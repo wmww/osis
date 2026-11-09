@@ -214,7 +214,7 @@ fn polling_sync_now_costs_nothing_and_holds_nothing_back() {
     b.nudge_sync().unwrap();
     w.run();
     assert_eq!(says(&a, t), Some(s("written while polled")));
-    w.until(b.wait_synced(SyncScope::AllWithSavedPeers), 100, 5).unwrap();
+    w.until(b.wait_synced(SyncScope::All), 100, 5).unwrap();
 }
 
 /// Time to `db` hearing Bob's write on `t` once Bob is back: the redial's pause (`retry_ms`, 5 s) and

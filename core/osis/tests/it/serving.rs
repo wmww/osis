@@ -132,7 +132,7 @@ fn serving_node_needs_no_setup_spec_data_model_9() {
     assert_eq!(alice.saved_peers().unwrap(), vec![ha.clone()]);
     let g = group_of(&alice, alice.me(), alice.me(), &[]);
     item(&alice, g, "x");
-    w.until(alice.wait_synced(osis::SyncScope::AllWithSavedPeers), 1000, 30).unwrap();
+    w.until(alice.wait_synced(osis::SyncScope::All), 1000, 30).unwrap();
     let ai = w.index(&alice).unwrap();
     let s = w.host_of(ai).unwrap();
     for l in [home_label(&alice), label_of(&alice, g)] {
@@ -436,7 +436,7 @@ fn stop_serving_erases_its_store_spec_data_model_9() {
     db.set_serving(hosting()).unwrap();
     listening(&db);
     db.add_peer(&db.serving_address().unwrap().unwrap()).unwrap();
-    common::block_on(db.wait_synced(osis::SyncScope::AllWithSavedPeers)).unwrap();
+    common::block_on(db.wait_synced(osis::SyncScope::All)).unwrap();
     let home = home_label(&db);
     let mut c = osis::internals::Opening::at(osis::Store::Memory(osis::MemStore::new()));
     c.app.internals.seed = Some(100);

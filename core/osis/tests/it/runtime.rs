@@ -114,7 +114,7 @@ async fn round_trip(host_ep: Option<osis::internals::InProcess>, url: &str, a: O
     let t = w.create_in(da.me(), &[da.me()]).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str("over the wire".into())).unwrap();
     w.commit().unwrap();
-    tokio::time::timeout(GUARD, da.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, da.wait_synced(SyncScope::All)).await.unwrap().unwrap();
 
     // the new node syncs on a runtime of osis's own (`Runtime::Own`)
     let mut own = cfg(2, vec![], b);
@@ -186,7 +186,7 @@ async fn redeem_over(host_ep: Option<osis::internals::InProcess>, url: &str, a: 
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     let link = alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
-    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All)).await.unwrap().unwrap();
     assert_eq!(tokio::time::timeout(Duration::from_secs(90), bob.redeem(&link)).await.unwrap().unwrap(), g);
     drop((alice, bob));
     drop(host_db);
@@ -352,7 +352,7 @@ async fn redeem_direct_in_process_spec_permissions_7() {
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str("first contact".into())).unwrap();
     w.commit().unwrap();
     // the link carries the dialable key, listened on
-    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All)).await.unwrap().unwrap();
     let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
     let now = alice.sync_engine(|s| s.own_reach()).unwrap();
     assert_eq!(now.dialable, me.reach.dialable);
@@ -365,7 +365,7 @@ async fn redeem_direct_in_process_spec_permissions_7() {
     })
     .await
     .unwrap();
-    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All)).await.unwrap().unwrap();
     assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
     // redeemed: the target is here, from the sharer's node
     assert_eq!(bob.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), Some(Value::Str("first contact".into())));
@@ -497,10 +497,9 @@ async fn redeem_direct_no_peer_in_process_spec_permissions_7() {
 
 // spec/requirements.md Offline and network, notes/api.md Sync configuration, Demotion and catching up:
 // status never says a group has nobody while a node is connected on it, whichever side dialed: Alice
-// shows `NoPeers`, and `Connected` once Bob dialed her by her direct link; he shows it too, and
-// `peers` names her to him. He judges her as a dialed reader.
+// shows `NotConnected` until Bob dialed her by her direct link; then each shows a source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn status_says_connected_with_a_direct_peer() {
+async fn status_shows_a_source_once_a_direct_peer_dialed() {
     let h = hosts(9).await;
     let alice = osis::internals::create(h.on_host(1, vec![], "a")).unwrap();
     let mut c = h.on_host(2, vec![], "b");
@@ -511,13 +510,14 @@ async fn status_says_connected_with_a_direct_peer() {
     let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
-    assert_eq!(alice.status().unwrap().groups[&g].state, osis::SyncState::NoPeers);
+    assert_eq!(alice.status().unwrap().groups[&g].state, osis::SyncState::NotConnected);
     assert_eq!(alice.status().unwrap().connected, 0);
     assert!(alice.peers(g).unwrap().is_empty(), "nobody known");
     let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
     tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap();
     tokio::time::timeout(GUARD, async {
-        while alice.status().unwrap().groups[&g].state != osis::SyncState::Connected || bob.status().unwrap().groups.get(&g).map(|x| x.state) != Some(osis::SyncState::Connected) {
+        let has_source = |db: &osis::Osis| db.status().unwrap().groups.get(&g).is_some_and(|x| matches!(x.state, osis::SyncState::Synced | osis::SyncState::Syncing));
+        while !has_source(&alice) || !has_source(&bob) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
@@ -567,7 +567,7 @@ async fn single_use_direct_keeps_key_in_process_spec_permissions_7() {
     let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, single_use: true, ..Default::default() }).unwrap();
     let key = alice.sync_engine(|s| s.own_reach()).unwrap().dialable;
     assert_eq!(osis_label::ShareLink::from_text(&link.to_string()).unwrap().peers[0].dialable, key);
-    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All)).await.unwrap().unwrap();
     assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
     tokio::time::timeout(GUARD, async {
         while !alice.links_of(g).unwrap().is_empty() {
@@ -704,7 +704,7 @@ fn tokio_runtime_close_then_shutdown_no_timer_panic() {
                     c.runtime = Runtime::Tokio(rt.handle().clone());
                     c.app.internals.transport = Some(net.endpoint(&format!("k{t}-{i}")));
                     let db = osis::internals::create(c).unwrap();
-                    let _ = common::block_on(db.wait_synced(osis::SyncScope::AllWithSavedPeers));
+                    let _ = common::block_on(db.wait_synced(osis::SyncScope::All));
                     assert_eq!(db.close().unwrap(), osis::Close::Closed);
                     drop(rt);
                 }
@@ -742,19 +742,19 @@ async fn own_serving_node_in_process_spec_data_model_9() {
     .await
     .unwrap();
     alice.add_peer(&ha).unwrap();
-    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All)).await.unwrap().unwrap();
 
     let mut w = alice.write();
     let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
-    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All)).await.unwrap().unwrap();
     let mut w = alice.write();
     let t = w.create_in(g, &[g]).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str("hello".into())).unwrap();
     w.commit().unwrap();
     let link = alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
-    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All)).await.unwrap().unwrap();
     // Bob, on that peer only, redeems: the group is here when it returns
     let bob = osis::internals::create(cfg(3, vec![ha], Some(net.endpoint("b")))).unwrap();
     assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
@@ -772,7 +772,7 @@ fn driver_panic_fails_waiters() {
     c.app.internals.seed = Some(3);
     c.runtime = Runtime::Own;
     c.app.internals.transport = Some(net.endpoint("dp"));
-    // a peer nobody answers at: `wait_synced(AllWithSavedPeers)` waits
+    // a peer nobody answers at: `wait_synced(All)` waits
     c.hosts = vec![Address::new(&"mem://nobody".parse().unwrap(), [7; 32])];
     let db = osis::internals::create(c).unwrap();
     let (dtx, drx) = std::sync::mpsc::channel();
@@ -782,7 +782,7 @@ fn driver_panic_fails_waiters() {
     let (tx, rx) = std::sync::mpsc::channel();
     let d2 = db.clone();
     let waiter = std::thread::spawn(move || {
-        let _ = tx.send(common::block_on(d2.wait_synced(SyncScope::AllWithSavedPeers)));
+        let _ = tx.send(common::block_on(d2.wait_synced(SyncScope::All)));
     });
     let t0 = std::time::Instant::now();
     while db.waiting() == 0 {
@@ -799,7 +799,7 @@ fn driver_panic_fails_waiters() {
     };
     died(r);
     // a later wait fails at once too
-    died(common::block_on(db.wait_synced(SyncScope::AllWithSavedPeers)));
+    died(common::block_on(db.wait_synced(SyncScope::All)));
     let d = loop {
         let d = drx.recv_timeout(GUARD).expect("no SyncStopped diagnostic");
         if let osis::Diagnostic::SyncStopped { detail } = d {
@@ -831,10 +831,10 @@ async fn direct_link_with_peers_off_fails_at_once() {
 #[tokio::test]
 async fn node_going_answers_a_wait_with_no_handle() {
     let net = osis_transport::Net::new(2);
-    // a peer nobody answers at: `wait_synced(AllWithSavedPeers)` waits
+    // a peer nobody answers at: `wait_synced(All)` waits
     let nobody = Address::new(&"mem://nobody".parse().unwrap(), [7; 32]);
     let db = osis::internals::create(cfg(1, vec![nobody], Some(net.endpoint("a")))).unwrap();
-    let f = db.wait_synced_no_handle(SyncScope::AllWithSavedPeers);
+    let f = db.wait_synced_no_handle(SyncScope::All);
     assert_eq!(db.waiting(), 1);
     drop(db);
     let r = tokio::time::timeout(GUARD, f).await.expect("nothing answers it");

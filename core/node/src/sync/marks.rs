@@ -16,6 +16,9 @@ impl SyncEngine {
     /// moved, keys, and remote role commits restart `complete_pass` for the actors they
     /// touch.
     pub(crate) fn engine_events(&mut self) -> Result<()> {
+        for l in std::mem::take(&mut self.engine.core.made_labels) {
+            self.state.note_passed(l);
+        }
         let mut changed = false;
         // who wants a pass: every label (`wide`), or those holding what these aspects are on
         let (mut wide, mut narrow): (bool, BTreeSet<(Tid, Ak)>) = (false, BTreeSet::new());

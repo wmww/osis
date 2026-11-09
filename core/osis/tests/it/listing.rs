@@ -414,7 +414,8 @@ fn purge_without_the_right_is_refused_spec_perm_6() {
 }
 
 // spec/sync.md §6, notes/api.md Commits (the seam for issues/partial-history-fetch.md): `complete` is false while a
-// label carrying the thing has more to bring, so what is not listed is not fetched, not absent.
+// sync ID carrying the thing has more to bring from a connected node; a sync ID this node made has
+// nothing to bring before any pass.
 #[test]
 fn page_says_when_it_may_miss_commits() {
     let mut w = World::new();
@@ -428,8 +429,8 @@ fn page_says_when_it_may_miss_commits() {
     let t = t.unwrap();
     say(&db, t, "x");
     let newest = |db: &Osis, t| db.at(t, untyped(msg())).writes(&page(CommitFrom::Newest, 1)).unwrap();
-    assert!(!newest(&db, t).complete, "still syncing");
-    w.until(db.wait_synced(SyncScope::AllWithSavedPeers), 1000, 10).unwrap();
+    assert!(newest(&db, t).complete, "a sync ID it made: nothing known is missing");
+    w.until(db.wait_synced(SyncScope::All), 1000, 10).unwrap();
     w.run();
     assert!(newest(&db, t).complete);
     // a thing in no label: nothing to wait for

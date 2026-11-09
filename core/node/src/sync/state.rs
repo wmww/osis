@@ -57,6 +57,8 @@ const LINK_PEER: &[u8] = b"y/l";
 const DECLINED: &[u8] = b"y/m";
 /// Groups this node holds none of (receipts-only, `SyncEngine::set_receipts_only`).
 const RECEIPTS_ONLY: &[u8] = b"y/w";
+/// Labels a pass finished at once, or that this node made (`note_passed`).
+const PASSED: &[u8] = b"y/B";
 /// A flow's delivery (not an inbox blob) not carried out yet, by the hash of its encoding
 /// (`owe_tx`, `SyncEngine::take_done`).
 const OWED: &[u8] = b"y/y";
@@ -165,6 +167,16 @@ pub struct SentInbox {
     pub at: u64,
     /// Re-sends so far.
     pub tries: u32,
+    /// The last send had nowhere to go (the inbox lists no node and is not this node's): it counts
+    /// as pending until a node took it.
+    pub nowhere: bool,
+}
+
+impl SentInbox {
+    /// Not taken by anyone yet.
+    pub fn unsent(&self) -> bool {
+        self.at == 0 || self.nowhere
+    }
 }
 
 /// A label learned from an inbox blob before its `label.0` is held, or followed by a held key
@@ -315,6 +327,9 @@ pub struct State {
     pub direct: BTreeMap<Tid, Vec<CommitId>>,
     /// Groups this node holds none of (`y/w`): their labels are read only for receipts.
     pub receipts_only: BTreeSet<Tid>,
+    /// Labels with no first download outstanding: a pass finished once, or this node made them
+    /// (`y/B`). History `complete` reads it, so it outlives the run.
+    pub passed: BTreeSet<LabelId>,
     /// Persons marked as contacts (`y/a`).
     pub contacts: BTreeSet<Tid>,
     /// Commits of declined invite requests (`y/m`).
@@ -560,6 +575,9 @@ impl State {
                 }
                 b"w" => {
                     s.receipts_only.insert(r.tid()?);
+                }
+                b"B" => {
+                    s.passed.insert(LabelId(r.arr()?));
                 }
                 // one that does not decode is skipped, never a failed load
                 b"y" => {
@@ -1071,6 +1089,20 @@ impl State {
         }
     }
 
+    /// A pass of `l` finished, or this node made it (`passed`).
+    pub fn note_passed(&mut self, l: LabelId) {
+        if self.passed.insert(l) {
+            self.put(key(PASSED, &[&l.0]), Vec::new());
+        }
+    }
+
+    /// This node no longer holds `l`.
+    pub fn forget_passed(&mut self, l: &LabelId) {
+        if self.passed.remove(l) {
+            self.del(key(PASSED, &[&l.0]));
+        }
+    }
+
     /// Marks (or unmarks) a group as held by this node for receipts only.
     pub fn set_receipts_only(&mut self, g: Tid, on: bool) {
         if on {
@@ -1128,12 +1160,12 @@ impl State {
     }
 
     /// Records an inbox delivery, or a re-send of one (counted).
-    pub fn note_sent(&mut self, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool, at: u64) {
+    pub fn note_sent(&mut self, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool, at: u64, nowhere: bool) {
         let x = match self.sent_inbox.get(&(holder, commit)) {
             // the first send of a delivery queued unsent (`at` 0) is no re-send
-            Some(old) if old.at == 0 => SentInbox { at, ..old.clone() },
-            Some(old) => SentInbox { at, tries: old.tries.saturating_add(1), ..old.clone() },
-            None => SentInbox { holder, commit, things, edge_only, at, tries: 0 },
+            Some(old) if old.at == 0 => SentInbox { at, nowhere, ..old.clone() },
+            Some(old) => SentInbox { at, nowhere, tries: old.tries.saturating_add(1), ..old.clone() },
+            None => SentInbox { holder, commit, things, edge_only, at, tries: 0, nowhere },
         };
         self.put(key(SENT_INBOX, &[holder.as_bytes(), &commit.0]), encode_sent(&x));
         self.sent_inbox.insert((holder, commit), x);
@@ -1145,7 +1177,7 @@ impl State {
         if self.sent_inbox.contains_key(&(holder, commit)) {
             return;
         }
-        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0 };
+        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0, nowhere: false };
         self.put(key(SENT_INBOX, &[holder.as_bytes(), &commit.0]), encode_sent(&x));
         self.sent_inbox.insert((holder, commit), x);
     }
@@ -1434,7 +1466,7 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
 }
 
 fn encode_sent(x: &SentInbox) -> Vec<u8> {
-    let mut w = Wr::new().raw(x.holder.as_bytes()).raw(&x.commit.0).u8(u8::from(x.edge_only)).u64(x.at).u32(x.tries).u32(x.things.len() as u32);
+    let mut w = Wr::new().raw(x.holder.as_bytes()).raw(&x.commit.0).u8(u8::from(x.edge_only)).u64(x.at).u32(x.tries).u8(u8::from(x.nowhere)).u32(x.things.len() as u32);
     for t in &x.things {
         w = w.raw(t.as_bytes());
     }
@@ -1446,7 +1478,7 @@ fn encode_sent(x: &SentInbox) -> Vec<u8> {
 fn note_unsent_tx(tx: &mut Tx<'_>, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()> {
     let k = key(SENT_INBOX, &[holder.as_bytes(), &commit.0]);
     if tx.txn.get_local(&k)?.is_none() {
-        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0 };
+        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0, nowhere: false };
         tx.txn.put_local(&k, &encode_sent(&x), Shred::No)?;
     }
     Ok(())
@@ -1543,12 +1575,13 @@ fn decode_sent(v: &[u8]) -> Result<SentInbox> {
     let edge_only = r.u8()? == 1;
     let at = r.u64()?;
     let tries = r.u32()?;
+    let nowhere = r.u8()? == 1;
     let n = r.u32()?;
     let mut things = Vec::new();
     for _ in 0..n {
         things.push(r.tid()?);
     }
-    Ok(SentInbox { holder, commit, things, edge_only, at, tries })
+    Ok(SentInbox { holder, commit, things, edge_only, at, tries, nowhere })
 }
 
 /// The records engine transactions touch (`Engine::set_sync_records`).

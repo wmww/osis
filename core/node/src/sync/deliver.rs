@@ -145,8 +145,8 @@ impl SyncEngine {
         refused || (open > 0 && idle == open)
     }
 
-    /// Lost actors waiting for this node's own self-removals to be placed (`drop_left`), as last
-    /// computed: a host that never takes the removal keeps them for good (shown in
+    /// Lost actors waiting for this node's own self-removals to be placed at a source
+    /// (`drop_left`), as last computed: a node that never takes the removal keeps them for good (shown in
     /// `LabelStatus::leaving`).
     pub fn leaving(&self) -> impl Iterator<Item = &Tid> {
         self.left.iter().flat_map(|l| l.leaving.actors.keys())
@@ -216,6 +216,7 @@ impl SyncEngine {
         let gone = |l: &LabelId| f.labels.contains(l);
         for l in &f.labels {
             self.state.feed.forget(l);
+            self.state.forget_passed(l);
         }
         for (id, c) in self.conns.iter_mut() {
             for l in c.labels.keys().filter(|l| gone(l)) {
@@ -393,7 +394,7 @@ impl SyncEngine {
             if parts.is_empty() {
                 continue;
             }
-            if !self.held_at(&gl.id, c, Some(&parts), !local) && !self.parts_covered_at(&gl.id, c, &h, &parts)? {
+            if !self.held_at(&gl.id, c, Some(&parts), true) && !self.parts_covered_at(&gl.id, c, &h, &parts)? {
                 return Ok(false);
             }
         }

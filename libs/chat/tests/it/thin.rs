@@ -59,7 +59,7 @@ fn thin_client_reads_watches_posts_spec_client_port() {
     let addr = peer.serving_address().unwrap().unwrap();
     let n = osis::internals::create(on(&net, "n", vec![addr])).unwrap();
     let c = create(&n, &Options::default()).unwrap();
-    block_on(n.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
+    block_on(n.wait_synced(SyncScope::All)).unwrap();
     post(&n, c, "first").unwrap();
     let nc = n.client_listen(&["mem://clients".parse().unwrap()]).unwrap().remove(0);
     let (actor, secret) = n.add_client(None).unwrap();

@@ -209,29 +209,26 @@ pub struct LabelStatus {
     pub group: Tid,
     pub label: LabelId,
     pub hosts: usize,
-    /// Connections up to its hosts.
-    pub connected: usize,
-    /// Other nodes connected on it directly, whichever side dialed: co-readers and served sessions
-    /// with it open.
-    pub peers_connected: usize,
-    /// Connections on which it is open.
-    pub open: usize,
-    /// Of those, the ones whose last pass ended with nothing outstanding.
+    /// Nodes connected now with it open, whoever dialed, readers or not: a node both sides dialed
+    /// counts once, by this node's own connection.
+    pub sources: usize,
+    /// Of those, the ones this node's own pass ended with, nothing outstanding and nothing changed
+    /// since. A session only the other side dialed runs no pass here, so it is never among them.
     pub idle: usize,
-    /// Connections this node dialed to other readers (not hosts) on which it is open.
-    pub peers_open: usize,
-    /// Of those, the ones whose last pass ended with nothing outstanding.
-    pub peers_idle: usize,
+    /// Connections up and still opening it: passes about to run, not sources yet.
+    pub opening: usize,
     /// Every host refused every key this node holds: none can serve it here (waits for a re-seal).
     pub stranded: bool,
-    /// Some host refused registering it for now (tried again after a back-off).
-    pub refused: bool,
-    /// Hosts whose last refusal in a row was "not admitted" (code 14), until it opens there.
-    pub not_admitted: Vec<Address>,
+    /// Hosts connected now whose last refusal in a row was "not admitted" (code 14): nodes this
+    /// node holds to serve it, that will not.
+    pub refused_by: Vec<Address>,
     /// This node left the group and keeps its secrets until its self-removal is placed
     /// (`SyncEngine::leaving`).
     pub leaving: bool,
+    /// When it was last seen with a source and every source caught up (raw wall ms), in this run.
     pub last_sync: Option<u64>,
+    /// A pass finished here once, or this node made it: no first download is outstanding.
+    pub passed: bool,
     /// Replaced (an admin syncs it until it retires, `retire_replaced`).
     pub replaced: bool,
 }

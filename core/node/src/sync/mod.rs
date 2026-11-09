@@ -115,6 +115,8 @@ pub struct SyncEngine {
     /// costs a box. Clearing would block re-seal and link finalization while one host is down.
     pub(crate) passes: BTreeMap<(HostKey, LabelId), (u64, u64)>,
     wake: Option<u64>,
+    /// Per label, when it last had every source caught up (raw wall ms; `label_status`, memory only).
+    last_synced: BTreeMap<LabelId, u64>,
     /// When the last Tick was handled (raw wall ms).
     last_tick: u64,
     /// Recent diagnostics (also sent as engine events).
@@ -363,6 +365,7 @@ impl SyncEngine {
             rotation_at: BTreeMap::new(),
             placed_cache: (u64::MAX, BTreeMap::new()),
             pass_peers: BTreeMap::new(),
+            last_synced: BTreeMap::new(),
             holders_moved: false,
             clients_moved: false,
             prefix_checked: BTreeSet::new(),

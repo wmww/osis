@@ -951,12 +951,12 @@ fn differential(seed: u64) -> usize {
         w.commit().unwrap();
         things.push((t, of));
     }
-    block_on(x.n.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
+    block_on(x.n.wait_synced(SyncScope::All)).unwrap();
     until("P has them", || {
         let _ = x.p.nudge_sync();
         things.iter().all(|(t, _)| x.p.at(*t, osis::DynamicAspectKey::untyped(title())).get().ok().flatten() == Some(s("start")))
     });
-    block_on(x.p.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
+    block_on(x.p.wait_synced(SyncScope::All)).unwrap();
     // from here the two copies diverge: nothing moves between them but what the calls do
     x.net.partition("n", "s");
     x.net.partition("p", "s");
@@ -1256,7 +1256,7 @@ fn moves_differential(seed: u64) -> (usize, usize) {
     }).unwrap();
     let (both, added) = (thing(), thing());
     x.n.add_with_grant(Member::Item(both), h, Role::Write).unwrap();
-    block_on(x.n.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
+    block_on(x.n.wait_synced(SyncScope::All)).unwrap();
     until("P has them", || {
         let _ = x.p.nudge_sync();
         x.p.at(both, osis::DynamicAspectKey::untyped(title())).get().ok().flatten() == Some(s("first")) && x.p.at(added, osis::DynamicAspectKey::untyped(title())).get().ok().flatten() == Some(s("first")) && x.p.engine(|e| e.groups_of(&both).contains(&h))
@@ -1416,10 +1416,10 @@ fn second_group(x: &World) -> Tid {
 fn third_node(x: &World) -> Osis {
     let w_db = osis::internals::create(cfg_on(&x.net, "w", &MemStore::new(), vec![x.addr.clone()])).unwrap();
     let card = w_db.contact_card().unwrap();
-    block_on(w_db.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
+    block_on(w_db.wait_synced(SyncScope::All)).unwrap();
     let who = block_on(x.n.import_contact(&card)).unwrap();
     x.n.grant(x.g, who, Role::Write, Default::default()).unwrap();
-    block_on(x.n.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
+    block_on(x.n.wait_synced(SyncScope::All)).unwrap();
     until("W has t", || {
         let _ = w_db.nudge_sync();
         for i in w_db.invite_requests().unwrap() {
@@ -1463,7 +1463,7 @@ fn a_split_thing_reads_at_the_route_and_refuses_writes() {
     assert_eq!(x.p.status().unwrap().two_sources.iter().copied().collect::<Vec<_>>(), vec![x.t]);
     // what only G carries: W syncs G alone
     w_db.commit_with(|w| w.at(x.t, osis::DynamicAspectKey::untyped(title())).set(&s("from w"))).unwrap();
-    block_on(w_db.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
+    block_on(w_db.wait_synced(SyncScope::All)).unwrap();
     until("N has W's write", || {
         let _ = x.n.nudge_sync();
         x.n.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap() == Some(s("from w"))

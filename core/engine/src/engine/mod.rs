@@ -914,6 +914,8 @@ pub struct Core {
     pub memory_generation: u64,
     /// The running transaction is a memory one (`Tx::set_memory`).
     pub memory_tx: bool,
+    /// Labels this node made, not yet seen by node-sync (`take_made_labels`).
+    pub made_labels: Vec<osis_base::LabelId>,
     /// Debug builds: the cache hits compared with a fresh read at this point of the store
     /// (`Engine::recheck`).
     #[cfg(debug_assertions)]
@@ -1320,6 +1322,7 @@ impl Core {
             stale_all: _,
             batched: _,
             memory_tx: _,
+            made_labels: _,
             dirty: _,
             // caches, dropped when anything changed (`states` and `pages` per written aspect)
             states: _,
@@ -1502,6 +1505,7 @@ impl Core {
             generation: 0,
             memory_generation: 0,
             memory_tx: false,
+            made_labels: Vec::new(),
             #[cfg(debug_assertions)]
             rechecked: Default::default(),
             labels: BTreeMap::new(),

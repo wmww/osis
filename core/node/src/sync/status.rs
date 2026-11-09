@@ -3,58 +3,53 @@
 use super::*;
 
 impl SyncEngine {
-    /// Where each synced label stands (the API's status): per label, its group, its hosts,
-    /// how many connections are up and have it open, whether every one of those finished a pass
-    /// with nothing outstanding (and likewise of the other readers dialed), whether every host
-    /// failed it (stranded: none can serve it to this node), and when it last synced (raw wall ms).
+    /// Where each synced label stands (the API's status): per label its group, its sources (nodes
+    /// connected now with it open, whoever dialed) and how many of them this node's pass is done
+    /// with, whether every host failed it (stranded), which connected hosts refuse it, and when it
+    /// last had every source caught up.
     pub fn label_status(&mut self) -> Vec<LabelStatus> {
-        let mut out = Vec::new();
         let now = self.raw_now();
+        let mut out = Vec::new();
         for (g, l) in self.labels() {
             let leaving = self.leaving().any(|a| *a == self.engine.group_actor(&g));
             let mut failed = BTreeSet::new();
-            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, peers_connected: 0, open: 0, idle: 0, peers_open: 0, peers_idle: 0, stranded: false, refused: false, not_admitted: Vec::new(), leaving, last_sync: None, replaced: l.replaced };
-            for c in self.conns.values().filter(|c| l.hosts.iter().any(|a| a.key == c.host)) {
-                if c.up {
-                    st.connected += 1;
+            let mut dialed_peers = 0;
+            let passed = self.state.passed.contains(&l.id);
+            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), sources: 0, idle: 0, opening: 0, stranded: false, refused_by: Vec::new(), leaving, last_sync: None, passed, replaced: l.replaced };
+            for c in self.conns.values() {
+                let host = l.hosts.iter().find(|a| a.key == c.host);
+                if let Some(a) = host.filter(|_| c.up && c.req.refusals.get(&l.id).is_some_and(|(_, code)| *code == Code::NOT_ADMITTED)) {
+                    st.refused_by.push(a.clone());
                 }
-                if c.req.refusals.get(&l.id).is_some_and(|(_, code)| *code == Code::NOT_ADMITTED)
-                    && let Some(a) = l.hosts.iter().find(|a| a.key == c.host)
-                {
-                    st.not_admitted.push(a.clone());
+                let Some(x) = c.labels.get(&l.id) else {
+                    // labels are started once the session is ready
+                    st.opening += usize::from(c.up && !c.session.is_ready() && (host.is_some() || c.peer));
+                    continue;
+                };
+                if x.phase == Phase::Failed && host.is_some() {
+                    failed.insert(c.host);
                 }
-                let Some(x) = c.labels.get(&l.id) else { continue };
-                match x.phase {
-                    Phase::Failed => {
-                        failed.insert(c.host);
-                    }
-                    Phase::Refused { .. } => st.refused = true,
-                    Phase::Open => {
-                        st.open += 1;
-                        if x.idle() && c.session.outstanding() == 0 {
-                            st.idle += 1;
-                        }
-                        if x.synced {
-                            // live on an open subscription: as of now, passes or not
-                            let live = self.cfg.subscribe && c.up && x.idle();
-                            st.last_sync = st.last_sync.max(Some(if live { now } else { x.last_sync }));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            st.stranded = !l.hosts.is_empty() && l.hosts.iter().all(|a| failed.contains(&a.key));
-            for c in self.conns.values().filter(|c| c.peer && c.up && !l.hosts.iter().any(|a| a.key == c.host)) {
-                if let Some(x) = c.labels.get(&l.id).filter(|x| x.phase == Phase::Open && !x.receipts) {
-                    st.peers_open += 1;
+                st.opening += usize::from(c.up && x.phase == Phase::Opening && (host.is_some() || c.peer));
+                // a host the label no longer names is on its way out: no source of it
+                if c.up && x.phase == Phase::Open && !x.receipts && (host.is_some() || c.peer) {
+                    dialed_peers += usize::from(c.peer);
+                    st.sources += 1;
                     if x.idle() && c.session.outstanding() == 0 {
-                        st.peers_idle += 1;
+                        st.idle += 1;
                     }
                 }
             }
-            st.peers_connected = self.conns.values().filter(|c| c.peer && c.up && c.labels.get(&l.id).is_some_and(|x| matches!(x.phase, Phase::Open))).count() + self.served.values().filter(|s| s.opens(&l.id)).count();
+            // a session names no node (dialers use fresh keys): a co-reader both sides dialed is
+            // one source, so sessions beyond the co-readers dialed are the ones only they dialed
+            st.sources += self.served.values().filter(|s| s.opens(&l.id)).count().saturating_sub(dialed_peers);
+            st.stranded = !l.hosts.is_empty() && l.hosts.iter().all(|a| failed.contains(&a.key));
+            if !st.stranded && st.sources > 0 && st.idle == st.sources {
+                self.last_synced.insert(l.id, now);
+            }
+            st.last_sync = self.last_synced.get(&l.id).copied();
             out.push(st);
         }
+        self.last_synced.retain(|l, _| out.iter().any(|s| s.label == *l));
         out
     }
 
@@ -95,17 +90,18 @@ impl SyncEngine {
         out
     }
 
-    /// Inbox blobs (grants, notices) not yet sent or not yet answered by a host (the outbox
-    /// and the delivery records are stored and restored at open).
+    /// Inbox blobs (grants, notices) not yet sent, sent to nowhere (no node to take them), or
+    /// not yet answered by a host (the outbox and the delivery records are stored and restored
+    /// at open).
     pub fn deliveries_pending(&self) -> usize {
-        self.outbox.len() + self.state.sent_inbox.values().filter(|s| s.at == 0).count()
+        self.outbox.len() + self.state.sent_inbox.values().filter(|s| s.unsent()).count()
     }
 
     /// What each pending delivery (`deliveries_pending`) is about, for `wait_synced`'s scope:
     /// an inbox delivery's things (a grant's target), a non-writer's deposit its label's group;
     /// empty when none is known (an inbox blob outside a delivery record).
     pub fn pending_about(&mut self) -> Vec<Vec<Tid>> {
-        let unsent = self.state.sent_inbox.values().filter(|s| s.at == 0).map(|s| s.things.clone());
+        let unsent = self.state.sent_inbox.values().filter(|s| s.unsent()).map(|s| s.things.clone());
         let mut out: Vec<Vec<Tid>> = unsent.collect();
         let queued: Vec<(LabelId, Option<(Tid, osis_base::CommitId)>)> = self.outbox.keys().map(|k| (k.1, self.state.outbox.get(k).and_then(|o| o.delivery))).collect();
         for (l, d) in queued {

@@ -654,7 +654,7 @@ fn direct_packages_survive_a_crash_before_carry_out_spec_sync_3() {
 fn settled(net: &mut Net, n: usize, g: Tid) -> bool {
     let st = net.sync(n).label_status();
     let of: Vec<_> = st.iter().filter(|s| s.group == g).collect();
-    of.len() == 1 && !of[0].stranded && of[0].open == 1 && of[0].idle == 1
+    of.len() == 1 && !of[0].stranded && of[0].sources == 1 && of[0].idle == 1
 }
 
 /// Alice's item `t` of `g`, labeled by g alone.

@@ -48,7 +48,7 @@ fn create_syncs_home_spec_sync_2() {
     assert_eq!(st.connected, 1);
     item(&db, db.me(), db.me(), "hello");
     assert_ne!(db.status().unwrap().groups.get(&db.me()).map(|g| g.state), Some(SyncState::Synced), "a local commit is not at the host yet");
-    w.until(db.wait_synced(SyncScope::AllWithSavedPeers), 1000, 10).unwrap();
+    w.until(db.wait_synced(SyncScope::All), 1000, 10).unwrap();
 }
 
 // notes/api.md Sharing (nodes), spec/sync.md §2 (pairing: the only way a node receives a
@@ -584,7 +584,7 @@ fn receipts_only_status_spec_permissions_5_3() {
     assert_eq!(st.groups.get(&h).map(|s| s.state), Some(SyncState::LogOnly), "{st:?}");
     assert_eq!(st.groups.get(&g).map(|s| s.state), Some(SyncState::Synced), "{st:?}");
     // nothing of H goes into a wait for it
-    w.until(phone.wait_synced(SyncScope::AllWithSavedPeers), 1000, 10).unwrap();
+    w.until(phone.wait_synced(SyncScope::All), 1000, 10).unwrap();
     assert!(w.until(phone.wait_synced(SyncScope::Thing(h)), 1000, 10).is_err(), "H is not synced here");
 }
 
@@ -871,24 +871,24 @@ fn add_peer_moves_groups_spec_sync_2() {
     let host = w.add_host();
     let a = osis::internals::create(w.cfg(1, &[])).unwrap();
     w.run();
-    assert_eq!(a.status().unwrap().groups[&a.me()].state, SyncState::NoPeers);
+    assert_eq!(a.status().unwrap().groups[&a.me()].state, SyncState::NotConnected);
     a.add_peer(&w.addr(host).unwrap()).unwrap();
     w.run();
     assert_eq!(a.status().unwrap().groups[&a.me()].state, SyncState::Synced);
     let inbox = a.at(a.me(), osis::internals::core_types::KEYS).get().unwrap().unwrap().inbox.unwrap();
     assert_eq!(inbox.hosts.len(), 1);
-    w.until(a.wait_synced(SyncScope::AllWithSavedPeers), 1000, 10).unwrap();
+    w.until(a.wait_synced(SyncScope::All), 1000, 10).unwrap();
     a.remove_peer(&w.addr(host).unwrap()).unwrap();
     w.run();
-    assert_eq!(a.status().unwrap().groups[&a.me()].state, SyncState::NoPeers);
+    assert_eq!(a.status().unwrap().groups[&a.me()].state, SyncState::NotConnected);
 }
 
-// notes/api.md Sync status (`wait_synced(AllWithSavedPeers)` leaves `NoPeers` groups out): Carol has no
-// peers (her home is `NoPeers`) and joined Alice's served group by a link; Alice's later
-// write reaches her through `wait_synced(AllWithSavedPeers)`, while `Group(home)` still fails `Unsynced`.
+// notes/api.md Sync configuration and status: `All` and `Thing` wait on a group with nobody
+// connected rather than failing or skipping it: Carol has no peers (her home is `NotConnected`) and
+// joined Alice's served group by a link; Alice's later write still reaches her.
 // spec: none (API surface, notes/api.md)
 #[test]
-fn wait_synced_skips_groups_without_peers() {
+fn wait_synced_waits_on_a_group_with_nobody_connected() {
     let mut w = World::new();
     let (alice, _, _) = people(&mut w, 0);
     let g = group(&alice);
@@ -898,17 +898,17 @@ fn wait_synced_skips_groups_without_peers() {
     w.run();
     assert_eq!(w.until(carol.redeem(&link), 1000, 10).unwrap(), g);
     w.run();
-    assert_eq!(carol.status().unwrap().groups[&carol.me()].state, SyncState::NoPeers);
+    assert_eq!(carol.status().unwrap().groups[&carol.me()].state, SyncState::NotConnected);
     let t = item(&alice, g, g, "after the redeem");
-    w.until(alice.wait_synced(SyncScope::AllWithSavedPeers), 1000, 10).unwrap();
-    w.until(carol.wait_synced(SyncScope::AllWithSavedPeers), 1000, 10).unwrap();
+    w.until(alice.wait_synced(SyncScope::All), 1000, 10).unwrap();
+    assert!(w.try_until(carol.wait_synced(SyncScope::All), 1000, 10).is_none());
     assert_eq!(x(&carol, t), Some(s("after the redeem")));
-    assert!(matches!(w.until(carol.wait_synced(SyncScope::Thing(carol.me())), 1000, 10), Err(osis::Error::Unsynced { .. })));
+    assert!(w.try_until(carol.wait_synced(SyncScope::Thing(carol.me())), 1000, 10).is_none());
 }
 
 // notes/api.md Sync status (`wait_synced` scopes the deliveries): Bob's inbox is on a peer
 // Alice cannot reach, so her grant to him stays queued; `Group(other)` resolves meanwhile,
-// `Thing(g)` and `AllWithSavedPeers` wait for it until the peer is back.
+// `Thing(g)` and `All` wait for it until the peer is back.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn wait_synced_scopes_deliveries() {
@@ -927,15 +927,40 @@ fn wait_synced_scopes_deliveries() {
     item(&alice, other, other, "unrelated");
     w.until(alice.wait_synced(SyncScope::Thing(other)), 1000, 10).unwrap();
     assert!(w.try_until(alice.wait_synced(SyncScope::Thing(g)), 1000, 10).is_none());
-    assert!(w.try_until(alice.wait_synced(SyncScope::AllWithSavedPeers), 1000, 10).is_none());
+    assert!(w.try_until(alice.wait_synced(SyncScope::All), 1000, 10).is_none());
     w.set_reachable(&alice, h2, true);
-    w.until(alice.wait_synced(SyncScope::AllWithSavedPeers), 1000, 130).unwrap();
+    w.until(alice.wait_synced(SyncScope::All), 1000, 130).unwrap();
 }
 
-// notes/api.md Sync status (`AllWithSavedPeers` waits for every delivery): Carol syncs no label with peers;
+// notes/api.md Sync configuration and status: a replaced label with no peer does not count in status
+// or waits: Carol's group has one and, after a replacement and `sync` with a peer, a served one; the group
+// is `Synced` by the served one, and a write there leaves that state until the peer has it.
+// spec: none (API surface, notes/api.md)
+#[test]
+fn a_replaced_label_is_left_out_of_status() {
+    let mut w = World::new();
+    let h = w.add_host();
+    let carol = osis::internals::create(w.cfg(9, &[])).unwrap();
+    w.run();
+    let g = group(&carol);
+    let old = carol.engine(|e| e.group_labels(&g).unwrap()[0].id);
+    let _ = carol.sync_engine(|s| s.replace_label(&g, &old)).unwrap();
+    carol.sync(g, &[w.addr(h).unwrap()]).unwrap();
+    w.run();
+    let st = carol.status().unwrap().groups[&g].clone();
+    assert_eq!((st.state, carol.sync_ids(g).unwrap().len()), (SyncState::Synced, 2), "a hostless and a hosted label");
+    w.set_reachable(&carol, h, false);
+    item(&carol, g, g, "while cut off");
+    w.run();
+    assert_ne!(carol.status().unwrap().groups[&g].state, SyncState::Synced, "not passed on");
+    w.set_reachable(&carol, h, true);
+    w.advance(130_000);
+    assert_eq!(carol.status().unwrap().groups[&g].state, SyncState::Synced);
+}
+
+// notes/api.md Sync status (`All` waits for every delivery): Carol syncs no label with peers;
 // her grant on her peerless group to Bob is queued for his inbox peer, which she cannot
-// reach: `AllWithSavedPeers` does not resolve before it lands, `Group(g)` fails `Unsynced` (Bob can never
-// fetch `g`); removing Bob there waits for nobody.
+// reach: `All` and `Thing(g)` do not resolve before it lands; removing Bob there waits for nobody.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn wait_synced_waits_for_deliveries_without_peered_groups() {
@@ -952,18 +977,19 @@ fn wait_synced_waits_for_deliveries_without_peered_groups() {
     w.set_reachable(&carol, h, false);
     // the groups learned from Bob's card held for receipts only: no label of hers with peers
     // is synced
-    for (h, _) in carol.status().unwrap().groups.into_iter().filter(|(_, s)| s.state != SyncState::NoPeers) {
+    for (h, _) in carol.status().unwrap().groups.into_iter().filter(|(_, s)| s.state != SyncState::NotConnected) {
         carol.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly }).unwrap();
     }
     carol.grant(g, b, Role::Read, Default::default()).unwrap();
-    assert!(w.try_until(carol.wait_synced(SyncScope::AllWithSavedPeers), 1000, 10).is_none());
-    assert!(matches!(w.until(carol.wait_synced(SyncScope::Thing(g)), 1000, 10), Err(osis::Error::Unsynced { .. })));
+    assert!(w.try_until(carol.wait_synced(SyncScope::All), 1000, 10).is_none());
+    assert!(w.try_until(carol.wait_synced(SyncScope::Thing(g)), 1000, 10).is_none());
     // a group with nobody reachable: `set_role` catches up with nobody and writes at once
     carol.grant(g, b, Role::Write, Default::default()).unwrap();
     carol.set_role(g, b, None, SetRoleOpts::default()).unwrap();
     assert!(!carol.grants(g).unwrap().contains_key(&b));
     w.set_reachable(&carol, h, true);
-    w.until(carol.wait_synced(SyncScope::AllWithSavedPeers), 1000, 130).unwrap();
+    w.advance(130_000);
+    assert_eq!(carol.sync_engine(|s| s.deliveries_pending()), 0, "the delivery was taken");
 }
 
 // notes/api.md Sync configuration (`add_peer` scope), spec/sync.md §2: Alice's peer changes
@@ -1021,7 +1047,7 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
         a.commit_set(u, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s(v)).unwrap();
     }
     w.run();
-    w.until(a.wait_synced(SyncScope::AllWithSavedPeers), 1000, 10).unwrap();
+    w.until(a.wait_synced(SyncScope::All), 1000, 10).unwrap();
     let node = a.node();
     let lost = commit_with(&a, |wr| wr.at(u, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("after the backup 3"))).stamp.id.raw();
     w.run();

@@ -81,10 +81,10 @@ pub struct CommitPage {
     pub commits: Vec<Commit>,
     /// More commits may lie that way: past `limit`, a page's cap or the read limit.
     pub more: bool,
-    /// Every sync carrying the address with a saved peer finished here, so past the last commit
-    /// there is nothing this node knows of. `false`: commits may yet arrive anywhere, older ones
-    /// too (offline, syncing): not fetched, not absent. A group with no saved peer has no such
-    /// pass to wait for and counts as finished, though a node that reads it may hold more.
+    /// Past the last commit there is nothing this node knows of. `false`: a sync carrying the
+    /// address is mid-pass with a connected node or this node never finished one there, so commits
+    /// may yet arrive anywhere, older ones too: not fetched, not absent. `true` says nothing of
+    /// nodes not connected, and stays true offline.
     pub complete: bool,
 }
 

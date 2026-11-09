@@ -299,7 +299,8 @@ impl SyncEngine {
             let ts = self.engine.header(&s.commit).map(|h| h.ts);
             let gone = match ts {
                 None => true,
-                Some(ts) => !first && (s.tries >= MAX_INBOX_RESENDS || self.acted(&s.holder, ts, &s.things)),
+                // a delivery that went nowhere stays until a node takes it
+                Some(ts) => !first && ((s.tries >= MAX_INBOX_RESENDS && !s.nowhere) || self.acted(&s.holder, ts, &s.things)),
             };
             if gone || !s.edge_only && !self.still_holder(&s.holder, &s.commit) {
                 self.forget_delivery(&s.holder, &s.commit);
@@ -325,16 +326,18 @@ impl SyncEngine {
             }
             // a new seal replaces the earlier one still queued
             self.drop_delivery_out(&s.holder, &s.commit);
-            let mut sent = false;
+            let (mut sent, mut reaches) = (false, false);
             for d in r.unwrap_or_default() {
                 if let crate::flows::Delivery::Inbox { to, inbox, blob, .. } = d {
                     let inbox_actor = self.inbox_actor(&to, &inbox.label)?.unwrap_or(to);
+                    // an inbox listing no node, not one of this node's: nothing takes it
+                    reaches |= !inbox.hosts.is_empty() || self.labels().iter().any(|(_, x)| x.id == inbox.label);
                     self.queue_inbox(&inbox_actor, inbox.label, &inbox.hosts, blob, Some((s.holder, s.commit)))?;
                     sent = true;
                 }
             }
             if sent {
-                self.state.note_sent(s.holder, s.commit, s.things.clone(), s.edge_only, now);
+                self.state.note_sent(s.holder, s.commit, s.things.clone(), s.edge_only, now, !reaches);
             } else {
                 // no inbox or keys for the holder any more
                 self.forget_delivery(&s.holder, &s.commit);

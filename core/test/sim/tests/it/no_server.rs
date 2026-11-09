@@ -173,8 +173,7 @@ fn repro_row9_a_grant_reaches_a_known_account() {
 // Row 9, spec/sync.md §3: a grant with no way to arrive is not reported delivered: with Bob unreachable the wait
 // does not end `Ok`.
 #[test]
-#[ignore = "issues/net-honest-status.md"]
-fn repro_row9_an_undelivered_grant_is_not_reported_done() {
+fn an_undelivered_grant_keeps_the_wait_open_row_9_spec_sync_3() {
     let (mut w, a, b, _) = co_readers(1, Role::Read);
     w.set_peer_reachable(&a, &b, false);
     w.run();
@@ -182,8 +181,9 @@ fn repro_row9_an_undelivered_grant_is_not_reported_done() {
     let t = wr.create().unwrap();
     wr.commit().unwrap();
     a.grant(t, b.me(), Role::Read, GrantOpts::default()).unwrap();
-    let got = w.try_until(a.wait_synced(SyncScope::AllWithSavedPeers), STEP_MS, STEPS);
+    let got = w.try_until(a.wait_synced(SyncScope::All), STEP_MS, STEPS);
     assert!(got.is_none(), "reported done with the grant undelivered: {got:?}");
+    assert_eq!(a.sync_engine(|s| s.deliveries_pending()), 1, "still pending, not marked sent");
 }
 
 // Row 10, spec/permissions.md §7: nothing Alice does to her key cuts off a connected joiner: a
@@ -238,20 +238,18 @@ fn repro_row10_a_key_change_while_away_does_not_strand_a_joiner() {
 
 // Row 15 (spec: none, notes/api.md Sync configuration and status): a write nobody received: `wait_synced` waits, it does not end `Ok`.
 #[test]
-#[ignore = "issues/net-honest-status.md"]
-fn repro_row15_a_wait_with_nobody_connected_waits() {
+fn a_wait_with_nobody_connected_waits_row_15_spec_none() {
     let mut w = World::new();
     let a = w.account(1, &[]);
     let g = group(&a);
     say(&a, g, "nobody got this");
-    let got = w.try_until(a.wait_synced(SyncScope::AllWithSavedPeers), STEP_MS, STEPS);
+    let got = w.try_until(a.wait_synced(SyncScope::All), STEP_MS, STEPS);
     assert!(got.is_none(), "ended with nobody connected: {got:?}");
 }
 
 // Row 16 (spec: none, notes/api.md Sync configuration and status): waiting on a thing caught up with a connected peer ends `Ok`.
 #[test]
-#[ignore = "issues/net-honest-status.md"]
-fn repro_row16_a_thing_wait_ends_when_caught_up_with_a_peer() {
+fn a_thing_wait_ends_when_caught_up_with_a_peer_row_16_spec_none() {
     let (mut w, a, b, g) = co_readers(1, Role::Write);
     say(&a, g, "x");
     w.advance(pause_ms());
@@ -262,8 +260,7 @@ fn repro_row16_a_thing_wait_ends_when_caught_up_with_a_peer() {
 
 // Row 17 (spec: none, notes/api.md Sync configuration and status): caught up with every connected peer reads `Synced`, not "connected, nothing said".
 #[test]
-#[ignore = "issues/net-honest-status.md"]
-fn repro_row17_status_says_synced_when_caught_up_with_a_peer() {
+fn status_says_synced_when_caught_up_with_a_peer_row_17_spec_none() {
     let (mut w, a, b, g) = co_readers(1, Role::Write);
     say(&a, g, "x");
     w.advance(pause_ms());
@@ -274,8 +271,7 @@ fn repro_row17_status_says_synced_when_caught_up_with_a_peer() {
 
 // Row 18 (spec: none, notes/api.md Sync configuration and status): while connected with a peer that still holds more, history is not `complete`.
 #[test]
-#[ignore = "issues/net-honest-status.md"]
-fn repro_row18_history_is_not_complete_while_a_peer_holds_more() {
+fn history_is_not_complete_while_a_peer_holds_more_row_18_spec_none() {
     let (mut w, a, b, g) = co_readers(1, Role::Write);
     w.set_peer_reachable(&a, &b, false);
     w.run();
@@ -284,13 +280,176 @@ fn repro_row18_history_is_not_complete_while_a_peer_holds_more() {
     w.tick(pause_ms());
     let mut judged = 0;
     while w.step(None) {
-        if !w.peer_routes(&b).is_empty() && heard(&b, g).as_deref() != Some("while apart") {
+        if b.status().unwrap().connected > 0 && heard(&b, g).as_deref() != Some("while apart") {
             judged += 1;
             assert!(!b.writes(&Scope::Group(g), &CommitQuery::default()).unwrap().complete, "complete with a peer holding more");
         }
     }
     assert!(judged > 0, "the connection was never up before the write arrived");
     assert_eq!(heard(&b, g).as_deref(), Some("while apart"));
+}
+
+/// Polls `f` for `steps` steps of model time; `f` stays alive after a pending result.
+fn poll_for<F: Future + Unpin>(w: &mut World, f: &mut F, steps: usize) -> Option<F::Output> {
+    let mut cx = Context::from_waker(Waker::noop());
+    for _ in 0..steps {
+        w.run();
+        if let Poll::Ready(v) = std::pin::Pin::new(&mut *f).poll(&mut cx) {
+            return Some(v);
+        }
+        w.advance(STEP_MS);
+    }
+    None
+}
+
+fn state(db: &Osis, g: Tid) -> SyncState {
+    db.status().unwrap().groups[&g].state
+}
+
+/// Bob behind a NAT, no relay: Alice cannot dial him, he dials her.
+fn served_only(seed: u64, role: Role) -> (World, Osis, Osis, Tid) {
+    let mut w = World::new();
+    let r = w.reach.add_relay(None);
+    let cone = w.reach.add_nat(Nat::CONE);
+    let a = w.account(seed, &[]);
+    let b = w.account(seed + 1, &[]);
+    w.place(&a, &[], Uplink::Public, &[r]);
+    w.place(&b, &[], Uplink::Nat(cone), &[]);
+    w.run();
+    let g = join(&mut w, &a, &b, role);
+    w.advance(pause_ms());
+    (w, a, b, g)
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: a connection only Bob
+// dialed is judged by his pass: `Synced` for him, `Syncing` at Alice, who runs no pass on it.
+#[test]
+fn a_served_only_connection_is_synced_at_the_dialer_and_syncing_at_the_served_side() {
+    let (mut w, a, b, g) = served_only(10, Role::Write);
+    say(&a, g, "x");
+    w.advance(pause_ms());
+    assert_eq!(heard(&b, g).as_deref(), Some("x"));
+    assert_eq!(state(&b, g), SyncState::Synced);
+    assert_eq!(state(&a, g), SyncState::Syncing);
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: a node connected only to a peer that cannot read
+// is judged by its own pass there, as at any source.
+#[test]
+fn a_peer_that_cannot_read_is_a_source() {
+    let mut w = World::new();
+    let h = w.add_host();
+    let a = w.account(20, &[h]);
+    w.run();
+    let g = a.me();
+    say(&a, g, "x");
+    w.run();
+    assert_eq!(state(&a, g), SyncState::Synced);
+    w.until(a.wait_synced(SyncScope::Thing(g)), STEP_MS, STEPS).unwrap();
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: the wait follows the sources as they change.
+#[test]
+fn a_wait_follows_sources_that_come_and_go() {
+    let (mut w, a, b, g) = co_readers(30, Role::Write);
+    w.set_peer_reachable(&a, &b, false);
+    w.advance(pause_ms());
+    assert_eq!(state(&a, g), SyncState::NotConnected);
+    let mut wait = Box::pin(a.wait_synced(SyncScope::Thing(g)));
+    assert!(poll_for(&mut w, &mut wait, 4).is_none(), "nobody connected: waits");
+    w.set_peer_reachable(&a, &b, true);
+    assert!(matches!(poll_for(&mut w, &mut wait, STEPS), Some(Ok(()))), "the source came back");
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: a source that went mid-pass does not count as
+// caught up: nothing is reported until the write reached one.
+#[test]
+fn a_source_disconnecting_mid_pass_is_not_caught_up() {
+    let (mut w, a, b, g) = co_readers(40, Role::Write);
+    w.advance(pause_ms());
+    say(&a, g, "x");
+    w.set_peer_reachable(&a, &b, false);
+    w.run();
+    assert_eq!(state(&a, g), SyncState::NotConnected);
+    assert!(w.try_until(a.wait_synced(SyncScope::Thing(g)), STEP_MS, 4).is_none());
+    assert_eq!(heard(&b, g), Some("first".to_owned()));
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: a write after `Synced` leaves the state until passed
+// on, and `Synced` comes back; `last_sync` says when it last was, and stands without a source.
+#[test]
+fn a_local_write_leaves_synced_and_last_sync_says_when() {
+    let (mut w, a, b, g) = co_readers(50, Role::Write);
+    say(&a, g, "first of mine");
+    w.advance(pause_ms());
+    assert_eq!(state(&a, g), SyncState::Synced);
+    let before = a.status().unwrap().groups[&g].last_sync;
+    assert!(before.is_some());
+    say(&a, g, "again");
+    assert_eq!(state(&a, g), SyncState::Syncing, "not passed on yet");
+    w.advance(pause_ms());
+    assert_eq!(heard(&b, g).as_deref(), Some("again"));
+    assert_eq!(state(&a, g), SyncState::Synced);
+    w.set_peer_reachable(&a, &b, false);
+    w.advance(pause_ms());
+    let st = a.status().unwrap().groups[&g].clone();
+    assert_eq!(st.state, SyncState::NotConnected);
+    assert!(st.last_sync >= before, "still names the last time: {st:?}");
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: `leaving` stays until a source has the removal.
+#[test]
+fn leaving_stays_until_a_source_has_the_removal() {
+    let (mut w, a, b, g) = co_readers(60, Role::Write);
+    w.set_peer_reachable(&a, &b, false);
+    w.advance(pause_ms());
+    b.leave(b.me(), g).unwrap();
+    w.advance(pause_ms());
+    assert!(b.status().unwrap().groups.get(&g).is_some_and(|s| s.leaving), "nobody has the removal");
+    w.set_peer_reachable(&a, &b, true);
+    w.advance(LONG_MS);
+    assert!(b.status().unwrap().groups.get(&g).is_none_or(|s| !s.leaving), "the removal is held");
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: a dropped wait leaves nothing behind.
+#[test]
+fn a_dropped_wait_leaves_nothing() {
+    let (mut w, a, _b, g) = co_readers(70, Role::Write);
+    say(&a, g, "x");
+    {
+        let mut wait = Box::pin(a.wait_synced(SyncScope::All));
+        assert!(poll_for(&mut w, &mut wait, 2).is_none());
+        assert_eq!(a.waiting(), 1);
+    }
+    w.run();
+    w.advance(STEP_MS);
+    assert_eq!(a.waiting(), 0);
+}
+
+// spec: none (API surface), notes/api.md Commits: `complete` is false before this node first finished a pass of a sync ID it
+// did not make, true for one it made, and true offline afterwards.
+#[test]
+fn history_complete_needs_a_first_pass_and_stands_offline() {
+    let (mut w, a, _b, g) = co_readers(80, Role::Write);
+    let own = a.writes(&Scope::Group(g), &CommitQuery::default()).unwrap();
+    assert!(own.complete, "a sync ID it made");
+    let a2 = pair(&w, &a, 90);
+    assert!(!a2.writes(&Scope::Group(a.me()), &CommitQuery::default()).unwrap().complete, "no pass yet");
+    w.set_online(&a, false);
+    w.advance(pause_ms());
+    assert!(a.writes(&Scope::Group(g), &CommitQuery::default()).unwrap().complete, "offline: no gap known");
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: a group is the worst of its sync IDs, and was last
+// synced no later than the most behind.
+#[test]
+fn a_group_is_the_worst_of_its_sync_ids() {
+    let g = Tid::from_bytes([1; 15]);
+    let label = |sources: usize, idle: usize, last_sync: Option<u64>| osis_node::sync::LabelStatus { group: g, label: osis_schema::osis_base::LabelId([sources as u8; 16]), hosts: 0, sources, idle, opening: 0, stranded: false, refused_by: Vec::new(), leaving: false, last_sync, passed: true, replaced: false };
+    let groups = osis::internals::groups_of_labels(&[label(1, 1, Some(30)), label(0, 0, None)]);
+    assert_eq!((groups[&g].state, groups[&g].last_sync), (SyncState::NotConnected, None));
+    let groups = osis::internals::groups_of_labels(&[label(1, 1, Some(30)), label(2, 1, Some(20))]);
+    assert_eq!((groups[&g].state, groups[&g].last_sync), (SyncState::Syncing, Some(osis::Time(20))));
 }
 
 // Row 21, spec/wire.md §8, §12: a link redeems from a bundle alone, Alice and Bob unable to connect.

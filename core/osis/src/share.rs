@@ -318,20 +318,16 @@ pub struct AccountNode {
 /// once, as when moving from one to another, shows the worst of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SyncState {
-    /// Nothing left to send or fetch.
+    /// A node is connected with it open, and each such node is caught up with this one.
     Synced,
-    /// Sending or fetching.
+    /// A node is connected with it open, and some such node is not caught up (or this node
+    /// has not judged it: a connection only the other side dialed).
     Syncing,
-    /// No saved peer, but other readers have it open with this node: commits go to them as they
-    /// happen, and nothing says either side holds all the other does.
-    Connected,
-    /// No saved peer of it answers now (a node that does not serve never does). It keeps trying.
-    Unreachable,
-    /// No saved peer, and no other node has it open with this node now: what is written here stays
+    /// No node is connected with it open, whether or not one is known: what is written here stays
     /// here for now.
-    NoPeers,
-    /// A saved peer does not take it (yet; `GroupSync::refused_by` names them) and no other has it open.
-    /// It keeps asking.
+    NotConnected,
+    /// No node is connected with it open, and a connected node this node holds to serve it will
+    /// not (`GroupSync::refused_by` names them).
     Refused,
     /// This node holds no key to read what its peers hold now (lost, or not given yet), and can read
     /// nothing new until another holder gives them again.
@@ -345,13 +341,13 @@ pub enum SyncState {
 pub struct GroupSync {
     /// Where its sync has got to.
     pub state: SyncState,
-    /// When it was last caught up.
+    /// When it was last `Synced`, as far as this run of the node knows.
     pub last_sync: Option<Time>,
-    /// Saved peers that do not take it (yet): state `Refused` when no other has it open, else
-    /// informational.
+    /// Connected nodes this node holds to serve it that do not take it: state `Refused` when no
+    /// node has it open, else informational.
     pub refused_by: Vec<Address>,
-    /// This node left the group and keeps it until a saved peer has its removal; stays set while none
-    /// takes it.
+    /// This node left the group and keeps it until a connected node has its removal; stays set
+    /// while none has.
     pub leaving: bool,
 }
 
@@ -372,55 +368,58 @@ pub struct Status {
 /// What `Osis::wait_synced` waits for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyncScope {
-    /// Every synced group with a saved peer, and every pending delivery. A group with none is left
-    /// out, so `Ok` says nothing of it: what was written there may have reached nobody (`status` shows
-    /// such a group as `NoPeers` or `Connected`). There is no scope that waits on other readers.
-    AllWithSavedPeers,
-    /// The sync of this thing (its own, or of groups containing it; one with no saved peer fails
-    /// `Unsynced`) and the deliveries about it, what it holds or those groups.
+    /// Every synced group and every pending delivery.
+    All,
+    /// The groups holding this thing (or the thing's own sync), and the deliveries about it, what
+    /// it holds or those groups.
     Thing(Tid),
-}
-
-/// Nothing a wait can judge by: a group with no saved peer (issues/net-honest-status.md).
-fn no_saved_peer(s: SyncState) -> bool {
-    matches!(s, SyncState::NoPeers | SyncState::Connected)
 }
 
 /// One synced label's state.
 fn label_state(s: &osis_node::sync::LabelStatus) -> SyncState {
-    if s.hosts == 0 {
-        if s.peers_connected > 0 { SyncState::Connected } else { SyncState::NoPeers }
-    } else if s.stranded {
+    if s.stranded {
         SyncState::Stranded
-    } else if !s.not_admitted.is_empty() && s.open == 0 {
-        SyncState::Refused
-    } else if s.refused && s.open == 0 {
-        SyncState::Unreachable
-    } else if s.open > 0 && s.idle == s.open {
+    } else if s.sources == 0 {
+        if s.refused_by.is_empty() { SyncState::NotConnected } else { SyncState::Refused }
+    } else if s.idle == s.sources {
         SyncState::Synced
-    } else if s.connected > 0 || s.open > 0 {
-        SyncState::Syncing
     } else {
-        SyncState::Unreachable
+        SyncState::Syncing
     }
+}
+
+/// Folds one label into its group: the group shows the worst state of its labels and was last
+/// synced no later than its most behind one (`None` while one never was).
+fn add_label(groups: &mut BTreeMap<Tid, GroupSync>, s: &osis_node::sync::LabelStatus) {
+    let state = label_state(s);
+    let last = s.last_sync.map(Time);
+    let g = groups.entry(s.group).or_insert(GroupSync { state, last_sync: last, refused_by: Vec::new(), leaving: false });
+    g.state = g.state.max(state);
+    g.last_sync = g.last_sync.min(last);
+    g.leaving |= s.leaving;
+    for a in &s.refused_by {
+        let a = Address(a.clone());
+        if !g.refused_by.contains(&a) {
+            g.refused_by.push(a);
+        }
+    }
+}
+
+/// Each group's sync as `status` folds it from its labels (tests).
+pub(crate) fn groups_of_labels(labels: &[osis_node::sync::LabelStatus]) -> BTreeMap<Tid, GroupSync> {
+    let mut groups = BTreeMap::new();
+    for s in labels {
+        add_label(&mut groups, s);
+    }
+    groups
 }
 
 /// The status from the sync engine's labels (a group with several labels shows the worst).
 pub(crate) fn status_of(sync: &mut SyncEngine) -> Result<Status> {
     let mut groups: BTreeMap<Tid, GroupSync> = BTreeMap::new();
-    for s in sync.label_status() {
-        let state = label_state(&s);
-        let last = s.last_sync.map(Time);
-        let g = groups.entry(s.group).or_insert(GroupSync { state, last_sync: last, refused_by: Vec::new(), leaving: false });
-        g.state = g.state.max(state);
-        g.last_sync = g.last_sync.max(last);
-        g.leaving |= s.leaving;
-        for a in s.not_admitted {
-            let a = Address(a);
-            if !g.refused_by.contains(&a) {
-                g.refused_by.push(a);
-            }
-        }
+    let all = sync.label_status();
+    for s in live_labels(&all) {
+        add_label(&mut groups, s);
     }
     for g in sync.receipts_only() {
         groups.insert(*g, GroupSync { state: SyncState::LogOnly, last_sync: None, refused_by: Vec::new(), leaving: false });
@@ -455,15 +454,16 @@ fn needs_admin(e: osis_node::Error) -> Error {
     }
 }
 
-/// Whether everything carrying `t` here finished a pass: its groups' labels, none of them left to
-/// answer for what they did not bring (a label with no hosts has nothing to bring). The seam for
-/// partial fetch (issues/partial-history-fetch.md): a node that chose not to fetch says `false` too.
+/// Whether nothing known is missing of what carries `t` here: every sync ID of its groups had a
+/// first pass finish (or this node made it) and none has a pass unfinished or about to run. Says
+/// nothing of nodes not connected, so it stays true offline. The seam for partial fetch
+/// (issues/partial-history-fetch.md): a node that chose not to fetch says `false` too.
 pub(crate) fn fetched(l: &mut crate::handle::Locked, t: Tid) -> bool {
     let e = l.sync.engine();
     let mut groups = e.groups_of(&t);
     groups.insert(t);
     let stale = l.sync.receipts_only().iter().any(|g| groups.contains(g));
-    !stale && l.sync.label_status().iter().filter(|s| groups.contains(&s.group)).all(|s| matches!(label_state(s), SyncState::Synced | SyncState::Connected | SyncState::NoPeers))
+    !stale && live_labels(&l.sync.label_status()).filter(|s| groups.contains(&s.group)).all(|s| s.passed && s.opening == 0 && label_state(s) != SyncState::Syncing)
 }
 
 /// Synced groups holding any of `things` (the thing itself or its closure).
@@ -482,7 +482,10 @@ fn still_arriving(sync: &mut SyncEngine, t: &Tid) -> bool {
         return false;
     }
     let skip = sync.receipts_only().clone();
-    sync.label_status().iter().any(|s| !skip.contains(&s.group) && matches!(label_state(s), SyncState::Syncing | SyncState::Unreachable))
+    sync.label_status().iter().any(|s| {
+        let state = label_state(s);
+        !skip.contains(&s.group) && (state == SyncState::Syncing || (state == SyncState::NotConnected && s.hosts > 0))
+    })
 }
 
 /// The labels' check of `wait_synced(Thing(t))`, over the groups holding `t` now and the
@@ -503,17 +506,14 @@ fn group_synced(sync: &mut SyncEngine, t: Tid) -> Option<Result<()>> {
     synced(sync, Some(&groups), Some(&about))
 }
 
-/// The sync wait's check (`Osis::groups_synced`): one rule over the labels in scope, `groups`
-/// (all their labels but a replaced hostless one beside another) or `None` (every label with hosts), then the pending deliveries about
-/// `deliveries` (every one when `groups` is `None`).
+/// The sync wait's check (`Osis::groups_synced`): over the labels in scope, `groups` (all their
+/// live labels) or `None` (every label), `Unsynced` when one is stranded, nothing while one is not
+/// `Synced`, then the pending deliveries about `deliveries` (every one when `groups` is `None`).
 fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, deliveries: Option<&BTreeSet<Tid>>) -> Option<Result<()>> {
     let skip = sync.receipts_only().clone();
     let all: Vec<_> = sync.label_status().into_iter().filter(|s| !skip.contains(&s.group) && groups.is_none_or(|gs| gs.contains(&s.group))).collect();
-    let labels: Vec<(Tid, SyncState)> = live_labels(&all)
-        .map(|s| (s.group, label_state(s)))
-        .filter(|(_, st)| groups.is_some() || !no_saved_peer(*st))
-        .collect();
-    let bad: BTreeSet<Tid> = labels.iter().filter(|(_, s)| *s == SyncState::Stranded || no_saved_peer(*s)).map(|(g, _)| *g).collect();
+    let labels: Vec<(Tid, SyncState)> = live_labels(&all).map(|s| (s.group, label_state(s))).collect();
+    let bad: BTreeSet<Tid> = labels.iter().filter(|(_, s)| *s == SyncState::Stranded).map(|(g, _)| *g).collect();
     if !bad.is_empty() {
         return Some(Err(Error::Unsynced { groups: bad.into_iter().collect() }));
     }
@@ -531,15 +531,14 @@ fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, deliveries: Option<&BTr
 }
 
 /// Whether `t` reads here as at a node that has it: it has a label here, and each of its labels
-/// finished a pass with nothing outstanding at some node it syncs with (a peer, or a co-reader
-/// dialed: a direct link's sharer). A link makes its target a label of its own (`make_link`).
+/// finished a pass with nothing outstanding at some source. A link makes its target a label of its own (`make_link`).
 /// `Unsynced` on a stranded label, as every sync wait (`synced`).
 fn arrived(sync: &mut SyncEngine, t: Tid) -> Option<Result<()>> {
     let all: Vec<_> = sync.label_status().into_iter().filter(|s| s.group == t).collect();
     if live_labels(&all).any(|s| label_state(s) == SyncState::Stranded) {
         return Some(Err(Error::Unsynced { groups: vec![t] }));
     }
-    (!all.is_empty() && live_labels(&all).all(|s| s.idle > 0 || s.peers_idle > 0)).then_some(Ok(()))
+    (!all.is_empty() && live_labels(&all).all(|s| s.idle > 0)).then_some(Ok(()))
 }
 
 /// `all` but a replaced label with no peer beside another of its group: it takes nothing (it
@@ -1606,22 +1605,18 @@ impl Osis {
         }))
     }
 
-    /// Resolves once this node's writes so far in scope reached a saved peer, nothing more is
-    /// outstanding, and every pending delivery in scope was taken. Fails `Unsynced` at once on a
-    /// stranded group in scope (`SyncState::Stranded`, for now), and for `Thing(t)` on a group with no
-    /// saved peer; `Network` without a runtime. A peer out of reach, or one that does not take a group
-    /// or a delivery for now (`SyncState::Refused`), may yet: this waits (`status` shows them). `Thing(t)`: the groups
-    /// holding `t` and the deliveries about `t`, a thing it holds or one of those groups. With no group
-    /// holding `t` it fails `Unsynced` at once, unless one may still arrive: a grant named it, or this
-    /// node does not administer `t` and something it syncs has more to bring (a first sync).
-    /// `AllWithSavedPeers`: every group with a saved peer and every delivery. Groups with none are left out,
-    /// and `Ok` says nothing of them: look at `status`.
+    /// Resolves once every group in scope is `SyncState::Synced` and every pending delivery in
+    /// scope was taken. Otherwise it waits, with nobody connected too: use your runtime's timeout.
+    /// It ends early only with `Unsynced`, on what is known never to finish (`SyncState::Stranded`,
+    /// or for `Thing(t)` no group holding `t` and none on its way), and `Network` without a
+    /// runtime. `All` includes groups no other node has open now (a home group with no second node):
+    /// `Thing` to wait on one group.
     ///
     /// On a thin client the node waits with the same outcomes.
     pub async fn wait_synced(&self, scope: SyncScope) -> Result<()> {
         let r = match scope {
             SyncScope::Thing(t) => self.source(t),
-            SyncScope::AllWithSavedPeers => self.source_scope(None)?,
+            SyncScope::All => self.source_scope(None)?,
         };
         if let crate::sources::Source::Node(r) = r {
             return self.node_task(&r, crate::port::method::WAIT_SYNCED, vec![crate::port::codec::sync_scope_v(scope)]).await.map(drop);
@@ -1633,11 +1628,11 @@ impl Osis {
     pub(crate) fn wait_synced_pending(&self, scope: SyncScope) -> crate::net::Pending<Result<()>> {
         use crate::net::Pending;
         match scope {
-            SyncScope::AllWithSavedPeers => {
+            SyncScope::All => {
                 // nothing to wait for: done, also without a runtime
                 let idle = self.locked(|x| {
                     let skip = x.sync.receipts_only().clone();
-                    x.sync.deliveries_pending() == 0 && !x.sync.label_status().iter().any(|s| s.hosts > 0 && !skip.contains(&s.group))
+                    x.sync.deliveries_pending() == 0 && x.sync.label_status().iter().all(|s| skip.contains(&s.group))
                 });
                 if idle {
                     return Pending::ready(Ok(()));

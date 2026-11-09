@@ -828,7 +828,7 @@ fn bundle_round_trip_spec_sync_11() {
     w.run();
     w.set_online(&db, false);
     let t = item(&da, da.me(), da.me(), "by bundle");
-    w.until(da.wait_synced(SyncScope::AllWithSavedPeers), 1000, 5).unwrap();
+    w.until(da.wait_synced(SyncScope::All), 1000, 5).unwrap();
     let mut b = Vec::new();
     da.export_bundle(&[da.me()], &mut b).unwrap();
     assert_eq!(x(&db, t), None);

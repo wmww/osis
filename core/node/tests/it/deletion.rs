@@ -143,7 +143,7 @@ fn rotation_at_full_host_waits_spec_sync_5() {
     let d = net.sync(a).take_diagnostics();
     assert!(d.iter().any(|x| x.contains("step refused for now (code 12)")), "{d:?}");
     let st = net.sync(a).label_status().into_iter().find(|s| s.label == l).unwrap();
-    assert!(!st.stranded && st.open == 1, "{st:?}");
+    assert!(!st.stranded && st.sources == 1, "{st:?}");
     net.advance(wait);
     net.advance(60_000);
     net.trace(&[a]);

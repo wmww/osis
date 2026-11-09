@@ -665,7 +665,7 @@ fn creator_on_a_new_node_spec_sync_3() {
     let c = create(&a, &Options::default()).unwrap();
     post(&a, c, "hello").unwrap();
     w.run();
-    w.until(a.wait_synced(osis::SyncScope::AllWithSavedPeers), 1000, 60).unwrap();
+    w.until(a.wait_synced(osis::SyncScope::All), 1000, 60).unwrap();
     let offer = a.pair_offer().unwrap();
     let join = osis::internals::pair(w.cfg(2, &[]), &offer).unwrap();
     let req: osis::PairRequest = join.request().to_string().parse().unwrap();

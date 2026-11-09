@@ -156,6 +156,7 @@ pub(crate) fn new_label(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &
     let (step, set) = issue(tx, &group, epochs, index, None, readers, deposit)?;
     put_label(m, group, step.label, index, &step, &set, Some(hosts))?;
     drop_old_claims(tx, m, group)?;
+    tx.core.made_labels.push(step.label);
     Ok(step.label)
 }
 

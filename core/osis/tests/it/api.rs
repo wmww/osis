@@ -625,7 +625,7 @@ fn local_sync_surface_spec_api_sync() {
     let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap();
     assert!(db.saved_peers().unwrap().is_empty());
     let st = db.status().unwrap();
-    assert_eq!(st.groups.get(&db.me()).map(|g| g.state), Some(osis::SyncState::NoPeers));
+    assert_eq!(st.groups.get(&db.me()).map(|g| g.state), Some(osis::SyncState::NotConnected));
     assert!("".parse::<osis::Address>().is_err());
     let a = osis::Address::new(&"quic://h:1".parse().unwrap(), [7; 32]);
     assert_eq!(a.to_string().parse::<osis::Address>().unwrap(), a);
@@ -634,7 +634,7 @@ fn local_sync_surface_spec_api_sync() {
     assert_eq!(d.to_string().replace(":4040", "").parse::<osis::Address>().unwrap(), d);
     assert_eq!(osis::Address::new(&"quic://h".parse().unwrap(), [7; 32]), d);
     db.add_peer(&a).unwrap();
-    assert!(matches!(common::block_on(db.wait_synced(osis::SyncScope::AllWithSavedPeers)), Err(Error::Network(_))));
+    assert!(matches!(common::block_on(db.wait_synced(osis::SyncScope::All)), Err(Error::Network(_))));
     drop(db);
     let db = osis::internals::open(cfg(1, store, &c)).unwrap();
     assert_eq!(db.saved_peers().unwrap(), vec![a]);
@@ -1655,7 +1655,7 @@ fn urls_and_serving_policy_are_typed() {
 fn waiting_calls_are_send() {
     fn send<T: Send>(_: T) {}
     fn all(db: Osis, login: osis::NodeLogin, link: osis::ShareLink, card: osis::ContactCard, id: osis::LinkId, t: osis::Tid, o: osis::SetRoleOpts) {
-        send(db.wait_synced(osis::SyncScope::AllWithSavedPeers));
+        send(db.wait_synced(osis::SyncScope::All));
         send(db.redeem(&link));
         send(db.import_contact(&card));
         send(db.set_role(t, t, None, o));

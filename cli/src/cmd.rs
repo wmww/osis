@@ -130,19 +130,6 @@ fn wait_sync(ctx: &Ctx<'_>, s: SyncScope, limit: Option<Duration>) -> anyhow::Re
     }
 }
 
-/// Names the groups `wait_synced(AllWithSavedPeers)` left out: what was written there reached nobody.
-fn say_no_peers(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
-    if ctx.g.quiet {
-        return Ok(());
-    }
-    for (g, x) in ctx.db.status()?.groups {
-        if matches!(x.state, SyncState::NoPeers | SyncState::Connected) {
-            eprintln!("{}: no saved peer, so not waited for", g.to_uri());
-        }
-    }
-    Ok(())
-}
-
 /// `e` with the serving nodes that do not admit the groups it names (state `Refused`), if any.
 fn not_admitted(db: &Osis, e: Error) -> anyhow::Error {
     let (Error::Unsynced { groups }, Ok(st)) = (&e, db.status()) else { return e.into() };
@@ -279,19 +266,17 @@ fn own_peers(db: &Osis) -> osis::Result<Vec<osis::Address>> {
 }
 
 /// Sends what a `delivers` command queued (within `--timeout`): `wait_synced` on the shared
-/// thing's groups (one with no peer fails: its holders can never fetch it), then on all with peers.
+/// thing's groups, or on everything when the command shared no thing.
 pub(crate) fn deliver(ctx: &mut Ctx<'_>, shared: Option<String>) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     db.nudge_sync()?;
     let end = deadline(ctx.timeout()?);
-    let mut scopes = vec![SyncScope::AllWithSavedPeers];
-    if let Some(x) = shared {
-        scopes.insert(0, SyncScope::Thing(ctx.tid(&x)?));
-    }
-    for s in scopes {
-        let left = end.map(|e| e.saturating_duration_since(Instant::now()));
-        wait_sync(ctx, s, left).map_err(|e| exit(6, format!("done locally, not yet at its peers: {e:#}")))?;
-    }
+    let s = match shared {
+        Some(x) => SyncScope::Thing(ctx.tid(&x)?),
+        None => SyncScope::All,
+    };
+    let left = end.map(|e| e.saturating_duration_since(Instant::now()));
+    wait_sync(ctx, s, left).map_err(|e| exit(6, format!("done locally, not yet at its peers: {e:#}")))?;
     Ok(())
 }
 
@@ -672,14 +657,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Sync { group } | Cmd::Wait { group } => {
             let s = match group {
                 Some(g) => SyncScope::Thing(ctx.tid(&g)?),
-                None => SyncScope::AllWithSavedPeers,
+                None => SyncScope::All,
             };
             let t = ctx.timeout()?;
-            wait_sync(ctx, s, t)?;
-            if matches!(s, SyncScope::AllWithSavedPeers) {
-                say_no_peers(ctx)?;
-            }
-            Ok(())
+            wait_sync(ctx, s, t)
         }
         Cmd::Group(GroupCmd::Sync { g, peer }) => {
             let g = ctx.tid(&g)?;

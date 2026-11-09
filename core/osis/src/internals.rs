@@ -136,6 +136,11 @@ pub struct Knobs {
     pub text_save: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
 
+/// How `status` folds labels into groups (tests).
+pub fn groups_of_labels(labels: &[osis_node::sync::LabelStatus]) -> std::collections::BTreeMap<osis_base::Tid, crate::GroupSync> {
+    crate::share::groups_of_labels(labels)
+}
+
 /// The hooks on `Osis` (`use osis::internals::Internals;`). Each panics on a thin client
 /// (`Osis::connect`): its engine is a stand-in, never the node's.
 pub trait Internals {

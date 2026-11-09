@@ -306,7 +306,7 @@ pub(crate) fn read(v: Value) -> Result<Result<Option<Value>>> {
     }
 }
 
-const STATES: [SyncState; 8] = [SyncState::Synced, SyncState::Syncing, SyncState::Connected, SyncState::Unreachable, SyncState::NoPeers, SyncState::Refused, SyncState::Stranded, SyncState::LogOnly];
+const STATES: [SyncState; 6] = [SyncState::Synced, SyncState::Syncing, SyncState::NotConnected, SyncState::Refused, SyncState::Stranded, SyncState::LogOnly];
 
 pub(crate) fn status_v(s: &Status) -> Value {
     let groups = s
@@ -756,7 +756,7 @@ pub(crate) fn links(v: Value) -> Result<Vec<LinkInfo>> {
 /// A sync scope: `[]` all, `[tid]` the groups holding it.
 pub(crate) fn sync_scope_v(s: SyncScope) -> Value {
     Value::List(match s {
-        SyncScope::AllWithSavedPeers => vec![],
+        SyncScope::All => vec![],
         SyncScope::Thing(t) => vec![Value::Tid(t)],
     })
 }
@@ -764,7 +764,7 @@ pub(crate) fn sync_scope_v(s: SyncScope) -> Value {
 pub(crate) fn sync_scope(v: Value) -> Result<SyncScope> {
     let mut a = Args::new(v)?;
     let s = match a.opt_tid()? {
-        None => SyncScope::AllWithSavedPeers,
+        None => SyncScope::All,
         Some(t) => SyncScope::Thing(t),
     };
     a.end()?;

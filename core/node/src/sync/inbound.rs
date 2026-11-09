@@ -1175,6 +1175,7 @@ impl SyncEngine {
         // role commits applied by this run count before the pass end
         self.engine_events()?;
         self.seq += 1;
+        self.state.note_passed(l);
         self.passes.insert((host, l), (self.seq, self.now()));
         Ok(())
     }

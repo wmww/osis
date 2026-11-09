@@ -377,12 +377,12 @@ pub enum Cmd {
         #[arg(long)]
         watch: bool,
     },
-    /// Sync now and wait until everything (or G) reached a saved peer; groups with none are named, not waited for (G with none fails)
+    /// Sync now and wait until everything (or G) is caught up with every connected node; with nobody connected it waits (until --timeout)
     Sync {
         #[arg(long, value_name = "G")]
         group: Option<String>,
     },
-    /// Wait until everything (or G) reached a saved peer; groups with none are named, not waited for (G with none fails)
+    /// Wait until everything (or G) is caught up with every connected node; with nobody connected it waits (until --timeout)
     Wait {
         #[arg(long, value_name = "G")]
         group: Option<String>,

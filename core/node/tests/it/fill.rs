@@ -92,7 +92,7 @@ impl Chat {
 
     fn filling(&mut self) -> bool {
         let g = self.g;
-        self.net.sync(self.c).label_status().iter().any(|s| s.group == g && (s.idle < s.open || s.open < s.connected))
+        self.net.sync(self.c).label_status().iter().any(|s| s.group == g && (s.idle < s.sources || s.sources == 0))
     }
 
     /// Goes on to a point part way through the fill: some messages here, more to come.

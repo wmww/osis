@@ -914,7 +914,7 @@ fn link_joiner_leave_forks_converge_spec_crypto_4() {
             assert!(ep.role(r).holds_current(), "node {n}: {r:?} secrets whole");
         }
         let st: Vec<_> = net.sync(n).label_status().into_iter().filter(|x| x.group == c).collect();
-        assert!(st.iter().all(|x| x.open == 1 && x.idle == 1 && !x.stranded), "node {n}: {st:?}");
+        assert!(st.iter().all(|x| x.sources == 1 && x.idle == 1 && !x.stranded), "node {n}: {st:?}");
     }
     let (ea, ed) = (net.engine(a).epochs(&c).unwrap(), net.engine(d).epochs(&c).unwrap());
     assert_eq!(ea.read.current(), ed.read.current(), "one current read epoch at both");
@@ -1000,7 +1000,7 @@ fn no_secret_of_the_heads_read_epoch_is_stranded_spec_sync_5() {
         net.advance(31_000);
     }
     let st = net.sync(r).label_status().into_iter().find(|x| x.group == g).unwrap();
-    assert!(!st.stranded && st.open == 1 && st.idle == 1, "{st:?}");
+    assert!(!st.stranded && st.sources == 1 && st.idle == 1, "{st:?}");
     assert_eq!(net.read(r, u), Some(s("after")));
 }
 

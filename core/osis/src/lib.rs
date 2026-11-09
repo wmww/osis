@@ -217,15 +217,15 @@
 //!   (`set_serving`, `serving_address`), whether or not they can read it: another of your machines,
 //!   a friend's, a rented box. What a peer cannot read reaches it encrypted.
 //!
-//! Only a saved peer can confirm that a write reached someone (`wait_synced`), and `status` shows a
-//! group with none as `NoPeers` or `Connected`.
+//! `status` says how far each group got with the nodes connected now, and `wait_synced` waits until
+//! they are caught up: with nobody connected it waits.
 //!
 //! Sync runs on a runtime (`Runtime::Own`, or your tokio handle); without one everything local still
 //! works, and a call that waits for another node fails `Network`.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, SyncState};
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
-//! assert_eq!(db.status()?.groups[&db.me()].state, SyncState::NoPeers);
+//! assert_eq!(db.status()?.groups[&db.me()].state, SyncState::NotConnected);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -236,8 +236,8 @@
 //! # use osis::{Osis, SyncScope};
 //! # use std::time::Duration;
 //! # async fn demo(db: Osis) {
-//! match tokio::time::timeout(Duration::from_secs(10), db.wait_synced(SyncScope::AllWithSavedPeers)).await {
-//!     Ok(Ok(())) => println!("reached the saved peers"),
+//! match tokio::time::timeout(Duration::from_secs(10), db.wait_synced(SyncScope::All)).await {
+//!     Ok(Ok(())) => println!("caught up with every connected node"),
 //!     Ok(Err(e)) => println!("cannot sync: {e}"),
 //!     Err(_) => println!("not yet: see db.status()"),
 //! }

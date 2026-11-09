@@ -233,7 +233,9 @@ fn untyped_index_paths_notes_cli() {
 #[test]
 fn timeout_zero_plan_cli_2() {
     let s = S::mem();
-    for args in [vec!["--timeout", "0", "wait"], vec!["--timeout", "0", "sync"]] {
+    // on a thing nothing holds: both end at once, `Unsynced`; with no timeout `wait` alone would last
+    let nothing = osis::Tid::from_bytes([9; 15]).to_uri();
+    for args in [vec!["--timeout", "0", "wait", "--group", &nothing], vec!["--timeout", "0", "sync", "--group", &nothing]] {
         let o = s.call(&args, "");
         assert_ne!(o.code, 2, "{args:?}: {}", o.err);
     }

@@ -68,15 +68,15 @@ fn chat(opts: GrantOpts, role: Role) -> Chat {
     let b_store = MemStore::new();
     let b = osis::internals::create(on(&net, "b", &b_store, vec![addr.clone()])).unwrap();
     let card = b.contact_card().unwrap();
-    block_on(b.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
+    block_on(b.wait_synced(SyncScope::All)).unwrap();
     let bob = block_on(a.import_contact(&card)).unwrap();
     let mut w = a.write();
     let g = w.create().unwrap();
     w.group(a.me()).add(osis::Member::Item(g)).unwrap();
     w.commit().unwrap();
     a.sync(g, &[]).unwrap();
-    block_on(a.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
-    block_on(b.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
+    block_on(a.wait_synced(SyncScope::All)).unwrap();
+    block_on(b.wait_synced(SyncScope::All)).unwrap();
     let mut w = a.write();
     let m = w.create_with_admin(g).unwrap();
     w.group(g).add(osis::Member::Item(m)).unwrap();

@@ -1389,7 +1389,7 @@ impl Osis {
             // a Notify naming no status: the node's store could not say
             match c::status(v).ok()?.groups.get(&g).map(|s| s.state) {
                 None | Some(S::Synced) => Some(Ok(())),
-                Some(S::Stranded | S::NoPeers | S::Connected) => Some(Err(Error::Unsynced { groups: vec![g] })),
+                Some(S::Stranded) => Some(Err(Error::Unsynced { groups: vec![g] })),
                 Some(_) => None,
             }
         };
