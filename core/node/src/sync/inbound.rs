@@ -723,9 +723,18 @@ impl SyncEngine {
             if self.state.declined.contains(&c) {
                 continue;
             }
-            let Some(bytes) = self.engine.blob(&b)? else { continue };
-            let Some((_, payload)) = self.open_inbox(&l, &bytes) else { continue };
-            let (pt, _, chain) = payload.split();
+            // opened once however many wakes it waits through: a wake per grant accepted would
+            // otherwise open every waiting blob each time
+            let (pt, chain) = match self.inbox_plain.remove(&(l, b)) {
+                Some(x) => x,
+                None => {
+                    let Some(bytes) = self.engine.blob(&b)? else { continue };
+                    let Some((_, payload)) = self.open_inbox(&l, &bytes) else { continue };
+                    let (pt, _, chain) = payload.split();
+                    (pt, chain)
+                }
+            };
+            self.inbox_plain.insert((l, b), (pt.clone(), chain.clone()));
             // the author's chain first; what still cannot be judged is looked at again later
             for plain in chain_commits(chain).into_iter().map(|(plain, _)| plain).chain([pt]) {
                 match self.engine.ingest(&plain, Vec::new()) {
@@ -743,6 +752,9 @@ impl SyncEngine {
                 self.redelivered += 1;
             }
         }
+        // what no longer waits is not kept
+        let waiting = &self.inbox_awaits;
+        self.inbox_plain.retain(|k, _| waiting.contains_key(k));
         self.engine.reexamine()
     }
 
@@ -1131,13 +1143,15 @@ impl SyncEngine {
                 self.state.set_entry(l, b, e);
             }
             self.engine.note_delete_hints(x, &things)?;
-            for (cpt, cb) in chain_commits(chain) {
-                if let Err(e) = self.engine.ingest(&cpt, Vec::new()) {
-                    self.diag(format!("ingest {:?}: {e}", cb.id()));
+            // the author's chain first; what cannot be judged yet is looked at again on a wake
+            for (plain, cb) in chain_commits(chain).into_iter().chain([(pt, blob)]) {
+                match self.engine.ingest(&plain, Vec::new()) {
+                    Ok(Ingested::Awaits(_, r)) => {
+                        self.inbox_awaits.entry((l, b)).or_default().insert(awaited(&r));
+                    }
+                    Ok(_) => {}
+                    Err(e) => self.diag(format!("ingest {:?}: {e}", cb.id())),
                 }
-            }
-            if let Err(e) = self.engine.ingest(&pt, Vec::new()) {
-                self.diag(format!("ingest {:?}: {e}", blob.id()));
             }
             released = true;
         }

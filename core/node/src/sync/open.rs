@@ -116,7 +116,8 @@ impl SyncEngine {
             // (spec/sync.md §5): presenting every held one would link their labels at this host
             // (spec/requirements.md, Data a node cannot read)
             let holders = self.engine.get_typed(g, &osis_schema::core_types::ROLES).ok().flatten().unwrap_or_default();
-            v.extend(self.static_tries().into_iter().filter(|(t, _)| Some(*t) == via || holders.contains_key(t)).map(|(_, x)| x));
+            let named = self.hint_actors(g).unwrap_or_default();
+            v.extend(self.static_tries().into_iter().filter(|(t, _)| Some(*t) == via || holders.contains_key(t) || named.contains(t)).map(|(_, x)| x));
             return (index, v);
         };
         let index = gl.index;
@@ -461,6 +462,24 @@ impl SyncEngine {
         self.walk_on(conn, l, step, out)
     }
 
+    /// The actors a label of `g` known only by a hint is for: the applied holders and those the
+    /// inbox blobs naming `g` say hold it (`Engine::hint_actors`), never any other: presenting
+    /// another's key would link its labels at this host (spec/requirements.md, Data a node cannot
+    /// read).
+    fn hint_actors(&mut self, g: &Tid) -> Result<std::collections::BTreeSet<Tid>> {
+        let inbox: Vec<(LabelId, osis_base::BlobId)> = self.state.entries.iter().filter_map(|((x, id), e)| matches!(e.kind, super::state::Kind::Inbox(Some(_))).then_some((*x, *id))).collect();
+        let mut named: Vec<Tid> = Vec::new();
+        for (x, id) in inbox {
+            if let Some((_, things)) = self.inbox_parts(&x, &id)?
+                && things.contains(g)
+                && let Some(o) = self.inbox_opened(&x, &id)?
+            {
+                named.extend(o.named.get(g).into_iter().flatten().copied());
+            }
+        }
+        self.engine.hint_actors(g, named)
+    }
+
     /// Continues a walk at `step` (verified): its sync key if held, else claims on it. On a
     /// hinted label's walk the step is the host's word until the path verifies (`opened`):
     /// claims there go only with the keys of the actors the hint is for (`Engine::hint_actors`,
@@ -469,22 +488,7 @@ impl SyncEngine {
     fn walk_on(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let (g, index, hinted) = (lc.group, lc.index, lc.walk.is_some());
-        let only = if hinted {
-            // the pending commits of the inbox blobs naming the thing: nothing else unverified
-            let inbox: Vec<(LabelId, osis_base::BlobId, osis_base::CommitId)> = self.state.entries.iter().filter_map(|((x, id), e)| if let super::state::Kind::Inbox(Some(c)) = e.kind { Some((*x, *id, c)) } else { None }).collect();
-            let mut named: Vec<Tid> = Vec::new();
-            for (x, id, _) in inbox {
-                if let Some((_, things)) = self.inbox_parts(&x, &id)?
-                    && things.contains(&g)
-                    && let Some(o) = self.inbox_opened(&x, &id)?
-                {
-                    named.extend(o.named.get(&g).into_iter().flatten().copied());
-                }
-            }
-            Some(self.engine.hint_actors(&g, named)?)
-        } else {
-            None
-        };
+        let only = if hinted { Some(self.hint_actors(&g)?) } else { None };
         let mut front = Vec::new();
         if let Some(e) = self.engine.epochs(&g)
             && let Some(s) = e.read.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s, index)).find(|k| k.verifying_key() == step.keys.sync)

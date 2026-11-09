@@ -8,7 +8,7 @@
 //!   sender's side and the connection (`osis_crypto::kdf::beacon_hit`): reflected to its sender or
 //!   carried to another connection it shows nothing.
 //! - An untagged 0 opens nothing for the tester; the tag is computed only with the credential.
-//! - J counts only key actors proved by their own key (`Proven::key_actors`).
+//! - J counts the actors a connection proved (`Proven::all`).
 //! - `pending` (changed_at past `acked_pos`) is tested at every arrival and every own change, and
 //!   `acked_pos` passes only what is acknowledged and tested with no Offer unanswered: two nodes
 //!   gaining one credential at once cannot both miss it.
@@ -21,6 +21,7 @@
 
 use super::{Action, ConnId, SyncEngine};
 use super::credentials::Credential;
+use super::proofs::Proven;
 use super::records::ConnRecord;
 use crate::error::Result;
 use osis_base::LabelId;
@@ -268,7 +269,7 @@ impl SyncEngine {
     /// covered past is not recognised yet (a rotation covering it reopens by a later credential).
     fn shared_creds(&mut self, conn: ConnId, only: Option<&BTreeSet<LabelId>>) -> Result<Vec<Cred>> {
         let Some(r) = self.records.shared.get(&conn).map(|s| s.r) else { return Ok(Vec::new()) };
-        let Some(actors) = self.connection_proven(conn).map(|p| p.key_actors.clone()) else { return Ok(Vec::new()) };
+        let Some(actors) = self.connection_proven(conn).map(Proven::all) else { return Ok(Vec::new()) };
         let things = self.things();
         let labels: Vec<LabelId> = things.keys().filter(|l| only.is_none_or(|o| o.contains(l))).copied().collect();
         let creds = self.credentials(&labels)?;
@@ -518,7 +519,7 @@ impl SyncEngine {
     /// ByRole items once the Hits were answered: for L not open that J judges the peer holds
     /// (issues/net-shared-set.md, Offer). Then the pending position may rise.
     fn shared_roles(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
-        let Some(actors) = self.connection_proven(conn).map(|p| p.key_actors.clone()) else { return Ok(()) };
+        let Some(actors) = self.connection_proven(conn).map(Proven::all) else { return Ok(()) };
         let things = self.things();
         let mut judge = self.engine.core.judge(actors);
         let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
@@ -583,7 +584,7 @@ impl SyncEngine {
     fn shared_offer(&mut self, conn: ConnId, id: u32, items: Vec<OfferItem>, out: &mut Vec<Action>) -> Result<()> {
         self.shared_table(conn)?;
         let things = self.things();
-        let Some(actors) = self.connection_proven(conn).map(|p| p.key_actors.clone()) else { return Ok(()) };
+        let Some(actors) = self.connection_proven(conn).map(Proven::all) else { return Ok(()) };
         let mut judge = self.engine.core.judge(actors);
         let mut codes = Vec::with_capacity(items.len());
         let mut opens: Vec<(LabelId, u8, Option<[u8; 32]>)> = Vec::new();
@@ -666,7 +667,7 @@ impl SyncEngine {
             // a record is honoured only while its actors are known here (spec/sync.md §10)
             self.records.unbind(conn);
         }
-        let Some(actors) = self.connection_proven(conn).map(|p| p.key_actors.clone()) else { return Ok(()) };
+        let Some(actors) = self.connection_proven(conn).map(Proven::all) else { return Ok(()) };
         let creds = self.shared_creds(conn, None)?;
         let things = self.things();
         let mut judge = self.engine.core.judge(actors);
@@ -746,7 +747,7 @@ impl SyncEngine {
                         // a ByRole's sender judged the peer a holder: no proof but J, still so now
                         AskedItem::ByRole(l) => {
                             let things = self.things();
-                            let actors = self.connection_proven(conn).map(|p| p.key_actors.clone()).unwrap_or_default();
+                            let actors = self.connection_proven(conn).map(Proven::all).unwrap_or_default();
                             if things.get(&l).is_some_and(|t| self.engine.core.judge(actors).of(t) == super::credentials::Judgment::Holder) {
                                 self.shared_open(conn, l, JUDGED, None, out)?;
                                 opened = true;

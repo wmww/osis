@@ -198,7 +198,7 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
     // colluding with the host (spec/requirements.md, Threat model): every secret M holds opens
     // no body of a commit made after its removal
     let secrets: Vec<osis_crypto::Secret32> = sim.engine(m)?.epochs(&g).map(|e| e.read.held().map(|x| x.1.clone()).collect()).unwrap_or_default();
-    let mt = sim.tid(m)?;
+    let mt = sim.engine(m)?.me();
     let me = sim.engine(m)?.epochs(&g).map(|e| e.read.held().map(|x| format!("{:?}", x.0).chars().take(14).collect::<String>()).collect::<Vec<_>>());
     let ae = sim.engine(a)?.epochs(&g).map(|e| e.read.held().map(|x| format!("{:?}", x.0).chars().take(14).collect::<String>()).collect::<Vec<_>>());
     let (ta, tb) = (sim.tid(a)?, sim.tid(b)?);
@@ -224,16 +224,16 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Notes, per node tid, the commits it had authored when it is first seen holding `holder`'s
+/// Notes, per author account, the commits it had authored when it is first seen holding `holder`'s
 /// removal from `g` (noted after the step that brought it, so judged leniently, never wrongly
 /// late).
 fn note_removal(sim: &mut NetSim, nodes: [usize; 2], g: Tid, holder: Tid, knew: &mut Knew) -> Res<()> {
     for n in nodes {
-        let t = sim.tid(n)?;
+        let Some(e) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()).map(|x| x.engine_mut()) else { continue };
+        let t = e.me();
         if knew.contains_key(&t) {
             continue;
         }
-        let Some(e) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()).map(|x| x.engine_mut()) else { continue };
         let holders = e.get_typed(&g, &osis_schema::core_types::ROLES).ok().flatten().unwrap_or_default();
         if !holders.contains_key(&holder) {
             let own: BTreeSet<CommitId> = e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.author == t)).collect();

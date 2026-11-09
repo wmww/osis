@@ -194,11 +194,10 @@ fn an_account_on_the_roster_has_no_static_entry_spec_sync_2() {
     assert!(static_entries(&net.sync(a).credentials(&[gl]).unwrap().remove(&gl).unwrap()).is_empty());
 }
 
-// issues/net-shared-set.md step 3, spec/sync.md §10: a proven account reaches nothing until a
-// removal rotates it: a node's Prove leaves J unknown on a thing the account holds here and it
-// gets no proof back
+// spec/sync.md §10: an account proved at an epoch open here is judged by its roles: J knows it on a
+// thing it holds here, and the prover gets a proof back
 #[test]
-fn proven_account_gets_nothing_from_j_spec_sync_10() {
+fn proven_account_is_judged_by_its_roles_spec_sync_10() {
     let mut net = Net::new();
     let host = net.add_host();
     let (a, _) = account_node(&mut net, 1, host);
@@ -212,8 +211,8 @@ fn proven_account_gets_nothing_from_j_spec_sync_10() {
     let (conn, answered) = prove(&mut net, a, provers);
     let proven = net.sync(a).proven(conn).unwrap();
     assert!(proven.contains(&account) && proven.contains(&ts), "reported: {proven:?}");
-    assert_eq!(one(&mut net, a, conn, label), Judgment::Unknown, "J counts key actors alone");
-    assert_eq!(answered, 0, "no known key actor");
+    assert_eq!(one(&mut net, a, conn, label), Judgment::Holder, "J reads the proven account's role");
+    assert!(answered > 0, "a known actor gets a proof back");
 }
 
 // spec/sync.md §2, issues/net-shared-set.md Words, credentials table: a reader holds a read secret per current

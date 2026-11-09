@@ -424,10 +424,10 @@ fn a_filter_past_the_entry_cap_closes_the_connection_spec_wire_11_2() {
     assert!(net.sync(b).proven(p.conn).is_none(), "closed");
 }
 
-// spec/sync.md §10: a node that ties to this one only by an account it claims by a chain gets no
-// shared set: its NoRecord is refused and a Hit opens nothing
+// spec/sync.md §10: a node proving an account at an epoch open here is judged as that account: the
+// shared set finds its way in by the account's role
 #[test]
-fn a_chain_proved_account_gets_no_shared_set_spec_sync_10() {
+fn an_account_proved_at_an_open_epoch_gets_a_shared_set_spec_sync_10() {
     let mut net = Net::new();
     let host = net.add_host();
     let (a, _) = crate::net_judgment::account_node(&mut net, 1, host);
@@ -437,7 +437,5 @@ fn a_chain_proved_account_gets_no_shared_set_spec_sync_10() {
     assert_eq!(net.engine(a).core.judge([account]).of(&g), osis_node::sync::credentials::Judgment::Holder, "the account holds g here");
     let mut p = dial_as(&mut net, s, a, [7; 32]);
     let msgs = shared_of(&send(&mut net, a, &mut p, Message::NoRecord { id: 1 << 31 }));
-    assert_eq!(answer(&msgs[0]), vec![(Code::NOT_ADMITTED, None)]);
-    assert!(!msgs.iter().any(|m| matches!(m, Message::Beacons { .. })), "no filter");
-    assert!(net.sync(a).shared_members(p.conn).is_empty());
+    assert!(msgs.iter().any(|m| matches!(m, Message::Beacons { .. })), "a filter goes out: {msgs:?}");
 }

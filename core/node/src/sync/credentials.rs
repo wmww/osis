@@ -137,7 +137,7 @@ impl SyncEngine {
     pub fn judgments(&mut self, conn: ConnId, labels: &[LabelId]) -> Option<BTreeMap<LabelId, Judgment>> {
         let proven = self.connection_proven(conn)?.clone();
         let things = self.things();
-        let mut judge = self.engine.core.judge(proven.key_actors);
+        let mut judge = self.engine.core.judge(proven.all());
         Some(labels.iter().map(|l| (*l, things.get(l).map_or(Judgment::Unknown, |t| judge.of(t)))).collect())
     }
 

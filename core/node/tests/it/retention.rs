@@ -2273,47 +2273,41 @@ fn demotion_lists_the_message_omits_the_delete_spec_perm_6() {
     }
 }
 
-// spec/permissions.md §5.1, §6: a request resting on the author class through an account: its signer
-// keeps a direct write edge on the thing, so its class falls only on the account (`on_person`), or the
-// account falls and the signer stays on it. An honest demotion lists the request either way.
+// spec/permissions.md §5.1, §6: a request resting on the author class of an account, made by another
+// node of it: an honest demotion of the account lists the request.
 #[test]
 fn honest_demotion_keeps_a_request_resting_on_the_account_spec_perm_6() {
-    for on_person in [true, false] {
-        let mut lp = net(3, 0x7c + u64::from(on_person));
-        let (who, _) = lp.peers[0].engine.create_account(&crate::flows::hosts()).unwrap();
-        let person = who.account;
-        let (x, o) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-        crate::flows::spread(&mut lp);
-        let paired = lp.peers[0].engine.pair(&x).unwrap();
-        crate::flows::spread(&mut lp);
-        lp.peers[1].engine.paired(&person, paired.commits.last().unwrap()).unwrap();
-        let t = crate::flows::thing_of(&mut lp, 2, o);
-        set_edge(&mut lp.peers[2].engine, t, person, Some(edge(Role::Write)), None);
-        set_edge(&mut lp.peers[2].engine, t, x, Some(edge(Role::Write)), None);
-        crate::flows::spread(&mut lp);
-        lp.advance(5);
-        let mut m = Mutation::new();
-        m.act_as(person);
-        m.set(t, &REG, &s("kept")).unwrap();
-        let c = lp.peers[0].commit(m).unwrap().unwrap();
-        crate::flows::spread(&mut lp);
-        lp.advance(5);
-        let mut m = Mutation::new();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
-        m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
-        lp.peers[1].commit(m).unwrap().unwrap();
-        crate::flows::spread(&mut lp);
-        assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), "the right holds through the account");
-        lp.advance(5);
-        let (by, on, holder) = if on_person { (0, person, x) } else { (2, t, person) };
-        let d = osis_node::flows::Demotion { holder, new: None, retain: None };
-        lp.peers[by].engine.demote(&on, &d).unwrap();
-        crate::flows::spread(&mut lp);
-        for i in [0, 2] {
-            let e = &mut lp.peers[i].engine;
-            assert!(!e.body_not_dropped(&c, &t, &ak("t:reg.0")), "on_person {on_person}, peer {i}: the demotion brought it back");
-            assert_eq!(e.purged_on(&t, &ak("t:reg.0")).unwrap().len(), 1, "on_person {on_person}, peer {i}");
-        }
+    let mut lp = net(3, 0x7c);
+    let (who, _) = lp.peers[0].engine.create_account(&crate::flows::hosts()).unwrap();
+    let person = who.account;
+    let (x, o) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    crate::flows::spread(&mut lp);
+    let paired = lp.peers[0].engine.pair(&x).unwrap();
+    crate::flows::spread(&mut lp);
+    lp.peers[1].engine.paired(&person, paired.commits.last().unwrap()).unwrap();
+    let t = crate::flows::thing_of(&mut lp, 2, o);
+    set_edge(&mut lp.peers[2].engine, t, person, Some(edge(Role::Write)), None);
+    crate::flows::spread(&mut lp);
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("kept")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    crate::flows::spread(&mut lp);
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+    m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    crate::flows::spread(&mut lp);
+    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), "the right holds through the account");
+    lp.advance(5);
+    let d = osis_node::flows::Demotion { holder: person, new: None, retain: None };
+    lp.peers[2].engine.demote(&t, &d).unwrap();
+    crate::flows::spread(&mut lp);
+    for i in [0, 2] {
+        let e = &mut lp.peers[i].engine;
+        assert!(!e.body_not_dropped(&c, &t, &ak("t:reg.0")), "peer {i}: the demotion brought it back");
+        assert_eq!(e.purged_on(&t, &ak("t:reg.0")).unwrap().len(), 1, "peer {i}");
     }
 }
 

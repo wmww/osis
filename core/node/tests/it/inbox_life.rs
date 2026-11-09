@@ -379,6 +379,38 @@ fn grant_commit(net: &mut Net, a: usize, g: Tid, bob: Tid) -> osis_base::CommitI
     c
 }
 
+// spec/sync.md §3, §5: Bob knows nothing of Alice when her grant reaches him and the label's head has
+// moved past the epoch boxed in it (Carol's removal): his account's static entry on the head opens the
+// label, Alice's chain comes under it, and the grant applies. A commit released from an invite request
+// that cannot be judged yet waits for what it needs like any other.
+#[test]
+fn grant_reaches_a_grantee_new_to_the_granter_past_a_rotation_spec_sync_5() {
+    let (mut net, host, a, b, _, bob, g, _) = alice_and_bob_at(Vec::new());
+    let c = net.node(3, &[host]);
+    let addr = net.address(host);
+    let (carol, done) = net.engine(c).create_account(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(c).carry_out(done).unwrap();
+    net.actions(c, acts);
+    net.run();
+    net.pair(c, a);
+    grant(&mut net, a, g, carol.account);
+    net.run();
+    net.set_online(b, false);
+    grant(&mut net, a, g, bob);
+    net.run();
+    let d = osis_node::flows::Demotion { holder: carol.account, new: None, retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.set_online(b, true);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    assert!(net.engine(b).roster(&g).contains_key(&bob), "the grant applied at Bob: pending {:?}", net.engine(b).pending());
+    assert!(net.engine(b).role_on(&g).is_some(), "Bob holds g");
+}
+
 // spec/sync.md §3 (invite requests): Bob shares nothing with Alice, so her invite is a request:
 // its commit is not applied and g's hosts are never dialed until Bob accepts; accepting
 // applies it, dials them and joins g.

@@ -339,7 +339,7 @@ impl LabelStore for PeerStore<'_> {
         let engine = self.engine.get_mut();
         let proven = super::proofs::proven_actors(engine, &proofs).map_err(|e| StoreError(e.to_string()))?;
         // this side proves only to a dialer that proved an actor it knows (spec/sync.md §10)
-        let known = engine.core.judge(proven.key_actors.iter().copied()).known();
+        let known = engine.core.judge(proven.all()).known();
         let mine = if known { super::proofs::provers(engine).map_err(|e| StoreError(e.to_string()))?.iter().map(|p| p.sign(true, challenge, listener_key)).collect() } else { Vec::new() };
         self.acc.proven = proven;
         Ok(mine)
@@ -639,7 +639,7 @@ impl SyncEngine {
         let Some(mut s) = self.served.remove(&conn) else { return Ok(()) };
         let total = self.charges.total;
         // charged to the proved node only if known here: a fresh key per connection would bound nothing
-        let node = s.proven.node.filter(|n| self.engine.core.judge([*n]).known());
+        let node = s.proven.node.filter(|_| self.engine.core.judge(s.proven.all()).known());
         self.state.feed.heads(labels);
         if matches!(input, ServingInput::Bytes(_)) {
             s.last = now;

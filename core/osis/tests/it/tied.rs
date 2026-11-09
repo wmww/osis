@@ -418,7 +418,8 @@ fn invalidated_membership_removes_the_tied_grant() {
 // spec/permissions.md §2 (a removal of another actor's grant is placed under the labels holding
 // it): Bob, the card's admin, removes the tag's hand-granted grant on his card added to the tag;
 // the tag's admin and its other writer drop it from their roster and reach and lose the card
-// (the removal leaves the tag's closure bodies, so only that membership tells Carol).
+// (the removal leaves the tag's closure bodies, so only that membership tells Carol). Whether Carol
+// reads the card's fresh deposit seed through its own sync ID: issues/removed-holder-reads-fresh-deposit-seed.md.
 #[test]
 fn group_holders_learn_grant_removal() {
     let Setup { mut w, alice, bob, carol, g } = setup();

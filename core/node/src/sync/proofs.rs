@@ -30,9 +30,7 @@ pub struct Proven {
     pub key_actors: BTreeSet<Tid>,
     /// The first proof's actor: the prover's own node key (spec/wire.md §11.2 Prove).
     pub node: Option<Tid>,
-    /// Accounts proved at an epoch open here. Reported, never counted by J: until a removal
-    /// rotates the epoch a removed node keeps its seed and the epoch stays open, so a J counting
-    /// these would give a removed node access. Invariant, enforced where `Judge` is made.
+    /// Accounts proved at an epoch open here: a closed epoch proves nothing (spec/sync.md §10).
     pub accounts: BTreeSet<Tid>,
 }
 

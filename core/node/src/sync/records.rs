@@ -1,10 +1,8 @@
 //! Pair keys and per-peer records on connections (issues/net-reconnect.md, Resume).
 //!
-//! What proves a record: the session's own proven key actors, those this node knows now (`Judge`
-//! over the rosters it holds): the same set that gates the proof answer (spec/sync.md §10). Only
-//! key actors proved by their own key count: a chain-proved or account-key-proved account proves
-//! no removal it omits, so it finds no record and makes none until accounts sign
-//! (issues/net-shared-set.md step 10; `Proven::accounts`). A record is honoured only while a
+//! What proves a record: the session's own proven actors, those this node knows now (`Judge`
+//! over the rosters it holds): the same set that gates the proof answer (spec/sync.md §10). A
+//! record is honoured only while a
 //! proven actor of this session is one of its actors and known here now, so a node removed from
 //! every roster held here cannot use one. The tag binds r to this connection: its challenges and
 //! the listener's static key, so a node between two holders of r cannot pass one's tag to the
@@ -98,10 +96,9 @@ impl Records {
     }
 }
 
-/// The proven actors that count for a record now: key actors known here. Never an account
-/// (`Proven::accounts`): a record cannot let a chain-proved account resume anything.
+/// The proven actors that count for a record now: those known here.
 pub(super) fn counted_actors(engine: &Engine, proven: &Proven) -> Vec<Tid> {
-    proven.key_actors.iter().copied().filter(|a| engine.core.judge([*a]).known()).collect()
+    proven.all().iter().copied().filter(|a| engine.core.judge([*a]).known()).collect()
 }
 
 /// The listener's part of a Resume: the nonce it answers and the tag of a record it holds, with

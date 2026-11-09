@@ -344,8 +344,6 @@ impl Engine {
         }
         self.core.accounts.insert(*p, Arc::new(HeldAccount { devices: *d, first, seeds }));
         self.core.role_changed();
-        // boxes of pending commits may open to it
-        self.core.waits.clear();
         self.run(super::reopen_all)
     }
 
