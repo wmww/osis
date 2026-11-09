@@ -42,11 +42,11 @@
   - A host holds one path from the genesis step to its **head** (§4). A new step is a child of the target host's head (§5).
   - An admin MAY issue a step without a rotation (same role keys, fresh step key) to list readers granted since its parent, key actors in particular.
 - **Claim set** of a step: padded with random keys to a power of two, in random order. It lists each **reader** M of the registered read epoch: every actor holding its read secret as the registrar knows it at registration (the holders of boxes carrying it, the first admin included while its record edge stands; a holder re-sealed later opens by sync key).
-  - A reader is listed by its claim public key (derivation: spec/wire.md §8). M's X25519 key is the X25519 half of its read-role KEM key in the newest `keys.0` of M the registrar holds (a key actor: its single KEM key). A non-contributory DH result omits M.
-  - A reader that is a key actor other than a node (a recovery key, a link key) is listed instead by its **static entry** (spec/wire.md §8), the same 32 bytes.
+  - A reader is listed by its claim public key (derivation: spec/wire.md §8). M's X25519 key is the X25519 half of its read-role KEM key in the newest `keys.0` of M the registrar holds (a key actor: its single KEM key; an account: its newest open epoch's, spec/crypto.md §3). A non-contributory DH result omits M.
+  - A reader that is a key actor other than a node or an account (a recovery key, a link key) is listed instead by its **static entry** (spec/wire.md §8), the same 32 bytes.
   - The registrar erases the step private key after signing.
   - M derives its claim key from its own private key and the step key; it tries each keyset epoch it has held.
-- **Entry boxes** of a step: one for each reader that is a key actor other than a node (a recovery key, a link key), sealed to its KEM key (spec/crypto.md §4 sealed form; AD = (label ID, step key)). Layout: spec/wire.md §7.
+- **Entry boxes** of a step: one for each reader that is a key actor other than a node or an account (a recovery key, a link key), sealed to its KEM key (spec/crypto.md §4 sealed form; AD = (label ID, step key)). Layout: spec/wire.md §7.
   - It holds the epoch's read secret and, when the epoch supersedes one whose secret the registrar holds, the secret of the one with the greatest n, ties by lowest nonce (what its rotation commit is wrapped under, spec/crypto.md §5).
   - A key actor holding no secret of the group reads the label from the current step; the rotation commit's history box (spec/crypto.md §4) opens the rest.
   - Each secret names its epoch of the group thing (spec/crypto.md §4); it is held as that epoch's secret, which establishes nothing.
@@ -71,23 +71,24 @@
   - A link's K label is K's home label.
 - **Inbox**: an actor with role secrets names its home label in `keys.0` as its inbox for inbox blobs (§3), with the deposit seed, in the commit that gives it the label.
   - A sender uses the inbox the actor's `keys.0` names; a sender holding none cannot reach it.
-  - Key actors have none: a node receives a direct grant only over a direct connection to the granting node (pairing); a recovery key or link key holds its label from its card or link and claims the current step by its static entry (§5).
+  - An account's inbox is its D's home label (spec/permissions.md §1). Other key actors have none: a node receives its grant on D only over a direct connection to a node of the account (pairing); a recovery key or link key holds its label from its card or link and claims the current step by its static entry (§5).
 
 ## 3. What goes under a label
 - **Closure**: the blobs of group G are the commits touching any thing in G's transitive closure (through `group.0`, spec/data-model.md §8), plus the chunk, tree-node and page blobs they reference (every blob their values link, whether or not the linking commit's chunk list names it).
   - Each node tags commits with their things' `groups.0` and retags when group membership changes.
 - **Entitlement**: a thing's **reader actor** is the thing if it has secrets of its own, else the nearest actor up its record chain that has them (a key actor is its own). G's actor is the group thing if it has secrets of its own, else its base actor (spec/crypto.md §3). G's actor may read a thing iff the thing's secrets derive from its own or it holds read or above on the thing's reader actor. A commit's blob belongs under G's label iff G's actor may read a part of it on a thing of the closure (or published there, §2).
   - Only a writer of G stamps entries (§5).
-  - A node that is not one deposits what it must place there (its chain certificates and node card, its invite grant or self-removal, its heartbeats, its history adds (spec/permissions.md §3), and the revokes it must place by spec/permissions.md §4) and relays stamped entries it holds.
+  - A node that is not one deposits what it must place there (its account's chain certificates, rotations and thing lists, its invite grant or self-removal, its listings, its history adds (spec/permissions.md §3), and the revokes it must place by spec/permissions.md §4) and relays stamped entries it holds.
 - **One blob per commit**: a commit is uploaded as one blob holding every part of it the uploader holds and can seal, each part in the section of its thing under the thing's read secret (spec/wire.md §4; a part of a thing whose read secret the uploader lacks, a key actor's own record or card, travels as a certificate copy). Every label of every thing the commit touches carries the one blob under its label's wrap; hosts and nodes syncing several of those labels dedup it by blob ID. No size split: a commit stays within `MAX_BLOB` by paging its deltas (spec/crdt.md §8), largest first, or is refused at the writer.
   - A node judges a blob by the parts the label's actor may read (§6); a section it cannot open it copies verbatim when it encrypts the commit again (a tombstoned entry, a purge rewrite).
   - A section opens with the thing's read secret at the epoch the writer used: a reader of the thing holds it (its own, through its history boxes; a plain thing's by derivation through the record chain the section lists from a member it holds epochs of), and a holder of a role on the thing's reader actor keeps up with its rotations through that actor's label (§2).
   - **Per-label copies**: besides certificate copies (below), a label whose readers could not open a part's section in the shared blob gets a fresh blob of the parts its actor may read, one section under the read secret of the label's group, never shared with another label; judged like any body of the commit. Exactly two cases: a role commit with such a part on a thing other than the label's actor (its boxes are what give the readers that thing's secrets: a rotation, a grant, a cross-published `label.0`, §2); a part on a thing whose read secret derives from neither the label's actor nor an actor in its closure (a cross-published `created.0`, §2; a thing added from another actor's tree, read by role on a reader actor whose rotations the label does not carry). A blob a node opens only under the label group's secret for a section on another thing is such a copy: its sections are not copied into another encryption.
 - **Retag**: when a thing joins a group, any writer of the label that holds the thing's live blobs adds them under it; when it leaves, delete-key holders delete them under the old label as they see the change (§7).
-- **Certificate blobs**: chain certificates, node cards, heartbeats and revokes (spec/permissions.md §4): copies of the parts of a role commit about one actor.
+- **Certificate blobs**: chain certificates, accounts' rotations (header-only copies), list blobs and revokes (spec/permissions.md §4, §5.5): copies of the parts of a role commit about one actor, or thing lists.
   - They go under a label as a fresh encryption per label, never as a blob shared with another label.
   - The chunk and tree-node blobs of a linked frontier or header list go under it too, as the same blobs (a link names them) with a filler wrap.
   - A writer promoting a deposited commit completes its author's chain under the label from what it holds (§5).
+- **List blobs** (target, issues/account-signing.md step 5): a blob carrying thing lists of one rotation (spec/permissions.md §5.5; bytes spec/wire.md §4, List tree), wrapped per label like a commit, with no expiry and no commitments. Under a label it carries only thing lists of things in the label's closure. A non-writer deposits it; a writer promotes it once each thing list in it verifies against the root of a rotation it holds.
 - **Inbox blob** (spec/crypto.md §5; layout and payload spec/wire.md §9): the parts about actor G of a role commit, boxed to G, with the label IDs and host addresses of those things it names that have labels of their own.
   - **What it carries about G**, any of:
     - a grant with G's boxes;
@@ -95,7 +96,7 @@
     - a re-seal of G;
     - a rotation boxing G where G held no box at the read epoch before it.
   - **Placement**: under G's inbox (§2) by deposit, or by upload when the sender holds the inbox label's write key. The inbox group's admins may delete it earlier than its expiry.
-  - **Re-send**: its prefix expiry is `INBOX_LIFETIME`, after which the sender re-sends unless the recipient has since acted on it: a commit by it or a node of it writing a thing the blob names or a thing whose record chain (spec/permissions.md §1) reaches such a thing. Acting elsewhere does not count. A sender MAY bound the number of re-sends.
+  - **Re-send**: its prefix expiry is `INBOX_LIFETIME`, after which the sender re-sends unless the recipient has since acted on it: a commit by it writing a thing the blob names or a thing whose record chain (spec/permissions.md §1) reaches such a thing. Acting elsewhere does not count. A sender MAY bound the number of re-sends.
   - **Stamping in place**: a writer of the inbox's group stamps a deposited inbox blob in place (§5).
     - It does so when either:
       - its commit is applied, valid in every part the blob carries, and about an actor whose inbox the label is (it has parts a copy below would take for that actor); or
@@ -116,7 +117,7 @@
 - **Invite requests**: a recipient node applies the commit of an opened inbox blob, and follows what it names, only once it **admits** the blob.
   - It admits the blob when either:
     - the commit is already held (applied or pending; a sibling node that accepted it places its copy under the home label); or
-    - its sender is **connected**: the header's author is a key actor whose creation record the node holds and under whose key the commit's signature verifies, and the author has an effective role now (spec/permissions.md §1, as this node judges it) on a group the node syncs (§2), on a thing up such a group's record chain, or on an account whose contact card the node imported.
+    - its sender is **connected**: the header's author is a key actor whose creation record the node holds and under whose key (an account's: at the epoch it names, with that epoch's chain held) the commit's signature verifies, and the author has an effective role now (spec/permissions.md §1, as this node judges it) on a group the node syncs (§2), on a thing up such a group's record chain, or on an account whose contact card the node imported.
   - A blob not admitted is an invite request: its commit is not applied, its chain certificates (spec/wire.md §9) are not ingested, and nothing it names is fetched, followed or dialed until the user accepts it.
   - It is judged again as the node's state changes.
   - Accepting admits it.
@@ -130,7 +131,7 @@
   - Nothing else an inbox blob carries is placed.
   - A node runs this whenever it opens an inbox blob, its commit held or not.
 - **Inbox blob order**: a sender still opening or registering a label an inbox blob names at a host it is connected to, open at none of them, deposits the blob after that ends. A node told a label is unknown at a host, with no step of it to register, opens it again after a back-off of `retry_ms` doubling per refusal up to `resync_ms` (local policy).
-- **Contact card**: a link (spec/permissions.md §7) with read role to an account's profile thing P, a group of itself with no items: its label carries P's own aspects and, as certificate copies, the account's `created.0` and `keys.0` commits.
+- **Contact card**: a link (spec/permissions.md §7) with read role to an account's profile thing P, a group of itself with no items: its label carries P's own aspects and, as certificate copies, the account's `created.0` and `keys.0` commits and its rotations (spec/permissions.md §5.5).
 - **Unjudged blobs**: a receiver keeps blobs a peer placed under a label even if its own closure disagrees, while it cannot judge them: a commit it holds pending (not parked) or an entry of the label it can open and has not applied; then §6 decides.
 
 ## 4. Host state
@@ -155,9 +156,9 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - A client whose open head gains a child with another sync key (its own registration included) opens again.
 - **Claim**: an open signature under a key V, with (step ID j, V).
   - If V is in step j's claim set: j the head opens the label, j on the path is answered with its child as above. Otherwise refused like an unknown key.
-  - A key actor other than a node sends its signing public key with the open signature instead of (j, V), only to labels of things it holds a role on or that it follows for itself (its link's or card's label). The host opens the label if its static entry is in the head's set, and that key reads the current read secret from the head's entry box.
+  - A key actor other than a node or an account sends its signing public key with the open signature instead of (j, V), only to labels of things it holds a role on or that it follows for itself (its link's or card's label). The host opens the label if its static entry is in the head's set, and that key reads the current read secret from the head's entry box.
   - A holder that missed n steps walks them in n round trips, verifying each step under its parent's delete key (the genesis step against the label ID), then downloads the rotations and derives the current keys. The claim is bootstrap only.
-  - A claim at a step whose set the host has dropped is refused; such a holder places a stranded heartbeat (spec/permissions.md §4) and is reached only by re-seal (spec/permissions.md §3).
+  - A claim at a step whose set the host has dropped is refused; such a holder is stranded (spec/permissions.md §4) and is reached only by re-seal (spec/permissions.md §3).
 - **Register** (delete key of the parent). Relayable by any node.
   - Accept a genesis step only if its delete key hashes to the label ID and the label is new.
   - Accept a step whose `prev` is the head.
@@ -209,7 +210,6 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - A writer that holds neither the commit applied nor the chain leaves the deposit unpromoted.
     - The author's chain under a label leaves out every `keys.0` but the author's own.
     - A certificate copy is never deleted for an incomplete chain.
-    - A heartbeat (spec/permissions.md §4) is never promoted.
 - **Clearing an inbox**: a node holding the delete key of an inbox label (§2) keeps at most `INBOX_WAITING` entries and `INBOX_WAITING_BYTES` bytes per host of the deposits there it can do nothing with.
   - Those are every deposited entry except:
     - one it opened as a commit under a read secret (parked included);
@@ -230,10 +230,10 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - Hosts may rate-limit deletes, deposits, registrations (code 4) and relay-only uploads per label.
   - A cursor below a trimmed ephemeral log gets the live ephemeral entries added since in place of their add events.
 - **Co-reader peer**: A co-reader peer serving a label applies the same rule (relay-only uploads included: it passes a new one on to the label's hosts it syncs with, §9).
-  - It may also serve a node of a current co-reader: an open whose proof is a signature under `"osis v1 co-reader open"` (spec/wire.md §11.2, proof 3) by the `dialable` key of a `reach.0` it holds on a node thing whose actor currently reads the label, where no other node thing's `reach.0` it holds names that key. Hosts refuse such proofs.
+  - It may also serve a co-reader: a connection whose peer proved an account or key actor that currently reads the label (§10, Connection proofs) opens the label on that connection (target, issues/net-shared-set.md). Hosts open nothing so.
   - A co-reader peer that syncs a label with no host serves it as its own host:
     - it issues a child step when it would re-register at a host (recorded in `label.0`);
-    - it holds the bodies it holds that the label must hold (§6) and the blobs they link, its certificates and heartbeats, and the inbox blobs it sends to an inbox label it syncs with no host;
+    - it holds the bodies it holds that the label must hold (§6) and the blobs they link, its certificates, and the inbox blobs it sends to an inbox label it syncs with no host;
     - it drops what its sync would delete at a host (a body with live writes only once a carrier is under the label) or what expired.
 - **Re-registration**: an admin node that holds the epochs a host's head registers (the write and admin ones established) and, for any role, an established epoch newer than the head's (spec/crypto.md §4; its own rotation or another node's) issues a child of that head when it next syncs that label at that host.
   - Order, at that host:
@@ -291,8 +291,8 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - expired (its blob's prefix expiry, §3, whatever of it the label's actor reads);
     - outside the required set;
     - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold and whose extra deltas include one only a blob carries: kept or holding a live write, and covered by no snapshot under the label;
-    - another node's node-card commit (spec/permissions.md §4) once a later valid card commit of that node writing the same aspect is under the label (an entry of it this node opened and checked against its header);
-    - another node's node-card commit, for `node.0` and `reach.0`, once that node reads the label's actor no more after an applied edge write on its way to the actor ended a grant (removed it, or its `until` passed).
+    - under D's home label, another node's card commit (spec/permissions.md §4) once a later valid card commit of that node writing the same aspect is under the label (an entry of it this node opened and checked against its header);
+    - under D's home label, another node's card commit, for `node.0` and `reach.0`, once that node is a node of the account no more after an applied edge write on D ended its grant (removed it, or its `until` passed).
   - **may-hold**: the rest: covered, between bounds, parked, unfetched pages, a certificate blob whose author has no other blob under the label.
 
   After syncing:
@@ -327,9 +327,9 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - A write here: in a map any write under a key, else a value-carrying one or `W`.
   - A record merely lacking its creation is left: the creation may arrive.
   - A reset so repeated stays if the first remover turns out invalid.
-- **Repair**: a node that may write an aspect of a thing in a label's closure, past its first sync there (§6), acts on each entry of another node's live heartbeat under the label reporting it suspect (spec/permissions.md §4) whose digest differs from the node's own digest of that aspect, if it holds state of the aspect.
+- **Repair**: a node that may write an aspect of a thing in a label's closure, past its first sync there (§6), acts on each entry of a suspect list a connected peer sent it for the label (spec/permissions.md §4) whose digest differs from the node's own digest of that aspect, if it holds state of the aspect.
   - It writes a snapshot of the aspect from its whole state (spec/commits.md §2) and places it like any must-hold body, unless it already wrote one from that same state for that node.
-  - It judges each entry of each heartbeat once.
+  - It judges each entry once per suspect list.
   - It SHOULD report every entry it judged (a diagnostic), repaired or not.
 - **Duplicates**: of two blobs of one commit with the same delta set under one label, a delete-key holder deletes the one with the higher blob ID. Of two at a host where one counts as lacking (§5), that one, and it counts as no copy of the other.
 
@@ -400,14 +400,20 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
 - Sync runs over any ordered, bidirectional byte stream with confidentiality and an authenticated peer key.
 - A transport handshake has no deadline of its own beyond the transport's idle timeout; a host MAY close a connection whose peer sends no Hello (spec/wire.md §11.1) within a local policy bound.
 - A host **address** is a transport URL plus the host's static public key; a client MUST check the host's key against it.
-- **Keys and reach**: clients connect to hosts with an ephemeral transport key per connection. A node's dialable P2P key is separate from its signing key and published only in `reach.0`, together with its global addresses and its relays. Other addresses are never published; nodes exchange them on a relayed connection (hole punching), or LAN discovery finds them.
+- **Keys and reach**: clients connect to hosts with an ephemeral transport key per connection. A node's dialable P2P key is separate from its signing key and published only in `reach.0`, together with its global addresses and its relays; `reach.0` goes under its account's D's home label only (target, issues/account-signing.md step 8), so only its own account's nodes read it. Other nodes learn a dialable key and addresses from a link, a configured address, a connection, or the serving-node listing of a contact's profile (for dialing only). Other addresses are never published; nodes exchange them on a connection (hole punching), or LAN discovery finds them.
 - **`quic://host[:port]`** host addresses (port 4040 when absent, an IPv6 address in brackets):
   - QUIC v1 (RFC 9000, RFC 9001) with TLS 1.3 only, ALPN `osis`, 0-RTT MUST NOT be used.
   - Both sides MUST authenticate (client authentication is mandatory) with RFC 7250 raw public keys: an RFC 8410 Ed25519 SubjectPublicKeyInfo, signature scheme `ed25519` only, no certificates.
   - The host's key is the address key; a client's is fresh per connection, or a host's own address key when it dials another host.
   - SNI is ignored.
   - Each sync session (spec/wire.md §11.1) runs on a bidirectional stream the client opens; the dialer closes the connection.
-- **Node keys**: a node's dialable key and its LAN transport keys are Ed25519 public keys (RFC 8032), each with a 32-byte seed as its transport secret. A node dials other nodes with an ephemeral transport key and proves itself a co-reader's node inside the session (open proof 3, §5).
+- **Node keys**: a node's dialable key and its LAN transport keys are Ed25519 public keys (RFC 8032), each with a 32-byte seed as its transport secret. A node dials other nodes with an ephemeral transport key and proves the actors it acts for inside the session (Connection proofs).
+- **Connection proofs** (target, issues/account-signing.md step 6; bytes and the exchange: issues/net-shared-set.md, Account proofs across rotations): each side proves the actors it acts for over the connection's challenges, both ways, and to a side that already knows them only (spec/requirements.md, Offline and network):
+  - its account by a signature at an epoch, with the signed rotations of that account the verifier lacks; a refusal carries the verifier's rotations the prover lacks. Both sides judge them by spec/permissions.md §5.4 alone, no timestamp read;
+  - a key actor (a link key, a recovery key) by its signing key, matched to a static entry the verifier holds;
+  - its own node key only to nodes of its own account.
+  - Until accounts sign (issues/account-signing.md step 6), a proof also carries the node's chain certificates to its account.
+  - Nothing a connection proves comes from group data; the serving-node listing on a profile is for dialing only, never proof.
 - **P2P transports**: a node dials a co-reader by dialable key over a P2P transport, each named by its own address scheme; only `peer://` is defined.
 - **`peer://`** nodes are dialed by dialable or LAN transport key:
   - The URL is `peer://` then items separated by single spaces, each a socket address of the node (`ip:port`, an IPv6 address in brackets) or a relay, written `<key>@<socket address>` with the relay node's dialable key as 64 lowercase hex digits. Other items are skipped, and items past the 16th; none means LAN only. No address lookup service or default relay is used.
@@ -422,12 +428,12 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
   - **Relayed connection**: TLS 1.3 runs over the forwarded bytes as on a direct connection (the dialer is the client and pins the target's key, ALPN `osis`, raw keys, no session tickets, no early data), records exactly as RFC 8446 frames them. The plaintext starts with an `addr` from each side, which each sends before reading the other's: its own address as the relay saw it (the dialer's from its Dial answer, the target's from its Register answer). Then the plaintext is one session; a relayed connection carries no other. Its end is the TLS close_notify; forwarded bytes ending without one end it abnormally.
   - **Registration streams**: a registering client lets the relay open 2048 streams at once on the registration connection, with a connection receive window at least 2048 times its stream receive window, so forwarded streams it has not read never hold back another. It holds at most 1024 forwarded streams not yet serving an accepted connection (handshaking or queued), ending the oldest past that.
   - **Hole punching**: on a relayed connection the target sends a QUIC Initial from its listening socket to the dialer's address (a handshake it never completes), and the dialer dials the target's address from the socket it reached the relay from, as a direct connection.
-  - **IP consent**: any positive action toward a node (sharing a group with it, making, sending or following a link, accepting an invite, choosing a relay) is consent to show it this node's IP address. So `reach.0` goes under every label a node syncs, and a node exchanges addresses with every peer of a relayed connection.
+  - **IP consent**: any positive action toward a node (sharing a group with it, making, sending or following a link, accepting an invite, choosing a relay) is consent to show it this node's IP address. So a node exchanges addresses with every peer of a relayed connection.
   - **Switching**: when a direct connection completes after a dialer began using a relayed one, it closes the relayed one and its next dial of that key uses the direct one.
   - **Relaying** is a node's choice. A relay accepts registrations only of the keys it allows, and bounds per source (an IPv4 address, an IPv6 /64) the bytes per second it forwards and its share of relay connections. It sees addresses, volume and the keys dialed, never the data.
   - A `peer://` entry in a label's `hosts` is never dialed as a host: a label with no other entry has no host, and its nodes serve it.
 - **LAN discovery** announces nothing stable across networks or meaningful to strangers: a tag and a transport key fresh per network join, never the dialable key.
-  - **Tag**: `kdf("lan tag", lan secret, le64(window))` (first 16 bytes), with window = `floor(unix ms / 600000)`. The 32-byte random lan secret is in `reach.0`. A co-reader matches tags of the nodes it knows for the current and adjacent windows.
+  - **Tag**: `kdf("lan tag", lan secret, le64(window))` (first 16 bytes), with window = `floor(unix ms / 600000)`. The 32-byte random lan secret is in `reach.0`. A node matches tags of the nodes whose `reach.0` it holds (its own account's) for the current and adjacent windows; finding other accounts' nodes on a LAN is issues/net-connect.md's.
   - **Joining**: a node joins anew (a fresh transport key and listener, announced at once) whenever its network may have changed.
   - **Announcement** (provisional): a UDP datagram to port 47380 on each address family the node has, as an IPv4 broadcast (255.255.255.255) and an IPv6 multicast to the link-local all-nodes group ff02::1 on each up interface with a link-local address, of exactly 124 bytes:
 
@@ -458,7 +464,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
   - Only a local client dials one; a node never dials a `unix://` address taken from synced data.
   - A session on it is a **main session**, acting as the node's main actor (Auth without secret); a session on any other transport never is, whatever key it presents.
 - **Client-actor session**: a session on a keyed transport, whose dialer pinned the node's key, that sent a current bearer secret in Auth (spec/wire.md §11.2).
-  - The node acts as its client actor: it signs the session's commits as their author with that actor in the header's actor field, and holds them to that actor's rights itself, since receivers judge only the author node's (spec/permissions.md §5).
+  - The node acts as its client actor: it signs the session's commits as its account, with that actor in the header's actor field, and holds them to that actor's rights itself, since receivers judge only the author account's (spec/permissions.md §5).
   - A client's secret is never sent on another transport.
   - A client whose connection ended dials again with its session id unchanged, sends Auth, and resends each write that had no answer, marking it (spec/wire.md §11.2). A node that no longer remembers it answers that its outcome is unknown.
 - **Group source**: a node MAY read and write a group through another node it is a client of (the group's source).

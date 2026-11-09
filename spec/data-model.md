@@ -4,7 +4,7 @@
 ## 1. Things and tids
 - Every datum is an **aspect** of a **thing**. A thing holds aspects and nothing else.
 - A **tid** is 120 bits: the first 120 bits of BLAKE3 over the canonical encoding of the thing's **creation record** (spec/wire.md §3). Text form: 20 characters of unpadded base64url, prefixed `osis://` where ambiguous or user-visible.
-- Creation record of a thing: (first admin's tid, 32-byte random nonce) (spec/permissions.md §1), with a `link` flag on a link's actor K (spec/permissions.md §7). Of a **key actor** (node, recovery key, link key), which holds admin on itself: (algorithm-tagged signing public key, 32-byte nonce). A link key's or recovery key's nonce derives from its seed (spec/crypto.md §3).
+- Creation record of a thing: (first admin's tid, 32-byte random nonce) (spec/permissions.md §1), with a `link` flag on a link's actor K (spec/permissions.md §7). Of a **key actor** (account, node, recovery key, link key), which holds admin on itself: (algorithm-tagged signing public key, 32-byte nonce), with an `account` flag on an account (spec/permissions.md §1). A link key's or recovery key's nonce derives from its seed (spec/crypto.md §3).
 - A node checks a creation record by hashing when it receives the thing's data. A tid inside a value is a bare reference: it may dangle, and the thing may lack the expected aspects.
 - A received record that hashes to a tid the node already holds a different record for is bad input: keep the held record, ignore the new one, report a diagnostic. Never panic on it.
 - A thing never changes its record (its first admin is history; its admins change by grants).
@@ -109,18 +109,20 @@ The core aspects form the core schema, evolving under spec/versioning.md. `schem
 - `roles.0` reads as the role timeline's roster (spec/permissions.md §5). `tied`: spec/permissions.md §2. `until` 0: a removal saying retain (spec/permissions.md §2).
 - `addenda.0` is read per delta, never as state.
 - `keys.0`: spec/crypto.md §3, spec/sync.md §2. `secrets.0`: spec/crypto.md §4. `label.0`: spec/sync.md §2. `reach.0`: spec/sync.md §10. Box payloads, history box layout and AD tuples: spec/wire.md §7.
-- `node.0`, `reach.0`, `seen.0`, `host^.0`, `clients^.0` are written on node things. `seen.0` is a heartbeat, always written with `expires` (spec/permissions.md §4).
+- `node.0`, `reach.0`, `host^.0`, `clients^.0` are written on node things. `node.0` and `reach.0` go under the node's account's D's home label only (spec/permissions.md §4; target, issues/account-signing.md steps 7, 8). The core schema has no heartbeat aspect: a node's last sync is its own record, stranded and suspect reports go over connections (spec/permissions.md §4; target, step 8: schema/core.osis still defines `seen.0`).
+- **`account.0`** on an account's D (target, issues/account-signing.md step 6; not yet in schema/core.osis): `struct { seeds 0: map<blob, blob> }`, per epoch of the account's signing chain its 32-byte ID (spec/crypto.md §9) to its 32-byte seed (spec/crypto.md §3). Written by the account in the rotation that mints the epoch (the first in the commit creating the account and D).
+- **`listing.0`** (target, issues/account-signing.md step 5; not yet in schema/core.osis): `map<blob, set<blob>>`, a rotation's 32-byte commit ID to the 32-byte commit IDs a listing names (spec/permissions.md §5.5); entries only put, never reset. Read per delta, never as state.
 - `required^.0`: the retention the thing requires (spec/commits.md §5) and its removal default (`retain`, spec/permissions.md §2, §3); a separate setting per thing.
 - `purge.0`: the delta a purge request naming no aspect to reset carries (spec/commits.md §5).
 - `group.0`, `groups.0`: §8. `tag.0` marks a group as a user-facing tag (§8).
-- **`host^.0`** present: the node hosts (spec/sync.md §4). Absent: it does not, and holds no host store (stopping erases it, at the latest when the node next runs sync; a later start begins empty). Never part of the node card (spec/permissions.md §4).
-  - `admit` `own`: it takes registrations of the labels of its account's own groups whose hosts name its host address, and of `labels`. Its account's own group: the node or its account (the account it was created or paired for) is on the group's record chain (spec/permissions.md §1) through record edges that stand at the node; no other role edge, on the group or a thing above it, held by the node or the account, qualifies. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5).
+- **`host^.0`** present: the node hosts (spec/sync.md §4). Absent: it does not, and holds no host store (stopping erases it, at the latest when the node next runs sync; a later start begins empty). Never placed under a label.
+  - `admit` `own`: it takes registrations of the labels of its account's own groups whose hosts name its host address, and of `labels`. Its account's own group: its account (the account it is a node of) is on the group's record chain (spec/permissions.md §1) through record edges that stand at the node; no other role edge, on the group or a thing above it, held by the account, qualifies. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5).
   - `admit` `open`: it takes registrations of any label.
   - `replicate`: peer hosts. `policy`, `caps`: local policy.
-- **`clients^.0`**: clients with an actor of their own, by client actor (spec/sync.md §10). Never part of the node card.
+- **`clients^.0`**: clients with an actor of their own, by client actor (spec/sync.md §10). Never placed under a label.
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.
   - The client actor is a thing whose first admin is the node's account, with secrets of its own, and what the client may do is that actor's roles.
-- **Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`. Their rules: spec/commits.md §2, spec/permissions.md. `addenda.0` is content with the retention of a role-class aspect (spec/commits.md §5), never compacted. Role-class aspects, `addenda.0`, `created.0`, `required^.0` and `purge.0` have the fixed retention of spec/commits.md §5.
+- **Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`, `listing.0`. Their rules: spec/commits.md §2, spec/permissions.md. `addenda.0` is content with the retention of a role-class aspect (spec/commits.md §5), never compacted. Role-class aspects, `addenda.0`, `created.0`, `required^.0` and `purge.0` have the fixed retention of spec/commits.md §5.
 - `creation` holds exactly one of fields 0 and 1 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
 
 ## 10. Schemas

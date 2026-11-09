@@ -4,7 +4,7 @@
 ## 1. Header
 Encoding: spec/wire.md §4. Fields:
 - Format version (spec/versioning.md §1).
-- Author node tid and the actor tid it acts for (checked: spec/permissions.md §5.2).
+- Author tid (an account, or a key actor signing as itself), the epoch an account signs at, and the actor tid it acts for (checked: spec/permissions.md §5.2, §5.5); a rotation (spec/crypto.md §9).
 - Kind: content or role (§2); compaction-snapshot marker.
 - `ts` (spec/crdt.md §2.2) and the dot form, commit or session (§3).
 - Optional `expires` (§6), the expiry of every delta of the commit.
@@ -67,8 +67,8 @@ Encoding: spec/wire.md §4. Fields:
 
 ## 3. Dot forms
 - **Commit form**: dots `(commit ID, index)`, unlinkable across commits. Any content commit, durable or ephemeral, may use it.
-  - A key actor whose key is used from more than one node (link key, recovery key) MUST use it, and every role commit and every compaction snapshot MUST use it.
-- **Session form**: dots `(Session(author node, nonce), counter)` (spec/crdt.md §2.1), counters per (aspect, session), contiguous from 1; the header carries the 16-byte nonce.
+  - A key actor other than an account whose key is used from more than one node (link key, recovery key) MUST use it, and every role commit and every compaction snapshot MUST use it.
+- **Session form**: dots `(Session(author, nonce), counter)` (spec/crdt.md §2.1), counters per (aspect, session), contiguous from 1; the header carries the 16-byte nonce.
   - Content commits (§2) with own writes otherwise use it, durable and ephemeral alike.
   - Session form on any other kind (§2: role, compaction snapshot) is bad input.
 
@@ -78,6 +78,7 @@ Encoding: spec/wire.md §4. Fields:
 - A commit is **pending**, not applied and counted as not received, while any of these holds:
   - it is parked (spec/versioning.md §2);
   - the author's `created.0` record is unknown;
+  - its author is an account and the rotation minting the epoch it names is not held (spec/permissions.md §5.5);
   - its `ts` is more than `MAX_DRIFT` ahead (spec/crdt.md §2.2);
   - a header list or frontier given by link (spec/wire.md §4) is not resolved;
   - the node holds parts of it and every one waits.
@@ -153,7 +154,7 @@ Every delta carries **retention** on the wire: who may purge it and what happens
   - A snapshot written from a node's whole state of an aspect covers every body of it the node had applied, except a delta with an expiry holding a live value.
 
 ### Keep bounds
-- **Keep at least**: before the bound (T, or D after the body was replaced, Bodies and deaths) a body leaves the labels of its things' groups only by purge request or expiry, and a node only by those or as invalid: compaction MUST NOT drop it, right holders MUST NOT delete it at hosts and a demotion's frontier does not leave it out as covered (spec/permissions.md §5.1). A body with no dead writes is past a relative bound. A node judges the bound alike whether it may write or not.
+- **Keep at least**: before the bound (T, or D after the body was replaced, Bodies and deaths) a body leaves the labels of its things' groups only by purge request or expiry, and a node only by those or as invalid: compaction MUST NOT drop it, right holders MUST NOT delete it at hosts. A body with no dead writes is past a relative bound. A node judges the bound alike whether it may write or not.
 - On a commit carrying a purge request every body is kept at least until the purge floor (below), judged by the node's corrected clock.
 - **Purge on replace**: a node that may write the aspect and holds a replaced purge-on-replace body that no held valid snapshot holding the right over it covers MUST write a compaction snapshot of the aspect from its whole state in the transaction in which it comes to hold one (applying the replacing write or the body, a validity change, or a role change making it a writer); duplicates from several writers are harmless (spec/sync.md §7). Every node MUST drop a held purge-on-replace body that a held valid snapshot holding the right over it covers, as soon as it holds both. So the body is gone at every writer holding it in the transaction it learns of the replacement, and everywhere else when such a writer's snapshot arrives; a node without write keeps it until then, for good if no writer holding the body and its replacement ever syncs. A snapshot carrying a purge-on-replace write live purges on replace itself (Fixed retention), so its copy goes the same way. If the replacing write later turns invalid, the valid snapshots carrying it vouch for it (spec/permissions.md §5.2, Copies): the replacement stays and the replaced body does not come back.
 - A waiting part (§4), parked included, keeps its body until it applies, whatever its retention: before that only a purge request or its expiry acts on it (below). Limit: one that never applies is kept until one of those does, or for good.

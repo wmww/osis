@@ -1,31 +1,34 @@
 # Permissions
-> Summary: The rules of actors, role grants and first admins, role secrets and rotation, certificates, validity (role timeline, content, an account's signing chain), purge rights and links.
+> Summary: The rules of actors, role grants and first admins, role secrets and rotation, certificates, validity (role timeline, content, an account's signing chain and epochs), purge rights and links.
 
 ## 1. Concepts
 - **Terms**:
   - Rights are **roles** (read < write < admin) given by **role grants** (**grants**; "edge" in rule text means a grant). An actor with a role on a thing is a **holder** of that role on it.
   - A **role commit** (spec/commits.md §2) carries writes of **role-class aspects** (spec/data-model.md §9).
   - The **role timeline** (§5.1) orders edge writes.
-  - A **co-reader open** (proof 3, spec/sync.md §5) is a label open by a node that reads the label.
+  - A **co-reader open** (spec/sync.md §5) is a label open on a connection whose peer proved a current reader of the label (spec/sync.md §10, Connection proofs).
   - **Member**, **membership** and **member of a group** mean only being listed in a group (`group.0`, spec/data-model.md §8), which grants no rights.
   - A value in a CRDT set is an **element**.
 - **Actor**: a thing that can hold roles and act. Thing, group and actor are overlapping capabilities of one object, not kinds. A thing has this capability by having role secrets (spec/crypto.md §3).
-  - A **key actor** (node, recovery key, link key) also has a signing key committed by its tid and holds admin on itself.
-  - A **node** is a key actor whose seed never leaves it.
+  - A **key actor** (account, node, recovery key, link key) also has a signing key committed by its tid and holds admin on itself. No edge write targets a key actor: it has no roster.
+  - An **account** P is a key actor with **epochs**, its creation record marked so (spec/wire.md §3): its keys change by rotations of its **signing chain** (spec/crypto.md §3, §9; §5.4, §5.5). Only accounts and key actors other than nodes author commits; every commit a node makes outside its own key actor's `keys.0` is authored by its account (target, issues/account-signing.md step 6).
+  - A **node** is a key actor whose seed never leaves it. It is a **node of P** while it holds a grant on P's devices actor D. A node acts only as an account it is a node of: it signs as P (spec/crypto.md §3), and every role and authority this spec gives "a node" is its account's. A node that is a node of several accounts signs each commit as one of them.
+  - **Devices actor** D of P: an actor with secrets of its own whose first admin is P, created with P. Its roster is P's node list; P is its only admin. Its `account.0` holds P's epoch seeds (spec/data-model.md §9), so D's read role opens P's epochs (target, issues/account-signing.md step 6). D's home label is P's **home**: its inbox (spec/sync.md §2) and the sync ID of what only P's nodes share. Only P's nodes (and a recovery key, §7) read D, and nothing outside D is judged by D: a node's identity appears only in D's roster and labels, in the inner signature (§5.5) and on connections (spec/sync.md §10).
+  - **Profile** of P: an ordinary thing whose first admin is P, created with P, read by P's contacts (contact card, spec/sync.md §3). The serving-node listing on it is for dialing only (issues/net-one-peer.md).
+  - Teams, bots and shared identities are ordinary actors with rosters; an account holding a role on one acts for it (§5.2, Acting).
   - A **link's actor** K (§7) is an actor its creation record marks as a link's.
-  - An **account** is the actor apps treat as a user, team, bot or shared identity; its nodes hold roles on it (by app convention its first admin is the node that made it, a recovery key holds an admin edge on it, and its nodes are its admins).
 - **First admin**: every thing but a key actor has a creation record naming its **first admin**, an actor, fixed by the tid (spec/wire.md §3). A key actor holds admin on itself.
   - **Record edge**: the record gives the first admin an admin edge on the thing from before every edge write (the walk's initial state, §5.1; not an edge write: it applies by the tid alone and audits nothing). It stores nothing; edge writes change or remove it like any edge, a removal resetting no entry of it (§2). The first admin is history: once its edge is gone it has nothing on the thing but what grants give it.
   - The **record chain** of a thing: its first admin, and so on up to a key actor, within `MAX_CHAIN_DEPTH` links. A delta written on a thing further down (judged from the creation records alone) is invalid, its `created.0` excepted; the rest of its commit is judged as usual.
   - With no admin left, a thing's edges, secrets and keys change no more (holders keep reading and writing as granted) and nothing recovers it.
   - A node MUST NOT remove or lower the last admin edge of a plain thing (§3); the write is refused locally. Limit: signed anyway it applies, the thing stays plain, its content stays readable through derivation by the first admin's holders, and nobody writes it.
-  - A record needs no authority. A node names as first admin only itself or an actor it holds write on. A thing may be created by a commit carrying its `created.0` alone (a role commit, spec/commits.md §2).
+  - A record needs no authority. A node names as first admin only its account or an actor its account holds write on. A thing may be created by a commit carrying its `created.0` alone (a role commit, spec/commits.md §2).
 - **Role grant**: a record (holder actor, target, role), stored in the target's `roles.0`, on the target; what it reaches beyond follows from paths.
-- **Effective role** of a node on a thing at time t: the maximum over paths from the node to the thing of the minimum role along the path, evaluated with the timeline (§5.1) at t. A path climbs role grants, record edges included while they stand; an actor holds admin on itself.
+- **Effective role** of an actor on a thing at time t: the maximum over paths from the actor to the thing of the minimum role along the path, evaluated with the timeline (§5.1) at t. A path climbs role grants, record edges included while they stand; an actor holds admin on itself.
 - **Admin** = write + change role grants + purge (§6) + write admin-only (`^`) aspects (spec/data-model.md §2; §5.2). An admin grant on a plain thing grants changing its role grants and purge on that thing.
 - Admins are equal and may remove each other, the first admin included.
 - An edge write whose holder is its target is not applied (§5.1).
-- The role-class aspects of a thing (spec/data-model.md §9) are written only by its admins, whatever other role a node holds, except invite grants, self-removals and finalizes (§2), and what rotations and re-seals write into `secrets.0` and `keys.0` (§3).
+- The role-class aspects of a thing (spec/data-model.md §9) are written only by its admins, whatever other role a node holds, except invite grants, self-removals and finalizes (§2), what rotations and re-seals write into `secrets.0` and `keys.0` (§3), and listings (§5.5).
 - Ephemeral writes (spec/data-model.md §2) need the role the durable write would need.
 
 ## 2. Role grant writes
@@ -51,8 +54,8 @@
   - Its plain entry reset says erase.
   - Its entry reset with the grant written anew with `until` 0 (role read, no invite, no `tied`), gone at every clock, says retain, and is a removal all the same (§5.1), in one commit with its rotation. A client writes `until` 0 for nothing else.
   - It says what its remover wants, or else what the thing's default says: `retain` of the `required^.0` setting in force (spec/commits.md §5), none erasing.
-  - A self-removal says what its node wants, whatever the default.
-  - A client removing a node from its account writes erase unless its user says otherwise, whatever the default.
+  - A self-removal says what its author wants, whatever the default.
+  - A client removing a node from its account's D writes erase unless its user says otherwise, whatever the default.
   - A receiver reads what the removal says, never the default.
   - An invite grant gone when written does not apply (§5.1).
 - A grant may carry `invite: role`, at most its role. A `roles.0` delta putting a value that breaks this or reads as no grant is bad by itself (spec/commits.md §4), and so applies nothing, its entry resets included.
@@ -65,7 +68,7 @@
   - Invite holders cannot change or remove any other edge.
 - **Self-removal**: a node with admin on actor X may always remove X's grant on any target, or lower its role, invite or `until`. Such a write is a self-removal when either holds; otherwise it is an explicit demotion (§5.1):
   - it lowers the author's own grant. Lowers: removes it, or sets no component of role, invite and `until` above the grant's value. An unchanged rewrite and a removal of an absent grant lower; `tied` is ignored.
-  - admin on X is the author's only authority for it: with X's grant on the target disregarded, the author has no edge-admin authority on the target at that point (authority through X does not count: a node of an account leaving a group the account administers, or the admin of a group leaving a thing the group administers, leaves by self-removal; so does an admin of a thing's first admin removing the record edge).
+  - admin on X is the author's only authority for it: with X's grant on the target disregarded, the author has no edge-admin authority on the target at that point (authority through X does not count: an account leaving a group a team it holds admin on administers, or the admin of a group leaving a thing the group administers, leaves by self-removal; so does an admin of a thing's first admin removing the record edge).
 - A self-removal needs no authority on the target and carries no rotation (§3); otherwise it is judged and audited like any edge write (§5.1).
 - **Tied grants**: a grant whose holder is a group G (a thing with `group.0`) may carry `tied`: the `group.0` element of G listing the target T (as an item or subgroup) that the grant goes with, named by its creation stamp (spec/crdt.md §2.2) and its set.
   - The tie is no authority: edge writes are judged as without it (§5.1), a change of the grant other than a new one keeps it.
@@ -84,17 +87,18 @@
 - A **plain thing** (no holder for keys but its first admin, and no edge write on it) uses derived role secrets (spec/crypto.md §3). Before any grant on it, it gets random secrets of its own by a rotation from the derived epochs, boxed to its current holders for keys, and a `keys.0` (any other edge write on it lowers its first admin's edge, which §1 refuses).
   - A thing that is to be granted a role on anything gets secrets of its own first.
   - An admin node that sees a current holder of a plain thing other than its first admin (left so by its only keyset part turning invalid, spec/crypto.md §3) SHOULD give it secrets of its own the same way, boxing every current holder but one whose grant it may finalize (§2), deciding at the end of a complete sync pass (below) of the labels of the actor its secrets derive from. Concurrent ones fork (spec/crypto.md §4).
-- **Required rotation**: a departure (spec/crypto.md §4: removal, demotion, finalize) of holder M from actor A (a node removal is one, on the account) requires rotating every role secret M could open through A:
+- **Required rotation**: a departure (spec/crypto.md §4: removal, demotion, finalize) of holder M from actor A (a node's removal from its account's D is one, on D) requires rotating every role secret M could open through A:
   - on A, the roles M left;
   - on every thing with secrets of its own that A's roles open (the targets of A's grants, record edges included, and so on transitively), the roles A holds there among those the roles M left open through A (a role secret opens only boxes of that role, spec/crypto.md §4). Those rotations are required through A's keyset: A's rotation lists the keyset M could open, so each box to A at it is stale (spec/crypto.md §4, Holder actors), and so on up.
   - Content is not re-encrypted.
+  - A node's removal from D also rotates P's epoch, in the same role commit (§5.5): the new epoch's seed goes into D's `account.0` under D's new read epoch, so the removed node holds neither. P's keysets are its epochs (spec/crypto.md §4, Holder actors), so every box to P at a closed epoch is stale and things P holds roles on rotate as for any holder actor's new keyset (target, issues/account-signing.md step 6).
 - The write by another node that removes or demotes M on A and the rotation of A's roles it requires are one role commit (spec/commits.md §2). A node may hold its parts at different times (spec/commits.md §4).
   - The removal applies at once, whatever the remover holds (no secret of A is needed for the rotation, spec/crypto.md §4, Boxes). It carries the rotation when its author can make it then; while Seal waits (spec/crypto.md §4, Holder actors) or Authority would fail (spec/crypto.md §4, Possession) the write goes alone, a finalize included: its departure stays uncovered, so A's rotation is due and no node knowing it encrypts under A until one is made (spec/crypto.md §4, Encrypting under); a node knowing it that may rotate a thing whose epoch boxes A at A's uncovered keyset rotates that thing first, leaving A out (Seal), and A is re-sealed to it once A has rotated.
 - A self-removal (§2) carries no rotation (a rotation by the leaver covers nothing of its own departure, spec/crypto.md §4): the departure stays uncovered until the next node that may rotate does so. Things above the actor leave it out meanwhile (spec/crypto.md §4, Seal), so a node that may rotate it SHOULD do so in its next sync pass of the actor's labels or of a thing it holds a role on, not only before its next write.
 - Every other rotation is required of whoever may make it, when it next encrypts under the secret (spec/crypto.md §4). Nobody is required to sync anything to find it.
 - **Who rotates**: a node with effective role write or above on an actor may rotate its roles at or below that role (a writer rotates read and write, an admin all three); through a holder actor only by showing it holds that actor's keyset secret (spec/crypto.md §4, Possession).
   - A rotation seals the new secrets to every current holder of each rotated role, writes the history boxes and the rotated roles' keysets in `keys.0` (spec/crypto.md §3, §4). The other roles keep their epochs.
-  - A rotation boxing a holder that holds no box at a current read epoch before it, as the rotator's applied state stands, is also delivered to that holder as an inbox blob (spec/sync.md §3; to a node, over a direct connection).
+  - A rotation boxing a holder that holds no box at a current read epoch before it, as the rotator's applied state stands, is also delivered to that holder as an inbox blob (spec/sync.md §3; to a node of D, over a direct connection).
   - Its validity is the author's role at its `ts` (§5.2) and possession (spec/crypto.md §4, Authority): a rotation counts the author's role through a holder actor only where its keysets carry a proof by a keyset of that actor, and a removal of a box to a holder actor its author holds a role on only where it puts that box again signed by the keyset it boxes at. A rotation failing it is invalid whole, its keysets included.
   - A `secrets.0` delta needs, per entry record it carries (a put, a write into an entry, a removal), the role its key names (each record names its key, spec/crdt.md §5.6, so this is judged from the delta alone), and at least write unless it puts history boxes only (a history add, spec/crypto.md §4). A key-erased record, a key that is no box or history key, and a write or reset of the whole value or of a field need admin.
   - A `keys.0` delta needs write when it touches only the `read` and `write` fields, and admin when it touches any other field or writes or resets the whole value.
@@ -105,8 +109,8 @@
 - **Role cycles**: actors each holding a role on the next, back to the first, form a cycle. No key cycle forms: the grant that would close one is keyless (spec/crypto.md §4, Key access), so its holder reads nothing of the target through it.
   - A node that lacks the earlier grant takes the later one as giving key access and boxes into a cycle. Its box is stale (tainted) at every node that holds both grants, which rotates; until the writer holds the grants and the commits of the cycle, a party removed from one actor on it may read the other's new content (spec/requirements.md, Permissions).
 - **Re-seal**: a node that may rotate a role may write a current holder's boxes for that role's current epochs, to the holder's newest keyset it holds (a holder actor: the keyset Seal gives, spec/crypto.md §4) and with those epochs' history boxes, changing nothing else (spec/crypto.md §4).
-  - It is delivered as an inbox blob (spec/sync.md §3; to a node, over a direct connection, spec/sync.md §2) and placed under the actor's labels like any role commit.
-  - A node that may rotate r SHOULD re-seal a current holder of r that it sees without a box at a current epoch of r, or whose heartbeat reports it stranded (§4), before it next writes under the actor.
+  - It is delivered as an inbox blob (spec/sync.md §3; to a node of D, over a direct connection, spec/sync.md §2) and placed under the actor's labels like any role commit.
+  - A node that may rotate r SHOULD re-seal a current holder of r that it sees without a box at a current epoch of r, or that a stranded notice names (§4), before it next writes under the actor.
   - **Complete pass**: it decides at the end of a complete sync pass of the actor's labels: one that read the log of every host, and of every peer it received the label from, can reach and that still reads it, to its end. A node MAY stop waiting for peers a bounded time after the role change it decides on (policy).
   - It re-seals never an actor without key access, a holder actor Seal leaves out (above) or a holder whose grant it may finalize (§2), and only at established epochs (spec/crypto.md §4).
   - It re-seals for a role only when holding the secret of such a current epoch the holder lacks a box at. It boxes the ones it holds; another holder boxes the rest.
@@ -116,7 +120,7 @@
   - it holds an epoch newer than a host's head;
   - its actor's deposit seed derives a deposit key other than the head's, and it has opened every entry it can open under the label at the hosts it reaches and holds no unapplied `keys.0` write of the actor signed by a current admin of it.
 - A host serves a label only to holders of its current sync key or of a claim key in its current step (spec/sync.md §5). A holder that missed rotations claims its way through the steps it missed, then downloads them and opens each under the epoch before it (spec/crypto.md §5), or is re-sealed (a claim set dropped on the way, or a rotation compacted, strands it until then).
-- A node that removes a holder, a node included, MUST, in the same sync and before any other upload, place the removal and the affected actors' new `keys.0` under every label it tracks that the removed party could read (as certificates, §4).
+- A node that removes a holder MUST, in the same sync and before any other upload, place the removal and the affected actors' new `keys.0` under every label it tracks that the removed party could read (as certificates, §4); a node's removal from D places P's rotation and its lists as §5.5 says.
 - **Lost access**: a node that learns it lost read access to an actor MUST drop those role secrets and every local unit it can no longer read by another path, except what it retains (Retain, below).
   - A held pending role commit boxing the node secrets of the actor (or of one a role on which gives one on it) is no loss of access only if either holds:
     - the node holds no secret of the actor but those kept for reading (learned only from pending or invalid commits, spec/crypto.md §4);
@@ -147,48 +151,42 @@
     - The node's user may erase a copy at any time, with what is kept only through it.
 
 ## 4. Verifying authors: certificates
-- A write's authority is checked through the chain from the signing node up: each link is an edge write or a record edge (the tid commits to the first admin), ending at a key actor whose tid commits to its public key. No secrets are needed.
-- **Chain certificates** of a node for a thing are built on the things on any path from the node to the thing over record edges and every edge any held edge write sets, at any time, applied or not. They are:
+- A write's authority is checked through the chain from its author up: each link is an edge write or a record edge (the tid commits to the first admin), ending at a key actor whose tid commits to its public key; an account's commit also through its signing chain to the epoch it names (§5.4, §5.5). No secrets are needed.
+- **Chain certificates** of an actor for a thing are built on the things on any path from the actor to the thing over record edges and every edge any held edge write sets, at any time, applied or not. They are:
   - for each such thing, its `created.0` record (and those up its record chain);
   - for each such actor, its **current `keys.0` commits**: its newest `keys.0` commit and the rotation commits of its newest keyset of each role, forks included, each projected to `keys.0` (the newest may write no keyset, and a rotation of what the actor holds names its keyset, spec/crypto.md §4; the keysets carry the proofs Authority is judged by);
+  - for each such account, the rotations of its signing chain the node holds, every line, as header-only copies (§5.5, Chains travel), and their thing lists for things under the label (§5.5);
   - every held edge write on a grant between two of those things (projected to its grant deltas);
   - closed under authors: for each such write, its author's chain certificates for its target and for its holder.
-- A node's **node card**: its `keys.0`, `node.0` and `reach.0` commits (each a commit of its own touching nothing else). The node card itself is never re-placed unchanged.
-- **Placing**: when a node first places anything under a label, and whenever they change, it places its chain certificates (for the label's group and for each actor it has acted for), its node card and the cards (`created.0`, `keys.0`) of the key actors holding the label's group that are not nodes (no `node.0` of theirs held; a node places its own) (spec/sync.md §3; a non-writer of the label by deposit), except the deltas an entry under the label already holds:
+- **Nothing of a node goes under another label than its account's D's** (target, issues/account-signing.md steps 7, 8): a node's `keys.0`, `node.0` and `reach.0` commits go under D's home label only, as D's holder card, each a commit of its own touching nothing else, never re-placed unchanged. No group label holds a node's certificate, card or tid.
+- **Placing**: when a node first places anything under a label, and whenever they change, it places its account's chain certificates (for the label's group and for each actor it has acted for) and the cards (`created.0`, `keys.0`) of the key actors other than accounts holding the label's group (spec/sync.md §3; a non-writer of the label by deposit), except the deltas an entry under the label already holds:
   - a certificate copy or closure blob placed by any node counts once the node has opened it as the same commit and checked each of its deltas against the header's delta hash (spec/commits.md §4), while it is present at every host the node syncs the label with;
   - a blob of a rotation commit of the label's actor (wrapped under the epoch it supersedes, spec/crypto.md §5) counts only if it opens under the newest read epoch.
 - Deltas on things in the label's closure go as closure blobs, never as copies.
 - A demotion or `keys.0` write by another node is its author's to place (§3); a node MAY wait up to `SETTLE_MS` after receiving one before copying it.
 - A promoter completes the chain it holds: a writer promotes a deposited commit only once its author's chain for it is under the label, placing the missing parts itself (spec/sync.md §5).
-- **`reach.0`** goes under every label a node syncs (spec/sync.md §10, IP consent).
-- **Heartbeat**: a node MAY place under a label it tracks a commit writing `seen.0` on its node thing (`{ ts: the commit's ts, stranded: bool, suspect }`), a non-writer by deposit.
-  - Its `expires` is no earlier than `HEARTBEAT_MIN_LIFETIME` and no later than `HEARTBEAT_MAX_LIFETIME` after `ts`.
-  - A node places at most one per `HEARTBEAT_MIN_INTERVAL` per label.
-  - It MUST place one with `stranded: true` when it cannot read the label's current epoch: it reached the head and after a complete pass there cannot open the epoch it registers, or a claim on the way was refused (spec/sync.md §5).
-  - A stranded heartbeat is wrapped under the newest established read secret the node holds (spec/crypto.md §5) and signed by the deposit key the host's head registers, as far as the node knows that head. A node whose held deposit seed of the label's actor does not derive that key places none.
-  - The live heartbeat of a node under L (the newest `seen.0` commit received under L, not the aspect's joined read) gives its last sync of L; absent means unknown.
-  - Heartbeats are never promoted (spec/sync.md §5).
+- **Stranded**: a node is stranded on a label when it cannot read the label's current epoch: it reached the head and after a complete pass there cannot open the epoch it registers, or a claim on the way was refused (spec/sync.md §5). A stranded node MUST send a Stranded message (spec/wire.md §11.2) naming the label to each connected peer that proved an account holding write or above on the label's actor, as the node judges it (target, issues/account-signing.md step 8). With none connected, it deposits a stranded notice (spec/wire.md §9) under the inbox of each admin of the label's actor it holds, once per epoch of the head it is stranded at. Either names a current holder to re-seal (§3), which the receiver checks itself.
 - **Suspect**: a node flags an aspect suspect when:
   - a body of it dropped as covered counts as never received (§5.2);
   - a part of it pending at its expiry goes (spec/commits.md §5).
   - A flag names the bodies it is about. An entry goes as its body is held again (or with its thing).
   - An entry not about a part that went pending at its expiry is dormant while a held compaction snapshot of the aspect valid at the node is stamped after the body's commit, judged from what the node holds when it reports (a snapshot turned invalid gives nothing, §5.2, so what it had settled is suspect again). An entry about such a part is never dormant.
-- **Suspect list**: a heartbeat under L lists in `suspect` the flagged aspects of things in L's closure, at most `MAX_HEARTBEAT_SUSPECTS`, the most recently flagged first, each as `{ thing, ak, digest }`.
+- **Suspect list**: a node sends the flagged, not dormant aspects of things in L's closure to each connected peer it shares L with (issues/net-shared-set.md), as Suspect messages (spec/wire.md §11.2), the most recently flagged first, on sharing L and whenever its flags change (target, issues/account-signing.md step 8). Each entry is `{ thing, ak, digest }`.
   - `digest` is the state digest (spec/crypto.md §6) under the thing's dedup secret.
   - The state bytes are the canonical CBOR array `[snapshot delta bytes, [page*]]` of the aspect's state encoded as a snapshot delta (spec/crdt.md §8) with an all-zero nonce, no frontiers or `Absorbed`, its pages in the order of their hashes, or no bytes for an aspect holding no state.
   - An aspect with no known creation record is left out until it has one.
-  - A reader reads a node's suspect list from its live heartbeat under L (that commit's `seen.0` part, not the aspect's joined read); the repair it asks for is spec/sync.md §7.
+  - The repair a list asks for is spec/sync.md §7.
 - **Placing revokes**: any node that syncs a label and holds a revoke about the author of an entry under that label that it judges invalid, or cannot judge yet, places it there (a non-writer by deposit), with the chain certificates of that commit's own author, of the `keys.0` commits only those of actors that read the label's actor. A revoke changes no verdict on the writes its frontier covers, so it is not placed for those alone.
-- The grantee's current `keys.0` commits go under the target's label as a certificate, so every admin can seal and list the grantee.
-- A commit's **author's chain** is its author's chain certificates for each thing it has a delta on and for its actor (§5.2, Acting). A commit whose author's chain to the things it writes has not arrived is pending (spec/commits.md §4); one whose chain to its actor has not is invalid until it arrives.
+- The grantee's current `keys.0` commits (an account's: with its rotations, §5.5) go under the target's label as a certificate, so every admin can seal and list the grantee.
+- A commit's **author's chain** is its author's chain certificates for each thing it has a delta on and for its actor (§5.2, Acting). A commit whose author's chain to the things it writes has not arrived is pending (spec/commits.md §4); one whose chain to its actor has not is invalid until it arrives. An account's commit at an epoch whose minting rotation the node does not hold is pending (§5.5).
 - A node that does not sync a thing applies the certificate deltas it holds; its timeline for that thing runs over the entries it was given.
 
 ## 5. Validity
-Validity is a deterministic function of the commits a node holds and its trust set (§5.1, Trust set).
+Validity is a deterministic function of the commits a node holds and its trust set (§5.1, Trust set) and side (§5.4). An account's commit first passes the epoch rule (§5.5); one that does not count there is judged by nothing below.
 
 ### 5.1 Layer 1: role timeline
 The timeline covers **edge writes**: writes to `roles.0`. Every other role-class write (`secrets.0`, `keys.0`, `label.0`) is judged like content (§5.2) by the role its aspect requires (§1, §3).
-1. Order all held edge writes, over every thing, by (`ts`, author node, commit ID): a write's **key** is its position in this order. Start before every write, with each thing's record edge in force (§1).
+1. Order all held edge writes, over every thing, by (`ts`, author, commit ID): a write's **key** is its position in this order. Start before every write, with each thing's record edge in force (§1).
 2. Walk the writes, skipping the drop set D (initially empty). A write applies iff its author has the required authority at that point:
    - admin on the thing;
    - for an invite grant, the effective invite it needs;
@@ -197,7 +195,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
    - a write lowering another holder's edge by an author that also has edge-admin authority on the thing is an explicit write of that class (step 3).
    - An **explicit write** is an applied edge write attributed to edge-admin authority (step 3), grants and raises included; self-removals, finalizes and invite grants are not.
    - Authority at a point is evaluated over every thing's state at that point, so the walk is one joint computation.
-3. Attribute each applied write by X on N to X's **authority class** on N at that point: edge admin, or invite (with its level); admin before invite. A finalize is attributed to no class. A self-removal (§2) through admin on actor M ≠ X counts as a write by X on M, attributed to X's class on M; one lowering X's own edge is attributed to X's class on its target (none, for a node with no class there).
+3. Attribute each applied write by X on N to X's **authority class** on N at that point: edge admin, or invite (with its level); admin before invite. A finalize is attributed to no class. A self-removal (§2) through admin on actor M ≠ X counts as a write by X on M, attributed to X's class on M; one lowering X's own edge is attributed to X's class on its target (none, for an author with no class there).
 4. An applied write R at time T **demotes** X on N when X's effective class on N (the maximum over all its paths) falls: from edge admin to below, or to a lower invite level.
    - R then adds to D every earlier applied edge write by X on N, and, when N is an actor, on every thing N reaches by edges (record edges included, transitively) where X's class also falls, attributed to a class X fell through (above its class after R, up to its class before R) and not covered by R's **frontier**, and the walk restarts.
    - An explicit write **audits** when the edge as restored (below, a demoter's kept standing included) exceeds its new value: the new value is absent or expired when written, or has a lower role or invite (an `until` alive at R takes nothing there: its passing audits nothing, below). It carries its author's frontier (below), whichever of grant, change or removal it is; so does every explicit removal (one without is a finalize, §2), and no other write.
@@ -207,7 +205,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
    - Each edge write of a commit is judged on its own, against the state before the commit. The commit's applied edge writes then take effect one at a time in order (the header's aspect order, then by holder tid, bytewise); each write's demotions and whether its author reaches the holder just before it are judged with the earlier ones in effect.
 5. A walk that adds nothing to D has settled; the timeline is the settled walk. D is rebuilt from scratch whenever the held set or the trust set changes.
 
-- **Frontier**: R embeds what its author A had received of X's writes as of T on the aspects R puts in question in the settled walk with R and that frontier, as commit IDs, never counters.
+- **Frontier**: R embeds what its author A had received of X's writes as of T on the aspects R puts in question in the settled walk with R and that frontier, as commit IDs, never counters. What an account received is what the node writing R received.
   - **Aspects in question**:
     - for any demotion, role-class and admin-only aspects (spec/data-model.md §2), also of the targets of X's self-removals through things where X's class falls;
     - for a demotion below write, every aspect of the things the demoted authority gave write on.
@@ -216,7 +214,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
     - for a demotion below write, also X's held commits acting for one of those things (§5.2, Acting);
     - the role commits among A's chain certificates for R's target (§4).
   - A commit is listed whether A still holds its body, dropped it or compacted it.
-  - **Purge requests**: for any demotion A also lists every commit whose purge request's right may rest on X's standing there (§6), received as of T, and none of those is left out as covered. Such a commit is both:
+  - **Purge requests**: for any demotion A also lists every commit whose purge request's right may rest on X's standing there (§6), received as of T. Such a commit is both:
     - signed, as author or as the header's actor, by X or by a holder X's possible admins named with write or above on X;
     - naming a delta on a thing whose role-class aspects R puts in question for X or on which such a thing may hold write.
   - Where a frontier would pass the list bound a node resolves (`MAX_LIST_BYTES`), A leaves out, as few as fit: first the plain-content commits (§5.2, Addenda) it received last, which its own addenda list instead; then the purge-request commits it received last, each losing its right. A frontier over the bound without them is refused. Limit: a removal whose role-class, admin-only and chain-certificate commits alone pass the bound cannot be written.
@@ -228,12 +226,12 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
   - A frontier above `CHUNK_THRESHOLD` is a chunked large value referenced by link (spec/commits.md §1).
 - A demotion by `until`, self-removal or finalize audits nothing. The next explicit write on that grant, by any node, audits with its frontier against the edge as restored.
 - **Trust set**: a node's walk takes one more input, its trust set: held edge writes it sides with, each carrying a frontier and lowering or setting the edge of a holder other than its author (and other than its target). Nodes holding the same commits under the same trust set read alike. Which writes a node trusts is its own, kept across restarts, carried by nothing on the wire; how it chooses (defaults, a user's choice) is local behaviour.
-  - **Seeds** of a trusted write R by A on edge (M, T): every held edge write ordered before R that R's frontier does not list, by M when M is a node or by any node that reaches M by admin edges at any time (edges any held write sets to admin, record edges included; A excepted), on T or on anything T reaches by edges at any time (as its target or its holder), except a write lowering its author's own edge: below the value the last held write on that edge ordered before it set (else the edge's record value) in every component (role, invite, `until`) and not equal to it.
+  - **Seeds** of a trusted write R by A on edge (M, T): every held edge write ordered before R that R's frontier does not list, by M when M is a key actor or by any author that reaches M by admin edges at any time (edges any held write sets to admin, record edges included; A excepted), on T or on anything T reaches by edges at any time (as its target or its holder), except a write lowering its author's own edge: below the value the last held write on that edge ordered before it set (else the edge's record value) in every component (role, invite, `until`) and not equal to it.
   - D starts at the seeds of every trusted write. A trusted write the settled walk does not apply is **void**: every void write loses its seeds at once and the walk is redone from scratch, until none is void.
   - A **dispute** is a write R that may be trusted, which the settled walk does not apply and no seed dropped, and which the walk with D starting at the trusted writes' seeds plus R's own applies as an explicit write with a value below the edge's value just before it (the walk's last change to that edge, else its record value) in every component and not equal to it. Disputes are keyed by (R, M) and reported; the walk acts on the trust set alone.
 
 ### 5.2 Layer 2: content
-- A delta is judged by its author node's authority, whatever its header actor (Acting, below, adds a condition). A delta by X on thing N is valid if X held write or above on N just before the commit's key (§5.1; grants' `until` judged at its `ts`) and no valid explicit demotion of X below write on N is ordered after it.
+- A delta is judged by its author's authority, whatever its header actor (Acting, below, adds a condition). A delta by X on thing N is valid if X held write or above on N just before the commit's key (§5.1; grants' `until` judged at its `ts`) and no valid explicit demotion of X below write on N is ordered after it.
   - An **explicit demotion of X below write on N** is an applied explicit write (§5.1 step 2) by another author that demotes X on N (§5.1 step 4) and takes X's role on N, with the edge as restored, from write or above to below write.
 - Otherwise it is valid iff the frontier of a valid explicit demotion of X below write on N lists its commit, whatever their order, or a counting addendum vouches for it (Addenda, below).
 - **Addenda**: a write of `addenda.0` on N (spec/data-model.md §9): an entry its delta creates (spec/crdt.md §5.6 `put_new`; a write into an entry it did not create says nothing), keyed by the commit ID of a removal R, holding a `frontier` listing commit IDs. An addendum A by writer W **vouches for** a delta of X on N (or the Acting check of X's commit for N, below) when all of:
@@ -280,11 +278,33 @@ Which of an account's rotations count (chain per spec/crypto.md §9), as a deter
 - An epoch **counts** iff it is the first epoch or its minting rotation counts. A counting rotation **closes** every epoch that does not descend from it. An epoch is **open** iff it counts and no counting rotation closes it.
 - **Dispute**: rotations a and b are parties iff each rejects a rotation on the other's line other than itself. A node with no side reads a dispute's contested rotations as undecided.
 - **Default side**: the party whose line holds the first-received rotation (by the node's receipt order) not on every party's line; a tie goes to the party with the smaller commit ID, and a party with no such rotation comes last.
+- **Nodes of P** side with the line D's roster authorizes: the line holding the rotations signed by nodes D holds as current; a rotation's signer is read from its inner signature (§5.5).
+
+### 5.5 Account epochs
+Target, issues/account-signing.md steps 5 and 6. A commit of account P names the epoch it is signed at (spec/wire.md §4); §5.4 decides which epochs are open.
+- **Epoch rule**: commit c of P at epoch e counts at a node iff e counts and is open there, or e counts and c is **named**: listed by a counting rotation's list, named by a counting listing, or vouched for by a counting addendum (below). A commit that does not count is invalid whole (its edge writes apply nothing, its deltas are un-merged, spec/crdt.md §4.6) and counts again once it does. A commit at an epoch whose minting rotation the node does not hold is pending (spec/commits.md §4). Rotations count by §5.4 alone. Judging reads no `ts`, counter or inner signature; the inner signature guides only what P's nodes write (Cutoff, Listings).
+- **Closers** of e at a node: the counting rotations it holds that close e (§5.4). The **earliest closer** of e at a node is the first of them it received.
+- **Cutoff** (one rule for every lister: rotator, listing node, witness): a list, listing or addendum names a commit of P at epoch e only if its writing node received it (§5.1, Received) before the earliest closer of e it holds, or made it itself (read from the inner signature). A node lists a commit only once it holds the chain of the commit's epoch, and acts on a rotation (answers it, merges it, sides with it) only once it holds its chain.
+- **Rotation's list**: a rotation r lists the commits of P at the epochs r closes that its rotator holds and names by the cutoff (any kind, covered ones included; no ephemeral commit).
+  - It is cut into **thing lists**: for each thing T under a label the rotator opens, one naming the listed commits with a delta on T or acting for T. Each is a leaf of r's list tree, whose root r's header carries (spec/wire.md §4, List tree), at a random index.
+  - A thing list is a chain certificate of T (§4): it goes under every label holding T. The rotator places, with r, the thing lists of the things under each label it opens (spec/sync.md §3, List blobs).
+  - Nothing waits for a thing list: a commit whose thing list has not arrived reads as unlisted until it does. A thing under no label the rotator opens gets none; P's commits on it count only once named otherwise.
+  - **Bound**: a thing list's role-class and purge-request commits stay within `MAX_LIST_BYTES` (a rotation whose role and purge commits alone pass it on some thing is refused at the writer); plain content past it goes into the rotator's later listings.
+- **Chains travel**: every node of P places under each label it opens the rotations of P it holds (header-only certificate copies, every line) and their thing lists for things there.
+- **Listings**: after each rotation r of P it holds with its chain, a node of P writes, per label it opens, one role commit at an open epoch whose `listing.0` entry keyed by r on each thing T there names the commits of P on T at epochs r closes that no list, listing or addendum it holds names: its own (by inner signature), others' by the cutoff (its own rotations' overflow included), and every commit by a node that was removed from D and is a node of P again.
+  - With no open epoch (concurrent rotations close each other's) it waits for a merge. A listing at a closed epoch counts only once it is itself named.
+  - A `listing.0` entry names commits of its own author only and needs no role on T; anything else in it is bad input. Listings compose by union, and the next rotation lists a listing by ID like any commit.
+  - Bound: as a rotation's list, plain content past it in later listings.
+- **Addenda against a rotation**: an addendum (§5.2) keyed by the commit ID of a rotation r of P vouches for a delta of P on N when r counts and closes the delta's commit's epoch, A's entry lists that commit, W held write on N just before A's key, the delta is plain content (§5.2), and A is valid (the same least fixpoint).
+  - **Writing**: every writer node of N, of any account, that holds a rotation r of P with its chain writes one addendum on N keyed by r, listing P's plain-content commits on N at epochs r closes that it names by the cutoff and that no list, listing or addendum it holds names; again whenever what it holds changes.
+  - Limit (§5.2): nothing checks when W received what it lists.
+- **Demoting an account** on a thing is §5.1 and §5.2 with the account as author, independent of the epoch rule.
+- **Honest nodes of P** sign at the newest open epoch they hold. Removing a node X from D is one role commit: the removal, D's rotation boxing every node but X, and P's rotation (spec/crypto.md §9), its seed in D's `account.0` (§3). A node of P merges out every fork of P's chain whose chain it holds and that D's roster authorizes, the merge signed at each fork's epoch (spec/crypto.md §9).
 
 ## 6. Purge rights
 - **The right**: a delta's retention names who may purge it (spec/commits.md §5), judged at the request's time. Each member of the named set holds the right on its own:
   - **admin**: the thing's current admins;
-  - **author**: the delta's header actor while it holds write on the thing: the actor itself and any node with write on that actor;
+  - **author**: the delta's header actor while it holds write on the thing: the actor itself and any author with write on that actor;
   - **writer**: any current writer of the thing.
   - An admin with no write on that actor holds no right under `author`, and an actor that lost write on the thing gives none until it regains it.
 - A role counts toward the right exactly when a delta of its holder needing that role at the request's key would be valid (§5.2): a demotion whose frontier does not list the request takes the right however early its `ts`; one that lists it leaves the purge standing; a re-grant gives the right back to a request made in the gap, as to its writes.
@@ -312,7 +332,7 @@ Which of an account's rotations count (chain per spec/crypto.md §9), as a deter
   - A client making the link writes the target's `retain` default then in force on K (§3) when it says retain.
 - **Link text** encodes: L's seed, the target tid, K's tid, K's label ID and host addresses, and optionally the sharer node's dialable key and relays.
 - **First contact**: a redeemer sharing no host with the sharer dials the sharer's node at that key, which serves K's label as a co-reader peer (spec/wire.md §10).
-  - A link carries only that key and those relays; the sharer's `reach.0` goes under K's labels as under any it syncs (§4).
+  - A link carries only that key and those relays.
   - The redeemer dials that key with an ephemeral transport key and no co-reader proof (spec/sync.md §5, §10), opens K's label there as at a host, and MAY keep dialing it, from the link it followed, for K's labels and the target's, nothing else.
   - Putting the key in a link is the sharer's explicit choice, and a node without hosts can make only such links (one naming no host and no node reaches nobody); it serves K's label and the target's complete (spec/sync.md §5).
 - **Rotating the dialable key**: when a link ends by revocation (of L, or with a joiner's), by expiry, or a multi-use link otherwise, the sharer SHOULD rotate its dialable key and lan secret; a single-use link finalized by its redemption does not.
@@ -321,7 +341,7 @@ Which of an account's rotations count (chain per spec/crypto.md §9), as a deter
   1. Derive L's keys from the seed.
   2. Claim K's label by L's static entry, take K's read secrets from the head's entry box (spec/sync.md §2), download K's label and L's boxes.
   3. Wait until the held role history shows K's grant on the target (a client making a link delivers that grant under K's label), and grant nothing without it: the target is the link text's word, unsigned.
-  4. Then, signing as L, invite-grant the redeemer's actor (or a fresh node) to K with role r and seal K's secrets to it. L writes in commit form and deposits the commit under K's label (spec/sync.md §5) unless r is write or above.
+  4. Then, signing as L, invite-grant the redeemer's actor (its account, or a fresh account) to K with role r and seal K's secrets to it. L writes in commit form and deposits the commit under K's label (spec/sync.md §5) unless r is write or above.
   - A redeemer SHOULD discard the seed afterwards.
   - A rotation of K by a holder's departure (a joiner's leave, a node removal) changes nothing for the link: L stays a holder and the next step lists it.
   - The link has ended, and the redeemer stops there, when either holds:
@@ -331,8 +351,8 @@ Which of an account's rotations count (chain per spec/crypto.md §9), as a deter
 - `until` on L's grant expires the link. **Single use** (the link's `flags` bit 0, spec/wire.md §10) = the redemption also removes L's own grant in the same commit (a self-removal).
 - **Finalized**: L's grant past `until` is finalized like any ended grant (§2), by any writer of K: that removal rotates K and audits nothing. Besides, an expired or self-removed L is finalized by a sharer node writing an explicit removal of L (§5.1), which audits L's invite grants: a node that holds the link's seed thing and admin on K MUST write it once L's edge expired or was self-removed (or finalized) with no explicit write on it since, after a complete pass of K's labels (§3) that ended, for an expiry, after `until` (when K's labels have no host, at once and only by the node that wrote the seed thing; with hosts it waits for that pass however long it takes).
   - An invite grant as L that the removal's frontier does not cover is dropped (§5.1 step 4); one received before it stands.
-- The sharer's link seed thing is an item of the sharer's home group, so every node of the sharer holds it. A node removal does not end a link: the removed node reads through L until L is removed from K. An implementation MUST tell the one removing a node which of the account's links still work, and let any node of the sharer remove their L.
+- The sharer's link seed thing is an item of the sharer's D, so every node of the sharer holds it. A node's removal from D does not end a link: the removed node reads through L until L is removed from K. An implementation MUST tell the one removing a node which of the account's links still work, and let any node of the sharer remove their L.
 - **Bearer use**: act as L without writing anything. Read only. A node that read as L may forget the seed and keep what L reads and follow it (a contact card, spec/sync.md §3): it counts as read access while L holds a role on it (§3).
 - A joiner that may still hold the seed is revoked only together with L, both removals in one commit with one rotation of K (spec/commits.md §2); a new link is a new L.
 - The sharer keeps the seed on a thing only its own actor reads (the seed thing: aspect `link:seed.0`, a map {0: K's tid, 1: the seed, 2: the target's tid, 3: single use}) and writes L's `keys.0` and K's deposit seed.
-- **Recovery card** (not built: no implementation issues or uses one, issues/recovery-redesign.md): recovery key seed, account actor tid, home label, several host addresses (spec/wire.md §10). The recovery key holds an admin edge on the account actor, so every step of the home label lists it with an entry box. A node holding the card claims the home label's current step by the key's static entry (spec/sync.md §5), takes the read secret from the entry box, then its boxes, `label.0` and `created.0`.
+- **Recovery card** (not built: no implementation issues or uses one, issues/recovery-redesign.md): recovery key seed, account tid, the home label (D's), several host addresses (spec/wire.md §10). The recovery key holds a grant on the account's D, so every step of D's home label lists it with an entry box. A node holding the card claims the home label's current step by the key's static entry (spec/sync.md §5), takes the read secret from the entry box, then its boxes, `label.0` and `created.0`.

@@ -23,19 +23,19 @@ Notation: `{k: v}` maps in this file have int keys, sorted. `A < B` on stamps is
 ### 2.1 Sources and dots
 A **source** is who minted a run of counters:
 - `Commit(id)`: the commit itself (32-byte commit ID). Counters are per commit, contiguous from 1 across all the commit's deltas (aspects get disjoint ranges). The header marks the form once per commit; a commit uses one form for all its writes.
-- `Session(tid, nonce)`: a session of node `tid`: 15-byte tid, then a 16-byte nonce.
+- `Session(tid, nonce)`: a session of author `tid` (an account; target, issues/account-signing.md step 6): 15-byte tid, then a 16-byte nonce. Every node of an account runs its own sessions under the account's tid; the random nonce keeps them apart.
   - **Start.** The node draws the nonce at random at each start. A new start is a new session; two copies of one store running at once, or a copy restored from a backup, are distinct sessions.
   - **Within a run.** A node also begins a new session once one of its session-form writes under the current ones turns invalid (spec/sync.md §9), under a nonce no earlier session of it used.
   - **Use.** Every content write, durable or ephemeral (spec/data-model.md §2), uses the current session. A node also has a second session, begun with each, for its ephemeral writes with an expiry.
   - **Counters** are per (aspect, session), contiguous, starting at 1, never reused within the session, and live in memory only: a session leaves no counter behind.
-  - **Attribution.** Its writes belong to node `tid` (attribution, un-merge). A session-form commit carries them as its own writes (spec/commits.md §3), a snapshot as foreign stamps (§8, spec/commits.md §2).
+  - **Attribution.** Its writes belong to author `tid` (attribution, un-merge). A session-form commit carries them as its own writes (spec/commits.md §3), a snapshot as foreign stamps (§8, spec/commits.md §2).
 - `Derived(dot)`: synthetic, never written by any writer. Produced only by lattice embeddings (§7) that need several identities out of a single register write with dot `dot`. Counters start at 1. Belongs to the author of `dot` for attribution, frontiers and un-merge.
 
 A **dot** is `(source, counter)`, counter ≥ 1. A dot identifies one write forever (the commit-level writes of a delta share theirs, §2.3), and doubles as the identity of the element it created.
 
 ### 2.2 Timestamps and stamps
 - `ts` is one unsigned integer: `wall_ms * 2^16 + logical`, `wall_ms < 2^47`.
-- **HLC rules.** A node's clock is `max(wall clock, last ts seen)`, where wall clock is the node's corrected clock (spec/sync.md §6), with `logical` incremented on equal `wall_ms`. On receiving a commit the clock advances to the commit's ts. The node tiebreak lives in the dot, not in `ts`.
+- **HLC rules.** A node's clock is `max(wall clock, last ts seen)`, where wall clock is the node's corrected clock (spec/sync.md §6), with `logical` incremented on equal `wall_ms`. On receiving a commit the clock advances to the commit's ts. The author tiebreak lives in the dot, not in `ts`.
 - **Parking.** A commit with `wall_ms(ts)` more than `MAX_DRIFT` ahead of the receiver's wall clock is **parked**: kept unjoined and counted as not received (frontiers, §8) until local wall time catches up, then joined normally.
 - **Next stamp.** Every stamp a node holds has a `ts` at most that of a commit it applied (a carried write is stamped no later than the snapshot carrying it, §8). So a node's next commit stamps above every stamp it holds, but for the ephemeral commit that follows a durable one under its `ts` (spec/sync.md §9).
 - A **stamp** is `(ts, dot)`. One commit has one `ts`; every write in it has that `ts`. A creation or position write has its own counter, so these are ordered by counter inside a commit; commit-level writes share `lo` (§2.3).
@@ -533,7 +533,7 @@ Principle: deltas, state and snapshots are the same grammar, so any fragment's e
   - `Frontiers` holds exactly one entry per `Session` source of `Sources` (the sources that **occur** in the fragment: a stamp, an element or entry dot, an anchor or a sibling key names it, value-less writes and tombstones included, §3.3 rule 1), in table order.
   - `ctr` ≥ 0 is the largest counter such that the writer has applied all of that source's writes in this aspect up to it (0: none; parked commits are not applied, §2.2; nor is a delta its commit applied without, spec/commits.md §4, until it joins, unless it has an expiry). The fragment reflects every write in those ranges.
   - Bad input: an entry missing, repeated, out of order, or naming a source of another kind; a snapshot carrying a stamp whose `ts` is above the snapshot's own `ts`.
-  - `Commit` sources have no frontier. `Absorbed` (commit ID, then the author node as a TID-tagged value, spec/data-model.md §5), sorted by commit ID, lists every commit-form commit whose writes in this aspect the writer had applied and whose source occurs in the fragment.
+  - `Commit` sources have no frontier. `Absorbed` (commit ID, then the author as a TID-tagged value, spec/data-model.md §5), sorted by commit ID, lists every commit-form commit whose writes in this aspect the writer had applied and whose source occurs in the fragment.
   - **Absence.** A session or commit-form commit the tables do not name left no write in the fragment: a reader takes its absence for that, never for "not received". An entry of 0 says the writer applied none of the source's writes contiguously, though some of them are in the fragment.
   - Frontiers and `Absorbed` are no receipts (spec/permissions.md §5.1): they serve covering (spec/commits.md §5).
 - **Values.** Snapshots never carry the values of writes from deltas with an expiry, expired or not, or of writes named by a purge request the writer holds (§4.7): those writes go value-less, and a delta with an expiry is covered only once none of its values lives (spec/commits.md §5). Live content of any other delta is carried as usual, whatever its retention.

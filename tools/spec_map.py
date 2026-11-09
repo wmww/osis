@@ -145,7 +145,7 @@ RULES = [
     ("spec/permissions.md", "2", "tied edge removed", "MUST remove the edge when it may"),
     ("spec/permissions.md", "2", "finalize", "MUST write the finalize before its next commit encrypting under T"),
     ("spec/permissions.md", "3", "drop lost secrets", "MUST drop those role secrets"),
-    ("spec/permissions.md", "4", "stranded heartbeat", "It MUST place one with `stranded: true`"),
+    ("spec/permissions.md", "4", "stranded", "A stranded node MUST send a Stranded message"),
     ("spec/permissions.md", "5.1", "frontier received", "frontier MUST NOT list a commit A had not received"),
     ("spec/permissions.md", "5.2", "admin-only", "A writer that does not hold admin on N MUST NOT write one"),
     ("spec/permissions.md", "5.2", "dot reuse", "One dot names one write"),
