@@ -20,4 +20,4 @@ Big features and refactors first; chase a bug only when it could threaten their 
 - Bounding rotation names (issues/rotation-names-grow.md): "chain coverage through supersedes" leaks (a TLA instance found it); a base-chain rule breaks when a base rotation turns invalid. Redo with the rotate-free principle (spec/crypto.md §4).
 
 ## Networking (Petrel's, devbox)
-Kestrel's two branches are merged (net-repros: net-tests step 5; net-role-sync). Petrel owns networking in issues/net-rework.md's order: net-tests step 2 merged; honest-status step 1 and the shared-set + reconnect model in progress. Tess's open calls: issues/net-mesh-discovery.md.
+Kestrel's two branches are merged (net-repros: net-tests step 5; net-role-sync). Petrel owns networking in issues/net-rework.md's order: net-tests step 2 merged; honest-status step 1 and the shared-set + reconnect model in progress.
