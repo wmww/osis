@@ -56,9 +56,14 @@ fn pump(net: &mut Net, n: usize, p: &mut Dialer, mut acts: Vec<Action>, mut outs
 }
 
 fn dial(net: &mut Net, n: usize) -> Dialer {
+    dial_with(net, n, CHALLENGE)
+}
+
+/// A dialer's own Hello challenge, chosen by the dialer: a hostile one picks it.
+fn dial_with(net: &mut Net, n: usize, challenge: [u8; 32]) -> Dialer {
     let (conn, acts) = net.sync(n).accept(LISTENER, [0x43; 32]);
     let hello = acts.iter().find_map(|a| if let Action::Send { bytes, .. } = a { osis_proto::Hello::decode(&bytes[4..]).ok() } else { None }).unwrap().challenge;
-    let mut p = Dialer { conn, cs: ClientSession::new(ClientConfig { peer_static_key: LISTENER, challenge: CHALLENGE }), hello };
+    let mut p = Dialer { conn, cs: ClientSession::new(ClientConfig { peer_static_key: LISTENER, challenge }), hello };
     let now = net.now();
     let outs = p.cs.handle(now, ClientInput::Start);
     pump(net, n, &mut p, acts, outs);
@@ -332,4 +337,72 @@ fn proofs_run_on_a_real_connection_either_way_spec_sync_10() {
     let saw = |net: &mut Net, n: usize, peer: Tid| net.sync(n).proven_connections().iter().any(|(_, p)| p.contains(&peer) && p.contains(&account));
     assert!(saw(&mut net, a, tb), "a saw b prove");
     assert!(saw(&mut net, b, ta), "b saw a prove");
+}
+
+/// The actors `proofs` name.
+fn actors(proofs: &[ActorProof]) -> BTreeSet<Tid> {
+    proofs.iter().map(ActorProof::actor).collect()
+}
+
+// spec/sync.md §10 (a connection's proven actors are only what its peer proved on it): adversary
+// M runs other sessions in parallel, choosing every Hello challenge it controls (it reads a peer's
+// Hello before sending its own), and presents any proof it collected on any session. Honest parties
+// a (a listener, M dials it twice) and h (a dialer, dials M) never prove anything to each other:
+// no session they run may report an actor of theirs, however M mixes what it collected.
+#[test]
+#[ignore]
+fn repro_no_session_reports_an_actor_it_did_not_prove_spec_sync_10() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, _) = account_node(&mut net, 1, host);
+    let (h, _) = account_node(&mut net, 2, host);
+    let (m, _) = account_node(&mut net, 3, host);
+    let (ta, th) = (net.tid(a), net.tid(h));
+    // M is known to a, so a answers it (its best position)
+    reach_ed(&mut net, a);
+    reach_ed(&mut net, m);
+    net.group_at(a, &[(m, Role::Read)], vec![]);
+    net.run();
+    net.advance(70_000);
+    net.run();
+    let h_provers = net.sync(h).provers().unwrap();
+    let m_provers = net.sync(m).provers().unwrap();
+    let h_set: BTreeSet<Tid> = actors(&h_provers.iter().map(|x| x.sign(&[0; 32], &[0; 32])).collect::<Vec<_>>());
+    const KM: [u8; 32] = [0x77; 32];
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let mut pick = |n: usize| { x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9).wrapping_add(0x94d0_49bb_1331_11eb); ((x >> 32) as usize) % n };
+    for round in 0..64 {
+        // the listener-side target: a's second session, whose challenge M reads first
+        let target = dial(&mut net, a);
+        // a answers M on a session whose dialer challenge M chose (often equal to the target's)
+        let c1 = if pick(4) == 0 { [round as u8; 32] } else { target.hello };
+        let mut src = dial_with(&mut net, a, c1);
+        let evs = prove(&mut net, a, &mut src, m_provers.clone());
+        let a_listener = proved_by(&evs);
+        assert!(!a_listener.is_empty(), "a knows m and answers");
+        // h dials M: signs whatever challenge M's Hello chose, over M's key
+        let c2 = if pick(4) == 0 { target.hello } else { [round as u8 + 100; 32] };
+        let h_dialer: Vec<ActorProof> = h_provers.iter().map(|x| x.sign(&c2, &KM)).collect();
+        // into the listener target: everything M collected, in a random order and subset
+        let mut pool: Vec<ActorProof> = a_listener.iter().chain(&h_dialer).cloned().collect();
+        if pick(2) == 0 { pool.reverse(); }
+        pool.truncate(1 + pick(pool.len()));
+        let _ = prove_raw(&mut net, a, &target, 900 + round, pool);
+        let seen = proven(&mut net, a, &target);
+        assert!(!seen.contains(&ta), "round {round}: a's own actor on a connection M dialed: {seen:?}");
+        assert!(!seen.contains(&th), "round {round}: h's actor on a connection M dialed: {seen:?}");
+        // the dialer target: honest h dialing M, which echoes h's own Hello challenge at it
+        let ch = [round as u8 + 50; 32];
+        let mut cs = ClientSession::new(ClientConfig { peer_static_key: KM, challenge: ch });
+        let now = net.now();
+        cs.handle(now, ClientInput::Start);
+        cs.handle(now, ClientInput::Bytes(encode_frame(&osis_proto::Hello::new(now, ch).encode())));
+        let out = cs.handle(now, ClientInput::Command(Command::Prove(h_provers.clone())));
+        let (id, sent) = out.iter().find_map(|o| if let ClientOutput::Send(f) = o { match Message::decode(&f[4..]) { Ok(Message::Prove { id, proofs }) => Some((id, proofs)), _ => None } } else { None }).expect("h proves");
+        // M answers with h's own proof, or a's listener proof made over h's challenge
+        let reply: Vec<ActorProof> = if pick(2) == 0 { sent } else { h_provers.iter().map(|x| x.sign(&ch, &KM)).collect() };
+        let out = cs.handle(now, ClientInput::Bytes(encode_frame(&Message::Proved { id, proofs: reply }.encode())));
+        let got = out.iter().find_map(|o| if let ClientOutput::Event(ClientEvent::Proved { proofs }) = o { Some(proofs.clone()) } else { None }).expect("an answer");
+        assert!(actors(&got).is_disjoint(&h_set), "round {round}: h proved to itself by its own reflected proof");
+    }
 }
