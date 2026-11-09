@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use crate::view::db::Db;
 use crate::view::graph::{Graph, Local, Scope};
-use crate::view::{Summary, TICK};
+use crate::view::Summary;
 use osis::ReadSet;
 use crate::schema::{ARRANGED, Arrange, COLLECTION, Collection, FAVORITES, INTERNAL, MODE, Mode, OPEN, THEME, VIEWED_AS, WINDOWS};
 use osis::core::{NAME, TAG};
@@ -115,40 +115,56 @@ impl Reader {
     }
 
     /// `f`, remembered under `key` and re-run only when what it read differs (equal output stops
-    /// there). `f` takes what it needs by value: a memo depends on its key and its reads, never on
-    /// where it is called from. Outside a render it simply runs.
-    pub fn memo<K, V>(&self, key: K, f: impl Fn(&Reader) -> Result<V> + 'static) -> Result<Rc<V>>
+    /// there). `f` is told the key and nothing else (a plain `fn`, so it captures nothing): a memo
+    /// depends on its key and its reads, never on where it is called from. Outside a render it
+    /// simply runs.
+    ///
+    /// ```compile_fail
+    /// # fn wrong(r: &osis_kit::store::Reader, n: u32) {
+    /// let _ = r.memo(("wrong", ()), |_, _| Ok(n));
+    /// # }
+    /// ```
+    pub fn memo<K, V>(&self, key: K, f: fn(&Reader, &K) -> Result<V>) -> Result<Rc<V>>
     where
-        K: Any + Debug + Hash + Eq,
+        K: Any + Debug + Hash + Eq + Clone,
         V: PartialEq + 'static,
     {
         match &self.db.scope {
-            None => f(self).map(Rc::new),
-            Some(s) => Graph::get(&s.graph, s, key, f),
+            None => f(self, &key).map(Rc::new),
+            Some(s) => {
+                let k = key.clone();
+                Graph::get(&s.graph, s, key, move |r| f(r, &k))
+            }
         }
     }
 
-    /// A local cell's value (`Local`): tracked as a read of osis is.
+    /// The window this `Reader`'s render belongs to.
+    pub(crate) fn window_state(&self) -> Option<crate::view::WindowState> {
+        self.db.scope.as_ref().and_then(|s| s.graph.window())
+    }
+
+    /// Now as local wall ms; in a render it moves with the minute tick, as `db.now()` does.
+    pub fn now_local(&self) -> Result<i64> {
+        self.db.now()?;
+        Ok(crate::time::now_local())
+    }
+
+    /// A local cell's value (`Local`): tracked as a read of osis is. Only a render holds them.
     pub fn local<T: Clone + PartialEq + 'static>(&self, cell: Local<T>) -> Result<T> {
         match &self.db.scope {
-            None => Ok(cell.default_value()),
+            None => Err(osis::Error::Invalid("a local cell outside a render".into())),
             Some(s) => Graph::local(&s.graph, s, cell),
         }
     }
 
-    /// "5 min ago" for wall ms `at`: reads the minute tick, so it stays true and moves when the tick
-    /// does (`db.now()` is not tracked; only a render showing an age needs the tick).
+    /// "5 min ago" for wall ms `at`.
     pub fn ago(&self, at: u64) -> Result<String> {
-        let now = match self.db.scope {
-            Some(_) => self.local(TICK)? * 60_000,
-            None => self.db.now()?.0,
-        };
-        Ok(ago(now.saturating_sub(at)))
+        Ok(ago(self.db.now()?.0.saturating_sub(at)))
     }
 
     /// `t`'s summary through every applying facet, the color first.
     pub fn summary(&self, t: Tid) -> Result<Summary> {
-        Ok((*self.memo(("summary", t), move |r| {
+        Ok((*self.memo(("summary", t), |r, &(_, t)| {
             let mut s = Summary { color: r.color(t)?, ..Summary::default() };
             for f in r.registry.facets.iter() {
                 if f.applies(r, t)? {
@@ -168,7 +184,7 @@ impl Reader {
 
     /// The aspect names `t` carries, the system's left out.
     pub fn aspects(&self, t: Tid) -> Result<Rc<Vec<String>>> {
-        self.memo(("aspects", t), move |r| {
+        self.memo(("aspects", t), |r, &(_, t)| {
             Ok(r.db.aspects(t)?.into_iter().map(|a| a.as_str().to_string()).filter(|a| !SYSTEM.contains(&a.as_str())).collect())
         })
     }
@@ -193,7 +209,7 @@ impl Reader {
 
     /// The account groups, the main one first.
     pub fn groups(&self) -> Result<Vec<Tid>> {
-        Ok((*self.memo(("groups", ()), |r| r.account.groups(&r.db))?).clone())
+        Ok((*self.memo(("groups", ()), |r, _| r.account.groups(&r.db))?).clone())
     }
 
     /// Whether `t` is one of the app's own groups.
@@ -210,7 +226,7 @@ impl Reader {
     /// profile once made, and through tags what they hold. Racing nodes' seed views count once
     /// (equal `(collection.0, name.0)`, the smallest tid).
     pub fn things(&self) -> Result<Rc<BTreeSet<Tid>>> {
-        self.memo(("things", ()), |r| r.compute_things())
+        self.memo(("things", ()), |r, _| r.compute_things())
     }
 
     fn compute_things(&self) -> Result<BTreeSet<Tid>> {
@@ -397,7 +413,7 @@ impl Reader {
     /// skipped, a duplicate view stands for the one `views` keeps.
     /// Works around issues/app-group-helper.md.
     pub fn favorites(&self) -> Result<Vec<Tid>> {
-        Ok((*self.memo(("favorites", ()), |r| r.compute_favorites())?).clone())
+        Ok((*self.memo(("favorites", ()), |r, _| r.compute_favorites())?).clone())
     }
 
     fn compute_favorites(&self) -> Result<Vec<Tid>> {

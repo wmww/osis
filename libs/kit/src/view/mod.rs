@@ -439,9 +439,10 @@ pub struct WindowState(Rc<WindowInner>);
 
 impl Default for WindowState {
     fn default() -> WindowState {
-        let inner = WindowInner { sessions: Sessions::default(), graph: Rc::default() };
+        let inner = Rc::new(WindowInner { sessions: Sessions::default(), graph: Rc::default() });
         inner.sessions.set_graph(inner.graph.clone());
-        WindowState(Rc::new(inner))
+        inner.graph.set_window(Rc::downgrade(&inner));
+        WindowState(inner)
     }
 }
 
@@ -459,9 +460,6 @@ impl Deref for WindowState {
 }
 
 impl WindowState {
-    pub(crate) fn inner(&self) -> &Rc<WindowInner> {
-        &self.0
-    }
     pub fn set_local<T: Clone + PartialEq + 'static>(&self, cell: Local<T>, v: T) {
         self.0.graph.set_local(cell, v);
     }
@@ -475,9 +473,15 @@ impl WindowState {
 /// cx.db.write();
 /// # }
 /// ```
+///
+/// ```compile_fail
+/// # fn wrong(cx: &osis_kit::view::Cx) {
+/// cx.window.set_local(osis_kit::view::QUERY, String::new());
+/// # }
+/// ```
 pub struct Cx {
     reader: Reader,
-    pub window: WindowState,
+    pub(crate) window: WindowState,
     node: (NodePath, Config),
 }
 

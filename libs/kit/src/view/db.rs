@@ -2,6 +2,7 @@
 //! so a write during render does not compile. On a render's handle each address is one node of the
 //! graph (one read, one listener however many memos ask); elsewhere it is a plain read.
 
+use crate::view::TICK;
 use crate::view::graph::{Graph, Scope};
 use osis::{Ak, Address, Commit, CommitPage, CommitQuery, DynamicAspectKey, Grants, GroupsOf, Member, Osis, Path, Result, Role, SignalKey, Status, ThingStamp, Tid, Time, ValueKey};
 use std::any::{Any, TypeId};
@@ -43,7 +44,11 @@ impl Db {
     pub fn node(&self) -> Tid {
         self.inner.node()
     }
+    /// The time. In a render it depends on the minute tick: what shows a time moves with it.
     pub fn now(&self) -> Result<Time> {
+        if let Some(s) = &self.scope {
+            Graph::local(&s.graph, s, TICK)?;
+        }
         self.inner.now()
     }
     pub fn aspect_key(&self, ak: &str) -> Result<DynamicAspectKey> {

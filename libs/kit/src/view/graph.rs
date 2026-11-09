@@ -10,13 +10,14 @@
 //! moved since this node ran makes it `Dirty`; none, and it is `Clean` without running.
 
 use crate::store::Reader;
+use crate::view::{WindowInner, WindowState};
 use osis::{ReadSet, Result};
 use std::any::{Any, TypeId};
 use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
 
 type NodeId = u64;
@@ -113,11 +114,12 @@ pub struct Graph {
     shared: Arc<Shared>,
     base: OnceCell<Reader>,
     log: RefCell<Option<Vec<String>>>,
+    window: RefCell<Weak<WindowInner>>,
 }
 
 impl Default for Graph {
     fn default() -> Graph {
-        Graph { inner: RefCell::default(), shared: Arc::new(Shared { queue: Mutex::default(), notify: Mutex::default() }), base: OnceCell::new(), log: RefCell::default() }
+        Graph { inner: RefCell::default(), shared: Arc::new(Shared { queue: Mutex::default(), notify: Mutex::default() }), base: OnceCell::new(), log: RefCell::default(), window: RefCell::new(Weak::new()) }
     }
 }
 
@@ -140,9 +142,6 @@ impl<T: 'static> Local<T> {
     pub const fn new(name: &'static str, default: fn() -> T) -> Local<T> {
         Local { name, default }
     }
-    pub(crate) fn default_value(self) -> T {
-        (self.default)()
-    }
 }
 
 impl Graph {
@@ -156,6 +155,15 @@ impl Graph {
         if let Some(f) = lock(&self.shared.notify).clone() {
             f();
         }
+    }
+
+    pub(crate) fn set_window(&self, w: Weak<WindowInner>) {
+        *self.window.borrow_mut() = w;
+    }
+
+    /// The window this graph belongs to.
+    pub(crate) fn window(&self) -> Option<WindowState> {
+        self.window.borrow().upgrade().map(WindowState::from)
     }
 
     /// Records which keys run (tests' work counts), from now until `recorded` is taken.
@@ -264,49 +272,50 @@ impl Graph {
         if this.inner.borrow().nodes.get(&id).is_some_and(|n| n.running) {
             return Err(osis::Error::Invalid("a value that depends on itself".into()));
         }
-        Graph::bring_up(this, id)?;
+        let up = Graph::bring_up(this, id);
         let mut i = this.inner.borrow_mut();
-        let (value, seq) = {
-            let n = i.nodes.get(&id).ok_or_else(gone)?;
-            (n.value.clone().ok_or_else(gone)?, n.seq)
-        };
+        // the dependency stands even when it failed: a parent that handles the error reruns with it
+        let seq = i.nodes.get(&id).ok_or_else(gone)?.seq;
         add_dep(&mut i, parent.node, id, seq);
+        up?;
+        let value = i.nodes.get(&id).ok_or_else(gone)?.value.clone().ok_or_else(gone)?;
         drop(i);
         value.downcast::<V>().map_err(|_| osis::Error::Invalid("a graph key of two value types".into()))
     }
 
     /// Brings `id` up to date: validated, and run if that left it dirty.
     fn bring_up(this: &Rc<Graph>, id: NodeId) -> Result<()> {
-        loop {
-            let state = {
-                let i = this.inner.borrow();
-                i.nodes.get(&id).ok_or_else(gone)?.state
-            };
-            match state {
-                State::Clean => return Ok(()),
-                State::Dirty => return Graph::run(this, id),
-                State::Check => Graph::validate(this, id)?,
-            }
+        let state = |this: &Rc<Graph>| -> Result<(State, bool)> {
+            let i = this.inner.borrow();
+            let n = i.nodes.get(&id).ok_or_else(gone)?;
+            Ok((n.state, n.running))
+        };
+        let (first, running) = state(this)?;
+        if running {
+            return Err(osis::Error::Invalid("a value that depends on itself".into()));
         }
+        if first == State::Check {
+            Graph::validate(this, id)?;
+        }
+        // after validating `Check` is an answer too: settled, over a failure it handled
+        if state(this)?.0 == State::Dirty { Graph::run(this, id) } else { Ok(()) }
     }
 
-    /// A `Check` node: `Dirty` if a dependency it saw has moved, else `Clean`.
+    /// A `Check` node: `Dirty` if a dependency it saw has moved or failed, else `Clean`.
     fn validate(this: &Rc<Graph>, id: NodeId) -> Result<()> {
         let deps = {
             let i = this.inner.borrow();
             i.nodes.get(&id).ok_or_else(gone)?.deps.clone()
         };
         for (d, seen) in deps {
-            Graph::bring_up(this, d)?;
-            let i = this.inner.borrow();
-            let now = i.nodes.get(&d).ok_or_else(gone)?.seq;
-            if now != seen {
-                drop(i);
-                this.inner.borrow_mut().nodes.get_mut(&id).ok_or_else(gone)?.state = State::Dirty;
+            let up = Graph::bring_up(this, d);
+            let mut i = this.inner.borrow_mut();
+            if up.is_err() || i.nodes.get(&d).ok_or_else(gone)?.seq != seen {
+                i.nodes.get_mut(&id).ok_or_else(gone)?.state = State::Dirty;
                 return Ok(());
             }
         }
-        this.inner.borrow_mut().nodes.get_mut(&id).ok_or_else(gone)?.state = State::Clean;
+        settle(&mut this.inner.borrow_mut(), id);
         Ok(())
     }
 
@@ -349,7 +358,7 @@ impl Graph {
             n.value = Some(v);
             n.seq = seq;
         }
-        n.state = State::Clean;
+        settle(&mut i, id);
         Ok(())
     }
 
@@ -431,6 +440,15 @@ fn local_node<T: Clone + PartialEq + 'static>(i: &mut Inner, shared: &Arc<Shared
         n.state = State::Clean;
     }
     id
+}
+
+/// Done computing: `Clean`, unless a dependency whose failure it handled is still not (`Check`, so
+/// it is asked again). A node is never `Clean` over one that is not.
+fn settle(i: &mut Inner, id: NodeId) {
+    let clean = i.nodes.get(&id).is_some_and(|n| n.deps.iter().all(|(d, _)| i.nodes.get(d).is_none_or(|x| x.state == State::Clean)));
+    if let Some(n) = i.nodes.get_mut(&id) {
+        n.state = if clean { State::Clean } else { State::Check };
+    }
 }
 
 fn clear_deps(i: &mut Inner, id: NodeId) {

@@ -14,7 +14,7 @@ pub fn of(cx: &Reader, t: Tid) -> Result<Collection> {
 
 /// What `view` holds on `t`, narrowed and ordered, without `t` itself.
 pub fn items(cx: &Reader, t: Tid) -> Result<Rc<Vec<Tid>>> {
-    cx.memo(("items", t), move |r| compute_items(r, t))
+    cx.memo(("items", t), |r, &(_, t)| compute_items(r, t))
 }
 
 fn compute_items(cx: &Reader, t: Tid) -> Result<Vec<Tid>> {

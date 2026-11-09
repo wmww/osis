@@ -3,7 +3,7 @@
 use crate::store::Reader;
 use super::{Cx, Day, Entry, OutlineRun, Placed, Run, Span, Window};
 use crate::schema::{Arrange, Collection};
-use crate::time::{DAY, fmt_day, fmt_time, monday_of, now_local};
+use crate::time::{DAY, fmt_day, fmt_time, monday_of};
 use osis::{Result, Tid};
 use std::collections::BTreeSet;
 
@@ -48,8 +48,8 @@ pub fn stream(mut v: Vec<Entry>) -> Placed {
 }
 
 /// The seven days from `monday` (local wall ms), admitting only entries with a span.
-pub fn days(entries: Vec<Entry>, monday: i64) -> Placed {
-    let today = now_local().div_euclid(DAY);
+pub fn days(entries: Vec<Entry>, monday: i64, now: i64) -> Placed {
+    let today = now.div_euclid(DAY);
     let mut out = Vec::new();
     for i in 0..7 {
         let day = monday + i * DAY;
@@ -152,25 +152,25 @@ fn walk(cx: &Reader, t: Tid, children: &impl Fn(Tid) -> Result<Vec<Tid>>, path: 
 }
 
 /// The window `arrange` wants, `week` weeks from this one.
-pub fn window(arrange: &Arrange, week: i64) -> Option<Window> {
-    match arrange {
+pub fn window(cx: &Reader, arrange: &Arrange, week: i64) -> Result<Option<Window>> {
+    Ok(match arrange {
         Arrange::Days => {
-            let from = monday_of(now_local()) + week * 7 * DAY;
+            let from = monday_of(cx.now_local()?) + week * 7 * DAY;
             Some(Window::Span { from, to: from + 7 * DAY })
         }
         Arrange::Stream => Some(Window::Newest(NEWEST)),
         _ => None,
-    }
+    })
 }
 
 /// `items` placed as `arrange`. `run` decorates a cards or rows run.
 pub fn place(cx: &Cx, items: &[Tid], view: &Collection, arrange: &Arrange, week: i64, run: Run) -> Result<Placed> {
-    let win = window(arrange, week);
+    let win = window(cx, arrange, week)?;
     Ok(match (arrange, win) {
         (Arrange::Cards, _) => Placed::Cards(Run { entries: one_each(cx, items), ..run }),
         (Arrange::Rows, _) => Placed::Rows(Run { entries: one_each(cx, items), ..run }),
         (Arrange::Outline, _) => outline(cx, items, view)?,
-        (Arrange::Days, Some(w @ Window::Span { from, .. })) => days(expand(cx, items, &w), from),
+        (Arrange::Days, Some(w @ Window::Span { from, .. })) => days(expand(cx, items, &w), from, cx.now_local()?),
         (Arrange::Stream, Some(w)) => stream(expand(cx, items, &w)),
         _ => Placed::Rows(Run { entries: one_each(cx, items), ..run }),
     })

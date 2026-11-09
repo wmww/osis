@@ -106,7 +106,9 @@ fn opener(cx: &Cx, spec: &ViewSpec) -> Result<Section> {
     }
     let child = ViewSpec { view_type: view.id.into(), subject: t, config: spec.config.clone() };
     let key = format!("content:{}", view.id);
-    let has_foot = !super::render(cx, &super::child_path(&node, &key), &child)?.foot.is_empty(); // the child's node: `sync` then finds it built
+    // the child's node, so `sync` finds it built; a memo of its own, so what changes in the child
+    // other than having a foot leaves the opener alone
+    let has_foot = *cx.memo(("has_foot", super::child_path(&node, &key), child.clone()), |r, (_, path, child)| Ok(!super::render(r, path, child)?.foot.is_empty()))?;
     let below = if chrome_on { vec![Block::View { key: "chrome".into(), spec: ViewSpec::new("chrome", t) }] } else { Vec::new() };
     blocks.push(Block::Filled { key, spec: child, has_foot, plain: !chrome_on, below });
     Ok(Section::of(blocks))

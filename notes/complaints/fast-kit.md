@@ -1,2 +1,3 @@
 - First kit test build took about 12 min at load 35-40 (opt-level 1, the whole masonry tree); `cargo check` gave errors in seconds. Check first, test once.
 - A failing `wdotool key A B C` (one chain only) does not stop a script: later clicks then land on the wrong screen.
+- `cargo test -p osis-kit` from the worktree root says "did not match any packages": the GUI workspace's root is libs/kit, so cd there. Sourcing a guibox env changes XDG_RUNTIME_DIR, so `osis` beside it misses its daemon's socket ("store in use by pid"): run CLI commands outside that env.

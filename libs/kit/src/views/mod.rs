@@ -11,7 +11,7 @@ mod tile;
 
 pub use opener::open_spec;
 
-use crate::view::{Block, Cx, Placed, Section, ViewSpec, WindowState, source};
+use crate::view::{Block, Cx, Placed, Section, ViewSpec, source};
 use crate::store::Reader;
 use osis::{Result, Tid};
 use std::rc::Rc;
@@ -54,20 +54,19 @@ pub fn kit() -> [&'static ViewType; 8] {
 }
 
 /// `view` at `path`, its `Block`s and pinned foot. An unknown view type is empty.
-pub fn render(cx: &Cx, path: &str, spec: &ViewSpec) -> Result<Rc<Section>> {
-    let (path, spec2, window) = (path.to_string(), spec.clone(), Rc::downgrade(cx.window.inner()));
-    cx.memo(("render", path.clone(), spec.clone()), move |r| {
-        let Some(window) = window.upgrade().map(WindowState::from) else { return Ok(Section::default()) };
-        let cx = Cx::node(r.clone(), window, path.clone(), spec2.config.clone());
-        let Some(v) = cx.registry.view(&spec2.view_type) else { return Ok(Section::default()) };
+pub fn render(cx: &Reader, path: &str, spec: &ViewSpec) -> Result<Rc<Section>> {
+    cx.memo(("render", path.to_string(), spec.clone()), |r, (_, path, spec)| {
+        let Some(window) = r.window_state() else { return Ok(Section::default()) };
+        let cx = Cx::node(r.clone(), window, path.clone(), spec.config.clone());
+        let Some(v) = cx.registry.view(&spec.view_type) else { return Ok(Section::default()) };
         if let Some(f) = v.custom {
-            return f(&cx, &spec2);
+            return f(&cx, spec);
         }
         let mut out = Section::default();
         for p in v.parts {
             let Some(f) = cx.registry.facet(p.facet) else { continue };
-            if p.always || f.applies(&cx, spec2.subject)? {
-                let s = f.show(&cx, spec2.subject)?;
+            if p.always || f.applies(&cx, spec.subject)? {
+                let s = f.show(&cx, spec.subject)?;
                 out.blocks.extend(s.blocks);
                 out.foot.extend(s.foot);
                 out.follow_end |= s.follow_end;

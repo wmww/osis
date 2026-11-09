@@ -94,8 +94,8 @@ impl Facet for MembersFacet {
             blocks.push(Block::Chips(chips));
         }
         if matches!(arranged, Arrange::Days) {
-            use crate::time::{DAY, fmt_day, monday_of, now_local};
-            let monday = monday_of(now_local()) + week * 7 * DAY;
+            use crate::time::{DAY, fmt_day, monday_of};
+            let monday = monday_of(cx.now_local()?) + week * 7 * DAY;
             blocks.push(Block::Chips(vec![Chip::action(Icon::Back, "Earlier", Do::new(SetWeek(cx.path(), week - 1))), Chip::action(Icon::Calendar, "This week", Do::new(SetWeek(cx.path(), 0))), Chip::action(Icon::Plus, "Later", Do::new(SetWeek(cx.path(), week + 1)))]));
             blocks.push(Block::Label(format!("{} – {}", fmt_day(monday / DAY), fmt_day(monday / DAY + 6))));
         }

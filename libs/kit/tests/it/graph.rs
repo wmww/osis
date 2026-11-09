@@ -80,7 +80,7 @@ fn equal_output_stops_there() {
     let t = d.create_note().unwrap();
     let w = WindowState::default();
     let cx = Cx::new(&d, &w, false);
-    let top = |cx: &Cx| cx.memo(("top", t), move |r| Ok(*r.memo(("length", t), move |r| Ok(r.name(t)?.len()))? + 1)).unwrap();
+    let top = |cx: &Cx| cx.memo(("top", t), |r, &(_, t)| Ok(*r.memo(("length", t), |r, &(_, t)| Ok(r.name(t)?.len()))? + 1)).unwrap();
     assert_eq!(*top(&cx), 1);
     drop(cx);
     let keys = ran(&w, || {
@@ -103,8 +103,8 @@ fn equal_output_stops_there() {
 fn a_value_depending_on_itself_fails() {
     let d = data();
     let w = WindowState::default();
-    fn looped(r: &osis_kit::store::Reader) -> osis::Result<u32> {
-        Ok(*r.memo(("self", 1), looped)? + 1)
+    fn looped(r: &osis_kit::store::Reader, k: &(&'static str, i32)) -> osis::Result<u32> {
+        Ok(*r.memo(*k, looped)? + 1)
     }
     assert!(Cx::new(&d, &w, false).memo(("self", 1), looped).is_err());
 }
@@ -147,4 +147,167 @@ fn a_pass_frees_what_it_did_not_reach() {
     pass(b);
     assert!(w.graph.len() < wide, "the tag's nodes went: {} then {}", wide, w.graph.len());
     let _: &Rc<Graph> = &w.graph;
+}
+
+fn body(d: &osis_kit::store::Data, t: osis::Tid, s: &str) {
+    let mut w = d.db.write();
+    w.at(t, BODY).set(&s.to_string()).unwrap();
+    w.commit().unwrap();
+}
+
+/// A parent that handles a dependency's failure reads it again: when the failure ends it updates,
+/// and so does what read the parent.
+#[test]
+fn a_handled_failure_does_not_stick() {
+    let d = data();
+    let t = d.create_note().unwrap();
+    name(&d, t, "bad");
+    let w = WindowState::default();
+    fn fails(r: &osis_kit::store::Reader, &(_, t): &(&'static str, osis::Tid)) -> osis::Result<usize> {
+        let n = r.name(t)?;
+        if n == "bad" { Err(osis::Error::Invalid("bad".into())) } else { Ok(n.len()) }
+    }
+    fn handles(r: &osis_kit::store::Reader, k: &(&'static str, osis::Tid)) -> osis::Result<usize> {
+        Ok(r.memo(("fails", k.1), fails).map_or(0, |v| *v))
+    }
+    fn top(r: &osis_kit::store::Reader, k: &(&'static str, osis::Tid)) -> osis::Result<usize> {
+        Ok(*r.memo(("handles", k.1), handles)? + 1)
+    }
+    let ask = || *Cx::new(&d, &w, false).memo(("top", t), top).unwrap();
+    assert_eq!(ask(), 1);
+    assert_eq!(ask(), 1, "still failing, still handled");
+    name(&d, t, "good");
+    assert_eq!(ask(), 5);
+}
+
+/// Dependencies that come to form a cycle after a change fail; they do not recurse for ever.
+#[test]
+fn a_cycle_formed_by_a_change_fails() {
+    let d = data();
+    let t = d.create_note().unwrap();
+    let w = WindowState::default();
+    type K = (&'static str, osis::Tid);
+    fn a(r: &osis_kit::store::Reader, k: &K) -> osis::Result<u32> {
+        if r.name(k.1)? == "loop" { Ok(*r.memo(("b", k.1), b)? + 1) } else { Ok(1) }
+    }
+    fn b(r: &osis_kit::store::Reader, k: &K) -> osis::Result<u32> {
+        Ok(*r.memo(("a", k.1), a)? + 1)
+    }
+    assert_eq!(*Cx::new(&d, &w, false).memo(("b", t), b).unwrap(), 2);
+    name(&d, t, "loop");
+    assert!(Cx::new(&d, &w, false).memo(("b", t), b).is_err());
+    name(&d, t, "");
+    assert_eq!(*Cx::new(&d, &w, false).memo(("b", t), b).unwrap(), 2);
+}
+
+/// A diamond: a node reading a memo and what the memo read sees one state, and runs once.
+#[test]
+fn a_node_never_sees_a_stale_memo() {
+    let d = data();
+    let t = d.create_note().unwrap();
+    name(&d, t, "a");
+    let w = WindowState::default();
+    type K = (&'static str, osis::Tid);
+    fn len(r: &osis_kit::store::Reader, k: &K) -> osis::Result<usize> {
+        Ok(r.name(k.1)?.len())
+    }
+    fn top(r: &osis_kit::store::Reader, k: &K) -> osis::Result<(usize, usize)> {
+        Ok((*r.memo(("len", k.1), len)?, r.name(k.1)?.len()))
+    }
+    assert_eq!(*Cx::new(&d, &w, false).memo(("top", t), top).unwrap(), (1, 1));
+    let keys = ran(&w, || {
+        name(&d, t, "abc");
+        assert_eq!(*Cx::new(&d, &w, false).memo(("top", t), top).unwrap(), (3, 3));
+    });
+    assert_eq!(keys.iter().filter(|k| k.contains("\"top\"")).count(), 1, "{keys:?}");
+}
+
+/// What reads the time depends on the minute tick; what does not, does not.
+#[test]
+fn a_time_moves_with_the_tick() {
+    use osis_kit::view::{TICK, TYPED};
+    let d = data();
+    let w = WindowState::default();
+    type K = (&'static str, ());
+    fn clock(r: &osis_kit::store::Reader, _: &K) -> osis::Result<u8> {
+        r.db.now()?;
+        Ok(1)
+    }
+    fn fixed(_: &osis_kit::store::Reader, _: &K) -> osis::Result<u8> {
+        Ok(1)
+    }
+    let pass = || {
+        let cx = Cx::new(&d, &w, false);
+        cx.memo(("clock", ()), clock).unwrap();
+        cx.memo(("fixed", ()), fixed).unwrap();
+    };
+    pass();
+    let keys = ran(&w, || {
+        w.set_local(TICK, w.graph.peek(TICK) + 1);
+        w.set_local(TYPED, 1);
+        pass();
+    });
+    assert!(keys.iter().any(|k| k.contains("clock")) && !keys.iter().any(|k| k.contains("fixed")), "{keys:?}");
+}
+
+/// A change inside a page's content leaves its opener alone (it asked the child only for its foot).
+#[test]
+fn a_childs_change_stops_at_the_child() {
+    let d = data();
+    let t = d.create_note().unwrap();
+    body(&d, t, "one");
+    let w = WindowState::default();
+    page(&Cx::new(&d, &w, false), t).unwrap();
+    let keys = ran(&w, || {
+        body(&d, t, "two");
+        page(&Cx::new(&d, &w, false), t).unwrap();
+    });
+    assert!(!keys.iter().any(|k| k.contains("render") && k.contains("view_type: \"opener\"")), "{keys:?}");
+}
+
+/// Passes over a changing page hold the graph's size; a closed window frees the graph.
+#[test]
+fn nothing_grows_and_a_window_frees_its_graph() {
+    let d = data();
+    let t = d.create_note().unwrap();
+    let w = WindowState::default();
+    let pass = |i: usize| {
+        name(&d, t, &format!("n{i}"));
+        Graph::begin_pass(&w.graph);
+        page(&Cx::new(&d, &w, false), t).unwrap();
+        w.graph.end_pass();
+    };
+    pass(0);
+    let first = w.graph.len();
+    (1..30).for_each(pass);
+    assert_eq!(w.graph.len(), first);
+    let g = Rc::downgrade(&w.graph);
+    drop(w);
+    assert!(g.upgrade().is_none(), "nothing keeps a closed window's graph");
+}
+
+/// One thing's name at n and 10n things on a page: the work is the same, the nodes grow with n.
+#[test]
+fn one_write_costs_the_same_at_n_and_10n() {
+    let at = |n: usize| {
+        let d = data();
+        let g = d.main_group().unwrap();
+        let mut last = None;
+        for i in 0..n {
+            let t = d.create_note().unwrap();
+            name(&d, t, &format!("n{i}"));
+            last = Some(t);
+        }
+        let w = WindowState::default();
+        page(&Cx::new(&d, &w, false), g).unwrap();
+        let held = w.graph.len();
+        let keys = ran(&w, || {
+            name(&d, last.unwrap(), "renamed");
+            page(&Cx::new(&d, &w, false), g).unwrap();
+        });
+        (keys.len(), held)
+    };
+    let ((a, na), (b, nb)) = (at(5), at(50));
+    assert_eq!(a, b, "work of one write at n and 10n");
+    assert!(nb <= na * 14, "nodes per thing stay bounded: {na} then {nb}");
 }
