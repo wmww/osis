@@ -677,6 +677,17 @@ fn own_runtime_reopen_right_after_close() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// spec: none (an API property): a store directory that cannot be opened fails `Storage` naming the file and the cause, the only trace a full disk leaves in a log
+#[test]
+fn a_store_it_cannot_write_names_the_file() {
+    let dir = std::env::temp_dir().join(format!("osis-unwritable-{}-{}", std::process::id(), rand_suffix()));
+    // the store file's name is taken by a directory: its open fails as a full disk's would
+    std::fs::create_dir_all(dir.join("db.redb")).unwrap();
+    let e = osis::internals::create(osis::internals::Opening::at(Store::Dir(dir.clone()))).map(|_| ()).unwrap_err();
+    assert!(matches!(&e, osis::Error::Storage(m) if m.contains(dir.to_str().unwrap())), "{e:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn rand_suffix() -> u64 {
     use std::hash::{BuildHasher, Hasher};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();

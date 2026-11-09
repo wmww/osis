@@ -625,6 +625,10 @@ impl Io {
         let end = Instant::now() + self.wait;
         let mut authed = false;
         loop {
+            // nothing counts past the deadline, what already arrived included: a wait of 0 connects nothing
+            if Instant::now() >= end {
+                return Started::Failed(net("the node did not answer in time"));
+            }
             while let Ok(r) = rrx.try_recv() {
                 if !authed {
                     if !matches!(r, Ok(Outcome::Ok { .. })) {

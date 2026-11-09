@@ -490,10 +490,10 @@ impl Osis {
     ///
     /// To `Node(addr)`: the connection must be up and the node know the group (else `Network` or
     /// `UnknownThing`, nothing changed); waits for this node's writes in it to reach a saved peer
-    /// (`wait_synced`'s outcomes; failed or dropped, nothing changed); then this
+    /// (`wait_synced`'s outcomes; failed or dropped, nothing changed; what is written or arrives meanwhile
+    /// is waited for too); then this
     /// node stops syncing it, for itself alone (`SyncMode::LogOnly`), and calls go there. `Invalid`: the account's home group, or a
-    /// group still synced here through a parent (its things would have two sources: move the parent). A write made
-    /// during the wait fails the move `Unsynced` rather than strand it: call it again.
+    /// group still synced here through a parent (its things would have two sources: move the parent).
     ///
     /// To `Local`: this node must hold the group (a program with no store has no keys: `Unsupported`; a node
     /// without it: `Invalid`). It syncs the group again and, until the node's writes reached a saved peer
@@ -527,34 +527,41 @@ impl Osis {
         if r.call_pending(method::HOLDS, vec![Value::Tid(group)]).await? != Value::Bool(true) {
             return Err(Error::UnknownThing { tid: group });
         }
-        let (held, live) = self.locked(|l| {
-            let held = l.engine().knows(&group);
-            (held, syncs_here(l, &group))
-        });
-        if live {
-            self.wait_synced_pending(SyncScope::Thing(group)).await?;
-        }
-        self.locked(|l| {
-            let parents: Vec<Tid> = l.engine().groups_of(&group).into_iter().filter(|p| *p != group && !l.group_sources.contains_key(p)).collect();
-            if parents.iter().any(|p| syncs_here(l, p)) {
-                // every write in it would be refused (the module's split)
-                return Err(Error::Invalid("this group stays synced here through a group holding it: move that one".into()));
+        loop {
+            if self.locked(|l| syncs_here(l, &group)) {
+                self.wait_synced_pending(SyncScope::Thing(group)).await?;
             }
-            // written since the wait: never strand it
-            if syncs_here(l, &group) && crate::share::synced_now(l, group) != Some(Ok(())) {
-                return Err(Error::Unsynced { groups: vec![group] });
-            }
-            self.moving(l, |l| {
-                l.group_sources.insert(group, addr.clone());
-                save_sources(l)?;
-                self.inner.routing.store(true, Ordering::Release);
-                if held && !l.sync.receipts_only().contains(&group) {
-                    let acts = l.sync.set_receipts_only(group, true);
-                    self.inner.apply(acts);
+            let moved = self.locked(|l| {
+                let parents: Vec<Tid> = l.engine().groups_of(&group).into_iter().filter(|p| *p != group && !l.group_sources.contains_key(p)).collect();
+                if parents.iter().any(|p| syncs_here(l, p)) {
+                    // every write in it would be refused (the module's split)
+                    return Err(Error::Invalid("this group stays synced here through a group holding it: move that one".into()));
                 }
-                Ok(())
-            })
-        })
+                // the group arrived, or something was written, since the wait: wait again, never strand it
+                if syncs_here(l, &group) {
+                    match crate::share::synced_now(l, group) {
+                        Some(Ok(())) => {}
+                        Some(Err(e)) => return Err(e),
+                        None => return Ok(false),
+                    }
+                }
+                let held = l.engine().knows(&group);
+                self.moving(l, |l| {
+                    l.group_sources.insert(group, addr.clone());
+                    save_sources(l)?;
+                    self.inner.routing.store(true, Ordering::Release);
+                    if held && !l.sync.receipts_only().contains(&group) {
+                        let acts = l.sync.set_receipts_only(group, true);
+                        self.inner.apply(acts);
+                    }
+                    Ok(())
+                })?;
+                Ok(true)
+            })?;
+            if moved {
+                return Ok(());
+            }
+        }
     }
 
     async fn source_local(&self, group: Tid) -> Result<()> {

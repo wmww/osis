@@ -556,10 +556,9 @@ fn live_labels(all: &[osis_node::sync::LabelStatus]) -> impl Iterator<Item = &os
     all.iter().filter(move |s| !gone(s) || !all.iter().any(|x| x.group == s.group && !gone(x)))
 }
 
-/// Whether `g`'s labels are done now: nothing written here still waits (`Osis::group_source`).
+/// What `wait_synced(Thing(g))` would answer now (`Osis::group_source`).
 pub(crate) fn synced_now(l: &mut crate::handle::Locked, g: Tid) -> Option<Result<()>> {
-    let about: BTreeSet<Tid> = l.sync.engine().closure(&g).iter().copied().chain([g]).collect();
-    synced(&mut l.sync, Some(&[g]), Some(&about))
+    group_synced(&mut l.sync, g)
 }
 
 impl Osis {

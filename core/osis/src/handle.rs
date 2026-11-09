@@ -345,8 +345,9 @@ fn parts(store: &Store) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_st
             d.recursive(true);
             #[cfg(unix)]
             std::os::unix::fs::DirBuilderExt::mode(&mut d, 0o700);
-            d.create(p).map_err(|e| Error::Storage(e.to_string()))?;
-            let b = osis_store::RedbBackend::open(&p.join("db.redb")).map_err(|e| Error::Storage(e.to_string()))?;
+            let bad = |e: &dyn std::fmt::Display| Error::Storage(format!("{}: {e}", p.display()));
+            d.create(p).map_err(|e| bad(&e))?;
+            let b = osis_store::RedbBackend::open(&p.join("db.redb")).map_err(|e| bad(&e))?;
             Ok((Box::new(b), Box::new(osis_store::FileRoot::new(p.join("root")))))
         }
     }
@@ -371,7 +372,7 @@ fn open_salt(store: &Store, cfg: &Config) -> Result<u64> {
         Store::Dir(p) => {
             let f = p.join("seeded-opens");
             let n = std::fs::read_to_string(&f).ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-            std::fs::write(&f, n.wrapping_add(1).to_string()).map_err(|e| Error::Storage(e.to_string()))?;
+            std::fs::write(&f, n.wrapping_add(1).to_string()).map_err(|e| Error::Storage(format!("{}: {e}", f.display())))?;
             n
         }
     };

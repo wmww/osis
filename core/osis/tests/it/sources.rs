@@ -666,6 +666,7 @@ fn client_listener_key_is_its_own() {
     cfg.app.internals.transport = Some(x.net.endpoint("c2"));
     cfg.app.internals.connection_wait = Some(SHORT);
     assert!(matches!(crate::common::block_on(osis::internals::connect(&x.nc, &x.secret, cfg.clone())), Err(Error::Network(_))));
+    cfg.app.internals.connection_wait = Some(W);
     let c2 = crate::common::block_on(osis::internals::connect(&new, &x.secret, cfg.clone())).unwrap();
     assert_eq!(c2.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("first")));
     // no URL: stops, ends sessions, shreds
