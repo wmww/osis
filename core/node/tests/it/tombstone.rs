@@ -35,7 +35,8 @@ fn purge(net: &mut Net, n: usize, t: Tid, c: CommitId, r: Retention) -> CommitId
     // a value of its own: writing the same value again is no write
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     m.set(t, &REG, &s(&format!("after {}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))).unwrap();
-    net.engine(n).commit(m).unwrap().unwrap()
+    // past the writer's own refusal of a request without the right: the receivers judge it
+    net.engine(n).commit_hostile(m).unwrap().unwrap()
 }
 
 /// The delta sets of commit `c`'s entries node `n` knows present at `host`.
@@ -707,7 +708,7 @@ fn an_aspect_wide_request_lasts_by_what_it_dropped_spec_commits_5() {
         let mut m = Mutation::new();
         m.purge(PurgeItem::Aspect { tid: t, ak: k() });
         m.set(t, &REG, &s("after")).unwrap();
-        let p = net.engine(by).commit(m).unwrap().unwrap();
+        let p = net.engine(by).commit_hostile(m).unwrap().unwrap();
         net.run();
         cover(&mut net, a, t);
         assert!(!net.engine(a).body_not_dropped(&p, &t, &k()));

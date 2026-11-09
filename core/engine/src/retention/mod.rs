@@ -45,15 +45,16 @@ pub mod suspect;
 pub(crate) use replace::settle_none;
 pub(crate) use pending::{emptied, fetch_fallen, forget_joined_leftovers, forget_waiting_leftovers, pending_drops, pending_expired, stripped_joined, waiting_stripped};
 use pending::{purge_pending, strip_pending};
-pub(crate) use purge::{counts_as_purged, known_purged, lasting, note_requests, purged_aspects, purged_by, rejudge_purges, requests_resting_on};
+pub(crate) use purge::{check_request, counts_as_purged, known_purged, lasting, note_requests, purged_aspects, purged_by, rejudge_purges, requests_resting_on};
 pub(crate) use snapshot::covered;
 pub(crate) use bounds::{Killed, any_bounded, mark_killed, mark_bounded};
 
 const T_EXPIRY: u8 = 1;
 /// A purge-on-replace body kept to its commit's purge floor: judged again then (`replace`).
 const T_FLOOR: u8 = 2;
-/// A signal body's keep bound: it goes then (`signal_bound`).
-const T_KEPT: u8 = 3;
+/// A body's keep bound: a signal's body goes then (`signal_bound`); a listed value part leaves
+/// the listing then (`listing::kept_passed`).
+pub(crate) const T_KEPT: u8 = 3;
 
 /// A signal delta's keep bound, wall ms (spec/commits.md §5 Signals): any body's keep at least
 /// (`body_keep`), replaced when written; `None`: kept for good.
@@ -886,9 +887,13 @@ fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
 /// Runs due timer `key` (`records::timer_key`) of part `ai` of `c`, of `kind`; the
 /// aspects it changed go to `changed`.
 fn run_timer(tx: &mut Tx<'_>, key: &[u8], c: &CommitId, ai: usize, kind: u8, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+    tx.txn.remove_local(key, Shred::No)?;
+    // a value part's keep bound changes nothing held, only its listing
+    if kind == T_KEPT && tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)).is_some_and(|a| !a.ak.signal()) {
+        return crate::engine::listing::kept_passed(tx, c, ai);
+    }
     // judged again by node-sync whatever the timer did
     tx.core.mark_changed(*c);
-    tx.txn.remove_local(key, Shred::No)?;
     let mut ch = BTreeSet::new();
     if kind == T_FLOOR {
         replace::floor_passed(tx, c, ai);

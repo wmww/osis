@@ -49,6 +49,28 @@ pub(super) fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntr
     core.timelines.get(&a.tid).is_some_and(|tl| tl.purge_stands(&p.author, &a.tid, by, &actor, point) && (p.actor == p.author || tl.purge_stands(&p.actor, &a.tid, by, &actor, point)))
 }
 
+/// The writer's check of its own request `pc` (header `p`), built but not applied: each item that
+/// names held deltas must drop one of them by `holds_right`, as a receiver judges it, or the
+/// request is refused (`Permission` on the item's thing). An item naming none held is written: a
+/// request naming a delta that arrives later is honored then.
+pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()> {
+    for item in &p.purge {
+        // the right once per class and actor, as `apply_request` judges it
+        let mut rights: BTreeMap<(u64, Tid), bool> = BTreeMap::new();
+        for c in named_by(core, item, p.ts) {
+            let Some((m, ai)) = core.ix.commits.get(&c).and_then(|m| Some((m, m.aspect(item.tid(), item.ak())?))) else { continue };
+            let Some(a) = m.header.aspects.get(ai).filter(|a| names(p, a, &m.header, &c)) else { continue };
+            if *rights.entry((a.retention.by as u64, m.header.actor)).or_insert_with(|| holds_right(core, p, pc, a, &m.header)) {
+                break;
+            }
+        }
+        if !rights.is_empty() && !rights.values().any(|r| *r) {
+            return Err(Error::Permission { tid: *item.tid() });
+        }
+    }
+    Ok(())
+}
+
 /// Whether request `pc` (header `p`) drops delta `a` of commit `c` (header `ch`).
 fn stands(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
     names(p, a, ch, c) && holds_right(core, p, pc, a, ch)

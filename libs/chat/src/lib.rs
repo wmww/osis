@@ -330,8 +330,12 @@ pub fn edit(db: &Osis, c: Tid, m: &Message, text: &str) -> Result<CommitPos> {
     let mut w = db.write();
     w.at(c, schema::MSG).fire(&schema::Message { text: text.into(), name, reply_to, edit: Some(edit) })?;
     let new = w.commit()?.ok_or_else(|| Error::Invalid("nothing written".into()))?.pos();
-    if mode == EditMode::Purge && may_delete(db, c, m.sender)? {
-        purge(db, c, &held)?;
+    // the old text stays where this account may not purge it (the chat's purge set)
+    if mode == EditMode::Purge {
+        match purge(db, c, &held) {
+            Ok(()) | Err(Error::Permission { .. }) => {}
+            Err(e) => return Err(e),
+        }
     }
     Ok(new)
 }
@@ -357,30 +361,9 @@ fn purge(db: &Osis, c: Tid, ids: &[CommitPos]) -> Result<()> {
     w.commit().map(drop)
 }
 
-/// Whether this account's request would drop a body of `sender`'s, by the chat's purge set: a
-/// request without the right drops nothing anywhere, so it is refused here (issues/purge-rights-local.md).
-fn may_delete(db: &Osis, c: Tid, sender: Tid) -> Result<bool> {
-    let role = db.role_on(c)?;
-    let admin = role == Some(Role::Admin);
-    let writer = matches!(role, Some(Role::Admin | Role::Write));
-    let own = sender == db.me() && writer;
-    let rules = db.at(c, REQUIRED).get()?.unwrap_or_default();
-    let by = rules.rules.get(&schema::MSG.name()).map_or(PurgeBy::default(), |r| r.retention.by);
-    Ok(match by {
-        PurgeBy::Nobody => false,
-        PurgeBy::Admin => admin,
-        PurgeBy::AuthorOrAdmin => admin || own,
-        PurgeBy::Writer => writer,
-        PurgeBy::Author => own,
-    })
-}
-
 /// Deletes a message for everyone, every version here, by its author or a moderator as the chat's
 /// purge set says (`Permission` otherwise). Its tombstone stays and reaches new nodes.
 pub fn delete(db: &Osis, c: Tid, m: &Message) -> Result<()> {
-    if !may_delete(db, c, m.sender)? {
-        return Err(Error::Permission { tid: c, needs: Role::Admin });
-    }
     purge(db, c, &versions_held(m))
 }
 

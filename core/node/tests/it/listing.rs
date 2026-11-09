@@ -47,7 +47,8 @@ fn purge(lp: &mut LocalPeer, i: usize, item: PurgeItem) -> CommitId {
     let now = lp.peers[i].engine.now();
     m.set(*item.tid(), &ct::PURGE, &now).unwrap();
     m.purge(item);
-    let c = lp.peers[i].commit(m).unwrap().unwrap();
+    // past the writer's own refusal of a request without the right: the receivers judge it
+    let c = lp.peers[i].engine.commit_hostile(m).unwrap().unwrap();
     lp.advance(1_000);
     c
 }

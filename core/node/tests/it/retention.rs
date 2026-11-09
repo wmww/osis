@@ -173,7 +173,7 @@ fn purge_sets_any_order_spec_perm_6() {
             let mut m = Mutation::new();
             m.set(t, &REG, &s("later")).unwrap();
             m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
-            let pc = lp.peers[who].commit(m).unwrap().unwrap();
+            let pc = lp.peers[who].engine.commit_hostile(m).unwrap().unwrap();
             sync(&mut lp, who, 1 - who);
             let holds = |lp: &mut osis_node::local_peer::LocalPeer, n: usize| lp.peers[n].engine.body_not_dropped(&c, &t, &ak("t:reg.0"));
             assert_eq!((holds(&mut lp, 0), holds(&mut lp, 1)), (!dropped, !dropped), "{by:?} by peer {who}");
@@ -245,7 +245,7 @@ fn purge_rights(orders: &[[usize; 3]]) {
             let mut m = Mutation::new();
             m.set(t, &REG, &s("later")).unwrap();
             m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
-            let pc = lp.peers[who].commit(m).unwrap().unwrap();
+            let pc = lp.peers[who].engine.commit_hostile(m).unwrap().unwrap();
             late.push(lp.peers[who].engine.package(&pc).unwrap().unwrap());
             let pks = lp.packages(0).unwrap();
             for (k, order) in orders.iter().enumerate() {
@@ -730,7 +730,8 @@ fn purge_spec_commits_5() {
     let mut m = Mutation::new();
     m.set(t, &REG, &s("b's")).unwrap();
     m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
-    lp.peers[1].commit(m).unwrap();
+    assert!(matches!(lp.peers[1].commit(m.clone()), Err(osis_node::Error::Permission { tid }) if tid == t), "refused by its writer");
+    lp.peers[1].engine.commit_hostile(m).unwrap();
     assert!(lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
     // a purges it
     lp.advance(5);
@@ -3413,7 +3414,7 @@ fn parked_grant_gives_no_purge_right_spec_commits_4() {
     let mut m = Mutation::new();
     m.purge(PurgeItem::Aspect { tid: t, ak: ak("t:reg.0") });
     m.set(t, &REG, &s("x's")).unwrap();
-    let r = lp.peers[1].commit(m).unwrap().unwrap();
+    let r = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
     let request = lp.peers[1].engine.package(&r).unwrap().unwrap();
     assert!(matches!(lp.deliver(2, &grant).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
     lp.deliver(2, &request).unwrap();

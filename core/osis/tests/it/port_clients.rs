@@ -1437,14 +1437,14 @@ fn listings_as_the_actor() {
     x.n.settle();
     let heard: Vec<_> = erx.try_iter().collect();
     assert!(heard.is_empty(), "{heard:?}");
-    // by author over the port
+    // by author over the port: the node's writes are not the client's to purge (author or
+    // admin), so the request is refused
     let mut w = c.write();
     w.at(x.t, key()).purge(osis::Purge::Author(x.n.me())).unwrap();
-    let rq = w.commit().unwrap().unwrap().stamp.id;
+    assert!(matches!(w.commit(), Err(Error::Permission { .. })), "no right over another's writes");
     let e = x.n.at(x.t, key()).writes(&page(osis::CommitFrom::Oldest, 1)).unwrap().commits;
     assert_eq!(e[0].stamp.id, one);
-    let by = e[0].at(x.t, key()).unwrap().body;
-    assert!(by == Body::Purged { by: rq, actor: Some(a) } || by == Body::Held(Some(Value::Str("one".into()))), "as its right says: {by:?}");
+    assert_eq!(e[0].at(x.t, key()).unwrap().body, Body::Held(Some(Value::Str("one".into()))));
 }
 
 // spec/wire.md §11.2, notes/client-port.md Reconnect, notes/api.md Commits: a dropped connection and its return are

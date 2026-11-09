@@ -702,7 +702,8 @@ fn purge_commit(net: &mut Net, n: usize, t: osis_base::Tid, c: osis_base::Commit
     let mut m = Mutation::new();
     m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(REG.ak()).unwrap() });
     m.set(t, &REG, &s(&format!("after {n} {c:?}"))).unwrap();
-    net.engine(n).commit(m).unwrap();
+    // past the writer's own refusal of a request without the right: the receivers judge it
+    net.engine(n).commit_hostile(m).unwrap();
     net.run();
 }
 

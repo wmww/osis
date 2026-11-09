@@ -535,7 +535,9 @@ impl Osis {
             let on = match &filter {
                 Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Grants(t) => Some(*t),
                 Filter::Commits(a) => {
-                    l.engine().listen_commits(d.commit_things());
+                    // a store failure here only loses telling a keep bound passing: the
+                    // subscription stands
+                    let _ = l.engine().listen_commits(d.commit_things(), &a.things());
                     a.things().first().copied()
                 }
                 _ => None,

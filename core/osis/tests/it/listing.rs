@@ -4,6 +4,7 @@
 //! everyone and purge by author.
 
 use crate::common::TestWrites as _;
+use osis::internals::Internals as _;
 use crate::common::*;
 use osis::{Body, CommitEvent, CommitFrom, CommitId, CommitKind, CommitQuery, Error, Osis, Role, Scope, SyncScope, Tid, Value};
 use osis_sim::world::World;
@@ -120,6 +121,44 @@ fn listed_while_in_read_or_kept_api_commits() {
     // listing an aspect whose writes keep no history is no error; nor a crossing of kinds
     assert!(db.at(t, untyped(ak("t:log~0"))).writes(&CommitQuery::default()).unwrap().commits.is_empty());
     assert!(db.at(t, untyped(plain.clone())).fired(&CommitQuery::default()).unwrap().commits.is_empty());
+}
+
+// spec/commits.md §7 (Listed parts), notes/api.md Commits (listeners): a replaced part leaving
+// the listing at its keep bound is told, to a listener added before its replacement and to one
+// added after, once; no keep-bound timer is armed for an aspect no listener is on, or for one
+// whose writes keep no history.
+#[test]
+fn kept_part_is_told_leaving_at_its_bound_api_commits() {
+    let c = clock();
+    let db = osis::internals::create(cfg(1, osis::MemStore::new(), &c)).unwrap();
+    keep_day(&db, &["t:kept.0"]);
+    let t = thing(&db);
+    let (k, plain) = (ak("t:kept.0"), ak("t:plain.0"));
+    let timer = || db.engine(|e| e.next_timer().unwrap());
+    let x = commit_with(&db, |w| w.at(t, kept(&db, &k)).set(&s("x"))).stamp.id;
+    commit_with(&db, |w| w.at(t, kept(&db, &k)).set(&s("y")));
+    assert_eq!(timer(), None, "no listener: no timer");
+    let p = thing(&db);
+    let (_p, prx) = watch(&db, p, plain.clone());
+    for v in ["x", "y"] {
+        db.commit_set(p, untyped(plain.clone()), &s(v)).unwrap();
+    }
+    assert_eq!(timer(), None, "no history kept: no timer");
+    let u = thing(&db);
+    let (_before, rx) = watch(&db, u, k.clone());
+    let a = commit_with(&db, |w| w.at(u, kept(&db, &k)).set(&s("a"))).stamp.id;
+    commit_with(&db, |w| w.at(u, kept(&db, &k)).set(&s("b")));
+    // replaced while no listener was on it
+    let (_late, rx2) = watch(&db, t, k.clone());
+    heard(&db, &rx);
+    heard(&db, &prx);
+    c.advance(2 * 86_400_000);
+    db.engine(|e| e.tick().unwrap());
+    assert_eq!(ids(&heard(&db, &rx)), vec![(a, false)], "told leaving");
+    assert_eq!(ids(&heard(&db, &rx2)), vec![(x, false)], "to a listener added after its replacement too");
+    assert_eq!(bodies(&db, u, &k), vec![Body::Held(Some(s("b")))], "as a page reads");
+    commit_with(&db, |w| w.at(u, kept(&db, &k)).set(&s("d")));
+    assert!(ids(&heard(&db, &rx)).iter().all(|x| x.0 != a), "told once");
 }
 
 // spec/commits.md §7 (Listed parts), notes/api.md Commits (listeners): a write replacing a part
@@ -293,6 +332,29 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
 // right, and nothing else in the commit would check).
 #[test]
 fn purge_author_through_the_api_spec_perm_6() {
+    let (mut w, alice, bob, b, g) = alice_admits_bob();
+    let mut x = bob.write();
+    x.at(g, untyped(msg())).purge(osis::Purge::Author(alice.me())).unwrap();
+    assert!(matches!(x.commit(), Err(Error::Permission { needs: Role::Write, .. })), "a reader");
+    alice.grant(g, b, Role::Write, Default::default()).unwrap();
+    w.run();
+    let flood = say(&bob, g, "junk");
+    let own = say(&alice, g, "mine");
+    w.run();
+    let mut x = alice.write();
+    x.at(g, untyped(msg())).purge(osis::Purge::Author(bob.me())).unwrap();
+    let rq = x.commit().unwrap().unwrap().stamp.id;
+    w.run();
+    for db in [&alice, &bob] {
+        let got = db.at(g, untyped(msg())).writes(&page(CommitFrom::Oldest, 10)).unwrap();
+        let of = |c: CommitId| part(got.commits.iter().find(|e| e.stamp.id == c).unwrap(), g, &msg()).body;
+        assert_eq!(of(flood), Body::Purged { by: rq, actor: Some(alice.me()) });
+        assert_eq!(of(own), Body::Held(Some(s("mine"))));
+    }
+}
+
+/// Alice's synced thing `g`, Bob (actor `b`) a reader of it.
+fn alice_admits_bob() -> (World, Osis, Osis, Tid, Tid) {
     let mut w = World::new();
     let host = w.add_host();
     let alice = w.account(1, &[host]);
@@ -312,23 +374,42 @@ fn purge_author_through_the_api_spec_perm_6() {
         let _ = bob.accept_invite(r);
     }
     w.run();
-    let mut x = bob.write();
-    x.at(g, untyped(msg())).purge(osis::Purge::Author(alice.me())).unwrap();
-    assert!(matches!(x.commit(), Err(Error::Permission { needs: Role::Write, .. })), "a reader");
+    (w, alice, bob, b, g)
+}
+
+// spec/permissions.md §6, notes/api-design.md (rights are checked locally before signing): a
+// request whose purge rights would drop none of the held deltas it names is refused with
+// `Permission` and nothing is sent; one dropping any of them is written. The default purge set is
+// author or admin: a writer purges its own writes, the admin anyone's.
+#[test]
+fn purge_without_the_right_is_refused_spec_perm_6() {
+    let (mut w, alice, bob, b, g) = alice_admits_bob();
     alice.grant(g, b, Role::Write, Default::default()).unwrap();
     w.run();
-    let flood = say(&bob, g, "junk");
-    let own = say(&alice, g, "mine");
+    let hers = say(&alice, g, "hers");
     w.run();
+    let refused = |what: osis::Purge| {
+        let mut x = bob.write();
+        x.at(g, untyped(msg())).purge(what).unwrap();
+        matches!(x.commit(), Err(Error::Permission { tid, .. }) if tid == g)
+    };
+    assert!(refused(osis::Purge::Commit(hers)), "another's write by commit");
+    assert!(refused(osis::Purge::Author(alice.me())), "another's writes by author");
+    assert!(refused(osis::Purge::All), "the aspect holding only another's writes");
+    let his = say(&bob, g, "his");
+    w.run();
+    assert!(refused(osis::Purge::Author(alice.me())), "still none of his");
+    let mut x = bob.write();
+    x.at(g, untyped(msg())).purge(osis::Purge::Commit(his)).unwrap();
+    let own = x.commit().unwrap().unwrap().stamp.id;
     let mut x = alice.write();
-    x.at(g, untyped(msg())).purge(osis::Purge::Author(bob.me())).unwrap();
-    let rq = x.commit().unwrap().unwrap().stamp.id;
+    x.at(g, untyped(msg())).purge(osis::Purge::Commit(hers)).unwrap();
+    x.commit().unwrap();
     w.run();
     for db in [&alice, &bob] {
         let got = db.at(g, untyped(msg())).writes(&page(CommitFrom::Oldest, 10)).unwrap();
-        let of = |c: CommitId| part(got.commits.iter().find(|e| e.stamp.id == c).unwrap(), g, &msg()).body;
-        assert_eq!(of(flood), Body::Purged { by: rq, actor: Some(alice.me()) });
-        assert_eq!(of(own), Body::Held(Some(s("mine"))));
+        let bodies: Vec<Body<Value>> = got.commits.iter().map(|c| part(c, g, &msg()).body).collect();
+        assert!(matches!(bodies.as_slice(), [Body::Purged { .. }, Body::Purged { by, .. }] if *by == own), "{bodies:?}");
     }
 }
 

@@ -247,10 +247,10 @@ fn delete_for_everyone_spec_commits_5() {
     w.run();
     let at = |db: &Osis, id: &CommitPos| find(db, c, id).unwrap().unwrap();
     assert!(matches!(delete(&b, c, &at(&b, &mine)), Err(osis::Error::Permission { .. })));
-    // past the library: the request drops nothing
+    // past the library: osis refuses the request too, so nothing is sent
     let mut x = b.write();
     x.at(c, MSG).purge(osis::Purge::Commit(mine.commit().unwrap())).unwrap();
-    x.commit().unwrap();
+    assert!(matches!(x.commit(), Err(osis::Error::Permission { .. })));
     w.run();
     assert!(matches!(at(&a, &mine).body, Body::Held(Some(_))));
     delete(&b, c, &at(&b, &his)).unwrap();

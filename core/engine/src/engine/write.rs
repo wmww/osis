@@ -590,6 +590,10 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         b => b?,
     };
     let id = built.commit.id();
+    // rights are checked before anything leaves the node: a request dropping nothing is refused
+    if !tx.core.skip_writer_rules {
+        crate::retention::check_request(tx.core, &built.commit.header, &id)?;
+    }
     // hostile test authors: the blob as sent, whatever this node's own copy drops of it
     if !tx.core.forge_bad.is_empty() || tx.core.skip_writer_rules {
         tx.core.forged = Some(built.commit.encode());
