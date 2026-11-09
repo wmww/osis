@@ -586,6 +586,9 @@ impl SyncEngine {
                 steps.to_mut().entry(s.id()).or_insert_with(|| (s.clone(), c.clone()));
             }
             if let Some(s) = ServedLabel::new(gl.group, &steps) {
+                if let Some(h) = s.path.last() {
+                    self.state.note_head(gl.id, h.id().0);
+                }
                 m.insert(gl.id, s);
             }
         }
@@ -947,6 +950,7 @@ impl SyncEngine {
         // these scan every entry and placement: at most once per `RECORD_SWEEP_MS`
         if wall >= self.swept.saturating_add(RECORD_SWEEP_MS) {
             self.swept = wall;
+            self.state.log_sweep_due = true;
             self.state.sweep_carriers(wall);
             let ix = &self.engine.core.ix.commits;
             self.state.sweep_certs(|c| ix.get(c).is_some_and(|m| (0..m.header.aspects.len()).any(|ai| !m.body_gone(ai))));

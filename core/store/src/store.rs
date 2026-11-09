@@ -47,14 +47,13 @@ pub enum PendingKind {
 }
 
 /// Catalog key kinds.
-mod kind {
+pub(crate) mod kind {
     pub const ASPECT: u8 = 1;
     pub const TABLE: u8 = 3;
     pub const WRAP: u8 = 4;
     pub const SECRETS: u8 = 5;
     pub const CURSOR: u8 = 6;
     pub const LOG: u8 = 7;
-    pub const LOG_HEAD: u8 = 8;
     pub const COUNTER: u8 = 9;
     pub const PENDING: u8 = 10;
     pub const INDEX: u8 = 11;
@@ -312,10 +311,14 @@ impl Transaction<'_> {
         self.memory || self.is_memory_aspect(tid, ak)
     }
 
+    pub(crate) fn rng(&mut self) -> &mut dyn CryptoRngCore {
+        &mut *self.rng
+    }
+
     fn catalog(&self) -> u64 {
         self.d.meta.catalog
     }
-    fn cat_get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+    pub(crate) fn cat_get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
         if let Some(v) = self.mem.o.cat.get(key) {
             return Ok(Some(v.clone()));
         }
@@ -327,7 +330,7 @@ impl Transaction<'_> {
         self.cat_put_to(key, val, shred, m)
     }
     /// A catalog row to memory when `mem` or already there, else to the durable store.
-    fn cat_put_to(&mut self, key: &[u8], val: Vec<u8>, shred: Shred, mem: bool) -> Result<(), Error> {
+    pub(crate) fn cat_put_to(&mut self, key: &[u8], val: Vec<u8>, shred: Shred, mem: bool) -> Result<(), Error> {
         if mem || self.mem.o.cat.contains_key(key) {
             debug_assert!(self.durable_get(key)?.is_none(), "a memory row over a durable one");
             self.mem.cat_put(key, val);
@@ -340,13 +343,13 @@ impl Transaction<'_> {
         let c = self.catalog();
         btree::get(self, c, key)
     }
-    fn cat_remove(&mut self, key: &[u8], shred: Shred) -> Result<bool, Error> {
+    pub(crate) fn cat_remove(&mut self, key: &[u8], shred: Shred) -> Result<bool, Error> {
         let removed = self.mem.cat_remove(key);
         let c = self.catalog();
         Ok(btree::remove(self, c, key, shred.on())? || removed)
     }
     /// Catalog entries under `prefix`, from `prefix || from` on.
-    fn cat_scan(&mut self, prefix: &[u8], from: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
+    pub(crate) fn cat_scan(&mut self, prefix: &[u8], from: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
         let c = self.catalog();
         let start = [prefix, from].concat();
         let end = crate::backend::prefix_end(prefix);
@@ -560,7 +563,7 @@ impl Transaction<'_> {
         self.cat_remove(&W::new().u8(kind::SECRETS).raw(actor.as_bytes()).take(), Shred::Yes)
     }
 
-    // Cursors and logs (blob IDs gained, diagnostics).
+    // Cursors.
 
     pub fn put_cursor(&mut self, name: &[u8], bytes: &[u8]) -> Result<(), Error> {
         self.cat_put(&named_key(kind::CURSOR, name), bytes.to_vec(), Shred::No)
@@ -570,41 +573,6 @@ impl Transaction<'_> {
     }
     pub fn remove_cursor(&mut self, name: &[u8]) -> Result<bool, Error> {
         self.cat_remove(&named_key(kind::CURSOR, name), Shred::No)
-    }
-
-    /// Appends to log `name`; returns the entry's sequence number (from 0).
-    pub fn log_append(&mut self, name: &[u8], bytes: &[u8]) -> Result<u64, Error> {
-        let head = named_key(kind::LOG_HEAD, name);
-        let seq = u64_value(self.cat_get(&head)?)?.unwrap_or(0);
-        self.cat_put(&head, W::new().u64(seq + 1).take(), Shred::No)?;
-        let key = [named_key(kind::LOG, name), seq.to_be_bytes().to_vec()].concat();
-        self.cat_put(&key, bytes.to_vec(), Shred::No)?;
-        Ok(seq)
-    }
-    /// Entries of log `name` from sequence `from` on.
-    pub fn log_scan(&mut self, name: &[u8], from: u64, limit: usize) -> Result<Vec<(u64, Vec<u8>)>, Error> {
-        self.cat_scan(&named_key(kind::LOG, name), &from.to_be_bytes(), limit)?
-            .into_iter()
-            .map(|(k, v)| Ok((u64::from_be_bytes(tail(&k)?), v)))
-            .collect()
-    }
-    /// Removes entries below sequence `before`.
-    pub fn log_truncate(&mut self, name: &[u8], before: u64) -> Result<(), Error> {
-        let prefix = named_key(kind::LOG, name);
-        loop {
-            let page = self.cat_scan(&prefix, b"", 256)?;
-            let mut done = page.is_empty();
-            for (k, _) in page {
-                if u64::from_be_bytes(tail(&k)?) >= before {
-                    done = true;
-                    break;
-                }
-                self.cat_remove(&k, Shred::No)?;
-            }
-            if done {
-                return Ok(());
-            }
-        }
     }
 
     // Counters per (aspect, this session): memory rows only (spec/crdt.md §2.1: a session's

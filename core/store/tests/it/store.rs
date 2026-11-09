@@ -123,15 +123,6 @@ fn cursors_logs_local() {
     let mut s = create(&dev, &mut rng);
     let mut t = s.transaction(&mut rng).unwrap();
     t.put_cursor(b"host", b"c1").unwrap();
-    for i in 0..10u8 {
-        assert_eq!(t.log_append(b"gained", &[i; 32]).unwrap(), u64::from(i));
-    }
-    t.log_append(b"other", b"x").unwrap();
-    t.log_truncate(b"gained", 4).unwrap();
-    let rest = t.log_scan(b"gained", 0, 100).unwrap();
-    assert_eq!(rest.iter().map(|(s, _)| *s).collect::<Vec<_>>(), (4..10).collect::<Vec<_>>());
-    assert_eq!(t.log_scan(b"gained", 8, 100).unwrap().len(), 2);
-    assert_eq!(t.log_append(b"gained", b"y").unwrap(), 10);
     t.put_local(b"roster/1", b"a", Shred::No).unwrap();
     t.put_local(b"roster/2", b"b", Shred::No).unwrap();
     t.put_local(b"zzz", b"c", Shred::No).unwrap();

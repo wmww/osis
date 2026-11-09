@@ -159,6 +159,8 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 ### Shared set and reconnect (design, issues/net-shared-set.md, issues/net-reconnect.md)
 | value | class | 0 / ∞ |
 |---|---|---|
+| `INCARNATIONS_KEPT` 4096 (`store/nodelog.rs`) | R (oldest evicted: a cursor on an evicted incarnation is no cursor, one listing for that peer) | every cursor before an appending start no cursor, a listing per peer / disk grows with appending starts |
+| node log `PAGE` 256 (`store/nodelog.rs`: rows a sweep or forget scan handles per call) | P (only how the work is split into transactions) | no progress / one transaction holds the whole sweep |
 | `P` 8 (filter's false-positive bits) | P | every own credential a refused 32 B Hit / 32-byte beacons sent whole; both correct |
 | whole-filter re-send at doubling (additions up to n of the whole) | P (receiver enforces the same limit) | re-send each change / false positives grow only |
 | `RECORD_BUDGET` 256 MiB | R (evict least recently used record not in use; a filter that does not fit is tested and not stored) | every connection a first contact / disk |

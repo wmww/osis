@@ -4,6 +4,7 @@
 mod common;
 mod backend;
 mod crash;
+mod nodelog;
 mod paged;
 mod shred;
 mod store;

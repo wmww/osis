@@ -5,6 +5,7 @@ mod common;
 mod connection_proofs;
 mod net_judgment;
 mod net;
+mod nodelog;
 mod required;
 mod cert_judge;
 mod caches;

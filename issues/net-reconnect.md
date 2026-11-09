@@ -126,6 +126,9 @@ core/test/tla/net (TLC), both halves of this design with issues/net-shared-set.m
 - Rules the design relies on, each failing the properties when removed: pending set; `acked_pos` only past what is acknowledged and tested; arrival test before later messages; the tag; ByRole; a declining tester's `Lost`; the rotation's `until`; the digest; `Lost` and digest re-marking pending; Lost's older lag; a join's own position; a join answered; the cursor applied before stored; a change announced during a Pull denying that Pull's caught-up; the server's S read per reply; both sides pull; a listing carrying retained deletions; `Applied` after a `report`, a Pull's cursor repairing a lost one; no Offer before the peer's digest; tested reset with `acked_pos` when pending again; at a peer that cannot read, `known` only from Pulls, replaced by a from-the-start reply, deletes from `known`, the carrier shown first.
 - Not modelled: more than one peer, key actors and covers, deposits, account proofs, filter pages and false positives, inline bodies, ephemeral entries, record eviction, the generation base check's bug (a single credential makes additions equal the whole filter; the argument is ASSUMPTIONS.md's), a peer that cannot read with no record, two live copies each redialing.
 
+## Built
+The node log is in `core/store/src/nodelog.rs` (notes/local-store.md, Node log), written from `State::flush` of node sync: events for entries added or re-wrapped or stamped, entries removed (every path through `State::drop_entry`: delete, expiry, junk, compaction's drop) and served heads (derived from group data, logged at the next `served_labels` after a move); ephemeral entries and a label forgotten log nothing. Nothing reads it in production yet: `Pull`, the Hub switch and `Feed`'s removal are still to do. `changed_at` takes a position from `Transaction::log_advance`.
+
 ## Steps
 issues/net-shared-set.md, Steps: this issue is 4, 6, 7.
 
