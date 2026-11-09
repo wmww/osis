@@ -876,6 +876,26 @@ mod tests {
         drop(l);
     }
 
+    // spec/sync.md §10: `peer://` names routes, which `InProcess` has none of: a listener's key
+    // alone reaches nobody here (`P2p<MemUdp>` is what dials `peer://` in process).
+    #[test]
+    fn peer_url_finds_no_listener_by_key_spec_sync_10() {
+        let net = Net::new(2);
+        let mut s = Sched::new(2, Some(net.clone()));
+        let serving = net.endpoint("listener");
+        let l = s
+            .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([3; 32]) }).await.unwrap() })
+            .unwrap();
+        let key = l.address().key;
+        let cli = net.endpoint("cli");
+        let url = crate::peer_url(&["https://relay.example".into()]);
+        assert_eq!(crate::peer_items(&url), Some(vec!["https://relay.example".to_owned()]));
+        assert_eq!(crate::peer_items(&crate::peer_url(&[])), Some(vec![]));
+        let r = s.block_on(async move { cli.dial(&Address { url, key }).await.map(|_| ()) }).unwrap();
+        assert!(matches!(r, Err(Error::UnknownScheme(_))), "{r:?}");
+        drop(l);
+    }
+
     // spec: none (bounded memory): a long-lived connection keeps no state of sessions both
     // sides are done with, accepted or not yet when the opener finished
     #[test]

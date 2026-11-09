@@ -2,7 +2,7 @@
 //! spec/permissions.md §4): this node's `reach.0` (dialable key, relays, lan secret), the co-reader
 //! nodes it knows from theirs, and LAN discovery tags. A co-reader of a label is a node thing
 //! other than this node, holding `reach.0`, that may read the label's group; this node dials it at
-//! `peer://` + its relays (osis-transport finds it by key), or at the address a matching LAN
+//! `peer://` + its relays (the relay finds it by key), or at the address a matching LAN
 //! announcement gave, and syncs those labels with it as with a host.
 
 use super::{Action, Event, SyncEngine};
