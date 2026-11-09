@@ -145,6 +145,34 @@ fn choose_switches_sides_and_persists_spec_permissions_5_1() {
     assert!(matches!(f.lp.peers[2].engine.choose(d.commit, 7, d.holder, true), Err(osis_node::Error::UnknownCommit(_))));
 }
 
+// spec/permissions.md §5.1, spec/commits.md §5 Invalid: a side chosen late, after content its
+// default dropped as invalid, reads as a node that always stood there once the dropped write
+// comes again. `a` writes after b's removal of it; peer 2, on b's side by default, drops the
+// write, then takes a's side; peer 3 stood there from the start.
+#[test]
+fn late_choice_brings_back_what_the_default_dropped_spec_permissions_5_1() {
+    let mut f = fight(4, 606);
+    let (w, r) = (f.w.clone(), f.r.clone());
+    f.lp.peers[0].clock.advance(10_000);
+    let mut m = osis_node::Mutation::new();
+    m.set(f.t, &crate::common::REG, &crate::common::s("a's")).unwrap();
+    let x = f.lp.peers[0].commit(m).unwrap().unwrap();
+    let reg = |f: &mut Fight, i: usize| f.lp.peers[i].engine.get(&f.t, &crate::common::ak("t:reg.0")).unwrap();
+    for (i, first, then) in [(2, &w, &r), (3, &r, &w)] {
+        send(&mut f.lp, if i == 2 { 1 } else { 0 }, i, first);
+        send(&mut f.lp, if i == 2 { 0 } else { 1 }, i, then);
+        send(&mut f.lp, 0, i, &[x]);
+    }
+    assert_eq!(reg(&mut f, 3), Some(crate::common::s("a's")));
+    assert_ne!(reg(&mut f, 2), reg(&mut f, 3), "b's side: a's write dropped as invalid");
+    let d = the_dispute(&f, 2);
+    f.lp.peers[2].engine.choose(d.commit, d.op, d.holder, false).unwrap();
+    assert_eq!(admins(&f, 2), (true, false));
+    assert!(f.lp.peers[2].engine.commit_parts_missing().iter().any(|(c, m)| *c == x && !m.is_empty()), "valid again: missing");
+    send(&mut f.lp, 0, 2, &[x]);
+    assert_eq!(reg(&mut f, 2), reg(&mut f, 3));
+}
+
 // notes/disputes-plan.md step 4: the default side is durable: after a restart the node
 // reads as before, and the dispute is listed with the side it took.
 #[test]
