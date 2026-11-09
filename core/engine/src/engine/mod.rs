@@ -14,7 +14,7 @@ pub(crate) mod index;
 pub(crate) mod journal;
 pub(crate) mod pages;
 pub(crate) mod large;
-mod read;
+pub(crate) mod read;
 pub mod records;
 pub(crate) mod secrets;
 pub(crate) mod state;

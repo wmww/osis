@@ -565,10 +565,6 @@ impl Osis {
         self.locked(|l| {
             let e = l.engine();
             let gone = Error::NotUndoable { commit: c, reason: NotUndoableReason::ContentGone };
-            // checked in the order `revert_one` meets them
-            if !self.held_whole(e, c.0) {
-                return Err(gone);
-            }
             let r = match self.acting {
                 Some(a) => e.check_revertible_as(c.0, a),
                 None => e.check_revertible(&c.0),
@@ -582,14 +578,12 @@ impl Osis {
     }
 
     /// The held commits validly touching `scope`, newest first, with relations judged over every
-    /// held commit that can revert one of them (a revert touches aspects its target touched:
-    /// undoing a creation resets every held aspect of the thing, the ones its creation wrote
-    /// among them).
+    /// held commit that can revert one of them (on their `Engine::revert_reach`).
     fn found(&self, scope: &Scope) -> Result<Vec<Found>> {
         let aks = self.scope_aspects(scope)?;
         let found = self.engine(|e| {
             let base = e.held_commits(Some(&aks));
-            let touched: BTreeSet<(Tid, Ak)> = base.iter().flat_map(|c| c.header.aspects.iter().map(|a| (a.tid, a.ak.clone()))).collect();
+            let touched: BTreeSet<(Tid, Ak)> = base.iter().flat_map(|c| e.revert_reach(&c.id)).collect();
             let related = e.held_commits(Some(&touched.into_iter().collect::<Vec<_>>()));
             let undoes = |h: &osis_commit::Header| h.undoes.filter(|_| h.kind == Kind::Content).map(CommitId);
             // relations over the related commits, oldest first
@@ -669,12 +663,6 @@ impl Osis {
         self.revert_one(id)
     }
 
-    /// Whether what content commit `c` wrote is all still here (a revert needs it); of what the
-    /// actor may not read, not asked: `revert_as` refuses it whichever.
-    fn held_whole(&self, e: &osis_node::Engine, c: osis_base::CommitId) -> bool {
-        e.header(&c).is_none_or(|h| !h.aspects.iter().any(|a| a.ak.as_str() != "created.0" && self.acting.is_none_or(|x| e.readable_by(&x, &a.tid)) && !e.body_not_dropped(&c, &a.tid, &a.ak)))
-    }
-
     /// Undo or redo, serialized under one lock: choose by query, then revert.
     fn step(&self, scope: &Scope, redo: bool) -> Result<Option<Commit>> {
         let _g = lock(&self.inner.undo);
@@ -707,9 +695,6 @@ impl Osis {
             let h = e.header(&c).filter(|h| self.acting.is_none_or(|a| h.aspects.iter().any(|x| e.readable_by(&a, &x.tid)))).ok_or_else(|| Error::Invalid("unknown commit".into()))?;
             if h.kind != Kind::Content {
                 return Err(Error::Invalid("only changes and reverts are reverted".into()));
-            }
-            if !self.held_whole(e, c) {
-                return Err(blocked(NotUndoableReason::ContentGone));
             }
             let r = match self.acting {
                 Some(a) => e.revert_as(c, a)?,

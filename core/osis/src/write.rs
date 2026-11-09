@@ -245,9 +245,10 @@ impl<'d> Write<'d> {
         Ok(())
     }
 
-    /// Removes every aspect the node knows of `tid` and its memberships in
-    /// every group this node may write (one it may not keeps listing it; it reads deleted
-    /// there), as held when the write commits. Afterwards `has_content(tid)` is `false`; the tid stays
+    /// Removes every durable aspect of `tid` that may hold content (present here, or written by a
+    /// part not received yet) and its
+    /// memberships in every group this node may write (one it may not keeps listing it; it reads
+    /// deleted there), as held when the write commits. Afterwards `has_content(tid)` is `false`; the tid stays
     /// valid and a later write recreates the thing. Its ephemeral (`+`) values are dropped here
     /// and not written: other nodes holding them keep them until they restart or the values end
     /// (expiry, their author leaving), in no group they read.
@@ -432,10 +433,12 @@ impl<'d> Write<'d> {
                     b.m.purge(PurgeItem::Author { tid, ak: key(k)?.ak.clone(), actor });
                 }
                 WriteOp::Delete(t) => {
-                    // the durable aspects: its ephemeral state is dropped here, not written
+                    // the durable aspects that may hold content, bodies held or not
+                    // (`Engine::deleted_aspects`): its ephemeral state is dropped here, not written
                     // (`Mutation::deleting`). Each removal typed as `aspect_key` types it, so it
                     // keeps the history its schema keeps and the delete undoes (spec/crdt.md §4.6)
-                    for ak in r.aspects(t)?.iter().filter(|a| !read_only(a.as_str()) && osis_schema::core_types::is_content(a.as_str()) && !a.ephemeral()) {
+                    let aks = if r.hidden(t) { Vec::new() } else { r.e.deleted_aspects(&t)? };
+                    for ak in &aks {
                         b.m.remove_aspect(t, &db.aspect_key(ak.as_str())?)?;
                     }
                     let gs = r.groups_of(t);

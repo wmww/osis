@@ -48,7 +48,7 @@ fn purge_on_replace_spec_commits_5() {
     let e = &mut lp.peers[0].engine;
     assert!(!e.body_not_dropped(&c1, &t, &ak("t:gone.0")));
     assert_eq!(e.get(&t, &ak("t:gone.0")).unwrap(), Some(s("final")));
-    assert_eq!(e.revert(&c1).unwrap(), None);
+    assert!(matches!(e.revert(&c1), Err(osis_node::Error::ContentGone(_))));
     // a writer receiving the kill with its cover drops it at once
     sync(&mut lp, 0, 1);
     assert!(!lp.peers[1].engine.body_not_dropped(&c1, &t, &ak("t:gone.0")));

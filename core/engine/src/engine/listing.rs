@@ -458,15 +458,28 @@ impl Engine {
         if from.newer() { all.iter().take(n).map(pos).collect() } else { all.iter().rev().take(n).map(pos).collect() }
     }
 
-    /// The held commits reverting `c` (a revert touches what its target touched, so it is among
-    /// the commits on `c`'s aspects stamped after it), oldest first. A commit touching only
-    /// signals has none: a revert of it writes nothing.
+    /// The aspects a revert of held commit `c` may touch: those `c` touches, and, for things it
+    /// created, every aspect of theirs a held header names (the revert deletes them,
+    /// `read::deleted_aspects`). Signals left out: a revert writes nothing for one.
+    pub fn revert_reach(&self, c: &CommitId) -> BTreeSet<(Tid, Ak)> {
+        let Some(m) = self.core.ix.commits.get(c) else { return BTreeSet::new() };
+        let mut out: BTreeSet<(Tid, Ak)> = m.view.aspects.iter().filter(|a| !a.ak.signal()).map(|a| (a.tid, a.ak.clone())).collect();
+        if let Some(h) = m.header.decoded() {
+            for t in crate::undo::made_by(&h, &m.valid) {
+                out.extend(self.core.aspects_of(&t).map(|(k, _)| k.clone()).filter(|k| !k.1.signal()));
+            }
+        }
+        out
+    }
+
+    /// The held commits reverting `c` (among the commits on `revert_reach` stamped after it),
+    /// oldest first. A commit touching only signals has none: a revert of it writes nothing.
     pub fn reverters(&self, c: &CommitId) -> Vec<CommitId> {
         let Some(m) = self.core.ix.commits.get(c) else { return Vec::new() };
         let at = (m.view.ts, *c);
         let mut out: BTreeSet<(Ts, CommitId)> = BTreeSet::new();
-        for a in m.view.aspects.iter().filter(|a| !a.ak.signal()) {
-            let Some(set) = self.core.ix.by_aspect.get(&(a.tid, a.ak.clone())) else { continue };
+        for k in self.revert_reach(c) {
+            let Some(set) = self.core.ix.by_aspect.get(&k) else { continue };
             for x in set.range((Excluded(at), Unbounded)) {
                 if !out.contains(x) && self.core.ix.commits.get(&x.1).and_then(|m| m.header.decoded()).is_some_and(|h| undoes(&h) == Some(*c)) {
                     out.insert(*x);

@@ -132,6 +132,12 @@ impl Engine {
         }
     }
 
+    /// The aspects a delete of `tid` resets (`deleted_aspects`).
+    pub fn deleted_aspects(&mut self, tid: &Tid) -> Result<Vec<Ak>> {
+        let tid = *tid;
+        self.run(|tx| deleted_aspects(tx, &tid))
+    }
+
     /// AKs present on the thing (`aspects.0`).
     pub fn aspects(&mut self, tid: &Tid) -> Result<Vec<Ak>> {
         let tid = *tid;
@@ -228,4 +234,25 @@ impl Engine {
             Ok(out)
         })
     }
+}
+
+/// The aspects a delete of `t` resets (spec/crdt.md §4.6): of its durable content aspects some held
+/// commit header names (not `created.0`, role-class, signal or ephemeral ones), each that may hold
+/// content: present here, or written by a valid part not received yet. So once synced a delete
+/// leaves the same reads at every node, whichever bodies it held; an aspect that reads absent with
+/// every part held needs no reset (one a required rule would refuse beside the others).
+pub(crate) fn deleted_aspects(tx: &mut super::Tx<'_>, t: &Tid) -> Result<Vec<Ak>> {
+    let named: Vec<(Ak, bool)> = tx
+        .core
+        .aspects_of(t)
+        .filter(|((_, ak), _)| ct::is_content(ak.as_str()) && !ak.ephemeral() && !ak.signal())
+        .map(|((_, ak), cs)| (ak.clone(), cs.iter().any(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(t, ak).is_some_and(|ai| m.valid_at(ai) && m.missing.contains(&ai))))))
+        .collect();
+    let mut out = Vec::new();
+    for (ak, missing) in named {
+        if missing || tx.state(t, &ak)?.is_some_and(Fragment::present) {
+            out.push(ak);
+        }
+    }
+    Ok(out)
 }

@@ -463,10 +463,12 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
             if !root {
                 return Err(Error::Mismatch("remove_aspect below the root"));
             }
+            // a reset removes everything older at the root in every encoding (§7), so it is
+            // written whatever is held: an untyped aspect held nowhere here takes a register's
             let enc = match (view.encoding(), cur) {
                 (Some(e), _) => e,
                 (None, Some(c)) => c.chosen().encoding(),
-                (None, None) => return Ok(None),
+                (None, None) => Encoding::Register,
             };
             remove(w, enc).map(Some)
         }

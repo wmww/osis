@@ -3,11 +3,11 @@
 //! commit's deltas come from osis-crdt's `undo` against the current state and the state before
 //! the undone commit as kept history gives it (`kept_before`): never from a body held but not
 //! kept, so whether an undo works and what it writes is alike at every node holding the same
-//! commits. Where the inverse writes back replaced content (`osis_crdt::restores`, by the
-//! writes' kinds) and a part it may have replaced is not kept (`replaced_kept`), it is
-//! `ContentGone`.
+//! commits. It reverts every part of the commit or none: a part it inverts whose body is not held
+//! (dropped, or not fetched yet) is `ContentGone`, as is an inverse writing back replaced content
+//! (`osis_crdt::restores`, by the writes' kinds) where a part it may have replaced is not kept
+//! (`replaced_kept`).
 
-use crate::engine::records::Rd;
 use crate::engine::write::{CommitPlan, Resolved, build_one, check_acts, check_authority};
 use crate::engine::{Core, Engine, Mutation, Tx};
 use crate::ephemeral::Written;
@@ -25,7 +25,8 @@ pub enum Reverted {
     Written(Written),
     /// Nothing to write: everything it wrote was superseded since.
     Superseded,
-    /// Its inverse writes back content no kept history holds (`Error::ContentGone`).
+    /// A part's body is not held whole here, or its inverse writes back content no kept history
+    /// holds (`Error::ContentGone`).
     ContentGone,
 }
 
@@ -177,8 +178,8 @@ pub(crate) fn copy_expiry(copies: &Copies) -> Result<Option<u64>> {
 /// `confined`: every write it makes is held to `actor`'s rights (`Engine::revert_as`). It
 /// expires with the writes it copies back, refused while those expire differently
 /// (`copy_expiry`); an ephemeral one copying back an expiring value is under the open's
-/// expiring session (spec/crdt.md §2.1). `ContentGone` when its inverse writes back replaced
-/// content not kept (`replaced_kept`).
+/// expiring session (spec/crdt.md §2.1). `ContentGone` when a part is not held whole or its
+/// inverse writes back replaced content not kept (`undone_parts`).
 pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>, confined: bool) -> Result<CommitId> {
     let m = tx.core.ix.commits.get(&target).cloned().ok_or(Error::UnknownCommit(target))?;
     let h = m.header.clone();
@@ -225,20 +226,25 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
 }
 
 /// The parts of content commit `target` its undo inverts, each with its delta and its writer's
-/// source; `ContentGone` when one writes back replaced content (`osis_crdt::restores`) not kept at
-/// wall ms `now` (`replaced_kept`). Left out: a part whose body was dropped (spec/commits.md
-/// §7), one invalid here, a signal's (it reads absent before and after), the creation record and
-/// the parts on things the commit created (those are deleted, `unmake_ops`).
+/// source. Left out: one invalid here, a signal's (it reads absent before and after), the creation
+/// record and the parts on things the commit created (those are deleted, `unmake_ops`). Every
+/// other part is reverted, or there is no undo (`ContentGone`): its body dropped (spec/commits.md
+/// §7: by cover, expiry or purge) or not fetched yet, so an undo is the same on every node; or it
+/// writes back replaced content (`osis_crdt::restores`) not kept at wall ms `now`
+/// (`replaced_kept`).
 fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, now: u64) -> Result<Vec<(osis_commit::AspectEntry, Fragment, Source)>> {
     let m = tx.core.ix.commits.get(target).cloned().ok_or(Error::UnknownCommit(*target))?;
     let h = m.header.clone();
     let made = made_by(&h, &m.valid);
     let mut parts = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if m.dropped.contains_key(&ai) || !m.valid_at(ai) || a.ak.signal() || a.ak.as_str() == CREATED.ak() || a.ak.as_str() == osis_commit::retention::REQUIRED || made.contains(&a.tid) {
+        if !m.valid_at(ai) || a.ak.signal() || a.ak.as_str() == CREATED.ak() || a.ak.as_str() == osis_commit::retention::REQUIRED || made.contains(&a.tid) {
             continue;
         }
-        let Some(Decoded::Delta(d)) = crate::apply::held_part(tx, target, ai)? else { continue };
+        if m.body_gone(ai) || m.missing.contains(&ai) {
+            return Err(Error::ContentGone(*target));
+        }
+        let Some(Decoded::Delta(d)) = crate::apply::held_part(tx, target, ai)? else { return Err(Error::Corrupt("content part held without its delta")) };
         let source = h.form.own_source(h.author, *target);
         let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi } };
         if osis_crdt::restores(&undone) && !replaced_kept(tx, &h, target, a, now)? {
@@ -316,10 +322,10 @@ pub(crate) fn made_by(h: &osis_commit::Header, valid: &[bool]) -> BTreeSet<Tid> 
 }
 
 /// Undoing a creation deletes the thing (spec/crdt.md §4.6): `delete`'s writes for each of
-/// `made`, its held durable aspects reset (not `created.0` or role-class ones; its ephemeral
-/// ones go in the revert's memory commit, `Engine::revert_batch`) and its entries
-/// removed from every `group.0` listing it that all of `writers` may write (this node, a
-/// confined revert's actor too), each resolved after the undo's own delta of that aspect and
+/// `made`, its aspects that may hold content reset (`read::deleted_aspects`; its ephemeral
+/// state is dropped, `Engine::revert_inner`) and its entries removed from every `group.0`
+/// listing it that all of `writers` may write (this node, a confined revert's actor too), each
+/// resolved after the undo's own delta of that aspect and
 /// joined into it (`unmake_one`). `Permission` when this node may not write one of `made`
 /// (`delete` would refuse; never a partial revert).
 fn unmake_ops(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, writers: &[Tid]) -> Result<BTreeMap<(Tid, Ak), Vec<PathOp>>> {
@@ -331,13 +337,7 @@ fn unmake_ops(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, writers:
         if crate::engine::write::role_of(tx.core, &node, x, ts) < Some(Role::Write) {
             return Err(Error::Permission { tid: *x });
         }
-        let prefix = [crate::engine::records::ASPECTS, x.as_bytes()].concat();
-        let mut aks = Vec::new();
-        tx.scan(&prefix, |k, _| {
-            aks.push(Rd::new(k).ak()?);
-            Ok(())
-        })?;
-        for ak in aks.into_iter().filter(|a| osis_schema::core_types::is_content(a.as_str()) && !a.ephemeral()) {
+        for ak in crate::engine::read::deleted_aspects(tx, x)? {
             ops.entry((*x, ak)).or_default().push(PathOp { path: Vec::new(), op: Op::RemoveAspect });
         }
     }
@@ -402,8 +402,8 @@ pub struct HeldCommit {
 
 impl Engine {
     /// Reverts `target` (any held content commit; spec/crdt.md §4.6: an undo commit). `None` if
-    /// there is nothing to write; `ContentGone` (`Error`) when its inverse needs content no kept
-    /// history holds; `Clash` if its writes cannot share a commit.
+    /// there is nothing to write; `ContentGone` (`Error`) when a part's body is not held whole or
+    /// its inverse needs content no kept history holds; `Clash` if its writes cannot share a commit.
     pub fn revert(&mut self, target: &CommitId) -> Result<Option<CommitId>> {
         let me = self.tid();
         match self.revert_commit(*target, me)? {
@@ -413,8 +413,8 @@ impl Engine {
         }
     }
 
-    /// `ContentGone` when reverting held content commit `c` now writes back content no kept
-    /// history holds, by its writes' kinds and keep bounds alone (what `revert_commit` checks
+    /// `ContentGone` when reverting held content commit `c` now meets a part not held whole or
+    /// writes back content no kept history holds, by its writes' kinds and keep bounds alone (what `revert_commit` checks
     /// first; whether it then writes anything is not judged).
     pub fn check_revertible(&mut self, c: &CommitId) -> Result<()> {
         let c = *c;
@@ -604,6 +604,82 @@ mod tests {
             }
             assert!(matches!(remove_k(&mut lp, t, &x, keep), Err(Error::ContentGone(_))), "headers {headers}");
         }
+    }
+
+    // Delivers `from`'s commits `to` peer `to`, `id` without its parts on `leave`'s thing (held
+    // as missing there).
+    fn deliver_leaving(lp: &mut LocalPeer, from: usize, to: usize, id: osis_base::CommitId, leave: osis_base::Tid) {
+        for pk in lp.packages(from).unwrap() {
+            let bytes = if pk.id == id {
+                let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+                osis_commit::rewrite(&b, |ai| b.header.aspects[ai].tid == leave).encode()
+            } else {
+                pk.bytes.clone()
+            };
+            lp.peers[to].engine.ingest(&bytes, pk.blobs.clone()).unwrap();
+        }
+    }
+
+    // A and B, things of A's that B may write, register aspects `x` and `y`.
+    fn writable(seed: u64, n: usize) -> (LocalPeer, Vec<osis_base::Tid>, Ak, Ak) {
+        let mut lp = LocalPeer::new(2, seed, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let [a, b] = [0, 1].map(|i| lp.peers[i].engine.tid());
+        let ts: Vec<_> = (0..n).map(|_| lp.peers[0].engine.create_with_admin(&a).unwrap().0).collect();
+        for t in &ts {
+            lp.peers[0].engine.grant(t, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+        }
+        lp.sync_all().unwrap();
+        lp.advance(10);
+        (lp, ts, Ak::new("x:r.0").unwrap(), Ak::new("y:r.0").unwrap())
+    }
+
+    // spec/commits.md §7: an undo reverts every part of the commit or there is none, alike at
+    // every node. T writes `x` on P and `y` on Q; B holds T's part on Q as missing. A's undo
+    // reverts both; B's is `ContentGone`, never an undo of `x` alone, until the part arrives.
+    #[test]
+    fn undo_needs_every_part_held_spec_commits_7() {
+        let (mut lp, ts, x, y) = writable(963, 2);
+        let (p, q) = (ts[0], ts[1]);
+        let mut m = Mutation::new();
+        m.set(p, &x, &Value::Int(1)).unwrap().set(q, &y, &Value::Int(1)).unwrap();
+        let t = lp.peers[0].commit(m).unwrap().unwrap();
+        deliver_leaving(&mut lp, 0, 1, t, q);
+        lp.advance(10);
+        let b = &mut lp.peers[1].engine;
+        assert!(matches!(b.revert(&t), Err(Error::ContentGone(_))), "B holds T's part on Q as missing");
+        assert!(matches!(b.check_revertible(&t), Err(Error::ContentGone(_))));
+        assert_eq!(b.get(&p, &x).unwrap(), Some(Value::Int(1)), "nothing reverted");
+        lp.sync(0, 1).unwrap();
+        lp.peers[1].engine.check_revertible(&t).unwrap();
+        let a = &mut lp.peers[0].engine;
+        a.revert(&t).unwrap().unwrap();
+        assert_eq!((a.get(&p, &x).unwrap(), a.get(&q, &y).unwrap()), (None, None));
+    }
+
+    // spec/crdt.md §4.6: undoing a creation deletes the thing, alike at every node: B holds the
+    // header of A's later write of `y` on N but not its body; B's undo of N's creation resets `y`
+    // too (it may hold content), so once synced N has no content.
+    #[test]
+    fn undo_creation_resets_unfetched_writes_spec_crdt_4_6() {
+        let (mut lp, ts, x, y) = writable(964, 1);
+        let [a, b] = [0, 1].map(|i| lp.peers[i].engine.tid());
+        let mut m = Mutation::new();
+        let n = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(n, &x, &Value::Int(1)).unwrap().set(ts[0], &x, &Value::Int(1)).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        lp.peers[0].engine.grant(&n, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+        lp.advance(10);
+        let mut m = Mutation::new();
+        m.set(n, &y, &Value::Int(2)).unwrap();
+        let w = lp.peers[0].commit(m).unwrap().unwrap();
+        deliver_leaving(&mut lp, 0, 1, w, n);
+        lp.advance(10);
+        assert_eq!(lp.peers[1].engine.get(&n, &y).unwrap(), None, "B holds `y`'s header only");
+        lp.peers[1].engine.revert(&c).unwrap().unwrap();
+        lp.sync(1, 0).unwrap();
+        let e = &mut lp.peers[0].engine;
+        assert_eq!((e.get(&n, &x).unwrap(), e.get(&n, &y).unwrap(), e.get(&ts[0], &x).unwrap()), (None, None, None));
     }
 
     // spec/commits.md §7, spec/crdt.md §8: a snapshot holds an expiring delta's writes
