@@ -610,16 +610,37 @@ fn a_thing_wait_covers_a_source_further_up() {
     assert!(w.try_until(a.wait_synced(SyncScope::Thing(t)), STEP_MS, 4).is_none(), "resolved past a source that holds more");
 }
 
-// spec: none (API surface), notes/api.md Sync configuration and status: `Deliveries` counts a commit for a node over a
-// direct connection: a grant to a node has not left while nothing took it.
+// spec/sync.md §2: a grant to a node has no route outside pairing, so a commit stored for it is no delivery: an
+// earlier one holds up no later `Deliveries` wait.
 #[test]
-fn a_grant_to_a_node_stays_pending_under_deliveries() {
+fn a_grant_to_a_node_holds_up_no_later_delivery_wait() {
     let (mut w, a, _b, g) = co_readers(270, Role::Write);
     let c = pair(&w, &a, 272);
     w.run();
     w.until(a.wait_synced(SyncScope::Deliveries), STEP_MS, STEPS).unwrap();
     a.grant(g, c.node(), Role::Read, Default::default()).unwrap();
-    assert!(w.try_until(a.wait_synced(SyncScope::Deliveries), STEP_MS, 4).is_none(), "the grant has not left");
+    w.until(a.wait_synced(SyncScope::Deliveries), STEP_MS, STEPS).unwrap();
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: a thing that lost its carrier while this node still
+// holds a role on it is not forgotten, so the wait does not end as if it were.
+#[test]
+fn a_thing_wait_does_not_end_when_only_its_carrier_went() {
+    let (mut w, a, _b, g) = served_only(280, Role::Write);
+    let mut wr = a.write();
+    let t = wr.create().unwrap();
+    wr.commit().unwrap();
+    let mut wr = a.write();
+    wr.group(g).add(osis::Member::Item(t)).unwrap();
+    wr.commit().unwrap();
+    w.advance(pause_ms());
+    assert_eq!(state(&a, g), SyncState::Syncing, "the premise: a source not caught up");
+    let mut f = Box::pin(a.wait_synced(SyncScope::Thing(t)));
+    assert!(w.try_until(&mut f, STEP_MS, 2).is_none(), "the premise: pending");
+    let mut wr = a.write();
+    wr.group(g).remove(osis::Member::Item(t)).unwrap();
+    wr.commit().unwrap();
+    assert!(w.try_until(&mut f, STEP_MS, 4).is_none(), "ended though this node still holds the thing");
 }
 
 // spec: none (API surface), notes/api.md Sync configuration and status: a leave waits on what the leaver left, not on an

@@ -374,8 +374,7 @@ pub enum SyncScope {
     /// other node is connected on left out while one has a node connected; and the deliveries
     /// about it, what it holds or those groups. Done too once this node stops holding the thing.
     Thing(Tid),
-    /// This node's pending deliveries (grants and other inbox items, and commits for a node over a
-    /// direct connection, which a pairing channel carries), nothing else.
+    /// This node's pending deliveries (grants and other inbox items), nothing else.
     Deliveries,
 }
 
@@ -478,8 +477,8 @@ fn carrying(sync: &mut SyncEngine, status: &Status, t: Tid) -> Vec<Tid> {
 /// is `Synced`, and the deliveries about `t`, what it holds or those groups were taken. A sync
 /// ID with no source promises nothing, so it holds nothing up while another has one; with no
 /// source anywhere it waits. `was_carried`: something carried `t` when the wait began, so once
-/// nothing does this node has forgotten it (a leave or a removal) and nothing is left to wait
-/// for. Never carried, it waits, unless it is held only as a log.
+/// nothing does and this node holds no role on it, it has forgotten `t` (a leave or a removal) and
+/// nothing is left to wait for. Otherwise, carried by nothing, it waits, unless held only as a log.
 fn group_synced(sync: &mut SyncEngine, t: Tid, was_carried: bool) -> Option<Result<()>> {
     let st = match status_of(sync) {
         Ok(st) => st,
@@ -489,7 +488,7 @@ fn group_synced(sync: &mut SyncEngine, t: Tid, was_carried: bool) -> Option<Resu
     if groups.is_empty() {
         // held only as a log: nothing here will ever sync it
         let log_only = sync.receipts_only().clone().iter().any(|g| *g == t || sync.engine().closure(g).contains(&t));
-        return if log_only { Some(Err(Error::Unsynced { groups: vec![t] })) } else { was_carried.then_some(Ok(())) };
+        return if log_only { Some(Err(Error::Unsynced { groups: vec![t] })) } else { (was_carried && sync.engine().role_on(&t).is_none()).then_some(Ok(())) };
     }
     let all = scoped_labels(sync, Some(&groups));
     let sourced = live_labels(&all).any(|s| s.sources > 0);
@@ -1649,11 +1648,11 @@ impl Osis {
                 self.groups_synced(None, None)
             }
             SyncScope::Deliveries => {
-                if self.locked(|x| x.sync.deliveries_pending() + x.sync.direct_pending() == 0) {
+                if self.locked(|x| x.sync.deliveries_pending() == 0) {
                     return Pending::ready(Ok(()));
                 }
                 self.sync_labels();
-                self.wait_until(Box::new(move |sync, _| (sync.deliveries_pending() + sync.direct_pending() == 0).then_some(Ok(()))))
+                self.wait_until(Box::new(move |sync, _| (sync.deliveries_pending() == 0).then_some(Ok(()))))
             }
             SyncScope::Thing(t) => {
                 self.sync_labels();
