@@ -919,7 +919,7 @@ fn ephemeral_signal_commit_in_two_sections_all_delivered_spec_sync_5() {
     let rb = net.listen(b);
     let mut fires = Vec::new();
     for p in &blob.parts {
-        let one = osis_commit::CommitBlob { header: blob.header.clone(), signature: blob.signature, parts: vec![p.clone()] };
+        let one = osis_commit::CommitBlob { header: blob.header.clone(), sigs: blob.sigs.clone(), parts: vec![p.clone()] };
         assert!(net.engine(b).ingest_relay(one.clone()).unwrap());
         assert!(!net.engine(b).ingest_relay(one).unwrap(), "a copy");
         fires.extend(fired(&rb).into_iter().map(|(t, _, v, _)| (t, v)));
@@ -1464,7 +1464,7 @@ fn forged_copy_of_held_commit_refused_spec_sync_9() {
     junk.parts[0].delta.push(0);
     assert_eq!(net.engine(b).parts_genuine(&junk), Some(false), "a junk delta");
     let mut unsigned = blob;
-    unsigned.signature = osis_crypto::Signature([0; 64]);
+    unsigned.sigs.signature = osis_crypto::Signature([0; 64]);
     assert_eq!(net.engine(b).parts_genuine(&unsigned), Some(false), "a junk signature");
 }
 

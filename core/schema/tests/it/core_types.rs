@@ -42,7 +42,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
     )]);
     vec![
         ("created thing", "created.0", CREATED.encode(&CreationRecord::Thing { admin: tid(1), nonce: [2; 32], link: false })),
-        ("created key actor", "created.0", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32] })),
+        ("created key actor", "created.0", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32], account: false })),
         ("holders", "roles.0", ROLES.encode(&holders)),
         ("keys", "keys.0", KEYS.encode(&keys)),
         ("secrets", "secrets.0", SECRETS.encode(&secrets)),
@@ -119,7 +119,7 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
     assert_eq!(e.kind, PathErrorKind::UnknownCase(9));
     assert_eq!(e.path, p![tid(1), FieldId(0)]);
     // created.0: an unknown signing key case parks; both admin and key is bad input.
-    let rec = CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32] }.to_value();
+    let rec = CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32], account: false }.to_value();
     let Value::Map(mut f) = rec else { panic!() };
     f.insert(Value::Int(1), Value::Enum(7, Some(Box::new(Value::Bytes(vec![0; 40])))));
     assert_eq!(CREATED.decode(&Value::Map(f.clone())).unwrap_err().class(), ErrorClass::Parked);

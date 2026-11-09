@@ -23,6 +23,8 @@ mod oracle;
 mod tests_paged;
 #[cfg(test)]
 mod tests_steps;
+#[cfg(test)]
+mod tests_account;
 
 pub(crate) use unindex::unindex_commit;
 pub use memory::PART_OVERHEAD;
@@ -60,6 +62,9 @@ pub enum Reason {
     Parked,
     /// Stored pending; not examined since the node opened.
     Unexamined,
+    /// An account's commit at an epoch whose minting rotation is not held (spec/permissions.md
+    /// §5.5).
+    Epoch(CommitId),
 }
 
 /// What `ingest` did with a commit.
@@ -248,9 +253,40 @@ pub(crate) fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> B
     out
 }
 
+/// The key that signs a commit of `h` by `author` (spec/wire.md §4): a key actor's own; an
+/// account's, the key of the epoch the header names (its first by the creation record, another
+/// by the held rotation minting it). `Ok(None)`: that rotation is not held, so the commit is
+/// pending. Bad input: an author that is no key actor, an epoch or inner signature on a commit
+/// by another than an account or none on one, a rotation by another than an account, a merge
+/// signature count other than the rotation's names.
+pub(crate) fn author_key(core: &crate::engine::Core, h: &osis_commit::Header, sigs: &osis_commit::Sigs, author: &CreationRecord) -> Result<Option<VerifyingKey>> {
+    let CreationRecord::KeyActor { public_key, account, .. } = author else { return Err(Error::BadInput("author is not a key actor")) };
+    if *account != h.epoch.is_some() || *account != sigs.inner.is_some() || (!*account && h.rotation.is_some()) {
+        return Err(Error::BadInput("epoch or inner signature on a commit by another than an account, or none on one"));
+    }
+    if sigs.merge.len() != h.rotation.as_ref().map_or(0, |r| r.names.len()) {
+        return Err(Error::BadInput("a merge signature count other than the rotation's names"));
+    }
+    match h.epoch {
+        None => Ok(Some(VerifyingKey::from_slice(public_key)?)),
+        Some(e) if e == osis_commit::FIRST_EPOCH => Ok(Some(VerifyingKey::from_slice(public_key)?)),
+        Some(e) => Ok(core.rotation(&h.author, &e).map(|r| r.signing_key)),
+    }
+}
+
+/// Whether `blob`'s signature is its author's (`author_key`), the author's record from `record`:
+/// `None` when that cannot be told yet (no record, an epoch not held).
+pub(crate) fn signed_by_author(core: &crate::engine::Core, blob: &CommitBlob, id: &CommitId, record: Option<&CreationRecord>) -> Option<bool> {
+    match author_key(core, &blob.header, &blob.sigs, record?) {
+        Ok(Some(vk)) => Some(osis_commit::verify_signature(id, &blob.sigs.signature, &vk).is_ok()),
+        Ok(None) => None,
+        Err(_) => Some(false),
+    }
+}
+
 fn check_signature(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId, vk: &VerifyingKey) -> Result<()> {
     let _s = crate::costs::span("examine: signature");
-    if let Err(e) = osis_commit::verify_signature(id, &blob.signature, vk) {
+    if let Err(e) = osis_commit::verify_signature(id, &blob.sigs.signature, vk) {
         // the first copy's signature, kept while the author was away: a true copy may be held
         if tx.core.ix.pending.contains_key(id) {
             tx.core.redeliver.insert(*id);
@@ -296,8 +332,9 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if !blob.header.is_resolved() {
         // a held author's signature first: a false one costs no list. An author's record carried
         // by this commit waits for the lists: only the aspects say which part holds it
-        if let Some(CreationRecord::KeyActor { public_key, .. }) = tx.core.created(&blob.header.author) {
-            let vk = VerifyingKey::from_slice(public_key)?;
+        if let Some(rec) = tx.core.created(&blob.header.author).cloned()
+            && let Some(vk) = author_key(tx.core, &blob.header, &blob.sigs, &rec)?
+        {
             check_signature(tx, blob, id, &vk)?;
         }
         let Some(dedup) = tx.core.dedup(&blob.header.actor) else { return Ok(Exam::Pending(Reason::UnknownCreated(blob.header.actor), Vec::new())) };
@@ -313,8 +350,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let chain_rec = |t: &Tid, core: &crate::engine::Core| -> Option<CreationRecord> { core.created(t).cloned().or_else(|| carried.get(t).cloned()) };
     let record = |t: &Tid| -> Option<CreationRecord> { held.get(t).cloned().or_else(|| carried.get(t).cloned()) };
     let Some(author) = record(&h.author) else { return Ok(Exam::Pending(Reason::MissingChain(h.author), Vec::new())) };
-    let CreationRecord::KeyActor { public_key, .. } = &author else { return Err(Error::BadInput("author is not a key actor")) };
-    let vk = VerifyingKey::from_slice(public_key)?;
+    let Some(vk) = author_key(tx.core, &h, &blob.sigs, &author)? else { return Ok(Exam::Pending(Reason::Epoch(h.epoch.unwrap_or(osis_commit::FIRST_EPOCH)), Vec::new())) };
     check_signature(tx, blob, id, &vk)?;
     h.validate()?;
     // a frontier that does not decode is bad input, never a demotion without one (spec/wire.md
@@ -717,19 +753,18 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
         }
         blob.parts = rest;
         if !others.is_empty() {
-            keys::read_pending_boxes(tx, &CommitBlob { header: old.header.clone(), signature: old.signature, parts: others }, id)?;
+            keys::read_pending_boxes(tx, &CommitBlob { header: old.header.clone(), sigs: old.sigs.clone(), parts: others }, id)?;
         }
-        let signature = blob.signature;
+        let sigs = blob.sigs.clone();
         let mut merged = merge_parts(old, blob);
-        // a true copy's signature replaces the first once its author is known here, by what this copy
-        // brought (its `created.0`) or by anything else
-        if signature != merged.signature {
+        // a true copy's signatures replace the first once its author is known here, by what this
+        // copy brought (its `created.0`) or by anything else
+        if sigs != merged.sigs {
             let carried = carried_records(&merged.header, &merged, id);
             let author = tx.core.created(&merged.header.author).cloned().or_else(|| carried.get(&merged.header.author).cloned());
-            if let Some(CreationRecord::KeyActor { public_key, .. }) = author
-                && VerifyingKey::from_slice(&public_key).is_ok_and(|vk| osis_commit::verify_signature(id, &signature, &vk).is_ok())
-            {
-                merged.signature = signature;
+            let copy = CommitBlob { header: merged.header.clone(), sigs: sigs.clone(), parts: Vec::new() };
+            if signed_by_author(tx.core, &copy, id, author.as_ref()) == Some(true) {
+                merged.sigs = sigs;
             }
         }
         return Ok(merged);
@@ -855,6 +890,7 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, received: WallMs) 
         }
         Exam::Pending(r, _) => Err(Error::Misuse(match r {
             Reason::MissingChain(_) => "own commit not applicable: a record on its chain is missing",
+            Reason::Epoch(_) => "own commit not applicable: its epoch's rotation is missing",
             Reason::UnknownCreated(_) => "own commit not applicable: a thing's record is unknown",
             Reason::Drift => "own commit not applicable: ts drift",
             Reason::WaitBlobs => "own commit not applicable: blobs missing",
@@ -902,14 +938,9 @@ impl Engine {
                 None => known = false,
             }
         }
-        match record(&self.core, &h.author) {
-            Some(CreationRecord::KeyActor { public_key, .. }) => {
-                let vk = VerifyingKey::from_slice(&public_key).ok()?;
-                if osis_commit::verify_signature(&id, &blob.signature, &vk).is_err() {
-                    return Some(false);
-                }
-            }
-            Some(_) => return Some(false),
+        match signed_by_author(&self.core, blob, &id, record(&self.core, &h.author).as_ref()) {
+            Some(true) => {}
+            Some(false) => return Some(false),
             None => known = false,
         }
         known.then_some(true)

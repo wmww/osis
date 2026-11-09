@@ -34,7 +34,7 @@ pub fn key_actors(n: usize, salt: u8) -> Vec<(Tid, CreationRecord)> {
         .map(|i| {
             let mut nonce = [salt; 32];
             nonce[..8].copy_from_slice(&(i as u64).to_be_bytes());
-            let rec = CreationRecord::KeyActor { alg: 1, public_key: vec![i as u8; 32], nonce };
+            let rec = CreationRecord::KeyActor { alg: 1, public_key: vec![i as u8; 32], nonce, account: false };
             (rec.tid(), rec)
         })
         .collect();

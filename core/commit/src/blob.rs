@@ -1,5 +1,5 @@
-//! Commit blob plaintext `[Header, signature, [Section*]]` and its opened form, the commit's
-//! held parts (spec/wire.md §4).
+//! Commit blob plaintext `[Header, signature, Opt(inner), [signature*], [Section*]]` and its
+//! opened form, the commit's held parts (spec/wire.md §4).
 //!
 //! Confidentiality invariants (spec/wire.md §4, spec/sync.md §3):
 //! - a section holds the parts of one reader actor, sealed under a fresh random section key
@@ -18,7 +18,7 @@ use crate::header::{Header, LIMITS};
 use crate::Error;
 use osis_base::cbor::{MAJOR_ARRAY, MAJOR_UINT, encode_into, head};
 use osis_base::{CommitId, Tid, Value};
-use osis_crypto::{CryptoRngCore, SECTION_WRAP_LEN, Secret32, Signature};
+use osis_crypto::{CryptoRngCore, INNER_LEN, SECTION_WRAP_LEN, Secret32, Signature};
 use std::collections::BTreeMap;
 
 /// One delta of a commit blob: its aspect's index and canonical delta (or snapshot) bytes.
@@ -34,14 +34,51 @@ impl Part {
     }
 }
 
-/// A commit as a node holds it: the header, the signature and the parts it opened (its stored
-/// form, `[Header, signature, [Part*]]`; an inbox blob's payload too, spec/wire.md §9).
+/// A commit as a node holds it: the header, its signatures and the parts it opened (its stored
+/// form, `[Header, signature, Opt(inner), [signature*], [Part*]]`; an inbox blob's payload too,
+/// spec/wire.md §9).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitBlob {
     pub header: Header,
-    pub signature: Signature,
+    pub sigs: Sigs,
     /// Sorted by `ai`, distinct.
     pub parts: Vec<Part>,
+}
+
+/// A commit's signatures (spec/wire.md §4): the author's; an account's commit's sealed inner
+/// signature; a merge's signatures at the forks its rotation names, in that order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sigs {
+    pub signature: Signature,
+    pub inner: Option<[u8; INNER_LEN]>,
+    pub merge: Vec<Signature>,
+}
+
+impl Sigs {
+    /// A key actor's signature alone.
+    pub fn of(signature: Signature) -> Sigs {
+        Sigs { signature, inner: None, merge: Vec::new() }
+    }
+
+    /// Bytes of the three in a blob.
+    pub fn encoded_len(&self) -> usize {
+        let mut out = Vec::new();
+        self.encode_into(&mut out);
+        out.len()
+    }
+
+    fn encode_into(&self, out: &mut Vec<u8>) {
+        encode_into(&self.signature.to_value(), out);
+        encode_into(&Value::opt(self.inner.map(|i| Value::bytes(&i))), out);
+        encode_into(&Value::List(self.merge.iter().map(Signature::to_value).collect()), out);
+    }
+
+    fn from_values(sv: &Value, iv: &Value, mv: &Value) -> Result<Sigs, Error> {
+        let signature = Signature::from_value(sv)?;
+        let inner = crate::cbor::as_opt(iv)?.map(crate::cbor::as_bytes::<INNER_LEN>).transpose()?;
+        let merge = as_list(mv)?.iter().map(Signature::from_value).collect::<Result<Vec<_>, _>>()?;
+        Ok(Sigs { signature, inner, merge })
+    }
 }
 
 impl CommitBlob {
@@ -52,9 +89,9 @@ impl CommitBlob {
     /// Canonical bytes of the opened form (unpadded).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        head(&mut out, MAJOR_ARRAY, 3);
+        head(&mut out, MAJOR_ARRAY, 5);
         out.extend_from_slice(&self.header.encode());
-        encode_into(&self.signature.to_value(), &mut out);
+        self.sigs.encode_into(&mut out);
         encode_parts(&self.parts, &mut out);
         out
     }
@@ -75,11 +112,11 @@ impl CommitBlob {
 
     fn decode_as(b: &[u8], stored: bool) -> Result<CommitBlob, Error> {
         let v = osis_base::decode(b, &LIMITS)?;
-        let [hv, sv, pv] = as_list(&v)? else { return Err(Error::Malformed("commit blob arity")) };
+        let [hv, sv, iv, mv, pv] = as_list(&v)? else { return Err(Error::Malformed("commit blob arity")) };
         let header = if stored { Header::from_stored_value(hv)? } else { Header::from_value(hv)? };
-        let signature = Signature::from_value(sv)?;
+        let sigs = Sigs::from_values(sv, iv, mv)?;
         let parts = decode_parts(pv)?;
-        let blob = CommitBlob { header, signature, parts };
+        let blob = CommitBlob { header, sigs, parts };
         if blob.encode() != b {
             return Err(Error::Malformed("commit blob not canonical"));
         }
@@ -225,7 +262,7 @@ impl Section {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Envelope {
     pub header: Header,
-    pub signature: Signature,
+    pub sigs: Sigs,
     pub sections: Vec<Section>,
 }
 
@@ -237,9 +274,9 @@ impl Envelope {
     /// Canonical plaintext bytes (unpadded).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        head(&mut out, MAJOR_ARRAY, 3);
+        head(&mut out, MAJOR_ARRAY, 5);
         out.extend_from_slice(&self.header.encode());
-        encode_into(&self.signature.to_value(), &mut out);
+        self.sigs.encode_into(&mut out);
         encode_into(&Value::List(self.sections.iter().map(Section::to_value).collect()), &mut out);
         out
     }
@@ -248,9 +285,9 @@ impl Envelope {
     /// are checked against the header once resolved (`prefix_groups`).
     pub fn decode(b: &[u8]) -> Result<Envelope, Error> {
         let v = osis_base::decode(b, &LIMITS)?;
-        let [hv, sv, ss] = as_list(&v)? else { return Err(Error::Malformed("commit blob arity")) };
+        let [hv, sv, iv, mv, ss] = as_list(&v)? else { return Err(Error::Malformed("commit blob arity")) };
         let header = Header::from_value(hv)?;
-        let signature = Signature::from_value(sv)?;
+        let sigs = Sigs::from_values(sv, iv, mv)?;
         let sections = as_list(ss)?.iter().map(Section::from_value).collect::<Result<Vec<_>, _>>()?;
         if !strictly_ascending(&sections, |s| s.ais.first().copied()) {
             return Err(Error::Malformed("sections not sorted by first aspect"));
@@ -259,7 +296,7 @@ impl Envelope {
         if sections.iter().flat_map(|s| s.ais.iter()).any(|a| !seen.insert(*a)) {
             return Err(Error::Malformed("an aspect in two sections"));
         }
-        let e = Envelope { header, signature, sections };
+        let e = Envelope { header, sigs, sections };
         if e.encode() != b {
             return Err(Error::Malformed("commit blob not canonical"));
         }
@@ -284,7 +321,7 @@ impl Envelope {
             }
         }
         parts.sort_by_key(|p| p.ai);
-        Ok(Opened { commit: CommitBlob { header: self.header.clone(), signature: self.signature, parts }, sealed })
+        Ok(Opened { commit: CommitBlob { header: self.header.clone(), sigs: self.sigs.clone(), parts }, sealed })
     }
 }
 
@@ -327,5 +364,5 @@ pub fn seal_commit<K: Ord + Clone>(c: &CommitBlob, section_of: impl Fn(usize) ->
         sections.push(s.clone());
     }
     sections.sort_by_key(|s| s.ais.first().copied());
-    Ok(Envelope { header: c.header.clone(), signature: c.signature, sections })
+    Ok(Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections })
 }

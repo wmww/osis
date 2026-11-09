@@ -25,6 +25,16 @@ impl Core {
         self.ix.held.created(tid)
     }
 
+    /// The rotation of `account`'s signing chain minting epoch `e` (spec/crypto.md §9), if this
+    /// node holds that commit (whole or header only).
+    pub(crate) fn rotation(&self, account: &Tid, e: &CommitId) -> Option<osis_commit::RotationHeader> {
+        let m = self.ix.commits.get(e)?;
+        if m.view.author != *account {
+            return None;
+        }
+        m.header.rotation.clone()
+    }
+
     pub(crate) fn dedup(&self, tid: &Tid) -> Option<Secret32> {
         self.created(tid).map(|r| dedup_secret(r.nonce()))
     }
@@ -412,7 +422,10 @@ impl osis_keys::Held for NamesHeld<'_> {
         let Ok(roles) = osis_base::Ak::new("roles.0") else { return false };
         let Some(set) = self.core.ix.by_aspect.get(&(self.actor, roles)) else { return false };
         let ts = osis_base::Ts::from_u64(own.ts).unwrap_or_default();
-        set.range((ts, CommitId([0; 32]))..=(ts, CommitId([0xff; 32]))).any(|(_, c)| self.core.ix.commits.get(c).is_some_and(|m| m.view.author == own.node && m.view.kind.is_role()) && self.resolved(c))
+        set.range((ts, CommitId([0; 32]))..=(ts, CommitId([0xff; 32]))).any(|(_, c)| self.core.ix.commits.get(c).is_some_and(|m| m.view.author == own.author && m.view.kind.is_role() && m.header.blind == own.blind) && self.resolved(c))
+    }
+    fn marks(&self, own: &Own, key: &osis_keys::Key) -> bool {
+        self.core.ix.commits.get(&key.commit).is_some_and(|m| own.is_of(key, &m.header.blind))
     }
 }
 
@@ -813,7 +826,7 @@ mod tests {
         a.read.set_rotation(e2, osis_base::CommitId([9; 32]), [Epoch::new(1, [3; 32]).unwrap()].into());
         let k = |n: u8| osis_keys::Key { ts: u64::from(n), node: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
         a.read.set_snapshot(e2, osis_base::CommitId([8; 32]));
-        a.read.add_names(e2, osis_keys::Names { list: [Name { thing: Tid::from_bytes([6; 15]), key: k(5) }].into(), departs: Some(Own { ts: 7, node: Tid::from_bytes([7; 15]) }) });
+        a.read.add_names(e2, osis_keys::Names { list: [Name { thing: Tid::from_bytes([6; 15]), key: k(5) }].into(), departs: Some(Own { ts: 7, author: Tid::from_bytes([7; 15]), blind: [0; 16] }) });
         let b = decode_epochs(&encode_epochs(&a)).unwrap();
         assert_eq!(b, a);
         assert!(b.read.is_reading_only(&e2) && b.read.secret(&e2).is_none());

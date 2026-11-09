@@ -1,7 +1,7 @@
 //! The commit builder (spec/commits.md §1, spec/wire.md §4).
 
-use crate::blob::{CommitBlob, Part};
-use crate::header::{AspectEntry, ChunkEntry, DeleteKey, Form, Header, Kind, Links, ListField, PurgeItem, aspect_key, key_value, purge_value};
+use crate::blob::{CommitBlob, Part, Sigs};
+use crate::header::{AspectEntry, ChunkEntry, DeleteKey, Form, Header, Kind, Links, ListField, PurgeItem, RotationHeader, aspect_key, key_value, purge_value};
 use crate::groups::check_fits;
 use crate::keys::{Prefix, Secrets, delete_keys};
 use crate::lists::{BlobSink, write_list};
@@ -9,7 +9,7 @@ use osis_base::format::MAX_LIST_BYTES;
 use crate::Error;
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_AUTHOR, FORMAT_VERSION, MAX_BLOB};
 use osis_base::{Ak, BlobId, CommitId, Tid, Ts, Value};
-use osis_crypto::{CryptoRngCore, SigningSecret, delta_hash};
+use osis_crypto::{CryptoRngCore, Domain, Secret32, SigningSecret, delta_hash, seal_inner};
 use osis_schema::Retention;
 use std::collections::BTreeMap;
 
@@ -43,7 +43,8 @@ impl AspectWrite {
 pub struct CommitBuilder {
     pub kind: Kind,
     pub ts: Ts,
-    /// The signing key actor (a node, link key or recovery key).
+    /// The signing key actor: an account, or a key actor other than an account signing as
+    /// itself.
     pub author: Tid,
     /// The actor it acts for.
     pub actor: Tid,
@@ -60,8 +61,24 @@ pub struct CommitBuilder {
     pub blind: Option<[u8; 16]>,
     /// The ephemeral marker (an ephemeral commit, spec/commits.md §2).
     pub ephemeral: Option<crate::header::EphClass>,
+    /// An account author's epoch and inner signer (spec/wire.md §4): `build`'s key is then the
+    /// epoch's signing key.
+    pub account: Option<AccountSigner>,
+    /// A rotation of the account's signing chain, with a key per fork it names (in that
+    /// order) signing the merge at that fork's epoch.
+    pub rotation: Option<(RotationHeader, Vec<SigningSecret>)>,
     /// The blob bound each delta is checked against: `MAX_BLOB` (tests shrink it).
     pub(crate) max_blob: usize,
+}
+
+/// What an account's commit carries besides its epoch's signature (spec/wire.md §4): the epoch,
+/// and the node signing it with that epoch's inner secret.
+#[derive(Clone, Debug)]
+pub struct AccountSigner {
+    pub epoch: CommitId,
+    pub inner: Secret32,
+    pub node: Tid,
+    pub node_key: SigningSecret,
 }
 
 /// A built commit: the blob holding every delta.
@@ -81,7 +98,7 @@ fn build_err(e: Error) -> Error {
 
 impl CommitBuilder {
     pub fn new(kind: Kind, ts: Ts, author: Tid, actor: Tid, form: Form) -> CommitBuilder {
-        CommitBuilder { kind, ts, author, actor, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, ephemeral: None, max_blob: MAX_BLOB }
+        CommitBuilder { kind, ts, author, actor, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, ephemeral: None, account: None, rotation: None, max_blob: MAX_BLOB }
     }
 
     /// Builds the header (lists above `CHUNK_THRESHOLD` go by link through `sink`), signs it,
@@ -156,7 +173,12 @@ impl CommitBuilder {
             frontier: self.frontier,
             links: Links::default(),
             ephemeral: self.ephemeral,
+            epoch: self.account.as_ref().map(|a| a.epoch),
+            rotation: self.rotation.as_ref().map(|r| r.0.clone()),
         };
+        if self.rotation.as_ref().is_some_and(|(r, keys)| r.names.len() != keys.len()) {
+            return Err(Error::Build("a merge signature per named fork"));
+        }
         header.validate().map_err(build_err)?;
 
         // lists above the threshold go by link
@@ -186,9 +208,14 @@ impl CommitBuilder {
             header.links.set(f, Some(link));
         }
 
-        let signature = header.sign(key);
+        let id = header.id();
+        let sigs = Sigs {
+            signature: header.sign(key),
+            inner: self.account.as_ref().map(|a| seal_inner(&a.inner, &id.0, &a.node, &a.node_key)),
+            merge: self.rotation.iter().flat_map(|(_, keys)| keys.iter().map(|k| k.sign(Domain::Merge, &id.0))).collect(),
+        };
         let parts = deltas.into_iter().enumerate().map(|(ai, delta)| Part { ai, delta }).collect();
-        let commit = CommitBlob { header, signature, parts };
+        let commit = CommitBlob { header, sigs, parts };
         check_fits(&commit, self.max_blob)?;
         Ok(Built { commit, list_blobs })
     }

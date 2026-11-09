@@ -191,13 +191,14 @@ pub(crate) fn refreshes_deposit(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSe
 /// history boxes carrying the secrets this node holds and the names of the departures from `a`
 /// it holds (`departures::names`). `held` is this node's view (derived epochs for the switch to
 /// secrets of its own). `departs`: the same commit makes a departure from `a` (a removal's
-/// rotation): its names mark it by `ts` and signer, and the commit covers that departure itself
+/// rotation): its names mark it by `ts`, signer and blind, and the commit covers that departure itself
 /// (spec/crypto.md §4, covers).
 pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, holders: &[Recipient], departs: bool) -> Result<Rotation> {
     let secrets = secrets_in(tx, &a)?;
     let own = departs.then(|| {
         let ts = *m.ts.get_or_insert_with(|| tx.core.hlc.next());
-        osis_keys::Own { ts: ts.to_u64(), node: m.signer.unwrap_or(tx.core.id.tid()) }
+        let blind = *m.blind.get_or_insert_with(|| crate::engine::write::draw_blind(&mut *tx.rng));
+        osis_keys::Own { ts: ts.to_u64(), author: m.signer.unwrap_or(tx.core.id.tid()), blind }
     });
     let names = departures::names(tx.core, &a, own);
     let rot = rotate(&a, roles, held, &secrets, holders, &names, &mut *tx.rng)?;

@@ -46,7 +46,7 @@ pub fn blob_bound(c: &CommitBlob) -> usize {
     let h = &c.header;
     let things = h.aspects.iter().map(|a| a.tid).collect::<std::collections::BTreeSet<_>>().len().max(1);
     let groups = prefix_groups(h, 0..h.aspects.len()).map_or(h.aspects.len(), |g| g.len());
-    let fixed = 1usize.saturating_add(h.encode().len()).saturating_add(osis_base::encode(&c.signature.to_value()).len()).saturating_add(head_len(things as u64));
+    let fixed = 1usize.saturating_add(h.encode().len()).saturating_add(c.sigs.encoded_len()).saturating_add(head_len(things as u64));
     let section = Section { ais: Vec::new(), chain: vec![osis_base::Tid::from_bytes([0; 15]); osis_base::format::MAX_CHAIN_DEPTH], wrap: vec![0; osis_crypto::SECTION_WRAP_LEN], ciphertext: vec![0; 16 + 9] }.len();
     let heads = h.aspects.len().saturating_add(things).saturating_mul(head_len(h.aspects.len() as u64)).saturating_add(things.saturating_mul(8));
     let parts: usize = c.parts.iter().map(part_len).fold(0, usize::saturating_add);
@@ -71,5 +71,5 @@ pub fn strict_subset(a: &[usize], b: &[usize]) -> bool {
 /// Purge rewrite: the same header and signature without the deltas `drop` names (header-only
 /// when none remain). Its prefix groups are those of its remaining aspects (`prefix_groups`).
 pub fn rewrite(c: &CommitBlob, drop: impl Fn(usize) -> bool) -> CommitBlob {
-    CommitBlob { header: c.header.clone(), signature: c.signature, parts: c.parts.iter().filter(|p| !drop(p.ai)).cloned().collect() }
+    CommitBlob { header: c.header.clone(), sigs: c.sigs.clone(), parts: c.parts.iter().filter(|p| !drop(p.ai)).cloned().collect() }
 }

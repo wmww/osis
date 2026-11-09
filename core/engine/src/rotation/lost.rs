@@ -292,10 +292,8 @@ impl Engine {
 /// `author` and `ts` could be anyone's.
 pub(crate) fn authentic(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_base::CommitId, x: &Tid) -> bool {
     let h = &blob.header;
-    let Some(osis_base::CreationRecord::KeyActor { public_key, .. }) = core.created(&h.author) else { return false };
-    let Ok(vk) = osis_crypto::VerifyingKey::from_slice(public_key) else { return false };
     let mut interner = osis_crdt::Interner::new();
-    osis_commit::verify_signature(id, &blob.signature, &vk).is_ok()
+    crate::apply::signed_by_author(core, blob, id, core.created(&h.author)) == Some(true)
         && blob.parts.iter().all(|p| match h.aspects.get(p.ai) {
             Some(a) if a.tid == *x && a.ak.as_str() == "secrets.0" => core.dedup(x).is_some_and(|d| osis_commit::verify_part(h, id, p, &d, &mut interner, None).is_ok()),
             _ => true,

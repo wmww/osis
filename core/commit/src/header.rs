@@ -7,7 +7,8 @@ use osis_base::cbor::{MAJOR_ARRAY, MAJOR_BYTES};
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH, TAG_SET, TID_LEN};
 use osis_base::{Ak, BlobId, CommitId, Limits, Link, Reader, Tid, Ts, Value};
 use osis_crdt::DeltaKind;
-use osis_crypto::{Domain, Signature, SigningSecret, VerifyingKey};
+use osis_base::SIGNING_KEY_ED25519;
+use osis_crypto::{Domain, KemPublicKey, Signature, SigningSecret, VerifyingKey};
 use osis_schema::{History, PurgeBy, Retention};
 
 /// Decoder limits of commit structures (spec/wire.md §13).
@@ -245,6 +246,51 @@ pub struct Header {
     pub links: Links,
     /// Set on an ephemeral commit (kept in memory by every node, never stored).
     pub ephemeral: Option<EphClass>,
+    /// The epoch an account author signs at (spec/crypto.md §9): its minting rotation's commit
+    /// ID, `FIRST_EPOCH` for the first. Present iff the author is an account (judged by the
+    /// author's creation record).
+    pub epoch: Option<CommitId>,
+    /// A rotation of the account's signing chain (spec/wire.md §4): only on an account's role
+    /// commit. Its commit ID names the epoch it mints.
+    pub rotation: Option<RotationHeader>,
+}
+
+/// The first epoch of every account's signing chain, named by 32 zero bytes (spec/crypto.md §9).
+pub const FIRST_EPOCH: CommitId = CommitId([0; 32]);
+
+/// A header's `rotation` (spec/wire.md §4 `Rotation`): the new epoch's public keys, the epochs it
+/// supersedes (the header's `epoch` among them), the fork rotations it names (a merge), and the
+/// root of its list tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RotationHeader {
+    pub signing_key: VerifyingKey,
+    pub kem_key: KemPublicKey,
+    /// Ascending, distinct.
+    pub supersedes: Vec<CommitId>,
+    /// Ascending, distinct.
+    pub names: Vec<CommitId>,
+    pub list_root: [u8; 32],
+}
+
+impl RotationHeader {
+    fn to_value(&self) -> Value {
+        let ids = |v: &[CommitId]| Value::List(v.iter().map(|c| Value::bytes(&c.0)).collect());
+        Value::List(vec![Value::Enum(SIGNING_KEY_ED25519, Some(Box::new(Value::bytes(&self.signing_key.to_bytes())))), self.kem_key.to_value(), ids(&self.supersedes), ids(&self.names), Value::bytes(&self.list_root)])
+    }
+
+    fn from_value(v: &Value) -> Result<RotationHeader, Error> {
+        let [sk, kem, sup, names, root] = as_list(v)? else { return Err(Error::Malformed("rotation arity")) };
+        let signing_key = match sk {
+            Value::Enum(SIGNING_KEY_ED25519, Some(b)) => match b.as_ref() {
+                Value::Bytes(k) => VerifyingKey::from_slice(k).map_err(|_| Error::Malformed("rotation signing key"))?,
+                _ => return Err(Error::Malformed("rotation signing key")),
+            },
+            _ => return Err(Error::Malformed("rotation signing key")),
+        };
+        let kem_key = KemPublicKey::from_value(kem).map_err(|_| Error::Malformed("rotation kem key"))?;
+        let ids = |v: &Value| -> Result<Vec<CommitId>, Error> { as_list(v)?.iter().map(|c| as_bytes(c).map(CommitId)).collect() };
+        Ok(RotationHeader { signing_key, kem_key, supersedes: ids(sup)?, names: ids(names)?, list_root: as_bytes(root)? })
+    }
 }
 
 // ---- encode
@@ -348,6 +394,8 @@ impl Header {
             self.position(ListField::Keys),
             self.position(ListField::Frontier),
             Value::opt(self.ephemeral.map(|c| uint(c as u64))),
+            Value::opt(self.epoch.map(|c| Value::bytes(&c.0))),
+            Value::opt(self.rotation.as_ref().map(RotationHeader::to_value)),
         ])
     }
 
@@ -385,6 +433,11 @@ impl Header {
 /// Verifies the author's signature over a commit ID (spec/crypto.md §2).
 pub fn verify_signature(id: &CommitId, sig: &Signature, key: &VerifyingKey) -> Result<(), Error> {
     key.verify(Domain::Commit, &id.0, sig).map_err(|_| Error::BadSignature)
+}
+
+/// Verifies a merge's signature at a fork's epoch, by the key that fork mints (spec/crypto.md §9).
+pub fn verify_merge(id: &CommitId, sig: &Signature, fork_key: &VerifyingKey) -> bool {
+    fork_key.verify(Domain::Merge, &id.0, sig).is_ok()
 }
 
 // ---- decode
@@ -597,7 +650,7 @@ impl Header {
         if version != FORMAT_VERSION {
             return Err(Error::Malformed("format version"));
         }
-        let [_, author, actor, kind, ts, form, expires, aspects, chunks, purge, undoes, blind, keys, frontier, ephemeral] = items else {
+        let [_, author, actor, kind, ts, form, expires, aspects, chunks, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation] = items else {
             return Err(Error::Malformed("header arity"));
         };
         let mut h = Header {
@@ -617,6 +670,8 @@ impl Header {
             frontier: None,
             links: Links::default(),
             ephemeral: as_opt(ephemeral)?.map(|c| EphClass::from_id(as_uint(c)?).ok_or(Error::Malformed("ephemeral marker"))).transpose()?,
+            epoch: as_opt(epoch)?.map(|c| as_bytes(c).map(CommitId)).transpose()?,
+            rotation: as_opt(rotation)?.map(RotationHeader::from_value).transpose()?,
         };
         h.take_position(ListField::Aspects, aspects, stored)?;
         h.take_position(ListField::Chunks, chunks, stored)?;

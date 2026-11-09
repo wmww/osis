@@ -729,7 +729,7 @@ fn relay_copies_keep_out_nothing_spec_commits_4() {
         let mut relay = Relay::default();
         let mut first = CommitBlob::decode(&with_delta(&carrier.bytes, 4, 40)).unwrap();
         if junk_sig {
-            first.signature = osis_crypto::Signature::from_slice(&[9; 64]).unwrap();
+            first.sigs.signature = osis_crypto::Signature::from_slice(&[9; 64]).unwrap();
         }
         relay.give(&mut p, &first.encode(), Vec::new());
         assert!(!p.engine.commit_ids().contains(&carrier.id));
@@ -765,7 +765,7 @@ fn relay_copies_keep_out_nothing_spec_commits_4() {
     let (played, _, last, _, _) = relay_case();
     let other = CommitBlob::decode(&played.packs[last - 1].bytes).unwrap();
     let mut forged = CommitBlob::decode(&played.packs[last].bytes).unwrap();
-    forged.signature = other.signature;
+    forged.sigs = other.sigs.clone();
     let forged = forged.encode();
     for first in [&forged, &played.packs[last].bytes] {
         let second = if std::ptr::eq(first, &forged) { &played.packs[last].bytes } else { &forged };
@@ -930,7 +930,7 @@ fn false_signature_refused_before_linked_lists() {
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
     let mut forged = CommitBlob::decode(&pk.bytes).unwrap();
     assert!(forged.header.links.aspects.is_some(), "the aspect list goes by link");
-    forged.signature = osis_crypto::Signature::from_slice(&[9; 64]).unwrap();
+    forged.sigs.signature = osis_crypto::Signature::from_slice(&[9; 64]).unwrap();
     assert!(lp.peers[1].engine.ingest(&forged.encode(), Vec::new()).is_err());
     assert!(lp.peers[1].engine.pending().is_empty());
     // the true copy waits for them

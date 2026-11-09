@@ -20,6 +20,55 @@ impl KeyActorKeys {
     }
 }
 
+/// One epoch of an account's signing chain, all from its 32-byte seed (spec/crypto.md §3):
+/// signing and KEM keys as a key actor's, its inner secret and its role secrets.
+#[derive(Clone, Debug)]
+pub struct AccountEpochKeys {
+    pub signing: SigningSecret,
+    pub kem: KemSecret,
+    /// `kdf("inner secret", seed)`: keys the inner signatures of commits signed at this epoch.
+    pub inner: Secret32,
+}
+
+impl AccountEpochKeys {
+    pub fn from_seed(seed: &Secret32) -> AccountEpochKeys {
+        let KeyActorKeys { signing, kem } = KeyActorKeys::from_seed(seed);
+        AccountEpochKeys { signing, kem, inner: kdf(kdf::INNER_SECRET, seed.expose(), b"") }
+    }
+}
+
+/// Bytes of a sealed inner signature: the node's tid (15) and its signature (64), plus the tag.
+pub const INNER_LEN: usize = osis_base::format::TID_LEN + 64 + crate::aead::TAG_LEN;
+
+/// A node's inner signature on an account's commit (spec/crypto.md §3, spec/wire.md §4): the
+/// node's tid and its signature under `"osis v1 inner"` over the commit ID, sealed under
+/// `kdf("inner key", inner secret, commit ID)` with a zero nonce (one plaintext per key).
+pub fn seal_inner(inner: &Secret32, commit: &[u8; 32], node: &Tid, key: &SigningSecret) -> [u8; INNER_LEN] {
+    let sig = key.sign(Domain::Inner, commit);
+    let k = kdf(kdf::INNER, inner.expose(), commit);
+    let plain = [node.as_bytes().as_slice(), &sig.0].concat();
+    let mut out = [0u8; INNER_LEN];
+    // XChaCha20-Poly1305 of 79 bytes under a 32-byte key cannot fail
+    if let Ok(c) = crate::aead::seal(k.expose(), &[0; crate::aead::NONCE_LEN], &[], &plain) {
+        out.copy_from_slice(&c);
+    }
+    out
+}
+
+/// Opens an inner signature with the epoch's inner secret: the node's tid and signature, not yet
+/// checked against the node's key (`verify_inner`). `None` when it does not open.
+pub fn open_inner(inner: &Secret32, commit: &[u8; 32], sealed: &[u8; INNER_LEN]) -> Option<(Tid, Signature)> {
+    let k = kdf(kdf::INNER, inner.expose(), commit);
+    let plain = crate::aead::open(k.expose(), &[0; crate::aead::NONCE_LEN], &[], sealed).ok()?;
+    let (t, s) = plain.split_at_checked(osis_base::format::TID_LEN)?;
+    Some((Tid::from_bytes(t.try_into().ok()?), Signature(s.try_into().ok()?)))
+}
+
+/// Whether an opened inner signature is `node`'s over the commit.
+pub fn verify_inner(node: &VerifyingKey, commit: &[u8; 32], sig: &Signature) -> bool {
+    node.verify(Domain::Inner, commit, sig).is_ok()
+}
+
 /// A key actor's role secret `kdf("role <role>", seed)`, never rotated.
 pub fn key_actor_role_secret(seed: &Secret32, role: Role) -> Secret32 {
     kdf(kdf::role_purpose(role), seed.expose(), b"")
@@ -155,6 +204,25 @@ mod tests {
         assert_eq!(*thing_role_secret(&r[0], Role::Read, &t1).expose(), *kdf("thing read", r[0].expose(), &[1; 15]).expose());
         assert_ne!(role_kem(&r[0]).public(), role_kem(&r[1]).public());
         assert_ne!(creation_nonce(&seed), *dedup_secret(&creation_nonce(&seed)).expose());
+    }
+
+    // spec/crypto.md §3: an inner signature opens only under its epoch's inner secret and
+    // commit, and verifies only under its node's key.
+    #[test]
+    fn inner_signature_spec_crypto_3() {
+        let e = AccountEpochKeys::from_seed(&Secret32::from_bytes([3; 32]));
+        let node = KeyActorKeys::from_seed(&Secret32::from_bytes([4; 32]));
+        let (t, c) = (Tid::from_bytes([9; 15]), [6u8; 32]);
+        let sealed = seal_inner(&e.inner, &c, &t, &node.signing);
+        assert_eq!(sealed.len(), 95);
+        let (got, sig) = open_inner(&e.inner, &c, &sealed).expect("opens");
+        assert_eq!(got, t);
+        assert!(verify_inner(&node.signing.verifying_key(), &c, &sig));
+        assert!(!verify_inner(&e.signing.verifying_key(), &c, &sig), "another key");
+        assert!(open_inner(&e.inner, &[7; 32], &sealed).is_none(), "another commit");
+        let other = AccountEpochKeys::from_seed(&Secret32::from_bytes([5; 32]));
+        assert!(open_inner(&other.inner, &c, &sealed).is_none(), "another epoch");
+        assert_eq!(e.signing.verifying_key(), KeyActorKeys::from_seed(&Secret32::from_bytes([3; 32])).signing.verifying_key());
     }
 
     // spec/wire.md §6: tree-node hashes cover the level and the children's hashes and lengths

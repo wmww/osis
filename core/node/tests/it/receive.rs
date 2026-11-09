@@ -19,10 +19,10 @@ fn bad_signature_rejected_spec_commits_4() {
     new_thing(&mut lp, 0);
     let pks = packages(&mut lp, 0);
     let mut blob = CommitBlob::decode(&pks[2].bytes).unwrap();
-    let Value::Enum(c, Some(p)) = blob.signature.to_value() else { panic!() };
+    let Value::Enum(c, Some(p)) = blob.sigs.signature.to_value() else { panic!() };
     let Value::Bytes(mut sig) = *p else { panic!() };
     sig[0] ^= 1;
-    blob.signature = osis_crypto::Signature::from_value(&Value::Enum(c, Some(Box::new(Value::Bytes(sig))))).unwrap();
+    blob.sigs.signature = osis_crypto::Signature::from_value(&Value::Enum(c, Some(Box::new(Value::Bytes(sig))))).unwrap();
     for p in &pks[..2] {
         lp.deliver(1, p).unwrap();
     }

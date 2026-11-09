@@ -63,9 +63,9 @@ impl Departure {
 
 /// Whether names `n` of an epoch of `actor` name `d` (spec/crypto.md §4): its name is among
 /// them, or it is a departure from `actor` made by the rotation commit itself (its departs
-/// mark, by the commit's `ts` and signer), that signer holding `r` under `held`.
+/// mark, by the commit's `ts`, author and `blind`), that author holding `r` under `held`.
 pub fn named(n: &Names, actor: &Tid, r: Role, d: &Departure, held: &dyn Held) -> bool {
-    d.at.is_some_and(|at| n.list.contains(&at) || (at.thing == *actor && n.departs.is_some_and(|o| o.ts == at.key.ts && o.node == at.key.node) && held.holds(&at.key.node, r)))
+    d.at.is_some_and(|at| n.list.contains(&at) || (at.thing == *actor && n.departs.is_some_and(|o| held.marks(&o, &at.key)) && held.holds(&at.key.node, r)))
 }
 
 /// The covers rule (spec/crypto.md §4): epoch `e` of role `r` of `actor` covers `d` when `d`

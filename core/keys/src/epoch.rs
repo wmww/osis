@@ -668,6 +668,9 @@ mod tests {
         fn departed(&self, o: &crate::Own) -> bool {
             u8::try_from(o.ts).is_ok_and(|b| self.have.contains(&b))
         }
+        fn marks(&self, o: &crate::Own, k: &crate::Key) -> bool {
+            o.ts == k.ts && o.author == k.node
+        }
         fn publishes(&self, _: Role, _: &Epoch, _: &crate::NamesDigest) -> bool {
             true
         }
@@ -677,7 +680,7 @@ mod tests {
     fn names(cs: &[u8], own: Option<u8>) -> Names {
         let t = Tid::from_bytes([5; 15]);
         let list = cs.iter().map(|c| crate::Name { thing: t, key: crate::Key { ts: u64::from(*c), node: t, commit: cid(*c) } }).collect();
-        Names { list, departs: own.map(|ts| crate::Own { ts: u64::from(ts), node: t }) }
+        Names { list, departs: own.map(|ts| crate::Own { ts: u64::from(ts), author: t, blind: [0; 16] }) }
     }
 
     // spec/crypto.md §4 (established; names): an epoch established by its rotation commit or a

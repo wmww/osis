@@ -171,6 +171,9 @@ fn missing_box_covers_nothing() {
         fn departed(&self, _: &osis_keys::Own) -> bool {
             true
         }
+        fn marks(&self, o: &osis_keys::Own, k: &osis_keys::Key) -> bool {
+            o.ts == k.ts && o.author == k.node
+        }
         fn publishes(&self, _: Role, _: &osis_crypto::Epoch, _: &osis_keys::NamesDigest) -> bool {
             true
         }

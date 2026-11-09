@@ -76,7 +76,7 @@ impl History {
     fn entries(&self, i: usize) -> Vec<Names> {
         let c = &self.commits[i];
         let Kind::Rotation { departs, .. } = c.kind else { return Vec::new() };
-        let own = departs.then_some(Own { ts: key(i).ts, node: key(i).node });
+        let own = departs.then_some(Own { ts: key(i).ts, author: key(i).node, blind: [0; 16] });
         let names = |ks: &BTreeSet<usize>| Names { list: ks.iter().map(|k| Name { thing: THING, key: key(*k) }).collect(), departs: own };
         std::iter::once(names(&c.knew)).chain(c.forged.iter().map(|f| Names { departs: None, ..names(f) })).collect()
     }
@@ -101,6 +101,9 @@ impl Held for Observer<'_> {
     }
     fn departed(&self, own: &Own) -> bool {
         self.0.met(own.ts as usize - 1)
+    }
+    fn marks(&self, o: &Own, k: &osis_keys::Key) -> bool {
+        o.ts == k.ts && o.author == k.node
     }
     fn publishes(&self, _: Role, _: &Epoch, _: &osis_keys::NamesDigest) -> bool {
         true

@@ -67,6 +67,8 @@ prop_compose! {
             frontier: frontier.map(|n| Value::Map([(Value::Int(0), Value::Int(n))].into_iter().collect())),
             links: l,
             ephemeral: None,
+            epoch: None,
+            rotation: None,
         };
         // the lists' rule: sorted and distinct
         let by_item = |b: Value| osis_base::encode(&b);

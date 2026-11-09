@@ -81,17 +81,19 @@ pub enum CreationRecord {
     /// start, fixed by the tid; a 32-byte random nonce; `link`: it is a share link's actor K
     /// (spec/permissions.md §7).
     Thing { admin: Tid, nonce: [u8; 32], link: bool },
-    /// Key actor (admin of itself): `signing_key` enum case and key bytes, and a 32-byte nonce.
-    /// Only `alg` 1 (ed25519, 32 bytes) is readable in this build; other cases can be built (a
-    /// later suite) but `from_value` refuses them.
-    KeyActor { alg: u64, public_key: Vec<u8>, nonce: [u8; 32] },
+    /// Key actor (admin of itself): `signing_key` enum case and key bytes, and a 32-byte nonce;
+    /// `account`: an account, whose key is its first epoch's (spec/permissions.md §1). Only
+    /// `alg` 1 (ed25519, 32 bytes) is readable in this build; other cases can be built (a later
+    /// suite) but `from_value` refuses them.
+    KeyActor { alg: u64, public_key: Vec<u8>, nonce: [u8; 32], account: bool },
 }
 
-// spec/wire.md §3: `creation = struct { admin 0: tid, key 1: signing_key, nonce 2: blob, link 3: bool }`.
+// spec/wire.md §3: `creation = struct { admin 0: tid, key 1: signing_key, nonce 2: blob, link 3: bool, account 4: bool }`.
 const REC_ADMIN: i64 = 0;
 const REC_KEY: i64 = 1;
 const REC_NONCE: i64 = 2;
 const REC_LINK: i64 = 3;
+const REC_ACCOUNT: i64 = 4;
 /// `signing_key` case ed25519 (spec/wire.md §3).
 pub const SIGNING_KEY_ED25519: u64 = 1;
 
@@ -107,16 +109,19 @@ impl CreationRecord {
                     m.insert(Value::Int(REC_LINK), Value::Bool(true));
                 }
             }
-            CreationRecord::KeyActor { alg, public_key, nonce } => {
+            CreationRecord::KeyActor { alg, public_key, nonce, account } => {
                 let key = Value::Enum(*alg, Some(Box::new(Value::Bytes(public_key.clone()))));
                 m.insert(Value::Int(REC_KEY), key);
                 m.insert(Value::Int(REC_NONCE), Value::Bytes(nonce.to_vec()));
+                if *account {
+                    m.insert(Value::Int(REC_ACCOUNT), Value::Bool(true));
+                }
             }
         }
         Value::Map(m)
     }
     /// Reads a record: exactly one of admin and key, a 32-byte nonce, `link` only `true` beside
-    /// admin, no other field, key an ed25519 `signing_key` of 32 bytes. `None` is bad input (an unknown key case included:
+    /// admin, `account` only `true` beside key, no other field, key an ed25519 `signing_key` of 32 bytes. `None` is bad input (an unknown key case included:
     /// callers that must park it check the enum case themselves).
     pub fn from_value(v: &Value) -> Option<CreationRecord> {
         let Value::Map(m) = v else { return None };
@@ -129,11 +134,16 @@ impl CreationRecord {
             Some(Value::Bool(true)) if m.contains_key(&Value::Int(REC_ADMIN)) => true,
             _ => return None,
         };
-        match (m.get(&Value::Int(REC_ADMIN)), m.get(&Value::Int(REC_KEY)), m.len() - usize::from(link)) {
+        let account = match m.get(&Value::Int(REC_ACCOUNT)) {
+            None => false,
+            Some(Value::Bool(true)) if m.contains_key(&Value::Int(REC_KEY)) => true,
+            _ => return None,
+        };
+        match (m.get(&Value::Int(REC_ADMIN)), m.get(&Value::Int(REC_KEY)), m.len() - usize::from(link) - usize::from(account)) {
             (Some(Value::Tid(admin)), None, 2) => Some(CreationRecord::Thing { admin: *admin, nonce, link }),
             (None, Some(Value::Enum(SIGNING_KEY_ED25519, Some(p))), 2) => match p.as_ref() {
                 Value::Bytes(pk) if pk.len() == 32 => {
-                    Some(CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: pk.clone(), nonce })
+                    Some(CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: pk.clone(), nonce, account })
                 }
                 _ => None,
             },
@@ -153,6 +163,10 @@ impl CreationRecord {
     /// Whether this is a share link's actor K (spec/permissions.md §7).
     pub fn is_link(&self) -> bool {
         matches!(self, CreationRecord::Thing { link: true, .. })
+    }
+    /// Whether this is an account's (spec/permissions.md §1): a key actor with epochs.
+    pub fn is_account(&self) -> bool {
+        matches!(self, CreationRecord::KeyActor { account: true, .. })
     }
     pub fn first_admin(&self) -> Option<Tid> {
         match self {
@@ -516,7 +530,21 @@ mod tests {
         };
         assert!(with(&|m| { m.insert(Value::Int(REC_LINK), Value::Bool(false)); }).is_none());
         assert!(with(&|m| { m.remove(&Value::Int(REC_ADMIN)); m.insert(Value::Int(REC_KEY), Value::Enum(1, Some(Box::new(Value::Bytes(vec![9; 32]))))); }).is_none());
-        let k = CreationRecord::KeyActor { alg: 1, public_key: vec![9; 32], nonce: [1; 32] };
+        let k = CreationRecord::KeyActor { alg: 1, public_key: vec![9; 32], nonce: [1; 32], account: false };
+        // an account: field 4, only ever true and only beside key, in the tid
+        let a = CreationRecord::KeyActor { alg: 1, public_key: vec![9; 32], nonce: [1; 32], account: true };
+        assert!(a.is_account() && !k.is_account());
+        assert_ne!(a.tid(), k.tid());
+        assert_eq!(CreationRecord::from_value(&a.to_value()), Some(a.clone()));
+        let Value::Map(am) = a.to_value() else { panic!() };
+        let mut f = am.clone();
+        f.insert(Value::Int(REC_ACCOUNT), Value::Bool(false));
+        assert!(CreationRecord::from_value(&Value::Map(f)).is_none());
+        let mut f = l.to_value();
+        if let Value::Map(m) = &mut f {
+            m.insert(Value::Int(REC_ACCOUNT), Value::Bool(true));
+        }
+        assert!(CreationRecord::from_value(&f).is_none(), "account beside admin");
         let kb = hex(&format!("a2 01 d90651 82 01 5820{} 02 5820{}", "09".repeat(32), "01".repeat(32)));
         for (rec, bytes) in [(r, rb), (k, kb)] {
             assert_eq!(encode(&rec.to_value()), bytes);

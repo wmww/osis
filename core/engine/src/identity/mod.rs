@@ -2,12 +2,9 @@
 //! device gives the node's signing and KEM keys, its creation record and tid. Creation records
 //! of new things (spec/data-model.md §1).
 
-use osis_base::{CreationRecord, Tid};
+use osis_base::{CreationRecord, SIGNING_KEY_ED25519, Tid};
 use osis_crypto::{CryptoRngCore, KeyActorKeys, Secret32, creation_nonce};
 use osis_keys::ActorEpochs;
-
-/// `signing_key` case ed25519 (spec/wire.md §3).
-const SIGNING_KEY_ED25519: u64 = 1;
 
 /// A key actor this node signs as: the node itself.
 #[derive(Clone)]
@@ -51,7 +48,7 @@ impl Identity {
 
 /// The creation record of a key actor with these keys (spec/wire.md §3).
 pub fn key_actor_record(keys: &KeyActorKeys, seed: &Secret32) -> CreationRecord {
-    CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: keys.signing.verifying_key().to_bytes().to_vec(), nonce: creation_nonce(seed) }
+    CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: keys.signing.verifying_key().to_bytes().to_vec(), nonce: creation_nonce(seed), account: false }
 }
 
 /// A fresh record for a link's actor K of `admin` (spec/permissions.md §7).

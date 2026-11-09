@@ -388,7 +388,7 @@ mod tests {
         CreationRecord::Thing { admin, nonce: [n; 32], link: false }
     }
     fn actor(n: u8) -> CreationRecord {
-        CreationRecord::KeyActor { alg: 1, public_key: vec![n; 32], nonce: [n; 32] }
+        CreationRecord::KeyActor { alg: 1, public_key: vec![n; 32], nonce: [n; 32], account: false }
     }
     fn grant(id: u64, by: Tid, on: Tid, to: Tid, role: Role) -> RoleCommit {
         let mut c = [0; 32];

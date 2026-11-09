@@ -20,10 +20,14 @@ pub enum Domain {
     CoReaderOpen,
     /// A box's possession signature, by a keyset's possession key (spec/crypto.md §4).
     Possession,
+    /// A node's inner signature over an account's commit ID (spec/permissions.md §5.5).
+    Inner,
+    /// A merge's signature at a fork's epoch, over the merge's commit ID (spec/crypto.md §9).
+    Merge,
 }
 
 impl Domain {
-    pub const ALL: [Domain; 9] = [
+    pub const ALL: [Domain; 11] = [
         Domain::Commit,
         Domain::LabelRegister,
         Domain::LabelOpen,
@@ -33,6 +37,8 @@ impl Domain {
         Domain::LanAnnounce,
         Domain::CoReaderOpen,
         Domain::Possession,
+        Domain::Inner,
+        Domain::Merge,
     ];
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -45,6 +51,8 @@ impl Domain {
             Domain::LanAnnounce => "osis v1 lan announce",
             Domain::CoReaderOpen => "osis v1 co-reader open",
             Domain::Possession => "osis v1 possession",
+            Domain::Inner => "osis v1 inner",
+            Domain::Merge => "osis v1 merge",
         }
     }
     fn message(self, digest: &[u8; 32]) -> Vec<u8> {

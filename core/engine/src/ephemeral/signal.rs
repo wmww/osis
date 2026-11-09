@@ -12,10 +12,9 @@ use super::Written;
 use crate::engine::listing::{CommitRow, PartBody, PartRow};
 use crate::events::CommitChange;
 use osis_base::format::MAX_DRIFT_MS;
-use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value};
+use osis_base::{Ak, CommitId, Role, Tid, Ts, Value};
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, EphClass, Form, Kind, MemoryBlobs};
 use osis_crdt::{AnyView, Fragment, Frontiers, Interner, Op, PathOp, Snapshot, Source, Unpaged, Writer};
-use osis_crypto::VerifyingKey;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Relay-only commit IDs remembered as delivered (notes/ephemeral.md Bounds). Resource bound
@@ -116,8 +115,11 @@ impl Engine {
             return Ok(false);
         }
         // its author's record must be held here (a relay never waits)
-        let Some(CreationRecord::KeyActor { public_key, .. }) = self.core.created(&h.author) else { return Ok(false) };
-        osis_commit::verify_signature(&id, &blob.signature, &VerifyingKey::from_slice(public_key)?)?;
+        match crate::apply::signed_by_author(&self.core, &blob, &id, self.core.created(&h.author)) {
+            Some(true) => {}
+            Some(false) => return Err(crate::Error::BadInput("signature")),
+            None => return Ok(false),
+        }
         h.validate()?;
         let core = &self.core;
         let mut interner = Interner::new();

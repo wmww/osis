@@ -208,7 +208,7 @@ fn junk_signature_with_the_author_away_spec_commits_4() {
         assert!(!before.contains(&c));
         let good = plain(&mut x.net, d, &c);
         let mut forged = CommitBlob::decode(&good).unwrap();
-        forged.signature = osis_crypto::Signature::from_slice(&[9; 64]).unwrap();
+        forged.sigs.signature = osis_crypto::Signature::from_slice(&[9; 64]).unwrap();
         let forged = forged.encode();
         let order = if junk_first { [forged.clone(), good.clone()] } else { [good.clone(), forged.clone()] };
         let mut forged_entry = None;
@@ -595,7 +595,7 @@ fn relay_seed(seed: u64) {
                         let i = rng.below(j.parts.len() as u64) as usize;
                         j.parts[i].delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![rng.below(250) as u8; 40])]));
                     }
-                    _ => j.signature = osis_crypto::Signature::from_slice(&[rng.below(250) as u8 + 1; 64]).unwrap(),
+                    _ => j.sigs.signature = osis_crypto::Signature::from_slice(&[rng.below(250) as u8 + 1; 64]).unwrap(),
                 }
                 at += 1;
                 seal(&mut x, *from, &j.encode(), at);

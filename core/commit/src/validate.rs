@@ -144,6 +144,17 @@ impl Header {
         if self.frontier.is_some() && kind != Kind::Role {
             return Err(Error::Invalid("frontier outside a role commit"));
         }
+        // a rotation of an account's signing chain: on a role commit signed at an epoch it
+        // supersedes, its lists ascending and distinct (spec/wire.md §4 field 16)
+        if let Some(r) = &self.rotation {
+            if kind != Kind::Role {
+                return Err(Error::Invalid("rotation outside a role commit"));
+            }
+            ord(strictly_ascending(&r.supersedes, |c| *c) && strictly_ascending(&r.names, |c| *c), "rotation lists not sorted and distinct")?;
+            if !self.epoch.is_some_and(|e| r.supersedes.contains(&e)) {
+                return Err(Error::Invalid("rotation not superseding the epoch it is signed at"));
+            }
+        }
         // an ephemeral commit is a content commit or a content snapshot (each in its form, as a
         // durable one) and carries nothing a stored commit is for (spec/commits.md §2, §3)
         if let Some(c) = self.ephemeral {

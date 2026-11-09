@@ -80,7 +80,10 @@ pub(super) fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::
         m.ts = Some(ts);
         crate::flows::edges::removal(tx, &mut m, g, me)?;
         match how {
-            Forge::Mark => forged_entry(tx, &mut m, g, &Names { departs: Some(Own { ts: ts.to_u64(), node: me }), ..Names::default() })?,
+            Forge::Mark => {
+                let blind = *m.blind.get_or_insert_with(|| crate::engine::write::draw_blind(&mut *tx.rng));
+                forged_entry(tx, &mut m, g, &Names { departs: Some(Own { ts: ts.to_u64(), author: me, blind }), ..Names::default() })?
+            }
             Forge::Rotating => {
                 let holders = super::recipients(tx, &me, &g, &[(me, None)])?.ok_or(super::SEAL_WAITS)?;
                 let rot = super::rotation_into(tx, &mut m, g, &[Role::Read, Role::Write].into(), &held, &holders, true)?;
@@ -143,7 +146,7 @@ fn leaver_uncovered_as(seed: u64, role: Role, how: Forge) {
         if role == Role::Write {
             let e = lp.peers[i].engine.epochs(&g).unwrap();
             let opened = match how {
-                Forge::Mark => e.read.epochs().any(|(_, x)| x.names.iter().any(|n| n.departs.is_some_and(|o| o.node == tids[W]))),
+                Forge::Mark => e.read.epochs().any(|(_, x)| x.names.iter().any(|n| n.departs.is_some_and(|o| o.author == tids[W]))),
                 Forge::Listed | Forge::Backdated => e.read.epochs().any(|(_, x)| x.names.iter().any(|n| n.list.iter().any(|m| m.key.node == tids[W]))),
                 Forge::None | Forge::Rotating => true,
             };

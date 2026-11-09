@@ -19,14 +19,18 @@ type signing_key = enum {
 
 /// How a thing was created (spec/wire.md §3). Exactly one of `admin` and `key` is set:
 /// - `admin`: the thing's first admin, who made it;
-/// - `key`: the thing is a key actor, a device, recovery key or share-link key identified by
-///   this public key. It has no admin; whoever holds the key's secret acts as it.
+/// - `key`: the thing is a key actor, an account, device, recovery key or share-link key
+///   identified by this public key (an account's: its first). It has no admin; whoever holds
+///   the key's secret acts as it.
 /// `link`, only ever set to true and only beside `admin`: the thing is a share link's actor.
+/// `account`, only ever set to true and only beside `key`: the thing is an account, whose keys
+/// change by rotations (spec/crypto.md §9).
 type creation = struct {
     admin 0: tid,
     key 1: signing_key,
     nonce 2: blob,
     link 3: bool,
+    account 4: bool,
 };
 
 guaranteed purgeable_by(nobody) keep_history(forever) aspect created.0: creation;
@@ -217,6 +221,16 @@ purgeable_by(admin) aspect secrets.0: struct {
     boxes 0: map<box_key, box>,
     history 1: map<history_key, blob>,
 };
+
+/// An account's epoch seeds, on its devices actor (spec/data-model.md §9): per epoch, its
+/// 32-byte signing public key to its 32-byte seed. One entry put per rotation.
+purgeable_by(admin) aspect account.0: struct {
+    seeds 0: map<blob, blob> = {},
+};
+
+/// An account's listings (spec/permissions.md §5.5): by a rotation's 32-byte commit ID, the
+/// account's own commits at the epochs it closed that this listing names. Entries only put.
+purgeable_by(admin) aspect listing.0: map<blob, set<blob>>;
 
 // ---- Syncing ----
 // A synced group is stored at hosts under a label: hosts hold encrypted data they cannot read,

@@ -392,6 +392,8 @@ fn fallback_header(v: &View) -> Header {
         frontier: None,
         links: Default::default(),
         ephemeral: None,
+        epoch: None,
+        rotation: None,
     }
 }
 

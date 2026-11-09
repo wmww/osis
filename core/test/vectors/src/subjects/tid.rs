@@ -53,7 +53,7 @@ pub fn key_actor() -> VecFile {
     let mut cases = Vec::new();
     for (name, nonce) in [("node", [4u8; 32]), ("link key", osis_crypto::creation_nonce(&seed))] {
         // alg 1: `signing_key` case ed25519 (spec/wire.md §3).
-        let rec = CreationRecord::KeyActor { alg: 1, public_key: key.to_bytes().to_vec(), nonce };
+        let rec = CreationRecord::KeyActor { alg: 1, public_key: key.to_bytes().to_vec(), nonce, account: false };
         let bytes = encode(&rec.to_value());
         let tid = rec.tid();
         assert_eq!(CreationRecord::from_value(&rec.to_value()), Some(rec.clone()));

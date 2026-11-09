@@ -86,7 +86,7 @@ fn record(name: &str, spec: &str, c: &CommitBlob) -> Record {
     }
     r.with("header", hex(&c.header.encode()))
         .with("commit-id", hex(&c.id().0))
-        .with("signature", hex(&c.signature.0))
+        .with("signature", hex(&c.sigs.signature.0))
         .with("blob", hex(&c.encode()))
 }
 
@@ -292,7 +292,7 @@ fn more_accepted() -> Vec<Record> {
         assert!(framed.commitments().count() == 1 && framed.commitments().all(|x| x[0] == 2));
         r = r.with(&format!("list-blob-{i}"), format!("{} {} {} {}", hex(&id.0), hex(&p.salt), hex(&framed.commitments().copied().collect::<Vec<_>>().concat()), hex(plain)));
     }
-    out.push(r.with("header", hex(&c.header.encode())).with("commit-id", hex(&c.id().0)).with("signature", hex(&c.signature.0)).with("blob", hex(&c.encode())));
+    out.push(r.with("header", hex(&c.header.encode())).with("commit-id", hex(&c.id().0)).with("signature", hex(&c.sigs.signature.0)).with("blob", hex(&c.encode())));
     out
 }
 

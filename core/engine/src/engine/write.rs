@@ -67,6 +67,8 @@ pub struct Mutation {
     pub(crate) deleting: std::collections::BTreeSet<Tid>,
     /// The commit's `ts`, when taken before the commit (an ephemeral batch's, a revert's).
     pub(crate) ts: Option<Ts>,
+    /// The header's blind, when taken before the commit (a rotation's departs mark names it).
+    pub(crate) blind: Option<[u8; 16]>,
     /// Memberships (thing, group) the commit must not leave unsynced (`require_synced`).
     pub(crate) synced: Vec<(Tid, Tid)>,
 }
@@ -83,7 +85,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, synced: Vec::new() }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new() }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -111,6 +113,12 @@ impl Mutation {
     /// Takes the commit's `ts` now, from the engine's clock, and returns it.
     pub fn take_ts(&mut self, e: &mut crate::Engine) -> Ts {
         *self.ts.get_or_insert_with(|| e.core.hlc.next())
+    }
+
+    /// The header's blind, drawn now (tests forging a departs mark, spec/crypto.md §4).
+    #[doc(hidden)]
+    pub fn take_blind(&mut self, e: &mut crate::Engine) -> [u8; 16] {
+        *self.blind.get_or_insert_with(|| e.run(|tx| Ok(draw_blind(&mut *tx.rng))).unwrap_or_default())
     }
 
     /// Commit-form dots (spec/commits.md §3).
@@ -682,7 +690,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             e => Err(e),
         });
     }
-    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: draw_blind(&mut *tx.rng), expires: None, restores: false };
+    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false };
     if !m.unchecked {
         check_acts(tx.core, node, &|t| base.creates.get(t), &base.actor, ts)?;
     }

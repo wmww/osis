@@ -30,7 +30,7 @@ pub(crate) struct Opened {
 
 impl Opened {
     fn new(prefix: &osis_label::Prefix, c: &osis_commit::CommitBlob, things: Vec<osis_label::InboxThing>) -> Opened {
-        Opened { until: prefix.expiry().map_or(u64::MAX, |w| w.0), ais: c.parts.iter().map(|p| p.ai).collect(), things, author: c.header.author, signature: c.signature }
+        Opened { until: prefix.expiry().map_or(u64::MAX, |w| w.0), ais: c.parts.iter().map(|p| p.ai).collect(), things, author: c.header.author, signature: c.sigs.signature }
     }
 }
 

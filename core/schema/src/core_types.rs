@@ -11,7 +11,7 @@ use osis_base::{Ak, CommitId, CreationRecord, LabelId, Role, Tid, Ts, Value, Wal
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
-pub const ROLE_CLASS: [&str; 4] = ["roles.0", "secrets.0", "keys.0", "label.0"];
+pub const ROLE_CLASS: [&str; 6] = ["roles.0", "secrets.0", "keys.0", "label.0", "account.0", "listing.0"];
 
 pub fn is_role_class(ak: &str) -> bool {
     ROLE_CLASS.contains(&ak)
@@ -373,6 +373,27 @@ codec_struct! {
     pub struct Tag { 0 color: Option<String> }
 }
 
+/// `account.0` on an account's devices actor (spec/data-model.md §9): per epoch, its signing
+/// public key to its seed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Account {
+    pub seeds: BTreeMap<Vec<u8>, Vec<u8>>,
+}
+
+#[doc(hidden)]
+impl Codec for Account {
+    fn to_value(&self) -> Value {
+        rt::struct_value(vec![(0, self.seeds.to_value())])
+    }
+    fn from_value(v: &Value) -> Result<Self, PathError> {
+        let m = rt::struct_map(v)?;
+        Ok(Account { seeds: if m.contains_key(&0u64.to_value()) { rt::field(m, 0)? } else { BTreeMap::new() } })
+    }
+}
+
+/// `listing.0`: a rotation's commit ID to the commit IDs a listing names (spec/permissions.md §5.5).
+pub type Listings = BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>;
+
 pub type Holders = BTreeMap<Tid, Edge>;
 pub type Labels = BTreeMap<LabelId, Label>;
 
@@ -386,6 +407,8 @@ pub const ADDENDA: Aspect<Addenda> = Aspect::new(ADDENDA_AK, &CORE);
 pub const KEYS: Aspect<Keys> = Aspect::new("keys.0", &CORE);
 pub const SECRETS: Aspect<Secrets> = Aspect::new("secrets.0", &CORE);
 pub const LABEL: Aspect<Labels> = Aspect::new("label.0", &CORE);
+pub const ACCOUNT: Aspect<Account> = Aspect::new("account.0", &CORE);
+pub const LISTING: Aspect<Listings> = Aspect::new("listing.0", &CORE);
 pub const NODE: Aspect<NodeInfo> = Aspect::new("node.0", &CORE);
 pub const REACH: Aspect<Reach> = Aspect::new("reach.0", &CORE);
 pub const SEEN: Aspect<Seen> = Aspect::new("seen.0", &CORE);

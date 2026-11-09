@@ -8,9 +8,8 @@ use crate::engine::records::{self, Rd, Wr};
 use crate::engine::{Engine, Tx};
 use crate::error::Result;
 use osis_base::format::MAX_DRIFT_MS;
-use osis_base::{Ak, CommitId, CreationRecord, Tid, Ts, WallMs};
+use osis_base::{Ak, CommitId, Tid, Ts, WallMs};
 use osis_commit::{CommitBlob, Header};
-use osis_crypto::VerifyingKey;
 use osis_perm::DemotionScope;
 use osis_schema::core_types::{Frontier, is_role_class};
 use std::collections::BTreeMap;
@@ -88,11 +87,12 @@ impl Engine {
         if !h.is_resolved() || h.ephemeral.is_some() {
             return Ok(false);
         }
-        let Some(CreationRecord::KeyActor { public_key, .. }) = self.core.created(&h.author) else { return Ok(false) };
-        let Ok(vk) = VerifyingKey::from_slice(public_key) else { return Ok(false) };
         let id = c.id();
+        if super::signed_by_author(&self.core, c, &id, self.core.created(&h.author)) != Some(true) {
+            return Ok(false);
+        }
         let now = self.now();
-        if osis_commit::verify_signature(&id, &c.signature, &vk).is_err() || h.validate().is_err() || h.ts.wall_ms().0 > now.0.saturating_add(MAX_DRIFT_MS) {
+        if h.validate().is_err() || h.ts.wall_ms().0 > now.0.saturating_add(MAX_DRIFT_MS) {
             return Ok(false);
         }
         // a request also counts where it names (any demotion there lists it, `frontier`): noted under

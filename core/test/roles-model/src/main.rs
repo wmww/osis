@@ -11,8 +11,11 @@ fn main() {
                 println!("{name} {d:016x}");
             }
         }
-        Some("epochs") => roles_model::epochs::run(samples, false),
-        Some("epochs-exh") => roles_model::epochs::run(samples, true),
+        Some(m @ ("epochs" | "epochs-exh")) => {
+            if roles_model::epochs::run(samples, m == "epochs-exh") > 0 {
+                std::process::exit(1);
+            }
+        }
         Some("disputes") => roles_model::trust::run(samples, false),
         Some("disputes-random") => roles_model::trust::run(samples, true),
         Some("addenda") => roles_model::addenda::random(samples, 0x5eed).print(),

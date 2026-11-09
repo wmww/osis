@@ -2124,7 +2124,9 @@ fn parallel(f: impl Fn(usize, usize, &mut Stats) -> u64 + Sync) -> (u64, Stats) 
     (n, st)
 }
 
-pub fn run(samples: u64, exhaustive_family: bool) {
+/// Runs the search and prints its tallies; returns the hard failures found (the driver exits
+/// nonzero on any).
+pub fn run(samples: u64, exhaustive_family: bool) -> u64 {
     let mut fails = vec![];
     if exhaustive_family {
         let (n, st) = parallel(|th, threads, st| family_a(th, threads, &mut |w| check(&w, st)));
@@ -2150,6 +2152,7 @@ pub fn run(samples: u64, exhaustive_family: bool) {
         st.print("epochs");
         fails.push(st);
     }
+    let hard = fails.iter().map(Stats::hard_failures).sum();
     for st in fails {
         if let Some(w) = &st.fail {
             println!("first failing world:");
@@ -2167,6 +2170,7 @@ pub fn run(samples: u64, exhaustive_family: bool) {
             DEBUG.store(false, std::sync::atomic::Ordering::Relaxed);
         }
     }
+    hard
 }
 
 #[cfg(test)]

@@ -54,6 +54,8 @@ pub(crate) fn sample_header() -> Header {
         frontier: None,
         links: Links::default(),
         ephemeral: None,
+        epoch: None,
+        rotation: None,
     }
 }
 
@@ -65,6 +67,30 @@ fn header_round_trip() {
     let b = h.encode();
     assert_eq!(Header::decode(&b).unwrap(), h);
     assert_eq!(h.id().0, osis_base::hash::hash(&b));
+}
+
+// spec/wire.md §4 fields 15, 16: an account's epoch and a rotation round-trip; a rotation sits
+// only on a role commit, supersedes the epoch it is signed at, and keeps its lists ascending.
+#[test]
+fn rotation_header_spec_wire_4() {
+    use crate::header::RotationHeader;
+    let keys = osis_crypto::AccountEpochKeys::from_seed(&Secret32::from_bytes([8; 32]));
+    let rot = RotationHeader { signing_key: keys.signing.verifying_key(), kem_key: keys.kem.public().clone(), supersedes: vec![crate::FIRST_EPOCH, CommitId([3; 32])], names: vec![CommitId([3; 32])], list_root: [6; 32] };
+    let mut h = sample_header();
+    h.epoch = Some(crate::FIRST_EPOCH);
+    assert_eq!(Header::decode(&h.encode()).unwrap(), h);
+    h.rotation = Some(rot.clone());
+    assert_eq!(Header::decode(&h.encode()).unwrap(), h);
+    assert!(matches!(h.validate(), Err(Error::Invalid(m)) if m.contains("rotation outside a role commit")));
+    let mut r = validate::role_header("roles.0");
+    r.epoch = Some(crate::FIRST_EPOCH);
+    r.rotation = Some(rot.clone());
+    r.validate().unwrap();
+    r.epoch = Some(CommitId([9; 32]));
+    assert!(r.validate().is_err(), "signed at an epoch it does not supersede");
+    r.epoch = Some(crate::FIRST_EPOCH);
+    r.rotation = Some(RotationHeader { supersedes: vec![CommitId([3; 32]), crate::FIRST_EPOCH], ..rot });
+    assert!(r.validate().is_err(), "supersedes not ascending");
 }
 
 // spec/wire.md §4: a stored header (verified on arrival) reads back as `from_value` reads it,

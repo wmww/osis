@@ -59,7 +59,7 @@ fn half_valid(lp: &mut LocalPeer, m: Tid, s: Tid, prove: bool) -> (CommitId, BTr
                     ks.proofs.insert(s, p);
                 }
             }
-            mu.ts = aside.ts;
+            (mu.ts, mu.blind) = (aside.ts, aside.blind);
             crate::flows::put_secrets(&mut mu, m, &rot.secrets, false)?;
             crate::flows::put_keysets(&mut mu, m, &rot.keys)?;
             mu.unchecked();

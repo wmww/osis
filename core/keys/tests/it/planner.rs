@@ -83,7 +83,7 @@ fn reached_is_the_hop_fixpoint() {
 #[test]
 fn perm_graph() {
     let mut held = MemoryHeldSet::new();
-    let d = held.create(CreationRecord::KeyActor { alg: 1, public_key: vec![7; 32], nonce: [1; 32] });
+    let d = held.create(CreationRecord::KeyActor { alg: 1, public_key: vec![7; 32], nonce: [1; 32], account: false });
     let p = held.create(CreationRecord::Thing { admin: d, nonce: [2; 32], link: false });
     let t = held.create(CreationRecord::Thing { admin: p, nonce: [3; 32], link: false });
     let a2 = held.create(CreationRecord::Thing { admin: d, nonce: [4; 32], link: false });

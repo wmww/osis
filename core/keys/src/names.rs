@@ -23,11 +23,20 @@ pub struct Name {
 }
 
 /// The rotation commit itself, when it departs a holder of the actor (it cannot name its own
-/// ID): its `ts` and author node, unique to it.
+/// ID): its departs mark, its `ts`, author and header `blind` (two nodes of one account sign
+/// as one author, so `ts` and author alone may repeat).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Own {
     pub ts: u64,
-    pub node: Tid,
+    pub author: Tid,
+    pub blind: [u8; 16],
+}
+
+impl Own {
+    /// Whether this mark names the commit of `key` whose header `blind` is `blind`.
+    pub fn is_of(&self, key: &Key, blind: &[u8; 16]) -> bool {
+        self.ts == key.ts && self.author == key.node && self.blind == *blind
+    }
 }
 
 /// What one history entry names: the departure commits its rotator held, and the rotation
@@ -42,15 +51,15 @@ pub struct Names {
 pub type NamesDigest = [u8; 32];
 
 impl Names {
-    /// `[[name*], Opt([ts, node])]`, each name `[thing, ts, node, commit]`, ascending
-    /// (spec/wire.md §7).
+    /// `[[name*], Opt([ts, author, blind])]`, each name `[thing, ts, author, commit]`,
+    /// ascending (spec/wire.md §7).
     pub fn to_value(&self) -> Value {
         let list = self
             .list
             .iter()
             .map(|n| Value::List(vec![Value::bytes(n.thing.as_bytes()), Value::uint(n.key.ts), Value::bytes(n.key.node.as_bytes()), Value::bytes(&n.key.commit.0)]))
             .collect();
-        let own = self.departs.iter().map(|o| Value::List(vec![Value::uint(o.ts), Value::bytes(o.node.as_bytes())])).collect();
+        let own = self.departs.iter().map(|o| Value::List(vec![Value::uint(o.ts), Value::bytes(o.author.as_bytes()), Value::bytes(&o.blind)])).collect();
         Value::List(vec![Value::List(list), Value::List(own)])
     }
 
@@ -62,7 +71,7 @@ impl Names {
         let departs = match own.as_slice() {
             [] => None,
             [Value::List(o)] => match o.as_slice() {
-                [Value::Int(ts), Value::Bytes(node)] => Some(Own { ts: u64::try_from(*ts).ok()?, node: Tid::from_bytes(node.as_slice().try_into().ok()?) }),
+                [Value::Int(ts), Value::Bytes(author), Value::Bytes(blind)] => Some(Own { ts: u64::try_from(*ts).ok()?, author: Tid::from_bytes(author.as_slice().try_into().ok()?), blind: blind.as_slice().try_into().ok()? }),
                 _ => return None,
             },
             _ => return None,
@@ -109,9 +118,11 @@ pub trait Held {
     /// snapshot's body) publishes `digest` as its names' and its author holds `r` now
     /// (spec/crypto.md §4, Names: the entry is bound to that body; Covers).
     fn publishes(&self, r: Role, e: &osis_crypto::Epoch, digest: &NamesDigest) -> bool;
-    /// The commit `own` names (by `ts` and author) is a role commit applied here with its
-    /// `roles.0` delta on the actor, resolved (spec/crypto.md §4, Met).
+    /// The commit `own` names (by `ts`, author and `blind`) is a role commit applied here with
+    /// its `roles.0` delta on the actor, resolved (spec/crypto.md §4, Met).
     fn departed(&self, own: &Own) -> bool;
+    /// Whether `own` is the departs mark of the held commit at `key` (`Own::is_of` its header).
+    fn marks(&self, own: &Own, key: &Key) -> bool;
 }
 
 /// Every name met and every rotator holding its role (a node holding everything: tests, and the
@@ -126,6 +137,9 @@ impl Held for AllHeld {
         true
     }
     fn departed(&self, _: &Own) -> bool {
+        true
+    }
+    fn marks(&self, _: &Own, _: &Key) -> bool {
         true
     }
     fn publishes(&self, _: Role, _: &osis_crypto::Epoch, _: &NamesDigest) -> bool {

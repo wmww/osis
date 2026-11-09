@@ -42,6 +42,9 @@ impl osis_keys::Held for Holding {
     fn departed(&self, own: &osis_keys::Own) -> bool {
         u8::try_from(own.ts).is_ok_and(|b| self.0.contains(&cid(b)))
     }
+    fn marks(&self, o: &osis_keys::Own, k: &osis_keys::Key) -> bool {
+        o.ts == k.ts && o.author == k.node
+    }
     fn publishes(&self, _: Role, _: &Epoch, _: &osis_keys::NamesDigest) -> bool {
         true
     }
@@ -109,7 +112,7 @@ impl World {
     /// departs mark set), held by a1 only.
     fn remove_m1(&mut self) -> (Rotation, ActorEpochs, Secrets) {
         let (v0, s0) = (self.a1v.clone(), self.s0.clone());
-        let r1 = self.rotate_naming(&v0, &s0, &[self.p, self.a2], &Names { departs: Some(osis_keys::Own { ts: 4, node: tid(9) }), ..Names::default() });
+        let r1 = self.rotate_naming(&v0, &s0, &[self.p, self.a2], &Names { departs: Some(osis_keys::Own { ts: 4, author: tid(9), blind: [0; 16] }), ..Names::default() });
         let (mut v, mut s) = (v0, s0);
         r1.secrets.apply(&mut s);
         v = applied(&r1, &v, 4);
