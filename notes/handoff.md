@@ -7,7 +7,7 @@ Read CLAUDE.md and notes/coordination.md first. Tess: opus only for every agent,
 Big features and refactors first; chase a bug only when it could threaten their viability. Don't rush to the goal API through shortcuts that later unravel it, but bring core to a settled, finalized state soon so the whole system can settle.
 
 ## Large designs, in order
-- **Rotation leak fix** (branch `half-valid`, not merged): keysets carry possession proofs, one verdict per rotation, keysets read as of the commit's key (Depth0 and Authority models). Blocked on the gate: an index rebuild disagrees on a derived epoch's establishment (`osis` test `sync::a_grant_on_a_group_owned_item_by_an_admin_grant`). Carries the rotation property test. Open beside it: issues/keys-depth0-removed-member-rotates.md, issues/rotation-settled-current-epochs-differ.md.
+- **Rotation leak fix**: merged (keysets carry possession proofs; one verdict per rotation; derived establishment computed from held commits). Open: issues/keys-depth0-removed-member-rotates.md, issues/history-entry-inputs-outlive-their-entry.md, issues/rotation-keyset-gone-before-its-boxes.md.
 - **Test refactor** (notes/test-design.md): steps 1-8 and 10 done or in review (step 7 on `crdt-differential`); left: 5b (held-model values from crdt-model, issues/held-model-values-from-crdt-model.md), 9 (ephemeral, after connection-lived data), 11, 12. Open: issues/held-set-decides-full-size.md, issues/held-model-role-commit-scope.md.
 - **Expiry and creation records** (notes/expiry-creation-design.md): steps 1-3 built. Left: the creation-record steps and step 4's osis-API examples. Open with it: issues/purge-author-order-452234901986.md (a purged write's leftover shadows an older value only where the body was held when the purge landed); decide in the leftover work: one leftover every node forms from what it holds, or fetchable leftovers.
 - **Listener API** (notes/listener-design.md): steps 1-4 built. Left: 5 (path listeners), 6 (sessions follow every write), 7 (callers), 8 (node-state granularity, an app session with Tess).
@@ -19,9 +19,5 @@ Big features and refactors first; chase a bug only when it could threaten their 
 ## Findings recorded only here
 - Bounding rotation names (issues/rotation-names-grow.md): "chain coverage through supersedes" leaks (a TLA instance found it); a base-chain rule breaks when a base rotation turns invalid. Redo with the rotate-free principle (spec/crypto.md §4).
 
-## Networking (Kestrel's, open for the next coordinator)
-Kestrel's branches are on this box too (fetched from a git bundle sent over the dogfood channel), unmerged:
-- `kestrel-net-role-sync` (tip c32abf013): net-role-sync, reviewed and gated. Blocked on issues/derived-adoption-order.md (on the branch), fixed on branch `half-valid` (derived establishment computed from held commits; Kestrel's case is `sync::derived_adoption_order_item_granted_to_its_groups_reader` there): rebase on main once `half-valid` merges, delete the issue and its ignored repro, gate, merge.
-- `kestrel-net-repros` (tip 04d5f8363): issues/net-tests.md step 5, 22 ignored repro tests and 4 passing ones. Worker done, no reviewer yet. Carries new issues inbox-copied-stale and link-expiry-spin.
-
-Next in networking: review and merge those, then net-tests step 2, then issues/net-rework.md's order. Tess's open calls: issues/net-connect.md (one-way knowledge), issues/net-mesh-discovery.md, issues/net-peer-continuity.md. A model is required before building shared-set and reconnect (issues/net-reconnect.md).
+## Networking (Petrel's, devbox)
+Kestrel's two branches are merged (net-repros: net-tests step 5; net-role-sync). Petrel owns networking in issues/net-rework.md's order: net-tests step 2 merged; honest-status step 1 and the shared-set + reconnect model in progress. Tess's open calls: issues/net-connect.md (one-way knowledge), issues/net-mesh-discovery.md, issues/net-peer-continuity.md.
