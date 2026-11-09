@@ -22,7 +22,7 @@
 
 ## Per-label copies: the closed list
 spec/sync.md §3; `Body::to_label`, `Engine::seal_to`; received ones marked by `OpenedBlob::copy` so their one section is never copied into a fresh encryption. A copy holds exactly the parts the label's actor reads and is judged as any blob of the commit. Each case is needed (dropping it fails tests):
-1. A role commit with a readable part on a thing other than the label's actor: its boxes are what give the label's readers that thing's secrets (a subgroup's first rotation, a grant to the label's group, a cross-published `label.0`), so the thing's own section is under a secret they do not hold yet (`sync_review::self_removal_shared_subgroup`, tied shares, tags, routes, `sharing::removing_a_device_lists_its_links`).
+1. A role commit with a readable part on a thing other than the label's actor: its boxes are what give the label's readers that thing's secrets (a subgroup's first rotation, a grant to the label's group, a cross-published `label.0`), so the thing's own section is under a secret they do not hold yet (`sync_review::self_removal_shared_subgroup`, tied shares, tags, routes).
 2. A part on a thing whose read secret derives from neither the label's actor nor an actor in its closure: a cross-published `created.0` (the group's own secret, under the home label) and a thing added from another actor's tree (`sync_more::label_published_under_home_label`, `ephemeral::second_label_gets_held_state`, `ephemeral::moved_thing_leaves_old_label`).
 3. A part whose thing's secret the writer lacks (a key actor's own card) stays out of the shared blob and travels as a certificate copy.
 Shrinking further would need case 1 to ride the certificate path and case 2 the label to carry the outside reader actor's rotations.

@@ -52,7 +52,7 @@ Removing a member rotates R in the removal commit. A group never looks inside it
 
 A shared tag is already an actor (notes/tags.md, Sharing a tag) and may also carry `realm.0`; one thing may be both.
 
-## What chat no longer needs (an earlier chat realms design's "faction")
+## What realms make unnecessary for chat
 - **"A chat is a faction"**: a chat is a thing a realm holds write on or administers. A plain 1:1 or group chat is no realm; a server or team is a realm, a channel a chat in it, a mod role a realm holding admin on it or on some chats.
 - **The directory aspect** (`faction:children^.0`): the contents list is R's grants. A chat app wanting categories, order or names of channels it has not synced keeps its own layout aspect on R.
 - **Tied content**: a document in the realm is a grant to R; removing it from R's group does not revoke.
