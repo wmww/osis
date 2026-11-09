@@ -704,7 +704,7 @@ fn tokio_runtime_close_then_shutdown_no_timer_panic() {
                     c.runtime = Runtime::Tokio(rt.handle().clone());
                     c.app.internals.transport = Some(net.endpoint(&format!("k{t}-{i}")));
                     let db = osis::internals::create(c).unwrap();
-                    let _ = common::block_on(db.wait_synced(osis::SyncScope::All));
+                    let _ = common::within(Duration::from_millis(1), db.wait_synced(osis::SyncScope::All));
                     assert_eq!(db.close().unwrap(), osis::Close::Closed);
                     drop(rt);
                 }
