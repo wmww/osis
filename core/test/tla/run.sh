@@ -71,6 +71,7 @@ instances=(
   "netstream net MCStream SN_bothpull.cfg fail"
   "netstream net MCStream SN_sreconcile.cfg fail"
   "netstream net MCStream SN_rearm.cfg fail"
+  "netstream net MCStream SN_history.cfg fail"
   "netshared net MCShared T_cred.cfg pass"
   "netshared net MCShared T_gain.cfg pass"
   "netshared net MCShared T_remove.cfg pass"

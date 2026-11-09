@@ -15,6 +15,7 @@ CONSTANTS
     MaxRestart, MaxRecLoss, MaxDelete, MaxExpire, MaxClone, MaxDrop, MaxRevoke,
     Retire,                         \* the copy replaces b (a restore) or runs beside it
     IncCheck,                       \* a cursor is honoured only on this store's own history (proposed)
+    KeepHistory,                    \* a start records the incarnation before it, so a restart honours earlier cursors
     HorizonMode,                    \* "oldest" (issue's text) | "trim" (position of the newest dropped deletion)
     Infer,                          \* "literal" (issue) | "knew" (spec/sync.md §6) | "none" (proposed)
     JoinDurable,                    \* an unfinished join keeps its own position until its last page
@@ -89,11 +90,13 @@ Valid(c, s) ==
     /\ c # NoCur /\ c.lid = s.lid /\ c.pos <= s.end
     /\ c.pos >= Horizon(s)
     /\ (IncCheck => Lineage(c, s))
-\* Real need for a from-the-start reply: nothing to resume from, or a deletion
-\* the log really dropped above the cursor, or another history.
+\* Real need for a from-the-start reply: nothing to resume from, a deletion the
+\* log really dropped above the cursor, or a restored or copied store's other
+\* history. An ordinary restart is none of these: it never forces one.
 Forced(r, s) ==
     \/ r.cur = NoCur /\ ~r.everCur
-    \/ r.cur # NoCur /\ (r.cur.lid # s.lid \/ r.cur.pos > s.end \/ r.cur.pos < s.floor \/ ~Lineage(r.cur, s))
+    \/ r.cur # NoCur /\ (r.cur.lid # s.lid \/ r.cur.pos < s.floor
+                          \/ (cloned /\ (r.cur.pos > s.end \/ ~Lineage(r.cur, s))))
 
 Page(S) == {ev \in S : Cardinality({u \in S : u.pos < ev.pos}) < PageK}
 
@@ -266,8 +269,10 @@ Expire(s) ==
 \* A start: every start is a new incarnation of the store.
 NewInc(s, i) ==
     [s EXCEPT !.inc = i,
-              !.hist = {IF h.inc = s.inc THEN [inc |-> h.inc, end |-> s.end] ELSE h : h \in @}
-                       \cup {[inc |-> i, end |-> Inf]}]
+              !.hist = IF KeepHistory
+                       THEN {IF h.inc = s.inc THEN [inc |-> h.inc, end |-> s.end] ELSE h : h \in @}
+                            \cup {[inc |-> i, end |-> Inf]}
+                       ELSE {[inc |-> i, end |-> Inf]}]
 
 Drop ==
     /\ link # {}

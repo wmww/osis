@@ -3,3 +3,5 @@
 
 - tools/heavy is on main only; a fresh worktree branch from an older commit lacks it until `git rebase main`.
 - TLC 2.19 has no ALIAS in the cfg here, so a counterexample is a screen of full records; a small trace printer per model is worth writing first.
+- Probes with their own -metadir filled the shared tmpfs (13 GB, "Disk quota exceeded" in another run); keep TLC state dirs off /tmp.
+- TLC with a state-growing probe (no bound on pos) ran to the quota before reporting anything.

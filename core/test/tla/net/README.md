@@ -10,7 +10,7 @@ Files: `NetStream.tla`, `MCStream.tla`, `NetShared.tla`, `MCShared.tla`, cfgs `S
 - `NoWriteLost`: no node drops a write nobody deleted.
 - `CaughtUpHolds`: a source judged caught up (L open, last pull reached its end, nothing announced since) holds nothing of L this node lacks, unless deleted somewhere.
 - `ServedRight`: nothing is served for a sync ID the peer has lost the right to.
-- `ReconnectCost`: a from-the-start reply happens only if the record is gone, the store's history is another's, or a deletion really dropped above the cursor; otherwise a reconnect sends what changed.
+- `ReconnectCost`: a from-the-start reply happens only if the record is gone, a deletion really dropped above the cursor, or the store is a restored or copied one; an ordinary restart never forces one (`SN_history`).
 - `Settles`: the connection settles (liveness).
 - `RuleHolds`: when quiet, L is open on both sides or neither, exactly when each side's rule holds on what it holds now.
 - `EpochReached`: a holder served at a rotation reaches the new epoch (issues/net-shared-set.md, the event that ends sharing is still sent).
@@ -36,6 +36,6 @@ TLC 2.19, 12 workers. Positive cfgs pass; each `*N_*` fails with the listed prop
 | T_hostile | peer answers any Hit, claims every credential | pass | 462 |
 | T_until, T_live | rotation event served before Lost; liveness | pass | 274,445; 3,067 |
 
-Rule removals: `SN_infer_lit`, `SN_infer_knew` NoWriteLost; `SN_horizon` ReconnectCost; `SN_inc`, `SN_copies`, `SN_sreconcile`, `SN_joindur`, `SN_joinans`, `SN_lostolder`, `SN_cursor`, `SN_rearm` CaughtUpHolds; `SN_gate` ServedRight; `SN_bothpull` Settles; `TN_pending`, `TN_ack`, `TN_arrival`, `TN_tag`, `TN_resend`, `TN_genbase`, `TN_byrole`, `TN_reconcile`, `TN_retest` RuleHolds; `TN_until` EpochReached.
+Rule removals: `SN_infer_lit`, `SN_infer_knew` NoWriteLost; `SN_horizon`, `SN_history` ReconnectCost; `SN_inc`, `SN_copies`, `SN_sreconcile`, `SN_joindur`, `SN_joinans`, `SN_lostolder`, `SN_cursor`, `SN_rearm` CaughtUpHolds; `SN_gate` ServedRight; `SN_bothpull` Settles; `TN_pending`, `TN_ack`, `TN_arrival`, `TN_tag`, `TN_resend`, `TN_genbase`, `TN_byrole`, `TN_reconcile`, `TN_retest` RuleHolds; `TN_until` EpochReached.
 
-Two rules are redundant given the S digest (`SReconcile`): `ResendLost` and `GenBase` fail only with it off (`TN_resend`, `TN_genbase` turn it off to show this).
+`ResendLost` is redundant given the S digest (`SReconcile`): `T_remove` passes with `ResendLost` off and the digest on. `GenBase` also passes with it off, but only because one credential per side makes additions equal the whole filter (ASSUMPTIONS): the digest compares S, not filters, so this shows nothing about dropping it.

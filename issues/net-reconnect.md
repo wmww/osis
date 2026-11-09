@@ -107,7 +107,7 @@ core/test/tla/net (TLC), both halves of this design with issues/net-shared-set.m
 issues/net-shared-set.md, Steps: this issue is 4, 6, 7.
 
 ## Tests (tier 1, over issues/net-tests.md)
-An idle reconnect sends no per-sync-ID message (counted); a restarted node resumes; a lost record is a first contact and converges; a rotation while apart rejoins from its lag and refetches only the missed events (counted); a node back after the peer compacted deletions past its cursor converges with the messages of one stream (counted at n and 10n sync IDs: no term in n beyond pages) and holds no deleted entry; a first contact sharing n sync IDs joins them in O(1) Pulls (counted); a mesh body crosses once with announcements per peer (counted); a skewed clock changes nothing.
+An idle reconnect sends no per-sync-ID message (counted); a restarted node resumes; a lost record is a first contact and converges; a rotation while apart rejoins from its lag and refetches only the missed events (counted); a node back after the peer compacted deletions past its cursor converges with the messages of one stream (counted at n and 10n sync IDs: no term in n beyond pages); a first contact sharing n sync IDs joins them in O(1) Pulls (counted); a mesh body crosses once with announcements per peer (counted); a skewed clock changes nothing.
 
 ## Unsure
 - (implementor) Serving `Pull`: scan the log after the cursor, or each member's events after its position (a join from the start: the member's entries), whichever is less (a busy node with a small S; one join among a large stream).
