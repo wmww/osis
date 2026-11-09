@@ -1,5 +1,5 @@
 # Networking tests that can fail
-> Summary: Tier-1 networking coverage. In-process `peer://` runs the real P2P code over the NAT model and the sims have peer links over one reachability model (`osis_sim::reach`). Add the in-process LAN and commit the audit's probes as ignored `repro_*` tests each job un-ignores. First job of issues/net-rework.md.
+> Summary: Tier-1 networking coverage. In-process `peer://` runs the real P2P code over the NAT model and the sims have peer links over one reachability model (`osis_sim::reach`). Add the in-process LAN. Each open audit row has a `repro_*` test its job un-ignores. First job of issues/net-rework.md.
 > Priority: normal
 > Tags: tests, sim, transport
 
@@ -14,11 +14,11 @@
 1. In-process P2P with routes: built (Today).
 2. **In-process LAN.** The driver's LAN loop over a `MemUdp` broadcast domain per segment, with loss and the source addresses the model assigns (row 30 then tests in tier 1).
 3. Sim peer links and 4. Checks over peers: built (Today).
-5. **The audit's probes as tests.** Every row still open (issues/no-server-audit.md: pNN/qN, never committed) becomes a `repro_*` test with `#[ignore = "issues/net-<job>.md"]` (notes/testing.md, Phase C: the `repro_` convention), asserting the right outcome over 1-3; the job that fixes the row renames and un-ignores it. Timeouts in them (40 s, 100 s) run on model time (`ManualClock`, the nat.rs net's steps), never wall time.
+5. Audit rows as tests: built (core/test/sim/tests/it/no_server.rs on `World`, model time; `repro_row1_*` in core/osis/tests/it/runtime.rs, `repro_row3_row12_*` in cli/tests/it/cli.rs). The job that fixes a row renames and un-ignores its test. Waiting on step 2: row 33 (a lost announcement, the driver's LAN loop) and row 4 end to end.
 
-Done: 5 for every row testable in process; 2; repro tests for the rows the sims and transport can reach. Not in tier 1: row 32 (a real port's bind: tier 2), Android, real broadcast reach (row 31, beyond what a model says).
+Done: 2. Not in tier 1: row 32 (a real port's bind: tier 2), Android, real broadcast reach (row 31, beyond what a model says).
 
-Order: 5 comes first: each job's "tests that fail without it" needs them. 2 before issues/net-connect.md's LAN rules.
+Order: 2 before issues/net-connect.md's LAN rules.
 
 Harness words follow the code (`World::add_host`, `NetHost`), renamed with issues/net-rename.md.
 

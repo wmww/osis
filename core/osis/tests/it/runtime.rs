@@ -927,3 +927,12 @@ async fn redeem_direct_redials_sharer_spec_permissions_7() {
     net.disconnect("r", "b");
     assert!(pause(bob.clone()).await > 100, "a co-reader's pause once redeemed");
 }
+
+// Audit row 1 (issues/no-server-audit.md), spec/sync.md §10: every
+// build runs the LAN loop.
+#[test]
+#[ignore = "issues/net-connect.md"]
+fn repro_row1_every_build_has_the_lan_loop() {
+    let lan = cfg!(feature = "lan");
+    assert!(lan, "the `lan` feature is off in this build");
+}

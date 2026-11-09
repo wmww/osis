@@ -784,3 +784,17 @@ fn redeem_past_its_wait_says_retrying_is_safe_notes_cli() {
     assert_eq!(o.code, 6, "{}", o.err);
     assert!(o.err.contains("could not confirm this link yet; trying again is safe"), "{}", o.err);
 }
+
+// Audit rows 3 and 12 (issues/no-server-audit.md), spec/permissions.md §7: with no saved peers
+// the CLI still makes a link, a chat link and a contact card; a store with no peers is not a dead end.
+#[test]
+#[ignore = "issues/net-first-contact.md"]
+fn repro_row3_row12_links_and_cards_on_a_store_with_no_saved_peer() {
+    let s = S::mem();
+    let g = s.ok(&["create", "--in", "me", "t:made.0", "true"]).line().to_string();
+    s.ok(&["group", "sync", &g]);
+    assert_eq!(s.code(&["link", "make", &g, "write"]), 0, "link make");
+    assert_eq!(s.code(&["card", "show"]), 0, "card show");
+    let c = s.ok(&["chat", "create", "--name", "room"]).line().to_string();
+    assert_eq!(s.code(&["chat", "link", &c, "write"]), 0, "chat link");
+}

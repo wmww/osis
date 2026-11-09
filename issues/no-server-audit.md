@@ -3,10 +3,10 @@
 > Priority: normal
 > Tags: node, sync, api
 
-Probes: throwaway tests in `core/osis/tests/it`, two or three `Osis` with no saved peers on `Runtime::Tokio`, not committed (`pNN`/`qN` below). `(tier 2)`: real sockets on localhost under `cargo test-net`. All others ran over `Transport::InProcess`, whose `peer://` finds any listener by key (core/transport/src/multi.rs:39). That is **kinder than reality**: a `works` from it says the sync logic holds, not that nodes find each other.
+Evidence: `pNN`/`qN` are throwaway probes over `Transport::InProcess`, whose `peer://` finds any listener by key (**kinder than reality**: a `works` from it says the sync logic holds, not that nodes find each other). `(tier 2)`: real sockets on localhost under `cargo test-net`. `no_server` tests: core/test/sim/tests/it/no_server.rs, on `World` over the reachability model, model time; each open row's `repro_row<N>_*` (`#[ignore]` names the job, which renames it) asserts the right outcome. Also core/osis/tests/it/runtime.rs `repro_row1_*` and cli/tests/it/cli.rs `repro_row3_row12_*`.
 
 ## Findings
-Rows 10, 22 and 23 predate a406b6c3 (`reach.0` under every synced label, no rotation on grants or a second direct link): re-probe them (issues/net-tests.md). Row 35's likely cause, read only: the own-commit drift exemption skips only commits this node signs, not those signed by a key actor it holds (issues/clock-peer-offset.md).
+Row 35's likely cause, read only: the own-commit drift exemption skips only commits this node signs, not those signed by a key actor it holds (issues/clock-peer-offset.md).
 
 Severity: **fails** (error or never happens), **silent** (claims success or does nothing, no error), **degraded**, ok.
 
@@ -21,9 +21,9 @@ Severity: **fails** (error or never happens), **silent** (claims success or does
 | 7 | Redeem, in-process | Works, also read role, also a joiner's `leave` of K | p04, p05 | ok in-process |
 | 8 | Contact card | `contact_card` and `profile` are `Invalid` (a card's link is never direct), so no `import_contact` and no names | share.rs:1227,1259; p01; app/src/chat.rs:61,77 | fails |
 | 9 | **Grant to a known account** | `Ok`, then never arrives: the inbox has no saved peers, the deposit loop runs zero times, the delivery is marked sent. `wait_synced(AllWithSavedPeers)` `Ok`, nothing pending, no invite, status `NoPeers`, `unrouted` empty; after 100 s Bob has no role and doesn't know the thing. Also removal notices and re-seals by inbox (read) | local.rs:466-469,340-345; status.rs:71; p03, q4 | silent |
-| 10 | **A grant cuts the grantee off** | Granting a joiner a role on a group whose label holds `reach.0` rotates Alice's key; so does a second direct link to such a group, ending a direct link, or `rotate_reach`. Joiners hold only the key from the link text and never learn the new one, so sync with them stops both ways, for good | peers.rs:179, share.rs:1183, peers.rs:407; q5, p14, q3 (100 s, past every retry) | silent |
+| 10 | Key changes and a joiner | A connected joiner keeps syncing through a grant, a second direct link, ending one and `rotate_peer_address`. A joiner away during a key change who can only dial out (NAT, no relay) is cut off for good: it knows only the old key and hears the new one from nobody | `no_server`: `key_changes_keep_a_connected_joiner`, `repro_row10_*` | silent |
 | 11 | `add_with_grant` into a shared group | Works, when nothing rotated | q1 | ok |
-| 12 | Chat | `create` works (read). `link` always `direct: false`, so `Invalid`; `add` is row 9; names are row 8. Android's home screen asks for a serving address first | libs/chat/src/lib.rs:182; app/src/ui/chat.rs:118; p01 for the same call | fails |
+| 12 | Chat | `create` works (read). The CLI's `chat link` is always `direct: false`, so `Invalid`; `add` is row 9; names are row 8 | cli/src/chat.rs; `repro_row3_row12_*` | fails |
 | 13 | `set_role`, `revoke_link` | Write at once; other writers' addenda keep what they received, and a caller may `wait_synced` first (notes/api.md Demotion and addenda) | share.rs | ok |
 | 14 | `SyncFirst::Try` | Gone: nothing waits before a removal | share.rs | ok |
 | 15 | `wait_synced(AllWithSavedPeers)` | Skips groups with no saved peer: `Ok` in microseconds with a write nobody received. The name and the doc say so, and the CLI's `sync` and `wait` print those groups; an app's own call still gets `Ok` | share.rs; p04 | visible |
@@ -33,9 +33,9 @@ Severity: **fails** (error or never happens), **silent** (claims success or does
 | 19 | Restore, recover | Gone from the API until a design exists (issues/recovery-redesign.md) | - | n/a |
 | 20 | Data between nodes that know each other | Works: writes both ways, a 3 MB value, reader deposits | p02, p05, p12; `driver_p2p_localhost`, LAN loop (tier 2) | ok |
 | 21 | Bundles | Work between co-readers, also with no saved peers and with `Runtime::None`. **Not** for first contact: redeem by bundle alone times out (cause not traced; the link key's entry box comes from an open reply) | p01, p11 | degraded |
-| 22 | **Peers of a link-shared group** | Default `reach.0` policy excludes it, so nobody knows anyone: a star on the sharer. Sharer gone: B to C never arrives. `Reach::Always` set by hand on every node fixes it | peers.rs:641-651; p07 | fails |
-| 23 | LAN after joining | Same cause: a joiner never hears the sharer's LAN announcement | p09 | fails |
-| 24 | Multi-hop, B reads | A to C through B works (A, C partitioned, B an admin who made C's link). **C to A doesn't**: Alice has the commit, pending `MissingChain` for 100 s, and never sees C as a holder (cause not traced: C's chain certificates aren't relayed) | p06, q2 | degraded |
+| 22 | Peers of a link-shared group | Joiners find each other: `reach.0` goes under every synced label. Sharer and relay gone, B to C arrives | `no_server`: `joiners_of_a_link_reach_each_other` | ok |
+| 23 | LAN after joining | A joiner hears its sharer's LAN announcement | `no_server`: `a_joiner_finds_its_sharer_on_the_lan` | ok |
+| 24 | Multi-hop, B reads | Both ways through B (A, C apart, B an admin who made C's link). One order trips a debug assertion: issues/inbox-copied-stale.md | `no_server`: `writes_cross_a_reader_both_ways` | ok |
 | 25 | Multi-hop, B can't read | Works **only** if an admin names B as a saved peer from the start, B is `Admit::Open`, and B has a fixed `quic://` address: A to B to C, B's role `None`. Nothing suggests or finds such a peer | p08 | degraded |
 | 26 | Adding a non-reading peer later | `sync(g, [b])` on a group already synced with no saved peer is `Invalid`. `add_peer` moves all of an account's own groups at once; nothing does it per group, nor for a group under someone else's account | share.rs:1527,1759; p08 | degraded |
 | 27 | Non-reading peer on a dynamic address | `peer://` among a label's saved peers is never dialed, so a saved peer can't be reached by key: needs a stable IP and port. Link and card text fix their addresses for good | conn.rs:226; spec/sync.md §10; share.rs:1416 | fails |
@@ -61,6 +61,6 @@ The fixes, their order and what is open: issues/net-rework.md and its job issues
 
 ## Verified or only read
 - **By probe**: rows marked with `p`/`q`, tier 2 tests. In-process results say nothing about finding a peer: only p20, p21 and the tier-2 tests ran real sockets, and all on localhost, never between machines.
-- **By reading only**: 3, 18, 28, 31, 32, 36, 37, the "works, read" part of 12; 9's removal notices and re-seals; causes in 21, 24, 33; deny for libs/kit; everything on Android.
+- **By reading only**: 3's "never syncs" (`Runtime::None` under the CLI needs real sockets to see), 31, 32, the "works, read" part of 12; 9's removal notices and re-seals; causes in 21, 24, 33; deny for libs/kit; everything on Android.
 - **Not checked**: real devices, Wi-Fi client isolation, ephemeral values and ephemeral signals over peers beyond existing tests, thin clients with no saved peers, disk-backed restart of link peers.
 - notes/networking.md is out of date where it says a contact card may carry a dialable key, and names `sync_policy` (now `set_sync_options`).

@@ -1,0 +1,2 @@
+- A `World` node whose `Osis` handle is dropped silently stops: a helper returning only some handles made a three-node test fail "nothing arrived" for no network reason.
+- Running a test binary under a shell `timeout` is the only way to bound a test that may spin, since cargo must not be wrapped; `--test-threads=1` plus gdb's `timeout -s INT` gives a stack.

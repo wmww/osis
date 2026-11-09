@@ -2,6 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod net;
+mod no_server;
 mod peers;
 mod scale;
 mod scenarios;
