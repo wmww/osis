@@ -170,6 +170,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 ### Engine, keys, perm, crdt, store, schema, API
 | value | class | 0 / ∞ |
 |---|---|---|
+| `MAX_REMEMBERED` 4096 (engine `Waits`, headers of unjudgeable commits kept in memory for `awaits_on` and the record wake) | R (past it the smallest ID is forgotten: its record wake stops, a host listing it brings it back) | no record wakes across parts / one peer grows memory per unjudged header without end |
 | `MAX_READING` 256, `MAX_READING_PER_AUTHOR` 64, `MAX_READING_ACTORS` 64 | R (tested, keys `boxes.rs`; counts epochs known only from pending commits; a genuine one past it waits for its checked box) | |
 | `LOST_HEARD_WAIT_MS` = `ROLE_KEEP` 90 days (engine rotation) | M: how long an actor lost by an `until` passing alone waits for node-sync to hear its labels out. Past it a node out of reach loses unsent writes on what a renewal it has not heard would have kept, and comes back by a re-seal; before it the erase is late. No new number: past `ROLE_KEEP` such a node does not sync cleanly anyway. At 0 every offline holder loses those writes; at infinity one dead or hostile host keeps every expired share it hosts on the node for good | `rotation/lost.rs`; `keep_clients::an_until_ended_out_of_reach_goes_past_role_keep` |
 | `MAX_HINT_COMMITS` 64 | R (lowest commit ID evicted, not oldest; inbox spam can evict a genuine hint) | the grantee then writes once the thing's `keys.0` syncs, as after a restart (candidates are not persisted): a delay (checked) |

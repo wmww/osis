@@ -37,9 +37,21 @@ impl Engine {
         let mut seed = [0u8; 32];
         self.rng.fill_bytes(&mut seed);
         let mut scratch = Engine::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), Config::default(), self.clock.clone(), Box::new(SeededRng::from_seed(seed)))?;
-        // the order a chain's commits arrive in does not matter: each waits for what it names
-        for bytes in chain {
-            let _ = scratch.ingest(bytes, Vec::new());
+        // the order a chain's commits arrive in does not matter: creations first, then by `ts`, as
+        // a batch is judged; what is still unjudgeable (nothing is kept of it, spec/commits.md §4)
+        // is judged again while anything applied: a linear chain lands in one round
+        let mut order: Vec<(bool, osis_base::Ts, &Vec<u8>)> = chain.iter().map(|b| match osis_commit::CommitBlob::decode(b) {
+            Ok(c) => (!c.header.aspects.iter().any(|a| a.ak.as_str() == "created.0"), c.header.ts, b),
+            Err(_) => (true, osis_base::Ts::default(), b),
+        }).collect();
+        order.sort();
+        let mut waiting: Vec<&Vec<u8>> = order.into_iter().map(|(_, _, b)| b).collect();
+        while !waiting.is_empty() {
+            let before = waiting.len();
+            waiting.retain(|b| matches!(scratch.ingest(b, Vec::new()), Ok(crate::Ingested::Awaits(..))));
+            if waiting.len() == before {
+                break;
+            }
         }
         Ok(claims.iter().copied().filter(|(actor, account)| scratch.node_of(actor, account)).collect())
     }

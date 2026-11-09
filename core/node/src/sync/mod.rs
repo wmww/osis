@@ -151,6 +151,8 @@ pub struct SyncEngine {
     pub(crate) inbox_copied: work::InboxCopied,
     /// `secrets_count` at this engine generation (both).
     pub(crate) secrets_counted: std::cell::Cell<Option<((u64, u64), usize)>>,
+    /// `secrets_shape`'s count of reading-only secrets, per engine state.
+    pub(crate) reading_counted: std::cell::Cell<Option<((u64, u64), usize)>>,
     /// `pass::pending_sets` at this engine generation (both).
     pub(crate) unsettled_memo: Option<((u64, u64), pass::Unsettled, pass::Unsettled)>,
     /// Re-encrypting deleted chunks (`Engine::relink`) per aspect: when allowed next, and the
@@ -174,8 +176,8 @@ pub struct SyncEngine {
     /// Entries `redeliver` ingested again since the start.
     #[doc(hidden)]
     pub redelivered: u64,
-    /// `Core::secrets_moved` the awaiting entries were last reopened at (`redeliver`).
-    pub(crate) awaits_secrets: u64,
+    /// `secrets_shape` the awaiting entries were last reopened at (`redeliver`).
+    pub(crate) awaits_secrets: (usize, usize),
     /// Inbox blobs to ingest again at the next step (`wake_awaiting`).
     pub(crate) retry_inbox: BTreeSet<(LabelId, osis_base::BlobId)>,
     /// Opened inbox blobs with a commit (the carried one, or a chain certificate) that cannot be
@@ -343,6 +345,7 @@ impl SyncEngine {
             hint_failed: BTreeSet::new(),
             inbox_copied: work::InboxCopied::default(),
             secrets_counted: std::cell::Cell::new(None),
+            reading_counted: std::cell::Cell::new(None),
             unsettled_memo: None,
             relink_backoff: BTreeMap::new(),
             relink_pending: BTreeSet::new(),
@@ -353,7 +356,7 @@ impl SyncEngine {
             reread_boxes: true,
             start_look: true,
             redelivered: 0,
-            awaits_secrets: 0,
+            awaits_secrets: (0, 0),
             retry_inbox: BTreeSet::new(),
             inbox_awaits: BTreeMap::new(),
             unchecked_swept: None,

@@ -1184,12 +1184,6 @@ impl Engine {
         self.core.waits.unawaits(id);
     }
 
-    /// Commits whose unjudgeable things are remembered in memory (`awaits_on`): node-sync's sweep
-    /// lets go of those no entry holds (a commit given directly, an inbox blob gone).
-    pub fn awaiting_commits(&self) -> Vec<CommitId> {
-        self.core.waits.awaiting_ids()
-    }
-
     /// The commits reading-only secrets came from (node-sync's sweep of entries gone).
     pub fn reading_sources(&self) -> Vec<CommitId> {
         self.core.waits.sources().iter().copied().collect()

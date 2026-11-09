@@ -290,6 +290,9 @@ pub struct State {
     pub by_commit: BTreeMap<CommitId, BTreeSet<BlobId>>,
     /// How many inbox or request entries carry each commit.
     pub inbox_commits: BTreeMap<CommitId, usize>,
+    /// Entries a wake reopened (`Kind::Unknown` again) and the commit each was awaiting for: its
+    /// reading-only secrets stay until the entry is judged again or leaves (`SyncEngine::sweep_unchecked`).
+    pub awaits_reopened: BTreeMap<(LabelId, BlobId), CommitId>,
     /// Commits whose last `Kind::Awaits` entry changed kind or left, not told the engine yet.
     pub awaits_left: Vec<CommitId>,
     /// `Kind::Awaits` entries by what they await and by commit.
@@ -699,6 +702,10 @@ impl State {
                 self.awaits_left.push(*commit);
             }
         }
+        // judged again or gone: the reopened entry stops holding its commit's reading-only secrets
+        if add && !matches!(e.kind, Kind::Unknown) {
+            self.awaits_reopened.remove(&(l, b));
+        }
         if let Kind::Inbox(Some(c)) | Kind::Request(c) = &e.kind {
             let n = self.inbox_commits.entry(*c).or_default();
             *n = if add { n.saturating_add(1) } else { n.saturating_sub(1) };
@@ -966,6 +973,7 @@ impl State {
     /// Forgets an entry that never counted (junk a host announced, an expired one): no
     /// tombstone. Whether there was one.
     pub fn drop_entry(&mut self, l: LabelId, b: BlobId) -> bool {
+        self.awaits_reopened.remove(&(l, b));
         self.touch(l, b);
         let Some(e) = self.entries.remove(&(l, b)) else { return false };
         self.index(l, b, &e, false);

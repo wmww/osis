@@ -686,6 +686,9 @@ impl SyncEngine {
         let mut labels = BTreeSet::new();
         for (l, b) in ids {
             if let Some(mut e) = self.state.entries.get(&(l, b)).cloned() {
+                if let Kind::Awaits { commit, .. } = e.kind {
+                    self.state.awaits_reopened.insert((l, b), commit);
+                }
                 e.kind = Kind::Unknown;
                 self.state.charge_memory(l, b, None);
                 self.state.set_entry(l, b, e);
@@ -743,25 +746,20 @@ impl SyncEngine {
         self.engine.reexamine()
     }
 
-    /// Reading-only secrets and remembered headers whose source has no entry left go (`by_commit`
-    /// empties, the last `Kind::Awaits` or inbox entry leaves: `forget_unchecked`, `no_entry_left`).
+    /// Reading-only secrets whose source has no entry left go (`by_commit` empties, the last
+    /// `Kind::Awaits` or inbox entry leaves: `forget_unchecked`).
     fn sweep_unchecked(&mut self) -> Result<()> {
         let sources = self.engine.reading_sources();
-        let awaiting = self.engine.awaiting_commits();
-        if (sources.is_empty() && awaiting.is_empty()) || self.unchecked_swept == Some(self.state.version) {
+        if sources.is_empty() || self.unchecked_swept == Some(self.state.version) {
             return Ok(());
         }
         self.unchecked_swept = Some(self.state.version);
-        let held = |s: &Self, c: &CommitId| s.state.by_commit.contains_key(c) || s.state.awaits_by_commit.contains_key(c) || s.state.inbox_commits.contains_key(c);
+        // an entry a wake reopened holds its source until it is judged again: forgetting here would
+        // lose the keys that open what the fetch brings, and flip the secrets every pass
+        let reopened: BTreeSet<CommitId> = self.state.awaits_reopened.values().copied().collect();
         for c in sources {
-            if !held(self, &c) {
+            if !reopened.contains(&c) && !self.state.by_commit.contains_key(&c) && !self.state.awaits_by_commit.contains_key(&c) && !self.state.inbox_commits.contains_key(&c) {
                 self.engine.forget_awaiting(&c)?;
-            }
-        }
-        // what `awaits_on` remembers of headers seen is bounded by the entries holding them
-        for c in awaiting {
-            if !held(self, &c) {
-                self.engine.no_entry_left(&c);
             }
         }
         Ok(())
@@ -786,9 +784,11 @@ impl SyncEngine {
     /// A copy brings no slot counting as never received (`Engine::settled_slots`: a body dropped for its
     /// keep bounds, a part past its expiry, spec/commits.md §5): such a slot comes back only as a new copy.
     pub(crate) fn redeliver(&mut self) -> Result<()> {
-        // the node's epochs moved, by whatever path: a box or section of what awaits may open now
-        // (spec/wire.md §4)
-        let secrets = self.engine.core.secrets_moved;
+        // the secrets held moved, by whatever path, or a reading-only one became checked (the count
+        // alone does not move then): a box or section of what awaits may open now (spec/wire.md §4).
+        // Compared by value: a reading-only secret dropped and re-read within a pass changes nothing,
+        // and a counter of the moves would reopen an awaiting commit whose own box re-read bumped it
+        let secrets = self.secrets_shape();
         if secrets != std::mem::replace(&mut self.awaits_secrets, secrets) {
             let awaiting = self.state.by_awaited.values().flatten().copied().collect();
             self.reopen_awaiting(awaiting);
@@ -931,6 +931,20 @@ impl SyncEngine {
             }
         }
         Ok(out)
+    }
+
+    /// `secrets_count`, and how many of those are reading-only (spec/crypto.md Reading-only secrets).
+    fn secrets_shape(&self) -> (usize, usize) {
+        let at = (self.engine.core.generation, self.engine.core.memory_generation);
+        let reading = match self.reading_counted.get() {
+            Some((k, n)) if k == at => n,
+            _ => {
+                let n = self.engine.core.ix.secrets.values().map(|e| osis_keys::ROLES.iter().map(|r| e.role(*r).epochs().filter(|(_, i)| i.is_reading_only()).count()).sum::<usize>()).sum();
+                self.reading_counted.set(Some((at, n)));
+                n
+            }
+        };
+        (self.secrets_count(), reading)
     }
 
     pub(crate) fn secrets_count(&self) -> usize {

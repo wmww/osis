@@ -923,9 +923,6 @@ pub struct Core {
     pub generation: u64,
     /// Bumped by every `role_changed` (roster or read secrets): the node's `changed_at` pass.
     pub role_generation: u64,
-    /// Times this node's epochs moved (`save_epochs`), whatever the count of secrets did: a box of
-    /// what awaits (`Kind::Awaits`) may open now, also when a reading-only secret only became checked.
-    pub secrets_moved: u64,
     /// `generation` for memory transactions (`Tx::set_memory`): what they change is in memory
     /// only, so durable-derived caches (node-sync's) keep theirs.
     pub memory_generation: u64,
@@ -1390,7 +1387,6 @@ impl Core {
             generation: _,
             role_generation: _,
             memory_generation: _,
-            secrets_moved: _,
             // work lists and hints a superset of which is harmless (the consumer re-checks each
             // entry against the restored state), and what a step only moves forward
             drop_due: _,
@@ -1579,7 +1575,6 @@ impl Core {
             generation: 0,
             role_generation: 0,
             memory_generation: 0,
-            secrets_moved: 0,
             memory_tx: false,
             made_labels: Vec::new(),
             #[cfg(debug_assertions)]

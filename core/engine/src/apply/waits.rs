@@ -12,6 +12,10 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Applied commits with a slot `thing_wait` holds back (`m.missing`), derived from held headers:
 /// not journaled, a wake a rollback undoes only costs a fetch. A slot no entry opened costs nothing:
 /// node-sync finds no entry for it.
+/// Headers of unjudgeable commits remembered in memory (`Waits`): a page of a very large backlog is
+/// the most a peer's input can keep; a restart loses them all and fetches again.
+const MAX_REMEMBERED: usize = 4096;
+
 #[derive(Default)]
 pub(crate) struct Awaiting {
     by_record: BTreeMap<Tid, BTreeSet<CommitId>>,
@@ -62,6 +66,7 @@ impl Waits {
 
     /// `id` cannot be judged; `things`: its header's.
     pub fn awaits(&mut self, id: CommitId, things: Vec<Tid>) {
+        self.make_room(&id);
         for t in &things {
             self.on_thing.entry(*t).or_default().insert(id);
         }
@@ -70,11 +75,22 @@ impl Waits {
 
     /// `id`, thrown out whole, awaits each of `records`.
     pub fn awaits_records(&mut self, id: CommitId, records: impl Iterator<Item = Tid>) {
+        self.make_room(&id);
         let records: Vec<Tid> = records.collect::<BTreeSet<_>>().into_iter().collect();
         for t in &records {
             self.on_record.entry(*t).or_default().insert(id);
         }
         self.records_of.insert(id, records);
+    }
+
+    /// Remembered commits stay under `MAX_REMEMBERED`, the headers of commits given directly (a peer,
+    /// an inbox chain) having no entry to go with: past it the smallest ID is forgotten (it waits on no
+    /// wake, and `awaits_on` stops naming it; a restart forgets them all alike).
+    fn make_room(&mut self, id: &CommitId) {
+        while !self.things_of.contains_key(id) && !self.records_of.contains_key(id) && self.things_of.len().max(self.records_of.len()) >= MAX_REMEMBERED {
+            let Some(first) = self.things_of.keys().chain(self.records_of.keys()).min().copied() else { return };
+            self.unawaits(&first);
+        }
     }
 
     /// `id` applied, or its last entry left.
@@ -95,11 +111,6 @@ impl Waits {
                 }
             }
         }
-    }
-
-    /// The commits `awaits` holds things of.
-    pub fn awaiting_ids(&self) -> Vec<CommitId> {
-        self.things_of.keys().chain(self.records_of.keys()).copied().collect::<BTreeSet<_>>().into_iter().collect()
     }
 
     /// Whether a commit touching `t` cannot be judged here (`Engine::awaits_on`).
@@ -169,4 +180,24 @@ pub(crate) fn wake(core: &mut Core) {
 pub(crate) fn load_reading(core: &mut Core) {
     let ids: BTreeSet<CommitId> = core.ix.secrets.values().flat_map(|e| osis_keys::ROLES.iter().flat_map(|r| e.role(*r).epochs().flat_map(|(_, i)| i.reading.iter().map(|u| u.commit)).collect::<Vec<_>>()).collect::<Vec<_>>()).collect();
     core.waits.reading = ids;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // spec/requirements.md (no unbounded storage from peer input): what is remembered of unjudgeable
+    // headers stays under its bound however many come.
+    #[test]
+    fn remembered_headers_are_bounded() {
+        let mut w = Waits::default();
+        for i in 0..MAX_REMEMBERED + 10 {
+            let mut c = [0u8; 32];
+            c[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            w.awaits(CommitId(c), vec![Tid::from_bytes([1; 15])]);
+            w.awaits_records(CommitId(c), [Tid::from_bytes([2; 15])].into_iter());
+        }
+        assert!(w.things_of.len() <= MAX_REMEMBERED && w.records_of.len() <= MAX_REMEMBERED);
+        assert_eq!(w.on_thing[&Tid::from_bytes([1; 15])].len(), w.things_of.len(), "the index follows");
+    }
 }
