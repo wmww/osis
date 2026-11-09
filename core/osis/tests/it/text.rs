@@ -244,17 +244,51 @@ fn text_edit_keeps_unshown_merge() {
     s.edit(">hellX world!", ">hellX_rld!").unwrap();
     assert_eq!(s.text(), ">hellX brave_rld!", "a replace right after the merge");
     s.edit(&s.text(), ">hellX brave world!").unwrap();
-    // a deletion across the merge point: the merge wins, only what was typed lands, after it
+    // a replace across the merge point: what it removed goes, the merge stays
     s.edit(">hellX world!", ">hell_rld!").unwrap();
-    assert_eq!(s.text(), ">hellX brave _world!");
-    s.edit(">hellX brave _world!", ">hellX brave _world").unwrap();
-    assert_eq!(s.text(), ">hellX brave _world", "no merge pending: the plain splice");
+    assert_eq!(s.text(), ">hell_brave rld!");
+    s.edit(">hell_brave rld!", ">hell_brave rld").unwrap();
+    assert_eq!(s.text(), ">hell_brave rld", "no merge pending: the plain splice");
+}
+
+// Merges the UI does not show yet in two places: typing and deleting between them land where
+// the user did them, both merges kept.
+#[test]
+fn text_edit_between_unshown_merges_lands_where_typed() {
+    let (db, t, k) = setup(db(1));
+    let s = open(&db, t, &k);
+    let shown = "one two three";
+    s.edit("", shown).unwrap();
+    s.edit(shown, "zero one two three four").unwrap();
+    s.edit(shown, "one twos three").unwrap();
+    assert_eq!(s.text(), "zero one twos three four", "typed between them");
+    s.edit("one twos three", "one tos three").unwrap();
+    assert_eq!(s.text(), "zero one tos three four", "deleted between them");
+}
+
+// No runtime, so the next edit ends an idle pause: when that pause's commit fails (the thing
+// deleted) the keystroke is in the buffer all the same, the call failing as `commit` would.
+#[test]
+fn text_edit_after_a_failed_pause_commit_keeps_the_keystroke() {
+    let mut c = cfg(1, MemStore::new(), &clock());
+    c.app.idle_commit = std::time::Duration::from_millis(1);
+    let (db, t, k) = setup(osis::internals::create(c).unwrap());
+    let s = open(&db, t, &k);
+    s.edit("", "a").unwrap();
+    s.commit().unwrap().unwrap();
+    s.edit("a", "ab").unwrap();
+    let mut w = db.write();
+    w.delete(t).unwrap();
+    w.commit().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    assert!(matches!(s.edit("ab", "abc"), Err(osis::Error::UnknownThing { .. })));
+    assert_eq!(s.text(), "abc", "kept");
 }
 
 // Random shown text, merged edit and local edit (one splice each, over a 2-letter alphabet so
 // diffs are ambiguous). Disjoint edits give both applied, under some reading of each edit as one
 // splice (`aa -> aaa` inserts at any of three points); overlapping ones keep the typed text and
-// lose at most the chars the user removed.
+// lose only chars the user removed.
 #[test]
 fn text_edit_random_against_reference() {
     let (db, t, k) = setup(db(1));
@@ -312,5 +346,22 @@ fn text_edit_random_against_reference() {
             });
             assert!(ok, "{case}");
         }
+    }
+    // two merges, anywhere: the typed text lands whole, and only chars the user removed go
+    for _ in 0..2000 {
+        let sh = word(&mut rnd, 9);
+        let mut remote = sh.clone();
+        for _ in 0..2 {
+            let at = rnd(remote.len() + 1);
+            let (del, ins) = (rnd(remote.len() - at + 1), word(&mut rnd, 4));
+            remote = apply(&remote, at, del, &ins);
+        }
+        let ldat = rnd(sh.len() + 1);
+        let new = apply(&sh, ldat, rnd(sh.len() - ldat + 1), &word(&mut rnd, 4));
+        s.edit(&s.text(), &st(&remote)).unwrap();
+        s.edit(&st(&sh), &st(&new)).unwrap();
+        let got: Vec<char> = s.text().chars().collect();
+        let ok = readings(&sh, &new).into_iter().any(|(_, ld, li)| st(&got).contains(&st(&li)) && got.len() + ld >= remote.len() + li.len() && got.len() <= remote.len() + li.len());
+        assert!(ok, "shown {:?} remote {:?} new {:?} got {:?}", st(&sh), st(&remote), st(&new), st(&got));
     }
 }

@@ -23,6 +23,7 @@ use osis_base::{Tid, Value};
 use osis_crdt::{Op, PathOp};
 use osis_schema::ValueKey;
 use osis_schema::{Path, Type};
+use std::ops::Range;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
@@ -60,10 +61,10 @@ fn splices(old: &str, new: &str) -> Vec<Splice> {
     osis_crdt::changes(&a, &b).into_iter().map(|(o, n)| Splice { at: n.start, del: o.len(), text: b.get(n).unwrap_or_default().iter().collect() }).collect()
 }
 
-/// `old -> new` as one splice in chars: (start, chars removed, chars inserted), common prefix
-/// and suffix kept. A splice inside a run of equal chars (`aa -> aaa`) can sit anywhere in it:
-/// `left` takes the leftmost place, else the rightmost.
-fn one_splice(o: &[char], n: &[char], left: bool) -> (usize, usize, Vec<char>) {
+/// `old -> new` as one splice of `old` in chars, common prefix and suffix kept: the chars it
+/// removes and the text it inserts there. A splice inside a run of equal chars (`aa -> aaa`) can
+/// sit anywhere in it: `left` takes the leftmost place, else the rightmost.
+fn one_splice<'a>(o: &[char], n: &'a [char], left: bool) -> (Range<usize>, &'a [char]) {
     let common = |a: &mut dyn Iterator<Item = (&char, &char)>| a.take_while(|(a, b)| a == b).count();
     let min = o.len().min(n.len());
     let (pre, suf) = if left {
@@ -73,28 +74,59 @@ fn one_splice(o: &[char], n: &[char], left: bool) -> (usize, usize, Vec<char>) {
         let pre = common(&mut o.iter().zip(n));
         (pre, common(&mut o.iter().rev().zip(n.iter().rev()).take(min - pre)))
     };
-    (pre, o.len() - suf - pre, n.get(pre..n.len() - suf).unwrap_or_default().to_vec())
+    (pre..o.len() - suf, n.get(pre..n.len() - suf).unwrap_or_default())
 }
 
-/// `buf` with the change `base -> new` placed in it (`TextSession::edit`), where `buf` is `base`
-/// with a merge applied: before or after the merge, or an insert at its end where they overlap.
+/// The char diff `old -> new` (`osis_crdt::changes`), each change as far `left` as a run of
+/// equal chars lets it sit, else as far right; `whole`: as one change from the first to the last.
+fn changes(o: &[char], n: &[char], left: bool, whole: bool) -> Vec<(Range<usize>, Range<usize>)> {
+    let rev = |v: &[char]| v.iter().rev().copied().collect::<Vec<_>>();
+    let flip = |r: Range<usize>, len: usize| len - r.end..len - r.start;
+    let c = match left {
+        true => osis_crdt::changes(&rev(o), &rev(n)).into_iter().rev().map(|(a, b)| (flip(a, o.len()), flip(b, n.len()))).collect(),
+        false => osis_crdt::changes(o, n),
+    };
+    match (c.first(), c.last()) {
+        (Some(f), Some(l)) if whole => vec![(f.0.start..l.0.end, f.1.start..l.1.end)],
+        _ => c,
+    }
+}
+
+/// `buf` with the user's change `base -> new` placed in it (`TextSession::edit`), where `buf` is
+/// `base` with merges the UI does not show yet. The change is read as one splice of `base`, the
+/// merges as changes of `base`: as one change, else as the char diff, each tried with the splice
+/// leftmost and the merges rightmost, then the reverse; the first reading where they are
+/// disjoint, else the char diff's first. The splice removes the chars of `base` it removed that
+/// the merges kept, and inserts where its point is in `buf`: after a merge's insert there, at the
+/// end of a merge's change it falls inside.
 fn placed(base: &str, new: &str, buf: &str) -> String {
     let (sh, nw, rm): (Vec<char>, Vec<char>, Vec<char>) = (base.chars().collect(), new.chars().collect(), buf.chars().collect());
-    let ((la, ld, li), (ra, _, _)) = (one_splice(&sh, &nw, true), one_splice(&sh, &rm, false));
-    let (at, del, ins) = if la + ld <= ra {
-        (la, ld, li)
-    } else {
-        let ((la, ld, li), (ra, rd, ri)) = (one_splice(&sh, &nw, false), one_splice(&sh, &rm, true));
-        if la >= ra + rd {
-            (la - rd + ri.len(), ld, li)
-        } else {
-            let (ra, _, ri) = one_splice(&sh, &rm, false);
-            (ra + ri.len(), 0, li)
-        }
+    let reading = |left: bool, whole: bool| (one_splice(&sh, &nw, left), changes(&sh, &rm, !left, whole));
+    let ((del, ins), merged) = [(true, true), (false, true), (true, false), (false, false)]
+        .into_iter()
+        .map(|(left, whole)| reading(left, whole))
+        .find(|((d, _), m)| m.iter().all(|(o, _)| d.end <= o.start || d.start >= o.end))
+        .unwrap_or_else(|| reading(true, false));
+    let to_buf = |p: usize| match merged.iter().take_while(|(o, _)| o.start < p || o.end <= p).last() {
+        Some((o, n)) if o.end <= p => p - o.end + n.end,
+        Some((_, n)) => n.end,
+        None => p,
     };
-    let mut out = rm;
-    out.splice(at..at + del, ins);
-    out.into_iter().collect()
+    let gone: std::collections::BTreeSet<usize> = del.clone().filter(|i| !merged.iter().any(|(o, _)| o.contains(i))).map(to_buf).collect();
+    let at = to_buf(del.start);
+    let mut out = String::new();
+    for (j, c) in rm.iter().enumerate() {
+        if j == at {
+            out.extend(ins);
+        }
+        if !gone.contains(&j) {
+            out.push(*c);
+        }
+    }
+    if at == rm.len() {
+        out.extend(ins);
+    }
+    out
 }
 
 struct State {
@@ -329,9 +361,10 @@ impl TextSession {
     }
 
     /// Writes the user's change `base -> new` into the buffer, `base` being the text the UI
-    /// showed. A merge into the buffer the UI does not show yet is kept: the change goes before or
-    /// after it (each placed so they are disjoint if any placement is), or, overlapping it,
-    /// becomes an insert at its end (the UI then shows both, through `on_merge`).
+    /// showed. Merges into the buffer the UI does not show yet are kept: the change removes what
+    /// it removed that they kept and inserts where its point went (the UI then shows both, through
+    /// `on_merge`). Fails as `commit` would when the idle pause it ends cannot be committed; the
+    /// change is in the buffer all the same.
     pub fn edit(&self, base: &str, new: &str) -> Result<()> {
         if base == new {
             return Ok(());
@@ -341,17 +374,15 @@ impl TextSession {
             let st = lock(&self.s.st);
             !st.armed && st.last_edit.is_some_and(|t| t.elapsed() >= idle)
         };
-        // an idle pause no timer took ends here
-        if paused {
-            save(&self.db, &self.s)?;
-        }
+        // an idle pause no timer took ends here; its failure keeps its edits, and this one
+        let saved = if paused { save(&self.db, &self.s).map(drop) } else { Ok(()) };
         let mut st = lock(&self.s.st);
         st.buf = placed(base, new, &st.buf);
         st.last_edit = Some(Instant::now());
         if !st.armed {
             st.armed = arm(&self.db, Arc::downgrade(&self.s), idle);
         }
-        Ok(())
+        saved
     }
 
     /// Commits what changed since the last commit as one commit; `UnknownThing` (the edits

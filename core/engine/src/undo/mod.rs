@@ -433,7 +433,8 @@ impl Engine {
     /// `check_revertible` acting as `actor`; `confined` as `revert_inner`.
     pub(crate) fn check_revert(&mut self, c: CommitId, actor: Tid, confined: bool) -> Result<bool> {
         let memory = self.core.ix.commits.get(&c).is_some_and(|m| m.view.memory);
-        let ts = self.core.hlc.next();
+        // a probe stamps nothing: the clock is not stepped
+        let ts = self.core.hlc.peek();
         self.probe(|tx| tx.in_class(memory, |tx| undo_writes(tx, c, actor, ts, confined)).map(|w| w.is_some()))
     }
 
@@ -576,6 +577,47 @@ mod tests {
                 r => panic!("{r:?}"),
             }
         }
+    }
+
+    // `check_revertible` runs the revert's own writes in a transaction rolled back after: it
+    // changes nothing, whatever it answers. A creates a thing (its creation's undo would delete
+    // it) and sets register `x` twice keeping history, C overwriting the first. Probing the creation, the
+    // first set (superseded) and the second (revertible) leaves the state, the clock, the
+    // generations, the session counters and the events as they were; the revert then writes.
+    #[test]
+    fn check_revertible_changes_nothing() {
+        let (mut lp, t, _, keep) = two(966);
+        let x = Ak::new("x:r.0").unwrap();
+        let set = |lp: &mut LocalPeer, i: usize, v: i64| {
+            let mut m = Mutation::new();
+            m.set(t, &x, &Value::Int(v)).unwrap().retention(t, &x, keep).unwrap();
+            lp.advance(10);
+            lp.peers[i].commit(m).unwrap().unwrap()
+        };
+        let a = lp.peers[0].engine.tid();
+        let mut m = Mutation::new();
+        let n = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(n, &x, &Value::Int(1)).unwrap();
+        let made = lp.peers[0].commit(m).unwrap().unwrap();
+        let first = set(&mut lp, 0, 1);
+        lp.sync_all().unwrap();
+        set(&mut lp, 1, 2);
+        lp.sync_all().unwrap();
+        let second = set(&mut lp, 0, 3);
+        let p = &mut lp.peers[0];
+        p.drain_events();
+        let nonce = p.engine.core.session.nonce;
+        let seen = |e: &mut crate::Engine| {
+            let ctr = e.run(|tx| Ok((tx.txn.counter(&t, &x, &nonce)?, tx.txn.counter(&n, &x, &nonce)?))).unwrap();
+            (e.get(&t, &x).unwrap(), e.get(&n, &x).unwrap(), e.core.hlc.last(), e.core.generation, e.core.memory_generation, ctr, e.commit_ids().len())
+        };
+        let before = seen(&mut p.engine);
+        assert!(p.engine.check_revertible(&made).unwrap());
+        assert!(!p.engine.check_revertible(&first).unwrap(), "C overwrote it");
+        assert!(p.engine.check_revertible(&second).unwrap());
+        assert_eq!(seen(&mut p.engine), before);
+        assert!(p.drain_events().is_empty());
+        p.engine.revert(&second).unwrap().unwrap();
     }
 
     // A and C, a thing of A's that C may write, map aspect `x`, and a keep-history retention.
