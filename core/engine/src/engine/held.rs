@@ -1,7 +1,9 @@
 //! perm's held set (notes/architecture.md §2: the node implements `HeldSet`): applied role
 //! commits by target, `created.0` records, indexed by commit and by
 //! holder, journaled for rollback, and remembering which things' inputs changed since perm last
-//! looked (`take_touched`), so the timelines re-partition only around them.
+//! looked (`take_touched`), so the timelines re-partition only around them. A role commit of an
+//! account that does not count by the epoch rule (spec/permissions.md §5.5) stays held but no
+//! timeline reads it (`set_counted`): the filter runs before the timeline.
 
 use super::journal::Journaled;
 use osis_base::{CommitId, CreationRecord, RecordLink, Role, Tid};
@@ -14,6 +16,7 @@ enum Undo {
     Created(Tid, Option<CreationRecord>),
     AddedCommit(Arc<RoleCommit>),
     Removed(Arc<RoleCommit>),
+    Counted(CommitId, bool),
 }
 
 #[derive(Debug, Default)]
@@ -37,6 +40,10 @@ pub struct Held {
     generation: u64,
     /// Things whose creation record `create` added since `take_records`.
     records: Vec<Tid>,
+    /// Role commits held that do not count (an account's at a closed epoch no word names):
+    /// left out of what perm reads (`HeldSet::edge_commits`). By ID, whether held or not, so a
+    /// commit re-derived (`add_commit`) keeps its standing.
+    uncounted: BTreeSet<CommitId>,
 }
 
 fn named(c: &RoleCommit) -> Vec<(Tid, Tid)> {
@@ -314,6 +321,30 @@ impl Held {
         self.ids.get(id).map(|c| &**c)
     }
 
+    /// Whether the role commit `id` counts (spec/permissions.md §5.5): one that does not stays
+    /// held, read by no timeline. A change touches what the commit writes, so perm judges it again.
+    pub fn set_counted(&mut self, id: CommitId, counts: bool) {
+        if self.uncounted.contains(&id) != counts {
+            return;
+        }
+        self.mark_counted(id, counts);
+        self.log.push(Undo::Counted(id, !counts));
+    }
+
+    fn mark_counted(&mut self, id: CommitId, counts: bool) {
+        if counts {
+            self.uncounted.remove(&id);
+        } else {
+            self.uncounted.insert(id);
+        }
+        if let Some(c) = self.ids.get(&id) {
+            let targets: Vec<Tid> = c.ops.iter().map(|o| o.target).chain([c.author]).collect();
+            self.moved.extend(targets.iter().copied());
+            self.touched.extend(targets);
+            self.generation += 1;
+        }
+    }
+
     /// Drops the commit with this ID.
     pub fn remove(&mut self, id: &CommitId) {
         if let Some(c) = self.take(id) {
@@ -350,7 +381,7 @@ impl Held {
 impl Journaled for Held {
     #[cfg(test)]
     fn contents(&self) -> String {
-        format!("{:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.first_admin_of, self.ids)
+        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.first_admin_of, self.ids, self.uncounted)
     }
     type Mark = usize;
     fn commit(&mut self) {
@@ -370,6 +401,7 @@ impl Journaled for Held {
                     self.take(&c.id);
                 }
                 Undo::Removed(c) => self.put_commit(c),
+                Undo::Counted(id, counts) => self.mark_counted(id, counts),
             }
         }
     }
@@ -382,7 +414,11 @@ impl HeldSet for Held {
         s.into_iter().collect()
     }
     fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>> {
-        self.commits.get(thing).cloned().unwrap_or_default()
+        let Some(cs) = self.commits.get(thing) else { return Vec::new() };
+        if self.uncounted.is_empty() {
+            return cs.clone();
+        }
+        cs.iter().filter(|c| !self.uncounted.contains(&c.id)).cloned().collect()
     }
     fn created(&self, thing: &Tid) -> Option<CreationRecord> {
         self.created.get(thing).cloned()

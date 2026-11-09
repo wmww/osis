@@ -219,3 +219,37 @@ fn regrant_replay_equals_search() {
         }
     }
 }
+
+/// §5.2 Addenda, §5.5: the addenda fixpoint runs through every account's epochs. X's addendum
+/// (at an epoch rotation r1 closed) saves Y's write (at an epoch r2 closed) only once A's
+/// addendum against r1 saves X's; without it, or saving itself, X's addendum is invalid.
+#[test]
+fn addenda_fixpoint_runs_through_closed_epochs_spec_permissions_5_5() {
+    use osis_perm::{Addendum, EpochStanding};
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    let (mut w, n, d) = doc();
+    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(n[0], d, n[3], edge(Write), 0, &all);
+    let (a, x, y) = (n[1], n[2], n[3]);
+    let (r1, r2) = (cid(9001), cid(9002));
+    let wy = w.content(y, 3, &[]);
+    let ax = w.content(x, 5, &[]);
+    let aa = w.content(a, 6, &[]);
+    let tl = Timeline::evaluate(&w.held());
+    let names = |r, c: osis_base::CommitId| (r, Arc::new(BTreeSet::from([c])));
+    let by_x = Addendum { point: ax, entries: vec![names(r2, wy.commit), names(r1, ax.commit)] };
+    let by_a = Addendum { point: aa, entries: vec![names(r1, ax.commit)] };
+    let standing = |c: &osis_base::CommitId| match *c {
+        c if c == ax.commit => EpochStanding::Closed(BTreeSet::from([r1])),
+        c if c == wy.commit => EpochStanding::Closed(BTreeSet::from([r2])),
+        _ => EpochStanding::Counts,
+    };
+    let v = tl.vouching(&d, &[by_x.clone(), by_a], standing);
+    assert!(v.valid(&ax.commit) && v.valid(&aa.commit));
+    assert!(v.saves(&wy.commit, &BTreeSet::from([r2])), "X's saved addendum saves Y's write");
+    assert!(!v.saves(&wy.commit, &BTreeSet::from([r1])), "only against a closer of its epoch");
+    let alone = tl.vouching(&d, &[by_x], standing);
+    assert!(!alone.valid(&ax.commit), "an addendum at a closed epoch does not save itself");
+    assert!(!alone.saves(&wy.commit, &BTreeSet::from([r2])));
+}

@@ -41,6 +41,9 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     if v.actor != v.author {
         core.ix.by_actor.remove(&(v.actor, v.author), id);
     }
+    if let Some(e) = v.epoch {
+        core.ix.by_epoch.remove(&(v.author, e), id);
+    }
     super::validity::forget_addenda(core, id, &v.aspects);
     for b in &v.chunks {
         core.ix.by_chunk.remove(b, id);

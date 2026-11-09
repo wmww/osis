@@ -255,6 +255,9 @@ pub struct View {
     pub chunks: Vec<osis_base::BlobId>,
     /// It carries a purge request (`retention::lasting`).
     pub purges: bool,
+    /// The epoch an account's commit is signed at (spec/wire.md §4): what the epoch rule reads
+    /// (`Core::standing`); `None` for any other author.
+    pub epoch: Option<CommitId>,
 }
 
 /// One aspect entry as `View` keeps it.
@@ -288,6 +291,7 @@ impl View {
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
             chunks: h.chunks.iter().map(|c| c.blob).collect(),
             purges: !h.purge.is_empty(),
+            epoch: h.epoch,
         }
     }
 }
@@ -531,6 +535,14 @@ indexes! {
     /// Per account, the sequence number of its last rotation held or dropped
     /// (`Core::note_rotation`): what `Core::account_view` is cached by.
     pub rotations: JMap<Tid, u64>,
+    /// Accounts whose rotations held changed since their epochs were last judged
+    /// (`Core::refresh_epochs`).
+    pub epochs_due: JSet<Tid>,
+    /// Per account with a rotation judged, what the epoch rule says of its commits
+    /// (`JudgedEpochs`; `Core::refresh_epochs` re-judges what moved). Persisted.
+    pub epochs: JMap<Tid, Arc<crate::flows::account::JudgedEpochs>>,
+    /// Held commits of accounts per (account, epoch they are signed at).
+    pub by_epoch: JSetMap<(Tid, CommitId), CommitId>,
     /// Held parts with a relative keep bound per aspect (`Core::put_meta`), absent at 0:
     /// `retention::any_bounded` without walking the aspect.
     pub bounded_held: JMap<(Tid, Ak), u64>,
@@ -1198,7 +1210,7 @@ impl Core {
 
     /// Whether some validity waits for `rejudge_all`.
     pub fn stale(&self) -> bool {
-        self.stale_all || !self.stale_things.is_empty() || !self.stale_commits.is_empty() || !self.stale_authors.is_empty()
+        self.stale_all || !self.stale_things.is_empty() || !self.stale_commits.is_empty() || !self.stale_authors.is_empty() || !self.ix.epochs_due.is_empty()
     }
 
     /// Drops what is derived from the state of `(tid, ak)` (a write changes it).
@@ -1712,6 +1724,7 @@ impl Core {
         if m.view.kind.is_role() && m.view.aspects.iter().any(|a| a.tid == m.view.author && a.ak.as_str() == "keys.0") {
             self.rotation_seq = self.rotation_seq.saturating_add(1);
             self.ix.rotations.insert(m.view.author, self.rotation_seq);
+            self.ix.epochs_due.insert(m.view.author);
             // what possession reads of the account changed, as for an actor's keyset
             crate::apply::keyset_changed(self, &m.view.author);
         }
@@ -2648,7 +2661,7 @@ impl Engine {
                     tx.core.groups_moved();
                 }
                 // every validity change was judged before the index is persisted
-                debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_authors.is_empty() && tx.core.stale_commits.is_empty()), "stale validity left unjudged: {:?} {:?} {:?}", tx.core.stale_things, tx.core.stale_authors, tx.core.stale_commits);
+                debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_authors.is_empty() && tx.core.stale_commits.is_empty() && tx.core.ix.epochs_due.is_empty()), "stale validity left unjudged: {:?} {:?} {:?} {:?}", tx.core.stale_things, tx.core.stale_authors, tx.core.stale_commits, *tx.core.ix.epochs_due);
                 #[cfg(debug_assertions)]
                 if r.is_ok() && !tx.core.unchecked_tx {
                     match crate::apply::check_rebuilt(&mut tx) {

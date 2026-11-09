@@ -1,6 +1,7 @@
 //! Layer 2 (spec/permissions.md §5.2): per-delta validity of content and of the
 //! role-class writes judged like content.
 
+use crate::epochs::EpochStanding;
 use crate::graph::{EdgesAt, View};
 use crate::timeline::{At, Timeline};
 use crate::walk::Demotion;
@@ -80,20 +81,30 @@ impl Timeline {
     /// those whose author held write on the thing at their key. `addenda`: every held addendum
     /// delta on `thing`, a write of its author as itself (one acting for another actor is no
     /// addendum), listing what its body says while held and nothing otherwise: its validity
-    /// never depends on its body.
-    pub fn vouching(&self, thing: &Tid, addenda: &[Addendum]) -> Vouching {
-        // (addendum, its author held write at its key, valid so far)
-        let mut st: Vec<(&Addendum, bool, bool)> = addenda.iter().map(|a| (a, self.role(&a.point.node, thing, At::before(a.point)) >= Some(Role::Write), false)).collect();
+    /// never depends on its body. `standing`: what the epoch rule says of an addendum's commit
+    /// (§5.5; `Counts` for an author with no epochs): one at a closed epoch is valid only where a
+    /// counting addendum against a closer of its epoch lists it, so the fixpoint runs through
+    /// every account's epochs at once (it stays monotone: addenda save plain content only, which
+    /// no timeline or epoch reads).
+    pub fn vouching(&self, thing: &Tid, addenda: &[Addendum], standing: impl Fn(&CommitId) -> EpochStanding<CommitId>) -> Vouching {
+        // (addendum, its author held write at its key, its standing, valid so far)
+        let mut st: Vec<(&Addendum, bool, EpochStanding<CommitId>, bool)> = addenda.iter().map(|a| (a, self.role(&a.point.node, thing, At::before(a.point)) >= Some(Role::Write), standing(&a.point.commit), false)).collect();
         loop {
             let mut changed = false;
             for i in 0..st.len() {
-                let Some(&(a, _, valid)) = st.get(i) else { break };
-                if valid {
+                let Some((a, _, s, valid)) = st.get(i) else { break };
+                if *valid {
                     continue;
                 }
-                let v = self.delta_valid(a.point, thing, Role::Write) == Validity::Valid || st.iter().any(|(b, w, bv)| *bv && *w && self.vouches(thing, b, a.point));
+                let a = *a;
+                let counted = |b: &&(&Addendum, bool, EpochStanding<CommitId>, bool)| b.1 && b.3;
+                let epoch = match s {
+                    EpochStanding::Counts => true,
+                    EpochStanding::Closed(closers) => st.iter().filter(counted).any(|b| saves(b.0, &a.point.commit, closers)),
+                };
+                let v = epoch && (self.delta_valid(a.point, thing, Role::Write) == Validity::Valid || st.iter().filter(counted).any(|b| self.vouches(thing, b.0, a.point)));
                 if v && let Some(x) = st.get_mut(i) {
-                    x.2 = true;
+                    x.3 = true;
                     changed = true;
                 }
             }
@@ -101,8 +112,8 @@ impl Timeline {
                 break;
             }
         }
-        let counting = st.iter().filter(|(_, w, v)| *w && *v).map(|(a, _, _)| (*a).clone()).collect();
-        Vouching { thing: *thing, valid: st.iter().filter(|(_, _, v)| *v).map(|(a, _, _)| a.point.commit).collect(), counting }
+        let counting = st.iter().filter(|(_, w, _, v)| *w && *v).map(|(a, ..)| (*a).clone()).collect();
+        Vouching { thing: *thing, valid: st.iter().filter(|x| x.3).map(|(a, ..)| a.point.commit).collect(), counting }
     }
 
     /// Whether addendum `a` (counting) vouches for the write at `at` on `thing`: an entry of it
@@ -246,7 +257,20 @@ impl Vouching {
         self.counting.iter().filter(move |a| tl.vouches(&self.thing, a, at)).map(|a| (a.point.node, a.point))
     }
 
+    /// Whether a counting addendum against one of `closers` (the counting rotations closing the
+    /// epoch commit `c` is signed at, `EpochStanding::Closed`) lists `c`: it saves `c`'s plain deltas
+    /// on the thing (spec/permissions.md §5.5, Addenda against a rotation).
+    pub fn saves(&self, c: &CommitId, closers: &BTreeSet<CommitId>) -> bool {
+        self.counting.iter().any(|a| saves(a, c, closers))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.counting.is_empty()
     }
+}
+
+/// Whether addendum `a` has an entry keyed by one of `closers` listing `c`. Reads no `ts`: a
+/// rotation is ordered by nothing (spec/permissions.md §5.5).
+fn saves(a: &Addendum, c: &CommitId, closers: &BTreeSet<CommitId>) -> bool {
+    a.entries.iter().any(|(r, lists)| closers.contains(r) && lists.contains(c))
 }

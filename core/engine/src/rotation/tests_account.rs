@@ -348,15 +348,15 @@ fn account_view_is_built_once_per_rotation() {
         write(&mut lp);
     }
     assert_eq!(lp.peers[0].engine.core.account_view_builds.get(), before, "no write rebuilds it");
-    // a rotation is seen at the next read, once, however many reads follow
+    // a rotation builds it once (the epoch rule judges it on arrival), however many reads follow
     let e = &mut lp.peers[0].engine;
     let held = e.core.accounts.get(&a.account).unwrap().clone();
     let first = AccountEpochKeys::from_seed(held.seeds.values().next().unwrap());
     let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([81; 32]));
     let rec = e.core.created(&a.account).unwrap().clone();
     let ts = Ts::make(e.now(), 0).unwrap();
-    e.ingest(&rotation(rec, &first, &next, ts), Vec::new()).unwrap();
     let before = e.core.account_view_builds.get();
+    e.ingest(&rotation(rec, &first, &next, ts), Vec::new()).unwrap();
     for _ in 0..5 {
         assert_eq!(e.core.account_delete_key(&a.account).unwrap(), next.signing.verifying_key());
     }
@@ -412,4 +412,116 @@ fn a_siblings_far_future_commit_waits_spec_crdt_2_2() {
     lp.peers[0].clock.advance(osis_base::format::MAX_DRIFT_MS + 1);
     lp.peers[0].engine.tick().unwrap();
     assert!(lp.peers[0].engine.pending().is_empty(), "it applies once within the bound");
+}
+
+/// `peers(3)` synced; peer 1 makes thing `t` (`x:a.0` = 0) and grants peer 0's account admin;
+/// peer 0's account writes `x:a.0` = 1 there (`c`) and grants peer 2's account write (`g`);
+/// all synced. Returns (lp, account, t, c, g) and the rotation of the account closing its first
+/// epoch, as peer 1 would receive it.
+fn closed_world() -> (LocalPeer, Tid, Tid, CommitId, CommitId, Vec<u8>) {
+    let mut lp = peers(3);
+    lp.sync_all().unwrap();
+    let (a, z) = (lp.peers[0].engine.me(), lp.peers[2].engine.me());
+    let me = lp.peers[1].engine.me();
+    let mut m = crate::Mutation::new();
+    let t = lp.peers[1].engine.new_thing(&mut m, me);
+    m.set(t, &Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
+    lp.peers[1].commit(m).unwrap();
+    lp.peers[1].engine.grant(&t, &a, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(1000);
+    let mut m = crate::Mutation::new();
+    m.set(t, &Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let g = *lp.peers[0].engine.grant(&t, &z, &edge(Role::Write)).unwrap().commits.last().unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(1000);
+    let e = &lp.peers[0].engine;
+    let first = AccountEpochKeys::from_seed(e.core.accounts[&a].seeds.values().next().unwrap());
+    let rot = rotation(e.core.created(&a).unwrap().clone(), &first, &AccountEpochKeys::from_seed(&Secret32::from_bytes([90; 32])), Ts::make(e.now(), 0).unwrap());
+    (lp, a, t, c, g, rot)
+}
+
+/// An addendum on `t` by `peer` against rotation `r` listing `lists`.
+fn addendum(lp: &mut LocalPeer, peer: usize, t: Tid, r: CommitId, lists: &[CommitId]) {
+    let mut mu = crate::Mutation::new();
+    let f = osis_schema::core_types::Frontier { commits: lists.iter().copied().collect() };
+    mu.op(t, &osis_schema::core_types::ADDENDA, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(osis_base::Value::bytes(&r.0))], op: osis_crdt::Op::Put(f.to_value()) }).unwrap();
+    lp.peers[peer].commit(mu).unwrap();
+}
+
+// spec/permissions.md §5.5 (Epoch rule, Addenda against a rotation): once an outsider holds a
+// rotation closing an account's epoch, the account's write there reads as absent and its grant
+// gives nothing; a writer's addendum against the rotation listing both brings the write back,
+// never the grant; a restart reads the same
+#[test]
+fn closed_epoch_write_falls_and_a_witness_saves_it_spec_permissions_5_5() {
+    let (mut lp, a, t, c, g, rot) = closed_world();
+    let r = CommitBlob::decode(&rot).unwrap().header.id();
+    let z = lp.peers[2].engine.me();
+    let x = Ak::new("x:a.0").unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(e.get(&t, &x).unwrap(), Some(osis_base::Value::Int(1)));
+    assert_eq!(e.core.role_now(&z, &t), Some(Role::Write));
+    assert!(matches!(e.ingest(&rot, Vec::new()).unwrap(), Ingested::Applied(_)));
+    assert_eq!(e.get(&t, &x).unwrap(), Some(osis_base::Value::Int(0)), "the account's write at the closed epoch reads as absent");
+    assert_eq!(e.core.role_now(&z, &t), None, "its grant there gives nothing");
+    assert_eq!(e.core.role_now(&a, &t), Some(Role::Admin), "another's grant to the account stands");
+    addendum(&mut lp, 1, t, r, &[c, g]);
+    // the write's body went with its fall; valid again, it is fetched again
+    lp.sync(0, 1).unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(e.get(&t, &x).unwrap(), Some(osis_base::Value::Int(1)), "the witness's addendum saves the write");
+    assert_eq!(e.core.role_now(&z, &t), None, "an addendum saves plain content only");
+    lp.peers[1].restart(7).unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert_eq!((e.get(&t, &x).unwrap(), e.core.role_now(&z, &t)), (Some(osis_base::Value::Int(1)), None));
+}
+
+// spec/permissions.md §5.5: an addendum against a rotation that closes nothing the commit is
+// signed at, or by a reader of the thing, saves nothing
+#[test]
+fn addendum_saves_only_against_a_closer_by_a_writer_spec_permissions_5_5() {
+    let (mut lp, _, t, c, _, rot) = closed_world();
+    let x = Ak::new("x:a.0").unwrap();
+    assert!(matches!(lp.peers[1].engine.ingest(&rot, Vec::new()).unwrap(), Ingested::Applied(_)));
+    addendum(&mut lp, 1, t, CommitId([3; 32]), &[c]);
+    assert_eq!(lp.peers[1].engine.get(&t, &x).unwrap(), Some(osis_base::Value::Int(0)), "keyed by no closer");
+    // peer 2 holds write on `t` only through the account's grant, which falls at peer 1
+    let r = CommitBlob::decode(&rot).unwrap().header.id();
+    addendum(&mut lp, 2, t, r, &[c]);
+    lp.sync(2, 1).unwrap();
+    lp.sync(0, 1).unwrap();
+    assert_eq!(lp.peers[1].engine.get(&t, &x).unwrap(), Some(osis_base::Value::Int(0)), "no writer's word");
+}
+
+// spec/permissions.md §5.5, notes/api-design.md (Fast by construction): a rotation re-judges the
+// commits signed at the epochs it moved, once; a later write by anyone re-judges none of the
+// account's history and builds no signing chain
+#[test]
+fn rotation_judges_its_epochs_once_and_writes_stay_flat() {
+    let count = |n: usize| {
+        let (mut lp, _, t, _, _, rot) = closed_world();
+        for i in 0..n {
+            let mut m = crate::Mutation::new();
+            m.set(t, &Ak::new("x:b.0").unwrap(), &osis_base::Value::Int(i as i64)).unwrap();
+            lp.peers[0].commit(m).unwrap();
+        }
+        lp.sync_all().unwrap();
+        let e = &mut lp.peers[1].engine;
+        crate::costs::take();
+        e.ingest(&rot, Vec::new()).unwrap();
+        let judged = |c: Vec<(&'static str, std::time::Duration, u64)>| c.into_iter().find(|x| x.0 == "rejudge: a commit").map_or(0, |x| x.2);
+        let on_rotation = judged(crate::costs::take());
+        let builds = e.core.account_view_builds.get();
+        let mut m = crate::Mutation::new();
+        m.set(t, &Ak::new("x:c.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
+        lp.peers[1].commit(m).unwrap();
+        let e = &mut lp.peers[1].engine;
+        (on_rotation, judged(crate::costs::take()), e.core.account_view_builds.get() - builds)
+    };
+    let (small, large) = (count(5), count(50));
+    assert!(large.0 >= 45 && large.0 <= small.0 + 50, "a rotation judges its epoch's commits: {small:?} {large:?}");
+    assert_eq!((small.1, small.2), (large.1, large.2), "a write after it is flat in the account's history");
+    assert_eq!(large.2, 0, "and builds no signing chain");
 }

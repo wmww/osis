@@ -1575,6 +1575,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             validity::add_role_commit(tx.core, &v, &id, &validity::EdgeParts::of(&b.header, &parts));
         }
     }
+    // which role commits of accounts count (spec/permissions.md §5.5), before any timeline
+    tx.core.refresh_epochs();
     // a commit read before the record it needs (a nested edge write `ts`-ordered before its
     // grant: another node's clock) is derived now, as it was when that record arrived
     validity::resolve_unresolved(tx)?;

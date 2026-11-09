@@ -41,6 +41,9 @@ const DELETE_HINTS: &[u8] = b"node/delete hints";
 const REQUIRED: &[u8] = b"node/required";
 const ORIGINALS: &[u8] = b"node/originals";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
+/// Per account with a rotation judged, what the epoch rule says of its commits
+/// (`Indexes::epochs`): an open builds no signing chain.
+const EPOCHS: &[u8] = b"node/epochs";
 /// What each addendum commit says (`validity::AddendaParts`), by commit ID.
 pub(super) const ADDENDA: &[u8] = b"node/addenda";
 /// Per role commit, what perm's adaptation reads of its held `roles.0` parts (`validity::EdgeParts`): written with the commit record (`Tx::put_commit`), so an open
@@ -108,6 +111,14 @@ impl Rec for Role {
     }
     fn from(v: &Value) -> Option<Self> {
         Role::from_value(v).ok()
+    }
+}
+impl Rec for Arc<crate::flows::account::JudgedEpochs> {
+    fn to(&self) -> Value {
+        self.to_value()
+    }
+    fn from(v: &Value) -> Option<Self> {
+        crate::flows::account::JudgedEpochs::from_value(v).map(Arc::new)
     }
 }
 impl Rec for super::HeldKeyset {
@@ -620,7 +631,10 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
         osis_commit::Form::Commit => w.u8(0),
         osis_commit::Form::Session(n) => w.u8(1).raw(&n),
     };
-    w = w.raw(v.author.as_bytes()).raw(v.actor.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2));
+    w = w.raw(v.author.as_bytes()).raw(v.actor.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2) | (u8::from(v.epoch.is_some()) << 3));
+    if let Some(e) = &v.epoch {
+        w = w.raw(&e.0);
+    }
     for a in &v.aspects {
         let ak = a.ak.as_str().as_bytes();
         w = w.raw(a.tid.as_bytes()).raw(&(ak.len() as u16).to_be_bytes()).raw(ak).u64(a.lo).u64(a.hi).u8(u8::from(a.bounded) | (u8::from(a.permanent) << 1) | (u8::from(a.none) << 2) | (u8::from(a.replaces.is_some()) << 3));
@@ -714,6 +728,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View, PartsShown)> {
     let (author, actor) = (r.tid()?, r.tid()?);
     let flags = r.u8()?;
     let (linked, memory, purges) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
+    let epoch = if flags & 8 != 0 { Some(CommitId(r.arr()?)) } else { None };
     let mut aspects = Vec::with_capacity(n);
     for _ in 0..n {
         let (tid, ak) = (r.tid()?, r.ak()?);
@@ -742,7 +757,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View, PartsShown)> {
         shown.push((ai, read_showing(&mut r)?));
     }
     r.end()?;
-    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, chunks, purges }, shown))
+    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, chunks, purges, epoch }, shown))
 }
 
 /// A commit record's head and its blob bytes.
@@ -828,6 +843,7 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, REQUIRED, &c.ix.required, all)?;
     put_setmap(txn, ORIGINALS, &c.ix.originals, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
+    put_map(txn, EPOCHS, &c.ix.epochs, all)?;
     // after the indexes and in their transaction: a saved walk never runs ahead of the
     // commits it covers
     let min = tx.core.walk_cache_min;
@@ -1010,6 +1026,14 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, SNAPSHOTS)? {
         tx.core.ix.snapshots.insert(k, dec(&v)?);
+    }
+    for (k, v) in scan::<Tid>(tx, EPOCHS)? {
+        tx.core.ix.epochs.insert(k, dec(&v)?);
+    }
+    // the epochs as persisted are judged: every change was before the index was written
+    let due: Vec<Tid> = tx.core.ix.epochs_due.iter().copied().collect();
+    for p in due {
+        tx.core.ix.epochs_due.remove(&p);
     }
     Ok(())
 }

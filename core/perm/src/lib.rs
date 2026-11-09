@@ -21,7 +21,7 @@ mod walk;
 
 pub use cert::{verify, Certificates};
 pub use chain::{Chain, Rotation};
-pub use epochs::{AccountCommit, Epochs, ListPath, Listing, RotationAddendum, ThingList};
+pub use epochs::{AccountCommit, Epochs, ListPath, Listing, EpochStanding, ThingList};
 pub use content::{Addendum, AddendumEntry, Validity, Vouching};
 pub use graph::{Class, Edges, Records, Standing};
 pub use held::{HeldSet, MemoryHeldSet};

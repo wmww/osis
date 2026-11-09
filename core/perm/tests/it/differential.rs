@@ -527,7 +527,7 @@ fn item_point(jw: &JointWorld, it: &addenda::Item) -> osis_perm::Point {
 fn addenda_diff(w: &addenda::World) -> Option<String> {
     let (jw, held, on) = addenda_world(w);
     let tl = Timeline::evaluate(&held);
-    let vouching: BTreeMap<usize, Vouching> = (0..w.roles.admins.len()).map(|m| (m, tl.vouching(&jw.actors[m], on.get(&m).map_or(&[][..], |v| v.as_slice())))).collect();
+    let vouching: BTreeMap<usize, Vouching> = (0..w.roles.admins.len()).map(|m| (m, tl.vouching(&jw.actors[m], on.get(&m).map_or(&[][..], |v| v.as_slice()), |_| osis_perm::EpochStanding::Counts))).collect();
     let part_ok = |it: &addenda::Item, m: usize| -> bool {
         let p = item_point(&jw, it);
         if let addenda::Kind::Add { .. } = it.kind {

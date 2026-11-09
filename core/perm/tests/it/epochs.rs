@@ -1,13 +1,14 @@
 //! The epoch rule (spec/permissions.md §5.5): a commit at a closed epoch counts iff a counting
 //! rotation's thing list names it, a counting listing names it, or a counting addendum vouches
-//! for it. Hand worlds of core/test/roles-model `epochs` on synthetic commits (a rotation's ID is
+//! for it (here: every addendum given counts; their own fixpoint is `Timeline::vouching`'s). Hand worlds of core/test/roles-model `epochs` on synthetic commits (a rotation's ID is
 //! the epoch it mints, the root 0; commits 100 and up; X is the removed node), then a
 //! differential against the model's random worlds.
 #![allow(clippy::needless_range_loop)]
 
 use crate::common::seeded;
 use osis_perm::epochs::{fit_list, list_bytes, list_leaf, list_tree};
-use osis_perm::{AccountCommit, Epochs, ListPath, Listing, Rotation, RotationAddendum, ThingList};
+use osis_perm::{AccountCommit, EpochStanding, Epochs, ListPath, Listing, Rotation, ThingList};
+use std::collections::BTreeMap;
 use roles_model::epochs::{self as model, Kind, World};
 use roles_model::Rng;
 use std::collections::BTreeSet;
@@ -29,18 +30,59 @@ fn list(rotation: u32, commits: &[u32]) -> ThingList<u32, u32> {
     ThingList { rotation, thing: 0, commits: set(commits) }
 }
 
-fn listing(listing: u32, commits: &[u32]) -> Listing<u32, u32> {
-    Listing { listing, thing: 0, commits: set(commits) }
+/// Listing `listing` (a commit at `epoch` on thing 0) naming `commits` on thing 0.
+fn listing_at(listing: u32, epoch: u32, commits: &[u32]) -> Listing<u32, u32> {
+    Listing { listing: c(listing, epoch), thing: 0, commits: set(commits) }
 }
 
-fn addendum(against: u32, commits: &[u32]) -> RotationAddendum<u32, u32> {
+/// A counting addendum on `thing` against rotation `against`, listing `commits`.
+#[derive(Clone, Debug)]
+struct RotationAddendum<T> {
+    thing: T,
+    against: u32,
+    commits: BTreeSet<u32>,
+}
+
+fn addendum(against: u32, commits: &[u32]) -> RotationAddendum<u32> {
     RotationAddendum { thing: 0, against, commits: set(commits) }
 }
 
-type Parts<'a> = (&'a [ThingList<u32, u32>], &'a [Listing<u32, u32>], &'a [RotationAddendum<u32, u32>]);
+/// Perm's judgment of an account with its held commits and counting addenda, asked by commit ID.
+struct Judged<T> {
+    e: Epochs<u32, T>,
+    commits: BTreeMap<u32, AccountCommit<u32, T>>,
+    addenda: Vec<RotationAddendum<T>>,
+}
 
-fn judge(rots: &[Rotation<u32>], commits: &[AccountCommit<u32, u32>], (l, g, a): Parts) -> Epochs<u32, u32> {
-    Epochs::new(0, rots.to_vec(), None, commits.to_vec(), l, g, a)
+impl<T: Ord + Copy> Judged<T> {
+    fn new(e: Epochs<u32, T>, commits: impl IntoIterator<Item = AccountCommit<u32, T>>, addenda: Vec<RotationAddendum<T>>) -> Judged<T> {
+        Judged { e, commits: commits.into_iter().map(|c| (c.id, c)).collect(), addenda }
+    }
+    fn chain(&self) -> &osis_perm::Chain<u32> {
+        self.e.chain()
+    }
+    fn counts(&self, id: &u32) -> bool {
+        self.commits.get(id).is_some_and(|c| self.e.counts(c))
+    }
+    fn pending(&self, id: &u32) -> bool {
+        self.commits.get(id).is_some_and(|c| self.e.pending(c))
+    }
+    /// A counting addendum on `thing` against a closer of `id`'s epoch lists it.
+    fn vouched(&self, id: &u32, thing: &T) -> bool {
+        let Some(c) = self.commits.get(id).filter(|c| c.things.contains(thing)) else { return false };
+        let EpochStanding::Closed(closers) = self.e.standing(c) else { return false };
+        self.addenda.iter().any(|a| a.thing == *thing && a.commits.contains(id) && closers.contains(&a.against))
+    }
+    /// Whether a delta of `id` on `thing` passes the epoch rule; `plain`: a plain-content delta.
+    fn delta_counts(&self, id: &u32, thing: &T, plain: bool) -> bool {
+        self.counts(id) || plain && self.vouched(id, thing)
+    }
+}
+
+type Parts<'a> = (&'a [ThingList<u32, u32>], &'a [Listing<u32, u32>], &'a [RotationAddendum<u32>]);
+
+fn judge(rots: &[Rotation<u32>], commits: &[AccountCommit<u32, u32>], (l, g, a): Parts) -> Judged<u32> {
+    Judged::new(Epochs::new(0, rots.to_vec(), None, l, g), commits.to_vec(), a.to_vec())
 }
 
 /// The rotator received X's write (100) and lists it; X's later write at the old epoch (101)
@@ -95,7 +137,7 @@ fn siblings_listing_revives_its_offline_write() {
     let rots = [rot(1, 0, &[0], &[])];
     let commits = [c(100, 0), c(200, 1)];
     assert!(!judge(&rots, &commits, (&[list(1, &[])], &[], &[])).counts(&100));
-    let e = judge(&rots, &commits, (&[list(1, &[])], &[listing(200, &[100])], &[]));
+    let e = judge(&rots, &commits, (&[list(1, &[])], &[listing_at(200, 1, &[100])], &[]));
     assert!(e.counts(&200) && e.counts(&100));
 }
 
@@ -105,12 +147,12 @@ fn siblings_listing_revives_its_offline_write() {
 fn listing_at_a_closed_epoch_counts_once_listed() {
     let rots = [rot(1, 0, &[0], &[]), rot(2, 1, &[1], &[])];
     let commits = [c(100, 0), c(200, 1)];
-    let listed = judge(&rots, &commits, (&[list(1, &[]), list(2, &[200])], &[listing(200, &[100])], &[]));
+    let listed = judge(&rots, &commits, (&[list(1, &[]), list(2, &[200])], &[listing_at(200, 1, &[100])], &[]));
     assert!(listed.counts(&200) && listed.counts(&100));
-    let unlisted = judge(&rots, &commits, (&[list(1, &[])], &[listing(200, &[100])], &[]));
+    let unlisted = judge(&rots, &commits, (&[list(1, &[])], &[listing_at(200, 1, &[100])], &[]));
     assert!(!unlisted.counts(&200) && !unlisted.counts(&100));
     // Listings chained through closed epochs count by the least fixpoint, never by themselves.
-    let chained = judge(&rots, &[c(100, 0), c(200, 1), c(201, 1)], (&[], &[listing(200, &[201]), listing(201, &[200, 100])], &[]));
+    let chained = judge(&rots, &[c(100, 0), c(200, 1), c(201, 1)], (&[], &[listing_at(200, 1, &[201]), listing_at(201, 1, &[200, 100])], &[]));
     assert!(!chained.counts(&200) && !chained.counts(&201) && !chained.counts(&100));
 }
 
@@ -219,7 +261,7 @@ fn pid_of(w: &World, id: u32) -> u32 {
 }
 
 /// Perm's verdict on the model's held set under `side` (a model item index).
-fn perm_epochs(w: &World, held: &[bool], side: Option<usize>) -> Epochs<u32, usize> {
+fn perm_epochs(w: &World, held: &[bool], side: Option<usize>) -> Judged<usize> {
     let mut rots = Vec::new();
     let mut commits = Vec::new();
     let mut lists = Vec::new();
@@ -247,13 +289,14 @@ fn perm_epochs(w: &World, held: &[bool], side: Option<usize>) -> Epochs<u32, usi
         }
         if let (Some(e), false) = (it.epoch, matches!(it.kind, Kind::Rotation { .. })) {
             let thing = it.kind.thing().unwrap_or(D);
-            commits.push(AccountCommit { id: pid(w, i), epoch: e, things: [thing].into() });
+            let c = AccountCommit { id: pid(w, i), epoch: e, things: [thing].into() };
             if let Kind::Listing { thing, lists: l, .. } = &it.kind {
-                listings.push(Listing { listing: pid(w, i), thing: *thing, commits: ids(l) });
+                listings.push(Listing { listing: c.clone(), thing: *thing, commits: ids(l) });
             }
+            commits.push(c);
         }
     }
-    Epochs::new(0, rots, side.map(|s| pid(w, s)), commits, &lists, &listings, &addenda)
+    Judged::new(Epochs::new(0, rots, side.map(|s| pid(w, s)), &lists, &listings), commits, addenda)
 }
 
 /// The first difference between the model's `judge` and perm at observer `o` holding `held`.

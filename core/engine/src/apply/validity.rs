@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use osis_commit::{Decoded, Header, Kind};
 use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Value};
 use osis_crdt::{Dot, Fragment};
-use osis_perm::{Addendum, AddendumEntry, At, Edge, EdgeOp, Frontier, Point, RoleCommit, Validity, Vouching, WriteId};
+use osis_perm::{Addendum, AddendumEntry, At, Edge, EdgeOp, EpochStanding, Frontier, Point, RoleCommit, Validity, Vouching, WriteId};
 use osis_schema::core_types as ct;
 use osis_schema::{Codec, Type, typed_read};
 use std::collections::{BTreeMap, BTreeSet};
@@ -297,6 +297,9 @@ pub(crate) fn check_holders_parts(h: &Header, id: &CommitId, parts: &[(usize, De
 /// here, and one partly applied would let its name cover a holder it left in place.
 pub(crate) fn add_role_commit(core: &mut Core, h: &View, id: &CommitId, parts: &EdgeParts) {
     core.stale_commits.insert(*id);
+    // the epoch rule filters before the timeline (spec/permissions.md §5.5)
+    let counts = core.standing(id, h) == osis_perm::EpochStanding::Counts;
+    core.ix.held.set_counted(*id, counts);
     for (ai, es) in &parts.0 {
         if let Some(a) = h.aspects.get(*ai) {
             note_keys(core, &a.tid, es, Owned::of_view(h, id, *ai).as_ref());
@@ -667,6 +670,8 @@ pub(crate) struct Judge<'a> {
     /// Per thing, the addenda on it that count (`Timeline::vouching`), found once; `None` for a
     /// thing with no timeline.
     vouchings: BTreeMap<Tid, Option<Arc<Vouching>>>,
+    /// Per commit, what the epoch rule says of it (`Core::standing`), found once.
+    standings: BTreeMap<CommitId, EpochStanding<CommitId>>,
 }
 
 /// A thing's `required^.0` deltas: each one's key and what it says.
@@ -674,7 +679,25 @@ type Settings = Vec<(Point, Arc<ct::RequiredRules>)>;
 
 impl<'a> Judge<'a> {
     pub(crate) fn new(core: &'a Core) -> Judge<'a> {
-        Judge { core, last: None, from: BTreeMap::new(), acts: BTreeMap::new(), settings: None, vouchings: BTreeMap::new() }
+        Judge { core, last: None, from: BTreeMap::new(), acts: BTreeMap::new(), settings: None, vouchings: BTreeMap::new(), standings: BTreeMap::new() }
+    }
+
+    /// What the epoch rule says of commit `id` (`h` its header).
+    fn standing(&mut self, h: &Header, id: &CommitId) -> EpochStanding<CommitId> {
+        if h.epoch.is_none() {
+            return EpochStanding::Counts;
+        }
+        let core = self.core;
+        self.standings.entry(*id).or_insert_with(|| core.standing_of(id, h)).clone()
+    }
+
+    /// Whether part `a` of commit `id` passes the epoch rule (spec/permissions.md §5.5): the
+    /// commit counts, or the part is plain content a counting addendum on its thing saves.
+    fn counts(&mut self, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry) -> bool {
+        match self.standing(h, id) {
+            EpochStanding::Counts => true,
+            EpochStanding::Closed(closers) => !closers.is_empty() && plain_part(h, a) && self.vouching(&a.tid).is_some_and(|v| v.saves(id, &closers)),
+        }
     }
 
     /// The addenda on `t` that count (spec/permissions.md §5.2, Addenda): every held `addenda.0`
@@ -696,7 +719,10 @@ impl<'a> Judge<'a> {
                 }
                 all.push((**list).clone());
             }
-            Arc::new(tl.vouching(t, &all))
+            // an addendum at a closed epoch counts only once another saves it: one fixpoint
+            // over every account's epochs (spec/permissions.md §5.5)
+            let standing = |c: &CommitId| core.ix.commits.get(c).map_or(EpochStanding::Counts, |m| core.standing(c, &m.view));
+            Arc::new(tl.vouching(t, &all, standing))
         });
         self.vouchings.insert(*t, v.clone());
         v
@@ -789,6 +815,10 @@ impl<'a> Judge<'a> {
         // vouches for every write it carries (spec/permissions.md §5.2)
         if ak == "created.0" {
             return true;
+        }
+        // the epoch rule filters first (an addendum's is the fixpoint's, `vouching`)
+        if !ct::is_addenda(ak) && !self.counts(h, id, a) {
+            return false;
         }
         if !self.acts(h, id) {
             return false;
@@ -979,7 +1009,9 @@ pub(crate) fn misjudged(core: &Core) -> Option<String> {
 
 /// One pass of `rejudge_all`.
 fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
-    if resolve_unresolved(tx)? {
+    // the epoch rule first: it decides which role commits the timelines read
+    let epochs = tx.core.refresh_epochs();
+    if resolve_unresolved(tx)? | epochs {
         tx.core.update_timelines();
     }
     let mut flipped: BTreeSet<(Tid, Ak)> = BTreeSet::new();

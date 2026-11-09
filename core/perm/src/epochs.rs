@@ -7,6 +7,11 @@
 //! (a thing list of a counting rotation), the account's own later word (a counting listing), or
 //! another writer's (an addendum against a counting rotation closing the epoch). When each
 //! party names a commit is the one cutoff, a writer's rule (`fit_list` for the bound).
+//!
+//! Addenda are not judged here: an addendum counts by §5.2's least fixpoint, which may run
+//! through other accounts' epochs (a witness's addendum at its own closed epoch), so it is
+//! `Timeline::vouching`'s, fed each addendum's `EpochStanding`. Lists and listings save whole
+//! commits (role commits among them), so the timeline reads `counts`, which no addendum moves.
 
 use crate::chain::{Chain, Rotation};
 use osis_base::cbor::head_len;
@@ -33,66 +38,63 @@ pub struct ThingList<E, T> {
 }
 
 /// A held listing's word on one thing: the `listing.0` entries on `thing` of the account's
-/// commit `listing` (itself one of the account's commits) name `commits`.
+/// commit `listing` name `commits`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Listing<E, T> {
-    pub listing: E,
+    pub listing: AccountCommit<E, T>,
     pub thing: T,
     pub commits: BTreeSet<E>,
 }
 
-/// A counting addendum on `thing` against rotation `against`, listing `commits`: the caller
-/// passes only addenda whose author held write on the thing just before their key and that are
-/// valid (spec/permissions.md §5.2, the least fixpoint).
+/// What the epoch rule says of one held commit of the account, before §5.2 judges it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RotationAddendum<E, T> {
-    pub thing: T,
-    pub against: E,
-    pub commits: BTreeSet<E>,
+pub enum EpochStanding<E> {
+    /// It counts whole: its epoch counts and is open, a counting list or listing names it, or
+    /// (a rotation) the chain counts it.
+    Counts,
+    /// It does not count. A counting addendum on a thing against one of `closers` (the counting
+    /// rotations closing its epoch; none when the epoch does not count, or for a rotation)
+    /// listing it saves its plain deltas there (spec/permissions.md §5.5, the addenda fixpoint
+    /// of §5.2).
+    Closed(BTreeSet<E>),
 }
 
-/// One account's commits as a node judges them.
+/// One account's epochs as a node judges them: the chain and the held words naming the
+/// account's commits at closed epochs. Holds nothing per commit: a commit is judged when asked
+/// (`standing`), so building it costs the rotations, lists and listings held, never the
+/// account's history.
 #[derive(Clone, Debug)]
 pub struct Epochs<E, T> {
     chain: Chain<E>,
-    commits: BTreeMap<E, AccountCommit<E, T>>,
-    /// Commits a counting thing list or counting listing names.
-    named: BTreeSet<E>,
-    /// (commit, thing): a counting addendum on the thing against a closer of the commit's epoch
-    /// lists it.
-    vouched: BTreeSet<(E, T)>,
+    /// The held epochs that count and are open.
+    open: BTreeSet<E>,
+    /// Per held epoch that counts and is closed, its closers.
+    closers: BTreeMap<E, BTreeSet<E>>,
+    /// (commit, thing): a counting thing list or counting listing names the commit on the thing.
+    named: BTreeSet<(E, T)>,
 }
 
 impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
     /// Judges the account with first epoch `root`: its held `rotations` under `side` (only
-    /// those held with their chain take part, `Chain::new`), its held `commits`, and the held
-    /// thing lists, listings and counting addenda naming them.
-    pub fn new(
-        root: E,
-        rotations: impl IntoIterator<Item = Rotation<E>>,
-        side: Option<E>,
-        commits: impl IntoIterator<Item = AccountCommit<E, T>>,
-        lists: &[ThingList<E, T>],
-        listings: &[Listing<E, T>],
-        addenda: &[RotationAddendum<E, T>],
-    ) -> Epochs<E, T> {
+    /// those held with their chain take part, `Chain::new`) and the held thing lists and
+    /// listings naming its commits.
+    pub fn new(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, side: Option<E>, lists: &[ThingList<E, T>], listings: &[Listing<E, T>]) -> Epochs<E, T> {
+        let rotations: Vec<Rotation<E>> = rotations.into_iter().collect();
+        let held: BTreeSet<E> = rotations.iter().map(|r| r.id).chain([root]).collect();
         let chain = Chain::new(root, rotations, side);
-        let commits: BTreeMap<E, AccountCommit<E, T>> = commits.into_iter().map(|c| (c.id, c)).collect();
-        let mut e = Epochs { chain, commits, named: BTreeSet::new(), vouched: BTreeSet::new() };
-        // What a word on thing t says of c: only of a commit on t.
-        let says = |e: &Epochs<E, T>, t: &T, cs: &BTreeSet<E>| -> Vec<E> { cs.iter().filter(|c| e.commits.get(c).is_some_and(|c| c.things.contains(t))).copied().collect() };
-        e.named = lists.iter().filter(|l| e.chain.counts(&l.rotation)).flat_map(|l| says(&e, &l.thing, &l.commits)).collect();
+        let held: Vec<E> = held.into_iter().filter(|e| chain.holds(e) && chain.epoch_counts(e)).collect();
+        let open = held.iter().filter(|e| chain.open(e)).copied().collect();
+        let mut e = Epochs { chain, open, closers: BTreeMap::new(), named: BTreeSet::new() };
+        e.closers = held.iter().filter(|x| !e.open.contains(x)).map(|x| (*x, e.chain.closers(x).into_iter().collect())).collect();
+        e.named = lists.iter().filter(|l| e.chain.counts(&l.rotation)).flat_map(|l| l.commits.iter().map(|c| (*c, l.thing))).collect();
         // Least fixpoint: a listing at a closed epoch speaks only once it is itself named.
         loop {
-            let more: Vec<E> = listings.iter().filter(|l| e.counts(&l.listing)).flat_map(|l| says(&e, &l.thing, &l.commits)).filter(|c| !e.named.contains(c)).collect();
+            let more: Vec<(E, T)> = listings.iter().filter(|l| e.counts(&l.listing)).flat_map(|l| l.commits.iter().map(|c| (*c, l.thing))).filter(|x| !e.named.contains(x)).collect();
             if more.is_empty() {
                 break;
             }
             e.named.extend(more);
         }
-        // An addendum speaks against a counting rotation closing the commit's epoch.
-        let closes = |e: &Epochs<E, T>, r: &E, c: &E| e.commits.get(c).is_some_and(|c| e.chain.epoch_counts(&c.epoch) && e.chain.closers(&c.epoch).contains(r));
-        e.vouched = addenda.iter().flat_map(|a| says(&e, &a.thing, &a.commits).into_iter().filter(|c| closes(&e, &a.against, c)).map(|c| (c, a.thing))).collect();
         e
     }
 
@@ -101,28 +103,34 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
         &self.chain
     }
 
-    /// Whether held commit `c` is pending: its epoch is not held (its minting rotation, or that
-    /// rotation's chain, has not arrived).
-    pub fn pending(&self, c: &E) -> bool {
-        self.commits.get(c).is_some_and(|c| !self.chain.holds(&c.epoch))
+    /// Whether `c` is pending: its epoch is not held (its minting rotation, or that rotation's
+    /// chain, has not arrived).
+    pub fn pending(&self, c: &AccountCommit<E, T>) -> bool {
+        !self.chain.holds(&c.epoch)
     }
 
-    /// Whether held commit `c` counts whole: its epoch counts and is open, or counts and a
-    /// counting thing list or listing names it.
-    pub fn counts(&self, c: &E) -> bool {
-        self.commits.get(c).is_some_and(|x| self.chain.epoch_counts(&x.epoch) && (self.chain.open(&x.epoch) || self.named.contains(c)))
+    /// Whether `c` counts whole: a held rotation counts by the chain alone; any other commit
+    /// iff its epoch counts and is open, or counts and a counting thing list or listing on one
+    /// of its things names it.
+    pub fn counts(&self, c: &AccountCommit<E, T>) -> bool {
+        if self.chain.holds(&c.id) {
+            return self.chain.counts(&c.id);
+        }
+        self.open.contains(&c.epoch) || self.closers.contains_key(&c.epoch) && c.things.iter().any(|t| self.named.contains(&(c.id, *t)))
     }
 
-    /// Whether a counting addendum on `thing` against a counting rotation closing `c`'s epoch
-    /// lists `c` (it saves `c`'s plain-content deltas on `thing`, spec/permissions.md §5.2).
-    pub fn vouched(&self, c: &E, thing: &T) -> bool {
-        self.vouched.contains(&(*c, *thing))
+    /// What the epoch rule says of `c` (`EpochStanding`).
+    pub fn standing(&self, c: &AccountCommit<E, T>) -> EpochStanding<E> {
+        if self.counts(c) {
+            return EpochStanding::Counts;
+        }
+        EpochStanding::Closed(if self.chain.holds(&c.id) { BTreeSet::new() } else { self.closers.get(&c.epoch).cloned().unwrap_or_default() })
     }
 
-    /// Whether a delta of `c` on `thing` passes the epoch rule; `plain`: a plain-content delta
-    /// (a content commit with no purge request, its aspect neither role-class nor admin-only).
-    pub fn delta_counts(&self, c: &E, thing: &T, plain: bool) -> bool {
-        self.counts(c) || (plain && self.vouched(c, thing))
+    /// What a commit signed at `e` that no word names stands as (its `standing`, a rotation
+    /// aside).
+    pub fn unnamed(&self, e: &E) -> EpochStanding<E> {
+        if self.open.contains(e) { EpochStanding::Counts } else { EpochStanding::Closed(self.closers.get(e).cloned().unwrap_or_default()) }
     }
 }
 

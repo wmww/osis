@@ -67,6 +67,9 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
     if h.actor != h.author {
         core.ix.by_actor.insert((h.actor, h.author), *id);
     }
+    if let Some(e) = h.epoch {
+        core.ix.by_epoch.insert((h.author, e), *id);
+    }
     for b in &h.chunks {
         core.ix.by_chunk.insert(*b, *id);
     }
