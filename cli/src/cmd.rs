@@ -228,6 +228,16 @@ fn needs_net(c: &Cmd) -> bool {
     ) || delivers(c)
 }
 
+/// What a command uses of the network: `serve` and `pair` stay up and are on the local network;
+/// the others are gone too soon to be worth announcing.
+fn network(c: &Cmd) -> crate::Network {
+    match c {
+        Cmd::Serve { no_lan: false, .. } | Cmd::Pair(_) => crate::Network::Node,
+        c if needs_net(c) => crate::Network::Sync,
+        _ => crate::Network::None,
+    }
+}
+
 /// Commands whose API call hands other nodes something the engine keeps only in memory until
 /// sent (inbox grants, the first commits under a new sync ID):
 /// they run with sync on and wait until it reached a peer before the process exits.
@@ -294,7 +304,7 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
         Cmd::Init { peer } => crate::create(&sel, &g, seed(peer)?)?,
         Cmd::Pair(PairCmd::Join { offer, peer }) => {
             // the app carries two messages: print the request, read the reply
-            let cfg = crate::config(&g, true);
+            let cfg = crate::config(&g, crate::Network::Node);
             let offer: osis::PairOffer = offer.parse()?;
             let join = Osis::pair(crate::store_of(&sel), &seed(peer)?, &offer, cfg)?;
             writeln!(out, "{}", join.request())?;
@@ -303,7 +313,7 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
             stdin.read_line(&mut line)?;
             join.finish(&line.parse()?)?
         }
-        c => open(&sel, &g, needs_net(c), !matches!(c, Cmd::Inspect(_) | Cmd::Serve { .. }))?,
+        c => open(&sel, &g, network(c), !matches!(c, Cmd::Inspect(_) | Cmd::Serve { .. }))?,
     };
     // -v on a command that syncs: diagnostics to stderr while it runs, best effort (not for
     // those that already print them on stdout)
@@ -419,7 +429,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             ctx.emit(&ids, j)
         }
         Cmd::Clients(c) => clients(ctx, &c),
-        Cmd::Serve { serving, client_listen } => serve(ctx, serving, &client_listen),
+        Cmd::Serve { serving, client_listen, .. } => serve(ctx, serving, &client_listen),
         Cmd::Schema(_) => unreachable!("handled before opening"),
         Cmd::Create(a) => one_write(ctx, ScriptCmd::Create(a)),
         Cmd::Set(a) => one_write(ctx, ScriptCmd::Set(a)),
@@ -1570,6 +1580,24 @@ fn schema_reg(sel: &StoreSel, file: &std::path::Path, add: bool) -> anyhow::Resu
 
 #[cfg(test)]
 mod tests {
+    // notes/cli.md Network: only a command that stays up is on the LAN; a short one never announces.
+    #[test]
+    fn only_commands_that_stay_up_announce_notes_cli() {
+        use crate::Network::{Node, None, Sync};
+        use clap::Parser;
+        for (args, want) in [
+            (&["osis", "serve"][..], Node),
+            (&["osis", "serve", "--no-lan"], Sync),
+            (&["osis", "pair", "join", "x"], Node),
+            (&["osis", "link", "make", "t", "read"], Sync),
+            (&["osis", "sync"], Sync),
+            (&["osis", "get", "t", "a:b.0"], None),
+        ] {
+            let cli = crate::args::Cli::try_parse_from(args).unwrap();
+            assert!(super::network(&cli.cmd) == want, "{args:?}");
+        }
+    }
+
     // notes/cli.md Command table: `status` shows split things apart from groups, in both forms.
     #[test]
     fn status_lists_things_with_two_sources_apart_notes_cli() {

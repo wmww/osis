@@ -267,7 +267,8 @@ impl std::ops::DerefMut for Opening {
 
 impl Opening {
     pub fn at(store: crate::Store) -> Opening {
-        Opening { store, hosts: Vec::new(), cfg: crate::Config::default() }
+        // no harness announces on the machine's real network unless it asks to
+        Opening { store, hosts: Vec::new(), cfg: crate::Config { lan: crate::Lan::Off, ..crate::Config::default() } }
     }
 
     pub fn memory() -> Opening {

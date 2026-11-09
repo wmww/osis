@@ -434,8 +434,8 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
   - A `peer://` entry in a label's `hosts` is never dialed as a host: a label with no other entry has no host, and its nodes serve it.
 - **LAN discovery** announces nothing stable across networks or meaningful to strangers: a tag and a transport key fresh per network join, never the dialable key.
   - **Tag**: `kdf("lan tag", lan secret, le64(window))` (first 16 bytes), with window = `floor(unix ms / 600000)`. The 32-byte random lan secret is in `reach.0`. A node matches tags of the nodes whose `reach.0` it holds (its own account's) for the current and adjacent windows; finding other accounts' nodes on a LAN is issues/net-connect.md's (target, issues/account-signing.md step 8).
-  - **Joining**: a node joins anew (a fresh transport key and listener, announced at once) whenever its network may have changed.
-  - **Announcement** (provisional): a UDP datagram to port 47380 on each address family the node has, as an IPv4 broadcast (255.255.255.255) and an IPv6 multicast to the link-local all-nodes group ff02::1 on each up interface with a link-local address, of exactly 124 bytes:
+  - **Joining**: a node joins anew (a fresh transport key and listener, announced at once and a few more times in its first seconds) whenever its network may have changed.
+  - **Announcement** (provisional): a UDP datagram to port 47380 on each address family the node has, as an IPv4 broadcast (255.255.255.255) and an IPv6 multicast to the link-local all-nodes group ff02::1 on each up interface with a link-local address, and to any further addresses configured, of exactly 124 bytes:
 
     | offset | size | field |
     |---|---|---|

@@ -8,13 +8,13 @@
 - **Checks over peers**: `NetSim`'s liveness and agreement judge the holders the model keeps connected (`check::Connected`: every host they reach, replication, routes between holders); a holder the model cuts off is left out and counted (`Report::unjudged`). Sweep scenarios `no_host` (one LAN, public, relayed or punched, by seed) and `no_host_chain` (two LANs joined by a holder) have no host.
 - **Tokio tests** over `InProcess` (`Internals.transport`, core/osis/src/net.rs `spawn_driver`): `peer://` needs `P2p`; without one it is `UnknownScheme`. A node placed on a host of a nat.rs net (`Internals.host`, `Net::run_on_tokio`) dials `peer://` through `P2p<MemUdp>` over the route it names (`Multi<U>`): core/osis/tests/it/runtime.rs, core/node/tests/it/driver.rs. A node with no host does not reach anyone by key.
 - **Route tests**: core/transport/tests/it/p2p.rs `peer_*`, a `Multi<MemUdp>` under `Sched`: no route, direct item, relay, LAN address (same NAT).
-- **LAN**: the driver's loop (`Control::Lan`) takes its announcement socket from the transport (`Transport::lan`: `lan::Lan`'s UDP sockets on `QuicUdp` with feature `lan`, a `MemLan` on `MemUdp`), so tier 1 runs the production loop over the nat.rs model: LAN segments a host joins at an address (`MemUdp::on_lan`), loss per segment (`Net::set_lan_loss`), source addresses per segment (core/node/tests/it/driver.rs `driver_lan_*`, row 30 as `repro_lan_any_source_connects`). Real sockets on localhost stay tier 2 (`driver_lan_loop_*`).
+- **LAN**: the driver's loop (`Control::Lan`) takes its announcement socket from the transport (`Transport::lan`: `lan::Lan`'s UDP sockets on `QuicUdp`, a `MemLan` on `MemUdp`), so tier 1 runs the production loop over the nat.rs model: LAN segments a host joins at an address (`MemUdp::on_lan`), loss per segment (`Net::set_lan_loss`), source addresses per segment (core/node/tests/it/driver.rs `driver_lan_*`, row 30 as `repro_lan_any_source_connects`). Real sockets on localhost stay tier 2 (`driver_lan_loop_*`).
 
 ## Do
 1. In-process P2P with routes: built (Today).
 2. In-process LAN: built (Today).
 3. Sim peer links and 4. Checks over peers: built (Today).
-5. Audit rows as tests: built (core/test/sim/tests/it/no_server.rs on `World`, model time; `repro_row1_*` in core/osis/tests/it/runtime.rs, `repro_row3_row12_*` in cli/tests/it/cli.rs). The job that fixes a row renames and un-ignores its test. Still without a repro: row 33 (a lost announcement waits a whole interval, the driver's LAN loop can now show it) and row 4 end to end.
+5. Audit rows as tests: built (core/test/sim/tests/it/no_server.rs on `World`, model time; `repro_row3_row12_*` in cli/tests/it/cli.rs). The job that fixes a row renames and un-ignores its test. Still without a repro: row 33 (a lost announcement waits a whole interval, the driver's LAN loop can now show it) and row 4 end to end.
 
 Not in tier 1: row 32 (a real port's bind: tier 2), Android, real broadcast reach (row 31, beyond what a model says).
 

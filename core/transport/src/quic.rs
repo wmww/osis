@@ -563,13 +563,7 @@ impl crate::p2p::Udp for QuicUdp {
     type Sock = QuicSock;
 
     async fn lan(&self, port: u16) -> Result<std::sync::Arc<dyn crate::lan::LanSocket>, Error> {
-        #[cfg(feature = "lan")]
-        return crate::lan::Lan::bind(port).await.map(|s| std::sync::Arc::new(s) as std::sync::Arc<dyn crate::lan::LanSocket>);
-        #[cfg(not(feature = "lan"))]
-        {
-            let _ = port;
-            Err(Error::Unreachable("LAN: built without feature `lan`".into()))
-        }
+        crate::lan::Lan::bind(port).await.map(|s| std::sync::Arc::new(s) as std::sync::Arc<dyn crate::lan::LanSocket>)
     }
 
     fn bind(&self, at: SocketAddr, secret: Option<&crate::StaticSecret>) -> Result<QuicSock, Error> {

@@ -4,8 +4,8 @@
 # Networking code (QUIC, P2P, LAN): the one feature set its tier-2 tests and lints use.
 # Dev profile like every other per-branch command: no release set outside explicit benches.
 [alias]
-test-net = "test --workspace --features osis/lan"
-clippy-net = "clippy --workspace --all-targets --features osis/lan"
+test-net = "test --workspace"
+clippy-net = "clippy --workspace --all-targets"
 
 # Test tier 1 defaults (notes/architecture.md §4). An explicit environment value wins.
 [env]

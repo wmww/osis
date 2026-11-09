@@ -161,12 +161,25 @@ pub(crate) fn store_of(sel: &StoreSel) -> Store {
     }
 }
 
-/// The config of a command holding a store; `net`: sync runs (`Runtime::Own` over QUIC) while the
-/// command runs, else the command stays local (`Runtime::None`).
-fn config(g: &Global, net: bool) -> Config {
+/// How much of the network a command holding a store uses while it runs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Network {
+    /// Local: no runtime.
+    None,
+    /// Sync runs (`Runtime::Own` over QUIC); a short command, so it does not announce itself.
+    Sync,
+    /// Sync runs and the node is on its local network: a command that stays up.
+    Node,
+}
+
+/// The config of a command holding a store.
+fn config(g: &Global, net: Network) -> Config {
     let mut c = Config { app: app_config(g), ..Config::default() };
-    if net {
+    if net != Network::None {
         c.runtime = osis::Runtime::Own;
+    }
+    if net != Network::Node {
+        c.lan = osis::Lan::Off;
     }
     c
 }
@@ -215,7 +228,7 @@ fn lock_err(dir: &Path, e: Error) -> anyhow::Error {
 /// Opens an existing store (exit 8 when missing or locked). Locked by a daemon (`osis serve`)
 /// whose socket answers, the invocation is that daemon's client instead (`use_daemon`, unless the
 /// command must hold the store itself: `inspect`).
-fn open(sel: &StoreSel, g: &Global, net: bool, use_daemon: bool) -> anyhow::Result<Osis> {
+fn open(sel: &StoreSel, g: &Global, net: Network, use_daemon: bool) -> anyhow::Result<Osis> {
     if g.node.is_some() {
         return if use_daemon { client_of_node(g) } else { Err(usage("this command holds a store: not with --node")) };
     }
@@ -284,7 +297,8 @@ fn create(sel: &StoreSel, g: &Global, peers: Vec<osis::Address>) -> anyhow::Resu
     {
         return Err(exit(8, format!("{} is not empty", d.display())));
     }
-    let net = !peers.is_empty();
+    // `init` runs sync only to reach the peers it is given
+    let net = if peers.is_empty() { Network::None } else { Network::Sync };
     let db = Osis::create(store_of(sel), &peers, config(g, net)).map_err(|e| match sel {
         StoreSel::Dir(d) => lock_err(d, e),
         _ => e.into(),

@@ -1,10 +1,10 @@
 # Connecting: which nodes connect, and the lower network layer
-> Summary: The first of the two layers (Tess): which nodes a node connects to. Proposed: on a LAN, every osis node connects to every other (an announcement of a per-join key and port, nothing else; no tag, lan secret or signature), kept while issues/net-shared-set.md finds something shared or a delivery is pending; beyond a LAN, known addresses and own nodes only (groups carry no node addresses); one stable listening key, no automatic rotation; identity shown only to known actors (private recognition on the LAN), shared set only with them. Plus `lan` in every build, a runtime always, LAN rule fixes, Android. One-way knowledge is a configuration choice the design keeps open (Tess). Open: meeting points for nodes that never met on different networks; a mesh without broadcast across hops is issues/net-mesh-discovery.md. Part of issues/net-rework.md.
+> Summary: The first of the two layers (Tess): which nodes a node connects to. Proposed: on a LAN, every osis node connects to every other (an announcement of a per-join key and port, nothing else; no tag, lan secret or signature), kept while issues/net-shared-set.md finds something shared or a delivery is pending; beyond a LAN, known addresses and own nodes only (groups carry no node addresses); one stable listening key, no automatic rotation; identity shown only to known actors (private recognition on the LAN), shared set only with them. Plus Android. One-way knowledge is a configuration choice the design keeps open (Tess). Open: meeting points for nodes that never met on different networks; a mesh without broadcast across hops is issues/net-mesh-discovery.md. Part of issues/net-rework.md.
 > Priority: normal
 > Tags: transport, node, spec
 
 ## Today (code as built)
-- `lan` is an optional feature of osis-transport, osis-node and osis; only `cargo test-net`/`clippy-net` turn it on, so no shipped build announces or listens on the LAN (row 1). The CLI runs a runtime only for commands that sync (`cli/src/lib.rs` `config(g, net)`; row 3).
+- Every build runs the LAN loop on a node with direct sync and `Config::lan` on (the default); the CLI's short commands keep it off (notes/cli.md).
 - Dialed (`conn.rs` `wanted_hosts`): config hosts, labels' and hints' non-`peer://` hosts, queued deposits' hosts, receipt groups' hosts, co-readers and a link's sharer (row 28). Co-readers (`peers.rs` `peers`): node things with a held `reach.0` that `may_read` a synced label's group, at most 8 per label and 64 in all, newest `seen.0` first; an unreachable 8 hide a reachable 9th (row 36).
 - `reach.0` (dialable key, global addresses, relays, lan secret) goes under every synced label.
 - LAN: a 124-byte announcement of a tag (from the lan secret), a per-join key, a port and a signature by the dialable key sealed under the lan secret. A receiver matches it only against co-readers it knows from `reach.0`, only from a private source address (`lan.rs` `recv` and `peers.rs` `lan_seen`, row 30), within ±1 ten-minute window (row 34), and runs a candidate, heard-count, replay-binding and route-switching machine on the match (notes/peers.md LAN).
@@ -46,16 +46,10 @@
 - Not part of this rework (it is done without it); a later job. Design when needed: a lookup by account: each node registers once, under a beacon of its own account's key, at the meeting points it uses; a node looking for co-holders looks up the accounts of its groups' holders. Meeting points are relays (any node relaying, listed in `reach.0` as relays are) or an opt-in DHT (notes/networking.md decision 3). One record per node, not per sync ID. It must keep identity to known actors (above).
 - A mesh with no broadcast across hops (row 31) is this case unless extra announcement targets are configured: the target is issues/net-mesh-discovery.md. Rejected here: every node re-announcing the (address, key, port) it hears one hop on (n² datagrams per announcement round on a segment of n nodes, reaches two hops and not three, and carries addresses onto segments their owners never announced on).
 
-## Connect by default
-- `lan` becomes non-optional in osis-transport, osis-node and osis, as QUIC and P2P are (a default on `osis` alone breaks the gate's unification check, notes/build.md). `cargo test-net`/`clippy-net` then lose `--features osis/lan`; tier-2 LAN tests stay `#[ignore]`d (rows 1, 31).
-- The CLI and app always run a runtime, saved peers or not (row 3).
+## Android and client isolation
 - Android: `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE`, `CHANGE_WIFI_MULTICAST_STATE` and a held multicast lock over JNI; `/proc/net/if_inet6` may be unreadable on newer APIs. Unverified, needs a real phone (issues/no-server-audit.md, Builds).
 - Wi-Fi client isolation blocks LAN discovery entirely; nothing to do but fall back to the above.
-
-## LAN rules that stay (independent, any time)
-- `SO_REUSEADDR` (and on Linux every socket on the port getting broadcasts) or a status for a failed bind of 47380; today a second node on one machine only logs it (`driver.rs` `lan_start`, row 32).
-- Extra announcement targets for routed meshes, `LanConfig` in `Config` (row 31; passes notes/api-design.md).
-- A joining node announces a few times in its first seconds; a lost first announcement waits 30 s today (row 33). Unsure (implementor): how many and how fast.
+- Sharing the announcement port needs `SO_REUSEADDR` semantics of Linux and Android. On BSD and macOS a second node on one machine fails the bind (logged, no LAN for it): `SO_REUSEPORT` there, untested.
 
 ## Spec and code to change
 spec/sync.md §10 (LAN discovery: announcement, tag, sealed signature, receiver rules; `reach.0` lan secret; Keys and reach), spec/data-model.md §9 `reach.0` field 2, spec/permissions.md §7 rotation, osis-crypto LAN sealing and its vector, notes/peers.md LAN and `reach.0`, notes/networking.md decision 4.

@@ -225,9 +225,15 @@ impl State {
         let mut to_each = Vec::new();
         for (seg, own) in host.lans.iter().filter(|(_, own)| own.is_ipv6() == to.is_ipv6()) {
             for (at, h) in self.udp.lan_socks.keys().filter(|s| s.port() == to.port()).filter_map(|s| Some((*s, self.udp.hosts.get(&s.ip())?))) {
-                if h.lans.get(seg).is_some_and(|a| a.is_ipv6() == to.is_ipv6() && (every || *a == to.ip())) {
+                // broadcast and multicast stop at the segment; one address is routed to
+                let reached = if every { h.lans.get(seg).is_some_and(|a| a.is_ipv6() == to.is_ipv6()) } else { h.lans.values().any(|a| *a == to.ip()) };
+                if reached {
                     to_each.push((seg.clone(), at, SocketAddr::new(*own, from.port())));
                 }
+            }
+            // one address is sent once, from the first segment
+            if !every && !to_each.is_empty() {
+                break;
             }
         }
         for (seg, at, src) in to_each {

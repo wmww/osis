@@ -15,7 +15,6 @@ workspace = true
 
 [features]
 # The LAN loop: per-network keys and announcements (spec/sync.md §10).
-lan = ["osis-node/lan"]
 
 [dependencies]
 osis-node.workspace = true

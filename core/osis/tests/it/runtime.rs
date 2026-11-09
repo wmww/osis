@@ -928,11 +928,61 @@ async fn redeem_direct_redials_sharer_spec_permissions_7() {
     assert!(pause(bob.clone()).await > 100, "a co-reader's pause once redeemed");
 }
 
-// Audit row 1 (issues/no-server-audit.md), spec/sync.md §10: every
-// build runs the LAN loop.
+/// A node with a store of its own on the LAN model, at `at` on segment `seg`, `lan` as given.
+fn lan_model_node(net: &osis_transport::Net, name: &str, at: &str, seg: &str, seed: u64, lan: osis::Lan) -> Osis {
+    let mut c = cfg(seed, vec![], None);
+    let h = net.udp(name, at.parse().unwrap(), None);
+    h.on_lan(seg, at.parse().unwrap());
+    c.app.internals.host = Some(h);
+    c.lan = lan;
+    osis::internals::create(c).unwrap()
+}
+
+/// The source address of the next announcement `ear` hears.
+async fn heard_at(ear: &osis_transport::MemLan) -> std::net::IpAddr {
+    use osis_transport::lan::LanSocket;
+    tokio::time::timeout(GUARD, ear.recv()).await.expect("nothing heard").unwrap().1.ip()
+}
+
+// Audit row 1 (issues/no-server-audit.md), spec/sync.md §10: a default node is on its LAN, in
+// every build; `Lan::Off` keeps one quiet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_default_node_announces_and_lan_off_stays_quiet() {
+    let net = osis_transport::Net::new(40);
+    net.run_on_tokio();
+    let ear = net.udp("e", "10.0.0.9".parse().unwrap(), None);
+    ear.on_lan("s", "10.0.0.9".parse().unwrap());
+    let ear = ear.lan_socket(osis_transport::lan::PORT).unwrap();
+    let _off = lan_model_node(&net, "off", "10.0.0.2", "s", 41, osis::Lan::Off);
+    let _on = lan_model_node(&net, "on", "10.0.0.1", "s", 42, osis::Lan::default());
+    // the first and a repeat: time for the quiet node to have announced, had it
+    for _ in 0..2 {
+        assert_eq!(heard_at(&ear).await, "10.0.0.1".parse::<std::net::IpAddr>().unwrap());
+    }
+}
+
+// Audit row 31, spec/sync.md §10: a configured target hears announcements a broadcast would not
+// reach (another segment of a routed mesh).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lan_announces_to_configured_targets_across_segments() {
+    let net = osis_transport::Net::new(43);
+    net.run_on_tokio();
+    let far: std::net::IpAddr = "10.1.0.9".parse().unwrap();
+    let ear = net.udp("e", far, None);
+    ear.on_lan("other", far);
+    let ear = ear.lan_socket(osis_transport::lan::PORT).unwrap();
+    let to = std::net::SocketAddr::new(far, osis_transport::lan::PORT);
+    let _on = lan_model_node(&net, "on", "10.0.0.1", "s", 44, osis::Lan::On { also_announce_to: vec![to] });
+    assert_eq!(heard_at(&ear).await, "10.0.0.1".parse::<std::net::IpAddr>().unwrap());
+}
+
+// notes/api-design.md (explicit where a wrong default is silent): a target that names no place is
+// refused. spec: none (an API property)
 #[test]
-#[ignore = "issues/net-connect.md"]
-fn repro_row1_every_build_has_the_lan_loop() {
-    let lan = cfg!(feature = "lan");
-    assert!(lan, "the `lan` feature is off in this build");
+fn a_lan_target_with_no_address_or_port_is_invalid() {
+    for bad in ["0.0.0.0:47380", "10.0.0.1:0"] {
+        let c = osis::Config { lan: osis::Lan::On { also_announce_to: vec![bad.parse().unwrap()] }, ..osis::Config::default() };
+        let r = Osis::create(Store::Memory(MemStore::new()), &[], c);
+        assert!(matches!(r, Err(osis::Error::Invalid(_))), "{bad}");
+    }
 }

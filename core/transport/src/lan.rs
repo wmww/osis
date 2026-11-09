@@ -1,4 +1,4 @@
-//! LAN announcements (spec/sync.md §10; the sockets with feature `lan`): a UDP datagram carrying
+//! LAN announcements (spec/sync.md §10): a UDP datagram carrying
 //! the node's current LAN tag, the transport key it listens with on this network (fresh per
 //! network join, never the dialable key), that listener's port on the datagram's address family
 //! and a signature under the node's dialable key binding the three, sealed under the lan secret
@@ -13,10 +13,8 @@
 //! port (2, big-endian), signature (64).
 
 use crate::{Address, PublicKey};
-#[cfg(feature = "lan")]
 use crate::Error;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
-#[cfg(feature = "lan")]
 use std::task::Poll;
 
 const MAGIC: &[u8; 10] = b"osis lan 1";
@@ -67,7 +65,6 @@ pub fn link_scopes(addrs: impl IntoIterator<Item = (Ipv6Addr, u32)>) -> Vec<u32>
 /// The machine's interfaces for IPv6 announcements now: `link_scopes` over the kernel's IPv6
 /// address list (`/proc/net/if_inet6`, Linux and Android; elsewhere none, so announcements go
 /// out the default interface only).
-#[cfg(feature = "lan")]
 pub async fn v6_scopes() -> Vec<u32> {
     let text = std::fs::read_to_string("/proc/net/if_inet6").unwrap_or_default();
     link_scopes(if_inet6(&text))
@@ -157,8 +154,6 @@ pub trait LanSocket: Send + Sync + 'static {
     /// The next announcement heard, and its sender's address.
     fn recv(&self) -> LanFuture<'_, (Announce, SocketAddr)>;
 }
-
-#[cfg(feature = "lan")]
 impl LanSocket for Lan {
     fn has_v6(&self) -> bool {
         Lan::has_v6(self)
@@ -171,9 +166,8 @@ impl LanSocket for Lan {
     }
 }
 
-/// UDP sockets sending and receiving announcements (feature `lan`): IPv4 (broadcast) and, where
+/// UDP sockets sending and receiving announcements: IPv4 (broadcast) and, where
 /// the machine has IPv6, IPv6 (all-nodes multicast).
-#[cfg(feature = "lan")]
 pub struct Lan {
     v4: tokio::net::UdpSocket,
     v6: Option<tokio::net::UdpSocket>,
@@ -181,33 +175,43 @@ pub struct Lan {
     /// Which socket `recv` looks at first (alternates, so a flood on one starves neither).
     turn: std::sync::atomic::AtomicBool,
 }
-
-#[cfg(feature = "lan")]
 fn io(e: std::io::Error) -> Error {
     Error::Io(e.to_string())
 }
 
+/// A nonblocking UDP socket of `family` that shares its port with other nodes on the machine
+/// (`SO_REUSEADDR`: on Linux each socket on the port gets every broadcast and multicast).
+fn shared_udp(family: socket2::Domain) -> std::io::Result<socket2::Socket> {
+    let s = socket2::Socket::new(family, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+    s.set_reuse_address(true)?;
+    s.set_nonblocking(true)?;
+    Ok(s)
+}
+
+/// An IPv4 UDP socket at `port`, allowed to broadcast.
+fn bind_v4(port: u16) -> std::io::Result<tokio::net::UdpSocket> {
+    let s = shared_udp(socket2::Domain::IPV4)?;
+    s.set_broadcast(true)?;
+    s.bind(&SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port).into())?;
+    tokio::net::UdpSocket::from_std(s.into())
+}
+
 /// An IPv6-only UDP socket at `port`, in the all-nodes group.
-#[cfg(feature = "lan")]
 fn bind_v6(port: u16) -> std::io::Result<tokio::net::UdpSocket> {
-    use socket2::{Domain, Protocol, Socket, Type};
-    let s = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+    let s = shared_udp(socket2::Domain::IPV6)?;
     // beside the IPv4 socket of the same port
     s.set_only_v6(true)?;
-    s.set_nonblocking(true)?;
     s.bind(&SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port).into())?;
     // IPv6 machines are in the group anyway; joining makes delivery explicit where that matters
     let _ = s.join_multicast_v6(&ALL_NODES, 0);
     tokio::net::UdpSocket::from_std(s.into())
 }
-
-#[cfg(feature = "lan")]
 impl Lan {
     /// Binds the announcement port on all IPv4 interfaces and, when the machine has IPv6, on all
-    /// IPv6 interfaces (`port` 0: any, for tests; IPv6 then takes the port IPv4 got).
+    /// IPv6 interfaces (`port` 0: any, for tests; IPv6 then takes the port IPv4 got). Other nodes
+    /// on this machine can bind the same port.
     pub async fn bind(port: u16) -> Result<Lan, Error> {
-        let v4 = tokio::net::UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)).await.map_err(io)?;
-        v4.set_broadcast(true).map_err(io)?;
+        let v4 = bind_v4(port).map_err(io)?;
         let port = v4.local_addr().map_err(io)?.port();
         Ok(Lan { v4, v6: bind_v6(port).ok(), port, turn: Default::default() })
     }
@@ -301,7 +305,6 @@ pub async fn route_ips() -> (Option<IpAddr>, Option<IpAddr>) {
 
 /// What identifies the network the routes go out on: the IPv4 address, the IPv6 /64 prefix
 /// (`network_of`); a change means another network.
-#[cfg(feature = "lan")]
 async fn route_networks() -> (Option<IpAddr>, Option<IpAddr>) {
     let (v4, v6) = route_ips().await;
     (v4, v6.map(network_of))
@@ -310,18 +313,14 @@ async fn route_networks() -> (Option<IpAddr>, Option<IpAddr>) {
 /// How often `NetWatch` looks at the routes' local addresses (provisional; minor: a change is
 /// seen this much later; 0: a busy loop; unbounded: no fresh LAN key per network, and
 /// registrations renew only at their relay connections' idle timeout).
-#[cfg(feature = "lan")]
 pub const ROUTE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Tells network changes (feature `lan`) by polling the routes' local addresses every
+/// Tells network changes by polling the routes' local addresses every
 /// `ROUTE_POLL`. Another network with the same addressing goes unseen; a P2P listener's
 /// registrations renew themselves after such a change once their relay connections time out.
-#[cfg(feature = "lan")]
 pub struct NetWatch {
     route: (Option<IpAddr>, Option<IpAddr>),
 }
-
-#[cfg(feature = "lan")]
 impl NetWatch {
     /// Starts watching (needs a tokio runtime); the current network is the baseline.
     pub async fn new() -> NetWatch {
@@ -377,7 +376,6 @@ pub fn is_local(ip: IpAddr) -> bool {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    #[cfg(feature = "lan")]
     use std::net::Ipv4Addr;
 
     // spec/sync.md §10: an announcement carries the tag and a transport key, and is dialed at
@@ -445,7 +443,6 @@ mod tests {
     }
 
     // spec/sync.md §10: an announcement sent over UDP is heard (tier 2: localhost socket).
-    #[cfg(feature = "lan")]
     #[tokio::test]
     #[ignore]
     async fn announce_over_udp_spec_sync_10() {
@@ -465,11 +462,26 @@ mod tests {
         }
     }
 
+    // spec/sync.md §10: two nodes on one machine both bind the announcement port and both hear
+    // a broadcast to it (tier 2: real sockets).
+    #[tokio::test]
+    #[ignore]
+    async fn two_nodes_share_the_port_spec_sync_10() {
+        let a = Lan::bind(0).await.unwrap();
+        let b = Lan::bind(a.port()).await.unwrap();
+        let tx = Lan::bind(0).await.unwrap();
+        let msg = Announce { tag: [9; 16], key: [8; 32], port: 7, sig: [6; 64] };
+        tx.announce(&msg, SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 255, 255, 255)), a.port())).await.unwrap();
+        for s in [&a, &b] {
+            let (got, _) = tokio::time::timeout(std::time::Duration::from_secs(5), s.recv()).await.unwrap().unwrap();
+            assert_eq!(got, msg);
+        }
+    }
+
     // spec/sync.md §10: an announcement to the all-nodes group goes out every IPv6 link, each
     // send naming its interface (a scope no interface has fails); copies looped back are heard
     // from that link's address (tier 2: real sockets and interfaces; a machine whose firewall drops
     // multicast, as the dev VM's, hears none, so hearing is checked only when something comes).
-    #[cfg(feature = "lan")]
     #[tokio::test]
     #[ignore]
     async fn announce_v6_every_interface_spec_sync_10() {
@@ -497,7 +509,6 @@ mod tests {
     }
 
     // spec/sync.md §10: a network watch starts and polls the routes (tier 2: real sockets).
-    #[cfg(feature = "lan")]
     #[tokio::test]
     #[ignore]
     async fn net_watch_starts_spec_sync_10() {

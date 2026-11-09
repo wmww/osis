@@ -36,6 +36,26 @@ pub enum Runtime {
     Manual(ManualNet),
 }
 
+/// Whether a node with direct sync on (`Config::direct_sync`) finds other nodes on its local
+/// network and is found by them, by a small UDP datagram it broadcasts there every so often.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Lan {
+    /// Announce on the local network.
+    On {
+        /// Further addresses to announce to, ones a broadcast does not reach, such as nodes of a
+        /// routed mesh (each `<ip>:47380` unless it listens elsewhere).
+        also_announce_to: Vec<std::net::SocketAddr>,
+    },
+    /// Stay quiet on the local network.
+    Off,
+}
+
+impl Default for Lan {
+    fn default() -> Lan {
+        Lan::On { also_announce_to: Vec::new() }
+    }
+}
+
 /// The nodes a test harness drives (`Runtime::Manual`), in the order they started.
 #[derive(Clone, Debug, Default)]
 pub struct ManualNet(Arc<Mutex<Vec<WeakOsis>>>);
@@ -198,34 +218,36 @@ impl Net {
     /// Starts the driver task over one transport for every node it dials (`Multi`; what it serves
     /// for others stored beside the node). With `p2p` (`Config::direct_sync`) it listens with the
     /// dialable secret (registered at `relays`) and publishes `reach.0`; with `P2p` (QUIC, or a
-    /// test's in-process host) it relays for its co-readers (spec/sync.md §10), and over QUIC
-    /// with feature `lan` also runs the LAN loop.
+    /// test's in-process host) it relays for its co-readers (spec/sync.md §10) and, unless
+    /// `Config::lan` is off, runs the LAN loop: over real sockets, or a test's model of them.
     pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, store: crate::Store, cfg: &crate::Config, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
         let Net::Driver { ctl, stop, .. } = self else { return Ok(()) };
         let shared = OsisShared(db.clone(), store);
         let (mem, host, p2p, relays) = (cfg.app.internals.transport.clone(), cfg.app.internals.host.clone(), cfg.direct_sync, cfg.relays.iter().filter_map(crate::share::Address::relay_item).collect::<Vec<String>>());
         // where the dialable-key listener goes (the first URL that listens), and whether the
-        // LAN loop runs
-        let (urls, lan): (Vec<String>, bool) = match (mem, host) {
+        // LAN loop runs (`Some`), watching the machine's real routes (true)
+        let (urls, lan): (Vec<String>, Option<bool>) = match (mem, host) {
             (t, Some(udp)) => {
                 self.start(shared, Multi { mem: t, p2p: Some(p2p_of(udp, ctl)?), unix: Some(Unix), quic: None }, clock, rx, db, stop);
-                (peer_urls(&relays), false)
+                (peer_urls(&relays), Some(false))
             }
             (Some(t), None) => {
                 let url = format!("mem://{}-peer", t.name());
                 self.start::<osis_transport::QuicUdp>(shared, Multi { mem: Some(t), unix: Some(Unix), ..Default::default() }, clock, rx, db, stop);
-                (vec![url], false)
+                (vec![url], None)
             }
             (None, None) => {
                 let multi = Multi { quic: Some(Quic::new()), p2p: Some(p2p_of(osis_transport::QuicUdp::new(), ctl)?), unix: Some(Unix), mem: None };
                 self.start(shared, multi, clock, rx, db, stop);
-                (peer_urls(&relays), cfg!(feature = "lan"))
+                (peer_urls(&relays), Some(true))
             }
         };
         if p2p {
             let _ = ctl.send(Control::Reach { urls, reply: None });
-            if lan {
-                let _ = ctl.send(Control::Lan(driver::LanConfig::default()));
+            if let (Some(watch), Lan::On { also_announce_to }) = (lan, &cfg.lan) {
+                let mut c = driver::LanConfig { watch, ..Default::default() };
+                c.to.extend(also_announce_to.iter().copied());
+                let _ = ctl.send(Control::Lan(c));
             }
         }
         Ok(())

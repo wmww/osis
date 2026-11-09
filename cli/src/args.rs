@@ -175,6 +175,9 @@ pub enum Cmd {
         /// line `client URL#KEY` per listener prints after the serving address
         #[arg(long = "client-listen", value_name = "URL")]
         client_listen: Vec<String>,
+        /// Do not announce this node on the local network or look for others there
+        #[arg(long = "no-lan")]
+        no_lan: bool,
     },
     /// Create a thing, optionally setting aspects: create --in me note:title.0 '"x"'
     Create(CreateArgs),

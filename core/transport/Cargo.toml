@@ -23,9 +23,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 ring = "0.17"
 tokio.workspace = true
 # An IPv6-only LAN socket beside the IPv4 one (already in tokio's tree).
-socket2 = { version = "0.6", optional = true }
+socket2 = "0.6"
 
 [features]
 # LAN announcements over UDP, IPv4 and IPv6 (spec/sync.md §10).
-lan = ["dep:socket2"]
 

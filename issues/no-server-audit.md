@@ -12,9 +12,9 @@ Severity: **fails** (error or never happens), **silent** (claims success or does
 
 | # | Feature | No saved peers, no internet | Evidence | Severity |
 |---|---|---|---|---|
-| 1 | P2P at all, today's builds | P2P is on in every build, but no shipped build runs the LAN loop (`lan`), and with no relay configured, nodes off one LAN reach each other only when one has a global address (listed in `reach.0`; issues/p2p-own.md) | net.rs `spawn_driver` | degraded |
+| 1 | P2P at all | P2P and the LAN loop run in every build; with no relay configured, nodes off one LAN reach each other only when one has a global address (listed in `reach.0`; issues/p2p-own.md) | net.rs `spawn_driver` | degraded |
 | 2 | Create account | Works, but no recovery card and the key is discarded | handle.rs:436; p01 | degraded |
-| 3 | CLI on a store with no saved peers | `Runtime::None`, never syncs; links always `direct: false` | cli/src/lib.rs:318, cmd.rs:582 (read) | fails |
+| 3 | CLI on a store with no saved peers | Commands that sync run a runtime with or without saved peers; local commands and `init` without `--peer` have none. Links are always `direct: false`, so `link make` is `Invalid` here (row 5) | cli/src/cmd.rs `network`, `Cmd::Link` (read) | degraded |
 | 4 | Pair a second device | Works both ways: the app carries the texts, the reply brings the sharer's `reach.0`, so the new device dials it and hears its LAN tag | p02. Over a real LAN only in pieces: p02, `driver_lan_loop` (tier 2) | ok in-process; not run end to end |
 | 5 | `make_link` | Not direct: `Invalid`. Direct: fine, with a runtime. `Runtime::None`: `Invalid`, though a bundle could carry it | share.rs:958,961; p01 | degraded |
 | 6 | **Redeem a direct link on a LAN** | **Cannot find the sharer.** The link holds key and relays only; with no relay a `peer://` URL lists nothing to dial (`Unreachable` at once); LAN tags match only co-readers' lan secrets, which the redeemer lacks | wire.md §10; p2p.rs `dial_inner`; peers.rs:531; p20, p21 `Network("timed out")` at 40 s with the LAN loop on (tier 2); p09 `matched=false` for a joiner and a stranger | fails |
@@ -42,9 +42,9 @@ Severity: **fails** (error or never happens), **silent** (claims success or does
 | 28 | Who gets dialed | Only: config peers, labels' non-`peer://` saved peers, hints, queued deposits' peers, receipts groups, co-readers with `reach.0`, a link's sharer. No dynamic discovery; the LAN only confirms known co-readers | conn.rs:222-254 (read) | fails |
 | 29 | `Admit::Own` default | A friend's node refuses: `Refused`, clear and not silent. No choice between own groups and any stranger's (`Open`) | host.rs:113; p08 | degraded |
 | 30 | LAN source check | Valid announcements from 100.64/10, global IPv4, global IPv6, Yggdrasil's 200::/7 are dropped; the same one from 10/8, fc00::/7, fe80::/10 matches | lan.rs:394, peers.rs:517; p09 (with a control) | fails |
-| 31 | LAN reach on a mesh | 255.255.255.255 and ff02::1 stop at one hop; no way to add targets (`LanConfig` not in `Config`) | lan.rs, net.rs:252 (read) | fails |
-| 32 | LAN loop on one machine | Second node's `bind(47380)` fails: only logged, no LAN for it, no status | driver.rs:625-630 (read) | silent |
-| 33 | Lost announcement | Next one is 30 s away; `driver_lan_loop_localhost` failed 1 run in 5 here, within its 30 s guard (not traced, likely this) | tier 2 | degraded |
+| 31 | LAN reach on a mesh | 255.255.255.255 and ff02::1 stop at one hop; `Lan::On { also_announce_to }` adds targets by hand, and a source outside the private ranges is still dropped (row 30). No discovery across hops (issues/net-mesh-discovery.md) | lan.rs, net.rs (read); `lan_announces_to_configured_targets_across_segments` | degraded |
+| 32 | LAN loop on one machine | Nodes share port 47380 on Linux (`SO_REUSEADDR`) and all hear broadcasts; a bind that still fails is logged and leaves the node working | `two_nodes_share_the_port` (tier 2), `driver_lan_failed_bind_leaves_the_node_working` | ok |
+| 33 | Lost announcement | A join announces 3 times in its first 2 s; a later loss waits for the next 30 s repeat | `driver_lan_join_repeats_its_announcement` | ok |
 | 34 | LAN tag vs clock | Tags tolerate 10-20 min of skew, `MAX_DRIFT` allows 60. Past it nodes never match, and a connection is what would correct the clock | peers.rs:525; p10 window | fails |
 | 35 | Clock pulled by a peer | The offset is the median over all connections, peers included, with no cap: one peer can set it. Alice 120 min behind: Bob's `redeem` fails `own commit not applicable`. +120, ±30, -5 fine. Against "a wrong local clock harms only that node's own writes" | conn.rs:386; apply/mod.rs:817; p10 | fails |
 | 36 | Co-reader cap | At most 8 per label, chosen by newest `seen.0`, and LAN tags come from that same list: an unreachable 8 hide a reachable 9th | peers.rs:303-315,524 (read) | degraded |

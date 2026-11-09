@@ -27,7 +27,6 @@ pub use quic::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend, QuicSock, QuicU
 pub use nat::{Dep, MemLan, MemSock, MemUdp, Nat};
 pub use p2p::{P2p, P2pConn, P2pListener, RelayConfig};
 pub use unix::{Unix, UnixConn, UnixListener, UnixRecv, UnixSend};
-// codec always; the socket with feature `lan`
 pub mod lan;
 
 use std::future::Future;

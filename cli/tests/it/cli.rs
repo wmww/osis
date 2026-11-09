@@ -702,7 +702,7 @@ fn serve_survives_a_bad_socket_dir() {
     let xdg = d.with_extension("xdg");
     std::fs::create_dir_all(xdg.join("osis")).unwrap();
     std::fs::set_permissions(xdg.join("osis"), std::fs::Permissions::from_mode(0o755)).unwrap();
-    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_osis")).env("XDG_RUNTIME_DIR", &xdg).args(["-s", ds, "serve"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_osis")).env("XDG_RUNTIME_DIR", &xdg).args(["-s", ds, "serve", "--no-lan"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap();
     // read on a thread: a serve that never warns runs on and keeps stderr open
     let err = std::io::BufReader::new(c.stderr.take().unwrap());
     let (tx, rx) = std::sync::mpsc::channel();

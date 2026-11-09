@@ -59,6 +59,13 @@ pub const RELISTEN_RETRY: Duration = Duration::from_secs(5);
 /// its actions are carried out.
 pub type Call = Box<dyn FnOnce(&mut SyncEngine) -> Vec<Action> + Send>;
 
+/// A join announces this many more times after the first (minor: 0: a lost first announcement
+/// waits for `LAN_ANNOUNCE`; unbounded: one datagram per `LAN_JOIN_GAP` forever).
+pub const LAN_JOIN_REPEATS: u32 = 2;
+/// The time between a join's first announcements (minor: 0: one loss burst takes them all;
+/// unbounded: as `LAN_JOIN_REPEATS` 0).
+pub const LAN_JOIN_GAP: Duration = Duration::from_secs(1);
+
 /// The LAN loop's settings.
 #[derive(Clone, Debug)]
 pub struct LanConfig {
@@ -74,6 +81,10 @@ pub struct LanConfig {
     pub watch: bool,
     /// Announcements repeat this often (`LAN_ANNOUNCE`).
     pub announce: Duration,
+    /// After a join, this many more announcements (`LAN_JOIN_REPEATS`), `join_gap` apart.
+    pub join_repeats: u32,
+    /// The time between a join's first announcements (`LAN_JOIN_GAP`).
+    pub join_gap: Duration,
     /// Network changes rejoin at most this often (`LAN_REJOIN_MIN`).
     pub rejoin_min: Duration,
 }
@@ -81,7 +92,7 @@ pub struct LanConfig {
 impl Default for LanConfig {
     fn default() -> LanConfig {
         let p = osis_transport::lan::PORT;
-        LanConfig { port: p, to: vec![osis_transport::lan::broadcast(p), osis_transport::lan::multicast(p)], listen: "peer://[::]:0".into(), watch: true, announce: LAN_ANNOUNCE, rejoin_min: LAN_REJOIN_MIN }
+        LanConfig { port: p, to: vec![osis_transport::lan::broadcast(p), osis_transport::lan::multicast(p)], listen: "peer://[::]:0".into(), watch: true, announce: LAN_ANNOUNCE, join_repeats: LAN_JOIN_REPEATS, join_gap: LAN_JOIN_GAP, rejoin_min: LAN_REJOIN_MIN }
     }
 }
 
@@ -107,7 +118,7 @@ pub enum Control {
     /// stop, their sessions end. Answers the addresses (notes/client-port.md §5). All or none: on
     /// an error nothing listens.
     ClientListen { urls: ClientUrls, reply: oneshot::Sender<Result<Vec<Address>, String>> },
-    /// Run the LAN loop (on a transport with no LAN, or real sockets without feature `lan`: logged, nothing runs).
+    /// Run the LAN loop (no announcement socket: logged, nothing runs, the node works on).
     Lan(LanConfig),
     /// The network may have changed (an app's OS callback): join the LAN again with a fresh key
     /// and listener, at most every `LanConfig::rejoin_min`.
@@ -227,6 +238,8 @@ fn transport_secret(s: &osis_crypto::Secret32) -> StaticSecret {
 struct LanLoop {
     cfg: LanConfig,
     sock: Arc<dyn osis_transport::lan::LanSocket>,
+    /// Announcements left of the join's quick repeats.
+    repeats: u32,
     /// Join at the next check (start, network change, new dialable key).
     rejoin: bool,
     /// When it last joined (network changes rejoin at most every `LAN_REJOIN_MIN`).
@@ -290,7 +303,6 @@ struct Driver<T: Transport, H: Shared> {
     lan: Option<LanLoop>,
     lan_tx: mpsc::Sender<(Announce, std::net::SocketAddr)>,
     /// Network changes from the LAN loop's watch.
-    #[cfg_attr(not(feature = "lan"), allow(dead_code))]
     net_tx: mpsc::Sender<()>,
     /// The dialable listener's URLs (`Control::Reach`), and its key.
     reach: Option<Vec<String>>,
@@ -672,7 +684,6 @@ impl<T: Transport, H: Shared> Driver<T, H> {
             }
         };
         let (s2, tx) = (sock.clone(), self.lan_tx.clone());
-        #[cfg_attr(not(feature = "lan"), allow(unused_mut))]
         let mut tasks = vec![tokio::spawn(async move {
             while let Ok(x) = s2.recv().await {
                 // a flood is dropped, not queued
@@ -681,7 +692,6 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 }
             }
         })];
-        #[cfg(feature = "lan")]
         if cfg.watch {
             let tx = self.net_tx.clone();
             tasks.push(tokio::spawn(async move {
@@ -694,7 +704,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 }
             }));
         }
-        self.lan = Some(LanLoop { cfg, sock, rejoin: true, joined: None, listener: None, next: Some(tokio::time::Instant::now()), tasks });
+        self.lan = Some(LanLoop { cfg, sock, repeats: 0, rejoin: true, joined: None, listener: None, next: Some(tokio::time::Instant::now()), tasks });
         self.lan_check().await;
     }
 
@@ -712,8 +722,8 @@ impl<T: Transport, H: Shared> Driver<T, H> {
     }
 
     /// The LAN loop's timer: a join (start, network change, new dialable key) drops the old
-    /// listener and listens with a fresh key, announced at once; announcements repeat every
-    /// `LanConfig::announce`, each family's carrying the listener's port on that family.
+    /// listener and listens with a fresh key, announced at once and `join_repeats` more times
+    /// soon after; announcements then repeat every `LanConfig::announce`, each family's carrying the listener's port on that family.
     async fn lan_check(&mut self) {
         let now = tokio::time::Instant::now();
         let Some((old, url)) = self.lan.as_mut().filter(|x| x.rejoin && x.joined.is_none_or(|t| t.checked_add(x.cfg.rejoin_min).is_some_and(|due| due <= now))).map(|x| {
@@ -736,6 +746,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         if let Some(x) = self.lan.as_mut() {
             x.listener = r.ok().map(|a| (a.key, listen_ports(&a.url)));
             x.next = Some(tokio::time::Instant::now());
+            x.repeats = x.cfg.join_repeats;
         }
         self.lan_announce().await;
     }
@@ -745,7 +756,9 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         let now = tokio::time::Instant::now();
         let Some((key, ports, to, sock)) = self.lan.as_ref().filter(|x| x.next.is_some_and(|n| n <= now)).and_then(|x| x.listener.map(|(k, p)| (k, p, x.cfg.to.clone(), x.sock.clone()))) else { return };
         if let Some(x) = self.lan.as_mut() {
-            x.next = now.checked_add(x.cfg.announce);
+            let wait = if x.repeats > 0 { x.cfg.join_gap } else { x.cfg.announce };
+            x.repeats = x.repeats.saturating_sub(1);
+            x.next = now.checked_add(wait);
         }
         for (port, fam) in [(ports.v4, false), (ports.v6, true)] {
             let Some(port) = port else { continue };
