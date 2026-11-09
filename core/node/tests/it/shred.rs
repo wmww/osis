@@ -932,7 +932,7 @@ fn tombstone_alike_spec_commits_5() {
 // As above, every order and restart point.
 #[test]
 #[ignore = "tier 2"]
-fn tombstone_alike_in_every_order_spec_commits_5() {
+fn tombstone_alike_in_every_order_exhaustive_spec_commits_5() {
     tombstone_alike(1);
 }
 

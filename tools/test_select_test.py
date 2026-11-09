@@ -2,6 +2,10 @@
 """Tests tools/test_select.py on a fabricated workspace in a throwaway repo. Exit 1 on a mismatch."""
 import os, shutil, subprocess, sys, tempfile
 
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import test_select
+
 TOOL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_select.py")
 
 # base <- mid <- top; model is only a dev-dependency of mid; osis-sim depends on mid; leaf depends on nothing.
@@ -53,14 +57,14 @@ members = ", ".join(f'"{p}"' for p in CRATES)
 write("Cargo.toml", f"[workspace]\nresolver = \"2\"\nmembers = [{members}]\n")
 for path, (name, deps) in CRATES.items():
     write(f"{path}/Cargo.toml", f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n[lib]\npath = "src/lib.rs"\n[dependencies]\n{deps}')
-write("core/base/src/lib.rs", PROP.format("base_prop_large"))
+write("core/base/src/lib.rs", PROP.format("base_prop_large") + '#[test] #[ignore] fn base_inline_large() {}\n#[test]\n#[ignore]\n// fn decoy_large names nothing\nfn base_after_comment_large() {}\n')
 # a size word in the middle, a repro, an example, a networking test: none are properties
 write("core/mid/src/lib.rs", PROP.format("mid_prop_tier2_spec_crdt_4") + PROP.format("quic_large_transfer") + PROP.format("repro_big_large") + "#[test]\nfn mid_quick() {}\n")
 write("core/mid/tests/it/main.rs", PROP.format("mid_it_plain") + PROP.format("mid_it_plain_over_quic"))
 write("core/top/src/lib.rs", PROP.format("top_exhaustive"))
 write("core/test/model/src/lib.rs", PROP.format("model_large"))
 write("core/test/sim/src/lib.rs", "")
-write("core/leaf/src/lib.rs", PROP.format("leaf_large"))
+write("core/leaf/src/lib.rs", PROP.format("leaf_large") + "macro_rules! t { ($n:ident) => { #[test]\n#[ignore]\nfn $n() {} } }\n")
 for f in ("notes/a.md", "tools/x.sh", "schema/core.osis", "schema/README.md", "schema/orphan.osis"):
     write(f, "x\n")
 write("core/mid/build.rs", '// reads "../../schema/core.osis"\n')
@@ -84,10 +88,10 @@ t = out("--paths", "core/test/model/src/lib.rs")
 check("dev edge selects and stops", t, "crates selected: 2 of 6", "held-model: model_large", "osis-mid:", absent=["osis-top:", "every scenario"])
 
 t = out("--paths", "core/base/src/lib.rs")
-check("low crate", t, "crates selected: 4 of 6", "(nearly everything", "base_prop_large", "top_exhaustive", "every scenario", absent=["leaf_large", "model_large"])
+check("low crate", t, "crates selected: 4 of 6", "(nearly everything", "base_prop_large", "base_inline_large", "base_after_comment_large", "top_exhaustive", "every scenario", absent=["leaf_large", "model_large", "decoy_large"])
 
 t = out("--paths", "Cargo.lock")
-check("workspace config", t, "crates selected: 6 of 6", "every crate", "leaf_large", "model_large")
+check("workspace config", t, "crates selected: 6 of 6", "every crate", "leaf_large", "model_large", "not read: core/leaf/src/lib.rs:5")
 
 t = out("--paths", "tools/x.sh")
 check("tools", t, "selects nothing: tools/x.sh (the tools' own tests", "nothing to run")
@@ -109,6 +113,29 @@ git("commit", "-qm", "edit")
 write("core/top/new.rs", "// new\n")
 t = out()
 check("diff from merge-base", t, "paths: 2", "crates touched: osis-leaf, osis-top", "leaf_large", "top_exhaustive")
+
+# --run: a failing property reaches the exit code, through tools/heavy
+write("tools/heavy", '#!/bin/sh\nexec "$@"\n')
+os.chmod("tools/heavy", 0o755)
+write("core/leaf/src/lib.rs", '#[test]\n#[ignore]\nfn leaf_large() { panic!() }\n')
+r = subprocess.run([sys.executable, TOOL, "--run", "--offset", "7", "--paths", "core/leaf/src/lib.rs"], capture_output=True, text=True)
+if r.returncode == 0:
+    print(f"FAIL --run: a failing test exited 0\n{r.stdout}{r.stderr}")
+    fails = 1
+write("core/leaf/src/lib.rs", PROP.format("leaf_large"))
+r = subprocess.run([sys.executable, TOOL, "--run", "--offset", "7", "--paths", "core/leaf/src/lib.rs"], capture_output=True, text=True)
+if r.returncode != 0:
+    print(f"FAIL --run: a passing test exited {r.returncode}\n{r.stdout}{r.stderr}")
+    fails = 1
+
+# closure, on edges in the order that once lost a dependent: y is reached by a dev edge first
+via = {"x": [("y", {"dev"}), ("z", {"normal"})], "z": [("y", {"normal"})], "y": [("w", {"normal"})]}
+if test_select.closure({"x"}, via) != {"x", "y", "z", "w"}:
+    print("FAIL closure: a dev edge reached first stopped a normal edge")
+    fails = 1
+if test_select.closure({"x"}, {"x": [("y", {"dev"})], "y": [("w", {"normal"})]}) != {"x", "y"}:
+    print("FAIL closure: a dev edge carried on")
+    fails = 1
 
 os.chdir("/")
 shutil.rmtree(d)

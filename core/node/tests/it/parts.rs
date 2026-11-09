@@ -1160,7 +1160,7 @@ fn forged_parts_beside_a_part_past_expiry_alike_spec_commits_4() {
 // As above, in every order.
 #[test]
 #[ignore = "tier 2"]
-fn forged_parts_beside_a_part_past_expiry_alike_in_every_order_spec_commits_4() {
+fn forged_parts_beside_a_part_past_expiry_alike_in_every_order_exhaustive_spec_commits_4() {
     forged_parts_beside_a_part_past_expiry(1);
 }
 

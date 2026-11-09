@@ -90,14 +90,14 @@ fn slow_runner() -> proptest::test_runner::TestRunner {
 // §5, slow tier: `ord_is_byte_order` at size.
 #[test]
 #[ignore]
-fn slow_ord_is_byte_order() {
+fn ord_is_byte_order_large() {
     slow_runner().run(&(value(), value()), |(a, b)| check_ord(&a, &b)).unwrap();
 }
 
 // §5, slow tier: `mutation` at size.
 #[test]
 #[ignore]
-fn slow_mutation() {
+fn mutation_large() {
     let ops = prop::collection::vec((any::<u8>(), any::<usize>(), any::<u8>()), 1..6);
     slow_runner().run(&(value(), ops), |(v, ops)| check_mutation(&v, &ops)).unwrap();
 }

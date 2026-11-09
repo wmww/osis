@@ -19,8 +19,8 @@ sim sweep, so a review samples seeds no earlier review ran.
 import json, os, random, re, shlex, subprocess, sys
 
 SIZE_WORD = re.compile(r"_(large|tier2|plain|exhaustive)(_spec_\w*)?$")
-IGNORE = re.compile(r"\s*#\[ignore\b")
-FN = re.compile(r"\bfn (\w+)")
+IGNORE = re.compile(r"^(?!\s*//).*#\[(ignore\b|cfg_attr\(.*\bignore\b)")
+FN = re.compile(r"^(?!\s*//).*?\bfn\s+(\$?\w+)")
 # How far past `#[ignore]` the test's `fn` can be: only other attributes and comments sit between.
 FN_WITHIN = 10
 # Sim seeds at plain size: a tenth of the 150 of a periodic sweep, as for every harness
@@ -107,20 +107,22 @@ def classify(paths, dirs):
 
 
 def closure(touched, users):
-    """`touched` and its dependents: normal and build edges propagate, a dev edge selects and stops."""
-    selected, todo = set(touched), list(touched)
+    """`touched` and its dependents: normal and build edges propagate, a dev edge selects and stops.
+    A crate reached by a dev edge first and a normal edge later still propagates."""
+    selected, carried, todo = set(touched), set(touched), list(touched)
     while todo:
         for user, kinds in users.get(todo.pop(), ()):
-            if user not in selected:
-                selected.add(user)
-                if kinds != {"dev"}:
-                    todo.append(user)
+            selected.add(user)
+            if kinds != {"dev"} and user not in carried:
+                carried.add(user)
+                todo.append(user)
     return selected
 
 
 def ignored_tests(pkg_dir, nested):
-    """Names of the `#[ignore]` tests under a crate, nested crates left to themselves."""
-    names = set()
+    """(names of the `#[ignore]` tests under a crate, nested crates left to themselves;
+    `file:line` of each `#[ignore]` no name could be read for)."""
+    names, unread = set(), []
     for f in run("git", "ls-files", "-z", "--", pkg_dir).split("\0"):
         if not f.endswith(".rs") or any(f.startswith(n + "/") for n in nested):
             continue
@@ -128,22 +130,25 @@ def ignored_tests(pkg_dir, nested):
         for i, line in enumerate(lines):
             if IGNORE.match(line):
                 m = next(filter(None, (FN.search(s) for s in lines[i:i + FN_WITHIN])), None)
-                if m:
+                if m and not m.group(1).startswith("$"):
                     names.add(m.group(1))
-    return names
+                else:
+                    unread.append(f"{f}:{i + 1}")
+    return names, unread
 
 
 def properties(selected, dirs):
-    """({crate: property test names}, other `#[ignore]` names in those crates)."""
-    props, others = {}, set()
+    """({crate: property test names}, other `#[ignore]` names in those crates, unread `#[ignore]`s)."""
+    props, others, unread = {}, set(), []
     for c in sorted(selected):
         nested = [d for n, d in dirs.items() if n != c and d.startswith(dirs[c] + "/")]
-        names = ignored_tests(dirs[c], nested)
+        names, missed = ignored_tests(dirs[c], nested)
+        unread += missed
         chosen = {n for n in names if SIZE_WORD.search(n) and not n.startswith("repro_")}
         if chosen:
             props[c] = sorted(chosen)
         others |= names - chosen
-    return props, others
+    return props, others, unread
 
 
 def cargo_args(props, others):
@@ -191,7 +196,7 @@ def main():
     root, dirs, users = metadata()
     touched, whole, nothing = classify(paths, dirs)
     selected = set(dirs) if whole else closure(touched, users)
-    props, others = properties(selected, dirs)
+    props, others, unread = properties(selected, dirs)
     sim = "osis-sim" in selected
 
     print(f"paths: {len(paths)}")
@@ -205,6 +210,8 @@ def main():
     print(f"property tests: {count}")
     for c, names in props.items():
         print(f"  {c}: {' '.join(names)}")
+    for u in unread:
+        print(f"  not read: {u} (an #[ignore] with no named fn, so not selected: check it by hand)")
     print(f"sim: {'every scenario, ' + str(SIM_SEEDS) + ' seeds from ' + str(offset) if sim else 'none'}")
 
     cmds = []
