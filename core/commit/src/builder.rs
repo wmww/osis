@@ -29,12 +29,14 @@ pub struct AspectWrite {
     /// Chunk, tree-node and page blobs the deltas introduce (framed with this aspect's delete
     /// keys, [`delete_keys`]).
     pub chunks: Vec<BlobId>,
+    /// The fire this delta claims to replace (spec/commits.md §5 Signals).
+    pub replaces: Option<CommitId>,
 }
 
 impl AspectWrite {
     /// One delta with untyped defaults; set the other fields as needed.
     pub fn new(tid: Tid, ak: Ak, lo: u64, hi: u64, delta: Vec<u8>) -> AspectWrite {
-        AspectWrite { tid, ak, lo, hi, delta, retention: Retention::default(), chunks: Vec::new() }
+        AspectWrite { tid, ak, lo, hi, delta, retention: Retention::default(), chunks: Vec::new(), replaces: None }
     }
 }
 
@@ -130,6 +132,7 @@ impl CommitBuilder {
                     retention: a.retention,
                     keys: Vec::new(),
                     hash,
+                    replaces: a.replaces,
                 },
                 a.chunks,
             ));

@@ -285,13 +285,13 @@ impl Codec for crate::History {
 }
 codec_struct! {
     /// The retention and expiry a write of an aspect must carry; `expires` as a
-    /// duration from the write, none: no expiry.
+    /// duration from the write, none: no expiry. `final`: a delta claiming `replaces` breaks it.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct Required { 0 by: osis_base::PurgeBy, 1 history: Option<crate::History>, 2 expires: Option<u64> }
+    pub struct Required { 0 by: osis_base::PurgeBy, 1 history: Option<crate::History>, 2 expires: Option<u64>, 3 r#final: bool }
 }
 impl Required {
     pub fn new(r: crate::Retention, expires: Option<u64>) -> Required {
-        Required { by: r.by, history: r.history, expires }
+        Required { by: r.by, history: r.history, expires, r#final: false }
     }
     pub fn retention(&self) -> crate::Retention {
         crate::Retention { by: self.by, history: self.history }
@@ -302,6 +302,16 @@ impl Required {
         match self.expires {
             None => Some(None),
             Some(d) => wall.checked_add(d).map(Some),
+        }
+    }
+
+    /// Whether `expires`, on a delta stamped at `wall` ms, meets this entry (spec/commits.md §5
+    /// Required retention): a `replaces` delta's within `(wall, wall + duration]`, any other's
+    /// exactly `expires_at`.
+    pub fn expiry_met(&self, wall: u64, expires: Option<u64>, replaces: bool) -> bool {
+        match (self.expires_at(wall), replaces) {
+            (Some(Some(t)), true) => expires.is_some_and(|e| wall < e && e <= t),
+            (want, _) => want == Some(expires),
         }
     }
 }

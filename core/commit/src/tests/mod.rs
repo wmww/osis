@@ -45,6 +45,7 @@ pub(crate) fn sample_header() -> Header {
             retention: Retention { by: PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::Keep { until: None, after: Some(5) }) },
             keys: vec![0, 1],
             hash: [9; 32],
+            replaces: Some(CommitId([8; 32])),
         }],
         chunks: vec![],
         purge: vec![],

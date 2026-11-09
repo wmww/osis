@@ -346,7 +346,7 @@ type history = enum {
 };
 
 /// A retention every write of an aspect must carry: who may purge it, its history (absent: none
-/// promised) and when it expires.
+/// promised), when it expires, and whether a delta claiming `replaces` breaks it (`final`).
 type required = struct {
     by 0: enum {
         nobody 0,
@@ -357,6 +357,7 @@ type required = struct {
     },
     history 1: option<history>,
     expires 2: option<duration>,
+    final 3: bool,
 };
 
 type required_rules = struct {

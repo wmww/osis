@@ -70,6 +70,7 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
     for b in &h.chunks {
         core.ix.by_chunk.insert(*b, *id);
     }
+    crate::engine::edits::index_commit(core, id, h);
 }
 
 /// Commits of the same session whose counter ranges on one aspect overlap this one's

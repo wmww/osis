@@ -71,7 +71,7 @@ Not format constants. A value marked recommended is advice.
 ```
 Header    := [version, author, actor, kind, ts, form, expires, aspects, chunks,
               purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation]
-Aspect    := [tid, ak, lo, hi, Retention, keys, hash]
+Aspect    := [tid, ak, lo, hi, Retention, keys, hash, replaces]
 Retention := [by, history]
 History   := 0 | 1 | [2, Keep]
 Keep      := {? 0: until, ? 1: after}
@@ -100,7 +100,7 @@ Header fields by position:
 15. `epoch`: `Opt(epoch_id)`, the epoch an account author signs at (spec/crypto.md §9; 32 bytes: the minting rotation's commit ID, 32 zero bytes for the first epoch); present iff the author's creation record marks an account, else bad input.
 16. `rotation`: `Opt(Rotation)`, present only on a role commit of an account (else bad input): the new epoch's signing key and KEM key (spec/crypto.md §3); the epochs it supersedes, ascending, distinct, the header's `epoch` among them (else bad input); actor equal to author and a `keys.0` delta on the author (else bad input); the fork rotations it names (a merge), ascending, distinct; `list_root`, 32 bytes, the root of its list tree (below). Its commit ID names the epoch it mints.
 
-Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3; else `1 <= lo < hi`); `Retention`: `by` (purgeable-by class) and `history` (spec/commits.md §5): `0` none given, `1` purge on replace, `[2, Keep]` keep history, `until` wall ms (`2^63 - 1` means forever) and `after` ms after the body is replaced, at least one of the two, `after` above 0 (else bad input); `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hash`: the 32-byte delta hash of its one delta.
+Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3; else `1 <= lo < hi`); `Retention`: `by` (purgeable-by class) and `history` (spec/commits.md §5): `0` none given, `1` purge on replace, `[2, Keep]` keep history, `until` wall ms (`2^63 - 1` means forever) and `after` ms after the body is replaced, at least one of the two, `after` above 0 (else bad input); `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hash`: the 32-byte delta hash of its one delta. `replaces`: `Opt(commit_id)`, the fire the delta claims to replace (spec/commits.md §5 Signals), allowed only on a durable signal's delta of a durable commit; anywhere else the part is bad (spec/commits.md §2).
 
 - **Inline or link**: `aspects`, `chunks`, `purge`, `keys` and the frontier are each inline iff their canonical encoding is at most `CHUNK_THRESHOLD` bytes; otherwise the position holds a LINK value (`Opt(LINK)` for the frontier) to a chunk tree (§6) of that canonical encoding, its content hashes keyed by the dedup secret of the header's `actor`. A decoder rejects an inline list above the threshold or a link to one at or below it or above `MAX_LIST_BYTES`; a writer refuses such a commit. A linked frontier's encoding is exactly `{0: set<32-byte commit ID>}`; anything else is bad input. Header-list chunks carry the commitments of §5.
 - **Commit ID** = BLAKE3(canonical bytes of `Header`). The signature is the `signature` value of the author's key (an account's: the signing key of the epoch the header names) under `"osis v1 commit"` over the digest below.
@@ -132,7 +132,6 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`
   - a content compaction snapshot's retention `by` other than writer;
   - purge on replace under a class other than writer, or `nobody` with a history other than kept forever (`until` `2^63 - 1`);
   - `expires` or a purge item on a role commit;
-  - `expires` on a commit with a purge request (spec/commits.md §5);
   - a purge item naming a role-class aspect;
   - more than `MAX_AUTHOR_ITEMS` purge items by author;
   - a frontier outside a role commit (kind 1).

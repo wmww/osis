@@ -646,9 +646,10 @@ pub(crate) fn broken_by(core: &Core, h: &Header, id: &CommitId, ai: usize) -> Op
     Judge::new(core).broken(h, id, h.aspects.get(ai)?)
 }
 
-/// Whether a delta carries exactly the retention and expiry `q` requires.
+/// Whether a delta carries exactly the retention and expiry `q` requires, and no `replaces` when
+/// it is `final`.
 pub(super) fn meets(q: &ct::Required, h: &Header, a: &osis_commit::AspectEntry) -> bool {
-    a.retention == q.retention().canonical() && q.expires_at(h.ts.wall_ms().0) == Some(h.expires)
+    a.retention == q.retention().canonical() && q.expiry_met(h.ts.wall_ms().0, h.expires, a.replaces.is_some()) && !(q.r#final && a.replaces.is_some())
 }
 
 /// `part_valid` over many parts: what is per thing (chain depth, timeline) looked up once per

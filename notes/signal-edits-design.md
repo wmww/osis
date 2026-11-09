@@ -76,7 +76,11 @@ Index: `originals` for paging (honored versions removed, so edits add no walk) a
 **Removed from osis-chat:** `Timeline`, `find`, `find_all`, `edit_of`, `Claim`, `checked`, `entry_at`, `prior`, `Message`'s fold and its `earlier`, the schema's `edit` field and `edit` struct, the second purge commit, and the `edit` mode in settings (it moves to the required rule). `since` stops folding.
 
 ## Build plan
-Each step gets one worker and one reviewer.
+Each step gets one worker and one reviewer. Steps 1-3 are built: the model (`core/test/held-model/src/edits.rs`), the wire and rules, and the engine (`core/engine/src/engine/edits.rs`: `originals` persisted, `versions` derived from views and validity; `settle` re-places the claims of each changed original and each changed claim at a transaction's end; a purge tombstone's end has a `T_KEPT` timer).
+
+Engine limits the model does not show:
+- An original leaving the listing by time (expiry, keep bound, tombstone end) frees its versions at the next `tick`; until then a version folded under it is not shown.
+- An original whose header is held and body not yet is listed (as `NotFetched`), so its versions fold under it; the model lists only held bodies, so it shows them alone until the body comes. The newest version read skips a version whose body is not here.
 1. **Model first.** A small TLA or held-model covering arrival order, validity flips, purge, expiry and forged claims. Properties: nodes holding the same commits read alike, and a forged claim changes no reading.
 2. **Wire and rules:** `replaces`, the honoring rule, `final`, the expiry bound, the purge and expiry change; spec/commits.md, spec/wire.md, spec/data-model.md.
 3. **Engine indexes and fold:** `originals`, `versions`, listing, listener events. Counted test at n and 10n: bodies read per page and per quote are flat.

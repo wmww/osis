@@ -39,6 +39,7 @@ const EPOCH_INTRO: &[u8] = b"node/epoch intro";
 const KEYSETS: &[u8] = b"node/keysets";
 const DELETE_HINTS: &[u8] = b"node/delete hints";
 const REQUIRED: &[u8] = b"node/required";
+const ORIGINALS: &[u8] = b"node/originals";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 /// What each addendum commit says (`validity::AddendaParts`), by commit ID.
 pub(super) const ADDENDA: &[u8] = b"node/addenda";
@@ -622,7 +623,10 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     w = w.raw(v.author.as_bytes()).raw(v.actor.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2));
     for a in &v.aspects {
         let ak = a.ak.as_str().as_bytes();
-        w = w.raw(a.tid.as_bytes()).raw(&(ak.len() as u16).to_be_bytes()).raw(ak).u64(a.lo).u64(a.hi).u8(u8::from(a.bounded) | (u8::from(a.permanent) << 1) | (u8::from(a.none) << 2));
+        w = w.raw(a.tid.as_bytes()).raw(&(ak.len() as u16).to_be_bytes()).raw(ak).u64(a.lo).u64(a.hi).u8(u8::from(a.bounded) | (u8::from(a.permanent) << 1) | (u8::from(a.none) << 2) | (u8::from(a.replaces.is_some()) << 3));
+        if let Some(c) = &a.replaces {
+            w = w.raw(&c.0);
+        }
     }
     w = w.u32(v.chunks.len() as u32);
     for b in &v.chunks {
@@ -714,7 +718,8 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View, PartsShown)> {
     for _ in 0..n {
         let (tid, ak) = (r.tid()?, r.ak()?);
         let (lo, hi, bits) = (r.u64()?, r.u64()?, r.u8()?);
-        aspects.push(super::AspectView { tid, ak, lo, hi, bounded: bits & 1 != 0, none: bits & 4 != 0, permanent: bits & 2 != 0 });
+        let replaces = if bits & 8 != 0 { Some(CommitId(r.arr()?)) } else { None };
+        aspects.push(super::AspectView { tid, ak, lo, hi, bounded: bits & 1 != 0, none: bits & 4 != 0, permanent: bits & 2 != 0, replaces });
     }
     let mut chunks = Vec::new();
     for _ in 0..r.u32()? {
@@ -821,6 +826,7 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, KEYSETS, &c.ix.keysets, all)?;
     put_map(txn, DELETE_HINTS, &c.ix.delete_hints, all)?;
     put_map(txn, REQUIRED, &c.ix.required, all)?;
+    put_setmap(txn, ORIGINALS, &c.ix.originals, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
     // after the indexes and in their transaction: a saved walk never runs ahead of the
     // commits it covers
@@ -995,6 +1001,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<Tid>(tx, DELETE_HINTS)? {
         tx.core.ix.delete_hints.insert(k, dec(&v)?);
+    }
+    for ((k, x), _) in scan::<((Tid, osis_base::Ak), (Ts, CommitId))>(tx, ORIGINALS)? {
+        tx.core.ix.originals.insert(k, x);
     }
     for (k, v) in scan::<Tid>(tx, REQUIRED)? {
         tx.core.ix.required.insert(k, dec(&v)?);

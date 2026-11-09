@@ -78,7 +78,7 @@ fn build_role_commit_and_refusals() {
     let mut p = content(1);
     p.expires = Some(at.wall_ms().0 + 10);
     p.purge.push(PurgeItem::Aspect { tid: t(9), ak: Ak::new("app:title.0").unwrap() });
-    assert!(matches!(build(p.clone(), &mut sink), Err(Error::Build(_))));
+    assert_eq!(retention::purge_keep_until(&build(p.clone(), &mut sink).unwrap().commit.header), p.expires);
     p.expires = None;
     let built = build(p, &mut sink).unwrap();
     assert_eq!(retention::purge_keep_until(&built.commit.header), Some(at.wall_ms().0 + osis_base::format::ROLE_KEEP_MS));

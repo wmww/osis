@@ -16,6 +16,7 @@ mod crash;
 mod deletion;
 mod ending;
 mod disputes;
+mod edits;
 mod deposit_queue;
 mod fill;
 mod finalize;

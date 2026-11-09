@@ -190,10 +190,6 @@ pub fn headers() -> VecFile {
     x.expires = Some(x.ts.wall_ms().0);
     cases.push(reject("expires not after ts", "spec/commits.md §6", &x, "expires-ts"));
     let mut x = h.clone();
-    x.expires = Some(x.ts.wall_ms().0 + 1);
-    x.purge.push(PurgeItem::Aspect { tid: THING, ak: Ak::new("app:body.0").unwrap() });
-    cases.push(reject("expires with a purge request", "spec/commits.md §5", &x, "purge-expires"));
-    let mut x = h.clone();
     x.aspects[0].lo = 0;
     cases.push(reject("empty counter range on a content commit", "spec/wire.md §4", &x, "counter-range"));
     let mut x = h.clone();
@@ -252,6 +248,16 @@ fn more_accepted() -> Vec<Record> {
         PurgeItem::Commit { commit: CommitId([0x2d; 32]), tid: THING, ak: Ak::new("app:title.0").unwrap() },
     ];
     out.push(record("purge request beside a creation", "spec/wire.md §4; spec/commits.md §5", &built(b)));
+    // a fire replacing an earlier one, expiring, with a purge request naming it
+    let at = ts(1_700_000_005_500);
+    let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
+    let mut a = AspectWrite::new(THING, Ak::new("app:msg~0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("edited".into()), 9));
+    a.retention = Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::FOREVER) };
+    a.replaces = Some(CommitId([0x2f; 32]));
+    b.aspects.push(a);
+    b.expires = Some(at.wall_ms().0 + 86_400_000);
+    b.purge = vec![PurgeItem::Commit { commit: CommitId([0x2f; 32]), tid: THING, ak: Ak::new("app:msg~0").unwrap() }];
+    out.push(record("signal fire replacing another, expiring, purging it", "spec/wire.md §4; spec/commits.md §5 Signals, Purge", &built(b)));
     // role commit with a frontier
     let at = ts(1_700_000_006_000);
     let mut b = CommitBuilder::new(Kind::Role, at, AUTHOR, AUTHOR, Form::Commit);

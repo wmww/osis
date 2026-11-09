@@ -7,6 +7,7 @@
 pub(crate) mod acting;
 pub(crate) mod blobs;
 pub(crate) mod clock;
+pub(crate) mod edits;
 pub(crate) mod groups;
 pub(crate) mod held;
 pub mod listing;
@@ -269,6 +270,8 @@ pub struct AspectView {
     pub none: bool,
     /// A permanent delta (`AspectEntry::permanent`) of a durable commit.
     pub permanent: bool,
+    /// The fire it claims to replace (spec/commits.md §5 Signals).
+    pub replaces: Option<CommitId>,
 }
 
 impl View {
@@ -281,7 +284,7 @@ impl View {
             actor: h.actor,
             linked: h.links != osis_commit::Links::default(),
             memory: h.ephemeral.is_some(),
-            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a), none: a.retention.history == Some(osis_schema::History::PurgeOnReplace), permanent: h.permanent(a) }).collect(),
+            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a), none: a.retention.history == Some(osis_schema::History::PurgeOnReplace), permanent: h.permanent(a), replaces: a.replaces }).collect(),
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
             chunks: h.chunks.iter().map(|c| c.blob).collect(),
             purges: !h.purge.is_empty(),
@@ -385,7 +388,7 @@ fn fallback_header(v: &View) -> Header {
         ts: v.ts,
         form: v.form,
         expires: None,
-        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, retention: Default::default(), keys: Vec::new(), hash: [0; 32] }).collect(),
+        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, retention: Default::default(), keys: Vec::new(), hash: [0; 32], replaces: a.replaces }).collect(),
         chunks: Vec::new(),
         purge: Vec::new(),
         undoes: None,
@@ -531,6 +534,12 @@ indexes! {
     /// Held parts with a relative keep bound per aspect (`Core::put_meta`), absent at 0:
     /// `retention::any_bounded` without walking the aspect.
     pub bounded_held: JMap<(Tid, Ak), u64>,
+    /// The places listing walks on a durable signal: every fire but the honored versions, valid
+    /// or not (`edits`, persisted).
+    pub originals: JSetMap<(Tid, Ak), (Ts, CommitId)>,
+    /// A durable signal's valid parts claiming `replaces`, per (thing, aspect, named commit, actor):
+    /// (`ts`, version). Forged claims are other actors' and are never read (`edits`).
+    pub versions: JSetMap<(Tid, Ak, CommitId, Tid), (Ts, CommitId)>,
     /// Commits holding a purge-on-replace part with values per aspect (`Core::put_meta`): the
     /// bodies `retention::settle_none` judges.
     pub none_held: JSetMap<(Tid, Ak), CommitId>,
@@ -894,6 +903,9 @@ pub struct Core {
     /// Commits with a part judged invalid this transaction (`Core::index_validity`): dropped at
     /// its end where held (`retention::drop_invalid`).
     pub drop_due: BTreeSet<CommitId>,
+    /// The commits on durable signal aspects `edits::settle` refolds besides those the journal
+    /// names: a keep bound passed with no meta changing (`edits::time_passed`).
+    pub refold: BTreeSet<(Tid, Ak, CommitId)>,
     /// What changed since node-sync last took it (`Engine::take_changed`; `None`: no
     /// node-sync, nothing kept). A mark from an aborted transaction stays: one extra judgment.
     pub changed: Option<Changed>,
@@ -1419,6 +1431,7 @@ impl Core {
             // work lists and hints a superset of which is harmless (the consumer re-checks each
             // entry against the restored state), and what a step only moves forward
             drop_due: _,
+            refold: _,
             none_due: _,
             valueless_dirty: _,
             changed: _,
@@ -1607,6 +1620,7 @@ impl Core {
             timer_floor: 0,
             none_due: BTreeSet::new(),
             drop_due: BTreeSet::new(),
+            refold: BTreeSet::new(),
             changed: None,
             sync_records: None,
             live_trees: BTreeMap::new(),
@@ -1794,6 +1808,7 @@ impl Core {
                 self.none_due.insert(k);
             }
         }
+        edits::index_validity(self, id);
     }
 
     /// The commit that wrote dot `d` on `(tid, ak)`, if held.
@@ -2619,6 +2634,10 @@ impl Engine {
                     r = r.and_then(|v| crate::retention::persist_valueless(&mut tx).map(|_| v));
                 }
                 tx.core.valueless_dirty.clear();
+                if r.is_ok() {
+                    r = r.and_then(|v| edits::settle(&mut tx).map(|_| v));
+                }
+                tx.core.refold.clear();
                 if r.is_ok() {
                     r = r.and_then(|v| listing::listing_moved(&mut tx).map(|_| v));
                 }

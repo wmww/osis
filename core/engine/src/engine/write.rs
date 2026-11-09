@@ -28,6 +28,8 @@ pub(crate) struct AspectMut {
     pub expires: Option<u64>,
     /// The key's default expiry (ms after the write): ephemeral writes fill it themselves.
     pub default_expiry: Option<u64>,
+    /// The fire this write replaces (spec/commits.md §5 Signals).
+    pub replaces: Option<CommitId>,
 }
 
 /// Creation records of a commit by tid (each `tid` is a hash: computed once).
@@ -203,6 +205,13 @@ impl Mutation {
         Ok(self)
     }
 
+    /// The write of `key` on `tid` replaces fire `original` (spec/commits.md §5 Signals), taking
+    /// its expiry when it set none.
+    pub fn replaces<K: RawKey>(&mut self, tid: Tid, key: &K, original: CommitId) -> Result<&mut Self> {
+        self.entry(tid, key)?.replaces = Some(original);
+        Ok(self)
+    }
+
     /// Expiry T (wall ms) for the delta of every aspect written so far (`expires`).
     pub fn expires_all(&mut self, t: WallMs) -> &mut Self {
         for a in self.aspects.values_mut() {
@@ -351,6 +360,8 @@ pub(crate) struct Resolved {
     pub schema: Option<Arc<Schema>>,
     pub retention: Option<Retention>,
     pub expires: Option<u64>,
+    /// The fire this delta replaces (spec/commits.md §5 Signals).
+    pub replaces: Option<CommitId>,
     /// A snapshot delta's frontiers and absorbed commits (spec/crdt.md §8).
     pub frontiers: Option<(osis_crdt::Frontiers, std::collections::BTreeMap<osis_base::CommitId, Tid>)>,
     /// Chunk blobs of large values the delta introduces.
@@ -390,16 +401,19 @@ pub(crate) fn draw_blind(rng: &mut dyn osis_crypto::CryptoRngCore) -> [u8; 16] {
 /// (spec/commits.md §5, §6): the thing's required retention fills what the writer did not, and
 /// refuses what breaks it; then the given ones, the schema's defaults, the untyped default.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, signer: Tid, tid: &Tid, ak: &Ak, schema: Option<&Schema>, mut r: Option<Retention>, mut e: Option<u64>) -> Result<(Retention, Option<u64>)> {
+pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, signer: Tid, tid: &Tid, ak: &Ak, schema: Option<&Schema>, replaces: bool, mut r: Option<Retention>, mut e: Option<u64>) -> Result<(Retention, Option<u64>)> {
     let mut defaults = schema.and_then(|s| s.defaults(ak.as_str()));
     // a hostile test writer writes what it is told
     if kind == Kind::Content && !core.skip_writer_rules && !ak.ephemeral() && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && let Some(q) = crate::apply::validity::required_now(core, tid, ak, signer, ts) {
         let want = q.expires_at(ts.wall_ms().0).ok_or(Error::Misuse("expiry out of range"))?;
-        if r.is_some_and(|x| x.canonical() != q.retention().canonical()) || e.is_some_and(|x| Some(x) != want) {
+        if r.is_some_and(|x| x.canonical() != q.retention().canonical()) || e.is_some_and(|x| !q.expiry_met(ts.wall_ms().0, Some(x), replaces)) {
             return Err(Error::Misuse("a retention or expiry other than the thing requires"));
         }
+        if replaces && q.r#final {
+            return Err(Error::Misuse("an edit of a fire the thing requires to be final"));
+        }
         r = Some(q.retention());
-        e = want;
+        e = if replaces { e.or(want) } else { want };
         defaults = None;
     }
     let retention = if memory || ak.ephemeral() {
@@ -460,9 +474,9 @@ fn fit_creations(aspects: &mut [((Tid, Ak), AspectMut)], creates: &Creates) {
 
 /// The one expiry of a commit of these deltas (`entries`: thing, AK, retention, expiry; spec/commits.md
 /// §5, §6), or `Clash` naming what cannot share a commit: different expiries, a `nobody` delta beside
-/// others (`required^.0` goes with any), or an expiry beside `required^.0` or a purge request, which
-/// carry none. `way`: what the caller can do about it.
-fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], purge: bool, way: &str) -> Result<Option<u64>> {
+/// others (`required^.0` goes with any), or an expiry beside `required^.0`, which carries none.
+/// `way`: what the caller can do about it.
+fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], way: &str) -> Result<Option<u64>> {
     let free = |ak: &Ak| ak.as_str() == osis_commit::retention::REQUIRED;
     let name = |t: &Tid, ak: &Ak, e: Option<u64>| match e {
         Some(e) => format!("{t} {ak} (expires at {e})"),
@@ -480,13 +494,10 @@ fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], purge: bool, way:
         }
     }
     let expires = first.and_then(|e| e.3);
-    if let Some(at) = expires {
-        if let Some(r) = entries.iter().find(|e| free(e.1)) {
-            return Err(Error::Clash(format!("{} {} never expires, and this commit expires at {at}. {way}", r.0, r.1)));
-        }
-        if purge {
-            return Err(Error::Clash(format!("a purge request never expires, and this commit expires at {at}. {way}")));
-        }
+    if let Some(at) = expires
+        && let Some(r) = entries.iter().find(|e| free(e.1))
+    {
+        return Err(Error::Clash(format!("{} {} never expires, and this commit expires at {at}. {way}", r.0, r.1)));
     }
     Ok(expires)
 }
@@ -498,12 +509,12 @@ fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], purge: bool, way:
 pub(crate) fn build_one(tx: &mut Tx<'_>, mut plan: CommitPlan, mut deltas: Vec<Resolved>) -> Result<CommitId> {
     let mut settled = Vec::with_capacity(deltas.len());
     for d in &deltas {
-        let (r, _) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, plan.signer, &d.tid, &d.ak, d.schema.as_deref(), d.retention, d.expires)?;
-        let (_, e) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, plan.signer, &d.tid, &d.ak, None, Some(r), d.expires)?;
+        let (r, _) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, plan.signer, &d.tid, &d.ak, d.schema.as_deref(), d.replaces.is_some(), d.retention, d.expires)?;
+        let (_, e) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, plan.signer, &d.tid, &d.ak, None, d.replaces.is_some(), Some(r), d.expires)?;
         settled.push((r, e));
     }
     let entries: Vec<(Tid, &Ak, &Retention, Option<u64>)> = deltas.iter().zip(&settled).map(|(d, (r, e))| (d.tid, &d.ak, r, *e)).collect();
-    plan.expires = one_commit(&entries, !plan.purge.is_empty(), "An undo is one commit, so this cannot be undone while both stand")?;
+    plan.expires = one_commit(&entries, "An undo is one commit, so this cannot be undone while both stand")?;
     plan.restores = true;
     for (d, (r, e)) in deltas.iter_mut().zip(settled) {
         (d.retention, d.expires) = (Some(r), e);
@@ -536,7 +547,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     let published = super::secrets::published_keys(tx, &plan.creates, deltas.iter().map(|d| d.tid))?;
     let mut writes = Vec::with_capacity(deltas.len());
     for d in deltas {
-        let (retention, expires) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, plan.signer, &d.tid, &d.ak, d.schema.as_deref(), d.retention, d.expires)?;
+        let (retention, expires) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, plan.signer, &d.tid, &d.ak, d.schema.as_deref(), d.replaces.is_some(), d.retention, d.expires)?;
         // one expiry per commit (spec/commits.md §6): `one_commit` saw to it
         if expires != plan.expires && !plan.restores {
             return Err(Error::Misuse("a commit's deltas share one expiry"));
@@ -582,10 +593,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         }
         // hostile test authors only (`Engine::commit_forged`): the header hashes what is sent
         let bytes = if tx.core.forge_bad.contains(&(d.tid, d.ak.clone())) { osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Int(1)])) } else { bytes };
-        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, retention, chunks });
-    }
-    if !plan.purge.is_empty() && plan.expires.is_some() {
-        return Err(Error::Misuse("a commit with a purge request cannot carry expires (spec/commits.md §5)"));
+        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, retention, chunks, replaces: d.replaces });
     }
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, plan.actor, plan.form);
     b.expires = plan.expires;
@@ -724,7 +732,16 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if !m.unchecked {
             check_authority(tx.core, node, &base.creates, &tid, ak.as_str(), ts)?;
         }
-        let (r, e) = settle(tx.core, memory, kind, ts, node, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
+        let (r, e) = {
+            if let Some(o) = am.replaces {
+                if !tx.core.skip_writer_rules && (memory || kind != Kind::Content || !super::edits::durable_signal(&ak)) {
+                    return Err(Error::Misuse("only a durable signal's fire is replaced"));
+                }
+                // an edit ends with its original (spec/commits.md §5 Signals)
+                am.expires = am.expires.or_else(|| tx.core.ix.commits.get(&o).and_then(|m| m.header.expires));
+            }
+            settle(tx.core, memory, kind, ts, node, &tid, &ak, am.schema.as_deref(), am.replaces.is_some(), am.retention, am.expires)?
+        };
         // a signal write is a whole value, history from the start (spec/commits.md §5 Signals)
         if ak.signal() && !tx.core.skip_writer_rules {
             if !matches!(am.ops.as_slice(), [op] if op.path.is_empty() && matches!(op.op, Op::Set(_))) || m.dead_resets.contains_key(&(tid, ak.clone())) {
@@ -740,7 +757,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     fit_creations(&mut aspects, &base.creates);
     let entries: Vec<(Tid, &Ak, &Retention, Option<u64>)> = aspects.iter().filter_map(|((t, ak), am)| Some((*t, ak, am.retention.as_ref()?, am.expires))).collect();
     let way = if m.deleting.is_empty() { "Write them as separate commits" } else { "A delete removes every aspect of its thing and takes it out of its groups: do these in commits of their own first, then delete" };
-    let expires = one_commit(&entries, !base.purge.is_empty(), way)?;
+    let expires = one_commit(&entries, way)?;
     // role commits use commit form: a later commit by the same node can never void them by
     // reusing their counters; content commits write under this open's session unless asked
     // for commit form (spec/commits.md §3); expiring memory writes under its second session
@@ -843,7 +860,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if let Some(s) = &am.schema {
             keep_schema(tx, s, false)?;
         }
-        let r = Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, frontiers: None, chunks };
+        let r = Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, replaces: am.replaces, frontiers: None, chunks };
         deltas.push(r);
     }
     if deltas.is_empty() && plan.purge.is_empty() {

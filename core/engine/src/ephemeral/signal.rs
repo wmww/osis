@@ -84,7 +84,7 @@ impl Engine {
                 let mut nonce = [0u8; osis_crdt::NONCE_LEN];
                 tx.rng.fill_bytes(&mut nonce);
                 let bytes = osis_crdt::encode_snapshot(&Snapshot { nonce, fragment, frontiers: Frontiers::default(), absorbed: BTreeMap::new() }, &cx, Some(&mut Unpaged))?;
-                writes.push(AspectWrite { tid, ak, lo: 0, hi: 0, delta: bytes, retention: osis_commit::retention::EPHEMERAL_RETENTION, chunks: Vec::new() });
+                writes.push(AspectWrite { tid, ak, lo: 0, hi: 0, delta: bytes, replaces: None, retention: osis_commit::retention::EPHEMERAL_RETENTION, chunks: Vec::new() });
             }
             let things: Vec<Tid> = writes.iter().map(|w| w.tid).collect();
             let published = published_keys(tx, &creates, things)?;
@@ -141,7 +141,7 @@ impl Engine {
         let mut signals = Vec::new();
         for (ai, s) in &decoded {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            let valid = a.ak.signal() && a.ak.ephemeral() && acts && check_role_with(core, h.author, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
+            let valid = a.ak.signal() && a.ak.ephemeral() && a.replaces.is_none() && acts && check_role_with(core, h.author, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
             if valid && let Some(v) = s.fragment.read() {
                 signals.push((a.tid, a.ak.clone(), v));
             }
@@ -180,7 +180,7 @@ impl Engine {
 /// A fired ephemeral signal commit as it arrived, told at each signal it fired: a fire is
 /// content, though its relay-only commit is snapshot-encoded.
 fn fired(signals: Vec<(Tid, Ak, Value)>, id: CommitId, actor: Tid, node: Tid, ts: Ts, received: osis_base::WallMs) -> Vec<CommitChange> {
-    let parts: Vec<PartRow> = signals.into_iter().map(|(tid, ak, v)| PartRow { tid, ak, valid: true, body: PartBody::Held(Some(v)) }).collect();
+    let parts: Vec<PartRow> = signals.into_iter().map(|(tid, ak, v)| PartRow { tid, ak, valid: true, version: None, body: PartBody::Held(Some(v)) }).collect();
     let row = CommitRow { id, kind: Kind::Content, undoes: None, actor, node, ts, received, parts };
     row.parts.iter().map(|p| CommitChange { tid: p.tid, ak: p.ak.clone(), id, fired: Some(row.clone()) }).collect()
 }

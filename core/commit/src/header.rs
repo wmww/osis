@@ -125,6 +125,8 @@ pub struct AspectEntry {
     pub keys: Vec<usize>,
     /// The delta hash of the aspect's one delta.
     pub hash: [u8; 32],
+    /// The fire this delta claims to replace (a durable signal's, spec/commits.md §5 Signals).
+    pub replaces: Option<CommitId>,
 }
 
 /// A delete key with its level (spec/crypto.md §7); a valid Ed25519 key once decoded.
@@ -325,6 +327,7 @@ fn aspect_value(a: &AspectEntry) -> Value {
         retention_value(&a.retention),
         Value::List(a.keys.iter().map(|i| uidx(*i)).collect()),
         Value::bytes(&a.hash),
+        Value::List(a.replaces.iter().map(|c| Value::bytes(&c.0)).collect()),
     ])
 }
 
@@ -519,13 +522,18 @@ fn read_retention(r: &mut Reader<'_>) -> Result<Retention, Error> {
 }
 
 fn read_aspect(r: &mut Reader<'_>) -> Result<AspectEntry, Error> {
-    if r.array()? != 7 {
+    if r.array()? != 8 {
         return Err(Error::Malformed("aspect arity"));
     }
     let (tid, ak, lo, hi) = (read_tid(r)?, read_ak(r)?, r.uint()?, r.uint()?);
     let (retention, keys) = (read_retention(r)?, read_idxs(r)?);
     let hash = r.fixed::<32>()?;
-    Ok(AspectEntry { tid, ak, lo, hi, retention, keys, hash })
+    let replaces = match r.array()? {
+        0 => None,
+        1 => Some(CommitId(r.fixed::<32>()?)),
+        _ => return Err(Error::Malformed("aspect replaces arity")),
+    };
+    Ok(AspectEntry { tid, ak, lo, hi, retention, keys, hash, replaces })
 }
 
 fn read_key(r: &mut Reader<'_>, check: bool) -> Result<DeleteKey, Error> {

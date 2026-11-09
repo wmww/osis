@@ -642,6 +642,8 @@ impl super::Core {
             ("by_thing", format!("{:?}", *ix.by_thing)),
             ("by_actor", format!("{:?}", *ix.by_actor)),
             ("by_aspect", format!("{:?}", *ix.by_aspect)),
+            ("originals", format!("{:?}", *ix.originals)),
+            ("versions", format!("{:?}", *ix.versions)),
             ("bounded_held", format!("{:?}", *ix.bounded_held)),
             ("invalid", format!("{:?}", *ix.invalid)),
             ("ranges", format!("{:?}", *ix.ranges)),

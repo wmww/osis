@@ -45,6 +45,9 @@ impl CommitFrom {
     }
 }
 
+/// The places held on an aspect a walk reads (`Engine::places_in`).
+type PlacesOf<'a> = dyn Fn(&(Tid, Ak)) -> Option<&'a BTreeSet<(Ts, CommitId)>> + 'a;
+
 /// What is here of a part's body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PartBody {
@@ -67,6 +70,9 @@ pub struct PartRow {
     pub ak: Ak,
     pub valid: bool,
     pub body: PartBody,
+    /// The place of the version `body` reads, when an honored version replaces this fire
+    /// (spec/commits.md §5 Signals).
+    pub version: Option<CommitPos>,
 }
 
 /// A commit, what its signed header says, with its listed parts.
@@ -94,7 +100,7 @@ pub struct HeldPart {
 }
 
 /// What is here of part `ai` of commit `c`, its body unread (`Here::Holds`).
-enum Here {
+pub(super) enum Here {
     Holds,
     Purged(CommitId),
     Dropped,
@@ -144,20 +150,28 @@ pub(crate) fn in_kept_history(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak,
 fn listed_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Result<Option<PartRow>> {
     let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)) else { return Ok(None) };
     let (tid, ak) = (a.tid, a.ak.clone());
+    // an honored version is listed under its original, not at its own place
+    if super::edits::folded(tx.core, c, &tid, &ak) {
+        return Ok(None);
+    }
     let Some((valid, here)) = listed(tx, c, ai)? else { return Ok(None) };
+    let (at, here, version) = match super::edits::newest_version(tx, c, ai, &tid, &ak, valid)? {
+        Some((v, vai, pos, h)) => ((v, vai), h, Some(pos)),
+        None => ((*c, ai), here, None),
+    };
     let body = match here {
-        Here::Holds => held_body(tx, c, ai, budget)?,
+        Here::Holds => held_body(tx, &at.0, at.1, budget)?,
         Here::Purged(by) => PartBody::Purged(by),
         Here::Dropped | Here::NotFetched => PartBody::NotFetched,
     };
-    Ok(Some(PartRow { tid, ak, valid, body }))
+    Ok(Some(PartRow { tid, ak, valid, body, version }))
 }
 
 /// Whether part `ai` of `c` is listed, with its validity and what is here of it; its body not
 /// read. A purged part is judged as if the purge had replaced it: in the read by its value-less
 /// writes, else kept by its keep rule counted from the request's `ts` (its body is gone, so no
 /// death of its writes can be judged from it).
-fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(bool, Here)>> {
+pub(super) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(bool, Here)>> {
     let me = tx.core.me();
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(a) = m.view.aspects.get(ai) else { return Ok(None) };
@@ -177,7 +191,7 @@ fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(bool, Here
 }
 
 /// The keep bound of part `ai` of `c` purged by `by`: its keep rule counted from the request's `ts`.
-fn purged_keep(tx: &Tx<'_>, c: &CommitId, ai: usize, by: &CommitId) -> u64 {
+pub(super) fn purged_keep(tx: &Tx<'_>, c: &CommitId, ai: usize, by: &CommitId) -> u64 {
     let Some(k) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.get(ai).map(osis_commit::retention::KeepRule::of_aspect)) else { return 0 };
     let rel = k.after.zip(tx.core.ix.commits.get(by).map(|m| m.view.ts.wall_ms().0)).map_or(0, |(d, t)| t.saturating_add(d));
     k.until.unwrap_or(0).max(rel)
@@ -335,6 +349,7 @@ fn past_due(h: &Header, ai: usize, now: u64) -> bool {
 
 /// The read of a held part, its pieces joined up to `budget` bytes.
 fn held_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Result<PartBody> {
+    drop(crate::costs::span("listing: body read"));
     let mut out: Option<osis_crdt::Fragment> = None;
     let mut over = false;
     crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
@@ -397,14 +412,14 @@ impl Engine {
         let Some(ai) = m.aspect(tid, ak) else { return Ok(None) };
         let valid = m.valid_at(ai);
         let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.run(|tx| Ok(Some(PartRow { tid, ak, valid, body: part_body(tx, &c, ai, budget)? })))
+        self.run(|tx| Ok(Some(PartRow { tid, ak, valid, body: part_body(tx, &c, ai, budget)?, version: None })))
     }
 
     /// What is here of each commit's part on `(tid, ak)`, listed or not: at most `limit` from
     /// `from`, stopping early past `budget` bytes of bodies, and whether more lie that way. The
     /// engine's own view of what it holds, under the listing rule.
     pub fn held_parts(&mut self, tid: &Tid, ak: &Ak, from: CommitFrom, limit: usize, budget: usize) -> Result<(Vec<HeldPart>, bool)> {
-        let mut places = self.places(&[(*tid, ak.clone())], from, limit.saturating_add(1));
+        let mut places = self.held_places(&[(*tid, ak.clone())], from, limit.saturating_add(1));
         let mut more = places.len() > limit;
         places.truncate(limit);
         let mut out = Vec::with_capacity(places.len());
@@ -440,7 +455,9 @@ impl Engine {
         let c = *c;
         self.run(|tx| {
             for ai in on {
-                if listed_part(tx, &c, ai, 0)?.is_some() {
+                let Some(a) = tx.core.ix.commits.get(&c).and_then(|m| m.view.aspects.get(ai)) else { continue };
+                let (tid, ak) = (a.tid, a.ak.clone());
+                if !super::edits::folded(tx.core, &c, &tid, &ak) && listed(tx, &c, ai)?.is_some() {
                     return Ok(true);
                 }
             }
@@ -469,12 +486,21 @@ impl Engine {
         Ok(Some(CommitRow { id: c, kind, undoes: header.decoded().and_then(|h| undoes(&h)), actor, node, ts, received, parts }))
     }
 
-    /// Up to `n` places among the commits on `aspects` past `from` in its direction, each commit
-    /// once, in order.
+    /// Up to `n` places a listing walks on `aspects` past `from` in its direction, each once, in
+    /// order: on a durable signal the honored versions' are not among them (`Indexes::originals`).
     pub fn places(&self, aspects: &[(Tid, Ak)], from: CommitFrom, n: usize) -> Vec<CommitPos> {
+        self.places_in(aspects, from, n, &|k| if super::edits::durable_signal(&k.1) { self.core.ix.originals.get(k) } else { self.core.ix.by_aspect.get(k) })
+    }
+
+    /// `places` among every held commit on `aspects`, honored versions included.
+    fn held_places(&self, aspects: &[(Tid, Ak)], from: CommitFrom, n: usize) -> Vec<CommitPos> {
+        self.places_in(aspects, from, n, &|k| self.core.ix.by_aspect.get(k))
+    }
+
+    fn places_in<'a>(&'a self, aspects: &[(Tid, Ak)], from: CommitFrom, n: usize, of: &PlacesOf<'a>) -> Vec<CommitPos> {
         let mut all: BTreeSet<(Ts, CommitId)> = BTreeSet::new();
         for k in aspects {
-            let Some(set) = self.core.ix.by_aspect.get(k) else { continue };
+            let Some(set) = of(k) else { continue };
             let it: Box<dyn Iterator<Item = &(Ts, CommitId)>> = match from {
                 CommitFrom::Newest => Box::new(set.iter().rev()),
                 CommitFrom::Oldest => Box::new(set.iter()),

@@ -8,7 +8,7 @@ Encoding: spec/wire.md §4. Fields:
 - Kind: content or role (§2); compaction-snapshot marker.
 - `ts` (spec/crdt.md §2.2) and the dot form, commit or session (§3).
 - Optional `expires` (§6), the expiry of every delta of the commit.
-- Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5) and the delta hash of its one delta.
+- Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5), the delta hash of its one delta, and for a durable signal's delta optionally the fire it `replaces` (§5 Signals).
 - Chunk list: the chunk, tree-node and page blobs the deltas introduce, each with the indices of the delete keys of the delta that created it (spec/crypto.md §7).
 - Optional purge request (§5), optional `undoes: commit ID` (§7).
 - A 16-byte random blind and the delete keys with their levels (spec/crypto.md §7); per aspect, the indices of the keys its deltas call for.
@@ -60,7 +60,8 @@ Encoding: spec/wire.md §4. Fields:
   - an AK that is not an ephemeral aspect (`+` and `.`) in an ephemeral commit that is not relay-only;
   - an AK that is not an ephemeral signal (`+` and `~`) in a relay-only commit;
   - an AK with `+` in a durable commit;
-  - a signal AK in a compaction snapshot, or with a retention whose history is not keep history (§5 Signals).
+  - a signal AK in a compaction snapshot, or with a retention whose history is not keep history (§5 Signals);
+  - an AK other than a durable signal (`~` without `+`), or a commit with an ephemeral marker, with `replaces` (§5 Signals).
 
   For such a part: a writer MUST NOT write one, and a receiver drops it alone, as a part not matching its header entry (§4).
 - A commit spanning several kinds is invalid.
@@ -183,6 +184,9 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 - Its retention is keep history (in its wire form, spec/wire.md §4); a writer MUST NOT write one with none given or purge on replace, and such a part is bad (§2).
 - Keep bounds apply unchanged, D counting from its own `ts` (Keep bounds); T forever keeps it for good. Before its keep at least and any purge floor end it leaves only by purge request, expiry or as invalid; then every node drops it, whole or as its leftover, and it counts as never received.
 - Expiry (§6) and purge requests apply to it per delta, as to any delta.
+- **`replaces`**: a delta names a fire it replaces (§1, spec/wire.md §4). It is **honored**, judged from headers alone, when the named commit O is listed on the same `(t, ak)` and valid (a purge tombstone counts), carries no `replaces` on that aspect, has the same verified `actor`, and sorts before the delta by `(ts, ID)`; else the delta is a fire of its own at its own place.
+- A listed original's part reads as its newest listed honored version by `(ts, ID)`, valid versions only; its stamp, place and order stay the original's. An honored version is not listed of its own. A node's own invalid part is marked and reads as itself.
+- A writer gives an edit O's `expires`.
 - Listeners hear a write only as a listed commit (§7 Listed parts): told, at the end of each storage transaction, of every commit whose listed part on it reads otherwise after it (applied, joined late, turned valid or invalid, purged, dropped). A commit that leaves the listing and shows again is told again.
 - A validity change rebuilds no state for it: it changes only which of its bodies are valid (spec/permissions.md §5.2), and so its history.
 
@@ -191,7 +195,7 @@ Every delta carries **retention** on the wire: who may purge it and what happens
   - A delta answers to it unless it is a compaction snapshot's or its aspect has fixed retention or is not durable.
   - The setting **in force** at a key is what the newest valid `required^.0` delta the node holds on the thing ordered strictly before that key (by key, spec/permissions.md §5.1) says, each judged as an admin-only delta at its own key (spec/permissions.md §5.2); none: nothing is required.
   - The entry governing an AK is its own in `rules`, else `default`; neither: nothing is required.
-  - A delta **breaks** an entry that governs it if it does not carry exactly the entry's purgeable-by and history (in its wire form, spec/wire.md §4: a keep with `after` 0 is none given, one with neither bound too) and its commit, with a duration, `expires` = `wall_ms(ts)` + that duration, without one no `expires`.
+  - A delta **breaks** an entry that governs it if it does not carry exactly the entry's purgeable-by and history (in its wire form, spec/wire.md §4: a keep with `after` 0 is none given, one with neither bound too), or its commit, with a duration, does not have `expires` = `wall_ms(ts)` + that duration (a `replaces` delta: `wall_ms(ts)` < `expires` <= `wall_ms(ts)` + that duration) or, without one, has an `expires`, or it carries `replaces` under a `final` entry.
   - A delta that breaks the setting in force at its key is invalid; its commit's other deltas are judged on their own.
   - Each `required^.0` delta is read alone: its value is the whole setting, and a delta not reading as the aspect's type, with a key in `rules` that is not an AK (spec/data-model.md §2) or with more than `MAX_REQUIRED_ENTRIES` entries in `rules`, requires nothing.
   - A writer fills the required retention and expiry and refuses others, writes `required^.0` whole (never by path, within those bounds, with no entry a write could not meet) and does not undo it.
@@ -204,7 +208,7 @@ Every delta carries **retention** on the wire: who may purge it and what happens
   - A writer that, after applying it, holds no covering snapshot of the aspect under a label it writes re-snapshots there (duplicates are harmless, spec/sync.md §7).
   - A request SHOULD name dead writes; the writer resets live content in the same commit.
   - A commit carrying a request has a delta (it is what places the commit under the thing's labels): where no reset is wanted, a write of `purge.0` (spec/data-model.md §9).
-  - A commit carrying a purge request MUST NOT carry `expires`; its blobs are kept at least until `wall_ms(ts) + ROLE_KEEP`, whatever its deltas' keep bounds.
+  - A commit carrying a purge request and an `expires` reaches only deltas of commits whose `expires` is at most its own (a delta with none is beyond it). Its blobs are kept at least until `wall_ms(ts) + ROLE_KEEP` or its `expires`, the earlier, whatever its deltas' keep bounds.
 - **Purging drops bodies, never headers**: a node keeps the header of every durable commit it applied.
   - An ephemeral commit goes whole, header included, once none of its deltas is held and none waits: covered or superseded (spec/sync.md §9); an expired one is held as its leftover. A copy arriving again applies again and goes again by the same rules.
   - A node dropping a body for a purge keeps the commit as a blob without the purged deltas: same header and commit ID, new blob, held and uploaded like any body. With none left it holds only the header.
@@ -245,7 +249,7 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 - A writer whose `ts` has reached the T it was given (its HLC ahead of its clock) writes `wall_ms(ts) + 1`.
 - The schema may give a default per AK as a duration from the write.
 - The blob prefix carries the commit's T (spec/sync.md §1, §3).
-- A write is one commit. A delete writes its durable commit only: the deleting node drops the thing's ephemeral state locally (spec/sync.md §9 Sending). A commit creating a thing takes the commit's expiry on its `created.0`, so one commit is a whole thing that expires. A writer refuses, before anything applies, a write whose deltas want different expiries, that mixes `nobody` deltas with others (§5), or that asks for an expiry beside a fixed-retention aspect or a purge request; and one asking for durable, ephemeral and relay-only writes together (§2, spec/sync.md §9).
+- A write is one commit. A delete writes its durable commit only: the deleting node drops the thing's ephemeral state locally (spec/sync.md §9 Sending). A commit creating a thing takes the commit's expiry on its `created.0`, so one commit is a whole thing that expires. A writer refuses, before anything applies, a write whose deltas want different expiries, that mixes `nobody` deltas with others (§5), or that asks for an expiry beside a fixed-retention aspect; and one asking for durable, ephemeral and relay-only writes together (§2, spec/sync.md §9).
 - At T every value-carrying write of the delta dies (spec/crdt.md §4.7): every node holds them value-less, the body and every held snapshot carrying a copy of their values as its leftover, whatever the delta's keep-at-least bound.
 - A delta never received stays never received: a copy arriving after T joins value-less (held as its leftover from then on), and what a held snapshot gave under its dots goes with the snapshot (spec/permissions.md §5.2).
 - Hosts delete the blob at T unattended (spec/sync.md §5).

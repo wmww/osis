@@ -153,9 +153,9 @@ pub fn write_expires(ak: &str, ts: Ts, defaults: Option<&AspectDefaults>, set: O
 }
 
 /// Floor on keeping the blobs of a commit carrying a purge request: `wall_ms(ts) +
-/// ROLE_KEEP`, whatever its deltas' bounds.
+/// ROLE_KEEP`, whatever its deltas' bounds, ending at the commit's expiry.
 pub(crate) fn purge_keep_until(h: &Header) -> Option<u64> {
-    (!h.purge.is_empty()).then(|| h.ts.wall_ms().0.saturating_add(ROLE_KEEP_MS))
+    (!h.purge.is_empty()).then(|| h.ts.wall_ms().0.saturating_add(ROLE_KEEP_MS).min(h.expires.unwrap_or(u64::MAX)))
 }
 
 /// Before which wall ms a body of `h` holding deltas of aspect `a`'s class leaves only by purge

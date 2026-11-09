@@ -27,8 +27,8 @@ fn tid() -> impl Strategy<Value = Tid> {
 }
 
 fn aspect() -> impl Strategy<Value = AspectEntry> {
-    (tid(), "[a-z]{1,8}", 0u64..100, 0u64..100, retention(), proptest::collection::vec(0usize..8, 0..3), any::<[u8; 32]>())
-        .prop_map(|(tid, ak, lo, hi, retention, keys, hash)| AspectEntry { tid, ak: Ak::new(format!("{ak}.0")).unwrap(), lo, hi, retention, keys, hash })
+    (tid(), "[a-z]{1,8}", 0u64..100, 0u64..100, retention(), proptest::collection::vec(0usize..8, 0..3), any::<[u8; 32]>(), proptest::option::of(any::<[u8; 32]>()))
+        .prop_map(|(tid, ak, lo, hi, retention, keys, hash, replaces)| AspectEntry { tid, ak: Ak::new(format!("{ak}.0")).unwrap(), lo, hi, retention, keys, hash, replaces: replaces.map(CommitId) })
 }
 
 fn link() -> impl Strategy<Value = Link> {

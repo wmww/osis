@@ -122,7 +122,6 @@ RULES = [
     ("spec/commits.md", "5", "covering copies", "MUST NOT count a body covered unless the snapshot holds each live write"),
     ("spec/commits.md", "5", "purge not role-class", "It MUST NOT name role-class deltas"),
     ("spec/commits.md", "5", "signal keeps history", "a writer MUST NOT write one with none given or purge on replace"),
-    ("spec/commits.md", "5", "purge no expires", "A commit carrying a purge request MUST NOT carry `expires`"),
     ("spec/crdt.md", "4.6", "undo rights", "MUST hold the rights any write of the same deltas needs"),
     ("spec/crdt.md", "4.6", "undo revives nothing", "MUST NOT write back content it holds value-less"),
     ("spec/crdt.md", "4.6", "undo expiry", "MUST give the commit an expiry no later than"),

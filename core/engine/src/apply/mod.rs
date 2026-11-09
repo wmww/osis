@@ -197,10 +197,11 @@ pub(crate) fn fits_class(ak: &osis_base::Ak, memory: bool) -> bool {
     ak.ephemeral() == memory && !(memory && ak.signal())
 }
 
-/// `fits_class` for a received part's header entry `a`, and a signal's part keeps history and is
-/// in no compaction snapshot (spec/commits.md §2, §5 Signals).
+/// `fits_class` for a received part's header entry `a`; a signal's part keeps history and is in
+/// no compaction snapshot; `replaces` only on a durable signal's part of a durable commit
+/// (spec/commits.md §2, §5 Signals).
 fn fits_part(a: &osis_commit::AspectEntry, memory: bool, snapshot: bool) -> bool {
-    fits_class(&a.ak, memory) && !(a.ak.signal() && (snapshot || !keeps_history(&a.retention)))
+    fits_class(&a.ak, memory) && !(a.ak.signal() && (snapshot || !keeps_history(&a.retention))) && (a.replaces.is_none() || (!memory && !snapshot && crate::engine::edits::durable_signal(&a.ak)))
 }
 
 /// Whether retention `r` is keep history, what a signal's writes carry (spec/commits.md §5 Signals).
@@ -1654,6 +1655,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         }
     }
     stale.retain(|(_, ak)| !validity::perm_ak(ak.as_str()));
+    crate::engine::edits::rebuild(tx)?;
     Ok(Some(stale.into_iter().collect()))
 }
 

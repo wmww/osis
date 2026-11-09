@@ -903,6 +903,7 @@ fn run_timer(tx: &mut Tx<'_>, key: &[u8], c: &CommitId, ai: usize, kind: u8, cha
         replace::floor_passed(tx, c, ai);
     } else if kind == T_KEPT {
         drop_part(tx, c, ai)?;
+        crate::engine::edits::time_passed(tx, c, ai);
     } else {
         hold_valueless(tx, c, ai, false, &mut ch)?;
     }

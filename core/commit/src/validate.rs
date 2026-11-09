@@ -98,9 +98,6 @@ impl Header {
             if kind.is_role() {
                 return Err(Error::Invalid("expires on a role commit"));
             }
-            if !self.purge.is_empty() {
-                return Err(Error::Invalid("expires on a commit with a purge request"));
-            }
             if self.aspects.iter().any(|a| fixed_retention(a.ak.as_str()).is_some()) {
                 return Err(Error::Invalid("expires on a commit with a fixed-retention aspect"));
             }

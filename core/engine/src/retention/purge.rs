@@ -28,9 +28,10 @@ fn reaches(item: &PurgeItem, ch: &Header, c: &CommitId) -> bool {
 }
 
 /// Whether a request with header `p` names delta `a` of commit `c` (header `ch`): an item on its
-/// aspect reaches it, and it is stamped before the request (spec/commits.md §5).
+/// aspect reaches it, it is stamped before the request, and a request that expires reaches only
+/// deltas expiring no later than it (spec/commits.md §5).
 fn names(p: &Header, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
-    ch.ts < p.ts && p.purge.iter().any(|i| i.tid() == &a.tid && i.ak() == &a.ak && reaches(i, ch, c))
+    ch.ts < p.ts && p.expires.is_none_or(|e| ch.expires.is_some_and(|x| x <= e)) && p.purge.iter().any(|i| i.tid() == &a.tid && i.ak() == &a.ak && reaches(i, ch, c))
 }
 
 /// Whether commit `pc` (header `p`: a purge request or a compaction snapshot) holds the right over
