@@ -63,5 +63,4 @@ Depends on issues/account-signing.md: what a connection proves (3, 5-6), the pee
 ## Open (whole project)
 - (design) The node's tick per sync ID (issues/idle-pass-per-label.md): the one per-sync-ID cost that still bounds the pairing and the shared set (issues/net-shared-set.md, Costs).
 - (design) The private LAN recognition (issues/net-connect.md) and its cost per known actor.
-- (Tess) One-way knowledge: may a node prove "I know you" to a node that does not know it (issues/net-connect.md, Rules).
 - (Tess) A mesh with no broadcast across hops: issues/net-mesh-discovery.md.
