@@ -34,7 +34,7 @@ Format version 1, spec/versioning.md §1:
 | `ROLE_KEEP` | 90 days |
 | `INBOX_LIFETIME` | 90 days |
 | `INBOX_WAITING`, `INBOX_WAITING_BYTES` | 32 entries, 1 MiB (1 048 576 bytes): deposits a node leaves at an inbox it clears (spec/sync.md §5) |
-| `LIST_TREE_DEPTH` | 32: levels of a rotation's list tree, at most 2^32 thing lists per rotation (§4, List tree; spec/permissions.md §5.5) |
+| `LIST_TREE_DEPTH` | 32 (target, issues/account-signing.md step 5): levels of a rotation's list tree, at most 2^32 thing lists per rotation (§4, List tree; spec/permissions.md §5.5) |
 | `MAX_CHAIN_DEPTH` | 64 links from a thing up its record chain to its key actor (spec/permissions.md §1) |
 | `MAX_REQUIRED_ENTRIES` | 64 entries in the `rules` of one `required^.0` delta (spec/commits.md §5) |
 | `MAX_AUTHOR_ITEMS` | 32 items by author in one commit's `purge` (§4) |
@@ -86,7 +86,7 @@ Part      := [ai, delta]
 ```
 Header fields by position:
 0. `version`: uint, the format version (1).
-1. `author`: tid of the signing key actor: an account, or a key actor other than an account signing as itself (a node only for its own `keys.0`, spec/permissions.md §1). 2. `actor`: tid of the actor it acts for (spec/permissions.md §5.2); in a role commit (`kind` 1) equal to `author`, else bad input.
+1. `author`: tid of the signing key actor: an account, or a key actor other than an account signing as itself (a node only for its own node thing's aspects, spec/permissions.md §1). 2. `actor`: tid of the actor it acts for (spec/permissions.md §5.2); in a role commit (`kind` 1) equal to `author`, else bad input.
 3. `kind`: 0 content, 1 role, 2 content compaction snapshot, 3 role compaction snapshot (spec/commits.md §2).
 4. `ts` (spec/crdt.md §2.2). 5. `form`: 0 commit form, or `[1, nonce]` session form with the session's 16-byte nonce (spec/commits.md §3).
 6. `expires`: `Opt(T)`, the commit's expiry, wall ms (spec/commits.md §6).
@@ -98,14 +98,14 @@ Header fields by position:
 12. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1), at most one at level 2 (the author chain); a key no aspect lists is bad input.
 13. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a role commit carrying an explicit removal or an explicit edge write that audits (spec/permissions.md §5.1 step 4; a writer rule: a receiver checks only that it sits on a role commit). A value that does not decode as a `frontier` is bad input.
 14. `ephemeral`: `Opt(uint)`, the ephemeral marker (spec/commits.md §2): 0 an ephemeral commit, 1 a relay-only one. Present only with `kind` 2 and `form` 0, or `kind` 0, no `chunks`, no `purge`, no list by link and no `created.0` aspect; every aspect's retention is `writer`, with no history given or keep history, with the levels it calls for; a relay-only commit has no `expires`, no `undoes` and no history given. Anything else is bad input.
-15. `epoch`: `Opt(epoch_id)`, the epoch an account author signs at (spec/crypto.md §9; 32 bytes: the minting rotation's commit ID, 32 zero bytes for the first epoch); present iff the author's creation record marks an account, else bad input.
-16. `rotation`: `Opt(Rotation)`, present only on a role commit of an account (else bad input): the new epoch's signing key and KEM key (spec/crypto.md §3); the epochs it supersedes, ascending, distinct, the header's `epoch` among them (else bad input); the fork rotations it names (a merge), ascending, distinct; `list_root`, 32 bytes, the root of its list tree (below). Its commit ID names the epoch it mints.
+15. `epoch` (target, issues/account-signing.md step 6): `Opt(epoch_id)`, the epoch an account author signs at (spec/crypto.md §9; 32 bytes: the minting rotation's commit ID, 32 zero bytes for the first epoch); present iff the author's creation record marks an account, else bad input.
+16. `rotation` (target, step 6): `Opt(Rotation)`, present only on a role commit of an account (else bad input): the new epoch's signing key and KEM key (spec/crypto.md §3); the epochs it supersedes, ascending, distinct, the header's `epoch` among them (else bad input); the fork rotations it names (a merge), ascending, distinct; `list_root`, 32 bytes, the root of its list tree (below). Its commit ID names the epoch it mints.
 
 Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3; else `1 <= lo < hi`); `Retention`: `by` (purgeable-by class) and `history` (spec/commits.md §5): `0` none given, `1` purge on replace, `[2, Keep]` keep history, `until` wall ms (`2^63 - 1` means forever) and `after` ms after the body is replaced, at least one of the two, `after` above 0 (else bad input); `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hash`: the 32-byte delta hash of its one delta.
 
 - **Inline or link**: `aspects`, `chunks`, `purge`, `keys` and the frontier are each inline iff their canonical encoding is at most `CHUNK_THRESHOLD` bytes; otherwise the position holds a LINK value (`Opt(LINK)` for the frontier) to a chunk tree (§6) of that canonical encoding, its content hashes keyed by the dedup secret of the header's `actor`. A decoder rejects an inline list above the threshold or a link to one at or below it or above `MAX_LIST_BYTES`; a writer refuses such a commit. A linked frontier's encoding is exactly `{0: set<32-byte commit ID>}`; anything else is bad input. Header-list chunks carry the commitments of §5.
 - **Commit ID** = BLAKE3(canonical bytes of `Header`). The signature is the `signature` value of the author's key (an account's: the signing key of the epoch the header names) under `"osis v1 commit" || commit ID`.
-- **Inner signature** (spec/crypto.md §3): `inner` is present iff the author is an account (else bad input): 95 bytes, XChaCha20-Poly1305 under `kdf("inner", inner secret, commit ID)`, nonce 24 zero bytes, no AD, of the node's tid (15) then its raw Ed25519 signature under `"osis v1 inner"` over the commit ID (64).
+- **Inner signature** (spec/crypto.md §3; target, issues/account-signing.md step 6): `inner` is present iff the author is an account (else bad input): 95 bytes, XChaCha20-Poly1305 under `kdf("inner", inner secret, commit ID)`, nonce 24 zero bytes, no AD, of the node's tid (15) then its raw Ed25519 signature under `"osis v1 inner"` over the commit ID (64).
 - **Merge signatures**: one `signature` per fork rotation the header's `rotation` names, in that order, each under `"osis v1 merge"` over the commit ID by the signing key that fork mints (spec/crypto.md §9); empty without a rotation; another count is bad input. A header-only copy of a rotation (spec/sync.md §3) carries them.
 - **List tree** (spec/permissions.md §5.5; target, issues/account-signing.md step 5): a binary Merkle tree of depth `LIST_TREE_DEPTH` whose leaves are a rotation's thing lists, each at a random distinct index below 2^`LIST_TREE_DEPTH`.
   ```

@@ -28,7 +28,7 @@
   - `"osis v1 possession"` (a box's possession signature and a keyset's possession proof, spec/wire.md §7)
   - `"osis v1 inner"` (a node's inner signature, input digest: the commit ID; spec/permissions.md §5.5)
   - `"osis v1 merge"` (a merge's signature at a fork's epoch, input digest: the merge's commit ID; §9)
-- Signers: account epoch keys (commits by the account, §3), node keys (inner signatures, the node's own `keys.0`, connection proofs, spec/sync.md §10), recovery keys and link keys (commits signed as that key actor), label role keys (spec/sync.md §5), blinded delete keys (§7), possession keys (§4, Holder actors).
+- Signers: account epoch keys (commits by the account, §3), node keys (inner signatures, the node thing's own aspects, connection proofs, spec/sync.md §10), recovery keys and link keys (commits signed as that key actor), label role keys (spec/sync.md §5), blinded delete keys (§7), possession keys (§4, Holder actors).
 
 ## 3. Keys per actor kind
 - **Notation**: a `kdf` written with two arguments has empty input; a tid as input is its 15 bytes; an Ed25519 key "from" a kdf output is the key with that 32-byte seed (RFC 8032).
@@ -50,7 +50,7 @@
   - Signing key from `kdf("sign", seed)`; KEM key pair from `kdf("kem", seed)` as a key actor's; inner secret `kdf("inner secret", seed)`.
   - Role secrets `kdf("role <role>", seed)`: every role rotates with each epoch. Role epoch n is the epoch's **height** (the first epoch 0; a rotation's, 1 plus the greatest height of the epochs it supersedes), its nonce by the nonce rule (§4).
   - The creation record commits to the first epoch's signing key. A rotation's header carries the new epoch's signing and KEM public keys (spec/wire.md §4).
-  - `keys.0` of an account holds its inbox (its D's home label) and deposit seed only, written by the account; its keysets are its epochs (§4, Holder actors).
+  - `keys.0` of an account holds its inbox (its D's home label) and D's deposit seed only, written by the account in each commit that changes D's; its keysets are its epochs (§4, Holder actors).
   - **Inner signature**: every commit an account authors carries one: the node's tid and its Ed25519 signature under `"osis v1 inner"` over the commit ID, sealed under `kdf("inner", inner secret, commit ID)` of the epoch the commit is signed at, nonce 24 zero bytes (one plaintext per key) (spec/wire.md §4). Only the account's nodes open it.
 - **Other actors**: one KEM key pair per role per epoch, `kdf("kem", role secret)`. The read-role pair's X25519 half is the actor's claim key (spec/sync.md §2).
 - **`keys.0`**: a struct holding the current keyset only.
@@ -103,7 +103,7 @@ Terms in this section depend on each other; each is defined once, under its bold
 - **Lowering**: a point of A's role timeline (spec/permissions.md §5.1) at which a holder's grant on A for keys (Departures and covering, below) is lowered: an applied edge write on A after which the holder holds less for keys than just before it (a removal, demotion, self-removal or finalize; A's grants for keys are constant between applied edge writes on A), or a demotion elsewhere whose audit dropped (spec/permissions.md §5.1) an edge write on A that had raised the holder (its value above the holder's grant for keys just before its own point): the holder leaves the roles from read up to that value. A dropped write that lowered the holder raised nobody and lowers nobody by going; a renewal lowers nobody.
 - **Names**: a rotation of actor A names the lowerings on A its rotator holds, read from its own role timeline, never copied from another history box: an edge write's commit named on A; a demotion elsewhere named once per thing its edge writes target.
 - A name is that thing and the commit's key (spec/permissions.md §5.1).
-- **Departs mark**: when the rotation commit itself writes such a grant on A it cannot name itself. The names then carry its departs mark: its `ts`, author and header `blind` (spec/wire.md §4).
+- **Departs mark**: when the rotation commit itself writes such a grant on A it cannot name itself. The names then carry its departs mark: its `ts`, author and header `blind` (spec/wire.md §4; target, issues/account-signing.md step 6).
 - Every history box of one rotation carries the same names, and the rotated roles' keysets carry their digest (spec/wire.md §7): an entry is **bound** to each held valid rotation commit of its epoch whose keyset carries the digest of its names; a held valid `keys.0` compaction snapshot carrying the keyset beside a `secrets.0` snapshot carrying the entry counts as one, by its author.
 - The rotator places every named commit under each label it places the rotation commit under (spec/sync.md §5).
 - **Met**: the names of a history box entry are met at a node when both hold:
@@ -190,7 +190,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
 - A wrap names no epoch: a reader tries the read secrets it holds, newest first.
 - **Who wraps under what**:
   - An uploader wraps under the newest current read epoch whose secret it holds (§4).
-  - A node holding no current secret places nothing: it is stranded (spec/permissions.md §4).
+  - A node holding no current secret places nothing: it is stranded (spec/permissions.md §4; target, issues/account-signing.md step 8).
   - Exception: a commit carrying boxes of a read epoch e (a rotation) is wrapped, under every label whose read secret derives from that actor's, under the read epoch e supersedes whose secret the rotator holds with the greatest n, ties by lowest nonce (n, not order n, §4).
 - Label role keys for a host are those of the epochs its current step registers (spec/sync.md §5).
 - **Inbox blob** (spec/sync.md §3): a role commit (header and deltas) about the recipient, plus the label IDs and host addresses of the things it names, sealed to the recipient actor's read-role KEM key. Bytes: spec/wire.md §9.

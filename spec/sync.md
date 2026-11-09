@@ -78,7 +78,7 @@
   - Each node tags commits with their things' `groups.0` and retags when group membership changes.
 - **Entitlement**: a thing's **reader actor** is the thing if it has secrets of its own, else the nearest actor up its record chain that has them (a key actor is its own). G's actor is the group thing if it has secrets of its own, else its base actor (spec/crypto.md §3). G's actor may read a thing iff the thing's secrets derive from its own or it holds read or above on the thing's reader actor. A commit's blob belongs under G's label iff G's actor may read a part of it on a thing of the closure (or published there, §2).
   - Only a writer of G stamps entries (§5).
-  - A node that is not one deposits what it must place there (its account's chain certificates, rotations and thing lists, its invite grant or self-removal, its listings, its history adds (spec/permissions.md §3), and the revokes it must place by spec/permissions.md §4) and relays stamped entries it holds.
+  - A node that is not one deposits what it must place there (its account's chain certificates, rotations and thing lists, its invite grant or self-removal, its listings (target, issues/account-signing.md step 5), its history adds (spec/permissions.md §3), and the revokes it must place by spec/permissions.md §4) and relays stamped entries it holds.
 - **One blob per commit**: a commit is uploaded as one blob holding every part of it the uploader holds and can seal, each part in the section of its thing under the thing's read secret (spec/wire.md §4; a part of a thing whose read secret the uploader lacks, a key actor's own record or card, travels as a certificate copy). Every label of every thing the commit touches carries the one blob under its label's wrap; hosts and nodes syncing several of those labels dedup it by blob ID. No size split: a commit stays within `MAX_BLOB` by paging its deltas (spec/crdt.md §8), largest first, or is refused at the writer.
   - A node judges a blob by the parts the label's actor may read (§6); a section it cannot open it copies verbatim when it encrypts the commit again (a tombstoned entry, a purge rewrite).
   - A section opens with the thing's read secret at the epoch the writer used: a reader of the thing holds it (its own, through its history boxes; a plain thing's by derivation through the record chain the section lists from a member it holds epochs of), and a holder of a role on the thing's reader actor keeps up with its rotations through that actor's label (§2).
@@ -276,7 +276,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - After any other fallback it is only not present there.
 - One connection may sync many labels; a blob under several of them SHOULD cross it once (spec/wire.md §11).
 - **Convergence**: a label's **required set** is its closure blobs (§3) plus what is placed there from outside the closure:
-  - the certificate blobs of spec/permissions.md §4, judged by the deltas a blob holds, whatever else its commit writes (a `created.0` copy of a commit that also placed the thing);
+  - the certificate blobs of spec/permissions.md §4, judged by the deltas a blob holds, whatever else its commit writes (a `created.0` copy of a commit that also placed the thing), a list blob by its thing lists;
   - the grantee's certificate copies and cross-published `label.0` commits (§3);
   - unexpired inbox blobs.
 
@@ -291,7 +291,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - expired (its blob's prefix expiry, §3, whatever of it the label's actor reads);
     - outside the required set;
     - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold and whose extra deltas include one only a blob carries: kept or holding a live write, and covered by no snapshot under the label;
-    - under D's home label, another node's card commit (spec/permissions.md §4) once a later valid card commit of that node writing the same aspect is under the label (an entry of it this node opened and checked against its header);
+    - under D's home label (target, issues/account-signing.md step 7), another node's card commit (spec/permissions.md §4) once a later valid card commit of that node writing the same aspect is under the label (an entry of it this node opened and checked against its header);
     - under D's home label, another node's card commit, for `node.0` and `reach.0`, once that node is a node of the account no more after an applied edge write on D ended its grant (removed it, or its `until` passed).
   - **may-hold**: the rest: covered, between bounds, parked, unfetched pages, a certificate blob whose author has no other blob under the label.
 
@@ -433,7 +433,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
   - **Relaying** is a node's choice. A relay accepts registrations only of the keys it allows, and bounds per source (an IPv4 address, an IPv6 /64) the bytes per second it forwards and its share of relay connections. It sees addresses, volume and the keys dialed, never the data.
   - A `peer://` entry in a label's `hosts` is never dialed as a host: a label with no other entry has no host, and its nodes serve it.
 - **LAN discovery** announces nothing stable across networks or meaningful to strangers: a tag and a transport key fresh per network join, never the dialable key.
-  - **Tag**: `kdf("lan tag", lan secret, le64(window))` (first 16 bytes), with window = `floor(unix ms / 600000)`. The 32-byte random lan secret is in `reach.0`. A node matches tags of the nodes whose `reach.0` it holds (its own account's) for the current and adjacent windows; finding other accounts' nodes on a LAN is issues/net-connect.md's.
+  - **Tag**: `kdf("lan tag", lan secret, le64(window))` (first 16 bytes), with window = `floor(unix ms / 600000)`. The 32-byte random lan secret is in `reach.0`. A node matches tags of the nodes whose `reach.0` it holds (its own account's) for the current and adjacent windows; finding other accounts' nodes on a LAN is issues/net-connect.md's (target, issues/account-signing.md step 8).
   - **Joining**: a node joins anew (a fresh transport key and listener, announced at once) whenever its network may have changed.
   - **Announcement** (provisional): a UDP datagram to port 47380 on each address family the node has, as an IPv4 broadcast (255.255.255.255) and an IPv6 multicast to the link-local all-nodes group ff02::1 on each up interface with a link-local address, of exactly 124 bytes:
 
