@@ -34,7 +34,7 @@ Format version 1, spec/versioning.md §1:
 | `ROLE_KEEP` | 90 days |
 | `INBOX_LIFETIME` | 90 days |
 | `INBOX_WAITING`, `INBOX_WAITING_BYTES` | 32 entries, 1 MiB (1 048 576 bytes): deposits a node leaves at an inbox it clears (spec/sync.md §5) |
-| `LIST_TREE_DEPTH` | 32 (target, issues/account-signing.md step 5): levels of a rotation's list tree, at most 2^32 thing lists per rotation (§4, List tree; spec/permissions.md §5.5) |
+| `LIST_TREE_DEPTH` | 32 (target, issues/account-signing.md step 6): levels of a rotation's list tree, at most 2^32 thing lists per rotation (§4, List tree; spec/permissions.md §5.5) |
 | `MAX_CHAIN_DEPTH` | 64 links from a thing up its record chain to its key actor (spec/permissions.md §1) |
 | `MAX_REQUIRED_ENTRIES` | 64 entries in the `rules` of one `required^.0` delta (spec/commits.md §5) |
 | `MAX_AUTHOR_ITEMS` | 32 items by author in one commit's `purge` (§4) |
@@ -107,7 +107,7 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`
 - **Commit ID** = BLAKE3(canonical bytes of `Header`). The signature is the `signature` value of the author's key (an account's: the signing key of the epoch the header names) under `"osis v1 commit" || commit ID`.
 - **Inner signature** (spec/crypto.md §3; target, issues/account-signing.md step 6): `inner` is present iff the author is an account (else bad input): 95 bytes, XChaCha20-Poly1305 under `kdf("inner", inner secret, commit ID)`, nonce 24 zero bytes, no AD, of the node's tid (15) then its raw Ed25519 signature under `"osis v1 inner"` over the commit ID (64).
 - **Merge signatures**: one `signature` per fork rotation the header's `rotation` names, in that order, each under `"osis v1 merge"` over the commit ID by the signing key that fork mints (spec/crypto.md §9); empty without a rotation; another count is bad input. A header-only copy of a rotation (spec/sync.md §3) carries them.
-- **List tree** (spec/permissions.md §5.5; target, issues/account-signing.md step 5): a binary Merkle tree of depth `LIST_TREE_DEPTH` whose leaves are a rotation's thing lists, each at a random distinct index below 2^`LIST_TREE_DEPTH`.
+- **List tree** (spec/permissions.md §5.5; target, issues/account-signing.md step 6): a binary Merkle tree of depth `LIST_TREE_DEPTH` whose leaves are a rotation's thing lists, each at a random distinct index below 2^`LIST_TREE_DEPTH`.
   ```
   ThingList := [tid, [commit_id*] | LINK, salt]
   ThingCert := [rotation_id, index, [hash*], ThingList]

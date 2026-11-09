@@ -5,6 +5,7 @@ mod common;
 mod chain;
 mod scale;
 mod content;
+mod epochs;
 mod differential;
 mod incremental;
 mod queries;

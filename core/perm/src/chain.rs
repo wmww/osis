@@ -62,9 +62,17 @@ pub struct Chain<E> {
 
 impl<E: Ord + Copy> Chain<E> {
     /// Judges `rotations` (the held ones, one record each) under `side`: the rotation the node
-    /// sides with in a dispute, if any.
+    /// sides with in a dispute, if any. A rotation counts as held only with its chain back to
+    /// the root (over the epochs it is signed at, spec/permissions.md §5.4); the rest are
+    /// pending and take part in nothing (`holds`).
     pub fn new(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, side: Option<E>) -> Chain<E> {
-        let rots: BTreeMap<E, Rotation<E>> = rotations.into_iter().filter(|r| r.id != root).map(|r| (r.id, r)).collect();
+        let mut pending: BTreeMap<E, Rotation<E>> = rotations.into_iter().filter(|r| r.id != root).map(|r| (r.id, r)).collect();
+        let mut rots: BTreeMap<E, Rotation<E>> = BTreeMap::new();
+        while let Some(&id) = pending.values().find(|r| r.at == root || rots.contains_key(&r.at)).map(|r| &r.id) {
+            if let Some(r) = pending.remove(&id) {
+                rots.insert(id, r);
+            }
+        }
         let mut c = Chain { root, rots, lines: BTreeMap::new(), rejects: BTreeSet::new(), counting: BTreeSet::new(), parties: BTreeSet::new() };
         c.lines = c.rots.keys().map(|&r| (r, c.line_of(r))).collect();
         c.rejects = c.rejections();
@@ -173,6 +181,12 @@ impl<E: Ord + Copy> Chain<E> {
         let contests = |a: E, b: E| self.lines.get(&b).into_iter().flatten().any(|&c| c != a && self.rejects.contains(&(a, c)));
         let ids: Vec<E> = self.rots.keys().copied().collect();
         ids.iter().copied().filter(|&a| ids.iter().any(|&b| a != b && contests(a, b) && contests(b, a))).collect()
+    }
+
+    /// Whether epoch `e` is held: the root, or minted by a rotation held with its chain. A
+    /// commit at an epoch not held is pending (spec/permissions.md §5.5).
+    pub fn holds(&self, e: &E) -> bool {
+        *e == self.root || self.rots.contains_key(e)
     }
 
     /// Whether held rotation `r` counts.

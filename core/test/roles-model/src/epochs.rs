@@ -3,7 +3,8 @@
 //! receive it) followed by a rotation of the signing epoch that names it; what still counts of
 //! a closed epoch is decided as for any ended standing (the demoter-frontier rule with addenda,
 //! spec/permissions.md §5): by what the rotator had received (the rotation's list), by what
-//! other writers of the thing had received by the rotation's `ts` (addenda, as built), and by
+//! other writers of the thing had received before the earliest rotation closing the epoch
+//! (addenda; a writer's rule, judgment reads no `ts`), and by
 //! P's own later word at a counting epoch (a listing, as a re-grant revives a holder's).
 //! Nothing reads the author's `ts`, nothing reads the inner (node) signature: it only guides
 //! what P's honest nodes list.
@@ -461,13 +462,14 @@ impl World {
         let dem = (0..n).find(|&i| held[i] && matches!(self.items[i].kind, Kind::Demotion { .. }));
         let thing = |i: usize| self.items[i].kind.thing();
         // Witness addendum a (held, by a writer of i's thing, on it) lists i against
-        // `against`, i stamped before it and a after it, i plain content.
+        // `against`, i plain content. Against a demotion, i is ordered before it and a after it
+        // (§5.2, key order); against a rotation nothing reads `ts` (§5.5).
         let vouched_by_witness = |i: usize, against: usize| {
             self.items[i].kind.plain()
                 && (0..n).any(|a| {
                     held[a] && match &self.items[a].kind {
                         Kind::Addendum { against: ag, thing: at, lists } => {
-                            Some(*at) == thing(i) && self.writer[self.items[a].author] == Some(*at) && *ag == self.items[against].id && lists.contains(&self.items[i].id) && self.items[i].ts < self.items[against].ts && self.items[against].ts < self.items[a].ts
+                            Some(*at) == thing(i) && self.writer[self.items[a].author] == Some(*at) && *ag == self.items[against].id && lists.contains(&self.items[i].id) && (self.items[against].kind.is_rot() || (self.items[i].ts < self.items[against].ts && self.items[against].ts < self.items[a].ts))
                         }
                         _ => false,
                     }
