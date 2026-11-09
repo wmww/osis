@@ -145,6 +145,13 @@ Late == FALSE
 \* is held: the Authority evidence travels with the keyset)
 HalfForgers == {}
 HalfMode == "keyset"
+\* possession proofs (spec/crypto.md \S 4, Possession, Stale): a rotation
+\* proves each holder actor it boxes at a keyset whose secret the rotator
+\* holds (pf), and a proof naming a stale keyset makes its epoch stale as a
+\* box does. ProofOnly {<<device, actor>>} (Eager pairs): that unprompted
+\* rotation boxes no holder actor, proving each it would seal (a writer
+\* through it keeping its route to itself)
+ProofOnly == {}
 \* spec/crypto.md §4 Encrypting under: a box carrying an epoch's secret is
 \* encrypted under its recipient's key, not under that epoch, so a re-seal
 \* boxes a current holder at every current epoch whose secret the node holds,
@@ -157,7 +164,7 @@ KK(k) == [t |-> "k", d |-> "", k |-> k]
 Idx(a) == CHOOSE i \in 1..Len(ActSeq) : ActSeq[i] = a
 InitKey(h) == IF h \in Acts THEN KK(Idx(h)) ELSE DK(h)
 
-VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged];
+VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged, half, race, out, pf];
                   \* a box: [h, key, by (its sealer)]
           rs,     \* re-seal boxes: [e, h, key, by]
           ha,     \* history adds: <<e, f>>: an entry at epoch e carries f
@@ -242,7 +249,8 @@ Opens(S, c) == IF c.der THEN c.e \in DSec(S, c.a) ELSE c.e \in S
 Keyless(x, k) == \E b \in BoxesAt(x, k) : b.h \in Acts /\ b.h \notin KH(x, ep[k].act)
 StaleK(x, k) == k \in kn[x] /\ (~Valid(x, k) \/ Keyless(x, k)
                                 \/ \E j \in KOf(x, ep[k].act) : k \in AncV(x, j))
-StaleAt(x, e) == \E b \in BoxesAt(x, e) : b.key.t = "k" /\ StaleK(x, b.key.k)
+StaleAt(x, e) == \/ \E b \in BoxesAt(x, e) : b.key.t = "k" /\ StaleK(x, b.key.k)
+                 \/ \E k \in ep[e].pf : StaleK(x, k)
 \* an epoch whose secret x lacks covers nothing (its history box is closed)
 Covers(x, e, a) == \A dp \in Known(x) : dp[2] = a => (e \in Sec(x) /\ dp \in ep[e].knows)
 IsAdm(x, a) == x \in Learners /\ <<a, x>> \in Adm
@@ -283,17 +291,19 @@ Waits(x, a, extra) == \E h \in MemV(x, a, extra) \cap Acts :
   \/ SealK(x, a, h) = 0 /\ Forked(x, a, h)
   \/ Walk = "wait" /\ SealK(x, a, h) \in Blocked(x) /\ ~(IsAdm(x, h) \/ (Through(x, h) /\ ~OffPath(x, x, h)))
 
-Rotate(x, a, extra, race) ==
+Rotate(x, a, extra, race, po) ==
   LET lo(h) == h \in Acts /\
                (SealK(x, a, h) = 0 \/ SealK(x, a, h) \in Blocked(x))
       seal(h) == IF h \in Acts THEN KK(SealK(x, a, h)) ELSE DK(h)
+      boxed == {g \in MemV(x, a, extra) : ~lo(g)}
       new == [act |-> a,
               n |-> IF Est(x, a) = {} THEN 1 ELSE 1 + ep[NewestV(x, a)].n,
               \* (it lists its current epochs: the established ones)
               par |-> Est(x, a),
               by |-> x,
               bx |-> {[h |-> h, key |-> seal(h), by |-> x] :
-                        h \in {g \in MemV(x, a, extra) : ~lo(g)}},
+                        h \in IF po THEN boxed \ Acts ELSE boxed},
+              pf |-> {SealK(x, a, h) : h \in {g \in boxed \cap Acts : SealK(x, a, g) \in Sec(x)}},
               hist |-> {e \in Sec(x) : ep[e].act = a},
               dhist |-> IF a \in PlainActs THEN DSec(Sec(x), a) ELSE {},
               knows |-> {dp \in Known(x) \cup extra : dp[2] = a},
@@ -316,7 +326,7 @@ Init ==
                         h \in {g \in KeyIn(GAll, ActSeq[i]) : <<ActSeq[i], g>> \notin GLate}},
               hist |-> {},
               dhist |-> IF ActSeq[i] \in PlainActs THEN {Idx(PlainOf(ActSeq[i]))} ELSE {},
-              knows |-> {}, forged |-> FALSE, half |-> FALSE, race |-> FALSE, out |-> {}]]
+              knows |-> {}, forged |-> FALSE, half |-> FALSE, race |-> FALSE, out |-> {}, pf |-> {}]]
   /\ rs = {}
   /\ ha = {}
   /\ kn = [x \in Learners |-> {i \in 1..Len(ActSeq) : <<x, ActSeq[i]>> \notin Unaware}]
@@ -370,7 +380,7 @@ Remove(dp) ==
   /\ dp \notin done
   /\ IsAdm(dp[3], dp[2])
   /\ \/ /\ Len(ep) < MaxE
-        /\ Rotate(dp[3], dp[2], {dp}, FALSE)
+        /\ Rotate(dp[3], dp[2], {dp}, FALSE, FALSE)
         \* the remover places it under the labels it syncs the removed party
         \* read; placements only judge writers through holder actors (none:
         \* left out, a smaller state space)
@@ -388,7 +398,7 @@ Remove(dp) ==
 
 EagerRot(p) ==
   /\ p \notin evd /\ Len(ep) < MaxE /\ Writer(p[1], p[2]) /\ Possess(p[1], p[2])
-  /\ Rotate(p[1], p[2], {}, FALSE)
+  /\ Rotate(p[1], p[2], {}, FALSE, p \in ProofOnly)
   /\ evd' = evd \cup {p}
   /\ UNCHANGED <<kg, rs, krs, ha, wr, done, nw, pl, kpl>>
 
@@ -397,7 +407,7 @@ ForcedRot(x, a) ==
   /\ Len(ep) < MaxE /\ NeedRot(x, a)
   /\ LET race == ~OtherDue(x, a) /\ Racing(x, a)
      IN /\ race => Cardinality({e \in Ids : ep[e].race}) < MaxRace
-        /\ Rotate(x, a, {}, race)
+        /\ Rotate(x, a, {}, race, FALSE)
   /\ UNCHANGED <<kg, rs, krs, ha, wr, done, evd, nw, pl, kpl>>
 
 Forge(d) ==
@@ -409,7 +419,7 @@ Forge(d) ==
                                n |-> 1 + ep[Newest(ms)].n,
                                par |-> ms, by |-> d,
                                bx |-> {[h |-> d, key |-> DK(d), by |-> d]},
-                               hist |-> {}, dhist |-> {}, knows |-> {}, forged |-> TRUE, half |-> FALSE, race |-> FALSE, out |-> {}])
+                               hist |-> {}, dhist |-> {}, knows |-> {}, forged |-> TRUE, half |-> FALSE, race |-> FALSE, out |-> {}, pf |-> {}])
   /\ evd' = evd \cup {<<d, "forge">>}
   /\ UNCHANGED <<kg, rs, kn, krs, ha, wr, done, nw, pl, kpl>>
 
@@ -423,7 +433,7 @@ HalfForge(q) ==
         /\ ep' = Append(ep, [act |-> q[3], n |-> 1 + ep[Newest(ms)].n,
                              par |-> ms, by |-> q[1], bx |-> {},
                              hist |-> {}, dhist |-> {}, knows |-> {dp},
-                             forged |-> FALSE, half |-> TRUE, race |-> FALSE, out |-> {}])
+                             forged |-> FALSE, half |-> TRUE, race |-> FALSE, out |-> {}, pf |-> {}])
         /\ done' = done \cup {dp}
   /\ evd' = evd \cup {q}
   /\ UNCHANGED <<kg, rs, kn, krs, ha, wr, nw, pl, kpl>>

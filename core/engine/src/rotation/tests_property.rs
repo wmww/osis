@@ -127,24 +127,23 @@ impl Run {
                 for (x, info) in e.role(r).epochs() {
                     if info.checked().is_some() && !known.contains(&(t, r, *x)) {
                         let own = self.lp.peers[i].engine.core.ix.epoch_intro.get(&(t, r, *x)).map(|v| v.1);
-                        // nor where its rotation boxed a holder actor (one the step then removed:
-                        // the step's cascade rotates before the removal's own rotation)
-                        if own.is_some_and(|c| self.boxed_actor(i, &c)) {
-                            continue;
-                        }
+                        // a peer reading a holder actor the epoch boxes reads it rightly (the
+                        // step may remove that actor after its cascade rotated `t` boxing it)
+                        let via = own.map(|c| self.boxed_actors(i, &c, r)).unwrap_or_default();
+                        let below: BTreeSet<usize> = below.iter().copied().filter(|d| !via.iter().any(|m| access(self, i, *d, *m, r))).collect();
                         self.log.push(format!("  made actor {} {r:?} n{} {:?} at peer {i}, below {below:?}", self.actors.iter().position(|a| a.0 == t).unwrap(), x.n(), &x.nonce()[..2]));
-                        self.made.insert((t, r, *x), (held.iter().copied().chain(own).collect(), below.clone()));
+                        self.made.insert((t, r, *x), (held.iter().copied().chain(own).collect(), below));
                     }
                 }
             }
         }
     }
 
-    /// Whether commit `c` at peer `i` writes a box to a holder that is no peer (an actor).
-    fn boxed_actor(&self, i: usize, c: &CommitId) -> bool {
+    /// The holder actors (no peers) commit `c` boxes or proves at role `r`, as peer `i` read it.
+    fn boxed_actors(&self, i: usize, c: &CommitId, r: Role) -> BTreeSet<Tid> {
         let core = &self.lp.peers[i].engine.core;
-        let Some(m) = core.ix.commits.get(c) else { return false };
-        (0..m.view.aspects.len()).filter_map(|ai| core.ix.shown.get(&(*c, ai))).any(|x| x.shown.iter().any(|s| !self.tids.contains(&s.holder)))
+        let Some(m) = core.ix.commits.get(c) else { return BTreeSet::new() };
+        (0..m.view.aspects.len()).filter_map(|ai| core.ix.shown.get(&(*c, ai))).flat_map(|x| x.shown.iter().filter(|s| s.role == r && !self.tids.contains(&s.holder)).map(|s| s.holder).collect::<Vec<_>>()).collect()
     }
 
     /// Peer `i` rotates `rot` of `t`, leaving out each other member (peer or actor) at random, or
@@ -440,15 +439,7 @@ fn settle(run: &mut Run, seed: u64, rotate: bool) {
 /// nodes under one trust set must read alike (spec/permissions.md §5.1); forks are permanent, so
 /// the property is checked within the walk's side. How many sides changed.
 fn walk_sides(run: &mut Run) -> usize {
-    let mut n = 0;
-    for p in 0..N {
-        let (ds, _) = run.lp.peers[p].engine.disputes(usize::MAX);
-        for d in ds.iter().filter(|d| d.side.is_some_and(|s| s.trust)) {
-            run.lp.peers[p].engine.choose(d.commit, d.op, d.holder, false).unwrap();
-            n += 1;
-        }
-    }
-    n
+    (0..N).map(|p| run.lp.peers[p].engine.take_walk_sides()).sum()
 }
 
 /// Whether peer `d` may read role `r` of actor `t` in peer `at`'s rosters: a holder of it for

@@ -232,4 +232,15 @@ impl crate::engine::Engine {
             Ok(())
         })
     }
+    /// Takes the walk's side in every dispute held where this node trusts the author, as a user
+    /// choosing it would (engine tests settling under the walk). How many sides changed.
+    #[cfg(test)]
+    pub(crate) fn take_walk_sides(&mut self) -> usize {
+        let (ds, _) = self.disputes(usize::MAX);
+        let trusted: Vec<DisputeInfo> = ds.into_iter().filter(|d| d.side.is_some_and(|s| s.trust)).collect();
+        for d in &trusted {
+            self.choose(d.commit, d.op, d.holder, false).unwrap_or_else(|e| panic!("choose: {e:?}"));
+        }
+        trusted.len()
+    }
 }

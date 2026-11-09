@@ -33,10 +33,11 @@ fn half_shape(seed: u64) -> (LocalPeer, Tid, Tid, Tid) {
     (lp, a, m, s)
 }
 
-/// f removes S from M in a commit that also rotates M boxing everyone but S: its proofs show no
-/// possession of S, the only way f holds a role on M.
+/// f removes S from M in a commit that also rotates M boxing everyone but S: unless `prove`, its
+/// proofs show no possession of S, the only way f holds a role on M; with `prove`, they prove S
+/// by the keyset of S f holds.
 /// Returns the commit and the secrets f holds of M (its own new epochs included).
-fn half_valid(lp: &mut LocalPeer, m: Tid, s: Tid) -> (CommitId, BTreeSet<(Tid, Role, Epoch)>) {
+fn half_valid(lp: &mut LocalPeer, m: Tid, s: Tid, prove: bool) -> (CommitId, BTreeSet<(Tid, Role, Epoch)>) {
     let before = commit_ids(lp, F);
     let made = lp.peers[F]
         .engine
@@ -46,8 +47,21 @@ fn half_valid(lp: &mut LocalPeer, m: Tid, s: Tid) -> (CommitId, BTreeSet<(Tid, R
             let holders = super::recipients(tx, &me, &m, &[(s, None)])?.ok_or(super::SEAL_WAITS)?;
             let mut mu = Mutation::new();
             crate::flows::edges::removal(tx, &mut mu, m, s)?;
-            let rot = super::rotation_into(tx, &mut mu, m, &[Role::Read, Role::Write].into(), &held, &holders, true)?;
+            // the rotation written beside, its keysets proved first
+            let mut aside = Mutation::new();
+            let mut rot = super::rotation_into(tx, &mut aside, m, &[Role::Read, Role::Write].into(), &held, &holders, true)?;
             assert!(rot.keys.keysets.values().all(|ks| ks.proofs.is_empty()), "S left out: nothing proved");
+            if prove {
+                let sh = tx.core.epochs(&s).unwrap();
+                for (r, ks) in rot.keys.keysets.iter_mut() {
+                    let (k, sec) = sh.role(*r).newest_secret().map(|(e, x)| (e, x.clone())).unwrap();
+                    let p = osis_keys::possession::prove(&m, *r, ks, &s, k, &sec);
+                    ks.proofs.insert(s, p);
+                }
+            }
+            mu.ts = aside.ts;
+            crate::flows::put_secrets(&mut mu, m, &rot.secrets, false)?;
+            crate::flows::put_keysets(&mut mu, m, &rot.keys)?;
             mu.unchecked();
             // past this node's own refusal: receivers judge it
             tx.core.skip_writer_rules = true;
@@ -77,7 +91,7 @@ fn verdicts(lp: &LocalPeer, i: usize, c: &CommitId, t: Tid) -> Vec<(String, bool
 #[test]
 fn half_valid_rotation_leaks_nothing_spec_crypto_4() {
     let (mut lp, a, m, s) = half_shape(7_101);
-    let (c, known) = half_valid(&mut lp, m, s);
+    let (c, known) = half_valid(&mut lp, m, s, false);
     deliver_without_secrets(&mut lp, F, A1, m);
     send_skipping(&mut lp, F, M1, &BTreeSet::new());
     lp.peers[A1].engine.ensure_rotated(&a).unwrap();
@@ -102,7 +116,7 @@ fn half_valid_rotation_leaks_nothing_spec_crypto_4() {
 fn half_valid_rotation_refused_alike_with_certificates_only_spec_crypto_4() {
     let (mut lp, _, m, s) = half_shape(7_102);
     let before = held_by(&lp, F, &[m]);
-    let (c, known) = half_valid(&mut lp, m, s);
+    let (c, known) = half_valid(&mut lp, m, s, false);
     let made: Vec<(Role, Epoch)> = known.difference(&before).map(|(_, r, e)| (*r, *e)).collect();
     deliver_without_secrets(&mut lp, F, A1, m);
     send_skipping(&mut lp, F, M1, &BTreeSet::new());
@@ -212,4 +226,28 @@ fn authority_needs_only_the_rotated_roles_spec_crypto_4() {
     lp.peers[1].engine.run(|tx| super::rotate_now(tx, p, a, &BTreeSet::from([Role::Read]))).unwrap();
     let c = *commit_ids(&mut lp, 1).difference(&before).next().unwrap();
     assert!(verdicts(&lp, 1, &c, a).iter().all(|(_, v)| *v));
+}
+
+// The order reading's other half (spec/crypto.md §4, Authority; spec/permissions.md §5.1): f's
+// role on M through S counts just before the commit removing S, so the same rotation proving S
+// by the keyset of S it holds is valid at every node. It leaks nothing: f made the epoch, so it
+// covers no departure of f's (m1 rotates M again), and a1 seals A at m1's keyset.
+#[test]
+fn route_removal_proved_leaks_nothing_spec_crypto_4() {
+    let (mut lp, a, m, s) = half_shape(7_105);
+    let (c, known) = half_valid(&mut lp, m, s, true);
+    deliver_without_secrets(&mut lp, F, A1, m);
+    send_skipping(&mut lp, F, M1, &BTreeSet::new());
+    assert!(verdicts(&lp, A1, &c, m).iter().chain(&verdicts(&lp, M1, &c, m)).all(|(_, v)| *v), "a proof of S counts");
+    lp.peers[A1].engine.ensure_rotated(&a).unwrap();
+    lp.peers[M1].engine.ensure_rotated(&m).unwrap();
+    deliver_without_secrets(&mut lp, M1, A1, m);
+    let (_, still) = lp.peers[A1].engine.ensure_rotated(&a).unwrap();
+    assert!(still.is_empty(), "a1 blocked on A: {still:?}");
+    let mut known = known;
+    known.extend(held_by(&lp, F, &[a]));
+    let f = lp.peers[F].engine.tid();
+    let (e, em) = (newest_read(&lp, A1, a).unwrap(), newest_read(&lp, M1, m).unwrap());
+    assert!(!openable(&mut lp, A1, &[a, m], f, known.clone()).contains(&(a, Role::Read, e)), "f opens a1's newest epoch of A");
+    assert!(!openable(&mut lp, M1, &[m], f, known).contains(&(m, Role::Read, em)), "f opens m1's newest epoch of M");
 }
