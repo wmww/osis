@@ -214,6 +214,8 @@ pub(crate) fn expired(c: &Commit, now: u64) -> bool {
 fn names(q: &Commit, c: &Commit, p: &Part) -> bool {
     c.ts < q.ts
         && !c.is_role()
+        // an expiring request reaches only deltas expiring no later
+        && q.expires.is_none_or(|e| c.expires.is_some_and(|x| x <= e))
         && q.purge.iter().any(|it| match *it {
             PurgeItem::Commit { commit, thing, aspect } => commit == c.id && p.thing == thing && p.aspect == aspect,
             PurgeItem::Aspect { thing, aspect } => p.thing == thing && p.aspect == aspect,
@@ -368,7 +370,12 @@ fn applies(c: &Commit, waiting: &BTreeSet<PartRef>, thrown: &BTreeSet<PartRef>, 
 /// Does a delta break its governing entry of a `required^.0` setting (spec/commits.md §5).
 fn breaks(rules: &[Rule], c: &Commit, p: &Part) -> bool {
     let entry = rules.iter().find(|r| r.aspect == Some(p.aspect.name)).or_else(|| rules.iter().find(|r| r.aspect.is_none()));
-    entry.is_some_and(|e| e.retention != p.retention || c.expires != e.expiry.map(|d| wall(c.ts) + d))
+    // a `replaces` part's expiry need only lie within the duration (an edit takes its original's)
+    let expiry_met = |e: &Rule| match (e.expiry, p.replaces) {
+        (Some(d), Some(_)) => c.expires.is_some_and(|x| wall(c.ts) < x && x <= wall(c.ts) + d),
+        (d, _) => c.expires == d.map(|d| wall(c.ts) + d),
+    };
+    entry.is_some_and(|e| e.retention != p.retention || !expiry_met(e) || (e.r#final && p.replaces.is_some()))
 }
 
 fn parked(h: &Held) -> BTreeSet<CommitId> {

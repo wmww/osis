@@ -334,7 +334,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             let aspect_ = r.pick(&[None, Some(REG.name), Some(MAP.name), Some(TEXT.name), Some(SET.name), Some(LIST.name), Some(SIG.name)]);
             let retention = r.pick(&retentions(w));
             let expiry = (retention.by != PurgeBy::Nobody && r.chance(20)).then(|| (1 + r.below(3)) * HOUR);
-            let d = Delta::Required(vec![Rule { aspect: aspect_, retention, expiry }]);
+            let d = Delta::Required(vec![Rule { aspect: aspect_, retention, expiry, r#final: false }]);
             Commit { parts: vec![plain_part(thing, Aspect::REQUIRED, Retention::FIXED, d)], ..base(id, chief, ts) }
         } else {
             let undone = (roll < 44)

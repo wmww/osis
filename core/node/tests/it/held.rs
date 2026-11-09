@@ -289,7 +289,7 @@ impl Conv<'_> {
         if rules.retain {
             return Err("required retain");
         }
-        let rule = |aspect, q: &ct::Required| hm::Rule { aspect, retention: retention(&q.retention().canonical()), expiry: q.expires };
+        let rule = |aspect, q: &ct::Required| hm::Rule { aspect, retention: retention(&q.retention().canonical()), expiry: q.expires, r#final: q.r#final };
         let mut out: Vec<hm::Rule> = rules.default.iter().map(|q| rule(None, q)).collect();
         for (a, q) in &rules.rules {
             let name = if self.hist.aks.contains(a.as_str()) { self.aspect(a.as_str()).name } else { 99 };
@@ -464,7 +464,8 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                 inside.insert((a.tid, a.ak.clone()), (thing, aspect));
             }
             let retention = retention(&a.retention);
-            let part = |body| hm::Part { thing, aspect, retention, body, stripped: BTreeSet::new(), replaces: None };
+            let replaces = a.replaces.map(|o| cv.commit(&o));
+            let part = |body| hm::Part { thing, aspect, retention, body, stripped: BTreeSet::new(), replaces };
             let state = match &meta {
                 Some(m) if m.missing.contains(&ai) => Some(hm::Body::Missing),
                 Some(m) if m.dropped.contains_key(&ai) => {

@@ -118,6 +118,8 @@ pub struct Rule {
     pub retention: Retention,
     /// Expiry as a duration from the commit's `wall_ms(ts)`, ms.
     pub expiry: Option<u64>,
+    /// A part claiming `replaces` breaks it.
+    pub r#final: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -460,13 +460,14 @@ fn bodies_read_are_flat_in_n_spec_commits_5() {
     fn count(n: usize) -> (u64, u64, u64) {
         let (mut lp, d, _) = setup(n as u64);
         let r = forever();
-        let mut last = None;
+        // the quote is of the oldest message: a walk from the newest pays the whole signal
+        let mut first = None;
         for i in 0..n {
             let o = fire(&mut lp, 0, d, r, &format!("m{i}"));
             for j in 0..3 {
                 edit(&mut lp, 0, d, r, &format!("m{i}e{j}"), o);
             }
-            last = Some(o);
+            first.get_or_insert(o);
         }
         osis_node::costs::take();
         let aks = [(d, log())];
@@ -479,9 +480,10 @@ fn bodies_read_are_flat_in_n_spec_commits_5() {
         let bodies = |c: &[(&str, std::time::Duration, u64)], k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
         let c = osis_node::costs::take();
         let (page, judged) = (bodies(&c, "listing: body read"), bodies(&c, "listing: version judged"));
-        lp.peers[0].engine.commit_row(&last.unwrap(), &|_, _| true, usize::MAX).unwrap();
+        let row = lp.peers[0].engine.commit_row(&first.unwrap(), &|_, _| true, usize::MAX).unwrap().unwrap();
+        assert_eq!(row.parts[0].body, body("m0e2"));
         let c = osis_node::costs::take();
-        (page, judged, bodies(&c, "listing: body read"))
+        (page, judged, bodies(&c, "listing: body read") + bodies(&c, "listing: version judged"))
     }
     assert_eq!(count(25), count(250));
 }
@@ -502,4 +504,142 @@ fn replaces_off_a_durable_signal_is_a_bad_part_spec_commits_2() {
     lp.peers[0].engine.commit_hostile(claim()).unwrap().unwrap();
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[1].engine.get(&d, &ak("t:reg.0")).unwrap(), None);
+}
+
+/// A small splitmix stream (the scripted runs below).
+struct Mix(u64);
+impl Mix {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        ((z ^ (z >> 31)) % n as u64) as usize
+    }
+}
+
+// spec/commits.md §5 Signals; spec: none (rebuildable indexes): over scripted runs of fires, honored,
+// forged and chained edits, purges (edits purging their predecessors too), a writer removed (its
+// writes falling, his writes while out invalid everywhere) and back, expiry and keep bounds passing:
+// after every step the incremental indexes equal a reopen and a rebuild from the commit records
+// (`Engine::check_index`), and at the end a node fed every commit in a shuffled order, some header
+// first and body later, reads the same listing
+#[test]
+fn incremental_equals_rebuilt_and_every_order_reads_alike_spec_commits_5() {
+    let (mut folded, mut out_writes) = (0, 0);
+    for seed in 0..10u64 {
+        let mut g = Mix(seed);
+        let (mut lp, d, ids) = net_with(3, 30 + seed);
+        let (alice, bob, obs) = (0, 1, 2);
+        let mut fires: Vec<CommitId> = Vec::new();
+        let mut bob_in = true;
+        for step in 0..14 {
+            let now = lp.peers[alice].engine.now().0;
+            let who = if g.below(2) == 1 { bob } else { alice };
+            let r = [forever(), after(2 * HOUR)][g.below(2)];
+            let mut m = Mutation::new();
+            m.retention(d, &log(), r).unwrap();
+            match g.below(6) {
+                0 | 1 => {
+                    m.set(d, &log(), &s(&format!("f{step}"))).unwrap();
+                    if g.below(3) == 0 {
+                        m.expires_all(WallMs(now + (1 + g.below(4) as u64) * HOUR));
+                    }
+                }
+                2 | 3 if !fires.is_empty() => {
+                    let of = fires[g.below(fires.len())];
+                    m.set(d, &log(), &s(&format!("e{step}"))).unwrap();
+                    m.replaces(d, &log(), of).unwrap();
+                    if g.below(3) == 0 {
+                        m.purge(named(d, fires[g.below(fires.len())]));
+                    }
+                }
+                4 if !fires.is_empty() => {
+                    m = Mutation::new();
+                    m.set(d, &ct::PURGE, &lp.peers[who].engine.now()).unwrap();
+                    m.purge(named(d, fires[g.below(fires.len())]));
+                }
+                5 => {
+                    if bob_in {
+                        // a hand-built frontier keeps some of his writes: the rest fall
+                        let keep: BTreeSet<CommitId> = fires.iter().filter(|_| g.below(2) == 0).copied().collect();
+                        set_edge(&mut lp.peers[alice].engine, d, ids[bob], None, Some(ct::Frontier { commits: keep }.to_value()));
+                    } else {
+                        set_edge(&mut lp.peers[alice].engine, d, ids[bob], Some(edge(Role::Write)), None);
+                    }
+                    bob_in = !bob_in;
+                    m = Mutation::new();
+                }
+                _ => {
+                    lp.advance(g.below(3) as u64 * HOUR + 1);
+                    m = Mutation::new();
+                }
+            }
+            // bob out writes anyway: invalid at every node
+            let out = who == bob && !bob_in;
+            let wrote = if m.is_empty() { None } else if out { lp.peers[bob].engine.commit_hostile(m).ok().flatten() } else { lp.peers[who].commit(m).ok().flatten() };
+            out_writes += usize::from(out && wrote.is_some());
+            fires.extend(wrote);
+            sync(&mut lp, alice, bob);
+            sync(&mut lp, bob, alice);
+            for i in [alice, bob] {
+                lp.peers[i].engine.tick().unwrap();
+            }
+            for i in [alice, bob] {
+                lp.peers[i].engine.check_index();
+            }
+        }
+        let want = list(&mut lp, alice, d);
+        // every commit alice holds, shuffled, a third of them header first
+        let mut all: Vec<CommitId> = lp.peers[alice].engine.commit_ids();
+        for i in (1..all.len()).rev() {
+            all.swap(i, g.below(i + 1));
+        }
+        // it holds exactly alice's commits: no addenda of its own
+        lp.peers[obs].engine.write_addenda(false);
+        let mut late = Vec::new();
+        for c in &all {
+            let Some(bytes) = lp.peers[alice].engine.commit_bytes(c).unwrap() else { continue };
+            if g.below(3) == 0 {
+                let mut bare = osis_commit::CommitBlob::decode(&bytes).unwrap();
+                bare.parts.clear();
+                let _ = lp.peers[obs].receive(&bare.encode(), Vec::new());
+                late.push(bytes);
+            } else {
+                let _ = lp.peers[obs].receive(&bytes, Vec::new());
+            }
+        }
+        for b in late {
+            let _ = lp.peers[obs].receive(&b, Vec::new());
+        }
+        // a body dropped as invalid in passing is fetched again once valid (node-sync's part)
+        for c in &all {
+            if let Some(bytes) = lp.peers[alice].engine.commit_bytes(c).unwrap() {
+                let _ = lp.peers[obs].receive(&bytes, Vec::new());
+            }
+        }
+        lp.peers[obs].engine.reexamine().unwrap();
+        lp.peers[obs].engine.tick().unwrap();
+        assert_eq!(list(&mut lp, obs, d), want, "seed {seed}: shuffled");
+        lp.peers[obs].engine.check_index();
+        folded += want.iter().filter(|x| x.1.is_some()).count();
+    }
+    assert!(folded > 0 && out_writes > 0, "reach: {folded} folded, {out_writes} writes while out");
+}
+
+// spec/commits.md §7: an undo of a signal's part writes nothing back, so undoing an edit leaves
+// the original reading as the edit; to restore text, replace again
+#[test]
+fn an_undo_of_an_edit_changes_no_reading_spec_commits_7() {
+    let (mut lp, d, _) = setup(20);
+    let r = forever();
+    let o = fire(&mut lp, 0, d, r, "one");
+    let v = edit(&mut lp, 0, d, r, "two", o);
+    let mut m = Mutation::new();
+    m.undo(v);
+    let _ = lp.peers[0].engine.write(m);
+    lp.sync_all().unwrap();
+    for i in 0..2 {
+        assert_eq!(list(&mut lp, i, d), vec![(o, Some(v), body("two"))], "node {i}");
+    }
 }

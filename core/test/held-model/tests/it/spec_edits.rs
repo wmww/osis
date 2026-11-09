@@ -147,6 +147,8 @@ fn nodes_holding_the_same_commits_read_alike() {
     alike(&u_validity(), &[9]);
     alike(&u_purge(Retention::PLAIN.after(2 * HOUR)), &[6, 7]);
     alike(&u_expiry(), &[5, 7]);
+    let r = FOREVER_KEPT;
+    alike(&[missing(fire(10, A, 1, r), 0), edit(11, A, 2, r, 10), missing(edit(12, A, 3, r, 10), 0), edit(30, B, 4, r, 10)], &[9]);
 }
 
 /// A reading depends only on what is listed: a held commit not listed reads as one never held
@@ -335,4 +337,57 @@ fn a_gone_original_reads_like_one_never_held() {
     let v2 = edit(12, A, 2, Retention::PLAIN.after(5 * HOUR), 10);
     assert_eq!(shown(&world(5, &[fire(10, A, 1, keep), v2.clone()])), shown(&world(5, &[v2.clone()])));
     assert_eq!(shown(&world(5, &[v2])), vec![(12, 12, val(12))]);
+}
+
+// Listing is judged from headers: an original whose body is not here holds its versions' place, and
+// reads as its newest version whose body is here; a version whose body is not here reads as nothing
+#[test]
+fn an_original_without_its_body_keeps_its_versions() {
+    let r = FOREVER_KEPT;
+    let s = [missing(fire(10, A, 1, r), 0), edit(11, A, 2, r, 10), missing(edit(12, A, 3, r, 10), 0)];
+    assert_eq!(shown(&world(9, &s)), vec![(10, 11, val(11))]);
+    let s = [missing(fire(10, A, 1, r), 0), missing(edit(11, A, 2, r, 10), 0)];
+    assert_eq!(shown(&world(9, &s)), vec![(10, 10, Shows::NotFetched)]);
+    let s = [fire(10, A, 1, r), missing(edit(11, A, 2, r, 10), 0)];
+    assert_eq!(shown(&world(9, &s)), vec![(10, 10, val(10))]);
+}
+
+fn required(id: CommitId, h: u64, rule: Rule) -> Commit {
+    let p = Part { thing: T, aspect: Aspect::REQUIRED, retention: Retention::FIXED, body: Body::Held(Delta::Required(vec![rule])), stripped: Default::default(), replaces: None };
+    content(id, FIRST_ADMIN, h, vec![p])
+}
+
+// spec/commits.md §5 Required retention: `final` makes a replacing part break the entry (invalid,
+// so the original reads as itself); under a duration a replacing part's expiry need only lie within it
+#[test]
+fn final_and_the_expiry_bound_judge_replacing_parts() {
+    let r = FOREVER_KEPT;
+    let fin = Rule { aspect: Some(SIG.name), retention: r, expiry: None, r#final: true };
+    let s = [required(5, 0, fin), fire(10, A, 1, r), edit(11, A, 2, r, 10)];
+    assert_eq!(shown(&world(9, &s)), vec![(10, 10, val(10))]);
+    let dur = Rule { aspect: Some(SIG.name), retention: r, expiry: Some(5 * HOUR), r#final: false };
+    let o = expiring(fire(10, A, 1, r), 6);
+    let within = expiring(edit(11, A, 2, r, 10), 6);
+    let beyond = expiring(edit(12, A, 3, r, 10), 9);
+    let none = edit(13, A, 4, r, 10);
+    assert_eq!(shown(&world(5, &[required(5, 0, dur), o.clone(), within])), vec![(10, 11, val(11))]);
+    for v in [beyond, none] {
+        assert_eq!(shown(&world(5, &[required(5, 0, dur), o.clone(), v])), vec![(10, 10, val(10))]);
+    }
+    // a plain fire still needs exactly the duration
+    assert_eq!(shown(&world(4, &[required(5, 0, dur), expiring(fire(20, B, 1, r), 5)])), vec![]);
+}
+
+// spec/commits.md §5 Purge: a request that expires reaches only deltas expiring no later than it
+#[test]
+fn an_expiring_request_reaches_only_earlier_expiries() {
+    let r = FOREVER_KEPT;
+    let item = |c| PurgeItem::Commit { commit: c, thing: T, aspect: SIG };
+    let mut rq = expiring(purge(50, A, 4, item(10)), 6);
+    rq.purge.extend([item(11), item(12)]);
+    let s = [fire(10, A, 1, r), expiring(fire(11, A, 2, r), 5), expiring(fire(12, A, 3, r), 8), rq];
+    let o = evaluate(&world(4, &s));
+    assert!(!o.purged.contains_key(&(10, 0)), "no expiry: out of reach");
+    assert!(o.purged.contains_key(&(11, 0)));
+    assert!(!o.purged.contains_key(&(12, 0)), "expires later than the request");
 }

@@ -1,0 +1,3 @@
+# signal-edits (review)
+- `common::set_edge` with a hand-built frontier turns this node's addenda off for good; a reopen or `rebuild_index` turns them back on and writes an addendum, so comparing digests across `restart`/`rebuild_index` after a removal fails for a reason unrelated to the code under test (cost me a false issue). `Engine::check_index` is the right tool: it loads in a dropped transaction and writes nothing. A node that should hold exactly another's commits needs `write_addenda(false)` too, or it answers removals itself.
+- A heredoc-free python edit that opened the file for writing before reading it truncated a test file; restore from git, never `open(p,'w')` and `open(p).read()` in one expression.
