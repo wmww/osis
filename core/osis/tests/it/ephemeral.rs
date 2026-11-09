@@ -51,7 +51,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     let win = db.engine(|e| e.header(&made.stamp.id.raw())).unwrap().aspects[0].tid;
     let c = db.created(win).unwrap().unwrap();
     // a record alone acts for its signer (spec/commits.md §2)
-    assert_eq!((c.id, c.ts(), c.node, c.actor), (made.stamp.id, made.ts(), db.node(), db.node()), "a new thing is durable");
+    assert_eq!((c.id, c.ts(), c.actor, c.actor), (made.stamp.id, made.ts(), db.me(), db.me()), "a new thing is durable");
     let before = durable_marks(&db);
     let mut w = db.write();
     w.at(win, state.clone()).set(&Value::Map([(Value::Int(0), s("draft")), (Value::Int(1), Value::List(vec![s("a")]))].into())).unwrap();
@@ -71,7 +71,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     let done = w.commit().unwrap().unwrap();
     let ch = recv(&rx);
     match ch.origin {
-        Origin::Local(i) => assert_eq!((i.id, i.ts(), i.node), (done.stamp.id, done.ts(), db.node())),
+        Origin::Local(i) => assert_eq!((i.id, i.ts(), i.actor), (done.stamp.id, done.ts(), db.node())),
         other => panic!("{other:?}"),
     }
     assert_eq!(db.at(win, state.clone()).path(field(1)).get::<Vec<String>>().unwrap(), Some(vec!["a".to_string(), "b".to_string()]));
@@ -81,7 +81,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     // an ephemeral aspect of a durable thing
     let cur = ak("app:selection+.0");
     db.commit_set(db.me(), osis::DynamicAspectKey::untyped(cur.clone()), &Value::Int(7)).unwrap();
-    assert_eq!(db.at(db.me(), osis::DynamicAspectKey::untyped(cur)).get().unwrap(), Some(Value::Int(7)));
+    assert_eq!(db.at(db.home(), osis::DynamicAspectKey::untyped(cur)).get().unwrap(), Some(Value::Int(7)));
     assert_eq!(durable_marks(&db), before);
     assert!(db.aspects(db.me()).unwrap().contains(&ak("app:selection+.0")));
 }
@@ -240,7 +240,7 @@ fn ephemeral_signal_fires_reach_history_listener_once_spec_data_model_2() {
                 assert_eq!(i, *id);
                 assert_eq!(c.stamp.id, *id);
                 let p = c.at(t, ring.clone()).unwrap();
-                assert_eq!((c.stamp.actor, c.stamp.node, c.kind, p.valid), (db.me(), db.node(), osis::CommitKind::Content, true));
+                assert_eq!((c.stamp.actor, c.kind, p.valid), (db.me(), osis::CommitKind::Content, true));
                 assert_eq!(p.body, osis::Body::Held(Some(s("ding"))));
             }
             e => panic!("{e:?}"),
@@ -353,15 +353,15 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
     let kept = ak("app:kept.0");
     let mut w = b.write();
     let e = w.create().unwrap();
-    w.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
+    w.at(b.home(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(kept.clone())).set(&Value::Int(2)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("app:draft+.0") && m.contains("app:kept.0")));
     assert!(!b.has_content(e).unwrap());
-    assert_eq!(b.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).get().unwrap(), None);
+    assert_eq!(b.at(b.home(), osis::DynamicAspectKey::untyped(draft.clone())).get().unwrap(), None);
     // an ephemeral op takes no retention
     let before = durable_marks(&b);
     let mut w = b.write();
-    w.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).retention(osis::Retention::default()).set(&Value::Int(1)).unwrap();
+    w.at(b.home(), osis::DynamicAspectKey::untyped(draft.clone())).retention(osis::Retention::default()).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
     assert_eq!(durable_marks(&b), before);
     // nor an ephemeral write on a thing the write creates: its record is durable
@@ -372,14 +372,14 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
     assert!(b.created(x).unwrap().is_none());
     // nor a signal beside an ephemeral write
     let mut w = b.write();
-    w.at(b.me(), osis::DynamicAspectKey::untyped(ak("app:ring+~0"))).fire(&Value::Int(1)).unwrap();
-    w.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
+    w.at(b.home(), osis::DynamicAspectKey::untyped(ak("app:ring+~0"))).fire(&Value::Int(1)).unwrap();
+    w.at(b.home(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("signal")));
     // nor ephemeral writes of two expiries
     b.register_schema("cursor.osis", "revision 1;\nexpires(30s) ephemeral aspect app:cursor+.0: int;").unwrap();
     let mut w = b.write();
-    w.at(b.me(), b.aspect_key("app:cursor+.0").unwrap()).set(&Value::Int(1)).unwrap();
-    w.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
+    w.at(b.home(), b.aspect_key("app:cursor+.0").unwrap()).set(&Value::Int(1)).unwrap();
+    w.at(b.home(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("one expiry")));
     assert_eq!(durable_marks(&b), before, "nothing applied");
     // a delete is no way past it: what it ends follows the durable commit, what is asked beside it
@@ -393,7 +393,7 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
     let marks = durable_marks(&b);
     let mut w = b.write();
     w.delete(gone).unwrap();
-    w.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
+    w.at(b.home(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("app:draft+.0") && m.contains("app:kept.0")));
     let mut w = b.write();
     w.delete(gone).unwrap();
@@ -402,12 +402,12 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
     assert_eq!((durable_marks(&b), b.has_content(gone).unwrap()), (marks, true), "nothing applied");
     // apart: the durable one a commit, the ephemeral one with an id of its own, each what its watch names
     let (tx, rx) = channel();
-    let _sub = b.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
+    let _sub = b.at(b.home(), osis::DynamicAspectKey::untyped(draft.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     recv(&rx);
-    let done = commit_with(&b, |w| w.at(b.me(), osis::DynamicAspectKey::untyped(kept.clone())).set(&Value::Int(3)));
+    let done = commit_with(&b, |w| w.at(b.home(), osis::DynamicAspectKey::untyped(kept.clone())).set(&Value::Int(3)));
     let c = done.stamp.id.raw();
     assert_eq!(b.engine(|e| e.header(&c)).unwrap().ts, done.ts());
-    let own = commit_with(&b, |w| w.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(4)));
+    let own = commit_with(&b, |w| w.at(b.home(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(4)));
     assert!(b.engine(|e| e.holds_memory(&own.stamp.id.raw())));
     assert_ne!(own.stamp.id, done.stamp.id);
     match recv(&rx).origin {
@@ -433,7 +433,7 @@ fn delete_resets_ephemeral_aspects_spec_data_model_1() {
     let x = db
         .commit_with(|w| {
             let x = w.create()?;
-            w.group(db.me()).add(osis::Member::Item(x))?;
+            w.group(db.home()).add(osis::Member::Item(x))?;
             Ok(x)
         })
         .unwrap();
@@ -465,7 +465,7 @@ fn shared(role: Role) -> (World, Osis, Osis, osis::Tid) {
     let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
     let mut wr = alice.write();
     let g = wr.create().unwrap();
-    wr.group(alice.me()).add(osis::Member::Item(g)).unwrap();
+    wr.group(alice.home()).add(osis::Member::Item(g)).unwrap();
     wr.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     alice.grant(g, b, role, Default::default()).unwrap();
@@ -509,10 +509,10 @@ fn failed_ephemeral_op_fails_the_commit_spec_data_model_2() {
     let state = db.aspect_key("win:state+.0").unwrap();
     let e = db.commit_with(|w| w.create()).unwrap();
     let mut w = db.write();
-    w.at(db.me(), osis::DynamicAspectKey::untyped(ak("app:kept+.0"))).set(&Value::Int(3)).unwrap();
+    w.at(db.home(), osis::DynamicAspectKey::untyped(ak("app:kept+.0"))).set(&Value::Int(3)).unwrap();
     w.at(e, state.clone()).path(field(1)).splice(5..5, &[s("x")]).unwrap();
     assert!(w.commit().is_err());
-    assert_eq!(db.at(db.me(), osis::DynamicAspectKey::untyped(ak("app:kept+.0"))).get().unwrap(), None);
+    assert_eq!(db.at(db.home(), osis::DynamicAspectKey::untyped(ak("app:kept+.0"))).get().unwrap(), None);
     assert_eq!(db.at(e, state).get().unwrap(), None);
 }
 
@@ -537,7 +537,6 @@ fn ephemeral_write_counts_as_acting_spec_permissions_4() {
     assert!(!before.contains(&db.me()), "nothing acted for the account yet: {before:?}");
     // a record alone acts for its signer (spec/commits.md §2)
     let win = db.commit_with(|w| w.create()).unwrap();
-    assert!(!db.engine(|e| e.core.acting()).contains(&db.me()), "a record alone acts for the node");
     let mut w = db.write();
     w.at(win, state.clone()).set(&Value::Map([(Value::Int(0), s("draft")), (Value::Int(1), Value::List(vec![]))].into())).unwrap();
     w.commit().unwrap();

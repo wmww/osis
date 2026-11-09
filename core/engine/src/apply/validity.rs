@@ -632,7 +632,7 @@ pub(crate) fn retain_in_force(core: &Core, tid: &Tid, at: &Point) -> bool {
 
 /// `retain_in_force` for a write this node makes now: after every setting it holds.
 pub(crate) fn retain_now(core: &Core, tid: &Tid) -> bool {
-    retain_in_force(core, tid, &Point { ts: core.hlc.peek(), node: core.id.tid(), commit: CommitId([0xff; 32]) })
+    retain_in_force(core, tid, &Point { ts: core.hlc.peek(), node: core.me(), commit: CommitId([0xff; 32]) })
 }
 
 /// The requirement in force for a write of `ak` on `tid` by `node` at `ts` (the writer's side).
@@ -1069,7 +1069,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
             }
         }
     }
-    let me = tx.core.id.tid();
+    let me = tx.core.me();
     let mut own_fell: Vec<(CommitId, Vec<Tid>)> = Vec::new();
     // parts dropped while invalid that turn valid: missing again, fetched
     let mut back: Vec<(CommitId, usize)> = Vec::new();

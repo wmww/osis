@@ -121,6 +121,7 @@ pub fn own_uid() -> Result<u32> {
 pub(crate) struct Who {
     pub me: Tid,
     pub node: Tid,
+    pub home: Tid,
 }
 
 type CallReply = std::sync::mpsc::Sender<std::result::Result<Outcome, Code>>;
@@ -439,7 +440,7 @@ fn not_authed(r: std::result::Result<Outcome, Code>, keyed: bool) -> Started {
 /// A `whoami` reply.
 fn who_of(r: std::result::Result<Outcome, Code>) -> Result<Who> {
     match r {
-        Ok(Outcome::Ok { value }) => c::Args::new(value).and_then(|mut a| Ok(Who { me: a.tid()?, node: a.tid()? })),
+        Ok(Outcome::Ok { value }) => c::Args::new(value).and_then(|mut a| Ok(Who { me: a.tid()?, node: a.tid()?, home: a.tid()? })),
         Ok(Outcome::Err { code, detail }) => Err(c::error_of(code, detail)),
         Err(c) => Err(net(format!("node answered error {}", c.0))),
     }

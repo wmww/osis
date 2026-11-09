@@ -30,7 +30,7 @@ fn app_group_and_seeds() {
     let d = data();
     let g = d.main_group().unwrap();
     assert_eq!(d.main_group().unwrap(), g);
-    let home = d.db.at(d.db.me(), GROUP).get().unwrap().unwrap();
+    let home = d.db.at(d.db.home(), GROUP).get().unwrap().unwrap();
     assert!(home.items.contains(&g) && home.subgroups.contains(&g));
     assert_eq!(d.db.at(g, TAG).get().unwrap(), None);
     assert_eq!(d.collections().unwrap().len(), 4);

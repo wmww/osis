@@ -1034,7 +1034,8 @@ impl SyncEngine {
             // the pass of the inbox's label stamps it, the home label's of the actor it is sealed
             // to or one above it places its copy (`inbox_certificates`); applying starts them only
             // if the commit is new here, and a sender's own deposit under its own inbox is not
-            let scope: BTreeSet<Tid> = self.engine.record_chain(&actor).collect();
+            let mut scope: BTreeSet<Tid> = self.engine.record_chain(&actor).collect();
+            scope.extend(self.engine.core.account_devices().filter(|(p, _)| scope.contains(p)).map(|x| x.1));
             self.mark_dirty_of(&scope);
             self.mark_labels(&[l]);
         }
@@ -1191,9 +1192,10 @@ impl SyncEngine {
         self.stats.inbox_tries += 1;
         // a KEM per try, so one at a time
         for a in self.inbox_actors_at(l) {
-            for s in self.read_secrets(&a) {
+            let kems: Vec<osis_crypto::KemSecret> = if self.engine.core.is_account(&a) { self.engine.account_kems(&a) } else { self.read_secrets(&a).iter().map(role_kem).collect() };
+            for kem in &kems {
                 self.stats.inbox_keys += 1;
-                if let Ok((p, x)) = osis_label::open_inbox_blob(bytes, &a, &role_kem(&s)) {
+                if let Ok((p, x)) = osis_label::open_inbox_blob(bytes, &a, kem) {
                     return Some((a, p, x));
                 }
             }

@@ -798,9 +798,9 @@ fn carry(net: &mut Net, n: usize, done: osis_node::flows::Done) {
 
 /// Node `n`'s account, made on `home`, synced.
 fn account(net: &mut Net, n: usize, home: &[osis_label::Address]) -> osis_base::Tid {
-    let (p, done) = net.engine(n).create_person(home).unwrap();
+    let (p, done) = net.engine(n).create_account(home).unwrap();
     carry(net, n, done);
-    p.person
+    p.account
 }
 
 /// Node `x`'s account joins by `link`: follows K's label by the link key, redeems, drops the key.

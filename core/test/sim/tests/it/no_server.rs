@@ -930,7 +930,7 @@ fn repro_row36_unreachable_co_readers_do_not_hide_a_reachable_one() {
         w.set_peer_reachable(&older, n, false);
     }
     w.run();
-    let home = a.me();
+    let home = a.home();
     say(&a, home, "to the reachable one");
     w.advance(LONG_MS);
     assert_eq!(heard(&older, home).as_deref(), Some("to the reachable one"));

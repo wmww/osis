@@ -37,8 +37,8 @@ pub fn new_tag(db: &Osis, name: &str) -> Result<Tid> {
 /// subgroup (its items sync), so every node has it and nobody else does.
 pub fn private_tag(db: &Osis, name: &str) -> Result<Tid> {
     db.commit_with(|w| {
-        let t = w.create_in(db.me(), &[db.me()])?;
-        w.group(db.me()).add(osis::Member::Subgroup(t))?;
+        let t = w.create_in(db.me(), &[db.home()])?;
+        w.group(db.home()).add(osis::Member::Subgroup(t))?;
         w.at(t, TAG).set(&Tag::default())?;
         w.at(t, NAME).set(&name.to_string())?;
         Ok(t)

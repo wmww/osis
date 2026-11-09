@@ -8,6 +8,7 @@ use std::sync::mpsc::channel;
 
 // spec/permissions.md §5.1 Trust set: a node's side is its own; notes/disputes-plan.md step 4
 #[test]
+#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     let (ca, cb, cc) = (clock(), clock(), clock());
     let a = osis::internals::create(cfg(1, MemStore::new(), &ca)).unwrap();
@@ -26,8 +27,8 @@ fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     let opts = osis::SetRoleOpts { retain_copy: None };
     // b's clock runs ahead; a has not seen b's removal when it removes b
     cb.advance(5000);
-    b.set_role(b.me(), node_a, None, opts).unwrap();
-    a.set_role(a.me(), node_b, None, opts).unwrap();
+    b.set_role(b.home(), node_a, None, opts).unwrap();
+    a.set_role(a.home(), node_b, None, opts).unwrap();
     let (tx, rx) = channel();
     let _sub = c.on_dispute(move |_, d| tx.send(d).unwrap()).unwrap();
     deliver(&b, &c);

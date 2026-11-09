@@ -121,17 +121,20 @@ impl Engine {
     /// This node's chain certificates for `g`, its node card and the cards of the key actors
     /// holding `g` (spec/permissions.md §4), as commits with the parts to carry.
     pub fn certificates(&mut self, g: &Tid) -> BTreeMap<CommitId, Parts> {
-        let me = self.tid();
+        let me = self.me();
         let mut out: BTreeMap<CommitId, Parts> = BTreeMap::new();
         let mut add = |c: CommitId, parts: Parts| {
             if !parts.is_empty() {
                 out.entry(c).or_default().extend(parts);
             }
         };
-        let mine = BTreeSet::from([me]);
-        for ak in CARD.iter().chain(["created.0"].iter()) {
-            if let Some(c) = self.latest_on(&me, ak) {
-                add(c, self.parts_of(&c, &mine, &[ak]));
+        // the account's card (the author of every commit but the node's own) and the node's
+        for who in [me, self.tid()] {
+            let mine = BTreeSet::from([who]);
+            for ak in CARD.iter().chain(["created.0"].iter()) {
+                if let Some(c) = self.latest_on(&who, ak) {
+                    add(c, self.parts_of(&c, &mine, &[ak]));
+                }
             }
         }
         // the record chain's `created.0` records

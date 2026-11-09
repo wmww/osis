@@ -10,17 +10,17 @@
 //! act (an account, a node, a shared space) is an **actor**.
 //!
 //! # A first write
-//! You are the first admin of a thing you create. `me()` is your account, and also a group synced to
+//! You are the first admin of a thing you create. `me()` is your account; `home()` is a private group synced to
 //! all your nodes.
 //! ```
 //! use osis::{Config, Member, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
 //! let mut w = db.write();
 //! let note = w.create()?;
-//! w.group(db.me()).add(Member::Item(note))?;
+//! w.group(db.home()).add(Member::Item(note))?;
 //! w.at(note, db.aspect_key("note:title.0")?).set(&Value::Str("Groceries".into()))?;
 //! w.commit()?;
-//! assert!(db.members(db.me())?.contains(&Member::Item(note)));
+//! assert!(db.members(db.home())?.contains(&Member::Item(note)));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -247,7 +247,7 @@
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, SyncState};
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
-//! assert_eq!(db.status()?.groups[&db.me()].state, SyncState::NotConnected);
+//! assert_eq!(db.status()?.groups[&db.home()].state, SyncState::NotConnected);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -406,7 +406,7 @@
 //! let a = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
 //! let b = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
 //! let mut w = a.write();
-//! w.at(b.me(), a.aspect_key("app:x.0")?).set(&osis::Value::Int(1))?;
+//! w.at(b.home(), a.aspect_key("app:x.0")?).set(&osis::Value::Int(1))?;
 //! assert!(matches!(w.commit(), Err(Error::UnknownThing { .. })));
 //! # Ok::<(), osis::Error>(())
 //! ```

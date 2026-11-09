@@ -365,7 +365,7 @@ pub fn parse_duration(s: &str) -> Option<i64> {
 
 // ---- parsing
 
-/// Resolves `me`, `node` and script variables (`$name`) to tids.
+/// Resolves `me`, `home`, `node` and script variables (`$name`) to tids.
 pub type Aliases<'a> = &'a dyn Fn(&str) -> Option<Tid>;
 
 pub fn no_aliases(_: &str) -> Option<Tid> {

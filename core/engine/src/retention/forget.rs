@@ -54,7 +54,7 @@ pub struct Forgotten {
 
 /// Whether a held path reads `t` (the node's or a held key actor's effective role on it).
 fn read_path(core: &Core, t: &Tid) -> bool {
-    let node = core.id.tid();
+    let node = core.me();
     core.may_read(&node, t) || core.key_actors.keys().chain(core.ix.bearers.iter()).any(|k| core.may_read(k, t))
 }
 

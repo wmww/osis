@@ -55,7 +55,7 @@ impl Engine {
     /// here with its durable commit and writes none (`retention::memory::drop_things`). When the
     /// commit or any op fails, nothing applies. `None` when nothing changes.
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
-        let node = self.tid();
+        let node = self.me();
         let actor = m.actor.unwrap_or(node);
         if m.confined {
             self.check_confined(&m, &actor)?;
@@ -166,7 +166,7 @@ impl Engine {
 
     /// Ends an own memory commit `id` written by `write` or a revert: its change event.
     pub(crate) fn ephemeral_written(&mut self, id: CommitId, actor: Tid) -> Written {
-        let node = self.tid();
+        let node = self.me();
         let now = self.now();
         let (ts, mut changed) = self.header(&id).map(|h| (h.ts, h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect::<Vec<_>>())).unwrap_or_default();
         changed.sort();
@@ -185,7 +185,7 @@ impl Engine {
             return;
         }
         let now = self.now();
-        self.core.events.queue(Event::Ephemeral { id: c, origin: Origin::Local, author: self.tid(), actor, ts, received: now, changed });
+        self.core.events.queue(Event::Ephemeral { id: c, origin: Origin::Local, author: self.me(), actor, ts, received: now, changed });
         self.core.events.flush();
     }
 
@@ -201,7 +201,7 @@ impl Engine {
             && let Some(h) = self.header(&c)
         {
             let now = self.now();
-            self.core.events.queue(Event::Ephemeral { id: c, origin: Origin::Local, author: self.tid(), actor, ts: h.ts, received: now, changed: h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect() });
+            self.core.events.queue(Event::Ephemeral { id: c, origin: Origin::Local, author: self.me(), actor, ts: h.ts, received: now, changed: h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect() });
             self.core.events.flush();
         }
         Ok(id)

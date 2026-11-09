@@ -264,7 +264,7 @@ fn groups(sim: &mut NetSim) -> Res<()> {
         let mut is_expected = BTreeMap::new();
         for n in 0..sim.nodes.len() {
             let tid = sim.tid(n)?;
-            let person = sim.person_of.get(&n).copied();
+            let person = sim.account_of.get(&n).copied();
             is_expected.insert(n, roster.contains(&tid) || person.is_some_and(|p| roster.contains(&p) || p == g.first_admin));
         }
         let holders: BTreeSet<usize> = is_expected.iter().filter(|(n, x)| **x && !sim.excused.contains(n)).map(|(n, _)| *n).collect();

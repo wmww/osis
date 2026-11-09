@@ -197,24 +197,24 @@ pub(crate) fn commit_id(v: Value) -> Result<CommitId> {
 }
 
 pub(crate) fn stamp_v(i: &Stamp) -> Value {
-    Value::List(vec![commit_id_v(&i.id), Value::Tid(i.actor), Value::Tid(i.node), ts_v(i.ts), u(i.received.0)])
+    Value::List(vec![commit_id_v(&i.id), Value::Tid(i.actor), ts_v(i.ts), u(i.received.0)])
 }
 
 pub(crate) fn stamp(v: Value) -> Result<Stamp> {
     let mut a = Args::new(v)?;
-    let i = Stamp::new(commit_id(a.next()?)?, a.tid()?, a.tid()?, ts(&a.next()?)?, wall(&a.next()?)?);
+    let i = Stamp::new(commit_id(a.next()?)?, a.tid()?, ts(&a.next()?)?, wall(&a.next()?)?);
     a.end()?;
     Ok(i)
 }
 
 pub(crate) fn thing_stamp_v(s: &ThingStamp) -> Value {
-    Value::List(vec![commit_id_v(&s.id), Value::Tid(s.actor), Value::Tid(s.node), ts_v(s.ts), u(s.received.0)])
+    Value::List(vec![commit_id_v(&s.id), Value::Tid(s.actor), ts_v(s.ts), u(s.received.0)])
 }
 
 pub(crate) fn thing_stamp(v: Value) -> Result<ThingStamp> {
     let mut a = Args::new(v)?;
-    let (id, actor, node, t, received) = (commit_id(a.next()?)?, a.tid()?, a.tid()?, ts(&a.next()?)?, wall(&a.next()?)?);
-    let s = ThingStamp { id, actor, node, written: t.wall_ms(), ts: t, received };
+    let (id, actor, t, received) = (commit_id(a.next()?)?, a.tid()?, ts(&a.next()?)?, wall(&a.next()?)?);
+    let s = ThingStamp { id, actor, written: t.wall_ms(), ts: t, received };
     a.end()?;
     Ok(s)
 }

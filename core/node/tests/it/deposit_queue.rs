@@ -169,28 +169,28 @@ fn link_setup_at(net: &mut Net, k: &[usize]) -> (usize, usize, osis_base::Tid, o
     let a = net.node(30, &all);
     let x = net.node(31, &all);
     let home = vec![net.address(s0)];
-    let (pa, done) = net.engine(a).create_person(&home).unwrap();
+    let (pa, done) = net.engine(a).create_account(&home).unwrap();
     carry(net, a, done);
-    let (px, done) = net.engine(x).create_person(&home).unwrap();
+    let (px, done) = net.engine(x).create_account(&home).unwrap();
     carry(net, x, done);
     net.run();
     let e = net.engine(a);
     let mut m = Mutation::new();
-    let t = e.new_thing(&mut m, pa.person);
+    let t = e.new_thing(&mut m, pa.account);
     m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
     let (_, acts) = net.sync(a).create_label(&t, home.clone()).unwrap();
     net.actions(a, acts);
     net.run();
     let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: k.iter().map(|s| net.address(*s)).collect(), peers: Vec::new(), single_use: true };
-    let (link, _, done) = net.engine(a).create_link(&pa.person, &spec).unwrap();
+    let (link, _, done) = net.engine(a).create_link(&pa.account, &spec).unwrap();
     carry(net, a, done);
     net.run();
     let held = net.engine(x).hold_key_actor(link.seed.clone()).unwrap();
     let acts = net.sync(x).follow(held, link.k, link.k_label, link.hosts.clone());
     net.actions(x, acts);
     net.run();
-    (a, x, t, link, px.person, held)
+    (a, x, t, link, px.account, held)
 }
 
 /// Commit `c`'s deltas node `n` lacks (none when it holds no copy of `c`).
@@ -531,19 +531,19 @@ fn link_card_survives_a_crash_spec_permissions_7() {
         let (s0, s1) = (net.add_host(), net.add_host());
         let a = net.node(30, &[s0, s1]);
         let home = vec![net.address(s0)];
-        let (pa, done) = net.engine(a).create_person(&home).unwrap();
+        let (pa, done) = net.engine(a).create_account(&home).unwrap();
         carry(&mut net, a, done);
         net.run();
         let e = net.engine(a);
         let mut m = Mutation::new();
-        let t = e.new_thing(&mut m, pa.person);
+        let t = e.new_thing(&mut m, pa.account);
         m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
         e.commit(m).unwrap();
         let (_, acts) = net.sync(a).create_label(&t, home.clone()).unwrap();
         net.actions(a, acts);
         net.run();
         let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: vec![net.address(s1)], peers: Vec::new(), single_use: true };
-        let (link, _, done) = net.engine(a).create_link(&pa.person, &spec).unwrap();
+        let (link, _, done) = net.engine(a).create_link(&pa.account, &spec).unwrap();
         let card = done.deliveries.iter().find_map(|d| if let osis_node::flows::Delivery::Certificate { commits, under } = d { (*under == link.k).then(|| commits[0]) } else { None }).unwrap();
         if crash {
             drop(done);

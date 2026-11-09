@@ -389,7 +389,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     }
     // the bound is for received commits (spec/crdt.md §2.2): this node's own are as far ahead
     // as its HLC, which a clock correction moving back must not turn against them
-    if h.author != tx.core.id.tid() && h.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
+    if h.author != tx.core.me() && h.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
         return Ok(Exam::Pending(Reason::Drift, Vec::new()));
     }
     // the slots a held purge request emptied while they waited (`retention::strip_purged`; perhaps just
@@ -457,7 +457,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let mut out = Parts::default();
     let mut interner = Interner::new();
     // tests let a local writer break the writer rules, to test receivers
-    let rules = !(tx.core.skip_writer_rules && h.author == tx.core.id.tid());
+    let rules = !(tx.core.skip_writer_rules && h.author == tx.core.me());
     let mut bad: Vec<usize> = Vec::new();
     for p in &blob.parts {
         if skip.contains(&p.ai) || unjudged.contains_key(&p.ai) {
@@ -1270,7 +1270,7 @@ impl Engine {
         let mut out: std::collections::BTreeSet<Tid> = self.get_typed(thing, &osis_schema::core_types::ROLES)?.unwrap_or_default().into_keys().collect();
         out.extend(self.get_typed(thing, &osis_schema::core_types::SECRETS)?.unwrap_or_default().boxes.into_keys().map(|k| k.holder));
         out.extend(named);
-        let me = self.core.id.tid();
+        let me = self.core.me();
         out.retain(|t| *t == me || self.core.ix.secrets.contains_key(t));
         Ok(out)
     }

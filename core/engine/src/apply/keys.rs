@@ -739,7 +739,7 @@ mod tests {
         let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
         for seed in 0..4u64 {
             let mut lp = LocalPeer::new(4, 530 + seed, WallMs(1_700_000_000_000)).unwrap();
-            let ps: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.create_person(&hosts).unwrap().0.person).collect();
+            let ps: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.create_account(&hosts).unwrap().0.account).collect();
             spread(&mut lp);
             for p in &mut lp.peers {
                 p.engine.core.check_ingest = true;

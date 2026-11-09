@@ -115,7 +115,7 @@ impl Engine {
     /// admin on the target, or an effective invite of at least `role` with no current edge of
     /// the holder (an invite grant).
     pub fn may_grant(&self, target: &Tid, holder: &Tid, role: Role) -> bool {
-        let me = self.tid();
+        let me = self.me();
         if self.core.role_now(&me, target) == Some(Role::Admin) {
             return true;
         }
@@ -128,7 +128,7 @@ impl Engine {
     /// (admin on the holder actor its only authority for it, spec/permissions.md §2), or an
     /// explicit demotion (admin on the target).
     pub fn may_remove(&self, target: &Tid, holder: &Tid) -> Option<Untie> {
-        let me = self.tid();
+        let me = self.me();
         if crate::apply::validity::self_removal(&self.core, &me, target, holder, now_ts(&self.core)) {
             return Some(Untie::SelfRemoval);
         }

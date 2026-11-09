@@ -330,7 +330,7 @@ pub struct NetSim {
     /// Nodes no check expects to read (removed, stranded on purpose).
     pub excused: BTreeSet<usize>,
     /// The account each node belongs to.
-    pub person_of: BTreeMap<usize, Tid>,
+    pub account_of: BTreeMap<usize, Tid>,
     /// Print every trace line (`OSIS_SIM_TRACE`).
     pub verbose: bool,
     /// Invariants switched off for a scenario, each naming the issue that breaks it.
@@ -455,7 +455,7 @@ impl NetSim {
             purged: Vec::new(),
             tombs: BTreeMap::new(),
             excused: BTreeSet::new(),
-            person_of: BTreeMap::new(),
+            account_of: BTreeMap::new(),
             verbose: std::env::var_os("OSIS_SIM_TRACE").is_some(),
             waivers: BTreeSet::new(),
             watch: false,
@@ -1647,27 +1647,30 @@ impl NetSim {
     }
 
     /// Node `n` creates an account with its home label at `hosts`.
-    pub fn person(&mut self, n: usize, hosts: &[usize]) -> Res<osis_node::flows::Person> {
+    pub fn account(&mut self, n: usize, hosts: &[usize]) -> Res<osis_node::flows::CreatedAccount> {
         let addrs = self.addresses(hosts);
-        let r = self.engine(n)?.create_person(&addrs);
-        let (p, done) = r.map_err(|e| self.fail(format!("node {n} create_person: {e}")))?;
+        let r = self.engine(n)?.create_account(&addrs);
+        let (a, done) = r.map_err(|e| self.fail(format!("node {n} create_account: {e}")))?;
         self.carry(n, done)?;
-        self.person_of.insert(n, p.person);
-        Ok(p)
+        self.account_of.insert(n, a.account);
+        Ok(a)
     }
 
-    /// Pairs node `new` to `account` through node `have` (spec/sync.md §2: the node card over
-    /// a direct connection, the grant back).
-    pub fn pair(&mut self, have: usize, new: usize, person: Tid) -> Res<()> {
+    /// Pairs node `new` to `have`'s account through node `have` (spec/sync.md §2: the node card
+    /// over a direct connection, the grant back).
+    pub fn pair(&mut self, have: usize, new: usize) -> Res<()> {
         self.direct(new, have)?;
         let nt = self.tid(new)?;
-        let r = self.engine(have)?.pair(&person, &nt);
+        let e = self.engine(have)?;
+        let account = e.account().ok().flatten().map(|a| a.0);
+        let r = e.pair(&nt);
         let done = r.map_err(|e| self.fail(format!("node {have} pair: {e}")))?;
         let grant = done.commits.last().copied();
-        self.person_of.insert(new, person);
+        let Some(account) = account else { return Err(self.fail(format!("node {have} has no account"))) };
+        self.account_of.insert(new, account);
         self.carry(have, done)?;
         if let Some(grant) = grant {
-            let r = self.engine(new)?.paired(&person, &grant);
+            let r = self.engine(new)?.paired(&account, &grant);
             if let Ok(done) = r {
                 self.carry(new, done)?;
             }

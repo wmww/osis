@@ -142,7 +142,7 @@ impl Engine {
     /// Held memory commits: id, how many of its parts are held, whether this node authored it
     /// (tests, diagnostics).
     pub fn memory_commits(&self) -> Vec<(CommitId, usize, bool)> {
-        let me = self.tid();
+        let me = self.me();
         self.core.ix.commits.iter().filter(|(_, m)| m.view.memory).map(|(id, m)| (*id, (0..m.view.aspects.len()).filter(|ai| m.holds(*ai)).count(), m.view.author == me)).collect()
     }
 
@@ -277,7 +277,7 @@ impl Engine {
     /// expiring writes value-less) encoded unpaged, weighed as a part plus `ENTRY_CHARGE`.
     fn snapshot_cost(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<usize>> {
         let (tid, ak) = (*tid, ak.clone());
-        let me = self.tid();
+        let me = self.me();
         self.run(|tx| {
             tx.set_memory();
             let Some(st) = crate::retention::snapshot_state(tx, &tid, &ak)? else { return Ok(None) };

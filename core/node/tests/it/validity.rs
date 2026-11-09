@@ -1268,7 +1268,7 @@ fn edge_change_is_remove_and_put_spec_perm_2() {
 /// Account actors for `lp`'s peers, known to all.
 fn persons(lp: &mut LocalPeer) -> Vec<Tid> {
     let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
-    let ps = (0..lp.peers.len()).map(|i| lp.peers[i].engine.create_person(&hosts).unwrap().0.person).collect();
+    let ps = (0..lp.peers.len()).map(|i| lp.peers[i].engine.create_account(&hosts).unwrap().0.account).collect();
     lp.sync_all().unwrap();
     ps
 }
@@ -3352,15 +3352,15 @@ fn stranger_card_makes_no_node_spec_perm_4() {
         let mut lp = net(2, 951);
         lp.sync_all().unwrap();
         let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
-        let (p, _) = lp.peers[0].engine.create_person(&hosts).unwrap();
-        let recovery = osis_node::identity::Identity::from_seed(p.card.seed.clone()).tid();
+        let (p, _) = lp.peers[0].engine.create_account(&hosts).unwrap();
         let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, p.person);
+        let t = lp.peers[0].engine.new_thing(&mut m, p.account);
         lp.peers[0].commit(m).unwrap();
         let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts, peers: Vec::new(), single_use: false };
-        let (link, _, _) = lp.peers[0].engine.create_link(&p.person, &spec).unwrap();
+        let (link, _, _) = lp.peers[0].engine.create_link(&p.account, &spec).unwrap();
         let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
-        for k in [recovery, l] {
+        {
+            let k = l;
             assert!(!lp.peers[0].engine.is_node(&k).unwrap(), "a key actor");
             let mut blob = forge_card(&mut lp, k);
             if header_only {
@@ -3383,21 +3383,21 @@ fn stranger_label_listing_labels_nothing_spec_sync_2() {
     let mut lp = net(2, 952);
     lp.sync_all().unwrap();
     let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
-    let (p, _) = lp.peers[0].engine.create_person(&hosts).unwrap();
+    let (p, _) = lp.peers[0].engine.create_account(&hosts).unwrap();
     let mut m = Mutation::new();
-    let t = lp.peers[0].engine.new_thing(&mut m, p.person);
+    let t = lp.peers[0].engine.new_thing(&mut m, p.account);
     lp.peers[0].commit(m).unwrap();
     let e = &mut lp.peers[0].engine;
-    assert!(e.labeled_groups().contains(&p.person), "the account's home label");
-    let before = e.published_under(&p.person);
+    assert!(e.labeled_groups().contains(&p.devices), "the account's home label");
+    let before = e.published_under(&p.devices);
     let mut blob = forge_on(&mut lp, t, "label.0");
     blob.parts.clear();
     let id = blob.id();
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.ingest(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(id));
     assert!(!e.labeled_groups().contains(&t), "a listing labels nothing");
-    assert!(!e.published_under(&p.person).contains(&t));
-    assert_eq!(e.published_under(&p.person), before);
+    assert!(!e.published_under(&p.devices).contains(&t));
+    assert_eq!(e.published_under(&p.devices), before);
     // nor after a reopen
     e.reload().unwrap();
     assert!(!e.labeled_groups().contains(&t));

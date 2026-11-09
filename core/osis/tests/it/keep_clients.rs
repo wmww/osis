@@ -72,7 +72,7 @@ fn chat(opts: GrantOpts, role: Role) -> Chat {
     let bob = block_on(a.import_contact(&card)).unwrap();
     let mut w = a.write();
     let g = w.create().unwrap();
-    w.group(a.me()).add(osis::Member::Item(g)).unwrap();
+    w.group(a.home()).add(osis::Member::Item(g)).unwrap();
     w.commit().unwrap();
     a.sync(g, &[]).unwrap();
     block_on(a.wait_synced(SyncScope::All)).unwrap();
@@ -319,7 +319,7 @@ fn sim(w: &mut World, keep: Option<bool>) -> (Osis, Osis, Tid, Tid, Tid) {
 fn sim_group(a: &Osis) -> Tid {
     let mut x = a.write();
     let g = x.create().unwrap();
-    x.group(a.me()).add(osis::Member::Item(g)).unwrap();
+    x.group(a.home()).add(osis::Member::Item(g)).unwrap();
     x.commit().unwrap();
     a.sync(g, &[]).unwrap();
     g
@@ -638,7 +638,7 @@ fn a_chat_by_record_keeps_spec_permissions_3() {
     let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
     let g = a.commit_with(|w| w.create()).unwrap();
     let mut x = a.write();
-    x.group(a.me()).add(osis::Member::Item(g)).unwrap();
+    x.group(a.home()).add(osis::Member::Item(g)).unwrap();
     x.commit().unwrap();
     a.sync(g, &[]).unwrap();
     let mut x = a.write();
@@ -747,7 +747,7 @@ fn a_copy_goes_nowhere_spec_permissions_3() {
 fn a_client_adds_no_copy_spec_permissions_3() {
     let c = chat(GrantOpts::default(), Role::Write);
     let (actor, _, app) = c.app(Role::Admin);
-    let own = c.b.commit_with(|w| { let o = w.create()?; w.group(c.b.me()).add(osis::Member::Item(o))?; w.group(c.b.me()).add(osis::Member::Subgroup(o))?; Ok(o) }).unwrap();
+    let own = c.b.commit_with(|w| { let o = w.create()?; w.group(c.b.home()).add(osis::Member::Item(o))?; w.group(c.b.home()).add(osis::Member::Subgroup(o))?; Ok(o) }).unwrap();
     c.b.grant(own, actor, Role::Write, Default::default()).unwrap();
     c.kick(c.bob, Some(true));
     until("the app reads the copy", || app.at(c.m, osis::DynamicAspectKey::untyped(text())).get().ok().flatten().is_some());
@@ -797,7 +797,7 @@ fn a_copy_beside_a_live_holder_spec_permissions_3() {
     let (h, a, b) = (x0.g, &x0.a, &x0.b);
     let mut w = a.write();
     let g = w.create().unwrap();
-    w.group(a.me()).add(osis::Member::Item(g)).unwrap();
+    w.group(a.home()).add(osis::Member::Item(g)).unwrap();
     let xg = g;
     w.commit().unwrap();
     a.sync(xg, &[]).unwrap();

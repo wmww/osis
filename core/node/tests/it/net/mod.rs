@@ -790,7 +790,7 @@ impl Net {
         for (m, _) in holders {
             self.pair(*m, admin);
         }
-        let me = self.tid(admin);
+        let me = self.engine(admin).me();
         let e = self.engine(admin);
         let mut m = Mutation::new();
         let g = e.new_thing(&mut m, me);
@@ -956,6 +956,9 @@ pub fn s(x: &str) -> Value {
 }
 
 fn recipient(e: &mut Engine, t: Tid, role: Role) -> Recipient {
+    if e.core.is_account(&t) {
+        return Recipient { holder: t, role, keys: e.account_holder_keys(&t).unwrap() };
+    }
     if t == e.tid() {
         return Recipient { holder: t, role, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } };
     }

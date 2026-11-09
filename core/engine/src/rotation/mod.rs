@@ -198,7 +198,7 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
     let own = departs.then(|| {
         let ts = *m.ts.get_or_insert_with(|| tx.core.hlc.next());
         let blind = *m.blind.get_or_insert_with(|| crate::engine::write::draw_blind(&mut *tx.rng));
-        osis_keys::Own { ts: ts.to_u64(), author: m.signer.unwrap_or(tx.core.id.tid()), blind }
+        osis_keys::Own { ts: ts.to_u64(), author: m.signer.unwrap_or(tx.core.me()), blind }
     });
     let names = departures::names(tx.core, &a, own);
     let rot = rotate(&a, roles, held, &secrets, holders, &names, &mut *tx.rng)?;
@@ -222,7 +222,7 @@ pub(crate) fn possessed(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>,
 pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<Tid>> {
     let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
     let secrets = secrets_in(tx, a)?;
-    let me = tx.core.id.tid();
+    let me = tx.core.me();
     let mut out: Vec<Tid> = rot.secrets.boxes.keys().map(|k| k.holder).filter(|m| *m != me).collect();
     out.sort();
     out.dedup();
@@ -265,7 +265,7 @@ pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Rol
 fn rotate_boxing(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>, holders: &[Recipient]) -> Result<Done> {
     let held = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
     let mut m = Mutation::new();
-    if who != tx.core.id.tid() {
+    if who != tx.core.me() {
         m.sign_as(who);
     }
     let rot = rotation_into(tx, &mut m, a, roles, &held, holders, false)?;
@@ -442,7 +442,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[c
     if tx.core.has_own_secrets(&t) || tx.core.is_key_actor(&t) {
         return Ok(None);
     }
-    let who = tx.core.id.tid();
+    let who = tx.core.me();
     ensure_rotated(tx, who, t, done)?;
     let held = tx.core.epochs(&t).ok_or(Error::Misuse("the secrets it derives from are not held"))?;
     // a holder whose grant this node may finalize is boxed nothing (spec/permissions.md §2), as
@@ -483,7 +483,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[c
 /// current holder other than its first admin (spec/permissions.md §3: such a thing is left by its
 /// only keyset part turning invalid, spec/crypto.md §3); each gets secrets of its own again.
 pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
-    let me = core.id.tid();
+    let me = core.me();
     // keys sort by target: each target once (a scan per call; only plain targets go further)
     let mut last = None;
     core.ix
@@ -540,7 +540,7 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
 }
 
 fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
-    let me = tx.core.id.tid();
+    let me = tx.core.me();
     let may = may_rotate(tx.core, &me, a);
     if may.is_empty() {
         return Ok(Vec::new());
@@ -589,7 +589,7 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
     // encrypted under its recipient's key (`members::sealed` leaves out a blocked keyset of a
     // holder actor), not under the epoch it carries (spec/crypto.md §4, Encrypting under), so
     // nobody new reads under a blocked epoch (`tests::grant_while_blocked_boxes_grantee_only_*`)
-    let me = tx.core.id.tid();
+    let me = tx.core.me();
     ensure_rotated(tx, me, a, &mut done)?;
     let epochs = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
     let secrets = secrets_in(tx, &a)?;
@@ -652,7 +652,7 @@ pub(crate) fn history_boxes(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<Histo
 pub(crate) fn add_history(tx: &mut Tx<'_>, a: Tid) -> Result<Done> {
     let mut done = Done::default();
     let Some(epochs) = tx.core.epochs(&a) else { return Ok(done) };
-    let me = tx.core.id.tid();
+    let me = tx.core.me();
     if tx.core.role_now(&me, &a).is_none() {
         return Ok(done);
     }
@@ -681,7 +681,7 @@ impl Engine {
         let a = *actor;
         self.run(|tx| {
             let mut done = Done::default();
-            let me = tx.core.id.tid();
+            let me = tx.core.me();
             let still = ensure_rotated(tx, me, a, &mut done)?;
             Ok((done, still))
         })
@@ -753,7 +753,7 @@ impl Engine {
             if !due.is_empty() {
                 // an ended edge is finalized first where this node can (its rotation boxes the
                 // others); an ended holder is no candidate either way (`ended_holders`)
-                let me = tx.core.id.tid();
+                let me = tx.core.me();
                 finalize_due(tx, me, a, &[], &mut done)?;
                 due = reseal_candidates(tx, &a)?;
             }
@@ -772,7 +772,7 @@ impl Engine {
         let (a, m) = (*actor, *holder);
         self.run(|tx| {
             let role = tx.core.key_holders(&a).into_iter().find(|(x, _)| *x == m).map(|x| x.1).ok_or(Error::Misuse("not a current holder"))?;
-            let me = tx.core.id.tid();
+            let me = tx.core.me();
             let may = may_rotate(tx.core, &me, &a);
             let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= role && may.contains(r)).collect();
             if roles.is_empty() {

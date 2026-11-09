@@ -542,7 +542,7 @@ impl Worker {
         let mut a = Args::of(args);
         let b = Value::Bool;
         let v = match m {
-            method::WHOAMI => Value::List(vec![Value::Tid(db.me()), Value::Tid(db.node())]),
+            method::WHOAMI => Value::List(vec![Value::Tid(db.me()), Value::Tid(db.node()), Value::Tid(db.home())]),
             method::GET => {
                 let (tid, ak, path) = (a.tid()?, a.ak()?, c::path(a.next()?)?);
                 let key = db.aspect_key(ak.as_str())?;

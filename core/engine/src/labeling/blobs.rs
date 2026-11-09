@@ -214,14 +214,14 @@ impl Engine {
     /// secrets of its own or a key actor.
     fn section_chain(&self, t: &Tid) -> Vec<Tid> {
         let mut out = Vec::new();
-        if self.core.ix.own_keys.contains(t) || *t == self.core.id.tid() {
+        if self.core.ix.own_keys.contains(t) || *t == self.core.me() {
             return out;
         }
         for step in self.core.record_chain(t) {
             match step {
                 osis_base::ChainStep::Up { admin: up, .. } => {
                     out.push(up);
-                    if self.core.ix.own_keys.contains(&up) || up == self.core.id.tid() {
+                    if self.core.ix.own_keys.contains(&up) || up == self.core.me() {
                         return out;
                     }
                 }
@@ -410,7 +410,9 @@ impl Engine {
     pub fn readable_parts(&self, ctx: &BodyCtx, id: &CommitId, parts: &[usize]) -> Vec<usize> {
         let Some(m) = self.core.ix.commits.get(id) else { return Vec::new() };
         let h = &m.header;
-        parts.iter().filter(|ai| h.aspects.get(**ai).is_some_and(|a| self.core.may_read(&ctx.actor, &self.core.reader_of(&a.tid)))).copied().collect()
+        // the readers of an account's devices actor are its nodes: they read what the account reads
+        let reader = self.core.account_devices().filter(|x| x.1 == ctx.actor).map_or(ctx.actor, |x| x.0);
+        parts.iter().filter(|ai| h.aspects.get(**ai).is_some_and(|a| self.core.may_read(&reader, &self.core.reader_of(&a.tid)))).copied().collect()
     }
 
     /// The body of commit `id` a label of the group of `ctx` must hold (`label_bodies_meta`):
@@ -754,7 +756,8 @@ pub fn delete_key<'a>(keys: &'a HeadKeys, item: &osis_label::DeleteItem) -> Opti
 fn published_by_actor(core: &crate::engine::Core, labeled: &std::collections::BTreeSet<Tid>) -> std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> {
     let mut map: std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> = std::collections::BTreeMap::new();
     for h in labeled {
-        let up = core.standing_chain(h).into_iter().skip(1).find(|a| labeled.contains(a) && core.ix.own_keys.contains(a));
+        // an account has no label: what is under it publishes under its devices actor's
+        let up = core.standing_chain(h).into_iter().skip(1).map(|a| core.accounts.get(&a).map_or(a, |x| x.devices)).find(|a| labeled.contains(a) && core.ix.own_keys.contains(a));
         if let Some(a) = up.filter(|a| a != h) {
             map.entry(a).or_default().insert(*h);
         }

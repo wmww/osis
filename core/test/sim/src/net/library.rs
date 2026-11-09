@@ -224,7 +224,7 @@ pub fn demotion_receipts(seed: u64) -> Res<Report> {
     let phone = sim.add_node(&[s], clock(&mut d))?;
     let acts = sim.sync(phone)?.set_receipts_only(h, true);
     sim.actions(phone, acts)?;
-    sim.pair(a, phone, pa)?;
+    sim.pair(a, phone)?;
     sim.quiet(40)?;
     add_tag(&mut sim, b, t, "in g")?;
     add_tag(&mut sim, b, u, "in h")?;
@@ -1098,8 +1098,8 @@ pub fn honest_flows(seed: u64) -> Res<Report> {
             }
         }};
     }
-    op!("node paired a2", sim.pair(a, a2, pa)?);
-    op!("node paired b2", sim.pair(b, b2, pb)?);
+    op!("node paired a2", sim.pair(a, a2)?);
+    op!("node paired b2", sim.pair(b, b2)?);
     op!("write by b2 acting for pb", { let mut m = Mutation::new(); m.act_as(pb); m.set(t2, &workload::REG, &Value::Str("x".into())).map_err(|e| sim.fail(e.to_string()))?; sim.commit(b2, m)?; });
     op!("write by b", { let mut m = Mutation::new(); m.set(t2, &workload::REG, &Value::Str("y".into())).map_err(|e| sim.fail(e.to_string()))?; sim.commit(b, m)?; });
     op!("write by a2", add_tag(&mut sim, a2, t1, "x")?);

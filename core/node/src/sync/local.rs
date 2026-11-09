@@ -213,7 +213,7 @@ impl SyncEngine {
         // nothing wrapped part of it (no current read secret): it waits like an uncovered epoch,
         // for a re-seal; a node that does not read the group (another's, its removal's copy) gets
         // none, so that copy is not this node's to place
-        if unwrapped && self.engine.core.may_read(&self.engine.tid(), &self.engine.group_actor(g)) {
+        if unwrapped && self.engine.core.may_read(&self.engine.me(), &self.engine.group_actor(g)) {
             self.deferred.push((*g, *c, aspects.clone(), owed));
         }
         Ok(())
@@ -267,10 +267,7 @@ impl SyncEngine {
         let id = *c;
         let blob = self.engine.run(|tx| tx.get_commit(&id))?.ok_or(Error::UnknownCommit(id))?;
         let cut = osis_commit::rewrite(&blob, |ai| !aspects.contains(&ai));
-        let keys = self.engine.get_typed(recipient, &ct::KEYS)?.ok_or(Error::UnknownThing(*recipient))?;
-        let ks = keys.read.as_ref().ok_or(Error::Misuse("recipient has no read keyset"))?;
-        let ct::KemKey::X25519MlKem768(kb) = &ks.kem_key;
-        let kem = osis_crypto::KemPublicKey::from_slice(kb)?;
+        let kem = self.engine.inbox_kem(recipient)?.ok_or(Error::Misuse("recipient has no KEM key"))?;
         let (inbox_actor, inbox) = self.engine.inbox_of_actor(recipient)?.ok_or(Error::Misuse("recipient has no inbox"))?;
         let mut things: Vec<InboxThing> = Vec::new();
         let tids: BTreeSet<Tid> = cut.header.aspects.iter().map(|a| a.tid).collect();

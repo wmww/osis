@@ -5,7 +5,6 @@
 //! finalization and revoking a joiner are demotions by a sharer node.
 
 use super::labels::ReaderKey;
-use super::person::key_actor_keys;
 use super::{Delivery, Done, put_edge};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
@@ -114,7 +113,7 @@ impl Engine {
         }
         let keep: Vec<Tid> = self.core.ix.by_aspect.keys().filter(|(_, a)| a.as_str() == LINK_SEED).map(|(t, _)| *t).collect();
         let ak = super::ak(LINK_SEED)?;
-        let me = self.tid();
+        let me = self.me();
         let mut out = Vec::new();
         for t in keep {
             if let Some(Value::Map(m)) = self.get(&t, &ak)?
@@ -142,7 +141,7 @@ impl Engine {
     /// worked that reached them. Idempotent across nodes: a finalization by any of them is
     /// that explicit write.
     pub fn links_due(&mut self) -> Result<Vec<(HeldLink, Option<WallMs>)>> {
-        let me = self.tid();
+        let me = self.me();
         let ts = super::now_ts(&self.core);
         let mut out = Vec::new();
         for h in self.held_links()?.iter() {
@@ -164,7 +163,7 @@ impl Engine {
     /// When the next link this node may finalize expires (corrected wall ms): the earliest
     /// `until` of a live L edge on a K it is admin of.
     pub fn next_link_expiry(&mut self) -> Result<Option<u64>> {
-        let me = self.tid();
+        let me = self.me();
         let ts = super::now_ts(&self.core);
         let mut next: Option<u64> = None;
         for h in self.held_links()?.iter() {
@@ -198,8 +197,15 @@ impl Engine {
     }
 }
 
+/// A key actor's `keys.0`: its KEM key (spec/crypto.md §3).
+fn key_actor_keys(m: &mut Mutation, t: Tid, keys: &KeyActorKeys) -> Result<()> {
+    let k = ct::Keys { key: Some(ct::KemKey::X25519MlKem768(keys.kem.public().as_bytes().to_vec())), ..Default::default() };
+    m.set(t, &ct::KEYS, &k)?;
+    Ok(())
+}
+
 fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &Secret32) -> Result<(Tid, osis_base::LabelId, Tid, Done)> {
-    let me = tx.core.id.tid();
+    let me = tx.core.me();
     if tx.core.role_now(&me, &sharer) != Some(Role::Admin) {
         return Err(Error::Permission { tid: sharer });
     }

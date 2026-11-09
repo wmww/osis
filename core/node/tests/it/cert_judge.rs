@@ -171,11 +171,11 @@ fn linked_blobs_of_gone_copy_deleted_spec_sync_3() {
 /// Node `n`'s account with its home label at peer `host`.
 fn person(net: &mut Net, n: usize, host: usize) -> Tid {
     let addr = net.address(host);
-    let (p, done) = net.engine(n).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (p, done) = net.engine(n).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(n).carry_out(done).unwrap();
     net.actions(n, acts);
     net.run();
-    p.person
+    p.account
 }
 
 /// Admin node `a`'s group at `host`, granted to node `r`'s account (read, until `until`), `r`'s
@@ -265,7 +265,7 @@ fn unheld_chain_card_kept_spec_permissions_4() {
     net.set_online(a, false);
     net.pair(r2, r);
     let r2t = net.tid(r2);
-    let done = net.engine(r).pair(&p, &r2t).unwrap();
+    let done = net.engine(r).pair(&r2t).unwrap();
     let grant = done.commits[0];
     let acts = net.sync(r).carry_out(done).unwrap();
     net.actions(r, acts);

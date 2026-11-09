@@ -126,7 +126,7 @@ fn reconcile_differences_capped_spec_wire_11_3() {
 fn prover(seed: u8) -> Prover {
     let key = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([seed; 32]));
     let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [seed; 32], account: false };
-    Prover { key, record, accounts: vec![], chain: vec![] }
+    Prover { key, record }
 }
 
 fn prove(c: &mut ClientSession) -> u32 {

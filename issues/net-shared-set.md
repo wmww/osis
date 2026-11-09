@@ -153,4 +153,4 @@ Not yet: S, filters and `acked_pos` across connections (step 7, with the digest,
 7. **Reconnect**: base generations, S restore, until and lag.
 8. **Deposit items** (with issues/net-first-contact.md).
 9. **Peers that cannot read** through filters and records (issues/net-one-peer.md): sync-key, deposit-key and claim-set entries.
-10. **Account signing step 6**: `SyncEngine::proven` proves the account signing key at its epoch; node key only to own nodes; departure of a node is its removal plus rotation. Replaces `actor_proof`'s chain certificates and `Engine::accounts_proven`'s scratch engine with a signature at an epoch, rotations and `osis_perm::chain`. No other step changes.
+10. **Account signing step 6**: `SyncEngine::proven` proves the account at its epoch by the epoch key (built; the rotations a verifier lacks are not carried, and the account gives no access until the removal rotation, issues/account-signing.md step (e)); node key only to own nodes; departure of a node is its removal plus rotation.

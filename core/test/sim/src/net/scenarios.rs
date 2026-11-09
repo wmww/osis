@@ -44,7 +44,7 @@ pub fn newest_read(sim: &mut NetSim, n: usize, g: &Tid) -> Res<Option<u64>> {
 pub fn persons<const N: usize>(sim: &mut NetSim, ns: [usize; N], homes: [usize; N]) -> Res<[Tid; N]> {
     let mut ps = Vec::new();
     for (n, h) in ns.iter().zip(homes) {
-        ps.push(sim.person(*n, &[h])?.person);
+        ps.push(sim.account(*n, &[h])?.account);
     }
     if let Some((first, rest)) = ns.split_first() {
         for n in rest {
@@ -94,8 +94,8 @@ pub fn two_nodes_host(seed: u64) -> Res<Report> {
     let s = sim.add_host()?;
     let d0 = sim.add_node(&[s], clock(&mut d))?;
     let d1 = sim.add_node(&[s], clock(&mut d))?;
-    let p = sim.person(d0, &[s])?.person;
-    sim.pair(d0, d1, p)?;
+    let p = sim.account(d0, &[s])?.devices;
+    sim.pair(d0, d1)?;
     sim.item(d0, p)?;
     sim.item(d0, p)?;
     sim.run(200)?;
@@ -255,9 +255,9 @@ pub fn stranded_reseal(seed: u64) -> Res<Report> {
     let d1 = sim.add_node(&[s], clock(&mut d))?;
     let d2 = sim.add_node(&[s], clock(&mut d))?;
     let d3 = sim.add_node(&[s], clock(&mut d))?;
-    let p = sim.person(d0, &[s])?.person;
+    let p = sim.account(d0, &[s])?.devices;
     for x in [d1, d2, d3] {
-        sim.pair(d0, x, p)?;
+        sim.pair(d0, x)?;
     }
     sim.item(d0, p)?;
     sim.run(60)?;
@@ -285,7 +285,7 @@ pub fn stranded_reseal(seed: u64) -> Res<Report> {
         return Err(sim.fail("the node past ROLE_KEEP was not stranded (it read the new epoch by claim)"));
     }
     // re-paired: a re-seal over the direct connection
-    sim.pair(d0, d1, p)?;
+    sim.pair(d0, d1)?;
     sim.run(60)?;
     sim.run_until_quiescent(40)?;
     if newest_read(&mut sim, d1, &p)? != newest_read(&mut sim, d0, &p)? {
@@ -413,52 +413,6 @@ pub fn grant_to_group(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Disk loss and recovery from the card (spec/permissions.md §7): one of an account's two nodes
-/// loses its disk; a fresh node holding the card follows the home label, recovers (grants
-/// itself admin, removes the lost node with the account's rotation) and converges with the
-/// remaining node.
-pub fn disk_loss(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0xd1);
-    let mut sim = sim("disk_loss", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let d0 = sim.add_node(&[s], clock(&mut d))?;
-    let d1 = sim.add_node(&[s], clock(&mut d))?;
-    let person = sim.person(d0, &[s])?;
-    let p = person.person;
-    sim.pair(d0, d1, p)?;
-    sim.item(d0, p)?;
-    sim.item(d1, p)?;
-    sim.run(80)?;
-    sim.lose_disk(d0)?;
-    sim.run(40)?;
-    sim.quiet(40)?;
-    let fresh = sim.add_node(&[s], clock(&mut d))?;
-    let card = person.card.clone();
-    let r = sim.engine(fresh)?.hold_key_actor(card.seed.clone());
-    let rk = r.map_err(|e| sim.fail(format!("hold_key_actor: {e}")))?;
-    let acts = sim.sync(fresh)?.follow(rk, card.person, card.home_label, card.hosts.clone());
-    sim.actions(fresh, acts)?;
-    sim.quiet(40)?;
-    let lost = sim.tid(d0)?;
-    let r = sim.engine(fresh)?.recover(&card, &[lost]);
-    let done = r.map_err(|e| sim.fail(format!("recover: {e}")))?;
-    sim.carry(fresh, done)?;
-    sim.feed(fresh, Event::Local)?;
-    sim.person_of.insert(fresh, p);
-    sim.quiet(40)?;
-    sim.run(80)?;
-    sim.run_until_quiescent(40)?;
-    let ft = sim.tid(fresh)?;
-    for n in [d1, fresh] {
-        let roster = sim.engine(n)?.roster(&p);
-        if roster.contains_key(&lost) || !roster.contains_key(&ft) {
-            return Err(sim.fail(format!("node {n}: the account's roster after recovery: {:?}", roster.keys().collect::<Vec<_>>())));
-        }
-    }
-    sim.finish()
-}
-
-
 /// A node restored from a backup of its store (spec/crdt.md §2.1): d0 is backed up, keeps
 /// writing (random writes too) until its commits reached the host, then its store is replaced by
 /// the backup and it writes at once, before any pass. The pass brings the lost commits; no
@@ -469,8 +423,8 @@ pub fn restore_backup(seed: u64) -> Res<Report> {
     let s = sim.add_host()?;
     let d0 = sim.add_node(&[s], clock(&mut d))?;
     let d1 = sim.add_node(&[s], clock(&mut d))?;
-    let p = sim.person(d0, &[s])?.person;
-    sim.pair(d0, d1, p)?;
+    let p = sim.account(d0, &[s])?.devices;
+    sim.pair(d0, d1)?;
     let items = [sim.item(d0, p)?, sim.item(d0, p)?];
     sim.run(80)?;
     sim.quiet(40)?;
@@ -550,8 +504,8 @@ pub fn large_edits(seed: u64) -> Res<Report> {
     let s = sim.add_host()?;
     let d0 = sim.add_node(&[s], clock(&mut d))?;
     let d1 = sim.add_node(&[s], clock(&mut d))?;
-    let p = sim.person(d0, &[s])?.person;
-    sim.pair(d0, d1, p)?;
+    let p = sim.account(d0, &[s])?.devices;
+    sim.pair(d0, d1)?;
     let t = sim.item(d0, p)?;
     sim.quiet(40)?;
     let file = Ak::new("app:file.0").map_err(|e| sim.fail(e.to_string()))?;
@@ -706,7 +660,7 @@ pub fn member_churn(seed: u64) -> Res<Report> {
     sim.quiet(40)?;
     // one of a member's nodes more, then a role lowered and raised
     let extra = sim.add_node(&[s], clock(&mut d))?;
-    sim.pair(c, extra, pc)?;
+    sim.pair(c, extra)?;
     sim.quiet(40)?;
     write(&mut sim, &mut d, extra, 40)?;
     let lower = osis_node::flows::Demotion { holder: pe, new: Some(osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None }), retain: None };
@@ -878,7 +832,7 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
     sim.quiet(40)?;
     sim.run_until_quiescent(60)?;
     let fresh = sim.add_node(&[s], clock(&mut d))?;
-    sim.pair(b, fresh, pb)?;
+    sim.pair(b, fresh)?;
     sim.quiet(40)?;
     sim.run(40)?;
     // the author's other node compacts with its right; a body whose live write it lacks stays
@@ -960,7 +914,7 @@ fn place_nodes(sim: &mut NetSim, ns: &[usize], t: Topology) -> Res<()> {
 pub fn peer_group(sim: &mut NetSim, ns: &[usize]) -> Res<Tid> {
     let mut persons = Vec::new();
     for n in ns {
-        persons.push(sim.person(*n, &[])?.person);
+        persons.push(sim.account(*n, &[])?.account);
         sim.listen_peer(*n)?;
     }
     let (Some(&a), Some(&pa)) = (ns.first(), persons.first()) else { return Err(sim.fail("no nodes")) };

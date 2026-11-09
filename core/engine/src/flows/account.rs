@@ -3,8 +3,8 @@
 //! as it and sealing to it read from the held signing chain.
 
 use super::labels::{ReaderKey, new_label};
-use super::{Done, put_edge};
-use crate::engine::{Core, Engine, Tx};
+use super::{Delivery, Done, put_edge};
+use crate::engine::{Core, Engine, Tx, records};
 use crate::error::{Error, Result};
 use crate::identity::thing_record;
 use crate::rotation;
@@ -14,6 +14,7 @@ use osis_commit::{CommitBlob, FIRST_EPOCH};
 use osis_crypto::{AccountEpochKeys, Epoch, KemPublicKey, Secret32, VerifyingKey, open_inner, verify_inner};
 use osis_keys::{ActorEpochs, HolderKeys, Keysets, ROLES, Recipient, account_epoch, account_keysets};
 use osis_label::Address;
+use osis_store::Shred;
 use osis_perm::Point;
 use osis_perm::chain::{Chain, Rotation};
 use osis_schema::core_types::{self as ct, Edge, KemKey, Keys, SigningKey};
@@ -89,6 +90,11 @@ impl AccountView {
         account_keysets(&self.chain, &named)
     }
 
+    /// Whether `key` is the signing key of an open epoch.
+    pub(crate) fn open_key(&self, key: &[u8; 32]) -> bool {
+        self.open.iter().filter_map(|id| self.epochs.get(id)).any(|e| e.signing.to_bytes() == *key)
+    }
+
     /// The newest open epoch that `held` admits, ties by the greater signing key.
     fn newest_open(&self, held: impl Fn(&EpochPublic) -> bool) -> Option<(&CommitId, &EpochPublic)> {
         self.open.iter().filter_map(|id| self.epochs.get_key_value(id)).filter(|(_, e)| held(e)).max_by_key(|(_, e)| (e.height, e.signing.to_bytes()))
@@ -131,7 +137,12 @@ fn heights(supersedes: &BTreeMap<CommitId, Vec<CommitId>>) -> BTreeMap<CommitId,
 }
 
 impl Core {
-    pub(crate) fn is_account(&self, t: &Tid) -> bool {
+    /// The actor `g` is the home of: the account whose devices actor it is, else `g` itself.
+    pub fn home_owner(&self, g: &Tid) -> Tid {
+        self.accounts.iter().find(|(_, a)| a.devices == *g).map_or(*g, |(p, _)| *p)
+    }
+
+    pub fn is_account(&self, t: &Tid) -> bool {
         self.created(t).is_some_and(CreationRecord::is_account)
     }
 
@@ -145,6 +156,12 @@ impl Core {
     /// account here). Built only when the account's rotations held changed (`rotation_seq`), so a
     /// write does not cost O(its rotations). A merge's forks stand unaccepted until merges are
     /// written: the chain is given no verified merge signature.
+    /// This node's account and its devices actor, when it holds the account.
+    pub fn account_devices(&self) -> Option<(Tid, Tid)> {
+        let p = self.account?;
+        Some((p, self.accounts.get(&p)?.devices))
+    }
+
     pub(crate) fn account_view(&self, p: &Tid) -> Option<Arc<AccountView>> {
         let seq = self.ix.rotations.get(p).copied().unwrap_or(0);
         if let Some(v) = self.account_views.borrow().get(p).filter(|x| x.0 == seq) {
@@ -292,21 +309,23 @@ impl Engine {
         let p = record.tid();
         let d_record = CreationRecord::Thing { admin: p, nonce: *nonce_d.nonce(), link: false };
         let d = d_record.tid();
+        self.core.account = Some(p);
         self.core.accounts.insert(p, Arc::new(HeldAccount { devices: d, first: signing, seeds: [(signing, seed.clone())].into() }));
         self.core.role_changed();
         let res = self.run(|tx| create_account_in(tx, record, d_record, &keys, &seed, hosts));
         if res.is_err() {
+            self.core.account = None;
             self.core.accounts.remove(&p);
         }
         let (profile, c) = res?;
+        self.save_account(&p, &d)?;
         let mut done = Done::default();
         done.add(c);
         Ok((CreatedAccount { account: p, devices: d, profile }, done))
     }
 
     /// Takes up account `p` from the seeds on its devices actor `d` (`account.0`, readable here
-    /// as a node of the account): this node signs as it (`Mutation::sign_as`) and its boxes
-    /// open. In memory only.
+    /// as a node of the account): this node signs as it and its boxes open.
     pub fn hold_account(&mut self, p: &Tid, d: &Tid) -> Result<()> {
         let Some(CreationRecord::KeyActor { public_key, account: true, .. }) = self.core.created(p).cloned() else { return Err(Error::UnknownThing(*p)) };
         let first: [u8; 32] = public_key.as_slice().try_into().map_err(|_| Error::Misuse("account key"))?;
@@ -325,7 +344,112 @@ impl Engine {
         }
         self.core.accounts.insert(*p, Arc::new(HeldAccount { devices: *d, first, seeds }));
         self.core.role_changed();
+        // boxes of pending commits may open to it
+        self.core.waits.clear();
+        self.run(super::reopen_all)
+    }
+
+    /// How a box to account `p` is sealed: at its newest open epoch.
+    pub fn account_holder_keys(&mut self, p: &Tid) -> Result<HolderKeys> {
+        let a = *p;
+        self.run(|tx| holder_keys(tx, &a))
+    }
+
+    /// The KEM secrets of account `p`'s epochs held here: what opens an inbox blob sealed to it
+    /// (spec/crypto.md §5).
+    pub fn account_kems(&self, p: &Tid) -> Vec<osis_crypto::KemSecret> {
+        self.core.accounts.get(p).map(|a| a.seeds.values().map(|s| AccountEpochKeys::from_seed(s).kem).collect()).unwrap_or_default()
+    }
+
+    /// The account this node belongs to and its devices actor, once it has joined one.
+    pub fn account(&mut self) -> Result<Option<(Tid, Tid)>> {
+        let Some(b) = self.run(|tx| Ok(tx.txn.get_local(records::ACCOUNT)?))? else { return Ok(None) };
+        let pair = |r: std::ops::Range<usize>| b.get(r).and_then(|x| <[u8; 15]>::try_from(x).ok()).map(Tid::from_bytes);
+        Ok(Some((pair(0..15).ok_or(Error::Corrupt("account record"))?, pair(15..30).ok_or(Error::Corrupt("account record"))?)))
+    }
+
+    fn save_account(&mut self, p: &Tid, d: &Tid) -> Result<()> {
+        let v = [p.as_bytes().as_slice(), d.as_bytes().as_slice()].concat();
+        self.run(|tx| Ok(tx.txn.put_local(records::ACCOUNT, &v, Shred::No)?))
+    }
+
+    /// Re-takes this node's account seeds at open (`hold_account`): seeds stay in the store's
+    /// encrypted `account.0`, never in a local record. Seeds not readable (the node was removed):
+    /// it stays the account's, unable to sign.
+    pub(crate) fn take_account(&mut self) -> Result<()> {
+        let Some((p, d)) = self.account()? else { return Ok(()) };
+        self.core.account = Some(p);
+        if self.hold_account(&p, &d).is_err() {
+            self.core.accounts.remove(&p);
+        }
         Ok(())
+    }
+
+    /// Pairing, existing node side (spec/sync.md §2: the only way a node receives a grant):
+    /// `node`'s card (`created.0`, `keys.0`) was received over the direct connection. A node
+    /// that is not on the account's devices actor is granted admin there (spec/permissions.md
+    /// §1: any grant on D makes a node of P); one that is (stranded) is re-sealed. Returns the
+    /// commits to send it directly: the grant or re-seal, D's and P's certificates and D's
+    /// `label.0` commits (the new node downloads the rest under the home label).
+    pub fn pair(&mut self, node: &Tid) -> Result<Done> {
+        let d = self.account()?.ok_or(Error::Misuse("not a node of an account"))?.1;
+        let n = *node;
+        if !self.knows(&n) {
+            return Err(Error::UnknownThing(n));
+        }
+        let holder = self.roster(&d).get(&n).is_some_and(|e| e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())));
+        let mut done = if holder { self.reshare(&d, &n)? } else { self.grant(&d, &n, &admin_edge())? };
+        let mut all: Vec<CommitId> = self.certificates(&d).into_keys().collect();
+        let label = osis_base::Ak::new("label.0").map_err(|_| Error::Misuse("ak"))?;
+        all.extend(self.core.ix.by_aspect.get(&(d, label)).into_iter().flatten().map(|(_, c)| *c));
+        // the account's first commit: D's `account.0` and P's creation record
+        let seeds = osis_base::Ak::new("account.0").map_err(|_| Error::Misuse("ak"))?;
+        all.extend(self.core.ix.by_aspect.get(&(d, seeds)).into_iter().flatten().map(|(_, c)| *c));
+        all.sort_by_key(|c| self.header(c).map(|h| h.ts));
+        for x in &done.deliveries {
+            if let Delivery::Direct { to, commits } = x
+                && *to == n
+            {
+                all.extend(commits.iter().copied());
+            }
+        }
+        // each commit once, in the order collected
+        let mut seen = BTreeSet::new();
+        all.retain(|c| seen.insert(*c));
+        // the grant's own direct send is replaced (crash-safe like the grant: `flows::owe`)
+        let (gone, kept): (Vec<Delivery>, Vec<Delivery>) = std::mem::take(&mut done.deliveries).into_iter().partition(|x| matches!(x, Delivery::Direct { to, .. } if *to == n));
+        done.deliveries = kept;
+        let x = self.run(|tx| {
+            super::unowe(tx, &gone)?;
+            super::owe(tx, Delivery::Direct { to: n, commits: all })
+        })?;
+        done.deliveries.push(x);
+        Ok(done)
+    }
+
+    /// Pairing, new node side, after applying what `pair` sent: checks the grant put it on the
+    /// account's devices actor, joins account `p` and returns the certificate copy of `grant` to place under D's home
+    /// label (spec/sync.md §3).
+    pub fn paired(&mut self, p: &Tid, grant: &CommitId) -> Result<Done> {
+        let node = self.tid();
+        let d = self.devices_held(p).ok_or(Error::UnknownThing(*p))?;
+        if self.core.role_now(&node, &d) != Some(Role::Admin) {
+            return Err(Error::Permission { tid: d });
+        }
+        self.hold_account(p, &d)?;
+        self.core.account = Some(*p);
+        self.save_account(p, &d)?;
+        self.core.role_changed();
+        let g = *grant;
+        let x = self.run(|tx| super::owe(tx, Delivery::Certificate { commits: vec![g], under: d }))?;
+        Ok(Done { deliveries: vec![x], ..Done::default() })
+    }
+
+    /// The devices actor of account `p` as held here: the thing with `account.0` whose first admin
+    /// is `p`.
+    pub fn devices_held(&self, p: &Tid) -> Option<Tid> {
+        let ak = osis_base::Ak::new("account.0").ok()?;
+        self.core.ix.by_aspect.keys().find(|(t, a)| *a == ak && self.core.first_admin(t) == Some(*p)).map(|(t, _)| *t)
     }
 
     /// The node whose inner signature `blob` carries, when this node holds the seed of the epoch

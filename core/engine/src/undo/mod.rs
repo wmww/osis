@@ -207,7 +207,7 @@ pub(crate) fn copy_expiry(copies: &Copies) -> Result<Option<u64>> {
 pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>, confined: bool) -> Result<CommitId> {
     let ts = ts.unwrap_or_else(|| tx.core.hlc.next());
     let Some((deltas, nonce)) = undo_writes(tx, target, actor, ts, confined)? else { return Err(Error::Misuse("nothing to undo")) };
-    let node = tx.core.id.tid();
+    let node = tx.core.me();
     // rights: its own commit applies only if valid here, as at every receiver (`apply_local`)
     check_acts(tx.core, node, &|_| None, &actor, ts)?;
     if confined {
@@ -231,7 +231,7 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Ts, confined: 
         return Err(Error::Misuse("only content commits are undone here"));
     }
     let memory = m.view.memory;
-    let node = tx.core.id.tid();
+    let node = tx.core.me();
     let made = made_by(&h, &m.valid);
     let writers: &[Tid] = if confined { &[node, actor] } else { &[node] };
     // the parts it undoes, each with the state before it as kept history gives it
@@ -294,7 +294,7 @@ fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, now: u64) -> Result<Vec<(osi
 /// it) and of the creations' undoing (`unmade`), stamped under session `nonce`, with the expiries
 /// of what they copy back.
 fn inverse(tx: &mut Tx<'_>, parts: &[(osis_commit::AspectEntry, Fragment, Source, Fragment)], mut unmade: BTreeMap<(Tid, Ak), Vec<PathOp>>, ts: Ts, nonce: [u8; osis_crdt::SESSION_NONCE_LEN]) -> Result<(Vec<Resolved>, Copies)> {
-    let own = Form::Session(nonce).own_source(tx.core.id.tid(), CommitId([0; 32]));
+    let own = Form::Session(nonce).own_source(tx.core.me(), CommitId([0; 32]));
     let mut deltas = Vec::new();
     let mut copies = Copies::new();
     for (a, delta, source, pre) in parts {
@@ -440,7 +440,7 @@ impl Engine {
     /// there is nothing to write; `ContentGone` (`Error`) when a part's body is not held whole or
     /// its inverse needs content no kept history holds; `Clash` if its writes cannot share a commit.
     pub fn revert(&mut self, target: &CommitId) -> Result<Option<CommitId>> {
-        let me = self.tid();
+        let me = self.me();
         match self.revert_commit(*target, me)? {
             Reverted::Written(w) => Ok(Some(w.id)),
             Reverted::Superseded => Ok(None),
@@ -453,7 +453,7 @@ impl Engine {
     /// part is not held whole or its inverse writes back content no kept history holds). Computes
     /// the revert's writes in a transaction rolled back after.
     pub fn check_revertible(&mut self, c: &CommitId) -> Result<bool> {
-        let me = self.tid();
+        let me = self.me();
         self.check_revert(*c, me, false)
     }
 
@@ -485,7 +485,7 @@ impl Engine {
             }
         }
         let ts = self.core.hlc.next();
-        let node = self.tid();
+        let node = self.me();
         // who must hold write on all it does: this node (spec/crdt.md §4.6), a confined revert's
         // actor too; things it deletes count though no write is left to make
         let writers: &[Tid] = if confined { &[node, actor] } else { &[node] };

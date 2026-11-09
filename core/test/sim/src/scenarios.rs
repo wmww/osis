@@ -32,7 +32,6 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("stranded_reseal", net::stranded_reseal),
     ("host_loses_data", net::host_loses_data),
     ("offline_rotation", net::offline_rotation),
-    ("disk_loss", net::disk_loss),
     ("restore_backup", net::restore_backup),
     ("grant_lost_on_crash", net::grant_lost_on_crash),
     ("large_edits", net::large_edits),

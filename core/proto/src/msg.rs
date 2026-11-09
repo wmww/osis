@@ -267,9 +267,7 @@ fn offer_item(v: Value) -> Result<OfferItem, Error> {
 }
 
 fn proofs(v: Vec<Value>) -> Result<Vec<crate::ActorProof>, Error> {
-    let proofs: Vec<crate::ActorProof> = v.into_iter().map(crate::ActorProof::from_value).collect::<Result<_, _>>()?;
-    crate::prove::check_caps(&proofs)?;
-    Ok(proofs)
+    v.into_iter().map(crate::ActorProof::from_value).collect()
 }
 
 fn step_value(s: &Step) -> Value {

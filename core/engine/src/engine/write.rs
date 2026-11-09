@@ -637,7 +637,12 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     let node = match m.signer {
         Some(k) if tx.core.key_actors.contains_key(&k) || tx.core.accounts.contains_key(&k) => k,
         Some(_) => return Err(Error::Misuse("signer not held")),
-        None => tx.core.id.tid(),
+        // a node writes its own thing as itself: nobody else has rights on it
+        None if !m.aspects.is_empty() && m.aspects.keys().all(|(t, _)| *t == tx.core.id.tid()) => {
+            m.actor = None;
+            tx.core.id.tid()
+        }
+        None => tx.core.me(),
     };
     if m.undoes.is_some() && !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.frontier.is_none()) {
         return Err(Error::Misuse("an undo mutation carries no other ops"));

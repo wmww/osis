@@ -158,7 +158,7 @@ fn drop_superseded_of(tx: &mut Tx<'_>, cands: BTreeSet<CommitId>, keep: Option<&
 /// uploads them again where the lane reconciles (`MemorySync::invalidated`).
 pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep: Option<&CommitId>, new: Option<&CommitId>) -> Result<BTreeSet<CommitId>> {
     let mut dropped = BTreeSet::new();
-    let me = tx.core.id.tid();
+    let me = tx.core.me();
     let held_on = |tx: &Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak| -> Option<(usize, bool, Tid)> {
         let m = tx.core.ix.commits.get(c).filter(|m| m.view.memory)?;
         let ai = m.aspect(tid, ak).filter(|ai| m.holds(*ai))?;

@@ -1208,7 +1208,7 @@ fn a_silent_node_holds_no_client_of_this_node() {
     let o2 = crate::common::block_on(osis::internals::connect_socket(&sock, osis::internals::Opening::memory())).unwrap();
     let mut w = x.p.write();
     let t = w.create().unwrap();
-    w.group(x.p.me()).add(osis::Member::Item(t)).unwrap();
+    w.group(x.p.home()).add(osis::Member::Item(t)).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(title())).set(&s("mine")).unwrap();
     let mine = t;
     w.commit().unwrap();

@@ -170,7 +170,7 @@ fn take_due(tx: &mut Tx<'_>, by: u64) -> Result<BTreeSet<Tid>> {
 /// Whether the node, a held key actor or a link key it keeps reading as has a role on `a` now
 /// (any path, `until` honoured).
 pub(crate) fn readable(core: &Core, a: &Tid) -> bool {
-    let node = core.id.tid();
+    let node = core.me();
     core.role_now(&node, a).is_some() || core.key_actors.keys().chain(core.ix.bearers.iter()).any(|k| core.role_now(k, a).is_some())
 }
 
@@ -179,7 +179,7 @@ pub(crate) fn readable(core: &Core, a: &Tid) -> bool {
 /// finalizes, spec/permissions.md §2), a role is there. A removal saying its own retain is written
 /// with `until` 0, gone at every clock, so it never counts.
 pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
-    let (node, ts) = (core.id.tid(), osis_base::Ts::default());
+    let (node, ts) = (core.me(), osis_base::Ts::default());
     let Some(tl) = core.timelines.get(a) else { return false };
     let role = |x: &Tid| tl.role_unfinalized(x, a, ts).is_some();
     role(&node) || core.key_actors.keys().any(role)
@@ -196,7 +196,7 @@ pub const LOST_HEARD_WAIT_MS: u64 = osis_base::format::ROLE_KEEP_MS;
 
 /// Whether box recipient `m` is this node, a held key actor or an actor it holds and reads now.
 fn ours(core: &Core, m: &Tid) -> bool {
-    *m == core.id.tid() || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
+    *m == core.me() || *m == core.id.tid() || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
 }
 
 /// Whether a role on `x` gives one on `a`: `x` is `a`, on its record chain, or holds a role on it.
@@ -361,7 +361,7 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
 /// only on the timeline's word: the edge's end now says erase. Least fixpoint, so holders
 /// cannot keep each other.
 fn keeps(core: &Core, lost: &BTreeSet<Tid>, marks: &BTreeMap<Tid, BTreeSet<Tid>>) -> BTreeMap<Tid, BTreeSet<Tid>> {
-    let me = core.id.tid();
+    let me = core.me();
     let own = |h: &Tid| *h == me || core.key_actors.contains_key(h);
     let all: BTreeSet<Tid> = lost.iter().chain(marks.keys()).copied().collect();
     let ways = ways(core, &all);

@@ -70,16 +70,22 @@ impl Osis {
         let secret = ClientSecret::generate();
         let entry = secret.entry(until);
         let (me, node) = (self.me(), self.node());
+        let home = self.home();
         let (actor, done) = self.engine(|e| {
             e.mint_actor(&me, |a| {
                 let mut m = osis_node::Mutation::new();
-                m.op(node, &ct::CLIENTS, PathOp { path: vec![PathSeg::Key(Value::Tid(a))], op: Op::Set(entry.to_value()) })?;
-                m.op(me, &ct::GROUP, crate::write::group_op(true, a, true))?;
-                m.act_as(me);
+                m.op(home, &ct::GROUP, crate::write::group_op(true, a, true))?;
                 Ok(m)
             })
         })?;
         self.carry(done)?;
+        // a commit of the node's own: only it writes its thing (a crash before it leaves an
+        // actor no client can reach, holding nothing)
+        self.engine(|e| {
+            let mut m = osis_node::Mutation::new();
+            m.op(node, &ct::CLIENTS, PathOp { path: vec![PathSeg::Key(Value::Tid(actor))], op: Op::Set(entry.to_value()) })?;
+            e.commit(m)
+        })?;
         Ok((actor, secret))
     }
 

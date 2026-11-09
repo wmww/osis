@@ -23,7 +23,7 @@ fn says(db: &Osis, t: Tid) -> Option<Value> {
 fn chat(a: &Osis, hosts: &[Address]) -> Tid {
     let mut w = a.write();
     let g = w.create().unwrap();
-    w.group(a.me()).add(osis::Member::Item(g)).unwrap();
+    w.group(a.home()).add(osis::Member::Item(g)).unwrap();
     w.commit().unwrap();
     a.sync(g, hosts).unwrap();
     g

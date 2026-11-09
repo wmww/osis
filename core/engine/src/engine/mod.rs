@@ -862,8 +862,11 @@ pub struct Core {
     /// its card, a link key; role flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
     pub key_actors: BTreeMap<Tid, Arc<Identity>>,
+    /// The account this node belongs to (`Engine::join_account`): the author of its commits and
+    /// the holder of its roles. `None` before it joins one.
+    pub account: Option<Tid>,
     /// Accounts this node signs as, seeds from each one's devices actor (`Engine::hold_account`),
-    /// in memory only.
+    /// retaken on every open.
     pub accounts: BTreeMap<Tid, Arc<crate::flows::account::HeldAccount>>,
     /// No purge-on-replace cover or drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
@@ -1113,7 +1116,7 @@ impl Core {
     /// moved, so a pass of a quiet node reads no index of every commit's author.
     pub fn acting(&mut self) -> Arc<Vec<Tid>> {
         let read = |c: &Core| -> Vec<Tid> {
-            let me = c.id.tid();
+            let me = c.me();
             c.ix.by_actor.keys().filter(|(_, au)| *au == me).map(|(a, _)| *a).collect()
         };
         match &self.acting_memo {
@@ -1427,6 +1430,7 @@ impl Core {
             forged: _,
             header_fault: _,
             key_actors: _,
+            account: _,
             accounts: _,
             keep_bodies: _,
             list_bound: _,
@@ -1499,6 +1503,12 @@ impl Core {
         n[..8] == now[..8] && nonce_count(&now).wrapping_sub(nonce_count(n)) <= self.later_sessions
     }
 
+    /// The actor this node's commits are authored by and its roles held by: its account, and the
+    /// node itself only before it has joined one (its own card).
+    pub(crate) fn me(&self) -> Tid {
+        self.account.unwrap_or_else(|| self.id.tid())
+    }
+
     fn new(id: Identity, clock: Arc<dyn Clock>, session: osis_crdt::Session, expiring: osis_crdt::Session) -> Core {
         let key_salt = osis_base::hash::derive_key("osis node key index", id.seed().expose());
         Core {
@@ -1559,6 +1569,7 @@ impl Core {
             #[cfg(test)]
             step_fault: None,
             key_actors: BTreeMap::new(),
+            account: None,
             accounts: BTreeMap::new(),
             keep_bodies: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
@@ -2403,6 +2414,7 @@ impl Engine {
         let (session, expiring) = sessions(id.tid(), &mut *rng);
         let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         e.reload()?;
+        e.take_account()?;
         e.reexamine()?;
         e.core.timer_floor = e.next_timer()?.unwrap_or(u64::MAX);
         Ok(e)
@@ -2462,6 +2474,12 @@ impl Engine {
     /// This node's tid.
     pub fn tid(&self) -> Tid {
         self.core.id.tid()
+    }
+
+    /// The actor this node's commits are authored by: its account, the node itself before it
+    /// has joined one.
+    pub fn me(&self) -> Tid {
+        self.core.me()
     }
 
     pub fn identity(&self) -> &Identity {

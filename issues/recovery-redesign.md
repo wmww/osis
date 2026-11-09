@@ -7,7 +7,7 @@ Taken out because it was tied to saved peers (no card without them, the key disc
 
 Until then an account is reached again only through one of its other nodes.
 
-What stays inside: the engine still mints a recovery key for the account (an admin by a plain edge) and drops it (`create_person`); the engine's `recover` and its node tests (core/node/tests/it/flows.rs: `stolen_device_recovery_spec_perm_7`, `recovery_erases_whatever_the_default_spec_perm_2`, ...) and `osis_label::RecoveryCard` stay until this redesign. Spec text on recovery cards (spec/permissions.md §7, spec/wire.md §10) is marked as not built.
+Nothing of recovery is left in the engine: `create_person`, `Engine::recover`, the recovery key the account was minted with, `osis_label::RecoveryCard` and the recovery tests (core/node/tests/it/flows.rs) and the `disk_loss` sim scenario are removed. What it did, from a card (a key holding an admin edge on the account): a fresh node took up the card's key by `hold_key_actor`, granted itself admin on the account as that key, and removed each lost node by an explicit demotion with rotation. It was reachable only from tests and the sim. Accounts as built (spec/permissions.md §1) have no owner key apart from their epoch seeds on D, so an account with no node left is not recoverable. A redesign starts from the epoch seeds. Spec text on recovery cards (spec/permissions.md §7, spec/wire.md §10) is marked as not built.
 
 ## Not in the API
 `RecoveryCard`, `Osis::restore`, `internals::restore`, CLI `restore`, and a card from `init`; `Osis::create` returns just the `Osis`. No app UI had it.

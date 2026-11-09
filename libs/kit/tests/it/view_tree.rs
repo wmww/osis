@@ -22,8 +22,8 @@ impl Account for Small {
         }
         let mut w = db.write();
         let t = w.create()?;
-        w.group(db.me()).add(Member::Item(t))?;
-        w.group(db.me()).add(Member::Subgroup(t))?;
+        w.group(db.home()).add(Member::Item(t))?;
+        w.group(db.home()).add(Member::Subgroup(t))?;
         w.commit()?;
         *g = Some(t);
         Ok(t)

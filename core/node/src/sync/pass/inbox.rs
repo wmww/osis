@@ -149,7 +149,9 @@ impl SyncEngine {
         if self.engine.role_on(g) != Some(Role::Admin) {
             return Ok(out);
         }
-        let Some(li) = self.engine.inbox(g) else { return Ok(out) };
+        // an account's inbox is its D's home label, and what it brings is about the account
+        let actor = self.engine.core.home_owner(g);
+        let Some(li) = self.engine.inbox(&actor) else { return Ok(out) };
         let opened: Vec<(BlobId, CommitId)> = self
             .state
             .of_kind(&li, Kind::TAG_INBOX)
@@ -172,7 +174,7 @@ impl SyncEngine {
             // the carried parts on the things the commit has an edge or box of the actor on (the
             // payload carries the sender's choice of parts; a role commit's are all
             // role-class)
-            let on = self.inbox_about(std::slice::from_ref(g), &c, &m);
+            let on = self.inbox_about(std::slice::from_ref(&actor), &c, &m);
             let ais: BTreeSet<usize> = o.ais.iter().copied().filter(|ai| m.header.aspects.get(*ai).is_some_and(|a| on.contains(&a.tid))).collect();
             if ais.is_empty() {
                 continue;

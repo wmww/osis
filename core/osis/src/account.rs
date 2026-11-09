@@ -5,7 +5,7 @@
 //! and the commits it needs), both authenticated by the offer's one-time secret.
 
 use crate::error::{Error, Result};
-use crate::handle::{Fresh, Osis, ACCOUNT, fresh_engine, save_peers};
+use crate::handle::{Fresh, Osis, fresh_engine, save_peers};
 use crate::share::Address;
 use crate::{Config, Store};
 use osis_base::cbor::{Limits, decode, encode};
@@ -173,9 +173,7 @@ impl Joining {
             for (bytes, blobs) in pks {
                 e.ingest(&bytes, blobs)?;
             }
-            let done = e.paired(&account, &grant).map_err(|_| Error::Invalid("pairing reply: this node was not made an admin of the account".into()))?;
-            e.set_app_record(ACCOUNT, account.as_bytes())?;
-            Ok(done)
+            e.paired(&account, &grant).map_err(|_| Error::Invalid("pairing reply: this node was not made a node of the account".into()))
         })?;
         let hosts = self.db.saved_peers()?;
         self.db.engine(|e| save_peers(e, &hosts))?;
@@ -195,7 +193,7 @@ impl Osis {
             let v = self.rcall(crate::port::method::PAIR_OFFER, vec![])?;
             return crate::port::codec::Args::of(vec![v]).text()?.parse();
         }
-        let (me, node) = (self.me(), self.node());
+        let (me, home, node) = (self.me(), self.home(), self.node());
         let hosts: Vec<Value> = self.saved_peers()?.iter().map(|s| Value::Str(s.to_string())).collect();
         let now = self.inner.clock.now_wall_ms().0;
         let secret = self.locked(|x| {
@@ -205,7 +203,7 @@ impl Osis {
             x.offers.push((s, now.saturating_add(OFFER_LIFETIME_MS)));
             s
         });
-        Ok(PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::Tid(me), Value::Tid(node), Value::Bytes(secret.to_vec()), Value::List(hosts)]))))
+        Ok(PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::Tid(me), Value::Tid(home), Value::Tid(node), Value::Bytes(secret.to_vec()), Value::List(hosts)]))))
     }
 
     /// Accepts a new node's request to an offer of this node: makes it an admin of the
@@ -231,12 +229,11 @@ impl Osis {
             .ok_or(Error::Invalid("pairing request matches no open offer".into()))?;
         let node = *node;
         let pks = packages_of(pks)?;
-        let me = self.me();
         let (grant, mine) = self.locked(|x| -> Result<(RawCommitId, Vec<Package>)> {
             for (bytes, blobs) in pks {
                 x.engine().ingest(&bytes, blobs)?;
             }
-            let done = x.engine().pair(&me, &node)?;
+            let done = x.engine().pair(&node)?;
             let grant = *done.commits.last().ok_or(Error::Invalid("pairing made no commit".into()))?;
             let acts = x.sync.carry_out(done)?;
             self.inner.apply(acts);
@@ -252,12 +249,12 @@ impl Osis {
     pub fn pair(store: Store, peers: &[Address], offer: &PairOffer, cfg: Config) -> Result<Joining> {
         cfg.check(peers)?;
         let items = unpack(&offer.0, OFFER)?;
-        let [_, Value::Tid(account), Value::Tid(_), Value::Bytes(secret), Value::List(addrs)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing offer".into())) };
+        let [_, Value::Tid(account), Value::Tid(home), Value::Tid(_), Value::Bytes(secret), Value::List(addrs)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing offer".into())) };
         let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| Error::Invalid("malformed pairing offer".into()))?;
         let addrs = addrs.iter().map(|a| if let Value::Str(s) = a { s.parse() } else { Err(Error::Invalid("malformed pairing offer".into())) }).collect::<Result<_>>()?;
         let peers = with_peers(peers, addrs);
         let Fresh { sync, clock } = fresh_engine(&store, &cfg, &peers)?;
-        let db = Osis::start(sync, clock, store, &cfg, *account)?;
+        let db = Osis::start(sync, clock, store, &cfg, *account, *home)?;
         let node = db.node();
         let pks = db.engine(|e| -> Result<Vec<Package>> {
             let ids = e.commit_ids();

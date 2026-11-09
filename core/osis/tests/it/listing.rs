@@ -269,7 +269,7 @@ fn invalid_listed_only_at_its_writer_spec_perm_5() {
     let g = alice
         .commit_with(|x| {
             let g = x.create()?;
-            x.group(alice.me()).add(osis::Member::Item(g))?;
+            x.group(alice.home()).add(osis::Member::Item(g))?;
             Ok(g)
         })
         .unwrap();
@@ -365,7 +365,7 @@ fn alice_admits_bob() -> (World, Osis, Osis, Tid, Tid) {
     let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
     let mut x = alice.write();
     let g = x.create().unwrap();
-    x.group(alice.me()).add(osis::Member::Item(g)).unwrap();
+    x.group(alice.home()).add(osis::Member::Item(g)).unwrap();
     x.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     alice.grant(g, b, Role::Read, Default::default()).unwrap();
@@ -423,7 +423,7 @@ fn page_says_when_it_may_miss_commits() {
     let db = w.account(1, &[host]);
     let t = db.commit_with(|x| {
         let t = x.create()?;
-        x.group(db.me()).add(osis::Member::Item(t))?;
+        x.group(db.home()).add(osis::Member::Item(t))?;
         Ok(t)
     });
     let t = t.unwrap();
@@ -449,7 +449,7 @@ fn a_new_node_reads_newest_first_spec_sync_6() {
     let db = w.account(1, &[host]);
     let mut x = db.write();
     let t = x.create().unwrap();
-    x.group(db.me()).add(osis::Member::Item(t)).unwrap();
+    x.group(db.home()).add(osis::Member::Item(t)).unwrap();
     x.commit().unwrap();
     // the thing's creation comes with its first message, which judging needs first
     say(&db, t, "first");
@@ -498,7 +498,7 @@ fn memory_commits_list_and_tell_spec_sync_9() {
     let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
     let mut x = alice.write();
     let g = x.create().unwrap();
-    x.group(alice.me()).add(osis::Member::Item(g)).unwrap();
+    x.group(alice.home()).add(osis::Member::Item(g)).unwrap();
     x.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     alice.grant(g, b, Role::Write, Default::default()).unwrap();

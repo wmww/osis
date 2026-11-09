@@ -321,7 +321,7 @@ fn commit_of(r: &mut Reader<'_>, rel: &mut Relations, row: CommitRow, limit: usi
     let reverted_by = rel.reverters(r.e, id);
     let in_effect = rel.in_effect(r.e, id);
     Ok(Commit {
-        stamp: Stamp::new(id, row.actor, row.node, row.ts, row.received),
+        stamp: Stamp::new(id, row.actor, row.ts, row.received),
         kind: kind_of(row.kind, row.undoes.is_some()),
         reverts: row.undoes.map(CommitId),
         reverted_by,
@@ -553,7 +553,7 @@ pub(crate) fn written_in(r: &mut Reader<'_>, w: osis_node::Written, actor: Tid) 
     if let Some(c) = commit_in(r, id)? {
         return Ok(c);
     }
-    Ok(Commit { stamp: Stamp::new(id, actor, r.e.tid(), w.ts, w.ts.wall_ms()), kind: CommitKind::Content, reverts: None, reverted_by: Vec::new(), in_effect: true, parts: Vec::new(), report: Reporter::default() })
+    Ok(Commit { stamp: Stamp::new(id, actor, w.ts, w.ts.wall_ms()), kind: CommitKind::Content, reverts: None, reverted_by: Vec::new(), in_effect: true, parts: Vec::new(), report: Reporter::default() })
 }
 
 /// Why a commit cannot be reverted.

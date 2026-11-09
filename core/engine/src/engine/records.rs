@@ -54,6 +54,8 @@ pub const SCHEMAS: &[u8] = b"d/";
 pub const APP: &[u8] = b"u/";
 /// The sides taken in admin disputes (`crate::sides`), one record.
 pub const SIDES: &[u8] = b"sides";
+/// The account this node belongs to and its devices actor (two tids).
+pub const ACCOUNT: &[u8] = b"account";
 
 /// A dot as a value (local records).
 pub fn dot_value(d: &osis_crdt::Dot) -> osis_base::Value {

@@ -890,7 +890,7 @@ impl Osis {
     fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
         let new = self.lowered_edge(t, m, role)?;
         // an account's default does not reach its nodes (spec/permissions.md §2)
-        let retain = o.retain_copy.or((t == self.inner.me).then_some(false));
+        let retain = o.retain_copy.or((t == self.inner.home).then_some(false));
         let fd = flows::Demotion { holder: m, new, retain };
         let done = self.guarded(&[t], |e| e.demote(&t, &fd).map_err(needs_admin))?;
         self.carry(done)
@@ -1005,7 +1005,7 @@ impl Osis {
         // the seed thing in the home group: every node of this account holds it and may
         // finalize the link (spec/permissions.md §7)
         let mut w = self.write();
-        w.group(self.me()).add(Member::Item(keep))?;
+        w.group(self.home()).add(Member::Item(keep))?;
         w.commit()?;
         let l = osis_node::Identity::from_seed(link.seed.clone()).tid();
         self.locked(|x| {
@@ -1402,11 +1402,11 @@ impl Osis {
                 Ok(AccountNode { node: a.tid()?, role: crate::port::codec::role(&a.next()?)? })
             }).collect();
         }
-        let me = self.me();
+        let home = self.home();
         let node_ak = Ak::new("node.0").map_err(|_| Error::Invalid("ak".into()))?;
         self.engine(|e| -> Result<Vec<AccountNode>> {
             let mut out = Vec::new();
-            for (m, edge) in e.roster(&me) {
+            for (m, edge) in e.roster(&home) {
                 if m == e.tid() || e.get(&m, &node_ak)?.is_some() {
                     out.push(AccountNode { node: m, role: edge.role });
                 }
@@ -1415,15 +1415,15 @@ impl Osis {
         })
     }
 
-    /// Removes a node from this account. This is `set_role(me, node, None, o)`, here because of
+    /// Removes a node from this account. This is `set_role(home(), node, None, o)`, here because of
     /// what it returns, which is easy to forget: this account's links still working. The node keeps
     /// their keys, so whoever holds it can read and join through each until `revoke_link`, and
     /// ending them is the caller's choice. None when `node` was not one of this account's.
     /// `Unsupported` on a client with its own actor.
     pub fn remove_node(&self, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {
-        let me = self.me();
-        let was = self.grants(me)?.contains_key(&node);
-        self.set_role(me, node, None, o)?;
+        let home = self.home();
+        let was = self.grants(home)?.contains_key(&node);
+        self.set_role(home, node, None, o)?;
         if was { self.links() } else { Ok(Vec::new()) }
     }
 
@@ -1708,7 +1708,8 @@ fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> b
 /// nodes never loses its last one.
 fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old: &BTreeSet<osis_label::Address>, new: &[osis_label::Address]) -> Result<()> {
     let list = Codec::to_value(&new.to_vec());
-    let nodes: BTreeSet<Tid> = e.roster(&me).into_keys().collect();
+    let home = e.account()?.map_or(me, |a| a.1);
+    let nodes: BTreeSet<Tid> = e.roster(&home).into_keys().collect();
     let mine = |e: &osis_node::Engine, g: Tid| e.core.standing_chain(&g).contains(&me);
     let mut m = osis_node::Mutation::new();
     let mut any = false;

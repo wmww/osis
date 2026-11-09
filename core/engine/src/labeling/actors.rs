@@ -47,7 +47,7 @@ impl Core {
     pub fn secret_actor(&self, t: &Tid) -> Option<Tid> {
         for step in self.record_chain(t) {
             let cur = step.thing()?;
-            if self.ix.own_keys.contains(&cur) || cur == self.id.tid() {
+            if self.ix.own_keys.contains(&cur) || cur == self.me() {
                 return Some(cur);
             }
             match step {
@@ -118,7 +118,7 @@ impl Engine {
 
     fn inbox_actors_read(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
         let mut by: BTreeMap<LabelId, Vec<Tid>> = BTreeMap::new();
-        for a in self.core.ix.secrets.keys().copied().collect::<Vec<_>>() {
+        for a in self.core.ix.secrets.keys().chain(self.core.accounts.keys()).copied().collect::<BTreeSet<_>>() {
             if let Some(l) = self.inbox(&a) {
                 by.entry(l).or_default().push(a);
             }

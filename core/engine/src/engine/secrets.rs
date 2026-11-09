@@ -521,7 +521,7 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
 /// `published` from `published_keys`): what every write on it needs, whatever its retention, so a
 /// write and `Engine::holds_delete_keys` agree.
 pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Creates, published: &BTreeMap<(Tid, Role), VerifyingKey>, tid: &Tid) -> bool {
-    let s = CommitSecrets { core, actor: core.id.tid(), created, published };
+    let s = CommitSecrets { core, actor: core.me(), created, published };
     osis_commit::Secrets::admin_key(&s, tid).is_some() && osis_commit::Secrets::write_key(&s, tid).is_some()
 }
 

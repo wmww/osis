@@ -38,7 +38,7 @@ fn on_change_initial_then_local() {
     let c = recv(&rx);
     assert_eq!((c.origin, c.value), (Origin::Initial, Ok(Some(Value::Int(1)))));
     let c = recv(&rx);
-    assert!(matches!(c.origin, Origin::Local(i) if i.node == db.node() && i.actor == db.me()));
+    assert!(matches!(c.origin, Origin::Local(i) if i.actor == db.me() && i.actor == db.me()));
     assert_eq!(c.value, Ok(Some(Value::Int(2))));
     // the initial call runs on the dispatcher thread like every later one
     let (tx, rx) = channel();
@@ -204,7 +204,7 @@ fn watch_roster_initial() {
     let db = db(1);
     let (tx, rx) = channel();
     let _s = db.on_grants_change(db.me(), move |_, r| tx.send(r).unwrap()).unwrap();
-    assert_eq!(recv(&rx).unwrap(), db.grants(db.me()).unwrap());
+    assert_eq!(recv(&rx).unwrap(), db.grants(db.home()).unwrap());
 }
 
 // notes/api.md Watching, Fixed directions: watches fire on remote writes: a commit made on
@@ -224,7 +224,7 @@ fn two_nodes_remote_watch() {
     let done = commit_with(&a, |w| w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(9)));
     deliver(&a, &b);
     let c = recv(&rx);
-    assert!(matches!(c.origin, Origin::Remote(i) if i.node == a.node() && i.actor == a.me() && i.id == done.stamp.id));
+    assert!(matches!(c.origin, Origin::Remote(i) if i.actor == a.me() && i.actor == a.me() && i.id == done.stamp.id));
     assert_eq!(c.value, Ok(Some(Value::Int(9))));
     assert!(w.changed_timeout(Duration::from_secs(20)));
     assert_eq!(w.current().unwrap(), Some(Value::Int(9)));
@@ -606,7 +606,7 @@ fn path_listener_hears_a_validity_flip() {
     let g = alice
         .commit_with(|x| {
             let g = x.create()?;
-            x.group(alice.me()).add(osis::Member::Item(g))?;
+            x.group(alice.home()).add(osis::Member::Item(g))?;
             Ok(g)
         })
         .unwrap();

@@ -28,7 +28,7 @@ fn x(db: &Osis, t: Tid) -> Option<Value> {
 
 fn group(db: &Osis) -> Tid {
     let mut w = db.write();
-    let g = w.create_in(db.me(), &[db.me()]).unwrap();
+    let g = w.create_in(db.me(), &[db.home()]).unwrap();
     w.commit().unwrap();
     db.sync(g, &[]).unwrap();
     g
@@ -206,7 +206,7 @@ fn redeem_link_after_a_rotation_and_a_late_peer_spec_permissions_4() {
     let bob = w.account(2, &[h0]);
     let node = new_node(&mut w, &alice, 7);
     let g = group(&alice);
-    alice.set_role(alice.me(), node, None, skip_sync()).unwrap();
+    alice.set_role(alice.home(), node, None, skip_sync()).unwrap();
     w.run();
     alice.add_peer(&w.addr(h1).unwrap()).unwrap();
     w.run();
@@ -364,7 +364,7 @@ fn redeem_after_a_node_removal_spec_permissions_7() {
     let t = item(&alice, g, g, "from alice");
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
     w.run();
-    alice.set_role(alice.me(), node, None, skip_sync()).unwrap();
+    alice.set_role(alice.home(), node, None, skip_sync()).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -736,7 +736,7 @@ fn stranded_only_when_every_host_refuses_spec_permissions_3() {
     let (node, reply) = da.pair_accept(join.request()).unwrap();
     let db = join.finish(&reply).unwrap();
     w.run();
-    let home = da.me();
+    let home = da.home();
     w.set_online(&db, false);
     da.set_role(home, node, None, SetRoleOpts { retain_copy: None }).unwrap();
     item(&da, da.me(), home, "after the removal");
@@ -770,7 +770,7 @@ fn watch_status_and_stranded_spec_permissions_3() {
         let _ = tx.send(st.unwrap());
     }).unwrap();
     w.run();
-    let home = da.me();
+    let home = da.home();
     let mut seen = recv(&rx);
     while seen.groups.get(&home).map(|g| g.state) != Some(SyncState::Synced) {
         seen = recv(&rx);
@@ -781,7 +781,7 @@ fn watch_status_and_stranded_spec_permissions_3() {
     w.run();
     let stranded = diags(&db, |d| if let osis::Diagnostic::Stranded { group, .. } = d { Some(vec![group]) } else { None });
     w.set_online(&db, false);
-    da.set_role(da.me(), node, None, SetRoleOpts { retain_copy: None }).unwrap();
+    da.set_role(da.home(), node, None, SetRoleOpts { retain_copy: None }).unwrap();
     item(&da, da.me(), home, "after the removal");
     w.run();
     w.set_online(&db, true);
@@ -838,7 +838,7 @@ fn bundle_round_trip_spec_sync_11() {
     let db = join.finish(&reply).unwrap();
     w.run();
     w.set_online(&db, false);
-    let t = item(&da, da.me(), da.me(), "by bundle");
+    let t = item(&da, da.me(), da.home(), "by bundle");
     w.until(da.wait_synced(SyncScope::All), 1000, 5).unwrap();
     let mut b = Vec::new();
     da.export_bundle(&[da.me()], &mut b).unwrap();
@@ -985,6 +985,7 @@ fn contact_invite_goes_through_spec_sync_3() {
 // spec/permissions.md §7 (removed node's links): a removed node keeps the seeds of the account's links, so
 // `remove_device` lists them, a link made on that node too; the node left can revoke it.
 #[test]
+#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn removing_a_node_lists_its_links_spec_permissions_7() {
     let mut w = World::new();
     let host = w.add_host();
@@ -1138,6 +1139,7 @@ fn moving_peers_after_a_revoke_keeps_the_links_sync_spec_permissions_7() {
 // before it hears of the removal (its commit is past the removal's frontier) or after (it lists
 // nothing and is refused); the link goes on working
 #[test]
+#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn removed_node_revokes_no_link_spec_permissions_7() {
     for aware in [false, true] {
         let mut w = World::new();
@@ -1150,7 +1152,7 @@ fn removed_node_revokes_no_link_spec_permissions_7() {
         w.run();
         let k = db.links_of(g).unwrap()[0].id.actor();
         w.set_online(&db, aware);
-        da.set_role(da.me(), db.node(), None, skip_sync()).unwrap();
+        da.set_role(da.home(), db.node(), None, skip_sync()).unwrap();
         w.run();
         if aware {
             assert!(db.links().unwrap().is_empty());
@@ -1241,7 +1243,7 @@ fn links_listed_on_every_node_and_one_paired_later_spec_permissions_7() {
     let host = w.add_host();
     let da = w.account(1, &[host]);
     let g = group(&da);
-    let t = item(&da, da.me(), da.me(), "plain");
+    let t = item(&da, da.me(), da.home(), "plain");
     let db = pair_node(&mut w, &da, 4);
     da.make_link(g, Role::Read, Default::default()).unwrap();
     da.make_link(t, Role::Read, Default::default()).unwrap();

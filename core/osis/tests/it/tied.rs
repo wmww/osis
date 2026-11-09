@@ -287,7 +287,7 @@ fn grant_before_membership_is_not_removed() {
     alice.grant(g, b, Role::Write, GrantOpts::default()).unwrap();
     w.run();
     let t = card(&bob, "plan");
-    bob.commit_with(|w| w.group(bob.me()).add(osis::Member::Item(t))).unwrap();
+    bob.commit_with(|w| w.group(bob.home()).add(osis::Member::Item(t))).unwrap();
     for _ in 0..3 {
         w.advance(70_000);
     }
@@ -327,7 +327,7 @@ fn grant_first_then_add_then_remove_removes_it() {
     alice.grant(g, b, Role::Write, GrantOpts::default()).unwrap();
     w.run();
     let t = card(&bob, "plan");
-    bob.commit_with(|w| w.group(bob.me()).add(osis::Member::Item(t))).unwrap();
+    bob.commit_with(|w| w.group(bob.home()).add(osis::Member::Item(t))).unwrap();
     for _ in 0..3 {
         w.advance(70_000);
     }
@@ -398,7 +398,7 @@ fn membership_pruned_by_a_reset_counts_as_gone() {
 fn invalidated_membership_removes_the_tied_grant() {
     let Setup { mut w, alice, bob, carol, g } = setup();
     let t = card(&bob, "plan");
-    bob.commit_with(|w| w.group(bob.me()).add(osis::Member::Item(t))).unwrap();
+    bob.commit_with(|w| w.group(bob.home()).add(osis::Member::Item(t))).unwrap();
     w.run();
     w.set_online(&bob, false);
     bob.add_with_grant(Member::Item(t), g, Role::Read).unwrap();
@@ -799,12 +799,12 @@ fn a_copy_survives_its_granter_rotating() {
     assert_eq!(text(&carol, t).as_deref(), Some("dave's"));
     let frank = account(&mut w, 7, 0);
     let f = introduce(&mut w, &dave, &frank);
-    let keys = alice.at(dave.me(), osis::internals::core_types::KEYS).get().unwrap();
+    let keys = alice.at(dave.home(), osis::internals::core_types::KEYS).get().unwrap();
     dave.grant(dave.me(), f, Role::Read, GrantOpts::default()).unwrap();
     w.run();
-    dave.set_role(dave.me(), f, None, skip()).unwrap();
+    dave.set_role(dave.home(), f, None, skip()).unwrap();
     w.run();
-    assert_ne!(alice.at(dave.me(), osis::internals::core_types::KEYS).get().unwrap(), keys, "alice holds his new keys");
+    assert_ne!(alice.at(dave.home(), osis::internals::core_types::KEYS).get().unwrap(), keys, "alice holds his new keys");
     later_reader_reads(&mut w, &alice, &bob, h, b, t, "the granter's keys moved");
 }
 

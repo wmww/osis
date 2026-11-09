@@ -141,6 +141,29 @@ fn box_to_a_closed_epoch_reads_stale_spec_crypto_4() {
     assert_eq!(osis_keys::seal_keyset(&ks, &[first_name].into(), &none), osis_keys::Seal::At(next_name), "sealed at the open epoch");
 }
 
+// spec/sync.md §10: an account's proof counts at an open epoch only: its first key alone while no
+// rotation is held, the rotation's key and no longer the first once it is
+#[test]
+fn account_key_open_follows_the_rotations_held_spec_sync_10() {
+    let mut lp = peers(2);
+    let (a, bytes) = created(&mut lp);
+    let record = lp.peers[0].engine.core.created(&a.account).cloned().unwrap();
+    let CreationRecord::KeyActor { public_key, .. } = &record else { panic!("a key actor") };
+    let first: [u8; 32] = public_key.as_slice().try_into().unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert!(e.account_key_open(&record, &first), "an account not held: its first key");
+    assert!(!e.account_key_open(&record, &[9; 32]), "any other key not");
+    e.ingest(&bytes, Vec::new()).unwrap();
+    assert!(e.account_key_open(&record, &first), "held: still open");
+    let seed = Secret32::from_bytes([3; 32]);
+    let (first_keys, next) = (AccountEpochKeys::from_seed(&lp.peers[0].engine.core.accounts[&a.account].seeds[&first]), AccountEpochKeys::from_seed(&seed));
+    let rot = rotation(record.clone(), &first_keys, &next, Ts::make(WallMs(1_700_000_000_100), 0).unwrap());
+    let e = &mut lp.peers[1].engine;
+    e.ingest(&rot, Vec::new()).unwrap();
+    assert!(!e.account_key_open(&record, &first), "a rotation closes the first");
+    assert!(e.account_key_open(&record, &next.signing.verifying_key().to_bytes()), "the new epoch");
+}
+
 // spec/crypto.md §4 (Account keysets), §7: concurrent rotations close each other's epochs, so at a
 // reader holding both no box is sealed to the account and every earlier box is stale; the account
 // still has a delete key, of an epoch that counts

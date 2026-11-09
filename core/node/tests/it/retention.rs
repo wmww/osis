@@ -2280,11 +2280,11 @@ fn demotion_lists_the_message_omits_the_delete_spec_perm_6() {
 fn honest_demotion_keeps_a_request_resting_on_the_account_spec_perm_6() {
     for on_person in [true, false] {
         let mut lp = net(3, 0x7c + u64::from(on_person));
-        let (who, _) = lp.peers[0].engine.create_person(&crate::flows::hosts()).unwrap();
-        let person = who.person;
+        let (who, _) = lp.peers[0].engine.create_account(&crate::flows::hosts()).unwrap();
+        let person = who.account;
         let (x, o) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         crate::flows::spread(&mut lp);
-        let paired = lp.peers[0].engine.pair(&person, &x).unwrap();
+        let paired = lp.peers[0].engine.pair(&x).unwrap();
         crate::flows::spread(&mut lp);
         lp.peers[1].engine.paired(&person, paired.commits.last().unwrap()).unwrap();
         let t = crate::flows::thing_of(&mut lp, 2, o);

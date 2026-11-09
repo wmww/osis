@@ -164,9 +164,9 @@ fn a_lan_announcement_makes_the_route_and_a_drop_does_not_spec_sync_10() {
 
 /// A group of `a` granted to `b` with nothing handed to `b` (no contact exchange).
 fn grant_without_handover(sim: &mut NetSim, a: usize, b: usize) {
-    let pa = sim.person(a, &[]).unwrap().person;
+    let pa = sim.account(a, &[]).unwrap().account;
     sim.listen_peer(a).unwrap();
-    let pb = sim.person(b, &[]).unwrap().person;
+    let pb = sim.account(b, &[]).unwrap().account;
     sim.listen_peer(b).unwrap();
     sim.introduce(b, a).unwrap();
     let g = sim.group_with(a, pa, &[], true).unwrap();
@@ -212,12 +212,12 @@ const AK: &str = "s:peer.0";
 
 fn say(db: &Osis, v: &str) {
     let mut w = db.write();
-    w.at(db.me(), DynamicAspectKey::untyped(Ak::new(AK).unwrap())).set(&Value::Str(v.into())).unwrap();
+    w.at(db.home(), DynamicAspectKey::untyped(Ak::new(AK).unwrap())).set(&Value::Str(v.into())).unwrap();
     w.commit().unwrap();
 }
 
 fn heard(db: &Osis) -> Option<Value> {
-    db.at(db.me(), DynamicAspectKey::untyped(Ak::new(AK).unwrap())).get().unwrap()
+    db.at(db.home(), DynamicAspectKey::untyped(Ak::new(AK).unwrap())).get().unwrap()
 }
 
 /// Two nodes of one account over a hub (their `reach.0` travels through it), placed by `place`,

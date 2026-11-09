@@ -906,7 +906,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     lines.push(format!("subgroup_of\t{}", uris(&groups.subgroup_of)));
     lines.push(format!("role\t{}", role.map_or("none", role_text)));
     let changed = db.changed(t)?;
-    let stamp = |c: Option<osis::ThingStamp>| c.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, c.written.0), c.node.to_uri()));
+    let stamp = |c: Option<osis::ThingStamp>| c.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, c.written.0), c.actor.to_uri()));
     lines.push(format!("created\t{}", stamp(created)));
     lines.push(format!("changed\t{}", stamp(changed)));
     let j = J::obj([
@@ -923,7 +923,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
 }
 
 fn stamp_json(c: osis::ThingStamp) -> J {
-    J::obj([("commit", J::str(c.id.to_string())), ("node", J::tid(c.node)), ("ts", J::int(c.written.0))])
+    J::obj([("commit", J::str(c.id.to_string())), ("actor", J::tid(c.actor)), ("ts", J::int(c.written.0))])
 }
 
 /// A change's line; its value printed by type `ty`, else by its aspect's.
@@ -949,7 +949,6 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>, ty: Ty<'_>) -> String {
             ("origin", J::str(src)),
             ("commit", J::opt(info.map(|i| J::str(i.id.to_string())))),
             ("actor", J::opt(info.map(|i| J::tid(i.actor)))),
-            ("node", J::opt(info.map(|i| J::tid(i.node)))),
             ("ts", J::opt(info.map(|i| J::int(i.written.0)))),
             ("value", vj),
         ])
@@ -957,9 +956,8 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>, ty: Ty<'_>) -> String {
     } else {
         let d = |o: Option<String>| o.unwrap_or_else(|| "-".into());
         format!(
-            "{src} {} {} {} {} {vt}",
+            "{src} {} {} {} {vt}",
             d(info.map(|i| i.actor.to_uri())),
-            d(info.map(|i| i.node.to_uri())),
             d(info.map(|i| ts_text(ctx.g.raw, i.written.0))),
             c.ak.as_str()
         )
@@ -1112,7 +1110,7 @@ fn body_text(b: &osis::Body<Value>) -> String {
 /// each part `T/AK valid|invalid body`.
 fn commit_line(ctx: &Ctx<'_>, c: &osis::Commit) -> String {
     let i = &c.stamp;
-    let mut l = format!("{} {} {} {} {} {}", c.pos(), ts_text(ctx.g.raw, i.written.0), i.actor.to_uri(), i.node.to_uri(), kind_text(c.kind), if c.in_effect { "in-effect" } else { "reverted" });
+    let mut l = format!("{} {} {} {} {}", c.pos(), ts_text(ctx.g.raw, i.written.0), i.actor.to_uri(), kind_text(c.kind), if c.in_effect { "in-effect" } else { "reverted" });
     if let Some(r) = &c.reverts {
         l += &format!(" reverts={r}");
     }
@@ -1131,7 +1129,6 @@ fn commit_j(c: &osis::Commit) -> J {
         ("ts", J::int(i.written.0)),
         ("received", J::int(i.received.0)),
         ("actor", J::tid(i.actor)),
-        ("node", J::tid(i.node)),
         ("kind", J::str(kind_text(c.kind))),
         ("in_effect", J::Bool(c.in_effect)),
         ("reverts", J::opt(c.reverts.as_ref().map(|r| J::str(r.to_string())))),

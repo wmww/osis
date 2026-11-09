@@ -323,14 +323,14 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
         m.sweep(tid, ak.clone(), tx.core.schemas.get(ak.as_str()).cloned());
         crate::engine::write::commit_in(tx, m)?;
     }
-    let node = tx.core.id.tid();
+    let node = tx.core.me();
     let ts = tx.core.hlc.next();
     // a snapshot needs the strictest role a write it carries could need (tests may write
     // one a receiver judges invalid)
     let need = if tx.core.skip_writer_rules { crate::engine::write::required_role(ak.as_str()) } else { crate::engine::write::snapshot_role(ak.as_str()) };
     if !(memory && tx.core.skip_writer_rules) {
         let core = &*tx.core;
-        crate::engine::write::check_role_with(core, core.id.tid(), &|_| None, &tid, ak.as_str(), need, ts)?;
+        crate::engine::write::check_role_with(core, core.me(), &|_| None, &tid, ak.as_str(), need, ts)?;
     }
     if tx.state(&tid, &ak)?.is_none() {
         return Ok(None);
@@ -366,7 +366,7 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
     // history from the retention of the writes it carries, schema known here or not
     // (spec/commits.md §5), memory or durable alike
     let retention = osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?);
-    let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
+    let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
     let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new() };
     build_and_apply(tx, plan, vec![d]).map(Some)
 }
@@ -415,7 +415,7 @@ impl Engine {
         let ids = ids.to_vec();
         self.run(|tx| {
             tx.set_memory();
-            let node = tx.core.id.tid();
+            let node = tx.core.me();
             let ts = tx.core.hlc.next();
             let own = osis_crdt::Source::session(tx.core.session);
             let mut st: Option<Fragment> = None;

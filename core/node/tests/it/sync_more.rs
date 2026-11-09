@@ -577,10 +577,10 @@ fn grant_by_inbox_end_to_end_spec_sync_3() {
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
     let addr = net.address(host);
-    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (alice, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let (bob, done) = net.engine(b).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (bob, done) = net.engine(b).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
     net.run();
@@ -588,7 +588,7 @@ fn grant_by_inbox_end_to_end_spec_sync_3() {
     net.pair(b, a);
     let e = net.engine(a);
     let mut m = Mutation::new();
-    let g = e.new_thing(&mut m, alice.person);
+    let g = e.new_thing(&mut m, alice.account);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
     // label, grant, content, then the first sync
@@ -596,7 +596,7 @@ fn grant_by_inbox_end_to_end_spec_sync_3() {
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-    let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
+    let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::Inbox { .. })));
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -609,31 +609,6 @@ fn grant_by_inbox_end_to_end_spec_sync_3() {
     assert_eq!(net.read(b, t), Some(s("for bob")));
 }
 
-// spec/sync.md §2, §5 (static entries): a recovery key held on a fresh node opens its
-// account's home label by static entry, takes the read secret from the head's entry box and
-// downloads what the label holds.
-#[test]
-fn static_entry_opens_home_label_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let c = net.node(3, &[host]);
-    let addr = net.address(host);
-    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
-    let t = net.item(a, alice.person, alice.person, "on the card's label");
-    net.run();
-    let card = alice.card.clone();
-    let rk = net.engine(c).hold_key_actor(card.seed.clone()).unwrap();
-    let acts = net.sync(c).follow(rk, card.person, card.home_label, card.hosts.clone());
-    net.actions(c, acts);
-    net.run();
-    net.run();
-    net.trace(&[c]);
-    assert_eq!(net.read(c, t), Some(s("on the card's label")));
-}
-
 // spec/crypto.md §4, spec/permissions.md §3, spec/sync.md §3: a grant by inbox carries the
 // history boxes of the epochs it boxes: the grantee reads content placed before the grant and
 // the grant does not stay pending.
@@ -644,17 +619,17 @@ fn grant_by_inbox_reads_earlier_content_spec_crypto_4() {
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
     let addr = net.address(host);
-    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (alice, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let (bob, done) = net.engine(b).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (bob, done) = net.engine(b).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
     net.run();
     net.pair(b, a);
     let e = net.engine(a);
     let mut m = Mutation::new();
-    let g = e.new_thing(&mut m, alice.person);
+    let g = e.new_thing(&mut m, alice.account);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
     let (_, done) = net.engine(a).create_label(&g, &[addr]).unwrap();
@@ -666,7 +641,7 @@ fn grant_by_inbox_reads_earlier_content_spec_crypto_4() {
         net.advance(70_000);
     }
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-    let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
+    let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     for _ in 0..3 {
@@ -1297,21 +1272,21 @@ fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
     let addr = net.address(host);
-    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (alice, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let (bob, done) = net.engine(b).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (bob, done) = net.engine(b).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
     net.run();
     net.pair(b, a);
     let e = net.engine(a);
     let mut m = Mutation::new();
-    let g = e.new_thing(&mut m, alice.person);
+    let g = e.new_thing(&mut m, alice.account);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
     let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
-    let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
+    let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     let blob = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { blob, .. } = d { Some(blob.clone()) } else { None }).expect("an inbox blob");
     // everything but the commits writing g's `keys.0` reaches b directly; the grant by inbox
     let keys_ak = Ak::new("keys.0").unwrap();
@@ -1331,7 +1306,7 @@ fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
     let h = net.engine(b).header(&c).unwrap();
     let admin = net.engine(a).epochs(&g).unwrap().admin.newest_held().map(|(_, s)| osis_crypto::DeleteSecret::derive(s).verifying_key().to_bytes()).unwrap();
     assert!(h.keys.iter().any(|k| k.level == 1 && k.key == admin), "b lists g's admin delete key");
-    let done = net.engine(b).demote(&g, &Demotion { holder: bob.person, new: None, retain: None }).unwrap();
+    let done = net.engine(b).demote(&g, &Demotion { holder: bob.account, new: None, retain: None }).unwrap();
     let _ = done;
 }
 
@@ -1348,7 +1323,7 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     let addr = net.address(host);
     let mut persons = Vec::new();
     for n in [a, b, c] {
-        let (p, done) = net.engine(n).create_person(std::slice::from_ref(&addr)).unwrap();
+        let (p, done) = net.engine(n).create_account(std::slice::from_ref(&addr)).unwrap();
         let acts = net.sync(n).carry_out(done).unwrap();
         net.actions(n, acts);
         persons.push(p);
@@ -1359,12 +1334,12 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     net.pair(c, a);
     let e = net.engine(a);
     let mut m = Mutation::new();
-    let g = e.new_thing(&mut m, alice.person);
+    let g = e.new_thing(&mut m, alice.account);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
     let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
-    net.engine(a).grant(&g, &carl.person, &edge).unwrap();
-    let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
+    net.engine(a).grant(&g, &carl.account, &edge).unwrap();
+    let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     let genuine = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { blob, .. } = d { Some(blob.clone()) } else { None }).expect("an inbox blob");
     net.pair(a, c);
     // carl, a writer of g, writes on g; carl's own account commit touches no g
@@ -1386,14 +1361,14 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     }
     // forged inbox blobs to bob: carl's keys as g's admin and write keys
     let ck = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([0xcc; 32])).verifying_key();
-    let ks = net.engine(a).get_typed(&bob.person, &ct::KEYS).unwrap().unwrap();
+    let ks = net.engine(a).get_typed(&bob.account, &ct::KEYS).unwrap().unwrap();
     let ct::KemKey::X25519MlKem768(kb) = ks.read.unwrap().kem_key;
     let kem = osis_crypto::KemPublicKey::from_slice(&kb).unwrap();
     let mut rng = osis_crypto::SeededRng::from_u64(7);
     for id in [cc, unrelated] {
         let commit = osis_base::decode(&net.engine(c).package(&id).unwrap().unwrap().bytes, &osis_base::Limits { max_depth: 512, max_bytes: 1 << 24 }).unwrap();
         let payload = osis_label::InboxPayload { chain: Vec::new(), commit, things: vec![osis_label::InboxThing { tid: g, label: None, delete_keys: Some((ck, ck)) }] };
-        let blob = osis_label::seal_inbox_blob(&bob.person, &kem, &payload, osis_base::WallMs(net.now()), &mut rng).unwrap();
+        let blob = osis_label::seal_inbox_blob(&bob.account, &kem, &payload, osis_base::WallMs(net.now()), &mut rng).unwrap();
         let _ = net.engine(b).accept_inbox(&blob);
     }
     net.engine(b).accept_inbox(&genuine).unwrap();

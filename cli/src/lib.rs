@@ -415,7 +415,7 @@ impl Ctx<'_> {
         timeout_of(&self.g, default)
     }
 
-    /// Resolves a tid argument: `osis://…`, bare, `me`, `node`, `$var`.
+    /// Resolves a tid argument: `osis://…`, bare, `me`, `home`, `node`, `$var`.
     pub fn tid(&self, s: &str) -> anyhow::Result<Tid> {
         self.alias(s).or_else(|| Tid::parse(s).ok()).ok_or_else(|| usage(format!("not a tid: {s}")))
     }
@@ -423,6 +423,7 @@ impl Ctx<'_> {
     pub fn alias(&self, s: &str) -> Option<Tid> {
         match s {
             "me" => Some(self.db.me()),
+            "home" => Some(self.db.home()),
             "node" => Some(self.db.node()),
             _ => s.strip_prefix('$').and_then(|v| self.vars.get(v).copied()),
         }

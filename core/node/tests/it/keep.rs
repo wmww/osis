@@ -62,8 +62,8 @@ struct Kept {
 /// at both.
 fn setup(seed: u64, (edge, keep): Holding) -> Kept {
     let mut lp = LocalPeer::of(vec![forensic_peer(seed, &osis_store::Faults::new()), forensic_peer(seed + 1, &osis_store::Faults::new())], seed);
-    let pa = lp.peers[0].engine.create_person(&hosts()).unwrap().0.person;
-    let pb = lp.peers[1].engine.create_person(&hosts()).unwrap().0.person;
+    let pa = lp.peers[0].engine.create_account(&hosts()).unwrap().0.account;
+    let pb = lp.peers[1].engine.create_account(&hosts()).unwrap().0.account;
     spread(&mut lp);
     let d = thing_of(&mut lp, 0, pa);
     if keep {
@@ -368,7 +368,7 @@ fn concurrent_admins_erase_in_either_order_spec_perm_3() {
         let (d, pb) = (x.d, x.pb);
         x.lp.peers.push(forensic_peer(seed + 7, &osis_store::Faults::new()));
         let carol = x.lp.peers[2].engine.tid();
-        x.lp.peers[2].engine.create_person(&hosts()).unwrap();
+        x.lp.peers[2].engine.create_account(&hosts()).unwrap();
         spread(&mut x.lp);
         x.lp.peers[0].engine.grant(&d, &carol, &edge_of(Role::Admin)).unwrap();
         spread(&mut x.lp);
@@ -414,8 +414,8 @@ fn a_holder_leaving_says_its_own_word_spec_perm_2() {
 /// default as `(on P, on C)`.
 fn nested(seed: u64, (on_p, on_c): (bool, bool)) -> (LocalPeer, Tid, Tid, Tid) {
     let mut lp = LocalPeer::of(vec![forensic_peer(seed, &osis_store::Faults::new()), forensic_peer(seed + 1, &osis_store::Faults::new())], seed);
-    let pa = lp.peers[0].engine.create_person(&hosts()).unwrap().0.person;
-    lp.peers[1].engine.create_person(&hosts()).unwrap();
+    let pa = lp.peers[0].engine.create_account(&hosts()).unwrap().0.account;
+    lp.peers[1].engine.create_account(&hosts()).unwrap();
     spread(&mut lp);
     let bob = lp.peers[1].engine.tid();
     let p = thing_of(&mut lp, 0, pa);
@@ -669,7 +669,7 @@ fn a_part_waiting_at_the_removal_stays_out_spec_perm_3() {
     let mut x = setup(9420, keeping(Role::Read));
     let (d, pb) = (x.d, x.pb);
     x.lp.peers.push(forensic_peer(9427, &osis_store::Faults::new()));
-    let pc = x.lp.peers[2].engine.create_person(&hosts()).unwrap().0.person;
+    let pc = x.lp.peers[2].engine.create_account(&hosts()).unwrap().0.account;
     spread(&mut x.lp);
     let g = *x.lp.peers[0].engine.grant(&d, &pc, &edge_of(Role::Write)).unwrap().commits.last().unwrap();
     send(&mut x.lp, 0, 2, &[g]);
@@ -695,7 +695,7 @@ fn a_stripped_waiting_part_stays_out_spec_perm_3() {
     let mut x = setup(9460, keeping(Role::Read));
     let (d, pb) = (x.d, x.pb);
     x.lp.peers.push(forensic_peer(9467, &osis_store::Faults::new()));
-    let pc = x.lp.peers[2].engine.create_person(&hosts()).unwrap().0.person;
+    let pc = x.lp.peers[2].engine.create_account(&hosts()).unwrap().0.account;
     spread(&mut x.lp);
     let g = *x.lp.peers[0].engine.grant(&d, &pc, &edge_of(Role::Write)).unwrap().commits.last().unwrap();
     send(&mut x.lp, 0, 2, &[g]);
@@ -834,8 +834,8 @@ fn copy_is_not_synced_spec_perm_3() {
 fn a_links_key_takes_the_targets_default_spec_perm_7() {
     for (keep, seed) in [(true, 9410), (false, 9415)] {
         let mut lp = LocalPeer::of(vec![forensic_peer(seed, &osis_store::Faults::new()), forensic_peer(seed + 1, &osis_store::Faults::new())], seed);
-        let pa = lp.peers[0].engine.create_person(&hosts()).unwrap().0.person;
-        let pb = lp.peers[1].engine.create_person(&hosts()).unwrap().0.person;
+        let pa = lp.peers[0].engine.create_account(&hosts()).unwrap().0.account;
+        let pb = lp.peers[1].engine.create_account(&hosts()).unwrap().0.account;
         spread(&mut lp);
         let d = thing_of(&mut lp, 0, pa);
         if keep {

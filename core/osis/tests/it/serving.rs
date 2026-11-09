@@ -21,7 +21,7 @@ fn item(db: &Osis, g: Tid, v: &str) -> Tid {
 }
 
 fn home_label(db: &Osis) -> LabelId {
-    let home = db.me();
+    let home = db.home();
     db.sync_engine(|s| s.labels().into_iter().find(|(g, _)| *g == home).map(|(_, l)| l.id)).unwrap()
 }
 
@@ -72,12 +72,12 @@ fn serving_own_then_open_spec_sync_5() {
     let (la, lb) = (home_label(&alice), home_label(&bob));
     assert!(hosted(&w, s).contains(&la), "own: admitted");
     assert!(!hosted(&w, s).contains(&lb), "own: another account's label refused");
-    let st = bob.status().unwrap().groups[&bob.me()].clone();
+    let st = bob.status().unwrap().groups[&bob.home()].clone();
     assert_eq!((st.state, st.refused_by), (osis::SyncState::Synced, vec![ha.clone()]), "not admitted, not full; synced at base");
-    w.until(bob.wait_synced(osis::SyncScope::Thing(bob.me())), 1000, 10).unwrap();
-    let st = carol.status().unwrap().groups[&carol.me()].clone();
+    w.until(bob.wait_synced(osis::SyncScope::Thing(bob.home())), 1000, 10).unwrap();
+    let st = carol.status().unwrap().groups[&carol.home()].clone();
     assert_eq!((st.state, st.refused_by), (osis::SyncState::Refused, vec![ha.clone()]), "at no other host");
-    assert!(w.try_until(carol.wait_synced(osis::SyncScope::Thing(carol.me())), 1000, 10).is_none());
+    assert!(w.try_until(carol.wait_synced(osis::SyncScope::Thing(carol.home())), 1000, 10).is_none());
 
     // open: Bob's label is taken at his next registration
     alice.set_serving(Some(Serving { admit: Admit::Open, ..alice.serving().unwrap().unwrap() })).unwrap();
@@ -94,7 +94,7 @@ fn serving_own_then_open_spec_sync_5() {
     let join = osis::internals::pair(cfg, &bob.pair_offer().unwrap()).unwrap();
     let (_, reply) = bob.pair_accept(join.request()).unwrap();
     let paired = join.finish(&reply).unwrap();
-    w.until(paired.wait_synced(osis::SyncScope::Thing(bob.me())), 1000, 30).unwrap();
+    w.until(paired.wait_synced(osis::SyncScope::Thing(bob.home())), 1000, 30).unwrap();
     assert_eq!(paired.at(tb, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), Some(Value::Str("bob's".into())));
 
     // hygiene: no tid or AK of the label Alice reads or the one she does not
@@ -130,7 +130,7 @@ fn serving_node_needs_no_setup_spec_data_model_9() {
     w.run();
     let ha = alice.serving_address().unwrap().expect("listening");
     assert_eq!(alice.saved_peers().unwrap(), vec![ha.clone()]);
-    let g = group_of(&alice, alice.me(), alice.me(), &[]);
+    let g = group_of(&alice, alice.me(), alice.home(), &[]);
     item(&alice, g, "x");
     w.until(alice.wait_synced(osis::SyncScope::All), 1000, 30).unwrap();
     let ai = w.index(&alice).unwrap();
@@ -194,7 +194,7 @@ fn own_admits_only_owned_groups_spec_data_model_9() {
     let hosts = [w.addr(base).unwrap(), ha.clone()];
 
     // Bob's group naming Alice's peer, Alice a reader: not hers
-    let x = group_of(&bob, bob.me(), bob.me(), &hosts);
+    let x = group_of(&bob, bob.me(), bob.home(), &hosts);
     bob.grant(x, a, Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(alice.role_on(x).unwrap(), Some(Role::Read));
@@ -218,7 +218,7 @@ fn own_admits_only_owned_groups_spec_data_model_9() {
     assert!(!hosted(&w, s).contains(&lx), "own: refused at registration");
 
     // an actor Bob made and made Alice's account admin of: still Bob's
-    let fam = group_of(&bob, bob.me(), bob.me(), &[]);
+    let fam = group_of(&bob, bob.me(), bob.home(), &[]);
     bob.grant(fam, a, Role::Admin, Default::default()).unwrap();
     let shared = group_of(&bob, fam, fam, &hosts);
     w.run();
@@ -226,8 +226,8 @@ fn own_admits_only_owned_groups_spec_data_model_9() {
     assert!(!admitted(&alice).contains(&ls), "own: owned by an actor Bob made Alice's account admin of");
 
     // her own group naming her peer, and one under an actor she owns
-    let mine = group_of(&alice, alice.me(), alice.me(), &hosts);
-    let y = group_of(&alice, alice.me(), alice.me(), &[]);
+    let mine = group_of(&alice, alice.me(), alice.home(), &hosts);
+    let y = group_of(&alice, alice.me(), alice.home(), &[]);
     let under = group_of(&alice, y, y, &hosts);
     w.run();
     let got = admitted(&alice);
@@ -246,7 +246,7 @@ fn own_admits_only_owned_groups_spec_data_model_9() {
 fn own_stops_at_a_cut_record_edge_spec_data_model_9() {
     let (mut w, alice, bob, base, ha, a, b) = own_pair(5);
     let hosts = [w.addr(base).unwrap(), ha.clone()];
-    let y = group_of(&alice, alice.me(), alice.me(), &[]);
+    let y = group_of(&alice, alice.me(), alice.home(), &[]);
     let g = group_of(&alice, y, y, &hosts);
     alice.grant(y, b, Role::Admin, Default::default()).unwrap();
     w.run();

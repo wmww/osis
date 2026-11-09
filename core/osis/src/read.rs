@@ -38,8 +38,6 @@ pub struct Stamp {
     pub id: CommitId,
     /// The actor the author acted for.
     pub actor: Tid,
-    /// The authoring node.
-    pub node: Tid,
     /// When it was written, by the author's clock: the same on every node.
     pub written: Time,
     /// When this node received it (per node).
@@ -49,8 +47,8 @@ pub struct Stamp {
 }
 
 impl Stamp {
-    pub(crate) fn new(id: CommitId, actor: Tid, node: Tid, ts: Ts, received: Time) -> Stamp {
-        Stamp { id, actor, node, written: ts.wall_ms(), received, ts }
+    pub(crate) fn new(id: CommitId, actor: Tid, ts: Ts, received: Time) -> Stamp {
+        Stamp { id, actor, written: ts.wall_ms(), received, ts }
     }
 
     /// The time to show and sort by: the earlier of `written` and `received`, as an author's clock
@@ -71,8 +69,6 @@ pub struct ThingStamp {
     pub id: CommitId,
     /// The actor the author acted for.
     pub actor: Tid,
-    /// The authoring node.
-    pub node: Tid,
     /// When it was written, by the author's clock: the same on every node.
     pub written: Time,
     /// When this node received it (per node).
@@ -89,7 +85,7 @@ impl ThingStamp {
 }
 
 fn stamp(c: osis_node::Creation) -> ThingStamp {
-    ThingStamp { id: CommitId(c.commit), written: c.ts.wall_ms(), ts: c.ts, node: c.node, actor: c.actor, received: c.received }
+    ThingStamp { id: CommitId(c.commit), written: c.ts.wall_ms(), ts: c.ts, actor: c.actor, received: c.received }
 }
 
 /// The groups a thing is in (`Osis::groups_of`), each list in tid order.

@@ -136,12 +136,12 @@ fn world() -> World {
     let db = db(7);
     let (things, groups) = db
         .commit_with(|w| {
-            let things: Vec<Tid> = (0..SETUP).map(|_| w.create_with_content(db.me())).collect::<osis::Result<_>>()?;
+            let things: Vec<Tid> = (0..SETUP).map(|_| w.create_with_content(db.home())).collect::<osis::Result<_>>()?;
             for t in &things {
                 w.at(*t, osis::DynamicAspectKey::untyped(ak(AKS[2]))).set(&Value::Map(osis_base::ValueMap::new()))?;
             }
-            let g0 = w.create_with_content(db.me())?;
-            let g1 = w.create_with_content(db.me())?;
+            let g0 = w.create_with_content(db.home())?;
+            let g1 = w.create_with_content(db.home())?;
             w.group(g0).add(osis::Member::Item(things[0]))?;
             Ok((things, [g0, g1]))
         })

@@ -230,6 +230,8 @@ impl SyncEngine {
                 out.extend(self.engine.record_chain(&h));
             }
         }
+        // an account's things publish under its devices actor's label
+        out.extend(self.engine.core.account_devices().filter(|(p, _)| out.contains(p)).map(|x| x.1));
         out
     }
 

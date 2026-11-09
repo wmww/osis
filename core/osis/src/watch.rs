@@ -525,16 +525,16 @@ impl Dispatch {
     }
 }
 
-fn origin_of(id: CommitId, from: EventOrigin, node: Tid, actor: Tid, ts: Ts, received: Time) -> Origin {
-    let i = Stamp::new(id, actor, node, ts, received);
+fn origin_of(id: CommitId, from: EventOrigin, actor: Tid, ts: Ts, received: Time) -> Origin {
+    let i = Stamp::new(id, actor, ts, received);
     if from == EventOrigin::Local { Origin::Local(i) } else { Origin::Remote(i) }
 }
 
 /// The aspects an event changed, with its origin.
 fn aspect_event(m: &Msg) -> Option<(&[(Tid, Ak)], Origin)> {
     match m {
-        Msg::Event(Event::Applied { id, origin, author, actor, ts, received, changed, .. }) => Some((changed, origin_of(CommitId(*id), *origin, *author, *actor, *ts, *received))),
-        Msg::Event(Event::Ephemeral { id, origin, author, actor, ts, received, changed, .. }) => Some((changed, origin_of(CommitId(*id), *origin, *author, *actor, *ts, *received))),
+        Msg::Event(Event::Applied { id, origin, actor, ts, received, changed, .. }) => Some((changed, origin_of(CommitId(*id), *origin, *actor, *ts, *received))),
+        Msg::Event(Event::Ephemeral { id, origin, actor, ts, received, changed, .. }) => Some((changed, origin_of(CommitId(*id), *origin, *actor, *ts, *received))),
         Msg::Event(Event::Changed { cause, changed }) => Some((changed, Origin::Derived((*cause).into()))),
         _ => None,
     }

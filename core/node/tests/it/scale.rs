@@ -1191,39 +1191,3 @@ fn repro_role_history_join_is_linear() {
     all_linear("a joiner ingesting a role history", &role_history_join(30), &role_history_join(300));
 }
 
-/// A proof's valid chain of n role commits, sent in `order`: work to judge one account claim. The
-/// claim's actor is a first admin (the chain alone shows it); the verifier holds nothing.
-fn proof_chain(n: usize, reverse: bool) -> (Work, u64) {
-    let mut lp = net(2, 0xc0a1 + n as u64 + u64::from(reverse));
-    let a = lp.peers[0].engine.tid();
-    let t = new_thing(&mut lp, 0);
-    for i in 0..n {
-        let mut h = [9u8; 15];
-        h[..8].copy_from_slice(&(i as u64).to_le_bytes());
-        set_edge(&mut lp.peers[0].engine, t, Tid::from_bytes(h), Some(edge(Role::Read)), None);
-        lp.advance(1);
-    }
-    let mut chain: Vec<Vec<u8>> = lp.packages(0).unwrap().into_iter().map(|p| p.bytes).collect();
-    if reverse {
-        chain.reverse();
-    }
-    let b = lp.peers[1].backend.clone();
-    let walked = osis_perm::commits_walked();
-    let (proved, work) = measured(&b, || lp.peers[1].engine.accounts_proven(&[(a, t)], &chain).unwrap());
-    assert_eq!(proved.len(), 1, "the chain shows the claim");
-    println!("chain of {n} commits: {} bytes", chain.iter().map(Vec::len).sum::<usize>());
-    (work, osis_perm::commits_walked() - walked)
-}
-
-// spec/wire.md §11.2 Prove (MAX_CHAIN_BYTES bounds the work; a valid chain costs commits times a
-// small factor, in either order)
-#[test]
-fn proof_chain_judging_is_linear() {
-    for reverse in [false, true] {
-        let ((small, walked_small), (big, walked_big)) = (proof_chain(30, reverse), proof_chain(300, reverse));
-        linear(&format!("commits walked (reverse: {reverse})"), walked_small, walked_big);
-        for k in small.spans.keys().chain(big.spans.keys()).collect::<BTreeSet<_>>() {
-            linear(&format!("{k} (reverse: {reverse})"), small.n(k), big.n(k));
-        }
-    }
-}

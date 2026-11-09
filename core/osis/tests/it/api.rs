@@ -36,7 +36,7 @@ fn create_and_reopen_spec_api_handle() {
     let (node, me) = {
         let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap();
         assert_ne!(db.me(), db.node());
-        assert_eq!(db.at(db.me(), osis::internals::core_types::GROUP).get().unwrap(), Some(Group::default()));
+        assert_eq!(db.at(db.home(), osis::internals::core_types::GROUP).get().unwrap(), Some(Group::default()));
         assert_eq!(db.role_on(db.me()).unwrap(), Some(Role::Admin));
         (db.node(), db.me())
     };
@@ -58,7 +58,7 @@ fn create_and_reopen_spec_api_handle() {
 fn typed_keys_and_paths_spec_versioning_5() {
     let db = db(1);
     let mut w = db.write();
-    let n = w.create_in(db.me(), &[db.me()]).unwrap();
+    let n = w.create_in(db.me(), &[db.home()]).unwrap();
     w.at(n, example::TITLE).set(&"Groceries".to_string()).unwrap();
     w.at(n, example::TASKS).set(&vec![task("milk"), task("eggs")]).unwrap();
     w.commit().unwrap();
@@ -110,7 +110,7 @@ fn typed_keys_and_paths_spec_versioning_5() {
 fn link_where_the_type_takes_none_reads_absent_spec_dm_6() {
     let db = db(1);
     let mut w = db.write();
-    let n = w.create_in(db.me(), &[db.me()]).unwrap();
+    let n = w.create_in(db.me(), &[db.home()]).unwrap();
     w.commit().unwrap();
     let (tx, diags) = std::sync::mpsc::channel();
     let _d = db.on_diagnostic(move |_, d| {
@@ -133,7 +133,7 @@ fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
     use osis::internals::schema::osis_base::{BlobId, Link};
     let db = db(1);
     let mut w = db.write();
-    let n = w.create_in(db.me(), &[db.me()]).unwrap();
+    let n = w.create_in(db.me(), &[db.home()]).unwrap();
     w.commit().unwrap();
     let (tx, diags) = std::sync::mpsc::channel();
     let _d = db.on_diagnostic(move |_, d| {
@@ -187,7 +187,7 @@ fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
 fn missed_blob_arriving_redelivers_watches_spec_dm_6() {
     let db = db(1);
     let mut w = db.write();
-    let n = w.create_in(db.me(), &[db.me()]).unwrap();
+    let n = w.create_in(db.me(), &[db.home()]).unwrap();
     w.commit().unwrap();
     let k = ak("t:big.0");
     let big = s(&"x".repeat(200 << 10));
@@ -252,7 +252,7 @@ fn absent_reads_none_spec_api_reads() {
     let db = db(1);
     let other = db_other_thing();
     assert_eq!(db.at(other, osis::DynamicAspectKey::untyped(ak("a:b.0"))).get().unwrap(), None);
-    assert_eq!(db.at(db.me(), osis::DynamicAspectKey::untyped(ak("a:b.0"))).get().unwrap(), None);
+    assert_eq!(db.at(db.home(), osis::DynamicAspectKey::untyped(ak("a:b.0"))).get().unwrap(), None);
     assert!(!db.has_content(other).unwrap());
     assert_eq!(db.role_on(other).unwrap(), None);
 }
@@ -413,19 +413,19 @@ fn large_value_round_trip_spec_data_model_6() {
 fn create_add_delete_spec_data_model_8() {
     let db = db(1);
     let mut w = db.write();
-    let folder = w.create_in(db.me(), &[db.me()]).unwrap();
-    w.group(db.me()).add(osis::Member::Subgroup(folder)).unwrap();
-    let a = w.create_in(db.me(), &[folder, db.me()]).unwrap();
+    let folder = w.create_in(db.me(), &[db.home()]).unwrap();
+    w.group(db.home()).add(osis::Member::Subgroup(folder)).unwrap();
+    let a = w.create_in(db.me(), &[folder, db.home()]).unwrap();
     let b = w.create().unwrap();
     w.at(a, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.groups_of(a).unwrap().within.into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([folder, db.me()]));
+    assert_eq!(db.groups_of(a).unwrap().within.into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([folder, db.home()]));
     assert!(db.groups_of(b).unwrap().within.is_empty());
     let mut w = db.write();
     w.group(folder).add(osis::Member::Item(b)).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
-    w.group(db.me()).remove(osis::Member::Item(a)).unwrap();
+    w.group(db.home()).remove(osis::Member::Item(a)).unwrap();
     w.commit().unwrap();
     assert_eq!(db.groups_of(a).unwrap().item_of, vec![folder]);
     let mut w = db.write();
@@ -606,11 +606,11 @@ fn act_as_spec_commits_1() {
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:y.0"))).set(&Value::Int(0)).unwrap();
     let c1 = w.commit().unwrap().unwrap();
     let mut w = db.write();
-    w.act_as(db.node());
+    w.act_as(t);
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
     let c2 = w.commit().unwrap().unwrap();
     let actor = |c: osis::internals::RawCommitId| db.engine(|e| e.header(&c).unwrap().actor);
-    assert_eq!((actor(c1.stamp.id.raw()), actor(c2.stamp.id.raw())), (db.me(), db.node()));
+    assert_eq!((actor(c1.stamp.id.raw()), actor(c2.stamp.id.raw())), (db.me(), t));
     // an empty write commits nothing
     assert_eq!(db.write().commit().unwrap(), None);
 }
@@ -625,7 +625,7 @@ fn local_sync_surface_spec_api_sync() {
     let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap();
     assert!(db.saved_peers().unwrap().is_empty());
     let st = db.status().unwrap();
-    assert_eq!(st.groups.get(&db.me()).map(|g| g.state), Some(osis::SyncState::NotConnected));
+    assert_eq!(st.groups.get(&db.home()).map(|g| g.state), Some(osis::SyncState::NotConnected));
     assert!("".parse::<osis::Address>().is_err());
     let a = osis::Address::new(&"quic://h:1".parse().unwrap(), [7; 32]);
     assert_eq!(a.to_string().parse::<osis::Address>().unwrap(), a);
@@ -719,9 +719,9 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
     let g = w.create().unwrap();
     // durable things: an ephemeral membership is no `NotSynced` matter (nothing leaves the
     // node anyway); placing a durable thing persists the group
-    let home_item = w.create_with_content(db.me()).unwrap();
-    w.group(db.me()).add(osis::Member::Item(home_item)).unwrap();
-    let lost = w.create_with_content(db.me()).unwrap();
+    let home_item = w.create_with_content(db.home()).unwrap();
+    w.group(db.home()).add(osis::Member::Item(home_item)).unwrap();
+    let lost = w.create_with_content(db.home()).unwrap();
     w.group(g).add(osis::Member::Item(lost)).unwrap();
     w.commit().unwrap();
     db.settle();
@@ -737,7 +737,7 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
 fn deleted_reads_unknown_spec_api_reads() {
     let db = db(1);
     let mut w = db.write();
-    let t = w.create_in(db.me(), &[db.me()]).unwrap();
+    let t = w.create_in(db.me(), &[db.home()]).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:y.0"))).set(&Value::Int(2)).unwrap();
     w.commit().unwrap();
@@ -756,7 +756,7 @@ fn deleted_reads_unknown_spec_api_reads() {
     let got: Vec<_> = rx.try_iter().collect();
     assert!(got.iter().any(|(ak, v, known)| ak.as_str() == "t:x.0" && *v == Ok(None) && !known), "{got:?}");
     assert!(!db.has_content(t).unwrap() && db.created(t).unwrap().is_some());
-    assert!(!db.groups_of(db.me()).unwrap().item_of.contains(&t) && !db.at(db.me(), osis::internals::core_types::GROUP).get().unwrap().unwrap().items.contains(&t));
+    assert!(!db.groups_of(db.home()).unwrap().item_of.contains(&t) && !db.at(db.home(), osis::internals::core_types::GROUP).get().unwrap().unwrap().items.contains(&t));
     // an unknown tid: not known, no creation
     let other = db_other_thing();
     assert!(!db.has_content(other).unwrap() && db.created(other).unwrap().is_none());
@@ -768,7 +768,7 @@ fn deleted_reads_unknown_spec_api_reads() {
 #[test]
 fn groups_of_relations_spec_data_model_8() {
     let db = db(1);
-    let home = db.me();
+    let home = db.home();
     let (g1, g2, tag, x) = db.commit_with(|w| {
         let group = |w: &mut osis::Write<'_>| -> osis::Result<osis::Tid> {
             let g = w.create_in(db.me(), &[home])?;
@@ -781,7 +781,7 @@ fn groups_of_relations_spec_data_model_8() {
         w.group(g1).add(osis::Member::Item(tag))?;
         w.group(g1).add(osis::Member::Subgroup(tag))?;
         w.group(g2).add(osis::Member::Subgroup(tag))?;
-        let x = w.create_with_content(db.me())?;
+        let x = w.create_with_content(db.home())?;
         w.group(tag).add(osis::Member::Item(x))?;
         Ok((g1, g2, tag, x))
     }).unwrap();
@@ -813,26 +813,26 @@ fn groups_of_relations_spec_data_model_8() {
 #[test]
 fn membership_reaching_no_synced_group_fails_spec_api_writes() {
     let db = db(1);
-    let home = db.me();
+    let home = db.home();
     let mut w = db.write();
     let g = w.create_in(db.me(), &[home]).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
-    let x = w.create_with_content(db.me()).unwrap();
+    let x = w.create_with_content(db.home()).unwrap();
     w.group(g).add(osis::Member::Item(x)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("as a subgroup")));
     assert!(!db.has_content(x).unwrap() && db.created(x).unwrap().is_none(), "nothing applied");
     // a group with no synced group at all: node-local, allowed (a `NotSynced` diagnostic)
     let mut w = db.write();
-    let l = w.create_with_content(db.me()).unwrap();
-    let y = w.create_with_content(db.me()).unwrap();
+    let l = w.create_with_content(db.home()).unwrap();
+    let y = w.create_with_content(db.home()).unwrap();
     w.group(l).add(osis::Member::Item(y)).unwrap();
     let local = l;
     w.commit().unwrap();
     assert!(db.has_content(local).unwrap());
     // the fix: the group as a subgroup too, in the same commit
     let mut w = db.write();
-    let x = w.create_with_content(db.me()).unwrap();
+    let x = w.create_with_content(db.home()).unwrap();
     w.group(g).add(osis::Member::Item(x)).unwrap();
     w.group(home).add(osis::Member::Subgroup(g)).unwrap();
     w.commit().unwrap();
@@ -964,15 +964,15 @@ fn expiring_membership_api_writes() {
     w.commit().unwrap();
     let mut w = db.write();
     w.expires(minute);
-    w.group(db.me()).add(osis::Member::Item(gone)).unwrap();
+    w.group(db.home()).add(osis::Member::Item(gone)).unwrap();
     w.at(gone, osis::DynamicAspectKey::untyped(x.clone())).set(&s("bye")).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
     let kept = w.create().unwrap();
-    w.group(db.me()).add(osis::Member::Item(kept)).unwrap();
+    w.group(db.home()).add(osis::Member::Item(kept)).unwrap();
     w.at(kept, osis::DynamicAspectKey::untyped(x.clone())).set(&s("stays")).unwrap();
     w.commit().unwrap();
-    let items = |db: &Osis| db.at(db.me(), osis::internals::core_types::GROUP).get().unwrap().unwrap().items;
+    let items = |db: &Osis| db.at(db.home(), osis::internals::core_types::GROUP).get().unwrap().unwrap().items;
     assert!(items(&db).contains(&gone) && items(&db).contains(&kept));
     c.advance(61_000);
     db.engine(|e| e.tick()).unwrap();
@@ -994,7 +994,7 @@ fn expiring_membership_api_writes() {
     w.at(kept, osis::DynamicAspectKey::untyped(x.clone())).set(&s("again")).unwrap();
     assert!(w.commit().unwrap().is_some());
     // the `group.0` field constants are the ones `add` writes
-    assert_eq!(db.at(db.me(), osis::internals::core_types::GROUP).path(p![osis::internals::GROUP_ITEMS]).get::<BTreeSet<osis::Tid>>().unwrap(), Some(items(&db)));
+    assert_eq!(db.at(db.home(), osis::internals::core_types::GROUP).path(p![osis::internals::GROUP_ITEMS]).get::<BTreeSet<osis::Tid>>().unwrap(), Some(items(&db)));
 }
 
 // spec/commits.md §2 (`created.0`); notes/api.md Reads (`created`, `now`): the creating commit with its time and
@@ -1007,10 +1007,10 @@ fn created_now_api_reads() {
     c.advance(5);
     assert_eq!(db.now().unwrap(), osis::Time(T0 + 5));
     let mut w = db.write();
-    let t = w.create_with_content(db.me()).unwrap();
+    let t = w.create_with_content(db.home()).unwrap();
     let done = w.commit().unwrap().unwrap();
     let ci = db.created(t).unwrap().unwrap();
-    assert_eq!((ci.id, ci.ts(), ci.node, ci.actor, ci.received), (done.stamp.id, done.ts(), db.node(), db.me(), osis::Time(T0 + 5)));
+    assert_eq!((ci.id, ci.ts(), ci.actor, ci.received), (done.stamp.id, done.ts(), db.me(), osis::Time(T0 + 5)));
     assert_eq!(ci.shown(), osis::Time(T0 + 5));
     c.advance(5);
     db.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("later")).unwrap();
@@ -1033,8 +1033,8 @@ fn changed_content_only_api_reads() {
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();
     let mut w = a.write();
-    let t = w.create_with_content(a.me()).unwrap();
-    w.group(a.me()).add(osis::Member::Item(t)).unwrap();
+    let t = w.create_with_content(a.home()).unwrap();
+    w.group(a.home()).add(osis::Member::Item(t)).unwrap();
     w.commit().unwrap();
     assert_eq!(a.changed(t).unwrap(), a.created(t).unwrap());
     ca.advance(10);
@@ -1046,11 +1046,11 @@ fn changed_content_only_api_reads() {
     let home = a.changed(a.me()).unwrap();
     ca.advance(10);
     let mut w = a.write();
-    let g = w.create_with_content(a.me()).unwrap();
+    let g = w.create_with_content(a.home()).unwrap();
     w.commit().unwrap();
     let mut w = a.write();
     w.group(g).add(osis::Member::Item(t)).unwrap();
-    w.group(a.me()).remove(osis::Member::Item(t)).unwrap();
+    w.group(a.home()).remove(osis::Member::Item(t)).unwrap();
     w.commit().unwrap();
     assert_eq!((a.changed(t).unwrap(), a.changed(a.me()).unwrap()), (Some(ch), home));
     // b's clock runs 30 min ahead (within MAX_DRIFT): its change shows at its receipt here
@@ -1059,12 +1059,12 @@ fn changed_content_only_api_reads() {
     b.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("2")).unwrap();
     deliver(&b, &a);
     let ch = a.changed(t).unwrap().unwrap();
-    assert_eq!((ch.node, ch.ts().wall_ms(), ch.shown()), (b.node(), osis::Time(T0 + 30 * 60_000), osis::Time(T0 + 20)));
+    assert_eq!((ch.actor, ch.ts().wall_ms(), ch.shown()), (b.me(), osis::Time(T0 + 30 * 60_000), osis::Time(T0 + 20)));
     // a's next change: its ts follows b's (the clock rule), shown latest at its receipt
     ca.advance(10);
     a.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:y.0")), &s("3")).unwrap();
     let ch = a.changed(t).unwrap().unwrap();
-    assert_eq!((ch.node, ch.shown()), (a.node(), osis::Time(T0 + 30)));
+    assert_eq!((ch.actor, ch.shown()), (a.me(), osis::Time(T0 + 30)));
     ca.advance(10);
     let mut w = a.write();
     w.delete(t).unwrap();
@@ -1094,7 +1094,7 @@ fn path_op_into_absent_key_spec_crdt_5_6() {
     let b = j.finish(&reply).unwrap();
     let r = ak("t:reactions.0");
     let mut w = a.write();
-    let t = w.create_with_content(a.me()).unwrap();
+    let t = w.create_with_content(a.home()).unwrap();
     w.commit().unwrap();
     deliver(&a, &b);
     let mut w = a.write();
@@ -1391,7 +1391,7 @@ fn a_first_member_makes_a_group() {
     let db = db(1);
     let (plain, other, a, b) = db
         .commit_with(|w| {
-            let v = [w.create_with_content(db.me())?, w.create_with_content(db.me())?, w.create_with_content(db.me())?, w.create_with_content(db.me())?];
+            let v = [w.create_with_content(db.home())?, w.create_with_content(db.home())?, w.create_with_content(db.home())?, w.create_with_content(db.home())?];
             Ok((v[0], v[1], v[2], v[3]))
         })
         .unwrap();
@@ -1419,7 +1419,7 @@ fn a_first_member_makes_a_group() {
     assert!(db.members(other).unwrap().is_empty() && db.at(other, osis::internals::core_types::GROUP).get().unwrap().is_some());
     // the acting actor's, whoever the commit acts as
     let mut w = db.write();
-    let group_actor = w.create_with_content(db.me()).unwrap();
+    let group_actor = w.create_with_content(db.home()).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
     w.act_as(group_actor);
@@ -1440,7 +1440,7 @@ fn a_first_member_makes_a_group() {
 
 /// A durable thing of `db`'s.
 fn made(db: &Osis) -> osis::Tid {
-    db.commit_with(|w| w.create_with_content(db.me())).unwrap()
+    db.commit_with(|w| w.create_with_content(db.home())).unwrap()
 }
 
 // spec/data-model.md §8: two nodes each adding what is to them a first member both keep theirs, whichever arrives first
@@ -1550,7 +1550,7 @@ fn membership_expires_item_or_subgroup_spec_commits_6() {
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let minute = osis::Expiry::In(std::time::Duration::from_secs(60));
     let mut w = db.write();
-    let (g, t, s, kept) = (w.create_with_content(db.me()).unwrap(), w.create_with_content(db.me()).unwrap(), w.create_with_content(db.me()).unwrap(), w.create_with_content(db.me()).unwrap());
+    let (g, t, s, kept) = (w.create_with_content(db.home()).unwrap(), w.create_with_content(db.home()).unwrap(), w.create_with_content(db.home()).unwrap(), w.create_with_content(db.home()).unwrap());
     w.commit().unwrap();
     let mut w = db.write();
     w.expires(minute);
@@ -1867,7 +1867,7 @@ fn a_reaction_outlives_a_disappearing_message_spec_crdt_4_7() {
     let (a, b, c) = paired();
     let k = osis::DynamicAspectKey::untyped(ak("t:msgs.0"));
     let mut w = a.write();
-    let t = w.create_with_content(a.me()).unwrap();
+    let t = w.create_with_content(a.home()).unwrap();
     w.commit().unwrap();
     a.commit_with(|w| {
         w.expires(osis::Expiry::In(std::time::Duration::from_secs(60)));
@@ -1901,7 +1901,7 @@ fn a_removal_does_not_outlive_a_disappearing_message_spec_crdt_4_7() {
     let (a, b, c) = paired();
     let k = osis::DynamicAspectKey::untyped(ak("t:msgs.0"));
     let mut w = a.write();
-    let t = w.create_with_content(a.me()).unwrap();
+    let t = w.create_with_content(a.home()).unwrap();
     w.commit().unwrap();
     a.commit_with(|w| {
         w.expires(osis::Expiry::In(std::time::Duration::from_secs(60)));

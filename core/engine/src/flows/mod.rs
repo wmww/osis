@@ -16,14 +16,12 @@ pub(crate) mod labels;
 pub(crate) mod links;
 mod create;
 pub(crate) mod account;
-pub(crate) mod person;
 pub mod tied;
 
 
 pub use edges::Demotion;
 pub use links::{HeldLink, LINK_SEED, LinkSpec};
 pub use account::CreatedAccount;
-pub use person::Person;
 pub use tied::Untie;
 
 use crate::engine::{Core, Engine, Tx};
@@ -392,6 +390,11 @@ fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
 impl Engine {
     /// The inbox a role write about `holder` goes to (`inbox_of`): the actor whose inbox it is,
     /// and the inbox.
+    pub fn inbox_kem(&mut self, actor: &Tid) -> Result<Option<osis_crypto::KemPublicKey>> {
+        let a = *actor;
+        self.run(|tx| edges::inbox_kem(tx, &a))
+    }
+
     pub fn inbox_of_actor(&mut self, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
         let h = *holder;
         self.run(|tx| inbox_of(tx, &h))

@@ -174,6 +174,10 @@ pub(crate) fn name_inbox(m: &mut Mutation, actor: Tid, label: LabelId, hosts: &[
 /// none there, no hosts.
 pub(crate) fn inherited_hosts(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<Address>> {
     for x in tx.core.standing_chain(t).into_iter().filter(|x| x != t) {
+        // an account has no label of its own: its inbox names the hosts of its devices actor's
+        if tx.core.is_account(&x) {
+            return Ok(Core::keys_in(tx, &x)?.and_then(|k| k.inbox).map(|i| i.hosts).unwrap_or_default());
+        }
         if let Some((_, _, hosts)) = own_label(tx, &x)? {
             return Ok(hosts);
         }
@@ -229,7 +233,7 @@ impl Engine {
         self.run(|tx| {
             // signing the step and sealing entry boxes encrypt under the group's epochs
             let mut done = Done::default();
-            let me = tx.core.id.tid();
+            let me = tx.core.me();
             rotation::require_covered(tx, me, g, &ROLES.into_iter().collect(), &mut done)?;
             let epochs = tx.core.epochs(&g).ok_or(Error::Misuse("no secrets held for the group"))?;
             let deposit = deposit_seed(tx, &g)?;
@@ -257,7 +261,7 @@ impl Engine {
         let (g, l, h) = (*group, *label, *head);
         let mut done = Done::default();
         let step = self.run(|tx| {
-            let me = tx.core.id.tid();
+            let me = tx.core.me();
             if tx.core.role_now(&me, &g) != Some(Role::Admin) {
                 return Ok(None);
             }
@@ -315,7 +319,7 @@ impl Engine {
     pub fn replace_label(&mut self, group: &Tid, old: &LabelId) -> Result<(LabelId, Done)> {
         let (g, o) = (*group, *old);
         self.run(|tx| {
-            let me = tx.core.id.tid();
+            let me = tx.core.me();
             if tx.core.role_now(&me, &g) != Some(Role::Admin) {
                 return Err(Error::Permission { tid: g });
             }

@@ -20,24 +20,24 @@ fn refused_inbox_deposit_retried_spec_sync_3() {
     let addr = net.address(host);
     // Bob's node cannot reach the host yet: his home label (his inbox) is not registered
     net.blocked.insert((b, host));
-    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (alice, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let (bob, done) = net.engine(b).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (bob, done) = net.engine(b).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
     net.run();
     net.pair(b, a);
     let e = net.engine(a);
     let mut m = Mutation::new();
-    let g = e.new_thing(&mut m, alice.person);
+    let g = e.new_thing(&mut m, alice.account);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
     let (_, done) = net.engine(a).create_label(&g, std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-    let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
+    let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
@@ -72,26 +72,26 @@ fn invite_goes_after_the_labels_registration_spec_sync_3() {
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
     let addr = net.address(host);
-    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (alice, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let (bob, done) = net.engine(b).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (bob, done) = net.engine(b).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
     net.run();
     net.pair(b, a);
     net.run();
-    let inbox = net.engine(a).get_typed(&bob.person, &ct::KEYS).unwrap().unwrap().inbox.unwrap().label;
+    let inbox = net.engine(a).get_typed(&bob.account, &ct::KEYS).unwrap().unwrap().inbox.unwrap().label;
     let held = net.host_ids(host, &inbox);
     let e = net.engine(a);
     let mut m = Mutation::new();
-    let g = e.new_thing(&mut m, alice.person);
+    let g = e.new_thing(&mut m, alice.account);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
     let (l, done) = net.engine(a).create_label(&g, std::slice::from_ref(&addr)).unwrap();
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let mut acts = net.sync(a).carry_out(done).unwrap();
-    let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
+    let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     acts.extend(net.sync(a).carry_out(done).unwrap());
     net.actions(a, acts);
     let mut came = false;
@@ -116,27 +116,27 @@ fn silent_host_of_the_label_holds_no_invite_back_spec_sync_3() {
     let a = net.node(1, &[host, silent]);
     let b = net.node(2, &[host]);
     let (addr, other) = (net.address(host), net.address(silent));
-    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (alice, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let (bob, done) = net.engine(b).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (bob, done) = net.engine(b).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
     net.run();
     net.pair(b, a);
     net.run();
-    let inbox = net.engine(a).get_typed(&bob.person, &ct::KEYS).unwrap().unwrap().inbox.unwrap().label;
+    let inbox = net.engine(a).get_typed(&bob.account, &ct::KEYS).unwrap().unwrap().inbox.unwrap().label;
     let held = net.host_ids(host, &inbox);
     let e = net.engine(a);
     let mut m = Mutation::new();
-    let g = e.new_thing(&mut m, alice.person);
+    let g = e.new_thing(&mut m, alice.account);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
     net.held_hosts.insert(silent);
     let (l, done) = net.engine(a).create_label(&g, &[addr, other]).unwrap();
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let mut acts = net.sync(a).carry_out(done).unwrap();
-    let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
+    let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     acts.extend(net.sync(a).carry_out(done).unwrap());
     net.actions(a, acts);
     net.run();
@@ -155,17 +155,17 @@ fn persons(replaced: usize, seed: u64) -> (Net, usize, usize, osis_base::Tid, os
     let b = net.node(seed + 1, &[host]);
     let addr = net.address(host);
     net.blocked.insert((b, host));
-    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (alice, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let (bob, done) = net.engine(b).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (bob, done) = net.engine(b).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
     net.run();
     net.pair(b, a);
     let e = net.engine(a);
     let mut m = Mutation::new();
-    let g = e.new_thing(&mut m, alice.person);
+    let g = e.new_thing(&mut m, alice.account);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
     let (mut l, done) = net.engine(a).create_label(&g, std::slice::from_ref(&addr)).unwrap();
@@ -181,11 +181,11 @@ fn persons(replaced: usize, seed: u64) -> (Net, usize, usize, osis_base::Tid, os
     }
     assert_eq!(net.engine(a).group_labels(&g).unwrap().iter().find(|x| x.id == l).unwrap().index, replaced as u64);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-    let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
+    let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
-    (net, a, b, bob.person, g, item)
+    (net, a, b, bob.account, g, item)
 }
 
 // spec/sync.md §3, §5 (a deposit goes until its host takes it): Bob's node is away for
@@ -253,15 +253,15 @@ fn two_accounts() -> (Net, usize, usize, usize, osis_base::Tid, osis_base::Tid) 
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
     let addr = net.address(host);
-    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (alice, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let (bob, done) = net.engine(b).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (bob, done) = net.engine(b).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
     net.run();
     net.pair(b, a);
-    (net, host, a, b, alice.person, bob.person)
+    (net, host, a, b, alice.account, bob.account)
 }
 
 /// Fills the deposit budget of `l` at the host with what nobody opens, but for `spare` slots.

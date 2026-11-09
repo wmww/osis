@@ -347,7 +347,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 /// and a memory part (forgotten with its commit once nothing of it is held, spec/sync.md §9, so it
 /// could not come back: notes/ephemeral.md Divergences left).
 fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
-    !m.valid_at(ai) && m.holds(ai) && !m.view.memory && m.view.author != core.id.tid() && !m.view.kind.is_role()
+    !m.valid_at(ai) && m.holds(ai) && !m.view.memory && m.view.author != core.me() && !m.view.kind.is_role()
 }
 
 /// Drops every held part judged invalid in this transaction (`Core::drop_due`) but those

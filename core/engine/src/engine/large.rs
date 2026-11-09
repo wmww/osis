@@ -538,7 +538,7 @@ impl Engine {
         if held.is_empty() {
             return Ok(None);
         }
-        let me = self.tid();
+        let me = self.me();
         // reuse links within one position of one aspect: the aspects of the commits listing it
         let core = &self.core;
         let cands: BTreeSet<(Tid, Ak)> = held.iter().flat_map(|b| core.ix.by_chunk.get(b).into_iter().flatten()).filter_map(|c| core.ix.commits.get(c)).flat_map(|m| m.view.aspects.iter().map(|a| (a.tid, a.ak.clone()))).collect();

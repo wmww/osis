@@ -163,9 +163,17 @@ impl SyncEngine {
         v
     }
 
-    /// Static-entry opens for the key actors this node holds that are not nodes, by tid.
-    fn static_tries(&self) -> Vec<(Tid, Try)> {
-        self.engine.core.key_actors.iter().map(|(t, id)| (*t, Try::Static { kem: id.keys().kem.clone(), key: id.keys().signing.clone() })).collect()
+    /// Static-entry opens for the key actors this node holds that are not nodes and for the
+    /// epochs of its account, by tid.
+    pub(crate) fn static_tries(&self) -> Vec<(Tid, Try)> {
+        let keys = self.engine.core.key_actors.iter().map(|(t, id)| (*t, Try::Static { kem: id.keys().kem.clone(), key: id.keys().signing.clone() }));
+        let accounts = self.engine.core.accounts.iter().flat_map(|(p, a)| {
+            a.seeds.values().map(|seed| {
+                let k = osis_crypto::AccountEpochKeys::from_seed(seed);
+                (*p, Try::Static { kem: k.kem, key: k.signing })
+            })
+        });
+        keys.chain(accounts).collect()
     }
 
     /// Follows `thing`'s label known only by ID and hosts (a recovery card's home label, a

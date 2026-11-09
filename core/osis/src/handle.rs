@@ -201,6 +201,7 @@ pub(crate) struct Inner {
     pub dispatch: Dispatch,
     pub node: Tid,
     pub me: Tid,
+    pub home: Tid,
     pub limit: usize,
     pub idle_commit: Duration,
     /// `Knobs::text_save`.
@@ -496,7 +497,6 @@ impl std::fmt::Debug for Inner {
     }
 }
 
-pub(crate) const ACCOUNT: &str = osis_node::ACCOUNT_RECORD;
 pub(crate) const SAVED_PEERS: &str = "saved_peers";
 pub(crate) const LINKS: &str = "links";
 /// The own serving address this node added to its saved peers (`Osis::upkeep_serving_peer`).
@@ -552,12 +552,6 @@ fn engine_cfg() -> osis_node::Config {
     osis_node::Config { software: format!("osis {}", env!("CARGO_PKG_VERSION")), ..Default::default() }
 }
 
-fn tid_record(e: &mut Engine, name: &str) -> Result<Tid> {
-    let b = e.app_record(name)?.ok_or(Error::Storage(format!("no {name} record: not an osis store")))?;
-    let a: [u8; osis_base::format::TID_LEN] = b.as_slice().try_into().map_err(|_| Error::Storage(format!("{name} record")))?;
-    Ok(Tid::from_bytes(a))
-}
-
 /// The saved peers as one local record (text lines).
 pub(crate) fn save_peers(e: &mut Engine, s: &[Address]) -> Result<()> {
     let text: Vec<String> = s.iter().map(|a| a.to_string()).collect();
@@ -598,14 +592,12 @@ impl Osis {
         let Fresh { mut sync, clock } = fresh_engine(&store, &cfg, peers)?;
         let engine = sync.engine_mut();
         let addrs: Vec<osis_label::Address> = peers.iter().map(|s| s.0.clone()).collect();
-        let (p, done) = engine.create_person(&addrs)?;
+        let (a, done) = engine.create_account(&addrs)?;
         let mut m = osis_node::Mutation::new();
-        m.set(p.person, &ct::GROUP, &ct::Group::default())?;
+        m.set(a.devices, &ct::GROUP, &ct::Group::default())?;
         engine.commit(m)?;
-        engine.set_app_record(ACCOUNT, p.person.as_bytes())?;
         save_peers(engine, peers)?;
-        // the creation record's key goes with `p` (a removal of its edge ends it, notes/disputes-plan.md)
-        let db = Osis::start(sync, clock, store, &cfg, p.person)?;
+        let db = Osis::start(sync, clock, store, &cfg, a.account, a.devices)?;
         db.carry(done)?;
         Ok(db)
     }
@@ -616,15 +608,15 @@ impl Osis {
         let (b, r) = parts(&store)?;
         let clock = clock(&cfg);
         let mut e = Engine::open(b, r, engine_cfg(), clock.clone(), rng(&cfg, open_salt(&store, &cfg)?))?;
-        let me = tid_record(&mut e, ACCOUNT)?;
+        let (me, home) = e.account()?.ok_or_else(|| Error::Storage("no account record".into()))?;
         let peers = load_peers(&mut e)?.unwrap_or_default();
         let sync = sync_over(e, &clock, &cfg, &peers)?;
-        let db = Osis::start(sync, clock, store, &cfg, me)?;
+        let db = Osis::start(sync, clock, store, &cfg, me, home)?;
         db.load_links()?;
         Ok(db)
     }
 
-    pub(crate) fn start(mut sync: SyncEngine, clock: Arc<dyn Clock>, store: Store, cfg: &Config, me: Tid) -> Result<Osis> {
+    pub(crate) fn start(mut sync: SyncEngine, clock: Arc<dyn Clock>, store: Store, cfg: &Config, me: Tid, home: Tid) -> Result<Osis> {
         // store files open to group or others: tightened where possible (best effort), else
         // reported
         if let Store::Dir(p) = &store {
@@ -648,7 +640,7 @@ impl Osis {
         };
         let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new(), connections: Vec::new(), group_sources, status_failed: false, serving_peer };
         let port = crate::port::serve::Port::new();
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, text_save: cfg.app.internals.text_save.clone(), transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.direct_sync, connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, home, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, text_save: cfg.app.internals.text_save.clone(), transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.direct_sync, connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
             inner.net.spawn_driver(ctl, store, cfg, clock, WeakOsis(Arc::downgrade(&inner)))?;
@@ -733,10 +725,16 @@ impl ReadOnly {
         self.inner.client.get().map_or(self.inner.node, |t| t.who.node)
     }
 
-    /// The account this node belongs to (a thin client: the actor its node acts as for
-    /// it). It is a group too: things in it reach every node of the account.
+    /// The account this node belongs to (a thin client: the actor its node acts as for it): the
+    /// author of its writes and the holder of its roles.
     pub fn me(&self) -> Tid {
         self.acting.unwrap_or_else(|| self.inner.client.get().map_or(self.inner.me, |t| t.who.me))
+    }
+
+    /// The group private to this account: what is in it reaches every node of the account and
+    /// nobody else. On a client with its own actor it is that actor.
+    pub fn home(&self) -> Tid {
+        self.acting.unwrap_or_else(|| self.inner.client.get().map_or(self.inner.home, |t| t.who.home))
     }
 
     /// Runs `f` on the engine under the node lock, then queues its events for the

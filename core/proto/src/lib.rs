@@ -29,7 +29,7 @@ pub use relay::{RelayGate, RelayLimits, RelayVerdict};
 pub use store::{Budget, EntryMeta, HeadKeys, LabelStore, LogRecord, MemoryLabelStore, Put, ResumeAnswer, StepKey, StoreError};
 pub use frame::{FrameDecoder, MAX_HELLO_BYTES, encode_frame};
 pub use hello::{Hello, OffsetSample, PROTOCOL_VERSION, estimate_offset, negotiate};
-pub use prove::{ActorProof, MAX_ACCOUNT_CLAIMS, MAX_CHAIN_BYTES, MAX_PROOFS, MAX_RESUME_TAGS, Prover};
+pub use prove::{ActorProof, MAX_PROOFS, MAX_RESUME_TAGS, Prover};
 pub use msg::{Code, Cursor, Entry, Event, Fetched, Message, Mode, Range, Rejected};
 
 /// Longest opaque node-log cursor a `Lost` carries (`osis_store` seals one in 80 bytes or so).

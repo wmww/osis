@@ -110,7 +110,7 @@ fn undo_blocked_by_dropped_body_spec_commits_7() {
 fn undo_mutation_alone_spec_commits_7() {
     let db = db(1);
     let mut w = db.write();
-    let t = w.create_with_content(db.me()).unwrap();
+    let t = w.create_with_content(db.home()).unwrap();
     let c = w.commit().unwrap().unwrap().stamp.id.raw();
     let mut m = osis::internals::node::Mutation::new();
     m.undo(c).set(t, &ak("t:x.0"), &Value::Int(1)).unwrap();
@@ -131,7 +131,7 @@ fn query_relations_spec_crdt_4_6() {
     w.commit().unwrap();
     let c1 = commit_with(&db, |w| w.at(t, kept(&db, &k.clone())).set(&Value::Int(1)));
     let mut w = db.write();
-    w.act_as(db.node());
+    w.act_as(t);
     w.at(t, kept(&db, &j.clone())).set(&Value::Int(5)).unwrap();
     let c2 = w.commit().unwrap().unwrap();
     // the node's commit is not me's to undo, but revert reverts it
@@ -166,11 +166,11 @@ fn query_filters_api_commits() {
     keep_day(&db, &["t:x.0", "t:y.0"]);
     let (k, j) = (ak("t:x.0"), ak("t:y.0"));
     // made acting for the account (a record alone would act for the node)
-    let t = db.commit_with(|w| w.create_with_content(db.me())).unwrap();
+    let t = db.commit_with(|w| w.create_with_content(db.home())).unwrap();
     let c1 = commit_with(&db, |w| w.at(t, kept(&db, &k.clone())).set(&Value::Int(1)));
     c.advance(1);
     let mut w = db.write();
-    w.act_as(db.node());
+    w.act_as(t);
     w.at(t, kept(&db, &j.clone())).set(&Value::Int(5)).unwrap();
     let c2 = w.commit().unwrap().unwrap();
     c.advance(1);
@@ -193,7 +193,7 @@ fn query_filters_api_commits() {
     assert_eq!(ids(between).first(), Some(&c2.stamp.id.raw()), "stamped before a time");
     assert_eq!(ids(CommitQuery { from: osis::CommitFrom::Before(c3.pos()), kinds: vec![CommitKind::Content], limit: Some(1), ..base() }), vec![c2.stamp.id.raw()]);
     let e = &db.writes(&Scope::Thing(t), &CommitQuery { limit: Some(1), ..base() }).unwrap().commits[0];
-    assert_eq!((e.stamp.actor, e.stamp.node, e.stamp.ts()), (db.me(), db.node(), u3.ts()));
+    assert_eq!((e.stamp.actor, e.stamp.actor, e.stamp.ts()), (db.me(), db.me(), u3.ts()));
     assert_eq!(e.parts().map(|(t, k, _)| (t, k.clone())).collect::<Vec<_>>(), vec![(t, k.clone())]);
 }
 
@@ -232,7 +232,7 @@ fn undo_redo_across_nodes_spec_commits_7() {
     sync2(&da, &db);
     assert_eq!(get(&da), None);
     let found = da.writes(&scope, &CommitQuery { reverts: Some(c1.stamp.id), ..Default::default() }).unwrap().commits;
-    assert_eq!(found.iter().map(|e| (e.stamp.id, e.stamp.node)).collect::<Vec<_>>(), vec![(u.stamp.id, db.node())]);
+    assert_eq!(found.iter().map(|e| (e.stamp.id, e.stamp.actor)).collect::<Vec<_>>(), vec![(u.stamp.id, db.me())]);
     let r = da.redo(&scope).unwrap().unwrap();
     assert_eq!(get(&da), Some(Value::Int(1)));
     sync2(&da, &db);
@@ -298,7 +298,7 @@ fn snapshot_only_attribution_api_history() {
     use osis::Origin;
     let (a, b, c) = (db(1), db(2), db(3));
     let k = ak("t:x.0");
-    let t = a.commit_with(|w| w.create_with_content(a.me())).unwrap();
+    let t = a.commit_with(|w| w.create_with_content(a.home())).unwrap();
     deliver(&a, &b);
     deliver(&a, &c);
     let done = commit_with(&a, |w| w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(7)));
@@ -315,9 +315,9 @@ fn snapshot_only_attribution_api_history() {
     }
     let ch = recv(&rx);
     assert_eq!(ch.value, Ok(Some(Value::Int(7))));
-    assert!(matches!(ch.origin, Origin::Remote(i) if i.id == osis::CommitId::from(snap) && i.node == a.node() && i.ts() == snap_ts), "{:?}", ch.origin);
+    assert!(matches!(ch.origin, Origin::Remote(i) if i.id == osis::CommitId::from(snap) && i.actor == a.me() && i.ts() == snap_ts), "{:?}", ch.origin);
     let hb = listed(&b, Scope::Thing(t));
-    assert!(hb.iter().any(|e| e.stamp.id == done.stamp.id && e.stamp.node == a.node() && e.stamp.ts() == done.ts()), "{hb:?}");
+    assert!(hb.iter().any(|e| e.stamp.id == done.stamp.id && e.stamp.actor == a.me() && e.stamp.ts() == done.ts()), "{hb:?}");
     let hc = listed(&c, Scope::Thing(t));
     assert!(hc.iter().all(|e| e.stamp.id != done.stamp.id && e.stamp.ts() != done.ts()), "{hc:?}");
     assert!(hc.iter().any(|e| e.stamp.id == osis::CommitId::from(snap) && e.kind == CommitKind::Snapshot), "the snapshot as itself: {hc:?}");
@@ -425,7 +425,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     let db = db(1);
     keep_day(&db, &["t:x.0", "t:y.0"]);
     let (x, y) = (ak("t:x.0"), ak("t:y.0"));
-    let mk = |db: &Osis| db.commit_with(|w| w.create_with_content(db.me())).unwrap();
+    let mk = |db: &Osis| db.commit_with(|w| w.create_with_content(db.home())).unwrap();
     let (f, f2, f3) = (mk(&db), mk(&db), mk(&db));
     let t = db.commit_with(|w| { let t = w.create_in(db.me(), &[f])?; w.at(t, kept(&db, &x.clone())).set(&Value::Int(1))?; Ok(t) }).unwrap();
     let created = db.created(t).unwrap().unwrap().id;
@@ -468,7 +468,7 @@ fn undo_of_creation_resets_ephemeral_aspects_spec_crdt_4_6() {
     let db = db(2);
     keep_day(&db, &["t:made.0"]);
     let k = ak("app:draft+.0");
-    let mk = |db: &Osis| db.commit_with(|w| w.create_with_content(db.me())).unwrap();
+    let mk = |db: &Osis| db.commit_with(|w| w.create_with_content(db.home())).unwrap();
     let (f, f2) = (mk(&db), mk(&db));
     let e = db
         .commit_with(|w| {
@@ -508,9 +508,9 @@ fn next_reports_what_undo_and_redo_revert_api_commits() {
     let db = db(3);
     keep_day(&db, &["t:x.0"]);
     let k = ak("t:x.0");
-    let f = db.commit_with(|w| { let g = w.create_with_content(db.me())?; Ok(g) }).unwrap();
+    let f = db.commit_with(|w| { let g = w.create_with_content(db.home())?; Ok(g) }).unwrap();
     let in_f = |w: &mut osis::Write<'_>| -> osis::Result<osis::Tid> {
-        let t = w.create_with_content(db.me())?;
+        let t = w.create_with_content(db.home())?;
         w.group(f).add(osis::Member::Item(t))?;
         Ok(t)
     };
@@ -580,7 +580,7 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
 #[test]
 fn creation_revert_found_by_created_scope_api_commits() {
     let (da, db) = two_nodes();
-    let t = da.commit_with(|w| w.create_with_content(da.me())).unwrap();
+    let t = da.commit_with(|w| w.create_with_content(da.home())).unwrap();
     let c = da.created(t).unwrap().unwrap().id;
     commit_with(&da, |w| {
         w.at(t, osis::DynamicAspectKey::untyped(ak("t:made.0"))).remove()?;

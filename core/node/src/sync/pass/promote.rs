@@ -191,9 +191,8 @@ impl SyncEngine {
     /// is set for then), `None` for now: its own (made here, a held key actor's included, or placed
     /// first by a flow) at once, another node's once `relay_delay` has passed since it arrived here.
     pub(super) fn relay_at(&mut self, l: LabelId, c: &CommitId) -> Option<u64> {
-        let me = self.engine.tid();
         let m = self.engine.core.ix.commits.get(c)?;
-        if m.origin == crate::events::Origin::Local || m.header.author == me || self.first.contains(c) {
+        if m.origin == crate::events::Origin::Local || self.first.contains(c) {
             return None;
         }
         let due = m.received.0.saturating_add(self.relay_delay(&c.0));

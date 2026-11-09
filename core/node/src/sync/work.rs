@@ -404,7 +404,7 @@ impl SyncEngine {
         let x = self.engine.group_actor(g);
         // roles the pass reads as the actor, the group or this node
         let RoleMoves { subjects, reached } = std::mem::take(&mut w.touched.roles);
-        if subjects.contains(&x) || subjects.contains(g) || subjects.contains(&self.engine.tid()) {
+        if subjects.contains(&x) || subjects.contains(g) || subjects.contains(&self.engine.tid()) || subjects.contains(&self.engine.me()) {
             w.touched.moved.extend(reached);
         }
         // a change of the record chain or of a role of the label's own actor (every entry's
@@ -567,7 +567,7 @@ impl SyncEngine {
 
     /// Brings the aggregates of `w` up to date for commits `cs` and blobs `bs`.
     fn aggregate(&mut self, g: &Tid, l: &LabelId, w: &mut Work, cs: &BTreeSet<CommitId>, bs: &BTreeSet<BlobId>) {
-        let me = self.engine.tid();
+        let me = self.engine.me();
         for c in cs {
             let entries: Vec<Vec<usize>> = self.state.entries_of(l, c).filter_map(|(_, e)| if let Kind::Commit { parts, .. } = &e.kind { Some(parts.clone()) } else { None }).collect();
             let blobs: Vec<BlobId> = self.state.entries_of(l, c).map(|(b, _)| b).collect();

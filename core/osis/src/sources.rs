@@ -521,7 +521,7 @@ impl Osis {
     }
 
     async fn source_node(&self, group: Tid, addr: Address) -> Result<()> {
-        if group == self.me() {
+        if group == self.home() {
             return Err(Error::Invalid("the home group stays on this node".into()));
         }
         let Some(r) = self.locked(|l| l.connections.iter().find(|r| r.addr == addr).cloned()) else { return Err(Error::Invalid(format!("not connected to {addr}"))) };

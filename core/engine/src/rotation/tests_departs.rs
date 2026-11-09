@@ -318,11 +318,11 @@ fn account_leaving_a_group_it_administers_spec_permissions_2() {
     let mut lp = LocalPeer::new(2, 5_111, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let g = group(&mut lp, 0);
-    let u = lp.peers[1].engine.create_person(&[]).unwrap().0.person;
+    let u = lp.peers[1].engine.create_account(&[]).unwrap().0.account;
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&g, &u, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
-    assert_eq!(lp.peers[1].engine.core.role_now(&lp.peers[1].engine.tid(), &g), Some(Role::Admin));
+    assert_eq!(lp.peers[1].engine.core.role_now(&u, &g), Some(Role::Admin));
     lp.peers[1].engine.demote(&g, &Demotion { holder: u, new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     for i in 0..2 {

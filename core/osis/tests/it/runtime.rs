@@ -111,7 +111,7 @@ async fn round_trip(host_ep: Option<osis::internals::InProcess>, url: &str, a: O
     ca.app.internals.host = ha;
     let da = osis::internals::create(ca).unwrap();
     let mut w = da.write();
-    let t = w.create_in(da.me(), &[da.me()]).unwrap();
+    let t = w.create_in(da.me(), &[da.home()]).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str("over the wire".into())).unwrap();
     w.commit().unwrap();
     tokio::time::timeout(GUARD, da.wait_synced(SyncScope::All)).await.unwrap().unwrap();
@@ -182,7 +182,7 @@ async fn redeem_over(host_ep: Option<osis::internals::InProcess>, url: &str, a: 
     let alice = osis::internals::create(cfg(1, vec![host.clone()], a)).unwrap();
     let bob = osis::internals::create(cfg(2, vec![host.clone()], b)).unwrap();
     let mut w = alice.write();
-    let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
+    let g = w.create_in(alice.me(), &[alice.home()]).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     let link = alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
@@ -320,7 +320,7 @@ fn direct_link_carries_relays_only_spec_permissions_7() {
     let relay = osis_transport::p2p::Relay { key: [7; 32], addr: "192.0.2.1:4040".parse().unwrap() }.item();
     let _ = db.sync_engine(|s| s.publish_reach([9; 32], vec!["203.0.113.7:47381".into(), relay.clone()]));
     let mut w = db.write();
-    let g = w.create_in(db.me(), &[db.me()]).unwrap();
+    let g = w.create_in(db.me(), &[db.home()]).unwrap();
     w.commit().unwrap();
     let link = db.make_link(g, osis::Role::Read, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
     let parsed = osis_label::ShareLink::from_text(&link.to_string()).unwrap();
@@ -344,7 +344,7 @@ async fn redeem_direct_in_process_spec_permissions_7() {
     let bob = osis::internals::create(c).unwrap();
     let me = reach_of(&alice).await;
     let mut w = alice.write();
-    let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
+    let g = w.create_in(alice.me(), &[alice.home()]).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     let mut w = alice.write();
@@ -443,7 +443,7 @@ async fn redeem_direct_no_peer_in_process_spec_permissions_7() {
     let bob = osis::internals::create(c).unwrap();
     h.ready(&alice).await;
     let mut w = alice.write();
-    let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
+    let g = w.create_in(alice.me(), &[alice.home()]).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     let mut w = alice.write();
@@ -507,7 +507,7 @@ async fn status_shows_a_source_once_a_direct_peer_dialed() {
     let bob = osis::internals::create(c).unwrap();
     h.ready(&alice).await;
     let mut w = alice.write();
-    let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
+    let g = w.create_in(alice.me(), &[alice.home()]).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     assert_eq!(alice.status().unwrap().groups[&g].state, osis::SyncState::NotConnected);
@@ -537,7 +537,7 @@ async fn peers_lists_what_a_group_saved() {
     let db = osis::internals::create(cfg(1, vec![], None)).unwrap();
     let there = Address::new(&"quic://192.0.2.1:9".parse().unwrap(), [7; 32]);
     let mut w = db.write();
-    let g = w.create_in(db.me(), &[db.me()]).unwrap();
+    let g = w.create_in(db.me(), &[db.home()]).unwrap();
     w.commit().unwrap();
     assert!(db.peers(g).unwrap().is_empty(), "not synced");
     db.sync(g, std::slice::from_ref(&there)).unwrap();
@@ -561,7 +561,7 @@ async fn single_use_direct_keeps_key_in_process_spec_permissions_7() {
     let bob = osis::internals::create(c).unwrap();
     h.ready(&alice).await;
     let mut w = alice.write();
-    let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
+    let g = w.create_in(alice.me(), &[alice.home()]).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, single_use: true, ..Default::default() }).unwrap();
@@ -665,7 +665,7 @@ fn own_runtime_reopen_right_after_close() {
     };
     let db = osis::internals::create(at(0)).unwrap();
     let mut w = db.write();
-    let t = w.create_with_content(db.me()).unwrap();
+    let t = w.create_with_content(db.home()).unwrap();
     w.commit().unwrap();
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     for i in 1..12u64 {
@@ -756,7 +756,7 @@ async fn own_serving_node_in_process_spec_data_model_9() {
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All)).await.unwrap().unwrap();
 
     let mut w = alice.write();
-    let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
+    let g = w.create_in(alice.me(), &[alice.home()]).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All)).await.unwrap().unwrap();
@@ -868,7 +868,7 @@ async fn redeem_direct_writes_at_once_in_process_spec_crypto_7() {
         c.app.internals.connection_wait = Some(GUARD);
         let bob = osis::internals::create(c).unwrap();
         let mut w = alice.write();
-        let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
+        let g = w.create_in(alice.me(), &[alice.home()]).unwrap();
         w.commit().unwrap();
         alice.sync(g, &[]).unwrap();
         let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
@@ -900,7 +900,7 @@ async fn redeem_direct_redials_sharer_spec_permissions_7() {
     let bob = osis::internals::create(c).unwrap();
     bob.sync_engine(|s| s.config_mut().retry_ms = 100);
     let mut w = alice.write();
-    let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
+    let g = w.create_in(alice.me(), &[alice.home()]).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();

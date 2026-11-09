@@ -302,8 +302,8 @@ fn client_connection_caps() {
 fn minting_a_client_is_all_or_nothing() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
-    let (p, _) = net.sync(a).engine_mut().create_person(&[]).unwrap();
-    let me = p.person;
+    let (p, _) = net.sync(a).engine_mut().create_account(&[]).unwrap();
+    let me = p.account;
     let node = net.sync(a).engine().tid();
     let before = net.sync(a).engine_mut().commit_ids().len();
     let mut seen = None;

@@ -29,17 +29,17 @@ fn alice_and_bob_at(extra: Vec<osis_label::Address>) -> (Net, usize, usize, usiz
 /// `alice_and_bob_at` on nodes and a host already made: (a, b, Alice's account, Bob's account, g, home).
 fn alice_and_bob_on(net: &mut Net, host: usize, a: usize, b: usize, extra: Vec<osis_label::Address>) -> (usize, usize, Tid, Tid, Tid, LabelId) {
     let addr = net.address(host);
-    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (alice, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let (bob, done) = net.engine(b).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (bob, done) = net.engine(b).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
     net.run();
     net.pair(b, a);
     let e = net.engine(a);
     let mut m = Mutation::new();
-    let g = e.new_thing(&mut m, alice.person);
+    let g = e.new_thing(&mut m, alice.account);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
     let mut at = vec![addr];
@@ -48,8 +48,8 @@ fn alice_and_bob_on(net: &mut Net, host: usize, a: usize, b: usize, extra: Vec<o
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
-    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob.person).unwrap().1.id;
-    (a, b, alice.person, bob.person, g, home)
+    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob.devices).unwrap().1.id;
+    (a, b, alice.account, bob.account, g, home)
 }
 
 fn grant(net: &mut Net, a: usize, g: Tid, to: Tid) {
@@ -111,11 +111,11 @@ fn unanswered_inbox_blob_resent_spec_sync_3() {
 // connection stay until the app takes them, across a restart.
 #[test]
 fn direct_packages_survive_restart_spec_sync_2() {
-    let (mut net, _, a, _, alice, _, _, _) = alice_and_bob();
+    let (mut net, _, a, _, _alice, _, _, _) = alice_and_bob();
     let c = net.node(3, &[]);
     net.pair(c, a);
     let ct_ = net.tid(c);
-    let done = net.engine(a).pair(&alice, &ct_).unwrap();
+    let done = net.engine(a).pair(&ct_).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.restart(a, 11);
@@ -191,7 +191,7 @@ fn inbox_copy_names_only_touched_things_spec_sync_3() {
     let bytes = net.engine(a).commit_bytes(&c).unwrap().unwrap();
     let commit = osis_base::decode(&bytes, &osis_base::Limits { max_depth: 64, max_bytes: bytes.len() }).unwrap();
     let keys = net.engine(a).get_typed(&bob, &ct::KEYS).unwrap().unwrap();
-    let ct::KemKey::X25519MlKem768(kb) = &keys.read.unwrap().kem_key;
+    let ct::KemKey::X25519MlKem768(kb) = &keys.key.or(keys.read.map(|k| k.kem_key)).unwrap();
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
     let payload = osis_label::InboxPayload { chain: Vec::new(), commit, things: vec![osis_label::InboxThing { tid: p, label: Some(osis_label::InboxLabel { id: home, index: 0, hosts: vec![net.address(host)] }), delete_keys: None }] };
     let now = osis_base::WallMs(net.now());
@@ -255,7 +255,7 @@ fn plant_inbox(net: &mut Net, from: usize, at: (usize, &LabelId), to: Tid, c: &o
 fn plant_bytes(net: &mut Net, from: usize, (host, l): (usize, &LabelId), to: Tid, bytes: &[u8], things: Vec<osis_label::InboxThing>, expiry: u64) -> osis_base::BlobId {
     let commit = osis_base::decode(bytes, &osis_base::Limits { max_depth: 64, max_bytes: bytes.len() }).unwrap();
     let keys = net.engine(from).get_typed(&to, &ct::KEYS).unwrap().unwrap();
-    let ct::KemKey::X25519MlKem768(kb) = &keys.read.unwrap().kem_key;
+    let ct::KemKey::X25519MlKem768(kb) = &keys.key.or(keys.read.map(|k| k.kem_key)).unwrap();
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
     let payload = osis_label::InboxPayload { commit, things, chain: Vec::new() };
     // the prefix carries `now + INBOX_LIFETIME`: seal "earlier" for a shorter expiry
@@ -437,7 +437,7 @@ fn an_inbox_chain_applies_only_chain_deltas_spec_wire_9() {
     };
     let payload = osis_label::InboxPayload { commit: value(&mut net, &main), things: Vec::new(), chain: vec![value(&mut net, &in_chain)] };
     let keys = net.engine(a).get_typed(&bob, &ct::KEYS).unwrap().unwrap();
-    let ct::KemKey::X25519MlKem768(kb) = &keys.read.unwrap().kem_key;
+    let ct::KemKey::X25519MlKem768(kb) = &keys.key.or(keys.read.map(|k| k.kem_key)).unwrap();
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
     let now = net.now();
     let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, osis_base::WallMs(now), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
@@ -522,7 +522,7 @@ fn bob_with_two_nodes() -> (Net, usize, usize, usize, Tid, Tid) {
     let b2 = net.node(3, &[host]);
     net.pair(b2, b);
     let b2t = net.tid(b2);
-    let done = net.engine(b).pair(&bob, &b2t).unwrap();
+    let done = net.engine(b).pair(&b2t).unwrap();
     let paired = done.commits[0];
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
@@ -596,29 +596,29 @@ fn removed_holder_invite_is_request_spec_sync_3() {
     let (mut net, host, a, b, _, bob, g, _) = alice_and_bob();
     let c = net.node(3, &[host]);
     let addr = net.address(host);
-    let (carol, done) = net.engine(c).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (carol, done) = net.engine(c).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(c).carry_out(done).unwrap();
     net.actions(c, acts);
     net.run();
     net.pair(c, a);
     net.pair(b, c);
     grant(&mut net, a, g, bob);
-    grant(&mut net, a, g, carol.person);
+    grant(&mut net, a, g, carol.account);
     let _ = net.item(a, g, g, "for both");
     for _ in 0..3 {
         net.advance(70_000);
     }
-    let done = net.engine(a).demote(&g, &Demotion { holder: carol.person, new: None, retain: None }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: carol.account, new: None, retain: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     for _ in 0..3 {
         net.advance(70_000);
     }
-    assert!(net.engine(b).role_on(&g).is_some() && net.engine(b).roster(&g).keys().all(|m| *m != carol.person), "Bob syncs g and saw Carol leave it");
+    assert!(net.engine(b).role_on(&g).is_some() && net.engine(b).roster(&g).keys().all(|m| *m != carol.account), "Bob syncs g and saw Carol leave it");
     net.nodes[b].accepts = false;
     let e = net.engine(c);
     let mut m = Mutation::new();
-    let gc = e.new_thing(&mut m, carol.person);
+    let gc = e.new_thing(&mut m, carol.account);
     m.set(gc, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
     let (_, done) = net.engine(c).create_label(&gc, &[addr]).unwrap();
@@ -637,11 +637,11 @@ fn removed_holder_invite_is_request_spec_sync_3() {
 // after the restart.
 #[test]
 fn direct_packages_survive_a_crash_before_carry_out_spec_sync_3() {
-    let (mut net, host, _, b, _, bob, _, _) = alice_and_bob();
+    let (mut net, host, _, b, _, _bob, _, _) = alice_and_bob();
     let b2 = net.node(3, &[host]);
     net.pair(b2, b);
     let b2t = net.tid(b2);
-    let done = net.engine(b).pair(&bob, &b2t).unwrap();
+    let done = net.engine(b).pair(&b2t).unwrap();
     let want: Vec<osis_base::CommitId> = done.deliveries.iter().find_map(|d| if let osis_node::flows::Delivery::Direct { to, commits } = d { (*to == b2t).then(|| commits.clone()) } else { None }).unwrap();
     drop(done);
     net.restart(b, 77);
@@ -1389,7 +1389,7 @@ fn fresh_node_keeps_requests_over_junk_spec_sync_5() {
     net.nodes[b2].accepts = false;
     net.pair(b2, b);
     let b2t = net.tid(b2);
-    let done = net.engine(b).pair(&bob, &b2t).unwrap();
+    let done = net.engine(b).pair(&b2t).unwrap();
     let paired = done.commits[0];
     for (_, pks) in net.sync(b).take_direct() {
         for pk in pks {
@@ -1425,10 +1425,10 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let addr = net.address(host);
-    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let (alice, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let (o, done) = net.engine(a).create_with_admin(&alice.person).unwrap();
+    let (o, done) = net.engine(a).create_with_admin(&alice.account).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     let (l, acts) = net.sync(a).create_label(&o, vec![addr.clone()]).unwrap();
@@ -1438,12 +1438,12 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     let mut readers = Vec::new();
     for i in 0..4 {
         let r = net.node(10 + i, &[host]);
-        let (p, done) = net.engine(r).create_person(std::slice::from_ref(&addr)).unwrap();
+        let (p, done) = net.engine(r).create_account(std::slice::from_ref(&addr)).unwrap();
         let acts = net.sync(r).carry_out(done).unwrap();
         net.actions(r, acts);
         net.run();
         net.pair(r, a);
-        let done = net.engine(a).grant(&o, &p.person, &edge).unwrap();
+        let done = net.engine(a).grant(&o, &p.account, &edge).unwrap();
         let acts = net.sync(a).carry_out(done).unwrap();
         net.actions(a, acts);
         net.run();
@@ -1504,7 +1504,7 @@ fn hostile_inbox_blob_peak_is_bounded_spec_sync_3() {
     };
     let (mut net, host, a, b, _, bob, _, home) = alice_and_bob();
     let keys = net.engine(a).get_typed(&bob, &ct::KEYS).unwrap().unwrap();
-    let ct::KemKey::X25519MlKem768(kb) = &keys.read.unwrap().kem_key;
+    let ct::KemKey::X25519MlKem768(kb) = &keys.key.or(keys.read.map(|k| k.kem_key)).unwrap();
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
     // `InboxPayload := [commit, things, chain]`, by hand: values built here would leave freed
     // memory for the decode to reuse, and the peak would not see it

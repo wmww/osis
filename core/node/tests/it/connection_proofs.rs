@@ -7,9 +7,7 @@ use net::*;
 use crate::peers::reach_ed;
 use osis_base::{Role, Tid};
 use osis_crypto::{Secret32, SigningSecret};
-use osis_node::ACCOUNT_RECORD;
 use osis_node::sync::{Action, ConnId, Event};
-use osis_schema::Codec;
 use osis_proto::{ActorProof, ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, Message, Prover, encode_frame};
 use std::collections::BTreeSet;
 
@@ -91,12 +89,11 @@ fn proved_by(evs: &[ClientEvent]) -> Vec<ActorProof> {
 pub(crate) fn account_node(net: &mut Net, seed: u64, host: usize) -> (usize, Tid) {
     let n = net.node(seed, &[host]);
     let addr = net.address(host);
-    let (p, done) = net.engine(n).create_person(std::slice::from_ref(&addr)).unwrap();
-    net.engine(n).set_app_record(ACCOUNT_RECORD, p.person.as_bytes()).unwrap();
+    let (p, done) = net.engine(n).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(n).carry_out(done).unwrap();
     net.actions(n, acts);
     net.run();
-    (n, p.person)
+    (n, p.account)
 }
 
 /// A second node of `first`'s account: admin on it, chain and all.
@@ -104,7 +101,7 @@ fn paired_node(net: &mut Net, seed: u64, host: usize, first: usize, account: Tid
     let n = net.node(seed, &[host]);
     net.pair(n, first);
     let nt = net.tid(n);
-    let done = net.engine(first).pair(&account, &nt).unwrap();
+    let done = net.engine(first).pair(&nt).unwrap();
     let grant = done.commits[0];
     let acts = net.sync(first).carry_out(done).unwrap();
     net.actions(first, acts);
@@ -114,7 +111,6 @@ fn paired_node(net: &mut Net, seed: u64, host: usize, first: usize, account: Tid
         }
     }
     let done = net.engine(n).paired(&account, &grant).unwrap();
-    net.engine(n).set_app_record(ACCOUNT_RECORD, account.as_bytes()).unwrap();
     let acts = net.sync(n).carry_out(done).unwrap();
     net.actions(n, acts);
     net.run();
@@ -129,7 +125,7 @@ fn set(tids: &[Tid]) -> BTreeSet<Tid> {
     tids.iter().copied().collect()
 }
 
-// spec/sync.md §10: a dialer's proof shows its node and, through its chain, its account; the
+// spec/sync.md §10: a dialer's proof shows its node and its account by the epoch's key; the
 // listener answers with its own proofs to a dialer that proved an actor it knows
 #[test]
 fn dialer_proves_then_known_listener_answers_spec_sync_10() {
@@ -143,7 +139,7 @@ fn dialer_proves_then_known_listener_answers_spec_sync_10() {
     let evs = prove(&mut net, a, &mut p, provers);
     assert_eq!(proven(&mut net, a, &p), set(&[tb, account]), "the node and its account");
     let back = proved_by(&evs);
-    assert!(back.iter().any(|x| x.actor() == ta && x.accounts == [account]), "the listener's proof: {back:?}");
+    assert_eq!(actors(&back), set(&[ta, account]), "the listener's proof: {back:?}");
     assert!(back.iter().all(|x| x.verify(true, &CHALLENGE, &LISTENER)), "signed for this dialer and this listener");
 }
 
@@ -173,7 +169,7 @@ fn key_actor_proved_by_its_signing_key_spec_sync_10() {
     let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [9; 32], account: false };
     let actor = record.tid();
     let mut p = dial(&mut net, a);
-    prove(&mut net, a, &mut p, vec![Prover { key, record, accounts: vec![], chain: vec![] }]);
+    prove(&mut net, a, &mut p, vec![Prover { key, record }]);
     assert_eq!(proven(&mut net, a, &p), set(&[actor]));
 }
 
@@ -186,7 +182,7 @@ fn forged_key_proves_nothing_spec_sync_10() {
     let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: real.verifying_key().to_bytes().to_vec(), nonce: [9; 32], account: false };
     let thief = SigningSecret::from_seed(&Secret32::from_bytes([8; 32]));
     let mut p = dial(&mut net, a);
-    let evs = prove(&mut net, a, &mut p, vec![Prover { key: thief, record, accounts: vec![], chain: vec![] }]);
+    let evs = prove(&mut net, a, &mut p, vec![Prover { key: thief, record }]);
     assert_eq!(proven(&mut net, a, &p), set(&[]));
     assert_eq!(proved_by(&evs), Vec::new());
 }
@@ -227,54 +223,38 @@ fn second_prove_refused_spec_wire_11_2() {
     let key = SigningSecret::from_seed(&Secret32::from_bytes([9; 32]));
     let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [9; 32], account: false };
     let mut p = dial(&mut net, a);
-    let first = prove(&mut net, a, &mut p, vec![Prover { key: key.clone(), record: record.clone(), accounts: vec![], chain: vec![] }]);
+    let first = prove(&mut net, a, &mut p, vec![Prover { key: key.clone(), record: record.clone() }]);
     assert_eq!(proved_by(&first), vec![], "unknown to a");
     let answers = prove_raw(&mut net, a, &p, 99, Vec::new());
     assert!(answers.contains(&Message::Error { id: 99, code: Code::MALFORMED }), "{answers:?}");
     assert_eq!(proven(&mut net, a, &p), set(&[record.tid()]), "the first stands");
 }
 
-// spec/sync.md §10: a chain that does not lead from the proving node to the account proves the
-// node alone: an unrelated account's chain, a chain of another node of the account, no chain
+// spec/sync.md §10: an account proof by a key that is no open epoch of that account proves it not;
+// the node's own key still stands
 #[test]
-fn chain_that_does_not_chain_proves_only_the_node_spec_sync_10() {
+fn an_account_is_proved_only_by_its_own_epoch_key_spec_sync_10() {
     let mut net = Net::new();
     let host = net.add_host();
     let (a, account) = account_node(&mut net, 1, host);
-    let b = paired_node(&mut net, 2, host, a, account);
     let (s, other) = account_node(&mut net, 3, host);
     let ts = net.tid(s);
-    // s claims a's account with its own (other account's) chain
-    let mut provers = net.sync(s).provers().unwrap();
-    provers[0].accounts = vec![account];
+    let provers = net.sync(s).provers().unwrap();
+    let record = net.engine(a).core.created(&account).unwrap().clone();
+    // s signs for a's account with its own node key
+    let mut forged = provers.clone();
+    forged[1] = Prover { key: provers[0].key.clone(), record };
     let mut p = dial(&mut net, a);
-    prove(&mut net, a, &mut p, provers.clone());
-    assert_eq!(proven(&mut net, a, &p), set(&[ts]), "another account's chain");
-    // s claims a's account with b's genuine chain: it is b's, not s's
-    provers[0].chain = net.engine(b).account_chain(&account).unwrap();
-    let mut p = dial(&mut net, a);
-    prove(&mut net, a, &mut p, provers.clone());
-    assert_eq!(proven(&mut net, a, &p), set(&[ts]), "a chain of another node");
-    // no chain at all
-    provers[0].chain = Vec::new();
-    let mut p = dial(&mut net, a);
-    prove(&mut net, a, &mut p, provers.clone());
-    assert_eq!(proven(&mut net, a, &p), set(&[ts]), "no chain");
-    // garbage chain does not break the exchange
-    provers[0].chain = vec![vec![1, 2, 3]];
-    let mut p = dial(&mut net, a);
-    prove(&mut net, a, &mut p, provers.clone());
-    assert_eq!(proven(&mut net, a, &p), set(&[ts]), "bytes that are no commit");
-    // and the claim of s's real account still works
-    provers[0].accounts = vec![other];
-    provers[0].chain = net.engine(s).account_chain(&other).unwrap();
+    prove(&mut net, a, &mut p, forged);
+    assert_eq!(proven(&mut net, a, &p), set(&[ts]), "another's account, by a key of no epoch of it");
+    // s's real account still works
     let mut p = dial(&mut net, a);
     prove(&mut net, a, &mut p, provers);
     assert_eq!(proven(&mut net, a, &p), set(&[ts, other]));
 }
 
-// spec/sync.md §10: group data never proves anything: b's chain held at a in full, a Prove
-// that shows no chain proves the node alone
+// spec/sync.md §10: group data never proves anything: b's roster entry held at a in full, a Prove
+// without the account's proof proves the node alone
 #[test]
 fn held_group_data_proves_nothing_spec_sync_10() {
     let mut net = Net::new();
@@ -282,30 +262,10 @@ fn held_group_data_proves_nothing_spec_sync_10() {
     let (a, account) = account_node(&mut net, 1, host);
     let b = paired_node(&mut net, 2, host, a, account);
     let tb = net.tid(b);
-    assert_eq!(net.engine(a).core.timelines.get(&account).unwrap().role(&tb, &account, osis_perm::At::KEYS), Some(Role::Admin), "a holds b's chain");
-    let mut provers = net.sync(b).provers().unwrap();
-    provers[0].chain = Vec::new();
+    let provers: Vec<Prover> = net.sync(b).provers().unwrap().into_iter().filter(|x| x.record.tid() == tb).collect();
     let mut p = dial(&mut net, a);
     prove(&mut net, a, &mut p, provers);
-    assert_eq!(proven(&mut net, a, &p), set(&[tb]), "the chain was not shown on this connection");
-}
-
-// spec/sync.md §10 (the stated limit, until accounts sign): a removal this node holds that the
-// chain does not show leaves the claim standing
-#[test]
-fn held_removal_not_in_the_chain_leaves_the_proof_standing_spec_sync_10() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let (a, account) = account_node(&mut net, 1, host);
-    let b = paired_node(&mut net, 2, host, a, account);
-    let (ta, tb) = (net.tid(a), net.tid(b));
-    // the chain as b holds it before its removal
-    let provers = net.sync(b).provers().unwrap();
-    let rec = recipients_of(net.engine(a), &[(ta, Role::Admin)]);
-    remove_holder(net.engine(a), account, tb, &rec, 79);
-    let mut p = dial(&mut net, a);
-    prove(&mut net, a, &mut p, provers);
-    assert_eq!(proven(&mut net, a, &p), set(&[tb, account]), "b's old chain shows no removal");
+    assert_eq!(proven(&mut net, a, &p), set(&[tb]), "the account was not proved on this connection");
 }
 
 // spec/sync.md §10: a connection whose peer sent no Prove proved nothing, and the listener shows
@@ -407,47 +367,8 @@ fn no_session_reports_an_actor_it_did_not_prove_spec_sync_10() {
     }
 }
 
-// spec/sync.md §10: a removal the proof's own chain shows closes the claim, anywhere on its
-// paths, as at the direct edge; a second path the chain shows keeps it standing
-#[test]
-fn removal_shown_in_the_chain_closes_the_proof_spec_sync_10() {
-    use crate::common::{edge, net, new_thing, set_edge};
-    let removal = || Some(osis_schema::core_types::Frontier::default().to_value());
-    for (seed, case) in [(0x71u64, "node from team"), (0x72, "team from account"), (0x73, "one of two paths")] {
-        let mut lp = net(2, seed);
-        let b = lp.peers[1].engine.tid();
-        let account = new_thing(&mut lp, 0);
-        let team = new_thing(&mut lp, 0);
-        let other = new_thing(&mut lp, 0);
-        let e = &mut lp.peers[0].engine;
-        set_edge(e, team, b, Some(edge(Role::Admin)), None);
-        set_edge(e, account, team, Some(edge(Role::Admin)), None);
-        if case == "one of two paths" {
-            set_edge(e, other, b, Some(edge(Role::Admin)), None);
-            set_edge(e, account, other, Some(edge(Role::Admin)), None);
-        }
-        lp.sync_all().unwrap();
-        let mut chain = lp.peers[1].engine.account_chain(&account).unwrap();
-        let claim = [(b, account)];
-        assert_eq!(lp.peers[0].engine.accounts_proven(&claim, &chain).unwrap(), set2(&claim), "{case}: before any removal");
-        lp.advance(1);
-        let e = &mut lp.peers[0].engine;
-        let removed = match case {
-            "team from account" => set_edge(e, account, team, None, removal()),
-            _ => set_edge(e, team, b, None, removal()),
-        };
-        chain.push(e.package(&removed).unwrap().expect("the removal").bytes);
-        let got = lp.peers[0].engine.accounts_proven(&claim, &chain).unwrap();
-        assert_eq!(got, if case == "one of two paths" { set2(&claim) } else { BTreeSet::new() }, "{case}");
-    }
-}
-
-fn set2(c: &[(Tid, Tid)]) -> BTreeSet<(Tid, Tid)> {
-    c.iter().copied().collect()
-}
-
-// spec/wire.md §11.2 (MAX_PROOFS): a node holding more key actors than fit proves its own key, then
-// the first key actors by tid, and the message fits and is accepted
+// spec/wire.md §11.2 (MAX_PROOFS): a node holding more key actors than fit proves its own key and
+// account, then the first key actors by tid, and the message fits and is accepted
 #[test]
 fn many_key_actors_prove_the_first_by_tid_spec_wire_11_2() {
     use osis_proto::MAX_PROOFS;
@@ -460,7 +381,7 @@ fn many_key_actors_prove_the_first_by_tid_spec_wire_11_2() {
     assert_eq!(provers.len(), MAX_PROOFS);
     let tids: Vec<Tid> = provers.iter().map(|p| p.record.tid()).collect();
     assert_eq!(tids[0], net.tid(a), "this node's own key first");
-    assert_eq!(tids[1..], held.iter().copied().take(MAX_PROOFS - 1).collect::<Vec<_>>()[..], "then the key actors, by tid");
+    assert_eq!(tids[2..], held.iter().copied().take(MAX_PROOFS - 2).collect::<Vec<_>>()[..], "then the key actors, by tid");
     let (s, _) = account_node(&mut net, 2, host);
     let mut p = dial(&mut net, s);
     let want: BTreeSet<Tid> = tids.iter().copied().collect();
@@ -469,10 +390,10 @@ fn many_key_actors_prove_the_first_by_tid_spec_wire_11_2() {
     assert!(want.is_subset(&got), "every proof sent was accepted");
 }
 
-// spec/wire.md §11.2 (caps): a Prove past a cap is refused whole: no Proved, nothing proved
+// spec/wire.md §11.2 (MAX_PROOFS): a Prove past the cap is refused whole: no Proved, nothing proved
 #[test]
 fn prove_past_its_caps_is_refused_whole_spec_wire_11_2() {
-    use osis_proto::{MAX_ACCOUNT_CLAIMS, MAX_CHAIN_BYTES, MAX_PROOFS};
+    use osis_proto::MAX_PROOFS;
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let signer = |i: u32| {
@@ -480,19 +401,12 @@ fn prove_past_its_caps_is_refused_whole_spec_wire_11_2() {
         seed[..4].copy_from_slice(&i.to_le_bytes());
         let key = SigningSecret::from_seed(&Secret32::from_bytes(seed));
         let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: seed, account: false };
-        Prover { key, record, accounts: vec![], chain: vec![] }
+        Prover { key, record }
     };
-    let account = Tid::from_bytes([1; 15]);
     let many: Vec<Prover> = (0..=MAX_PROOFS as u32).map(signer).collect();
-    let claims = |n: usize| { let mut p = signer(0); p.accounts = vec![account; n]; vec![p] };
-    let chained = |n: usize| { let mut p = signer(0); p.chain = vec![vec![0; n]]; vec![p] };
     for (case, provers, refused) in [
         ("MAX_PROOFS", many[..MAX_PROOFS].to_vec(), false),
         ("past MAX_PROOFS", many, true),
-        ("MAX_ACCOUNT_CLAIMS", claims(MAX_ACCOUNT_CLAIMS), false),
-        ("past MAX_ACCOUNT_CLAIMS", claims(MAX_ACCOUNT_CLAIMS + 1), true),
-        ("MAX_CHAIN_BYTES", chained(MAX_CHAIN_BYTES), false),
-        ("past MAX_CHAIN_BYTES", chained(MAX_CHAIN_BYTES + 1), true),
     ] {
         let p = dial(&mut net, a);
         let proofs: Vec<ActorProof> = provers.iter().map(|x| x.sign(false, &p.hello, &LISTENER)).collect();

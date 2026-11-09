@@ -27,7 +27,7 @@ impl Account for AppAccount {
     /// The groups marked as the app's among home's subgroups, smallest tid first.
     /// Works around issues/app-group-helper.md (as does merging favorites, collections, look).
     fn groups(&self, db: &osis::ReadOnly) -> Result<Vec<Tid>> {
-        let home = db.me();
+        let home = db.home();
         let mut out = Vec::new();
         for m in db.members(home)? {
             if let Member::Subgroup(t) = m
@@ -50,8 +50,8 @@ impl Account for AppAccount {
         let g = w.create()?;
         w.at(g, APP).set(&true)?;
         w.at(g, COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange: Arrange::Cards, element: None })?;
-        w.group(db.me()).add(Member::Item(g))?;
-        w.group(db.me()).add(Member::Subgroup(g))?;
+        w.group(db.home()).add(Member::Item(g))?;
+        w.group(db.home()).add(Member::Subgroup(g))?;
         let mut favs = Vec::new();
         for (v, name, color) in seeds() {
             let t = w.create()?;

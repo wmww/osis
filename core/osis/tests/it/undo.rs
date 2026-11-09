@@ -283,7 +283,7 @@ fn thing_scope_skips_cursor_spec_crdt_4_6() {
     let db = setup(7);
     let (text, cursor) = (key(&db, "app:k.0"), key(&db, "app:ke+.0"));
     let mut w = db.write();
-    let d = w.create_with_content(db.me()).unwrap();
+    let d = w.create_with_content(db.home()).unwrap();
     w.commit().unwrap();
     db.commit_set(d, text.clone(), &Value::Int(1)).unwrap();
     db.commit_set(d, cursor.clone(), &Value::Int(1)).unwrap();
@@ -308,8 +308,8 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
     let (body, draft) = (key(&db, "app:k.0"), key(&db, "app:ke+.0"));
     let (f, item) = db
         .commit_with(|w| {
-            let f = w.create_with_content(db.me())?;
-            let item = w.create_with_content(db.me())?;
+            let f = w.create_with_content(db.home())?;
+            let item = w.create_with_content(db.home())?;
             w.group(f).add(osis::Member::Item(item))?;
             Ok((f, item))
         })
@@ -342,7 +342,7 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
 fn undo_takes_no_key_default_spec_crdt_4_6() {
     let db = setup(30);
     db.register_schema("rv.osis", "revision 1;\nexpires(30d) keep_history(1d) aspect app:d.0: int;\nkeep_history(1d) aspect app:p.0: int;\nexpires(30s) keep_history(1d) ephemeral aspect app:de+.0: int;\nkeep_history(1d) ephemeral aspect app:pe+.0: int;").unwrap();
-    let t = db.commit_with(|w| w.create_with_content(db.me())).unwrap();
+    let t = db.commit_with(|w| w.create_with_content(db.home())).unwrap();
     for (x, y) in [("app:d.0", "app:p.0"), ("app:de+.0", "app:pe+.0")] {
         let (a, b) = (db.aspect_key(x).unwrap(), db.aspect_key(y).unwrap());
         let mut w = db.write();
@@ -366,7 +366,7 @@ fn undo_needing_two_expiries_waits_spec_crdt_4_6() {
     let c = clock();
     let db = osis::internals::create(cfg(31, MemStore::new(), &c)).unwrap();
     db.register_schema("two.osis", "revision 1;\nkeep_history(1d) aspect app:a.0: int;\nkeep_history(1d) aspect app:b.0: int;\nkeep_history(1d) ephemeral aspect app:c+.0: int;\nkeep_history(1d) ephemeral aspect app:d+.0: int;").unwrap();
-    let t = db.commit_with(|w| w.create_with_content(db.me())).unwrap();
+    let t = db.commit_with(|w| w.create_with_content(db.home())).unwrap();
     for (x, y) in [("app:a.0", "app:b.0"), ("app:c+.0", "app:d+.0")] {
         let (a, b) = (db.aspect_key(x).unwrap(), db.aspect_key(y).unwrap());
         db.commit_set(t, b.clone(), &Value::Int(0)).unwrap();

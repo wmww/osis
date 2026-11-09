@@ -1,13 +1,12 @@
 //! J and credentials (issues/net-shared-set.md, Words, step 3): holder/departed by proven key
-//! actor over the rosters held; a chain-proved or account-key-proved account reaches nothing
-//! until accounts sign; `credentials(L)` by class.
+//! actor over the rosters held; a proven account reaches nothing until a removal rotates the
+//! account; `credentials(L)` by class.
 
 use crate::net;
 use net::*;
 use osis_base::{LabelId, Role, Tid};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_engine::flows::LinkSpec;
-use osis_node::ACCOUNT_RECORD;
 use osis_node::labeling::Judgment;
 use osis_node::sync::credentials::{Credential, head_credentials};
 use osis_node::sync::{Action, ConnId, Event};
@@ -59,12 +58,11 @@ fn prove(net: &mut Net, n: usize, provers: Vec<Prover>) -> (ConnId, usize) {
 pub(crate) fn account_node(net: &mut Net, seed: u64, host: usize) -> (usize, Tid) {
     let n = net.node(seed, &[host]);
     let addr = net.address(host);
-    let (p, done) = net.engine(n).create_person(std::slice::from_ref(&addr)).unwrap();
-    net.engine(n).set_app_record(ACCOUNT_RECORD, p.person.as_bytes()).unwrap();
+    let (p, done) = net.engine(n).create_account(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(n).carry_out(done).unwrap();
     net.actions(n, acts);
     net.run();
-    (n, p.person)
+    (n, p.account)
 }
 
 /// A link on a fresh target of node `n`'s account: (k, k's label, the link's key actor).
@@ -121,7 +119,7 @@ fn key_actor_holder_then_departed_unknown_never_held_spec_sync_10() {
 
     let stranger = SigningSecret::from_seed(&Secret32::from_bytes([0x55; 32]));
     let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: stranger.verifying_key().to_bytes().to_vec(), nonce: [1; 32], account: false };
-    let (conn3, answered) = prove(&mut net, a, vec![Prover { key: stranger, record, accounts: vec![], chain: vec![] }]);
+    let (conn3, answered) = prove(&mut net, a, vec![Prover { key: stranger, record }]);
     assert_eq!(one(&mut net, a, conn3, label), Judgment::Unknown, "no path seen");
     assert_eq!(answered, 0, "an actor on no roster is unknown");
 }
@@ -164,8 +162,8 @@ fn departed_through_a_roster_path_spec_sync_10() {
 }
 
 // issues/net-shared-set.md step 3 (security rule), spec/sync.md §10: a node's own key reaches
-// what the rosters HELD here say and nothing a proof's chain says: a node on its account's roster
-// is a holder only once that roster is held here, and a held removal closes it
+// what the rosters HELD here say: a node on its devices actor's roster is a holder of what the
+// roster's owner holds only once that roster is held here
 #[test]
 fn node_key_reaches_only_through_rosters_held_spec_sync_10() {
     let mut net = Net::new();
@@ -175,13 +173,8 @@ fn node_key_reaches_only_through_rosters_held_spec_sync_10() {
     let ts = net.tid(s);
     let g = net.group_at(a, &[], vec![]);
     set_edge(net.engine(a), g, account, Role::Read);
-    let provers = net.sync(s).provers().unwrap();
-    assert_eq!(net.engine(a).core.judge([ts]).of(&g), Judgment::Unknown, "the node's edge to its account is not held");
-    // the certificate a group carries lands the edge here, as a held roster would
-    for bytes in provers[0].chain.clone() {
-        let _ = net.engine(a).ingest(&bytes, Vec::new());
-    }
-    assert_eq!(net.engine(a).core.judge([ts]).of(&g), Judgment::Holder, "through the roster held; a held removal ends it (departed_through_a_roster_path)");
+    assert_eq!(net.engine(a).core.judge([ts]).of(&g), Judgment::Unknown, "the node's link to its account is not held");
+    let _ = account;
 }
 
 // spec/sync.md §2, issues/net-shared-set.md Words: an account on a roster has no static entry
@@ -201,14 +194,14 @@ fn an_account_on_the_roster_has_no_static_entry_spec_sync_2() {
     assert!(static_entries(&net.sync(a).credentials(&[gl]).unwrap().remove(&gl).unwrap()).is_empty());
 }
 
-// issues/net-shared-set.md step 3, spec/sync.md §10 Limit: until accounts sign a proven account
-// reaches nothing, by a chain or by the account's own first key: its node's Prove leaves J
-// unknown on a thing the account holds here and it gets no proof back
+// issues/net-shared-set.md step 3, spec/sync.md §10: a proven account reaches nothing until a
+// removal rotates it: a node's Prove leaves J unknown on a thing the account holds here and it
+// gets no proof back
 #[test]
-fn chain_proved_account_gets_nothing_from_j_spec_sync_10() {
+fn proven_account_gets_nothing_from_j_spec_sync_10() {
     let mut net = Net::new();
     let host = net.add_host();
-    let (a, account_a) = account_node(&mut net, 1, host);
+    let (a, _) = account_node(&mut net, 1, host);
     let (s, account) = account_node(&mut net, 3, host);
     let ts = net.tid(s);
     let g = net.group_at(a, &[], vec![]);
@@ -216,25 +209,11 @@ fn chain_proved_account_gets_nothing_from_j_spec_sync_10() {
     let label = net.sync(a).labels().iter().find(|(x, _)| *x == g).unwrap().1.id;
     assert_eq!(net.engine(a).core.judge([account]).of(&g), Judgment::Holder, "the account is on g's roster: J reads it");
     let provers = net.sync(s).provers().unwrap();
-    assert_eq!(provers[0].accounts, vec![account], "s claims its account with its chain");
     let (conn, answered) = prove(&mut net, a, provers);
     let proven = net.sync(a).proven(conn).unwrap();
-    assert!(proven.contains(&account) && proven.contains(&ts), "the claim stands as reported: {proven:?}");
+    assert!(proven.contains(&account) && proven.contains(&ts), "reported: {proven:?}");
     assert_eq!(one(&mut net, a, conn, label), Judgment::Unknown, "J counts key actors alone");
     assert_eq!(answered, 0, "no known key actor");
-
-    // the same account by a proof with its own key (a removed node keeps the first epoch's)
-    let key = SigningSecret::from_seed(&Secret32::from_bytes([0x66; 32]));
-    let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [2; 32], account: true };
-    let keyed = record.tid();
-    let g2 = net.group_seeded(a, &[], vec![], 2);
-    set_edge(net.engine(a), g2, keyed, Role::Read);
-    let label2 = net.sync(a).labels().iter().find(|(x, _)| *x == g2).unwrap().1.id;
-    let (conn, answered) = prove(&mut net, a, vec![Prover { key, record, accounts: vec![], chain: vec![] }]);
-    assert!(net.sync(a).proven(conn).unwrap().contains(&keyed), "reported");
-    assert_eq!(one(&mut net, a, conn, label2), Judgment::Unknown, "an account's key proves no removal");
-    assert_eq!(answered, 0);
-    let _ = account_a;
 }
 
 // spec/sync.md §2, issues/net-shared-set.md Words, credentials table: a reader holds a read secret per current

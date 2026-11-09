@@ -248,7 +248,7 @@ impl Reader {
 
     fn compute_things(&self) -> Result<BTreeSet<Tid>> {
         let groups = self.groups()?;
-        let home = self.db.me();
+        let home = self.db.home();
         let internal = self.internal()?;
         let skip = |t: &Tid| *t == home || groups.contains(t) || internal.contains(t);
         let mut seen = BTreeSet::new();

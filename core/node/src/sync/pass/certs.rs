@@ -46,7 +46,7 @@ impl SyncEngine {
         // verdict on the writes its frontier covers (a joiner's home label holds the copy of its grant by
         // link actor L, made before L's removal)
         // (`authors`: `Work::unjudged`)
-        let me = self.engine.tid();
+        let me = self.engine.me();
         let mut authors = authors.clone();
         authors.remove(&me);
         let actor = self.engine.group_actor(g);
@@ -77,7 +77,7 @@ impl SyncEngine {
             // author's to place (spec/permissions.md §3, §4): holders that learn of it under
             // another label first do not all copy it; a wake brings the pass back then. An author
             // that does not read the label's actor places nothing: its copy just comes that late
-            let me = self.engine.tid();
+            let me = self.engine.me();
             let now = self.now();
             let due = self.engine.core.ix.commits.get(&c).filter(|m| m.header.author != me).map(|m| m.received.0.saturating_add(SETTLE_MS)).filter(|t| *t > now);
             if let Some(t) = due
@@ -162,7 +162,7 @@ impl SyncEngine {
 
     /// Whether this node may rotate the read role of `g`'s secret actor (spec/permissions.md §3).
     pub(super) fn may_rotate_read(&self, g: &Tid) -> bool {
-        let me = self.engine.tid();
+        let me = self.engine.me();
         let a = self.keys_actor(g);
         crate::rotation::may_rotate(&self.engine.core, &me, &a).contains(&Role::Read)
     }

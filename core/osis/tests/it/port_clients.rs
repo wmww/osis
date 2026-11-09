@@ -187,7 +187,7 @@ fn reads_are_exactly_the_actors() {
     let link_target = x.u;
     let _link = x.n.make_link(link_target, Role::Read, LinkOpts { until: None, single_use: false, direct: true }).unwrap();
     let k = x.n.links_of(link_target).unwrap()[0].id.actor();
-    let home = x.n.at(x.n.me(), ct::GROUP).get().unwrap().unwrap();
+    let home = x.n.at(x.n.home(), ct::GROUP).get().unwrap().unwrap();
     let seed = home.items.iter().copied().find(|i| x.n.aspects(*i).unwrap().iter().any(|a| a.as_str() == "link:seed.0")).unwrap();
     let ghost = Tid::from_bytes([9; 15]);
     let g_answers = answers(&c, ghost);
@@ -218,7 +218,7 @@ fn writes_are_the_actors() {
     c.commit_set(x.t, osis::DynamicAspectKey::untyped(name.clone()), &Value::Int(2)).unwrap();
     assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Int(2)));
     let last = &crate::common::listed(&x.n, Scope::Thing(x.t))[0];
-    assert_eq!((last.stamp.actor, last.stamp.node), (a, x.n.node()));
+    assert_eq!(last.stamp.actor, a);
     // created things
     let made = c.commit_with(|w| {
         let m = w.create_with_admin(x.g)?;
@@ -511,7 +511,7 @@ fn remove_client_revokes() {
     assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
     assert!(!x.n.remove_client(a).unwrap());
     assert!(!x.n.remove_client(x.n.me()).unwrap(), "only a registered client: never a role removal of something else");
-    assert!(x.n.grants(x.n.me()).unwrap().contains_key(&x.n.node()));
+    assert!(x.n.grants(x.n.home()).unwrap().contains_key(&x.n.node()));
     // its until passed already (a removal cut short ends there): the removal still removes its roles
     let (late, s2) = x.n.add_client(Some(Time(T0 + 1))).unwrap();
     x.n.grant(x.g, late, Role::Read, Default::default()).unwrap();
