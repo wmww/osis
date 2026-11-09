@@ -165,3 +165,38 @@ fn text_keystroke_does_not_wait_for_a_save() {
     db.settle();
     assert_eq!(listed.try_iter().count(), 2);
 }
+
+// A merge whose save is in flight while the user types: the keystroke does not wait, the merge
+// commits the typing by another round, and every edit is applied once.
+#[test]
+fn text_typing_during_a_merge_goes_round_again() {
+    let (saving_tx, saving) = channel();
+    let (go, go_rx) = channel::<()>();
+    let first = Mutex::new(Some((saving_tx, go_rx)));
+    let mut c = cfg(1, MemStore::new(), &clock());
+    c.app.internals.text_save = Some(Arc::new(move || {
+        if let Some((tx, rx)) = first.lock().unwrap().take() {
+            tx.send(()).unwrap();
+            rx.recv().unwrap();
+        }
+    }));
+    let (db, t, k) = setup(osis::internals::create(c).unwrap());
+    let s = open(&db, t, &k);
+    let (_m, merged) = merges(&s);
+    let (_c, listed) = commits(&db, t, &k);
+    s.splice(0..0, "x").unwrap();
+    db.commit_with(|w| w.at(t, k.clone()).set(&Value::Str("B".into()))).unwrap();
+    // the merge stopped in its save of "x"
+    recv(&saving);
+    s.splice(1..1, "y").unwrap();
+    assert_eq!(s.text(), "xy", "the keystroke returned while the merge's save was stopped");
+    go.send(()).unwrap();
+    db.settle();
+    db.settle();
+    let f = field(&db, t, &k).unwrap();
+    assert!(f.contains('B') && f.contains("xy") && f.len() == 3, "{f}");
+    assert_eq!(s.text(), f);
+    assert_eq!(merged.try_iter().collect::<Vec<_>>(), [f.clone()]);
+    assert_eq!(s.commit().unwrap(), None, "nothing left pending");
+    assert_eq!(listed.try_iter().count(), 3, "the write, then x, then y");
+}
