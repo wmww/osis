@@ -49,6 +49,9 @@ pub enum Kind {
     Snap(Vec<u32>),
     /// Addendum naming a removal (role write ID) and listing commit IDs.
     Add { removal: u32, lists: Vec<u32> },
+    /// `forget`, candidate B: the snapshot inside a removal commit, carrying these content
+    /// items; it stands exactly while that removal (role write ID) applies.
+    RemSnap { removal: u32, carries: Vec<u32> },
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +67,16 @@ pub struct Item {
     pub recv: Vec<u32>,
     /// Written by the attacker (`World::forge`).
     pub forged: bool,
+}
+
+impl Kind {
+    /// The content items a snapshot carries (none for other kinds).
+    pub fn carries(&self) -> &[u32] {
+        match self {
+            Kind::Snap(cs) | Kind::RemSnap { carries: cs, .. } => cs,
+            _ => &[],
+        }
+    }
 }
 
 impl Item {
@@ -177,6 +190,10 @@ impl L1 {
     fn at(&self, key: Key) -> usize {
         self.keys.partition_point(|k| *k < key)
     }
+    /// The role write with this ID is applied in the settled walk.
+    pub fn applied(&self, rid: u32) -> bool {
+        self.keys.iter().any(|k| k.2 == rid)
+    }
     pub fn role(&self, n: usize, x: usize, key: Key) -> Role {
         self.states[self.at(key)][n][x]
     }
@@ -238,6 +255,9 @@ impl<'a> Ctx<'a> {
     pub fn part_ok(&self, c: usize, m: usize, valid: &[bool]) -> bool {
         let it = &self.w.items[c];
         let (x, key, l1) = (it.author, it.key(), self.v.l1);
+        if let Kind::RemSnap { removal, .. } = &it.kind {
+            return l1.applied(*removal);
+        }
         if l1.regrant(x, m, key) {
             return true;
         }
@@ -296,7 +316,7 @@ impl<'a> Ctx<'a> {
         let visible = (0..w.items.len())
             .map(|c| {
                 let it = &w.items[c];
-                it.content() && (held(c) || w.items.iter().enumerate().any(|(s, si)| matches!(&si.kind, Kind::Snap(cs) if si.thing == it.thing && cs.contains(&it.id)) && held(s)))
+                it.content() && (held(c) || w.items.iter().enumerate().any(|(s, si)| si.thing == it.thing && si.kind.carries().contains(&it.id) && held(s)))
             })
             .collect();
         Eval { valid, visible, rounds }
@@ -668,6 +688,7 @@ impl std::fmt::Display for World {
                 Kind::Special => "special".to_string(),
                 Kind::Snap(c) => format!("snapshot carrying {c:?}"),
                 Kind::Add { removal, lists } => format!("addendum to {removal} listing {lists:?}"),
+                Kind::RemSnap { removal, carries } => format!("snapshot in removal {removal} carrying {carries:?}"),
             };
             let acting = it.acting.map_or(String::new(), |h| format!(" acting A{h}"));
             let forged = if it.forged { " FORGED" } else { "" };

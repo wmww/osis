@@ -18,6 +18,10 @@ fn main() {
         }
         Some("disputes") => roles_model::trust::run(samples, false),
         Some("disputes-random") => roles_model::trust::run(samples, true),
+        Some("forget") => roles_model::forget::exhaustive(),
+        Some("forget-min") => roles_model::forget::minimal(),
+        Some("forget-costs") => roles_model::forget::costs(),
+        Some("forget-account") => roles_model::forget_account::exhaustive(),
         Some("addenda") => roles_model::addenda::random(samples, 0x5eed).print(),
         Some("addenda-cost") => roles_model::addenda::cost_sweep(samples),
         Some("addenda-exh") => roles_model::addenda::exhaustive(false).print(),

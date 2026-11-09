@@ -19,6 +19,9 @@
 //!   lists leave out (`Cover`). Searches `addenda` (random), `addenda-exh` (exhaustive
 //!   families, about 2 CPU-hours), `addenda-covers`, `addenda-cost`. Every property passes;
 //!   drop-at-once loses writes; leaving out another writer's covers loses writes. Results: notes/permissions.md, Role timeline.
+//! - `forget`, `forget_account`: can a node forget a commit's ID (own-snapshot cover, a
+//!   snapshot inside the removal, the account level), per-node with real body drops, against
+//!   listing every commit. Searches `forget`, `forget-account`, `forget-costs`, `forget-min`.
 //! - `shrink`: counterexample shrinking (`Shrink` per history type; `shrink::shrink`).
 //! - `trust`: disputes and trust sets over `edges` and `joint` (notes/disputes-plan.md
 //!   step 3), below.
@@ -55,6 +58,8 @@ pub mod addenda;
 pub mod content;
 pub mod edges;
 pub mod epochs;
+pub mod forget;
+pub mod forget_account;
 pub mod joint;
 pub mod shrink;
 pub mod single;
