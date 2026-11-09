@@ -364,7 +364,7 @@ fn disconnected_node_is_network_never_stale() {
     drop(x.host);
 }
 
-// notes/api.md Tracked reads: a tracked read whose group moved listens at the new source, not at
+// spec/sync.md §10, notes/api.md Tracked reads: a tracked read whose group moved listens at the new source, not at
 // the subscription the move ended.
 #[test]
 fn a_tracked_read_listens_at_its_new_source_after_a_move() {
