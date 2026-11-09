@@ -1,9 +1,13 @@
-//! Possession (spec/crypto.md §4, Holder actors): a symmetric box to a holder actor M shows that
-//! its author holds the secret of the keyset of M it boxes at, by a signature with that keyset's
-//! possession key; a rotation, or a removal of a box to M, counts its author's role on the actor
-//! through M only where it shows that (Authority). Without it a party removed from M, where its
-//! removal is unknown, could rotate the actor sealing M at M's new keyset (which it cannot open),
-//! or replace a stale box with one so sealed, and so make an epoch it holds look fresh
+//! Possession (spec/crypto.md §4, Holder actors): a rotation's keyset carries, per holder actor
+//! M its rotator holds the role through, a proof that the rotator holds the secret of a keyset of
+//! M (a signature over the new keyset by that keyset's possession key); a rotation counts its
+//! author's role on the actor through M only where it shows that (Authority). The proof travels
+//! with the keyset, so every node holding the keyset (one holding it as a certificate, without
+//! the boxes, included) judges the rotation alike: keyset, establishment and boxes share one
+//! verdict. A removal of a box to M that is no rotation (a re-seal replacing it) shows the same
+//! by the possession signature of the box it puts again. Without it a party removed from M, where
+//! its removal is unknown, could rotate the actor sealing M at M's new keyset (which it cannot
+//! open), or replace a stale box with one so sealed, and so make an epoch it holds look fresh
 //! (issues/keys-depth0-removed-member-rotates.md). A box alone is never judged: it opens for
 //! whoever holds the keyset it names whatever its validity, so judging it would only hide what it
 //! discloses from the rules that judge boxes (stale, keyless).
@@ -13,7 +17,8 @@ use crate::aspects::from_schema;
 use crate::Error;
 use osis_base::{Role, Tid};
 use osis_crypto::{BoxSlot, Domain, Epoch, Secret32, Signature, SigningSecret, VerifyingKey, kdf};
-use osis_schema::core_types::{self as ct, BoxKey, SecretBox};
+use osis_schema::Codec;
+use osis_schema::core_types::{self as ct, BoxKey, Keyset, PossessionProof, SecretBox};
 use std::collections::BTreeSet;
 
 /// The possession signing key of role secret `s`: Ed25519 with seed `kdf("possession key", s)`.
@@ -32,9 +37,25 @@ pub fn sign(s: &Secret32, slot: &BoxSlot, epoch_s: Epoch, wrap: &[u8]) -> Result
     Ok(possession_secret(s).sign(Domain::Possession, &slot.possession_digest(epoch_s, wrap)?))
 }
 
-/// What a box written to a holder shows, read from the delta alone: the keyset of the holder it
-/// names and, for a symmetric box carrying a possession signature, the signed digest and the
-/// signature. Checked against the keyset's possession key once the node holds it (`verifies`).
+/// The digest a keyset's possession proof for holder actor `holder` signs (spec/wire.md §7):
+/// BLAKE3 of the canonical `[actor, holder, role, keyset]`, the keyset with no proofs.
+pub fn proof_digest(actor: &Tid, holder: &Tid, role: Role, ks: &Keyset) -> [u8; 32] {
+    let bare = Keyset { proofs: Default::default(), ..ks.clone() };
+    let v = osis_base::Value::List(vec![osis_base::Value::bytes(actor.as_bytes()), osis_base::Value::bytes(holder.as_bytes()), osis_base::Value::Int(role as i64), bare.to_value()]);
+    *blake3::hash(&osis_base::encode(&v)).as_bytes()
+}
+
+/// The proof keyset `ks` of `actor`'s role `role` carries for holder actor `holder`: signed by the
+/// possession key of `holder`'s secret `s` of keyset `k` (spec/crypto.md §4).
+pub fn prove(actor: &Tid, role: Role, ks: &Keyset, holder: &Tid, k: Epoch, s: &Secret32) -> PossessionProof {
+    let sig = possession_secret(s).sign(Domain::Possession, &proof_digest(actor, holder, role, ks));
+    PossessionProof { keyset: crate::aspects::to_schema(&k), signature: ct::Signature::Ed25519(sig.0.to_vec()) }
+}
+
+/// What a box written to a holder or a keyset's proof shows, read from the delta alone: the
+/// keyset of the holder it names and, for a symmetric box carrying a possession signature or a
+/// proof, the signed digest and the signature. Checked against the keyset's possession key once
+/// the node holds it (`verifies`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Shown {
     pub holder: Tid,
@@ -62,14 +83,30 @@ impl Shown {
         Some(Shown { holder: key.holder, role: key.role, keyset, signed })
     }
 
+    /// Each proof keyset `ks` of `actor`'s role `role` carries (one that does not decode shows
+    /// nothing).
+    pub fn of_keyset(actor: &Tid, role: Role, ks: &Keyset) -> Vec<Shown> {
+        ks.proofs
+            .iter()
+            .filter_map(|(m, p)| {
+                let keyset = from_schema(&p.keyset).ok()?;
+                let ct::Signature::Ed25519(sig) = &p.signature;
+                let signed = Some((proof_digest(actor, m, role, ks), <[u8; 64]>::try_from(sig.as_slice()).ok()?));
+                Some(Shown { holder: *m, role, keyset, signed })
+            })
+            .collect()
+    }
+
     /// Whether it carries a possession signature valid under `pk` (the keyset's possession key).
     pub fn verifies(&self, pk: &VerifyingKey) -> bool {
         self.signed.as_ref().is_some_and(|(d, s)| pk.verify(Domain::Possession, d, &Signature(*s)).is_ok())
     }
 }
 
-/// What judging a `secrets.0` delta of actor A for possession needs besides its boxes
-/// (spec/crypto.md §4): read just before its commit's key, by the node judging.
+/// What judging a role commit's delta on actor A for possession needs besides what it shows
+/// (spec/crypto.md §4): read just before its commit's key, by the node judging; keysets too, so
+/// a keyset counts only by a body ordered before the commit (validity a recursion down the key
+/// order: one result, whatever the arrival order).
 pub trait View {
     /// Whether `t` is a key actor (boxed by its one KEM key or seed, never a holder actor).
     fn key_actor(&self, t: &Tid) -> bool;
@@ -77,23 +114,23 @@ pub trait View {
     /// a cycle: no key access).
     fn author_on(&self, t: &Tid) -> Option<Role>;
     /// The holder actors of A the node holds a keyset of (its first admin included while its
-    /// record edge stands): those a box shows possession of.
+    /// record edge stands): those a proof or box shows possession of.
     fn holder_actors(&self) -> BTreeSet<Tid>;
     /// The author's role on A on paths through none of `avoid`.
     fn role_on_actor(&self, avoid: &BTreeSet<Tid>) -> Option<Role>;
     /// The possession keys the held valid bodies of keyset `k` of role `r` of `m` publish;
-    /// `None` when none is held.
+    /// `None` when none is held (nothing to judge by).
     fn keys(&self, m: &Tid, r: Role, k: &Epoch) -> Option<Vec<VerifyingKey>>;
 }
 
-/// Whether a `secrets.0` delta showing `shown` and removing boxes of `removed` (holder, role)
-/// passes possession (spec/crypto.md §4, Authority): when it `rotates` or removes a box of role r
-/// to a holder actor the author holds r or above on without putting it again with a valid
-/// signature, the author does not hold `needed` on the actor only through holder actors it does
-/// not box with a valid signature.
+/// Whether a delta showing `shown` (a rotation's keyset proofs, else its boxes) and removing
+/// boxes of `removed` (holder, role) passes possession (spec/crypto.md §4, Authority): when it
+/// `rotates` or removes a box of role r to a holder actor the author holds r or above on without
+/// putting it again with a valid signature, the author does not hold `needed` on the actor only
+/// through holder actors it shows no possession of.
 pub fn holds(shown: &[Shown], removed: &[(Tid, Role)], rotates: bool, needed: Role, v: &dyn View) -> bool {
-    // a keyset the node holds no valid body of is not judged by (a box naming it is not stale
-    // either: within the stated limit until the body arrives, and judged again then)
+    // a keyset the node holds no valid body of (before the commit) is not judged by (a box naming
+    // it is not stale either: within the stated limit until the body arrives, and judged again)
     let valid = |s: &Shown| v.keys(&s.holder, s.role, &s.keyset).is_none_or(|pks| pks.iter().any(|pk| s.verifies(pk)));
     let actors = || shown.iter().filter(|s| !v.key_actor(&s.holder));
     // a rotation through a holder actor counts only where the author shows it is in
@@ -249,6 +286,36 @@ mod tests {
         assert!(holds(&[], &gone, false, Role::Write, &V { direct: Some(Role::Write), ..setup().2 }), "a direct holder");
         let v = V { author_on_m: None, ..v };
         assert!(holds(&[], &gone, false, Role::Write, &v), "a non-member removes");
+    }
+
+    /// A keyset of A's write role carrying a proof for M by `by` naming M's keyset `k`.
+    fn proved(k: Epoch, by: &Secret32) -> Keyset {
+        let e = Epoch::derive(&tid(A), Role::Write, 2, &Secret32::from_bytes([9; 32])).unwrap();
+        let mut ks = crate::aspects::keyset(&e, &Secret32::from_bytes([9; 32]), &BTreeSet::new(), &crate::Names::default());
+        let p = prove(&tid(A), Role::Write, &ks, &tid(M), k, by);
+        ks.proofs.insert(tid(M), p);
+        ks
+    }
+
+    #[test]
+    fn keyset_proof_gives_authority() {
+        let (s, k, v) = setup();
+        let ks = proved(k, &s);
+        assert!(holds(&Shown::of_keyset(&tid(A), Role::Write, &ks), &[], true, Role::Write, &v));
+        let forged = proved(k, &Secret32::from_bytes([6; 32]));
+        assert!(!holds(&Shown::of_keyset(&tid(A), Role::Write, &forged), &[], true, Role::Write, &v), "signed by another secret");
+    }
+
+    #[test]
+    fn keyset_proof_binds_the_keyset() {
+        let (s, k, v) = setup();
+        let mut ks = proved(k, &s);
+        ks.supersedes.insert(to_schema(&k));
+        assert!(!holds(&Shown::of_keyset(&tid(A), Role::Write, &ks), &[], true, Role::Write, &v), "another supersedes list");
+        let ks = proved(k, &s);
+        let mut v = v;
+        v.keys.insert((tid(M), Role::Read, k), possession_key(&s));
+        assert!(!holds(&Shown::of_keyset(&tid(A), Role::Read, &ks), &[], true, Role::Write, &v), "read as another role's keyset");
     }
 
     #[test]

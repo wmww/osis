@@ -1,8 +1,8 @@
 //! Possession (spec/crypto.md §4, Holder actors; issues/keys-depth0-removed-member-rotates.md,
-//! model `D0_rm_possess*`): a rotation of G, or a removal of its box to X1, counts its writer's
-//! role through holder actor X1 only where it boxes X1 showing it holds the secret of the keyset
-//! it boxes it at (a signature). Shape: G <- X1 <- X2 <- W, X2 removing W where G's admin never
-//! learns of it.
+//! model `D0_rm_possess*`): a rotation of G counts its writer's role through holder actor X1
+//! only where its keysets prove X1 (a signature by the possession key of a keyset of X1), and a
+//! removal of G's box to X1 only where it puts that box again signed by the keyset it boxes at.
+//! Shape: G <- X1 <- X2 <- W, X2 removing W where G's admin never learns of it.
 
 #![allow(clippy::unwrap_used)]
 use super::tests::{blocked_at, commit_ids, edge, group, held_by, newest_read, openable, send_skipping};
@@ -69,10 +69,23 @@ fn removed(s: &mut Shape) -> BTreeSet<(Tid, Role, Epoch)> {
     removed_holding(s, false).0
 }
 
-/// W rotates read and write of G as a party removed from X2 may: boxing A, and X1 at X1's
-/// current keyset sealed (it holds no secret of it, so no signature) unless `leave_out`. Returns
-/// the commit and the new read epoch, whose secret W holds.
-fn forged_rotation(s: &mut Shape, leave_out: bool) -> (CommitId, Epoch) {
+/// How W's forged rotation of G treats X1.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Forged {
+    /// Left out.
+    Out,
+    /// Sealed at X1's current keyset, no proof (W holds no secret of it).
+    Sealed,
+    /// Sealed at X1's current keyset, its keysets proving X1 by the old keyset W holds.
+    ProvedOld,
+    /// Sealed at X1's current keyset, its keysets carrying a proof naming that keyset signed by
+    /// the old one W holds (verifies under nothing).
+    ProvedNew,
+}
+
+/// W rotates read and write of G as a party removed from X2 may: boxing A, and X1 as `how`
+/// says. Returns the commit and the new read epoch, whose secret W holds.
+fn forged_rotation(s: &mut Shape, how: Forged) -> (CommitId, Epoch) {
     let (g, x1) = (s.g, s.x1);
     let a = s.lp.peers[A].engine.tid();
     let before = commit_ids(&mut s.lp, W);
@@ -82,13 +95,25 @@ fn forged_rotation(s: &mut Shape, leave_out: bool) -> (CommitId, Epoch) {
             let held = tx.core.epochs(&g).unwrap();
             let secrets = crate::flows::secrets_in(tx, &g)?;
             let mut holders = vec![crate::flows::recipient(tx, a, Role::Admin)?];
-            if !leave_out {
-                let keys = crate::engine::Core::keys_in(tx, &x1)?.unwrap();
+            let keys = crate::engine::Core::keys_in(tx, &x1)?.unwrap();
+            if how != Forged::Out {
                 holders.push(Recipient { holder: x1, role: Role::Write, keys: HolderKeys::from_keys(&keys).unwrap() });
             }
             let names = super::departures::names(tx.core, &g, None);
             let roles = BTreeSet::from([Role::Read, Role::Write]);
-            let rot = osis_keys::rotate(&g, &roles, &held, &secrets, &holders, &names, &mut *tx.rng).unwrap();
+            let mut rot = osis_keys::rotate(&g, &roles, &held, &secrets, &holders, &names, &mut *tx.rng).unwrap();
+            if let Forged::ProvedOld | Forged::ProvedNew = how {
+                let x1_held = tx.core.epochs(&x1).unwrap();
+                for (r, ks) in rot.keys.keysets.iter_mut() {
+                    // (a role W holds no secret of goes unproved: one proof shows X1)
+                    let Some((old, secret)) = x1_held.role(*r).newest_secret().map(|(e, s)| (e, s.clone())) else { continue };
+                    let new = osis_keys::aspects::from_schema(&osis_keys::aspects::keyset_of(&keys, *r).unwrap().epoch).unwrap();
+                    assert_ne!(old, new, "W holds no secret of X1's new keyset");
+                    let named = if how == Forged::ProvedOld { old } else { new };
+                    let p = osis_keys::possession::prove(&g, *r, ks, &x1, named, &secret);
+                    ks.proofs.insert(x1, p);
+                }
+            }
             // signed as W's engine would refuse to: every node judges it invalid
             tx.core.skip_writer_rules = true;
             let mut m = Mutation::new();
@@ -111,11 +136,15 @@ fn deliver_w(s: &mut Shape) {
     }
 }
 
-/// A's `secrets.0` part of commit `c` on G is invalid, and `e` is no epoch A uses.
+/// Peer `i` judges commit `c`'s `secrets.0` part on G invalid, and its `keys.0` part too where it
+/// has one (a rotation is invalid whole), and `e` is no epoch it uses.
 fn refused_at(s: &mut Shape, i: usize, c: CommitId, e: Option<Epoch>) {
     let m = s.lp.peers[i].engine.core.ix.commits.get(&c).cloned().expect("held");
-    let ai = m.view.aspects.iter().position(|x| x.tid == s.g && x.ak.as_str() == "secrets.0").unwrap();
-    assert!(!m.valid_at(ai), "peer {i}: W's secrets.0 part invalid");
+    for (ai, x) in m.view.aspects.iter().enumerate().filter(|(_, x)| x.tid == s.g) {
+        if matches!(x.ak.as_str(), "secrets.0" | "keys.0") {
+            assert!(!m.valid_at(ai), "peer {i}: W's {} part valid", x.ak.as_str());
+        }
+    }
     if let Some(e) = e {
         assert!(!s.lp.peers[i].engine.epochs(&s.g).unwrap().read.is_established(&e), "peer {i}: W's epoch not established");
     }
@@ -160,7 +189,7 @@ fn removed_member_waits_spec_crypto_4() {
 fn removed_member_forged_rotation_refused_spec_crypto_4() {
     let mut s = shape(7_002);
     let start = removed(&mut s);
-    let (c, e) = forged_rotation(&mut s, false);
+    let (c, e) = forged_rotation(&mut s, Forged::Sealed);
     deliver_w(&mut s);
     refused_at(&mut s, A, c, Some(e));
     refused_at(&mut s, B, c, Some(e));
@@ -173,7 +202,7 @@ fn removed_member_forged_rotation_refused_spec_crypto_4() {
 fn removed_member_rotation_leaving_holder_out_refused_spec_crypto_4() {
     let mut s = shape(7_003);
     let start = removed(&mut s);
-    let (c, e) = forged_rotation(&mut s, true);
+    let (c, e) = forged_rotation(&mut s, Forged::Out);
     deliver_w(&mut s);
     refused_at(&mut s, A, c, Some(e));
     refused_at(&mut s, B, c, Some(e));
@@ -249,21 +278,34 @@ fn removed_member_reseal_refused_spec_crypto_4() {
     a_writes_unread(&mut s, start);
 }
 
+// W proves X1 by the old keyset of it that it holds (a valid proof: the rotation counts) while
+// sealing X1 at X1's new keyset: A finds the epoch's proof names a superseded keyset of X1, a
+// stale box (spec/crypto.md §4, Stale), and rotates; W opens nothing A uses.
+#[test]
+fn removed_member_proving_an_old_keyset_is_stale_spec_crypto_4() {
+    let mut s = shape(7_008);
+    let start = removed(&mut s);
+    let (c, _) = forged_rotation(&mut s, Forged::ProvedOld);
+    deliver_w(&mut s);
+    let m = s.lp.peers[A].engine.core.ix.commits.get(&c).cloned().expect("held");
+    assert!(m.valid.iter().all(|v| *v), "a proof by a keyset W holds shows X1");
+    a_writes_unread(&mut s, start);
+}
+
 // Judged again when the keyset arrives (arrival-order independence): A holds W's forged
-// rotation (X1 sealed at its new keyset, unsigned) before X1's rotation: it holds no keyset of X1
-// that W cannot open, so the box is not judged (within the stated limit) and the rotation is
-// valid there; once X1's rotation arrives, it is invalid, as where it arrived first.
+// rotation (its proof naming X1's new keyset, signed by another) before X1's rotation: it holds
+// no body of that keyset, so the proof is not judged (within the stated limit) and the rotation
+// is valid there; once X1's rotation arrives, it is invalid, as where it arrived first.
 #[test]
 fn possession_judged_again_when_keyset_arrives_spec_crypto_4() {
     let mut s = shape(7_006);
     let (_, x1_rot) = removed_holding(&mut s, true);
-    let (c, e) = forged_rotation(&mut s, false);
+    let (c, e) = forged_rotation(&mut s, Forged::ProvedNew);
     for pk in s.lp.packages(W).unwrap().into_iter().filter(|p| p.id == c) {
         s.lp.peers[A].engine.ingest(&pk.bytes, pk.blobs).unwrap();
     }
     let m = s.lp.peers[A].engine.core.ix.commits.get(&c).cloned().expect("held");
-    let ai = m.view.aspects.iter().position(|x| x.tid == s.g && x.ak.as_str() == "secrets.0").unwrap();
-    assert!(m.valid_at(ai), "valid while A holds no keyset of X1 W cannot open");
+    assert!(m.valid.iter().all(|v| *v), "valid while A holds no body of the keyset the proof names");
     let mut skip = commit_ids(&mut s.lp, B);
     skip.retain(|x| !x1_rot.contains(x));
     send_skipping(&mut s.lp, B, A, &skip);

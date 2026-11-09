@@ -122,18 +122,23 @@ pub struct Dropped {
     /// `epoch_intro` candidates; every valid one's are held keysets (`keysets`, spec/crypto.md
     /// §4), and an invalid one's held invalid.
     pub keysets: Vec<KeysetRec>,
-    /// What a role commit's `secrets.0` body showed for possession (`Indexes::shown`).
+    /// What a role commit's `secrets.0` or `keys.0` body showed for possession
+    /// (`Indexes::shown`).
     pub shown: Option<Arc<Showing>>,
 }
 
-/// What a role commit's `secrets.0` part shows for possession (spec/crypto.md §4, Holder
-/// actors), read from its bodies (`validity::note_required`): whether it rotates (its commit
-/// writes a keyset of the actor, or it writes more than entries), the boxes it removes, and what
-/// each box to a holder names and signs. A judgment of the body
-/// alone; the keysets that verify it and the roles it is judged by are read when judging.
+/// What a role commit's part shows for possession (spec/crypto.md §4, Holder actors), read from
+/// its bodies (`validity::note_required`). A `keys.0` part: whether it writes a keyset (a
+/// rotation), and the proofs its keysets carry. A `secrets.0` part: whether it writes more than
+/// entries, the boxes it removes, and what each box to a holder names and signs. A judgment of
+/// the body alone; the keysets that verify it and the roles it is judged by are read when
+/// judging.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Showing {
     pub rotates: bool,
+    /// A `keys.0` part: the highest role whose keyset it writes (what its rotation needs, at
+    /// least write: spec/permissions.md §3).
+    pub top: Option<osis_base::Role>,
     /// (holder, role) of each box it removes.
     pub removed: Vec<(Tid, osis_base::Role)>,
     pub shown: Vec<osis_keys::possession::Shown>,
@@ -160,17 +165,28 @@ pub struct KeysetRec {
 }
 
 /// A held valid keyset (`Indexes::keysets`): the epochs the supersedes lists of the bodies
-/// writing it name, joined, its KEM key (the first such body's of suite 1 noted), and the
-/// possession keys those bodies publish, joined (any of them verifies a possession signature,
-/// spec/crypto.md §4: a body other than the keyset's rotation is a forgery, within its limit),
-/// and the names digests they publish, each with its body's author (what binds a history entry
-/// to a rotator, spec/crypto.md §4: a forger's body binds entries to the forger).
+/// writing it name, joined, its KEM key (the first such body's of suite 1 noted), the
+/// possession keys those bodies publish, each with the key of the earliest body publishing it
+/// (any of them verifies a possession signature or proof made after it, spec/crypto.md §4: a
+/// body other than the keyset's rotation is a forgery, within its limit), the key of its
+/// earliest body (Authority reads a keyset as held just before a commit's key), and the names
+/// digests they publish, each with its body's author (what binds a history entry to a rotator,
+/// spec/crypto.md §4: a forger's body binds entries to the forger).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeldKeyset {
     pub lists: BTreeSet<osis_crypto::Epoch>,
     pub kem: Option<Vec<u8>>,
-    pub possession: BTreeSet<[u8; 32]>,
+    pub possession: BTreeMap<[u8; 32], osis_perm::Point>,
+    /// The key of its earliest valid body; `None` only before one is noted.
+    pub since: Option<osis_perm::Point>,
     pub names: BTreeSet<(osis_keys::NamesDigest, Tid)>,
+}
+
+impl HeldKeyset {
+    /// Whether a body of it is ordered before `p`.
+    pub fn held_before(&self, p: &osis_perm::Point) -> bool {
+        self.since.is_some_and(|s| s < *p)
+    }
 }
 
 /// A snapshot part's frontiers and `Absorbed` (commit, author).

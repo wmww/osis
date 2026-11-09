@@ -242,8 +242,24 @@ pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secr
         if !items.is_empty() && box_items(actor, m, &items, rng, &mut secrets)?.is_none() {
             unboxed.push(m.holder);
         }
+        prove_boxed(actor, m, &rotated, &secrets, &mut keys);
     }
     Ok(Rotation { rotated, secrets, keys, unboxed, names: names.clone(), wrap })
+}
+
+/// The proofs a rotation's keysets carry for holder actor `m` (spec/crypto.md §4, Possession):
+/// at each rotated role where its box to `m` is symmetric under `m`'s secret, a signature over
+/// the keyset by that secret's possession key, naming the keyset its box names.
+fn prove_boxed(actor: &Tid, m: &Recipient, rotated: &[Rotated], secrets: &SecretsWrite, keys: &mut KeysWrite) {
+    let HolderKeys::Actor { own, .. } = &m.keys else { return };
+    for x in rotated {
+        let Some(SecretBox::Symmetric(b)) = secrets.boxes.get(&box_key(m.holder, x.role, &x.epoch)) else { continue };
+        let (Some((es, s)), Some(ks)) = (own.get(&x.role), keys.keysets.get_mut(&x.role)) else { continue };
+        if from_schema(&b.epoch).is_ok_and(|e| e == *es) {
+            let p = crate::possession::prove(actor, x.role, ks, &m.holder, *es, s);
+            ks.proofs.insert(m.holder, p);
+        }
+    }
 }
 
 /// What a node writes as the history box of one current epoch (spec/crypto.md §4, History box):

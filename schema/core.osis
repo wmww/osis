@@ -154,6 +154,15 @@ type keyset = struct {
     possession_key 5: signing_key,
     /// 32-byte digest of the names this change of secrets records.
     names 6: blob,
+    /// Per holder actor the rotator holds the role through, that it holds a secret of it
+    /// (spec/crypto.md §4).
+    proofs 7: map<tid, possession_proof>,
+};
+
+/// A signature over a keyset by the possession key of a holder actor's keyset (spec/wire.md §7).
+type possession_proof = struct {
+    keyset 0: epoch,
+    signature 1: signature,
 };
 
 /// Where others can drop things for an actor: a 16-byte label ID and the hosts holding it.

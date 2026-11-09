@@ -231,11 +231,15 @@ fn roles_avoiding(core: &Core, who: &Tid, a: &Tid, avoid: &BTreeSet<Tid>) -> BTr
 
 /// Whether `who` may make a rotation of `roles` of `a` needing `needed`, boxing `holders`
 /// (`sealed`) (spec/crypto.md §4, Possession, Authority): `who` does not hold `needed` on `a`
-/// only through holder actors of `a` with a keyset held that the rotation's own boxes do not show
-/// (symmetric, signed, at a rotated role: a box of a role it does not rotate is not in its delta).
-/// Otherwise it waits: every node would judge that rotation invalid.
+/// only through holder actors of `a` with a keyset held that the rotation's keysets carry no
+/// proof for (`osis_keys::rotate` proves a holder at each rotated role it boxes symmetric under
+/// the holder's secret). Otherwise it waits: every node would judge that rotation invalid.
 pub(crate) fn authority(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>, needed: Role, holders: &[Recipient]) -> bool {
-    let shown: BTreeSet<Tid> = holders.iter().filter(|h| matches!(&h.keys, HolderKeys::Actor { own, .. } if own.keys().any(|r| roles.contains(r)))).map(|h| h.holder).collect();
+    let proves = |h: &Recipient| match &h.keys {
+        HolderKeys::Actor { own, keysets } => own.iter().any(|(r, (es, _))| roles.contains(r) && *r <= h.role && osis_keys::symmetric_box(es, keysets.get(r).map(|k| &k.0))),
+        HolderKeys::KeyActor { .. } => false,
+    };
+    let shown: BTreeSet<Tid> = holders.iter().filter(|h| proves(h)).map(|h| h.holder).collect();
     let avoid: BTreeSet<Tid> = core.key_holders(a).into_iter().map(|x| x.0).filter(|m| !core.is_key_actor(m) && core.keysets_of(m).next().is_some() && !shown.contains(m)).collect();
     let on_a = |avoid: &BTreeSet<Tid>| roles_avoiding(core, who, a, avoid).get(a).copied();
     avoid.is_empty() || on_a(&avoid) >= Some(needed) || on_a(&BTreeSet::new()) < Some(needed)
@@ -253,11 +257,24 @@ pub(crate) fn boxed_keysets(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Res
         .collect())
 }
 
+/// The holder actors `a`'s epoch `e` of role `r` proves, each with the keyset its proof names:
+/// the proofs of `e`'s keyset in its rotation commit (`epoch_intro`; spec/crypto.md §4,
+/// Possession).
+fn proved_keysets(core: &Core, a: &Tid, r: Role, e: &Epoch) -> Vec<(Tid, Epoch)> {
+    let Some((_, c)) = core.ix.epoch_intro.get(&(*a, r, *e)) else { return Vec::new() };
+    let Some(m) = core.ix.commits.get(c) else { return Vec::new() };
+    let Some(ki) = m.header.aspects.iter().position(|x| x.tid == *a && x.ak.as_str() == "keys.0") else { return Vec::new() };
+    let Some(x) = core.ix.shown.get(&(*c, ki)) else { return Vec::new() };
+    x.shown.iter().filter(|s| s.role == r && !core.is_key_actor(&s.holder)).map(|s| (s.holder, s.keyset)).collect()
+}
+
 /// Whether `a`'s epoch `e` of role `r` has a stale box (spec/crypto.md §4, rule 2): a box of its
-/// `secrets.0` state to a holder actor naming a keyset held invalid, tainted, or listed by a held
-/// valid keyset of it.
+/// `secrets.0` state to a holder actor, or a proof of `e`'s keyset, naming a keyset of it held
+/// invalid, tainted, or listed by a held valid keyset of it.
 pub(crate) fn stale_at(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<bool> {
-    for (m, k) in boxed_keysets(tx, a, r, e)? {
+    let mut named = boxed_keysets(tx, a, r, e)?;
+    named.extend(proved_keysets(tx.core, a, r, e));
+    for (m, k) in named {
         let held = keysets_of(tx, &m, r, Some(&k))?;
         if osis_keys::stale(&k, &held, &tainted(tx, &m, r)?) {
             return Ok(true);

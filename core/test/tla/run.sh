@@ -41,16 +41,17 @@ instances=(
   "depth0 rotation Depth0MC D0_fa_dmerge.cfg pass" # liveness: a derived write is merged
   "depth0 rotation Depth0MC D0_rm_possess0.cfg pass" # possession
   "depth0 rotation Depth0MC D0_readers.cfg fail" # issues/blocked-walk-stops-at-readers.md
-  "depth0 rotation Depth0MC D0_half.cfg fail"    # issues/half-valid-rotation-leak.md
+  "depth0 rotation Depth0MC D0_half.cfg fail"    # negative control: Authority judged on secrets.0 alone leaks
+  "depth0 rotation Depth0MC D0_half_keys_ns.cfg pass" # Authority judged from the keyset's proofs (spec/crypto.md §4)
   "lockout rotation Lockout L_rogue.cfg pass"    # notes/crypto.md (Lockouts)
   "lockout rotation Lockout L_none.cfg fail"     # negative control: no recovery
   "finalize rotation Finalize F_named_bogus.cfg pass" # notes/permissions.md (Keys)
   "finalize rotation Finalize F_old_seed3.cfg fail"   # negative control: a name met by its commit alone
   "cover rotation Cover C_drop.cfg pass"         # notes/crypto.md (Frozen coverage)
   "cover rotation Cover C_drop_any.cfg fail"     # negative control: attribution to any audit drop
-  "authority rotation AuthorityMC A_order_nobase.cfg pass" # validity layering (issues/half-valid-rotation-leak.md)
+  "authority rotation AuthorityMC A_order_nobase.cfg pass" # keysets read as of the commit's key (spec/crypto.md §4, Possession)
   "authority rotation AuthorityMC A_order_3.cfg pass"
-  "authority rotation AuthorityMC A_held_nobase.cfg fail" # finding: keysets read as held now give two fixpoints
+  "authority rotation AuthorityMC A_held_nobase.cfg fail" # negative control: keysets read as held now give two fixpoints
 )
 
 module=${1:-}

@@ -113,13 +113,14 @@ impl Rec for super::HeldKeyset {
     fn to(&self) -> Value {
         let kem = Value::List(self.kem.iter().map(|b| Value::bytes(b)).collect());
         let lists: Vec<osis_crypto::Epoch> = self.lists.iter().copied().collect();
-        let possession = Value::List(self.possession.iter().map(|b| Value::bytes(b)).collect());
+        let possession = Value::List(self.possession.iter().map(|(b, p)| Value::List(vec![Value::bytes(b), p.to()])).collect());
+        let since = Value::List(self.since.iter().map(Rec::to).collect());
         let names = Value::List(self.names.iter().map(|(d, a)| Value::List(vec![Value::bytes(d), Value::bytes(a.as_bytes())])).collect());
-        Value::List(vec![lists.to(), kem, possession, names])
+        Value::List(vec![lists.to(), kem, possession, since, names])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(f) = v else { return None };
-        let [lists, kem, possession, names] = f.as_slice() else { return None };
+        let [lists, kem, possession, since, names] = f.as_slice() else { return None };
         let Value::List(names) = names else { return None };
         let names = names
             .iter()
@@ -132,10 +133,24 @@ impl Rec for super::HeldKeyset {
             })
             .collect::<Option<BTreeSet<_>>>()?;
         let Value::List(possession) = possession else { return None };
-        let possession = possession.iter().map(|p| match p {
-            Value::Bytes(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
-            _ => None,
-        }).collect::<Option<BTreeSet<[u8; 32]>>>()?;
+        let possession = possession
+            .iter()
+            .map(|x| match x {
+                Value::List(p) => match p.as_slice() {
+                    [Value::Bytes(b), p] => Some((<[u8; 32]>::try_from(b.as_slice()).ok()?, Rec::from(p)?)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Option<BTreeMap<[u8; 32], osis_perm::Point>>>()?;
+        let since = match since {
+            Value::List(x) => match x.as_slice() {
+                [] => None,
+                [p] => Some(Rec::from(p)?),
+                _ => return None,
+            },
+            _ => return None,
+        };
         let kem = match kem {
             Value::List(x) => match x.as_slice() {
                 [] => None,
@@ -145,7 +160,7 @@ impl Rec for super::HeldKeyset {
             _ => return None,
         };
         let lists: Vec<osis_crypto::Epoch> = Rec::from(lists)?;
-        Some(super::HeldKeyset { lists: lists.into_iter().collect(), kem, possession, names })
+        Some(super::HeldKeyset { lists: lists.into_iter().collect(), kem, possession, since, names })
     }
 }
 impl Rec for BoxKey {
@@ -620,7 +635,7 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
             w = w.u8(1).bytes(&osis_base::encode(&f.to_value()));
         }
     }
-    // what its `secrets.0` parts show for possession (`Indexes::shown`): an input of their
+    // what its `secrets.0` and `keys.0` parts show for possession (`Indexes::shown`): an input of their
     // judgment, as the rotation roles above are
     let shown: Vec<(usize, &Arc<super::Showing>)> = (0..m.valid.len()).filter_map(|ai| Some((ai, core.ix.shown.get(&(*id, ai))?))).collect();
     w = w.u32(shown.len() as u32);
@@ -630,9 +645,13 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     w.take()
 }
 
-/// What a `secrets.0` part shows (`Showing`), in a meta row or a dropped part's record.
+/// What a part shows (`Showing`), in a meta row or a dropped part's record.
 fn put_showing(w: records::Wr, x: &super::Showing) -> records::Wr {
-    let mut w = w.u8(u8::from(x.rotates)).u32(x.removed.len() as u32);
+    let top = match x.top {
+        None => 0,
+        Some(r) => 1 + r as u8,
+    };
+    let mut w = w.u8(u8::from(x.rotates)).u8(top).u32(x.removed.len() as u32);
     for (m, r) in &x.removed {
         w = w.raw(m.as_bytes()).u8(*r as u8);
     }
@@ -650,6 +669,10 @@ fn put_showing(w: records::Wr, x: &super::Showing) -> records::Wr {
 fn read_showing(r: &mut records::Rd<'_>) -> Result<super::Showing> {
     let role = |b: u8| [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from(b)).copied().ok_or(Error::Corrupt("shown role"));
     let rotates = r.u8()? != 0;
+    let top = match r.u8()? {
+        0 => None,
+        b => Some(role(b - 1)?),
+    };
     let mut removed = Vec::new();
     for _ in 0..r.u32()? {
         let m = Tid::from_bytes(r.arr()?);
@@ -663,7 +686,7 @@ fn read_showing(r: &mut records::Rd<'_>) -> Result<super::Showing> {
         let signed = if r.u8()? != 0 { Some((r.arr()?, r.arr()?)) } else { None };
         shown.push(osis_keys::possession::Shown { holder, role, keyset, signed });
     }
-    Ok(super::Showing { rotates, removed, shown })
+    Ok(super::Showing { rotates, top, removed, shown })
 }
 
 /// What a commit's parts show, by part (`Indexes::shown`), as a `METAS` row keeps it.

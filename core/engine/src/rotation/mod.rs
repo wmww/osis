@@ -753,6 +753,8 @@ mod tests_members;
 #[cfg(test)]
 mod tests_possession;
 #[cfg(test)]
+mod tests_authority;
+#[cfg(test)]
 mod tests_departs;
 #[cfg(test)]
 mod tests_property;

@@ -117,6 +117,10 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
 /// (`Core::epoch_intro`) is its rotation commit, or unknown while that `keys.0` part is not held
 /// (synced after a compaction, or missing again after `retention::uncover`).
 pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, keysets: &[KeysetRec]) {
+    if keysets.is_empty() {
+        return;
+    }
+    let at = osis_perm::Point { ts: h.ts, node: h.author, commit: h.id() };
     for k in keysets {
         if h.kind == Kind::Role {
             note_intro(core, h, actor, k.role, k.epoch);
@@ -128,7 +132,10 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, keysets: &[
         if held.kem.is_none() {
             held.kem = k.kem.clone();
         }
-        held.possession.extend(k.possession);
+        if let Some(p) = k.possession {
+            held.possession.entry(p).and_modify(|x| *x = (*x).min(at)).or_insert(at);
+        }
+        held.since = Some(held.since.map_or(at, |x| x.min(at)));
         held.names.insert((k.names, h.author));
         if held != before || !core.ix.keysets.contains_key(&key) {
             core.ix.keysets.insert(key, held);
@@ -139,18 +146,21 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, keysets: &[
 }
 
 /// A held valid keyset of `actor` changed: possession (`validity::possessed`) is judged again for
-/// the `secrets.0` parts of what boxes it (`boxes_to`) and of what it holds a role on or is first admin of
-/// (their commits only: a thing's other deltas do not depend on it).
+/// the role commits writing `secrets.0` or `keys.0` of what boxes it (`boxes_to`) and of what it
+/// holds a role on or is first admin of (a rotation's proofs name keysets of those holders; their
+/// commits only: a thing's other deltas do not depend on it).
 fn keyset_changed(core: &mut Core, actor: &Tid) {
     let mut things: std::collections::BTreeSet<Tid> = core.ix.boxes_to.get(actor).into_iter().flatten().map(|x| x.0).collect();
     things.extend(core.ix.held.first_admin_of(actor).copied());
     if let Some(tl) = core.timelines.get(actor) {
         things.extend(tl.edges_at(None).targets(actor).copied());
     }
-    let Ok(ak) = osis_base::Ak::new("secrets.0") else { return };
-    for t in things {
-        let ids: Vec<CommitId> = core.ix.by_aspect.get(&(t, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-        core.stale_commits.extend(ids);
+    for ak in ["secrets.0", "keys.0"] {
+        let Ok(ak) = osis_base::Ak::new(ak) else { return };
+        for t in &things {
+            let ids: Vec<CommitId> = core.ix.by_aspect.get(&(*t, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+            core.stale_commits.extend(ids);
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 ------------------------------- MODULE Authority -------------------------------
 (* Whether rotation validity is one function of the held set once a rotation  *)
 (* failing Authority is invalid as a whole, keyset included (spec/crypto.md   *)
-(* §4 Holder actors, Authority; issues/half-valid-rotation-leak.md option A). *)
+(* §4 Holder actors, Possession, Authority).                                *)
 (* Authority of a rotation of actor a by an author whose role runs only       *)
 (* through holder actor h reads h's held valid keysets: h counts while one is *)
 (* held, and the rotation's box to h shows it when it is signed by the        *)

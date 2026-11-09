@@ -134,7 +134,7 @@ GNow(dn) == GAll \ {<<dp[2], dp[1]>> : dp \in {q \in dn : ActDep(q)}}
 \* be learned before the keysets its boxes name (carried as separate blobs);
 \* FALSE: they come along
 Late == FALSE
-\* a half-valid rotation (issues/half-valid-rotation-leak.md): HalfForgers
+\* a half-valid rotation (spec/crypto.md §4, Authority): HalfForgers
 \* {<<device, holder actor S, actor M>>}: the device, reaching M only through
 \* S, removes S from M in a commit rotating M whose secrets.0 part fails
 \* Authority (S departing, nothing shows it); the rotation boxes nobody, lists

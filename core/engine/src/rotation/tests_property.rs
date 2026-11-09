@@ -127,12 +127,24 @@ impl Run {
                 for (x, info) in e.role(r).epochs() {
                     if info.checked().is_some() && !known.contains(&(t, r, *x)) {
                         let own = self.lp.peers[i].engine.core.ix.epoch_intro.get(&(t, r, *x)).map(|v| v.1);
+                        // nor where its rotation boxed a holder actor (one the step then removed:
+                        // the step's cascade rotates before the removal's own rotation)
+                        if own.is_some_and(|c| self.boxed_actor(i, &c)) {
+                            continue;
+                        }
                         self.log.push(format!("  made actor {} {r:?} n{} {:?} at peer {i}, below {below:?}", self.actors.iter().position(|a| a.0 == t).unwrap(), x.n(), &x.nonce()[..2]));
                         self.made.insert((t, r, *x), (held.iter().copied().chain(own).collect(), below.clone()));
                     }
                 }
             }
         }
+    }
+
+    /// Whether commit `c` at peer `i` writes a box to a holder that is no peer (an actor).
+    fn boxed_actor(&self, i: usize, c: &CommitId) -> bool {
+        let core = &self.lp.peers[i].engine.core;
+        let Some(m) = core.ix.commits.get(c) else { return false };
+        (0..m.view.aspects.len()).filter_map(|ai| core.ix.shown.get(&(*c, ai))).any(|x| x.shown.iter().any(|s| !self.tids.contains(&s.holder)))
     }
 
     /// Peer `i` rotates `rot` of `t`, leaving out each other member (peer or actor) at random, or

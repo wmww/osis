@@ -196,7 +196,7 @@ faUnaware == {<<"f1", "T">>}
 \* derivation alone: no grant of T on F
 fdMem == faMem \ {<<"F", "T">>}
 fdG == << <<"T", "F">> >>
-\* half-valid rotation (issues/half-valid-rotation-leak.md): M holds A's role,
+\* half-valid rotation (spec/crypto.md §4, Authority): M holds A's role,
 \* S holds M's; f, S's one device and admin, reaches M only through S and
 \* removes S from M in a commit rotating M that fails Authority; m1 the admin
 \* of M, a1 of A
