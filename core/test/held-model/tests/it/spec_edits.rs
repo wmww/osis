@@ -1,6 +1,5 @@
 //! Signal edits (notes/signal-edits-design.md, held_model::edits). Properties checked over every subset
-//! of small worlds, smallest first, so a failure names a minimal counterexample; holes as `repro_*`.
-//! Issue: issues/signal-edits-model-holes.md.
+//! of small worlds, smallest first, so a failure names a minimal counterexample.
 use crate::util::*;
 use held_model::edits::{listed, listing, Entry, Shows};
 use held_model::*;
@@ -151,14 +150,15 @@ fn nodes_holding_the_same_commits_read_alike() {
 }
 
 /// A reading depends only on what is listed: a held commit not listed reads as one never held
-/// (an edit turned invalid or expired shows the previous version).
-fn unlisted_counts_for_nothing(u: &[Commit], nows: &[u64], signals: &[CommitId]) {
+/// (an edit turned invalid or expired shows the previous version). `ends`: (original, purge) pairs;
+/// a purged-out original's header still ends the message.
+fn unlisted_counts_for_nothing(u: &[Commit], nows: &[u64], signals: &[CommitId], ends: &[(CommitId, CommitId)]) {
     each_subset(u, |s| {
         for &n in nows {
             let w = world(n, s);
             let all = at_sig(&w);
             let on = listed(&w);
-            for &c in signals.iter().filter(|c| ids(s).contains(c) && !on.contains(c)) {
+            for &c in signals.iter().filter(|c| ids(s).contains(c) && !on.contains(c) && !ends.iter().any(|(o, p)| o == *c && ids(s).contains(p))) {
                 assert_eq!(all, at_sig(&world(n, &without(s, &[c]))), "{c} unlisted in {:?} now {n}", ids(s));
             }
         }
@@ -179,9 +179,9 @@ fn u_validity() -> Vec<Commit> {
 // an edit turned invalid (or expired) shows the previous version: unlisted, it counts for nothing
 #[test]
 fn an_unlisted_commit_counts_for_nothing() {
-    unlisted_counts_for_nothing(&u_validity(), &[9], &[10, 11, 12]);
-    unlisted_counts_for_nothing(&u_expiry(), &[1, 3, 4, 5, 6, 7, 9], &[10, 11, 12, 13]);
-    unlisted_counts_for_nothing(&u_purge(Retention::PLAIN.after(2 * HOUR)), &[4, 6, 7, 9, 12], &[10, 11, 12]);
+    unlisted_counts_for_nothing(&u_validity(), &[9], &[10, 11, 12], &[]);
+    unlisted_counts_for_nothing(&u_expiry(), &[1, 3, 4, 5, 6, 7, 9], &[10, 11, 12, 13], &[]);
+    unlisted_counts_for_nothing(&u_purge(Retention::PLAIN.after(2 * HOUR)), &[4, 6, 7, 9, 12], &[10, 11, 12], &[(10, 52)]);
 }
 
 // An invalid original takes its versions with it (no entry at its place), and they return when it
@@ -204,16 +204,15 @@ fn an_invalid_original_loses_its_place_and_returns_with_it() {
     });
 }
 
-// The strong reading: a valid version goes with its invalid original. The rule makes it a fire of its
-// own, shown alone.
+// A valid edit of an invalid original is a fire of its own, at its own place; it folds when the
+// original is valid
 #[test]
-#[ignore = "hole: issues/signal-edits-model-holes.md (1)"]
-fn repro_invalid_original_with_valid_version() {
+fn a_valid_edit_of_an_invalid_original_stands_alone_until_it_validates() {
     let r = FOREVER_KEPT;
     let s = [fire(10, A, 1, r), edit(11, A, 3, r, 10)];
-    // A gets write after the original, before the edit
-    let w = held(9, vec![edge(1, FIRST_ADMIN, 2, A, Some(Role::Write), None), s[0].clone(), s[1].clone()]);
-    assert_eq!(shown(&w), vec![], "an invalid original takes its versions with it");
+    let granted_at = |h| held(9, vec![edge(1, FIRST_ADMIN, h, A, Some(Role::Write), None), s[0].clone(), s[1].clone()]);
+    assert_eq!(shown(&granted_at(2)), vec![(11, 11, val(11))]);
+    assert_eq!(shown(&granted_at(0)), vec![(10, 11, val(11))]);
 }
 
 fn u_purge(r: Retention) -> Vec<Commit> {
@@ -245,24 +244,39 @@ fn a_purged_newest_version_keeps_older_ones_gone() {
     }
 }
 
-// When a purged newest version's tombstone ends before an older version's keep, the older comes back
+// Limit: a purged edit with a shorter keep than older versions lets them return when its tombstone
+// ends. Purging old text names the earlier versions in the same commit, so nothing returns.
 #[test]
-#[ignore = "hole: issues/signal-edits-model-holes.md (2)"]
-fn repro_purged_newest_with_a_shorter_keep_lets_the_older_return() {
-    let s = [fire(10, A, 1, FOREVER_KEPT), edit(11, A, 2, Retention::PLAIN.after(2 * HOUR), 10), purge_of(50, A, 3, 11)];
-    // the tombstone is listed until hour 5, the original for good
+fn a_purged_edit_with_a_shorter_keep_is_a_stated_limit() {
+    let short = Retention::PLAIN.after(2 * HOUR);
+    let s = [fire(10, A, 1, FOREVER_KEPT), edit(11, A, 2, short, 10), purge_of(50, A, 3, 11)];
     assert_eq!(shown(&world(4, &s)), vec![(10, 11, Shows::Purged)]);
-    assert_eq!(shown(&world(6, &s)), vec![(10, 11, Shows::Purged)], "a purged edit keeps the older from returning");
+    assert_eq!(shown(&world(6, &s)), vec![(10, 10, val(10))]);
+    let mut v = edit(11, A, 2, short, 10);
+    v.purge.push(PurgeItem::Commit { commit: 10, thing: T, aspect: SIG });
+    let s = [fire(10, A, 1, FOREVER_KEPT), v, purge_of(50, A, 3, 11)];
+    assert_eq!(shown(&world(3000, &s)), vec![(10, 10, Shows::Purged)]);
 }
 
-// A purge of the original alone leaves the edit showing: nothing of the rule ends the message. Design
-// question, issues/signal-edits-model-holes.md (3).
+// A purge of the original by any commit but one of its own versions ends the message: racing and
+// later versions no longer show, also once its tombstone is gone
 #[test]
-fn a_purge_of_the_original_leaves_its_edit_showing() {
+fn a_purge_of_the_original_ends_the_message() {
     let r = FOREVER_KEPT;
-    // X (a moderator) purges the original, unaware of the racing edit
-    let s = [fire(10, A, 1, r), edit(11, A, 3, r, 10), purge_of(50, X, 2, 10)];
-    assert_eq!(shown(&world(9, &s)), vec![(10, 11, val(11))]);
+    let race = [fire(10, A, 1, r), edit(11, A, 3, r, 10), purge_of(50, X, 2, 10)];
+    assert_eq!(shown(&world(9, &race)), vec![(10, 10, Shows::Purged)]);
+    let later = [fire(10, A, 1, r), purge_of(50, A, 2, 10), edit(11, A, 3, r, 10), edit(12, A, 4, r, 10)];
+    assert_eq!(shown(&world(9, &later)), vec![(10, 10, Shows::Purged)]);
+    let long = Retention::PLAIN.after(9 * HOUR);
+    let gone = [fire(10, A, 1, Retention::PLAIN.after(2 * HOUR)), edit(11, A, 3, long, 10), purge_of(50, X, 2, 10)];
+    assert_eq!(shown(&world(8, &gone)), vec![]);
+    // a version purging it too does not undo the moderator's end
+    let mut own = edit(11, A, 3, r, 10);
+    own.purge.push(PurgeItem::Commit { commit: 10, thing: T, aspect: SIG });
+    assert_eq!(shown(&world(9, &[fire(10, A, 1, r), own, purge_of(5, X, 2, 10)])), vec![(10, 10, Shows::Purged)]);
+    // another actor's claim on it stays that actor's own message
+    let forged = [fire(10, A, 1, r), purge_of(50, X, 2, 10), edit(30, B, 3, r, 10)];
+    assert_eq!(shown(&world(9, &forged)), vec![(10, 10, Shows::Purged), (30, 30, val(30))]);
 }
 
 // An edit that purges every earlier version in its own commit stays honored: old text gone, the new
@@ -308,8 +322,8 @@ fn expiry_shows_the_previous_or_stands_alone() {
     });
 }
 
-// The note's limit: an original past its keep reads like one never held (the version alone), and the
-// jump to its own place happens at every node, also with one shared `after` (issue (4)).
+// Limit: an original past its keep reads like one never held (the version alone), and the jump to its
+// own place happens at every node, also with one shared `after`.
 #[test]
 fn a_gone_original_reads_like_one_never_held() {
     let keep = Retention::PLAIN.after(2 * HOUR);

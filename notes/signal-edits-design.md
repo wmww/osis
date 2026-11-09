@@ -11,17 +11,20 @@
   - has the same verified `actor`;
   - sorts before the version by `(ts, ID)`.
 - **Otherwise** it is a fire of its own, at its own place. A forged edit is just the forger's own message.
-- **Read:** an original's part reads as its newest listed honored version by `CommitPos`. Stamp, place and order stay the original's, and honored versions are not listed separately.
+- **Read:** an original's part reads as its newest listed honored version by `CommitPos`, valid versions only (a node's own invalid part is marked and reads as itself). Stamp, place and order stay the original's, and honored versions are not listed separately.
+- **Ended message:** a purge of the original by any commit other than one of its own versions ends the message: it reads as a tombstone, and no version of it shows, racing or later ones included, also after the tombstone's listing ends. A version's own purge of older text (same commit as the edit) does not end it.
 - **One rule covers the required cases:**
   - edit turned invalid or expired: unlisted, so the previous version shows;
   - purged newest version: a listed tombstone, so nothing older comes back;
-  - O invalid: its versions are unlisted;
-  - O re-validated: they return.
+  - O invalid: not honored, so a valid edit is a fire of its own at its own place, and an edit invalid with it is unlisted;
+  - O re-validated: its versions fold under it again.
 - **Expiry:** a writer gives an edit O's `expires`. A required rule's check for a `replaces` delta becomes `ts < expires <= ts + duration`, so one is still required. O and its edits end together. An over-long edit stands alone once O goes, which is no more than a new message could do.
 - **Retention:** each version carries its own, under the same required rule. Keep bounds and `keep_history` apply per version, from its own `ts`. Durable signals keep their history unchanged.
-- **Old text gone:** the edit commit carries an ordinary purge request naming the earlier versions. The rule "no `expires` on a purge commit" becomes: a request reaches only deltas expiring no later than its commit, and the purge floor ends at that expiry. That restriction is what forced chat's second commit.
+- **Old text gone:** the edit commit carries an ordinary purge request naming the earlier versions, and stays honored. The rule "no `expires` on a purge commit" becomes: a request reaches only deltas expiring no later than its commit, and the purge floor ends at that expiry. That restriction is what forced chat's second commit.
 - **Edits off:** new `final` flag on a `required^.0` entry. A `replaces` delta breaks it and is invalid, judged per key like every required rule.
-- **Limit:** a node that never held O's header (a finite-keep, non-expiring signal whose O was purged or aged out) shows the version alone. Permanent deltas keep lasting headers, so chat is unaffected.
+- **Limits:**
+  - An original past its keep is not listed, so its versions stand alone at their own places. This happens at every node, also under one shared `after D`: O's `ts` is earlier, so it ends first. A node that never held O's header reads the same, and also shows the versions of a message a purge ended. Permanent deltas keep lasting headers, so chat is unaffected.
+  - A purged edit with a shorter keep or earlier expiry than older versions lets them show again when its tombstone ends. Purging old text means naming the earlier versions in the same commit, which is what the API does; a schema wanting a guarantee uses a required rule.
 - **Ephemeral signals:** no edits, refused with `Invalid`. Nobody holds the original, so there is nothing to replace.
 
 ## Reused and new

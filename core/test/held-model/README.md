@@ -21,7 +21,7 @@ Written from `spec/` alone, depending on no osis crate but crdt-model (the other
 - `Body::Missing`: never received or counting so; `Body::Dropped(by)`: dropped here as covered by snapshot commit `by`'s part on the aspect: it contributes nothing while the cover stands (valid, held or itself dropped covered) and is never received once it does not (`Outcome::uncovered`); its commit applied when it was held, so it counts as a held part that does not wait (AMBIGUITIES.md 40).
 
 ## Output (`src/model.rs`, `evaluate(&Held) -> Outcome`)
-- `parked`, `applied`, `valid` (per part of an applied commit; role parts: whether the edge write applied), `purged` (part to request).
+- `parked`, `applied`, `valid` (per part of an applied commit; role parts: whether the edge write applied), `purged` (part to request), `purged_by` (every request dropping it).
 - `reads` per `(thing, aspect)`: the crdt-model read, None absent; `states`: the canonical fragment.
 - Applied commits, reads and validity read creations as above; a creation is always valid (a record needs no authority).
 - `fates` per held or parked body: `Keep(why)` (`Until`: before its absolute keep-at-least or a purge request's floor at every node, or within D of the earliest replacing write the node holds; `Plain`: uncovered, or covered by no snapshot holding the right), `Leftover(why)` (strip values), `MayDrop(Covered)` (convenient, or past T: a valid snapshot whose commit holds the purge right over the body covers it), `MustDrop(why)` (`Covered` under purge-on-replace, at every node; `Gone`: a waiting part past its expiry or an unjoinable body expired or purged, which counts as never received; `PastBound`: a signal body, whole or leftover, past its keep bound), `NeverReceived`.
@@ -40,7 +40,7 @@ For adapters written against the previous input (one change per line):
 - A waiting part of an applied commit that a request names is `Leftover(PendingPurged)`, not in `purged`.
 
 ## Signal edits (`src/edits.rs`, `tests/it/spec_edits.rs`)
-`Part::replaces` is a signal edit's claim; `edits::listing(&Held)` is the signal's listing under the rule of notes/signal-edits-design.md (`Entry { place, version, shows }`), `edits::listed` the commits with a listed part. Each property runs on every subset of small worlds, smallest first; open holes are `repro_*` naming issues/signal-edits-model-holes.md.
+`Part::replaces` is a signal edit's claim; `edits::listing(&Held)` is the signal's listing under the rule of notes/signal-edits-design.md (`Entry { place, version, shows }`), `edits::listed` the commits with a listed part. Each property runs on every subset of small worlds, smallest first.
 
 ## Properties (`tests/it/props.rs`)
 `settle` carries out the forced fates, writes the covers `me` owes, and (given the full history) fetches again what `uncovered` or `NeverReceived` names.

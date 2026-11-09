@@ -1,8 +1,9 @@
 //! Signal edits (notes/signal-edits-design.md, the design, not the engine). A part with `replaces` is
 //! honored when the named commit is listed on the same (thing, aspect), valid or a purge tombstone,
 //! has no `replaces` itself, has the same verified actor and sorts before it by (ts, ID); else it is a
-//! fire of its own. An original reads as its newest listed honored version; stamp, place and order
-//! stay the original's.
+//! fire of its own. An original reads as its newest listed honored version (valid versions only);
+//! stamp, place and order stay the original's. A purge of the original by any commit but one of its
+//! own versions ends the message: its versions no longer show, racing or later ones included.
 use crate::model::{evaluate, expired, kept_until, signal_kept, Outcome};
 use crate::types::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -61,19 +62,34 @@ fn status(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &Commit>, c: &Commit
     (matches!(p.body, Body::Held(_)) && signal_kept(c, p, h.now)).then_some(false)
 }
 
-/// The original `v` is honored against, if any.
-fn original<'a>(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &'a Commit>, v: &Commit, i: usize) -> Option<&'a Commit> {
+/// The commit `v` names, when it is `v`'s original but for being listed: same (thing, aspect), valid
+/// or a purge tombstone's, no `replaces` of its own, same verified actor, sorting before `v`.
+fn named<'a>(o: &Outcome, by_id: &BTreeMap<CommitId, &'a Commit>, v: &Commit, i: usize) -> Option<(&'a Commit, usize)> {
     let p = &v.parts[i];
     let x = *by_id.get(&p.replaces?)?;
     let j = x.parts.iter().position(|q| q.thing == p.thing && q.aspect == p.aspect)?;
-    let ok = status(h, o, by_id, x, j).is_some() && x.parts[j].replaces.is_none() && x.actor == v.actor && (x.ts, x.id) < (v.ts, v.id);
-    ok.then_some(x)
+    let ok = o.valid.get(&(x.id, j)) == Some(&true) && x.parts[j].replaces.is_none() && x.actor == v.actor && (x.ts, x.id) < (v.ts, v.id);
+    ok.then_some((x, j))
+}
+
+/// The original `v` is honored against, if any.
+fn original<'a>(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &'a Commit>, v: &Commit, i: usize) -> Option<&'a Commit> {
+    let (x, j) = named(o, by_id, v, i)?;
+    status(h, o, by_id, x, j).is_some().then_some(x)
+}
+
+/// Whether a request other than one of `x`'s own versions purges its part `j`: the message ended.
+fn ended(o: &Outcome, by_id: &BTreeMap<CommitId, &Commit>, x: &Commit, j: usize) -> bool {
+    let own = |q: &Commit| q.parts.iter().enumerate().any(|(i, p)| p.replaces == Some(x.id) && named(o, by_id, q, i).is_some_and(|(n, _)| n.id == x.id));
+    o.purged_by.get(&(x.id, j)).is_some_and(|qs| qs.iter().any(|q| !own(by_id[q])))
 }
 
 fn entries(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &Commit>, parts: &[(&Commit, usize)]) -> Vec<Entry> {
+    // the versions of an ended message show nowhere
+    let live: Vec<(&Commit, usize)> = parts.iter().copied().filter(|&(v, i)| !named(o, by_id, v, i).is_some_and(|(x, j)| ended(o, by_id, x, j))).collect();
     let mut out = vec![];
-    for &(c, i) in parts.iter().filter(|&&(c, i)| original(h, o, by_id, c, i).is_none()) {
-        let honored = parts.iter().filter(|&&(v, j)| original(h, o, by_id, v, j).is_some_and(|x| x.id == c.id));
+    for &(c, i) in live.iter().filter(|&&(c, i)| original(h, o, by_id, c, i).is_none()) {
+        let honored = live.iter().filter(|&&(v, j)| original(h, o, by_id, v, j).is_some_and(|x| x.id == c.id));
         let (nc, ni) = honored.copied().chain([(c, i)]).max_by_key(|&(v, _)| (v.ts, v.id)).unwrap();
         let shows = if status(h, o, by_id, nc, ni) == Some(true) { Shows::Purged } else { Shows::Value(value(&nc.parts[ni])) };
         out.push(Entry { place: (c.ts, c.id), version: nc.id, shows });
