@@ -413,6 +413,33 @@ fn a_session_of_a_node_not_dialed_is_a_source_not_caught_up() {
     assert_eq!(after.idle, before.idle, "not caught up: {after:?}");
 }
 
+// spec: none (notes/api.md Sync configuration and status): a session paired with a connection
+// this node dialed is that one source only while the connection is there: once it drops, the
+// session is a source of its own, not caught up.
+#[test]
+fn a_named_session_whose_dialed_connection_dropped_is_not_caught_up() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    for n in [a, b] {
+        reach_ed(&mut net, n);
+    }
+    let g = net.group_at(a, &[(b, Role::Read)], vec![]);
+    net.run();
+    let status = |net: &mut Net| net.sync(a).label_status().into_iter().find(|s| s.group == g).unwrap();
+    let l: LabelId = net.label(a);
+    let db = SigningSecret::from_seed(&net.sync(b).dialable_secret());
+    let (mut p, _) = dial_in(&mut net, a);
+    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::CoReader(db) });
+    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Opened { .. })), "{evs:?}");
+    let paired = status(&mut net);
+    assert_eq!((paired.sources, paired.idle), (1, 1), "one source with the connection dialed: {paired:?}");
+    net.set_online(b, false);
+    net.run();
+    let alone = status(&mut net);
+    assert_eq!((alone.sources, alone.idle), (1, 0), "the session alone, not caught up: {alone:?}");
+}
+
 // spec/sync.md §5: a served session that opens nothing is closed after `serve_open_ms`, even
 // while it keeps sending.
 #[test]

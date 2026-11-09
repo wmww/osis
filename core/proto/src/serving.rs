@@ -786,7 +786,8 @@ impl ServingSession {
             // the signature proves whose session this is, whoever the store knows
             self.named = Some(key);
             // a label open already: the proof only names the session, the open keeps what it holds under
-            if self.opened.contains_key(&label) {
+            // (`still_open`: one a new head ended is no open, and shows no head to a key no store knows)
+            if self.still_open(store, &label)? {
                 return Ok(Message::Opened { id, head, entry_box: None });
             }
             if !store.co_reader_open(&key, &label)? {
