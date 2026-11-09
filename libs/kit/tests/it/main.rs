@@ -6,3 +6,4 @@ mod list;
 mod tags;
 mod theme;
 mod view_tree;
+mod view_costs;

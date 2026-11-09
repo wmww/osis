@@ -10,6 +10,7 @@ use crate::masonry::properties::types::{CrossAxisAlignment, Length};
 use crate::masonry::widgets::{Flex, SizedBox, TextInput};
 use crate::theme::{Look, parse};
 use crate::widgets::style::{self, Text};
+use crate::list::{KeyedList, Rows};
 use crate::widgets::{Chip as KChip, ChipMark as KMark, Panel, PanelKind, Tile, TileGrid, TileIcon, TileStyle, Wrap};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -45,7 +46,23 @@ pub struct Built {
     pub feet: Vec<(String, WidgetId)>,
     /// Scrolling portals of filled children, by key.
     pub portals: Vec<(String, WidgetId)>,
+    /// The kept lists, by the index of their block.
+    pub lists: HashMap<usize, RowList>,
     ids: Vec<WidgetId>,
+}
+
+/// A stream's, cards' or rows' widget and what each row registered.
+pub struct RowList {
+    pub widget: WidgetId,
+    pub kind: ListKind,
+    pub keyed: KeyedList<String, Built>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListKind {
+    Stream,
+    Card,
+    Row,
 }
 
 /// The widgets that report an action, and what it does.
@@ -111,6 +128,9 @@ impl Acts {
         }
     }
     pub fn forget(&mut self, b: &Built) {
+        for row in b.lists.values().flat_map(|l| l.keyed.rows()) {
+            self.forget(row);
+        }
         for id in &b.ids {
             self.press.remove(id);
             self.remove.remove(id);
@@ -131,16 +151,47 @@ struct R<'a> {
     built: Built,
     current: Option<Tid>,
     path: &'a str,
+    /// The block being placed, while it can keep a list: where the list is recorded.
+    listing: Option<usize>,
+}
+
+/// Runs of rows the shell patches: makes one row and forgets one row.
+pub struct Maker<'a> {
+    pub data: &'a Data,
+    pub window: &'a WindowState,
+    pub look: &'a Arc<Look>,
+    pub acts: &'a mut Acts,
+    pub current: Option<Tid>,
+    pub path: &'a str,
+    pub kind: ListKind,
+    pub entries: HashMap<&'a str, &'a Entry>,
+}
+
+impl Rows<String, Built> for Maker<'_> {
+    fn make(&mut self, key: &String) -> (NewWidget<dyn Widget>, Built) {
+        let mut r = R { data: self.data, window: self.window, look: self.look, acts: &mut *self.acts, built: Built::default(), current: self.current, path: self.path, listing: None };
+        let w = match (self.entries.get(key.as_str()), self.kind) {
+            (Some(e), ListKind::Stream) => r.stream_entry(e),
+            (Some(e), ListKind::Card) => r.tile(TileStyle::Card, e).erased(),
+            (Some(e), ListKind::Row) => r.tile(TileStyle::Row, e).erased(),
+            (None, _) => NewWidget::new(SizedBox::empty()).erased(),
+        };
+        (w, r.built)
+    }
+    fn dropped(&mut self, row: Built) {
+        self.acts.forget(&row);
+    }
 }
 
 /// The widgets of `blocks`, registering what they do.
 #[allow(clippy::too_many_arguments)]
 pub fn blocks(data: &Data, window: &WindowState, look: &Arc<Look>, acts: &mut Acts, path: &str, blocks: &[Block], current: Option<Tid>) -> (NewWidget<dyn Widget>, Built) {
-    let mut r = R { data, window, look, acts, built: Built::default(), current, path };
+    let mut r = R { data, window, look, acts, built: Built::default(), current, path, listing: None };
     let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(8.0)));
     // what fills the space takes what the column is given: a lone child view, or a filled one
     let fill = |b: &Block| matches!(b, Block::Filled { .. }) || (blocks.len() == 1 && matches!(b, Block::View { .. }));
-    for b in blocks {
+    for (i, b) in blocks.iter().enumerate() {
+        r.listing = matches!(b, Block::Entries(_)).then_some(i);
         if let Some(w) = r.block(b) {
             col = if fill(b) { col.with_flex_child(w, 1.0) } else { col.with_child(w) };
         }
@@ -273,12 +324,27 @@ impl R<'_> {
     }
 
     fn tile(&mut self, style: TileStyle, e: &Entry) -> NewWidget<Tile> {
+        self.window.graph.add_row();
         let w = NewWidget::new(Tile::new(style, tile_icon(&e.mark), &e.title, &e.text, tint(&e.color), self.look.clone()).current(self.current == Some(e.thing)));
         self.press(w.id(), Do::new(crate::view::Open(Some(e.thing))));
         w
     }
 
-    fn run(&mut self, r: &Run, style: TileStyle) -> NewWidget<dyn Widget> {
+    /// What `f` registered, apart from what came before: one row's `Built`.
+    fn row<W>(&mut self, f: impl FnOnce(&mut Self) -> W) -> (W, Built) {
+        let outer = std::mem::take(&mut self.built);
+        let w = f(self);
+        (w, std::mem::replace(&mut self.built, outer))
+    }
+
+    /// Records `keyed` as the list of the block being placed.
+    fn keep(&mut self, listing: Option<usize>, widget: WidgetId, kind: ListKind, keyed: KeyedList<String, Built>) {
+        if let Some(i) = listing {
+            self.built.lists.insert(i, RowList { widget, kind, keyed });
+        }
+    }
+
+    fn run(&mut self, r: &Run, style: TileStyle, listing: Option<usize>) -> NewWidget<dyn Widget> {
         let look = self.look.clone();
         let (min, gap) = match style {
             TileStyle::Card => (158.0, 12.0),
@@ -286,8 +352,14 @@ impl R<'_> {
             _ => (220.0, 4.0),
         };
         let mut g = TileGrid::new(look.clone(), min).max_cols(r.cols).gap(gap);
+        let mut keyed = KeyedList::default();
         for e in &r.entries {
-            g = g.with_child(self.tile(style, e));
+            let (w, b) = self.row(|s| s.tile(style, e));
+            g = g.with_child(w);
+            match listing {
+                Some(_) => keyed.push(e.key.clone(), b),
+                None => self.built.ids.extend(b.ids),
+            }
         }
         if r.reorder.is_some() {
             g = g.reorderable(usize::from(r.new.is_some()));
@@ -298,6 +370,7 @@ impl R<'_> {
             g = g.with_child(w);
         }
         let g = NewWidget::new(g);
+        self.keep(listing, g.id(), if style == TileStyle::Card { ListKind::Card } else { ListKind::Row }, keyed);
         if let Some(d) = &r.reorder {
             self.acts.reorder.insert(g.id(), d.clone());
             self.built.ids.push(g.id());
@@ -310,8 +383,14 @@ impl R<'_> {
         Some(match p {
             Placed::Cards(r) if r.entries.is_empty() && r.new.is_none() => return None,
             Placed::Rows(r) if r.entries.is_empty() && r.new.is_none() => return None,
-            Placed::Cards(r) => self.run(r, TileStyle::Card),
-            Placed::Rows(r) => self.run(r, TileStyle::Row),
+            Placed::Cards(r) => {
+                let l = self.listing.take();
+                self.run(r, TileStyle::Card, l)
+            }
+            Placed::Rows(r) => {
+                let l = self.listing.take();
+                self.run(r, TileStyle::Row, l)
+            }
             Placed::Outline(runs) => {
                 let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(8.0)));
                 for o in runs {
@@ -322,7 +401,7 @@ impl R<'_> {
                         continue;
                     }
                     let run = Run { entries: o.entries.clone(), ..Run::default() };
-                    col = col.with_child(self.run(&run, if o.parent.is_none() { TileStyle::Card } else { TileStyle::Row }));
+                    col = col.with_child(self.run(&run, if o.parent.is_none() { TileStyle::Card } else { TileStyle::Row }, None));
                 }
                 NewWidget::new(col).erased()
             }
@@ -335,6 +414,7 @@ impl R<'_> {
                         day = day.with_child(style::label(&look, "Free", Text::Small));
                     }
                     for e in &d.entries {
+                        self.window.graph.add_row();
                         let w = NewWidget::new(Tile::new(TileStyle::Row, TileIcon::Bar, &e.title, &e.text, tint(&e.color), look.clone()));
                         self.press(w.id(), Do::new(crate::view::Open(Some(e.thing))));
                         day = day.with_child(w);
@@ -352,17 +432,27 @@ impl R<'_> {
                 NewWidget::new(g).erased()
             }
             Placed::Stream(v) => {
+                let listing = self.listing.take();
                 let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(8.0)));
+                let mut keyed = KeyedList::default();
                 for e in v {
-                    col = col.with_child(self.stream_entry(e));
+                    let (w, b) = self.row(|s| s.stream_entry(e));
+                    col = col.with_child(w);
+                    match listing {
+                        Some(_) => keyed.push(e.key.clone(), b),
+                        None => self.built.ids.extend(b.ids),
+                    }
                 }
-                NewWidget::new(col).erased()
+                let w = NewWidget::new(col);
+                self.keep(listing, w.id(), ListKind::Stream, keyed);
+                w.erased()
             }
         })
     }
 
     /// One entry in a stream: who and when, what it answers, its text, its actions.
     fn stream_entry(&mut self, e: &Entry) -> NewWidget<dyn Widget> {
+        self.window.graph.add_row();
         let look = self.look.clone();
         let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(4.0)));
         let head = e.author.clone().unwrap_or_else(|| e.title.clone());

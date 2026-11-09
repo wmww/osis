@@ -23,6 +23,12 @@ pub const GROUP_ITEMS: osis_schema::FieldId = osis_schema::FieldId(0);
 /// `group.0`'s field of subgroups.
 pub const GROUP_SUBGROUPS: osis_schema::FieldId = osis_schema::FieldId(1);
 
+/// What a `ReadSet` listens to (its addresses, e.g. `value {tid} {ak} Path([])`, `aspects {tid}`)
+/// and how often the last pass read each: a harness finds a read made twice by one node.
+pub fn read_counts(set: &crate::ReadSet) -> Vec<(String, u32)> {
+    set.counts()
+}
+
 /// What a commit's id holds, as a test asks.
 pub trait CommitRaw {
     /// The engine's id of the commit it names.

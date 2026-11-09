@@ -32,6 +32,14 @@ pub struct Line {
     pub edited: bool,
 }
 
+/// A chat with one message, for a view's `sample`.
+#[allow(clippy::expect_used)]
+pub fn sample(d: &osis_kit::store::Data) -> Tid {
+    let c = osis_chat::create(&d.db, &osis_chat::Options::default()).expect("sample: a chat");
+    send(&d.db, c, "", "hello", None).expect("sample: a message");
+    c
+}
+
 /// The log's name: its settings' name, `"Chat"` when unnamed.
 pub fn name(db: &osis::ReadOnly, c: Tid) -> Result<String> {
     let n = db.at(c, SETTINGS).get()?.map(|s| s.name).unwrap_or_default();
@@ -87,11 +95,12 @@ fn quote_of(who: &str, text: &str) -> String {
 /// The newest `n` messages, oldest first. The messages they answer from further back are read in
 /// one walk (`osis_chat::find_all`), so a page costs the history back to its oldest quote once.
 pub fn recent(db: &osis::ReadOnly, c: Tid, n: usize) -> Result<Vec<Line>> {
-    let mut messages = Timeline::new(db, c)?.older(db, n)?.messages;
+    let mut timeline = Timeline::new(db, c)?;
+    let mut messages = timeline.older(db, n)?.messages;
     messages.reverse();
     let shown: BTreeMap<CommitPos, &Message> = messages.iter().map(|m| (m.id, m)).collect();
     let further: Vec<CommitPos> = messages.iter().filter_map(Message::reply_to).filter(|r| !shown.contains_key(r)).collect();
-    let further = osis_chat::find_all(db, c, &further)?;
+    let further = timeline.find_all(db, &further)?;
     let me = db.me();
     let mut out: Vec<Line> = Vec::new();
     for m in &messages {

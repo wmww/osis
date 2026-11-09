@@ -9,4 +9,4 @@ fn tile(cx: &Cx, spec: &ViewSpec) -> Result<Section> {
     Ok(Section::of(vec![Block::Entries(Placed::Rows(Run { entries: vec![e], cols: 1, ..Run::default() }))]))
 }
 
-pub static TILE: ViewType = ViewType { id: "tile", label: "Tile", fits: None, parts: &[], always_offered: false, custom: Some(tile) };
+pub static TILE: ViewType = ViewType { id: "tile", label: "Tile", fits: None, parts: &[], always_offered: false, custom: Some(tile), sample: super::sample_note };

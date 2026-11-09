@@ -15,7 +15,7 @@ pub use shell::RAIL;
 
 use crate::view::graph::{Graph, NodeId};
 use crate::view::{Block, Cx, Placed, Section, ViewSpec, source};
-use crate::store::Reader;
+use crate::store::{Data, Reader};
 use osis::{Result, Tid};
 use std::rc::Rc;
 
@@ -46,6 +46,43 @@ pub struct ViewType {
     pub always_offered: bool,
     /// Set for a view type that is not a stack of parts.
     pub custom: Option<fn(&Cx, &ViewSpec) -> Result<Section>>,
+    /// A subject the cost harness shows this view with (usually one line through an `Offer`), so a
+    /// view without one does not compile (notes/fast-design.md).
+    pub sample: fn(&Data) -> Tid,
+}
+
+/// A new thing through the offer `id`, for a `sample` (`sample` has no error; a sample is only ever
+/// run by the harness, where a panic names the failure).
+#[allow(clippy::expect_used)]
+pub fn sample_offer(d: &Data, id: &str) -> Tid {
+    crate::facets::create(d, id).expect("sample: an offer that does not work")
+}
+
+/// A named note with a body, for a `sample`.
+#[allow(clippy::expect_used)]
+pub fn sample_note(d: &Data) -> Tid {
+    let t = sample_offer(d, "note");
+    let mut w = d.db.write();
+    let set = w.at(t, osis::core::NAME).set(&"A note".to_string()).and_then(|()| w.at(t, osis::core::BODY).set(&"Text".to_string()));
+    set.expect("sample: a note");
+    w.commit().expect("sample: a note");
+    t
+}
+
+/// A tag holding two notes, for a `sample`.
+#[allow(clippy::expect_used)]
+pub fn sample_collection(d: &Data) -> Tid {
+    let tag = sample_offer(d, "tag");
+    for _ in 0..2 {
+        d.add_tag(sample_note(d), tag).expect("sample: an item");
+    }
+    tag
+}
+
+/// An account group, for a `sample`: what kit's views of the account show.
+#[allow(clippy::expect_used)]
+pub fn sample_main(d: &Data) -> Tid {
+    d.main_group().expect("sample: an account group")
 }
 
 /// The raw view.
@@ -64,6 +101,7 @@ fn render_key(path: &str, spec: &ViewSpec) -> RenderKey {
 
 fn compute(r: &Reader, (_, path, spec): &RenderKey) -> Result<Section> {
     let Some(window) = r.window_state() else { return Ok(Section::default()) };
+    window.graph.add_render();
     let cx = Cx::node(r.clone(), window, path.clone(), spec.config.clone());
     let Some(v) = cx.registry.view(&spec.view_type) else { return Ok(Section::default()) };
     if let Some(f) = v.custom {

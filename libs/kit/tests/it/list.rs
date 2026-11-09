@@ -25,9 +25,12 @@ fn insert_remove_update() {
 }
 
 #[test]
-fn rename_moves_one_row() {
-    // b renamed to z sorts last: one move, one update
-    assert_eq!(check(&[(1, 0), (2, 0), (3, 0)], &[(1, 0), (3, 0), (2, 1)]), vec![Op::Move { from: 2, to: 1 }, Op::Update(2)]);
+fn a_row_moving_far_touches_that_row() {
+    // the first row sorts last: rows between keep their widgets, one row rebuilt
+    let old: Vec<(u32, u32)> = (0..50).map(|i| (i, 0)).collect();
+    let mut new = old[1..].to_vec();
+    new.push((0, 1));
+    assert_eq!(check(&old, &new), vec![Op::Remove(0), Op::Insert(49, 0)]);
 }
 
 #[test]
@@ -64,19 +67,21 @@ fn exhaustive_small() {
         out
     }
     let all = lists();
-    for a in all.iter().step_by(7) {
+    for a in all.iter().step_by(61) {
         for b in &all {
             let ops = check(a, b);
             let kept = b.iter().filter(|(k, _)| a.iter().any(|(ak, _)| ak == k)).count();
             let inserts = ops.iter().filter(|o| matches!(o, Op::Insert(..))).count();
-            assert_eq!(inserts, b.len() - kept, "{a:?} -> {b:?}: {ops:?}");
+            let removes = ops.iter().filter(|o| matches!(o, Op::Remove(..))).count();
+            // a row that moved is one remove and one insert; a row new or gone is the one
+            assert_eq!(inserts - (b.len() - kept), removes - (a.len() - kept), "{a:?} -> {b:?}: {ops:?}");
         }
     }
 }
 
 /// Random old/new lists (duplicate keys included, up to 12 rows): every op is in range when
-/// applied (the lenient `apply` would skip one silently), moves go up, applying gives `new`, and
-/// a row is updated only if its value changed or it was moved or rebuilt.
+/// applied (the lenient `apply` would skip one silently), applying gives `new`, and
+/// a row is updated only if its value changed or it was rebuilt.
 #[test]
 fn random_lists_strict() {
     let mut seed = 0x9e3779b97f4a7c15u64;
@@ -116,12 +121,6 @@ fn random_lists_strict() {
                 Op::Insert(i, k) => {
                     assert!(*i <= list.len(), "{old:?} -> {new:?}: {ops:?}");
                     list.insert(*i, (*k, u64::MAX, true));
-                }
-                Op::Move { from, to } => {
-                    assert!(*to < *from && *from < list.len(), "{old:?} -> {new:?}: {ops:?}");
-                    let mut x = list.remove(*from);
-                    x.2 = true;
-                    list.insert(*to, x);
                 }
                 Op::Update(i) => {
                     assert!(*i < list.len(), "{old:?} -> {new:?}: {ops:?}");

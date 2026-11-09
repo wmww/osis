@@ -32,6 +32,15 @@ struct Listener {
     gate: Arc<Gate>,
     /// The pass it was last read in.
     pass: u64,
+    /// Reads of it in that pass (a read of one address twice: `internals::read_counts`).
+    reads: u32,
+}
+
+impl Listener {
+    fn read(&mut self, pass: u64) {
+        self.reads = if self.pass == pass { self.reads + 1 } else { 1 };
+        self.pass = pass;
+    }
 }
 
 /// What a listener compares with, and whether it is waiting to be read again.
@@ -92,6 +101,14 @@ impl ReadSet {
     }
 }
 
+impl ReadSet {
+    /// Every address listened to and how often the last pass read it: test harnesses' view
+    /// (`internals::read_counts`).
+    pub(crate) fn counts(&self) -> Vec<(String, u32)> {
+        lock(&self.0.listeners).iter().map(|(k, l)| (k.clone(), l.reads)).collect()
+    }
+}
+
 impl std::fmt::Debug for ReadSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "ReadSet({})", lock(&self.0.listeners).len())
@@ -133,13 +150,13 @@ impl ReadOnly {
             if let Some(id) = li.sub.id() {
                 self.inner.dispatch.since(id, since);
             }
-            li.pass = pass;
+            li.read(pass);
             return;
         }
         let gate = Gate::new(last);
         let (filter, cb) = make(gate.clone());
         let sub = self.subscribe_in(l, filter, false, cb);
-        let old = g.insert(key, Listener { sub, gate, pass });
+        let old = g.insert(key, Listener { sub, gate, pass, reads: 1 });
         drop(g);
         drop(old);
     }
@@ -169,6 +186,7 @@ impl ReadOnly {
         let Some(set) = self.tracking.clone() else { return self.read_local(|r| read.0(r)) };
         let (ak, limit, actor) = (ak.clone(), self.inner.limit, self.acting);
         self.locked(|l| {
+            drop(osis_node::costs::span("read: engine"));
             let v = read.0(&mut Reader { e: l.engine(), limit, actor });
             self.track_in(l, &set, key, digest(&v), |gate| {
                 let w = Arc::downgrade(&set);
@@ -184,6 +202,7 @@ impl ReadOnly {
         let Some(set) = self.tracking.clone() else { return self.read_local(|r| read(r)) };
         let (limit, actor) = (self.inner.limit, self.acting);
         self.locked(|l| {
+            drop(osis_node::costs::span("read: engine"));
             let a = read(&mut Reader { e: l.engine(), limit, actor });
             let last = Some(answer_digest(&a));
             let w = Arc::downgrade(&set);
@@ -258,13 +277,13 @@ impl ReadOnly {
         let mut g = lock(&set.listeners);
         if let Some(li) = g.get_mut(&key).filter(|li| !li.gate.gone.load(Ordering::Acquire)) {
             li.gate.armed.store(true, Ordering::Release);
-            li.pass = pass;
+            li.read(pass);
             return Ok(());
         }
         drop(g);
         let gate = Gate::new(None);
         let s = sub(gate.clone())?;
-        let old = lock(&set.listeners).insert(key, Listener { sub: s, gate, pass });
+        let old = lock(&set.listeners).insert(key, Listener { sub: s, gate, pass, reads: 1 });
         drop(old);
         Ok(())
     }

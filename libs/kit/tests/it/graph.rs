@@ -166,11 +166,12 @@ fn what_leaves_the_tree_is_freed() {
     let w = WindowState::default();
     let mut tree = Tree::default();
     tree.show(attached(&d, &w), &mut Screen::default(), &format!("page:{a}"), &open_spec(a)).unwrap();
-    let wide = w.graph.len();
+    assert!(w.graph.snapshot().iter().any(|n| n.key.contains(&format!("page:{a}"))));
     tree.clear(&w, &mut Screen::default());
     tree.show(attached(&d, &w), &mut Screen::default(), &format!("page:{b}"), &open_spec(b)).unwrap();
     tree.update(&w, &mut Screen::default()).unwrap();
-    assert!(w.graph.len() < wide, "the tag's nodes went: {} then {}", wide, w.graph.len());
+    let left: Vec<String> = w.graph.snapshot().into_iter().filter(|n| n.key.contains(&format!("page:{a}"))).map(|n| n.key).collect();
+    assert!(left.is_empty(), "the tag's nodes went: {left:?}");
     let _: &Rc<Graph> = &w.graph;
 }
 
@@ -496,7 +497,7 @@ mod flaky {
     }
     macro_rules! view {
         ($s:ident, $id:literal, $f:ident) => {
-            pub static $s: ViewType = ViewType { id: $id, label: $id, fits: None, parts: &[], always_offered: false, custom: Some($f) };
+            pub static $s: ViewType = ViewType { id: $id, label: $id, fits: None, parts: &[], always_offered: false, custom: Some($f), sample: osis_kit::views::sample_main };
         };
     }
     view!(FAILING, "failing", failing);

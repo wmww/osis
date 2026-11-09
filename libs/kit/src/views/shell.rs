@@ -62,5 +62,5 @@ fn creating(cx: &Cx, _: &ViewSpec) -> Result<Section> {
     Ok(Section::of(if show { vec![Block::Chips(cx.offer_chips(None)?)] } else { Vec::new() }))
 }
 
-pub static RESULTS: ViewType = ViewType { id: "results", label: "Results", fits: None, parts: &[], always_offered: false, custom: Some(results) };
-pub static CREATING: ViewType = ViewType { id: "creating", label: "New", fits: None, parts: &[], always_offered: false, custom: Some(creating) };
+pub static RESULTS: ViewType = ViewType { id: "results", label: "Results", fits: None, parts: &[], always_offered: false, custom: Some(results), sample: super::sample_main };
+pub static CREATING: ViewType = ViewType { id: "creating", label: "New", fits: None, parts: &[], always_offered: false, custom: Some(creating), sample: super::sample_main };

@@ -19,6 +19,7 @@ pub mod time;
 pub mod view;
 pub mod views;
 pub mod text;
+pub mod testing;
 pub mod theme;
 pub mod widgets;
 pub mod window;

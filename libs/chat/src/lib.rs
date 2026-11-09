@@ -222,7 +222,17 @@ pub struct Timeline {
 
 impl Timeline {
     pub fn new(db: &ReadOnly, c: Tid) -> Result<Timeline> {
-        Ok(Timeline { chat: c, me: db.me(), mode: edit_mode(db, c)?, cursor: CommitFrom::Newest, fetched: VecDeque::new(), done: false, complete: true, edits: BTreeMap::new(), answered: BTreeSet::new() })
+        Ok(Timeline::with_mode(db, c, edit_mode(db, c)?))
+    }
+
+    fn with_mode(db: &ReadOnly, c: Tid, mode: EditMode) -> Timeline {
+        Timeline { chat: c, me: db.me(), mode, cursor: CommitFrom::Newest, fetched: VecDeque::new(), done: false, complete: true, edits: BTreeMap::new(), answered: BTreeSet::new() }
+    }
+
+    /// `find_all`, under the edit rules this timeline already read: one read of the settings for
+    /// a page and its quotes.
+    pub fn find_all(&self, db: &ReadOnly, ids: &[CommitPos]) -> Result<BTreeMap<CommitPos, Message>> {
+        find_all_under(db, self.chat, &self.mode, ids)
     }
 
     /// The next `n` messages going back, newest first. `more`: there may be older ones.
@@ -299,17 +309,20 @@ pub fn find(db: &ReadOnly, c: Tid, id: &CommitPos) -> Result<Option<Message>> {
 /// `find` of each of `ids` (those not here left out), in one walk back to the oldest: a reader
 /// quoting many messages costs the messages since the oldest, not that once per quote.
 pub fn find_all(db: &ReadOnly, c: Tid, ids: &[CommitPos]) -> Result<BTreeMap<CommitPos, Message>> {
-    let mode = edit_mode(db, c)?;
+    find_all_under(db, c, &edit_mode(db, c)?, ids)
+}
+
+fn find_all_under(db: &ReadOnly, c: Tid, mode: &EditMode, ids: &[CommitPos]) -> Result<BTreeMap<CommitPos, Message>> {
     // the ids asked for, by the original they are versions of
     let mut want: BTreeMap<CommitPos, Vec<CommitPos>> = BTreeMap::new();
     for id in ids.iter().collect::<BTreeSet<_>>() {
         let Some(e) = entry_at(db, c, id)? else { continue };
-        let target = checked(db, c, &e, &mode)?.map_or(*id, |r| r.original);
+        let target = checked(db, c, &e, mode)?.map_or(*id, |r| r.original);
         want.entry(target).or_default().push(*id);
     }
     let mut out = BTreeMap::new();
     let Some(oldest) = want.keys().next().copied() else { return Ok(out) };
-    let mut t = Timeline::new(db, c)?;
+    let mut t = Timeline::with_mode(db, c, mode.clone());
     while !want.is_empty() {
         let page = t.older(db, FETCH)?;
         for m in &page.messages {

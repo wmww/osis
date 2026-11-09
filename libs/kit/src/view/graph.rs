@@ -30,6 +30,29 @@ pub struct Shown<V> {
     pub value: Rc<V>,
 }
 
+/// Work a window's graph did (`Graph::take_costs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Costs {
+    /// View renders.
+    pub renders: u64,
+    /// Memo runs (a view's render is a run too; this is the rest).
+    pub memo_runs: u64,
+    /// List rows built (widgets made for an entry).
+    pub rows: u64,
+}
+
+/// A node as a test reads it (`Graph::snapshot`).
+#[derive(Clone, Debug)]
+pub struct NodeReads {
+    pub key: String,
+    /// On screen.
+    pub view: bool,
+    /// Its own addresses, and how often its last run read each.
+    pub reads: Vec<(String, u32)>,
+    /// The nodes that read this one.
+    pub dependents: Vec<String>,
+}
+
 /// A hashable, comparable key of any type (memos and reads key on what they read).
 trait AnyKey: Any + Debug {
     fn dyn_hash(&self, h: &mut dyn Hasher);
@@ -126,12 +149,13 @@ pub struct Graph {
     shared: Arc<Shared>,
     base: OnceCell<Reader>,
     log: RefCell<Option<Vec<String>>>,
+    costs: std::cell::Cell<Costs>,
     window: RefCell<Weak<WindowInner>>,
 }
 
 impl Default for Graph {
     fn default() -> Graph {
-        Graph { inner: RefCell::default(), shared: Arc::new(Shared { queue: Mutex::default(), notify: Mutex::default() }), base: OnceCell::new(), log: RefCell::default(), window: RefCell::new(Weak::new()) }
+        Graph { inner: RefCell::default(), shared: Arc::new(Shared { queue: Mutex::default(), notify: Mutex::default() }), base: OnceCell::new(), log: RefCell::default(), costs: std::cell::Cell::default(), window: RefCell::new(Weak::new()) }
     }
 }
 
@@ -186,6 +210,42 @@ impl Graph {
     /// The keys that ran since `record`.
     pub fn recorded(&self) -> Vec<String> {
         self.log.borrow_mut().take().unwrap_or_default()
+    }
+
+    /// The work done since the last call.
+    pub fn take_costs(&self) -> Costs {
+        self.costs.take()
+    }
+
+    /// One more list row was built.
+    pub fn add_row(&self) {
+        let mut c = self.costs.get();
+        c.rows += 1;
+        self.costs.set(c);
+    }
+
+    /// The node running now is a view's render (`renders`, not `memo_runs`).
+    pub(crate) fn add_render(&self) {
+        let mut c = self.costs.get();
+        c.renders += 1;
+        c.memo_runs = c.memo_runs.saturating_sub(1);
+        self.costs.set(c);
+    }
+
+    /// Every computed node, as a test reads it.
+    pub fn snapshot(&self) -> Vec<NodeReads> {
+        let i = self.inner.borrow();
+        let root = i.root;
+        i.nodes
+            .iter()
+            .filter(|(id, n)| Some(**id) != root && n.compute.is_some())
+            .map(|(_, n)| NodeReads {
+                key: format!("{:?}", n.key),
+                view: n.view,
+                reads: osis::internals::read_counts(&n.set),
+                dependents: n.dependents.iter().filter_map(|d| i.nodes.get(d)).map(|d| format!("{:?}", d.key)).collect(),
+            })
+            .collect()
     }
 
     /// Nodes held (a test's view of what `collect` frees).
@@ -382,6 +442,9 @@ impl Graph {
                 n.state = State::Clean;
                 return Ok(());
             };
+            let mut counts = this.costs.get();
+            counts.memo_runs += 1;
+            this.costs.set(counts);
             if let Some(l) = this.log.borrow_mut().as_mut() {
                 l.push(format!("{:?}", n.key));
             }

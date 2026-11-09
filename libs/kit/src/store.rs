@@ -254,7 +254,7 @@ impl Reader {
         let mut seen = BTreeSet::new();
         let mut todo: Vec<Tid> = Vec::new();
         for g in &groups {
-            todo.extend(self.db.members(*g)?.into_iter().map(Member::tid).filter(|t| !skip(t)));
+            todo.extend(self.members(*g)?.iter().copied().map(Member::tid).filter(|t| !skip(t)));
         }
         todo.extend(self.db.status()?.groups.into_iter().filter(|(t, g)| !g.leaving && !skip(t)).map(|(t, _)| t));
         todo.extend(self.db.profile_of(home)?);
@@ -262,14 +262,14 @@ impl Reader {
             if !seen.insert(t) {
                 continue;
             }
-            if self.db.at(t, TAG).get()?.is_some() {
-                todo.extend(self.db.members(t)?.into_iter().map(Member::tid).filter(|x| !skip(x) && !seen.contains(x)));
+            if self.tag(t)?.is_some() {
+                todo.extend(self.members(t)?.iter().copied().map(Member::tid).filter(|x| !skip(x) && !seen.contains(x)));
             }
         }
         let mut keep: BTreeMap<(Collection, String), Tid> = BTreeMap::new();
         let mut dup = Vec::new();
         for t in &seen {
-            if let Some(v) = self.db.at(*t, COLLECTION).get()?
+            if let Some(v) = (*self.collection(*t)?).clone()
                 && keep.insert((v, self.name(*t)?), *t).is_some()
             {
                 dup.push(*t);
@@ -285,7 +285,7 @@ impl Reader {
     pub fn collections(&self) -> Result<Vec<(Collection, Tid)>> {
         let mut out = Vec::new();
         for t in self.things()?.iter().copied() {
-            if let Some(v) = self.db.at(t, COLLECTION).get()? {
+            if let Some(v) = (*self.collection(t)?).clone() {
                 out.push((v, t));
             }
         }
@@ -294,17 +294,32 @@ impl Reader {
     }
 
     pub fn name(&self, t: Tid) -> Result<String> {
-        Ok(self.db.at(t, NAME).get()?.unwrap_or_default())
+        Ok((*self.memo(("name", t), |r, &(_, t)| Ok(r.db.at(t, NAME).get()?.unwrap_or_default()))?).clone())
+    }
+
+    /// `t`'s members, shared by what reads them.
+    pub fn members(&self, t: Tid) -> Result<Rc<Vec<Member>>> {
+        self.memo(("members", t), |r, &(_, t)| r.db.members(t))
+    }
+
+    /// `t`'s `tag.0`, shared by what reads it.
+    pub fn tag(&self, t: Tid) -> Result<Rc<Option<osis::core::Tag>>> {
+        self.memo(("tag", t), |r, &(_, t)| r.db.at(t, TAG).get())
+    }
+
+    /// `t`'s `ui:collection.0`, shared by what reads it.
+    pub fn collection(&self, t: Tid) -> Result<Rc<Option<Collection>>> {
+        self.memo(("collection", t), |r, &(_, t)| r.db.at(t, COLLECTION).get())
     }
 
     /// A view or a tag: a thing that stands for a set.
     pub fn is_scope(&self, t: Tid) -> Result<bool> {
-        Ok(self.db.at(t, COLLECTION).get()?.is_some() || self.db.at(t, TAG).get()?.is_some())
+        Ok(self.collection(t)?.is_some() || self.tag(t)?.is_some())
     }
 
     /// The thing's own colour: its tag colour.
     pub fn own_color(&self, t: Tid) -> Result<Option<String>> {
-        Ok(self.db.at(t, TAG).get()?.and_then(|g| g.color))
+        Ok(self.tag(t)?.as_ref().as_ref().and_then(|g| g.color.clone()))
     }
 
     /// Its own colour, else its first tag's.
@@ -326,11 +341,11 @@ impl Reader {
         // a tag nested in a tag is its subgroup, not a member: `groups_of` does not list the parent
         // (issues/api-subgroup-parents.md)
         let mut cands: BTreeSet<Tid> = self.db.groups_of(t)?.within.into_iter().collect();
-        if self.db.at(t, TAG).get()?.is_some() {
+        if self.tag(t)?.is_some() {
             cands.extend(self.all_tags()?);
         }
         for g in cands {
-            if g != t && self.db.at(g, TAG).get()?.is_some() && self.db.members(g)?.iter().any(|m| m.tid() == t) {
+            if g != t && self.tag(g)?.is_some() && self.members(g)?.iter().any(|m| m.tid() == t) {
                 out.push(g);
             }
         }
@@ -342,9 +357,9 @@ impl Reader {
     pub fn tag_contents(&self, tag: Tid) -> Result<(Vec<Tid>, Vec<Tid>)> {
         let mut subs = Vec::new();
         let mut items = Vec::new();
-        for m in self.db.members(tag)? {
+        for m in self.members(tag)?.iter().copied() {
             match m {
-                Member::Subgroup(s) if s != tag && self.db.at(s, TAG).get()?.is_some() => subs.push(s),
+                Member::Subgroup(s) if s != tag && self.tag(s)?.is_some() => subs.push(s),
                 Member::Item(t) if t != tag => items.push(t),
                 _ => {}
             }
@@ -377,7 +392,7 @@ impl Reader {
     pub fn all_tags(&self) -> Result<Vec<Tid>> {
         let mut out = Vec::new();
         for t in self.things()?.iter().copied() {
-            if self.db.at(t, TAG).get()?.is_some() {
+            if self.tag(t)?.is_some() {
                 out.push(t);
             }
         }
@@ -462,7 +477,7 @@ impl Reader {
 
     /// The thing a favorites entry shows: a duplicate view stands for the one `views` keeps.
     fn shown_as(&self, views: &BTreeMap<Collection, Tid>, t: Tid) -> Result<Tid> {
-        Ok(match self.db.at(t, COLLECTION).get()? {
+        Ok(match (*self.collection(t)?).clone() {
             Some(v) => views.get(&v).copied().unwrap_or(t),
             None => t,
         })
@@ -492,12 +507,12 @@ impl Reader {
     fn internal(&self) -> Result<BTreeSet<Tid>> {
         let mut out = BTreeSet::new();
         for g in self.groups()? {
-            for m in self.db.members(g)? {
+            for m in self.members(g)?.iter().copied() {
                 if let Member::Subgroup(x) = m
                     && self.db.at(x, INTERNAL).get()? == Some(true)
                 {
                     out.insert(x);
-                    out.extend(self.db.members(x)?.into_iter().map(Member::tid));
+                    out.extend(self.members(x)?.iter().copied().map(Member::tid));
                 }
             }
         }
@@ -506,13 +521,15 @@ impl Reader {
 
     /// This device's window, if it has one (the main group's first).
     pub fn window_opt(&self) -> Result<Option<Tid>> {
-        let node = self.db.node();
-        for g in self.groups()? {
-            if let Some(w) = self.db.at(g, WINDOWS).get()?.and_then(|m| m.get(&node).copied()) {
-                return Ok(Some(w));
+        Ok(*self.memo(("window_opt", ()), |r, _| {
+            let node = r.db.node();
+            for g in r.groups()? {
+                if let Some(w) = r.db.at(g, WINDOWS).get()?.and_then(|m| m.get(&node).copied()) {
+                    return Ok(Some(w));
+                }
             }
-        }
-        Ok(None)
+            Ok(None)
+        })?)
     }
 
 

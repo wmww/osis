@@ -421,3 +421,26 @@ fn every_changed_answer_fires() {
         }
     }
 }
+
+// One node reading one address twice is what a harness finds through `read_counts`: reads per
+// address per pass, starting over at `sweep`; each read is one engine read.
+#[test]
+fn read_counts_say_what_a_pass_read_twice() {
+    let db = pumped(9);
+    let t = thing(&db);
+    set(&db, t, "t:a.0", 0);
+    set(&db, t, "t:b.0", 0);
+    let (rs, _n, h) = tracked(&db);
+    let (a, b) = (untyped("t:a.0"), untyped("t:b.0"));
+    costs::take();
+    h.at(t, a.clone()).get().unwrap();
+    h.at(t, a.clone()).get().unwrap();
+    h.at(t, b.clone()).get().unwrap();
+    assert_eq!(count(&costs::take(), "read: engine"), 3);
+    rs.sweep();
+    let by = |rs: &ReadSet, k: &str| osis::internals::read_counts(rs).into_iter().find(|(a, _)| a.contains(k)).map(|x| x.1);
+    assert_eq!((by(&rs, "t:a.0"), by(&rs, "t:b.0")), (Some(2), Some(1)));
+    h.at(t, a).get().unwrap();
+    rs.sweep();
+    assert_eq!((by(&rs, "t:a.0"), by(&rs, "t:b.0")), (Some(1), None), "a second pass starts over");
+}

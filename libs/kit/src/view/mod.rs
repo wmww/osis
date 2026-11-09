@@ -3,6 +3,7 @@
 
 pub mod arrange;
 pub mod graph;
+pub mod keyed;
 pub mod registry;
 pub mod search;
 pub mod sessions;
@@ -12,7 +13,7 @@ pub mod tree;
 use crate::store::{Data, Reader};
 use osis::{Result, Tid};
 pub use crate::icons::Icon;
-pub use graph::{Graph, Local};
+pub use graph::{Costs, Graph, Local};
 pub use tree::{Surface, Tree};
 use sessions::Sessions;
 use std::any::Any;

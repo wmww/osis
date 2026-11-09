@@ -130,8 +130,8 @@ fn bar(cx: &Cx, spec: &ViewSpec) -> Result<Section> {
     Ok(Section::of(vec![Block::Bar { back, descriptor, favorite: cx.is_favorite(t)?, star: Do::new(ToggleFavorite(t)), more: Do::new(ToggleMenu(opener)), menu }]))
 }
 
-pub static OPENER: ViewType = ViewType { id: "opener", label: "Opener", fits: None, parts: &[], always_offered: false, custom: Some(opener) };
-pub static BAR: ViewType = ViewType { id: "bar", label: "Bar", fits: None, parts: &[], always_offered: false, custom: Some(bar) };
+pub static OPENER: ViewType = ViewType { id: "opener", label: "Opener", fits: None, parts: &[], always_offered: false, custom: Some(opener), sample: super::sample_note };
+pub static BAR: ViewType = ViewType { id: "bar", label: "Bar", fits: None, parts: &[], always_offered: false, custom: Some(bar), sample: super::sample_note };
 
 /// A spec opening `t` through the opener.
 pub fn open_spec(t: Tid) -> ViewSpec {

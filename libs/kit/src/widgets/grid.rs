@@ -94,11 +94,37 @@ impl TileGrid {
         this.ctx.request_layout();
     }
 
+    /// Inserts a child at `i` (before the `fixed` children for a row of the list).
+    pub fn insert_child(this: &mut WidgetMut<'_, Self>, i: usize, child: NewWidget<impl Widget + ?Sized>) {
+        let i = i.min(this.widget.children.len());
+        this.widget.children.insert(i, child.erased().to_pod());
+        this.ctx.children_changed();
+        this.ctx.request_layout();
+    }
+
+    /// Removes the child at `i`.
+    pub fn remove_child(this: &mut WidgetMut<'_, Self>, i: usize) {
+        if i < this.widget.children.len() {
+            let c = this.widget.children.remove(i);
+            this.ctx.remove_child(c);
+            this.ctx.request_layout();
+        }
+    }
+
     pub fn clear(this: &mut WidgetMut<'_, Self>) {
         for c in std::mem::take(&mut this.widget.children) {
             this.ctx.remove_child(c);
         }
         this.ctx.request_layout();
+    }
+}
+
+impl crate::list::ListWidget for TileGrid {
+    fn insert_row(this: &mut WidgetMut<'_, Self>, i: usize, row: NewWidget<dyn Widget>) {
+        TileGrid::insert_child(this, i, row);
+    }
+    fn remove_row(this: &mut WidgetMut<'_, Self>, i: usize) {
+        TileGrid::remove_child(this, i);
     }
 }
 

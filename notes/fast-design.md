@@ -48,7 +48,8 @@ Counts in section 1 and 2 are from reading the code. Symbols: H things held, P m
 - `Cx` holds `Reader` (`db`: a tracked `osis::ReadOnly`, plus every `Data` read) and no write methods. Actions get `Act` (`Data`, untracked, writes, effects). A write, a listener, a session, the clock and creating the profile do not compile on `ReadOnly` (doc tests in core/osis); `Reader::now`/`now_local` are the only clock and move with the tick. `Data` is `Reader` plus writes. The account's profile is made at open and when a peer arrives (`Data::ensure_profile`), never by a read.
 - `things`, `favorites`, `groups`, `summary` and `aspects` are shared memos. The opener asks for the child node's foot, so nothing renders twice.
 - Passing state not in osis (scroll range, search query, the minute tick for "5 min ago") is a local cell (`Local`), a node set from outside. `Reader::now` and `now_local` in a render depend on the tick, so whatever shows a time moves with it; `Cx` reaches no other clock.
-- The renderer (`Tree`) re-runs marked nodes only, parents first; a parent that came out different reconciles its children (a child whose slot was rebuilt is refilled from its value, unrun). A node that fails stays in the tree and its siblings go on, so the read that recovers marks it; marks walk past nodes already marked, which a failure can have left unqueued. The shell's own reads are a node too; its results and New chips are view types. Rows reconcile by key with `list.rs` (step 6).
+- The renderer (`Tree`) re-runs marked nodes only, parents first; a parent that came out different reconciles its children (a child whose slot was rebuilt is refilled from its value, unrun). A node that fails stays in the tree and its siblings go on, so the read that recovers marks it; marks walk past nodes already marked, which a failure can have left unqueued. The shell's own reads are a node too; its results and New chips are view types. Rows of a stream, cards or rows block reconcile by key (`view/keyed.rs`, `list.rs`): one changed row rebuilds that row, and the widgets around it stay.
+- What a node reads twice is a memo (`members`, `tag`, `collection`, `name`, `window_opt`): one listener per address per node, by construction.
 - **Windowed by construction:** the only list block is `cx.list(page, |cx, key| Entry)`. `page(from, n)` returns keys, and the closure runs only for rows the `VirtualScroll` shows. A set source pages a key index built from per-item memos, so one change costs one item (first build O(H), once). History sources page through `fired`.
 - A `Vec<Entry>` block cannot be built.
 
@@ -61,12 +62,12 @@ Why this passes the notes:
 - **notes/app.md:** views stay data-driven, and memo and list are general concepts that name no feature.
 
 ## 4. Holding it there
-Counters: the existing `osis::costs` spans (extended to count engine reads and dispatched targets) plus graph counters (renders, memo reruns, rows built). A new kit test, `view_costs`, walks `registry.views`, so a new view is covered when it registers. `ViewType` gains a required `sample: fn(&Data) -> Tid`, usually one line through an `Offer`, so a view without one does not compile.
+Counters: `osis::costs` spans (`read: engine`, `watch: considered`, `watch: dispatched`) plus `Graph::take_costs` (renders, memo runs, rows built). `osis_kit::testing::check_views` walks `registry.views`, so a new view is covered when it registers; kit's `view_costs` test runs it on kit's registry, the app's on the app's. `ViewType` has a required `sample: fn(&Data) -> Tid`, usually one line through an `Offer`, so a view without one does not compile.
 
 For each view the harness checks:
 - **Precision:** a write to an address the node did not read causes 0 renders; a write to one it did causes exactly that node (generic, driven by the recorded `ReadSet`).
 - **Scale:** grow what the view read at n and 10n; reads and rows built stay within a fixed ratio.
-- **No duplicates:** no address is read twice in one pass.
+- **No duplicates:** within one node, no address is read twice. Across nodes sharing is by memo, so two nodes reading one address is allowed (the rule is per node, not per pass).
 - **Window:** rows built are at most W.
 
 Hand-written, for what the harness cannot generate:
@@ -77,7 +78,7 @@ Hand-written, for what the harness cannot generate:
 All of these count work, never wall time.
 
 ## 5. Build plan (one worker plus reviewer each; the app works after each)
-Steps 1 to 4 are built (notes/api.md Watching; libs/kit/src/view/graph.rs, view/tree.rs).
+Steps 1 to 6 are built (notes/api.md Watching; libs/kit/src/view/graph.rs, view/tree.rs, view/keyed.rs, testing.rs).
 1. Core: indexed dispatch, hashed `last`, `listing_moved` by touched commits; kit adopts `Dispatcher::Pump` (delete `marshal`).
 2. Core: `ReadSet` and the tracking handle over every read; notes/api.md and the api-design checklist.
 3. Kit: graph, `Cx`/`Act` split, shared memos (a summary counts unsorted: `source::count`).

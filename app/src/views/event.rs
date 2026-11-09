@@ -8,4 +8,4 @@ fn fits(cx: &Reader, t: Tid) -> Result<bool> {
 
 const PARTS: &[Part] = &[always("name"), part("event-place"), part("event-time"), always("body")];
 
-pub static VIEW: ViewType = ViewType { id: "event", label: "Event", fits: Some(fits), parts: PARTS, always_offered: false, custom: None };
+pub static VIEW: ViewType = ViewType { id: "event", label: "Event", fits: Some(fits), parts: PARTS, always_offered: false, custom: None, sample: |d| osis_kit::views::sample_offer(d, "event") };

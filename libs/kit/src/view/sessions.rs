@@ -106,10 +106,14 @@ impl Sessions {
         Some((text, shown, edits))
     }
 
-    /// Commits the pending typing of `t`'s editors, which stay open.
+    /// Commits the pending typing of `t`'s editors, which stay open. What is pending moves, and
+    /// an undo right after can leave the field as it was read, so what shows pending typing is told.
     pub fn commit(&self, t: Tid) -> Result<()> {
         for (_, e) in self.editors.borrow().iter().filter(|(k, _)| k.1 == t) {
             e.session.commit()?;
+        }
+        if let Some(g) = self.typed.borrow().as_ref() {
+            g.set_local(crate::view::TYPED, g.peek(crate::view::TYPED) + 1);
         }
         Ok(())
     }

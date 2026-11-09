@@ -1,7 +1,7 @@
 //! A set of things: from `ui:collection.0`, a `tag.0` thing, or a group with members.
 
 use crate::store::Reader;
-use crate::schema::{Arrange, COLLECTION, CREATING, WEEK};
+use crate::schema::{Arrange, CREATING, WEEK};
 use crate::store::Data;
 use crate::view::source::{items, of};
 use crate::view::{Act, Action, Block, Chip, Cx, Do, Facet, Icon, Input, Mark, Offer, Placed, Run, Section, Summary, Config, ViewSpec, arrange};
@@ -55,10 +55,10 @@ impl Facet for MembersFacet {
     }
     /// `collection.0` or `tag.0`, or a group that holds something.
     fn applies(&self, cx: &Reader, t: Tid) -> Result<bool> {
-        Ok(cx.aspects(t)?.iter().any(|a| self.claims(a)) || !cx.db.members(t)?.is_empty())
+        Ok(cx.aspects(t)?.iter().any(|a| self.claims(a)) || !cx.members(t)?.is_empty())
     }
     fn summarize(&self, cx: &Reader, t: Tid, s: &mut Summary) -> Result<()> {
-        let view = cx.db.at(t, COLLECTION).get()?;
+        let view = cx.collection(t)?;
         let is_tag = cx.has(t, "tag.0")?;
         s.words.insert(0, if view.is_some() { "Collection" } else if is_tag { "Tag" } else { "Group" }.into());
         let v = of(cx, t)?;

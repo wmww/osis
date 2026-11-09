@@ -432,6 +432,7 @@ impl ReadOnly {
     /// Runs `f` on this process's engine (callers pick the source first).
     pub(crate) fn read_local<R>(&self, f: impl FnOnce(&mut Reader<'_>) -> R) -> R {
         let (limit, actor) = (self.inner.limit, self.acting);
+        drop(osis_node::costs::span("read: engine"));
         self.engine(|e| f(&mut Reader { e, limit, actor }))
     }
 

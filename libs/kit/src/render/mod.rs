@@ -12,6 +12,7 @@ use crate::schema::Mode as ModeChoice;
 use crate::store::{Data, Reader};
 use crate::view::search::{Paste, classify, search};
 use crate::view::{Act, Block, Cx, DARK, Do, Graph, Icon, Input, Open, QUERY, Section, Surface, TICK, Tree, ViewSpec, WindowState};
+use crate::view::keyed::{self, ListSteps};
 use crate::view::sessions::Key;
 use crate::views::{self, RAIL, open_spec};
 use osis::{Subscription, Tid};
@@ -87,6 +88,15 @@ struct Layout {
     searching: bool,
 }
 
+/// What `fill_blocks` did.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Filled {
+    Same,
+    /// Rows changed in their lists; the widgets around them stayed.
+    Patched,
+    Rebuilt,
+}
+
 /// `Ui` as the tree's surface.
 struct Draw<'u, 'a, 'b> {
     ui: &'u mut Ui,
@@ -108,14 +118,14 @@ impl Surface for Draw<'_, '_, '_> {
         if filled {
             let key = format!("{path}#foot");
             let foot_changed = ui.fill_blocks(self.ctx, &key, foot, None)?;
-            if (changed || foot_changed) && out.follow_end {
+            if (changed != Filled::Same || foot_changed != Filled::Same) && out.follow_end {
                 // once laid out: the new content's height is known only then
                 let _ = ui.tx.send(Msg::ScrollEnd);
                 ui.waker.wake();
             }
-            return Ok(changed || foot_changed);
+            return Ok(changed == Filled::Rebuilt || foot_changed == Filled::Rebuilt);
         }
-        Ok(changed)
+        Ok(changed == Filled::Rebuilt)
     }
 
     fn gone(&mut self, path: &str) {
@@ -461,12 +471,22 @@ impl Ui {
         ViewSpec::new("collection", main).config_rail()
     }
 
-    /// Shows `model` in the slot `key` if it changed; a form input with the focus keeps it (by
-    /// place, caret at the end). Returns whether it rebuilt. Unknown slots are not on screen.
-    fn fill_blocks(&mut self, ctx: &mut DriverCtx<'_, '_>, key: &str, model: Vec<Block>, current: Option<Tid>) -> osis::Result<bool> {
-        let Some(slot) = self.slots.get(key) else { return Ok(false) };
+    /// Shows `model` in the slot `key` if it changed: rows that changed in their lists alone, else
+    /// a rebuild, where a form input with the focus keeps it (by place, caret at the end). Unknown
+    /// slots are not on screen.
+    fn fill_blocks(&mut self, ctx: &mut DriverCtx<'_, '_>, key: &str, model: Vec<Block>, current: Option<Tid>) -> osis::Result<Filled> {
+        let Some(slot) = self.slots.get(key) else { return Ok(Filled::Same) };
         if slot.model == model {
-            return Ok(false);
+            return Ok(Filled::Same);
+        }
+        if let Some(steps) = keyed::steps(&slot.model, &model)
+            && steps.iter().all(|(i, _)| slot.built.lists.contains_key(i))
+        {
+            self.patch(ctx, key, &model, steps, current);
+            if let Some(slot) = self.slots.get_mut(key) {
+                slot.model = model;
+            }
+            return Ok(Filled::Patched);
         }
         let id = slot.id;
         let focused = ctx.render_root(self.window).focused_widget();
@@ -504,7 +524,28 @@ impl Ui {
             slot.model = model;
             slot.built = built;
         }
-        Ok(true)
+        Ok(Filled::Rebuilt)
+    }
+
+    /// Applies row steps to the lists of the slot `key`: only the rows named are touched.
+    fn patch(&mut self, ctx: &mut DriverCtx<'_, '_>, key: &str, model: &[Block], steps: ListSteps, current: Option<Tid>) {
+        let root = ctx.render_root(self.window);
+        let Ui { slots, acts, data, state, look, .. } = self;
+        let Some(slot) = slots.get_mut(key) else { return };
+        for (i, ops) in steps {
+            let Some(list) = slot.built.lists.get_mut(&i) else { continue };
+            let entries: &[crate::view::Entry] = match model.get(i) {
+                Some(Block::Entries(crate::view::Placed::Stream(v))) => v,
+                Some(Block::Entries(crate::view::Placed::Cards(r) | crate::view::Placed::Rows(r))) => &r.entries,
+                _ => continue,
+            };
+            let by_key = entries.iter().map(|e| (e.key.as_str(), e)).collect();
+            let mut maker = blocks::Maker { data, window: state, look, acts, current, path: key, kind: list.kind, entries: by_key };
+            root.edit_widget(list.widget, |mut w| match list.kind {
+                blocks::ListKind::Stream => list.keyed.apply(&mut w.downcast::<Flex>(), &ops, &mut maker),
+                _ => list.keyed.apply(&mut w.downcast::<crate::widgets::TileGrid>(), &ops, &mut maker),
+            });
+        }
     }
 
     /// Runs an action on the UI thread, then applies what it asked of the shell.

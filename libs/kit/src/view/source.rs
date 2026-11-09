@@ -2,14 +2,14 @@
 
 use crate::store::Reader;
 use crate::schema::{CollectionOrder as Order, CollectionSource as Source};
-use crate::schema::{COLLECTION, Collection};
+use crate::schema::Collection;
 use osis::{Result, Tid};
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
 /// `t`'s view: `collection.0`, else its members, placed as cards.
 pub fn of(cx: &Reader, t: Tid) -> Result<Collection> {
-    Ok(cx.db.at(t, COLLECTION).get()?.unwrap_or(Collection { source: Source::Members, having: BTreeSet::new().into_iter().collect(), order: Order::Own, arrange: crate::schema::Arrange::Cards, element: None }))
+    Ok((*cx.collection(t)?).clone().unwrap_or(Collection { source: Source::Members, having: BTreeSet::new().into_iter().collect(), order: Order::Own, arrange: crate::schema::Arrange::Cards, element: None }))
 }
 
 /// What `view` holds on `t`, narrowed and ordered, without `t` itself.
