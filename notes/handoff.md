@@ -21,4 +21,9 @@ Big features and refactors first; chase a bug only when it could threaten their 
 - Bounding rotation names (issues/rotation-names-grow.md): "chain coverage through supersedes" leaks (a TLA instance found it); a base-chain rule breaks when a base rotation turns invalid. Redo with the rotate-free principle (spec/crypto.md §4).
 
 ## Networking (Petrel's, devbox)
-Kestrel's two branches are merged (net-repros: net-tests step 5; net-role-sync). Petrel owns networking in issues/net-rework.md's order: net-tests step 2 merged; honest-status step 1 and the shared-set + reconnect model in progress.
+Issues/net-rework.md's order. Built on main: net-tests step 2; honest status step 1 (step 2 waits for Pull); `lan` in every build; shared-set steps 2-4 (`SyncEngine::proven`, J and credentials, records and `changed_at`) and the node log. Nothing in production reads J, credentials, records or the log yet.
+- In flight: branch `net-beacons` (local, shared-set step 5: beacons, Offer, Lost, first contact), one worker, no review. Next: a fresh security reviewer. Earlier steps' reviews each found a role- or relay-binding bug: ask that first.
+- After it: steps 6-9 of issues/net-shared-set.md, step 2 of issues/net-honest-status.md with Pull.
+- Step 10 (the epoch signature, Fathom's account signing) decides when a proven account counts. Check what main says before relying on "J counts key actors alone".
+- issues/leaving-not-confirmed-after-rotation.md needs a format change; offered to Fathom.
+- Dogfood channel served from devbox (`~/osis-dogfood`, port 4040, transient units `osis-serving`, `osis-me`): a box stop ends them; restart per notes/dogfood.md with the same stores.
