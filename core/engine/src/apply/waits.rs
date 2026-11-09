@@ -186,10 +186,10 @@ pub(crate) fn load_reading(core: &mut Core) {
 mod tests {
     use super::*;
 
-    // spec/requirements.md (no unbounded storage from peer input): what is remembered of unjudgeable
+    // spec/requirements.md (no unbounded storage from peer input), spec/commits.md §4: what is remembered of unjudgeable
     // headers stays under its bound however many come.
     #[test]
-    fn remembered_headers_are_bounded() {
+    fn remembered_headers_are_bounded_spec_commits_4() {
         let mut w = Waits::default();
         for i in 0..MAX_REMEMBERED + 10 {
             let mut c = [0u8; 32];
