@@ -15,3 +15,10 @@ Read CLAUDE.md and notes/coordination.md first. Tess: opus only for every agent,
 
 ## Findings recorded only here
 - Bounding rotation names (issues/rotation-names-grow.md): "chain coverage through supersedes" leaks (a TLA instance found it); a base-chain rule breaks when a base rotation turns invalid. Redo with the rotate-free principle (spec/crypto.md §4).
+
+## Kestrel (networking and share-view, osprey)
+Local branches on osprey, unmerged (`git branch` there; never pushed):
+- `kestrel-net-role-sync` (tip c32abf013): net-role-sync, reviewed and gated. Do not merge until issues/derived-adoption-order.md is fixed: the branch makes it reachable in normal use (an item in a synced group, granted directly to a reader of that group). The issue and its ignored repro are on the branch.
+- `kestrel-net-repros` (tip 04d5f8363): issues/net-tests.md step 5, 22 ignored repro tests and 4 passing ones. Worker done, no reviewer yet. Carries new issues inbox-copied-stale and link-expiry-spin.
+
+Next in networking: review and merge those, then net-tests step 2, then issues/net-rework.md's order. Tess's open calls: issues/net-connect.md (one-way knowledge), issues/net-mesh-discovery.md, issues/net-peer-continuity.md. A model is required before building shared-set and reconnect (issues/net-reconnect.md).
