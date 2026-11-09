@@ -220,7 +220,7 @@ SIDES_NAMES = re.compile(r"\bsides::|\bDisputeInfo\b|\bDisputeDetected\b|\bDispu
 SIDES_HOOKS = ("core/engine/src/engine/mod.rs", "core/engine/src/apply/mod.rs", "core/engine/src/events/mod.rs", "core/engine/src/lib.rs")
 
 def dispute_types():
-    for top in ("core", "cli", "libs", "app"):
+    for top in ("core", "cli", "libs/chat") if WS == ROOT else ("libs/kit", "app"):
         for dirpath, dirs, files in os.walk(os.path.join(ROOT, top)):
             dirs[:] = [d for d in dirs if d not in ("target", "patches")]
             for f in files:
@@ -246,10 +246,12 @@ def dispute_types():
 # `internals::Opening` (LAN off), never a bare `Config` with a runtime.
 LAN_BIND = re.compile(r"\bLan::bind\(\s*(?!0\s*\)|\w+\.port\(\)\s*\))")
 CLI_RUN = re.compile(r"CARGO_BIN_EXE_osis|\bCommand::new\(OSIS\)|\bmain_with\(|\brun\(\[")
-BARE_NODE = re.compile(r"\bConfig\s*\{[^}]*\bruntime:\s*(osis::)?Runtime::")
+NODE_RUNTIME = r"(osis::)?Runtime::(Own|Tokio)"
+BARE_NODE = re.compile(r"\bConfig\s*\{[^}]*\bruntime:\s*" + NODE_RUNTIME + r"[^}]*\}")
+DEFAULT_CFG = re.compile(r"let mut (\w+)\s*=\s*(osis::)?Config::default\(\)")
 
 def real_lan_tests():
-    for top in ("core", "cli", "libs", "app"):
+    for top in ("core", "cli", "libs/chat") if WS == ROOT else ("libs/kit", "app"):
         for dirpath, dirs, files in os.walk(os.path.join(ROOT, top)):
             dirs[:] = [d for d in dirs if d not in ("target", "patches")]
             for f in files:
@@ -262,16 +264,20 @@ def real_lan_tests():
                     if "#[cfg(test)]" not in text:
                         continue
                     text = text.split("#[cfg(test)]", 1)[1]
+                for m in BARE_NODE.finditer(text):
+                    if not re.search(r"\blan:", m[0]):
+                        yield f"{rel}: a test node from a bare Config is on the real LAN: {' '.join(m[0].split())[:80]} (use internals::Opening)"
+                for m in DEFAULT_CFG.finditer(text):
+                    if re.search(rf"\b{m[1]}\.runtime\s*=\s*{NODE_RUNTIME}", text) and not re.search(rf"\b{m[1]}\.lan\s*=", text):
+                        yield f"{rel}: a test node from a bare Config is on the real LAN: {m[0]} (use internals::Opening)"
                 for line in text.splitlines():
                     if LAN_BIND.search(line):
                         yield f"{rel}: Lan::bind in a test on a fixed port: {line.strip()[:80]} (use 0 or another socket's port)"
-                    if BARE_NODE.search(line) and "lan:" not in line:
-                        yield f"{rel}: a test node from a bare Config is on the real LAN: {line.strip()[:80]} (use internals::Opening)"
                     if rel.startswith("cli/tests/") and CLI_RUN.search(line) and "--no-lan" not in line and "const OSIS" not in line:
                         yield f"{rel}: runs osis without --no-lan: {line.strip()[:80]}"
 
+errs.extend(real_lan_tests())
 if WS == ROOT:
-    errs.extend(real_lan_tests())
     errs.extend(env_vars())
     errs.extend(host_blind())
     errs.extend(dispute_types())
