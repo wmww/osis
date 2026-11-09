@@ -200,12 +200,6 @@ fn purge_rights_both_arrival_orders_spec_perm_6() {
     purge_rights(&[[0, 1, 2], [2, 1, 0]]);
 }
 
-#[test]
-#[ignore = "tier 2: every order of the three"]
-fn purge_rights_any_arrival_order_large_spec_perm_6() {
-    purge_rights(&[[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]);
-}
-
 /// Every purge right against every kind of requester, each arriving in each of `orders` at a fresh node.
 fn purge_rights(orders: &[[usize; 3]]) {
     use osis_schema::PurgeBy;

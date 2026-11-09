@@ -1,9 +1,9 @@
 # A body dropped while invalid, valid again and purged before its refetch has no leftover
-> Summary: Design question. A node that drops a delta as invalid, then sees it turn valid and purged in one step, holds it "missing when purged" (never received, not fetched), so it reads the older value; a node that held the body holds its leftover, whose value-less write wins, and reads absent. Found by `order::arrival_order_purge_author_large_spec_perm_6` seed 452234901986.
+> Summary: Design question. A node that drops a delta as invalid, then sees it turn valid and purged in one step, holds it "missing when purged" (never received, not fetched), so it reads the older value; a node that held the body holds its leftover, whose value-less write wins, and reads absent. Found by the order harness (purges by author) at seed 452234901986.
 > Priority: normal
 > Tags: engine, retention, tests
 
-Replay: `OSIS_ORDER_SEED=452234901986 OSIS_ORDER_LEN=50 cargo test -p osis-node --test it -- --ignored --exact order::arrival_order_purge_author_large_spec_perm_6`.
+Replay: `cargo test -p osis-node --test it -- --ignored --exact order::repro_purge_author_order_452234901986` (the history as the order harness made it, in its orders).
 
 Minimal case (thing G, register under permanent retention):
 - 0 lowers 2 to read (frontier lists none of 2's writes), then grants 2 write again.

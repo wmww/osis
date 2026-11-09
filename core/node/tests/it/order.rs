@@ -1,21 +1,23 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Arrival-order differential (spec/requirements.md Deterministic: a node's state and its
-//! judgment of every write are functions of the data it holds, never of arrival order;
-//! spec/permissions.md §5, §5.2; spec/crdt.md §4.6). Random histories over three writers
-//! (grants, demotions with frontiers before, inside and after the demoted writes, re-grants,
-//! self-removals, compaction snapshots, things created under things in later commits, writes
-//! inside map entries, struct fields and nested texts, signal writes, undo, expiry, typed and
-//! untyped writes, hostile commits (`Step::Forged`), partial syncs) are delivered, as several held sets, to fresh
-//! nodes in several arrival orders (some with multi-aspect commits split into a part and late
-//! parts, some in part at an earlier clock), syncing things by seed (`with_syncs`). Each node is
-//! judged against the oracle, a node holding the same commits and keeping every body
-//! (`node_checks`): after the sync exchange it shows the same reads and rosters, now and once
-//! every bound and expiry passed, but where a part may have waited at its expiry (from the
-//! history); nothing purged or expired is held; with `Cfg::model`, held-model judges it alike.
-//! Orders agree because each equals the oracle. A reopen and a rebuild show the same. Every node
-//! judged takes the walk's side in each admin dispute it detected (`disputes::walk_sides`): a
-//! default side is first received, so it may rightly differ by arrival order
-//! (spec/permissions.md §5.1: alike under the same trust set). Seeds run on a thread per core.
+//! `held_set_decides` (spec/requirements.md Deterministic: what a node shows is a function of
+//! the commits it holds, never of the order they came in). One generator (`generate`) plays
+//! random histories over three writers: content writes on every encoding (typed and untyped,
+//! inside map entries, struct fields and nested texts), grants, demotions with frontiers before,
+//! inside and after the demoted writes (some linked), self-removals, compactions, things made
+//! under things or by their record alone, flow grants and removals, undo, expiry, every history
+//! mode, required retention set and broken, messages, signals, purges by name, wide and by author,
+//! commits on several things, hostile commits and bad parts, partial syncs. Each feature draws
+//! from its own stream; the seed picks an emphasis (`Emphasis`). Each held set goes to fresh
+//! nodes in the orders of one config (`ORDERS`: as made, reversed, as fetched, shuffles, late
+//! parts, part at an earlier clock; `Size` scales the counts, the exhaustive size tries every
+//! order of short histories), syncing things by seed (`with_syncs`). Each node is judged by
+//! `node_checks` against the node holding the same commits and keeping every body, and against
+//! held-model (`held.rs`), the engine-independent reference; also reopened after every ingest
+//! (`reopens_alike`) and, for parts away, given only what its snapshots leave uncovered
+//! (`covered_away`). Every node judged takes the walk's side in each admin dispute it detected
+//! (`disputes::walk_sides`): a default side is first received, so it may rightly differ by
+//! arrival order (spec/permissions.md §5.1: alike under the same trust set). Seeds run on a
+//! thread per core. The scripted tests below are minimal reproducers, checked in named orders.
 
 use crate::common;
 use common::*;
@@ -40,7 +42,7 @@ impl Rng {
         self.0 ^= self.0 << 17;
         self.0 % n.max(1)
     }
-    pub(crate) fn pick<T: Copy>(&mut self, xs: &[T]) -> T {
+    fn pick<T: Copy>(&mut self, xs: &[T]) -> T {
         xs[self.below(xs.len() as u64) as usize]
     }
 }
@@ -52,7 +54,7 @@ pub(crate) enum Step {
     /// A content write (`op` picks the aspect and shape) by `by` on thing `t`.
     Write { by: usize, t: usize, op: u8, k: u8, v: u8 },
     /// `Write` plus a write of `t:rec.0` under default retention in the same commit: two bodies
-    /// when `op` has a keep bound (`random_step` never draws it, so found histories keep).
+    /// when `op` has a keep bound (`generate`'s parts group draws it under purge on replace).
     Mixed { by: usize, t: usize, op: u8, k: u8, v: u8 },
     /// `holder`'s edge on `t` set to `role` (a grant, re-grant or demotion without frontier).
     Edge { by: usize, t: usize, holder: usize, role: Option<Role> },
@@ -121,7 +123,8 @@ pub(crate) enum Step {
     BadPart { by: usize, a: usize, b: usize, how: u8 },
     /// `Demote` to no role with a frontier padded past `CHUNK_THRESHOLD`, linked.
     BigDemote { by: usize, t: usize, holder: usize },
-    // scripted only (`random_step` never draws these), for the judgment vectors:
+    // for the judgment vectors and scripted examples (`generate` draws `NewTop`, `Require`,
+    // `Breaking`, `Two` and `TwoEdges` too):
     /// A new thing whose first admin is peer `by` itself: no edge of G reaches it.
     NewTop { by: usize },
     /// A bare edge write past the writer's rules (`Engine::commit_hostile`):
@@ -157,7 +160,7 @@ pub(crate) enum Step {
     /// A removal of `holder` on `t` with its frontier as of now, padded past `CHUNK_THRESHOLD`
     /// with things nobody holds, so it goes by link.
     LinkedDemote { by: usize, t: usize, holder: usize },
-    // `record_only_history` (`random_step` never draws these):
+    // record-only things and the flows (`random_step` never draws these):
     /// `by` makes a thing by its record alone, whose first admin is itself, or thing `under` (needing
     /// write on it), with a write on it: a plain thing deriving from its first admin, whose
     /// record edge no entry holds.
@@ -227,10 +230,11 @@ fn keep_of(op: u8) -> Option<Retention> {
     }
 }
 
-/// `keep_of(op)`, with history kept until an absolute time for op 30 (spec/commits.md §5): a
-/// second (a peer's own clock steps pass it) or half an hour after `now`, by `v`.
+/// `keep_of(op)`, with history kept until an absolute time for op 30 and a third of op 16's
+/// writes (a list, a register held-model judges; spec/commits.md §5): a second (a peer's own clock
+/// steps pass it) or half an hour after `now`, by `v`.
 fn retention_of(op: u8, v: u8, now: WallMs) -> Option<Retention> {
-    if op % OPS != 30 {
+    if op % OPS != 30 && !(op % OPS == 16 && v.is_multiple_of(3)) {
         return keep_of(op);
     }
     let until = now.0 + if v.is_multiple_of(2) { 1_000 } else { HOUR / 2 };
@@ -247,11 +251,6 @@ fn sig() -> Ak {
 fn purged_ak(e: &osis_node::Engine, commit: &CommitId, t: Tid) -> Ak {
     let signal = e.header(commit).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t && a.ak == sig()));
     if signal { sig() } else { ak("t:reg.0") }
-}
-
-/// Whether aspect entry `a` is purged on replace.
-fn purges(a: &osis_commit::AspectEntry) -> bool {
-    a.retention.history == Some(History::PurgeOnReplace)
 }
 
 /// The expiry of `op`'s writes after their commit's wall time, if any (spec/crdt.md §4.7): a
@@ -537,12 +536,14 @@ pub(crate) struct Played {
     /// Deliveries at an earlier clock whose move to `now` changed a state or a body (`Clock`).
     moved: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// The history ends with every writer compacting what it holds (`settled`): equal to the
-    /// keep-everything node before the sync exchange too, but on `no_writer_last`.
+    /// keep-everything node before the sync exchange too, on `settled_last`.
     settled: bool,
-    /// The aspects every compaction after the last commit of another step was refused for want
-    /// of a role, keyed as `shown` keys them: in a `settled` history, those no writer is left to
-    /// settle.
-    no_writer_last: BTreeSet<(String, String)>,
+    /// The aspects some writer compacted (or could, nothing having changed) after the last commit
+    /// of another step, keyed as `shown` keys them: in a `settled` history, those settled. An
+    /// aspect no writer is left to compact, or the tail does not compact, is not.
+    settled_last: BTreeSet<(String, String)>,
+    /// Commits `with_syncs` holds in part for good.
+    withheld: u64,
     /// `Cfg::model`: the history for the held-model adapter, and what it compared.
     model: Option<std::sync::Arc<(crate::held::History, std::sync::Mutex<crate::held::Coverage>)>>,
 }
@@ -600,6 +601,14 @@ fn why<T, E: std::fmt::Debug>(r: &Result<T, E>) -> Option<String> {
             None => name.to_string(),
         }
     })
+}
+
+/// `r`, a commit made past the writer's rules, its ID noted in `unchecked`.
+fn noting<E>(r: Result<Option<CommitId>, E>, unchecked: &mut BTreeSet<CommitId>) -> Result<Option<CommitId>, E> {
+    if let Ok(Some(id)) = &r {
+        unchecked.insert(*id);
+    }
+    r
 }
 
 /// A fresh node under test: it answers removals with no addenda, so what it reads is a function
@@ -670,6 +679,8 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     let mut firsts: BTreeMap<Tid, Tid> = BTreeMap::new();
     // the blobs of `BadPart`, with what their authors' own copies dropped
     let mut forged: BTreeMap<CommitId, Vec<u8>> = BTreeMap::new();
+    // every other commit made past the writer's rules: a peer may refuse it as bad input
+    let mut unchecked: BTreeSet<CommitId> = BTreeSet::new();
     // per aspect compacted since the last commit of another step: whether a peer could
     let mut compacted_last: BTreeMap<(String, String), bool> = BTreeMap::new();
     for st in steps {
@@ -880,7 +891,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                     for pk in lp.packages(from).unwrap() {
                         if let Err(e) = lp.deliver(to, &pk) {
                             assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput, "{e}");
-                            assert!(forged.contains_key(&pk.id), "an honest commit refused: {e}");
+                            assert!(forged.contains_key(&pk.id) || unchecked.contains(&pk.id), "an honest commit refused: {e}");
                         }
                     }
                 }
@@ -890,8 +901,9 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let n = own[from].len();
                 if let Some(id) = n.checked_sub(1 + back as usize).and_then(|i| own[from].get(i)).copied()
                     && let Some(pk) = lp.peers[from].engine.package(&id).unwrap()
+                    && let Err(e) = lp.deliver(to, &pk)
                 {
-                    lp.deliver(to, &pk).unwrap();
+                    assert!(osis_base::Classified::class(&e) == osis_base::ErrorClass::BadInput && (unchecked.contains(&id) || forged.contains_key(&id)), "an honest commit refused: {e}");
                 }
                 None
             }
@@ -935,7 +947,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                     }
                     _ => edge_on(&mut m, a, ids[by], osis_schema::core_types::Edge { invite: (v % 2 == 0).then_some(Role::Admin), ..edge(Role::Admin) }),
                 }
-                no = why(&lp.peers[by].engine.commit_hostile(m));
+                no = why(&noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked));
                 Some(by)
             }
             Step::BadPart { by, a, b, how } => {
@@ -1037,7 +1049,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             }
             Step::Hostile { by, t, holder, role, invite } => {
                 let m = edge_write(&lp.peers[by].engine, th(t), ids[holder], role.map(|r| osis_schema::core_types::Edge { invite, ..edge(r) }));
-                lp.peers[by].engine.commit_hostile(m).unwrap().expect("an edge write writes");
+                noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked).unwrap().expect("an edge write writes");
                 Some(by)
             }
             Step::HostileKeys { by, t, field } => {
@@ -1047,7 +1059,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 };
                 let mut m = Mutation::new();
                 m.op(th(t), &osis_schema::core_types::KEYS, PathOp { path: vec![PathSeg::Field(field)], op: Op::Set(v) }).unwrap();
-                lp.peers[by].engine.commit_hostile(m).unwrap().expect("a keys.0 write writes");
+                noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked).unwrap().expect("a keys.0 write writes");
                 Some(by)
             }
             Step::Require { by, t, op, rule } => {
@@ -1069,7 +1081,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                     }
                     m
                 };
-                no = why(&if rule & 4 != 0 { lp.peers[by].engine.commit_hostile(m) } else { lp.peers[by].commit(m) });
+                no = why(&if rule & 4 != 0 { noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked) } else { lp.peers[by].commit(m) });
                 Some(by)
             }
             Step::Breaking { by, t, op, v, fits } => {
@@ -1089,20 +1101,20 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                         m.expires(th(t), &o, WallMs(lp.peers[by].engine.now().0 + ms)).unwrap();
                     }
                 }
-                no = why(&lp.peers[by].engine.commit_hostile(m));
+                no = why(&noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked));
                 Some(by)
             }
             Step::HostileWrite { by, t, v } => {
                 let mut m = Mutation::new();
                 m.set(th(t), &REG, &s(&format!("v{v}"))).unwrap();
-                lp.peers[by].engine.commit_hostile(m).unwrap();
+                noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked).unwrap();
                 Some(by)
             }
             Step::Two { by, a, b, v } => {
                 let mut m = Mutation::new();
                 m.set(th(a), &REG, &s(&format!("v{v}"))).unwrap();
                 m.set(th(b), &REG, &s(&format!("v{v}"))).unwrap();
-                lp.peers[by].engine.commit_hostile(m).unwrap();
+                no = why(&noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked));
                 Some(by)
             }
             Step::Three { by, a, b, c, v } => {
@@ -1111,7 +1123,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                     m.set(x, &REG, &s(&format!("v{v}"))).unwrap();
                 }
                 // `None` (as for `Two`, `HostileWrite`): the values were there already, no commit
-                lp.peers[by].engine.commit_hostile(m).unwrap();
+                noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked).unwrap();
                 Some(by)
             }
             Step::TwoEdges { by, a, b, holder, role } => {
@@ -1120,7 +1132,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                     m.op(x, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Tid(ids[holder])) }).unwrap();
                     m.op(x, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(ids[holder]))], op: Op::Set(edge(role).to_value()) }).unwrap();
                 }
-                lp.peers[by].engine.commit_hostile(m).unwrap().expect("two edge writes");
+                no = why(&noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked));
                 Some(by)
             }
             Step::NestedTyped { by, other, t, k } => {
@@ -1186,7 +1198,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
         if let Some(i) = acted {
             collect(&mut lp, i, &mut seen, &mut packs, &mut authors, &mut own);
             let kind = format!("{st:?}");
-            let kind = kind.split(' ').next().unwrap().to_string() + if matches!(st, Step::Nested { text: true, .. }) { "(text)" } else if record { "(record)" } else { "" };
+            let kind = kind.split(' ').next().unwrap().to_string() + if matches!(st, Step::Nested { text: true, .. }) { "(text)" } else if record { "(record)" } else { "" } + if old { "(old)" } else { "" };
             match st {
                 Step::Compact { t, op, .. } => {
                     let k = (format!("{:?}", things[t % things.len()]), aspect_of(*op).as_str().to_string());
@@ -1206,7 +1218,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
         }
     }
     tally.commits = (packs.len() - base) as u64;
-    let no_writer_last = compacted_last.into_iter().filter(|x| !x.1).map(|x| x.0).collect();
+    let settled_last = compacted_last.into_iter().filter(|x| x.1).map(|x| x.0).collect();
     // the fresh nodes' clock: the latest of the writers' (nothing parks for drift)
     let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
     for pk in &mut packs {
@@ -1214,7 +1226,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             pk.bytes = b.clone();
         }
     }
-    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), settled: false, no_writer_last, model: None }
+    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), settled: false, settled_last, withheld: 0, model: None }
 }
 
 /// Per body (commit, thing, aspect): when it was replaced, for keep-for-D (spec/commits.md §5).
@@ -1356,7 +1368,7 @@ fn value_past_end(p: &mut Peer, played: &Played, now: WallMs) -> Option<String> 
 /// there counts as never received.
 fn model_differs(p: &mut Peer, played: &Played, o: &Oracle, waited: &BTreeSet<(String, String)>) -> Option<String> {
     let m = played.model.as_ref()?;
-    let mut cov = crate::held::Coverage { survey: m.1.lock().unwrap().survey, ..Default::default() };
+    let mut cov = crate::held::Coverage::default();
     let d = crate::held::compare(&mut p.engine, &m.0, &o.bodies, &mut cov, waited);
     m.1.lock().unwrap().add(&cov);
     d
@@ -1366,11 +1378,11 @@ fn model_differs(p: &mut Peer, played: &Played, o: &Oracle, waited: &BTreeSet<(S
 /// `ais` (`None`: every part), at wall clock `at`; `blobs` false when the blobs it references are
 /// kept away.
 #[derive(Clone, Debug)]
-pub(crate) struct Arrival {
-    pub(crate) pack: usize,
-    pub(crate) ais: Option<BTreeSet<usize>>,
-    pub(crate) at: WallMs,
-    pub(crate) blobs: bool,
+struct Arrival {
+    pack: usize,
+    ais: Option<BTreeSet<usize>>,
+    at: WallMs,
+    blobs: bool,
 }
 
 /// The aspects of the parts that may have waited at their expiry (spec/commits.md §5: they count
@@ -1383,7 +1395,7 @@ pub(crate) struct Arrival {
 /// any other part of a commit with an expiry at or before `upto` may have waited, and its aspect
 /// may read apart from a node that applied it. Nodes given the same packs agree on what never
 /// arrives: a part waiting on one outside them waits at every such node.
-pub(crate) fn waited_at_expiry(played: &Played, universe: Option<&BTreeSet<usize>>, arrivals: &[Arrival], upto: WallMs) -> BTreeSet<(Tid, Ak)> {
+fn waited_at_expiry(played: &Played, universe: Option<&BTreeSet<usize>>, arrivals: &[Arrival], upto: WallMs) -> BTreeSet<(Tid, Ak)> {
     let blob = |i: usize| osis_commit::CommitBlob::decode_stored(&played.packs[i].bytes).ok();
     let held_ais = |i: usize| -> BTreeSet<usize> { blob(i).map_or(BTreeSet::new(), |b| b.parts.iter().map(|p| p.ai).collect()) };
     let ais_of = |i: usize| -> BTreeSet<usize> { if universe.is_some() { held_ais(i) } else { blob(i).map_or(BTreeSet::new(), |b| (0..b.header.aspects.len()).collect()) } };
@@ -1484,9 +1496,9 @@ fn node_checks(p: &mut Peer, played: &Played, o: &Oracle, w: &Waited) -> Result<
             return Err(format!("{when}: the permission index differs from its walk from scratch"));
         }
         let before = shown(p, &played.things);
-        // every writer compacted last: nothing is left apart until a copy arrives, but on an
-        // aspect no writer is left to compact
-        let unsettled = |k: &(String, String)| waited.contains(k) || played.no_writer_last.contains(k);
+        // every writer compacted last: nothing is left apart until a copy arrives, on the aspects
+        // a writer compacted (rosters: role commits are never dropped)
+        let unsettled = |k: &(String, String)| waited.contains(k) || (k.1 != ROSTER && !played.settled_last.contains(k));
         if let Some(d) = shown_differs(want, &before, &unsettled).filter(|_| played.settled) {
             return Err(format!("{when}, settled: shows other than the node keeping every body: {d}"));
         }
@@ -1518,6 +1530,72 @@ fn order_checks(played: &Played, order: &[usize], way: Way) -> Result<(), String
     let (mut rng, clock) = way.clone().parts();
     let mut p = deliver_with(played, order, rng.as_mut(), clock, &mut |_| {});
     node_checks(&mut p, played, &o, &waited(played, order, way))
+}
+
+/// A node given `order` that reopens after every ingest, its clock a millisecond on each time,
+/// shows what one given it the same way without reopening shows, once each has fetched what it
+/// counts missing (a reopen moves where pending commits apply, so when a part dropped while
+/// invalid is valid again). No excuse: both took the same parts at the same clocks.
+fn reopens_alike(played: &Played, order: &[usize]) -> Result<(), String> {
+    let tick = |p: &mut Peer| {
+        let now = p.engine.now();
+        p.clock.set(WallMs(now.0 + 1));
+    };
+    let mut r = deliver_with(played, order, None, None, &mut |p| tick(p));
+    let mut p = deliver_with(played, order, None, None, &mut |p| {
+        tick(p);
+        p.engine.reload().unwrap();
+    });
+    let held: Vec<usize> = (0..played.packs.len()).collect();
+    fetch_missing(&mut r, played, &held);
+    fetch_missing(&mut p, played, &held);
+    shown_differs(&shown(&mut r, &played.things), &shown(&mut p, &played.things), &|_| false).map_or(Ok(()), Err)
+}
+
+/// A node holding what hosts keep once covered bodies go (spec/permissions.md §5.1: a frontier
+/// lists commit IDs; §5.2: a valid snapshot vouches for what it carries): every role commit and
+/// snapshot whole, each other commit without the parts a held snapshot covers at the node keeping
+/// every body (none of it when that leaves no part), as made. `node_checks` it against `o`, the
+/// whole set's keep-everything node; how many parts it left out.
+fn covered_away(played: &Played, o: &Oracle) -> Result<usize, String> {
+    let n = played.packs.len();
+    let mut full = fresh(played.now);
+    full.engine.keep_bodies(true);
+    for t in played.sync.things() {
+        full.engine.set_syncing(*t, true).unwrap();
+    }
+    for pk in &played.packs {
+        let _ = full.engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    full.engine.reexamine().unwrap();
+    let snaps: Vec<(CommitId, Tid, Ak)> = full.engine.commit_ids().iter().filter_map(|c| full.engine.header(c).filter(|h| h.kind.is_compaction()).map(|h| h.aspects.iter().map(|a| (*c, a.tid, a.ak.clone())).collect::<Vec<_>>())).flatten().collect();
+    let mut packs = played.packs.clone();
+    let (mut order, mut ais, mut left) = (Vec::new(), BTreeMap::new(), 0);
+    for (i, pk) in played.packs.iter().enumerate() {
+        let h = full.engine.header(&pk.id).filter(|h| !h.kind.is_role() && !h.kind.is_compaction());
+        let covered: BTreeSet<usize> = h.as_ref().map_or(BTreeSet::new(), |h| (0..h.aspects.len()).filter(|ai| snaps.iter().any(|(s, t, k)| *t == h.aspects[*ai].tid && *k == h.aspects[*ai].ak && full.engine.covered(s, &pk.id, t, k).unwrap() == Some(true))).collect());
+        if covered.is_empty() {
+            order.push(i);
+            continue;
+        }
+        let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        let had = b.parts.len();
+        b.parts.retain(|p| !covered.contains(&p.ai));
+        left += had - b.parts.len();
+        if had > 0 && b.parts.is_empty() {
+            continue;
+        }
+        ais.insert(i, b.parts.iter().map(|p| p.ai).collect::<BTreeSet<usize>>());
+        packs[i].bytes = b.encode();
+        order.push(i);
+    }
+    let away = Played { packs, ..played.clone() };
+    let mut p = deliver(&away, &order);
+    let arrived: Vec<Arrival> = order.iter().map(|&i| Arrival { pack: i, ais: ais.get(&i).cloned(), at: played.now, blobs: true }).collect();
+    let all: BTreeSet<usize> = (0..n).collect();
+    let read = |upto| printed(waited_at_expiry(played, Some(&all), &arrived, upto));
+    node_checks(&mut p, played, o, &Waited { now: read(played.now), later: read(later_than(played)) })?;
+    Ok(left)
 }
 
 const FRESH: u64 = 0x5eed_f00d;
@@ -1591,19 +1669,20 @@ impl SyncPlan {
     }
 }
 
-/// The history as the seed's fresh nodes get it, by `seed % 3`: as made; each thing synced from
-/// the start with probability one half and half of the commits with parts on several aspects
-/// held in part for good (`Syncs::Early`); or things synced at varying points, with such parts
-/// withheld too (`Syncs::Late`).
-fn with_syncs(mut played: Played, seed: u64, settled: bool) -> Played {
+/// The history as the seed's fresh nodes get it, by `seed % 3` (`away`: one of the last two):
+/// as made; each thing synced from the start with probability one half and half of the commits
+/// with parts on several aspects held in part for good (`Syncs::Early`); or things synced at
+/// varying points, with such parts withheld too (`Syncs::Late`). Not withheld when `settled`.
+fn with_syncs(mut played: Played, seed: u64, settled: bool, away: bool) -> Played {
     let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
     let mut half = |ts: &[Tid]| ts.iter().copied().filter(|_| rng.below(2) == 0).collect::<Vec<_>>();
     let things = played.things.clone();
     let (on, other) = (half(&things), half(&things));
     let prefix: Vec<Tid> = other.into_iter().filter(|t| !on.contains(t)).collect();
-    match seed % 3 {
+    // parts away: always some synced and some parts withheld
+    match if away { 1 + seed % 2 } else { seed % 3 } {
         0 => {}
-        _ => {
+        mode => {
             for i in played.base..played.packs.len() {
                 let mut b = osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap();
                 let ais: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
@@ -1613,9 +1692,10 @@ fn with_syncs(mut played: Played, seed: u64, settled: bool) -> Played {
                     let keep = ais.iter().copied().nth(rng.below(ais.len() as u64) as usize).unwrap();
                     b.parts.retain(|x| x.ai == keep);
                     played.packs[i].bytes = b.encode();
+                    played.withheld += 1;
                 }
             }
-            played.sync = if seed % 3 == 1 { Syncs::Early { on, prefix } } else { Syncs::Late { on } };
+            played.sync = if mode == 1 { Syncs::Early { on, prefix } } else { Syncs::Late { on } };
         }
     }
     played
@@ -1829,31 +1909,31 @@ struct Cfg {
     /// A seed's orders are independent tasks (each late-parts order split by its own rng), run
     /// on `threads` threads; else they run in turn, split by one rng.
     par_orders: bool,
-    /// Set by `run`: the threads a seed's orders share (cores over the seeds run at once).
+    /// Set by `held_set_decides_at`: the threads a seed's orders share (cores over the seeds run at once).
     threads: usize,
-    /// Set by `run`: fresh nodes sync things, by seed (`with_syncs`).
+    /// Fresh nodes sync things, by seed (`with_syncs`).
     sync: bool,
     /// `settled` histories: the whole held set only, equal before the sync exchange too.
     settled: bool,
     /// Every node judged is also compared with held-model (`held::compare`).
     model: bool,
-    /// With `model`: tally every difference and fail on none (`held::Coverage::survey`).
-    survey: bool,
     /// The history's peers answer removals with addenda (`play_with`).
     addenda: bool,
+    /// Parts away: fresh nodes sync things and hold half the multi-part commits in part for good
+    /// (`with_syncs`), and the whole set is also given without what its snapshots cover
+    /// (`covered_away`).
+    away: bool,
 }
 
-const SMALL: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 1, split: 2, clock: 2, par_orders: false, threads: 1, sync: false, settled: false, model: false, survey: false, addenda: false };
-const LARGE: Cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: false, settled: false, model: false, survey: false, addenda: false };
-/// Every order of the whole set and 2 partial sets (`OSIS_ORDER_ALL_HELD`: of every held set),
-/// every order with late parts too (6 commits: up to 720 orders), 24 of them at an earlier clock
-/// (every order clocked cost +50%; `OSIS_ORDER_CLOCK=720` gives that back).
-const EXHAUST: Cfg = Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: 24, par_orders: true, threads: 1, sync: false, settled: false, model: false, survey: false, addenda: false };
-/// The same up to 5 commits (120 orders), for tier 1.
-const EXHAUST_SMALL: Cfg = Cfg { all_up_to: 5, subsets: 1, ..EXHAUST };
+/// The one order config (`held_set_decides`): as made, reversed, as fetched, every order of a
+/// whole set of at most 4 commits after the setup, shuffles, two partial held sets, two orders
+/// each with late parts and at an earlier clock; every node judged by held-model too. Sizes
+/// change the counts (`Size`), never the kinds.
+const ORDERS: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 2, split: 2, clock: 2, par_orders: false, threads: 1, sync: true, settled: false, model: true, addenda: false, away: false };
+
 /// A hand-written history's orders, none shuffled or drawn: as made, reversed and as a first
 /// sync fetches it, of the whole set and two first-sync prefixes.
-const NAMED: Cfg = Cfg { random: 0, subsets: 0, split: 0, clock: 0, ..LARGE };
+const NAMED: Cfg = Cfg { all_up_to: 0, random: 0, subsets: 0, split: 0, clock: 0, sync: false, model: false, ..ORDERS };
 
 /// The arrival orders of `held` tried: as made (the reference), reversed, every order of the
 /// held commits after the setup when there are at most `all_up_to` (and the whole set is held,
@@ -1926,8 +2006,13 @@ fn held_sets(played: &Played, subsets: usize, rng: &mut Rng) -> Vec<Vec<usize>> 
 #[derive(Clone, Debug, Default)]
 struct Seen {
     orders: usize,
+    /// Seeds passed per emphasis (`Emphasis`).
+    emphases: BTreeMap<String, u64>,
     /// Its steps' outcomes.
     tally: Tally,
+    /// Commit steps and those that made a commit, outside settled histories (whose tail tries
+    /// every compaction, most refused).
+    steps: (u64, u64),
     /// The reference node's pending commits, by reason, over the held sets.
     pending: BTreeMap<String, u64>,
     /// The reference node's commits with an invalid part, over the held sets.
@@ -1952,6 +2037,13 @@ struct Seen {
     /// Deliveries at an earlier clock (`Clock`), and those whose move changed a state or a body.
     clocked: u64,
     moved: u64,
+    /// Orders delivered reopening after every ingest (`reopens_alike`).
+    reopened: u64,
+    /// Parts left out as covered (`covered_away`), commits held in part for good (`with_syncs`).
+    covered_away: u64,
+    withheld: u64,
+    /// Settled histories checked.
+    settled: u64,
     /// What the held-model comparison covered (`Cfg::model`).
     model: crate::held::Coverage,
 }
@@ -1960,6 +2052,7 @@ impl Seen {
     fn add(&mut self, o: &Seen) {
         self.orders += o.orders;
         self.tally.add(&o.tally);
+        self.steps = (self.steps.0 + o.steps.0, self.steps.1 + o.steps.1);
         self.invalid += o.invalid;
         self.broken += o.broken;
         self.fallen += o.fallen;
@@ -1971,6 +2064,10 @@ impl Seen {
         }
         self.clocked += o.clocked;
         self.moved += o.moved;
+        self.reopened += o.reopened;
+        self.covered_away += o.covered_away;
+        self.withheld += o.withheld;
+        self.settled += o.settled;
         self.model.add(&o.model);
         for (k, v) in &o.pending {
             *self.pending.entry(k.clone()).or_default() += v;
@@ -1978,54 +2075,67 @@ impl Seen {
         for (k, v) in &o.aspects {
             *self.aspects.entry(k.clone()).or_default() += v;
         }
+        for (k, v) in &o.emphases {
+            *self.emphases.entry(k.clone()).or_default() += v;
+        }
     }
 
-    /// A run of many seeds that did not reach what the generators are for is a harness bug: the
-    /// oracle would pass while testing nothing. Most steps commit, over 20 or more of them (one
-    /// short history, a replay, may be mostly refused); 20 seeds or more reach an invalid part
-    /// (no window of 2000 focused or 1000 short histories lacked one). `broad`: long `history`s
-    /// reach every shape too (over 500 such seeds, no window lacked one; 8-step histories rarely
-    /// reach any).
-    fn floors(&self, name: &str, seeds: usize, broad: bool) {
-        let (n, m) = self.tally.totals();
-        // `settled` tries every compaction, most refused
-        assert!(n < 20 || m * 2 >= n || name.contains("settled"), "order::{name}: {m} of {n} commit steps made a commit:\n{}", self.tally.show());
-        // what the required retention harness is for
-        assert!(!name.contains("required") || (self.broken > 0 && self.fallen > 0), "order::{name}: no delta broke a required retention, or none of them fell: {self:?}");
-        // what the record-only harness is for: a first admin's record edge removed
-        assert!(!name.contains("record_only") || seeds < 4 || self.tally.kinds.get("RemoveFlow(record)").is_some_and(|k| k.1 > 0), "order::{name}: no record edge removed:\n{}", self.tally.show());
-        // what the addenda harness is for: histories carrying them
-        assert!(!name.contains("addenda") || self.aspects.contains_key(osis_schema::core_types::ADDENDA_AK), "order::{name}: no addendum written: {:?}\n{}", self.aspects, self.tally.show());
-        // signal writes made reach the nodes judged (`aspects`: the whole set held), and
-        // held-model compares them where it runs
-        let signals = self.tally.kinds.get("Signal").map_or(0, |k| k.1);
-        assert!(signals == 0 || self.aspects.get("t:sig~0").is_some_and(|n| *n > 0), "order::{name}: {signals} signal writes made, none held: {:?}", self.aspects);
-        assert!(signals == 0 || self.model.nodes == 0 || self.model.reached.get("signal parts").is_some_and(|n| *n > 0), "order::{name}: {signals} signal writes made, held-model compared none: {:?}", self.model.reached);
-        if seeds < 20 {
+    /// The coverage tally: a run that did not reach what the generator is for is a harness bug
+    /// (the oracle would pass while testing nothing). Every floor follows from the run's size:
+    /// every run judged nodes; each emphasis that ran outside the exhaustive cap reached its own
+    /// outcome (`by`: those seeds per emphasis; a capped history may stop before its start ends);
+    /// seeds of every emphasis outside the cap (`open`) reached a commit of every step kind tried
+    /// ten times or more and every judging path (a clock move over 300 clocked deliveries).
+    fn floors(&self, open: &Seen, by: &BTreeMap<String, Seen>) {
+        let fail = |what: &str| -> ! { panic!("held_set_decides: {what}:\n{}\n{open:?}", open.tally.show()) };
+        if self.judged[0] == 0 || self.model.compared == 0 {
+            fail("no node judged against the oracle and held-model");
+        }
+        // each emphasis's outcome, over its own seeds
+        type Reached = fn(&Seen) -> bool;
+        let checks: [(Emphasis, &str, Reached); 8] = [
+            (Emphasis::Purges, "a permanent delta purged by name and one by author", |s| s.tombstones > 0 && s.by_author > 0),
+            (Emphasis::Keeps, "kept writes on a register, a set and a map, and held-model judging a covered body kept until T", |s| ["t:kept.0", "t:keptset.0", "t:keptmap.0"].iter().all(|a| s.aspects.contains_key(*a)) && s.model.reached.get("covered kept until T").is_some_and(|n| *n > 0)),
+            (Emphasis::Required, "a delta broke a required retention and a setting fell", |s| s.broken > 0 && s.fallen > 0),
+            (Emphasis::RecordOnly, "a first admin's record edge removed", |s| s.tally.kinds.get("RemoveFlow(record)").is_some_and(|x| x.1 > 0)),
+            (Emphasis::Lists, "list elements written, some by a writer predating the undo expiry rule", |s| s.aspects.contains_key("t:listtext.0") && s.tally.kinds.iter().any(|(k, x)| k.ends_with("(old)") && x.1 > 0)),
+            (Emphasis::PartsAway, "parts held away and parts left out as covered", |s| s.withheld > 0 && s.covered_away > 0),
+            (Emphasis::Settled, "a settled history judged before its exchange", |s| s.settled > 0),
+            (Emphasis::Addenda, "an addendum written", |s| s.aspects.contains_key(osis_schema::core_types::ADDENDA_AK)),
+        ];
+        for (e, what, reached) in checks {
+            if by.get(&format!("{e:?}")).is_some_and(|s| !reached(s)) {
+                fail(&format!("{e:?} seeds ran, but not {what}"));
+            }
+        }
+        if !EMPHASES.iter().all(|e| by.contains_key(&format!("{e:?}"))) {
             return;
         }
-        assert!(!self.tally.kinds.contains_key("PurgeAuthor") || self.by_author > 0, "order::{name}: no delta purged by author: {self:?}");
-        // a history with no role change or hostile commit (`seq_compact_history`) has none to reach
-        assert!(!self.tally.kinds.contains_key("Purge") || self.tombstones > 0, "order::{name}: no permanent delta purged: {self:?}");
-        // a purge whose right fell after a node applied it (spec/permissions.md §6): the sync
-        // exchange brings content back
-        assert!(!self.tally.kinds.contains_key("Purge") || self.restored > 0 || name.contains("settled"), "order::{name}: no sync exchange brought content back: {self:?}");
-        let can_fall = ["Forged", "Demote", "Edge"].iter().any(|k| self.tally.kinds.contains_key(*k));
-        assert!(!can_fall || self.invalid > 0, "order::{name}: no invalid part: {self:?}");
-        // an earlier clock that never changes anything at its move tests nothing (where histories
-        // pass expiries and keep bounds: purge and required ones need not)
-        let timed = name.contains("alike") || name.contains("exhaustive");
-        assert!(!timed || self.clocked == 0 || self.moved > 0, "order::{name}: no move of an earlier clock changed a state or a body: {self:?}");
-        // the per-node checks judged something
-        // `focused_history` draws no expiry or purge, so `value_past_end` may meet nothing there
-        assert!(!timed || (self.judged[0] > 0 && (self.judged[1] > 0 || name.contains("exhaustive"))), "order::{name}: a per-node check judged nothing: {self:?}");
-        // a history setting required retentions reaches a delta breaking one
-        assert!(!self.tally.kinds.contains_key("Require") || self.broken > 0, "order::{name}: no delta broke a required retention: {self:?}");
-        if broad {
-            for a in ["t:text.0", "t:docs.0", "t:list.0", "t:count.0", "t:map.0"] {
-                assert!(self.aspects.contains_key(a), "order::{name}: no write on {a}: {self:?}");
+        let (n, m) = open.steps;
+        if m * 2 < n {
+            fail(&format!("{m} of {n} commit steps made a commit"));
+        }
+        // a kind refused ten times in a row is refused always (most kinds commit half the time
+        // or more)
+        for (k, (n, c)) in &open.tally.kinds {
+            if *n >= 10 && *c == 0 {
+                fail(&format!("none of {n} {k} steps made a commit"));
             }
-            assert!(self.pending.contains_key("MissingChain"), "order::{name}: no commit without its chain: {self:?}");
+        }
+        let paths = [
+            ("an invalid part", open.invalid > 0),
+            ("a commit waiting for what it needs", !open.pending.is_empty()),
+            ("a signal write held and judged by held-model", open.aspects.contains_key("t:sig~0") && open.model.reached.get("signal parts").is_some_and(|n| *n > 0)),
+            // about one clocked delivery in fifty moves something: judged over 300 or more
+            ("a move of an earlier clock changing a state or a body", open.moved > 0 || open.clocked < 300),
+            ("purged or expired deltas judged", open.judged[1] > 0),
+            ("a reopen after every ingest", open.reopened > 0),
+            ("a sync exchange bringing content back", open.restored > 0),
+        ];
+        for (what, ok) in paths {
+            if !ok {
+                fail(&format!("a whole emphasis cycle reached no {what}"));
+            }
         }
     }
 }
@@ -2038,9 +2148,8 @@ fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
 
 fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     let played = play_with(seed, steps, cfg.addenda);
-    let played = if cfg.sync { with_syncs(played, seed, cfg.settled) } else { played };
-    let cov = crate::held::Coverage { survey: cfg.survey, ..Default::default() };
-    let model = cfg.model.then(|| std::sync::Arc::new((crate::held::History::new(&played.packs), std::sync::Mutex::new(cov))));
+    let played = if cfg.sync { with_syncs(played, seed, cfg.settled, cfg.away) } else { played };
+    let model = cfg.model.then(|| std::sync::Arc::new((crate::held::History::new(&played.packs), std::sync::Mutex::new(crate::held::Coverage::default()))));
     let played = Played { model, settled: cfg.settled, ..played };
     let played = &played;
     let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
@@ -2175,9 +2284,24 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             }
         }
         if held == whole {
+            if !played.settled {
+                // a node reopening after every ingest (its clock moving) reads as one that never did
+                for order in &orders[..2] {
+                    reopens_alike(played, order).map_err(|d| format!("{of}, order {order:?} reopened after every ingest: {d}"))?;
+                    seen.reopened += 1;
+                }
+            }
+            if cfg.away {
+                seen.covered_away += covered_away(played, &o).map_err(|d| format!("{of} without what its snapshots cover: {d}"))? as u64;
+            }
             full = Some(o);
         }
     }
+    seen.withheld = played.withheld;
+    if !played.settled {
+        seen.steps = played.tally.totals();
+    }
+    seen.settled = u64::from(played.settled);
     if let Some(m) = &played.model {
         seen.model = m.1.lock().unwrap().clone();
     }
@@ -2207,44 +2331,36 @@ fn shrink(seed: u64, mut steps: Vec<Step>, cfg: Cfg) -> (Vec<Step>, String) {
     (steps, err)
 }
 
-fn history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
-    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    let mut steps: Vec<Step> = (0..len).map(|_| random_step(&mut rng)).collect();
-    // every other history also sets required retentions and breaks them
-    if seed.is_multiple_of(2) {
-        let mut r = Rng(seed.wrapping_mul(0xd6e8_feb8_6659_fd93) | 1);
-        for _ in 0..len / 6 {
-            steps.insert(r.below(steps.len() as u64 + 1) as usize, required_step(&mut r));
-        }
-    }
-    steps
+/// What a seed leans toward, by `seed % 8`: every feature is drawn in every history, each from its
+/// own stream (`generate`), and the emphasis raises one group's share or shapes the whole
+/// history (settled, addenda, parts away).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Emphasis {
+    /// Permanent messages, signal writes, purges by name, wide and by author.
+    Purges,
+    /// Writes under keep-at-least (after replaced, or until T) and their compactions.
+    Keeps,
+    /// Required retention set, broken and fallen.
+    Required,
+    /// Things made by their record alone, grants and removals through the flows.
+    RecordOnly,
+    /// Sequences: expiring list elements, texts, writers predating the undo expiry rule.
+    Lists,
+    /// Multi-part commits held in part for good, split over things, bad parts, covered parts left
+    /// out (`Cfg::away`).
+    PartsAway,
+    /// Every writer compacts last (`settled`): alike before the sync exchange too.
+    Settled,
+    /// The writers answer removals with addenda (`play_with`).
+    Addenda,
 }
 
-/// `history`'s random steps with things made by their record alone among G's (spec/permissions.md §1, §2, §3): their
-/// creation (first admin a peer or G), grants through the flow (a plain thing's secrets of its own
-/// first) and removals or lowerings through the flow, a first admin's record edge included.
-fn record_only_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
-    let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
-    let aim = |x: Step| Step::Aim(Box::new(x));
-    let mut steps = vec![Step::RecordOnly { by: 0, under: None }];
-    for _ in 0..len {
-        let (by, t) = (rng.below(3) as usize, rng.below(8) as usize);
-        steps.push(match rng.below(10) {
-            0 if rng.below(2) == 0 => Step::RecordOnly { by, under: None },
-            0 => aim(Step::RecordOnly { by, under: Some(0) }),
-            1 | 2 => aim(Step::GrantFlow { by, t, holder: rng.below(4) as usize, role: rng.pick(&[Role::Read, Role::Write, Role::Admin, Role::Admin]) }),
-            3 | 4 => aim(Step::RemoveFlow { by, t, holder: rng.below(4) as usize, lower: rng.below(4) == 0 }),
-            _ => random_step(&mut rng),
-        });
-    }
-    steps
+const EMPHASES: [Emphasis; 8] = [Emphasis::Purges, Emphasis::Keeps, Emphasis::Required, Emphasis::RecordOnly, Emphasis::Lists, Emphasis::PartsAway, Emphasis::Settled, Emphasis::Addenda];
+
+fn emphasis(seed: u64) -> Emphasis {
+    EMPHASES[(seed % EMPHASES.len() as u64) as usize]
 }
 
-/// A short history aimed at keep bounds and validity together: writes of two bounded aspects
-/// (purge-on-replace ones by the first admin, keep-at-least ones mostly by the others), their compactions, undo, demotions
-/// and grants, nested writes under others' entries, one clock pulled ahead (a write made later
-/// by a peer behind sorts earlier), sends and syncs. Cut to the longest prefix making at most
-/// `cfg.all_up_to` commits after the setup (a prefix of a history plays as its start).
 /// A step of a thing's required retention: an admin's change or a write that may break it.
 fn required_step(r: &mut Rng) -> Step {
     let (by, t, op) = (r.below(3) as usize, r.below(3) as usize, r.below(DRAWN as u64) as u8);
@@ -2255,88 +2371,165 @@ fn required_step(r: &mut Rng) -> Step {
     }))
 }
 
-/// Short histories around required retention: changes, breaking and fitting writes, demotions of
-/// the admin who made a change, compactions, all on one thing, so every order meets them.
-fn required_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
-    let mut rng = Rng(seed.wrapping_mul(0xa24b_aed4_963e_e407) | 1);
-    let op = rng.below(DRAWN as u64) as u8;
-    // Carol's rule, a write breaking it, and Alice demoting her with or without having received
-    // the rule, so it may fall
-    let mut steps = vec![
-        Step::Require { by: 2, t: 0, op, rule: 2 + rng.below(2) as u8 },
-        Step::Breaking { by: 1, t: 0, op, v: 1, fits: false },
-    ];
-    if rng.below(2) == 0 {
-        steps.push(Step::Sync { from: 2, to: 0 });
-    }
-    steps.push(Step::Aim(Box::new(Step::Demote { by: 0, t: 0, holder: 2, at: rng.below(2) as u8, to_read: false })));
-    while steps.len() < len {
-        let by = rng.below(3) as usize;
-        steps.push(match rng.below(11) {
-            10 => Step::Require { by: 1, t: 0, op, rule: 4 + rng.below(4) as u8 },
-            0..=3 => Step::Aim(Box::new(Step::Breaking { by, t: 0, op, v: rng.below(10) as u8, fits: rng.below(3) == 0 })),
-            4 | 5 => Step::Aim(Box::new(Step::Require { by: rng.pick(&[0, 2]), t: 0, op, rule: rng.below(4) as u8 })),
-            6 => Step::Aim(Box::new(Step::Demote { by: 0, t: 0, holder: 2, at: rng.below(4) as u8, to_read: false })),
-            7 => Step::Aim(Box::new(Step::Compact { by: rng.pick(&[0, by]), t: 0, op })),
-            8 => Step::Advance { who: Some(by), ms: 1 + rng.below(2_000) },
-            _ => Step::Sync { from: by, to: (by + 1 + rng.below(2) as usize) % 3 },
-        });
-    }
-    // the bound on commits an exhaustive run takes
-    let mut k = steps.len();
-    while k > 0 && !caught(|| {
-        let p = play(seed, &steps[..k]);
-        Ok::<_, String>(p.packs.len() - p.base <= cfg.all_up_to)
-    })
-    .unwrap_or(true)
-    {
-        k -= 1;
-    }
-    steps.truncate(k);
-    steps
-}
+/// The ops of writes that keep history: after replaced (registers, sets, map fields, texts, a
+/// map of strings), and until an absolute time (a list insert).
+const KEPT_OPS: [u8; 9] = [16, 21, 22, 23, 24, 30, 35, 36, 26];
+/// Sequence ops: texts in a map entry, texts, lists, kept texts, expiring list elements, others'
+/// writes in them and their removals.
+const SEQ_OPS: [u8; 12] = [8, 9, 10, 11, 14, 23, 24, 26, 32, 32, 33, 34];
 
-fn focused_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
-    let mut rng = Rng(seed.wrapping_mul(0xa076_1d64_78bd_642f) | 1);
-    // two bounded aspects per history, so writes, compactions and undos meet
-    const BOUNDED: [u8; 12] = [16, 17, 18, 19, 20, 21, 22, 23, 24, 26, 30, 31];
-    let ops = [rng.pick(&BOUNDED), rng.pick(&BOUNDED)];
-    let steps: Vec<Step> = (0..len)
-        .map(|_| {
-            let by = rng.below(3) as usize;
-            let t = rng.below(2) as usize;
-            let op = rng.pick(&ops);
-            match rng.below(22) {
-                // a hostile commit among the rest: its parts wait, or judge invalid, in every order
-                20 | 21 => Step::Forged { by, a: t, b: rng.below(2) as usize, how: rng.below(5) as u8, op, k: rng.below(2) as u8, v: rng.below(10) as u8 },
-                0..=6 => Step::Aim(Box::new(Step::Typed { by: if (17..=20).contains(&op) || op == 31 || rng.below(3) == 0 { 0 } else { 1 + rng.below(2) as usize }, t, op, k: rng.below(2) as u8, v: rng.below(10) as u8 })),
-                7 | 8 => Step::Aim(Box::new(Step::Compact { by: rng.pick(&[0, 0, by]), t, op })),
-                9 | 10 => Step::Aim(Box::new(Step::Undo { by: rng.pick(&[0, by]), back: rng.below(3) as u8 })),
-                11 | 12 => Step::Aim(Box::new(Step::Demote { by: rng.pick(&[0, 0, 2]), t, holder: rng.pick(&[1, 2]), at: rng.below(4) as u8, to_read: rng.below(3) == 0 })),
-                13 => Step::Edge { by: 0, t, holder: rng.pick(&[1, 2]), role: rng.pick(&[None, Some(Role::Read), Some(Role::Write)]) },
-                14 => Step::Aim(Box::new(Step::Nested { by, other: (by + 1 + rng.below(2) as usize) % 3, t, k: rng.below(2) as u8, text: rng.below(2) == 0, compact: rng.below(2) == 0, also: rng.below(3) == 0 })),
-                15 | 16 => Step::Advance { who: Some(rng.below(3) as usize), ms: 1 + rng.below(3_000) },
-                17 => Step::Advance { who: None, ms: HOUR / 4 + rng.below(HOUR) },
-                18 => {
-                    let from = rng.below(3) as usize;
-                    Step::Send { from, to: (from + 1 + rng.below(2) as usize) % 3, back: rng.below(2) as u8 }
-                }
-                _ => {
-                    let from = rng.below(3) as usize;
-                    Step::Sync { from, to: (from + 1 + rng.below(2) as usize) % 3 }
+/// One history of `len` steps for `seed`, and its emphasis. Every step first draws its group
+/// (`General` mostly; the emphasis's own group five times its share), then draws its step from
+/// that group's own stream, so a change to one group's draws leaves every other group's steps
+/// as they were. Groups other than `General` act on the first three things, so their steps meet.
+/// The emphasis also shapes the whole history: a start that reaches its outcome (a fallen and a
+/// broken required setting, a record-only thing, an addendum, a signal), the settling tail.
+fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
+    use Step::*;
+    let e = emphasis(seed);
+    let stream = |k: u64| Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15).wrapping_add(k.wrapping_mul(0xd1b5_4a32_d192_ed03)) | 1);
+    let mut pick = stream(1);
+    let (mut general, mut purges, mut keeps, mut required, mut record, mut lists, mut parts) = (stream(2), stream(3), stream(4), stream(5), stream(6), stream(7), stream(8));
+    let aim = |x: Step| Aim(Box::new(x));
+    let mut h = Vec::new();
+    // the start an emphasis needs, from its group's stream
+    match e {
+        // a signal, a message purged by author and one purged by name
+        Emphasis::Purges => {
+            let v = purges.below(10) as u8;
+            let tick = Advance { who: None, ms: 1_000 };
+            h.extend([aim(Signal { by: 1, t: 0, v }), Message { by: 1, t: 0, v }, Sync { from: 1, to: 0 }, tick.clone(), PurgeAuthor { by: 0, t: 0, of: 1 }, Message { by: 2, t: 0, v }, Sync { from: 2, to: 0 }, tick, Purge { by: 0, t: 0, of: 2, back: 0, v }]);
+        }
+        // a register write kept until T (`retention_of`: `v` 3 or 9) replaced and compacted, then
+        // writes on a kept set and map (an even `v` adds to the set)
+        Emphasis::Keeps => {
+            let tick = Advance { who: None, ms: 10 };
+            h.extend([Typed { by: 0, t: 0, op: 16, k: 0, v: 3 + 6 * keeps.below(2) as u8 }, tick.clone(), Typed { by: 0, t: 0, op: 16, k: 0, v: 2 * keeps.below(5) as u8 }, tick, Compact { by: 0, t: 0, op: 16 }]);
+            h.extend([21, 35].map(|op| Typed { by: keeps.below(3) as usize, t: 0, op, k: keeps.below(3) as u8, v: 2 * keeps.below(5) as u8 }));
+        }
+        Emphasis::Required => {
+            let op = required.pick(&KEPT_OPS);
+            // the first admin's setting stands and 1's write breaks it; Carol's, a second on, falls
+            // when Alice demotes her as of the setup (Carol has no writes before it)
+            h.extend([Require { by: 0, t: 0, op, rule: 3 }, Advance { who: None, ms: 1_000 }, Require { by: 2, t: 0, op, rule: 2 }, Breaking { by: 1, t: 0, op, v: 1, fits: false }, Sync { from: 2, to: 0 }, Demote { by: 0, t: 0, holder: 2, at: 0, to_read: false }]);
+        }
+        // a record-only thing (thing 1), another admin, and its first admin's record edge removed
+        Emphasis::RecordOnly => h.extend([RecordOnly { by: 0, under: None }, GrantFlow { by: 0, t: 1, holder: 2, role: Role::Admin }, RemoveFlow { by: 0, t: 1, holder: 0, lower: false }]),
+        Emphasis::Addenda => {
+            // Bob's write reaches Carol, Alice demotes him with a frontier before it, Carol applies
+            // the demotion and vouches for the write, and grants Bob write again
+            h.extend([Write { by: 1, t: 0, op: 0, k: 0, v: 0 }, Sync { from: 1, to: 2 }, Advance { who: None, ms: 1_000 }, Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false }, Sync { from: 0, to: 2 }, Edge { by: 2, t: 0, holder: 1, role: Some(Role::Write) }]);
+        }
+        _ => {}
+    }
+    // group shares: general, purges, keeps, required, record-only, lists, parts
+    let mut weights = [40u64, 6, 6, 5, 4, 5, 4];
+    let own = match e {
+        Emphasis::Purges => Some(1),
+        Emphasis::Keeps => Some(2),
+        Emphasis::Required => Some(3),
+        Emphasis::RecordOnly => Some(4),
+        Emphasis::Lists => Some(5),
+        Emphasis::PartsAway => Some(6),
+        _ => None,
+    };
+    if let Some(g) = own {
+        weights[g] *= 5;
+    }
+    let total: u64 = weights.iter().sum();
+    while h.len() < len {
+        let mut x = pick.below(total);
+        let g = weights.iter().position(|w| x < *w || { x -= w; false }).unwrap_or(0);
+        h.push(match g {
+            0 => random_step(&mut general),
+            1 => {
+                let r = &mut purges;
+                let (by, t, v) = (r.below(3) as usize, r.below(3) as usize, r.below(10) as u8);
+                match r.below(10) {
+                    0..=3 => aim(Message { by, t, v }),
+                    4 | 5 => aim(Purge { by: r.below(3) as usize, t, of: by, back: r.below(4) as u8, v }),
+                    6 => aim(PurgeNamed { by: r.below(3) as usize, t, of: r.below(3) as usize, back: r.below(3) as u8, v }),
+                    7 => aim(PurgeAuthor { by: r.below(3) as usize, t, of: by }),
+                    _ => aim(Signal { by, t, v }),
                 }
             }
-        })
-        .collect();
-    // commits made grow with the prefix: the longest prefix within the bound
-    let fits = |k: usize| {
-        // a play that panics is one `check` reports
-        caught(|| {
-            let p = play(seed, &steps[..k]);
-            Ok::<_, String>(p.packs.len() - p.base <= cfg.all_up_to)
-        })
-        .unwrap_or(true)
-    };
+            2 => {
+                let r = &mut keeps;
+                let (by, t, op) = (r.below(3) as usize, r.below(2) as usize, r.pick(&KEPT_OPS));
+                match r.below(10) {
+                    0..=4 => aim(Typed { by, t, op, k: r.below(3) as u8, v: r.below(10) as u8 }),
+                    5..=7 => aim(Compact { by, t, op }),
+                    8 => aim(Undo { by, back: r.below(3) as u8 }),
+                    _ => Send { from: by, to: (by + 1 + r.below(2) as usize) % 3, back: r.below(3) as u8 },
+                }
+            }
+            3 => required_step(&mut required),
+            4 => {
+                let r = &mut record;
+                let (by, t) = (r.below(3) as usize, r.below(8) as usize);
+                match r.below(6) {
+                    0 if r.below(2) == 0 => RecordOnly { by, under: None },
+                    0 => aim(RecordOnly { by, under: Some(0) }),
+                    1 | 2 => aim(GrantFlow { by, t, holder: r.below(4) as usize, role: r.pick(&[Role::Read, Role::Write, Role::Admin, Role::Admin]) }),
+                    _ => aim(RemoveFlow { by, t, holder: r.below(4) as usize, lower: r.below(4) == 0 }),
+                }
+            }
+            5 => {
+                let r = &mut lists;
+                let (by, t, op) = (r.below(3) as usize, r.below(2) as usize, r.pick(&SEQ_OPS));
+                let step = match r.below(10) {
+                    0..=5 => aim(Typed { by, t, op, k: r.below(3) as u8, v: r.below(10) as u8 }),
+                    6 | 7 => aim(Compact { by, t, op }),
+                    8 => aim(Undo { by, back: r.below(3) as u8 }),
+                    _ => Advance { who: Some(by), ms: 400 + r.below(800) },
+                };
+                // a writer predating the undo expiry rule, in a quarter of the writes and undos
+                if !matches!(step, Advance { .. }) && !matches!(&step, Aim(x) if matches!(**x, Compact { .. })) && r.below(4) == 0 { Old(Box::new(step)) } else { step }
+            }
+            _ => {
+                let r = &mut parts;
+                let (by, a, b) = (r.below(3) as usize, r.below(3) as usize, r.below(3) as usize);
+                let op = r.pick(&[17, 18, 19, 19, 20, 30, 31]);
+                match r.below(13) {
+                    // a removal whose frontier goes by link
+                    12 => BigDemote { by: 0, t: a, holder: 1 + b % 2 },
+                    0..=3 => Mixed { by, t: a % 2, op, k: r.below(3) as u8, v: r.below(10) as u8 },
+                    // a snapshot covering what a node may then hold away
+                    10 | 11 => aim(Compact { by, t: a % 2, op: r.pick(&[op, 15, 0]) }),
+                    4 => Two { by, a, b: (a + 1 + b % 2) % 3, v: r.below(10) as u8 },
+                    // one role commit on two things
+                    5 => TwoEdges { by, a, b: (a + 1 + b % 2) % 3, holder: (by + 1) % 3, role: r.pick(&[Role::Read, Role::Write]) },
+                    6 => BadPart { by, a, b: (a + 1) % 3, how: r.below(2) as u8 },
+                    7 => aim(Nested { by, other: (by + 1 + r.below(2) as usize) % 3, t: a, k: r.below(3) as u8, text: r.below(2) == 0, compact: r.below(2) == 0, also: true }),
+                    8 => Forged { by, a, b, how: 1, op: 27 + r.below(3) as u8, k: 2, v: r.below(10) as u8 },
+                    _ => {
+                        let from = r.below(3) as usize;
+                        Sync { from, to: (from + 1 + r.below(2) as usize) % 3 }
+                    }
+                }
+            }
+        });
+    }
+    if e == Emphasis::Settled {
+        h = settled(h);
+    }
+    (e, h)
+}
+
+/// `cfg` for a history of emphasis `e`.
+fn cfg_of(e: Emphasis, cfg: Cfg) -> Cfg {
+    Cfg { settled: e == Emphasis::Settled, addenda: e == Emphasis::Addenda, away: e == Emphasis::PartsAway, ..cfg }
+}
+
+/// The longest prefix of `steps` making at most `max` commits after the setup (a prefix of a
+/// history plays as its start), for the exhaustive size. A play that panics keeps its length:
+/// `check` reports it.
+fn cap(seed: u64, steps: &[Step], addenda: bool, max: usize) -> Vec<Step> {
+    let fits = |k: usize| caught(|| Ok::<_, String>({
+        let p = play_with(seed, &steps[..k], addenda);
+        p.packs.len() - p.base <= max
+    }))
+    .unwrap_or(true);
     let (mut lo, mut hi) = (0, steps.len());
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
@@ -2345,151 +2538,171 @@ fn focused_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
     steps[..lo].to_vec()
 }
 
-/// Writes by every peer on kept aspects (a register, a set, map entries with fields and
-/// removals, a text), compactions by any of them, sends and syncs so snapshots carry stale copies
-/// and copies of dead writes, undo, and a demotion now and then (a flip): what dates a keep-for-D
-/// body's replacement (spec/commits.md §5), judged against held-model's date.
-fn kept_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
-    let mut rng = Rng(seed.wrapping_mul(0xd1b5_4a32_d192_ed03) | 1);
-    const KEPT_OPS: [u8; 7] = [16, 21, 22, 23, 24, 35, 36];
-    // map entries put and set (one stamp naming several writes), removed, in half the histories
-    let ops = if rng.below(2) == 0 { [35, 35, 36] } else { [rng.pick(&KEPT_OPS), rng.pick(&KEPT_OPS), rng.pick(&[35, 36])] };
-    (0..len)
-        .map(|_| {
-            let by = rng.below(3) as usize;
-            let t = usize::from(rng.below(4) == 0);
-            let op = rng.pick(&ops);
-            let to = (by + 1 + rng.below(2) as usize) % 3;
-            // syncs rare and sends of one commit common, so compactions carry stale copies
-            match rng.below(20) {
-                0..=7 => Step::Aim(Box::new(Step::Typed { by, t, op, k: rng.below(2) as u8, v: rng.below(10) as u8 })),
-                8..=11 => Step::Aim(Box::new(Step::Compact { by, t, op })),
-                12 => Step::Aim(Box::new(Step::Undo { by, back: rng.below(3) as u8 })),
-                13 => Step::Aim(Box::new(Step::Demote { by: 0, t, holder: rng.pick(&[1, 2]), at: rng.below(4) as u8, to_read: rng.below(3) == 0 })),
-                14 => Step::Advance { who: Some(by), ms: 1 + rng.below(3_000) },
-                15..=17 => Step::Send { from: by, to, back: rng.below(3) as u8 },
-                _ => Step::Sync { from: by, to },
-            }
-        })
-        .collect()
-}
-
-/// Sequence writes by every peer, undo, sends and syncs and compactions of those sequences: no
-/// role change, no hostile commit, so nothing falls. Three ops per history, so they meet.
-fn seq_compact_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
-    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    const SEQ: [u8; 8] = [8, 9, 10, 11, 14, 23, 24, 26];
-    let ops = [rng.pick(&SEQ), rng.pick(&SEQ), rng.pick(&SEQ)];
-    (0..len)
-        .map(|_| {
-            let by = rng.below(3) as usize;
-            let op = rng.pick(&ops);
-            let to = (by + 1 + rng.below(2) as usize) % 3;
-            match rng.below(10) {
-                0..=4 => Step::Aim(Box::new(Step::Typed { by, t: 0, op, k: rng.below(2) as u8, v: rng.below(10) as u8 })),
-                5 | 6 => Step::Compact { by, t: 0, op },
-                7 => Step::Aim(Box::new(Step::Undo { by, back: rng.below(3) as u8 })),
-                8 => Step::Send { from: by, to, back: rng.below(2) as u8 },
-                _ => Step::Sync { from: by, to },
-            }
-        })
-        .collect()
-}
-
-/// The seeds and history length a harness run checks, and its overrides.
+/// A run of `held_set_decides`: seeds, steps per history, the orders, and for the exhaustive size
+/// the bound on commits after the setup.
 struct Size {
+    name: &'static str,
     seeds: Vec<u64>,
     len: usize,
-    /// Orders per held set at an earlier clock, replacing the config's.
-    clock: Option<usize>,
-    /// Every held set where the config tries every order (`Cfg::every_held`; about 2.3x the time).
-    all_held: bool,
-    /// The overrides set, as printed.
-    settings: Vec<String>,
-    /// Read from the environment (`tier2`): a seed replays alone by `OSIS_ORDER_SEED`.
-    tier2: bool,
+    cfg: Cfg,
+    exhaustive: Option<usize>,
+    /// Read from the environment: a seed replays alone by `OSIS_ORDER_SEED`.
+    env: bool,
+}
+
+/// Tier 1: a seed of every emphasis, and one of every emphasis capped to 4 commits after the
+/// setup, checked in every order of every held set; no environment read.
+fn quick() -> Vec<Size> {
+    vec![
+        Size { name: "quick", seeds: (0..8).collect(), len: 32, cfg: ORDERS, exhaustive: None, env: false },
+        Size { name: "quick, exhaustive", seeds: (100..108).collect(), len: 30, cfg: Cfg { all_up_to: 4, every_held: true, random: 0, subsets: 1, split: usize::MAX, clock: 4, ..ORDERS }, exhaustive: Some(4), env: false },
+    ]
+}
+
+/// The environment's range (`OSIS_ORDER_START`, `OSIS_ORDER_SEEDS`, or `OSIS_ORDER_SEED` alone),
+/// a tenth of `full` unless `OSIS_FULL=1`; `OSIS_ORDER_LEN` sets the steps, `OSIS_ORDER_CLOCK`
+/// the orders per held set at an earlier clock.
+fn from_env(name: &'static str, full: std::ops::Range<u64>, len: usize, cfg: Cfg, exhaustive: Option<usize>) -> Size {
+    use osis_base::testenv::{Seeds, large, u64_var};
+    let range = Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", large(full));
+    range.announce(&format!("order::held_set_decides ({name})"));
+    let seeds = u64_var("OSIS_ORDER_SEED").map_or_else(|| range.range.collect(), |s| vec![s]);
+    let len = u64_var("OSIS_ORDER_LEN").map_or(len, |n| n as usize);
+    let clock = u64_var("OSIS_ORDER_CLOCK").map_or(cfg.clock, |n| n as usize);
+    Size { name, seeds, len, cfg: Cfg { clock, ..cfg }, exhaustive, env: true }
+}
+
+/// `plain`: 80 seeds of 60 steps at full size (`OSIS_FULL=1`), a tenth by default.
+fn plain() -> Size {
+    from_env("plain", 0..80, 60, Cfg { random: 6, subsets: 4, ..ORDERS }, None)
+}
+
+/// Every order of the whole set and of every held set, each with late parts, of histories of at
+/// most 6 commits after the setup (720 orders), 24 of them at an earlier clock; a seed's orders
+/// run on a thread each.
+fn exhaustive() -> Size {
+    from_env("exhaustive", 0..80, 40, Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: 24, par_orders: true, ..ORDERS }, Some(6))
 }
 
 impl Size {
-    /// The command that replays `seed` of test `name` (a tier-1 run reads no environment and is
-    /// deterministic: it replays whole).
-    fn replay(&self, name: &str, seed: u64) -> String {
-        let test = name.split(' ').next().unwrap_or(name);
-        if self.tier2 {
-            format!("OSIS_ORDER_SEED={seed} OSIS_ORDER_LEN={} cargo test -p osis-node --test it -- --ignored --exact order::{test}", self.len)
-        } else {
-            format!("cargo test -p osis-node --test it -- --exact order::{test}")
+    /// The command that replays `seed`.
+    fn replay(&self, seed: u64) -> String {
+        match (self.env, self.exhaustive) {
+            (false, _) => "cargo test -p osis-node --test it -- --exact order::held_set_decides".to_string(),
+            (true, None) => format!("OSIS_ORDER_SEED={seed} OSIS_ORDER_LEN={} cargo test -p osis-node --test it -- --ignored --exact order::held_set_decides_plain", self.len),
+            (true, Some(_)) => format!("OSIS_ORDER_SEED={seed} OSIS_ORDER_LEN={} cargo test -p osis-node --test it -- --ignored --exact order::held_set_decides_exhaustive", self.len),
         }
     }
 }
 
-/// A tier-1 run: fixed seeds and length; it reads no environment.
-fn quick(seeds: std::ops::Range<u64>, len: usize) -> Size {
-    Size { seeds: seeds.collect(), len, clock: None, all_held: false, settings: Vec::new(), tier2: false }
-}
-
-/// A tier-2 run: `OSIS_ORDER_SEED=n` runs only seed n; `OSIS_ORDER_START=n`, `OSIS_ORDER_SEEDS=n` and
-/// `OSIS_ORDER_LEN=n` set the first seed, how many seeds and steps (a seed's history and orders
-/// depend on the seed, the length and the test alone); `OSIS_ORDER_CLOCK=n` sets the orders per held
-/// set at an earlier clock (0: none); `OSIS_ORDER_ALL_HELD=1` tries every held set in exhaustive mode.
-fn tier2(seeds: std::ops::Range<u64>, len: usize) -> Size {
-    use osis_base::testenv::{Seeds, u64_var};
-    let range = Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", seeds);
-    let seeds = match u64_var("OSIS_ORDER_SEED") {
-        Some(o) => vec![o],
-        None => range.range.collect(),
-    };
-    let settings = ["OSIS_ORDER_SEED", "OSIS_ORDER_START", "OSIS_ORDER_SEEDS", "OSIS_ORDER_LEN", "OSIS_ORDER_CLOCK", "OSIS_ORDER_ALL_HELD"].iter().filter_map(|k| std::env::var(k).ok().map(|v| format!("{k}={v}"))).collect();
-    let len = u64_var("OSIS_ORDER_LEN").map_or(len, |n| n as usize);
-    let clock = u64_var("OSIS_ORDER_CLOCK").map(|n| n as usize);
-    Size { seeds, len, clock, all_held: u64_var("OSIS_ORDER_ALL_HELD").is_some_and(|n| n != 0), settings, tier2: true }
-}
-
-/// Checks the histories `gen` makes from `size`'s seeds (one seed per task, a thread per core) and
-/// reports every failing one, each with the command that replays it. `OSIS_ORDER_SHRINK=1` shrinks
-/// each failure first (slow: a shrink reruns the check per dropped step).
-fn run(name: &str, size: Size, cfg: Cfg, generate: fn(u64, usize, Cfg) -> Vec<Step>) {
+/// Checks the histories of `sizes`' seeds (one seed per task, a thread per core) and reports every
+/// failing one, each with the command that replays it; then the coverage tally (`Seen::floors`)
+/// over all of them. `OSIS_ORDER_SHRINK=1` shrinks each failure first (slow: a shrink reruns the
+/// check per dropped step).
+fn held_set_decides_at(sizes: Vec<Size>) {
     use osis_base::testenv::u64_var;
-    let replay = |seed| size.replay(name, seed);
-    let Size { ref seeds, len, clock, all_held, ref settings, .. } = size;
-    let t0 = std::time::Instant::now();
-    // seeds on a thread per core; with fewer seeds than cores, a seed's orders share the rest
-    let outer = threads("OSIS_ORDER_THREADS").min(seeds.len()).max(1);
-    let subsets = if cfg.every_held && all_held { usize::MAX } else { cfg.subsets };
-    let cfg = Cfg { threads: if cfg.par_orders { threads("OSIS_ORDER_THREADS").div_ceil(outer) } else { 1 }, sync: true, clock: clock.unwrap_or(cfg.clock), subsets, ..cfg };
-    let results = par_map(seeds, outer, |seed| {
-        let steps = generate(seed, len, cfg);
-        if std::env::var("OSIS_ORDER_STATS").is_ok() {
-            eprintln!("seed {seed}: vec!{steps:?}");
-        }
-        let r = check(seed, &steps, cfg);
-        let fail = r.as_ref().is_err().then(|| {
-            let shrunk = u64_var("OSIS_ORDER_SHRINK").is_some_and(|n| n != 0);
-            let (steps, err) = if shrunk { shrink(seed, steps, cfg) } else { (steps, r.clone().unwrap_err()) };
-            let what = if shrunk { "shrunk" } else { "as made; OSIS_ORDER_SHRINK=1 shrinks it" };
-            let msg = format!("seed {seed} (replay: {}; {what}, for check({seed}, &h, {cfg:?})): h = vec!{steps:?}\n{err}", replay(seed));
-            eprintln!("{msg}\n");
-            msg
-        });
-        (r.unwrap_or_default(), fail)
-    });
     let mut seen = Seen::default();
-    for r in &results {
-        seen.add(&r.0);
-    }
-    let tried = seen.orders;
-    let fails: Vec<String> = results.into_iter().filter_map(|x| x.1).collect();
-    let summary = format!("order::{name}: {} seeds from {}, {len} steps, {tried} orders in the passing ones, {} failing, {:.1} s (settings: {settings:?})", seeds.len(), seeds.first().copied().unwrap_or(0), fails.len(), t0.elapsed().as_secs_f64());
-    // always shown: the order counts are what a passing run is read for
-    osis_base::testenv::visible(true, &summary);
-    if cfg.model {
-        osis_base::testenv::visible(true, &format!("order::{name}: held-model compared {} aspects over {} nodes, reaching {:?}; skipped {:?}; differs {:?}", seen.model.compared, seen.model.nodes, seen.model.reached, seen.model.skipped, seen.model.differs));
+    let mut by: BTreeMap<String, Seen> = BTreeMap::new();
+    let mut open = Seen::default();
+    let mut fails = Vec::new();
+    for size in &sizes {
+        let t0 = std::time::Instant::now();
+        // seeds on a thread per core; with fewer seeds than cores, a seed's orders share the rest
+        let outer = threads("OSIS_ORDER_THREADS").min(size.seeds.len()).max(1);
+        let inner = if size.cfg.par_orders { threads("OSIS_ORDER_THREADS").div_ceil(outer) } else { 1 };
+        let results = par_map(&size.seeds, outer, |seed| {
+            let (e, steps) = generate(seed, size.len);
+            let cfg = Cfg { threads: inner, ..cfg_of(e, size.cfg) };
+            let steps = match size.exhaustive {
+                Some(max) => cap(seed, &steps, cfg.addenda, max),
+                None => steps,
+            };
+            if std::env::var("OSIS_ORDER_STATS").is_ok() {
+                eprintln!("seed {seed} ({e:?}): vec!{steps:?}");
+            }
+            let r = check(seed, &steps, cfg).map(|s| Seen { emphases: BTreeMap::from([(format!("{e:?}"), 1)]), ..s });
+            let fail = r.as_ref().is_err().then(|| {
+                let shrunk = u64_var("OSIS_ORDER_SHRINK").is_some_and(|n| n != 0);
+                let (steps, err) = if shrunk { shrink(seed, steps, cfg) } else { (steps, r.clone().unwrap_err()) };
+                let what = if shrunk { "shrunk" } else { "as made; OSIS_ORDER_SHRINK=1 shrinks it" };
+                let msg = format!("seed {seed}, {e:?} (replay: {}; {what}, for check({seed}, &h, {cfg:?})): h = vec!{steps:?}\n{err}", size.replay(seed));
+                eprintln!("{msg}\n");
+                msg
+            });
+            (r.unwrap_or_default(), fail)
+        });
+        let mut here = Seen::default();
+        for r in &results {
+            here.add(&r.0);
+            // an emphasis's outcome needs its whole start: none is judged under the exhaustive cap
+            if size.exhaustive.is_none() {
+                open.add(&r.0);
+                for e in r.0.emphases.keys() {
+                    by.entry(e.clone()).or_default().add(&r.0);
+                }
+            }
+        }
+        let failed: Vec<String> = results.into_iter().filter_map(|x| x.1).collect();
+        // always shown: the counts are what a passing run is read for
+        osis_base::testenv::visible(true, &format!("order::held_set_decides ({}): {} seeds from {}, {} steps, {} orders in the passing ones, {} failing, {:.1} s; held-model compared {} aspects over {} nodes", size.name, size.seeds.len(), size.seeds.first().copied().unwrap_or(0), size.len, here.orders, failed.len(), t0.elapsed().as_secs_f64(), here.model.compared, here.model.nodes));
+        seen.add(&here);
+        fails.extend(failed);
     }
     if std::env::var("OSIS_ORDER_STATS").is_ok() {
-        eprintln!("{}\npending {:?}, invalid {}, aspects {:?}, per-node checks judged {:?}, {} of {} early clocks changed a state or a body at the move", seen.tally.show(), seen.pending, seen.invalid, seen.aspects, seen.judged, seen.moved, seen.clocked);
+        eprintln!("{}\nemphases {:?}, pending {:?}, invalid {}, aspects {:?}, judged {:?}, {} of {} early clocks moved, model reached {:?}, skipped {:?}", seen.tally.show(), seen.emphases, seen.pending, seen.invalid, seen.aspects, seen.judged, seen.moved, seen.clocked, seen.model.reached, seen.model.skipped);
     }
-    assert!(fails.is_empty(), "{summary}\n{} of {} histories judged differently by arrival order:\n{}", fails.len(), seeds.len(), fails.join("\n\n"));
-    seen.floors(name, seeds.len(), !cfg.par_orders && !cfg.settled && len >= 60);
+    assert!(fails.is_empty(), "{} histories judged differently by what was held:\n{}", fails.len(), fails.join("\n\n"));
+    seen.floors(&open, &by);
+}
+
+// spec/requirements.md Decentralization (Deterministic: a node's state and its judgment of every
+// write are functions of the data it holds, never of arrival order); spec/commits.md §4, §5
+// (purge, required retention, history modes, keep for D), §6; spec/crdt.md §4.6, §4.7, §4.8,
+// §5.7; spec/permissions.md §1, §2, §3, §4, §5, §5.1, §5.2 (addenda), §6: one generator
+// (`generate`), every node in every order judged by `node_checks` against the node keeping
+// every body and against held-model.
+#[test]
+fn held_set_decides() {
+    held_set_decides_at(quick());
+}
+
+// The same at plain size (a tenth of full; `OSIS_FULL=1` full).
+#[test]
+#[ignore = "tier 2"]
+fn held_set_decides_plain() {
+    held_set_decides_at(vec![plain()]);
+}
+
+// The same over short histories, in every order of every held set.
+#[test]
+#[ignore = "tier 2"]
+fn held_set_decides_exhaustive() {
+    held_set_decides_at(vec![exhaustive()]);
+}
+
+/// The orders the step-4 order harness tried on its long histories: 8 shuffles, 4 partial sets.
+const WIDE: Cfg = Cfg { all_up_to: 0, random: 8, subsets: 4, model: false, ..ORDERS };
+
+// issues/settled-purges-3751.md (spec/requirements.md Deterministic): in a settled history with
+// purges, a node reads absent before its sync exchange on an aspect a writer compacted last, where
+// the node keeping every body reads a value. The history as the order harness made it.
+#[test]
+#[ignore = "open: issues/settled-purges-3751.md"]
+fn repro_settled_purges_3751() {
+    use Step::*;
+    let h = vec![Aim(Box::new(Signal { by: 1, t: 0, v: 167 })), Aim(Box::new(Demote { by: 0, t: 2, holder: 1, at: 5, to_read: false })), Aim(Box::new(Message { by: 1, t: 1, v: 7 })), Aim(Box::new(Edge { by: 0, t: 0, holder: 2, role: None })), Aim(Box::new(Typed { by: 1, t: 4, op: 26, k: 1, v: 6 })), Send { from: 0, to: 1, back: 1 }, Aim(Box::new(Purge { by: 1, t: 1, of: 1, back: 2, v: 4 })), Aim(Box::new(Typed { by: 1, t: 6, op: 17, k: 0, v: 9 })), Aim(Box::new(Message { by: 0, t: 2, v: 0 })), Advance { who: Some(1), ms: 34 }, Send { from: 0, to: 1, back: 2 }, Send { from: 2, to: 0, back: 2 }, Aim(Box::new(Signal { by: 1, t: 7, v: 9 })), Aim(Box::new(Typed { by: 2, t: 0, op: 11, k: 1, v: 3 })), Send { from: 1, to: 0, back: 2 }, Aim(Box::new(NestedItem { by: 1, other: 2, t: 1, k: 1, compact: false, also: false })), Aim(Box::new(Compact { by: 0, t: 4, op: 0 })), Aim(Box::new(Edge { by: 2, t: 1, holder: 1, role: None })), Aim(Box::new(Typed { by: 2, t: 3, op: 31, k: 1, v: 9 })), Aim(Box::new(Leave { by: 2, t: 5 })), Aim(Box::new(Purge { by: 1, t: 4, of: 1, back: 0, v: 7 })), Aim(Box::new(Compact { by: 2, t: 4, op: 22 })), Aim(Box::new(Undo { by: 2, back: 0 })), Aim(Box::new(NestedItem { by: 1, other: 0, t: 7, k: 0, compact: true, also: true })), Aim(Box::new(Signal { by: 0, t: 5, v: 6 })), Aim(Box::new(Demote { by: 0, t: 7, holder: 1, at: 4, to_read: false })), Aim(Box::new(Message { by: 2, t: 7, v: 5 })), Advance { who: Some(1), ms: 961 }, Aim(Box::new(Nested { by: 1, other: 0, t: 3, k: 1, text: false, compact: true, also: false })), Aim(Box::new(Purge { by: 2, t: 0, of: 1, back: 2, v: 4 })), Aim(Box::new(Demote { by: 0, t: 5, holder: 1, at: 3, to_read: false })), Aim(Box::new(New { by: 2, parent: 6, write: true })), Aim(Box::new(Message { by: 1, t: 6, v: 4 })), Aim(Box::new(Compact { by: 0, t: 2, op: 18 })), Aim(Box::new(Nested { by: 2, other: 1, t: 2, k: 1, text: true, compact: true, also: false })), Advance { who: Some(0), ms: 1285 }, Aim(Box::new(Nested { by: 1, other: 2, t: 1, k: 0, text: true, compact: true, also: false })), Aim(Box::new(Nested { by: 1, other: 0, t: 2, k: 1, text: false, compact: true, also: false })), Aim(Box::new(Message { by: 1, t: 3, v: 6 })), Aim(Box::new(Typed { by: 1, t: 0, op: 18, k: 0, v: 2 })), Aim(Box::new(Nested { by: 1, other: 0, t: 4, k: 1, text: false, compact: true, also: false })), Aim(Box::new(Message { by: 2, t: 0, v: 4 })), Sync { from: 0, to: 1 }, Aim(Box::new(Message { by: 2, t: 0, v: 5 })), Advance { who: Some(0), ms: 875 }, Aim(Box::new(Message { by: 2, t: 1, v: 6 })), Aim(Box::new(Leave { by: 1, t: 7 })), Aim(Box::new(Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) })), Aim(Box::new(Message { by: 2, t: 1, v: 0 })), Aim(Box::new(Typed { by: 2, t: 1, op: 31, k: 1, v: 0 })), Aim(Box::new(Message { by: 1, t: 1, v: 2 })), Aim(Box::new(Nested { by: 2, other: 0, t: 5, k: 0, text: true, compact: true, also: false })), Aim(Box::new(Message { by: 0, t: 1, v: 6 })), Send { from: 2, to: 0, back: 1 }, Aim(Box::new(Leave { by: 2, t: 7 })), Aim(Box::new(Demote { by: 0, t: 1, holder: 1, at: 2, to_read: false })), Aim(Box::new(Leave { by: 2, t: 7 })), Aim(Box::new(Edge { by: 0, t: 7, holder: 2, role: Some(Role::Write) })), Sync { from: 1, to: 0 }, Aim(Box::new(Signal { by: 0, t: 5, v: 4 })), Advance { who: None, ms: 5182836 }, Aim(Box::new(Write { by: 2, t: 4, op: 22, k: 0, v: 2 })), Forged { by: 0, a: 7, b: 1, how: 2, op: 18, k: 1, v: 2 }, Send { from: 0, to: 1, back: 1 }, Aim(Box::new(Signal { by: 1, t: 6, v: 4 })), Aim(Box::new(Compact { by: 1, t: 5, op: 13 })), Aim(Box::new(Purge { by: 2, t: 4, of: 2, back: 3, v: 9 })), Aim(Box::new(Demote { by: 2, t: 0, holder: 1, at: 0, to_read: false })), Aim(Box::new(NestedItem { by: 1, other: 2, t: 3, k: 0, compact: true, also: true })), Aim(Box::new(Message { by: 1, t: 3, v: 1 })), Send { from: 0, to: 2, back: 0 }, Aim(Box::new(Signal { by: 2, t: 3, v: 5 })), Send { from: 2, to: 0, back: 2 }, Aim(Box::new(NestedItem { by: 1, other: 2, t: 5, k: 2, compact: false, also: true })), Aim(Box::new(Write { by: 2, t: 6, op: 0, k: 0, v: 9 })), Aim(Box::new(Purge { by: 0, t: 1, of: 2, back: 0, v: 8 })), Aim(Box::new(NestedItem { by: 0, other: 1, t: 3, k: 1, compact: true, also: true })), Aim(Box::new(Message { by: 2, t: 2, v: 2 })), Aim(Box::new(Edge { by: 2, t: 1, holder: 2, role: Some(Role::Write) })), Aim(Box::new(Message { by: 2, t: 2, v: 3 })), Aim(Box::new(Edge { by: 2, t: 4, holder: 1, role: Some(Role::Admin) })), Aim(Box::new(Message { by: 1, t: 5, v: 4 })), Send { from: 2, to: 0, back: 1 }, Aim(Box::new(Message { by: 1, t: 3, v: 3 })), Aim(Box::new(Leave { by: 2, t: 1 })), Aim(Box::new(Typed { by: 1, t: 6, op: 18, k: 1, v: 2 })), Aim(Box::new(Signal { by: 1, t: 7, v: 1 })), Aim(Box::new(Undo { by: 1, back: 1 })), Aim(Box::new(Signal { by: 0, t: 0, v: 1 }))];
+    check(3751, &settled(h), Cfg { settled: true, ..WIDE }).unwrap();
+}
+
+// issues/purge-author-order-452234901986.md (spec/permissions.md §6): a delta dropped while
+// invalid, valid again and purged by author before its refetch has no leftover, so the node reads
+// the older value where one that held the body reads absent. The history as the order harness made it.
+#[test]
+#[ignore = "open: issues/purge-author-order-452234901986.md"]
+fn repro_purge_author_order_452234901986() {
+    use Step::*;
+    let h = vec![Sync { from: 1, to: 0 }, Sync { from: 2, to: 1 }, Sync { from: 0, to: 2 }, Aim(Box::new(PurgeAuthor { by: 2, t: 2, of: 0 })), Aim(Box::new(Message { by: 0, t: 2, v: 8 })), Aim(Box::new(PurgeAuthor { by: 2, t: 2, of: 1 })), Aim(Box::new(Message { by: 1, t: 2, v: 9 })), Aim(Box::new(Message { by: 1, t: 1, v: 5 })), Aim(Box::new(PurgeAuthor { by: 2, t: 3, of: 1 })), Sync { from: 0, to: 2 }, Aim(Box::new(PurgeAuthor { by: 0, t: 2, of: 2 })), Aim(Box::new(Message { by: 1, t: 3, v: 3 })), Aim(Box::new(Message { by: 0, t: 0, v: 5 })), Advance { who: None, ms: 1069 }, Advance { who: None, ms: 27 }, Aim(Box::new(PurgeAuthor { by: 0, t: 3, of: 2 })), Sync { from: 2, to: 0 }, Aim(Box::new(PurgeAuthor { by: 0, t: 1, of: 0 })), Aim(Box::new(Demote { by: 0, t: 3, holder: 2, at: 3, to_read: true })), Advance { who: None, ms: 1602 }, Aim(Box::new(Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) })), Aim(Box::new(Message { by: 0, t: 0, v: 2 })), Aim(Box::new(Message { by: 1, t: 1, v: 7 })), Aim(Box::new(Message { by: 0, t: 3, v: 2 })), Aim(Box::new(Message { by: 1, t: 3, v: 7 })), Aim(Box::new(Message { by: 2, t: 2, v: 0 })), Aim(Box::new(Message { by: 0, t: 1, v: 5 })), Aim(Box::new(PurgeAuthor { by: 1, t: 3, of: 2 })), Aim(Box::new(Message { by: 0, t: 2, v: 7 })), Aim(Box::new(PurgeAuthor { by: 0, t: 0, of: 1 })), Aim(Box::new(Message { by: 0, t: 1, v: 4 })), Sync { from: 0, to: 1 }, Aim(Box::new(PurgeAuthor { by: 2, t: 0, of: 2 })), Aim(Box::new(Message { by: 0, t: 3, v: 1 })), Advance { who: None, ms: 1887 }, Aim(Box::new(Message { by: 2, t: 1, v: 3 })), Aim(Box::new(Message { by: 1, t: 3, v: 3 })), Aim(Box::new(Message { by: 2, t: 3, v: 9 })), Advance { who: None, ms: 620 }, Sync { from: 2, to: 1 }, Aim(Box::new(Message { by: 0, t: 3, v: 9 })), Sync { from: 2, to: 1 }, Aim(Box::new(Message { by: 0, t: 2, v: 3 })), Aim(Box::new(Message { by: 0, t: 0, v: 7 })), Advance { who: None, ms: 1499 }, Aim(Box::new(Demote { by: 0, t: 1, holder: 0, at: 1, to_read: true })), Aim(Box::new(Message { by: 2, t: 0, v: 1 })), Aim(Box::new(Message { by: 0, t: 1, v: 2 })), Aim(Box::new(PurgeAuthor { by: 0, t: 0, of: 2 })), Aim(Box::new(PurgeAuthor { by: 2, t: 0, of: 2 }))];
+    check(452234901986, &h, WIDE).unwrap();
 }
 
 // spec/permissions.md §5.2, spec/crdt.md §4.6: 2's snapshot, invalid once 0 lowers 2 to read,
@@ -2611,154 +2824,6 @@ fn sync_learned_after_part_reads_alike_spec_commits_4() {
 }
 
 
-// spec/requirements.md Decentralization, spec/permissions.md §5 and §5.2, spec/crdt.md §4.6:
-// small histories, every arrival order of what follows the setup, plus shuffles of everything.
-#[test]
-fn arrival_order_alike_small_spec_permissions_5_2() {
-    run("arrival_order_alike_small_spec_permissions_5_2", quick(0..4, 8), SMALL, history);
-}
-
-// spec/permissions.md §1, §2, §5.2: histories with things made by their record alone (derived secrets, grants
-// giving secrets of their own, removals of a first admin's record edge, which no entry holds)
-// judged alike in every arrival order.
-#[test]
-fn arrival_order_record_only_small_spec_permissions_2() {
-    run("arrival_order_record_only_small_spec_permissions_2", quick(0..2, 16), SMALL, record_only_history);
-}
-
-// The same over more and longer histories.
-#[test]
-#[ignore = "tier 2"]
-fn arrival_order_record_only_large_spec_permissions_2() {
-    run("arrival_order_record_only_large_spec_permissions_2", tier2(osis_base::testenv::large(0..60), 40), LARGE, record_only_history);
-}
-
-// spec/commits.md §5, spec/permissions.md §5.2: required retention judged by the setting in force
-// at the delta's key, every arrival order and held subset alike. Seeds 2..4: 3 breaks a required
-// retention, 2 lets one fall; more in `_large`.
-#[test]
-fn arrival_order_required_spec_commits_5() {
-    run("arrival_order_required_spec_commits_5", quick(2..4, 12), EXHAUST_SMALL, required_history);
-}
-
-// The same over more histories.
-#[test]
-#[ignore = "tier 2"]
-fn arrival_order_required_large_spec_commits_5() {
-    run("arrival_order_required_large_spec_commits_5", tier2(osis_base::testenv::large(0..40), 12), EXHAUST_SMALL, required_history);
-}
-
-/// Every arrival order, a node reopening after each commit (its clock moving) reads as a node with
-/// that order that never reopened, and reopens and rebuilds its index as made.
-fn reopens_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
-    let played = play(seed, steps);
-    let held: Vec<usize> = (0..played.packs.len()).collect();
-    let orders = orders(&played, &held, cfg, &mut Rng(seed ^ 0x0de5_ab1e | 1));
-    reopens_alike_in(&played, &orders)
-}
-
-/// `reopens_alike` for the given orders of `played`.
-fn reopens_alike_in(played: &Played, orders: &[Vec<usize>]) -> Result<Seen, String> {
-    caught(|| {
-        let mut seen = Seen { tally: played.tally.clone(), ..Seen::default() };
-        let tick = |p: &mut Peer| {
-            let now = p.engine.now();
-            p.clock.set(WallMs(now.0 + 1));
-        };
-        seen.orders += orders.len();
-        let held: Vec<usize> = (0..played.packs.len()).collect();
-        for order in orders {
-            let mut r = deliver_with(played, order, None, None, &mut |p| tick(p));
-            seen.broken += r.engine.broken_parts() as u64;
-            seen.fallen += r.engine.fallen_required() as u64;
-            let mut p = deliver_with(played, order, None, None, &mut |p| {
-                tick(p);
-                p.engine.reload().unwrap();
-            });
-            // a reopen moves where pending commits apply, so when a part dropped while invalid is
-            // valid again: each node fetches what it counts missing, as node-sync does
-            fetch_missing(&mut r, played, &held);
-            fetch_missing(&mut p, played, &held);
-            if let Some(d) = shown_differs(&shown(&mut r, &played.things), &shown(&mut p, &played.things), &|_| false) {
-                return Err(format!("order {order:?}: {d}"));
-            }
-        }
-        Ok(seen)
-    })
-}
-
-fn run_reopens(name: &str, size: Size, cfg: Cfg, generate: fn(u64, usize, Cfg) -> Vec<Step>) {
-    let Size { seeds, len, .. } = size;
-    let results = par_map(&seeds, threads("OSIS_ORDER_THREADS").min(seeds.len()).max(1), |seed| {
-        let steps = generate(seed, len, cfg);
-        (seed, steps.clone(), reopens_alike(seed, &steps, cfg))
-    });
-    let mut seen = Seen::default();
-    let mut fails = Vec::new();
-    for (seed, steps, r) in results {
-        match r {
-            Ok(s) => seen.add(&s),
-            Err(e) => fails.push(format!("seed {seed}: h = vec!{steps:?}\n{e}")),
-        }
-    }
-    osis_base::testenv::visible(true, &format!("order::{name}: {} seeds from {}, {} orders, {} broken, {} fallen, {} failing", seeds.len(), seeds.first().copied().unwrap_or(0), seen.orders, seen.broken, seen.fallen, fails.len()));
-    assert!(fails.is_empty(), "{}", fails.join("\n\n"));
-}
-
-// A node reopening after every commit reads as one that never reopened, whichever arrived first,
-// under required retentions set and broken. Seeds 2..4 (3 breaks a required retention); more in
-// `_large`.
-#[test]
-fn reopen_after_each_commit_reads_alike_spec_commits_5() {
-    run_reopens("reopen_after_each_commit_reads_alike_spec_commits_5", quick(2..4, 12), EXHAUST_SMALL, required_history);
-}
-
-// The same over the general histories.
-#[test]
-#[ignore = "tier 2"]
-fn reopen_after_each_commit_reads_alike_large_spec_commits_5() {
-    run_reopens("reopen_after_each_commit_reads_alike_large_spec_commits_5", tier2(osis_base::testenv::large(0..200), 12), EXHAUST_SMALL, required_history);
-    run_reopens("reopen_after_each_commit_reads_alike_large_spec_commits_5 (general)", tier2(0..200, 30), LARGE, history);
-}
-
-/// `history` after a start that writes an addendum (spec/permissions.md §5.2, Addenda): Bob's write
-/// on G reaches Carol, a second later Alice demotes him with a frontier before it (ordered after
-/// it, as an addendum lists only what precedes the removal), Carol applies the demotion and vouches
-/// for the write, and grants Bob write again (a step of hers, so the history takes her addendum).
-fn addenda_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
-    let mut h = vec![
-        Step::Write { by: 1, t: 0, op: 0, k: 0, v: 0 },
-        Step::Sync { from: 1, to: 2 },
-        Step::Advance { who: None, ms: 1_000 },
-        Step::Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false },
-        Step::Sync { from: 0, to: 2 },
-        Step::Edge { by: 2, t: 0, holder: 1, role: Some(Role::Write) },
-    ];
-    h.extend(history(seed, len, cfg));
-    h
-}
-
-// spec/permissions.md §5.2 (Addenda): the histories' writers answer removals with addenda, so
-// what is judged includes them, in every arrival order, and held-model judges them alike.
-#[test]
-fn arrival_order_addenda_small_spec_permissions_5_2() {
-    run("arrival_order_addenda_small_spec_permissions_5_2", quick(0..4, 16), Cfg { addenda: true, model: true, ..SMALL }, addenda_history);
-}
-
-// The same at size.
-#[test]
-#[ignore = "tier 2"]
-fn arrival_order_addenda_large_spec_permissions_5_2() {
-    run("arrival_order_addenda_large_spec_permissions_5_2", tier2(osis_base::testenv::large(2000..2060), 60), Cfg { addenda: true, model: true, ..LARGE }, addenda_history);
-}
-
-// The same at size: long histories, random orders.
-#[test]
-#[ignore = "tier 2"]
-fn arrival_order_alike_large_spec_permissions_5_2() {
-    run("arrival_order_alike_large_spec_permissions_5_2", tier2(osis_base::testenv::large(1000..1060), 60), LARGE, history);
-}
-
 /// `h`, then every peer holds what the others do and each compacts every aspect of every thing it
 /// may write: spec/commits.md §5's waiting part past its expiry and spec/requirements.md
 /// Deterministic's limits last until a writer next compacts or writes, so every node shows what
@@ -2776,140 +2841,12 @@ fn settled(mut h: Vec<Step>) -> Vec<Step> {
     sync(&mut h);
     sync(&mut h);
     for t in 0..12 {
-        for op in [0, 1, 3, 6, 8, 10, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 27, 28, 29] {
+        for op in [0, 1, 3, 6, 8, 10, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 27, 28, 29, 32, 35] {
             h.extend((0..3).map(|by| Compact { by, t, op }));
         }
     }
     sync(&mut h);
     h
-}
-
-/// `history` with permanent messages, signal writes (one first, so every history has one) and
-/// purges by anyone mixed in, on their own draws. A purge whose right falls after it applied brings
-/// content back only as copies arrive (spec/permissions.md §6): a node's sync exchange fetches them.
-fn purge_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
-    let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
-    let mut out = vec![Step::Aim(Box::new(Step::Signal { by: 1, t: 0, v: seed as u8 }))];
-    for st in history(seed, len, cfg) {
-        out.push(st);
-        let (by, t, v) = (rng.below(3) as usize, rng.below(8) as usize, rng.below(10) as u8);
-        match rng.below(8) {
-            0 | 1 => out.push(Step::Aim(Box::new(Step::Message { by, t, v }))),
-            2 => out.push(Step::Aim(Box::new(Step::Purge { by: rng.below(3) as usize, t, of: by, back: rng.below(4) as u8, v }))),
-            3 => out.push(Step::Aim(Box::new(Step::Signal { by, t, v }))),
-            _ => {}
-        }
-    }
-    out
-}
-
-/// Short histories for purges by author, on what a chat does: permanent messages by three writers,
-/// demotions, grants, compactions, sync, purges by any of them, so requests fall and rise. Not `history`'s mix: a whole-aspect or by-author request with
-/// purge-on-replace bodies or commits split over parts still differs (issue wide-purge-order, closed).
-fn purge_author_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
-    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    let mut out = Vec::new();
-    while out.len() < len {
-        let (by, t, v) = (rng.below(3) as usize, rng.below(4) as usize, rng.below(10) as u8);
-        out.push(match rng.below(12) {
-            0..=4 => Step::Aim(Box::new(Step::Message { by, t, v })),
-            5 | 6 => Step::Aim(Box::new(Step::PurgeAuthor { by: rng.below(3) as usize, t, of: by })),
-            7 => Step::Aim(Box::new(Step::Demote { by: 0, t, holder: by, at: rng.below(4) as u8, to_read: rng.below(2) == 0 })),
-            8 => Step::Aim(Box::new(Step::Edge { by: 0, t, holder: by, role: Some(Role::Write) })),
-            9 => Step::Advance { who: None, ms: 1 + rng.below(2_000) },
-            _ => Step::Sync { from: by, to: (by + 1 + rng.below(2) as usize) % 3 },
-        });
-    }
-    out
-}
-
-/// Short histories on one register: requests stand, fall and rise over deltas that also expire, with
-/// compactions, so a leftover set aside by a fall meets each. By seed, requests by name or wide. Keep at
-/// most or a required retention in this mix still differs: issue wide-purge-order (closed).
-fn purge_rows_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
-    let mut rng = Rng(seed.wrapping_mul(0xc2b2_ae3d_27d4_eb4f) | 1);
-    let wide = seed % 2 == 1;
-    let mut out = vec![Step::Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Step::Edge { by: 0, t: 0, holder: 2, role: Some(Role::Admin) }, Step::Sync { from: 0, to: 1 }, Step::Sync { from: 0, to: 2 }];
-    while out.len() < len {
-        let (by, v) = (rng.below(3) as usize, rng.below(10) as u8);
-        let to = (by + 1 + rng.below(2) as usize) % 3;
-        out.push(match rng.below(24) {
-            0 | 1 => Step::Aim(Box::new(Step::Typed { by, t: 0, op: 0, k: 0, v })),
-            2 | 3 => Step::Aim(Box::new(Step::Typed { by, t: 0, op: 27, k: rng.below(3) as u8, v })),
-            4 => Step::Aim(Box::new(Step::Message { by, t: 0, v })),
-            8 | 9 => Step::Aim(Box::new(Step::Compact { by, t: 0, op: 0 })),
-            10..=12 if wide => Step::Aim(Box::new(Step::Purge { by, t: 0, of: rng.below(3) as usize, back: rng.below(3) as u8, v })),
-            10..=12 => Step::Aim(Box::new(Step::PurgeNamed { by, t: 0, of: rng.below(3) as usize, back: rng.below(3) as u8, v })),
-            13 | 14 => Step::Aim(Box::new(Step::Demote { by: rng.below(3) as usize, t: 0, holder: rng.below(3) as usize, at: rng.below(4) as u8, to_read: rng.below(3) == 0 })),
-            15 => Step::Edge { by: rng.below(3) as usize, t: 0, holder: rng.below(3) as usize, role: rng.pick(&[Some(Role::Admin), Some(Role::Write)]) },
-            16 => Step::Advance { who: Some(by), ms: 1 + rng.below(1_500) },
-            17 => Step::Advance { who: None, ms: rng.pick(&[1_100, HOUR]) },
-            18 => Step::Send { from: by, to, back: rng.below(2) as u8 },
-            _ => Step::Sync { from: by, to },
-        });
-    }
-    out
-}
-
-// spec/permissions.md §6, spec/crdt.md §4.7: a leftover set aside by a fall, value-less again by expiry or a
-// purge, and reopened.
-#[test]
-#[ignore = "tier 2"]
-fn arrival_order_purge_rows_large_spec_perm_6() {
-    run("arrival_order_purge_rows_large_spec_perm_6", tier2(osis_base::testenv::large(7000..7060), 40), LARGE, purge_rows_history);
-}
-
-// spec/permissions.md §6, spec/wire.md §4: arrival order decides nothing with purges by author,
-// whichever deltas and demotions come after them.
-#[test]
-fn arrival_order_purge_author_small_spec_perm_6() {
-    run("arrival_order_purge_author_small_spec_perm_6", quick(0..3, 24), SMALL, purge_author_history);
-}
-
-#[test]
-#[ignore = "tier 2"]
-fn arrival_order_purge_author_large_spec_perm_6() {
-    run("arrival_order_purge_author_large_spec_perm_6", tier2(osis_base::testenv::large(4000..4100), 50), LARGE, purge_author_history);
-}
-
-// spec/commits.md §5 (purge, lasting headers), spec/permissions.md §6: arrival order decides nothing
-// with purges in the history either.
-#[test]
-fn arrival_order_purge_small_spec_commits_5() {
-    run("arrival_order_purge_small_spec_commits_5", quick(0..4, 8), Cfg { model: true, ..SMALL }, purge_history);
-}
-
-#[test]
-#[ignore = "tier 2"]
-fn arrival_order_purge_large_spec_commits_5() {
-    run("arrival_order_purge_large_spec_commits_5", tier2(osis_base::testenv::large(3000..3060), 60), Cfg { model: true, ..LARGE }, purge_history);
-}
-
-// spec/commits.md §5 (keep for D): a keep-for-D body's keep bound is never before D after its
-// replacement as held-model dates it (the earliest held valid body holding a superseder; a
-// delta at its first death, a snapshot at its last), at every node in every arrival order.
-#[test]
-fn arrival_order_kept_small_spec_commits_5() {
-    run("arrival_order_kept_small_spec_commits_5", quick(5000..5003, 40), Cfg { model: true, ..SMALL }, kept_history);
-}
-
-#[test]
-#[ignore = "tier 2"]
-fn arrival_order_kept_large_spec_commits_5() {
-    run("arrival_order_kept_large_spec_commits_5", tier2(osis_base::testenv::large(5000..5060), 50), Cfg { model: true, ..LARGE }, kept_history);
-}
-
-// spec/requirements.md Decentralization, spec/crdt.md §4.8: short histories mixing bounded
-// writes, compactions, undo, demotions and late writes, every arrival order (the setup first)
-// of the whole set and a partial one, each with late parts too.
-#[test]
-fn arrival_order_exhaustive_small_spec_crdt_4_8() {
-    run("arrival_order_exhaustive_small_spec_crdt_4_8", quick(0..3, 30), EXHAUST_SMALL, focused_history);
-}
-
-#[test]
-fn arrival_order_settled_small_spec_commits_5() {
-    run("arrival_order_settled_small_spec_commits_5", quick(0..2, 60), Cfg { settled: true, ..LARGE }, |s, l, c| settled(history(s, l, c)));
 }
 
 // spec/commits.md §5 Invalid, spec/sync.md §7: a body dropped while invalid and valid again is
@@ -2923,7 +2860,7 @@ fn settled_check_spares_aspects_no_writer_compacted_spec_commits_5() {
     let h = vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Demote { by: 0, t: 0, holder: 1, at: 9, to_read: true }, Demote { by: 0, t: 0, holder: 2, at: 9, to_read: false }, Demote { by: 0, t: 0, holder: 0, at: 9, to_read: true }];
     let played = Played { settled: true, ..play(5, &settled(h)) };
     let g = (format!("{:?}", played.things[0]), "t:reg.0".to_string());
-    assert!(played.no_writer_last.contains(&g), "no writer compacts: {:?}", played.tally);
+    assert!(!played.settled_last.contains(&g), "no writer compacts: {:?}", played.tally);
     // the setup but 1's grant (pack 7), the history from its end, then the grant
     let mut order: Vec<usize> = (0..played.base).filter(|i| *i != 7).collect();
     order.extend((played.base..played.packs.len()).rev());
@@ -2931,349 +2868,6 @@ fn settled_check_spares_aspects_no_writer_compacted_spec_commits_5() {
     let mut p = deliver(&played, &order);
     assert_eq!(shown(&mut p, &played.things)[&g], "Ok(Some(Str(\"g\")))", "1's write dropped while invalid");
     order_checks(&played, &order, Way::Plain).unwrap();
-}
-
-#[test]
-#[ignore = "tier 2"]
-fn arrival_order_settled_large_spec_commits_5() {
-    run("arrival_order_settled_large_spec_commits_5", tier2(osis_base::testenv::large(7000..7060), 60), Cfg { settled: true, ..LARGE }, |s, l, c| settled(history(s, l, c)));
-}
-
-#[test]
-#[ignore = "tier 2"]
-fn arrival_order_settled_purges_large_spec_commits_5() {
-    run("arrival_order_settled_purges_large_spec_commits_5", tier2(osis_base::testenv::large(7100..7160), 60), Cfg { settled: true, ..LARGE }, |s, l, c| settled(purge_history(s, l, c)));
-}
-
-// The same over more histories, up to 6 commits.
-#[test]
-#[ignore = "tier 2"]
-fn arrival_order_exhaustive_large_spec_crdt_4_8() {
-    run("arrival_order_exhaustive_large_spec_crdt_4_8", tier2(osis_base::testenv::large(2023..2063), 30), Cfg { model: true, ..EXHAUST }, focused_history);
-}
-
-/// A history of writes under purge on replace, some with a part under default retention, on G.
-fn carrierless_history(seed: u64, len: usize) -> Vec<Step> {
-    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    let mut steps = vec![Step::Sync { from: 0, to: 1 }];
-    for _ in 0..len {
-        let (by, op, k, v) = (rng.below(2) as usize, rng.pick(&[17, 18, 19, 19, 20, 30, 31]), rng.below(3) as u8, rng.below(10) as u8);
-        steps.push(match rng.below(8) {
-            0..=2 => Step::Mixed { by, t: 0, op, k, v },
-            3..=5 => Step::Write { by, t: 0, op, k, v },
-            6 => Step::Sync { from: by, to: 1 - by },
-            _ => Step::Advance { who: None, ms: 1 + rng.below(1_000) },
-        });
-    }
-    steps
-}
-
-/// `pk` without the parts `gone` of it holds: `None` when that leaves no part.
-fn without(pk: &Package, gone: &BTreeSet<(CommitId, usize)>) -> Option<Vec<u8>> {
-    let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-    let had = !b.parts.is_empty();
-    b.parts.retain(|p| !gone.contains(&(pk.id, p.ai)));
-    (b.parts.len() + usize::from(!had) > 0).then(|| b.encode())
-}
-
-/// spec/commits.md §4 (a node never waits for a part), §5: whether a part under purge on replace
-/// arrives never, or after its commit applied, or with the rest, in any order, the node ends alike
-/// and nothing pends, for every part a holder dropped with no live write (what hosts delete with no
-/// carrier). A part with no commit on its aspect stamped as late, live or not, is waited for by
-/// nothing: its commit applies without it, and it joins when it comes.
-fn carrierless_check(seed: u64, len: usize) -> Result<usize, String> {
-    let played = play(seed, &carrierless_history(seed, len));
-    let n = played.packs.len();
-    let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
-    let later = WallMs(played.now.0 + 24 * HOUR);
-    let dump = |p: &mut Peer| (shown(p, &played.things), format!("{:?}", p.engine.pending()));
-    let settle = |p: &mut Peer| {
-        p.clock.set(later);
-        p.engine.tick().unwrap();
-    };
-    let syncing_node = || {
-        let mut p = fresh(played.now);
-        p.engine.set_syncing(played.things[0], true).unwrap();
-        p
-    };
-    let mut full = deliver(&played, &(0..n).collect::<Vec<_>>());
-    settle(&mut full);
-    let want = dump(&mut full);
-    if want.1 != "[]" {
-        return Err(format!("the whole set pends: {}", want.1));
-    }
-    // what a holder dropped with no live write, and the parts nothing on their aspect is as late as
-    let headers: Vec<osis_commit::Header> = played.packs.iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header).collect();
-    let (mut gone, mut last) = (BTreeSet::new(), Vec::new());
-    for (i, h) in headers.iter().enumerate().skip(played.base) {
-        for (ai, a) in h.aspects.iter().enumerate() {
-            if !purges(a) {
-                continue;
-            }
-            if !full.engine.body_not_dropped(&played.packs[i].id, &a.tid, &a.ak) && !full.engine.body_live(&played.packs[i].id, &a.tid, &a.ak).unwrap() {
-                gone.insert((played.packs[i].id, ai));
-            }
-            let on = |o: &osis_commit::Header| o.aspects.iter().any(|x| x.tid == a.tid && x.ak == a.ak);
-            if h.aspects.len() > 1 && !headers.iter().enumerate().any(|(j, o)| j != i && o.ts >= h.ts && on(o)) {
-                last.push((played.packs[i].id, ai));
-            }
-        }
-    }
-    let shuffled = |rng: &mut Rng| {
-        let mut o: Vec<usize> = (played.base..n).collect();
-        for x in (1..o.len()).rev() {
-            o.swap(x, rng.below(x as u64 + 1) as usize);
-        }
-        (0..played.base).chain(o).collect::<Vec<usize>>()
-    };
-    let mut tried = 0;
-    for _ in 0..4 {
-        tried += 1;
-        // never: the bodies are gone
-        let order = shuffled(&mut rng);
-        let mut p = syncing_node();
-        for &i in &order {
-            if let Some(b) = without(&played.packs[i], &gone) {
-                let _ = p.engine.ingest(&b, played.packs[i].blobs.clone());
-            }
-        }
-        let _ = p.engine.reexamine();
-        settle(&mut p);
-        let got = dump(&mut p);
-        let vs = format!("order {order:?}, withheld {gone:?}");
-        if got.1 != "[]" {
-            return Err(format!("{vs}: pends: {}", got.1));
-        }
-        if let Some(d) = shown_differs(&want.0, &got.0, &|_| false) {
-            return Err(format!("{vs}: {d}"));
-        }
-        // late: a copy still comes, in another order
-        let order = shuffled(&mut rng);
-        for &i in &order {
-            let _ = p.engine.ingest(&played.packs[i].bytes, played.packs[i].blobs.clone());
-        }
-        let _ = p.engine.reexamine();
-        let got = dump(&mut p);
-        if let Some(d) = shown_differs(&want.0, &got.0, &|_| false).or_else(|| (got.1 != want.1).then(|| format!("pending {} vs {}", want.1, got.1))) {
-            return Err(format!("{vs}, then late in {order:?}: {d}"));
-        }
-    }
-    for (id, ai) in last {
-        let mut p = syncing_node();
-        let held = BTreeSet::from([(id, ai)]);
-        for pk in &played.packs {
-            if let Some(b) = without(pk, &held) {
-                let _ = p.engine.ingest(&b, pk.blobs.clone());
-            }
-        }
-        settle(&mut p);
-        if !p.engine.pending().is_empty() || !p.engine.commit_ids().contains(&id) {
-            return Err(format!("{id:?} part {ai} away, nothing on its aspect as late: its commit did not apply: {:?}", p.engine.pending()));
-        }
-        let pk = played.packs.iter().find(|pk| pk.id == id).unwrap();
-        let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
-        let _ = p.engine.reexamine();
-        let got = dump(&mut p);
-        if let Some(d) = shown_differs(&want.0, &got.0, &|_| false).or_else(|| (got.1 != want.1).then(|| format!("pending {} vs {}", want.1, got.1))) {
-            return Err(format!("{id:?} part {ai} late: {d}"));
-        }
-    }
-    Ok(tried)
-}
-
-fn carrierless_run(name: &str, size: Size) {
-    let (seeds, len) = (&size.seeds, size.len);
-    let results = par_map(seeds, threads("OSIS_ORDER_THREADS").min(seeds.len()).max(1), |seed| caught(|| carrierless_check(seed, len)).map_err(|e| format!("seed {seed} (replay: {}): {e}", size.replay(name, seed))));
-    let fails: Vec<String> = results.into_iter().filter_map(Result::err).collect();
-    assert!(fails.is_empty(), "{} of {} failing:\n{}", fails.len(), seeds.len(), fails.join("\n\n"));
-}
-
-// spec/commits.md §4 (a node never waits for a part), §5: `carrierless_check`.
-#[test]
-fn carrierless_part_alike_small_spec_commits_4() {
-    carrierless_run("carrierless_part_alike_small_spec_commits_4", quick(0..12, 14));
-}
-
-// The same over more histories, longer.
-#[test]
-#[ignore = "tier 2"]
-fn carrierless_part_alike_large_spec_commits_4() {
-    carrierless_run("carrierless_part_alike_large_spec_commits_4", tier2(osis_base::testenv::large(1000..1200), 30));
-}
-
-/// A history for `new_node_alike`: a random one with, in its middle, writer 1's commits
-/// synced to the first admin and compacted there, and at its end the first admin's demotion of writer 1
-/// (its frontier as of a random point among 1's writes).
-fn node_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
-    let mut steps = history(seed, len, cfg);
-    let mut rng = Rng(seed.wrapping_mul(0xd1b5_4a32_d192_ed03) | 1);
-    let at = steps.len() / 2;
-    let op = rng.below(DRAWN as u64) as u8;
-    steps.splice(at..at, [Step::Write { by: 1, t: 0, op, k: rng.below(3) as u8, v: rng.below(10) as u8 }, Step::Sync { from: 1, to: 0 }, Step::Advance { who: None, ms: 1_000 }, Step::Compact { by: 0, t: 0, op }]);
-    steps.push(Step::Advance { who: None, ms: 1_000 });
-    steps.push(Step::Demote { by: 0, t: 0, holder: 1, at: rng.below(6) as u8, to_read: false });
-    steps
-}
-
-/// Checks Tess's decision (a)'s new-node equivalence (spec/permissions.md §5.1: a frontier lists
-/// commit IDs, leaving out commits covered at the demoter; §5.2: a valid snapshot vouches for
-/// what it carries): a node holding every body and a fresh node holding only what hosts keep
-/// once covered bodies go (every role commit and snapshot whole; each other commit without its
-/// parts the first node finds covered by a held snapshot, or not at all when none is left) read
-/// every aspect and roster alike. Both keep every body past its purge-on-replace cover, so only
-/// coverage tells them apart. The one limit: an aspect a node flags for a part that went at its
-/// expiry while it waited may read
-/// differently: that part counts as never received (spec/commits.md §5).
-fn check_new_node(seed: u64, steps: &[Step]) -> Result<(usize, usize), String> {
-    let played = play(seed, steps);
-    let ingest = |p: &mut Peer, bytes: &[u8], pk: &Package| {
-        let _ = p.engine.ingest(bytes, pk.blobs.clone());
-    };
-    let mut full = fresh(played.now);
-    full.engine.keep_bodies(true);
-    for pk in &played.packs {
-        ingest(&mut full, &pk.bytes, pk);
-    }
-    full.engine.reexamine().unwrap();
-    let ids = full.engine.commit_ids();
-    let snaps: Vec<(CommitId, Tid, Ak)> = ids.iter().filter_map(|c| full.engine.header(c).filter(|h| h.kind.is_compaction()).map(|h| h.aspects.iter().map(|a| (*c, a.tid, a.ak.clone())).collect::<Vec<_>>())).flatten().collect();
-    let mut fresh = fresh(played.now);
-    fresh.engine.keep_bodies(true);
-    let mut left_out = (0, 0);
-    // what `fresh` is given, for `waited_at_expiry`
-    let mut arrived = Vec::new();
-    let whole = |i: usize| Arrival { pack: i, ais: None, at: played.now, blobs: true };
-    for (i, pk) in played.packs.iter().enumerate() {
-        let Some(h) = full.engine.header(&pk.id) else {
-            ingest(&mut fresh, &pk.bytes, pk);
-            arrived.push(whole(i));
-            continue;
-        };
-        if h.kind.is_role() || h.kind.is_compaction() {
-            ingest(&mut fresh, &pk.bytes, pk);
-            arrived.push(whole(i));
-            continue;
-        }
-        let covered: BTreeSet<usize> = (0..h.aspects.len())
-            .filter(|ai| {
-                let a = &h.aspects[*ai];
-                snaps.iter().any(|(s, t, k)| *t == a.tid && *k == a.ak && full.engine.covered(s, &pk.id, t, k).unwrap() == Some(true))
-            })
-            .collect();
-        let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-        let had = !b.parts.is_empty();
-        b.parts.retain(|p| !covered.contains(&p.ai));
-        // the parts left out, and those of them invalid here (their writes only vouched for)
-        left_out.0 += covered.len();
-        left_out.1 += covered.iter().filter(|ai| full.engine.body_valid(&pk.id, &h.aspects[**ai].tid, &h.aspects[**ai].ak) == Some(false)).count();
-        if had && b.parts.is_empty() {
-            continue;
-        }
-        ingest(&mut fresh, &b.encode(), pk);
-        arrived.push(Arrival { ais: Some(b.parts.iter().map(|p| p.ai).collect()), ..whole(i) });
-    }
-    fresh.engine.reexamine().unwrap();
-    // `full` is given every commit whole in the order made: nothing of it waits
-    let expired = printed(waited_at_expiry(&played, Some(&(0..played.packs.len()).collect()), &arrived, played.now));
-    for (t, a) in full.engine.all_aspects().unwrap() {
-        let (want, got) = (full.engine.get(&t, &a).unwrap(), fresh.engine.get(&t, &a).unwrap());
-        if want != got && !expired.contains(&(format!("{t:?}"), a.as_str().to_string())) {
-            return Err(format!("{t:?} {}: every body {want:?}, after covered drops {got:?}\nevery body:\n{}\nafter covered drops:\n{}", a.as_str(), full.engine.aspect_dump(&t, &a), fresh.engine.aspect_dump(&t, &a)));
-        }
-    }
-    for t in &played.things {
-        if full.engine.roster(t) != fresh.engine.roster(t) {
-            return Err(format!("roster of {t:?}: {:?} vs {:?}", full.engine.roster(t), fresh.engine.roster(t)));
-        }
-    }
-    Ok(left_out)
-}
-
-/// Runs `check_new_node` over `size`'s seeds, shrinking each failing history.
-fn run_new_node(name: &str, size: Size) {
-    let Size { seeds, len, .. } = size;
-    let check = |seed: u64, steps: &[Step]| caught(|| check_new_node(seed, steps));
-    let results = par_map(&seeds, threads("OSIS_ORDER_THREADS"), |seed| {
-        let mut steps = node_history(seed, len, SMALL);
-        match check(seed, &steps) {
-            Ok(n) => (n, None),
-            Err(mut err) => {
-                let mut i = 0;
-                while i < steps.len() {
-                    let mut fewer = steps.clone();
-                    fewer.remove(i);
-                    match check(seed, &fewer) {
-                        Err(e) => (steps, err) = (fewer, e),
-                        Ok(_) => i += 1,
-                    }
-                }
-                ((0, 0), Some(format!("seed {seed}: h = vec!{steps:?}\n{err}")))
-            }
-        }
-    });
-    let left_out: usize = results.iter().map(|x| x.0.0).sum();
-    let invalid: usize = results.iter().map(|x| x.0.1).sum();
-    let fails: Vec<String> = results.into_iter().filter_map(|x| x.1).collect();
-    let summary = format!("order::{name}: {} seeds from {}, {len} steps, {left_out} covered parts left out ({invalid} invalid), {} failing", seeds.len(), seeds.first().copied().unwrap_or(0), fails.len());
-    osis_base::testenv::visible(true, &summary);
-    assert!(fails.is_empty(), "{summary}\n{}", fails.join("\n\n"));
-}
-
-// spec/permissions.md §5.1 (frontier by commit ID), §5.2 (snapshots vouch), Tess's decision (a)
-// (issues/session-sources.md rule 7): a fresh node holding the demotion, the snapshots and the
-// uncovered bodies reads as a node holding every body.
-#[test]
-fn new_node_alike_spec_permissions_5_1() {
-    run_new_node("new_node_alike_spec_permissions_5_1", quick(0..16, 20));
-}
-
-// The same at size.
-#[test]
-#[ignore = "tier 2"]
-fn new_node_alike_large_spec_permissions_5_1() {
-    run_new_node("new_node_alike_large_spec_permissions_5_1", tier2(osis_base::testenv::large(0..256), 40));
-}
-
-// spec/crdt.md §4.7, §5.7: expiring list elements, others' writes in them, snapshots written before
-// and after T carrying their creations value-less, removals by writers who may fall.
-fn list_expiry_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
-    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    // a write or undo in four by a writer predating the undo expiry rule (spec/crdt.md §4.6), so
-    // readers meet undos writing back an expiring value that do not expire with it; drawn from a
-    // stream of its own, so the steps stay those of the seed
-    let mut old = Rng(seed.wrapping_mul(0xd6e8_feb8_6659_fd93) | 1);
-    let steps: Vec<Step> = (0..len)
-        .map(|_| {
-            let by = rng.below(3) as usize;
-            let to = (by + 1 + rng.below(2) as usize) % 3;
-            match rng.below(16) {
-                0..=3 => Step::Aim(Box::new(Step::Typed { by, t: 0, op: 32, k: 0, v: rng.below(10) as u8 })),
-                4..=6 => Step::Aim(Box::new(Step::Typed { by, t: 0, op: 33, k: 0, v: rng.below(10) as u8 })),
-                7 => Step::Aim(Box::new(Step::Typed { by, t: 0, op: 34, k: 0, v: rng.below(10) as u8 })),
-                8 | 9 => Step::Compact { by, t: 0, op: 32 },
-                10 => Step::Aim(Box::new(Step::Undo { by, back: rng.below(3) as u8 })),
-                11 => Step::Aim(Box::new(Step::Demote { by, t: 0, holder: to, at: rng.below(6) as u8, to_read: rng.below(2) == 0 })),
-                12 => Step::Advance { who: Some(by), ms: 400 + rng.below(800) },
-                13 => Step::Send { from: by, to, back: rng.below(2) as u8 },
-                _ => Step::Sync { from: by, to },
-            }
-        })
-        .collect();
-    steps.into_iter().map(|x| if matches!(&x, Step::Aim(a) if matches!(**a, Step::Typed { .. } | Step::Undo { .. })) && old.below(4) == 0 { Step::Old(Box::new(x)) } else { x }).collect()
-}
-
-#[test]
-#[ignore = "tier 2"]
-fn arrival_order_list_expiry_large_spec_crdt_4_7() {
-    run("arrival_order_list_expiry_large_spec_crdt_4_7", tier2(3000..3040, 40), LARGE, list_expiry_history);
-}
-
-// spec/requirements.md Decentralization, spec/crdt.md §5.7: the same for sequences compacted with
-// nothing fallen (no role change, no hostile commit): several writers, undo, partial holders.
-#[test]
-#[ignore = "tier 2"]
-fn arrival_order_seq_compact_large_spec_crdt_5_7() {
-    run("arrival_order_seq_compact_large_spec_crdt_5_7", tier2(osis_base::testenv::large(3000..3020), 40), LARGE, seq_compact_history);
 }
 
 // spec/crdt.md §5.7: 0 inserts `v5` and deletes the `5` (both kept, so the delete undoes), 1
@@ -3292,11 +2886,12 @@ fn undelete_with_snapshot_of_deleted_spec_crdt_5_7() {
 }
 
 // spec/commits.md §5, spec/crdt.md §4.8 (replaced, a function of the held set): three writes of
-// a kept register, X < Y < Z; X is replaced at Y and Y at Z, delivered in order or Z first.
+// a kept register (no `v` a multiple of 3: kept after replaced, `retention_of`), X < Y < Z; X is
+// replaced at Y and Y at Z, delivered in order or Z first.
 #[test]
 fn replaced_alike_in_any_order_spec_commits_5() {
     use Step::*;
-    let h: Vec<Step> = (0..3).flat_map(|by| [Write { by, t: 0, op: 16, k: 0, v: by as u8 }, Advance { who: None, ms: 1000 }]).collect();
+    let h: Vec<Step> = (0..3).flat_map(|by| [Write { by, t: 0, op: 16, k: 0, v: [1, 2, 4][by] }, Advance { who: None, ms: 1000 }]).collect();
     let played = play(16, &h);
     let n = played.packs.len();
     let mut seen = Vec::new();
@@ -3724,39 +3319,6 @@ fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
     for p in [&mut after, &mut before] {
         let st = format!("{:?}", p.engine.state(&played.things[0], &ak("t:map.0")).unwrap());
         assert!(st.contains("value: Some(Int(5))"), "1's write is kept: {st}");
-    }
-}
-
-// spec/commits.md §5 (history modes): a survey of where the engine and held-model disagree, by
-// kind, over the harness's histories (issues/retention-modes.md). Never fails on a model
-// difference (`Cfg::survey`); with `--nocapture`.
-#[test]
-#[ignore = "survey, about 400 CPU-s"]
-fn held_model_retention_modes_survey_spec_commits_5() {
-    let cfg = Cfg { model: true, survey: true, sync: true, ..LARGE };
-    type Gen = fn(u64, usize, Cfg) -> Vec<Step>;
-    let sets: [(&str, std::ops::Range<u64>, usize, Gen); 3] = [("purge", 3000..3012, 60, purge_history), ("focused", 2023..2035, 30, focused_history), ("history", 0..12, 60, history)];
-    let mut tally = crate::held::Coverage::default();
-    let mut others = Vec::new();
-    for (name, seeds, len, generate) in sets {
-        for seed in seeds {
-            let steps = generate(seed, len, cfg);
-            match check(seed, &steps, cfg) {
-                Ok(seen) => tally.add(&seen.model),
-                Err(e) => others.push(format!("{name} seed {seed}: {}", e.lines().next().unwrap_or(""))),
-            }
-        }
-    }
-    osis_base::testenv::visible(true, &format!("survey: held-model compared {} aspects over {} nodes, reaching {:?}; skipped {:?}", tally.compared, tally.nodes, tally.reached, tally.skipped));
-    for (k, n) in &tally.differs {
-        osis_base::testenv::visible(true, &format!("survey: {n:6}  {k}"));
-    }
-    for o in &others {
-        osis_base::testenv::visible(true, &format!("survey: other oracle failed: {o}"));
-    }
-    for (k, d) in &tally.examples {
-        let short: String = d.chars().take(1500).collect();
-        osis_base::testenv::visible(true, &format!("survey example: {k}\n{short}\n"));
     }
 }
 

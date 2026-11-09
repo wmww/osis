@@ -291,8 +291,7 @@ fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
 ///   commit's other parts apply; it joins when its wait ends.
 ///
 /// Every wait only ends as the held set grows, so the applied parts are the least fixpoint of a
-/// monotone rule, one result for every order (`parts::split_delivery_*`, `parts::parts_differential_*`
-/// play them).
+/// monotone rule, one result for every order (osis-node `order::held_set_decides` plays them).
 pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, skip: &BTreeSet<usize>) -> Result<Exam> {
     if !blob.header.is_resolved() {
         // a held author's signature first: a false one costs no list. An author's record carried

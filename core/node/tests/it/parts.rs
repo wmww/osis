@@ -3,7 +3,7 @@
 //! came first or what it syncs, however the commit's parts are split over deliveries.
 
 use crate::judgment::observe;
-use crate::order::{Arrival, Played, Rng, Step, play, waited_at_expiry};
+use crate::order::{Played, Step, play};
 use osis_base::{Role, Tid, Value};
 use osis_commit::CommitBlob;
 use osis_node::{Ingested, Mutation, Reason};
@@ -11,7 +11,6 @@ use osis_node::local_peer::Peer;
 
 const SEED: u64 = 1038;
 const FRESH: u64 = 0x5eed_f00d;
-const SHUFFLES: u64 = 6;
 
 /// One delivery: pack `.0`, whole or only its parts on one thing.
 type Tok = (usize, Option<Tid>);
@@ -20,28 +19,16 @@ fn reg() -> osis_base::Ak {
     osis_base::Ak::new("t:reg.0").unwrap()
 }
 
-/// A history, and what may stay away: packs holding a chain or a creation record.
-struct History {
-    played: Played,
-    /// Whichever of these a case hides, one commit on several things is left without it.
-    hides: Vec<Vec<usize>>,
-}
-
-fn histories() -> Vec<History> {
+/// Four histories over things G, H (and K) ending in one commit on several things: a content
+/// commit, a role commit, one on three things, and an honest one on G and a new H.
+fn histories() -> Vec<Played> {
     use Step::*;
     let tick = || Advance { who: None, ms: 1000 };
     let content = play(SEED, &[NewTop { by: 0 }, tick(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick(), Two { by: 1, a: 0, b: 1, v: 1 }]);
     let role = play(SEED, &[NewTop { by: 0 }, tick(), Edge { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick(), TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }]);
     let three = play(SEED, &[NewTop { by: 0 }, NewTop { by: 0 }, tick(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }, Sync { from: 0, to: 1 }, tick(), Three { by: 1, a: 0, b: 1, c: 2, v: 1 }]);
     let honest = play(SEED, &[New { by: 0, parent: 0, write: true }, tick(), Two { by: 0, a: 0, b: 1, v: 7 }]);
-    let (cb, rb, tb, hb) = (content.base, role.base, three.base, honest.base);
-    vec![
-        // no edge, then no creation record
-        History { played: content, hides: vec![vec![], vec![cb + 1], vec![cb]] },
-        History { played: role, hides: vec![vec![], vec![rb + 1], vec![rb]] },
-        History { played: three, hides: vec![vec![], vec![tb + 2], vec![tb + 3], vec![tb + 2, tb + 3], vec![tb]] },
-        History { played: honest, hides: vec![vec![], vec![hb]] },
-    ]
+    vec![content, role, three, honest]
 }
 
 fn part(played: &Played, i: usize, t: Option<Tid>) -> Vec<u8> {
@@ -51,14 +38,6 @@ fn part(played: &Played, i: usize, t: Option<Tid>) -> Vec<u8> {
     let h = b.header.clone();
     b.parts.retain(|p| h.aspects[p.ai].tid == t);
     b.encode()
-}
-
-/// The things pack `i` has parts on.
-fn things_of(played: &Played, i: usize) -> Vec<Tid> {
-    let b = CommitBlob::decode(&played.packs[i].bytes).unwrap();
-    let mut out: Vec<Tid> = b.parts.iter().map(|p| b.header.aspects[p.ai].tid).collect();
-    out.dedup();
-    out
 }
 
 fn deliver(played: &Played, syncs: &[Tid], order: &[Tok]) -> Peer {
@@ -83,54 +62,6 @@ fn in_order(played: &Played, hidden: &[usize]) -> Vec<Tok> {
     (0..played.packs.len()).filter(|i| !hidden.contains(i)).map(|i| (i, None)).collect()
 }
 
-/// A random order of `hidden`'s complement, multi-thing commits split, some whole copies again.
-fn shuffled(played: &Played, hidden: &[usize], rng: &mut Rng) -> Vec<Tok> {
-    let mut out: Vec<Tok> = Vec::new();
-    for i in (0..played.packs.len()).filter(|i| !hidden.contains(i)) {
-        let ts = things_of(played, i);
-        if ts.len() > 1 {
-            out.extend(ts.into_iter().map(|t| (i, Some(t))));
-        } else {
-            out.push((i, None));
-        }
-    }
-    for i in (1..out.len()).rev() {
-        out.swap(i, rng.below(i as u64 + 1) as usize);
-    }
-    if rng.below(2) == 0 {
-        let at = rng.below(out.len() as u64 + 1) as usize;
-        let whole = out[rng.below(out.len() as u64) as usize].0;
-        out.insert(at, (whole, None));
-    }
-    out
-}
-
-// spec/requirements.md Decentralization (Deterministic), spec/commits.md §4: for each history,
-// held set and sync set, every arrival order and split of the same parts reads alike, whether
-// the commit's other things lack an edge or a creation record or nothing, on content and role
-// commits and three things.
-#[test]
-fn split_delivery_any_order_reads_alike_spec_commits_4() {
-    for (hi, h) in histories().into_iter().enumerate() {
-        let things = h.played.things.clone();
-        let syncs: Vec<Vec<Tid>> = vec![vec![], vec![things[1]], vec![things[0], things[1]]];
-        for hidden in &h.hides {
-            for sy in &syncs {
-                let want = seen(&h.played, &mut deliver(&h.played, sy, &in_order(&h.played, hidden)));
-                let mut rng = Rng(hi as u64 + 1);
-                for n in 0..SHUFFLES {
-                    let order = shuffled(&h.played, hidden, &mut rng);
-                    let got = seen(&h.played, &mut deliver(&h.played, sy, &order));
-                    if got != want {
-                        let first = got.iter().zip(&want).find(|(a, b)| a != b);
-                        panic!("history {hi}, hidden {hidden:?}, syncs {}, shuffle {n}, order {order:?}: {first:?}", sy.len());
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// `played`'s last commit's value on a thing, delivered with the packs `hidden` held back.
 fn reads(played: &Played, syncs: &[Tid], hidden: &[usize]) -> (Vec<Option<Value>>, usize) {
     let mut p = deliver(played, syncs, &in_order(played, hidden));
@@ -148,7 +79,7 @@ fn v(x: &str) -> Option<Value> {
 #[test]
 fn chainless_part_waits_alone_whatever_is_synced_spec_commits_4() {
     let hs = histories();
-    let (content, three) = (&hs[0].played, &hs[2].played);
+    let (content, three) = (&hs[0], &hs[2]);
     let (g, h) = (content.things[0], content.things[1]);
     let edge = content.base + 1;
     let (got, pending) = reads(content, &[], &[edge]);
@@ -173,7 +104,7 @@ fn chainless_part_waits_alone_whatever_is_synced_spec_commits_4() {
 #[test]
 fn role_part_applies_whatever_is_synced_spec_commits_4() {
     let hs = histories();
-    let role = &hs[1].played;
+    let role = &hs[1];
     let (g, h) = (role.things[0], role.things[1]);
     let roster = |p: &mut Peer| seen(role, p).into_iter().find(|(k, _)| *k == format!("thing {g}")).unwrap().1;
     let edge = role.base + 1;
@@ -395,7 +326,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
 #[test]
 fn late_part_of_applied_commit_joins_alone_spec_commits_4() {
     let hs = histories();
-    let three = &hs[2].played;
+    let three = &hs[2];
     let (g, h, c) = (three.things[0], three.things[1], three.things[2]);
     let last = three.packs.len() - 1;
     let setup: Vec<Tok> = in_order(three, &[last]);
@@ -557,60 +488,6 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     }
 }
 
-// Reviewer's differential: random histories with role commits granting across things, commits on
-// three things and hostile spans; every part split by aspect, in random orders. Each fixed sync set
-// and hidden set must read alike; with a sync set that changes during delivery, rosters are checked.
-fn diff_steps(rng: &mut Rng) -> Vec<Step> {
-    use Step::*;
-    let aim = |s: Step| Aim(Box::new(s));
-    let mut out = vec![NewTop { by: 0 }, NewTop { by: 0 }, Advance { who: None, ms: 1000 }];
-    for _ in 0..(8 + rng.below(14)) {
-        let (a, b, c) = (rng.below(5) as usize, rng.below(5) as usize, rng.below(5) as usize);
-        let by = rng.below(3) as usize;
-        let holder = rng.pick(&[1, 2]);
-        out.push(match rng.below(15) {
-            0 | 1 => aim(Edge { by: 0, t: a, holder, role: rng.pick(&[None, Some(Role::Read), Some(Role::Write), Some(Role::Admin)]) }),
-            2 => aim(New { by: 0, parent: a, write: rng.below(2) == 0 }),
-            3 => Forged { by, a, b, how: 1, op: rng.below(30) as u8, k: 0, v: rng.below(9) as u8 },
-            4 | 5 => Forged { by, a, b, how: 2, op: 0, k: 0, v: rng.below(9) as u8 },
-            6 => Forged { by, a, b, how: 3, op: 0, k: 0, v: 0 },
-            7 => {
-                let from = rng.below(3) as usize;
-                Sync { from, to: (from + 1 + rng.below(2) as usize) % 3 }
-            }
-            8 => Send { from: by, to: holder, back: rng.below(3) as u8 },
-            9 => Three { by: 0, a: a % 3, b: (a + 1) % 3, c: (a + 2) % 3, v: c as u8 },
-            10 => aim(Demote { by: 0, t: a, holder, at: rng.below(4) as u8, to_read: rng.below(2) == 0 }),
-            11 => BadPart { by, a, b, how: rng.below(2) as u8 },
-            12 => BigDemote { by: 0, t: a, holder },
-            // expiring (ops 27..=29): a part that waits past its expiry goes (spec/commits.md §5)
-            13 => Forged { by, a, b, how: 1, op: 27 + rng.below(3) as u8, k: 0, v: rng.below(9) as u8 },
-            _ => Advance { who: None, ms: 1000 },
-        });
-    }
-    // a linked frontier for the variants that keep its blobs away
-    let holder = rng.pick(&[1, 2]);
-    out.extend([BadPart { by: 0, a: 0, b: 1, how: rng.below(2) as u8 }, Advance { who: None, ms: 1000 }, BigDemote { by: 0, t: 0, holder }, Advance { who: None, ms: 1000 }]);
-    out
-}
-
-/// What a relay can make of pack `i`: the same signed header with another's deltas in its slots, or
-/// with another's signature, or both.
-fn junk_copy(played: &Played, i: usize, rng: &mut Rng) -> Vec<u8> {
-    let mut b = CommitBlob::decode(&played.packs[i].bytes).unwrap();
-    let other = CommitBlob::decode(&played.packs[rng.below(played.packs.len() as u64) as usize].bytes).unwrap();
-    let how = rng.below(3);
-    if how != 0 {
-        for p in &mut b.parts {
-            p.delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![rng.below(256) as u8; 40]), Value::Int(i as i64)]));
-        }
-    }
-    if how != 1 {
-        b.signature = other.signature;
-    }
-    b.encode()
-}
-
 /// What a node keeps of what it is given, for the tests here at the engine: every copy, ingested again
 /// as `SyncEngine::redeliver` does but for its look at which slots a copy brings (`parts_relay` runs the
 /// real one, restarts and lost names included).
@@ -663,185 +540,6 @@ fn cuts(played: &Played, i: usize) -> Vec<Vec<u8>> {
             x.encode()
         })
         .collect()
-}
-
-/// What one seed of `parts_differential` held and found.
-#[derive(Default)]
-struct PartsSeed {
-    played: bool,
-    bad_parts: usize,
-    linked: usize,
-    expiring: usize,
-    bad: Vec<String>,
-}
-
-fn parts_seed(seed: u64) -> PartsSeed {
-    let mut bad = Vec::new();
-    let (mut bad_parts, mut linked, mut expiring) = (0, 0, 0);
-    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    let steps = diff_steps(&mut rng);
-    // a scripted step may be refused after a demotion: named, the history left out
-    let played = match std::panic::catch_unwind(|| play(seed, &steps)) {
-        Ok(p) => p,
-        Err(e) => {
-            let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|x| x.to_string())).unwrap_or_default();
-            eprintln!("seed {seed} not played: {msg}");
-            return PartsSeed::default();
-        }
-    };
-    for pk in &played.packs {
-        let b = CommitBlob::decode(&pk.bytes).unwrap();
-        linked += usize::from(b.header.links.frontier.is_some());
-        expiring += usize::from(b.header.expires.is_some());
-        bad_parts += usize::from(b.parts.iter().any(|p| matches!(osis_base::decode(&p.delta, &osis_base::Limits { max_depth: 8, max_bytes: p.delta.len() }), Ok(Value::List(l)) if matches!(l.as_slice(), [Value::Int(1)]))));
-    }
-    let ids: std::collections::BTreeSet<_> = played.packs.iter().map(|x| x.id).collect();
-    let later: Vec<usize> = (0..played.packs.len()).collect();
-    for variant in 0..6 {
-        let hidden: Vec<usize> = later.iter().copied().filter(|_| variant > 0 && rng.below(5) == 0).collect();
-        let sync: Vec<Tid> = played.things.iter().copied().filter(|_| variant % 2 == 1 && rng.below(2) == 0).collect();
-        let keep: Vec<usize> = later.iter().copied().filter(|i| !hidden.contains(i)).collect();
-        // the blobs of the demotions' linked frontiers stay away, then come
-        let away = variant % 3 == 2;
-        let away_from = |i: usize| -> Vec<(osis_base::BlobId, Vec<u8>)> {
-            let pk = &played.packs[i];
-            let h = CommitBlob::decode(&pk.bytes).unwrap().header;
-            // a role commit references no blobs but its linked frontier's
-            let frontier: std::collections::BTreeSet<_> = if away && h.links.frontier.is_some() { pk.blobs.iter().map(|b| b.0).collect() } else { Default::default() };
-            pk.blobs.iter().filter(|(b, _)| !frontier.contains(b)).cloned().collect()
-        };
-        let universe: std::collections::BTreeSet<usize> = keep.iter().copied().collect();
-        let held_of = |p: &mut Peer, arrived: &[Arrival]| {
-            let roster: Vec<String> = played.things.iter().map(|t| format!("{:?}", p.engine.roster(t))).collect();
-            let seen = observe(&mut p.engine, &ids);
-            // a part that may have waited at its expiry counts as never received: its aspect may
-            // differ from one that applied it before T (spec/commits.md §5); from the history
-            let expired: Vec<String> = waited_at_expiry(&played, Some(&universe), arrived, played.now).into_iter().map(|(t, a)| format!("aspect {t} {}", a.as_str())).collect();
-            (seen, roster, expired)
-        };
-        // what a token delivers (`Arrival`): a pack whole, a cut of it, or nothing genuine (junk)
-        let arrival = |i: usize, bytes: &[u8]| -> Option<Arrival> {
-            let pk = &played.packs[i];
-            let blobs = away_from(i).len() == pk.blobs.len();
-            if bytes == pk.bytes.as_slice() {
-                return Some(Arrival { pack: i, ais: None, at: played.now, blobs });
-            }
-            let (whole, b) = (CommitBlob::decode(&pk.bytes).ok()?, CommitBlob::decode(bytes).ok()?);
-            let genuine = !b.parts.is_empty() && b.header == whole.header && b.parts.iter().all(|p| whole.parts.contains(p));
-            genuine.then(|| Arrival { pack: i, ais: Some(b.parts.iter().map(|p| p.ai).collect()), at: played.now, blobs })
-        };
-        // the state read with the blobs away, and read once they came
-        let read = |toks: &[Vec<u8>], blobs: &[usize], toggles: Option<&[(usize, Tid, bool)]>| {
-            let mut p = Peer::new(FRESH, played.now).unwrap();
-            let mut relay = Relay::default();
-            let mut arrived: Vec<Arrival> = Vec::new();
-            if toggles.is_none() {
-                for t in &sync {
-                    p.engine.set_syncing(*t, true).unwrap();
-                }
-            }
-            for (at, b) in toks.iter().enumerate() {
-                for (w, t, on) in toggles.unwrap_or(&[]) {
-                    if *w == at {
-                        p.engine.set_syncing(*t, *on).unwrap();
-                    }
-                }
-                relay.give(&mut p, b, away_from(blobs[at]));
-                arrived.extend(arrival(blobs[at], b));
-            }
-            for t in sync.iter() {
-                p.engine.set_syncing(*t, true).unwrap();
-            }
-            // a part missing again (its cover no longer carries it, or its purge fell: never
-            // received, spec/commits.md §5) node-sync fetches: its copy comes from a holder
-            let refetch = |p: &mut Peer, relay: &mut Relay, arrived: &mut Vec<Arrival>| {
-                for (id, ais) in p.engine.commit_parts_missing() {
-                    if let Some(i) = blobs.iter().find(|i| !ais.is_empty() && played.packs[**i].id == id) {
-                        relay.give(p, &played.packs[*i].bytes, away_from(*i));
-                        arrived.extend(arrival(*i, &played.packs[*i].bytes));
-                    }
-                }
-            };
-            relay.settle(&mut p);
-            refetch(&mut p, &mut relay, &mut arrived);
-            let first = held_of(&mut p, &arrived);
-            for i in blobs {
-                p.engine.put_blobs(played.packs[*i].blobs.clone()).unwrap();
-                arrived.push(Arrival { pack: *i, ais: Some(Default::default()), at: played.now, blobs: true });
-            }
-            relay.settle(&mut p);
-            refetch(&mut p, &mut relay, &mut arrived);
-            (first, held_of(&mut p, &arrived))
-        };
-        let whole: Vec<Vec<u8>> = keep.iter().map(|i| played.packs[*i].bytes.clone()).collect();
-        let (want, want_after) = read(&whole, &keep, None);
-        for _ in 0..5 {
-            let mut toks: Vec<(usize, Vec<u8>)> = keep.iter().flat_map(|i| cuts(&played, *i).into_iter().map(move |b| (*i, b))).collect();
-            // a whole copy again (under a second label), a relay's junk
-            for _ in 0..rng.below(4) {
-                let i = keep[rng.below(keep.len() as u64) as usize];
-                toks.push((i, played.packs[i].bytes.clone()));
-            }
-            for _ in 0..rng.below(4) {
-                let i = keep[rng.below(keep.len() as u64) as usize];
-                let j = junk_copy(&played, i, &mut rng);
-                toks.push((i, j));
-            }
-            for i in (1..toks.len()).rev() {
-                toks.swap(i, rng.below(i as u64 + 1) as usize);
-            }
-            let (is, bs): (Vec<usize>, Vec<Vec<u8>>) = toks.into_iter().unzip();
-            let (got, got_after) = read(&bs, &is, None);
-            for (name, (g, ge), (w, we)) in [("as delivered", (&got.0, &got.2), (&want.0, &want.2)), ("blobs come", (&got_after.0, &got_after.2), (&want_after.0, &want_after.2))] {
-                // a flagged aspect's lines and its bodies' (`body <commit> <tid> <ak>`): the part that
-                // waited past T is never received here, held where it applied first (spec/commits.md §5)
-                let aspect = |k: &str| k.strip_prefix("body ").and_then(|r| r.split_once(' ')).map(|(_, ta)| format!("aspect {ta}"));
-                let stands = |x: &&(String, String)| [ge, we].iter().all(|f| !f.contains(&x.0) && aspect(&x.0).is_none_or(|a| !f.contains(&a)));
-                let (g, w): (Vec<_>, Vec<_>) = (g.iter().filter(stands).collect(), w.iter().filter(stands).collect());
-                if g != w {
-                    let first = g.iter().filter(|x| !w.contains(x)).map(|x| format!("got {x:?}")).chain(w.iter().filter(|x| !g.contains(x)).map(|x| format!("want {x:?}"))).collect::<Vec<_>>().join("; ");
-                    bad.push(format!("seed {seed} variant {variant} fixed sync, {name}: {}", first.chars().take(300).collect::<String>()));
-                }
-            }
-            for (name, g, w) in [("as delivered", &got.1, &want.1), ("blobs come", &got_after.1, &want_after.1)] {
-                if g != w {
-                    let first = g.iter().zip(w).find(|(a, b)| a != b).map(|x| format!("{x:?}"));
-                    bad.push(format!("seed {seed} variant {variant} fixed sync roster, {name}: {}", first.unwrap_or_default().chars().take(300).collect::<String>()));
-                }
-            }
-            // the sync set arriving during delivery, same in the end
-            let toggles: Vec<(usize, Tid, bool)> = sync.iter().map(|t| (rng.below(bs.len() as u64 + 1) as usize, *t, true)).collect();
-            let (changing, _) = read(&bs, &is, Some(&toggles));
-            if changing.1 != want.1 {
-                let first = changing.1.iter().zip(&want.1).find(|(a, b)| a != b).map(|x| format!("{x:?}"));
-                bad.push(format!("seed {seed} variant {variant} changing sync, roster: {}", first.unwrap_or_default().chars().take(300).collect::<String>()));
-            }
-        }
-    }
-    PartsSeed { played: true, bad_parts, linked, expiring, bad }
-}
-
-fn parts_replay(s: u64) -> String {
-    format!("OSIS_PARTS_START={s} OSIS_PARTS_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact parts::parts_differential_large_spec_commits_4")
-}
-
-#[test]
-#[ignore]
-fn parts_differential_large_spec_commits_4() {
-    let seeds = osis_base::testenv::Seeds::from_env("OSIS_PARTS_START", "OSIS_PARTS_SEEDS", osis_base::testenv::large(1..151));
-    let n = seeds.range.end - seeds.range.start;
-    let all = seeds.run("parts::parts_differential_large_spec_commits_4", parts_replay, parts_seed);
-    let played_n = all.iter().filter(|s| s.played).count() as u64;
-    // what the histories hold of the hostile cases
-    let (bad_parts, linked, expiring): (usize, usize, usize) = (all.iter().map(|s| s.bad_parts).sum(), all.iter().map(|s| s.linked).sum(), all.iter().map(|s| s.expiring).sum());
-    let bad: Vec<&String> = all.iter().flat_map(|s| &s.bad).collect();
-    eprintln!("{played_n} of {n} histories played, {bad_parts} commits with a bad part, {linked} demotions linking a frontier, {expiring} expiring commits");
-    for b in &bad {
-        eprintln!("failure: {b}");
-    }
-    assert!(played_n > n / 2);
-    assert!(n < 10 || (bad_parts > 0 && linked > 0 && expiring > 0), "the histories hold the hostile cases");
-    assert!(bad.is_empty(), "{} failures:\n{}", bad.len(), bad.iter().take(12).map(|x| x.as_str()).collect::<Vec<_>>().join("\n"));
 }
 
 // spec/commits.md §4: the differential's histories play through a write that changes nothing (no
@@ -1127,7 +825,7 @@ fn flood_of_copies_keeps_out_nothing_spec_commits_4() {
 #[test]
 fn role_commit_of_junk_holds_nothing_spec_commits_4() {
     let hs = histories();
-    let role = &hs[1].played;
+    let role = &hs[1];
     let last = role.packs.len() - 1;
     let id = role.packs[last].id;
     let g = role.things[0];
@@ -1238,80 +936,6 @@ fn false_signature_refused_before_linked_lists() {
     // the true copy waits for them
     assert!(lp.peers[1].engine.ingest(&pk.bytes, Vec::new()).is_ok());
     assert!(!lp.peers[1].engine.pending().is_empty());
-}
-
-// Reviewer's differential (spec/permissions.md §5.1, spec/commits.md §4): a role's standing does not
-// read what a node syncs: one held set, with linked frontiers away and after they come, reads one
-// roster under every sync set, in random shapes and orders, a restart among them.
-fn rosters_alike(seeds: impl Iterator<Item = u64>) {
-    let mut bad = Vec::new();
-    let mut linked = 0;
-    for seed in seeds {
-        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-        let steps = diff_steps(&mut rng);
-        let Ok(played) = std::panic::catch_unwind(|| play(seed, &steps)) else { continue };
-        let frontier_of = |i: usize| -> std::collections::BTreeSet<osis_base::BlobId> {
-            // a role commit references no blobs but its linked frontier's
-            let h = CommitBlob::decode(&played.packs[i].bytes).unwrap().header;
-            if h.links.frontier.is_some() { played.packs[i].blobs.iter().map(|b| b.0).collect() } else { Default::default() }
-        };
-        linked += (0..played.packs.len()).filter(|i| !frontier_of(*i).is_empty()).count();
-        let rosters = |p: &mut Peer| -> Vec<String> { played.things.iter().map(|t| format!("{:?}", p.engine.roster(t))).collect() };
-        let all: Vec<usize> = (0..played.packs.len()).collect();
-        let read = |sync: &[Tid], rng: &mut Rng, cut: bool, restart: bool, all: &[usize]| {
-            let mut p = Peer::new(FRESH, played.now).unwrap();
-            for t in sync {
-                p.engine.set_syncing(*t, true).unwrap();
-            }
-            let mut toks: Vec<(usize, Vec<u8>)> = all.iter().flat_map(|i| if cut { cuts(&played, *i) } else { vec![played.packs[*i].bytes.clone()] }.into_iter().map(move |b| (*i, b))).collect();
-            for i in (1..toks.len()).rev() {
-                toks.swap(i, rng.below(i as u64 + 1) as usize);
-            }
-            for (i, b) in &toks {
-                let away = frontier_of(*i);
-                let _ = p.engine.ingest(b, played.packs[*i].blobs.iter().filter(|(x, _)| !away.contains(x)).cloned().collect());
-            }
-            p.engine.reexamine().unwrap();
-            if restart {
-                p.restart(seed).unwrap();
-                p.engine.reexamine().unwrap();
-            }
-            let first = rosters(&mut p);
-            for i in all {
-                p.engine.put_blobs(played.packs[*i].blobs.clone()).unwrap();
-            }
-            p.engine.reexamine().unwrap();
-            (first, rosters(&mut p))
-        };
-        for round in 0..3 {
-            // some packs stay away, alike in each
-            let keep: Vec<usize> = all.iter().copied().filter(|_| round == 0 || rng.below(5) != 0).collect();
-            let want = read(&[], &mut rng, false, false, &keep);
-            for variant in 0..6 {
-                let sync: Vec<Tid> = match variant {
-                    0 | 1 => played.things.clone(),
-                    _ => played.things.iter().copied().filter(|_| rng.below(2) == 0).collect(),
-                };
-                let got = read(&sync, &mut rng, variant % 2 == 1, variant >= 4, &keep);
-                for (name, g, w) in [("away", &got.0, &want.0), ("come", &got.1, &want.1)] {
-                    if g != w {
-                        let first = g.iter().zip(w).find(|(a, b)| a != b).map(|x| format!("{x:?}")).unwrap_or_default();
-                        bad.push(format!("seed {seed} round {round} variant {variant} hidden {:?} sync {sync:?} blobs {name}: {}", all.iter().filter(|i| !keep.contains(i)).collect::<Vec<_>>(), first.chars().take(300).collect::<String>()));
-                    }
-                }
-            }
-        }
-    }
-    assert!(linked > 0);
-    assert!(bad.is_empty(), "{} failures:\n{}", bad.len(), bad.iter().take(12).cloned().collect::<Vec<_>>().join("\n"));
-}
-
-#[test]
-#[ignore]
-fn rosters_alike_across_sync_sets_large_spec_permissions_5_1() {
-    let seeds = osis_base::testenv::Seeds::from_env("OSIS_ROSTERS_START", "OSIS_ROSTERS_SEEDS", 1..61);
-    seeds.announce("parts::rosters_alike_across_sync_sets_large_spec_permissions_5_1");
-    rosters_alike(seeds.range);
 }
 
 // spec/commits.md §4: a bad part on a synced thing beside a part waiting alone: dropped, the commit
@@ -1586,128 +1210,4 @@ fn forged_parts_beside_a_part_past_expiry(stride: usize) {
             assert_eq!(seen.len(), 1, "made {n}, sync {:?}: {seen:#?}", sync.map(|t| t == x));
         }
     }
-}
-
-/// Random histories of writers' commits on two things, demotions (some with frontiers), re-grants
-/// and demotions of the demoter: what a part away and its late join meet.
-fn away_steps(rng: &mut Rng) -> Vec<Step> {
-    use Step::*;
-    let tick = Advance { who: None, ms: 1000 };
-    let mut out = vec![NewTop { by: 0 }, tick.clone()];
-    for (t, holder, role) in [(1, 1, Role::Write), (1, 2, Role::Admin), (2, 1, Role::Write)] {
-        out.push(Edge { by: 0, t, holder, role: Some(role) });
-    }
-    out.extend([Sync { from: 0, to: 1 }, Sync { from: 0, to: 2 }, tick.clone()]);
-    for _ in 0..(6 + rng.below(10)) {
-        let t = rng.below(2) as usize;
-        let writer = 1 + rng.below(2) as usize;
-        out.push(match rng.below(11) {
-            0..=2 => Two { by: writer, a: t, b: 1 - t, v: rng.below(9) as u8 },
-            3 => Demote { by: 2, t, holder: 1, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
-            4 => Demote { by: 0, t, holder: writer, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
-            5 => Edge { by: 0, t, holder: writer, role: Some(Role::Write) },
-            6 => Sync { from: rng.below(3) as usize, to: rng.below(3) as usize },
-            // Carol makes Bob an admin, he lowers her: a signer's grant that may fall
-            7 => Edge { by: 2, t, holder: 1, role: Some(Role::Admin) },
-            8 => Demote { by: 1, t, holder: 2, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
-            9 => Edge { by: 1, t, holder: 2, role: Some(Role::Write) },
-            _ => tick.clone(),
-        });
-        out.push(tick.clone());
-    }
-    out
-}
-
-/// What one seed of `part_away_differential` found.
-#[derive(Default)]
-struct AwaySeed {
-    played: bool,
-    /// Commits on two things delivered with a part away.
-    away: usize,
-    bad: Vec<String>,
-}
-
-fn away_seed(seed: u64) -> AwaySeed {
-    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    let steps = away_steps(&mut rng);
-    let Ok(played) = std::panic::catch_unwind(|| play(seed, &steps)) else { return AwaySeed::default() };
-    let ids: std::collections::BTreeSet<_> = played.packs.iter().map(|x| x.id).collect();
-    let mut out = AwaySeed { played: true, ..Default::default() };
-    // a part of each commit on two things stays away, on one of them
-    let away: Vec<(usize, Tid)> = (0..played.packs.len())
-        .filter_map(|i| {
-            let ts = things_of(&played, i);
-            let b = CommitBlob::decode(&played.packs[i].bytes).unwrap();
-            (b.header.kind == osis_commit::Kind::Content && ts.len() == 2 && rng.below(4) != 0).then(|| (i, ts[rng.below(2) as usize]))
-        })
-        .collect();
-    out.away = away.len();
-    if away.is_empty() {
-        return out;
-    }
-    let cut = |i: usize| -> Vec<u8> {
-        let Some((_, t)) = away.iter().find(|x| x.0 == i) else { return played.packs[i].bytes.clone() };
-        let b = CommitBlob::decode(&played.packs[i].bytes).unwrap();
-        let mut x = b.clone();
-        x.parts.retain(|p| b.header.aspects[p.ai].tid != *t);
-        x.encode()
-    };
-    let read = |toks: &[(usize, Vec<u8>)], late: bool| {
-        let mut p = Peer::new(FRESH, played.now).unwrap();
-        for (i, b) in toks {
-            let _ = p.engine.ingest(b, played.packs[*i].blobs.clone());
-            p.engine.reexamine().unwrap();
-        }
-        if late {
-            for (i, _) in &away {
-                let _ = p.engine.ingest(&played.packs[*i].bytes, Vec::new());
-                p.engine.reexamine().unwrap();
-            }
-        }
-        let seen = observe(&mut p.engine, &ids);
-        (seen, played.things.iter().map(|t| format!("{:?}", p.engine.roster(t))).collect::<Vec<_>>())
-    };
-    let toks: Vec<(usize, Vec<u8>)> = (0..played.packs.len()).map(|i| (i, cut(i))).collect();
-    let whole: Vec<(usize, Vec<u8>)> = (0..played.packs.len()).map(|i| (i, played.packs[i].bytes.clone())).collect();
-    let want = read(&toks, false);
-    let joined = read(&whole, false);
-    let mut differs = |what: &str, got: &(Vec<(String, String)>, Vec<String>), w: &(Vec<(String, String)>, Vec<String>)| {
-        if got != w {
-            let first = got.0.iter().filter(|x| !w.0.contains(x)).map(|x| format!("got {x:?}")).chain(w.0.iter().filter(|x| !got.0.contains(x)).map(|x| format!("want {x:?}"))).collect::<Vec<_>>().join("; ");
-            out.bad.push(format!("seed {seed} {what}: {}", first.chars().take(300).collect::<String>()));
-        }
-    };
-    for _ in 0..8 {
-        let mut order = toks.clone();
-        for i in (1..order.len()).rev() {
-            order.swap(i, rng.below(i as u64 + 1) as usize);
-        }
-        differs("any order, a part away", &read(&order, false), &want);
-        // the part arriving late joins to what a reader given every commit whole has
-        differs("the part comes", &read(&order, true), &joined);
-    }
-    out
-}
-
-fn away_replay(s: u64) -> String {
-    format!("OSIS_AWAY_START={s} OSIS_AWAY_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact parts::part_away_differential_large_spec_commits_4")
-}
-
-// spec/commits.md §4: commits on two things, each with a part away: what a reader applies is alike in
-// every order (nothing waits for the part), and the part arriving late joins to what a reader holding
-// every commit whole has, under demotions with and without frontiers, re-grants, falling grants and
-// rosters.
-#[test]
-#[ignore]
-fn part_away_differential_large_spec_commits_4() {
-    let seeds = osis_base::testenv::Seeds::from_env("OSIS_AWAY_START", "OSIS_AWAY_SEEDS", osis_base::testenv::large(1..61));
-    let n = seeds.range.end - seeds.range.start;
-    let all = seeds.run("parts::part_away_differential_large_spec_commits_4", away_replay, away_seed);
-    let played_n = all.iter().filter(|s| s.played).count() as u64;
-    let away: usize = all.iter().map(|s| s.away).sum();
-    let bad: Vec<&String> = all.iter().flat_map(|s| &s.bad).collect();
-    eprintln!("{played_n} of {n} histories played, {away} commits with a part away");
-    assert!(played_n > n / 2);
-    assert!(n < 10 || away > 0, "the histories reach a part away");
-    assert!(bad.is_empty(), "{} failures:\n{}", bad.len(), bad.iter().take(12).map(|x| x.as_str()).collect::<Vec<_>>().join("\n"));
 }

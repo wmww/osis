@@ -111,7 +111,7 @@ Seed-breadth runs reach what per-branch sizes never do. They detect design smell
 Commands (the full set; an area run takes its own items):
 - `cargo run --bin sim-sweep -- --seeds 150 --from <F> --budget-secs 3600` (51 scenarios; at load 30-45 it reached 78 of 150 seeds in 3600 s; a seed past `OSIS_SEED_TIMEOUT_SECS` CPU-seconds, default 600, is named hung, and one still running at the end exits the sweep, 101, after naming it). A sweep cut by its budget says so only in its per-scenario seed counts: log the seeds that ran.
 - `OSIS_FULL=1` on every tier-2 test named below that takes its plain default.
-- `OSIS_ORDER_START=<S> OSIS_ORDER_SEEDS=300 cargo test -p osis-node --test it -- --ignored order::arrival_order_alike_large_spec_permissions_5_2` (2 min on 16 threads), and `OSIS_ORDER_SEEDS=200` for `order::arrival_order_exhaustive_large_spec_crdt_4_8` (13 min).
+- `OSIS_FULL=1 OSIS_ORDER_START=<S> cargo test -p osis-node --test it -- --ignored order::held_set_decides_` (plain and exhaustive, 80 seeds each).
 - `OSIS_PERM_SEED=<P> cargo test -p osis-perm` (only osis-perm reads it) and `OSIS_PERM_SEED=<P> cargo test -p osis-perm --test it -- --ignored differential:: queries:: incremental::` (2.4 min).
 - `OSIS_CRDT_SEED=<C> cargo test -p osis-crdt -- --include-ignored --skip repro_ --skip hostile_moves --skip shrink_script`.
 - Every seed-ranged harness has a `_large` twin (notes/testing.md Seed runners).

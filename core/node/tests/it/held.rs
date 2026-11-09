@@ -28,8 +28,7 @@
 //! history: every body the node dropped whose keep-at-least bound is an absolute time still ahead (kept until T,
 //! or for good), given back as the order harness's keep-everything node holds it, one the model
 //! lets go. Which other bodies a node holds, and when it dates a death, are its own. Every
-//! difference is tallied by kind (`Coverage::differs`); the first is reported, none under
-//! `Coverage::survey` (`order::held_model_retention_modes_survey_*`). The order harness also
+//! difference is tallied by kind (`Coverage::differs`); the first is reported. The order harness also
 //! compares after every ingest of its clocked deliveries, between ticks.
 //!
 //! Retention is fed as the model's history mode (`retention`): purge on replace is `PurgeOnReplace`, kept
@@ -80,13 +79,8 @@ pub(crate) struct Coverage {
     /// value-less deltas. Of nodes with a compared aspect: the commits and edges fed of each
     /// feature (undo, acting, `required^.0`, addenda, invites, `until`, self-removals).
     pub(crate) reached: BTreeMap<&'static str, u64>,
-    /// Every difference found, by kind (`compare` reports the first; under `survey` none).
+    /// Every difference found, by kind (`compare` reports the first).
     pub(crate) differs: BTreeMap<String, u64>,
-    /// Survey mode (`Cfg::survey`): `compare` tallies every difference and reports none, so a
-    /// harness run surveys where the node and the model disagree instead of stopping at the first.
-    pub(crate) survey: bool,
-    /// Under `survey`: the first difference of each kind, described.
-    pub(crate) examples: BTreeMap<String, String>,
 }
 
 impl Coverage {
@@ -101,9 +95,6 @@ impl Coverage {
         }
         for (k, n) in &o.differs {
             *self.differs.entry(k.clone()).or_default() += n;
-        }
-        for (k, d) in &o.examples {
-            self.examples.entry(k.clone()).or_insert_with(|| d.clone());
         }
     }
 }
@@ -649,6 +640,9 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
     reach("leftover", parts().filter(|(_, p)| !p.stripped.is_empty()).count());
     reach("value-less", o.valueless.iter().filter(|d| inside.contains(&(d.1, d.2))).count());
     reach("signal parts", parts().filter(|(_, p)| p.aspect.signal).count());
+    // replaced bodies (held or dropped) whose absolute keep-at-least is still ahead: a node must
+    // keep them however a snapshot covers them
+    reach("covered kept until T", parts().filter(|(k, p)| o.replaced.contains(k) && matches!(p.retention.history, hm::History::Keep { until, .. } if until > input.held.now)).count());
     if !inside.is_empty() {
         let cs = &input.held.commits;
         let edges = || cs.iter().filter(|c| c.kind == hm::CommitKind::Role).flat_map(|c| c.parts.iter().map(move |p| (c, p))).filter_map(|(c, p)| match &p.body {
@@ -678,7 +672,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         Some(s)
     };
     let by_part: BTreeMap<(hm::ThingId, hm::Aspect), (Tid, Ak)> = input.inside.iter().map(|(k, v)| (*v, k.clone())).collect();
-    // every difference, by kind; the first is reported (none under `survey`)
+    // every difference, by kind; the first is reported
     let mut diffs: Vec<(String, Option<String>)> = Vec::new();
     for c in &input.held.commits {
         let (id, applied) = input.commits[&c.id];
@@ -772,14 +766,6 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
     }
     for (k, _) in &diffs {
         *cov.differs.entry(k.clone()).or_default() += 1;
-    }
-    if cov.survey {
-        for (k, d) in &diffs {
-            if let Some(d) = d {
-                cov.examples.entry(k.clone()).or_insert_with(|| d.clone());
-            }
-        }
-        return None;
     }
     diffs.into_iter().next().and_then(|(_, d)| d)
 }

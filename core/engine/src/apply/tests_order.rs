@@ -192,15 +192,3 @@ fn validity_alike_in_every_arrival_order_spec_permissions_5_2() {
         assert_eq!(sample(0x0de5_0000 + i as u64, Shape { writes, at, by, sub, tail }), 24);
     }
 }
-
-// The same over random shapes (up to 720 orders each).
-#[test]
-#[ignore = "tier 2"]
-fn validity_alike_in_every_arrival_order_random_spec_permissions_5_2() {
-    let mut rng = Rng(0x0de5_1111);
-    for seed in 0..40 {
-        let writes = 1 + rng.below(2);
-        let shape = Shape { writes, at: rng.below(writes + 1), by: [0, 2][rng.below(2)], sub: rng.below(3), tail: rng.below(4) };
-        sample(0x0de5_1000 + seed, shape);
-    }
-}
