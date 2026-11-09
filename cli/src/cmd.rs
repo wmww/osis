@@ -215,11 +215,11 @@ fn needs_net(c: &Cmd) -> bool {
     ) || delivers(c)
 }
 
-/// Commands that stay up until stopped, so they are on the local network (not `serve --no-lan`).
+/// Commands that stay up until stopped, so they are on the local network (unless `--no-lan`).
 fn stays_up(c: &Cmd) -> bool {
     matches!(
         c,
-        Cmd::Serve { no_lan: false, .. }
+        Cmd::Serve { .. }
             | Cmd::Pair(_)
             | Cmd::Watch { .. }
             | Cmd::Status { watch: true }
@@ -1592,7 +1592,6 @@ mod tests {
         use clap::Parser;
         for (args, want) in [
             (&["osis", "serve"][..], Node),
-            (&["osis", "serve", "--no-lan"], Sync),
             (&["osis", "pair", "join", "x"], Node),
             (&["osis", "diag", "--follow"], Node),
             (&["osis", "status", "--watch"], Node),
@@ -1605,6 +1604,18 @@ mod tests {
             let cli = crate::args::Cli::try_parse_from(args).unwrap();
             assert!(super::network(&cli.cmd) == want, "{args:?}");
         }
+    }
+
+    // notes/cli.md Network: `--no-lan`, on any command that stays up, keeps it off the LAN.
+    #[test]
+    fn no_lan_keeps_a_node_off_the_lan_notes_cli() {
+        use clap::Parser;
+        for args in [&["osis", "--no-lan", "watch", "t", "a:b.0"][..], &["osis", "serve", "--no-lan"], &["osis", "--no-lan", "pair", "join", "x"]] {
+            let cli = crate::args::Cli::try_parse_from(args).unwrap();
+            assert!(matches!(crate::config(&cli.g, super::network(&cli.cmd)).lan, osis::Lan::Off), "{args:?}");
+        }
+        let cli = crate::args::Cli::try_parse_from(["osis", "serve"]).unwrap();
+        assert!(matches!(crate::config(&cli.g, super::network(&cli.cmd)).lan, osis::Lan::On { .. }));
     }
 
     // notes/cli.md Command table: `status` shows split things apart from groups, in both forms.

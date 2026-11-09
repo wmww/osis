@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: node, sync, api
 
-Evidence: `pNN`/`qN` are throwaway probes over `Transport::InProcess`, whose `peer://` finds any listener by key (**kinder than reality**: a `works` from it says the sync logic holds, not that nodes find each other). `(tier 2)`: real sockets on localhost under `cargo test-net`. `no_server` tests: core/test/sim/tests/it/no_server.rs, on `World` over the reachability model, model time; each open row's `repro_row<N>_*` (`#[ignore]` names the job, which renames it) asserts the right outcome. Also cli/tests/it/cli.rs `repro_row3_row12_*`.
+Evidence: `pNN`/`qN` are throwaway probes over `Transport::InProcess`, whose `peer://` finds any listener by key (**kinder than reality**: a `works` from it says the sync logic holds, not that nodes find each other). `(tier 2)`: real sockets on localhost (networking tier 2, notes/build.md). `no_server` tests: core/test/sim/tests/it/no_server.rs, on `World` over the reachability model, model time; each open row's `repro_row<N>_*` (`#[ignore]` names the job, which renames it) asserts the right outcome. Also cli/tests/it/cli.rs `repro_row3_row12_*`.
 
 ## Findings
 Row 35's likely cause, read only: the own-commit drift exemption skips only commits this node signs, not those signed by a key actor it holds (issues/clock-peer-offset.md).

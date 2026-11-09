@@ -39,6 +39,9 @@ pub struct Global {
     /// Diagnostics on stderr while a command that syncs runs (as `diag --follow`)
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
+    /// Do not announce this node on the local network or look for others there
+    #[arg(long = "no-lan", global = true)]
+    pub no_lan: bool,
     /// Materialization bound in bytes
     #[arg(long, global = true, value_name = "BYTES")]
     pub limit: Option<usize>,
@@ -175,9 +178,6 @@ pub enum Cmd {
         /// line `client URL#KEY` per listener prints after the serving address
         #[arg(long = "client-listen", value_name = "URL")]
         client_listen: Vec<String>,
-        /// Do not announce this node on the local network or look for others there
-        #[arg(long = "no-lan")]
-        no_lan: bool,
     },
     /// Create a thing, optionally setting aspects: create --in me note:title.0 '"x"'
     Create(CreateArgs),

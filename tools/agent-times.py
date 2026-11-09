@@ -11,7 +11,7 @@ foreground tool running: thinking and writing) and minutes per kind of work, as 
 kinds that took most time over all agents. A command counts from its call to its result, or for a
 background one to its completion notice, so background and parallel work overlap and a row need
 not add up to its total. A shell command is charged to its weightiest part: gate, sim-sweep,
-oracle (--ignored, _large, seed ranges, test-net), bench, tier 1 (whole-workspace cargo test),
+oracle (--ignored, _large, seed ranges), bench, tier 1 (whole-workspace cargo test),
 tests (filtered), clippy, tla, profile, android, build, gui, script (by its file's text), git, wt,
 shell. Waiting (claudewait, poll loops) is no kind: the job waited on is counted instead. The
 footer covers only agents started in the last 24 h: it totals each kind (runs, median and longest
@@ -101,14 +101,14 @@ def segkind(words, c):
     if p == "cargo":
         if re.search(r"\bsim-sweep\b", rest):
             return "sim-sweep"
-        if re.match(r"(\+\S+ )?(clippy|clippy-net)\b", rest):
+        if re.match(r"(\+\S+ )?clippy\b", rest):
             return "clippy"
-        if re.match(r"(\+\S+ )?(test|test-net|bench)\b", rest):
+        if re.match(r"(\+\S+ )?(test|bench)\b", rest):
             if re.search(r"--no-run", rest):
                 return "build"
             if re.search(r"--release", rest) and re.search(r"scale::|bench::|budget|bench", rest) or "bench" in rest.split()[:1]:
                 return "bench"
-            if re.search(r"--ignored|--include-ignored|_large\b|test-net", rest) or re.search(r"OSIS_\w+_(SEEDS|START)=", c):
+            if re.search(r"--ignored|--include-ignored|_large\b", rest) or re.search(r"OSIS_\w+_(SEEDS|START)=", c):
                 return "oracle"
             if re.fullmatch(r"(test)( -q| --locked| --workspace| --no-fail-fast| --jobs \d+)*", rest.strip()):
                 return "tier 1" if "--workspace" in rest else "tests"

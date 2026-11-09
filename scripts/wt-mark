@@ -9,5 +9,4 @@ else
   cargo test --workspace --no-run
   cargo build --workspace --all-targets
   cargo clippy --workspace --all-targets -- -D warnings
-  cargo clippy-net -- -D warnings
 fi

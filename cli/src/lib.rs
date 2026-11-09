@@ -178,7 +178,7 @@ fn config(g: &Global, net: Network) -> Config {
     if net != Network::None {
         c.runtime = osis::Runtime::Own;
     }
-    if net != Network::Node {
+    if net != Network::Node || g.no_lan {
         c.lan = osis::Lan::Off;
     }
     c

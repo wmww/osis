@@ -486,6 +486,8 @@ mod tests {
     // send naming its interface (a scope no interface has fails); copies looped back are heard
     // from that link's address (tier 2: real sockets and interfaces; a machine whose firewall drops
     // multicast, as the dev VM's, hears none, so hearing is checked only when something comes).
+    // The one test that sends on the real network (every real link is its point), to a free port no
+    // node listens on; run it through tools/heavy with the networking tier 2.
     #[tokio::test]
     #[ignore]
     async fn announce_v6_every_interface_spec_sync_10() {

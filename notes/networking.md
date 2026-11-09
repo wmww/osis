@@ -3,7 +3,7 @@
 
 ## What osis needs from the network (spec/requirements.md)
 - Long-lived connections with push from the serving side (subscriptions, relay-only signals), several labels per connection, one round trip for the common case.
-- No always-on node or public IP is assumed (spec/requirements.md, Offline and network): nodes that share data sync directly, and any node may also store and serve data it cannot read for others. P2P (`p2p`) is on in every build; LAN announcements (`lan`) only in `cargo test-net`, no shipped manifest enables them (issues/net-connect.md).
+- No always-on node or public IP is assumed (spec/requirements.md, Offline and network): nodes that share data sync directly, and any node may also store and serve data it cannot read for others. P2P (`p2p`) is on in every build; LAN announcements (`lan`, `Config::lan`) are on in every build (issues/net-connect.md).
 - No required coordinator: any helper is replaceable and self-hostable; osis works without it (LAN, any peer, a known address).
 - For data it cannot read a node must not learn authorship or role grants. It learns client IPs (accepted), not node identities.
 - Authorization is application-level (node signatures, label role keys), so the transport only needs confidentiality and a stable peer key to dial.

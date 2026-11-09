@@ -128,7 +128,6 @@ if [ "$core" = docs ]; then
 fi
 # lints before tier 1: a lint failure found after minutes of tests wasted them (watchdog 13h)
 step cargo clippy --workspace --all-targets --locked -- -D warnings
-step cargo clippy-net --locked -- -D warnings
 step locked cargo test --workspace --locked --no-fail-fast
 step unification_check
 step sh -c 'for f in schema/*.osis; do printf "%s: " "$f"; cargo run --locked --quiet --bin osis -- schema check "$f" || exit 1; done'

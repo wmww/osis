@@ -786,7 +786,7 @@ fn a_write_overtaken_by_a_move_fails() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §3, §5 (networking tier: `cargo test-net -- --ignored quic`): a thin client over real QUIC with bearer Auth: reads, writes, watches at the client listener; a wrong pinned key dials nothing; a wrong secret is refused; a node restart on the same port reconnects under the same key; a rotation strands the old address
+// spec/sync.md §10, notes/client-port.md §3, §5 (networking tier: `cargo test -p osis --test it -- --ignored quic`): a thin client over real QUIC with bearer Auth: reads, writes, watches at the client listener; a wrong pinned key dials nothing; a wrong secret is refused; a node restart on the same port reconnects under the same key; a rotation strands the old address
 #[test]
 #[ignore]
 fn thin_client_over_quic() {

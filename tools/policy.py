@@ -3,7 +3,8 @@
 workspace lints on, every external dependency has its line in notes/architecture.md §5, and no
 target marked `test = false` / `doctest = false` has unit tests / doctests that would silently not run,
 and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name, and
-osis-host cannot reach decryption (`host_blind`).
+osis-host cannot reach decryption (`host_blind`), and no test can bind the real LAN port or
+announce on the real LAN (`real_lan_tests`).
 Usage: python3 tools/policy.py [WORKSPACE]   (from the repo root; WORKSPACE: the directory of a
 workspace's root manifest, `.` (core, default) or `libs/kit` (the GUI workspace, notes/app.md); vendored
 crates under `patches/` are not ours and are skipped; exit 1 on any violation)"""
@@ -239,7 +240,38 @@ def dispute_types():
                 elif top == "core" and not rel.startswith(SIDES_HOOKS) and SIDES_NAMES.search(re.sub(r"//[^\n]*", "", text)):
                     yield f"{rel}: names the trust store or its dispute event (engine sides.rs, its hooks and the API layer only)"
 
+# notes/testing.md (Network in tests): agents run tests side by side, so none binds the real LAN port or
+# announces on the real network. `Lan::bind` in tests takes a free port (0, or another socket's);
+# `osis` from a CLI test runs with `--no-lan`; a node a test builds starts from
+# `internals::Opening` (LAN off), never a bare `Config` with a runtime.
+LAN_BIND = re.compile(r"\bLan::bind\(\s*(?!0\s*\)|\w+\.port\(\)\s*\))")
+CLI_RUN = re.compile(r"CARGO_BIN_EXE_osis|\bCommand::new\(OSIS\)|\bmain_with\(|\brun\(\[")
+BARE_NODE = re.compile(r"\bConfig\s*\{[^}]*\bruntime:\s*(osis::)?Runtime::")
+
+def real_lan_tests():
+    for top in ("core", "cli", "libs", "app"):
+        for dirpath, dirs, files in os.walk(os.path.join(ROOT, top)):
+            dirs[:] = [d for d in dirs if d not in ("target", "patches")]
+            for f in files:
+                if not f.endswith(".rs"):
+                    continue
+                path = os.path.join(dirpath, f)
+                rel = os.path.relpath(path, ROOT)
+                text = re.sub(r"//[^\n]*", "", open(path, errors="replace").read())
+                if "/tests/" not in "/" + rel:
+                    if "#[cfg(test)]" not in text:
+                        continue
+                    text = text.split("#[cfg(test)]", 1)[1]
+                for line in text.splitlines():
+                    if LAN_BIND.search(line):
+                        yield f"{rel}: Lan::bind in a test on a fixed port: {line.strip()[:80]} (use 0 or another socket's port)"
+                    if BARE_NODE.search(line) and "lan:" not in line:
+                        yield f"{rel}: a test node from a bare Config is on the real LAN: {line.strip()[:80]} (use internals::Opening)"
+                    if rel.startswith("cli/tests/") and CLI_RUN.search(line) and "--no-lan" not in line and "const OSIS" not in line:
+                        yield f"{rel}: runs osis without --no-lan: {line.strip()[:80]}"
+
 if WS == ROOT:
+    errs.extend(real_lan_tests())
     errs.extend(env_vars())
     errs.extend(host_blind())
     errs.extend(dispute_types())

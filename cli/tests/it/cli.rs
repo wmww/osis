@@ -39,7 +39,7 @@ impl S {
     fn call(&self, args: &[&str], stdin: &str) -> Out {
         let (mut o, mut e) = (Vec::new(), Vec::new());
         let mut i = stdin.as_bytes();
-        let code = run(std::iter::once("osis").chain(self.pre.iter().map(String::as_str)).chain(args.iter().copied()), Some(self.sel.clone()), Io { stdin: &mut i, stdout: &mut o, stderr: &mut e, tty: false });
+        let code = run(["osis", "--no-lan"].into_iter().chain(self.pre.iter().map(String::as_str)).chain(args.iter().copied()), Some(self.sel.clone()), Io { stdin: &mut i, stdout: &mut o, stderr: &mut e, tty: false });
         Out { code, out: String::from_utf8(o).unwrap(), err: String::from_utf8(e).unwrap() }
     }
 
@@ -121,7 +121,7 @@ fn exit_codes_plan_cli_6() {
     assert!(o.err.contains("not built yet"), "{}", o.err);
     // 8: store missing
     let d = tmp("missing");
-    let o = osis_cli::main_with(["osis", "-s", d.to_str().unwrap(), "whoami"], &mut &b""[..], &mut Vec::new(), &mut Vec::new());
+    let o = osis_cli::main_with(["osis", "--no-lan", "-s", d.to_str().unwrap(), "whoami"], &mut &b""[..], &mut Vec::new(), &mut Vec::new());
     assert_eq!(o, 8);
     // a secret is read from `@FILE` or `-` (a link need not sit in argv)
     let o = s.call(&["link", "redeem", "@/nonexistent/link"], "");
@@ -136,7 +136,7 @@ fn store_dir_init_lock_plan_cli_2() {
     let ds = d.to_str().unwrap();
     let call = |args: &[&str]| {
         let (mut o, mut e) = (Vec::new(), Vec::new());
-        let code = osis_cli::main_with(["osis", "-s", ds].iter().chain(args).copied(), &mut &b""[..], &mut o, &mut e);
+        let code = osis_cli::main_with(["osis", "--no-lan", "-s", ds].iter().chain(args).copied(), &mut &b""[..], &mut o, &mut e);
         (code, String::from_utf8(o).unwrap(), String::from_utf8(e).unwrap())
     };
     let (c, out, _) = call(&["init"]);
@@ -440,7 +440,7 @@ fn named_keys_with_schema_plan_cli_1() {
     let st = store.to_str().unwrap();
     let call = |args: &[&str], stdin: &str| {
         let (mut o, mut e) = (Vec::new(), Vec::new());
-        let code = osis_cli::main_with(["osis", "-s", st].iter().chain(args).copied(), &mut stdin.as_bytes(), &mut o, &mut e);
+        let code = osis_cli::main_with(["osis", "--no-lan", "-s", st].iter().chain(args).copied(), &mut stdin.as_bytes(), &mut o, &mut e);
         (code, String::from_utf8(o).unwrap(), String::from_utf8(e).unwrap())
     };
     assert_eq!(call(&["init"], "").0, 0);
@@ -657,7 +657,7 @@ fn locked_store_with_no_live_daemon() {
     let ds = d.to_str().unwrap();
     let call = |args: &[&str]| {
         let (mut o, mut e) = (Vec::new(), Vec::new());
-        let code = osis_cli::main_with(["osis", "-s", ds, "--timeout", "0"].iter().chain(args).copied(), &mut &b""[..], &mut o, &mut e);
+        let code = osis_cli::main_with(["osis", "--no-lan", "-s", ds, "--timeout", "0"].iter().chain(args).copied(), &mut &b""[..], &mut o, &mut e);
         (code, String::from_utf8(e).unwrap())
     };
     assert_eq!(call(&["init"]).0, 0);
@@ -694,11 +694,11 @@ fn serve_survives_a_bad_socket_dir() {
     use std::os::unix::fs::PermissionsExt;
     let d = tmp("badsockdir");
     let ds = d.to_str().unwrap();
-    assert_eq!(osis_cli::main_with(["osis", "-s", ds, "init"], &mut &b""[..], &mut Vec::new(), &mut Vec::new()), 0);
+    assert_eq!(osis_cli::main_with(["osis", "--no-lan", "-s", ds, "init"], &mut &b""[..], &mut Vec::new(), &mut Vec::new()), 0);
     let xdg = d.with_extension("xdg");
     std::fs::create_dir_all(xdg.join("osis")).unwrap();
     std::fs::set_permissions(xdg.join("osis"), std::fs::Permissions::from_mode(0o755)).unwrap();
-    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_osis")).env("XDG_RUNTIME_DIR", &xdg).args(["-s", ds, "serve", "--no-lan"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_osis")).env("XDG_RUNTIME_DIR", &xdg).args(["--no-lan", "-s", ds, "serve"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap();
     // read on a thread: a serve that never warns runs on and keeps stderr open
     let err = std::io::BufReader::new(c.stderr.take().unwrap());
     let (tx, rx) = std::sync::mpsc::channel();

@@ -17,9 +17,9 @@ thread_local! {
     static NO_XDG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// The binary, in this test's environment.
+/// The binary, in this test's environment, off the machine's real LAN (tools/policy.py).
 fn cmd() -> Command {
-    let mut c = Command::new(OSIS);
+    let mut c = Command::new(OSIS); c.arg("--no-lan");
     if NO_XDG.get() {
         c.env_remove("XDG_RUNTIME_DIR");
     }
@@ -65,12 +65,12 @@ fn field<'a>(json: &'a str, key: &str) -> &'a str {
 /// Pairs `new` (an empty store) to the account of `old`: the offer and request/reply lines are
 /// carried between the two processes, as an account would by QR code. `peer`: the new store's.
 fn pair(old: &Path, new: &Path, peer: Option<&str>) {
-    let mut offer = Command::new(OSIS).arg("-s").arg(old).args(["--timeout", "60s", "pair", "offer"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut offer = cmd().arg("-s").arg(old).args(["--timeout", "60s", "pair", "offer"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut offer_out = BufReader::new(offer.stdout.take().unwrap());
     let mut line = String::new();
     offer_out.read_line(&mut line).unwrap();
     let peer = peer.map(|h| vec!["--peer", h]).unwrap_or_default();
-    let mut join = Command::new(OSIS).arg("-s").arg(new).args(["--timeout", "60s", "pair", "join"]).args(peer).arg(line.trim()).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut join = cmd().arg("-s").arg(new).args(["--timeout", "60s", "pair", "join"]).args(peer).arg(line.trim()).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut join_out = BufReader::new(join.stdout.take().unwrap());
     let mut req = String::new();
     join_out.read_line(&mut req).unwrap();
@@ -134,7 +134,7 @@ fn two_accounts_three_nodes_one_peer_localhost() {
     osis(&a1, &["undo", "--thing", &t]);
     osis(&a1, &["sync"]);
     osis(&b, &["sync"]);
-    let absent = Command::new(OSIS).arg("-s").arg(&b).args(["get", &t, "t:z.0"]).output().unwrap();
+    let absent = cmd().arg("-s").arg(&b).args(["get", &t, "t:z.0"]).output().unwrap();
     assert_eq!(absent.status.code(), Some(3), "Alice's last change undone everywhere: absent");
 
     // a bundle carries the home group to the other node by hand
@@ -359,7 +359,7 @@ fn own_serving_node_localhost() {
     assert_eq!(osis(&b, &["link", "redeem", &link]), g);
     assert_eq!(osis(&b, &["get", &t, "t:x.0"]), "\"hello\"");
     let home = osis(&b, &["whoami", "--json"]);
-    let o = Command::new(OSIS).arg("-s").arg(&b).args(["--timeout", "5s", "sync"]).output().unwrap();
+    let o = cmd().arg("-s").arg(&b).args(["--timeout", "5s", "sync"]).output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(6), "{err}");
     assert!(err.contains(&format!("{addr} does not admit group {} (yet)", field(&home, "me"))), "{err}");
