@@ -1,7 +1,7 @@
 # Handoff to the next coordinator
 > Summary: What is in flight and what comes next, for whoever coordinates after Fathom. Design principles and process live in notes/coordination.md; this note only holds state. Rewrite or delete once taken.
 
-Read CLAUDE.md and notes/coordination.md first. Tess: opus only for every agent, no fable, until she says otherwise. Questions for Tess are issues tagged `tess-call`; priorities are on every issue. A second coordinator (Kestrel, Tess's other box) owns networking and docs cleanup; the split and protocol run over the dogfood channel (notes/dogfood.md).
+Read CLAUDE.md and notes/coordination.md first. Tess: opus only for every agent, no fable, until she says otherwise. Questions for Tess are issues tagged `tess-call`; priorities are on every issue. Fathom is the lead coordinator (Tess); a second coordinator takes the areas the lead assigns (Kestrel had networking and docs cleanup); the split and protocol run over the dogfood channel (notes/dogfood.md).
 
 ## Focus (Tess)
 Big features and refactors first; chase a bug only when it could threaten their viability. Don't rush to the goal API through shortcuts that later unravel it, but bring core to a settled, finalized state soon so the whole system can settle.
