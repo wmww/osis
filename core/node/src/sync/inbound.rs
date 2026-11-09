@@ -790,7 +790,7 @@ impl SyncEngine {
         }
         // the node's secrets moved, by whatever path: a box or section of what awaits may open now
         // (spec/wire.md §4)
-        let secrets = self.secrets_count();
+        let secrets = self.engine.core.secrets_moved;
         if secrets != std::mem::replace(&mut self.awaits_secrets, secrets) {
             let awaiting = self.state.by_awaited.values().flatten().copied().collect();
             self.reopen_awaiting(awaiting);

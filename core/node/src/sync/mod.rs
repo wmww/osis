@@ -174,8 +174,8 @@ pub struct SyncEngine {
     /// Entries `redeliver` ingested again since the start.
     #[doc(hidden)]
     pub redelivered: u64,
-    /// `secrets_count` the awaiting entries were last reopened at (`redeliver`).
-    pub(crate) awaits_secrets: usize,
+    /// `Core::secrets_moved` the awaiting entries were last reopened at (`redeliver`).
+    pub(crate) awaits_secrets: u64,
     /// Inbox blobs to ingest again at the next step (`wake_awaiting`).
     pub(crate) retry_inbox: BTreeSet<(LabelId, osis_base::BlobId)>,
     /// Opened inbox blobs with a commit (the carried one, or a chain certificate) that cannot be

@@ -258,7 +258,7 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
             tx.core.ix.own_keys.insert(*t);
             if let Some(b) = base {
                 tx.core.ix.secrets.insert(*t, b.into_record());
-                save(tx, t)?;
+                crate::flows::save_epochs(tx, t)?;
             }
         } else {
             tx.core.ix.own_keys.remove(t);
@@ -427,15 +427,6 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)
     Ok(out)
 }
 
-fn save(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
-    tx.core.role_changed();
-        if let Some(e) = tx.core.ix.secrets.get(actor) {
-        let b = crate::engine::secrets::encode_epochs(e);
-        tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
-    }
-    Ok(())
-}
-
 /// After the joins: the applied rotations, and `secrets.0` compaction snapshots held.
 pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)], valid: &[bool], pending: Vec<Pending>) -> Result<()> {
     tx.core.touch();
@@ -454,7 +445,7 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]
         let before = e.clone();
         let _ = w.rotated(e, p.id, &p.keys);
         if *e != before {
-            save(tx, &actor)?;
+            crate::flows::save_epochs(tx, &actor)?;
         }
     }
     if h.kind == Kind::RoleSnapshot {
@@ -467,7 +458,7 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]
             let Some(sv) = s.fragment.read().and_then(|v| crate::engine::secrets::secrets_value(&v)) else { continue };
             let e = tx.core.ix.secrets.entry_or_default(a.tid);
             if osis_keys::snapshot_keyed(&sv, h.id(), e).unwrap_or(false) {
-                save(tx, &a.tid)?;
+                crate::flows::save_epochs(tx, &a.tid)?;
             }
         }
     }
@@ -485,7 +476,7 @@ pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     if let Some(e) = tx.core.ix.secrets.get_mut(&a.tid) {
         e.invalidate(c);
     }
-    save(tx, &a.tid)
+    crate::flows::save_epochs(tx, &a.tid)
 }
 
 /// The `secrets.0` compaction gate (spec/crypto.md §4).
@@ -510,7 +501,7 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
             tx.core.touch();
             let e = tx.core.ix.secrets.entry_or_default(a.tid);
             if osis_keys::snapshot_keyed(&sv, *c, e).unwrap_or(false) {
-                save(tx, &a.tid)?;
+                crate::flows::save_epochs(tx, &a.tid)?;
             }
             return Ok(());
         }
@@ -527,7 +518,7 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     let before = e.clone();
     let _ = secrets.rotated(e, *c, &keys);
     if *e != before {
-        save(tx, &a.tid)?;
+        crate::flows::save_epochs(tx, &a.tid)?;
     }
     Ok(())
 }
