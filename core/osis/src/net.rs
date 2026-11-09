@@ -11,6 +11,8 @@ use crate::watch::lock;
 use osis_base::{Clock, Value};
 use osis_node::sync::driver::{self, Control, Shared};
 use osis_node::sync::{Action, SyncEngine};
+use osis_transport::p2p::Udp;
+use osis_transport::{Multi, Quic, Unix};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -195,63 +197,49 @@ impl Net {
 
     /// Starts the driver task over one transport for every node it dials (`Multi`; what it serves
     /// for others stored beside the node). With `p2p` (`Config::direct_sync`) it listens with the
-    /// dialable secret (registered at `relays`) and publishes `reach.0`; over QUIC it relays for
-    /// its co-readers (spec/sync.md §10), and with feature `lan` also runs the LAN loop.
+    /// dialable secret (registered at `relays`) and publishes `reach.0`; with `P2p` (QUIC, or a
+    /// test's in-process host) it relays for its co-readers (spec/sync.md §10), and over QUIC
+    /// with feature `lan` also runs the LAN loop.
     pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, store: crate::Store, cfg: &crate::Config, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
-        let Net::Driver { handle, ctl, stop, .. } = self else { return Ok(()) };
+        let Net::Driver { ctl, stop, .. } = self else { return Ok(()) };
         let shared = OsisShared(db.clone(), store);
-        let (transport, p2p, relays) = (cfg.app.internals.transport.clone(), cfg.direct_sync, cfg.relays.iter().filter_map(crate::share::Address::relay_item).collect::<Vec<String>>());
-        let log: driver::Log = Arc::new(|m: &str| log_line(m));
-        // the client port's unix socket (`Osis::listen_socket`)
-        let mut multi = osis_transport::Multi { unix: Some(osis_transport::Unix), ..Default::default() };
+        let (mem, host, p2p, relays) = (cfg.app.internals.transport.clone(), cfg.app.internals.host.clone(), cfg.direct_sync, cfg.relays.iter().filter_map(crate::share::Address::relay_item).collect::<Vec<String>>());
         // where the dialable-key listener goes (the first URL that listens), and whether the
         // LAN loop runs
-        let (reach, lan): (Option<Vec<String>>, bool) = match transport {
-            Some(t) => {
-                let url = format!("mem://{}-peer", t.name());
-                multi.mem = Some(t);
-                (Some(vec![url]), false)
+        let (urls, lan): (Vec<String>, bool) = match (mem, host) {
+            (t, Some(udp)) => {
+                self.start(shared, Multi { mem: t, p2p: Some(p2p_of(udp, ctl)?), unix: Some(Unix), quic: None }, clock, rx, db, stop);
+                (peer_urls(&relays), false)
             }
-            None => {
-                multi.quic = Some(osis_transport::Quic::new());
-                // co-readers' dialable keys, from the driver (`Control::PeerKeys`)
-                let co: Arc<std::sync::RwLock<std::collections::BTreeSet<[u8; 32]>>> = Arc::default();
-                let co2 = co.clone();
-                let shares = move |k: &[u8; 32]| co.read().unwrap_or_else(std::sync::PoisonError::into_inner).contains(k);
-                let p = osis_transport::P2p::new(osis_transport::QuicUdp::new()).relaying(osis_transport::RelayConfig::new(Arc::new(shares))).map_err(|e| Error::Network(e.to_string()))?;
-                multi.p2p = Some(p.clone());
-                let _ = ctl.send(Control::PeerKeys(Arc::new(move |keys| {
-                    *co2.write().unwrap_or_else(std::sync::PoisonError::into_inner) = keys.clone();
-                    p.recheck_relayed();
-                })));
-                // the fixed port when free, else any
-                let urls = [osis_transport::p2p::PORT, 0].map(|port| {
-                    let mut items = vec![format!("[::]:{port}")];
-                    items.extend(relays.iter().cloned());
-                    osis_transport::peer_url(&items)
-                });
-                (Some(urls.to_vec()), cfg!(feature = "lan"))
+            (Some(t), None) => {
+                let url = format!("mem://{}-peer", t.name());
+                self.start::<osis_transport::QuicUdp>(shared, Multi { mem: Some(t), unix: Some(Unix), ..Default::default() }, clock, rx, db, stop);
+                (vec![url], false)
+            }
+            (None, None) => {
+                let multi = Multi { quic: Some(Quic::new()), p2p: Some(p2p_of(osis_transport::QuicUdp::new(), ctl)?), unix: Some(Unix), mem: None };
+                self.start(shared, multi, clock, rx, db, stop);
+                (peer_urls(&relays), cfg!(feature = "lan"))
             }
         };
+        if p2p {
+            let _ = ctl.send(Control::Reach { urls, reply: None });
+            if lan {
+                let _ = ctl.send(Control::Lan(driver::LanConfig::default()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Starts the driver task over `multi`.
+    fn start<U: Udp>(&self, shared: OsisShared, multi: Multi<U>, clock: Arc<dyn Clock>, rx: mpsc::UnboundedReceiver<Control>, db: WeakOsis, stop: &Mutex<Option<Stop>>) {
+        let Net::Driver { handle, .. } = self else { return };
+        let log: driver::Log = Arc::new(|m: &str| log_line(m));
         let alive = lock(stop).as_mut().and_then(|s| s.task.take());
         handle.spawn(async move {
             let _alive = alive;
             Watched { f: Box::pin(driver::run_shared(shared, multi, Vec::new(), clock, rx, log)), db, done: false }.await;
         });
-        match reach {
-            Some(urls) if p2p => {
-                let _ = ctl.send(Control::Reach { urls, reply: None });
-                if lan {
-                    let _ = ctl.send(Control::Lan(driver::LanConfig::default()));
-                }
-            }
-            // nothing dials `peer://`: co-readers are not dialed
-            None => {
-                let _ = ctl.send(Control::Call(Box::new(|s| s.set_peers(false))));
-            }
-            Some(_) => {}
-        }
-        Ok(())
     }
 
     /// Serves the client port on a listener at `url`:
@@ -307,6 +295,32 @@ impl Net {
         });
         true
     }
+}
+
+/// A `P2p` over `udp` that relays for this node's co-readers (their dialable keys come from the
+/// driver, `Control::PeerKeys`).
+fn p2p_of<U: Udp>(udp: U, ctl: &mpsc::UnboundedSender<Control>) -> Result<osis_transport::P2p<U>> {
+    let co: Arc<std::sync::RwLock<std::collections::BTreeSet<[u8; 32]>>> = Arc::default();
+    let co2 = co.clone();
+    let shares = move |k: &[u8; 32]| co.read().unwrap_or_else(std::sync::PoisonError::into_inner).contains(k);
+    let p = osis_transport::P2p::new(udp).relaying(osis_transport::RelayConfig::new(Arc::new(shares))).map_err(|e| Error::Network(e.to_string()))?;
+    let p2 = p.clone();
+    let _ = ctl.send(Control::PeerKeys(Arc::new(move |keys| {
+        *co2.write().unwrap_or_else(std::sync::PoisonError::into_inner) = keys.clone();
+        p2.recheck_relayed();
+    })));
+    Ok(p)
+}
+
+/// The dialable listener's URLs: the fixed port when free, else any; every address, `relays`.
+fn peer_urls(relays: &[String]) -> Vec<String> {
+    [osis_transport::p2p::PORT, 0]
+        .map(|port| {
+            let mut items = vec![format!("[::]:{port}")];
+            items.extend(relays.iter().cloned());
+            osis_transport::peer_url(&items)
+        })
+        .to_vec()
 }
 
 /// The driver task's future. A panic in it, or its runtime dropping it unfinished (the app shut

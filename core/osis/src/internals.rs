@@ -16,7 +16,7 @@ pub use osis_node as node;
 pub use osis_node::sync::MAX_CONNS_PER_CLIENT;
 pub use osis_schema as schema;
 pub use osis_schema::core_types;
-pub use osis_transport::InProcess;
+pub use osis_transport::{InProcess, MemUdp};
 
 /// `group.0`'s field of items, for path reads and writes of it (spec/data-model.md §8).
 pub const GROUP_ITEMS: osis_schema::FieldId = osis_schema::FieldId(0);
@@ -127,8 +127,11 @@ pub struct Knobs {
     pub seed: Option<u64>,
     /// In place of `CONNECTION_WAIT`.
     pub connection_wait: Option<std::time::Duration>,
-    /// In-process endpoints in place of QUIC, for every dial and listener.
+    /// In-process endpoints in place of QUIC, for every `mem://` dial and listener.
     pub transport: Option<InProcess>,
+    /// This node's host on an in-process NAT net (`Net::run_on_tokio`), for `peer://`: without it
+    /// `peer://` is unknown to a node with `transport`.
+    pub host: Option<MemUdp>,
 }
 
 /// The hooks on `Osis` (`use osis::internals::Internals;`). Each panics on a thin client

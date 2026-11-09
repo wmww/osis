@@ -137,7 +137,7 @@ pub trait Sock: Send + Sync + 'static {
     fn close(&self);
 }
 
-type SConn<U> = <<U as Udp>::Sock as Sock>::Conn;
+pub(crate) type SConn<U> = <<U as Udp>::Sock as Sock>::Conn;
 
 /// A relay in a `peer://` URL: a node's dialable key and its socket address, written
 /// `<64 hex key>@<socket address>`.

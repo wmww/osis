@@ -19,6 +19,10 @@ use std::task::{Poll, Waker};
 /// URL scheme of in-process listeners: `mem://name`.
 pub const SCHEME: &str = "mem";
 
+/// `Net::run_on_tokio`'s pace, wall milliseconds per stretch of model time (minor: it only
+/// shapes test pace; 0: the task spins).
+const PUMP_MS: u64 = 1;
+
 /// Fault settings; the default is a perfect network.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Faults {
@@ -47,6 +51,8 @@ pub(crate) struct State {
     pub(crate) udp: crate::nat::Udp,
     /// Tasks spawned through the net (`Net::spawn`), for `Sched` to take.
     spawned: Vec<Spawned>,
+    /// Where `Net::spawn` runs tasks instead (`Net::run_on_tokio`).
+    tokio: Option<tokio::runtime::Handle>,
 }
 
 /// A task spawned through a `Net`.
@@ -315,6 +321,7 @@ impl Net {
             next_id: 0,
             udp: crate::nat::Udp::default(),
             spawned: Vec::new(),
+            tokio: None,
         })))
     }
 
@@ -322,9 +329,41 @@ impl Net {
         lock(&self.0)
     }
 
-    /// Runs `f` as a task of the `Sched` stepping this net (from its next turn).
+    /// Runs `f` as a task of the `Sched` stepping this net (from its next turn), or of the tokio
+    /// runtime after `run_on_tokio`.
     pub fn spawn(&self, f: impl Future<Output = ()> + Send + 'static) {
-        lock(&self.0).spawned.push(Box::pin(f));
+        let mut st = lock(&self.0);
+        match st.tokio.clone() {
+            Some(h) => {
+                drop(st);
+                h.spawn(f);
+            }
+            None => st.spawned.push(Box::pin(f)),
+        }
+    }
+
+    /// Drives this net on the current tokio runtime, for nodes whose drivers run there: what
+    /// `Sched` does, with `Net::spawn` onto that runtime and a task stepping the net. Model time
+    /// runs by the timers, idle stretches skipped, one stretch per `PUMP_MS` of wall time: a
+    /// dial no route carries fails after its model timeout's resends, in milliseconds. A
+    /// parked direct connection does not wait for a redial on this clock, so relayed-to-direct
+    /// switching is tested under `Sched`.
+    ///
+    /// Panics outside a tokio runtime.
+    #[allow(clippy::expect_used)]
+    pub fn run_on_tokio(&self) {
+        let handle = tokio::runtime::Handle::try_current().expect("Net::run_on_tokio: on a tokio runtime");
+        lock(&self.0).tokio = Some(handle.clone());
+        let net = self.clone();
+        handle.spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(PUMP_MS)).await;
+                if net.pending() {
+                    net.skip_idle();
+                    net.step();
+                }
+            }
+        });
     }
 
     pub(crate) fn take_spawned(&self) -> Vec<Spawned> {
@@ -499,15 +538,7 @@ impl InProcess {
     fn dial_with(&self, addr: &Address, own: Option<PublicKey>) -> Result<MemConn, Error> {
         crate::check_url(&addr.url)?;
         let mut st = lock(&self.net.0);
-        // `peer://`: the listener presenting the key, as P2P transports dial
-        let name = match crate::peer_items(&addr.url) {
-            Some(_) => match st.listeners.iter().find(|(_, l)| l.key == addr.key) {
-                Some((n, _)) => n.clone(),
-                None => return Err(Error::Unreachable(addr.url.clone())),
-            },
-            None => mem_name(&addr.url)?.to_owned(),
-        };
-        let name = name.as_str();
+        let name = mem_name(&addr.url)?;
         let Some(l) = st.listeners.get(name) else { return Err(Error::Unreachable(addr.url.clone())) };
         let (lend, lkey) = (l.endpoint.clone(), l.key);
         if st.cut.contains(&pair(&self.name, &lend)) {
@@ -842,29 +873,6 @@ mod tests {
         let c = s.block_on(async move { cli.dial(&addr).await.unwrap() }).unwrap();
         drop(c);
         assert_eq!(lock(&net.0).conns.len(), 0);
-        drop(l);
-    }
-
-    // spec/sync.md §10: a peer is dialed by its dialable key alone (`peer://`), never by a
-    // published address; the relays in the URL do not matter in process.
-    #[test]
-    fn peer_url_dials_by_key_spec_sync_10() {
-        let net = Net::new(2);
-        let mut s = Sched::new(2, Some(net.clone()));
-        let serving = net.endpoint("listener");
-        let l = s
-            .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([3; 32]) }).await.unwrap() })
-            .unwrap();
-        let key = l.address().key;
-        let cli = net.endpoint("cli");
-        let url = crate::peer_url(&["https://relay.example".into()]);
-        assert_eq!(crate::peer_items(&url), Some(vec!["https://relay.example".to_owned()]));
-        assert_eq!(crate::peer_items(&crate::peer_url(&[])), Some(vec![]));
-        let (u, c2) = (url.clone(), cli.clone());
-        let c = s.block_on(async move { c2.dial(&Address { url: u, key }).await.unwrap() }).unwrap();
-        assert_eq!(c.peer_key(), key);
-        let r = s.block_on(async move { cli.dial(&Address { url, key: [9; 32] }).await }).unwrap();
-        assert!(matches!(r, Err(Error::Unreachable(_))));
         drop(l);
     }
 

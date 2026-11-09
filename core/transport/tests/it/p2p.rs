@@ -929,3 +929,106 @@ fn quic_dial_mixed_families_spec_sync_10() {
         accept.await.unwrap().unwrap();
     });
 }
+
+// ---- `peer://` routes through `Multi` over the NAT model ----
+
+/// A `Multi` whose `peer://` is `P2p` on `udp`.
+fn multi(udp: MemUdp) -> Multi<MemUdp> {
+    Multi { p2p: Some(P2p::new(udp)), ..Multi::default() }
+}
+
+/// `to` listens at `url` under `w`'s scheduler (registered at relays it lists).
+fn listen_at(w: &mut World, to: Multi<MemUdp>, url: String, s: u8) -> MultiListener<MemUdp> {
+    let l = w.sched.block_on(async move { to.listen(ListenConfig { url, secret: secret(s) }).await.unwrap() }).unwrap();
+    w.sched.run();
+    l
+}
+
+/// `from` dials `addr`, and the connection carries bytes both ways (the listener's side echoes
+/// one stream); the dial's error if it fails.
+fn dial_route(w: &mut World, from: Multi<MemUdp>, addr: Address, mut l: MultiListener<MemUdp>) -> Result<(), Error> {
+    let sp = w.sched.spawner();
+    let sp2 = sp.clone();
+    sp.spawn(async move {
+        while let Ok(c) = l.accept().await {
+            sp2.spawn(async move {
+                if let Ok((mut tx, mut rx)) = c.accept_stream().await {
+                    let mut b = [0u8; 4];
+                    if let Ok(n) = rx.read(&mut b).await {
+                        let _ = tx.write_all(&b[..n]).await;
+                    }
+                    // the connection outlives the echo: until the dialer is done
+                    let _ = rx.read(&mut b).await;
+                }
+            });
+        }
+    });
+    w.sched.block_on(async move {
+        let c = from.dial(&addr).await?;
+        assert_eq!(c.peer_key(), addr.key);
+        let (mut tx, mut rx) = c.open_stream().await?;
+        tx.write_all(b"ping").await?;
+        let mut got = [0u8; 4];
+        let mut at = 0;
+        while at < got.len() {
+            at += rx.read(&mut got[at..]).await?;
+        }
+        assert_eq!(&got, b"ping");
+        Ok(())
+    })
+    .unwrap()
+}
+
+const B_PUBLIC: &str = "203.0.113.2";
+
+fn peer_addr(items: &[String], s: u8) -> Address {
+    Address { url: peer_url(items), key: InProcess::public_key(&secret(s)) }
+}
+
+// spec/sync.md §10: a dial with no route fails, whoever listens with the key: an empty URL, an
+// address the dialer cannot reach (another NAT's inside), a relay the target is not at.
+#[test]
+fn peer_no_route_fails_spec_sync_10() {
+    let mut w = world(61, anyone());
+    let b = multi(host(&w.net, "b", "10.0.0.2", B_PUBLIC, Some(Nat::SYMMETRIC)));
+    let lb = listen_at(&mut w, b, "peer://10.0.0.2:7000".into(), 2);
+    let a = multi(host(&w.net, "a", "10.9.0.2", "203.0.113.1", Some(Nat::CONE)));
+    for items in [vec![], vec!["10.0.0.2:7000".to_owned()], vec![w.relay.item()]] {
+        let (a2, addr) = (a.clone(), peer_addr(&items, 2));
+        let r = w.sched.block_on(async move { a2.dial(&addr).await.map(drop) }).unwrap();
+        assert!(matches!(r, Err(Error::Unreachable(_))), "{items:?}: {r:?}");
+    }
+    drop(lb);
+}
+
+// spec/sync.md §10: a direct item the dialer can reach connects, the target's key proven.
+#[test]
+fn peer_direct_item_connects_spec_sync_10() {
+    let mut w = world(62, anyone());
+    let b = multi(host(&w.net, "b", B_PUBLIC, B_PUBLIC, None));
+    let lb = listen_at(&mut w, b, format!("peer://{B_PUBLIC}:7000"), 2);
+    let a = multi(host(&w.net, "a", "10.9.0.2", "203.0.113.1", Some(Nat::CONE)));
+    dial_route(&mut w, a, peer_addr(&[format!("{B_PUBLIC}:7000")], 2), lb).unwrap();
+}
+
+// spec/sync.md §10: a relay the target registered at connects, with no direct item.
+#[test]
+fn peer_relay_connects_spec_sync_10() {
+    let mut w = world(63, anyone());
+    let b = multi(host(&w.net, "b", "10.0.0.2", B_PUBLIC, Some(Nat::SYMMETRIC)));
+    let item = w.relay.item();
+    let lb = listen_at(&mut w, b, format!("peer://10.0.0.2:7000 {item}"), 2);
+    let a = multi(host(&w.net, "a", "10.9.0.2", "203.0.113.1", Some(Nat::SYMMETRIC)));
+    dial_route(&mut w, a, peer_addr(&[item], 2), lb).unwrap();
+}
+
+// spec/sync.md §10: two hosts behind one NAT reach each other at their LAN addresses; a host
+// behind another NAT does not.
+#[test]
+fn peer_lan_address_connects_spec_sync_10() {
+    let mut w = world(64, anyone());
+    let b = multi(host(&w.net, "b", "10.0.0.2", B_PUBLIC, Some(Nat::SYMMETRIC)));
+    let lb = listen_at(&mut w, b, "peer://10.0.0.2:7000".into(), 2);
+    let a = multi(w.net.udp("a", ip("10.0.0.3"), Some(ip(B_PUBLIC))));
+    dial_route(&mut w, a, peer_addr(&["10.0.0.2:7000".to_owned()], 2), lb).unwrap();
+}

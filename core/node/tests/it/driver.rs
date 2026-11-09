@@ -164,9 +164,9 @@ fn s_(x: &str) -> Value {
 /// How the nodes of `converge_p2p` find each other besides `reach.0`.
 pub enum Direct<'a> {
     None,
-    /// Each also listens at its URL with a fresh LAN key (`SyncEngine::lan_secret`) and the other hears
-    /// its signed announcement from 127.0.0.1.
-    Heard([&'a str; 2]),
+    /// Each also listens at its URL with a fresh LAN key (`SyncEngine::lan_secret`) and the other
+    /// hears its signed announcement from that node's IP.
+    Heard([(&'a str, std::net::IpAddr); 2]),
     /// Each runs the driver's LAN loop.
     #[allow(dead_code)]
     Loop([driver::LanConfig; 2]),
@@ -195,8 +195,8 @@ pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &s
     let brx = net.engine(b).subscribe();
     // `Heard`: each listens on the LAN with a fresh key and announces it
     let mut anns = Vec::new();
-    if let Direct::Heard(urls) = &direct {
-        for (i, n, ep, url) in [(0, a, &a_ep, urls[0]), (1, b, &b_ep, urls[1])] {
+    if let Direct::Heard(heard) = &direct {
+        for (i, n, ep, (url, _)) in [(0, a, &a_ep, heard[0]), (1, b, &b_ep, heard[1])] {
             let secret = StaticSecret::from_bytes(*net.sync(n).lan_secret().expose());
             let l = ep.listen(ListenConfig { url: url.into(), secret }).await.unwrap();
             let addr = l.address();
@@ -221,10 +221,10 @@ pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &s
             assert!(ctl.send(Control::Lan(cfg)).is_ok());
             call(ctl, |_| ()).await;
         }
-    } else if !anns.is_empty() {
-        // a hears b's announcement and b hears a's
-        for (ctl, ann) in [(&actl, anns[1]), (&bctl, anns[0])] {
-            let f: driver::Call = Box::new(move |s: &mut SyncEngine| s.lan_seen(&ann, (std::net::Ipv4Addr::LOCALHOST, 47380).into()).1);
+    } else if let Direct::Heard(heard) = direct {
+        // a hears b's announcement and b hears a's, from each one's IP
+        for (ctl, ann, ip) in [(&actl, anns[1], heard[1].1), (&bctl, anns[0], heard[0].1)] {
+            let f: driver::Call = Box::new(move |s: &mut SyncEngine| s.lan_seen(&ann, (ip, 47380).into()).1);
             assert!(ctl.send(Control::Call(f)).is_ok());
         }
     }
@@ -261,20 +261,40 @@ pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &s
     db.await.unwrap();
 }
 
-// spec/sync.md §5 (co-reader peer), §10: two nodes sync a label with no host under the tokio
-// driver over in-process sessions, each dialing the other by its dialable key.
+/// `P2p` on a host at `ip` (behind the NAT at `nat`) of `tnet`.
+fn on_host(tnet: &osis_transport::Net, name: &str, ip: &str, nat: Option<std::net::IpAddr>) -> osis_transport::P2p<osis_transport::MemUdp> {
+    osis_transport::P2p::new(tnet.udp(name, ip.parse().unwrap(), nat))
+}
+
+// spec/sync.md §5 (co-reader peer), §10: two nodes behind NATs sync a label with no host under
+// the tokio driver over the real P2P code, each dialing the other by its dialable key through a
+// relay it names.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_p2p_in_process_spec_sync_5() {
     let tnet = osis_transport::Net::new(4);
-    converge_p2p(tnet.endpoint("a"), "mem://a", tnet.endpoint("b"), "mem://b", vec![], Direct::None).await;
+    tnet.run_on_tokio();
+    let r = on_host(&tnet, "r", "198.51.100.1", None).relaying(osis_transport::RelayConfig::new(Arc::new(|_| true))).unwrap();
+    let rl = r.listen(ListenConfig { url: "peer://198.51.100.1:4040".into(), secret: StaticSecret::from_bytes([77; 32]) }).await.unwrap();
+    let item = osis_transport::p2p::Relay { key: rl.address().key, addr: "198.51.100.1:4040".parse().unwrap() }.item();
+    // symmetric NATs: no punching, so the relay stays the route (no switch to direct)
+    for public in ["203.0.113.1", "203.0.113.2"] {
+        tnet.add_nat(public.parse().unwrap(), osis_transport::Nat::SYMMETRIC);
+    }
+    let (a, b) = (on_host(&tnet, "a", "10.0.1.2", Some("203.0.113.1".parse().unwrap())), on_host(&tnet, "b", "10.0.2.2", Some("203.0.113.2".parse().unwrap())));
+    converge_p2p(a, &format!("peer://10.0.1.2:7000 {item}"), b, &format!("peer://10.0.2.2:7000 {item}"), vec![item.clone()], Direct::None).await;
 }
 
-// spec/sync.md §10: the same with each node also listening with a fresh LAN key and hearing
-// the other's signed announcement.
+// spec/sync.md §10: the same behind one NAT with no relay: each node also listens with a fresh
+// LAN key, hears the other's signed announcement and dials its LAN address (the only route).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_p2p_lan_in_process_spec_sync_10() {
     let tnet = osis_transport::Net::new(5);
-    converge_p2p(tnet.endpoint("a"), "mem://a", tnet.endpoint("b"), "mem://b", vec![], Direct::Heard(["mem://a-lan", "mem://b-lan"])).await;
+    tnet.run_on_tokio();
+    let lan: std::net::IpAddr = "203.0.113.5".parse().unwrap();
+    tnet.add_nat(lan, osis_transport::Nat::CONE);
+    let (ipa, ipb): (std::net::IpAddr, std::net::IpAddr) = ("10.0.0.1".parse().unwrap(), "10.0.0.2".parse().unwrap());
+    let (a, b) = (on_host(&tnet, "a", "10.0.0.1", Some(lan)), on_host(&tnet, "b", "10.0.0.2", Some(lan)));
+    converge_p2p(a, "peer://10.0.0.1:7000", b, "peer://10.0.0.2:7000", vec![], Direct::Heard([("peer://10.0.0.1:7001", ipa), ("peer://10.0.0.2:7001", ipb)])).await;
 }
 
 // notes/peers.md (driver): `Control::Reach` listens at the first of its URLs that listens (a
@@ -318,7 +338,7 @@ async fn relay_node() -> (osis_transport::P2pListener<osis_transport::QuicUdp>, 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn driver_p2p_localhost_spec_sync_10() {
-    converge_p2p(p2p(), "peer://127.0.0.1:0", p2p(), "peer://127.0.0.1:0", vec![], Direct::Heard(["peer://127.0.0.1:0", "peer://127.0.0.1:0"])).await;
+    converge_p2p(p2p(), "peer://127.0.0.1:0", p2p(), "peer://127.0.0.1:0", vec![], Direct::Heard([("peer://127.0.0.1:0", std::net::Ipv4Addr::LOCALHOST.into()), ("peer://127.0.0.1:0", std::net::Ipv4Addr::LOCALHOST.into())])).await;
 }
 
 // spec/sync.md §10: two nodes over P2P find each other only by the driver's LAN loop: fresh

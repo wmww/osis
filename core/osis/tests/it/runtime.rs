@@ -44,13 +44,72 @@ async fn host_node(t: Option<osis::internals::InProcess>, url: &str) -> (Option<
     (Some(db), a)
 }
 
+/// A `Net` with a relay anyone may register at: a node placed on a host of it (`on_host`) dials
+/// `peer://` through the real P2P code, over a route it names.
+struct Hosts {
+    net: osis_transport::Net,
+    relay: Address,
+    item: String,
+    _l: osis_transport::P2pListener<osis_transport::MemUdp>,
+}
+
+const RELAY_ADDR: &str = "198.51.100.1:4040";
+
+async fn hosts(seed: u64) -> Hosts {
+    let net = osis_transport::Net::new(seed);
+    net.run_on_tokio();
+    let r = osis_transport::P2p::new(net.udp("r", "198.51.100.1".parse().unwrap(), None)).relaying(osis_transport::RelayConfig::new(std::sync::Arc::new(|_| true))).unwrap();
+    let l = r.listen(osis_transport::ListenConfig { url: format!("peer://{RELAY_ADDR}"), secret: osis_transport::StaticSecret::from_bytes([77; 32]) }).await.unwrap();
+    let relay = Address::new(&format!("peer://{RELAY_ADDR}").parse().unwrap(), osis_transport::Listener::address(&l).key);
+    let item = osis_transport::p2p::Relay { key: relay.key(), addr: RELAY_ADDR.parse().unwrap() }.item();
+    Hosts { net, relay, item, _l: l }
+}
+
+impl Hosts {
+    /// `cfg`, placed on a host named `name` behind a symmetric NAT (addresses from `seed`: no
+    /// punching, so the relay stays its route, no switch) that registers at the relay.
+    fn on_host(&self, seed: u64, hosts: Vec<Address>, name: &str) -> osis::internals::Opening {
+        let mut c = cfg(seed, hosts, Some(self.net.endpoint(name)));
+        c.app.internals.host = Some(self.host(name, seed));
+        c.relays = vec![self.relay.clone()];
+        c
+    }
+
+    fn host(&self, name: &str, seed: u64) -> osis_transport::MemUdp {
+        let public: std::net::IpAddr = format!("203.0.113.{seed}").parse().unwrap();
+        self.net.add_nat(public, osis_transport::Nat::SYMMETRIC);
+        self.net.udp(name, format!("10.0.{seed}.1").parse().unwrap(), Some(public))
+    }
+
+    /// Waits until `db` is registered at the relay: a redeemer's dial finds it at once.
+    async fn ready(&self, db: &Osis) {
+        let key = reach_of(db).await.reach.dialable;
+        tokio::time::timeout(GUARD, async {
+            while !self.probe(key).await {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    /// A dial of `key` through the relay, from a host outside the nodes under test.
+    async fn probe(&self, key: [u8; 32]) -> bool {
+        let p = osis_transport::P2p::new(self.host("probe", 200));
+        osis_transport::Transport::dial(&p, &osis_transport::Address { url: osis_transport::peer_url(std::slice::from_ref(&self.item)), key }).await.is_ok()
+    }
+}
+
 /// An account writes into its home group and waits until it is at the peer; a new node paired
 /// with it reads it. `p2p`: the peer then stops, and a write
 /// reaches the other node directly (each listens with its dialable key, spec/sync.md §5, §10).
-async fn round_trip(host_ep: Option<osis::internals::InProcess>, url: &str, a: Option<osis::internals::InProcess>, b: Option<osis::internals::InProcess>, p2p: bool) {
+async fn round_trip(host_ep: Option<osis::internals::InProcess>, url: &str, a: Option<osis::internals::InProcess>, b: Option<osis::internals::InProcess>, p2p: Option<[osis_transport::MemUdp; 2]>) {
     let (mut host_db, host) = host_node(host_ep, url).await;
 
-    let da = osis::internals::create(cfg(1, vec![host.clone()], a)).unwrap();
+    let [ha, hb] = p2p.clone().map_or([None, None], |[a, b]| [Some(a), Some(b)]);
+    let mut ca = cfg(1, vec![host.clone()], a);
+    ca.app.internals.host = ha;
+    let da = osis::internals::create(ca).unwrap();
     let mut w = da.write();
     let t = w.create_in(da.me(), &[da.me()]).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str("over the wire".into())).unwrap();
@@ -59,6 +118,7 @@ async fn round_trip(host_ep: Option<osis::internals::InProcess>, url: &str, a: O
 
     // the new node syncs on a runtime of osis's own (`Runtime::Own`)
     let mut own = cfg(2, vec![], b);
+    own.app.internals.host = hb;
     own.runtime = Runtime::Own;
     let join = osis::internals::pair(own, &da.pair_offer().unwrap()).unwrap();
     let (_, reply) = da.pair_accept(join.request()).unwrap();
@@ -67,7 +127,7 @@ async fn round_trip(host_ep: Option<osis::internals::InProcess>, url: &str, a: O
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), Some(Value::Str("over the wire".into())));
     // the peer, and the first node as a co-reader once its connection is up
     assert!(db.status().unwrap().connected >= 1);
-    if p2p {
+    if p2p.is_some() {
         drop(host_db.take());
         let mut w = da.write();
         w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str("peer to peer".into())).unwrap();
@@ -93,15 +153,19 @@ async fn round_trip(host_ep: Option<osis::internals::InProcess>, url: &str, a: O
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_in_process_spec_sync_10() {
     let net = osis_transport::Net::new(3);
-    round_trip(Some(net.endpoint("s")), "mem://s", Some(net.endpoint("a")), Some(net.endpoint("b")), false).await;
+    round_trip(Some(net.endpoint("s")), "mem://s", Some(net.endpoint("a")), Some(net.endpoint("b")), None).await;
 }
 
-// spec/sync.md §5 (co-reader peer), §10, notes/api.md (Config::direct_sync): two nodes under the
-// handle's driver keep syncing peer to peer once their peer is gone.
+// spec/sync.md §5 (co-reader peer), §10, notes/api.md (Config::direct_sync): two nodes on public
+// hosts of a NAT net, under the handle's driver, keep syncing peer to peer at each other's
+// published address once their peer is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_peers_in_process_spec_sync_5() {
     let net = osis_transport::Net::new(5);
-    round_trip(Some(net.endpoint("s")), "mem://s", Some(net.endpoint("a")), Some(net.endpoint("b")), true).await;
+    net.run_on_tokio();
+    let host = |n: &str, ip: &str| net.udp(n, ip.parse().unwrap(), None);
+    let p2p = [host("a", "203.0.113.1"), host("b", "203.0.113.2")];
+    round_trip(Some(net.endpoint("s")), "mem://s", Some(net.endpoint("a")), Some(net.endpoint("b")), Some(p2p)).await;
 }
 
 // spec/sync.md §10: the same over localhost QUIC (tier 2: touches the network).
@@ -109,7 +173,7 @@ async fn runtime_peers_in_process_spec_sync_5() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn runtime_quic_localhost_spec_sync_10() {
-    round_trip(None, "quic://127.0.0.1:0", None, None, false).await;
+    round_trip(None, "quic://127.0.0.1:0", None, None, None).await;
 }
 
 /// Bob redeems Alice's write link to a synced group, both on the tokio driver.
@@ -269,12 +333,13 @@ fn direct_link_carries_relays_only_spec_permissions_7() {
 // her node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_direct_in_process_spec_permissions_7() {
-    let net = osis_transport::Net::new(6);
+    let h = hosts(6).await;
+    let net = h.net.clone();
     let host_ep = Some(net.endpoint("s"));
     let (host_db, host) = host_node(host_ep, "mem://s").await;
     net.partition("b", "s");
-    let alice = osis::internals::create(cfg(1, vec![host], Some(net.endpoint("a")))).unwrap();
-    let mut c = cfg(2, vec![], Some(net.endpoint("b")));
+    let alice = osis::internals::create(h.on_host(1, vec![host], "a")).unwrap();
+    let mut c = h.on_host(2, vec![], "b");
     c.app.internals.connection_wait = Some(GUARD);
     let bob = osis::internals::create(c).unwrap();
     let me = reach_of(&alice).await;
@@ -292,10 +357,9 @@ async fn redeem_direct_in_process_spec_permissions_7() {
     let now = alice.sync_engine(|s| s.own_reach()).unwrap();
     assert_eq!(now.dialable, me.reach.dialable);
     let parsed = osis_label::ShareLink::from_text(&link.to_string()).unwrap();
-    assert_eq!(parsed.peers, vec![osis_label::Peer { dialable: now.dialable, relays: vec![] }]);
-    let probe = net.endpoint("probe");
+    assert_eq!(parsed.peers, vec![osis_label::Peer { dialable: now.dialable, relays: vec![h.item.clone()] }]);
     tokio::time::timeout(GUARD, async {
-        while probe.dial(&osis_transport::Address { url: osis_transport::peer_url(&[]), key: now.dialable }).await.is_err() {
+        while !h.probe(now.dialable).await {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
@@ -330,7 +394,7 @@ async fn redeem_direct_in_process_spec_permissions_7() {
     .await
     .unwrap();
     // a later holder of the link reaches nothing, and its follow is forgotten
-    let mut c = cfg(3, vec![], Some(net.endpoint("c")));
+    let mut c = h.on_host(3, vec![], "c");
     c.app.internals.connection_wait = Some(Duration::from_secs(2));
     let carol = osis::internals::create(c).unwrap();
     net.partition("c", "s");
@@ -341,18 +405,18 @@ async fn redeem_direct_in_process_spec_permissions_7() {
     // Erin is told at once; the new key is listened on first (a dial before that pauses the peer)
     let nk = alice.sync_engine(|s| s.own_reach()).unwrap().dialable;
     tokio::time::timeout(GUARD, async {
-        while probe.dial(&osis_transport::Address { url: osis_transport::peer_url(&[]), key: nk }).await.is_err() {
+        while !h.probe(nk).await {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
     .unwrap();
     let mut patched = parsed.clone();
-    patched.peers = vec![osis_label::Peer { dialable: nk, relays: vec![] }];
+    patched.peers = vec![osis_label::Peer { dialable: nk, relays: vec![h.item.clone()] }];
     // the sharer's node is its only route: a peer not answering would keep the verdict open
     patched.hosts = vec![];
     let patched: osis::ShareLink = patched.to_text().unwrap().parse().unwrap();
-    let mut e = cfg(5, vec![], Some(net.endpoint("e")));
+    let mut e = h.on_host(5, vec![], "e");
     e.app.internals.connection_wait = Some(GUARD);
     let erin = osis::internals::create(e).unwrap();
     assert!(matches!(tokio::time::timeout(GUARD, erin.redeem(&patched)).await.unwrap(), Err(osis::Error::Invalid(_))), "K's open was refused at the sharer");
@@ -360,7 +424,7 @@ async fn redeem_direct_in_process_spec_permissions_7() {
     assert_eq!(erin.role_on(g).unwrap(), None);
     // a redemption dropped while it waits forgets its follow too (the key guard)
     net.partition("d", "s");
-    let dave = osis::internals::create(cfg(4, vec![], Some(net.endpoint("d")))).unwrap();
+    let dave = osis::internals::create(h.on_host(4, vec![], "d")).unwrap();
     assert!(tokio::time::timeout(Duration::from_millis(300), dave.redeem(&link)).await.is_err());
     assert!(dave.sync_engine(|s| s.link_peer_keys()).is_empty());
     drop((alice, bob, carol, dave, erin));
@@ -372,12 +436,12 @@ async fn redeem_direct_in_process_spec_permissions_7() {
 // other node; Bob redeems her direct link at her node and the two sync the target there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_direct_no_peer_in_process_spec_permissions_7() {
-    let net = osis_transport::Net::new(9);
-    let alice = osis::internals::create(cfg(1, vec![], Some(net.endpoint("a")))).unwrap();
-    let mut c = cfg(2, vec![], Some(net.endpoint("b")));
+    let h = hosts(9).await;
+    let alice = osis::internals::create(h.on_host(1, vec![], "a")).unwrap();
+    let mut c = h.on_host(2, vec![], "b");
     c.app.internals.connection_wait = Some(GUARD);
     let bob = osis::internals::create(c).unwrap();
-    reach_of(&alice).await;
+    h.ready(&alice).await;
     let mut w = alice.write();
     let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
     w.commit().unwrap();
@@ -418,7 +482,7 @@ async fn redeem_direct_no_peer_in_process_spec_permissions_7() {
     })
     .await
     .unwrap();
-    let mut c = cfg(3, vec![], Some(net.endpoint("c")));
+    let mut c = h.on_host(3, vec![], "c");
     c.app.internals.connection_wait = Some(GUARD);
     let carol = osis::internals::create(c).unwrap();
     assert_eq!(tokio::time::timeout(GUARD, carol.redeem(&link)).await.unwrap().unwrap(), g);
@@ -437,12 +501,12 @@ async fn redeem_direct_no_peer_in_process_spec_permissions_7() {
 // `peers` names her to him. He judges her as a dialed reader.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_says_connected_with_a_direct_peer() {
-    let net = osis_transport::Net::new(9);
-    let alice = osis::internals::create(cfg(1, vec![], Some(net.endpoint("a")))).unwrap();
-    let mut c = cfg(2, vec![], Some(net.endpoint("b")));
+    let h = hosts(9).await;
+    let alice = osis::internals::create(h.on_host(1, vec![], "a")).unwrap();
+    let mut c = h.on_host(2, vec![], "b");
     c.app.internals.connection_wait = Some(GUARD);
     let bob = osis::internals::create(c).unwrap();
-    reach_of(&alice).await;
+    h.ready(&alice).await;
     let mut w = alice.write();
     let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
     w.commit().unwrap();
@@ -486,15 +550,16 @@ async fn peers_lists_what_a_group_saved() {
 // her key is the one the link carried and Bob's writes still reach her directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn single_use_direct_keeps_key_in_process_spec_permissions_7() {
-    let net = osis_transport::Net::new(8);
+    let h = hosts(8).await;
+    let net = h.net.clone();
     let host_ep = Some(net.endpoint("s"));
     let (host_db, host) = host_node(host_ep, "mem://s").await;
     net.partition("b", "s");
-    let alice = osis::internals::create(cfg(1, vec![host.clone()], Some(net.endpoint("a")))).unwrap();
-    let mut c = cfg(2, vec![], Some(net.endpoint("b")));
+    let alice = osis::internals::create(h.on_host(1, vec![host.clone()], "a")).unwrap();
+    let mut c = h.on_host(2, vec![], "b");
     c.app.internals.connection_wait = Some(GUARD);
     let bob = osis::internals::create(c).unwrap();
-    reach_of(&alice).await;
+    h.ready(&alice).await;
     let mut w = alice.write();
     let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
     w.commit().unwrap();
@@ -532,23 +597,28 @@ async fn single_use_direct_keeps_key_in_process_spec_permissions_7() {
 // without a restart, and the old one no longer answers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rotate_reach_relistens_in_process_spec_sync_10() {
-    let net = osis_transport::Net::new(7);
-    let db = osis::internals::create(cfg(1, vec![], Some(net.endpoint("a")))).unwrap();
+    let h = hosts(7).await;
+    let db = osis::internals::create(h.on_host(1, vec![], "a")).unwrap();
     let old = reach_of(&db).await.reach;
     // spec/permissions.md §7: direct is opt-in; without peers a link must be direct
     assert!(matches!(db.make_link(db.me(), osis::Role::Read, Default::default()), Err(osis::Error::Invalid(_))));
-    let probe = net.endpoint("probe");
-    let dial = |key: [u8; 32]| {
-        let probe = probe.clone();
-        async move { osis_transport::Transport::dial(&probe, &osis_transport::Address { url: osis_transport::peer_url(&[]), key }).await.is_ok() }
+    let registered = |key: [u8; 32]| {
+        let h = &h;
+        async move { h.probe(key).await }
     };
-    assert!(dial(old.dialable).await);
+    tokio::time::timeout(GUARD, async {
+        while !registered(old.dialable).await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     db.rotate_peer_address().unwrap();
     let new = db.sync_engine(|s| s.own_reach()).unwrap();
     assert_ne!(new.dialable, old.dialable);
     assert_ne!(new.lan_secret, old.lan_secret);
     tokio::time::timeout(GUARD, async {
-        while !dial(new.dialable).await || dial(old.dialable).await {
+        while !registered(new.dialable).await || registered(old.dialable).await {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
@@ -777,12 +847,13 @@ async fn node_going_answers_a_wait_with_no_handle() {
 // his first write builds. Three redeemers: without the wait about two in three fail each.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_direct_writes_at_once_in_process_spec_crypto_7() {
-    let net = osis_transport::Net::new(8);
-    let alice = osis::internals::create(cfg(1, vec![], Some(net.endpoint("a")))).unwrap();
-    reach_of(&alice).await;
+    let h = hosts(8).await;
+    let net = h.net.clone();
+    let alice = osis::internals::create(h.on_host(1, vec![], "a")).unwrap();
+    h.ready(&alice).await;
     for i in 0..3u64 {
         let ep = format!("b{i}");
-        let mut c = cfg(2 + i, vec![], Some(net.endpoint(&ep)));
+        let mut c = h.on_host(2 + i, vec![], &ep);
         c.app.internals.connection_wait = Some(GUARD);
         let bob = osis::internals::create(c).unwrap();
         let mut w = alice.write();
@@ -792,6 +863,7 @@ async fn redeem_direct_writes_at_once_in_process_spec_crypto_7() {
         let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
         assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
         net.partition("a", &ep);
+        net.partition("r", &ep);
         let mut w = bob.write();
         let t = w.create_in(g, &[g]).unwrap();
         w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str("at once".into())).unwrap();
@@ -806,10 +878,11 @@ async fn redeem_direct_writes_at_once_in_process_spec_crypto_7() {
 // (kept as a route) is paced like any co-reader: an offline one is not redialed every few seconds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_direct_redials_sharer_spec_permissions_7() {
-    let net = osis_transport::Net::new(8);
-    let alice = osis::internals::create(cfg(1, vec![], Some(net.endpoint("a")))).unwrap();
-    reach_of(&alice).await;
-    let mut c = cfg(2, vec![], Some(net.endpoint("b")));
+    let h = hosts(8).await;
+    let net = h.net.clone();
+    let alice = osis::internals::create(h.on_host(1, vec![], "a")).unwrap();
+    h.ready(&alice).await;
+    let mut c = h.on_host(2, vec![], "b");
     c.app.internals.connection_wait = Some(GUARD);
     let bob = osis::internals::create(c).unwrap();
     bob.sync_engine(|s| s.config_mut().retry_ms = 100);
@@ -832,13 +905,23 @@ async fn redeem_direct_redials_sharer_spec_permissions_7() {
         .await
         .unwrap()
     };
-    net.partition("a", "b");
+    let cut = |on: bool| {
+        for pair in [("a", "b"), ("r", "b")] {
+            if on {
+                net.partition(pair.0, pair.1);
+            } else {
+                net.heal(pair.0, pair.1);
+            }
+        }
+    };
+    cut(true);
     let b = bob.clone();
     let redeem = tokio::spawn(async move { b.redeem(&link).await });
     assert!(pause(bob.clone()).await <= 100, "a host's pause while redeeming");
-    net.heal("a", "b");
+    cut(false);
     assert_eq!(tokio::time::timeout(GUARD, redeem).await.expect("redialed only after the co-reader pause").unwrap().unwrap(), g);
-    net.partition("a", "b");
+    cut(true);
     net.disconnect("a", "b");
+    net.disconnect("r", "b");
     assert!(pause(bob.clone()).await > 100, "a co-reader's pause once redeemed");
 }
