@@ -4,3 +4,4 @@
 - Wrapped one cargo run in `timeout` by reflex; it printed nothing and wasted a round.
 - Review: a new thing's creation commit carrying content is multi-part, and `with_syncs` withholds a part of half of those for good, so a scripted step on a fresh thing reached nothing for some seeds until each write was its own commit (`Removals`).
 - Review: a set sabotage that leaves a non-canonical state is caught by the reopen check before held-model runs; probing held-model meant moving its check first temporarily.
+- Wrapped `tools/gate.sh` in `tools/heavy` as the brief's "all-core runs through tools/heavy" suggests: the gate takes the lock itself, so the nested lock deadlocks; run the gate bare.
