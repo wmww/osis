@@ -164,13 +164,13 @@ pub struct Maker<'a> {
     pub current: Option<Tid>,
     pub path: &'a str,
     pub kind: ListKind,
-    pub entries: HashMap<&'a str, &'a Entry>,
+    pub entries: &'a [Entry],
 }
 
 impl Rows<String, Built> for Maker<'_> {
-    fn make(&mut self, key: &String) -> (NewWidget<dyn Widget>, Built) {
+    fn make(&mut self, i: usize, _: &String) -> (NewWidget<dyn Widget>, Built) {
         let mut r = R { data: self.data, window: self.window, look: self.look, acts: &mut *self.acts, built: Built::default(), current: self.current, path: self.path, listing: None };
-        let w = match (self.entries.get(key.as_str()), self.kind) {
+        let w = match (self.entries.get(i), self.kind) {
             (Some(e), ListKind::Stream) => r.stream_entry(e),
             (Some(e), ListKind::Card) => r.tile(TileStyle::Card, e).erased(),
             (Some(e), ListKind::Row) => r.tile(TileStyle::Row, e).erased(),

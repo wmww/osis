@@ -1,6 +1,6 @@
-//! The keyed list reconciler (notes/app.md Layers): a changed list becomes insert/move/remove/update
-//! steps on a list widget, so rows that stayed keep their widgets and one changed row costs one
-//! row. `reconcile` is toolkit-free; `KeyedList` applies the steps to a `ListWidget`.
+//! The keyed list reconciler (notes/app.md Layers): a changed list becomes remove and insert steps
+//! on a list widget, so rows that stayed keep their widgets and one changed row costs one row.
+//! `reconcile` is toolkit-free; `KeyedList` applies the steps to a `ListWidget`.
 
 use masonry::core::{NewWidget, Widget, WidgetMut};
 use masonry::widgets::Flex;
@@ -12,10 +12,8 @@ use std::hash::Hash;
 pub enum Op<K> {
     /// Remove the row at the index.
     Remove(usize),
-    /// Insert a row for the key at the index.
+    /// Insert a row for the key at the index, which is its index in the new list.
     Insert(usize, K),
-    /// The row at the index stays but its value changed.
-    Update(usize),
 }
 
 /// The longest strictly increasing subsequence of `seq` (indices into `seq`).
@@ -43,17 +41,20 @@ fn increasing(seq: &[usize]) -> Vec<usize> {
 }
 
 /// Steps turning `old` into `new` (rows are `(key, value)`; keys should be unique, a duplicate
-/// gets a row of its own, matched in order). The rows that stay are the longest run kept in
-/// order: every other old row is removed (back to front) and every other new row inserted, so
-/// one row moving is one remove and one insert however far it goes. A kept row whose value
-/// differs gets an `Update`.
+/// gets a row of its own, matched in order). The rows that stay are the longest run of rows with
+/// the same key and value kept in order; every other old row is removed (back to front) and every
+/// other new row inserted. So one row changing or moving is one remove and one insert, however
+/// far it goes, and a row that changed is never kept in place of one that did not.
 pub fn reconcile<K: Eq + Hash + Clone, V: PartialEq>(old: &[(K, V)], new: &[(K, V)]) -> Vec<Op<K>> {
     let mut at_old: HashMap<&K, VecDeque<usize>> = HashMap::new();
     for (i, (k, _)) in old.iter().enumerate() {
         at_old.entry(k).or_default().push_back(i);
     }
-    // each new row's old row, in new's order; the increasing run of those stays
-    let matched: Vec<Option<usize>> = new.iter().map(|(k, _)| at_old.get_mut(k).and_then(VecDeque::pop_front)).collect();
+    // each new row's old row if it is unchanged, in new's order; the increasing run of those stays
+    let matched: Vec<Option<usize>> = new
+        .iter()
+        .map(|(k, v)| at_old.get_mut(k).and_then(VecDeque::pop_front).filter(|o| old.get(*o).is_some_and(|(_, ov)| ov == v)))
+        .collect();
     let present: Vec<usize> = matched.iter().flatten().copied().collect();
     let staying: HashSet<usize> = increasing(&present).into_iter().filter_map(|i| present.get(i).copied()).collect();
     let mut ops = Vec::new();
@@ -62,14 +63,9 @@ pub fn reconcile<K: Eq + Hash + Clone, V: PartialEq>(old: &[(K, V)], new: &[(K, 
             ops.push(Op::Remove(i));
         }
     }
-    for (i, (k, v)) in new.iter().enumerate() {
-        match matched.get(i).copied().flatten().filter(|o| staying.contains(o)) {
-            Some(o) => {
-                if old.get(o).is_none_or(|(_, ov)| ov != v) {
-                    ops.push(Op::Update(i));
-                }
-            }
-            None => ops.push(Op::Insert(i, k.clone())),
+    for (i, (k, _)) in new.iter().enumerate() {
+        if !matched.get(i).copied().flatten().is_some_and(|o| staying.contains(&o)) {
+            ops.push(Op::Insert(i, k.clone()));
         }
     }
     ops
@@ -77,18 +73,13 @@ pub fn reconcile<K: Eq + Hash + Clone, V: PartialEq>(old: &[(K, V)], new: &[(K, 
 
 /// Applies `ops` to a plain vector of keys (what `reconcile` assumes of a list); for tests and
 /// for mirrors of widget lists. `make` gives the element for an inserted key.
-pub fn apply<K: Clone, T>(list: &mut Vec<T>, ops: &[Op<K>], mut make: impl FnMut(&K) -> T, mut update: impl FnMut(usize, &mut T)) {
+pub fn apply<K: Clone, T>(list: &mut Vec<T>, ops: &[Op<K>], mut make: impl FnMut(usize, &K) -> T) {
     for op in ops {
         match op {
             Op::Remove(i) if *i < list.len() => {
                 list.remove(*i);
             }
-            Op::Insert(i, k) if *i <= list.len() => list.insert(*i, make(k)),
-            Op::Update(i) => {
-                if let Some(x) = list.get_mut(*i) {
-                    update(*i, x);
-                }
-            }
+            Op::Insert(i, k) if *i <= list.len() => list.insert(*i, make(*i, k)),
             _ => {}
         }
     }
@@ -112,14 +103,14 @@ impl ListWidget for Flex {
 
 /// How a `KeyedList` builds its rows; `B` is what a row holds on to.
 pub trait Rows<K, B> {
-    /// A new row widget for `key`.
-    fn make(&mut self, key: &K) -> (NewWidget<dyn Widget>, B);
+    /// A new row widget for `key`, the row at `i` of the new list.
+    fn make(&mut self, i: usize, key: &K) -> (NewWidget<dyn Widget>, B);
     /// A row left: its widget is gone, this forgets what `make` registered.
     fn dropped(&mut self, _: B) {}
 }
 
 /// A list widget's rows, kept equal to a keyed list. Masonry cannot move a widget between slots,
-/// so an update rebuilds that one row.
+/// so a row that moved or changed is rebuilt.
 #[derive(Debug)]
 pub struct KeyedList<K, B = ()> {
     rows: Vec<(K, B)>,
@@ -156,15 +147,8 @@ impl<K: Clone + Eq, B> KeyedList<K, B> {
                     W::remove_row(list, *i);
                 }
                 Op::Insert(i, k) if *i <= self.rows.len() => {
-                    let (w, b) = rows.make(k);
+                    let (w, b) = rows.make(*i, k);
                     self.rows.insert(*i, (k.clone(), b));
-                    W::insert_row(list, *i, w);
-                }
-                Op::Update(i) if *i < self.rows.len() => {
-                    let k = self.rows.remove(*i).0.clone();
-                    W::remove_row(list, *i);
-                    let (w, b) = rows.make(&k);
-                    self.rows.insert(*i, (k, b));
                     W::insert_row(list, *i, w);
                 }
                 _ => {}

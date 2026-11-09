@@ -1,5 +1,5 @@
 //! The keyed list reconciler: applying its steps to the old list gives the new one, rows that
-//! stay keep their element, and only changed rows are updated.
+//! stay keep their element, and only changed rows are rebuilt.
 use osis_kit::list::{Op, apply, reconcile};
 
 /// Applies `reconcile(old, new)` to elements tagged with where they came from; checks the
@@ -8,7 +8,7 @@ fn check(old: &[(u32, u32)], new: &[(u32, u32)]) -> Vec<Op<u32>> {
     let ops = reconcile(old, new);
     // element: (key, value, built here)
     let mut list: Vec<(u32, u32, bool)> = old.iter().map(|(k, v)| (*k, *v, false)).collect();
-    apply(&mut list, &ops, |k| (*k, new.iter().find(|(nk, _)| nk == k).unwrap().1, true), |i, x| x.1 = new[i].1);
+    apply(&mut list, &ops, |i, k| (*k, new[i].1, true));
     let got: Vec<(u32, u32)> = list.iter().map(|(k, v, _)| (*k, *v)).collect();
     assert_eq!(got, new, "old {old:?} ops {ops:?}");
     ops
@@ -20,8 +20,39 @@ fn unchanged_list_needs_nothing() {
 }
 
 #[test]
-fn insert_remove_update() {
-    assert_eq!(check(&[(1, 0), (2, 0), (3, 0)], &[(1, 0), (3, 5), (4, 0)]), vec![Op::Remove(1), Op::Update(1), Op::Insert(2, 4)]);
+fn insert_remove_change() {
+    assert_eq!(check(&[(1, 0), (2, 0), (3, 0)], &[(1, 0), (3, 5), (4, 0)]), vec![Op::Remove(2), Op::Remove(1), Op::Insert(1, 3), Op::Insert(2, 4)]);
+}
+
+/// The first row of the pair changed and moved past the last: the row that did not change is the
+/// one kept, whichever comes first in a tie for the longest run.
+#[test]
+fn a_changed_row_is_never_kept_over_one_that_did_not_change() {
+    assert_eq!(check(&[(1, 0), (2, 0)], &[(2, 0), (1, 1)]), vec![Op::Remove(0), Op::Insert(1, 1)]);
+    assert_eq!(check(&[(1, 0), (2, 0)], &[(2, 1), (1, 0)]), vec![Op::Remove(1), Op::Insert(0, 2)]);
+}
+
+/// A row changing in place rebuilds that row; duplicate keys each keep their own value.
+#[test]
+fn duplicates_take_their_own_values() {
+    let old = [(1, 0), (1, 1), (2, 0)];
+    let new = [(1, 1), (1, 2), (2, 0)];
+    let ops = check(&old, &new);
+    assert!(ops.contains(&Op::Insert(1, 1)), "{ops:?}");
+}
+
+/// Whatever the reorder, a list costs at most one remove and one insert per row, and reversing a
+/// long list keeps one row.
+#[test]
+fn a_reorder_is_linear_in_rows() {
+    let old: Vec<(u32, u32)> = (0..10_000).map(|i| (i, 0)).collect();
+    let reversed: Vec<(u32, u32)> = old.iter().rev().copied().collect();
+    let ops = reconcile(&old, &reversed);
+    assert_eq!(ops.len(), 2 * (old.len() - 1));
+    let everything_new: Vec<(u32, u32)> = old.iter().map(|(k, _)| (k + 100_000, 0)).collect();
+    assert_eq!(reconcile(&old, &everything_new).len(), 2 * old.len());
+    let everything_changed: Vec<(u32, u32)> = old.iter().map(|(k, _)| (*k, 1)).collect();
+    assert_eq!(reconcile(&old, &everything_changed).len(), 2 * old.len());
 }
 
 #[test]
@@ -70,18 +101,18 @@ fn exhaustive_small() {
     for a in all.iter().step_by(61) {
         for b in &all {
             let ops = check(a, b);
-            let kept = b.iter().filter(|(k, _)| a.iter().any(|(ak, _)| ak == k)).count();
+            let kept = b.iter().filter(|r| a.contains(r)).count();
             let inserts = ops.iter().filter(|o| matches!(o, Op::Insert(..))).count();
             let removes = ops.iter().filter(|o| matches!(o, Op::Remove(..))).count();
-            // a row that moved is one remove and one insert; a row new or gone is the one
+            // a row that moved or changed is one remove and one insert; a row new or gone is the one
             assert_eq!(inserts - (b.len() - kept), removes - (a.len() - kept), "{a:?} -> {b:?}: {ops:?}");
         }
     }
 }
 
 /// Random old/new lists (duplicate keys included, up to 12 rows): every op is in range when
-/// applied (the lenient `apply` would skip one silently), applying gives `new`, and
-/// a row is updated only if its value changed or it was rebuilt.
+/// applied (the lenient `apply` would skip one silently), applying gives `new`, and a kept row
+/// already holds its new value.
 #[test]
 fn random_lists_strict() {
     let mut seed = 0x9e3779b97f4a7c15u64;
@@ -121,12 +152,6 @@ fn random_lists_strict() {
                 Op::Insert(i, k) => {
                     assert!(*i <= list.len(), "{old:?} -> {new:?}: {ops:?}");
                     list.insert(*i, (*k, u64::MAX, true));
-                }
-                Op::Update(i) => {
-                    assert!(*i < list.len(), "{old:?} -> {new:?}: {ops:?}");
-                    let (_, nv) = new[*i];
-                    assert!(list[*i].1 != nv || list[*i].2, "needless update {old:?} -> {new:?}: {ops:?}");
-                    list[*i].1 = nv;
                 }
             }
         }

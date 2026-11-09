@@ -62,5 +62,16 @@ fn creating(cx: &Cx, _: &ViewSpec) -> Result<Section> {
     Ok(Section::of(if show { vec![Block::Chips(cx.offer_chips(None)?)] } else { Vec::new() }))
 }
 
+/// What `creating` shows only while New is open.
+#[allow(clippy::expect_used)]
+fn sample_creating(d: &crate::store::Data) -> osis::Tid {
+    let win = d.window().expect("sample: a window");
+    let mut w = d.db.write();
+    let set = w.at(win, crate::schema::CREATING).path(osis::Path::root().push("shell")).set(&true);
+    set.expect("sample: creating");
+    w.commit().expect("sample: creating");
+    super::sample_main(d)
+}
+
 pub static RESULTS: ViewType = ViewType { id: "results", label: "Results", fits: None, parts: &[], always_offered: false, custom: Some(results), sample: super::sample_main };
-pub static CREATING: ViewType = ViewType { id: "creating", label: "New", fits: None, parts: &[], always_offered: false, custom: Some(creating), sample: super::sample_main };
+pub static CREATING: ViewType = ViewType { id: "creating", label: "New", fits: None, parts: &[], always_offered: false, custom: Some(creating), sample: sample_creating };

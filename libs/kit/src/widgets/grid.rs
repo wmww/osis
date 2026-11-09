@@ -98,6 +98,7 @@ impl TileGrid {
     pub fn insert_child(this: &mut WidgetMut<'_, Self>, i: usize, child: NewWidget<impl Widget + ?Sized>) {
         let i = i.min(this.widget.children.len());
         this.widget.children.insert(i, child.erased().to_pod());
+        Self::end_drag(this);
         this.ctx.children_changed();
         this.ctx.request_layout();
     }
@@ -107,7 +108,16 @@ impl TileGrid {
         if i < this.widget.children.len() {
             let c = this.widget.children.remove(i);
             this.ctx.remove_child(c);
+            Self::end_drag(this);
             this.ctx.request_layout();
+        }
+    }
+
+    /// The indices a drag holds name children that moved: it ends.
+    fn end_drag(this: &mut WidgetMut<'_, Self>) {
+        this.widget.press = None;
+        if this.widget.drop.take().is_some() {
+            this.ctx.request_paint_only();
         }
     }
 

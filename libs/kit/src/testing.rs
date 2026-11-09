@@ -8,13 +8,15 @@
 use crate::store::Data;
 use crate::view::graph::{Costs, NodeReads};
 use crate::view::keyed::steps;
-use crate::view::{Block, Cx, QUERY, Section, Surface, Tree, ViewSpec, WindowState};
+use crate::view::{Block, Cx, QUERY, Section, Surface, TICK, Tree, ViewSpec, WindowState};
 use crate::views::ViewType;
 use osis::{Ak, DynamicAspectKey, Member, Tid, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// An aspect no view reads, on purpose.
 const PROBE: &str = "x:probe.0";
+/// An aspect a write adds to a thing, moving what reads its set of aspects.
+const ADDED: &str = "x:added.0";
 
 /// Where a tree draws in a test: what each path shows, and the rows a change would touch.
 #[derive(Default)]
@@ -75,22 +77,45 @@ pub fn check_views(d: &Data) -> Vec<String> {
         t
     };
     probe(other, 0);
-    let mut moved = 0;
+    let spare = crate::facets::create(d, "tag").unwrap();
     for v in d.registry.views.iter().copied() {
+        let mut reached = Reached::default();
         for query in ["", "a"] {
             let t = (v.sample)(d);
             probe(t, 0);
-            check_view(d, v, t, other, query, &mut fails, &mut moved);
+            check_view(d, v, t, other, spare, query, &mut fails, &mut reached);
         }
-    }
-    // a harness that moved nothing checked nothing
-    if moved == 0 {
-        fails.push("no address could be moved".into());
+        // a sample that shows nothing or whose reads cannot be moved checked nothing
+        if !reached.content {
+            fails.push(format!("{}: its sample shows nothing", v.id));
+        }
+        if !reached.moved {
+            fails.push(format!("{}: nothing it read could be moved", v.id));
+        }
     }
     fails
 }
 
-fn check_view(d: &Data, v: &ViewType, t: Tid, other: Tid, query: &str, fails: &mut Vec<String>, total_moved: &mut usize) {
+/// What a view's sample reached, over its runs.
+#[derive(Default)]
+struct Reached {
+    content: bool,
+    moved: bool,
+}
+
+/// What `t` and the things read hold, in the form a write can move: `(thing, aspect)`.
+fn movable(d: &Data, tids: &BTreeSet<Tid>) -> BTreeSet<(Tid, String)> {
+    tids.iter()
+        .flat_map(|t| d.db.aspects(*t).unwrap_or_default().into_iter().map(move |ak| (*t, ak.to_string())))
+        .collect()
+}
+
+/// A thing's id in an address.
+fn tids_in(address: &str) -> Vec<Tid> {
+    address.split([' ', '(', ')']).filter_map(|w| w.parse().ok()).collect()
+}
+
+fn check_view(d: &Data, v: &ViewType, t: Tid, other: Tid, spare: Tid, query: &str, fails: &mut Vec<String>, reached: &mut Reached) {
     let w = WindowState::default();
     Cx::new(d, &w, false);
     w.set_local(QUERY, query.to_string());
@@ -108,6 +133,7 @@ fn check_view(d: &Data, v: &ViewType, t: Tid, other: Tid, query: &str, fails: &m
     }
     // what ran in setting it up is not a change
     update(&mut tree, &mut screen).unwrap();
+    reached.content |= screen.models.values().any(|m| !m.blocks.is_empty());
     let snap = w.graph.snapshot();
     // no duplicates: within one node, no address read twice
     for n in &snap {
@@ -156,30 +182,84 @@ fn check_view(d: &Data, v: &ViewType, t: Tid, other: Tid, query: &str, fails: &m
         }
     }
     update(&mut tree, &mut screen).unwrap();
-    // a write to an aspect of the subject no one reads runs only what reads the thing as a whole
-    let whole: BTreeSet<&str> = closure(&snap, |n| n.reads.iter().any(|(a, _)| !a.starts_with("value ") && a.contains(&t.to_string())));
-    let (ran, _) = run(&mut tree, &mut screen, &|| set(d, t, PROBE, Value::Int(1)));
-    check_ran("a write to an unread aspect", &ran, &whole, &[], fails);
-    set(d, t, PROBE, Value::Int(0));
-    update(&mut tree, &mut screen).unwrap();
-    // a write to an address that was read runs exactly what read it
+    // what is on screen is what a fresh render of the current data shows: a read no one listens
+    // to leaves it stale
+    let fresh = |screen: &Screen| -> Vec<String> {
+        let w2 = WindowState::default();
+        w2.set_local(TICK, w.graph.peek(TICK));
+        w2.set_local(QUERY, query.to_string());
+        Cx::new(d, &w2, false);
+        let (mut t2, mut s2) = (Tree::default(), Screen::default());
+        if let Err(e) = t2.show(&w2, &mut s2, "sample", &spec) {
+            return vec![format!("fresh render: {e}")];
+        }
+        Cx::new(d, &w2, false);
+        if let Err(e) = t2.update(&w2, &mut s2) {
+            return vec![format!("fresh render: {e}")];
+        }
+        let shown = |m: &HashMap<String, Section>| m.iter().map(|(k, v)| format!("{k}: {v:?}")).collect::<BTreeSet<_>>();
+        shown(&screen.models).symmetric_difference(&shown(&s2.models)).cloned().collect()
+    };
     let addresses: BTreeSet<String> = snap.iter().flat_map(|n| n.reads.iter().map(|(a, _)| a.clone())).collect();
-    let mut moved = 0;
-    for a in &addresses {
-        let Some((tid, ak, restore)) = perturb(d, a) else { continue };
-        moved += 1;
-        // and what reads the thing as a whole, which any write of its moves (`changed`, undo)
-        let whole_of = |x: &str| !x.starts_with("value ") && x.contains(&tid.to_string());
-        let allowed = closure(&snap, |n| n.reads.iter().any(|(x, _)| x == a || whole_of(x)));
-        let readers: Vec<&str> = snap.iter().filter(|n| n.view && n.reads.iter().any(|(x, _)| x == a)).map(|n| n.key.as_str()).collect();
-        let (ran, _) = run(&mut tree, &mut screen, &|| ());
+    // a write moves what reads the thing whole (`changed`, its commits) and the aspect's address
+    let whole = |x: &str, tid: Tid| (x.starts_with("changed ") || x.starts_with("Writes")) && x.contains(&tid.to_string());
+    let mut tids: BTreeSet<Tid> = addresses.iter().flat_map(|a| tids_in(a)).collect();
+    tids.insert(t);
+    let mut moved = false;
+    let mut check_write = |tree: &mut Tree, screen: &mut Screen, what: String, allowed: BTreeSet<&str>, must: Vec<&str>| {
+        let (ran, _) = run(tree, screen, &|| ());
         let after = w.graph.snapshot();
-        let still: Vec<&str> = readers.into_iter().filter(|k| after.iter().any(|n| n.key == **k)).collect();
-        check_ran(&format!("a write to {a}"), &ran, &allowed, &still, fails);
-        put(d, tid, &ak, restore);
+        let still: Vec<&str> = must.into_iter().filter(|k| after.iter().any(|n| n.key == **k)).collect();
+        check_ran(&what, &ran, &allowed, &still, fails);
+        for d in fresh(screen) {
+            fails.push(format!("{name}: {what}: the screen is stale: {d}"));
+        }
+    };
+    // each thing's every aspect, read or not: the writes a view must hear or must not care about
+    for (tid, ak) in movable(d, &tids) {
+        let Some(old) = d.db.at(tid, DynamicAspectKey::untyped(Ak::new(&ak).unwrap())).get().ok().flatten() else { continue };
+        let Some(new) = mutated(&old) else { continue };
+        if !try_put(d, tid, &ak, Some(new)) {
+            continue;
+        }
+        moved = true;
+        let address = format!("value {tid} {ak} Path([])");
+        let prefix = format!("value {tid} {ak} ");
+        let allowed = closure(&snap, |n| n.reads.iter().any(|(x, _)| x.contains(&prefix) || whole(x, tid)));
+        let readers: Vec<&str> = snap.iter().filter(|n| n.view && n.reads.iter().any(|(x, _)| *x == address)).map(|n| n.key.as_str()).collect();
+        check_write(&mut tree, &mut screen, format!("a write to {address}"), allowed, readers);
+        put(d, tid, &ak, Some(old));
         update(&mut tree, &mut screen).unwrap();
     }
-    *total_moved += moved;
+    // the set of aspects, and what groups a thing is in
+    for a in &addresses {
+        if let Some(rest) = a.strip_prefix("aspects ") {
+            let Ok(tid) = rest.parse::<Tid>() else { continue };
+            if !try_put(d, tid, ADDED, Some(Value::Int(1))) {
+                continue;
+            }
+            moved = true;
+            let allowed = closure(&snap, |n| n.reads.iter().any(|(x, _)| x == a || whole(x, tid)));
+            let readers: Vec<&str> = snap.iter().filter(|n| n.view && n.reads.iter().any(|(x, _)| x == a)).map(|n| n.key.as_str()).collect();
+            check_write(&mut tree, &mut screen, format!("a write to {a}"), allowed, readers);
+            put(d, tid, ADDED, None);
+            update(&mut tree, &mut screen).unwrap();
+        } else if let Some(rest) = a.strip_prefix("groups_of ") {
+            let Ok(tid) = rest.parse::<Tid>() else { continue };
+            if !member(d, spare, tid, true) {
+                continue;
+            }
+            moved = true;
+            let spare_s = spare.to_string();
+            let allowed = closure(&snap, |n| n.reads.iter().any(|(x, _)| x == a || x.contains(&spare_s) || whole(x, tid)));
+            let readers: Vec<&str> = snap.iter().filter(|n| n.view && n.reads.iter().any(|(x, _)| x == a)).map(|n| n.key.as_str()).collect();
+            check_write(&mut tree, &mut screen, format!("a write to {a}"), allowed, readers);
+            member(d, spare, tid, false);
+            update(&mut tree, &mut screen).unwrap();
+        }
+    }
+    drop(check_write);
+    reached.moved |= moved;
 }
 
 /// The keys of the nodes `pick` matches and everything that depends on them.
@@ -209,33 +289,26 @@ fn put(d: &Data, t: Tid, ak: &str, v: Option<Value>) {
     w.commit().unwrap();
 }
 
-/// A write that changes what `address` reads (the same shape, one leaf differs); the address's
-/// old state. `None`: not a kind of address this can move.
-fn perturb(d: &Data, address: &str) -> Option<(Tid, String, Option<Value>)> {
-    let mut p = address.split(' ');
-    match (p.next()?, p.next()?) {
-        ("value", t) => {
-            let t: Tid = t.parse().ok()?;
-            let ak = p.next()?.to_string();
-            if p.next()? != "Path([])" {
-                return None;
-            }
-            let old = d.db.at(t, DynamicAspectKey::untyped(Ak::new(&ak).ok()?)).get().ok()??;
-            let new = mutated(&old)?;
-            let mut w = d.db.write();
-            w.at(t, DynamicAspectKey::untyped(Ak::new(&ak).ok()?)).set(&new).ok()?;
-            w.commit().ok()?;
-            Some((t, ak, Some(old)))
-        }
-        ("aspects", t) => {
-            let t: Tid = t.parse().ok()?;
-            let mut w = d.db.write();
-            w.at(t, DynamicAspectKey::untyped(Ak::new("x:added.0").ok()?)).set(&Value::Int(1)).ok()?;
-            w.commit().ok()?;
-            Some((t, "x:added.0".into(), None))
-        }
-        _ => None,
+/// `put`, for a write the store may refuse (not every aspect read can be written here).
+fn try_put(d: &Data, t: Tid, ak: &str, v: Option<Value>) -> bool {
+    let Ok(ak) = Ak::new(ak) else { return false };
+    let k = DynamicAspectKey::untyped(ak);
+    let mut w = d.db.write();
+    let set = match &v {
+        Some(v) => w.at(t, k).set(v),
+        None => w.at(t, k).remove(),
+    };
+    set.is_ok() && w.commit().is_ok()
+}
+
+/// `t` put in or taken out of the group `g`.
+fn member(d: &Data, g: Tid, t: Tid, add: bool) -> bool {
+    if g == t {
+        return false;
     }
+    let mut w = d.db.write();
+    let changed = if add { w.group(g).add(Member::Item(t)) } else { w.group(g).remove(Member::Item(t)) };
+    changed.is_ok() && w.commit().is_ok()
 }
 
 fn mutated(v: &Value) -> Option<Value> {

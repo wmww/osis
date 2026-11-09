@@ -65,10 +65,11 @@ Why this passes the notes:
 Counters: `osis::costs` spans (`read: engine`, `watch: considered`, `watch: dispatched`) plus `Graph::take_costs` (renders, memo runs, rows built). `osis_kit::testing::check_views` walks `registry.views`, so a new view is covered when it registers; kit's `view_costs` test runs it on kit's registry, the app's on the app's. `ViewType` has a required `sample: fn(&Data) -> Tid`, usually one line through an `Offer`, so a view without one does not compile.
 
 For each view the harness checks:
-- **Precision:** a write to an address the node did not read causes 0 renders; a write to one it did causes exactly that node (generic, driven by the recorded `ReadSet`).
-- **Scale:** grow what the view read at n and 10n; reads and rows built stay within a fixed ratio.
-- **No duplicates:** within one node, no address is read twice. Across nodes sharing is by memo, so two nodes reading one address is allowed (the rule is per node, not per pass).
-- **Window:** rows built are at most W.
+- **Precision (built):** every aspect of the things it read, each moved in turn, and each aspect set and group membership it read: only the nodes that read that address (and what depends on them, and what reads the whole thing: `changed`, its commits) run, each reader exactly once; a write to an unread thing runs nothing.
+- **Nothing stale (built):** after every such write the screen equals a fresh render of the current data, which catches a read no listener covers.
+- **Reach (built):** a view whose sample shows no block, or none of whose reads could be moved, fails; a sample that shows a thin view (no rows) is not detected.
+- **No duplicates (built):** no node reads an address twice. Nodes reading one address separately are not checked (raw's name, body and aspects; the opener's `groups_of` and `ui:raw.0`; a profile in results): one read per node and per address, a constant.
+- **Scale and window (step 7):** grow what the view read at n and 10n; reads and rows built stay within a fixed ratio; rows built are at most W. Until then only the hand-written rows tests at n and 5n guard scale.
 
 Hand-written, for what the harness cannot generate:
 - One chat message, at n and 10n: 1 render, at most c·W rows read, 1 row built.

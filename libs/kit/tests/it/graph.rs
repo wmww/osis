@@ -175,6 +175,27 @@ fn what_leaves_the_tree_is_freed() {
     let _: &Rc<Graph> = &w.graph;
 }
 
+/// The memos a thing's reads made go when the thing does: what stays is bounded by what is held.
+#[test]
+fn a_thing_gone_frees_its_memos() {
+    let d = data();
+    let tag = create(&d, "tag").unwrap();
+    let (kept, gone) = (d.create_note().unwrap(), d.create_note().unwrap());
+    d.add_tag(kept, tag).unwrap();
+    d.add_tag(gone, tag).unwrap();
+    let w = WindowState::default();
+    let (mut tree, mut screen) = (Tree::default(), Screen::default());
+    tree.show(attached(&d, &w), &mut screen, &format!("page:{tag}"), &open_spec(tag)).unwrap();
+    let of = |t: osis::Tid| w.graph.snapshot().into_iter().filter(|n| n.key.contains(&t.to_string())).map(|n| n.key).collect::<Vec<_>>();
+    assert!(!of(gone).is_empty(), "the thing's memos are there to go");
+    let held = w.graph.len();
+    d.delete(gone).unwrap();
+    tree.update(attached(&d, &w), &mut screen).unwrap();
+    assert!(of(gone).is_empty(), "left: {:?}", of(gone));
+    assert!(!of(kept).is_empty());
+    assert!(w.graph.len() < held, "{} then {}", held, w.graph.len());
+}
+
 fn body(d: &osis_kit::store::Data, t: osis::Tid, s: &str) {
     let mut w = d.db.write();
     w.at(t, BODY).set(&s.to_string()).unwrap();

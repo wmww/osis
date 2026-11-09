@@ -539,8 +539,7 @@ impl Ui {
                 Some(Block::Entries(crate::view::Placed::Cards(r) | crate::view::Placed::Rows(r))) => &r.entries,
                 _ => continue,
             };
-            let by_key = entries.iter().map(|e| (e.key.as_str(), e)).collect();
-            let mut maker = blocks::Maker { data, window: state, look, acts, current, path: key, kind: list.kind, entries: by_key };
+            let mut maker = blocks::Maker { data, window: state, look, acts, current, path: key, kind: list.kind, entries };
             root.edit_widget(list.widget, |mut w| match list.kind {
                 blocks::ListKind::Stream => list.keyed.apply(&mut w.downcast::<Flex>(), &ops, &mut maker),
                 _ => list.keyed.apply(&mut w.downcast::<crate::widgets::TileGrid>(), &ops, &mut maker),
