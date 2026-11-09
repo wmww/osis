@@ -583,7 +583,7 @@ impl SyncEngine {
             let mut progressed = false;
             for (o, r) in std::mem::take(&mut unjudged) {
                 // what it awaits has not come: nothing to look at again
-                if self.engine.core.created(&awaited(&r)).is_none() {
+                if !self.engine.core.exists(&awaited(&r)) {
                     later.push((o, r));
                     continue;
                 }
@@ -660,7 +660,7 @@ impl SyncEngine {
             ids.extend(self.state.by_awaited.get(t).into_iter().flatten().copied());
         }
         if w.moved {
-            let reach: Vec<Tid> = self.state.by_awaited.keys().filter(|t| self.engine.core.created(t).is_some()).copied().collect();
+            let reach: Vec<Tid> = self.state.by_awaited.keys().filter(|t| self.engine.core.exists(t)).copied().collect();
             for t in reach {
                 ids.extend(self.state.by_awaited.get(&t).into_iter().flatten().copied());
             }
@@ -671,7 +671,7 @@ impl SyncEngine {
         self.reopen_awaiting(ids);
         // an inbox blob is opened again here, not fetched: it stays local under its own budget
         let core = &self.engine.core;
-        let due = self.inbox_awaits.iter().filter(|(_, ts)| w.reopen_awaits || ts.iter().any(|t| w.records.contains(t) || (w.moved && core.created(t).is_some()))).map(|(k, _)| *k);
+        let due = self.inbox_awaits.iter().filter(|(_, ts)| w.reopen_awaits || ts.iter().any(|t| w.records.contains(t) || (w.moved && core.exists(t)))).map(|(k, _)| *k);
         self.retry_inbox.extend(due);
         if !w.reread.is_empty() {
             let reread: Vec<(LabelId, BlobId)> = self.state.of_tag(Kind::TAG_INBOX).into_iter().filter(|k| matches!(self.state.entries.get(k).map(|e| &e.kind), Some(Kind::Inbox(Some(c))) if w.reread.contains(c))).collect();

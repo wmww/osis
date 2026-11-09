@@ -230,7 +230,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let snapshot = m.header.kind.is_compaction();
     // the held valid snapshots covering it: their copies of its writes stay its writes
     // (an invalid body's writes are none of the state's, whatever carries copies of them)
-    let snaps: Vec<CommitId> = if invalid { Vec::new() } else { tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| s != c).collect() };
+    let snaps: Vec<CommitId> = if invalid || why == DropFor::Ended { Vec::new() } else { tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| s != c).collect() };
     let mut covered_by = BTreeSet::new();
     for s in snaps {
         if covered(tx, &s, c, &a.tid, &a.ak)? == Some(true) {
@@ -277,7 +277,10 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // the one path (issues/drop-rejoin-robust.md item 1): the aspect is rebuilt from what is
     // held now, shredded (every local copy of the body goes,
     // spec/commits.md §5). A valid snapshot dropped vouches no more for invalid deltas' writes
-    // it carried (spec/permissions.md §5.2).
+    // it carried (spec/permissions.md §5.2). An ended thing's aspects rebuild once, after its last part (`retention::end`).
+    if why == DropFor::Ended {
+        return Ok(());
+    }
     crate::apply::rebuild(tx, &a.tid, &a.ak)
 }
 

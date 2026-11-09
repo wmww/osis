@@ -32,7 +32,7 @@ impl Engine {
     /// The value of `(tid, ak)` as this node reads it; `None` if absent.
     pub fn get(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Value>> {
         let (tid, ak) = (*tid, ak.clone());
-        if self.core.created(&tid).is_none() {
+        if !self.core.exists(&tid) {
             return Ok(None);
         }
         let v = match ak.as_str() {
@@ -83,7 +83,7 @@ impl Engine {
         if path.is_empty() || synthetic_ak(ak.as_str()) {
             return Ok(self.get(tid, ak)?.and_then(|v| osis_crdt::value_at(&v, path).cloned()));
         }
-        if self.core.created(tid).is_none() {
+        if !self.core.exists(tid) {
             return Ok(None);
         }
         let path = self.lookup_path(tid, path)?;
@@ -102,7 +102,7 @@ impl Engine {
         if synthetic_ak(ak.as_str()) {
             return Ok(None);
         }
-        if self.core.created(tid).is_none() {
+        if !self.core.exists(tid) {
             return Ok(None);
         }
         let path = self.lookup_path(tid, path)?;
@@ -128,7 +128,7 @@ impl Engine {
     /// AKs present on the thing (`aspects.0`).
     pub fn aspects(&mut self, tid: &Tid) -> Result<Vec<Ak>> {
         let tid = *tid;
-        if self.core.created(&tid).is_none() {
+        if !self.core.exists(&tid) {
             return Ok(Vec::new());
         }
         let mut out = self.run(|tx| {
@@ -155,7 +155,7 @@ impl Engine {
     /// `created.0`, not role-class), durable or ephemeral. Stops at the first.
     pub fn has_content(&mut self, tid: &Tid) -> Result<bool> {
         let content = |ak: &Ak| ct::is_content(ak.as_str());
-        if self.core.created(tid).is_none() {
+        if !self.core.exists(tid) {
             return Ok(false);
         }
         let tid = *tid;
@@ -178,11 +178,17 @@ impl Engine {
 
     /// The role timeline's roster of `thing` (spec/permissions.md §2).
     pub fn roster(&self, thing: &Tid) -> BTreeMap<Tid, Edge> {
+        if !self.core.exists(thing) {
+            return BTreeMap::new();
+        }
         self.core.roster_of(thing)
     }
 
     /// This node's effective role on `tid` now.
     pub fn role_on(&self, tid: &Tid) -> Option<Role> {
+        if !self.core.exists(tid) {
+            return None;
+        }
         let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
         super::write::role_of(&self.core, &self.me(), tid, ts)
     }
@@ -206,7 +212,7 @@ impl Engine {
 
     /// Whether the creation record of `tid` is held here, durable or memory class.
     pub fn knows(&self, tid: &Tid) -> bool {
-        self.core.created(tid).is_some()
+        self.core.exists(tid)
     }
 
     /// Every aspect with a held state, as `(tid, ak)` (simulator invariants).

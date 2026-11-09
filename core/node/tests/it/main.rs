@@ -14,6 +14,7 @@ mod caches;
 mod corrupt;
 mod crash;
 mod deletion;
+mod ending;
 mod disputes;
 mod deposit_queue;
 mod fill;

@@ -106,7 +106,7 @@ impl Peer {
             let core = &self.engine.core;
             let due = |d: &Discarded| {
                 w.reopen_awaits || w.reread.contains(&d.commit) || match &d.awaits {
-                    Some(t) => w.records.contains(t) || (w.moved && core.created(t).is_some()),
+                    Some(t) => w.records.contains(t) || (w.moved && core.exists(t)),
                     None => w.woken.contains(&d.commit),
                 }
             };

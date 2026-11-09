@@ -602,7 +602,7 @@ fn thing_wait(
     record: &dyn Fn(&Tid) -> Option<CreationRecord>,
     chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>,
 ) -> Option<Reason> {
-    // an ended thing is unknown, but for a request's own part (`retention::end`)
+    // an ended thing is unknown, but for a request's own part and its creation (`retention::end`)
     if record(&a.tid).is_none() || core.ended(&a.tid) && a.ak.as_str() != osis_commit::retention::PURGE && a.ak.as_str() != osis_commit::retention::CREATED {
         return Some(Reason::UnknownCreated(a.tid));
     }

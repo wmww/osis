@@ -68,6 +68,7 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 
 **Ending.** `created.0` takes ordinary retention: a schema default per AK (proposed `admin`, no history), set per commit like any delta. The fixed `nobody` retention and the commit-sharing exemption go. Purging or expiring it **ends** the thing.
 - **Who ends** (spec/permissions.md §6): the first admin's holders, while its edge on the thing stands. A grant on the thing gives no right: the right must not turn on what the ending drops, or a stale creation copy re-judges the request without the dropped roles and the thing comes back. Rejected: storing the verdict with the request (an ending that fell could never be repaired there); keeping the thing's roles while the request lives (a tombstone).
+- **Open** (issues/ending-verdict-reads-dropped-grants.md): the first admin's edge on the thing is still read, and a removal of it is authorised by grants the ending drops.
 - Every node drops the thing whole in the transaction that made its last creation value-less (`retention/end.rs`): incremental, cost the thing's parts, since a disappearing message ends often; the commits' headers stay, as for any purge.
 - Node-sync deletes at hosts what the node has delete keys for, by the dropped-body path.
 - No wait before hosts delete (Tess): an ending that later falls brings the thing back only if some node still holds a copy.

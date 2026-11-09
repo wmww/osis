@@ -1153,11 +1153,23 @@ impl Core {
         }
     }
 
-    /// Whether `t` is ended: its record stays only for a request's own part, and no creation of it
-    /// is held any more (`retention::end`).
+    /// Whether `t` exists here: its record is held and it has not ended. What may read or write
+    /// a thing asks this; what judges commits on it asks `created`, a record being identity.
+    pub fn exists(&self, t: &Tid) -> bool {
+        self.created(t).is_some() && !self.ended(t)
+    }
+
+    /// Whether `t` is ended: a creation of it was held, and each is held value-less or dropped by
+    /// a purge or the ending (`retention::end`). One missing may yet come. A thing never held is
+    /// unknown, not ended.
     pub fn ended(&self, t: &Tid) -> bool {
         let Ok(ak) = Ak::new(osis_commit::retention::CREATED) else { return false };
-        self.ix.by_aspect.get(&(*t, ak.clone())).is_some_and(|held| held.iter().all(|(_, c)| self.ix.commits.get(c).is_none_or(|m| m.aspect(t, &ak).is_none_or(|ai| m.dropped.contains_key(&ai)))))
+        let gone = |c: &CommitId| {
+            let Some(m) = self.ix.commits.get(c) else { return false };
+            let Some(ai) = m.aspect(t, &ak) else { return false };
+            crate::retention::valueless(self, c, ai) || m.dropped.get(&ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Ended))
+        };
+        self.ix.by_aspect.get(&(*t, ak.clone())).is_some_and(|held| !held.is_empty() && held.iter().all(|(_, c)| gone(c)))
     }
 
     /// Re-evaluates the timelines around the things whose held inputs changed; the things of

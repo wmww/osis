@@ -95,7 +95,7 @@ impl Engine {
         let now = self.now();
         let mut signals = Vec::new();
         for (tid, ak, am) in &eph_ops {
-            if self.core.created(tid).is_none() {
+            if !self.core.exists(tid) {
                 return Err(Error::UnknownThing(*tid));
             }
             check_authority(&self.core, node, &Default::default(), tid, ak.as_str(), ts)?;

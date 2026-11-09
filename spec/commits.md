@@ -234,7 +234,8 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 
 ### Ending
 - `created.0` has ordinary retention; its schema default is `admin` with no history promised, and a writer gives it `nobody`, history kept forever, in a commit of `nobody` deltas.
-- A thing whose every held `created.0` delta is held value-less (expired, or purged by a request holding the right, spec/permissions.md §6) is **ended**: in the same transaction the node drops every part on it as a body (spec/sync.md §5 deletes them at hosts), its states and its creation record. Parts on it arriving later are parts on an unknown thing (§4).
+- A thing whose every held `created.0` delta is held value-less (expired, or purged by a request holding the right, spec/permissions.md §6) is **ended**: in the same transaction the node drops every part on it as a body (spec/sync.md §5 deletes them at hosts), its states and its creation record. Parts on it arriving later are parts on an unknown thing (§4), but for its `created.0` deltas and a request's `purge.0` part.
+- An ended thing reads as absent to every read and write, its held record and request included.
 - Nothing is kept per ended thing but what any drop leaves: commit headers, and the request by the ordinary purge rules. A copy of the creation arriving while the request is held ends the thing again; one arriving after the request is gone brings the thing back with what is still fetchable.
 - An ending that falls brings the thing back only where a copy of it is still held or fetchable.
 - A key actor's `created.0` does not end: no request holds the right over it, and a commit carrying its record with `expires` is bad input for that delta (§4).
