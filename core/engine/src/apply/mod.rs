@@ -1454,6 +1454,19 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         Ok(())
     })?;
     tx.core.schemas.extend(schemas);
+    let mut forgotten = Vec::new();
+    tx.scan(records::FORGOTTEN, |k, v| {
+        let bad = || Error::Corrupt("forgotten row");
+        let (tid, ak) = k.split_at_checked(osis_base::format::TID_LEN).ok_or_else(bad)?;
+        let tid = Tid::from_bytes(tid.try_into().map_err(|_| bad())?);
+        let ak = osis_base::Ak::new(std::str::from_utf8(ak).map_err(|_| bad())?).map_err(|_| bad())?;
+        let ts = v.try_into().map_err(|_| bad()).and_then(|b: [u8; 8]| osis_base::Ts::from_u64(u64::from_be_bytes(b)).ok_or_else(bad))?;
+        forgotten.push(((tid, ak), ts));
+        Ok(())
+    })?;
+    for (k, ts) in forgotten {
+        tx.core.ix.forgotten.insert(k, ts);
+    }
     let fast = !rebuild && crate::engine::index::current(tx)?;
     let old = if fast { None } else { crate::engine::index::old_judgments(tx) };
     if fast {
@@ -1547,6 +1560,17 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 .flatten()
                 {
                     atomic::note_snapshot(tx.core, &a.tid, &a.ak, blob.header.ts, &id, g);
+                }
+            }
+        }
+        // what is a whole replace (`Meta::whole`), from each held plain body
+        let plain: Vec<CommitId> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind == Kind::Content && !m.view.memory).map(|(id, _)| *id).collect();
+        for id in plain {
+            for (ai, d) in held_parts_at(tx, &id, &|_| true)? {
+                let Some(mut m) = tx.core.ix.commits.get(&id).cloned() else { continue };
+                if m.view.aspects.get(ai).is_some_and(|a| crate::retention::snapshot::own_aspect(&a.ak)) && matches!(&d, Decoded::Delta(x) if crate::retention::snapshot::replaces(&x.fragment)) {
+                    m.whole.insert(ai);
+                    tx.core.put_meta(id, m);
                 }
             }
         }

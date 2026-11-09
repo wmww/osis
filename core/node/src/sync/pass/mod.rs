@@ -736,19 +736,21 @@ impl SyncEngine {
             if a.ephemeral() {
                 continue;
             }
-            for s in ss {
+            // by commit, not by blob: which cover a body drops under (its carrier) is not the luck
+            // of the random stream its blobs were sealed with
+            let ss: BTreeSet<CommitId> = ss.iter().copied().collect();
+            for s in &ss {
                 let snapshot = self.engine.core.ix.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot);
-                if !snapshot && !self.engine.plain_cover(s, t, a) {
+                if !snapshot && !self.engine.own_replace(s, t, a) {
                     continue;
                 }
-                // an own whole replace (spec/commits.md §5): only its author's just older ones
+                // an own replace (spec/commits.md §5): the author's older commits the scope names
+                // (the work set adds what arriving replaces newly let go); every one in a full pass
                 if !snapshot {
-                    let older = self.engine.own_older(s, t, a, 2);
-                    let in_scope = |c: &CommitId| match &*scope {
-                        Scope::Some { commits, .. } => commits.contains(s) || commits.contains(c),
-                        _ => true,
+                    let only: Vec<CommitId> = match &*scope {
+                        Scope::Some { commits, .. } => commits.iter().filter(|c| self.engine.own_older(s, c, t, a)).copied().collect(),
+                        _ => self.engine.own_held_before(s, t, a),
                     };
-                    let only: Vec<CommitId> = older.into_iter().filter(in_scope).collect();
                     if !only.is_empty() {
                         dropped.extend(self.drop_covered(t, a, s, Some(&only), left)?);
                     }

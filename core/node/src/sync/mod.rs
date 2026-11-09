@@ -94,6 +94,8 @@ impl Default for Synced {
 /// The sync engine of one node.
 pub struct SyncEngine {
     pub(crate) engine: Engine,
+    /// Whether `forget_own_covered` has looked at every held commit since this open.
+    pub(crate) forget_seeded: bool,
     events: Receiver<crate::Event>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) rng: Box<dyn CryptoRngCore + Send>,
@@ -319,6 +321,7 @@ impl SyncEngine {
         rng.fill_bytes(&mut state.feed.log_id);
         let started = clock.now_wall_ms().0;
         Ok(SyncEngine {
+            forget_seeded: false,
             engine,
             events,
             clock,

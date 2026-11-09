@@ -332,6 +332,11 @@ pub struct State {
     /// holder whose bounds are dated later re-uploads it every pass until its own bound, at
     /// infinity memory grows with deletions; live writes are carried either way).
     pub deleted: BTreeMap<DeletedBody, u64>,
+    /// Commits to look at for forgetting (`forget_own_covered`): one's last part dropped, entry
+    /// gone or tombstone expired.
+    pub forget_due: BTreeSet<CommitId>,
+    /// Commits with a row in `deleted`, and how many.
+    pub deleted_commits: BTreeMap<CommitId, usize>,
     /// Inbox blobs not yet answered by their host, by (host, blob).
     pub outbox: BTreeMap<(HostKey, LabelId, BlobId), OutRec>,
     /// Corrected wall ms of the running `handle` (tombstone times).
@@ -653,6 +658,9 @@ impl State {
         s.present_by = s.present.iter().map(|(host, l, b)| (*l, *b, *host)).collect();
         s.gone_by = s.gone.keys().map(|(host, l, b)| (*l, *b, *host)).collect();
         s.deleted = s.tombs.iter().filter_map(|((l, b), t)| s.blobs.get(b).filter(|r| !r.cert).map(|r| ((*l, r.commit, r.parts.clone()), t.saturating_add(osis_base::format::TOMBSTONE_LIFETIME_MS)))).collect();
+        for (_, c, _) in s.deleted.keys() {
+            *s.deleted_commits.entry(*c).or_default() += 1;
+        }
         Ok(s)
     }
 
@@ -676,6 +684,7 @@ impl State {
                     if x.is_empty() {
                         self.by_label_commit.remove(&k);
                         self.commit_labels.remove(&(*commit, l));
+                        self.forget_due.insert(*commit);
                     }
                 }
             }
@@ -954,7 +963,9 @@ impl State {
     pub fn remove_entry(&mut self, l: LabelId, b: BlobId) {
         if let Some(Entry { cert: false, kind: Kind::Commit { commit, parts, .. }, memory, .. }) = self.entries.get(&(l, b)) {
             let life = if *memory { osis_base::format::MAX_DRIFT_MS } else { osis_base::format::TOMBSTONE_LIFETIME_MS };
-            self.deleted.insert((l, *commit, parts.clone()), self.now.saturating_add(life));
+            if self.deleted.insert((l, *commit, parts.clone()), self.now.saturating_add(life)).is_none() {
+                *self.deleted_commits.entry(*commit).or_default() += 1;
+            }
         }
         if let Some(e) = self.entries.get(&(l, b)).filter(|e| e.memory && matches!(e.kind, Kind::Commit { .. })) {
             self.tomb_kinds.insert((l, b), e.kind.clone());
@@ -1027,7 +1038,17 @@ impl State {
             self.memory_entries.remove(&(l, b));
             self.tomb_kinds.remove(&(l, b));
         }
-        self.deleted.retain(|_, until| *until > now);
+        let due: Vec<(DeletedBody, u64)> = self.deleted.iter().filter(|(_, until)| **until <= now).map(|(k, v)| (k.clone(), *v)).collect();
+        for ((l, c, parts), _) in due {
+            self.deleted.remove(&(l, c, parts));
+            if let Some(n) = self.deleted_commits.get_mut(&c) {
+                *n -= 1;
+                if *n == 0 {
+                    self.deleted_commits.remove(&c);
+                }
+            }
+            self.forget_due.insert(c);
+        }
     }
 
     pub fn set_reach_secret(&mut self, s: Secret32) {
@@ -1185,6 +1206,7 @@ impl State {
                 s.remove(id);
                 if s.is_empty() {
                     self.by_commit.remove(&r.commit);
+                    self.forget_due.insert(r.commit);
                 }
             }
             if !r.memory {
@@ -1425,6 +1447,11 @@ impl State {
                 self.del(key(CARRIER, &[&b.0]));
             }
         }
+    }
+
+    /// Whether a delete of a body of `c` is within its tombstone, under any label.
+    pub fn deleted_commit(&self, c: &CommitId) -> bool {
+        self.deleted_commits.contains_key(c)
     }
 
     /// Forgets commit `c`'s carrier row (it is forgotten: it carries nothing and nothing names

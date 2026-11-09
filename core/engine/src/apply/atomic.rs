@@ -305,6 +305,9 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     }
     let gives = part.gives();
     let snap = gives.is_some();
+    // what stands as an own replace: a plain durable commit's whole delta (`Indexes::own_replaces`)
+    let own = !snap && h.ephemeral.is_none() && h.kind == osis_commit::Kind::Content && crate::retention::snapshot::own_aspect(&ak);
+    let mut whole = false;
     // edge and creation aspects reach perm instead
     let perm = validity::perm_ak(ak.as_str());
     if !v && !snap && perm {
@@ -326,12 +329,20 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     // joins; the aspect is rebuilt from the held bodies once it is stored
     if !v && !snap {
         j.rebuild.insert((tid, ak.clone()));
+        if own {
+            each_piece(tx, h, id, blob, part, &mut |_, f| {
+                whole |= crate::retention::snapshot::replaces(&f);
+                Ok(())
+            })?;
+            note_whole(tx, id, ai, whole);
+        }
         return Ok(());
     }
     each_piece(tx, h, id, blob, part, &mut |tx, f| {
         if snap {
             vouch |= copies::vouches_any(&f, &owned);
         }
+        whole |= own && crate::retention::snapshot::replaces(&f);
         if !v {
             return Ok(());
         }
@@ -340,6 +351,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
         tx.evict_pages(&tid, &ak);
         Ok(())
     })?;
+    note_whole(tx, id, ai, whole);
     if vouch {
         j.rebuild.insert((tid, ak.clone()));
     }
@@ -601,7 +613,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
-    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeMap::new(), stripped: BTreeSet::new(), valued: BTreeSet::new(), missing };
+    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeMap::new(), stripped: BTreeSet::new(), valued: BTreeSet::new(), missing, whole: BTreeSet::new() };
     crate::retention::fetch_fallen(tx, &h, &id, &meta.missing)?;
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
@@ -678,6 +690,18 @@ fn note_held_rules(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) ->
         }
     }
     Ok(())
+}
+
+/// Marks part `ai` of commit `id` as a whole replace (`Meta::whole`), so it stands in the own
+/// indexes (`Core::put_meta`).
+fn note_whole(tx: &mut Tx<'_>, id: &CommitId, ai: usize, whole: bool) {
+    if !whole {
+        return;
+    }
+    if let Some(mut m) = tx.core.ix.commits.get(id).cloned() {
+        m.whole.insert(ai);
+        tx.core.put_meta(*id, m);
+    }
 }
 
 /// A delta invalid on arrival whose part is not held (it may never come, or come late), on

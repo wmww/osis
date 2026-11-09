@@ -118,7 +118,9 @@ fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
         }
         assert_eq!(net.engine(n).get(&t, &ak).unwrap(), Some(s("v3")));
     }
-    (deletions(&net, host, &l) - before, seen.len())
+    // the dead bodies' blobs only: heartbeats replaced by the next ones go too
+    let _ = before;
+    (deletions_of(&net, host, &l, &seen), seen.len())
 }
 
 // spec/sync.md §7 (compaction waits MAX_DRIFT past keep-at-least): two right holders whose

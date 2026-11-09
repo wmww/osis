@@ -427,6 +427,7 @@ impl SyncEngine {
             let me = self.engine.tid();
             let mut aspects: BTreeSet<(Tid, Ak)> = BTreeSet::new();
             let mut older: BTreeSet<CommitId> = BTreeSet::new();
+            let mut own: BTreeMap<(Tid, Ak, Tid), Vec<CommitId>> = BTreeMap::new();
             for c in &w.touched.commits {
                 let Some(h) = self.engine.header(c) else { continue };
                 let snapshot = is_snapshot(h.kind);
@@ -435,13 +436,21 @@ impl SyncEngine {
                     if snapshot || card {
                         aspects.insert((a.tid, a.ak.clone()));
                     }
-                    if !snapshot && self.engine.plain_cover(c, &a.tid, &a.ak) {
-                        older.extend(self.engine.own_older(c, &a.tid, &a.ak, 2));
+                    if !snapshot && self.engine.own_replace(c, &a.tid, &a.ak) {
+                        own.entry((a.tid, a.ak.clone(), h.author)).or_default().push(*c);
+                        // a carrier for what a delete waits on (spec/sync.md §7)
+                        if let Some(cs) = w.waits.aspects.remove(&(a.tid, a.ak.clone())) {
+                            older.extend(cs);
+                        }
                     }
                 }
             }
             for k in aspects {
                 w.touched.commits.extend(self.engine.core.held_on(&k));
+            }
+            // what own replaces let go, judged together: several may arrive or turn valid at once
+            for ((t, a, _), qs) in own {
+                older.extend(self.engine.own_newly_covered(&qs, &t, &a));
             }
             w.touched.commits.extend(older);
             for t in things {
@@ -583,7 +592,7 @@ impl SyncEngine {
             };
             for a in &h.aspects {
                 let k = (a.tid, a.ak.clone());
-                if is_snapshot(h.kind) || self.engine.plain_cover(c, &a.tid, &a.ak) {
+                if is_snapshot(h.kind) || self.engine.own_replace(c, &a.tid, &a.ak) {
                     let set = w.snaps.entry(k.clone()).or_default();
                     set.retain(|(_, x)| x != c);
                     set.extend(blobs.iter().map(|b| (*b, *c)));

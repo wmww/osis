@@ -147,7 +147,7 @@ fn replaced_kept(tx: &mut Tx<'_>, h: &Header, id: &CommitId, a: &osis_commit::As
 /// Whether part `d` is a delta resetting the aspect whole (its root reset, or a register write,
 /// which implies one, spec/crdt.md §5.1), so superseding every write stamped before it.
 fn resets_whole(d: &Decoded) -> bool {
-    matches!(d, Decoded::Delta(x) if x.fragment.reset().is_some() || matches!(x.fragment, Fragment::Register(_) | Fragment::Slots(_)))
+    matches!(d, Decoded::Delta(x) if crate::retention::snapshot::replaces(&x.fragment))
 }
 
 /// The expiry of the write dotted `d` in `(tid, ak)` an undo copies back (`undo_expiring`): its

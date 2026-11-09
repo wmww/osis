@@ -98,6 +98,14 @@ impl SyncEngine {
                 self.covered_judged.remove(&k);
             }
             if !self.engine.droppable_if_covered(&c, t, ak) {
+                // a leftover drops as covered once past its expiry: judged again then
+                if let Some(h) = self.engine.header(&c)
+                    && let Some(x) = h.expires
+                    && x > now.0
+                    && h.aspects.iter().position(|a| a.tid == *t && a.ak == *ak).is_some_and(|ai| self.engine.part_held(&c, ai))
+                {
+                    left.at(x, super::state::Touch::Commit(c));
+                }
                 continue;
             }
             let Some(h) = self.engine.header(&c) else { continue };
@@ -108,9 +116,21 @@ impl SyncEngine {
             }
             // an own whole replace is judged before its body's keep bound: most plain commits
             // cover nothing, and the bound reads every part of the body
-            let own = self.engine.plain_cover(&s, t, ak);
-            if own && self.engine.covered(&s, &c, t, ak)? != Some(true) {
-                continue;
+            let own = self.engine.own_replace(&s, t, ak);
+            if own {
+                match self.engine.covered(&s, &c, t, ak)? {
+                    Some(true) => {}
+                    // not established yet: judged again
+                    None => {
+                        left.commits.insert(c);
+                        continue;
+                    }
+                    // judged again once the aspect changes (a write's liveness, `cannot_keep`)
+                    Some(false) => {
+                        left.wait(*t, ak.clone(), c);
+                        continue;
+                    }
+                }
             }
             let due = if own {
                 self.engine.own_drop_from(&c, t, ak)?
@@ -120,6 +140,14 @@ impl SyncEngine {
             };
             if due > now.0 {
                 left.at(due, super::state::Touch::Commit(c));
+                continue;
+            }
+            // spec/commits.md §5 Own replaces: a commit goes only whole, or a node that may not
+            // rewrite its blob (a reader) could no longer relay what its other parts carry
+            if own && !self.own_covers_every_part(&c, &h)? {
+                for a in &h.aspects {
+                    left.wait(a.tid, a.ak.clone(), c);
+                }
                 continue;
             }
             match self.engine.covered(&s, &c, t, ak)? {
@@ -146,11 +174,30 @@ impl SyncEngine {
                 continue;
             }
             self.engine.drop_body(&c, t, ak)?;
+            self.state.forget_due.insert(c);
             self.state.set_carrier(c, s);
             self.touched.commits.insert(c);
             dropped.push(c);
         }
         Ok(dropped)
+    }
+
+    /// Whether every part of `c` still held is covered by own replaces (spec/commits.md §5).
+    fn own_covers_every_part(&mut self, c: &CommitId, h: &osis_commit::Header) -> Result<bool> {
+        for (ai, a) in h.aspects.iter().enumerate() {
+            if !self.engine.part_held(c, ai) {
+                continue;
+            }
+            let covers = self.engine.own_covers(c, &a.tid, &a.ak);
+            let mut covered = false;
+            for q in &covers {
+                covered |= self.engine.covered(q, c, &a.tid, &a.ak)? == Some(true);
+            }
+            if !covered {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Places commit `c`'s deltas on `aspects` as a certificate copy under every label of `g`

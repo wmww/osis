@@ -86,6 +86,9 @@ pub struct Meta {
     /// (`retention::uncover`) (spec/permissions.md §5.2: a snapshot's copies of their writes
     /// count).
     pub missing: BTreeSet<usize>,
+    /// Held plain parts whose delta replaces the aspect whole (`retention::snapshot::replaces`):
+    /// what stands as an own replace (`Indexes::own_replaces`).
+    pub whole: BTreeSet<usize>,
 }
 
 /// Why a part dropped, where that decides whether it can come back.
@@ -202,7 +205,7 @@ pub(crate) type CoverCache = (CommitId, usize, Vec<osis_crdt::Fragment>, Option<
 impl Meta {
     /// A commit's meta from its decoded header.
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing }
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing, whole: BTreeSet::new() }
     }
     /// The index of aspect `(tid, ak)` in the commit.
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
@@ -562,10 +565,16 @@ indexes! {
     /// Snapshots per aspect whose dropped part still stands in (`Dropped::stands_in`; derived at
     /// open, not persisted).
     pub dropped_snapshots: JSetMap<(Tid, Ak), CommitId>,
-    /// Per aspect the newest `ts` of a memory commit forgotten here with a part on it
+    /// Per aspect the newest `ts` of a commit forgotten here with a part on it
     /// (`apply::unindex_commit`): what stands for the forgotten parts an undo may have replaced
-    /// (`undo::replaced_kept`). Memory only, so not persisted.
+    /// (`undo::replaced_kept`). A durable commit's row persists (`records::FORGOTTEN`).
     pub forgotten: JMap<(Tid, Ak), Ts>,
+    /// Per (thing, aspect, author) the held parts of plain commits of a coverable aspect (`retention::snapshot::own_aspect`): what an own replace may cover, without
+    /// walking the aspect (derived, as `Core::put_meta` keeps it).
+    pub own_held: JSetMap<(Tid, Ak, Tid), (Ts, CommitId)>,
+    /// `own_held`'s subset of whole replaces (spec/commits.md §5 Own replaces), any validity:
+    /// the candidates that may cover an older commit of the author.
+    pub own_replaces: JSetMap<(Tid, Ak, Tid), (Ts, CommitId)>,
     /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
     pub by_thing: JSetMap<(Tid, Tid), CommitId>,
     /// Held commits per (header actor, author), where those differ: re-judging
@@ -1756,6 +1765,7 @@ impl Core {
     /// `ix.bounded_held` stays exact.
     pub(crate) fn put_meta(&mut self, id: CommitId, m: Meta) {
         self.count_bounded(&m, true);
+        self.index_own(&id, &m, true);
         // a part held invalid (a late part joining, a leftover kept) goes at the transaction's end
         if (0..m.valid.len()).any(|ai| !m.valid_at(ai) && m.holds(ai)) {
             self.drop_due.insert(id);
@@ -1774,6 +1784,7 @@ impl Core {
         let m = self.ix.commits.remove(id)?;
         self.note_rotation(&m);
         self.count_bounded(&m, false);
+        self.index_own(id, &m, false);
         let none = self.none_parts(&m, true);
         if !none.is_empty() {
             self.index_none(id, none);
@@ -1805,6 +1816,33 @@ impl Core {
     fn none_parts(&self, m: &Meta, forgotten: bool) -> Vec<(Tid, Ak, bool, bool)> {
         let any = |a: &AspectView| a.none || self.ix.none_held.get(&(a.tid, a.ak.clone())).is_some_and(|s| !s.is_empty());
         m.view.aspects.iter().enumerate().filter(|(_, a)| any(a)).map(|(ai, a)| (a.tid, a.ak.clone(), a.none, !forgotten && m.holds(ai) && !m.bare(ai))).collect()
+    }
+
+    /// `ix.own_held` and `ix.own_replaces` for commit `id` as `m` now stands: a part is in them
+    /// while held (`add`: false, gone with its commit).
+    fn index_own(&mut self, id: &CommitId, m: &Meta, add: bool) {
+        use osis_commit::Kind;
+        if m.view.memory || m.view.kind != Kind::Content {
+            return;
+        }
+        for (ai, a) in m.view.aspects.iter().enumerate() {
+            if !crate::retention::snapshot::own_aspect(&a.ak) {
+                continue;
+            }
+            let k = (a.tid, a.ak.clone(), m.view.author);
+            let e = (m.view.ts, *id);
+            let held = add && m.holds(ai);
+            if held {
+                self.ix.own_held.insert(k.clone(), e);
+            } else {
+                self.ix.own_held.remove(&k, &e);
+            }
+            if held && m.whole.contains(&ai) {
+                self.ix.own_replaces.insert(k, e);
+            } else {
+                self.ix.own_replaces.remove(&k, &e);
+            }
+        }
     }
 
     fn count_bounded(&mut self, m: &Meta, add: bool) {

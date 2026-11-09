@@ -160,13 +160,18 @@ Every delta carries **retention** on the wire: who may purge it and what happens
   - A snapshot written from a node's whole state of an aspect covers every body of it the node had applied, except a delta with an expiry holding a live value.
 
 ### Own replaces
-- A plain durable content commit Q on a content aspect (not signal, not ephemeral) with no expiry is an **own replace** of an earlier commit C of its author on that aspect, by the covered test of §5 Covered with Q's delta in place of the snapshot's fragment: joining C's delta into Q's delta leaves its canonical bytes unchanged. Only C stamped before Q and of its author (an account's devices are one author) can be so covered; a commit of another author, a snapshot's own writes or a part of a role-class or admin-only aspect cannot.
-- C drops as covered under Q only once a second own replace Q' of C by the same author with `ts` between C and Q is held valid: the writer's previous replace stays until the next lands, so a replace that later counts for nothing costs what it alone carried.
-- Q's right over C is its author's, which every node reads alike: every node, reader or writer, drops C under an own replace once its keep-at-least bound passes (`MAX_DRIFT` past it), as under a snapshot it holds the right for, and judges C covered for must-hold (spec/sync.md §6) by the same test.
+- A **whole replace** is a plain durable content commit on a content aspect (not signal, not ephemeral) whose delta resets the aspect at its root (a root reset or a root register write, spec/crdt.md §5.1); it may carry an expiry. An **own replace** of an earlier plain content commit C is a whole replace of the same author (an account's devices are one author), `ts` later than C's, valid and held here, that passes the covered test of §5 Covered with its delta in place of the snapshot's fragment.
+- C drops as covered by an own replace once two own replaces of C are held valid here: the writer's previous replace stays until the next lands, so a replace that later counts for nothing costs what it alone carried. Which commits cover C is a function of the commits held: the same at every node holding the same commits.
+- A commit with several parts goes under own replaces only whole: every part it still holds must be covered by own replaces.
+- A body not held and not dropped (not fetched yet) is not established as covered; a dropped one joins nothing and is.
+- An own replace's right over C is its author's, which every node reads alike: every node, reader or writer, drops C under own replaces once its keep-at-least bound passes (`MAX_DRIFT` past it), as under a snapshot it holds the right for, and judges C covered for must-hold (spec/sync.md §6) by the same test.
+- An own replace that turns invalid, or drops other than as covered, gives nothing: what it alone covered is missing again, as under a snapshot (spec/permissions.md §5.2).
+- A delta with an expiry is judged by the join, not by its own lifetime: a later own whole replace covers it whether its values have expired or not.
 
 ### Forgetting
 - A node forgets a durable content commit, header and ID included, once every part of it dropped as covered by a cover of its own author (a compaction snapshot or an own replace) and no entry of a blob of it is known and no delete of one is within `TOMBSTONE_LIFETIME`.
 - Kept: role commits, a thing's first commit (its `created.0` part never drops), a lasting commit, a commit carrying a purge request, a compaction snapshot.
+- A node keeps, per aspect, the newest `ts` of a commit it forgot there, across restarts: an undo counts what that commit may have held (§7).
 - Forgetting reads as never having received it: a demotion frontier cannot list it (spec/permissions.md §5.1), and its author's cover stands for it. A forgotten commit arriving again applies and goes again by the same rules.
 - Limit: a cover that later counts for nothing (a removal that does not list it, an addendum that falls) cannot give a forgotten commit back. Loss is bounded: a snapshot or own replace that reached a node before the removal's `ts` still counts for what it carries.
 

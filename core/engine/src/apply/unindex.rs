@@ -36,6 +36,10 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         }
         super::atomic::forget_snapshot(core, &a.tid, &a.ak, id);
         if core.ix.forgotten.get(&k).is_none_or(|t| *t < v.ts) {
+            if !v.memory {
+                let key = [records::FORGOTTEN, a.tid.as_bytes().as_slice(), a.ak.as_str().as_bytes()].concat();
+                tx.txn.put_local(&key, &v.ts.to_u64().to_be_bytes(), Shred::No)?;
+            }
             core.ix.forgotten.insert(k, v.ts);
         }
     }
@@ -60,21 +64,19 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     }
     // its writes off the value-less list: a copy arriving again applies as new (a batched
     // rebuild still to run strips their values first, `apply::run_batched`)
-    if v.memory {
-        for (ai, a) in m.header.aspects.iter().enumerate() {
-            let owned = crate::retention::writes_of(&m.header, id, ai);
-            if owned.is_empty() {
-                continue;
+    for (ai, a) in m.header.aspects.iter().enumerate() {
+        let owned = crate::retention::writes_of(&m.header, id, ai);
+        if owned.is_empty() {
+            continue;
+        }
+        match &mut tx.core.batched {
+            Some(b) => {
+                // a memory aspect's rebuild: in the memory class however it was asked
+                let e = b.entry((a.tid, a.ak.clone())).or_default();
+                e.unlist.extend(owned);
+                e.memory |= v.memory;
             }
-            match &mut tx.core.batched {
-                Some(b) => {
-                    // a memory aspect's rebuild: in the memory class however it was asked
-                    let e = b.entry((a.tid, a.ak.clone())).or_default();
-                    e.unlist.extend(owned);
-                    e.memory = true;
-                }
-                None => crate::retention::off_valueless(tx, &a.tid, &a.ak, &owned),
-            }
+            None => crate::retention::off_valueless(tx, &a.tid, &a.ak, &owned),
         }
     }
     tx.remove_commit(id)

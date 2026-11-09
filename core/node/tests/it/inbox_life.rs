@@ -1499,15 +1499,18 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
         net.advance(70_000);
     }
     assert!(readers.iter().all(|r| net.engine(*r).role_on(&o) == Some(Role::Read)));
-    let before = net.host_ids(host, &l).len();
+    let before: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
     net.set_online(a, false);
     let until = net.now() + INBOX_LIFETIME_MS;
     let junk = deposit_junk(&mut net, readers[0], (host, &l), o, 40, until);
+    // what the readers placed since, each heartbeat counted though the next replaces it
+    let mut placed = std::collections::BTreeSet::new();
     for _ in 0..3 {
         net.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 1_000);
+        placed.extend(net.host_ids(host, &l).into_iter().filter(|x| !junk.contains(x) && !before.contains(x)));
     }
+    assert!(placed.len() >= osis_base::format::INBOX_WAITING / 3, "readers placed: {}", placed.len());
     let held: Vec<_> = net.host_ids(host, &l).into_iter().filter(|x| !junk.contains(x)).collect();
-    assert!(held.len() >= before + osis_base::format::INBOX_WAITING / 3, "readers placed: {} after {before}", held.len());
     net.set_online(a, true);
     for _ in 0..4 {
         net.advance(70_000);

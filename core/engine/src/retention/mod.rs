@@ -32,7 +32,7 @@ pub(crate) mod leftover;
 mod pending;
 mod purge;
 mod replace;
-mod snapshot;
+pub(crate) mod snapshot;
 #[cfg(test)]
 mod oracle;
 pub(crate) mod end;
@@ -233,6 +233,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // (a plain commit counts only as its author's own whole replace: `snapshot::own_covers`)
     let snaps: Vec<CommitId> = if invalid || why == DropFor::Ended { Vec::new() } else { tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).chain(snapshot::own_covers(tx.core, c, &a.tid, &a.ak)).filter(|s| s != c).collect() };
     let mut covered_by = BTreeSet::new();
+    let own_cover = m.whole.remove(&ai);
     for s in snaps {
         if covered(tx, &s, c, &a.tid, &a.ak)? == Some(true) {
             covered_by.insert(s);
@@ -272,7 +273,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     crate::apply::keys::forget_dropped(tx, &header, ai, &role_bodies)?;
     // a snapshot dropped other than as covered carries nothing: the parts dropped under its
     // cover alone are missing again
-    if stands_in {
+    if stands_in || (own_cover && why != DropFor::Cover) {
         uncover(tx, &a.tid, &a.ak)?;
     }
     // the one path (issues/drop-rejoin-robust.md item 1): the aspect is rebuilt from what is
@@ -991,36 +992,55 @@ impl Engine {
         })
     }
 
-    /// Whether held plain commit `c` may stand as its author's own whole replace of `(tid, ak)`
-    /// (`snapshot::covered`).
-    pub fn plain_cover(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
-        snapshot::plain_cover(&self.core, c, tid, ak)
+    /// Whether held commit `c` is an own replace of `(tid, ak)` (`snapshot::covered`).
+    pub fn own_replace(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
+        snapshot::own_replace(&self.core, c, tid, ak)
     }
 
-    /// `s`'s author's held plain commits on `(tid, ak)` just older than it, at most `n`, newest first.
-    pub fn own_older(&self, s: &CommitId, tid: &Tid, ak: &Ak, n: usize) -> Vec<CommitId> {
-        snapshot::own_older(&self.core, s, tid, ak, n)
+    /// The held commits own replaces `qs` of one author newly let go (`snapshot::own_newly_covered`).
+    pub fn own_newly_covered(&self, qs: &[CommitId], tid: &Tid, ak: &Ak) -> Vec<CommitId> {
+        snapshot::own_newly_covered(&self.core, qs, tid, ak)
     }
 
-    /// The held commits a node may forget, ID included (spec/commits.md §5, Forgetting): a
+    /// Whether `c` is a held commit of `s`'s author on `(tid, ak)` stamped before `s`.
+    pub fn own_older(&self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
+        let (Some(sm), Some(cm)) = (self.core.ix.commits.get(s), self.core.ix.commits.get(c)) else { return false };
+        self.core.ix.own_held.get(&(*tid, ak.clone(), sm.view.author)).is_some_and(|x| x.contains(&(cm.view.ts, *c))) && cm.view.ts < sm.view.ts
+    }
+
+    /// `s`'s author's held commits on `(tid, ak)` stamped before `s` (`Indexes::own_held`).
+    pub fn own_held_before(&self, s: &CommitId, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
+        let Some(m) = self.core.ix.commits.get(s) else { return Vec::new() };
+        let ts = m.view.ts;
+        self.core.ix.own_held.get(&(*tid, ak.clone(), m.view.author)).into_iter().flatten().take_while(|x| x.0 < ts).map(|x| x.1).collect()
+    }
+
+    /// The own replaces that may cover `c` on `(tid, ak)` (`snapshot::own_covers`).
+    pub fn own_covers(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
+        snapshot::own_covers(&self.core, c, tid, ak)
+    }
+
+    /// Whether part `ai` of commit `c` is held.
+    pub fn part_held(&self, c: &CommitId, ai: usize) -> bool {
+        self.core.ix.commits.get(c).is_some_and(|m| m.holds(ai))
+    }
+
+    /// Whether commit `c` may be forgotten, ID included (spec/commits.md §5, Forgetting): a
     /// content commit, every part dropped as covered by a cover of its own author, no purge
     /// request, nothing waiting.
-    pub fn forgettable(&self) -> Vec<CommitId> {
+    pub fn forgettable(&self, c: &CommitId) -> bool {
+        // counted: tests read how many commits forgetting looks at
+        let _s = crate::costs::span("forgettable");
         let core = &self.core;
-        let own_cover = |m: &crate::engine::Meta, d: &Dropped| d.why == DropFor::Cover && d.covered_by.iter().any(|x| core.ix.commits.get(x).is_none_or(|s| s.view.author == m.view.author));
-        core.ix
-            .commits
-            .iter()
-            .filter(|(c, m)| {
-                !m.view.memory
-                    && m.view.kind == Kind::Content
-                    && !m.view.purges
-                    && m.dropped.len() == m.view.aspects.len()
-                    && m.dropped.values().all(|d| own_cover(m, d))
-                    && !core.ix.pending.contains_key(c)
-            })
-            .map(|(c, _)| *c)
-            .collect()
+        let Some(m) = core.ix.commits.get(c) else { return false };
+        let own_cover = |d: &Dropped| d.why == DropFor::Cover && d.covered_by.iter().any(|x| core.ix.commits.get(x).is_none_or(|s| s.view.author == m.view.author));
+        !m.view.memory && m.view.kind == Kind::Content && !m.view.purges && m.dropped.len() == m.view.aspects.len() && m.dropped.values().all(own_cover) && !core.ix.pending.contains_key(c)
+    }
+
+    /// Every commit `forgettable` holds true of (the first tick after an open: forgetting
+    /// is otherwise by events).
+    pub fn all_forgettable(&self) -> Vec<CommitId> {
+        self.core.ix.commits.keys().copied().filter(|c| self.forgettable(c)).collect()
     }
 
     /// Forgets commit `c`, ID included: as if it had never applied (`apply::unindex_commit`).
@@ -1045,6 +1065,8 @@ impl Engine {
     }
 }
 
+#[cfg(test)]
+mod tests_own;
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

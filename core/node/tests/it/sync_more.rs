@@ -1474,8 +1474,11 @@ fn work_waiting_bounded_spec_sync_6() {
     net.sync(a).config_mut().work_max = cap;
     let s0 = net.sync(a).pass_stats();
     let mut most = 0;
+    // distinct aspects: nothing replaces anything (own replaces would drop these)
     for i in 0..3 * cap {
-        net.write(a, t, &format!("v{i}"));
+        let mut m = Mutation::new();
+        m.set(t, &osis_base::Ak::new(format!("u:a{i}.0")).unwrap(), &s("v")).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap();
         net.run();
         most = most.max(net.sync(a).work_waiting());
     }

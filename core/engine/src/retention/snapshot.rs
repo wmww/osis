@@ -202,98 +202,82 @@ pub(super) fn stamped_later(core: &Core, c: &CommitId, s: &CommitId) -> bool {
     core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction()) && ts(c) > ts(s)
 }
 
-/// The newest (at most `n`) of `author`'s held valid plain content commits on `(tid, ak)` newer
-/// than `after`, newest first: the commits that may stand as own whole replaces.
-fn newest_own(core: &Core, tid: &Tid, ak: &Ak, author: &Tid, after: Ts, n: usize) -> Vec<CommitId> {
-    let Some(on) = core.ix.by_aspect.get(&(*tid, ak.clone())) else { return Vec::new() };
-    let mut out = Vec::new();
-    for (_, c) in on.iter().rev().take_while(|(ts, _)| *ts > after) {
-        let Some(m) = core.ix.commits.get(c) else { continue };
-        if m.view.author == *author && plain_held(m, tid, ak) {
-            out.push(*c);
-            if out.len() == n {
-                break;
-            }
-        }
-    }
-    out
+/// Whether `ak` is an aspect its author's own replaces may cover: content, neither ephemeral
+/// nor a signal (spec/commits.md §5 Own replaces).
+pub(crate) fn own_aspect(ak: &Ak) -> bool {
+    is_content(ak.as_str()) && !ak.ephemeral() && !ak.signal()
 }
 
-/// Whether `m` is a plain durable content commit holding a valid body of `(tid, ak)`, with no
-/// expiry: what can stand in as its author's cover (an expiring write cannot: its value goes).
-fn plain_held(m: &crate::engine::Meta, tid: &Tid, ak: &Ak) -> bool {
-    m.view.kind == Kind::Content && !m.view.memory && m.header.expires.is_none() && m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && m.holds(ai))
+/// Whether fragment `f` is a delta replacing the aspect whole: its root reset, or a register
+/// write, which implies one (spec/crdt.md §5.1).
+pub(crate) fn replaces(f: &Fragment) -> bool {
+    f.reset().is_some() || matches!(f, Fragment::Register(_) | Fragment::Slots(_))
 }
 
-/// Whether plain commit `s` stands as a possible cover of `(tid, ak)`: a content aspect
-/// that is neither ephemeral nor a signal, and `s` is one of its author's two newest held
-/// plain commits on it. Others cannot cover anything: two newer own covers are all that is ever
-/// needed (`covered`), so nothing older need be judged.
-pub(crate) fn plain_cover(core: &Core, s: &CommitId, tid: &Tid, ak: &Ak) -> bool {
-    if !is_content(ak.as_str()) || ak.ephemeral() || ak.signal() {
-        return false;
-    }
+/// `author`'s valid own replaces of `(tid, ak)` held here, oldest first.
+fn own_replaces<'c>(core: &'c Core, tid: &Tid, ak: &Ak, author: &Tid) -> impl DoubleEndedIterator<Item = (Ts, CommitId)> + 'c {
+    let (tid, ak2) = (*tid, ak.clone());
+    core.ix
+        .own_replaces
+        .get(&(tid, ak2.clone(), *author))
+        .into_iter()
+        .flatten()
+        .filter(move |(_, c)| core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak2).is_some_and(|ai| m.valid_at(ai))))
+        .copied()
+}
+
+/// Whether held commit `s` stands as an own replace of `(tid, ak)` (spec/commits.md §5 Own
+/// replaces): a plain whole replace of its author, valid here.
+pub(crate) fn own_replace(core: &Core, s: &CommitId, tid: &Tid, ak: &Ak) -> bool {
     let Some(m) = core.ix.commits.get(s) else { return false };
-    if !plain_held(m, tid, ak) {
-        return false;
-    }
-    newest_own(core, tid, ak, &m.view.author, Ts::ZERO, 2).contains(s)
+    core.ix.own_replaces.get(&(*tid, ak.clone(), m.view.author)).is_some_and(|x| x.contains(&(m.view.ts, *s))) && m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai))
 }
 
-/// The (at most `n`) held plain commits of `s`'s author on `(tid, ak)` just older than `s`,
-/// newest first: what `s` may let go as an own replace.
-pub(crate) fn own_older(core: &Core, s: &CommitId, tid: &Tid, ak: &Ak, n: usize) -> Vec<CommitId> {
-    let Some(m) = core.ix.commits.get(s) else { return Vec::new() };
-    let Some(on) = core.ix.by_aspect.get(&(*tid, ak.clone())) else { return Vec::new() };
-    let mut out = Vec::new();
-    for (_, c) in on.iter().rev().skip_while(|(ts, c)| !(*ts == m.view.ts && c == s)).skip(1) {
-        let Some(o) = core.ix.commits.get(c) else { continue };
-        if o.view.author == m.view.author && o.view.kind == Kind::Content && !o.view.memory && o.aspect(tid, ak).is_some_and(|ai| o.holds(ai)) {
-            out.push(*c);
-            if out.len() == n {
-                break;
-            }
-        }
-    }
-    out
+/// The commits own replaces `qs` (of one author on `(tid, ak)`, held here) newly let go: the
+/// author's held commits older than the newest of `qs` with at most one other own replace later
+/// than them, so `qs` give them their second (spec/commits.md §5 Own replaces). What a pass
+/// judges when `qs` arrive or turn valid: older ones had two covers before.
+pub(crate) fn own_newly_covered(core: &Core, qs: &[CommitId], tid: &Tid, ak: &Ak) -> Vec<CommitId> {
+    let Some(m) = qs.first().and_then(|q| core.ix.commits.get(q)) else { return Vec::new() };
+    let author = m.view.author;
+    let Some(hi) = qs.iter().filter_map(|q| core.ix.commits.get(q)).map(|m| m.view.ts).max() else { return Vec::new() };
+    let lo = own_replaces(core, tid, ak, &author).rev().filter(|x| !qs.contains(&x.1)).map(|x| x.0).nth(1);
+    core.ix.own_held.get(&(*tid, ak.clone(), author)).into_iter().flatten().filter(|(ts, c)| *ts < hi && lo.is_none_or(|l| *ts >= l) && !qs.contains(c)).map(|x| x.1).collect()
 }
 
-/// `(tid, ak)`'s own whole-replace covers of `c`: at most its author's two newest held plain
-/// commits later than `c`.
+/// The own replaces that may cover `c` on `(tid, ak)`: its author's two newest valid held
+/// own replaces later than it, none for a memory commit (`covered` asks for two).
 pub(crate) fn own_covers(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
-    if !is_content(ak.as_str()) || ak.ephemeral() || ak.signal() {
-        return Vec::new();
-    }
     let Some(m) = core.ix.commits.get(c) else { return Vec::new() };
-    if m.view.memory {
+    if m.view.memory || !own_aspect(ak) {
         return Vec::new();
     }
-    newest_own(core, tid, ak, &m.view.author, m.view.ts, 2)
+    let ts = m.view.ts;
+    own_replaces(core, tid, ak, &m.view.author).rev().take_while(|x| x.0 > ts).take(2).map(|x| x.1).collect()
 }
 
-/// `Engine::covered` in `tx`: a plain commit `s` covers `c` only as its author's own whole
-/// replace (spec/commits.md §5, Own replaces): the same author, later, and a second own later
-/// plain commit also covers it, so the writer's previous replace stays until the next lands.
+/// `Engine::covered` in `tx`: a plain commit `s` covers `c` only as its author's own replace
+/// (spec/commits.md §5, Own replaces), with a second own replace later than `c`, so what
+/// `c`'s author wrote before their last replace stays: a function of the commits held here,
+/// the same at every node holding them.
 pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
     let Some(sm) = tx.core.ix.commits.get(s) else { return covered_join(tx, s, c, tid, ak) };
     if sm.view.kind.is_compaction() {
         return covered_join(tx, s, c, tid, ak);
     }
+    let (s_author, s_ts) = (sm.view.author, sm.view.ts);
     let Some(cm) = tx.core.ix.commits.get(c) else { return Ok(None) };
-    let candidates = plain_cover(tx.core, s, tid, ak) && sm.view.author == cm.view.author && sm.view.ts > cm.view.ts && matches!(cm.view.kind, Kind::Content | Kind::ContentSnapshot);
-    if !candidates {
+    let (author, cts) = (cm.view.author, cm.view.ts);
+    let may = own_replace(tx.core, s, tid, ak) && s_author == author && s_ts > cts && !cm.view.memory && cm.view.kind == Kind::Content;
+    if !may {
         return Ok(Some(false));
     }
-    let Some(true) = covered_join(tx, s, c, tid, ak)? else { return Ok(Some(false)) };
-    // the writer's previous replace stays until the next lands: a second own later cover
-    let Some((author, cts, sts)) = tx.core.ix.commits.get(c).zip(tx.core.ix.commits.get(s)).map(|(m, x)| (m.view.author, m.view.ts, x.view.ts)) else { return Ok(None) };
-    let others: Vec<CommitId> = newest_own(tx.core, tid, ak, &author, cts, usize::MAX).into_iter().filter(|d| tx.core.ix.commits.get(d).is_some_and(|m| m.view.ts < sts)).collect();
-    for d in others {
-        if covered_join(tx, &d, c, tid, ak)? == Some(true) {
-            return Ok(Some(true));
-        }
+    match covered_join(tx, s, c, tid, ak)? {
+        Some(true) => {}
+        other => return Ok(other),
     }
-    Ok(Some(false))
+    let Some(second) = own_replaces(tx.core, tid, ak, &author).rev().take_while(|x| x.0 > cts).map(|x| x.1).find(|x| x != s) else { return Ok(Some(false)) };
+    covered_join(tx, &second, c, tid, ak)
 }
 
 /// The body whole, the snapshot a piece at a time (its part at the
@@ -302,6 +286,8 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
 /// and the snapshot's part at its positions, about twice the body; both whole only with a
 /// pull decoder walking them side by side (issues/durable-decode-bound.md).
 pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
+    // counted: tests read how many pairs are joined
+    let _s = crate::costs::span("covered: join");
     let (Some(sai), Some(cai)) = (aspect_index(tx.core, s, tid, ak), aspect_index(tx.core, c, tid, ak)) else { return Ok(None) };
     // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2)
     if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || cannot_keep(tx, s, sai, c, cai, tid, ak)? {
@@ -386,9 +372,11 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
         }
     }
     // a body this node holds no delta of (dropped at its keep bounds or as covered, a purge
-    // rewrite) joins nothing: covered
+    // rewrite) joins nothing: covered. Before an own replace the part must really have
+    // dropped: a part not fetched yet is not established (a set add or map put still to come).
     if !held {
-        return Ok(Some(true));
+        let own = g.is_none();
+        return Ok(if own && !m.dropped.contains_key(&cai) { None } else { Some(true) });
     }
     // the snapshot holds the body's live writes as the body does, judged on its part at the
     // body's positions: with its writes under the body's dots taken out and the body joined

@@ -623,7 +623,7 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
             Some(Role::Write) => 2,
             Some(Role::Admin) => 3,
         };
-        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 3) | (u8::from(m.missing.contains(&ai)) << 4));
+        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 3) | (u8::from(m.missing.contains(&ai)) << 4) | (u8::from(m.whole.contains(&ai)) << 5));
     }
     let v = &m.view;
     let mut w = records::Wr(out).u64(v.ts.to_u64()).u8(v.kind.id() as u8);
@@ -970,10 +970,14 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         }
         let mut valid = Vec::with_capacity(parts.len());
         let mut missing = BTreeSet::new();
+        let mut whole = BTreeSet::new();
         for (ai, p) in parts.iter().enumerate() {
             valid.push(p & 1 != 0);
             if p & 16 != 0 {
                 missing.insert(ai);
+            }
+            if p & 32 != 0 {
+                whole.insert(ai);
             }
             if let Some(r) = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((p >> 1) & 3).wrapping_sub(1)) {
                 tx.core.ix.rotation_role.insert((id, ai), *r);
@@ -1001,7 +1005,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing });
+        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing, whole });
         crate::apply::note_stands_in(tx.core, &id);
         tx.core.index_validity(&id);
     }

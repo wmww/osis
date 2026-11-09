@@ -174,7 +174,8 @@ impl SyncEngine {
         for ai in parts {
             let Some(a) = h.aspects.get(*ai) else { continue };
             let k = (a.tid, a.ak.clone());
-            let on: Vec<CommitId> = self.engine.core.ix.by_aspect.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| (self.engine.header(s).is_some_and(|x| is_snapshot(x.kind)) || self.engine.plain_cover(s, &k.0, &k.1)) && self.state.entries_of(l, s).next().is_some()).collect();
+            let snapshots = self.engine.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1);
+            let on: Vec<CommitId> = snapshots.chain(self.engine.own_covers(c, &k.0, &k.1)).filter(|s| self.state.entries_of(l, s).next().is_some()).collect();
             snaps.insert(k, on);
         }
         self.parts_covered(&snaps, c, h, parts, &mut Note::default())
