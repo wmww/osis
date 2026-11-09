@@ -70,7 +70,7 @@ Reading and writing are split by type: a render gets `Cx`, an action `Act`.
 - **`Cx`** derefs to `Reader`, every read: `cx.db` (`view::Db`, the read half of `Osis`: a write, a listener or a session does not compile in a render), `cx.things()`, `cx.tags_of(t)`, `cx.state(key, node)`, `cx.summary(t)`. It also has the node's `path()`, `config()` and `window`. Reads through a render's `db` subscribe (the dependency graph, below).
 - **`Act`** derefs to `Data` (`Reader` plus every write: `set_open`, `toggle_favorite`, `delete`, `db.write()`), holds the effects and sets node state (`set_state`). Its reads are untracked.
 - **The graph** (`view/graph.rs`, notes/fast-design.md): one node type, a key, a value, a `ReadSet`, a dirty flag. A view render is a node; `cx.memo(key, f)` is a node; every address a render's `db` reads is a node, so an address is read once and has one listener however many memos ask; a local cell (`Local`: search query, the minute tick, dark, pending typing) is a node set from outside. Equal output stops propagation. Things held, favorites, groups, summary and aspects are shared memos.
-- `f` given to `memo` takes owned captures and a `&Reader`, never a `Cx`: a memo depends on its key and its reads, not on where it is called from.
+- `f` given to `memo` is a plain `fn(&Reader, &K)`, told only the key: it cannot capture, so a memo depends on its key and its reads, not on where it is called from.
 - The whole tree is still walked on any change (step 4 of the design replaces that), but only dirty nodes run.
 
 Closed and open sets, deliberately:
