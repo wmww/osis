@@ -10,3 +10,5 @@ held-model (`spec_records.rs`, `props.rs`) found two faces of one gap:
 The model judges an ending with the data held and has its property tests fetch an ended thing's parts again, so they converge; that assumes hosts still have them.
 
 Options to weigh: hosts delete an ended thing only after a wait (`ROLE_KEEP`, what a purge commit already gets); an ending needs a right that outlives it (the record chain's), which lets a removed first admin end the thing; or accept the loss and say so in the requirements.
+
+For Tess: if an ending later turns out to be invalid (the person ending the thing had already lost the right, but one node did not know yet), should the thing come back? Coming back means hosts wait before deleting ended things; gone for good means one node can lose a whole thing to an honest race.

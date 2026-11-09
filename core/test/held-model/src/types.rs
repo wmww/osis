@@ -320,9 +320,10 @@ pub struct Held {
     pub now: u64,
     /// The node itself (for "may drop" judgments that need the right).
     pub me: NodeId,
-    /// The creation records the node holds apart from creations: key actors' and the raw records
+    /// Creation records the node knows without a held creation: key actors' and the raw records
     /// a dependent's record chain carries (spec/permissions.md §1). A held creation's record is
-    /// known too (`model::records`).
+    /// known too (`model::records`); an input may list it here as well. A record alone is
+    /// identity: the thing exists only while a creation joins.
     pub records: Vec<Record>,
     /// Commit IDs are unique.
     pub commits: Vec<Commit>,

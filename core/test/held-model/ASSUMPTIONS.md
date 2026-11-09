@@ -18,6 +18,7 @@
 
 **Permissions**
 - Holders and first admins are actors (nodes, things); effective roles are widest paths over alive edges and record edges. No `MAX_CHAIN_DEPTH`, keys, secrets, rotation, certificates, `tied` edges, `keyset`, retain or erase (Keep copies), `LOST_HEARD_WAIT_MS`, or role-class aspects other than `roles.0`.
+- Records as writes and ending are modeled from notes/expiry-creation-design.md §3 (spec/ follows with steps 6 and 7): a thing is unknown or ended where spec/commits.md §4 still says a part waits.
 - A `created.0` part is one `Delta::Created` write; a second minting of a thing is never generated. `Held::records` are raw records from wherever they came.
 - Edge as restored: the join over the written edge only; a demoter's kept standing is not modeled beyond "R never demotes its own author" (its author is never audited by it).
 - `required^.0`: one entry per AK name and the default; no `retain` or `MAX_REQUIRED_ENTRIES`.

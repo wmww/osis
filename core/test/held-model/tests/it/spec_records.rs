@@ -118,3 +118,41 @@ fn things_an_ended_thing_created_live_on_spec_permissions_1() {
     assert!(o.valid[&(10, 0)]);
     assert_eq!(o.reads.get(&(12, REG)).cloned().flatten(), int(7));
 }
+
+// notes/expiry-creation-design.md §3 (Ending: purge is per part): purging one creation of a
+// commit making two things ends that thing alone
+#[test]
+fn ending_one_creation_leaves_the_others_of_its_commit_spec_commits_5() {
+    const OTHER: ThingId = 14;
+    let w = |id, thing, v: i64| Commit { parts: vec![Part { thing, ..part(REG, Retention::PLAIN, vec![set(1, id, v)]) }], ..reg(id, FIRST_ADMIN, 1, REG, Retention::PLAIN, v) };
+    let mut c = made(None);
+    let other = Part { thing: OTHER, ..c.parts[0].clone() };
+    c.parts.push(other);
+    let item = PurgeItem::Commit { commit: CREATION_ID + T, thing: T, aspect: Aspect::CREATED };
+    let hd = held(5, vec![c, w(10, T, 1), w(11, OTHER, 2), purge(20, FIRST_ADMIN, 2, item)]);
+    let o = evaluate(&hd);
+    assert_eq!(o.ended, [T].into());
+    assert_eq!(o.reads.get(&(T, REG)).cloned().flatten(), None);
+    assert_eq!(o.reads.get(&(OTHER, REG)).cloned().flatten(), int(2));
+    assert_eq!(o.fates[&(CREATION_ID + T, 0)], Fate::MustDrop(DropWhy::Ended));
+    assert_ne!(o.fates[&(CREATION_ID + T, 1)], Fate::MustDrop(DropWhy::Ended));
+}
+
+// notes/expiry-creation-design.md §3 (Dependents): a thing kept only as a chain proof is not
+// back: a write on the ended account goes while its raw record is held
+#[test]
+fn a_kept_record_does_not_bring_an_ended_thing_back_spec_permissions_1() {
+    let acc = creation(ACCOUNT, RecordLink::Admin(2), 2, ts(0), Retention::ROLE, Some(at(3)));
+    let w = |id, h: u64| Commit { parts: vec![Part { thing: ACCOUNT, ..part(REG, Retention::PLAIN, vec![set(h, id, 7)]) }], ..reg(id, 2, h, REG, Retention::PLAIN, 7) };
+    let hd = held(5, vec![acc, w(10, 1)]);
+    let o = evaluate(&hd);
+    assert_eq!(o.ended, [ACCOUNT].into());
+    assert_eq!(o.fates[&(10, 0)], Fate::MustDrop(DropWhy::Ended));
+    let mut next = act(&hd, &o, None);
+    assert!(next.records.iter().any(|r| r.id == ACCOUNT), "held as a chain proof");
+    next.commits.push(w(11, 4));
+    let o = evaluate(&next);
+    assert_eq!(o.fates[&(11, 0)], Fate::MustDrop(DropWhy::Unknown));
+    assert_eq!(o.revisit, [11].into());
+    assert_eq!(o.reads.get(&(ACCOUNT, REG)).cloned().flatten(), None);
+}
