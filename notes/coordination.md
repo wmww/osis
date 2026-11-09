@@ -69,7 +69,7 @@ How osis is meant to be designed. Most fiddly bugs this project has had came fro
 - Issues carry a Priority (critical: now; normal: before release; low: if convenient) and questions for Tess are issues tagged `tess-call`.
 - App work (libs/kit/, app/) is planned with Tess in a separate UX session (notes/app.md) and counts toward the agent limit. With no app session active, the core coordinator fixes app breakage itself. What kit/app needs from core becomes an issue tagged `core-ask`.
 - Names: each coordinator picks a name and pronouns once it knows the codebase (check the registry), records both here and says them in chat. Sub-agents are `<coordinator>-<branch>` in briefs, reports and complaints.
-- Registry: **Lodestar**, she/her. **Tiller**, he/him. **Wren**, they/them. **Sorrel**, they/them. **Fathom**, they/them. **Kestrel**, they/them.
+- Registry: **Lodestar**, she/her. **Tiller**, he/him. **Wren**, they/them. **Sorrel**, they/them. **Fathom**, they/them. **Kestrel**, they/them. **Petrel**, they/them.
 
 ## Test budget
 Seed breadth belongs to the periodic checks, not to branches (Tess: cut testing time without letting issues slip). Of about 200 merged tasks' bugs, reading and new targeted tests found about 225, per-branch oracles about 25, periodic and wide runs about 10, rerunning already-run ranges about 2 (notes/testing.md (What finds bugs)).
