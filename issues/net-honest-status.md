@@ -6,8 +6,8 @@
 ## Built (notes/api.md Sync configuration and status)
 Step 1: `sources(L)` in `SyncEngine::label_status`, the states, the `All`/`Thing`/`Deliveries` scopes, waits that wait, `complete`, the pending delivery with nowhere to go.
 - A served session is its own source, not caught up, unless it proved by a co-reader proof that it is a node this node has a connection to with the sync ID open (`name_sessions`); a dialer names itself only to a known co-reader.
-- `Thing(t)` waits on the sync IDs `t` itself travels under: its own, else the nearest synced groups listing it.
-- `Deliveries` is this node's pending deliveries alone: grant-style CLI commands wait on it.
+- `Thing(t)` waits on every sync ID carrying `t` with at least one source; with none it waits; it ends once this node forgot a `t` it held.
+- `Deliveries` is this node's pending deliveries alone, direct commits to a node included: grant-style CLI commands wait on it.
 
 ## Remaining (step 2, jobs 5-6 of issues/net-rework.md)
 - **Both sides judge**: with issues/net-reconnect.md each side of a connection pulls from the other's node log, so every source is judged by this node's own pass and a pair needs one connection, not two. Until then a connection only the other side dialed reads `Syncing` at the served side (a NAT'd node's partner is never `Synced`) and `complete` stays false there.
@@ -16,7 +16,4 @@ Step 1: `sources(L)` in `SyncEngine::label_status`, the states, the `All`/`Thing
 - A delivery with nowhere to go (`SentInbox::nowhere`) is retried at `INBOX_LIFETIME`, not when the recipient's inbox gets a node: issues/net-first-contact.md replaces it with offers.
 
 ## Gaps in step 1
-- `Thing(t)` waits on `t`'s own sync IDs, else the nearest synced groups listing it, while commits travel under every synced group whose closure holds `t`: the wait can resolve while a source connected only on a group further up holds newer `t`, or hang on a lonely nearest group though a parent carries `t`. Status per group stays honest.
-- `deliveries_pending` ignores `Delivery::Direct`: a `grant` to a node exits 0 before the grant left.
-- `leave` and `card show` wait on `All`, so an unrelated group with nobody connected ends them in exit 6 at the timeout.
 - `Command::Name`, `Pending::Name` and `named` are interim: proof 3 and a re-Open on an open label are not in spec/wire.md; issues/net-shared-set.md replaces them.

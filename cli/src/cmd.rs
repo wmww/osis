@@ -250,8 +250,10 @@ fn delivers(c: &Cmd) -> bool {
 
 /// What a delivering command waits on before exit.
 pub(crate) enum Delivers {
-    /// The thing its holders fetch.
+    /// The thing its holders fetch, or the one a removal is about.
     Thing(String),
+    /// This account's profile: a contact card is a read link to it.
+    Profile,
     /// Only the inbox items it queued: the role is recorded, and `status` shows how its sync stands.
     Deliveries,
     All,
@@ -259,7 +261,8 @@ pub(crate) enum Delivers {
 
 fn delivery_of(c: &Cmd) -> Delivers {
     match c {
-        Cmd::AddWithGrant { t, .. } | Cmd::Link(LinkCmd::Make { t, .. }) => Delivers::Thing(t.clone()),
+        Cmd::AddWithGrant { t, .. } | Cmd::Link(LinkCmd::Make { t, .. }) | Cmd::Leave { t, .. } => Delivers::Thing(t.clone()),
+        Cmd::Card(CardCmd::Show) => Delivers::Profile,
         Cmd::Group(GroupCmd::Sync { g, .. }) => Delivers::Thing(g.clone()),
         Cmd::Grant { .. } | Cmd::SetRole { .. } => Delivers::Deliveries,
         _ => Delivers::All,
@@ -281,6 +284,7 @@ pub(crate) fn deliver(ctx: &mut Ctx<'_>, what: Delivers) -> anyhow::Result<()> {
     let end = deadline(ctx.timeout()?);
     let s = match what {
         Delivers::Thing(x) => SyncScope::Thing(ctx.tid(&x)?),
+        Delivers::Profile => SyncScope::Thing(db.profile()?),
         Delivers::Deliveries => SyncScope::Deliveries,
         Delivers::All => SyncScope::All,
     };
@@ -1585,6 +1589,15 @@ fn schema_reg(sel: &StoreSel, file: &std::path::Path, add: bool) -> anyhow::Resu
 
 #[cfg(test)]
 mod tests {
+    // notes/api.md Sync configuration and status: `leave` and `card show` wait on the thing they touch, so an unrelated
+    // group with nobody connected does not end them in exit 6.
+    #[test]
+    fn leave_and_card_show_wait_on_what_they_touch() {
+        use super::{CardCmd, Cmd, Delivers, delivery_of};
+        assert!(matches!(delivery_of(&Cmd::Leave { t: "x".into(), holder: None }), Delivers::Thing(t) if t == "x"));
+        assert!(matches!(delivery_of(&Cmd::Card(CardCmd::Show)), Delivers::Profile));
+    }
+
     // notes/cli.md Network: only a command that stays up is on the LAN; a short one never announces.
     #[test]
     fn only_commands_that_stay_up_announce_notes_cli() {

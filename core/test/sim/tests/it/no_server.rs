@@ -553,7 +553,7 @@ fn a_co_reader_dialed_both_ways_is_one_source_and_ends_synced() {
 // `t` itself travels under: group g, caught up with Bob, resolves though it lists under a home
 // group no other node is connected on; a thing inside g resolves on g.
 #[test]
-fn a_thing_wait_is_the_nearest_sync_id_not_a_lonely_home() {
+fn a_thing_wait_leaves_out_a_lonely_home() {
     let (mut w, a, _b, g) = co_readers(220, Role::Write);
     let mut wr = a.write();
     let t = wr.create().unwrap();
@@ -567,6 +567,84 @@ fn a_thing_wait_is_the_nearest_sync_id_not_a_lonely_home() {
     assert_eq!(state(&a, home), SyncState::NotConnected, "the premise: nobody else on home");
     w.until(a.wait_synced(SyncScope::Thing(g)), STEP_MS, STEPS).unwrap();
     w.until(a.wait_synced(SyncScope::Thing(t)), STEP_MS, STEPS).unwrap();
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: a sync ID with no source promises nothing, so
+// `Thing(t)` does not hang on a lonely group listing `t` when a group further up has a source.
+#[test]
+fn a_thing_wait_leaves_out_a_lonely_group_when_another_has_a_source() {
+    let (mut w, a, _b, parent) = co_readers(240, Role::Write);
+    let near = group(&a);
+    let mut wr = a.write();
+    let t = wr.create().unwrap();
+    wr.commit().unwrap();
+    let mut wr = a.write();
+    wr.group(near).add(osis::Member::Item(t)).unwrap();
+    wr.group(parent).add(osis::Member::Subgroup(near)).unwrap();
+    wr.commit().unwrap();
+    w.advance(pause_ms());
+    assert_eq!(state(&a, near), SyncState::NotConnected, "the premise: nobody on the nearest group");
+    w.until(a.wait_synced(SyncScope::Thing(t)), STEP_MS, STEPS).unwrap();
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: `Thing(t)` covers every sync ID carrying `t` with a
+// source: Bob's connection on the group further up is not caught up, so the wait holds though the nearest
+// group is caught up with Carol.
+#[test]
+fn a_thing_wait_covers_a_source_further_up() {
+    let (mut w, a, _b, parent) = served_only(250, Role::Write);
+    let c = w.account(252, &[]);
+    w.place(&c, &[], Uplink::Public, &[]);
+    w.run();
+    let near = join(&mut w, &a, &c, Role::Write);
+    let mut wr = a.write();
+    let t = wr.create().unwrap();
+    wr.commit().unwrap();
+    let mut wr = a.write();
+    wr.group(near).add(osis::Member::Item(t)).unwrap();
+    wr.group(parent).add(osis::Member::Subgroup(near)).unwrap();
+    wr.commit().unwrap();
+    w.advance(pause_ms());
+    w.until(a.wait_synced(SyncScope::Thing(near)), STEP_MS, STEPS).unwrap();
+    assert_eq!(state(&a, parent), SyncState::Syncing, "the premise: a source further up not caught up");
+    assert!(w.try_until(a.wait_synced(SyncScope::Thing(t)), STEP_MS, 4).is_none(), "resolved past a source that holds more");
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: `Deliveries` counts a commit for a node over a
+// direct connection: a grant to a node has not left while nothing took it.
+#[test]
+fn a_grant_to_a_node_stays_pending_under_deliveries() {
+    let (mut w, a, _b, g) = co_readers(270, Role::Write);
+    let c = pair(&w, &a, 272);
+    w.run();
+    w.until(a.wait_synced(SyncScope::Deliveries), STEP_MS, STEPS).unwrap();
+    a.grant(g, c.node(), Role::Read, Default::default()).unwrap();
+    assert!(w.try_until(a.wait_synced(SyncScope::Deliveries), STEP_MS, 4).is_none(), "the grant has not left");
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: a leave waits on what the leaver left, not on an
+// unrelated group nobody is connected on, and ends once the node has forgotten it.
+#[test]
+fn a_leave_wait_ends_when_the_removal_landed_whatever_else_is_lonely() {
+    let mut w = World::new();
+    let h = w.add_host();
+    let (a, b) = (w.account(260, &[h]), w.account(261, &[]));
+    w.run();
+    let g = group(&a);
+    say(&a, g, "first");
+    w.run();
+    let link = a.make_link(g, Role::Write, LinkOpts::default()).unwrap();
+    w.run();
+    w.until(b.redeem(&link), 1000, 40).unwrap();
+    w.run();
+    let lonely = group(&b);
+    w.advance(pause_ms());
+    assert_eq!(state(&b, lonely), SyncState::NotConnected, "the premise");
+    b.leave(b.me(), g).unwrap();
+    w.until(b.wait_synced(SyncScope::Thing(g)), STEP_MS, STEPS).unwrap();
+    assert!(!b.status().unwrap().groups.contains_key(&g), "forgotten once it landed");
+    w.advance(pause_ms());
+    assert!(a.holders(g).unwrap().iter().all(|h| h.actor != b.me()), "Alice has the removal");
 }
 
 // spec: none (API surface), notes/api.md Sync configuration and status: `last_sync` needs no one to have looked while `Synced`.

@@ -93,6 +93,12 @@ impl SyncEngine {
         self.outbox.len() + self.state.sent_inbox.values().filter(|s| s.unsent()).count()
     }
 
+    /// Commits for a node over a direct connection (`Delivery::Direct`) not taken yet: only the
+    /// app's pairing channel finishes these, no sync pass does.
+    pub fn direct_pending(&self) -> usize {
+        self.state.direct.values().map(Vec::len).sum()
+    }
+
     /// What each pending delivery (`deliveries_pending`) is about, for `wait_synced`'s scope:
     /// an inbox delivery's things (a grant's target), a non-writer's deposit its label's group;
     /// empty when none is known (an inbox blob outside a delivery record).

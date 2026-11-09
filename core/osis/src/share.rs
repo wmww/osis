@@ -370,10 +370,12 @@ pub struct Status {
 pub enum SyncScope {
     /// Every synced group and every pending delivery.
     All,
-    /// What this thing travels under: its own sync if it has one, else the nearest synced groups
-    /// listing it; and the deliveries about it, what it holds or those groups.
+    /// What this thing travels under: its own sync and every synced group holding it, those no
+    /// other node is connected on left out while one has a node connected; and the deliveries
+    /// about it, what it holds or those groups. Done too once this node stops holding the thing.
     Thing(Tid),
-    /// This node's pending deliveries (grants and other inbox items), nothing else.
+    /// This node's pending deliveries (grants and other inbox items, and commits for a node over a
+    /// direct connection, which a pairing channel carries), nothing else.
     Deliveries,
 }
 
@@ -464,33 +466,21 @@ pub(crate) fn fetched(l: &mut crate::handle::Locked, t: Tid) -> bool {
     !stale && live_labels(&l.sync.label_status()).filter(|s| groups.contains(&s.group)).all(|s| s.passed && s.opening == 0 && label_state(s) != SyncState::Syncing)
 }
 
-/// The synced groups `t` travels under: `t` when it has sync IDs of its own, else the groups
-/// listing it, nearest first (groups further up carry it too, but the nearest answer for it).
+/// The synced groups `t` travels under: itself when it has sync IDs of its own, and every
+/// group whose closure holds it.
 fn carrying(sync: &mut SyncEngine, status: &Status, t: Tid) -> Vec<Tid> {
-    let synced = |g: &Tid| status.groups.get(g).is_some_and(|s| s.state != SyncState::LogOnly);
-    let mut level = BTreeSet::from([t]);
-    let mut seen = level.clone();
-    while !level.is_empty() {
-        let hit: Vec<Tid> = level.iter().filter(|g| synced(g)).copied().collect();
-        if !hit.is_empty() {
-            return hit;
-        }
-        let mut up = BTreeSet::new();
-        for x in &level {
-            let (items, subs) = sync.engine().listed_in(x);
-            up.extend(items);
-            up.extend(subs);
-        }
-        up.retain(|g| seen.insert(*g));
-        level = up;
-    }
-    Vec::new()
+    let mut groups = sync.engine().groups_of(&t);
+    groups.insert(t);
+    groups.into_iter().filter(|g| status.groups.get(g).is_some_and(|s| s.state != SyncState::LogOnly)).collect()
 }
 
-/// The labels' check of `wait_synced(Thing(t))`, over the groups `t` travels under now
-/// (`carrying`) and the deliveries about `t`, what it holds or those groups; while no group
-/// carries `t` it waits, unless it is held only as a log (`LogOnly`).
-fn group_synced(sync: &mut SyncEngine, t: Tid) -> Option<Result<()>> {
+/// The check of `wait_synced(Thing(t))`: every sync ID carrying `t` with at least one source
+/// is `Synced`, and the deliveries about `t`, what it holds or those groups were taken. A sync
+/// ID with no source promises nothing, so it holds nothing up while another has one; with no
+/// source anywhere it waits. `was_carried`: something carried `t` when the wait began, so once
+/// nothing does this node has forgotten it (a leave or a removal) and nothing is left to wait
+/// for. Never carried, it waits, unless it is held only as a log.
+fn group_synced(sync: &mut SyncEngine, t: Tid, was_carried: bool) -> Option<Result<()>> {
     let st = match status_of(sync) {
         Ok(st) => st,
         Err(e) => return Some(Err(e)),
@@ -499,36 +489,54 @@ fn group_synced(sync: &mut SyncEngine, t: Tid) -> Option<Result<()>> {
     if groups.is_empty() {
         // held only as a log: nothing here will ever sync it
         let log_only = sync.receipts_only().clone().iter().any(|g| *g == t || sync.engine().closure(g).contains(&t));
-        return log_only.then(|| Err(Error::Unsynced { groups: vec![t] }));
+        return if log_only { Some(Err(Error::Unsynced { groups: vec![t] })) } else { was_carried.then_some(Ok(())) };
+    }
+    let all = scoped_labels(sync, Some(&groups));
+    let sourced = live_labels(&all).any(|s| s.sources > 0);
+    let labels: Vec<_> = live_labels(&all).filter(|s| !sourced || s.sources > 0).collect();
+    if let Err(e) = labels_done(&labels)? {
+        return Some(Err(e));
     }
     let mut about: BTreeSet<Tid> = sync.engine().closure(&t).iter().copied().collect();
     about.insert(t);
-    about.extend(groups.iter().copied());
-    synced(sync, Some(&groups), Some(&about))
+    about.extend(labels.iter().map(|s| s.group));
+    deliveries_taken(sync, Some(&about)).then_some(Ok(()))
 }
 
-/// The sync wait's check (`Osis::groups_synced`): over the labels in scope, `groups` (all their
-/// live labels) or `None` (every label), `Unsynced` when one is stranded, nothing while one is not
-/// `Synced`, then the pending deliveries about `deliveries` (every one when `groups` is `None`).
-fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, deliveries: Option<&BTreeSet<Tid>>) -> Option<Result<()>> {
+/// The sync wait's check (`Osis::groups_synced`): every live label of `groups` (`None`: of every
+/// group) is `Synced` and none is stranded (`Unsynced`), then the pending deliveries about `about`
+/// were taken (`None`: every one).
+fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, about: Option<&BTreeSet<Tid>>) -> Option<Result<()>> {
+    let all = scoped_labels(sync, groups);
+    let labels: Vec<_> = live_labels(&all).collect();
+    let done = labels_done(&labels)?;
+    if done.is_err() {
+        return Some(done);
+    }
+    if groups.is_some_and(|gs| gs.iter().any(|g| labels.iter().all(|s| s.group != *g))) {
+        return None;
+    }
+    deliveries_taken(sync, about).then_some(Ok(()))
+}
+
+/// The label statuses of `groups` (`None`: every group), receipts-only groups left out.
+fn scoped_labels(sync: &mut SyncEngine, groups: Option<&[Tid]>) -> Vec<osis_node::sync::LabelStatus> {
     let skip = sync.receipts_only().clone();
-    let all: Vec<_> = sync.label_status().into_iter().filter(|s| !skip.contains(&s.group) && groups.is_none_or(|gs| gs.contains(&s.group))).collect();
-    let labels: Vec<(Tid, SyncState)> = live_labels(&all).map(|s| (s.group, label_state(s))).collect();
-    let bad: BTreeSet<Tid> = labels.iter().filter(|(_, s)| *s == SyncState::Stranded).map(|(g, _)| *g).collect();
+    sync.label_status().into_iter().filter(|s| !skip.contains(&s.group) && groups.is_none_or(|gs| gs.contains(&s.group))).collect()
+}
+
+/// `Unsynced` when a label is stranded, nothing while one is not `Synced`, else done.
+fn labels_done(labels: &[&osis_node::sync::LabelStatus]) -> Option<Result<()>> {
+    let bad: BTreeSet<Tid> = labels.iter().filter(|s| label_state(s) == SyncState::Stranded).map(|s| s.group).collect();
     if !bad.is_empty() {
         return Some(Err(Error::Unsynced { groups: bad.into_iter().collect() }));
     }
-    let labeled = groups.is_none_or(|gs| gs.iter().all(|g| labels.iter().any(|(x, _)| x == g)));
-    if !labeled || labels.iter().any(|(_, s)| *s != SyncState::Synced) {
-        return None;
-    }
-    if let Some(about) = deliveries
-        && sync.deliveries_pending() > 0
-        && (groups.is_none() || sync.pending_about().iter().any(|ts| ts.iter().any(|t| about.contains(t))))
-    {
-        return None;
-    }
-    Some(Ok(()))
+    labels.iter().all(|s| label_state(s) == SyncState::Synced).then_some(Ok(()))
+}
+
+/// Whether no pending delivery is about `about` (`None`: none at all).
+fn deliveries_taken(sync: &mut SyncEngine, about: Option<&BTreeSet<Tid>>) -> bool {
+    sync.deliveries_pending() == 0 || about.is_some_and(|a| !sync.pending_about().iter().any(|ts| ts.iter().any(|t| a.contains(t))))
 }
 
 /// Whether `t` reads here as at a node that has it: it has a label here, and each of its labels
@@ -736,8 +744,8 @@ impl Osis {
     /// about one of those things is pending, any delivery for `groups` `None`); fails `Unsynced`
     /// when a label in scope is stranded. The scope: every label of `groups`, or for `None`
     /// every label of a synced group.
-    fn groups_synced(&self, groups: Option<Vec<Tid>>, deliveries: Option<BTreeSet<Tid>>) -> crate::net::Pending<Result<()>> {
-        self.wait_until(Box::new(move |sync, _| synced(sync, groups.as_deref(), deliveries.as_ref())))
+    fn groups_synced(&self, groups: Option<Vec<Tid>>, about: Option<BTreeSet<Tid>>) -> crate::net::Pending<Result<()>> {
+        self.wait_until(Box::new(move |sync, _| synced(sync, groups.as_deref(), about.as_ref())))
     }
 
     /// Makes `holder`'s role on `target` this one: raises, lowers, or with `None` removes. The usual
@@ -1638,22 +1646,26 @@ impl Osis {
                     return Pending::ready(Ok(()));
                 }
                 self.sync_labels();
-                self.groups_synced(None, Some(BTreeSet::new()))
+                self.groups_synced(None, None)
             }
             SyncScope::Deliveries => {
-                if self.locked(|x| x.sync.deliveries_pending() == 0) {
+                if self.locked(|x| x.sync.deliveries_pending() + x.sync.direct_pending() == 0) {
                     return Pending::ready(Ok(()));
                 }
                 self.sync_labels();
-                self.wait_until(Box::new(move |sync, _| (sync.deliveries_pending() == 0).then_some(Ok(()))))
+                self.wait_until(Box::new(move |sync, _| (sync.deliveries_pending() + sync.direct_pending() == 0).then_some(Ok(()))))
             }
             SyncScope::Thing(t) => {
                 self.sync_labels();
                 // a failure at once needs no runtime
-                if let Some(Err(e)) = self.locked(|x| group_synced(&mut x.sync, t)).filter(Result::is_err) {
+                let (first, carried) = self.locked(|x| {
+                    let carried = status_of(&mut x.sync).is_ok_and(|st| !carrying(&mut x.sync, &st, t).is_empty());
+                    (group_synced(&mut x.sync, t, carried), carried)
+                });
+                if let Some(Err(e)) = first {
                     return Pending::ready(Err(e));
                 }
-                self.wait_until(Box::new(move |sync, _| group_synced(sync, t)))
+                self.wait_until(Box::new(move |sync, _| group_synced(sync, t, carried)))
             }
         }
     }
