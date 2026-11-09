@@ -44,7 +44,8 @@ pub enum Provenance {
 }
 
 impl Provenance {
-    /// Set directly, never recomputed.
+    /// Set directly (`Fixed` in the record, `Derived` by the view from the base actor), never
+    /// recomputed by `establish`.
     pub fn sticky(self) -> bool {
         matches!(self, Provenance::Fixed | Provenance::Derived)
     }
@@ -563,12 +564,12 @@ impl ActorEpochs {
         changed
     }
 
-    /// The record behind an established view: `Rotated` cleared (computed by `establish`, never
-    /// stored), `Fixed` and `Derived` kept.
+    /// The record behind an established view: `Rotated` and `Derived` cleared (computed from
+    /// what the node holds, never stored), `Fixed` kept.
     pub fn into_record(mut self) -> ActorEpochs {
         for r in ROLES {
             for i in self.role_mut(r).map.values_mut() {
-                i.established = i.established.filter(|p| p.sticky());
+                i.established = i.established.filter(|p| *p == Provenance::Fixed);
             }
         }
         self

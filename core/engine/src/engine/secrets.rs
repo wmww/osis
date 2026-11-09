@@ -92,10 +92,11 @@ impl Core {
     }
 
     /// `own_record` established (spec/crypto.md §4): a function of what this node holds now (its
-    /// applied commits, `NamesHeld`), so nothing about establishment is stored
-    /// or invalidated.
+    /// applied commits, `NamesHeld`, and the base actor's establishment, `adopt_derived`), so
+    /// nothing about establishment is stored or invalidated.
     pub(crate) fn own_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         let mut e = self.own_record(tid)?.clone();
+        self.adopt_derived(tid, &mut e);
         e.establish(&self.names_held(tid));
         Some(e)
     }
@@ -254,13 +255,6 @@ impl Core {
         for (m, e) in &openers {
             let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Actor { holder: *m, epochs: e }, &mut epochs, unchecked);
         }
-        // a pending commit's boxes teach secrets only, read from the boxes and their openers'
-        // epochs (`apply::waits`, `Wait::openers`): the derived establishment comes once the
-        // commit applies, as it reads the base actor's establishment, which no wait can follow
-        // (computed from applied commits and roles, `Core::own_epochs`)
-        if unchecked.is_none() {
-            self.adopt_derived(actor, &mut epochs);
-        }
         let held_any = epochs.holds_any();
         (held_any && Some(&epochs) != before.as_ref()).then_some(epochs)
     }
@@ -321,15 +315,21 @@ impl Core {
         learned
     }
 
+    /// The epochs the next actor up `actor`'s record chain (its first admin) derives for it,
+    /// established as that actor's are now (spec/crypto.md §3, §4).
+    pub(crate) fn base_derived(&self, actor: &Tid) -> Option<ActorEpochs> {
+        let up = self.created(actor).and_then(CreationRecord::first_admin)?;
+        Some(ActorEpochs::derived(&self.epochs(&up)?, actor))
+    }
+
     /// A thing that got secrets of its own keeps its earlier derived epochs (by history box):
     /// those derived from an established epoch of the next actor up its record chain are
     /// established (spec/crypto.md §4), so the rotation from them establishes
     /// and labels registered under them can be stepped. A derived epoch's ID names its secret, so
-    /// only a base actor epoch whose secret is held matches.
-    pub(crate) fn adopt_derived(&self, actor: &Tid, epochs: &mut ActorEpochs) {
-        let Some(up) = self.created(actor).and_then(CreationRecord::first_admin) else { return };
-        let Some(o) = self.epochs(&up) else { return };
-        let d = ActorEpochs::derived(&o, actor);
+    /// only a base actor epoch whose secret is held matches. Computed whenever the view is
+    /// (`own_epochs`), never stored: the base actor's establishment changes with what is held.
+    fn adopt_derived(&self, actor: &Tid, epochs: &mut ActorEpochs) {
+        let Some(d) = self.base_derived(actor) else { return };
         for r in ROLES {
             for (ep, info) in d.role(r).epochs() {
                 let sticky = epochs.role(r).get(ep).is_some_and(|i| i.established.is_some_and(Provenance::sticky));
@@ -633,7 +633,7 @@ fn newest_delete_key(e: &ActorEpochs, r: Role) -> Option<VerifyingKey> {
 // ---- local encoding of held epochs (the store's actor secrets unit)
 
 /// Persisted: what establishment is computed from (rotation commits, snapshot, names) and the
-/// directly set `Fixed`/`Derived` provenances; `Rotated` is never stored (`Core::own_epochs`).
+/// directly set `Fixed` provenance; `Rotated` and `Derived` are never stored (`Core::own_epochs`).
 pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
     let roles = ROLES
         .iter()
@@ -642,13 +642,13 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
                 a.role(*r)
                     .epochs()
                     .map(|(e, i)| {
-                        let sticky = i.established.filter(|p| p.sticky()).map(|p| Value::Bool(p == Provenance::Derived));
+                        let fixed = i.established == Some(Provenance::Fixed);
                         Value::List(vec![
                             e.to_wire(),
                             Value::List(i.rotations.iter().map(|(c, sup)| Value::List(vec![Value::Bytes(c.0.to_vec()), Value::List(sup.iter().map(Epoch::to_wire).collect())])).collect()),
                             Value::Bool(i.snapshot),
                             Value::List(i.names.iter().map(osis_keys::Names::to_value).collect()),
-                            Value::List(sticky.into_iter().collect()),
+                            Value::Bool(fixed),
                             Value::List(i.supersedes.iter().map(Epoch::to_wire).collect()),
                             Value::List(i.secret.iter().map(|s| Value::Bytes(s.expose().to_vec())).collect()),
                             Value::List(i.reading.iter().map(|u| Value::List(vec![Value::Bytes(u.author.as_bytes().to_vec()), Value::Bytes(u.commit.0.to_vec())])).collect()),
@@ -731,7 +731,7 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
         let Value::List(items) = items else { return Err(bad()) };
         for it in items {
             let Value::List(f) = it else { return Err(bad()) };
-            let [e, Value::List(rotations), Value::Bool(snapshot), Value::List(names), Value::List(est), Value::List(sup), Value::List(sec), Value::List(reading)] = f.as_slice() else { return Err(bad()) };
+            let [e, Value::List(rotations), Value::Bool(snapshot), Value::List(names), Value::Bool(fixed), Value::List(sup), Value::List(sec), Value::List(reading)] = f.as_slice() else { return Err(bad()) };
             let e = Epoch::from_wire(e).map_err(|_| bad())?;
             let info = a.role_mut(*r).observe(e);
             for x in rotations {
@@ -745,11 +745,7 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
             for n in names {
                 info.names.insert(osis_keys::Names::from_value(n).ok_or_else(bad)?);
             }
-            match est.as_slice() {
-                [] => {}
-                [Value::Bool(derived)] => info.established = Some(if *derived { Provenance::Derived } else { Provenance::Fixed }),
-                _ => return Err(bad()),
-            }
+            info.established = fixed.then_some(Provenance::Fixed);
             for s in sup {
                 info.supersedes.insert(Epoch::from_wire(s).map_err(|_| bad())?);
             }
@@ -815,7 +811,6 @@ mod tests {
         let k = |n: u8| osis_keys::Key { ts: u64::from(n), node: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
         a.read.set_snapshot(e2);
         a.read.add_names(e2, osis_keys::Names { list: [Name { thing: Tid::from_bytes([6; 15]), key: k(5) }].into(), departs: Some(Own { ts: 7, node: Tid::from_bytes([7; 15]) }) });
-        a.write.set_established(e1, Provenance::Derived);
         let b = decode_epochs(&encode_epochs(&a)).unwrap();
         assert_eq!(b, a);
         assert!(b.read.is_reading_only(&e2) && b.read.secret(&e2).is_none());

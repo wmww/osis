@@ -250,7 +250,9 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
         if own {
             // epochs kept from a rotation found invalid earlier: start again from the derived
             // ones (`Core::epochs`), so a stale derived epoch stays current nowhere
-            let derived = |e: &osis_keys::ActorEpochs| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.established == Some(osis_keys::Provenance::Derived)));
+            let derived = |e: &osis_keys::ActorEpochs| {
+                tx.core.base_derived(t).is_some_and(|d| ROLES.iter().any(|r| d.role(*r).epochs().any(|(ep, i)| i.established.is_some() && i.secret.is_some() && e.role(*r).get(ep).is_some())))
+            };
             let restart = regain && tx.core.ix.secrets.get(t).is_some_and(derived) && tx.core.own_record(t).is_none();
             let base = restart.then(|| tx.core.epochs(t)).flatten();
             tx.core.ix.own_keys.insert(*t);
@@ -1330,6 +1332,45 @@ mod tests {
             lp.peers[i].engine.rebuild_index().unwrap();
             assert_eq!(d0.first_diff(&lp.peers[i].engine.index_digest()), None, "peer {i}: open = rebuild");
         }
+    }
+
+    // spec/crypto.md §4 (Established: derived from an established epoch of the base actor):
+    // establishment is a function of the held commits, so reopen equals rebuild. B opens T's
+    // epoch derived from G's e1 (T's first rotation's history box) while e1 is not established
+    // (its rotation names C's self-removal, not held); once C's commit arrives, e1 and the
+    // derived epoch are established, though nothing of T arrived again.
+    #[test]
+    fn derived_epoch_follows_base_establishment_spec_crypto_4() {
+        let mut lp = LocalPeer::new(3, 943, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let (me, b, c) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2));
+        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
+        let g = thing_of(&mut lp, 0, me);
+        lp.peers[0].engine.grant(&g, &b, &edge(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&g, &c, &edge(Role::Read)).unwrap();
+        let t = thing_of(&mut lp, 0, g);
+        lp.sync_all().unwrap();
+        let before: std::collections::BTreeSet<CommitId> = lp.peers[2].engine.commit_ids().into_iter().collect();
+        lp.peers[2].engine.demote(&g, &Demotion { holder: c, new: None, retain: None }).unwrap();
+        let leave: Vec<CommitId> = lp.peers[2].engine.commit_ids().into_iter().filter(|x| !before.contains(x)).collect();
+        send(&mut lp, 2, 0, &leave);
+        lp.peers[0].engine.ensure_rotated(&g).unwrap();
+        let e1 = lp.peers[0].engine.core.epochs(&g).unwrap().read.newest().unwrap();
+        let d1 = osis_keys::ActorEpochs::derived(&lp.peers[0].engine.core.epochs(&g).unwrap(), &t).read.newest().unwrap();
+        lp.peers[0].engine.grant(&t, &b, &edge(Role::Read)).unwrap();
+        let rest: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|x| !leave.contains(x)).collect();
+        send(&mut lp, 0, 1, &rest);
+        let at_b = |lp: &LocalPeer| (lp.peers[1].engine.core.epochs(&g).unwrap(), lp.peers[1].engine.core.epochs(&t).unwrap());
+        let (gb, tb) = at_b(&lp);
+        assert!(gb.read.secret(&e1).is_some() && !gb.read.is_established(&e1), "e1 held, its names unmet");
+        assert!(tb.read.secret(&d1).is_some() && !tb.read.is_established(&d1), "derived epoch held, not established");
+        send(&mut lp, 2, 1, &leave);
+        let (gb, tb) = at_b(&lp);
+        assert!(gb.read.is_established(&e1));
+        assert!(tb.read.is_established(&d1), "follows e1");
+        lp.peers[1].engine.rebuild_index().unwrap();
+        assert_eq!(at_b(&lp), (gb, tb), "rebuild = live");
     }
 
     // spec/crypto.md §3: B, an admin of G, grants Z on T while A's rotation (T's first keyset,
