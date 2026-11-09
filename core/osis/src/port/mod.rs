@@ -62,8 +62,6 @@ pub(crate) mod method {
     pub const NUDGE_SYNC: u64 = 22;
     /// `[group, [address text*]]` -> `[]`
     pub const SYNC: u64 = 23;
-    /// `[group]` -> `[]`
-    pub const UNSYNC: u64 = 24;
     /// `[target, holder, role, grant opts]` -> `[]`
     pub const GRANT: u64 = 25;
     /// `[target, holder, Opt(role), set role]` -> `[]` (no role: removed)

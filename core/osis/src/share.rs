@@ -338,10 +338,6 @@ pub enum SyncState {
     Stranded,
     /// Only the log of its commits is held (`SyncMode::LogOnly`): not synced, what is here is stale.
     LogOnly,
-    /// A holder of a role on this thing gets none of its data (`GroupSync::not_carried_to`): the role
-    /// stands, and it reads nothing until `sync` syncs the thing or a synced group the holder reads
-    /// takes it in.
-    NotCarried,
 }
 
 /// How one group syncs here.
@@ -357,14 +353,9 @@ pub struct GroupSync {
     /// This node left the group and keeps it until a saved peer has its removal; stays set while none
     /// takes it.
     pub leaving: bool,
-    /// Holders of a role on the thing that no sync carries it to, as far as this node knows: this
-    /// account among them when it is the one cut off. Not this node's own clients on a thing of this
-    /// account's: they read what this node holds.
-    pub not_carried_to: Vec<Tid>,
 }
 
-/// How sync stands: connections, each group this node syncs or holds the log of, and each thing shared
-/// with no sync to carry it.
+/// How sync stands: connections and each group this node syncs or holds the log of.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Status {
     /// Sync connections up now, whichever side dialed.
@@ -414,14 +405,13 @@ fn label_state(s: &osis_node::sync::LabelStatus) -> SyncState {
     }
 }
 
-/// The status from the sync engine's labels (a group with several labels shows the worst) and
-/// the engine's routes; `me`: this node's account.
-pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
+/// The status from the sync engine's labels (a group with several labels shows the worst).
+pub(crate) fn status_of(sync: &mut SyncEngine) -> Result<Status> {
     let mut groups: BTreeMap<Tid, GroupSync> = BTreeMap::new();
     for s in sync.label_status() {
         let state = label_state(&s);
         let last = s.last_sync.map(Time);
-        let g = groups.entry(s.group).or_insert(GroupSync { state, last_sync: last, refused_by: Vec::new(), leaving: false, not_carried_to: Vec::new() });
+        let g = groups.entry(s.group).or_insert(GroupSync { state, last_sync: last, refused_by: Vec::new(), leaving: false });
         g.state = g.state.max(state);
         g.last_sync = g.last_sync.max(last);
         g.leaving |= s.leaving;
@@ -433,25 +423,7 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
         }
     }
     for g in sync.receipts_only() {
-        groups.insert(*g, GroupSync { state: SyncState::LogOnly, last_sync: None, refused_by: Vec::new(), leaving: false, not_carried_to: Vec::new() });
-    }
-    // things a holder has a role on and no route to (spec/sync.md §2): none has a label of its
-    // own, so none is listed above. On a thing this account administers (it can `sync` it) nobody
-    // misses a route who reads only what this node holds: this account, its clients, and a group
-    // of its own (up record edges standing here) held by no one else
-    let e = sync.engine_mut();
-    let node = e.tid();
-    // a store that cannot answer fails the status: none read here would list its clients as cut off
-    let clients = e.get_typed(&node, &ct::CLIENTS)?.unwrap_or_default();
-    let served: BTreeSet<Tid> = [me].into_iter().chain(clients.into_keys()).collect();
-    for (t, holders) in e.unrouted().iter() {
-        let t = *t;
-        let own = e.core.role_now(&me, &t) == Some(Role::Admin);
-        let local = |e: &osis_node::Engine, h: &Tid| served.contains(h) || (e.core.standing_chain(h).contains(&me) && e.core.current_holders(h).iter().all(|(m, _, _)| served.contains(m)));
-        let not_carried_to: Vec<Tid> = holders.iter().copied().filter(|h| !(own && local(e, h))).collect();
-        if !not_carried_to.is_empty() && !groups.contains_key(&t) {
-            groups.insert(t, GroupSync { state: SyncState::NotCarried, last_sync: None, refused_by: Vec::new(), leaving: false, not_carried_to });
-        }
+        groups.insert(*g, GroupSync { state: SyncState::LogOnly, last_sync: None, refused_by: Vec::new(), leaving: false });
     }
     Ok(Status { connected: sync.connected(), groups, node_connections: Vec::new(), two_sources: BTreeSet::new() })
 }
@@ -496,13 +468,13 @@ pub(crate) fn fetched(l: &mut crate::handle::Locked, t: Tid) -> bool {
 
 /// Synced groups holding any of `things` (the thing itself or its closure).
 fn groups_holding(sync: &mut SyncEngine, status: &Status, things: &BTreeSet<Tid>) -> Vec<Tid> {
-    status.groups.iter().filter(|(_, s)| !matches!(s.state, SyncState::LogOnly | SyncState::NotCarried)).map(|(g, _)| *g).filter(|g| things.contains(g) || sync.engine().closure(g).iter().any(|t| things.contains(t))).collect()
+    status.groups.iter().filter(|(_, s)| s.state != SyncState::LogOnly).map(|(g, _)| *g).filter(|g| things.contains(g) || sync.engine().closure(g).iter().any(|t| things.contains(t))).collect()
 }
 
-/// Whether a route to `t`, which no group here holds yet, may still arrive: a hint names its label,
-/// or this node does not administer it (it could `sync` it itself, nothing is coming) and a label
-/// it reads has more to bring (a grant or a copy not read yet, a first sync).
-fn route_arriving(sync: &mut SyncEngine, t: &Tid) -> bool {
+/// Whether `t`, which no group here holds yet, may still arrive: a hint names its label, or this
+/// node does not administer it (its own sync IDs are all it has) and a label it reads has more
+/// to bring (a grant or a copy not read yet, a first sync).
+fn still_arriving(sync: &mut SyncEngine, t: &Tid) -> bool {
     if sync.hinted(t) {
         return true;
     }
@@ -515,15 +487,15 @@ fn route_arriving(sync: &mut SyncEngine, t: &Tid) -> bool {
 
 /// The labels' check of `wait_synced(Thing(t))`, over the groups holding `t` now and the
 /// deliveries about `t`, what it holds or those groups; `Unsynced` when none holds it and none
-/// will (`route_arriving`).
-fn group_synced(sync: &mut SyncEngine, me: Tid, t: Tid) -> Option<Result<()>> {
-    let st = match status_of(sync, me) {
+/// will (`still_arriving`).
+fn group_synced(sync: &mut SyncEngine, t: Tid) -> Option<Result<()>> {
+    let st = match status_of(sync) {
         Ok(st) => st,
         Err(e) => return Some(Err(e)),
     };
     let groups = groups_holding(sync, &st, &[t].into_iter().collect());
     if groups.is_empty() {
-        return (!route_arriving(sync, &t)).then(|| Err(Error::Unsynced { groups: vec![t] }));
+        return (!still_arriving(sync, &t)).then(|| Err(Error::Unsynced { groups: vec![t] }));
     }
     let mut about: BTreeSet<Tid> = sync.engine().closure(&t).iter().copied().collect();
     about.insert(t);
@@ -605,9 +577,8 @@ impl Osis {
     /// (it left, or its grant ended and was removed) undoes what it wrote with that role that this
     /// node had not received.
     ///
-    /// This records the permission and nothing else. The holder reads the target only once a synced
-    /// group it reads holds the target, or the target's own `sync` carries it; until then `status`
-    /// shows `SyncState::NotCarried` and names the holder (`GroupSync::not_carried_to`).
+    /// A thing's first grant to anyone but its first admin also makes it sync (`sync`), so every
+    /// holder of a role on it can read it, whatever groups it is in.
     ///
     /// Needs admin on the target (or a `may_grant` of at least `role`, for someone with no grant yet;
     /// a grant that ended above `role` counts as one until an admin takes it away), else `Permission`,
@@ -953,8 +924,7 @@ impl Osis {
     }
 
     /// Makes a share link to `target` with `role`, reached through this node's saved peers. Anyone holding the link
-    /// can redeem it until `until` or `revoke_link`. It also syncs `target` when it does not sync on
-    /// its own, or the link could not work.
+    /// can redeem it until `until` or `revoke_link`.
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
         if let crate::sources::Source::Node(r) = self.source_write(target)? {
             let v = r.call(crate::port::method::MAKE_LINK, vec![Value::Tid(target), crate::port::codec::role_v(role), crate::port::codec::opt(opts.until, |w| Value::uint(w.0)), Value::Bool(opts.single_use), Value::Bool(opts.direct)])?;
@@ -971,14 +941,7 @@ impl Osis {
         self.after_source();
         let (mut link, keep, done) = self.locked(|l| {
             self.guard_local(l, &[target])?;
-            // K reads the target's own label alone (spec/sync.md §2): a link syncs the target
-            let label = !l.engine().labeled(&target);
             let made = l.engine().create_link(&me, &flows::LinkSpec { target, role, until: opts.until, hosts: hosts.clone(), peers: Vec::new(), single_use: opts.single_use }).map_err(needs_admin)?;
-            // K is on it before the label's first pass: this node's `reach.0` never goes under
-            // it, and nothing rotates (spec/permissions.md §4, §7)
-            if label {
-                self.make_label(l, target, hosts)?;
-            }
             Ok::<_, Error>(made)
         })?;
         // the seed thing in the home group: every node of this account holds it and may
@@ -1270,11 +1233,8 @@ impl Osis {
         let p = w.create()?;
         w.commit()?;
         self.locked(|x| -> Result<()> {
-            // secrets of its own before the label, as `sync()` does
-            let done = x.engine().give_own_secrets(&p)?;
+            let done = x.engine().give_own_secrets_on(&p, &hosts)?;
             let acts = x.sync.carry_out(done)?;
-            self.inner.apply(acts);
-            let (_, acts) = x.sync.create_label(&p, hosts.clone())?;
             self.inner.apply(acts);
             // the account's creation and `keys.0` commits, as certificates under P's label
             let e = x.engine();
@@ -1601,44 +1561,17 @@ impl Osis {
         if x.engine().group_labels(&g)?.iter().any(|l| !l.replaced) {
             return Ok(());
         }
-        // the label's keys derive from the group's own secrets from the start, so holders
-        // granted later verify its whole path (notes/api.md Implementation)
-        let done = x.engine().give_own_secrets(&g)?;
+        let done = x.engine().give_own_secrets_on(&g, &hosts)?;
         let acts = x.sync.carry_out(done)?;
         self.inner.apply(acts);
-        let (_, acts) = x.sync.create_label(&g, hosts)?;
-        self.inner.apply(acts);
         Ok(())
-    }
-
-    /// Stops syncing `group` for all its holders (it stays in other synced groups it is a member of).
-    /// `Unsupported` on a client with its own actor.
-    pub fn unsync(&self, group: Tid) -> Result<()> {
-        if let crate::sources::Source::Node(r) = self.source_write(group)? {
-            return r.call(crate::port::method::UNSYNC, vec![Value::Tid(group)]).map(drop);
-        }
-        self.guarded(&[group], |e| {
-            let ls = e.group_labels(&group)?;
-            let mut m = osis_node::Mutation::new();
-            let mut any = false;
-            for l in ls.iter().filter(|l| !l.replaced) {
-                any = true;
-                let path = vec![osis_crdt::PathSeg::Key(l.id.to_value()), osis_crdt::PathSeg::Field(3)];
-                m.op(group, &ct::LABEL, osis_crdt::PathOp { path, op: osis_crdt::Op::Set(Value::Bool(true)) })?;
-            }
-            if any {
-                e.commit(m).map_err(needs_admin)?;
-            }
-            Ok(())
-        })
     }
 
     /// How sync stands now.
     pub fn status(&self) -> Result<Status> {
         let acting = self.acting;
-        let me = self.inner.me;
         let local = self.locked(|x| {
-            let mut s = status_of(&mut x.sync, me)?;
+            let mut s = status_of(&mut x.sync)?;
             if let Some(a) = acting {
                 s.groups.retain(|g, _| x.sync.engine().readable_by(&a, g));
             }
@@ -1698,7 +1631,6 @@ impl Osis {
 
     /// `wait_synced` as a future holding no handle (the client port serves it so).
     pub(crate) fn wait_synced_pending(&self, scope: SyncScope) -> crate::net::Pending<Result<()>> {
-        let me = self.inner.me;
         use crate::net::Pending;
         match scope {
             SyncScope::AllWithSavedPeers => {
@@ -1717,10 +1649,10 @@ impl Osis {
                 // first, so that a label with more to bring counts as such
                 self.sync_labels();
                 // a failure at once needs no runtime
-                if let Some(Err(e)) = self.locked(|x| group_synced(&mut x.sync, me, t)).filter(Result::is_err) {
+                if let Some(Err(e)) = self.locked(|x| group_synced(&mut x.sync, t)).filter(Result::is_err) {
                     return Pending::ready(Err(e));
                 }
-                self.wait_until(Box::new(move |sync, _| group_synced(sync, me, t)))
+                self.wait_until(Box::new(move |sync, _| group_synced(sync, t)))
             }
         }
     }

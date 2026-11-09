@@ -49,8 +49,8 @@ impl SyncEngine {
             return Ok(true);
         }
         let Some((m, o)) = self.inbox_valid(l, id, c)? else { return Ok(false) };
-        let actors = self.inbox_actors(l);
-        let on = self.inbox_about(&actors, c, &m, &o);
+        let Some(actor) = self.inbox_actor_at(l) else { return Ok(false) };
+        let on = self.inbox_about(&actor, c, &m);
         Ok(o.ais.iter().any(|ai| m.header.aspects.get(*ai).is_some_and(|a| on.contains(&a.tid))))
     }
 
@@ -66,7 +66,7 @@ impl SyncEngine {
             return Ok(());
         }
         let deposited = self.state.deposited_at(&host, &l);
-        if deposited.is_empty() || self.inbox_actors(&l).is_empty() {
+        if deposited.is_empty() || self.inbox_actor_at(&l).is_none() {
             return Ok(());
         }
         let latest = self.inbox_latest();
@@ -114,22 +114,11 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// The things commit `c` (header in `m`) of opened inbox blob `o` is about for `actors`
-    /// (spec/sync.md §3): where it has an edge or box of one of them or of an actor whose record
-    /// chain reaches one through standing record edges (`Core::standing_chain`: a removed first
-    /// admin no longer administers what is below),
-    /// and, of a `label.0` write (it names no holder), the things the payload names that one of
-    /// them holds an edge on, by the roster as applied here, not the payload's word.
-    pub(super) fn inbox_about(&mut self, actors: &[Tid], c: &CommitId, m: &osis_engine::engine::Meta, o: &crate::sync::inbound::Opened) -> BTreeSet<Tid> {
+    /// The things commit `c` (header in `m`) of an opened inbox blob is about for `actor`
+    /// (spec/sync.md §3): where it has an edge or box of it.
+    pub(super) fn inbox_about(&mut self, actor: &Tid, c: &CommitId, m: &osis_engine::engine::Meta) -> BTreeSet<Tid> {
         let named = self.engine.holders_named(c);
-        let mine = |x: &Tid| self.engine.core.standing_chain(x).iter().any(|y| actors.contains(y));
-        let mut on: BTreeSet<Tid> = named.iter().filter(|(_, ms)| ms.iter().any(mine)).filter_map(|(ai, _)| m.header.aspects.get(*ai).map(|a| a.tid)).collect();
-        for t in o.things.iter().map(|t| t.tid) {
-            if m.header.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "label.0") && self.engine.roster(&t).keys().any(mine) {
-                on.insert(t);
-            }
-        }
-        on
+        named.iter().filter(|(_, ms)| ms.contains(actor)).filter_map(|(ai, _)| m.header.aspects.get(*ai).map(|a| a.tid)).collect()
     }
 
     /// Commit `c` of opened inbox blob `b` under `l`, applied here and valid in every part the
@@ -144,40 +133,32 @@ impl SyncEngine {
     }
 
     /// What a grantee node copies of what `g`'s inbox brought, once applied, under `g`'s home
-    /// label `l` (spec/sync.md §3; the inbox may be another label, its first admin's: a group's holders
-    /// learn its edges there, its inbox reaching only its admins): of a role commit, the carried
-    /// parts on the things it writes an edge of `g` or an actor below it through standing record edges on, or boxes one on (boxes
-    /// are sealed to the actor anyway), or, of a `label.0` write, its parts on the named things `g`
-    /// or an actor whose record chain reaches it through standing record edges holds an edge on (a thing's first label, delivered to its holders), with
-    /// the `label.0` and `created.0` commits of those things
-    /// and their authors' chains (a granter who is no co-reader has placed none there), so the
-    /// actor's other nodes and readers find the grant and its labels there; nothing from a blob
-    /// expiring less than `INBOX_COPY_MIN_LEFT` from now (an expiry is the sender's word: a short
-    /// one would free the deposit budget for the next copy), and not what an entry there already
-    /// holds. Only an admin of `g` copies: a reader of an actor whose inbox is its own label reads
-    /// the blob itself, and all of them copying would flood the label. The consumed inbox blob
-    /// stays until it expires: its label hints are what a later holder that cannot apply the copied
-    /// `label.0` yet opens the thing's label by.
+    /// label `l` (spec/sync.md §3): of a role commit, the carried parts on the things it writes
+    /// an edge of `g` on, or boxes it on, with the `label.0` and `created.0` commits of those
+    /// things and their authors' chains (a granter who is no co-reader has placed none there), so
+    /// the actor's other nodes and readers find the grant and its labels there; nothing from a
+    /// blob expiring less than `INBOX_COPY_MIN_LEFT` from now (an expiry is the sender's word: a
+    /// short one would free the deposit budget for the next copy), and not what an entry there
+    /// already holds. Only an admin of `g` copies: a reader of an actor reads the blob itself, and
+    /// all of them copying would flood the label. The consumed inbox blob stays until it expires:
+    /// its label hints are what a later holder that cannot apply the copied `label.0` yet opens
+    /// the thing's label by.
     pub(super) fn inbox_certificates(&mut self, g: &Tid, l: LabelId) -> Result<BTreeMap<CommitId, Parts>> {
         let mut out: BTreeMap<CommitId, Parts> = BTreeMap::new();
-        // only under the actor's home label (spec/sync.md §3): an inbox at another group's label
-        // would show that group's readers the actor's edges, labels and box keys
-        if self.engine.core.secret_actor(g) != Some(*g) || self.engine.role_on(g) != Some(Role::Admin) {
+        if self.engine.role_on(g) != Some(Role::Admin) {
             return Ok(out);
         }
-        // every inbox a blob about `g` may have come under (a sender knowing an older `keys.0` of
-        // `g`, naming none, went up its record chain)
-        let opened: Vec<(LabelId, BlobId, CommitId)> = self
-            .engine
-            .inbox_candidates(g)
+        let Some(li) = self.engine.inbox(g) else { return Ok(out) };
+        let opened: Vec<(BlobId, CommitId)> = self
+            .state
+            .of_kind(&li, Kind::TAG_INBOX)
             .into_iter()
-            .flat_map(|li| self.state.of_kind(&li, Kind::TAG_INBOX).into_iter().map(move |b| (li, b)))
-            .filter_map(|(li, b)| if let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(li, b)).map(|e| &e.kind) { Some((li, b, *c)) } else { None })
+            .filter_map(|b| if let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(li, b)).map(|e| &e.kind) { Some((b, *c)) } else { None })
             .collect();
         let now = self.now();
         // what the last passes found all there (`InboxCopied`): a pass walks only what is new
         self.inbox_copied.lost(self.state.losses);
-        for (li, b, c) in opened {
+        for (b, c) in opened {
             let copied = self.inbox_copied.has(&l, &b);
             #[cfg(not(debug_assertions))]
             if copied {
@@ -190,7 +171,7 @@ impl SyncEngine {
             // the carried parts on the things the commit has an edge or box of the actor on (the
             // payload carries the sender's choice of parts; a role commit's are all
             // role-class)
-            let on = self.inbox_about(std::slice::from_ref(g), &c, &m, &o);
+            let on = self.inbox_about(g, &c, &m);
             let ais: BTreeSet<usize> = o.ais.iter().copied().filter(|ai| m.header.aspects.get(*ai).is_some_and(|a| on.contains(&a.tid))).collect();
             if ais.is_empty() {
                 continue;
@@ -209,7 +190,7 @@ impl SyncEngine {
             }
             // all there already (another holder's copy counts), the usual case: a chain taken now
             // would carry what moved since. A thing's `label.0` arriving after the grant was
-            // copied (its first label, or a later step) makes it not so
+            // copied (a later step) makes it not so
             let mut held = true;
             for (x, xs) in &copy {
                 if !self.held_whole(g, l, x, xs)? {
@@ -220,12 +201,8 @@ impl SyncEngine {
             if held {
                 if !copied {
                     // what moves the answer: an edge, record or label on these, or their holders
-                    // (and the record chains above the holders: `inbox_about` reads their edges)
-                    let mut holders: BTreeSet<Tid> = self.engine.holders_named(&c).values().flat_map(|ms| ms.iter().copied()).collect();
-                    for t in &o.things {
-                        holders.extend(self.engine.roster(&t.tid).into_keys());
-                    }
-                    let mut on: BTreeSet<Tid> = holders.iter().flat_map(|x| self.engine.record_chain(x).collect::<Vec<_>>()).collect();
+                    let holders: BTreeSet<Tid> = self.engine.holders_named(&c).values().flat_map(|ms| ms.iter().copied()).collect();
+                    let mut on = holders;
                     on.extend(o.things.iter().map(|t| t.tid));
                     for (x, _) in &copy {
                         on.extend(self.engine.header(x).iter().flat_map(|h| h.aspects.iter().map(|a| a.tid).collect::<Vec<_>>()));

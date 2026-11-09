@@ -631,10 +631,6 @@ impl Worker {
                 db.sync(g, &hosts)?;
                 Value::List(vec![])
             }
-            method::UNSYNC => {
-                db.unsync(a.tid()?)?;
-                Value::List(vec![])
-            }
             method::GRANT => {
                 db.grant(a.tid()?, a.tid()?, c::role(&a.next()?)?, c::grant_opts(a.next()?)?)?;
                 Value::List(vec![])

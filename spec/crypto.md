@@ -48,7 +48,7 @@
 - **Other actors**: one KEM key pair per role per epoch, `kdf("kem", role secret)`. The read-role pair's X25519 half is the actor's claim key (spec/sync.md §2).
 - **`keys.0`**: a struct holding the current keyset only.
   - Per role a `keyset` (spec/data-model.md §9; `delete_key`: §7; `possession_key`: §4, Holder actors; a key actor: one KEM key, no epoch).
-  - For an actor other than a key actor, also its **inbox** (label ID, hosts; spec/sync.md §2) and **deposit seed** (32 random bytes, spec/sync.md §2).
+  - For an actor other than a key actor, also its **inbox** (its home label's ID and hosts; spec/sync.md §2) and **deposit seed** (32 random bytes, spec/sync.md §2).
   - A role's entry is written by the node that rotates that role (spec/permissions.md §3).
   - An admin writes the inbox and deposit seed; it MAY refresh the deposit seed at any time and MUST write a fresh one in each rotation of the read role it makes.
   - A key actor's `keys.0` is written by its own key. A key actor's keyset is fixed by its seed and never rotates: a key actor changes keys only by being replaced (a new key actor added, the old one removed).

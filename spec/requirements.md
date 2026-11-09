@@ -40,7 +40,7 @@ Terms:
 - Nothing is special-cased by how much of a store is readable: a normal store holds some data it can read and some it cannot.
 - No dependence on one transport. Sync works over any ordered byte stream, including files carried by hand.
 - A node shows which node, actor or account it is only to nodes of actors it already knows (it holds their keys). To any other node, a relay, or a node holding data it cannot read, it shows only its address, whoever dialed.
-- Nothing syncs by being created under an actor: apps add things to synced groups explicitly, and a thing in no synced group stays local.
+- Nothing syncs by being created under an actor: apps add things to synced groups or share them explicitly, and a thing in no synced group, shared with no one, stays local.
 
 ## Cost (goal)
 - Bytes transferred are close to the size of the commit: about 1.2x for large commits is fine, 2x-10x is not. Small commits may carry a fixed overhead of a few hundred bytes.

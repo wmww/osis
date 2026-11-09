@@ -528,7 +528,7 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]) -> Resu
             let key = [records::CREATED, a.tid.as_bytes()].concat();
             tx.txn.put_local(&key, &osis_base::encode(&rec.to_value()), Shred::No)?;
             tx.core.ix.held.create(rec);
-            tx.core.inbox_moved(&a.tid);
+            tx.core.inbox_actors = None;
             // the reader actor of the thing's deltas is known now
             let touching: Vec<CommitId> = tx.core.aspects_of(&a.tid).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
             for c in touching {

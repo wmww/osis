@@ -1701,8 +1701,7 @@ impl NetSim {
         Ok(g)
     }
 
-    /// Node `n` creates a thing whose first admin is `admin`, with secrets of its own and no label, in
-    /// no group (a grant's target with no route, spec/sync.md §2).
+    /// Node `n` creates a thing whose first admin is `admin`, with secrets of its own, in no group.
     pub fn thing_with_secrets(&mut self, n: usize, admin: Tid) -> Res<Tid> {
         let e = self.engine(n)?;
         let mut m = Mutation::new();

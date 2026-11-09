@@ -4,7 +4,7 @@
 //! invite grant signed as L, single use with L's self-removal in the same commit), bearer use,
 //! finalization and revoking a joiner are demotions by a sharer node.
 
-use super::labels::{ReaderKey, name_inbox, new_label};
+use super::labels::ReaderKey;
 use super::person::key_actor_keys;
 use super::{Delivery, Done, put_edge};
 use crate::engine::{Engine, Tx};
@@ -216,8 +216,10 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     let mut m = Mutation::new();
     let k = m.create(crate::identity::link_record(sharer, &mut *tx.rng));
     done.add(Engine::commit_tx(tx, m)?);
-    rotation::own_secrets(tx, k, &mut done)?;
-    // L's edge (r, invite r, until) with its boxes, K's home label listing L, K's inbox
+    // K's secrets, its home label listing L, its inbox: one commit
+    let lvk = lkeys.signing.verifying_key();
+    rotation::own_secrets_on(tx, k, Some(&spec.hosts), &[ReaderKey::Static(lvk, lkeys.kem.public().clone())], &mut done)?;
+    // L's edge (r, invite r, until) with its boxes
     let epochs = tx.core.epochs(&k).ok_or(Error::Misuse("K's secrets"))?;
     let rcpt = Recipient { holder: l, role: spec.role, keys: HolderKeys::KeyActor { kem: lkeys.kem.public().clone(), seed: None } };
     let hist = crate::rotation::history_boxes(tx, &sharer, &k)?;
@@ -226,14 +228,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), tied: None })?;
     super::put_secrets(&mut m, k, &boxes, false)?;
     done.add(Engine::commit_tx(tx, m)?);
-    let epochs = tx.core.epochs(&k).ok_or(Error::Misuse("K's secrets"))?;
-    let (re, _) = epochs.role(Role::Read).newest_held().ok_or(Error::Misuse("K's read secret"))?;
-    let readers: Vec<ReaderKey> = super::labels::readers(tx, &k, &re)?;
-    let deposit = osis_crypto::Secret32::from_bytes(super::super::flows::deposit_of(tx, &k)?);
-    let mut m = Mutation::new();
-    let label = new_label(tx, &mut m, k, &epochs, &readers, &deposit, &spec.hosts)?;
-    name_inbox(&mut m, k, label, &spec.hosts)?;
-    done.add(Engine::commit_tx(tx, m)?);
+    let label = super::own_label(tx, &k)?.ok_or(Error::Misuse("K's sync ID"))?.0;
     // L's card under K's label: a redeemer holds only the seed, and verifiers of L's commits
     // need L's `created.0`
     if let Some(c) = lc {

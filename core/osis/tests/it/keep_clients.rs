@@ -835,9 +835,9 @@ fn a_copy_beside_a_live_holder_spec_permissions_3() {
     assert_eq!(b2.close().unwrap(), osis::Close::Closed);
 }
 
-// spec/sync.md §2 (Route), notes/client-port.md Routes for client actors: a thing granted to Bob that nothing carries shows without a route at Bob's node and to Bob's app (a thin client acting as his actor), and the app reads it once the granter syncs it
+// spec/sync.md §2, notes/client-port.md: a thing granted to Bob reaches his app through its one sync ID
 #[test]
-fn a_thin_client_sees_the_missing_route_and_the_thing_once_synced() {
+fn a_thin_client_reads_a_thing_granted_to_its_account() {
     let x = chat(GrantOpts::default(), Role::Read);
     let (_, _, app) = x.app(Role::Read);
     let t = x
@@ -849,21 +849,12 @@ fn a_thin_client_sees_the_missing_route_and_the_thing_once_synced() {
         })
         .unwrap();
     x.a.grant(t, x.bob, Role::Read, Default::default()).unwrap();
-    let no_route = |db: &Osis| db.status().unwrap().groups.get(&t).is_some_and(|g| g.state == osis::SyncState::NotCarried && g.not_carried_to == vec![x.bob]);
-    assert!(no_route(&x.a), "the granter");
     let nudge = Nudge::default();
-    until("Bob's node and his app show the missing route", || {
-        nudge.at(&x.b);
-        no_route(&x.b) && no_route(&app)
-    });
-    assert_ne!(app.at(t, osis::DynamicAspectKey::untyped(text())).get().ok().flatten(), Some(s("plain")));
-    // sharing is not for a thin client (`method::for_client`)
-    assert!(matches!(app.grant(t, x.bob, Role::Read, Default::default()), Err(osis::Error::Unsupported(_))));
-    x.a.sync(t, &[]).unwrap();
     until("the app reads it", || {
         nudge.at(&x.b);
         app.at(t, osis::DynamicAspectKey::untyped(text())).get().ok().flatten() == Some(s("plain"))
     });
-    assert!(!no_route(&x.a) && !no_route(&x.b) && !no_route(&app));
+    // sharing is not for a thin client (`method::for_client`)
+    assert!(matches!(app.grant(t, x.bob, Role::Read, Default::default()), Err(osis::Error::Unsupported(_))));
     until("Bob's node syncs it", || x.b.status().unwrap().groups.get(&t).is_some_and(|g| g.state == osis::SyncState::Synced));
 }

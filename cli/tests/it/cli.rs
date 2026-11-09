@@ -630,8 +630,8 @@ fn serving_commands_plan_cli_4() {
 
 // notes/cli.md Design `-v`: a command that syncs prints the node's diagnostics on stderr
 // (as `diag --follow`); without `-v`, or on a local command, none. The diagnostic: a thing
-// only in groups no synced group holds (`NotSynced`), by `add-with-grant` (it syncs) and by
-// `group add` (local).
+// only in groups no synced group holds (`NotSynced`), by `add-with-grant` (it syncs), for its
+// membership commit, before its grant gives the thing a sync ID, and by `group add` (local).
 #[test]
 fn verbose_prints_diagnostics_plan_cli_4() {
     let s = S::mem();
@@ -645,7 +645,8 @@ fn verbose_prints_diagnostics_plan_cli_4() {
     assert_eq!(o.err, "");
     let o = s.ok(&["-v", "group", "add", &g4, &t]);
     assert_eq!(o.err, "", "a local command");
-    let o = s.ok(&["-v", "--json", "add-with-grant", &t, &g5, "read"]);
+    let t2 = s.ok(&["create", "--in", &g, "t:x.0", "2"]).line().to_string();
+    let o = s.ok(&["-v", "--json", "add-with-grant", &t2, &g5, "read"]);
     assert!(o.err.contains("\"kind\":\"NotSynced\""), "{}", o.err);
 }
 

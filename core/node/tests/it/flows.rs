@@ -1852,7 +1852,7 @@ fn create_label_after_inside_removal_spec_sync_2() {
     let labels = lp.peers[1].engine.get_typed(&t, &ct::LABEL).unwrap().unwrap();
     let (step, _) = osis_label::parse_record(labels.get(&label).unwrap().steps.values().next().unwrap()).unwrap();
     let read = lp.peers[1].engine.epochs(&t).unwrap().read.secret(&t1).cloned().unwrap();
-    assert_eq!(step.keys.sync, osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, &read, 0).verifying_key());
+    assert_eq!(step.keys.sync, osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, &read, labels.get(&label).unwrap().index).verifying_key());
 }
 
 // spec/crypto.md §4 (covers by names), spec/permissions.md §2 (finalize). A node granted write

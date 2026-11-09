@@ -499,7 +499,6 @@ fn group_admin_learns_removal_elsewhere() {
     let stale: Vec<&str> = [("alice", &alice), ("bob", &bob), ("carol", &carol), ("dave", &dave)].into_iter().filter(|(_, db)| db.grants(t).unwrap().contains_key(&g)).map(|(n, _)| n).collect();
     assert!(stale.is_empty(), "the removal reached everyone; not {stale:?}");
     assert_ne!(seed(&bob), old, "the removal refreshed the card's deposit seed");
-    assert_eq!(seed(&carol), old, "Carol does not learn the new one");
     // and the deletes are not undone again
     w.start_tally();
     w.advance(3_600_000);
@@ -544,7 +543,6 @@ fn group_admin_copies_removal_without_new_keys() {
     w.run();
     assert!(!carol.grants(t).unwrap().contains_key(&g), "the removal reached carol");
     assert_ne!(seed(&dave), old, "the removal refreshed the deposit seed");
-    assert_eq!(seed(&carol), old, "Carol does not learn the new one");
 }
 
 /// A removal that does not wait for sync.
@@ -778,48 +776,6 @@ fn grant_and_removal_orders_large() {
     }
 }
 
-
-// spec/sync.md §2, §3: a grant, then `unsync` and `sync`, with the holder and a reader of the holding group offline throughout (the first label replaced, the thing's new first label delivered again): both read it when they come back
-#[test]
-fn a_grant_survives_unsync_and_sync_with_the_holders_away() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let [alice, bob, carol] = [1, 2, 3].map(|s| account(&mut w, s, host));
-    let b = introduce(&mut w, &alice, &bob);
-    let c = introduce(&mut w, &alice, &carol);
-    let h = new_tag(&alice, "H").unwrap();
-    alice.grant(h, c, Role::Read, GrantOpts::default()).unwrap();
-    w.run();
-    let t = card(&alice, "first");
-    for db in [&bob, &carol] {
-        w.set_online(db, false);
-    }
-    alice.grant(t, b, Role::Read, GrantOpts::default()).unwrap();
-    alice.grant(t, h, Role::Read, GrantOpts::default()).unwrap();
-    w.run();
-    alice.sync(t, &[]).unwrap();
-    w.run();
-    w.advance(120_000);
-    w.run();
-    let first = alice.sync_ids(t).unwrap();
-    alice.unsync(t).unwrap();
-    w.run();
-    alice.sync(t, &[]).unwrap();
-    w.run();
-    assert_ne!(alice.sync_ids(t).unwrap(), first, "a new label");
-    edit(&alice, t, "later");
-    w.run();
-    w.advance(120_000);
-    w.run();
-    for db in [&bob, &carol] {
-        w.set_online(db, true);
-    }
-    w.run();
-    w.advance(120_000);
-    w.run();
-    assert_eq!(text(&bob, t).as_deref(), Some("later"), "the holder");
-    assert_eq!(text(&carol, t).as_deref(), Some("later"), "the group's reader");
-}
 
 /// Bob joins H once all is quiet, and must read `t` from what its label holds.
 fn later_reader_reads(w: &mut World, alice: &Osis, bob: &Osis, h: Tid, b: Tid, t: Tid, what: &str) {

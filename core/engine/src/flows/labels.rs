@@ -18,6 +18,7 @@ use osis_schema::core_types::{self as ct, KemKey};
 use osis_schema::{RawKey, Codec};
 
 /// A reader of a group's read epoch as the registrar lists it.
+#[derive(Clone)]
 pub(crate) enum ReaderKey {
     /// A node or an actor: the X25519 half of its (read-role) KEM key.
     Dh([u8; 32]),
@@ -53,7 +54,7 @@ pub(crate) fn readers(tx: &mut Tx<'_>, group: &Tid, e: &Epoch) -> Result<Vec<Rea
     Ok(out)
 }
 
-fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> {
+pub(crate) fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> {
     let keys = Core::keys_in(tx, m)?;
     if tx.core.is_key_actor(m) {
         let kem = match (keys.as_ref().and_then(|k| k.key.as_ref()), tx.core.key_actors.get(m)) {
@@ -165,6 +166,17 @@ pub(crate) fn name_inbox(m: &mut Mutation, actor: Tid, label: LabelId, hosts: &[
     Ok(())
 }
 
+/// The hosts of the nearest sync ID up `t`'s record chain, for a new one of `t` (spec/sync.md §2);
+/// none there, no hosts.
+pub(crate) fn inherited_hosts(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<Address>> {
+    for x in tx.core.standing_chain(t).into_iter().filter(|x| x != t) {
+        if let Some((_, _, hosts)) = own_label(tx, &x)? {
+            return Ok(hosts);
+        }
+    }
+    Ok(Vec::new())
+}
+
 /// Whether a new live label of actor `a` becomes its inbox (spec/sync.md §2): its `keys.0`
 /// names none, or names `old`, the label it replaces.
 pub(crate) fn takes_inbox(tx: &mut Tx<'_>, a: &Tid, old: Option<LabelId>) -> Result<bool> {
@@ -206,11 +218,8 @@ impl Engine {
         Ok(done)
     }
 
-    /// Gives `group` a label (its home label, for an actor) on `hosts`: genesis step at its
-    /// newest epochs, recorded in `label.0` (spec/sync.md §2). node-sync registers it. The
-    /// thing's first live label is a route for the holders of roles on it: the write goes to
-    /// each of them as an inbox blob naming the thing and its label (spec/sync.md §3), so a
-    /// holder granted before anything carried the thing finds it now.
+    /// Gives `group` a sync ID on `hosts` beside the rule's one (`give_own_secrets`): genesis step
+    /// at its newest epochs, recorded in `label.0` (spec/sync.md §2). node-sync registers it.
     pub fn create_label(&mut self, group: &Tid, hosts: &[Address]) -> Result<(LabelId, Done)> {
         let g = *group;
         self.run(|tx| {
@@ -222,27 +231,13 @@ impl Engine {
             let deposit = deposit_seed(tx, &g)?;
             let (re, _) = epochs.role(Role::Read).newest_held().ok_or(Error::Misuse("no read secret"))?;
             let rs = readers(tx, &g, &re)?;
-            let first = !labels_of(tx, &g)?.values().any(|l| !l.replaced);
             let inbox = tx.core.has_own_secrets(&g) && takes_inbox(tx, &g, None)?;
             let mut m = Mutation::new();
             let id = new_label(tx, &mut m, g, &epochs, &rs, &deposit, hosts)?;
             if inbox {
                 name_inbox(&mut m, g, id, hosts)?;
             }
-            let c = Engine::commit_tx(tx, m)?;
-            done.add(c);
-            if let Some(c) = c
-                && first
-            {
-                // the roster's actors: not the first admin (its nodes read `label.0` under its
-                // home label), not a key actor (a node reads the thing's labels or has no route;
-                // a recovery or link key reads by static entry)
-                let first = tx.core.first_admin(&g);
-                let holders: Vec<Tid> = tx.core.current_holders(&g).into_iter().map(|(m, _, _)| m).filter(|m| Some(*m) != first && !tx.core.is_key_actor(m)).collect();
-                for h in holders {
-                    done.deliveries.extend(super::edges::deliver_to(tx, h, c, &[g])?);
-                }
-            }
+            done.add(Engine::commit_tx(tx, m)?);
             Ok((id, done))
         })
     }

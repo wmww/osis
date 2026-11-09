@@ -237,7 +237,7 @@ fn delivers(c: &Cmd) -> bool {
 }
 
 /// The thing a sharing command shares (a `delivers` command its holders fetch). Not `grant`: it
-/// records the role, route or no route (`status` shows it).
+/// records the role, and `status` shows how its sync stands.
 fn shared(c: &Cmd) -> Option<String> {
     match c {
         Cmd::AddWithGrant { t, .. } | Cmd::Link(LinkCmd::Make { t, .. }) => Some(t.clone()),
@@ -661,7 +661,6 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let s = peers(ctx, &peer)?;
             Ok(db.sync(g, &s)?)
         }
-        Cmd::Group(GroupCmd::Unsync { g }) => Ok(db.unsync(ctx.tid(&g)?)?),
         Cmd::Group(GroupCmd::Source { g, to }) => {
             // the source's connection and its secret are in the process that holds the store
             if !db.has_store() {
@@ -1150,15 +1149,14 @@ fn status(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
 
 fn status_lines(s: &osis::Status, raw: bool) -> Vec<String> {
     let groups = s.groups.iter().map(|(g, x)| {
-        let cut_off = if x.not_carried_to.is_empty() { String::new() } else { format!(" not carried to {}", x.not_carried_to.iter().map(|t| t.to_uri()).collect::<Vec<_>>().join(",")) };
-        format!("{} {:?} {}{cut_off}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)))
+        format!("{} {:?} {}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)))
     });
     // writes on these are refused until a group moves (Osis::group_source)
     std::iter::once(format!("connected {}", s.connected)).chain(groups).chain(s.two_sources.iter().map(|t| format!("{} two sources: writes refused", t.to_uri()))).collect()
 }
 
 fn status_json(s: &osis::Status) -> J {
-    let groups = s.groups.iter().map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0)))), ("not_carried_to", J::Arr(x.not_carried_to.iter().map(|t| J::tid(*t)).collect()))]));
+    let groups = s.groups.iter().map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0))))]));
     J::obj([("groups", J::Arr(groups.collect())), ("connected", J::int(s.connected as u64)), ("two_sources", J::Arr(s.two_sources.iter().map(|t| J::tid(*t)).collect()))])
 }
 

@@ -12,6 +12,7 @@ mod departures;
 mod lost;
 mod members;
 
+use osis_label::Address;
 use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use crate::flows::{self, Delivery, Done, SyncState, put_keysets, put_secrets, save_epochs, secrets_in};
@@ -170,12 +171,13 @@ pub(crate) fn recipients(tx: &mut Tx<'_>, who: &Tid, a: &Tid, skip: &[(Tid, Opti
 pub(crate) const SEAL_WAITS: Error = Error::Misuse("a holder actor's keysets have forked: this waits until that actor's merger merges them (spec/crypto.md §4, Seal)");
 
 /// A fresh deposit seed for `a` in `m` (spec/crypto.md §3; an admin's write).
-pub(crate) fn fresh_deposit_seed(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid) -> Result<()> {
+pub(crate) fn fresh_deposit_seed(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid) -> Result<osis_crypto::Secret32> {
     let mut seed = [0u8; 32];
     tx.rng.fill_bytes(&mut seed);
     m.op(a, &osis_schema::core_types::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(5)], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&Some(seed))) })?;
+    let out = osis_crypto::Secret32::from_bytes(seed);
     seed.fill(0);
-    Ok(())
+    Ok(out)
 }
 
 /// Whether a rotation of `roles` of `a` by `who` also refreshes `a`'s deposit seed (spec/crypto.md
@@ -418,7 +420,14 @@ pub(crate) fn require_covered(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSe
 /// first admin included; not one whose grant this node may finalize, `ended_holders`), with a
 /// `keys.0` carrying the keysets and a fresh deposit seed. Nothing when it has them already.
 pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()> {
-    if let Some((c, rot, _)) = own_secrets_rot(tx, t, done)? {
+    own_secrets_on(tx, t, None, &[], done)
+}
+
+/// `own_secrets` with the sync ID on `hosts` (`None`: those of the nearest sync ID up its record
+/// chain, spec/sync.md §2) and listing `also` besides the holders it boxes (a link's key, granted
+/// next).
+pub(crate) fn own_secrets_on(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[crate::flows::labels::ReaderKey], done: &mut Done) -> Result<()> {
+    if let Some((c, rot, _)) = own_secrets_rot(tx, t, hosts, also, done)? {
         record(tx, t, &rot)?;
         done.add(c);
     }
@@ -428,7 +437,7 @@ pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()
 /// `own_secrets` up to its commit, not yet recorded: the commit, the rotation, and the
 /// holders it boxes that held no box at a current read epoch before it (`unreached`).
 type OwnRot = (Option<osis_base::CommitId>, Rotation, Vec<Tid>);
-fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<Option<OwnRot>> {
+fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[crate::flows::labels::ReaderKey], done: &mut Done) -> Result<Option<OwnRot>> {
     if tx.core.has_own_secrets(&t) || tx.core.is_key_actor(&t) {
         return Ok(None);
     }
@@ -441,12 +450,28 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<Option<Ow
     let holders = recipients(tx, &who, &t, &ended)?.ok_or(SEAL_WAITS)?;
     let mut m = Mutation::new();
     let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, false)?;
-    fresh_deposit_seed(tx, &mut m, t)?;
-    // a labeled thing becomes an actor with a home label: it names it as its inbox (spec/sync.md §2)
-    if let Some((label, _, hosts)) = crate::flows::own_label(tx, &t)?
-        && crate::flows::labels::takes_inbox(tx, &t, None)?
-    {
-        crate::flows::labels::name_inbox(&mut m, t, label, &hosts)?;
+    let deposit = fresh_deposit_seed(tx, &mut m, t)?;
+    // the rule (spec/sync.md §2): role secrets of its own and its one sync ID, its home and inbox,
+    // in this one commit
+    let (label, at) = match crate::flows::own_label(tx, &t)? {
+        Some((label, _, at)) => (label, at),
+        None => {
+            let at = match hosts {
+                Some(h) => h.to_vec(),
+                None => crate::flows::labels::inherited_hosts(tx, &t)?,
+            };
+            let mut readers = Vec::new();
+            for r in &holders {
+                readers.extend(crate::flows::labels::reader_key(tx, &r.holder)?);
+            }
+            let after = rot.preview(&held)?;
+            let readers: Vec<_> = readers.into_iter().chain(also.iter().cloned()).collect();
+            let label = crate::flows::labels::new_label(tx, &mut m, t, &after, &readers, &deposit, &at)?;
+            (label, at)
+        }
+    };
+    if crate::flows::labels::takes_inbox(tx, &t, None)? {
+        crate::flows::labels::name_inbox(&mut m, t, label, &at)?;
     }
     let to = unreached(tx, &t, &rot)?;
     let c = Engine::commit_tx(tx, m)?;
@@ -475,7 +500,7 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
 /// first under the labels above the thing (its new `keys.0`).
 fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
     let mut done = Done::default();
-    let Some((c, rot, mut to)) = own_secrets_rot(tx, t, &mut done)? else { return Ok(done) };
+    let Some((c, rot, mut to)) = own_secrets_rot(tx, t, None, &[], &mut done)? else { return Ok(done) };
     let up = tx.core.first_admin(&t);
     to.retain(|m| Some(*m) != up);
     recorded(tx, t, c, &rot, &to, &mut done)?;
@@ -678,13 +703,25 @@ impl Engine {
         self.run(|tx| departures(tx, &a))
     }
 
-    /// Gives `thing` secrets of its own (spec/permissions.md §3): before its first holder other
-    /// than its first admin, or before it is made a holder of anything.
+    /// Gives `thing` secrets of its own (spec/permissions.md §3), with its one sync ID in the same
+    /// commit (spec/sync.md §2): before its first holder other than its first admin, or before it
+    /// is made a holder of anything. The sync ID's hosts: those of the nearest sync ID up its
+    /// record chain.
     pub fn give_own_secrets(&mut self, thing: &Tid) -> Result<Done> {
         let t = *thing;
         self.run(|tx| {
             let mut done = Done::default();
             own_secrets(tx, t, &mut done)?;
+            Ok(done)
+        })
+    }
+
+    /// `give_own_secrets` with the sync ID on `hosts`.
+    pub fn give_own_secrets_on(&mut self, thing: &Tid, hosts: &[Address]) -> Result<Done> {
+        let t = *thing;
+        self.run(|tx| {
+            let mut done = Done::default();
+            own_secrets_on(tx, t, Some(hosts), &[], &mut done)?;
             Ok(done)
         })
     }

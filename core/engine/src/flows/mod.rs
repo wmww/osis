@@ -281,20 +281,13 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
     Ok(Recipient { holder, role, keys })
 }
 
-/// The inbox a role write about `holder` goes to (spec/sync.md §2): the one its `keys.0` names;
-/// else its first admin's, the same way, while its record edge stands here, and so on up
-/// (`Core::standing_chain`; the first of `Engine::inbox_candidates`). `None` for a key actor
-/// (direct delivery only) and when none is known here.
+/// The inbox a role write about `holder` goes to (spec/sync.md §2): the one its `keys.0` names.
+/// `None` for a key actor (direct delivery only) and when none is known here.
 pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
     if tx.core.is_key_actor(holder) {
         return Ok(None);
     }
-    for t in tx.core.standing_chain(holder) {
-        if let Some(i) = Core::keys_in(tx, &t)?.and_then(|k| k.inbox) {
-            return Ok(Some((t, i)));
-        }
-    }
-    Ok(None)
+    Ok(Core::keys_in(tx, holder)?.and_then(|k| k.inbox).map(|i| (*holder, i)))
 }
 
 /// The newest unreplaced label of `tid`: ID, index, hosts.
@@ -306,11 +299,6 @@ pub(crate) fn own_label(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, u
 /// Whether key actor `t` is a node (it has a `node.0` card), not a recovery or link key.
 pub(crate) fn is_node(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
     Ok(*t == tx.core.id.tid() || tx.has_state(t, &ak("node.0")?)?)
-}
-
-/// The deposit seed in `keys.0` of `actor`.
-pub(crate) fn deposit_of(tx: &mut Tx<'_>, actor: &Tid) -> Result<[u8; 32]> {
-    Core::keys_in(tx, actor)?.and_then(|k| k.deposit_seed).ok_or(Error::Misuse("no deposit seed in keys.0"))
 }
 
 /// `secrets.0` of `actor`, decoded, held until its state changes (`Core::secrets_read`).

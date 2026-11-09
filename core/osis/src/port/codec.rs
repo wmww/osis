@@ -306,7 +306,7 @@ pub(crate) fn read(v: Value) -> Result<Result<Option<Value>>> {
     }
 }
 
-const STATES: [SyncState; 9] = [SyncState::Synced, SyncState::Syncing, SyncState::Connected, SyncState::Unreachable, SyncState::NoPeers, SyncState::Refused, SyncState::Stranded, SyncState::LogOnly, SyncState::NotCarried];
+const STATES: [SyncState; 8] = [SyncState::Synced, SyncState::Syncing, SyncState::Connected, SyncState::Unreachable, SyncState::NoPeers, SyncState::Refused, SyncState::Stranded, SyncState::LogOnly];
 
 pub(crate) fn status_v(s: &Status) -> Value {
     let groups = s
@@ -319,7 +319,6 @@ pub(crate) fn status_v(s: &Status) -> Value {
                 opt(x.last_sync, |w| u(w.0)),
                 Value::List(x.refused_by.iter().map(|h| Value::Str(h.to_string())).collect()),
                 Value::Bool(x.leaving),
-                Value::List(x.not_carried_to.iter().map(|t| Value::Tid(*t)).collect()),
             ])
         })
         .collect();
@@ -337,9 +336,8 @@ pub(crate) fn status(v: Value) -> Result<Status> {
         let last_sync = b.opt_wall()?;
         let refused_by = b.list()?.into_iter().map(|h| Args::of(vec![h]).text().and_then(|t| t.parse::<Address>())).collect::<Result<_>>()?;
         let leaving = b.bool()?;
-        let not_carried_to = b.list()?.into_iter().map(|t| Args::of(vec![t]).tid()).collect::<Result<_>>()?;
         b.end()?;
-        st.groups.insert(t, GroupSync { state, last_sync, refused_by, leaving, not_carried_to });
+        st.groups.insert(t, GroupSync { state, last_sync, refused_by, leaving });
     }
     for t in a.list()? {
         st.two_sources.insert(Args::of(vec![t]).tid()?);

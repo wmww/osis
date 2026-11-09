@@ -490,8 +490,7 @@ impl Osis {
     /// To `Node(addr)`: the connection must be up and the node know the group (else `Network` or
     /// `UnknownThing`, nothing changed); waits for this node's writes in it to reach a saved peer
     /// (`wait_synced`'s outcomes; failed or dropped, nothing changed); then this
-    /// node stops syncing it, for itself alone (`SyncMode::LogOnly`, not `unsync`, which
-    /// stops it for every holder), and calls go there. `Invalid`: the account's home group, or a
+    /// node stops syncing it, for itself alone (`SyncMode::LogOnly`), and calls go there. `Invalid`: the account's home group, or a
     /// group still synced here through a parent (its things would have two sources: move the parent). A write made
     /// during the wait fails the move `Unsynced` rather than strand it: call it again.
     ///

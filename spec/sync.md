@@ -29,7 +29,7 @@
   - How often is local policy.
 
 ## 2. Labels
-- A synced group has a **label**: the unit a host stores. A label has an **index** i (0 for a group's first label) and the role keys below.
+- A synced thing has a **label**: the unit a host stores. A label has an **index** i (0 for a group's first label) and the role keys below.
 - **Role keys**: Ed25519 keys, the first three from the group thing's role secrets (explicit, or derived from its base actor's by tid; spec/crypto.md §3):
   - **sync** `kdf("label sync", read secret, le64(i))`;
   - **write** `kdf("label write", write secret, le64(i))`;
@@ -62,21 +62,16 @@
   - At hosts it still controls it deletes the old label's content entries, keeping its role commits and the `label.0` commit that marks it replaced.
   - No new step of a replaced label is issued. At a host that does not hold it, the admin MAY register its recorded path again to place that `label.0` commit there.
   - Once that commit is under the old label and its content entries are gone at a host (or the label cannot be opened there), the admin's work there is done.
-- **Home label**: an actor with role secrets (not a key actor) MAY be synced as a group of itself; that label is its home label.
-  - It MUST have one when it names it as its inbox, when it is the nearest such actor up a labeled group's record chain (its home label carries that group's `label.0` and `created.0` writes while the record edges between them stand at the writer, §3) or when it receives grants (below).
+- **One sync ID per actor**: a commit that gives a thing role secrets of its own (spec/permissions.md §3) MUST also create its label (index 0, unless it already has one) and record it in `label.0`, in that one commit. That label is the thing's **home label**.
+  - Its hosts are the ones named by the operation making it, else those of the nearest thing up its record chain with a live label, else none.
+  - So every holder of a role on a thing with secrets of its own can read it through that label, whatever else holds the thing. It stays for the thing's life; holders are removed, the label is not retired.
+  - A plain thing has none. A thing in no labeled group is not synced; a plain thing in a synced group syncs under the group's label.
   - The home closure holds the actor thing and what its `group.0` lists, nothing by record chain.
+  - The nearest actor with a home label up a labeled group's record chain carries that group's `label.0` and `created.0` writes, while the record edges between them stand at the writer (§3).
   - A link's K label is K's home label.
-- **Inbox**: the label an actor with role secrets names in `keys.0` for inbox blobs (§3): a label of a group its admins administer.
-  - An actor with a home label names one: a commit that gives an actor naming none a live home label (its first label, or secrets of its own to a labeled thing), or replaces the label it names, names its newest live label.
-  - A sender uses the inbox the actor's `keys.0` names; for one naming none, its first admin's, the same way, while its record edge stands at the sender, and so on up its record chain. A reader of an actor opens inbox blobs about it under each inbox up that chain, as the reader knows them.
+- **Inbox**: an actor with role secrets names its home label in `keys.0` as its inbox for inbox blobs (§3), with the deposit seed, in the commit that gives it the label.
+  - A sender uses the inbox the actor's `keys.0` names; a sender holding none cannot reach it.
   - Key actors have none: a node receives a direct grant only over a direct connection to the granting node (pairing); a recovery key or link key holds its label from its card or link and claims the current step by its static entry (§5).
-- A thing in no labeled group is not synced. Only an admin's `label.0` write makes a label; a grant makes none.
-- **Route**: a holder of a role on a thing reads it only through a live label it can open whose closure holds the thing (§3).
-  - That label is either:
-    - the thing's own label (every holder of a role on it derives its sync key); or
-    - a label of a group whose closure holds it, whose actor may read it, and whose actor the holder may read or which reads the holder (a subgroup holder's readers read through the group).
-  - A grant records the role whether or not the holder has a route. Without one it holds the role and reads nothing until a label carries the thing (the first label of a thing is delivered to its holders, §3).
-  - A link's K reads its target's own label alone, so making a link gives its target one if it has none.
 
 ## 3. What goes under a label
 - **Closure**: the blobs of group G are the commits touching any thing in G's transitive closure (through `group.0`, spec/data-model.md §8), plus the chunk, tree-node and page blobs they reference (every blob their values link, whether or not the linking commit's chunk list names it).
@@ -86,7 +81,7 @@
   - A node that is not one deposits what it must place there (its chain certificates and node card, its invite grant or self-removal, its heartbeats, its history adds (spec/permissions.md §3), and the revokes it must place by spec/permissions.md §4) and relays stamped entries it holds.
 - **One blob per commit**: a commit is uploaded as one blob holding every part of it the uploader holds and can seal, each part in the section of its thing under the thing's read secret (spec/wire.md §4; a part of a thing whose read secret the uploader lacks, a key actor's own record or card, travels as a certificate copy). Every label of every thing the commit touches carries the one blob under its label's wrap; hosts and nodes syncing several of those labels dedup it by blob ID. No size split: a commit stays within `MAX_BLOB` by paging its deltas (spec/crdt.md §8), largest first, or is refused at the writer.
   - A node judges a blob by the parts the label's actor may read (§6); a section it cannot open it copies verbatim when it encrypts the commit again (a tombstoned entry, a purge rewrite).
-  - A section opens with the thing's read secret at the epoch the writer used: a reader of the thing holds it (its own, through its history boxes; a plain thing's by derivation through the record chain the section lists from a member it holds epochs of), and a holder of a role on the thing's reader actor keeps up with its rotations through a label carrying it (§2 Route).
+  - A section opens with the thing's read secret at the epoch the writer used: a reader of the thing holds it (its own, through its history boxes; a plain thing's by derivation through the record chain the section lists from a member it holds epochs of), and a holder of a role on the thing's reader actor keeps up with its rotations through that actor's label (§2).
   - **Per-label copies**: besides certificate copies (below), a label whose readers could not open a part's section in the shared blob gets a fresh blob of the parts its actor may read, one section under the read secret of the label's group, never shared with another label; judged like any body of the commit. Exactly two cases: a role commit with such a part on a thing other than the label's actor (its boxes are what give the readers that thing's secrets: a rotation, a grant, a cross-published `label.0`, §2); a part on a thing whose read secret derives from neither the label's actor nor an actor in its closure (a cross-published `created.0`, §2; a thing added from another actor's tree, read by role on a reader actor whose rotations the label does not carry). A blob a node opens only under the label group's secret for a section on another thing is such a copy: its sections are not copied into another encryption.
 - **Retag**: when a thing joins a group, any writer of the label that holds the thing's live blobs adds them under it; when it leaves, delete-key holders delete them under the old label as they see the change (§7).
 - **Certificate blobs**: chain certificates, node cards, heartbeats and revokes (spec/permissions.md §4): copies of the parts of a role commit about one actor.
@@ -98,8 +93,7 @@
     - a grant with G's boxes;
     - a change or removal of G's grant;
     - a re-seal of G;
-    - a rotation boxing G where G held no box at the read epoch before it;
-    - the `label.0` write giving a thing G holds a grant on its first live label: sent by its writer to every actor on the thing's roster that is not a key actor and whose read keyset and inbox it knows.
+    - a rotation boxing G where G held no box at the read epoch before it.
   - **Placement**: under G's inbox (§2) by deposit, or by upload when the sender holds the inbox label's write key. The inbox group's admins may delete it earlier than its expiry.
   - **Re-send**: its prefix expiry is `INBOX_LIFETIME`, after which the sender re-sends unless the recipient has since acted on it: a commit by it or a node of it writing a thing the blob names or a thing whose record chain (spec/permissions.md §1) reaches such a thing. Acting elsewhere does not count. A sender MAY bound the number of re-sends.
   - **Stamping in place**: a writer of the inbox's group stamps a deposited inbox blob in place (§5).
@@ -129,7 +123,7 @@
   - Declining one leaves its commit unapplied, at that node and for good, from every inbox blob carrying it. The same commit arriving in a blob under a label the node syncs (a sibling node that accepted it placed its copy under home) is applied as any commit: the acceptance wins.
 - **Grant copy**: a grantee node that accepts a grant for an actor (from the inbox, from K's label, or by pairing) places a certificate copy of the grant, with the `label.0` commits of the labels it reached, under that actor's home label; not when an entry there already holds the grant's parts, counted as for chain certificates (spec/permissions.md §4).
   - From an inbox blob only a node with admin on the actor copies, and only, of a valid applied role commit:
-    - the carried parts on the things where a `roles.0` delta writes the grant of the actor or an actor whose record chain reaches it through record edges standing at the node, or a `secrets.0` delta boxes one, or, of a `label.0` write, on the named things where the actor or such an actor holds a grant;
+    - the carried parts on the things where a `roles.0` delta writes the grant of the actor or a `secrets.0` delta boxes it;
     - with the `created.0` commit and every `label.0` commit of those things that the payload names (no `label.0` commit of a thing the actor reads no more);
     - and the author's chain of each (spec/permissions.md §4), that chain without any `keys.0` but its author's own;
     - and nothing from a blob whose expiry is less than `INBOX_LIFETIME` / 2 away.

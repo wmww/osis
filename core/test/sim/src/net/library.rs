@@ -1108,8 +1108,7 @@ pub fn honest_flows(seed: u64) -> Res<Report> {
     op!("write by e under g2", { let mut m = Mutation::new(); m.set(t2, &workload::REG, &Value::Str("e".into())).map_err(|e| sim.fail(e.to_string()))?; sim.commit(e, m)?; });
     op!("grant g3 to group h", sim.grant(a, g3, h, Role::Read)?);
     let u = sim.thing_with_secrets(a, pa)?;
-    op!("grant unlabeled u to h", sim.grant(a, u, h, Role::Read)?);
-    op!("first label of u", { let addrs = sim.addresses(&[s]); let r = sim.sync(a)?.create_label(&u, addrs); let (_, acts) = r.map_err(|e| sim.fail(e.to_string()))?; sim.after_node(a, acts)?; });
+    op!("grant u to h", sim.grant(a, u, h, Role::Read)?);
     op!("remove pb from g1", sim.remove(a, g1, pb)?);
     op!("write by a after", add_tag(&mut sim, a, t1, "after")?);
     op!("lower pb on g2 to read", demote(&mut sim, a, g2, pb, Some(Role::Read))?);

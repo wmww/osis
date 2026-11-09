@@ -1025,7 +1025,8 @@ fn grant_payload_names_only_the_things_own_label_spec_wire_9() {
         let (things, _) = net.engine(b).accept_inbox(&blob).unwrap();
         things.into_iter().find(|x| x.tid == on).expect("the payload names it").label.map(|l| l.id)
     };
-    assert_eq!(names(t, &mut net), None);
+    let tl = names(t, &mut net).expect("the grant gave it a sync ID");
+    assert_ne!(tl, gl, "its own, not the group's");
     assert_eq!(names(g, &mut net), Some(gl));
 }
 
@@ -1154,61 +1155,6 @@ fn stamped_inbox_blob_reaches_a_sibling_spec_sync_5() {
     assert!(net.sync(b2).entries(&home).iter().any(|(x, k)| *x == id && matches!(k, EntryKind::Inbox(Some(x)) if *x == c)), "the sibling opened it");
     assert!(net.sync(b2).entry_meta(&home, &id).unwrap().1.is_some(), "stamped");
     assert_eq!(net.read(b2, t), Some(s("for bob")));
-}
-
-// spec/sync.md §3 (grant copy, stamping in place: actors below the inbox's through record
-// edges standing at the node): Bob makes Y under his account and X under Y, gives Alice admin on
-// Y and himself and Alice read on X. Alice grants X read on G: X and Y name no inbox, so the blob goes to
-// Bob's, and his node, holding it as an invite request, opens it. Offline, Bob accepts (the
-// commit applies) and leaves Y (his record edge on it goes) before his node's next pass judges
-// the opened blob: X is no longer below him, so it neither stamps the blob nor copies the grant
-// under his home label.
-#[test]
-fn inbox_of_a_removed_first_admin_neither_stamps_nor_copies_spec_sync_3() {
-    let (mut net, host, a, b, alice, bob, g, home) = alice_and_bob();
-    net.pair(a, b);
-    let e = net.engine(b);
-    let mut m = Mutation::new();
-    let y = e.new_thing(&mut m, bob);
-    m.set(y, &ct::GROUP, &ct::Group::default()).unwrap();
-    let x = e.new_thing(&mut m, y);
-    m.set(x, &ct::GROUP, &ct::Group::default()).unwrap();
-    e.commit(m).unwrap();
-    let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
-    // Alice reads X by a grant of its own (no label carries X to her)
-    for (t, h, r) in [(y, alice, Role::Admin), (x, bob, Role::Read), (x, alice, Role::Read)] {
-        let done = net.engine(b).grant(&t, &h, &edge(r)).unwrap();
-        let acts = net.sync(b).carry_out(done).unwrap();
-        net.actions(b, acts);
-    }
-    for _ in 0..3 {
-        net.advance(70_000);
-    }
-    assert_eq!(net.engine(a).role_on(&x), Some(Role::Admin));
-    net.nodes[b].accepts = false;
-    let left = budget_left(&mut net, host, &home);
-    let c = grant_commit(&mut net, a, g, x);
-    for _ in 0..3 {
-        net.advance(70_000);
-    }
-    assert_eq!(requests(&mut net, b), vec![c], "opened under Bob's inbox, held as a request");
-    net.set_online(b, false);
-    let (_, acts) = net.sync(b).accept_invite(c).unwrap();
-    net.actions(b, acts);
-    let leave = osis_node::flows::Demotion { holder: bob, new: None, retain: None };
-    let done = net.engine(b).demote(&y, &leave).unwrap();
-    let acts = net.sync(b).carry_out(done).unwrap();
-    net.actions(b, acts);
-    assert!(net.engine(b).commit_ids().contains(&c), "the grant applied");
-    net.set_online(b, true);
-    for _ in 0..4 {
-        net.advance(70_000);
-    }
-    assert_eq!(net.engine(b).role_on(&x), Some(Role::Read), "Bob still reads X");
-    let id = net.sync(b).entries(&home).into_iter().find(|(_, k)| matches!(k, EntryKind::Inbox(Some(y)) if *y == c)).unwrap().0;
-    assert!(net.sync(b).entry_meta(&home, &id).unwrap().1.is_none(), "not stamped");
-    assert_eq!(budget_left(&mut net, host, &home), left - 1, "it stays deposited");
-    assert_eq!(under(&mut net, b, host, &home, g, "roles.0"), 0, "no copy of the grant under Bob's home label");
 }
 
 // spec/sync.md §5: a stranger's request holds its budget slot until the user answers it; declining frees the slot and the blob stays until it expires
@@ -1741,10 +1687,9 @@ fn a_home_label_is_named_the_inbox_spec_sync_2() {
     for n in [a, c] {
         assert_eq!(net.engine(n).inbox_of_actor(&g).unwrap().map(|(o, i)| (o, i.label)), Some((g, l)), "node {n}");
     }
-    let (mut net, _, a, _, alice, bob, plain, _) = alice_and_bob();
-    let home = net.engine(a).get_typed(&alice, &ct::KEYS).unwrap().and_then(|k| k.inbox).unwrap().label;
+    let (mut net, _, a, _, _, bob, plain, _) = alice_and_bob();
     assert_eq!(net.engine(a).get_typed(&plain, &ct::KEYS).unwrap().and_then(|k| k.inbox), None, "a plain group names none");
-    assert_eq!(net.engine(a).inbox_candidates(&plain), vec![home], "its first admin's inbox");
+    assert_eq!(net.engine(a).inbox(&plain), None, "and has no inbox: no fallback to its first admin's");
     // shared, it gets secrets of its own, and its label is named in the same commit
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&plain, &bob, &edge).unwrap();
@@ -1754,7 +1699,7 @@ fn a_home_label_is_named_the_inbox_spec_sync_2() {
     let c0 = net.engine(a).aspect_commit(&plain, "keys.0").unwrap().0;
     assert_eq!(net.engine(a).get_typed(&plain, &ct::KEYS).unwrap().and_then(|k| k.inbox).map(|i| i.label), Some(pl));
     assert!(net.engine(a).header(&c0).unwrap().aspects.iter().any(|x| x.tid == plain && x.ak.as_str() == "secrets.0"), "with its secrets");
-    assert_eq!(net.engine(a).inbox_candidates(&plain), vec![pl, home]);
+    assert_eq!(net.engine(a).inbox(&plain), Some(pl));
 }
 
 // spec/sync.md §2: replacing the label an actor's `keys.0` names as its inbox names the new one
@@ -1774,4 +1719,32 @@ fn a_replaced_inbox_is_named_again_spec_sync_2() {
         net.advance(70_000);
     }
     assert_eq!(net.engine(b).role_on(&g), Some(Role::Read));
+}
+
+// spec/sync.md §2 (one sync ID per actor): a shared thing costs one sync ID and one commit of about
+// the same size, however many this node already has.
+#[test]
+fn a_sync_id_costs_the_same_at_any_count_spec_sync_2() {
+    let (mut net, _, a, _, alice, bob, _, _) = alice_and_bob();
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let per = |net: &mut Net, n: usize| {
+        let before = net.sync(a).labels().len();
+        let mut bytes = 0usize;
+        for _ in 0..n {
+            let e = net.engine(a);
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, alice);
+            m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
+            e.commit(m).unwrap();
+            e.grant(&t, &bob, &edge).unwrap();
+            let c = e.aspect_commit(&t, "label.0").unwrap().0;
+            assert_eq!(e.aspect_commit(&t, "keys.0").map(|x| x.0), Some(c), "secrets and sync ID in one commit");
+            bytes += e.commit_bytes(&c).unwrap().unwrap().len();
+        }
+        assert_eq!(net.sync(a).labels().len() - before, n, "one sync ID per thing shared");
+        bytes / n
+    };
+    let small = per(&mut net, 4);
+    let large = per(&mut net, 40);
+    assert!(large <= small + small / 5, "per sync ID {small} B at 4, {large} B at 40");
 }

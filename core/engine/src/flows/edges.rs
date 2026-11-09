@@ -68,19 +68,11 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
         return Ok(if is_node { vec![super::owe(tx, Delivery::Direct { to: holder, commits: vec![c] })?] } else { Vec::new() });
     }
     let Some((_, inbox)) = inbox_of(tx, &holder)? else { return Ok(Vec::new()) };
-    // sealed to the holder's newest read keyset (its own, else the inbox actor's)
-    let mut to = holder;
-    let mut kem = None;
-    let up: Vec<Tid> = tx.core.record_chain(&holder).filter_map(|s| s.thing()).collect();
-    for cur in up {
-        if let Some(ks) = super::Core::keys_in(tx, &cur)?.and_then(|k| k.read) {
-            let ct::KemKey::X25519MlKem768(b) = &ks.kem_key;
-            kem = Some(osis_crypto::KemPublicKey::from_slice(b)?);
-            to = cur;
-            break;
-        }
-    }
-    let Some(kem) = kem else { return Ok(Vec::new()) };
+    // sealed to the holder's newest read keyset
+    let to = holder;
+    let Some(ks) = super::Core::keys_in(tx, &holder)?.and_then(|k| k.read) else { return Ok(Vec::new()) };
+    let ct::KemKey::X25519MlKem768(b) = &ks.kem_key;
+    let kem = osis_crypto::KemPublicKey::from_slice(b)?;
     let mut blob = tx.get_commit(&c)?.ok_or(Error::UnknownCommit(c))?;
     if parts == Parts::Edge {
         let keep: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, a)| a.ak.as_str() == "roles.0").map(|(i, _)| i).collect();

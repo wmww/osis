@@ -746,15 +746,10 @@ pub struct Core {
     /// The keyless actor grants (target, holder) over those held (`rotation::members::key_access`):
     /// O(edges) to build. Cleared by `role_changed` and a rollback (the timelines move back).
     pub key_access: Option<Arc<BTreeSet<(Tid, Tid)>>>,
-    /// `Engine::inbox_candidates`' answers by actor, and the things up their record chains those
-    /// read through: a write there can move many answers (`inbox_moved`); a role change can end
-    /// a record edge they go through (`role_changed`).
-    pub inbox_labels: BTreeMap<Tid, Vec<LabelId>>,
-    pub inbox_uppers: BTreeSet<Tid>,
     /// `acting` at this engine generation (both: memory commits are in `by_actor` too).
     acting_memo: Option<(u64, u64, Arc<Vec<Tid>>)>,
     /// `Engine::inbox_actors`.
-    pub inbox_actors: Option<Arc<BTreeMap<LabelId, Vec<Tid>>>>,
+    pub inbox_actors: Option<Arc<BTreeMap<LabelId, Tid>>>,
     /// Page indexes of the cached states kept paged in the store.
     pub pages: HashMap<(Tid, Ak), pages::PageIndex>,
     pub timelines: Timelines,
@@ -913,8 +908,6 @@ pub struct Core {
     pub copy_index: BTreeMap<CommitId, BTreeMap<(Tid, Ak), Arc<osis_crdt::CopyIndex>>>,
     /// Bumped whenever a transaction changes the indexes or a state, rolls back, or the caches
     /// reload (it never goes back): caches derived from them (the sync engine's) compare it.
-    /// `Engine::unrouted`, until a role, label or placement is written.
-    pub unrouted: Option<Arc<BTreeMap<Tid, Vec<Tid>>>>,
     pub generation: u64,
     /// `generation` for memory transactions (`Tx::set_memory`): what they change is in memory
     /// only, so durable-derived caches (node-sync's) keep theirs.
@@ -1101,8 +1094,6 @@ impl Core {
 
     pub fn role_changed(&mut self) {
         self.inbox_actors = None;
-        self.inbox_labels.clear();
-        self.inbox_uppers.clear();
         self.head_keys.clear();
         self.holders_named.clear();
         self.reseal_quiet.clear();
@@ -1118,7 +1109,6 @@ impl Core {
         let _s = crate::costs::span("timelines");
         let touched = self.ix.held.take_touched();
         if !touched.is_empty() {
-            self.unrouted = None;
             let changed = self.timelines.update_touched(&self.ix.held, &touched);
             self.timelines_changed(changed);
             if self.detect {
@@ -1183,21 +1173,10 @@ impl Core {
         }
     }
 
-    /// Drops what `Engine::inbox_candidates` knew through `t`'s `keys.0` or creation record.
-    pub fn inbox_moved(&mut self, t: &Tid) {
-        self.inbox_actors = None;
-        if self.inbox_uppers.contains(t) {
-            self.inbox_labels.clear();
-            self.inbox_uppers.clear();
-        } else {
-            self.inbox_labels.remove(t);
-        }
-    }
-
     /// Notes that the running transaction writes the state of `k` (evicted on rollback).
     pub fn wrote(&mut self, k: (Tid, Ak)) {
         if k.1.as_str() == "keys.0" {
-            self.inbox_moved(&k.0);
+            self.inbox_actors = None;
         }
         if k.1.as_str() == "label.0" {
             self.labels.remove(&k.0);
@@ -1207,7 +1186,6 @@ impl Core {
         }
         // a holder's `node.0` decides its reader key and route (`flows::is_node`)
         if matches!(k.1.as_str(), "label.0" | "group.0" | "groups.0" | "node.0") || osis_schema::core_types::is_role_class(k.1.as_str()) {
-            self.unrouted = None;
             self.head_keys.clear();
             self.holders_named.clear();
             self.reseal_quiet.clear();
@@ -1286,7 +1264,6 @@ impl Core {
             }
             self.role_changed();
             self.labels.clear();
-            self.unrouted = None;
             self.links = None;
             for k in self.written.split_off(m.written) {
                 if k.1.as_str() == "secrets.0" {
@@ -1297,8 +1274,6 @@ impl Core {
             }
         }
         self.dirty = m.dirty;
-        self.inbox_labels.clear();
-        self.inbox_uppers.clear();
         self.inbox_actors = None;
         self.key_access = None;
         self.ix.rollback_to(m.ix);
@@ -1354,8 +1329,6 @@ impl Core {
             holders_named: _,
             reseal_quiet: _,
             key_access: _,
-            inbox_labels: _,
-            inbox_uppers: _,
             inbox_actors: _,
             acting_memo: _,
             waits: _,
@@ -1367,7 +1340,6 @@ impl Core {
             held_writes: _,
             published: _,
             labels: _,
-            unrouted: _,
             links: _,
             generation: _,
             memory_generation: _,
@@ -1461,8 +1433,6 @@ impl Core {
             holders_named: HashMap::new(),
             reseal_quiet: BTreeSet::new(),
             key_access: None,
-            inbox_labels: BTreeMap::new(),
-            inbox_uppers: BTreeSet::new(),
             acting_memo: None,
             inbox_actors: None,
             pages: HashMap::new(),
@@ -1529,7 +1499,6 @@ impl Core {
             death_walks: 0,
             rebuilds: 0,
             copy_index: BTreeMap::new(),
-            unrouted: None,
             generation: 0,
             memory_generation: 0,
             memory_tx: false,

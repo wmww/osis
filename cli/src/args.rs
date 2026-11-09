@@ -738,7 +738,6 @@ pub enum GroupCmd {
         #[arg(long, value_name = "ADDR")]
         peer: Vec<String>,
     },
-    Unsync { g: String },
     /// Where G's calls go: `local`, or ADDR (URL#KEY) of the node connected by --connect; held in the
     /// store. Local: this store syncs it, and it is caught up before calls come home
     Source { g: String, to: String },

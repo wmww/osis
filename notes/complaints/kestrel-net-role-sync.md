@@ -1,0 +1,1 @@
+- A long python rewrite script aborted part-way after editing an earlier file, leaving a half-applied tree: run multi-file edits in one pass per file and re-grep afterward.

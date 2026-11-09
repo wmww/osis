@@ -400,35 +400,15 @@ pub fn grant_to_group(seed: u64) -> Res<Report> {
     if newest_read(&mut sim, c, &t)? != now || newest_read(&mut sim, e, &t)? != now {
         return Err(sim.fail("a staying reader of the group holds not the thing's newest epoch"));
     }
-    // a grant of a thing with no label (spec/sync.md §2): the group's readers hold the role and
-    // no route, shown at the granter and at a reader alike; the thing's first label is delivered
-    // to the group and copied under its label, and they read it
+    // a thing with secrets and so its own sync ID (spec/sync.md §2), granted to the group: its
+    // readers read it through that sync ID
     let u = sim.thing_with_secrets(a, pa)?;
     sim.grant(a, u, h, Role::Read)?;
-    sim.run(30)?;
-    sim.quiet(40)?;
-    for n in [a, c] {
-        if sim.engine(n)?.unrouted().get(&u).is_none_or(|hs| *hs != vec![h]) {
-            return Err(sim.fail(format!("node {n} does not show the group without a route to the unsynced thing")));
-        }
-    }
-    if newest_read(&mut sim, c, &u)?.is_some() {
-        return Err(sim.fail("a reader of the group reads a thing nothing carries"));
-    }
-    let addrs = sim.addresses(&[s]);
-    let r = sim.sync(a)?.create_label(&u, addrs);
-    let (_, acts) = r.map_err(|e| sim.fail(format!("node {a} create_label: {e}")))?;
-    sim.after_node(a, acts)?;
     sim.run(30)?;
     sim.run_until_quiescent(40)?;
     let now = newest_read(&mut sim, a, &u)?;
     if newest_read(&mut sim, c, &u)? != now || newest_read(&mut sim, e, &u)? != now {
-        return Err(sim.fail("a reader of the group holds not the synced thing's epoch"));
-    }
-    for n in [a, c] {
-        if sim.engine(n)?.unrouted().contains_key(&u) {
-            return Err(sim.fail(format!("node {n} still shows the synced thing without a route")));
-        }
+        return Err(sim.fail("a reader of the group holds not the thing's epoch"));
     }
     sim.finish()
 }

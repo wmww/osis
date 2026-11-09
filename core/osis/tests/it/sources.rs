@@ -239,29 +239,6 @@ fn moving_a_group_both_ways() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6: a holder that unsyncs a group for everyone (N's `unsync` replaces the label): P, which routes nothing, keeps reading and writing its own copy and says so in status (no fallback to N though N is connected); N's own clients read N's copy, its authority; a later move to N needs no upload wait, there is nothing to upload to
-#[test]
-fn a_node_unsyncing_a_group_a_process_thinks_is_local() {
-    let x = world();
-    x.connect_p();
-    let c = x.thin("c1");
-    x.n.unsync(x.g).unwrap();
-    until("P saw the label replaced", || {
-        let _ = x.n.nudge_sync();
-        let _ = x.p.nudge_sync();
-        !x.p.engine(|e| e.labels_of(&x.g).iter().any(|l| !l.replaced))
-    });
-    x.set_n("n after unsync");
-    assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("first")), "still P's, not a fallback");
-    x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("p after unsync")).unwrap();
-    assert_eq!(x.p_local_copy(), Some(s("p after unsync")));
-    assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("n after unsync")));
-    assert_eq!(c.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("n after unsync")));
-    x.to_node();
-    assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("n after unsync")));
-    drop(x.host);
-}
-
 // spec/sync.md §10, notes/client-port.md §6: moves with writes pending on either side refuse, changing nothing, and each write stays where it is readable: a local write not yet at a peer holds the move away; going home while this engine cannot catch up, or while the node holds a write no peer has, keeps the route, so calls still go to the node and the local copy never answers behind
 #[test]
 fn moves_with_pending_writes_refuse() {
@@ -1515,7 +1492,7 @@ fn a_split_arriving_from_another_node_refuses_the_next_write() {
     assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("acked")));
     let r = x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("again"));
     let Err(Error::Invalid(why)) = r else { panic!("{r:?}") };
-    assert!(why.contains(&h.to_string()) && why.contains(&x.g.to_string()), "{why}");
+    assert!(why.contains(&x.g.to_string()), "{why}");
     drop(x.host);
 }
 

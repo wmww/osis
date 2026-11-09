@@ -95,35 +95,14 @@ impl Engine {
         self.core.ix.labeled.iter().copied().collect()
     }
 
-    /// Every inbox a blob about actor `a` may come under (spec/sync.md §2): the `keys.0` inbox
-    /// of each thing up `a`'s record chain through standing record edges, the nearest first. A
-    /// sender uses the first it knows of (`flows::inbox_of`); one knowing less of `a` (its
-    /// `keys.0` from before it named one) used one further up, so a reader opens under them all.
-    pub fn inbox_candidates(&mut self, a: &Tid) -> Vec<LabelId> {
-        if let Some(l) = self.core.inbox_labels.get(a).cloned() {
-            #[cfg(debug_assertions)]
-            if self.recheck(format!("inbox_candidates {a}")) {
-                assert_eq!(l, self.inbox_candidates_read(a), "inbox_candidates({a}) cached");
-            }
-            return l;
-        }
-        let l = self.inbox_candidates_read(a);
-        let uppers: Vec<Tid> = self.core.standing_chain(a).into_iter().filter(|t| t != a).collect();
-        self.core.inbox_uppers.extend(uppers);
-        self.core.inbox_labels.insert(*a, l.clone());
-        l
+    /// The inbox of actor `a` (spec/sync.md §2): the sync ID its `keys.0` names.
+    pub fn inbox(&mut self, a: &Tid) -> Option<LabelId> {
+        self.get_typed(a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox).map(|i| i.label)
     }
 
-    fn inbox_candidates_read(&mut self, a: &Tid) -> Vec<LabelId> {
-        let mut out: Vec<LabelId> = self.core.standing_chain(a).iter().filter_map(|t| self.get_typed(t, &ct::KEYS).ok().flatten().and_then(|k| k.inbox)).map(|i| i.label).collect();
-        out.dedup();
-        out
-    }
-
-    /// The inboxes here (spec/sync.md §2): per label, the actors with secrets held here a blob
-    /// under it may be about (`inbox_candidates`), the topmost first (a blob is tried under each
-    /// in turn, and most name a person, not one of its many things).
-    pub fn inbox_actors(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
+    /// The inboxes here (spec/sync.md §2): per sync ID, the actor with secrets held here whose
+    /// inbox it is.
+    pub fn inbox_actors(&mut self) -> Arc<BTreeMap<LabelId, Tid>> {
         if let Some(m) = self.core.inbox_actors.clone() {
             #[cfg(debug_assertions)]
             if self.recheck("inbox_actors".to_string()) {
@@ -136,96 +115,19 @@ impl Engine {
         m
     }
 
-    fn inbox_actors_read(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
-        let mut by: BTreeMap<LabelId, Vec<(usize, Tid)>> = BTreeMap::new();
+    fn inbox_actors_read(&mut self) -> Arc<BTreeMap<LabelId, Tid>> {
+        let mut by = BTreeMap::new();
         for a in self.core.ix.secrets.keys().copied().collect::<Vec<_>>() {
-            let depth = self.core.standing_chain(&a).len();
-            for l in self.inbox_candidates(&a) {
-                by.entry(l).or_default().push((depth, a));
+            if let Some(l) = self.inbox(&a) {
+                by.insert(l, a);
             }
         }
-        Arc::new(
-            by.into_iter()
-                .map(|(l, mut v)| {
-                    v.sort();
-                    (l, v.into_iter().map(|x| x.1).collect())
-                })
-                .collect(),
-        )
+        Arc::new(by)
     }
 
     /// Whether `g` has a live (unreplaced) label here.
     pub fn labeled(&mut self, g: &Tid) -> bool {
         self.labels_of(g).iter().any(|l| !l.replaced)
-    }
-
-    /// Whether the label of a group whose actor is `a` and whose closure is `c` carries `t` to
-    /// holder `x`: `t` is in the closure and `a` may read it (else it is excluded: no writer of
-    /// the label holds it there), and `x` reads the label, or is read through it (a subgroup's
-    /// edge on its item: `a` holds `x`, so whoever reads `x` that way reads `t`).
-    fn carries(&self, a: &Tid, c: &BTreeSet<Tid>, x: &Tid, t: &Tid) -> bool {
-        // `a` itself is the usual holder: a thing shared into a group, its edge is what may read
-        c.contains(t) && (x == a || (self.core.may_read(a, t) && (self.core.may_read(x, a) || self.core.may_read(a, x))))
-    }
-
-    /// Whether holder `x` of a role on `t` has a **route** to it (spec/sync.md §2): a live label
-    /// it can open carries `t`: `t`'s own (every holder of `t` derives its sync key), or one of a
-    /// group that carries it to `x` (`carries`). Labels as this node knows them: a label of a
-    /// group it does not read is not counted, so another node may see a route this one does not.
-    pub fn routed(&mut self, x: &Tid, t: &Tid) -> bool {
-        if self.labeled(t) {
-            return true;
-        }
-        let groups = self.labeled_groups();
-        groups.into_iter().any(|g| g != *t && self.labeled(&g) && self.carries(&self.group_actor(&g), &self.closure(&g), x, t))
-    }
-
-    /// Per thing this node has a role on, whose roster this node holds and that has no live label
-    /// of its own, its direct holders without a route (`routed`): the roster's actors and nodes,
-    /// not its first admin (a thing in no group is local to its first admin by design), not a
-    /// recovery or link key (a link always has its target's label), not an account's nodes (nodes
-    /// on a thing whose first admin is a key actor: its home label is theirs, known only to them).
-    /// Empty when every holder
-    /// has one. A thing this node has no role on is no business of its status, and its labels are
-    /// not known here: rosters arrive as a writer's chain, and stay after a removal. Every status
-    /// asks, so kept until a role, label or placement is written: an edge expiring shows at the
-    /// next such write.
-    pub fn unrouted(&mut self) -> Arc<BTreeMap<Tid, Vec<Tid>>> {
-        if let Some(u) = &self.core.unrouted {
-            return u.clone();
-        }
-        let u = Arc::new(self.find_unrouted());
-        self.core.unrouted = Some(u.clone());
-        u
-    }
-
-    fn find_unrouted(&mut self) -> BTreeMap<Tid, Vec<Tid>> {
-        let things: Vec<Tid> = self.core.timelines.things().copied().collect();
-        let mut live: Vec<(Tid, Arc<BTreeSet<Tid>>)> = Vec::new();
-        for g in self.labeled_groups() {
-            if self.labeled(&g) {
-                live.push((self.group_actor(&g), self.closure(&g)));
-            }
-        }
-        let mut out = BTreeMap::new();
-        for t in things {
-            if self.labeled(&t) {
-                continue;
-            }
-            let first = self.core.first_admin(&t);
-            let person = first.is_some_and(|o| self.core.is_key_actor(&o));
-            let mut holders = Vec::new();
-            for (m, _, _) in self.core.current_holders(&t) {
-                let skip = self.core.is_key_actor(&m) && (person || !self.is_node(&m).unwrap_or(false));
-                if Some(m) != first && !skip && !live.iter().any(|(a, c)| self.carries(a, c, &m, &t)) {
-                    holders.push(m);
-                }
-            }
-            if !holders.is_empty() && self.role_on(&t).is_some() {
-                out.insert(t, holders);
-            }
-        }
-        out
     }
 
     /// The labels `label.0` of `g` records, replaced ones included; records that do not parse
