@@ -254,7 +254,9 @@ fn groups(sim: &mut NetSim) -> Res<()> {
             is_expected.insert(n, roster.contains(&tid) || person.is_some_and(|p| roster.contains(&p) || p == g.first_admin));
         }
         let holders: BTreeSet<usize> = is_expected.iter().filter(|(n, x)| **x && !sim.excused.contains(n)).map(|(n, _)| *n).collect();
-        let parts = Connected::of(sim, &holders);
+        // the admin's node may hold through a folder, not by the roster: it is in the graph all the same
+        let parties: BTreeSet<usize> = holders.iter().copied().chain(anchor).collect();
+        let parts = Connected::of(sim, &parties);
         for n in holders.iter().filter(|n| anchor.is_some_and(|a| parts.root(Party::N(a)) != parts.root(Party::N(**n)))) {
             sim.report.unjudged = sim.report.unjudged.saturating_add(1);
             sim.note(format!("node {n}, a holder of group {}, is cut off from its admin: not judged", g.g));
