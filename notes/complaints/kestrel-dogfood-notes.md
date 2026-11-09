@@ -1,0 +1,3 @@
+- `osis -s STORE serving show` right after starting `osis -s STORE serve` makes the daemon lose the store race and exit 8; notes/dogfood.md warns, still bit me. A status check needs another signal (`journalctl`, `ss`).
+- `osis -s STORE --timeout 10 status` beside a running daemon printed `store in use by pid N`, though `chat post`/`read` on the same store went through the daemon. notes/cli.md says only `inspect` and `serve` stay direct. Not root-caused.
+- Warming worktrees: a claim/build/release loop re-claims wt1 each time; claim all first.
