@@ -1,8 +1,8 @@
 # Expiry and creation records: design
-> Summary: Design for issues/expiry-knocks-out-commit.md and issues/creation-record-ordinary.md. Expiry and purge take only a commit's own values; an element shows while it is not removed and holds a live value (its creation's or anyone's inside it); records with no write go (virtual anchors place alike); copy expiry leaves the CRDT (only the undo writer rule stays); `created.0` is an ordinary write whose end ends the thing; writes to unknown things are not kept, only revisited. Decided where Tess's issues decide; marked **Proposal (Tess)** where it needs her.
+> Summary: Design for issues/expiry-knocks-out-commit.md and issues/creation-record-ordinary.md. Expiry and purge take only a commit's own values; an element shows while it is not removed and holds a live value (its creation's or anyone's inside it); records with no write go (virtual anchors place alike); copy expiry leaves the CRDT (only the undo writer rule stays); `created.0` is an ordinary write whose end ends the thing; a part or commit the node cannot judge is thrown out and fetched again, and what it opened keeps the keys to fetch what judges it. Decided where Tess's issues decide; marked **Proposal (Tess)** where it needs her.
 
 ## Principle
-A write's value lives by its own commit: at expiry or purge the commit's values go, and nothing else. Removals, positions and stamps carry no app data and stay. Nothing is judged from data the node does not hold. When it cannot judge, it keeps nothing and fetches again once it can.
+A write's value lives by its own commit: at expiry or purge the commit's values go, and nothing else. Removals, positions and stamps carry no app data and stay. A node keeps no part it cannot judge, and keeps what it needs to fetch what judges it: nothing past the pass that fetched it, except the reading-only secrets its boxes open, and it fetches the rest again once it can judge them.
 
 ## 1. The CRDT rule
 **Element rule.** An element (map entry, list element, text char, set or bag element) shows iff:
@@ -53,11 +53,18 @@ Removed code:
 Expiry stops changing winners (stamps stay), so it can be an in-place strip of one delta's dots instead of a rebuild.
 
 ## 3. Creation records
-**Decided (Tess's direction).** No tombstone. A node holds no part whose thing record, chain record or author record it lacks.
-- **Throw out and revisit.** Such a part is not kept, and the node remembers only the blob's ID in a per-label revisit set: 32 B, bounded by the host's per-label cap, gone when the entry leaves the host. After any transaction that brings in a record, it fetches those blobs again and judges them.
-- **Who holds them meanwhile.** Hosts, under the label, and the author, whose node holds the record and treats its own writes as must-hold.
-- **Why it is rare.** First sync already orders creations first (spec/crypto.md order key). Writes before their creation happen mainly when one thing sits under two labels.
-- **What this removes.** The pending store for unknown records, the first-copy and junk-slot handling for parts whose hash cannot be checked yet, and the waiting-part-at-expiry and waiting-part-under-purge paths for record waits (`pending.rs` `strip_pending`, `purge_pending` and `emptied` for record waits). It closes issues/pending-unbounded.md for records and the first case of issues/purged-values-in-waiting-copies.md. Other waits (pages, drift, parked, chain edges) could follow the same rule later. This plan does records only.
+**No tombstone.** A node holds no part whose thing record, chain record or author record it lacks, and no part whose author's reach it cannot read.
+- **Unjudgeable.** A part is unjudgeable when `thing_wait` says so (thing record, chain record, author's reach). A commit is unjudgeable when its author's or actor's record is unknown. No such bytes are kept past the pass that fetched them.
+- **What stays: reading-only secrets.** A box opens with this node's own KEM key, needs no record, and proves itself by what it opens: it is a means to fetch, not a claim (spec/crypto.md Reading-only secrets). Before discarding, the node reads the `secrets.0` boxes of what it opened (`read_pending_boxes`) into reading-only secrets sourced from that commit, within `MAX_READING*`, and never encrypts under them. This is what lets an invited person open a label whose only key is in the grant, while the record that judges the grant sits under that label. They go when the commit's last part applies, it is judged bad, or its last entry leaves (`by_commit` empties, then `forget_unchecked`). A refused box re-reads when the budget frees (`wake_refused`).
+- **A whole commit that waits** turns its label entry into `Kind::Awaits { commit, thing }`: no separate revisit set, since the entry table is bounded by what hosts list and this variant is smaller than `Kind::Commit`. An index thing → entries spans labels. `thing` names what is awaited broadly enough that ending's account signing can name an epoch's minting rotation.
+- **A part of an applied commit that waits** keeps its slot in `m.missing`, the awaited thing derived from the held header (`Changed::undropped`, `reopen_undropped`). `settled_slots` does not count those slots; the index is derived from the header, no stored ID.
+- **Wake at pass end.** Entries whose awaited record arrived reopen; reach waits reopen on `Changed::edges`, batched per pass. A refetched blob is judged afresh and may await the next record.
+- **One batch per pass.** A pass judges the order-0 fetch together: `created.0` carriers, then role commits by `ts` (as `reexamine` sorts); it discards only what is still unjudgeable at pass end. Otherwise a first sync is a storm of waits.
+- **Inbox.** `admits`, `vet_inbox_hints`, `boxed_by`, `hint_actors` ask "applied, or an entry held", not "applied or pending". `hint_actors` reads `inbox_opened`. The inbox blob stays local under `INBOX_WAITING*`, so retrying costs no download. Stamping treats an awaiting commit as it treats a pending one.
+- **Ephemeral commits** are thrown out by the same rule. An `Awaits` entry is `memory: true`, charged to the label's memory cap; past it, `refuse_memory`.
+- **What stays pending.** `with_pending`/`redeliver` remain for `WaitBlobs`, `Drift`, `Parked` (issues/pending-unbounded.md covers those). A commit carrying its author's `created.0` keeps its aspect list inline (writer rule), so no linked header needs the record it carries.
+- **Stated limits.** An insider can exhaust the reading budget and delay honest grants until its entries leave. A hostile writer with a k-aspect blob can cause k refetches by publishing k records one at a time.
+- **Rejected.** The grant bringing the record: it removes only the first wait, the author's chain is the same problem next, and it misses the home-label sibling route. Keeping commits with boxes for this node: bytes keyed on an unverified claim any depositor can add.
 
 **Ending.** `created.0` takes ordinary retention: a schema default per AK (proposed `admin`, no history), set per commit like any delta. The fixed `nobody` retention and the commit-sharing exemption go. Purging or expiring it **ends** the thing.
 - Every node drops the thing whole, by the existing lost-access path (`retention/forget.rs`).
@@ -100,9 +107,9 @@ Model first: crdt-model for steps 1-3, held-model (liveness through crdt-model, 
    - Tests: the osis-API examples (a reaction outlives a disappearing message; a removal does not); the order oracle.
 5. **held-model: records as writes.** Built (`spec_records.rs`, `DropWhy::Unknown`/`Ended`, `Outcome::revisit`/`ended`). A thing exists while its `created.0` is held live; parts on unknown things are not held; ending forgets the thing; purge and expiry of `created.0`.
    - Property: the read is a function of the held set in every arrival order of creation, writes, purge and expiry.
-6. **Throw out and revisit** in osis-engine and node-sync; remove the record-wait pending paths.
-   - Property: creation-after-writes reads like creation-first.
-   - Tests: a two-label arrival-order case; pending bytes bounded per label at n and 10n.
+6. **Unjudgeable parts.** held-model built (`fetch.rs`, `spec_fetch.rs`: labels, boxes, the fetch loop, discard keeping reading-only keys, wake on arrival). Not built: osis-engine and node-sync per §3, removing the record-wait pending paths and the `waited_at_expiry` oracle excuse.
+   - Property: a valid grant whose label is reachable reads like creation-first; forged boxes never change a read.
+   - Tests: invite with the record unknown and only the grant's keys open the label; the home-label sibling copy route; a forged grant fills only the budget; an order-0 batch at n and 10n counts no refetches; awaiting bytes per label at n and 10n (the bound covers record and chain waits only: `Drift`, `WaitBlobs`, `Parked` remain, issues/pending-unbounded.md).
 7. **Ordinary `created.0` retention and ending.** Spec, commit validation, API: one-commit disappearing message, end by purge.
    - Tests: the thing is gone at every node at T or at the purge, in any order; a write after the end is ignored; a non-admin purge falls; hosts drop the ended thing's blobs.
 8. **Dependents** per Tess's A/B choice (B: raw-record chain certificates). Waits for her decision; steps 1-7 don't need it except to refuse ending a key actor meanwhile.

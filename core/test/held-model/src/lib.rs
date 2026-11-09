@@ -4,6 +4,7 @@
 //! spec/permissions.md §5, §6). Slow and small on purpose; every query recomputes from scratch.
 //! Values are crdt-model fragments: crdt-model is the one model of values (join, prune, read,
 //! un-merge, strip, death, covering). README.md: input format; AMBIGUITIES.md: the choices the spec left; ASSUMPTIONS.md: what is cut.
+pub mod fetch;
 pub mod gen;
 pub mod model;
 pub mod roles;

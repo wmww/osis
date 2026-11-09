@@ -113,7 +113,7 @@ pub const CREATION_ID: CommitId = 2_000_000;
 /// Thing `t`'s creation commit (one `created.0` part), by `author` at `ts`.
 pub fn creation(t: ThingId, link: RecordLink, author: NodeId, ts: u64, retention: Retention, expires: Option<u64>) -> Commit {
     let part = Part { thing: t, aspect: Aspect::CREATED, retention, body: Body::Held(Delta::Created(link)), stripped: Default::default() };
-    Commit { id: CREATION_ID + t, author, actor: author, ts, expires, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None }
+    Commit { id: CREATION_ID + t, author, actor: author, ts, expires, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None , boxes: vec![] }
 }
 
 /// Every `CREATIONS` thing's creation, an hour before `START`, kept for good.
@@ -205,6 +205,7 @@ pub fn history(seed: u64, n: usize) -> Held {
         purge: vec![],
         frontier: None,
         undoes: None,
+        boxes: vec![],
     };
     // half the histories set a link up: K's edge on thing 10, L's (invite) edge on K
     if r.chance(50) {

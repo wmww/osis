@@ -119,7 +119,7 @@ pub struct Outcome {
     /// Things the node forgets: ended (`DropWhy::Ended`).
     pub ended: BTreeSet<ThingId>,
     /// Commits held of which the node holds nothing (every part it holds is `DropWhy::Unknown`, or
-    /// its author record is unknown): thrown out whole, their IDs kept to fetch them again once a
+    /// its author's or actor's record is unknown): thrown out whole, their IDs kept to fetch them again once a
     /// record comes (`act` removes them).
     pub revisit: BTreeSet<CommitId>,
 }
@@ -254,11 +254,13 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>) -> Joined<'a> {
         // a thing exists while a creation of it joins (notes/expiry-creation-design.md §3)
         let exists: BTreeSet<ThingId> = view.iter().flat_map(|c| c.parts.iter()).filter(|p| creation(p).is_some()).map(|p| p.thing).collect();
         let parts = || live.iter().flat_map(|c| c.parts.iter().enumerate().map(move |(i, p)| (c, i, p))).filter(|(_, _, p)| held(p));
-        let t: BTreeSet<PartRef> = parts().filter(|(c, _, p)| unknown(&world, &exists, c, p)).map(|(c, i, _)| (c.id, i)).collect();
-        let w: BTreeSet<PartRef> = parts()
-            .filter(|(c, i, p)| !t.contains(&(c.id, *i)) && matches!(p.body, Body::Held(_) | Body::Parked) && part_waits(&leads, c, p, &world))
+        // a part the node cannot judge (notes/expiry-creation-design.md §3 Unjudgeable): not held
+        let t: BTreeSet<PartRef> = parts()
+            .filter(|(c, _, p)| unknown(&world, &exists, c, p) || (matches!(p.body, Body::Held(_)) && unreached(&leads, c, p, &world)))
             .map(|(c, i, _)| (c.id, i))
             .collect();
+        // parked parts wait; nothing else does
+        let w: BTreeSet<PartRef> = parts().filter(|(c, i, p)| !t.contains(&(c.id, *i)) && p.body == Body::Parked).map(|(c, i, _)| (c.id, i)).collect();
         let a: BTreeSet<CommitId> = live.iter().filter(|c| applies(c, &w, &t, &world, h.now)).map(|c| c.id).collect();
         if a == applied && w == waiting && t == thrown {
             break view;
@@ -271,7 +273,7 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>) -> Joined<'a> {
     let revisit = live
         .iter()
         .filter(|c| !applied.contains(&c.id))
-        .filter(|c| !world.known(c.author) || ((0..c.parts.len()).any(|i| thrown.contains(&(c.id, i))) && (0..c.parts.len()).all(|i| thrown.contains(&(c.id, i)) || !held(&c.parts[i]))))
+        .filter(|c| !judgeable(&world, c) || ((0..c.parts.len()).any(|i| thrown.contains(&(c.id, i))) && (0..c.parts.len()).all(|i| thrown.contains(&(c.id, i)) || !held(&c.parts[i]))))
         .map(|c| c.id)
         .collect();
     // Role timeline over the joined role commits.
@@ -285,10 +287,15 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>) -> Joined<'a> {
 /// the one it makes).
 fn unknown(world: &World, exists: &BTreeSet<ThingId>, c: &Commit, p: &Part) -> bool {
     let t = p.thing;
-    if !world.known(c.author) || !world.known(t) || world.chain_above(t).iter().any(|&o| !world.known(o)) {
+    if !judgeable(world, c) || !world.known(t) || world.chain_above(t).iter().any(|&o| !world.known(o)) {
         return true;
     }
     creation(p).is_none() && !exists.contains(&t)
+}
+
+/// A commit is unjudgeable while its author's or actor's record is unknown.
+fn judgeable(world: &World, c: &Commit) -> bool {
+    world.known(c.author) && world.known(c.actor)
 }
 
 /// Per author, the things something leads to from it (spec/commits.md §4 A held part waits):
@@ -322,13 +329,10 @@ fn leads(world: &World, live: &[&Commit], view: &[Commit]) -> BTreeMap<NodeId, B
         .collect()
 }
 
-/// spec/commits.md §4: a held part waits while nothing leads from the author to it, or it is
-/// parked (record waits are `unknown`).
-fn part_waits(leads: &BTreeMap<NodeId, BTreeSet<ThingId>>, c: &Commit, p: &Part, world: &World) -> bool {
+/// Notes/expiry-creation-design.md §3: nothing leads from the author to the part's thing: not
+/// judgeable (record waits are `unknown`).
+fn unreached(leads: &BTreeMap<NodeId, BTreeSet<ThingId>>, c: &Commit, p: &Part, world: &World) -> bool {
     let t = p.thing;
-    if p.body == Body::Parked {
-        return true;
-    }
     t != c.author && !world.chain_above(t).contains(&c.author) && !leads.get(&c.author).is_some_and(|s| s.contains(&t))
 }
 
@@ -348,7 +352,7 @@ fn without(c: &Commit, waiting: &BTreeSet<PartRef>) -> Commit {
 /// out (`unknown`). A waiting part past its expiry has gone (§5); a dropped body's commit
 /// applied when it was held (README.md).
 fn applies(c: &Commit, waiting: &BTreeSet<PartRef>, thrown: &BTreeSet<PartRef>, world: &World, now: u64) -> bool {
-    if !world.known(c.author) {
+    if !judgeable(world, c) {
         return false;
     }
     let held: Vec<usize> = (0..c.parts.len())
@@ -876,7 +880,7 @@ pub fn cover(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect, id: CommitId
     let f = snapshot_state(h, o, thing, aspect);
     let retention = snapshot_retention(h, thing, aspect, &f);
     let part = Part { thing, aspect, retention, body: Body::Held(Delta::Writes(f)), stripped: Default::default() };
-    Commit { id, author: h.me, actor: h.me, ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None }
+    Commit { id, author: h.me, actor: h.me, ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None , boxes: vec![] }
 }
 
 /// What a snapshot of an aspect carries: the state, writes of expiring deltas value-less

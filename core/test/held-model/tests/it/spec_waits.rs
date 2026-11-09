@@ -108,18 +108,33 @@ fn role_commit_part_on_unknown_thing_goes_alone_spec_commits_4() {
 /// A thing nothing leads to from node 0 (first admin node 1): a part of node 0's on it waits.
 const AWAY: ThingId = 11;
 
-// spec/commits.md §5 (A waiting part past its expiry), §4: it goes and decides nothing; the commit
-// applies without it
+// spec/commits.md §5 (A waiting part past its expiry), §4: a parked part goes and decides
+// nothing; the commit applies without it
 #[test]
 fn waiting_part_past_expiry_goes_spec_commits_5() {
     let mut c = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
-    c.parts.push(on(AWAY, reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 2)).parts.remove(0));
+    c.parts.push(part(Aspect::plain(5), Retention::PLAIN, vec![]));
+    c.parts[1].body = Body::Parked;
     c.expires = Some(at(3));
     let hd = held(4, vec![c]);
     let o = evaluate(&hd);
     assert!(o.applied.contains(&10));
     assert_eq!(o.fates[&(10, 0)], Fate::Leftover(LeftoverWhy::Expired));
     assert_eq!(o.fates[&(10, 1)], Fate::MustDrop(DropWhy::Gone));
+    assert_eq!(act(&hd, &o, None).commits.iter().find(|x| x.id == 10).unwrap().parts[1].body, Body::Missing);
+}
+
+// notes/expiry-creation-design.md §3 (Unjudgeable): a part nothing leads to from its author is
+// not held, whether or not it has expired; the commit holding only it is thrown out
+#[test]
+fn part_no_way_to_the_thing_is_not_held_spec_commits_4() {
+    let mut c = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
+    c.parts.push(on(AWAY, reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 2)).parts.remove(0));
+    c.expires = Some(at(3));
+    let hd = held(2, vec![c]);
+    let o = evaluate(&hd);
+    assert!(o.applied.contains(&10));
+    assert_eq!(o.fates[&(10, 1)], Fate::MustDrop(DropWhy::Unknown));
     assert_eq!(act(&hd, &o, None).commits.iter().find(|x| x.id == 10).unwrap().parts[1].body, Body::Missing);
 }
 
@@ -148,16 +163,15 @@ fn breaking_required_retention_is_invalid_spec_commits_5() {
     assert!(o.valid[&(13, 0)], "no entry governs another AK");
 }
 
-// spec/commits.md §4 (Pending), §5 (A waiting part past its expiry): a commit whose only held part
-// waits pends; once the part has gone at its expiry no part is held and it applies as its header
+// notes/expiry-creation-design.md §3: a commit whose only part cannot be judged is thrown out,
+// before and after its expiry alike: nothing of it is held to go at its expiry
 #[test]
-fn only_waiting_part_gone_at_expiry_applies_the_header_spec_commits_5() {
+fn only_part_unjudgeable_is_thrown_out_spec_commits_4() {
     let mut c = on(AWAY, reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 2));
     c.expires = Some(at(3));
-    let o = evaluate(&held(2, vec![c.clone()]));
-    assert!(!o.applied.contains(&10));
-    assert!(o.deadlines.contains(&at(3)));
-    let o = evaluate(&held(3, vec![c]));
-    assert!(o.applied.contains(&10));
-    assert_eq!(o.fates[&(10, 0)], Fate::MustDrop(DropWhy::Gone));
+    for now in [2, 3] {
+        let o = evaluate(&held(now, vec![c.clone()]));
+        assert!(!o.applied.contains(&10));
+        assert_eq!(o.revisit, [10].into());
+    }
 }

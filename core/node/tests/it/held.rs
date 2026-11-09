@@ -552,7 +552,7 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
             .collect();
         let (author, actor) = (cv.id(&h.author), cv.id(&h.actor));
         let undoes = h.undoes.as_ref().map(|c| cv.commit(c));
-        commits.push(hm::Commit { id: label, author, actor, ts: h.ts.to_u64(), expires: h.expires, kind, parts, purge, frontier, undoes });
+        commits.push(hm::Commit { id: label, author, actor, ts: h.ts.to_u64(), expires: h.expires, kind, parts, purge, frontier, undoes, boxes: vec![] });
     }
     let me = cv.id(&e.tid());
     // every record the node holds of an id named, first admins naming more

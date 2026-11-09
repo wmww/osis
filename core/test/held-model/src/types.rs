@@ -280,7 +280,21 @@ pub struct Commit {
     pub frontier: Option<Vec<CommitId>>,
     /// `undoes` (spec/commits.md §7).
     pub undoes: Option<CommitId>,
+    /// `secrets.0` boxes it carries for the node (`fetch`): each opens with the node's own key
+    /// and may be forged (it then opens nothing).
+    pub boxes: Vec<KeyBox>,
 }
+
+/// A box: on `thing`'s `secrets.0` part, the label key it hands over. Forged boxes name a key no
+/// label has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct KeyBox {
+    pub thing: ThingId,
+    pub key: Label,
+}
+
+/// A label, and the key that opens it (one id: a node holding a label's key can open its entries).
+pub type Label = u32;
 
 /// A position in the role timeline's order: `(ts, author node, commit ID)` (spec/permissions.md §5.1).
 pub type Key = (u64, NodeId, CommitId);
