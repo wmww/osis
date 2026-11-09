@@ -179,6 +179,9 @@ fn restart_without_appends_writes_nothing() {
     assert_eq!(position(&mut s, &mut rng, &c), Some(1));
     let mut t = s.transaction(&mut rng).unwrap();
     t.log_read(Some(&c2), 10).unwrap();
+    let end = t.log_end().unwrap();
+    t.log_cursor(end).unwrap().unwrap();
+    t.log_position(&c).unwrap().unwrap();
     t.commit().unwrap();
     drop(s);
     assert_eq!(d.backend.dump(), before, "a start and a read draw no incarnation");
