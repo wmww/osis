@@ -1117,6 +1117,43 @@ mod tests {
         assert!(lp.peers[0].engine.body_live(&c, &t, &ak).unwrap(), "fetched from its author: live");
     }
 
+    // spec/commits.md §5 live writes, by dot, and a delta stamp marks many positions: C's snapshot,
+    // invalid at C after A's demotion, holds A's write to field 0 (dead here), and of field 1 only
+    // C's reset of it (invalid too), so field 1's entry, under the same stamp, is live here at a
+    // position the snapshot does not hold.
+    #[test]
+    fn invalid_snapshot_is_live_by_dot_spec_commits_5() {
+        static TS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("t.osis", "revision 1; aspect k:s.0: struct { 0 a: int, 1 m: map<string, int> };\n");
+        let key: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:s.0", &TS);
+        let ak = Ak::new("k:s.0").unwrap();
+        let mut lp = LocalPeer::new(2, 955, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let [a, c] = [0, 1].map(|i| lp.peers[i].engine.tid());
+        let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+        use osis_crdt::{Op, PathOp, PathSeg};
+        let mut m = Mutation::new();
+        m.op(t, &key, PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(Value::Int(1)) }).unwrap();
+        m.op(t, &key, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(Value::Str("x".into()))], op: Op::Put(Value::Int(2)) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(10);
+        let mut m = Mutation::new();
+        m.op(t, &key, PathOp { path: vec![PathSeg::Field(1)], op: Op::Replace(Value::Map(Default::default())) }).unwrap();
+        lp.peers[1].commit(m).unwrap().unwrap();
+        lp.advance(10);
+        let snap = lp.peers[1].engine.snapshot(&t, &ak).unwrap().unwrap();
+        lp.advance(10);
+        let mut m = Mutation::new();
+        m.op(t, &key, PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(Value::Int(3)) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.peers[0].engine.demote(&t, &Demotion { holder: c, new: None, retain: None }).unwrap();
+        lp.sync(0, 1).unwrap();
+        let e = &mut lp.peers[1].engine;
+        assert_eq!(e.body_valid(&snap, &t, &ak), Some(false), "the snapshot is invalid here");
+        assert!(e.body_live(&snap, &t, &ak).unwrap(), "its stamp is live at field 1");
+    }
+
     // spec/crdt.md §4.6 Un-merge, §4.7, issues/drop-rejoin-robust.md item 2 (leftovers are
     // bodies): every write a node holds of a delta it holds value-less is in a held body, never
     // in the state alone (`make_leftover`), so after an expiry and after a purge the state is

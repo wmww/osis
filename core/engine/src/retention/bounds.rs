@@ -361,11 +361,16 @@ pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: 
     for x in holders {
         let Some(a) = h.aspects.get(*x) else { continue };
         // by dot: records without a `ts` count too
+        let valid = crate::apply::copies::snapshot_valid(tx.core, c, &a.tid, &a.ak);
         let mut live = false;
         let held = crate::apply::each_held_piece(tx, c, *x, &mut |tx, f| {
             let carried: BTreeSet<osis_crdt::Dot> = f.live_writes().into_iter().map(|(d, _)| d).collect();
             if !live && !carried.is_empty() {
-                live = tx.state_part_at(&a.tid, &a.ak, &f)?.is_some_and(|st| st.live_writes().into_iter().any(|(d, _)| carried.contains(&d)));
+                // a valid snapshot is joined in the state, so a dot it shares with the state sits
+                // at a position it holds; an invalid one's may sit elsewhere (one delta stamp
+                // covers many positions)
+                let st = if valid { tx.state_part_at(&a.tid, &a.ak, &f)? } else { tx.state_at(&a.tid, &a.ak, &f)? };
+                live = st.is_some_and(|st| st.live_writes().into_iter().any(|(d, _)| carried.contains(&d)));
             }
             Ok(())
         })?;

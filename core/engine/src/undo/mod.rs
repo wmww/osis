@@ -79,7 +79,7 @@ fn kept_before(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId)) -> Resul
     #[cfg(test)]
     {
         let whole = crate::costs::paused(|| kept_join(tx, tid, ak, at, now))?;
-        assert_eq!(f.read(), whole.read(), "kept_before stopped at a reset reads as the whole join");
+        assert_eq!(crate::engine::state::encode(&f)?, crate::engine::state::encode(&whole)?, "kept_before stopped at a reset: the whole join");
     }
     Ok(f)
 }
@@ -692,6 +692,100 @@ mod tests {
         let [typing_small, typing_big] = [30, 120].map(|n| check_cost("typing", n));
         assert_eq!((typing_small.1, typing_big.1), (0, 0), "a whole state copied per part");
         assert!(typing_big.0 <= 4 * typing_small.0 + 8, "typing: more than linear: {typing_small:?} {typing_big:?}");
+    }
+
+    /// `f` is `Value::Map` of `(key, int)` pairs on aspect `x`.
+    fn map_of(p: &[(&str, i64)]) -> Value {
+        Value::Map(p.iter().map(|(k, v)| (Value::Str((*k).into()), Value::Int(*v))).collect())
+    }
+
+    fn put(lp: &mut LocalPeer, who: usize, t: osis_base::Tid, x: &Ak, k: &str, v: i64, keep: osis_schema::Retention) -> osis_base::CommitId {
+        lp.advance(10);
+        let mut m = Mutation::new();
+        m.op(t, x, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str(k.into()))], op: Op::Put(Value::Int(v)) }).unwrap().retention(t, x, keep).unwrap();
+        lp.peers[who].commit(m).unwrap().unwrap()
+    }
+
+    fn replace(lp: &mut LocalPeer, who: usize, t: osis_base::Tid, x: &Ak, v: Value, keep: osis_schema::Retention, expires: Option<WallMs>) -> osis_base::CommitId {
+        lp.advance(10);
+        let mut m = Mutation::new();
+        m.op(t, x, PathOp { path: vec![], op: Op::Replace(v) }).unwrap().retention(t, x, keep).unwrap();
+        if let Some(e) = expires {
+            m.expires(t, x, e).unwrap();
+        }
+        lp.peers[who].commit(m).unwrap().unwrap()
+    }
+
+    // spec/crdt.md §4.2: a reset prunes by stamp, so the walk stops at the newest kept reset
+    // whichever writes are concurrent with it, and a write stamped after it stays in. Each
+    // revert also runs `kept_before`'s check against the whole join.
+    #[test]
+    fn pre_state_stops_at_a_reset_by_stamp() {
+        for reset_first in [false, true] {
+            let (mut lp, t, x, keep) = two(963);
+            replace(&mut lp, 0, t, &x, map_of(&[("o", 0)]), keep, None);
+            lp.sync_all().unwrap();
+            let concurrent = |lp: &mut LocalPeer| { put(lp, 1, t, &x, "k", 1, keep); };
+            let reset = |lp: &mut LocalPeer| { replace(lp, 0, t, &x, map_of(&[("j", 1)]), keep, None); };
+            if reset_first {
+                reset(&mut lp);
+                concurrent(&mut lp);
+            } else {
+                concurrent(&mut lp);
+                reset(&mut lp);
+            }
+            lp.sync_all().unwrap();
+            let before = lp.peers[0].engine.get(&t, &x).unwrap();
+            assert_eq!(before, Some(if reset_first { map_of(&[("j", 1), ("k", 1)]) } else { map_of(&[("j", 1)]) }), "a reset prunes what is stamped before it, seen or not");
+            let last = put(&mut lp, 0, t, &x, "j", 2, keep);
+            lp.peers[0].engine.revert(&last).unwrap().unwrap();
+            assert_eq!(lp.peers[0].engine.get(&t, &x).unwrap(), before);
+        }
+    }
+
+    // An expired reset still resets (its leftover holds it), a purged one is left behind by the
+    // purge's own reset, and an invalid one gives nothing, so the walk passes it. Either way the
+    // undo reads as the whole join does.
+    #[test]
+    fn pre_state_at_a_reset_gone_or_invalid() {
+        for case in ["expired", "purged", "invalid"] {
+            let (mut lp, t, x, keep) = two(964);
+            let expires = (case == "expired").then(|| WallMs(lp.peers[0].engine.now().0 + 100));
+            replace(&mut lp, 0, t, &x, map_of(&[("j", 1)]), keep, None);
+            lp.sync_all().unwrap();
+            let r = replace(&mut lp, 1, t, &x, map_of(&[("r", 1)]), keep, expires);
+            if case != "invalid" {
+                lp.sync_all().unwrap();
+            }
+            match case {
+                "expired" => {
+                    lp.advance(1000);
+                    (0..2).for_each(|i| lp.peers[i].engine.tick().unwrap());
+                }
+                "purged" => {
+                    lp.advance(10);
+                    let mut m = Mutation::new();
+                    m.purge(osis_commit::PurgeItem::Commit { commit: r, tid: t, ak: x.clone() }).op(t, &x, PathOp { path: vec![], op: Op::Replace(map_of(&[("p", 1)])) }).unwrap().retention(t, &x, keep).unwrap();
+                    lp.peers[0].commit(m).unwrap();
+                }
+                _ => {
+                    // not seen by the demoter, so not vouched for
+                    let c = lp.peers[1].engine.tid();
+                    lp.peers[0].engine.demote(&t, &crate::flows::Demotion { holder: c, new: None, retain: None }).unwrap();
+                }
+            }
+            lp.sync_all().unwrap();
+            let before = lp.peers[0].engine.get(&t, &x).unwrap();
+            let want_before = match case {
+                "invalid" => Some(map_of(&[("j", 1)])),
+                "purged" => Some(map_of(&[("p", 1)])),
+                _ => None,
+            };
+            assert_eq!(before, want_before, "{case}");
+            let last = put(&mut lp, 0, t, &x, "k", 2, keep);
+            lp.peers[0].engine.revert(&last).unwrap().unwrap();
+            assert_eq!(lp.peers[0].engine.get(&t, &x).unwrap(), before, "{case}");
+        }
     }
 
     // A and C, a thing of A's that C may write, map aspect `x`, and a keep-history retention.

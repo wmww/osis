@@ -5,7 +5,7 @@
 
 The about chip calls `undo_target` on every page refresh, and a per-generation cache misses since every commit steps the generation.
 
-Counted by `undo::tests::check_cost_scales` (commit bodies read by one check, 400 commits to the field): written whole and kept until a date 3 (flat); written whole and kept for a while after replaced 408; typing 799; typing ending in a delete 1198.
+Counted with `undo::tests::check_cost`'s counters (commit bodies read by one check, 400 commits to the field; the test itself checks the first and third): written whole and kept until a date 3 (flat); written whole and kept for a while after replaced 408; typing 799; typing ending in a delete 1200.
 
 Where the reads go:
 - `kept_before` joins every kept part: only a kept whole reset ends the walk. Sequence edits carry no reset, and `seq_ops::undo` consults the pre-state only at the delta's dots, but a dot's earlier flag writes are in arbitrary parts and no index names them.
