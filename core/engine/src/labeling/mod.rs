@@ -6,6 +6,7 @@
 mod actors;
 mod blobs;
 mod certs;
+mod proofs;
 pub mod converge;
 
 pub use actors::GroupLabel;

@@ -2211,7 +2211,7 @@ pub struct Engine {
     /// The local ephemeral write path's own state (`crate::ephemeral`): the undo log,
     /// unsent ephemeral signals, delivered relay-only commits.
     pub(crate) eph: crate::ephemeral::Eph,
-    clock: Arc<dyn Clock>,
+    pub(crate) clock: Arc<dyn Clock>,
     pub(crate) cfg: Config,
     /// Debug builds: this open's durable transactions that changed a state or a commit's
     /// parts, and those of them that changed more than valid joins (`check_index` runs when

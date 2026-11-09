@@ -119,6 +119,8 @@ pub(crate) struct Conn {
     /// This node named itself on this connection (`SyncEngine::name_sessions`).
     pub named: bool,
     pub session: ClientSession,
+    /// What this connection's peer proved (spec/sync.md §10), read by `SyncEngine::proven`.
+    pub proven: BTreeSet<Tid>,
     pub up: bool,
     pub labels: BTreeMap<LabelId, LConn>,
     pub timer: Option<u64>,
@@ -297,7 +299,7 @@ impl SyncEngine {
             self.rng.fill_bytes(&mut challenge);
             // the key the transport authenticates (a LAN address presents its own)
             let session = ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge });
-            self.conns.insert(conn, Conn { host: key, address: addr.clone(), peer, named: false, session, up: false, labels: BTreeMap::new(), timer: None, offset: None, req: Requests::default() });
+            self.conns.insert(conn, Conn { host: key, address: addr.clone(), peer, named: false, session, proven: BTreeSet::new(), up: false, labels: BTreeMap::new(), timer: None, offset: None, req: Requests::default() });
             out.push(Action::Dial { conn, address: addr });
         }
     }
@@ -398,6 +400,12 @@ impl SyncEngine {
         match e {
             // the node's own dials send no client-port requests
             E::Reply { .. } | E::Notify { .. } => {}
+            E::Proved { proofs } => {
+                let proven = super::proofs::proven_actors(&mut self.engine, &proofs)?;
+                if let Some(c) = self.conns.get_mut(&conn) {
+                    c.proven = proven;
+                }
+            }
             // Hellos done: every label this host holds starts opening
             E::Ready { .. } => self.add_new_labels(out)?,
             E::ClockOffset { offset_ms, .. } => {

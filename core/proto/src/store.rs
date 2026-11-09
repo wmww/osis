@@ -157,6 +157,13 @@ impl HeadKeys {
 /// deletes) and
 /// answers with a status code.
 pub trait LabelStore {
+    /// A dialer's verified connection proofs (spec/sync.md §10) reach the store, which answers
+    /// this side's own, signed for `challenge` (the dialer's) and `listener_key` (this side's),
+    /// when the dialer proved a known actor, else nothing. A store with no identity proves
+    /// nothing.
+    fn prove(&mut self, _proofs: Vec<crate::ActorProof>, _challenge: &[u8; 32], _listener_key: &[u8; 32]) -> Result<Vec<crate::ActorProof>, StoreError> {
+        Ok(Vec::new())
+    }
     /// The head's step ID; none for an unknown label.
     fn head(&self, label: &LabelId) -> Result<Option<StepId>, StoreError>;
     /// A step on the label's path.

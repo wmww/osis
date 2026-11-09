@@ -260,7 +260,10 @@ Unsub     [28, id, sub_id]                     -> Ok
 Notify    [29, 0, sub_id, payload]
 Stranded  [30, id, label_id]                   -> Ok
 Suspect   [31, id, label_id, [suspect+]]       -> Ok
+Prove     [32, id, [actor_proof*]]             -> Proved | Error
+Proved    [33, id, [actor_proof*]]
 
+actor_proof := [creation, sig, [account*], [commit_blob*]]
 proof  := [0, sync_pk, sig] | [1, step_id, claim_pk, sig] | [2, signing_pk, sig]
 entry  := [blob, wrap, stamp] | [blob, wrap, stamp, [replace+]]
 replace := [blob_id, [[level, dsig]*], sig]
@@ -275,6 +278,7 @@ mode   := [0, fingerprint] | [1, [blob_id*]] | [2, [blob_id*], [blob_id*]]
 ```
 Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canonical bytes as byte strings; blobs are byte strings; `wrap` 57 bytes; `sig`, `dsig`, `stamp` raw 64-byte Ed25519 signatures; `*_pk` raw 32-byte keys; `log_id` 16 bytes.
 
+- **Prove** (spec/sync.md §10, Connection proofs): dialer to listener, at most one per connection (a second is answered Error 2). `creation` is the proving key actor's creation record (§3): the actor is its tid. `sig` by that record's key under `"osis v1 connection proof"`, digest BLAKE3(canonical `[challenge, listener_key]`): `challenge` the verifier's Hello challenge, `listener_key` the listener's static key, in both directions. A proof that does not verify proves nothing and is otherwise ignored. `account` is a tid the actor claims; `commit_blob` a commit blob (§4) holding only the parts of the chain certificates (spec/permissions.md §4). A node whose certificates pass half of `MAX_MESSAGE` sends none and claims no account. **Proved** carries the listener's proofs, possibly none, under the same rules. A node serving no identity answers none.
 - **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry). A co-reader peer opens a label for a connection's proven actors without a proof (spec/sync.md §5, §10; target: the exchange's bytes are issues/net-shared-set.md's). An unknown label is answered Error 13. Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
 - **Register**: replies Ok (also when the step already is the head), or an Error without the head (spec/sync.md §5):
   - 2 when the step's label is not the message's or the claim set does not hash to `claims_hash`;

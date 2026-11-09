@@ -197,6 +197,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | value | class | note |
 |---|---|---|
 | sim `STATE_FACTOR` 2 etc. | M (calibrated detection bound, notes/testing.md) | growth below the bound goes unseen |
+| `MAX_CHAIN_BYTES` `MAX_MESSAGE`/2 (`sync/proofs.rs`: chain certificates in a connection proof) | R | past it the node proves its key and no account; 0: no account is ever proved; ∞: a frame the peer rejects |
 | sim `IDLE_ROUNDS` 3 | M | ping-pong with a longer period goes unseen |
 | sim `STORM` 5000, `ROGUE_STORM` 100 000, `SLOW_MS` 30 s | M | |
 | sim `reach::PORT`, `NetSim::lan_drop_pct` 25 | M | a port is only text in an address; the drop rate shapes the mix of events, quiet announces undropped |

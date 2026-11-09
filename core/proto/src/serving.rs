@@ -197,6 +197,10 @@ pub struct ServingSession {
     /// Dialable key this session proved by a co-reader proof (valid under the key, whether or not
     /// the store knows it).
     named: Option<[u8; 32]>,
+    /// The dialer's Hello challenge: what this side's connection proofs sign.
+    peer_challenge: Option<[u8; 32]>,
+    /// A Prove was answered: at most one per connection (spec/wire.md §11.2).
+    proved: bool,
     /// Bytes of `Send` outputs so far.
     written: u64,
     /// The last `ServingInput::Taken` (none: never reported, no flow control).
@@ -280,6 +284,8 @@ impl ServingSession {
             keys: HashMap::new(),
             struck: false,
             co_reader: None,
+            peer_challenge: None,
+            proved: false,
             named: None,
             written: 0,
             taken: None,
@@ -581,8 +587,11 @@ impl ServingSession {
 
     fn frame(&mut self, now: u64, store: &mut dyn LabelStore, body: &[u8], charged: &mut usize, out: &mut Vec<ServingOutput>) {
         if self.version.is_none() {
-            match Hello::decode(body).and_then(|h| negotiate(&[PROTOCOL_VERSION], &h.versions)) {
-                Ok(v) => self.version = Some(v),
+            match Hello::decode(body).and_then(|h| negotiate(&[PROTOCOL_VERSION], &h.versions).map(|v| (v, h.challenge))) {
+                Ok((v, challenge)) => {
+                    self.version = Some(v);
+                    self.peer_challenge = Some(challenge);
+                }
                 Err(e) => {
                     out.push(ServingOutput::PeerError(e));
                     self.close(out);
@@ -646,6 +655,17 @@ impl ServingSession {
         Ok(Some(match msg {
             M::Ping { id, .. } => M::Pong { id, wall_ms: now },
             M::Open { id, label, proof } => self.open(store, id, label, proof)?,
+            M::Prove { id, proofs } => {
+                let Some(peer) = self.peer_challenge.filter(|_| !self.proved) else {
+                    return Ok(Some(M::Error { id, code: Code::MALFORMED }));
+                };
+                self.proved = true;
+                let (ch, key) = (self.cfg.challenge, self.cfg.static_key);
+                // over this side's challenge and static key: a proof made for another
+                // connection or another listener proves nothing here
+                let good = proofs.into_iter().filter(|p| p.verify(&ch, &key)).collect();
+                M::Proved { id, proofs: store.prove(good, &peer, &key)? }
+            }
             M::Register { id, label, step, claim_set } => self.register(store, id, label, step, claim_set, out)?,
             M::Path { id, label, after } => self.path(store, id, label, after)?,
             M::Upload { id, label, entries } => {

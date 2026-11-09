@@ -47,7 +47,7 @@ Rotations are self-verifying (each is signed at the epoch it rotates; `osis_perm
 - **Removed against behind** needs no timestamp: an epoch is open only where it descends from every rotation held, so a removal closes a removed node's epoch, and once both sides hold the same rotations both answer alike.
 - **Size** is the rotations since the verifier's head, not the history.
 - A key actor proves its signing key over the connection's challenges; the verifier matches it to a static entry it holds (Words). Everything a connection proves comes over the connection, never from group data: a node's chain to its account is in this exchange, under step 6 of issues/account-signing.md the account's rotations alone.
-Message bytes are to be fixed with step 2; this issue owns them (issues/account-signing.md points here).
+Message bytes as built: spec/wire.md §11.2 Prove; step 10 adds the verifier's heads and the refusal's rotations (this issue owns them; issues/account-signing.md points here).
 
 ## Messages
 ```
@@ -140,7 +140,7 @@ Two nodes that never met, of accounts that know each other, find T; a node a rot
 
 ## Steps, in dependency order (with issues/net-reconnect.md)
 1. **Model** (Model, issues/net-reconnect.md).
-2. **Session proven actors**: `Session::proven()`, the actors a connection proved, read only from the connection's own proof exchange. Before account signing step 6: the node key and its chain certificates to its account, sent in that exchange (never read from group data: issues/account-signing.md step 7 removes them from groups), the listed LAN gap of issues/net-connect.md's first build; key actors by signing key. One function; everything below reads only it.
+2. **Session proven actors** (built: `SyncEngine::proven(conn)`, `Prove`/`Proved`, spec/wire.md §11.2; nothing reads it yet, step 3 does; known actor at the listener's gate is "holds its creation record", exact rosters arrive with step 3; a node admin of any thing may claim it as an account, what a claim means is step 10's): `Session::proven()`, the actors a connection proved, read only from the connection's own proof exchange. Before account signing step 6: the node key and its chain certificates to its account, sent in that exchange (never read from group data: issues/account-signing.md step 7 removes them from groups), the listed LAN gap of issues/net-connect.md's first build; key actors by signing key. One function; everything below reads only it.
 3. **J and credentials**: holder/departed by actor over rosters; `credentials(L)` by class; the `changed_at` stamp (issues/net-reconnect.md).
 4. **Records, r** (issues/net-reconnect.md, Resume).
 5. **Beacons, Offer, Lost, first contact**; replaces proof 3 and `wanted_labels`' co-reader part; static entries at readers (issues/net-first-contact.md).
@@ -148,4 +148,4 @@ Two nodes that never met, of accounts that know each other, find T; a node a rot
 7. **Reconnect**: base generations, S restore, until and lag.
 8. **Deposit items** (with issues/net-first-contact.md).
 9. **Peers that cannot read** through filters and records (issues/net-one-peer.md): sync-key, deposit-key and claim-set entries.
-10. **Account signing step 6**: `Session::proven()` proves the account signing key at its epoch; node key only to own nodes; departure of a node is its removal plus rotation. No other step changes.
+10. **Account signing step 6**: `SyncEngine::proven` proves the account signing key at its epoch; node key only to own nodes; departure of a node is its removal plus rotation. Replaces `actor_proof`'s chain certificates and `Engine::accounts_proven`'s scratch engine with a signature at an epoch, rotations and `osis_perm::chain`; the removal check goes with them. No other step changes.

@@ -163,6 +163,8 @@ pub(crate) struct Served {
     public: bool,
     /// The dialer's authenticated key (budgets are charged to it).
     peer: [u8; 32],
+    /// What this connection's dialer proved (spec/sync.md §10), read by `SyncEngine::proven`.
+    proven: BTreeSet<Tid>,
     /// Raw ms of the last bytes received (idle sessions are closed).
     pub last: u64,
     /// Raw ms the session started (one that opens nothing is closed).
@@ -245,6 +247,8 @@ struct Accepted {
     full: bool,
     /// Entries accepted uploads replaced: hidden from peers once the uploads are applied.
     removed: Vec<(LabelId, BlobId)>,
+    /// What the dialer proved by its Prove (`proofs`).
+    proven: BTreeSet<Tid>,
 }
 
 /// The `LabelStore` a co-reader peer serves from.
@@ -323,6 +327,16 @@ impl PeerStore<'_> {
 }
 
 impl LabelStore for PeerStore<'_> {
+    fn prove(&mut self, proofs: Vec<osis_proto::ActorProof>, challenge: &[u8; 32], listener_key: &[u8; 32]) -> std::result::Result<Vec<osis_proto::ActorProof>, StoreError> {
+        let engine = self.engine.get_mut();
+        let proven = super::proofs::proven_actors(engine, &proofs).map_err(|e| StoreError(e.to_string()))?;
+        // this side proves only to a dialer that proved an actor it knows (spec/sync.md §10)
+        let known = proven.iter().any(|a| engine.core.created(a).is_some());
+        let mine = if known { super::proofs::provers(engine).map_err(|e| StoreError(e.to_string()))?.iter().map(|p| p.sign(challenge, listener_key)).collect() } else { Vec::new() };
+        self.acc.proven = proven;
+        Ok(mine)
+    }
+
     /// A node of a current reader of the label (spec/sync.md §5).
     fn co_reader_open(&self, dialable: &[u8; 32], label: &LabelId) -> std::result::Result<bool, StoreError> {
         let Some(n) = self.reach.get(dialable).copied() else { return Ok(false) };
@@ -530,7 +544,7 @@ impl SyncEngine {
         self.rng.fill_bytes(&mut challenge);
         let last = self.raw_now();
         let session = ServingSession::new(ServingConfig { static_key: local, challenge });
-        self.served.insert(conn, Served { conn: if public { session.port_only() } else { session.with_port() }, tier, public, ported: false, peer, last, since: last, client: None });
+        self.served.insert(conn, Served { conn: if public { session.port_only() } else { session.with_port() }, tier, public, ported: false, peer, proven: BTreeSet::new(), last, since: last, client: None });
         if let Err(e) = self.serve(conn, ServingInput::Start, &mut out) {
             self.diag(format!("serve: {e}"));
         }
@@ -541,6 +555,15 @@ impl SyncEngine {
     /// Label IDs opened on each served session (tests, diagnostics).
     pub fn served_opened(&self) -> BTreeMap<ConnId, BTreeSet<LabelId>> {
         self.served.iter().map(|(c, s)| (*c, s.conn.opened().copied().collect())).collect()
+    }
+
+    pub(super) fn served_proven_all(&self) -> Vec<(ConnId, BTreeSet<Tid>)> {
+        self.served.iter().map(|(c, s)| (*c, s.proven.clone())).collect()
+    }
+
+    /// The actors served session `conn` proved (`SyncEngine::proven`).
+    pub(super) fn served_proven(&self, conn: ConnId) -> Option<&BTreeSet<Tid>> {
+        self.served.get(&conn).map(|s| &s.proven)
     }
 
     /// The dialable keys co-reader proofs proved on the sessions served now (spec/sync.md §5).
@@ -608,7 +631,7 @@ impl SyncEngine {
             s.last = now;
         }
         let wall = self.state.now;
-        let (outputs, acc) = {
+        let (outputs, mut acc) = {
             let mut store = PeerStore {
                 engine: RefCell::new(&mut self.engine),
                 entries: &self.state.entries,
@@ -630,6 +653,9 @@ impl SyncEngine {
             let o = s.conn.handle(now, &mut store, input);
             (o, store.acc)
         };
+        if !acc.proven.is_empty() {
+            s.proven = std::mem::take(&mut acc.proven);
+        }
         let peer = s.conn.co_reader().unwrap_or(s.peer);
         let proven = s.conn.co_reader();
         let co_reader = proven.is_some_and(|k| reach.contains_key(&k));

@@ -412,7 +412,12 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
   - its account by a signature at an epoch, with the signed rotations of that account the verifier lacks; a refusal carries the verifier's rotations the prover lacks. Both sides judge them by spec/permissions.md §5.4 alone, no timestamp read;
   - a key actor (a link key, a recovery key) by its signing key, matched to a static entry the verifier holds;
   - its own node key only to nodes of its own account.
-  - Until accounts sign (issues/account-signing.md step 6), a proof also carries the node's chain certificates to its account.
+  - **As built, until accounts sign** (issues/account-signing.md step 6): a proof shows a key actor's signing key over the connection; a node's proof also names its account and carries its chain certificates to it, in place of the epoch signature and rotations above, and the node key goes with it to every side it proves to (issues/net-connect.md).
+    - The account counts when the node holds admin on it by those certificates alone, every `until` disregarded (spec/crypto.md §4, Holders for keys). A clock is never read. An `until` or a removal the certificates do not show does not count against it, except a removal the verifier holds.
+    - A certificate that does not lead from the proving key to the account proves no account; the key is still proved.
+    - A removal the verifier holds closes the account's proof. What the verifier holds never makes one.
+  - **Order**: the dialer proves first, after the listener's Hello, only on a connection to a key it chose to dial; the listener answers with its own proofs only if the dialer proved an actor whose creation record the listener holds, else with none. A proof is never sent unasked (spec/wire.md §11.2, Prove).
+  - Which side dialed and what carries the connection change nothing else.
   - Nothing a connection proves comes from group data; the serving-node listing on a profile is for dialing only, never proof.
 - **P2P transports**: a node dials a co-reader by dialable key over a P2P transport, each named by its own address scheme; only `peer://` is defined.
 - **`peer://`** nodes are dialed by dialable or LAN transport key:

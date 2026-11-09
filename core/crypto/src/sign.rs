@@ -24,10 +24,12 @@ pub enum Domain {
     Inner,
     /// A merge's signature at a fork's epoch, over the merge's commit ID (spec/crypto.md §9).
     Merge,
+    /// An actor's proof on a connection (spec/sync.md §10, spec/wire.md §11.2).
+    ConnectionProof,
 }
 
 impl Domain {
-    pub const ALL: [Domain; 11] = [
+    pub const ALL: [Domain; 12] = [
         Domain::Commit,
         Domain::LabelRegister,
         Domain::LabelOpen,
@@ -39,6 +41,7 @@ impl Domain {
         Domain::Possession,
         Domain::Inner,
         Domain::Merge,
+        Domain::ConnectionProof,
     ];
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -53,6 +56,7 @@ impl Domain {
             Domain::Possession => "osis v1 possession",
             Domain::Inner => "osis v1 inner",
             Domain::Merge => "osis v1 merge",
+            Domain::ConnectionProof => "osis v1 connection proof",
         }
     }
     fn message(self, digest: &[u8; 32]) -> Vec<u8> {

@@ -1,0 +1,1 @@
+- `Message` arity table in `decode_body` is separate from the kind match: a new kind answers Error 11 with no compile error, read as a dispatch bug until a debug print showed it.

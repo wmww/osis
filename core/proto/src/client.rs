@@ -52,10 +52,10 @@ pub const MAX_UNANSWERED: usize = WINDOW + (MAX_MESSAGE + 4) + MAX_MESSAGE;
 pub fn allowance(msg: &Message) -> usize {
     use Message as M;
     match msg {
-        M::Reconcile { .. } => MAX_MESSAGE,
+        M::Reconcile { .. } | M::Prove { .. } => MAX_MESSAGE,
         M::Sync { max_reply, .. } | M::Fetch { max_reply, .. } | M::Call { max_reply, .. } | M::Sub { max_reply, .. } => usize::try_from(*max_reply).unwrap_or(usize::MAX),
         M::Ping { .. } | M::Path { .. } | M::Open { .. } | M::Register { .. } | M::Upload { .. } | M::Deposit { .. } | M::Delete { .. } | M::Subscribe { .. } | M::Unsubscribe { .. } | M::Auth { .. } | M::Unsub { .. } => SMALL_REPLY,
-        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::Budget { .. } | M::SyncReply { .. } | M::ReconcileReply { .. } | M::FetchReply { .. } | M::Push { .. } | M::Reply { .. } | M::Notify { .. } => 0,
+        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::Budget { .. } | M::SyncReply { .. } | M::ReconcileReply { .. } | M::FetchReply { .. } | M::Push { .. } | M::Reply { .. } | M::Notify { .. } | M::Proved { .. } => 0,
     }
 }
 /// Clock samples kept.
@@ -99,6 +99,8 @@ pub enum Command {
     /// A co-reader proof on `label`, open here already: names this node to the peer for the
     /// session, and opens nothing. No event: an answer changes nothing here.
     Name { label: LabelId, key: SigningSecret },
+    /// This node's connection proofs (spec/sync.md §10): the peer's come back as `Proved`.
+    Prove(Vec<crate::Prover>),
     Register { label: LabelId, step: Step, claim_set: Option<ClaimSet> },
     /// The registration path after `after` (from the genesis step when none), all pages.
     Path { label: LabelId, after: Option<StepId> },
@@ -179,6 +181,9 @@ pub enum ClientEvent {
     Refused { label: Option<LabelId>, kind: Request, code: Code, fetch: Vec<BlobId> },
     /// The peer broke a protocol rule (diagnostic); a paged exchange it broke is abandoned.
     PeerError(Error),
+    /// The peer's connection proofs that verified over this connection's challenge and the
+    /// listener's key (spec/sync.md §10). Only a chain's judgment is left to the node.
+    Proved { proofs: Vec<crate::ActorProof> },
     /// The answer to an Auth, Call or Sub: a Reply, or the code of the Error answering it.
     Reply { token: u64, reply: Result<crate::api::Outcome, Code> },
     /// A Notify of a live subscription (after `Lapsed` the token is free).
@@ -219,12 +224,14 @@ pub enum Request {
     Unsubscribe,
     /// A client-port request.
     Api,
+    Prove,
 }
 
 #[derive(Clone, Debug)]
 enum Pending {
     /// A `Command::Name`: answered like an open, about nothing but the name.
     Name,
+    Prove,
     Ping { sent: u64 },
     Open(LabelId),
     Register(LabelId),
@@ -253,7 +260,7 @@ impl Pending {
         match self {
             Pending::Open(l) | Pending::Register(l) | Pending::Path(l) | Pending::PathStopped(l) | Pending::Upload(l, _) | Pending::Deposit(l, _) | Pending::Delete(l, _) | Pending::Reconcile(l, _) | Pending::Fetch(l, ..) => Some(*l),
             Pending::Sync { label, .. } => Some(*label),
-            Pending::Name | Pending::Ping { .. } | Pending::Subscribe(_) | Pending::Unsubscribe | Pending::Api(_) | Pending::ApiUnsub(_) => None,
+            Pending::Name | Pending::Prove | Pending::Ping { .. } | Pending::Subscribe(_) | Pending::Unsubscribe | Pending::Api(_) | Pending::ApiUnsub(_) => None,
         }
     }
 
@@ -261,6 +268,7 @@ impl Pending {
         match self {
             Pending::Ping { .. } => Request::Ping,
             Pending::Open(_) | Pending::Name => Request::Open,
+            Pending::Prove => Request::Prove,
             Pending::Register(_) => Request::Register,
             Pending::Path(_) | Pending::PathStopped(_) => Request::Path,
             Pending::Upload(..) => Request::Upload,
@@ -539,6 +547,13 @@ impl ClientSession {
                 let proof = Proof::co_reader(&key, &label, &peer.challenge, &self.cfg.peer_static_key);
                 self.request(|id| Message::Open { id, label, proof }, Pending::Name);
             }
+            Command::Prove(provers) => {
+                let Some(peer) = &self.peer else { return };
+                // the listener's Hello challenge and its key, the key this side chose to dial
+                let (ch, listener) = (peer.challenge, self.cfg.peer_static_key);
+                let proofs = provers.iter().map(|p| p.sign(&ch, &listener)).collect();
+                self.request(|id| Message::Prove { id, proofs }, Pending::Prove);
+            }
             Command::Register { label, step, claim_set } => self.request(|id| Message::Register { id, label, step, claim_set }, Pending::Register(label)),
             Command::Path { label, after } => self.request(|id| Message::Path { id, label, after }, Pending::Path(label)),
             Command::Sync { label, cursor, inline_limit, entries, gained } => {
@@ -813,6 +828,12 @@ impl ClientSession {
             // again after a back-off, and the deposits paced behind it go on (`send_outbox`)
             (Pending::Deposit(label, blob_id), M::Error { .. }) => event(out, E::Budget { label, blob_id, code: Code::RATE_LIMITED, budget: None }),
             (Pending::Name, _) => {}
+            (Pending::Prove, M::Proved { proofs, .. }) => {
+                // proved over this side's challenge and the key it dialed: a proof of any other
+                // connection, or the listener's relayed from one, does not verify
+                let (ch, listener) = (self.cfg.challenge, self.cfg.peer_static_key);
+                event(out, E::Proved { proofs: proofs.into_iter().filter(|p| p.verify(&ch, &listener)).collect() });
+            }
             (p, M::Error { code, .. }) => event(out, E::Refused { label: p.label(), kind: p.kind(), code, fetch: Vec::new() }),
             (Pending::Open(label), M::Opened { head, entry_box, .. }) => event(out, E::Opened { label, head, entry_box }),
             (Pending::Open(label), M::Step { step, .. }) => event(out, E::Step { label, step }),

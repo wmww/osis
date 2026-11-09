@@ -331,7 +331,7 @@ impl std::fmt::Debug for Inner {
     }
 }
 
-pub(crate) const ACCOUNT: &str = "account";
+pub(crate) const ACCOUNT: &str = osis_node::ACCOUNT_RECORD;
 pub(crate) const SAVED_PEERS: &str = "saved_peers";
 pub(crate) const LINKS: &str = "links";
 /// The own serving address this node added to its saved peers (`Osis::upkeep_serving_peer`).

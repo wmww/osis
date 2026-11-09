@@ -24,6 +24,7 @@ mod marks;
 mod memory;
 mod open;
 mod pass;
+pub mod proofs;
 pub mod peers;
 mod receipts;
 mod serve;
@@ -543,8 +544,13 @@ impl SyncEngine {
                 let now = self.raw_now();
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.up = true;
-                    let o = c.session.handle(now, ClientInput::Start);
+                    let mut o = c.session.handle(now, ClientInput::Start);
                     let lan = c.peer.then(|| (c.host, c.address.clone()));
+                    // to a key this node chose to dial; a host needs no proof (spec/sync.md §10)
+                    if c.peer {
+                        let provers = proofs::provers(&mut self.engine)?;
+                        o.extend(c.session.handle(now, ClientInput::Command(Command::Prove(provers))));
+                    }
                     self.outputs(conn, o, out)?;
                     if let Some((k, a)) = lan
                         && self.lan_up(k, &a)

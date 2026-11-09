@@ -186,7 +186,7 @@ impl Engine {
 
     /// `node`'s chain certificates for `t` with the record chains of both up to their key
     /// actors, timeline or not.
-    fn chain_to(&self, node: &Tid, t: &Tid) -> osis_perm::Certificates {
+    pub(super) fn chain_to(&self, node: &Tid, t: &Tid) -> osis_perm::Certificates {
         let mut cs = match self.core.timelines.get(t) {
             Some(tl) => tl.certificates(node, t),
             None => osis_perm::Certificates::default(),
@@ -234,7 +234,7 @@ impl Engine {
     /// The commits and parts certificates `certs` name (spec/permissions.md §4), added to `out`:
     /// edge writes projected to their edge deltas on the chain's things, the newest `created.0` of
     /// each thing and the current `keys.0` of each actor.
-    fn cert_parts(&mut self, certs: &osis_perm::Certificates, out: &mut BTreeMap<CommitId, Parts>) {
+    pub(super) fn cert_parts(&mut self, certs: &osis_perm::Certificates, out: &mut BTreeMap<CommitId, Parts>) {
         let mut add = |c: CommitId, parts: Parts| {
             if !parts.is_empty() {
                 out.entry(c).or_default().extend(parts);

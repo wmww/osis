@@ -177,6 +177,10 @@ pub enum Message {
     /// Client port (notes/client-port.md §2): a main session sends no secret, a thin client
     /// its bearer secret (`Debug` redacted, zeroized on drop).
     Auth { id: Id, secret: Option<osis_crypto::Secret32>, session: [u8; 16] },
+    /// The dialer's connection proofs (spec/sync.md §10); at most one per connection.
+    Prove { id: Id, proofs: Vec<crate::ActorProof> },
+    /// The listener's answer: its own proofs, none unless the dialer proved a known actor.
+    Proved { id: Id, proofs: Vec<crate::ActorProof> },
     /// `max_reply`: the reply's frame body bound, `SMALL_REPLY..=REPLY_BUDGET`; `args` a list.
     Call { id: Id, max_reply: u64, method: u64, args: Vec<Value> },
     Reply { id: Id, outcome: crate::api::Outcome },
@@ -211,7 +215,11 @@ impl Rejected {
 
 /// Kinds that are requests (spec/wire.md §11.2: those with `->`).
 pub fn is_request_kind(kind: u64) -> bool {
-    matches!(kind, 2 | 4 | 7 | 8 | 10 | 12 | 14 | 15 | 17 | 19 | 21 | 22 | 24 | 25 | 27 | 28)
+    matches!(kind, 2 | 4 | 7 | 8 | 10 | 12 | 14 | 15 | 17 | 19 | 21 | 22 | 24 | 25 | 27 | 28 | 32)
+}
+
+fn proofs(v: Vec<Value>) -> Result<Vec<crate::ActorProof>, Error> {
+    v.into_iter().map(crate::ActorProof::from_value).collect()
 }
 
 fn step_value(s: &Step) -> Value {
@@ -256,6 +264,8 @@ impl Message {
             Sub { .. } => 27,
             Unsub { .. } => 28,
             Notify { .. } => 29,
+            Prove { .. } => 32,
+            Proved { .. } => 33,
         }
     }
 
@@ -263,7 +273,7 @@ impl Message {
     pub fn id(&self) -> Id {
         use Message::*;
         match self {
-            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Open { id, .. } | Opened { id, .. } | Step { id, .. } | Register { id, .. } | Path { id, .. } | PathReply { id, .. } | Upload { id, .. } | Status { id, .. } | Deposit { id, .. } | Budget { id, .. } | Delete { id, .. } | Sync { id, .. } | SyncReply { id, .. } | Reconcile { id, .. } | ReconcileReply { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Subscribe { id, .. } | Unsubscribe { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } => *id,
+            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Open { id, .. } | Opened { id, .. } | Step { id, .. } | Register { id, .. } | Path { id, .. } | PathReply { id, .. } | Upload { id, .. } | Status { id, .. } | Deposit { id, .. } | Budget { id, .. } | Delete { id, .. } | Sync { id, .. } | SyncReply { id, .. } | Reconcile { id, .. } | ReconcileReply { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Subscribe { id, .. } | Unsubscribe { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Prove { id, .. } | Proved { id, .. } => *id,
             Push { .. } | Notify { .. } => 0,
         }
     }
@@ -314,6 +324,7 @@ impl Message {
             ],
             M::Subscribe { labels, .. } | M::Unsubscribe { labels, .. } => vec![k, id, Value::List(labels.iter().map(l).collect())],
             M::Push { label, events, cursor } => vec![k, id, l(label), events_value(events), cursor_value(cursor)],
+            M::Prove { proofs, .. } | M::Proved { proofs, .. } => vec![k, id, Value::List(proofs.iter().map(crate::ActorProof::to_value).collect())],
             M::Auth { secret, session, .. } => vec![k, id, Value::opt(secret.as_ref().map(|s| Value::bytes(s.expose()))), Value::bytes(session)],
             M::Call { max_reply, method, args, .. } => vec![k, id, Value::uint(*max_reply), Value::uint(*method), Value::List(args.clone())],
             M::Reply { outcome, .. } => vec![k, id, outcome.to_value()],
@@ -352,7 +363,7 @@ impl Message {
 fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
     let n = match kind {
         1 => 2,
-        0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 | 26 | 28 => 3,
+        0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 | 26 | 28 | 32 | 33 => 3,
         4 | 5 | 8 | 9 | 10 | 13 | 14 | 17 | 24 | 27 | 29 => 4,
         7 | 19 | 23 | 25 => 5,
         12 => 6,
@@ -428,6 +439,8 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         27 => Message::Sub { id, max_reply: max_reply(&mut f)?, filter: f.next()? },
         28 => Message::Unsub { id, sub: sub_id(&mut f)? },
         29 => Message::Notify { sub: sub_id(&mut f)?, payload: crate::api::Payload::from_value(f.next()?)? },
+        32 => Message::Prove { id, proofs: proofs(f.list(0, usize::MAX, "proofs")?)? },
+        33 => Message::Proved { id, proofs: proofs(f.list(0, usize::MAX, "proofs")?)? },
         _ => return Err(Error::UnknownKind(kind)),
     };
     f.end()?;
