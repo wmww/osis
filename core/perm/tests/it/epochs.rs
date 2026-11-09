@@ -261,12 +261,29 @@ fn epochs_diff(w: &World, o: usize, held: &[bool]) -> Option<String> {
     let side = w.default_side(o, held);
     let v = w.judge(held, side);
     let e = perm_epochs(w, held, side);
+    // Which rotations take part (held with their chain): the disputes and, off P, the side.
+    let parties: BTreeSet<u32> = w.parties(held).into_iter().map(|i| pid(w, i)).collect();
+    if *e.chain().parties() != parties {
+        return Some(format!("observer n{o}: parties model {parties:?}, perm {:?}", e.chain().parties()));
+    }
+    if o >= w.np {
+        let mut received: Vec<usize> = (0..w.items.len()).filter(|&i| held[i] && matches!(w.items[i].kind, Kind::Rotation { .. })).collect();
+        received.sort_by_key(|&i| (w.items[i].recv[o], w.items[i].id));
+        let mine = e.chain().default_side(&received.iter().map(|&i| pid(w, i)).collect::<Vec<_>>());
+        if mine != side.map(|s| pid(w, s)) {
+            return Some(format!("observer n{o}: side model {side:?}, perm {mine:?}"));
+        }
+    }
+    let rooted = w.rooted(held);
+    let minted = |ep: u32| ep == 0 || (0..w.items.len()).any(|r| rooted[r] && matches!(w.items[r].kind, Kind::Rotation { new, .. } if new == ep));
     for (i, it) in w.items.iter().enumerate() {
         if !held[i] {
             continue;
         }
         let (m, p) = match &it.kind {
+            Kind::Rotation { new, .. } if rooted[i] != e.chain().holds(new) => (rooted[i], e.chain().holds(new)),
             Kind::Rotation { new, .. } => (v.counting[i], e.chain().counts(new)),
+            _ if it.epoch.is_some_and(|ep| minted(ep) == e.pending(&pid(w, i))) => (!minted(it.epoch.unwrap_or(0)), e.pending(&pid(w, i))),
             _ if it.epoch.is_some() => (v.as_p[i], e.delta_counts(&pid(w, i), &it.kind.thing().unwrap_or(D), matches!(it.kind, Kind::Content { plain: true, .. }))),
             _ => continue,
         };
@@ -280,7 +297,7 @@ fn epochs_diff(w: &World, o: usize, held: &[bool]) -> Option<String> {
 fn epochs_run(samples: u64, seed: u64) {
     let seed = seeded(seed);
     let mut rng = Rng(seed);
-    let (mut checked, mut closed_named) = (0u64, 0u64);
+    let (mut checked, mut closed_named, mut unrooted) = (0u64, 0u64, 0u64);
     for s in 0..samples {
         let w = model::random_world(&mut rng);
         // Every observer at every receipt time.
@@ -291,6 +308,7 @@ fn epochs_run(samples: u64, seed: u64) {
             for &t in &times {
                 let held = w.held_at(o, t);
                 checked += 1;
+                unrooted += u64::from(w.rooted(&held) != held);
                 if let Some(d) = epochs_diff(&w, o, &held) {
                     panic!("seed {seed:#x} sample {s}: {d}\n{w:?}");
                 }
@@ -299,8 +317,9 @@ fn epochs_run(samples: u64, seed: u64) {
             }
         }
     }
-    eprintln!("epochs model: {samples} worlds, {checked} observer-prefixes, {closed_named} closed-epoch commits counting");
+    eprintln!("epochs model: {samples} worlds, {checked} observer-prefixes ({unrooted} holding a rotation without its chain), {closed_named} closed-epoch commits counting");
     assert!(closed_named > 0, "the run reaches commits named at a closed epoch");
+    assert!(unrooted > 0, "the run reaches rotations held without their chain");
 }
 
 /// spec/permissions.md §5.4-§5.5: the epoch rule agrees with core/test/roles-model `epochs` at
