@@ -7,4 +7,4 @@ The right to end is the ordinary purge right, so a removal of the first admin ar
 
 Rejected: reading the right from standing on the first admin alone, because a removed admin could then destroy a thing for everyone.
 
-The cost is one thing's edges per purged thing, kept for good (issues/ended-thing-leftovers.md, notes/growth.md row 6). Reversing the decision means dropping `judges_ending`'s `roles.0` and choosing what the right reads instead.
+The cost is one thing's edges per purged thing, kept for good (issues/ended-thing-leftovers.md, notes/growth.md row 5). Reversing the decision means dropping `judges_ending`'s `roles.0` and choosing what the right reads instead.

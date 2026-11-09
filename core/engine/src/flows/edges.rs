@@ -1,6 +1,6 @@
 //! Edge writes (spec/permissions.md §2, §3, §5.3): grants with the grantee's boxes, changes,
 //! removals and demotions carrying the target's rotation, invite grants and self-removals,
-//! the pre-sync choice and the receipt-record frontier, inbox delivery and acceptance
+//! the frontier, inbox delivery and acceptance
 //! (spec/sync.md §3, spec/crypto.md §5).
 
 use super::{Delivery, Done, inbox_of, now_ts, own_label, put_edge, put_secrets, remove_edge};

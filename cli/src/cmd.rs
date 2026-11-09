@@ -697,12 +697,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             if let Some(m) = mode {
                 o.mode = match m.as_str() {
                     "full" => osis::SyncMode::Full,
-                    "log-only" => osis::SyncMode::LogOnly,
-                    _ => return Err(usage(format!("bad --mode {m:?}: full or log-only"))),
+                    "stopped" => osis::SyncMode::Stopped,
+                    _ => return Err(usage(format!("bad --mode {m:?}: full or stopped"))),
                 };
                 db.set_sync_options(g, o)?;
             }
-            let m = if o.mode == osis::SyncMode::Full { "full" } else { "log-only" };
+            let m = if o.mode == osis::SyncMode::Full { "full" } else { "stopped" };
             ctx.emit(&[format!("mode {m}")], J::obj([("mode", J::str(m.to_string()))]))
         }
         Cmd::Bundle(BundleCmd::Export { groups }) => {

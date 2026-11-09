@@ -956,12 +956,9 @@ pub struct Core {
     /// The sync records this engine's transactions write or drop (`SyncRecords`), set by
     /// node-sync (`Engine::set_sync_records`; `None`: no node-sync, no sync records).
     pub sync_records: Option<&'static dyn SyncRecords>,
-    /// Aspects whose receipts came from headers alone in this run (`Engine::record_header`, a
-    /// receipts-only read): a demotion's frontier reads them besides its scope's held aspects.
-    pub header_receipts: BTreeSet<(Tid, Ak)>,
-    /// Groups this node holds for receipts only (set by node sync,
-    /// `SyncEngine::set_receipts_only`): what is here of them is behind (`readable_by`).
-    pub receipts_only: BTreeSet<Tid>,
+    /// Groups this node does not sync (set by node sync, `SyncEngine::set_stopped`): what is
+    /// here of them is behind (`readable_by`).
+    pub stopped: BTreeSet<Tid>,
     /// Groups the handle reads and writes at another node (`osis` routes): what is here of them
     /// may be behind, syncing or not (`readable_by`).
     pub routed_away: BTreeSet<Tid>,
@@ -1436,9 +1433,8 @@ impl Core {
             death_walks: _,
             rebuilds: _,
             // set outside steps: identity, configuration, node-sync's settings, test hooks, what
-            // a transaction's end or a receipts-only read records
+            // a transaction's end records
             walks_done: _,
-            header_receipts: _,
             id: _,
             detect: _,
             walk_cache_min: _,
@@ -1456,7 +1452,7 @@ impl Core {
             keep_bodies: _,
             list_bound: _,
             sync_records: _,
-            receipts_only: _,
+            stopped: _,
             routed_away: _,
             #[cfg(debug_assertions)]
             unchecked_tx: _,
@@ -1631,8 +1627,7 @@ impl Core {
             labels: BTreeMap::new(),
             published: None,
             links: None,
-            header_receipts: BTreeSet::new(),
-            receipts_only: BTreeSet::new(),
+            stopped: BTreeSet::new(),
             routed_away: BTreeSet::new(),
         }
     }

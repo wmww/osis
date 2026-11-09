@@ -82,8 +82,6 @@ pub(crate) struct LConn {
     /// Write keys of a host path verified here (a label not recorded in `label.0`): stamps
     /// under them vouch for an entry.
     pub writers: Vec<osis_crypto::VerifyingKey>,
-    /// Read for receipts only (`receipts`): no pass, nothing placed, nothing kept.
-    pub receipts: bool,
 }
 
 impl LConn {
@@ -257,12 +255,6 @@ impl SyncEngine {
         }
         // a queued deposit's host until it takes it (an inbox host of no label synced here)
         add(&mut m, self.state.outbox.values().map(|o| &o.host));
-        let reads: Vec<Tid> = self.receipts.values().map(|r| r.group).collect();
-        for g in reads {
-            for l in self.engine.labels_of(&g) {
-                add(&mut m, &l.hosts);
-            }
-        }
         if self.cfg.peers {
             for (k, (a, _)) in self.peer_addresses() {
                 m.entry(k).or_insert((a, true));
@@ -387,15 +379,6 @@ impl SyncEngine {
 
     pub(super) fn session_event(&mut self, conn: ConnId, e: ClientEvent, out: &mut Vec<Action>) -> Result<()> {
         use ClientEvent as E;
-        // a receipts-only label's data never reaches the entry records (`receipts`)
-        if self.receipts_event(conn, &e, out)? {
-            return Ok(());
-        }
-        if let E::Refused { label: Some(l), fetch, .. } = &e
-            && self.receipts_lc(conn, l)
-        {
-            self.receipts_refused(conn, l, fetch);
-        }
         match e {
             // the node's own dials send no client-port requests
             E::Reply { .. } | E::Notify { .. } => {}
@@ -508,12 +491,6 @@ impl SyncEngine {
         for (l, h) in &self.state.hints {
             if !want.iter().any(|(_, x, _)| x == l) {
                 want.push((h.thing, *l, h.hosts.iter().map(|a| a.key).collect()));
-            }
-        }
-        // receipts-only reads: at their hosts only
-        for r in self.receipts_wanted() {
-            if !want.iter().any(|(_, x, _)| *x == r.1) {
-                want.push(r);
             }
         }
         want

@@ -11,7 +11,7 @@
 //! records (a commit left with no part is deleted, so a re-grant fetches it again; the others
 //! keep their readable parts, the forgotten ones joining late if they come back), pending parts,
 //! but a re-grant's boxes that may still apply (`rotation::boxes_kept`),
-//! receipts, value-less lists, leftovers, purge lists and what they dropped, timers, `secrets.0` waits, the sync records of the
+//! value-less lists, leftovers, purge lists and what they dropped, timers, `secrets.0` waits, the sync records of the
 //! labels of forgotten groups and of the commit blobs holding forgotten parts, and their blob
 //! ciphertexts.
 //!
@@ -210,7 +210,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     // aspect units and per-aspect records
     for (t, ak) in &aspects {
         tx.txn.drop_aspect(t, ak)?;
-        for p in [records::ASPECTS, records::RECEIPT, records::VALUELESS, records::PURGES, records::SUSPECT] {
+        for p in [records::ASPECTS, records::VALUELESS, records::PURGES, records::SUSPECT] {
             tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
         }
         let mut rows = Vec::new();

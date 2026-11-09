@@ -2076,28 +2076,6 @@ fn frontier_lists(e: &osis_node::Engine, done: &osis_node::flows::Done, p: &osis
     done.commits.iter().filter_map(|c| e.header(c)).filter_map(|h| h.frontier.clone()).any(|f| osis_schema::core_types::Frontier::from_value(&f).unwrap().commits.contains(p))
 }
 
-// spec/permissions.md §5.1: a request read by header alone (a receipts-only read) lists too.
-#[test]
-fn request_read_by_header_alone_is_listed_spec_perm_5_1() {
-    let mut lp = net(2, 0x76);
-    lp.sync_all().unwrap();
-    let x = lp.peers[1].engine.me();
-    let t = new_thing(&mut lp, 1);
-    let c = set(&mut lp, 1, t, &REG, "kept");
-    lp.advance(5);
-    let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
-    m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
-    let p = lp.peers[1].commit(m).unwrap().unwrap();
-    let pk = lp.peers[1].engine.package(&p).unwrap().unwrap();
-    let e = &mut lp.peers[0].engine;
-    assert!(e.record_header(&osis_commit::CommitBlob::decode(&pk.bytes).unwrap()).unwrap());
-    let mut scope = osis_perm::DemotionScope::default();
-    scope.roles.entry(x).or_default().insert(t);
-    let now = e.now();
-    assert!(e.frontier(&scope, now).unwrap().commits.contains(&p));
-}
-
 // spec/sync.md §6: a request no signer could ever hold the right for explains no delete: a plain
 // writer's aspect-wide request leaves the keep-out rule alone.
 #[test]

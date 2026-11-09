@@ -709,7 +709,7 @@ fn process_wide_rows_through_the_socket() {
     assert_eq!(c.serving().unwrap(), None);
     until(|| matches!(n.serving_address(), Ok(None)), "hosting did not stop");
     // policies, reach
-    let p = SyncOptions { mode: SyncMode::LogOnly };
+    let p = SyncOptions { mode: SyncMode::Stopped };
     assert_eq!(c.sync_options(g).unwrap(), SyncOptions::default());
     c.set_sync_options(g, p).unwrap();
     assert_eq!(n.sync_options(g).unwrap(), p);

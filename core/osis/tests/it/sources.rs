@@ -194,7 +194,7 @@ fn moving_a_group_both_ways() {
     assert!(x.p.group_sources().is_empty());
     x.to_node();
     assert_eq!(x.p.group_sources().get(&x.g), Some(&x.nc));
-    assert!(x.p.sync_options(x.g).unwrap().mode == osis::SyncMode::LogOnly);
+    assert!(x.p.sync_options(x.g).unwrap().mode == osis::SyncMode::Stopped);
     // only for P: N's label lives and syncs
     block_on(x.n.wait_synced(SyncScope::Thing(x.g))).unwrap();
     until("N synced", || x.n.status().unwrap().groups[&x.g].state == SyncState::Synced);
@@ -225,7 +225,7 @@ fn moving_a_group_both_ways() {
     block_on(x.n.wait_synced(SyncScope::Thing(x.g))).unwrap();
     x.move_group(x.g, GroupSource::Local).unwrap();
     assert!(x.p.group_sources().is_empty());
-    assert!(!(x.p.sync_options(x.g).unwrap().mode == osis::SyncMode::LogOnly));
+    assert!(!(x.p.sync_options(x.g).unwrap().mode == osis::SyncMode::Stopped));
     // what P wrote through N is here: no stale read after the move
     assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("p1")));
     assert_eq!(x.p_local_copy(), Some(s("p1")));
@@ -250,7 +250,7 @@ fn moves_with_pending_writes_refuse() {
     let r = x.move_group(x.g, GroupSource::Node(x.nc.clone()));
     assert!(matches!(r, Err(Error::Network(_) | Error::Unsynced { .. })), "{r:?}");
     assert!(x.p.group_sources().is_empty());
-    assert!(x.p.sync_options(x.g).unwrap().mode != osis::SyncMode::LogOnly);
+    assert!(x.p.sync_options(x.g).unwrap().mode != osis::SyncMode::Stopped);
     assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("pending")));
     // another world: away with nothing pending, then home with P cut from the peer
     let x = world_waiting(Duration::from_millis(300));
@@ -795,7 +795,7 @@ fn a_write_overtaken_by_a_move_fails() {
     let (p, g, addr) = (x.p.clone(), x.g, x.nc.clone());
     x.p.after_source(Box::new(move || {
         p.set_source(g, Some(addr.clone()));
-        let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly });
+        let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::Stopped });
     }));
     let before = x.p_local_copy();
     let r = x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("stranded?"));
@@ -1008,7 +1008,7 @@ fn differential(seed: u64) -> usize {
             2 => {
                 let i = r.next(3) as usize;
                 stopped[i] = !stopped[i];
-                x.p.set_sync_options(gs[i], osis::SyncOptions { mode: if stopped[i] { osis::SyncMode::LogOnly } else { osis::SyncMode::Full } }).unwrap();
+                x.p.set_sync_options(gs[i], osis::SyncOptions { mode: if stopped[i] { osis::SyncMode::Stopped } else { osis::SyncMode::Full } }).unwrap();
             }
             3 => {
                 if connected {
@@ -1094,7 +1094,7 @@ fn a_sharing_flow_overtaken_by_a_move_fails() {
     x.p.after_source(Box::new(move || {
         if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
             p.set_source(g, Some(addr.clone()));
-            let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly });
+            let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::Stopped });
         }
     }));
     let roster = x.p.engine(|e| e.roster(&x.g).len());
@@ -1164,7 +1164,7 @@ fn a_nodes_client_reads_nothing_during_the_catch_up() {
     x.net.partition("p", "s");
     x.net.disconnect("p", "s");
     assert!(x.move_group(x.g, GroupSource::Local).is_err());
-    assert!(x.p.sync_options(x.g).unwrap().mode != osis::SyncMode::LogOnly, "syncing again, behind");
+    assert!(x.p.sync_options(x.g).unwrap().mode != osis::SyncMode::Stopped, "syncing again, behind");
     assert_eq!(x.p.group_sources().get(&x.g), Some(&x.nc));
     assert_eq!(client.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), None, "a stale value, as if current");
     drop(x.host);
@@ -1832,7 +1832,7 @@ fn a_split_made_after_the_route_refuses_the_write() {
     let (p, g, addr) = (x.p.clone(), x.g, x.nc.clone());
     x.p.after_source(Box::new(move || {
         p.set_source(g, Some(addr.clone()));
-        let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly });
+        let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::Stopped });
     }));
     let r = x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("late"));
     x.p.after_source(Box::new(|| {}));

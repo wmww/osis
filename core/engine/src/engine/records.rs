@@ -15,8 +15,6 @@ pub const COMMIT: &[u8] = b"c/";
 pub const CREATED: &[u8] = b"t/";
 /// Aspects with a state (the `aspects.0` index): `a/` + aspect key, empty value.
 pub const ASPECTS: &[u8] = b"a/";
-/// Receipt record per aspect: `r/` + aspect key.
-pub const RECEIPT: &[u8] = b"r/";
 /// Value-less deltas per aspect (expired, purged): `v/` + aspect key.
 pub const VALUELESS: &[u8] = b"v/";
 /// The leftover of a part whose values went (expired, purged; `Meta::stripped`): its body with

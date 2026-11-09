@@ -2811,8 +2811,6 @@ fn settled(mut h: Vec<Step>) -> Vec<Step> {
     h
 }
 
-/// `played`, the history `steps`: when they end with `settled`'s tail (not cut short, as the
-/// exhaustive size's cap cuts it), marked settled from the tail's first commit.
 /// The pack of the setup's grant on G to peer `to` (0's edge naming `to`'s account; `to` authors
 /// a commit in the history).
 fn setup_grant(played: &Played, to: usize) -> usize {
@@ -2823,6 +2821,8 @@ fn setup_grant(played: &Played, to: usize) -> usize {
         .unwrap()
 }
 
+/// `played`, the history `steps`: when they end with `settled`'s tail (not cut short, as the
+/// exhaustive size's cap cuts it), marked settled from the tail's first commit.
 fn settling(played: Played, steps: &[Step]) -> Played {
     let tail = settled(Vec::new());
     let Some(at) = steps.len().checked_sub(tail.len()).filter(|&at| steps[at..] == tail[..]) else { return played };

@@ -29,7 +29,7 @@ pub mod records;
 mod shared;
 pub mod credentials;
 pub mod peers;
-mod receipts;
+mod stopped;
 mod serve;
 pub(crate) mod state;
 mod status;
@@ -294,8 +294,6 @@ pub struct SyncEngine {
     pub(crate) memory: memory::Memory,
     /// Relay-only uploads served sessions made (spec/sync.md §5, as a host admits them).
     pub(crate) relay_gate: osis_proto::RelayGate,
-    /// Labels read for receipts only (`read_receipts`; memory only).
-    pub(crate) receipts: BTreeMap<LabelId, receipts::Read>,
     /// The host config handed to the driver (`host_step`).
     pub(crate) hosting: host::Hosting,
 }
@@ -314,7 +312,7 @@ impl SyncEngine {
         // keeps the changed commits from now on (`Engine::take_changed`)
         engine.take_changed();
         let mut state = State::load(&mut engine)?;
-        engine.core.receipts_only = state.receipts_only.clone();
+        engine.core.stopped = state.stopped.clone();
         // deposits not answered before a restart go again
         let outbox = state.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
         let mut rng = rng;
@@ -410,7 +408,6 @@ impl SyncEngine {
             prefix_checked: BTreeSet::new(),
             memory: memory::Memory::default(),
             relay_gate: osis_proto::RelayGate::default(),
-            receipts: BTreeMap::new(),
             hosting: host::Hosting::default(),
         })
         .and_then(|mut s| {
@@ -673,7 +670,7 @@ impl SyncEngine {
         let key = (self.engine.core.generation, self.state.retired.len(), if self.synced.timed { now } else { 0 });
         if self.synced.key == key {
             #[cfg(debug_assertions)]
-            if self.engine.recheck(format!("labels {} {} {}", self.state.version, self.state.retired.len(), self.state.receipts_only.len())) {
+            if self.engine.recheck(format!("labels {} {} {}", self.state.version, self.state.retired.len(), self.state.stopped.len())) {
                 let ids = |v: &[(Tid, Arc<GroupLabel>)]| v.iter().map(|(g, l)| (*g, l.id, l.replaced)).collect::<Vec<_>>();
                 let (fresh, _) = self.compute_labels(now);
                 assert_eq!(ids(&fresh), ids(&self.synced.labels), "labels() cached");
@@ -697,8 +694,8 @@ impl SyncEngine {
         let me = self.engine.account_tid();
         let (mut out, mut timed) = (Vec::new(), false);
         for g in self.engine.labeled_groups() {
-            // held for receipts only: read on demand (`read_receipts`), never synced
-            if self.state.receipts_only.contains(&g) || self.engine.epochs(&g).is_none_or(|e| !e.read.holds_any()) {
+            // stopped here (`set_stopped`): never synced
+            if self.state.stopped.contains(&g) || self.engine.epochs(&g).is_none_or(|e| !e.read.holds_any()) {
                 continue;
             }
             let labels = self.engine.labels_of(&g);

@@ -1,6 +1,6 @@
 //! Role flows (spec/permissions.md; notes/permissions.md Implementation): accounts, pairing,
 //! grants and inbox delivery, changes and removals with their rotation,
-//! demotions with the pre-sync and the receipt-record frontier, invite grants and self-removal,
+//! demotions with their frontier, invite grants and self-removal,
 //! re-seal, registration steps, links, lost-access cleanup. Rotations, the
 //! cascade and departures live in `crate::rotation`.
 //!

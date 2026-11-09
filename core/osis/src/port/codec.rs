@@ -302,7 +302,7 @@ pub(crate) fn read(v: Value) -> Result<Result<Option<Value>>> {
     }
 }
 
-const STATES: [SyncState; 6] = [SyncState::Synced, SyncState::Syncing, SyncState::NotConnected, SyncState::Refused, SyncState::Stranded, SyncState::LogOnly];
+const STATES: [SyncState; 6] = [SyncState::Synced, SyncState::Syncing, SyncState::NotConnected, SyncState::Refused, SyncState::Stranded, SyncState::Stopped];
 
 pub(crate) fn status_v(s: &Status) -> Value {
     let groups = s
@@ -782,11 +782,11 @@ pub(crate) fn set_role(v: Value) -> Result<SetRoleOpts> {
 
 /// `SyncOptions`' fields.
 pub(crate) fn sync_options_v(o: &crate::SyncOptions) -> Vec<Value> {
-    vec![Value::Bool(o.mode == crate::SyncMode::LogOnly)]
+    vec![Value::Bool(o.mode == crate::SyncMode::Stopped)]
 }
 
 pub(crate) fn sync_options(a: &mut Args) -> Result<crate::SyncOptions> {
-    Ok(crate::SyncOptions { mode: if a.bool()? { crate::SyncMode::LogOnly } else { crate::SyncMode::Full } })
+    Ok(crate::SyncOptions { mode: if a.bool()? { crate::SyncMode::Stopped } else { crate::SyncMode::Full } })
 }
 
 /// An outcome carried as a value (a row that waits): the Reply's own forms.

@@ -30,6 +30,19 @@ pub struct Judge<'a> {
 }
 
 impl Core {
+    /// The account `t` is private to: its reader actor is the account or the account's devices
+    /// actor, so only the account's nodes read it (spec/sync.md §10, Connection proofs).
+    pub fn private_to(&self, t: &Tid) -> Option<Tid> {
+        let r = self.reader_of(t);
+        if self.is_account(&r) { Some(r) } else { self.devices_owner(&r) }
+    }
+
+    /// The account whose devices actor `d` is: `d` has `account.0` and an account as first admin.
+    pub fn devices_owner(&self, d: &Tid) -> Option<Tid> {
+        let seeds = self.ix.by_aspect.contains_key(&(*d, osis_schema::core_types::ACCOUNT.name()));
+        self.first_admin(d).filter(|p| seeds && self.is_account(p))
+    }
+
     /// J over `actors`. Invariant: only actors that proved their own key belong here, never an
     /// account: a chain or an account key proves no removal it omits (`Proven::accounts`).
     pub fn judge(&self, actors: impl IntoIterator<Item = Tid>) -> Judge<'_> {
@@ -60,10 +73,25 @@ impl Judge<'_> {
         Judgment::Unknown
     }
 
-    /// Whether any actor is **known** here: a holder of anything through the rosters this node
-    /// holds. A departed actor is not (it holds nothing).
+    /// Whether any actor is **known** here (spec/sync.md §10, Connection proofs): through the
+    /// rosters this node holds, it holds a role on a thing other than itself that is not private
+    /// to another account (`Core::private_to`), or it is a node of an account that does. A
+    /// departed actor is not (it holds nothing).
     pub fn known(&self) -> bool {
-        self.actors.iter().any(|x| self.timeline(x).is_some_and(|tl| tl.roles_of(x, At::KEYS).keys().any(|t| t != x)))
+        self.actors.iter().any(|x| self.shares(x) || self.accounts_of(x).iter().any(|p| self.shares(p)))
+    }
+
+    /// Whether `x` holds a role on a thing other than itself that is not private to another
+    /// account than this node's.
+    fn shares(&self, x: &Tid) -> bool {
+        let mine = self.core.account;
+        self.timeline(x).is_some_and(|tl| tl.roles_of(x, At::KEYS).keys().any(|t| t != x && self.core.private_to(t).is_none_or(|p| Some(p) == mine)))
+    }
+
+    /// The accounts other than `x` whose devices actor `x` holds a role on: those it is a node of
+    /// (spec/permissions.md §1).
+    fn accounts_of(&self, x: &Tid) -> Vec<Tid> {
+        self.timeline(x).map(|tl| tl.roles_of(x, At::KEYS).keys().filter_map(|t| self.core.devices_owner(t)).filter(|p| p != x).collect()).unwrap_or_default()
     }
 }
 

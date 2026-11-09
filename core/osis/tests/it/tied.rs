@@ -229,12 +229,12 @@ fn nested_tied_grants() {
 }
 
 
-// spec/permissions.md §2 (tied edge removed), notes/node-sync.md Receipts-only reads: Bob's phone
-// holds his sub-tag for receipts only. Carol removes it from the tag while Alice and Bob's
+// spec/permissions.md §2 (tied edge removed): Bob's phone holds his sub-tag but does not sync
+// it. Carol removes it from the tag while Alice and Bob's
 // laptop are away: the phone, admin of the sub-tag by Bob, sees the tie die but leaves the
 // grant to the sub-tag's holders; Bob's laptop removes it once back.
 #[test]
-fn receipts_only_scope_left_to_holders() {
+fn stopped_scope_left_to_holders() {
     let Setup { mut w, alice, bob, carol, g } = setup();
     let join = osis::internals::pair(w.cfg(4, &[]), &bob.pair_offer().unwrap()).unwrap();
     let (_, reply) = bob.pair_accept(join.request()).unwrap();
@@ -248,7 +248,7 @@ fn receipts_only_scope_left_to_holders() {
     bob.add_with_grant(Member::Item(sub), g, Role::Read).unwrap();
     assert_eq!(reach_of(&bob, sub, g).map(|r| r.tie), Some(Tie::Tied(Role::Read)));
     w.run();
-    phone.set_sync_options(sub, osis::SyncOptions { mode: osis::SyncMode::LogOnly }).unwrap();
+    phone.set_sync_options(sub, osis::SyncOptions { mode: osis::SyncMode::Stopped }).unwrap();
     w.run();
     assert_eq!(phone.grants(sub).unwrap().get(&g).map(|e| e.with_membership), Some(true));
     w.set_online(&alice, false);

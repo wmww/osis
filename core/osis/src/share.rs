@@ -332,8 +332,8 @@ pub enum SyncState {
     /// This node holds no key to read what its peers hold now (lost, or not given yet), and can read
     /// nothing new until another holder gives them again.
     Stranded,
-    /// Only the log of its commits is held (`SyncMode::LogOnly`): not synced, what is here is stale.
-    LogOnly,
+    /// Not synced here (`SyncMode::Stopped`): what is here is stale.
+    Stopped,
 }
 
 /// How one group syncs here.
@@ -420,8 +420,8 @@ pub(crate) fn groups_of_labels(labels: &[osis_node::sync::LabelStatus]) -> BTree
 /// The status from the sync engine's labels (a group with several labels shows the worst).
 pub(crate) fn status_of(sync: &mut SyncEngine) -> Result<Status> {
     let mut groups = groups_of_labels(&sync.label_status());
-    for g in sync.receipts_only() {
-        groups.insert(*g, GroupSync { state: SyncState::LogOnly, last_sync: None, refused_by: Vec::new(), leaving: false });
+    for g in sync.stopped() {
+        groups.insert(*g, GroupSync { state: SyncState::Stopped, last_sync: None, refused_by: Vec::new(), leaving: false });
     }
     Ok(Status { connected: sync.connected(), groups, node_connections: Vec::new(), two_sources: BTreeSet::new() })
 }
@@ -461,7 +461,7 @@ pub(crate) fn fetched(l: &mut crate::handle::Locked, t: Tid) -> bool {
     let e = l.sync.engine();
     let mut groups = e.groups_of(&t);
     groups.insert(t);
-    let stale = l.sync.receipts_only().iter().any(|g| groups.contains(g));
+    let stale = l.sync.stopped().iter().any(|g| groups.contains(g));
     !stale && live_labels(&l.sync.label_status()).filter(|s| groups.contains(&s.group)).all(|s| s.passed && s.opening == 0 && label_state(s) != SyncState::Syncing)
 }
 
@@ -470,7 +470,7 @@ pub(crate) fn fetched(l: &mut crate::handle::Locked, t: Tid) -> bool {
 fn carrying(sync: &mut SyncEngine, status: &Status, t: Tid) -> Vec<Tid> {
     let mut groups = sync.engine().groups_of(&t);
     groups.insert(t);
-    groups.into_iter().filter(|g| status.groups.get(g).is_some_and(|s| s.state != SyncState::LogOnly)).collect()
+    groups.into_iter().filter(|g| status.groups.get(g).is_some_and(|s| s.state != SyncState::Stopped)).collect()
 }
 
 /// The check of `wait_synced(Thing(t))`: every sync ID carrying `t` with at least one source
@@ -478,7 +478,8 @@ fn carrying(sync: &mut SyncEngine, status: &Status, t: Tid) -> Vec<Tid> {
 /// ID with no source promises nothing, so it holds nothing up while another has one; with no
 /// source anywhere it waits. `was_carried`: something carried `t` when the wait began, so once
 /// nothing does and this node holds no role on it, it has forgotten `t` (a leave or a removal) and
-/// nothing is left to wait for. Otherwise, carried by nothing, it waits, unless held only as a log.
+/// nothing is left to wait for. Otherwise, carried by nothing, it waits, unless only stopped
+/// groups hold it.
 fn group_synced(sync: &mut SyncEngine, t: Tid, was_carried: bool) -> Option<Result<()>> {
     let st = match status_of(sync) {
         Ok(st) => st,
@@ -486,9 +487,9 @@ fn group_synced(sync: &mut SyncEngine, t: Tid, was_carried: bool) -> Option<Resu
     };
     let groups = carrying(sync, &st, t);
     if groups.is_empty() {
-        // held only as a log: nothing here will ever sync it
-        let log_only = sync.receipts_only().clone().iter().any(|g| *g == t || sync.engine().closure(g).contains(&t));
-        return if log_only { Some(Err(Error::Unsynced { groups: vec![t] })) } else { (was_carried && sync.engine().role_on(&t).is_none()).then_some(Ok(())) };
+        // held only by stopped groups: nothing here will ever sync it
+        let stopped = sync.stopped().clone().iter().any(|g| *g == t || sync.engine().closure(g).contains(&t));
+        return if stopped { Some(Err(Error::Unsynced { groups: vec![t] })) } else { (was_carried && sync.engine().role_on(&t).is_none()).then_some(Ok(())) };
     }
     let all = scoped_labels(sync, Some(&groups));
     let sourced = live_labels(&all).any(|s| s.sources > 0);
@@ -518,9 +519,9 @@ fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, about: Option<&BTreeSet
     deliveries_taken(sync, about).then_some(Ok(()))
 }
 
-/// The label statuses of `groups` (`None`: every group), receipts-only groups left out.
+/// The label statuses of `groups` (`None`: every group), stopped groups left out.
 fn scoped_labels(sync: &mut SyncEngine, groups: Option<&[Tid]>) -> Vec<osis_node::sync::LabelStatus> {
-    let skip = sync.receipts_only().clone();
+    let skip = sync.stopped().clone();
     sync.label_status().into_iter().filter(|s| !skip.contains(&s.group) && groups.is_none_or(|gs| gs.contains(&s.group))).collect()
 }
 
@@ -1590,7 +1591,7 @@ impl Osis {
             SyncScope::All => {
                 // nothing to wait for: done, also without a runtime
                 let idle = self.locked(|x| {
-                    let skip = x.sync.receipts_only().clone();
+                    let skip = x.sync.stopped().clone();
                     x.sync.deliveries_pending() == 0 && x.sync.label_status().iter().all(|s| skip.contains(&s.group))
                 });
                 if idle {

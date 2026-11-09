@@ -749,7 +749,7 @@ pub enum GroupCmd {
     /// How this node syncs G: shows it, and changes what the flags name
     Policy {
         g: String,
-        /// How much of G this node holds: full, log-only
+        /// Whether this node syncs G: full, stopped
         #[arg(long, value_name = "MODE")]
         mode: Option<String>,
     },

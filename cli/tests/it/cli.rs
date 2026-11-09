@@ -378,8 +378,8 @@ fn sharing_commands_local_plan_cli_4() {
     assert_eq!(s.ok(&["status"]).out.lines().next(), Some("connected 0"));
     // CLI `group policy`: shows and sets `SyncOptions`
     assert_eq!(s.ok(&["group", "policy", "me"]).out, "mode full\n");
-    assert_eq!(s.ok(&["group", "policy", "me", "--mode", "log-only"]).out, "mode log-only\n");
-    assert_eq!(s.ok(&["group", "policy", "me"]).out, "mode log-only\n");
+    assert_eq!(s.ok(&["group", "policy", "me", "--mode", "stopped"]).out, "mode stopped\n");
+    assert_eq!(s.ok(&["group", "policy", "me"]).out, "mode stopped\n");
     assert_eq!(s.code(&["group", "policy", "me", "--mode", "some"]), 2);
 }
 

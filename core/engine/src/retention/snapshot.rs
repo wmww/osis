@@ -374,7 +374,7 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
 impl Engine {
     /// Writes a compaction snapshot of `(tid, ak)` from this node's whole state (spec/commits.md
     /// §2, spec/crdt.md §8): values of deltas with an expiry and of purged writes go
-    /// value-less; frontiers from the receipt record. On a `+` aspect a memory commit, frontiers
+    /// value-less; frontiers from what this node received. On a `+` aspect a memory commit, frontiers
     /// continuing from the held valid memory snapshots'. `None`: no state to snapshot (a signal
     /// has none).
     pub fn snapshot(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {

@@ -55,8 +55,8 @@ const CONTACT: &[u8] = b"y/a";
 const LINK_PEER: &[u8] = b"y/l";
 /// Commits of invite requests the user declined (`SyncEngine::decline_invite`).
 const DECLINED: &[u8] = b"y/m";
-/// Groups this node holds none of (receipts-only, `SyncEngine::set_receipts_only`).
-const RECEIPTS_ONLY: &[u8] = b"y/w";
+/// Groups this node does not sync (`SyncEngine::set_stopped`).
+const STOPPED: &[u8] = b"y/w";
 /// Labels a pass finished at once, or that this node made (`note_passed`).
 const PASSED: &[u8] = b"y/B";
 /// A flow's delivery (not an inbox blob) not carried out yet, by the hash of its encoding
@@ -349,8 +349,8 @@ pub struct State {
     pub stranded: BTreeMap<LabelId, u64>,
     /// Commits for nodes over a direct connection (pairing), until the app takes them.
     pub direct: BTreeMap<Tid, Vec<CommitId>>,
-    /// Groups this node holds none of (`y/w`): their labels are read only for receipts.
-    pub receipts_only: BTreeSet<Tid>,
+    /// Groups this node does not sync (`y/w`).
+    pub stopped: BTreeSet<Tid>,
     /// Labels with no first download outstanding: a pass finished once, or this node made them
     /// (`y/B`). History `complete` reads it, so it outlives the run.
     pub passed: BTreeSet<LabelId>,
@@ -607,7 +607,7 @@ impl State {
                     s.direct.insert(r.tid()?, decode_commits(&v)?);
                 }
                 b"w" => {
-                    s.receipts_only.insert(r.tid()?);
+                    s.stopped.insert(r.tid()?);
                 }
                 b"B" => {
                     s.passed.insert(LabelId(r.arr()?));
@@ -1207,14 +1207,14 @@ impl State {
         }
     }
 
-    /// Marks (or unmarks) a group as held by this node for receipts only.
-    pub fn set_receipts_only(&mut self, g: Tid, on: bool) {
+    /// Marks (or unmarks) a group as not synced by this node.
+    pub fn set_stopped(&mut self, g: Tid, on: bool) {
         if on {
-            self.put(key(RECEIPTS_ONLY, &[g.as_bytes()]), Vec::new());
-            self.receipts_only.insert(g);
+            self.put(key(STOPPED, &[g.as_bytes()]), Vec::new());
+            self.stopped.insert(g);
         } else {
-            self.del(key(RECEIPTS_ONLY, &[g.as_bytes()]));
-            self.receipts_only.remove(&g);
+            self.del(key(STOPPED, &[g.as_bytes()]));
+            self.stopped.remove(&g);
         }
     }
 

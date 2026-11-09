@@ -218,12 +218,10 @@ impl SyncEngine {
             entry_box: None,
             writers: Vec::new(),
             work: super::work::Work::fresh(),
-            receipts: self.receipts.contains_key(&l),
         };
         if let Some(c) = self.conns.get_mut(&conn) {
             c.labels.insert(l, lc);
         }
-        self.receipts_start(conn, &l);
         self.try_next(conn, l, out)
     }
 
@@ -237,9 +235,8 @@ impl SyncEngine {
         }
         let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
         if lc.tries.is_empty() {
-            let (g, claimed) = (lc.group, lc.tried_claim && !lc.receipts);
+            let (g, claimed) = (lc.group, lc.tried_claim);
             self.fail(conn, l);
-            // a stranded heartbeat is a holder's act: never under a receipts-only label
             if claimed {
                 self.stranded(conn, g, l, out)?;
             }
@@ -424,7 +421,7 @@ impl SyncEngine {
             lc.tries.clear();
             (lc.step_retry, lc.step_refusals) = (0, 0);
         }
-        if self.cfg.subscribe && !self.receipts_lc(conn, &l) {
+        if self.cfg.subscribe {
             self.command(conn, Command::Subscribe { labels: vec![l] }, out)?;
         }
         // a step registered between the Open reply and the subscription is in neither the
@@ -636,11 +633,6 @@ impl SyncEngine {
     /// The host does not hold the label: register the recorded path from the genesis step
     /// along the deepest branch (relayable by any node, spec/sync.md §5), then open.
     fn register_path(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        // a receipts-only read registers nothing: the label is not there to read
-        if self.receipts_lc(conn, &l) {
-            self.fail(conn, l);
-            return Ok(());
-        }
         let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(()) };
         // nothing to register with: it is not at this host yet (an inbox blob's sender still
         // registering it, a card whose first admin has not), so no other key would open it either
@@ -717,8 +709,8 @@ impl SyncEngine {
     /// Records steps in `label.0` of `g` when this node may write it (an admin; spec/sync.md
     /// §2, §5: "records the steps in label.0"). Steps already recorded are left alone.
     pub(crate) fn record_steps(&mut self, g: &Tid, l: &LabelId, steps: &[Step], claims: Option<(StepId, ClaimSet)>) -> Result<()> {
-        // a receipts-only read writes nothing (`receipts`)
-        if self.state.receipts_only.contains(g) {
+        // a stopped group: nothing is placed there from here
+        if self.state.stopped.contains(g) {
             return Ok(());
         }
         let Some(gl) = self.group_label(g, l) else { return Ok(()) };

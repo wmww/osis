@@ -32,7 +32,7 @@ impl SyncEngine {
                 }
                 st.opening += usize::from(c.up && x.phase == Phase::Opening && (host.is_some() || c.peer));
                 // a host the label no longer names is on its way out: no source of it
-                if c.up && x.phase == Phase::Open && !x.receipts && (host.is_some() || c.peer) {
+                if c.up && x.phase == Phase::Open && (host.is_some() || c.peer) {
                     dialed.extend(c.proven.node);
                     st.sources += 1;
                     if x.idle() && c.session.outstanding() == 0 {
@@ -172,7 +172,7 @@ impl SyncEngine {
     /// Whether every open label on every connection has completed a pass and nothing is
     /// outstanding (tests, simulator quiescence).
     pub fn is_idle(&self) -> bool {
-        self.conns.values().all(|c| c.session.outstanding() == 0 && c.labels.values().all(|l| l.receipts || l.phase != Phase::Open || l.idle()))
+        self.conns.values().all(|c| c.session.outstanding() == 0 && c.labels.values().all(|l| l.phase != Phase::Open || l.idle()))
     }
 
     /// A one-line summary of each label on each connection (tests, diagnostics).

@@ -13,7 +13,7 @@ Named exceptions, each following from a principle stated with it:
 
 ## Words
 - **Proven actors** of a connection: the actors the peer proved on it (issues/net-connect.md, Rules): its account, key actors it holds (a link key it redeems), its own node to nodes of its own account.
-- **Known actor**: one whose proof this node can check: its own account, contacts, holders of anything it holds (through the rosters it holds), and a key actor listed by static entry on a roster or in a head claim set it holds (spec/sync.md §2: K's admin listed it there, so a node holding K may be shown it). A node holding only K's `label.0` (a peer that cannot read K) knows K's key actors this way and no account.
+- **Known actor**: one whose proof this node can check: its own account, contacts, holders of anything it holds (through the rosters it holds) but their own account's private things (spec/sync.md §10), and a key actor listed by static entry on a roster or in a head claim set it holds (spec/sync.md §2: K's admin listed it there, so a node holding K may be shown it). A node holding only K's `label.0` (a peer that cannot read K) knows K's key actors this way and no account.
 - **Credential** of L: a (match value, proof) pair. The match value keys the beacon; the proof is what a Hit on it must show. Four classes, one table:
 
   | class | match value | proof | in whose filter | the filter goes to |

@@ -566,22 +566,21 @@ impl crate::Osis {
     }
 }
 
-/// How much of a group this node holds.
+/// Whether this node syncs a group.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SyncMode {
-    /// All of it.
+    /// It syncs.
     #[default]
     Full,
-    /// None of its content: nothing of it is downloaded or uploaded from here, and what is already
-    /// here stays, no longer updated. Lowering a role reads only the log of who changed what, so
-    /// that the holder's edits there are kept.
-    LogOnly,
+    /// It does not: nothing of it is downloaded or uploaded from here, and what is already here
+    /// stays, no longer updated.
+    Stopped,
 }
 
 /// How this node syncs a group (`Osis::sync_options`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SyncOptions {
-    /// How much of the group this node holds.
+    /// Whether this node syncs the group.
     pub mode: SyncMode,
 }
 
@@ -595,7 +594,7 @@ impl crate::Osis {
             return crate::port::codec::sync_options(&mut a);
         }
         Ok(self.locked(|x| SyncOptions {
-            mode: if x.sync.receipts_only().contains(&group) { SyncMode::LogOnly } else { SyncMode::Full },
+            mode: if x.sync.stopped().contains(&group) { SyncMode::Stopped } else { SyncMode::Full },
         }))
     }
 
@@ -608,8 +607,8 @@ impl crate::Osis {
             args.extend(crate::port::codec::sync_options_v(&o));
             return self.rcall(crate::port::method::SET_SYNC_OPTIONS, args).map(drop);
         }
-        let headers = o.mode == SyncMode::LogOnly;
-        self.act(|l| if l.sync.receipts_only().contains(&group) != headers { l.sync.set_receipts_only(group, headers) } else { Vec::new() });
+        let stop = o.mode == SyncMode::Stopped;
+        self.act(|l| if l.sync.stopped().contains(&group) != stop { l.sync.set_stopped(group, stop) } else { Vec::new() });
         Ok(())
     }
 

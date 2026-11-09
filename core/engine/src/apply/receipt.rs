@@ -1,58 +1,14 @@
 //! Receipts (spec/permissions.md §5.1, notes/permissions.md Revocation): what a demotion's
 //! frontier lists, by commit ID only. A held commit counts as received at its meta's receipt
-//! time; the receipt record (`r/` per aspect) keeps only the commits a receipts-only read
-//! verified without keeping them (`Engine::record_header`). Pending and parked commits are not
-//! received; snapshot frontiers and `Absorbed` are no receipts (spec/crdt.md §8).
+//! time. Pending and parked commits are not received; snapshot frontiers and `Absorbed` are no
+//! receipts (spec/crdt.md §8).
 
-use crate::engine::records::{self, Rd, Wr};
-use crate::engine::{Engine, Tx};
+use crate::engine::Engine;
 use crate::error::Result;
-use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, CommitId, Tid, Ts, WallMs};
-use osis_commit::{CommitBlob, Header};
+use osis_commit::Header;
 use osis_perm::DemotionScope;
 use osis_schema::core_types::{Frontier, is_role_class};
-use std::collections::BTreeMap;
-
-/// The receipt record of one aspect: commits verified by header alone (receipts-only reads).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Receipt {
-    /// ID -> (author, received).
-    pub commits: BTreeMap<CommitId, (Tid, u64)>,
-}
-
-impl Receipt {
-    fn encode(&self) -> Vec<u8> {
-        let mut w = Wr::new().u32(self.commits.len() as u32);
-        for (c, (a, t)) in &self.commits {
-            w = w.raw(&c.0).raw(a.as_bytes()).u64(*t);
-        }
-        w.take()
-    }
-
-    fn decode(b: &[u8]) -> Result<Receipt> {
-        let mut r = Rd::new(b);
-        let mut out = Receipt::default();
-        for _ in 0..r.u32()? {
-            let c = CommitId(r.arr()?);
-            let a = r.tid()?;
-            out.commits.insert(c, (a, r.u64()?));
-        }
-        r.end()?;
-        Ok(out)
-    }
-}
-
-fn get(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Receipt> {
-    match tx.txn.get_local(&records::aspect_key(records::RECEIPT, tid, ak))? {
-        Some(b) => Receipt::decode(&b),
-        None => Ok(Receipt::default()),
-    }
-}
-
-fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, r: &Receipt) -> Result<()> {
-    tx.put_aspect_local(records::RECEIPT, tid, ak, &r.encode())
-}
 
 /// The held snapshots of `(tid, ak)`, any validity (bodies held, or dropped and still standing in,
 /// `Dropped::stands_in`): ID and `ts`.
@@ -73,55 +29,10 @@ pub(crate) fn settled(core: &crate::engine::Core, h: &Header, ai: usize) -> bool
 }
 
 impl Engine {
-    /// Records what one commit's header shows this node received, keeping and applying nothing
-    /// (a receipts-only read of a label this node does not hold, notes/node-sync.md Receipts-only
-    /// reads): every aspect the header lists, received now (spec/permissions.md §5.1: received
-    /// means its header decrypted and its signature verified). Those aspects join
-    /// `Core::header_receipts`, which demotions' frontiers read. False, recording nothing, when
-    /// the header cannot be verified here: lists by link (their pages are not fetched), an
-    /// author whose creation record is not held, a bad signature or header, an ephemeral
-    /// commit (a frontier lists none, spec/permissions.md §5.2), a `ts` past the drift bound
-    /// (it would wait, spec/crdt.md §2.2).
-    pub fn record_header(&mut self, c: &CommitBlob) -> Result<bool> {
-        let h = &c.header;
-        if !h.is_resolved() || h.ephemeral.is_some() {
-            return Ok(false);
-        }
-        let id = c.id();
-        if super::signed_by_author(&self.core, c, &id, self.core.created(&h.author)) != Some(true) {
-            return Ok(false);
-        }
-        let now = self.now();
-        if h.validate().is_err() || h.ts.wall_ms().0 > now.0.saturating_add(MAX_DRIFT_MS) {
-            return Ok(false);
-        }
-        // a request also counts where it names (any demotion there lists it, `frontier`): noted under
-        // the thing's `roles.0`, which every demotion's scope reads
-        let roles = Ak::new("roles.0").map_err(|_| crate::error::Error::Corrupt("roles.0"))?;
-        let aspects: Vec<(Tid, Ak)> = h.aspects.iter().map(|a| (a.tid, a.ak.clone())).chain(h.purge.iter().map(|i| (*i.tid(), roles.clone()))).collect();
-        self.run(|tx| {
-            for (t, ak) in &aspects {
-                let mut r = get(tx, t, ak)?;
-                // a header read again keeps its first receipt time (`as_of` frontiers)
-                r.commits.entry(id).or_insert((h.author, now.0));
-                put(tx, t, ak, &r)?;
-            }
-            Ok(())
-        })?;
-        self.core.header_receipts.extend(aspects);
-        Ok(true)
-    }
-
-    /// The receipt record of one aspect: commits verified by header alone.
-    pub fn receipt(&mut self, tid: &Tid, ak: &Ak) -> Result<Receipt> {
-        let (tid, ak) = (*tid, ak.clone());
-        self.run(|tx| get(tx, &tid, &ak))
-    }
-
     /// The frontier a demotion stamped now must embed (spec/permissions.md §5.1), by commit ID:
     /// per aspect the scope puts in question and per demoted node, that node's commits this
-    /// node received by `as_of` (held ones at their meta's receipt time, those verified by
-    /// header alone at the record's; bodies held, dropped or compacted alike), memory commits
+    /// node received by `as_of` (at their meta's receipt time; bodies held, dropped or compacted
+    /// alike), memory commits
     /// never; and, where it falls below write, its held commits acting for that thing; and every
     /// purge request whose right may rest on a role it puts in question
     /// (`retention::requests_resting_on`). This node's own receipts only. A demotion stamps it as
@@ -157,15 +68,6 @@ impl Engine {
                 aspects.push((*node, *t, ak.clone()));
             }
         }
-        // aspects known only from headers (receipts-only reads): this node cannot tell which
-        // the scope reaches, so each demoted node's commits on them are listed; one where its
-        // class did not fall is never consulted (spec/permissions.md §5.1)
-        for (tid, ak) in &self.core.header_receipts {
-            let admin = admin_class(ak);
-            for node in scope.content.keys().chain(scope.roles.keys().filter(|_| admin)) {
-                aspects.push((*node, *tid, ak.clone()));
-            }
-        }
         aspects.sort();
         aspects.dedup();
         self.run(|tx| {
@@ -174,14 +76,6 @@ impl Engine {
             let mut content: Vec<(std::cmp::Reverse<u64>, CommitId)> = Vec::new();
             for (node, t, ak) in aspects.iter().cloned() {
                 let plain = !admin_class(&ak);
-                for (id, (a, at)) in get(tx, &t, &ak)?.commits {
-                    if a == node && at <= as_of.0 {
-                        f.commits.insert(id);
-                        if plain {
-                            content.push((std::cmp::Reverse(at), id));
-                        }
-                    }
-                }
                 for c in tx.core.durable_on(&(t, ak.clone())) {
                     let Some(m) = tx.core.ix.commits.get(&c) else { continue };
                     if m.view.author == node && m.received.0 <= as_of.0 {

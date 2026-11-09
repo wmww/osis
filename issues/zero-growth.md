@@ -20,7 +20,6 @@ Permission changes over inconsistent connections cannot all work out; this is on
 ## To check when building
 - Bound the loss: keep the writer's previous snapshot until the next one lands, so a late snapshot falls back to it and costs at most one compaction interval. Not modelled yet: add it to `forget.rs` first.
 - A snapshot rewrites the whole field, so a very large field needs a snapshot that links existing pages (none allowed today).
-- `Receipt` is rewritten on every insert (O(n) per write): make it append segments.
 - spec/requirements.md states the visible guarantee and the best-effort goals, in user terms, never naming snapshots; wording goes to Tess.
 - Spec: spec/commits.md §5 ("never headers"), spec/permissions.md lists; notes/growth.md rows 1, 3.
 - The model is on branch `zero-growth`.

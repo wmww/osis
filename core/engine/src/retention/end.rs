@@ -134,7 +134,7 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
         crate::apply::rebuild(tx, t, ak)?;
         tx.txn.drop_aspect(t, ak)?;
         tx.core.forget_live(t, ak);
-        for p in [records::ASPECTS, records::RECEIPT, records::SUSPECT] {
+        for p in [records::ASPECTS, records::SUSPECT] {
             tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
         }
         if tx.core.ix.valueless.get(&k).is_some() {

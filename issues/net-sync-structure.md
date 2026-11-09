@@ -11,7 +11,7 @@ Unblocks: issues/net-honest-status.md (both sides judge: a pass runs over every 
 
 ## (b) One `sources(L)`
 Six computations each answer "which nodes does L sync with" over different inputs, and they disagree at the edges (audit rows 13, 15-18, 36):
-- `wanted_hosts` (conn.rs): the hosts to dial, from config, labels' and hints' hosts, queued deposits' hosts, receipt groups' hosts, then `peer_addresses` and `link_routes`;
+- `wanted_hosts` (conn.rs): the hosts to dial, from config, labels' and hints' hosts, queued deposits' hosts, then `peer_addresses` and `link_routes`;
 - `wanted_labels` (conn.rs): per label, the host keys to open it at, co-readers' and link routes' keys appended;
 - `drop_unwanted_peers`' set (conn.rs): `peers()` keys plus `link_routes()`, closing every peer connection outside it;
 - `group_peers` (status.rs): a group's hosts, co-readers and link routes, for the API;

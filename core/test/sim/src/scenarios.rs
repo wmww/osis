@@ -45,7 +45,6 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("revocation_carol", library::revocation_carol),
     ("demotion_synced", library::demotion_synced),
     ("demotion_unsynced", library::demotion_unsynced),
-    ("demotion_receipts", library::demotion_receipts),
     ("link_redeem", library::link_redeem),
     ("link_race", library::link_race),
     ("chat_join_leave", library::chat_join_leave),

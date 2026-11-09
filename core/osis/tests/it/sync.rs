@@ -531,7 +531,7 @@ fn removal_from_partial_node_keeps_unheld_edits_spec_permissions_5_2() {
     let join = osis::internals::pair(w.cfg(9, &[]), &alice.pair_offer().unwrap()).unwrap();
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
     let phone = join.finish(&reply).unwrap();
-    phone.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly }).unwrap();
+    phone.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::Stopped }).unwrap();
     w.run();
     let in_g = item(bob, g, g, "bob in g");
     let in_h = item(bob, h, h, "bob in h");
@@ -560,10 +560,10 @@ fn removal_from_partial_node_keeps_unheld_edits_spec_permissions_5_2() {
     assert_eq!(x(carol, in_h), Some(s("bob in h")), "his edit under H stays: Carol vouches for it");
 }
 
-// spec/permissions.md §5.3, notes/api.md Sync configuration and status: a group held for receipts only shows as such in
-// the status, and `wait_synced` leaves it out.
+// spec: none (API surface, notes/api.md Sync configuration and status): a group stopped here
+// shows as such in the status, and `wait_synced` leaves it out.
 #[test]
-fn receipts_only_status_spec_permissions_5_3() {
+fn stopped_group_status() {
     let mut w = World::new();
     let (alice, _, _) = people(&mut w, 1);
     let g = group(&alice);
@@ -578,11 +578,11 @@ fn receipts_only_status_spec_permissions_5_3() {
     let join = osis::internals::pair(w.cfg(9, &[]), &alice.pair_offer().unwrap()).unwrap();
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
     let phone = join.finish(&reply).unwrap();
-    phone.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly }).unwrap();
-    assert_eq!(phone.sync_options(h).unwrap(), osis::SyncOptions { mode: osis::SyncMode::LogOnly });
+    phone.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::Stopped }).unwrap();
+    assert_eq!(phone.sync_options(h).unwrap(), osis::SyncOptions { mode: osis::SyncMode::Stopped });
     w.run();
     let st = phone.status().unwrap();
-    assert_eq!(st.groups.get(&h).map(|s| s.state), Some(SyncState::LogOnly), "{st:?}");
+    assert_eq!(st.groups.get(&h).map(|s| s.state), Some(SyncState::Stopped), "{st:?}");
     assert_eq!(st.groups.get(&g).map(|s| s.state), Some(SyncState::Synced), "{st:?}");
     // nothing of H goes into a wait for it
     w.until(phone.wait_synced(SyncScope::All), 1000, 10).unwrap();
@@ -949,10 +949,9 @@ fn wait_synced_waits_for_deliveries_without_peered_groups() {
     let g = group(&carol);
     w.run();
     w.set_reachable(&carol, h, false);
-    // the groups learned from Bob's card held for receipts only: no label of hers with peers
-    // is synced
+    // the groups learned from Bob's card stopped: no label of hers with peers is synced
     for (h, _) in carol.status().unwrap().groups.into_iter().filter(|(_, s)| s.state != SyncState::NotConnected) {
-        carol.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly }).unwrap();
+        carol.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::Stopped }).unwrap();
     }
     carol.grant(g, b, Role::Read, Default::default()).unwrap();
     assert!(w.try_until(carol.wait_synced(SyncScope::All), 1000, 10).is_none());

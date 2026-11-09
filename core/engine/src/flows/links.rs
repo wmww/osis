@@ -140,7 +140,8 @@ impl Engine {
     /// worked that reached them. Idempotent across nodes: a finalization by any of them is
     /// that explicit write.
     pub fn links_due(&mut self) -> Result<Vec<(HeldLink, Option<WallMs>)>> {
-        let me = self.core.writer()?;
+        // a node that has joined no account is admin of no K
+        let Some(me) = self.core.me() else { return Ok(Vec::new()) };
         let ts = super::now_ts(&self.core);
         let mut out = Vec::new();
         for h in self.held_links()?.iter() {
@@ -162,7 +163,7 @@ impl Engine {
     /// When the next link this node may finalize expires (corrected wall ms): the earliest
     /// `until` of a live L edge on a K it is admin of.
     pub fn next_link_expiry(&mut self) -> Result<Option<u64>> {
-        let me = self.core.writer()?;
+        let Some(me) = self.core.me() else { return Ok(None) };
         let ts = super::now_ts(&self.core);
         let mut next: Option<u64> = None;
         for h in self.held_links()?.iter() {

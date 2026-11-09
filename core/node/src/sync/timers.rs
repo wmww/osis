@@ -9,7 +9,7 @@ impl SyncEngine {
         let todo: Vec<(ConnId, LabelId)> = self
             .conns
             .iter()
-            .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| !l.receipts && l.dirty && l.phase == Phase::Open && l.ready()).map(move |(lid, _)| (*id, *lid)))
+            .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.dirty && l.phase == Phase::Open && l.ready()).map(move |(lid, _)| (*id, *lid)))
             .collect();
         // no pass before a fill has what judging needs, on any connection: it would call this node
         // stranded
@@ -95,13 +95,6 @@ impl SyncEngine {
             self.local_dirty = true;
         }
         for (conn, label) in resync {
-            // a receipts-only label is listed once per connection
-            if let Some(l) = self.lc(conn, &label).filter(|l| l.receipts) {
-                if !l.synced {
-                    self.sync_label(conn, label, out)?;
-                }
-                continue;
-            }
             if self.needs_sync(conn, &label) {
                 self.sync_label(conn, label, out)?;
                 continue;
@@ -210,7 +203,7 @@ impl SyncEngine {
                 self.diag(format!("sync: {e}"));
             }
         }
-        let open: Vec<(ConnId, LabelId)> = self.conns.iter().flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.phase == Phase::Open && !l.syncing && !l.receipts).map(move |(lid, _)| (*id, *lid))).collect();
+        let open: Vec<(ConnId, LabelId)> = self.conns.iter().flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.phase == Phase::Open && !l.syncing).map(move |(lid, _)| (*id, *lid))).collect();
         for (conn, label) in open {
             if self.needs_sync(conn, &label) {
                 if let Err(e) = self.sync_label(conn, label, &mut out) {
@@ -240,9 +233,6 @@ impl SyncEngine {
 
     /// Starts a cursor sync of an open label.
     pub(crate) fn sync_label(&mut self, conn: ConnId, label: LabelId, out: &mut Vec<Action>) -> Result<()> {
-        if self.receipts_lc(conn, &label) {
-            return self.receipts_sync(conn, label, out);
-        }
         let now = self.raw_now();
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let host = c.host;

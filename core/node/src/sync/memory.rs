@@ -213,7 +213,7 @@ pub(crate) struct Memory {
 impl SyncEngine {
     /// Open connections with label `l` (connection, host key, keys).
     fn open_conns(&self, l: &LabelId) -> Vec<(ConnId, HostKey, HeadKeys)> {
-        self.conns.iter().filter_map(|(id, c)| c.labels.get(l).filter(|x| x.phase == Phase::Open && !x.receipts && c.up).map(|x| (*id, c.host, x.keys.clone()))).collect()
+        self.conns.iter().filter_map(|(id, c)| c.labels.get(l).filter(|x| x.phase == Phase::Open && c.up).map(|x| (*id, c.host, x.keys.clone()))).collect()
     }
 
     /// Per step, before the engine's changes are drained: the aspects whose memory snapshot
@@ -687,7 +687,7 @@ impl SyncEngine {
     /// label at.
     fn relay_stamp_key(&mut self, g: &Tid, l: &LabelId) -> Option<osis_crypto::SigningSecret> {
         for c in self.conns.values() {
-            if let Some(x) = c.labels.get(l).filter(|x| x.phase == Phase::Open && !x.receipts)
+            if let Some(x) = c.labels.get(l).filter(|x| x.phase == Phase::Open)
                 && let Some(w) = &x.keys.write
             {
                 return Some(w.clone());

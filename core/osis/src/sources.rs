@@ -101,9 +101,9 @@ pub(crate) fn labeled(l: &mut Locked, g: &Tid) -> bool {
     l.sync.engine_mut().labels_of(g).iter().any(|x| !x.replaced)
 }
 
-/// The group syncs here: a live label, not held for receipts only.
+/// The group syncs here: a live label, not stopped.
 fn syncs_here(l: &mut Locked, g: &Tid) -> bool {
-    !l.sync.receipts_only().contains(g) && labeled(l, g)
+    !l.sync.stopped().contains(g) && labeled(l, g)
 }
 
 /// The things commit `id` touched, when this engine holds it.
@@ -495,7 +495,7 @@ impl Osis {
     /// `UnknownThing`, nothing changed); waits for this node's writes in it to reach a saved peer
     /// (`wait_synced`'s outcomes; failed or dropped, nothing changed; what is written or arrives meanwhile
     /// is waited for too); then this
-    /// node stops syncing it, for itself alone (`SyncMode::LogOnly`), and calls go there. `Invalid`: the account's home group, or a
+    /// node stops syncing it, for itself alone (`SyncMode::Stopped`), and calls go there. `Invalid`: the account's home group, or a
     /// group still synced here through a parent (its things would have two sources: move the parent).
     ///
     /// To `Local`: this node must hold the group (a program with no store has no keys: `Unsupported`; a node
@@ -553,8 +553,8 @@ impl Osis {
                     l.group_sources.insert(group, addr.clone());
                     save_sources(l)?;
                     self.inner.routing.store(true, Ordering::Release);
-                    if held && !l.sync.receipts_only().contains(&group) {
-                        let acts = l.sync.set_receipts_only(group, true);
+                    if held && !l.sync.stopped().contains(&group) {
+                        let acts = l.sync.set_stopped(group, true);
                         self.inner.apply(acts);
                     }
                     Ok(())
@@ -572,7 +572,7 @@ impl Osis {
             let held = l.engine().knows(&group);
             let limit = self.inner.limit;
             let role = crate::read::Reader { e: l.engine(), limit, actor: None }.role_on(group);
-            let stopped = l.sync.receipts_only().contains(&group);
+            let stopped = l.sync.stopped().contains(&group);
             (held, role, stopped, labeled(l, &group), l.group_sources.get(&group).cloned())
         });
         if at.is_none() && !stopped {
@@ -586,7 +586,7 @@ impl Osis {
             self.sync_here(group, &[], true)?;
         }
         if stopped {
-            self.act(|l| l.sync.set_receipts_only(group, false));
+            self.act(|l| l.sync.set_stopped(group, false));
         }
         // what was written at the node reaches a saved peer first, else this engine would catch up
         // without it; not asked of a node that is gone

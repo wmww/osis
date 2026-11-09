@@ -10,7 +10,6 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` records
 | `c/`+commit | applied commit records: a head (`index::record_head`, version byte 1: received, origin, dropped parts with what each keeps (`Meta::dropped`), stripped parts (`Meta::stripped`), parts whose leftover keeps own values (`Meta::valued`)), then the current blob |
 | `t/`+tid | creation records |
 | `a/`+aspect | aspects with a state (`aspects.0`) |
-| `r/`+aspect | receipt records (notes/permissions.md Revocation) |
 | `v/`+aspect | value-less deltas (expired, purged): the join-time strip list |
 | `w/`+aspect+commit+ai | leftovers (notes/engine-retention.md) |
 | `p/`+aspect, `pn/`+aspect+commit, `z/`+commit+tid | purge requests on a whole aspect or author; requests naming a commit; a request that dropped a permanent delta (`retention::lasting`) |
