@@ -8,7 +8,7 @@
 - Dialed (`conn.rs` `wanted_hosts`): config hosts, labels' and hints' non-`peer://` hosts, queued deposits' hosts, co-readers and a link's sharer (row 28). Co-readers (`peers.rs` `peers`): node things with a held `reach.0` that `may_read` a synced label's group, at most 8 per label and 64 in all, by node tid; an unreachable 8 hide a reachable 9th (row 36).
 - `reach.0` (dialable key, global addresses, relays, lan secret) goes under every synced label.
 - LAN: a 124-byte announcement of a tag (from the lan secret), a per-join key, a port and a signature by the dialable key sealed under the lan secret. A receiver matches it only against co-readers it knows from `reach.0`, only from a private source address (`lan.rs` `recv` and `peers.rs` `lan_seen`, row 30), within ±1 ten-minute window (row 34), and runs a candidate, heard-count, replay-binding and route-switching machine on the match (notes/peers.md LAN).
-- Rotation (`rotate_reach`): by hand (`rotate_peer_address`) and when a direct link ends (osis `upkeep_links`; spec/permissions.md §7 SHOULD). It drops the old listener at once, so a node that knows only the old key and hears the new `reach.0` from nobody is cut off for good (rest of row 10).
+- Rotation (`rotate_reach`): only by hand (`rotate_peer_address`; notes/peers.md, No automatic rotation). It drops the old listener at once, so a node that knows only the old key and hears the new `reach.0` from nobody is cut off for good (rest of row 10).
 - So a node connects only to nodes it already knows something of. Two nodes holding the same thing that never met (new devices on both sides; nodes granted by nodes now gone) never connect, on a LAN or off it.
 
 ## Rules
@@ -36,8 +36,8 @@
 ## The listening key
 - One listening key per node is a design choice, not a requirement: the dialable key, dialed by key from config, links and own account data, also its key as a peer of groups it cannot read (issues/net-one-peer.md). LAN listeners take a fresh key per network join, since an announcement is heard by strangers and a stable key in it would let anyone track the device across networks (spec/sync.md §10). The dialable listener shows its stable key in TLS to any dialer, scanners included: tracking of a node reachable at global addresses; a later fix makes the dialer prove it knows the key first (issues/privacy.md).
 - Unsure (design): whether one key for dialing, serving and the client port earns its keep against a key per role; decide with issues/net-one-peer.md.
-- **No automatic rotation** (design; Tess has no preference): the key stays put; `rotate_peer_address` stays as an explicit user act; ending a direct link no longer rotates (spec/permissions.md §7 SHOULD goes). Why: once LAN recognition and opening need no known key, an old key gives an ex-holder only a way to dial the node, which opens nothing for it; what it still learns is the node's address and that it is online, which is issues/privacy.md's. Rotation's costs stay: it strands nodes that knew only the old key (row 10), breaks a key named in `Config.relays` (issues/p2p-own.md Open) and changes the key own data lists.
-- If rotation stays for the hand-made case: keep the old listener until the new key reached every own node and connected peer, or a bound passes (Unsure (design)), so connected peers learn the new key before the old one goes.
+- **No automatic rotation** (Built; notes/peers.md, with the why): the key stays put; `rotate_peer_address` is the only rotation, an explicit user act; ending a direct link rotates nothing.
+- Not built, for `rotate_peer_address`: keep the old listener until the new key reached every own node and connected peer, or a bound passes (Unsure (design)), so connected peers learn the new key before the old one goes.
 
 ## Nodes that never met, on different networks
 - Two nodes of different accounts on different networks with no common node online and no known address cannot connect: no relay or default meeting point is in builds (decided). Off a LAN that is the usual case for phones and home machines, whose addresses change and who are not reachable. On a LAN or with any common node online they meet as above.
@@ -51,7 +51,7 @@
 - Sharing the announcement port needs `SO_REUSEADDR` semantics of Linux and Android. On BSD and macOS a second node on one machine fails the bind (logged, no LAN for it): `SO_REUSEPORT` there, untested.
 
 ## Spec and code to change
-spec/sync.md §10 (LAN discovery: announcement, tag, sealed signature, receiver rules; `reach.0` lan secret; Keys and reach), spec/data-model.md §9 `reach.0` field 2, spec/permissions.md §7 rotation, osis-crypto LAN sealing and its vector, notes/peers.md LAN and `reach.0`, notes/networking.md decision 4.
+spec/sync.md §10 (LAN discovery: announcement, tag, sealed signature, receiver rules; `reach.0` lan secret; Keys and reach), spec/data-model.md §9 `reach.0` field 2, osis-crypto LAN sealing and its vector, notes/peers.md LAN and `reach.0`, notes/networking.md decision 4.
 
 ## Related
 Relays (co-readers as relays, relaying for strangers, port mapping): issues/p2p-own.md. What opens once connected: issues/net-shared-set.md. Links and inbox delivery: issues/net-first-contact.md.

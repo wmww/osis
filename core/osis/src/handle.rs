@@ -135,18 +135,6 @@ impl Default for AppConfig {
     }
 }
 
-/// A share link this node made: K and L (spec/permissions.md §7).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct MadeLink {
-    pub l: Tid,
-    pub target: Tid,
-    pub single_use: bool,
-    /// The link text carries this node's dialable key (`LinkOpts.direct`).
-    pub direct: bool,
-    /// A direct link that ended (revoked, finalized, expired): the key it carried was rotated.
-    pub ended: bool,
-}
-
 /// The sync engine with its event channel, the dispatcher sequence number and the handle's
 /// bookkeeping, all under one lock.
 pub(crate) struct Locked {
@@ -157,8 +145,6 @@ pub(crate) struct Locked {
     pub status: Status,
     /// Pairing offers not yet used: secret, expiry (wall ms).
     pub offers: Vec<([u8; 32], u64)>,
-    /// Links made here, by K.
-    pub links: BTreeMap<Tid, MadeLink>,
     /// This process's connections to other nodes, in the order they connected.
     pub connections: Vec<Arc<crate::port::client::Connection>>,
     /// Groups this node reads and writes at another node: its address, persisted as the `sources`
@@ -498,7 +484,6 @@ impl std::fmt::Debug for Inner {
 }
 
 pub(crate) const SAVED_PEERS: &str = "saved_peers";
-pub(crate) const LINKS: &str = "links";
 /// The own serving address this node added to its saved peers (`Osis::upkeep_serving_peer`).
 pub(crate) const SERVING_PEER: &str = "serving_peer";
 
@@ -613,9 +598,7 @@ impl Osis {
         let (me, home) = e.account()?.ok_or_else(|| Error::Storage("no account record".into()))?;
         let peers = load_peers(&mut e)?.unwrap_or_default();
         let sync = sync_over(e, &clock, &cfg, &peers)?;
-        let db = Osis::start(sync, clock, store, &cfg, me, home)?;
-        db.load_links()?;
-        Ok(db)
+        Osis::start(sync, clock, store, &cfg, me, home)
     }
 
     pub(crate) fn start(mut sync: SyncEngine, clock: Arc<dyn Clock>, store: Store, cfg: &Config, me: Tid, home: Tid) -> Result<Osis> {
@@ -639,7 +622,7 @@ impl Osis {
             Some(b) if !b.is_empty() => Some(String::from_utf8(b).map_err(|_| Error::Storage("serving peer record".into()))?.parse()?),
             _ => None,
         };
-        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new(), connections: Vec::new(), group_sources, status_failed: false, serving_peer };
+        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), connections: Vec::new(), group_sources, status_failed: false, serving_peer };
         let port = crate::port::serve::Port::new();
         let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, home, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, text_save: cfg.app.internals.text_save.clone(), transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.direct_sync, connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
@@ -804,7 +787,6 @@ impl ReadOnly {
             return;
         }
         self.upkeep_serving_peer(l);
-        self.upkeep_links(l);
         match crate::share::status_of(&mut l.sync) {
             Ok(status) if status != l.status || l.status_failed => {
                 for (g, s) in &status.groups {

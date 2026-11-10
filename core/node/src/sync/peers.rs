@@ -138,10 +138,10 @@ impl SyncEngine {
         s
     }
 
-    /// Rotates this node's reach now (`Osis::rotate_reach`): a new dialable secret and lan
+    /// Rotates this node's reach now (`Osis::rotate_peer_address`): a new dialable secret and lan
     /// secret, `reach.0` written with the new key and the same relays, and `Action::Reach` so
-    /// the driver listens with the new key and joins the LAN with a fresh one. The osis handle
-    /// also rotates when a direct link ends. A co-reader removed since, or a link holder, can no
+    /// the driver listens with the new key and joins the LAN with a fresh one. Only when asked: nothing
+    /// rotates it automatically. A co-reader removed since, or a link holder, can no
     /// longer dial this node or recognise it on a LAN. Direct links still open lose first
     /// contact (they work through hosts).
     #[must_use]

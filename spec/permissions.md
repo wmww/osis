@@ -342,7 +342,6 @@ A commit of account P names the epoch it is signed at (spec/wire.md §4); §5.4 
   - A link carries only that key and those relays.
   - The redeemer dials that key with an ephemeral transport key, finds K through its shared set (the link key's static entry, spec/sync.md §10, Shared set), opens K's label there as at a host, and MAY keep dialing it, from the link it followed, for K's labels and the target's, nothing else.
   - Putting the key in a link is the sharer's explicit choice, and a node without hosts can make only such links (one naming no host and no node reaches nobody); it serves K's label and the target's complete (spec/sync.md §5).
-- **Rotating the dialable key**: when a link ends by revocation (of L, or with a joiner's), by expiry, or a multi-use link otherwise, the sharer SHOULD rotate its dialable key and lan secret; a single-use link finalized by its redemption does not.
 - L is listed in every step of K's label by its static entry with an entry box (spec/sync.md §2), and holds boxes in K's `secrets.0` like any key-actor holder (sealed to L's KEM key, spec/crypto.md §3).
 - **Redeem**:
   1. Derive L's keys from the seed.

@@ -4,7 +4,7 @@
 //! carries out; calls that wait for another node are `async` (runtime-agnostic futures).
 
 use crate::error::{Error, Result};
-use crate::handle::{LINKS, Locked, MadeLink, Osis, ReadOnly, SERVING_PEER, save_peers};
+use crate::handle::{Locked, Osis, ReadOnly, SERVING_PEER, save_peers};
 use crate::watch::{Delivery, Filter, Subscription};
 use osis_base::{Ak, Role, Tid, Value, Time};
 use osis_node::flows;
@@ -12,7 +12,6 @@ use osis_node::sync::{HostStatus, SyncEngine};
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Duration;
 
 /// When a grant ends and what its holder may grant others (`Osis::grant`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -106,10 +105,10 @@ pub struct LinkOpts {
     /// The first redemption ends the link.
     pub single_use: bool,
     /// Opt-in: the link text says how to reach this node directly, so a redeemer that shares no saved
-    /// peer with it reaches it while it is online. Anyone holding the link can dial this node until
-    /// the link ends by revocation or expiry, when the node's address changes (a single-use link's
-    /// redemption keeps it: the redeemer keeps the direct path). Needs a runtime and
-    /// `Config::direct_sync`; a node with no saved peers can only make direct links.
+    /// peer with it reaches it while it is online. Anyone holding the link can dial this node, also
+    /// after the link ends, until `Osis::rotate_peer_address`; dialing opens nothing the link no
+    /// longer grants. Needs a runtime and `Config::direct_sync`; a node with no saved peers can
+    /// only make direct links.
     pub direct: bool,
 }
 
@@ -1016,11 +1015,6 @@ impl Osis {
         let mut w = self.write();
         w.group(self.home()).add(Member::Item(keep))?;
         w.commit()?;
-        let l = osis_node::Identity::from_seed(link.seed.clone()).tid();
-        self.locked(|x| {
-            x.links.insert(link.k, MadeLink { l, target, single_use: opts.single_use, direct: opts.direct, ended: false });
-            save_links(x)
-        })?;
         self.carry(done)?;
         if opts.direct {
             // only the dialable key and relays, never direct addresses or the lan secret
@@ -1028,16 +1022,6 @@ impl Osis {
             let r = self.locked(|x| x.sync.own_reach()).ok_or(Error::Invalid("this node's reach is gone".into()))?;
             let relays = r.items.iter().filter(|i| osis_transport::p2p::Relay::parse(i).is_some()).cloned().collect();
             link.peers = vec![osis_label::Peer { dialable: r.dialable, relays }];
-            if let Some(until) = opts.until {
-                // the link ends by expiry: `upkeep_links` rotates the key then
-                let wait = Duration::from_millis(until.0.saturating_sub(self.inner.clock.now_wall_ms().0).saturating_add(1));
-                let db = self.downgrade();
-                self.inner.net.after(wait, Box::new(move || {
-                    if let Some(db) = db.hold() {
-                        db.locked(|x| db.upkeep_links(x));
-                    }
-                }));
-            }
         }
         Ok(ShareLink(link.to_text().map_err(bad("link"))?))
     }
@@ -1237,27 +1221,6 @@ impl Osis {
         self.carry(done)
     }
 
-
-    pub(crate) fn load_links(&self) -> Result<()> {
-        let Some(b) = self.engine(|e| e.app_record(LINKS))? else { return Ok(()) };
-        let v = osis_base::cbor::decode(&b, &osis_base::cbor::Limits { max_depth: 4, max_bytes: b.len() }).map_err(|_| Error::Storage("links record".into()))?;
-        let Value::List(items) = v else { return Err(Error::Storage("links record".into())) };
-        let mut links = BTreeMap::new();
-        for i in items {
-            if let Value::List(f) = i
-                && let [Value::Tid(k), Value::Tid(l), Value::Tid(t), Value::Bool(s), rest @ ..] = f.as_slice()
-            {
-                let flag = |i: usize| matches!(rest.get(i), Some(Value::Bool(true)));
-                let (direct, ended) = (flag(0), flag(1));
-                links.insert(*k, MadeLink { l: *l, target: *t, single_use: *s, direct, ended });
-            }
-        }
-        self.locked(|x| {
-            x.links = links;
-            self.upkeep_links(x);
-        });
-        Ok(())
-    }
 
     /// This account's contact card: a read link to its profile, a thing that also carries what others
     /// need to grant this account a role. Made once; later calls return the same card. `Invalid` on a node with no saved peers.
@@ -1790,12 +1753,6 @@ const CONTACT: &str = "contact";
 /// App record prefix: `profile/<account tid>` -> profile tid text, written by `import_contact`.
 const PROFILE_OF: &str = "profile/";
 
-/// Stores the links made here (one local record).
-fn save_links(l: &mut Locked) -> Result<()> {
-    let v = Value::List(l.links.iter().map(|(k, m)| Value::List(vec![Value::Tid(*k), Value::Tid(m.l), Value::Tid(m.target), Value::Bool(m.single_use), Value::Bool(m.direct), Value::Bool(m.ended)])).collect());
-    l.engine().set_app_record(LINKS, &osis_base::cbor::encode(&v))?;
-    Ok(())
-}
 
 /// A held link key, forgotten when the guard goes: every outcome of a waiting call,
 /// a dropped future included.
@@ -1896,40 +1853,6 @@ impl crate::handle::ReadOnly {
         let mut acts = l.sync.handle(osis_node::sync::Event::Local);
         acts.extend(l.sync.refresh());
         self.inner.apply(acts);
-    }
-}
-
-impl crate::handle::ReadOnly {
-    /// Rotates this node's dialable key when a direct link it made ended (spec/permissions.md
-    /// §7): after every change, at open and at the link's expiry. Finalizing links is
-    /// node-sync's (`SyncEngine::finalize_links`). `ended` is persisted.
-    pub(crate) fn upkeep_links(&self, l: &mut Locked) {
-        let mut any = false;
-        // a direct link that ended (its key left K, or its edge expired) gave out this node's
-        // dialable key: rotate it (spec/permissions.md §7), unless a single-use link ended by its
-        // redemption (the one who could use it is now a holder and keeps the direct path)
-        let now = l.engine().now();
-        let direct: Vec<(Tid, MadeLink)> = l.links.iter().filter(|(_, m)| m.direct && !m.ended).map(|(k, m)| (*k, *m)).collect();
-        let mut rotate = false;
-        for (k, m) in direct {
-            let r = l.engine().roster(&k);
-            if r.get(&m.l).is_none_or(|e| e.until.is_some_and(|u| u <= now)) {
-                // a used single-use link: its joiner is on K
-                let redeemed = m.single_use && r.keys().any(|x| *x != m.l);
-                rotate |= !redeemed;
-                if let Some(m) = l.links.get_mut(&k) {
-                    m.ended = true;
-                    any = true;
-                }
-            }
-        }
-        if rotate {
-            let acts = l.sync.rotate_reach();
-            self.inner.apply(acts);
-        }
-        if any && let Err(e) = save_links(l) {
-            l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::BadInput, tids: Vec::new(), commit: None, peer: None, detail: format!("links record: {e}") });
-        }
     }
 }
 

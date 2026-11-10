@@ -383,17 +383,26 @@ async fn redeem_direct_in_process_spec_permissions_7() {
     .unwrap();
     // Bob keeps the sharer from the link
     assert_eq!(bob.sync_engine(|s| s.link_peer_keys()), [now.dialable].into());
-    // the link ends (revoked): the key it carried rotates
+    // the link ends (revoked): the key it carried stays put (notes/peers.md, No automatic rotation)
     let k = alice.links_of(g).unwrap()[0].id.actor();
     alice.revoke_link(crate::common::link_id(k)).unwrap();
+    assert!(alice.links_of(g).unwrap().is_empty());
+    assert_eq!(alice.sync_engine(|s| s.own_reach()).unwrap().dialable, now.dialable, "ending a direct link rotates nothing");
+    // Bob, who knew the key, still reaches her at it
+    let mut w = bob.write();
+    w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str("after the end".into())).unwrap();
+    w.commit().unwrap();
+    let after = Some(Value::Str("after the end".into()));
     tokio::time::timeout(GUARD, async {
-        while alice.sync_engine(|s| s.own_reach()).unwrap().dialable == now.dialable {
+        while alice.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap() != after {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
     .unwrap();
-    // a later holder of the link reaches nothing, and its follow is forgotten
+    assert!(h.probe(now.dialable).await, "the key the link carried still answers a dial");
+    // a later holder of the link reaches nothing (its host is cut off, K refuses L at the
+    // sharer), and its follow is forgotten
     let mut c = h.on_host(3, vec![], "c");
     c.app.internals.connection_wait = Some(Duration::from_secs(2));
     let carol = osis::internals::create(c).unwrap();
@@ -401,19 +410,9 @@ async fn redeem_direct_in_process_spec_permissions_7() {
     assert!(tokio::time::timeout(Duration::from_secs(2), carol.redeem(&link)).await.is_err());
     assert!(carol.sync_engine(|s| s.link_peer_keys()).is_empty());
     assert_eq!(carol.role_on(g).unwrap(), None);
-    // even at the sharer's current key, K refuses the revoked link's key: the open fails there.
-    // Erin is told at once; the new key is listened on first (a dial before that pauses the peer)
-    let nk = alice.sync_engine(|s| s.own_reach()).unwrap().dialable;
-    tokio::time::timeout(GUARD, async {
-        while !h.probe(nk).await {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    // with the sharer's node its only route (a host not answering would keep the verdict open),
+    // the open fails there: K refuses the revoked link's key
     let mut patched = parsed.clone();
-    patched.peers = vec![osis_label::Peer { dialable: nk, relays: vec![h.item.clone()] }];
-    // the sharer's node is its only route: a peer not answering would keep the verdict open
     patched.hosts = vec![];
     let patched: osis::ShareLink = patched.to_text().unwrap().parse().unwrap();
     let mut e = h.on_host(5, vec![], "e");
@@ -545,58 +544,10 @@ async fn peers_lists_what_a_group_saved() {
     assert!(db.saved_peers().unwrap().is_empty());
 }
 
-// spec/permissions.md §7 (a single-use link finalized by its redemption does not rotate): Bob
-// redeems Alice's single-use direct link with no peer between them; once Alice finalizes it,
-// her key is the one the link carried and Bob's writes still reach her directly.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn single_use_direct_keeps_key_in_process_spec_permissions_7() {
-    let h = hosts(8).await;
-    let net = h.net.clone();
-    let host_ep = Some(net.endpoint("s"));
-    let (host_db, host) = host_node(host_ep, "mem://s").await;
-    net.partition("b", "s");
-    let alice = osis::internals::create(h.on_host(1, vec![host.clone()], "a")).unwrap();
-    let mut c = h.on_host(2, vec![], "b");
-    c.app.internals.connection_wait = Some(GUARD);
-    let bob = osis::internals::create(c).unwrap();
-    h.ready(&alice).await;
-    let mut w = alice.write();
-    let g = w.create_in(alice.me(), &[alice.home()]).unwrap();
-    w.commit().unwrap();
-    alice.sync(g, &[]).unwrap();
-    let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, single_use: true, ..Default::default() }).unwrap();
-    let key = alice.sync_engine(|s| s.own_reach()).unwrap().dialable;
-    assert_eq!(osis_label::ShareLink::from_text(&link.to_string()).unwrap().peers[0].dialable, key);
-    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All)).await.unwrap().unwrap();
-    assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
-    tokio::time::timeout(GUARD, async {
-        while !alice.links_of(g).unwrap().is_empty() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(alice.sync_engine(|s| s.own_reach()).unwrap().dialable, key, "finalized by redemption: kept");
-    let mut w = bob.write();
-    let t = w.create_in(g, &[g]).unwrap();
-    w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str("still direct".into())).unwrap();
-    w.commit().unwrap();
-    let want = Some(Value::Str("still direct".into()));
-    tokio::time::timeout(GUARD, async {
-        while alice.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap() != want {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-    drop((alice, bob));
-    drop(host_db);
-}
-
-// spec/sync.md §10, notes/api.md (`rotate_reach`): a rotated dialable key is listened on at once,
+// spec/sync.md §10, notes/api.md (`rotate_peer_address`): a rotated dialable key is listened on at once,
 // without a restart, and the old one no longer answers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn rotate_reach_relistens_in_process_spec_sync_10() {
+async fn rotate_peer_address_relistens_in_process_spec_sync_10() {
     let h = hosts(7).await;
     let db = osis::internals::create(h.on_host(1, vec![], "a")).unwrap();
     let old = reach_of(&db).await.reach;

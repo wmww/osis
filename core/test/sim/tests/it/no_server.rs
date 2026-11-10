@@ -204,8 +204,8 @@ fn deliveries_wait_only_for_deliveries() {
     assert!(w.try_until(a.wait_synced(SyncScope::Deliveries), STEP_MS, STEPS).is_none(), "the grant is undelivered");
 }
 
-// Row 10, spec/permissions.md §7: nothing Alice does to her key cuts off a connected joiner: a
-// grant, a second direct link, ending it, rotating by hand. Her writes still reach Bob.
+// Row 10, spec/permissions.md §7: nothing Alice does cuts off a connected joiner: a grant, a
+// second direct link, ending it, rotating her key by hand. Her writes still reach Bob.
 #[test]
 fn key_changes_keep_a_connected_joiner_row_10_spec_permissions_7() {
     let (mut w, a, b, g) = co_readers(1, Role::Read);
@@ -227,11 +227,11 @@ fn key_changes_keep_a_connected_joiner_row_10_spec_permissions_7() {
     check(&mut w, "after rotating");
 }
 
-// Row 10, spec/permissions.md §7: a key change while a joiner is away does not strand it: Bob,
-// who can only dial (behind a NAT), reaches Alice again when he is back.
+// Row 10, spec/permissions.md §7 (the redeemer may keep dialing the key), notes/peers.md (No
+// automatic rotation): a direct link ending while a joiner is away does not strand it: Bob, who
+// can only dial (behind a NAT), reaches Alice again when he is back.
 #[test]
-#[ignore = "issues/net-connect.md"]
-fn repro_row10_a_key_change_while_away_does_not_strand_a_joiner() {
+fn a_link_ending_while_away_does_not_strand_a_joiner_row_10_spec_permissions_7() {
     let mut w = World::new();
     let r = w.reach.add_relay(None);
     let cone = w.reach.add_nat(Nat::CONE);

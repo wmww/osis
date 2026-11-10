@@ -620,8 +620,8 @@ impl crate::Osis {
     /// Gives this node a new address other nodes dial it directly at (`Config::direct_sync`): it listens
     /// there at once and tells the groups it syncs. A node removed from those since can no longer
     /// dial it or recognise it on a LAN, nor can a holder of a direct link. Direct links still open
-    /// no longer reach this node directly (they still work through saved peers). Done by itself
-    /// when a direct link ends.
+    /// no longer reach this node directly (they still work through saved peers). Never done by
+    /// itself: the address stays put until this is called.
     /// `Unsupported` on a client with its own actor.
     pub fn rotate_peer_address(&self) -> crate::Result<()> {
         if !self.has_store() {
