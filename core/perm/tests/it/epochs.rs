@@ -317,9 +317,9 @@ fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judge
 fn epochs_diff(w: &World, o: usize, held: &[bool]) -> Option<String> {
     let side = w.default_side(o, held);
     let v = w.judge_at(o, held);
-    // P's nodes are given their side (the devices actor's line); anyone else takes perm's
-    // default from its receipt order.
-    let e = perm_epochs(w, o, held, side.filter(|_| o < w.np));
+    // P's nodes are given their roster's side (the devices actor's line); without one, or for
+    // anyone else, perm takes its default from the receipt order.
+    let e = perm_epochs(w, o, held, w.roster_side(o, held));
     // Which rotations take part (held with their chain): the disputes, the side, the head
     // followed.
     let parties: BTreeSet<u32> = w.parties(held).into_iter().map(|i| pid(w, i)).collect();
@@ -381,6 +381,29 @@ fn epochs_run(samples: u64, seed: u64) {
     eprintln!("epochs model: {samples} worlds, {checked} observer-prefixes ({unrooted} holding a rotation without its chain), {closed_named} closed-epoch commits counting");
     assert!(closed_named > 0, "the run reaches commits named at a closed epoch");
     assert!(unrooted > 0, "the run reaches rotations held without their chain");
+}
+
+/// spec/permissions.md §5.4, Side: a node of P whose roster authorizes no held rotation (here
+/// only removed nodes X and Y rotated) takes a dispute's preferred party, as anyone else does.
+/// X and Y fork from the root (1, 2) and each merges the other out (3, 4); node 3 received Y's
+/// line first.
+#[test]
+fn node_of_p_without_a_roster_line_takes_the_preferred_party() {
+    let mut w = World::shape(4, vec![vec![0]], vec![vec![0]; 4], vec![None; 4], None, None, false);
+    w.left = vec![roles_model::shrink::LATE, 0, 0, roles_model::shrink::LATE];
+    for (id, author, at, new, t, seen) in [(1, 1, 0, 1, 1, 3), (2, 2, 0, 2, 1, 1), (3, 1, 1, 3, 2, 4), (4, 2, 2, 4, 2, 2)] {
+        let mut recv = vec![roles_model::shrink::LATE; 4];
+        recv[1] = t;
+        recv[2] = t;
+        recv[3] = seen;
+        let kind = Kind::Rotation { at, new, supersedes: if at == 0 { vec![0] } else { vec![1, 2] }, names: vec![], removes: None };
+        w.items.push(model::Item { id, kind, author, epoch: Some(at), t, ts: t, recv, hostile: true });
+    }
+    let all = vec![true; 4];
+    assert_eq!(w.parties(&all), vec![2, 3]);
+    assert_eq!((w.roster_side(3, &all), w.default_side(3, &all)), (None, Some(3)));
+    assert_eq!(perm_epochs(&w, 3, &all, None).chain().side(), Some(4));
+    assert_eq!(epochs_diff(&w, 3, &all), None);
 }
 
 /// spec/permissions.md §5.4-§5.5: the epoch rule agrees with core/test/roles-model `epochs` at

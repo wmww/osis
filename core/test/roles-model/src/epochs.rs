@@ -278,16 +278,20 @@ impl World {
         rots.iter().copied().filter(|&a| rots.iter().any(|&b| a != b && contests(a, b) && contests(b, a))).collect()
     }
 
-    /// The side an observer takes: P's nodes side with node 0's line as far as they hold it
-    /// (they read the devices actor's roster); anyone else with the party it received first.
-    pub fn default_side(&self, o: usize, held: &[bool]) -> Option<usize> {
+    /// The line a node of P's roster authorizes: node 0's newest rotation whose chain it holds
+    /// whole (it reads the devices actor's roster). None for anyone else.
+    pub fn roster_side(&self, o: usize, held: &[bool]) -> Option<usize> {
         let held = &self.rooted(held);
-        if o < self.np {
-            // Node 0's newest rotation whose chain it holds whole.
-            let rooted = |i: usize| self.verified(held, i);
-            return (0..self.items.len()).filter(|&i| held[i] && self.items[i].author == 0 && self.items[i].kind.is_rot() && rooted(i)).max_by_key(|&i| self.items[i].t);
-        }
-        self.first_line(&self.parties(held), &self.lines(held), Some(o))
+        (o < self.np).then(|| (0..self.items.len()).filter(|&i| held[i] && self.items[i].author == 0 && self.items[i].kind.is_rot() && self.verified(held, i)).max_by_key(|&i| self.items[i].t)).flatten()
+    }
+
+    /// The side an observer takes: its roster's line (`roster_side`), else in a dispute the
+    /// party it received first.
+    pub fn default_side(&self, o: usize, held: &[bool]) -> Option<usize> {
+        self.roster_side(o, held).or_else(|| {
+            let held = &self.rooted(held);
+            self.first_line(&self.parties(held), &self.lines(held), Some(o))
+        })
     }
 
     /// Of `cands`, the line `seen` received first: c beats d when, of the rotations on
