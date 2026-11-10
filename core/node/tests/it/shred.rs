@@ -766,8 +766,10 @@ fn tombstone_alike(stride: u64) {
     let item = |pk: &osis_node::local_peer::Package| (pk.bytes.clone(), pk.blobs.clone());
     let (cw, ch, pw, ph, zw, rc) = (item(&whole), (header(&whole.bytes), Vec::new()), item(&request), (header(&request.bytes), Vec::new()), item(&snap), item(&rec[0]));
     let sets = [("body, header and request", vec![cw.clone(), ch.clone(), pw.clone(), rc.clone()]), ("header and request", vec![ch.clone(), pw, rc.clone()]), ("two headers and a snapshot", vec![ch, ph, zw, rc])];
+    // every case, then those of this stride on a thread per core: each is its own node
     let mut cases = 0;
-    for (what, items) in sets {
+    let mut jobs = Vec::new();
+    for (k, (_, items)) in sets.iter().enumerate() {
         let mut orders: Vec<Vec<usize>> = vec![Vec::new()];
         for i in 0..items.len() {
             orders = orders.iter().flat_map(|q| (0..=q.len()).map(move |at| { let mut x = q.clone(); x.insert(at, i); x })).collect();
@@ -776,38 +778,48 @@ fn tombstone_alike(stride: u64) {
             for order in &orders {
                 for restart in 0..=order.len() {
                     cases += 1;
-                    if cases % stride != 0 {
-                        continue;
-                    }
-                    let mut p = peer(7000 + cases);
-                    for pk in &setup {
-                        p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
-                    }
-                    if syncing {
-                        p.engine.set_syncing(t, true).unwrap();
-                    }
-                    for (at, i) in order.iter().enumerate() {
-                        if at == restart {
-                            p = reopened(p, 8000 + cases);
-                        }
-                        p.receive(&items[*i].0, items[*i].1.clone()).unwrap();
-                    }
-                    let e = &mut p.engine;
-                    let at = format!("{what}, syncing {syncing}, order {order:?}, restart {restart}");
-                    assert!(e.commit_ids().contains(&c), "{at}: not applied");
-                    assert!(!e.body_not_dropped(&c, &t, &ak("t:reg.0")), "{at}: its body is held");
-                    assert_eq!(e.purged_on(&t, &ak("t:reg.0")).unwrap().get(&c), Some(&pc), "{at}");
-                    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("after")), "{at}");
-                    assert!(e.pending().is_empty(), "{at}: {:?}", e.pending());
-                    assert!(e.suspects().unwrap().is_empty(), "{at}: flagged");
-                    // the slow check: a sample
-                    if restart == order.len() {
-                        assert!(!recoverable(&mut p, marker.as_bytes()), "{at}: recoverable");
+                    if cases % stride == 0 {
+                        jobs.push((k, syncing, order.clone(), restart, cases));
                     }
                 }
             }
         }
     }
+    let one = |j: u64| {
+        osis_base::testenv::caught(|| {
+            let (k, syncing, order, restart, case) = &jobs[j as usize];
+            let (what, items) = &sets[*k];
+            let mut p = peer(7000 + case);
+            for pk in &setup {
+                p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
+            }
+            if *syncing {
+                p.engine.set_syncing(t, true).unwrap();
+            }
+            for (at, i) in order.iter().enumerate() {
+                if at == *restart {
+                    p = reopened(p, 8000 + case);
+                }
+                p.receive(&items[*i].0, items[*i].1.clone()).unwrap();
+            }
+            let e = &mut p.engine;
+            let at = format!("{what}, syncing {syncing}, order {order:?}, restart {restart}");
+            assert!(e.commit_ids().contains(&c), "{at}: not applied");
+            assert!(!e.body_not_dropped(&c, &t, &ak("t:reg.0")), "{at}: its body is held");
+            assert_eq!(e.purged_on(&t, &ak("t:reg.0")).unwrap().get(&c), Some(&pc), "{at}");
+            assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("after")), "{at}");
+            assert!(e.pending().is_empty(), "{at}: {:?}", e.pending());
+            assert!(e.suspects().unwrap().is_empty(), "{at}: flagged");
+            // the slow check: a sample
+            if *restart == order.len() {
+                assert!(!recoverable(&mut p, marker.as_bytes()), "{at}: recoverable");
+            }
+            Ok(())
+        })
+    };
+    let idx: Vec<u64> = (0..jobs.len() as u64).collect();
+    let fails: Vec<String> = osis_base::testenv::par_map(&idx, osis_base::testenv::threads("OSIS_SEED_THREADS"), one).into_iter().filter_map(Result::err).collect();
+    assert!(fails.is_empty(), "{} of {} cases failed, the first: {}", fails.len(), jobs.len(), fails[0]);
     // every case counted: both sync modes, each order, each restart point
     assert_eq!(cases, 2 * (24 * 5 + 6 * 4 + 24 * 5));
 }

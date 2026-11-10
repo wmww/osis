@@ -106,9 +106,28 @@ pub(crate) struct History {
     headers: BTreeMap<CommitId, Arc<Header>>,
     /// Commit labels, in dot order.
     labels: BTreeMap<CommitId, u32>,
+    /// The model's judgment of each held set judged so far: a pure function of its input, and
+    /// the arrival orders of one history mostly end on the same few (`judged`).
+    judged: std::sync::Mutex<Vec<(hm::Held, Arc<Judged>)>>,
+}
+
+/// What `compare` reads of the model for one input: its outcome and role timeline.
+struct Judged {
+    o: hm::Outcome,
+    tl: hm::roles::Timeline,
 }
 
 impl History {
+    /// The model's judgment of `h`, from an earlier equal input when there is one.
+    fn judged(&self, h: &hm::Held) -> Arc<Judged> {
+        if let Some((_, j)) = self.judged.lock().unwrap().iter().find(|(k, _)| k == h) {
+            return j.clone();
+        }
+        let j = Arc::new(Judged { o: hm::evaluate(h), tl: hm::timeline(h) });
+        self.judged.lock().unwrap().push((h.clone(), j.clone()));
+        j
+    }
+
     pub(crate) fn new(packs: &[Package]) -> History {
         let headers: BTreeMap<CommitId, Arc<Header>> = packs.iter().filter_map(|pk| CommitBlob::decode_stored(&pk.bytes).ok()).map(|b| (b.id(), Arc::new(b.header))).collect();
         let mut order: Vec<(u8, Vec<u8>, u64, CommitId)> = headers
@@ -120,7 +139,7 @@ impl History {
             .collect();
         order.sort();
         let labels = order.iter().enumerate().map(|(i, x)| (x.3, i as u32 + 1)).collect();
-        History { headers, labels }
+        History { headers, labels, judged: Default::default() }
     }
 }
 
@@ -664,7 +683,8 @@ fn held_body(e: &Engine, c: &CommitId, ai: usize) -> bool {
 /// difference, with the model's answer and the node's.
 pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut Coverage) -> Option<String> {
     let input = convert(e, hist);
-    let o = hm::evaluate(&input.held);
+    let j = hist.judged(&input.held);
+    let (o, tl) = (&j.o, &j.tl);
     cov.nodes += 1;
     cov.compared += input.inside.len() as u64;
     for why in input.skipped.values() {
@@ -710,7 +730,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         let addenda = cs.iter().flat_map(|c| c.parts.iter()).filter(|p| matches!(&p.body, hm::Body::Held(hm::Delta::Addenda(es)) if !es.is_empty())).count();
         reach("addenda", addenda);
         if addenda > 0 {
-            reach("counting addenda", hm::timeline(&input.held).counting.len());
+            reach("counting addenda", tl.counting.len());
         }
         reach("invites", edges().filter(|(_, e)| e.invite.is_some()).count());
         reach("untils", edges().filter(|(_, e)| e.until.is_some()).count());
@@ -729,7 +749,6 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
     let by_part: BTreeMap<(hm::ThingId, hm::Aspect), (Tid, Ak)> = input.inside.iter().map(|(k, v)| (*v, k.clone())).collect();
     // every difference, by kind; the first is reported
     let mut diffs: Vec<(String, Option<String>)> = Vec::new();
-    let tl = hm::timeline(&input.held);
     for c in &input.held.commits {
         let (id, applied) = input.commits[&c.id];
         let touches = c.parts.iter().any(|p| by_part.contains_key(&(p.thing, p.aspect))) || (c.is_role() && !by_part.is_empty());
@@ -787,7 +806,6 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
     // `roles.0` reads: each known thing's roster (its edges alive now, record edges included;
     // `tied` carried, never an authority) as the model's walk ends
     if !by_part.is_empty() {
-        let tl = hm::timeline(&input.held);
         let last = tl.applied.last().map_or(&tl.initial, |a| &a.after);
         for th in input.held.records.iter().map(|t| t.id) {
             let model: BTreeMap<hm::NodeId, (hm::Role, Option<hm::Role>, Option<u64>)> = last.iter().filter(|((t, _), e)| *t == th && e.alive(input.held.now)).map(|((_, h), e)| (*h, (e.role, e.invite, e.until))).collect();

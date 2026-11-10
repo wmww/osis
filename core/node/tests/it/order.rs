@@ -659,8 +659,12 @@ fn noting<E>(r: Result<Option<CommitId>, E>, unchecked: &mut BTreeSet<CommitId>)
 /// A fresh node under test: it answers removals with no addenda, so what it reads is a function
 /// of the commits it received alone (`Engine::write_addenda`; the witness rule has its own tests).
 fn fresh(now: WallMs) -> Peer {
-    // its account's commits date from before any clock under test, so none parks for drift
-    let mut p = Peer::new(FRESH, WallMs(T0.0 - 2 * 86_400_000)).unwrap();
+    // its account's commits date from before any clock under test, so none parks for drift; one
+    // account per thread, forked (making one is a tenth of `held_set_decides`)
+    thread_local! {
+        static BASE: Peer = Peer::new(FRESH, WallMs(T0.0 - 2 * 86_400_000)).unwrap();
+    }
+    let mut p = BASE.with(|b| b.fork(FRESH)).unwrap();
     p.clock.set(now);
     p.engine.write_addenda(false);
     p
@@ -1359,26 +1363,61 @@ fn replaced_of(e: &mut osis_node::Engine) -> Replaced {
 /// What a node shows its user, from the API alone: each aspect's read (or the error reading it)
 /// and each of the history's things' roster, keyed by (thing, aspect) as printed (`ROSTER` for a
 /// roster). An aspect a node holds nothing of reads `Ok(None)`.
-type Shown = BTreeMap<(String, String), String>;
+type Shown = BTreeMap<(String, String), Shows>;
+
+/// One thing a node shows: a read, compared as a value and printed only for a message (printing
+/// every read was a fifth of `held_set_decides_exhaustive`), or an error or roster as printed.
+#[derive(Clone, PartialEq)]
+enum Shows {
+    Read(Option<Value>),
+    Printed(String),
+}
+
+impl std::fmt::Display for Shows {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Shows::Read(v) => write!(f, "Ok({v:?})"),
+            Shows::Printed(s) => f.write_str(s),
+        }
+    }
+}
+
+impl std::fmt::Debug for Shows {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+/// As printed, for the scripted examples that name what a node reads.
+impl PartialEq<&str> for Shows {
+    fn eq(&self, other: &&str) -> bool {
+        let printed = self.to_string();
+        printed == *other
+    }
+}
 
 const ROSTER: &str = "roster";
-const NOTHING: &str = "Ok(None)";
+const NOTHING: Shows = Shows::Read(None);
 
 fn shown(p: &mut Peer, things: &[Tid]) -> Shown {
     let e = &mut p.engine;
     let mut out = Shown::new();
     for (t, a) in e.all_aspects().unwrap() {
-        out.insert((format!("{t:?}"), a.as_str().to_string()), format!("{:?}", e.get(&t, &a)));
+        let v = match e.get(&t, &a) {
+            Ok(v) => Shows::Read(v),
+            Err(err) => Shows::Printed(format!("{:?}", Err::<(), _>(err))),
+        };
+        out.insert((format!("{t:?}"), a.as_str().to_string()), v);
     }
     for t in things {
-        out.insert((format!("{t:?}"), ROSTER.to_string()), format!("{:?}", e.roster(t)));
+        out.insert((format!("{t:?}"), ROSTER.to_string()), Shows::Printed(format!("{:?}", e.roster(t))));
     }
     out
 }
 
 /// The first key where `got` shows other than `want`, outside `skip`.
 fn shown_differs(want: &Shown, got: &Shown, skip: &dyn Fn(&(String, String)) -> bool) -> Option<String> {
-    let of = |m: &Shown, k: &(String, String)| m.get(k).cloned().unwrap_or_else(|| NOTHING.to_string());
+    let of = |m: &Shown, k: &(String, String)| m.get(k).cloned().unwrap_or(NOTHING);
     want.keys().chain(got.keys()).find(|k| of(want, k) != of(got, k) && !skip(k)).map(|k| format!("{} {}:\n  want {}\n  got  {}", k.0, k.1, of(want, k), of(got, k)))
 }
 

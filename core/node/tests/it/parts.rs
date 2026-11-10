@@ -987,8 +987,11 @@ fn forged_parts_beside_a_part_past_expiry(stride: usize) {
             orders = orders.iter().flat_map(|q| (0..=q.len()).map(move |at| { let mut o = q.clone(); o.insert(at, i); o })).collect();
         }
         for sync in [None, Some(x), Some(y), Some(z)] {
-            let mut seen = std::collections::BTreeMap::<String, Vec<usize>>::new();
-            for order in orders.iter().step_by(stride) {
+            // the orders on a thread per core, each on its own node
+            let picked: Vec<&Vec<usize>> = orders.iter().step_by(stride).collect();
+            let idx: Vec<u64> = (0..picked.len() as u64).collect();
+            let one = |j: u64| {
+                let order = picked[j as usize];
                 let mut p = Peer::new(FRESH, now).unwrap();
                 if let Some(t) = sync {
                     p.engine.set_syncing(t, true).unwrap();
@@ -1004,8 +1007,11 @@ fn forged_parts_beside_a_part_past_expiry(stride: usize) {
                     let _ = p.engine.ingest(&items[i], Vec::new());
                     p.reexamine().unwrap();
                 }
-                let got = format!("applied {} pending {:?} flags {:?} reads {:?} {:?} {:?}", p.engine.commit_ids().contains(&b.id()), p.engine.pending(), p.engine.suspects().unwrap().iter().map(|f| f.1.clone()).collect::<Vec<_>>(), p.engine.get(&x, &ak("t:brief.0")).unwrap(), p.engine.get(&y, &ak("t:reg.0")).unwrap(), p.engine.get(&z, &ak("t:reg.0")).unwrap());
-                seen.entry(got).or_insert_with(|| order.clone());
+                format!("applied {} pending {:?} flags {:?} reads {:?} {:?} {:?}", p.engine.commit_ids().contains(&b.id()), p.engine.pending(), p.engine.suspects().unwrap().iter().map(|f| f.1.clone()).collect::<Vec<_>>(), p.engine.get(&x, &ak("t:brief.0")).unwrap(), p.engine.get(&y, &ak("t:reg.0")).unwrap(), p.engine.get(&z, &ak("t:reg.0")).unwrap())
+            };
+            let mut seen = std::collections::BTreeMap::<String, Vec<usize>>::new();
+            for (order, got) in picked.iter().zip(osis_base::testenv::par_map(&idx, osis_base::testenv::threads("OSIS_SEED_THREADS"), one)) {
+                seen.entry(got).or_insert_with(|| (*order).clone());
             }
             assert_eq!(seen.len(), 1, "made {n}, sync {:?}: {seen:#?}", sync.map(|t| t == x));
         }

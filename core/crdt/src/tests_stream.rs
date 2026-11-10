@@ -289,11 +289,13 @@ fn stream_differential_covers_paging_spec_8() {
 #[test]
 #[ignore = "property"]
 fn stream_check_matches_whole_large_spec_8() {
-    for seed in 0..600u64 {
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_CRDT_START", "OSIS_CRDT_SEEDS", 0..600);
+    let replay = |s: u64| format!("OSIS_CRDT_START={s} OSIS_CRDT_SEEDS=1 cargo test -p osis-crdt --lib -- --ignored --exact tests_stream::stream_check_matches_whole_large_spec_8");
+    seeds.run("tests_stream::stream_check_matches_whole_large_spec_8", replay, |seed| {
         if let Err(e) = case(seed) {
             panic!("seed {seed}: {e}");
         }
-    }
+    });
 }
 
 /// §8: leaf links swapped, a leaf dropped or repeated, a page's run split at a seam: rejected
