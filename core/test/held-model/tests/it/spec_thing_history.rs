@@ -337,6 +337,49 @@ fn ev_in_force_from_its_own_commit() {
     assert!(listed(&h, REG).is_empty());
 }
 
+// issues/thing-history.md (In force, Decisions 3): settings are in force by key from their own
+// stamps, whatever order they are held in. From a newer setting's stamp on, a node also holding
+// an older-stamped one shows what a node holding only the newer shows, unless the older set purge
+// on replace and the newer keeps (one way: then neither keeps anything). Of two admins' settings at
+// one stamp the later key governs from it, as alone.
+#[test]
+fn ev_in_force_by_key_from_its_own_stamp() {
+    // replaced at 4 and 6, judged from hour 6 on (no replacement stamped ahead of the clock)
+    let bodies = || vec![body(10, 3, false), body(11, 4, false), body(12, 6, false)];
+    let one_way = |a: Opt, b: Opt| a == Opt::Purge && matches!(b, Opt::Keep { .. });
+    let view = |h: &Held| {
+        let o = evaluate(h);
+        (o.history.get(&(T, REG)).map(|s| s.iter().map(|x| x.1).collect::<BTreeSet<_>>()).unwrap_or_default(), o.under_purge)
+    };
+    for older in all_opts() {
+        for newer in all_opts() {
+            for now in 6..12 {
+                let only = view(&world(now, &[(3, newer)], false, bodies()));
+                let both = view(&world(now, &[(1, older), (3, newer)], false, bodies()));
+                if one_way(older, newer) {
+                    assert!(both.0.is_empty(), "{older:?}, {newer:?} now {now}: one way");
+                } else {
+                    assert_eq!(both, only, "{older:?}, {newer:?} now {now}");
+                }
+            }
+            // two admins at hour 2: node 1's key is the later
+            let grant = edge(5, FIRST_ADMIN, 0, 1, Some(Role::Admin), None);
+            let s = |id, by, opt| setting_by(id, by, 2, Setting { rules: vec![(REG.name, SettingEntry { history: opt, expires: None })], default: None });
+            let (lo, hi) = (s(100, FIRST_ADMIN, older), s(101, 1, newer));
+            for now in 6..12 {
+                let at_once = |cs: Vec<Commit>| view(&held(now, [vec![grant.clone()], cs, bodies()].concat()));
+                let a = at_once(vec![lo.clone(), hi.clone()]);
+                assert_eq!(at_once(vec![hi.clone(), lo.clone()]), a, "{older:?}, {newer:?} now {now}: held order");
+                if one_way(older, newer) {
+                    assert!(a.0.is_empty(), "{older:?}, {newer:?} now {now}: one way");
+                } else {
+                    assert_eq!(a, at_once(vec![hi.clone()]), "{older:?}, {newer:?} now {now}: the later key governs");
+                }
+            }
+        }
+    }
+}
+
 // issues/thing-history.md (Decisions 1): a setting arriving late (stamped before ones already
 // held) can put a body still held back in history
 #[test]

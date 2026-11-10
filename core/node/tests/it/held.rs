@@ -65,7 +65,7 @@ use std::sync::Arc;
 /// No actor: the holder of a waiting role part's placeholder edge write.
 const NOBODY: hm::NodeId = u32::MAX;
 /// Out until thing-history step 3: an aspect a held `required^.0` delta governs and a held write
-/// does not meet, or every aspect of a thing whose applied `required^.0` body is not held.
+/// does not meet, or every aspect of a thing whose applied `required^.0` body is not held or sets `retain`.
 const STEP3_REQUIRED: &str = "required^.0 governs it (thing-history step 3)";
 /// Out until thing-history step 3: an aspect with an `author` part a held purge request names.
 const STEP3_AUTHOR: &str = "purgeable by author, named by a purge (thing-history step 3)";
@@ -432,7 +432,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
             };
             let rules = ct::required_rules(&v);
             if rules.retain {
-                sc.things.entry(a.tid).or_insert("required retain");
+                sc.things.entry(a.tid).or_insert(STEP3_REQUIRED);
             }
             for (_, w, _) in held.iter().filter(|(_, w, _)| w.kind == Kind::Content && w.ts >= h.ts) {
                 for p in w.aspects.iter().filter(|p| p.tid == a.tid && ct::is_content(p.ak.as_str())) {
