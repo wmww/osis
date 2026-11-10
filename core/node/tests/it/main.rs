@@ -21,6 +21,7 @@ mod ending;
 mod disputes;
 mod edits;
 mod deposit_queue;
+mod deposits;
 mod fill;
 mod growth;
 mod finalize;

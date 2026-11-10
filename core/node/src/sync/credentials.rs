@@ -147,8 +147,8 @@ impl SyncEngine {
     }
 
     /// This node's credentials of each of `labels`, as a reader or as the key actor its link or
-    /// card names (issues/net-shared-set.md, Words): the read secret at each current epoch held,
-    /// a static entry per key actor on the label's roster held, and the static entry of the key
+    /// card names (issues/net-shared-set.md, Words): the read secret at each current epoch held
+    /// (of a synced group, or of a hint's thing a held box gave one of), a static entry per key actor on the label's roster held, and the static entry of the key
     /// actor a hint names. A peer that cannot read a label has `head_credentials` instead (step 9).
     /// O(N) for the label table, then per label O(its roster).
     pub fn credentials(&mut self, labels: &[LabelId]) -> Result<BTreeMap<LabelId, Vec<Credential>>> {
@@ -156,16 +156,21 @@ impl SyncEngine {
         let mut all = BTreeMap::new();
         for l in labels {
             let mut out = Vec::new();
-            if let Some(g) = readers.get(l) {
-                if let Some(e) = self.engine.epochs(g) {
-                    // current epochs, or (a newly granted reader, its epoch not established until
-                    // the group's commits arrive) the newest secret held: nothing else finds them
-                    let mut secrets: Vec<Secret32> = e.read.current().iter().filter_map(|ep| e.read.secret(ep)).cloned().collect();
-                    if secrets.is_empty() {
-                        secrets.extend(e.read.held_newest_first().into_iter().take(1).map(|(_, s)| s.clone()));
-                    }
-                    out.extend(secrets.into_iter().map(Credential::ReadSecret));
+            // a hint's thing too: a read secret a held box gave (an inbox grant), before the
+            // label's own `label.0` comes by that label
+            let read = readers.get(l).copied().or_else(|| self.state.hints.get(l).map(|h| h.thing));
+            if let Some(g) = read
+                && let Some(e) = self.engine.epochs(&g)
+            {
+                // current epochs, or (a newly granted reader, its epoch not established until
+                // the group's commits arrive) the newest secret held: nothing else finds them
+                let mut secrets: Vec<Secret32> = e.read.current().iter().filter_map(|ep| e.read.secret(ep)).cloned().collect();
+                if secrets.is_empty() {
+                    secrets.extend(e.read.held_newest_first().into_iter().take(1).map(|(_, s)| s.clone()));
                 }
+                out.extend(secrets.into_iter().map(Credential::ReadSecret));
+            }
+            if let Some(g) = readers.get(l) {
                 for pk in self.engine.static_listed(g)? {
                     out.push(Credential::StaticEntry(osis_crypto::static_entry(l, &pk)));
                 }

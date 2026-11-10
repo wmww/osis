@@ -20,7 +20,7 @@ pub mod step;
 pub mod tree;
 
 pub use addr::{Address, address_from_text, address_from_value, address_to_text};
-pub use auth::{DeleteItem, OpenOutcome, PathIndex, Proof, by_from_value, delete_digest, entry_digest, evaluate_open, key_for_levels, sign_deposit, sign_stamp, verify_stamp};
+pub use auth::{DeleteItem, OpenOutcome, PathIndex, Proof, by_from_value, delete_digest, entry_digest, evaluate_open, key_for_levels, sign_deposit, sign_stamp, verify_deposit, verify_stamp};
 pub use blob::{Class, Group, Level, MAX_GROUPS, Prefix, blob_id, check_size, frame, open, host_prefix, prefix_bytes, unwrap_any, wrap_order};
 pub use chunks::{LargeParams, LargeReader, StringReader, ValueWriter, chunk_value, read_value};
 pub use bundle::{BundleEvent, BundleReader, BundleWriter, Importer, Record};

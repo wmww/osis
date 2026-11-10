@@ -190,12 +190,13 @@ pub struct PassStats {
     pub changed_passes: u64,
     pub changed_labels: u64,
     /// Shared sets (issues/net-shared-set.md): filters sent and received, beacons in filters sent,
-    /// Hits and ByRole items offered, Hit tables built.
+    /// Hits, ByRole and Deposit items offered, Hit tables built.
     pub filters_sent: u64,
     pub filters_received: u64,
     pub beacons_sent: u64,
     pub hits_sent: u64,
     pub by_role_sent: u64,
+    pub deposits_sent: u64,
     pub tables_built: u64,
     /// Tests of the pending set run, and the beacons they tested; Lost items sent; digests that
     /// differed from the peer's and sync IDs listed in Members.

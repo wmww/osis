@@ -2112,8 +2112,8 @@ impl SyncEngine {
             let resigned = code == Code::NOT_HEAD && self.resign_deposit(&host, &l, &b)?;
             let retry = matches!(code, Code::UNKNOWN_LABEL | Code::RATE_LIMITED | Code::BUDGET_FULL | Code::STORAGE_CAP) || resigned;
             if retry && !self.deposit_moot(&host, &l, &b) {
-                // retry_ms, doubling per refusal, at most DEPOSIT_RETRY_CAP_MS; re-signed: at once
-                let back = if resigned { 0 } else { self.cfg.retry_ms.saturating_mul(1u64 << (tries - 1).min(20)).min(super::local::DEPOSIT_RETRY_CAP_MS) };
+                // re-signed: at once
+                let back = if resigned { 0 } else { self.deposit_back_off(tries) };
                 if let Some(o) = self.outbox.get_mut(&(host, l, b)) {
                     o.after = now.saturating_add(back);
                 }

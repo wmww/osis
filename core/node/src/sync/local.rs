@@ -367,8 +367,8 @@ impl SyncEngine {
             let ts = self.engine.header(&s.commit).map(|h| h.ts);
             let gone = match ts {
                 None => true,
-                // a delivery that went nowhere stays until a node takes it
-                Some(ts) => !first && ((s.tries >= MAX_INBOX_RESENDS && !s.nowhere) || self.acted(&s.holder, ts, &s.things)),
+                // a seal waiting for the inbox's nodes stays until one takes it
+                Some(ts) => !first && ((s.tries >= MAX_INBOX_RESENDS && !self.waits_for_nodes(&(s.holder, s.commit))) || self.acted(&s.holder, ts, &s.things)),
             };
             if gone || !s.edge_only && !self.still_holder(&s.holder, &s.commit) {
                 self.forget_delivery(&s.holder, &s.commit);
@@ -394,24 +394,27 @@ impl SyncEngine {
             }
             // a new seal replaces the earlier one still queued
             self.drop_delivery_out(&s.holder, &s.commit);
-            let (mut sent, mut reaches) = (false, false);
+            let mut sent = false;
             for d in r.unwrap_or_default() {
                 if let crate::flows::Delivery::Inbox { to, inbox, blob, .. } = d {
                     let inbox_actor = self.inbox_actor(&to, &inbox.label)?.unwrap_or(to);
-                    // an inbox listing no node, not one of this node's: nothing takes it
-                    reaches |= !inbox.hosts.is_empty() || self.labels().iter().any(|(_, x)| x.id == inbox.label);
                     self.queue_inbox(&inbox_actor, inbox.label, &inbox.hosts, blob, Some((s.holder, s.commit)))?;
                     sent = true;
                 }
             }
             if sent {
-                self.state.note_sent(s.holder, s.commit, s.things.clone(), s.edge_only, now, !reaches);
+                self.state.note_sent(s.holder, s.commit, s.things.clone(), s.edge_only, now);
             } else {
                 // no inbox or keys for the holder any more
                 self.forget_delivery(&s.holder, &s.commit);
             }
         }
         Ok(())
+    }
+
+    /// Whether a seal of inbox delivery `d` waits for its inbox's nodes (`Dest::Nodes`).
+    fn waits_for_nodes(&self, d: &(Tid, CommitId)) -> bool {
+        self.state.outbox.values().any(|o| o.delivery.as_ref() == Some(d) && matches!(o.to, super::state::Dest::Nodes(_)))
     }
 
     /// Forgets inbox delivery `(holder, c)` and its seals still queued.
@@ -428,6 +431,12 @@ impl SyncEngine {
             self.outbox.remove(&(s, l, b));
             self.state.remove_out(&s, &l, &b);
         }
+    }
+
+    /// How long a queued deposit refused for now `tries` times waits: `retry_ms`, doubling per
+    /// refusal, at most `DEPOSIT_RETRY_CAP_MS`.
+    pub(crate) fn deposit_back_off(&self, tries: u32) -> u64 {
+        self.cfg.retry_ms.saturating_mul(1u64 << tries.saturating_sub(1).min(20)).min(DEPOSIT_RETRY_CAP_MS)
     }
 
     /// Whether a queued deposit refused for now (`SyncEngine::budget`) is moot, so it is dropped
@@ -529,11 +538,17 @@ impl SyncEngine {
         };
         let d = osis_crypto::deposit_key(&osis_crypto::Secret32::from_bytes(seed), &label);
         let wrap = osis_crypto::filler_wrap(&mut *self.rng);
-        // an inbox this node serves to nobody else's host: deposited here
-        if super::peers::hostless(hosts) && self.labels().iter().any(|(_, x)| x.id == label) {
-            self.local_inbox.push((label, blob.clone(), wrap));
+        if !super::peers::hostless(hosts) {
+            self.queue_deposit(label, hosts, &d, blob, wrap, delivery);
+        } else if self.labels().iter().any(|(_, x)| x.id == label) {
+            // an inbox this node reads and no host serves: deposited here, its other nodes get it
+            // by their streams
+            self.local_inbox.push((label, blob, wrap));
+        } else {
+            // one no host serves: a Deposit item to whichever of its nodes is connected first
+            let sig = osis_label::sign_deposit(&d, &label, &osis_label::blob_id(&blob), &wrap);
+            self.queue_out(label, super::state::Dest::Nodes(*actor), blob, wrap, sig, delivery);
         }
-        self.queue_deposit(label, hosts, &d, blob, wrap, delivery);
         Ok(())
     }
 
@@ -542,11 +557,16 @@ impl SyncEngine {
     /// label does not recall it.
     pub(crate) fn queue_deposit(&mut self, label: LabelId, hosts: &[Address], deposit: &osis_crypto::SigningSecret, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], delivery: Option<(Tid, CommitId)>) {
         let sig = osis_label::sign_deposit(deposit, &label, &osis_label::blob_id(&blob), &wrap);
-        let id = osis_label::blob_id(&blob);
         for host in hosts {
-            self.state.add_out(super::state::OutRec { label, host: host.clone(), blob: blob.clone(), wrap, sig, delivery });
-            self.outbox.entry((host.key, label, id)).or_default();
+            self.queue_out(label, super::state::Dest::Host(host.clone()), blob.clone(), wrap, sig, delivery);
         }
+    }
+
+    /// Queues one signed deposit for `to`.
+    fn queue_out(&mut self, label: LabelId, to: super::state::Dest, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], sig: osis_crypto::Signature, delivery: Option<(Tid, CommitId)>) {
+        let k = (to.key(), label, osis_label::blob_id(&blob));
+        self.state.add_out(super::state::OutRec { label, to, blob, wrap, sig, delivery });
+        self.outbox.entry(k).or_default();
     }
 
     /// Whether inbox delivery `d` names a label this node is still opening (so maybe registering)
@@ -575,7 +595,7 @@ impl SyncEngine {
         let due: Vec<((HostKey, LabelId, BlobId), ConnId)> = self
             .outbox
             .iter()
-            .filter(|(_, o)| o.sent.is_none() && o.after <= now)
+            .filter(|(k, o)| k.0 != super::state::INBOX_NODES && o.sent.is_none() && o.after <= now)
             .filter_map(|(k, _)| ready.iter().find(|(_, s)| *s == k.0).map(|(c, _)| (*k, *c)))
             .collect();
         // what the host last said fits (`deposit_room`, unknown: all), with one unanswered at any
@@ -603,6 +623,7 @@ impl SyncEngine {
             }
             self.command(conn, cmd, out)?;
         }
-        Ok(())
+        // those for an inbox's nodes go as Deposit items on the shared sets
+        self.shared_deposits(out)
     }
 }

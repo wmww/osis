@@ -25,6 +25,10 @@
 //!   re-marking it pending on both. No Offer goes before the peer's digest is read and no Pull
 //!   before the agreement ends (a member only one side holds is out of both streams by then).
 //!
+//! - A Deposit item goes only where J of its inbox's actor is holder, and is taken only for an
+//!   inbox an actor this side proved holds, else 14 whether or not it is held: neither side
+//!   learns of an inbox the connection's proofs did not already show (tests/it/deposits.rs).
+//!
 //! A filter goes only to a peer that proved a known actor, so where only one side knows the other
 //! (a link's redeemer) that side's filter is the only one; a connection without a record uses its
 //! own pair key, starts with whole filters and tests everything.
@@ -68,6 +72,8 @@ struct Cred {
 enum AskedItem {
     Hit(Cred),
     ByRole(LabelId),
+    /// A queued deposit for an inbox's nodes (`Dest::Nodes`), by its outbox key's label and blob.
+    Deposit(LabelId, BlobId),
 }
 
 /// What a request of this side waits for.
@@ -168,6 +174,11 @@ pub(crate) struct Shared {
     filter_out: bool,
     /// Tests of the pending set run and generations sent on this connection (tests count them).
     work: (u64, u64),
+    /// A Deposit item of this side is unanswered (one at a time per connection).
+    deposit_out: bool,
+    /// Deposits the peer refused (14) on this connection: not offered here again until what this
+    /// node holds changes.
+    deposits_refused: BTreeSet<(LabelId, BlobId)>,
 }
 
 /// Ids this module draws: never one the session's own requests use (top bit set).
@@ -214,6 +225,8 @@ impl Shared {
             static_missing: BTreeSet::new(),
             filter_out: false,
             work: (0, 0),
+            deposit_out: false,
+            deposits_refused: BTreeSet::new(),
         }
     }
 
@@ -398,6 +411,7 @@ impl SyncEngine {
             let Some(s) = self.records.shared.get_mut(&conn) else { continue };
             s.table = None;
             s.test_due = true;
+            s.deposits_refused.clear();
             self.shared_rejudge(conn, out)?;
             self.shared_send_generation(conn, out)?;
             self.shared_test(conn, out)?;
@@ -794,6 +808,8 @@ impl SyncEngine {
         let mut judge = self.engine.core.judge(actors);
         let mut codes = Vec::with_capacity(items.len());
         let mut opens: Vec<(LabelId, u8, Option<[u8; 32]>)> = Vec::new();
+        // Deposit items, judged once the loop's borrows end: (index of the answer, the item)
+        let mut deposits = Vec::new();
         let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
         for item in items {
             let answer = match item {
@@ -817,15 +833,155 @@ impl SyncEngine {
                         (Code::NOT_ADMITTED, None, None)
                     }
                 }
+                OfferItem::Deposit { label, blob, wrap, sig } => {
+                    deposits.push((codes.len(), label, blob, wrap, sig));
+                    (Code::NOT_ADMITTED, None, None)
+                }
             };
             codes.push(answer);
         }
         drop(judge);
+        let mut takes = Vec::new();
+        for (i, l, blob, wrap, sig) in deposits {
+            let code = self.shared_deposit_verdict(conn, &served, &things, l, &blob, &wrap, &sig)?;
+            if let Some(c) = codes.get_mut(i) {
+                c.0 = code;
+            }
+            if code == Code::OK {
+                takes.push((l, blob, wrap));
+            }
+        }
         // the answer first: the tester opens on reading it, so a Pull joining L after it finds L
         // open there (stream.rs)
         self.shared_send(conn, Message::Shared { id, codes }, out)?;
         for (l, class, value) in opens {
             self.shared_open(conn, l, class, value, out)?;
+        }
+        // a deposit taken goes on as one a host gave would: the inbox's own processing
+        for (l, blob, wrap) in takes {
+            let blob_id = osis_label::blob_id(&blob);
+            if self.state.entries.contains_key(&(l, blob_id)) || self.state.tombs.contains_key(&(l, blob_id)) {
+                continue;
+            }
+            self.log_events_from(super::inbound::Src::Served(conn), l, vec![osis_proto::Event::Added { blob_id, blob: Some(blob), wrap, stamp: None }], None, out)?;
+            self.stream_crossed(conn, vec![blob_id]);
+        }
+        Ok(())
+    }
+
+    /// The answer to a Deposit item (issues/net-shared-set.md, Deposits): taken (0) when this
+    /// side proved to the peer an actor holding L's read role and the signature verifies under
+    /// its served head's deposit key; refused for now (5) past the peer budgets; else 14, the
+    /// same whether or not L is held here. A blob held or dropped here is answered 0 and changes
+    /// nothing.
+    #[allow(clippy::too_many_arguments)]
+    fn shared_deposit_verdict(&mut self, conn: ConnId, served: &BTreeMap<LabelId, super::serve::ServedLabel>, things: &BTreeMap<LabelId, Tid>, l: LabelId, blob: &[u8], wrap: &[u8; osis_crypto::WRAP_LEN], sig: &osis_crypto::Signature) -> Result<Code> {
+        let Some(t) = things.get(&l) else { return Ok(Code::NOT_ADMITTED) };
+        // what this side proved on the connection: its provers (a shared set runs only where it did)
+        let mine: Vec<Tid> = super::proofs::provers(&mut self.engine)?.iter().map(|p| p.record.tid()).collect();
+        if self.engine.core.judge(mine).of(t) != super::credentials::Judgment::Holder {
+            return Ok(Code::NOT_ADMITTED);
+        }
+        let Some(head) = served.get(&l).and_then(|x| x.head()) else { return Ok(Code::NOT_ADMITTED) };
+        let blob_id = osis_label::blob_id(blob);
+        if osis_label::verify_deposit(&head.keys.deposit, &l, &blob_id, wrap, sig).is_err() {
+            return Ok(Code::NOT_ADMITTED);
+        }
+        // ephemeral and relay-only blobs are never deposited (spec/sync.md §5)
+        if !osis_label::Prefix::parse(blob).is_ok_and(|p| p.class() == osis_label::Class::Durable) {
+            return Ok(Code::NOT_ADMITTED);
+        }
+        if self.state.entries.contains_key(&(l, blob_id)) || self.state.tombs.contains_key(&(l, blob_id)) {
+            return Ok(Code::OK);
+        }
+        Ok(if self.charge_deposit(conn, l, blob_id, blob.len() as u64) { Code::OK } else { Code::BUDGET_FULL })
+    }
+
+    /// Queued deposits for an inbox's nodes (`Dest::Nodes`) go as Deposit items, one unanswered
+    /// per connection, each only on a connection where J of the inbox's actor is holder and the
+    /// peer has not refused it, after the peer's digest (issues/net-shared-set.md, Deposits).
+    pub(super) fn shared_deposits(&mut self, out: &mut Vec<Action>) -> Result<()> {
+        use super::state::{Dest, INBOX_NODES};
+        let now = self.raw_now();
+        // one in flight on a connection gone (dialed or served) goes again
+        for (_, o) in self.outbox.iter_mut().filter(|(k, _)| k.0 == INBOX_NODES) {
+            if o.sent.is_some_and(|c| !self.records.shared.contains_key(&c)) {
+                o.sent = None;
+            }
+        }
+        let mut due: Vec<((LabelId, BlobId), Tid)> = Vec::new();
+        for (k, o) in &self.outbox {
+            if k.0 != INBOX_NODES || o.sent.is_some() || o.after > now {
+                continue;
+            }
+            if let Some(Dest::Nodes(a)) = self.state.outbox.get(k).map(|r| &r.to) {
+                due.push(((k.1, k.2), *a));
+            }
+        }
+        if due.is_empty() {
+            return Ok(());
+        }
+        let conns: Vec<ConnId> = self.records.shared.iter().filter(|(_, s)| s.digest_read && !s.deposit_out).map(|(c, _)| *c).collect();
+        for conn in conns {
+            let Some(actors) = self.connection_proven(conn).map(Proven::all) else { continue };
+            let Some(s) = self.records.shared.get(&conn) else { continue };
+            let mut judge = self.engine.core.judge(actors);
+            let pick = due.iter().find(|(k, a)| {
+                self.outbox.get(&(INBOX_NODES, k.0, k.1)).is_some_and(|o| o.sent.is_none()) && !s.deposits_refused.contains(k) && judge.of(a) == super::credentials::Judgment::Holder
+            });
+            let Some(((l, b), _)) = pick.copied() else { continue };
+            drop(judge);
+            let Some(r) = self.state.outbox.get(&(INBOX_NODES, l, b)) else { continue };
+            let item = OfferItem::Deposit { label: l, blob: r.blob.clone(), wrap: r.wrap, sig: r.sig };
+            if let Some(o) = self.outbox.get_mut(&(INBOX_NODES, l, b)) {
+                o.sent = Some(conn);
+            }
+            if let Some(s) = self.records.shared.get_mut(&conn) {
+                s.deposit_out = true;
+            }
+            self.stats.deposits_sent += 1;
+            self.shared_send_offer(conn, vec![item], vec![AskedItem::Deposit(l, b)], out)?;
+        }
+        Ok(())
+    }
+
+    /// The peer's answer to Deposit item `(l, b)`: taken, it leaves the outbox (the pending
+    /// deliveries); refused for now, it backs off as a host's refusal does (`budget`); refused,
+    /// it is signed again with the current deposit key if that differs and offered again, else
+    /// not offered on this connection again until what this node holds changes.
+    fn shared_deposit_answered(&mut self, conn: ConnId, l: LabelId, b: BlobId, code: Code) -> Result<()> {
+        use super::state::INBOX_NODES;
+        let k = (INBOX_NODES, l, b);
+        if let Some(s) = self.records.shared.get_mut(&conn) {
+            s.deposit_out = false;
+        }
+        let Some(o) = self.outbox.get_mut(&k) else { return Ok(()) };
+        o.sent = None;
+        if code == Code::OK {
+            self.outbox.remove(&k);
+            self.state.remove_out(&INBOX_NODES, &l, &b);
+            return Ok(());
+        }
+        if self.deposit_moot(&INBOX_NODES, &l, &b) {
+            self.outbox.remove(&k);
+            self.state.remove_out(&INBOX_NODES, &l, &b);
+            return Ok(());
+        }
+        if matches!(code, Code::BUDGET_FULL | Code::RATE_LIMITED | Code::STORAGE_CAP) {
+            let now = self.raw_now();
+            let Some(o) = self.outbox.get_mut(&k) else { return Ok(()) };
+            o.tries = o.tries.saturating_add(1);
+            let tries = o.tries;
+            let back = self.deposit_back_off(tries);
+            if let Some(o) = self.outbox.get_mut(&k) {
+                o.after = now.saturating_add(back);
+            }
+            return Ok(());
+        }
+        if !self.resign_deposit(&INBOX_NODES, &l, &b)?
+            && let Some(s) = self.records.shared.get_mut(&conn)
+        {
+            s.deposits_refused.insert((l, b));
         }
         Ok(())
     }
@@ -1115,6 +1271,10 @@ impl SyncEngine {
             Asked::Offer(items) => {
                 s.pending.offers_unanswered = s.pending.offers_unanswered.saturating_sub(1);
                 for (item, (code, tag, grant)) in items.into_iter().zip(codes) {
+                    if let AskedItem::Deposit(l, b) = item {
+                        self.shared_deposit_answered(conn, l, b, code)?;
+                        continue;
+                    }
                     if code != Code::OK {
                         continue;
                     }
@@ -1127,6 +1287,7 @@ impl SyncEngine {
                                 self.shared_open(conn, l, JUDGED, None, out)?;
                             }
                         }
+                        AskedItem::Deposit(..) => {}
                         AskedItem::Hit(c) => {
                             let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
                             let expect = beacon_reply(&c.value, &c.label.0, &c.beacon, s.side(!s.by_listener));

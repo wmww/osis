@@ -288,6 +288,9 @@ pub enum OfferItem {
     Hit([u8; 32]),
     /// A sync ID the sender judged the peer holds, with the sender's Hit at each epoch it holds.
     ByRole(LabelId, Vec<[u8; 32]>),
+    /// An inbox blob for inbox sync ID `label`, its wrap and the deposit key's signature, as a
+    /// Deposit carries them, to a peer the sender judged a holder of the inbox.
+    Deposit { label: LabelId, blob: Vec<u8>, wrap: Wrap, sig: Signature },
 }
 
 /// Most items in one Offer or Lost.
@@ -369,17 +372,23 @@ impl OfferItem {
         match self {
             OfferItem::Hit(h) => Value::List(vec![Value::uint(0), Value::bytes(h)]),
             OfferItem::ByRole(l, hits) => Value::List(vec![Value::uint(1), Value::bytes(&l.0), Value::List(hits.iter().map(|h| Value::bytes(h)).collect())]),
+            OfferItem::Deposit { label, blob, wrap, sig } => Value::List(vec![Value::uint(2), Value::bytes(&label.0), Value::bytes(blob), Value::bytes(wrap), Value::bytes(&sig.0)]),
         }
     }
 }
 
 fn offer_item(v: Value) -> Result<OfferItem, Error> {
-    let mut f = Fields::range(v, 2, 3, "offer item")?;
-    Ok(match f.uint()? {
+    let mut f = Fields::range(v, 2, 5, "offer item")?;
+    let item = match f.uint()? {
         0 => OfferItem::Hit(f.fixed()?),
         1 => OfferItem::ByRole(LabelId(f.fixed()?), f.list(1, MAX_BYROLE_HITS, "hits")?.into_iter().map(|v| dec::fixed(v, "hit")).collect::<Result<_, _>>()?),
+        2 => OfferItem::Deposit { label: LabelId(f.fixed()?), blob: f.bytes(MAX_BLOB)?, wrap: f.fixed()?, sig: Signature(f.fixed()?) },
         _ => return Err(Error::Malformed("offer item")),
-    })
+    };
+    if f.remaining() != 0 {
+        return Err(Error::Malformed("offer item"));
+    }
+    Ok(item)
 }
 
 fn proofs(v: Vec<Value>) -> Result<Vec<crate::ActorProof>, Error> {

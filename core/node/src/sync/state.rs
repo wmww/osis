@@ -170,12 +170,35 @@ pub struct BlobRec {
 /// A body under a label: (label, commit, its parts by aspect index, sorted).
 pub type DeletedBody = (LabelId, CommitId, Vec<usize>);
 
+/// Where a queued deposit goes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Dest {
+    /// A host of its label, until that host takes it.
+    Host(Address),
+    /// The nodes of inbox actor `0` (an inbox listing no host): a Deposit item to a connected
+    /// node judged a holder of the inbox (spec/sync.md §10 Shared set), until one takes it.
+    Nodes(Tid),
+}
+
+/// The outbox key of `Dest::Nodes`: no host has it (an Ed25519 key of all zeros).
+pub const INBOX_NODES: HostKey = [0; 32];
+
+impl Dest {
+    /// Its outbox key.
+    pub fn key(&self) -> HostKey {
+        match self {
+            Dest::Host(a) => a.key,
+            Dest::Nodes(_) => INBOX_NODES,
+        }
+    }
+}
+
 /// A deposit (an inbox blob, a non-writer's role write) sealed, wrapped and signed, kept
-/// until its host answers (spec/sync.md §3, §5).
+/// until where it goes takes it (spec/sync.md §3, §5, §10).
 #[derive(Clone, Debug)]
 pub struct OutRec {
     pub label: LabelId,
-    pub host: Address,
+    pub to: Dest,
     pub blob: Vec<u8>,
     pub wrap: [u8; WRAP_LEN],
     pub sig: Signature,
@@ -197,15 +220,12 @@ pub struct SentInbox {
     pub at: u64,
     /// Re-sends so far.
     pub tries: u32,
-    /// The last send had nowhere to go (the inbox lists no node and is not this node's): it counts
-    /// as pending until a node took it.
-    pub nowhere: bool,
 }
 
 impl SentInbox {
-    /// Not taken by anyone yet.
+    /// Not sealed and queued yet (a queued seal counts in the outbox until taken).
     pub fn unsent(&self) -> bool {
-        self.at == 0 || self.nowhere
+        self.at == 0
     }
 }
 
@@ -1355,12 +1375,12 @@ impl State {
     }
 
     /// Records an inbox delivery, or a re-send of one (counted).
-    pub fn note_sent(&mut self, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool, at: u64, nowhere: bool) {
+    pub fn note_sent(&mut self, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool, at: u64) {
         let x = match self.sent_inbox.get(&(holder, commit)) {
             // the first send of a delivery queued unsent (`at` 0) is no re-send
-            Some(old) if old.at == 0 => SentInbox { at, nowhere, ..old.clone() },
-            Some(old) => SentInbox { at, nowhere, tries: old.tries.saturating_add(1), ..old.clone() },
-            None => SentInbox { holder, commit, things, edge_only, at, tries: 0, nowhere },
+            Some(old) if old.at == 0 => SentInbox { at, ..old.clone() },
+            Some(old) => SentInbox { at, tries: old.tries.saturating_add(1), ..old.clone() },
+            None => SentInbox { holder, commit, things, edge_only, at, tries: 0 },
         };
         self.put(key(SENT_INBOX, &[holder.as_bytes(), &commit.0]), encode_sent(&x));
         self.sent_inbox.insert((holder, commit), x);
@@ -1372,7 +1392,7 @@ impl State {
         if self.sent_inbox.contains_key(&(holder, commit)) {
             return;
         }
-        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0, nowhere: false };
+        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0 };
         self.put(key(SENT_INBOX, &[holder.as_bytes(), &commit.0]), encode_sent(&x));
         self.sent_inbox.insert((holder, commit), x);
     }
@@ -1539,13 +1559,19 @@ impl State {
 
     pub fn add_out(&mut self, o: OutRec) {
         let id = osis_label::blob_id(&o.blob);
-        let mut w = Wr::new().raw(&o.label.0).bytes(o.host.url.as_bytes()).raw(&o.host.key).raw(&o.wrap).raw(&o.sig.0).bytes(&o.blob);
+        let w = Wr::new().raw(&o.label.0);
+        let mut w = match &o.to {
+            Dest::Host(a) => w.u8(0).bytes(a.url.as_bytes()).raw(&a.key),
+            Dest::Nodes(t) => w.u8(1).raw(t.as_bytes()),
+        };
+        w = w.raw(&o.wrap).raw(&o.sig.0).bytes(&o.blob);
         if let Some((m, c)) = &o.delivery {
             w = w.raw(m.as_bytes()).raw(&c.0);
         }
         let v = w.take();
-        self.put(key(OUTBOX, &[&o.host.key, &o.label.0, &id.0]), v);
-        self.outbox.insert((o.host.key, o.label, id), o);
+        let k = o.to.key();
+        self.put(key(OUTBOX, &[&k, &o.label.0, &id.0]), v);
+        self.outbox.insert((k, o.label, id), o);
         self.version += 1;
     }
 
@@ -1676,7 +1702,7 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
 }
 
 fn encode_sent(x: &SentInbox) -> Vec<u8> {
-    let mut w = Wr::new().raw(x.holder.as_bytes()).raw(&x.commit.0).u8(u8::from(x.edge_only)).u64(x.at).u32(x.tries).u8(u8::from(x.nowhere)).u32(x.things.len() as u32);
+    let mut w = Wr::new().raw(x.holder.as_bytes()).raw(&x.commit.0).u8(u8::from(x.edge_only)).u64(x.at).u32(x.tries).u32(x.things.len() as u32);
     for t in &x.things {
         w = w.raw(t.as_bytes());
     }
@@ -1688,7 +1714,7 @@ fn encode_sent(x: &SentInbox) -> Vec<u8> {
 fn note_unsent_tx(tx: &mut Tx<'_>, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()> {
     let k = key(SENT_INBOX, &[holder.as_bytes(), &commit.0]);
     if tx.txn.get_local(&k)?.is_none() {
-        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0, nowhere: false };
+        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0 };
         tx.txn.put_local(&k, &encode_sent(&x), Shred::No)?;
     }
     Ok(())
@@ -1766,8 +1792,17 @@ fn decode_out(k: &[u8], v: &[u8]) -> Result<((HostKey, LabelId, BlobId), OutRec)
     if !r.is_empty() || label != key.1 {
         return Err(Error::Corrupt("outbox"));
     }
-    let url = String::from_utf8(x.bytes()?.to_vec()).map_err(|_| Error::Corrupt("outbox"))?;
-    let host = Address { url, key: x.arr()? };
+    let to = match x.u8()? {
+        0 => {
+            let url = String::from_utf8(x.bytes()?.to_vec()).map_err(|_| Error::Corrupt("outbox"))?;
+            Dest::Host(Address { url, key: x.arr()? })
+        }
+        1 => Dest::Nodes(x.tid()?),
+        _ => return Err(Error::Corrupt("outbox")),
+    };
+    if to.key() != key.0 {
+        return Err(Error::Corrupt("outbox"));
+    }
     let wrap = x.arr()?;
     let sig = Signature(x.arr()?);
     let blob = x.bytes()?.to_vec();
@@ -1775,7 +1810,7 @@ fn decode_out(k: &[u8], v: &[u8]) -> Result<((HostKey, LabelId, BlobId), OutRec)
     if !x.is_empty() {
         return Err(Error::Corrupt("outbox"));
     }
-    Ok((key, OutRec { label, host, blob, wrap, sig, delivery }))
+    Ok((key, OutRec { label, to, blob, wrap, sig, delivery }))
 }
 
 fn decode_sent(v: &[u8]) -> Result<SentInbox> {
@@ -1785,13 +1820,12 @@ fn decode_sent(v: &[u8]) -> Result<SentInbox> {
     let edge_only = r.u8()? == 1;
     let at = r.u64()?;
     let tries = r.u32()?;
-    let nowhere = r.u8()? == 1;
     let n = r.u32()?;
     let mut things = Vec::new();
     for _ in 0..n {
         things.push(r.tid()?);
     }
-    Ok(SentInbox { holder, commit, things, edge_only, at, tries, nowhere })
+    Ok(SentInbox { holder, commit, things, edge_only, at, tries })
 }
 
 /// The records engine transactions touch (`Engine::set_sync_records`).

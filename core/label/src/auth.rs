@@ -154,6 +154,11 @@ pub fn sign_deposit(deposit: &SigningSecret, label: &LabelId, blob: &BlobId, wra
     deposit.sign(Domain::Deposit, &entry_digest(label, blob, wrap))
 }
 
+/// Checks a deposit's signature against the head's deposit key; an altered wrap fails.
+pub fn verify_deposit(head_deposit: &VerifyingKey, label: &LabelId, blob: &BlobId, wrap: &[u8], sig: &Signature) -> Result<(), Error> {
+    head_deposit.verify(Domain::Deposit, &entry_digest(label, blob, wrap), sig).map_err(|_| Error::Verify("deposit"))
+}
+
 /// The label key a delete by delete keys at `levels` needs beside them (spec/sync.md §5): the
 /// write key when any is level 3, else the sync key; the delete key with no level.
 pub fn key_for_levels(levels: &[Level]) -> Result<LabelRole, Error> {

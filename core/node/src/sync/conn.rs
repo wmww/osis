@@ -274,7 +274,7 @@ impl SyncEngine {
             add(&mut m, &h.hosts);
         }
         // a queued deposit's host until it takes it (an inbox host of no label synced here)
-        add(&mut m, self.state.outbox.values().map(|o| &o.host));
+        add(&mut m, self.state.outbox.values().filter_map(|o| if let super::state::Dest::Host(a) = &o.to { Some(a) } else { None }));
         if self.cfg.peers {
             for (k, (a, _)) in self.peer_addresses() {
                 m.entry(k).or_insert((a, true));

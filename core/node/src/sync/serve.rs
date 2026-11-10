@@ -506,6 +506,20 @@ impl SyncEngine {
         self.delete_blobs(&gone)
     }
 
+    /// Charges a Deposit item's blob `b` (`size` bytes under `l`) from `conn`'s peer as an upload
+    /// is charged (`charge_key`); false, charging nothing, past either budget.
+    pub(crate) fn charge_deposit(&mut self, conn: ConnId, l: LabelId, b: BlobId, size: u64) -> bool {
+        let node = self.connection_proven(conn).and_then(|p| p.node).filter(|_| self.connection_proven(conn).is_some_and(|p| self.engine.core.judge(p.all()).known()));
+        let key = charge_key(node, &l);
+        let used = self.charges.per.get(&key).copied().unwrap_or(0);
+        if size > self.cfg.peer_bytes.saturating_sub(used) || size > self.cfg.peer_total_bytes.saturating_sub(self.charges.total) {
+            self.charges.full = true;
+            return false;
+        }
+        self.charges.charge(l, b, key, size);
+        true
+    }
+
     /// Drops charges that no longer count: entries no longer held, opened since, or present at
     /// a host or peer.
     pub(crate) fn prune_charges(&mut self) {
