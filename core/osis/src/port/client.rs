@@ -598,7 +598,7 @@ impl Io {
         let now = self.now();
         if tx.taken() != self.taken {
             self.taken = tx.taken();
-            let o = self.cs.handle(now, ClientInput::Sent);
+            let o = self.cs.handle(now, ClientInput::Taken(self.taken));
             up = self.outputs(tx, o);
         }
         self.timer = None;

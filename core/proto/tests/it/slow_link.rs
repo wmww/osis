@@ -115,7 +115,7 @@ impl Run {
         self.now += step_ms;
         let b = self.up.take(rate);
         if !b.is_empty() {
-            self.input(ClientInput::Sent);
+            self.input(ClientInput::Taken(self.up.taken));
             let so = self.host.handle(self.now, &mut self.store, ServingInput::Bytes(b));
             self.host_out(so);
         }

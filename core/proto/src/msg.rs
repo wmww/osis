@@ -306,6 +306,32 @@ impl Rejected {
     }
 }
 
+/// The kind and id of a message from the first bytes of its frame body, when they are there (a
+/// frame still arriving); `Message::decode` checks the whole once it is in.
+pub fn peek_head(body: &[u8]) -> Option<(u64, Id)> {
+    fn uint(b: &[u8]) -> Option<(u64, &[u8])> {
+        let (&ib, rest) = b.split_first()?;
+        let n = match ib {
+            0..=23 => return Some((u64::from(ib), rest)),
+            24 => 1,
+            25 => 2,
+            26 => 4,
+            27 => 8,
+            _ => return None,
+        };
+        let (x, rest) = rest.split_at_checked(n)?;
+        Some((x.iter().fold(0, |a, b| a << 8 | u64::from(*b)), rest))
+    }
+    let (&ib, rest) = body.split_first()?;
+    // an array of at most 23 items: every v1 message
+    if !(0x80..=0x97).contains(&ib) {
+        return None;
+    }
+    let (kind, rest) = uint(rest)?;
+    let (id, _) = uint(rest)?;
+    Some((kind, Id::try_from(id).ok()?))
+}
+
 /// Kinds that are requests (spec/wire.md §11.2: those with `->`).
 pub fn is_request_kind(kind: u64) -> bool {
     matches!(kind, 2 | 4 | 7 | 8 | 10 | 12 | 14 | 15 | 17 | 19 | 21 | 22 | 24 | 25 | 27 | 28 | 32 | 36 | 37 | 38 | 40 | 41)

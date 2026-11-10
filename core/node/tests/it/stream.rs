@@ -340,6 +340,54 @@ fn a_source_answering_fetches_with_nothing_is_failed_spec_sync_10() {
     assert!(net.peer_sent(a, FETCH) - fetches <= 3, "{}", net.peer_sent(a, FETCH) - fetches);
 }
 
+/// Node `a` with co-readers `b` (the writer) and `c`; `a` dials `b` when `a_dials`, else `b`
+/// dials `a`. Then `b` answers none of `a`'s requests while it keeps writing and pushing every
+/// 30 s: whether `a` reads `b`'s first write, fetched from `c`, after `wait` ms.
+fn silent_co_reader(a_dials: bool, wait: u64) -> bool {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    let c = net.node(3, &[]);
+    reach_ed(&mut net, if a_dials { b } else { a });
+    reach_ed(&mut net, c);
+    let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
+    net.pair(c, a);
+    net.pair(b, c);
+    net.run();
+    net.advance(120_000);
+    let probe = net.item(b, g, g, "probe");
+    net.run();
+    assert_eq!(net.read(a, probe), Some(s("probe")), "a reads b's writes");
+    net.silent.insert((b, a));
+    let fetches = net.peer_sent(a, FETCH);
+    let first = net.item(b, g, g, "first");
+    net.run();
+    assert!(net.peer_sent(a, FETCH) > fetches, "a asked b for the body");
+    assert_eq!(net.read(c, first), Some(s("first")), "c holds it");
+    assert_eq!(net.read(a, first), None, "held by the Fetch b does not answer");
+    let mut waited = 0;
+    while waited < wait {
+        net.advance(30_000);
+        waited += 30_000;
+        net.item(b, g, g, &format!("later {waited}"));
+        net.run();
+    }
+    net.read(a, first) == Some(s("first"))
+}
+
+// spec/sync.md §6 (stall), §10 (Bodies: the next source): a co-reader that answers none of a
+// node's requests while it keeps pushing holds the node's Fetch only for the stall time,
+// whichever side dialed; the body then comes from an honest co-reader. Not before: nothing
+// closes an answering peer early
+#[test]
+fn a_silent_co_reader_is_closed_and_the_body_comes_from_another_spec_sync_6() {
+    let stall = osis_proto::client::STALL_TIMEOUT_MS;
+    for a_dials in [true, false] {
+        assert!(!silent_co_reader(a_dials, stall - 30_000), "not closed before the stall time (a dials: {a_dials})");
+        assert!(silent_co_reader(a_dials, stall + 60_000), "from c once b's connection closed (a dials: {a_dials})");
+    }
+}
+
 /// Pulls node `a` sends once back after `b`'s log aged out the deletions of what `a` held, at
 /// `n` sync IDs, and whether `a` then holds what `b` holds.
 fn back_after_aging(n: usize) -> (usize, bool, bool) {

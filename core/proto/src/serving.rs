@@ -88,6 +88,11 @@ pub enum ServingInput {
     WantRoom,
 }
 
+/// Bytes of the `Send` outputs in `out`.
+fn sent_bytes(out: &[ServingOutput]) -> u64 {
+    out.iter().map(|o| if let ServingOutput::Send(b) = o { b.len() as u64 } else { 0 }).sum()
+}
+
 /// A relay-only entry (spec/sync.md §5): accepted by stamp, pushed to the label's current
 /// subscribers on other connections, held by nobody.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -427,6 +432,13 @@ impl ServingSession {
         b > 0 && b.saturating_add(size) > REPLY_BUDGET
     }
 
+    /// When this side's oldest request to the dialer stalls (`client::STALL_TIMEOUT_MS`, the
+    /// requester's rule whichever side dialed): the driver closes the connection then. None while
+    /// none is out.
+    pub fn stall_at(&self) -> Option<u64> {
+        self.requests.stall_at()
+    }
+
     /// Bytes received and not yet parsed (a partial frame).
     pub fn buffered(&self) -> usize {
         self.decoder.pending()
@@ -439,10 +451,10 @@ impl ServingSession {
         }
         self.input(now, store, input, &mut out);
         if !self.closed {
-            self.requests.flush(|f| out.push(ServingOutput::Send(f)));
+            let before = self.written.saturating_add(sent_bytes(&out));
+            self.requests.flush(before, now, |f| out.push(ServingOutput::Send(f)));
         }
-        let n: usize = out.iter().map(|x| if let ServingOutput::Send(b) = x { b.len() } else { 0 }).sum();
-        self.written = self.written.saturating_add(n as u64);
+        self.written = self.written.saturating_add(sent_bytes(&out));
         out
     }
 
@@ -481,6 +493,7 @@ impl ServingSession {
                         }
                     }
                 }
+                self.requests.arriving(self.decoder.partial(), now);
             }
             // while pushes are held, a label waits its turn (`owed`)
             ServingInput::Changed(label) if self.held() => {
@@ -512,6 +525,7 @@ impl ServingSession {
             }
             ServingInput::Taken(n) => {
                 self.taken = Some(self.taken.map_or(n, |t| t.max(n)));
+                self.requests.taken(n, now);
                 // in turn: one held again goes to the back, and the rest keep their place
                 while let Some(l) = self.owed.pop_front() {
                     if let Err(e) = self.push(store, &l, out) {
@@ -653,7 +667,7 @@ impl ServingSession {
         use Message as M;
         if msg.for_node() {
             if !msg.is_request() {
-                self.requests.answered(msg.id());
+                self.requests.answered(msg.id(), now);
             }
             out.push(ServingOutput::Peer(Box::new(msg)));
             return Ok(None);

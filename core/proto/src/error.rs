@@ -18,7 +18,7 @@ pub enum Error {
     NoCommonVersion,
     /// A label object inside a message (step, claim set, entry box, proof, delete item, bundle).
     Label(osis_label::Error),
-    /// Requests in flight and nothing moved for `STALL_TIMEOUT_MS`: the session closes.
+    /// The oldest request in flight did not move for `STALL_TIMEOUT_MS`: the session closes.
     Timeout,
 }
 

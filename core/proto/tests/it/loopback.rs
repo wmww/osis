@@ -702,8 +702,14 @@ fn loopback_converges_at_size() {
     assert!(net.flights <= 8, "{} flights", net.flights);
 }
 
-// spec/sync.md §6: requests in flight with nothing moving on the stream close the session at
-// the deadline (the node redials); a byte received or one of ours taken by the transport moves it
+/// The frames a session sent in `out`, decoded.
+fn sent_msgs<'a>(out: impl IntoIterator<Item = &'a ClientOutput>) -> Vec<Message> {
+    out.into_iter().filter_map(|o| if let ClientOutput::Send(f) = o { Message::decode(&f[4..]).ok() } else { None }).collect()
+}
+
+// spec/sync.md §6 (stall): the oldest request in flight not moving closes the connection at the
+// deadline (the node redials). Its frame taken by the transport moves it, and so do the first
+// bytes of a reply to it; a push, the peer's own request or a reply to a later request does not
 #[test]
 fn stalled_requests_time_out() {
     let t = client::STALL_TIMEOUT_MS;
@@ -712,10 +718,21 @@ fn stalled_requests_time_out() {
     let hello = encode_frame(&Hello::new(T0, [3; 32]).encode());
     let out = c.handle(T0, ClientInput::Bytes(hello));
     assert!(out.iter().any(|o| matches!(o, ClientOutput::SetTimer(x) if *x == T0 + t)), "{out:?}");
-    // the initial pings stay unanswered; progress either way pushes the deadline
-    let out = c.handle(T0 + t - 1, ClientInput::Sent);
+    let pings: Vec<u32> = sent_msgs(&out).iter().filter_map(|m| if let Message::Ping { id, .. } = m { Some(*id) } else { None }).collect();
+    assert_eq!(pings.len(), 3);
+    // the transport takes part of the pings: they had not all left yet
+    let out = c.handle(T0 + t - 1, ClientInput::Taken(5));
     assert!(out.iter().any(|o| matches!(o, ClientOutput::SetTimer(x) if *x == T0 + 2 * t - 1)), "{out:?}");
-    c.handle(T0 + 2 * t - 2, ClientInput::Bytes(vec![0]));
+    // bytes of other kinds move nothing: a push, the peer's own request, a later ping's answer
+    let push = Message::Push { label: LabelId([7; 16]), events: vec![Event::Deleted(bid(1))], cursor: Cursor { log_id: [1; 16], seq: 1 } };
+    let mut other = encode_frame(&push.encode());
+    other.extend(encode_frame(&Message::Ping { id: 9, wall_ms: T0 }.encode()));
+    other.extend(encode_frame(&Message::Pong { id: pings[2], wall_ms: T0 }.encode()));
+    let out = c.handle(T0 + 2 * t - 3, ClientInput::Bytes(other));
+    assert!(!out.iter().any(|o| matches!(o, ClientOutput::SetTimer(_))), "{out:?}");
+    // the first bytes of the oldest's answer move it
+    let pong = encode_frame(&Message::Pong { id: pings[0], wall_ms: T0 }.encode());
+    c.handle(T0 + 2 * t - 2, ClientInput::Bytes(pong[..7].to_vec()));
     let early = c.handle(T0 + 3 * t - 3, ClientInput::Timer);
     assert!(!early.iter().any(|o| matches!(o, ClientOutput::Close)));
     let late = c.handle(T0 + 3 * t - 2, ClientInput::Timer);
@@ -723,8 +740,40 @@ fn stalled_requests_time_out() {
     assert!(c.is_closed());
 }
 
+// spec/sync.md §6 (stall, honest slow peers): a reply trickling in over many stall times keeps
+// the connection, as do answers one after another each within the stall time
+#[test]
+fn slow_replies_keep_the_connection_spec_sync_6() {
+    let t = client::STALL_TIMEOUT_MS;
+    let mut c = ClientSession::new(ClientConfig { peer_static_key: [1; 32], challenge: [2; 32] });
+    c.handle(T0, ClientInput::Start);
+    let out = c.handle(T0, ClientInput::Bytes(encode_frame(&Hello::new(T0, [3; 32]).encode())));
+    let pings: Vec<u32> = sent_msgs(&out).iter().filter_map(|m| if let Message::Ping { id, .. } = m { Some(*id) } else { None }).collect();
+    let mut now = T0;
+    for id in &pings[..2] {
+        now += t - 1;
+        c.handle(now, ClientInput::Bytes(encode_frame(&Message::Pong { id: *id, wall_ms: now }.encode())));
+        assert!(!c.handle(now, ClientInput::Timer).iter().any(|o| matches!(o, ClientOutput::Close)));
+    }
+    let l = LabelId([7; 16]);
+    let out = c.handle(now, ClientInput::Command(Command::Fetch { label: l, ids: vec![bid(1)] }));
+    let fetch = sent_msgs(&out).iter().find_map(|m| if let Message::Fetch { id, .. } = m { Some(*id) } else { None }).unwrap();
+    c.handle(now, ClientInput::Bytes(encode_frame(&Message::Pong { id: pings[2], wall_ms: now }.encode())));
+    // a 60 KiB answer at 1 KiB per 100 s
+    let reply = encode_frame(&Message::FetchReply { id: fetch, items: vec![Fetched { blob_id: bid(1), entry: Some((vec![5; 60 << 10], [0; osis_crypto::WRAP_LEN], None)) }] }.encode());
+    let mut fetched = false;
+    for piece in reply.chunks(1024) {
+        now += t - 20_000;
+        let out = c.handle(now, ClientInput::Bytes(piece.to_vec()));
+        fetched |= out.iter().any(|o| matches!(o, ClientOutput::Event(ClientEvent::Fetched { .. })));
+        assert!(!c.handle(now, ClientInput::Timer).iter().any(|o| matches!(o, ClientOutput::Close)), "closed at {} s", (now - T0) / 1000);
+    }
+    assert!(fetched, "the answer arrived");
+    assert!(!c.is_closed());
+}
+
 // spec/sync.md §6 (a node's own requests count as any): a peer silent on a stream Fetch is
-// closed at the stall deadline, and no ping goes meanwhile (its send would push the deadline)
+// closed at the stall deadline, and the quiet ping sends nothing meanwhile
 #[test]
 fn a_silent_node_request_times_out_spec_sync_6() {
     let t = client::STALL_TIMEOUT_MS;
@@ -747,6 +796,43 @@ fn a_silent_node_request_times_out_spec_sync_6() {
     assert!(!quiet.iter().any(|o| matches!(o, ClientOutput::Send(_))), "{quiet:?}");
     let late = c.handle(T0 + 1 + t, ClientInput::Timer);
     assert!(late.iter().any(|o| matches!(o, ClientOutput::Close)), "{late:?}");
+}
+
+// spec/sync.md §6 (stall, whichever side dialed): the listener's own request to the dialer
+// stalls as the dialer's would, however much the dialer pushes and asks meanwhile; an answer's
+// first bytes move it, and the transport taking its frame does too
+#[test]
+fn a_listener_request_stalls_while_the_dialer_answers_nothing_spec_sync_6() {
+    let t = client::STALL_TIMEOUT_MS;
+    let mut store = MemoryLabelStore::new([9; 32]);
+    let mut s = ServingSession::new(ServingConfig { static_key: [1; 32], challenge: [2; 32] });
+    let bytes = |out: Vec<ServingOutput>| out.iter().map(|o| if let ServingOutput::Send(f) = o { f.len() } else { 0 }).sum::<usize>();
+    let mut written = bytes(s.handle(T0, &mut store, ServingInput::Start));
+    written += bytes(s.handle(T0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(T0, [3; 32]).encode()))));
+    assert_eq!(s.stall_at(), None, "nothing asked");
+    let fetch = |id| Message::Fetch { id: osis_proto::msg::NODE_IDS | id, label: LabelId([7; 16]), max_reply: client::FIRST_REPLY as u64, ids: vec![bid(1)] };
+    written += bytes(s.handle(T0, &mut store, ServingInput::Peer(Box::new(fetch(1)))));
+    s.handle(T0 + 1, &mut store, ServingInput::Peer(Box::new(fetch(2))));
+    assert_eq!(s.stall_at(), Some(T0 + t));
+    // the transport takes the first request's frame (the Hello before it): it was not out yet
+    s.handle(T0 + 10, &mut store, ServingInput::Taken(written as u64));
+    assert_eq!(s.stall_at(), Some(T0 + 10 + t));
+    // later takes are of the second request: the first is with the peer
+    s.handle(T0 + 20, &mut store, ServingInput::Taken(written as u64 + 5));
+    assert_eq!(s.stall_at(), Some(T0 + 10 + t));
+    // the dialer pings and asks, and answers the second request only: nothing moves
+    let mut other = encode_frame(&Message::Ping { id: 1, wall_ms: T0 }.encode());
+    other.extend(encode_frame(&Message::Pull(Box::new(osis_proto::msg::Pull { id: osis_proto::msg::NODE_IDS | 1, cursor: None, joins: vec![], inline_limit: 0, max_reply: client::FIRST_REPLY as u64, follow: true, ephemeral: false })).encode()));
+    other.extend(encode_frame(&Message::FetchReply { id: osis_proto::msg::NODE_IDS | 2, items: vec![] }.encode()));
+    s.handle(T0 + t - 1, &mut store, ServingInput::Bytes(other));
+    assert_eq!(s.stall_at(), Some(T0 + 10 + t));
+    // the first one's answer starting moves it; the rest of it answers it and none is out
+    let reply = encode_frame(&Message::FetchReply { id: osis_proto::msg::NODE_IDS | 1, items: vec![] }.encode());
+    s.handle(T0 + t, &mut store, ServingInput::Bytes(reply[..11].to_vec()));
+    assert_eq!(s.stall_at(), Some(T0 + 2 * t));
+    s.handle(T0 + t + 1, &mut store, ServingInput::Bytes(reply[11..].to_vec()));
+    assert_eq!(s.stall_at(), None);
+    assert!(!s.is_closed());
 }
 
 // spec/sync.md §6 (a replay's pages bring the live entries, the last page the log cursor), §8

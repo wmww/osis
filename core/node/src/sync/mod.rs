@@ -630,7 +630,7 @@ impl SyncEngine {
                     if self.served.contains_key(&conn) {
                         self.serve(conn, osis_proto::ServingInput::Taken(n), out)?;
                     } else if let Some(c) = self.conns.get_mut(&conn) {
-                        let o = c.session.handle(now, ClientInput::Sent);
+                        let o = c.session.handle(now, ClientInput::Taken(n));
                         self.outputs(conn, o, out)?;
                     }
                 }

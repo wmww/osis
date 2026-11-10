@@ -18,9 +18,10 @@ use std::collections::{BTreeMap, VecDeque};
 pub const INITIAL_PINGS: usize = 3;
 /// Interval of later pings.
 pub const PING_INTERVAL_MS: u64 = 5 * 60 * 1000;
-/// Requests in flight with nothing moving this long (no byte received, none of ours taken by the
-/// transport, `ClientInput::Sent`) close the session; the node redials (spec/sync.md §6). Liveness
-/// only, any link speed passes: 0 closes every session at once, infinity keeps a hung peer.
+/// The oldest request in flight not moving this long (no byte of a reply to it received, none of
+/// its frame taken by the transport: `Window`) closes the connection, whichever side dialed; the
+/// node redials (spec/sync.md §6). Liveness only, any link speed passes: 0 closes every connection
+/// with a request out at once, infinity keeps a peer that answers nothing.
 pub const STALL_TIMEOUT_MS: u64 = 2 * 60 * 1000;
 /// Bytes in flight per session (spec/sync.md §6): per request sent and not answered, its frame
 /// plus its reply allowance. The next request goes while below it, so one always goes: 0 sends
@@ -63,12 +64,27 @@ pub fn allowance(msg: &Message) -> usize {
 /// flight (per request sent and not answered, its frame plus `allowance`) are below `WINDOW`, so
 /// one always goes. A `ClientSession` sends every request by one; a `ServingSession` the node's
 /// own requests to the dialer (a stream's Pulls and Fetches, the shared set's).
+///
+/// It also keeps the stall clock (`STALL_TIMEOUT_MS`): the oldest request sent and not answered
+/// must move. It moves when it goes out with none before it, when it becomes the oldest (the one
+/// before it answered), when bytes of a reply to it arrive (a frame still arriving included), and
+/// when the transport takes bytes this side wrote up to its frame's end. Bytes of any other kind
+/// (pushes, the peer's own requests, replies to later requests) move nothing.
 #[derive(Default)]
 pub(crate) struct Window {
     waiting: VecDeque<Message>,
-    /// Requests sent and not answered, with their cost.
-    sent: BTreeMap<Id, usize>,
+    /// Requests sent and not answered: their send order, cost, and the end of their frame in
+    /// this side's output (bytes written up to and including it).
+    sent: BTreeMap<Id, (u64, usize, u64)>,
+    /// `sent` by send order.
+    order: BTreeMap<u64, Id>,
+    /// Requests sent so far (the next one's order).
+    seq: u64,
     in_flight: usize,
+    /// When the oldest request sent last moved.
+    moved: u64,
+    /// The last `taken` reported (bytes of this side's output the transport took).
+    taken: u64,
 }
 
 impl Window {
@@ -94,28 +110,75 @@ impl Window {
         self.waiting.pop_front()
     }
 
-    /// Request `m` went as `frame` bytes: its cost counts until it is answered.
-    pub(crate) fn sent(&mut self, m: &Message, frame: usize) {
+    /// Request `m` went as `frame` bytes, ending at byte `end` of this side's output: its cost
+    /// counts until it is answered.
+    pub(crate) fn sent(&mut self, m: &Message, frame: usize, end: u64, now: u64) {
+        if self.sent.is_empty() {
+            self.moved = now;
+        }
         let cost = frame.saturating_add(allowance(m));
         self.in_flight = self.in_flight.saturating_add(cost);
-        self.sent.insert(m.id(), cost);
+        self.sent.insert(m.id(), (self.seq, cost, end));
+        self.order.insert(self.seq, m.id());
+        self.seq += 1;
+    }
+
+    /// The oldest request sent and not answered.
+    fn oldest(&self) -> Option<Id> {
+        self.order.first_key_value().map(|(_, id)| *id)
     }
 
     /// Request `id` was answered: whether it was one sent.
-    pub(crate) fn answered(&mut self, id: Id) -> bool {
-        let Some(cost) = self.sent.remove(&id) else { return false };
+    pub(crate) fn answered(&mut self, id: Id, now: u64) -> bool {
+        if self.oldest() == Some(id) {
+            self.moved = now;
+        }
+        let Some((seq, cost, _)) = self.sent.remove(&id) else { return false };
+        self.order.remove(&seq);
         self.in_flight = self.in_flight.saturating_sub(cost);
         true
     }
 
-    /// Sends what fits (`Send` frames).
-    pub(crate) fn flush(&mut self, mut send: impl FnMut(Vec<u8>)) {
+    /// Bytes arrived with `partial` (the body of a frame still arriving, as far as it came)
+    /// left over: they move the oldest request when that frame is a reply to it.
+    pub(crate) fn arriving(&mut self, partial: Option<&[u8]>, now: u64) {
+        if let Some((kind, id)) = partial.and_then(crate::msg::peek_head)
+            && !crate::msg::is_request_kind(kind)
+            && self.oldest() == Some(id)
+        {
+            self.moved = now;
+        }
+    }
+
+    /// The transport took `taken` bytes of this side's output so far (cumulative).
+    pub(crate) fn taken(&mut self, taken: u64, now: u64) {
+        let end = self.order.first_key_value().and_then(|(_, id)| self.sent.get(id)).map(|(_, _, end)| *end);
+        if taken > self.taken && end.is_some_and(|e| self.taken < e) {
+            self.moved = now;
+        }
+        self.taken = self.taken.max(taken);
+    }
+
+    /// When the stall clock closes the connection: `STALL_TIMEOUT_MS` after the oldest request
+    /// sent last moved; none while none is sent.
+    pub(crate) fn stall_at(&self) -> Option<u64> {
+        (!self.sent.is_empty()).then(|| self.moved.saturating_add(STALL_TIMEOUT_MS))
+    }
+
+    /// Sends what fits (`Send` frames), this side's output having `written` bytes before them.
+    pub(crate) fn flush(&mut self, mut written: u64, now: u64, mut send: impl FnMut(Vec<u8>)) {
         while let Some(m) = self.next() {
             let frame = encode_frame(&m.encode());
-            self.sent(&m, frame.len());
+            written = written.saturating_add(frame.len() as u64);
+            self.sent(&m, frame.len(), written, now);
             send(frame);
         }
     }
+}
+
+/// Bytes of the `Send` outputs in `out`.
+fn sent_bytes(out: &[ClientOutput]) -> u64 {
+    out.iter().map(|o| if let ClientOutput::Send(f) = o { f.len() as u64 } else { 0 }).sum()
 }
 
 /// Clock samples kept.
@@ -199,9 +262,10 @@ pub enum ClientInput {
     Bytes(Vec<u8>),
     /// The timer last set by `SetTimer` fired.
     Timer,
-    /// The transport took bytes this session wrote since the last `Sent` (progress for
-    /// `STALL_TIMEOUT_MS`; a driver may report it only when the timer fires).
-    Sent,
+    /// The transport has taken this many bytes of this session's output so far (cumulative;
+    /// `Window`'s stall clock). A driver may report it only when the timer fires; one that never
+    /// does delivers instantly.
+    Taken(u64),
     Command(Command),
 }
 
@@ -377,9 +441,10 @@ pub struct ClientSession {
     /// Requests not yet answered: sent, or waiting in `window` for room.
     pending: BTreeMap<Id, Req>,
     window: Window,
-    /// Last progress (a byte received, `Sent`, the first request going out after none was in
-    /// flight).
-    progress: u64,
+    /// Last byte received, sent, or taken by the transport (`ping_if_quiet`).
+    heard: u64,
+    /// Bytes of `Send` outputs so far.
+    written: u64,
     /// `now` of the running `handle`.
     now: u64,
     next_ping: u64,
@@ -412,7 +477,8 @@ impl ClientSession {
             next_id: 0,
             pending: BTreeMap::new(),
             window: Window::default(),
-            progress: 0,
+            heard: 0,
+            written: 0,
             now: 0,
             next_ping: 0,
             timer: 0,
@@ -437,10 +503,9 @@ impl ClientSession {
     }
 
     /// Pings now, with nothing outstanding and nothing sent or heard for `quiet_ms`: the stall
-    /// timeout then finds a dead connection. Never with a request outstanding: a send counts as
-    /// progress, so it would push that timeout back.
+    /// timeout then finds a dead connection. With a request outstanding that timeout runs already.
     pub fn ping_if_quiet(&mut self, now: u64, quiet_ms: u64) -> Vec<ClientOutput> {
-        if self.window.is_empty() && self.progress.saturating_add(quiet_ms) <= now {
+        if self.window.is_empty() && self.heard.saturating_add(quiet_ms) <= now {
             self.next_ping = now;
         }
         self.handle(now, ClientInput::Timer)
@@ -486,7 +551,7 @@ impl ClientSession {
             }
             ClientInput::Bytes(b) => {
                 if !b.is_empty() {
-                    self.progress = now;
+                    self.heard = now;
                 }
                 self.decoder.push(&b);
                 while !self.closed {
@@ -501,10 +566,11 @@ impl ClientSession {
                         }
                     }
                 }
+                self.window.arriving(self.decoder.partial(), now);
             }
             ClientInput::Timer => {
                 self.timer = 0;
-                if self.window.in_flight > 0 && self.progress.saturating_add(STALL_TIMEOUT_MS) <= now {
+                if self.window.stall_at().is_some_and(|t| t <= now) {
                     event(&mut out, ClientEvent::PeerError(Error::Timeout));
                     self.close(&mut out);
                     return out;
@@ -514,7 +580,12 @@ impl ClientSession {
                     self.next_ping = now.saturating_add(PING_INTERVAL_MS);
                 }
             }
-            ClientInput::Sent => self.progress = now,
+            ClientInput::Taken(n) => {
+                if n > self.window.taken {
+                    self.heard = now;
+                }
+                self.window.taken(n, now);
+            }
             ClientInput::Command(c) => {
                 self.commands = self.commands.saturating_add(1);
                 self.tag = self.commands;
@@ -527,6 +598,7 @@ impl ClientSession {
         }
         self.flush(&mut out);
         self.arm(&mut out);
+        self.written = self.written.saturating_add(sent_bytes(&out));
         out
     }
 
@@ -540,10 +612,9 @@ impl ClientSession {
                 *wall_ms = self.now;
             }
             let frame = encode_frame(&msg.encode());
-            if self.window.in_flight == 0 {
-                self.progress = self.now;
-            }
-            self.window.sent(&msg, frame.len());
+            let end = self.written.saturating_add(sent_bytes(out)).saturating_add(frame.len() as u64);
+            self.window.sent(&msg, frame.len(), end, self.now);
+            self.heard = self.now;
             out.push(ClientOutput::Send(frame));
         }
     }
@@ -553,10 +624,7 @@ impl ClientSession {
         if self.closed || !self.is_ready() {
             return;
         }
-        let mut t = self.next_ping;
-        if self.window.in_flight > 0 {
-            t = t.min(self.progress.saturating_add(STALL_TIMEOUT_MS));
-        }
+        let t = self.window.stall_at().map_or(self.next_ping, |s| s.min(self.next_ping));
         if t != self.timer {
             self.timer = t;
             out.push(ClientOutput::SetTimer(t));
@@ -591,7 +659,7 @@ impl ClientSession {
 
     /// Request `id` was answered: its entry, if it was one sent.
     fn answered_req(&mut self, id: Id) -> Option<Req> {
-        if !self.pending.contains_key(&id) || !self.window.answered(id) {
+        if !self.pending.contains_key(&id) || !self.window.answered(id, self.now) {
             return None;
         }
         let req = self.pending.remove(&id)?;
@@ -846,7 +914,7 @@ impl ClientSession {
             }
             m if m.for_node() => {
                 if !m.is_request() {
-                    self.window.answered(m.id());
+                    self.window.answered(m.id(), now);
                 }
                 event(out, ClientEvent::Peer(Box::new(m)))
             }

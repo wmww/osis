@@ -249,7 +249,6 @@ Each operation names a label. Writes are signed with the role keys of the host's
 - **Framing**: framed messages over an ordered byte stream (§10); version negotiation, messages and limits: spec/wire.md §11. Every message has a fixed maximum size; every list is paged.
 - **Handshake and clock**: each side's handshake carries its wall clock (ms) and a random challenge for opens (§5).
   - A node SHOULD estimate its clock offset from peers' handshakes and Ping/Pong round trips (spec/wire.md §11; round-trip corrected, robust to an outlier, ignoring samples whose round trip exceeds a few seconds) and use the corrected clock wherever wall time is used.
-  - A node SHOULD close a connection on which requests are outstanding and nothing moved for minutes (no byte received, none of its own taken by the transport), and redial.
 - **Flow control**:
   - **Requester**: either side of a connection, whoever dialed, keeps at most `WINDOW` in flight on it, counting per request it sent and that is not answered (the Stream's and the shared set's included) its frame length plus a reply allowance:
     - `MAX_MESSAGE` for Reconcile;
@@ -258,6 +257,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - It sends the next request while below `WINDOW` (so one always goes), in the order it made them.
   - **Pushes**: a peer sends a push (§8) only while its bytes not yet taken by the transport on that connection, the push included, stay within `REPLY_BUDGET`, or none are. Otherwise the subscription's pushes wait (Notifies likewise), continuing from its position once they fit (held subscriptions in turn, so none starves another), and a relay-only entry that does not fit is not pushed on that connection.
   - **Closing**: a peer MUST NOT close a connection over unwritten bytes below `WINDOW + 2 × (MAX_MESSAGE + 4)` plus its own bytes in flight there (Requester), and MAY close one beyond it.
+  - **Stall**: a requester SHOULD close a connection, whichever side dialed, on which its oldest request sent and not answered has not moved for minutes, and redial. It moves when it is sent with no other outstanding, when the request before it is answered, when bytes of a reply to it arrive (a frame not yet complete included), and when the transport takes bytes this side wrote up to the end of its frame. No other bytes move it: pushes, the peer's own requests, replies to later requests.
   - **Unanswered requests**: count the frame lengths plus allowances of the requests a peer receives before it has answered any of them. A peer MAY close a connection whose count passes `WINDOW + 2 × MAX_MESSAGE + 4` before it answers them, without running the request that passes it.
 - Between two readers of a label the Stream (§10) replaces cursor sync, first sync and range reconciliation below.
 - **Cursor sync**: a client keeps a cursor per (peer, label) and sends: the cursor, its own new blobs inline, and the blob IDs it gained under that label from other sources since. The peer replies with its log after the cursor minus those IDs, blobs inline, and a want-list of the gained IDs it lacks, which the client then sends.

@@ -175,7 +175,7 @@ impl Hub {
         self.batch(|h, out| {
             for (id, n) in ids {
                 match h.conns.get(id) {
-                    Some(Conn::Peer { .. }) => h.replicate(now, *id, Some(ClientInput::Sent), out),
+                    Some(Conn::Peer { .. }) => h.replicate(now, *id, Some(ClientInput::Taken(*n)), out),
                     Some(Conn::Served { .. }) => h.serve(now, *id, ServingInput::Taken(*n), out),
                     None => {}
                 }

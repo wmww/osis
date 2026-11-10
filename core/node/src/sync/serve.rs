@@ -807,7 +807,8 @@ impl SyncEngine {
     }
 
     /// Closes served sessions without bytes for `SyncConfig.serve_idle_ms` (but those kept while
-    /// up), and those that serve nothing within `serve_open_ms`; expires the memory log's deletions and this node's
+    /// up), those that serve nothing within `serve_open_ms`, and those whose oldest request of
+    /// this node's stalled (`ServingSession::stall_at`); expires the memory log's deletions and this node's
     /// tombstones; forgets carriers and certificate placements nothing needs; prunes charges
     /// and blob sizes.
     pub(crate) fn serve_timers(&mut self, out: &mut Vec<Action>) {
@@ -822,7 +823,8 @@ impl SyncEngine {
                 let opened_nothing = self.serves_nothing(**c, s) && s.since.saturating_add(open) <= now;
                 // a thin client's `until` passed: no other change is needed to end it
                 let ended = s.client.is_some_and(|b| b.until.is_some_and(|u| u <= corrected));
-                idled || opened_nothing || ended
+                let stalled = s.conn.stall_at().is_some_and(|t| t <= now);
+                idled || opened_nothing || ended || stalled
             })
             .map(|(c, _)| *c)
             .collect();
@@ -855,9 +857,10 @@ impl SyncEngine {
     pub(crate) fn serve_wake(&self) -> Option<u64> {
         // a session holding pushes back: `Event::Sent` at the next tick may give them room
         let poll = self.served.values().any(|s| s.conn.held()).then(|| self.raw_now().saturating_add(osis_proto::serving::PUSH_POLL_MS));
+        let stall = self.served.values().filter_map(|s| s.conn.stall_at()).min();
         // a thin client's `until`, corrected wall ms, on the raw clock
         let (raw, wall) = (self.raw_now(), self.now());
         let until = self.served.values().filter_map(|s| s.client.and_then(|b| b.until)).map(|u| u.saturating_add(raw).saturating_sub(wall)).min();
-        self.served.iter().filter(|(c, s)| !self.kept_while_up(**c, s)).map(|(c, s)| if self.serves_nothing(*c, s) { s.since.saturating_add(self.cfg.serve_open_ms).min(s.last.saturating_add(self.cfg.serve_idle_ms)) } else { s.last.saturating_add(self.cfg.serve_idle_ms) }).chain(poll).chain(until).min()
+        self.served.iter().filter(|(c, s)| !self.kept_while_up(**c, s)).map(|(c, s)| if self.serves_nothing(*c, s) { s.since.saturating_add(self.cfg.serve_open_ms).min(s.last.saturating_add(self.cfg.serve_idle_ms)) } else { s.last.saturating_add(self.cfg.serve_idle_ms) }).chain(poll).chain(until).chain(stall).min()
     }
 }

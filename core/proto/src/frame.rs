@@ -81,6 +81,11 @@ impl FrameDecoder {
         Ok(Some(body))
     }
 
+    /// The body of the frame still arriving, as far as it came (after `next_frame` returned none).
+    pub fn partial(&self) -> Option<&[u8]> {
+        self.buf.get(self.start..).and_then(|r| r.get(4..))
+    }
+
     /// Buffered bytes not yet returned.
     pub fn pending(&self) -> usize {
         self.buf.len() - self.start
