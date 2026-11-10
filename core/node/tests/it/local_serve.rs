@@ -774,6 +774,18 @@ fn covered_own_entry_mid_upload_leaves_the_host_too_spec_sync_5() {
 // the higher duplicate, h1 then away too: c still reaches h2, from the lower copy a keeps.
 #[test]
 fn own_duplicate_dropped_while_the_lower_host_is_away_still_reaches_another_host_spec_sync_7() {
+    // which encryption is the lower is the luck of the random stream: values are tried until b's
+    // copy is the lower
+    for i in 0..32 {
+        if own_duplicate_case(&format!("z{i}")) {
+            return;
+        }
+    }
+    panic!("no value put b's copy the lower");
+}
+
+/// The case above with value `v`; false when a's own copy is the lower.
+fn own_duplicate_case(v: &str) -> bool {
     let mut net = Net::new();
     let h1 = net.add_host();
     let h2 = net.add_host();
@@ -790,8 +802,7 @@ fn own_duplicate_dropped_while_the_lower_host_is_away_still_reaches_another_host
         net.drop_link(n, s);
     }
     net.run();
-    // the value picks blob IDs with b's copy the lower (asserted below)
-    let c = net.write(a, t, "z");
+    let c = net.write(a, t, v);
     let pk = net.engine(a).package(&c).unwrap().unwrap();
     net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();
     net.feed(b, Event::Local);
@@ -803,7 +814,9 @@ fn own_duplicate_dropped_while_the_lower_host_is_away_still_reaches_another_host
     assert_eq!(at_h1.len(), 1, "b's copy at h1");
     let own: Vec<BlobId> = of(&mut net, a).into_iter().filter(|id| *id != at_h1[0]).collect();
     assert_eq!(own.len(), 1, "a placed its own copy");
-    assert!(at_h1[0] < own[0], "the case needs b's copy the lower");
+    if at_h1[0] > own[0] {
+        return false;
+    }
     net.blocked.remove(&(a, h1));
     net.advance(60_000);
     net.run();
@@ -816,7 +829,8 @@ fn own_duplicate_dropped_while_the_lower_host_is_away_still_reaches_another_host
     net.advance(60_000);
     net.run();
     assert!(net.host_ids(h2, &l).contains(&at_h1[0]), "h2 gets the lower copy from a");
-    assert_eq!(net.read(a, t), Some(s("z")));
+    assert_eq!(net.read(a, t), Some(s(v)));
+    true
 }
 
 // spec/sync.md §5 (Placed, deleting at a host): an own entry whose upload the host took but
