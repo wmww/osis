@@ -31,7 +31,8 @@
 //!
 //! Both sides of a connection pull and serve: a member of S is pulled by the side it is open at,
 //! whoever dialed. Bodies announced without bytes are fetched from one reader at a time
-//! (`stream_fetch`, by ids in the node's range); what a stream owes lives in its memory alone (no
+//! (`stream_fetch`, by ids in the node's range), another that announced them too once the first
+//! is slower than the stall time (`stream_asked`); what a stream owes lives in its memory alone (no
 //! entry row before the bytes), so a lost connection or a restart forgets it and the stream,
 //! from its last stored position, announces it again. A stream waiting on `MAX_WAITING`
 //! positions or bodies takes no new one (flow control: its cursor stays, nothing is skipped),
@@ -45,6 +46,7 @@
 use super::{Action, ConnId, SyncEngine};
 use crate::error::Result;
 use osis_base::{BlobId, LabelId};
+use osis_proto::client::STALL_TIMEOUT_MS;
 use osis_proto::msg::{Join, Pull, PullReply, Stream};
 use osis_proto::{Event, Message};
 use osis_store::{LoggedEvent, NodeEvent, RecordId};
@@ -214,12 +216,14 @@ pub(crate) struct Pulling {
 }
 
 /// A Fetch of the stream not answered yet: its place in send order (`Pulling::sent`), the member,
-/// the blobs and the `max_reply` asked.
+/// the blobs, the `max_reply` asked and when it was made (raw ms: past `STALL_TIMEOUT_MS` its
+/// bodies are asked of the next source too, `stream_asked`).
 struct Fetching {
     seq: u64,
     label: LabelId,
     ids: Vec<BlobId>,
     max_reply: u64,
+    at: u64,
 }
 
 /// A position the stream reached that waits for bodies (`Pulling::unsettled`): stored, reported
@@ -673,9 +677,12 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// When a refused Pull goes again (`next_wake`).
+    /// When a refused Pull goes again, or a body Fetch passes the stall time and its bodies are
+    /// asked of the next source (`next_wake`).
     pub(super) fn stream_wake(&self) -> Option<u64> {
-        self.streams.values().filter_map(|s| s.pulling.retry_at).min()
+        let now = self.raw_now();
+        let stale = self.streams.values().flat_map(|s| s.pulling.fetching.values()).map(|f| f.at.saturating_add(STALL_TIMEOUT_MS)).filter(|t| *t > now);
+        self.streams.values().filter_map(|s| s.pulling.retry_at).chain(stale).min()
     }
 
     /// Asks every stream fresh: when the replies are in, this node has what its readers had.
@@ -845,8 +852,9 @@ impl SyncEngine {
             self.stream_settle(conn, out)?;
             let owed: BTreeSet<(LabelId, BlobId)> = self.streams.get(&conn).map(|s| s.pulling.unsettled.iter().flat_map(|u| u.owed.iter().copied()).collect()).unwrap_or_default();
             let mut ask: BTreeMap<LabelId, Vec<BlobId>> = BTreeMap::new();
+            let now = self.raw_now();
             for (l, b) in owed {
-                if !self.fetching(&b) && self.wants(&l, &b) {
+                if !self.stream_asked(conn, &b, now) && self.wants(&l, &b) {
                     ask.entry(l).or_default().push(b);
                 }
             }
@@ -965,11 +973,24 @@ impl SyncEngine {
         self.streams.values().any(|s| s.pulling.fetching.values().any(|f| f.ids.contains(b)))
     }
 
+    /// Whether `conn`'s source need not be asked for `b`: it is asked there already, or of a host,
+    /// or of a reader less than `STALL_TIMEOUT_MS` ago. A reader asked longer ago may be holding
+    /// the Fetch behind a reply it trickles (the stall rule only wants the oldest request to
+    /// move), so the next source that announced the body is asked too, and whichever answers first
+    /// settles it (spec/sync.md §10, Bodies).
+    fn stream_asked(&self, conn: ConnId, b: &BlobId, now: u64) -> bool {
+        let here = self.streams.get(&conn).is_some_and(|s| s.pulling.fetching.values().any(|f| f.ids.contains(b)));
+        let fresh = self.streams.values().any(|s| s.pulling.fetching.values().any(|f| f.ids.contains(b) && f.at.saturating_add(STALL_TIMEOUT_MS) > now));
+        here || fresh || self.conns.values().any(|c| c.req.fetching.contains(b))
+    }
+
     /// Fetches the bodies `ids` of member `l` from `conn`'s peer, but those asked for already
-    /// on any connection: one source at a time per blob. As any Fetch (spec/wire.md §11.3):
-    /// `FIRST_REPLY` per ID, or `REPLY_BUDGET` for the rest of an answered one (`again`).
+    /// (`stream_asked`): one source at a time per blob, a second only once the first is slower
+    /// than the stall time. As any Fetch (spec/wire.md §11.3): `FIRST_REPLY` per ID, or
+    /// `REPLY_BUDGET` for the rest of an answered one (`again`).
     pub(crate) fn stream_fetch(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, again: bool, out: &mut Vec<Action>) -> Result<()> {
-        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching(b)).collect();
+        let now = self.raw_now();
+        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.stream_asked(conn, b, now)).collect();
         if ids.is_empty() {
             return Ok(());
         }
@@ -979,7 +1000,7 @@ impl SyncEngine {
         for batch in ids.chunks(osis_proto::msg::MAX_ITEMS) {
             let (id, seq) = p.next();
             let max_reply = if again { budget } else { osis_proto::client::FIRST_REPLY.saturating_mul(batch.len()).min(budget) } as u64;
-            p.fetching.insert(id, Fetching { seq, label: l, ids: batch.to_vec(), max_reply });
+            p.fetching.insert(id, Fetching { seq, label: l, ids: batch.to_vec(), max_reply, at: now });
             msgs.push(Message::Fetch { id, label: l, max_reply, ids: batch.to_vec() });
         }
         for m in msgs {

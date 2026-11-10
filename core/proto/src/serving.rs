@@ -464,6 +464,7 @@ impl ServingSession {
             ServingInput::Peer(m) => send(out, *m),
             ServingInput::Start => out.push(ServingOutput::Send(encode_frame(&Hello::new(now, self.cfg.challenge).encode()))),
             ServingInput::Bytes(b) => {
+                self.requests.received(b.len(), now);
                 self.decoder.push(&b);
                 // frame bytes plus reply allowances of this input's requests, all unanswered
                 // when the last was sent, and of client-port requests handed out earlier and

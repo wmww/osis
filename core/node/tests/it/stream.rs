@@ -376,16 +376,97 @@ fn silent_co_reader(a_dials: bool, wait: u64) -> bool {
 }
 
 // spec/sync.md §6 (stall), §10 (Bodies: the next source): a co-reader that answers none of a
-// node's requests while it keeps pushing holds the node's Fetch only for the stall time,
-// whichever side dialed; the body then comes from an honest co-reader. Not before: nothing
-// closes an answering peer early
+// node's requests while it keeps pushing (its pushes keep the connection, within `MAX_AHEAD`)
+// holds the node's Fetch only for the stall time, whichever side dialed; the body then comes
+// from an honest co-reader. Not before: one source at a time
 #[test]
-fn a_silent_co_reader_is_closed_and_the_body_comes_from_another_spec_sync_6() {
+fn a_silent_co_reader_holds_a_body_for_the_stall_time_only_spec_sync_6() {
     let stall = osis_proto::client::STALL_TIMEOUT_MS;
     for a_dials in [true, false] {
         assert!(!silent_co_reader(a_dials, stall - 30_000), "not closed before the stall time (a dials: {a_dials})");
         assert!(silent_co_reader(a_dials, stall + 60_000), "from c once b's connection closed (a dials: {a_dials})");
     }
+}
+
+/// Node `a` with co-readers `b` (the writer, dialed by `a`) and `c`; from its first reply to
+/// `a` on, `b` trickles: 16 bytes at once, then one byte every 30 s, so the stall clock always
+/// moves. `b` writes, `a` asks `b` for the body. Then: ms after the write until `a` reads it
+/// (none within 10 min), whether `a`'s connection to `b` stayed up, `a`'s Fetches sent from the
+/// write until it read it and from then on (the rest of `b`'s bytes delivered meanwhile, with
+/// `release`), and whether every stream of `a` then settled with no fetch out.
+fn trickling_co_reader(release: bool) -> (Option<u64>, bool, usize, usize, bool) {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    let c = net.node(3, &[]);
+    reach_ed(&mut net, b);
+    reach_ed(&mut net, c);
+    let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
+    net.pair(c, a);
+    net.pair(b, c);
+    net.run();
+    net.advance(120_000);
+    let probe = net.item(b, g, g, "probe");
+    net.run();
+    assert_eq!(net.read(a, probe), Some(s("probe")), "a reads b's writes");
+    let (ab, _) = conn_to(&net, a, b);
+    net.trickle.insert((b, a), (ab, Vec::new()));
+    let closes = net.peer_closes;
+    let fetches = net.peer_sent(a, FETCH);
+    let start = net.now();
+    let first = net.item(b, g, g, "first");
+    net.run();
+    assert!(net.peer_sent(a, FETCH) > fetches, "a asked b for the body");
+    assert_eq!(net.read(c, first), Some(s("first")), "c holds it");
+    assert_eq!(net.read(a, first), None, "held by the Fetch b trickles");
+    assert!(net.trickle[&(b, a)].1.len() > 16, "b's reply is held back");
+    net.trickle_out(b, a, 16);
+    net.run();
+    let mut at = None;
+    while at.is_none() && net.now() - start < 600_000 {
+        net.advance(30_000);
+        net.trickle_out(b, a, 1);
+        net.run();
+        if net.read(a, first) == Some(s("first")) {
+            at = Some(net.now() - start);
+        }
+    }
+    let up = net.peer_closes == closes && net.peer_conns(a).iter().any(|(_, m, _)| *m == b);
+    let before = net.peer_sent(a, FETCH) - fetches;
+    let fetched = net.peer_sent(a, FETCH);
+    if release {
+        net.trickle_out(b, a, usize::MAX);
+        net.trickle.remove(&(b, a));
+        net.run();
+    }
+    net.advance(60_000);
+    net.run();
+    let after = net.peer_sent(a, FETCH) - fetched;
+    let settled = net.peer_conns(a).iter().all(|(conn, _, _)| net.sync(a).stream_caught_up(*conn));
+    (at, up, before, after, settled)
+}
+
+// spec/sync.md §10 (Bodies: a source slower than the stall time), issues: a co-reader trickling
+// its reply to a node's Fetch (so the stall rule never closes it) holds the body only for about
+// one stall time: then the next source that announced it is asked too, and the connection stays
+#[test]
+fn a_trickling_co_reader_holds_a_body_for_the_stall_time_only_spec_sync_10() {
+    let stall = osis_proto::client::STALL_TIMEOUT_MS;
+    let (at, up, before, _, _) = trickling_co_reader(false);
+    let at = at.expect("a reads the write from c");
+    assert!(at >= stall - 30_000 && at <= stall + 30_000, "read {at} ms after the write");
+    assert!(up, "the trickling connection stays: nothing closed it");
+    assert!(before <= 2, "{before} Fetches: b's, then c's");
+}
+
+// spec/sync.md §10 (Bodies: whichever answers first settles it): once both sources answered,
+// the body is held once, nothing more is fetched, and every stream settles
+#[test]
+fn both_sources_answering_store_once_and_settle_spec_sync_10() {
+    let (at, _, _, after, settled) = trickling_co_reader(true);
+    assert!(at.is_some());
+    assert_eq!(after, 0, "nothing asked again once both answered");
+    assert!(settled, "every stream of a settled, no fetch out");
 }
 
 /// Pulls node `a` sends once back after `b`'s log aged out the deletions of what `a` held, at

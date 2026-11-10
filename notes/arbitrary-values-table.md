@@ -49,7 +49,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `PING_INTERVAL_MS` 5 min | M | ping storm / offset never refreshed |
 | `OFFSET_DIAGNOSTIC_MS` 5 s | M (diagnostic only) | always reported / never |
 | `MAX_SAMPLE_RTT_MS` 10 s | M (spec: ignore long round trips) | no samples / suspend-length errors |
-| `STALL_TIMEOUT_MS` 2 min | M (liveness: the oldest request in flight did not move, either side) | every connection with a request out closes / a peer answering nothing holds its fetches; a link moving under one `WRITE_CHUNK` per timeout, or a reply behind more pushes than cross in it, counts as stalled |
+| `STALL_TIMEOUT_MS` 2 min | M (liveness: the oldest request in flight did not move, either side) | every connection with a request out closes, and every stream body is asked of a second source at once / a peer answering nothing holds its fetches; a link moving under one `WRITE_CHUNK` per timeout counts as stalled |
 | `SyncConfig::fill_batch` 128 (`node/sync/io.rs`) | M (a first sync's order and the lock held per batch, against a round trip per batch; only speed changes) | at least 1 is taken; order lost to what a reply fits, node's lock held minutes |
 | `WINDOW` 16 MiB (spec), `SMALL_REPLY` 16 KiB | R/P (per-peer buffer vs throughput, `WINDOW` per round trip; one request always goes) | one request at a time / queues overflow the caps |
 | `MAX_RECONCILE_MESSAGES` 4096, `MAX_RECONCILE_IDS` 2^21, `MAX_RECONCILE_QUEUED` 2^17 | R (abandon as peer error) | no reconciliation / a splitting responder holds us forever |

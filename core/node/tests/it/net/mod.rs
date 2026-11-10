@@ -134,6 +134,9 @@ pub struct Net {
     /// Peer links (from, to) whose sender answers no request: every reply it sends there is
     /// dropped; its pushes and its own requests go.
     pub silent: BTreeSet<(usize, usize)>,
+    /// Peer links (from, to) whose sender trickles: from its first reply there on, what it sends
+    /// waits here (the receiver's connection, the bytes) and goes only by `trickle_out`.
+    pub trickle: BTreeMap<(usize, usize), (ConnId, Vec<u8>)>,
     /// Peer bytes sent on a link before the last ones queued there were delivered join them:
     /// one input of several frames, as a real driver's read (else each send is its own input).
     pub batch_reads: bool,
@@ -216,7 +219,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 impl Net {
     /// A network whose new nodes are each their own account's only node.
     pub fn new() -> Net {
-        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, silent: BTreeSet::new(), batch_reads: false, peer_closes: 0 }
+        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), batch_reads: false, peer_closes: 0 }
     }
 
     /// A network whose new nodes join no account: the test makes or pairs them.
@@ -366,6 +369,16 @@ impl Net {
     /// Messages of `kind` node `n` sent on peer links so far.
     pub fn peer_sent(&self, n: usize, kind: u64) -> usize {
         self.peer_kinds.get(&(n, kind)).copied().unwrap_or(0)
+    }
+
+    /// Delivers the first `k` bytes a trickling link (`trickle`) holds back.
+    pub fn trickle_out(&mut self, from: usize, to: usize, k: usize) {
+        let Some((pc, held)) = self.trickle.get_mut(&(from, to)) else { return };
+        let bytes: Vec<u8> = held.drain(..k.min(held.len())).collect();
+        let pc = *pc;
+        if !bytes.is_empty() {
+            self.queue.push_back(Msg::ToNode(to, self.nodes[to].life, pc, bytes));
+        }
     }
 
     /// The other end of peer connection `(n, c)`.
@@ -605,6 +618,21 @@ impl Net {
                         while let Ok(Some(body)) = d.next_frame() {
                             if osis_proto::Message::decode(&body).is_ok_and(|x| x.is_request() || x.id() == 0) {
                                 kept.extend(osis_proto::encode_frame(&body));
+                            }
+                        }
+                        bytes = kept;
+                    }
+                    if let Some((c, held)) = self.trickle.get_mut(&(n, m)) {
+                        *c = pc;
+                        let mut d = osis_proto::FrameDecoder::new();
+                        d.push(&bytes);
+                        let mut kept = Vec::new();
+                        while let Ok(Some(body)) = d.next_frame() {
+                            let reply = osis_proto::Message::decode(&body).is_ok_and(|x| !x.is_request() && x.id() != 0);
+                            if held.is_empty() && !reply {
+                                kept.extend(osis_proto::encode_frame(&body));
+                            } else {
+                                held.extend(osis_proto::encode_frame(&body));
                             }
                         }
                         bytes = kept;

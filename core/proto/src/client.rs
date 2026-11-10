@@ -18,10 +18,12 @@ use std::collections::{BTreeMap, VecDeque};
 pub const INITIAL_PINGS: usize = 3;
 /// Interval of later pings.
 pub const PING_INTERVAL_MS: u64 = 5 * 60 * 1000;
-/// The oldest request in flight not moving this long (no byte of a reply to it received, none of
-/// its frame taken by the transport: `Window`) closes the connection, whichever side dialed; the
-/// node redials (spec/sync.md §6). Liveness only, any link speed passes: 0 closes every connection
-/// with a request out at once, infinity keeps a peer that answers nothing.
+/// The oldest request in flight not moving this long (`Window`: no byte of a reply to it received,
+/// none of its frame taken by the transport, no other bytes within `MAX_AHEAD`) closes the
+/// connection, whichever side dialed; the node redials (spec/sync.md §6). A stream body Fetch
+/// unanswered this long is asked of the next source too (node `stream_asked`). Liveness only, any
+/// link speed passes: 0 closes every connection with a request out at once and asks every body
+/// twice, infinity keeps a peer that answers nothing and lets it hold the bodies it announced.
 pub const STALL_TIMEOUT_MS: u64 = 2 * 60 * 1000;
 /// Bytes in flight per session (spec/sync.md §6): per request sent and not answered, its frame
 /// plus its reply allowance. The next request goes while below it, so one always goes: 0 sends
@@ -46,6 +48,12 @@ pub const FIRST_REPLY: usize = 64 << 10;
 /// that receives more before answering any of them closes the connection (spec/sync.md §6;
 /// `ServingSession`), so a pipelining peer cannot make one input cost more than a compliant one.
 pub const MAX_UNANSWERED: usize = WINDOW + (MAX_MESSAGE + 4) + MAX_MESSAGE;
+/// Bytes received that move the oldest request in flight since it last moved by its own events
+/// (`Window`): what an honest peer can have queued ahead of its reply, the spec's Closing bound
+/// (`SEND_QUEUE`) with the most a requester has in flight (`MAX_UNANSWERED`; spec/sync.md §6
+/// Stall). Not picked: below it a slow link with a full push backlog closes honest peers; past it
+/// a peer pushing while answering nothing keeps the connection longer, its own stream only.
+pub const MAX_AHEAD: usize = crate::serving::SEND_QUEUE + MAX_UNANSWERED;
 
 /// The most reply bytes the peer may queue for a request (spec/sync.md §6): `MAX_MESSAGE` for
 /// Reconcile, its `max_reply` for Sync, Fetch, Call and Sub, `SMALL_REPLY` for every other
@@ -66,10 +74,12 @@ pub fn allowance(msg: &Message) -> usize {
 /// own requests to the dialer (a stream's Pulls and Fetches, the shared set's).
 ///
 /// It also keeps the stall clock (`STALL_TIMEOUT_MS`): the oldest request sent and not answered
-/// must move. It moves when it goes out with none before it, when it becomes the oldest (the one
-/// before it answered), when bytes of a reply to it arrive (a frame still arriving included), and
-/// when the transport takes bytes this side wrote up to its frame's end. Bytes of any other kind
-/// (pushes, the peer's own requests, replies to later requests) move nothing.
+/// must move. It moves by its own events: when it goes out with none before it, when it becomes
+/// the oldest (the one before it answered), when bytes of a reply to it arrive (a frame still
+/// arriving included), and when the transport takes bytes this side wrote up to its frame's end.
+/// Bytes of any other kind (pushes, the peer's own requests, replies to later requests) move it
+/// too until `MAX_AHEAD` of them arrived since it last moved by its own: past that an honest
+/// peer's reply would have started.
 #[derive(Default)]
 pub(crate) struct Window {
     waiting: VecDeque<Message>,
@@ -83,6 +93,8 @@ pub(crate) struct Window {
     in_flight: usize,
     /// When the oldest request sent last moved.
     moved: u64,
+    /// Bytes received since it last moved by its own events.
+    ahead: usize,
     /// The last `taken` reported (bytes of this side's output the transport took).
     taken: u64,
 }
@@ -114,7 +126,7 @@ impl Window {
     /// counts until it is answered.
     pub(crate) fn sent(&mut self, m: &Message, frame: usize, end: u64, now: u64) {
         if self.sent.is_empty() {
-            self.moved = now;
+            self.own_move(now);
         }
         let cost = frame.saturating_add(allowance(m));
         self.in_flight = self.in_flight.saturating_add(cost);
@@ -131,12 +143,27 @@ impl Window {
     /// Request `id` was answered: whether it was one sent.
     pub(crate) fn answered(&mut self, id: Id, now: u64) -> bool {
         if self.oldest() == Some(id) {
-            self.moved = now;
+            self.own_move(now);
         }
         let Some((seq, cost, _)) = self.sent.remove(&id) else { return false };
         self.order.remove(&seq);
         self.in_flight = self.in_flight.saturating_sub(cost);
         true
+    }
+
+    /// The oldest request moved by an event of its own.
+    fn own_move(&mut self, now: u64) {
+        self.moved = now;
+        self.ahead = 0;
+    }
+
+    /// `n` bytes were received (before their frames are handled): they move the oldest request
+    /// while no more than `MAX_AHEAD` arrived since it last moved by its own events.
+    pub(crate) fn received(&mut self, n: usize, now: u64) {
+        self.ahead = self.ahead.saturating_add(n);
+        if n > 0 && self.ahead <= MAX_AHEAD {
+            self.moved = now;
+        }
     }
 
     /// Bytes arrived with `partial` (the body of a frame still arriving, as far as it came)
@@ -146,7 +173,7 @@ impl Window {
             && !crate::msg::is_request_kind(kind)
             && self.oldest() == Some(id)
         {
-            self.moved = now;
+            self.own_move(now);
         }
     }
 
@@ -154,7 +181,7 @@ impl Window {
     pub(crate) fn taken(&mut self, taken: u64, now: u64) {
         let end = self.order.first_key_value().and_then(|(_, id)| self.sent.get(id)).map(|(_, _, end)| *end);
         if taken > self.taken && end.is_some_and(|e| self.taken < e) {
-            self.moved = now;
+            self.own_move(now);
         }
         self.taken = self.taken.max(taken);
     }
@@ -553,6 +580,7 @@ impl ClientSession {
                 if !b.is_empty() {
                     self.heard = now;
                 }
+                self.window.received(b.len(), now);
                 self.decoder.push(&b);
                 while !self.closed {
                     // the peer's first frame is its Hello (spec/wire.md §11.1)

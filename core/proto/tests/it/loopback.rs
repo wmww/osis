@@ -707,9 +707,46 @@ fn sent_msgs<'a>(out: impl IntoIterator<Item = &'a ClientOutput>) -> Vec<Message
     out.into_iter().filter_map(|o| if let ClientOutput::Send(f) = o { Message::decode(&f[4..]).ok() } else { None }).collect()
 }
 
+/// Push frames (Stream frames when `stream`, for a served session), each carrying an 8 MiB blob,
+/// at least `total` bytes in all.
+fn filler(total: usize, stream: bool) -> Vec<Vec<u8>> {
+    let mut frames = Vec::new();
+    let mut n = 0;
+    while n < total {
+        let ev = Event::Added { blob_id: bid(frames.len() as u64), blob: Some(vec![0; 8 << 20]), wrap: [0; osis_crypto::WRAP_LEN], stamp: None };
+        let l = LabelId([7; 16]);
+        let m = if stream {
+            Message::Stream(Box::new(osis_proto::msg::Stream { events: vec![(l, ev)], cursor: None, report: false }))
+        } else {
+            Message::Push { label: l, events: vec![ev], cursor: Cursor { log_id: [1; 16], seq: 1 } }
+        };
+        let f = encode_frame(&m.encode());
+        n += f.len();
+        frames.push(f);
+    }
+    frames
+}
+
+/// A session past its Hello with its clock pings answered: nothing of its own in flight.
+fn quiet_session() -> ClientSession {
+    let mut c = ClientSession::new(ClientConfig { peer_static_key: [1; 32], challenge: [2; 32] });
+    c.handle(T0, ClientInput::Start);
+    let mut out = c.handle(T0, ClientInput::Bytes(encode_frame(&Hello::new(T0, [3; 32]).encode())));
+    loop {
+        let pongs: Vec<u8> = sent_msgs(&out).into_iter().filter_map(|m| if let Message::Ping { id, .. } = m { Some(encode_frame(&Message::Pong { id, wall_ms: T0 }.encode())) } else { None }).flatten().collect();
+        if pongs.is_empty() {
+            break;
+        }
+        out = c.handle(T0, ClientInput::Bytes(pongs));
+    }
+    assert_eq!((c.outstanding(), c.in_flight()), (0, 0));
+    c
+}
+
 // spec/sync.md §6 (stall): the oldest request in flight not moving closes the connection at the
 // deadline (the node redials). Its frame taken by the transport moves it, and so do the first
-// bytes of a reply to it; a push, the peer's own request or a reply to a later request does not
+// bytes of a reply to it; other bytes (a push, the peer's own request, a reply to a later
+// request) move it only until `MAX_AHEAD` of them arrived since it last moved by its own
 #[test]
 fn stalled_requests_time_out() {
     let t = client::STALL_TIMEOUT_MS;
@@ -723,7 +760,15 @@ fn stalled_requests_time_out() {
     // the transport takes part of the pings: they had not all left yet
     let out = c.handle(T0 + t - 1, ClientInput::Taken(5));
     assert!(out.iter().any(|o| matches!(o, ClientOutput::SetTimer(x) if *x == T0 + 2 * t - 1)), "{out:?}");
-    // bytes of other kinds move nothing: a push, the peer's own request, a later ping's answer
+    // a push backlog moves it while within `MAX_AHEAD`: an honest peer's reply can be behind it
+    let mut moved = false;
+    for f in filler(client::MAX_AHEAD + 1, false) {
+        let out = c.handle(T0 + t, ClientInput::Bytes(f));
+        moved |= out.iter().any(|o| matches!(o, ClientOutput::SetTimer(x) if *x == T0 + 2 * t));
+    }
+    assert!(moved, "the push backlog moved it");
+    // past it bytes of other kinds move nothing: a push, the peer's own request, a later ping's
+    // answer
     let push = Message::Push { label: LabelId([7; 16]), events: vec![Event::Deleted(bid(1))], cursor: Cursor { log_id: [1; 16], seq: 1 } };
     let mut other = encode_frame(&push.encode());
     other.extend(encode_frame(&Message::Ping { id: 9, wall_ms: T0 }.encode()));
@@ -770,6 +815,57 @@ fn slow_replies_keep_the_connection_spec_sync_6() {
     }
     assert!(fetched, "the answer arrived");
     assert!(!c.is_closed());
+}
+
+// spec/sync.md §6 (stall, honest slow peers): a reply queued behind a full push backlog (pushes
+// held within `REPLY_BUDGET`, one push frame past it) on a link far slower than that backlog per
+// stall time keeps the connection: the pushes move the oldest request while within `MAX_AHEAD`
+#[test]
+fn a_slow_reply_behind_a_full_push_backlog_keeps_the_connection_spec_sync_6() {
+    let t = client::STALL_TIMEOUT_MS;
+    let mut c = quiet_session();
+    let out = c.handle(T0, ClientInput::Command(Command::Fetch { label: LabelId([7; 16]), ids: vec![bid(1)] }));
+    let fetch = sent_msgs(&out).iter().find_map(|m| if let Message::Fetch { id, .. } = m { Some(*id) } else { None }).unwrap();
+    let blob = vec![5; osis_proto::serving::REPLY_BUDGET - 1024];
+    let push = |seq| encode_frame(&Message::Push { label: LabelId([8; 16]), events: vec![Event::Added { blob_id: bid(seq), blob: Some(blob.clone()), wrap: [0; osis_crypto::WRAP_LEN], stamp: None }], cursor: Cursor { log_id: [1; 16], seq } }.encode());
+    let mut link = push(1);
+    link.extend(push(2));
+    link.extend(encode_frame(&Message::FetchReply { id: fetch, items: vec![] }.encode()));
+    // 64 KiB every 4 s (16 KB/s): the backlog alone takes about 20 min
+    let mut now = T0;
+    let mut answered = false;
+    for piece in link.chunks(64 << 10) {
+        now += 4000;
+        let out = c.handle(now, ClientInput::Bytes(piece.to_vec()));
+        answered |= out.iter().any(|o| matches!(o, ClientOutput::Event(ClientEvent::Fetched { .. })));
+        assert!(!c.handle(now, ClientInput::Timer).iter().any(|o| matches!(o, ClientOutput::Close)), "closed at {} s", (now - T0) / 1000);
+    }
+    assert!(now - T0 > 4 * t, "slower than the stall time");
+    assert!(answered && !c.is_closed());
+}
+
+// spec/sync.md §6 (stall): a peer pushing at full speed while answering nothing is closed one
+// stall time after `MAX_AHEAD` bytes, however much it pushes on
+#[test]
+fn a_pusher_answering_nothing_is_closed_after_max_ahead_spec_sync_6() {
+    let t = client::STALL_TIMEOUT_MS;
+    let mut c = quiet_session();
+    c.handle(T0, ClientInput::Command(Command::Fetch { label: LabelId([7; 16]), ids: vec![bid(1)] }));
+    let mut bytes = 0;
+    for f in filler(client::MAX_AHEAD + 1, false) {
+        bytes += f.len();
+        c.handle(T0 + 1, ClientInput::Bytes(f));
+    }
+    assert!(bytes <= client::MAX_AHEAD + (9 << 20), "{bytes}");
+    let small = encode_frame(&Message::Push { label: LabelId([8; 16]), events: vec![Event::Deleted(bid(1))], cursor: Cursor { log_id: [1; 16], seq: 1 } }.encode());
+    let mut now = T0 + 1;
+    while now < T0 + 1 + t - 1000 {
+        now += 1000;
+        c.handle(now, ClientInput::Bytes(small.clone()));
+        assert!(!c.handle(now, ClientInput::Timer).iter().any(|o| matches!(o, ClientOutput::Close)), "closed early at {} s", (now - T0) / 1000);
+    }
+    let late = c.handle(T0 + 1 + t, ClientInput::Timer);
+    assert!(late.iter().any(|o| matches!(o, ClientOutput::Close)), "{late:?}");
 }
 
 // spec/sync.md §6 (a node's own requests count as any): a peer silent on a stream Fetch is
@@ -820,12 +916,18 @@ fn a_listener_request_stalls_while_the_dialer_answers_nothing_spec_sync_6() {
     // later takes are of the second request: the first is with the peer
     s.handle(T0 + 20, &mut store, ServingInput::Taken(written as u64 + 5));
     assert_eq!(s.stall_at(), Some(T0 + 10 + t));
-    // the dialer pings and asks, and answers the second request only: nothing moves
+    // the dialer's own messages move it until `MAX_AHEAD` of them came (one per input: what a
+    // single input may carry is bounded apart)
+    for f in filler(client::MAX_AHEAD + 1, true) {
+        s.handle(T0 + 30, &mut store, ServingInput::Bytes(f));
+    }
+    assert_eq!(s.stall_at(), Some(T0 + 30 + t));
+    // past it the dialer pings and asks, and answers the second request only: nothing moves
     let mut other = encode_frame(&Message::Ping { id: 1, wall_ms: T0 }.encode());
     other.extend(encode_frame(&Message::Pull(Box::new(osis_proto::msg::Pull { id: osis_proto::msg::NODE_IDS | 1, cursor: None, joins: vec![], inline_limit: 0, max_reply: client::FIRST_REPLY as u64, follow: true, ephemeral: false })).encode()));
     other.extend(encode_frame(&Message::FetchReply { id: osis_proto::msg::NODE_IDS | 2, items: vec![] }.encode()));
     s.handle(T0 + t - 1, &mut store, ServingInput::Bytes(other));
-    assert_eq!(s.stall_at(), Some(T0 + 10 + t));
+    assert_eq!(s.stall_at(), Some(T0 + 30 + t));
     // the first one's answer starting moves it; the rest of it answers it and none is out
     let reply = encode_frame(&Message::FetchReply { id: osis_proto::msg::NODE_IDS | 1, items: vec![] }.encode());
     s.handle(T0 + t, &mut store, ServingInput::Bytes(reply[..11].to_vec()));
