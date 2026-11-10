@@ -1086,7 +1086,10 @@ fn a_node_judging_itself_out_claims_as_an_actor_a_held_write_names_spec_sync_5()
 // static entry) while the sharer grants X's node on K, the grant not reaching it, and K rotates
 // leaving L out. X's walk reaches K's new step with no actor it holds named on K and L's entry
 // gone: no key left to try, no claim tried. It is stranded all the same: its stranded heartbeat
-// makes the sharer re-seal it, and K's label opens again.
+// makes the sharer re-seal it, and K's label opens again. The rotation keeps the deposit seed
+// and the grant names X's node: the only shape the built heartbeat delivers in (notes/label-access.md
+// Limits); the natural one (an admin's rotation, a grant to X's account) is a step-8 test
+// (issues/account-signing.md).
 #[test]
 fn walk_out_of_keys_is_stranded_spec_permissions_4() {
     let mut net = Net::new();
