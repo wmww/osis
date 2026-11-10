@@ -9,7 +9,7 @@ use net::*;
 use osis_base::format::INBOX_LIFETIME_MS;
 use osis_base::{Ak, BlobId, LabelId, Role, Tid, WallMs};
 use osis_node::flows::Demotion;
-use osis_node::sync::EntryKind;
+use osis_node::sync::{EntryKind, Event};
 use osis_schema::RawKey;
 use std::collections::BTreeSet;
 
@@ -767,4 +767,54 @@ fn covered_own_entry_mid_upload_leaves_the_host_too_spec_sync_5() {
     assert!(!net.host_ids(h, &l).contains(&e2[0]), "the covered entry stays at the host");
     assert!(of(&mut net, c2).is_empty(), "the covered entry stays at the node");
     assert_eq!(net.read(a, t), Some(s("v4")));
+}
+
+// spec/sync.md §5 (Placed), §7 (duplicates): writers a and b each place their own encryption
+// of commit c while away from h2; b's, the lower, reaches h1, a's no host. a drops its own as
+// the higher duplicate, h1 then away too: c still reaches h2, from the lower copy a keeps.
+#[test]
+fn own_duplicate_dropped_while_the_lower_host_is_away_still_reaches_another_host_spec_sync_7() {
+    let mut net = Net::new();
+    let h1 = net.add_host();
+    let h2 = net.add_host();
+    let a = net.node(1, &[h1, h2]);
+    let b = net.node(2, &[h1, h2]);
+    let g = net.group(a, &[(b, Role::Write)], &[h1, h2]);
+    let t = net.item(a, g, g, "x");
+    let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let l = net.label(a);
+    for (n, s) in [(a, h1), (a, h2), (b, h2)] {
+        net.blocked.insert((n, s));
+        net.drop_link(n, s);
+    }
+    net.run();
+    // the value picks blob IDs with b's copy the lower (asserted below)
+    let c = net.write(a, t, "z");
+    let pk = net.engine(a).package(&c).unwrap().unwrap();
+    net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();
+    net.feed(b, Event::Local);
+    net.advance(60_000);
+    net.settle(200_000);
+    let of = |net: &mut Net, n: usize| net.sync(n).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect::<Vec<_>>();
+    let theirs = of(&mut net, b);
+    let at_h1: Vec<BlobId> = net.host_ids(h1, &l).into_iter().filter(|id| theirs.contains(id)).collect();
+    assert_eq!(at_h1.len(), 1, "b's copy at h1");
+    let own: Vec<BlobId> = of(&mut net, a).into_iter().filter(|id| *id != at_h1[0]).collect();
+    assert_eq!(own.len(), 1, "a placed its own copy");
+    assert!(at_h1[0] < own[0], "the case needs b's copy the lower");
+    net.blocked.remove(&(a, h1));
+    net.advance(60_000);
+    net.run();
+    net.blocked.insert((a, h1));
+    net.drop_link(a, h1);
+    net.run();
+    assert_eq!(of(&mut net, a), at_h1, "a's own copy went as the higher duplicate");
+    assert!(!net.host_ids(h1, &l).contains(&own[0]), "never uploaded");
+    net.blocked.remove(&(a, h2));
+    net.advance(60_000);
+    net.run();
+    assert!(net.host_ids(h2, &l).contains(&at_h1[0]), "h2 gets the lower copy from a");
+    assert_eq!(net.read(a, t), Some(s("z")));
 }

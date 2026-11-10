@@ -3,3 +3,4 @@
 
 - The writer keeps its previous body as well as its newest (`single_writer_replace_grows_nothing`), so a test that needs a body covered must write two newer ones, not one; a first attempt with one newer write looked like a broken guard.
 - The in-flight half of `held_elsewhere` was covered by no existing test (all of osis-node passed without it); only a held-host test (`held_hosts`) reaches it.
+- Review: a blob-ID-order case (which of two encryptions is lower) can only be set up by trying written values until the IDs fall right; the test asserts the order so a harness change fails it loudly instead of silently testing the other case.
