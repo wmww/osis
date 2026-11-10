@@ -358,3 +358,81 @@ fn signal_kept_invalid_told_when_valid_spec_commits_5() {
     assert_eq!(told(&mut lp.peers[1], d, &rx), held(&[(c, "gap")]), "told again: now valid");
 }
 
+
+// spec/commits.md §5 Signals: past its keep bound a signal part is past every bound, so nothing
+// makes it missing again: a write dropped as invalid that turns valid past it, or a purge of it
+// that falls past it, is not fetched again, flags no suspect and reads dropped, as at a node
+// where it stayed valid or unpurged
+#[test]
+fn signal_past_its_bound_never_missing_again_spec_commits_5() {
+    let suspects = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.suspects().unwrap();
+    // valid again: Alice kicks Bob, re-grants past the bound
+    let (mut lp, d, ids) = setup(41);
+    let c = send(&mut lp, 1, d, keep(None, Some(HOUR)), "hi");
+    lp.sync_all().unwrap();
+    set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(ct::Frontier::default().to_value()));
+    assert_eq!(body(&mut lp, 0, d, &c), PartBody::Dropped);
+    lp.advance(2 * HOUR);
+    lp.peers[1].engine.tick().unwrap();
+    set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    for i in 0..2 {
+        assert!(lp.peers[i].engine.held_part(&d, &log(), &c, usize::MAX).unwrap().unwrap().valid);
+        assert_eq!(body(&mut lp, i, d, &c), PartBody::Dropped);
+        assert!(suspects(&mut lp, i).is_empty(), "nothing to fetch back");
+    }
+    // a purge falling: Carol (admin) purges Bob's write, Alice kicks her past the bound
+    let mut lp = net(3, 42);
+    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let mut m = Mutation::new();
+    let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
+    lp.peers[0].commit(m).unwrap().unwrap();
+    set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, d, ids[2], Some(edge(Role::Admin)), None);
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    let c = send(&mut lp, 1, d, keep(None, Some(HOUR)), "oops");
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    m.set(d, &ct::PURGE, &lp.peers[2].engine.now()).unwrap();
+    m.purge(PurgeItem::Commit { commit: c, tid: d, ak: log() });
+    let p = lp.peers[2].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(body(&mut lp, 0, d, &c), PartBody::Purged(p));
+    lp.advance(2 * HOUR);
+    for i in 0..3 {
+        lp.peers[i].engine.tick().unwrap();
+    }
+    set_edge(&mut lp.peers[0].engine, d, ids[2], None, Some(ct::Frontier::default().to_value()));
+    lp.sync_all().unwrap();
+    for i in 0..3 {
+        assert_eq!(body(&mut lp, i, d, &c), PartBody::Dropped, "peer {i}");
+        assert!(suspects(&mut lp, i).is_empty(), "peer {i}: nothing to fetch back");
+    }
+}
+
+// spec/sync.md §6, spec/commits.md §5 Signals: a signal part is must-hold only while kept: past
+// its bound a node still holding it (its timer not yet run) holds it as may-hold, so no pass
+// places it again. This engine runs due timers before every step, so a pass meets it only when
+// the clock crosses the bound during one; the judgment is checked directly
+#[test]
+fn signal_past_its_bound_not_must_hold_spec_sync_6() {
+    use crate::net::Net;
+    let mut net = Net::new();
+    let h = net.add_host();
+    let a = net.node(1, &[h]);
+    let g = net.group(a, &[], &[h]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let mut m = Mutation::new();
+    m.retention(t, &log(), keep(None, Some(HOUR))).unwrap();
+    m.set(t, &log(), &s("brief")).unwrap();
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let (key, l) = (net.address(h).key, net.label(a));
+    let must = |net: &mut Net| net.sync(a).verdicts(&key, &l).unwrap().unwrap().must_hold.iter().any(|(x, _)| *x == c);
+    assert!(must(&mut net), "kept: must-hold");
+    net.clock.advance(HOUR + 1);
+    assert!(net.engine(a).body_not_dropped(&c, &t, &log()), "its timer not run: held");
+    assert!(!must(&mut net), "past its bound: not must-hold");
+}

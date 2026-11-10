@@ -341,12 +341,10 @@ pub(crate) fn listing_moved(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Whether part `ai` of `h` is past its expiry or, a signal's, its keep bound: the next tick
-/// drops it, and no read shows it until then.
+/// Whether part `ai` of `h` is past its expiry or, a signal's, its keep bound: no read shows it,
+/// held or not (this engine's next tick drops it).
 fn past_due(h: &Header, ai: usize, now: u64) -> bool {
-    let Some(a) = h.aspects.get(ai) else { return false };
-    let bound = if a.ak.signal() { crate::retention::signal_bound(h, a) } else { None };
-    bound.into_iter().chain(h.expires).any(|t| t <= now)
+    h.expires.is_some_and(|t| t <= now) || crate::retention::past_signal_bound(h, ai, now)
 }
 
 /// The read of a held part, its pieces joined up to `budget` bytes.

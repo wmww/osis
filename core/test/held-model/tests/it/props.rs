@@ -111,19 +111,26 @@ fn forced_fates_keep_reads_and_leave_no_forbidden_value_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 (Covered): each drop a node may make changes no read
+// spec/commits.md §5 (Covered, Signals): each drop a node may make changes no read and no
+// history(): a covered body, and a signal's past its keep bound, read alike held or not
 #[test]
 fn optional_drops_keep_reads_spec_commits_5() {
+    let mut past_bound = 0;
     for seed in 0..SEEDS {
         let mut h = settle(history(seed, LEN), None, seed, &mut Seen::default());
         for _ in 0..12 {
             let o = evaluate(&h);
             let Some((&pr, _)) = o.fates.iter().find(|(_, f)| matches!(f, Fate::MayDrop(_))) else { break };
+            past_bound += usize::from(o.fates[&pr] == Fate::MayDrop(DropWhy::PastBound));
             let n = act(&h, &o, Some(pr));
-            assert_eq!(reads(&n), reads(&h), "seed {seed}: dropping {pr:?} ({:?}) changed a read", o.fates[&pr]);
+            let on = evaluate(&n);
+            let some = |o: &Outcome| o.reads.iter().filter(|(_, r)| r.is_some()).map(|(k, r)| (*k, r.clone())).collect::<BTreeMap<_, _>>();
+            assert_eq!(some(&on), some(&o), "seed {seed}: dropping {pr:?} ({:?}) changed a read", o.fates[&pr]);
+            assert_eq!(on.history, o.history, "seed {seed}: dropping {pr:?} ({:?}) changed history()", o.fates[&pr]);
             h = settle(n, None, seed, &mut Seen::default());
         }
     }
+    assert!(past_bound > 0, "no signal dropped past its bound");
 }
 
 /// Whether `me` holds the purge right over the body now.

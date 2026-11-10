@@ -371,8 +371,8 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
         let Some(m) = core.ix.commits.get(&c) else { continue };
         let Some(ai) = m.aspect(tid, ak) else { continue };
         let Some(a) = m.header.aspects.get(ai) else { continue };
-        // past its expiry it goes whatever the requests say
-        if m.header.expires.is_some_and(|t| t <= now) {
+        // past its expiry, or a signal's past its keep bound, it goes whatever the requests say
+        if m.header.expires.is_some_and(|t| t <= now) || super::past_signal_bound(&m.header, ai, now) {
             continue;
         }
         // a snapshot has no values of its own: a request naming it takes nothing

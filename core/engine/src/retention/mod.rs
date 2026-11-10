@@ -64,6 +64,13 @@ pub(crate) fn signal_bound(h: &Header, a: &osis_commit::AspectEntry) -> Option<u
     (t < osis_commit::FOREVER).then_some(t)
 }
 
+/// Whether part `ai` of `h` is a signal's past its keep bound at wall ms `now` (spec/commits.md §5
+/// Signals): past every bound, so no read shows it, no copy of it is taken and nothing makes it
+/// missing again (fetched, or a suspect flag for it).
+pub(crate) fn past_signal_bound(h: &Header, ai: usize, now: u64) -> bool {
+    h.aspects.get(ai).filter(|a| a.ak.signal()).and_then(|a| signal_bound(h, a)).is_some_and(|t| t <= now)
+}
+
 /// A non-`Derived` source's bytes (its length tells the kind).
 fn source_bytes(src: &osis_crdt::Source) -> Vec<u8> {
     match src.kind() {
@@ -384,11 +391,13 @@ pub(crate) fn drop_invalid(tx: &mut Tx<'_>) -> Result<()> {
 /// The parts `parts` dropped while invalid that are valid now are missing again (spec/permissions.md
 /// §6): they give nothing until the body arrives again, as at a node that never received it
 /// (node-sync fetches it, `Changed::undropped`, from any holder; with none it stays gone at every
-/// node alike). Until then this node may read less than one that kept it (its author).
+/// node alike). Until then this node may read less than one that kept it (its author). A signal's
+/// past its keep bound stays dropped (`past_signal_bound`).
 pub(crate) fn valid_again(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Result<()> {
+    let now = tx.now().0;
     let mut by_aspect: std::collections::BTreeMap<(Tid, Ak), Vec<(CommitId, usize)>> = std::collections::BTreeMap::new();
     for (c, ai) in parts {
-        if let Some(a) = tx.core.ix.commits.get(c).filter(|m| m.dropped_invalid(*ai) && m.valid_at(*ai)).and_then(|m| m.view.aspects.get(*ai)) {
+        if let Some(a) = tx.core.ix.commits.get(c).filter(|m| m.dropped_invalid(*ai) && m.valid_at(*ai) && !past_signal_bound(&m.header, *ai, now)).and_then(|m| m.view.aspects.get(*ai)) {
             by_aspect.entry((a.tid, a.ak.clone())).or_default().push((*c, *ai));
         }
     }
@@ -456,7 +465,7 @@ fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<cr
 /// (spec/commits.md §5 Signals), so a peer still holding it resends nothing that sticks.
 pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
-    if m.header.aspects.get(ai).filter(|a| a.ak.signal()).and_then(|a| signal_bound(&m.header, a)).is_some_and(|t| t <= tx.now().0) {
+    if past_signal_bound(&m.header, ai, tx.now().0) {
         return Ok(false);
     }
     if m.stripped.contains(&ai) {
