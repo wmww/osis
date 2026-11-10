@@ -1624,7 +1624,7 @@ impl NetSim {
         for (to, pkgs) in direct {
             let Some(m) = self.nodes.iter().position(|x| x.tid == to && x.up) else { continue };
             for p in pkgs {
-                let r = self.engine(m)?.ingest(&p.bytes, p.blobs);
+                let r = self.engine(m)?.ingest_with_lists(&p.bytes, p.blobs, None, &p.lists);
                 r.map_err(|e| self.fail(format!("node {m} direct ingest: {e}")))?;
             }
             self.feed(m, Event::Local)?;
@@ -1639,7 +1639,7 @@ impl NetSim {
         for id in ids {
             let p = self.engine(from)?.package(&id).map_err(|e| self.fail(e.to_string()))?;
             let Some(p) = p else { continue };
-            let r = self.engine(to)?.ingest(&p.bytes, p.blobs);
+            let r = self.engine(to)?.ingest_with_lists(&p.bytes, p.blobs, None, &p.lists);
             r.map_err(|e| self.fail(format!("node {to} direct ingest: {e}")))?;
         }
         self.feed(to, Event::Local)

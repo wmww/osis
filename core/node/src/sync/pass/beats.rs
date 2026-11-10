@@ -116,6 +116,13 @@ impl SyncEngine {
             Ok(done) => self.take_done(done)?,
             Err(e) => self.diag(format!("re-seal of {a}: {e}")),
         }
+        // the account's signing chain, once its devices actor's labels are heard out
+        if self.engine.core.account_devices().is_some_and(|(_, d)| d == a) {
+            match self.engine.signing_due() {
+                Ok(done) => self.take_done(done)?,
+                Err(e) => self.diag(format!("rotation of the account: {e}")),
+            }
+        }
         Ok(())
     }
 

@@ -61,6 +61,17 @@ impl SyncEngine {
         for (c, p) in removals {
             wanted.entry(c).or_default().extend(p);
         }
+        // the things the account's commits placed here touch: their thing lists go with them
+        let me = self.engine.account_tid();
+        let mut listed_things: BTreeSet<Tid> = BTreeSet::new();
+        for c in wanted.keys() {
+            if let Some(h) = self.engine.header(c).filter(|h| Some(h.author) == me && h.epoch.is_some()) {
+                listed_things.extend(h.aspects.iter().map(|a| a.tid));
+                if h.actor != h.author {
+                    listed_things.insert(h.actor);
+                }
+            }
+        }
         for (c, want) in wanted {
             let (mine, have) = self.held_parts(g, l, &c)?;
             // what the label's closure bodies carry is never copied (a copy duplicating closure
@@ -91,6 +102,50 @@ impl SyncEngine {
             // nothing to place once its parts are dropped here (`State::sweep_certs`)
             let Some(body) = self.engine.part_body(&c, &missing)? else { continue };
             self.place_copy(g, l, &c, &missing, body)?;
+        }
+        self.place_lists(g, l, listed_things)
+    }
+
+    /// The thing lists of this node's account's rotations for the things in `g`'s closure, those
+    /// its account's commits placed here touch (`extra`), and those a commit under `l` it names
+    /// is on (a thing list is a chain certificate of its thing and goes where the thing's
+    /// commits go, spec/permissions.md §5.5), as list blobs under `l` (spec/sync.md §3), a fresh
+    /// encryption per label; each thing's list once (`State::listed`). Costs the names of the
+    /// account's rotations per pass, until each list is placed.
+    fn place_lists(&mut self, g: &Tid, l: LabelId, mut extra: BTreeSet<Tid>) -> Result<()> {
+        let Some(me) = self.engine.account_tid().filter(|p| self.engine.core.is_account(p)) else { return Ok(()) };
+        let rotations = self.engine.account_rotations(&me);
+        if rotations.is_empty() {
+            return Ok(());
+        }
+        extra.extend(self.engine.closure(g).iter().copied());
+        for r in rotations {
+            let want: BTreeSet<Tid> = self
+                .engine
+                .rotation_lists(&r)?
+                .into_iter()
+                .filter(|(t, ids)| !self.state.listed.contains(&(l, r, *t)) && (extra.contains(t) || ids.iter().any(|c| self.state.by_label_commit.contains_key(&(l, *c)))))
+                .map(|(t, _)| t)
+                .collect();
+            if want.is_empty() {
+                continue;
+            }
+            let Some(secret) = self.engine.wrap_secret(g, None)? else { return Ok(()) };
+            if let Some(pt) = self.engine.list_blob(&r, Some(&want))? {
+                let mut blind = [0u8; 16];
+                self.rng.fill_bytes(&mut blind);
+                let salt = osis_label::Prefix::random_salt(&mut *self.rng);
+                let prefix = osis_label::Prefix::for_delete_keys(salt, &blind, None, &[])?;
+                let (key, blob) = osis_label::frame(&prefix, &pt, &mut *self.rng)?;
+                let id = osis_label::blob_id(&blob);
+                self.engine.put_blobs(vec![(id, blob)])?;
+                // fetched first: what it names reads as listed from the start
+                let wrap = osis_crypto::wrap(&secret, &id, &key, 0)?;
+                self.state.set_entry(l, id, Entry { wrap, stamp: None, cert: true, kind: Kind::List { rotation: r, held: true }, memory: false });
+            }
+            for t in want {
+                self.state.add_listed(l, r, t);
+            }
         }
         Ok(())
     }

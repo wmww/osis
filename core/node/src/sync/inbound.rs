@@ -538,8 +538,9 @@ impl SyncEngine {
         for _ in 0..MAX_ROUNDS {
             let before = self.secrets_count();
             let mut commits: Vec<ToIngest> = Vec::new();
+            let mut lists: Vec<(LabelId, BlobId, Vec<u8>)> = Vec::new();
             for (l, b) in std::mem::take(&mut todo) {
-                self.open_one(on, l, b, &mut commits)?;
+                self.open_one(on, l, b, &mut commits, &mut lists)?;
             }
             // the retries are of every label's entries: each under its own group
             on = None;
@@ -552,13 +553,16 @@ impl SyncEngine {
                     self.ingest_memory_entry(o.label, o.blob, o.size, &o.plaintext, &o.commit)?;
                     continue;
                 }
-                match self.engine.ingest(&o.plaintext, Vec::new()) {
+                // a rotation with the thing lists that came with it (spec/sync.md §3)
+                let with: Vec<Vec<u8>> = if o.commit.header.rotation.is_some() { lists.iter().map(|x| x.2.clone()).collect() } else { Vec::new() };
+                match self.engine.ingest_with_lists(&o.plaintext, Vec::new(), None, &with) {
                     Ok(Ingested::Awaits(_, r)) => unjudged.push((o, r)),
                     Ok(_) => {}
                     Err(e) => self.ingest_failed(&o.commit, e)?,
                 }
             }
             self.settle_batch(unjudged)?;
+            self.hold_lists(lists)?;
             if self.secrets_count() == before {
                 break;
             }
@@ -976,7 +980,41 @@ impl SyncEngine {
         }
     }
 
-    fn open_one(&mut self, conn: Option<ConnId>, l: LabelId, b: BlobId, commits: &mut Vec<ToIngest>) -> Result<()> {
+    /// Holds the list blobs a batch opened, and those that awaited a rotation now held: each kept
+    /// (`Kind::List`), awaiting its rotation, or bad input.
+    fn hold_lists(&mut self, mut lists: Vec<(LabelId, BlobId, Vec<u8>)>) -> Result<()> {
+        for (l, b) in self.state.of_tag(Kind::TAG_LIST_AWAITS) {
+            let Some(Kind::List { rotation, .. }) = self.state.entries.get(&(l, b)).map(|e| e.kind.clone()) else { continue };
+            if !self.engine.core.ix.commits.contains_key(&rotation) || lists.iter().any(|x| x.1 == b) {
+                continue;
+            }
+            let Some(bytes) = self.engine.blob(&b)? else { continue };
+            let Some(g) = self.group_of(&l, None) else { continue };
+            let secrets = self.read_secrets(&g);
+            let Some(e) = self.state.entries.get(&(l, b)) else { continue };
+            let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, &e.wrap) else { continue };
+            let Ok((_, pt)) = osis_label::open(&bytes, &key) else { continue };
+            lists.push((l, b, pt));
+        }
+        for (l, b, pt) in lists {
+            let Some(mut e) = self.state.entries.get(&(l, b)).cloned() else { continue };
+            e.kind = match self.engine.hold_lists(&pt)? {
+                osis_engine::flows::ListsHeld::Held | osis_engine::flows::ListsHeld::Known => match e.kind {
+                    Kind::List { rotation, .. } => Kind::List { rotation, held: true },
+                    k => k,
+                },
+                osis_engine::flows::ListsHeld::Awaits(rotation) => Kind::List { rotation, held: false },
+                osis_engine::flows::ListsHeld::Bad => {
+                    self.diag(format!("blob {b:?}: a list blob that does not verify"));
+                    Kind::Bad
+                }
+            };
+            self.state.set_entry(l, b, e);
+        }
+        Ok(())
+    }
+
+    fn open_one(&mut self, conn: Option<ConnId>, l: LabelId, b: BlobId, commits: &mut Vec<ToIngest>, lists: &mut Vec<(LabelId, BlobId, Vec<u8>)>) -> Result<()> {
         let Some(mut e) = self.state.entries.get(&(l, b)).cloned() else { return Ok(()) };
         if e.kind != Kind::Unknown {
             return Ok(());
@@ -1004,6 +1042,16 @@ impl SyncEngine {
                     commits.push(ToIngest { label: l, blob: b, size: bytes.len(), plaintext: o.plaintext, commit: o.commit });
                 }
                 Err(err) => {
+                    // a list blob (spec/sync.md §3): held once the batch's commits are in
+                    if let Ok((_, pt)) = osis_label::open(&bytes, &key)
+                        && osis_commit::thing_list::is_list_blob(&pt)
+                        && let Some(rotation) = osis_commit::thing_list::decode_list_blob(&pt).ok().and_then(|c| c.first().map(|c| c.rotation))
+                    {
+                        e.kind = Kind::List { rotation, held: false };
+                        self.state.set_entry(l, b, e);
+                        lists.push((l, b, pt));
+                        return Ok(());
+                    }
                     // a commit this build cannot interpret is parked, anything else is bad
                     // input; neither is opened again (spec/versioning.md §2)
                     let pt = (err.class() == ErrorClass::Parked).then(|| osis_label::open(&bytes, &key).ok()).flatten();

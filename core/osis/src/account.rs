@@ -110,11 +110,11 @@ fn same(a: &[u8], b: &[u8]) -> bool {
 }
 
 fn packages_value(pks: &[Package]) -> Value {
-    Value::List(pks.iter().map(|p| Value::List(vec![Value::Bytes(p.bytes.clone()), Value::List(p.blobs.iter().map(|(id, b)| Value::List(vec![Value::Bytes(id.0.to_vec()), Value::Bytes(b.clone())])).collect())])).collect())
+    Value::List(pks.iter().map(|p| Value::List(vec![Value::Bytes(p.bytes.clone()), Value::List(p.blobs.iter().map(|(id, b)| Value::List(vec![Value::Bytes(id.0.to_vec()), Value::Bytes(b.clone())])).collect()), Value::List(p.lists.iter().map(|l| Value::Bytes(l.clone())).collect())])).collect())
 }
 
-/// Commit bytes with their blobs.
-type Packages = Vec<(Vec<u8>, Vec<(BlobId, Vec<u8>)>)>;
+/// Commit bytes with their blobs and (a rotation's) list blobs.
+type Packages = Vec<(Vec<u8>, Vec<(BlobId, Vec<u8>)>, Vec<Vec<u8>>)>;
 
 fn packages_of(v: &Value) -> Result<Packages> {
     let bad = || Error::Invalid("malformed pairing packages".into());
@@ -122,14 +122,18 @@ fn packages_of(v: &Value) -> Result<Packages> {
     let mut out = Vec::new();
     for i in items {
         let Value::List(f) = i else { return Err(bad()) };
-        let [Value::Bytes(bytes), Value::List(blobs)] = f.as_slice() else { return Err(bad()) };
+        let [Value::Bytes(bytes), Value::List(blobs), Value::List(lists)] = f.as_slice() else { return Err(bad()) };
+        let lists = lists.iter().map(|l| match l {
+            Value::Bytes(b) => Ok(b.clone()),
+            _ => Err(bad()),
+        }).collect::<Result<Vec<_>>>()?;
         let mut bs = Vec::new();
         for b in blobs {
             let Value::List(x) = b else { return Err(bad()) };
             let [Value::Bytes(id), Value::Bytes(data)] = x.as_slice() else { return Err(bad()) };
             bs.push((BlobId(id.as_slice().try_into().map_err(|_| bad())?), data.clone()));
         }
-        out.push((bytes.clone(), bs));
+        out.push((bytes.clone(), bs, lists));
     }
     Ok(out)
 }
@@ -170,8 +174,8 @@ impl Joining {
         let pks = packages_of(pks)?;
         let account = self.account;
         let done = self.db.engine(|e| -> Result<_> {
-            for (bytes, blobs) in pks {
-                e.ingest(&bytes, blobs)?;
+            for (bytes, blobs, lists) in pks {
+                e.ingest_with_lists(&bytes, blobs, None, &lists)?;
             }
             e.paired(&account, &grant).map_err(|_| Error::Invalid("pairing reply: this node was not made a node of the account".into()))
         })?;
@@ -230,8 +234,8 @@ impl Osis {
         let node = *node;
         let pks = packages_of(pks)?;
         let (grant, mine) = self.locked(|x| -> Result<(RawCommitId, Vec<Package>)> {
-            for (bytes, blobs) in pks {
-                x.engine().ingest(&bytes, blobs)?;
+            for (bytes, blobs, lists) in pks {
+                x.engine().ingest_with_lists(&bytes, blobs, None, &lists)?;
             }
             let done = x.engine().pair(&node)?;
             let grant = *done.commits.last().ok_or(Error::Invalid("pairing made no commit".into()))?;

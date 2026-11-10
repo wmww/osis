@@ -936,7 +936,10 @@ impl Osis {
         for t in &on {
             self.engine(|e| leave_allowed(e, holder, *t, own))?;
         }
-        for t in on {
+        // the target's own grant first: its next rotation still seals a link's K at the keyset
+        // it holds, which the leave of K then leaves uncovered (until a joiner rotates K)
+        let order: Vec<Tid> = on.iter().copied().filter(|t| *t == target).chain(on.iter().copied().filter(|t| *t != target)).collect();
+        for t in order {
             self.leave_grant(holder, t, own)?;
         }
         Ok(())

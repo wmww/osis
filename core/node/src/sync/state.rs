@@ -27,6 +27,8 @@ const FILLING: &[u8] = b"y/4";
 const HEAD: &[u8] = b"y/h";
 const BLOB: &[u8] = b"y/b";
 const CERT: &[u8] = b"y/k";
+/// Thing lists placed: label, rotation, thing (`State::listed`).
+const LISTED: &[u8] = b"y/L";
 const BEAT: &[u8] = b"y/t";
 const GONE: &[u8] = b"y/g";
 const DOUBT: &[u8] = b"y/3";
@@ -97,6 +99,10 @@ pub enum Kind {
     /// A commit this build cannot interpret, held parked (spec/versioning.md §2): relayed,
     /// never judged.
     Parked(CommitId),
+    /// A list blob of rotation `rotation`'s thing lists (spec/sync.md §3): `held` once the engine
+    /// holds them (`Engine::hold_lists`), else it awaits the rotation and is held again once that
+    /// is here.
+    List { rotation: CommitId, held: bool },
 }
 
 /// A node log event waiting for the flush that writes its effect.
@@ -229,6 +235,8 @@ impl Kind {
     pub const TAG_PARKED: u8 = 4;
     pub const TAG_REQUEST: u8 = 5;
     pub const TAG_AWAITS: u8 = 6;
+    pub const TAG_LIST: u8 = 7;
+    pub const TAG_LIST_AWAITS: u8 = 8;
 
     /// The index tag of a kind other than `Commit` (`State::by_kind`).
     pub fn tag(&self) -> Option<u8> {
@@ -240,6 +248,8 @@ impl Kind {
             Kind::Bad => Some(Kind::TAG_BAD),
             Kind::Parked(_) => Some(Kind::TAG_PARKED),
             Kind::Request(_) => Some(Kind::TAG_REQUEST),
+            Kind::List { held: true, .. } => Some(Kind::TAG_LIST),
+            Kind::List { held: false, .. } => Some(Kind::TAG_LIST_AWAITS),
         }
     }
 }
@@ -299,6 +309,8 @@ pub struct State {
     pub by_awaited: BTreeMap<Tid, BTreeSet<(LabelId, BlobId)>>,
     pub awaits_by_commit: BTreeMap<CommitId, BTreeSet<(LabelId, BlobId)>>,
     pub certs: BTreeSet<(LabelId, CommitId)>,
+    /// The thing lists this node placed under a label: (label, rotation, thing).
+    pub listed: BTreeSet<(LabelId, CommitId, Tid)>,
     pub beats: BTreeMap<LabelId, u64>,
     /// Blob IDs of no use at a host, by when (corrected wall ms): uploads it refused as
     /// tombstoned, and entries it holds under a wrap not opening to the blob's key (a stamped
@@ -478,6 +490,7 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
         Kind::Parked(c) => w.u8(4).raw(&c.0),
         Kind::Request(c) => w.u8(7).raw(&c.0),
         Kind::Awaits { commit, thing } => w.u8(8).raw(&commit.0).raw(thing.as_bytes()),
+        Kind::List { rotation, held } => w.u8(9).raw(&rotation.0).u8(u8::from(*held)),
     }
     .take()
 }
@@ -504,6 +517,7 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
         4 => Kind::Parked(CommitId(r.arr()?)),
         7 => Kind::Request(CommitId(r.arr()?)),
         8 => Kind::Awaits { commit: CommitId(r.arr()?), thing: Tid::from_bytes(r.arr()?) },
+        9 => Kind::List { rotation: CommitId(r.arr()?), held: r.u8()? == 1 },
         _ => return Err(Error::Corrupt("sync entry kind")),
     };
     Ok(Entry { wrap, stamp, cert, kind, memory: false })
@@ -563,6 +577,9 @@ impl State {
                 }
                 b"k" => {
                     s.certs.insert((LabelId(r.arr()?), CommitId(r.arr()?)));
+                }
+                b"L" => {
+                    s.listed.insert((LabelId(r.arr()?), CommitId(r.arr()?), Tid::from_bytes(r.arr()?)));
                 }
                 b"t" => {
                     s.beats.insert(LabelId(r.arr()?), Rd::new(&v).u64()?);
@@ -1357,6 +1374,12 @@ impl State {
         if self.certs.insert((l, c)) {
             self.touched.insert((l, Touch::Commit(c)));
             self.put(key(CERT, &[&l.0, &c.0]), Vec::new());
+        }
+    }
+
+    pub fn add_listed(&mut self, l: LabelId, r: CommitId, t: Tid) {
+        if self.listed.insert((l, r, t)) {
+            self.put(key(LISTED, &[&l.0, &r.0, t.as_bytes()]), Vec::new());
         }
     }
 
