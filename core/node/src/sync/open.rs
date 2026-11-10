@@ -1,7 +1,7 @@
 //! Opening a label at a host (spec/sync.md §2, §5): the sync key of the head, else the newest
 //! recorded step this node holds the key of; a superseded key or a claim answered with the next
 //! step is a walk, each step verified under its parent's delete key; a host lacking the label
-//! gets the recorded path registered; a refused claim places a stranded heartbeat. An opened head
+//! gets the recorded path registered; no key left to try places a stranded heartbeat. An opened head
 //! not recorded in `label.0` is checked against the host's path.
 
 use super::{ConnId, LConn, Phase, SyncEngine};
@@ -198,7 +198,6 @@ impl SyncEngine {
             phase: Phase::Opening,
             tries,
             static_refused: false,
-            tried_claim: false,
             head: None,
             keys: HeadKeys::default(),
             syncing: false,
@@ -222,7 +221,8 @@ impl SyncEngine {
         self.try_next(conn, l, out)
     }
 
-    /// Sends the next open attempt; none left: failed (stranded after a refused claim).
+    /// Sends the next open attempt; none left: failed and stranded (spec/permissions.md §4: no
+    /// key this node holds opens the label's current epoch, wherever the walk stopped).
     fn try_next(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         if let Some(g) = self.lc(conn, &l).filter(|x| matches!(x.tries.first(), Some(Try::Rest))).map(|x| x.group) {
             let rest = self.rest_tries(&g, &l)?;
@@ -232,18 +232,12 @@ impl SyncEngine {
         }
         let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
         if lc.tries.is_empty() {
-            let (g, claimed) = (lc.group, lc.tried_claim);
+            let g = lc.group;
             self.fail(conn, l);
-            if claimed {
-                self.stranded(conn, g, l, out)?;
-            }
-            return Ok(());
+            return self.stranded(conn, g, l, out);
         }
         lc.phase = Phase::Opening;
         let key = lc.tries.first().map(Try::open_key);
-        if matches!(lc.tries.first(), Some(Try::Claim { .. })) {
-            lc.tried_claim = true;
-        }
         if let Some(key) = key {
             self.command(conn, Command::Open { label: l, key }, out)?;
         }

@@ -52,7 +52,6 @@ pub(crate) struct LConn {
     pub tries: Vec<open::Try>,
     /// The host refused this node's static entry (`SyncEngine::static_entry_refused`).
     pub static_refused: bool,
-    pub tried_claim: bool,
     pub head: Option<Step>,
     pub keys: HeadKeys,
     /// A Sync exchange is running.

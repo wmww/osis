@@ -1080,3 +1080,77 @@ fn a_node_judging_itself_out_claims_as_an_actor_a_held_write_names_spec_sync_5()
     }
     assert_eq!(net.engine(x).role_on(&t), Some(Role::Read), "X reads the target");
 }
+
+// spec/permissions.md §3, §4 (stranded: the node cannot read the label's current epoch by any
+// key it holds, wherever its walk stopped), spec/sync.md §5: X bears a link (reads K through L's
+// static entry) while the sharer grants X's node on K, the grant not reaching it, and K rotates
+// leaving L out. X's walk reaches K's new step with no actor it holds named on K and L's entry
+// gone: no key left to try, no claim tried. It is stranded all the same: its stranded heartbeat
+// makes the sharer re-seal it, and K's label opens again.
+#[test]
+fn walk_out_of_keys_is_stranded_spec_permissions_4() {
+    let mut net = Net::new();
+    let s0 = net.add_host();
+    let home = vec![net.address(s0)];
+    let a = net.node(60, &[s0]);
+    let x = net.node(61, &[s0]);
+    let pa = account(&mut net, a, &home);
+    let xn = net.node_tid(x);
+    net.run();
+    net.pair(x, a);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, pa);
+    m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    let (_, acts) = net.sync(a).create_label(&t, home.clone()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: home.clone(), peers: Vec::new(), single_use: false };
+    let (link, _, done) = net.engine(a).create_link(&pa, &spec).unwrap();
+    carry(&mut net, a, done);
+    let k = link.k;
+    let l = net.engine(x).bear(&link).unwrap();
+    let acts = net.sync(x).follow(l, k, link.k_label, link.hosts.clone());
+    net.actions(x, acts);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    let lk = link.k_label;
+    let e0 = net.engine(x).epochs(&k).unwrap().read.newest().unwrap();
+    // X away: the sharer grants X's node on K (its delivery lost), and K rotates boxing the
+    // sharer and X's node, not L (a rotation keeping the deposit seed)
+    net.set_online(x, false);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    net.engine(a).grant(&k, &xn, &edge).unwrap();
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(pa, Role::Admin), (xn, Role::Read)]);
+    rotation(e, k, &rs, 61, false);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    let e1 = net.engine(a).epochs(&k).unwrap().read.newest().unwrap();
+    assert_ne!(e0, e1);
+    assert!(!net.engine(x).roster(&k).contains_key(&xn), "X does not hold its grant");
+    net.set_online(x, true);
+    for _ in 0..4 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert!(net.sync(x).stranded_at(&lk), "X's walk ran out of keys: stranded");
+    // the sharer's re-seal goes to X's node over a direct connection
+    for _ in 0..4 {
+        for (_, pks) in net.sync(a).take_direct() {
+            for p in pks {
+                let _ = net.engine(x).ingest(&p.bytes, p.blobs);
+            }
+        }
+        net.run();
+        net.advance(61_000);
+    }
+    assert_eq!(net.engine(x).epochs(&k).unwrap().read.newest(), Some(e1), "re-sealed: X reads K's new epoch");
+    let st = net.sync(x).label_status().into_iter().find(|s| s.label == lk).unwrap();
+    assert!(!st.stranded && st.sources == 1, "K's label open again: {st:?}");
+}

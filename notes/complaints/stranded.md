@@ -1,0 +1,2 @@
+# stranded
+- The issue's premise ("the stranded heartbeat heals it") took long to test: the built heartbeat cannot reach an admin after an admin read rotation (fresh deposit seed) and re-seals only node-level holders (record chain), so a natural reproducer kept failing for reasons outside the issue. A shape that delivers needed the raw `rotation` hook (no seed refresh) and a node-level grant. notes/label-access.md Limits stated the opposite ("the refresh is explicit only"); fixed.
