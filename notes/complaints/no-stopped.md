@@ -1,0 +1,2 @@
+- Reviewer: an early `cargo clippy ... | tail -5` read exit 0 from the pipe and hid a lint the gate then failed on (a wasted gate start). Pipe-exit footgun applies to clippy as much as tests.
+- The worker's commit carried a `.clone()` clippy lint; workers' clippy is in the brief, so it was likely skipped or piped the same way.
