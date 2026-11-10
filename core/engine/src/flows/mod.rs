@@ -311,7 +311,9 @@ pub(crate) fn is_node(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
 pub(crate) fn secrets_in(tx: &mut Tx<'_>, actor: &Tid) -> Result<Arc<Secrets>> {
     if let Some(s) = tx.core.secrets_read.get(actor).cloned() {
         #[cfg(debug_assertions)]
-        assert_eq!(*s, secrets_decoded(tx, actor)?, "secrets_read of {actor:?} went stale");
+        if tx.recheck(format!("secrets_in {actor}")) {
+            assert_eq!(*s, secrets_decoded(tx, actor)?, "secrets_read of {actor:?} went stale");
+        }
         return Ok(s);
     }
     let _s = crate::costs::span("secrets: decode");

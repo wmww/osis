@@ -74,6 +74,9 @@ pub(crate) struct AccountView {
     /// The counting epochs by name: what a write or seal reads, so neither walks the chain (its
     /// length is the account's to choose).
     by_name: BTreeMap<Epoch, CommitId>,
+    /// `Core::account_epochs`: the role epochs the held seeds give under this chain, derived once
+    /// (a view is built anew when the seeds held or the chain change, `ViewKey`).
+    role_epochs: std::sync::OnceLock<Option<ActorEpochs>>,
 }
 
 impl AccountView {
@@ -459,7 +462,7 @@ impl Core {
                 }
             }
         }
-        let mut v = AccountView { rule, rotations, side, received, authorized, epochs, by_name: BTreeMap::new() };
+        let mut v = AccountView { rule, rotations, side, received, authorized, epochs, by_name: BTreeMap::new(), role_epochs: std::sync::OnceLock::new() };
         // a name repeated (two rotations minting one key) is read as its lowest ID
         for (id, e) in v.epochs.iter().filter(|(id, _)| v.rule.chain().epoch_counts(id)) {
             if let Some(name) = v.name(e) {
@@ -506,12 +509,16 @@ impl Core {
     pub(crate) fn account_epochs(&self, p: &Tid) -> Option<ActorEpochs> {
         let a = self.accounts.get(p)?;
         let v = self.account_view(p)?;
-        let seed = |e: &EpochPublic| a.seeds.get(&e.signing.to_bytes()).cloned();
-        let held: Vec<_> = v.epochs.values().filter_map(|e| {
-            let sup = e.supersedes.iter().filter_map(|s| v.epochs.get(s)).filter_map(|x| Some((x.height?, seed(x)?))).collect();
-            Some((e.height?, seed(e)?, sup))
-        }).collect();
-        ActorEpochs::account(p, &held).ok()
+        v.role_epochs
+            .get_or_init(|| {
+                let seed = |e: &EpochPublic| a.seeds.get(&e.signing.to_bytes()).cloned();
+                let held: Vec<_> = v.epochs.values().filter_map(|e| {
+                    let sup = e.supersedes.iter().filter_map(|s| v.epochs.get(s)).filter_map(|x| Some((x.height?, seed(x)?))).collect();
+                    Some((e.height?, seed(e)?, sup))
+                }).collect();
+                ActorEpochs::account(p, &held).ok()
+            })
+            .clone()
     }
 
     /// The seeds of `p` held, by epoch name (spec/crypto.md §3).

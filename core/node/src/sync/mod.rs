@@ -697,7 +697,7 @@ impl SyncEngine {
         let key = (self.engine.core.generation, self.state.retired.len(), if self.synced.timed { now } else { 0 });
         if self.synced.key == key {
             #[cfg(debug_assertions)]
-            if self.engine.recheck(format!("labels {} {} {}", self.state.version, self.state.retired.len(), self.state.handed_off.len())) {
+            if self.engine.recheck(format!("labels {} {} {}", self.state.retired.len(), self.state.handed_off.len(), key.2)) {
                 let ids = |v: &[(Tid, Arc<GroupLabel>)]| v.iter().map(|(g, l)| (*g, l.id, l.replaced)).collect::<Vec<_>>();
                 let (fresh, _) = self.compute_labels(now);
                 assert_eq!(ids(&fresh), ids(&self.synced.labels), "labels() cached");

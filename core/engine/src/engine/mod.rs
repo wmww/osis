@@ -1004,7 +1004,10 @@ pub struct Core {
     /// Debug builds: the cache hits compared with a fresh read at this point of the store
     /// (`Engine::recheck`).
     #[cfg(debug_assertions)]
-    pub(crate) rechecked: (ReadPoint, BTreeSet<String>),
+    pub(crate) rechecked: ((u64, u64, u64), BTreeSet<String>),
+    /// Debug builds: `Store::changes` when the running transaction began (`Tx::recheck`).
+    #[cfg(debug_assertions)]
+    pub(crate) tx_store: u64,
     /// `Engine::labels_of` per group, with the records parsed: dropped when its `label.0` state is written (`wrote`) and
     /// on rollback.
     pub(crate) labels: BTreeMap<Tid, (Vec<std::sync::Arc<crate::labeling::GroupLabel>>, osis_schema::core_types::Labels)>,
@@ -1527,6 +1530,8 @@ impl Core {
             unchecked_tx: _,
             #[cfg(debug_assertions)]
             rechecked: _,
+            #[cfg(debug_assertions)]
+            tx_store: _,
             #[cfg(test)]
             check_ingest: _,
             #[cfg(test)]
@@ -1705,6 +1710,8 @@ impl Core {
             made_labels: Vec::new(),
             #[cfg(debug_assertions)]
             rechecked: Default::default(),
+            #[cfg(debug_assertions)]
+            tx_store: 0,
             labels: BTreeMap::new(),
             published: None,
             links: None,
@@ -1714,6 +1721,15 @@ impl Core {
 
     pub fn now(&self) -> WallMs {
         self.hlc.wall()
+    }
+
+    /// `Engine::recheck` at point `at`.
+    #[cfg(debug_assertions)]
+    pub(crate) fn recheck_at(&mut self, at: (u64, u64, u64), what: String) -> bool {
+        if self.rechecked.0 != at {
+            self.rechecked = (at, BTreeSet::new());
+        }
+        self.rechecked.1.insert(what)
     }
 
     /// Queues `changes` as a commit event, if anyone may listen.
@@ -1964,6 +1980,14 @@ impl Tx<'_> {
     pub fn set_memory(&mut self) {
         self.txn.set_memory(true);
         self.core.memory_tx = true;
+    }
+
+    /// `Engine::recheck` inside this transaction: its point is the store as the transaction
+    /// found it (`Core::tx_store`) and the generations, which every change it makes moves.
+    #[cfg(debug_assertions)]
+    pub(crate) fn recheck(&mut self, what: String) -> bool {
+        let at = (self.core.tx_store, self.core.generation, self.core.memory_generation);
+        self.core.recheck_at(at, what)
     }
 
     /// Runs `f` as work on data of class `memory` (issues/eph-unify.md): rows it creates for a
@@ -2526,15 +2550,14 @@ impl Engine {
     }
 
     /// Debug builds: whether a cache hit of `what` is worth comparing with a fresh read: one
-    /// comparison per `point` checks all that can be checked (repeats held a quarter of the CPU of
-    /// `osis`'s tests, notes/testing.md).
+    /// comparison per state of the store and indexes checks all that can be checked (repeats held
+    /// a quarter of the CPU of `osis`'s tests, notes/testing.md). The clock is not part of it (a
+    /// running one moves at nearly every hit): a cache whose answer moves with time names that
+    /// time in `what`.
     #[cfg(debug_assertions)]
     pub fn recheck(&mut self, what: String) -> bool {
-        let at = self.point();
-        if self.core.rechecked.0 != at {
-            self.core.rechecked = (at, BTreeSet::new());
-        }
-        self.core.rechecked.1.insert(what)
+        let at = (self.store.changes(), self.core.generation, self.core.memory_generation);
+        self.core.recheck_at(at, what)
     }
 
     /// A new node over an empty backend: fresh identity, its node thing with `created.0`,
@@ -2713,6 +2736,7 @@ impl Engine {
         #[cfg(debug_assertions)]
         {
             self.core.unchecked_tx = false;
+            self.core.tx_store = self.store.changes();
         }
         // debug builds: whether `check_index` runs after this transaction
         #[cfg(debug_assertions)]
