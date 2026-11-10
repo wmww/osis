@@ -139,7 +139,7 @@ impl SyncEngine {
         }
         let _s = crate::costs::span("pass: body keeps");
         let k = std::sync::Arc::new(self.engine.body_keeps(c)?);
-        let undated = self.engine.header(c).is_some_and(|h| h.aspects.iter().zip(k.iter()).all(|(a, x)| osis_commit::retention::body_keep(&h, a, None) == *x));
+        let undated = self.engine.header(c).is_some_and(|h| self.engine.keeps_unreplaced(&h) == *k);
         if !pending && undated {
             self.keeps.insert(*c, k.clone());
         }

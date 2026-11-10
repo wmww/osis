@@ -291,7 +291,7 @@ impl View {
             actor: h.actor,
             linked: h.links != osis_commit::Links::default(),
             memory: h.ephemeral.is_some(),
-            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a), none: a.retention.history == Some(osis_schema::History::PurgeOnReplace), permanent: h.permanent(a), replaces: a.replaces }).collect(),
+            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a), none: crate::retention::history::of(a).purge_on_replace(), permanent: crate::retention::history::permanent(h, a), replaces: a.replaces }).collect(),
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
             chunks: h.chunks.iter().map(|c| c.blob).collect(),
             purges: !h.purge.is_empty(),

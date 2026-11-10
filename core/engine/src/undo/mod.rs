@@ -34,8 +34,7 @@ pub enum Reverted {
 /// replaced it: until its keep bound (spec/commits.md §5), a relative one counted from `h`'s
 /// `ts`. By the part's retention alone, never by what is held.
 fn keeps_now(h: &Header, a: &osis_commit::AspectEntry, now: u64) -> bool {
-    let k = osis_commit::retention::KeepRule::of_aspect(a);
-    k.until.is_some_and(|t| now < t) || k.after.is_some_and(|d| now < h.ts.wall_ms().0.saturating_add(d))
+    crate::retention::history::of(a).leaves_at(Some(h.ts.wall_ms().0)) > now
 }
 
 /// The valid parts of `(tid, ak)` ordered before `at` whose headers are held, oldest first, each

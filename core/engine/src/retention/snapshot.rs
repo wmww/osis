@@ -188,9 +188,8 @@ pub(super) fn by_id(kind: Kind, form: Form) -> bool {
 /// which drops `s` too (its first death), or a validity change, after which `s` covers it at most
 /// later than it could.
 pub(super) fn cannot_keep(tx: &mut Tx<'_>, s: &CommitId, sai: usize, c: &CommitId, cai: usize, tid: &Tid, ak: &Ak) -> Result<bool> {
-    use osis_schema::History;
-    let history = |x: &CommitId, ai: usize| tx.core.ix.commits.get(x).and_then(|m| m.header.aspects.get(ai)).and_then(|a| a.retention.history);
-    if history(s, sai) != Some(History::PurgeOnReplace) || !matches!(history(c, cai), Some(History::Keep { .. })) {
+    let history = |x: &CommitId, ai: usize| tx.core.ix.commits.get(x).and_then(|m| m.header.aspects.get(ai)).map(super::history::of).unwrap_or_default();
+    if !history(s, sai).purge_on_replace() || !history(c, cai).keeps() {
         return Ok(false);
     }
     super::bounds::body_live(tx, c, tid, ak)

@@ -264,7 +264,7 @@ fn superseded(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<BTreeSet<CommitId>
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
     let held: Vec<usize> = (0..m.header.aspects.len()).filter(|ai| m.holds(*ai)).collect();
     let Some(p_exp) = m.header.expires else { return Ok(None) };
-    if held.is_empty() || held.iter().any(|ai| m.header.aspects.get(*ai).is_some_and(|a| a.retention.history.is_some())) {
+    if held.is_empty() || held.iter().any(|ai| m.header.aspects.get(*ai).is_some_and(|a| super::history::of(a).keeps())) {
         return Ok(None);
     }
     let mut by = BTreeSet::new();

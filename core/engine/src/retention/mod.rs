@@ -9,7 +9,8 @@
 //!
 //! Here: bodies dropping and coming back, leftovers, what runs on apply and by timer.
 //! `purge`: purge requests. `pending`: parts held while their commit waits. `snapshot`: compaction.
-//! `bounds`: a body's keep bound, when it was replaced, and liveness. `replace`: purge on
+//! `history`: the one door to what history keeps of a body. `bounds`: a body's keep bound, when
+//! it was replaced, and liveness. `replace`: purge on
 //! replace. `leftover`: the rows.
 //!
 //! A body here is one retention class of a commit (`body_class`): it is judged over the class,
@@ -28,6 +29,7 @@ use osis_store::Shred;
 use std::collections::BTreeSet;
 
 pub(crate) mod bounds;
+pub(crate) mod history;
 pub(crate) mod leftover;
 mod pending;
 mod purge;
@@ -60,7 +62,7 @@ pub(crate) const T_KEPT: u8 = 3;
 /// A signal delta's keep bound, wall ms (spec/commits.md §5 Signals): any body's keep at least
 /// (`body_keep`), replaced when written; `None`: kept for good.
 pub(crate) fn signal_bound(h: &Header, a: &osis_commit::AspectEntry) -> Option<u64> {
-    let t = osis_commit::retention::body_keep(h, a, Some(h.ts.wall_ms().0));
+    let t = bounds::kept_until(h, a, Some(h.ts.wall_ms().0));
     (t < osis_commit::FOREVER).then_some(t)
 }
 
@@ -180,7 +182,7 @@ pub(crate) fn body_classes(core: &Core, h: &Header) -> Vec<Vec<usize>> {
 /// Whether a delta's body has a relative keep bound (spec/commits.md §5): only it asks when the body
 /// was replaced (`bounds::replaced_at`).
 pub(crate) fn bounded(a: &osis_commit::AspectEntry) -> bool {
-    osis_commit::retention::KeepRule::of_aspect(a).relative()
+    history::of(a).dated()
 }
 
 /// The aspect index of `(tid, ak)` in held commit `c`, if that part is held (`Meta::holds`: a

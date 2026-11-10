@@ -254,7 +254,7 @@ impl SyncEngine {
                 // a lasting header this node does not judge lasting: a node may yet judge it so, or
                 // it is left from a purge that fell. Deleting what another must hold would not end:
                 // it stays (spec/sync.md §6)
-                if opened.is_empty() && (!h.purge.is_empty() || (h.ephemeral.is_none() && h.aspects.iter().any(|a| h.permanent(a)))) {
+                if opened.is_empty() && (!h.purge.is_empty() || (h.ephemeral.is_none() && h.aspects.iter().any(|a| self.engine.permanent(&h, a)))) {
                     return Ok(None);
                 }
                 // only deltas this node holds can be judged outside the label

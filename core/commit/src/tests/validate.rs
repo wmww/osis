@@ -206,10 +206,9 @@ fn history_encoding_spec_wire_4() {
 }
 
 // spec/commits.md §5: fixed tables, write defaults (untyped: author_or_admin, no history, no expiry),
-// snapshot retention from schema defaults, keep bounds, the purge floor.
+// snapshot retention from schema defaults.
 #[test]
 fn retention_rules() {
-    use osis_base::format::ROLE_KEEP_MS;
     use osis_schema::AspectDefaults;
     use retention::*;
     assert_eq!(fixed_retention("secrets.0"), Some(ROLE_RETENTION));
@@ -253,24 +252,6 @@ fn retention_rules() {
     assert_eq!(snapshot_retention("app:x.0", []), Retention { by: PurgeBy::Writer, ..Default::default() });
     assert_eq!(snapshot_retention("app:x.0", [own(keep(Some(500), None))]), Retention { by: PurgeBy::Writer, ..Default::default() });
     assert_eq!(snapshot_retention("keys.0", [own(Some(History::PurgeOnReplace))]), ROLE_RETENTION);
-    // a role-class body is kept `ROLE_KEEP` after replaced, its retention promising none
-    assert_eq!(KeepRule::of("keys.0", &ROLE_RETENTION), KeepRule { until: None, after: Some(ROLE_KEEP_MS) });
-    assert_eq!(KeepRule::of("app:x.0", &ROLE_RETENTION), KeepRule { until: None, after: None });
-    let r = Retention { by: PurgeBy::Writer, history: keep(Some(100), Some(50)) };
-    let a = |r: Retention| AspectEntry { tid: t(3), ak: Ak::new("app:title.0").unwrap(), lo: 1, hi: 2, retention: r, keys: vec![], hash: [0; 32], replaces: None };
-    let h = sample_header();
-    assert_eq!(body_keep(&h, &a(r), None), 100);
-    assert_eq!(body_keep(&h, &a(r), Some(20)), 100);
-    assert_eq!(body_keep(&h, &a(r), Some(70)), 120);
-    // purge on replace bounds nothing
-    let r = Retention { by: PurgeBy::Writer, history: Some(History::PurgeOnReplace) };
-    assert_eq!(body_keep(&h, &a(r), Some(20)), 0);
-    let mut p = h.clone();
-    p.expires = None;
-    p.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("app:title.0").unwrap() });
-    let floor = h.ts.wall_ms().0 + ROLE_KEEP_MS;
-    assert_eq!(purge_keep_until(&p), Some(floor));
-    assert_eq!(body_keep(&p, &a(r), Some(20)), floor);
 }
 
 // spec/commits.md §2, spec/wire.md §4: an ephemeral commit's retention is `writer`, keeping history

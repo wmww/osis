@@ -353,13 +353,6 @@ pub(crate) fn aspect_key(t: &Tid, a: &Ak) -> Vec<u8> {
 }
 
 impl Header {
-    /// Whether aspect `a` of this header is a permanent delta (spec/commits.md §5): history kept
-    /// forever, no expiry, on an aspect with no fixed retention, in a durable commit. It leaves by
-    /// purge request, and leaves its header behind for good.
-    pub fn permanent(&self, a: &AspectEntry) -> bool {
-        self.ephemeral.is_none() && self.expires.is_none() && matches!(a.retention.history, Some(History::Keep { until: Some(FOREVER), .. })) && crate::retention::fixed_retention(a.ak.as_str()).is_none()
-    }
-
     /// The list's (or frontier's) value as it would sit inline; `None` for an absent frontier.
     pub fn list_value(&self, f: ListField) -> Option<Value> {
         Some(match f {

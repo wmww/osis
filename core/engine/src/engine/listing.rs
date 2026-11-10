@@ -140,7 +140,7 @@ fn part_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Result<
 /// does) or its body kept by a keep bound (`body_keep`). By headers and the state alone.
 pub(crate) fn in_kept_history(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, now: u64) -> Result<bool> {
     let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(tid, ak).and_then(|ai| m.header.aspects.get(ai).cloned())) else { return Ok(false) };
-    if osis_commit::retention::KeepRule::of_aspect(&a).until.is_some_and(|t| now < t) {
+    if crate::retention::history::of(&a).leaves_at(None) > now {
         return Ok(true);
     }
     Ok(crate::retention::bounds::body_live(tx, c, tid, ak)? || crate::retention::bounds::body_keep(tx, c, tid, ak)? > now)
@@ -194,9 +194,8 @@ pub(super) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
 
 /// The keep bound of part `ai` of `c` purged by `by`: its keep rule counted from the request's `ts`.
 pub(super) fn purged_keep(tx: &Tx<'_>, c: &CommitId, ai: usize, by: &CommitId) -> u64 {
-    let Some(k) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.get(ai).map(osis_commit::retention::KeepRule::of_aspect)) else { return 0 };
-    let rel = k.after.zip(tx.core.ix.commits.get(by).map(|m| m.view.ts.wall_ms().0)).map_or(0, |(d, t)| t.saturating_add(d));
-    k.until.unwrap_or(0).max(rel)
+    let Some(k) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.get(ai).map(crate::retention::history::of)) else { return 0 };
+    k.leaves_at(tx.core.ix.commits.get(by).map(|m| m.view.ts.wall_ms().0))
 }
 
 /// The wall ms before which part `ai` of `c` is listed by its keep bound alone; `None` when no
@@ -222,7 +221,7 @@ fn keep_bound(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<u64>> {
 fn arm_keep_bound(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId) -> Result<()> {
     let now = tx.now().0;
     // the latest bound its header allows (replaced last): `keep_bound` is never later
-    let may_keep = |m: &crate::engine::Meta, ai: usize| m.header.aspects.get(ai).is_some_and(|a| now < osis_commit::retention::body_keep(&m.header, a, Some(u64::MAX)));
+    let may_keep = |m: &crate::engine::Meta, ai: usize| m.header.aspects.get(ai).is_some_and(|a| now < crate::retention::bounds::kept_until(&m.header, a, Some(u64::MAX)));
     let Some((ai, expires)) = tx.core.ix.commits.get(c).and_then(|m| Some((m.aspect(tid, ak)?, m.header.expires)).filter(|(ai, _)| may_keep(m, *ai))) else { return Ok(()) };
     // an expiry by then takes it out first, by its own timer (one timer per part and time)
     if let Some(t) = keep_bound(tx, c, ai)?.filter(|t| now < *t && *t < osis_commit::FOREVER && expires.is_none_or(|e| *t < e)) {
@@ -274,7 +273,7 @@ fn listed_by_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Commi
         drop(crate::costs::span("listing: commit judged"));
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
         let Some(ai) = m.aspect(tid, ak) else { continue };
-        let fixed = m.header.aspects.get(ai).is_some_and(|a| osis_commit::retention::KeepRule::of_aspect(a).until.is_some_and(|t| now < t));
+        let fixed = m.header.aspects.get(ai).is_some_and(|a| crate::retention::history::of(a).leaves_at(None) > now);
         if !fixed && listed(tx, &c, ai)?.is_some() {
             out.insert(c);
         }

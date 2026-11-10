@@ -42,13 +42,21 @@ pub(crate) fn delta_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> R
     Ok(r)
 }
 
+/// Before which wall ms a body of `h` holding deltas of aspect `a`'s class leaves only by purge
+/// request or expiry (spec/commits.md §5 Keep bounds; 0: no floor): the later of when it leaves
+/// history (`history::Kept::leaves_at`, replaced at wall ms `replaced`; `None`: not replaced) and
+/// the purge-request floor.
+pub(crate) fn kept_until(h: &Header, a: &osis_commit::AspectEntry, replaced: Option<u64>) -> u64 {
+    super::history::of(a).leaves_at(replaced).max(osis_commit::retention::purge_keep_until(h).unwrap_or(0))
+}
+
 /// `Engine::body_keep` in `tx`: before which wall ms the body leaves only by purge or expiry.
 pub(crate) fn body_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<u64> {
     let (ai, h) = known_part(tx.core, c, tid, ak)?;
     let a = h.aspects.get(ai).ok_or(Error::UnknownCommit(*c))?;
     let holders = body_class(tx.core, &h, ai);
     let r = replaced_at(tx, &h, c, &holders)?;
-    Ok(osis_commit::retention::body_keep(&h, a, r.map(|t| t.wall_ms().0)))
+    Ok(kept_until(&h, a, r.map(|t| t.wall_ms().0)))
 }
 
 /// `Engine::body_keeps` in `tx`: each body's replacement judged once.
@@ -58,7 +66,7 @@ fn body_keeps(tx: &mut Tx<'_>, c: &CommitId) -> Result<Vec<u64>> {
     for holders in body_classes(tx.core, &h) {
         let Some(a) = holders.first().and_then(|x| h.aspects.get(*x)) else { continue };
         let r = replaced_at(tx, &h, c, &holders)?;
-        let k = osis_commit::retention::body_keep(&h, a, r.map(|t| t.wall_ms().0));
+        let k = kept_until(&h, a, r.map(|t| t.wall_ms().0));
         for x in holders {
             if let Some(o) = out.get_mut(x) {
                 *o = k;
@@ -116,7 +124,7 @@ pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[
         }
         let held = held_writes(tx, &tid, &ak)?;
         if snap {
-            let after = keep_after(a);
+            let after = super::history::of(a).after();
             dead.retain(|w| !held.carried.get(w).is_some_and(|v| v.iter().any(|(t, k, x)| *t > h.ts && *k >= after && x != c)));
         }
         // the state is the join of the held bodies (un-merged, spec/crdt.md §4.6) and the part's
@@ -132,11 +140,6 @@ pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[
     Ok(out)
 }
 
-/// The D of a part's keep for D after replaced (0: none).
-fn keep_after(a: &osis_commit::AspectEntry) -> u64 {
-    osis_commit::retention::KeepRule::of_aspect(a).after.unwrap_or(0)
-}
-
 /// What `replaced_at` reads of the held bodies of an aspect, by write (`osis_crdt::ByWrite`).
 #[derive(Debug, Default)]
 pub(crate) struct HeldWrites {
@@ -147,7 +150,7 @@ pub(crate) struct HeldWrites {
     /// the body judged.
     holds: ByWrite<Vec<(Ts, CommitId)>>,
     /// The writes each held valid snapshot with values holds as winners: its `ts`, its D
-    /// (`keep_after`) and ID.
+    /// (`history::Kept::after`) and ID.
     carried: ByWrite<Vec<(Ts, u64, CommitId)>>,
 }
 
@@ -219,7 +222,7 @@ fn read_held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<HeldWrites> {
         }
         let Some(m) = tx.core.ix.commits.get(&x) else { continue };
         let snap = m.header.kind.is_compaction();
-        let carries = (snap && !m.bare(xai) && m.valid_at(xai)).then(|| m.header.aspects.get(xai).map_or(0, keep_after));
+        let carries = (snap && !m.bare(xai) && m.valid_at(xai)).then(|| m.header.aspects.get(xai).map_or(0, |a| super::history::of(a).after()));
         let Some(mut f) = crate::apply::held_fragment(tx, &x, xai)? else { continue };
         drop(crate::costs::span("deaths: a body"));
         if let Some(d) = carries {
@@ -399,6 +402,17 @@ impl Engine {
     pub fn body_keeps(&mut self, c: &CommitId) -> Result<Vec<u64>> {
         let c = *c;
         self.run(|tx| body_keeps(tx, &c))
+    }
+
+    /// What `body_keeps` gives for each part of `h` were no body of it replaced: equal to it
+    /// when no bound is dated by a replacement.
+    pub fn keeps_unreplaced(&self, h: &Header) -> Vec<u64> {
+        h.aspects.iter().map(|a| kept_until(h, a, None)).collect()
+    }
+
+    /// Whether aspect `a` of `h` is a permanent delta (`history::permanent`).
+    pub fn permanent(&self, h: &Header, a: &osis_commit::AspectEntry) -> bool {
+        super::history::permanent(h, a)
     }
 
     /// From when this node's compaction may drop held body `(tid, ak)` of `c` as covered

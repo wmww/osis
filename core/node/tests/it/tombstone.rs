@@ -202,7 +202,7 @@ fn expired_write_leaves_none_spec_commits_6() {
     m.expires(t, &REG, at).unwrap();
     let c = net.engine(b).commit(m).unwrap().unwrap();
     let h = net.engine(b).header(&c).unwrap();
-    assert!(!h.aspects.iter().any(|x| h.permanent(x)));
+    assert!(!h.aspects.iter().any(|x| net.engine(b).permanent(&h, x)));
     net.run();
     assert!(!at_host(&mut net, a, host, &l, c).is_empty());
     net.advance(120_000);

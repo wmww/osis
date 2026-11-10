@@ -2197,7 +2197,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         let mut p = deliver(played, &orders[0]);
         for t in &played.things {
             for c in p.engine.purged_on(t, &ak("t:reg.0")).unwrap().into_keys() {
-                seen.tombstones += u64::from(p.engine.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t && a.ak.as_str() == "t:reg.0" && h.permanent(a))));
+                seen.tombstones += u64::from(p.engine.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t && a.ak.as_str() == "t:reg.0" && p.engine.permanent(&h, a))));
             }
             let (rows, _) = p.engine.held_parts(t, &ak("t:reg.0"), osis_node::engine::listing::CommitFrom::Oldest, usize::MAX - 1, usize::MAX).unwrap();
             for r in &rows {
