@@ -249,7 +249,7 @@ fn complete_pass_after_push_spec_permissions_3() {
     assert!(net.sync(b).complete_pass(&g));
     net.pair(c, a);
     let ct_ = net.tid(c);
-    set_edge(net.engine(a), g, ct_, Role::Read);
+    net.grant(a, g, ct_, Role::Read);
     net.feed(a, Event::Local);
     net.settle(100_000);
     assert!(net.engine(b).roster(&g).contains_key(&ct_), "arrived by push");
@@ -371,7 +371,7 @@ fn complete_pass_survives_disconnect_spec_permissions_3() {
     assert!(net.sync(b).complete_pass(&g), "the pass before going offline still counts");
     net.pair(c, a);
     let ct_ = net.tid(c);
-    set_edge(net.engine(a), g, ct_, Role::Read);
+    net.grant(a, g, ct_, Role::Read);
     net.pair(a, b);
     net.feed(b, Event::Local);
     net.run();
@@ -481,7 +481,8 @@ fn self_removal_kept_by_trigger_until_placed_spec_permissions_3() {
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
     // the admin adds someone meanwhile: b applies a received role commit on g
-    set_edge(net.engine(a), g, ct_, Role::Read);
+    net.pair(c, a);
+    net.grant(a, g, ct_, Role::Read);
     net.feed(a, Event::Local);
     net.run();
     net.restart_host_with(host, osis_host::HostPolicy { cap_entries: 0, ..osis_host::HostPolicy::default() });
@@ -562,6 +563,7 @@ fn self_removal_shared_subgroup_spec_permissions_3() {
     let mut m = Mutation::new();
     m.set(g2, &ct::GROUP, &items).unwrap();
     e.commit(m).unwrap();
+    // bare edges: the rotation below boxes both holders before any pass (a grant by hand)
     set_edge(e, sub, g1, Role::Read);
     set_edge(e, sub, g2, Role::Read);
     let rs = recipients_of(e, &[(at, Role::Admin), (g1, Role::Read), (g2, Role::Read)]);
