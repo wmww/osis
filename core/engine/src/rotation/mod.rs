@@ -72,8 +72,9 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure],
 /// holder actor at keyset `e` (`Walk::Seal`, from `members::sealed`) is held back too by a stale
 /// box at any epoch walked, whoever may rotate it and whether or not its secret is held: the
 /// sealer rotates the actor sealed into, and a co-writer that cannot judge M's departure would
-/// otherwise re-seal M where a knowing node left it out, over and over. The box clause follows every box at an epoch whose secret this node holds (`Walk::Encrypt`: what a
-/// departed party opens does not depend on who may rotate), or for placing only those of actors
+/// otherwise re-seal M where a knowing node left it out, over and over. The box clause follows
+/// every box at an epoch whose secret this node holds (`Walk::Encrypt`: what a departed party
+/// opens does not depend on who may rotate), or for placing only those of actors
 /// it may rotate (`Walk::Place`): a node that may not rotate places its chain certificates (and
 /// revokes) under the actor's labels meanwhile, the holder actors' new `keys.0` among them, which
 /// is how the rotators learn of the staleness. Only epochs whose secret this node holds are

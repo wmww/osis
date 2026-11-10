@@ -390,7 +390,8 @@ Possess(x, a) == IsAdm(x, a) \/
 \* y may rotate a, as x sees it
 MayRot(x, y, a) == IsAdm(y, a) \/ (y \in Learners /\ Through(y, a) /\ ~OffPath(x, y, a))
 \* x merges a fork of a: it made a current epoch other than the newest, or no
-\* maker of one may rotate a ("fork": two makers merging alike fork again)
+\* maker of one may rotate a ("fork": two makers merging alike fork again); the
+\* spec's one merger (the newest such epoch's maker) is this with two forks
 Merger(x, a) ==
   LET others == Cur(x, a) \ {NewestV(x, a)}
   IN (\E f \in others : ep[f].by = x) \/ ~\E f \in others : MayRot(x, ep[f].by, a)
