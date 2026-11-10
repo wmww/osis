@@ -197,6 +197,13 @@ pub struct PassStats {
     pub hits_sent: u64,
     pub by_role_sent: u64,
     pub tables_built: u64,
+    /// Tests of the pending set run, and the beacons they tested; Lost items sent; digests that
+    /// differed from the peer's and sync IDs listed in Members.
+    pub tests: u64,
+    pub tested: u64,
+    pub lost_sent: u64,
+    pub digests_differ: u64,
+    pub members_listed: u64,
     /// Pending commits read again (`Engine::examined`).
     pub examined: u64,
     /// Entries thrown out as unjudgeable (`mark_awaits`): each is fetched again.

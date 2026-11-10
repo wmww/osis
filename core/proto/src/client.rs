@@ -65,7 +65,7 @@ pub fn allowance(msg: &Message) -> usize {
         M::Sync { max_reply, .. } | M::Fetch { max_reply, .. } | M::Call { max_reply, .. } | M::Sub { max_reply, .. } => usize::try_from(*max_reply).unwrap_or(usize::MAX),
         M::Pull(p) => usize::try_from(p.max_reply).unwrap_or(usize::MAX),
         M::Ping { .. } | M::Path { .. } | M::Open { .. } | M::Register { .. } | M::Upload { .. } | M::Deposit { .. } | M::Delete { .. } | M::Subscribe { .. } | M::Unsubscribe { .. } | M::Auth { .. } | M::Unsub { .. } | M::Resume { .. } | M::Beacons { .. } | M::Offer { .. } | M::Lost { .. } | M::NoRecord { .. } | M::Stranded { .. } | M::Suspect { .. } => SMALL_REPLY,
-        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::Budget { .. } | M::SyncReply { .. } | M::ReconcileReply { .. } | M::FetchReply { .. } | M::Push { .. } | M::Reply { .. } | M::Notify { .. } | M::Proved { .. } | M::Resumed { .. } | M::Shared { .. } | M::PullReply(_) | M::Stream(_) | M::Applied { .. } => 0,
+        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::Budget { .. } | M::SyncReply { .. } | M::ReconcileReply { .. } | M::FetchReply { .. } | M::Push { .. } | M::Reply { .. } | M::Notify { .. } | M::Proved { .. } | M::Resumed { .. } | M::Shared { .. } | M::PullReply(_) | M::Stream(_) | M::Applied { .. } | M::Digest { .. } | M::Members { .. } => 0,
     }
 }
 /// A requester's window (spec/sync.md §6): requests go in the order made while the bytes in

@@ -312,5 +312,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ),
         ("stream", Message::Stream(Box::new(crate::msg::Stream { events: vec![(l, added.clone())], cursor: Some(vec![0x30; 72]), report: true }))),
         ("applied", Message::Applied { cursor: vec![0x30; 72] }),
+        ("digest", Message::Digest { digest: [0x31; 32] }),
+        ("members", Message::Members { labels: vec![l, LabelId([0x0b; 16])], more: false }),
     ]
 }

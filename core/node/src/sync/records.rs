@@ -104,9 +104,15 @@ pub(super) fn counted_actors(engine: &Engine, proven: &Proven) -> Vec<Tid> {
     proven.all().iter().copied().filter(|a| engine.core.judge([*a]).known()).collect()
 }
 
+/// Whether a session proving `now` proves other actors than record `rec` names.
+fn actors_moved(rec: &Record, now: &[Tid]) -> bool {
+    rec.actors.iter().collect::<BTreeSet<_>>() != now.iter().collect::<BTreeSet<_>>()
+}
+
 /// The listener's part of a Resume: the nonce it answers and the tag of a record it holds, with
-/// the record used or made, durably before the answer goes.
-pub(super) fn answer_resume(engine: &mut Engine, actors: &[Tid], in_use: &BTreeSet<RecordId>, nonce: &[u8; 32], tags: &[[u8; 32]], (dialer, listener, key): (&[u8; 32], &[u8; 32], &[u8; 32])) -> Result<(osis_proto::ResumeAnswer, RecordId, u64)> {
+/// the record used or made, durably before the answer goes, and whether the record named other
+/// actors than this session proves.
+pub(super) fn answer_resume(engine: &mut Engine, actors: &[Tid], in_use: &BTreeSet<RecordId>, nonce: &[u8; 32], tags: &[[u8; 32]], (dialer, listener, key): (&[u8; 32], &[u8; 32], &[u8; 32])) -> Result<(osis_proto::ResumeAnswer, (RecordId, bool), u64)> {
     engine.run(|tx| {
         let records = tx.txn.records_of_actors(actors)?;
         let looked = records.len() as u64;
@@ -115,14 +121,14 @@ pub(super) fn answer_resume(engine: &mut Engine, actors: &[Tid], in_use: &BTreeS
         let mine = tx.txn.random32();
         if let Some(r) = hit {
             tx.txn.record_used(&r.id, actors)?;
-            return Ok(((mine, Some(resumed_tag(&r.r, key, dialer, listener))), r.id, looked));
+            return Ok(((mine, Some(resumed_tag(&r.r, key, dialer, listener))), (r.id, actors_moved(r, actors)), looked));
         }
         let r = pair_key(nonce, &mine);
         let id = tx.txn.record_create(*r.expose(), actors)?;
         let mut keep = in_use.clone();
         keep.insert(id);
         tx.txn.records_evict(RECORD_BUDGET, &keep)?;
-        Ok(((mine, None), id, looked))
+        Ok(((mine, None), (id, false), looked))
     })
 }
 
@@ -164,20 +170,20 @@ impl SyncEngine {
         let Some(sent) = self.records.sent.remove(&conn) else { return Ok(()) };
         let hit = tag.and_then(|t| sent.expect.iter().find(|(e, _)| *e == t).map(|(_, id)| *id));
         let mut in_use = self.records.live();
-        let id = self.engine.run(|tx| match hit.map_or(Ok(None), |id| tx.txn.record(&id).map(|r| r.map(|_| id)))? {
-            Some(id) => {
-                tx.txn.record_used(&id, &sent.actors)?;
-                Ok(id)
+        let bound = self.engine.run(|tx| match hit.map_or(Ok(None), |id| tx.txn.record(&id))? {
+            Some(rec) => {
+                tx.txn.record_used(&rec.id, &sent.actors)?;
+                Ok((rec.id, actors_moved(&rec, &sent.actors)))
             }
             None => {
                 let r = pair_key(&sent.nonce, &theirs);
                 let id = tx.txn.record_create(*r.expose(), &sent.actors)?;
                 in_use.insert(id);
                 tx.txn.records_evict(RECORD_BUDGET, &in_use)?;
-                Ok(id)
+                Ok((id, false))
             }
         })?;
-        self.bind_record(conn, id, out)
+        self.bind_record(conn, bound, out)
     }
 
     /// The transport carries `conn` through a relay (the driver says so before the connection's
@@ -186,14 +192,15 @@ impl SyncEngine {
         self.records.relayed.insert(conn);
     }
 
-    /// `conn` takes record `id`, and its stream and shared set start. Two connections of one
+    /// `conn` takes record `id` (and whether the session proves other actors than it names), and
+    /// its stream and shared set start from it. Two connections of one
     /// record are one pair of nodes (r is known to the two alone), whoever dialed each: the one
     /// of smaller rank stays and the other closes, on both ends, whatever order the answers
     /// arrived in. The rank is the route first, a direct connection before a relayed one (both
     /// ends tell a relayed connection alike), then `connection_order`. A dialer whose connection
     /// lost to one the peer dialed does not dial the peer again while that one lasts
     /// (`stand_in`).
-    pub(super) fn bind_record(&mut self, conn: ConnId, id: RecordId, out: &mut Vec<Action>) -> Result<()> {
+    pub(super) fn bind_record(&mut self, conn: ConnId, (id, moved): (RecordId, bool), out: &mut Vec<Action>) -> Result<()> {
         let (acked, r) = self.engine.run(|tx| Ok(tx.txn.record(&id)?.map_or((0, [0; 32]), |r| (r.acked_pos, r.r))))?;
         let Some((dialer, listener)) = self.conns.get(&conn).and_then(|c| c.session.binding()).or_else(|| self.served_binding(conn)).map(|(d, l, _)| (d, l)) else { return Ok(()) };
         let order = (self.records.relayed.contains(&conn), connection_order(&r, &dialer, &listener));
@@ -212,8 +219,7 @@ impl SyncEngine {
         } else {
             self.records.live.insert(id, conn);
         }
-        self.stream_bind(conn, id)?;
-        self.shared_begin(conn, Some(r), out)
+        self.shared_begin(conn, Some((id, moved)), out)
     }
 
     /// Closes `conn`, the duplicate of `keep`. A dialed one is not dialed again at once: its

@@ -185,6 +185,18 @@ pub fn connection_order(r: &[u8; 32], dialer: &[u8; 32], listener: &[u8; 32]) ->
     *h.finalize().as_bytes()
 }
 
+/// The digest of a record's shared set (spec/sync.md §10, Agreement): the xor over its members of
+/// `BLAKE3(key = r, sync_id)`. Equal sets give equal digests, whatever their size.
+pub fn members_digest<'a>(r: &[u8; 32], members: impl IntoIterator<Item = &'a [u8; 16]>) -> [u8; 32] {
+    let mut d = [0u8; 32];
+    for l in members {
+        for (x, y) in d.iter_mut().zip(blake3::keyed_hash(r, l).as_bytes()) {
+            *x ^= y;
+        }
+    }
+    d
+}
+
 fn resume_hash(r: &[u8; 32], word: &[u8], key: &[u8; 32], dialer: &[u8; 32], listener: &[u8; 32]) -> [u8; 32] {
     let mut h = blake3::Hasher::new_keyed(r);
     h.update(word);

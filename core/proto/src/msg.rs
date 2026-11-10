@@ -215,6 +215,11 @@ pub enum Message {
     Stream(Box<Stream>),
     /// The requester applied what `cursor` covers (id 0).
     Applied { cursor: Vec<u8> },
+    /// The digest of the record's shared set, a connection's first message each way after Resume
+    /// (id 0; spec/sync.md §10, Agreement).
+    Digest { digest: [u8; 32] },
+    /// A page of the sender's shared set, sent only when the digests differ (id 0).
+    Members { labels: Vec<LabelId>, more: bool },
     /// `max_reply`: the reply's frame body bound, `SMALL_REPLY..=REPLY_BUDGET`; `args` a list.
     Call { id: Id, max_reply: u64, method: u64, args: Vec<Value> },
     Reply { id: Id, outcome: crate::api::Outcome },
@@ -287,6 +292,8 @@ pub enum OfferItem {
 
 /// Most items in one Offer or Lost.
 pub const MAX_SHARED_ITEMS: usize = 1024;
+/// Most sync IDs in one Members page.
+pub const MAX_MEMBERS: usize = 4096;
 
 /// One item's answer in a Shared: its code, the tag of an accepted Hit, and for an accepted Hit
 /// on the tester's static entry the head's entry box for it (spec/sync.md §10, Shared set).
@@ -436,6 +443,8 @@ impl Message {
             PullReply(_) => 42,
             Stream(_) => 43,
             Applied { .. } => 44,
+            Digest { .. } => 45,
+            Members { .. } => 46,
         }
     }
 
@@ -446,7 +455,7 @@ impl Message {
             Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Open { id, .. } | Opened { id, .. } | Step { id, .. } | Register { id, .. } | Path { id, .. } | PathReply { id, .. } | Upload { id, .. } | Status { id, .. } | Deposit { id, .. } | Budget { id, .. } | Delete { id, .. } | Sync { id, .. } | SyncReply { id, .. } | Reconcile { id, .. } | ReconcileReply { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Subscribe { id, .. } | Unsubscribe { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Suspect { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id,
             Pull(p) => p.id,
             PullReply(r) => r.id,
-            Push { .. } | Notify { .. } | Stream(_) | Applied { .. } => 0,
+            Push { .. } | Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } => 0,
         }
     }
 
@@ -456,7 +465,7 @@ impl Message {
     /// message with an id in the node's range (`NODE_IDS`): a peer node's own request (a Fetch
     /// of the stream's bodies) or the answer to one of this node's.
     pub fn for_node(&self) -> bool {
-        matches!(self.kind(), 30 | 31 | 36..=44) || self.id() & NODE_IDS != 0
+        matches!(self.kind(), 30 | 31 | 36..=46) || self.id() & NODE_IDS != 0
     }
 
     /// Whether this kind is a request the other side answers.
@@ -519,6 +528,8 @@ impl Message {
             M::PullReply(r) => vec![k, id, stream_events_value(&r.events), opt_cursor(&r.cursor), Value::Bool(r.whole), Value::Bool(r.more), Value::Bool(r.report), joins_value(&r.joins)],
             M::Stream(s) => vec![k, id, stream_events_value(&s.events), opt_cursor(&s.cursor), Value::Bool(s.report)],
             M::Applied { cursor } => vec![k, id, Value::bytes(cursor)],
+            M::Digest { digest } => vec![k, id, Value::bytes(digest)],
+            M::Members { labels, more } => vec![k, id, Value::List(labels.iter().map(l).collect()), Value::Bool(*more)],
             M::Auth { secret, session, .. } => vec![k, id, Value::opt(secret.as_ref().map(|s| Value::bytes(s.expose()))), Value::bytes(session)],
             M::Call { max_reply, method, args, .. } => vec![k, id, Value::uint(*max_reply), Value::uint(*method), Value::List(args.clone())],
             M::Reply { outcome, .. } => vec![k, id, outcome.to_value()],
@@ -557,7 +568,7 @@ impl Message {
 fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
     let n = match kind {
         1 | 40 => 2,
-        0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 | 26 | 28 | 30 | 32 | 33 | 37 | 38 | 39 | 44 => 3,
+        0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 | 26 | 28 | 30 | 32 | 33 | 37 | 38 | 39 | 44 | 45 => 3,
         4 | 5 | 8 | 9 | 10 | 13 | 14 | 17 | 24 | 27 | 29 | 31 | 34 | 35 => 4,
         7 | 19 | 23 | 25 => 5,
         12 => 6,
@@ -565,13 +576,14 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         15 | 41 | 42 => 8,
         36 => 9,
         43 => 5,
+        46 => 4,
         _ => return Err(Error::UnknownKind(kind)),
     };
     // Push has no reply (id 0); every request and reply has a real id; an Error answering a
     // broken frame may carry 0.
     match (kind, id) {
-        (23 | 29 | 43 | 44, 0) | (0, _) => {}
-        (23 | 29 | 43 | 44, _) => return Err(Error::Malformed("id of a message without reply")),
+        (23 | 29 | 43..=46, 0) | (0, _) => {}
+        (23 | 29 | 43..=46, _) => return Err(Error::Malformed("id of a message without reply")),
         (_, 0) => return Err(Error::Malformed("id 0")),
         _ => {}
     }
@@ -662,6 +674,8 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         })),
         43 => Message::Stream(Box::new(Stream { events: stream_events(f.list(1, usize::MAX, "events")?)?, cursor: opt_cursor_of(&mut f)?, report: f.bool()? })),
         44 => Message::Applied { cursor: f.bytes(crate::MAX_CURSOR_BYTES)? },
+        45 => Message::Digest { digest: f.fixed()? },
+        46 => Message::Members { labels: labels(f.list(0, MAX_MEMBERS, "members")?)?, more: f.bool()? },
         36 => Message::Beacons {
             id,
             generation: f.uint()?,

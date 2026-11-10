@@ -9,7 +9,8 @@
 //! Rows, all catalog rows under `kind::RECORD`, keyed by a random ID so no row key holds r:
 //! `m` meta (total bytes, LRU sequence); `c id` the record; `a actor id` the actor index;
 //! `u seq id` least recently used first; `s id label` a member of S; `l label id` the member index;
-//! `g id label` a stopped member's lag, beside S; `j label id` its index.
+//! `g id label` a stopped member's lag, beside S; `j label id` its index; `p id gen` one
+//! generation of the peer's filter, as received (a whole one replaces every row before it).
 
 use crate::codec::{R, W};
 use crate::store::{Shred, Transaction, kind};
@@ -37,6 +38,7 @@ const MEMBER: &[u8] = &[kind::RECORD, b's'];
 const INDEX: &[u8] = &[kind::RECORD, b'l'];
 const LAG: &[u8] = &[kind::RECORD, b'g'];
 const LAG_INDEX: &[u8] = &[kind::RECORD, b'j'];
+const FILTER: &[u8] = &[kind::RECORD, b'p'];
 
 /// A record as held.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,19 +54,44 @@ pub struct Record {
     pub judged_pos: u64,
     /// Opaque position in the peer's node log.
     pub cursor: Option<Vec<u8>>,
+    /// This side's filter as sent to the peer (issues/net-shared-set.md, Messages).
+    pub own: Filter,
+    /// The peer's filter as stored: its rows are `Transaction::record_peer_filter`'s.
+    pub peer: Filter,
     used: u64,
     member_bytes: u64,
 }
 
-/// A member of S with what each side proved, ending or joining state.
+/// One side's filter of a record: the last generation, its width, and the entries of its last
+/// whole generation and of the additions since. For this side's own filter `generation` is the
+/// last one sent and `acked` the last the peer acknowledged; for the peer's, both are the stored one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Filter {
+    pub generation: u64,
+    pub acked: u64,
+    pub f: u8,
+    pub whole: u64,
+    pub added: u64,
+}
+
+/// A member of S: the credential class this side opened it by and that credential's beacon
+/// (none for an open by judgment), its end while being ended, and where it is in the stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Member {
-    /// The credential class this side proved, and the peer's.
-    pub proved: (u8, u8),
+    pub class: u8,
+    pub beacon: Option<[u8; 32]>,
     /// Position at which it stops, while being ended.
     pub until: Option<u64>,
-    /// Its own position while a join of it is in pages.
-    pub lag: Option<Vec<u8>>,
+    pub at: At,
+}
+
+/// Where a member is in the record's stream.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum At {
+    /// In the stream, at the record's cursor.
+    Stream,
+    /// Joining it from its own position (none: the start of the peer's log).
+    Join(Option<Vec<u8>>),
 }
 
 fn meta_key() -> Vec<u8> {
@@ -107,6 +134,15 @@ fn read_opt_bytes(r: &mut R<'_>) -> Result<Option<Vec<u8>>, Error> {
     Ok(if r.u8()? == 1 { Some(r.bytes()?.to_vec()) } else { None })
 }
 
+impl Filter {
+    fn encode(&self, w: &mut W) {
+        w.u64(self.generation).u64(self.acked).u8(self.f).u64(self.whole).u64(self.added);
+    }
+    fn decode(r: &mut R<'_>) -> Result<Filter, Error> {
+        Ok(Filter { generation: r.u64()?, acked: r.u64()?, f: r.u8()?, whole: r.u64()?, added: r.u64()? })
+    }
+}
+
 impl Record {
     fn encode(&self) -> Vec<u8> {
         let mut w = W::new();
@@ -116,6 +152,8 @@ impl Record {
         }
         w.u64(self.acked_pos).u64(self.judged_pos).u64(self.used).u64(self.member_bytes);
         opt_bytes(&mut w, &self.cursor);
+        self.own.encode(&mut w);
+        self.peer.encode(&mut w);
         w.take()
     }
 
@@ -129,8 +167,9 @@ impl Record {
         }
         let (acked_pos, judged_pos, used, member_bytes) = (r.u64()?, r.u64()?, r.u64()?, r.u64()?);
         let cursor = read_opt_bytes(&mut r)?;
+        let (own, peer) = (Filter::decode(&mut r)?, Filter::decode(&mut r)?);
         r.end()?;
-        Ok(Record { id, r: key, actors, acked_pos, judged_pos, cursor, used, member_bytes })
+        Ok(Record { id, r: key, actors, acked_pos, judged_pos, cursor, own, peer, used, member_bytes })
     }
 
     /// The bytes this record's rows take: what `RECORD_BUDGET` counts.
@@ -145,7 +184,15 @@ impl Record {
 impl Member {
     fn encode(&self) -> Vec<u8> {
         let mut w = W::new();
-        w.u8(self.proved.0).u8(self.proved.1);
+        w.u8(self.class);
+        match &self.beacon {
+            Some(b) => {
+                w.u8(1).raw(b);
+            }
+            None => {
+                w.u8(0);
+            }
+        }
         match self.until {
             Some(p) => {
                 w.u8(1).u64(p);
@@ -154,17 +201,30 @@ impl Member {
                 w.u8(0);
             }
         }
-        opt_bytes(&mut w, &self.lag);
+        match &self.at {
+            At::Stream => {
+                w.u8(0);
+            }
+            At::Join(c) => {
+                w.u8(1);
+                opt_bytes(&mut w, c);
+            }
+        }
         w.take()
     }
 
     fn decode(b: &[u8]) -> Result<Member, Error> {
         let mut r = R::new(b);
-        let proved = (r.u8()?, r.u8()?);
+        let class = r.u8()?;
+        let beacon = if r.u8()? == 1 { Some(r.array()?) } else { None };
         let until = if r.u8()? == 1 { Some(r.u64()?) } else { None };
-        let lag = read_opt_bytes(&mut r)?;
+        let at = match r.u8()? {
+            0 => At::Stream,
+            1 => At::Join(read_opt_bytes(&mut r)?),
+            _ => return Err(Error::Corrupt("peer record member")),
+        };
         r.end()?;
-        Ok(Member { proved, until, lag })
+        Ok(Member { class, beacon, until, at })
     }
 }
 
@@ -220,7 +280,7 @@ impl Transaction<'_> {
         let mut id = [0u8; 16];
         self.rng().fill_bytes(&mut id);
         let used = self.record_next_used()?;
-        let rec = Record { id, r, actors: actors.to_vec(), acked_pos: 0, judged_pos: 0, cursor: None, used, member_bytes: 0 };
+        let rec = Record { id, r, actors: actors.to_vec(), acked_pos: 0, judged_pos: 0, cursor: None, own: Filter::default(), peer: Filter::default(), used, member_bytes: 0 };
         for a in actors {
             self.cat_put_to(&actor_key(a, &id), Vec::new(), Shred::No, false)?;
         }
@@ -373,31 +433,83 @@ impl Transaction<'_> {
         Ok(acked)
     }
 
-    /// `l` leaves this record's stream (issues/net-reconnect.md, Joining and rejoining): out of
-    /// S, `stop` kept as its lag unless an older one is. Pending is untouched: the shared set
-    /// re-marks a close itself (`record_close`).
-    pub fn record_stop(&mut self, id: &RecordId, l: &LabelId, stop: Option<Vec<u8>>) -> Result<(), Error> {
+    /// Member `l` moved in the stream (`At`): its row changes if it is still a member, else
+    /// nothing (a member closed since stays closed).
+    pub fn record_member_at(&mut self, id: &RecordId, l: LabelId, at: At) -> Result<(), Error> {
+        let Some(old) = self.cat_get(&member_key(id, &l))? else { return Ok(()) };
+        let m = Member { at, ..Member::decode(&old)? };
+        self.record_open(id, l, &m)
+    }
+
+    /// A member only one side of the record held (a digest difference, issues/net-reconnect.md
+    /// Agreement): out of S with no lag kept, so its rejoin is a listing, and pending again as
+    /// `record_close` re-marks. Returns `acked_pos`.
+    pub fn record_drop(&mut self, id: &RecordId, l: &LabelId, changed_at: u64) -> Result<u64, Error> {
         let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
         let before = rec.cost();
         self.record_drop_member(&mut rec, l)?;
-        if let Some(c) = stop
-            && self.cat_get(&lag_key(id, l))?.is_none()
-        {
-            rec.member_bytes += self.record_put_lag(id, l, c)?;
-        }
+        rec.member_bytes = rec.member_bytes.saturating_sub(self.record_drop_lag(id, l)?);
+        rec.acked_pos = rec.acked_pos.min(changed_at.saturating_sub(1));
+        let acked = rec.acked_pos;
+        self.record_store(&rec, before)?;
+        Ok(acked)
+    }
+
+    /// Everything is pending again for this record (the session proved other actors than the
+    /// record names: issues/net-reconnect.md, What a reconnect sends).
+    pub fn record_pending_all(&mut self, id: &RecordId) -> Result<(), Error> {
+        let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
+        let before = rec.cost();
+        rec.acked_pos = 0;
         self.record_store(&rec, before)
     }
 
-    /// A connection of this record starts: every member leaves the stream at the position it
-    /// holds (its own lag while in pages, else the record's cursor), so one the new connection
-    /// does not reopen claims nothing past what it applied. O(S).
-    pub fn record_stop_all(&mut self, id: &RecordId) -> Result<(), Error> {
-        let Some(rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
-        for (l, m) in self.record_members(id)? {
-            let stop = m.lag.or_else(|| rec.cursor.clone());
-            self.record_stop(id, &l, stop)?;
+    /// This side's filter as sent and acknowledged.
+    pub fn record_set_own(&mut self, id: &RecordId, own: Filter) -> Result<(), Error> {
+        let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
+        let before = rec.cost();
+        rec.own = own;
+        self.record_store(&rec, before)
+    }
+
+    /// A generation of the peer's filter arrived whole: `rows` its encoded values (a whole one
+    /// replaces every stored row; additions add one). `peer` the filter it makes.
+    pub fn record_put_peer_filter(&mut self, id: &RecordId, whole: bool, peer: Filter, row: Vec<u8>) -> Result<(), Error> {
+        let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
+        let before = rec.cost();
+        if whole {
+            for (k, v) in self.record_filter_rows(id)? {
+                rec.member_bytes = rec.member_bytes.saturating_sub(row_bytes(&k, &v));
+                self.cat_remove(&k, Shred::No)?;
+            }
         }
-        Ok(())
+        let key = [FILTER, id, &peer.generation.to_be_bytes()].concat();
+        rec.member_bytes += row_bytes(&key, &row);
+        self.cat_put_to(&key, row, Shred::No, false)?;
+        rec.peer = peer;
+        self.record_store(&rec, before)
+    }
+
+    /// The peer's stored filter, one row per generation since its last whole one, in order.
+    pub fn record_peer_filter(&mut self, id: &RecordId) -> Result<Vec<Vec<u8>>, Error> {
+        Ok(self.record_filter_rows(id)?.into_iter().map(|(_, v)| v).collect())
+    }
+
+    fn record_filter_rows(&mut self, id: &RecordId) -> Result<Vec<crate::KeyValue>, Error> {
+        let prefix = [FILTER, id].concat();
+        let mut out: Vec<crate::KeyValue> = Vec::new();
+        let mut from = Vec::new();
+        loop {
+            let rows = self.cat_scan(&prefix, &from, PAGE)?;
+            let n = rows.len();
+            for (k, v) in rows {
+                from = [k.get(prefix.len()..).unwrap_or_default(), &[0]].concat();
+                out.push((k, v));
+            }
+            if n < PAGE {
+                return Ok(out);
+            }
+        }
     }
 
     /// The lag kept for `l`'s rejoin.
@@ -480,6 +592,9 @@ impl Transaction<'_> {
             if n < PAGE {
                 break;
             }
+        }
+        for (k, _) in self.record_filter_rows(&rec.id)? {
+            self.cat_remove(&k, Shred::No)?;
         }
         for a in &rec.actors {
             self.cat_remove(&actor_key(a, &rec.id), Shred::No)?;

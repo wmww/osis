@@ -7,7 +7,7 @@ use crate::common;
 use common::*;
 use osis_base::LabelId;
 use osis_crypto::SeededRng;
-use osis_store::{Fault, Member, MemoryBackend, MemoryRoot, RecordId, Shred, Store};
+use osis_store::{At, Fault, Member, MemoryBackend, MemoryRoot, RecordId, Shred, Store};
 use std::collections::BTreeSet;
 
 fn l(n: u8) -> LabelId {
@@ -35,7 +35,7 @@ impl Dev {
 }
 
 fn member() -> Member {
-    Member { proved: (1, 2), until: None, lag: None }
+    Member { class: 1, beacon: Some([2; 32]), until: None, at: At::Stream }
 }
 
 fn create(s: &mut Store, rng: &mut SeededRng, r: u8, actor: u8) -> RecordId {
@@ -237,4 +237,44 @@ fn a_lookup_reads_only_the_records_of_the_proven_actors() {
         t.record_create([2; 32], &[tid(0xfe)]).unwrap();
         assert_eq!(t.records_of_actors(&[tid(0xfe)]).unwrap().len(), 1, "at n = {n}");
     }
+}
+
+// issues/net-reconnect.md, Agreement: a member only one side held leaves S with no lag (its
+// rejoin is a listing) and is pending again; a stream move of a member closed since adds nothing
+#[test]
+fn a_dropped_member_keeps_no_lag_and_a_late_move_reopens_nothing() {
+    let (_d, mut s, mut rng) = Dev::new();
+    let a = create(&mut s, &mut rng, 1, 1);
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.record_open(&a, l(1), &Member { at: At::Join(Some(b"lag".to_vec())), ..member() }).unwrap();
+    t.record_rise_acked(&a, 50).unwrap();
+    assert_eq!(t.record_drop(&a, &l(1), 20).unwrap(), 19);
+    assert!(t.record_members(&a).unwrap().is_empty());
+    assert_eq!(t.record_lag(&a, &l(1)).unwrap(), None, "no lag: a listing");
+    t.record_member_at(&a, l(1), At::Stream).unwrap();
+    assert!(t.record_members(&a).unwrap().is_empty(), "a member closed since stays closed");
+}
+
+// issues/net-shared-set.md, Stored filter: the peer's filter is kept by generation, a whole one
+// replacing what was stored, and it goes with the record
+#[test]
+fn the_peer_filter_is_kept_by_generation_and_goes_with_its_record() {
+    use osis_store::Filter;
+    let (_d, mut s, mut rng) = Dev::new();
+    let a = create(&mut s, &mut rng, 1, 1);
+    let mut t = s.transaction(&mut rng).unwrap();
+    let g = |generation, added| Filter { generation, acked: generation, f: 9, whole: 2, added };
+    t.record_put_peer_filter(&a, true, g(1, 0), b"one".to_vec()).unwrap();
+    t.record_put_peer_filter(&a, false, g(2, 1), b"two".to_vec()).unwrap();
+    assert_eq!(t.record_peer_filter(&a).unwrap(), [b"one".to_vec(), b"two".to_vec()]);
+    assert_eq!(t.record(&a).unwrap().unwrap().peer, g(2, 1));
+    t.record_put_peer_filter(&a, true, g(3, 0), b"three".to_vec()).unwrap();
+    assert_eq!(t.record_peer_filter(&a).unwrap(), [b"three".to_vec()], "a whole one replaces");
+    let total = t.records_total().unwrap();
+    t.record_put_peer_filter(&a, false, g(4, 1), vec![0; 1000]).unwrap();
+    assert!(t.records_total().unwrap() >= total + 1000, "counted in the budget");
+    let in_use = BTreeSet::new();
+    t.records_evict(0, &in_use).unwrap();
+    assert!(t.record_peer_filter(&a).unwrap().is_empty(), "evicted with its record");
+    assert_eq!(t.records_total().unwrap(), 0);
 }

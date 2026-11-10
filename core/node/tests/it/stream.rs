@@ -617,8 +617,9 @@ fn a_host_and_a_co_reader_both_answering_store_once_and_settle_spec_sync_10() {
 }
 
 /// Pulls node `a` sends once back after `b`'s log aged out the deletions of what `a` held, at
-/// `n` sync IDs, and whether `a` then holds what `b` holds.
-fn back_after_aging(n: usize) -> (usize, bool, bool) {
+/// `n` sync IDs, and whether `a` then holds what `b` holds; and the shared set's messages both
+/// sent meanwhile (Offers, Lost, Members) and the joins their Pulls named.
+fn back_after_aging(n: usize) -> (usize, bool, bool, usize) {
     let mut net = Net::new();
     let (a, b, gs) = pair(&mut net, n);
     let day = 86_400_000;
@@ -639,17 +640,29 @@ fn back_after_aging(n: usize) -> (usize, bool, bool) {
         net.advance(8 * day);
     }
     let before = net.peer_sent(a, PULL);
+    let shared = |net: &Net| [37u64, 38, 46].iter().map(|k| net.peer_sent(a, *k) + net.peer_sent(b, *k)).sum::<usize>();
+    let shared_before = shared(&net);
+    let joins = std::rc::Rc::new(std::cell::RefCell::new(0usize));
     let seen = watch(&mut net);
+    let mut inner = net.tamper.take().unwrap();
+    let j = joins.clone();
+    net.tamper = Some(Box::new(move |m| {
+        if let osis_proto::Message::Pull(p) = m {
+            *j.borrow_mut() += p.joins.len();
+        }
+        inner(m)
+    }));
     net.set_online(a, true);
     net.advance(120_000);
     let pulls = net.peer_sent(a, PULL) - before;
+    let per_id = shared(&net) - shared_before + *joins.borrow();
     let mut same = true;
     for l in net.group_labels(b).into_iter().map(|(_, l)| l.id).collect::<Vec<_>>() {
         let at = |net: &mut Net, x: usize| net.sync(x).entries(&l).into_iter().map(|(id, _)| id).collect::<std::collections::BTreeSet<_>>();
         same &= at(&mut net, a) == at(&mut net, b);
     }
     let whole = seen.borrow().replies.iter().any(|(w, _)| *w);
-    (pulls, same, whole)
+    (pulls, same, whole, per_id)
 }
 
 // issues/net-reconnect.md (Back after a long absence; Deletions): a node back after the peer's
@@ -657,15 +670,17 @@ fn back_after_aging(n: usize) -> (usize, bool, bool) {
 // (counted at n and 10n); a deletion older than the log reaches it by its own judgment (expiry)
 #[test]
 fn back_after_aged_deletions_converges_in_one_stream_spec_sync_10() {
-    let (p1, same1, whole1) = back_after_aging(1);
-    let (p10, same10, whole10) = back_after_aging(10);
+    let (p1, same1, whole1, s1) = back_after_aging(1);
+    let (p10, same10, whole10, s10) = back_after_aging(10);
     assert!(same1 && same10, "a holds what b holds");
     assert!(!whole1 && !whole10, "the old cursor is honoured: no stream from the start");
     assert!(p10 <= p1 + 1, "Pulls back: {p1} at n, {p10} at 10n");
+    assert_eq!((s1, s10), (0, 0), "no Offer, Lost, list or join: S is the record's");
 }
 
 /// One differential run: `a` and `b` write, `b` opens new groups with `a`, restarts; `a` goes off
-/// and on, restarts (also mid-stream, a fetch in flight), loses its records. Once settled, each side's stream from the other is
+/// and on, restarts (also mid-stream, a fetch in flight), loses its records or a member of one
+/// (the records then disagree on S: the digest repairs it). Once settled, each side's stream from the other is
 /// caught up and holds every entry the other serves under a label they share (both pull).
 /// `paged`: every Pull asks the smallest reply with announcements only, so replies page.
 fn stream_run(seed: u64, paged: bool) {
@@ -686,7 +701,7 @@ fn stream_run(seed: u64, paged: bool) {
     let (a, b, mut gs) = pair(&mut net, 2);
     let mut life = 100;
     for step in 0..24 {
-        match rnd(10) {
+        match rnd(11) {
             0..=3 => {
                 let g = gs[rnd(gs.len() as u64) as usize];
                 // either side writes: each pulls the other
@@ -728,6 +743,24 @@ fn stream_run(seed: u64, paged: bool) {
             8 => {
                 let in_use = std::collections::BTreeSet::new();
                 net.engine(a).run(|tx| Ok(tx.txn.records_evict(0, &in_use)?)).unwrap();
+            }
+            9 => {
+                // `a`'s record restored without one of its members (a backup from before it
+                // opened, a Lost lost with its connection): the records disagree on it
+                net.set_online(a, false);
+                let tb = net.tid(b);
+                let pick = rnd(8) as usize;
+                net.engine(a)
+                    .run(|tx| {
+                        if let Some(rec) = tx.txn.records_of_actors(&[tb])?.first() {
+                            let ms = tx.txn.record_members(&rec.id)?;
+                            if let Some((l, _)) = ms.get(pick % ms.len().max(1)) {
+                                tx.txn.record_drop(&rec.id, l, u64::MAX)?;
+                            }
+                        }
+                        Ok(())
+                    })
+                    .unwrap();
             }
             _ => {
                 // `a` crashes mid-stream: once it asked `b` for a body (bodies announced without
@@ -1073,11 +1106,21 @@ fn nothing_is_pushed_past_a_lost_right_spec_sync_10() {
 #[test]
 fn a_join_cursor_naming_no_position_is_a_stream_from_the_start_spec_sync_10() {
     let mut net = Net::new();
-    let (a, _, gs) = pair(&mut net, 2);
+    let (a, b, gs) = pair(&mut net, 2);
     for g in &gs {
         net.item(a, *g, *g, "x");
     }
     net.run();
+    // one member of a's record joins from its own position (a join in pages when a stopped)
+    let tb = net.tid(b);
+    let l = label_of(&mut net, a, gs[0]);
+    net.engine(a)
+        .run(|tx| {
+            let rec = tx.txn.records_of_actors(&[tb])?.remove(0);
+            tx.txn.record_member_at(&rec.id, l, osis_store::At::Join(rec.cursor.clone()))?;
+            Ok(())
+        })
+        .unwrap();
     let seen = std::rc::Rc::new(std::cell::RefCell::new((false, Vec::new())));
     let s2 = seen.clone();
     net.tamper = Some(Box::new(move |m| {

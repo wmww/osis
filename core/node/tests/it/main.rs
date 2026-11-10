@@ -8,6 +8,7 @@ mod net;
 mod net_records;
 mod shared;
 mod stream;
+mod reconnect;
 mod nodelog;
 mod required;
 mod cert_judge;

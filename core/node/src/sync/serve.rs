@@ -150,7 +150,7 @@ struct Accepted {
     /// What the dialer proved by its Prove (`proofs`).
     proven: super::proofs::Proven,
     /// The record this connection's Resume found or made, and records read for it.
-    bound: Option<osis_store::RecordId>,
+    bound: Option<(osis_store::RecordId, bool)>,
     lookups: u64,
 }
 

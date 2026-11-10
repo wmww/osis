@@ -3,7 +3,7 @@
 //! filter of beacons of what it may share, tests its own beacons against the peer's filter and
 //! offers the hits; a hit opens L only with the tag or J proving it.
 //!
-//! Invariants the design rests on (each a default test in tests/it/shared.rs):
+//! Invariants the design rests on (each a default test in tests/it/shared.rs or reconnect.rs):
 //! - A beacon is equal on both sides, so a filter entry only finds a pair; a Hit is keyed by its
 //!   sender's side and the connection (`osis_crypto::kdf::beacon_hit`): reflected to its sender or
 //!   carried to another connection it shows nothing.
@@ -14,10 +14,16 @@
 //!   gaining one credential at once cannot both miss it.
 //! - A filter connection ends with the rule: re-judged at every change of what a node holds.
 //!
-//! As built, a connection starts with a whole filter and tests everything: base generations and
-//! the digest come with durable S (step 7). A filter goes only to a peer that proved a known actor,
-//! so where only one side knows the other (a link's redeemer) that side's filter is the only one;
-//! a connection without a record uses its own pair key.
+//! - A record says only what need not be sent again (issues/net-reconnect.md): a connection with
+//!   a record restores S, `acked_pos`, its own filter's generations and the peer's stored filter,
+//!   and first proves the two records agree: `Digest` is its first message each way, and on a
+//!   difference each side lists S (`Members`) and closes, with no lag, what only one side holds,
+//!   re-marking it pending on both. No Offer goes before the peer's digest is read and no Pull
+//!   before the agreement ends (a member only one side holds is out of both streams by then).
+//!
+//! A filter goes only to a peer that proved a known actor, so where only one side knows the other
+//! (a link's redeemer) that side's filter is the only one; a connection without a record uses its
+//! own pair key, starts with whole filters and tests everything.
 
 use super::{Action, ConnId, SyncEngine};
 use super::credentials::Credential;
@@ -26,9 +32,10 @@ use super::records::ConnRecord;
 use crate::error::Result;
 use osis_base::LabelId;
 use osis_crypto::kdf::{Side, beacon, beacon_hit, beacon_reply};
-use osis_proto::filter::{BEACON_P, Page, beacon_value, decode_gcs, filter_width, pages};
-use osis_proto::msg::{MAX_SHARED_ITEMS, OfferItem};
+use osis_proto::filter::{BEACON_P, Page, beacon_value, decode_gcs, encode_gcs, filter_width, pages};
+use osis_proto::msg::{MAX_MEMBERS, MAX_SHARED_ITEMS, OfferItem};
 use osis_proto::{Code, Command, Message, ServingInput};
+use osis_store::{At, Filter, RecordId};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Entries a peer's filter may hold, the sum of its pages. Resource bound: 0 no filter is
@@ -61,7 +68,7 @@ enum AskedItem {
 
 /// What a request of this side waits for.
 enum Asked {
-    Beacons { pos: u64, last: bool },
+    Beacons { generation: u64, pos: u64, last: bool },
     /// Items in order.
     Offer(Vec<AskedItem>),
     Lost,
@@ -90,8 +97,9 @@ struct Pages {
 /// One member of S (issues/net-shared-set.md, Opens).
 struct Member {
     class: u8,
-    /// The credential's match value, for an open by a credential (none for JUDGED).
-    value: Option<[u8; 32]>,
+    /// The credential's beacon, for an open by a credential (none for JUDGED): the open stands
+    /// while a credential with that beacon is admissible.
+    beacon: Option<[u8; 32]>,
 }
 
 /// The shared set state of one connection with a record.
@@ -102,12 +110,26 @@ pub(crate) struct Shared {
     dialer: [u8; 32],
     listener: [u8; 32],
     next_id: u32,
+    /// The record whose S, `acked_pos` and filters this connection keeps (none: kept nowhere).
+    record: Option<RecordId>,
+    /// The digest this side sent (none without a record).
+    digest: Option<[u8; 32]>,
+    /// The peer's digest was read: Offers may go.
+    digest_read: bool,
+    /// The two records agree (the peer's digest matched, or its last Members page was read):
+    /// the stream may pull.
+    agreed: bool,
+    /// The peer's Members pages read so far.
+    peer_list: BTreeSet<LabelId>,
     /// `ack`, `tested` and Offers unanswered (`ConnRecord`), and `acked_pos`, for this connection.
     pending: ConnRecord,
     acked_pos: u64,
     test_due: bool,
-    /// Whole filter's entries and additions since, generations.
+    /// Whole filter's entries and additions since, generations: the last sent, the last the peer
+    /// acknowledged (additions extend it), whether one went on this connection.
     sent_gen: u64,
+    acked_gen: u64,
+    started: bool,
     in_flight: bool,
     /// The last generation was refused: a whole filter goes again (`again`) at this time (raw
     /// ms), `resync_ms` after, as a refused Pull does (`stream_refused`).
@@ -118,6 +140,8 @@ pub(crate) struct Shared {
     f: u8,
     sent_pos: u64,
     peer: Option<PeerFilter>,
+    /// A filter of the peer's arrived on this connection.
+    arrived: bool,
     pages: Option<Pages>,
     members: BTreeMap<LabelId, Member>,
     /// Hits already offered and answered (a refused one is not sent again until re-marked).
@@ -135,6 +159,8 @@ pub(crate) struct Shared {
     static_missing: BTreeSet<LabelId>,
     /// The peer proved an actor known here now: this side sends a filter (issues/net-shared-set.md, Words).
     filter_out: bool,
+    /// Tests of the pending set run and generations sent on this connection (tests count them).
+    work: (u64, u64),
 }
 
 /// Ids this module draws: never one the session's own requests use (top bit set).
@@ -151,10 +177,17 @@ impl Shared {
             dialer: [0; 32],
             listener: [0; 32],
             next_id: 0,
+            record: None,
+            digest: None,
+            digest_read: true,
+            agreed: true,
+            peer_list: BTreeSet::new(),
             pending: ConnRecord::new([0; 16], 0),
             acked_pos: 0,
             test_due: false,
             sent_gen: 0,
+            acked_gen: 0,
+            started: false,
             in_flight: false,
             retry_at: None,
             again: false,
@@ -163,6 +196,7 @@ impl Shared {
             f: BEACON_P as u8,
             sent_pos: 0,
             peer: None,
+            arrived: false,
             pages: None,
             members: BTreeMap::new(),
             offered: BTreeSet::new(),
@@ -172,6 +206,7 @@ impl Shared {
             refused: false,
             static_missing: BTreeSet::new(),
             filter_out: false,
+            work: (0, 0),
         }
     }
 
@@ -205,6 +240,11 @@ impl SyncEngine {
         self.records.shared.get(&conn).is_some_and(|s| s.members.contains_key(l))
     }
 
+    /// Tests of the pending set run and filter generations sent on `conn` (tests count them).
+    pub fn shared_work(&self, conn: ConnId) -> (u64, u64) {
+        self.records.shared.get(&conn).map_or((0, 0), |s| s.work)
+    }
+
     /// Sync IDs open on `conn` by its shared set (tests).
     pub fn shared_members(&self, conn: ConnId) -> BTreeSet<LabelId> {
         self.records.shared.get(&conn).map(|s| s.members.keys().copied().collect()).unwrap_or_default()
@@ -215,7 +255,7 @@ impl SyncEngine {
     #[doc(hidden)]
     pub fn shared_admit(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<Action>) -> Result<()> {
         let s = self.records.shared.entry(conn).or_insert_with(|| Shared::bare(!self.conns.contains_key(&conn)));
-        s.members.insert(l, Member { class: JUDGED, value: None });
+        s.members.insert(l, Member { class: JUDGED, beacon: None });
         self.shared_open(conn, l, JUDGED, None, out)
     }
 
@@ -223,7 +263,12 @@ impl SyncEngine {
     /// and nothing it asked is unanswered, or it never starts (a host, a peer with no proofs yet
     /// counts as still finding).
     pub(crate) fn shared_settled(&self, conn: ConnId) -> bool {
-        self.records.shared.get(&conn).is_some_and(|s| (s.peer.is_some() || s.refused) && !s.test_due && !s.in_flight && s.pending.offers_unanswered == 0)
+        self.records.shared.get(&conn).is_some_and(|s| s.agreed && (s.arrived || s.refused) && !s.test_due && !s.in_flight && s.pending.offers_unanswered == 0)
+    }
+
+    /// Whether `conn`'s stream may pull: the two records agree (no record: at once).
+    pub(crate) fn shared_agreed(&self, conn: ConnId) -> bool {
+        self.records.shared.get(&conn).is_some_and(|s| s.agreed)
     }
 
     /// The listener answered this dialer's `NoRecord` with a refusal: it knows no actor this
@@ -244,8 +289,11 @@ impl SyncEngine {
 
     /// The shared set of `conn` starts, whichever side dialed, under the record's `r` or, with no
     /// record, the connection's own pair key (spec/sync.md §10): a filter goes out only if the
-    /// peer proved a known actor (issues/net-shared-set.md, Words).
-    pub(super) fn shared_begin(&mut self, conn: ConnId, r: Option<[u8; 32]>, out: &mut Vec<Action>) -> Result<()> {
+    /// peer proved a known actor (issues/net-shared-set.md, Words). With a record (`bound`: its
+    /// ID, and whether the session proved other actors than the record names) S, `acked_pos` and
+    /// both filters are restored, the digest of S goes first, and S is re-judged: what changed
+    /// goes, not what the record proves was sent.
+    pub(super) fn shared_begin(&mut self, conn: ConnId, bound: Option<(RecordId, bool)>, out: &mut Vec<Action>) -> Result<()> {
         if self.records.shared.contains_key(&conn) {
             return Ok(());
         }
@@ -254,10 +302,61 @@ impl SyncEngine {
             None => (self.served_binding(conn), true),
         };
         let Some((dialer, listener, key)) = binding else { return Ok(()) };
-        let r = r.unwrap_or_else(|| *osis_crypto::kdf::pair_key(&dialer, &listener).expose());
         let filter_out = self.shared_known(conn);
-        let s = Shared { r, key, dialer, listener, filter_out, ..Shared::bare(by_listener) };
+        let Some((id, actors_changed)) = bound else {
+            let r = *osis_crypto::kdf::pair_key(&dialer, &listener).expose();
+            let s = Shared { r, key, dialer, listener, filter_out, ..Shared::bare(by_listener) };
+            self.records.shared.insert(conn, s);
+            return self.shared_send_generation(conn, out);
+        };
+        let (rec, members, rows) = self.engine.run(|tx| {
+            if actors_changed {
+                tx.txn.record_pending_all(&id)?;
+            }
+            let rec = tx.txn.record(&id)?;
+            Ok((rec, tx.txn.record_members(&id)?, tx.txn.record_peer_filter(&id)?))
+        })?;
+        let Some(rec) = rec else { return Ok(()) };
+        let peer = (rec.peer.generation > 0).then(|| {
+            let hi = 1u64.checked_shl(u32::from(rec.peer.f)).unwrap_or(u64::MAX);
+            let mut values: Vec<u64> = rows.iter().flat_map(|g| decode_gcs(g, 0, hi).unwrap_or_default()).collect();
+            values.sort_unstable();
+            PeerFilter { generation: rec.peer.generation, f: rec.peer.f, values, whole: rec.peer.whole as usize, added: rec.peer.added as usize }
+        });
+        let digest = osis_crypto::kdf::members_digest(&rec.r, members.iter().map(|(l, _)| &l.0));
+        let mut s = Shared {
+            r: rec.r,
+            key,
+            dialer,
+            listener,
+            filter_out,
+            record: Some(id),
+            digest: Some(digest),
+            digest_read: false,
+            agreed: false,
+            pending: ConnRecord::new(id, rec.acked_pos),
+            acked_pos: rec.acked_pos,
+            sent_gen: rec.own.generation,
+            acked_gen: rec.own.acked,
+            // nothing the peer acknowledged to build on, or other actors: a whole filter
+            again: rec.own.acked == 0 || actors_changed,
+            whole_n: rec.own.whole as usize,
+            added: rec.own.added as usize,
+            f: if rec.own.generation == 0 { BEACON_P as u8 } else { rec.own.f },
+            sent_pos: rec.acked_pos,
+            peer,
+            ..Shared::bare(by_listener)
+        };
+        s.members = members.iter().map(|(l, m)| (*l, Member { class: m.class, beacon: m.beacon })).collect();
+        let restored = !s.members.is_empty();
         self.records.shared.insert(conn, s);
+        self.stream_bind(conn, id, rec.cursor, &members);
+        if restored {
+            self.local_dirty = true;
+            self.suspects_due = true;
+        }
+        self.shared_send(conn, Message::Digest { digest }, out)?;
+        self.shared_rejudge(conn, out)?;
         self.shared_send_generation(conn, out)
     }
 
@@ -328,11 +427,13 @@ impl SyncEngine {
         if !s.filter_out || s.in_flight || s.retry_at.is_some() {
             return Ok(());
         }
-        // a whole filter, also after a refused generation (`shared_retry`)
+        // a whole filter, also after a refused generation (`shared_retry`); a connection's first
+        // generation goes even with no additions, so the peer's test of its pending set runs
         let first = s.sent_gen == 0 || s.again;
+        let opening = !s.started;
         let after = if first { 0 } else { s.sent_pos };
         let (labels, top) = self.shared_changes_after(after)?;
-        if !first && labels.is_empty() {
+        if !first && !opening && labels.is_empty() {
             return Ok(());
         }
         let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
@@ -348,10 +449,12 @@ impl SyncEngine {
         let mut values: Vec<u64> = creds.iter().map(|c| beacon_value(&c.beacon, width)).collect();
         values.sort_unstable();
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
-        let base = (!whole).then_some(s.sent_gen);
+        let base = (!whole).then_some(s.acked_gen);
         s.sent_gen += 1;
         let generation = s.sent_gen;
         s.again = false;
+        s.started = true;
+        s.work.1 += 1;
         if whole {
             s.whole_n = n;
             s.added = 0;
@@ -364,11 +467,15 @@ impl SyncEngine {
         let mut msgs = Vec::new();
         for Page { lo, hi, gcs, more } in pages(&values, width, PAGE_BYTES) {
             let id = s.next();
-            s.asked.insert(id, Asked::Beacons { pos: top, last: !more });
+            s.asked.insert(id, Asked::Beacons { generation, pos: top, last: !more });
             msgs.push(Message::Beacons { id, generation, base, f: width, lo, hi, gcs, more });
         }
+        let (record, own) = (s.record, Filter { generation, acked: s.acked_gen, f: s.f, whole: s.whole_n as u64, added: s.added as u64 });
         self.stats.beacons_sent += n as u64;
         self.stats.filters_sent += 1;
+        if let Some(id) = record {
+            self.engine.run(|tx| Ok(tx.txn.record_set_own(&id, own)?))?;
+        }
         for m in msgs {
             self.shared_send(conn, m, out)?;
         }
@@ -427,6 +534,8 @@ impl SyncEngine {
         }
         match m {
             Message::NoRecord { id } => self.shared_send(conn, Message::Shared { id, codes: vec![(Code::OK, None, None)] }, out),
+            Message::Digest { digest } => self.shared_digest(conn, digest, out),
+            Message::Members { labels, more } => self.shared_peer_members(conn, labels, more, out),
             Message::Beacons { id, generation, base, f, lo, hi, gcs, more } => self.shared_beacons(conn, id, (generation, base, f, lo, hi), &gcs, more, out),
             Message::Offer { id, items } => self.shared_offer(conn, id, items, out),
             Message::Lost { id, items } => self.shared_lost(conn, id, items, out),
@@ -489,16 +598,14 @@ impl SyncEngine {
         if space.is_some_and(|e| p.next_lo != e) {
             return self.shared_kill(conn, id, "filter does not reach the end of the space", out);
         }
+        let mut values = p.values;
+        values.sort_unstable();
+        let row = encode_gcs(&values, 0);
         let fin = match (p.base, s.peer.take()) {
-            (None, _) if f == filter_width(p.values.len()) => {
-                let n = p.values.len();
-                let mut values = p.values;
-                values.sort_unstable();
-                Some(PeerFilter { generation, f, whole: n, added: 0, values })
-            }
-            (Some(_), Some(mut held)) if f == held.f && held.added + p.values.len() <= held.whole => {
-                held.added += p.values.len();
-                held.values.extend(p.values);
+            (None, _) if f == filter_width(values.len()) => Some(PeerFilter { generation, f, whole: values.len(), added: 0, values }),
+            (Some(_), Some(mut held)) if f == held.f && held.added + values.len() <= held.whole => {
+                held.added += values.len();
+                held.values.extend(values);
                 held.values.sort_unstable();
                 held.generation = generation;
                 Some(held)
@@ -508,9 +615,17 @@ impl SyncEngine {
         let Some(fin) = fin else {
             return self.shared_kill(conn, id, "filter width or density", out);
         };
+        let stored = Filter { generation, acked: generation, f: fin.f, whole: fin.whole as u64, added: fin.added as u64 };
+        let whole = p.base.is_none();
         s.peer = Some(fin);
+        s.arrived = true;
         s.test_due = true;
+        let record = s.record;
         self.stats.filters_received += 1;
+        // the peer's filter is the record's: kept so a reconnect sends additions only
+        if let Some(rid) = record {
+            self.engine.run(|tx| Ok(tx.txn.record_put_peer_filter(&rid, whole, stored, row)?))?;
+        }
         self.shared_send(conn, Message::Shared { id, codes: vec![(Code::OK, None, None)] }, out)?;
         self.shared_test(conn, out)
     }
@@ -519,14 +634,18 @@ impl SyncEngine {
     /// due, after a filter, and with no Offer of this side unanswered.
     fn shared_test(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
-        if !s.test_due || s.peer.is_none() || s.pending.offers_unanswered > 0 {
+        // no Offer before the peer's digest is read (issues/net-reconnect.md, Agreement)
+        if !s.test_due || s.peer.is_none() || !s.digest_read || s.pending.offers_unanswered > 0 {
             return Ok(());
         }
         let acked = s.acked_pos;
         let (labels, top) = self.shared_changes_after(acked)?;
         let creds = self.shared_creds(conn, Some(&labels))?;
+        self.stats.tests += 1;
+        self.stats.tested += creds.len() as u64;
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         s.test_due = false;
+        s.work.0 += 1;
         s.pending.tested = s.pending.tested.max(top);
         let side = (s.by_listener, &s.key, &s.dialer, &s.listener);
         let Some(peer) = &s.peer else { return Ok(()) };
@@ -607,10 +726,13 @@ impl SyncEngine {
     /// `acked_pos` rises to `min(ack, tested)` once no Offer is unanswered and no test is due.
     fn shared_rise(&mut self, conn: ConnId) -> Result<()> {
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
-        if !s.test_due
-            && let Some(pos) = s.pending.rise_to()
-        {
-            s.acked_pos = s.acked_pos.max(pos);
+        if s.test_due {
+            return Ok(());
+        }
+        let Some(pos) = s.pending.rise_to().filter(|p| *p > s.acked_pos) else { return Ok(()) };
+        s.acked_pos = pos;
+        if let Some(id) = s.record {
+            self.engine.run(|tx| Ok(tx.txn.record_rise_acked(&id, pos)?))?;
         }
         Ok(())
     }
@@ -651,7 +773,7 @@ impl SyncEngine {
                 OfferItem::Hit(hit) => match s.table.as_ref().and_then(|t| t.get(&hit)) {
                     Some(c) if c.class != STATIC || self.shared_static_proved(conn, &c.label, &c.value) => {
                         let tag = beacon_reply(&c.value, &c.label.0, &c.beacon, s.side(s.by_listener));
-                        opens.push((c.label, c.class, Some(c.value)));
+                        opens.push((c.label, c.class, Some(c.beacon)));
                         // a key actor's node learns the read secret from the head's box for it
                         let grant = (c.class == STATIC).then(|| served.get(&c.label).and_then(|x| x.grant(&c.value))).flatten().map(Box::new);
                         (Code::OK, Some(tag), grant)
@@ -662,7 +784,7 @@ impl SyncEngine {
                     let listed = hits.iter().filter_map(|h| s.table.as_ref().and_then(|t| t.get(h))).find(|c| c.label == l && (c.class != STATIC || self.shared_static_proved(conn, &c.label, &c.value)));
                     let holder = things.get(&l).is_some_and(|t| judge.of(t) == super::credentials::Judgment::Holder);
                     if holder || listed.is_some() {
-                        opens.push((l, listed.map_or(JUDGED, |c| c.class), listed.map(|c| c.value)));
+                        opens.push((l, listed.map_or(JUDGED, |c| c.class), listed.map(|c| c.beacon)));
                         (Code::OK, None, None)
                     } else {
                         (Code::NOT_ADMITTED, None, None)
@@ -681,22 +803,24 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// L joins `conn`'s S on this side, and this side's stream of the peer.
-    fn shared_open(&mut self, conn: ConnId, l: LabelId, class: u8, value: Option<[u8; 32]>, out: &mut Vec<Action>) -> Result<()> {
+    /// L joins `conn`'s S on this side, and this side's stream of the peer; the record keeps it.
+    fn shared_open(&mut self, conn: ConnId, l: LabelId, class: u8, beacon: Option<[u8; 32]>, out: &mut Vec<Action>) -> Result<()> {
         // the first sync ID shared here: what this node holds of labels synced with no host is
         // placed for its readers from now on (`serves_readers`)
         self.local_dirty |= self.records.shared.values().all(Shared::is_empty);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
-        s.members.insert(l, Member { class, value });
+        s.members.insert(l, Member { class, beacon });
         self.suspects_due = true;
-        self.stream_join(conn, l, out)?;
+        self.stream_join(conn, l, osis_store::Member { class, beacon, until: None, at: At::Join(None) }, out)?;
         self.stream_source_gained(conn, &l, out)
     }
 
-    /// L leaves S on this side (a Lost, a judgment): nothing more is served or pulled for it and
-    /// the member is pending again for this connection (issues/net-shared-set.md, Re-marking).
-    fn shared_close(&mut self, conn: ConnId, l: &LabelId) -> Result<()> {
-        let at = self.engine.run(|tx| Ok(tx.txn.changed_at(l)?))?.unwrap_or(0);
+    /// L leaves S on this side (a Lost, a judgment, a digest difference) and is pending again
+    /// for this record (issues/net-shared-set.md, Re-marking), whether or not it was a member:
+    /// nothing more is served or pulled for it, and its stream position is kept as `stop` says.
+    fn shared_close(&mut self, conn: ConnId, l: &LabelId, stop: super::stream::Stop) -> Result<()> {
+        // a sync ID not held here has nothing pending: nothing is re-marked
+        let at = self.engine.run(|tx| Ok(tx.txn.changed_at(l)?))?.unwrap_or(u64::MAX);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         s.members.remove(l);
         s.by_role.remove(l);
@@ -704,7 +828,7 @@ impl SyncEngine {
         s.pending.remark(at);
         s.acked_pos = s.acked_pos.min(at.saturating_sub(1));
         s.test_due = true;
-        self.stream_leave(conn, l)
+        self.stream_leave(conn, l, at, stop)
     }
 
     /// Re-judges every member: holders stay; a credential open stays while that credential is
@@ -718,6 +842,10 @@ impl SyncEngine {
         if !known {
             // a record is honoured only while its actors are known here (spec/sync.md §10)
             self.records.unbind(conn);
+            self.stream_unbind(conn);
+            if let Some(s) = self.records.shared.get_mut(&conn) {
+                s.record = None;
+            }
         }
         let Some(actors) = self.connection_proven(conn).map(Proven::all) else { return Ok(()) };
         let creds = self.shared_creds(conn, None)?;
@@ -733,7 +861,7 @@ impl SyncEngine {
                     return true;
                 }
                 let holder = things.get(*l).is_some_and(|t| judge.of(t) == super::credentials::Judgment::Holder);
-                let cred = m.value.is_some_and(|v| m.class != JUDGED && creds.iter().any(|c| c.label == **l && c.value == v));
+                let cred = m.beacon.is_some_and(|b| m.class != JUDGED && creds.iter().any(|c| c.label == **l && c.beacon == b));
                 !holder && !cred
             })
             .map(|(l, _)| *l)
@@ -742,13 +870,17 @@ impl SyncEngine {
             return Ok(());
         }
         for l in &gone {
-            self.shared_close(conn, l)?;
+            self.shared_close(conn, l, super::stream::Stop::Here)?;
         }
+        // where each stopped for the peer: the end of what this connection's stream served it,
+        // `Lost` written in order after it (issues/net-reconnect.md, Lost and rejoin)
+        let at = self.stream_served_to(conn);
         for batch in gone.chunks(MAX_SHARED_ITEMS) {
             let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
             let id = s.next();
             s.asked.insert(id, Asked::Lost);
-            let items = batch.iter().map(|l| (*l, None)).collect();
+            let items = batch.iter().map(|l| (*l, at.clone())).collect();
+            self.stats.lost_sent += batch.len() as u64;
             self.shared_send(conn, Message::Lost { id, items }, out)?;
         }
         Ok(())
@@ -758,9 +890,9 @@ impl SyncEngine {
         // only a member of S is closed: a sync ID the peer does not share with this node changes
         // nothing and costs no test (idempotent)
         let n = items.len();
-        for (l, _) in items {
+        for (l, c) in items {
             if self.shared_member(conn, &l) {
-                self.shared_close(conn, &l)?;
+                self.shared_close(conn, &l, super::stream::Stop::Lost(c))?;
             }
         }
         self.shared_send(conn, Message::Shared { id, codes: vec![(Code::OK, None, None); n] }, out)?;
@@ -773,7 +905,7 @@ impl SyncEngine {
         let Some(asked) = s.asked.remove(&id) else { return Ok(()) };
         match asked {
             Asked::Lost => Ok(()),
-            Asked::Beacons { pos, last, .. } => {
+            Asked::Beacons { generation, pos, last } => {
                 let code = codes.first().map_or(Code::REFUSED, |c| c.0);
                 if !last {
                     return Ok(());
@@ -781,6 +913,12 @@ impl SyncEngine {
                 s.in_flight = false;
                 if code == Code::OK {
                     s.pending.ack = s.pending.ack.max(pos);
+                    // the peer holds this generation: the next additions extend it
+                    s.acked_gen = generation;
+                    if let Some(id) = s.record {
+                        let own = Filter { generation: s.sent_gen, acked: generation, f: s.f, whole: s.whole_n as u64, added: s.added as u64 };
+                        self.engine.run(|tx| Ok(tx.txn.record_set_own(&id, own)?))?;
+                    }
                 } else {
                     // refused (base unknown, an Error): a whole filter goes again after
                     // `resync_ms`, as a refused Pull does (one rule for refused node requests)
@@ -822,7 +960,7 @@ impl SyncEngine {
                             let set: BTreeSet<LabelId> = [c.label].into();
                             let now = self.shared_creds(conn, Some(&set))?;
                             if granted && now.iter().any(|x| x.value == c.value) {
-                                self.shared_open(conn, c.label, c.class, Some(c.value), out)?;
+                                self.shared_open(conn, c.label, c.class, Some(c.beacon), out)?;
                             } else if !self.shared_member(conn, &c.label) {
                                 // this tester's credential is gone (issues/net-shared-set.md, Divergence)
                                 self.shared_lost_send(conn, c.label, out)?;
@@ -844,6 +982,55 @@ impl SyncEngine {
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         let id = s.next();
         s.asked.insert(id, Asked::Lost);
+        self.stats.lost_sent += 1;
         self.shared_send(conn, Message::Lost { id, items: vec![(l, None)] }, out)
+    }
+
+    /// The peer's digest, its first message (issues/net-reconnect.md, Agreement), compared with
+    /// the one this side sent. A match ends it; on a difference this side lists S in full now,
+    /// before it acts on any later message, and waits for the peer's list.
+    fn shared_digest(&mut self, conn: ConnId, digest: [u8; 32], out: &mut Vec<Action>) -> Result<()> {
+        let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
+        if s.digest_read {
+            return Ok(());
+        }
+        s.digest_read = true;
+        if s.digest == Some(digest) {
+            s.agreed = true;
+            self.shared_test(conn, out)?;
+            return self.stream_ask(conn, false, out);
+        }
+        let mine: Vec<LabelId> = s.members.keys().copied().collect();
+        self.stats.digests_differ += 1;
+        self.stats.members_listed += mine.len() as u64;
+        let pages: Vec<&[LabelId]> = if mine.is_empty() { vec![&[]] } else { mine.chunks(MAX_MEMBERS).collect() };
+        let last = pages.len() - 1;
+        for (i, p) in pages.into_iter().enumerate() {
+            self.shared_send(conn, Message::Members { labels: p.to_vec(), more: i < last }, out)?;
+        }
+        self.shared_test(conn, out)
+    }
+
+    /// A page of the peer's S. At its last, every member only one side holds is closed on this
+    /// side with no lag (its rejoin is a listing) and re-marked pending, so the shared set's own
+    /// rule finds it again; then the stream may pull.
+    fn shared_peer_members(&mut self, conn: ConnId, labels: Vec<LabelId>, more: bool, out: &mut Vec<Action>) -> Result<()> {
+        let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
+        if s.agreed || !s.digest_read {
+            return Ok(());
+        }
+        s.peer_list.extend(labels);
+        if more {
+            return Ok(());
+        }
+        let theirs = std::mem::take(&mut s.peer_list);
+        let mine: BTreeSet<LabelId> = s.members.keys().copied().collect();
+        s.agreed = true;
+        for l in mine.symmetric_difference(&theirs) {
+            let stop = if mine.contains(l) { super::stream::Stop::Listing } else { super::stream::Stop::Here };
+            self.shared_close(conn, l, stop)?;
+        }
+        self.shared_test(conn, out)?;
+        self.stream_ask(conn, false, out)
     }
 }

@@ -37,14 +37,23 @@ fn dial_as(net: &mut Net, a: usize, b: usize, challenge: [u8; 32]) -> Dialer {
     p
 }
 
-/// A hand dialer that proved `a` and resumed the record whose key is `r`: `b`'s first filter comes back.
+/// A hand dialer that proved `a` and resumed the record whose key is `r`, holding an empty S: its
+/// digest and empty list close what `b`'s record held (issues/net-reconnect.md, Agreement), and
+/// `b`'s first filter comes back.
 fn resumed(net: &mut Net, a: usize, b: usize, r: &[u8; 32], challenge: [u8; 32]) -> (Dialer, Vec<ClientEvent>) {
     let mut p = dial_as(net, a, b, challenge);
     let tag = resume_tag(r, &LISTENER, &challenge, &p.hello);
     let now = net.now();
     let outs = p.cs.handle(now, ClientInput::Command(Command::Resume { nonce: [5; 32], tags: vec![tag] }));
-    let evs = pump(net, b, &mut p, Vec::new(), outs);
+    let mut evs = pump(net, b, &mut p, Vec::new(), outs);
     assert!(net.sync(b).connection_record(p.conn).is_some(), "the record is bound");
+    let theirs = shared_of(&evs).into_iter().find_map(|m| if let Message::Digest { digest } = m { Some(digest) } else { None }).expect("b's digest first");
+    let empty = osis_crypto::kdf::members_digest(r, []);
+    evs.extend(send(net, b, &mut p, Message::Digest { digest: empty }));
+    if theirs != empty {
+        evs.extend(send(net, b, &mut p, Message::Members { labels: vec![], more: false }));
+    }
+    assert!(net.sync(b).shared_members(p.conn).is_empty(), "S agreed empty");
     (p, evs)
 }
 
@@ -127,12 +136,14 @@ fn a_reflected_or_carried_hit_opens_nothing_spec_wire_11_2() {
 fn a_hit_answered_without_a_tag_opens_nothing_spec_wire_11_2() {
     let mut net = Net::new();
     let (a, b, l, r) = pair(&mut net);
-    let (mut p, _) = resumed(&mut net, a, b, &r, CHALLENGE);
+    let (mut p, first) = resumed(&mut net, a, b, &r, CHALLENGE);
     let v = read_value(&mut net, a, l);
     let bcn = beacon(&v, &l.0, &r);
     let f = filter_width(1);
     let gcs = encode_gcs(&[beacon_value(&bcn, f)], 0);
-    let msgs = shared_of(&send(&mut net, b, &mut p, Message::Beacons { id: 40, generation: 1, base: None, f, lo: 0, hi: 1 << f, gcs, more: false }));
+    // b tests L, re-marked pending by the agreement, against the filter its record stored or this one
+    let mut msgs = shared_of(&first);
+    msgs.extend(shared_of(&send(&mut net, b, &mut p, Message::Beacons { id: 40, generation: 1, base: None, f, lo: 0, hi: 1 << f, gcs, more: false })));
     let Some(Message::Offer { id, items }) = msgs.iter().find(|m| matches!(m, Message::Offer { .. })) else { panic!("no Offer: {msgs:?}") };
     assert!(matches!(items[0], OfferItem::Hit(_)), "{items:?}");
     send(&mut net, b, &mut p, Message::Shared { id: *id, codes: vec![(Code::OK, None, None)] });
@@ -411,6 +422,11 @@ fn an_accepted_by_role_opens_at_its_sender_spec_wire_11_2() {
     // an empty filter: b finds nothing by testing and offers by role
     let mut msgs = shared_of(&first);
     msgs.extend(shared_of(&send(&mut net, b, &mut p, Message::Beacons { id: 40, generation: 1, base: None, f: filter_width(0), lo: 0, hi: 1 << filter_width(0), gcs: vec![], more: false })));
+    // a Hit on the filter b's record stored is refused: b finds nothing by testing
+    while let Some(Message::Offer { id, items }) = msgs.iter().find(|m| matches!(m, Message::Offer { items, .. } if matches!(items[0], OfferItem::Hit(_)))).cloned() {
+        msgs.retain(|m| m.id() != id);
+        msgs.extend(shared_of(&send(&mut net, b, &mut p, Message::Shared { id, codes: vec![(Code::NOT_ADMITTED, None, None); items.len()] })));
+    }
     let Some(Message::Offer { id, items }) = msgs.iter().find(|m| matches!(m, Message::Offer { .. })) else { panic!("no Offer: {msgs:?}") };
     assert!(matches!(&items[0], OfferItem::ByRole(x, _) if *x == l), "{items:?}");
     send(&mut net, b, &mut p, Message::Shared { id: *id, codes: vec![(Code::OK, None, None)] });

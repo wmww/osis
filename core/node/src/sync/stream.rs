@@ -14,9 +14,10 @@
 //!   position never needs an event the log dropped but a deletion past `TOMBSTONE_LIFETIME`,
 //!   which no read carries (issues/net-reconnect.md, Deletions).
 //! - A member enters the requester's stream only with its join merged at the stream's position;
-//!   one leaving keeps its position as a lag. A connection's start stops every member of the
-//!   record at the position it holds (`record_stop_all`), so one this connection does not open
-//!   claims nothing past what it applied.
+//!   one leaving keeps its position as a lag. A connection with a record starts from the record's
+//!   S, each member where the record holds it (at the cursor, or joining from its own position),
+//!   and pulls only once the two records agree (`shared_agreed`): a member only one side held
+//!   leaves both streams with no lag, so neither claims a position the other did not serve it.
 //! - A cursor is stored only after what it covers is applied (state flushed first), an entry
 //!   announced without bytes once its bytes are held (`stream_settle`); Applied and a pass end
 //!   wait alike. A member leaves the stream when it leaves S here, before any later message is
@@ -48,7 +49,7 @@ use crate::error::Result;
 use osis_base::{BlobId, LabelId};
 use osis_proto::msg::{Join, Pull, PullReply, Stream};
 use osis_proto::{Event, Message};
-use osis_store::{LoggedEvent, NodeEvent, RecordId};
+use osis_store::{At, LoggedEvent, NodeEvent, RecordId};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Log rows one reply or push scans at most, matching or not. Resource bound: 0 never moves
@@ -136,6 +137,9 @@ pub(crate) struct Serving {
     crossed: BTreeSet<BlobId>,
     /// The last reply or push left nothing of the log or its memory part unscanned.
     at_end: bool,
+    /// The cursor of the last reply or push: where a member this side stops sharing stopped for
+    /// the requester (`Lost`).
+    last: Option<Vec<u8>>,
     /// Members the requester joined on this connection (a Pull's `join` this node shares).
     pulled: BTreeSet<LabelId>,
     /// Replies and pushes asked to report and not reported yet, in order: their cursor and
@@ -258,6 +262,17 @@ impl Pulling {
     fn full(&self) -> bool {
         self.unsettled.len() >= MAX_WAITING || self.unsettled.iter().map(|u| u.owed.len()).sum::<usize>() >= MAX_WAITING
     }
+}
+
+/// Where a member leaving S stops in this side's stream of the peer (`stream_leave`).
+pub(crate) enum Stop {
+    /// Where this side holds it.
+    Here,
+    /// Where the peer's `Lost` says it stopped for this side: kept unless this side's own is
+    /// older, and none (a listing on rejoin) where the two cannot be ordered.
+    Lost(Option<Vec<u8>>),
+    /// Nowhere: the records disagreed on it (a digest difference), its rejoin is a listing.
+    Listing,
 }
 
 /// One connection's stream, either side.
@@ -509,6 +524,9 @@ impl SyncEngine {
             s.follow = Some(stream_at);
         }
         s.at_end = !more;
+        if cursor.is_some() {
+            s.last = cursor.clone();
+        }
         s.pulled.extend(p.joins.iter().map(|(l, _)| *l).filter(|l| members.contains(l)));
         let report = s.sent(&cursor, labels);
         let reply = PullReply { id: p.id, events, cursor, whole, more, report, joins };
@@ -547,6 +565,9 @@ impl SyncEngine {
             }
             let cursor = self.engine.run(|tx| Ok(tx.txn.log_cursor(end)?))?;
             let labels: BTreeSet<LabelId> = events.iter().map(|(l, _)| *l).collect();
+            if let Some(s) = self.streams.get_mut(&conn).filter(|_| cursor.is_some()) {
+                s.serving.last = cursor.clone();
+            }
             let report = self.streams.get_mut(&conn).is_some_and(|s| s.serving.sent(&cursor, labels));
             self.shared_send(conn, Message::Stream(Box::new(Stream { events, cursor, report })), out)?;
         }
@@ -555,30 +576,55 @@ impl SyncEngine {
 
     // ---- the requesting side ----
 
-    /// `conn` took record `id`: every member it held leaves the stream at its position, kept as
-    /// a lag for its rejoin, and the stream goes on from the record's cursor.
-    pub(super) fn stream_bind(&mut self, conn: ConnId, id: RecordId) -> Result<()> {
-        let cursor = self.engine.run(|tx| {
-            tx.txn.record_stop_all(&id)?;
-            Ok(tx.txn.record(&id)?.and_then(|r| r.cursor))
-        })?;
-        let p = &mut self.streams.entry(conn).or_default().pulling;
+    /// `conn` took record `id`: its stream goes on from the record's cursor with the record's
+    /// members where the record holds them, pulled once the two records agree; the peer is
+    /// served them as members it tracks.
+    pub(super) fn stream_bind(&mut self, conn: ConnId, id: RecordId, cursor: Option<Vec<u8>>, members: &[(LabelId, osis_store::Member)]) {
+        let st = self.streams.entry(conn).or_default();
+        st.serving.pulled = members.iter().map(|(l, _)| *l).collect();
+        let p = &mut st.pulling;
         p.record = Some(id);
         p.settled = cursor.clone();
         p.cursor = cursor;
-        Ok(())
+        for (l, m) in members {
+            match &m.at {
+                At::Stream => {
+                    p.in_stream.insert(*l);
+                }
+                At::Join(c) => {
+                    p.joins.insert(*l, c.clone());
+                }
+            }
+        }
+    }
+
+    /// `conn`'s record is no longer honoured: its stream keeps nothing in it from now on.
+    pub(super) fn stream_unbind(&mut self, conn: ConnId) {
+        if let Some(s) = self.streams.get_mut(&conn) {
+            s.pulling.record = None;
+        }
+    }
+
+    /// The cursor this side last served `conn`'s peer: where a member it stops sharing stopped
+    /// for the peer.
+    pub(super) fn stream_served_to(&self, conn: ConnId) -> Option<Vec<u8>> {
+        self.streams.get(&conn).and_then(|s| s.serving.last.clone())
     }
 
     /// Member `l` opened in `conn`'s shared set here: it joins the stream, from its lag or the
-    /// start.
-    pub(super) fn stream_join(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<Action>) -> Result<()> {
+    /// start, and the record keeps it (`m`, joining from there) in the same transaction.
+    pub(super) fn stream_join(&mut self, conn: ConnId, l: LabelId, m: osis_store::Member, out: &mut Vec<Action>) -> Result<()> {
         let tracked = self.streams.get(&conn).is_some_and(|s| s.pulling.in_stream.contains(&l) || s.pulling.joins.contains_key(&l));
         if tracked {
             return Ok(());
         }
         let record = self.streams.get(&conn).and_then(|s| s.pulling.record);
         let lag = match record {
-            Some(id) => self.engine.run(|tx| Ok(tx.txn.record_take_lag(&id, &l)?))?,
+            Some(id) => self.engine.run(|tx| {
+                let lag = tx.txn.record_take_lag(&id, &l)?;
+                tx.txn.record_open(&id, l, &osis_store::Member { at: At::Join(lag.clone()), ..m })?;
+                Ok(lag)
+            })?,
             None => None,
         };
         let p = &mut self.streams.entry(conn).or_default().pulling;
@@ -587,9 +633,10 @@ impl SyncEngine {
         self.stream_ask(conn, false, out)
     }
 
-    /// Member `l` left `conn`'s shared set here: nothing more of it is applied or served, and its
-    /// position is kept as a lag for a rejoin.
-    pub(super) fn stream_leave(&mut self, conn: ConnId, l: &LabelId) -> Result<()> {
+    /// Member `l` left `conn`'s shared set here: nothing more of it is applied or served, its
+    /// position is kept as `stop` says for a rejoin, and the record re-marks it pending (below
+    /// `changed_at`) in the same transaction.
+    pub(super) fn stream_leave(&mut self, conn: ConnId, l: &LabelId, changed_at: u64, stop: Stop) -> Result<()> {
         let Some(s) = self.streams.get_mut(&conn) else { return Ok(()) };
         s.serving.pulled.remove(l);
         let p = &mut s.pulling;
@@ -597,20 +644,32 @@ impl SyncEngine {
         // page is not settled yet keeps no newer lag (read again from its last stored one, else
         // from the start)
         let named = p.unsettled_names(l);
-        let at = if p.unsettled.is_empty() { p.cursor.clone() } else { p.settled.clone() };
-        let stop = match (p.in_stream.remove(l), p.joins.remove(l)) {
+        let quiet = p.unsettled.is_empty();
+        let at = if quiet { p.cursor.clone() } else { p.settled.clone() };
+        let (was_in, join) = (p.in_stream.remove(l), p.joins.remove(l));
+        let listing = matches!(stop, Stop::Listing);
+        let lag = match (stop, was_in, join) {
+            (Stop::Listing, ..) => None,
             _ if named => None,
-            (true, _) => at,
-            (false, j) => j.flatten(),
+            (Stop::Here, true, _) => at,
+            (Stop::Lost(c), true, _) => if quiet { c.or(at) } else { None },
+            (_, false, j) => j.flatten(),
         };
         for u in &mut p.unsettled {
             u.owed.retain(|(x, _)| x != l);
             u.passed.retain(|x| x != l);
+            u.merged.retain(|x| x != l);
+            u.paging.retain(|(x, _)| x != l);
         }
-        if let Some(id) = p.record {
-            self.engine.run(|tx| Ok(tx.txn.record_stop(&id, l, stop)?))?;
-        }
-        Ok(())
+        let Some(id) = p.record else { return Ok(()) };
+        self.engine.run(|tx| {
+            if listing {
+                tx.txn.record_drop(&id, l, changed_at)?;
+            } else {
+                tx.txn.record_close(&id, l, changed_at, lag)?;
+            }
+            Ok(())
+        })
     }
 
     /// The connections `l` comes by now: hosts with it open, and readers with it in their shared
@@ -705,6 +764,10 @@ impl SyncEngine {
     /// A Pull whose `inline_limit` is no longer the one due (`stream_inline`) also goes, so the
     /// peer's pushes carry bodies inline only while it is this node's one source.
     pub(super) fn stream_ask(&mut self, conn: ConnId, fresh: bool, out: &mut Vec<Action>) -> Result<()> {
+        // no Pull before the two records agree (issues/net-reconnect.md, Agreement)
+        if !self.shared_agreed(conn) {
+            return Ok(());
+        }
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
         if p.asked.is_some() || p.retry_at.is_some() || (p.in_stream.is_empty() && p.joins.is_empty()) {
             return Ok(());
@@ -879,10 +942,10 @@ impl SyncEngine {
         self.engine.run(|tx| {
             tx.txn.record_set_cursor(&id, cursor)?;
             for l in merged {
-                tx.txn.record_open(&id, *l, &osis_store::Member { proved: (0, 0), until: None, lag: None })?;
+                tx.txn.record_member_at(&id, *l, At::Stream)?;
             }
             for (l, c) in paging {
-                tx.txn.record_open(&id, *l, &osis_store::Member { proved: (0, 0), until: None, lag: Some(c.clone()) })?;
+                tx.txn.record_member_at(&id, *l, At::Join(Some(c.clone())))?;
             }
             Ok(())
         })
