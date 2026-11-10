@@ -644,7 +644,8 @@ impl SyncEngine {
         // page is not settled yet keeps no newer lag (read again from its last stored one, else
         // from the start)
         let named = p.unsettled_names(l);
-        let quiet = p.unsettled.is_empty();
+        // everything the stream received is applied: none unsettled and no push dropped
+        let quiet = p.unsettled.is_empty() && !p.dropped;
         let at = if quiet { p.cursor.clone() } else { p.settled.clone() };
         let (was_in, join) = (p.in_stream.remove(l), p.joins.remove(l));
         let listing = matches!(stop, Stop::Listing);

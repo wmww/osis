@@ -228,3 +228,127 @@ fn a_lost_lost_with_its_connection_is_found_by_the_digest_spec_sync_10() {
     net.run();
     assert_eq!(net.read(a, t), Some(s("still shared")), "the other member goes on");
 }
+
+// spec/sync.md §10 (filter): a generation lost with its connection is not one the peer holds, so
+// the next connection's first generation does not build on it. Here `a`'s whole filter at a new
+// width (its credentials grew past doubling) never reaches `b`: additions at that width on `b`'s
+// older generation would break `b`'s width rule and close every connection that follows
+#[test]
+fn a_generation_lost_with_its_connection_is_not_built_on_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b, _) = pair(&mut net, 1);
+    net.advance(120_000);
+    net.tamper_link = Some((a, b));
+    net.tamper = Some(Box::new(|m| matches!(m, Message::Beacons { .. }).then(|| Message::Applied { cursor: vec![0; 72] })));
+    let more: Vec<Tid> = (0..20).map(|i| net.group_seeded(b, &[(a, Role::Write)], vec![], 40 + i)).collect();
+    net.run();
+    net.set_online(a, false);
+    net.run();
+    net.tamper = None;
+    net.tamper_link = None;
+    let closes = net.peer_closes;
+    net.set_online(a, true);
+    net.advance(120_000);
+    let t = net.item(b, more[3], more[3], "after");
+    net.run();
+    assert_eq!(net.read(a, t), Some(s("after")));
+    assert_eq!(net.peer_closes, closes, "no connection closed");
+}
+
+// spec/sync.md §10 (Lost): the receiver keeps a Lost's cursor only when it applied everything its
+// stream received. A push it did not take (`MAX_WAITING`) is received and not applied: the
+// sender's cursor is then past a write this node lacks, and a rejoin from it would skip that write
+#[test]
+fn a_lost_after_a_dropped_push_keeps_no_lag_past_it_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b, gs) = pair(&mut net, 1);
+    net.item(b, gs[0], gs[0], "x");
+    net.run();
+    let l = label_of(&mut net, b, gs[0]);
+    let (c, pc) = net.peer_conns(a).into_iter().find(|(_, m, _)| *m == b).map(|(c, _, pc)| (c, pc)).unwrap();
+    // b's fetch answers and pull replies to a are lost: a stays full; the last cursor b pushed
+    let pushed = Rc::new(RefCell::new(None));
+    let p2 = pushed.clone();
+    net.tamper_link = Some((b, a));
+    net.tamper = Some(Box::new(move |m| match m {
+        Message::FetchReply { .. } | Message::PullReply(_) => Some(Message::Applied { cursor: vec![] }),
+        Message::Stream(st) if st.cursor.is_some() => {
+            *p2.borrow_mut() = st.cursor.clone();
+            None
+        }
+        _ => None,
+    }));
+    let cursor = net.sync(a).stream_cursor(c);
+    for i in 0..20 {
+        let events = (0..100).map(|j| (l, osis_proto::Event::Added { blob_id: osis_label::blob_id(format!("unserved {i} {j}").as_bytes()), blob: None, wrap: [0; osis_crypto::WRAP_LEN], stamp: None })).collect();
+        net.inject(b, pc, &Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: cursor.clone(), report: false })));
+    }
+    net.run();
+    assert!(net.sync(a).stream_waiting(c).1 >= 1024, "a waits on bodies");
+    let t = net.item(b, gs[0], gs[0], "pushed while full");
+    net.run();
+    let at = pushed.borrow().clone();
+    assert!(at.is_some() && at != cursor, "b pushed t");
+    // b says it holds none of what a waits on: a settles, the dropped push still unread
+    for i in 0..20 {
+        let events = (0..100).map(|j| (l, osis_proto::Event::Deleted(osis_label::blob_id(format!("unserved {i} {j}").as_bytes())))).collect();
+        net.inject(b, pc, &Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false })));
+    }
+    net.run();
+    assert_eq!(net.sync(a).stream_waiting(c), (0, 0), "settled");
+    // b's Lost names the last cursor it served: the dropped push's
+    net.inject(b, pc, &Message::Lost { id: 1 << 31 | 99, items: vec![(l, at)] });
+    net.run();
+    net.tamper = None;
+    net.tamper_link = None;
+    net.restart(a, 21);
+    net.run();
+    net.advance(120_000);
+    assert_eq!(net.read(a, t), Some(s("pushed while full")));
+}
+
+// spec/sync.md §10 (Agreement): no Offer before the peer's Digest is read and no Pull before the
+// records agree. Here `a`'s Digest never reaches `b`: `b`, with a group new to `a` to offer and a
+// filter of `a`'s to test it against, offers and pulls nothing on that connection
+#[test]
+fn nothing_is_offered_or_pulled_before_the_peers_digest_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b, _) = pair(&mut net, 1);
+    net.set_online(a, false);
+    net.run();
+    net.group_seeded(b, &[(a, Role::Write)], vec![], 40);
+    net.run();
+    net.tamper_link = Some((a, b));
+    net.tamper = Some(Box::new(|m| matches!(m, Message::Digest { .. }).then(|| Message::Applied { cursor: vec![0; 72] })));
+    let (offers, pulls, filters) = (net.peer_sent(b, OFFER), net.peer_sent(b, PULL), net.peer_sent(a, BEACONS));
+    net.set_online(a, true);
+    net.advance(120_000);
+    assert!(net.peer_sent(a, BEACONS) > filters, "a's filter reached b");
+    assert_eq!(net.peer_sent(b, OFFER), offers, "no Offer");
+    assert_eq!(net.peer_sent(b, PULL), pulls, "no Pull");
+}
+
+// issues/net-reconnect.md (Adversaries): a peer's `Members` list keeps only what can matter here
+// (a member of S, or a sync ID this node holds), so a peer listing sync IDs this node never held
+// page after page makes it keep nothing
+#[test]
+fn a_members_list_keeps_only_what_this_node_holds_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b, _) = pair(&mut net, 1);
+    net.set_online(a, false);
+    net.run();
+    // b reads a digest that differs and waits for a's list
+    net.tamper_link = Some((a, b));
+    net.tamper = Some(Box::new(|m| matches!(m, Message::Digest { .. }).then(|| Message::Digest { digest: [9; 32] })));
+    net.set_online(a, true);
+    net.advance(120_000);
+    net.tamper = None;
+    net.tamper_link = None;
+    let (ca, cb) = net.peer_conns(a).into_iter().find(|(_, m, _)| *m == b).map(|(c, _, pc)| (c, pc)).unwrap();
+    for i in 0..10u8 {
+        let labels = (0..100u8).map(|j| LabelId([i, j, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee])).collect();
+        net.inject(a, ca, &Message::Members { labels, more: true });
+    }
+    net.run();
+    assert_eq!(net.sync(b).shared_listed(cb), 0, "nothing kept of sync IDs b never held");
+}

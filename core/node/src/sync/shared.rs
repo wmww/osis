@@ -240,6 +240,11 @@ impl SyncEngine {
         self.records.shared.get(&conn).is_some_and(|s| s.members.contains_key(l))
     }
 
+    /// Sync IDs of the peer's `Members` pages kept on `conn` while its list is read (tests).
+    pub fn shared_listed(&self, conn: ConnId) -> usize {
+        self.records.shared.get(&conn).map_or(0, |s| s.peer_list.len())
+    }
+
     /// Tests of the pending set run and filter generations sent on `conn` (tests count them).
     pub fn shared_work(&self, conn: ConnId) -> (u64, u64) {
         self.records.shared.get(&conn).map_or((0, 0), |s| s.work)
@@ -338,8 +343,10 @@ impl SyncEngine {
             acked_pos: rec.acked_pos,
             sent_gen: rec.own.generation,
             acked_gen: rec.own.acked,
-            // nothing the peer acknowledged to build on, or other actors: a whole filter
-            again: rec.own.acked == 0 || actors_changed,
+            // nothing the peer acknowledged to build on, the last generation sent not
+            // acknowledged (its width and counts are not the ones the peer holds), or other
+            // actors: a whole filter
+            again: rec.own.acked == 0 || rec.own.acked != rec.own.generation || actors_changed,
             whole_n: rec.own.whole as usize,
             added: rec.own.added as usize,
             f: if rec.own.generation == 0 { BEACON_P as u8 } else { rec.own.f },
@@ -1019,7 +1026,12 @@ impl SyncEngine {
         if s.agreed || !s.digest_read {
             return Ok(());
         }
-        s.peer_list.extend(labels);
+        // a sync ID neither in S nor held here changes nothing (nothing to close or re-mark): the
+        // list keeps only the rest, so what it holds is bounded by what this node holds
+        let (members, rest): (Vec<LabelId>, Vec<LabelId>) = labels.into_iter().partition(|l| s.members.contains_key(l));
+        let held = self.engine.run(|tx| rest.into_iter().filter_map(|l| tx.txn.changed_at(&l).map(|c| c.map(|_| l)).transpose()).collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into))?;
+        let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
+        s.peer_list.extend(members.into_iter().chain(held));
         if more {
             return Ok(());
         }
