@@ -214,8 +214,9 @@ pub(crate) fn labels_of(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::Labels> {
 impl Engine {
     /// Refreshes `actor`'s deposit seed (spec/crypto.md §3, a MAY: a departed holder can then no
     /// longer deposit under its labels, nor can a holder that has not read the new `keys.0`).
+    /// A devices actor's is its account's (`deposit_seed`).
     pub fn refresh_deposit_seed(&mut self, actor: &Tid) -> Result<Done> {
-        let a = *actor;
+        let a = self.core.home_owner(actor);
         let mut done = Done::default();
         let c = self.run(|tx| {
             let mut seed = [0u8; 32];

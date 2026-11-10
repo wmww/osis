@@ -47,7 +47,12 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         core.ix.by_actor.remove(&(v.actor, v.author), id);
     }
     if let Some(e) = v.epoch {
+        core.ix.merge_sigs.remove(id);
         core.ix.by_epoch.remove(&(v.author, e), id);
+        if let Some(j) = core.ix.epochs.get(&v.author).and_then(|j| j.unnamed(id)) {
+            core.ix.epochs.insert(v.author, std::sync::Arc::new(j));
+        }
+        core.ix.names_due.remove(id);
     }
     super::validity::forget_addenda(core, id, &v.aspects);
     for b in &v.chunks {

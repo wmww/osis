@@ -24,6 +24,8 @@ pub struct Package {
     pub id: CommitId,
     pub bytes: Vec<u8>,
     pub blobs: Vec<(BlobId, Vec<u8>)>,
+    /// A rotation's list blob (its thing lists held here), as labels carry it beside it.
+    pub lists: Vec<Vec<u8>>,
 }
 
 /// A commit as labels carry it (spec/sync.md §1-§3): its one sealed blob with a wrap under
@@ -76,7 +78,12 @@ impl Peer {
     /// ingested again when `Wakes` names what it awaits. The test's `Engine::ingest` is what
     /// node-sync calls; only the fetching is played here.
     pub fn receive(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>) -> Result<Ingested> {
-        let r = self.engine.ingest(bytes, blobs.clone());
+        self.receive_with(bytes, blobs, &[])
+    }
+
+    /// `receive` with the list blobs that came with it (`Engine::ingest_with_lists`).
+    pub fn receive_with(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, lists: &[Vec<u8>]) -> Result<Ingested> {
+        let r = self.engine.ingest_with_lists(bytes, blobs.clone(), None, lists);
         if let (Err(e), Ok(b)) = (&r, CommitBlob::decode(bytes)) && e.class() == osis_base::ErrorClass::BadInput {
             self.engine.forget_awaiting(&b.id())?;
         }
@@ -193,7 +200,8 @@ impl Engine {
                 blobs.push((b, x));
             }
         }
-        Ok(Some(Package { id: *id, bytes, blobs }))
+        let lists = self.list_blob(id, None)?.into_iter().collect();
+        Ok(Some(Package { id: *id, bytes, blobs, lists }))
     }
 
     /// A held commit sealed as labels carry it (`SealedPackage`): its blob framed with a fresh
@@ -323,7 +331,7 @@ impl LocalPeer {
     /// Delivers one package to peer `to`.
     pub fn deliver(&mut self, to: usize, pk: &Package) -> Result<Ingested> {
         match self.peers.get_mut(to) {
-            Some(p) => p.receive(&pk.bytes, pk.blobs.clone()),
+            Some(p) => p.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists),
             None => Ok(Ingested::Duplicate(pk.id)),
         }
     }

@@ -573,7 +573,8 @@ impl Engine {
 
     /// The deposit seed of `g`'s actor (its `keys.0`).
     pub fn deposit_seed(&mut self, g: &Tid) -> Result<Option<Secret32>> {
-        let x = self.group_actor(g);
+        // a devices actor's labels derive from its account's seed
+        let x = self.core.home_owner(&self.group_actor(g));
         Ok(self.get_typed(&x, &ct::KEYS)?.and_then(|k| k.deposit_seed).map(Secret32::from_bytes))
     }
 

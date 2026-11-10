@@ -1106,7 +1106,15 @@ impl Engine {
 
     /// `ingest`, attributing diagnostics to `peer`.
     pub fn ingest_from(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>) -> Result<Ingested> {
-        self.ingest_class(bytes, blobs, peer, None)
+        self.ingest_class(bytes, blobs, peer, None, &[])
+    }
+
+    /// `ingest_from` of an account's rotation with list blobs that came with it (under the
+    /// same label, spec/sync.md §3): the thing lists of this rotation among them that verify are
+    /// held in the same transaction, before it applies, so what they name never reads as
+    /// unlisted here. Others are left (`hold_lists`).
+    pub fn ingest_with_lists(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>, lists: &[Vec<u8>]) -> Result<Ingested> {
+        self.ingest_class(bytes, blobs, peer, None, lists)
     }
 
     /// Receives a memory commit (session form, spec/commits.md §2-§3) through the commit path,
@@ -1118,11 +1126,11 @@ impl Engine {
     /// writer cannot slip one in through the durable lane meanwhile.
     #[doc(hidden)]
     pub fn ingest_memory(&mut self, bytes: &[u8], room: u64) -> Result<Ingested> {
-        self.ingest_class(bytes, Vec::new(), None, Some(room))
+        self.ingest_class(bytes, Vec::new(), None, Some(room), &[])
     }
 
     /// `room`: a memory commit's (`ingest_memory`); `None` on the durable path.
-    fn ingest_class(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>, room: Option<u64>) -> Result<Ingested> {
+    fn ingest_class(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>, room: Option<u64>, lists: &[Vec<u8>]) -> Result<Ingested> {
         let memory = room.is_some();
         let _s = crate::costs::span("ingest");
         let mut fresh = false;
@@ -1141,6 +1149,14 @@ impl Engine {
                 }
             } else {
                 fresh = !tx.store_blobs(blobs)?.is_empty();
+            }
+            if let Ok(b) = &decoded
+                && let Some(root) = b.header.rotation.as_ref().map(|r| r.list_root)
+                && !tx.core.ix.commits.contains_key(&b.id())
+            {
+                let id = b.id();
+                let certs: Vec<osis_commit::thing_list::ThingCert> = lists.iter().filter_map(|l| osis_commit::thing_list::decode_list_blob(l).ok()).flatten().filter(|c| c.rotation == id && crate::flows::lists::verifies(c, &root)).collect();
+                crate::flows::lists::keep_certs(tx, &certs)?;
             }
             match decoded {
                 Ok(blob) => ingest_blob(tx, blob, Origin::Remote),
@@ -1407,6 +1423,12 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         Ok(())
     })?;
     tx.core.ix.addenda_due.extend(due);
+    let mut due = Vec::new();
+    tx.scan(records::ROTATIONS_DUE, |k, _| {
+        due.push(CommitId(k.try_into().map_err(|_| Error::Corrupt("listings due"))?));
+        Ok(())
+    })?;
+    tx.core.ix.rotations_due.extend(due);
     let mut vl = Vec::new();
     tx.scan(records::VALUELESS, |k, v| {
         vl.push((k.to_vec(), v));
@@ -1579,6 +1601,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let id = blob.id();
             let b = blob;
             let parts = examine_stored(tx, &b, &id)?;
+            atomic::note_merge(tx.core, &b.header, &id, &b.sigs);
             validity::note_required(tx.core, &b.header, &id, &parts);
             validity::note_required_rules(tx.core, &b.header, &id, &parts);
             validity::note_addenda(tx.core, &b.header, &id, &parts);
@@ -1599,7 +1622,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         }
     }
     // which role commits of accounts count (spec/permissions.md §5.5), before any timeline
-    tx.core.refresh_epochs();
+    crate::flows::account::refresh_epochs(tx)?;
     // a commit read before the record it needs (a nested edge write `ts`-ordered before its
     // grant: another node's clock) is derived now, as it was when that record arrived
     validity::resolve_unresolved(tx)?;

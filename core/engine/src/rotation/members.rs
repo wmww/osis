@@ -189,6 +189,9 @@ pub(crate) enum Sealed {
 /// cover, say), left out of it and the roles above; `Wait` if Seal waits at any role up to
 /// `role`.
 pub(crate) fn sealed(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<Sealed> {
+    if !tx.core.seals_to(a, m) {
+        return Ok(Sealed::Out);
+    }
     if tx.core.is_account(m) {
         return sealed_to_account(tx, who, a, m, role);
     }

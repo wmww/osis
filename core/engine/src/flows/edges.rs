@@ -373,6 +373,17 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         let gone_from = if new_role.is_none() || selfr { &removing[..] } else { removing.get(1..).unwrap_or_default() };
         lowered_deliveries(tx, who, target, c, rot.as_ref(), &unreached, &removing, gone_from, &mut done)?;
     }
+    // a node's removal from its account's devices actor: the account's epoch rotates next, in
+    // this transaction (spec/permissions.md §3)
+    if c.is_some()
+        && !selfr
+        && let Some(p) = tx.core.devices_of(&target).filter(|p| tx.core.accounts.contains_key(p))
+        && removing.iter().any(|x| tx.core.is_key_actor(x))
+        && let Some(r) = super::signing::rotate_in(tx, p, &[])?
+    {
+        done.add(Some(r));
+        done.deliveries.push(super::owe(tx, Delivery::First { commits: vec![r], under: vec![target] })?);
+    }
     // the leaver drops what it lost once the removal is placed (`Done::drop_lost`): it must
     // still seal the removal under the labels it leaves
     done.drop_lost |= selfr;

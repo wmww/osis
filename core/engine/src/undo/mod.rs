@@ -214,7 +214,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         crate::engine::acting::check_undo(tx, actor, &deltas, ts)?;
     }
     // an undo writes under this open's session, like any content commit (spec/commits.md §3)
-    let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
+    let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, rotation: None };
     build_one(tx, plan, deltas)
 }
 

@@ -450,7 +450,7 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
     // history from the retention of the writes it carries, schema known here or not
     // (spec/commits.md §5), memory or durable alike
     let retention = osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?);
-    let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
+    let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, rotation: None };
     let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, replaces: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new() };
     build_and_apply(tx, plan, vec![d]).map(Some)
 }
@@ -526,7 +526,7 @@ impl Engine {
             }
             frontiers.retain(&traced);
             let retention = osis_commit::retention::snapshot_retention(ak.as_str(), kept);
-            let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
+            let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, rotation: None };
             let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, replaces: None, frontiers: Some((frontiers, std::collections::BTreeMap::new())), chunks: Vec::new() };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })

@@ -544,8 +544,14 @@ indexes! {
     /// Per account with a rotation judged, what the epoch rule says of its commits
     /// (`JudgedEpochs`; `Core::refresh_epochs` re-judges what moved). Persisted.
     pub epochs: JMap<Tid, Arc<crate::flows::account::JudgedEpochs>>,
+    /// Per held merge, its merge signatures (spec/wire.md §4), verified when the chain is built
+    /// (`Core::account_view`). Persisted.
+    pub merge_sigs: JMap<CommitId, Arc<Vec<osis_crypto::Signature>>>,
     /// Held commits of accounts per (account, epoch they are signed at).
     pub by_epoch: JSetMap<(Tid, CommitId), CommitId>,
+    /// Held commits of accounts a thing list or listing may name otherwise since they were last
+    /// judged (`flows::lists::due`; `refresh_epochs`).
+    pub names_due: JSet<CommitId>,
     /// Held parts with a relative keep bound per aspect (`Core::put_meta`), absent at 0:
     /// `retention::any_bounded` without walking the aspect.
     pub bounded_held: JMap<(Tid, Ak), u64>,
@@ -635,6 +641,9 @@ indexes! {
     /// Role commits with a frontier applied here and not yet answered with this node's addenda
     /// (`Engine::answer_removals`; `records::ADDENDA_DUE`).
     pub addenda_due: JSet<CommitId>,
+    /// Accounts' rotations applied and not yet answered with this node's listing or addenda
+    /// (`flows::signing::answer_rotations`; `records::ROTATIONS_DUE`).
+    pub rotations_due: JSet<CommitId>,
     /// The earliest valid held commit writing an epoch's keyset in `keys.0` (its rotation):
     /// (actor, role, epoch) -> (`ts`, commit). Absent: unknown. What a box naming the keyset
     /// carries (spec/crypto.md §4, Carried) and a certificate of the actor's current keys.
@@ -900,6 +909,13 @@ pub struct Core {
     /// Accounts this node signs as, seeds from each one's devices actor (`Engine::hold_account`),
     /// retaken on every open.
     pub accounts: BTreeMap<Tid, Arc<crate::flows::account::HeldAccount>>,
+    /// The account this node was removed from and has not dropped what it read as it yet
+    /// (`flows::signing::leave_if_removed`; the lost-access drop takes it).
+    pub left: BTreeSet<Tid>,
+    /// A commit of this node's account applied: what it owes its signing chain is looked at
+    /// at the end of the next complete pass of its devices actor's labels
+    /// (`Engine::signing_due`).
+    pub signing_due: bool,
     /// No purge-on-replace cover or drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
     /// What `receipt::fit` fits a frontier to: `MAX_LIST_BYTES` (tests: `Engine::list_bound`).
@@ -1480,6 +1496,8 @@ impl Core {
             key_actors: _,
             account: _,
             accounts: _,
+            left: _,
+            signing_due: _,
             keep_bodies: _,
             list_bound: _,
             sync_records: _,
@@ -1556,14 +1574,22 @@ impl Core {
         self.account
     }
 
+    /// The account this node acts as: its own while it is a node of it (holds its seeds). A
+    /// node removed from its account reads nothing as it (spec/permissions.md §3, Lost access).
+    pub(crate) fn member(&self) -> Option<Tid> {
+        self.account.filter(|p| self.accounts.contains_key(p))
+    }
+
     /// Who writes on `t`: a node writes its own thing as itself, all else as its account.
     pub(crate) fn writer_for(&self, t: &Tid) -> Result<Tid> {
         if *t == self.id.tid() { Ok(*t) } else { self.writer() }
     }
 
     /// `me`, for what only an account may do.
+    /// A node removed from its account writes nothing as it (`member`).
     pub(crate) fn writer(&self) -> Result<Tid> {
-        self.account.ok_or(Error::Misuse("this node has joined no account"))
+        let p = self.account.ok_or(Error::Misuse("this node has joined no account"))?;
+        self.member().ok_or(Error::Misuse("this node was removed from its account")).map(|_| p)
     }
 
     fn new(id: Identity, clock: Arc<dyn Clock>, session: osis_crdt::Session, expiring: osis_crdt::Session) -> Core {
@@ -1627,6 +1653,8 @@ impl Core {
             step_fault: None,
             key_actors: BTreeMap::new(),
             account: None,
+            left: BTreeSet::new(),
+            signing_due: false,
             accounts: BTreeMap::new(),
             keep_bodies: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
@@ -2675,7 +2703,7 @@ impl Engine {
                 // explicit demotions applied get this node's addenda (spec/permissions.md §5.2)
                 if r.is_ok()
                     && !tx.txn.is_memory()
-                    && let Err(e) = crate::flows::addenda::answer_removals(&mut tx)
+                    && let Err(e) = crate::flows::addenda::answer_removals(&mut tx).and_then(|()| crate::flows::signing::leave_if_removed(&mut tx)).and_then(|()| crate::flows::signing::answer_rotations(&mut tx))
                 {
                     r = Err(e);
                 }

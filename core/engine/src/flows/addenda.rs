@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Whether a part on `ak` is plain content an addendum may list (spec/permissions.md §5.2,
 /// Addenda): no role-class or admin-only aspect, no creation record; another addendum is one.
-fn plain_ak(ak: &osis_base::Ak) -> bool {
+pub(crate) fn plain_ak(ak: &osis_base::Ak) -> bool {
     let s = ak.as_str();
     !ct::is_role_class(s) && !ak.admin_only() && s != "created.0"
 }
@@ -37,7 +37,7 @@ pub(crate) fn answer_removals(tx: &mut Tx<'_>) -> Result<()> {
         return Ok(());
     }
     let due: Vec<CommitId> = tx.core.ix.addenda_due.iter().copied().collect();
-    let Some(me) = tx.core.me() else { return Ok(()) };
+    let Some(me) = tx.core.member() else { return Ok(()) };
     for r in due {
         if let Err(e) = tx.step(Step::Answer, |tx| answer_removal(tx, &r, me)) {
             let now = tx.now();

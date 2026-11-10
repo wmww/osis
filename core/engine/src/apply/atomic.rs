@@ -52,6 +52,13 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
     }
 }
 
+/// A merge's signatures, for the signing chain to verify (`Indexes::merge_sigs`).
+pub(crate) fn note_merge(core: &mut Core, h: &osis_commit::Header, id: &CommitId, sigs: &osis_commit::Sigs) {
+    if h.rotation.as_ref().is_some_and(|r| !r.names.is_empty()) {
+        core.ix.merge_sigs.insert(*id, Arc::new(sigs.merge.clone()));
+    }
+}
+
 /// Adds a commit to the per-aspect and session range indexes.
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
     for a in &h.aspects {
@@ -69,6 +76,11 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
     }
     if let Some(e) = h.epoch {
         core.ix.by_epoch.insert((h.author, e), *id);
+        // at an epoch not open, a held word may name it (`refresh_epochs`)
+        if core.ix.epochs.get(&h.author).is_some_and(|j| j.unnamed_at(&e) != osis_perm::EpochStanding::Counts) {
+            core.ix.names_due.insert(*id);
+            core.ix.epochs_due.insert(h.author);
+        }
     }
     for b in &h.chunks {
         core.ix.by_chunk.insert(*b, *id);
@@ -606,7 +618,16 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         );
     }
     index_commit(tx.core, &id, &view);
+    note_merge(tx.core, &blob.header, &id, &blob.sigs);
     validity::note_addenda(tx.core, &h, &id, &parts.whole);
+    crate::flows::lists::note_listing(tx, &h, &id, &parts.whole)?;
+    if tx.core.accounts.contains_key(&h.author) && origin == Origin::Remote {
+        tx.core.signing_due = true;
+    }
+    // an account's rotation: this node answers it with its listing or addenda
+    if h.rotation.is_some() {
+        crate::flows::signing::note_rotation_due(tx, &id)?;
+    }
     // an explicit demotion: this node answers it with its addenda (`Engine::answer_removals`)
     if h.kind.is_role() && view.frontier.is_some() {
         note_addenda_due(tx, &id)?;
@@ -774,6 +795,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let mut held_changed = note_created(tx, &h, &parts.whole)?;
     let edges = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
     validity::note_addenda(tx.core, &h, id, &parts.whole);
+    crate::flows::lists::note_listing(tx, &h, id, &parts.whole)?;
     if edges && meta.view.frontier.is_some() {
         note_addenda_due(tx, id)?;
     }
@@ -979,7 +1001,7 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
 /// Keeps the indexes derived from states current: secrets opened from `secrets.0`, inbox
 /// delete-key hints `keys.0` replaces, group definitions.
 pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "group.0") {
+    if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "group.0" | "account.0") {
         return Ok(());
     }
     let v = tx.state(tid, ak)?.and_then(Fragment::read);
@@ -1003,6 +1025,8 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         }
         // every path that changes a `group.0` (late deltas, re-judging) updates `groups.0`
         "group.0" => tx.core.ix.groups.set(*tid, group_def(v)),
+        // an account's devices actor: its nodes take up the seeds a rotation added
+        "account.0" => crate::flows::signing::take_seeds(tx, tid)?,
         _ => {}
     }
     Ok(())

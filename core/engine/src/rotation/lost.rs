@@ -170,7 +170,7 @@ fn take_due(tx: &mut Tx<'_>, by: u64) -> Result<BTreeSet<Tid>> {
 /// Whether the node, a held key actor or a link key it keeps reading as has a role on `a` now
 /// (any path, `until` honoured).
 pub(crate) fn readable(core: &Core, a: &Tid) -> bool {
-    core.me().is_some_and(|m| core.role_now(&m, a).is_some()) || core.key_actors.keys().chain(core.ix.bearers.iter()).any(|k| core.role_now(k, a).is_some())
+    core.member().into_iter().chain([core.id.tid()]).any(|m| core.role_now(&m, a).is_some()) || core.key_actors.keys().chain(core.ix.bearers.iter()).any(|k| core.role_now(k, a).is_some())
 }
 
 /// Whether all that ended the node's (or a held key actor's) role on `a` is an `until` passing:
@@ -181,7 +181,7 @@ pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
     let ts = osis_base::Ts::default();
     let Some(tl) = core.timelines.get(a) else { return false };
     let role = |x: &Tid| tl.role_unfinalized(x, a, ts).is_some();
-    core.me().as_ref().is_some_and(role) || core.key_actors.keys().any(role)
+    core.member().as_ref().is_some_and(role) || core.key_actors.keys().any(role)
 }
 
 /// How long an actor lost by the time alone waits for node-sync to hear its labels out before
@@ -195,7 +195,7 @@ pub const LOST_HEARD_WAIT_MS: u64 = osis_base::format::ROLE_KEEP_MS;
 
 /// Whether box recipient `m` is this node, a held key actor or an actor it holds and reads now.
 fn ours(core: &Core, m: &Tid) -> bool {
-    Some(*m) == core.me() || *m == core.id.tid() || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
+    Some(*m) == core.member() || *m == core.id.tid() || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
 }
 
 /// Whether a role on `x` gives one on `a`: `x` is `a`, on its record chain, or holds a role on it.
@@ -360,7 +360,7 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
 /// only on the timeline's word: the edge's end now says erase. Least fixpoint, so holders
 /// cannot keep each other.
 fn keeps(core: &Core, lost: &BTreeSet<Tid>, marks: &BTreeMap<Tid, BTreeSet<Tid>>) -> BTreeMap<Tid, BTreeSet<Tid>> {
-    let me = core.me();
+    let me = core.member();
     let own = |h: &Tid| Some(*h) == me || core.key_actors.contains_key(h);
     let all: BTreeSet<Tid> = lost.iter().chain(marks.keys()).copied().collect();
     let ways = ways(core, &all);
@@ -400,7 +400,9 @@ pub(crate) fn without_frozen(core: &Core, blob: osis_commit::CommitBlob) -> osis
 /// Drops the secrets of `lost` actors (diagnostic each) and forgets what only they read; keeps
 /// what the rules keep, and erases the held copies (minus `dropped`, the user's) nothing keeps
 /// now. `rejudge`: a role commit may have changed what the held copies hang on.
-fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) -> Result<(Vec<Tid>, Forgotten)> {
+fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) -> Result<(Vec<Tid>, Forgotten)> {
+    // an account this node was removed from: what it read as it goes too
+    lost.extend(std::mem::take(&mut tx.core.left));
     if lost.is_empty() && dropped.is_empty() && !(rejudge && !tx.core.ix.kept.is_empty()) {
         return Ok((lost, Forgotten::default()));
     }

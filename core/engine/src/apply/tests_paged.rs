@@ -526,7 +526,7 @@ fn forge_snapshot(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_
     cb.blind = Some(blind);
     let forge_key = w.lp.peers[by].engine.sign_forged(&mut cb);
     let c = cb.build(&forge_key, &sec, &mut osis_commit::MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit;
-    Package { id: c.id(), bytes: c.encode(), blobs: blobs.0.into_iter().collect() }
+    Package { id: c.id(), bytes: c.encode(), blobs: blobs.0.into_iter().collect(), lists: Vec::new() }
 }
 
 /// A session of a made-up node `src` (made-up sources sort by their bytes among the peers'

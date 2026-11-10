@@ -420,6 +420,10 @@ fn a_siblings_far_future_commit_waits_spec_crdt_2_2() {
 /// epoch, as peer 1 would receive it.
 fn closed_world() -> (LocalPeer, Tid, Tid, CommitId, CommitId, Vec<u8>) {
     let mut lp = peers(3);
+    // the addenda here are the tests' own
+    for p in &mut lp.peers {
+        p.engine.core.addenda_on = false;
+    }
     lp.sync_all().unwrap();
     let (a, z) = (lp.peers[0].engine.me(), lp.peers[2].engine.me());
     let me = lp.peers[1].engine.me();

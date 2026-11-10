@@ -137,6 +137,14 @@ impl Engine {
                 }
             }
         }
+        // the account's signing chain, every line (spec/permissions.md §5.5, Chains travel)
+        if self.core.is_account(&me) {
+            let rots: Vec<CommitId> = self.core.ix.by_aspect.get(&(me, osis_base::Ak::new("keys.0").unwrap_or_else(|_| unreachable!()))).into_iter().flatten().map(|(_, c)| *c).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| m.view.author == me && m.view.epoch.is_some()) && self.header(c).is_some_and(|h| h.rotation.is_some())).collect();
+            let mine = BTreeSet::from([me]);
+            for c in rots {
+                add(c, self.parts_of(&c, &mine, &["keys.0"]));
+            }
+        }
         // the record chain's `created.0` records
         for t in self.core.record_chain(g).filter_map(|s| s.thing()) {
             if let Some(c) = self.latest_on(&t, "created.0") {

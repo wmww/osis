@@ -43,6 +43,9 @@ pub const VOID: &[u8] = b"o/";
 /// `ad/<commit>`: explicit demotions this node has not answered with addenda yet
 /// (`Indexes::addenda_due`).
 pub const ADDENDA_DUE: &[u8] = b"ad/";
+/// `rd/<commit>`: accounts' rotations not yet answered with this node's listing (its own
+/// account's) or addenda (another's) (`Indexes::rotations_due`).
+pub const ROTATIONS_DUE: &[u8] = b"rd/";
 /// Commits whose `keys.0` part on a thing wrote a keyset in its body (`Indexes::keyset_parts`;
 /// kept while the commit is held, whatever becomes of the body): `g/` + tid + commit ID.
 pub const OWN_KEYS: &[u8] = b"g/";
@@ -57,6 +60,14 @@ pub const APP: &[u8] = b"u/";
 pub const SIDES: &[u8] = b"sides";
 /// The account this node belongs to and its devices actor (two tids).
 pub const ACCOUNT: &[u8] = b"account";
+/// Thing lists held (`flows::lists`): `tl/` + rotation ID + thing + be64 index, the `ThingCert`.
+/// Kept for good, like the role commits they name.
+pub const LISTS: &[u8] = b"tl/";
+/// Names of accounts' commits (`flows::lists`): `tn/` + commit ID + thing + source (a rotation
+/// whose thing list, or a listing whose `listing.0`, names the commit on the thing).
+pub const NAMES: &[u8] = b"tn/";
+/// The same rows by source: `tb/` + source + commit ID + thing.
+pub const NAMED_BY: &[u8] = b"tb/";
 
 /// A dot as a value (local records).
 pub fn dot_value(d: &osis_crdt::Dot) -> osis_base::Value {

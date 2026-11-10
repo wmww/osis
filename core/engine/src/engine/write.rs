@@ -73,6 +73,9 @@ pub struct Mutation {
     pub(crate) blind: Option<[u8; 16]>,
     /// Memberships (thing, group) the commit must not leave unsynced (`require_synced`).
     pub(crate) synced: Vec<(Tid, Tid)>,
+    /// A rotation of the signing account's chain, with the key of each fork it names
+    /// (spec/crypto.md §9; `flows::signing`).
+    pub(crate) rotation: Option<crate::flows::signing::AccountRotation>,
 }
 
 impl Default for Mutation {
@@ -87,7 +90,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new() }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new(), rotation: None }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -388,6 +391,8 @@ pub(crate) struct CommitPlan {
     pub expires: Option<u64>,
     /// An undo's: `expires` stands, whatever its keys' defaults (`build_one`).
     pub restores: bool,
+    /// The header's rotation of the signer's chain and its merge keys (`Mutation::rotation`).
+    pub rotation: Option<crate::flows::signing::AccountRotation>,
 }
 
 /// A fresh header blind.
@@ -613,9 +618,14 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     b.undoes = plan.undoes;
     b.frontier = plan.frontier;
     b.blind = Some(plan.blind);
+    b.rotation = plan.rotation.as_ref().map(|r| (r.header.clone(), r.merge_keys.clone()));
     // a commit built in a memory transaction is a memory commit (spec/commits.md §2, §3)
     b.ephemeral = tx.txn.is_memory().then_some(osis_commit::EphClass::Plain);
-    let account = tx.core.account_signing(&node)?;
+    // a merge is signed at the head it names first (`flows::signing::rotate_in`)
+    let account = match plan.rotation.as_ref().and_then(|r| r.at.clone()) {
+        Some(at) => Some(at),
+        None => tx.core.account_signing(&node)?,
+    };
     b.account = account.as_ref().map(|(epoch, k)| osis_commit::AccountSigner { epoch: *epoch, inner: k.inner.clone(), node: tx.core.id.tid(), node_key: tx.core.id.keys().signing.clone() });
     let built = {
         let core: &Core = tx.core;
@@ -634,6 +644,10 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         b => b?,
     };
     let id = built.commit.id();
+    // a rotation's thing lists are held before it applies, so what they name never falls here
+    if let Some(r) = &plan.rotation {
+        crate::flows::lists::keep_certs(tx, &r.certs(id))?;
+    }
     // rights are checked before anything leaves the node: a request dropping nothing is refused
     if !tx.core.skip_writer_rules {
         crate::retention::check_request(tx.core, &built.commit.header, &id)?;
@@ -731,7 +745,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             e => Err(e),
         });
     }
-    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false };
+    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false, rotation: m.rotation.take() };
     if !m.unchecked {
         check_acts(tx.core, node, &|t| base.creates.get(t), &base.actor, ts)?;
     }

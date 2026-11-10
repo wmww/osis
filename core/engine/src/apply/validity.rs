@@ -837,6 +837,11 @@ impl<'a> Judge<'a> {
         if ak == "roles.0" {
             return true;
         }
+        // a listing needs no role on its thing: it names its author's own commits
+        // (spec/permissions.md §5.5), and the epoch rule judged it above
+        if ak == "listing.0" {
+            return h.epoch.is_some() && h.kind.is_role();
+        }
         let Some(tl) = tl else { return false };
         // an addendum: valid as its author's plain delta, by the timeline or by a counting
         // addendum (the fixpoint, `vouching`)
@@ -1010,7 +1015,7 @@ pub(crate) fn misjudged(core: &Core) -> Option<String> {
 /// One pass of `rejudge_all`.
 fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     // the epoch rule first: it decides which role commits the timelines read
-    let epochs = tx.core.refresh_epochs();
+    let epochs = crate::flows::account::refresh_epochs(tx)?;
     if resolve_unresolved(tx)? | epochs {
         tx.core.update_timelines();
     }
