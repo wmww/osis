@@ -73,6 +73,8 @@ pub struct World {
     peer_cut: BTreeSet<(Who, Who)>,
     /// Who can reach whom over `peer://` (`reach`).
     pub reach: Reach,
+    /// `peer://` dials by (dialer, node listening at the dialed key), routed or not.
+    peer_dials: BTreeMap<(usize, usize), u64>,
     /// Clocks of the nodes made with `cfg_clocked`.
     own_clocks: Vec<(Arc<ManualClock>, ClockSpec)>,
     queue: VecDeque<(u64, Msg)>,
@@ -122,6 +124,7 @@ impl World {
             peer_links: BTreeMap::new(),
             peer_cut: BTreeSet::new(),
             reach: Reach::default(),
+            peer_dials: BTreeMap::new(),
             own_clocks: Vec::new(),
             queue: VecDeque::new(),
             no_storm: false,
@@ -523,6 +526,9 @@ impl World {
     /// it, its session `SyncEngine::accept`'s.
     fn dial_peer(&mut self, d: usize, conn: ConnId, address: &osis_label::Address) {
         let dbs = self.dbs();
+        if let Some(m) = self.reach.node_of(&address.key) {
+            *self.peer_dials.entry((d, m)).or_default() += 1;
+        }
         let target = self.reach.node_of(&address.key).filter(|m| *m != d && !self.is_offline(*m) && !self.is_offline(d));
         let cut = &self.peer_cut;
         let route = target.and_then(|m| self.reach.route(d, m, &address.url, |a, b| cut.contains(&(a, b)) || cut.contains(&(b, a))));
@@ -546,6 +552,13 @@ impl World {
         self.peer_links.insert((m, pc), (d, conn, route));
         self.send_msg(Msg::Up(d, conn));
         self.actions(m, acts);
+    }
+
+    /// How many `peer://` dials `from` made so far to the node `to` listens as, whether they
+    /// reached it or not.
+    pub fn peer_dials(&mut self, from: &Osis, to: &Osis) -> u64 {
+        let (Some(f), Some(t)) = (self.index(from), self.index(to)) else { return 0 };
+        self.peer_dials.get(&(f, t)).copied().unwrap_or(0)
     }
 
     /// A relay of the reachability model (`Reach::add_relay`).

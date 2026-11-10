@@ -217,8 +217,12 @@ fn a_redeemer_knowing_nothing_sends_no_filter_spec_sync_10() {
     let (k, _, _, seed) = crate::net_judgment::link(&mut net, a, account);
     let key = reach_ed(&mut net, a);
     let c = net.node(2, &[]);
-    net.engine(c).hold_key_actor(seed).unwrap();
+    let held = net.engine(c).hold_key_actor(seed).unwrap();
+    // the sharer is dialed while a label is followed through the link: here one it does not
+    // serve, so `c` comes to know nothing there
     net.sync(c).follow_link_peer(k, k, vec![osis_label::Address { url: osis_transport::peer_url(&[]), key }]);
+    let acts = net.sync(c).follow(held, k, LabelId([0x99; 16]), vec![]);
+    net.actions(c, acts);
     net.run();
     assert_eq!(net.sync(c).pass_stats().filters_sent, 0, "knows no actor of the listener");
     assert!(net.sync(c).pass_stats().filters_received >= 1, "and tests the listener's");

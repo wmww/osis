@@ -27,6 +27,7 @@ impl SyncEngine {
                 self.state.remove_hint(&l);
             }
         }
+        self.end_idle_links();
         for (conn, label) in self.dirty_labels() {
             if let Some(l) = self.lc_mut(conn, &label) {
                 l.dirty = false;

@@ -411,8 +411,8 @@ impl SyncEngine {
 
     /// Records the sharer node a followed link names (`peers`: its `peer://` addresses, from
     /// the link text only; spec/permissions.md §7). It is dialed like a co-reader (ephemeral key)
-    /// for K's labels and the target's,
-    /// and nothing else, until `forget_link`. Whatever the link lists learns this node's IP
+    /// for K's labels and the target's, and nothing else, while one of them is synced here
+    /// (`end_idle_links`) or until `forget_link`. Whatever the link lists learns this node's IP
     /// (following the link is consent: spec/sync.md §10).
     pub fn follow_link_peer(&mut self, k: Tid, target: Tid, peers: Vec<Address>) {
         let peers: Vec<Address> = peers.into_iter().filter(is_peer).collect();
@@ -424,8 +424,8 @@ impl SyncEngine {
         let _ = self.state.flush(&mut self.engine);
     }
 
-    /// The redemption of followed link `k` went through: its sharer node stays a route, redialed
-    /// like a co-reader (`lost`).
+    /// The redemption of followed link `k` ended: its sharer node, while it stays a route, is
+    /// redialed like a co-reader (`lost`).
     pub fn link_redeemed(&mut self, k: &Tid) {
         self.redeeming.remove(k);
     }
@@ -452,17 +452,40 @@ impl SyncEngine {
         self.handle(Event::Local)
     }
 
-    /// Where to dial followed links' sharer nodes, by key, with the labels each serves here: K's
-    /// hinted label and the synced labels of K and of the target.
-    pub(crate) fn link_routes(&mut self) -> BTreeMap<[u8; 32], (Address, BTreeSet<LabelId>)> {
+    /// The labels each followed link's sharer node serves here: K's hinted label and the synced
+    /// labels of K and of the target.
+    fn link_labels(&mut self) -> Vec<(Tid, BTreeSet<LabelId>)> {
         if self.state.link_peers.is_empty() {
-            return BTreeMap::new();
+            return Vec::new();
         }
         let synced = self.labels();
+        let hints = &self.state.hints;
+        let labels = |k: &Tid, target: &Tid| -> BTreeSet<LabelId> {
+            let mut ls: BTreeSet<LabelId> = synced.iter().filter(|(g, _)| g == k || g == target).map(|(_, l)| l.id).collect();
+            ls.extend(hints.iter().filter(|(_, h)| h.thing == *k && h.via.is_some()).map(|(l, _)| *l));
+            ls
+        };
+        self.state.link_peers.iter().map(|(k, lp)| (*k, labels(k, &lp.target))).collect()
+    }
+
+    /// A followed link is done once its sharer node serves no label here (access to K and the
+    /// target ended: a leave once placed, a kick): the record goes, so the sharer is dialed no
+    /// more (spec/permissions.md §7: kept only for K's labels and the target's).
+    pub(crate) fn end_idle_links(&mut self) {
+        let idle: Vec<Tid> = self.link_labels().into_iter().filter(|(_, ls)| ls.is_empty()).map(|(k, _)| k).collect();
+        for k in idle {
+            self.state.remove_link_peer(&k);
+            self.redeeming.remove(&k);
+        }
+    }
+
+    /// Where to dial followed links' sharer nodes, by key, with the labels each serves here
+    /// (`link_labels`, never none).
+    pub(crate) fn link_routes(&mut self) -> BTreeMap<[u8; 32], (Address, BTreeSet<LabelId>)> {
+        let ks = self.link_labels();
         let mut out: BTreeMap<[u8; 32], (Address, BTreeSet<LabelId>)> = BTreeMap::new();
-        for (k, lp) in &self.state.link_peers {
-            let mut labels: BTreeSet<LabelId> = synced.iter().filter(|(g, _)| g == k || *g == lp.target).map(|(_, l)| l.id).collect();
-            labels.extend(self.state.hints.iter().filter(|(_, h)| h.thing == *k && h.via.is_some()).map(|(l, _)| *l));
+        for (k, labels) in ks.into_iter().filter(|(_, ls)| !ls.is_empty()) {
+            let Some(lp) = self.state.link_peers.get(&k) else { continue };
             for a in &lp.peers {
                 out.entry(a.key).or_insert_with(|| (a.clone(), BTreeSet::new())).1.extend(labels.iter().copied());
             }
