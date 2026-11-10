@@ -34,11 +34,14 @@ fn reaches(item: &PurgeItem, ch: &Header, c: &CommitId) -> bool {
     }
 }
 
-/// Whether a request with header `p` names delta `a` of commit `c` (header `ch`): an item on its
-/// aspect reaches it, it is stamped before the request, and a request that expires reaches only
-/// deltas expiring no later than it (spec/commits.md §5).
+/// Whether a request with header `p` names delta `a` of commit `c` (header `ch`): a delta with
+/// writes of its own (a snapshot has none, so no request names it: it is never purged, its copies
+/// of purged values go as any carrying body's), an item on its aspect reaches it, it is stamped
+/// before the request, and a request that expires reaches only deltas expiring no later than it
+/// (spec/commits.md §5).
 fn names(p: &Header, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
-    stamped_before(p.ts, &a.ak, ch.ts) && p.expires.is_none_or(|e| ch.expires.is_some_and(|x| x <= e)) && p.purge.iter().any(|i| i.tid() == &a.tid && i.ak() == &a.ak && reaches(i, ch, c))
+    ch.kind.has_own_writes()
+        && stamped_before(p.ts, &a.ak, ch.ts) && p.expires.is_none_or(|e| ch.expires.is_some_and(|x| x <= e)) && p.purge.iter().any(|i| i.tid() == &a.tid && i.ak() == &a.ak && reaches(i, ch, c))
 }
 
 /// Whether commit `pc` (header `p`: a purge request or a compaction snapshot) holds the right over
@@ -107,11 +110,11 @@ impl HeldSet for Cut<'_> {
 pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()> {
     for item in &p.purge {
         // a request that expires reaches only deltas expiring no later: one naming a held delta
-        // beyond it is refused, never written to drop less than it says (a snapshot has nothing
-        // of its own to take)
+        // beyond it is refused, never written to drop less than it says (no request names a
+        // snapshot, `names`)
         if let Some(e) = p.expires {
             for c in named_by(core, item, p.ts) {
-                let Some(m) = core.ix.commits.get(&c).filter(|m| !m.header.kind.is_compaction() && m.aspect(item.tid(), item.ak()).is_some()) else { continue };
+                let Some(m) = core.ix.commits.get(&c).filter(|m| m.header.kind.has_own_writes() && m.aspect(item.tid(), item.ak()).is_some()) else { continue };
                 if stamped_before(p.ts, item.ak(), m.header.ts) && reaches(item, &m.header, &c) && m.header.expires.is_none_or(|x| x > e) {
                     return Err(Error::Clash(format!("a purge in a commit that expires reaches only commits expiring no later, and {c:?} on {} {} expires later or never. Write the purge as a commit of its own", item.tid(), item.ak())));
                 }
@@ -385,8 +388,8 @@ impl AspectRequests {
 /// counts as never received from here on: off the value-less list, its leftover set aside
 /// (`unstrip`) and its writes gone from the state until a copy comes (node-sync fetches it,
 /// `Changed::undropped`; a holder uploads it). A body stripped for carrying others' values stays held
-/// as its leftover (spec/permissions.md §6); a request naming a snapshot takes nothing. Cost: the aspect's requests and
-/// what they name, its snapshots' views, and with an aspect-wide request a walk of its parts, as
+/// as its leftover (spec/permissions.md §6); no request names a snapshot (`names`). Cost: the aspect's requests
+/// and what they name, its snapshots' views, and with an aspect-wide request a walk of its parts, as
 /// `validity::rejudge_once` walks them (`scale::purge_rejudge_is_linear_in_requests_spec_permissions_6`). A memory delta purged stays
 /// purged: no fall restores it (a divergence, notes/ephemeral.md Divergences left).
 pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
@@ -413,7 +416,7 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
         if m.header.expires.is_some_and(|t| t <= now) || super::past_signal_bound(&m.header, ai, now) {
             continue;
         }
-        // a snapshot has no values of its own: a request naming it takes nothing
+        // no request names a snapshot (`names`)
         if writes_of(&m.header, &c, ai).is_empty() {
             continue;
         }

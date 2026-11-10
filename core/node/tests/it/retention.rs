@@ -3361,35 +3361,6 @@ fn covered_drop_needs_the_nodes_own_right_spec_commits_5() {
     assert_eq!(e.drop_from(&c, &t, &k).unwrap(), None, "the writer may not purge it");
 }
 
-// spec/commits.md §5 (Purge): a request naming a whole aspect history names its compaction
-// snapshots too, judged by the snapshot's own retention and header: a snapshot dropped as covered
-// reads as purged by it in the history.
-#[test]
-fn aspect_purge_names_its_snapshots_spec_commits_5() {
-    use osis_node::engine::listing::{CommitFrom, PartBody};
-    let mut lp = net(1, 0x7e06);
-    let t = new_thing(&mut lp, 0);
-    let k = ak("t:gone.0");
-    set(&mut lp, 0, t, &GONE, "a");
-    lp.advance(5);
-    set(&mut lp, 0, t, &GONE, "b");
-    let s0 = snapshots_held(&mut lp, 0, t, &k);
-    assert_eq!(s0.len(), 1);
-    let s0 = s0[0];
-    lp.advance(5);
-    set(&mut lp, 0, t, &GONE, "c");
-    assert!(!lp.peers[0].engine.body_not_dropped(&s0, &t, &k), "covered by the next cover");
-    lp.advance(5);
-    let mut m = Mutation::new();
-    m.purge(PurgeItem::Aspect { tid: t, ak: k.clone() });
-    m.set(t, &GONE, &s("d")).unwrap();
-    let pc = lp.peers[0].commit(m).unwrap().unwrap();
-    let e = &mut lp.peers[0].engine;
-    let (rows, _) = e.held_parts(&t, &k, CommitFrom::Newest, 100, usize::MAX).unwrap();
-    let row = rows.iter().find(|r| r.id == s0).expect("the snapshot's entry");
-    assert_eq!(row.body, PartBody::Purged(pc));
-}
-
 // spec/permissions.md §2 (Self-removal): removing one's own edge is a self-removal whatever
 // other authority the author has: an admin of t that is also admin through a group removes its
 // own edge with no frontier, and it applies. Read as explicit (both conditions), a removal without

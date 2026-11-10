@@ -1329,3 +1329,75 @@ fn undo_copying_two_expiries_waits_spec_crdt_4_6() {
     assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), None, "e expired");
     assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("kept"))]).unwrap(), Some(item("v", 1)));
 }
+
+// spec/commits.md §5 Purge (a snapshot has no values of its own: a request naming it takes nothing
+// of it; every body carrying a purged value is held as its leftover whatever the order): a message,
+// a snapshot carrying it, a later message and snapshot, and an aspect-wide request by their author,
+// in every arrival order (the snapshots whole or as bare headers that a copy fills in later): the
+// receiver keeps no purged value, lists the messages as purged and the snapshots as never purged,
+// alike in every order, and so whether it holds a snapshot whole or dropped it as covered.
+#[test]
+fn purge_strips_carrying_snapshots_alike_in_every_order_spec_commits_5() {
+    let k = ak("t:reg.0");
+    let marker = "SECRET-SNAP-4e7a";
+    let mut seen: Option<(Vec<osis_node::engine::listing::PartBody>, std::collections::BTreeMap<osis_base::CommitId, osis_base::CommitId>)> = None;
+    for bare in [false, true] {
+        for order in [[0usize, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            let mut lp = net2(151);
+            let t = new_thing(&mut lp, 0);
+            lp.sync(0, 1).unwrap();
+            lp.advance(5);
+            let m1 = set(&mut lp, 0, t, &REG, marker);
+            lp.advance(5);
+            let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+            lp.advance(5);
+            let m2 = set(&mut lp, 0, t, &REG, "later");
+            lp.advance(5);
+            let s2 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+            lp.advance(5);
+            let pk = |lp: &mut LocalPeer, c| lp.peers[0].engine.package(&c).unwrap().unwrap();
+            let msgs = vec![pk(&mut lp, m1), pk(&mut lp, m2)];
+            let snaps = vec![pk(&mut lp, s1), pk(&mut lp, s2)];
+            let mut m = Mutation::new();
+            m.set(t, &TEXT, &s("x")).unwrap();
+            m.purge(PurgeItem::Aspect { tid: t, ak: k.clone() });
+            let p = lp.peers[0].commit(m).unwrap().unwrap();
+            let groups = [msgs, snaps.clone(), vec![pk(&mut lp, p)]];
+            for g in order {
+                for x in &groups[g] {
+                    let mut x = x.clone();
+                    if bare && g == 1 {
+                        x.bytes = osis_commit::rewrite(&osis_commit::CommitBlob::decode(&x.bytes).unwrap(), |_| true).encode();
+                    }
+                    lp.deliver(1, &x).unwrap();
+                }
+                lp.peers[1].reexamine().unwrap();
+            }
+            if bare {
+                // the snapshots' copies come after all
+                for x in &snaps {
+                    lp.deliver(1, x).unwrap();
+                }
+                lp.peers[1].reexamine().unwrap();
+            }
+            let e = &mut lp.peers[1].engine;
+            let bodies: Vec<_> = [m1, m2, s1, s2].iter().map(|c| e.part(&t, &k, c, usize::MAX).unwrap().unwrap().body).collect();
+            let purged = e.purged_on(&t, &k).unwrap();
+            assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "bare {bare}, order {order:?}: the purged value kept");
+            assert!(!purged.contains_key(&s1) && !purged.contains_key(&s2), "bare {bare}, order {order:?}: a snapshot listed purged {purged:?}");
+            match &seen {
+                None => seen = Some((bodies, purged)),
+                Some(x) => assert_eq!(*x, (bodies, purged), "bare {bare}, order {order:?}"),
+            }
+            // compaction drops the older snapshot: still never purged
+            let e = &mut lp.peers[1].engine;
+            e.drop_body(&s1, &t, &k).unwrap();
+            assert_eq!(e.part(&t, &k, &s1, usize::MAX).unwrap().unwrap().body, osis_node::engine::listing::PartBody::Dropped, "bare {bare}, order {order:?}");
+            assert!(!e.purged_on(&t, &k).unwrap().contains_key(&s1), "bare {bare}, order {order:?}");
+        }
+    }
+    let (bodies, purged) = seen.unwrap();
+    assert!(matches!(bodies[0], osis_node::engine::listing::PartBody::Purged(_)), "{bodies:?}");
+    assert!(matches!(bodies[1], osis_node::engine::listing::PartBody::Purged(_)), "{bodies:?}");
+    assert!(purged.len() >= 2, "{purged:?}");
+}

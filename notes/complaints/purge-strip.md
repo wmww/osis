@@ -1,0 +1,3 @@
+# purge-strip
+- The brief's premise (an arrival-order strip, a possible erasure leak) came from reading `purged_on` as "stripped": it lists every part whose body is gone (stripped, or dropped as covered by compaction) that a standing request names, so a snapshot dropped by a node's own compaction read as purged. A sim dump of `aspect_dump` + `body_fragment` at both nodes settled it in minutes; worth doing before theorising.
+- Reproducing a branch-only sim failure meant checking the branch out detached in the task worktree (no second target dir allowed), adding a debug dump to the scenario, then switching back.
