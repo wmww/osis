@@ -341,6 +341,7 @@ fn changed_at_moves_on_a_role_change_only() {
     let c = net.node(3, &[host]);
     let tc = net.node_tid(c);
     net.pair(c, a);
+    assert_eq!(changed(&mut net, a, l), Some(first), "learning c's keys is no change");
     net.grant(a, g, tc, Role::Read);
     net.run();
     let moved = changed(&mut net, a, l).unwrap();
@@ -360,10 +361,10 @@ fn changed_at_moves_when_a_holder_reaches_it_through_a_roster() {
     let h = net.group(a, &[], &[host]);
     net.grant(a, g, h, Role::Read);
     net.run();
-    let before = changed(&mut net, a, l).unwrap();
     let x = net.node(3, &[host]);
     let tx_ = net.tid(x);
     net.pair(x, a);
+    let before = changed(&mut net, a, l).unwrap();
     net.grant(a, h, tx_, Role::Read);
     net.run();
     assert!(changed(&mut net, a, l).unwrap() > before, "x now reaches g through h");
@@ -478,10 +479,10 @@ fn changed_at_moves_through_a_cycle_of_rosters() {
         let lof = |t: Tid| labels.iter().find(|s| s.group == t).map(|s| s.label).unwrap();
         let (lg2, lh2) = (lof(g), lof(h));
         assert_eq!(lg, lg2);
-        let before = (changed(&mut net, a, lg2).unwrap(), changed(&mut net, a, lh2).unwrap());
         let x = net.node(3, &[host]);
         let tx_ = net.tid(x);
         net.pair(x, a);
+        let before = (changed(&mut net, a, lg2).unwrap(), changed(&mut net, a, lh2).unwrap());
         net.grant(a, if grant_on_second { h } else { g }, tx_, Role::Read);
         net.run();
         assert!(changed(&mut net, a, lg2).unwrap() > before.0, "g's sync ID moved (grant on {})", if grant_on_second { "h" } else { "g" });
