@@ -6,16 +6,15 @@ use held_model::*;
 
 const SIG: Aspect = Aspect::signal(5);
 const SIG2: Aspect = Aspect::signal(6);
-const FOREVER_KEPT: Retention = Retention { by: PurgeBy::AuthorOrAdmin, history: History::Keep { until: FOREVER, after: 0 } };
 const A: NodeId = 1;
 const B: NodeId = 2;
 const X: NodeId = 3;
 
-fn fire(id: CommitId, author: NodeId, h: u64, r: Retention) -> Commit {
-    reg(id, author, h, SIG, r, id as i64)
+fn fire(id: CommitId, author: NodeId, h: u64) -> Commit {
+    reg(id, author, h, SIG, Retention::PLAIN, id as i64)
 }
-fn edit(id: CommitId, author: NodeId, h: u64, r: Retention, of: CommitId) -> Commit {
-    let mut c = fire(id, author, h, r);
+fn edit(id: CommitId, author: NodeId, h: u64, of: CommitId) -> Commit {
+    let mut c = fire(id, author, h);
     c.parts[0].replaces = Some(of);
     c
 }
@@ -29,8 +28,12 @@ fn purge_of(id: CommitId, author: NodeId, h: u64, target: CommitId) -> Commit {
 fn grants() -> Vec<Commit> {
     vec![edge(1, FIRST_ADMIN, 0, A, Some(Role::Write), None), edge(2, FIRST_ADMIN, 0, B, Some(Role::Write), None), edge(3, FIRST_ADMIN, 0, X, Some(Role::Admin), None)]
 }
+/// The grants, `set`, and unless `set` holds a `retention^.0` setting, one keeping every AK for good.
 fn world(now: u64, set: &[Commit]) -> Held {
     let mut c = grants();
+    if !set.iter().any(|c| c.parts.iter().any(|p| p.aspect == Aspect::RETENTION)) {
+        c.push(setting_by(4, FIRST_ADMIN, 0, Setting { rules: vec![], default: Some(SettingEntry { history: KEPT, expires: None }) }));
+    }
     c.extend_from_slice(set);
     held(now, c)
 }
@@ -59,15 +62,14 @@ fn without(s: &[Commit], gone: &[CommitId]) -> Vec<Commit> {
     s.iter().filter(|c| !gone.contains(&c.id)).cloned().collect()
 }
 /// The shape every property reasons about: same-actor versions on one original.
-fn u_edits(r: Retention) -> Vec<Commit> {
-    vec![fire(10, A, 1, r), edit(11, A, 2, r, 10), edit(12, A, 3, r, 10)]
+fn u_edits() -> Vec<Commit> {
+    vec![fire(10, A, 1), edit(11, A, 2, 10), edit(12, A, 3, 10)]
 }
 
 // the rule, one honored example: reads as the newest, keeps its place and order
 #[test]
 fn an_edit_reads_in_the_originals_place() {
-    let r = FOREVER_KEPT;
-    let s = [fire(10, A, 1, r), fire(20, B, 2, r), edit(11, A, 3, r, 10), edit(12, A, 4, r, 10)];
+    let s = [fire(10, A, 1), fire(20, B, 2), edit(11, A, 3, 10), edit(12, A, 4, 10)];
     assert_eq!(shown(&world(9, &s)), vec![(10, 12, val(12)), (20, 20, val(20))]);
 }
 
@@ -89,17 +91,16 @@ fn alike(u: &[Commit], nows: &[u64]) {
 
 // every claim shape that is not honored, forged or dangling
 fn u_forged() -> Vec<Commit> {
-    let r = FOREVER_KEPT;
-    let mut u = u_edits(r);
-    u.push(edit(30, B, 4, r, 10)); // another actor's claim
-    u.push(Commit { actor: A, ..edit(31, B, 4, r, 10) }); // actor claimed, not verified: invalid
-    u.push(edit(32, A, 4, r, 11)); // names a version (chain)
-    u.push(edit(33, A, 0, r, 10)); // sorts before it
-    let mut other = edit(34, A, 4, r, 10); // on another aspect
-    other.parts[0] = part(SIG2, r, vec![set(4, 34, 34)]);
+    let mut u = u_edits();
+    u.push(edit(30, B, 4, 10)); // another actor's claim
+    u.push(Commit { actor: A, ..edit(31, B, 4, 10) }); // actor claimed, not verified: invalid
+    u.push(edit(32, A, 4, 11)); // names a version (chain)
+    u.push(edit(33, A, 0, 10)); // sorts before it
+    let mut other = edit(34, A, 4, 10); // on another aspect
+    other.parts[0] = part(SIG2, Retention::PLAIN, vec![set(4, 34, 34)]);
     other.parts[0].replaces = Some(10);
     u.push(other);
-    u.push(edit(35, A, 4, r, 999)); // names nothing
+    u.push(edit(35, A, 4, 999)); // names nothing
     u
 }
 
@@ -145,10 +146,9 @@ fn forged_claims_change_only_the_forgers_own_place() {
 fn nodes_holding_the_same_commits_read_alike() {
     alike(&u_forged(), &[9]);
     alike(&u_validity(), &[9]);
-    alike(&u_purge(Retention::PLAIN.after(2 * HOUR)), &[6, 7]);
+    alike(&u_purge(keep_after(2)), &[6, 7]);
     alike(&u_expiry(), &[5, 7]);
-    let r = FOREVER_KEPT;
-    alike(&[missing(fire(10, A, 1, r), 0), edit(11, A, 2, r, 10), missing(edit(12, A, 3, r, 10), 0), edit(30, B, 4, r, 10)], &[9]);
+    alike(&[missing(fire(10, A, 1), 0), edit(11, A, 2, 10), missing(edit(12, A, 3, 10), 0), edit(30, B, 4, 10)], &[9]);
 }
 
 /// A reading depends only on what is listed: a held commit not listed reads as one never held
@@ -167,8 +167,7 @@ fn unlisted_counts_for_nothing(u: &[Commit], nows: &[u64], signals: &[CommitId])
 }
 
 fn u_validity() -> Vec<Commit> {
-    let r = FOREVER_KEPT;
-    let mut u = u_edits(r);
+    let mut u = u_edits();
     u.push(edge(40, X, 4, A, None, Some(vec![]))); // kick, all A's writes fall
     u.push(edge(41, X, 4, A, None, Some(vec![10, 11, 12]))); // kick, all stay
     u.push(edge(42, X, 4, A, None, Some(vec![10]))); // the original stays, the edits fall
@@ -182,7 +181,7 @@ fn u_validity() -> Vec<Commit> {
 fn an_unlisted_commit_counts_for_nothing() {
     unlisted_counts_for_nothing(&u_validity(), &[9], &[10, 11, 12]);
     unlisted_counts_for_nothing(&u_expiry(), &[1, 3, 4, 5, 6, 7, 9], &[10, 11, 12, 13]);
-    unlisted_counts_for_nothing(&u_purge(Retention::PLAIN.after(2 * HOUR)), &[4, 6, 7, 9, 12], &[10, 11, 12]);
+    unlisted_counts_for_nothing(&u_purge(keep_after(2)), &[4, 6, 7, 9, 12], &[10, 11, 12]);
 }
 
 // An invalid original takes its versions with it (no entry at its place), and they return when it
@@ -209,15 +208,16 @@ fn an_invalid_original_loses_its_place_and_returns_with_it() {
 // original is valid
 #[test]
 fn a_valid_edit_of_an_invalid_original_stands_alone_until_it_validates() {
-    let r = FOREVER_KEPT;
-    let s = [fire(10, A, 1, r), edit(11, A, 3, r, 10)];
-    let granted_at = |h| held(9, vec![edge(1, FIRST_ADMIN, h, A, Some(Role::Write), None), s[0].clone(), s[1].clone()]);
+    let s = [fire(10, A, 1), edit(11, A, 3, 10)];
+    let granted_at = |h| held(9, vec![edge(1, FIRST_ADMIN, h, A, Some(Role::Write), None), setting(4, 0, SIG, KEPT), s[0].clone(), s[1].clone()]);
     assert_eq!(shown(&granted_at(2)), vec![(11, 11, val(11))]);
     assert_eq!(shown(&granted_at(0)), vec![(10, 11, val(11))]);
 }
 
-fn u_purge(r: Retention) -> Vec<Commit> {
-    let mut u = u_edits(r);
+/// Versions, purges of each, and the signal's window `opt` (its setting in every subset).
+fn u_purge(opt: Opt) -> Vec<Commit> {
+    let mut u = u_edits();
+    u.push(setting(5, 0, SIG, opt));
     u.push(purge_of(50, A, 5, 12));
     u.push(purge_of(51, A, 5, 11));
     u.push(purge_of(52, A, 5, 10));
@@ -225,12 +225,12 @@ fn u_purge(r: Retention) -> Vec<Commit> {
     u
 }
 
-// A purged newest version keeps older ones from returning, at every time, when versions share
-// retention (a required rule makes them)
+// A purged newest version keeps older ones from returning, at every time: versions share their
+// aspect's window, each from its own `ts`
 #[test]
 fn a_purged_newest_version_keeps_older_ones_gone() {
-    for r in [FOREVER_KEPT, Retention::PLAIN.until(at(8)), Retention::PLAIN.after(2 * HOUR)] {
-        each_subset(&u_purge(r), |s| {
+    for opt in [KEPT, keep_until(8), keep_after(2)] {
+        each_subset(&u_purge(opt), |s| {
             for n in [6u64, 7, 8, 9, 12, 20] {
                 let w = world(n, s);
                 let o = evaluate(&w);
@@ -245,18 +245,20 @@ fn a_purged_newest_version_keeps_older_ones_gone() {
     }
 }
 
-// Limit: a purged edit with a shorter keep than older versions lets them return when its tombstone
-// ends. Purging old text names the earlier versions in the same commit, so nothing returns.
+// One window per aspect: a purged edit's tombstone, listed from its request's `ts`, outlasts the
+// versions before it, so none returns when it ends. Purging old text names the earlier versions too.
 #[test]
-fn a_purged_edit_with_a_shorter_keep_is_a_stated_limit() {
-    let short = Retention::PLAIN.after(2 * HOUR);
-    let s = [fire(10, A, 1, FOREVER_KEPT), edit(11, A, 2, short, 10), purge_of(50, A, 3, 11)];
-    assert_eq!(shown(&world(4, &s)), vec![(10, 11, Shows::Purged)]);
-    assert_eq!(shown(&world(6, &s)), vec![(10, 10, val(10))]);
-    let mut v = edit(11, A, 2, short, 10);
+fn a_purged_edits_tombstone_outlasts_older_versions() {
+    let w = setting(5, 0, SIG, keep_after(2));
+    let s = [w.clone(), fire(10, A, 1), edit(11, A, 2, 10), purge_of(50, A, 3, 11)];
+    assert_eq!(shown(&world(2, &s)), vec![(10, 11, Shows::Purged)]);
+    // the original left at 3: the tombstone stands alone until 5, and 10 never shows again
+    assert_eq!(shown(&world(4, &s)), vec![(11, 11, Shows::Purged)]);
+    assert_eq!(shown(&world(5, &s)), vec![]);
+    let mut v = edit(11, A, 2, 10);
     v.purge.push(PurgeItem::Commit { commit: 10, thing: T, aspect: SIG });
-    let s = [fire(10, A, 1, FOREVER_KEPT), v, purge_of(50, A, 3, 11)];
-    assert_eq!(shown(&world(3000, &s)), vec![(10, 10, Shows::Purged)]);
+    let s = [fire(10, A, 1), v, purge_of(50, A, 3, 11)];
+    assert_eq!(shown(&world(3000, &s)), vec![(10, 11, Shows::Purged)]);
 }
 
 // A purge takes only what it names: a racing or later version of a purged original still shows, in
@@ -264,19 +266,18 @@ fn a_purged_edit_with_a_shorter_keep_is_a_stated_limit() {
 // could do. A deletion meant to hold names the versions too.
 #[test]
 fn a_purge_takes_only_what_it_names() {
-    let r = FOREVER_KEPT;
-    let race = [fire(10, A, 1, r), edit(11, A, 3, r, 10), purge_of(50, X, 2, 10)];
+    let race = [fire(10, A, 1), edit(11, A, 3, 10), purge_of(50, X, 2, 10)];
     assert_eq!(shown(&world(9, &race)), vec![(10, 11, val(11))]);
-    let later = [fire(10, A, 1, r), purge_of(50, A, 2, 10), edit(11, A, 3, r, 10), edit(12, A, 4, r, 10)];
+    let later = [fire(10, A, 1), purge_of(50, A, 2, 10), edit(11, A, 3, 10), edit(12, A, 4, 10)];
     assert_eq!(shown(&world(9, &later)), vec![(10, 12, val(12))]);
-    let long = Retention::PLAIN.after(9 * HOUR);
-    let gone = [fire(10, A, 1, Retention::PLAIN.after(2 * HOUR)), edit(11, A, 3, long, 10), purge_of(50, X, 2, 10)];
-    assert_eq!(shown(&world(8, &gone)), vec![(11, 11, val(11))]);
+    // the tombstone (from 2) ends before the version (from 3): it shows at its own place
+    let gone = [setting(5, 0, SIG, keep_after(2)), fire(10, A, 1), edit(11, A, 3, 10), purge_of(50, X, 2, 10)];
+    assert_eq!(shown(&world(4, &gone)), vec![(11, 11, val(11))]);
     // naming the version too takes it
-    let both = [fire(10, A, 1, r), edit(11, A, 3, r, 10), purge_of(50, X, 4, 10), purge_of(51, X, 4, 11)];
+    let both = [fire(10, A, 1), edit(11, A, 3, 10), purge_of(50, X, 4, 10), purge_of(51, X, 4, 11)];
     assert_eq!(shown(&world(9, &both)), vec![(10, 11, Shows::Purged)]);
     // another actor's claim on it stays that actor's own message
-    let forged = [fire(10, A, 1, r), purge_of(50, X, 2, 10), edit(30, B, 3, r, 10)];
+    let forged = [fire(10, A, 1), purge_of(50, X, 2, 10), edit(30, B, 3, 10)];
     assert_eq!(shown(&world(9, &forged)), vec![(10, 10, Shows::Purged), (30, 30, val(30))]);
 }
 
@@ -284,21 +285,19 @@ fn a_purge_takes_only_what_it_names() {
 // text in the original's place
 #[test]
 fn an_edit_purging_earlier_versions_stays_honored() {
-    let r = FOREVER_KEPT;
-    let mut v = edit(11, A, 3, r, 10);
+    let mut v = edit(11, A, 3, 10);
     v.purge.push(PurgeItem::Commit { commit: 10, thing: T, aspect: SIG });
-    let w = world(9, &[fire(10, A, 1, r), v]);
+    let w = world(9, &[fire(10, A, 1), v]);
     assert_eq!(shown(&w), vec![(10, 11, val(11))]);
     assert!(evaluate(&w).purged.contains_key(&(10, 0)));
 }
 
 fn u_expiry() -> Vec<Commit> {
-    let r = FOREVER_KEPT;
     vec![
-        expiring(fire(10, A, 1, r), 6),
-        expiring(edit(11, A, 2, r, 10), 6),
-        expiring(edit(12, A, 3, r, 10), 4),  // shorter: the previous version shows after it
-        expiring(edit(13, A, 3, r, 10), 8),  // longer: stands alone once the original is gone
+        expiring(fire(10, A, 1), 6),
+        expiring(edit(11, A, 2, 10), 6),
+        expiring(edit(12, A, 3, 10), 4),  // shorter: the previous version shows after it
+        expiring(edit(13, A, 3, 10), 8),  // longer: stands alone once the original is gone
     ]
 }
 
@@ -323,69 +322,38 @@ fn expiry_shows_the_previous_or_stands_alone() {
     });
 }
 
-// Limit: an original past its keep reads like one never held (the version alone), and the jump to its
-// own place happens at every node, also with one shared `after`.
+// Limit: an original out of history reads like one never held (the version alone), and the jump
+// to its own place happens at every node.
 #[test]
 fn a_gone_original_reads_like_one_never_held() {
-    let keep = Retention::PLAIN.after(2 * HOUR);
-    let (o, v) = (fire(10, A, 1, keep), edit(11, A, 2, keep, 10));
-    let both = [o, v.clone()];
+    let keep = setting(5, 0, SIG, keep_after(2));
+    let (o, v) = (fire(10, A, 1), edit(11, A, 2, 10));
+    let both = [keep.clone(), o, v.clone()];
     assert_eq!(shown(&world(2, &both)), vec![(10, 11, val(11))]);
     assert_eq!(shown(&world(3, &both)), vec![(11, 11, val(11))]);
-    assert_eq!(shown(&world(5, &both)), shown(&world(5, &[v.clone()])));
-    assert_eq!(shown(&world(5, &[v.clone()])), vec![]); // past D of the version too
-    let v2 = edit(12, A, 2, Retention::PLAIN.after(5 * HOUR), 10);
-    assert_eq!(shown(&world(5, &[fire(10, A, 1, keep), v2.clone()])), shown(&world(5, &[v2.clone()])));
-    assert_eq!(shown(&world(5, &[v2])), vec![(12, 12, val(12))]);
+    assert_eq!(shown(&world(3, &both)), shown(&world(3, &[keep.clone(), v.clone()])));
+    assert_eq!(shown(&world(4, &[keep, v])), vec![]); // out of history too
 }
 
 // Listing is judged from headers: an original whose body is not here holds its versions' place, and
 // reads as its newest version whose body is here; a version whose body is not here reads as nothing
 #[test]
 fn an_original_without_its_body_keeps_its_versions() {
-    let r = FOREVER_KEPT;
-    let s = [missing(fire(10, A, 1, r), 0), edit(11, A, 2, r, 10), missing(edit(12, A, 3, r, 10), 0)];
+    let s = [missing(fire(10, A, 1), 0), edit(11, A, 2, 10), missing(edit(12, A, 3, 10), 0)];
     assert_eq!(shown(&world(9, &s)), vec![(10, 11, val(11))]);
-    let s = [missing(fire(10, A, 1, r), 0), missing(edit(11, A, 2, r, 10), 0)];
+    let s = [missing(fire(10, A, 1), 0), missing(edit(11, A, 2, 10), 0)];
     assert_eq!(shown(&world(9, &s)), vec![(10, 10, Shows::NotFetched)]);
-    let s = [fire(10, A, 1, r), missing(edit(11, A, 2, r, 10), 0)];
+    let s = [fire(10, A, 1), missing(edit(11, A, 2, 10), 0)];
     assert_eq!(shown(&world(9, &s)), vec![(10, 10, val(10))]);
-}
-
-fn required(id: CommitId, h: u64, rule: Rule) -> Commit {
-    let p = Part { thing: T, aspect: Aspect::REQUIRED, retention: Retention::FIXED, body: Body::Held(Delta::Required(vec![rule])), stripped: Default::default(), replaces: None };
-    content(id, FIRST_ADMIN, h, vec![p])
-}
-
-// spec/commits.md §5 Required retention: `final` makes a replacing part break the entry (invalid,
-// so the original reads as itself); under a duration a replacing part's expiry need only lie within it
-#[test]
-fn final_and_the_expiry_bound_judge_replacing_parts() {
-    let r = FOREVER_KEPT;
-    let fin = Rule { aspect: Some(SIG.name), retention: r, expiry: None, r#final: true };
-    let s = [required(5, 0, fin), fire(10, A, 1, r), edit(11, A, 2, r, 10)];
-    assert_eq!(shown(&world(9, &s)), vec![(10, 10, val(10))]);
-    let dur = Rule { aspect: Some(SIG.name), retention: r, expiry: Some(5 * HOUR), r#final: false };
-    let o = expiring(fire(10, A, 1, r), 6);
-    let within = expiring(edit(11, A, 2, r, 10), 6);
-    let beyond = expiring(edit(12, A, 3, r, 10), 9);
-    let none = edit(13, A, 4, r, 10);
-    assert_eq!(shown(&world(5, &[required(5, 0, dur), o.clone(), within])), vec![(10, 11, val(11))]);
-    for v in [beyond, none] {
-        assert_eq!(shown(&world(5, &[required(5, 0, dur), o.clone(), v])), vec![(10, 10, val(10))]);
-    }
-    // a plain fire still needs exactly the duration
-    assert_eq!(shown(&world(4, &[required(5, 0, dur), expiring(fire(20, B, 1, r), 5)])), vec![]);
 }
 
 // spec/commits.md §5 Purge: a request that expires reaches only deltas expiring no later than it
 #[test]
 fn an_expiring_request_reaches_only_earlier_expiries() {
-    let r = FOREVER_KEPT;
     let item = |c| PurgeItem::Commit { commit: c, thing: T, aspect: SIG };
     let mut rq = expiring(purge(50, A, 4, item(10)), 6);
     rq.purge.extend([item(11), item(12)]);
-    let s = [fire(10, A, 1, r), expiring(fire(11, A, 2, r), 5), expiring(fire(12, A, 3, r), 8), rq];
+    let s = [fire(10, A, 1), expiring(fire(11, A, 2), 5), expiring(fire(12, A, 3), 8), rq];
     let o = evaluate(&world(4, &s));
     assert!(!o.purged.contains_key(&(10, 0)), "no expiry: out of reach");
     assert!(o.purged.contains_key(&(11, 0)));

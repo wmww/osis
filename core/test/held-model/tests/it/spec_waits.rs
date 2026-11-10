@@ -138,31 +138,6 @@ fn part_no_way_to_the_thing_is_not_held_spec_commits_4() {
     assert_eq!(act(&hd, &o, None).commits.iter().find(|x| x.id == 10).unwrap().parts[1].body, Body::Missing);
 }
 
-fn required(id: CommitId, h: u64, rules: Vec<Rule>) -> Commit {
-    let p = Part { thing: T, aspect: Aspect::REQUIRED, retention: Retention::FIXED, body: Body::Held(Delta::Required(rules)), stripped: Default::default(), replaces: None };
-    content(id, FIRST_ADMIN, h, vec![p])
-}
-
-// spec/commits.md §5 (Required retention): a delta breaking the setting in force at its key is
-// invalid; one before the setting is not judged by it
-#[test]
-fn breaking_required_retention_is_invalid_spec_commits_5() {
-    let rule = Rule { aspect: Some(REG.name), retention: Retention::WRITER, expiry: Some(HOUR), r#final: false };
-    let mut ok = reg(12, FIRST_ADMIN, 2, REG, Retention::WRITER, 3);
-    ok.expires = Some(at(2) + HOUR);
-    let o = evaluate(&held(2, vec![
-        reg(10, FIRST_ADMIN, 0, REG, Retention::PLAIN, 1),
-        required(5, 1, vec![rule]),
-        reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 2),
-        ok,
-        reg(13, FIRST_ADMIN, 2, Aspect::plain(5), Retention::PLAIN, 4),
-    ]));
-    assert!(o.valid[&(10, 0)]);
-    assert!(!o.valid[&(11, 0)]);
-    assert!(o.valid[&(12, 0)]);
-    assert!(o.valid[&(13, 0)], "no entry governs another AK");
-}
-
 // notes/expiry-creation-design.md §3: a commit whose only part cannot be judged is thrown out,
 // before and after its expiry alike: nothing of it is held to go at its expiry
 #[test]

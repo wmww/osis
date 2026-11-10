@@ -445,14 +445,13 @@ impl Timeline {
     pub fn right(&self, q: NodeId, qa: NodeId, qkey: Key, qc: CommitId, by: PurgeBy, actor: NodeId, thing: ThingId) -> bool {
         let both = |need: Role| self.valid_as(q, thing, need, qkey, qc) && (qa == q || self.valid_as(qa, thing, need, qkey, qc));
         let admin = || both(Role::Admin);
-        // `author`: the delta's actor while it holds write on the thing, held by it and by any
-        // node with write on it; each signer holds it on its own
+        // the author's part of `author_or_admin`: the delta's actor while it holds write on the
+        // thing, held by it and by any node with write on it; each signer holds it on its own
         let on_actor = |x: NodeId| x == actor || self.valid_as(x, actor, Role::Write, qkey, qc);
         let auth = || on_actor(q) && on_actor(qa) && self.valid_as(actor, thing, Role::Write, qkey, qc);
         match by {
             PurgeBy::Nobody => false,
             PurgeBy::Admin => admin(),
-            PurgeBy::Author => auth(),
             PurgeBy::AuthorOrAdmin => admin() || auth(),
             PurgeBy::Writer => both(Role::Write),
         }

@@ -1,6 +1,7 @@
-//! Greenfield model of the thing-level history judgment (issues/thing-history.md): history is set
-//! per thing by `retention^.0`, never per write. One aspect of one thing; times are wall ms.
-//! Not wired into `evaluate`: it becomes the oracle when the per-write history modes go.
+//! The thing-level history judgment (issues/thing-history.md): history is set per thing by
+//! `retention^.0`, never per write. One aspect of one thing; times are wall ms. `evaluate` judges
+//! every replaced body by `out` over the thing's held valid settings (`Outcome::out`); `Eager`
+//! and `history` here are the greenfield small worlds `tests/it/spec_thing_history.rs` checks.
 //!
 //! The rule: a replaced body leaves history at the first moment, at or after it was replaced,
 //! at which the setting then in force does not keep it; from then it is out for good.
@@ -9,7 +10,7 @@ pub type Ms = u64;
 pub const NEVER: Ms = u64::MAX;
 
 /// What a setting says for the aspect (its own entry, else the default, else `None`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Opt {
     /// No history promised.
     None,
@@ -44,11 +45,7 @@ pub fn timeline(settings: &[Setting], one_way: bool) -> Vec<Setting> {
 }
 
 /// The moment a body replaced at `r` leaves history; `NEVER` if no held setting ends it.
-/// `nobody`: a body nobody may purge is never out.
-pub fn out(settings: &[Setting], one_way: bool, r: Ms, nobody: bool) -> Ms {
-    if nobody {
-        return NEVER;
-    }
+pub fn out(settings: &[Setting], one_way: bool, r: Ms) -> Ms {
     let tl = timeline(settings, one_way);
     // before the first setting nothing is promised: in force from the beginning of time
     let mut spans = vec![(0, Opt::None)];
@@ -74,8 +71,8 @@ pub fn in_force(settings: &[Setting], one_way: bool, t: Ms) -> Opt {
 }
 
 /// Whether a body replaced at `r` falls under purge on replace: the writers' duty to cover it.
-pub fn purge_owed(settings: &[Setting], one_way: bool, r: Ms, nobody: bool) -> bool {
-    !nobody && in_force(settings, one_way, r) == Opt::Purge
+pub fn purge_owed(settings: &[Setting], one_way: bool, r: Ms) -> bool {
+    in_force(settings, one_way, r) == Opt::Purge
 }
 
 /// A register write: body `id` stamped `ts` (stamps distinct). `fire`: a signal's, replaced
@@ -85,7 +82,6 @@ pub struct Body {
     pub ts: Ms,
     pub id: u32,
     pub fire: bool,
-    pub nobody: bool,
 }
 
 /// When `b` was replaced, from the bodies held: a fire at its own `ts`, a value at the `ts` of
@@ -99,7 +95,7 @@ pub fn replaced_at(held: &[Body], b: &Body) -> Option<Ms> {
 
 /// The history a node shows at `now`: its held replaced bodies still in their window.
 pub fn history(settings: &[Setting], one_way: bool, held: &[Body], now: Ms) -> Vec<u32> {
-    let mut v: Vec<u32> = held.iter().filter(|b| replaced_at(held, b).is_some_and(|r| now < out(settings, one_way, r, b.nobody))).map(|b| b.id).collect();
+    let mut v: Vec<u32> = held.iter().filter(|b| replaced_at(held, b).is_some_and(|r| now < out(settings, one_way, r))).map(|b| b.id).collect();
     v.sort();
     v
 }
@@ -133,7 +129,7 @@ impl Eager {
         let seen = self.seen.clone();
         let (settings, dropped) = (&self.settings, &mut self.dropped);
         self.held.retain(|b| {
-            let gone = replaced_at(&seen, b).is_some_and(|r| out(settings, one_way, r, b.nobody) <= now);
+            let gone = replaced_at(&seen, b).is_some_and(|r| out(settings, one_way, r) <= now);
             if gone {
                 dropped.push(b.id);
             }
@@ -141,7 +137,7 @@ impl Eager {
         });
     }
     pub fn history(&self, one_way: bool, now: Ms) -> Vec<u32> {
-        let mut v: Vec<u32> = self.held.iter().filter(|b| replaced_at(&self.seen, b).is_some_and(|r| now < out(&self.settings, one_way, r, b.nobody))).map(|b| b.id).collect();
+        let mut v: Vec<u32> = self.held.iter().filter(|b| replaced_at(&self.seen, b).is_some_and(|r| now < out(&self.settings, one_way, r))).map(|b| b.id).collect();
         v.sort();
         v
     }

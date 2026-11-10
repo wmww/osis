@@ -1,11 +1,13 @@
 # held-model: spec ambiguities
-> Summary: Every place the spec left a choice, contradicted itself or said too little while building held-model, the model's choice, and how each was resolved against the engine (1-39 resolved; 25-39 from undo, roles beyond one edge, waits and required retention; 40-44 from apply without atomicity and timing; 58 signals).
+> Summary: Every place the spec left a choice, contradicted itself or said too little while building held-model, the model's choice, and how each was resolved against the engine (1-39 resolved; 25-39 from undo, roles beyond one edge, waits and required retention; 40-44 from apply without atomicity and timing; 58 signals; 59-67 thing-level history, issues/thing-history.md).
 
 Each entry: the spec text, the problem, the model's choice (and where in the code), then **Resolved**: (a) spec fixed to the intended rule (the engine's), model matched; (b) engine wrong, issue filed; (c) a question for Tess (an issue tagged `tess-call`), model's choice kept. Each rule settled by reading engine code names its engine example test.
 
 Entries 8, 14, 19, 20, 34 and the "counted held" of 37 concern spec/commits.md §4 clauses (atomic apply, counts as held, a thing's wait holding the commit) that whole-commits step 3 deleted; the model dropped them with it (held-model-3).
 
 Entries 1, 2, 20, 23, 44 and 45, and the keep-at-most parts of 6, 9 and 38, concern keep-at-most bounds and invalid bodies counted dead, which the history modes removed (54-56: purge on replace is a writer's cover, no node drops on its own but expiry); the code and tests they cite are gone. Entries 6 and 42 concern the own state counting as a body and what a dropped snapshot gave staying in it; the state is the join of the held bodies (spec/crdt.md §4.6), so neither rule exists.
+
+Entries 39 (required retention), 54-56 (snapshot history modes, D at a node without the right, a body nothing dates under a relative bound) and the per-write keep bounds of 58 concern per-write history modes and `required^.0`, which thing-level history replaced (59-67): the code and tests they cite are gone.
 
 ## Headline
 
@@ -160,3 +162,16 @@ Retention is a purgeable-by and a history mode (purge-on-replace | keep at least
 
 ## Signals
 58. **When a signal body goes.** Decided (Tess): a signal write is replaced when written, so history from the start, kept until its keep bound, expiry or purge; never covered. Keep history is a keep at least for signals as for values (Tess). Choice: past its keep bound the body may go (`MayDrop(PastBound)`), whole or as an expired or purged leftover: nothing joins, so no state needs it, and history lists it only before the bound, held or not. A part on a signal keeping no history is bad input, never generated. spec/commits.md §5 Signals says so.
+
+## Thing-level history (issues/thing-history.md, step 1)
+The rules are the issue's (Rules, Decisions); spec/commits.md follows in its step 3, so until then these choices are against the issue's text, not the spec's.
+
+59. **A body nothing held dates.** History counts from replaced-at; a replaced body no held body supersedes (a reset pruned its content, a copy without it; a snapshot whose every dead write a later held snapshot carries) has none. Choice: not in history (`Outcome::replaced_at` None): nothing promises it, and a later snapshot carrying the write holds its history (`a_later_snapshot_carrying_a_dead_write_holds_its_history_spec_commits_5`).
+60. **Keep at least and drift.** "before a body leaves history (`MAX_DRIFT` past, on the node's clock) compaction and own replaces MUST NOT drop it". Choice: no slack in the model: `now` is the corrected clock and a body may go at `out` exactly; the slack is host and compactor policy against clock error.
+61. **Which covers drop a body out of history.** History says out-of-history value bodies drop "as covered by a cover holding the right"; Purge on replace's last rule and Decisions 4 say any valid writer's cover. Choice: Decisions 4, for every body not in history, live ones included (a cover carries all of a live body): `MayDrop(Covered)` under any valid snapshot covering it; in history, `Keep(Until)` whatever covers it; under purge on replace, `MustDrop(Covered)` only under a right holder's cover (`fate` names a right holder's cover first when there is one).
+62. **Owed while a writer's cover is held.** A body under purge on replace covered only by a snapshot whose commit lacks the right may go (61) and is still owed a cover by a right holder: the promise is kept by right holders' covers (`out_of_history_drops_under_any_writers_cover_spec_commits_5`).
+63. **A setting in an expiring commit.** "It carries no `expires`". Choice: such a delta is no setting (not in the timeline); its commit is otherwise judged as any.
+64. **Fixed retention.** Governed by no setting: `roles.0`, `retention^.0`, `purge.0`, `addenda.0`, `created.0` (`Aspect::fixed`): never out of history, never covered. `PurgeBy::Nobody` stays in the input for them; a content part carrying it (the engine writes such until step 3) is judged like any content part, nobody holding its purge right.
+65. **Order of settings.** In force by key `(ts, author, commit)`; `thing_history` takes wall ms with each setting's rank by key, so settings at one wall ms apply in key order (`Outcome::timeline_of`).
+66. **One way through the default.** The one-way rule reads per AK the entry governing it, own or default: a default purge on replace followed by an AK's own keep keeps nothing there.
+67. **Signal edits.** Versions and their original share their AK's window, each from its own `ts`, and a purged version is listed while a body replaced at its request's `ts` would be in history. One window per AK: a purged newest version's listing outlasts every older version's, so none shows again when it ends (`a_purged_edits_tombstone_outlasts_older_versions`); the shorter-keep limit cannot arise. `final` and the expiry bound for replacing parts are writer defaults with no validity rule (Decisions 5): not modeled.

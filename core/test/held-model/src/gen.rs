@@ -1,7 +1,7 @@
 //! A small random history generator (for this crate's properties and for an engine adapter), and a
 //! shuffle of a held set's order. Dependency-free PRNG so a seed means the same history everywhere.
 
-use crate::model::{cover, evaluate, join, snapshot_retention, snapshot_state};
+use crate::model::{cover, evaluate, join, snapshot_state};
 use crate::types::*;
 use crdt_model::ops::{self, Ty, Writer};
 use std::collections::BTreeSet;
@@ -132,31 +132,55 @@ pub const TARGETS: [(ThingId, NodeId); 6] = [(10, 0), (11, 1), (12, 2), (13, 3),
 pub const HOLDERS: [NodeId; 7] = [0, 1, 2, 3, ACCOUNT, LINK_K, LINK_L];
 pub const START: u64 = 1_000_000_000;
 
-/// Retention presets the generator draws from: convenient (`author_or_admin`, `writer`), kept
-/// for good (`nobody`), gone once replaced, kept until an hour or two from now, kept an hour
-/// after replaced, both.
-pub fn retentions(wall_now: u64) -> [Retention; 8] {
+/// Who may purge a content write: the three options content has (Decisions 2).
+pub const RETENTIONS: [Retention; 3] = [Retention::PLAIN, Retention::WRITER, Retention::ADMIN];
+
+/// The history options a setting's entry draws from, at wall `now`: none, kept an hour or six
+/// after replaced, until an hour from now, for good (twice as often), both bounds, purge on
+/// replace (twice as often).
+pub fn options(now: u64) -> [Opt; 9] {
     [
-        Retention::PLAIN,
-        Retention::WRITER,
-        Retention::FIXED,
-        Retention::PURGE_ON_REPLACE,
-        Retention::PLAIN.until(wall_now + HOUR),
-        Retention::PLAIN.with_by(PurgeBy::Admin).until(wall_now + 2 * HOUR),
-        Retention::WRITER.after(HOUR),
-        Retention::PLAIN.until(wall_now + HOUR).after(2 * HOUR),
+        Opt::None,
+        Opt::Keep { after: HOUR, until: 0 },
+        Opt::Keep { after: 6 * HOUR, until: 0 },
+        Opt::Keep { after: 0, until: now + HOUR },
+        Opt::Keep { after: 0, until: NEVER },
+        Opt::Keep { after: 0, until: NEVER },
+        Opt::Keep { after: 2 * HOUR, until: now + 4 * HOUR },
+        Opt::Purge,
+        Opt::Purge,
     ]
 }
 
-/// The keep-history settings a signal declares (spec/commits.md §5 Signals): until an hour
-/// from now, an hour after written, for good, both.
-pub fn signal_retentions(wall_now: u64) -> [Retention; 4] {
-    [
-        Retention::WRITER.until(wall_now + HOUR),
-        Retention::PLAIN.after(HOUR),
-        Retention::PLAIN.until(FOREVER),
-        Retention::PLAIN.with_by(PurgeBy::Admin).until(wall_now + HOUR).after(2 * HOUR),
-    ]
+/// A random `retention^.0` setting: an entry for one or two aspects (the signal often), a
+/// default half the time, an expiry default now and then.
+pub fn setting(r: &mut Rng, now: u64) -> Setting {
+    let entry = |r: &mut Rng| SettingEntry { history: r.pick(&options(now)), expires: r.chance(20).then(|| (1 + r.below(3)) * HOUR) };
+    let mut rules: Vec<(u32, SettingEntry)> = Vec::new();
+    for _ in 0..1 + r.below(2) {
+        let a = r.pick(&[REG, MAP, TEXT, SET, LIST, REC, SIG, SIG]);
+        if !rules.iter().any(|x| x.0 == a.name) {
+            let e = entry(r);
+            rules.push((a.name, e));
+        }
+    }
+    let default = r.chance(80).then(|| entry(r));
+    Setting { rules, default }
+}
+
+/// The entry governing `aspect` in the newest `retention^.0` setting on `thing` stamped before
+/// `ts` in `commits`, held and of any validity: what a writer reads its defaults from.
+fn newest_entry(commits: &[Commit], thing: ThingId, aspect: Aspect, ts: u64) -> Option<SettingEntry> {
+    commits
+        .iter()
+        .filter(|c| c.ts < ts)
+        .flat_map(|c| c.parts.iter().map(move |p| (c, p)))
+        .filter_map(|(c, p)| match &p.body {
+            Body::Held(Delta::Retention(x)) if p.thing == thing => Some((c.key(), x)),
+            _ => None,
+        })
+        .max_by_key(|x| x.0)
+        .and_then(|(_, x)| x.entry(aspect.name))
 }
 
 fn role_part(thing: ThingId, e: EdgeWrite) -> Part {
@@ -168,8 +192,9 @@ fn plain_part(thing: ThingId, aspect: Aspect, retention: Retention, d: Delta) ->
 }
 
 /// A random history of `n` commits on the `CREATIONS` things, after their creations (plus the
-/// covering snapshots writers owe): content
-/// under every history mode, signal writes, compaction snapshots, purges, undos, required retention, acting for
+/// covering snapshots writers owe): content under every purge option, signal writes, compaction
+/// snapshots, purges, undos, `retention^.0` settings (things made with one, late ones stamped up to
+/// an hour back, invalid ones by a non-admin), writers following the setting they hold half the time, acting for
 /// the account, edge writes (grants, `until`, invites, self-removals, finalizes, link
 /// redemptions); creations kept for good or `admin` with no history, a few expiring, some
 /// purged; every body held but about one in ten missing and a few parked (creations whole);
@@ -194,6 +219,15 @@ pub fn history(seed: u64, n: usize) -> Held {
             break id;
         }
     };
+    // things made with a setting (as an app writes one at creation), now and then
+    for (k, &(t, chief)) in CONTENT.iter().enumerate() {
+        if r.chance(40) {
+            let d = Delta::Retention(setting(&mut r, START));
+            let part = plain_part(t, Aspect::RETENTION, Retention::FIXED, d);
+            let id = new_id(&mut r);
+            commits.push(Commit { id, author: chief, actor: chief, ts: (START - HOUR / 2) * MS + k as u64, expires: None, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, boxes: vec![] });
+        }
+    }
     let base = |id, author, ts| Commit {
         id,
         author,
@@ -297,8 +331,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             let o = evaluate(&h);
             // a snapshot carries writes of expiring deltas value-less (spec/crdt.md §8)
             let f = snapshot_state(&h, &o, thing, aspect);
-            let retention = snapshot_retention(&h, thing, aspect, &f);
-            Commit { kind: CommitKind::Snapshot, parts: vec![plain_part(thing, aspect, retention, Delta::Writes(f))], ..base(id, author, ts) }
+            Commit { kind: CommitKind::Snapshot, parts: vec![plain_part(thing, aspect, Retention::WRITER, Delta::Writes(f))], ..base(id, author, ts) }
         } else if roll < 31 && !commits.is_empty() {
             // a creation's purge ends the thing: drawn less often
             let mut target = commits[r.below(commits.len() as u64) as usize].clone();
@@ -329,15 +362,16 @@ pub fn history(seed: u64, n: usize) -> Held {
                 _ => author,
             };
             Commit { purge: vec![item], parts: vec![plain_part(tp.thing, PURGE, Retention::PLAIN, Delta::Writes(ws))], ..base(id, author, ts) }
-        } else if roll < 34 {
-            // a required retention setting for one aspect or every AK
-            let aspect_ = r.pick(&[None, Some(REG.name), Some(MAP.name), Some(TEXT.name), Some(SET.name), Some(LIST.name), Some(SIG.name)]);
-            let retention = r.pick(&retentions(w));
-            let expiry = (retention.by != PurgeBy::Nobody && r.chance(20)).then(|| (1 + r.below(3)) * HOUR);
-            let d = Delta::Required(vec![Rule { aspect: aspect_, retention, expiry, r#final: false }]);
-            Commit { parts: vec![plain_part(thing, Aspect::REQUIRED, Retention::FIXED, d)], ..base(id, chief, ts) }
+        } else if roll < 39 {
+            // a `retention^.0` setting: the chief's mostly (others' are invalid unless granted
+            // admin), stamped now or up to an hour back (late: before commits already written)
+            let author = if r.chance(80) { chief } else { author };
+            let back = r.below(3) * HOUR / 2;
+            let ts = (w - back) * MS + logical;
+            let d = Delta::Retention(setting(&mut r, w));
+            Commit { parts: vec![plain_part(thing, Aspect::RETENTION, Retention::FIXED, d)], ..base(id, author, ts) }
         } else {
-            let undone = (roll < 44)
+            let undone = (roll < 48)
                 .then(|| {
                     // a one-part signal commit has nothing to undo (spec/crdt.md §4.6)
                     let cands: Vec<CommitId> = commits.iter().filter(|c| c.kind == CommitKind::Content && c.purge.is_empty() && !creates(c) && !c.parts.iter().any(|p| p.aspect.signal)).map(|c| c.id).collect();
@@ -347,29 +381,23 @@ pub fn history(seed: u64, n: usize) -> Held {
             match undone {
                 Some(u) => u,
                 None => {
-                    let aspect = r.pick(&WRITTEN);
-                    // the writer's view: every body written on the aspect so far
+                    let mut aspect = r.pick(&WRITTEN);
+                    // half the writers follow the setting they hold: its expiry default, and no
+                    // fire it would not keep (spec/commits.md §5 Signals; the rest write as they like)
+                    let follows = r.chance(50);
+                    let entry = newest_entry(&commits, thing, aspect, ts);
+                    if aspect.signal && follows && !entry.is_some_and(|e| matches!(e.history, Opt::Keep { .. })) {
+                        aspect = REG;
+                    }
                     let prior = join(commits.iter().flat_map(|c| c.parts.iter()).filter(|p| p.thing == thing && p.aspect == aspect).filter_map(|p| match &p.body {
                         Body::Held(Delta::Writes(f)) => Some(f.clone()),
                         _ => None,
                     }));
                     let ws = if aspect.signal { set(ts, id, r.below(5) as i64) } else { content(&mut r, aspect, ts, id, &prior) };
-                    let mut retention = if aspect.signal { r.pick(&signal_retentions(w)) } else { r.pick(&retentions(w)) };
-                    let mut expires = (r.chance(15) && retention.by != PurgeBy::Nobody).then(|| w + (1 + r.below(4)) * HOUR);
-                    // half the writers follow the required retention they hold
-                    if r.chance(50) {
-                        let req = commits.iter().filter(|c| c.ts < ts).flat_map(|c| c.parts.iter().map(move |p| (c, p))).filter_map(|(c, p)| match &p.body {
-                            Body::Held(Delta::Required(rules)) if p.thing == thing => Some((c.ts, rules.clone())),
-                            _ => None,
-                        });
-                        if let Some((_, rules)) = req.max_by_key(|x| x.0) {
-                            let e = rules.iter().find(|x| x.aspect == Some(aspect.name)).or_else(|| rules.iter().find(|x| x.aspect.is_none()));
-                            // a signal declares keep history
-                            if let Some(e) = e.filter(|e| !aspect.signal || e.retention.keeps()) {
-                                retention = e.retention;
-                                expires = e.expiry.map(|d| w + d);
-                            }
-                        }
+                    let retention = r.pick(&RETENTIONS);
+                    let mut expires = r.chance(15).then(|| w + (1 + r.below(4)) * HOUR);
+                    if follows {
+                        expires = newest_entry(&commits, thing, aspect, ts).and_then(|e| e.expires).map(|d| w + d).or(expires);
                     }
                     // node 2 acts for its account on the account's thing half the time
                     let actor = if thing == 12 && author == 2 && r.chance(50) { ACCOUNT } else { author };

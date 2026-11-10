@@ -4,6 +4,7 @@
 pub use crdt_model::stamp::{Dot, Source, Stamp};
 pub use crdt_model::state::Frag;
 pub use crdt_model::value::Value;
+pub use crate::thing_history::{Opt, NEVER};
 
 pub type CommitId = u32;
 /// Things, actors and nodes share one id space (spec/permissions.md §1: an actor is a thing; a
@@ -49,15 +50,16 @@ impl Aspect {
     pub const fn signal(name: u32) -> Aspect {
         Aspect { name, admin_only: false, signal: true }
     }
-    /// `required^.0` (spec/commits.md §5 Required retention).
-    pub const REQUIRED: Aspect = Aspect { name: 8, admin_only: true, signal: false };
+    /// `retention^.0`: the thing's history setting (issues/thing-history.md; `Delta::Retention`).
+    pub const RETENTION: Aspect = Aspect { name: 8, admin_only: true, signal: false };
     /// `addenda.0` (spec/permissions.md §5.2 Addenda).
     pub const ADDENDA: Aspect = Aspect { name: 10, admin_only: false, signal: false };
     /// `created.0`: a thing's creation, the write that makes it exist (`Delta::Created`).
     pub const CREATED: Aspect = Aspect { name: 13, admin_only: false, signal: false };
-    /// Role-class or fixed retention: answers to no required retention (spec/commits.md §5).
+    /// Role-class or fixed retention (`roles.0`, `retention^.0`, `purge.0`, `addenda.0`,
+    /// `created.0`): governed by no setting, never out of history, never covered.
     pub fn fixed(&self) -> bool {
-        matches!(self.name, 0 | 8 | 9 | 10)
+        matches!(self.name, 0 | 8 | 9 | 10 | 13)
     }
 }
 
@@ -110,16 +112,29 @@ impl EdgeWrite {
     }
 }
 
-/// One entry of a `required^.0` setting (spec/commits.md §5 Required retention): `aspect` None is
-/// the default (every AK with no entry of its own), else an aspect name.
+/// One entry of a `retention^.0` setting (issues/thing-history.md, The setting): what it promises
+/// for replaced content of the AKs it governs, and the expiry default a writer fills in
+/// (`wall_ms(ts)` + duration; only the writer reads it: a commit is valid with the expiry it
+/// carries).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Rule {
-    pub aspect: Option<u32>,
-    pub retention: Retention,
-    /// Expiry as a duration from the commit's `wall_ms(ts)`, ms.
-    pub expiry: Option<u64>,
-    /// A part claiming `replaces` breaks it.
-    pub r#final: bool,
+pub struct SettingEntry {
+    pub history: Opt,
+    pub expires: Option<u64>,
+}
+
+/// A whole `retention^.0` setting: per aspect name its entry, and the default entry for every
+/// AK with none (`retain`, the removal default, is not modeled).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Setting {
+    pub rules: Vec<(u32, SettingEntry)>,
+    pub default: Option<SettingEntry>,
+}
+
+impl Setting {
+    /// The entry governing aspect `name`: its own, else the default.
+    pub fn entry(&self, name: u32) -> Option<SettingEntry> {
+        self.rules.iter().find(|r| r.0 == name).map(|r| r.1).or(self.default)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,8 +142,8 @@ pub enum Delta {
     /// A content or snapshot fragment (spec/crdt.md §3).
     Writes(Frag),
     Edge(EdgeWrite),
-    /// A whole `required^.0` setting (its `rules`; `keep` is not modeled).
-    Required(Vec<Rule>),
+    /// A whole `retention^.0` setting (on `Aspect::RETENTION`, fixed retention).
+    Retention(Setting),
     /// `addenda.0` entries: per entry the removal's commit and the commits it lists.
     Addenda(Vec<(CommitId, Vec<CommitId>)>),
     /// A `created.0` write minting its part's thing's record (on `Aspect::CREATED`): the thing
@@ -153,85 +168,34 @@ pub enum Body {
     Parked,
 }
 
+/// Who may purge a write (spec/commits.md §5): admins always may. `Nobody` is fixed retention's
+/// only (`created.0`, `retention^.0`); content has the other three (Decisions 2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PurgeBy {
     Nobody,
     Admin,
-    Author,
     AuthorOrAdmin,
     Writer,
 }
 
-/// spec/commits.md §5 history mode of a write's body (the issue retention-modes). `PurgeOnReplace`:
-/// gone once replaced (a writer applying a kill of any of its writes covers it in that transaction;
-/// `writer` only). `Keep`: kept at least until wall ms `until` (0: no absolute bound; `FOREVER`)
-/// and/or until `after` ms past the earliest valid replacing write the node holds (0: no
-/// relative bound), the later; both 0 is convenient (no promise). The bound limits every node's
-/// covered drop alike (a function of the held set) and what `history()` shows. Expiry and purge
-/// act whatever the mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum History {
-    PurgeOnReplace,
-    Keep { until: u64, after: u64 },
-}
-
-impl History {
-    pub const CONVENIENT: History = History::Keep { until: 0, after: 0 };
-}
-
-/// spec/commits.md §5 retention: who may purge the body and its history mode.
+/// A write's retention on the wire: who may purge it. What replaced content is kept is the
+/// thing's setting (`Delta::Retention`), never the write's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Retention {
     pub by: PurgeBy,
-    pub history: History,
 }
 
 impl Retention {
-    /// The untyped default: `author_or_admin`, convenient.
-    pub const PLAIN: Retention = Retention { by: PurgeBy::AuthorOrAdmin, history: History::CONVENIENT };
-    pub const WRITER: Retention = Retention { by: PurgeBy::Writer, ..Retention::PLAIN };
-    /// Gone once replaced.
-    pub const PURGE_ON_REPLACE: Retention = Retention { by: PurgeBy::Writer, history: History::PurgeOnReplace };
+    /// The untyped default: `author_or_admin`.
+    pub const PLAIN: Retention = Retention { by: PurgeBy::AuthorOrAdmin };
+    pub const WRITER: Retention = Retention { by: PurgeBy::Writer };
+    pub const ADMIN: Retention = Retention { by: PurgeBy::Admin };
     /// Role-class: `admin`; the model drops no role body (ROLE_KEEP is compactor policy).
-    pub const ROLE: Retention = Retention { by: PurgeBy::Admin, ..Retention::PLAIN };
-    /// `created.0` and `required^.0` (spec/commits.md §5 Fixed retention): kept for good.
-    pub const FIXED: Retention = Retention { by: PurgeBy::Nobody, history: History::Keep { until: FOREVER, after: 0 } };
+    pub const ROLE: Retention = Retention::ADMIN;
+    /// `created.0` and `retention^.0` (fixed retention): nobody may purge them.
+    pub const FIXED: Retention = Retention { by: PurgeBy::Nobody };
     pub fn with_by(self, by: PurgeBy) -> Retention {
-        Retention { by, ..self }
-    }
-    /// Kept until wall ms `t`.
-    pub fn until(self, t: u64) -> Retention {
-        let after = match self.history {
-            History::Keep { after, .. } => after,
-            History::PurgeOnReplace => 0,
-        };
-        Retention { history: History::Keep { until: t, after }, ..self }
-    }
-    /// Kept until `d` ms after replaced.
-    pub fn after(self, d: u64) -> Retention {
-        let until = match self.history {
-            History::Keep { until, .. } => until,
-            History::PurgeOnReplace => 0,
-        };
-        Retention { history: History::Keep { until, after: d }, ..self }
-    }
-    /// The wall ms before which the body is must-hold at every node (the absolute bound).
-    pub fn kept_until(&self) -> u64 {
-        match self.history {
-            History::PurgeOnReplace => 0,
-            History::Keep { until, .. } => until,
-        }
-    }
-    /// The relative bound: ms after the earliest replacing write, 0 for none.
-    pub fn kept_after(&self) -> u64 {
-        match self.history {
-            History::PurgeOnReplace => 0,
-            History::Keep { after, .. } => after,
-        }
-    }
-    /// Whether the mode promises any history (shown by `history()` while kept).
-    pub fn keeps(&self) -> bool {
-        self.kept_until() > 0 || self.kept_after() > 0
+        Retention { by }
     }
 }
 

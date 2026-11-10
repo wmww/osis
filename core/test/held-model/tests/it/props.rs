@@ -27,7 +27,7 @@ fn output_is_a_function_of_the_held_set_spec_commits_4() {
 }
 
 /// Carries out every forced fate until nothing changes: `act`, the covering snapshots `me` owes
-/// (spec/commits.md §5 history purge-on-replace), and, with `full`, the fetch again of bodies whose cover
+/// (issues/thing-history.md, Purge on replace), and, with `full`, the fetch again of bodies whose cover
 /// or purge fell (`Outcome::uncovered`, `Fate::NeverReceived`) or that turned valid again after
 /// their drop as invalid (copies taken from `full`). Each
 /// round changes no read. Commits thrown out whole are fetched again from `full` each round
@@ -59,15 +59,18 @@ fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held 
         }
         if let Some(full) = full {
             // a body dropped as invalid is missing from then on, so fetched again once it turns
-            // valid (spec/permissions.md §6): a valid part of an applied commit `full` holds,
-            // unless held it would go again (expired, purged past its bound, covered)
+            // valid (spec/permissions.md §6), and one thrown out as unknown once it is known
+            // (notes/expiry-creation-design.md §3): a part `full` holds of any held commit, valid
+            // where its commit applied, unless held it would go again (expired, purged past its
+            // bound, covered, still unknown)
             let mut again = again;
-            for c in h.commits.iter().filter(|c| o.applied.contains(&c.id)) {
+            for c in &h.commits {
                 // the covers `settle` wrote are not in `full`, and never missing
                 let Some(fc) = full.commits.iter().find(|x| x.id == c.id) else { continue };
                 for (i, p) in c.parts.iter().enumerate() {
                     let src = &fc.parts[i];
-                    if p.body == Body::Missing && matches!(src.body, Body::Held(_)) && o.valid.get(&(c.id, i)) == Some(&true) {
+                    let valid = !o.applied.contains(&c.id) || o.valid.get(&(c.id, i)) == Some(&true);
+                    if p.body == Body::Missing && matches!(src.body, Body::Held(_)) && valid {
                         let mut t = h.clone();
                         t.commits.iter_mut().find(|x| x.id == c.id).unwrap().parts[i].body = src.body.clone();
                         if !matches!(evaluate(&t).fates.get(&(c.id, i)), Some(Fate::MustDrop(_) | Fate::NeverReceived)) {
@@ -112,7 +115,7 @@ fn forced_fates_keep_reads_and_leave_no_forbidden_value_spec_commits_5() {
 }
 
 // spec/commits.md §5 (Covered, Signals): each drop a node may make changes no read and no
-// history(): a covered body, and a signal's past its keep bound, read alike held or not
+// history(): a covered body, and a signal's out of history, read alike held or not
 #[test]
 fn optional_drops_keep_reads_spec_commits_5() {
     let mut past_bound = 0;
@@ -138,30 +141,30 @@ fn right_now(h: &Held, c: &Commit, p: &Part) -> bool {
     timeline(h).right(h.me, h.me, (u64::MAX, h.me, u32::MAX), u32::MAX, p.retention.by, c.actor, p.thing)
 }
 
-// spec/commits.md §5 (history purge-on-replace, keep-at-least): once a node holding the right has acted, it
-// holds no replaced purge-on-replace body (its covering snapshot dropped it), no body before its absolute
-// keep-until is ever dropped but by purge or expiry, and history() shows no body the node may
-// drop
+// spec/commits.md §5 (purge on replace, keep at least), issues/thing-history.md: once a node
+// holding the right has acted, it holds no body under purge on replace (its covering snapshot
+// dropped it), no body is dropped before a purge request's floor but by purge, and history()
+// shows no body the node may drop
 #[test]
-fn none_gone_once_replaced_and_kept_until_t_spec_commits_5() {
+fn purge_on_replace_gone_once_replaced_and_history_kept_spec_commits_5() {
     for seed in 0..SEEDS {
         let h = settle(history(seed, LEN), None, seed, &mut Seen::default());
         let o = evaluate(&h);
         assert!(o.owed.is_empty(), "seed {seed}: owed {:?}", o.owed);
         for c in &h.commits {
             for (i, p) in c.parts.iter().enumerate() {
-                // a replaced purge-on-replace body a right holder still holds: a leftover (its own expiry or
-                // purge), or before a purge request's floor
-                if matches!(p.body, Body::Held(_)) && p.retention.history == History::PurgeOnReplace && o.replaced.contains(&(c.id, i)) && right_now(&h, c, p) {
+                // a body under purge on replace a right holder still holds: a leftover (its own
+                // expiry or purge), or before a purge request's floor
+                if matches!(p.body, Body::Held(_)) && o.under_purge.contains(&(c.id, i)) && right_now(&h, c, p) {
                     let f = o.fates[&(c.id, i)];
                     assert!(matches!(f, Fate::Leftover(LeftoverWhy::Expired | LeftoverWhy::Purged) | Fate::Keep(KeepWhy::Until)), "seed {seed}: {} part {i} is replaced and held at a right holder as {f:?}", c.id);
                 }
                 if let Body::Dropped(by) = p.body {
                     let purged = h.commits.iter().any(|q| q.id == by && !q.purge.is_empty());
-                    assert!(purged || h.now >= kept_until(c, p), "seed {seed}: {} part {i} dropped before its keep-until", c.id);
+                    assert!(purged || h.now >= kept_until(c), "seed {seed}: {} part {i} dropped before its purge floor", c.id);
                 }
-                // history() shows a replaced write only while its body's bound keeps it, at every
-                // node alike: no body the node may drop has an entry
+                // history() shows a replaced write only while the settings keep it, at every node
+                // alike: no body the node may drop has an entry
                 if matches!(o.fates.get(&(c.id, i)), Some(Fate::MayDrop(_) | Fate::MustDrop(_))) {
                     let entries = o.history.get(&(p.thing, p.aspect));
                     assert!(entries.is_none_or(|e| !e.iter().any(|x| x.1 == c.id)), "seed {seed}: {} part {i} may drop and is in history()", c.id);
@@ -252,7 +255,7 @@ fn arrival_orders_read_alike_after_repair_spec_commits_5() {
 }
 
 // spec/commits.md §5, §6, spec/crdt.md §2.2: the clock changes the output only at the deadlines it
-// lists (unparking, expiry, keep-until), so an adapter checking at each sees every change
+// lists (unparking, expiry, a body leaving history), so an adapter checking at each sees every change
 #[test]
 fn output_changes_only_at_its_deadlines_spec_commits_5() {
     for seed in 0..SEEDS {
@@ -293,15 +296,24 @@ fn creations_last_read_like_creations_first_spec_commits_4() {
     }
 }
 
-// spec: none (the generator's reach): the histories end things by expiry and by purge, and
-// throw parts out on things a node holds no creation of, in a share of seeds that does not
-// depend on the run's size
+// spec: none (the generator's reach): the histories end things by expiry and by purge, throw
+// parts out on things a node holds no creation of, and hold settings (late ones, invalid ones),
+// bodies in history (signals too) and bodies under purge on replace, in a share of seeds that does
+// not depend on the run's size
 #[test]
-fn histories_reach_endings_and_unknown_things() {
+fn histories_reach_endings_unknown_things_and_settings() {
     let (mut expired, mut purged, mut thrown) = (0, 0, 0);
+    let (mut late, mut invalid, mut kept, mut sig, mut under) = (0, 0, 0, 0, 0);
     for seed in 0..SEEDS {
         let h = history(seed, LEN);
         let o = evaluate(&h);
+        let settings = || h.commits.iter().enumerate().filter(|(_, c)| c.parts.iter().any(|p| p.aspect == Aspect::RETENTION));
+        // late: stamped before a commit written before it
+        late += settings().any(|(i, c)| h.commits[..i].iter().any(|x| x.ts > c.ts)) as u64;
+        invalid += settings().any(|(_, c)| o.valid.get(&(c.id, 0)) == Some(&false)) as u64;
+        kept += o.history.keys().any(|k| !k.1.signal) as u64;
+        sig += o.history.keys().any(|k| k.1.signal) as u64;
+        under += !o.under_purge.is_empty() as u64;
         for &t in &o.ended {
             let c = h.commits.iter().find(|c| c.id == held_model::gen::CREATION_ID + t).unwrap();
             if c.expires.is_some_and(|x| h.now >= x) {
@@ -312,8 +324,8 @@ fn histories_reach_endings_and_unknown_things() {
         }
         thrown += o.fates.values().any(|f| *f == Fate::MustDrop(DropWhy::Unknown)) as u64;
     }
-    eprintln!("of {SEEDS}: {expired} ended by expiry, {purged} by purge, {thrown} throwing parts out");
-    for (what, n) in [("expiry", expired), ("purge", purged), ("unknown", thrown)] {
+    eprintln!("of {SEEDS}: {expired} ended by expiry, {purged} by purge, {thrown} throwing parts out; settings {late} late, {invalid} invalid; history {kept}, signal {sig}, under purge on replace {under}");
+    for (what, n) in [("expiry", expired), ("purge", purged), ("unknown", thrown), ("late setting", late), ("invalid setting", invalid), ("history", kept), ("signal history", sig), ("purge on replace", under)] {
         assert!(n * 100 >= SEEDS, "{what}: {n} of {SEEDS}");
     }
 }

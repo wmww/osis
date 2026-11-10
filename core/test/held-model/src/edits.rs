@@ -66,9 +66,8 @@ fn status(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &Commit>, c: &Commit
         return None;
     }
     if let Some(q) = o.purged.get(&(c.id, i)) {
-        // spec/commits.md §7: listed while its keep rule would keep it, counted from the request
-        let after = p.retention.kept_after();
-        let kept = h.now < kept_until(c, p) || (after > 0 && h.now < wall(by_id[q].ts).saturating_add(after));
+        // spec/commits.md §7: listed while a body replaced at its request's `ts` would be in history
+        let kept = h.now < kept_until(c) || o.in_history(p.thing, p.aspect, wall(by_id[q].ts), h.now);
         return kept.then_some(Here::Purged);
     }
     let here = match p.body {
@@ -76,7 +75,7 @@ fn status(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &Commit>, c: &Commit
         Body::Missing => Here::NotFetched,
         _ => return None,
     };
-    signal_kept(c, p, h.now).then_some(here)
+    signal_kept(o, c, p, h.now).then_some(here)
 }
 
 /// The commit `v` names, when it is `v`'s original but for being listed: same (thing, aspect), valid

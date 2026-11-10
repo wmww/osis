@@ -84,12 +84,15 @@ fn purge_without_the_right_drops_nothing_spec_commits_5() {
     assert!(evaluate(&h).purged.is_empty());
 }
 
-// spec/commits.md §5 (Who and how long): `nobody` has no holder
+// spec/commits.md §5 (Who and how long): fixed retention (`nobody`) has no holder: a purge of the
+// setting takes nothing, and it stays in force
 #[test]
 fn nobody_delta_stays_spec_commits_5() {
-    let h = held(3, vec![reg(10, FIRST_ADMIN, 1, REG, Retention::FIXED, 7), purge(20, FIRST_ADMIN, 2, PurgeItem::Aspect { thing: T, aspect: REG })]);
-    assert_eq!(fate(&h, 10), Fate::Keep(KeepWhy::Until));
-    assert_eq!(read(&h, REG), int(7));
+    let cs = vec![setting(5, 0, REG, KEPT), reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 7), reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 8), purge(20, FIRST_ADMIN, 3, PurgeItem::Aspect { thing: T, aspect: Aspect::RETENTION })];
+    let o = evaluate(&held(4, cs));
+    assert!(o.purged.is_empty());
+    assert_eq!(o.fates[&(5, 0)], Fate::Keep(KeepWhy::Plain));
+    assert_eq!(o.history[&(T, REG)], [(st(1, 10, 1), 10)].into_iter().collect());
 }
 
 // spec/commits.md §5 (Purge), spec/crdt.md §4.7 (Copies)
@@ -108,22 +111,24 @@ fn snapshot_copy_of_a_purged_value_is_a_leftover_spec_commits_5() {
     assert!(evaluate(&act(&h, &o, None)).forbidden.is_empty());
 }
 
-// spec/commits.md §5 (history purge-on-replace): gone once replaced. A writer holding the body that applies
-// the kill owes a covering snapshot in that transaction; once a valid cover with the right is
-// held the body must go, at every node; a node without the right owes nothing and keeps it
+// issues/thing-history.md (Purge on replace): gone once replaced under a setting saying so. A
+// writer holding the body that applies the kill owes a covering snapshot in that transaction; once
+// a valid cover with the right is held the body must go, at every node; a node without the right
+// owes nothing and keeps it until such a cover comes
 #[test]
 fn none_body_is_owed_a_cover_at_the_kill_and_drops_covered_spec_commits_5() {
-    let cs = vec![reg(10, FIRST_ADMIN, 1, REG, Retention::PURGE_ON_REPLACE, 1), reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 2)];
-    let o = evaluate(&held(1, cs[..1].to_vec()));
+    let por = setting(5, 0, REG, Opt::Purge);
+    let cs = vec![por.clone(), reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1), reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 2)];
+    let o = evaluate(&held(1, cs[..2].to_vec()));
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain));
     assert!(o.owed.is_empty() && o.replaced.is_empty());
     let h = held(2, cs.clone());
     let o = evaluate(&h);
-    assert!(o.replaced.contains(&(10, 0)));
+    assert!(o.under_purge.contains(&(10, 0)));
     assert_eq!(o.owed, [(10, 0)].into_iter().collect(), "the writer owes the cover");
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain), "until it is covered");
     let s = cover(&h, &o, T, REG, 12, ts(2) + 1);
-    assert_eq!(s.parts[0].retention, Retention::WRITER, "it carries no purge-on-replace write live: convenient");
+    assert_eq!(s.parts[0].retention, Retention::WRITER);
     let mut cs2 = cs.clone();
     cs2.push(s);
     let h2 = held(2, cs2.clone());
@@ -131,25 +136,28 @@ fn none_body_is_owed_a_cover_at_the_kill_and_drops_covered_spec_commits_5() {
     assert_eq!(o2.fates[&(10, 0)], Fate::MustDrop(DropWhy::Covered { by: 12 }));
     assert!(o2.owed.is_empty());
     let h3 = act(&h2, &o2, None);
-    assert_eq!(h3.commits[0].parts[0].body, Body::Dropped(12));
+    assert_eq!(h3.commits[1].parts[0].body, Body::Dropped(12));
     assert_eq!(read(&h3, REG), int(2));
     // a reader (node 3 has no role on T) owes nothing and drops only once the cover arrives
-    let mut reader = held(2, cs);
+    let mut reader = held(2, cs.clone());
     reader.me = 3;
     let o = evaluate(&reader);
     assert!(o.owed.is_empty());
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain));
     reader.commits = held(2, cs2).commits;
     assert_eq!(fate(&reader, 10), Fate::MustDrop(DropWhy::Covered { by: 12 }));
+    // no setting held: nothing is promised, nothing owed
+    let o = evaluate(&held(2, cs[1..].to_vec()));
+    assert!(o.under_purge.is_empty() && o.owed.is_empty());
 }
 
 // spec/commits.md §5 (Purge): a commit carrying a purge request keeps its blobs until wall(ts) +
-// ROLE_KEEP, whatever its history mode (seed 9450000)
+// ROLE_KEEP, whatever the setting says (seed 9450000)
 #[test]
 fn purge_request_floor_beats_none_spec_commits_5() {
-    let mut a = reg(10, FIRST_ADMIN, 1, REG, Retention::PURGE_ON_REPLACE, 1);
+    let mut a = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
     a.purge = vec![PurgeItem::Commit { commit: 3, thing: T, aspect: OTHER }];
-    let cs = vec![a, reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 2), snap(12, FIRST_ADMIN, 3, REG, Retention::PURGE_ON_REPLACE, vec![set(2, 11, 2)])];
+    let cs = vec![setting(5, 0, REG, Opt::Purge), a, reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 2), snap(12, FIRST_ADMIN, 3, REG, Retention::WRITER, vec![set(2, 11, 2)])];
     let o = evaluate(&held(3, cs.clone()));
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
     assert!(o.owed.is_empty());
@@ -157,13 +165,13 @@ fn purge_request_floor_beats_none_spec_commits_5() {
     assert_eq!(fate(&held(1 + ROLE_KEEP / HOUR, cs), 10), Fate::MustDrop(DropWhy::Covered { by: 12 }));
 }
 
-// spec/commits.md §5 (history purge-on-replace): a body partly replaced (its entry creation live, its value
-// dead) is covered by the snapshot of the whole state, which carries the live creation
+// issues/thing-history.md (Purge on replace): a body partly replaced (its entry creation live, its
+// value dead) is covered by the snapshot of the whole state, which carries the live creation
 #[test]
 fn none_body_partly_replaced_is_covered_by_the_state_snapshot_spec_commits_5() {
-    let a = content(10, FIRST_ADMIN, 1, vec![part(MAP, Retention::PURGE_ON_REPLACE, new_entry(1, 10, 1, 5))]);
+    let a = content(10, FIRST_ADMIN, 1, vec![part(MAP, Retention::PLAIN, new_entry(1, 10, 1, 5))]);
     let b = content(11, FIRST_ADMIN, 2, vec![part(MAP, Retention::PLAIN, vec![put(2, 11, 10, 1, 6)])]);
-    let h = held(2, vec![a, b]);
+    let h = held(2, vec![setting(5, 0, MAP, Opt::Purge), a, b]);
     let o = evaluate(&h);
     assert_eq!(o.owed, [(10, 0)].into_iter().collect());
     let mut h2 = h.clone();
@@ -175,42 +183,22 @@ fn none_body_partly_replaced_is_covered_by_the_state_snapshot_spec_commits_5() {
     assert_eq!(read(&h3, MAP), read(&h, MAP));
 }
 
-// spec/commits.md §5 (Covered): on an aspect mixing modes the state snapshot purges on replace;
-// it covers the purge-on-replace body but not a live body kept D after replaced, whose history it
-// could not keep. Once that body's write is dead, it is covered like any.
+// issues/thing-history.md (History): a snapshot is judged by the setting like any body: carrying
+// a write live, then replaced under purge on replace, a right holder's cover drops it everywhere
 #[test]
-fn purge_on_replace_snapshot_leaves_a_live_kept_body_spec_commits_5() {
-    let kept = Retention::WRITER.after(5 * HOUR);
-    let mk = |c: CommitId, h: u64, k: i64, v: i64| content(c, FIRST_ADMIN, h, vec![part(MAP, if c == 10 { kept } else { Retention::PURGE_ON_REPLACE }, new_entry(h, c, k, v))]);
-    let h = held(3, vec![mk(10, 1, 1, 5), mk(11, 2, 2, 6)]);
+fn snapshot_under_purge_on_replace_drops_covered_spec_commits_5() {
+    let cs = vec![
+        setting(5, 0, REG, Opt::Purge),
+        reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1),
+        snap(12, FIRST_ADMIN, 2, REG, Retention::WRITER, vec![set(1, 10, 1)]),
+        reg(13, FIRST_ADMIN, 3, REG, Retention::PLAIN, 2),
+    ];
+    let h = held(3, cs);
     let o = evaluate(&h);
+    assert!(o.under_purge.contains(&(12, 0)) && o.owed.contains(&(12, 0)));
     let mut h2 = h.clone();
-    h2.commits.push(cover(&h, &o, T, MAP, 12, ts(2) + 1));
-    assert_eq!(h2.commits.last().unwrap().parts[0].retention, Retention::PURGE_ON_REPLACE);
-    let o2 = evaluate(&h2);
-    assert_eq!(o2.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain), "kept body, live: not covered");
-    assert_eq!(o2.fates[&(11, 0)], Fate::MustDrop(DropWhy::Covered { by: 12 }));
-    // a reset of the map kills the kept body's writes: past its bound any snapshot covers it
-    let mut h3 = act(&h2, &o2, None);
-    h3.commits.push(content(13, FIRST_ADMIN, 3, vec![part(MAP, kept, vec![map_reset(3, 13)])]));
-    h3.now = at(4);
-    let o3 = evaluate(&h3);
-    let mut h4 = h3.clone();
-    h4.commits.push(cover(&h3, &o3, T, MAP, 14, ts(4)));
-    h4.now = at(9);
-    assert!(matches!(evaluate(&h4).fates[&(10, 0)], Fate::MayDrop(DropWhy::Covered { .. })), "dead past its bound: covered");
-}
-
-// spec/commits.md §5 (history purge-on-replace): a snapshot carrying a purge-on-replace write live is purge-on-replace itself,
-// so its copy goes when that write is replaced
-#[test]
-fn snapshot_of_a_none_write_is_none_spec_commits_5() {
-    let cs = vec![reg(10, FIRST_ADMIN, 1, REG, Retention::PURGE_ON_REPLACE, 1), reg(11, FIRST_ADMIN, 1, OTHER, Retention::PLAIN, 1)];
-    assert_eq!(snapshot_retention(&held(1, cs.clone()), T, REG, &set(1, 10, 1)), Retention::PURGE_ON_REPLACE);
-    assert_eq!(snapshot_retention(&held(1, cs.clone()), T, OTHER, &set(1, 11, 1)), Retention::WRITER);
-    // the mode is the carried write's own delta's, not another delta of its commit
-    let two = vec![content(10, FIRST_ADMIN, 1, vec![part(REG, Retention::PURGE_ON_REPLACE, vec![set(1, 10, 1)]), part(OTHER, Retention::PLAIN, vec![set(1, 10, 2)])])];
-    assert_eq!(snapshot_retention(&held(1, two.clone()), T, OTHER, &set(1, 10, 2)), Retention::WRITER);
+    h2.commits.push(cover(&h, &o, T, REG, 14, ts(3) + 1));
+    assert_eq!(fate(&h2, 12), Fate::MustDrop(DropWhy::Covered { by: 14 }));
 }
 
 // spec/sync.md §7 (covered-equal): of two snapshots at one `ts` covering each other, only the lower
@@ -227,12 +215,13 @@ fn covered_equal_snapshots_lower_id_covers_spec_sync_7() {
     assert_eq!(o.fates[&(12, 0)], Fate::Keep(KeepWhy::Plain));
 }
 
-// spec/commits.md §5 (keep-at-least, absolute T): never compacted before T, convenient after; the
+// issues/thing-history.md (History, keep until T): never compacted before T, droppable after; the
 // replaced write shows in history() until T
 #[test]
 fn keep_until_blocks_compaction_spec_commits_5() {
     let cs = vec![
-        reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN.until(at(5)), 1),
+        setting(5, 0, REG, keep_until(5)),
+        reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1),
         reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 2),
         snap(12, FIRST_ADMIN, 3, REG, Retention::WRITER, vec![set(2, 11, 2)]),
     ];
@@ -240,56 +229,63 @@ fn keep_until_blocks_compaction_spec_commits_5() {
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
     assert!(o.deadlines.contains(&at(5)));
     assert_eq!(o.history[&(T, REG)], [(st(1, 10, 1), 10)].into_iter().collect());
+    assert_eq!(o.fates[&(11, 0)], Fate::MayDrop(DropWhy::Covered { by: 12 }), "live: no history to keep");
     let o = evaluate(&held(5, cs));
     assert_eq!(o.fates[&(10, 0)], Fate::MayDrop(DropWhy::Covered { by: 12 }));
     assert!(o.history.is_empty());
 }
 
-// spec/commits.md §5 (keep-at-least, D after replaced): no node drops the body earlier than D
+// issues/thing-history.md (History, keep D after replaced): no node drops a body earlier than D
 // after the earliest valid replacing write it holds, by its signed ts, and history() shows the
-// replaced write until then; readers and writers holding the same data judge alike; a body
-// nothing held supersedes is past the bound
+// replaced write until then; readers and writers holding the same data judge alike
 #[test]
 fn keep_after_replaced_limits_the_compactor_spec_commits_5() {
-    let r = Retention::PLAIN.after(5 * HOUR);
+    let r = Retention::PLAIN;
     let cs = vec![
+        setting(5, 0, REG, keep_after(5)),
         reg(10, FIRST_ADMIN, 1, REG, r, 1),
-        reg(11, FIRST_ADMIN, 4, REG, Retention::PLAIN, 2),
-        reg(13, FIRST_ADMIN, 2, REG, Retention::PLAIN, 3),
+        reg(11, FIRST_ADMIN, 4, REG, r, 2),
+        reg(13, FIRST_ADMIN, 2, REG, r, 3),
         snap(12, FIRST_ADMIN, 5, REG, Retention::WRITER, vec![set(4, 11, 2)]),
     ];
     let o = evaluate(&held(6, cs.clone()));
     assert_eq!(o.replaced_at[&(10, 0)], Some(at(2)), "the earliest replacing write held");
-    assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
-    assert_eq!(o.fates[&(13, 0)], Fate::MayDrop(DropWhy::Covered { by: 12 }), "convenient");
-    assert_eq!(o.history[&(T, REG)], [(st(1, 10, 1), 10)].into_iter().collect());
-    assert!(o.deadlines.contains(&at(7)));
+    assert_eq!((o.fates[&(10, 0)], o.fates[&(13, 0)]), (Fate::Keep(KeepWhy::Until), Fate::Keep(KeepWhy::Until)));
+    assert_eq!(o.history[&(T, REG)], [(st(1, 10, 1), 10), (st(2, 13, 1), 13)].into_iter().collect());
+    assert!(o.deadlines.contains(&at(7)) && o.deadlines.contains(&at(9)));
     let o = evaluate(&held(7, cs.clone()));
     assert_eq!(o.fates[&(10, 0)], Fate::MayDrop(DropWhy::Covered { by: 12 }));
-    assert!(o.history.is_empty());
-    // without the earlier replacer held, the bound counts from the later one
+    assert_eq!(o.history[&(T, REG)], [(st(2, 13, 1), 13)].into_iter().collect(), "leaves in replaced order");
+    // without the earlier replacer held, the window counts from the later one
     let mut fewer = cs.clone();
-    fewer.remove(2);
+    fewer.remove(3);
     assert_eq!(evaluate(&held(7, fewer)).fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
     // a reader (node 3 holds no right) keeps it as a writer does, showing the same history
     let mut reader = held(6, cs);
     reader.me = 3;
     let o = evaluate(&reader);
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
-    assert_eq!(o.history[&(T, REG)], [(st(1, 10, 1), 10)].into_iter().collect());
+    assert_eq!(o.history[&(T, REG)].len(), 2);
 }
 
-// spec/commits.md §5 (Between the bounds): the covering snapshot's commit must hold the right
+// issues/thing-history.md (Purge on replace, last rule; Decisions 4): a body out of history drops
+// under any valid writer's cover, the right or not; under purge on replace only a right holder's
+// cover forces the drop, and a right holder owes one until it is held
 #[test]
-fn covering_snapshot_needs_the_right_spec_commits_5() {
-    let admin = Retention::PLAIN.with_by(PurgeBy::Admin);
+fn out_of_history_drops_under_any_writers_cover_spec_commits_5() {
+    let admin = Retention::ADMIN;
     let base = vec![edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None), reg(10, FIRST_ADMIN, 1, REG, admin, 1), reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 2)];
-    let mut by_writer = base.clone();
-    by_writer.push(snap(12, 1, 3, REG, Retention::WRITER, vec![set(2, 11, 2)]));
-    assert_eq!(fate(&held(4, by_writer), 10), Fate::Keep(KeepWhy::Plain));
-    let mut by_admin = base;
-    by_admin.push(snap(12, FIRST_ADMIN, 3, REG, Retention::WRITER, vec![set(2, 11, 2)]));
-    assert_eq!(fate(&held(4, by_admin), 10), Fate::MayDrop(DropWhy::Covered { by: 12 }));
+    let by_writer = snap(12, 1, 3, REG, Retention::WRITER, vec![set(2, 11, 2)]);
+    let by_admin = snap(13, FIRST_ADMIN, 3, REG, Retention::WRITER, vec![set(2, 11, 2)]);
+    let with = |more: &[Commit]| held(4, [base.clone(), more.to_vec()].concat());
+    assert_eq!(fate(&with(&[by_writer.clone()]), 10), Fate::MayDrop(DropWhy::Covered { by: 12 }));
+    let por = setting(6, 0, REG, Opt::Purge);
+    let o = evaluate(&with(&[por.clone(), by_writer.clone()]));
+    assert_eq!(o.fates[&(10, 0)], Fate::MayDrop(DropWhy::Covered { by: 12 }));
+    assert!(o.owed.contains(&(10, 0)), "the admin still owes its cover");
+    assert_eq!(fate(&with(&[por, by_writer, by_admin]), 10), Fate::MustDrop(DropWhy::Covered { by: 13 }));
+    // in history, no cover drops it
+    assert_eq!(fate(&with(&[setting(6, 0, REG, KEPT), snap(12, 1, 3, REG, Retention::WRITER, vec![set(2, 11, 2)])]), 10), Fate::Keep(KeepWhy::Until));
 }
 
 // spec/commits.md §6: at T every value-carrying write dies; the body is held as its leftover
@@ -336,7 +332,7 @@ fn valueless_body_without_reason_is_never_received_spec_commits_5() {
 // read; the node's own invalid write stays (its user may write it again)
 #[test]
 fn invalid_body_drops_unless_own_spec_permissions_6() {
-    let cs = vec![edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, Retention::PURGE_ON_REPLACE, 1), edge(20, FIRST_ADMIN, 3, 1, None, Some(vec![]))];
+    let cs = vec![setting(6, 0, REG, Opt::Purge), edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, Retention::PLAIN, 1), edge(20, FIRST_ADMIN, 3, 1, None, Some(vec![]))];
     let h = held(3, cs);
     let o = evaluate(&h);
     assert_eq!(o.valid[&(10, 0)], false);
@@ -367,7 +363,8 @@ fn invalid_text_body_drops_anchored_insert_reads_spec_permissions_6() {
     let a = (10, 1);
     let cs = vec![
         edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None),
-        content(10, 1, 1, vec![part(TEXT, Retention::PURGE_ON_REPLACE, vec![ins(1, 10, 1, None, Some(1))])]),
+        setting(6, 0, TEXT, Opt::Purge),
+        content(10, 1, 1, vec![part(TEXT, Retention::PLAIN, vec![ins(1, 10, 1, None, Some(1))])]),
         content(11, FIRST_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![ins(2, 11, 1, Some(a), Some(2))])]),
         edge(20, FIRST_ADMIN, 3, 1, None, Some(vec![])),
     ];
@@ -414,7 +411,7 @@ fn stripped_copy_of_a_fallen_purge_stays_held_spec_permissions_6() {
 // 14 carries 2 live; 15 overwrites 2 at 5. 14 keeps 2's history, so 12 is replaced at 3, 14 at 5.
 #[test]
 fn snapshot_replaced_at_last_death_no_later_snapshot_carries_spec_commits_5() {
-    let r = Retention::WRITER.after(5 * HOUR);
+    let r = Retention::WRITER;
     let mk = new_entry;
     let (one, two) = (mk(1, 10, 1, 5), mk(1, 11, 2, 6));
     let cs = vec![
@@ -429,48 +426,43 @@ fn snapshot_replaced_at_last_death_no_later_snapshot_carries_spec_commits_5() {
     assert_eq!((o.replaced_at[&(12, 0)], o.replaced_at[&(14, 0)]), (Some(at(3)), Some(at(5))));
 }
 
-// spec/commits.md §5 Fixed retention: a snapshot carrying a keep-for-D write live keeps that D,
-// counted from the latest of its carried writes' replacements, so a write compacted while live
-// keeps its history for D after it is replaced
+// issues/thing-history.md (History): a snapshot is judged by the setting like any body, from its
+// replacement: carrying a write live, it keeps that write's history for D after it is replaced
 #[test]
-fn snapshot_keeps_the_longest_d_of_what_it_carries_spec_commits_5() {
-    let r = Retention::PLAIN.after(5 * HOUR);
-    let cs = vec![reg(10, FIRST_ADMIN, 1, REG, r, 1), reg(11, FIRST_ADMIN, 1, OTHER, Retention::PLAIN, 1)];
-    assert_eq!(snapshot_retention(&held(1, cs.clone()), T, REG, &set(1, 10, 1)), Retention::WRITER.after(5 * HOUR));
-    assert_eq!(snapshot_retention(&held(1, cs.clone()), T, OTHER, &set(1, 11, 1)), Retention::WRITER);
-    // 12 carries 10's write live; 13 replaces it at 3; 14 covers 12 and 10
+fn snapshot_kept_like_any_body_spec_commits_5() {
     let cs = vec![
-        reg(10, FIRST_ADMIN, 1, REG, r, 1),
-        snap(12, FIRST_ADMIN, 2, REG, Retention::WRITER.after(5 * HOUR), vec![set(1, 10, 1)]),
+        setting(5, 0, REG, keep_after(5)),
+        reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1),
+        snap(12, FIRST_ADMIN, 2, REG, Retention::WRITER, vec![set(1, 10, 1)]),
         reg(13, FIRST_ADMIN, 3, REG, Retention::PLAIN, 2),
         snap(14, FIRST_ADMIN, 4, REG, Retention::WRITER, vec![set(3, 13, 2)]),
     ];
     let o = evaluate(&held(5, cs.clone()));
     assert_eq!(o.replaced_at[&(12, 0)], Some(at(3)));
-    assert_eq!(o.fates[&(12, 0)], Fate::Keep(KeepWhy::Until), "the snapshot keeps the carried write's D");
+    assert_eq!(o.fates[&(12, 0)], Fate::Keep(KeepWhy::Until));
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
     assert_eq!(evaluate(&held(8, cs)).fates[&(12, 0)], Fate::MayDrop(DropWhy::Covered { by: 14 }));
 }
 
-// spec/commits.md §5 (Bodies and deaths): a later snapshot counts as carrying a write only if it
-// keeps history at least as long. 12 (kept 5 h) carries entry 1 (10); 11 writes entry 2 purge on
-// replace; 13 carries both, purging on replace itself; 14 overwrites 1 at 4. 13 keeps no history,
-// so 12 is replaced at 4 and shows 1's history until 9.
+// spec/commits.md §5 (Bodies and deaths): a later snapshot carrying a dead write holds its
+// history. 12 carries entry 1 (10); 11 writes entry 2; 13 carries both; 14 overwrites 1 at 4. 13
+// carries 12's dead write, so 12 is not dated by it (nothing else of it died): 13 is replaced at 4
+// and shows 1's history until 9, and 12 may go under 13's cover
 #[test]
-fn purge_on_replace_later_snapshot_carries_no_kept_history_spec_commits_5() {
-    let r = Retention::WRITER.after(5 * HOUR);
+fn a_later_snapshot_carrying_a_dead_write_holds_its_history_spec_commits_5() {
+    let r = Retention::WRITER;
     let mk = new_entry;
     let (one, two) = (mk(1, 10, 1, 5), mk(2, 11, 2, 6));
-    for later in [Retention::PURGE_ON_REPLACE, Retention::WRITER, Retention::WRITER.after(HOUR)] {
-        let cs = vec![
-            content(10, FIRST_ADMIN, 1, vec![part(MAP, r, one.clone())]),
-            snap(12, FIRST_ADMIN, 1, MAP, r, one.clone()),
-            content(11, FIRST_ADMIN, 2, vec![part(MAP, Retention::PURGE_ON_REPLACE, two.clone())]),
-            snap(13, FIRST_ADMIN, 3, MAP, later, [one.clone(), two.clone()].concat()),
-            content(14, FIRST_ADMIN, 4, vec![part(MAP, r, vec![put(4, 14, 10, 1, 7)])]),
-        ];
-        let o = evaluate(&held(6, cs));
-        assert_eq!(o.replaced_at[&(12, 0)], Some(at(4)), "{later:?}");
-        assert!(o.history.get(&(T, MAP)).is_some_and(|x| x.iter().any(|(s, c)| *c == 12 && s.dot == dot(10, 1))), "{later:?}");
-    }
+    let cs = vec![
+        setting(5, 0, MAP, keep_after(5)),
+        content(10, FIRST_ADMIN, 1, vec![part(MAP, r, one.clone())]),
+        snap(12, FIRST_ADMIN, 1, MAP, r, one.clone()),
+        content(11, FIRST_ADMIN, 2, vec![part(MAP, r, two.clone())]),
+        snap(13, FIRST_ADMIN, 3, MAP, r, [one.clone(), two.clone()].concat()),
+        content(14, FIRST_ADMIN, 4, vec![part(MAP, r, vec![put(4, 14, 10, 1, 7)])]),
+    ];
+    let o = evaluate(&held(6, cs));
+    assert_eq!((o.replaced_at[&(12, 0)], o.replaced_at[&(13, 0)]), (None, Some(at(4))));
+    assert!(o.history[&(T, MAP)].iter().any(|(s, c)| *c == 13 && s.dot == dot(10, 1)));
+    assert_eq!(o.fates[&(12, 0)], Fate::MayDrop(DropWhy::Covered { by: 13 }));
 }
