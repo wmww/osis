@@ -501,7 +501,7 @@ fn unmerge_and_strip(c: &Case, reference: &MFrag) {
     let mut model = None;
     for (d, _) in &c.deltas {
         let mut m = d.clone();
-        m.unmerge(&|d| d.source == c.bad, None);
+        m.unmerge(&|d| d.source == c.bad, &|_| false);
         mapply(&mut model, m);
     }
     let ours = unmerged(&mut c.deltas.iter());
