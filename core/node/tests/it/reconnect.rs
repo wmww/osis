@@ -255,11 +255,12 @@ fn a_generation_lost_with_its_connection_is_not_built_on_spec_sync_10() {
     assert_eq!(net.peer_closes, closes, "no connection closed");
 }
 
-// spec/sync.md §10 (Lost): the receiver keeps a Lost's cursor only when it applied everything its
-// stream received. A push it did not take (`MAX_WAITING`) is received and not applied: the
-// sender's cursor is then past a write this node lacks, and a rejoin from it would skip that write
+// spec/sync.md §10 (Lost): a Lost names a position the receiver reported storing, which it keeps.
+// A push it did not take (`MAX_WAITING`) is received and not applied: the sender's last cursor is
+// then past a write this node lacks, so the Lost names an older one, and the rejoin from it brings
+// that write
 #[test]
-fn a_lost_after_a_dropped_push_keeps_no_lag_past_it_spec_sync_10() {
+fn a_lost_after_a_dropped_push_names_a_reported_position_spec_sync_10() {
     let mut net = Net::new();
     let (a, b, gs) = pair(&mut net, 1);
     net.item(b, gs[0], gs[0], "x");
@@ -296,8 +297,10 @@ fn a_lost_after_a_dropped_push_keeps_no_lag_past_it_spec_sync_10() {
     }
     net.run();
     assert_eq!(net.sync(a).stream_waiting(c), (0, 0), "settled");
-    // b's Lost names the last cursor it served: the dropped push's
-    net.inject(b, pc, &Message::Lost { id: 1 << 31 | 99, items: vec![(l, at)] });
+    // b's Lost names what a reported storing: not the dropped push's cursor
+    let lost = net.sync(b).shared_lost_cursor(pc, &l).unwrap();
+    assert!(lost.is_some() && lost != at, "a reported position, not the last one served");
+    net.inject(b, pc, &Message::Lost { id: 1 << 31 | 99, items: vec![(l, lost)] });
     net.run();
     net.tamper = None;
     net.tamper_link = None;

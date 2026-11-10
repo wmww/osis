@@ -1,0 +1,3 @@
+# until-exact
+- The reviewer's "re-judge before the step's event" broke `until`: at a step's start an own rotation is applied (credentials moved) but not yet placed in its label (the local pass places it at the step's end), so `until` fell back to the log's end before the rotation and the rotation itself was never served. Checking where an entry is logged before moving a judgment would have saved a round.
+- The issue's "every Lost names a reported position, the receiver always keeps it" missed that a Pull's cursor is sent before it settles (bodies owed, not flushed): only the first Pull's cursor is stored, so only it reports.

@@ -10,7 +10,8 @@ use crate::net;
 use crate::peers::reach_ed;
 use crate::shared::{dial_as, dialer_hit, offer, read_value, send, shared_of};
 use net::*;
-use osis_base::{BlobId, LabelId, Role, Tid};
+use osis_base::{BlobId, CommitId, LabelId, Role, Tid};
+use osis_node::sync::EntryKind;
 use osis_crypto::kdf::{beacon, members_digest, resume_tag};
 use osis_proto::filter::{beacon_value, decode_gcs};
 use osis_proto::msg::{OfferItem, Pull, PullReply};
@@ -40,14 +41,21 @@ fn opened() -> Setup {
 
 /// `opened`, `b`'s group kept at a host when `hosted` (so `b`'s entries get the host's stamps).
 fn opened_at(hosted: bool) -> Setup {
+    opened_with(hosted, false).0
+}
+
+/// `opened_at`, with a node `c` holding `g`'s admin role too when `other`.
+fn opened_with(hosted: bool, other: bool) -> (Setup, Option<usize>) {
     let mut net = Net::new();
     let hosts: Vec<usize> = if hosted { vec![net.add_host()] } else { vec![] };
     let a = net.node(1, &[]);
     let b = net.node(2, &hosts);
+    let c = other.then(|| net.node(3, &hosts));
     reach_ed(&mut net, b);
     net.group_at(b, &[(a, Role::Read)], vec![]);
     let addrs = hosts.iter().map(|s| net.address(*s)).collect();
-    let g = net.group_seeded(b, &[], addrs, 2);
+    let holders: Vec<(usize, Role)> = c.iter().map(|c| (*c, Role::Admin)).collect();
+    let g = net.group_seeded(b, &holders, addrs, 2);
     let l = net.engine(b).labels_of(&g)[0].id;
     net.item(b, g, g, "before");
     net.run();
@@ -63,7 +71,7 @@ fn opened_at(hosted: bool) -> Setup {
     assert!(reply.report && events_of(&reply.events, l) > 0, "the listing carries g and asks its report");
     let cursor = reply.cursor.clone().unwrap();
     send(&mut net, b, &mut p, Message::Applied { cursor: cursor.clone() });
-    Setup { net, b, a, g, l, r, p, cursor }
+    (Setup { net, b, a, g, l, r, p, cursor }, c)
 }
 
 /// A hand dialer proving `a` that resumes the record keyed `r` holding `members` (its digest
@@ -122,10 +130,21 @@ fn losts(msgs: &[Message]) -> Vec<(LabelId, Option<Vec<u8>>)> {
 }
 
 /// `b` rotates `g`, boxing only itself: `a`'s shown credential is stale, and `a` is no holder.
-fn rotate(net: &mut Net, b: usize, g: Tid) {
+fn rotate(net: &mut Net, b: usize, g: Tid) -> CommitId {
     let tb = net.tid(b);
     let rec = recipients_of(net.engine(b), &[(tb, Role::Admin)]);
-    rotation(net.engine(b), g, &rec, 9, false);
+    rotation(net.engine(b), g, &rec, 9, false)
+}
+
+/// The entries of commit `c` `b` holds under `l`.
+fn entries_of(net: &mut Net, b: usize, l: LabelId, c: CommitId) -> BTreeSet<BlobId> {
+    net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect()
+}
+
+/// The entries of `l` with an event `b` logged past position `after`.
+fn logged_past(net: &mut Net, b: usize, l: LabelId, after: u64) -> BTreeSet<BlobId> {
+    let (later, ..) = net.engine(b).run(|tx| Ok(tx.txn.log_after(after, 1 << 16)?)).unwrap();
+    later.iter().filter_map(|e| if let osis_store::NodeEvent::Added(x, id) = e.event { (x == l).then_some(id) } else { None }).collect()
 }
 
 fn position(net: &mut Net, b: usize, c: &[u8]) -> u64 {
@@ -190,7 +209,8 @@ fn nothing_is_served_past_until_to_a_peer_that_lost_the_right_spec_sync_10() {
 // the rotation, not at the reconnect. On the next connection the requester's Pull from its
 // position gets the rotation, its report brings the `Lost` naming where L stopped, the holder
 // finds L again by `b`'s added beacon (the new epoch's), and its rejoin from that position
-// carries only what it missed: what came after the rotation, nothing served before
+// carries exactly what was logged past it: what it missed after the rotation, and what was
+// served before only where it was logged again since (a re-wrap)
 #[test]
 fn a_rotation_while_apart_rejoins_from_its_lag_spec_sync_10() {
     let Setup { mut net, b, a, g, l, r, p, cursor } = opened();
@@ -223,10 +243,11 @@ fn a_rotation_while_apart_rejoins_from_its_lag_spec_sync_10() {
     assert!(found, "b sent the new epoch's beacon");
     let hit = dialer_hit(&v, l, &r, &p, [8; 32]);
     assert_eq!(offer(&mut net, b, &mut p, vec![OfferItem::Hit(hit)])[0].0, Code::OK, "the holder reopens L");
+    let stop = position(&mut net, b, &lag);
     let rejoin = pull(&mut net, b, &mut p, reply.cursor.clone(), vec![(l, Some(lag))]);
     let again = added_of(&rejoin.events, l);
     assert!(missed.is_subset(&again), "what it missed arrives");
-    assert!(again.is_disjoint(&first) && again.iter().all(|id| !held.contains(id)), "nothing served before comes again");
+    assert_eq!(again, logged_past(&mut net, b, l, stop), "exactly what was logged past where it stopped");
     assert!(!rejoin.whole);
 }
 
@@ -255,10 +276,9 @@ fn a_rotation_logged_again_while_apart_is_still_served_spec_sync_10() {
     let Setup { mut net, b, a, g, l, r, p, cursor } = opened_at(true);
     let acts = net.sync(b).handle(osis_node::sync::Event::Down { conn: p.conn });
     net.actions(b, acts);
-    let held: BTreeSet<BlobId> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).collect();
-    rotate(&mut net, b, g);
+    let c = rotate(&mut net, b, g);
     net.run();
-    let rotated: BTreeSet<BlobId> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).filter(|id| !held.contains(id)).collect();
+    let rotated = entries_of(&mut net, b, l, c);
     assert!(!rotated.is_empty());
     let until = net.engine(b).run(|tx| Ok(tx.txn.records_holding(&l)?)).unwrap().into_iter().find_map(|(rec, m)| (rec.r == r).then_some(m.until)).flatten().expect("ended while apart");
     let (later, ..) = net.engine(b).run(|tx| Ok(tx.txn.log_after(until, 1 << 16)?)).unwrap();
@@ -298,4 +318,59 @@ fn a_member_being_ended_is_relayed_no_signal_spec_sync_10() {
     let msgs = step(&mut net, b, &mut p);
     assert!(net.sync(b).shared_members(p.conn).contains(&l), "still being ended");
     assert_eq!(relayed(&msgs, l), 0, "nothing relayed past the rotation");
+}
+
+// issues/net-reconnect.md (Joining and rejoining): `until` is where the rotation was logged, not
+// where the step that judged it ended. An app write made after the rotation, between the same two
+// steps, is placed by the same pass: logged after the rotation, it reaches the member being ended
+// neither by a Pull answered in the next step's event (nothing of either is logged by then), nor
+// by push, nor by a Pull from before the rotation after it
+#[test]
+fn a_write_logged_after_the_rotation_in_its_step_is_not_served_spec_sync_10() {
+    let Setup { mut net, b, g, l, mut p, cursor, .. } = opened();
+    let held: BTreeSet<BlobId> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).collect();
+    let c = rotate(&mut net, b, g);
+    net.item(b, g, g, "after");
+    let mut served = added_of(&pull(&mut net, b, &mut p, Some(cursor.clone()), vec![]).events, l);
+    served.extend(pushes(&step(&mut net, b, &mut p)).iter().flat_map(|s| added_of(&s.events, l)));
+    let rotated = entries_of(&mut net, b, l, c);
+    let first = |net: &mut Net, id: &BlobId| net.engine(b).run(|tx| Ok(tx.txn.log_entry_first(&l, id)?)).unwrap().unwrap();
+    let at = rotated.iter().map(|id| first(&mut net, id)).max().unwrap();
+    let new: Vec<BlobId> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).filter(|id| !held.contains(id)).collect();
+    let after: BTreeSet<BlobId> = new.into_iter().filter(|id| first(&mut net, id) > at).collect();
+    assert!(!after.is_empty(), "the write is logged after the rotation");
+    served.extend(added_of(&pull(&mut net, b, &mut p, Some(cursor), vec![]).events, l));
+    assert!(rotated.is_subset(&served), "the rotation is served");
+    assert!(served.is_disjoint(&after), "nothing logged after it");
+}
+
+// issues/net-reconnect.md (Joining and rejoining): a rotation arriving in a peer's batch ends the
+// member where the rotation was logged: another writer's write logged after it in that batch is
+// not served to the member being ended (here while apart, then by a Pull from before the rotation)
+#[test]
+fn a_write_after_the_rotation_in_its_batch_is_not_served_spec_sync_10() {
+    let (Setup { mut net, b, a, g, l, r, p, cursor }, c) = opened_with(false, true);
+    let c = c.unwrap();
+    let acts = net.sync(b).handle(osis_node::sync::Event::Down { conn: p.conn });
+    net.actions(b, acts);
+    let held: BTreeSet<BlobId> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).collect();
+    net.set_online(c, false);
+    net.run();
+    let (tb, tc) = (net.tid(b), net.tid(c));
+    let rec = recipients_of(net.engine(c), &[(tb, Role::Admin), (tc, Role::Admin)]);
+    let rot = rotation(net.engine(c), g, &rec, 9, false);
+    net.item(c, g, g, "by c");
+    net.set_online(c, true);
+    net.advance(120_000);
+    let rotated = entries_of(&mut net, b, l, rot);
+    assert!(!rotated.is_empty());
+    let first = |net: &mut Net, id: &BlobId| net.engine(b).run(|tx| Ok(tx.txn.log_entry_first(&l, id)?)).unwrap().unwrap();
+    let at = rotated.iter().map(|id| first(&mut net, id)).max().unwrap();
+    let new: Vec<BlobId> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).filter(|id| !held.contains(id)).collect();
+    let after: BTreeSet<BlobId> = new.into_iter().filter(|id| first(&mut net, id) > at).collect();
+    assert!(!after.is_empty(), "c's write is logged after the rotation");
+    let (mut p, _) = resume(&mut net, a, b, &r, [8; 32], &[l]);
+    let served = added_of(&pull(&mut net, b, &mut p, Some(cursor), vec![]).events, l);
+    assert!(rotated.is_subset(&served), "the rotation is served");
+    assert!(served.is_disjoint(&after), "nothing logged after it");
 }
