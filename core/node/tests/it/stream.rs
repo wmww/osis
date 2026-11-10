@@ -34,6 +34,32 @@ fn a_dialer_pulls_its_peer_stream_spec_sync_10() {
     assert_eq!(net.peer_sent(a, SYNC) + net.peer_sent(a, SUBSCRIBE), 0, "no per-label Sync or Subscribe between readers");
 }
 
+// spec/sync.md §10 (Stream): a Pull answered Error is answered: the stream asks again after
+// `resync_ms` instead of waiting for a reply that never comes
+#[test]
+fn a_refused_pull_is_asked_again_spec_sync_10() {
+    let mut net = Net::new();
+    let refused = std::rc::Rc::new(std::cell::Cell::new(0));
+    let r = refused.clone();
+    net.tamper = Some(Box::new(move |m| match m {
+        osis_proto::Message::PullReply(p) if r.get() == 0 => {
+            r.set(1);
+            Some(osis_proto::Message::Error { id: p.id, code: osis_proto::Code::RATE_LIMITED })
+        }
+        _ => None,
+    }));
+    let (a, b, gs) = pair(&mut net, 1);
+    let t = net.item(b, gs[0], gs[0], "x");
+    net.run();
+    assert_eq!(refused.get(), 1, "a reply was refused");
+    let pulls = net.peer_sent(a, PULL);
+    let resync = net.sync(a).config().resync_ms;
+    net.advance(resync + 1);
+    net.run();
+    assert!(net.peer_sent(a, PULL) > pulls, "asked again");
+    assert_eq!(net.read(a, t), Some(s("x")), "b's write reached a");
+}
+
 /// What the stream replies and pushes carried, as a tamper hook sees them on peer links: per
 /// message, whether it was a stream from the start, its events, and the blobs whose bytes it
 /// carried.

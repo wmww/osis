@@ -61,6 +61,7 @@ impl SyncEngine {
                 self.outputs(conn, o, out)?;
             }
         }
+        self.stream_retry(out)?;
         let resync: Vec<(ConnId, LabelId)> = self
             .conns
             .iter()
@@ -141,6 +142,9 @@ impl SyncEngine {
             }
         }
         if let Some(x) = self.serve_wake() {
+            at(x);
+        }
+        if let Some(x) = self.stream_wake() {
             at(x);
         }
         for (_, x) in self.retry.values() {

@@ -469,3 +469,18 @@ fn restart_keeps_state() {
     let (evs, _) = events_of(&w.run(a, sync(l.id, cursor, vec![], vec![])));
     assert_eq!(evs, vec![Event::Deleted(bid(0))]);
 }
+
+// spec/sync.md §10 (Shared set, Stream): a host keeps no shared set, so a node's Pull, or any
+// request of the shared set, is answered Error 14, never left unanswered
+#[test]
+fn node_requests_answered_14_spec_sync_10() {
+    let mut w = World::new();
+    let h = w.add_hub(HostPolicy::default());
+    let a = w.connect(h);
+    let id = osis_proto::msg::NODE_IDS | 7;
+    let pull = osis_proto::msg::Pull { id, cursor: None, joins: vec![], inline_limit: 0, max_reply: osis_proto::serving::REPLY_BUDGET as u64, follow: true, ephemeral: false };
+    for m in [Message::Pull(Box::new(pull)), Message::NoRecord { id }] {
+        let ev = w.run(a, Command::Peer(Box::new(m)));
+        assert!(matches!(&ev[..], [ClientEvent::Peer(r)] if matches!(**r, Message::Error { id: i, code: Code::NOT_ADMITTED } if i == id)), "{ev:?}");
+    }
+}

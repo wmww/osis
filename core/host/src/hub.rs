@@ -292,8 +292,13 @@ impl Hub {
                 }
                 ServingOutput::PeerError(e) => out.push(HubOutput::Diagnostic(format!("connection {id}: {e}"))),
                 ServingOutput::StoreError(e) => out.push(HubOutput::Diagnostic(e.to_string())),
-                // a host serves no client port (its sessions answer those kinds Error 11) and,
-                // proving no actor, has no shared set
+                // proving no actor, a host has no shared set: a request of the shared set or the
+                // stream is answered 14 (spec/sync.md §10)
+                ServingOutput::Peer(m) if m.is_request() => {
+                    let reply = osis_proto::Message::Error { id: m.id(), code: osis_proto::Code::NOT_ADMITTED };
+                    self.serve(now, id, ServingInput::Peer(Box::new(reply)), out);
+                }
+                // a host serves no client port (its sessions answer those kinds Error 11)
                 ServingOutput::Request(_) | ServingOutput::Room { .. } | ServingOutput::Peer(_) => {}
             }
         }

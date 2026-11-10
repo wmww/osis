@@ -134,7 +134,7 @@ pub(crate) struct Shared {
 }
 
 /// Ids this module draws: never one the session's own requests use (top bit set).
-const ID_BASE: u32 = 1 << 31;
+const ID_BASE: u32 = osis_proto::msg::NODE_IDS;
 /// The id of a dialer's `NoRecord` (`Records::send_resume`).
 pub(super) const NO_RECORD_ID: u32 = ID_BASE;
 
@@ -369,7 +369,9 @@ impl SyncEngine {
                 return self.shared_message(conn, m, out);
             }
             if m.is_request() {
-                self.shared_send(conn, Message::Shared { id: m.id(), codes: vec![(Code::NOT_ADMITTED, None)] }, out)?;
+                self.shared_send(conn, Message::Error { id: m.id(), code: Code::NOT_ADMITTED }, out)?;
+            } else if matches!(m, Message::Error { id: NO_RECORD_ID, code: Code::NOT_ADMITTED }) {
+                self.shared_peer_refused(conn);
             }
             return Ok(());
         }
@@ -378,10 +380,9 @@ impl SyncEngine {
             Message::Beacons { id, generation, base, f, lo, hi, gcs, more } => self.shared_beacons(conn, id, (generation, base, f, lo, hi), &gcs, more, out),
             Message::Offer { id, items } => self.shared_offer(conn, id, items, out),
             Message::Lost { id, items } => self.shared_lost(conn, id, items, out),
-            Message::Shared { id, codes } if id == NO_RECORD_ID => {
-                if codes.first().is_some_and(|c| c.0 == Code::NOT_ADMITTED) {
-                    self.shared_peer_refused(conn);
-                }
+            Message::Shared { id, .. } if id == NO_RECORD_ID => Ok(()),
+            Message::Error { id: NO_RECORD_ID, code: Code::NOT_ADMITTED } => {
+                self.shared_peer_refused(conn);
                 Ok(())
             }
             Message::Shared { id, codes } => self.shared_reply(conn, id, codes, out),

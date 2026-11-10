@@ -29,6 +29,9 @@ pub const MAX_OPEN_LABELS: usize = 4096;
 pub const MAX_STEP_BYTES: usize = 323;
 /// Request ids are below 2^32 (spec/wire.md §11.1).
 pub type Id = u32;
+/// The ids a node draws for the shared set's and the stream's requests (spec/wire.md §11.2):
+/// the top bit set, so they never equal a session's own.
+pub const NODE_IDS: Id = 1 << 31;
 
 /// Deepest nesting of any v1 message: a sync message is at most 6 deep (FetchReply); a Call's
 /// args or a Reply's value hold values (64 deep, spec/data-model.md §5) inside at most 16 levels
@@ -387,9 +390,10 @@ impl Message {
     }
 
     /// Whether the node answers this itself rather than a session: the shared set's and the
-    /// stream's messages (spec/wire.md §11.2 Beacons to NoRecord, Pull to Applied).
+    /// stream's messages (spec/wire.md §11.2 Beacons to NoRecord, Pull to Applied), and an Error
+    /// answering a request the node drew its id for (`NODE_IDS`).
     pub fn for_node(&self) -> bool {
-        matches!(self.kind(), 36..=44)
+        matches!(self.kind(), 36..=44) || matches!(self, Message::Error { id, .. } if id & NODE_IDS != 0)
     }
 
     /// Whether this kind is a request the other side answers.

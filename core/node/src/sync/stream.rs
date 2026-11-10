@@ -46,7 +46,7 @@ const SCAN_ROWS: usize = 1 << 16;
 const READ_PAGE: usize = 1024;
 /// Ids this module draws for its Pulls: the shared set's range (top bit) with the next bit, so
 /// they never meet a session's own or the shared set's.
-const ID_BASE: u32 = (1 << 31) | (1 << 30);
+const ID_BASE: u32 = osis_proto::msg::NODE_IDS | (1 << 30);
 
 /// The node log's memory part: one latest event per memory entry, ordered by an in-memory
 /// counter, a deletion kept `MAX_DRIFT_MS` (a memory entry's tombstone). Bounded by the live
@@ -139,6 +139,8 @@ pub(crate) struct Pulling {
     record: Option<RecordId>,
     /// Pulls sent (tests count them).
     pulls: u64,
+    /// The last Pull was answered Error: asked again at this time (raw ms), `resync_ms` after.
+    retry_at: Option<u64>,
 }
 
 /// One connection's stream, either side.
@@ -190,6 +192,7 @@ impl SyncEngine {
             Message::Stream(s) => self.stream_pushed(conn, *s, out),
             // a report is asked only by an `until`, which this node never sets
             Message::Applied { .. } => Ok(()),
+            Message::Error { id, code } if self.stream_refused(conn, id, code) => Ok(()),
             m => self.shared_message(conn, m, out),
         }
     }
@@ -298,6 +301,10 @@ impl SyncEngine {
     /// (a moved head enters the log only there), read in a transaction of its own, filtered by S
     /// and by the bytes held.
     fn stream_serve(&mut self, conn: ConnId, p: Pull, out: &mut Vec<Action>) -> Result<()> {
+        // a connection with no shared set serves no stream (spec/sync.md §10)
+        if !self.records.shared.contains_key(&conn) {
+            return self.shared_send(conn, Message::Error { id: p.id, code: osis_proto::Code::NOT_ADMITTED }, out);
+        }
         let members = self.stream_members(conn);
         let _ = self.served_labels();
         self.state.flush(&mut self.engine)?;
@@ -465,12 +472,46 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// A request of this node's answered Error: a Pull is no longer in flight and goes again
+    /// after `resync_ms` (`stream_retry`), as a refused Sync would.
+    /// Whether it answered this stream's Pull.
+    fn stream_refused(&mut self, conn: ConnId, id: u32, code: osis_proto::Code) -> bool {
+        let at = self.raw_now().saturating_add(self.cfg.resync_ms);
+        let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return false };
+        if p.asked.as_ref().is_none_or(|(x, _)| *x != id) {
+            return false;
+        }
+        p.asked = None;
+        p.caught_up = false;
+        p.retry_at = Some(at);
+        self.diag(format!("pull refused: code {}", code.0));
+        true
+    }
+
+    /// Asks again the streams whose Pull was answered Error once their time came.
+    pub(super) fn stream_retry(&mut self, out: &mut Vec<Action>) -> Result<()> {
+        let now = self.raw_now();
+        let due: Vec<ConnId> = self.streams.iter().filter(|(_, s)| s.pulling.retry_at.is_some_and(|t| t <= now)).map(|(c, _)| *c).collect();
+        for conn in due {
+            if let Some(s) = self.streams.get_mut(&conn) {
+                s.pulling.retry_at = None;
+            }
+            self.stream_ask(conn, true, out)?;
+        }
+        Ok(())
+    }
+
+    /// When a refused Pull goes again (`next_wake`).
+    pub(super) fn stream_wake(&self) -> Option<u64> {
+        self.streams.values().filter_map(|s| s.pulling.retry_at).min()
+    }
+
     /// Sends a Pull on `conn` unless one is in flight: with joins waiting, a reply that left
     /// more, or `fresh` (a caller that must hear everything the peer holds now).
     pub(super) fn stream_ask(&mut self, conn: ConnId, fresh: bool, out: &mut Vec<Action>) -> Result<()> {
         self.stream_prune(conn)?;
         let Some(p) = self.streams.get(&conn).map(|s| &s.pulling) else { return Ok(()) };
-        if p.asked.is_some() || (p.in_stream.is_empty() && p.joins.is_empty()) || (p.caught_up && p.joins.is_empty() && !fresh) {
+        if p.asked.is_some() || p.retry_at.is_some() || (p.in_stream.is_empty() && p.joins.is_empty()) || (p.caught_up && p.joins.is_empty() && !fresh) {
             return Ok(());
         }
         // a body crosses once in a mesh: with another source of any member, announcements only

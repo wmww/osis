@@ -221,11 +221,12 @@ fn a_connection_with_no_record_has_no_shared_set_spec_sync_10() {
     let (_a, b, _, _) = pair(&mut net);
     let stranger = net.node(9, &[]);
     let mut p = dial_as(&mut net, stranger, b, [4; 32]);
-    let msgs = shared_of(&send(&mut net, b, &mut p, Message::Beacons { id: 5, generation: 1, base: None, f: 8, lo: 0, hi: 256, gcs: vec![], more: false }));
-    assert_eq!(answer(&msgs[0]), vec![(Code::NOT_ADMITTED, None)]);
+    let ids = osis_proto::msg::NODE_IDS;
+    let msgs = shared_of(&send(&mut net, b, &mut p, Message::Beacons { id: ids | 5, generation: 1, base: None, f: 8, lo: 0, hi: 256, gcs: vec![], more: false }));
+    assert_eq!(msgs[0], Message::Error { id: ids | 5, code: Code::NOT_ADMITTED });
     assert!(net.sync(b).shared_members(p.conn).is_empty());
-    let msgs = shared_of(&send(&mut net, b, &mut p, Message::NoRecord { id: 6 }));
-    assert_eq!(answer(&msgs[0]), vec![(Code::NOT_ADMITTED, None)], "a NoRecord from an unknown dialer starts nothing");
+    let msgs = shared_of(&send(&mut net, b, &mut p, Message::NoRecord { id: ids | 6 }));
+    assert_eq!(msgs[0], Message::Error { id: ids | 6, code: Code::NOT_ADMITTED }, "a NoRecord from an unknown dialer starts nothing");
     assert!(!msgs.iter().any(|m| matches!(m, Message::Beacons { .. })), "and no filter");
 }
 
