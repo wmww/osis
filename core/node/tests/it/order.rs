@@ -628,7 +628,7 @@ fn resnapshot<T, E>(lp: &mut LocalPeer, r: &Result<Option<T>, E>, by: usize, t: 
     if !matches!(r, Ok(Some(_))) || e.role_on(&t) < Some(Role::Write) {
         return;
     }
-    let snaps: Vec<CommitId> = e.core.ix.snapshots.get(&(t, a.clone())).into_iter().flatten().map(|x| x.1).filter(|s| e.body_not_dropped(s, &t, a)).collect();
+    let snaps: Vec<CommitId> = e.core.ix.snapshots.get(&(t, a.clone())).into_iter().flatten().map(|x| x.1).filter(|s| e.holds_valid_snapshot(s, &t, a)).collect();
     let covered = snaps.iter().any(|s| held.iter().all(|b| s != b && e.covered(s, b, &t, a).ok().flatten() == Some(true)));
     if !covered {
         lp.peers[by].clock.advance(1);
