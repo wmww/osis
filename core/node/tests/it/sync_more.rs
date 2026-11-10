@@ -94,6 +94,7 @@ fn promotion_waits_for_the_chain_at_the_host_spec_sync_5() {
     let g = e.new_thing(&mut m, at);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
+    // bare edges: the rotation below boxes every holder before any pass (a grant by hand)
     set_edge(e, g, wt, Role::Write);
     set_edge(e, g, rt, Role::Read);
     let rs = recipients_of(e, &[(at, Role::Admin), (wt, Role::Write), (rt, Role::Read)]);
@@ -1039,6 +1040,7 @@ fn newcomer_after_rotation_reads_older_copies_spec_crypto_4() {
     // r joins with the rotation: its first box is at the new epoch
     net.pair(r, a);
     let e = net.engine(a);
+    // bare edge: the rotation below boxes the holder before any pass (a grant by hand)
     set_edge(e, g, rt, Role::Read);
     let rs = recipients_of(e, &[(at, Role::Admin), (wt, Role::Write), (rt, Role::Read)]);
     rotation(e, g, &rs, 78, false);
@@ -1389,13 +1391,13 @@ fn role_change_judges_only_its_labels_spec_sync_6() {
     e.commit(m).unwrap();
     net.advance(61_000);
     let s0 = net.sync(a).pass_stats();
-    set_edge(net.engine(a), u, other, Role::Read);
+    net.grant(a, u, other, Role::Read);
     net.run();
     let s1 = net.sync(a).pass_stats();
     assert_eq!((s1.passes - s0.passes, s1.full - s0.full, s1.bodies - s0.bodies), (0, 0, 0), "an unrelated edge starts no pass");
     net.advance(61_000);
     let s2 = net.sync(a).pass_stats();
-    set_edge(net.engine(a), g0, other, Role::Read);
+    net.grant(a, g0, other, Role::Read);
     net.run();
     let s3 = net.sync(a).pass_stats();
     assert_eq!(s3.full - s2.full, 0, "a new holder moves no role this label's verdicts read");
@@ -1422,6 +1424,7 @@ fn marked_by_a_pass_passes_in_the_same_step_spec_sync_6() {
     net.pair(c, a);
     net.advance(61_000);
     let other = net.tid(c);
+    // bare: the pass's re-seal of `other` is the write that marks the second pass
     set_edge(net.engine(a), g, other, Role::Read);
     let before = net.sync(a).pass_stats().passes;
     let _ = net.sync(a).handle(osis_node::sync::Event::Local);
