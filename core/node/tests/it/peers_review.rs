@@ -200,7 +200,7 @@ fn stranger_refused_spec_sync_5() {
     let l: LabelId = net.label(b);
     let (mut p, _) = dial_in(&mut net, b);
     let key = SigningSecret::from_seed(&Secret32::from_bytes([0x99; 32]));
-    let evs = command(&mut net, b, &mut p, Command::Open { label: l, key: OpenKey::Sync { step: None, key: key } });
+    let evs = command(&mut net, b, &mut p, Command::Open { label: l, key: OpenKey::Sync { step: None, key } });
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
     assert!(!evs.iter().any(|e| matches!(e, ClientEvent::Opened { .. })));
     assert!(net.sync(b).served_opened()[&p.conn].is_empty());
