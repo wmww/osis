@@ -4,3 +4,4 @@
 > Tags: tests, node-sync
 
 Found by a branch sweep at a random offset (the seed reproduces on main). Investigate why `uncovered` stays nonempty at rest.
+- Seeds: 32 fails on main at 6b1fb2989; with own replaces (zero-growth-1) seeds 1 and 32 fail. Seed 1's copy left is a role commit (`keys.0`, `secrets.0`) of another thing, deferred as `unwrapped` (no current read secret of the group, waiting for a re-seal), not as uncovered.
