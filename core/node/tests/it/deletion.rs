@@ -835,7 +835,7 @@ fn second_label_gets_kept_bodies_spec_sync_6() {
         let g2 = net.group_seeded(a, &[(b, Role::Write)], addrs, 2);
         let l2 = net.group_labels(a).into_iter().find(|x| x.0 == g2).unwrap().1.id;
         // the new group's actor reads the thing
-        set_edge(net.engine(a), g, g2, Role::Read);
+        net.grant(a, g, g2, Role::Read);
         net.run();
         let e = net.engine(a);
         let mut grp = e.get_typed(&g2, &ct::GROUP).unwrap().unwrap();
@@ -1011,7 +1011,7 @@ fn right_learned_late_spec_commits_5() {
     net.run();
     net.set_online(n, false);
     let xt = net.tid(x);
-    set_edge(net.engine(a), g, xt, Role::Admin);
+    net.grant(a, g, xt, Role::Admin);
     net.run();
     net.advance(1_000);
     let acts = net.sync(x).compact(&t, &k).unwrap();

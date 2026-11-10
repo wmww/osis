@@ -427,6 +427,17 @@ impl Net {
         self.sync(n).engine_mut()
     }
 
+    /// Node `n` grants `holder` `role` on `target` (`Engine::grant`: secrets in the same step)
+    /// and carries it out; the grant's commit. Tests that set up access use this, not `set_edge`.
+    pub fn grant(&mut self, n: usize, target: Tid, holder: Tid, role: Role) -> CommitId {
+        let edge = ct::Edge { role, until: None, invite: None, tied: None };
+        let done = self.engine(n).grant(&target, &holder, &edge).unwrap();
+        let c = *done.commits.last().unwrap();
+        let acts = self.sync(n).carry_out(done).unwrap();
+        self.actions(n, acts);
+        c
+    }
+
     /// Whether blob `b` under `l` carries one of `commits`, by some node's entry for it.
     fn carries(&self, l: &osis_base::LabelId, b: &osis_base::BlobId, commits: &BTreeSet<CommitId>) -> bool {
         !commits.is_empty() && self.nodes.iter().filter_map(|x| x.sync.as_ref()).any(|s| s.entries(l).into_iter().any(|(x, k)| x == *b && matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commits.contains(&commit))))
@@ -984,6 +995,7 @@ impl Net {
         let mtids: Vec<(Tid, Role)> = holders.iter().map(|(n, r)| (self.tid(*n), *r)).collect();
         for (t, r) in &mtids {
             let e = self.engine(admin);
+            // bare edges: the rotation below boxes every holder before any pass (a grant by hand)
             set_edge(e, g, *t, *r);
             recipients.push(recipient(e, *t, *r));
         }
@@ -1160,6 +1172,8 @@ fn recipient(e: &mut Engine, t: Tid, role: Role) -> Recipient {
     Recipient { holder: t, role, keys }
 }
 
+/// A bare edge write: no secrets with it, so the holder gets them only from a later repair (a
+/// plain thing's own secrets, `reseal` at a complete pass). Setting up access: `Net::grant`.
 pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, role: Role) -> CommitId {
     let mut m = Mutation::new();
     let edge = ct::Edge { role, until: None, invite: None, tied: None };
