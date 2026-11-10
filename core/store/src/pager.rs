@@ -16,6 +16,7 @@
 //! moves `r`, deletes old rows and the journal. Open finishes or rolls back from the journal.
 //! Large transactions spill unit rows early under journal rows; their keys stay in memory.
 
+use crate::btree::Page;
 use crate::backend::{Backend, WriteBatch};
 use crate::codec::{R, W};
 use crate::root::{RootRecord, RootStorage};
@@ -24,6 +25,7 @@ use osis_base::BlobId;
 use osis_crypto::aead::{self, NONCE_LEN};
 use osis_crypto::{CryptoRngCore, Secret32, Zeroizing, padme};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 /// Shape and budgets. `arity`, `depth` and `page_max` are fixed when the store is created
 /// (stored in the meta); the rest are per open.
@@ -240,7 +242,8 @@ fn read_pointer(b: &[u8]) -> Result<(u64, u64), Error> {
 
 /// A unit's state inside a transaction.
 enum DirtyUnit {
-    Plain { data: Vec<u8>, shred: bool },
+    /// `page`: the table page `data` encodes, when it was written or read as one.
+    Plain { data: Vec<u8>, shred: bool, page: Option<Arc<Page>> },
     /// Written early as row `u slot ver` under `key` (memory only until commit).
     Spilled { key: Secret32, shred: bool },
     Deleted { shred: bool },
@@ -425,6 +428,9 @@ fn recover(backend: &mut dyn Backend, root: &mut dyn RootStorage, cfg: &mut Stor
     Ok((epoch, rec.key, ver, meta, top))
 }
 
+/// A unit's plain bytes and, where it was read or written as a table page, the page decoded.
+type CachedUnit = (Vec<u8>, Option<Arc<Page>>);
+
 pub(crate) struct Pager {
     backend: Box<dyn Backend>,
     root: Box<dyn RootStorage>,
@@ -440,8 +446,13 @@ pub(crate) struct Pager {
     top: Node,
     /// Committed tree nodes below the top by (level, index); `None`: absent.
     nodes: HashMap<(u32, u64), Option<Node>>,
-    units: HashMap<u64, Vec<u8>>,
+    /// Committed units read or written: their plain bytes and, for one read as a table page,
+    /// the page decoded (`page`). Bounded by `unit_cache_bytes` (the bytes; a decoded page
+    /// counts its unit's bytes again).
+    units: HashMap<u64, CachedUnit>,
     unit_bytes: usize,
+    /// Table pages decoded since the open (`Store::pages_decoded`).
+    decoded: u64,
     broken: bool,
     /// `Store::changes`.
     changes: u64,
@@ -480,7 +491,7 @@ impl Pager {
 
     #[allow(clippy::too_many_arguments)]
     fn new(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: StoreConfig, epoch: u64, root_key: Secret32, top_ver: u64, meta: Meta, top: Node) -> Pager {
-        Pager { backend, root, cfg, epoch, root_key, top_ver, next_ver: meta.next_ver, open_spills: BTreeSet::new(), meta, top, nodes: HashMap::new(), units: HashMap::new(), unit_bytes: 0, broken: false, changes: next_change() }
+        Pager { backend, root, cfg, epoch, root_key, top_ver, next_ver: meta.next_ver, open_spills: BTreeSet::new(), meta, top, nodes: HashMap::new(), units: HashMap::new(), unit_bytes: 0, decoded: 0, broken: false, changes: next_change() }
     }
 
     /// Opens a store, finishing or rolling back an interrupted commit. The stored shape wins
@@ -590,7 +601,7 @@ impl Pager {
     pub fn read(&mut self, slot: u64) -> Result<Option<Vec<u8>>, Error> {
         self.check()?;
         if let Some(u) = self.units.get(&slot) {
-            return Ok(Some(u.clone()));
+            return Ok(Some(u.0.clone()));
         }
         let Some(e) = self.unit_entry(slot)? else { return Ok(None) };
         let row = unit_row(slot, e.ver);
@@ -610,7 +621,63 @@ impl Pager {
             self.unit_bytes = 0;
         }
         self.unit_bytes = self.unit_bytes.saturating_add(data.len());
-        self.units.insert(slot, data);
+        self.units.insert(slot, (data, None));
+    }
+
+    /// The table page committed unit `slot` holds, decoded once while the unit stays cached.
+    fn page(&mut self, slot: u64) -> Result<Arc<Page>, Error> {
+        if let Some((_, Some(p))) = self.units.get(&slot) {
+            return Ok(p.clone());
+        }
+        let data = self.read(slot)?.ok_or(Error::Corrupt("table page missing"))?;
+        let page = Arc::new(self.decode(&data)?);
+        if self.unit_bytes.saturating_add(data.len()) <= self.cfg.unit_cache_bytes
+            && let Some(u) = self.units.get_mut(&slot)
+        {
+            self.unit_bytes = self.unit_bytes.saturating_add(data.len());
+            u.1 = Some(page.clone());
+        }
+        Ok(page)
+    }
+
+    fn decode(&mut self, data: &[u8]) -> Result<Page, Error> {
+        self.decoded = self.decoded.saturating_add(1);
+        Page::decode(data)
+    }
+
+    pub fn pages_decoded(&self) -> u64 {
+        self.decoded
+    }
+
+    /// The table page of unit `slot` as the transaction sees it.
+    pub fn txn_page(&mut self, d: &mut Dirty, slot: u64) -> Result<Arc<Page>, Error> {
+        match d.units.get_mut(&slot) {
+            Some(DirtyUnit::Plain { page: Some(p), .. }) => Ok(p.clone()),
+            Some(DirtyUnit::Plain { data, page, .. }) => Ok(page.insert(Arc::new(self.decode(data)?)).clone()),
+            Some(_) => {
+                let data = self.txn_read(d, slot)?.ok_or(Error::Corrupt("table page missing"))?;
+                self.decode(&data).map(Arc::new)
+            }
+            None => self.page(slot),
+        }
+    }
+
+    /// `txn_page` to change and write back: the transaction's own copy when it has one.
+    pub fn txn_take_page(&mut self, d: &mut Dirty, slot: u64) -> Result<Page, Error> {
+        if let Some(DirtyUnit::Plain { page, .. }) = d.units.get_mut(&slot)
+            && let Some(p) = page.take()
+        {
+            return Ok(Arc::unwrap_or_clone(p));
+        }
+        Ok(Arc::unwrap_or_clone(self.txn_page(d, slot)?))
+    }
+
+    /// Writes table page `page` as unit `slot` (`txn_write` of its bytes).
+    pub fn txn_put_page(&mut self, d: &mut Dirty, slot: u64, page: Page, shred: bool, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
+        self.check()?;
+        let shred = shred || d.units.get(&slot).is_some_and(DirtyUnit::shred);
+        d.set_unit(slot, DirtyUnit::Plain { data: page.encode(), shred, page: Some(Arc::new(page)) });
+        self.spill_if_due(d, rng)
     }
 
     /// Starts a transaction, first rolling back the spills of aborted ones.
@@ -661,7 +728,7 @@ impl Pager {
     pub fn txn_write(&mut self, d: &mut Dirty, slot: u64, data: Vec<u8>, shred: bool, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
         self.check()?;
         let shred = shred || d.units.get(&slot).is_some_and(DirtyUnit::shred);
-        d.set_unit(slot, DirtyUnit::Plain { data, shred });
+        d.set_unit(slot, DirtyUnit::Plain { data, shred, page: None });
         self.spill_if_due(d, rng)
     }
 
@@ -707,7 +774,7 @@ impl Pager {
         let mut batch = WriteBatch::new();
         let mut j = Journal::default();
         for (slot, u) in d.units.iter_mut() {
-            if let DirtyUnit::Plain { data, shred } = u {
+            if let DirtyUnit::Plain { data, shred, .. } = u {
                 let key = Secret32::random(rng);
                 let row = unit_row(*slot, d.ver);
                 batch.put(row.clone(), seal(&key, &row, data, rng)?);
@@ -755,7 +822,7 @@ impl Pager {
         let mut j = Journal::default();
         let mut changes: BTreeMap<u64, BTreeMap<u32, Option<Entry>>> = BTreeMap::new();
         let mut rotate: BTreeSet<u64> = BTreeSet::new();
-        let mut cached: Vec<(u64, Option<Vec<u8>>)> = Vec::new();
+        let mut cached: Vec<(u64, Option<CachedUnit>)> = Vec::new();
         let mut units: Vec<(u64, DirtyUnit)> = d.units.drain().collect();
         units.sort_by_key(|(s, _)| *s);
         for (slot, u) in units {
@@ -763,11 +830,11 @@ impl Pager {
             let row = unit_row(slot, ver);
             let shred = u.shred();
             let entry = match u {
-                DirtyUnit::Plain { data, .. } => {
+                DirtyUnit::Plain { data, page, .. } => {
                     let key = Secret32::random(rng);
                     batch.put(row.clone(), seal(&key, &row, &data, rng)?);
                     j.new_rows.push(row);
-                    cached.push((slot, Some(data)));
+                    cached.push((slot, Some((data, page))));
                     Some(Entry { key, ver })
                 }
                 DirtyUnit::Spilled { key, .. } => {
@@ -902,7 +969,15 @@ impl Pager {
         }
         for (slot, data) in cached {
             match data {
-                Some(data) => self.cache_unit(slot, data),
+                Some((data, page)) => {
+                    let n = data.len();
+                    self.cache_unit(slot, data);
+                    // the page the transaction wrote stays decoded beside its bytes
+                    if let (Some(page), Some(u)) = (page, self.units.get_mut(&slot)) {
+                        self.unit_bytes = self.unit_bytes.saturating_add(n);
+                        u.1 = Some(page);
+                    }
+                }
                 None => {
                     self.units.remove(&slot);
                 }

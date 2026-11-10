@@ -11,35 +11,47 @@
 
 use crate::codec::{R, W};
 use crate::{Error, KeyValue};
+use std::sync::Arc;
 
 pub(crate) trait Units {
     fn read(&mut self, slot: u64) -> Result<Option<Vec<u8>>, Error>;
     fn write(&mut self, slot: u64, data: Vec<u8>, shred: bool) -> Result<(), Error>;
+    /// The table page unit `slot` holds: decoded once per write of the unit and kept beside its
+    /// bytes, so a lookup decodes no page it has seen.
+    fn page(&mut self, slot: u64) -> Result<Arc<Page>, Error>;
+    /// The page of unit `slot` to change and write back (`put_page`).
+    fn take_page(&mut self, slot: u64) -> Result<Page, Error> {
+        Ok(Arc::unwrap_or_clone(self.page(slot)?))
+    }
+    /// Writes `page` as unit `slot`.
+    fn put_page(&mut self, slot: u64, page: Page, shred: bool) -> Result<(), Error>;
     fn delete(&mut self, slot: u64, shred: bool);
     fn alloc(&mut self) -> Result<u64, Error>;
     fn page_max(&self) -> usize;
 }
 
 #[derive(Clone)]
-enum Val {
+pub(crate) enum Val {
     Inline(Vec<u8>),
     Overflow { slot: u64, len: u64 },
 }
 
 #[derive(Clone)]
-struct LeafE {
+pub(crate) struct LeafE {
     key: Vec<u8>,
     val: Val,
 }
 
 #[derive(Clone)]
-struct InnerE {
+pub(crate) struct InnerE {
     key: Vec<u8>,
     child: u64,
     count: u64,
 }
 
-enum Page {
+/// A table page: a unit's bytes decoded (`Units::page`).
+#[derive(Clone)]
+pub(crate) enum Page {
     Leaf(Vec<LeafE>),
     Inner(Vec<InnerE>),
 }
@@ -85,7 +97,7 @@ impl Page {
             Page::Inner(es) => es.is_empty(),
         }
     }
-    fn encode(&self) -> Vec<u8> {
+    pub(crate) fn encode(&self) -> Vec<u8> {
         let mut w = W::new();
         match self {
             Page::Leaf(es) => {
@@ -107,7 +119,7 @@ impl Page {
         }
         w.take()
     }
-    fn decode(b: &[u8]) -> Result<Page, Error> {
+    pub(crate) fn decode(b: &[u8]) -> Result<Page, Error> {
         let mut r = R::new(b);
         let kind = r.u8()?;
         let n = r.u32()?;
@@ -139,13 +151,6 @@ impl Page {
     }
 }
 
-fn load(u: &mut dyn Units, slot: u64) -> Result<Page, Error> {
-    Page::decode(&u.read(slot)?.ok_or(Error::Corrupt("table page missing"))?)
-}
-
-fn save(u: &mut dyn Units, slot: u64, p: &Page, shred: bool) -> Result<(), Error> {
-    u.write(slot, p.encode(), shred)
-}
 
 /// A leaf entry's value as a page holds it: inline, or the slot of the unit holding it.
 pub(crate) type LeafValue = Result<Vec<u8>, u64>;
@@ -227,7 +232,7 @@ pub(crate) fn empty_page() -> Vec<u8> {
 /// Creates an empty table; returns its root slot.
 pub(crate) fn create(u: &mut dyn Units) -> Result<u64, Error> {
     let slot = u.alloc()?;
-    save(u, slot, &Page::Leaf(Vec::new()), false)?;
+    u.put_page(slot, Page::Leaf(Vec::new()), false)?;
     Ok(slot)
 }
 
@@ -242,8 +247,8 @@ pub(crate) fn get(u: &mut dyn Units, root: u64, key: &[u8]) -> Result<Option<Vec
 fn find(u: &mut dyn Units, root: u64, key: &[u8]) -> Result<Option<Val>, Error> {
     let mut slot = root;
     loop {
-        match load(u, slot)? {
-            Page::Inner(es) => slot = es.get(child_index(&es, key)).ok_or(Error::Corrupt("empty interior page"))?.child,
+        match &*u.page(slot)? {
+            Page::Inner(es) => slot = es.get(child_index(es, key)).ok_or(Error::Corrupt("empty interior page"))?.child,
             Page::Leaf(es) => {
                 return Ok(match es.binary_search_by(|e| e.key.as_slice().cmp(key)) {
                     Ok(i) => es.get(i).map(|e| e.val.clone()),
@@ -273,14 +278,14 @@ pub(crate) fn put(u: &mut dyn Units, root: u64, key: &[u8], val: Vec<u8>, shred:
     let (added, pieces) = insert(u, root, key, val, shred)?;
     if pieces.len() > 1 {
         // Keep the root's slot: move its first piece out.
-        let first = load(u, root)?;
+        let first = u.take_page(root)?;
         let moved = u.alloc()?;
-        save(u, moved, &first, shred)?;
+        u.put_page(moved, first, shred)?;
         let mut es = pieces;
         if let Some(e) = es.first_mut() {
             e.child = moved;
         }
-        save(u, root, &Page::Inner(es), true)?;
+        u.put_page(root, Page::Inner(es), true)?;
     }
     Ok(added)
 }
@@ -288,7 +293,7 @@ pub(crate) fn put(u: &mut dyn Units, root: u64, key: &[u8], val: Vec<u8>, shred:
 /// Returns whether the key was new and this node's entries after the op (itself, then new
 /// right siblings).
 fn insert(u: &mut dyn Units, slot: u64, key: &[u8], val: Val, shred: bool) -> Result<(bool, Vec<InnerE>), Error> {
-    let mut page = load(u, slot)?;
+    let mut page = u.take_page(slot)?;
     let added = match &mut page {
         Page::Leaf(es) => match es.binary_search_by(|e| e.key.as_slice().cmp(key)) {
             Ok(i) => {
@@ -318,41 +323,48 @@ fn insert(u: &mut dyn Units, slot: u64, key: &[u8], val: Val, shred: bool) -> Re
         }
     };
     if page.size() <= u.page_max() {
-        save(u, slot, &page, shred)?;
-        return Ok((added, vec![entry(&page, slot)]));
+        let e = entry(&page, slot);
+        u.put_page(slot, page, shred)?;
+        return Ok((added, vec![e]));
     }
     let (a, b) = split(page);
     let right = u.alloc()?;
-    save(u, slot, &a, true)?;
-    save(u, right, &b, shred)?;
-    Ok((added, vec![entry(&a, slot), entry(&b, right)]))
+    let es = vec![entry(&a, slot), entry(&b, right)];
+    u.put_page(slot, a, true)?;
+    u.put_page(right, b, shred)?;
+    Ok((added, es))
 }
 
 /// Removes `key`; true if it was present.
 pub(crate) fn remove(u: &mut dyn Units, root: u64, key: &[u8], shred: bool) -> Result<bool, Error> {
     match del(u, root, key, shred)? {
         None => return Ok(false),
-        Some(p) if p.is_empty() => save(u, root, &Page::Leaf(Vec::new()), shred)?,
+        Some(p) if p.empty => u.put_page(root, Page::Leaf(Vec::new()), shred)?,
         Some(_) => {}
     }
     // Collapse a root with one child into the root's slot.
     loop {
-        match load(u, root)? {
-            Page::Inner(es) if es.len() == 1 => {
-                let child = es.first().map(|e| e.child).ok_or(Error::Corrupt("empty interior page"))?;
-                let page = load(u, child)?;
-                save(u, root, &page, true)?;
-                u.delete(child, true);
-            }
+        let child = match &*u.page(root)? {
+            Page::Inner(es) if es.len() == 1 => es.first().map(|e| e.child).ok_or(Error::Corrupt("empty interior page"))?,
             _ => return Ok(true),
-        }
+        };
+        let page = u.take_page(child)?;
+        u.put_page(root, page, true)?;
+        u.delete(child, true);
     }
+}
+
+/// A node's page after a removal below it: whether it is empty, its size, its entry.
+struct After {
+    empty: bool,
+    size: usize,
+    entry: InnerE,
 }
 
 /// Removes `key` below `slot`; `None` if absent, else the node's page after the op (already
 /// saved unless empty).
-fn del(u: &mut dyn Units, slot: u64, key: &[u8], shred: bool) -> Result<Option<Page>, Error> {
-    let mut page = load(u, slot)?;
+fn del(u: &mut dyn Units, slot: u64, key: &[u8], shred: bool) -> Result<Option<After>, Error> {
+    let mut page = u.take_page(slot)?;
     match &mut page {
         Page::Leaf(es) => {
             let Ok(i) = es.binary_search_by(|e| e.key.as_slice().cmp(key)) else { return Ok(None) };
@@ -363,24 +375,25 @@ fn del(u: &mut dyn Units, slot: u64, key: &[u8], shred: bool) -> Result<Option<P
             let i = child_index(es, key);
             let child_slot = es.get(i).ok_or(Error::Corrupt("empty interior page"))?.child;
             let Some(child) = del(u, child_slot, key, shred)? else { return Ok(None) };
-            if child.is_empty() {
+            if child.empty {
                 es.remove(i);
                 u.delete(child_slot, shred);
             } else {
                 if let Some(e) = es.get_mut(i) {
-                    *e = entry(&child, child_slot);
+                    *e = child.entry;
                 }
-                if child.size() < u.page_max() / 4 && es.len() > 1 {
+                if child.size < u.page_max() / 4 && es.len() > 1 {
                     let (l, r) = if i + 1 < es.len() { (i, i + 1) } else { (i - 1, i) };
                     rebalance(u, es, l, r, shred)?;
                 }
             }
         }
     }
-    if !page.is_empty() {
-        save(u, slot, &page, shred)?;
+    let after = After { empty: page.is_empty(), size: page.size(), entry: entry(&page, slot) };
+    if !after.empty {
+        u.put_page(slot, page, shred)?;
     }
-    Ok(Some(page))
+    Ok(Some(after))
 }
 
 /// Merges siblings `l` and `l + 1` or, if too big for one page, splits them evenly.
@@ -389,7 +402,7 @@ fn rebalance(u: &mut dyn Units, es: &mut Vec<InnerE>, l: usize, r: usize, shred:
         (Some(a), Some(b)) => (a.child, b.child),
         _ => return Err(Error::Corrupt("rebalance")),
     };
-    let merged = match (load(u, ls)?, load(u, rs)?) {
+    let merged = match (u.take_page(ls)?, u.take_page(rs)?) {
         (Page::Leaf(mut a), Page::Leaf(b)) => {
             a.extend(b);
             Page::Leaf(a)
@@ -401,14 +414,14 @@ fn rebalance(u: &mut dyn Units, es: &mut Vec<InnerE>, l: usize, r: usize, shred:
         _ => return Err(Error::Corrupt("uneven table")),
     };
     if merged.size() <= u.page_max() {
-        save(u, ls, &merged, shred)?;
-        u.delete(rs, true);
         es.splice(l..=r, [entry(&merged, ls)]);
+        u.put_page(ls, merged, shred)?;
+        u.delete(rs, true);
     } else {
         let (a, b) = split(merged);
-        save(u, ls, &a, true)?;
-        save(u, rs, &b, true)?;
         es.splice(l..=r, [entry(&a, ls), entry(&b, rs)]);
+        u.put_page(ls, a, true)?;
+        u.put_page(rs, b, true)?;
     }
     Ok(())
 }
@@ -421,7 +434,7 @@ pub(crate) fn range(u: &mut dyn Units, root: u64, start: &[u8], end: Option<&[u8
 }
 
 fn collect(u: &mut dyn Units, slot: u64, start: &[u8], end: Option<&[u8]>, limit: usize, out: &mut Vec<KeyValue>) -> Result<(), Error> {
-    match load(u, slot)? {
+    match &*u.page(slot)? {
         Page::Leaf(es) => {
             for e in es.iter().skip(es.partition_point(|e| e.key.as_slice() < start)) {
                 if out.len() >= limit || end.is_some_and(|end| e.key.as_slice() >= end) {
@@ -431,7 +444,7 @@ fn collect(u: &mut dyn Units, slot: u64, start: &[u8], end: Option<&[u8]>, limit
             }
         }
         Page::Inner(es) => {
-            for e in es.iter().skip(child_index(&es, start)) {
+            for e in es.iter().skip(child_index(es, start)) {
                 if out.len() >= limit || end.is_some_and(|end| e.key.as_slice() >= end) {
                     break;
                 }
@@ -444,7 +457,7 @@ fn collect(u: &mut dyn Units, slot: u64, start: &[u8], end: Option<&[u8]>, limit
 
 /// Entries in the table.
 pub(crate) fn len(u: &mut dyn Units, root: u64) -> Result<u64, Error> {
-    Ok(load(u, root)?.count())
+    Ok(u.page(root)?.count())
 }
 
 /// Number of keys below `key`.
@@ -452,10 +465,10 @@ pub(crate) fn rank(u: &mut dyn Units, root: u64, key: &[u8]) -> Result<u64, Erro
     let mut slot = root;
     let mut acc = 0u64;
     loop {
-        match load(u, slot)? {
+        match &*u.page(slot)? {
             Page::Leaf(es) => return Ok(acc.saturating_add(es.partition_point(|e| e.key.as_slice() < key) as u64)),
             Page::Inner(es) => {
-                let i = child_index(&es, key);
+                let i = child_index(es, key);
                 acc = es.iter().take(i).fold(acc, |a, e| a.saturating_add(e.count));
                 slot = es.get(i).ok_or(Error::Corrupt("empty interior page"))?.child;
             }
@@ -467,14 +480,14 @@ pub(crate) fn rank(u: &mut dyn Units, root: u64, key: &[u8]) -> Result<u64, Erro
 pub(crate) fn nth(u: &mut dyn Units, root: u64, mut i: u64) -> Result<Option<KeyValue>, Error> {
     let mut slot = root;
     loop {
-        match load(u, slot)? {
+        match &*u.page(slot)? {
             Page::Leaf(es) => {
                 let Some(e) = usize::try_from(i).ok().and_then(|i| es.get(i)) else { return Ok(None) };
                 return Ok(Some((e.key.clone(), resolve(u, &e.val)?)));
             }
             Page::Inner(es) => {
                 let mut next = None;
-                for e in &es {
+                for e in es {
                     if i < e.count {
                         next = Some(e.child);
                         break;
@@ -490,10 +503,10 @@ pub(crate) fn nth(u: &mut dyn Units, root: u64, mut i: u64) -> Result<Option<Key
 
 /// Deletes every unit of the table, its root included.
 pub(crate) fn drop_all(u: &mut dyn Units, root: u64, shred: bool) -> Result<(), Error> {
-    match load(u, root)? {
+    match &*u.page(root)? {
         Page::Leaf(es) => es.iter().for_each(|e| free_val(u, &e.val, shred)),
         Page::Inner(es) => {
-            for e in &es {
+            for e in es {
                 drop_all(u, e.child, shred)?;
             }
         }
@@ -534,6 +547,12 @@ mod tests {
             }
             self.units.remove(&slot);
         }
+        fn page(&mut self, slot: u64) -> Result<Arc<Page>, Error> {
+            Page::decode(self.units.get(&slot).ok_or(Error::Corrupt("table page missing"))?).map(Arc::new)
+        }
+        fn put_page(&mut self, slot: u64, page: Page, shred: bool) -> Result<(), Error> {
+            self.write(slot, page.encode(), shred)
+        }
         fn alloc(&mut self) -> Result<u64, Error> {
             self.next += 1;
             Ok(self.next)
@@ -553,13 +572,13 @@ mod tests {
         let mut stack = vec![root];
         while let Some(s) = stack.pop() {
             reachable += 1;
-            let p = load(u, s).unwrap();
+            let p = u.page(s).unwrap();
             assert!(p.size() <= u.max, "page {} > {}", p.size(), u.max);
-            match p {
+            match &*p {
                 Page::Inner(es) => {
                     for e in es {
-                        assert_eq!(load(u, e.child).unwrap().first_key(), e.key, "separator is the child's first key");
-                        assert_eq!(load(u, e.child).unwrap().count(), e.count);
+                        assert_eq!(u.page(e.child).unwrap().first_key(), e.key, "separator is the child's first key");
+                        assert_eq!(u.page(e.child).unwrap().count(), e.count);
                         stack.push(e.child);
                     }
                 }
@@ -618,7 +637,7 @@ mod tests {
         let changed = u.units.iter().filter(|(s, v)| before.get(s) != Some(v)).count();
         let mut depth = 0;
         let mut s = root;
-        while let Page::Inner(es) = load(&mut u, s).unwrap() {
+        while let Page::Inner(es) = &*u.page(s).unwrap() {
             depth += 1;
             s = es[0].child;
         }

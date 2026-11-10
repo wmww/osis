@@ -137,6 +137,12 @@ impl Store {
         self.pager.changes()
     }
 
+    /// Table pages decoded since the open (tests count work): a page is decoded once per write
+    /// of its unit while the unit stays cached.
+    pub fn pages_decoded(&self) -> u64 {
+        self.pager.pages_decoded()
+    }
+
     /// Starts a transaction; reads see its own writes. Drop it to abort.
     pub fn transaction<'a>(&'a mut self, rng: &'a mut dyn CryptoRngCore) -> Result<Transaction<'a>, Error> {
         let d = self.pager.begin()?;
@@ -227,6 +233,15 @@ impl Units for Transaction<'_> {
     }
     fn write(&mut self, slot: u64, data: Vec<u8>, shred: bool) -> Result<(), Error> {
         self.pager.txn_write(&mut self.d, slot, data, shred, &mut *self.rng)
+    }
+    fn page(&mut self, slot: u64) -> Result<std::sync::Arc<crate::btree::Page>, Error> {
+        self.pager.txn_page(&mut self.d, slot)
+    }
+    fn take_page(&mut self, slot: u64) -> Result<crate::btree::Page, Error> {
+        self.pager.txn_take_page(&mut self.d, slot)
+    }
+    fn put_page(&mut self, slot: u64, page: crate::btree::Page, shred: bool) -> Result<(), Error> {
+        self.pager.txn_put_page(&mut self.d, slot, page, shred, &mut *self.rng)
     }
     fn delete(&mut self, slot: u64, shred: bool) {
         self.pager.txn_delete(&mut self.d, slot, shred);

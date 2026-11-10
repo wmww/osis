@@ -101,3 +101,37 @@ fn table_edit_is_flat() {
     assert!(b.1 <= 2 * a.1 + 2 && a.2 <= 64 * 1024 && b.2 <= 64 * 1024, "rows and bytes written grow with the table: {a:?}, {b:?}");
 }
 
+
+// spec: none (internal: notes/local-store.md, Implementation). A table page is decoded once per
+// write of its unit: lookups after the first decode none, in a later transaction too; a write
+// decodes nothing of the pages it rewrites again, and the lookups after it nothing at all (the
+// pages written stay decoded).
+#[test]
+fn a_table_page_is_decoded_once_per_write() {
+    let b = MemoryBackend::new();
+    let mut rng = SeededRng::from_u64(5);
+    let mut s = Store::create(Box::new(b.clone()), Box::new(osis_store::MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+    fill(&mut s, &mut rng, 3_000, 50_000);
+    let key = |i: u32| format!("key{i:08}").into_bytes();
+    let gets = |s: &mut Store, rng: &mut SeededRng| {
+        let before = s.pages_decoded();
+        let mut t = s.transaction(rng).unwrap();
+        let elems = t.table(&tid(1), &ak("big.0"), 0).unwrap().unwrap();
+        for i in (0..3_000).step_by(7) {
+            assert!(t.table_get(elems, &key(i)).unwrap().is_some());
+        }
+        drop(t);
+        s.pages_decoded() - before
+    };
+    gets(&mut s, &mut rng);
+    assert_eq!(gets(&mut s, &mut rng), 0, "pages read before");
+    let before = s.pages_decoded();
+    let mut t = s.transaction(&mut rng).unwrap();
+    let elems = t.table(&tid(1), &ak("big.0"), 0).unwrap().unwrap();
+    for i in 0..50 {
+        t.table_put(elems, &key(1_500), vec![i], Shred::No).unwrap();
+    }
+    t.commit().unwrap();
+    assert_eq!(s.pages_decoded() - before, 0, "a write of pages held decoded");
+    assert_eq!(gets(&mut s, &mut rng), 0, "pages a transaction wrote");
+}
