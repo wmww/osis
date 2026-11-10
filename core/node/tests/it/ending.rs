@@ -105,7 +105,7 @@ fn a_grant_holder_ends_and_a_stale_copy_ends_again_spec_permissions_6() {
     let Setup { mut net, a, b, c, g } = setup();
     let (t, creation) = made(&mut net, a, g);
     let tc = net.tid(c);
-    set_edge(net.engine(a), t, tc, Role::Admin);
+    net.grant(a, t, tc, Role::Admin);
     demote(&mut net, a, g, tc, Role::Read);
     net.run();
     let stale = net.engine(a).package(&creation).unwrap().unwrap();
@@ -130,7 +130,7 @@ fn an_ending_that_falls_comes_back_from_a_copy_spec_commits_5() {
     let Setup { mut net, a, b, c, g, .. } = setup();
     let (t, _) = made(&mut net, a, g);
     let tb = net.tid(b);
-    set_edge(net.engine(a), g, tb, Role::Admin);
+    net.grant(a, g, tb, Role::Admin);
     net.run();
     // c demotes b concurrently: its demotion is earlier than b's request, and b has not seen it
     net.set_online(c, false);
@@ -249,7 +249,7 @@ fn repro_first_admin_removal_after_ending() {
     let Setup { mut net, a, b, c, g } = setup();
     let (t, creation) = made(&mut net, a, g);
     let tc = net.tid(c);
-    set_edge(net.engine(a), t, tc, Role::Admin);
+    net.grant(a, t, tc, Role::Admin);
     net.run();
     let copy = net.engine(a).package(&creation).unwrap().unwrap();
     net.set_online(c, false);
@@ -275,8 +275,8 @@ fn removal_racing_an_ending_converges_in_both_orders_spec_commits_5() {
         let Setup { mut net, a, b, c, g } = setup();
         let (t, _) = made(&mut net, a, g);
         let (tc, tb) = (net.tid(c), net.tid(b));
-        set_edge(net.engine(a), t, tc, Role::Admin);
-        set_edge(net.engine(a), t, tb, Role::Read);
+        net.grant(a, t, tc, Role::Admin);
+        net.grant(a, t, tb, Role::Read);
         net.run();
         // who is cut off until both are written: the side that took the other first
         let off = if ending_first { c } else { a };
@@ -326,7 +326,7 @@ fn a_fall_judges_again_what_waited_on_the_ended_thing_spec_commits_5() {
     let Setup { mut net, a, b, c, g } = setup();
     let (t, _) = made(&mut net, a, g);
     let tb = net.tid(b);
-    set_edge(net.engine(a), t, tb, Role::Admin);
+    net.grant(a, t, tb, Role::Admin);
     net.run();
     net.set_online(c, false);
     let done = net.engine(c).demote(&t, &osis_node::flows::Demotion { holder: tb, new: None, retain: None }).unwrap();
@@ -389,7 +389,7 @@ fn removal_and_regrant_around_an_ending_converge_in_any_order_spec_commits_5() {
         let Setup { mut net, a, b, c, g } = setup();
         let (t, _) = made(&mut net, a, g);
         let tb = net.tid(b);
-        set_edge(net.engine(a), t, tb, Role::Admin);
+        net.grant(a, t, tb, Role::Admin);
         net.run();
         // a takes all three in turn: c's removal of b, c's re-grant of b, and b's request after them
         net.set_online(a, false);
@@ -397,7 +397,7 @@ fn removal_and_regrant_around_an_ending_converge_in_any_order_spec_commits_5() {
         let done = net.engine(c).demote(&t, &osis_node::flows::Demotion { holder: tb, new: None, retain: None }).unwrap();
         let removal: Vec<_> = done.commits.iter().map(|x| net.engine(c).package(x).unwrap().unwrap()).collect();
         net.advance(10);
-        let re = set_edge(net.engine(c), t, tb, Role::Admin);
+        let re = net.grant(c, t, tb, Role::Admin);
         let regrant = vec![net.engine(c).package(&re).unwrap().unwrap()];
         net.advance(10);
         let ending = end(&mut net, b, t);
@@ -646,7 +646,7 @@ fn ending_actor(net: &mut Net, a: usize, b: usize, g: Tid, listed: bool) -> Tid 
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let tb = net.tid(b);
-    set_edge(net.engine(a), t, tb, Role::Admin);
+    net.grant(a, t, tb, Role::Admin);
     net.run();
     t
 }
@@ -676,7 +676,7 @@ fn an_ended_first_admins_edges_reach_a_node_that_held_no_dependent_spec_commits_
         let x = net.item(a, g, t, "x");
         net.run();
         let ta = net.tid(a);
-        set_edge(net.engine(b), x, ta, Role::Read);
+        net.grant(b, x, ta, Role::Read);
         net.run();
         let ra = net.engine(a).roster(&x);
         assert!(ra.contains_key(&ta), "listed {listed}: a: b's grant on x by its admin on t");
@@ -701,14 +701,14 @@ fn authority_through_an_ended_granted_admin_stands_spec_commits_5() {
     net.set_online(c, false);
     let x = net.item(a, g, g, "x");
     net.run();
-    set_edge(net.engine(a), x, t, Role::Admin);
+    net.grant(a, x, t, Role::Admin);
     net.run();
     let ta = net.tid(a);
-    set_edge(net.engine(b), x, ta, Role::Read);
+    net.grant(b, x, ta, Role::Read);
     net.run();
     end_with_c_away(&mut net, c);
     let tc = net.tid(c);
-    set_edge(net.engine(b), x, tc, Role::Write);
+    net.grant(b, x, tc, Role::Write);
     net.run();
     for _ in 0..2 {
         net.advance(70_000);
@@ -739,7 +739,7 @@ fn repro_newcomer_reads_no_dependent_keyed_by_an_ended_actor() {
     let x = net.item(a, g, t, "x");
     net.run();
     let ta = net.tid(a);
-    set_edge(net.engine(b), x, ta, Role::Read);
+    net.grant(b, x, ta, Role::Read);
     net.run();
     let ra = net.engine(a).roster(&x);
     end_with_c_away(&mut net, c);
