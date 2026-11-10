@@ -2134,7 +2134,7 @@ const FLAG: &str = "win:flag+.0";
 /// (several ops per batch, sometimes two aspects), removals and replaces (resets), undos of
 /// their own changes, demotions and promotions of writers, with partitions and node and host
 /// restarts; once every writer may write again and the network healed, every holder reads the
-/// same, a once-demoted author included. Whether a node drops a superseded commit must depend only on what it holds.
+/// same, a once-demoted author included. Whether a node drops a superseded part must depend only on what it holds.
 fn random_churn_run(seed: u64) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut rnd = move |n: u64| {
@@ -2898,7 +2898,7 @@ fn superseded_unsent_moves_one_commit_spec_sync_9() {
     assert_eq!((cs[0].1.header.aspects.len(), cs[0].1.header.expires), (1, Some(last)), "the last move's");
 }
 
-// spec/sync.md §9 (a superseded commit's writes are held value-less at every node, its author
+// spec/sync.md §9 (a superseded part's writes are held value-less at every node, its author
 // included): once a holder removes the newer entry at the key, the author and the holder both read
 // the key gone; the older entry does not show again at the author
 #[test]

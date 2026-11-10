@@ -768,7 +768,7 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
     if let Some(k) = make_leftover(tx, c, ai, &own, &[])? {
         changed.insert(k);
     }
-    // a memory commit's leftover may be superseded whole now (spec/sync.md §9), or covered by a
+    // a memory commit's leftover may be superseded now (spec/sync.md §9), or covered by a
     // held snapshot (spec/commits.md §5); its caller forgets it
     changed.extend(memory::superseded_rest(tx, c)?);
     if tx.is_memory_commit(c)
