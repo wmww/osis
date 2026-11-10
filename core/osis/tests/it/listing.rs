@@ -42,9 +42,11 @@ fn say(db: &Osis, t: Tid, x: &str) -> CommitId {
     w.commit().unwrap().unwrap().stamp.id
 }
 
-/// The bodies of `t`'s `k` listed, oldest first.
+/// The bodies of what was written at `(t, k)`, oldest first: content commits and reverts, not the
+/// snapshots any writer may add (notes/api.md Delete for everyone).
 fn bodies(db: &Osis, t: Tid, k: &osis::Ak) -> Vec<Body<Value>> {
-    db.at(t, untyped(k.clone())).writes(&page(CommitFrom::Oldest, 100)).unwrap().commits.iter().map(|c| part(c, t, k).body).collect()
+    let q = CommitQuery { kinds: vec![CommitKind::Content, CommitKind::Revert], ..page(CommitFrom::Oldest, 100) };
+    db.at(t, untyped(k.clone())).writes(&q).unwrap().commits.iter().map(|c| part(c, t, k).body).collect()
 }
 
 fn watch(db: &Osis, t: Tid, k: osis::Ak) -> (osis::Subscription, Receiver<CommitEvent>) {
@@ -299,7 +301,8 @@ fn invalid_listed_only_at_its_writer_spec_perm_5() {
 
 // spec/commits.md §5, notes/api.md Commits: delete for everyone: one commit's body goes for good
 // and it stays listed as a tombstone; what the state reads does not change for a dead write; the
-// request adds no commit to the aspect it purges; the listener tells it.
+// request is not listed at the aspect it purges (a writer may add a snapshot there); the listener
+// tells it.
 #[test]
 fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     let db = db(3);
@@ -311,10 +314,11 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     w.at(t, untyped(msg())).purge(osis::Purge::Commit(a)).unwrap();
     let rq = w.commit().unwrap().unwrap().stamp.id;
     let got = db.at(t, untyped(msg())).writes(&page(CommitFrom::Oldest, 10)).unwrap();
-    assert_eq!(got.commits.len(), 2, "no commit for the request");
-    assert_eq!(got.commits[0].stamp.id, a);
-    assert_eq!(part(&got.commits[0], t, &msg()).body, Body::Purged { by: rq, actor: Some(db.me()) });
-    assert_eq!(got.commits[1].stamp.id, b);
+    assert!(!got.commits.iter().any(|c| c.stamp.id == rq), "the request is not listed");
+    let written: Vec<_> = got.commits.iter().filter(|c| c.kind == CommitKind::Content).collect();
+    assert_eq!(written.iter().map(|c| c.stamp.id).collect::<Vec<_>>(), vec![a, b]);
+    assert_eq!(part(written[0], t, &msg()).body, Body::Purged { by: rq, actor: Some(db.me()) });
+    assert_eq!(part(written[1], t, &msg()).body, Body::Held(Some(s("next"))));
     assert_eq!(db.at(t, untyped(msg())).get().unwrap(), Some(s("next")));
     let evs = heard(&db, &rx);
     assert!(evs.iter().any(|e| matches!(e, CommitEvent::Commit { id, commit: Some(c) } if *id == a && matches!(part(c, t, &msg()).body, Body::Purged { .. }))), "{evs:?}");
@@ -407,8 +411,7 @@ fn purge_without_the_right_is_refused_spec_perm_6() {
     x.commit().unwrap();
     w.run();
     for db in [&alice, &bob] {
-        let got = db.at(g, untyped(msg())).writes(&page(CommitFrom::Oldest, 10)).unwrap();
-        let bodies: Vec<Body<Value>> = got.commits.iter().map(|c| part(c, g, &msg()).body).collect();
+        let bodies = bodies(db, g, &msg());
         assert!(matches!(bodies.as_slice(), [Body::Purged { .. }, Body::Purged { by, .. }] if *by == own), "{bodies:?}");
     }
 }

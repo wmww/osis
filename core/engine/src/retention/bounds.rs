@@ -495,6 +495,14 @@ impl Engine {
         m.aspect(tid, ak).is_some_and(|ai| !m.body_gone(ai))
     }
 
+    /// Whether `s` is a snapshot whose part on `(tid, ak)` this node holds whole (received, not
+    /// dropped or held as its leftover) and judges valid: one that may stand for the aspect's
+    /// history (spec/commits.md §5 Purge).
+    pub fn holds_valid_snapshot(&self, s: &CommitId, tid: &Tid, ak: &Ak) -> bool {
+        let Some(m) = self.core.ix.commits.get(s) else { return false };
+        m.view.kind.is_compaction() && m.aspect(tid, ak).is_some_and(|ai| !m.body_gone(ai) && !m.missing.contains(&ai) && m.valid_at(ai))
+    }
+
     /// Whether `c`'s part on `(tid, ak)` is held and drops as covered (compaction, spec/commits.md
     /// §5): a body not dropped, or a leftover past its expiry (`expired_leftover`).
     pub fn droppable_if_covered(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {

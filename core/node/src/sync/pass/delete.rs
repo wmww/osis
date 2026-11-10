@@ -679,8 +679,9 @@ impl SyncEngine {
             if !self.snapshots_on(&t, &a) {
                 continue;
             }
-            // a snapshot the purge stripped goes at hosts (`snapshot_first`): only a whole one carries
-            let snaps: Vec<CommitId> = self.engine.core.ix.snapshots.get(&(t, a.clone())).into_iter().flatten().map(|x| x.1).filter(|s| self.engine.body_not_dropped(s, &t, &a)).collect();
+            // a snapshot the purge stripped goes at hosts (`snapshot_first`): only a whole, valid
+            // one carries (and with no named body applied here, it alone decides)
+            let snaps: Vec<CommitId> = self.engine.core.ix.snapshots.get(&(t, a.clone())).into_iter().flatten().map(|x| x.1).filter(|s| self.engine.holds_valid_snapshot(s, &t, &a)).collect();
             let mut covered = false;
             'snaps: for s in &snaps {
                 for b in &held {

@@ -356,18 +356,20 @@ fn tombstone_reads_through_the_client_port_spec_commits_5() {
     let forever = osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() };
     let (ca, _, c) = x.client(Role::Read);
     let q = |db: &Osis, t: Tid| db.writes(&Scope::Thing(t), &CommitQuery::default()).unwrap().commits;
+    let mut by = None;
     for t in [x.t, x.u] {
         let mut w = x.n.write();
         w.at(t, osis::DynamicAspectKey::untyped(k.clone())).retention(forever).set(&Value::Str("secret".into())).unwrap();
         w.commit().unwrap();
         let mut w = x.n.write();
         w.at(t, osis::DynamicAspectKey::untyped(k.clone())).purge(osis::Purge::All).unwrap();
-        w.commit().unwrap();
+        let rq = w.commit().unwrap().unwrap().stamp.id;
+        by = by.or(Some(rq));
     }
     let purged = |c: &osis::Commit| c.parts().filter(|(_, _, p)| matches!(p.body, osis::Body::Purged { .. })).map(|(t, k, _)| (t, k.clone())).collect::<Vec<_>>();
     let entries = q(&x.n, x.t);
     let e = entries.iter().find(|e| !purged(e).is_empty()).expect("a tombstone");
-    let by = entries[0].stamp.id;
+    let by = by.unwrap();
     assert_eq!(purged(e), vec![(x.t, k.clone())]);
     assert_eq!(e.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).unwrap().body, osis::Body::Purged { by, actor: Some(x.n.me()) });
     assert_eq!(e.stamp.actor, x.n.me());

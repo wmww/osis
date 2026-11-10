@@ -758,7 +758,9 @@ fn writes_and_purge_commands_plan_cli() {
     assert!(lines.lines().any(|l| l.contains(one) && l.contains("purged=")), "{lines}");
     let me = rows[0].split(' ').nth(2).unwrap();
     s.ok(&["purge", &t, "note:m.0", "--author", me]);
-    assert!(s.ok(&["writes", &t, "note:m.0"]).out.lines().all(|l| l.contains("purged=")));
+    // what was written, every line a tombstone (a writer may add a snapshot of the aspect)
+    let lines = s.ok(&["writes", &t, "note:m.0", "--kind", "content"]).out;
+    assert!(lines.lines().count() == 2 && lines.lines().all(|l| l.contains("purged=")), "{lines}");
     assert_eq!(s.code(&["writes", &t, "note:m.0", "--before", "nonsense"]), 2);
     // a signal: listed by `fired`, not by `writes`; `watch` points there
     s.ok(&["fire", "--retention", "keep_history=forever", &t, "note:ping~0", "1"]);
