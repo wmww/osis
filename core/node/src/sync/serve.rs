@@ -86,6 +86,9 @@ pub(crate) struct Served {
     proven: super::proofs::Proven,
     /// The actors this node proved to it in answer (`SyncEngine::proved`).
     proved: BTreeSet<Tid>,
+    /// How far its proof exchange went: Prove, then Resume, each at most once (spec/wire.md
+    /// §11.2).
+    asked: Asked,
     /// Raw ms of the last bytes received (idle sessions are closed).
     pub last: u64,
     /// Raw ms the session started (one that opens nothing is closed).
@@ -93,6 +96,13 @@ pub(crate) struct Served {
     /// A thin client's: the hash of the secret it authenticated with and its entry's end
     /// (corrected wall ms). The session ends with the entry, with that hash, at that end.
     client: Option<ClientBinding>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Asked {
+    Nothing,
+    Prove,
+    Resume,
 }
 
 #[derive(Clone, Copy)]
@@ -149,12 +159,6 @@ struct Accepted {
     charges: Vec<(LabelId, BlobId, u64)>,
     /// A put was refused for the budget.
     full: bool,
-    /// What the dialer proved by its Prove (`proofs`), and what this node proved in answer.
-    proven: super::proofs::Proven,
-    proved: Option<BTreeSet<Tid>>,
-    /// The record this connection's Resume found or made, and records read for it.
-    bound: Option<(osis_store::RecordId, bool)>,
-    lookups: u64,
 }
 
 /// The `LabelStore` a co-reader peer serves from.
@@ -163,10 +167,6 @@ struct PeerStore<'a> {
     entries: &'a BTreeMap<(LabelId, BlobId), Entry>,
     tombs: &'a BTreeMap<(LabelId, BlobId), Tomb>,
     labels: &'a BTreeMap<LabelId, ServedLabel>,
-    /// What this session proved so far (`Accepted.proven` for a Prove in the same input).
-    proven_before: &'a super::proofs::Proven,
-    /// Records in use by a connection: not evicted.
-    in_use: BTreeSet<osis_store::RecordId>,
     /// Blob sizes seen (`live` reads a blob only once).
     sizes: RefCell<&'a mut BTreeMap<BlobId, u64>>,
     /// Corrected wall ms (tombstones of this node's drops).
@@ -235,31 +235,6 @@ impl PeerStore<'_> {
 }
 
 impl LabelStore for PeerStore<'_> {
-    fn prove(&mut self, proofs: Vec<osis_proto::ActorProof>, challenge: &[u8; 32], listener_key: &[u8; 32]) -> std::result::Result<Vec<osis_proto::ActorProof>, StoreError> {
-        let engine = self.engine.get_mut();
-        let proven = super::proofs::proven_actors(engine, &proofs).map_err(|e| StoreError(e.to_string()))?;
-        // this side proves only to a dialer that proved an actor it knows (spec/sync.md §10)
-        let known = engine.core.judge(proven.all()).known();
-        let own = super::proofs::own_peer(engine, &proven);
-        let mine: Vec<osis_proto::ActorProof> = if known { super::proofs::provers(engine, own).map_err(|e| StoreError(e.to_string()))?.iter().map(|p| p.sign(true, challenge, listener_key)).collect() } else { Vec::new() };
-        self.acc.proven = proven;
-        self.acc.proved = Some(mine.iter().map(|p| p.actor()).collect());
-        Ok(mine)
-    }
-
-    fn resume(&mut self, nonce: &[u8; 32], tags: &[[u8; 32]], binding: (&[u8; 32], &[u8; 32], &[u8; 32])) -> std::result::Result<Option<osis_proto::ResumeAnswer>, StoreError> {
-        let proven = if self.acc.proven.is_empty() { self.proven_before } else { &self.acc.proven };
-        let engine = self.engine.get_mut();
-        let actors = super::records::counted_actors(engine, proven);
-        if actors.is_empty() {
-            return Ok(None);
-        }
-        let (answer, id, looked) = super::records::answer_resume(engine, &actors, &self.in_use, nonce, tags, binding).map_err(|e| StoreError(e.to_string()))?;
-        self.acc.bound = Some(id);
-        self.acc.lookups += looked;
-        Ok(Some(answer))
-    }
-
     fn head(&self, label: &LabelId) -> std::result::Result<Option<StepId>, StoreError> {
         Ok(self.labels.get(label).and_then(|s| s.path.last()).map(|s| s.id()))
     }
@@ -416,7 +391,7 @@ impl SyncEngine {
         self.rng.fill_bytes(&mut challenge);
         let last = self.raw_now();
         let session = ServingSession::new(ServingConfig { static_key: local, challenge });
-        self.served.insert(conn, Served { conn: if public { session.port_only() } else { session.with_port() }, tier, public, ported: false, proven: super::proofs::Proven::default(), proved: BTreeSet::new(), last, since: last, client: None });
+        self.served.insert(conn, Served { conn: if public { session.port_only() } else { session.with_port() }, tier, public, ported: false, proven: super::proofs::Proven::default(), proved: BTreeSet::new(), asked: Asked::Nothing, last, since: last, client: None });
         if let Err(e) = self.serve(conn, ServingInput::Start, &mut out) {
             self.diag(format!("serve: {e}"));
         }
@@ -568,11 +543,9 @@ impl SyncEngine {
             s.last = now;
         }
         let wall = self.state.now;
-        let (outputs, mut acc) = {
+        let (outputs, acc) = {
             let mut store = PeerStore {
                 engine: RefCell::new(&mut self.engine),
-                proven_before: &s.proven,
-                in_use: self.records.live(),
                 entries: &self.state.entries,
                 tombs: &self.state.tombs,
                 labels,
@@ -589,12 +562,6 @@ impl SyncEngine {
             let o = s.conn.handle(now, &mut store, input);
             (o, store.acc)
         };
-        if !acc.proven.is_empty() {
-            s.proven = std::mem::take(&mut acc.proven);
-        }
-        if let Some(p) = acc.proved.take() {
-            s.proved = p;
-        }
         let closed = s.conn.is_closed();
         if outputs.iter().any(|o| matches!(o, ServingOutput::Request(_))) {
             s.ported = true;
@@ -608,8 +575,6 @@ impl SyncEngine {
         } else {
             self.served.insert(conn, s);
         }
-        self.records.lookups += acc.lookups;
-        let bound = acc.bound.take().filter(|_| !closed);
         self.charges.full |= acc.full;
         for (l, b, n) in acc.charges {
             self.charges.charge(l, b, charge_key(source, &l), n);
@@ -647,6 +612,7 @@ impl SyncEngine {
         }
         let mut relays = Vec::new();
         let mut refused = Vec::new();
+        let mut bound = None;
         for o in outputs {
             match o {
                 ServingOutput::Send(bytes) => out.push(Action::Send { conn, bytes }),
@@ -666,12 +632,16 @@ impl SyncEngine {
                     Err(r) => refused.push(r),
                 },
                 ServingOutput::Room { budget } => out.push(Action::Room { conn, budget }),
-                ServingOutput::Peer(m) => self.peer_message(conn, *m, out)?,
+                ServingOutput::Peer(m) => match *m {
+                    osis_proto::Message::Prove { id, proofs } => self.served_prove(conn, id, proofs, out)?,
+                    osis_proto::Message::Resume { id, nonce, tags } => bound = self.served_resume(conn, id, nonce, tags, out)?.or(bound),
+                    m => self.peer_message(conn, m, out)?,
+                },
             }
         }
         // after the answer to the Resume: the shared set's first messages follow it on the wire,
         // so the dialer has begun its own set when they arrive
-        if let Some(id) = bound {
+        if let Some(id) = bound.filter(|_| self.served.contains_key(&conn)) {
             self.bind_record(conn, id, out)?;
         }
         // a relay-only entry: delivered here and passed on (the other served sessions, the
@@ -683,6 +653,52 @@ impl SyncEngine {
             self.serve_with(conn, ServingInput::Reply { id, reply: Err(code) }, labels, out)?;
         }
         Ok(())
+    }
+
+    /// A served dialer's Prove (spec/sync.md §10): its proofs over this side's challenge and
+    /// key count (one made for another connection or listener proves nothing here); this node
+    /// answers its own, over the dialer's challenge, only to a dialer that proved an actor it
+    /// knows. At most one per connection, after the dialer's Hello.
+    fn served_prove(&mut self, conn: ConnId, id: osis_proto::msg::Id, proofs: Vec<osis_proto::ActorProof>, out: &mut Vec<Action>) -> Result<()> {
+        use osis_proto::{Code, Message};
+        let Some(s) = self.served.get_mut(&conn) else { return Ok(()) };
+        let Some((dialer, ch, key)) = s.conn.binding().filter(|_| s.asked == Asked::Nothing) else {
+            return self.serve(conn, ServingInput::Peer(Box::new(Message::Error { id, code: Code::MALFORMED })), out);
+        };
+        s.asked = Asked::Prove;
+        let good = osis_proto::prove::verified(proofs, false, &ch, &key);
+        let proven = super::proofs::proven_actors(&mut self.engine, &good)?;
+        let known = self.engine.core.judge(proven.all()).known();
+        let own = super::proofs::own_peer(&self.engine, &proven);
+        let mine: Vec<osis_proto::ActorProof> = if known { super::proofs::provers(&mut self.engine, own)?.iter().map(|p| p.sign(true, &dialer, &key)).collect() } else { Vec::new() };
+        if let Some(s) = self.served.get_mut(&conn) {
+            s.proven = proven;
+            s.proved = mine.iter().map(|p| p.actor()).collect();
+        }
+        self.serve(conn, ServingInput::Peer(Box::new(Message::Proved { id, proofs: mine })), out)
+    }
+
+    /// A served dialer's Resume (spec/sync.md §10, Pair key): answered with a record of the
+    /// actors it proved that are known here, found by its tags or made; Error 1 when it proved
+    /// none. At most one per connection, after its Prove. Returns the record for `bind_record`,
+    /// which waits until the answer is out (`serve_with`).
+    fn served_resume(&mut self, conn: ConnId, id: osis_proto::msg::Id, nonce: [u8; 32], tags: Vec<[u8; 32]>, out: &mut Vec<Action>) -> Result<Option<(osis_store::RecordId, bool)>> {
+        use osis_proto::{Code, Message};
+        let Some(s) = self.served.get_mut(&conn) else { return Ok(None) };
+        let Some((dialer, ch, key)) = s.conn.binding().filter(|_| s.asked == Asked::Prove) else {
+            self.serve(conn, ServingInput::Peer(Box::new(Message::Error { id, code: Code::MALFORMED })), out)?;
+            return Ok(None);
+        };
+        s.asked = Asked::Resume;
+        let actors = super::records::counted_actors(&self.engine, &s.proven);
+        if actors.is_empty() {
+            self.serve(conn, ServingInput::Peer(Box::new(Message::Error { id, code: Code::REFUSED })), out)?;
+            return Ok(None);
+        }
+        let ((mine, tag), bound, looked) = super::records::answer_resume(&mut self.engine, &actors, &self.records.live(), &nonce, &tags, (&dialer, &ch, &key))?;
+        self.records.lookups += looked;
+        self.serve(conn, ServingInput::Peer(Box::new(Message::Resumed { id, nonce: mine, tag })), out)?;
+        Ok(Some(bound))
     }
 
     /// Decides what a served session's client-port request goes up as (notes/client-port.md §3).

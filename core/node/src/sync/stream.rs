@@ -438,6 +438,8 @@ impl SyncEngine {
                 self.shared_send(conn, Message::Ok { id }, out)?;
                 self.suspect_message(conn, label, entries)
             }
+            // only a dialer proves first (a served session's go to `served_prove`, `served_resume`)
+            Message::Prove { id, .. } | Message::Resume { id, .. } => self.shared_send(conn, Message::Error { id, code: osis_proto::Code::UNSUPPORTED }, out),
             Message::Fetch { id, label, max_reply, ids } => self.stream_serve_fetch(conn, id, label, max_reply, ids, out),
             Message::FetchReply { id, items } => self.stream_fetch_reply(conn, id, items, out),
             Message::Error { id, code } => {

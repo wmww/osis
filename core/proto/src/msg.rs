@@ -364,7 +364,7 @@ pub fn peek_head(body: &[u8]) -> Option<(u64, Id)> {
 
 /// Kinds that are requests (spec/wire.md §11.2: those with `->`).
 pub fn is_request_kind(kind: u64) -> bool {
-    matches!(kind, 2 | 4 | 7 | 8 | 10 | 12 | 14 | 15 | 17 | 19 | 21 | 22 | 24 | 25 | 27 | 28 | 30 | 31 | 32 | 36 | 37 | 38 | 40 | 41)
+    matches!(kind, 2 | 4 | 7 | 8 | 10 | 12 | 14 | 15 | 17 | 19 | 21 | 22 | 24 | 25 | 27 | 28 | 30 | 31 | 32 | 34 | 36 | 37 | 38 | 40 | 41)
 }
 
 impl OfferItem {
@@ -468,13 +468,14 @@ impl Message {
         }
     }
 
-    /// Whether the node answers this itself rather than a session: Stranded and Suspect, the
-    /// shared set's and the stream's messages (spec/wire.md §11.2 Beacons to NoRecord, Pull to
-    /// Applied), and any
-    /// message with an id in the node's range (`NODE_IDS`): a peer node's own request (a Fetch
-    /// of the stream's bodies) or the answer to one of this node's.
+    /// Whether the node answers this itself rather than a session: Stranded and Suspect, Prove
+    /// and Resume, the shared set's and the stream's messages (spec/wire.md §11.2 Beacons to
+    /// NoRecord, Pull to Applied), and any message with an id in the node's range (`NODE_IDS`):
+    /// a peer node's own request (a Fetch of the stream's bodies) or the answer to one of this
+    /// node's. Proved and Resumed go by id: a dialing `ClientSession` sends Prove and Resume
+    /// with its own ids and takes their answers itself.
     pub fn for_node(&self) -> bool {
-        matches!(self.kind(), 30 | 31 | 36..=46) || self.id() & NODE_IDS != 0
+        matches!(self.kind(), 30..=32 | 34 | 36..=46) || self.id() & NODE_IDS != 0
     }
 
     /// Whether this kind is a request the other side answers.

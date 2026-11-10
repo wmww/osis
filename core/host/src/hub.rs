@@ -292,12 +292,18 @@ impl Hub {
                 }
                 ServingOutput::PeerError(e) => out.push(HubOutput::Diagnostic(format!("connection {id}: {e}"))),
                 ServingOutput::StoreError(e) => out.push(HubOutput::Diagnostic(e.to_string())),
-                // proving no actor, a host has no shared set: a request of the shared set or the
-                // stream is answered 14 (spec/sync.md §10); Stranded and Suspect are node to node
-                // only, 11 (spec/wire.md §11.2)
+                // serving no identity, a host proves nothing and keeps no record (spec/wire.md
+                // §11.2); proving no actor, it has no shared set: a request of the shared set or
+                // the stream is answered 14 (spec/sync.md §10); Stranded and Suspect are node to
+                // node only, 11 (spec/wire.md §11.2)
                 ServingOutput::Peer(m) if m.is_request() => {
-                    let code = if matches!(*m, osis_proto::Message::Stranded { .. } | osis_proto::Message::Suspect { .. }) { osis_proto::Code::UNSUPPORTED } else { osis_proto::Code::NOT_ADMITTED };
-                    let reply = osis_proto::Message::Error { id: m.id(), code };
+                    use osis_proto::{Code, Message as M};
+                    let reply = match *m {
+                        M::Prove { id, .. } => M::Proved { id, proofs: Vec::new() },
+                        M::Resume { id, .. } => M::Error { id, code: Code::REFUSED },
+                        M::Stranded { id, .. } | M::Suspect { id, .. } => M::Error { id, code: Code::UNSUPPORTED },
+                        m => M::Error { id: m.id(), code: Code::NOT_ADMITTED },
+                    };
                     self.serve(now, id, ServingInput::Peer(Box::new(reply)), out);
                 }
                 // a host serves no client port (its sessions answer those kinds Error 11)

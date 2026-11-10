@@ -484,3 +484,16 @@ fn node_requests_answered_14_spec_sync_10() {
         assert!(matches!(&ev[..], [ClientEvent::Peer(r)] if matches!(**r, Message::Error { id: i, code: Code::NOT_ADMITTED } if i == id)), "{ev:?}");
     }
 }
+
+// spec/wire.md §11.2 (Prove, Resume): a host serves no identity and keeps no record: a Prove is
+// answered with no proofs, a Resume Error 1
+#[test]
+fn prove_answered_with_none_spec_wire_11_2() {
+    let mut w = World::new();
+    let h = w.add_hub(HostPolicy::default());
+    let a = w.connect(h);
+    let ev = w.run(a, Command::Prove(vec![]));
+    assert!(matches!(&ev[..], [ClientEvent::Proved { proofs }] if proofs.is_empty()), "{ev:?}");
+    let ev = w.run(a, Command::Resume { nonce: [5; 32], tags: vec![[6; 32]] });
+    assert!(matches!(&ev[..], [ClientEvent::Refused { kind: osis_proto::Request::Resume, code: Code::REFUSED, .. }]), "{ev:?}");
+}

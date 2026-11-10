@@ -152,27 +152,7 @@ impl HeadKeys {
     }
 }
 
-/// The listener's nonce and the tag of a record it holds, answering a Resume.
-pub type ResumeAnswer = ([u8; 32], Option<[u8; 32]>);
-
-/// Host state per label. Mutations append their log records; the store applies policy
-/// (storage caps, the ephemeral cap, deposit budget, rate limits on
-/// deletes) and
-/// answers with a status code.
 pub trait LabelStore {
-    /// A dialer's verified connection proofs (spec/sync.md §10) reach the store, which answers
-    /// this side's own, signed for `challenge` (the dialer's) and `listener_key` (this side's),
-    /// when the dialer proved a known actor, else nothing. A store with no identity proves
-    /// nothing.
-    fn prove(&mut self, _proofs: Vec<crate::ActorProof>, _challenge: &[u8; 32], _listener_key: &[u8; 32]) -> Result<Vec<crate::ActorProof>, StoreError> {
-        Ok(Vec::new())
-    }
-    /// A dialer's Resume (spec/sync.md §10, Pair key), `binding` the dialer's and listener's
-    /// challenges and the listener's static key: `None` when this side keeps no record for
-    /// this connection (the dialer proved no known actor, or a store with no identity).
-    fn resume(&mut self, _nonce: &[u8; 32], _tags: &[[u8; 32]], _binding: (&[u8; 32], &[u8; 32], &[u8; 32])) -> Result<Option<ResumeAnswer>, StoreError> {
-        Ok(None)
-    }
     /// The head's step ID; none for an unknown label.
     fn head(&self, label: &LabelId) -> Result<Option<StepId>, StoreError>;
     /// A step on the label's path.

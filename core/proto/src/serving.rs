@@ -197,12 +197,8 @@ pub struct ServingSession {
     keys: HashMap<LabelId, HeadKeys>,
     /// A signature of the message being handled verified under no key (`check`).
     struck: bool,
-    /// The dialer's Hello challenge: what this side's connection proofs sign.
+    /// The dialer's Hello challenge: what this side's connection proofs sign (`binding`).
     peer_challenge: Option<[u8; 32]>,
-    /// A Prove was answered: at most one per connection (spec/wire.md §11.2).
-    proved: bool,
-    /// A Resume was answered: at most one per connection, after a Prove.
-    resumed: bool,
     /// Bytes of `Send` outputs so far.
     written: u64,
     /// The last `ServingInput::Taken` (none: never reported, no flow control).
@@ -288,8 +284,6 @@ impl ServingSession {
             keys: HashMap::new(),
             struck: false,
             peer_challenge: None,
-            resumed: false,
-            proved: false,
             written: 0,
             taken: None,
             owed: VecDeque::new(),
@@ -679,28 +673,6 @@ impl ServingSession {
         Ok(Some(match msg {
             M::Ping { id, .. } => M::Pong { id, wall_ms: now },
             M::Open { id, label, proof } => self.open(store, id, label, proof)?,
-            M::Prove { id, proofs } => {
-                let Some(peer) = self.peer_challenge.filter(|_| !self.proved) else {
-                    return Ok(Some(M::Error { id, code: Code::MALFORMED }));
-                };
-                self.proved = true;
-                let (ch, key) = (self.cfg.challenge, self.cfg.static_key);
-                // over this side's challenge and static key: a proof made for another
-                // connection or another listener proves nothing here
-                let good = crate::prove::verified(proofs, false, &ch, &key);
-                M::Proved { id, proofs: store.prove(good, &peer, &key)? }
-            }
-            M::Resume { id, nonce, tags } => {
-                let Some(peer) = self.peer_challenge.filter(|_| self.proved && !self.resumed) else {
-                    return Ok(Some(M::Error { id, code: Code::MALFORMED }));
-                };
-                self.resumed = true;
-                let (ch, key) = (self.cfg.challenge, self.cfg.static_key);
-                match store.resume(&nonce, &tags, (&peer, &ch, &key))? {
-                    Some((mine, tag)) => M::Resumed { id, nonce: mine, tag },
-                    None => M::Error { id, code: Code::REFUSED },
-                }
-            }
             M::Register { id, label, step, claim_set } => self.register(store, id, label, step, claim_set, out)?,
             M::Path { id, label, after } => self.path(store, id, label, after)?,
             M::Upload { id, label, entries } => {
@@ -1350,6 +1322,24 @@ mod tests {
 
     fn reply(out: &[ServingOutput]) -> Message {
         out.iter().find_map(|o| if let ServingOutput::Send(b) = o { Message::decode(&b[4..]).ok() } else { None }).unwrap()
+    }
+
+    // spec/sync.md §10 (Connection proofs, Pair key): Prove and Resume are the node's, not the
+    // store's: the session hands them up unanswered and sends the upper layer's answers
+    #[test]
+    fn prove_and_resume_go_up() {
+        let mut store = MemoryLabelStore::new([1; 32]);
+        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        for m in [Message::Prove { id: 1, proofs: vec![] }, Message::Resume { id: 2, nonce: [3; 32], tags: vec![[4; 32]] }] {
+            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&m.encode())));
+            assert_eq!(out, vec![ServingOutput::Peer(Box::new(m))]);
+        }
+        for m in [Message::Proved { id: 1, proofs: vec![] }, Message::Resumed { id: 2, nonce: [5; 32], tag: None }] {
+            let out = c.handle(0, &mut store, ServingInput::Peer(Box::new(m.clone())));
+            assert_eq!(reply(&out), m);
+        }
+        assert!(!c.is_closed());
     }
 
     // spec/sync.md §6 (request window), spec/requirements.md (peer input never causes unbounded

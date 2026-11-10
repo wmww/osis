@@ -109,10 +109,13 @@ fn actors_moved(rec: &Record, now: &[Tid]) -> bool {
     rec.actors.iter().collect::<BTreeSet<_>>() != now.iter().collect::<BTreeSet<_>>()
 }
 
+/// The listener's nonce and the tag of a record it holds, answering a Resume.
+pub(super) type ResumeAnswer = ([u8; 32], Option<[u8; 32]>);
+
 /// The listener's part of a Resume: the nonce it answers and the tag of a record it holds, with
 /// the record used or made, durably before the answer goes, and whether the record named other
 /// actors than this session proves.
-pub(super) fn answer_resume(engine: &mut Engine, actors: &[Tid], in_use: &BTreeSet<RecordId>, nonce: &[u8; 32], tags: &[[u8; 32]], (dialer, listener, key): (&[u8; 32], &[u8; 32], &[u8; 32])) -> Result<(osis_proto::ResumeAnswer, (RecordId, bool), u64)> {
+pub(super) fn answer_resume(engine: &mut Engine, actors: &[Tid], in_use: &BTreeSet<RecordId>, nonce: &[u8; 32], tags: &[[u8; 32]], (dialer, listener, key): (&[u8; 32], &[u8; 32], &[u8; 32])) -> Result<(ResumeAnswer, (RecordId, bool), u64)> {
     engine.run(|tx| {
         let records = tx.txn.records_of_actors(actors)?;
         let looked = records.len() as u64;
