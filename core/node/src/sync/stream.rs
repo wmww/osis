@@ -31,7 +31,12 @@
 //!
 //! Both sides of a connection pull and serve: a member of S is pulled by the side it is open at,
 //! whoever dialed. Bodies announced without bytes are fetched from one reader at a time
-//! (`stream_fetch`, by ids in the node's range). Memory entries are the log's memory part
+//! (`stream_fetch`, by ids in the node's range); what a stream owes lives in its memory alone (no
+//! entry row before the bytes), so a lost connection or a restart forgets it and the stream,
+//! from its last stored position, announces it again. A stream waiting on `MAX_WAITING`
+//! positions or bodies takes no new one (flow control: its cursor stays, nothing is skipped),
+//! and a peer answers stream requests in order, so a Fetch it skipped is asked elsewhere
+//! (`stream_skipped`). Memory entries are the log's memory part
 //! (`MemLog`), which no cursor names: the first Pull of a connection, and every join, list the
 //! memory events of what they start; later ones follow in counter order on that connection,
 //! paged by the same budget as the durable part. Relay-only entries go as a Stream with no
@@ -53,6 +58,12 @@ const READ_PAGE: usize = 1024;
 /// Ids this module draws for its Pulls: the shared set's range (top bit) with the next bit, so
 /// they never meet a session's own or the shared set's.
 const ID_BASE: u32 = osis_proto::msg::NODE_IDS | (1 << 30);
+/// Positions waiting to settle, and bodies they owe, from which a stream takes no new position
+/// (`Pulling::full`): no Pull goes and a push is not taken, the cursor staying where it is, so
+/// nothing is skipped; past it only the reply of the Pull in flight and the push taken last add
+/// to it, each within a message. Resource bound: 0 never moves; infinity lets a source that never
+/// serves make this node keep a position per push and an id per announcement.
+const MAX_WAITING: usize = 1024;
 
 /// The node log's memory part: one latest event per memory entry, ordered by an in-memory
 /// counter, a deletion kept `MAX_DRIFT_MS` (a memory entry's tombstone). Bounded by the live
@@ -173,10 +184,16 @@ pub(crate) struct Pulling {
     in_stream: BTreeSet<LabelId>,
     /// Members entering the stream, each from its own position (none: the start).
     joins: BTreeMap<LabelId, Option<Vec<u8>>>,
-    /// The Pull in flight: its id and the joins it named.
-    asked: Option<(u32, Vec<LabelId>)>,
-    /// Fetches in flight, by id: the member and the blobs asked.
-    fetching: BTreeMap<u32, (LabelId, Vec<BlobId>)>,
+    /// The Pull in flight: its id, its place in send order (`sent`) and the joins it named.
+    asked: Option<(u32, u64, Vec<LabelId>)>,
+    /// Fetches in flight, by id: their place in send order, the member and the blobs asked.
+    fetching: BTreeMap<u32, (u64, LabelId, Vec<BlobId>)>,
+    /// Requests of the stream sent on this connection (Pulls and Fetches): answered in this order
+    /// (`stream_skipped`).
+    sent: u64,
+    /// A push was not taken (`MAX_WAITING`): none is until the next reply, which reads it again
+    /// from `cursor`.
+    dropped: bool,
     /// Positions reached whose bodies announced without bytes are not all held here yet, oldest
     /// first (`stream_settle`).
     unsettled: std::collections::VecDeque<Unsettled>,
@@ -217,9 +234,16 @@ impl Pulling {
         self.unsettled.iter().any(|u| u.merged.contains(l) || u.paging.iter().any(|(x, _)| x == l))
     }
 
-    fn next(&mut self) -> u32 {
+    /// A request's id, and its place in send order.
+    fn next(&mut self) -> (u32, u64) {
         self.next_id = self.next_id.wrapping_add(1);
-        ID_BASE | (self.next_id & ((1 << 30) - 1))
+        self.sent += 1;
+        (ID_BASE | (self.next_id & ((1 << 30) - 1)), self.sent)
+    }
+
+    /// The stream waits on `MAX_WAITING` positions or bodies: it takes no new position.
+    fn full(&self) -> bool {
+        self.unsettled.len() >= MAX_WAITING || self.unsettled.iter().map(|u| u.owed.len()).sum::<usize>() >= MAX_WAITING
     }
 }
 
@@ -579,21 +603,52 @@ impl SyncEngine {
     /// again after `resync_ms` (`stream_retry`), as a refused Sync would; a fetch is a fetch
     /// answered with nothing. Whether it answered one.
     fn stream_refused(&mut self, conn: ConnId, id: u32, code: osis_proto::Code, out: &mut Vec<Action>) -> Result<bool> {
-        let at = self.raw_now().saturating_add(self.cfg.resync_ms);
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(false) };
-        if let Some((l, ids)) = p.fetching.remove(&id) {
-            let none = ids.into_iter().map(|blob_id| osis_proto::msg::Fetched { blob_id, entry: None }).collect();
-            self.stream_fetched(conn, l, none, out)?;
+        if let Some((seq, l, ids)) = p.fetching.remove(&id) {
+            self.stream_skipped(conn, seq, out)?;
+            self.stream_unfetched(conn, l, ids, out)?;
             return Ok(true);
         }
-        if p.asked.as_ref().is_none_or(|(x, _)| *x != id) {
-            return Ok(false);
-        }
-        p.asked = None;
-        p.caught_up = false;
-        p.retry_at = Some(at);
+        let Some(seq) = p.asked.as_ref().filter(|(x, ..)| *x == id).map(|(_, s, _)| *s) else { return Ok(false) };
+        self.stream_pull_refused(conn);
         self.diag(format!("pull refused: code {}", code.0));
+        self.stream_skipped(conn, seq, out)?;
         Ok(true)
+    }
+
+    /// `conn`'s Pull in flight is refused: asked again after `resync_ms` (`stream_retry`).
+    fn stream_pull_refused(&mut self, conn: ConnId) {
+        let at = self.raw_now().saturating_add(self.cfg.resync_ms);
+        if let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) {
+            p.asked = None;
+            p.caught_up = false;
+            p.retry_at = Some(at);
+        }
+    }
+
+    /// A fetch of `ids` answered with none of them.
+    fn stream_unfetched(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, out: &mut Vec<Action>) -> Result<()> {
+        let none = ids.into_iter().map(|blob_id| osis_proto::msg::Fetched { blob_id, entry: None }).collect();
+        self.stream_fetched(conn, l, none, out)
+    }
+
+    /// The request sent `seq`-th on `conn`'s stream was answered. The peer answers them in order
+    /// (spec/wire.md §11.2, Pull), so every one sent before it and still unanswered was skipped:
+    /// a skipped Fetch is one answered with none of its bodies (the next source is asked), a
+    /// skipped Pull one refused.
+    fn stream_skipped(&mut self, conn: ConnId, seq: u64, out: &mut Vec<Action>) -> Result<()> {
+        let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
+        let fetches: Vec<u32> = p.fetching.iter().filter(|(_, (s, ..))| *s < seq).map(|(id, _)| *id).collect();
+        let pull = p.asked.as_ref().is_some_and(|(_, s, _)| *s < seq);
+        let skipped: Vec<(LabelId, Vec<BlobId>)> = fetches.into_iter().filter_map(|id| p.fetching.remove(&id)).map(|(_, l, ids)| (l, ids)).collect();
+        if pull {
+            self.stream_pull_refused(conn);
+            self.diag("pull skipped".to_string());
+        }
+        for (l, ids) in skipped {
+            self.stream_unfetched(conn, l, ids, out)?;
+        }
+        Ok(())
     }
 
     /// Asks again the streams whose Pull was answered Error once their time came.
@@ -628,8 +683,13 @@ impl SyncEngine {
     /// A Pull whose `inline_limit` is no longer the one due (`stream_inline`) also goes, so the
     /// peer's pushes carry bodies inline only while it is this node's one source.
     pub(super) fn stream_ask(&mut self, conn: ConnId, fresh: bool, out: &mut Vec<Action>) -> Result<()> {
-        let Some(p) = self.streams.get(&conn).map(|s| &s.pulling) else { return Ok(()) };
+        let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
         if p.asked.is_some() || p.retry_at.is_some() || (p.in_stream.is_empty() && p.joins.is_empty()) {
+            return Ok(());
+        }
+        // waiting on bodies: asked once positions settle (`stream_settle`)
+        if p.full() {
+            p.caught_up &= !fresh;
             return Ok(());
         }
         let inline_limit = self.stream_inline(conn);
@@ -639,9 +699,9 @@ impl SyncEngine {
             return Ok(());
         }
         p.inline = inline_limit;
-        let id = p.next();
+        let (id, seq) = p.next();
         let joins: Vec<Join> = p.joins.iter().map(|(l, c)| (*l, c.clone())).collect();
-        p.asked = Some((id, joins.iter().map(|(l, _)| *l).collect()));
+        p.asked = Some((id, seq, joins.iter().map(|(l, _)| *l).collect()));
         let ephemeral = !p.started;
         p.started = true;
         p.pulls += 1;
@@ -669,8 +729,9 @@ impl SyncEngine {
     }
 
     /// Applies stream events of tracked members, by label in order: the bodies they announced
-    /// without bytes that this node lists and lacks (owed until held). A deletion says the source
-    /// no longer holds the entry: nothing of it is owed on this stream.
+    /// without bytes that this node wants (owed until held; no entry row is made before its
+    /// bytes, so what a source announces costs this node only the stream's memory). A deletion
+    /// says the source no longer holds the entry: nothing of it is owed on this stream.
     fn stream_apply(&mut self, conn: ConnId, events: Vec<(LabelId, Event)>, out: &mut Vec<Action>) -> Result<BTreeSet<(LabelId, BlobId)>> {
         let Some(p) = self.streams.get(&conn).map(|s| &s.pulling) else { return Ok(BTreeSet::new()) };
         let mut by_label: BTreeMap<LabelId, Vec<Event>> = BTreeMap::new();
@@ -686,7 +747,7 @@ impl SyncEngine {
             self.received_from(conn, l);
             self.reader_events(conn, l, evs, out)?;
             for b in announced {
-                if self.lacks(&l, &b) {
+                if self.wants(&l, &b) {
                     owed.insert((l, b));
                 }
             }
@@ -695,10 +756,10 @@ impl SyncEngine {
         Ok(owed)
     }
 
-    /// Whether this node lists entry `b` of `l` and lacks its bytes, wanting them (an entry the
-    /// ephemeral cap refused waits for room, not for a fetch).
-    fn lacks(&mut self, l: &LabelId, b: &BlobId) -> bool {
-        self.state.entries.contains_key(&(*l, *b)) && !self.memory_skips(l, b) && !self.engine.has_blob(b)
+    /// Whether this node wants the bytes of entry `b` of `l`: not held, not removed here within
+    /// its tombstone, not refused by the ephemeral cap (which waits for room, not for a fetch).
+    fn wants(&mut self, l: &LabelId, b: &BlobId) -> bool {
+        !self.engine.has_blob(b) && !self.memory_skips(l, b)
     }
 
     /// `conn`'s source no longer holds these entries: they are owed on its stream no more.
@@ -713,12 +774,6 @@ impl SyncEngine {
         }
     }
 
-    /// Whether some stream owes entry `b` of `l`: its bytes are on their way (or asked again),
-    /// not gone.
-    pub(crate) fn stream_owes(&self, l: &LabelId, b: &BlobId) -> bool {
-        self.streams.values().any(|s| s.pulling.unsettled.iter().any(|u| u.owed.contains(&(*l, *b))))
-    }
-
     /// The stream on `conn` reached position `u`: settled now if it owes nothing.
     fn stream_reached(&mut self, conn: ConnId, u: Unsettled, out: &mut Vec<Action>) -> Result<()> {
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
@@ -727,14 +782,15 @@ impl SyncEngine {
     }
 
     /// Settles `conn`'s positions in order while every body they owe is held here (or no longer
-    /// listed): the last one settled is stored with the members it covers, reported if one of
-    /// them asked, and is a pass end for the members read to the peer's end. So a position, an
-    /// Applied and a caught-up source never cover a body this node lacks.
+    /// wanted, `wants`): the last one settled is stored with the members it covers, reported if
+    /// one of them asked, and is a pass end for the members read to the peer's end. So a
+    /// position, an Applied and a caught-up source never cover a body this node lacks. A stream
+    /// that waited (`Pulling::full`) asks again.
     fn stream_settle(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         let mut done: Option<Unsettled> = None;
         let mut report = None;
         while let Some(owed) = self.streams.get(&conn).and_then(|s| s.pulling.unsettled.front()).map(|u| u.owed.clone()) {
-            let left: BTreeSet<(LabelId, BlobId)> = owed.into_iter().filter(|(l, b)| self.lacks(l, b)).collect();
+            let left: BTreeSet<(LabelId, BlobId)> = owed.into_iter().filter(|(l, b)| self.wants(l, b)).collect();
             let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { break };
             let Some(front) = p.unsettled.front_mut() else { break };
             if !left.is_empty() {
@@ -768,7 +824,7 @@ impl SyncEngine {
         for l in passed {
             self.source_passed(conn, l)?;
         }
-        Ok(())
+        self.stream_ask(conn, false, out)
     }
 
     /// At the end of each step: every stream's positions settle as far as the bodies held now
@@ -781,7 +837,7 @@ impl SyncEngine {
             let owed: BTreeSet<(LabelId, BlobId)> = self.streams.get(&conn).map(|s| s.pulling.unsettled.iter().flat_map(|u| u.owed.iter().copied()).collect()).unwrap_or_default();
             let mut ask: BTreeMap<LabelId, Vec<BlobId>> = BTreeMap::new();
             for (l, b) in owed {
-                if !self.fetching(&b) && self.lacks(&l, &b) {
+                if !self.fetching(&b) && self.wants(&l, &b) {
                     ask.entry(l).or_default().push(b);
                 }
             }
@@ -812,11 +868,14 @@ impl SyncEngine {
 
     fn stream_reply(&mut self, conn: ConnId, r: PullReply, out: &mut Vec<Action>) -> Result<()> {
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
-        let Some((id, sent)) = p.asked.take() else { return Ok(()) };
+        let Some((id, seq, sent)) = p.asked.take() else { return Ok(()) };
         if id != r.id {
-            p.asked = Some((id, sent));
+            p.asked = Some((id, seq, sent));
             return Ok(());
         }
+        // the reply reads from the cursor: pushes go on from its end
+        p.dropped = false;
+        self.stream_skipped(conn, seq, out)?;
         let owed = self.stream_apply(conn, r.events, out)?;
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
         let left: BTreeMap<LabelId, Option<Vec<u8>>> = r.joins.into_iter().collect();
@@ -854,12 +913,22 @@ impl SyncEngine {
     }
 
     fn stream_pushed(&mut self, conn: ConnId, s: Stream, out: &mut Vec<Action>) -> Result<()> {
-        if !self.streams.contains_key(&conn) {
+        let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
+        let Some(c) = s.cursor else {
+            // what no position names: relay-only entries, which carry their bytes (an
+            // announcement without them owes nothing)
+            let events = s.events.into_iter().filter(|(_, e)| !matches!(e, Event::Added { blob: None, .. })).collect();
+            self.stream_apply(conn, events, out)?;
             return Ok(());
+        };
+        // flow control: a push is not taken while the stream waits on bodies, nor after one was
+        // not until a reply reads from the cursor again (pushes follow on from each other)
+        if p.dropped || p.full() {
+            p.dropped = true;
+            p.caught_up = false;
+            return self.stream_ask(conn, false, out);
         }
         let owed = self.stream_apply(conn, s.events, out)?;
-        // a push with no cursor carries what no position names (a relay-only entry)
-        let Some(c) = s.cursor else { return Ok(()) };
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
         p.cursor = Some(c.clone());
         // a push to a stream read to its end moves it to the server's newer end: a pass end there
@@ -884,7 +953,7 @@ impl SyncEngine {
 
     /// Whether blob `b` is asked of a reader and not received yet.
     pub(crate) fn stream_fetching(&self, b: &BlobId) -> bool {
-        self.streams.values().any(|s| s.pulling.fetching.values().any(|(_, ids)| ids.contains(b)))
+        self.streams.values().any(|s| s.pulling.fetching.values().any(|(_, _, ids)| ids.contains(b)))
     }
 
     /// Fetches the bodies `ids` of member `l` from `conn`'s peer, but those asked for already
@@ -897,8 +966,8 @@ impl SyncEngine {
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
         let mut msgs = Vec::new();
         for batch in ids.chunks(osis_proto::msg::MAX_ITEMS) {
-            let id = p.next();
-            p.fetching.insert(id, (l, batch.to_vec()));
+            let (id, seq) = p.next();
+            p.fetching.insert(id, (seq, l, batch.to_vec()));
             msgs.push(Message::Fetch { id, label: l, max_reply: osis_proto::serving::REPLY_BUDGET as u64, ids: batch.to_vec() });
         }
         for m in msgs {
@@ -934,7 +1003,8 @@ impl SyncEngine {
     /// not is asked of the next source of `l` (by connection order), else waits for an
     /// announcement; what did not fit is asked again here.
     fn stream_fetch_reply(&mut self, conn: ConnId, id: u32, items: Vec<osis_proto::msg::Fetched>, out: &mut Vec<Action>) -> Result<()> {
-        let Some((l, asked)) = self.streams.get_mut(&conn).and_then(|s| s.pulling.fetching.remove(&id)) else { return Ok(()) };
+        let Some((seq, l, asked)) = self.streams.get_mut(&conn).and_then(|s| s.pulling.fetching.remove(&id)) else { return Ok(()) };
+        self.stream_skipped(conn, seq, out)?;
         let answered: BTreeSet<BlobId> = items.iter().map(|f| f.blob_id).collect();
         self.stream_fetched(conn, l, items, out)?;
         let rest: Vec<BlobId> = asked.into_iter().filter(|b| !answered.contains(b)).collect();
@@ -958,7 +1028,7 @@ impl SyncEngine {
             self.reader_events(conn, l, evs, out)?;
             // bytes served and not kept (a relay-only blob, one past a budget): the source gave
             // what it holds, so nothing of them is owed on its stream (else asked every step)
-            let unkept: BTreeSet<(LabelId, BlobId)> = delivered.into_iter().filter(|b| self.lacks(&l, b)).map(|b| (l, b)).collect();
+            let unkept: BTreeSet<(LabelId, BlobId)> = delivered.into_iter().filter(|b| self.wants(&l, b)).map(|b| (l, b)).collect();
             self.stream_unowe(conn, &unkept);
         }
         if failed.is_empty() {
@@ -977,6 +1047,16 @@ impl SyncEngine {
     /// Pulls sent on `conn` so far (tests count them).
     pub fn stream_pulls(&self, conn: ConnId) -> u64 {
         self.streams.get(&conn).map_or(0, |s| s.pulling.pulls)
+    }
+
+    /// What `conn`'s stream keeps waiting: positions not settled, and the bodies they owe (tests).
+    pub fn stream_waiting(&self, conn: ConnId) -> (usize, usize) {
+        self.streams.get(&conn).map_or((0, 0), |s| (s.pulling.unsettled.len(), s.pulling.unsettled.iter().map(|u| u.owed.len()).sum()))
+    }
+
+    /// `conn`'s stream position in the peer's log (tests).
+    pub fn stream_cursor(&self, conn: ConnId) -> Option<Vec<u8>> {
+        self.streams.get(&conn).and_then(|s| s.pulling.cursor.clone())
     }
 
     /// Whether `conn`'s stream read the peer's log to its end with nothing waiting (tests).

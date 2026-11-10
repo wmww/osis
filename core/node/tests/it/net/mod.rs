@@ -129,6 +129,8 @@ pub struct Net {
     pub walk_to: BTreeMap<usize, (osis_base::LabelId, osis_label::Step)>,
     /// A node between peers: a message it returns replaces the frame (peer sessions only).
     pub tamper: Option<Tamper>,
+    /// Set: `tamper` sees only what this node sends to that one.
+    pub tamper_link: Option<(usize, usize)>,
 }
 
 /// Whether whole frames `b` hold an Opened reply.
@@ -206,7 +208,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 impl Net {
     /// A network whose new nodes are each their own account's only node.
     pub fn new() -> Net {
-        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None }
+        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None }
     }
 
     /// A network whose new nodes join no account: the test makes or pairs them.
@@ -361,6 +363,12 @@ impl Net {
     /// The other end of peer connection `(n, c)`.
     pub fn peer_of(&self, n: usize, c: ConnId) -> Option<(usize, ConnId)> {
         self.plinks.get(&(n, c)).copied()
+    }
+
+    /// Queues `m` on peer connection `(n, c)` as if node `n` sent it (a hand peer's message).
+    pub fn inject(&mut self, n: usize, c: ConnId, m: &osis_proto::Message) {
+        let (to, pc) = self.plinks[&(n, c)];
+        self.queue.push_back(Msg::ToNode(to, self.nodes[to].life, pc, osis_proto::encode_frame(&m.encode())));
     }
 
     pub fn sync(&mut self, n: usize) -> &mut SyncEngine {
@@ -568,7 +576,9 @@ impl Net {
                             }
                         }
                     }
-                    if let Some(t) = &mut self.tamper {
+                    if let Some(t) = &mut self.tamper
+                        && self.tamper_link.is_none_or(|x| x == (n, m))
+                    {
                         let mut d = osis_proto::FrameDecoder::new();
                         d.push(&bytes);
                         let mut kept = Vec::new();

@@ -195,6 +195,8 @@ impl SyncEngine {
         let mut memory_blobs = Vec::new();
         let mut touched = Vec::new();
         let mut fetch: Vec<BlobId> = Vec::new();
+        // the wraps of a reader's announcements that make no row (their bytes not held)
+        let mut unlisted: BTreeMap<BlobId, [u8; osis_crypto::WRAP_LEN]> = BTreeMap::new();
         let mut announced = false;
         // entries new here that no writer vouched for (a deposit, or a host's junk): no stamp
         // under the head's write key, or before a head is known any step's this node knows (a
@@ -300,6 +302,15 @@ impl SyncEngine {
                         }
                     }
                     match self.state.entries.get(&(l, blob_id)).cloned() {
+                        // a reader's announcement makes no entry row before its bytes: its
+                        // stream owes the body (`stream_apply`) and the row comes with them
+                        None if reader.is_some() && blob.is_none() && !self.engine.has_blob(&blob_id) => {
+                            if !self.memory_skips(&l, &blob_id) {
+                                fetch.push(blob_id);
+                                unlisted.insert(blob_id, wrap);
+                            }
+                            continue;
+                        }
                         None => {
                             if host.is_some() && stamp.is_none() && !vouched {
                                 // bytes held before (another label's entry) stay whatever happens
@@ -420,7 +431,7 @@ impl SyncEngine {
             // changes where bytes come from, not which): one that does not open yet is held for
             // a secret that may come later, which no reader announces again
             let secrets = self.group_of(&l, None).map(|g| self.read_secrets(&g)).unwrap_or_default();
-            let (mut want, rest): (Vec<BlobId>, Vec<BlobId>) = fetch.into_iter().partition(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some()));
+            let (mut want, rest): (Vec<BlobId>, Vec<BlobId>) = fetch.into_iter().partition(|b| self.state.entries.get(&(l, *b)).map(|e| &e.wrap).or(unlisted.get(b)).is_some_and(|w| osis_label::unwrap_any(secrets.iter(), b, w).is_some()));
             want.extend(rest);
             want.extend(self.waiting_blobs()?);
             self.stream_fetch(c, l, want, out)?;

@@ -47,11 +47,8 @@ impl SyncEngine {
                 }
             }
             if !held {
-                // bytes a stream owes were not held yet, not dropped: on their way
-                if !self.stream_owes(&l, &id) {
-                    self.state.drop_entry(l, id);
-                    self.local_expiry.remove(&id);
-                }
+                self.state.drop_entry(l, id);
+                self.local_expiry.remove(&id);
                 continue;
             }
             let expiry = match self.local_expiry.get(&id) {

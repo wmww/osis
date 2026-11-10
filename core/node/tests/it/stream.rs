@@ -803,3 +803,116 @@ fn memory_entries_page_within_max_reply_spec_sync_10() {
     assert_eq!(got, ts.len(), "every memory entry arrived");
     assert!(largest.get() <= osis_proto::client::SMALL_REPLY, "a reply of {} bytes", largest.get());
 }
+
+/// Node `b`'s end of `a`'s connection to it, and `a`'s.
+fn conn_to(net: &Net, a: usize, b: usize) -> (osis_node::sync::ConnId, osis_node::sync::ConnId) {
+    net.peer_conns(a).into_iter().find(|(_, m, _)| *m == b).map(|(c, _, pc)| (c, pc)).expect("a connection")
+}
+
+/// `b`, a hand peer, queues to `a` `pushes` Streams at `a`'s position, each announcing `per`
+/// entries of `l` without bytes that no node holds.
+fn flood(net: &mut Net, a: usize, b: usize, l: osis_base::LabelId, pushes: usize, per: usize) {
+    let (c, pc) = conn_to(net, a, b);
+    let cursor = net.sync(a).stream_cursor(c);
+    assert!(cursor.is_some(), "a holds a position in b's log");
+    for i in 0..pushes {
+        let events = (0..per)
+            .map(|j| {
+                let blob_id = osis_label::blob_id(format!("unserved {i} {j}").as_bytes());
+                (l, osis_proto::Event::Added { blob_id, blob: None, wrap: [0; osis_crypto::WRAP_LEN], stamp: None })
+            })
+            .collect();
+        net.inject(b, pc, &osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: cursor.clone(), report: false })));
+    }
+}
+
+/// `b` announces `pushes` × 100 entries it never serves (its fetch answers lost): the entry rows
+/// `a` gained under the label, and what its stream of `b` waits on (positions, bodies).
+fn unserved(pushes: usize) -> (usize, (usize, usize)) {
+    let mut net = Net::new();
+    let (a, b, gs) = pair(&mut net, 1);
+    net.item(b, gs[0], gs[0], "x");
+    net.run();
+    let l = label_of(&mut net, b, gs[0]);
+    let before = net.sync(a).entries(&l).len();
+    net.tamper_link = Some((b, a));
+    net.tamper = Some(Box::new(|m| matches!(m, osis_proto::Message::FetchReply { .. }).then(|| osis_proto::Message::Applied { cursor: vec![] })));
+    flood(&mut net, a, b, l, pushes, 100);
+    net.run();
+    net.advance(60_000);
+    let (c, _) = conn_to(&net, a, b);
+    let rows = net.sync(a).entries(&l).len() - before;
+    (rows, net.sync(a).stream_waiting(c))
+}
+
+// The stream's settling rule and its bound (core/node/src/sync/stream.rs, `MAX_WAITING`): an
+// announcement without bytes makes no entry row before its bytes, and a stream waiting on
+// bodies takes no new position, so a co-reader announcing entries it never serves makes this
+// node keep the same at n and 10n
+#[test]
+fn announcements_never_served_keep_nothing_spec_sync_10() {
+    let (rows, waiting) = unserved(20);
+    let (rows10, waiting10) = unserved(200);
+    assert_eq!((rows, rows10), (0, 0), "entry rows gained at n and 10n");
+    assert_eq!(waiting10, waiting, "what the stream waits on at n and 10n");
+    assert!(waiting.1 <= 1024 + 100, "{waiting:?}");
+}
+
+// spec/wire.md §11.2 (Pull: stream requests are answered in order): a Fetch still unanswered
+// when a later request's answer arrives was skipped, so its bodies come from another source
+#[test]
+fn a_skipped_fetch_is_asked_elsewhere_spec_wire_11_2() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    let c = net.node(3, &[]);
+    reach_ed(&mut net, b);
+    reach_ed(&mut net, c);
+    let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
+    net.pair(c, a);
+    net.pair(b, c);
+    net.run();
+    net.advance(120_000);
+    let skipped = std::rc::Rc::new(std::cell::Cell::new(false));
+    let sk = skipped.clone();
+    net.tamper_link = Some((b, a));
+    net.tamper = Some(Box::new(move |m| match m {
+        osis_proto::Message::FetchReply { .. } if !sk.get() => {
+            sk.set(true);
+            Some(osis_proto::Message::Applied { cursor: vec![] })
+        }
+        _ => None,
+    }));
+    let t1 = net.item(b, g, g, "one");
+    net.run();
+    assert!(skipped.get(), "b skipped a's first fetch");
+    let t2 = net.item(b, g, g, "two");
+    net.run();
+    net.advance(60_000);
+    assert_eq!(net.read(a, t2), Some(s("two")));
+    assert_eq!(net.read(a, t1), Some(s("one")), "the skipped body came from c");
+}
+
+// The stream's bound (`MAX_WAITING`) is flow control, not a drop: pushes past it are read again
+// from the stream's position once its bodies are answered, so a source flooding unsolicited
+// positions grows nothing and a write it pushed meanwhile arrives
+#[test]
+fn pushes_past_the_bound_grow_nothing_and_lose_nothing_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b, gs) = pair(&mut net, 1);
+    net.item(b, gs[0], gs[0], "x");
+    net.run();
+    let l = label_of(&mut net, b, gs[0]);
+    flood(&mut net, a, b, l, 200, 100);
+    let t = net.item(b, gs[0], gs[0], "during the flood");
+    let (c, _) = conn_to(&net, a, b);
+    let mut most = (0, 0);
+    while net.step() {
+        let w = net.sync(a).stream_waiting(c);
+        most = (most.0.max(w.0), most.1.max(w.1));
+    }
+    assert!(most.0 <= 1024 && most.1 <= 1024 + 100, "most waiting {most:?}");
+    net.advance(60_000);
+    assert_eq!(net.read(a, t), Some(s("during the flood")), "the write pushed during the flood arrived");
+    assert_eq!(net.sync(a).stream_waiting(c), (0, 0), "settled");
+}
