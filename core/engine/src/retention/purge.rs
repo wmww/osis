@@ -104,7 +104,7 @@ impl HeldSet for Cut<'_> {
 }
 
 /// The writer's check of its own request `pc` (header `p`), built but not applied: each item that
-/// names held content deltas must drop one of them by `holds_right`, as a receiver judges it, or the
+/// names held deltas must drop one of them by `holds_right`, as a receiver judges it, or the
 /// request is refused (`Permission` on the item's thing). An item naming none held is written: a
 /// request naming a delta that arrives later is honored then.
 pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()> {
@@ -120,12 +120,11 @@ pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()
                 }
             }
         }
-        // the right once per class and actor, as `apply_request` judges it; a named snapshot has
-        // nothing of its own to take (spec/commits.md §5), so a right over one drops nothing and
-        // whether one is held (a compaction, a purge's re-snapshot) never decides
+        // the right once per class and actor, as `apply_request` judges it; `names` skips
+        // snapshots, so whether one is held (a compaction, a purge's re-snapshot) never decides
         let mut rights: BTreeMap<(u64, Tid), bool> = BTreeMap::new();
         for c in named_by(core, item, p.ts) {
-            let Some((m, ai)) = core.ix.commits.get(&c).filter(|m| !m.header.kind.is_compaction()).and_then(|m| Some((m, m.aspect(item.tid(), item.ak())?))) else { continue };
+            let Some((m, ai)) = core.ix.commits.get(&c).and_then(|m| Some((m, m.aspect(item.tid(), item.ak())?))) else { continue };
             let Some(a) = m.header.aspects.get(ai).filter(|a| names(p, a, &m.header, &c)) else { continue };
             if *rights.entry((a.retention.by as u64, m.header.actor)).or_insert_with(|| holds_right(core, p, pc, a, &m.header)) {
                 break;
@@ -514,7 +513,7 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
             let Some((m, ai)) = core.ix.commits.get(&c).and_then(|m| Some((m, m.aspect(item.tid(), item.ak())?))) else { continue };
             let Some(a) = m.header.aspects.get(ai) else { continue };
             // applied here: held, or dropped as covered (its writes in the state through its cover)
-            if !m.view.kind.is_compaction() && (!m.body_gone(ai) || m.dropped.get(&ai).is_some_and(|d| d.as_cover())) {
+            if m.view.kind.has_own_writes() && (!m.body_gone(ai) || m.dropped.get(&ai).is_some_and(|d| d.as_cover())) {
                 held.insert(c);
             }
             if matches!(item, PurgeItem::Commit { .. }) || *rights.entry((a.retention.by as u64, m.header.actor)).or_insert_with(|| holds_right(core, h, id, a, &m.header)) {
