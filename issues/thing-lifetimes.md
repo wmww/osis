@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: data-model, api, permissions, sync, engine
 
-**Go-ahead given by Tess**: implement in the order below. Halyard runs the lane; Fathom reviews steps 1 and 3. Steps 1-2 now; 3-4 after Fathom's ending-cluster worker lands and after thing-history step 1 (held-model). Her decisions are below (Decisions). Nothing is built but the model.
+**Go-ahead given by Tess**: implement in the order below. Halyard runs the lane; Fathom reviews steps 1 and 3. Tess: additive, so it comes after the simplifications, fixes and changes in flight (thing-history, the network rework, open fixes); then steps 1-2, and 3-4 after Fathom's ending-cluster worker and thing-history step 1 (held-model). Her decisions are below (Decisions). Nothing is built but the model.
 
 ## Principle
 A thing's lifetime is decided by whoever may end it. Listing retainers is their standing instruction to end the thing once none of them keeps it; a node carries the instruction out only with the right to end the thing and only on what it holds, so a node that cannot see enough leaks and never deletes. Nothing here is a validity rule: no write is valid or invalid because of a list or a reference.
