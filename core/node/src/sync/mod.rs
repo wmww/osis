@@ -265,6 +265,8 @@ pub struct SyncEngine {
     pub(crate) changed_due: bool,
     /// `Core::role_generation` at the last `changed_at` pass.
     pub(crate) changed_gen: u64,
+    /// Sync IDs whose `changed_at` moved since the last `shared_changed`.
+    pub(crate) changed_moved: BTreeSet<LabelId>,
     /// Engine changes not yet spread to the labels' work sets (`spread_touches`).
     pub(crate) touched: work::Touched,
     /// Peer sessions this node serves (co-reader peer, spec/sync.md §5).
@@ -434,6 +436,7 @@ impl SyncEngine {
             peer_cache: peers::PeerCache::default(),
             peer_received: BTreeMap::new(),
             shared_dirty: false,
+            changed_moved: BTreeSet::new(),
             role_change: BTreeMap::new(),
             started,
             rotation_at: BTreeMap::new(),

@@ -315,6 +315,12 @@ impl Transaction<'_> {
         self.log_place(entry_slot(&l, &b), NodeEvent::Added(l, b), &[])
     }
 
+    /// The position of an entry's latest event, `None` with none in the log.
+    pub fn log_entry_pos(&mut self, l: &LabelId, b: &BlobId) -> Result<Option<u64>, Error> {
+        let Some(v) = self.cat_get(&entry_slot(l, b))? else { return Ok(None) };
+        Ok(Some(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?))
+    }
+
     /// Logs that an entry left the node at `at` (corrected wall ms). Returns its position.
     pub fn log_deleted(&mut self, label: LabelId, blob: BlobId, at: u64) -> Result<u64, Error> {
         self.log_place(entry_slot(&label, &blob), NodeEvent::Deleted { label, blob, at }, &[])

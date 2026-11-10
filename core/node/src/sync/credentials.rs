@@ -105,17 +105,22 @@ impl SyncEngine {
             fps.push((*l, *osis_crypto::kdf::kdf(CHANGED_FP, &bytes, b"label").expose()));
         }
         let kept: BTreeSet<LabelId> = labels.into_iter().collect();
-        self.engine.run(|tx| {
+        let moved = self.engine.run(|tx| {
+            let mut moved = Vec::new();
             for (l, fp) in &fps {
-                tx.txn.changed_note(*l, fp)?;
+                if tx.txn.changed_note(*l, fp)?.is_some() {
+                    moved.push(*l);
+                }
             }
             for l in tx.txn.changed_labels()? {
                 if !kept.contains(&l) {
                     tx.txn.changed_forget(&l)?;
                 }
             }
-            Ok(())
+            Ok(moved)
         })?;
+        // records not in use are judged for these (`shared_changed`, `records_end`)
+        self.changed_moved.extend(moved);
         self.changed_due = false;
         self.changed_gen = generation;
         Ok(())

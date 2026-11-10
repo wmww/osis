@@ -137,15 +137,27 @@ pub(crate) struct Serving {
     crossed: BTreeSet<BlobId>,
     /// The last reply or push left nothing of the log or its memory part unscanned.
     at_end: bool,
-    /// The cursor of the last reply or push: where a member this side stops sharing stopped for
-    /// the requester (`Lost`).
+    /// The cursor of the last reply or push, and its position: where a member this side stops
+    /// sharing stopped for the requester (`Lost`).
     last: Option<Vec<u8>>,
+    last_pos: Option<u64>,
     /// Members the requester joined on this connection (a Pull's `join` this node shares).
     pulled: BTreeSet<LabelId>,
-    /// Replies and pushes asked to report and not reported yet, in order: their cursor and
-    /// the members they carried events of. At most `MAX_UNREPORTED`: past it the oldest two
-    /// merge, their members waiting for the later cursor.
-    unreported: std::collections::VecDeque<(Vec<u8>, BTreeSet<LabelId>)>,
+    /// Replies and pushes asked to report and not reported yet, in order: their cursor, the
+    /// members they carried events of, and the position they brought each member being ended
+    /// to. At most `MAX_UNREPORTED`: past it the oldest two merge, their members waiting for the
+    /// later cursor.
+    unreported: std::collections::VecDeque<Unreported>,
+    /// The position the requester reported applying, per member being ended (a Pull's cursor,
+    /// an `Applied`): for this connection only.
+    reported: BTreeMap<LabelId, u64>,
+}
+
+/// A reply or push asked to report (`Serving::unreported`).
+struct Unreported {
+    cursor: Vec<u8>,
+    labels: BTreeSet<LabelId>,
+    ends: Vec<(LabelId, u64)>,
 }
 
 const MAX_CROSSED: usize = 1 << 14;
@@ -155,27 +167,53 @@ const MAX_CROSSED: usize = 1 << 14;
 const MAX_UNREPORTED: usize = 16;
 
 impl Serving {
-    /// A reply or push with events of `labels` went with `cursor`, asking for its report.
-    fn sent(&mut self, cursor: &Option<Vec<u8>>, labels: BTreeSet<LabelId>) -> bool {
+    /// A reply or push went with `cursor`, events of `labels`, bringing the members being ended
+    /// to `ends`: it asks for its report when it carries events, or when it brings a member to
+    /// its `until` that no report awaited covers (`until_due`).
+    fn sent(&mut self, cursor: &Option<Vec<u8>>, labels: BTreeSet<LabelId>, ends: Vec<(LabelId, u64)>, untils: &BTreeMap<LabelId, u64>) -> bool {
         let Some(c) = cursor else { return false };
-        if labels.is_empty() {
+        if labels.is_empty() && !self.until_due(&ends, untils) {
             return false;
         }
-        self.unreported.push_back((c.clone(), labels));
+        self.unreported.push_back(Unreported { cursor: c.clone(), labels, ends });
         if self.unreported.len() > MAX_UNREPORTED
-            && let Some((_, first)) = self.unreported.pop_front()
-            && let Some((_, next)) = self.unreported.front_mut()
+            && let Some(first) = self.unreported.pop_front()
+            && let Some(next) = self.unreported.front_mut()
         {
-            next.extend(first);
+            next.labels.extend(first.labels);
+            next.ends.extend(first.ends);
         }
         true
+    }
+
+    /// Whether a message bringing members to `ends` must ask a report for an `until`: one of
+    /// them reaches it, not reported there yet nor covered by a report awaited.
+    fn until_due(&self, ends: &[(LabelId, u64)], untils: &BTreeMap<LabelId, u64>) -> bool {
+        ends.iter().any(|(l, at)| {
+            untils.get(l).is_some_and(|u| *at >= *u && self.reported.get(l).is_none_or(|r| r < u) && !self.unreported.iter().any(|x| x.ends.iter().any(|(y, a)| y == l && a >= u)))
+        })
+    }
+
+    /// Where a message brings each member being ended that the requester tracks: `at`, but a
+    /// join still in pages at its own position.
+    fn ends(&self, untils: &BTreeMap<LabelId, u64>, at: u64, still: &[(LabelId, u64)]) -> Vec<(LabelId, u64)> {
+        untils.keys().filter(|l| self.pulled.contains(l)).map(|l| (*l, still.iter().find(|(x, _)| x == l).map_or(at, |(_, p)| *p))).collect()
+    }
+
+    /// The requester applied member `l` up to `at`.
+    fn report(&mut self, l: LabelId, at: u64) {
+        let r = self.reported.entry(l).or_insert(at);
+        *r = (*r).max(at);
     }
 
     /// The requester reported applying what `cursor` covers: that message and every one
     /// before it are applied (a requester applies in order).
     fn reported(&mut self, cursor: &[u8]) {
-        if let Some(i) = self.unreported.iter().position(|(c, _)| c == cursor) {
-            self.unreported.drain(..=i);
+        if let Some(i) = self.unreported.iter().position(|x| x.cursor == cursor) {
+            let done: Vec<Unreported> = self.unreported.drain(..=i).collect();
+            for (l, at) in done.into_iter().flat_map(|x| x.ends) {
+                self.report(l, at);
+            }
         }
     }
 }
@@ -292,9 +330,9 @@ struct Scan {
     log_end: u64,
 }
 
-/// Scans the log from `from` for events of `starts`' members past their start, at most
-/// `SCAN_ROWS` rows.
-fn scan(tx: &mut osis_store::Transaction<'_>, from: u64, starts: &BTreeMap<LabelId, u64>) -> std::result::Result<Scan, osis_store::Error> {
+/// Scans the log from `from` for events of `starts`' members past their start and not past
+/// their end (a member being ended: its `until`), at most `SCAN_ROWS` rows.
+fn scan(tx: &mut osis_store::Transaction<'_>, from: u64, starts: &BTreeMap<LabelId, (u64, u64)>) -> std::result::Result<Scan, osis_store::Error> {
     let log_end = tx.log_end()?;
     let (mut pos, mut rows, mut events) = (from, 0usize, Vec::new());
     loop {
@@ -304,7 +342,7 @@ fn scan(tx: &mut osis_store::Transaction<'_>, from: u64, starts: &BTreeMap<Label
             let l = match e.event {
                 NodeEvent::Added(l, _) | NodeEvent::Deleted { label: l, .. } | NodeEvent::Head(l) => l,
             };
-            if starts.get(&l).is_some_and(|s| e.pos > *s) {
+            if starts.get(&l).is_some_and(|(s, until)| e.pos > *s && e.pos <= *until) {
                 events.push(e);
             }
         }
@@ -326,7 +364,7 @@ impl SyncEngine {
                 if let Some(s) = self.streams.get_mut(&conn) {
                     s.serving.reported(&cursor);
                 }
-                Ok(())
+                self.shared_until_due(conn, out)
             }
             Message::Stranded { id, label } => {
                 self.shared_send(conn, Message::Ok { id }, out)?;
@@ -451,13 +489,31 @@ impl SyncEngine {
 
     /// Answers a Pull (issues/net-reconnect.md, One node log): after `served_labels` and a flush
     /// (a moved head enters the log only there), read in a transaction of its own, filtered by S
-    /// and by the bytes held.
+    /// and by the bytes held. The Pull's cursor first reports where the requester is: a member
+    /// being ended whose `until` it passed closes before the reply (`shared_until_due`).
     fn stream_serve(&mut self, conn: ConnId, p: Pull, out: &mut Vec<Action>) -> Result<()> {
         // a connection with no shared set serves no stream (spec/sync.md §10)
         if !self.records.shared.contains_key(&conn) {
             return self.shared_send(conn, Message::Error { id: p.id, code: osis_proto::Code::NOT_ADMITTED }, out);
         }
+        let (base, join_at) = self.engine.run(|tx| {
+            let base = match &p.cursor {
+                Some(c) => tx.txn.log_position(c)?,
+                None => None,
+            };
+            let mut join_at = Vec::with_capacity(p.joins.len());
+            for (l, c) in &p.joins {
+                join_at.push((*l, match c {
+                    Some(c) => tx.txn.log_position(c)?,
+                    None => Some(0),
+                }));
+            }
+            Ok((base, join_at))
+        })?;
+        self.stream_pull_reports(conn, base, &join_at);
+        self.shared_until_due(conn, out)?;
         let members = self.stream_members(conn);
+        let untils = self.shared_untils(conn);
         let _ = self.served_labels();
         self.state.flush(&mut self.engine)?;
         {
@@ -466,42 +522,34 @@ impl SyncEngine {
             s.follow = None;
         }
         let first = p.ephemeral;
-        let (base, whole, joined, refused, scan) = self.engine.run(|tx| {
-            let base = match &p.cursor {
-                Some(c) => tx.txn.log_position(c)?,
-                None => None,
-            };
-            // a cursor naming no position, the stream's or a join's: the stream from the start
-            // (else a join read from the start would not be known as a listing there)
-            let mut whole = base.is_none();
-            let (mut joined, mut refused) = (Vec::new(), Vec::new());
-            for (l, c) in &p.joins {
-                if !members.contains(l) {
-                    refused.push(*l);
-                    continue;
-                }
-                let at = match c {
-                    Some(c) => tx.txn.log_position(c)?,
-                    None => Some(0),
-                };
-                whole |= at.is_none();
-                joined.push((*l, at.unwrap_or(0)));
+        // a cursor naming no position, the stream's or a join's: the stream from the start
+        // (else a join read from the start would not be known as a listing there)
+        let mut whole = base.is_none();
+        let (mut joined, mut refused) = (Vec::new(), Vec::new());
+        for (l, at) in &join_at {
+            if !members.contains(l) {
+                refused.push(*l);
+                continue;
             }
-            if whole {
-                joined.clear();
-            }
-            let base = base.filter(|_| !whole).unwrap_or(0);
-            let mut starts: BTreeMap<LabelId, u64> = members.iter().map(|l| (*l, base)).collect();
-            starts.extend(joined.iter().copied());
-            let from = starts.values().copied().min().unwrap_or(base);
-            let scan = scan(&mut tx.txn, from, &starts)?;
-            Ok((base, whole, joined, refused, scan))
-        })?;
+            whole |= at.is_none();
+            joined.push((*l, at.unwrap_or(0)));
+        }
+        if whole {
+            joined.clear();
+        }
+        let base = base.filter(|_| !whole).unwrap_or(0);
+        let bound = |l: &LabelId| untils.get(l).copied().unwrap_or(u64::MAX);
+        let mut starts: BTreeMap<LabelId, (u64, u64)> = members.iter().map(|l| (*l, (base, bound(l)))).collect();
+        starts.extend(joined.iter().map(|(l, at)| (*l, (*at, bound(l)))));
+        let from = starts.values().map(|(s, _)| *s).min().unwrap_or(base);
+        let scan = self.engine.run(|tx| Ok(scan(&mut tx.txn, from, &starts)?))?;
         let mut budget = usize::try_from(p.max_reply).unwrap_or(usize::MAX).saturating_sub(256);
         // the memory part first: a cursor names no memory event, so each member entering the
-        // stream gets its live entries listed; then what followed for the rest
-        let listed: BTreeSet<LabelId> = if whole || first { members.clone() } else { joined.iter().map(|(l, ..)| *l).collect() };
-        let (mut events, memory_cut) = self.stream_memory(conn, &listed, &members, &mut budget)?;
+        // stream gets its live entries listed; then what followed for the rest. A member being
+        // ended gets none: no position bounds them
+        let live: BTreeSet<LabelId> = members.iter().filter(|l| !untils.contains_key(l)).copied().collect();
+        let listed: BTreeSet<LabelId> = if whole || first { live.clone() } else { joined.iter().map(|(l, ..)| *l).filter(|l| live.contains(l)).collect() };
+        let (mut events, memory_cut) = self.stream_memory(conn, &listed, &live, &mut budget)?;
         let (durable, cut) = self.stream_events(conn, &scan.events, &mut budget, events.is_empty())?;
         events.extend(durable);
         let end = cut.unwrap_or(scan.end);
@@ -526,15 +574,34 @@ impl SyncEngine {
         s.at_end = !more;
         if cursor.is_some() {
             s.last = cursor.clone();
+            s.last_pos = Some(stream_at);
         }
         s.pulled.extend(p.joins.iter().map(|(l, _)| *l).filter(|l| members.contains(l)));
-        let report = s.sent(&cursor, labels);
+        let ends = s.ends(&untils, stream_at, &still);
+        let report = s.sent(&cursor, labels, ends, &untils);
         let reply = PullReply { id: p.id, events, cursor, whole, more, report, joins };
         self.shared_send(conn, Message::PullReply(Box::new(reply)), out)
     }
 
+    /// A Pull reports where the requester is for each member being ended: its join's position,
+    /// else the stream's cursor for a member it tracks.
+    fn stream_pull_reports(&mut self, conn: ConnId, base: Option<u64>, joins: &[(LabelId, Option<u64>)]) {
+        let untils = self.shared_untils(conn);
+        let Some(s) = self.streams.get_mut(&conn).map(|s| &mut s.serving) else { return };
+        for l in untils.keys() {
+            let at = match joins.iter().find(|(x, _)| x == l) {
+                Some((_, at)) => *at,
+                None => base.filter(|_| s.pulled.contains(l)),
+            };
+            if let Some(at) = at {
+                s.report(*l, at);
+            }
+        }
+    }
+
     /// Pushes what the log gained to each connection following its stream, at most one page
-    /// each per step (the next goes at the next step).
+    /// each per step (the next goes at the next step). A push also goes, with no events, when it
+    /// brings a member being ended to its `until` with no report awaited there (`until_due`).
     pub(super) fn stream_push(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let following: Vec<(ConnId, u64, u64)> = self.streams.iter().filter_map(|(c, s)| s.serving.follow.map(|f| (*c, f, s.serving.mem_seq))).collect();
         if following.is_empty() {
@@ -545,14 +612,17 @@ impl SyncEngine {
         let log_end = self.engine.run(|tx| Ok(tx.txn.log_end()?))?;
         let mem_seq = self.state.mem_log.seq();
         for (conn, at, seen) in following {
-            if at >= log_end && seen >= mem_seq {
+            let untils = self.shared_untils(conn);
+            let due = |s: &Self, end: u64| s.streams.get(&conn).is_some_and(|x| x.serving.until_due(&x.serving.ends(&untils, end, &[]), &untils));
+            if at >= log_end && seen >= mem_seq && !due(self, at) {
                 continue;
             }
             let members = self.stream_members(conn);
-            let starts: BTreeMap<LabelId, u64> = members.iter().map(|l| (*l, at)).collect();
+            let starts: BTreeMap<LabelId, (u64, u64)> = members.iter().map(|l| (*l, (at, untils.get(l).copied().unwrap_or(u64::MAX)))).collect();
             let scan = self.engine.run(|tx| Ok(scan(&mut tx.txn, at, &starts)?))?;
             let mut budget = osis_proto::serving::REPLY_BUDGET - 256;
-            let (mut events, memory_cut) = self.stream_memory(conn, &BTreeSet::new(), &members, &mut budget)?;
+            let live: BTreeSet<LabelId> = members.iter().filter(|l| !untils.contains_key(l)).copied().collect();
+            let (mut events, memory_cut) = self.stream_memory(conn, &BTreeSet::new(), &live, &mut budget)?;
             let (durable, cut) = self.stream_events(conn, &scan.events, &mut budget, events.is_empty())?;
             events.extend(durable);
             let end = cut.unwrap_or(scan.end);
@@ -560,18 +630,31 @@ impl SyncEngine {
                 s.serving.follow = Some(end);
                 s.serving.at_end = end >= log_end && !memory_cut;
             }
-            if events.is_empty() {
+            if events.is_empty() && !due(self, end) {
                 continue;
             }
             let cursor = self.engine.run(|tx| Ok(tx.txn.log_cursor(end)?))?;
             let labels: BTreeSet<LabelId> = events.iter().map(|(l, _)| *l).collect();
-            if let Some(s) = self.streams.get_mut(&conn).filter(|_| cursor.is_some()) {
-                s.serving.last = cursor.clone();
+            let Some(s) = self.streams.get_mut(&conn).map(|s| &mut s.serving) else { continue };
+            if cursor.is_some() {
+                s.last = cursor.clone();
+                s.last_pos = Some(end);
             }
-            let report = self.streams.get_mut(&conn).is_some_and(|s| s.serving.sent(&cursor, labels));
+            let ends = s.ends(&untils, end, &[]);
+            let report = s.sent(&cursor, labels, ends, &untils);
             self.shared_send(conn, Message::Stream(Box::new(Stream { events, cursor, report })), out)?;
         }
         Ok(())
+    }
+
+    /// Where `conn`'s requester reported applying member `l` (a member being ended).
+    pub(super) fn stream_reported(&self, conn: ConnId, l: &LabelId) -> Option<u64> {
+        self.streams.get(&conn).and_then(|s| s.serving.reported.get(l).copied())
+    }
+
+    /// The position this side last served `conn`'s peer to.
+    pub(super) fn stream_served_pos(&self, conn: ConnId) -> Option<u64> {
+        self.streams.get(&conn).and_then(|s| s.serving.last_pos)
     }
 
     // ---- the requesting side ----
@@ -605,12 +688,6 @@ impl SyncEngine {
         }
     }
 
-    /// The cursor this side last served `conn`'s peer: where a member it stops sharing stopped
-    /// for the peer.
-    pub(super) fn stream_served_to(&self, conn: ConnId) -> Option<Vec<u8>> {
-        self.streams.get(&conn).and_then(|s| s.serving.last.clone())
-    }
-
     /// Member `l` opened in `conn`'s shared set here: it joins the stream, from its lag or the
     /// start, and the record keeps it (`m`, joining from there) in the same transaction.
     pub(super) fn stream_join(&mut self, conn: ConnId, l: LabelId, m: osis_store::Member, out: &mut Vec<Action>) -> Result<()> {
@@ -639,6 +716,7 @@ impl SyncEngine {
     pub(super) fn stream_leave(&mut self, conn: ConnId, l: &LabelId, changed_at: u64, stop: Stop) -> Result<()> {
         let Some(s) = self.streams.get_mut(&conn) else { return Ok(()) };
         s.serving.pulled.remove(l);
+        s.serving.reported.remove(l);
         let p = &mut s.pulling;
         // the position it leaves at is the last one settled for it: a member whose merge or
         // page is not settled yet keeps no newer lag (read again from its last stored one, else
@@ -1075,13 +1153,19 @@ impl SyncEngine {
 
     /// Answers a reader's Fetch from what this node holds of a member of the connection's
     /// shared set, in order within `max_reply`: what does not fit is left out (asked again; under
-    /// `REPLY_BUDGET` any blob fits), what is not held is answered with nothing.
+    /// `REPLY_BUDGET` any blob fits), what is not held is answered with nothing, and so is an
+    /// entry of a member being ended whose event is past its `until`.
     fn stream_serve_fetch(&mut self, conn: ConnId, id: u32, l: LabelId, max_reply: u64, ids: Vec<BlobId>, out: &mut Vec<Action>) -> Result<()> {
         let member = self.records.shared.get(&conn).is_some_and(|s| s.has(&l));
+        let until = self.shared_untils(conn).get(&l).copied();
         let mut budget = osis_proto::serving::reply_bound(max_reply);
         let mut items = Vec::new();
         for b in ids {
-            let held = if member { self.state.entries.get(&(l, b)).map(|e| (e.wrap, e.stamp)) } else { None };
+            let shown = match until {
+                Some(u) => self.engine.run(|tx| Ok(tx.txn.log_entry_pos(&l, &b)?))?.is_some_and(|p| p <= u),
+                None => true,
+            };
+            let held = if member && shown { self.state.entries.get(&(l, b)).map(|e| (e.wrap, e.stamp)) } else { None };
             let entry = match held {
                 Some((wrap, stamp)) => self.engine.blob(&b)?.map(|x| (x, wrap, stamp)),
                 None => None,
@@ -1175,8 +1259,35 @@ impl SyncEngine {
         self.streams.get(&conn).is_some_and(|s| {
             let pulled = s.pulling.caught_up && s.pulling.in_stream.contains(l) && s.pulling.fetching.is_empty() && s.pulling.unsettled.is_empty();
             let v = &s.serving;
-            let served = v.follow.is_some() && v.at_end && v.pulled.contains(l) && !v.unreported.iter().any(|(_, ls)| ls.contains(l));
+            let served = v.follow.is_some() && v.at_end && v.pulled.contains(l) && !v.unreported.iter().any(|x| x.labels.contains(l));
             pulled && served
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // spec/sync.md §10 (Reports): a message bringing an ended member the requester tracks to its
+    // `until` asks a report, events or none, unless one awaited covers it or the requester
+    // already reported a position past it; a member it does not track is not reported for
+    #[test]
+    fn a_message_reaching_until_asks_its_report_once() {
+        let l = LabelId([1; 16]);
+        let untils: BTreeMap<LabelId, u64> = [(l, 10)].into();
+        let mut s = Serving::default();
+        assert!(s.ends(&untils, 12, &[]).is_empty(), "not tracked: no end");
+        s.pulled.insert(l);
+        assert!(!s.until_due(&s.ends(&untils, 9, &[]), &untils), "short of until");
+        assert!(!s.until_due(&s.ends(&untils, 12, &[(l, 8)]), &untils), "a join in pages is at its own position");
+        let ends = s.ends(&untils, 12, &[]);
+        assert!(s.until_due(&ends, &untils));
+        assert!(s.sent(&Some(vec![1]), BTreeSet::new(), ends, &untils), "asked with no events");
+        assert!(!s.until_due(&s.ends(&untils, 13, &[]), &untils), "one awaited covers it");
+        s.reported(&[1]);
+        assert_eq!(s.reported.get(&l), Some(&12));
+        assert!(!s.until_due(&s.ends(&untils, 14, &[]), &untils), "reported past it");
+        assert!(!s.sent(&Some(vec![2]), BTreeSet::new(), s.ends(&untils, 14, &[]), &untils), "nothing to ask");
     }
 }

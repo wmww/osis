@@ -67,6 +67,14 @@ fn round_trip_every_kind() {
     }
 }
 
+// spec/wire.md §11.2 Pull: a Stream with a cursor and no events (an ended member reaching its
+// `until`, asking a report) is a message
+#[test]
+fn a_stream_with_no_events_round_trips_spec_wire_11_2() {
+    let m = Message::Stream(Box::new(crate::msg::Stream { events: vec![], cursor: Some(vec![0x30; 72]), report: true }));
+    assert_eq!(Message::decode(&m.encode()), Ok(m));
+}
+
 // spec/wire.md §11.2: per-message caps
 #[test]
 fn caps() {

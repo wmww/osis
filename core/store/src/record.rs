@@ -441,6 +441,34 @@ impl Transaction<'_> {
         self.record_open(id, l, &m)
     }
 
+    /// Member `l`'s end (`until`) is set or cleared: its row changes if it is still a member.
+    pub fn record_member_until(&mut self, id: &RecordId, l: LabelId, until: Option<u64>) -> Result<(), Error> {
+        let Some(old) = self.cat_get(&member_key(id, &l))? else { return Ok(()) };
+        let m = Member { until, ..Member::decode(&old)? };
+        self.record_open(id, l, &m)
+    }
+
+    /// The records holding `l` in S, with its member row there. O(records holding it).
+    pub fn records_holding(&mut self, l: &LabelId) -> Result<Vec<(Record, Member)>, Error> {
+        let prefix = [INDEX, &l.0].concat();
+        let mut out = Vec::new();
+        let mut from = Vec::new();
+        loop {
+            let rows = self.cat_scan(&prefix, &from, PAGE)?;
+            let n = rows.len();
+            for (k, _) in rows {
+                let id = tail_id(&k)?;
+                from = [id.as_slice(), &[0]].concat();
+                if let (Some(rec), Some(m)) = (self.record(&id)?, self.cat_get(&member_key(&id, l))?) {
+                    out.push((rec, Member::decode(&m)?));
+                }
+            }
+            if n < PAGE {
+                return Ok(out);
+            }
+        }
+    }
+
     /// A member only one side of the record held (a digest difference, issues/net-reconnect.md
     /// Agreement): out of S with no lag kept, so its rejoin is a listing, and pending again as
     /// `record_close` re-marks. Returns `acked_pos`.

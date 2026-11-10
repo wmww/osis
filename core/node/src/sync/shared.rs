@@ -13,6 +13,10 @@
 //!   `acked_pos` passes only what is acknowledged and tested with no Offer unanswered: two nodes
 //!   gaining one credential at once cannot both miss it.
 //! - A filter connection ends with the rule: re-judged at every change of what a node holds.
+//! - An open whose credential a rotation made stale, its peer neither holder nor departed, ends
+//!   at `until` (the log's end at that re-judging, records not on a connection included): the
+//!   requester is served through the rotation and nothing after it, and gets `Lost` once it
+//!   reported a position past `until` (tests/it/until.rs).
 //!
 //! - A record says only what need not be sent again (issues/net-reconnect.md): a connection with
 //!   a record restores S, `acked_pos`, its own filter's generations and the peer's stored filter,
@@ -100,6 +104,9 @@ struct Member {
     /// The credential's beacon, for an open by a credential (none for JUDGED): the open stands
     /// while a credential with that beacon is admissible.
     beacon: Option<[u8; 32]>,
+    /// While being ended by a rotation: the node log position its stream ends at, inclusive
+    /// (issues/net-reconnect.md, Joining and rejoining).
+    until: Option<u64>,
 }
 
 /// The shared set state of one connection with a record.
@@ -260,7 +267,7 @@ impl SyncEngine {
     #[doc(hidden)]
     pub fn shared_admit(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<Action>) -> Result<()> {
         let s = self.records.shared.entry(conn).or_insert_with(|| Shared::bare(!self.conns.contains_key(&conn)));
-        s.members.insert(l, Member { class: JUDGED, beacon: None });
+        s.members.insert(l, Member { class: JUDGED, beacon: None, until: None });
         self.shared_open(conn, l, JUDGED, None, out)
     }
 
@@ -354,7 +361,7 @@ impl SyncEngine {
             peer,
             ..Shared::bare(by_listener)
         };
-        s.members = members.iter().map(|(l, m)| (*l, Member { class: m.class, beacon: m.beacon })).collect();
+        s.members = members.iter().map(|(l, m)| (*l, Member { class: m.class, beacon: m.beacon, until: m.until })).collect();
         let restored = !s.members.is_empty();
         self.records.shared.insert(conn, s);
         self.stream_bind(conn, id, rec.cursor, &members);
@@ -373,6 +380,7 @@ impl SyncEngine {
         if !std::mem::take(&mut self.shared_dirty) {
             return Ok(());
         }
+        self.records_end()?;
         let conns: Vec<ConnId> = self.records.shared.keys().copied().collect();
         for conn in conns {
             let Some(s) = self.records.shared.get_mut(&conn) else { continue };
@@ -816,7 +824,7 @@ impl SyncEngine {
         // placed for its readers from now on (`serves_readers`)
         self.local_dirty |= self.records.shared.values().all(Shared::is_empty);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
-        s.members.insert(l, Member { class, beacon });
+        s.members.insert(l, Member { class, beacon, until: None });
         self.suspects_due = true;
         self.stream_join(conn, l, osis_store::Member { class, beacon, until: None, at: At::Join(None) }, out)?;
         self.stream_source_gained(conn, &l, out)
@@ -838,9 +846,12 @@ impl SyncEngine {
         self.stream_leave(conn, l, at, stop)
     }
 
-    /// Re-judges every member: holders stay; a credential open stays while that credential is
-    /// admissible; anything else closes with a `Lost`. A connection whose actors are unknown here
-    /// now keeps what the rule keeps, but sends no more beacons and loses its record.
+    /// Re-judges every member (issues/net-shared-set.md, Opens): a holder stays, and so does a
+    /// member whose credential is still admissible. One opened by a credential no longer
+    /// admissible, its peer's actors not departed, ends at a rotation: it is served through the
+    /// log's end now (`until`) and closes once the requester reported a position past it
+    /// (`shared_until_due`). Anything else closes now with a `Lost`. A connection whose actors are
+    /// unknown here now keeps what the rule keeps, but sends no more beacons and loses its record.
     fn shared_rejudge(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         if !self.records.shared.contains_key(&conn) {
             return Ok(());
@@ -860,37 +871,155 @@ impl SyncEngine {
         let mut judge = self.engine.core.judge(actors);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         s.filter_out = known;
-        let gone: Vec<LabelId> = s
-            .members
-            .iter()
-            .filter(|(l, m)| {
-                if !things.contains_key(*l) {
-                    return true;
+        let (mut gone, mut ending, mut stays) = (Vec::new(), Vec::new(), Vec::new());
+        for (l, m) in &s.members {
+            let Some(t) = things.get(l) else {
+                gone.push(*l);
+                continue;
+            };
+            let j = judge.of(t);
+            let cred = m.beacon.is_some_and(|b| m.class != JUDGED && creds.iter().any(|c| c.label == *l && c.beacon == b));
+            if j == super::credentials::Judgment::Holder || cred {
+                if m.until.is_some() {
+                    stays.push(*l);
                 }
-                let holder = things.get(*l).is_some_and(|t| judge.of(t) == super::credentials::Judgment::Holder);
-                let cred = m.beacon.is_some_and(|b| m.class != JUDGED && creds.iter().any(|c| c.label == **l && c.beacon == b));
-                !holder && !cred
-            })
-            .map(|(l, _)| *l)
-            .collect();
-        if gone.is_empty() {
-            return Ok(());
+            } else if j == super::credentials::Judgment::Departed || m.class == JUDGED {
+                gone.push(*l);
+            } else if m.until.is_none() {
+                ending.push(*l);
+            }
         }
-        for l in &gone {
-            self.shared_close(conn, l, super::stream::Stop::Here)?;
+        drop(judge);
+        let until = if ending.is_empty() { None } else { Some(self.log_end_now()?) };
+        let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
+        let mut moved: Vec<(LabelId, Option<u64>)> = stays.into_iter().map(|l| (l, None)).collect();
+        moved.extend(ending.into_iter().map(|l| (l, until)));
+        for (l, u) in &moved {
+            if let Some(m) = s.members.get_mut(l) {
+                m.until = *u;
+            }
         }
-        // where each stopped for the peer: the end of what this connection's stream served it,
-        // `Lost` written in order after it (issues/net-reconnect.md, Lost and rejoin)
-        let at = self.stream_served_to(conn);
-        for batch in gone.chunks(MAX_SHARED_ITEMS) {
+        if let Some(id) = s.record.filter(|_| !moved.is_empty()) {
+            self.engine.run(|tx| {
+                for (l, u) in &moved {
+                    tx.txn.record_member_until(&id, *l, *u)?;
+                }
+                Ok(())
+            })?;
+        }
+        if !gone.is_empty() {
+            // where each stopped for the peer: the end of what this connection's stream served it,
+            // or its `until` if below (issues/net-reconnect.md, Lost and rejoin)
+            let mut items = Vec::with_capacity(gone.len());
+            for l in &gone {
+                let c = self.shared_stopped(conn, l, None)?;
+                self.shared_close(conn, l, super::stream::Stop::Here)?;
+                items.push((*l, c));
+            }
+            self.shared_send_lost(conn, items, out)?;
+        }
+        self.shared_until_due(conn, out)
+    }
+
+    /// Where member `l` stopped for `conn`'s requester: its `until` and what this connection's
+    /// stream served, the lower; `reported` (a position the requester reported) for a member
+    /// whose report passed its `until`. None where nothing names it.
+    fn shared_stopped(&mut self, conn: ConnId, l: &LabelId, reported: Option<u64>) -> Result<Option<Vec<u8>>> {
+        let until = self.records.shared.get(&conn).and_then(|s| s.members.get(l)).and_then(|m| m.until);
+        let served = reported.or_else(|| self.stream_served_pos(conn));
+        let at = match (until, served) {
+            (Some(u), Some(p)) => u.min(p),
+            (None, Some(p)) => p,
+            (_, None) => return Ok(None),
+        };
+        self.engine.run(|tx| Ok(tx.txn.log_cursor(at)?))
+    }
+
+    fn shared_send_lost(&mut self, conn: ConnId, items: Vec<(LabelId, Option<Vec<u8>>)>, out: &mut Vec<Action>) -> Result<()> {
+        for batch in items.chunks(MAX_SHARED_ITEMS) {
             let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
             let id = s.next();
             s.asked.insert(id, Asked::Lost);
-            let items = batch.iter().map(|l| (*l, at.clone())).collect();
             self.stats.lost_sent += batch.len() as u64;
-            self.shared_send(conn, Message::Lost { id, items }, out)?;
+            self.shared_send(conn, Message::Lost { id, items: batch.to_vec() }, out)?;
         }
         Ok(())
+    }
+
+    /// The members of `conn` being ended (`until`).
+    pub(super) fn shared_untils(&self, conn: ConnId) -> BTreeMap<LabelId, u64> {
+        self.records.shared.get(&conn).map(|s| s.members.iter().filter_map(|(l, m)| m.until.map(|u| (*l, u))).collect()).unwrap_or_default()
+    }
+
+    /// Members being ended whose requester reported a position at or past their `until` (a
+    /// Pull's cursor, an `Applied`) close, with a `Lost` naming `until`.
+    pub(super) fn shared_until_due(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
+        let untils = self.shared_untils(conn);
+        if untils.is_empty() {
+            return Ok(());
+        }
+        let due: Vec<(LabelId, u64)> = untils.into_iter().filter(|(l, u)| self.stream_reported(conn, l).is_some_and(|r| r >= *u)).collect();
+        if due.is_empty() {
+            return Ok(());
+        }
+        let mut items = Vec::with_capacity(due.len());
+        for (l, u) in due {
+            let c = self.shared_stopped(conn, &l, Some(u))?;
+            self.shared_close(conn, &l, super::stream::Stop::Here)?;
+            items.push((l, c));
+        }
+        self.shared_send_lost(conn, items, out)?;
+        self.shared_test(conn, out)
+    }
+
+    /// The node log's end once what this node holds is logged (`served_labels`, a flush).
+    fn log_end_now(&mut self) -> Result<u64> {
+        let _ = self.served_labels();
+        self.state.flush(&mut self.engine)?;
+        self.engine.run(|tx| Ok(tx.txn.log_end()?))
+    }
+
+    /// Records not bound to a connection, for the sync IDs whose `changed_at` moved: a member
+    /// opened by a credential no longer admissible, the record's actors neither holders nor
+    /// departed, ends at the log's end now (`until`), as `shared_rejudge` ends one on a
+    /// connection; so a rotation while apart ends the stream at the rotation, not at the
+    /// reconnect. A departed one closes at the reconnect's re-judging. O(records holding each).
+    fn records_end(&mut self) -> Result<()> {
+        let moved: Vec<LabelId> = std::mem::take(&mut self.changed_moved).into_iter().collect();
+        if moved.is_empty() {
+            return Ok(());
+        }
+        let bound: BTreeSet<RecordId> = self.records.shared.values().filter_map(|s| s.record).collect();
+        let things = self.things();
+        let creds = self.credentials(&moved)?;
+        let mut ends: Vec<(RecordId, LabelId)> = Vec::new();
+        for l in &moved {
+            let Some(t) = things.get(l) else { continue };
+            let held = self.engine.run(|tx| Ok(tx.txn.records_holding(l)?))?;
+            for (rec, m) in held {
+                let Some(b) = m.beacon.filter(|_| m.class != JUDGED && m.until.is_none() && !bound.contains(&rec.id)) else { continue };
+                let j = self.engine.core.judge(rec.actors.iter().copied()).of(t);
+                if j != super::credentials::Judgment::Unknown {
+                    continue;
+                }
+                let admissible = creds.get(l).is_some_and(|cs| {
+                    cs.iter().filter(|c| matches!(c, Credential::ReadSecret(_) | Credential::StaticEntry(_))).any(|c| beacon(&c.match_value(), &l.0, &rec.r) == b)
+                });
+                if !admissible {
+                    ends.push((rec.id, *l));
+                }
+            }
+        }
+        if ends.is_empty() {
+            return Ok(());
+        }
+        let until = self.log_end_now()?;
+        self.engine.run(|tx| {
+            for (id, l) in &ends {
+                tx.txn.record_member_until(id, *l, Some(until))?;
+            }
+            Ok(())
+        })
     }
 
     fn shared_lost(&mut self, conn: ConnId, id: u32, items: Vec<(LabelId, Option<Vec<u8>>)>, out: &mut Vec<Action>) -> Result<()> {

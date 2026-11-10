@@ -273,7 +273,7 @@ pub struct PullReply {
     pub joins: Vec<Join>,
 }
 
-/// `Stream [43, 0, [[label_id, event]+], Opt(cursor), report]`.
+/// `Stream [43, 0, [[label_id, event]*], Opt(cursor), report]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stream {
     pub events: Vec<(LabelId, Event)>,
@@ -672,7 +672,7 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
             report: f.bool()?,
             joins: joins(f.list(0, usize::MAX, "joins")?)?,
         })),
-        43 => Message::Stream(Box::new(Stream { events: stream_events(f.list(1, usize::MAX, "events")?)?, cursor: opt_cursor_of(&mut f)?, report: f.bool()? })),
+        43 => Message::Stream(Box::new(Stream { events: stream_events(f.list(0, usize::MAX, "events")?)?, cursor: opt_cursor_of(&mut f)?, report: f.bool()? })),
         44 => Message::Applied { cursor: f.bytes(crate::MAX_CURSOR_BYTES)? },
         45 => Message::Digest { digest: f.fixed()? },
         46 => Message::Members { labels: labels(f.list(0, MAX_MEMBERS, "members")?)?, more: f.bool()? },

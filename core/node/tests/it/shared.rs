@@ -30,7 +30,7 @@ fn pair(net: &mut Net) -> (usize, usize, LabelId, [u8; 32]) {
     (a, b, l, r)
 }
 
-fn dial_as(net: &mut Net, a: usize, b: usize, challenge: [u8; 32]) -> Dialer {
+pub(crate) fn dial_as(net: &mut Net, a: usize, b: usize, challenge: [u8; 32]) -> Dialer {
     let mut p = dial_with(net, b, challenge);
     let provers = net.sync(a).provers().unwrap();
     prove(net, b, &mut p, provers);
@@ -57,24 +57,24 @@ fn resumed(net: &mut Net, a: usize, b: usize, r: &[u8; 32], challenge: [u8; 32])
     (p, evs)
 }
 
-fn send(net: &mut Net, b: usize, p: &mut Dialer, m: Message) -> Vec<ClientEvent> {
+pub(crate) fn send(net: &mut Net, b: usize, p: &mut Dialer, m: Message) -> Vec<ClientEvent> {
     let now = net.now();
     let outs = p.cs.handle(now, ClientInput::Command(Command::Peer(Box::new(m))));
     pump(net, b, p, Vec::new(), outs)
 }
 
-fn shared_of(evs: &[ClientEvent]) -> Vec<Message> {
+pub(crate) fn shared_of(evs: &[ClientEvent]) -> Vec<Message> {
     evs.iter().filter_map(|e| if let ClientEvent::Peer(m) = e { Some((**m).clone()) } else { None }).collect()
 }
 
 /// `a`'s read-secret match value for L (it holds L's read role).
-fn read_value(net: &mut Net, a: usize, l: LabelId) -> [u8; 32] {
+pub(crate) fn read_value(net: &mut Net, a: usize, l: LabelId) -> [u8; 32] {
     let creds = net.sync(a).credentials(&[l]).unwrap();
     creds[&l].iter().find_map(|c| matches!(c, Credential::ReadSecret(_)).then(|| c.match_value())).expect("a holds L")
 }
 
 /// Hit of a dialer-side `a` (its beacon, its side, this connection).
-fn dialer_hit(value: &[u8; 32], l: LabelId, r: &[u8; 32], p: &Dialer, challenge: [u8; 32]) -> [u8; 32] {
+pub(crate) fn dialer_hit(value: &[u8; 32], l: LabelId, r: &[u8; 32], p: &Dialer, challenge: [u8; 32]) -> [u8; 32] {
     beacon_hit(value, &l.0, &beacon(value, &l.0, r), (false, &LISTENER, &challenge, &p.hello))
 }
 
@@ -85,7 +85,7 @@ fn answer(m: &Message) -> Vec<(Code, Option<[u8; 32]>)> {
     }
 }
 
-fn offer(net: &mut Net, b: usize, p: &mut Dialer, items: Vec<OfferItem>) -> Vec<(Code, Option<[u8; 32]>)> {
+pub(crate) fn offer(net: &mut Net, b: usize, p: &mut Dialer, items: Vec<OfferItem>) -> Vec<(Code, Option<[u8; 32]>)> {
     let msgs = shared_of(&send(net, b, p, Message::Offer { id: 77, items }));
     answer(msgs.iter().find(|m| m.id() == 77).expect("answered"))
 }
