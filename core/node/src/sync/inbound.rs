@@ -75,7 +75,7 @@ fn chain_commits(chain: Vec<osis_base::Value>) -> Vec<(Vec<u8>, osis_commit::Com
         drop(v);
         let mut c = osis_commit::CommitBlob::decode(&plain).ok()?;
         let aspects = &c.header.aspects;
-        let parts = c.parts.iter().filter(|x| aspects.get(x.ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "created.0" | "keys.0"))).cloned().collect();
+        let parts = c.parts.iter().filter(|x| aspects.get(x.ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "keys.0"))).cloned().collect();
         c.parts = parts;
         (!c.parts.is_empty()).then(|| (c.encode(), c))
     }).collect()
@@ -760,8 +760,10 @@ impl SyncEngine {
         // still awaited: it comes back judged or awaiting (`awaits_left` is for entries gone)
         let told = self.state.awaits_left.len();
         let mut labels = BTreeSet::new();
+        let mut reopened = Vec::new();
         for (l, b) in ids {
             if let Some(mut e) = self.state.entries.get(&(l, b)).cloned() {
+                reopened.push((l, b));
                 if let Kind::Awaits { commit, .. } = e.kind {
                     self.state.awaits_reopened.insert((l, b), commit);
                 }
@@ -772,6 +774,13 @@ impl SyncEngine {
             }
         }
         self.state.awaits_left.truncate(told);
+        // a label still filling fetches them again in its order: what judging needs before the
+        // rest (spec/sync.md §6), also when what it awaited came in a later batch
+        let filling: Vec<(ConnId, LabelId)> = self.conns.iter().flat_map(|(c, x)| x.labels.iter().filter(|(l, lc)| labels.contains(*l) && lc.fill.is_some()).map(move |(l, _)| (*c, *l))).collect();
+        for (c, l) in filling {
+            let ids: Vec<BlobId> = reopened.iter().filter(|(x, _)| *x == l).map(|(_, b)| *b).collect();
+            self.fill_add(c, l, &ids);
+        }
         if !labels.is_empty() {
             self.mark_labels(&labels);
         }
@@ -801,16 +810,17 @@ impl SyncEngine {
             }
             // opened once however many wakes it waits through: a wake per grant accepted would
             // otherwise open every waiting blob each time
-            let (pt, chain) = match self.inbox_plain.remove(&(l, b)) {
+            let (pt, chain, records) = match self.inbox_plain.remove(&(l, b)) {
                 Some(x) => x,
                 None => {
                     let Some(bytes) = self.engine.blob(&b)? else { continue };
                     let Some((_, payload)) = self.open_inbox(&l, &bytes) else { continue };
-                    let (pt, _, chain) = payload.split();
-                    (pt, chain)
+                    let (pt, _, chain, records) = payload.split();
+                    (pt, chain, records)
                 }
             };
-            self.inbox_plain.insert((l, b), (pt.clone(), chain.clone()));
+            self.inbox_plain.insert((l, b), (pt.clone(), chain.clone(), records.clone()));
+            self.engine.learn_records(records)?;
             // the author's chain first; what still cannot be judged is looked at again later
             for plain in chain_commits(chain).into_iter().map(|(plain, _)| plain).chain([pt]) {
                 match self.engine.ingest(&plain, Vec::new()) {
@@ -1113,6 +1123,12 @@ impl SyncEngine {
                     self.state.note_memory_size(l, b, bytes.len());
                     commits.push(ToIngest { label: l, blob: b, size: bytes.len(), plaintext: o.plaintext, commit: o.commit });
                 }
+                // a record blob (spec/wire.md §3): records prove themselves by their hash
+                Err(_) if let Some(rs) = osis_label::open(&bytes, &key).ok().filter(|(_, pt)| osis_commit::record_blob::is_record_blob(pt)).and_then(|(_, pt)| osis_commit::record_blob::decode_record_blob(&pt).ok()) => {
+                    e.kind = Kind::Records(rs.iter().map(osis_base::CreationRecord::tid).collect());
+                    self.state.set_entry(l, b, e);
+                    self.engine.learn_records(rs)?;
+                }
                 Err(err) => {
                     // a list blob (spec/sync.md §3): held once the batch's commits are in
                     if let Ok((_, pt)) = osis_label::open(&bytes, &key)
@@ -1141,7 +1157,7 @@ impl SyncEngine {
             return Ok(());
         }
         let Some((actor, prefix, payload)) = self.open_inbox_as(&l, &bytes) else { return Ok(()) };
-        let (pt, things, chain) = payload.split();
+        let (pt, things, chain, records) = payload.split();
         let c = osis_commit::CommitBlob::decode(&pt).ok();
         let o = c.as_ref().map(|c| Opened::new(&prefix, c, things.clone()));
         // its labels are followed only once vetted (`vet_inbox_hints`)
@@ -1161,6 +1177,7 @@ impl SyncEngine {
             e.kind = Kind::Inbox(Some(id));
             // the author's chain first (spec/wire.md §9): the commit applies with no label of the
             // thing read
+            self.engine.learn_records(records)?;
             commits.extend(chain_commits(chain).into_iter().map(|(plaintext, commit)| ToIngest { label: l, blob: b, size: 0, plaintext, commit }));
             commits.push(ToIngest { label: l, blob: b, size: 0, plaintext: pt, commit: c });
             // the pass of the inbox's label stamps it, the home label's of the actor it is sealed
@@ -1257,8 +1274,9 @@ impl SyncEngine {
             }
             let Some(bytes) = self.engine.blob(&b)? else { continue };
             let Some((_, payload)) = self.open_inbox(&l, &bytes) else { continue };
-            let (pt, things, chain) = payload.split();
+            let (pt, things, chain, records) = payload.split();
             let Ok(blob) = osis_commit::CommitBlob::decode(&pt) else { continue };
+            self.engine.learn_records(records)?;
             if let Some(mut e) = self.state.entries.get(&(l, b)).cloned() {
                 e.kind = Kind::Inbox(Some(x));
                 self.state.set_entry(l, b, e);
@@ -1350,7 +1368,7 @@ impl SyncEngine {
             self.inbox_opened.insert((*l, *b), None);
             return Ok(None);
         };
-        let (pt, things, _) = payload.split();
+        let (pt, things, ..) = payload.split();
         let x = osis_commit::CommitBlob::decode(&pt).ok().map(|c| Arc::new(Opened::new(&prefix, &c, things)));
         self.inbox_opened.insert((*l, *b), x.clone());
         Ok(x)
@@ -1503,7 +1521,7 @@ impl SyncEngine {
         for (l, b) in inbox {
             let Some(bytes) = self.engine.blob(&b)? else { continue };
             let Some((_, payload)) = self.open_inbox(&l, &bytes) else { continue };
-            let (pt, named, _) = payload.split();
+            let (pt, named, ..) = payload.split();
             let names = named.iter().any(|t| things.contains(&t.tid)) || osis_commit::CommitBlob::decode(&pt).is_ok_and(|c| c.header.aspects.iter().any(|a| things.contains(&a.tid)));
             if names {
                 gone.push(b);

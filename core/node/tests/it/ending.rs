@@ -413,3 +413,93 @@ fn removal_and_regrant_around_an_ending_converge_in_any_order_spec_commits_5() {
         gone(&mut net, a, t);
     }
 }
+
+// spec/commits.md §5 (Ending: dependents): an ended thing others name first admin keeps its record
+// and edges while one of them is held, so the dependent reads and is written through the ended
+// thing's standing edges; once its last dependent ends too, neither leaves anything
+#[test]
+fn an_ended_first_admin_stays_a_chain_proof_until_its_last_dependent_goes_spec_commits_5() {
+    let mut lp = crate::common::net(2, 0x7e5);
+    lp.sync_all().unwrap();
+    let now = lp.peers[0].engine.now().0;
+    let me = lp.peers[0].engine.me();
+    let made = |lp: &mut osis_node::local_peer::LocalPeer, admin: Tid, v: &str, at: u64| {
+        let mut m = Mutation::new();
+        let x = lp.peers[0].engine.new_thing(&mut m, admin);
+        m.set(x, &crate::common::REG, &s(v)).unwrap();
+        m.expires_all(osis_base::WallMs(at));
+        lp.peers[0].commit(m).unwrap().unwrap();
+        x
+    };
+    let t = made(&mut lp, me, "t", now + 1_000);
+    let x = made(&mut lp, t, "x", now + 5_000);
+    lp.sync_all().unwrap();
+    lp.advance(2_000);
+    for i in 0..2 {
+        let e = &mut lp.peers[i].engine;
+        e.tick().unwrap();
+        assert!(!e.knows(&t), "peer {i}: t ended");
+        assert!(e.core.created(&t).is_some(), "peer {i}: t's record kept as x's chain proof");
+        assert_eq!(e.get(&x, &Ak::new(crate::common::REG.ak()).unwrap()).unwrap(), Some(s("x")), "peer {i}: x lives on");
+    }
+    let mut m = Mutation::new();
+    m.set(x, &crate::common::REG, &s("y")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[1].engine.get(&x, &Ak::new(crate::common::REG.ak()).unwrap()).unwrap(), Some(s("y")), "written through t's standing edges");
+    lp.advance(4_000);
+    for i in 0..2 {
+        let e = &mut lp.peers[i].engine;
+        e.tick().unwrap();
+        assert!(!e.knows(&x), "peer {i}: x ended");
+        assert!(e.core.created(&x).is_none() && e.core.created(&t).is_none(), "peer {i}: neither leaves a record");
+    }
+}
+
+// spec/commits.md §5 (Ending: dependents), spec/permissions.md §4 (records travel raw): an account
+// that ends itself leaves the group it created running under its other admins. Its own data is
+// gone; what it wrote there still reads and verifies, the other admin writes on, and a node
+// granted afterwards learns the account's record from the group's label alone
+#[test]
+fn an_ended_account_leaves_what_it_created_running_spec_commits_5() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let p = net.engine(a).me();
+    let t = net.item(a, g, g, "from a");
+    let mut m = Mutation::new();
+    m.set(p, &REG, &s("mine")).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    assert_eq!(net.read(a, p), Some(s("mine")));
+    end(&mut net, a, p);
+    net.run();
+    gone(&mut net, a, p);
+    assert!(net.engine(a).core.created(&p).is_some(), "its record stays: the group names it first admin");
+    for n in [a, b, c] {
+        assert_eq!(net.read(n, t), Some(s("from a")), "node {n}: what the account wrote verifies");
+    }
+    let t2 = net.item(c, g, g, "from c");
+    net.run();
+    assert_eq!(net.read(b, t2), Some(s("from c")), "the other admin runs the group");
+    // a node granted now opens the group's label: the account's record comes raw from there
+    let d = net.joining_node(4, &[0]);
+    let addr = net.address(0);
+    let (made, done) = net.engine(d).create_account(std::slice::from_ref(&addr)).unwrap();
+    let dt = made.account;
+    let acts = net.sync(d).carry_out(done).unwrap();
+    net.actions(d, acts);
+    net.run();
+    net.pair(d, c);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let done = net.engine(c).grant(&g, &dt, &edge).unwrap();
+    let acts = net.sync(c).carry_out(done).unwrap();
+    net.actions(c, acts);
+    net.run();
+    let acts = net.accept_invites(d);
+    net.actions(d, acts);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(net.engine(d).core.created(&p).is_some(), "the account's record, from the group's label");
+    assert_eq!(net.read(d, t), Some(s("from a")));
+    assert_eq!(net.read(d, t2), Some(s("from c")));
+}

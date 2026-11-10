@@ -135,7 +135,7 @@ fn promotion_waits_for_the_chain_at_the_host_spec_sync_5() {
         let e = at_host.expect("the card deposited at the host");
         assert!(net.engine(w).header(&commit).is_some() && !net.engine(w).pending().iter().any(|p| p.0 == commit), "w applied the card");
         let chain = net.engine(w).author_chain(&commit, &parts.iter().copied().collect()).unwrap();
-        assert!(chain.keys().any(|x| keys.contains(x)), "the keyset is in the card's chain at w");
+        assert!(chain.commits.keys().any(|x| keys.contains(x)), "the keyset is in the card's chain at w");
         assert!(e.stamp.is_none(), "the card is not promoted without its chain at the host");
         cards += 1;
     }
@@ -930,6 +930,7 @@ fn lazy_node_shreds_dropped_chunks_spec_sync_7() {
 fn chain_commit(net: &mut Net, n: usize, g: osis_base::Tid, author: osis_base::Tid, ak: &str) -> (osis_base::CommitId, BTreeSet<usize>) {
     let certs = net.engine(n).certificates(&g);
     certs
+        .commits
         .into_iter()
         .find(|(c, _)| net.engine(n).header(c).is_some_and(|h| h.author == author && h.aspects.iter().any(|a| a.tid == author && a.ak.as_str() == ak)))
         .expect("a chain commit")
@@ -1035,7 +1036,7 @@ fn others_fresh_keys_left_to_author_spec_permissions_4() {
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.pair(a, r);
     net.run();
-    assert!(net.engine(r).certificates(&g).iter().any(|(x, _)| *x == c), "the new keys are on the reader's chain");
+    assert!(net.engine(r).certificates(&g).commits.iter().any(|(x, _)| *x == c), "the new keys are on the reader's chain");
     assert!(entries_of(&mut net, r, host, &l, &c).is_empty(), "left to its author for now");
     net.advance(31_000);
     net.run();
@@ -1369,7 +1370,7 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     let mut rng = osis_crypto::SeededRng::from_u64(7);
     for id in [cc, unrelated] {
         let commit = osis_base::decode(&net.engine(c).package(&id).unwrap().unwrap().bytes, &osis_base::Limits { max_depth: 512, max_bytes: 1 << 24 }).unwrap();
-        let payload = osis_label::InboxPayload { chain: Vec::new(), commit, things: vec![osis_label::InboxThing { tid: g, label: None, delete_keys: Some((ck, ck)) }] };
+        let payload = osis_label::InboxPayload { chain: Vec::new(), records: Vec::new(), commit, things: vec![osis_label::InboxThing { tid: g, label: None, delete_keys: Some((ck, ck)) }] };
         let blob = osis_label::seal_inbox_blob(&bob.account, &kem, &payload, osis_base::WallMs(net.now()), &mut rng).unwrap();
         let _ = net.engine(b).accept_inbox(&blob);
     }

@@ -84,7 +84,7 @@
   - A section opens with the thing's read secret at the epoch the writer used: a reader of the thing holds it (its own, through its history boxes; a plain thing's by derivation through the record chain the section lists from a member it holds epochs of), and a holder of a role on the thing's reader actor keeps up with its rotations through that actor's label (§2).
   - **Per-label copies**: besides certificate copies (below), a label whose readers could not open a part's section in the shared blob gets a fresh blob of the parts its actor may read, one section under the read secret of the label's group, never shared with another label; judged like any body of the commit. Exactly two cases: a role commit with such a part on a thing other than the label's actor (its boxes are what give the readers that thing's secrets: a rotation, a grant, a cross-published `label.0`, §2); a part on a thing whose read secret derives from neither the label's actor nor an actor in its closure (a cross-published `created.0`, §2; a thing added from another actor's tree, read by role on a reader actor whose rotations the label does not carry). A blob a node opens only under the label group's secret for a section on another thing is such a copy: its sections are not copied into another encryption.
 - **Retag**: when a thing joins a group, any writer of the label that holds the thing's live blobs adds them under it; when it leaves, delete-key holders delete them under the old label as they see the change (§7).
-- **Certificate blobs**: chain certificates, accounts' rotations (header-only copies), list blobs and revokes (spec/permissions.md §4, §5.5): copies of the parts of a role commit about one actor, or thing lists.
+- **Certificate blobs**: chain certificates, accounts' rotations (header-only copies), list blobs, record blobs and revokes (spec/permissions.md §4, §5.5): copies of the parts of a role commit about one actor, thing lists, or raw creation records (spec/wire.md §3).
   - They go under a label as a fresh encryption per label, never as a blob shared with another label.
   - The chunk and tree-node blobs of a linked frontier or header list go under it too, as the same blobs (a link names them) with a filler wrap.
   - A writer promoting a deposited commit completes its author's chain under the label from what it holds (§5).
@@ -122,7 +122,7 @@
   - It is judged again as the node's state changes.
   - Accepting admits it.
   - Declining one leaves its commit unapplied, at that node and for good, from every inbox blob carrying it. The same commit arriving in a blob under a label the node syncs (a sibling node that accepted it placed its copy under home) is applied as any commit: the acceptance wins.
-- **Grant copy**: a grantee node that accepts a grant for an actor (from the inbox, from K's label, or by pairing) places a certificate copy of the grant, with the `label.0` commits of the labels it reached, under that actor's home label; not when an entry there already holds the grant's parts, counted as for chain certificates (spec/permissions.md §4).
+- **Grant copy**: a grantee node that accepts a grant for an actor (from the inbox, from K's label, or by pairing) places a certificate copy of the grant, with the `label.0` commits of the labels it reached and those things' records (a record blob, spec/wire.md §3), under that actor's home label; not when an entry there already holds the grant's parts, counted as for chain certificates (spec/permissions.md §4).
   - From an inbox blob only a node with admin on the actor copies, and only, of a valid applied role commit:
     - the carried parts on the things where a `roles.0` delta writes the grant of the actor or a `secrets.0` delta boxes it;
     - with the `created.0` commit and every `label.0` commit of those things that the payload names (no `label.0` commit of a thing the actor reads no more);
@@ -131,7 +131,7 @@
   - Nothing else an inbox blob carries is placed.
   - A node runs this whenever it opens an inbox blob, its commit held or not.
 - **Inbox blob order**: a sender still opening or registering a label an inbox blob names at a host it is connected to, open at none of them, deposits the blob after that ends. A node told a label is unknown at a host, with no step of it to register, opens it again after a back-off of `retry_ms` doubling per refusal up to `resync_ms` (local policy).
-- **Contact card**: a link (spec/permissions.md §7) with read role to an account's profile thing P, a group of itself with no items: its label carries P's own aspects and, as certificate copies, the account's `created.0` and `keys.0` commits and its rotations (spec/permissions.md §5.5).
+- **Contact card**: a link (spec/permissions.md §7) with read role to an account's profile thing P, a group of itself with no items: its label carries P's own aspects, the account's record (a record blob) and, as certificate copies, its `keys.0` commits and rotations (spec/permissions.md §5.5).
 - **Unjudged blobs**: a receiver keeps blobs a peer placed under a label even if its own closure disagrees, while it cannot judge them: a commit it holds pending (not parked) or an entry of the label it can open and has not applied, an entry awaiting a record included; then §6 decides.
 
 ## 4. Host state
@@ -212,7 +212,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - A certificate copy is never deleted for an incomplete chain.
 - **Clearing an inbox**: a node holding the delete key of an inbox label (§2) keeps at most `INBOX_WAITING` entries and `INBOX_WAITING_BYTES` bytes per host of the deposits there it can do nothing with.
   - Those are every deposited entry except:
-    - one it opened as a commit under a read secret (parked included);
+    - one it opened as a commit or a record blob under a read secret (parked included);
     - an inbox blob it would stamp (§3);
     - an inbox blob whose commit is not applied and whose prefix expiry is within `INBOX_LIFETIME + 2 × MAX_DRIFT`.
   - Past either bound it deletes them at each pass, in this order:
@@ -278,7 +278,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - After any other fallback it is only not present there.
 - One connection may sync many labels; a blob under several of them SHOULD cross it once (spec/wire.md §11).
 - **Convergence**: a label's **required set** is its closure blobs (§3) plus what is placed there from outside the closure:
-  - the certificate blobs of spec/permissions.md §4, judged by the deltas a blob holds, whatever else its commit writes (a `created.0` copy of a commit that also placed the thing), a list blob by its thing lists;
+  - the certificate blobs of spec/permissions.md §4, judged by the deltas a blob holds, whatever else its commit writes, a list blob by its thing lists, a record blob by its records (never must-not-hold: no delete key covers it);
   - the grantee's certificate copies and cross-published `label.0` commits (§3);
   - unexpired inbox blobs.
 

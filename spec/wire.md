@@ -66,6 +66,7 @@ Not format constants. A value marked recommended is advice.
 - Agility enums (spec/crypto.md §8) are values: `signing_key = enum { ed25519 1 (blob) }` (32 bytes), `signature = enum { ed25519 1 (blob) }` (64 bytes), `kem_key = enum { x25519_mlkem768 1 (blob) }` (`pk_x || pk_m`, 1216 bytes), `sealed = enum { x25519_mlkem768 1 (blob) }` (`ct_x || ct_m || AEAD`). Each encodes as `1617([1, h'...'])`.
 - A **creation record** is the value `creation = struct { admin 0: tid, key 1: signing_key, nonce 2: blob, link 3: bool, account 4: bool }` holding exactly one of fields 0 and 1, and a 32-byte nonce: a thing `{0: admin, 2: nonce}` (its first admin, spec/permissions.md §1), a link's actor K `{0: admin, 2: nonce, 3: true}` (spec/permissions.md §7), a key actor `{1: key, 2: nonce}`, an account `{1: key, 2: nonce, 4: true}` (`key` its first epoch's, spec/crypto.md §3). Field 3 is only ever true and only beside field 0; field 4 only ever true and only beside field 1. Its canonical encoding is what the tid hashes: tid = first 15 bytes of BLAKE3(canonical bytes). `created.0` holds this value (spec/data-model.md §9); a `created.0` whose read does not hash to its tid, holds not exactly one of fields 0 and 1, a field 3 not `true` or beside field 1, a field 4 not `true` or beside field 0, or any field other than 0 to 4, is bad input (a closed struct, not parked); an unknown `signing_key` case parks the thing (spec/versioning.md §2).
 - A link key's nonce is `kdf("creation nonce", seed, "")`; a node's or an account's is random.
+- **Record blob** (spec/permissions.md §4): a blob whose plaintext, in place of a `CommitBlobPlaintext`, is `RecordBlobPlaintext := ["records", [creation+]]`, the creation records ascending by tid, distinct, each read as `created.0` reads one; with no commitments and no expiry, durable. A reader takes each record's tid from its hash: a record needs no signature. Anything else is bad input.
 
 ## 4. Commits
 ```
@@ -201,14 +202,14 @@ ClaimSet := [[claim+], {entry: box}]
 - AD = `[recipient, "inbox", prefix bytes]` (`"inbox"` a text string).
 - Payload: the padded (§5) canonical bytes of `InboxPayload`:
   ```
-  InboxPayload := [CommitBlobPlaintext, [[tid, Opt([label_id, index, [address*]]), Opt([admin_pk, write_pk])]*], [CommitBlobPlaintext*]]
+  InboxPayload := [CommitBlobPlaintext, [[tid, Opt([label_id, index, [address*]]), Opt([admin_pk, write_pk])]*], [CommitBlobPlaintext*], [creation*]]
   ```
   - **Position 0**: the role commit with the parts about the recipient (§4).
   - **Position 1**: for each thing it names, sorted by tid: if the thing has a label of its own (its `label.0`, never a group's holding it), that label's ID, index (uint, spec/sync.md §2) and host addresses (`address` values, spec/data-model.md §9) and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7).
-  - **Position 2**: empty unless a thing the commit touches has no label of its own. Then it holds, a chain that would not fit the blob left out:
-    - the author's chain certificates for the carried parts (spec/permissions.md §4), each projected to its chain deltas and without any `keys.0` but the author's own;
-    - when the commit boxes the recipient (a grant, a re-seal), the current `keys.0` commit of each thing it boxes it on, projected to that delta.
-- A recipient ingests the chain before the commit, only once the blob is admitted (spec/sync.md §3), and only its `roles.0`, `created.0` and `keys.0` deltas and accounts' rotations.
+  - **Positions 2 and 3**: empty unless a thing the commit touches has no label of its own. Then they hold, a chain that would not fit the blob left out:
+    - the author's chain certificates for the carried parts (spec/permissions.md §4): its commits, each projected to its chain deltas and without any `keys.0` but the author's own, in position 2, and its creation records, ascending by tid and distinct, in position 3;
+    - when the commit boxes the recipient (a grant, a re-seal), the current `keys.0` commit of each thing it boxes it on, projected to that delta, in position 2.
+- A recipient ingests the chain before the commit, only once the blob is admitted (spec/sync.md §3), and only its records, `roles.0` and `keys.0` deltas and accounts' rotations.
 - **Stranded notice** (spec/permissions.md §4; target, issues/account-signing.md step 8): an inbox blob whose payload is `StrandedNotice := ["stranded", label_id, holder]` in place of an `InboxPayload`: the label the holder (an actor tid) is stranded on. It carries no commit and asks only for a re-seal the recipient judges itself.
 
 ## 10. Links

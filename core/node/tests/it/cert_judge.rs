@@ -128,49 +128,6 @@ fn regranted_node_card_placed_again_spec_permissions_4() {
     assert!(back.iter().any(|(_, c)| first.iter().any(|(_, f)| f == c)), "the re-granted node's unchanged reach.0 is under the label again: {first:?} {back:?}");
 }
 
-// spec/sync.md §3 (a certificate copy carries the blobs its parts link), §6: once no entry of
-// the copied commit is under the label any more, the admin deletes the linked blobs the copy
-// placed (here a first admin's `created.0` from a commit whose aspect list goes by link).
-#[test]
-fn linked_blobs_of_gone_copy_deleted_spec_sync_3() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let me = net.tid(a);
-    let e = net.engine(a);
-    let mut m = osis_node::Mutation::new();
-    let p = e.new_thing(&mut m, me);
-    crate::common::link_aspects(&mut m, p);
-    let pc = e.commit(m).unwrap().unwrap();
-    assert!(net.engine(a).header(&pc).unwrap().links.aspects.is_some(), "the aspect list goes by link");
-    let mut m = osis_node::Mutation::new();
-    let h = net.engine(a).new_thing(&mut m, p);
-    m.set(h, &osis_schema::core_types::GROUP, &osis_schema::core_types::Group::default()).unwrap();
-    net.engine(a).commit(m).unwrap();
-    let done = net.engine(a).give_own_secrets(&h).unwrap();
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
-    let addr = net.address(host);
-    let (l, acts) = net.sync(a).create_label(&h, vec![addr]).unwrap();
-    net.actions(a, acts);
-    settle(&mut net);
-    let copies: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == pc)).map(|(id, _)| id).collect();
-    let linked: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| *k == EntryKind::Unknown).map(|(id, _)| id).collect();
-    let ids = net.host_ids(host, &l);
-    assert!(!copies.is_empty() && copies.iter().all(|c| ids.contains(c)), "the first admin's created.0 copy is there");
-    assert!(!linked.is_empty() && linked.iter().all(|b| ids.contains(b)), "with its linked aspect list");
-    // the copy deleted at the host behind the node's back; it learns at its next sync
-    net.set_online(a, false);
-    for id in &copies {
-        let now = net.now();
-        osis_proto::LabelStore::delete(net.hosts[host].hub.store_mut(), &l, id, now).unwrap();
-    }
-    net.set_online(a, true);
-    settle(&mut net);
-    let ids = net.host_ids(host, &l);
-    assert!(linked.iter().all(|b| !ids.contains(b)), "the linked blobs went with the copy");
-}
-
 /// Node `n`'s account with its home label at peer `host`.
 fn person(net: &mut Net, n: usize, host: usize) -> Tid {
     let addr = net.address(host);

@@ -9,7 +9,7 @@ use crate::step::OBJECT_LIMITS;
 use crate::Error;
 use osis_base::cbor::{decode, encode};
 use osis_base::format::INBOX_LIFETIME_MS;
-use osis_base::{LabelId, Tid, Value, WallMs};
+use osis_base::{CreationRecord, LabelId, Tid, Value, WallMs};
 use osis_crypto::{CryptoRngCore, KemPublicKey, KemSecret, VerifyingKey, open_inbox, seal_inbox};
 use osis_schema::Codec;
 
@@ -34,7 +34,8 @@ pub struct InboxThing {
 }
 
 /// `InboxPayload := [CommitBlobPlaintext, [[tid, Opt([label_id, index, [address*]]),
-/// Opt([admin_pk, write_pk])]*]]`, things sorted by tid, distinct.
+/// Opt([admin_pk, write_pk])]*], [CommitBlobPlaintext*], [creation*]]`, things sorted by tid,
+/// distinct, records ascending by tid, distinct.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboxPayload {
     /// The role commit's `CommitBlobPlaintext` value (header, signature, parts about the
@@ -45,6 +46,9 @@ pub struct InboxPayload {
     /// `CommitBlobPlaintext` values each projected to its chain deltas, so the recipient verifies
     /// the commit without reading any label of the things it names (spec/wire.md §9).
     pub chain: Vec<Value>,
+    /// The raw creation records of that chain (spec/permissions.md §4): a record proves itself by
+    /// its hash.
+    pub records: Vec<CreationRecord>,
 }
 
 impl InboxPayload {
@@ -61,21 +65,29 @@ impl InboxPayload {
                 Value::List(t.delete_keys.iter().map(|(a, w)| Value::List(vec![Value::bytes(&a.to_bytes()), Value::bytes(&w.to_bytes())])).collect()),
             ]));
         }
-        Ok(Value::List(vec![self.commit.clone(), Value::List(things), Value::List(self.chain.clone())]))
+        let mut records: Vec<&CreationRecord> = self.records.iter().collect();
+        records.sort_by_key(|r| r.tid());
+        records.dedup_by_key(|r| r.tid());
+        let records = records.into_iter().map(CreationRecord::to_value).collect();
+        Ok(Value::List(vec![self.commit.clone(), Value::List(things), Value::List(self.chain.clone()), Value::List(records)]))
     }
 
     /// The commit's plaintext, its decoded form freed first so that decoding the plaintext again
     /// does not hold two decoded copies of a stranger's blob; and the rest.
-    pub fn split(self) -> (Vec<u8>, Vec<InboxThing>, Vec<Value>) {
-        (encode(&self.commit), self.things, self.chain)
+    pub fn split(self) -> (Vec<u8>, Vec<InboxThing>, Vec<Value>, Vec<CreationRecord>) {
+        (encode(&self.commit), self.things, self.chain, self.records)
     }
 
     /// Takes `v` apart without copying: it is a blob from anyone (`open_inbox_blob`).
     pub fn from_value(v: Value) -> Result<InboxPayload, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("inbox payload")) };
-        let Ok::<[Value; 3], _>([commit @ Value::List(_), Value::List(things), Value::List(chain)]) = items.try_into() else { return Err(Error::Malformed("inbox payload")) };
+        let Ok::<[Value; 4], _>([commit @ Value::List(_), Value::List(things), Value::List(chain), Value::List(records)]) = items.try_into() else { return Err(Error::Malformed("inbox payload")) };
         if !chain.iter().all(|c| matches!(c, Value::List(_))) {
             return Err(Error::Malformed("inbox chain"));
+        }
+        let records = records.iter().map(|r| CreationRecord::from_value(r).ok_or(Error::Malformed("inbox record"))).collect::<Result<Vec<_>, _>>()?;
+        if !records.windows(2).all(|w| matches!(w, [x, y] if x.tid() < y.tid())) {
+            return Err(Error::Malformed("inbox records not sorted by tid"));
         }
         let mut out: Vec<InboxThing> = Vec::with_capacity(things.len());
         for t in &things {
@@ -105,7 +117,7 @@ impl InboxPayload {
             }
             out.push(InboxThing { tid, label, delete_keys });
         }
-        Ok(InboxPayload { commit, things: out, chain })
+        Ok(InboxPayload { commit, things: out, chain, records })
     }
 }
 
@@ -141,6 +153,7 @@ mod tests {
         let a = Address { url: "quic://s".into(), key: [1; 32] };
         InboxPayload {
             chain: vec![Value::List(vec![Value::List(vec![]), Value::Int(1), Value::List(vec![])])],
+            records: vec![CreationRecord::Thing { admin: Tid::from_bytes([4; 15]), nonce: [4; 32], link: false }],
             commit: Value::List(vec![Value::List(vec![]), Value::Int(0), Value::List(vec![])]),
             things: vec![
                 InboxThing { tid: Tid::from_bytes([1; 15]), label: Some(InboxLabel { id: LabelId([2; 16]), index: 0, hosts: vec![a.clone()] }), delete_keys: None },

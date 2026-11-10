@@ -479,7 +479,7 @@ fn deposit_promoted_on_local_label_spec_sync_5() {
         // a promotion only with the author's chain under the label
         if stamped {
             let chain = net.engine(a).author_chain(&commit, &parts.iter().copied().collect()).unwrap();
-            for x in chain.keys() {
+            for x in chain.commits.keys() {
                 assert!(under.contains(x) || *x == commit, "chain commit {x:?} of a promoted deposit under the label");
             }
         }

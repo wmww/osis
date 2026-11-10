@@ -193,7 +193,7 @@ fn inbox_copy_names_only_touched_things_spec_sync_3() {
     let keys = net.engine(a).get_typed(&bob, &ct::KEYS).unwrap().unwrap();
     let ct::KemKey::X25519MlKem768(kb) = &keys.key.or(keys.read.map(|k| k.kem_key)).unwrap();
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
-    let payload = osis_label::InboxPayload { chain: Vec::new(), commit, things: vec![osis_label::InboxThing { tid: p, label: Some(osis_label::InboxLabel { id: home, index: 0, hosts: vec![net.address(host)] }), delete_keys: None }] };
+    let payload = osis_label::InboxPayload { chain: Vec::new(), records: Vec::new(), commit, things: vec![osis_label::InboxThing { tid: p, label: Some(osis_label::InboxLabel { id: home, index: 0, hosts: vec![net.address(host)] }), delete_keys: None }] };
     let now = osis_base::WallMs(net.now());
     let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, now, &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
     let id = osis_label::blob_id(&blob);
@@ -257,7 +257,7 @@ fn plant_bytes(net: &mut Net, from: usize, (host, l): (usize, &LabelId), to: Tid
     let keys = net.engine(from).get_typed(&to, &ct::KEYS).unwrap().unwrap();
     let ct::KemKey::X25519MlKem768(kb) = &keys.key.or(keys.read.map(|k| k.kem_key)).unwrap();
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
-    let payload = osis_label::InboxPayload { commit, things, chain: Vec::new() };
+    let payload = osis_label::InboxPayload { commit, things, chain: Vec::new(), records: Vec::new() };
     // the prefix carries `now + INBOX_LIFETIME`: seal "earlier" for a shorter expiry
     let blob = osis_label::seal_inbox_blob(&to, &kem, &payload, osis_base::WallMs(expiry - INBOX_LIFETIME_MS), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
     let id = osis_label::blob_id(&blob);
@@ -458,7 +458,7 @@ fn stranger_invite_waits_for_accept_spec_sync_3() {
     assert_eq!(net.read(b, t), Some(s("for bob")), "and joins g");
 }
 
-// spec/wire.md §9: an inbox payload's chain gives only chain deltas: what else a commit in it carries (a box, a `label.0`, a group) is not applied
+// spec/wire.md §9: an inbox payload's chain gives only chain deltas and raw records: what else a commit in it carries (a box, a `label.0`, a group, a creation) is not applied
 #[test]
 fn an_inbox_chain_applies_only_chain_deltas_spec_wire_9() {
     let (mut net, host, a, b, alice, bob, g, home) = alice_and_bob();
@@ -486,7 +486,8 @@ fn an_inbox_chain_applies_only_chain_deltas_spec_wire_9() {
         let bytes = net.engine(a).commit_bytes(c).unwrap().unwrap();
         osis_base::decode(&bytes, &osis_base::Limits { max_depth: 64, max_bytes: bytes.len() }).unwrap()
     };
-    let payload = osis_label::InboxPayload { commit: value(&mut net, &main), things: Vec::new(), chain: vec![value(&mut net, &in_chain)] };
+    let rec = net.engine(a).core.created(&x).cloned().unwrap();
+    let payload = osis_label::InboxPayload { commit: value(&mut net, &main), things: Vec::new(), chain: vec![value(&mut net, &in_chain)], records: vec![rec] };
     let keys = net.engine(a).get_typed(&bob, &ct::KEYS).unwrap().unwrap();
     let ct::KemKey::X25519MlKem768(kb) = &keys.key.or(keys.read.map(|k| k.kem_key)).unwrap();
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
@@ -498,8 +499,8 @@ fn an_inbox_chain_applies_only_chain_deltas_spec_wire_9() {
     for _ in 0..3 {
         net.advance(70_000);
     }
-    assert!(holds(&mut net, b, &in_chain), "the chain went in");
-    assert!(net.engine(b).knows(&x), "its creation record");
+    assert!(net.engine(b).knows(&x), "its creation record, raw");
+    assert!(!holds(&mut net, b, &in_chain), "a chain commit with no chain delta gives nothing");
     assert!(net.engine(b).get_typed(&x, &ct::GROUP).unwrap().is_none(), "and nothing but chain deltas");
 }
 
@@ -1555,15 +1556,15 @@ fn hostile_inbox_blob_peak_is_bounded_spec_sync_3() {
     let keys = net.engine(a).get_typed(&bob, &ct::KEYS).unwrap().unwrap();
     let ct::KemKey::X25519MlKem768(kb) = &keys.key.or(keys.read.map(|k| k.kem_key)).unwrap();
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
-    // `InboxPayload := [commit, things, chain]`, by hand: values built here would leave freed
-    // memory for the decode to reuse, and the peak would not see it
+    // `InboxPayload := [commit, things, chain, records]`, by hand: values built here would leave
+    // freed memory for the decode to reuse, and the peak would not see it
     let mut plain = Vec::with_capacity(SIZE + 32);
-    plain.extend([0x83]);
+    plain.extend([0x84]);
     osis_base::cbor::head(&mut plain, osis_base::cbor::MAJOR_ARRAY, (SIZE / 3) as u64);
     for _ in 0..SIZE / 3 {
         plain.extend([0xa1, 0, 0]);
     }
-    plain.extend([0x80, 0x80]);
+    plain.extend([0x80, 0x80, 0x80]);
     let now = osis_base::WallMs(net.now());
     let mut rng = osis_crypto::SeededRng::from_u64(5);
     let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(&mut rng), Some(now.saturating_add(INBOX_LIFETIME_MS)), vec![]).unwrap();

@@ -559,6 +559,11 @@ fn link_card_survives_a_crash_spec_permissions_7() {
             net.run();
             net.advance(61_000);
         }
-        assert!(copy_at(&mut net, a, s1, &link.k_label, &card, "created.0"), "crash {crash}: L's card under K");
+        // the card's records travel raw: those the card commit mints, in a record blob there
+        let minted: Vec<osis_base::Tid> = net.engine(a).header(&card).unwrap().aspects.iter().filter(|x| x.ak.as_str() == "created.0").map(|x| x.tid).collect();
+        assert!(!minted.is_empty());
+        let at = net.host_ids(s1, &link.k_label);
+        let held: std::collections::BTreeSet<osis_base::Tid> = net.sync(a).entries(&link.k_label).into_iter().filter(|(id, _)| at.contains(id)).flat_map(|(_, k)| if let EntryKind::Records(ts) = k { ts } else { Vec::new() }).collect();
+        assert!(minted.iter().all(|t| held.contains(t)), "crash {crash}: L's card's records under K");
     }
 }

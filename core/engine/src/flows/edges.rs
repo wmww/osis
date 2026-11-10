@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::rotation;
 use crate::Mutation;
 use osis_commit::CommitBlob;
-use osis_base::{CommitId, Role, Tid, WallMs};
+use osis_base::{CommitId, CreationRecord, Role, Tid, WallMs};
 use osis_keys::{Departure, ROLES, box_holder, roles_up_to};
 use osis_label::{InboxLabel, InboxPayload, InboxThing, open_inbox_blob, seal_inbox_blob};
 use osis_perm::{At, Edge as PermEdge};
@@ -56,7 +56,7 @@ pub enum Parts {
 /// blob for an actor, the commit itself over a direct connection for a node, nothing for a
 /// link key (it reads its label by static entry).
 pub(crate) fn deliver_to(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid]) -> Result<Vec<Delivery>> {
-    deliver_parts(tx, holder, c, things, Parts::All, Vec::new())
+    deliver_parts(tx, holder, c, things, Parts::All, Vec::new(), Vec::new())
 }
 
 /// The KEM key an inbox blob to `actor` is sealed to (spec/crypto.md §5): an account's current
@@ -69,9 +69,9 @@ pub(crate) fn inbox_kem(tx: &mut Tx<'_>, actor: &Tid) -> Result<Option<osis_cryp
 }
 
 /// `deliver_to` with the carried `parts` and the author's `chain` for them (`CommitBlobPlaintext`
-/// values, spec/wire.md §9). A flow seals with no chain: node-sync seals again from the record it
+/// values and raw `records`, spec/wire.md §9). A flow seals with no chain: node-sync seals again from the record it
 /// keeps (`SyncRecords::note_unsent`), with the chain, when it sends.
-pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], parts: Parts, chain: Vec<osis_base::Value>) -> Result<Vec<Delivery>> {
+pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], parts: Parts, chain: Vec<osis_base::Value>, records: Vec<CreationRecord>) -> Result<Vec<Delivery>> {
     if tx.core.is_key_actor(&holder) && !tx.core.is_account(&holder) {
         let is_node = super::super::flows::is_node(tx, &holder)?;
         return Ok(if is_node { vec![super::owe(tx, Delivery::Direct { to: holder, commits: vec![c] })?] } else { Vec::new() });
@@ -97,7 +97,7 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
         }
     }
     ts.sort_by_key(|t| t.tid);
-    let payload = InboxPayload { commit, things: ts, chain };
+    let payload = InboxPayload { commit, things: ts, chain, records };
     let now = tx.now();
     let blob = seal_inbox_blob(&to, &kem, &payload, now, &mut *tx.rng)?;
     let resend = super::Resend { holder, commit: c, things: things.to_vec(), edge_only: parts == Parts::Edge };
@@ -401,7 +401,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
 fn lowered_deliveries(tx: &mut Tx<'_>, who: Tid, target: Tid, c: CommitId, rot: Option<&osis_keys::Rotation>, unreached: &[Tid], lowered: &[Tid], gone_from: &[Tid], done: &mut Done) -> Result<()> {
     let ts = now_ts(tx.core);
     for x in lowered {
-        done.deliveries.extend(deliver_parts(tx, *x, c, &[target], Parts::Edge, Vec::new())?);
+        done.deliveries.extend(deliver_parts(tx, *x, c, &[target], Parts::Edge, Vec::new(), Vec::new())?);
     }
     done.deliveries.extend(rotation::deliver_rotation(tx, target, Some(c), unreached)?);
     let graph = osis_keys::PermGraph { timeline: tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?, at: At::now(ts) };
@@ -649,8 +649,9 @@ impl Engine {
             }
         }
         let (a, p) = opened.ok_or(Error::Misuse("no held read secret opens this inbox blob"))?;
-        let (bytes, things, _) = p.split();
+        let (bytes, things, _, records) = p.split();
         let id = CommitBlob::decode(&bytes)?.id();
+        self.learn_records(records)?;
         self.ingest(&bytes, Vec::new())?;
         self.note_delete_hints(id, &things)?;
         let mut done = Done::default();

@@ -241,9 +241,6 @@ fn minted_record(h: &Header, id: &CommitId, p: &osis_commit::Part, tid: &Tid, in
     if !crate::engine::write::is_minting(&d.fragment, &rec) {
         return Err(Error::BadInput("created.0 is not one minting of its record"));
     }
-    if h.expires.is_some() && matches!(rec, CreationRecord::KeyActor { .. }) {
-        return Err(Error::BadInput("a key actor's record does not expire"));
-    }
     Ok(rec)
 }
 
@@ -1102,6 +1099,27 @@ impl Engine {
     /// a diagnostic and returned as an error; nothing of it is stored.
     pub fn ingest(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>) -> Result<Ingested> {
         self.ingest_from(bytes, blobs, None)
+    }
+
+    /// Receives raw creation records (a record blob, an inbox payload's, spec/permissions.md §4):
+    /// a record proves itself by its hash, so it needs no commit. Returns how many were new; what
+    /// awaited them is judged again.
+    pub fn learn_records(&mut self, records: Vec<CreationRecord>) -> Result<usize> {
+        let n = self.run(|tx| {
+            let mut n = 0;
+            for r in records {
+                n += usize::from(atomic::learn_record(tx, r)?);
+            }
+            if n > 0 {
+                tx.core.update_timelines();
+                atomic::rejudged(tx, true)?;
+            }
+            Ok(n)
+        })?;
+        if n > 0 {
+            self.reexamine()?;
+        }
+        Ok(n)
     }
 
     /// `ingest`, attributing diagnostics to `peer`.

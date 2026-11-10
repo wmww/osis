@@ -11,6 +11,7 @@ mod cbor;
 mod error;
 mod header;
 mod groups;
+pub mod record_blob;
 pub mod retention;
 mod keys;
 mod lists;

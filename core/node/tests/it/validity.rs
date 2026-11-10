@@ -8,7 +8,7 @@ use common::*;
 use osis_base::Classified;
 use osis_base::{Role, Tid, Value, WallMs};
 use osis_node::local_peer::LocalPeer;
-use osis_node::{Event, Ingested, Mutation, Reason};
+use osis_node::{Event, Ingested, Mutation};
 use osis_perm::DemotionScope;
 use osis_schema::Codec;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1143,12 +1143,11 @@ fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_node::Result
 // spec/permissions.md §1 (paths climb record links and edges), §4 (chain certificates): n0 is first
 // admin of A, A writes B, B admin of C (n1 first admin of B and C). n0's write on C applies at n0 and a receiver; a
 // node with no path may not write C. A fresh receiver given n0's certificates for C but A's
-// `created.0` (the record-link step) holds nothing of the write until it arrives on n0's chain.
+// raw record (the record-link step) holds nothing of the write until that record arrives.
 #[test]
 fn record_then_edge_chain_applies_spec_perm_1() {
     let mut lp = net(3, 62);
     lp.sync_all().unwrap();
-    let n0 = lp.peers[0].engine.me();
     let a = new_thing(&mut lp, 0);
     let b = new_thing(&mut lp, 1);
     let c = new_thing(&mut lp, 1);
@@ -1162,20 +1161,24 @@ fn record_then_edge_chain_applies_spec_perm_1() {
     for i in [0, 2] {
         assert_eq!(lp.peers[i].engine.get(&c, &ak("t:reg.0")).unwrap(), Some(s("n0")), "peer {i}");
     }
-    // the certificates carry the edges and A's `created.0`
+    // the certificates carry the edges and the records, A's among them, raw
     let certs = lp.peers[0].engine.certificates(&c);
-    let created = |e: &osis_node::Engine, id: &osis_base::CommitId, t: Tid| e.header(id).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "created.0"));
-    let a_rec = *certs.keys().find(|id| created(&lp.peers[0].engine, id, a)).expect("A's created.0 certified");
-    assert!(certs.contains_key(&ab) && certs.contains_key(&bc));
+    assert!(certs.records.contains(&a));
+    assert!(certs.commits.contains_key(&ab) && certs.commits.contains_key(&bc));
     let mut fresh = net(1, 63);
-    for id in certs.keys().filter(|id| **id != a_rec) {
+    for id in certs.commits.keys() {
         let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
         fresh.deliver(0, &pk).unwrap();
     }
+    let rec = |lp: &LocalPeer, t: &Tid| lp.peers[0].engine.core.created(t).cloned().unwrap();
+    let others = certs.records.iter().filter(|t| **t != a).map(|t| rec(&lp, t)).collect();
+    fresh.peers[0].engine.learn_records(others).unwrap();
     let pk = lp.peers[0].engine.package(&w).unwrap().unwrap();
     let r = fresh.deliver(0, &pk).unwrap();
-    assert!(matches!(r, Ingested::Awaits(_, Reason::MissingChain(x)) if x == n0), "{r:?}");
-    let pk = lp.peers[0].engine.package(&a_rec).unwrap().unwrap();
+    assert!(matches!(r, Ingested::Awaits(..)), "{r:?}");
+    let ra = rec(&lp, &a);
+    fresh.peers[0].engine.learn_records(vec![ra]).unwrap();
+    // what was thrown out is fetched again once its record came
     fresh.deliver(0, &pk).unwrap();
     assert!(fresh.peers[0].engine.pending().is_empty());
     assert_eq!(fresh.peers[0].engine.get(&c, &ak("t:reg.0")).unwrap(), Some(s("n0")));

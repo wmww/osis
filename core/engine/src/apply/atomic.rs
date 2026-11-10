@@ -552,20 +552,30 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]) -> Resu
         }
         let rec = d.fragment().read().as_ref().and_then(CreationRecord::from_value).ok_or(Error::BadInput("created.0"))?;
         if rec.tid() == a.tid {
-            let key = [records::CREATED, a.tid.as_bytes()].concat();
-            tx.txn.put_local(&key, &osis_base::encode(&rec.to_value()), Shred::No)?;
-            tx.core.ix.held.create(rec);
-            tx.core.inbox_actors = None;
-            // the reader actor of the thing's deltas is known now
-            let touching: Vec<CommitId> = tx.core.aspects_of(&a.tid).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
-            for c in touching {
-                tx.core.bodies.remove(&c);
-                tx.core.mark_changed(c);
-            }
-            any = true;
+            any |= learn_record(tx, rec)?;
         }
     }
     Ok(any)
+}
+
+/// Holds creation record `rec` (from a `created.0` delta or a record blob: a record proves itself
+/// by its hash, spec/permissions.md §1); whether it was new.
+pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool> {
+    let t = rec.tid();
+    if tx.core.created(&t).is_some() {
+        return Ok(false);
+    }
+    let key = [records::CREATED, t.as_bytes()].concat();
+    tx.txn.put_local(&key, &osis_base::encode(&rec.to_value()), Shred::No)?;
+    tx.core.ix.held.create(rec);
+    tx.core.inbox_actors = None;
+    // the reader actor of the thing's deltas is known now
+    let touching: Vec<CommitId> = tx.core.aspects_of(&t).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
+    for c in touching {
+        tx.core.bodies.remove(&c);
+        tx.core.mark_changed(c);
+    }
+    Ok(true)
 }
 
 /// Role commit `id` (with a frontier) is due an answer by this node's addenda, kept across

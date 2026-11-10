@@ -37,9 +37,7 @@ impl SyncEngine {
         let _s = crate::costs::span("pass: certificates");
         let closure = self.engine.closure(g);
         let mut wanted = self.engine.certificates(g);
-        for (c, p) in self.inbox_certificates(g, l)? {
-            wanted.entry(c).or_default().extend(p);
-        }
+        wanted.extend(self.inbox_certificates(g, l)?);
         // revokes about authors seen under the label (spec/permissions.md
         // §4), so its verifiers judge their writes as this node does: authors of an entry
         // judged invalid here or not judged yet (`Engine::judged_valid`); a revoke changes no
@@ -51,20 +49,16 @@ impl SyncEngine {
             authors.remove(&me);
         }
         let actor = self.engine.group_actor(g);
-        for (c, p) in self.engine.revoke_certificates(&authors, &closure, &actor) {
-            wanted.entry(c).or_default().extend(p);
-        }
+        wanted.extend(self.engine.revoke_certificates(&authors, &closure, &actor));
         // removals of the label's actor's edges on things in its closure, whoever made them
         // (spec/permissions.md §2): its holders still holding such an edge would re-upload
         // the thing's bodies that others delete, on every pass
         let (removals, own_removals) = self.engine.removal_certificates(&actor, &closure);
-        for (c, p) in removals {
-            wanted.entry(c).or_default().extend(p);
-        }
+        wanted.extend(removals);
         // the things the account's commits placed here touch: their thing lists go with them
         let me = self.engine.account_tid();
         let mut listed_things: BTreeSet<Tid> = BTreeSet::new();
-        for c in wanted.keys() {
+        for c in wanted.commits.keys() {
             if let Some(h) = self.engine.header(c).filter(|h| Some(h.author) == me && h.epoch.is_some()) {
                 listed_things.extend(h.aspects.iter().map(|a| a.tid));
                 if h.actor != h.author {
@@ -72,7 +66,9 @@ impl SyncEngine {
                 }
             }
         }
-        for (c, want) in wanted {
+        // the records, raw: they outlive the commits that minted them (spec/permissions.md §4)
+        self.place_records(g, l, &wanted.records)?;
+        for (c, want) in wanted.commits {
             let (mine, have) = self.held_parts(g, l, &c)?;
             // what the label's closure bodies carry is never copied (a copy duplicating closure
             // parts is a strict subset others delete), but a removal's own parts: no body carries
@@ -148,6 +144,44 @@ impl SyncEngine {
             }
         }
         Ok(())
+    }
+
+    /// The records entries under `l` hold: this node's own record blobs, another node's present at
+    /// each of `hosts` (`None`: every one), as `held_parts_at` counts copies. A record blob proves
+    /// itself, so every opened one counts.
+    pub(super) fn held_records_at(&self, l: LabelId, hosts: Option<&[HostKey]>) -> BTreeSet<Tid> {
+        let mut out = BTreeSet::new();
+        for id in self.state.of_kind(&l, Kind::TAG_RECORDS) {
+            let Some(e) = self.state.entries.get(&(l, id)) else { continue };
+            let Kind::Records(ts) = &e.kind else { continue };
+            if e.cert || hosts.is_none_or(|ss| !ss.is_empty() && ss.iter().all(|s| self.state.holds_at(s, &l, &id))) {
+                out.extend(ts.iter().copied());
+            }
+        }
+        out
+    }
+
+    /// Places the records of `want` that no entry under `l` holds at the hosts this node syncs it
+    /// with (`held_records_at`) as one record blob of this node's (spec/wire.md §3); records this
+    /// node does not hold are left out. Whether every one of `want` is held there now.
+    pub(crate) fn place_records(&mut self, g: &Tid, l: LabelId, want: &BTreeSet<Tid>) -> Result<bool> {
+        let hosts: Vec<HostKey> = self.conns.values().filter(|x| x.labels.contains_key(&l)).map(|x| x.host).collect();
+        let held = self.held_records_at(l, Some(&hosts));
+        let missing: Vec<osis_base::CreationRecord> = want.iter().filter(|t| !held.contains(t)).filter_map(|t| self.engine.core.created(t).cloned()).collect();
+        let all = missing.len() == want.iter().filter(|t| !held.contains(t)).count();
+        if missing.is_empty() {
+            return Ok(all);
+        }
+        let Some(secret) = self.engine.wrap_secret(g, None)? else { return Ok(false) };
+        let tids: Vec<Tid> = missing.iter().map(osis_base::CreationRecord::tid).collect::<BTreeSet<_>>().into_iter().collect();
+        let plain = osis_commit::record_blob::encode_record_blob(&missing);
+        let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(&mut *self.rng), None, Vec::new())?;
+        let (key, blob) = osis_label::frame(&prefix, &plain, &mut *self.rng)?;
+        let id = osis_label::blob_id(&blob);
+        self.engine.put_blobs(vec![(id, blob)])?;
+        let wrap = osis_crypto::wrap(&secret, &id, &key, 0)?;
+        self.state.set_entry(l, id, Entry { wrap, stamp: None, cert: true, kind: Kind::Records(tids), memory: false });
+        Ok(all)
     }
 
     /// Places `body` (of `parts` of `c`) as this node's certificate copy under `l` and records

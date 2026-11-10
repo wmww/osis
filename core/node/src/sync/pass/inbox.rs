@@ -74,7 +74,7 @@ impl SyncEngine {
         for id in deposited {
             let Some(kind) = self.state.entries.get(&(l, id)).map(|e| e.kind.clone()) else { continue };
             let idle = match &kind {
-                Kind::Commit { .. } | Kind::Parked(_) => false,
+                Kind::Commit { .. } | Kind::Parked(_) | Kind::Records(_) => false,
                 Kind::Inbox(Some(c)) => {
                     // unapplied: it waits, as its inbox bytes do, until its turn past `latest`
                     let pending = !self.engine.core.ix.commits.contains_key(c) && self.inbox_opened(&l, &id)?.is_some_and(|o| o.until <= latest);
@@ -144,8 +144,8 @@ impl SyncEngine {
     /// all of them copying would flood the label. The consumed inbox blob stays until it expires:
     /// its label hints are what a later holder that cannot apply the copied `label.0` yet opens
     /// the thing's label by.
-    pub(super) fn inbox_certificates(&mut self, g: &Tid, l: LabelId) -> Result<BTreeMap<CommitId, Parts>> {
-        let mut out: BTreeMap<CommitId, Parts> = BTreeMap::new();
+    pub(super) fn inbox_certificates(&mut self, g: &Tid, l: LabelId) -> Result<crate::labeling::Certs> {
+        let mut out = crate::labeling::Certs::default();
         if self.engine.role_on(g) != Some(Role::Admin) {
             return Ok(out);
         }
@@ -183,7 +183,8 @@ impl SyncEngine {
             // labels only of those things the payload names (its list is the sender's word: it
             // could name any thing this node holds)
             for t in o.things.iter().map(|t| t.tid).filter(|t| on.contains(t)) {
-                copy.extend(self.engine.aspect_commit(&t, "created.0"));
+                // its record travels raw (`place_records`)
+                out.records.insert(t);
                 // every `label.0` write: a later one (a rotation's new step) is a delta on the record
                 // an earlier one set, useless alone. None of a thing the actor reads no more (a late
                 // blob): its current steps are not for its readers, as a re-sent removal names none
@@ -218,10 +219,8 @@ impl SyncEngine {
             for (x, xs) in copy {
                 let Some(h) = self.engine.header(&x) else { continue };
                 let parts = parts_of(&h, |i| xs.contains(&i));
-                for (y, q) in self.chain_under(&x, &parts).unwrap_or_default() {
-                    out.entry(y).or_default().extend(q);
-                }
-                out.entry(x).or_default().extend(parts);
+                out.extend(self.chain_under(&x, &parts).unwrap_or_default());
+                out.commits.entry(x).or_default().extend(parts);
             }
         }
         Ok(out)

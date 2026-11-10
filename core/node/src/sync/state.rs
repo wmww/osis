@@ -103,6 +103,8 @@ pub enum Kind {
     /// holds them (`Engine::hold_lists`), else it awaits the rotation and is held again once that
     /// is here.
     List { rotation: CommitId, held: bool },
+    /// A record blob (spec/wire.md §3): the raw creation records it carries, by tid, ascending.
+    Records(Vec<Tid>),
 }
 
 /// A node log event waiting for the flush that writes its effect.
@@ -237,6 +239,7 @@ impl Kind {
     pub const TAG_AWAITS: u8 = 6;
     pub const TAG_LIST: u8 = 7;
     pub const TAG_LIST_AWAITS: u8 = 8;
+    pub const TAG_RECORDS: u8 = 9;
 
     /// The index tag of a kind other than `Commit` (`State::by_kind`).
     pub fn tag(&self) -> Option<u8> {
@@ -250,6 +253,7 @@ impl Kind {
             Kind::Request(_) => Some(Kind::TAG_REQUEST),
             Kind::List { held: true, .. } => Some(Kind::TAG_LIST),
             Kind::List { held: false, .. } => Some(Kind::TAG_LIST_AWAITS),
+            Kind::Records(_) => Some(Kind::TAG_RECORDS),
         }
     }
 }
@@ -491,6 +495,13 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
         Kind::Request(c) => w.u8(7).raw(&c.0),
         Kind::Awaits { commit, thing } => w.u8(8).raw(&commit.0).raw(thing.as_bytes()),
         Kind::List { rotation, held } => w.u8(9).raw(&rotation.0).u8(u8::from(*held)),
+        Kind::Records(ts) => {
+            let mut w = w.u8(10).u32(ts.len() as u32);
+            for t in ts {
+                w = w.raw(t.as_bytes());
+            }
+            w
+        }
     }
     .take()
 }
@@ -518,6 +529,14 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
         7 => Kind::Request(CommitId(r.arr()?)),
         8 => Kind::Awaits { commit: CommitId(r.arr()?), thing: Tid::from_bytes(r.arr()?) },
         9 => Kind::List { rotation: CommitId(r.arr()?), held: r.u8()? == 1 },
+        10 => {
+            let n = r.u32()?;
+            let mut ts = Vec::new();
+            for _ in 0..n {
+                ts.push(Tid::from_bytes(r.arr()?));
+            }
+            Kind::Records(ts)
+        }
         _ => return Err(Error::Corrupt("sync entry kind")),
     };
     Ok(Entry { wrap, stamp, cert, kind, memory: false })

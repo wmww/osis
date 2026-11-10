@@ -1276,11 +1276,3 @@ fn one_commit_disappearing_message_spec_commits_6() {
     }
 }
 
-// spec/commits.md §5 (Ending): a key actor's creation is no one's to end
-#[test]
-fn key_actor_cannot_be_ended_spec_commits_5() {
-    let (mut net, _host, a, _b, _g, _t) = ending_setup();
-    let me = net.engine(a).tid();
-    assert!(end_request(&mut net, a, me).is_err());
-    assert!(net.engine(a).get_typed(&me, &ct::CREATED).unwrap().is_some());
-}

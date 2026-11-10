@@ -460,17 +460,14 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
 }
 
 /// A creation takes what its commit's other deltas call for: their expiry (a one-commit disappearing
-/// message), a key actor's excepted (it carries none, `apply::minted_record`), and `nobody`, kept
-/// forever, beside `nobody` deltas (a `nobody` delta shares a commit only with others like it,
-/// spec/commits.md §5).
-fn fit_creations(aspects: &mut [((Tid, Ak), AspectMut)], creates: &Creates) {
+/// message), and `nobody`, kept forever, beside `nobody` deltas (a `nobody` delta shares a commit
+/// only with others like it, spec/commits.md §5).
+fn fit_creations(aspects: &mut [((Tid, Ak), AspectMut)]) {
     let other = |ak: &Ak| ak.as_str() != CREATED.ak() && ak.as_str() != osis_commit::retention::REQUIRED;
     let expires = aspects.iter().filter(|((_, ak), _)| other(ak)).find_map(|(_, am)| am.expires);
     let nobody = aspects.iter().any(|((_, ak), am)| other(ak) && am.retention.is_some_and(|r| r.by == osis_schema::PurgeBy::Nobody));
-    for ((t, _), am) in aspects.iter_mut().filter(|((_, ak), _)| ak.as_str() == CREATED.ak()) {
-        if !matches!(creates.get(t), Some(CreationRecord::KeyActor { .. })) {
-            am.expires = am.expires.or(expires);
-        }
+    for (_, am) in aspects.iter_mut().filter(|((_, ak), _)| ak.as_str() == CREATED.ak()) {
+        am.expires = am.expires.or(expires);
         if nobody {
             am.retention = Some(osis_commit::retention::KEPT_RETENTION);
         }
@@ -779,7 +776,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         (am.retention, am.expires) = (Some(r), e);
         aspects.push(((tid, ak), am));
     }
-    fit_creations(&mut aspects, &base.creates);
+    fit_creations(&mut aspects);
     let entries: Vec<(Tid, &Ak, &Retention, Option<u64>)> = aspects.iter().filter_map(|((t, ak), am)| Some((*t, ak, am.retention.as_ref()?, am.expires))).collect();
     let way = if m.deleting.is_empty() { "Write them as separate commits" } else { "A delete removes every aspect of its thing and takes it out of its groups: do these in commits of their own first, then delete" };
     let expires = one_commit(&entries, way)?;

@@ -771,7 +771,7 @@ impl Engine {
         }
         let holder = self.roster(&d).get(&n).is_some_and(|e| e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())));
         let mut done = if holder { self.reshare(&d, &n)? } else { self.grant(&d, &n, &admin_edge())? };
-        let mut all: Vec<CommitId> = self.certificates(&d).into_keys().collect();
+        let mut all: Vec<CommitId> = self.certificates(&d).commits.into_keys().collect();
         let label = osis_base::Ak::new("label.0").map_err(|_| Error::Misuse("ak"))?;
         all.extend(self.core.ix.by_aspect.get(&(d, label)).into_iter().flatten().map(|(_, c)| *c));
         // the account's first commit: D's `account.0` and P's creation record; its rotations

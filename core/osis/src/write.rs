@@ -263,9 +263,10 @@ impl<'d> Write<'d> {
     }
 
     /// Ends `tid` for everyone: every node drops the thing, whole, and ignores what is written on
-    /// it later. Unlike `delete` it cannot be undone. Only an admin of the thing may end it
-    /// (`Permission` otherwise); a key actor cannot be ended. An expiring commit that
-    /// creates a thing ends it the same way when it expires.
+    /// it later. Unlike `delete` it cannot be undone. What it created lives on: things it made
+    /// stay with their other admins, and what an ended account signed still verifies. Only an
+    /// admin of the thing may end it (`Permission` otherwise); an account ends itself. An
+    /// expiring commit that creates a thing ends it the same way when it expires.
     pub fn end(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
         self.ops.push(WriteOp::End(t));

@@ -349,7 +349,7 @@ impl SyncEngine {
         }
         let commit = osis_base::decode(&cut.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_MESSAGE })
             .map_err(|_| Error::Corrupt("commit blob"))?;
-        let payload = InboxPayload { commit, things, chain: Vec::new() };
+        let payload = InboxPayload { commit, things, chain: Vec::new(), records: Vec::new() };
         let blob = osis_label::seal_inbox_blob(recipient, &kem, &payload, self.engine.now(), &mut *self.rng)?;
         self.queue_inbox(&inbox_actor, inbox.label, &inbox.hosts, blob, None)?;
         Ok(self.handle(super::Event::Local))
@@ -387,10 +387,10 @@ impl SyncEngine {
             // a grant's or re-seal's recipient reads the thing: its `keys.0` goes along (a
             // removal's does not: the fresh deposit seed is not for the departed)
             let keys_of: Vec<Tid> = if s.edge_only { Vec::new() } else { s.things.clone() };
-            let chain = if unlabeled { self.inbox_chain(&s.commit, &carried, &keys_of)? } else { Vec::new() };
-            let mut r = self.engine.run(|tx| crate::flows::edges::deliver_parts(tx, s.holder, s.commit, &things, parts, chain));
+            let (chain, records) = if unlabeled { self.inbox_chain(&s.commit, &carried, &keys_of)? } else { Default::default() };
+            let mut r = self.engine.run(|tx| crate::flows::edges::deliver_parts(tx, s.holder, s.commit, &things, parts, chain, records));
             if r.is_err() {
-                r = self.engine.run(|tx| crate::flows::edges::deliver_parts(tx, s.holder, s.commit, &things, parts, Vec::new()));
+                r = self.engine.run(|tx| crate::flows::edges::deliver_parts(tx, s.holder, s.commit, &things, parts, Vec::new(), Vec::new()));
             }
             // a new seal replaces the earlier one still queued
             self.drop_delivery_out(&s.holder, &s.commit);
@@ -469,18 +469,18 @@ impl SyncEngine {
     /// The author's chain certificates for `parts` of `c` (`chain_under`: without any `keys.0`
     /// but the author's own) and the current `keys.0` commits of each of `keys_of` (the things a grant
     /// boxes the recipient on: it reads them, and judges them by their keyset) as plaintext commit
-    /// values, each projected to those deltas: an inbox payload's `chain` (spec/wire.md §9).
-    /// Empty for a commit not applied here.
-    fn inbox_chain(&mut self, c: &CommitId, parts: &BTreeSet<usize>, keys_of: &[Tid]) -> Result<Vec<osis_base::Value>> {
+    /// values, each projected to those deltas, and the chain's raw records: an inbox payload's
+    /// `chain` and `records` (spec/wire.md §9). Empty for a commit not applied here.
+    fn inbox_chain(&mut self, c: &CommitId, parts: &BTreeSet<usize>, keys_of: &[Tid]) -> Result<(Vec<osis_base::Value>, Vec<osis_base::CreationRecord>)> {
         let mut out = Vec::new();
         let mut chain = self.chain_under(c, parts).unwrap_or_default();
         for t in keys_of {
             for x in self.engine.current_keys(t) {
                 let Some(h) = self.engine.header(&x) else { continue };
-                chain.entry(x).or_default().extend(super::pass::parts_of(&h, |i| h.aspects.get(i).is_some_and(|a| a.tid == *t && a.ak.as_str() == "keys.0")));
+                chain.commits.entry(x).or_default().extend(super::pass::parts_of(&h, |i| h.aspects.get(i).is_some_and(|a| a.tid == *t && a.ak.as_str() == "keys.0")));
             }
         }
-        for (x, q) in chain {
+        for (x, q) in chain.commits {
             let Some(mut blob) = self.engine.run(|tx| tx.get_commit(&x))? else { continue };
             blob.parts.retain(|p| q.contains(&p.ai));
             if blob.parts.is_empty() {
@@ -489,7 +489,8 @@ impl SyncEngine {
             let limits = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB };
             out.push(osis_base::decode(&blob.encode(), &limits).map_err(|_| Error::Corrupt("commit blob"))?);
         }
-        Ok(out)
+        let records = chain.records.iter().filter_map(|t| self.engine.core.created(t).cloned()).collect();
+        Ok((out, records))
     }
 
     /// Whether `holder` is still a current holder of a thing whose edges, secrets or labels

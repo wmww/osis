@@ -280,7 +280,9 @@ fn creations_last_read_like_creations_first_spec_commits_4() {
         let (made, rest): (Vec<Commit>, Vec<Commit>) = full.commits.iter().cloned().partition(held_model::gen::creates);
         let mut seen = Seen::default();
         let mut h = settle(Held { commits: rest, ..full.clone() }, Some(&full), seed, &mut seen);
-        assert!(evaluate(&h).reads.values().all(|r| r.is_none()), "seed {seed}: nothing exists before its creation");
+        // a thing known by a raw record (the account) exists before its creation: a record is identity
+        let raw = |t: &ThingId| full.records.iter().any(|r| r.id == *t);
+        assert!(evaluate(&h).reads.iter().all(|((t, _), r)| r.is_none() || raw(t)), "seed {seed}: nothing exists before its creation");
         let more: Vec<Commit> = made.into_iter().filter(|c| !h.commits.iter().any(|x| x.id == c.id)).collect();
         h.commits.extend(more);
         let h = settle(h, Some(&full), seed, &mut seen);

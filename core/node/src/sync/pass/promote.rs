@@ -76,7 +76,7 @@ impl SyncEngine {
             return Ok(Some(true));
         }
         let mut bodies = Vec::new();
-        for (x, p) in &missing {
+        for (x, p) in &missing.commits {
             let Some(b) = self.engine.part_body(x, p)? else { return Ok(Some(false)) };
             let got: BTreeSet<usize> = b.parts.iter().copied().collect();
             if !p.is_subset(&got) {
@@ -84,9 +84,15 @@ impl SyncEngine {
             }
             bodies.push((*x, p.clone(), b));
         }
+        if missing.records.iter().any(|t| self.engine.core.created(t).is_none()) {
+            return Ok(Some(false));
+        }
         let mut complete = host.is_none();
         for (x, p, b) in bodies {
             complete &= self.place_copy(g, l, &x, &p, b)?;
+        }
+        if !missing.records.is_empty() {
+            complete &= self.place_records(g, l, &missing.records)? && host.is_none();
         }
         Ok(Some(complete))
     }
@@ -146,14 +152,14 @@ impl SyncEngine {
     /// label's readers (a removal's fresh deposit seed, spec/sync.md §3), a copier that took the
     /// commit from an inbox blob may not hold it, and it moves at every rotation of anyone on the
     /// way: every copy would owe it for good.
-    pub(crate) fn chain_under(&mut self, c: &CommitId, parts: &Parts) -> Option<BTreeMap<CommitId, Parts>> {
+    pub(crate) fn chain_under(&mut self, c: &CommitId, parts: &Parts) -> Option<crate::labeling::Certs> {
         let mut chain = self.engine.author_chain(c, parts)?;
         let author = self.engine.header(c)?.author;
-        for (x, q) in chain.iter_mut() {
+        for (x, q) in chain.commits.iter_mut() {
             let Some(hx) = self.engine.header(x) else { continue };
             q.retain(|ai| hx.aspects.get(*ai).is_none_or(|a| a.ak.as_str() != "keys.0" || a.tid == author));
         }
-        chain.retain(|_, q| !q.is_empty());
+        chain.commits.retain(|_, q| !q.is_empty());
         Some(chain)
     }
 
@@ -161,17 +167,21 @@ impl SyncEngine {
     /// no entry under `l` holds at `host` (`held_parts_at`: the promotion or deletion is
     /// that host's; `None`: this node's served state); `None` when this node has not applied
     /// `c`.
-    pub(super) fn chain_missing(&mut self, host: Option<HostKey>, g: &Tid, l: LabelId, c: &CommitId, parts: &[usize]) -> Result<Option<BTreeMap<CommitId, Parts>>> {
+    pub(super) fn chain_missing(&mut self, host: Option<HostKey>, g: &Tid, l: LabelId, c: &CommitId, parts: &[usize]) -> Result<Option<crate::labeling::Certs>> {
         let Some(chain) = self.chain_under(c, &parts.iter().copied().collect()) else { return Ok(None) };
         let closure = self.engine.closure(g);
-        let mut out = BTreeMap::new();
-        for (x, want) in chain {
+        let mut out = crate::labeling::Certs::default();
+        // records travel raw, also those of the label's own things: a creation's body goes when
+        // its thing ends, and what it created lives on (spec/permissions.md §4)
+        let held = self.held_records_at(l, host.as_ref().map(std::slice::from_ref));
+        out.records = chain.records.difference(&held).copied().collect();
+        for (x, want) in chain.commits {
             let (_, held) = self.held_parts_at(g, l, &x, host.as_ref().map(std::slice::from_ref))?;
             // closure bodies carry what is on the label's own things
             let inside = self.engine.header(&x).map(|h| inside(&h, &closure)).unwrap_or_default();
             let missing: Parts = want.difference(&held).filter(|ai| !inside.contains(ai)).copied().collect();
             if !missing.is_empty() {
-                out.insert(x, missing);
+                out.commits.insert(x, missing);
             }
         }
         Ok(Some(out))

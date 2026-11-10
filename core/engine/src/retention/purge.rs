@@ -46,17 +46,8 @@ pub(super) fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntr
         return false;
     }
     let point = Point { ts: p.ts, node: p.author, commit: *pc };
-    if key_actor_record(core, a) {
-        return false;
-    }
     let (by, actor) = (a.retention.by, ch.actor);
     core.timelines.get(&a.tid).is_some_and(|tl| tl.purge_stands(&p.author, &a.tid, by, &actor, point) && (p.actor == p.author || tl.purge_stands(&p.actor, &a.tid, by, &actor, point)))
-}
-
-/// Whether `a` is the `created.0` delta of a key actor, which nobody may end (until
-/// notes/expiry-creation-design.md step 8).
-fn key_actor_record(core: &Core, a: &AspectEntry) -> bool {
-    a.ak.as_str() == osis_commit::retention::CREATED && core.created(&a.tid).is_some_and(|r| r.first_admin().is_none())
 }
 
 /// The writer's check of its own request `pc` (header `p`), built but not applied: each item that
@@ -102,9 +93,6 @@ fn stands(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntry, ch: &Header, 
 /// inputs only widen it.
 fn signers_could(core: &Core, p: &Header, a: &AspectEntry, ch: &Header) -> bool {
     let (held, by, actor) = (&core.ix.held, a.retention.by, ch.actor);
-    if key_actor_record(core, a) {
-        return false;
-    }
     let could = |who: &Tid| {
         (by.admin() && held.ever_admins(&a.tid).contains(who))
             || (by.writer() && held.ever_writers(&a.tid).contains(who))

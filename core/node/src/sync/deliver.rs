@@ -320,13 +320,19 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Places `c`'s certificate deltas (edges, `keys.0`, `created.0`: spec/permissions.md §4) on
-    /// things outside `g`'s closure as a certificate copy under `g`'s labels; deltas on things
-    /// inside it go up as its closure bodies (a whole copy duplicated them, and carried
-    /// `secrets.0` boxes the label's readers cannot open).
+    /// Places `c`'s certificate deltas (edges, `keys.0`: spec/permissions.md §4) on things
+    /// outside `g`'s closure as a certificate copy under `g`'s labels, and the records it mints
+    /// raw (they outlive it); deltas on things inside it go up as its closure bodies (a whole
+    /// copy duplicated them, and carried `secrets.0` boxes the label's readers cannot open).
     pub(crate) fn place_chain(&mut self, g: &Tid, c: &CommitId, owed: Option<[u8; 32]>) -> Result<()> {
         let closure = self.engine.closure(g);
-        self.place_aspects(g, c, owed, |a| matches!(a.ak.as_str(), "roles.0" | "keys.0" | "created.0") && !closure.contains(&a.tid))
+        let minted: BTreeSet<Tid> = self.engine.header(c).map(|h| h.aspects.iter().filter(|a| a.ak.as_str() == "created.0").map(|a| a.tid).collect()).unwrap_or_default();
+        if !minted.is_empty() {
+            for l in self.engine.group_labels(g)?.into_iter().filter(|l| !l.replaced) {
+                self.place_records(g, l.id, &minted)?;
+            }
+        }
+        self.place_aspects(g, c, owed, |a| matches!(a.ak.as_str(), "roles.0" | "keys.0") && !closure.contains(&a.tid))
     }
 
     /// Places the aspects of `c` that `keep` admits as a certificate copy under the labels of

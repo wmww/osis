@@ -432,6 +432,9 @@ fn no_pass_before_order_0(hosts: usize, write: bool) {
     let d = net.node(4, &[]);
     let g = net.group(a, &[(c, Role::Write), (d, Role::Read)], &hs);
     let t = net.item(a, g, g, "chat");
+    // c holds the chat's creation directly: what judges the messages is never in the fetch held
+    // back below (which order-0 blobs share a batch is the blob IDs' order)
+    net.pair(a, c);
     net.set_online(c, false);
     net.run();
     for i in 0..N / 2 {

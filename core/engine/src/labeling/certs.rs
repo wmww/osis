@@ -17,6 +17,34 @@ const CARD: [&str; 3] = ["keys.0", "node.0", "reach.0"];
 /// Parts of a commit, by aspect index.
 pub type Parts = BTreeSet<usize>;
 
+/// Chain material a verifier needs (spec/permissions.md §4): parts of commits to copy, and raw
+/// creation records (a record blob's), which outlive the commits that minted them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Certs {
+    pub commits: BTreeMap<CommitId, Parts>,
+    pub records: BTreeSet<Tid>,
+}
+
+impl Certs {
+    fn add(&mut self, c: CommitId, parts: Parts) {
+        if !parts.is_empty() {
+            self.commits.entry(c).or_default().extend(parts);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.commits.is_empty() && self.records.is_empty()
+    }
+
+    /// Adds `other`'s commits and records.
+    pub fn extend(&mut self, other: Certs) {
+        for (c, p) in other.commits {
+            self.add(c, p);
+        }
+        self.records.extend(other.records);
+    }
+}
+
 impl Engine {
     /// The newest applied commit whose delta on `(tid, ak)` is valid here: `ts` is the author's
     /// to choose, so an invalid write (anyone's commit on another's card) never stands for the
@@ -119,21 +147,17 @@ impl Engine {
     }
 
     /// This node's chain certificates for `g`, its node card and the cards of the key actors
-    /// holding `g` (spec/permissions.md §4), as commits with the parts to carry.
-    pub fn certificates(&mut self, g: &Tid) -> BTreeMap<CommitId, Parts> {
-        let Some(me) = self.core.me() else { return BTreeMap::new() };
-        let mut out: BTreeMap<CommitId, Parts> = BTreeMap::new();
-        let mut add = |c: CommitId, parts: Parts| {
-            if !parts.is_empty() {
-                out.entry(c).or_default().extend(parts);
-            }
-        };
+    /// holding `g` (spec/permissions.md §4): the commits with the parts to carry, and the records.
+    pub fn certificates(&mut self, g: &Tid) -> Certs {
+        let Some(me) = self.core.me() else { return Certs::default() };
+        let mut out = Certs::default();
         // the account's card (the author of every commit but the node's own) and the node's
         for who in [me, self.tid()] {
             let mine = BTreeSet::from([who]);
-            for ak in CARD.iter().chain(["created.0"].iter()) {
+            out.records.insert(who);
+            for ak in CARD {
                 if let Some(c) = self.latest_on(&who, ak) {
-                    add(c, self.parts_of(&c, &mine, &[ak]));
+                    out.add(c, self.parts_of(&c, &mine, &[ak]));
                 }
             }
         }
@@ -144,24 +168,19 @@ impl Engine {
             let rots: Vec<CommitId> = self.core.ix.by_aspect.get(&(me, keys)).into_iter().flatten().map(|(_, c)| *c).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| m.view.author == me && m.view.epoch.is_some()) && self.header(c).is_some_and(|h| h.rotation.is_some())).collect();
             let mine = BTreeSet::from([me]);
             for c in rots {
-                add(c, self.parts_of(&c, &mine, &["keys.0"]));
+                out.add(c, self.parts_of(&c, &mine, &["keys.0"]));
             }
         }
-        // the record chain's `created.0` records
-        for t in self.core.record_chain(g).filter_map(|s| s.thing()) {
-            if let Some(c) = self.latest_on(&t, "created.0") {
-                add(c, self.parts_of(&c, &BTreeSet::from([t]), &["created.0"]));
-            }
-        }
+        // the record chain's records
+        out.records.extend(self.core.record_chain(g).filter_map(|s| s.thing()));
         // the cards of the key actors holding `g` that are no node (a link key: its writes
         // under the label verify by its card, which no chain of this node's carries; a node
         // places its own)
         let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| *k != me && self.core.is_key_actor(k)).collect();
         for k in keys.into_iter().filter(|k| self.latest_on(k, "node.0").is_none()) {
-            for ak in ["created.0", "keys.0"] {
-                if let Some(c) = self.latest_on(&k, ak) {
-                    add(c, self.parts_of(&c, &BTreeSet::from([k]), &[ak]));
-                }
+            out.records.insert(k);
+            if let Some(c) = self.latest_on(&k, "keys.0") {
+                out.add(c, self.parts_of(&c, &BTreeSet::from([k]), &["keys.0"]));
             }
         }
         if let Some(tl) = self.core.timelines.get(g) {
@@ -174,6 +193,7 @@ impl Engine {
             let certs = self.chain_to(&me, a);
             self.cert_parts(&certs, &mut out);
         }
+        out.records.retain(|t| self.core.created(t).is_some());
         out
     }
 
@@ -224,7 +244,7 @@ impl Engine {
     /// §4): its author's chain certificates to each thing the parts touch and to its actor
     /// (`validity::acts_for`), minus `parts` themselves. `None` when `c` is not applied here: a
     /// node that cannot verify it cannot tell.
-    pub fn author_chain(&mut self, c: &CommitId, parts: &Parts) -> Option<BTreeMap<CommitId, Parts>> {
+    pub fn author_chain(&mut self, c: &CommitId, parts: &Parts) -> Option<Certs> {
         if self.core.ix.pending.contains_key(c) {
             return None;
         }
@@ -232,38 +252,30 @@ impl Engine {
         let mut things: BTreeSet<Tid> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| a.tid).collect();
         things.insert(h.actor);
         let found: Vec<osis_perm::Certificates> = things.iter().chain([&h.author]).map(|t| self.chain_to(&h.author, t)).collect();
-        let mut out = BTreeMap::new();
+        let mut out = Certs::default();
         for cs in &found {
             self.cert_parts(cs, &mut out);
         }
-        if let Some(p) = out.get_mut(c) {
+        if let Some(p) = out.commits.get_mut(c) {
             p.retain(|x| !parts.contains(x));
         }
-        out.retain(|_, p| !p.is_empty());
+        out.commits.retain(|_, p| !p.is_empty());
+        out.records.retain(|t| self.core.created(t).is_some());
         Some(out)
     }
 
-    /// The commits and parts certificates `certs` name (spec/permissions.md §4), added to `out`:
-    /// edge writes projected to their edge deltas on the chain's things, the newest `created.0` of
+    /// The commits, parts and records certificates `certs` name (spec/permissions.md §4), added to
+    /// `out`: edge writes projected to their edge deltas on the chain's things, the record of
     /// each thing and the current `keys.0` of each actor.
-    pub(super) fn cert_parts(&mut self, certs: &osis_perm::Certificates, out: &mut BTreeMap<CommitId, Parts>) {
-        let mut add = |c: CommitId, parts: Parts| {
-            if !parts.is_empty() {
-                out.entry(c).or_default().extend(parts);
-            }
-        };
+    pub(super) fn cert_parts(&mut self, certs: &osis_perm::Certificates, out: &mut Certs) {
         let all: BTreeSet<Tid> = certs.created.iter().copied().collect();
         for c in &certs.commits {
-            add(*c, self.parts_of(c, &all, &["roles.0"]));
+            out.add(*c, self.parts_of(c, &all, &["roles.0"]));
         }
-        for t in &certs.created {
-            if let Some(c) = self.latest_on(t, "created.0") {
-                add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["created.0"]));
-            }
-        }
+        out.records.extend(certs.created.iter().copied());
         for t in &certs.keys {
             for c in self.current_keys(t) {
-                add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["keys.0"]));
+                out.add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["keys.0"]));
             }
         }
     }
@@ -294,7 +306,7 @@ impl Engine {
     /// are closure bodies). Keysets only of actors reading `actor`, the label's:
     /// its rotators seal to those; a verifier needs none, and a thing the author left has a fresh
     /// deposit seed that is not for the label's readers.
-    pub fn revoke_certificates(&mut self, authors: &BTreeSet<Tid>, closure: &BTreeSet<Tid>, actor: &Tid) -> BTreeMap<CommitId, Parts> {
+    pub fn revoke_certificates(&mut self, authors: &BTreeSet<Tid>, closure: &BTreeSet<Tid>, actor: &Tid) -> Certs {
         let mut found: Vec<osis_perm::Certificates> = Vec::new();
         for m in authors {
             let Some(tl) = self.core.timelines.get(m) else { continue };
@@ -315,10 +327,11 @@ impl Engine {
                 }
             }
         }
-        let mut out = BTreeMap::new();
+        let mut out = Certs::default();
         for cs in &found {
             self.cert_parts(cs, &mut out);
         }
+        out.records.retain(|t| self.core.created(t).is_some());
         out
     }
 
@@ -328,7 +341,7 @@ impl Engine {
     /// thing's bodies its delete-key holders drop. Also the commits whose own parts these are:
     /// placed though inside the closure (the label no longer carries them as bodies). Never a
     /// `secrets.0` or `keys.0` delta of such a commit (`cert_parts` takes its `roles.0`).
-    pub fn removal_certificates(&mut self, x: &Tid, closure: &BTreeSet<Tid>) -> (BTreeMap<CommitId, Parts>, BTreeSet<CommitId>) {
+    pub fn removal_certificates(&mut self, x: &Tid, closure: &BTreeSet<Tid>) -> (Certs, BTreeSet<CommitId>) {
         let mut found: Vec<osis_perm::Certificates> = Vec::new();
         let mut own = BTreeSet::new();
         if let Some(tl) = self.core.timelines.get(x) {
@@ -350,14 +363,15 @@ impl Engine {
                 }
             }
         }
-        let mut out = BTreeMap::new();
+        let mut out = Certs::default();
         for cs in &found {
             self.cert_parts(cs, &mut out);
         }
+        out.records.retain(|t| self.core.created(t).is_some());
         // the thing's newest `keys.0` is often the removal's own (its fresh deposit seed)
         for c in &own {
             let Some(h) = self.header(c) else { continue };
-            if let Some(p) = out.get_mut(c) {
+            if let Some(p) = out.commits.get_mut(c) {
                 p.retain(|ai| h.aspects.get(*ai).is_some_and(|a| crate::apply::validity::edge_ak(a.ak.as_str())));
             }
         }

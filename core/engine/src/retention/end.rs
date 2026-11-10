@@ -1,14 +1,17 @@
 //! Ending a thing (spec/commits.md §5 Ending; notes/expiry-creation-design.md §3): purging or
 //! expiring its creation. A thing exists while a creation of it is held live; once every held
-//! creation of it is value-less the thing goes whole in the transaction that made it so: its
-//! parts as bodies dropped (node-sync then deletes them at hosts by the dropped-body path), its
-//! states and per-aspect rows, its record and edges. A later write on it is a write on an unknown
-//! thing. An ending by purge keeps what judges it, for good since nothing drops a request: the
-//! request's own `purge.0` part, so it still reaches the nodes that have not heard, and the
-//! thing's record, its value-less creation and `roles.0` parts (no content), since the right to
-//! purge is read from them and a removal arriving later may make it fall; a fall reopens what the
-//! ending dropped to be fetched again (`reopen_fallen`). `Core::exists` says the thing is gone all the
-//! same. An ending by expiry needs no right: it keeps nothing but the commits' headers.
+//! creation of it is value-less the thing goes in the transaction that made it so: its parts as
+//! bodies dropped (node-sync then deletes them at hosts by the dropped-body path), its states and
+//! per-aspect rows. Records are identity, `created.0` is existence: what the thing created lives
+//! on. Its record, its value-less creation and its `roles.0` parts (no content) stay while it
+//! **keeps**: ended by purge (for good: the right to purge is read from them, and a removal
+//! arriving later may make it fall; a fall reopens what the ending dropped, `reopen_fallen`), or
+//! with a dependent here (`dependents`): a held record naming it first admin, whose chain
+//! climbs its standing edges, or for a key actor a held commit it signed or acted in with a part
+//! held on another thing, which its record verifies. An ended thing that keeps nothing leaves
+//! only the commits' headers, and its first admin, ended and kept only for it, goes then too.
+//! `Core::exists` says the thing is gone all the same. A later write on it is a write on an
+//! unknown thing.
 
 use crate::engine::records;
 use crate::engine::{DropFor, Tx};
@@ -92,16 +95,30 @@ fn every_creation_expired(tx: &Tx<'_>, t: &Tid) -> bool {
     tx.core.aspects_of(t).filter(|((_, ak), _)| ak.as_str() == CREATED).flat_map(|(_, s)| s.iter()).all(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.header.expires.is_some_and(|x| x <= now)))
 }
 
-/// Drops everything of `t` (`end_ended`) but what judges a purge's ending. Whether the role
-/// timelines' inputs changed: an ending by purge keeps them.
+/// Whether something held here depends on `t`'s record (the module doc): a held record naming
+/// it first admin, or for a key actor a held commit it signed or acted in with a part held on
+/// another thing. The second walks the commits: only a key actor's ending asks it, which is rare
+/// (notes/coordination.md, Rare paths may be brute force).
+pub(crate) fn dependents(core: &crate::engine::Core, t: &Tid) -> bool {
+    if core.ix.held.first_admin_of(t).next().is_some() {
+        return true;
+    }
+    if !core.is_key_actor(t) {
+        return false;
+    }
+    core.ix.commits.values().any(|m| (m.header.author == *t || m.header.actor == *t) && m.header.aspects.iter().enumerate().any(|(ai, a)| a.tid != *t && !m.dropped.contains_key(&ai)))
+}
+
+/// Drops everything of `t` (`end_ended`) but what it keeps (the module doc). Whether the role
+/// timelines' inputs changed: they do when it keeps nothing.
 fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<bool> {
-    let by_purge = !every_creation_expired(tx, t);
-    if by_purge {
+    let keep = !every_creation_expired(tx, t) || dependents(tx.core, t);
+    if keep {
         // what stays still reads as gone (`Core::exists`): observers hear it
         reads_again(t, changed);
     }
     // the holders its `roles.0` entries keyed go with the entries: read while the parts are held
-    let edge_commits: Vec<CommitId> = if by_purge { Vec::new() } else { tx.core.ix.held.commits_on(t).iter().map(|c| c.id).collect() };
+    let edge_commits: Vec<CommitId> = if keep { Vec::new() } else { tx.core.ix.held.commits_on(t).iter().map(|c| c.id).collect() };
     for id in &edge_commits {
         let parts = crate::apply::edge_parts(tx, id)?;
         let view = tx.core.ix.commits.get(id).map(|m| m.view.clone());
@@ -113,7 +130,7 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
             }
         }
     }
-    let aspects: Vec<(Ak, Vec<CommitId>)> = tx.core.aspects_of(t).filter(|((_, ak), _)| !by_purge || !judges_ending(ak.as_str())).map(|((_, ak), s)| (ak.clone(), s.iter().map(|x| x.1).collect())).collect();
+    let aspects: Vec<(Ak, Vec<CommitId>)> = tx.core.aspects_of(t).filter(|((_, ak), _)| !keep || !judges_ending(ak.as_str())).map(|((_, ak), s)| (ak.clone(), s.iter().map(|x| x.1).collect())).collect();
     for (ak, commits) in &aspects {
         for c in commits {
             if let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(t, ak)) {
@@ -146,10 +163,18 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
         tx.core.valueless_dirty.insert(k.clone());
         changed.insert(k);
     }
-    if !by_purge {
+    if !keep {
+        let up = tx.core.created(t).and_then(osis_base::CreationRecord::first_admin);
         tx.txn.remove_local(&[records::CREATED, t.as_bytes()].concat(), Shred::Yes)?;
         tx.core.ix.held.forget_record(t);
+        // its first admin, ended and kept only as this record's chain proof, goes too
+        if let Some(up) = up
+            && tx.core.created(&up).is_some()
+            && tx.core.ended(&up)
+        {
+            end_thing(tx, &up, changed)?;
+        }
     }
     tx.core.role_changed();
-    Ok(!by_purge)
+    Ok(!keep)
 }

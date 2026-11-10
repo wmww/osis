@@ -253,8 +253,10 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>) -> Joined<'a> {
         let out: BTreeSet<PartRef> = waiting.union(&thrown).copied().collect();
         let view: Vec<Commit> = live.iter().filter(|c| applied.contains(&c.id)).map(|c| without(c, &out)).collect();
         let leads = leads(&world, &live, &view);
-        // a thing exists while a creation of it joins (notes/expiry-creation-design.md §3)
-        let exists: BTreeSet<ThingId> = view.iter().flat_map(|c| c.parts.iter()).filter(|p| creation(p).is_some()).map(|p| p.thing).collect();
+        // a thing exists while a creation of it joins, or while it is known by its record alone,
+        // no held commit listing a creation of it (spec/commits.md §5: a record is identity)
+        let listed: BTreeSet<ThingId> = live.iter().flat_map(|c| c.parts.iter()).filter(|p| p.aspect == Aspect::CREATED).map(|p| p.thing).collect();
+        let exists: BTreeSet<ThingId> = view.iter().flat_map(|c| c.parts.iter()).filter(|p| creation(p).is_some()).map(|p| p.thing).chain(world.links.keys().copied().filter(|t| !listed.contains(t))).collect();
         let parts = || live.iter().flat_map(|c| c.parts.iter().enumerate().map(move |(i, p)| (c, i, p))).filter(|(_, _, p)| held(p));
         // a part the node cannot judge (notes/expiry-creation-design.md §3 Unjudgeable): not held
         let t: BTreeSet<PartRef> = parts()
@@ -491,8 +493,7 @@ fn judge(h: &Held) -> Outcome {
         for c in live.iter().filter(|c| c.kind != CommitKind::Snapshot) {
             for (i, p) in c.parts.iter().enumerate() {
                 // a part the node does not hold is judged once fetched again
-                // a key actor's creation has no holder: nobody ends it (spec/permissions.md §6)
-                let right = creation(p).is_none_or(|l| l.first_admin().is_some()) && tl.right(q.author, q.actor, q.key(), q.id, p.retention.by, c.actor, p.thing);
+                let right = tl.right(q.author, q.actor, q.key(), q.id, p.retention.by, c.actor, p.thing);
                 if thrown.contains(&(c.id, i)) || !names(q, c, p) || !right {
                     continue;
                 }

@@ -152,13 +152,14 @@
 ## 4. Verifying authors: certificates
 - A write's authority is checked through the chain from its author up: each link is an edge write or a record edge (the tid commits to the first admin), ending at a key actor whose tid commits to its public key; an account's commit also through its signing chain to the epoch it names (§5.4, §5.5). No secrets are needed.
 - **Chain certificates** of an actor for a thing are built on the things on any path from the actor to the thing over record edges and every edge any held edge write sets, at any time, applied or not. They are:
-  - for each such thing, its `created.0` record (and those up its record chain);
+  - for each such thing, its creation record (and those up its record chain), raw in a record blob (spec/wire.md §3), never a copy of the commit that minted it: a record outlives that commit's retention;
   - for each such actor, its **current `keys.0` commits**: its newest `keys.0` commit and the rotation commits of its newest keyset of each role, forks included, each projected to `keys.0` (the newest may write no keyset, and a rotation of what the actor holds names its keyset, spec/crypto.md §4; the keysets carry the proofs Authority is judged by);
   - for each such account, the rotations of its signing chain the node holds, every line, as header-only copies (§5.5, Chains travel), and their thing lists for things under the label (§5.5);
   - every held edge write on a grant between two of those things (projected to its grant deltas);
   - closed under authors: for each such write, its author's chain certificates for its target and for its holder.
 - **Nothing of a node goes under another label than its account's D's** (target, issues/account-signing.md steps 7, 8): a node's `keys.0`, `node.0` and `reach.0` commits go under D's home label only, as D's holder card, each a commit of its own touching nothing else, never re-placed unchanged. No group label holds a node's certificate, card or tid.
-- **Placing**: when a node first places anything under a label, and whenever they change, it places its account's chain certificates (for the label's group and for each actor it has acted for) and the cards (`created.0`, `keys.0`) of the key actors other than accounts holding the label's group (spec/sync.md §3; a non-writer of the label by deposit), except the deltas an entry under the label already holds:
+- **Placing**: when a node first places anything under a label, and whenever they change, it places its account's chain certificates (for the label's group and for each actor it has acted for) and the cards (record, `keys.0`) of the key actors other than accounts holding the label's group (spec/sync.md §3; a non-writer of the label by deposit), except the deltas and records an entry under the label already holds:
+  - the records missing go as one record blob of the placing node's; a record blob placed by any node counts once opened, while it is present at every host the node syncs the label with;
   - a certificate copy or closure blob placed by any node counts once the node has opened it as the same commit and checked each of its deltas against the header's delta hash (spec/commits.md §4), while it is present at every host the node syncs the label with;
   - a blob of a rotation commit of the label's actor (wrapped under the epoch it supersedes, spec/crypto.md §5) counts only if it opens under the newest read epoch.
 - Deltas on things in the label's closure go as closure blobs, never as copies.
@@ -315,7 +316,7 @@ A commit of account P names the epoch it is signed at (spec/wire.md §4); §5.4 
   - A held body stripped for carrying a purged value (a snapshot, a delta carrying a copy, spec/crdt.md §4.7) stays held as its leftover with any such fall: its value-less copies yield to the valued copy wherever one joins (spec/crdt.md §4.7 Join), and a copy of it that arrives replaces it, stripped again if it carries another's.
   - A body no node holds stays gone; the delta then reads as never received.
   - Held value-less again before a copy comes, it holds the leftover it set aside, as at a node that never saw the fall.
-- **Ending** (spec/commits.md §5): a request holds the right over a `created.0` delta as over any delta, by the set the delta's retention names. A key actor's has no holder.
+- **Ending** (spec/commits.md §5): a request holds the right over a `created.0` delta as over any delta, by the set the delta's retention names; a key actor's, by the key actor itself (admin on itself).
 - **Who may undo a purge so**: the author of a demotion, whose frontier omits the request. A frontier may list a message and omit its purge, and the message is back wherever a copy is left. An addendum vouches for no purge request (§5.2). A memory delta vanished stays gone.
 - A node deletes at hosts on its judgment after syncing, with no waiting time.
 - The same right decides whether a compaction snapshot may drop a body it covers (spec/commits.md §5); a body a right holder dropped under a snapshot whose right later falls stays dropped.

@@ -92,6 +92,9 @@ impl Default for Synced {
     }
 }
 
+/// An opened inbox payload kept while it awaits: the commit's plaintext, its chain, its records.
+pub(crate) type InboxPlain = (Vec<u8>, Vec<osis_base::Value>, Vec<osis_base::CreationRecord>);
+
 /// The sync engine of one node.
 pub struct SyncEngine {
     pub(crate) engine: Engine,
@@ -190,8 +193,8 @@ pub struct SyncEngine {
     /// judged yet, and what they await. In memory: a
     /// restart looks at every inbox blob once.
     pub(crate) inbox_awaits: BTreeMap<(LabelId, osis_base::BlobId), BTreeSet<Tid>>,
-    /// The opened bytes of the blobs `inbox_awaits` holds (the commit and its chain).
-    pub(crate) inbox_plain: BTreeMap<(LabelId, osis_base::BlobId), (Vec<u8>, Vec<osis_base::Value>)>,
+    /// The opened bytes of the blobs `inbox_awaits` holds (the commit, its chain and records).
+    pub(crate) inbox_plain: BTreeMap<(LabelId, osis_base::BlobId), InboxPlain>,
     /// `state.version` the sweep of reading-only sources last ran at (`sweep_unchecked`).
     pub(crate) unchecked_swept: Option<u64>,
     /// When a certificate left to its author (`SETTLE_MS`), or another node's body or deposit
