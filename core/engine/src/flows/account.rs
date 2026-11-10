@@ -117,11 +117,14 @@ impl AccountView {
         self.epochs.keys().map(|e| (*e, (self.rule.unnamed(e), (*e != FIRST_EPOCH && c.holds(e)).then(|| c.counts(e))))).collect()
     }
 
-    /// The heads: counting epochs no counting rotation supersedes, ascending.
+    /// The heads: counting epochs no counting rotation descends from (signed at it, or a merge
+    /// accepting it), ascending. By descent, never by a supersedes list, which its rotator
+    /// writes as it likes (a removed node's fork superseding the epoch that closed it would
+    /// hide that epoch from the merge).
     pub(crate) fn heads(&self) -> Vec<CommitId> {
         let c = self.rule.chain();
-        let superseded: BTreeSet<CommitId> = self.epochs.iter().filter(|(id, _)| **id != FIRST_EPOCH && c.holds(id) && c.counts(id)).flat_map(|(_, e)| e.supersedes.iter().copied()).collect();
-        self.epochs.keys().filter(|e| c.epoch_counts(e) && !superseded.contains(*e)).copied().collect()
+        let below: BTreeSet<CommitId> = self.rotations.iter().filter(|r| c.holds(&r.id) && c.counts(&r.id)).flat_map(|r| std::iter::once(r.at).chain(r.names.intersection(&r.signed).copied())).collect();
+        self.epochs.keys().filter(|e| c.epoch_counts(e) && !below.contains(*e)).copied().collect()
     }
 
     /// The seed of held epoch `e` among `held`'s.
@@ -497,12 +500,21 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
                 cands.extend(super::lists::named_by(tx, e)?.into_iter().map(|(c, _)| c));
             }
         }
-        // the names of the candidates, with the listings among their sources and what those name
+        // the names of the candidates, with the listings among their sources and among them, and
+        // what those name
         let mut names: BTreeMap<CommitId, Vec<(Tid, CommitId)>> = BTreeMap::new();
         let mut work: Vec<CommitId> = cands.iter().copied().collect();
         while let Some(c) = work.pop() {
             if names.contains_key(&c) {
                 continue;
+            }
+            // a candidate that is a listing: what it names stands or falls with it
+            if tx.core.ix.commits.get(&c).is_some_and(|m| m.view.author == p && m.view.epoch.is_some() && m.view.kind.is_role()) && !now.contains_key(&c) {
+                for (n, _) in super::lists::named_by(tx, &c)? {
+                    if cands.insert(n) {
+                        work.push(n);
+                    }
+                }
             }
             let ns = super::lists::names_of(tx, &c)?;
             for (_, s) in &ns {

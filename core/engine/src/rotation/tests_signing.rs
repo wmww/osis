@@ -90,8 +90,12 @@ fn removal_rotates_the_account_and_its_lists_keep_its_writes_spec_permissions_5_
     write(&mut lp, 1, t, "sibling");
     lp.sync_all().unwrap();
     let o = lp.peers[2].engine.me();
+    let deposit = lp.peers[0].engine.deposit_seed(&a.devices).unwrap().unwrap();
     let done = remove(&mut lp, 0, a.devices, 1);
     assert_eq!(done.commits.len(), 2, "the removal, then the rotation");
+    // D's labels derive deposit keys from the account's seed, fresh with the rotation, so the
+    // removed node deposits under them no more (spec/crypto.md §3)
+    assert_ne!(lp.peers[0].engine.deposit_seed(&a.devices).unwrap().unwrap().expose(), deposit.expose(), "a fresh deposit seed");
     let rot = lp.peers[0].engine.header(&done.commits[1]).unwrap();
     assert!(rot.rotation.is_some() && rot.author == a.account);
     // the outsider gets the rotation (with its lists), not the removal
@@ -224,4 +228,104 @@ fn a_rotation_lists_its_epoch_only() {
     let (small, large) = (count(5), count(50));
     assert!(large.0 >= small.0 + 45, "the first rotation lists its epoch: {small:?} {large:?}");
     assert_eq!(small.1, large.1, "the second lists only its own epoch");
+}
+
+// spec/permissions.md §5.4, §5.5: a removed node that forks the chain from its closed epoch, its
+// rotation's list naming its own later write, wins nothing once a node of the account merges:
+// the merge supersedes the fork unnamed (D's roster does not authorize it), so the fork is
+// rejected with its list, and the removed node's write counts for nothing at a sibling or an
+// outsider holding the merge
+#[test]
+fn a_removed_nodes_fork_is_merged_out_spec_permissions_5_4() {
+    let (mut lp, a, t) = world(4, 3);
+    let done = remove(&mut lp, 0, a.devices, 2);
+    send(&mut lp, 0, 1, &done.commits);
+    send(&mut lp, 0, 3, &done.commits[1..]);
+    // the removed node, unaware, writes and rotates: its rotation lists the write
+    let late = write(&mut lp, 2, t, "removed");
+    let fork = lp.peers[2].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[])).unwrap().unwrap();
+    for to in [0, 1, 3] {
+        send(&mut lp, 2, to, &[late, fork]);
+    }
+    let mut merges = Vec::new();
+    for k in [0, 1] {
+        merges.extend(lp.peers[k].engine.signing_due().unwrap().commits);
+    }
+    assert_eq!(merges.len(), 1, "one node of the account merges");
+    let h = lp.peers[0].engine.header(&merges[0]).or_else(|| lp.peers[1].engine.header(&merges[0])).unwrap();
+    let rh = h.rotation.as_ref().unwrap();
+    assert!(rh.supersedes.contains(&fork) && rh.names.is_empty(), "the fork superseded unnamed: {rh:?}");
+    for k in [0, 1] {
+        for to in [0, 1, 3] {
+            if to != k {
+                send(&mut lp, k, to, &merges);
+            }
+        }
+    }
+    // the write's body dropped with its fall is offered again
+    send(&mut lp, 2, 3, &[late]);
+    for k in [0, 1, 3] {
+        assert_ne!(read(&mut lp, k, t), Some(Value::Str("removed".into())), "peer {k}: the removed node's write counts after the merge");
+    }
+    let w = write(&mut lp, 1, t, "after");
+    send(&mut lp, 1, 3, &[w]);
+    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("after".into())), "the merge's epoch is open");
+}
+
+// spec/permissions.md §5.5 (Listings): a listing names what it names only while it counts. A
+// sibling's write counts at an outsider by the sibling's listing; once a later rotation closes
+// the listing's epoch without naming the listing (its rotator never received it, and removes the
+// sibling), the write counts for nothing, as a rebuild of the index reads it
+#[test]
+fn a_listing_names_nothing_once_its_epoch_closes_unnamed_spec_permissions_5_5() {
+    let (mut lp, a, t) = world(4, 3);
+    let c = write(&mut lp, 1, t, "sibling");
+    let r1 = remove(&mut lp, 0, a.devices, 2);
+    send(&mut lp, 0, 1, &r1.commits);
+    send(&mut lp, 0, 3, &r1.commits[1..]);
+    let listing = *lp.peers[1].engine.commit_ids().last().unwrap();
+    assert!(lp.peers[1].engine.header(&listing).unwrap().aspects.iter().any(|x| x.ak.as_str() == "listing.0"));
+    send(&mut lp, 1, 3, &[listing, c]);
+    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("sibling".into())), "named by the listing");
+    lp.advance(10);
+    let r2 = remove(&mut lp, 0, a.devices, 1);
+    send(&mut lp, 0, 3, &r2.commits[1..]);
+    let incremental = read(&mut lp, 3, t);
+    lp.peers[3].engine.rebuild_index().unwrap();
+    assert_eq!(incremental, read(&mut lp, 3, t), "incremental and rebuilt agree");
+    assert_eq!(incremental, Some(Value::Str("p".into())), "the listing's epoch closed unnamed: the write counts for nothing");
+}
+
+// spec/permissions.md §5.5 (Listings, Nothing waits for a thing list): a listing at an epoch a
+// later rotation closes counts once that rotation's thing list naming it arrives, and then names
+// what it names: the sibling's write it lists counts again, as a rebuild of the index reads it
+#[test]
+fn a_listing_named_late_names_again_spec_permissions_5_5() {
+    let (mut lp, a, t) = world(5, 4);
+    let c = write(&mut lp, 1, t, "sibling");
+    let r1 = remove(&mut lp, 0, a.devices, 2);
+    send(&mut lp, 0, 1, &r1.commits);
+    send(&mut lp, 0, 4, &r1.commits[1..]);
+    let listing = *lp.peers[1].engine.commit_ids().last().unwrap();
+    assert!(lp.peers[1].engine.header(&listing).unwrap().aspects.iter().any(|x| x.ak.as_str() == "listing.0"));
+    send(&mut lp, 1, 0, &[listing]);
+    send(&mut lp, 1, 4, &[listing, c]);
+    assert_eq!(read(&mut lp, 4, t), Some(Value::Str("sibling".into())), "named by the listing");
+    lp.advance(10);
+    let r2 = remove(&mut lp, 0, a.devices, 3);
+    let rot = r2.commits[1];
+    assert!(lp.peers[0].engine.rotation_lists(&rot).unwrap().iter().any(|(_, ids)| ids.contains(&listing)), "the rotation lists the listing");
+    // the rotation first, its lists after
+    let pk = lp.peers[0].engine.package(&rot).unwrap().unwrap();
+    lp.peers[4].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    assert_eq!(read(&mut lp, 4, t), Some(Value::Str("p".into())), "the listing unnamed at its closed epoch names nothing");
+    for l in &pk.lists {
+        lp.peers[4].engine.hold_lists(l).unwrap();
+    }
+    send(&mut lp, 1, 4, &[listing, c]);
+    let incremental = read(&mut lp, 4, t);
+    lp.peers[4].engine.rebuild_index().unwrap();
+    send(&mut lp, 1, 4, &[listing, c]);
+    assert_eq!(incremental, read(&mut lp, 4, t), "incremental and rebuilt agree");
+    assert_eq!(incremental, Some(Value::Str("sibling".into())), "the listing, named, names the write again");
 }

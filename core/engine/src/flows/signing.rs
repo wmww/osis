@@ -49,29 +49,35 @@ type PerThing = (BTreeSet<CommitId>, Vec<(osis_base::WallMs, CommitId)>);
 /// signed at the newest open epoch held, minting one whose seed goes into D's `account.0` (under
 /// D's newest read epoch, so only D's current nodes open it) and its public keys into P's
 /// `keys.0`. With no epoch open (concurrent rotations close each other's) it is a merge of the
-/// heads: signed at one, superseding each, naming the others with a signature by each one's key.
+/// heads: superseding each, signed at the lowest one D's roster authorizes and naming the other
+/// authorized ones with a signature by each one's key; a head no current node minted (a removed
+/// node's fork) is superseded unnamed, so the merge rejects it.
 /// Its thing lists name the commits of P this node holds at the epochs it closes that no word
 /// names, by the cutoff (`nameable`: at an open epoch every one received), cut per thing it has
 /// a delta on or acts for; within the bound, plain content past it left to this node's listings.
-/// `None`: a head's seed is not held here (another node merges).
+/// `None`: an authorized head's seed is not held here, or no head is authorized.
 pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId]) -> Result<Option<CommitId>> {
     let held = tx.core.accounts.get(&p).cloned().ok_or(Error::Misuse("not an account held here"))?;
     let v = tx.core.account_view(&p).ok_or(Error::Misuse("no signing chain for the account"))?;
     let signing = tx.core.account_signing(&p).ok().flatten();
+    let mut names = Vec::new();
     let (at, supersedes, merge_keys, closes) = match signing {
         Some((e, _)) => (None, vec![e], Vec::new(), v.open().to_vec()),
         // an open epoch whose seed is not here yet (its removal has not arrived): nothing to act at
         None if !v.open().is_empty() => return Ok(None),
         None => {
+            // the merge supersedes every head and names (accepts) only those D's roster
+            // authorizes: a removed node's fork is superseded unnamed, so it is rejected with
+            // its lists (spec/permissions.md §5.4)
             let heads = v.heads();
-            let mut keys = Vec::new();
-            for h in &heads {
-                let Some(k) = v.seed_of(h, &held).map(|s| AccountEpochKeys::from_seed(&s)) else { return Ok(None) };
-                keys.push(k);
+            let mut named = Vec::new();
+            for h in authorized(tx, &held.devices, &heads)? {
+                let Some(k) = v.seed_of(&h, &held).map(|s| AccountEpochKeys::from_seed(&s)) else { return Ok(None) };
+                named.push((h, k));
             }
-            let (Some(first), true) = (keys.first().cloned(), heads.len() > 1) else { return Ok(None) };
-            let at = heads.first().copied().map(|h| (h, first));
-            (at, heads.clone(), keys.into_iter().skip(1).map(|k| k.signing).collect(), heads)
+            let Some((first, k)) = named.first().cloned() else { return Ok(None) };
+            names = named.iter().skip(1).map(|x| x.0).collect();
+            (Some((first, k)), heads.clone(), named.into_iter().skip(1).map(|x| x.1.signing).collect(), heads)
         }
     };
     // per thing: role-class and purge-request commits, then plain ones by receipt
@@ -139,8 +145,6 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId]) -> Result<Op
     acct.seeds.insert(signing.to_bytes().to_vec(), seed.expose().to_vec());
     m.set(held.devices, &ct::ACCOUNT, &acct)?;
     let lists = leaves.into_iter().zip(paths).map(|((i, l), path)| (i, path.siblings, l)).collect();
-    // a merge names the heads it is not signed at
-    let names = if at.is_some() { supersedes.iter().skip(1).copied().collect() } else { Vec::new() };
     let mut sup = supersedes;
     sup.sort();
     m.rotation = Some(AccountRotation { header: RotationHeader { signing_key: signing, kem_key: keys.kem.public().clone(), supersedes: sup, names, list_root: root }, merge_keys, lists, at });
@@ -360,14 +364,26 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>) -> Result<Option<CommitId>> {
     rotate_in(tx, p, &unnamed)
 }
 
+/// The heads among `heads` that D's roster authorizes: minted by a node `d` holds as current, by
+/// inner signature (spec/permissions.md §5.4, Nodes of P), ascending.
+fn authorized(tx: &mut Tx<'_>, d: &Tid, heads: &[CommitId]) -> Result<Vec<CommitId>> {
+    let roster: BTreeSet<Tid> = tx.core.key_holders(d).into_iter().map(|(m, _)| m).collect();
+    let mut out = Vec::new();
+    for h in heads {
+        let by = tx.get_commit(h)?.and_then(|b| tx.core.inner_node(&b));
+        if by.is_some_and(|n| roster.contains(&n)) {
+            out.push(*h);
+        }
+    }
+    Ok(out)
+}
+
 /// Whether this node merges the heads (one merger, so the merges do not fork again): the node
-/// whose rotation is the lowest head, by inner signature, while it is a node of the account;
-/// else (it left) this one.
+/// whose rotation is the lowest head D's roster authorizes, by inner signature.
 fn merger(tx: &mut Tx<'_>, v: &super::account::AccountView, d: &Tid) -> Result<bool> {
-    let Some(first) = v.heads().into_iter().next() else { return Ok(false) };
-    let Some(b) = tx.get_commit(&first)? else { return Ok(false) };
-    let by = tx.core.inner_node(&b);
-    Ok(by == Some(tx.core.id.tid()) || by.is_none_or(|n| !tx.core.key_holders(d).iter().any(|(m, _)| *m == n)))
+    let Some(first) = authorized(tx, d, &v.heads())?.into_iter().next() else { return Ok(false) };
+    let by = tx.get_commit(&first)?.and_then(|b| tx.core.inner_node(&b));
+    Ok(by == Some(tx.core.id.tid()))
 }
 
 impl Engine {
