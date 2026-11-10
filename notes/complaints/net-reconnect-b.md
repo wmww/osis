@@ -3,3 +3,4 @@
 - A mutation run of the `until::` tests (one rule disabled at a time) took about 3 minutes of rebuilds; a small script in the scratch dir did it, worth keeping as a tool.
 - `sources::thin_client_over_quic` (osis, networking tier 2) failed once under the heavy lock ("not reached: down", 60 s) and passed on the rerun: flaky, unrelated to the shared set.
 - Review: the gate stops at a failing property (here a `held_set_decides_plain` Keeps-floor miss, engine-only) before the sim sweep, so the sweep had to be run by hand with the gate's offset.
+- review 2: `tools/bin-at` needs a clean tree, and an issue on origin/main is missing until the rebase: rebase before filing to an issue that landed after the branch point.
