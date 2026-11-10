@@ -275,7 +275,7 @@ pub struct AspectView {
     pub bounded: bool,
     /// Purge on replace (`retention::replace`).
     pub none: bool,
-    /// A permanent delta (`AspectEntry::permanent`) of a durable commit.
+    /// A permanent delta (`retention::history::permanent`) of a durable commit.
     pub permanent: bool,
     /// The fire it claims to replace (spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
