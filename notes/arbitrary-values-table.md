@@ -151,7 +151,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `LAN_JOIN_REPEATS` 2, `LAN_JOIN_GAP` 1 s (provisional) | M | a lost first announcement waits `LAN_ANNOUNCE` / one datagram per gap for ever |
 | `LAN_ANNOUNCE` 30 s, `LAN_REJOIN_MIN` 30 s (provisional) | M | repeats at the loop's speed, a network change rejoins at once / one announcement per join, a network change never rejoins |
 | `LAN_FRESH_MS` 2 windows, `PEERS_TTL_MS` 60 s | M (dialing only; opens check access) | |
-| `SETTLE_MS` 30 s, `RELAY_MIN_MS` 5 s | M (co-writers both upload: duplicate work, idempotent) | |
+| `SETTLE_MS` 30 s, `RELAY_MIN_MS` 5 s | M (co-writers both upload: duplicate work, idempotent; admins all give a plain thing with a holder secrets of its own: a fork and a label each, pruned) | |
 | `PASS_AGAIN` 8 (sync/mod.rs) | M (past it a marked label waits for the next event, a resync at the latest) | |
 | `RELINK_BACKOFF_MS` 1 h - 7 days | R (a host deleting fresh chunks) | |
 | `sync_now` pings a connection quiet for `retry_ms`, nothing outstanding (`SyncEngine::refresh`) | M (existing knob) | a ping per poll per connection / a dead connection found only by the periodic ping |

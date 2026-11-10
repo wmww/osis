@@ -42,7 +42,10 @@ pub struct Verdicts {
 }
 
 /// How long another node's fresh demotion or `keys.0` is left to its author before this node
-/// places it as its own chain certificate (ms; `settle_by` brings the pass back after).
+/// places it as its own chain certificate, and a plain thing with a holder to the author of its
+/// newest edge write before this node gives it secrets of its own (ms; `settle_by` brings the
+/// pass back after). Minor consequence: at 0 nodes duplicate the work (a copy each, a fork of the
+/// thing's secrets each); at infinity what an absent author left is never done.
 const SETTLE_MS: u64 = 30_000;
 
 /// The least a writer waits, after receiving another node's commit or seeing a deposit, before
