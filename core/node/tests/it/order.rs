@@ -606,6 +606,17 @@ fn pct(x: u64, of: u64) -> String {
     format!("{:.0}%", 100.0 * x as f64 / of.max(1) as f64)
 }
 
+/// After `by`'s purge request `r` naming `(t, a)`: the purger re-snapshots the aspect where it
+/// may write, as node-sync does (spec/commits.md §5 Purge; duplicates are harmless). Without it a
+/// node that never held a purged body reads what came before it for good (spec/requirements.md
+/// Deterministic, the limit for expiring or purged edits).
+fn resnapshot<T, E>(lp: &mut LocalPeer, r: &Result<Option<T>, E>, by: usize, t: Tid, a: &Ak) {
+    if matches!(r, Ok(Some(_))) {
+        lp.peers[by].clock.advance(1);
+        let _ = lp.peers[by].engine.snapshot(&t, a);
+    }
+}
+
 /// A refusal's name, for `Tally`: the error up to its fields, with its message if it has one.
 fn why<T, E: std::fmt::Debug>(r: &Result<T, E>) -> Option<String> {
     r.as_ref().err().map(|e| {
@@ -874,9 +885,12 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let t = th(t);
                 if let Some(commit) = own[of].len().checked_sub(1 + back as usize).and_then(|i| own[of].get(i)).copied() {
                     let mut m = Mutation::new();
-                    m.purge(osis_commit::PurgeItem::Commit { commit, tid: t, ak: purged_ak(&lp.peers[by].engine, &commit, t) });
+                    let a = purged_ak(&lp.peers[by].engine, &commit, t);
+                    m.purge(osis_commit::PurgeItem::Commit { commit, tid: t, ak: a.clone() });
                     m.set(t, &REG, &s(&format!("p{v}"))).unwrap();
-                    no = why(&lp.peers[by].commit(m));
+                    let r = lp.peers[by].commit(m);
+                    no = why(&r);
+                    resnapshot(&mut lp, &r, by, t, &a);
                 }
                 Some(by)
             }
@@ -885,12 +899,18 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let k = ak("t:reg.0");
                 let named = own[of].len().checked_sub(1 + back as usize).and_then(|i| own[of].get(i)).copied();
                 let mut m = Mutation::new();
+                let a = match named {
+                    Some(commit) => purged_ak(&lp.peers[by].engine, &commit, t),
+                    None => k,
+                };
                 m.purge(match named {
-                    Some(commit) => osis_commit::PurgeItem::Commit { commit, tid: t, ak: purged_ak(&lp.peers[by].engine, &commit, t) },
-                    None => osis_commit::PurgeItem::Aspect { tid: t, ak: k },
+                    Some(commit) => osis_commit::PurgeItem::Commit { commit, tid: t, ak: a.clone() },
+                    None => osis_commit::PurgeItem::Aspect { tid: t, ak: a.clone() },
                 });
                 m.set(t, &REG, &s(&format!("p{v}"))).unwrap();
-                no = why(&lp.peers[by].commit(m));
+                let r = lp.peers[by].commit(m);
+                no = why(&r);
+                resnapshot(&mut lp, &r, by, t, &a);
                 Some(by)
             }
             Step::PurgeAuthor { by, t, of } => {
@@ -899,7 +919,9 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let now = lp.peers[by].engine.now();
                 m.set(t, &osis_schema::core_types::PURGE, &now).unwrap();
                 m.purge(osis_commit::PurgeItem::Author { tid: t, ak: ak("t:reg.0"), actor });
-                no = why(&lp.peers[by].commit(m));
+                let r = lp.peers[by].commit(m);
+                no = why(&r);
+                resnapshot(&mut lp, &r, by, t, &ak("t:reg.0"));
                 Some(by)
             }
             Step::Sync { from, to } => {
@@ -2742,12 +2764,12 @@ fn held_set_decides_exhaustive() {
 /// The orders the step-4 order harness tried on its long histories: 8 shuffles, 4 partial sets.
 const WIDE: Cfg = Cfg { all_up_to: 0, random: 8, subsets: 4, model: false, ..ORDERS };
 
-// issues/purge-before-write.md (spec/permissions.md §6): a delta dropped while
-// invalid, valid again and purged by author before its refetch has no leftover, so the node reads
-// the older value where one that held the body reads absent. The history as the order harness made it.
+// spec/requirements.md Deterministic (an expiring or purged edit a node never held), spec/commits.md
+// §5 Purge: a delta dropped while invalid, valid again and purged by author before its refetch has
+// no leftover, so the node reads the older value until it holds the purger's re-snapshot, which
+// carries the purged write value-less; then it reads as a node that held the body.
 #[test]
-#[ignore = "open: issues/purge-before-write.md"]
-fn repro_purge_author_order_452234901986() {
+fn purge_before_write_resnapshot_repairs_spec_commits_5() {
     use Step::*;
     let h = vec![Sync { from: 1, to: 0 }, Sync { from: 2, to: 1 }, Sync { from: 0, to: 2 }, Aim(Box::new(PurgeAuthor { by: 2, t: 2, of: 0 })), Aim(Box::new(Message { by: 0, t: 2, v: 8 })), Aim(Box::new(PurgeAuthor { by: 2, t: 2, of: 1 })), Aim(Box::new(Message { by: 1, t: 2, v: 9 })), Aim(Box::new(Message { by: 1, t: 1, v: 5 })), Aim(Box::new(PurgeAuthor { by: 2, t: 3, of: 1 })), Sync { from: 0, to: 2 }, Aim(Box::new(PurgeAuthor { by: 0, t: 2, of: 2 })), Aim(Box::new(Message { by: 1, t: 3, v: 3 })), Aim(Box::new(Message { by: 0, t: 0, v: 5 })), Advance { who: None, ms: 1069 }, Advance { who: None, ms: 27 }, Aim(Box::new(PurgeAuthor { by: 0, t: 3, of: 2 })), Sync { from: 2, to: 0 }, Aim(Box::new(PurgeAuthor { by: 0, t: 1, of: 0 })), Aim(Box::new(Demote { by: 0, t: 3, holder: 2, at: 3, to_read: true })), Advance { who: None, ms: 1602 }, Aim(Box::new(Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) })), Aim(Box::new(Message { by: 0, t: 0, v: 2 })), Aim(Box::new(Message { by: 1, t: 1, v: 7 })), Aim(Box::new(Message { by: 0, t: 3, v: 2 })), Aim(Box::new(Message { by: 1, t: 3, v: 7 })), Aim(Box::new(Message { by: 2, t: 2, v: 0 })), Aim(Box::new(Message { by: 0, t: 1, v: 5 })), Aim(Box::new(PurgeAuthor { by: 1, t: 3, of: 2 })), Aim(Box::new(Message { by: 0, t: 2, v: 7 })), Aim(Box::new(PurgeAuthor { by: 0, t: 0, of: 1 })), Aim(Box::new(Message { by: 0, t: 1, v: 4 })), Sync { from: 0, to: 1 }, Aim(Box::new(PurgeAuthor { by: 2, t: 0, of: 2 })), Aim(Box::new(Message { by: 0, t: 3, v: 1 })), Advance { who: None, ms: 1887 }, Aim(Box::new(Message { by: 2, t: 1, v: 3 })), Aim(Box::new(Message { by: 1, t: 3, v: 3 })), Aim(Box::new(Message { by: 2, t: 3, v: 9 })), Advance { who: None, ms: 620 }, Sync { from: 2, to: 1 }, Aim(Box::new(Message { by: 0, t: 3, v: 9 })), Sync { from: 2, to: 1 }, Aim(Box::new(Message { by: 0, t: 2, v: 3 })), Aim(Box::new(Message { by: 0, t: 0, v: 7 })), Advance { who: None, ms: 1499 }, Aim(Box::new(Demote { by: 0, t: 1, holder: 0, at: 1, to_read: true })), Aim(Box::new(Message { by: 2, t: 0, v: 1 })), Aim(Box::new(Message { by: 0, t: 1, v: 2 })), Aim(Box::new(PurgeAuthor { by: 0, t: 0, of: 2 })), Aim(Box::new(PurgeAuthor { by: 2, t: 0, of: 2 }))];
     check(452234901986, &h, WIDE).unwrap();
@@ -3401,10 +3423,11 @@ fn kill_and_purge_in_one_commit_keeps_leftover_spec_commits_5() {
     let played = play(913006, &h);
     let n = played.packs.len();
     let (t, a) = (played.things[0], ak("t:reg.0"));
-    assert_eq!(n, played.base + 3, "{:?}", played.tally.show());
-    let (write, purge) = (played.packs[n - 2].id, played.packs[n - 1].id);
+    // the requirement, the write, the request, the purger's re-snapshot
+    assert_eq!(n, played.base + 4, "{:?}", played.tally.show());
+    let (write, purge) = (played.packs[n - 3].id, played.packs[n - 2].id);
     let made: Vec<usize> = (0..n).collect();
-    let request_first: Vec<usize> = (0..played.base).chain([n - 1, n - 2]).collect();
+    let request_first: Vec<usize> = (0..played.base).chain([n - 2, n - 3, n - 1]).collect();
     for order in [made, request_first] {
         let mut p = deliver(&played, &order);
         let h = p.engine.header(&write).unwrap();
