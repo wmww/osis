@@ -8,6 +8,7 @@
   - an inbox blob (§3).
 - Hosts cannot tell them apart except as §4 states.
 - **Layout**: **clear prefix** || ciphertext. The prefix holds a salt, an optional expiry `T`, the blob's **class** and the delete-key commitments, one per level (spec/crypto.md §7). Ciphertext: spec/crypto.md §5. Bytes, padding, **Blob ID** and the `MAX_BLOB` bound: spec/wire.md §5.
+- An add event or fetch answer whose bytes do not hash to its blob ID is ignored, whoever sends it.
 - **Class**: durable, ephemeral or relay-only, set as spec/wire.md §5 states. Hosts hold ephemeral entries in memory only and relay-only ones not at all (§4, §5).
 - **Several blobs of one commit**: one commit may travel as several blobs (purge rewrites, certificate copies, concurrent re-encryptions): same header and commit ID, each with its own key, salt and ID.
 - **Prefix of a commit encryption**: every encryption of a commit computes its prefix from the header and the aspects its sections list (spec/wire.md §4):

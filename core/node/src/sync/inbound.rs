@@ -168,6 +168,19 @@ impl SyncEngine {
 
     /// `log_events` from `src`.
     pub(crate) fn log_events_from(&mut self, src: Src, l: LabelId, events: Vec<LogEvent>, cursor: Option<Cursor>, out: &mut Vec<super::Action>) -> Result<()> {
+        // an add whose bytes do not hash to its blob ID (a hostile source's) is ignored (spec/sync.md
+        // §1), from any source: one check for every path bytes take below. A fetch it answered is
+        // over, asked again by a later pass (it wakes none: a hostile host's every answer would)
+        let events: Vec<LogEvent> = events
+            .into_iter()
+            .filter(|e| match e {
+                LogEvent::Added { blob_id, blob: Some(b), .. } if osis_label::blob_id(b) != *blob_id => {
+                    self.fetched(blob_id);
+                    false
+                }
+                _ => true,
+            })
+            .collect();
         let conn = match src {
             Src::Host(c) => Some(c),
             _ => None,
@@ -1755,11 +1768,10 @@ impl SyncEngine {
     }
 
     /// Records blob `b`'s prefix salt with every entry naming it that lacks one (spec/sync.md §6
-    /// Tombstones), from `bytes` or the bytes held here. Bytes that are not `b` (a hostile
-    /// source's) give none.
+    /// Tombstones), from `bytes` (checked to be `b`'s, `log_events_from`) or the bytes held here.
     pub(crate) fn keep_salts(&mut self, b: &BlobId, bytes: Option<&[u8]>) -> Result<()> {
         let ls: Vec<LabelId> = self.state.labels_of(b).into_iter().filter(|l| self.state.entries.get(&(*l, *b)).is_some_and(|e| e.salt.is_none())).collect();
-        if ls.is_empty() || bytes.is_some_and(|x| osis_label::blob_id(x) != *b) {
+        if ls.is_empty() {
             return Ok(());
         }
         let held = match bytes {
