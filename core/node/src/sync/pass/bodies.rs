@@ -124,7 +124,9 @@ impl SyncEngine {
     }
 
     /// `Engine::body_keeps` of `c`, judged once per change: kept until the engine marks `c`
-    /// changed (`SyncEngine::keeps`); one marked but not drained yet is judged anew.
+    /// changed (`SyncEngine::keeps`); one marked but not drained yet is judged anew, and so is
+    /// one whose bound a replacement dates (it moves earlier with no mark when an earlier
+    /// superseder of an already dead write arrives).
     pub(super) fn keeps(&mut self, c: &CommitId) -> Result<std::sync::Arc<Vec<u64>>> {
         let pending = self.engine.core.changed.as_ref().is_some_and(|x| x.commits.contains(c));
         if !pending && let Some(k) = self.keeps.get(c) {
@@ -137,7 +139,8 @@ impl SyncEngine {
         }
         let _s = crate::costs::span("pass: body keeps");
         let k = std::sync::Arc::new(self.engine.body_keeps(c)?);
-        if !pending {
+        let undated = self.engine.header(c).is_some_and(|h| h.aspects.iter().zip(k.iter()).all(|(a, x)| osis_commit::retention::body_keep(&h, a, None) == *x));
+        if !pending && undated {
             self.keeps.insert(*c, k.clone());
         }
         Ok(k)
