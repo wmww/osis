@@ -606,12 +606,30 @@ fn pct(x: u64, of: u64) -> String {
     format!("{:.0}%", 100.0 * x as f64 / of.max(1) as f64)
 }
 
-/// After `by`'s purge request `r` naming `(t, a)`: the purger re-snapshots the aspect where it
-/// may write, as node-sync does (spec/commits.md §5 Purge; duplicates are harmless). Without it a
-/// node that never held a purged body reads what came before it for good (spec/requirements.md
+/// The bodies of `(t, a)` peer `e` holds that purge item `item` names (`resnapshot`).
+fn named_held(e: &osis_node::Engine, item: &osis_commit::PurgeItem, t: Tid, a: &Ak) -> Vec<CommitId> {
+    let named = |c: &CommitId, m: &osis_node::engine::Meta| match item {
+        osis_commit::PurgeItem::Commit { commit, .. } => c == commit,
+        osis_commit::PurgeItem::Aspect { .. } => true,
+        osis_commit::PurgeItem::Author { actor, .. } => m.view.actor == *actor,
+    };
+    let on = |m: &osis_node::engine::Meta| m.header.aspects.iter().any(|x| x.tid == t && x.ak == *a);
+    e.core.ix.commits.iter().filter(|(c, m)| named(c, m) && !m.view.kind.is_compaction() && on(m) && e.body_not_dropped(c, &t, a)).map(|(c, _)| *c).collect()
+}
+
+/// After `by`'s purge request `r` naming `(t, a)`, `held` the named bodies it held before: a
+/// writer holding no covering snapshot after applying it re-snapshots (spec/commits.md §5 Purge;
+/// one held covering every named body carries their writes value-less already). Without it a node
+/// that never held a purged body reads what came before it for good (spec/requirements.md
 /// Deterministic, the limit for expiring or purged edits).
-fn resnapshot<T, E>(lp: &mut LocalPeer, r: &Result<Option<T>, E>, by: usize, t: Tid, a: &Ak) {
-    if matches!(r, Ok(Some(_))) {
+fn resnapshot<T, E>(lp: &mut LocalPeer, r: &Result<Option<T>, E>, by: usize, t: Tid, a: &Ak, held: &[CommitId]) {
+    let e = &mut lp.peers[by].engine;
+    if !matches!(r, Ok(Some(_))) || e.role_on(&t) < Some(Role::Write) {
+        return;
+    }
+    let snaps: Vec<CommitId> = e.core.ix.snapshots.get(&(t, a.clone())).into_iter().flatten().map(|x| x.1).collect();
+    let covered = !held.is_empty() && held.iter().all(|b| snaps.iter().any(|s| s != b && e.covered(s, b, &t, a).ok().flatten() == Some(true)));
+    if !covered {
         lp.peers[by].clock.advance(1);
         let _ = lp.peers[by].engine.snapshot(&t, a);
     }
@@ -886,11 +904,13 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 if let Some(commit) = own[of].len().checked_sub(1 + back as usize).and_then(|i| own[of].get(i)).copied() {
                     let mut m = Mutation::new();
                     let a = purged_ak(&lp.peers[by].engine, &commit, t);
-                    m.purge(osis_commit::PurgeItem::Commit { commit, tid: t, ak: a.clone() });
+                    let item = osis_commit::PurgeItem::Commit { commit, tid: t, ak: a.clone() };
+                    let held = named_held(&lp.peers[by].engine, &item, t, &a);
+                    m.purge(item);
                     m.set(t, &REG, &s(&format!("p{v}"))).unwrap();
                     let r = lp.peers[by].commit(m);
                     no = why(&r);
-                    resnapshot(&mut lp, &r, by, t, &a);
+                    resnapshot(&mut lp, &r, by, t, &a, &held);
                 }
                 Some(by)
             }
@@ -903,14 +923,16 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                     Some(commit) => purged_ak(&lp.peers[by].engine, &commit, t),
                     None => k,
                 };
-                m.purge(match named {
+                let item = match named {
                     Some(commit) => osis_commit::PurgeItem::Commit { commit, tid: t, ak: a.clone() },
                     None => osis_commit::PurgeItem::Aspect { tid: t, ak: a.clone() },
-                });
+                };
+                let held = named_held(&lp.peers[by].engine, &item, t, &a);
+                m.purge(item);
                 m.set(t, &REG, &s(&format!("p{v}"))).unwrap();
                 let r = lp.peers[by].commit(m);
                 no = why(&r);
-                resnapshot(&mut lp, &r, by, t, &a);
+                resnapshot(&mut lp, &r, by, t, &a, &held);
                 Some(by)
             }
             Step::PurgeAuthor { by, t, of } => {
@@ -918,10 +940,12 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let mut m = Mutation::new();
                 let now = lp.peers[by].engine.now();
                 m.set(t, &osis_schema::core_types::PURGE, &now).unwrap();
-                m.purge(osis_commit::PurgeItem::Author { tid: t, ak: ak("t:reg.0"), actor });
+                let item = osis_commit::PurgeItem::Author { tid: t, ak: ak("t:reg.0"), actor };
+                let held = named_held(&lp.peers[by].engine, &item, t, &ak("t:reg.0"));
+                m.purge(item);
                 let r = lp.peers[by].commit(m);
                 no = why(&r);
-                resnapshot(&mut lp, &r, by, t, &ak("t:reg.0"));
+                resnapshot(&mut lp, &r, by, t, &ak("t:reg.0"), &held);
                 Some(by)
             }
             Step::Sync { from, to } => {

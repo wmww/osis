@@ -1,0 +1,1 @@
+- Review: libtest captures eprintln in passing tests; a debug tally over a property run needs `--nocapture`.
