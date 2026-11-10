@@ -902,12 +902,35 @@ fn covered_own_entry_whose_answer_was_lost_leaves_the_host_past_the_tombstone_sp
     lost_answer(false, 31);
 }
 
+/// The purged chunks' bytes node `n` stores, and the node log events adding them (what a
+/// co-reader pulling `n` is sent).
+fn chunk_copies(net: &mut Net, n: usize, chunks: &[BlobId]) -> (usize, usize) {
+    let held = chunks.iter().filter(|b| net.sync(n).holds_blob(b)).count();
+    let events = net.engine(n).run(|tx| Ok(tx.txn.log_read(None, 1 << 20)?)).unwrap().events;
+    let logged = events.iter().filter(|e| matches!(e.event, osis_store::NodeEvent::Added(_, b) if chunks.contains(&b))).count();
+    (held, logged)
+}
+
+/// `Net::advance` by `ms`, checking after every message that node `n` holds none of `chunks`.
+fn advance_unheld(net: &mut Net, n: usize, chunks: &[BlobId], ms: u64) {
+    net.tick(ms);
+    for _ in 0..2 {
+        net.feed(n, Event::Local);
+        while net.step() {
+            let held = chunks.iter().filter(|b| net.sync(n).holds_blob(b)).count();
+            assert_eq!(held, 0, "the purged chunks' bytes are stored again");
+        }
+    }
+}
+
 /// spec/sync.md §6 (Tombstones), spec/commits.md §5 (a purge drops every body carrying the
 /// values, chunks included): a large value's chunks a host took while its answers were held are
 /// purged while those answers are still to come (`lost` false: they arrive after the drop) or
 /// after they were lost with the connection; the chunks leave the host once it reports them,
 /// and the node keeps no record of them. `writer`: the purger is a writer, not an admin (it
-/// deletes by its delta's delete key, fetching each chunk again for the salt that signs).
+/// deletes by its delta's delete key, signed for each chunk's salt kept from when it held the
+/// bytes): from the purge on it stores no byte of them and logs none, so a co-reader pulling it
+/// gets none, and it fetches none.
 fn chunks_answered_late(lost: bool, writer: bool) {
     let mut net = Net::new();
     let h = net.add_host();
@@ -942,9 +965,10 @@ fn chunks_answered_late(lost: bool, writer: bool) {
     let mut m = osis_node::Mutation::new();
     m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
     m.remove_aspect(t, &GONE).unwrap();
+    net.fetched.insert(w, Vec::new());
     net.engine(w).commit(m).unwrap();
-    net.feed(w, Event::Local);
-    net.run();
+    advance_unheld(&mut net, w, &chunks, 0);
+    assert_eq!(chunk_copies(&mut net, w, &chunks), (0, 0), "the purge drops the chunks' bytes at once");
     let known = |net: &mut Net| listed(net, w, &l).into_iter().filter(|id| chunks.contains(id)).count();
     if lost {
         assert_eq!(known(&mut net), 0, "the purged chunks left the node while the host was away");
@@ -953,11 +977,13 @@ fn chunks_answered_late(lost: bool, writer: bool) {
         net.release_host(h);
     }
     for _ in 0..4 {
-        net.advance(60_000);
-        net.run();
+        advance_unheld(&mut net, w, &chunks, 60_000);
+        assert_eq!(chunk_copies(&mut net, w, &chunks), (0, 0), "the purged chunks' bytes are logged again");
     }
     assert_eq!(at_host(&mut net), 0, "purged chunks stay at the host");
     assert_eq!(known(&mut net), 0, "the node keeps records of the purged chunks");
+    let fetched = net.fetched[&w].iter().filter(|b| chunks.contains(b)).count();
+    assert_eq!(fetched, 0, "purged chunks fetched again (their salts were here)");
 }
 
 #[test]
@@ -973,6 +999,57 @@ fn purged_chunks_whose_answers_were_lost_leave_the_host_by_delete_key_spec_sync_
 #[test]
 fn purged_chunks_mid_upload_leave_the_host_spec_sync_6() {
     chunks_answered_late(false, false);
+}
+
+#[test]
+fn purged_chunks_mid_upload_leave_the_host_by_delete_key_spec_sync_6() {
+    chunks_answered_late(false, true);
+}
+
+// spec/sync.md §6 (Tombstones: a delete needs only the salt), spec/commits.md §5: a writer (no
+// label delete key) purging another's large value whose chunks it never held deletes them at the
+// host by its delta's delete key: it fetches each for the salt that signs, and stores, logs and
+// serves none of them.
+#[test]
+fn purged_chunks_never_held_are_deleted_by_delete_key_unstored_spec_sync_6() {
+    let mut net = Net::new();
+    let h = net.add_host();
+    let a = net.node(1, &[h]);
+    let b = net.node(2, &[h]);
+    let g = net.group(a, &[(b, Role::Write)], &[h]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &GONE, &s(&big)).unwrap();
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    let chunks: Vec<BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    assert!(!chunks.is_empty(), "a chunked value");
+    // b hears of the chunks and never gets their bytes
+    net.bare_blobs.insert(b, chunks.iter().copied().collect());
+    net.run();
+    assert!(net.engine(b).header(&c).is_some(), "b holds the commit");
+    assert!(chunks.iter().all(|id| net.host_ids(h, &l).contains(id)), "the host holds the chunks");
+    assert!(chunks.iter().all(|id| listed(&mut net, b, &l).contains(id)), "b knows the chunk entries");
+    assert_eq!(chunk_copies(&mut net, b, &chunks), (0, 0), "b holds no chunk");
+    // the purger alone may delete there
+    net.set_online(a, false);
+    net.bare_blobs.remove(&b);
+    net.fetched.insert(b, Vec::new());
+    let mut m = osis_node::Mutation::new();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
+    m.remove_aspect(t, &GONE).unwrap();
+    net.engine(b).commit(m).unwrap();
+    for _ in 0..4 {
+        advance_unheld(&mut net, b, &chunks, 60_000);
+        assert_eq!(chunk_copies(&mut net, b, &chunks), (0, 0), "the purged chunks' bytes are logged");
+    }
+    let at_host = chunks.iter().filter(|id| net.host_ids(h, &l).contains(id)).count();
+    assert_eq!(at_host, 0, "purged chunks stay at the host");
+    let fetched = net.fetched[&b].iter().filter(|x| chunks.contains(x)).count();
+    assert!(fetched >= chunks.len(), "each chunk fetched for its salt ({fetched} of {})", chunks.len());
+    assert_eq!(listed(&mut net, b, &l).into_iter().filter(|id| chunks.contains(id)).count(), 0, "the node keeps records of the purged chunks");
 }
 
 /// spec/sync.md §6 (Tombstones), §3 (certificate copies' linked blobs), spec/commits.md §5: a

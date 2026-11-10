@@ -1,0 +1,4 @@
+# chunk-salt
+- Checking "fails with the fix disabled" by swapping `core/node/src` to an older commit rebuilds the crate twice (several minutes on a busy box); a test-only rebuild is quick.
+- Disabling salt recording entirely made a test hang rather than fail (declined bytes woke a pass that fetched again); a test loop on `net.step()` has no step cap.
+- A stray copy of inbound.rs went to the scratchpad root by mistake.

@@ -137,7 +137,7 @@ impl SyncEngine {
                 self.engine.put_blobs(vec![(id, blob)])?;
                 // fetched first: what it names reads as listed from the start
                 let wrap = osis_crypto::wrap(&secret, &id, &key, 0)?;
-                self.state.set_entry(l, id, Entry { wrap, stamp: None, cert: true, kind: Kind::List { rotation: r, held: true }, memory: false });
+                self.state.set_entry(l, id, Entry { wrap, stamp: None, cert: true, salt: Some(salt), kind: Kind::List { rotation: r, held: true }, memory: false });
             }
             for t in want {
                 self.state.add_listed(l, r, t);
@@ -175,12 +175,13 @@ impl SyncEngine {
         let Some(secret) = self.engine.wrap_secret(g, None)? else { return Ok(false) };
         let tids: Vec<Tid> = missing.iter().map(osis_base::CreationRecord::tid).collect::<BTreeSet<_>>().into_iter().collect();
         let plain = osis_commit::record_blob::encode_record_blob(&missing);
-        let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(&mut *self.rng), None, Vec::new())?;
+        let salt = osis_label::Prefix::random_salt(&mut *self.rng);
+        let prefix = osis_label::Prefix::new(salt, None, Vec::new())?;
         let (key, blob) = osis_label::frame(&prefix, &plain, &mut *self.rng)?;
         let id = osis_label::blob_id(&blob);
         self.engine.put_blobs(vec![(id, blob)])?;
         let wrap = osis_crypto::wrap(&secret, &id, &key, 0)?;
-        self.state.set_entry(l, id, Entry { wrap, stamp: None, cert: true, kind: Kind::Records(tids), memory: false });
+        self.state.set_entry(l, id, Entry { wrap, stamp: None, cert: true, salt: Some(salt), kind: Kind::Records(tids), memory: false });
         Ok(all)
     }
 

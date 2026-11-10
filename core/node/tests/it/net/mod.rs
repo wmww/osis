@@ -124,6 +124,9 @@ pub struct Net {
     /// Per node, blobs whose announcements and fetch replies hosts never deliver to it (the
     /// rest of each message is): a node that never hears of one entry.
     pub hide_blobs: BTreeMap<usize, BTreeSet<osis_base::BlobId>>,
+    /// Per node, blobs hosts announce to it without their bytes and leave out of their fetch
+    /// replies: a node that knows the entry and never holds it.
+    pub bare_blobs: BTreeMap<usize, BTreeSet<osis_base::BlobId>>,
     /// Per host, a label and a step it answers every Open of that label by sync key with
     /// (a hostile host's walk); other opens reach its hub.
     pub walk_to: BTreeMap<usize, (osis_base::LabelId, osis_label::Step)>,
@@ -174,7 +177,7 @@ fn told_ids(b: &[u8]) -> Vec<osis_base::BlobId> {
 
 /// Whole frames `b` from a host with every announcement and fetch reply item of a blob in
 /// `hide` left out.
-fn without_blobs(b: &[u8], hide: &BTreeSet<osis_base::BlobId>) -> Vec<u8> {
+fn without_blobs(b: &[u8], hide: &BTreeSet<osis_base::BlobId>, bare: bool) -> Vec<u8> {
     use osis_proto::{Event as E, Message as M};
     let mut d = osis_proto::FrameDecoder::new();
     d.push(b);
@@ -183,6 +186,15 @@ fn without_blobs(b: &[u8], hide: &BTreeSet<osis_base::BlobId>) -> Vec<u8> {
         match osis_proto::Message::decode(&body) {
             Ok(mut m) => {
                 match &mut m {
+                    M::Push { events, .. } | M::SyncReply { events, .. } if bare => {
+                        for e in events.iter_mut() {
+                            if let E::Added { blob_id, blob, .. } = e
+                                && hide.contains(blob_id)
+                            {
+                                *blob = None;
+                            }
+                        }
+                    }
                     M::Push { events, .. } | M::SyncReply { events, .. } => events.retain(|e| !matches!(e, E::Added { blob_id, .. } if hide.contains(blob_id))),
                     M::FetchReply { items, .. } => items.retain(|i| !hide.contains(&i.blob_id)),
                     _ => {}
@@ -219,7 +231,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 impl Net {
     /// A network whose new nodes are each their own account's only node.
     pub fn new() -> Net {
-        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), batch_reads: false, peer_closes: 0 }
+        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), batch_reads: false, peer_closes: 0 }
     }
 
     /// A network whose new nodes join no account: the test makes or pairs them.
@@ -754,7 +766,11 @@ impl Net {
                 HubOutput::Send(hc, bytes) => {
                     if let Some(((n, c), _)) = self.links.iter().find(|(_, (x, h))| *x == s && *h == hc) {
                         let bytes = match self.hide_blobs.get(n) {
-                            Some(hide) => without_blobs(&bytes, hide),
+                            Some(hide) => without_blobs(&bytes, hide, false),
+                            None => bytes,
+                        };
+                        let bytes = match self.bare_blobs.get(n) {
+                            Some(bare) => without_blobs(&bytes, bare, true),
                             None => bytes,
                         };
                         let held = self.held_to.contains(n) || self.hold_opened.contains(n) && (has_opened(&bytes) || self.held_messages.iter().any(|m| matches!(m, Msg::ToNode(x, ..) if x == n))) || (!self.hold_blobs.is_empty() && told_ids(&bytes).iter().any(|b| self.hold_blobs.contains(b)));

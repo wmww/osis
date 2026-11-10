@@ -223,23 +223,25 @@ impl SyncEngine {
         for ev in events {
             // an entry this node deleted or saw deleted, announced again within its tombstone
             // (a host an upload reached, its answer lost, a stale push crossing the deletion, a
-            // peer echoing an announcement): not fetched or served on, as a host's tombstone
-            // keeps the identical blob out (spec/sync.md §5); a host's is recorded as present
-            // there as it was (`host_holds`), so the pass judges it there as any. Only bytes
-            // this node asked for, of an entry it knows, are taken as any entry's (a dropped
-            // chunk fetched for the salt its delete signs)
+            // peer echoing an announcement): not stored, fetched or served on, as a host's
+            // tombstone keeps the identical blob out (spec/sync.md §5); a host's is recorded as
+            // present there as it was (`host_holds`), so the pass judges it there as any. Bytes
+            // it sends give only their salt (a delete-key signature's, fetched for it)
             if let LogEvent::Added { blob_id, blob, .. } = &ev
                 && self.state.tombs.contains_key(&(l, *blob_id))
             {
-                let asked = conn.and_then(|c| self.conns.get_mut(&c)).is_some_and(|c| c.req.fetching.remove(blob_id));
+                if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
+                    c.req.fetching.remove(blob_id);
+                }
                 if let Some(s) = host
                     && self.host_holds(s, l, *blob_id)
                 {
                     touched.push(*blob_id);
                 }
-                if !(asked && blob.is_some() && self.state.entries.contains_key(&(l, *blob_id))) {
-                    continue;
+                if let Some(bytes) = blob {
+                    self.keep_salts(blob_id, Some(bytes))?;
                 }
+                continue;
             }
             // a blob's prefix class routes it (spec/sync.md §9): a relay-only one is delivered
             // and passed on, held by nobody; an ephemeral one is a memory entry, recorded in
@@ -267,7 +269,7 @@ impl SyncEngine {
                 }
                 if !self.state.entries.contains_key(&(l, *blob_id)) {
                     // recorded before its presence (`State::put_of` goes by the record's class)
-                    self.state.set_entry(l, *blob_id, Entry { wrap: *wrap, stamp: None, cert: false, kind: Kind::Unknown, memory: true });
+                    self.state.set_entry(l, *blob_id, Entry { wrap: *wrap, stamp: None, cert: false, salt: None, kind: Kind::Unknown, memory: true });
                 }
             }
             match ev {
@@ -317,7 +319,7 @@ impl SyncEngine {
                                 let fresh = blob.is_some() && !self.engine.has_blob(&blob_id);
                                 unvouched.push((blob_id, fresh));
                             }
-                            self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, kind: Kind::Unknown, memory: false })
+                            self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, salt: None, kind: Kind::Unknown, memory: false })
                         }
                         Some(mut e) if e.wrap != wrap || (stamp.is_some() && e.stamp != stamp) => {
                             if self.take_wrap(conn, host, l, blob_id, &mut e, &wrap, stamp.is_some(), held_stamped) {
@@ -330,7 +332,19 @@ impl SyncEngine {
                         }
                         Some(_) => {}
                     }
+                    if let Some(b) = &blob {
+                        self.keep_salts(&blob_id, Some(b))?;
+                    }
                     match blob {
+                        // a chunk of dropped deltas (spec/commits.md §5): only its salt is kept
+                        // (fetched for a delete-key signature, or brought by anyone); one with
+                        // no salt to read (bad input) wakes no pass
+                        Some(_) if !memory && !self.engine.has_blob(&blob_id) && self.dropped_chunk(&blob_id)? => {
+                            self.fetched(&blob_id);
+                            if self.state.entries.get(&(l, blob_id)).is_none_or(|e| e.salt.is_none()) {
+                                continue;
+                            }
+                        }
                         Some(b) if memory => {
                             self.fetched(&blob_id);
                             // a host's unstamped junk in the ephemeral class is judged as its
@@ -1117,8 +1131,8 @@ impl SyncEngine {
                     if !self.state.blobs.contains_key(&b) {
                         self.state.add_blob(b, BlobRec { commit, parts: parts.clone(), ais: o.ais.clone(), key, cert: e.cert || o.copy, memory: e.memory });
                     }
-                    let salt = osis_label::Prefix::parse(&bytes).map(|p| *p.salt()).unwrap_or_default();
-                    e.kind = Kind::Commit { commit, parts, ais: o.ais, salt };
+                    e.salt = osis_label::Prefix::parse(&bytes).ok().map(|p| *p.salt());
+                    e.kind = Kind::Commit { commit, parts, ais: o.ais };
                     self.state.set_entry(l, b, e);
                     self.state.note_memory_size(l, b, bytes.len());
                     commits.push(ToIngest { label: l, blob: b, size: bytes.len(), plaintext: o.plaintext, commit: o.commit });
@@ -1630,9 +1644,10 @@ impl SyncEngine {
         if self.state.present_anywhere(&l, &b) {
             return Ok(false);
         }
+        // a dropped chunk's bytes go first: its salt goes into the tombstone (`keep_salts`)
+        self.forget_chunk(&b)?;
         self.state.remove_entry(l, b);
         self.forget_blob(&b)?;
-        self.forget_chunk(&b)?;
         Ok(true)
     }
 
@@ -1719,14 +1734,45 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Drops the bytes of a chunk of dropped deltas once no label entry names it (spec/commits.md
-    /// §5); while one does, its delete-key signature needs its prefix salt.
+    /// Drops the bytes of a chunk of dropped deltas (spec/commits.md §5), whatever names it:
+    /// its prefix salt stays with the entries that do (`keep_salts`), for the delete-key
+    /// signatures that remove it at hosts.
     pub(crate) fn forget_chunk(&mut self, b: &BlobId) -> Result<()> {
         // cheapest first: commit blobs have their own record, most deleted bytes are gone already
-        if self.state.blobs.contains_key(b) || !self.engine.has_blob(b) || self.state.named(b) || !self.dropped_chunks(&BTreeSet::from([*b]))?.0.contains_key(b) {
+        if self.state.blobs.contains_key(b) || !self.engine.has_blob(b) || !self.dropped_chunk(b)? {
             return Ok(());
         }
+        self.keep_salts(b, None)?;
         self.delete_blobs(&[*b])
+    }
+
+    /// Whether `b` is a chunk, tree node or page of deltas this node dropped (`dropped_chunks`):
+    /// its bytes are not kept, whoever brings them.
+    pub(crate) fn dropped_chunk(&mut self, b: &BlobId) -> Result<bool> {
+        let ix = &self.engine.core.ix;
+        let listed = ix.by_chunk.get(b).is_some_and(|cs| cs.iter().any(|c| ix.commits.get(c).is_some_and(|m| !m.dropped.is_empty() || !m.stripped.is_empty())));
+        Ok(listed && self.dropped_chunks(&BTreeSet::from([*b]))?.0.contains_key(b))
+    }
+
+    /// Records blob `b`'s prefix salt with every entry naming it that lacks one (spec/sync.md §6
+    /// Tombstones), from `bytes` or the bytes held here.
+    pub(crate) fn keep_salts(&mut self, b: &BlobId, bytes: Option<&[u8]>) -> Result<()> {
+        let ls: Vec<LabelId> = self.state.labels_of(b).into_iter().filter(|l| self.state.entries.get(&(*l, *b)).is_some_and(|e| e.salt.is_none())).collect();
+        if ls.is_empty() {
+            return Ok(());
+        }
+        let held = match bytes {
+            Some(_) => None,
+            None => self.engine.blob(b)?,
+        };
+        let Some(salt) = bytes.or(held.as_deref()).and_then(|x| osis_label::Prefix::parse(x).ok()).map(|p| *p.salt()) else { return Ok(()) };
+        for l in ls {
+            if let Some(mut e) = self.state.entries.get(&(l, *b)).cloned() {
+                e.salt = Some(salt);
+                self.state.set_entry(l, *b, e);
+            }
+        }
+        Ok(())
     }
 
     /// Forgets every commit blob holding a delta the engine dropped (purge, expiry, keep at
@@ -1746,16 +1792,19 @@ impl SyncEngine {
                 self.drop_blob(&id)?;
             }
         }
-        // chunks of dropped deltas no label entry names (never uploaded, or deleted everywhere)
+        // chunks of dropped deltas, their salts kept (`forget_chunk`)
         let listed: BTreeSet<BlobId> = match commits {
             None => self.engine.core.ix.commits.values().filter(|m| !m.dropped.is_empty() || !m.stripped.is_empty()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
             Some(cs) => cs.iter().filter_map(|c| self.engine.core.ix.commits.get(c)).filter(|m| !m.dropped.is_empty() || !m.stripped.is_empty()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
         };
-        let held: BTreeSet<BlobId> = listed.into_iter().filter(|b| !self.state.blobs.contains_key(b) && !self.state.named(b) && self.engine.has_blob(b)).collect();
+        let held: BTreeSet<BlobId> = listed.into_iter().filter(|b| !self.state.blobs.contains_key(b) && self.engine.has_blob(b)).collect();
         if held.is_empty() {
             return Ok(());
         }
         let gone: Vec<BlobId> = self.dropped_chunks(&held)?.0.into_keys().collect();
+        for b in &gone {
+            self.keep_salts(b, None)?;
+        }
         self.delete_blobs(&gone)
     }
 
@@ -1871,7 +1920,7 @@ impl SyncEngine {
         if !self.state.entries.contains_key(&(l, b)) {
             let Some(t) = self.state.tombs.get(&(l, b)).cloned() else { return false };
             let memory = self.state.is_memory(&l, &b);
-            self.state.set_entry_quiet(l, b, Entry { wrap: t.wrap, stamp: None, cert: t.cert, kind: t.kind, memory });
+            self.state.set_entry_quiet(l, b, Entry { wrap: t.wrap, stamp: None, cert: t.cert, salt: t.salt, kind: t.kind, memory });
         }
         let new = !self.state.is_present(&s, &l, &b);
         self.state.set_present(s, l, b, true);

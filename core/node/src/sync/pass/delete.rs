@@ -79,9 +79,10 @@ impl SyncEngine {
         let (chunks, waiting) = self.dropped_chunks(&cands)?;
         left.blobs.extend(waiting);
         for b in chunks.into_keys() {
+            // the bytes first: the salt goes into the tombstone (`keep_salts`)
+            self.forget_chunk(&b)?;
             self.state.remove_entry(l, b);
             self.local_expiry.remove(&b);
-            self.forget_chunk(&b)?;
         }
         // the blobs certificate copies linked, as a pass at a host deletes them (the bytes
         // stay: they are the engine's own): of the copies in `scope`, of every one when a
@@ -749,21 +750,22 @@ impl SyncEngine {
         Ok((out, waiting))
     }
 
-    /// A delete item for a dropped chunk: the label delete key, else a delete key of its delta
-    /// (signed for the salt in its prefix; a chunk never fetched is fetched first).
+    /// A delete item for a dropped chunk: the label delete key, else a delete key of its delta,
+    /// signed for its entry's salt (`Entry::salt`; one never here is fetched for it, its bytes
+    /// kept nowhere: `log_events`).
     fn chunk_delete(&mut self, conn: ConnId, keys: &HeadKeys, l: &LabelId, id: &BlobId, (c, ch): &(CommitId, osis_commit::ChunkEntry), out: &mut Vec<crate::sync::Action>) -> Result<Option<osis_label::DeleteItem>> {
         if keys.delete.is_some() {
             return Ok(delete_item(keys, l, *id, None, &[], true));
         }
-        let Some(blob) = self.engine.blob(id)? else {
+        self.keep_salts(id, None)?;
+        let Some(salt) = self.state.entries.get(&(*l, *id)).and_then(|e| e.salt) else {
             self.fetch_on(conn, *l, [*id], out)?;
             return Ok(None);
         };
-        let Ok(prefix) = osis_label::Prefix::parse(&blob) else { return Ok(None) };
         // a chunk's prefix has one group: its creating delta's keys
         let dks = vec![self.engine.chunk_delete_secrets(c, ch)];
         let Some(hb) = self.engine.header(c).map(|h| h.blind) else { return Ok(None) };
-        Ok(delete_item(keys, l, *id, Some((prefix.salt(), &hb)), &dks, true))
+        Ok(delete_item(keys, l, *id, Some((&salt, &hb)), &dks, true))
     }
 
     /// A delete item for an entry: the label delete key, else delete keys this node holds, one
@@ -772,17 +774,13 @@ impl SyncEngine {
         if keys.delete.is_some() {
             return Ok(delete_item(keys, l, *id, None, &[], true));
         }
-        Ok(match &e.kind {
-            Kind::Commit { commit, ais, salt, .. } => {
-                // a forgotten memory commit's keys are in the header kept for it
-                let (dks, hb) = match self.memory.forgotten.get(commit) {
-                    Some(f) => (self.engine.delete_secrets_by_group(&f.header, ais), Some(f.header.blind)),
-                    None => (self.engine.delete_secrets_of(commit, ais), self.engine.header(commit).map(|h| h.blind)),
-                };
-                delete_item(keys, l, *id, hb.as_ref().map(|hb| (salt, hb)), &dks, every)
-            }
-            _ => None,
-        })
+        let (Kind::Commit { commit, ais, .. }, Some(salt)) = (&e.kind, e.salt) else { return Ok(None) };
+        // a forgotten memory commit's keys are in the header kept for it
+        let (dks, hb) = match self.memory.forgotten.get(commit) {
+            Some(f) => (self.engine.delete_secrets_by_group(&f.header, ais), Some(f.header.blind)),
+            None => (self.engine.delete_secrets_of(commit, ais), self.engine.header(commit).map(|h| h.blind)),
+        };
+        Ok(delete_item(keys, l, *id, hb.as_ref().map(|hb| (&salt, hb)), &dks, every))
     }
 }
 

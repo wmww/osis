@@ -1017,8 +1017,8 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     let sync = net.engine(w).head_keys(&g, gl.index, &old_head).unwrap().sync.unwrap();
     let hb = net.engine(w).header(&cw).unwrap().blind;
     // positive control: the same delete verifies against the head before the removal
-    for (b, k) in &blobs {
-        let EntryKind::Commit { salt, .. } = k else { unreachable!() };
+    let salts: Vec<[u8; 16]> = blobs.iter().map(|(b, _)| *osis_label::Prefix::parse(&net.engine(w).blob(b).unwrap().unwrap()).unwrap().salt()).collect();
+    for ((b, _), salt) in blobs.iter().zip(&salts) {
         let item = osis_label::DeleteItem::sign_by(&sync, &[(level, &dk)], salt, &hb, &l, *b).unwrap();
         let prefix = osis_label::Prefix::parse(&net.engine(w).blob(b).unwrap().unwrap()).unwrap();
         item.verify(&old_head, Some(&prefix), true).unwrap();
@@ -1033,8 +1033,7 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     net.run();
     assert_ne!(net.host_path(host, &l).last().unwrap().id(), old_head.id(), "the label stepped");
     let mut items = Vec::new();
-    for (b, k) in &blobs {
-        let EntryKind::Commit { salt, .. } = k else { unreachable!() };
+    for ((b, _), salt) in blobs.iter().zip(&salts) {
         items.push(osis_label::DeleteItem::sign_by(&sync, &[(level, &dk)], salt, &hb, &l, *b).unwrap());
     }
     let conn = net.conn_to(w, host).expect("connected");
