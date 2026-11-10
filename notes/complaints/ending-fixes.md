@@ -6,3 +6,4 @@
 - Review: `after_ending` scanned every held commit per call and `end_thing` called it per edge commit, each call re-running the from-scratch cut walk; the ending is now computed once (`end::Ending`).
 - Review: the gate failed on an `osis` crate test the worker's loop never ran (`-p osis-node` only); a branch changing validity should run `-p osis --test it` too.
 - Rework: a minting judged as a write broke an honest path (a removed writer's creation, `osis` `sync::`) that only `-p osis` runs; the brief's premise that "nobody writes after its ending" stops re-minting did not hold (mintings must be exempt for arrival order), so the stated limit is wider than briefed.
+- Review 3: an engine-only `ingest` drops an awaiting commit's bytes, so an order test at one node can't assert the Awaits case before a net sync refetches it; assert after `advance` instead.

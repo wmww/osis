@@ -266,7 +266,7 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 - An ended thing reads as absent to every read and write, its held record and request included.
 - Nothing else is kept per ended thing but what any drop leaves: commit headers, and the request by the ordinary purge rules. A copy of the creation arriving ends the thing again.
 - An ending that falls brings the thing back only where a copy of it is still held or fetchable.
-- Limit: anyone holding a thing's record may mint it again, stamped at any `ts` (an honest writer mints once, in its first commit). A durable minting keeps an expiring thing existing past its expiry or brings it back after it, and one whose retention the ending request has no right over (`nobody`, another's `author`) keeps it from ending by purge or brings it back after. It carries no content: the thing's other parts expire and are purged as before, and what an ending dropped is back only where a copy is still held.
+- Limit: anyone holding a thing's record may mint it again, stamped at any `ts` (an honest writer mints once, in its first commit). A durable minting keeps an expiring thing existing past its expiry or brings it back after it, and one whose retention the ending request has no right over (`nobody`, another's `author`) keeps it from ending by purge or brings it back after. It carries no content: the thing's other parts expire and are purged as before, and what an ending dropped is back only where a copy is still held; brought back, the thing takes writes as any live thing, by its roster.
 
 ## 6. Expiry
 - `expires: T` (wall ms, `T > wall_ms(ts)`, else invalid), one per commit: every delta of it expires at T. A commit carrying a fixed-retention aspect (§5) carries none.

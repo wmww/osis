@@ -771,11 +771,12 @@ fn setup_reader() -> (Setup, usize) {
     (Setup { net, a, b, c, g }, r)
 }
 
-// spec/commits.md §5 (Ending): an ending is final. A reader of `g` (it holds t's record) mints t
-// again before and after an admin purges t's creation, and a writer of t mints it again after the
-// ending: c takes the three and the ending in every order, and t reads gone everywhere
+// spec/commits.md §5 (Ending): a request names every minting. A reader of `g` (it holds t's record)
+// mints t again before and after an admin purges t's creation, and a writer of t mints it again
+// after the ending, each with the default retention: c takes the three and the ending in every
+// order, and t reads gone everywhere
 #[test]
-fn a_minting_again_never_brings_back_a_purged_thing_spec_commits_5() {
+fn a_minting_again_the_request_can_drop_never_brings_back_a_purged_thing_spec_commits_5() {
     for order in [[0, 1, 2, 3], [1, 0, 2, 3], [2, 3, 1, 0], [3, 2, 0, 1]] {
         let (Setup { mut net, a, b, c, g }, r) = setup_reader();
         let (t, _) = made(&mut net, a, g);
@@ -975,4 +976,93 @@ fn a_fallen_ending_walks_only_the_things_authority_spec_permissions_6() {
     let (small, big) = (fallen_request_work(3), fallen_request_work(30));
     assert!(small > 0, "the cut walk runs");
     crate::scale::flat("cut walk things by other things", small, big);
+}
+
+// spec/commits.md §5 (Ending, Limit): a reader of g mints a purged t again `nobody`, which the
+// request has no right over; b, not having heard of the ending, writes t after it. Brought back, t
+// is live again: its roster stands and b's late write shows, at every node whatever the order c
+// took the three in
+#[test]
+fn a_minting_again_the_request_cannot_drop_brings_back_a_live_thing_alike_spec_commits_5() {
+    for order in [[0, 2, 1], [1, 0, 2]] {
+        let (Setup { mut net, a, b, c, g }, r) = setup_reader();
+        let (t, _) = made(&mut net, a, g);
+        let roster = net.engine(a).roster(&t);
+        for n in [a, b, c, r] {
+            net.set_online(n, false);
+        }
+        net.advance(10);
+        let ending = end(&mut net, a, t);
+        let ending = net.engine(a).package(&ending).unwrap().unwrap().bytes;
+        net.advance(10);
+        let rec = net.engine(r).core.created(&t).cloned().unwrap();
+        let mut m = Mutation::new();
+        m.create(rec);
+        m.retention(t, &ct::CREATED, osis_commit::retention::KEPT_RETENTION).unwrap();
+        let rc = net.engine(r).commit_hostile(m).unwrap().unwrap();
+        let remint = net.engine(r).take_forged().unwrap_or_else(|| net.engine(r).package(&rc).unwrap().unwrap().bytes);
+        net.advance(10);
+        let w = net.write(b, t, "late");
+        let late = net.engine(b).package(&w).unwrap().unwrap().bytes;
+        let lots = [&ending, &remint, &late];
+        for i in order {
+            let _ = net.engine(c).ingest(lots[i], Vec::new());
+            net.engine(c).reexamine().unwrap();
+        }
+        for n in [a, b, c, r] {
+            net.set_online(n, true);
+        }
+        for _ in 0..3 {
+            net.advance(70_000);
+        }
+        for n in [a, b, c, r] {
+            assert!(net.engine(n).knows(&t), "order {order:?}: node {n}: t back");
+            assert_eq!(net.engine(n).roster(&t), roster, "order {order:?}: node {n}: its roster");
+            assert_eq!(net.read(n, t), Some(s("late")), "order {order:?}: node {n}: b's late write");
+        }
+    }
+}
+
+// spec/commits.md §5 (Ending), spec/permissions.md §6: b's ending R1 falls by c's concurrent
+// demotion of b on g; a ends t after R1. A node taking R2 while R1 still stands drops it as written
+// after the ending, and fetches it again once R1 falls: t ends at every node whatever the order
+#[test]
+fn a_second_ending_after_one_that_falls_ends_the_thing_spec_commits_5() {
+    for order in [[1, 2, 0], [0, 1, 2]] {
+        let (Setup { mut net, a, b, c, g }, r) = setup_reader();
+        let (t, _) = made(&mut net, a, g);
+        let tb = net.tid(b);
+        set_edge(net.engine(a), g, tb, Role::Admin);
+        net.run();
+        for n in [a, b, c, r] {
+            net.set_online(n, false);
+        }
+        let mut m = Mutation::new();
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+        m.op(g, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(tb)) }).unwrap();
+        m.op(g, &ct::ROLES, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(tb))], op: Op::Set(edge.to_value()) }).unwrap();
+        m.frontier(ct::Frontier::default().to_value());
+        let d = net.engine(c).commit(m).unwrap().unwrap();
+        let dem = net.engine(c).package(&d).unwrap().unwrap().bytes;
+        net.advance(10);
+        let r1 = end(&mut net, b, t);
+        let r1 = net.engine(b).package(&r1).unwrap().unwrap().bytes;
+        net.advance(10);
+        let r2 = end(&mut net, a, t);
+        let r2 = net.engine(a).package(&r2).unwrap().unwrap().bytes;
+        let lots = [&dem, &r1, &r2];
+        for i in order {
+            let _ = net.engine(r).ingest(lots[i], Vec::new());
+            net.engine(r).reexamine().unwrap();
+        }
+        for n in [a, b, c, r] {
+            net.set_online(n, true);
+        }
+        for _ in 0..3 {
+            net.advance(70_000);
+        }
+        for n in [a, b, c, r] {
+            gone(&mut net, n, t);
+        }
+    }
 }

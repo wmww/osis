@@ -467,7 +467,7 @@ impl Engine {
             return Err(Error::Misuse("roles.0 is never compacted"));
         }
         if ak.as_str() == "created.0" {
-            return Err(Error::Misuse("created.0 is kept forever, never compacted"));
+            return Err(Error::Misuse("created.0 is never compacted"));
         }
         // the judgment reads every addendum delta (spec/permissions.md §5.2)
         if osis_schema::core_types::is_addenda(ak.as_str()) {
