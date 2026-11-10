@@ -330,8 +330,10 @@ struct Scan {
     log_end: u64,
 }
 
-/// Scans the log from `from` for events of `starts`' members past their start and not past
-/// their end (a member being ended: its `until`), at most `SCAN_ROWS` rows.
+/// Scans the log from `from` for events of `starts`' members past their start, at most
+/// `SCAN_ROWS` rows. A member being ended (its `until` below `u64::MAX`) gets only events of
+/// entries first logged at or below `until`: an entry it was served stays served when it is
+/// logged again (a stamp, a re-wrap, its deletion), the rotation among them.
 fn scan(tx: &mut osis_store::Transaction<'_>, from: u64, starts: &BTreeMap<LabelId, (u64, u64)>) -> std::result::Result<Scan, osis_store::Error> {
     let log_end = tx.log_end()?;
     let (mut pos, mut rows, mut events) = (from, 0usize, Vec::new());
@@ -339,10 +341,17 @@ fn scan(tx: &mut osis_store::Transaction<'_>, from: u64, starts: &BTreeMap<Label
         let (page, at, more) = tx.log_after(pos, READ_PAGE.min(SCAN_ROWS - rows))?;
         rows += page.len();
         for e in page {
-            let l = match e.event {
-                NodeEvent::Added(l, _) | NodeEvent::Deleted { label: l, .. } | NodeEvent::Head(l) => l,
+            let (l, entry) = match e.event {
+                NodeEvent::Added(l, b) | NodeEvent::Deleted { label: l, blob: b, .. } => (l, Some(b)),
+                NodeEvent::Head(l) => (l, None),
             };
-            if starts.get(&l).is_some_and(|(s, until)| e.pos > *s && e.pos <= *until) {
+            let Some((s, until)) = starts.get(&l) else { continue };
+            let shown = e.pos <= *until
+                || match entry {
+                    Some(b) => tx.log_entry_first(&l, &b)?.is_some_and(|f| f <= *until),
+                    None => false,
+                };
+            if e.pos > *s && shown {
                 events.push(e);
             }
         }
@@ -1101,11 +1110,11 @@ impl SyncEngine {
         self.stream_reached(conn, Unsettled { cursor: Some(c), owed, merged: Vec::new(), paging: Vec::new(), report: s.report, passed }, out)
     }
 
-    /// A relay-only entry to each reader sharing `l` but `except` (its source): a Stream with
-    /// no cursor, as no position names it (spec/sync.md §9).
+    /// A relay-only entry to each reader sharing `l` but `except` (its source) and a member being
+    /// ended (`until`): a Stream with no cursor, as no position names it (spec/sync.md §9).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn stream_relay(&mut self, except: Option<ConnId>, l: LabelId, blob_id: BlobId, blob: &[u8], wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<osis_crypto::Signature>, out: &mut Vec<Action>) -> Result<()> {
-        let to: Vec<ConnId> = self.records.shared.iter().filter(|(c, s)| Some(**c) != except && s.has(&l)).map(|(c, _)| *c).collect();
+        let to: Vec<ConnId> = self.records.shared.iter().filter(|(c, s)| Some(**c) != except && s.live(&l)).map(|(c, _)| *c).collect();
         for c in to {
             let ev = Event::Added { blob_id, blob: Some(blob.to_vec()), wrap, stamp };
             self.shared_send(c, Message::Stream(Box::new(Stream { events: vec![(l, ev)], cursor: None, report: false })), out)?;
@@ -1154,7 +1163,7 @@ impl SyncEngine {
     /// Answers a reader's Fetch from what this node holds of a member of the connection's
     /// shared set, in order within `max_reply`: what does not fit is left out (asked again; under
     /// `REPLY_BUDGET` any blob fits), what is not held is answered with nothing, and so is an
-    /// entry of a member being ended whose event is past its `until`.
+    /// entry of a member being ended first logged past its `until`.
     fn stream_serve_fetch(&mut self, conn: ConnId, id: u32, l: LabelId, max_reply: u64, ids: Vec<BlobId>, out: &mut Vec<Action>) -> Result<()> {
         let member = self.records.shared.get(&conn).is_some_and(|s| s.has(&l));
         let until = self.shared_untils(conn).get(&l).copied();
@@ -1162,7 +1171,7 @@ impl SyncEngine {
         let mut items = Vec::new();
         for b in ids {
             let shown = match until {
-                Some(u) => self.engine.run(|tx| Ok(tx.txn.log_entry_pos(&l, &b)?))?.is_some_and(|p| p <= u),
+                Some(u) => self.engine.run(|tx| Ok(tx.txn.log_entry_first(&l, &b)?))?.is_some_and(|p| p <= u),
                 None => true,
             };
             let held = if member && shown { self.state.entries.get(&(l, b)).map(|e| (e.wrap, e.stamp)) } else { None };

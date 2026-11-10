@@ -35,12 +35,19 @@ struct Setup {
 /// hand dialer proving `a` resumes the record, opens `g`'s label by a Hit on its read secret (J
 /// unknown: an open by a credential), pulls it with `follow` and reports the reply.
 fn opened() -> Setup {
+    opened_at(false)
+}
+
+/// `opened`, `b`'s group kept at a host when `hosted` (so `b`'s entries get the host's stamps).
+fn opened_at(hosted: bool) -> Setup {
     let mut net = Net::new();
+    let hosts: Vec<usize> = if hosted { vec![net.add_host()] } else { vec![] };
     let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let b = net.node(2, &hosts);
     reach_ed(&mut net, b);
     net.group_at(b, &[(a, Role::Read)], vec![]);
-    let g = net.group_seeded(b, &[], vec![], 2);
+    let addrs = hosts.iter().map(|s| net.address(*s)).collect();
+    let g = net.group_seeded(b, &[], addrs, 2);
     let l = net.engine(b).labels_of(&g)[0].id;
     net.item(b, g, g, "before");
     net.run();
@@ -238,4 +245,57 @@ fn a_report_lost_with_its_connection_is_repaired_by_the_next_pull_spec_sync_10()
     let (msgs, reply) = pull_all(&mut net, b, &mut p, Some(at), vec![]);
     assert_eq!(losts(&msgs).iter().map(|(x, _)| *x).collect::<Vec<_>>(), vec![l], "the Pull's cursor reported the rotation");
     assert_eq!(events_of(&reply.events, l), 0);
+}
+
+// issues/net-shared-set.md (Opens: the event that ends sharing is still sent): a rotation while
+// apart is served to the ended member however often its entry was logged again since (here: the
+// host's stamp coming back), or a holder J judges unknown could never learn the new epoch here
+#[test]
+fn a_rotation_logged_again_while_apart_is_still_served_spec_sync_10() {
+    let Setup { mut net, b, a, g, l, r, p, cursor } = opened_at(true);
+    let acts = net.sync(b).handle(osis_node::sync::Event::Down { conn: p.conn });
+    net.actions(b, acts);
+    let held: BTreeSet<BlobId> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).collect();
+    rotate(&mut net, b, g);
+    net.run();
+    let rotated: BTreeSet<BlobId> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).filter(|id| !held.contains(id)).collect();
+    assert!(!rotated.is_empty());
+    let until = net.engine(b).run(|tx| Ok(tx.txn.records_holding(&l)?)).unwrap().into_iter().find_map(|(rec, m)| (rec.r == r).then_some(m.until)).flatten().expect("ended while apart");
+    let (later, ..) = net.engine(b).run(|tx| Ok(tx.txn.log_after(until, 1 << 16)?)).unwrap();
+    let past = later.iter().any(|e| matches!(e.event, osis_store::NodeEvent::Added(x, id) if x == l && rotated.contains(&id)));
+    assert!(past, "the host's stamp logged the rotation again past until");
+    let (mut p, _) = resume(&mut net, a, b, &r, [8; 32], &[l]);
+    let reply = pull(&mut net, b, &mut p, Some(cursor), vec![]);
+    assert!(rotated.is_subset(&added_of(&reply.events, l)), "the rotation is served");
+    let msgs = shared_of(&send(&mut net, b, &mut p, Message::Fetch { id: PULL_ID + 1, label: l, max_reply: 1 << 20, ids: rotated.iter().copied().collect() }));
+    let fetched = msgs.iter().find_map(|m| if let Message::FetchReply { items, .. } = m { Some(items.clone()) } else { None }).expect("answered");
+    assert!(fetched.iter().all(|f| f.entry.is_some()), "and fetched");
+}
+
+/// `b` writes an ephemeral signal on `t`: a relay-only entry, stored nowhere.
+fn signal(net: &mut Net, b: usize, t: Tid, v: i64) {
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &crate::common::ak("t:typing+~0"), &osis_base::Value::Int(v)).unwrap();
+    net.engine(b).write(m).unwrap();
+}
+
+fn relayed(msgs: &[Message], l: LabelId) -> usize {
+    pushes(msgs).iter().filter(|s| s.cursor.is_none()).map(|s| events_of(&s.events, l)).sum()
+}
+
+// issues/net-reconnect.md (Joining and rejoining): a member being ended gets none of its
+// ephemeral entries, a relay-only one included: no position bounds them
+#[test]
+fn a_member_being_ended_is_relayed_no_signal_spec_sync_10() {
+    let Setup { mut net, b, g, l, mut p, .. } = opened();
+    let t = net.item(b, g, g, "t");
+    step(&mut net, b, &mut p);
+    signal(&mut net, b, t, 1);
+    assert!(relayed(&step(&mut net, b, &mut p), l) > 0, "a member relayed before the rotation");
+    rotate(&mut net, b, g);
+    step(&mut net, b, &mut p);
+    signal(&mut net, b, t, 2);
+    let msgs = step(&mut net, b, &mut p);
+    assert!(net.sync(b).shared_members(p.conn).contains(&l), "still being ended");
+    assert_eq!(relayed(&msgs, l), 0, "nothing relayed past the rotation");
 }

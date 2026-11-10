@@ -18,7 +18,8 @@
 //! Rows, all catalog rows under `kind::LOG`:
 //! `m` meta (cursor key, log ID, current incarnation, end position); `n` the ended incarnations;
 //! `s` a memory-only marker that this store start has drawn; `e pos` an event; `i label blob` an
-//! entry's slot; `h label` a head's slot; `d at pos` the deletion events by when they were
+//! entry's slot (its latest event's position and the position it was first logged at); `h label`
+//! a head's slot; `d at pos` the deletion events by when they were
 //! logged, for the sweep; `c label` a sync ID's `changed_at` and what it was computed from;
 //! `C pos label` the sync IDs by `changed_at`.
 
@@ -117,6 +118,11 @@ fn head_slot(l: &LabelId) -> Vec<u8> {
 
 fn deleted_key(at: u64, pos: u64) -> Vec<u8> {
     [DELETED, &at.to_be_bytes(), &pos.to_be_bytes()].concat()
+}
+
+/// An entry slot's extra: the position the entry was first logged at, the earlier one kept.
+fn first_logged(pos: u64, old: Option<&[u8]>) -> Vec<u8> {
+    old.filter(|o| o.len() == 8).map_or_else(|| pos.to_be_bytes().to_vec(), <[u8]>::to_vec)
 }
 
 fn pos_value(v: &[u8]) -> Result<u64, Error> {
@@ -293,16 +299,17 @@ impl Transaction<'_> {
         Ok(())
     }
 
-    /// Places an event at the next position, its subject's earlier event going; `extra` follows
-    /// the position in the slot. It joins this transaction, so it is durable exactly when the
-    /// effect written beside it is.
-    fn log_place(&mut self, slot: Vec<u8>, e: NodeEvent, extra: &[u8]) -> Result<u64, Error> {
+    /// Places an event at the next position, its subject's earlier event going; `extra` (of the
+    /// position and the slot's earlier extra) follows the position in the slot. It joins this
+    /// transaction, so it is durable exactly when the effect written beside it is.
+    fn log_place(&mut self, slot: Vec<u8>, e: NodeEvent, extra: impl FnOnce(u64, Option<&[u8]>) -> Vec<u8>) -> Result<u64, Error> {
         let pos = self.log_advance()?;
-        if let Some(v) = self.cat_get(&slot)? {
-            let old = pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?;
-            self.log_drop_event(old)?;
+        let old = self.cat_get(&slot)?;
+        if let Some(v) = &old {
+            self.log_drop_event(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?)?;
         }
-        self.cat_put_to(&slot, W::new().u64(pos).raw(extra).take(), Shred::Yes, false)?;
+        let extra = extra(pos, old.as_ref().and_then(|v| v.get(8..)));
+        self.cat_put_to(&slot, W::new().u64(pos).raw(&extra).take(), Shred::Yes, false)?;
         self.cat_put_to(&pos_key(EVENT, pos), encode_event(&e), Shred::No, false)?;
         if let NodeEvent::Deleted { at, .. } = e {
             self.cat_put_to(&deleted_key(at, pos), Vec::new(), Shred::No, false)?;
@@ -312,18 +319,20 @@ impl Transaction<'_> {
 
     /// Logs that an entry became servable or its wrap or stamp changed. Returns its position.
     pub fn log_added(&mut self, l: LabelId, b: BlobId) -> Result<u64, Error> {
-        self.log_place(entry_slot(&l, &b), NodeEvent::Added(l, b), &[])
+        self.log_place(entry_slot(&l, &b), NodeEvent::Added(l, b), first_logged)
     }
 
-    /// The position of an entry's latest event, `None` with none in the log.
-    pub fn log_entry_pos(&mut self, l: &LabelId, b: &BlobId) -> Result<Option<u64>, Error> {
+    /// The position an entry was first logged at, kept while its slot is (its later events move
+    /// only the latest): `None` with none in the log. What a member ended at `until` is served
+    /// (issues/net-reconnect.md, Joining and rejoining).
+    pub fn log_entry_first(&mut self, l: &LabelId, b: &BlobId) -> Result<Option<u64>, Error> {
         let Some(v) = self.cat_get(&entry_slot(l, b))? else { return Ok(None) };
-        Ok(Some(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?))
+        Ok(Some(pos_value(v.get(8..).ok_or(Error::Corrupt("node log slot"))?)?))
     }
 
     /// Logs that an entry left the node at `at` (corrected wall ms). Returns its position.
     pub fn log_deleted(&mut self, label: LabelId, blob: BlobId, at: u64) -> Result<u64, Error> {
-        self.log_place(entry_slot(&label, &blob), NodeEvent::Deleted { label, blob, at }, &[])
+        self.log_place(entry_slot(&label, &blob), NodeEvent::Deleted { label, blob, at }, first_logged)
     }
 
     /// Logs a head event only if `head` is not the head last logged for `l`. Whether it did.
@@ -332,7 +341,7 @@ impl Transaction<'_> {
         if self.cat_get(&slot)?.is_some_and(|v| v.get(8..) == Some(head.as_slice())) {
             return Ok(false);
         }
-        self.log_place(slot, NodeEvent::Head(l), head)?;
+        self.log_place(slot, NodeEvent::Head(l), |_, _| head.to_vec())?;
         Ok(true)
     }
 
@@ -363,7 +372,7 @@ impl Transaction<'_> {
             let rows = self.cat_scan(&prefix, b"", PAGE)?;
             let n = rows.len();
             for (k, v) in rows {
-                self.log_drop_event(pos_value(&v)?)?;
+                self.log_drop_event(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?)?;
                 self.cat_remove(&k, Shred::Yes)?;
             }
             if n < PAGE {

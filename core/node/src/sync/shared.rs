@@ -222,6 +222,12 @@ impl Shared {
         self.members.contains_key(l)
     }
 
+    /// Whether `l` is a member not being ended: one that gets what no position bounds (its
+    /// relay-only entries).
+    pub(crate) fn live(&self, l: &LabelId) -> bool {
+        self.members.get(l).is_some_and(|m| m.until.is_none())
+    }
+
     /// Whether S is empty here.
     pub(crate) fn is_empty(&self) -> bool {
         self.members.is_empty()
