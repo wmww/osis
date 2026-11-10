@@ -1181,8 +1181,8 @@ fn gap_covers_nothing_kept_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 Purge: a purge naming a snapshot takes nothing (it has no values of its own)
-// and never drops it: the body it covered, dropped and deleted at the host, stays carried. a, the
+// spec/commits.md §5 Purge: a request names no snapshot (it has no values of its own), so one
+// listing a snapshot's commit never drops it: the body it covered, dropped and deleted at the host, stays carried. a, the
 // fresh reader f and r, away through the compaction, all read the live value.
 #[test]
 fn purge_naming_a_cover_keeps_its_writes_spec_commits_5() {
