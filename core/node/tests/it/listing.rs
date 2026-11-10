@@ -212,7 +212,7 @@ fn purged_and_dropped_parts_read_as_such_spec_commits_5() {
     lp.advance(20);
     let p = &mut lp.peers[1];
     assert_eq!(held(p, d, &expiring).body, PartBody::Dropped, "past its expiry, the tick or not");
-    p.engine.tick().unwrap();
+    p.tick().unwrap();
     assert_eq!(held(p, d, &expiring).body, PartBody::Dropped);
     let e = held(p, d, &b);
     assert_eq!((e.actor, e.body.clone()), (ids[3], PartBody::Purged(first)));
@@ -233,7 +233,7 @@ fn expired_then_purged_tells_the_watch_spec_commits_5() {
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     lp.advance(20);
-    lp.peers[1].engine.tick().unwrap();
+    lp.peers[1].tick().unwrap();
     lp.peers[1].engine.watch_commits();
     lp.peers[1].drain_events();
     let rq = purge(&mut lp, 0, PurgeItem::Commit { commit: c, tid: d, ak: reg() });
@@ -539,7 +539,7 @@ fn purge_request_floor_holds_purge_on_replace_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.get(&d, &reg()).unwrap(), Some(s("later")));
     assert!(lp.peers[0].engine.body_not_dropped(&p, &d, &reg()), "killed, before its floor");
     lp.advance(osis_base::format::ROLE_KEEP_MS + 1_000);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert!(!lp.peers[0].engine.body_not_dropped(&p, &d, &reg()), "past its floor");
 }
 

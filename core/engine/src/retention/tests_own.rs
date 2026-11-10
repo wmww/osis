@@ -129,8 +129,8 @@ fn forgotten_goes_with_its_thing_spec_commits_5() {
     e.forget_commit(&c).unwrap();
     assert!(e.local_census().unwrap().contains_key("f/"), "the forgotten row");
     lp.advance(200_000);
+    lp.peers[0].tick().unwrap();
     let e = &mut lp.peers[0].engine;
-    e.tick().unwrap();
     assert_eq!(e.get(&t, &a).unwrap(), None, "ended");
     assert!(!e.core.ix.forgotten.contains_key(&(t, a.clone())));
     assert!(!e.local_census().unwrap().contains_key("f/"), "gone with the thing");

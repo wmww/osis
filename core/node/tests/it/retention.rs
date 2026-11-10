@@ -71,7 +71,7 @@ fn expiry_spec_commits_6() {
     lp.advance(3_600_001);
     for i in 0..2 {
         lp.peers[i].drain_events();
-        lp.peers[i].engine.tick().unwrap();
+        lp.peers[i].tick().unwrap();
         assert_eq!(lp.peers[i].engine.get(&t, &ak("t:brief.0")).unwrap(), None, "node {i}");
         assert!(!lp.peers[i].engine.body_not_dropped(&c, &t, &ak("t:brief.0")));
         assert!(lp.peers[i].drain_events().iter().any(|e| matches!(e, Event::Changed { cause: Cause::Expiry, .. })));
@@ -88,7 +88,7 @@ fn expiry_spec_commits_6() {
     m.expires(t, &REG, WallMs(now.0 + 1000)).unwrap();
     lp.peers[0].commit(m).unwrap();
     lp.advance(1000);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), None);
 }
 
@@ -603,12 +603,12 @@ fn part_of_a_fallen_purge_comes_back_spec_perm_6() {
     lp.peers[3].engine.set_syncing(t, true).unwrap();
     lp.deliver(3, &reg_part).unwrap();
     lp.deliver(3, &pp).unwrap();
-    lp.peers[3].engine.reexamine().unwrap();
+    lp.peers[3].reexamine().unwrap();
     assert!(lp.peers[3].engine.commit_ids().contains(&c), "it waits for nothing: {:?}", lp.peers[3].engine.pending());
     assert!(!lp.peers[3].engine.body_not_dropped(&c, &t, &k), "purged");
     lp.deliver(3, &pd).unwrap();
     lp.deliver(3, &list_part).unwrap();
-    lp.peers[3].engine.reexamine().unwrap();
+    lp.peers[3].reexamine().unwrap();
     let e = &mut lp.peers[3].engine;
     assert!(e.pending().is_empty(), "{:?}", e.pending());
     assert!(e.purged_on(&t, &k).unwrap().is_empty());
@@ -845,7 +845,7 @@ fn undo_redo_spec_commits_7() {
 }
 
 fn big(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid) -> Option<Value> {
-    lp.peers[i].engine.tick().unwrap();
+    lp.peers[i].tick().unwrap();
     lp.peers[i].engine.get(&t, &ak("t:big.0")).unwrap().filter(|v| *v != Value::Map(Default::default()))
 }
 
@@ -1545,7 +1545,7 @@ fn snapshot_carrying_write_past_frontier_dated_spec_commits_5() {
     lp.peers[0].engine.set_syncing(t, true).unwrap();
     lp.peers[0].receive(&b.encode(), Vec::new()).unwrap();
     lp.advance(3_600_001);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     let w = set(&mut lp, 1, t, &KEPT, "w");
     let wp = lp.peers[1].engine.package(&w).unwrap().unwrap();
     lp.deliver(0, &wp).unwrap();
@@ -1691,8 +1691,8 @@ fn undo_expiry_history(seed: u64) {
             lp.advance(below(3_000));
         }
         for p in 0..3 {
+            lp.peers[p].tick().unwrap();
             let e = &mut lp.peers[p].engine;
-            e.tick().unwrap();
             let now = e.now().0;
             for (ai, a) in aks.iter().enumerate() {
                 let mut vs = Vec::new();
@@ -1975,8 +1975,8 @@ fn invalid_role_commit_keeps_its_body_spec_commits_5() {
     lp.advance(10);
     remove_all(&mut lp, t, x);
     lp.advance(86_400_000 * 400);
+    lp.peers[0].tick().unwrap();
     let e = &mut lp.peers[0].engine;
-    e.tick().unwrap();
     let roles = ak("roles.0");
     assert!(e.body_not_dropped(&g, &t, &roles));
     assert_eq!(e.replaced_at(&g, &t, &roles).unwrap(), None);
@@ -2693,7 +2693,7 @@ fn stripped_part_fallen_then_expired_holds_its_leftover_spec_commits_6() {
     drop(pdm);
     lp.advance(600_001);
     for i in [4, 5] {
-        lp.peers[i].engine.tick().unwrap();
+        lp.peers[i].tick().unwrap();
     }
     alike_4_5(&mut lp, t, None, "expired");
     lp.peers[4].restart(0x7e4).unwrap();
@@ -2736,12 +2736,12 @@ fn group_index_follows_a_member_gone_by_retention_spec_commits_5() {
     let late = lp.peers[0].commit(m).unwrap().unwrap();
     assert!(lp.peers[0].engine.closure(&g).contains(&x));
     lp.advance(6_000);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     gone(&mut lp, 0, g, x, stays);
     // past it on arrival
     sync(&mut lp, 0, 1);
     assert!(lp.peers[1].engine.header(&late).is_some());
-    lp.peers[1].engine.tick().unwrap();
+    lp.peers[1].tick().unwrap();
     gone(&mut lp, 1, g, x, stays);
 
     // by a purge of its commit
@@ -2765,7 +2765,7 @@ fn group_index_follows_a_member_gone_by_retention_spec_commits_5() {
     let mut m = Mutation::new();
     m.op(g, &GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(y)) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     let group = osis_base::Ak::new("group.0").unwrap();
     let e = &mut lp.peers[0].engine;
     assert!(!e.body_not_dropped(&c, &g, &group));
@@ -2817,7 +2817,7 @@ fn none_reader_drops_when_the_writers_cover_arrives_spec_commits_5() {
     let kill = packages(&mut lp, 0).into_iter().find(|p| p.id == c2).unwrap();
     for i in [1, 2] {
         lp.deliver(i, &kill).unwrap();
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
     }
     assert!(lp.peers[2].engine.body_not_dropped(&c1, &t, &k), "the reader keeps the replaced body: no cover yet");
     assert!(snapshots_held(&mut lp, 2, t, &k).is_empty(), "a reader writes no cover");
@@ -3329,7 +3329,7 @@ fn parked_grant_gives_no_purge_right_spec_commits_4() {
     assert!(e.body_not_dropped(&c, &t, &ak("t:reg.0")));
     assert!(!e.named_by_a_fallen_purge(&c, &[0]).unwrap(), "the parked grant names no possible admin");
     lp.peers[2].engine.set_clock_offset(2 * MAX_DRIFT_MS as i64);
-    lp.peers[2].engine.reexamine().unwrap();
+    lp.peers[2].reexamine().unwrap();
     let e = &mut lp.peers[2].engine;
     assert!(e.pending().is_empty(), "{:?}", e.pending());
     assert!(e.body_not_dropped(&c, &t, &ak("t:reg.0")), "granted after the request: no right at its key");

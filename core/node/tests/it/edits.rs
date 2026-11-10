@@ -286,7 +286,7 @@ fn expiry_shows_the_previous_or_stands_alone_spec_commits_5() {
     lp.sync_all().unwrap();
     assert_eq!(list(&mut lp, 1, d), vec![(o, Some(long), body("long"))]);
     lp.advance(7 * HOUR);
-    lp.peers[1].engine.tick().unwrap();
+    lp.peers[1].tick().unwrap();
     assert_eq!(list(&mut lp, 1, d), vec![(long, None, body("long"))], "the original gone, the over-long edit alone");
 }
 
@@ -304,7 +304,7 @@ fn an_edit_takes_its_originals_expiry_spec_commits_5() {
     let v = edit(&mut lp, 0, d, r, "two", o);
     assert_eq!(lp.peers[0].engine.header(&v).unwrap().expires, lp.peers[0].engine.header(&o).unwrap().expires);
     lp.advance(HOUR + 1);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert_eq!(list(&mut lp, 0, d), vec![], "both end together");
 }
 
@@ -319,7 +319,7 @@ fn an_original_past_its_keep_frees_its_versions_spec_commits_5() {
     lp.sync_all().unwrap();
     assert_eq!(list(&mut lp, 1, d), vec![(o, Some(v), body("two"))]);
     lp.advance(2 * HOUR);
-    lp.peers[1].engine.tick().unwrap();
+    lp.peers[1].tick().unwrap();
     assert_eq!(list(&mut lp, 1, d), vec![(v, None, body("two"))]);
 }
 
@@ -468,7 +468,7 @@ fn a_folded_version_ending_with_its_fire_is_not_told_spec_commits_5() {
     let rx = lp.peers[0].engine.subscribe();
     lp.peers[0].engine.watch_commits();
     lp.advance(HOUR + 1);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert_eq!(list(&mut lp, 0, d), vec![]);
     assert_eq!(told(&rx, d), vec![o], "an expiry: one change of the fire");
     // the newest version ending first: the fire reads the previous, told as its change
@@ -484,7 +484,7 @@ fn a_folded_version_ending_with_its_fire_is_not_told_spec_commits_5() {
     let rx = lp.peers[0].engine.subscribe();
     lp.peers[0].engine.watch_commits();
     lp.advance(HOUR + 1);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert_eq!(list(&mut lp, 0, d), vec![(o, None, body("one"))]);
     assert_eq!(told(&rx, d), vec![o], "a version's expiry: one change of the fire");
 }
@@ -632,7 +632,7 @@ fn incremental_equals_rebuilt_and_every_order_reads_alike_spec_commits_5() {
             sync(&mut lp, alice, bob);
             sync(&mut lp, bob, alice);
             for i in [alice, bob] {
-                lp.peers[i].engine.tick().unwrap();
+                lp.peers[i].tick().unwrap();
             }
             for i in [alice, bob] {
                 lp.peers[i].engine.check_index();
@@ -685,8 +685,8 @@ fn incremental_equals_rebuilt_and_every_order_reads_alike_spec_commits_5() {
                 feed(&mut lp, &bytes);
             }
         }
-        lp.peers[obs].engine.reexamine().unwrap();
-        lp.peers[obs].engine.tick().unwrap();
+        lp.peers[obs].reexamine().unwrap();
+        lp.peers[obs].tick().unwrap();
         assert_eq!(list(&mut lp, obs, d), want, "seed {seed}: shuffled");
         lp.peers[obs].engine.check_index();
         folded += want.iter().filter(|x| x.1.is_some()).count();

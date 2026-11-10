@@ -759,7 +759,7 @@ mod tests {
             match case {
                 "expired" => {
                     lp.advance(1000);
-                    (0..2).for_each(|i| lp.peers[i].engine.tick().unwrap());
+                    (0..2).for_each(|i| lp.peers[i].tick().unwrap());
                 }
                 "purged" => {
                     lp.advance(10);

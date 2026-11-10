@@ -69,9 +69,9 @@ pub struct Peer {
 pub struct Discarded {
     bytes: Vec<u8>,
     blobs: Vec<(BlobId, Vec<u8>)>,
-    commit: CommitId,
+    pub commit: CommitId,
     /// `None`: a part of an applied commit (`Wakes::woken`).
-    awaits: Option<Tid>,
+    pub awaits: Option<Tid>,
 }
 
 impl Peer {

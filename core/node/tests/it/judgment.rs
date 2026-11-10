@@ -215,13 +215,13 @@ fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(
                 }
                 None => {
                     p.engine.put_blobs(vec![(ents[i].0, ents[i].2.clone())]).unwrap();
-                    p.engine.reexamine().unwrap();
+                    p.reexamine().unwrap();
                 }
             },
             Tok::Sync(t) => p.engine.set_syncing(t, true).unwrap(),
             Tok::Wait(ms) => {
                 p.clock.advance(ms);
-                p.engine.tick().unwrap();
+                p.tick().unwrap();
             }
             Tok::Drop(i) => {
                 let (_, cb) = open(i).unwrap();
@@ -241,7 +241,7 @@ fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(
             let _ = p.engine.ingest(&pt, Vec::new());
         }
     }
-    p.engine.reexamine().unwrap();
+    p.reexamine().unwrap();
     observe(&mut p.engine, &ids)
 }
 

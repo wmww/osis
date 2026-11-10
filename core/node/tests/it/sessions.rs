@@ -195,7 +195,7 @@ fn untraced_session_part_joins_late_spec_commits_4() {
     assert!(!frontiers_of(&lp.peers[2].engine, &snap, &t, &ak("t:tags.0")).lists(&source_of(&lp, 0, &c)), "W never received c");
     sync(&mut lp, 2, 1);
     lp.peers[1].receive(&only(&pk.bytes, &h, "t:reg.0"), Vec::new()).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
+    lp.peers[1].reexamine().unwrap();
     let e = &mut lp.peers[1].engine;
     assert!(e.pending().is_empty(), "{:?}", e.pending());
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("a")));

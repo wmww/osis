@@ -1837,6 +1837,12 @@ fn explain(played: &Played, held: &[usize], p: &mut Peer, what: &str) {
     for (c, why) in o.engine.pending() {
         let _ = writeln!(out, "keep pending #{:?}: {why:?}", pack(&c));
     }
+    // thrown out and not fetched again: no wake named what it awaits
+    for (who, q) in [("node", &*p), ("keep", &o)] {
+        for d in &q.discarded {
+            let _ = writeln!(out, "{who} thrown out #{:?}: {}", pack(&d.commit), d.awaits.map_or("a part of an applied commit".into(), |t| format!("awaits {t:?}")));
+        }
+    }
     eprintln!("{out}");
 }
 
@@ -3355,7 +3361,7 @@ fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
         let _ = before.engine.ingest(&pk.bytes, pk.blobs.clone());
     }
     before.clock.set(played.now);
-    before.engine.tick().unwrap();
+    before.tick().unwrap();
     let k = (format!("{:?}", played.things[0]), "t:map.0".to_string());
     let (a, b) = (shown(&mut after, &played.things), shown(&mut before, &played.things));
     assert_eq!(a.get(&k), b.get(&k));

@@ -3603,8 +3603,8 @@ fn memory_commit_expiry_stays_in_memory() {
     let writes = lp.peers[0].backend.faults().writes();
     let generation = lp.peers[0].engine.core.generation;
     lp.advance(2000);
+    lp.peers[0].tick().unwrap();
     let e = &mut lp.peers[0].engine;
-    e.tick().unwrap();
     assert!(e.get(&t, &tags).unwrap().is_none_or(|v| v == Value::Set(Default::default())), "expired");
     assert_eq!(e.core.generation, generation);
     assert_eq!(lp.peers[0].backend.faults().writes(), writes, "nothing durable written");
@@ -3740,7 +3740,7 @@ fn received_memory_commit_in_memory_spec_commits_4() {
     let pk3 = lp.peers[0].engine.package(&id3).unwrap().unwrap();
     assert!(matches!(lp.peers[1].engine.ingest_memory(&pk3.bytes, u64::MAX).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
     lp.peers[1].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
-    lp.peers[1].engine.reexamine().unwrap();
+    lp.peers[1].reexamine().unwrap();
     assert!(lp.peers[1].engine.core.ix.commits.contains_key(&id3), "applied at re-examination");
     assert_eq!(faults.forbidden(), 0, "nothing durable written for a memory commit");
     faults.forbid_writes(false);
@@ -3911,7 +3911,7 @@ fn memory_expiry_goes_valueless_spec_crdt_4_7() {
     assert_eq!((memory_tags(&mut lp, 0, d), memory_tags(&mut lp, 1, d)), (b.clone(), b));
     lp.advance(2000);
     for i in 0..3 {
-        lp.peers[i].engine.tick().unwrap();
+        lp.peers[i].tick().unwrap();
     }
     assert!(matches!(memory_deliver(&mut lp, 2, &rep), osis_node::Ingested::Applied(_)));
     let empty = None;
@@ -4199,7 +4199,7 @@ fn memory_random_histories(seeds: std::ops::Range<u64>, snapshots: bool) {
             lp.advance(1 + rnd(300));
             for to in 0..4 {
                 if rnd(3) == 0 {
-                    lp.peers[to].engine.tick().unwrap();
+                    lp.peers[to].tick().unwrap();
                 }
             }
             let due: Vec<_> = queue.iter().filter(|q| q.0 <= step).cloned().collect();
@@ -4213,7 +4213,7 @@ fn memory_random_histories(seeds: std::ops::Range<u64>, snapshots: bool) {
         }
         for round in 0..8 {
             for to in 0..4 {
-                lp.peers[to].engine.tick().unwrap();
+                lp.peers[to].tick().unwrap();
             }
             let reads: Vec<_> = (0..4).map(|i| (lp.peers[i].engine.get(&d, &eph(ak)).unwrap(), lp.peers[i].engine.get(&d, &eph("t:tags+.0")).unwrap())).collect();
             assert!(reads.iter().all(|r| *r == reads[0]), "seed {seed} round {round}: {reads:?}\n{}", log.join("\n"));
@@ -4287,7 +4287,7 @@ fn memory_snapshot_covers_held_bodies_spec_sync_9() {
     lp.advance(31_000);
     let left = Some(Value::Set([s("a1"), s("a2"), s("a3"), s("b1")].into()));
     for i in 0..3 {
-        lp.peers[i].engine.tick().unwrap();
+        lp.peers[i].tick().unwrap();
         assert_eq!(memory_tags(&mut lp, i, d), left, "{i}: the expiring write vanished");
     }
     assert!(faults.iter().all(|f| f.forbidden() == 0), "nothing durable written");
@@ -4444,7 +4444,7 @@ fn memory_random_demotion(seed: u64) {
         lp.advance(1 + rnd(400));
         for to in 0..4 {
             if rnd(3) == 0 {
-                lp.peers[to].engine.tick().unwrap();
+                lp.peers[to].tick().unwrap();
             }
         }
         let due: Vec<_> = queue.iter().filter(|q| q.0 <= step).cloned().collect();
@@ -4467,7 +4467,7 @@ fn memory_random_demotion(seed: u64) {
     }
     for round in 0..6 {
         for to in 0..4 {
-            lp.peers[to].engine.tick().unwrap();
+            lp.peers[to].tick().unwrap();
         }
         let reads: Vec<_> = (0..4).map(|i| aks.iter().map(|ak| lp.peers[i].engine.get(&d, &eph(ak)).unwrap()).collect::<Vec<_>>()).collect();
         assert!(reads.iter().all(|r| *r == reads[0]), "seed {seed} round {round}: {reads:?}\n{}", log.join("\n"));
@@ -4537,7 +4537,7 @@ fn memory_snapshot_covers_plain_after_expired_spec_sync_9() {
     memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s("E")), Some(1000));
     let ps: Vec<_> = (0..3).map(|i| memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s(&format!("p{i}"))), None)).collect();
     lp.advance(2000);
-    lp.peers[1].engine.tick().unwrap();
+    lp.peers[1].tick().unwrap();
     memory_snapshot(&mut lp, 1, d);
     for p in &ps {
         assert!(!holds_commit(&lp, 1, &p.0), "covered");

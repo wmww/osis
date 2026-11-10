@@ -1273,8 +1273,8 @@ mod tests {
         m.expires(t, &reg, WallMs(now.0 + 1000)).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         lp.advance(2000);
+        lp.peers[0].tick().unwrap();
         let e = &mut lp.peers[0].engine;
-        e.tick().unwrap();
         assert_eq!(e.get(&t, &reg).unwrap(), None, "the value-less winner reads absent");
         lp.advance(10);
         let mut m = Mutation::new();

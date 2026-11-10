@@ -94,7 +94,7 @@ fn forged_purge_on_replace_class_gives_no_rights_spec_commits_4() {
     let pl = packages(&mut lp, 2).into_iter().find(|p| p.id == later).unwrap();
     lp.peers[1].receive(&reg_only(&pk), Vec::new()).unwrap();
     lp.deliver(1, &pl).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
+    lp.peers[1].reexamine().unwrap();
     let e = &mut lp.peers[1].engine;
     assert!(e.pending().is_empty(), "{:?}", e.pending());
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")), "the part stays invalid");
@@ -162,7 +162,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
         if let Some(p) = &held {
             lp.deliver(1, p).unwrap();
         }
-        lp.peers[1].engine.reexamine().unwrap();
+        lp.peers[1].reexamine().unwrap();
         assert!(lp.peers[1].engine.pending().is_empty());
         let e = &mut lp.peers[1].engine;
         let snap = match &held {
@@ -211,7 +211,7 @@ fn expired_entry_keeps_nested_write_alike_spec_crdt_4_7() {
     lp.deliver(3, &p1).unwrap();
     for p in [2, 3] {
         lp.peers[p].clock.advance(2 * 3_600_000);
-        lp.peers[p].engine.tick().unwrap();
+        lp.peers[p].tick().unwrap();
     }
     assert_eq!(lp.peers[2].engine.get(&t, &map).unwrap(), lp.peers[3].engine.get(&t, &map).unwrap());
     assert_eq!(lp.peers[2].engine.get(&t, &map).unwrap(), Some(osis_base::Value::Map([(s("k"), s("b"))].into_iter().collect())), "the put keeps the entry");
@@ -425,7 +425,7 @@ fn sync_set_of_final_group_reads_alike_in_any_order_spec_commits_4() {
                 None => p.engine.ingest(&held, Vec::new()).unwrap(),
             };
         }
-        p.engine.reexamine().unwrap();
+        p.reexamine().unwrap();
         assert!(!p.engine.core.syncs(&u), "{seq:?}");
         assert!(p.engine.core.syncs(&t), "{seq:?}");
         assert_eq!(p.engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("t")), "{seq:?}");
@@ -454,7 +454,7 @@ fn list_element_overwritten_stays_past_expiry_spec_crdt_5_7() {
     m.op(t, &LIST, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Index(0)], op: osis_crdt::Op::Set(s("edited")) }).unwrap();
     lp.peers[1].commit(m).unwrap().unwrap();
     lp.advance(2 * 3_600_000);
-    lp.peers[1].engine.tick().unwrap();
+    lp.peers[1].tick().unwrap();
     let edited = Some(Value::List(vec![s("edited")]));
     assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), edited);
     lp.peers[1].engine.rebuild_index().unwrap();
@@ -493,7 +493,7 @@ fn list_element_stays_beside_snapshot_before_expiry_spec_crdt_4_7() {
     }
     lp.advance(2 * 3_600_000);
     for i in 0..3 {
-        lp.peers[i].engine.tick().unwrap();
+        lp.peers[i].tick().unwrap();
         assert_eq!(lp.peers[i].engine.get(&t, &k).unwrap(), None, "peer {i} past T");
     }
 }
@@ -575,7 +575,7 @@ fn expired_list_element_survives_unmerge_spec_crdt_4_6() {
     let _ = lp.deliver(1, &pk);
     assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("late"), s("edited"), s("kept")])));
     lp.advance(2 * 3_600_000);
-    lp.peers[1].engine.tick().unwrap();
+    lp.peers[1].tick().unwrap();
     assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("late"), s("edited")])));
     let pk = lp.peers[0].engine.package(&d).unwrap().unwrap();
     let _ = lp.deliver(1, &pk);
@@ -599,15 +599,15 @@ fn snapshot_past_expiry_beside_body_spec_crdt_4_7() {
     lp.sync_all().unwrap();
     lp.peers[1].clock.advance(3_600_000 + 1_000);
     lp.peers[2].clock.advance(3_600_000 - 1_000);
-    lp.peers[1].engine.tick().unwrap();
+    lp.peers[1].tick().unwrap();
     let c = lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
     let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
     lp.peers[2].drain_events();
     let _ = lp.deliver(2, &pk);
-    lp.peers[2].engine.reexamine().unwrap();
+    lp.peers[2].reexamine().unwrap();
     assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("hello")])));
     lp.peers[2].clock.advance(2_000);
-    lp.peers[2].engine.tick().unwrap();
+    lp.peers[2].tick().unwrap();
     assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), None, "past its own T");
 }
 
@@ -642,13 +642,13 @@ fn list_element_expiry_in_any_order_spec_crdt_5_7() {
         let _ = p.engine.ingest(&first.bytes, first.blobs.clone());
         if past {
             p.clock.advance(2 * 3_600_000);
-            p.engine.tick().unwrap();
+            p.tick().unwrap();
         }
         let _ = p.engine.ingest(&second.bytes, second.blobs.clone());
         if !past {
             assert_eq!(p.engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("edited")])));
             p.clock.advance(2 * 3_600_000);
-            p.engine.tick().unwrap();
+            p.tick().unwrap();
         }
         assert_eq!(p.engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("edited")])), "past {past}");
         digests.push(p.engine.state_digest(&t, &k).unwrap());
@@ -848,7 +848,7 @@ fn list_element_in_snapshot_before_expiry_reads_alike_spec_crdt_5_7() {
     }
     lp.advance(2 * 3_600_000);
     for i in [1, 2] {
-        lp.peers[i].engine.tick().unwrap();
+        lp.peers[i].tick().unwrap();
     }
     let held = lp.peers[1].engine.get(&t, &k).unwrap();
     assert_eq!(held, Some(Value::List(vec![s("X")])), "the other writer's char shows");

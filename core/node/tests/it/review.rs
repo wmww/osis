@@ -83,7 +83,7 @@ fn expiring_commit_applies_without_missing_delta_spec_commits_4() {
     assert_eq!(lp.peers[1].receive(&partial, Vec::new()).unwrap(), Ingested::Applied(id));
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("held")));
     lp.advance(3_600_001);
-    lp.peers[1].engine.tick().unwrap();
+    lp.peers[1].tick().unwrap();
     assert!(lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
     assert!(lp.peers[1].engine.commit_ids().contains(&id));
     // the expired write applied before T stays its value-less winner (spec/crdt.md §4.7)
@@ -163,7 +163,7 @@ fn purge_drops_late_snapshot_spec_commits_5() {
         lp.deliver(1, p).unwrap();
     }
     lp.peers[1].engine.set_syncing(t, true).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
+    lp.peers[1].reexamine().unwrap();
     assert!(!lp.peers[1].engine.body_not_dropped(&secret, &t, &reg));
     lp.deliver(1, &spk).unwrap();
     check(&mut lp.peers[1].engine, "snapshot last");
@@ -176,7 +176,7 @@ fn purge_drops_late_snapshot_spec_commits_5() {
         lp.deliver(i, p).unwrap();
     }
     lp.peers[i].engine.set_syncing(t, true).unwrap();
-    lp.peers[i].engine.reexamine().unwrap();
+    lp.peers[i].reexamine().unwrap();
     check(&mut lp.peers[i].engine, "named delta last");
     // the snapshot's header (applied alone, spec/commits.md §4), then its part
     let j = lp.peers.len();

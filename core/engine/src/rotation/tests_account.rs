@@ -420,7 +420,7 @@ fn a_siblings_far_future_commit_waits_spec_crdt_2_2() {
     let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
     assert!(matches!(lp.deliver(0, &pk).unwrap(), Ingested::Pending(_, crate::apply::Reason::Drift)));
     lp.peers[0].clock.advance(osis_base::format::MAX_DRIFT_MS + 1);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert!(lp.peers[0].engine.pending().is_empty(), "it applies once within the bound");
 }
 

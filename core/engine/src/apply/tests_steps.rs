@@ -67,7 +67,7 @@ fn pending_then_applied(seed: u64, f: Option<StepFault>) -> (LocalPeer, CommitId
     assert!(e.core.ix.pending.contains_key(&c2), "ahead of the clock: waits");
     e.core.step_fault = f;
     lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
-    lp.peers[1].engine.reexamine().unwrap();
+    lp.peers[1].reexamine().unwrap();
     (lp, c2)
 }
 

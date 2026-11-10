@@ -859,7 +859,7 @@ mod tests {
         // the first grant's thing arrives: it applies, its secret is checked, a place is free
         let created = lp.peers[0].engine.package(&c1).unwrap().unwrap();
         lp.deliver(1, &created).unwrap();
-        lp.peers[1].engine.reexamine().unwrap();
+        lp.peers[1].reexamine().unwrap();
         assert!(!lp.peers[1].engine.pending().iter().any(|(c, _)| *c == g1), "applied");
         assert!(held(&lp, &t2), "read once a place is free");
     }
@@ -1173,7 +1173,7 @@ mod tests {
         assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("x:a.0").unwrap()).unwrap(), None, "content forgotten");
         assert_eq!(secrets_parts(&mut lp, &regrant, t), 1, "the boxes stay");
         lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
-        lp.peers[1].engine.reexamine().unwrap();
+        lp.peers[1].reexamine().unwrap();
         assert_eq!(lp.peers[1].engine.core.role_now(&b, &t), Some(Role::Read), "the re-grant applied");
         let checked = lp.peers[1].engine.core.ix.secrets.get(&t).is_some_and(|e| e.read.held().next().is_some());
         assert!(checked, "its boxes came with it");

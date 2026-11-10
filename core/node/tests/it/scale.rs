@@ -1067,7 +1067,7 @@ fn dropped_frontier(k: usize) -> (usize, usize) {
         let pk = lp.peers[0].engine.package(&sn).unwrap().unwrap();
         lp.deliver(1, &pk).unwrap();
         lp.advance(1_000);
-        lp.peers[1].engine.tick().unwrap();
+        lp.peers[1].tick().unwrap();
     }
     let e = &mut lp.peers[1].engine;
     let scope = osis_perm::DemotionScope { roles: BTreeMap::new(), content: BTreeMap::from([(me, BTreeSet::from([t]))]) };

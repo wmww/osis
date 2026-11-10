@@ -171,7 +171,7 @@ fn unjudgeable_ahead_is_thrown_out_not_pending_spec_commits_4() {
     assert!(matches!(lp.deliver(1, &pc).unwrap(), Ingested::Awaits(..)), "its chain is unknown");
     assert!(lp.peers[1].engine.pending().is_empty(), "nothing of it kept");
     lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
-    lp.peers[1].engine.reexamine().unwrap();
+    lp.peers[1].reexamine().unwrap();
     assert!(lp.peers[1].engine.pending().is_empty() && !lp.peers[1].engine.knows(&t));
     let pr = lp.peers[0].engine.package(&rp).unwrap().unwrap();
     lp.deliver(1, &pr).unwrap();

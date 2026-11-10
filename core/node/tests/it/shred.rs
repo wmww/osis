@@ -92,7 +92,7 @@ fn expired_body_unrecoverable_spec_commits_6() {
     let c = set(&mut lp, 0, t, &BRIEF, &big(marker));
     filler(&mut lp, 0, 6);
     lp.advance(3_600_001);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:brief.0")));
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "expired content recovered");
 }
@@ -160,7 +160,7 @@ fn expired_entry_paged_unrecoverable_spec_commits_6() {
     filler(&mut lp, 0, 6);
     assert!(recoverable(&mut lp.peers[0], marker.as_bytes()), "the attack finds live content");
     lp.advance(60_001);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert_eq!(lp.peers[0].engine.get_at(&t, &ak("t:big.0"), &[osis_crdt::PathSeg::Key(s("k999"))]).unwrap(), None);
     // the value, the key, nor the key's hash (the paged map's key index): one attack
     let h = osis_base::hash::hash(&osis_base::encode(&s("k999")));
@@ -197,7 +197,7 @@ fn expired_element_paged_set_unrecoverable_spec_commits_6() {
     filler(&mut lp, 0, 6);
     assert!(recoverable(&mut lp.peers[0], marker.as_bytes()), "the attack finds live content");
     lp.advance(60_001);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "expired content recovered");
     let read = |lp: &mut LocalPeer| match lp.peers[0].engine.get(&t, &a).unwrap() {
         Some(Value::Set(v)) => v,
@@ -337,7 +337,7 @@ fn expired_late_part_unrecoverable_spec_crdt_4_7() {
     lp.peers[1].receive(&b.encode(), pk.blobs.clone()).unwrap();
     filler(&mut lp, 1, 6);
     lp.advance(3_600_001);
-    lp.peers[1].engine.tick().unwrap();
+    lp.peers[1].tick().unwrap();
     // taken (`retention::takes_late`): joined, then dropped again
     assert!(matches!(lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap(), osis_node::Ingested::Applied(_)));
     filler(&mut lp, 1, 6);
@@ -416,7 +416,7 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
             for pk in &groups[*g] {
                 lp.deliver(1, pk).unwrap();
             }
-            lp.peers[1].engine.reexamine().unwrap();
+            lp.peers[1].reexamine().unwrap();
             // the request held while the commit waits: its values left already
             if order[..=i].contains(&2) && lp.peers[1].engine.pending().iter().any(|x| x.0 == c) {
                 for marker in markers {
@@ -484,7 +484,7 @@ fn purge_of_a_part_waiting_aside_reads_alike_spec_commits_5() {
                 1 => drop(lp.deliver(1, &request).unwrap()),
                 _ => drop(lp.peers[1].receive(&rest.encode(), Vec::new()).unwrap()),
             }
-            lp.peers[1].engine.reexamine().unwrap();
+            lp.peers[1].reexamine().unwrap();
             assert!(lp.peers[1].engine.suspects().unwrap().is_empty(), "order {order:?} after {g}: held value-less, not dropped");
         }
         let e = &mut lp.peers[1].engine;
@@ -580,7 +580,7 @@ fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
     b.parts.sort_by_key(|p| p.ai);
     let r = lp.peers[1].receive(&b.encode(), Vec::new()).unwrap();
     assert!(!matches!(r, osis_node::Ingested::Pending(..)), "{r:?}");
-    lp.peers[1].engine.reexamine().unwrap();
+    lp.peers[1].reexamine().unwrap();
     assert!(lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
     assert!(lp.peers[1].engine.commit_ids().contains(&c));
     assert!(lp.peers[1].engine.suspects().unwrap().is_empty());
@@ -588,7 +588,7 @@ fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:brief.0")).unwrap(), None);
     // the writer past T reads the same
     lp.peers[0].clock.advance(120_000);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), None);
     assert_eq!(lp.peers[0].engine.state_digest(&t, &ak("t:reg.0")).unwrap(), lp.peers[1].engine.state_digest(&t, &ak("t:reg.0")).unwrap());
 }
@@ -675,14 +675,14 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
                     if i == k && k > 0 {
                         to(&mut p, late);
                         if tick {
-                            p.engine.tick().unwrap();
+                            p.tick().unwrap();
                         }
                     }
                     if i == 3 && at % 2 == 1 {
                         p = reopened(p, at as u64);
                     }
                     let _ = p.receive(&items[*x].0, items[*x].1.clone());
-                    p.engine.reexamine().unwrap();
+                    p.reexamine().unwrap();
                     // never shown past its expiry (a value held before T goes at the tick), nor after the request
                     if (k == 0 || tick) && p.engine.now().0 >= exp.0 {
                         assert_eq!(p.engine.get(&t2, &brief).unwrap(), None, "order {order:?}");
@@ -700,10 +700,10 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
                 }
                 for x in [1, 2, 3] {
                     let _ = p.receive(&items[x].0, items[x].1.clone());
-                    p.engine.reexamine().unwrap();
+                    p.reexamine().unwrap();
                 }
-                p.engine.tick().unwrap();
-                p.engine.reexamine().unwrap();
+                p.tick().unwrap();
+                p.reexamine().unwrap();
                 let e = &mut p.engine;
                 let got = format!("applied {} pending {:?} stripped {} flags {:?} reads {:?} {:?} {:?} digests {:?} {:?} {:?} {:?}", e.commit_ids().contains(&c), e.pending(), e.stripped_count(&c).unwrap(), e.suspects().unwrap().iter().map(|f| f.1.clone()).collect::<Vec<_>>(), e.get(&t, &reg).unwrap(), e.get(&t, &list).unwrap(), e.get(&t2, &brief).unwrap(), e.state_digest(&t, &reg).unwrap(), e.state_digest(&t, &list).unwrap(), e.state_digest(&t2, &brief).unwrap(), crate::judgment::observe(e, ids));
                 let [kept_secret, kept_brief] = recovered(&mut p, [b"SECRET-R5c", b"BRIEF-R5c"]);
@@ -868,11 +868,11 @@ fn purged_page_away(lp: &mut LocalPeer, marker: &str) -> (Tid, osis_base::Commit
     let p = lp.peers[0].commit(m).unwrap().unwrap();
     let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
     lp.peers[1].receive(&whole.bytes, held).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
+    lp.peers[1].reexamine().unwrap();
     assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == c), "it waits for its page");
     assert!(recoverable(&mut lp.peers[1], marker.as_bytes()), "held so far");
     lp.deliver(1, &request).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
+    lp.peers[1].reexamine().unwrap();
     (t, c, whole)
 }
 
@@ -909,7 +909,7 @@ fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
         } else {
             lp.peers[1].receive(&whole.bytes, whole.blobs.clone()).unwrap();
         }
-        lp.peers[1].engine.reexamine().unwrap();
+        lp.peers[1].reexamine().unwrap();
         assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), lp.peers[0].engine.get(&t, &a).unwrap(), "by snapshot {by_snapshot}");
         assert!(lp.peers[1].engine.suspects().unwrap().is_empty(), "by snapshot {by_snapshot}");
         assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "by snapshot {by_snapshot}");
@@ -1002,7 +1002,7 @@ fn fallen_snapshot_rig(seed: u64) -> Fallen {
     let p1 = big_put(&mut lp, 2, t, "ox", "w", Some(cx));
     let pk = lp.peers[2].engine.package(&p1).unwrap().unwrap();
     lp.deliver(1, &pk).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
+    lp.peers[1].reexamine().unwrap();
     let sai = lp.peers[1].engine.header(&snap).unwrap().aspects.iter().position(|a| a.tid == t && a.ak == k).unwrap();
     assert!(lp.peers[1].engine.core.ix.commits.get(&snap).unwrap().stripped.contains(&sai), "the snapshot is held as its leftover");
     lp.advance(5);
@@ -1011,7 +1011,7 @@ fn fallen_snapshot_rig(seed: u64) -> Fallen {
         let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
         lp.deliver(1, &pk).unwrap();
     }
-    lp.peers[1].engine.reexamine().unwrap();
+    lp.peers[1].reexamine().unwrap();
     let m = lp.peers[1].engine.core.ix.commits.get(&snap).unwrap();
     assert!(m.stripped.contains(&sai) && !m.missing.contains(&sai), "fallen: the snapshot stays held as its leftover");
     Fallen { lp, t, cy, my }
@@ -1038,7 +1038,7 @@ fn fallen_snapshot_leftover_gone_for_a_later_purge_spec_commits_5() {
     let p2 = big_put(&mut lp, 0, t, "oy", "w", Some(cy));
     let pk = lp.peers[0].engine.package(&p2).unwrap().unwrap();
     lp.deliver(1, &pk).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
+    lp.peers[1].reexamine().unwrap();
     filler(&mut lp, 1, 6);
     assert_eq!(lp.peers[1].engine.get_at(&t, &ak("t:big.0"), &[osis_crdt::PathSeg::Key(s("ky"))]).unwrap(), None);
     assert!(!recoverable(&mut lp.peers[1], my.as_bytes()), "the second purged value recovered from the fallen snapshot's leftover");
@@ -1128,7 +1128,7 @@ fn edit_into_expiring_entry_keeps_its_expiry_spec_crdt_4_7() {
     filler(&mut lp, 0, 6);
     lp.advance(60_001);
     for i in [0, 1] {
-        lp.peers[i].engine.tick().unwrap();
+        lp.peers[i].tick().unwrap();
     }
     let at = |key: &str, f: u64| [osis_crdt::PathSeg::Key(s(key)), osis_crdt::PathSeg::Field(f)];
     for i in [0, 1] {
@@ -1286,7 +1286,7 @@ fn reaction_outlives_expiring_message_spec_crdt_4_7() {
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.header(&c).unwrap().expires, None, "the reaction's own expiry");
     lp.advance(60_001);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), Some(Value::Map([(Value::Int(1), Value::Int(2))].into_iter().collect())), "e's own value expired, the reaction kept");
     assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("m2"))]).unwrap(), Some(item("M2-MARK", 9)), "m2 and its edit kept");
 }
@@ -1323,7 +1323,7 @@ fn undo_copying_two_expiries_waits_spec_crdt_4_6() {
     assert!(matches!(&r, Err(osis_node::Error::Clash(m)) if m.contains("one expiry")), "{r:?}");
     assert_eq!(lp.peers[0].engine.commit_ids().len(), held, "nothing applied");
     lp.advance(60_001);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     let u = lp.peers[0].engine.revert(&del).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.header(&u).unwrap().expires, None);
     assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), None, "e expired");

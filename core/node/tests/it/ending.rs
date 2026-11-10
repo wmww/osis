@@ -373,7 +373,7 @@ fn an_expiry_ending_keeps_nothing_beside_a_purge_spec_commits_5() {
     m.purge(PurgeItem::Aspect { tid: t, ak: Ak::new(crate::common::REG.ak()).unwrap() });
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(2_000);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert!(!lp.peers[0].engine.knows(&t));
     assert!(lp.peers[0].engine.core.created(&t).is_none(), "no record kept");
     assert!(lp.peers[0].engine.core.timelines.get(&t).is_none_or(|tl| tl.roster(&t, osis_perm::At::END).is_empty()), "no edges kept");
@@ -436,8 +436,8 @@ fn an_ended_first_admin_stays_a_chain_proof_until_its_last_dependent_goes_spec_c
     lp.sync_all().unwrap();
     lp.advance(2_000);
     for i in 0..2 {
+        lp.peers[i].tick().unwrap();
         let e = &mut lp.peers[i].engine;
-        e.tick().unwrap();
         assert!(!e.knows(&t), "peer {i}: t ended");
         assert!(e.core.created(&t).is_some(), "peer {i}: t's record kept as x's chain proof");
         assert_eq!(e.get(&x, &Ak::new(crate::common::REG.ak()).unwrap()).unwrap(), Some(s("x")), "peer {i}: x lives on");
@@ -449,8 +449,8 @@ fn an_ended_first_admin_stays_a_chain_proof_until_its_last_dependent_goes_spec_c
     assert_eq!(lp.peers[1].engine.get(&x, &Ak::new(crate::common::REG.ak()).unwrap()).unwrap(), Some(s("y")), "written through t's standing edges");
     lp.advance(4_000);
     for i in 0..2 {
+        lp.peers[i].tick().unwrap();
         let e = &mut lp.peers[i].engine;
-        e.tick().unwrap();
         assert!(!e.knows(&x), "peer {i}: x ended");
         assert!(e.core.created(&x).is_none() && e.core.created(&t).is_none(), "peer {i}: neither leaves a record");
     }
@@ -480,16 +480,16 @@ fn an_ended_holder_stays_until_what_names_it_goes_spec_commits_5() {
     lp.sync_all().unwrap();
     lp.advance(2_000);
     for i in 0..2 {
+        lp.peers[i].tick().unwrap();
         let e = &mut lp.peers[i].engine;
-        e.tick().unwrap();
         assert!(!e.knows(&t), "peer {i}: t ended");
         assert!(e.core.created(&t).is_some(), "peer {i}: t's record kept, x names it holder");
         assert!(e.roster(&x).contains_key(&t), "peer {i}: t's edge on x stands");
     }
     lp.advance(4_000);
     for i in 0..2 {
+        lp.peers[i].tick().unwrap();
         let e = &mut lp.peers[i].engine;
-        e.tick().unwrap();
         assert!(!e.knows(&x), "peer {i}: x ended");
         assert!(e.core.created(&x).is_none() && e.core.created(&t).is_none(), "peer {i}: neither leaves a record");
         assert!(e.core.timelines.get(&t).is_none_or(|tl| tl.roster(&t, osis_perm::At::END).is_empty()), "peer {i}: no edges of t kept");

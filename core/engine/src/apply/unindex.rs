@@ -160,8 +160,8 @@ mod tests {
         assert_eq!(h.expires, Some(h.ts.wall_ms().0 + 1));
         assert_eq!(e.get(&g, &ak("t:m.0")).unwrap(), Some(Value::Str("typing".into())));
         lp.advance(60_002);
+        lp.peers[0].tick().unwrap();
         let e = &mut lp.peers[0].engine;
-        e.tick().unwrap();
         assert_eq!(e.get(&g, &ak("t:m.0")).unwrap(), None);
     }
 
@@ -194,13 +194,13 @@ mod tests {
         m.set(g, &ak("t:r+.0"), &Value::Str("w".into())).unwrap();
         e.commit_in_memory(m).unwrap().unwrap();
         lp.advance(2000 + 3_600_000);
+        lp.peers[0].tick().unwrap();
         let e = &mut lp.peers[0].engine;
-        e.tick().unwrap();
         assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.dropped.is_empty()));
         assert_eq!(e.get(&g, &ak("t:s+.0")).unwrap(), Some(Value::Str("live".into())));
         lp.advance(2 * 3_600_000);
+        lp.peers[0].tick().unwrap();
         let e = &mut lp.peers[0].engine;
-        e.tick().unwrap();
         assert_eq!(e.get(&g, &ak("t:s+.0")).unwrap(), None, "value-less at its expiry");
         assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.dropped.is_empty() && m.stripped.len() == 2), "held as its leftover");
     }

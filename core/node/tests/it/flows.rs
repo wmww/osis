@@ -828,7 +828,7 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
             v.reverse();
         }
         send(&mut lp, 0, i, &v);
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
         for k in [0, 1, i] {
             for (x, a) in &aspects {
                 assert_eq!(lp.peers[k].engine.get(x, a).unwrap(), lp.peers[0].engine.get(x, a).unwrap(), "peer {k} {a:?}, reversed {reversed}");

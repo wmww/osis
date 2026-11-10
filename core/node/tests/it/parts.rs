@@ -48,7 +48,7 @@ fn deliver(played: &Played, syncs: &[Tid], order: &[Tok]) -> Peer {
     for (i, t) in order {
         let _ = p.engine.ingest(&part(played, *i, *t), played.packs[*i].blobs.clone());
     }
-    p.engine.reexamine().unwrap();
+    p.reexamine().unwrap();
     p
 }
 
@@ -341,7 +341,7 @@ fn late_part_of_applied_commit_joins_alone_spec_commits_4() {
             p.engine.set_syncing(*t, true).unwrap();
         }
         let _ = p.engine.ingest(&part(three, last, Some(c)), Vec::new());
-        p.engine.reexamine().unwrap();
+        p.reexamine().unwrap();
         assert_eq!(p.engine.get(&c, &reg()).unwrap(), v("v1"), "hidden {hidden:?}");
     }
 }
@@ -511,7 +511,7 @@ impl Relay {
         self.settle(p);
     }
     fn settle(&mut self, p: &mut Peer) {
-        p.engine.reexamine().unwrap();
+        p.reexamine().unwrap();
         for _ in 0..=self.copies.len() {
             let names = p.engine.take_redeliver();
             if names.is_empty() {
@@ -525,7 +525,7 @@ impl Relay {
                     }
                 }
             }
-            p.engine.reexamine().unwrap();
+            p.reexamine().unwrap();
         }
         assert!(p.engine.take_redeliver().is_empty(), "a name for every round");
     }
@@ -631,7 +631,7 @@ fn bad_part_every_shape_reads_alike_spec_commits_4() {
                 for x in &shape {
                     let _ = p.engine.ingest(x, Vec::new());
                 }
-                p.engine.reexamine().unwrap();
+                p.reexamine().unwrap();
                 let roster: Vec<String> = played.things.iter().map(|t| format!("{:?}", p.engine.roster(t))).collect();
                 let got = (observe(&mut p.engine, &ids), roster, p.engine.pending());
                 assert!(got.2.is_empty(), "how {how}: nothing waits for a part held bad: {:?}", got.2);
@@ -670,7 +670,7 @@ fn role_commit_of_junk_holds_nothing_spec_commits_4() {
         p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
     }
     let _ = p.engine.ingest(&junk, Vec::new());
-    p.engine.reexamine().unwrap();
+    p.reexamine().unwrap();
     assert!(!p.engine.commit_ids().contains(&id), "junk is no part of it");
     p.engine.ingest(&role.packs[last].bytes, Vec::new()).unwrap();
     assert!(p.engine.commit_ids().contains(&id));
@@ -755,7 +755,7 @@ fn bad_part_beside_a_waiting_part_alike_spec_commits_4() {
         for t in order {
             let _ = p.engine.ingest(t, Vec::new());
         }
-        p.engine.reexamine().unwrap();
+        p.reexamine().unwrap();
         (observe(&mut p.engine, &ids), p.engine.commit_ids().contains(&played.packs[last].id))
     };
     let (whole, on_a, on_b) = (played.packs[last].bytes.clone(), part(&played, last, Some(a)), part(&played, last, Some(b)));
@@ -793,7 +793,7 @@ fn true_record_replaces_junk_under_a_linked_header_spec_commits_4() {
     p.engine.ingest(&junk.encode(), pk.blobs.clone()).unwrap();
     assert!(!p.engine.commit_ids().contains(&id));
     p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
-    p.engine.reexamine().unwrap();
+    p.reexamine().unwrap();
     assert!(p.engine.commit_ids().contains(&id), "{:?}", p.engine.pending());
 }
 
@@ -898,7 +898,7 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
         assert_eq!(matches!(r, Ingested::Parked(_)), things.len() == 1, "{r:?}");
         assert_eq!(p.engine.pending(), vec![(b.id(), Reason::Parked)]);
         p.clock.advance(5000);
-        p.engine.tick().unwrap();
+        p.tick().unwrap();
         assert!(!copy_held(&mut p), "no copy past T");
         assert_eq!(p.engine.pending(), vec![]);
     }
@@ -906,7 +906,7 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
     let mut p = new(live);
     let _ = p.engine.ingest(&cut(&b, &[x]), Vec::new());
     p.clock.advance(5000);
-    p.engine.reexamine().unwrap();
+    p.reexamine().unwrap();
     assert!(!copy_held(&mut p), "no copy past T");
     assert_eq!(p.engine.pending(), vec![]);
 }
@@ -940,7 +940,7 @@ fn parked_part_goes_at_its_purge_spec_commits_5() {
             p.engine.ingest(&rq.bytes, rq.blobs.clone()).unwrap();
             let _ = p.engine.ingest(&parked(), Vec::new()).unwrap();
         }
-        p.engine.reexamine().unwrap();
+        p.reexamine().unwrap();
         assert!(p.engine.header(&rq.id).is_some(), "the request applied");
         assert_eq!(p.engine.pending(), vec![], "parked first: {parked_first}");
         assert!(p.engine.suspects().unwrap().iter().any(|f| f.0 == x), "flagged");
@@ -998,11 +998,11 @@ fn forged_parts_beside_a_part_past_expiry(stride: usize) {
                 }
                 for i in order {
                     let _ = p.engine.ingest(&items[*i], Vec::new());
-                    p.engine.reexamine().unwrap();
+                    p.reexamine().unwrap();
                 }
                 for i in [0, 1, 2] {
                     let _ = p.engine.ingest(&items[i], Vec::new());
-                    p.engine.reexamine().unwrap();
+                    p.reexamine().unwrap();
                 }
                 let got = format!("applied {} pending {:?} flags {:?} reads {:?} {:?} {:?}", p.engine.commit_ids().contains(&b.id()), p.engine.pending(), p.engine.suspects().unwrap().iter().map(|f| f.1.clone()).collect::<Vec<_>>(), p.engine.get(&x, &ak("t:brief.0")).unwrap(), p.engine.get(&y, &ak("t:reg.0")).unwrap(), p.engine.get(&z, &ak("t:reg.0")).unwrap());
                 seen.entry(got).or_insert_with(|| order.clone());

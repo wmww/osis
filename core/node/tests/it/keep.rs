@@ -177,7 +177,7 @@ fn expiry_runs_on_a_copy_spec_perm_3() {
     assert_eq!(read(&mut x.lp, x.d), Some(s(&big(LATE_MARK))));
     reopen(&mut x.lp, 1, 9132).unwrap();
     x.lp.peers[1].clock.advance(61_000);
-    x.lp.peers[1].engine.tick().unwrap();
+    x.lp.peers[1].tick().unwrap();
     assert_ne!(read(&mut x.lp, x.d), Some(s(&big(LATE_MARK))));
     assert!(!found(&mut x.lp, LATE_MARK), "expired");
 }
@@ -683,7 +683,7 @@ fn a_part_waiting_at_the_removal_stays_out_spec_perm_3() {
     x.lp.peers[1].engine.drop_lost_due().unwrap();
     assert_kept(&mut x);
     send(&mut x.lp, 0, 1, &[g]);
-    x.lp.peers[1].engine.reexamine().unwrap();
+    x.lp.peers[1].reexamine().unwrap();
     assert_kept(&mut x);
     assert!(!found(&mut x.lp, LATE_MARK), "joined after the drop");
 }
@@ -717,7 +717,7 @@ fn a_stripped_waiting_part_stays_out_spec_perm_3() {
     let before = read(&mut x.lp, d);
     let n = x.lp.peers[1].engine.commit_ids().len();
     send(&mut x.lp, 0, 1, &[g]);
-    x.lp.peers[1].engine.reexamine().unwrap();
+    x.lp.peers[1].reexamine().unwrap();
     reopen(&mut x.lp, 1, 9468).unwrap();
     assert_eq!(read(&mut x.lp, d), before);
     assert!(!x.lp.peers[1].engine.commit_ids().contains(&body), "nothing joined ({n} commits before)");

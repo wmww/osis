@@ -252,7 +252,7 @@ fn revoked_writer_forging_into_covered_counters_spec_perm_5_1() {
     for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != first) {
         fresh.deliver(0, &p).unwrap();
     }
-    fresh.peers[0].engine.reexamine().unwrap();
+    fresh.peers[0].reexamine().unwrap();
     fresh.peers[0].receive(&forged, Vec::new()).unwrap();
     assert_eq!(fresh.peers[0].engine.get(&d, &reg).unwrap(), Some(s("alice")), "a fresh node");
     lp.peers[0].receive(&forged, Vec::new()).unwrap();
@@ -321,7 +321,7 @@ fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
     for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != tag) {
         fresh.deliver(0, &p).unwrap();
     }
-    fresh.peers[0].engine.reexamine().unwrap();
+    fresh.peers[0].reexamine().unwrap();
     for (i, l) in [(0, &mut lp), (0, &mut fresh)] {
         assert_eq!(tags(l, i, d), BTreeSet::from(["mon".to_string()]));
         assert_eq!(l.peers[i].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("b")));
@@ -767,7 +767,7 @@ fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
         for pk in early.iter().chain(&late) {
             lp.deliver(3, pk).unwrap();
         }
-        lp.peers[3].engine.reexamine().unwrap();
+        lp.peers[3].reexamine().unwrap();
         assert!(lp.peers[3].engine.header(&snap).is_some(), "the snapshot applied");
         assert!(lp.peers[3].engine.header(&mon).is_none(), "Bob's own commit is not held");
         assert_eq!(tags(&mut lp, 3, d), both, "revoke first: {revoke_first}");
@@ -884,7 +884,7 @@ fn snapshot_before_grant_counts_spec_perm_5_2() {
     for pk in &content {
         lp.deliver(2, pk).unwrap();
     }
-    lp.peers[2].engine.reexamine().unwrap();
+    lp.peers[2].reexamine().unwrap();
     assert!(lp.peers[2].engine.header(&snap).is_some(), "the snapshot applied");
     assert_eq!(tags(&mut lp, 2, d), BTreeSet::from(["x".to_string()]), "vouched for by Alice's snapshot");
     let e = &mut lp.peers[2].engine;
@@ -896,7 +896,7 @@ fn snapshot_before_grant_counts_spec_perm_5_2() {
     for pk in &holders {
         lp.deliver(2, pk).unwrap();
     }
-    lp.peers[2].engine.reexamine().unwrap();
+    lp.peers[2].reexamine().unwrap();
     assert_eq!(tags(&mut lp, 2, d), BTreeSet::from(["x".to_string()]), "valid once the grant is held");
     lp.peers[2].restart(58).unwrap();
     assert_eq!(tags(&mut lp, 2, d), BTreeSet::from(["x".to_string()]), "after a restart");
@@ -988,7 +988,7 @@ fn entry_created_after_demotion(snapshot_first: bool) {
             lp.deliver(3, pk).unwrap();
         }
     }
-    lp.peers[3].engine.reexamine().unwrap();
+    lp.peers[3].reexamine().unwrap();
     sync(&mut lp, 1, 0);
     sync(&mut lp, 2, 0);
     let keys = |lp: &mut LocalPeer, i: usize| match lp.peers[i].engine.get(&d, &ak("x:m.0")).unwrap() {
@@ -1042,7 +1042,7 @@ fn differing_key_copy_shows_only_its_key_spec_crdt_4_6() {
         for pk in &pks {
             lp.deliver(i, pk).unwrap();
         }
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
         assert_eq!(keys(&mut lp, i), want, "peer {i}");
         lp.peers[i].engine.rebuild_state(&d, &ak("x:m.0")).unwrap();
         assert_eq!(keys(&mut lp, i), want, "peer {i}, rebuilt");
@@ -1492,7 +1492,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
         for bytes in seq {
             lp.peers[i].receive(bytes, Vec::new()).unwrap();
         }
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
     };
     feed(&mut lp, 4, &[&ck.bytes, &nk.bytes]);
     let look = |lp: &mut LocalPeer, i: usize| {
@@ -1599,7 +1599,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
             if real_first == Some(false) {
                 lp.deliver(i, &rpk).unwrap();
             }
-            lp.peers[i].engine.reexamine().unwrap();
+            lp.peers[i].reexamine().unwrap();
             let want = if real_first.is_some() { with_c.clone() } else { s(forged_value) };
             assert_eq!(lp.peers[i].engine.get(&d, &reg).unwrap(), Some(want), "peer {i}");
             // history: from verified commits only
@@ -1614,7 +1614,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
         assert_eq!(lp.peers[p0].engine.state(&d, &reg).unwrap(), lp.peers[p1].engine.state(&d, &reg).unwrap(), "states alike");
         // the snapshot-only node given C reads as the others
         lp.deliver(p2, &rpk).unwrap();
-        lp.peers[p2].engine.reexamine().unwrap();
+        lp.peers[p2].reexamine().unwrap();
         assert_eq!(lp.peers[p2].engine.get(&d, &reg).unwrap(), Some(with_c.clone()), "peer {p2}, C late");
         assert_eq!(lp.peers[p2].engine.state(&d, &reg).unwrap(), lp.peers[p0].engine.state(&d, &reg).unwrap(), "states alike, C late");
         lp.peers[p0].restart(0x5fd0 + p0 as u64).unwrap();
@@ -1628,7 +1628,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
         let rv = packages(&mut lp, 0).into_iter().find(|p| p.id == rv).unwrap();
         for i in [p0, p1, p2] {
             lp.deliver(i, &rv).unwrap();
-            lp.peers[i].engine.reexamine().unwrap();
+            lp.peers[i].reexamine().unwrap();
             assert_eq!(lp.peers[i].engine.get(&d, &reg).unwrap(), Some(s("real")), "peer {i}, Carol removed");
         }
         // Carol granted again for the next round
@@ -1662,7 +1662,7 @@ fn valueless_copy_loses_to_held_value_spec_crdt_4_7() {
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     let forged = forge_snapshot(&mut lp, 2, d, &reg, now, f);
     lp.peers[0].receive(&forged, Vec::new()).unwrap();
-    lp.peers[0].engine.reexamine().unwrap();
+    lp.peers[0].reexamine().unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("real")), "the held value wins");
     lp.peers.push(osis_node::local_peer::Peer::new(0x5fe1, lp.peers[0].engine.now()).unwrap());
     for p in &base {
@@ -1672,7 +1672,7 @@ fn valueless_copy_loses_to_held_value_spec_crdt_4_7() {
     assert_eq!(lp.peers[3].engine.get(&d, &reg).unwrap(), None, "the snapshot alone: absent");
     let rpk = packages(&mut lp, 1).into_iter().find(|p| p.id == real).unwrap();
     lp.deliver(3, &rpk).unwrap();
-    lp.peers[3].engine.reexamine().unwrap();
+    lp.peers[3].reexamine().unwrap();
     assert_eq!(lp.peers[3].engine.get(&d, &reg).unwrap(), Some(s("real")), "with the commit");
     assert_eq!(lp.peers[3].engine.state(&d, &reg).unwrap(), lp.peers[0].engine.state(&d, &reg).unwrap(), "states alike");
 }
@@ -1824,7 +1824,7 @@ fn snapshot_copy_of_a_delta_never_held_counts_spec_perm_5_2() {
         }
         for bytes in seq {
             let _ = lp.peers[i].receive(bytes, Vec::new());
-            lp.peers[i].engine.reexamine().unwrap();
+            lp.peers[i].reexamine().unwrap();
         }
         i
     };
@@ -2088,7 +2088,7 @@ fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
         for pk in early.iter().chain(&late) {
             lp.deliver(3, pk).unwrap();
         }
-        lp.peers[3].engine.reexamine().unwrap();
+        lp.peers[3].reexamine().unwrap();
         assert!(lp.peers[3].engine.header(&snap).is_some() && lp.peers[3].engine.header(&rv).is_some());
         assert!(bob.iter().all(|x| lp.peers[3].engine.header(x).is_none()), "Bob's commit is not held");
         let want = if covered { all.clone() } else { BTreeSet::from(["alice".to_string()]) };
@@ -2128,7 +2128,7 @@ fn reader_copy_voids_no_valid_carrier_spec_perm_5_2() {
             lp.deliver(3, &pk).unwrap();
         }
         lp.peers[3].receive(&forged, Vec::new()).unwrap();
-        lp.peers[3].engine.reexamine().unwrap();
+        lp.peers[3].reexamine().unwrap();
         assert!(lp.peers[3].engine.header(&snap).is_some() && bob.iter().all(|x| lp.peers[3].engine.header(x).is_none()));
         assert_eq!(tags(&mut lp, 3, d), BTreeSet::from(["bob".to_string()]), "forged first: {forged_first}");
         lp.peers[3].restart(0x5f85).unwrap();
@@ -2184,7 +2184,7 @@ fn demoted_writer_dropped_dot_copy_alike_spec_perm_5_2() {
     lp.deliver(3, &rv_pk).unwrap();
     lp.peers[3].receive(&forged, Vec::new()).unwrap();
     for i in 2..4 {
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
     }
     assert_eq!(lp.peers[3].engine.get(&t, &tags).unwrap(), before, "demotion first");
     assert_eq!(lp.peers[2].engine.get(&t, &tags).unwrap(), before, "snapshot first");
@@ -2227,7 +2227,7 @@ fn valid_carrier_dropped_alike_either_order_spec_perm_5_2() {
         if !forged_first {
             lp.peers[i].receive(&forged, Vec::new()).unwrap();
         }
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
         got.push(tags(&mut lp, i, d));
     }
     assert_eq!(got[0], got[1], "invalid copy before the drop, after it");
@@ -2307,7 +2307,7 @@ fn snapshot_extra_dot_of_dropped_delta_joins_alike_spec_perm_5_2() {
             let _ = lp.deliver(3, p);
         }
         lp.peers[3].receive(&forged, Vec::new()).unwrap();
-        lp.peers[3].engine.reexamine().unwrap();
+        lp.peers[3].reexamine().unwrap();
         assert_eq!(lp.peers[3].engine.get(&t, &tags).unwrap(), before, "forged first: {forged_first}, C never held");
     }
 }
@@ -2361,7 +2361,7 @@ fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
         for p in base.iter().cloned().chain(order.iter().map(|id| pk(*id))) {
             lp.deliver(i, &p).unwrap();
         }
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
         // "y" reads only where its body came (Carol's addendum vouches for it)
         let want: BTreeSet<String> = want.iter().filter(|t| t.as_str() != "y" || order.contains(&y)).cloned().collect();
         assert_eq!(tags(&mut lp, i, d), want, "order {order:?}");
@@ -2430,11 +2430,11 @@ fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
                 lp.deliver(i, &pk(s2)).unwrap();
             } else {
                 // S1 gives nothing until fetched again
-                lp.peers[i].engine.reexamine().unwrap();
+                lp.peers[i].reexamine().unwrap();
                 assert!(tags(&mut lp, i, d).is_empty(), "Bob's commit held: {bob_held}; S1 missing");
                 lp.deliver(i, &pk(s1)).unwrap();
             }
-            lp.peers[i].engine.reexamine().unwrap();
+            lp.peers[i].reexamine().unwrap();
             let t = tags(&mut lp, i, d);
             lp.peers[i].engine.rebuild_state(&d, &ak("t:tags.0")).unwrap();
             assert_eq!(tags(&mut lp, i, d), t, "Bob's commit held: {bob_held}; demote first: {demote_first}, rebuilt");
@@ -2492,7 +2492,7 @@ fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
         if !removal_first {
             lp.deliver(i, &pk(rv)).unwrap();
         }
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
         got.push(tags(&mut lp, i, d));
         lp.peers[i].engine.rebuild_state(&d, &tags_ak).unwrap();
         assert_eq!(tags(&mut lp, i, d), got[n], "removal first: {removal_first}, rebuilt");
@@ -2551,7 +2551,7 @@ fn covered_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
         if !removal_first {
             lp.deliver(i, &rm_pk).unwrap();
         }
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
         got.push((tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap()));
     }
     assert_eq!(got[0].0, BTreeSet::from(["ash".to_string()]), "removal applied, then voided");
@@ -2613,7 +2613,7 @@ fn covered_drop_coverer_and_remover_revoked_alike_spec_perm_5_2() {
         if !removal_first {
             lp.deliver(i, &rm_pk).unwrap();
         }
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
         if drop {
             assert!(tags(&mut lp, i, d).is_empty(), "removal first: {removal_first}; the dropped delta missing");
             lp.peers[i].engine.rebuild_state(&d, &tags_ak).unwrap();
@@ -2621,7 +2621,7 @@ fn covered_drop_coverer_and_remover_revoked_alike_spec_perm_5_2() {
             for pk in before.iter().filter(|p| added.contains(&p.id)) {
                 lp.deliver(i, pk).unwrap();
             }
-            lp.peers[i].engine.reexamine().unwrap();
+            lp.peers[i].reexamine().unwrap();
         }
         let t = tags(&mut lp, i, d);
         lp.peers[i].engine.rebuild_state(&d, &tags_ak).unwrap();
@@ -2692,7 +2692,7 @@ fn chained_cover_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
         if !removal_first {
             lp.deliver(i, &rm_pk).unwrap();
         }
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
         got.push((tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap()));
     }
     assert_eq!(got[0].0, BTreeSet::from(["ash".to_string(), "elm".to_string()]), "removal applied, then voided");
@@ -2772,13 +2772,13 @@ fn cover_drop_coverer_flips_back_alike_spec_perm_5_2() {
         }
         let (first, second) = if bob_first { (by_bob, by_alice) } else { (by_alice, by_bob) };
         lp.deliver(i, &all[&first]).unwrap();
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
         if bob_first {
             let want: BTreeSet<String> = if drop { BTreeSet::new() } else { BTreeSet::from(["ash".to_string()]) };
             assert_eq!(tags(&mut lp, i, d), want, "drop {drop}: S2 invalid");
         }
         lp.deliver(i, &all[&second]).unwrap();
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
         let mid = (tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap());
         // what went missing is fetched again (S1 uncovered; with Bob's removal first, Carol's
         // tag and S2, dropped while invalid, spec/permissions.md §6); node-sync would drop S1
@@ -2786,7 +2786,7 @@ fn cover_drop_coverer_flips_back_alike_spec_perm_5_2() {
         for x in base.iter().chain([&s1]) {
             lp.deliver(i, &all[x]).unwrap();
         }
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
         let t = (tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap());
         if !bob_first {
             assert_eq!(mid, t, "drop {drop}: nothing went missing");
@@ -2839,12 +2839,12 @@ fn missing_snapshot_not_covered_by_older_spec_perm_5_2() {
     assert_eq!(e.covered(&s2, &s1, &d, &tags_ak).unwrap(), Some(true), "S2 covers S1");
     e.drop_body(&s1, &d, &tags_ak).unwrap();
     lp.deliver(i, &pk(rv)).unwrap();
-    lp.peers[i].engine.reexamine().unwrap();
+    lp.peers[i].reexamine().unwrap();
     assert!(!tags(&mut lp, i, d).contains("bob"), "S1 missing");
     let e = &mut lp.peers[i].engine;
     assert_ne!(e.covered(&s0, &s1, &d, &tags_ak).unwrap(), Some(true), "S0 does not cover missing S1");
     lp.deliver(i, &pk(s1)).unwrap();
-    lp.peers[i].engine.reexamine().unwrap();
+    lp.peers[i].reexamine().unwrap();
     assert!(tags(&mut lp, i, d).contains("bob"), "S1 back");
 }
 
@@ -2888,7 +2888,7 @@ fn flipped_snapshot_leaves_frontier_alike_spec_perm_5_2() {
                 deliver_stripped(&mut lp, 1, i, &bob, d, &ak("t:tags.0"));
             }
         }
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
         assert!(tags(&mut lp, i, d).is_empty(), "order {order:?}");
         let now = lp.peers[i].engine.now();
         let f = lp.peers[i].engine.frontier(&of_bob, now).unwrap();
@@ -2949,7 +2949,7 @@ fn listed_part_peer(lp: &mut LocalPeer, d: Tid, pks: &[osis_node::local_peer::Pa
             lp.deliver(i, p).unwrap();
         }
     }
-    lp.peers[i].engine.reexamine().unwrap();
+    lp.peers[i].reexamine().unwrap();
     i
 }
 
@@ -3091,7 +3091,7 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
             for p in first.iter().chain(&second) {
                 lp.deliver(j, p).unwrap();
             }
-            lp.peers[j].engine.reexamine().unwrap();
+            lp.peers[j].reexamine().unwrap();
             assert_eq!(tags(&mut lp, j, d), BTreeSet::from(["mon".to_string()]), "snap first {snap_first}, removal first {removal_first}");
         }
     }
@@ -3185,7 +3185,7 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
     for p in packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)) {
         lp.deliver(3, &p).unwrap();
     }
-    lp.peers[3].engine.reexamine().unwrap();
+    lp.peers[3].reexamine().unwrap();
     let want = BTreeSet::from(["mon".to_string(), "tue".to_string()]);
     assert_eq!(tags(&mut lp, 3, d), want);
     lp.advance(DAY);
@@ -3207,7 +3207,7 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
         for p in &v {
             lp.deliver(i, p).unwrap();
         }
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
         for k in [0, 2, 3, i] {
             assert_eq!(tags(&mut lp, k, d), want, "peer {k}, reversed {reversed}");
         }
@@ -3277,7 +3277,7 @@ fn frontier_lists_kept_writes_compacted_or_not_spec_perm_5_1() {
     for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != one) {
         fresh.deliver(0, &p).unwrap();
     }
-    fresh.peers[0].engine.reexamine().unwrap();
+    fresh.peers[0].reexamine().unwrap();
     assert!(fresh.peers[0].engine.header(&one).is_none());
     for l in [&mut lp, &mut fresh] {
         assert_eq!(l.peers[0].engine.get(&d, &kept).unwrap(), Some(s("two")));
@@ -3727,7 +3727,7 @@ fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
         for p in order {
             lp.deliver(i, p).unwrap();
         }
-        lp.peers[i].engine.reexamine().unwrap();
+        lp.peers[i].reexamine().unwrap();
         assert_eq!(read(&mut lp, i), want, "fresh node {k}");
     }
 }

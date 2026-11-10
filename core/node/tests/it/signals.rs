@@ -89,22 +89,22 @@ fn signal_kept_until_its_bound_spec_commits_5() {
     let until = send(&mut lp, 0, d, keep(Some(t0 + 2 * HOUR), None), "t");
     let ever = send(&mut lp, 0, d, keep(Some(osis_commit::FOREVER), None), "f");
     lp.advance(HOUR - 10_000);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert_eq!(body(&mut lp, 0, d, &d_after), PartBody::Held(Some(s("d"))));
     lp.advance(20_000);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert_eq!(body(&mut lp, 0, d, &d_after), PartBody::Dropped);
     assert!(!lp.peers[0].engine.body_not_dropped(&d_after, &d, &log()));
     assert_eq!(body(&mut lp, 0, d, &until), PartBody::Held(Some(s("t"))));
     lp.advance(HOUR);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert_eq!(body(&mut lp, 0, d, &until), PartBody::Dropped);
     // a node receiving them past the bound drops them on arrival
     sync(&mut lp, 0, 1);
     assert_eq!(body(&mut lp, 1, d, &until), PartBody::Dropped);
     assert_eq!(body(&mut lp, 1, d, &ever), PartBody::Held(Some(s("f"))));
     lp.advance(1000 * 24 * HOUR);
-    lp.peers[0].engine.tick().unwrap();
+    lp.peers[0].tick().unwrap();
     assert_eq!(body(&mut lp, 0, d, &ever), PartBody::Held(Some(s("f"))));
 }
 
@@ -119,10 +119,10 @@ fn signal_dropped_past_its_bound_not_taken_again_spec_commits_5() {
     lp.sync_all().unwrap();
     let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
     lp.advance(HOUR - 10_000);
-    lp.peers[1].engine.tick().unwrap();
+    lp.peers[1].tick().unwrap();
     assert_eq!(body(&mut lp, 1, d, &c), PartBody::Held(Some(s("brief"))), "kept at least to its bound");
     lp.advance(20_000);
-    lp.peers[1].engine.tick().unwrap();
+    lp.peers[1].tick().unwrap();
     assert_eq!(body(&mut lp, 1, d, &c), PartBody::Dropped);
     // peer 0 has run no timer: it still holds the body past the bound, and lists it as dropped
     assert!(lp.peers[0].engine.body_not_dropped(&c, &d, &log()));
@@ -165,7 +165,7 @@ fn signal_purge_and_expiry_per_write_spec_commits_5() {
     lp.advance(2 * HOUR);
     lp.sync_all().unwrap();
     for i in 0..2 {
-        lp.peers[i].engine.tick().unwrap();
+        lp.peers[i].tick().unwrap();
         assert_eq!(body(&mut lp, i, d, &gone), PartBody::Purged(p));
         assert_eq!(body(&mut lp, i, d, &kept), PartBody::Held(Some(s("ok"))));
         assert_eq!(body(&mut lp, i, d, &brief), PartBody::Dropped);
@@ -373,7 +373,7 @@ fn signal_past_its_bound_never_missing_again_spec_commits_5() {
     set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(ct::Frontier::default().to_value()));
     assert_eq!(body(&mut lp, 0, d, &c), PartBody::Dropped);
     lp.advance(2 * HOUR);
-    lp.peers[1].engine.tick().unwrap();
+    lp.peers[1].tick().unwrap();
     set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
     for i in 0..2 {
@@ -401,7 +401,7 @@ fn signal_past_its_bound_never_missing_again_spec_commits_5() {
     assert_eq!(body(&mut lp, 0, d, &c), PartBody::Purged(p));
     lp.advance(2 * HOUR);
     for i in 0..3 {
-        lp.peers[i].engine.tick().unwrap();
+        lp.peers[i].tick().unwrap();
     }
     set_edge(&mut lp.peers[0].engine, d, ids[2], None, Some(ct::Frontier::default().to_value()));
     lp.sync_all().unwrap();

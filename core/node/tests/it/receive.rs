@@ -154,10 +154,10 @@ fn drift_parks_spec_crdt_2_2() {
     lp.peers[0].commit(m).unwrap();
     let pk = packages(&mut lp, 0).pop().unwrap();
     assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Pending(_, Reason::Drift)));
-    lp.peers[1].engine.tick().unwrap();
+    lp.peers[1].tick().unwrap();
     assert_eq!(lp.peers[1].engine.pending().len(), 1);
     lp.peers[1].clock.advance(3_600_000 + 1);
-    lp.peers[1].engine.tick().unwrap();
+    lp.peers[1].tick().unwrap();
     assert!(lp.peers[1].engine.pending().is_empty());
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("future")));
     // the HLC moved past the received ts
@@ -271,7 +271,7 @@ fn parked_spec_versioning_2() {
     let bytes = built.commit.encode();
     let r = lp.peers[1].receive(&bytes, Vec::new()).unwrap();
     assert!(matches!(r, Ingested::Parked(_)), "{r:?}");
-    lp.peers[1].engine.reexamine().unwrap();
+    lp.peers[1].reexamine().unwrap();
     assert_eq!(lp.peers[1].engine.pending().len(), 1);
     assert_eq!(lp.peers[1].engine.commit_bytes(&built.commit.id()).unwrap(), Some(bytes));
     // an unknown format version: the header does not even decode

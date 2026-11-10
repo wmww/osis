@@ -274,7 +274,22 @@ def real_lan_tests():
                     if rel.startswith("cli/tests/") and CLI_RUN.search(line) and "--no-lan" not in line and "const OSIS" not in line:
                         yield f"{rel}: runs osis without --no-lan: {line.strip()[:80]}"
 
+# notes/engine-apply.md (Ingest): a test peer runs what is due through `Peer::tick`/`Peer::reexamine`,
+# which fetch again what the step woke, as node-sync does; `<peer>.engine.tick()` skips that.
+PEER_TICK = re.compile(r"(?<!\bself)\.engine\.(tick|reexamine)\(")
+
+def peer_ticks():
+    for dirpath, dirs, files in os.walk(os.path.join(ROOT, "core")):
+        dirs[:] = [d for d in dirs if d != "target"]
+        for f in files:
+            if f.endswith(".rs"):
+                path = os.path.join(dirpath, f)
+                for n, line in enumerate(open(path, errors="replace"), 1):
+                    if PEER_TICK.search(line.split("//", 1)[0]):
+                        yield f"{os.path.relpath(path, ROOT)}:{n}: engine.tick()/reexamine() on a peer skips its wake (use Peer::tick/reexamine)"
+
 errs.extend(real_lan_tests())
+errs.extend(peer_ticks())
 errs.extend(env_vars())
 errs.extend(host_blind())
 errs.extend(dispute_types())
