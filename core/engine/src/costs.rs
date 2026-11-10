@@ -32,6 +32,13 @@ impl Drop for Span {
     }
 }
 
+/// Adds `n` to phase `name`'s count, with no time: work counted by size, not by call.
+pub fn count(name: &'static str, n: u64) {
+    if ON.with(Cell::get) {
+        COSTS.with(|c| c.borrow_mut().entry(name).or_default().1 += n);
+    }
+}
+
 /// The time and count per phase since the last `take` on this thread; the first call turns
 /// recording on for this thread (and returns nothing).
 pub fn take() -> Vec<(&'static str, Duration, u64)> {

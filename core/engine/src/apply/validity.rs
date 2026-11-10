@@ -810,11 +810,12 @@ impl<'a> Judge<'a> {
         }
         let Some(a) = h.aspects.get(ai) else { return false };
         let ak = a.ak.as_str();
-        // edge writes are layer 1 (reads go through the timeline); a compaction snapshot is judged
-        // as its author's write (below), which vouches for every write it carries
-        // (spec/permissions.md §5.2). A minting (`created.0`) is a write on its thing like any
-        // (spec/commits.md §5 Ending): its record needs no authority to be known, but writing the
-        // thing's existence needs write on it, so one holding the record alone cannot mint it again
+        // `created.0` hashes to its tid, whoever acts; edge writes are layer 1 (reads go through
+        // the timeline); a compaction snapshot is judged as its author's write (below), which
+        // vouches for every write it carries (spec/permissions.md §5.2)
+        if ak == "created.0" {
+            return true;
+        }
         // the epoch rule filters first (an addendum's is the fixpoint's, `vouching`)
         if !ct::is_addenda(ak) && !self.counts(h, id, a) {
             return false;
@@ -831,7 +832,7 @@ impl<'a> Judge<'a> {
         // it applies (spec/permissions.md §1); judged per delta from creation records alone
         let (deep, tl) = self.thing(&a.tid);
         if deep {
-            return ak == "created.0";
+            return false;
         }
         if ak == "roles.0" {
             return true;
@@ -1148,10 +1149,6 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 }
                 if x.ak.as_str() == "keys.0" {
                     keyset_flips.insert(x.tid);
-                }
-                // a minting's validity is the thing's existence (`retention::end`)
-                if x.ak.as_str() == osis_commit::retention::CREATED {
-                    tx.core.valueless_dirty.insert((x.tid, x.ak.clone()));
                 }
             }
         }

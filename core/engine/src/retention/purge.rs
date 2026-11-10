@@ -58,36 +58,45 @@ pub(super) fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntr
     // an ending is judged by the thing's history before it: nothing written on the thing after it
     // counts (spec/commits.md §5 Ending), so an edge write on it stamped later, held here before
     // the ending arrived, is left out of the walk that judges it. Such a write is not held once
-    // the thing ended (`end::Ending`): a walk from scratch only while one is, and only for
-    // signers that could ever hold the right (held inputs only grow, so neither can a cut's)
+    // the thing ended (`end::Ending`): a walk from scratch only while one is, only for signers
+    // that could ever hold the right (held inputs only grow, so neither can a cut's), and only
+    // over what authority on the thing and the delta's actor comes from (`Held::upstream`), not
+    // the node's whole role graph
     if a.ak.as_str() == osis_commit::retention::CREATED {
         let later: BTreeSet<CommitId> = HeldSet::edge_commits(&core.ix.held, &a.tid).iter().filter(|c| c.point() > point).map(|c| c.id).collect();
         if !later.is_empty() {
             if !signers_could(core, p, a, ch) {
                 return false;
             }
-            let cut = Cut { held: &core.ix.held, later };
+            let things = core.ix.held.upstream(&BTreeSet::from([a.tid, actor]));
+            crate::costs::count("ending: cut walk things", things.len() as u64);
+            let cut = Cut { held: &core.ix.held, things, later };
             return judge(&osis_perm::Timeline::evaluate_with(&cut, &core.sides.trust()));
         }
     }
     core.timelines.get(&a.tid).is_some_and(judge)
 }
 
-/// The held set without commits `later` (`holds_right`).
+/// The held set over `things` (closed upstream: roles on them come from them alone) without
+/// commits `later` (`holds_right`).
 struct Cut<'a> {
     held: &'a crate::engine::held::Held,
+    things: BTreeSet<Tid>,
     later: BTreeSet<CommitId>,
 }
 
 impl HeldSet for Cut<'_> {
     fn things(&self) -> Vec<Tid> {
-        self.held.things()
+        self.things.iter().copied().collect()
     }
     fn edge_commits(&self, thing: &Tid) -> Vec<std::sync::Arc<osis_perm::RoleCommit>> {
+        if !self.things.contains(thing) {
+            return Vec::new();
+        }
         self.held.edge_commits(thing).into_iter().filter(|c| !self.later.contains(&c.id)).collect()
     }
     fn created(&self, thing: &Tid) -> Option<osis_base::CreationRecord> {
-        HeldSet::created(self.held, thing)
+        self.things.contains(thing).then(|| HeldSet::created(self.held, thing)).flatten()
     }
 }
 

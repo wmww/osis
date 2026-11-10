@@ -38,7 +38,7 @@ pub(crate) fn judges_ending(ak: &str) -> bool {
     matches!(ak, CREATED | PURGE | ROLES)
 }
 
-/// When each valid minting of an ended thing ended (spec/commits.md §5 Ending): at its expiry
+/// When each minting of an ended thing ended (spec/commits.md §5 Ending): at its expiry
 /// (`wall_ms(ts) >= T`), or after the earliest held request that drops it. A minting is not asked:
 /// a request ending the thing names every minting of it (`purge::names`).
 pub(crate) struct Ending(Vec<(Option<u64>, Option<Point>)>);

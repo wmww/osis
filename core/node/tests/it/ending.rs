@@ -811,13 +811,13 @@ fn a_minting_again_never_brings_back_a_purged_thing_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 (Ending): a reader holding an expiring thing's record mints it again durable
-// before its expiry and after it: neither keeps it, wherever the minting arrives before or after the
-// thing ended there
+// spec/commits.md §5 (Ending, Limit): a reader holding an expiring thing's record mints it again
+// durable, before its expiry and after it. Wherever the mintings arrive before or after the thing
+// ended there, it exists past its expiry, but its content still expired
 #[test]
-fn a_reader_minting_again_never_keeps_an_expiring_thing_spec_commits_5() {
+fn a_durable_minting_again_keeps_an_expiring_thing_but_not_its_content_spec_commits_5() {
     for remint_first in [true, false] {
-        let (Setup { mut net, a, b, c, g }, r) = setup_reader();
+        let (Setup { mut net, a, c, g, .. }, r) = setup_reader();
         let at = net.now() + 5_000;
         let mut m = Mutation::new();
         let t = net.engine(a).new_thing(&mut m, g);
@@ -839,22 +839,15 @@ fn a_reader_minting_again_never_keeps_an_expiring_thing_spec_commits_5() {
         net.advance(10_000);
         // c is offline: its expiry runs by its own clock
         net.engine(c).tick().unwrap();
-        assert!(net.engine(c).core.ended(&t), "first {remint_first}: t ended at c");
+        assert_eq!(net.engine(c).core.ended(&t), !remint_first, "first {remint_first}: t ended at c only without the minting");
         let after = remint(&mut net, r, t);
         if !remint_first {
             let _ = net.engine(c).ingest(&before, Vec::new());
         }
         let _ = net.engine(c).ingest(&after, Vec::new());
         net.engine(c).reexamine().unwrap();
-        gone(&mut net, c, t);
-        net.set_online(c, true);
-        net.set_online(r, true);
-        for _ in 0..3 {
-            net.advance(70_000);
-        }
-        for n in [a, b, c, r] {
-            gone(&mut net, n, t);
-        }
+        assert!(net.engine(c).knows(&t), "first {remint_first}: t exists at c");
+        assert_eq!(net.read(c, t), None, "first {remint_first}: its content expired");
     }
 }
 
@@ -944,4 +937,42 @@ fn a_demotion_after_an_ending_does_not_undo_it_spec_commits_5() {
             gone(&mut net, n, t);
         }
     }
+}
+
+/// The things node a's cut walks count for one role change on t, while c's ending request on t
+/// stands nowhere (a demoted c on t first) and a later edge write on t is held, beside `others`
+/// other things in t's group.
+fn fallen_request_work(others: usize) -> u64 {
+    let Setup { mut net, a, b, c, g } = setup();
+    let (t, _) = made(&mut net, a, g);
+    for _ in 0..others {
+        made(&mut net, a, g);
+    }
+    let (tb, tc) = (net.tid(b), net.tid(c));
+    set_edge(net.engine(a), t, tc, Role::Admin);
+    demote(&mut net, a, g, tc, Role::Read);
+    net.run();
+    net.set_online(c, false);
+    demote(&mut net, a, t, tc, Role::Read);
+    net.advance(10);
+    let ending = end(&mut net, c, t);
+    let ending = net.engine(c).package(&ending).unwrap().unwrap().bytes;
+    net.advance(10);
+    set_edge(net.engine(a), t, tb, Role::Write);
+    let _ = net.engine(a).ingest(&ending, Vec::new());
+    net.engine(a).reexamine().unwrap();
+    assert!(!net.engine(a).core.ended(&t), "others {others}: the request stands nowhere");
+    osis_node::costs::take();
+    set_edge(net.engine(a), t, tb, Role::Admin);
+    osis_node::costs::take().into_iter().find(|x| x.0 == "ending: cut walk things").map_or(0, |x| x.2)
+}
+
+// spec/requirements.md Scale, spec/permissions.md §6 (Ending): a request that ended nothing, with
+// later edge writes on its thing held, costs each role change on the thing what the thing's
+// authority comes from, not the node's other things
+#[test]
+fn a_fallen_ending_walks_only_the_things_authority_spec_permissions_6() {
+    let (small, big) = (fallen_request_work(3), fallen_request_work(30));
+    assert!(small > 0, "the cut walk runs");
+    crate::scale::flat("cut walk things by other things", small, big);
 }
