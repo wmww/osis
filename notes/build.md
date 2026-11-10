@@ -80,10 +80,10 @@ Quiet machine, warm worktree. More than about 3x at low load: stop and find out 
 | what | expect |
 |---|---|
 | no-op `cargo build` / `--all-targets` | 0.4 s / 2 s |
-| one-line edit, `cargo test --no-run`: osis-node / osis-engine | 2.5 s (4 crates) / 5.5 s (5 crates) |
+| one-line edit, `cargo test --no-run`: osis-node / osis-engine | 2.5 s (4 crates) / 5.5 s (5 crates); osis-engine 68 s, 217 CPU-s at load 21-27 |
 | `cargo test`, built | 152 s, 1900 CPU-s (2834 tests); osis-node `it` 65 s of it. CPU-bound, 2-4x at load 25-35, and CPU-s rise too (SMT): a built run 3000-3400 CPU-s at load 20-40. Harness failures are reported unshrunk (`OSIS_ORDER_SHRINK=1`, `OSIS_PERM_SHRINK=1` shrink; a shrinking osis-node `it` with 12 failures ran 646 s); per test: notes/testing.md Tier-1 cost |
 | edit osis-crdt or osis-base, all targets | 10-16 s |
-| clippy after a one-line edit | 3-7 s |
+| clippy after a one-line edit | 3-7 s; osis-engine 8 s, 19 CPU-s at load 26, then the GUI lint 3 s, 5 CPU-s |
 | clean `cargo build`; then `--all-targets`; first clippy | 82 s; +53 s; +17 s |
 | osis-engine and osis-node from scratch | 27 s (osis-node starts on osis-engine's metadata and the two codegen in parallel) |
 | gate, warm, everything | 237 s: tier 1 143 s, sim sweep 26 s, GUI tests 46 s, clippy, unification, deny and instant checks about 20 s; 2-4x beside other all-core runs (460-1160 s at load 20-40, plus 1.5-7 min rebuilding after a rebase). The first core gate in a worktree that never linted the GUI adds about 290 CPU-s (GUI lint) |
