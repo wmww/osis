@@ -6,6 +6,7 @@
 use crate::common::TestWrites as _;
 use crate::scenario::{account, introduce, new_tag};
 use osis::internals::Internals as _;
+use osis::internals::CommitRaw as _;
 use osis::internals::node::sync::EntryKind;
 use osis::core::{BODY};
 use osis::internals::core_types::{GROUP};
@@ -27,6 +28,17 @@ fn text(db: &Osis, t: Tid) -> Option<String> {
 
 fn edit(db: &Osis, t: Tid, new: &str) {
     db.commit_set(t, BODY, &new.to_string()).unwrap();
+}
+
+/// The commits held here writing `t`'s `roles.0`, each with whether it also rotates `t`
+/// (writes its `secrets.0`): an explicit demotion does, a self-removal never (spec/permissions.md §2).
+fn role_writes(db: &Osis, t: Tid) -> std::collections::BTreeMap<osis::internals::RawCommitId, bool> {
+    db.engine(|e| {
+        e.core.ix.commits.iter().filter_map(|(id, m)| {
+            let on = |k: &str| m.header.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == k);
+            on("roles.0").then(|| (*id, on("secrets.0")))
+        }).collect()
+    })
 }
 
 fn listed(db: &Osis, g: Tid, t: Tid) -> bool {
@@ -346,9 +358,12 @@ fn grant_first_then_add_then_remove_removes_it() {
     assert_eq!(text(&alice, t).as_deref(), Some("plan"));
     // Alice, admin of the tag, would remove it too: offline, the phone's obligation alone
     w.set_online(&alice, false);
-    phone.commit_with(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
-    assert!(phone.grants(t).unwrap().contains_key(&g), "not a self-removal: left to the obligation");
+    let before = role_writes(&phone, t);
+    let c = crate::common::commit_with(&phone, |w| w.group(g).remove(osis::Member::Item(t)).map(|_| ()));
     w.advance(70_000);
+    // not a self-removal: the obligation's own commit, an explicit demotion (it rotates)
+    let new: Vec<_> = role_writes(&phone, t).into_iter().filter(|(id, _)| !before.contains_key(id)).collect();
+    assert!(matches!(new[..], [(id, true)] if id != c.stamp.id.raw()), "the grant goes by one explicit demotion apart from the removal: {new:?}");
     assert!(!phone.grants(t).unwrap().contains_key(&g) && !bob.grants(t).unwrap().contains_key(&g), "the phone removed it");
     w.set_online(&alice, true);
     for _ in 0..3 {
