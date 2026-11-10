@@ -156,7 +156,10 @@ impl SyncEngine {
                 let Ok(key) = s.claim_key(x) else { continue };
                 match set {
                     Some(set) if !set.contains(&key.verifying_key().to_bytes()) => {}
-                    _ => v.push(Try::Claim { step: (*s).clone(), key }),
+                    _ => {
+                        self.stats.claim_keys += 1;
+                        v.push(Try::Claim { step: (*s).clone(), key });
+                    }
                 }
             }
         }
@@ -527,6 +530,7 @@ impl SyncEngine {
         }
         for x in self.claim_keys_of(Some(&only)) {
             if let Ok(key) = step.claim_key(&x) {
+                self.stats.claim_keys += 1;
                 front.push(Try::Claim { step: step.clone(), key });
             }
         }

@@ -188,10 +188,12 @@ pub struct PassStats {
     /// Passes at hosts and local passes (labels served with no host), and how many judged
     /// everything.
     pub passes: u64,
-    /// `labels()` computed anew, inbox hints vetted, claim tries made, inbox keys tried.
+    /// `labels()` computed anew, inbox hints vetted, claim try lists made and the claim keys in
+    /// them (recorded steps and walked ones), inbox keys tried.
     pub label_reads: u64,
     pub vets: u64,
     pub claim_lists: u64,
+    pub claim_keys: u64,
     pub inbox_keys: u64,
     /// `changed_at` passes and the labels they fingerprinted (`stamp_changes`).
     pub changed_passes: u64,

@@ -1191,3 +1191,47 @@ fn repro_role_history_join_is_linear() {
     all_linear("a joiner ingesting a role history", &role_history_join(30), &role_history_join(300));
 }
 
+
+/// Claim keys reader b builds walking past a rotation it missed, b holding n groups of its own and
+/// g's edge writes naming n other groups.
+fn stale_walk_claims(n: usize) -> u64 {
+    use crate::net::{recipients_of, remove_holder};
+    let mut net = crate::net::Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Read), (c, Role::Read)], &[host]);
+    let addrs = vec![net.address(host)];
+    for i in 0..n {
+        net.group_seeded(b, &[], addrs.clone(), 100 + i as u64);
+        let f = net.group_seeded(a, &[], addrs.clone(), 200 + i as u64);
+        crate::net::set_edge(net.engine(a), g, f, Role::Read);
+    }
+    let t = net.item(a, g, g, "before");
+    net.run();
+    net.set_online(b, false);
+    let (at, bt, ct_) = (net.tid(a), net.tid(b), net.tid(c));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Read)]);
+    remove_holder(e, g, ct_, &rs, 41);
+    net.write(a, t, "after");
+    net.run();
+    let before = net.sync(b).pass_stats().claim_keys;
+    net.set_online(b, true);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert_eq!(net.read(b, t), Some(crate::net::s("after")), "b reads past the rotation at {n}");
+    net.sync(b).pass_stats().claim_keys - before
+}
+
+// spec/sync.md §5; spec/requirements.md, Scale: a walk past a missed rotation claims as the
+// thing's own named readers this node holds, not as every actor it holds nor every actor named.
+#[test]
+fn stale_walk_claims_are_flat() {
+    let (small, big) = (stale_walk_claims(1), stale_walk_claims(10));
+    assert!(small > 0, "b claimed");
+    flat("claim keys", small, big);
+}
