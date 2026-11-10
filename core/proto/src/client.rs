@@ -76,6 +76,11 @@ impl Window {
         self.waiting.push_back(m);
     }
 
+    /// Bytes in flight: frames plus allowances of the requests sent and not answered.
+    pub(crate) fn in_flight(&self) -> usize {
+        self.in_flight
+    }
+
     /// Requests sent or waiting.
     fn is_empty(&self) -> bool {
         self.waiting.is_empty() && self.sent.is_empty()

@@ -310,6 +310,36 @@ fn mesh_bodies_of_many_labels_fetched_at_once_spec_sync_6() {
     }
 }
 
+// spec/wire.md §11.3 (Fetch: possibly none below `REPLY_BUDGET`), spec/sync.md §10 (Bodies: the
+// next source when one fails): a source answering every stream Fetch with nothing is asked
+// once more under `REPLY_BUDGET`, then failed, so the body comes from another source rather
+// than being asked of it without end
+#[test]
+fn a_source_answering_fetches_with_nothing_is_failed_spec_sync_10() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    let c = net.node(3, &[]);
+    reach_ed(&mut net, b);
+    reach_ed(&mut net, c);
+    let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
+    net.pair(c, a);
+    net.pair(b, c);
+    net.run();
+    net.advance(120_000);
+    net.tamper = Some(Box::new(|m| match m {
+        osis_proto::Message::FetchReply { id, .. } => Some(osis_proto::Message::FetchReply { id: *id, items: vec![] }),
+        _ => None,
+    }));
+    net.tamper_link = Some((b, a));
+    let fetches = net.peer_sent(a, FETCH);
+    let t = net.item(b, g, g, "body");
+    net.run();
+    net.advance(60_000);
+    assert_eq!(net.read(a, t), Some(s("body")), "from c");
+    assert!(net.peer_sent(a, FETCH) - fetches <= 3, "{}", net.peer_sent(a, FETCH) - fetches);
+}
+
 /// Pulls node `a` sends once back after `b`'s log aged out the deletions of what `a` held, at
 /// `n` sync IDs, and whether `a` then holds what `b` holds.
 fn back_after_aging(n: usize) -> (usize, bool, bool) {

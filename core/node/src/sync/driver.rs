@@ -35,11 +35,11 @@ pub const MAX_IDLE: Duration = Duration::from_secs(60);
 /// How long a session's end waits for the host to take our last bytes.
 pub const FINISH_WAIT: Duration = Duration::from_secs(10);
 /// Bytes queued for a connection and not yet taken by the transport before it is dropped: a peer
-/// that does not read (resource bound; a session's own traffic stays within `WINDOW_QUEUE`, a
-/// served one's within `SEND_QUEUE`, spec/sync.md §6). 0 drops every session with a request
-/// queued behind another, infinity buffers a non-reading peer without end.
+/// that does not read (resource bound; a connection's replies and pushes stay within `SEND_QUEUE`,
+/// its own requests within `WINDOW_QUEUE` more, spec/sync.md §6). 0 drops every session with a
+/// request queued behind another, infinity buffers a non-reading peer without end.
 pub const MAX_QUEUED: usize = 64 * 1024 * 1024;
-const _: () = assert!(MAX_QUEUED >= osis_proto::serving::SEND_QUEUE);
+const _: () = assert!(MAX_QUEUED >= osis_proto::serving::SEND_QUEUE + osis_proto::client::WINDOW_QUEUE);
 /// How often the LAN loop repeats an announcement (`LanConfig::announce`; provisional, minor: a
 /// lost one costs this much longer to find a neighbour; 0: a busy loop, infinity: one chance).
 pub const LAN_ANNOUNCE: Duration = Duration::from_secs(30);

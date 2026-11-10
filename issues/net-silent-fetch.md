@@ -4,7 +4,7 @@
 > Tags: security, node, sync
 
 ## The case
-`stream_fetch` skips a body `fetching` anywhere; `stream_settle_all` asks a stream's source only for bodies asked nowhere. `stream_skipped` fails a Fetch once a later request on its connection is answered, but a peer answering nothing gives no such answer, and a stream waiting on `MAX_WAITING` sends no further Pull. What it holds back is bounded (`MAX_WAITING`), but the writes it announced first stall at this node while the connection lasts, even when an honest co-reader serves them.
+`stream_fetch` skips a body `fetching` anywhere; `stream_settle_all` asks a stream's source only for bodies asked nowhere. `stream_skipped` fails a Fetch once a later request on its connection is answered, but a peer answering nothing gives no such answer, and a stream waiting on `MAX_WAITING` sends no further Pull. The dialer's stall timeout (node requests count as any, `ClientSession`) closes a peer that sends no byte at all for 2 min, but not one that keeps sending (pushes, its own requests) while answering nothing; a listener has no stall timeout for its own requests to the dialer (spec/sync.md §6 SHOULD, either side). What it holds back is bounded (`MAX_WAITING`), but the writes it announced first stall at this node while the connection lasts, even when an honest co-reader serves them.
 
 ## Directions
 - A probe on the silent connection whose answer, in order, shows the Fetch skipped (needs the in-order rule to cover it, spec/wire.md §11.2 Pull).

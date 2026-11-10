@@ -466,8 +466,9 @@ impl ServingSession {
                             // a peer within its window (spec/sync.md §6) never has more replies
                             // unwritten: one that pipelines past it is closed here, before its
                             // further requests cost reads and memory, not after (the driver's
-                            // queue cap sees only what this input made)
-                            if self.unsent(out) > SEND_QUEUE {
+                            // queue cap sees only what this input made). The node's own requests
+                            // unanswered may be unwritten too (an answered one was delivered).
+                            if self.unsent(out) > SEND_QUEUE.saturating_add(self.requests.in_flight()) {
                                 out.push(ServingOutput::PeerError(Error::Cap("replies past the request window")));
                                 self.close(out);
                             }
@@ -1366,6 +1367,35 @@ mod tests {
         }
         assert!(c.is_closed());
         assert!(sent > SEND_QUEUE - MAX_MESSAGE && sent <= SEND_QUEUE + MAX_MESSAGE, "{sent}");
+    }
+
+    // spec/sync.md §6 (Requester, Closing): the node's own requests to the dialer, unwritten
+    // within their window, come on top of the replies a compliant dialer's window allows, so
+    // the two together close no connection
+    #[test]
+    fn own_requests_unwritten_close_nothing() {
+        let f = Fixture::new(0x10);
+        let mut store = MemoryLabelStore::new([1; 32]);
+        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
+        let blob = vec![7u8; osis_base::format::MAX_BLOB];
+        let blob_id = osis_label::blob_id(&blob);
+        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
+        let mut c = opened(&f, &mut store);
+        let taken = c.written;
+        c.handle(0, &mut store, ServingInput::Taken(taken));
+        // three filter pages just under 8 MiB each: below `WINDOW` before the third
+        let page = |k: u32| Message::Beacons { id: crate::msg::NODE_IDS | k, generation: 1, base: None, f: 8, lo: 0, hi: 256, gcs: vec![0; (8 << 20) - (64 << 10)], more: false };
+        for k in 1..=3 {
+            c.handle(0, &mut store, ServingInput::Peer(Box::new(page(k))));
+        }
+        assert!(c.requests.in_flight() > crate::client::WINDOW);
+        // a dialer within its window: two whole-budget Fetches, the second sent below `WINDOW`
+        for id in [10, 11] {
+            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Fetch { id, label: f.label, max_reply: REPLY_BUDGET as u64, ids: vec![blob_id] }.encode())));
+            assert!(matches!(reply(&out), Message::FetchReply { ref items, .. } if items.len() == 1), "{id}: closed {}", c.is_closed());
+        }
+        assert!(!c.is_closed());
     }
 
     // spec/sync.md §6 (request window), spec/requirements.md (peer input never causes unbounded

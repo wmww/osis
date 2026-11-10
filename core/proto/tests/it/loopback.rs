@@ -723,6 +723,32 @@ fn stalled_requests_time_out() {
     assert!(c.is_closed());
 }
 
+// spec/sync.md §6 (a node's own requests count as any): a peer silent on a stream Fetch is
+// closed at the stall deadline, and no ping goes meanwhile (its send would push the deadline)
+#[test]
+fn a_silent_node_request_times_out_spec_sync_6() {
+    let t = client::STALL_TIMEOUT_MS;
+    let mut c = ClientSession::new(ClientConfig { peer_static_key: [1; 32], challenge: [2; 32] });
+    c.handle(T0, ClientInput::Start);
+    let mut out = c.handle(T0, ClientInput::Bytes(encode_frame(&Hello::new(T0, [3; 32]).encode())));
+    // the clock pings answered: nothing of the session's own in flight
+    loop {
+        let pongs: Vec<u8> = out.iter().filter_map(|o| if let ClientOutput::Send(f) = o { Message::decode(&f[4..]).ok() } else { None }).filter_map(|m| if let Message::Ping { id, .. } = m { Some(encode_frame(&Message::Pong { id, wall_ms: T0 }.encode())) } else { None }).flatten().collect();
+        if pongs.is_empty() {
+            break;
+        }
+        out = c.handle(T0, ClientInput::Bytes(pongs));
+    }
+    assert_eq!((c.outstanding(), c.in_flight()), (0, 0));
+    let fetch = Message::Fetch { id: osis_proto::msg::NODE_IDS | 1, label: LabelId([7; 16]), max_reply: client::FIRST_REPLY as u64, ids: vec![bid(1)] };
+    let out = c.handle(T0 + 1, ClientInput::Command(Command::Peer(Box::new(fetch))));
+    assert!(out.iter().any(|o| matches!(o, ClientOutput::SetTimer(x) if *x == T0 + 1 + t)), "{out:?}");
+    let quiet = c.ping_if_quiet(T0 + t, 1000);
+    assert!(!quiet.iter().any(|o| matches!(o, ClientOutput::Send(_))), "{quiet:?}");
+    let late = c.handle(T0 + 1 + t, ClientInput::Timer);
+    assert!(late.iter().any(|o| matches!(o, ClientOutput::Close)), "{late:?}");
+}
+
 // spec/sync.md §6 (a replay's pages bring the live entries, the last page the log cursor), §8
 // (pushes carry cursors): a Push arriving while a Sync of its label runs gives no cursor to keep,
 // so a connection lost before the Sync ends never skips the entries its later pages held
@@ -883,6 +909,91 @@ fn node_requests_stay_within_the_unanswered_bound_spec_sync_6() {
         net.host_out(0, so);
     }
     assert_eq!(answered, node_requests().len());
+}
+
+/// Ids of the requests whole frames `bytes` hold.
+fn request_ids(bytes: &[u8]) -> Vec<u32> {
+    let mut d = FrameDecoder::new();
+    d.push(bytes);
+    let mut ids = Vec::new();
+    while let Ok(Some(body)) = d.next_frame() {
+        let m = Message::decode(&body).unwrap();
+        if m.is_request() {
+            ids.push(m.id());
+        }
+    }
+    ids
+}
+
+// spec/sync.md §6 (Requester: in the order made), spec/wire.md §11.2 (Pull: a stream request
+// still out when a later one's answer arrives was skipped): the window holds back whole-budget
+// Fetches, and a Pull made after them, though it would fit, waits its turn, from either side.
+// So a peer answering in arrival order answers in the order made, and a held-back request is
+// never counted skipped
+#[test]
+fn held_back_node_requests_keep_their_order_spec_sync_6() {
+    use osis_proto::msg::{NODE_IDS, Pull};
+    let budget = osis_proto::serving::REPLY_BUDGET as u64;
+    let id = |k: u32| NODE_IDS | (1 << 30) | k;
+    let mut reqs: Vec<Message> = (1..=3u32).map(|k| Message::Fetch { id: id(k), label: LabelId([k as u8; 16]), max_reply: budget, ids: vec![bid(u64::from(k))] }).collect();
+    reqs.push(Message::Pull(Box::new(Pull { id: id(4), cursor: None, joins: vec![], inline_limit: 0, max_reply: SMALL_REPLY as u64, follow: true, ephemeral: false })));
+    let made: Vec<u32> = reqs.iter().map(Message::id).collect();
+    // dialer's requests
+    let mut net = Net::new(1, 0);
+    let mut co = Vec::new();
+    for m in reqs.clone() {
+        co.extend(net.clients[0].handle(net.now, ClientInput::Command(Command::Peer(Box::new(m)))));
+    }
+    net.client_out(0, co);
+    let (mut sent, mut answered) = (Vec::new(), Vec::new());
+    loop {
+        let bytes: Vec<u8> = net.to_host[0].drain(..).flatten().collect();
+        if bytes.is_empty() {
+            break;
+        }
+        sent.push(request_ids(&bytes));
+        let so = net.hosts[0].handle(net.now, &mut net.store, ServingInput::Bytes(bytes));
+        for o in so {
+            if let ServingOutput::Peer(m) = o {
+                let so = net.hosts[0].handle(net.now, &mut net.store, ServingInput::Peer(Box::new(node_answer(&m))));
+                net.host_out(0, so);
+            }
+        }
+        let bytes: Vec<u8> = net.to_client[0].drain(..).flatten().collect();
+        let co = net.clients[0].handle(net.now, ClientInput::Bytes(bytes));
+        answered.extend(co.iter().filter_map(|o| if let ClientOutput::Event(ClientEvent::Peer(m)) = o { Some(m.id()) } else { None }));
+        net.client_out(0, co);
+    }
+    assert_eq!(sent[0], made[..2], "the window holds back the rest");
+    assert_eq!(answered, made, "dialer");
+    // listener's requests
+    let mut net = Net::new(1, 0);
+    let mut so = Vec::new();
+    for m in reqs {
+        so.extend(net.hosts[0].handle(net.now, &mut net.store, ServingInput::Peer(Box::new(m))));
+    }
+    net.host_out(0, so);
+    let (mut sent, mut answered) = (Vec::new(), Vec::new());
+    loop {
+        let bytes: Vec<u8> = net.to_client[0].drain(..).flatten().collect();
+        if bytes.is_empty() {
+            break;
+        }
+        sent.push(request_ids(&bytes));
+        let co = net.clients[0].handle(net.now, ClientInput::Bytes(bytes));
+        for o in co {
+            if let ClientOutput::Event(ClientEvent::Peer(m)) = o {
+                let co = net.clients[0].handle(net.now, ClientInput::Command(Command::Peer(Box::new(node_answer(&m)))));
+                net.client_out(0, co);
+            }
+        }
+        let bytes: Vec<u8> = net.to_host[0].drain(..).flatten().collect();
+        let so = net.hosts[0].handle(net.now, &mut net.store, ServingInput::Bytes(bytes));
+        answered.extend(so.iter().filter_map(|o| if let ServingOutput::Peer(m) = o { Some(m.id()) } else { None }));
+        net.host_out(0, so);
+    }
+    assert_eq!(sent[0], made[..2], "the window holds back the rest");
+    assert_eq!(answered, made, "listener");
 }
 
 // spec/sync.md §6, spec/wire.md §11.2 (Sync, Fetch `max_reply`): a request's allowance is what it
