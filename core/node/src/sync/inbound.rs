@@ -1755,10 +1755,11 @@ impl SyncEngine {
     }
 
     /// Records blob `b`'s prefix salt with every entry naming it that lacks one (spec/sync.md §6
-    /// Tombstones), from `bytes` or the bytes held here.
+    /// Tombstones), from `bytes` or the bytes held here. Bytes that are not `b` (a hostile
+    /// source's) give none.
     pub(crate) fn keep_salts(&mut self, b: &BlobId, bytes: Option<&[u8]>) -> Result<()> {
         let ls: Vec<LabelId> = self.state.labels_of(b).into_iter().filter(|l| self.state.entries.get(&(*l, *b)).is_some_and(|e| e.salt.is_none())).collect();
-        if ls.is_empty() {
+        if ls.is_empty() || bytes.is_some_and(|x| osis_label::blob_id(x) != *b) {
             return Ok(());
         }
         let held = match bytes {

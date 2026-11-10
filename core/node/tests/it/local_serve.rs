@@ -929,8 +929,8 @@ fn advance_unheld(net: &mut Net, n: usize, chunks: &[BlobId], ms: u64) {
 /// after they were lost with the connection; the chunks leave the host once it reports them,
 /// and the node keeps no record of them. `writer`: the purger is a writer, not an admin (it
 /// deletes by its delta's delete key, signed for each chunk's salt kept from when it held the
-/// bytes): from the purge on it stores no byte of them and logs none, so a co-reader pulling it
-/// gets none, and it fetches none.
+/// bytes, kept across a restart when `lost`): from the purge on it stores no byte of them and
+/// logs none, so a co-reader pulling it gets none, and it fetches none.
 fn chunks_answered_late(lost: bool, writer: bool) {
     let mut net = Net::new();
     let h = net.add_host();
@@ -972,6 +972,8 @@ fn chunks_answered_late(lost: bool, writer: bool) {
     let known = |net: &mut Net| listed(net, w, &l).into_iter().filter(|id| chunks.contains(id)).count();
     if lost {
         assert_eq!(known(&mut net), 0, "the purged chunks left the node while the host was away");
+        // the salts outlive a restart (in the tombstones)
+        net.restart(w, 7);
         net.blocked.remove(&(w, h));
     } else {
         net.release_host(h);
@@ -1009,9 +1011,9 @@ fn purged_chunks_mid_upload_leave_the_host_by_delete_key_spec_sync_6() {
 // spec/sync.md §6 (Tombstones: a delete needs only the salt), spec/commits.md §5: a writer (no
 // label delete key) purging another's large value whose chunks it never held deletes them at the
 // host by its delta's delete key: it fetches each for the salt that signs, and stores, logs and
-// serves none of them.
-#[test]
-fn purged_chunks_never_held_are_deleted_by_delete_key_unstored_spec_sync_6() {
+// serves none of them. `hostile`: the host first answers those fetches with another chunk's
+// bytes (a wrong salt), then honestly: no wrong salt sticks, so the deletes go through.
+fn never_held_chunks_deleted(hostile: bool) {
     let mut net = Net::new();
     let h = net.add_host();
     let a = net.node(1, &[h]);
@@ -1040,8 +1042,29 @@ fn purged_chunks_never_held_are_deleted_by_delete_key_unstored_spec_sync_6() {
     let mut m = osis_node::Mutation::new();
     m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
     m.remove_aspect(t, &GONE).unwrap();
+    if hostile {
+        assert!(chunks.len() > 1, "chunks to swap");
+        let bytes: Vec<Vec<u8>> = chunks.iter().map(|id| net.engine(a).blob(id).unwrap().unwrap()).collect();
+        let ids = chunks.clone();
+        net.host_tamper = Some(Box::new(move |m| match m {
+            osis_proto::Message::FetchReply { id, items } if items.iter().any(|f| f.entry.is_some() && ids.contains(&f.blob_id)) => {
+                let swap = |f: &osis_proto::msg::Fetched| {
+                    let mut f = f.clone();
+                    if let (Some(e), Some(i)) = (f.entry.as_mut(), ids.iter().position(|x| *x == f.blob_id)) {
+                        e.0 = bytes[(i + 1) % bytes.len()].clone();
+                    }
+                    f
+                };
+                Some(osis_proto::Message::FetchReply { id: *id, items: items.iter().map(swap).collect() })
+            }
+            _ => None,
+        }));
+    }
     net.engine(b).commit(m).unwrap();
-    for _ in 0..4 {
+    for i in 0..6 {
+        if i == 2 {
+            net.host_tamper = None;
+        }
         advance_unheld(&mut net, b, &chunks, 60_000);
         assert_eq!(chunk_copies(&mut net, b, &chunks), (0, 0), "the purged chunks' bytes are logged");
     }
@@ -1050,6 +1073,18 @@ fn purged_chunks_never_held_are_deleted_by_delete_key_unstored_spec_sync_6() {
     let fetched = net.fetched[&b].iter().filter(|x| chunks.contains(x)).count();
     assert!(fetched >= chunks.len(), "each chunk fetched for its salt ({fetched} of {})", chunks.len());
     assert_eq!(listed(&mut net, b, &l).into_iter().filter(|id| chunks.contains(id)).count(), 0, "the node keeps records of the purged chunks");
+}
+
+#[test]
+fn purged_chunks_never_held_are_deleted_by_delete_key_unstored_spec_sync_6() {
+    never_held_chunks_deleted(false);
+}
+
+// spec/sync.md §6 (Tombstones), spec/crypto.md §7: a host's wrong bytes for a chunk fetched for
+// its salt give no salt (they are not that blob), so the delete is signed once honest bytes come
+#[test]
+fn wrong_bytes_for_a_chunk_give_no_salt_spec_sync_6() {
+    never_held_chunks_deleted(true);
 }
 
 /// spec/sync.md §6 (Tombstones), §3 (certificate copies' linked blobs), spec/commits.md §5: a

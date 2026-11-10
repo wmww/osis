@@ -22,6 +22,19 @@ impl SyncEngine {
         self.stats.entries += ids.len() as u64;
         let now = self.now();
         let desired = desired(bodies);
+        // chunks of dropped deltas (a purge, spec/commits.md §5), first: tombstoned, whether or
+        // not their bytes are here (those went with the purge, `forget_dropped`), never taken
+        // below as an entry serving nothing. Those listed by the commits of `scope` and the
+        // chunk entries it names
+        let cands = self.chunk_entries(&l, scope, |s, b| !s.state.present_anywhere(&l, b));
+        let (chunks, waiting) = self.dropped_chunks(&cands)?;
+        left.blobs.extend(waiting);
+        for b in chunks.into_keys() {
+            // the bytes first: the salt goes into the tombstone (`keep_salts`)
+            self.forget_chunk(&b)?;
+            self.state.remove_entry(l, b);
+            self.local_expiry.remove(&b);
+        }
         let mut note = Note::default();
         for id in ids {
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
@@ -72,17 +85,6 @@ impl SyncEngine {
                 }
                 None => {}
             }
-        }
-        // chunks of dropped deltas (a purge, spec/commits.md §5): those listed by the commits of
-        // `scope` and the chunk entries it names
-        let cands = self.chunk_entries(&l, scope, |s, b| !s.state.present_anywhere(&l, b));
-        let (chunks, waiting) = self.dropped_chunks(&cands)?;
-        left.blobs.extend(waiting);
-        for b in chunks.into_keys() {
-            // the bytes first: the salt goes into the tombstone (`keep_salts`)
-            self.forget_chunk(&b)?;
-            self.state.remove_entry(l, b);
-            self.local_expiry.remove(&b);
         }
         // the blobs certificate copies linked, as a pass at a host deletes them (the bytes
         // stay: they are the engine's own): of the copies in `scope`, of every one when a

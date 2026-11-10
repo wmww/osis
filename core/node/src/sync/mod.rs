@@ -590,6 +590,9 @@ impl SyncEngine {
         if matches!(ev, Event::Tick) || self.engine.timers_due() {
             self.run_engine_timers()?;
         }
+        // the app's commits since the last event go before it: a purge's bytes are gone before a
+        // peer's Fetch reads them (spec/commits.md §5)
+        self.engine_events()?;
         match ev {
             Event::Tick => {
                 self.timers(out)?;

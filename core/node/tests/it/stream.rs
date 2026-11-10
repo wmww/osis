@@ -1211,3 +1211,62 @@ fn cursorless_announcements_are_not_fetched_spec_sync_10() {
     net.run();
     assert_eq!(net.peer_sent(a, 19), fetches, "no fetch asked");
 }
+
+/// `b` writes a large value its co-reader `a` holds the commit of; `b` purges it (`local`: the
+/// purge's Local event reaches `b` first, else a co-reader's Fetch for the chunks does), then
+/// `a` asks `b` for every chunk. The chunks `b` sends bytes of after the purge, by any stream
+/// message, and those `b` holds at the end.
+fn purged_chunks_served(local: bool) -> (usize, usize) {
+    use osis_base::Ak;
+    let mut net = Net::new();
+    let (a, b, gs) = pair(&mut net, 1);
+    let t = net.item(b, gs[0], gs[0], "x");
+    let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &GONE, &s(&big)).unwrap();
+    let c = net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    let l = label_of(&mut net, b, gs[0]);
+    let chunks: Vec<osis_base::BlobId> = net.engine(b).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    assert!(!chunks.is_empty() && chunks.iter().all(|x| net.sync(b).holds_blob(x)), "b holds a chunked value");
+    assert!(net.engine(a).header(&c).is_some(), "a holds the commit");
+    let served = std::rc::Rc::new(std::cell::RefCell::new(std::collections::BTreeSet::new()));
+    let seen = served.clone();
+    let ids = chunks.clone();
+    net.tamper = Some(Box::new(move |m| {
+        let carried: Vec<osis_base::BlobId> = match m {
+            osis_proto::Message::FetchReply { items, .. } => items.iter().filter(|f| f.entry.is_some()).map(|f| f.blob_id).collect(),
+            osis_proto::Message::Stream(x) => x.events.iter().filter_map(|(_, e)| if let osis_proto::Event::Added { blob_id, blob: Some(_), .. } = e { Some(*blob_id) } else { None }).collect(),
+            osis_proto::Message::PullReply(r) => r.events.iter().filter_map(|(_, e)| if let osis_proto::Event::Added { blob_id, blob: Some(_), .. } = e { Some(*blob_id) } else { None }).collect(),
+            _ => Vec::new(),
+        };
+        seen.borrow_mut().extend(carried.into_iter().filter(|x| ids.contains(x)));
+        None
+    }));
+    net.tamper_link = Some((b, a));
+    let mut m = osis_node::Mutation::new();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
+    m.remove_aspect(t, &GONE).unwrap();
+    net.engine(b).commit(m).unwrap();
+    if local {
+        net.feed(b, osis_node::sync::Event::Local);
+    }
+    let (ac, _) = conn_to(&net, a, b);
+    net.inject(a, ac, &osis_proto::Message::Fetch { id: osis_proto::msg::NODE_IDS | 7, label: l, max_reply: osis_proto::serving::REPLY_BUDGET as u64, ids: chunks.clone() });
+    net.settle(200_000);
+    net.run();
+    net.advance(60_000);
+    let held = chunks.iter().filter(|x| net.sync(b).holds_blob(x)).count();
+    let n = served.borrow().len();
+    (n, held)
+}
+
+// spec/commits.md §5 (a purge destroys every local copy), spec/sync.md §10 (Bodies): a node that
+// purged a large value sends a co-reader no byte of its chunks, even for a Fetch it reads before
+// the purge's own Local event
+#[test]
+fn purged_chunks_are_not_served_to_a_co_reader_spec_commits_5() {
+    for local in [true, false] {
+        assert_eq!(purged_chunks_served(local), (0, 0), "chunks served or held after the purge (Local first: {local})");
+    }
+}
