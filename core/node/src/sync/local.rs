@@ -495,7 +495,7 @@ impl SyncEngine {
     /// for them (`chain_under`), and the chain's raw records: a stranded report's holder keys
     /// (spec/wire.md §9), from which a reader of the label's actor gone from `h` seals `h` and
     /// deposits under its inbox.
-    pub(super) fn holder_keys(&mut self, h: &Tid) -> Result<osis_label::HolderKeys> {
+    pub fn holder_keys(&mut self, h: &Tid) -> Result<osis_label::HolderKeys> {
         let mut chain = crate::labeling::Certs::default();
         for x in self.engine.current_keys(h) {
             let Some(hd) = self.engine.header(&x) else { continue };

@@ -1,3 +1,4 @@
 # stranded-keys
 - `tools/heavy` waited 25+ min for another branch's all-core run; small TLC instances went unlocked at 2-4 workers instead.
 - The issue's leftover shape (Carol a member who then leaves) did not reproduce in the osis World: Carol keeps following T until her self-removal is placed (an admin promotes it), and reads T's rotation commits wrapped under the old epoch she still holds; Alice's placements under X wrapped under an epoch she cannot see superseded reach her too. The model's `Follow` is stricter than the build. A test of the fix needed the never-in-T shape (only a report can carry T's keys).
+- Review: two of the world test's three cases passed with either half disabled (checked by disabling each); 10 s of tier-1 for no differential. Check each case of a parametrized test fails without the fix.

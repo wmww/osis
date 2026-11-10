@@ -1240,23 +1240,47 @@ fn stranded_pair() -> (Net, usize, usize, osis_base::Tid, osis_base::LabelId, os
     (net, a, c, g, l, conn)
 }
 
-// spec/permissions.md §4 (Stranded message), §3 (re-seal): a Stranded message from a connected
-// peer that proved a current holder makes a node that may rotate re-seal that holder at the end
-// of a complete pass, once at the actor's current epochs, however often it comes.
+// spec/permissions.md §4 (Stranded message), §3 (re-seal): a Stranded message naming a current
+// holder makes a node that may rotate re-seal that holder at the end of a complete pass, once at
+// the actor's current epochs, however often it comes.
 #[test]
-fn stranded_message_reseals_the_proved_holder_spec_permissions_4() {
+fn stranded_message_reseals_the_named_holder_spec_permissions_4() {
     let (mut net, a, c, g, l, conn) = stranded_pair();
+    let holder = net.tid(c);
     let before = seals_by(&mut net, a, g);
     for i in 0..3 {
-        net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | (0x7000 + i), label: l, keys: Default::default() });
+        net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | (0x7000 + i), label: l, holder, keys: Default::default() });
         net.run();
         net.advance(61_000);
     }
     assert_eq!(seals_by(&mut net, a, g), before + 1, "one re-seal of c's account");
     // an unknown label: nothing
-    net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | 0x7100, label: osis_base::LabelId([0x44; 16]), keys: Default::default() });
+    net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | 0x7100, label: osis_base::LabelId([0x44; 16]), holder, keys: Default::default() });
     net.run();
     assert_eq!(seals_by(&mut net, a, g), before + 1);
+}
+
+// spec/permissions.md §4 (Stranded: the holder keys), spec/wire.md §9, §11.2: a Stranded message
+// carries the current `keys.0` of the holder it names, taken only for a current holder and only
+// for it (judged from nothing of the sender). T, a team of reader c's, holds no role on g: T's
+// keys sent under the name of c's account (a current holder), or under T's own, give admin `a`
+// nothing. (A node gone from the holder taking them: osis
+// `sharing::team_left_out_reads_again_by_its_stranded_report_spec_crypto_4`.)
+#[test]
+fn stranded_message_takes_only_the_named_holders_keys_spec_permissions_4() {
+    let (mut net, a, c, g, l, conn) = stranded_pair();
+    let t = net.group(c, &[], &[0]);
+    net.run();
+    let lacks = |net: &mut Net| -> Vec<osis_base::CommitId> { net.engine(c).current_keys(&t).into_iter().filter(|k| net.engine(a).header(k).is_none()).collect() };
+    let ts = lacks(&mut net);
+    assert!(!ts.is_empty(), "a lacks T's keyset");
+    let keys = net.sync(c).holder_keys(&t).unwrap();
+    for (i, holder) in [net.tid(c), t].into_iter().enumerate() {
+        net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | (0x7200 + i as u32), label: l, holder, keys: keys.clone() });
+        net.run();
+        assert_eq!(lacks(&mut net), ts, "holder {i}: T's keys not taken");
+    }
+    assert!(net.engine(a).core.key_holders(&g).iter().all(|x| x.0 != t), "T holds nothing on g");
 }
 
 // spec/permissions.md §4 (Stranded: to a connected peer that proved an account holding write or

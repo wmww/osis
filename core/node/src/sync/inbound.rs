@@ -1191,7 +1191,7 @@ impl SyncEngine {
                 self.inbox_opened.insert((l, b), None);
                 e.kind = Kind::Inbox(None);
                 self.state.set_entry(l, b, e);
-                return self.stranded_notice(n);
+                return self.stranded_report(n.label, n.holder, n.keys);
             }
         };
         let (pt, things, chain, records) = payload.split();
@@ -1229,12 +1229,24 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// The holder keys a stranded report carried (spec/wire.md §9): their records, then their
-    /// commits cut to `roles.0` and `keys.0` (`chain_commits`), role commits first by `ts`, each
-    /// judged like a chain certificate, again while one that awaited something applies.
-    pub(super) fn take_holder_keys(&mut self, keys: osis_label::HolderKeys) -> Result<()> {
+    /// The holder keys a stranded report carried for `holder` (spec/wire.md §9): their records,
+    /// then their commits cut to `roles.0` and to `keys.0` on the holder and on the authors of
+    /// those writes (their cards), role commits first by `ts`, each judged like a chain
+    /// certificate, again while one that awaited something applies. No other actor's keyset is
+    /// taken from a report.
+    pub(super) fn take_holder_keys(&mut self, holder: &Tid, keys: osis_label::HolderKeys) -> Result<()> {
         self.engine.learn_records(keys.records)?;
+        let on = |c: &osis_commit::CommitBlob, t: &dyn Fn(&Tid) -> bool| c.parts.iter().any(|p| c.header.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == "keys.0" && t(&a.tid)));
         let mut todo = chain_commits(keys.commits);
+        let authors: BTreeSet<Tid> = todo.iter().filter(|(_, c)| on(c, &|t| t == holder)).map(|(_, c)| c.header.author).collect();
+        todo = todo
+            .into_iter()
+            .filter_map(|(_, mut c)| {
+                let aspects = &c.header.aspects;
+                c.parts.retain(|p| aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == "roles.0" || a.tid == *holder || authors.contains(&a.tid)));
+                (!c.parts.is_empty()).then(|| (c.encode(), c))
+            })
+            .collect();
         todo.sort_by_key(|(_, c)| (!c.header.kind.is_role(), c.header.ts));
         for _ in 0..MAX_ROUNDS {
             let mut later = Vec::new();

@@ -24,7 +24,8 @@ impl SyncEngine {
     /// label's current epoch, wherever its walk at `conn`'s host stopped). It sends a Stranded
     /// message to each connected peer that proved an account holding write or above on the
     /// label's actor; with none, a stranded notice to the inbox of each admin of the actor. Each
-    /// once per sync key of the newest step reached and recipient.
+    /// once per sync key of the newest step reached and recipient, naming the holder this node
+    /// reads through with its keys (`holder_keys`, built only for a report that goes).
     pub(crate) fn stranded(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<Action>) -> Result<()> {
         self.stranded_on.insert(l);
         let Some(a) = self.engine.core.secret_actor(&g) else { return Ok(()) };
@@ -38,12 +39,16 @@ impl SyncEngine {
             .collect();
         // the keys of the holder this node reads through: a reader gone from it seals it there
         let holder = self.own_holder(&a);
-        let keys = self.holder_keys(&holder)?;
+        let mut keys = None;
         if !peers.is_empty() {
             for c in peers {
                 if self.stranded_sent.insert((l, step, To::Peer(c))) {
-                    let keys = keys.clone();
-                    self.shared_request(c, |id| Message::Stranded { id, label: l, keys }, out)?;
+                    let keys = match &keys {
+                        Some(k) => k,
+                        None => keys.insert(self.holder_keys(&holder)?),
+                    }
+                    .clone();
+                    self.shared_request(c, |id| Message::Stranded { id, label: l, holder, keys }, out)?;
                 }
             }
             return Ok(());
@@ -53,6 +58,10 @@ impl SyncEngine {
             if !self.stranded_sent.insert((l, step, To::Inbox(admin))) {
                 continue;
             }
+            let keys = match &keys {
+                Some(k) => k,
+                None => keys.insert(self.holder_keys(&holder)?),
+            };
             let (Some(kem), Some((inbox_actor, inbox))) = (self.engine.inbox_kem(&admin)?, self.engine.inbox_of_actor(&admin)?) else {
                 self.diag(format!("stranded on {l:?}: no inbox of admin {admin}"));
                 continue;
@@ -95,37 +104,18 @@ impl SyncEngine {
         holders.into_iter().find(|h| !self.engine.core.is_key_actor(h) && self.engine.core.role_now(&me, h).is_some()).unwrap_or(me)
     }
 
-    /// A Stranded message from `conn`'s peer: the holder of `l`'s actor among the actors the
-    /// connection proved (or up their record chains) waits for the end of a complete pass of the
-    /// actor's labels to be re-sealed (`reseal`), with the keys the peer carried.
-    pub(super) fn stranded_message(&mut self, conn: ConnId, l: LabelId, keys: osis_label::HolderKeys) -> Result<()> {
+    /// A stranded report (a Stranded message or an inbox notice): `holder`, reported stranded on
+    /// `l`, waits for the end of a complete pass of the labels of `l`'s actor `a` to be re-sealed
+    /// (`reseal`, a current holder only). When it is a current holder of `a` and this node may
+    /// re-seal it, the keys carried for it are taken first (`take_holder_keys`): a node gone from
+    /// the holder learns its keysets only so. Nothing of the sender is checked: a re-seal of a
+    /// current holder at the current epochs is due whoever asks.
+    pub(super) fn stranded_report(&mut self, l: LabelId, holder: Tid, keys: osis_label::HolderKeys) -> Result<()> {
         let Some(g) = self.labels().into_iter().find(|(_, x)| x.id == l).map(|x| x.0) else { return Ok(()) };
         let Some(a) = self.engine.core.secret_actor(&g) else { return Ok(()) };
-        let Some(p) = self.connection_proven(conn) else { return Ok(()) };
-        let actors: Vec<Tid> = p.all().into_iter().collect();
-        let holders: BTreeSet<Tid> = self.engine.core.key_holders(&a).into_iter().map(|x| x.0).collect();
-        let holder = actors.iter().find_map(|x| self.engine.record_chain(x).find(|t| holders.contains(t)));
-        match holder {
-            Some(h) => self.stranded_ask(a, h, l, keys),
-            None => Ok(()),
-        }
-    }
-
-    /// A stranded notice opened from an inbox: `holder` is re-sealed on `l`'s actor at the end
-    /// of a complete pass of its labels, if a current holder this node may re-seal.
-    pub(super) fn stranded_notice(&mut self, n: osis_label::StrandedNotice) -> Result<()> {
-        let Some(g) = self.labels().into_iter().find(|(_, x)| x.id == n.label).map(|x| x.0) else { return Ok(()) };
-        let Some(a) = self.engine.core.secret_actor(&g) else { return Ok(()) };
-        self.stranded_ask(a, n.holder, n.label, n.keys)
-    }
-
-    /// `holder`, reported stranded on `l` of `a`, waits for the re-seal; when it is a current
-    /// holder of `a` and this node may re-seal it, the holder keys carried are taken first (judged
-    /// like any chain certificate): a node gone from the holder learns its keysets only so.
-    fn stranded_ask(&mut self, a: Tid, holder: Tid, l: LabelId, keys: osis_label::HolderKeys) -> Result<()> {
         let current = self.engine.core.key_holders(&a).iter().any(|x| x.0 == holder);
         if current && self.engine.role_on(&a) >= Some(Role::Write) {
-            self.take_holder_keys(keys)?;
+            self.take_holder_keys(&holder, keys)?;
         }
         self.stranded_asks.entry(a).or_default().insert(holder);
         let labels: Vec<LabelId> = self.labels().into_iter().filter(|(g, _)| self.engine.core.secret_actor(g) == Some(a)).map(|x| x.1.id).chain([l]).collect();

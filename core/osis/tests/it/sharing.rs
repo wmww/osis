@@ -1890,80 +1890,66 @@ fn held_read(db: &Osis, a: Tid) -> Vec<(u64, [u8; 32])> {
 
 // spec/crypto.md §4 (Encrypting under: an epoch whose secret the node lacks is judged by order;
 // Reported), spec/permissions.md §4 (a stranded report carries the holder's keys): team T (Alice
-// its admin, Bob, Carol, Dave) reads Carol's doc X. Carol leaves T (`member`: only after the write
-// below) and drops its secrets. Dave leaves T (no rotation) and Carol hears of it (`away`: before
-// T's next keyset, Alice being away). T's keyset was made before Dave left, so it cannot cover
-// him: Carol's next write to X leaves T out, whether she holds T's secrets or not. Gone from T,
-// Carol does not follow it; once Alice rotates T, Bob is stranded on X and his report carries T's
-// new keys: Carol re-seals T there. Bob reads everything Carol wrote; X is never sealed to T at a
-// keyset Dave held.
+// its admin, Bob, Carol, Dave) reads Carol's doc X. Carol leaves T and drops its secrets. With
+// Alice away, Dave leaves T (no rotation) and Carol hears of it: T's keyset was made before Dave
+// left, so it cannot cover him, and Carol's next write to X leaves T out. Gone from T, Carol does
+// not follow it; once Alice rotates T, Bob is stranded on X and his report carries T's new keys:
+// Carol re-seals T there. Bob reads everything Carol wrote; X is never sealed to T at a keyset
+// Dave held. Without the order rule Dave's keyset is sealed to; without the keys T stays out.
 #[test]
 fn team_left_out_reads_again_by_its_stranded_report_spec_crypto_4() {
-    for (member, away) in [(false, true), (false, false), (true, true)] {
-        let case = format!("member {member} away {away}");
-        let mut w = World::new();
-        let host = w.add_host();
-        let alice = w.account(1, &[host]);
-        let bob = w.account(2, &[host]);
-        let carol = w.account(3, &[host]);
-        let dave = w.account(4, &[host]);
+    let mut w = World::new();
+    let host = w.add_host();
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
+    let carol = w.account(3, &[host]);
+    let dave = w.account(4, &[host]);
+    w.run();
+    let mut ids = Vec::new();
+    for p in [&bob, &carol, &dave] {
+        let card = p.contact_card().unwrap();
         w.run();
-        let mut ids = Vec::new();
-        for p in [&bob, &carol, &dave] {
-            let card = p.contact_card().unwrap();
-            w.run();
-            ids.push(w.until(alice.import_contact(&card), 1000, 10).unwrap());
-        }
-        let t = group(&alice);
-        for id in &ids {
-            alice.grant(t, *id, Role::Read, Default::default()).unwrap();
-        }
-        w.run();
-        let x_ = group(&carol);
-        carol.grant(x_, t, Role::Read, Default::default()).unwrap();
-        w.run();
-        if !member {
-            carol.leave(carol.me(), t).unwrap();
-            for _ in 0..3 {
-                w.advance(70_000);
-                w.run();
-            }
-            assert!(held_read(&carol, t).is_empty(), "{case}: Carol dropped T's secrets");
-        }
-        let before = item(&carol, x_, x_, "before");
-        w.run();
-        assert_eq!(x(&bob, before), Some(s("before")), "{case}");
-        let dave_held = held_read(&dave, t);
-        let not_daves = |db: &Osis| sealed_keyset(db, x_, t).is_none_or(|k| !dave_held.contains(&k));
-        if away {
-            w.set_online(&alice, false);
-        }
-        dave.leave(dave.me(), t).unwrap();
-        w.run();
-        let out = item(&carol, x_, x_, "after dave left");
-        w.run();
-        assert!(not_daves(&carol), "{case}: X sealed to T at a keyset Dave held");
-        if away {
-            assert!(carol.engine(|e| !e.departures(&t).unwrap().is_empty()), "{case}: Carol knows Dave left");
-            assert_eq!(x(&bob, out), None, "{case}: T left out of X");
-        }
-        if member {
-            carol.leave(carol.me(), t).unwrap();
-            w.run();
-        }
-        w.set_online(&alice, true);
-        for _ in 0..4 {
-            w.advance(70_000);
-            w.run();
-        }
-        let after = item(&carol, x_, x_, "after T rotated");
-        for _ in 0..2 {
-            w.advance(70_000);
-            w.run();
-        }
-        assert!(sealed_keyset(&carol, x_, t).is_some() && not_daves(&carol), "{case}: T sealed again, at a keyset Dave never held");
-        assert_eq!(x(&bob, out), Some(s("after dave left")), "{case}");
-        assert_eq!(x(&bob, after), Some(s("after T rotated")), "{case}");
-        assert_eq!(x(&dave, after), None, "{case}");
+        ids.push(w.until(alice.import_contact(&card), 1000, 10).unwrap());
     }
+    let t = group(&alice);
+    for id in &ids {
+        alice.grant(t, *id, Role::Read, Default::default()).unwrap();
+    }
+    w.run();
+    let x_ = group(&carol);
+    carol.grant(x_, t, Role::Read, Default::default()).unwrap();
+    w.run();
+    carol.leave(carol.me(), t).unwrap();
+    for _ in 0..3 {
+        w.advance(70_000);
+        w.run();
+    }
+    assert!(held_read(&carol, t).is_empty(), "Carol dropped T's secrets");
+    let before = item(&carol, x_, x_, "before");
+    w.run();
+    assert_eq!(x(&bob, before), Some(s("before")));
+    let dave_held = held_read(&dave, t);
+    let not_daves = |db: &Osis| sealed_keyset(db, x_, t).is_none_or(|k| !dave_held.contains(&k));
+    w.set_online(&alice, false);
+    dave.leave(dave.me(), t).unwrap();
+    w.run();
+    let out = item(&carol, x_, x_, "after dave left");
+    w.run();
+    assert!(not_daves(&carol), "X sealed to T at a keyset Dave held");
+    assert!(carol.engine(|e| !e.departures(&t).unwrap().is_empty()), "Carol knows Dave left");
+    assert_eq!(x(&bob, out), None, "T left out of X");
+    w.set_online(&alice, true);
+    for _ in 0..4 {
+        w.advance(70_000);
+        w.run();
+    }
+    let after = item(&carol, x_, x_, "after T rotated");
+    for _ in 0..2 {
+        w.advance(70_000);
+        w.run();
+    }
+    assert!(sealed_keyset(&carol, x_, t).is_some() && not_daves(&carol), "T sealed again, at a keyset Dave never held");
+    assert_eq!(x(&bob, out), Some(s("after dave left")));
+    assert_eq!(x(&bob, after), Some(s("after T rotated")));
+    assert_eq!(x(&dave, after), None);
 }
