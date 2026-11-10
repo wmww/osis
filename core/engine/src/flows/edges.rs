@@ -80,7 +80,7 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
     // sealed to an account's current epoch KEM key, another actor's newest read keyset
     let to = holder;
     let Some(kem) = inbox_kem(tx, &holder)? else { return Ok(Vec::new()) };
-    let mut blob = tx.get_commit(&c)?.ok_or(Error::UnknownCommit(c))?;
+    let mut blob = std::sync::Arc::unwrap_or_clone(tx.get_commit(&c)?.ok_or(Error::UnknownCommit(c))?);
     if parts == Parts::Edge {
         let keep: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, a)| a.ak.as_str() == "roles.0").map(|(i, _)| i).collect();
         blob.parts.retain(|p| keep.contains(&p.ai));

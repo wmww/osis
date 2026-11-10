@@ -7,6 +7,7 @@
 pub(crate) mod acting;
 pub(crate) mod blobs;
 pub(crate) mod clock;
+pub(crate) mod decoded;
 pub(crate) mod edits;
 pub(crate) mod groups;
 pub(crate) mod held;
@@ -989,6 +990,9 @@ pub struct Core {
     /// `remove_commit`, `leftover::put`/`remove`: a strip erases keys and values, a late part
     /// or an unstrip brings writes) and on rollback; all go past `COPY_CACHE_MAX` writes.
     pub copy_index: BTreeMap<CommitId, BTreeMap<(Tid, Ak), Arc<osis_crdt::CopyIndex>>>,
+    /// Stored commit records and their parts, decoded once per write of the record
+    /// (`decoded::DecodedCommits`).
+    pub(crate) decoded: decoded::DecodedCommits,
     /// Bumped whenever a transaction changes the indexes or a state, rolls back, or the caches
     /// reload (it never goes back): caches derived from them (the sync engine's) compare it.
     pub generation: u64,
@@ -1389,6 +1393,7 @@ impl Core {
             self.live_bodies.clear();
             self.bodies.clear();
             self.copy_index.clear();
+            self.decoded.clear();
             self.cover_cache = None;
             self.held_writes = Default::default();
             self.published = None;
@@ -1478,6 +1483,7 @@ impl Core {
             live_bodies: _,
             bodies: _,
             copy_index: _,
+            decoded: _,
             cover_cache: _,
             held_writes: _,
             published: _,
@@ -1703,6 +1709,7 @@ impl Core {
             death_walks: 0,
             rebuilds: 0,
             copy_index: BTreeMap::new(),
+            decoded: Default::default(),
             generation: 0,
             role_generation: 0,
             memory_generation: 0,
@@ -2391,6 +2398,7 @@ impl Tx<'_> {
         debug_assert!(meta.dropped.keys().all(|ai| !meta.missing.contains(ai)), "{id:?}: parts both dropped and missing: dropped {:?} missing {:?}", meta.dropped, meta.missing);
         self.core.bodies.remove(id);
         self.core.copy_index.remove(id);
+        self.core.decoded.forget(id);
         self.core.mark_changed(*id);
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
@@ -2416,12 +2424,29 @@ impl Tx<'_> {
     pub fn remove_commit(&mut self, id: &CommitId) -> Result<()> {
         self.core.bodies.remove(id);
         self.core.copy_index.remove(id);
+        self.core.decoded.forget(id);
         self.txn.remove_local(&records::commit_key(id), Shred::Yes)?;
         index::remove_edges(self, id)?;
         index::remove_addenda(self, id)
     }
 
-    pub fn get_commit(&mut self, id: &CommitId) -> Result<Option<CommitBlob>> {
+    /// The blob of the stored record of commit `id`, decoded once per write of the record
+    /// (`Core::decoded`).
+    pub fn get_commit(&mut self, id: &CommitId) -> Result<Option<Arc<CommitBlob>>> {
+        if let Some(b) = self.core.decoded.record(id) {
+            #[cfg(debug_assertions)]
+            if self.recheck(format!("commit record {id:?}")) {
+                assert_eq!(crate::costs::paused(|| self.read_commit(id))?.as_ref(), Some(&*b), "decoded record of {id:?} went stale");
+            }
+            return Ok(Some(b));
+        }
+        let Some(b) = self.read_commit(id)? else { return Ok(None) };
+        let b = Arc::new(b);
+        self.core.decoded.keep_record(*id, b.clone());
+        Ok(Some(b))
+    }
+
+    fn read_commit(&mut self, id: &CommitId) -> Result<Option<CommitBlob>> {
         drop(crate::costs::span("commit read"));
         let Some(v) = self.txn.get_local(&records::commit_key(id))? else { return Ok(None) };
         Ok(Some(decode_commit_record(&v)?.1))

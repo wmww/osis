@@ -939,7 +939,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
 /// Applied commit `id`'s stored blob (its resolved header), and the parts a late copy brings
 /// nothing for: those held, those dropped for good.
 fn held_and_skip(tx: &mut Tx<'_>, id: &CommitId) -> Result<(CommitBlob, BTreeSet<usize>)> {
-    let mut held = tx.get_commit(id)?.ok_or(Error::Corrupt("commit record"))?;
+    let mut held = Arc::unwrap_or_clone(tx.get_commit(id)?.ok_or(Error::Corrupt("commit record"))?);
     let meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let mut skip: BTreeSet<usize> = held.parts.iter().map(|p| p.ai).collect();
     for ai in meta.dropped.keys().chain(meta.stripped.iter()) {
@@ -1780,7 +1780,7 @@ fn examine_stored(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<V
 pub(crate) fn edge_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<validity::EdgeParts> {
     let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(validity::EdgeParts::default()) };
     let Some(blob) = tx.get_commit(id)? else { return Ok(validity::EdgeParts::default()) };
-    edge_parts_of(tx, id, &h, blob)
+    edge_parts_of(tx, id, &h, Arc::unwrap_or_clone(blob))
 }
 
 /// `edge_parts` of a commit record's blob (`h`: its resolved header).
@@ -1832,11 +1832,32 @@ pub(crate) fn stores_part(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<b
 /// Decoded parts of a held commit on the aspects `keep` selects, with their aspect indexes (a
 /// stripped part as its leftover).
 pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize) -> bool) -> Result<Vec<(usize, Decoded)>> {
-    let Some(mut blob) = tx.get_commit(id)? else { return Ok(Vec::new()) };
+    let Some(stored) = tx.get_commit(id)? else { return Ok(Vec::new()) };
     let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(Vec::new()) };
-    blob.header = (*m.header).clone();
-    blob.parts.retain(|p| keep(p.ai));
-    let mut out = examine_stored(tx, &blob, id)?;
+    // each stored part decoded once per write of the record (`Core::decoded`)
+    let mut out = Vec::new();
+    for p in stored.parts.iter().filter(|p| keep(p.ai)) {
+        let fresh = |tx: &mut Tx<'_>| -> Result<Decoded> {
+            let one = CommitBlob { header: (*m.header).clone(), sigs: stored.sigs.clone(), parts: vec![p.clone()] };
+            drop(crate::costs::span("part decode"));
+            examine_stored(tx, &one, id)?.pop().map(|x| x.1).ok_or(Error::Corrupt("stored delta"))
+        };
+        let d = match tx.core.decoded.part(id, p.ai) {
+            Some(d) => {
+                #[cfg(debug_assertions)]
+                if tx.recheck(format!("commit part {id:?} {}", p.ai)) {
+                    assert_eq!(crate::costs::paused(|| fresh(tx))?, *d, "decoded part {} of {id:?} went stale", p.ai);
+                }
+                d
+            }
+            None => {
+                let d = Arc::new(fresh(tx)?);
+                tx.core.decoded.keep_part(*id, p.ai, d.clone());
+                d
+            }
+        };
+        out.push((p.ai, (*d).clone()));
+    }
     for ai in m.stripped.iter().copied().filter(|ai| keep(*ai)) {
         let Some(a) = m.header.aspects.get(ai) else { continue };
         let Some(l) = crate::retention::leftover::get(tx, &a.tid, &a.ak, id, ai)? else { return Err(Error::Corrupt("leftover missing")) };

@@ -481,7 +481,7 @@ impl SyncEngine {
             }
         }
         for (x, q) in chain.commits {
-            let Some(mut blob) = self.engine.run(|tx| tx.get_commit(&x))? else { continue };
+            let Some(mut blob) = self.engine.run(|tx| tx.get_commit(&x))?.map(std::sync::Arc::unwrap_or_clone) else { continue };
             blob.parts.retain(|p| q.contains(&p.ai));
             if blob.parts.is_empty() {
                 continue;

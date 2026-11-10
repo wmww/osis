@@ -135,7 +135,7 @@ impl Engine {
         let id = *id;
         self.run(|tx| {
             tx.set_memory();
-            tx.get_commit(&id)
+            Ok(tx.get_commit(&id)?.map(std::sync::Arc::unwrap_or_clone))
         })
     }
 

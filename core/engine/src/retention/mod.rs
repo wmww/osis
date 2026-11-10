@@ -707,7 +707,7 @@ fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::
     }
     if let Some(blob) = tx.get_commit(c)? {
         // its body goes: the blob without the slot, shredded
-        let (rest, shred) = if whole { (osis_commit::rewrite(&blob, |x| x == ai), Shred::Yes) } else { (blob, Shred::No) };
+        let (rest, shred) = if whole { (osis_commit::rewrite(&blob, |x| x == ai), Shred::Yes) } else { (std::sync::Arc::unwrap_or_clone(blob), Shred::No) };
         tx.put_commit(c, &rest, &m, shred, None)?;
     }
     tx.core.put_meta(*c, m);
