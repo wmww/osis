@@ -35,7 +35,7 @@
 
 ## The listening key
 - One listening key per node is a design choice, not a requirement: the dialable key, dialed by key from config, links and own account data, also its key as a peer of groups it cannot read (issues/net-one-peer.md). LAN listeners take a fresh key per network join, since an announcement is heard by strangers and a stable key in it would let anyone track the device across networks (spec/sync.md §10). The dialable listener shows its stable key in TLS to any dialer, scanners included: tracking of a node reachable at global addresses; a later fix makes the dialer prove it knows the key first (issues/privacy.md).
-- Unsure (design): whether one key for dialing, serving and the client port earns its keep against a key per role; decide with issues/net-one-peer.md.
+- One key for dialing, serving and the client port (issues/net-one-peer.md step 2).
 - **No automatic rotation** (Built; notes/peers.md, with the why): the key stays put; `rotate_peer_address` is the only rotation, an explicit user act; ending a direct link rotates nothing.
 - Not built, for `rotate_peer_address`: keep the old listener until the new key reached every own node and connected peer, or a bound passes (Unsure (design)), so connected peers learn the new key before the old one goes.
 

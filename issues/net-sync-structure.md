@@ -40,7 +40,7 @@ Under the rework an open is never retried: it is judged, and re-judged on any ch
 Unblocks: issues/net-connect.md (dialing), issues/net-shared-set.md (opens), issues/net-reconnect.md (Lost and Offers retried by connection, not by timer).
 
 ## (e) Local passes as the empty-source case
-A label with no non-`peer://` host gets a **local pass** (`local_passes`, pass/mod.rs; notes/peers.md): the pass logic run with `conn = None` against the node's own entries, so a sharer with no host still promotes deposits, places certificates and deletes locally. It is the same pass with `sources(L) = {}`: nothing upstream holds what the node lacks, so it judges over what it holds. With (b), a pass runs over `sources(L)`, and the empty set is one case of it, not a second entry point. Where the pass's store lives once node sync and the hub share one store is issues/net-one-peer.md step 3's question; this item only removes the second entry point.
+A label with no non-`peer://` host gets a **local pass** (`local_passes`, pass/mod.rs; notes/peers.md): the pass logic run with `conn = None` against the node's own entries, so a sharer with no host still promotes deposits, places certificates and deletes locally. It is the same pass with `sources(L) = {}`: nothing upstream holds what the node lacks, so it judges over what it holds. With (b), a pass runs over `sources(L)`, and the empty set is one case of it, not a second entry point. The pass reads the one store (issues/net-one-peer.md step 4) and judges each source by its `known`; built in issues/net-one-peer.md 3h2.
 Unblocks: issues/net-one-peer.md step 3.
 
 ## (f) One serving implementation
