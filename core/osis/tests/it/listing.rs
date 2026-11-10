@@ -694,3 +694,31 @@ fn required_rules_are_one_aspect_under_both_keys() {
     db.commit_with(|w| w.at(t, osis::core::REQUIRED).set(&too_long(rule(nothing, None)))).unwrap();
     assert_eq!(db.at(t, osis::core::REQUIRED).get().unwrap().unwrap().rules[&ak("app:c.0")].retention.history, None);
 }
+
+// spec/commits.md §5 Purge: a request rides a delta on its thing. In a commit that expires it
+// reaches only what expires no later, so a writer refuses one naming more, never writing a purge
+// that drops less than it says; and a write that turns out to write nothing on the thing still
+// places the request there (`purge.0`), never only under another thing's labels.
+#[test]
+fn purge_goes_under_its_thing_and_reaches_what_it_names_spec_commits_5() {
+    let db = db(41);
+    let t = thing(&db);
+    let a = say(&db, t, "secret");
+    for what in [osis::Purge::Commit(a), osis::Purge::Author(db.me())] {
+        let mut w = db.write();
+        w.at(t, untyped(ak("t:other.0"))).set(&s("z")).unwrap();
+        w.at(t, untyped(msg())).purge(what).unwrap();
+        w.expires(osis::Expiry::In(std::time::Duration::from_secs(600)));
+        assert!(matches!(w.commit(), Err(Error::Invalid(_))), "an expiring commit cannot reach a permanent delta");
+    }
+    assert_eq!(bodies(&db, t, &msg()), vec![Body::Held(Some(s("secret")))]);
+    commit_with(&db, |w| w.at(t, untyped(ak("t:other.0"))).set(&s("z")));
+    let u = thing(&db);
+    let mut w = db.write();
+    w.at(t, untyped(ak("t:other.0"))).set(&s("z")).unwrap();
+    w.at(u, untyped(ak("t:other.0"))).set(&s("q")).unwrap();
+    w.at(t, untyped(msg())).purge(osis::Purge::Commit(a)).unwrap();
+    let done = w.commit().unwrap().unwrap();
+    assert!(done.parts().any(|(x, _, _)| x == t), "a delta on the purged thing: {done:?}");
+    assert!(matches!(bodies(&db, t, &msg())[..], [Body::Purged { .. }]));
+}

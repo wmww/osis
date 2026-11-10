@@ -187,7 +187,8 @@ impl<'d> Write<'d> {
 
     /// When this commit expires, in place of what its keys say. A later call replaces it. `commit`
     /// fails `Invalid` when the time is not in the future, or beside what cannot expire: a removal
-    /// from a group, a `delete`, an `end`, or a purge. A commit writing into
+    /// from a group, a `delete`, an `end`, or a purge naming anything but commits expiring no
+    /// later on a thing the write also writes. A commit writing into
     /// a value that expires sooner (a reaction to a disappearing message) expires with that value,
     /// whatever this says: it means nothing once the value is gone.
     pub fn expires(&mut self, e: Expiry) -> &mut Self {
@@ -394,8 +395,6 @@ impl<'d> Write<'d> {
         let Write { ops, keys, actor, created, .. } = self;
         let gk = DynamicAspectKey { ak: Ak::new(GROUP.ak()).unwrap_or_else(|_| unreachable!("a core AK")), schema: Some(crate::keys::core_schema()) };
         let mut b = Built { m: Mutation::new(), added: Vec::new(), removed: Vec::new(), cut: Vec::new() };
-        // things a request names that need a delta to place the commit under their labels
-        let mut placed = Vec::new();
         let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its write".into()));
         for op in ops {
             match op {
@@ -441,19 +440,19 @@ impl<'d> Write<'d> {
                 WriteOp::Retention { tid, key: k, r } => {
                     b.m.retention(tid, key(k)?, r)?;
                 }
-                // each request carries a delta on its thing: a value aspect's removal, the write's
-                // own other deltas there, else `purge.0` (below)
+                // each request carries a delta on its thing: a value aspect's removal, else
+                // `purge.0` (the engine leaves it out of a commit that expires)
                 WriteOp::Purge { tid, key: k } => {
                     let k = key(k)?;
                     if k.signal() {
-                        placed.push(tid);
+                        b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
                     } else {
                         b.m.op(tid, k, PathOp { path: Vec::new(), op: Op::RemoveAspect })?;
                     }
                     b.m.purge(PurgeItem::Aspect { tid, ak: k.ak.clone() });
                 }
                 WriteOp::PurgeCommit { tid, key: k, commit } => {
-                    placed.push(tid);
+                    b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
                     let ak = key(k)?.ak.clone();
                     // a fire's replacements held here go with it: a purge of a message purges
                     // every version of it
@@ -463,7 +462,7 @@ impl<'d> Write<'d> {
                     b.m.purge(PurgeItem::Commit { commit, tid, ak });
                 }
                 WriteOp::PurgeAuthor { tid, key: k, actor } => {
-                    placed.push(tid);
+                    b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
                     b.m.purge(PurgeItem::Author { tid, ak: key(k)?.ak.clone(), actor });
                 }
                 WriteOp::End(tid) => {
@@ -502,14 +501,6 @@ impl<'d> Write<'d> {
                     }
                     b.m.deleting(t);
                 }
-            }
-        }
-        // `purge.0` (fixed retention) carries no expiry, so a request beside a write of the
-        // thing goes under that write: an edit purging the old text of a disappearing message is
-        // one commit (spec/commits.md §5 Purge)
-        for tid in placed {
-            if !b.m.writes_on(&tid) {
-                b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
             }
         }
         b.m.act_as(actor);

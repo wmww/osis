@@ -65,6 +65,17 @@ fn key_actor_record(core: &Core, a: &AspectEntry) -> bool {
 /// request naming a delta that arrives later is honored then.
 pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()> {
     for item in &p.purge {
+        // a request that expires reaches only deltas expiring no later: one naming a held delta
+        // beyond it is refused, never written to drop less than it says (a snapshot has nothing
+        // of its own to take)
+        if let Some(e) = p.expires {
+            for c in named_by(core, item, p.ts) {
+                let Some(m) = core.ix.commits.get(&c).filter(|m| !m.header.kind.is_compaction() && m.aspect(item.tid(), item.ak()).is_some()) else { continue };
+                if m.header.ts < p.ts && reaches(item, &m.header, &c) && m.header.expires.is_none_or(|x| x > e) {
+                    return Err(Error::Clash(format!("a purge in a commit that expires reaches only commits expiring no later, and {c:?} on {} {} expires later or never. Write the purge as a commit of its own", item.tid(), item.ak())));
+                }
+            }
+        }
         // the right once per class and actor, as `apply_request` judges it
         let mut rights: BTreeMap<(u64, Tid), bool> = BTreeMap::new();
         for c in named_by(core, item, p.ts) {
