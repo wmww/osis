@@ -1,0 +1,12 @@
+# A node-sync pass costs several times what it did, per change
+> Summary: The same osis and osis-node tests cost 2-5x the instructions they did at daec95654 (median 1.94x over 275 tests above 2 G instructions), mostly inside `SyncEngine` passes: `usable_keys` runs `ensure_rotated` (decoding `secrets.0` and boxed keysets) on every pass, `must_hold` -> `body_keeps` re-reads and re-verifies held parts per body per pass, and one role change in a 3-node group runs about 125 passes per node (30 full). Scale checks count n against 10n, so a constant factor this size passes them unseen.
+> Priority: normal
+> Tags: node, performance, tests
+
+Measured (test-audit, debug, instruction counts per test run alone, base daec95654 against main 5f1db6e1f): tier 1 5911 -> 12907 G instructions; tests present at both 2969 -> 5846 G. In osis `it`, `SyncEngine::handle` went from 52% to 69% of a binary that grew 3x (about 4x absolute); `ensure_rotated` from 2% to 12%, `secrets_in` 2.5% to 12%, `body_keeps` from under 1.5% to 12%. In osis-node `it` the same paths are about 7% (the debug checks are 29% there: notes/testing.md Tier-1 cost).
+
+- `SyncEngine::usable_keys` (`sync/pass/mod.rs`) calls `uncovered`, which runs `Engine::ensure_rotated` -> `rotation::ensure_rotated_but` -> `blocked_roles_of` -> `secrets_in` / `boxed_keysets` / `stale_at` on every pass of every label: about 95% of `ensure_rotated_but`'s samples come from here, a third of them decoding `secrets.0`.
+- `SyncEngine::must_hold` -> `Engine::body_keeps` -> `retention::bounds::replaced_at` -> `held_parts_at` -> `examine_stored` -> `verify_part`: every pass verifies the signatures of held parts again for each body it judges.
+- `ending::a_fall_judges_again_what_waited_on_the_ended_thing_spec_commits_5`: after one `set_edge` (b made admin of a thing in a 3-node, 1-host group) the next `net.run()` takes 6.6 s in debug; `PassStats` per node: passes 7 -> 136, full 1 -> 35, bodies judged 17 -> 805, entries 46 -> 1456. Something re-dirties labels after each pass until it settles.
+
+Wanted: a pass's cost follows what changed (notes/coordination.md, Fast by construction): keys usable at a head computed once per change of the inputs, not per pass; held parts verified once at ingest; a role change settling in a few passes. A counted check: passes and full passes after one role change in a small group, flat in the group's history and bounded by a small constant.
