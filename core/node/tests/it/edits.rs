@@ -440,6 +440,52 @@ fn listeners_hear_the_original_spec_commits_5() {
     assert_eq!(list(&mut lp, 1, d), vec![(o, Some(v), body("two"))]);
 }
 
+// spec/commits.md §5 Signals (listeners): a version is told only when it is listed of its own
+// before or after; a purge of the fire with its versions, and an expiry ending the fire with them, are
+// each one change of the fire
+#[test]
+fn a_folded_version_ending_with_its_fire_is_not_told_spec_commits_5() {
+    let told = |rx: &std::sync::mpsc::Receiver<Event>, d: Tid| -> Vec<CommitId> { rx.try_iter().filter_map(|e| if let Event::Commits(ch) = e { Some(ch.iter().filter(|x| x.tid == d && x.ak == log()).map(|x| x.id).collect::<Vec<_>>()) } else { None }).flatten().collect() };
+    let (mut lp, d, _) = setup(21);
+    let r = forever();
+    let o = fire(&mut lp, 0, d, r, "one");
+    let v = edit(&mut lp, 0, d, r, "two", o);
+    let rx = lp.peers[0].engine.subscribe();
+    lp.peers[0].engine.watch_commits();
+    purge_commit(&mut lp, 0, d, vec![named(d, v), named(d, o)]);
+    assert_eq!(told(&rx, d), vec![o], "a delete: one change of the fire");
+    let (mut lp, d, _) = setup(22);
+    let t = lp.peers[0].engine.now().0;
+    let mut m = Mutation::new();
+    m.retention(d, &log(), r).unwrap();
+    m.set(d, &log(), &s("one")).unwrap();
+    m.expires_all(WallMs(t + HOUR));
+    let o = lp.peers[0].commit(m).unwrap().unwrap();
+    edit(&mut lp, 0, d, r, "two", o);
+    let rx = lp.peers[0].engine.subscribe();
+    lp.peers[0].engine.watch_commits();
+    lp.advance(HOUR + 1);
+    lp.peers[0].engine.tick().unwrap();
+    assert_eq!(list(&mut lp, 0, d), vec![]);
+    assert_eq!(told(&rx, d), vec![o], "an expiry: one change of the fire");
+    // the newest version ending first: the fire reads the previous, told as its change
+    let (mut lp, d, _) = setup(23);
+    let o = fire(&mut lp, 0, d, r, "one");
+    let t = lp.peers[0].engine.now().0;
+    let mut m = Mutation::new();
+    m.retention(d, &log(), r).unwrap();
+    m.set(d, &log(), &s("two")).unwrap();
+    m.replaces(d, &log(), o).unwrap();
+    m.expires_all(WallMs(t + HOUR));
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let rx = lp.peers[0].engine.subscribe();
+    lp.peers[0].engine.watch_commits();
+    lp.advance(HOUR + 1);
+    lp.peers[0].engine.tick().unwrap();
+    assert_eq!(list(&mut lp, 0, d), vec![(o, None, body("one"))]);
+    assert_eq!(told(&rx, d), vec![o], "a version's expiry: one change of the fire");
+}
+
 // spec/commits.md §5 Signals: the fold survives a restart
 #[test]
 fn the_fold_survives_a_restart_spec_commits_5() {
@@ -523,7 +569,7 @@ impl Mix {
 // writes falling, his writes while out invalid everywhere) and back, expiry and keep bounds passing:
 // after every step the incremental indexes equal a reopen and a rebuild from the commit records
 // (`Engine::check_index`), and at the end a node fed every commit in a shuffled order, some header
-// first and body later, reads the same listing
+// first and body later, reads the same listing, its listener told of each change of what it lists
 #[test]
 fn incremental_equals_rebuilt_and_every_order_reads_alike_spec_commits_5() {
     let (mut folded, mut out_writes) = (0, 0);
@@ -597,25 +643,43 @@ fn incremental_equals_rebuilt_and_every_order_reads_alike_spec_commits_5() {
         }
         // it holds exactly alice's commits: no addenda of its own
         lp.peers[obs].engine.write_addenda(false);
+        // listeners: every arrival tells each commit whose listed form changed, and never a claim
+        // folded under its original (an edit is heard as its original's change)
+        let claims: BTreeSet<CommitId> = all.iter().filter(|c| lp.peers[alice].engine.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.replaces.is_some()))).copied().collect();
+        let rx = lp.peers[obs].engine.subscribe();
+        lp.peers[obs].engine.watch_commits();
+        let feed = |lp: &mut LocalPeer, bytes: &[u8]| {
+            let shown = |lp: &mut LocalPeer| list(lp, obs, d).into_iter().map(|(c, v, b)| (c, (v, b))).collect::<BTreeMap<_, _>>();
+            let alone = |lp: &mut LocalPeer| lp.peers[obs].engine.places(&[(d, log())], CommitFrom::Oldest, usize::MAX).iter().map(|p| p.id).collect::<BTreeSet<CommitId>>();
+            let (before, was_alone) = (shown(lp), alone(lp));
+            let _ = lp.peers[obs].receive(bytes, Vec::new());
+            let (after, is_alone) = (shown(lp), alone(lp));
+            let told: BTreeSet<CommitId> = rx.try_iter().filter_map(|e| if let Event::Commits(ch) = e { Some(ch.iter().filter(|x| x.tid == d && x.ak == log()).map(|x| x.id).collect::<Vec<_>>()) } else { None }).flatten().collect();
+            let changed: BTreeSet<CommitId> = before.keys().chain(after.keys()).filter(|c| before.get(c) != after.get(c)).copied().collect();
+            assert!(changed.is_subset(&told), "seed {seed}: a listed change untold: {changed:?} told {told:?}");
+            // a claim standing alone is any fire (told when its state moves, listed or not)
+            let stray: Vec<&CommitId> = told.difference(&changed).filter(|c| claims.contains(c) && !was_alone.contains(c) && !is_alone.contains(c)).collect();
+            assert!(stray.is_empty(), "seed {seed}: a folded claim told of its own: {stray:?}");
+        };
         let mut late = Vec::new();
         for c in &all {
             let Some(bytes) = lp.peers[alice].engine.commit_bytes(c).unwrap() else { continue };
             if g.below(3) == 0 {
                 let mut bare = osis_commit::CommitBlob::decode(&bytes).unwrap();
                 bare.parts.clear();
-                let _ = lp.peers[obs].receive(&bare.encode(), Vec::new());
+                feed(&mut lp, &bare.encode());
                 late.push(bytes);
             } else {
-                let _ = lp.peers[obs].receive(&bytes, Vec::new());
+                feed(&mut lp, &bytes);
             }
         }
         for b in late {
-            let _ = lp.peers[obs].receive(&b, Vec::new());
+            feed(&mut lp, &b);
         }
         // a body dropped as invalid in passing is fetched again once valid (node-sync's part)
         for c in &all {
             if let Some(bytes) = lp.peers[alice].engine.commit_bytes(c).unwrap() {
-                let _ = lp.peers[obs].receive(&bytes, Vec::new());
+                feed(&mut lp, &bytes);
             }
         }
         lp.peers[obs].engine.reexamine().unwrap();

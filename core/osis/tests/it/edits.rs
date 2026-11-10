@@ -194,7 +194,7 @@ fn a_page_and_a_quote_are_flat_in_edits_spec_commits_5() {
         assert_eq!(part(&q, t, &log()).body, held(&format!("m0e{}", edits - 1)));
         let at_quote = costs::take();
         let n = |cs: &[(&str, std::time::Duration, u64)], k: &str| cs.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
-        let keys = ["listing: body read", "listing: version judged", "listing: commit read"];
+        let keys = ["listing: body read", "listing: version judged", "listing: commit read", "listing: place walked"];
         keys.iter().map(|k| (*k, n(&at_page, k))).chain(keys.iter().map(|k| (*k, n(&at_quote, k)))).collect()
     }
     let small = count(30, 3);

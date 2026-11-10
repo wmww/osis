@@ -702,7 +702,8 @@ impl crate::handle::ReadOnly {
             let shown = move |e: &mut osis_node::Engine, t: &Tid| actor.is_none_or(|a| e.readable_by(&a, t));
             let (mut commits, mut more, mut used, mut from) = (Vec::new(), false, 0usize, q.from.into());
             let mut rel = Relations::default();
-            // a fire's versions: each read as written, on the one aspect `aks` holds
+            // a fire's versions: each read as written, on the one aspect `aks` holds (none when the
+            // caller may not read it: then nothing is walked)
             let versions = match a {
                 Address::Versions(_, _, o) => aks.first().map(|(t, k)| (*t, k.clone(), *o)),
                 _ => None,
@@ -710,12 +711,12 @@ impl crate::handle::ReadOnly {
             'walk: loop {
                 let places = match &versions {
                     Some((t, k, o)) => r.e.version_places(t, k, &o.0, from, 64),
-                    None if matches!(a, Address::Versions(..)) => Vec::new(),
                     None => r.e.places(&aks, from, 64),
                 };
                 let Some(last) = places.last() else { break };
                 from = if q.from.newer() { osis_node::engine::listing::CommitFrom::After(*last) } else { osis_node::engine::listing::CommitFrom::Before(*last) };
                 for p in places {
+                    drop(osis_node::costs::span("listing: place walked"));
                     let row = match &versions {
                         Some((t, k, _)) => {
                             drop(osis_node::costs::span("listing: commit read"));

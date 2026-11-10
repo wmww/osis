@@ -1690,15 +1690,19 @@ impl Core {
     /// judged otherwise now (`Engine::commit_row`), per aspect, from the journal: O(commits
     /// changed), in one place, whichever path changed them. Nothing without a commit watch: a fall of an aspect
     /// would hold every commit of it here.
-    fn commit_changes(&mut self) {
-        if !self.commits_watched {
-            return;
+    fn commit_changes(tx: &mut Tx<'_>) -> Result<()> {
+        if !tx.core.commits_watched {
+            return Ok(());
         }
         let state = |m: &Meta, ai: usize| (m.valid_at(ai), m.dropped.contains_key(&ai), m.stripped.contains(&ai), m.missing.contains(&ai));
-        let mut out: BTreeSet<_> = std::mem::take(&mut self.commits_named).into_iter().collect();
-        for (id, old) in self.ix.commits.before() {
-            let new = self.ix.commits.get(id);
+        let mut out: BTreeSet<_> = std::mem::take(&mut tx.core.commits_named).into_iter().collect();
+        // each changed commit's view (its last if gone) and whether it was held when the
+        // transaction began
+        let mut views: BTreeMap<CommitId, (Arc<View>, bool)> = BTreeMap::new();
+        for (id, old) in tx.core.ix.commits.before() {
+            let new = tx.core.ix.commits.get(id);
             let Some(m) = new.or(old) else { continue };
+            views.insert(*id, (m.view.clone(), old.is_some()));
             for (ai, a) in m.view.aspects.iter().enumerate() {
                 if old.map(|m| state(m, ai)) != new.map(|m| state(m, ai)) {
                     out.insert((a.tid, a.ak.clone(), *id));
@@ -1706,12 +1710,24 @@ impl Core {
             }
         }
         // an honored version reads only through its original, which `edits::settle` names when
-        // the version changed: one that was no fire of its own before either is not told, so a
+        // the version changed: one shown alone neither before nor after is not told, so a
         // listener hears an edit once, under the original
-        let start = self.ix.originals.was_in();
-        let existed: BTreeMap<CommitId, bool> = self.ix.commits.before().iter().map(|(id, old)| (**id, old.is_some())).collect();
-        out.retain(|(t, ak, c)| !edits::unheard(self, c, t, ak, &start, existed.get(c).copied().unwrap_or(true)));
-        self.commits_touched(out.into_iter().collect());
+        let start = tx.core.ix.originals.was_in();
+        let mut told = Vec::with_capacity(out.len());
+        for (t, ak, c) in out {
+            let view = match views.get(&c) {
+                Some((v, existed)) => Some((v.clone(), *existed)),
+                None => tx.core.ix.commits.get(&c).map(|m| (m.view.clone(), true)),
+            };
+            if let Some((v, existed)) = view
+                && edits::unheard(tx, &c, &v, &t, &ak, &start, existed)?
+            {
+                continue;
+            }
+            told.push((t, ak, c));
+        }
+        tx.core.commits_touched(told);
+        Ok(())
     }
 
     /// At the end of a transaction: the things whose `groups_of` answer it changed are told.
@@ -2663,7 +2679,9 @@ impl Engine {
                 tx.core.listed_before.clear();
                 tx.core.killed.clear();
                 if r.is_ok() {
-                    tx.core.commit_changes();
+                    r = r.and_then(|v| Core::commit_changes(&mut tx).map(|_| v));
+                }
+                if r.is_ok() {
                     tx.core.groups_moved();
                 }
                 // every validity change was judged before the index is persisted

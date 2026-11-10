@@ -76,15 +76,22 @@ pub(crate) fn folded(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
 /// `Indexes::originals`' elements a transaction changed, and whether each was in when it began.
 pub(crate) type OriginalsAtStart = std::collections::BTreeMap<((Tid, Ak), (Ts, CommitId)), bool>;
 
-/// Whether a listener need not hear of `c` on `(tid, ak)` this transaction: an honored version now
-/// that was no fire of its own when it began either (new, `existed` false, or folded then: `start`,
-/// `Indexes::originals`' changed elements and whether each was in).
-pub(crate) fn unheard(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak, start: &OriginalsAtStart, existed: bool) -> bool {
-    if !folded(core, c, tid, ak) {
-        return false;
+/// Whether a listener need not hear of `c` (view `v`) on `(tid, ak)` this transaction: a claim no
+/// listing showed of its own when it began (folded, or new: `existed` false) nor shows now (folded,
+/// or freed but not listed: it ended with its original). What changed reads through its
+/// original, which `settle` names. `start`: `Indexes::originals`' changed elements and whether
+/// each was in.
+pub(crate) fn unheard(tx: &mut Tx<'_>, c: &CommitId, v: &View, tid: &Tid, ak: &Ak, start: &OriginalsAtStart, existed: bool) -> Result<bool> {
+    if !durable_signal(ak) || !v.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak && a.replaces.is_some()) {
+        return Ok(false);
     }
-    let Some(m) = core.ix.commits.get(c) else { return false };
-    !existed || !start.get(&((*tid, ak.clone()), (m.view.ts, *c))).copied().unwrap_or(false)
+    let (k, place) = ((*tid, ak.clone()), (v.ts, *c));
+    let now = tx.core.ix.originals.get(&k).is_some_and(|s| s.contains(&place));
+    if existed && start.get(&(k, place)).copied().unwrap_or(now) {
+        return Ok(false);
+    }
+    let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(tid, ak)).filter(|_| now) else { return Ok(true) };
+    Ok(listed(tx, c, ai)?.is_none())
 }
 
 /// Whether commit `o` can be replaced on `(tid, ak)`: it is held and listed there, valid, with no
