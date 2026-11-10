@@ -493,9 +493,10 @@ impl SyncEngine {
 
     /// Forgets the complete-pass sources no longer known here (spec/permissions.md §3): an own
     /// node off the account's roster, an account this node no longer shares anything with. Runs
-    /// when the engine's generation moved (only role commits change what is known).
+    /// when `role_generation` moved (rosters and read secrets change what is known; it also moves
+    /// on every held-set change, issues/derived-state-recomputed.md). O(labels x sources) a run.
     pub(crate) fn prune_pass_sources(&mut self) {
-        let generation = self.engine.core.generation;
+        let generation = self.engine.core.role_generation;
         if self.sources_gen == generation {
             return;
         }

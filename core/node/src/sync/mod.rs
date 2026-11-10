@@ -299,7 +299,7 @@ pub struct SyncEngine {
     /// Per (source, label), the last pass end at that source, as `passes` for hosts; pruned
     /// with `peer_received`.
     pub(crate) peer_passes: BTreeMap<(Tid, LabelId), (u64, u64)>,
-    /// The engine generation `prune_pass_sources` last ran at.
+    /// The role generation `prune_pass_sources` last ran at.
     pub(crate) sources_gen: u64,
     /// What this node holds moved: the shared sets re-judge and send additions (`shared_changed`).
     pub(crate) shared_dirty: bool,

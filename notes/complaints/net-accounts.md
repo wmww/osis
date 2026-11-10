@@ -4,3 +4,4 @@
 - Review: the hostless re-seal test's "stranded report included" was never exercised (a hostless reader is never stranded: stranded is judged at a host walk); a comment claimed coverage no assertion checked.
 - Review gate: rotation_holds_large_spec_crypto_4 seed 377427562097 failed ("a holder ... lacks a box"); it fails the same on main's binary (the known family). The gate stops there, so its sim step was run by hand (15 seeds, all pass).
 - `Net::group` with a holder of the admin's own account (a paired node) fails with `Permission` (it re-edges the account); a node of the admin's account reads by the account, so leave it out of `holders`. A reconnect after `set_online(n, true)` needs `advance(peer_retry_ms)` before entries flow again.
+- Review: a work-count test that writes must expect node-sync's role-keyed passes per write: `role_generation` moves on every ingested commit (issues/derived-state-recomputed.md), despite comments saying "never per write".

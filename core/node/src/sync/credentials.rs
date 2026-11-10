@@ -79,7 +79,8 @@ fn holders_hash(core: &Core, a: &Tid, memo: &mut BTreeMap<Tid, [u8; 32]>, stack:
 impl SyncEngine {
     /// `changed_at` of every held sync ID, stamped where its credentials or who reaches it moved
     /// (issues/net-reconnect.md, Changes). Runs when a role, roster or read secret moved, the set
-    /// of sync IDs changed, or at a start: never per write. O(N) labels and O(edges) over the
+    /// of sync IDs changed, or at a start (`role_generation`, which also moves on every held-set
+    /// change: issues/derived-state-recomputed.md). O(N) labels and O(edges) over the
     /// rosters, memoized per pass; a start or pass that finds nothing changed appends nothing.
     pub(super) fn stamp_changes(&mut self) -> Result<()> {
         self.labels();
