@@ -524,19 +524,31 @@ fn inspect_and_diag_plan_cli_4() {
     s.ok(&["diag"]);
 }
 
-// CLI `chat`, notes/chat.md: a local chat through the commands: post and read, the JSON, a cursor, edit, delete, bad arguments
+// CLI `chat`, notes/chat.md: a local chat through the commands: post and read, the JSON, a cursor, edit (the id stays; kept history in `earlier`), delete, editing off, bad arguments
 #[test]
 fn chat_commands_plan_cli() {
     let s = S::mem();
     let c = s.ok(&["chat", "create", "--name", "room"]).line().to_string();
     let one = s.ok(&["chat", "post", &c, "--from", "ann", "--subject", "head", "body"]).line().to_string();
     let read = s.ok(&["--json", "chat", "read", &c]).out;
-    assert!(read.contains(&format!("\"id\":\"{one}\"")) && read.contains("\"name\":\"ann\"") && read.contains("head\\n\\nbody") && read.contains("\"reply_to\":null") && read.contains("\"cursor\""), "{read}");
+    assert!(read.contains(&format!("\"id\":\"{one}\"")) && read.contains("\"name\":\"ann\"") && read.contains("head\\n\\nbody") && read.contains("\"reply_to\":null") && read.contains("\"edited\":false"), "{read}");
+    let last = read.lines().last().unwrap();
+    let cursor = &last[last.find("\"cursor\":\"").unwrap() + 10..];
+    let cursor = &cursor[..cursor.find('"').unwrap()];
     let two = s.ok(&["chat", "post", &c, "--reply-to", &one, "two"]).line().to_string();
-    assert!(s.ok(&["chat", "read", &c, "--after", &one]).out.contains(&format!("(to {one}): two")));
+    let after = s.ok(&["chat", "read", &c, "--after", cursor]).out;
+    assert!(after.contains(&format!("(to {one}): two")) && !after.contains("body"), "{after}");
     assert_eq!(s.ok(&["chat", "read", &c, "--max", "1"]).out.lines().count(), 2, "a message and the cursor");
-    s.ok(&["chat", "edit", &c, &two, "two!"]);
-    assert!(s.ok(&["chat", "read", &c]).out.contains("(edited): two!"));
+    assert!(s.ok(&["chat", "read", &c, "--before", &two]).out.contains(": head"));
+    assert_eq!(s.ok(&["chat", "edit", &c, &two, "two!"]).line(), two, "the message keeps its id");
+    let read = s.ok(&["chat", "read", &c]).out;
+    assert!(read.contains(&format!("{two} ")) && read.contains(&format!("(to {one}) (edited): two!")), "{read}");
+    assert!(s.ok(&["--json", "chat", "read", &c]).out.contains("\"earlier\":[]"), "edits purge the old text");
+    // an edit arrives after the cursor as its message again
+    let cursor2 = s.ok(&["chat", "read", &c]).out.lines().last().unwrap().strip_prefix("cursor ").unwrap().to_string();
+    s.ok(&["chat", "edit", &c, &two, "two!!"]);
+    let again = s.ok(&["chat", "read", &c, "--after", &cursor2]).out;
+    assert!(again.contains(&format!("{two} ")) && again.contains("two!!") && again.lines().count() == 2, "{again}");
     s.ok(&["chat", "delete", &c, &one]);
     let who = s.ok(&["whoami"]).out;
     let me = who.lines().find_map(|l| l.strip_prefix("me\t")).unwrap().to_string();
@@ -546,6 +558,17 @@ fn chat_commands_plan_cli() {
     assert!(s.ok(&["chat", "participants", &c]).out.contains("Admin"));
     assert_ne!(s.code(&["chat", "create", "--purge", "x"]), 0);
     assert_ne!(s.code(&["chat", "edit", &c, "not/an/id", "x"]), 0);
+    // keep: earlier versions in `earlier`, newest first; off: refused
+    let k = s.ok(&["chat", "create", "--edit", "keep"]).line().to_string();
+    let m = s.ok(&["chat", "post", &k, "one"]).line().to_string();
+    s.ok(&["chat", "edit", &k, &m, "two"]);
+    s.ok(&["chat", "edit", &k, &m, "three"]);
+    let read = s.ok(&["--json", "chat", "read", &k]).out;
+    assert!(read.contains("\"text\":\"three\"") && read.contains("\"earlier\":[\"two\",\"one\"]"), "{read}");
+    let off = s.ok(&["chat", "create", "--edit", "off"]).line().to_string();
+    let m = s.ok(&["chat", "post", &off, "fixed"]).line().to_string();
+    assert_ne!(s.code(&["chat", "edit", &off, &m, "x"]), 0, "editing off");
+    assert!(s.ok(&["chat", "read", &off]).out.contains(": fixed"));
 }
 
 // CLI `clients`, notes/client-port.md §3: `add` prints the actor and the secret once (only the hash stays), `ls` lists them, `rotate` prints a new secret, `rm` removes (again: exit 3); an until not in the future is refused; `--node` needs `--client-secret` and a readable secret file

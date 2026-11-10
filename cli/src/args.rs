@@ -705,8 +705,8 @@ pub enum ChatCmd {
         /// Only older than this message
         #[arg(long, value_name = "ID", conflicts_with = "after")]
         before: Option<String>,
-        /// Only written after this cursor (printed last, as `cursor ID`)
-        #[arg(long, value_name = "ID")]
+        /// Only what arrived here after this cursor (printed last, as `cursor CURSOR`)
+        #[arg(long, value_name = "CURSOR")]
         after: Option<String>,
     },
     /// Changes as they come: first what lies after `--after`, then new ones
@@ -715,10 +715,10 @@ pub enum ChatCmd {
         /// Stop after N
         #[arg(long)]
         count: Option<usize>,
-        #[arg(long, value_name = "ID")]
+        #[arg(long, value_name = "CURSOR")]
         after: Option<String>,
     },
-    /// Replaces one's own message
+    /// Replaces one's own message (its id stays)
     Edit { chat: String, id: String, text: String },
     /// Sends one's own undelivered message again
     Resend { chat: String, id: String },

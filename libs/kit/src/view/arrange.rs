@@ -176,9 +176,9 @@ fn outline(cx: &Cx, t: Tid, mut shape: Shape) -> Result<Block> {
     )
 }
 
-/// A thing's rows of a stream, newest first: its facets', or one entry at its change time if none
-/// expands it.
-fn stream_rows(cx: &Reader, t: Tid, before: Option<u64>, n: usize) -> Vec<Entry> {
+/// A thing's rows of a stream, newest first by `sort_key`: its facets', or one entry at its change
+/// time if none expands it; at most `n`, those sorting before `before` when given.
+fn stream_rows(cx: &Reader, t: Tid, before: Option<&str>, n: usize) -> Vec<Entry> {
     let mut out = Vec::new();
     for f in cx.registry.facets.iter() {
         if f.applies(cx, t).unwrap_or(false) {
@@ -187,10 +187,9 @@ fn stream_rows(cx: &Reader, t: Tid, before: Option<u64>, n: usize) -> Vec<Entry>
         }
     }
     if out.is_empty() && let Ok(s) = cx.summary(t) {
-        let time = cx.changed(t).ok().flatten();
-        if before.is_none_or(|b| time.unwrap_or(0) < b) {
-            let mut e = Entry::of(t, &s);
-            e.time = time;
+        let mut e = Entry::of(t, &s);
+        e.time = cx.changed(t).ok().flatten();
+        if before.is_none_or(|b| sort_key(&e).as_str() < b) {
             out.push(e);
         }
     }
@@ -202,15 +201,21 @@ fn head(cx: &Reader, t: Tid) -> Result<Rc<Vec<Entry>>> {
     cx.memo(("stream head", t), |r, &(_, t)| Ok(stream_rows(r, t, None, STREAM_HEAD)))
 }
 
-/// A stream row's place: sorts by time, then key.
-fn sort_key(e: &Entry) -> String {
+/// A stream row's place: sorts by time, then key. A facet's rows must sort so newest first
+/// (`Facet::stream`).
+pub fn sort_key(e: &Entry) -> String {
     format!("{:020}/{}", e.time.unwrap_or(0), e.key)
 }
 
+/// A sort key's time and entry key.
+pub fn split_sort_key(k: &str) -> Option<(u64, &str)> {
+    let (t, key) = k.split_once('/')?;
+    Some((t.parse().ok()?, key))
+}
+
 /// Rows of `things` merged oldest first. Heads cover what is near the end; deeper a thing is read
-/// past the anchor directly (its rows there are in no other page's way).
+/// past the anchor directly, one page (its rows there are in no other page's way).
 pub fn stream_page(cx: &Reader, things: &[Tid], at: &At, n: usize) -> Result<Page<Entry>> {
-    let time_of = |k: &str| k.split('/').next().and_then(|t| t.parse::<u64>().ok());
     let mut rows: Vec<(String, Entry)> = Vec::new();
     let mut more = false;
     match at {
@@ -226,28 +231,17 @@ pub fn stream_page(cx: &Reader, things: &[Tid], at: &At, n: usize) -> Result<Pag
             rows.drain(..cut);
         }
         At::Before(k, _) => {
-            let before = time_of(k).map(|t| t.saturating_add(1));
             for t in things {
                 let h = head(cx, *t)?;
-                let older = h.iter().rev().find(|e| sort_key(e) < *k);
-                let covered = h.len() < STREAM_HEAD || h.last().is_some_and(|e| sort_key(e) < *k) && older.is_some() && h.iter().filter(|e| sort_key(e) < *k).count() >= n;
-                if covered {
-                    more |= h.len() >= STREAM_HEAD || h.iter().filter(|e| sort_key(e) < *k).count() > n;
+                let older = h.iter().filter(|e| sort_key(e) < *k).count();
+                // the head holds a page past the anchor, or all there is
+                if h.len() < STREAM_HEAD || older >= n {
+                    more |= older > n || h.len() >= STREAM_HEAD;
                     rows.extend(h.iter().filter(|e| sort_key(e) < *k).map(|e| (sort_key(e), e.clone())));
                 } else {
-                    // rows sharing the anchor's millisecond and past it are read too: ask for more
-                    let mut m = n + 1;
-                    loop {
-                        let got = stream_rows(cx, *t, before, m);
-                        let done = got.len() < m;
-                        let older: Vec<_> = got.into_iter().filter(|e| sort_key(e) < *k).collect();
-                        if done || older.len() > n {
-                            more |= older.len() > n;
-                            rows.extend(older.into_iter().map(|e| (sort_key(&e), e)));
-                            break;
-                        }
-                        m = m.saturating_mul(4);
-                    }
+                    let got = stream_rows(cx, *t, Some(k), n + 1);
+                    more |= got.len() > n;
+                    rows.extend(got.into_iter().map(|e| (sort_key(&e), e)));
                 }
             }
             rows.sort_by(|a, b| a.0.cmp(&b.0));

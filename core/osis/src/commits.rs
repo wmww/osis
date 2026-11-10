@@ -378,7 +378,7 @@ impl ReadOnly {
     }
 
     fn target(&self, scope: &Scope, redo: bool) -> Result<Option<Commit>> {
-        self.track_commits(&Address::Writes(scope.clone()))?;
+        self.track_commits(&Address::Writes(scope.clone()), None)?;
         if let Source::Node(r) = self.source_scope(Some(scope))? {
             let m = if redo { crate::port::method::REDO_TARGET } else { crate::port::method::UNDO_TARGET };
             let v = r.call(m, vec![crate::port::codec::scope_v(scope)])?;
@@ -435,7 +435,7 @@ impl ReadOnly {
 
     /// Commit `id` as listed at `a` now, wherever it is read; `None` when it is not listed there.
     pub(crate) fn listed_commit(&self, a: &Address, id: CommitId) -> Result<Option<Commit>> {
-        self.track_commits(a)?;
+        self.track_commits(a, Some(id))?;
         match self.source_address(a)? {
             Source::Node(r) => self.node_listed_commit(&r, a, id),
             Source::Local => self.commit_told_here(a, id, None),
@@ -637,7 +637,12 @@ impl<K: SignalKey> AspectRef<'_, K> {
 impl crate::handle::ReadOnly {
     /// A page of the commits listed at `a`, wherever it is read.
     pub(crate) fn listing(&self, a: &Address, q: &CommitQuery) -> Result<CommitPage> {
-        self.track_commits(a)?;
+        // a fire's versions change exactly when it is told
+        let only = match a {
+            Address::Versions(_, _, id) => Some(*id),
+            _ => None,
+        };
+        self.track_commits(a, only)?;
         match self.source_address(a)? {
             Source::Node(r) => self.node_listing(&r, a, q),
             Source::Local => self.listing_here(a, q, usize::MAX),

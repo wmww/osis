@@ -1,16 +1,13 @@
 //! `chat:msg~0`: a signal of messages kept forever; entries, a composer, replies. The only file that names
-//! osis_chat (its keys and edit rules). The sender's name is the profile's `name.0`, else `OSIS_CHAT_NAME`.
+//! osis_chat (its keys and rules). The sender's name is the profile's `name.0`, else `OSIS_CHAT_NAME`.
 
-use osis_kit::view::arrange::stream;
+use osis_kit::view::arrange::{split_sort_key, stream};
 use osis_kit::view::{Act, Action, Block, Chip, Composer, ComposerField, Cx, Do, Entry, Facet, Icon, Input, Mark, Section, Summary};
 use osis_kit::store::Reader;
 use crate::schema::{DRAFT, REPLY_TO};
 use osis::core::NAME;
-use osis::{Body, CommitPos, Osis, Result, Tid};
+use osis::{Body, Commit, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, Osis, ReadOnly, Result, Tid, Time};
 use osis_chat::schema::{MSG, SETTINGS};
-use osis_chat::{Message, Timeline};
-use std::collections::BTreeMap;
-use std::rc::Rc;
 
 pub struct LogFacet;
 pub static FACET: LogFacet = LogFacet;
@@ -20,25 +17,30 @@ const ID: &str = "log";
 /// One message as a stream shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line {
-    pub id: CommitPos,
+    /// The message's (an edited one's original's).
+    pub id: CommitId,
+    /// Its place: where it sorts.
+    pub pos: CommitPos,
     /// The name it was sent under, else the start of the sender's tid.
     pub who: String,
-    /// UTC ms.
+    /// UTC ms, as shown.
     pub time: u64,
-    /// The text (`<deleted>` and the like for what has none here).
+    /// The newest text (`<deleted>` and the like for what has none here).
     pub text: String,
     /// The answered message: its sender and first line, or its id when not here.
-    pub reply_to: Option<(CommitPos, String)>,
+    pub reply_to: Option<(CommitId, String)>,
     pub mine: bool,
     pub edited: bool,
 }
 
-/// Adds `n` messages to the chat `c`, for the harness (`ViewType::grow`). No quotes: a quote walks
-/// history to its original until signal edits land, the one cost that grows (fast-design step 9).
+/// Adds `n` messages to the chat `c`, for the harness (`ViewType::grow`), each answering the
+/// oldest message: a quote reaches back the whole history and costs one read of it.
 #[allow(clippy::expect_used)]
 pub fn grow(d: &osis_kit::store::Data, c: Tid, n: usize) {
+    let page = d.db.at(c, MSG).fired(&CommitQuery { from: CommitFrom::Oldest, limit: Some(1), ..Default::default() }).expect("grow: the oldest");
+    let first = page.commits.first().map(|k| k.stamp.id);
     for i in 0..n {
-        send(&d.db, c, "", &format!("grown {i}"), None).expect("grow: a message");
+        send(&d.db, c, "", &format!("grown {i}"), first).expect("grow: a message");
     }
 }
 
@@ -62,8 +64,8 @@ pub fn my_name(db: &Osis) -> Result<Option<String>> {
     Ok(own.or_else(|| std::env::var("OSIS_CHAT_NAME").ok().filter(|n| !n.trim().is_empty())))
 }
 
-/// Sends `text` (a `subject` first, as the CLI's `--subject`), answering `reply_to`.
-pub fn send(db: &Osis, c: Tid, subject: &str, text: &str, reply_to: Option<CommitPos>) -> Result<CommitPos> {
+/// Sends `text` (a `subject` first, as the CLI's `--subject`), answering `reply_to`: its id.
+pub fn send(db: &Osis, c: Tid, subject: &str, text: &str, reply_to: Option<CommitId>) -> Result<CommitId> {
     let (s, t) = (subject.trim(), text.trim());
     let text = match (s.is_empty(), t.is_empty()) {
         (_, true) if s.is_empty() => return Err(osis::Error::Invalid("nothing to send".into())),
@@ -72,8 +74,8 @@ pub fn send(db: &Osis, c: Tid, subject: &str, text: &str, reply_to: Option<Commi
         (false, false) => format!("{s}\n\n{t}"),
     };
     let mut w = db.write();
-    w.at(c, MSG).fire(&osis_chat::schema::Message { text, name: my_name(db)?, reply_to: reply_to.map(|r| r.to_string()), edit: None })?;
-    Ok(w.commit()?.ok_or_else(|| osis::Error::Invalid("nothing written".into()))?.pos())
+    w.at(c, MSG).fire(&osis_chat::schema::Message { text, name: my_name(db)?, reply_to: reply_to.map(|r| r.to_string()) })?;
+    Ok(w.commit()?.ok_or_else(|| osis::Error::Invalid("nothing written".into()))?.stamp.id)
 }
 
 fn text_of(b: &Body<osis_chat::schema::Message>) -> String {
@@ -85,126 +87,56 @@ fn text_of(b: &Body<osis_chat::schema::Message>) -> String {
     }
 }
 
-fn who(m: &Message) -> String {
-    let name = match &m.body {
+fn who(k: &Commit, b: &Body<osis_chat::schema::Message>) -> String {
+    let name = match b {
         Body::Held(Some(x)) => x.name.clone(),
         _ => None,
     };
-    name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| m.sender.to_string().chars().take(8).collect())
+    name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| k.stamp.actor.to_string().chars().take(8).collect())
 }
 
-/// A message as a reply names it: its sender and first line.
-pub fn quote(m: &Message) -> String {
-    quote_of(&who(m), &text_of(&m.body))
+/// Message `id` as a reply names it, its sender and first line: `None` when it is not listed here.
+/// One commit read, however far back it is.
+fn quote(db: &ReadOnly, c: Tid, id: CommitId) -> Result<Option<String>> {
+    let Some(k) = db.at(c, MSG).commit(id)? else { return Ok(None) };
+    Ok(k.at(c, MSG).map(|p| format!("{}: {}", who(&k, &p.body), text_of(&p.body).lines().next().unwrap_or(""))))
 }
 
-fn quote_of(who: &str, text: &str) -> String {
-    format!("{who}: {}", text.lines().next().unwrap_or(""))
+/// A quote in a view: its own node, so it moves with the quoted message alone.
+fn quote_memo(r: &Reader, c: Tid, id: CommitId) -> Result<std::rc::Rc<Option<String>>> {
+    r.memo(("quote", c, id), |r, &(_, c, id)| quote(&r.db, c, id))
 }
 
-/// Messages read per step of the walk through a chat's history (a performance switch: the walk
-/// is cached per step; 1 caches each message, infinity re-reads the history per message).
-const WALK_STEP: usize = 64;
-
-/// One step of the walk from the newest message back: the messages it reached, and the walker to go on
-/// from. The walker carries the edits seen so far, which older steps need; a step reruns only when
-/// what it read differs, and is asked for only as deep as a window looks.
-#[derive(Clone, PartialEq)]
-struct Walk {
-    timeline: Timeline,
-    lines: Vec<Line>,
-    /// The ids answered here that this step does not hold, for the quote memo.
-    further: Vec<CommitPos>,
-    more: bool,
-}
-
-impl std::fmt::Debug for Walk {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Walk").field("lines", &self.lines.len()).finish()
+/// Up to `n` messages from `from`, newest first; `quote` names an answered message. One page
+/// read: its cost is the page's, however long the chat.
+fn lines(db: &ReadOnly, c: Tid, from: CommitFrom, n: usize, mut quote: impl FnMut(CommitId) -> Result<Option<String>>) -> Result<Vec<Line>> {
+    let page = db.at(c, MSG).fired(&CommitQuery { from, limit: Some(n), kinds: vec![CommitKind::Content], ..Default::default() })?;
+    let me = db.me();
+    let mut out = Vec::with_capacity(page.commits.len());
+    for k in &page.commits {
+        let Some(p) = k.at(c, MSG) else { continue };
+        let reply_to = match &p.body {
+            Body::Held(Some(m)) => m.reply(),
+            _ => None,
+        };
+        let reply_to = match reply_to {
+            Some(r) => Some((r, quote(r)?.unwrap_or_else(|| r.to_string()))),
+            None => None,
+        };
+        out.push(Line { id: k.stamp.id, pos: k.pos(), who: who(k, &p.body), time: k.stamp.shown().0, text: text_of(&p.body), reply_to, mine: k.stamp.actor == me, edited: p.edited.is_some() });
     }
-}
-
-fn walk(r: &Reader, c: Tid, step: usize) -> Result<Rc<Walk>> {
-    r.memo(("walk", c, step), walk_step)
-}
-
-fn walk_step(r: &Reader, &(_, c, step): &(&'static str, Tid, usize)) -> Result<Walk> {
-    let mut timeline = match step.checked_sub(1) {
-        None => Timeline::new(&r.db, c)?,
-        Some(p) => walk(r, c, p)?.timeline.clone(),
-    };
-    let page = timeline.older(&r.db, WALK_STEP)?;
-    let me = r.db.me();
-    let shown: BTreeMap<CommitPos, &Message> = page.messages.iter().map(|m| (m.id, m)).collect();
-    let further: Vec<CommitPos> = page.messages.iter().filter_map(Message::reply_to).filter(|p| !shown.contains_key(p)).collect();
-    let lines = page
-        .messages
-        .iter()
-        .map(|m| line_of(m, me, |p| shown.get(&p).map_or_else(String::new, |q| quote(q))))
-        .collect();
-    Ok(Walk { timeline, lines, further, more: page.more })
-}
-
-/// The answered messages of step `step` further back than the step holds. This walks history to the
-/// oldest of them: the cost that grows until signal edits land (fast-design step 9); the
-/// harness grows chats without quotes.
-fn quotes_of(r: &Reader, c: Tid, step: usize) -> Result<Rc<BTreeMap<CommitPos, String>>> {
-    r.memo(("quotes", c, step), |r, &(_, c, step)| {
-        let w = walk(r, c, step)?;
-        if w.further.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        Ok(w.timeline.find_all(&r.db, &w.further)?.iter().map(|(k, m)| (*k, quote(m))).collect())
-    })
-}
-
-/// Up to `n` messages, newest first, older than wall ms `before` when given.
-fn lines(r: &Reader, c: Tid, before: Option<u64>, n: usize) -> Result<Vec<Line>> {
-    let mut out = Vec::new();
-    let mut step = 0;
-    loop {
-        let w = walk(r, c, step)?;
-        let quotes = if w.further.is_empty() { None } else { Some(quotes_of(r, c, step)?) };
-        for l in &w.lines {
-            if before.is_some_and(|b| l.time >= b) {
-                continue;
-            }
-            let mut l = l.clone();
-            if let Some((p, q)) = &mut l.reply_to && q.is_empty() {
-                *q = quotes.as_ref().and_then(|m| m.get(p)).cloned().unwrap_or_else(|| p.to_string());
-            }
-            out.push(l);
-            if out.len() >= n {
-                return Ok(out);
-            }
-        }
-        if !w.more {
-            return Ok(out);
-        }
-        step += 1;
-    }
-}
-
-/// A message as a stream shows it, `quote` the answered message's text.
-fn line_of(m: &Message, me: Tid, quote: impl FnOnce(CommitPos) -> String) -> Line {
-    let reply_to = m.reply_to().map(|p| (p, quote(p)));
-    Line { id: m.id, who: who(m), time: m.time.0, text: text_of(&m.body), reply_to, mine: m.sender == me, edited: m.edited.is_some() }
+    Ok(out)
 }
 
 /// The newest `n` messages, oldest first, read outside a view.
 pub fn recent(db: &osis::ReadOnly, c: Tid, n: usize) -> Result<Vec<Line>> {
-    let mut timeline = Timeline::new(db, c)?;
-    let mut messages = timeline.older(db, n)?.messages;
-    messages.reverse();
-    let shown: BTreeMap<CommitPos, &Message> = messages.iter().map(|m| (m.id, m)).collect();
-    let further: Vec<CommitPos> = messages.iter().filter_map(Message::reply_to).filter(|r| !shown.contains_key(r)).collect();
-    let further = timeline.find_all(db, &further)?;
-    let me = db.me();
-    Ok(messages.iter().map(|m| line_of(m, me, |r| shown.get(&r).copied().or_else(|| further.get(&r)).map_or_else(|| r.to_string(), quote))).collect())
+    let mut out = lines(db, c, CommitFrom::Newest, n, |r| quote(db, c, r))?;
+    out.reverse();
+    Ok(out)
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct Reply(String, Option<CommitPos>);
+struct Reply(String, Option<CommitId>);
 impl Action for Reply {
     fn run(&self, act: &Act, _: &Input) -> Result<()> {
         match self.1 {
@@ -220,7 +152,7 @@ fn field(node: &str, name: &str) -> String {
 }
 
 /// The answered message of the node, if a valid one.
-fn reply_of(cx: &Reader, node: &str) -> Result<Option<CommitPos>> {
+fn reply_of(cx: &Reader, node: &str) -> Result<Option<CommitId>> {
     Ok(cx.state(REPLY_TO, node)?.and_then(|s| s.parse().ok()))
 }
 
@@ -257,10 +189,11 @@ fn entry_of(c: Tid, s: &Summary, l: &Line) -> Entry {
     if l.edited {
         head.push_str(" · edited");
     }
-    e.key = format!("{c}/{}", l.id);
+    // its place's text sorts as places do: rows of one time sort as `fired` pages them
+    e.key = format!("{c}/{}", l.pos);
     e.author = Some(head);
     e.text = l.text.clone();
-    e.time = Some(l.time);
+    e.time = Some(l.pos.at().0);
     e.quote = l.reply_to.as_ref().map(|(_, q)| q.clone());
     e.raised = l.mine;
     e
@@ -295,8 +228,7 @@ impl Facet for LogFacet {
         blocks.push(list);
         let mut foot = Vec::new();
         if let Some(r) = reply.filter(|_| cx.config().get("composer") != Some("none")) {
-            // walks to the message: the quote cost named at `quotes_of`
-            let quoted = (*cx.memo(("reply quote", t, r), |r, &(_, t, p)| Ok(osis_chat::find(&r.db, t, &p)?.as_ref().map(quote)))?).clone();
+            let quoted = (*quote_memo(cx, t, r)?).clone();
             let what = format!("Replying to {}", quoted.unwrap_or_else(|| r.to_string()));
             foot.push(Block::Line(what));
             foot.push(Block::Chips(vec![Chip::action(Icon::Back, "Don't reply", Do::new(Reply(node.clone(), None)))]));
@@ -312,14 +244,24 @@ impl Facet for LogFacet {
         }
         Ok(Section { blocks, foot })
     }
-    fn stream(&self, cx: &Reader, t: Tid, before: Option<u64>, n: usize, out: &mut Vec<Entry>) -> Result<()> {
+    fn stream(&self, cx: &Reader, t: Tid, before: Option<&str>, n: usize, out: &mut Vec<Entry>) -> Result<()> {
+        let mine = format!("{t}/");
+        let from = match before.map(split_sort_key) {
+            None => CommitFrom::Newest,
+            Some(None) => return Ok(()),
+            Some(Some((ms, key))) => match key.strip_prefix(&mine).and_then(|p| p.parse::<CommitPos>().ok()) {
+                Some(p) => CommitFrom::Before(p),
+                // another thing's row: this chat's rows of its time sort all before it or all after
+                None => CommitFrom::Before(CommitPos::time(Time(if mine.as_str() < key { ms.saturating_add(1) } else { ms }))),
+            },
+        };
         let s = cx.summary(t)?;
-        out.extend(lines(cx, t, before, n)?.iter().map(|l| entry_of(t, &s, l)));
+        out.extend(lines(&cx.db, t, from, n, |r| Ok((*quote_memo(cx, t, r)?).clone()))?.iter().map(|l| entry_of(t, &s, l)));
         Ok(())
     }
     fn stream_row(&self, cx: &Cx, e: &mut Entry) -> Result<()> {
-        if let Some(pos) = e.key.rsplit('/').next().and_then(|p| p.parse::<CommitPos>().ok()) {
-            e.actions = vec![Chip::action(Icon::Back, "Reply", Do::new(Reply(cx.path(), Some(pos))))];
+        if let Some(id) = e.key.rsplit('/').next().and_then(|p| p.parse::<CommitId>().ok()) {
+            e.actions = vec![Chip::action(Icon::Back, "Reply", Do::new(Reply(cx.path(), Some(id))))];
         }
         Ok(())
     }

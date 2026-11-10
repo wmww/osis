@@ -1,7 +1,7 @@
 //! A real thin client over the client port (no sim: it needs a running node). spec: none (notes/client-port.md).
 use osis_chat::*;
 use super::{leave, participants};
-use osis::{Address, Body, CommitEvent, CommitPos, MemStore, Osis, Role, Runtime, Store, SyncScope};
+use osis::{Address, Body, CommitEvent, CommitFrom, CommitId, CommitQuery, MemStore, Osis, Role, Runtime, Store, SyncScope};
 use std::future::Future;
 use std::sync::mpsc::channel;
 use std::task::{Context, Poll, Waker};
@@ -33,16 +33,17 @@ fn block_on<F: Future>(f: F) -> F::Output {
 }
 
 fn newest_text(db: &Osis, c: osis::Tid) -> Option<String> {
-    match Timeline::new(db, c).unwrap().older(db, 1).unwrap().messages.pop()?.body {
+    let page = db.at(c, schema::MSG).fired(&CommitQuery { from: CommitFrom::Newest, limit: Some(1), ..Default::default() }).unwrap();
+    match page.commits.first()?.at(c, schema::MSG)?.body {
         Body::Held(Some(m)) => Some(m.text),
         b => Some(format!("{b:?}")),
     }
 }
 
-fn post(db: &Osis, c: osis::Tid, text: &str) -> osis::Result<CommitPos> {
+fn post(db: &Osis, c: osis::Tid, text: &str) -> osis::Result<CommitId> {
     let mut w = db.write();
-    w.at(c, schema::MSG).fire(&schema::Message { text: text.into(), name: None, reply_to: None, edit: None })?;
-    Ok(w.commit()?.unwrap().pos())
+    w.at(c, schema::MSG).fire(&schema::Message { text: text.into(), name: None, reply_to: None })?;
+    Ok(w.commit()?.unwrap().stamp.id)
 }
 
 // notes/client-port.md §3: an app on a participant's node as a thin client: reads pages and a watch through the port; with write of its own it posts under its own actor; a reader may not; its own edit works
@@ -74,7 +75,7 @@ fn thin_client_reads_watches_posts_spec_client_port() {
     let _w = app.at(c, schema::MSG).on_fire(move |_, e| drop(tx.send(e))).unwrap();
     let second = post(&n, c, "second").unwrap();
     let got = rx.recv_timeout(W).unwrap();
-    assert!(matches!(&got, CommitEvent::Commit { commit: Some(k), .. } if k.pos() == second), "{got:?}");
+    assert!(matches!(&got, CommitEvent::Commit { commit: Some(k), .. } if k.stamp.id == second), "{got:?}");
     assert!(post(&app, c, "a reader").is_err());
     n.grant(c, actor, Role::Write, Default::default()).unwrap();
     let end = Instant::now() + W;
@@ -85,9 +86,9 @@ fn thin_client_reads_watches_posts_spec_client_port() {
         }
         std::thread::sleep(Duration::from_millis(5));
     };
-    let m = find(&n, c, &mine).unwrap().unwrap();
-    assert_eq!(m.sender, actor, "a client is its own sender");
-    edit(&app, c, &find(&app, c, &mine).unwrap().unwrap(), "fixed").unwrap();
+    let m = n.at(c, schema::MSG).commit(mine).unwrap().unwrap();
+    assert_eq!(m.stamp.actor, actor, "a client is its own sender");
+    edit(&app, c, mine, "fixed").unwrap();
     assert_eq!(newest_text(&n, c).as_deref(), Some("fixed"));
     // the node gone: a participant list says so, and `leave` acts on no empty answer
     net.partition("app", "n");

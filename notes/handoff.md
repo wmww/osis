@@ -15,7 +15,6 @@ Signal edits: reuse the existing edit machinery rather than add a second mechani
 - **Listener API** (notes/listener-design.md): steps 1-4 built. Left: 5 (path listeners), 6 (sessions follow every write), 7 (callers), 8 (node-state granularity, an app session with Tess).
 - **Account signing** (issues/account-signing.md): steps 1 and 4 built. Step 2 open with Tess (covered commits: keep listing everything; per-session ranges studied with header forgetting). Next: 3 (spec), 5, 6.
 - **Settings** (issues/settings.md, decided with Tess): account and node settings as ordinary aspects on private things in home; the design to reach for whenever persistent settings are needed, and bespoke settings systems get cut over to it. Not urgent. Build after account signing step 6, which moves node data under D's home label: reconcile the two first.
-- **Signal edits** (issues/signal-edits.md, tess-call): osis checks an edit claim (same author, original valid), removing chat's last shared rule.
 - **Forgetting compacted headers** (notes/growth.md row 1): conflicts with removal lists naming commit IDs; study a per-session counter range for frontiers with it.
 - Kestrel's: network rework (issues/net-rework.md), then data that lives while its keepers are connected (issues/connection-lived-data.md).
 

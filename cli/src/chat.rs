@@ -1,5 +1,5 @@
-//! `osis chat`: chats over plain osis calls on schema/chat.osis, with osis-chat's creation and edit
-//! rules (notes/chat.md).
+//! `osis chat`: chats over plain osis calls on schema/chat.osis, with osis-chat's creation, edit
+//! and arrival rules (notes/chat.md).
 
 use crate::args::ChatCmd;
 use crate::Ctx;
@@ -7,18 +7,18 @@ use crate::cmd::{deliver, parse_role};
 use crate::json::J;
 use crate::{exit, parse_dur, usage};
 use osis::core::REQUIRED;
-use osis::{Body, Commit, CommitEvent, CommitKind, CommitPos, GrantOpts, HolderKind, LinkOpts, Osis, PurgeBy, Role, SetRoleOpts, Tid};
+use osis::{Body, Commit, CommitEvent, CommitFrom, CommitId, CommitKind, CommitQuery, GrantOpts, HolderKind, LinkOpts, Osis, PurgeBy, ReadOnly, Role, SetRoleOpts, Tid};
 use osis_chat::schema::{self, EditMode, MSG, SETTINGS};
-use osis_chat::{Message, Options, Timeline};
+use osis_chat::{Cursor, Options};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, mpsc};
 
-fn id(s: &str) -> anyhow::Result<CommitPos> {
-    Ok(s.parse::<CommitPos>()?)
+fn id(s: &str) -> anyhow::Result<CommitId> {
+    Ok(s.parse::<CommitId>()?)
 }
 
-fn opt_id(i: Option<&CommitPos>) -> J {
-    J::opt(i.map(|i| J::str(i.to_string())))
+fn opt_str(s: Option<String>) -> J {
+    J::opt(s.map(J::str))
 }
 
 /// A body's state word and its text.
@@ -28,20 +28,6 @@ fn state(b: &Body<schema::Message>) -> (&'static str, &str) {
         Body::Held(None) | Body::TooLarge { .. } => ("odd", ""),
         Body::Purged { .. } => ("deleted", ""),
         Body::NotFetched => ("not-fetched", ""),
-    }
-}
-
-fn name_of(b: &Body<schema::Message>) -> Option<String> {
-    match b {
-        Body::Held(Some(m)) => m.name.clone(),
-        _ => None,
-    }
-}
-
-fn reply_of(b: &Body<schema::Message>) -> Option<CommitPos> {
-    match b {
-        Body::Held(Some(m)) => m.reply_to.as_deref().and_then(|r| r.parse().ok()),
-        _ => None,
     }
 }
 
@@ -64,74 +50,77 @@ fn deleted_by(b: &Body<schema::Message>) -> J {
     })
 }
 
-fn message_line(json: bool, m: &Message) -> String {
-    let (s, t) = state(&m.body);
-    let name = name_of(&m.body);
-    let reply_to = m.reply_to();
-    if json {
-        return J::obj([
-            ("id", J::str(m.id.to_string())),
-            ("sender", J::tid(m.sender)),
-            ("name", J::opt(name.map(J::str))),
-            ("time", J::int(m.time.0)),
-            ("state", J::str(s)),
-            ("text", J::str(t)),
-            ("deleted_by", deleted_by(&m.body)),
-            ("reply_to", opt_id(reply_to.as_ref())),
-            ("edited", J::Bool(m.edited.is_some())),
-            ("earlier", J::Arr(m.earlier.iter().map(|e| J::str(e.1.text.clone())).collect())),
-            ("valid", J::Bool(m.valid)),
-        ])
-        .text();
+/// The earlier versions of an edited message whose text is here, newest first: the chat keeps
+/// edit history, or another node's edit has not purged it here yet.
+fn earlier(db: &ReadOnly, c: Tid, k: &Commit, newest: osis::CommitPos) -> anyhow::Result<Vec<String>> {
+    let (mut out, mut from) = (Vec::new(), CommitFrom::Newest);
+    loop {
+        let p = db.at(c, MSG).versions(k.stamp.id, &CommitQuery { from, kinds: vec![CommitKind::Content], ..Default::default() })?;
+        out.extend(p.commits.iter().filter(|v| v.pos() != newest).filter_map(|v| match v.at(c, MSG)?.body {
+            Body::Held(Some(m)) => Some(m.text),
+            _ => None,
+        }));
+        match p.commits.last() {
+            Some(l) if p.more => from = CommitFrom::Before(l.pos()),
+            _ => return Ok(out),
+        }
     }
-    let reply = reply_to.map_or_else(String::new, |r| format!(" (to {r})"));
-    let edited = if m.edited.is_some() { " (edited)" } else { "" };
-    let bad = if m.valid { "" } else { " (not delivered)" };
-    format!("{} {} {}{reply}{edited}{bad}: {}", m.id, who(m.sender, name.as_ref()), m.time.0, shown(&m.body))
 }
 
-/// One message commit as a watch hears it, with the original it honestly edits.
-fn commit_line(db: &Osis, c: Tid, json: bool, k: &Commit) -> Option<String> {
-    let part = k.at(c, MSG).filter(|_| k.kind == CommitKind::Content)?;
-    let of = osis_chat::edit_of(db, c, k).ok().flatten();
+/// One message as `fired` lists it (under its id, its newest text): a line of `read` and of
+/// `watch` alike. `None`: no message there.
+fn message_line(db: &ReadOnly, c: Tid, json: bool, k: &Commit) -> anyhow::Result<Option<String>> {
+    let Some(part) = k.at(c, MSG).filter(|_| k.kind == CommitKind::Content) else { return Ok(None) };
     let (s, t) = state(&part.body);
-    let (name, reply_to, time) = (name_of(&part.body), reply_of(&part.body), k.stamp.shown().0);
+    let (name, reply_to) = match &part.body {
+        Body::Held(Some(m)) => (m.name.clone(), m.reply()),
+        _ => (None, None),
+    };
+    let earlier = match part.edited {
+        Some(newest) => earlier(db, c, k, newest)?,
+        None => Vec::new(),
+    };
+    let (sender, time) = (k.stamp.actor, k.stamp.shown().0);
     if json {
-        return Some(
+        return Ok(Some(
             J::obj([
-                ("id", J::str(k.pos().to_string())),
-                ("sender", J::tid(k.stamp.actor)),
-                ("name", J::opt(name.map(J::str))),
+                ("id", J::str(k.stamp.id.to_string())),
+                ("sender", J::tid(sender)),
+                ("name", opt_str(name)),
                 ("time", J::int(time)),
                 ("state", J::str(s)),
                 ("text", J::str(t)),
                 ("deleted_by", deleted_by(&part.body)),
-                ("reply_to", opt_id(reply_to.as_ref())),
-                ("replaces", opt_id(of.as_ref())),
+                ("reply_to", opt_str(reply_to.map(|r| r.to_string()))),
+                ("edited", J::Bool(part.edited.is_some())),
+                ("earlier", J::Arr(earlier.into_iter().map(J::str).collect())),
                 ("valid", J::Bool(part.valid)),
             ])
             .text(),
-        );
+        ));
     }
     let reply = reply_to.map_or_else(String::new, |r| format!(" (to {r})"));
-    let what = of.map_or_else(String::new, |o| format!(" replaces {o}"));
-    let bad = if part.valid { "" } else { " (invalid)" };
-    Some(format!("{} {} {time}{reply}{what}{bad}: {}", k.pos(), who(k.stamp.actor, name.as_ref()), shown(&part.body)))
+    let edited = if part.edited.is_some() { " (edited)" } else { "" };
+    let bad = if part.valid { "" } else { " (not delivered)" };
+    Ok(Some(format!("{} {} {time}{reply}{edited}{bad}: {}", k.stamp.id, who(sender, name.as_ref()), shown(&part.body))))
 }
 
-fn find(ctx: &Ctx<'_>, c: Tid, i: &str) -> anyhow::Result<Message> {
-    osis_chat::find(&ctx.db, c, &id(i)?)?.ok_or_else(|| exit(3, format!("no message {i}")))
+/// Message `i` of chat `c`, as listed here.
+fn find(ctx: &Ctx<'_>, c: Tid, i: &str) -> anyhow::Result<Commit> {
+    ctx.db.at(c, MSG).commit(id(i)?)?.ok_or_else(|| exit(3, format!("no message {i}")))
 }
 
-/// Prints `s`, the first line out of the way of a reader of `cursor`.
-fn print_since(ctx: &mut Ctx<'_>, s: &osis_chat::Since, from: Option<&CommitPos>) -> anyhow::Result<()> {
+/// Prints `messages`, then the cursor line: the first line out of the way of a reader of it.
+fn print_since(ctx: &mut Ctx<'_>, t: Tid, s: &osis_chat::Since, from: Option<&Cursor>) -> anyhow::Result<()> {
     let json = ctx.g.json;
-    for m in &s.messages {
-        ctx.line(&message_line(json, m))?;
+    for k in &s.messages {
+        if let Some(l) = message_line(&ctx.db, t, json, k)? {
+            ctx.line(&l)?;
+        }
     }
     let cursor = s.cursor.as_ref().or(from);
     if json {
-        ctx.line(&J::obj([("cursor", opt_id(cursor)), ("more", J::Bool(s.more)), ("complete", J::Bool(s.complete))]).text())
+        ctx.line(&J::obj([("cursor", opt_str(cursor.map(Cursor::to_string))), ("more", J::Bool(s.more)), ("complete", J::Bool(s.complete))]).text())
     } else if let Some(c) = cursor {
         ctx.line(&format!("cursor {c}"))
     } else {
@@ -139,11 +128,11 @@ fn print_since(ctx: &mut Ctx<'_>, s: &osis_chat::Since, from: Option<&CommitPos>
     }
 }
 
-/// Fires `m` on chat `c`: its place.
-fn fire(db: &Osis, c: Tid, m: &schema::Message) -> anyhow::Result<CommitPos> {
+/// Fires `m` on chat `c`: its id.
+fn fire(db: &Osis, c: Tid, m: &schema::Message) -> anyhow::Result<CommitId> {
     let mut w = db.write();
     w.at(c, MSG).fire(m)?;
-    Ok(w.commit()?.ok_or_else(|| anyhow::anyhow!("nothing written"))?.pos())
+    Ok(w.commit()?.ok_or_else(|| anyhow::anyhow!("nothing written"))?.stamp.id)
 }
 
 pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
@@ -158,9 +147,9 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
                 x => return Err(usage(format!("--purge: author-or-admin, author, admin or nobody, not {x:?}"))),
             };
             let edit = match edit.as_str() {
-                "purge" => EditMode::Purge,
-                "keep" => EditMode::Keep,
-                "off" => EditMode::Off,
+                "purge" => Some(EditMode::Purge),
+                "keep" => Some(EditMode::Keep),
+                "off" => None,
                 x => return Err(usage(format!("--edit: purge, keep or off, not {x:?}"))),
             };
             let peers = peer.iter().map(|h| h.parse()).collect::<Result<Vec<osis::Address>, _>>()?;
@@ -212,7 +201,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let body = ctx.arg_text(&text)?;
             let text = subject.map_or_else(|| body.clone(), |s| format!("{s}\n\n{body}"));
             let reply_to = reply_to.as_deref().map(id).transpose()?.map(|r| r.to_string());
-            let m = fire(&db, t, &schema::Message { text, name: from, reply_to, edit: None })?;
+            let m = fire(&db, t, &schema::Message { text, name: from, reply_to })?;
             send_out(ctx, None)?;
             ctx.emit(&[m.to_string()], J::obj([("id", J::str(m.to_string()))]))
         }
@@ -220,29 +209,26 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let t = ctx.tid(&chat)?;
             pull(ctx, t);
             if let Some(a) = after {
-                let a = id(&a)?;
+                let a: Cursor = a.parse()?;
                 let s = osis_chat::since(&db, t, Some(&a), max)?;
-                return print_since(ctx, &s, Some(&a));
+                return print_since(ctx, t, &s, Some(&a));
             }
-            let before = before.as_deref().map(id).transpose()?;
-            // from the newest: a timeline has then seen every edit of what it reaches
-            let mut tl = Timeline::new(&db, t)?;
-            let mut got = Vec::new();
-            let (mut more, mut complete);
-            loop {
-                let p = tl.older(&db, max.max(1))?;
-                (more, complete) = (p.more, p.complete);
-                got.extend(p.messages.into_iter().filter(|m| before.is_none_or(|b| m.id < b)));
-                if got.len() >= max || !more {
-                    break;
-                }
+            let mut from = match before {
+                Some(b) => CommitFrom::Before(find(ctx, t, &b)?.pos()),
+                None => CommitFrom::Newest,
+            };
+            let (mut got, mut more, mut complete) = (Vec::new(), true, true);
+            while got.len() < max && more {
+                let p = db.at(t, MSG).fired(&CommitQuery { from, limit: Some(max - got.len()), kinds: vec![CommitKind::Content], ..Default::default() })?;
+                (more, complete) = (p.more, complete && p.complete);
+                let Some(last) = p.commits.last().map(Commit::pos) else { break };
+                from = CommitFrom::Before(last);
+                got.extend(p.commits);
             }
-            more |= got.len() > max;
-            got.truncate(max);
             // the cursor to go on from is the last arrived entry, whatever the page shows
             let cursor = osis_chat::cursor(&db, t)?;
             got.reverse();
-            print_since(ctx, &osis_chat::Since { messages: got, cursor, more, complete }, None)
+            print_since(ctx, t, &osis_chat::Since { messages: got, cursor, more, complete }, None)
         }
         ChatCmd::Watch { chat, count, after } => {
             let t = ctx.tid(&chat)?;
@@ -254,9 +240,10 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let (mut tx, why) = (Some(tx), ended.clone());
             let sub = db.at(t, MSG).on_fire(move |db, e| {
                 let line = match e {
-                    CommitEvent::Commit { commit: Some(k), .. } => match commit_line(db, t, json, &k) {
-                        Some(l) => l,
-                        None => return,
+                    CommitEvent::Commit { commit: Some(k), .. } => match message_line(db, t, json, &k) {
+                        Ok(Some(l)) => l,
+                        Ok(None) => return,
+                        Err(e) => if json { J::obj([("error", J::str(e.to_string()))]).text() } else { format!("error {e}") },
                     },
                     CommitEvent::Commit { id: c, commit: None } => if json { J::obj([("left", J::str(c.to_string()))]).text() } else { format!("left {c}") },
                     CommitEvent::Reread => if json { J::obj([("reread", J::Bool(true))]).text() } else { "reread".to_string() },
@@ -272,11 +259,13 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             })?;
             // subscribed first: nothing between the page and the stream is missed; a repeat is harmless
             if let Some(a) = after {
-                let mut at = id(&a)?;
+                let mut at: Cursor = a.parse()?;
                 loop {
                     let s = osis_chat::since(&db, t, Some(&at), crate::args::PAGE)?;
-                    for m in &s.messages {
-                        let _ = wake.send(message_line(json, m));
+                    for k in &s.messages {
+                        if let Some(l) = message_line(&db, t, json, k)? {
+                            let _ = wake.send(l);
+                        }
                     }
                     match s.cursor {
                         Some(c) if s.more => at = c,
@@ -296,28 +285,32 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
         }
         ChatCmd::Edit { chat, id: i, text } => {
             let t = ctx.tid(&chat)?;
-            let m = find(ctx, t, &i)?;
-            let new = osis_chat::edit(&db, t, &m, &text)?;
+            let m = id(&i)?;
+            osis_chat::edit(&db, t, m, &text)?;
             send_out(ctx, None)?;
-            ctx.emit(&[new.to_string()], J::obj([("id", J::str(new.to_string()))]))
+            ctx.emit(&[m.to_string()], J::obj([("id", J::str(m.to_string()))]))
         }
         ChatCmd::Resend { chat, id: i } => {
             // one's own message turned invalid (`OwnWriteInvalid`), its text, name and reply as a
             // new message; the old one stays, to this account alone
             let t = ctx.tid(&chat)?;
-            let m = find(ctx, t, &i)?;
-            let Body::Held(Some(body)) = &m.body else { return Err(exit(1, "its text is not here")) };
-            if m.valid || m.sender != db.me() {
+            let k = find(ctx, t, &i)?;
+            let Some(part) = k.at(t, MSG) else { return Err(exit(3, format!("no message {i}"))) };
+            let Body::Held(Some(body)) = part.body else { return Err(exit(1, "its text is not here")) };
+            if part.valid || k.stamp.actor != db.me() {
                 return Err(exit(1, "only one's own undelivered message is sent again"));
             }
-            let new = fire(&db, t, &schema::Message { edit: None, ..body.clone() })?;
+            let new = fire(&db, t, &body)?;
             send_out(ctx, None)?;
             ctx.emit(&[new.to_string()], J::obj([("id", J::str(new.to_string()))]))
         }
         ChatCmd::Delete { chat, id: i } => {
+            // the message and every version of it here
             let t = ctx.tid(&chat)?;
-            let m = find(ctx, t, &i)?;
-            osis_chat::delete(&db, t, &m)?;
+            let k = find(ctx, t, &i)?;
+            let mut w = db.write();
+            w.at(t, MSG).purge(osis::Purge::Commit(k.stamp.id))?;
+            w.commit()?;
             send_out(ctx, None)
         }
         ChatCmd::Leave { chat } => {

@@ -576,3 +576,90 @@ fn stream_pages_have_no_gaps_or_duplicates() {
     assert_eq!(got.len(), 301, "every row before the live one, once");
     assert!(got.windows(2).all(|x| x[0] < x[1]), "strictly ordered, so no duplicates");
 }
+
+/// A chat of `n` messages (each answering the first) shown as the shell shows it; then `change`
+/// runs. What the change cost the view: renders, memo runs plus the addresses those runs read,
+/// rows built, and the nodes that ran.
+fn chat_change(n: usize, change: impl FnOnce(&Data, Tid, &[osis::CommitId])) -> (u64, u64, u64, Vec<String>) {
+    use osis_app::facets::log;
+    let d = data();
+    let c = log::sample(&d);
+    log::grow(&d, c, n);
+    let ids: Vec<_> = log::recent(&d.db, c, n + 1).unwrap().iter().map(|l| l.id).collect();
+    let w = WindowState::default();
+    Cx::new(&d, &w, false);
+    let (mut tree, mut screen) = (osis_kit::view::Tree::default(), osis_kit::testing::Screen::default());
+    tree.show(&w, &mut screen, "chat", &ViewSpec::new("stream", c)).unwrap();
+    Cx::new(&d, &w, false);
+    tree.update(&w, &mut screen).unwrap();
+    screen.rows = 0;
+    w.graph.take_costs();
+    w.graph.record();
+    change(&d, c, &ids);
+    d.db.settle();
+    Cx::new(&d, &w, false);
+    tree.update(&w, &mut screen).unwrap();
+    let ran = w.graph.recorded();
+    let costs = w.graph.take_costs();
+    let ranset: std::collections::BTreeSet<&String> = ran.iter().collect();
+    let reads: u64 = w.graph.snapshot().iter().filter(|n| ranset.contains(&n.key)).map(|n| n.reads.iter().map(|(_, c)| u64::from(*c)).sum::<u64>()).sum();
+    (costs.renders, costs.memo_runs + reads, screen.rows, ran)
+}
+
+/// An edit of a shown message rebuilds its row alone, re-renders the chat's node once, and costs
+/// the same at n and 10n messages: no quote reruns but the edited message's.
+#[test]
+fn an_edit_rebuilds_one_row_flat_in_history() {
+    let edit_newest = |d: &Data, c: Tid, ids: &[osis::CommitId]| osis_chat::edit(&d.db, c, *ids.last().unwrap(), "edited").unwrap();
+    let (renders_s, work_s, rows_s, ran) = chat_change(10, edit_newest);
+    assert!(!ran.iter().any(|k| k.contains("\"quote\"")), "no quote moved: {ran:?}");
+    let (renders_l, work_l, rows_l, _) = chat_change(100, edit_newest);
+    assert_eq!((renders_s, rows_s), (1, 1), "{ran:?}");
+    assert_eq!((renders_l, rows_l), (1, 1));
+    assert_eq!(work_s, work_l, "an edit's work at 10 and 100 messages");
+    // the quoted message edited: its quote reruns, and every shown row quoting it changes
+    let (_, _, rows, ran) = chat_change(10, |d, c, ids| osis_chat::edit(&d.db, c, ids[0], "first, edited").unwrap());
+    assert_eq!(ran.iter().filter(|k| k.contains("\"quote\"")).count(), 1, "{ran:?}");
+    assert_eq!(rows, 11, "the first and the ten rows answering it");
+}
+
+/// A new message runs no quote but its own (the first's quote is shared).
+#[test]
+fn a_new_message_reruns_no_quote() {
+    let (_, _, rows, ran) = chat_change(10, |d, c, ids| {
+        osis_app::facets::log::send(&d.db, c, "", "new", Some(ids[0])).unwrap();
+    });
+    assert!(!ran.iter().any(|k| k.contains("\"quote\"")), "{ran:?}");
+    assert_eq!(rows, 1);
+}
+
+/// Paging back reads one page however deep and however long the chat: the listing work for a page
+/// in the middle is the same at n and 10n.
+#[test]
+fn chat_pages_read_flat_in_history() {
+    use osis::internals::node::costs;
+    use osis_app::facets::log;
+    use osis_kit::view::arrange::stream_page;
+    use osis_kit::view::paged::At;
+    let work = |n: usize| {
+        let d = data();
+        let c = log::sample(&d);
+        log::grow(&d, c, n);
+        let w = WindowState::default();
+        let cx = Cx::new(&d, &w, false);
+        let key = |e: &osis_kit::view::Entry| format!("{:020}/{}", e.time.unwrap_or(0), e.key);
+        let mut page = stream_page(&cx, &[c], &At::End, 16).unwrap();
+        for _ in 0..n / 32 {
+            page = stream_page(&cx, &[c], &At::Before(key(&page.rows[0]), None), 16).unwrap();
+        }
+        let k = key(&page.rows[0]);
+        costs::take();
+        let p = stream_page(&cx, &[c], &At::Before(k, None), 16).unwrap();
+        assert_eq!(p.rows.len(), 16);
+        // what a read walks and reads (not the timers a listing arms)
+        let read = ["listing: place walked", "listing: commit read", "listing: body read"];
+        costs::take().into_iter().filter(|(k, _, _)| read.contains(k)).map(|x| (x.0, x.2)).collect::<Vec<_>>()
+    };
+    let (small, big) = (work(100), work(1000));
+    assert_eq!(small, big, "a page's listing work at 100 and 1000 messages");
+}

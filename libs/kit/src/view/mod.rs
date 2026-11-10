@@ -393,8 +393,10 @@ pub trait Facet: Sync {
     fn entries(&self, _cx: &Reader, _t: Tid, _from: i64, _to: i64, _out: &mut Vec<Entry>) -> Result<()> {
         Ok(())
     }
-    /// `t`'s rows of a stream, newest first: at most `n`, those before wall ms `before` when given.
-    fn stream(&self, _cx: &Reader, _t: Tid, _before: Option<u64>, _n: usize, _out: &mut Vec<Entry>) -> Result<()> {
+    /// `t`'s rows of a stream, newest first by `arrange::sort_key` (time, then key: a facet keys
+    /// rows of one time to sort as it pages them): at most `n`, those sorting before `before`
+    /// when given.
+    fn stream(&self, _cx: &Reader, _t: Tid, _before: Option<&str>, _n: usize, _out: &mut Vec<Entry>) -> Result<()> {
         Ok(())
     }
     /// Adds what depends on the node showing it (a per-row action) to one of `t`'s stream rows.

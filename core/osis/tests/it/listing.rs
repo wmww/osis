@@ -559,9 +559,10 @@ fn page_bound_counts_large_values() {
     assert_eq!(part(&huge.commits[0], t, &k).body, Body::TooLarge { limit: 3 << 20 });
 }
 
-// spec/commits.md §5 (fixed retention, a request carries no `expires`): a required retention with
+// spec/commits.md §5 (fixed retention, a request alone carries no `expires`): a required retention with
 // an expiry on every aspect reaches no `purge.0`, so delete for everyone still works in a
-// disappearing chat, and a kept-for-good one adds no permanent delta per delete.
+// disappearing chat, and a kept-for-good one adds no permanent delta per delete; a request beside
+// a write of the thing goes under that write, with its expiry (an edit purging old text).
 #[test]
 fn purge_answers_to_no_required_retention_spec_commits_5() {
     use osis::internals::schema::core_types as ct;
@@ -575,6 +576,17 @@ fn purge_answers_to_no_required_retention_spec_commits_5() {
     let rq = w.commit().unwrap().unwrap().stamp.id;
     let got = db.at(t, untyped(msg())).writes(&page(CommitFrom::Oldest, 1)).unwrap();
     assert_eq!(part(&got.commits[0], t, &msg()).body, Body::Purged { by: rq, actor: Some(db.me()) });
+    // beside a write of the thing, a request goes under it and takes its expiry: one commit
+    let mut w = db.write();
+    w.at(t, osis::DynamicAspectKey::untyped(msg())).set(&s("y")).unwrap();
+    let b = w.commit().unwrap().unwrap().stamp.id;
+    let mut w = db.write();
+    w.at(t, osis::DynamicAspectKey::untyped(ak("t:other.0"))).set(&s("z")).unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(msg())).purge(osis::Purge::Commit(b)).unwrap();
+    let done = w.commit().unwrap().unwrap();
+    assert!(done.parts().all(|(_, ak, _)| ak.as_str() != "purge.0"), "no purge.0 write: {done:?}");
+    let got = db.at(t, untyped(msg())).writes(&page(CommitFrom::Oldest, 8)).unwrap();
+    assert!(got.commits.iter().any(|k| k.stamp.id == b && part(k, t, &msg()).body == Body::Purged { by: done.stamp.id, actor: Some(db.me()) }), "{got:?}");
 }
 
 // spec/commits.md §5 (a writer does not undo `required^.0`), notes/api.md `has_content`: a required retention is no content: a delete leaves it in force and the thing reads deleted; undoing the creation likewise

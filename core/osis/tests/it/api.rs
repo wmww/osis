@@ -1735,6 +1735,9 @@ fn commit_and_place_text_forms_api_design() {
     let at = osis::CommitPos::time(done.stamp.written);
     assert!(at < pos);
     assert_eq!(at.commit(), None);
+    // texts sort as places do, a short time's too
+    let early = osis::CommitPos::time(osis::Time(1));
+    assert!(early.to_string() < at.to_string() && at.to_string() < pos.to_string(), "{early} {at} {pos}");
     assert_eq!(db.at(t, k.clone()).writes(&page(osis::CommitFrom::After(at), 1)).unwrap().commits[0].pos(), pos);
     // past the last moment a place can name: still a place, after everything
     assert!(osis::CommitPos::time(osis::Time(u64::MAX)) > pos);

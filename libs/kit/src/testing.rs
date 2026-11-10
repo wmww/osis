@@ -137,8 +137,7 @@ fn scale_run(d: &Data, v: &ViewType, grow: fn(&Data, Tid, usize), n: usize) -> (
 }
 
 /// Scale and window: what is shown is at most a window whatever is listed, and adding one row
-/// costs the same at n and 10n. A chat's grown messages quote nothing: a quote's walk grows until
-/// signal edits land (notes/fast-design.md step 9), the one exemption.
+/// costs the same at n and 10n.
 fn check_scale(d: &Data, v: &ViewType, grow: fn(&Data, Tid, usize), fails: &mut Vec<String>) {
     let (shown_s, work_s, rows_s) = scale_run(d, v, grow, SMALL);
     let (shown_l, work_l, rows_l) = scale_run(d, v, grow, LARGE);

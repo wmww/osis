@@ -306,8 +306,7 @@ fn chat_channel_localhost() {
         assert!(std::time::Instant::now() < end, "not at Alice");
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    let fixed = osis(&b, &["chat", "edit", &c, &mine, "from bob, fixed"]);
-    assert_ne!(fixed, mine);
+    assert_eq!(osis(&b, &["chat", "edit", &c, &mine, "from bob, fixed"]), mine, "an edit keeps the message's id");
     let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while !osis(&a, &["chat", "read", &c]).contains("from bob, fixed") {
         assert!(std::time::Instant::now() < end, "no edit at Alice");

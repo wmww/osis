@@ -245,6 +245,11 @@ impl Mutation {
         self
     }
 
+    /// Whether it writes a delta on `tid` (one that places the commit under the thing's labels).
+    pub fn writes_on(&self, tid: &Tid) -> bool {
+        self.aspects.keys().any(|(t, _)| t == tid)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.creates.is_empty() && self.aspects.is_empty() && self.purge.is_empty() && self.undoes.is_none() && self.deleting.is_empty()
     }

@@ -107,7 +107,7 @@ Renamed: `HistoryFrom`/`HistoryPos` to `CommitFrom`/`CommitPos`, `on_remote` to 
 Unchanged: `on_change`, `on_thing_change`, `on_grants_change`, `on_status_change`, `on_diagnostic`, `on_dispute`, `Change`, `Origin`, `Stamp`, `Scope`, `CommitKind`, `Subscription`, the dispatcher, `undo`/`redo`/`revert` signatures (they return `Commit`).
 
 Callers:
-- **libs/chat**: `fire`, `fired`, `on_fire` as above; its `Body::Gone` goes; `Id` is `CommitPos`.
+- **libs/chat**: `fire`, `fired`, `on_fire` as above; its `Body::Gone` goes; a message id is its fire's `CommitId`.
 - **kit**: `store.rs` `changed` uses `db.changed`, `next_undo` uses `db.undo_target` (both reimplement them over the commit query); Undo disables by `undo_target` and shows `NotUndoable` as "can't undo". `view/sessions.rs` back to one session per editor. Node state re-render through path listeners per shown node (an app-session task).
 - **app**: `log.rs` Send: `session.commit()` then clear the drafts, no `close_key`, no rebuild; `about.rs` Undo and `opener.rs` drop `sessions.close` and the forced rebuild. Notes, tags, events and contacts undo back a day from any device (the tagged aspects).
 - **cli**: `history T AK` and `commits` become `writes` at an address (`T AK`, `--thing T`, `--group G`, `--aspect T AK...`) and `fired T AK`, each with `--follow`; each line a commit with its parts. `watch T AK [PATH]` as `get`; on a signal it says to use `fired --follow`. `fire T AK VALUE` beside `set`.

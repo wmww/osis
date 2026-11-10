@@ -268,7 +268,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 14. Needs two serving nodes listed, or direct member-to-member contact, for the replacement to be learned.
 20. From held headers: an expired delta carries `expires`, a purged one is named by a purge request; after header forgetting both are residue.
 26. for messages written with the requested retention; a modified sender's `nobody` message is hidden and stored for good, unless a required retention refuses it.
-27. an edit is a new message plus a purge of the old one.
+27. an edit is a replacement of the message purging its older versions in the same commit.
 28. the header-only blob of a purged permanent delta is kept forever and reaches new devices, with its purge commit (spec/commits.md §5).
 30. nothing is compacted; messages keep at least forever.
 31. a required retention on every aspect makes `nobody` junk invalid (it goes but at its author, reading nothing); junk under the required retention is what purge by author erases; a member from before a change can still backdate below it.

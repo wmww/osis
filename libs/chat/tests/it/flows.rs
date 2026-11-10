@@ -3,7 +3,7 @@
 use osis_chat::*;
 use super::{leave, link_actors, participants};
 use osis::core::REQUIRED;
-use osis::{Body, CommitEvent, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, LinkOpts, Osis, Part, PurgeBy, Role, SetRoleOpts, ShareLink, Subscription, Tid, Value};
+use osis::{Body, Commit, CommitEvent, CommitFrom, CommitId, CommitKind, CommitQuery, LinkOpts, Osis, Part, PurgeBy, Role, SetRoleOpts, ShareLink, Subscription, Tid, Value};
 use osis_sim::world::World;
 use schema::{EditMode, MSG};
 use std::collections::BTreeSet;
@@ -11,24 +11,32 @@ use std::time::Duration;
 
 /// A message of `text`.
 fn msg(text: &str) -> schema::Message {
-    schema::Message { text: text.into(), name: None, reply_to: None, edit: None }
+    schema::Message { text: text.into(), name: None, reply_to: None }
 }
 
-/// Fires `m` on chat `c`: its place.
-fn send(db: &Osis, c: Tid, m: &schema::Message) -> osis::Result<CommitPos> {
+/// Fires `m` on chat `c`: its id.
+fn send(db: &Osis, c: Tid, m: &schema::Message) -> osis::Result<CommitId> {
     let mut w = db.write();
     w.at(c, MSG).fire(m)?;
-    Ok(w.commit()?.unwrap().pos())
+    Ok(w.commit()?.unwrap().stamp.id)
 }
 
-fn post(db: &Osis, c: Tid, text: &str) -> osis::Result<CommitPos> {
+fn post(db: &Osis, c: Tid, text: &str) -> osis::Result<CommitId> {
     send(db, c, &msg(text))
 }
 
-/// A write claiming to edit `original`, answering for `prior`, past `edit`'s checks.
-fn claim(db: &Osis, c: Tid, text: &str, original: CommitPos, prior: &[CommitPos]) -> CommitPos {
-    let edit = schema::Edit { original: original.to_string(), prior: prior.iter().map(CommitPos::to_string).collect() };
-    send(db, c, &schema::Message { edit: Some(edit), ..msg(text) }).unwrap()
+/// Deletes message `id`, every version here, in one purge.
+fn delete(db: &Osis, c: Tid, id: CommitId) -> osis::Result<()> {
+    let mut w = db.write();
+    w.at(c, MSG).purge(osis::Purge::Commit(id))?;
+    w.commit().map(drop)
+}
+
+/// `db`'s own replacement of `id` past osis-chat's `edit`: refused at commit unless osis honors it.
+fn replace(db: &Osis, c: Tid, id: CommitId, text: &str) -> osis::Result<()> {
+    let mut w = db.write();
+    w.at(c, MSG).replace(id, &msg(text))?;
+    w.commit().map(drop)
 }
 
 fn kick(db: &Osis, c: Tid, who: Tid, retain_copy: Option<bool>) -> osis::Result<()> {
@@ -66,10 +74,14 @@ fn watch(db: &Osis, c: Tid) -> (Subscription, std::sync::mpsc::Receiver<CommitEv
     (db.at(c, MSG).on_fire(move |_, e| tx.send(e).unwrap()).unwrap(), rx)
 }
 
-/// The message part at `id`, as listed here.
-fn part_at(db: &Osis, c: Tid, id: &CommitPos) -> Option<Part<schema::Message>> {
-    let page = db.at(c, MSG).fired(&CommitQuery { from: CommitFrom::After(CommitPos::time(id.at())), ..Default::default() }).unwrap();
-    page.commits.iter().find(|k| k.pos() == *id).and_then(|k| k.at(c, MSG))
+/// Message `id` as listed here.
+fn find(db: &Osis, c: Tid, id: CommitId) -> Option<Commit> {
+    db.at(c, MSG).commit(id).unwrap()
+}
+
+/// Message `id`'s part as listed here.
+fn part(db: &Osis, c: Tid, id: CommitId) -> Part<schema::Message> {
+    find(db, c, id).unwrap().at(c, MSG).unwrap()
 }
 
 fn text(b: &Body<schema::Message>) -> Option<&str> {
@@ -79,11 +91,30 @@ fn text(b: &Body<schema::Message>) -> Option<&str> {
     }
 }
 
-fn name(m: &Message) -> Option<&str> {
-    match &m.body {
-        Body::Held(Some(x)) => x.name.as_deref(),
-        _ => None,
+fn shown(b: &Body<schema::Message>) -> String {
+    match b {
+        Body::Held(Some(x)) => x.text.clone(),
+        Body::Purged { .. } => "<deleted>".into(),
+        b => format!("<{b:?}>"),
     }
+}
+
+fn content(from: CommitFrom) -> CommitQuery {
+    CommitQuery { from, kinds: vec![CommitKind::Content], ..Default::default() }
+}
+
+/// Every message, oldest first, each its newest text.
+fn texts(db: &Osis, c: Tid) -> Vec<String> {
+    db.at(c, MSG).fired(&content(CommitFrom::Oldest)).unwrap().commits.iter().map(|k| shown(&k.at(c, MSG).unwrap().body)).collect()
+}
+
+/// Message `id`'s versions, newest first, each as written.
+fn versions(db: &Osis, c: Tid, id: CommitId) -> Vec<String> {
+    db.at(c, MSG).versions(id, &content(CommitFrom::Newest)).unwrap().commits.iter().map(|k| shown(&k.at(c, MSG).unwrap().body)).collect()
+}
+
+fn newest(db: &Osis, c: Tid) -> Commit {
+    db.at(c, MSG).fired(&CommitQuery { limit: Some(1), ..content(CommitFrom::Newest) }).unwrap().commits.remove(0)
 }
 
 /// A world with one peer, Alice and Bob who know each other, and Alice's chat with Bob in it.
@@ -114,27 +145,6 @@ fn room(o: Options) -> Room {
     Room { w, a, b, c, bob }
 }
 
-fn texts(db: &Osis, c: Tid) -> Vec<String> {
-    let mut t = Timeline::new(db, c).unwrap();
-    let mut out: Vec<String> = t
-        .older(db, 1000)
-        .unwrap()
-        .messages
-        .iter()
-        .map(|m| match &m.body {
-            Body::Held(Some(x)) => x.text.clone(),
-            Body::Purged { .. } => "<deleted>".into(),
-            b => format!("<{b:?}>"),
-        })
-        .collect();
-    out.reverse();
-    out
-}
-
-fn newest(db: &Osis, c: Tid) -> Message {
-    Timeline::new(db, c).unwrap().older(db, 1).unwrap().messages.remove(0)
-}
-
 // spec/permissions.md §1, §5.2 and spec/commits.md §5: a chat in one flow: this account its first admin, synced, required retention; a post reaches a participant with its verified sender; identical posts are two messages; paging both ways
 #[test]
 fn create_post_read_spec_commits_5() {
@@ -148,8 +158,7 @@ fn create_post_read_spec_commits_5() {
     w.run();
     for db in [&a, &b] {
         assert_eq!(texts(db, c), ["hi", "hi", "yo"]);
-        let m = newest(db, c);
-        assert_eq!(m.sender, bob);
+        assert_eq!(newest(db, c).stamp.actor, bob);
     }
     let page = |from| a.at(c, MSG).fired(&CommitQuery { from, limit: Some(2), kinds: vec![CommitKind::Content], ..Default::default() }).unwrap();
     let rest = page(CommitFrom::Oldest);
@@ -159,52 +168,42 @@ fn create_post_read_spec_commits_5() {
     assert!(!next.more);
 }
 
-// notes/chat.md Edit, spec/permissions.md §5.2: edits: newest wins in any arrival order; the old text purged by default with no stray tombstone; a repeat edit still answers for the old one; another's edit is its own message, not an edit; off mode ignores replaces; keep mode shows versions
+// notes/chat.md Edit, spec/permissions.md §5.2: edits: the message keeps its id and place, reads its newest text, marked; the old text purged by default (its versions tombstones, one message shown); another's edit is refused at its writer; keep mode keeps the versions, and one delete takes them all; off refuses edits
 #[test]
 fn edit_modes_spec_perm_5() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
     let o = post(&a, c, "orginal").unwrap();
     w.run();
-    let m = newest(&a, c);
-    assert_eq!(m.id, o);
-    edit(&a, c, &m, "origina").unwrap();
+    edit(&a, c, o, "origina").unwrap();
     w.run();
-    edit(&a, c, &newest(&a, c), "original").unwrap();
+    edit(&a, c, o, "original").unwrap();
     w.run();
     for db in [&a, &b] {
-        assert_eq!(texts(db, c), ["original"], "one message, no stray tombstones");
+        assert_eq!(texts(db, c), ["original"], "one message");
         let m = newest(db, c);
-        assert_eq!(m.id, o);
-        assert!(m.edited.is_some());
-        assert!(m.earlier.is_empty(), "the old text is gone: {m:?}");
-        assert!(matches!(part_at(db, c, &o).unwrap().body, Body::Purged { .. }));
+        assert_eq!(m.stamp.id, o);
+        assert!(m.at(c, MSG).unwrap().edited.is_some());
+        assert_eq!(versions(db, c, o), ["original", "<deleted>", "<deleted>"], "the old text is gone");
     }
-    // Bob's forged edit of Alice's message: a message of his own
-    let forged = claim(&b, c, "forged", o, &[o]);
+    assert!(matches!(edit(&b, c, o, "x"), Err(osis::Error::Invalid(_))), "Bob's edit of Alice's message");
+    assert!(matches!(replace(&b, c, o, "forged"), Err(osis::Error::Invalid(_))), "osis refuses it too, so nothing is sent");
     w.run();
-    assert_eq!(texts(&a, c), ["original", "forged"]);
-    assert_eq!(newest(&a, c).id, forged);
-    // and the library refuses it plainly
-    assert!(edit(&b, c, &find(&b, c, &o).unwrap().unwrap(), "x").is_err());
-    let Room { mut w, a, b, c, .. } = room(Options { edit: EditMode::Keep, ..Options::default() });
-    post(&a, c, "one").unwrap();
-    edit(&a, c, &newest(&a, c), "two").unwrap();
-    edit(&a, c, &newest(&a, c), "three").unwrap();
+    assert_eq!(texts(&a, c), ["original"]);
+    let Room { mut w, a, b, c, .. } = room(Options { edit: Some(EditMode::Keep), ..Options::default() });
+    let o = post(&a, c, "one").unwrap();
+    edit(&a, c, o, "two").unwrap();
+    edit(&a, c, o, "three").unwrap();
     w.run();
-    let m = newest(&b, c);
-    assert_eq!(text(&m.body), Some("three"));
-    let e: Vec<_> = m.earlier.iter().map(|e| e.1.text.as_str()).collect();
-    assert_eq!(e, ["two", "one"]);
-    // an edit deleted takes every version
-    delete(&a, c, &m).unwrap();
+    assert_eq!(texts(&b, c), ["three"]);
+    assert_eq!(versions(&b, c, o), ["three", "two", "one"]);
+    delete(&a, c, o).unwrap();
     w.run();
-    assert!(texts(&b, c).iter().all(|t| t == "<deleted>"), "{:?}", texts(&b, c));
-    let Room { w: _, a, c, .. } = room(Options { edit: EditMode::Off, ..Options::default() });
-    post(&a, c, "fixed").unwrap();
-    assert!(edit(&a, c, &newest(&a, c), "x").is_err());
-    let o = newest(&a, c).id;
-    claim(&a, c, "a plain message", o, &[o]);
-    assert_eq!(texts(&a, c), ["fixed", "a plain message"]);
+    assert_eq!(texts(&b, c), ["<deleted>"], "a delete takes every version");
+    assert_eq!(versions(&b, c, o), ["<deleted>"; 3]);
+    let Room { w: _, a, c, .. } = room(Options { edit: None, ..Options::default() });
+    let o = post(&a, c, "fixed").unwrap();
+    assert!(matches!(edit(&a, c, o, "x"), Err(osis::Error::Invalid(_))));
+    assert_eq!(texts(&a, c), ["fixed"]);
 }
 
 // notes/chat.md Edit: two nodes' edits arrive in either order; the same newest wins
@@ -220,20 +219,20 @@ fn concurrent_edits_agree_spec_crdt_1() {
     let (_, reply) = a.pair_accept(&req).unwrap();
     let a2 = join.finish(&reply).unwrap();
     w.run();
-    let c = create(&a, &Options { edit: EditMode::Keep, ..Options::default() }).unwrap();
-    post(&a, c, "base").unwrap();
+    let c = create(&a, &Options { edit: Some(EditMode::Keep), ..Options::default() }).unwrap();
+    let m = post(&a, c, "base").unwrap();
     w.run();
     assert_eq!(texts(&a2, c), ["base"], "a new node of a participant");
     w.set_online(&a2, false);
-    let m = newest(&a, c);
-    edit(&a, c, &m, "from one").unwrap();
+    edit(&a, c, m, "from one").unwrap();
     w.advance(1000);
-    edit(&a2, c, &m, "from two").unwrap();
+    edit(&a2, c, m, "from two").unwrap();
     w.set_online(&a2, true);
     w.advance(60_000);
     w.run();
     assert_eq!(texts(&a, c), texts(&a2, c));
     assert_eq!(texts(&a, c), ["from two"]);
+    assert_eq!(versions(&a, c, m), versions(&a2, c, m));
 }
 
 // spec/commits.md §5, spec/sync.md §6: delete for everyone by author and moderator; a participant cannot delete another's; a tombstone reaches a new node with its sender
@@ -246,29 +245,24 @@ fn delete_for_everyone_spec_commits_5() {
     w.advance(10);
     post(&b, c, "retained").unwrap();
     w.run();
-    let at = |db: &Osis, id: &CommitPos| find(db, c, id).unwrap().unwrap();
-    assert!(matches!(delete(&b, c, &at(&b, &mine)), Err(osis::Error::Permission { .. })));
-    // past the library: osis refuses the request too, so nothing is sent
-    let mut x = b.write();
-    x.at(c, MSG).purge(osis::Purge::Commit(mine.commit().unwrap())).unwrap();
-    assert!(matches!(x.commit(), Err(osis::Error::Permission { .. })));
+    assert!(matches!(delete(&b, c, mine), Err(osis::Error::Permission { .. })), "osis refuses the request, so nothing is sent");
     w.run();
-    assert!(matches!(at(&a, &mine).body, Body::Held(Some(_))));
-    delete(&b, c, &at(&b, &his)).unwrap();
+    assert!(matches!(part(&a, c, mine).body, Body::Held(Some(_))));
+    delete(&b, c, his).unwrap();
     w.run();
     assert_eq!(texts(&a, c), ["mine", "<deleted>", "retained"]);
-    delete(&a, c, &at(&a, &mine)).unwrap();
+    delete(&a, c, mine).unwrap();
     w.run();
     assert_eq!(texts(&b, c), ["<deleted>", "<deleted>", "retained"]);
     // a moderator's delete of Bob's
-    delete(&a, c, &newest(&a, c)).unwrap();
+    delete(&a, c, newest(&a, c).stamp.id).unwrap();
     w.run();
     assert_eq!(texts(&b, c), ["<deleted>"; 3]);
-    let by = |db: &Osis, id: &CommitPos| match at(db, id).body {
+    let by = |db: &Osis, id: CommitId| match part(db, c, id).body {
         Body::Purged { actor, .. } => actor,
         x => panic!("{x:?}"),
     };
-    assert_eq!((by(&b, &his), by(&a, &mine)), (Some(bob), Some(a.me())), "who deleted, by its signed header");
+    assert_eq!((by(&b, his), by(&a, mine)), (Some(bob), Some(a.me())), "who deleted, by its signed header");
     let offer = b.pair_offer().unwrap();
     let join = osis::internals::pair(w.cfg(5, &[]), &offer).unwrap();
     let req: osis::PairRequest = join.request().to_string().parse().unwrap();
@@ -276,8 +270,8 @@ fn delete_for_everyone_spec_commits_5() {
     let b2 = join.finish(&reply).unwrap();
     w.run();
     assert_eq!(texts(&b2, c), ["<deleted>"; 3], "tombstones on a new node");
-    assert_eq!(newest(&b2, c).sender, bob);
-    assert_eq!(by(&b2, &his), Some(bob), "on a new node too");
+    assert_eq!(newest(&b2, c).stamp.actor, bob);
+    assert_eq!(by(&b2, his), Some(bob), "on a new node too");
 }
 
 // spec/permissions.md §6: purge sets: author only keeps a moderator out; nobody is a permanent chat; admin only keeps an author out
@@ -287,11 +281,11 @@ fn purge_sets_spec_perm_6() {
         let Room { mut w, a, b, c, .. } = room(Options { purge: by, ..Options::default() });
         post(&b, c, "x").unwrap();
         w.run();
-        assert_eq!(delete(&b, c, &newest(&b, c)).is_ok(), author, "{by:?}");
+        assert_eq!(delete(&b, c, newest(&b, c).stamp.id).is_ok(), author, "{by:?}");
         w.run();
         assert_eq!(texts(&a, c) == ["<deleted>"], author);
         if !author {
-            assert_eq!(delete(&a, c, &newest(&a, c)).is_ok(), admin, "{by:?}");
+            assert_eq!(delete(&a, c, newest(&a, c).stamp.id).is_ok(), admin, "{by:?}");
             w.run();
             assert_eq!(texts(&b, c) == ["<deleted>"], admin);
         }
@@ -354,11 +348,10 @@ fn required_and_stale_writer_spec_commits_5() {
     w.advance(60_000);
     w.run();
     b.settle();
-    let told: Vec<_> = rx.try_iter().collect();
-    let ids: Vec<CommitId> = told.clone();
-    assert!(ids.contains(&stale.commit().unwrap()) && ids.contains(&stale2.commit().unwrap()), "told of both: {told:?}");
+    let told: Vec<CommitId> = rx.try_iter().collect();
+    assert!(told.contains(&stale) && told.contains(&stale2), "told of both: {told:?}");
     assert!(!texts(&a, c).iter().any(|t| t.starts_with("stale")), "others do not show it");
-    let mine = find(&b, c, &stale).unwrap().unwrap();
+    let mine = part(&b, c, stale);
     assert!(!mine.valid, "its sender sees it did not go");
     assert_eq!(text(&mine.body), Some("stale"), "and can send it again");
     assert_eq!(participants(&a, c).unwrap().get(&bob), Some(&Role::Write));
@@ -366,7 +359,7 @@ fn required_and_stale_writer_spec_commits_5() {
     let again = send(&b, c, again).unwrap();
     w.run();
     assert_eq!(texts(&a, c).last().unwrap(), "stale", "it went this time");
-    assert!(find(&b, c, &again).unwrap().unwrap().valid);
+    assert!(part(&b, c, again).valid);
     w.advance(1000);
     // he can post again under the new rule
     post(&b, c, "fresh").unwrap();
@@ -394,20 +387,27 @@ fn disappearing_spec_commits_6() {
     w.advance(3_600_000);
     w.run();
     assert!(texts(&a, c).is_empty() && texts(&b, c).is_empty());
-    // delete and edit in a disappearing chat (no expiry on a request's commit)
+    // edit (purging the old text in the same commit) and delete in a disappearing chat; an edit
+    // ends with its message
     disappear(&a, c, Some(Duration::from_secs(60)));
     w.run();
-    post(&a, c, "orginal").unwrap();
-    edit(&a, c, &newest(&a, c), "original").unwrap();
+    let o = post(&a, c, "orginal").unwrap();
+    edit(&a, c, o, "original").unwrap();
     w.run();
     assert_eq!(texts(&b, c), ["original"]);
-    delete(&a, c, &newest(&a, c)).unwrap();
+    assert_eq!(versions(&b, c, o), ["original", "<deleted>"]);
+    delete(&a, c, o).unwrap();
+    let brief = post(&a, c, "brief").unwrap();
+    w.advance(30_000);
+    edit(&a, c, brief, "brief!").unwrap();
     w.run();
-    // a deleted edit has lost what linked its versions: a tombstone each (notes/chat.md)
-    assert_eq!(texts(&b, c), ["<deleted>"; 2]);
+    assert_eq!(texts(&b, c), ["<deleted>", "brief!"]);
+    w.advance(31_000);
+    w.run();
+    assert!(!texts(&b, c).iter().any(|t| t.starts_with("brief")), "{:?}", texts(&b, c));
 }
 
-// notes/api.md History: a watch hears a post, its edit checked, a deletion
+// notes/api.md Signals: a watch hears a post; its edit once, as the message under its id with the new text (the old text's purge in the same commit no event of its own); a deletion under the same id
 #[test]
 fn watch_spec_none() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
@@ -415,15 +415,23 @@ fn watch_spec_none() {
     let o = post(&a, c, "one").unwrap();
     w.run();
     b.settle();
-    let heard = |rx: &std::sync::mpsc::Receiver<CommitEvent>| rx.try_iter().filter_map(|e| if let CommitEvent::Commit { commit: Some(k), .. } = e { Some(k) } else { None }).collect::<Vec<_>>();
+    let heard = |rx: &std::sync::mpsc::Receiver<CommitEvent>| rx.try_iter().map(|e| match e {
+        CommitEvent::Commit { id, commit: Some(k) } => (id, Some(k.at(c, MSG).unwrap())),
+        CommitEvent::Commit { id, commit: None } => (id, None),
+        e => panic!("{e:?}"),
+    }).collect::<Vec<_>>();
     let got = heard(&rx);
-    assert!(got.iter().any(|k| k.pos() == o && k.at(c, MSG).is_some_and(|p| text(&p.body) == Some("one"))), "{got:?}");
-    let e = edit(&a, c, &newest(&a, c), "two").unwrap();
+    assert!(got.iter().any(|(id, p)| *id == o && p.as_ref().is_some_and(|p| text(&p.body) == Some("one"))), "{got:?}");
+    edit(&a, c, o, "two").unwrap();
     w.run();
     b.settle();
     let got = heard(&rx);
-    assert!(got.iter().any(|k| k.pos() == e && edit_of(&b, c, k).unwrap() == Some(o)), "{got:?}");
-    assert!(got.iter().any(|k| k.pos() == o && k.at(c, MSG).is_some_and(|p| matches!(p.body, Body::Purged { .. }))), "{got:?}");
+    assert!(!got.is_empty() && got.iter().all(|(id, p)| *id == o && p.as_ref().is_some_and(|p| text(&p.body) == Some("two") && p.edited.is_some())), "{got:?}");
+    delete(&a, c, o).unwrap();
+    w.run();
+    b.settle();
+    let got = heard(&rx);
+    assert!(!got.is_empty() && got.iter().all(|(id, p)| *id == o && p.as_ref().is_some_and(|p| matches!(p.body, Body::Purged { .. }))), "{got:?}");
 }
 
 /// Every link in `v`.
@@ -451,7 +459,7 @@ fn watch_hears_a_chunk_arrive_spec_dm_6() {
     w.run();
     // Bob loses each body's root blob
     let lost = ids.map(|id| {
-        let row = b.engine(|e| e.held_part(&c, &MSG.name(), &osis::internals::CommitRaw::raw(&id.commit().unwrap()), usize::MAX)).unwrap().unwrap();
+        let row = b.engine(|e| e.held_part(&c, &MSG.name(), &osis::internals::CommitRaw::raw(&id), usize::MAX)).unwrap().unwrap();
         let osis::internals::node::engine::listing::PartBody::Held(Some(v)) = &row.body else { panic!("{:?}", row.body) };
         let mut ls = Vec::new();
         links(v, &mut ls);
@@ -467,15 +475,15 @@ fn watch_hears_a_chunk_arrive_spec_dm_6() {
         (blob, bytes)
     });
     let (_s, rx) = watch(&b, c);
-    for id in &ids {
-        assert_eq!(part_at(&b, c, id).unwrap().body, Body::NotFetched);
+    for id in ids {
+        assert_eq!(part(&b, c, id).body, Body::NotFetched);
     }
     for (i, (blob, bytes)) in lost.into_iter().enumerate() {
         b.engine(|e| e.put_blobs(vec![(blob, bytes)])).unwrap();
         b.settle();
         let got: Vec<_> = rx.try_iter().collect();
         let body = |e: &CommitEvent| match e {
-            CommitEvent::Commit { commit: Some(k), .. } => k.at(c, MSG).map(|p| (k.pos(), p.body)),
+            CommitEvent::Commit { commit: Some(k), .. } => k.at(c, MSG).map(|p| (k.stamp.id, p.body)),
             _ => None,
         };
         let shown = || got.iter().map(|e| format!("{:?}", body(e)).chars().take(40).collect()).collect::<Vec<String>>();
@@ -540,8 +548,8 @@ fn kicked_while_offline_spec_perm_5() {
     w.run();
     b.settle();
     assert_eq!(texts(&a, c), ["seen"]);
-    assert!(rx.try_iter().any(|x| x == late.commit().unwrap()), "told");
-    assert!(!find(&b, c, &late).unwrap().unwrap().valid);
+    assert!(rx.try_iter().any(|x| x == late), "told");
+    assert!(!part(&b, c, late).valid);
     assert!(post(&b, c, "more").is_err(), "the kick arrived");
     // a re-grant: the copy ends, it follows again; the late post stays what design E says: revived
     a.grant(c, bob, Role::Write, Default::default()).unwrap();
@@ -573,20 +581,22 @@ fn new_node_of_a_participant_sees_history_spec_sync_6() {
     };
     let d = new_device(&mut w, 7);
     assert_eq!(texts(&d, c).len(), 200);
-    assert!(Timeline::new(&d, c).unwrap().older(&d, 1).unwrap().complete);
     // paging back by small pages reaches the same
-    let mut t = Timeline::new(&d, c).unwrap();
-    let (mut n, mut more) = (0, true);
-    while more {
-        let p = t.older(&d, 7).unwrap();
-        n += p.messages.len();
-        more = p.more;
+    let (mut n, mut from) = (0, CommitFrom::Newest);
+    loop {
+        let p = d.at(c, MSG).fired(&CommitQuery { limit: Some(7), ..content(from) }).unwrap();
+        assert!(p.complete);
+        n += p.commits.len();
+        match p.commits.last() {
+            Some(l) if p.more => from = CommitFrom::Before(l.pos()),
+            _ => break,
+        }
     }
     assert_eq!(n, 200);
     post(&d, c, "from the new node").unwrap();
     w.run();
-    assert_eq!(newest(&a, c).sender, bob, "one sender across nodes");
-    assert_eq!(text(&newest(&a, c).body), Some("from the new node"));
+    assert_eq!(newest(&a, c).stamp.actor, bob, "one sender across nodes");
+    assert_eq!(text(&newest(&a, c).at(c, MSG).unwrap().body), Some("from the new node"));
     // a node removed erases, a kicked account's new node gets nothing
     kick(&a, c, bob, None).unwrap();
     w.run();
@@ -678,10 +688,10 @@ fn creator_on_a_new_node_spec_sync_3() {
     assert_eq!(texts(&a, c), ["hello", "from two"]);
 }
 
-// spec/permissions.md §5.1, §5.2: a participant's write stamped after its kick reaches another participant before the kick does: once the kick is there it is hidden from others, an edit of the participant's older message by it answers for nothing; its own node shows it, marked; a watch says it turned invalid
+// spec/permissions.md §5.1, §5.2: a participant's write stamped after its kick reaches another participant before the kick does: once the kick is there it is hidden from others, and its edit of its older message is no longer honored (the old text shows again); its own node shows it, marked; a watch says it turned invalid
 #[test]
 fn turned_invalid_at_a_reader_spec_perm_5() {
-    let Room { mut w, a, b, c, bob } = room(Options::default());
+    let Room { mut w, a, b, c, bob } = room(Options { edit: Some(EditMode::Keep), ..Options::default() });
     let d = w.account(3, &[0]);
     w.run();
     let dee = meet(&mut w, &a, &d);
@@ -693,72 +703,62 @@ fn turned_invalid_at_a_reader_spec_perm_5() {
     w.set_online(&a, false);
     kick(&a, c, bob, None).unwrap();
     w.advance(1000);
-    let m = find(&b, c, &old).unwrap().unwrap();
-    let edit_id = edit(&b, c, &m, "rewritten").unwrap();
+    edit(&b, c, old, "rewritten").unwrap();
     let late = post(&b, c, "late").unwrap();
     w.run();
-    assert_eq!(texts(&d, c).last().unwrap(), "late", "there before the kick");
-    assert_eq!(text(&find(&d, c, &edit_id).unwrap().unwrap().body), Some("rewritten"));
+    assert_eq!(texts(&d, c), ["rewritten", "late"], "there before the kick");
     let (_s, rx) = watch(&d, c);
     w.set_online(&a, true);
     w.advance(60_000);
     w.run();
     d.settle();
-    let t = texts(&d, c);
-    assert!(!t.contains(&"late".to_string()) && !t.contains(&"rewritten".to_string()), "{t:?}");
-    assert!(rx.try_iter().any(|e| matches!(e, CommitEvent::Commit { id, commit: None } if Some(id) == late.commit())), "another's invalid write leaves the timeline");
+    assert_eq!(texts(&d, c), ["old"]);
+    let told: Vec<_> = rx.try_iter().collect();
+    assert!(told.iter().any(|e| matches!(e, CommitEvent::Commit { id, commit: None } if *id == late)), "another's invalid write leaves the timeline: {told:?}");
+    assert!(told.iter().any(|e| matches!(e, CommitEvent::Commit { id, commit: Some(k) } if *id == old && text(&k.at(c, MSG).unwrap().body) == Some("old"))), "the edit's message, as it reads now: {told:?}");
     b.settle();
-    assert!(!find(&b, c, &late).unwrap().unwrap().valid, "its own, marked");
-    assert_eq!(find(&b, c, &edit_id).unwrap().unwrap().id, edit_id, "an invalid edit replaces nothing");
+    assert!(!part(&b, c, late).valid, "its own, marked");
+    assert_eq!(text(&part(&b, c, old).body), Some("old"), "an invalid edit replaces nothing");
 }
 
-// spec/permissions.md §5.2: an edit's list of what it answers for hides only its sender's own tombstones: a participant naming another's deleted message hides nothing
-#[test]
-fn forged_prior_hides_no_tombstone_spec_perm_5() {
-    let Room { mut w, a, b, c, .. } = room(Options::default());
-    let hers = post(&a, c, "hers").unwrap();
-    w.run();
-    w.advance(10);
-    let his = post(&b, c, "his").unwrap();
-    w.run();
-    delete(&a, c, &find(&a, c, &hers).unwrap().unwrap()).unwrap();
-    w.run();
-    claim(&b, c, "his, edited", his, &[hers, his]);
-    w.run();
-    assert_eq!(texts(&a, c), ["<deleted>", "his, edited"]);
-}
-
-// spec: none (notes/chat.md Read): a cursor goes by arrival: a participant's post made offline, stamped before what the reader has seen, comes after the cursor; any entry's id is a cursor; nothing new reads as nothing
+// spec: none (notes/chat.md Read): a cursor goes by arrival: a participant's post made offline, stamped before what the reader has seen, comes after the cursor; nothing new reads as nothing; an edit comes as its message again
 #[test]
 fn late_post_comes_after_a_cursor_spec_none() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
     let first = post(&a, c, "first").unwrap();
     w.run();
+    let at = since(&a, c, None, 10).unwrap().cursor;
     w.set_online(&b, false);
     w.advance(1000);
     let late = post(&b, c, "from the train").unwrap();
     w.advance(1000);
     let seen = post(&a, c, "seen").unwrap();
     w.run();
-    let got = since(&a, c, Some(&first), 10).unwrap();
-    assert_eq!(got.messages.iter().map(|m| m.id).collect::<Vec<_>>(), [seen]);
+    let ids = |s: &Since| s.messages.iter().map(|k| k.stamp.id).collect::<Vec<_>>();
+    let got = since(&a, c, at.as_ref(), 10).unwrap();
+    assert_eq!(ids(&got), [seen]);
     let at = got.cursor.unwrap();
     assert_eq!(cursor(&a, c).unwrap(), Some(at));
     w.set_online(&b, true);
     w.advance(60_000);
     w.run();
-    assert!(late < seen);
+    assert!(find(&a, c, late).unwrap().pos() < find(&a, c, seen).unwrap().pos());
     let got = since(&a, c, Some(&at), 10).unwrap();
-    assert_eq!(got.messages.iter().map(|m| m.id).collect::<Vec<_>>(), [late]);
-    assert_eq!(got.cursor, Some(late), "it arrived last");
-    assert_eq!(cursor(&a, c).unwrap(), Some(late));
-    assert!(since(&a, c, Some(&late), 10).unwrap().messages.is_empty());
+    assert_eq!(ids(&got), [late]);
+    let at = got.cursor.unwrap();
+    assert_eq!(cursor(&a, c).unwrap(), Some(at), "it arrived last");
+    assert!(since(&a, c, Some(&at), 10).unwrap().messages.is_empty());
+    assert_eq!(at.to_string().parse::<Cursor>().unwrap(), at, "its text form");
     // by the page: one at a time, none lost
     let page = since(&a, c, None, 2).unwrap();
     assert!(page.more);
-    assert_eq!(page.messages.len(), 2);
+    assert_eq!(ids(&page), [first, seen]);
     let rest = since(&a, c, page.cursor.as_ref(), 2).unwrap();
-    assert_eq!(rest.messages.iter().map(|m| m.id).collect::<Vec<_>>(), [late]);
+    assert_eq!(ids(&rest), [late]);
+    w.advance(10);
+    edit(&a, c, first, "first!").unwrap();
+    let again = since(&a, c, Some(&at), 10).unwrap();
+    assert_eq!(again.messages.iter().map(|k| (k.stamp.id, shown(&k.at(c, MSG).unwrap().body))).collect::<Vec<_>>(), [(first, "first!".to_string())]);
 }
 
 // spec/permissions.md §7, §3: a link joiner leaves: its edge is on the link's key, so `leave` goes there; it writes no more, keeps its copy, the link's other joiner stays
@@ -916,28 +916,31 @@ fn link_join_name_reply_cursor_spec_perm_7() {
     w.run();
     assert_eq!(texts(&b, c), ["hi"]);
     w.advance(10);
-    let cursor = since(&b, c, None, 10).unwrap().cursor.unwrap();
-    assert_eq!(cursor, first);
+    let all = since(&b, c, None, 10).unwrap();
+    assert_eq!(all.messages.iter().map(|k| k.stamp.id).collect::<Vec<_>>(), [first]);
+    let cursor = all.cursor.unwrap();
     let r = send(&b, c, &schema::Message { name: Some("bob".into()), reply_to: Some(first.to_string()), ..msg("hello") }).unwrap();
     w.run();
     let m = newest(&a, c);
-    assert_eq!((m.id, m.sender, name(&m), m.reply_to()), (r, b.me(), Some("bob"), Some(first)));
-    let new = since(&a, c, Some(&cursor), 10).unwrap();
-    assert_eq!(new.messages.iter().map(|m| m.id).collect::<Vec<_>>(), [r]);
+    let Body::Held(Some(body)) = m.at(c, MSG).unwrap().body else { panic!() };
+    assert_eq!((m.stamp.id, m.stamp.actor, body.name.as_deref(), body.reply()), (r, b.me(), Some("bob"), Some(first)));
+    let new = since(&b, c, Some(&cursor), 10).unwrap();
+    assert_eq!(new.messages.iter().map(|k| k.stamp.id).collect::<Vec<_>>(), [r]);
     let cursor = new.cursor.unwrap();
-    assert!(since(&a, c, Some(&cursor), 10).unwrap().messages.is_empty());
+    assert!(since(&b, c, Some(&cursor), 10).unwrap().messages.is_empty());
     w.advance(10);
-    edit(&a, c, &find(&a, c, &first).unwrap().unwrap(), "hi!").unwrap();
+    edit(&a, c, first, "hi!").unwrap();
     w.run();
     let again = since(&b, c, Some(&cursor), 10).unwrap();
     assert_eq!(again.messages.len(), 1);
-    assert_eq!((again.messages[0].id, name(&again.messages[0]), text(&again.messages[0].body)), (first, Some("alice"), Some("hi!")));
+    let Body::Held(Some(body)) = again.messages[0].at(c, MSG).unwrap().body else { panic!() };
+    assert_eq!((again.messages[0].stamp.id, body.name.as_deref(), body.text.as_str()), (first, Some("alice"), "hi!"), "the edit keeps the name");
     kick(&a, c, b.me(), None).unwrap();
     w.run();
     assert!(post(&b, c, "after").is_err());
     post(&d, c, "still here").unwrap();
     w.run();
-    assert_eq!(text(&newest(&a, c).body), Some("still here"));
+    assert_eq!(text(&newest(&a, c).at(c, MSG).unwrap().body), Some("still here"));
     assert_eq!(texts(&b, c).len(), 2, "the kicked joiner's copy");
 }
 
@@ -977,7 +980,7 @@ fn leave_promote_newcomer_spec_perm_3() {
     post(&b, c, "from bob").unwrap();
     let gone = post(&a, c, "gone").unwrap();
     w.run();
-    delete(&a, c, &find(&a, c, &gone).unwrap().unwrap()).unwrap();
+    delete(&a, c, gone).unwrap();
     w.run();
     a.grant(c, dee, Role::Write, Default::default()).unwrap();
     w.run();
@@ -988,9 +991,9 @@ fn leave_promote_newcomer_spec_perm_3() {
     assert_eq!(participants(&b, c).unwrap().get(&dee), Some(&Role::Admin));
     let his = post(&b, c, "moderate me").unwrap();
     w.run();
-    delete(&d, c, &find(&d, c, &his).unwrap().unwrap()).unwrap();
+    delete(&d, c, his).unwrap();
     w.run();
-    assert!(matches!(find(&a, c, &his).unwrap().unwrap().body, Body::Purged { .. }));
+    assert!(matches!(part(&a, c, his).body, Body::Purged { .. }));
     leave(&b, c).unwrap();
     w.run();
     assert_eq!(participants(&a, c).unwrap().get(&bob), None);
@@ -1006,24 +1009,22 @@ fn leave_promote_newcomer_spec_perm_3() {
     assert_eq!(participants(&a, c).unwrap().len(), 1);
 }
 
-// spec: none. notes/chat.md Message, notes/api-design.md (stored data never fails a read): a message id is text another writer chose: what does not parse is no reply, a claim to replace what does not parse reads as a plain odd entry, and neither fails anyone's read, a delete or a kick
+// spec: none. notes/chat.md Message, notes/api-design.md (stored data never fails a read): a reply id is text another writer chose: what does not parse is no reply, one naming no message here quotes nothing; another shape on the aspect reads `Held(None)`; none fails anyone's read, a delete or an edit
 #[test]
 fn odd_ids_from_another_writer_fail_no_read() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
     let good = post(&a, c, "good").unwrap();
-    let raw = |m: &schema::Message| {
-        let mut x = b.write();
-        x.at(c, MSG).fire(m).unwrap();
-        x.commit().unwrap();
-    };
-    let odd = |reply_to: Option<&str>, edit: Option<&str>| schema::Message { text: "odd".into(), name: None, reply_to: reply_to.map(Into::into), edit: edit.map(|e| schema::Edit { original: e.into(), prior: [e.to_string()].into() }) };
-    let junk = ["", "x", "1", "1/", "x/y", "1/zz", "1/ephemeral:zz:1", "1/1/00", &format!("{}/{}", u64::MAX, "0".repeat(64))];
-    // parses, and names nothing here: a time's place, an ephemeral commit
-    let places = [format!("{}/{}", 1u64 << 20, "0".repeat(64)), format!("{}/ephemeral:{}:1", 1u64 << 20, "0".repeat(32))];
-    for j in junk.into_iter().chain(places.iter().map(String::as_str)) {
-        raw(&odd(Some(j), None));
-        raw(&odd(None, Some(j)));
+    let junk = ["", "x", "1", "zz", &"0".repeat(63), &"0".repeat(65), &format!("1/{good}")];
+    for j in junk {
+        let m = send(&b, c, &schema::Message { reply_to: Some(j.into()), ..msg("odd") }).unwrap();
+        let Body::Held(Some(body)) = part(&b, c, m).body else { panic!() };
+        assert_eq!(body.reply(), None, "{j:?}");
     }
+    // parses, and names no message here
+    let none = "0".repeat(64);
+    let m = send(&b, c, &schema::Message { reply_to: Some(none.clone()), ..msg("odd") }).unwrap();
+    let Body::Held(Some(body)) = part(&b, c, m).body else { panic!() };
+    assert!(find(&b, c, body.reply().unwrap()).is_none());
     // no message at all: another shape on the aspect
     let key = osis::DynamicAspectKey::untyped(MSG.name());
     for v in [Value::Bytes(vec![1]), Value::Map([(Value::Int(0), Value::Int(3))].into())] {
@@ -1035,15 +1036,14 @@ fn odd_ids_from_another_writer_fail_no_read() {
     for db in [&a, &b] {
         let t = texts(db, c);
         assert!(t.contains(&"good".to_string()) && t.contains(&"odd".to_string()), "{t:?}");
-        assert_eq!(find(db, c, &good).unwrap().unwrap().id, good);
+        assert_eq!(find(db, c, good).unwrap().stamp.id, good);
         // the other shapes read as odd entries
         let page = db.at(c, MSG).fired(&CommitQuery { limit: Some(2), ..Default::default() }).unwrap();
         assert!(page.commits.iter().all(|k| k.at(c, MSG).is_some_and(|p| p.body == Body::Held(None))));
     }
-    // what reads as messages can be deleted, whatever others claimed
-    let m = newest(&b, c);
-    delete(&b, c, &m).unwrap();
-    edit(&a, c, &find(&a, c, &good).unwrap().unwrap(), "better").unwrap();
+    // what is listed can be deleted and edited, whatever others wrote
+    delete(&b, c, newest(&b, c).stamp.id).unwrap();
+    edit(&a, c, good, "better").unwrap();
     w.run();
     assert!(texts(&a, c).contains(&"better".to_string()));
 }

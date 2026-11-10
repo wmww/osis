@@ -35,7 +35,7 @@ impl std::str::FromStr for CommitId {
 
 /// A place among commits, for `CommitFrom::Before` and `After`: a commit's (`Commit::pos`) or a
 /// time's. Places order as listings do, and the text form (`Display`, `FromStr`) keeps one
-/// anywhere.
+/// anywhere and sorts as they do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CommitPos(pub(crate) engine::CommitPos);
 
@@ -67,7 +67,8 @@ fn ts_at(t: Time) -> Ts {
 
 impl std::fmt::Display for CommitPos {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}", self.0.ts.to_u64(), CommitId(self.0.id))
+        // the time padded: texts sort as places do
+        write!(f, "{:020}/{}", self.0.ts.to_u64(), CommitId(self.0.id))
     }
 }
 

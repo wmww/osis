@@ -274,6 +274,24 @@ fn tracked_listing_hears_the_address() {
     assert_eq!(fired(&db, &n), 1);
 }
 
+// notes/api.md Tracked reads: a tracked `commit(id)` hears that commit alone: another write at its
+// address leaves it be, a purge of it is heard (a quote moves with its message only).
+#[test]
+fn tracked_commit_hears_its_commit_alone() {
+    let db = pumped(13);
+    let t = thing(&db);
+    keep_day(&db, &["t:k.0"]);
+    let k = kept(&db, &ak("t:k.0"));
+    let c = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1))).stamp.id;
+    db.settle();
+    let (_set, n, h) = tracked(&db);
+    assert!(h.at(t, k.clone()).commit(c).unwrap().is_some());
+    db.commit_set(t, k.clone(), &Value::Int(2)).unwrap();
+    assert_eq!(fired(&db, &n), 0, "another commit there");
+    db.commit_with(|w| w.at(t, k.clone()).purge(osis::Purge::Commit(c))).unwrap();
+    assert_eq!(fired(&db, &n), 1, "it, purged");
+}
+
 // listing_moved judges only commits a join touched: at n and 10n commits held on the listened
 // aspect, one replacing write judges the same few commits, never the whole history.
 #[test]

@@ -1,35 +1,24 @@
 //! Group chat. A chat is one thing, and everyone in the chat has write on it.
 revision 1;
 
-/// What editing a message does to its old text.
+/// What an edit does to the old text (editing off is the message rule's `final`).
 type edit_mode = enum {
     /// The old text is purged.
     purge 0,
     /// The old text stays readable as edit history.
     keep 1,
-    /// Messages cannot be edited.
-    off 2,
 };
 
-/// Names a message by its place in the chat's history (the text form of that position).
+/// Names a message: its commit id (the original's, for an edited one), in text form.
 type msg_id = string;
 
-/// An edit: the message it changes, and every earlier version it replaces. It counts as an edit
-/// only if the original was sent by the same person and is not itself an edit; otherwise it shows
-/// as a new message.
-type edit = struct {
-    original 0: msg_id,
-    prior 1: set<msg_id>,
-};
-
-/// One message.
+/// One message. An edit replaces it whole (its sender's own, osis checks).
 type message = struct {
     text 0: string,
     /// The name the sender chose to show (not checked by anyone).
     name 1: option<string>,
     /// The message it answers.
     reply_to 2: option<msg_id>,
-    edit 3: option<edit>,
 };
 
 /// The messages. Each write is one message, kept for good: the chat is the list of all writes (a
@@ -37,7 +26,7 @@ type message = struct {
 /// nobody else can forge.
 keep_history(forever) signal chat:msg~0: message;
 
-/// The chat's name, and what editing a message does. Only admins can change these.
+/// The chat's name, and what an edit does to the old text. Only admins can change these.
 admin aspect chat:settings^.0: struct {
     name 0: string,
     edit 1: edit_mode,

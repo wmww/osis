@@ -6,6 +6,7 @@
 //! after that read leaves its address reading otherwise, then waits for the next read.
 
 use crate::commits::Address;
+use crate::CommitId;
 use crate::error::{Error, Result};
 use crate::handle::{Locked, Osis, ReadOnly};
 use crate::read::Reader;
@@ -213,14 +214,21 @@ impl ReadOnly {
         })
     }
 
-    /// On a tracking handle: hears the commits at `a` before the page is read.
-    pub(crate) fn track_commits(&self, a: &Address) -> Result<()> {
+    /// On a tracking handle: hears the commits at `a` before the page is read; with `only`, that
+    /// one commit's (`commit(id)`: a quote moves with its message alone).
+    pub(crate) fn track_commits(&self, a: &Address, only: Option<CommitId>) -> Result<()> {
         let Some(set) = self.tracking.clone() else { return Ok(()) };
+        let key = match only {
+            Some(c) => format!("{a:?} {c}"),
+            None => format!("{a:?}"),
+        };
+        let mine = move |id: CommitId| only.is_none_or(|c| c == id);
         if let Source::Node(r) = self.source_address(a)? {
-            return self.track_remote(format!("{a:?}"), |gate| {
+            return self.track_remote(key, |gate| {
                 let w = Arc::downgrade(&set);
                 self.node_on_commits(&r, a.clone(), Box::new(move |db, e| match e {
                     crate::CommitEvent::Ended(_) => gate.ended(&w, db),
+                    crate::CommitEvent::Commit { id, .. } if !mine(id) => {}
                     _ => gate.fire(&w, db),
                 }))
             });
@@ -231,11 +239,11 @@ impl ReadOnly {
             if let Address::Writes(crate::commits::Scope::Group(g)) = &a {
                 self.track_due(l, &set, format!("holds {g}"), Watch::Groups(*g));
             }
-            self.track_in(l, &set, format!("{a:?}"), None, |gate| {
+            self.track_in(l, &set, key, None, |gate| {
                 let w = Arc::downgrade(&set);
                 (Filter::Commits(a), Box::new(move |db, d| {
                     match d {
-                        Delivery::Commit { .. } => gate.fire(&w, db),
+                        Delivery::Commit { id, .. } if mine(id) => gate.fire(&w, db),
                         Delivery::Moved => gate.ended(&w, db),
                         _ => {}
                     }
