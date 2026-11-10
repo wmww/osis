@@ -109,6 +109,7 @@ A deposit is a delivery of an inbox blob to the recipient's inbox sync ID (issue
 - **Restart, record loss, clock skew**: issues/net-reconnect.md. No clock anywhere above.
 - **Departed actor keeps a stale copy of our filter**: stale entries hit, Hits are refused, one code: it learns only that L was once held (it was there).
 - **Hostile Deposit items**: budgets and rates as spec/sync.md §5; a Deposit for an inbox the receiver proved no actor for is 14 whether or not it holds it.
+  - Open: a depositor holding the inbox's `keys.0` (a team's card) but not its actor's roster learns from 0 against 14 whether an actor the receiver proved here holds the inbox's read role: a team's membership, which only its roster shows. An honest depositor sends only where its own J already said holder. Closing it means taking deposits only for an inbox whose actor the receiver proved itself (a team's members' nodes no longer take them), or accepting it (the prober is a peer the receiver proved to: a known actor or one it dialed).
 
 ## Leaks to accept
 - A known-actor peer that shares nothing learns the node's count of current credentials, at first contact and as additions arrive (issues/net-reconnect.md). Padding counts shrinks the leak without closing it; the peer is a known actor.

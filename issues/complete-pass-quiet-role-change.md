@@ -1,0 +1,8 @@
+# A role change from outside the label's hosts leaves a quiet label's complete pass waiting
+> Summary: `complete_pass(actor)` needs a pass end at each host after the actor's last role commit applied from elsewhere, and a subscribed, synced label gets a pass end only from a host push (no Sync on resync). A role commit applied from an inbox or a Deposit item after the label's last push (a re-seal: a copy under the label cannot open before its box) leaves the pass incomplete until the next push of that label, unbounded on a quiet label; re-seals, unties, history adds and link finalization of that actor wait with it.
+> Priority: normal
+> Tags: node, sync
+
+- Seen: `peers_review::complete_pass_counts_peers_spec_permissions_3`. b's rotation boxes only b; b's re-seal of a reaches a by a's inbox (a Deposit item over b's link) after a's last pass end at the host. a applies it then (`role_change`, marks.rs), and its next host pass end comes only with the next push of g's label (there, the removal's step registration about a minute later).
+- The same order happens with a hosted inbox: the inbox's host and the label's host push independently.
+- The spec asks for a pass that read each host's log to its end after the change (spec/permissions.md §3 Complete pass). A live subscription with nothing more to push is at its end; the code cannot tell that from a push still in flight. Options: a role commit applied from outside a label's host stream asks that host for a pass end (a Sync, or a round trip the host answers after its pushes so far), or a live subscription's pass end counts from the next round trip on the connection. Either is O(labels of the actor) per such commit.

@@ -476,12 +476,14 @@ fn silent_session_closed_spec_sync_5() {
 
 // spec/permissions.md §3: a complete pass also waits for every co-reader the node received the
 // label from and can reach: with that peer's replies held back, the host's pass alone is not
-// enough; a node that is no co-reader is never waited for.
+// enough; a node that is no co-reader is never waited for. `a` never stops waiting for peers, so
+// only b's own passes complete it.
 #[test]
 fn complete_pass_counts_peers_spec_permissions_3() {
     let mut net = Net::new();
     let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let cfg = SyncConfig { hosts: vec![net.address(host)], peer_pass_wait_ms: u64::MAX, ..SyncConfig::default() };
+    let a = net.add_node(1, cfg);
     let b = net.node(2, &[host]);
     let c = net.node(3, &[host]);
     let x = net.node(4, &[host]);
@@ -502,6 +504,11 @@ fn complete_pass_counts_peers_spec_permissions_3() {
     net.run();
     assert!(!net.sync(a).complete_pass(&g), "b's pass is held back");
     net.release();
+    // b's rotation boxed only b: its re-seal of a comes by a's inbox over b's link once released,
+    // a role change after a's last pass at the host; the removal's step registration (a push of
+    // g's label) gives a the host pass after it
+    net.run();
+    net.advance(60_000);
     net.run();
     assert!(net.sync(a).complete_pass(&g));
 }

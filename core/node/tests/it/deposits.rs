@@ -104,6 +104,36 @@ fn a_deposit_item_is_taken_only_signed_for_a_held_inbox_spec_wire_11_2() {
     assert!(net.sync(b).entries(&inbox.label).iter().any(|(x, _)| *x == id), "taken into the inbox");
 }
 
+// spec/sync.md §10 Shared set (Deposit items): the receiver judges by the actors it proved on this
+// connection, not by what it could prove now: a listener that proved nothing to a stranger, and
+// came to know it before its NoRecord (so runs a set), answers a valid deposit for its own inbox
+// 14, as for one it does not hold
+#[test]
+fn a_deposit_item_is_judged_by_what_the_receiver_proved_here_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b) = known_pair(&mut net, SyncConfig::default());
+    let tb = net.tid(b);
+    let (inbox_actor, inbox) = net.engine(a).inbox_of_actor(&tb).unwrap().unwrap();
+    let seed = net.engine(a).get_typed(&inbox_actor, &osis_schema::core_types::KEYS).unwrap().unwrap().deposit_seed.unwrap();
+    let key = osis_crypto::deposit_key(&osis_crypto::Secret32::from_bytes(seed), &inbox.label);
+    let c = net.node(3, &[]);
+    net.set_online(a, false);
+    net.set_online(c, false);
+    net.run();
+    let mut p = dial_as(&mut net, c, b, CHALLENGE);
+    assert!(net.sync(b).proven(p.conn).is_some_and(|x| !x.is_empty()), "c proved itself");
+    // b learns of c only now: it proved nothing to c, yet runs the connection's set
+    net.group_at(b, &[(c, Role::Read)], vec![]);
+    send(&mut net, b, &mut p, Message::NoRecord { id: 1 << 31 });
+    let blob = osis_proto::examples::Fixture::blob(7);
+    let wrap = [5; osis_crypto::WRAP_LEN];
+    let id = osis_label::blob_id(&blob);
+    let sig = osis_label::sign_deposit(&key, &inbox.label, &id, &wrap);
+    let ans = offer(&mut net, b, &mut p, vec![OfferItem::Deposit { label: inbox.label, blob, wrap, sig }]);
+    assert_eq!(ans, vec![(Code::NOT_ADMITTED, None)], "b proved no actor here");
+    assert!(!net.sync(b).entries(&inbox.label).iter().any(|(x, _)| *x == id));
+}
+
 // spec/sync.md §10 Shared set (Deposit items refused for now): a deposit past the receiver's
 // peer budget is answered 5, kept pending and offered again after the back-off; it lands once the
 // budget frees (the first deposit, opened at the receiver, no longer counts)

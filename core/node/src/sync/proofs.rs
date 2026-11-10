@@ -69,6 +69,12 @@ impl SyncEngine {
         self.connection_proven(conn).map(Proven::all)
     }
 
+    /// The actors this node proved on `conn` (its Prove as the dialer, its Proved as the
+    /// listener): what a connection's peer may judge it by, never what it could prove now.
+    pub(super) fn proved(&self, conn: ConnId) -> Option<&BTreeSet<Tid>> {
+        self.conns.get(&conn).map(|c| &c.proved).or_else(|| self.served_proved(conn))
+    }
+
     /// `proven`, by how each actor was proved.
     pub(super) fn connection_proven(&self, conn: ConnId) -> Option<&Proven> {
         self.conns.get(&conn).map(|c| &c.proven).or_else(|| self.served_proven(conn))

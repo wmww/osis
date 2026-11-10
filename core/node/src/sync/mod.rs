@@ -631,6 +631,7 @@ impl SyncEngine {
                     // to a key this node chose to dial; a host needs no proof (spec/sync.md §10)
                     if c.peer {
                         let provers = proofs::provers(&mut self.engine)?;
+                        c.proved = provers.iter().map(|p| p.record.tid()).collect();
                         o.extend(c.session.handle(now, ClientInput::Command(Command::Prove(provers))));
                     }
                     self.outputs(conn, o, out)?;

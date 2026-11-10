@@ -84,6 +84,8 @@ pub(crate) struct Served {
     public: bool,
     /// What this connection's dialer proved (spec/sync.md §10), read by `SyncEngine::proven`.
     proven: super::proofs::Proven,
+    /// The actors this node proved to it in answer (`SyncEngine::proved`).
+    proved: BTreeSet<Tid>,
     /// Raw ms of the last bytes received (idle sessions are closed).
     pub last: u64,
     /// Raw ms the session started (one that opens nothing is closed).
@@ -147,8 +149,9 @@ struct Accepted {
     charges: Vec<(LabelId, BlobId, u64)>,
     /// A put was refused for the budget.
     full: bool,
-    /// What the dialer proved by its Prove (`proofs`).
+    /// What the dialer proved by its Prove (`proofs`), and what this node proved in answer.
     proven: super::proofs::Proven,
+    proved: Option<BTreeSet<Tid>>,
     /// The record this connection's Resume found or made, and records read for it.
     bound: Option<(osis_store::RecordId, bool)>,
     lookups: u64,
@@ -236,8 +239,9 @@ impl LabelStore for PeerStore<'_> {
         let proven = super::proofs::proven_actors(engine, &proofs).map_err(|e| StoreError(e.to_string()))?;
         // this side proves only to a dialer that proved an actor it knows (spec/sync.md §10)
         let known = engine.core.judge(proven.all()).known();
-        let mine = if known { super::proofs::provers(engine).map_err(|e| StoreError(e.to_string()))?.iter().map(|p| p.sign(true, challenge, listener_key)).collect() } else { Vec::new() };
+        let mine: Vec<osis_proto::ActorProof> = if known { super::proofs::provers(engine).map_err(|e| StoreError(e.to_string()))?.iter().map(|p| p.sign(true, challenge, listener_key)).collect() } else { Vec::new() };
         self.acc.proven = proven;
+        self.acc.proved = Some(mine.iter().map(|p| p.actor()).collect());
         Ok(mine)
     }
 
@@ -410,7 +414,7 @@ impl SyncEngine {
         self.rng.fill_bytes(&mut challenge);
         let last = self.raw_now();
         let session = ServingSession::new(ServingConfig { static_key: local, challenge });
-        self.served.insert(conn, Served { conn: if public { session.port_only() } else { session.with_port() }, tier, public, ported: false, proven: super::proofs::Proven::default(), last, since: last, client: None });
+        self.served.insert(conn, Served { conn: if public { session.port_only() } else { session.with_port() }, tier, public, ported: false, proven: super::proofs::Proven::default(), proved: BTreeSet::new(), last, since: last, client: None });
         if let Err(e) = self.serve(conn, ServingInput::Start, &mut out) {
             self.diag(format!("serve: {e}"));
         }
@@ -443,6 +447,11 @@ impl SyncEngine {
     /// The actors served session `conn` proved (`SyncEngine::proven`).
     pub(super) fn served_proven(&self, conn: ConnId) -> Option<&super::proofs::Proven> {
         self.served.get(&conn).map(|s| &s.proven)
+    }
+
+    /// What this node proved to served session `conn`'s dialer.
+    pub(super) fn served_proved(&self, conn: ConnId) -> Option<&BTreeSet<Tid>> {
+        self.served.get(&conn).map(|s| &s.proved)
     }
 
     /// The labels this node serves: those it syncs, at the deepest recorded step (and the steps
@@ -580,6 +589,9 @@ impl SyncEngine {
         };
         if !acc.proven.is_empty() {
             s.proven = std::mem::take(&mut acc.proven);
+        }
+        if let Some(p) = acc.proved.take() {
+            s.proved = p;
         }
         let closed = s.conn.is_closed();
         if outputs.iter().any(|o| matches!(o, ServingOutput::Request(_))) {

@@ -877,8 +877,8 @@ impl SyncEngine {
     #[allow(clippy::too_many_arguments)]
     fn shared_deposit_verdict(&mut self, conn: ConnId, served: &BTreeMap<LabelId, super::serve::ServedLabel>, things: &BTreeMap<LabelId, Tid>, l: LabelId, blob: &[u8], wrap: &[u8; osis_crypto::WRAP_LEN], sig: &osis_crypto::Signature) -> Result<Code> {
         let Some(t) = things.get(&l) else { return Ok(Code::NOT_ADMITTED) };
-        // what this side proved on the connection: its provers (a shared set runs only where it did)
-        let mine: Vec<Tid> = super::proofs::provers(&mut self.engine)?.iter().map(|p| p.record.tid()).collect();
+        // what this side proved on the connection, not what it could prove now
+        let mine: Vec<Tid> = self.proved(conn).map(|p| p.iter().copied().collect()).unwrap_or_default();
         if self.engine.core.judge(mine).of(t) != super::credentials::Judgment::Holder {
             return Ok(Code::NOT_ADMITTED);
         }
