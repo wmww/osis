@@ -78,6 +78,11 @@ if [ -z "$seeds" ]; then
   fi
 fi
 if [ -n "$plan" ]; then echo "core=${core:-0} gui=${gui:-0} seeds=$seeds unify=${unify:-0}"; exit 0; fi
+# system76-scheduler puts any cargo it sees (60 s refresh) and everything it spawns after in
+# SCHED_IDLE: builds then crawl 10-20x beside any test run (notes/build.md, Scheduler)
+if systemctl is-active --quiet com.system76.Scheduler.service 2>/dev/null; then
+  echo "gate: WARNING: system76-scheduler is running; builds here run at idle priority and take many times their cost (notes/build.md)" >&2
+fi
 t0=$(date +%s)
 # Feature unification is selection-invariant (notes/build.md, Feature unification): after the
 # whole-workspace build (GUI included), building the default members, or any one member alone,
