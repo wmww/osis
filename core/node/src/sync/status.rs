@@ -40,18 +40,18 @@ impl SyncEngine {
             // a reader is a source while L is in the connection's shared set, idle once caught
             // up both ways (`stream_idle`); one still finding what it shares is opening: a
             // connection this node dialed, or one it serves whose shared set began. A peer
-            // counts once whatever connections it has (`source_key`: one per record).
+            // counts once whatever connections it has (`pass_source`).
             let readers: BTreeSet<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && c.up).map(|(id, _)| *id).chain(self.records.shared.keys().copied()).collect();
             for id in readers {
                 if !self.shared_member(id, &l.id) && !self.shared_settled(id) {
                     st.opening += 1;
                 }
             }
-            let mut by_source: BTreeMap<[u8; 32], bool> = BTreeMap::new();
+            let mut by_source: BTreeMap<Tid, bool> = BTreeMap::new();
             let mut unnamed = (0, 0);
             for id in self.records.shared.keys().filter(|c| self.shared_member(**c, &l.id)) {
                 let idle = self.stream_idle(*id, &l.id);
-                match self.source_key(*id) {
+                match self.pass_source(*id) {
                     Some(k) => *by_source.entry(k).or_default() |= idle,
                     None => unnamed = (unnamed.0 + 1, unnamed.1 + usize::from(idle)),
                 }

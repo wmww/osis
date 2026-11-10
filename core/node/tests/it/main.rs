@@ -50,6 +50,7 @@ mod parts;
 mod pinned;
 mod parts_relay;
 mod pass_marks;
+mod pass_sources;
 mod peers;
 mod peers_review;
 mod port_tiers;

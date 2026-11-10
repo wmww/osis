@@ -291,9 +291,16 @@ pub struct SyncEngine {
     /// Wall time of the last carrier and certificate sweep (memory only; `serve::RECORD_SWEEP_MS`).
     pub(crate) swept: u64,
     pub(crate) peer_cache: peers::PeerCache,
-    /// Co-readers this node received entries of a label from (complete passes wait for them
-    /// while a connection to them is up, spec/permissions.md §3).
-    pub(crate) peer_received: BTreeMap<LabelId, BTreeSet<HostKey>>,
+    /// Per label, the sources (`Proven::source`) this node received its entries from: complete
+    /// passes wait for each that still reads it, connected or not (spec/permissions.md §3).
+    /// Kept while the source is known here (`prune_pass_sources`), so bounded by own nodes and
+    /// known accounts, never by connections or records.
+    pub(crate) peer_received: BTreeMap<LabelId, BTreeSet<Tid>>,
+    /// Per (source, label), the last pass end at that source, as `passes` for hosts; pruned
+    /// with `peer_received`.
+    pub(crate) peer_passes: BTreeMap<(Tid, LabelId), (u64, u64)>,
+    /// The engine generation `prune_pass_sources` last ran at.
+    pub(crate) sources_gen: u64,
     /// What this node holds moved: the shared sets re-judge and send additions (`shared_changed`).
     pub(crate) shared_dirty: bool,
     /// The last remote role commit of each actor applied: its `seq`, and when (raw ms; the peer
@@ -319,9 +326,6 @@ pub struct SyncEngine {
     /// engine marks changed for every commit whose bodies' replacement it may move (notes/node-sync-work-sets.md),
     /// so an entry goes with its commit's mark (`engine_events`).
     pub(crate) keeps: BTreeMap<osis_base::CommitId, std::sync::Arc<Vec<u64>>>,
-    /// Per label, the co-readers a complete pass waits for now (`peer_received` narrowed to
-    /// those with a connection up sharing it; set by `handle`).
-    pub(crate) pass_peers: BTreeMap<LabelId, BTreeSet<HostKey>>,
     /// This node's `clients^.0` changed since the last step (`clients_changed`).
     pub(crate) clients_moved: bool,
     /// Commit blobs with linked header lists whose prefix was checked against the resolved
@@ -438,6 +442,8 @@ impl SyncEngine {
             swept: 0,
             peer_cache: peers::PeerCache::default(),
             peer_received: BTreeMap::new(),
+            peer_passes: BTreeMap::new(),
+            sources_gen: u64::MAX,
             shared_dirty: false,
             changed_moved: BTreeSet::new(),
             role_change: BTreeMap::new(),
@@ -447,7 +453,6 @@ impl SyncEngine {
             placed_cache: (u64::MAX, BTreeMap::new()),
             rotated: BTreeMap::new(),
             keeps: BTreeMap::new(),
-            pass_peers: BTreeMap::new(),
             last_synced: BTreeMap::new(),
             clients_moved: false,
             prefix_checked: BTreeSet::new(),
@@ -566,7 +571,7 @@ impl SyncEngine {
         // to the open labels' work sets now: with none (offline, LAN or local labels only) the
         // changes go (a label opened later judges everything)
         self.spread_touches();
-        self.update_pass_peers();
+        self.prune_pass_sources();
         if let Err(e) = self.state.flush(&mut self.engine) {
             self.diag(format!("sync state: {e}"));
         }

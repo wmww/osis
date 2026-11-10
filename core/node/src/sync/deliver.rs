@@ -234,6 +234,7 @@ impl SyncEngine {
         }
         self.passes.retain(|(_, l), _| !gone(l));
         self.peer_received.retain(|l, _| !gone(l));
+        self.peer_passes.retain(|(_, l), _| !gone(l));
         self.served_cache = None;
         self.forget_inbox()?;
         Ok(leaving)
@@ -599,7 +600,7 @@ impl SyncEngine {
     /// counted from the last remote role commit of any of `actors`.
     fn passed_since(&self, groups: &BTreeSet<Tid>, since: u64, actors: &[Tid]) -> bool {
         let waited = actors.iter().all(|a| self.peers_waited(a));
-        self.synced.labels.iter().filter(|(g, _)| groups.contains(g)).all(|(_, l)| self.label_passed(&l.id, super::peers::host_keys(&l.hosts), since, waited))
+        self.synced.labels.iter().filter(|(g, _)| groups.contains(g)).all(|(g, l)| self.label_passed(&l.id, g, super::peers::host_keys(&l.hosts), since, waited))
     }
 
     /// Whether a complete pass may stop waiting for peers on `actor`'s change: `peer_pass_wait_ms`
@@ -656,20 +657,36 @@ impl SyncEngine {
         self.command(conn, osis_proto::Command::Sync { label, cursor: Some(cursor), inline_limit, entries: Vec::new(), gained: Vec::new() }, out)
     }
 
-    /// Whether label `l` passed completely after `since` (spec/permissions.md §3): at each of
-    /// `hosts` and, until `waited`, at each co-reader it was received from with a connection up
-    /// (`pass_peers`). With neither, nothing upstream holds what it lacks: it passes once
-    /// `waited` (a node serving it alone, spec/sync.md §5, else never re-seals or unties).
-    fn label_passed(&self, l: &LabelId, hosts: impl Iterator<Item = HostKey>, since: u64, waited: bool) -> bool {
-        let peers = self.pass_peers.get(l).into_iter().flatten().filter(|_| !waited).copied();
+    /// Whether label `l` (held under `thing`) passed completely after `since`
+    /// (spec/permissions.md §3): at each of `hosts` and, until `waited`, at each source it was
+    /// received from that still reads it, connected or not (`peer_received`). With neither,
+    /// nothing upstream holds what it lacks: it passes once `waited` (a node serving it alone,
+    /// spec/sync.md §5, else never re-seals or unties).
+    fn label_passed(&self, l: &LabelId, thing: &Tid, hosts: impl Iterator<Item = HostKey>, since: u64, waited: bool) -> bool {
+        let after = |p: Option<&(u64, u64)>| p.is_some_and(|p| p.0 > since);
         let mut any = false;
-        for s in hosts.chain(peers) {
+        for h in hosts {
             any = true;
-            if self.passes.get(&(s, *l)).is_none_or(|p| p.0 <= since) {
+            if !after(self.passes.get(&(h, *l))) {
                 return false;
             }
         }
-        any || waited
+        if waited {
+            return true;
+        }
+        let core = &self.engine.core;
+        for t in self.peer_received.get(l).into_iter().flatten() {
+            // an own node reads what its account reads (it proves the account too)
+            let account = core.account.filter(|_| core.own_node(t));
+            if core.judge(std::iter::once(*t).chain(account)).of(thing) != super::credentials::Judgment::Holder {
+                continue;
+            }
+            any = true;
+            if !after(self.peer_passes.get(&(*t, *l))) {
+                return false;
+            }
+        }
+        any
     }
 }
 
@@ -679,6 +696,6 @@ impl SyncState for SyncEngine {
         let waited = self.peers_waited(actor);
         // no label of the actor known (at start, before `labels()`): no pass yet
         let mut labels = self.synced.by_actor.get(actor).into_iter().flatten().filter_map(|l| self.synced.actors.get(l).map(|x| (l, x))).peekable();
-        labels.peek().is_some() && labels.all(|(l, (_, hosts))| self.label_passed(l, hosts.iter().copied(), since, waited))
+        labels.peek().is_some() && labels.all(|(l, (a, hosts))| self.label_passed(l, a, hosts.iter().copied(), since, waited))
     }
 }

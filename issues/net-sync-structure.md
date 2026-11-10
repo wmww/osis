@@ -1,5 +1,5 @@
 # Node sync structure for the rework
-> Summary: The structural refactors in core/node/src/sync that the networking rework's jobs need, each tied to the job it unblocks: one connection record (`Conn` + `Served`), one `sources(L)` in place of six per-label peer sets, the LAN route machinery deleted with issues/net-connect.md, one retry rule for ten, local passes as the empty-source pass, one serving implementation (osis-host's `Hub`; serve.rs's `PeerStore` goes). Three low bugs in the code they replace. Part of issues/net-rework.md.
+> Summary: The structural refactors in core/node/src/sync that the networking rework's jobs need, each tied to the job it unblocks: one connection record (`Conn` + `Served`), one `sources(L)` in place of five per-label peer sets, the LAN route machinery deleted with issues/net-connect.md, one retry rule for ten, local passes as the empty-source pass, one serving implementation (osis-host's `Hub`; serve.rs's `PeerStore` goes). Three low bugs in the code they replace. Part of issues/net-rework.md.
 > Priority: normal
 > Tags: node, sync
 
@@ -10,13 +10,13 @@ Two records describe a connection by who dialed: `Conn` (conn.rs: a dialed conne
 Unblocks: issues/net-honest-status.md (both sides judge: a pass runs over every connection with L open); issues/net-reconnect.md (one record per peer; two connections to one peer are one record, the older closing).
 
 ## (b) One `sources(L)`
-Six computations each answer "which nodes does L sync with" over different inputs, and they disagree at the edges (audit rows 13, 15-18, 36):
+Five computations each answer "which nodes does L sync with" over different inputs, and they disagree at the edges (audit rows 13, 15-18, 36):
 - `wanted_hosts` (conn.rs): the hosts to dial, from config, labels' and hints' hosts, queued deposits' hosts, then `peer_addresses` and `link_routes`;
 - `wanted_labels` (conn.rs): per label, the host keys to open it at, co-readers' and link routes' keys appended;
 - `drop_unwanted_peers`' set (conn.rs): `peers()` keys plus `link_routes()`, closing every peer connection outside it;
 - `group_peers` (status.rs): a group's hosts, co-readers and link routes, for the API;
-- `Synced.actors` (mod.rs): per label its actor and hosts, `peer://` left out, read by `complete_pass` and `passed_since` (deliver.rs);
-- `pass_peers` (mod.rs, `update_pass_peers` in peers.rs): the co-readers a complete pass waits for.
+- `Synced.actors` (mod.rs): per label its actor and hosts, `peer://` left out, read by `complete_pass` and `passed_since` (deliver.rs).
+Not one of them: the sources a complete pass waits for (`peer_received`) are proven identities kept across disconnects (spec/permissions.md §3, notes/peers.md Complete passes), not connections up.
 One function: `sources(L)` = the connections up now with L open (issues/net-honest-status.md Design), the set issues/net-shared-set.md produces. Whom to dial is a separate question with a separate answer (issues/net-connect.md: everyone on the LAN, known addresses, own nodes), never a filter on what may open or on what a pass judges.
 Unblocks: issues/net-honest-status.md step 1 (states and waits read `sources`); issues/net-shared-set.md (an open is a member of S on a connection, nothing else).
 

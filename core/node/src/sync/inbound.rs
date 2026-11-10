@@ -1631,12 +1631,18 @@ impl SyncEngine {
     }
 
     pub(crate) fn bump_pass(&mut self, host: HostKey, l: LabelId) -> Result<()> {
+        let at = self.pass_end(l)?;
+        self.passes.insert((host, l), at);
+        Ok(())
+    }
+
+    /// A pass of `l` ended (at a host or a source): its `seq` and when.
+    pub(crate) fn pass_end(&mut self, l: LabelId) -> Result<(u64, u64)> {
         // role commits applied by this run count before the pass end
         self.engine_events()?;
         self.seq += 1;
         self.state.note_passed(l);
-        self.passes.insert((host, l), (self.seq, self.now()));
-        Ok(())
+        Ok((self.seq, self.now()))
     }
 
     /// Commits wait for pages: fetch the blobs their headers list that are not held (pages

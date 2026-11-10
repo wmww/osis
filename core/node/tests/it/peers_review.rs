@@ -465,8 +465,8 @@ fn a_member_closes_with_the_right_spec_sync_10() {
     assert!(net.sync(a).served_opened()[&p.conn].is_empty(), "serves nothing");
 }
 
-// spec: none (notes/api.md Sync configuration and status): sources count per record
-// (`source_key`); a served session with none is its own source, never caught up, so it cannot
+// spec: none (notes/api.md Sync configuration and status): sources count per proven source
+// (`pass_source`); a served session with none is its own source, never caught up, so it cannot
 // make the count read caught up.
 #[test]
 fn a_session_of_a_node_not_dialed_is_a_source_not_caught_up() {

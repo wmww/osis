@@ -616,10 +616,10 @@ impl SyncEngine {
         }
         // entries from a reader: its source counts for the pass wait
         if !acc.entries.is_empty()
-            && let Some(k) = self.source_key(conn)
+            && let Some(t) = self.pass_source(conn)
         {
             for (l, _) in &acc.entries {
-                self.peer_received.entry(*l).or_default().insert(k);
+                self.peer_received.entry(*l).or_default().insert(t);
             }
         }
         for (l, step, cs) in acc.steps {

@@ -26,7 +26,7 @@
 
 ## R11. Which peers a complete pass covers (resolved)
 - permissions §3 "every host and peer it syncs them with": the model counts peers it received rotation commits from and that are online now. A peer that went offline mid-pass is not waited for; the instances that use peers have no offline steps, so this is not exercised.
-- Resolved: permissions §3 already says "every peer it received the label from, can reach and that still reads it" (a peer it cannot reach is not waited for), as osis-node's `update_pass_peers` does. The model counts peers it received a rotation commit from, a subset.
+- Resolved: permissions §3 says "every peer it received the label from and that still reads it", unreachable or not, up to the peer wait (osis-node `peer_received`). The model counts peers it received a rotation commit from and that are online, a subset: it waits for less than the spec.
 
 ## R12. Snapshot-established epochs (not modeled; modeling limit)
 - crypto §4 lets a `secrets.0` compaction snapshot establish an epoch; permissions §3 re-seals only at chain-established epochs and lets such a node rotate instead. The model has no `secrets.0` snapshot, so every established epoch is chain-established and the accepted post-compaction residue (notes/label-access.md Re-seal) is out of reach. An instance with a snapshot step is optional future work. Not an ambiguity: the text decides it.

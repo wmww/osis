@@ -23,8 +23,6 @@ pub const LAN_WINDOW_MS: u64 = 600_000;
 pub const LAN_FRESH_MS: u64 = 2 * LAN_WINDOW_MS;
 /// Co-readers are computed again at least this often (edges expire with time).
 const PEERS_TTL_MS: u64 = 60_000;
-/// Local only: what a record's complete-pass source key is derived under (`source_key`).
-const PASS_SOURCE: &str = "pass source";
 /// A co-reader's LAN candidate changes at most once in this long (announcement floods).
 pub const LAN_CHANGE_MS: u64 = 5_000;
 
@@ -493,38 +491,27 @@ impl SyncEngine {
         hit
     }
 
-    /// The co-readers a complete pass of each label waits for now (`pass_peers`): those it
-    /// received the label from with a connection up that shares it (its shared set judges that
-    /// the peer may still hold it). A source with no connection up is forgotten: entries it
-    /// brings again count anew.
-    pub(crate) fn update_pass_peers(&mut self) {
-        if self.peer_received.is_empty() {
-            self.pass_peers.clear();
+    /// Forgets the complete-pass sources no longer known here (spec/permissions.md §3): an own
+    /// node off the account's roster, an account this node no longer shares anything with. Runs
+    /// when the engine's generation moved (only role commits change what is known).
+    pub(crate) fn prune_pass_sources(&mut self) {
+        let generation = self.engine.core.generation;
+        if self.sources_gen == generation {
             return;
         }
-        // each reader connection's source and the members it shares
-        let readers: Vec<super::ConnId> = self.records.shared.keys().copied().collect();
-        let mut sharing: BTreeMap<[u8; 32], BTreeSet<LabelId>> = BTreeMap::new();
-        for c in readers {
-            if let Some(k) = self.source_key(c) {
-                sharing.entry(k).or_default().extend(self.shared_members(c));
-            }
+        self.sources_gen = generation;
+        let mut sources: BTreeSet<Tid> = self.peer_received.values().flatten().copied().collect();
+        sources.extend(self.peer_passes.keys().map(|(t, _)| *t));
+        let core = &self.engine.core;
+        let gone: BTreeSet<Tid> = sources.into_iter().filter(|t| !core.own_node(t) && !core.judge([*t]).known()).collect();
+        if gone.is_empty() {
+            return;
         }
-        let mut live: BTreeSet<[u8; 32]> = sharing.keys().copied().collect();
-        live.extend(self.conns.values().filter(|c| c.peer).map(|c| c.host));
         for ks in self.peer_received.values_mut() {
-            ks.retain(|k| live.contains(k));
+            ks.retain(|t| !gone.contains(t));
         }
         self.peer_received.retain(|_, ks| !ks.is_empty());
-        let mut out: BTreeMap<LabelId, BTreeSet<[u8; 32]>> = BTreeMap::new();
-        for (l, ks) in &self.peer_received {
-            for k in ks {
-                if sharing.get(k).is_some_and(|m| m.contains(l)) {
-                    out.entry(*l).or_default().insert(*k);
-                }
-            }
-        }
-        self.pass_peers = out;
+        self.peer_passes.retain(|(t, _), _| !gone.contains(t));
     }
 
     /// Whether a waiting LAN candidate may skip the peer's retry pause now (at most once per
@@ -628,29 +615,34 @@ impl SyncEngine {
     }
 
     /// The source a complete pass waits for on reader connection `conn` (spec/permissions.md
-    /// §3): its record, one per pair of nodes whichever side dialed (no node identity: a node
-    /// of another account proves none here), else the key a dialed one went to.
-    pub(crate) fn source_key(&self, conn: super::ConnId) -> Option<[u8; 32]> {
-        if let Some(id) = self.connection_record(conn) {
-            return Some(*osis_crypto::kdf::kdf(PASS_SOURCE, &id, b"record").expose());
-        }
-        self.conns.get(&conn).and_then(|c| c.peer.then_some(c.host))
+    /// §3): what its proofs identify (`Proven::source`), one per own node or other account
+    /// whatever connections or records it has. None for a peer known by nothing here.
+    pub(crate) fn pass_source(&self, conn: super::ConnId) -> Option<Tid> {
+        self.connection_proven(conn).and_then(|p| p.source(&self.engine.core))
     }
 
     /// Entries of `label` arrived from reader `conn`: a complete pass of the label then waits for
-    /// that co-reader while a connection to it is up (spec/permissions.md §3).
+    /// its source while that still reads it and is known here, connected or not
+    /// (spec/permissions.md §3).
     pub(crate) fn received_from(&mut self, conn: super::ConnId, label: LabelId) {
-        if let Some(k) = self.source_key(conn) {
-            self.peer_received.entry(label).or_default().insert(k);
+        if let Some(t) = self.pass_source(conn) {
+            self.peer_received.entry(label).or_default().insert(t);
         }
     }
 
-    /// Reader `conn`'s stream was read to its end for member `l`: a pass end at that co-reader.
+    /// Reader `conn`'s stream was read to its end for member `l`: a pass end at its source.
     pub(crate) fn source_passed(&mut self, conn: super::ConnId, l: LabelId) -> crate::error::Result<()> {
-        match self.source_key(conn) {
-            Some(k) => self.bump_pass(k, l),
-            None => Ok(()),
-        }
+        let Some(t) = self.pass_source(conn) else { return Ok(()) };
+        let at = self.pass_end(l)?;
+        self.peer_passes.insert((t, l), at);
+        Ok(())
+    }
+
+    /// Tests: what complete passes remember of `source`: labels received from it and pass ends
+    /// there.
+    #[doc(hidden)]
+    pub fn pass_source_held(&self, source: Tid) -> usize {
+        self.peer_received.values().filter(|ts| ts.contains(&source)).count() + self.peer_passes.keys().filter(|(t, _)| *t == source).count()
     }
 
     /// Marks a person as a contact of this node's person (stored).
