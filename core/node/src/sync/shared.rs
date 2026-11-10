@@ -990,32 +990,32 @@ impl SyncEngine {
     }
 
     /// Where a member of `l` (held under `thing`) opened by the credential with beacon `b` under
-    /// pair key `r` ends (`until`; issues/net-reconnect.md, Joining and rejoining): where L's
-    /// first rotation superseding that credential's epoch was logged (the highest first-logged
-    /// position of its entries in L, the lowest over such rotations), so nothing logged after
-    /// the rotation is served, however it arrived (in its batch, or written between steps). With
-    /// no such entry here (the credential no read secret held, an epoch derived from another
-    /// actor's, a static entry), the log's end. Read after `log_flush`.
+    /// pair key `r` ends (`until`; issues/net-reconnect.md, Joining and rejoining): where the last
+    /// rotation superseding that credential's epoch was logged (the highest first-logged position
+    /// of the entries in L of every such rotation), so each rotation is served (a holder this
+    /// node judges unknown needs all of them to reach the current epoch) and nothing logged after
+    /// them, however it arrived (in their batch, or written between steps). With no such entry
+    /// here (the credential no read secret held, an epoch derived from another actor's, a static
+    /// entry), the log's end. Read after `log_flush`.
     fn shared_until_at(&mut self, l: LabelId, thing: Tid, b: Option<[u8; 32]>, r: &[u8; 32]) -> Result<u64> {
-        let mut blobs: Vec<Vec<BlobId>> = Vec::new();
+        let mut blobs: Vec<BlobId> = Vec::new();
         if let (Some(b), Some(e)) = (b, self.engine.epochs(&thing)) {
             let read = &e.read;
             let old = read.epochs().find(|(_, i)| i.secret.as_ref().is_some_and(|s| beacon(s.expose(), &l.0, r) == b)).map(|(ep, _)| *ep);
             if let Some(old) = old {
                 let commits: Vec<CommitId> = read.epochs().filter(|(ep, i)| read.is_established(ep) && i.superseded_epochs().contains(&old)).flat_map(|(_, i)| i.rotations.keys().chain(&i.snapshots).copied().collect::<Vec<_>>()).collect();
-                blobs = commits.iter().map(|c| self.state.entries_of(&l, c).map(|(b, _)| b).collect::<Vec<_>>()).collect();
+                blobs = commits.iter().flat_map(|c| self.state.entries_of(&l, c).map(|(b, _)| b)).collect();
             }
         }
         self.engine.run(|tx| {
-            let mut low = tx.txn.log_end()?;
-            for entries in &blobs {
-                let mut last = None;
-                for x in entries {
-                    last = last.max(tx.txn.log_entry_first(&l, x)?);
-                }
-                low = last.map_or(low, |p| low.min(p));
+            let mut last = None;
+            for x in &blobs {
+                last = last.max(tx.txn.log_entry_first(&l, x)?);
             }
-            Ok(low)
+            Ok(match last {
+                Some(p) => p,
+                None => tx.txn.log_end()?,
+            })
         })
     }
 

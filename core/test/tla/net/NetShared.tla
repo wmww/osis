@@ -23,7 +23,7 @@ CONSTANTS
     OfferGate,                      \* no Offer before the peer's digest is read, so this side's list precedes it
     Follow,                         \* the stream is Pushes: only a Push marked `report` is answered with a position
     PushReport,                     \* a Push carrying an `until` event is marked `report`
-    CursorReport,                   \* a connection's Pull reports its cursor, repairing a report lost with a connection
+    CursorReport,                   \* a connection's first Pull reports its cursor, repairing a report lost with a connection
     TestAtArrival,                  \* the test of a filter's arrival precedes every later message of the connection
     Hostile                         \* the peer may answer any Hit as accepted
 
@@ -325,7 +325,7 @@ Rotate(n) ==
     /\ UNCHANGED <<role, removed, link, q, active, cloned>>
 
 \* The rotation event, in the stream of a member open at n (the `until` member). A
-\* receiver with L open applies it unless removed. Past is its report of its position: a Pull's
+\* receiver with L open applies it unless removed. Past is its report of its position: the first Pull's
 \* cursor, or under Follow only after a Push marked `report`. Costs nothing when no `until` is set.
 SendRot(n) ==
     LET s == st[n] p == Other(n, link) IN

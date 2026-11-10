@@ -374,3 +374,21 @@ fn a_write_after_the_rotation_in_its_batch_is_not_served_spec_sync_10() {
     assert!(rotated.is_subset(&served), "the rotation is served");
     assert!(served.is_disjoint(&after), "nothing logged after it");
 }
+
+// issues/net-reconnect.md (Joining and rejoining): two rotations superseding the credential's
+// epoch applied in one step both reach the member being ended (`until` is past the last of them):
+// the requester, if a holder this node judges unknown, needs every one to reach the current epoch
+#[test]
+fn every_rotation_superseding_the_credential_is_served_spec_sync_10() {
+    let Setup { mut net, b, g, l, mut p, cursor, .. } = opened();
+    let first = rotate(&mut net, b, g);
+    let tb = net.tid(b);
+    let rec = recipients_of(net.engine(b), &[(tb, Role::Admin)]);
+    let second = rotation(net.engine(b), g, &rec, 10, false);
+    let mut served: BTreeSet<BlobId> = pushes(&step(&mut net, b, &mut p)).iter().flat_map(|s| added_of(&s.events, l)).collect();
+    served.extend(added_of(&pull(&mut net, b, &mut p, Some(cursor), vec![]).events, l));
+    for c in [first, second] {
+        let rotated = entries_of(&mut net, b, l, c);
+        assert!(!rotated.is_empty() && rotated.is_subset(&served), "each rotation is served");
+    }
+}
