@@ -713,7 +713,6 @@ fn one_peer_refusing_is_no_end_spec_permissions_7() {
 // can serve the label. A node removed from its account while away, its home on two peers, with one
 // of them out of reach: the peer it reaches refuses it, but the other may yet serve it, so it is
 // not stranded and `wait_synced` waits; once both refused it is, and `wait_synced` fails `Unsynced`.
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 #[test]
 fn stranded_only_when_every_host_refuses_spec_permissions_3() {
     let mut w = World::new();
@@ -747,7 +746,6 @@ fn stranded_only_when_every_host_refuses_spec_permissions_3() {
 // notes/api.md Sync status (watch_status, Stranded), Diagnostics: a watcher sees the home group
 // synced; a node removed while away is stranded on the home label and says so.
 // spec/permissions.md §3
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 #[test]
 fn watch_status_and_stranded_spec_permissions_3() {
     let mut w = World::new();
@@ -1126,7 +1124,6 @@ fn moving_peers_after_a_revoke_keeps_the_links_sync_spec_permissions_7() {
 // before it hears of the removal (its commit is past the removal's frontier) or after (it lists
 // nothing and is refused); the link goes on working
 #[test]
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn removed_node_revokes_no_link_spec_permissions_7() {
     for aware in [false, true] {
         let mut w = World::new();

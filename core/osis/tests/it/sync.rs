@@ -60,7 +60,6 @@ fn create_syncs_home_spec_sync_2() {
 // grant): the app carries the request and the reply; the new node becomes an admin of the
 // account, reads the home group and its writes reach the first node.
 #[test]
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn pairing_spec_permissions_1() {
     let mut w = World::new();
     let host = w.add_host();
@@ -1603,7 +1602,6 @@ fn a_joiners_removal_overrides_the_default_spec_permissions_3() {
 
 // spec/permissions.md §2: an account's retain default does not reach a node's removal: the node erases.
 #[test]
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn an_accounts_default_does_not_reach_a_node_spec_permissions_2() {
     let mut w = World::new();
     let host = w.add_host();

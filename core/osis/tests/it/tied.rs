@@ -796,7 +796,6 @@ fn later_reader_reads(w: &mut World, alice: &Osis, bob: &Osis, h: Tid, b: Tid, t
 }
 
 // spec/sync.md §6, spec/permissions.md §4: a copy's chain leaves out every `keys.0`: the outside granter rotating his account after the grant must not lose the copy
-#[ignore = "needs step (e): an account's keys move only by a rotation of its epoch (issues/account-signing.md)"]
 #[test]
 fn a_copy_survives_its_granter_rotating() {
     let (mut w, alice, _eve, dave, carol, bob, h, b, t) = outsider();
@@ -804,14 +803,15 @@ fn a_copy_survives_its_granter_rotating() {
     dave.grant(t, h, Role::Read, GrantOpts::default()).unwrap();
     w.run();
     assert_eq!(text(&carol, t).as_deref(), Some("dave's"));
-    let frank = account(&mut w, 7, 0);
-    let f = introduce(&mut w, &dave, &frank);
-    let keys = alice.at(dave.home(), osis::internals::core_types::KEYS).get().unwrap();
-    dave.grant(dave.me(), f, Role::Read, GrantOpts::default()).unwrap();
+    // dave's account rotates by removing one of its nodes (spec/permissions.md §3)
+    let join = osis::internals::pair(w.cfg(7, &[]), &dave.pair_offer().unwrap()).unwrap();
+    let (node, reply) = dave.pair_accept(join.request()).unwrap();
+    let _d2 = join.finish(&reply).unwrap();
     w.run();
-    dave.set_role(dave.home(), f, None, skip()).unwrap();
+    let keys = alice.at(dave.me(), osis::internals::core_types::KEYS).get().unwrap();
+    dave.set_role(dave.home(), node, None, skip()).unwrap();
     w.run();
-    assert_ne!(alice.at(dave.home(), osis::internals::core_types::KEYS).get().unwrap(), keys, "alice holds his new keys");
+    assert_ne!(alice.at(dave.me(), osis::internals::core_types::KEYS).get().unwrap(), keys, "alice holds his new keys");
     later_reader_reads(&mut w, &alice, &bob, h, b, t, "the granter's keys moved");
 }
 

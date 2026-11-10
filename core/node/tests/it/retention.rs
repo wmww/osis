@@ -77,7 +77,7 @@ fn expiry_spec_commits_6() {
         assert!(lp.peers[i].drain_events().iter().any(|e| matches!(e, Event::Changed { cause: Cause::Expiry, .. })));
     }
     // a late copy (from a relay that still had it) is stripped on arrival
-    let pk = osis_node::local_peer::Package { id: c, bytes: lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap(), blobs: Vec::new() };
+    let pk = osis_node::local_peer::Package { id: c, bytes: lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap(), blobs: Vec::new(), lists: Vec::new() };
     sync(&mut lp, 0, 2);
     let _ = lp.deliver(2, &pk);
     assert_eq!(lp.peers[2].engine.get(&t, &ak("t:brief.0")).unwrap(), None);
@@ -1996,7 +1996,7 @@ fn undecided_write_keeps_its_body_spec_commits_5() {
     lp.advance(10);
     let a = ak("t:gone.0");
     let c = set(&mut lp, 1, t, &GONE, "soon");
-    let pk = osis_node::local_peer::Package { id: c, bytes: lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap(), blobs: Vec::new() };
+    let pk = osis_node::local_peer::Package { id: c, bytes: lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap(), blobs: Vec::new(), lists: Vec::new() };
     let _ = lp.deliver(2, &pk);
     assert!(!lp.peers[2].engine.commit_ids().contains(&c), "not judged, not invalid");
     sync(&mut lp, 0, 2);

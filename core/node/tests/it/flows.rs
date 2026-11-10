@@ -862,7 +862,6 @@ fn nodes_and_alice(seed: u64) -> (LocalPeer, Tid, Tid, LabelId) {
 // P's other node encrypts under U it rotates T (its box to P stale), then U (its box to T
 // stale); d1 holds neither new secret.
 #[test]
-#[ignore = "needs step (e): issues/account-signing.md"]
 fn cascade_two_hops_spec_perm_3() {
     let (mut lp, p, pa, _) = nodes_and_alice(507);
     let d1 = lp.peers[0].engine.tid();
@@ -1228,11 +1227,10 @@ fn reseal_raced_grant_spec_perm_3() {
 // role, every remaining holder has a box at each new epoch, so nobody is "seen without a box"
 // and nothing is re-sealed.
 #[test]
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn key_actor_holders_not_resealed_spec_perm_3() {
     let mut lp = net_bare(3, 533);
-    let (p, _) = lp.peers[0].engine.create_account(&hosts()).unwrap();
-    let p = p.account;
+    let (a, _) = lp.peers[0].engine.create_account(&hosts()).unwrap();
+    let (p, d) = (a.account, a.devices);
     for i in [1, 2] {
         let n = lp.peers[i].engine.tid();
         let card: Vec<CommitId> = lp.peers[i].engine.commit_ids();
@@ -1244,13 +1242,14 @@ fn key_actor_holders_not_resealed_spec_perm_3() {
     }
     spread(&mut lp);
     let n2 = lp.peers[2].engine.tid();
-    let done = lp.peers[0].engine.demote(&p, &Demotion { holder: n2, new: None, retain: None }).unwrap();
+    let done = lp.peers[0].engine.demote(&d, &Demotion { holder: n2, new: None, retain: None }).unwrap();
     carry(&mut lp, 0, &done);
     spread(&mut lp);
-    let e = newest_read(&lp, 0, p).unwrap();
-    assert_eq!(newest_read(&lp, 1, p), Some(e), "the remaining node follows");
+    let e = newest_read(&lp, 0, d).unwrap();
+    assert_eq!(newest_read(&lp, 1, d), Some(e), "the remaining node follows");
+    assert!(newest_read(&lp, 2, d) != Some(e), "the removed node does not");
     for i in [0, 1] {
-        assert!(lp.peers[i].engine.reseal_due(&p, &Pass).unwrap().commits.is_empty(), "peer {i}: nothing to re-seal");
+        assert!(lp.peers[i].engine.reseal_due(&d, &Pass).unwrap().commits.is_empty(), "peer {i}: nothing to re-seal");
     }
 }
 
@@ -1283,17 +1282,17 @@ fn an_ended_edge_departs_by_its_finalize_spec_crypto_4() {
 // notes/label-access.md Limits (stranded node re-paired), spec/permissions.md §3: a node whose
 // grant raced a rotation of its account is re-sealed over the pairing channel.
 #[test]
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn stranded_node_repaired_spec_perm_3() {
     let mut lp = net_bare(4, 513);
-    let (p, _) = lp.peers[0].engine.create_account(&hosts()).unwrap();
-    let p = p.account;
+    let (a, _) = lp.peers[0].engine.create_account(&hosts()).unwrap();
+    let (pa, p) = (a.account, a.devices);
     for i in [1, 2] {
         let n = lp.peers[i].engine.tid();
         let ids = lp.peers[i].engine.commit_ids();
         send(&mut lp, i, 0, &ids);
         let done = lp.peers[0].engine.pair(&n).unwrap();
         carry(&mut lp, 0, &done);
+        lp.peers[i].engine.paired(&pa, &done.commits[0]).unwrap();
     }
     spread(&mut lp);
     // d0 pairs n while d1, unaware, removes d2 (rotating P)
@@ -1308,7 +1307,7 @@ fn stranded_node_repaired_spec_perm_3() {
     spread(&mut lp);
     let e1 = newest_read(&lp, 1, p).unwrap();
     assert!(lp.peers[3].engine.epochs(&p).unwrap().read.secret(&e1).is_none(), "n is stranded");
-    assert_eq!(lp.peers[3].engine.role_on(&p), Some(Role::Admin));
+    assert_eq!(lp.peers[3].engine.roster(&p).get(&n).map(|e| e.role), Some(Role::Admin), "its grant stands: its granter's listing names it");
     assert_eq!(sealed_write(&mut lp, 1, p, "stranded"), BTreeSet::from([0]), "n reads nothing new");
     // re-pairing an existing holder re-seals it
     let again = lp.peers[0].engine.pair(&n).unwrap();
@@ -1527,29 +1526,32 @@ fn registration_step_after_rotation_spec_sync_5() {
 
 // spec/crypto.md §3 (fresh deposit seed), spec/sync.md §5: an admin's removal that rotates read writes a fresh
 // deposit seed in its rotation commit, and the step it issues registers the new deposit key, so
-// the removed node can no longer deposit under the actor's labels.
+// the removed account can no longer deposit under the thing's labels.
 #[test]
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn removal_refreshes_deposit_seed_spec_crypto_3() {
-    let (mut lp, p, _pa, card) = nodes_and_alice(516);
-    let d1 = lp.peers[0].engine.tid();
-    let labels = lp.peers[1].engine.get_typed(&p, &ct::LABEL).unwrap().unwrap();
+    let (mut lp, p, pa, _) = nodes_and_alice(516);
+    let pp = lp.peers[1].engine.me();
+    let t = thing_of(&mut lp, 2, pa);
+    lp.peers[2].engine.grant(&t, &pp, &edge_of(Role::Read)).unwrap();
+    let (card, _) = lp.peers[2].engine.create_label(&t, &hosts()).unwrap();
+    spread(&mut lp);
+    assert_ne!(pp, p);
+    let labels = lp.peers[2].engine.get_typed(&t, &ct::LABEL).unwrap().unwrap();
     let genesis = osis_label::StepId(*labels.get(&card).unwrap().steps.keys().next().unwrap());
-    let old = lp.peers[1].engine.deposit_seed(&p).unwrap().unwrap();
-    let done = lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, retain: None }).unwrap();
-    let new = lp.peers[1].engine.deposit_seed(&p).unwrap().unwrap();
+    let old = lp.peers[2].engine.deposit_seed(&t).unwrap().unwrap();
+    let done = lp.peers[2].engine.demote(&t, &Demotion { holder: pp, new: None, retain: None }).unwrap();
+    let new = lp.peers[2].engine.deposit_seed(&t).unwrap().unwrap();
     assert!(old != new, "refreshed");
     let removal = *done.commits.last().unwrap();
-    let h = lp.peers[1].engine.header(&removal).unwrap();
-    assert!(h.aspects.iter().any(|a| a.tid == p && a.ak.as_str() == "roles.0") && h.aspects.iter().any(|a| a.tid == p && a.ak.as_str() == "keys.0"), "in the removal's rotation commit");
-    let (step, _) = lp.peers[1].engine.issue_step(&p, &card, &genesis, false).unwrap().0.unwrap();
+    let h = lp.peers[2].engine.header(&removal).unwrap();
+    assert!(h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "roles.0") && h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "keys.0"), "in the removal's rotation commit");
+    let (step, _) = lp.peers[2].engine.issue_step(&t, &card, &genesis, false).unwrap().0.unwrap();
     assert_eq!(step.keys.deposit, osis_crypto::deposit_key(&new, &card).verifying_key());
 }
 
 // spec/sync.md §5: a refreshed deposit seed alone (no rotation) is registered by the next step
 // an admin issues: a child at the same role keys with the new deposit key; then nothing is due.
 #[test]
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn refreshed_deposit_seed_issues_step_spec_sync_5() {
     let (mut lp, p, _pa, card) = nodes_and_alice(518);
     let labels = lp.peers[1].engine.get_typed(&p, &ct::LABEL).unwrap().unwrap();
@@ -1657,7 +1659,6 @@ fn node_removes_account_from_team_spec_perm_3() {
 // it (d1's backdated forgery, in effect): every reader drops it and P keeps its role. Had d2
 // received it first, its frontier covers it and the leave stands.
 #[test]
-#[ignore = "needs step (e): issues/account-signing.md"]
 fn removed_node_backdated_leave_dropped_spec_perm_5_1() {
     for seen in [false, true] {
         let (mut lp, p, pa, _) = nodes_and_alice(523);
@@ -1953,7 +1954,6 @@ fn frontier_lists_commit_ids_spec_perm_5_1() {
 // (it would go invalid unlisted, though the node's own right on Y never fell), not every
 // commit it made as P; X keeps its last value.
 #[test]
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn removed_node_frontier_lists_uncovered_acting_spec_perm_5_1() {
     let (mut lp, p) = account_two_nodes(902);
     let x = thing_of(&mut lp, 0, p);
