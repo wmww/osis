@@ -340,7 +340,8 @@ fn changed_at_moves_on_a_role_change_only() {
     let _ = end;
     let c = net.node(3, &[host]);
     let tc = net.node_tid(c);
-    set_edge(net.engine(a), g, tc, Role::Read);
+    net.pair(c, a);
+    net.grant(a, g, tc, Role::Read);
     net.run();
     let moved = changed(&mut net, a, l).unwrap();
     assert!(moved > first, "a role change moves it");
@@ -357,12 +358,13 @@ fn changed_at_moves_when_a_holder_reaches_it_through_a_roster() {
     net.run();
     let l = net.label(a);
     let h = net.group(a, &[], &[host]);
-    set_edge(net.engine(a), g, h, Role::Read);
+    net.grant(a, g, h, Role::Read);
     net.run();
     let before = changed(&mut net, a, l).unwrap();
     let x = net.node(3, &[host]);
     let tx_ = net.tid(x);
-    set_edge(net.engine(a), h, tx_, Role::Read);
+    net.pair(x, a);
+    net.grant(a, h, tx_, Role::Read);
     net.run();
     assert!(changed(&mut net, a, l).unwrap() > before, "x now reaches g through h");
 }
@@ -469,8 +471,8 @@ fn changed_at_moves_through_a_cycle_of_rosters() {
         let lg = net.label(a);
         let h = net.group_seeded(a, &[], vec![net.address(host)], 2);
         net.run();
-        set_edge(net.engine(a), g, h, Role::Read);
-        set_edge(net.engine(a), h, g, Role::Read);
+        net.grant(a, g, h, Role::Read);
+        net.grant(a, h, g, Role::Read);
         net.run();
         let labels = net.sync(a).label_status();
         let lof = |t: Tid| labels.iter().find(|s| s.group == t).map(|s| s.label).unwrap();
@@ -479,7 +481,8 @@ fn changed_at_moves_through_a_cycle_of_rosters() {
         let before = (changed(&mut net, a, lg2).unwrap(), changed(&mut net, a, lh2).unwrap());
         let x = net.node(3, &[host]);
         let tx_ = net.tid(x);
-        set_edge(net.engine(a), if grant_on_second { h } else { g }, tx_, Role::Read);
+        net.pair(x, a);
+        net.grant(a, if grant_on_second { h } else { g }, tx_, Role::Read);
         net.run();
         assert!(changed(&mut net, a, lg2).unwrap() > before.0, "g's sync ID moved (grant on {})", if grant_on_second { "h" } else { "g" });
         assert!(changed(&mut net, a, lh2).unwrap() > before.1, "h's sync ID moved (grant on {})", if grant_on_second { "h" } else { "g" });
@@ -596,6 +599,7 @@ fn resume_history(seed: u64) -> usize {
             }
             3 => {
                 let t = net.node_tid(holder);
+                // bare: the hand-built removal above boxes no one, so no node holds g's secrets to grant with
                 set_edge(net.engine(admin), g, t, Role::Write);
             }
             4 => hand_resume(&mut net, nodes[(xorshift(&mut x) % 3) as usize], &all, &mut x),
@@ -642,11 +646,12 @@ fn stamp_work(n: u64) -> (u64, u64) {
     for i in 0..n {
         last = Some(net.group_seeded(a, &[], vec![addr.clone()], i + 1));
     }
-    net.run();
-    let t0 = net.sync(a).pass_stats();
     let x = net.node(3, &[host]);
     let tx_ = net.tid(x);
-    set_edge(net.engine(a), last.unwrap(), tx_, Role::Read);
+    net.pair(x, a);
+    net.run();
+    let t0 = net.sync(a).pass_stats();
+    net.grant(a, last.unwrap(), tx_, Role::Read);
     net.run();
     let t1 = net.sync(a).pass_stats();
     (t1.changed_passes - t0.changed_passes, t1.changed_labels - t0.changed_labels)
