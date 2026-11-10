@@ -429,8 +429,9 @@ impl ReadOnly {
             local.connected = local.connected.saturating_add(there.connected);
             local.two_sources.extend(there.two_sources);
             for (g, s) in there.groups {
-                let mine = group_sources.get(&g).is_some_and(|a| *a == r.addr);
-                if mine || !local.groups.contains_key(&g) {
+                // a group with a source node: that node's word alone, never another connection's
+                let mine = group_sources.get(&g).map(|a| *a == r.addr);
+                if mine.unwrap_or(!local.groups.contains_key(&g)) {
                     local.groups.insert(g, s);
                 }
             }

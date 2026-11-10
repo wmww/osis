@@ -237,11 +237,15 @@ fn moving_a_group_both_ways() {
     drop(x.host);
 }
 
-// spec: none (API surface); notes/api.md Sync configuration and status: a group's status is its source's: P's own before and after the move, the node's while it is there, absent while that node cannot be asked (its connection shown down); a wait for everything here leaves the group to its node
+// spec: none (API surface); notes/api.md Sync configuration and status: a group's status is its source's: P's own before and after the move, the node's while it is there, absent while that node cannot be asked (its connection shown down), whatever another connection says; a wait for everything here leaves the group to its node
 #[test]
 fn status_shows_a_group_as_its_source_does() {
     let x = world();
+    // a second connection to N, which also reports the group: never its word for a group sourced at the first
+    let urls: Vec<osis::Url> = vec![x.urls[0].clone(), "mem://n-clients-2".parse().unwrap()];
+    let other = x.n.client_listen(&urls).unwrap().remove(1);
     x.connect_p();
+    crate::common::block_on(x.p.connect_node(&NodeLogin { addr: other.clone(), secret: x.secret.clone() })).unwrap();
     block_on(x.p.wait_synced(SyncScope::Thing(x.g))).unwrap();
     assert_eq!(x.p.status().unwrap().groups[&x.g].state, SyncState::Synced, "P's own");
     x.to_node();
@@ -258,7 +262,7 @@ fn status_shows_a_group_as_its_source_does() {
     assert!(x.p.disconnect_node(&x.nc).unwrap());
     let st = x.p.status().unwrap();
     assert!(!st.groups.contains_key(&x.g), "{st:?}");
-    assert_eq!(st.node_connections, vec![osis::NodeConnection { address: x.nc.clone(), connected: false }]);
+    assert_eq!(st.node_connections, vec![osis::NodeConnection { address: other.clone(), connected: true }, osis::NodeConnection { address: x.nc.clone(), connected: false }]);
     // nothing here waits on it
     x.net.heal("p", "s");
     block_on(x.p.wait_synced(SyncScope::All)).unwrap();
