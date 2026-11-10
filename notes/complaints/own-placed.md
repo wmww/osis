@@ -1,0 +1,5 @@
+# own-placed complaints
+> Summary: Workflow snags met on the own-placed branch (local deletions under hosted labels).
+
+- The writer keeps its previous body as well as its newest (`single_writer_replace_grows_nothing`), so a test that needs a body covered must write two newer ones, not one; a first attempt with one newer write looked like a broken guard.
+- The in-flight half of `held_elsewhere` was covered by no existing test (all of osis-node passed without it); only a held-host test (`held_hosts`) reaches it.

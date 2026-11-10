@@ -607,7 +607,7 @@ impl SyncEngine {
                 continue;
             }
             let dead = matches!(self.state.entries.get(&(l, *b)), Some(Entry { kind: Kind::Commit { commit, .. }, .. }) if !self.engine.holds_memory(commit));
-            if dead && !self.state.present_anywhere(&l, b) && !self.upload_in_flight(&l, b) {
+            if dead && !self.held_elsewhere(&l, b) {
                 self.absent_at(None, l, *b)?;
             }
         }

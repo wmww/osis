@@ -531,9 +531,9 @@ impl SyncEngine {
     /// must hold of this node's is placed there whatever hosts are connected, so a reader
     /// pulling its stream (a direct link's redeemer, spec/permissions.md §7, or a co-reader
     /// either side dialed) finds its own writes (spec/sync.md §5, Placed and co-reader peer);
-    /// a host pass uploads what its host lacks of it. A label with no host in its `label.0`
-    /// has this node as its host: its local pass also issues steps, promotes, deletes and
-    /// re-seals, as a host pass does at a host.
+    /// a host pass uploads what its host lacks of it, and what the store must not hold leaves
+    /// it (`local_deletions`). A label with no host in its `label.0` has this node as its host:
+    /// its local pass also issues steps, promotes and re-seals, as a host pass does at a host.
     pub(crate) fn local_passes(&mut self) -> Result<()> {
         self.local_dirty = false;
         self.local_last = self.raw_now();
@@ -583,12 +583,12 @@ impl SyncEngine {
 
     /// One label's local pass: what a pass would upload is placed in this node's store
     /// (`body_sends`: the must-hold bodies and the blobs they link; inbox copies,
-    /// certificates), stamped when this node writes. With `host` (no host in `label.0`) it
-    /// leaves this node's store as a pass at a host would leave that host: a newer established
-    /// epoch first issues a child step of the head when that head is recorded in `label.0`
-    /// (recorded there, so the served head moves; `reregister` without the upload), and the pass
-    /// goes on under it; the heartbeat is placed, deposits promoted, then `local_deletions` and
-    /// re-seals.
+    /// certificates), stamped when this node writes, then `local_deletions`. With `host` (no
+    /// host in `label.0`) it leaves this node's store as a pass at a host would leave that host:
+    /// a newer established epoch first issues a child step of the head when that head is
+    /// recorded in `label.0` (recorded there, so the served head moves; `reregister` without the
+    /// upload), and the pass goes on under it; the heartbeat is placed, deposits promoted, and
+    /// after the deletions re-seals.
     fn local_pass(&mut self, g: Tid, l: LabelId, index: u64, head: &osis_label::Step, host: bool) -> Result<()> {
         let _s = crate::costs::span("pass: local");
         let (mut keys, read_ok) = self.usable_keys(&g, index, head)?;
@@ -644,10 +644,12 @@ impl SyncEngine {
                 }
             }
         }
+        // what this node's store must not hold goes, whoever else holds the label: an own entry
+        // no host took meets no host's deletion
+        let settled = self.unsettled_sets(!w.unopened.is_empty(), false)?.0.is_empty();
+        self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
+        self.local_deletions(&p.at(&snaps, settled), &bodies, &scope, &mut left)?;
         if host {
-            let settled = self.unsettled_sets(!w.unopened.is_empty(), false)?.0.is_empty();
-            self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
-            self.local_deletions(&p.at(&snaps, settled), &bodies, &scope, &mut left)?;
             // a node serving the label alone decides here: nobody runs a pass at a host for it
             self.reseal(&g, l, w)?;
             self.repair_suspects(w)?;

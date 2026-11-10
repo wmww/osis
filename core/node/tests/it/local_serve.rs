@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! A label a node syncs with no host (spec/sync.md §5, co-reader peer): the node serves it as
-//! such a host would hold it after its sync, so what the label must no longer hold leaves the
-//! served state too, and a removal moves its head.
+//! Local passes (spec/sync.md §5, co-reader peer): a label a node syncs with no host is served
+//! as such a host would hold it after its sync, so what the label must no longer hold leaves the
+//! served state too, and a removal moves its head; under a label with hosts the node's own
+//! entries are placed in its store, and what it must not hold of those no host took leaves it.
 
 use crate::net;
 use net::*;
@@ -689,4 +690,81 @@ fn own_write_placed_under_a_hosted_label_with_no_host_connected_spec_sync_5() {
     net.blocked.remove(&(a, h));
     net.advance(60_000);
     assert!(placed.iter().all(|b| net.host_ids(h, &l).contains(b)), "the host pass uploads that entry");
+}
+
+// spec/sync.md §5 (Placed, deletion), notes/growth.md: a node overwriting a register under a
+// label with a host while that host is away places each write in its own store; what its own
+// replaces cover leaves that store before any host takes it, so its entries for the label stay
+// flat at n and 10n overwrites; the newest write, still must-hold, stays and reaches the host
+// once back.
+#[test]
+fn own_entries_covered_while_the_host_is_away_leave_spec_sync_5() {
+    let mut net = Net::new();
+    let h = net.add_host();
+    let a = net.node(1, &[h]);
+    let g = net.group(a, &[], &[h]);
+    let t = net.item(a, g, g, "first");
+    let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let l = net.label(a);
+    net.blocked.insert((a, h));
+    net.drop_link(a, h);
+    net.run();
+    let mut last = None;
+    let mut at = |net: &mut Net, from: usize, to: usize| {
+        for i in from..to {
+            last = Some(net.write(a, t, &format!("v{i:08}")));
+            net.advance(1_000);
+            net.run();
+        }
+        net.sync(a).entries(&l).len()
+    };
+    at(&mut net, 0, 3);
+    let n1 = at(&mut net, 3, 13);
+    let n2 = at(&mut net, 13, 113);
+    assert!(n2 <= n1, "entries under the label grew with own overwrites while the host was away: {n1} -> {n2}");
+    let c = last.unwrap();
+    let of_c: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect();
+    assert_eq!(of_c.len(), 1, "the newest write stays placed");
+    net.blocked.remove(&(a, h));
+    net.advance(60_000);
+    assert!(of_c.iter().all(|b| net.host_ids(h, &l).contains(b)), "the host pass uploads the newest write");
+    assert_eq!(net.read(a, t), Some(s("v00000112")));
+}
+
+// spec/sync.md §5 (Placed, deleting at a host): an own entry whose upload is unanswered when a
+// newer own writes cover it stays in the node's store until that host answers, so the host pass
+// deletes it there; dropped at once, the host would keep that copy with nothing deleting it.
+#[test]
+fn covered_own_entry_mid_upload_leaves_the_host_too_spec_sync_5() {
+    let mut net = Net::new();
+    let h = net.add_host();
+    let a = net.node(1, &[h]);
+    let g = net.group(a, &[], &[h]);
+    let t = net.item(a, g, g, "first");
+    let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let l = net.label(a);
+    net.write(a, t, "v1");
+    net.run();
+    net.held_hosts.insert(h);
+    let c2 = net.write(a, t, "v2");
+    net.advance(1_000);
+    net.run();
+    let of = |net: &mut Net, c| net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect::<Vec<_>>();
+    let e2 = of(&mut net, c2);
+    assert_eq!(e2.len(), 1, "v2 placed");
+    for v in ["v3", "v4"] {
+        net.write(a, t, v);
+        net.advance(1_000);
+        net.run();
+    }
+    net.release_host(h);
+    net.advance(60_000);
+    net.advance(60_000);
+    assert!(!net.host_ids(h, &l).contains(&e2[0]), "the covered entry stays at the host");
+    assert!(of(&mut net, c2).is_empty(), "the covered entry stays at the node");
+    assert_eq!(net.read(a, t), Some(s("v4")));
 }

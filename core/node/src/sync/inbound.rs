@@ -1629,7 +1629,7 @@ impl SyncEngine {
         }
         // an upload of it unanswered elsewhere: the entry is kept until that host answers, so a
         // body forgotten meanwhile is deleted there too (`entry_status`, `memory_lost`)
-        if self.state.present_anywhere(&l, &b) || self.upload_in_flight(&l, &b) {
+        if self.held_elsewhere(&l, &b) {
             return Ok(false);
         }
         self.state.remove_entry(l, b);
@@ -1864,9 +1864,10 @@ impl SyncEngine {
         self.command(conn, Command::Sync { label: l, cursor: None, inline_limit: 0, entries: Vec::new(), gained: Vec::new() }, out)
     }
 
-    /// Whether an upload of entry `b` of `l` is unanswered on any connection.
-    pub(crate) fn upload_in_flight(&self, l: &LabelId, b: &BlobId) -> bool {
-        self.conns.values().any(|c| c.req.sent.contains_key(&(*l, *b)) || c.req.replacing.contains_key(&(*l, *b)))
+    /// Whether a host or peer holds entry `b` of `l`, or an upload of it is unanswered on some
+    /// connection (that host may hold it: its deletion follows from the answer).
+    pub(crate) fn held_elsewhere(&self, l: &LabelId, b: &BlobId) -> bool {
+        self.state.present_anywhere(l, b) || self.conns.values().any(|c| c.req.sent.contains_key(&(*l, *b)) || c.req.replacing.contains_key(&(*l, *b)))
     }
 
     /// Upload or Sync statuses. Code 9 (signed under a key older than the head's) needs nothing
@@ -1896,7 +1897,7 @@ impl SyncEngine {
             if code != Code::OK && self.state.is_memory(&l, &b) {
                 // kept only for this upload: a body forgotten meanwhile, held nowhere
                 let dead = matches!(self.state.entries.get(&(l, b)), Some(Entry { kind: Kind::Commit { commit, .. }, .. }) if !self.engine.holds_memory(commit));
-                if dead && !self.state.present_anywhere(&l, &b) && !self.upload_in_flight(&l, &b) {
+                if dead && !self.held_elsewhere(&l, &b) {
                     self.absent_at(None, l, b)?;
                 } else if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED) {
                     let raw = self.raw_now();

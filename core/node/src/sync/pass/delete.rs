@@ -6,8 +6,9 @@ use super::*;
 use crate::engine::MemoryDrop;
 
 impl SyncEngine {
-    /// The deletion step of a local pass, over the entries of `scope` no host or peer holds
-    /// (those go by their deletions, spec/sync.md §5-§7): a commit entry goes as `deletable` says
+    /// The deletion step of a local pass, under every label, over the entries of `scope` no host
+    /// or peer holds or is being sent (`held_elsewhere`: those go by their deletions, spec/sync.md
+    /// §5-§7): a commit entry goes as `deletable` says
     /// (a live body only with a carrier, a covering snapshot asked for meanwhile, even when its
     /// bytes are gone), an expired one outright; any other entry whose bytes this node no longer
     /// holds serves nothing and goes, one past its prefix's expiry goes outright (a heartbeat's
@@ -16,7 +17,7 @@ impl SyncEngine {
     /// waits goes into `left`.
     pub(super) fn local_deletions(&mut self, at: &At, bodies: &[Body], scope: &Scope, left: &mut Left) -> Result<()> {
         let (l, settled) = (at.l, at.settled);
-        let ids: Vec<BlobId> = self.scope_entries(&l, scope).into_iter().filter(|id| self.state.entries.contains_key(&(l, *id)) && !self.state.present_anywhere(&l, id)).collect();
+        let ids: Vec<BlobId> = self.scope_entries(&l, scope).into_iter().filter(|id| self.state.entries.contains_key(&(l, *id)) && !self.held_elsewhere(&l, id)).collect();
         self.stats.entries += ids.len() as u64;
         let now = self.now();
         let desired = desired(bodies);
@@ -73,7 +74,7 @@ impl SyncEngine {
         }
         // chunks of dropped deltas (a purge, spec/commits.md §5): those listed by the commits of
         // `scope` and the chunk entries it names
-        let cands = self.chunk_entries(&l, scope, |s, b| !s.state.present_anywhere(&l, b));
+        let cands = self.chunk_entries(&l, scope, |s, b| !s.held_elsewhere(&l, b));
         let (chunks, waiting) = self.dropped_chunks(&cands)?;
         left.blobs.extend(waiting);
         for b in chunks.into_keys() {
@@ -86,7 +87,7 @@ impl SyncEngine {
         // linked entry is
         let copied = self.copies_in(&l, scope);
         let mut gone = self.copy_links(&l, copied)?;
-        gone.retain(|b| !self.state.present_anywhere(&l, b));
+        gone.retain(|b| !self.held_elsewhere(&l, b));
         if !gone.is_empty() {
             let all: Vec<BlobId> = self.state.label_entries(&l).map(|(b, _)| b).collect();
             for b in self.linked_by(&l, all)? {

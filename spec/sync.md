@@ -231,11 +231,10 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - A cursor below a trimmed ephemeral log gets the live ephemeral entries added since in place of their add events.
 - **Co-reader peer**: A co-reader peer serving a label applies the same rule (relay-only uploads included: it passes a new one on to the label's hosts it syncs with, §9).
   - Between readers it serves its connection's shared set by the Stream (§10) alone; a peer opens nothing there and uploads nothing.
-  - While a reader can pull it (§5 Placed), a node places in its own store what each label it syncs must hold of its own (the must-hold bodies it would upload, its certificates), whatever hosts are connected; a pass at a host uploads what that host lacks of it.
+  - While a reader can pull it (§5 Placed), a node places in its own store what each label it syncs must hold of its own (the must-hold bodies it would upload, its certificates), whatever hosts are connected; a pass at a host uploads what that host lacks of it. Of the entries in its store no host holds or is being sent, it drops what its sync would delete at a host (a body with live writes only once a carrier is under the label) or what expired.
   - A co-reader peer that syncs a label with no host serves it as its own host, while a reader can pull it (§5 Placed):
     - it issues a child step when it would re-register at a host (recorded in `label.0`);
     - it holds the bodies it holds that the label must hold (§6) and the blobs they link, its certificates, and the inbox blobs it sends to an inbox label it syncs with no host;
-    - it drops what its sync would delete at a host (a body with live writes only once a carrier is under the label) or what expired.
 - **Re-registration**: an admin node that holds the epochs a host's head registers (the write and admin ones established) and, for any role, an established epoch newer than the head's (spec/crypto.md §4; its own rotation or another node's) issues a child of that head when it next syncs that label at that host.
   - Order, at that host:
     1. it uploads, under the head's keys, the role commits of the actor the label's keys derive from (§2) that it holds and the host lacks (the rotation commits of the epochs it registers and of those they supersede in particular);
