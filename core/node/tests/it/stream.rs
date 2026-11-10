@@ -722,6 +722,7 @@ fn stream_run(seed: u64, paged: bool) {
                 net.run();
                 let (tb, ta) = (net.tid(b), net.tid(a));
                 let e = net.engine(b);
+                // bare edge: the rotation below boxes the holder before any pass (a grant by hand)
                 set_edge(e, g, ta, Role::Write);
                 let rec = recipients_of(e, &[(tb, Role::Admin), (ta, Role::Write)]);
                 rotation(e, g, &rec, 500 + step, true);
@@ -995,6 +996,7 @@ fn a_join_pages_behind_the_stream_spec_sync_10() {
     assert_eq!(net.read(a, past), Some(s("past")), "the stream moved past the group's entries");
     let (tb, ta) = (net.tid(b), net.tid(a));
     let e = net.engine(b);
+    // bare edge: the rotation below boxes the holder before any pass (a grant by hand)
     set_edge(e, g, ta, Role::Write);
     let rec = recipients_of(e, &[(tb, Role::Admin), (ta, Role::Write)]);
     rotation(e, g, &rec, 500, true);
