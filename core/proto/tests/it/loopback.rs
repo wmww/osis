@@ -791,6 +791,100 @@ fn queued_requests_stay_within_the_unanswered_bound() {
     assert_eq!(net.clients[1].outstanding(), 0);
 }
 
+/// A node's own requests (spec/wire.md §11.2: a Pull and top-bit Fetches of several labels),
+/// all asking `REPLY_BUDGET`, made at once.
+fn node_requests() -> Vec<Message> {
+    use osis_proto::msg::{NODE_IDS, Pull};
+    let budget = osis_proto::serving::REPLY_BUDGET as u64;
+    let id = |k: u32| NODE_IDS | (1 << 30) | k;
+    let mut reqs = vec![Message::Pull(Box::new(Pull { id: id(1), cursor: None, joins: vec![], inline_limit: 0, max_reply: budget, follow: true, ephemeral: true }))];
+    reqs.extend((2..10u32).map(|k| Message::Fetch { id: id(k), label: LabelId([k as u8; 16]), max_reply: budget, ids: vec![bid(u64::from(k))] }));
+    reqs
+}
+
+/// The node's answer to one of `node_requests`.
+fn node_answer(m: &Message) -> Message {
+    match m {
+        Message::Pull(p) => Message::PullReply(Box::new(osis_proto::msg::PullReply { id: p.id, events: vec![], cursor: None, whole: true, more: false, report: false, joins: vec![] })),
+        Message::Fetch { id, .. } => Message::FetchReply { id: *id, items: vec![] },
+        m => panic!("{m:?}"),
+    }
+}
+
+/// Frame bytes plus reply allowances of the requests in `bytes` (`MAX_UNANSWERED`'s count).
+fn charged(bytes: &[u8]) -> usize {
+    let mut d = FrameDecoder::new();
+    d.push(bytes);
+    let mut n = 0;
+    while let Ok(Some(body)) = d.next_frame() {
+        n += body.len() + 4 + osis_proto::client::allowance(&Message::decode(&body).unwrap());
+    }
+    n
+}
+
+// spec/sync.md §6 (flow control), spec/wire.md §11.2 (Pull): a node's own requests go within the
+// request window with every other, from the dialer's session and from the listener's: a Pull
+// and stream Fetches of several labels made at once, everything sent delivered as one input (a
+// real driver's read of several frames), close nothing and are all answered
+#[test]
+fn node_requests_stay_within_the_unanswered_bound_spec_sync_6() {
+    // dialer to listener: the listener closes a connection past `MAX_UNANSWERED`
+    let mut net = Net::new(1, 0);
+    let mut co = Vec::new();
+    for m in node_requests() {
+        co.extend(net.clients[0].handle(net.now, ClientInput::Command(Command::Peer(Box::new(m)))));
+    }
+    net.client_out(0, co);
+    let mut answered = 0;
+    loop {
+        let bytes: Vec<u8> = net.to_host[0].drain(..).flatten().collect();
+        if bytes.is_empty() {
+            break;
+        }
+        let so = net.hosts[0].handle(net.now, &mut net.store, ServingInput::Bytes(bytes));
+        assert!(!net.hosts[0].is_closed(), "closed past the unanswered bound");
+        for o in so {
+            if let ServingOutput::Peer(m) = o {
+                let so = net.hosts[0].handle(net.now, &mut net.store, ServingInput::Peer(Box::new(node_answer(&m))));
+                net.host_out(0, so);
+            }
+        }
+        let bytes: Vec<u8> = net.to_client[0].drain(..).flatten().collect();
+        let co = net.clients[0].handle(net.now, ClientInput::Bytes(bytes));
+        answered += co.iter().filter(|o| matches!(o, ClientOutput::Event(ClientEvent::Peer(m)) if matches!(**m, Message::PullReply(_) | Message::FetchReply { .. }))).count();
+        net.client_out(0, co);
+    }
+    assert_eq!(answered, node_requests().len());
+    assert_eq!(net.clients[0].in_flight(), 0);
+    // listener to dialer: no input the dialer gets carries more
+    let mut net = Net::new(1, 0);
+    let mut so = Vec::new();
+    for m in node_requests() {
+        so.extend(net.hosts[0].handle(net.now, &mut net.store, ServingInput::Peer(Box::new(m))));
+    }
+    net.host_out(0, so);
+    let mut answered = 0;
+    loop {
+        let bytes: Vec<u8> = net.to_client[0].drain(..).flatten().collect();
+        if bytes.is_empty() {
+            break;
+        }
+        assert!(charged(&bytes) <= osis_proto::client::MAX_UNANSWERED, "past the unanswered bound");
+        let co = net.clients[0].handle(net.now, ClientInput::Bytes(bytes));
+        for o in co {
+            if let ClientOutput::Event(ClientEvent::Peer(m)) = o {
+                let co = net.clients[0].handle(net.now, ClientInput::Command(Command::Peer(Box::new(node_answer(&m)))));
+                net.client_out(0, co);
+            }
+        }
+        let bytes: Vec<u8> = net.to_host[0].drain(..).flatten().collect();
+        let so = net.hosts[0].handle(net.now, &mut net.store, ServingInput::Bytes(bytes));
+        answered += so.iter().filter(|o| matches!(o, ServingOutput::Peer(m) if matches!(**m, Message::PullReply(_) | Message::FetchReply { .. }))).count();
+        net.host_out(0, so);
+    }
+    assert_eq!(answered, node_requests().len());
+}
+
 // spec/sync.md §6, spec/wire.md §11.2 (Sync, Fetch `max_reply`): a request's allowance is what it
 // asks, so a connection opens and syncs many labels in a few round trips, not two labels per trip.
 #[test]

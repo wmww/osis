@@ -22,7 +22,7 @@ pub const REPLY_BUDGET: usize = MAX_MESSAGE - 64 * 1024;
 /// Room in a reply for its head, and for one event without bytes on a page that must not be empty.
 const REPLY_HEAD: usize = 1024;
 /// Bytes of events or items a reply under `max_reply` may hold.
-fn reply_bound(max_reply: u64) -> usize {
+pub fn reply_bound(max_reply: u64) -> usize {
     usize::try_from(max_reply).unwrap_or(usize::MAX).min(REPLY_BUDGET).saturating_sub(REPLY_HEAD)
 }
 /// Log records or entries read from the store per call.
@@ -81,7 +81,8 @@ pub enum ServingInput {
     /// Notify pushes, sent in order (as many as the last `ServingOutput::Room` allowed); one for
     /// a subscription no longer live is dropped, one above its `max_reply` goes as `Lapsed`.
     Notify(Vec<(Id, crate::api::Payload)>),
-    /// A shared-set or stream message to send.
+    /// A shared-set or stream message to send: a request within the request window (spec/sync.md
+    /// §6), sent once it fits.
     Peer(Box<Message>),
     /// The upper layer has Notifies to send: `ServingOutput::Room` when the push rule allows.
     WantRoom,
@@ -220,6 +221,8 @@ pub struct ServingSession {
     port: bool,
     /// Only the client port: every other kind is answered Error 11 (a client listener).
     port_only: bool,
+    /// The node's own requests to the dialer (`ServingInput::Peer`), within the request window.
+    requests: crate::client::Window,
 }
 
 /// The label's head keys, reloaded when the head changed (a store read, never the path); none
@@ -292,6 +295,7 @@ impl ServingSession {
             room_wanted: false,
             port: false,
             port_only: false,
+            requests: crate::client::Window::default(),
         }
     }
 
@@ -434,6 +438,9 @@ impl ServingSession {
             return out;
         }
         self.input(now, store, input, &mut out);
+        if !self.closed {
+            self.requests.flush(|f| out.push(ServingOutput::Send(f)));
+        }
         let n: usize = out.iter().map(|x| if let ServingOutput::Send(b) = x { b.len() } else { 0 }).sum();
         self.written = self.written.saturating_add(n as u64);
         out
@@ -441,6 +448,7 @@ impl ServingSession {
 
     fn input(&mut self, now: u64, store: &mut dyn LabelStore, input: ServingInput, out: &mut Vec<ServingOutput>) {
         match input {
+            ServingInput::Peer(m) if m.is_request() => self.requests.queue(*m),
             ServingInput::Peer(m) => send(out, *m),
             ServingInput::Start => out.push(ServingOutput::Send(encode_frame(&Hello::new(now, self.cfg.challenge).encode()))),
             ServingInput::Bytes(b) => {
@@ -643,6 +651,9 @@ impl ServingSession {
         }
         use Message as M;
         if msg.for_node() {
+            if !msg.is_request() {
+                self.requests.answered(msg.id());
+            }
             out.push(ServingOutput::Peer(Box::new(msg)));
             return Ok(None);
         }

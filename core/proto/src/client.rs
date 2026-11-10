@@ -59,6 +59,60 @@ pub fn allowance(msg: &Message) -> usize {
         M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::Budget { .. } | M::SyncReply { .. } | M::ReconcileReply { .. } | M::FetchReply { .. } | M::Push { .. } | M::Reply { .. } | M::Notify { .. } | M::Proved { .. } | M::Resumed { .. } | M::Shared { .. } | M::PullReply(_) | M::Stream(_) | M::Applied { .. } => 0,
     }
 }
+/// A requester's window (spec/sync.md §6): requests go in the order made while the bytes in
+/// flight (per request sent and not answered, its frame plus `allowance`) are below `WINDOW`, so
+/// one always goes. A `ClientSession` sends every request by one; a `ServingSession` the node's
+/// own requests to the dialer (a stream's Pulls and Fetches, the shared set's).
+#[derive(Default)]
+pub(crate) struct Window {
+    waiting: VecDeque<Message>,
+    /// Requests sent and not answered, with their cost.
+    sent: BTreeMap<Id, usize>,
+    in_flight: usize,
+}
+
+impl Window {
+    pub(crate) fn queue(&mut self, m: Message) {
+        self.waiting.push_back(m);
+    }
+
+    /// Requests sent or waiting.
+    fn is_empty(&self) -> bool {
+        self.waiting.is_empty() && self.sent.is_empty()
+    }
+
+    /// The next request to send, while the window has room.
+    pub(crate) fn next(&mut self) -> Option<Message> {
+        if self.in_flight >= WINDOW.max(1) {
+            return None;
+        }
+        self.waiting.pop_front()
+    }
+
+    /// Request `m` went as `frame` bytes: its cost counts until it is answered.
+    pub(crate) fn sent(&mut self, m: &Message, frame: usize) {
+        let cost = frame.saturating_add(allowance(m));
+        self.in_flight = self.in_flight.saturating_add(cost);
+        self.sent.insert(m.id(), cost);
+    }
+
+    /// Request `id` was answered: whether it was one sent.
+    pub(crate) fn answered(&mut self, id: Id) -> bool {
+        let Some(cost) = self.sent.remove(&id) else { return false };
+        self.in_flight = self.in_flight.saturating_sub(cost);
+        true
+    }
+
+    /// Sends what fits (`Send` frames).
+    pub(crate) fn flush(&mut self, mut send: impl FnMut(Vec<u8>)) {
+        while let Some(m) = self.next() {
+            let frame = encode_frame(&m.encode());
+            self.sent(&m, frame.len());
+            send(frame);
+        }
+    }
+}
+
 /// Clock samples kept.
 const MAX_SAMPLES: usize = 9;
 /// Round trips before a clock offset is reported (one outlier among three moves nothing).
@@ -101,7 +155,8 @@ pub enum Command {
     /// This node's records for the peer (spec/sync.md §10, Pair key): answered by `Resumed`.
     Resume { nonce: [u8; 32], tags: Vec<[u8; 32]> },
     /// A shared-set or stream message (spec/wire.md §11.2 Beacons to NoRecord, Pull to
-    /// Applied), sent as is: the node answers these itself.
+    /// Applied), sent as is (a request once the window has room, in order with the session's
+    /// own): the node answers these itself.
     Peer(Box<Message>),
     Register { label: LabelId, step: Step, claim_set: Option<ClaimSet> },
     /// The registration path after `after` (from the genesis step when none), all pages.
@@ -291,10 +346,9 @@ impl Pending {
     }
 }
 
-/// A request: its `cost` against `WINDOW` once it left the queue, and the command it serves
-/// (`ClientSession::commands`; `NO_COMMAND` for pings).
+/// A request not answered yet: the command it serves (`ClientSession::commands`; `NO_COMMAND`
+/// for pings). The node's own requests (`Command::Peer`) are in the window only.
 struct Req {
-    cost: Option<usize>,
     cmd: u64,
     p: Pending,
 }
@@ -315,12 +369,9 @@ pub struct ClientSession {
     peer: Option<Hello>,
     closed: bool,
     next_id: Id,
-    /// Requests not yet answered: sent, or waiting in `waiting` for room in the window.
+    /// Requests not yet answered: sent, or waiting in `window` for room.
     pending: BTreeMap<Id, Req>,
-    /// Requests not yet sent, in order.
-    waiting: VecDeque<(Id, Message)>,
-    /// Bytes in flight (costs of the sent requests of `pending`).
-    in_flight: usize,
+    window: Window,
     /// Last progress (a byte received, `Sent`, the first request going out after none was in
     /// flight).
     progress: u64,
@@ -355,8 +406,7 @@ impl ClientSession {
             closed: false,
             next_id: 0,
             pending: BTreeMap::new(),
-            waiting: VecDeque::new(),
-            in_flight: 0,
+            window: Window::default(),
             progress: 0,
             now: 0,
             next_ping: 0,
@@ -385,7 +435,7 @@ impl ClientSession {
     /// timeout then finds a dead connection. Never with a request outstanding: a send counts as
     /// progress, so it would push that timeout back.
     pub fn ping_if_quiet(&mut self, now: u64, quiet_ms: u64) -> Vec<ClientOutput> {
-        if self.pending.is_empty() && self.progress.saturating_add(quiet_ms) <= now {
+        if self.window.is_empty() && self.progress.saturating_add(quiet_ms) <= now {
             self.next_ping = now;
         }
         self.handle(now, ClientInput::Timer)
@@ -398,7 +448,7 @@ impl ClientSession {
 
     /// Requests waiting for room in the window (`WINDOW`).
     pub fn unsent(&self) -> usize {
-        self.waiting.len()
+        self.window.waiting.len()
     }
 
     /// Commands given so far: the tag of the last one (`answered`).
@@ -414,7 +464,7 @@ impl ClientSession {
 
     /// Bytes in flight against `WINDOW`.
     pub fn in_flight(&self) -> usize {
-        self.in_flight
+        self.window.in_flight
     }
 
     pub fn handle(&mut self, now: u64, input: ClientInput) -> Vec<ClientOutput> {
@@ -449,7 +499,7 @@ impl ClientSession {
             }
             ClientInput::Timer => {
                 self.timer = 0;
-                if self.in_flight > 0 && self.progress.saturating_add(STALL_TIMEOUT_MS) <= now {
+                if self.window.in_flight > 0 && self.progress.saturating_add(STALL_TIMEOUT_MS) <= now {
                     event(&mut out, ClientEvent::PeerError(Error::Timeout));
                     self.close(&mut out);
                     return out;
@@ -477,21 +527,18 @@ impl ClientSession {
 
     /// Sends waiting requests while the window has room (one always goes when none is in flight).
     fn flush(&mut self, out: &mut Vec<ClientOutput>) {
-        while !self.closed && self.in_flight < WINDOW.max(1) {
-            let Some((id, mut msg)) = self.waiting.pop_front() else { break };
-            let Some(req) = self.pending.get_mut(&id) else { continue };
-            if let (Pending::Ping { sent }, Message::Ping { wall_ms, .. }) = (&mut req.p, &mut msg) {
+        while !self.closed {
+            let Some(mut msg) = self.window.next() else { break };
+            if let (Some(Req { p: Pending::Ping { sent }, .. }), Message::Ping { wall_ms, .. }) = (self.pending.get_mut(&msg.id()), &mut msg) {
                 // the clock sample starts when the ping leaves
                 *sent = self.now;
                 *wall_ms = self.now;
             }
             let frame = encode_frame(&msg.encode());
-            let cost = frame.len().saturating_add(allowance(&msg));
-            if self.in_flight == 0 {
+            if self.window.in_flight == 0 {
                 self.progress = self.now;
             }
-            req.cost = Some(cost);
-            self.in_flight = self.in_flight.saturating_add(cost);
+            self.window.sent(&msg, frame.len());
             out.push(ClientOutput::Send(frame));
         }
     }
@@ -502,7 +549,7 @@ impl ClientSession {
             return;
         }
         let mut t = self.next_ping;
-        if self.in_flight > 0 {
+        if self.window.in_flight > 0 {
             t = t.min(self.progress.saturating_add(STALL_TIMEOUT_MS));
         }
         if t != self.timer {
@@ -524,16 +571,32 @@ impl ClientSession {
     /// `request`, returning the id it took.
     fn request_id(&mut self, msg: impl FnOnce(Id) -> Message, pending: Pending) -> Id {
         loop {
-            self.next_id = self.next_id.wrapping_add(1);
+            // the node's range (`NODE_IDS`) is the node's own
+            self.next_id = self.next_id.wrapping_add(1) & !NODE_IDS;
             if self.next_id != 0 && !self.pending.contains_key(&self.next_id) && !self.api_subs.contains_key(&self.next_id) {
                 break;
             }
         }
         let id = self.next_id;
-        self.pending.insert(id, Req { cost: None, cmd: self.tag, p: pending });
+        self.pending.insert(id, Req { cmd: self.tag, p: pending });
         *self.open.entry(self.tag).or_insert(0) += 1;
-        self.waiting.push_back((id, msg(id)));
+        self.window.queue(msg(id));
         id
+    }
+
+    /// Request `id` was answered: its entry, if it was one sent.
+    fn answered_req(&mut self, id: Id) -> Option<Req> {
+        if !self.pending.contains_key(&id) || !self.window.answered(id) {
+            return None;
+        }
+        let req = self.pending.remove(&id)?;
+        if let Some(n) = self.open.get_mut(&req.cmd) {
+            *n -= 1;
+            if *n == 0 {
+                self.open.remove(&req.cmd);
+            }
+        }
+        Some(req)
     }
 
     fn command(&mut self, c: Command, out: &mut Vec<ClientOutput>) {
@@ -561,6 +624,9 @@ impl ClientSession {
                 }
                 self.request(|id| Message::Resume { id, nonce, tags }, Pending::Resume);
             }
+            // the node's own requests (ids in its range, answered to the node) share the window;
+            // its answers go at once
+            Command::Peer(m) if m.is_request() => self.window.queue(*m),
             Command::Peer(m) => send(out, *m),
             Command::Register { label, step, claim_set } => self.request(|id| Message::Register { id, label, step, claim_set }, Pending::Register(label)),
             Command::Path { label, after } => self.request(|id| Message::Path { id, label, after }, Pending::Path(label)),
@@ -773,25 +839,22 @@ impl ClientSession {
                     self.api_subs.remove(&sub);
                 }
             }
-            m if m.for_node() => event(out, ClientEvent::Peer(Box::new(m))),
+            m if m.for_node() => {
+                if !m.is_request() {
+                    self.window.answered(m.id());
+                }
+                event(out, ClientEvent::Peer(Box::new(m)))
+            }
             m if m.is_request() => send(out, Message::Error { id: m.id(), code: Code::UNSUPPORTED }),
             m => self.reply(now, m, out),
         }
     }
 
     fn reply(&mut self, now: u64, m: Message, out: &mut Vec<ClientOutput>) {
-        let Some(Req { cost: Some(cost), .. }) = self.pending.get(&m.id()) else {
+        let Some(Req { p: pending, cmd }) = self.answered_req(m.id()) else {
             event(out, ClientEvent::PeerError(Error::Malformed("reply to no request")));
             return;
         };
-        self.in_flight = self.in_flight.saturating_sub(*cost);
-        let Some(Req { p: pending, cmd, .. }) = self.pending.remove(&m.id()) else { return };
-        if let Some(n) = self.open.get_mut(&cmd) {
-            *n -= 1;
-            if *n == 0 {
-                self.open.remove(&cmd);
-            }
-        }
         // follow-ups (next pages, entries sent on their own) serve the same command
         self.tag = cmd;
         use ClientEvent as E;

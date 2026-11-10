@@ -186,8 +186,8 @@ pub(crate) struct Pulling {
     joins: BTreeMap<LabelId, Option<Vec<u8>>>,
     /// The Pull in flight: its id, its place in send order (`sent`) and the joins it named.
     asked: Option<(u32, u64, Vec<LabelId>)>,
-    /// Fetches in flight, by id: their place in send order, the member and the blobs asked.
-    fetching: BTreeMap<u32, (u64, LabelId, Vec<BlobId>)>,
+    /// Fetches asked, by id.
+    fetching: BTreeMap<u32, Fetching>,
     /// Requests of the stream sent on this connection (Pulls and Fetches): answered in this order
     /// (`stream_skipped`).
     sent: u64,
@@ -211,6 +211,15 @@ pub(crate) struct Pulling {
     pulls: u64,
     /// The last Pull was answered Error: asked again at this time (raw ms), `resync_ms` after.
     retry_at: Option<u64>,
+}
+
+/// A Fetch of the stream not answered yet: its place in send order (`Pulling::sent`), the member,
+/// the blobs and the `max_reply` asked.
+struct Fetching {
+    seq: u64,
+    label: LabelId,
+    ids: Vec<BlobId>,
+    max_reply: u64,
 }
 
 /// A position the stream reached that waits for bodies (`Pulling::unsettled`): stored, reported
@@ -604,9 +613,9 @@ impl SyncEngine {
     /// answered with nothing. Whether it answered one.
     fn stream_refused(&mut self, conn: ConnId, id: u32, code: osis_proto::Code, out: &mut Vec<Action>) -> Result<bool> {
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(false) };
-        if let Some((seq, l, ids)) = p.fetching.remove(&id) {
-            self.stream_skipped(conn, seq, out)?;
-            self.stream_unfetched(conn, l, ids, out)?;
+        if let Some(f) = p.fetching.remove(&id) {
+            self.stream_skipped(conn, f.seq, out)?;
+            self.stream_unfetched(conn, f.label, f.ids, out)?;
             return Ok(true);
         }
         let Some(seq) = p.asked.as_ref().filter(|(x, ..)| *x == id).map(|(_, s, _)| *s) else { return Ok(false) };
@@ -638,9 +647,9 @@ impl SyncEngine {
     /// skipped Pull one refused.
     fn stream_skipped(&mut self, conn: ConnId, seq: u64, out: &mut Vec<Action>) -> Result<()> {
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
-        let fetches: Vec<u32> = p.fetching.iter().filter(|(_, (s, ..))| *s < seq).map(|(id, _)| *id).collect();
+        let fetches: Vec<u32> = p.fetching.iter().filter(|(_, f)| f.seq < seq).map(|(id, _)| *id).collect();
         let pull = p.asked.as_ref().is_some_and(|(_, s, _)| *s < seq);
-        let skipped: Vec<(LabelId, Vec<BlobId>)> = fetches.into_iter().filter_map(|id| p.fetching.remove(&id)).map(|(_, l, ids)| (l, ids)).collect();
+        let skipped: Vec<(LabelId, Vec<BlobId>)> = fetches.into_iter().filter_map(|id| p.fetching.remove(&id)).map(|f| (f.label, f.ids)).collect();
         if pull {
             self.stream_pull_refused(conn);
             self.diag("pull skipped".to_string());
@@ -842,7 +851,7 @@ impl SyncEngine {
                 }
             }
             for (l, ids) in ask {
-                self.stream_fetch(conn, l, ids, out)?;
+                self.stream_fetch(conn, l, ids, false, out)?;
             }
         }
         Ok(())
@@ -953,22 +962,25 @@ impl SyncEngine {
 
     /// Whether blob `b` is asked of a reader and not received yet.
     pub(crate) fn stream_fetching(&self, b: &BlobId) -> bool {
-        self.streams.values().any(|s| s.pulling.fetching.values().any(|(_, _, ids)| ids.contains(b)))
+        self.streams.values().any(|s| s.pulling.fetching.values().any(|f| f.ids.contains(b)))
     }
 
     /// Fetches the bodies `ids` of member `l` from `conn`'s peer, but those asked for already
-    /// on any connection: one source at a time per blob.
-    pub(crate) fn stream_fetch(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, out: &mut Vec<Action>) -> Result<()> {
+    /// on any connection: one source at a time per blob. As any Fetch (spec/wire.md §11.3):
+    /// `FIRST_REPLY` per ID, or `REPLY_BUDGET` for the rest of an answered one (`again`).
+    pub(crate) fn stream_fetch(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, again: bool, out: &mut Vec<Action>) -> Result<()> {
         let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching(b)).collect();
         if ids.is_empty() {
             return Ok(());
         }
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
+        let budget = osis_proto::serving::REPLY_BUDGET;
         let mut msgs = Vec::new();
         for batch in ids.chunks(osis_proto::msg::MAX_ITEMS) {
             let (id, seq) = p.next();
-            p.fetching.insert(id, (seq, l, batch.to_vec()));
-            msgs.push(Message::Fetch { id, label: l, max_reply: osis_proto::serving::REPLY_BUDGET as u64, ids: batch.to_vec() });
+            let max_reply = if again { budget } else { osis_proto::client::FIRST_REPLY.saturating_mul(batch.len()).min(budget) } as u64;
+            p.fetching.insert(id, Fetching { seq, label: l, ids: batch.to_vec(), max_reply });
+            msgs.push(Message::Fetch { id, label: l, max_reply, ids: batch.to_vec() });
         }
         for m in msgs {
             self.shared_send(conn, m, out)?;
@@ -977,11 +989,11 @@ impl SyncEngine {
     }
 
     /// Answers a reader's Fetch from what this node holds of a member of the connection's
-    /// shared set, in order within `max_reply`: what does not fit is left out (asked again), what
-    /// is not held is answered with nothing.
+    /// shared set, in order within `max_reply`: what does not fit is left out (asked again; under
+    /// `REPLY_BUDGET` any blob fits), what is not held is answered with nothing.
     fn stream_serve_fetch(&mut self, conn: ConnId, id: u32, l: LabelId, max_reply: u64, ids: Vec<BlobId>, out: &mut Vec<Action>) -> Result<()> {
         let member = self.records.shared.get(&conn).is_some_and(|s| s.has(&l));
-        let mut budget = usize::try_from(max_reply).unwrap_or(usize::MAX).min(osis_proto::serving::REPLY_BUDGET).saturating_sub(256);
+        let mut budget = osis_proto::serving::reply_bound(max_reply);
         let mut items = Vec::new();
         for b in ids {
             let held = if member { self.state.entries.get(&(l, b)).map(|e| (e.wrap, e.stamp)) } else { None };
@@ -990,7 +1002,7 @@ impl SyncEngine {
                 None => None,
             };
             let n = entry.as_ref().map_or(40, |(x, ..)| x.len().saturating_add(200));
-            if n > budget && !items.is_empty() {
+            if n > budget {
                 break;
             }
             budget = budget.saturating_sub(n);
@@ -1001,17 +1013,23 @@ impl SyncEngine {
 
     /// A reader answered a fetch: what it delivered is applied as its events are; what it did
     /// not is asked of the next source of `l` (by connection order), else waits for an
-    /// announcement; what did not fit is asked again here.
+    /// announcement; what did not fit is asked again here under `REPLY_BUDGET`, where any blob
+    /// fits (none fitting there: answered with none).
     fn stream_fetch_reply(&mut self, conn: ConnId, id: u32, items: Vec<osis_proto::msg::Fetched>, out: &mut Vec<Action>) -> Result<()> {
-        let Some((seq, l, asked)) = self.streams.get_mut(&conn).and_then(|s| s.pulling.fetching.remove(&id)) else { return Ok(()) };
-        self.stream_skipped(conn, seq, out)?;
+        let Some(f) = self.streams.get_mut(&conn).and_then(|s| s.pulling.fetching.remove(&id)) else { return Ok(()) };
+        self.stream_skipped(conn, f.seq, out)?;
+        let l = f.label;
         let answered: BTreeSet<BlobId> = items.iter().map(|f| f.blob_id).collect();
+        let none = items.is_empty();
         self.stream_fetched(conn, l, items, out)?;
-        let rest: Vec<BlobId> = asked.into_iter().filter(|b| !answered.contains(b)).collect();
-        if !rest.is_empty() {
-            self.stream_fetch(conn, l, rest, out)?;
+        let rest: Vec<BlobId> = f.ids.into_iter().filter(|b| !answered.contains(b)).collect();
+        if rest.is_empty() {
+            Ok(())
+        } else if none && f.max_reply >= osis_proto::serving::REPLY_BUDGET as u64 {
+            self.stream_unfetched(conn, l, rest, out)
+        } else {
+            self.stream_fetch(conn, l, rest, true, out)
         }
-        Ok(())
     }
 
     fn stream_fetched(&mut self, conn: ConnId, l: LabelId, items: Vec<osis_proto::msg::Fetched>, out: &mut Vec<Action>) -> Result<()> {
@@ -1039,7 +1057,7 @@ impl SyncEngine {
         self.stream_unowe(conn, &gone);
         let next = self.records.shared.iter().find(|(c, s)| **c > conn && s.has(&l)).map(|(c, _)| *c);
         match next {
-            Some(c) => self.stream_fetch(c, l, failed, out),
+            Some(c) => self.stream_fetch(c, l, failed, false, out),
             None => Ok(()),
         }
     }

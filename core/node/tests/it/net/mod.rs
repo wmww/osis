@@ -131,6 +131,11 @@ pub struct Net {
     pub tamper: Option<Tamper>,
     /// Set: `tamper` sees only what this node sends to that one.
     pub tamper_link: Option<(usize, usize)>,
+    /// Peer bytes sent on a link before the last ones queued there were delivered join them:
+    /// one input of several frames, as a real driver's read (else each send is its own input).
+    pub batch_reads: bool,
+    /// Peer connections a node closed over the peer's messages (`Action::Close`).
+    pub peer_closes: usize,
 }
 
 /// Whether whole frames `b` hold an Opened reply.
@@ -208,7 +213,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 impl Net {
     /// A network whose new nodes are each their own account's only node.
     pub fn new() -> Net {
-        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None }
+        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, batch_reads: false, peer_closes: 0 }
     }
 
     /// A network whose new nodes join no account: the test makes or pairs them.
@@ -627,13 +632,17 @@ impl Net {
                         }
                         bytes = kept;
                     }
+                    let life = self.nodes[m].life;
                     if self.held.contains(&(n, m)) {
-                        self.held_messages.push(Msg::ToNode(m, self.nodes[m].life, pc, bytes));
+                        self.held_messages.push(Msg::ToNode(m, life, pc, bytes));
+                    } else if let Some(Msg::ToNode(_, _, _, b)) = self.queue.iter_mut().rev().find(|x| matches!(x, Msg::Up(y, _, c) | Msg::ToNode(y, _, c, _) | Msg::Close(y, _, c) if *y == m && *c == pc)).filter(|x| self.batch_reads && matches!(x, Msg::ToNode(_, l, ..) if *l == life)) {
+                        b.extend(bytes);
                     } else {
-                        self.queue.push_back(Msg::ToNode(m, self.nodes[m].life, pc, bytes));
+                        self.queue.push_back(Msg::ToNode(m, life, pc, bytes));
                     }
                 }
                 Action::Close { conn } if self.plinks.contains_key(&(n, conn)) => {
+                    self.peer_closes += 1;
                     let (m, pc) = self.plinks.remove(&(n, conn)).unwrap();
                     self.plinks.remove(&(m, pc));
                     self.queue.push_back(Msg::Close(m, self.nodes[m].life, pc));

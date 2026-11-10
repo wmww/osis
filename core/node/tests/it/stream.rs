@@ -280,6 +280,36 @@ fn a_mesh_body_crosses_once_spec_sync_10() {
     assert_eq!(crossings, 2, "once to a, once to c");
 }
 
+// spec/sync.md §6 (flow control), §10 (Stream, Bodies): stream Pulls and Fetches go within the
+// request window, so bodies of several labels fetched at once in a mesh (each past a Fetch's
+// first `max_reply`, asked again under `REPLY_BUDGET`), with what a node sends delivered as one
+// read, close no connection and all arrive
+#[test]
+fn mesh_bodies_of_many_labels_fetched_at_once_spec_sync_6() {
+    let mut net = Net::new();
+    net.batch_reads = true;
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    let c = net.node(3, &[]);
+    reach_ed(&mut net, b);
+    reach_ed(&mut net, c);
+    let gs: Vec<Tid> = (0..4).map(|i| net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10 + i)).collect();
+    net.pair(c, a);
+    net.pair(b, c);
+    net.run();
+    net.advance(120_000);
+    let closes = net.peer_closes;
+    // past `FIRST_REPLY`, not compressible
+    let body = |i: u64| (0..100_000u64).map(|k| char::from(b'a' + (osis_base::hash::hash(&(i * 1_000_000 + k).to_le_bytes())[0] % 26))).collect::<String>();
+    let ts: Vec<(Tid, String)> = gs.iter().zip(0u64..).map(|(g, i)| (net.item(b, *g, *g, &body(i)), body(i))).collect();
+    net.run();
+    net.advance(60_000);
+    assert_eq!(net.peer_closes, closes, "no connection closed");
+    for (t, v) in ts {
+        assert_eq!((net.read(a, t), net.read(c, t)), (Some(s(&v)), Some(s(&v))));
+    }
+}
+
 /// Pulls node `a` sends once back after `b`'s log aged out the deletions of what `a` held, at
 /// `n` sync IDs, and whether `a` then holds what `b` holds.
 fn back_after_aging(n: usize) -> (usize, bool, bool) {
