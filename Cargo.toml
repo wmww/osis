@@ -1,7 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["core/*", "libs/chat", "core/test/sim", "core/test/crdt-model", "core/test/roles-model", "core/test/held-model", "core/test/vectors", "cli"]
-exclude = ["core/test", "libs/kit", "app"]
+members = ["core/*", "libs/chat", "core/test/sim", "core/test/crdt-model", "core/test/roles-model", "core/test/held-model", "core/test/vectors", "cli", "libs/kit", "app", "app/android"]
+# Core: what a bare `cargo build`/`test`/`clippy` selects. The GUI (libs/kit, app, app/android;
+# notes/app.md) builds only when named (`-p`, `--workspace`), sharing core's artifacts (notes/build.md).
+default-members = ["core/*", "libs/chat", "core/test/sim", "core/test/crdt-model", "core/test/roles-model", "core/test/held-model", "core/test/vectors", "cli"]
+# libs/kit/patches: vendored crates, reached through [patch] only
+exclude = ["core/test", "libs/kit/patches"]
 
 [workspace.package]
 version = "0.1.0"
@@ -27,6 +31,8 @@ osis-engine = { path = "core/engine" }
 osis-node = { path = "core/node" }
 osis = { path = "core/osis" }
 osis-chat = { path = "libs/chat" }
+osis-kit = { path = "libs/kit" }
+osis-app = { path = "app" }
 osis-sim = { path = "core/test/sim" }
 crdt-model = { path = "core/test/crdt-model" }
 held-model = { path = "core/test/held-model" }
@@ -47,10 +53,23 @@ redb = { version = "2.6", default-features = false }
 tokio = { version = "1.53", default-features = false, features = ["rt", "rt-multi-thread", "sync", "time", "macros", "net"] }
 clap = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions", "env"] }
 anyhow = "1.0"
+# The GUI. One pinned Masonry (notes/app.md Toolkit); re-exported as osis_kit::masonry.
+masonry = "=0.4.0"
+masonry_winit = "=0.4.0"
+# Civil time and the system time zone for calendar views (notes/architecture.md).
+jiff = "0.2"
 # Feature pins only (notes/build.md, Feature unification): default features, as quinn-proto and
 # libcrux-platform enable them.
 rand = "0.10"
 libc = "0.2"
+# As the GUI stack enables them: bitflags (wgpu-types), num-traits (half under naga), tracing and
+# tracing-core with defaults (masonry); in core they come in through proptest and quinn.
+bitflags = { version = "2.13", features = ["serde", "std"] }
+num-traits = { version = "0.2", features = ["libm"] }
+tracing = "0.1"
+tracing-core = "0.1"
+# The reverse, for the GUI: proptest's default features (regex-syntax under tracing-subscriber).
+regex-syntax = "0.8"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -84,3 +103,9 @@ opt-level = 2
 [profile.release]
 codegen-units = 16
 lto = "thin"
+
+# Patched low-level crates of the GUI stack, vendored in libs/kit/patches/ (notes/app.md, Patches).
+[patch.crates-io]
+masonry = { path = "libs/kit/patches/masonry" }
+masonry_core = { path = "libs/kit/patches/masonry_core" }
+masonry_winit = { path = "libs/kit/patches/masonry_winit" }

@@ -102,8 +102,8 @@ check("schema file names its readers", t, "crates touched: osis-mid", "top_exhau
 t = out("--paths", "schema/orphan.osis", "schema/README.md")
 check("schema without a reader", t, "schema/orphan.osis (no workspace crate reads it)", "schema/README.md (no crate, not classified", "nothing to run")
 
-t = out("--paths", "core/test/tla/x.tla", "weird.txt", "app/a.rs", "libs/kit/b.rs")
-check("outside any crate", t, "(core/test/tla/run.sh", "weird.txt (no crate, not classified", "app/a.rs (the gate's GUI steps", "libs/kit/b.rs (the gate's GUI steps", "nothing to run")
+t = out("--paths", "core/test/tla/x.tla", "weird.txt")
+check("outside any crate", t, "(core/test/tla/run.sh", "weird.txt (no crate, not classified", "nothing to run")
 
 # a real diff: uses merge-base with main and picks up untracked files
 git("checkout", "-qb", "t")

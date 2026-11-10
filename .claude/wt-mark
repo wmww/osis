@@ -1,12 +1,15 @@
-# Run by `wt release` in each workspace (repo root, libs/kit/) before it prunes that target: every
-# standard command (notes/build.md), so units a task skipped stay. Each is a no-op on a gated tree.
+# Run by `wt release` before it prunes the target: every standard command (notes/build.md), so
+# units a task skipped stay. Each is a no-op on a gated tree.
 set -e
-if [ "$(basename "$PWD")" = kit ]; then
-  cargo test --workspace --no-run
-  cargo check --workspace --all-targets
-  cargo clippy --workspace --all-targets -- -D warnings
-else
-  cargo test --workspace --no-run
-  cargo build --workspace --all-targets
-  cargo clippy --workspace --all-targets -- -D warnings
+cargo test --no-run
+cargo build --all-targets
+cargo clippy --all-targets -- -D warnings
+# The GUI's, where they were built before (an rmeta: linted; an rlib: built): marking never builds
+# the GUI stack cold.
+gui="-p osis-kit -p osis-app -p osis-android"
+if ls target/debug/deps/libosis_kit-*.rmeta >/dev/null 2>&1; then
+  cargo clippy $gui --all-targets -- -D warnings
+fi
+if ls target/debug/deps/libosis_kit-*.rlib >/dev/null 2>&1; then
+  cargo test $gui --no-run
 fi

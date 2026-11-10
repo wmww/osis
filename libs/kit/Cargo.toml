@@ -1,52 +1,3 @@
-# The GUI workspace (notes/app.md, libs/kit and app): osis-kit and osis-app, apart from the core
-# workspace at the repo root so the GUI stack stays out of core's builds, gate and feature
-# unification. This manifest is its root (Cargo.lock and target/ live here); `[patch]` entries
-# for forked low-level crates go here. Core crates come in by path: only osis, osis-schema and osis-chat.
-[workspace]
-resolver = "2"
-members = [".", "../../app", "../../app/android"]
-# a bare `cargo build` here builds the app too
-default-members = [".", "../../app", "../../app/android"]
-
-[workspace.package]
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.88"
-license = "MIT"
-
-# Every external dependency needs its line in notes/architecture.md (Dependency policy).
-[workspace.dependencies]
-osis = { path = "../../core/osis" }
-osis-schema = { path = "../../core/schema" }
-osis-chat = { path = "../chat" }
-osis-kit = { path = "." }
-osis-app = { path = "../../app" }
-# One pinned Masonry (notes/app.md Toolkit); re-exported as osis_kit::masonry.
-masonry = "=0.4.0"
-masonry_winit = "=0.4.0"
-# Civil time and the system time zone for calendar views (notes/architecture.md).
-jiff = "0.2"
-tokio = { version = "1.53", default-features = false, features = ["rt", "time"] }
-
-[workspace.lints.rust]
-unsafe_code = "forbid"
-
-# No panics on data (notes/architecture.md §3). Tests are exempt via the repo's clippy.toml.
-[workspace.lints.clippy]
-unwrap_used = "deny"
-expect_used = "deny"
-panic = "deny"
-indexing_slicing = "deny"
-
-[profile.dev]
-debug = "line-tables-only"
-opt-level = 1
-
-# Dependencies optimized: wgpu, Vello and the osis crypto are slow unoptimized.
-[profile.dev.package."*"]
-opt-level = 2
-debug = false
-
 [package]
 name = "osis-kit"
 description = "The first-party UI toolkit over Masonry: windowing, the osis-Masonry driver, widgets, theme"
@@ -74,12 +25,9 @@ jiff.workspace = true
 tokio.workspace = true
 masonry.workspace = true
 masonry_winit.workspace = true
+# Feature pin, unused here (notes/build.md, Feature unification): as core's proptest enables it.
+regex-syntax.workspace = true
 
 [build-dependencies]
 osis-schema.workspace = true
 
-# Patched low-level crates, vendored in patches/ (notes/app.md, Patches).
-[patch.crates-io]
-masonry = { path = "patches/masonry" }
-masonry_core = { path = "patches/masonry_core" }
-masonry_winit = { path = "patches/masonry_winit" }

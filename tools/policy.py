@@ -5,9 +5,8 @@ target marked `test = false` / `doctest = false` has unit tests / doctests that 
 and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name, and
 osis-host cannot reach decryption (`host_blind`), and no test can bind the real LAN port or
 announce on the real LAN (`real_lan_tests`).
-Usage: python3 tools/policy.py [WORKSPACE]   (from the repo root; WORKSPACE: the directory of a
-workspace's root manifest, `.` (core, default) or `libs/kit` (the GUI workspace, notes/app.md); vendored
-crates under `patches/` are not ours and are skipped; exit 1 on any violation)"""
+Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
+libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
 import glob, os, re, sys, tomllib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -17,10 +16,9 @@ def load(path):
     with open(path, "rb") as f:
         return tomllib.load(f)
 
-WS = os.path.normpath(os.path.join(ROOT, sys.argv[1] if len(sys.argv) > 1 else "."))
-ws = load(os.path.join(WS, "Cargo.toml"))
+ws = load(os.path.join(ROOT, "Cargo.toml"))
 internal = {n for n, d in ws["workspace"]["dependencies"].items() if isinstance(d, dict) and "path" in d}
-members = sorted(os.path.normpath(m) for pat in ws["workspace"]["members"] for m in glob.glob(os.path.join(WS, pat))
+members = sorted(os.path.normpath(m) for pat in ws["workspace"]["members"] for m in glob.glob(os.path.join(ROOT, pat))
                  if os.path.isfile(os.path.join(m, "Cargo.toml")))
 
 arch = open(os.path.join(ROOT, "notes/architecture.md")).read()
@@ -220,7 +218,7 @@ SIDES_NAMES = re.compile(r"\bsides::|\bDisputeInfo\b|\bDisputeDetected\b|\bDispu
 SIDES_HOOKS = ("core/engine/src/engine/mod.rs", "core/engine/src/apply/mod.rs", "core/engine/src/events/mod.rs", "core/engine/src/lib.rs")
 
 def dispute_types():
-    for top in ("core", "cli", "libs/chat") if WS == ROOT else ("libs/kit", "app"):
+    for top in ("core", "cli", "libs", "app"):
         for dirpath, dirs, files in os.walk(os.path.join(ROOT, top)):
             dirs[:] = [d for d in dirs if d not in ("target", "patches")]
             for f in files:
@@ -251,7 +249,7 @@ BARE_NODE = re.compile(r"\bConfig\s*\{[^}]*\bruntime:\s*" + NODE_RUNTIME + r"[^}
 DEFAULT_CFG = re.compile(r"let mut (\w+)\s*=\s*(osis::)?Config::default\(\)")
 
 def real_lan_tests():
-    for top in ("core", "cli", "libs/chat") if WS == ROOT else ("libs/kit", "app"):
+    for top in ("core", "cli", "libs", "app"):
         for dirpath, dirs, files in os.walk(os.path.join(ROOT, top)):
             dirs[:] = [d for d in dirs if d not in ("target", "patches")]
             for f in files:
@@ -277,10 +275,9 @@ def real_lan_tests():
                         yield f"{rel}: runs osis without --no-lan: {line.strip()[:80]}"
 
 errs.extend(real_lan_tests())
-if WS == ROOT:
-    errs.extend(env_vars())
-    errs.extend(host_blind())
-    errs.extend(dispute_types())
+errs.extend(env_vars())
+errs.extend(host_blind())
+errs.extend(dispute_types())
 
 for e in errs:
     print(e)

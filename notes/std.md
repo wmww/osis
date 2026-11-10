@@ -32,7 +32,7 @@ The schema says what each aspect holds; the reasons:
 - Occurrences are named by nominal start, so a zone rule change never orphans an exception. A changed occurrence is its own event.
 - Left out of iCalendar: attendees and RSVP, sub-daily frequencies, BYSETPOS and the rarer BY rules, RDATE, attachments, priority, transparency, sequence numbers, todos and journals.
 
-## Tests (core/osis's `it` binary in `cargo test --workspace`; tier 2 `--ignored`)
+## Tests (core/osis's `it` binary in `cargo test`; tier 2 `--ignored`)
 - core/osis/tests/it/notes.rs: two nodes, offline edits merging, undo across nodes; a notebook (a tag that is first admin of its notes) shared and unshared, a private tag on a shared note staying private; a large body streamed; local undo, redo and history.
 - core/osis/tests/it/tags.rs: notes/tags.md end to end (per-item share through one roster, sub-tags chaining rosters, only what you may share, cards under a tag with demotion and invites).
 - core/osis/tests/it/contact.rs: profile filled, read through the card and updated; a linked contact overriding it; a contact without a profile.

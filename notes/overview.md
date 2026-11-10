@@ -15,15 +15,15 @@ The MVP is built: every subsystem of the spec is implemented and tested. Require
 
 Code map (crate DAG and rules: notes/architecture.md):
 - `core/` (package names keep the `osis-` prefix): `base` osis-base (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, P2P, LAN), -host (serving), -node (engine, sync engine, role flows), `osis` (the app API), `bench` osis-bench. `libs/chat` osis-chat. `cli/` osis-cli (binary `osis`).
-- `libs/kit/` osis-kit (UI toolkit over Masonry) and `app/` osis-app (binary `osis-app`, prototype notes app): their own Cargo workspace rooted at libs/kit/Cargo.toml (notes/app.md).
+- `libs/kit/` osis-kit (UI toolkit over Masonry) and `app/` osis-app (binary `osis-app`, prototype notes app): workspace members outside default-members: built only when named (notes/app.md).
 - `schema/` the first-party schema files, their scenario tests in core/osis's test binary (notes/std.md); `core/test/sim/` the deterministic simulator (notes/testing.md); `core/test/vectors/` conformance vectors; `core/test/fuzz/` cargo-fuzz targets; `core/test/crdt-model`, `core/test/roles-model` and `core/test/held-model` reference models, `core/test/tla` TLA+ `sync`, `rotation` and `roles`; `tools/` policy.py, spec_map.py, fixpoint.
 
 How to run:
 - CLI: `cargo run --bin osis -- --help`; `osis -s DIR init`, writes, `osis serve` to keep a node running (notes/cli.md).
 - Serving for others: `osis -s DIR serve --admit open` (listens on UDP 4040); prints its address, `quic://IP:PORT#KEY`.
-- Standard data scenarios: core/osis's `contact`, `event`, `notes`, `tags` tests in `cargo test --workspace`.
+- Standard data scenarios: core/osis's `contact`, `event`, `notes`, `tags` tests in `cargo test`.
 - Sim: `cargo run --bin sim-sweep -- --seeds N --budget-secs T`; replay a failing seed with `osis_sim::replay("<scenario>", <seed>)`.
-- Models: `core/test/tla/run.sh <module>` (Java); their tests run in `cargo test --workspace`; `cargo run --bin roles-model`.
+- Models: `core/test/tla/run.sh <module>` (Java); their tests run in `cargo test`; `cargo run --bin roles-model`.
 
 Open work: issues/, by their Priority lines.
 

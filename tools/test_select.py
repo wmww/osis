@@ -35,7 +35,6 @@ WHOLE = ("Cargo.toml", "Cargo.lock", ".cargo/", "rust-toolchain")
 OUTSIDE = (
     ("notes/", "notes"), ("spec/", "spec"), ("issues/", "issues"), ("docs/", "docs"),
     ("tools/", "the tools' own tests, in the gate"),
-    ("libs/kit/", "the gate's GUI steps"), ("app/", "the gate's GUI steps"),
     ("core/test/tla/", "core/test/tla/run.sh <module> for an edited module"),
     ("core/test/fuzz/", "fuzz targets, by hand"),
 )

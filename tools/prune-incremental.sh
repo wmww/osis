@@ -4,5 +4,5 @@
 set -eu
 hours="${1:-3}"
 root="$(git rev-parse --show-toplevel)"
-find "$root"/.worktrees/*/target "$root"/.worktrees/*/libs/kit/target -mindepth 3 -maxdepth 3 -path '*/incremental/*' -type d -mmin +$((hours * 60)) -exec rm -rf {} + 2>/dev/null || true
+find "$root"/.worktrees/*/target -mindepth 3 -maxdepth 3 -path '*/incremental/*' -type d -mmin +$((hours * 60)) -exec rm -rf {} + 2>/dev/null || true
 df -h "$root" | tail -1

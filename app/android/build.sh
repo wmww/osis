@@ -10,7 +10,7 @@ case $abi in
     *) echo "usage: $0 [arm64|x86_64]" >&2; exit 2 ;;
 esac
 here=$(cd "$(dirname "$0")" && pwd)
-kit=$here/../../libs/kit
+root=$here/../..
 : "${ANDROID_HOME:?set ANDROID_HOME}" "${ANDROID_NDK_ROOT:?set ANDROID_NDK_ROOT}"
 bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
 jar=$ANDROID_HOME/platforms/android-36/android.jar
@@ -21,10 +21,10 @@ T=${t^^}
 export "CARGO_TARGET_${T}_LINKER=$llvm/${target}28-clang" "CC_${t}=$llvm/${target}28-clang" "AR_${t}=$llvm/llvm-ar"
 # release: a debug build turns on wgpu's debug labels (they crash the emulator's Vulkan driver)
 # and masonry's debug log file, and is slow on a phone
-(cd "$kit" && cargo build --release -p osis-android --target "$target")
-out=$kit/target/$target/release/apk
+(cd "$root" && cargo build --release -p osis-android --target "$target")
+out=$root/target/$target/release/apk
 rm -rf "$out" && mkdir -p "$out/lib/$dir"
-cp "$kit/target/$target/release/libosis_android.so" "$out/lib/$dir/"
+cp "$root/target/$target/release/libosis_android.so" "$out/lib/$dir/"
 "$llvm/llvm-strip" --strip-debug "$out/lib/$dir/libosis_android.so"
 "$bt/aapt2" link -o "$out/unaligned.apk" --manifest "$here/AndroidManifest.xml" -I "$jar"
 (cd "$out" && zip -q -r unaligned.apk lib)

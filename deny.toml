@@ -1,13 +1,18 @@
 # cargo deny check (notes/testing.md, Policy checks): licences, duplicate versions, advisories,
-# sources. Covers the workspace; core/test/fuzz/ is outside it.
+# sources. Covers the workspace, the GUI included; core/test/fuzz/ is outside it.
 
+# Default features: the GUI's off-by-default `accessibility` (zbus, unmaintained parts) is not
+# checked; core has no other optional features.
 [graph]
-all-features = true
+all-features = false
 
 [advisories]
 yanked = "deny"
 ignore = [
     { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 (unmaintained): compile-time only, via hax-lib-macros 0.3 under libcrux-ml-kem; no runtime code" },
+    # GUI: unmaintained, no maintained replacement upstream of us yet; revisit on a stack upgrade
+    { id = "RUSTSEC-2024-0436", reason = "paste: compile-time macro, via metal under wgpu-hal (macOS backend)" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: winit's sctk-adwaita (Wayland window decorations) via ab_glyph" },
 ]
 
 [licenses]
@@ -23,6 +28,8 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "Unicode-3.0",
+    # Boost: permissive, no attribution in binaries (Tess: fine for any crate)
+    "BSL-1.0",
 ]
 
 [licenses.private]
@@ -44,6 +51,14 @@ skip = [
     { crate = "shlex@1.3.0", reason = "bindgen (build only); cc uses 2.x" },
     { crate = "syn@2.0.119", reason = "proc macros (dalek, hax-lib, bindgen); serde_derive, tokio-macros, clap_derive and others use 3.x; compile time only" },
     { crate = "windows-sys@0.52.0", reason = "ring 0.17 (Windows only); mio/tokio use 0.61" },
+]
+# The GUI stack (wgpu, winit, windows-*, objc2) carries many duplicates we cannot pick: its trees
+# are left out of duplicate detection (a core duplicate still fails, unless the GUI stack holds a copy).
+skip-tree = [
+    { crate = "masonry@0.4.0", reason = "the GUI stack: Vello, wgpu, Parley, AccessKit" },
+    { crate = "masonry_winit@0.4.0", reason = "the GUI stack: winit and its platform crates" },
+    { crate = "winit", reason = "osis-android's own (Android target)" },
+    { crate = "jni", reason = "osis-android's clipboard (Android target)" },
 ]
 
 [sources]
