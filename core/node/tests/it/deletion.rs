@@ -336,6 +336,80 @@ fn reregistration_after_rotation_spec_sync_5() {
     assert!(diags.iter().any(|d| d.contains("re-seal of stranded") && d.contains("not a current holder")), "the admin read the notice and re-sealed nobody: {diags:?}");
 }
 
+// spec/sync.md §5 (re-registration): two admins holding epochs newer than the head while one's
+// rotation is fresh (a grant, then at once a demotion with no rotation): neither uploads for a
+// step that cannot go yet, and nothing is sent again unchanged (same entry, same stamp: neither
+// while in flight nor after a refusal under an older head), so the role commits travel once and
+// no admin places its own copy of another's (deleted again as a duplicate).
+#[test]
+fn reregistration_waits_and_sends_once_spec_sync_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Admin)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let tc = net.tid(c);
+    net.sent_kinds.clear();
+    net.uploaded.clear();
+    net.grant(a, t, tc, Role::Admin);
+    // a demotion with no rotation (a hand-built edge write): g's rotation stays due
+    let read = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    crate::common::set_edge(net.engine(a), g, tc, Some(read), None);
+    net.run();
+    let again: Vec<_> = net.uploaded.iter().filter(|(_, n)| **n > 1).collect();
+    assert!(again.is_empty(), "sent again unchanged: {again:?}");
+    // c's uploads under t's first head were refused (code 9) and went again under the next
+    let mut stamps = std::collections::BTreeMap::new();
+    for (n, l, id, _) in net.uploaded.keys() {
+        *stamps.entry((*n, *l, *id)).or_insert(0) += 1;
+    }
+    assert!(stamps.iter().any(|((n, _, _), k)| *n == c && *k > 1), "a refusal went again under the new head");
+    assert_eq!(net.sent_kinds.get(&14), None, "no duplicate entries to delete");
+    // the role commits the grant and the rotations it causes write, each once per label
+    let uploads = net.sent_kinds.get(&10).copied().unwrap_or(0);
+    assert!(uploads <= 30, "{uploads} uploads");
+    assert_eq!(net.read(c, t), Some(s("x")));
+}
+
+// spec/sync.md §5 (re-registration): an admin that uploaded another admin's rotation while its
+// step waited to settle does not upload it again while that upload is unanswered, once the
+// step may go
+#[test]
+fn reregistration_skips_uploads_in_flight_spec_sync_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(c, Role::Admin)], &[host]);
+    net.run();
+    let (at, ct_) = (net.tid(a), net.tid(c));
+    // c rotates g away from every host; a gets it directly: its step waits for c's
+    net.set_online(c, false);
+    let e = net.engine(c);
+    let rs = recipients_of(e, &[(at, Role::Admin), (ct_, Role::Admin)]);
+    rotation(e, g, &rs, 7, false);
+    net.pair(c, a);
+    // a's uploads stay unanswered; it relays c's rotation before its step may go
+    net.held_to.insert(a);
+    net.sent_kinds.clear();
+    net.uploaded.clear();
+    net.run();
+    net.advance(29_999);
+    assert!(!net.uploaded.is_empty(), "a relayed c's rotation under the head");
+    assert_eq!(net.sent_kinds.get(&7), None, "a's step waits");
+    net.advance(2_000);
+    assert_eq!(net.sent_kinds.get(&7), Some(&1), "a's step went once settled");
+    let again: Vec<_> = net.uploaded.iter().filter(|(_, n)| **n > 1).collect();
+    assert!(again.is_empty(), "sent again while in flight: {again:?}");
+    net.release();
+    net.run();
+    let l = net.label(a);
+    assert_eq!(net.host_path(host, &l).len(), 2, "a's step registered");
+}
+
 /// A record (about 73 KB) with a secret entry on aspect `asp` (a purge-on-replace map) in one
 /// commit at the host, compacted into one snapshot at the host when `compact`: (item,
 /// aspect, label, the body carrying the record: the snapshot, else the commit).

@@ -354,7 +354,7 @@ impl SyncEngine {
                     }
                 };
             }
-            if !seen.insert(o.id) || settled || self.conns.get(&conn).is_some_and(|c| super::in_flight(c, &c.req.sent, (l, o.id), raw) || c.req.replacing.contains_key(&(l, o.id))) {
+            if !seen.insert(o.id) || settled || self.upload_busy(conn, l, o.id, raw) {
                 continue;
             }
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
@@ -391,21 +391,38 @@ impl SyncEngine {
             self.promote(conn, host, &g, l, w, &mut uploads)?;
             self.stamp_inbox(conn, host, l, w, &mut uploads)?;
         }
-        let ids: Vec<BlobId> = uploads.iter().map(|u| osis_label::blob_id(&u.blob)).collect();
-        for b in &ids {
-            self.note_own_upload(conn, l, *b);
-        }
+        self.upload(conn, l, uploads, out)?;
         if let Some(c) = self.conns.get_mut(&conn) {
-            c.req.sent.extend(ids.into_iter().chain(deposits.iter().map(|d| osis_label::blob_id(&d.0))).map(|b| ((l, b), (raw, super::UNTAGGED))));
-        }
-        if !uploads.is_empty() {
-            self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
+            c.req.sent.extend(deposits.iter().map(|d| ((l, osis_label::blob_id(&d.0)), (raw, super::UNTAGGED))));
         }
         for (blob, wrap, sig) in deposits {
             self.command(conn, Command::Deposit { label: l, blob, wrap, sig }, out)?;
         }
         self.given(conn);
         Ok(())
+    }
+
+    /// Whether an upload of `id` under `l` on `conn` is in flight (`in_flight`) or waits on a
+    /// replacing upload: not sent again meanwhile.
+    pub(super) fn upload_busy(&self, conn: ConnId, l: LabelId, id: BlobId, raw: u64) -> bool {
+        self.conns.get(&conn).is_some_and(|c| super::in_flight(c, &c.req.sent, (l, id), raw) || c.req.replacing.contains_key(&(l, id)))
+    }
+
+    /// Gives `uploads` under `l` on `conn` as one Upload, each recorded in flight
+    /// (`upload_busy`) until answered. The caller tags them (`given`).
+    pub(super) fn upload(&mut self, conn: ConnId, l: LabelId, uploads: Vec<osis_proto::Entry>, out: &mut Vec<super::Action>) -> Result<()> {
+        if uploads.is_empty() {
+            return Ok(());
+        }
+        let raw = self.raw_now();
+        let ids: Vec<BlobId> = uploads.iter().map(|u| osis_label::blob_id(&u.blob)).collect();
+        for b in &ids {
+            self.note_own_upload(conn, l, *b);
+        }
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.req.sent.extend(ids.into_iter().map(|b| ((l, b), (raw, super::UNTAGGED))));
+        }
+        self.command(conn, Command::Upload { label: l, entries: uploads }, out)
     }
 
     /// Stamps entry `id` under `l` and keeps the stamp, so a later pass does not promote it again.

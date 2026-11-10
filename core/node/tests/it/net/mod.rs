@@ -80,6 +80,9 @@ pub struct Net {
     held_messages: Vec<Msg>,
     /// Message kinds nodes sent to hosts, by kind.
     pub sent_kinds: BTreeMap<u64, usize>,
+    /// Entries nodes uploaded to hosts, by (node, label, blob, stamp): how often each went (the
+    /// same stamp twice: sent again with nothing changed).
+    pub uploaded: BTreeMap<(usize, osis_base::LabelId, osis_base::BlobId, [u8; 64]), usize>,
     /// Messages sent on peer links, by sender and kind.
     pub peer_kinds: BTreeMap<(usize, u64), usize>,
     /// Bytes nodes sent to hosts.
@@ -236,7 +239,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 impl Net {
     /// A network whose new nodes are each their own account's only node.
     pub fn new() -> Net {
-        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), trickle_hosts: BTreeMap::new(), batch_reads: false, peer_closes: 0 }
+        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), uploaded: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), trickle_hosts: BTreeMap::new(), batch_reads: false, peer_closes: 0 }
     }
 
     /// A network whose new nodes join no account: the test makes or pairs them.
@@ -735,6 +738,11 @@ impl Net {
                     while let Ok(Some(body)) = d.next_frame() {
                         if let Ok(m) = osis_proto::Message::decode(&body) {
                             *self.sent_kinds.entry(m.kind()).or_default() += 1;
+                            if let osis_proto::Message::Upload { label, entries, .. } = &m {
+                                for e in entries {
+                                    *self.uploaded.entry((n, *label, osis_label::blob_id(&e.blob), e.stamp.0)).or_default() += 1;
+                                }
+                            }
                             if let osis_proto::Message::Sync { gained, .. } = &m
                                 && !gained.is_empty()
                             {

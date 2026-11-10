@@ -49,9 +49,10 @@ impl SyncEngine {
     }
 
     /// Re-registration (spec/sync.md §5): an admin holding the head's epochs and a newer
-    /// established one uploads the actor's role commits the host lacks under the head's
-    /// keys, then registers a child step; the rest of the pass runs once it is registered, or
-    /// under the host's head while the step is refused for now. True while the step is in flight.
+    /// established one, once the step may go (a recorded child, or `step_settled`), uploads the
+    /// actor's role commits the host lacks and has not in flight under the head's keys, then
+    /// registers a child step; the rest of the pass runs once it is registered, or under the
+    /// host's head while the step waits or is refused for now. True while the step is in flight.
     pub(super) fn reregister(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<crate::sync::Action>) -> Result<bool> {
         let Some(c) = self.conns.get(&conn) else { return Ok(false) };
         let host = c.host;
@@ -68,9 +69,17 @@ impl SyncEngine {
             return Ok(false);
         }
         let (Some(write), Some(head)) = (keys.write.clone(), head) else { return Ok(false) };
+        // a child of the host's head already recorded in `label.0` (this node's local step,
+        // another admin's) is registered first: the walk down the recorded path issues nothing;
+        // else a step goes only once settled, and nothing is uploaded for one that cannot go
+        let recorded = self.recorded_child(&g, &l, &head.id());
+        if recorded.is_none() && !self.step_settled(&g, l) {
+            return Ok(false);
+        }
         let a = self.keys_actor(&g);
         let core = &self.engine.core;
         let ids: Vec<CommitId> = core.on_thing(&a).filter(|c| core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_role())).collect();
+        let raw = self.raw_now();
         let mut uploads = Vec::new();
         let ctx = self.engine.body_ctx(&g);
         for id in ids {
@@ -80,36 +89,30 @@ impl SyncEngine {
             if b.parts.is_empty() {
                 continue;
             }
-            {
-                let bid = match self.entry_for(Some(&host), &l, &b) {
+            let bid = match self.entry_for(Some(&host), &l, &b) {
+                Some(x) => x,
+                None => match self.place(&g, l, &b, false)? {
                     Some(x) => x,
-                    None => match self.place(&g, l, &b, false)? {
-                        Some(x) => x,
-                        None => continue,
-                    },
-                };
-                if self.state.is_present(&host, &l, &bid) {
-                    continue;
-                }
-                let (Some(en), Some(blob)) = (self.state.entries.get(&(l, bid)).cloned(), self.engine.blob(&bid)?) else { continue };
-                let stamp = osis_label::sign_stamp(&write, &l, &bid, &en.wrap);
-                uploads.push(osis_proto::Entry { blob, wrap: en.wrap, stamp, replaces: Vec::new() });
+                    None => continue,
+                },
+            };
+            if self.state.is_present(&host, &l, &bid) || self.upload_busy(conn, l, bid, raw) {
+                continue;
             }
+            let (Some(en), Some(blob)) = (self.state.entries.get(&(l, bid)).cloned(), self.engine.blob(&bid)?) else { continue };
+            let stamp = osis_label::sign_stamp(&write, &l, &bid, &en.wrap);
+            uploads.push(osis_proto::Entry { blob, wrap: en.wrap, stamp, replaces: Vec::new() });
         }
-        if !uploads.is_empty() {
-            self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
-        }
-        // a child of the host's head already recorded in `label.0` (this node's local step,
-        // another admin's) is registered first: the walk down the recorded path issues nothing
-        let (step, set) = match self.recorded_child(&g, &l, &head.id()) {
+        self.upload(conn, l, uploads, out)?;
+        let (step, set) = match recorded {
             Some(x) => x,
             None => {
-                if !self.step_settled(&g, l) {
-                    return Ok(false);
-                }
                 let (step, done) = self.engine.issue_step(&g, &l, &head.id(), false)?;
                 self.take_done(done)?;
-                let Some(x) = step else { return Ok(false) };
+                let Some(x) = step else {
+                    self.given(conn);
+                    return Ok(false);
+                };
                 x
             }
         };
@@ -117,6 +120,7 @@ impl SyncEngine {
             lc.registering = Some((step.clone(), set.clone()));
         }
         self.command(conn, Command::Register { label: l, step, claim_set: Some(set) }, out)?;
+        self.given(conn);
         Ok(true)
     }
 
