@@ -7,6 +7,7 @@ mod spec_permissions;
 mod spec_records;
 mod spec_roles;
 mod spec_signals;
+mod spec_thing_history;
 mod spec_edits;
 mod spec_undo;
 mod spec_waits;

@@ -42,6 +42,9 @@ For adapters written against the previous input (one change per line):
 ## Signal edits (`src/edits.rs`, `tests/it/spec_edits.rs`)
 `Part::replaces` is a signal edit's claim; `edits::listing(&Held)` is the signal's listing under the rule of notes/signal-edits-design.md (`Entry { place, version, shows }`), `edits::listed` the commits with a listed part. Each property runs on every subset of small worlds, smallest first.
 
+## Thing-level history (`src/thing_history.rs`, `tests/it/spec_thing_history.rs`)
+Greenfield model of the judgment proposed in issues/thing-history.md, not wired into `evaluate`: `out` (the moment a body replaced at `r` leaves history under a timeline of settings), `purge_owed`, `history`, and `Eager`, a node that drops at the first allowed moment and takes nothing back. Properties run over every timeline of up to three settings: bodies leave in replaced order, a later setting never brings one back, purge-on-replace content is never history however late it is dated (and is, without the one-way rule), dropping loses nothing when nothing is late and shows a subset in any order.
+
 ## Properties (`tests/it/props.rs`)
 `settle` carries out the forced fates, writes the covers `me` owes, and (given the full history) fetches again what `uncovered` or `NeverReceived` names.
 - The output is a function of the held set (any order of commits). The histories include every history mode, undos (written by `undo::undo`), invites, `until`, self-removals, finalizes, link redemptions, acting for an account, `required^.0`, parked parts and unknown records.
