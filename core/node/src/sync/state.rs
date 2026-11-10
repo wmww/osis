@@ -115,6 +115,14 @@ enum LogWrite {
     Head(LabelId, [u8; 32]),
 }
 
+/// A tombstone (`State::tombs`): when (corrected wall ms) and what the entry was.
+#[derive(Clone, Debug)]
+pub struct Tomb {
+    pub at: u64,
+    pub cert: bool,
+    pub kind: Kind,
+}
+
 /// A label entry as this node knows it (spec/sync.md §4).
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -337,9 +345,12 @@ pub struct State {
     pub client_listen: Option<Secret32>,
     /// The node log's memory part: memory entries' events, which the durable log never holds.
     pub mem_log: super::stream::MemLog,
-    /// Entries this node dropped, by when (corrected wall ms): refused from peers for
-    /// `TOMBSTONE_LIFETIME` (spec/sync.md §5), so a peer cannot replay a deleted body.
-    pub tombs: BTreeMap<(LabelId, BlobId), u64>,
+    /// Entries this node dropped (`remove_entry`): refused from peers for `TOMBSTONE_LIFETIME`
+    /// (spec/sync.md §5), so a peer cannot replay a deleted body, with what the entry was: a host
+    /// reporting it within that time (one an upload reached, its answer lost or late) gets it
+    /// recorded again as present there without a fetch, so the pass judges it there as any
+    /// (`SyncEngine::host_holds`).
+    pub tombs: BTreeMap<(LabelId, BlobId), Tomb>,
     /// Bodies (commit and delta set) whose entry (not a certificate copy) left a label by a
     /// delete, by when (`remove_entry`): such a body (or one it is a purge rewrite of,
     /// `body_deleted`) is not placed there again while its live writes are carried (spec/sync.md
@@ -399,11 +410,6 @@ pub struct State {
     pub memory_bytes: BTreeMap<LabelId, u64>,
     /// Encoded size of each memory entry's blob while held here (tests, diagnostics).
     pub memory_sizes: BTreeMap<(LabelId, BlobId), usize>,
-    /// What a tombstoned commit entry (no certificate) was (`remove_entry`; stored with the
-    /// tombstone), while its tombstone lasts: a host announcing it again within that time (one
-    /// an upload reached late, its answer lost) gets it recorded as present there without a
-    /// fetch, so the deletion is judged there too (`log_events`).
-    pub tomb_kinds: BTreeMap<(LabelId, BlobId), Kind>,
     /// Memory entries judged or placed while their body was in the label's closure here: only
     /// those are deleted for leaving it (`pass/delete`, spec/sync.md §9).
     pub memory_in_closure: BTreeSet<(LabelId, BlobId)>,
@@ -623,10 +629,9 @@ impl State {
                 b"x" => {
                     let k = (LabelId(r.arr()?), BlobId(r.arr()?));
                     let mut x = Rd::new(&v);
-                    s.tombs.insert(k, x.u64()?);
-                    if !x.is_empty() {
-                        s.tomb_kinds.insert(k, decode_kind(&mut x)?);
-                    }
+                    let at = x.u64()?;
+                    let cert = x.u8()? == 1;
+                    s.tombs.insert(k, Tomb { at, cert, kind: decode_kind(&mut x)? });
                 }
                 b"r" => s.reach_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
                 b"z" => s.host_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
@@ -705,8 +710,8 @@ impl State {
         s.entries = entries;
         s.present_by = s.present.iter().map(|(host, l, b)| (*l, *b, *host)).collect();
         s.gone_by = s.gone.keys().map(|(host, l, b)| (*l, *b, *host)).collect();
-        s.deleted = s.tomb_kinds.iter().filter_map(|(k, kind)| match kind {
-            Kind::Commit { commit, parts, .. } => Some(((k.0, *commit, parts.clone()), s.tombs.get(k)?.saturating_add(osis_base::format::TOMBSTONE_LIFETIME_MS))),
+        s.deleted = s.tombs.iter().filter_map(|(k, t)| match &t.kind {
+            Kind::Commit { commit, parts, .. } if !t.cert => Some(((k.0, *commit, parts.clone()), t.at.saturating_add(osis_base::format::TOMBSTONE_LIFETIME_MS))),
             _ => None,
         }).collect();
         for (_, c, _) in s.deleted.keys() {
@@ -1020,25 +1025,16 @@ impl State {
                 *self.deleted_commits.entry(*commit).or_default() += 1;
             }
         }
-        let kind = self.entries.get(&(l, b)).filter(|e| !e.cert && matches!(e.kind, Kind::Commit { .. })).map(|e| e.kind.clone());
-        let memory = self.is_memory(&l, &b);
-        if self.drop_entry(l, b) {
-            // the class mark stays with the tombstone (`expire_tombs`)
-            if memory {
-                self.memory_entries.insert((l, b));
-            }
-            // the kind is stored with the tombstone (`tomb_kinds`)
-            let mut v = Wr::new().u64(self.now);
-            if let Some(k) = &kind {
-                v = encode_kind(v, k);
-            }
-            self.put_of(&l, &b, key(TOMB, &[&l.0, &b.0]), v.take());
-            self.tombs.insert((l, b), self.now);
-            match kind {
-                Some(k) => self.tomb_kinds.insert((l, b), k),
-                None => self.tomb_kinds.remove(&(l, b)),
-            };
+        let e = self.entries.get(&(l, b)).cloned();
+        let (true, Some(e)) = (self.drop_entry(l, b), e) else { return };
+        // the class mark stays with the tombstone (`expire_tombs`)
+        if e.memory {
+            self.memory_entries.insert((l, b));
         }
+        let tomb = Tomb { at: self.now, cert: e.cert, kind: e.kind };
+        let v = encode_kind(Wr::new().u64(tomb.at).u8(u8::from(tomb.cert)), &tomb.kind).take();
+        self.put_of(&l, &b, key(TOMB, &[&l.0, &b.0]), v);
+        self.tombs.insert((l, b), tomb);
     }
 
     /// Forgets an entry that never counted (junk a host announced, an expired one): no
@@ -1093,12 +1089,14 @@ impl State {
             self.touch(l, b);
             self.del_of(&l, &b, key(GONE, &[&s, &l.0, &b.0]));
         }
-        let old: Vec<(LabelId, BlobId)> = self.tombs.iter().filter(|((l, b), t)| t.saturating_add(life(self.memory_entries.contains(&(*l, *b)))) <= now).map(|(k, _)| *k).collect();
+        let old: Vec<(LabelId, BlobId)> = self.tombs.iter().filter(|((l, b), t)| t.at.saturating_add(life(self.memory_entries.contains(&(*l, *b)))) <= now).map(|(k, _)| *k).collect();
         for (l, b) in old {
-            self.tombs.remove(&(l, b));
             self.del_of(&l, &b, key(TOMB, &[&l.0, &b.0]));
-            self.memory_entries.remove(&(l, b));
-            self.tomb_kinds.remove(&(l, b));
+            self.tombs.remove(&(l, b));
+            // an entry recorded again (`SyncEngine::host_holds`) keeps its class
+            if !self.entries.contains_key(&(l, b)) {
+                self.memory_entries.remove(&(l, b));
+            }
         }
         let due: Vec<(DeletedBody, u64)> = self.deleted.iter().filter(|(_, until)| **until <= now).map(|(k, v)| (k.clone(), *v)).collect();
         for ((l, c, parts), _) in due {

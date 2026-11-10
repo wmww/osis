@@ -733,9 +733,9 @@ fn own_entries_covered_while_the_host_is_away_leave_spec_sync_5() {
     assert_eq!(net.read(a, t), Some(s("v00000112")));
 }
 
-// spec/sync.md §5 (Placed, deleting at a host): an own entry whose upload is unanswered when a
-// newer own writes cover it stays in the node's store until that host answers, so the host pass
-// deletes it there; dropped at once, the host would keep that copy with nothing deleting it.
+// spec/sync.md §5 (Placed, deleting at a host), §6 (Tombstones): an own entry whose upload is
+// unanswered when newer own writes cover it leaves the node's store, and the host's late OK
+// records it again as present there, so the host pass deletes it there too.
 #[test]
 fn covered_own_entry_mid_upload_leaves_the_host_too_spec_sync_5() {
     let mut net = Net::new();
@@ -900,4 +900,146 @@ fn covered_own_entry_whose_answer_was_lost_leaves_the_host_after_a_restart_spec_
 #[test]
 fn covered_own_entry_whose_answer_was_lost_leaves_the_host_past_the_tombstone_spec_sync_5() {
     lost_answer(false, 31);
+}
+
+/// spec/sync.md §6 (Tombstones), spec/commits.md §5 (a purge drops every body carrying the
+/// values, chunks included): a large value's chunks a host took while its answers were held are
+/// purged while those answers are still to come (`lost` false: they arrive after the drop) or
+/// after they were lost with the connection; the chunks leave the host once it reports them,
+/// and the node keeps no record of them. `writer`: the purger is a writer, not an admin (it
+/// deletes by its delta's delete key, fetching each chunk again for the salt that signs).
+fn chunks_answered_late(lost: bool, writer: bool) {
+    let mut net = Net::new();
+    let h = net.add_host();
+    let a = net.node(1, &[h]);
+    let b = net.node(2, &[h]);
+    let g = net.group(a, &[(b, Role::Write)], &[h]);
+    let t = net.item(a, g, g, "x");
+    let (w, other) = if writer { (b, a) } else { (a, b) };
+    // a node serving co-readers runs local passes: its store drops what it must not hold
+    let acts = net.sync(w).publish_reach([w as u8 + 1; 32], Vec::new()).unwrap();
+    net.actions(w, acts);
+    net.run();
+    let l = net.label(a);
+    // the purger alone may delete there
+    net.set_online(other, false);
+    net.held_hosts.insert(h);
+    let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &GONE, &s(&big)).unwrap();
+    let c = net.engine(w).commit(m).unwrap().unwrap();
+    net.feed(w, Event::Local);
+    net.run();
+    let chunks: Vec<BlobId> = net.engine(w).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    assert!(!chunks.is_empty(), "a chunked value");
+    let at_host = |net: &mut Net| chunks.iter().filter(|id| net.host_ids(h, &l).contains(id)).count();
+    assert!(at_host(&mut net) > 0, "the host took chunks");
+    if lost {
+        net.blocked.insert((w, h));
+        net.drop_link(w, h);
+        net.release_host(h);
+    }
+    let mut m = osis_node::Mutation::new();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
+    m.remove_aspect(t, &GONE).unwrap();
+    net.engine(w).commit(m).unwrap();
+    net.feed(w, Event::Local);
+    net.run();
+    let known = |net: &mut Net| listed(net, w, &l).into_iter().filter(|id| chunks.contains(id)).count();
+    if lost {
+        assert_eq!(known(&mut net), 0, "the purged chunks left the node while the host was away");
+        net.blocked.remove(&(w, h));
+    } else {
+        net.release_host(h);
+    }
+    for _ in 0..4 {
+        net.advance(60_000);
+        net.run();
+    }
+    assert_eq!(at_host(&mut net), 0, "purged chunks stay at the host");
+    assert_eq!(known(&mut net), 0, "the node keeps records of the purged chunks");
+}
+
+#[test]
+fn purged_chunks_whose_answers_were_lost_leave_the_host_spec_sync_6() {
+    chunks_answered_late(true, false);
+}
+
+#[test]
+fn purged_chunks_whose_answers_were_lost_leave_the_host_by_delete_key_spec_sync_6() {
+    chunks_answered_late(true, true);
+}
+
+#[test]
+fn purged_chunks_mid_upload_leave_the_host_spec_sync_6() {
+    chunks_answered_late(false, false);
+}
+
+// spec/sync.md §6 (Tombstones), §3 (certificate copies' linked blobs), spec/commits.md §5: a
+// certificate copy and the blobs it links, whose upload answers were lost with the connection,
+// leave the host once the copied delta is purged and the host reports them.
+#[test]
+fn certificate_copy_whose_answers_were_lost_leaves_the_host_with_its_links_spec_sync_6() {
+    let mut net = Net::new();
+    let h = net.add_host();
+    let a = net.node(1, &[h]);
+    let g = net.group(a, &[], &[h]);
+    let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let l = net.label(a);
+    // a thing outside the label's closure, written with an aspect list that goes by link
+    let me = net.tid(a);
+    let e = net.engine(a);
+    let mut m = osis_node::Mutation::new();
+    let u = e.new_thing(&mut m, me);
+    e.commit(m).unwrap();
+    let mut m = osis_node::Mutation::new();
+    // few aspects with long keys: the list just above `CHUNK_THRESHOLD`
+    for i in 0..160 {
+        let ak = Ak::new(format!("u:{}{i:05}.0", "a".repeat(900))).unwrap();
+        m.set(u, &ak, &s("v")).unwrap();
+    }
+    let c = e.commit(m).unwrap().unwrap();
+    assert!(net.engine(a).header(&c).unwrap().links.aspects.is_some(), "the aspect list goes by link");
+    let ai = net.engine(a).header(&c).unwrap().aspects.iter().position(|x| x.tid == u).unwrap();
+    let ak = net.engine(a).header(&c).unwrap().aspects[ai].ak.clone();
+    net.run();
+    let unknown = |net: &mut Net| net.sync(a).entries(&l).into_iter().filter(|(_, k)| *k == EntryKind::Unknown).map(|(id, _)| id).collect::<Vec<_>>();
+    let before = unknown(&mut net);
+    let acts = net.sync(a).place_certificate(&g, &c, &[ai].into()).unwrap();
+    net.actions(a, acts);
+    let copies = |net: &mut Net| net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect::<Vec<_>>();
+    let copy = copies(&mut net);
+    assert_eq!(copy.len(), 1, "the copy is placed");
+    // the connection goes once the host took the copy and every linked blob: its answers are lost
+    let mut linked = Vec::new();
+    let mut idle = 0;
+    while linked.is_empty() || linked.iter().chain(&copy).any(|id| !net.host_ids(h, &l).contains(id)) {
+        if !net.step() {
+            idle += 1;
+            assert!(idle < 120, "the host never took the copy and its linked blobs");
+            net.tick(1_000);
+        }
+        linked = unknown(&mut net).into_iter().filter(|id| !before.contains(id)).collect();
+    }
+    net.blocked.insert((a, h));
+    net.drop_link(a, h);
+    net.run();
+    let mut m = osis_node::Mutation::new();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: u, ak: ak.clone() });
+    m.remove_aspect(u, &ak).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.feed(a, Event::Local);
+    net.advance(60_000);
+    let known = |net: &mut Net| listed(net, a, &l).into_iter().filter(|id| linked.contains(id) || copy.contains(id)).count();
+    assert_eq!(known(&mut net), 0, "the purged copy and its linked blobs left the node while the host was away");
+    net.blocked.remove(&(a, h));
+    for _ in 0..4 {
+        net.advance(60_000);
+        net.run();
+    }
+    let at_host = |net: &mut Net| linked.iter().chain(&copy).filter(|id| net.host_ids(h, &l).contains(id)).count();
+    assert_eq!(at_host(&mut net), 0, "the purged copy or its linked blobs stay at the host");
+    assert_eq!(known(&mut net), 0, "the node keeps records of them");
 }

@@ -222,24 +222,24 @@ impl SyncEngine {
         let mut lost = BTreeSet::new();
         for ev in events {
             // an entry this node deleted or saw deleted, announced again within its tombstone
-            // (a host an upload reached late, a stale push crossing the deletion, a peer echoing
-            // an announcement): not fetched or served on, as a host's tombstone keeps the
-            // identical blob out (spec/sync.md §5); a commit entry whose kind the tombstone
-            // keeps is recorded as present there quietly, so the pass deletes it there too
-            if let LogEvent::Added { blob_id, wrap, .. } = &ev
+            // (a host an upload reached, its answer lost, a stale push crossing the deletion, a
+            // peer echoing an announcement): not fetched or served on, as a host's tombstone
+            // keeps the identical blob out (spec/sync.md §5); a host's is recorded as present
+            // there as it was (`host_holds`), so the pass judges it there as any. Only bytes
+            // this node asked for, of an entry it knows, are taken as any entry's (a dropped
+            // chunk fetched for the salt its delete signs)
+            if let LogEvent::Added { blob_id, blob, wrap, .. } = &ev
                 && self.state.tombs.contains_key(&(l, *blob_id))
             {
-                if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
-                    c.req.fetching.remove(blob_id);
-                }
-                if let (Some(s), Some(kind)) = (host, self.state.tomb_kinds.get(&(l, *blob_id)).cloned()) {
-                    if !self.state.entries.get(&(l, *blob_id)).is_some_and(|e| matches!(e.kind, Kind::Commit { .. })) {
-                        self.state.set_entry_quiet(l, *blob_id, Entry { wrap: *wrap, stamp: None, cert: false, kind, memory: self.state.is_memory(&l, blob_id) });
-                    }
-                    self.state.set_present(s, l, *blob_id, true);
+                let asked = conn.and_then(|c| self.conns.get_mut(&c)).is_some_and(|c| c.req.fetching.remove(blob_id));
+                if let Some(s) = host
+                    && self.host_holds(s, l, *blob_id, *wrap)
+                {
                     touched.push(*blob_id);
                 }
-                continue;
+                if !(asked && blob.is_some() && self.state.entries.contains_key(&(l, *blob_id))) {
+                    continue;
+                }
             }
             // a blob's prefix class routes it (spec/sync.md §9): a relay-only one is delivered
             // and passed on, held by nobody; an ephemeral one is a memory entry, recorded in
@@ -1627,9 +1627,7 @@ impl SyncEngine {
         if let Some(s) = host {
             self.state.set_present(s, l, b, false);
         }
-        // an upload of it unanswered elsewhere: the entry is kept until that host answers, so a
-        // body forgotten meanwhile is deleted there too (`entry_status`, `memory_lost`)
-        if self.held_elsewhere(&l, &b) {
+        if self.state.present_anywhere(&l, &b) {
             return Ok(false);
         }
         self.state.remove_entry(l, b);
@@ -1864,10 +1862,20 @@ impl SyncEngine {
         self.command(conn, Command::Sync { label: l, cursor: None, inline_limit: 0, entries: Vec::new(), gained: Vec::new() }, out)
     }
 
-    /// Whether a host or peer holds entry `b` of `l`, or an upload of it is unanswered on some
-    /// connection (that host may hold it: its deletion follows from the answer).
-    pub(crate) fn held_elsewhere(&self, l: &LabelId, b: &BlobId) -> bool {
-        self.state.present_anywhere(l, b) || self.conns.values().any(|c| c.req.sent.contains_key(&(*l, *b)) || c.req.replacing.contains_key(&(*l, *b)))
+    /// Host `s` reports holding entry `b` of `l` (an announcement, an upload answered OK): it is
+    /// present there. One this node tombstoned is recorded again as it was, quietly (not
+    /// fetched, not served on), so the pass judges it there as any present entry, whatever its
+    /// kind (spec/sync.md §6 Tombstones): an upload's answer lost or late leaves no copy behind.
+    /// One this node does not know gets no record. Whether the presence is new.
+    pub(crate) fn host_holds(&mut self, s: HostKey, l: LabelId, b: BlobId, wrap: [u8; osis_crypto::WRAP_LEN]) -> bool {
+        if !self.state.entries.contains_key(&(l, b)) {
+            let Some(t) = self.state.tombs.get(&(l, b)).cloned() else { return false };
+            let memory = self.state.is_memory(&l, &b);
+            self.state.set_entry_quiet(l, b, Entry { wrap, stamp: None, cert: t.cert, kind: t.kind, memory });
+        }
+        let new = !self.state.is_present(&s, &l, &b);
+        self.state.set_present(s, l, b, true);
+        new
     }
 
     /// Upload or Sync statuses. Code 9 (signed under a key older than the head's) needs nothing
@@ -1892,12 +1900,11 @@ impl SyncEngine {
             // a memory entry refused for the host's cap or rate waits its resend time, as if in
             // flight, before a pass sends it again: room appears by others' expiries and
             // compactions, not by asking again at once (one refused under an older head, code 9,
-            // goes again as soon as the new head is known, as a durable one); one no host holds
-            // and nothing more is uploading goes (it waited for this answer)
+            // goes again as soon as the new head is known, as a durable one); one of a body
+            // forgotten meanwhile that no host holds goes
             if code != Code::OK && self.state.is_memory(&l, &b) {
-                // kept only for this upload: a body forgotten meanwhile, held nowhere
                 let dead = matches!(self.state.entries.get(&(l, b)), Some(Entry { kind: Kind::Commit { commit, .. }, .. }) if !self.engine.holds_memory(commit));
-                if dead && !self.held_elsewhere(&l, &b) {
+                if dead && !self.state.present_anywhere(&l, &b) {
                     self.absent_at(None, l, b)?;
                 } else if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED) {
                     let raw = self.raw_now();
@@ -1931,9 +1938,8 @@ impl SyncEngine {
             }
             match code {
                 Code::OK => {
-                    let new = !self.state.is_present(&host, &l, &b);
+                    let new = self.host_holds(host, l, b, [0; osis_crypto::WRAP_LEN]);
                     grew |= new;
-                    self.state.set_present(host, l, b, true);
                     if new {
                         self.reached(&l, &b);
                     }

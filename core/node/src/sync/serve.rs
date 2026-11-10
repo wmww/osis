@@ -13,7 +13,7 @@
 //! uploads get code 12 and deposits code 5. A connection's shared set opens a label for a peer
 //! (issues/net-shared-set.md); budgets are then charged to the node it proved.
 
-use super::state::Entry;
+use super::state::{Entry, Tomb};
 use super::{Action, ConnId, SyncEngine};
 use crate::engine::Engine;
 use crate::error::Result;
@@ -158,7 +158,7 @@ struct Accepted {
 struct PeerStore<'a> {
     engine: RefCell<&'a mut Engine>,
     entries: &'a BTreeMap<(LabelId, BlobId), Entry>,
-    tombs: &'a BTreeMap<(LabelId, BlobId), u64>,
+    tombs: &'a BTreeMap<(LabelId, BlobId), Tomb>,
     labels: &'a BTreeMap<LabelId, ServedLabel>,
     /// What this session proved so far (`Accepted.proven` for a Prove in the same input).
     proven_before: &'a super::proofs::Proven,
@@ -303,7 +303,7 @@ impl LabelStore for PeerStore<'_> {
 
     fn tombstoned(&self, label: &LabelId, blob_id: &BlobId) -> std::result::Result<bool, StoreError> {
         // dropped here (a host's deletion, our own delete or drop): never back from a peer
-        Ok(self.tombs.get(&(*label, *blob_id)).is_some_and(|t| t.saturating_add(TOMBSTONE_LIFETIME_MS) > self.wall))
+        Ok(self.tombs.get(&(*label, *blob_id)).is_some_and(|t| t.at.saturating_add(TOMBSTONE_LIFETIME_MS) > self.wall))
     }
 
     fn blob(&self, blob_id: &BlobId) -> std::result::Result<Option<Vec<u8>>, StoreError> {

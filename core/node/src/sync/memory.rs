@@ -599,7 +599,7 @@ impl SyncEngine {
     }
 
     /// The peer wants gained entries: those are not present there (the pass uploads them); one
-    /// of a forgotten commit, held nowhere and uploading nowhere, goes (`absent_at`).
+    /// of a forgotten commit held nowhere goes (`absent_at`).
     pub(crate) fn memory_want(&mut self, conn: ConnId, l: LabelId, ids: &[BlobId]) -> Result<()> {
         let Some(mut g) = self.memory.gained.remove(&(conn, l)) else { return Ok(()) };
         for b in ids {
@@ -607,7 +607,7 @@ impl SyncEngine {
                 continue;
             }
             let dead = matches!(self.state.entries.get(&(l, *b)), Some(Entry { kind: Kind::Commit { commit, .. }, .. }) if !self.engine.holds_memory(commit));
-            if dead && !self.held_elsewhere(&l, b) {
+            if dead && !self.state.present_anywhere(&l, b) {
                 self.absent_at(None, l, *b)?;
             }
         }
