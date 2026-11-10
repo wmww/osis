@@ -218,7 +218,9 @@ fn back_after_aged_deletions_converges_in_one_stream_spec_sync_10() {
 /// One differential run: `b` writes, opens new groups with `a`, restarts; `a` goes off and on,
 /// restarts, loses its records. Once settled, `a`'s stream from `b` is caught up and `a` holds
 /// every entry `b` serves under a label they share.
-fn stream_run(seed: u64) {
+/// `pages`: every Pull asks the smallest reply with announcements only, so replies page and
+/// joins page at their own positions behind the stream's (counted into it).
+fn stream_run(seed: u64, pages: Option<&std::rc::Rc<std::cell::Cell<usize>>>) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut rnd = |n: u64| {
         x ^= x << 13;
@@ -227,6 +229,25 @@ fn stream_run(seed: u64) {
         x % n
     };
     let mut net = Net::new();
+    let bulk = if let Some(paged) = pages {
+        let paged = paged.clone();
+        net.tamper = Some(Box::new(move |m| match m {
+            osis_proto::Message::Pull(p) => {
+                let mut p = (**p).clone();
+                p.max_reply = osis_proto::client::SMALL_REPLY as u64;
+                p.inline_limit = 0;
+                Some(osis_proto::Message::Pull(Box::new(p)))
+            }
+            osis_proto::Message::PullReply(r) => {
+                paged.set(paged.get() + r.joins.iter().filter(|(_, c)| c.is_some()).count());
+                None
+            }
+            _ => None,
+        }));
+        90
+    } else {
+        0
+    };
     let (a, b, mut gs) = pair(&mut net, 2);
     let mut life = 100;
     for step in 0..24 {
@@ -238,7 +259,11 @@ fn stream_run(seed: u64) {
             4 => {
                 // a group opened after the stream started: it joins from the start
                 let g = net.group_seeded(b, &[(a, Role::Write)], vec![], 50 + step);
-                net.item(b, g, g, &format!("early{step}"));
+                let t = net.item(b, g, g, &format!("early{step}"));
+                // more events than one page holds before the join
+                for i in 0..bulk {
+                    net.write(b, t, &format!("early{step}.{i}"));
+                }
                 // a write the stream carries past the new group's first events
                 net.item(b, gs[0], gs[0], &format!("past{step}"));
                 gs.push(g);
@@ -285,7 +310,183 @@ fn stream_run(seed: u64) {
 #[test]
 fn stream_differential_no_write_dropped_spec_sync_10() {
     for seed in 1..=6 {
-        stream_run(seed);
+        stream_run(seed, None);
     }
 }
 
+// The same invariant with every reply paged (the smallest `max_reply`, announcements only): joins
+// page at their own positions behind the stream's and merge into it
+#[test]
+fn stream_differential_paged_spec_sync_10() {
+    let paged = std::rc::Rc::new(std::cell::Cell::new(0));
+    for seed in 1..=3 {
+        stream_run(seed, Some(&paged));
+    }
+    assert!(paged.get() > 0, "a join paged behind the stream");
+}
+
+
+/// The label of group `g` at node `n`.
+fn label_of(net: &mut Net, n: usize, g: Tid) -> osis_base::LabelId {
+    net.group_labels(n).into_iter().find(|(x, _)| *x == g).unwrap().1.id
+}
+
+/// Makes `b`'s next stream push carrying an add under `l` also carry a head of another sync ID
+/// for `l` (`step`): `a` holds no step it descends from, so `l` opens again there.
+fn reopen_on_next_push(net: &mut Net, l: osis_base::LabelId, step: osis_label::Step) {
+    let mut step = Some(step);
+    net.tamper = Some(Box::new(move |m| match m {
+        osis_proto::Message::Stream(x) if x.events.iter().any(|(y, e)| *y == l && matches!(e, osis_proto::Event::Added { .. })) => {
+            let mut x = (**x).clone();
+            x.events.push((l, osis_proto::Event::Head(step.take()?)));
+            Some(osis_proto::Message::Stream(Box::new(x)))
+        }
+        _ => None,
+    }));
+}
+
+/// A step of group `g`'s label at node `n`.
+fn a_step(net: &mut Net, n: usize, g: Tid) -> osis_label::Step {
+    net.group_labels(n).into_iter().find(|(x, _)| *x == g).unwrap().1.steps.values().next().unwrap().0.clone()
+}
+
+// The stream's invariant (core/node/src/sync/stream.rs): a member's position moves only over what
+// was applied. One that opens again on the connection (a head it cannot follow) misses nothing
+// that arrives while it is not open: it leaves the stream and rejoins from where it stopped
+#[test]
+fn a_member_opening_again_misses_nothing_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b, gs) = pair(&mut net, 2);
+    let l = label_of(&mut net, b, gs[0]);
+    let step = a_step(&mut net, b, gs[1]);
+    reopen_on_next_push(&mut net, l, step);
+    net.item(b, gs[0], gs[0], "one");
+    net.feed(b, osis_node::sync::Event::Local);
+    let two = net.item(b, gs[0], gs[0], "two");
+    net.feed(b, osis_node::sync::Event::Local);
+    net.run();
+    net.advance(120_000);
+    assert_eq!(net.read(a, two), Some(s("two")), "what came while it opened again arrives");
+}
+
+// spec/sync.md §10 (Stream; spec/sync.md §9): the stream's memory part has no position a cursor
+// names, so a member entering the stream on a connection, from a position or the start, gets its
+// live memory entries listed
+#[test]
+fn a_member_rejoining_gets_its_live_memory_entries_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b, gs) = pair(&mut net, 2);
+    let t = net.item(b, gs[0], gs[0], "v");
+    net.run();
+    let l = label_of(&mut net, b, gs[0]);
+    let step = a_step(&mut net, b, gs[1]);
+    reopen_on_next_push(&mut net, l, step);
+    net.item(b, gs[0], gs[0], "one");
+    net.feed(b, osis_node::sync::Event::Local);
+    net.eph_write(b, t, &crate::common::ak("t:typing+.0"), s("typing"));
+    net.run();
+    net.advance(60_000);
+    assert_eq!(net.eph_read(a, t, "t:typing+.0"), Some(s("typing")), "the live memory entry is listed at the rejoin");
+}
+
+// spec/sync.md §10 (Stream: filtered by the connection's shared set): a follow push goes out only
+// after the step's re-judging, so a peer whose right a step ends is pushed nothing of that step
+#[test]
+fn nothing_is_pushed_past_a_lost_right_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b, gs) = pair(&mut net, 1);
+    net.item(b, gs[0], gs[0], "before");
+    net.run();
+    let l = label_of(&mut net, b, gs[0]);
+    let seen = std::rc::Rc::new(std::cell::RefCell::new((0usize, 0usize)));
+    let s2 = seen.clone();
+    net.tamper = Some(Box::new(move |m| {
+        let mut s = s2.borrow_mut();
+        match m {
+            osis_proto::Message::Stream(x) => s.0 += x.events.iter().filter(|(y, _)| *y == l).count(),
+            osis_proto::Message::Lost { items, .. } => s.1 += items.iter().filter(|(y, _)| *y == l).count(),
+            _ => {}
+        }
+        None
+    }));
+    let (ta, tb) = (net.tid(a), net.tid(b));
+    let rec = recipients_of(net.engine(b), &[(tb, Role::Admin)]);
+    remove_holder(net.engine(b), gs[0], ta, &rec, 77);
+    net.feed(b, osis_node::sync::Event::Local);
+    net.run();
+    let (pushed, lost) = *seen.borrow();
+    assert!(lost > 0, "a's member closed");
+    assert_eq!(pushed, 0, "nothing of the removing step was pushed to a");
+}
+
+// spec/wire.md §11.2 (Pull): a join whose cursor names no position of the server's log makes the
+// reply a stream from the start, so the requester knows the join was read as a listing
+#[test]
+fn a_join_cursor_naming_no_position_is_a_stream_from_the_start_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, _, gs) = pair(&mut net, 2);
+    for g in &gs {
+        net.item(a, *g, *g, "x");
+    }
+    net.run();
+    let seen = std::rc::Rc::new(std::cell::RefCell::new((false, Vec::new())));
+    let s2 = seen.clone();
+    net.tamper = Some(Box::new(move |m| {
+        let mut s = s2.borrow_mut();
+        match m {
+            osis_proto::Message::Pull(p) if !s.0 && p.joins.iter().any(|(_, c)| c.is_some()) => {
+                s.0 = true;
+                let mut p = (**p).clone();
+                if let Some(c) = p.joins.iter_mut().find_map(|(_, c)| c.as_mut()) {
+                    c[0] ^= 1;
+                }
+                Some(osis_proto::Message::Pull(Box::new(p)))
+            }
+            osis_proto::Message::PullReply(r) if s.0 => {
+                s.1.push(r.whole);
+                None
+            }
+            _ => None,
+        }
+    }));
+    net.restart(a, 21);
+    net.run();
+    let s = seen.borrow();
+    assert!(s.0, "a joined from a lag");
+    assert_eq!(s.1.first(), Some(&true), "{:?}", s.1);
+}
+
+// spec/wire.md §11.2 (Pull: `max_reply` as for a Sync): the memory part pages within the reply's
+// budget as the durable part does, so a listing of many memory entries never passes `max_reply`
+// and each arrives
+#[test]
+fn memory_entries_page_within_max_reply_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b, gs) = pair(&mut net, 1);
+    let ts: Vec<Tid> = (0..120).map(|i| net.item(b, gs[0], gs[0], &format!("t{i}"))).collect();
+    net.run();
+    net.set_online(a, false);
+    net.run();
+    for t in &ts {
+        net.eph_write(b, *t, &crate::common::ak("t:typing+.0"), s("typing"));
+    }
+    let largest = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let l2 = largest.clone();
+    net.tamper = Some(Box::new(move |m| match m {
+        osis_proto::Message::Pull(p) => {
+            let mut p = (**p).clone();
+            p.max_reply = osis_proto::client::SMALL_REPLY as u64;
+            Some(osis_proto::Message::Pull(Box::new(p)))
+        }
+        osis_proto::Message::PullReply(_) | osis_proto::Message::Stream(_) => {
+            l2.set(l2.get().max(m.encode().len()));
+            None
+        }
+        _ => None,
+    }));
+    net.set_online(a, true);
+    net.advance(60_000);
+    let got = ts.iter().filter(|t| net.eph_read(a, **t, "t:typing+.0") == Some(s("typing"))).count();
+    assert_eq!(got, ts.len(), "every memory entry arrived");
+    assert!(largest.get() <= osis_proto::client::SMALL_REPLY, "a reply of {} bytes", largest.get());
+}

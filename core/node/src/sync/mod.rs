@@ -649,9 +649,10 @@ impl SyncEngine {
         self.send_inbox()?;
         self.send_outbox(out)?;
         self.run_dirty(out)?;
-        self.stream_push(out)?;
         // after the passes: this step's last sends go first, then what the change ends
         self.shared_changed(out)?;
+        // pushes after the re-judging: nothing of this step goes to a member it ended
+        self.stream_push(out)?;
         Ok(())
     }
 

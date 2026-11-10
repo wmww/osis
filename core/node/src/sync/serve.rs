@@ -3,9 +3,10 @@
 //! (`PeerStore`, a `LabelStore` over the sync state's entries and the engine's blobs). Opens,
 //! stamps and deposits are checked as a host checks them, against the registration path
 //! recorded in `label.0` (the deepest recorded step is the head). Accepted entries go through the
-//! same path as downloaded ones; the log is in memory (`Feed`, a fresh log ID per start, so a
-//! peer's old cursor replays). A peer's deletion hides the entry from peers only, a registration
-//! extends the served path in memory: this node's own state follows its own rules. Entries this
+//! same path as downloaded ones; what peers read of this node goes by its node log stream
+//! (`stream`), so Sync, Subscribe and Reconcile are answered Error 11. A peer's deletion or
+//! replacement removes nothing, a registration extends the served path in memory: this node's
+//! own state follows its own rules. Entries this
 //! node dropped stay refused for `TOMBSTONE_LIFETIME` (`State::tombs`). What peers upload or
 //! deposit is charged to the label it went under (dialer keys are fresh per connection) and to a node-wide total (`SyncConfig`
 //! `peer_bytes`, `peer_total_bytes`) until it opens, reaches a host or is dropped; past either,
@@ -775,7 +776,7 @@ impl SyncEngine {
     }
 
     /// Closes served sessions without bytes for `SyncConfig.serve_idle_ms`, and those that
-    /// opened no label within `serve_open_ms`; expires peer deletions and this node's
+    /// opened no label within `serve_open_ms`; expires the memory log's deletions and this node's
     /// tombstones; forgets carriers and certificate placements nothing needs; prunes charges
     /// and blob sizes.
     pub(crate) fn serve_timers(&mut self, out: &mut Vec<Action>) {

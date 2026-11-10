@@ -17,17 +17,19 @@
 //!   one leaving keeps its position as a lag. A connection's start stops every member of the
 //!   record at the position it holds (`record_stop_all`), so one this connection does not open
 //!   claims nothing past what it applied.
-//! - A cursor is stored only after what it covers is applied (state flushed first).
+//! - A cursor is stored only after what it covers is applied (state flushed first); a member no
+//!   longer open here leaves the stream before a message is applied (`stream_prune`).
 //! - Within a connection a requester opens L only after the server has (the shared set's reply
 //!   order) and the server's `Lost` follows every event it sent for L, so the server's S covers
 //!   the requester's tracked members wherever the stream moves them.
 //!
-//! Checked by the randomized differential `stream_differential_no_write_dropped_spec_sync_10`
-//! (core/node/tests/it/stream.rs).
+//! Checked by the randomized differentials `stream_differential_no_write_dropped_spec_sync_10`
+//! and `stream_differential_paged_spec_sync_10` (core/node/tests/it/stream.rs).
 //!
 //! As built: the dialer pulls; the listener serves (both sides serve). Memory entries are the
-//! log's memory part (`MemLog`): the first Pull of a connection, and a join from the start,
-//! list the live ones of what they start; later ones follow in order on that connection.
+//! log's memory part (`MemLog`), which no cursor names: the first Pull of a connection, and
+//! every join, list the memory events of what they start; later ones follow in counter order on
+//! that connection, paged by the same budget as the durable part.
 
 use super::{Action, ConnId, SyncEngine};
 use crate::error::Result;
@@ -100,11 +102,6 @@ impl MemLog {
     /// Events after counter `after`, in order: (counter, label, blob, added).
     fn after(&self, after: u64) -> impl Iterator<Item = (u64, LabelId, BlobId, bool)> + '_ {
         self.by_seq.range(after.saturating_add(1)..).map(|(s, (l, b, a, _))| (*s, *l, *b, *a))
-    }
-
-    /// The live memory entries of `l`.
-    fn live_of(&self, l: &LabelId) -> Vec<BlobId> {
-        self.slot.range((*l, BlobId([0; 32]))..=(*l, BlobId([0xff; 32]))).filter(|(_, s)| self.by_seq.get(s).is_some_and(|x| x.2)).map(|((_, b), _)| *b).collect()
     }
 }
 
@@ -211,9 +208,10 @@ impl SyncEngine {
         s.crossed.extend(ids);
     }
 
-    /// Builds wire events from scanned log events, within `budget` bytes: the events taken, and
-    /// the position the page covers if the budget cut it (else `None`).
-    fn stream_events(&mut self, conn: ConnId, scanned: &[LoggedEvent], budget: &mut usize) -> Result<(Events, Option<u64>)> {
+    /// Builds wire events from scanned log events, within `budget` bytes (past it only as the
+    /// message's first event, `alone`): the events taken, and the position the page covers if
+    /// the budget cut it (else `None`).
+    fn stream_events(&mut self, conn: ConnId, scanned: &[LoggedEvent], budget: &mut usize, alone: bool) -> Result<(Events, Option<u64>)> {
         let labels = self.served_labels();
         let (inline, crossed) = self.streams.get(&conn).map_or((0, BTreeSet::new()), |s| (s.serving.inline_limit, s.serving.crossed.clone()));
         let mut out = Vec::new();
@@ -230,7 +228,7 @@ impl SyncEngine {
                 },
             };
             let n = osis_proto::msg::stream_event_size(&ev.1);
-            if n > *budget && !out.is_empty() {
+            if n > *budget && (!out.is_empty() || !alone) {
                 return Ok((out, Some(e.pos.saturating_sub(1))));
             }
             *budget = budget.saturating_sub(n);
@@ -261,19 +259,20 @@ impl SyncEngine {
         Ok(Some(Event::Added { blob_id: b, blob, wrap, stamp }))
     }
 
-    /// The live memory entries of `ls`, and the memory events after `conn`'s counter for its
-    /// members, within `budget`.
-    fn stream_memory(&mut self, conn: ConnId, list: &BTreeSet<LabelId>, members: &BTreeSet<LabelId>, budget: &mut usize) -> Result<Vec<(LabelId, Event)>> {
+    /// The memory part, in counter order within `budget` (its counter is the connection's alone,
+    /// never a cursor's): every event of the `list` members (entering the stream here: a
+    /// listing) and the events after the connection's counter of its other members. Whether the
+    /// budget cut it: the counter then stops before the first event left, which the next reply
+    /// or push takes.
+    fn stream_memory(&mut self, conn: ConnId, list: &BTreeSet<LabelId>, members: &BTreeSet<LabelId>, budget: &mut usize) -> Result<(Vec<(LabelId, Event)>, bool)> {
         let after = self.streams.get(&conn).map_or(0, |s| s.serving.mem_seq);
-        let mut picked: Vec<(LabelId, BlobId, bool)> = Vec::new();
-        for l in list {
-            picked.extend(self.state.mem_log.live_of(l).into_iter().map(|b| (*l, b, true)));
-        }
-        picked.extend(self.state.mem_log.after(after).filter(|(_, l, _, _)| members.contains(l) && !list.contains(l)).map(|(_, l, b, a)| (l, b, a)));
-        let seq = self.state.mem_log.seq();
+        let from = if list.is_empty() { after } else { 0 };
+        let picked: Vec<(u64, LabelId, BlobId, bool)> = self.state.mem_log.after(from).filter(|(s, l, _, added)| (list.contains(l) && (*added || *s > after)) || (members.contains(l) && *s > after)).collect();
+        let mut at = self.state.mem_log.seq();
         let (inline, crossed) = self.streams.get(&conn).map_or((0, BTreeSet::new()), |s| (s.serving.inline_limit, s.serving.crossed.clone()));
         let mut out = Vec::new();
-        for (l, b, added) in picked {
+        let mut cut = false;
+        for (seq, l, b, added) in picked {
             let ev = if added {
                 match self.stream_added(l, b, inline, &crossed, *budget)? {
                     Some(e) => e,
@@ -282,12 +281,17 @@ impl SyncEngine {
             } else {
                 Event::Deleted(b)
             };
-            // memory entries are bounded by the ephemeral caps; an announcement is small
-            *budget = budget.saturating_sub(osis_proto::msg::stream_event_size(&ev));
+            let n = osis_proto::msg::stream_event_size(&ev);
+            if n > *budget && !out.is_empty() {
+                at = seq.saturating_sub(1);
+                cut = true;
+                break;
+            }
+            *budget = budget.saturating_sub(n);
             out.push((l, ev));
         }
-        self.streams.entry(conn).or_default().serving.mem_seq = seq;
-        Ok(out)
+        self.streams.entry(conn).or_default().serving.mem_seq = at;
+        Ok((out, cut))
     }
 
     /// Answers a Pull (issues/net-reconnect.md, One node log): after `served_labels` and a flush
@@ -303,47 +307,50 @@ impl SyncEngine {
             s.follow = None;
         }
         let first = p.ephemeral;
-        let (base, whole, starts, joined, refused, scan) = self.engine.run(|tx| {
+        let (base, whole, joined, refused, scan) = self.engine.run(|tx| {
             let base = match &p.cursor {
                 Some(c) => tx.txn.log_position(c)?,
                 None => None,
             };
-            let whole = base.is_none();
-            let base = base.unwrap_or(0);
-            let mut starts: BTreeMap<LabelId, u64> = members.iter().map(|l| (*l, base)).collect();
+            // a cursor naming no position, the stream's or a join's: the stream from the start
+            // (else a join read from the start would not be known as a listing there)
+            let mut whole = base.is_none();
             let (mut joined, mut refused) = (Vec::new(), Vec::new());
             for (l, c) in &p.joins {
                 if !members.contains(l) {
                     refused.push(*l);
                     continue;
                 }
-                if whole {
-                    continue;
-                }
                 let at = match c {
-                    Some(c) => tx.txn.log_position(c)?.unwrap_or(0),
-                    None => 0,
+                    Some(c) => tx.txn.log_position(c)?,
+                    None => Some(0),
                 };
-                starts.insert(*l, at);
-                joined.push((*l, at, c.is_none()));
+                whole |= at.is_none();
+                joined.push((*l, at.unwrap_or(0)));
             }
+            if whole {
+                joined.clear();
+            }
+            let base = base.filter(|_| !whole).unwrap_or(0);
+            let mut starts: BTreeMap<LabelId, u64> = members.iter().map(|l| (*l, base)).collect();
+            starts.extend(joined.iter().copied());
             let from = starts.values().copied().min().unwrap_or(base);
             let scan = scan(&mut tx.txn, from, &starts)?;
-            Ok((base, whole, starts, joined, refused, scan))
+            Ok((base, whole, joined, refused, scan))
         })?;
         let mut budget = usize::try_from(p.max_reply).unwrap_or(usize::MAX).saturating_sub(256);
-        // the memory part first: the live entries of what starts here, then what followed
-        let listed: BTreeSet<LabelId> = if whole || first { members.clone() } else { joined.iter().filter(|(_, _, fresh)| *fresh).map(|(l, ..)| *l).collect() };
-        let mut events = self.stream_memory(conn, &listed, &members, &mut budget)?;
-        let (durable, cut) = self.stream_events(conn, &scan.events, &mut budget)?;
+        // the memory part first: a cursor names no memory event, so each member entering the
+        // stream gets its live entries listed; then what followed for the rest
+        let listed: BTreeSet<LabelId> = if whole || first { members.clone() } else { joined.iter().map(|(l, ..)| *l).collect() };
+        let (mut events, memory_cut) = self.stream_memory(conn, &listed, &members, &mut budget)?;
+        let (durable, cut) = self.stream_events(conn, &scan.events, &mut budget, events.is_empty())?;
         events.extend(durable);
         let end = cut.unwrap_or(scan.end);
-        let more = end < scan.log_end;
+        let more = end < scan.log_end || memory_cut;
         // every member scanned past its start is at `end`; the stream's own position does not go
         // back (a reply ending below it moves only the joins)
         let stream_at = if whole { end } else { base.max(end) };
-        let still: Vec<(LabelId, u64)> = if whole { Vec::new() } else { joined.iter().map(|(l, at, _)| (*l, (*at).max(end))).filter(|(_, at)| *at < base).collect() };
-        let _ = starts;
+        let still: Vec<(LabelId, u64)> = if whole { Vec::new() } else { joined.iter().map(|(l, at)| (*l, (*at).max(end))).filter(|(_, at)| *at < base).collect() };
         let (cursor, joins) = self.engine.run(|tx| {
             let cursor = tx.txn.log_cursor(stream_at)?;
             let mut joins: Vec<Join> = refused.iter().map(|l| (*l, None)).collect();
@@ -378,8 +385,8 @@ impl SyncEngine {
             let starts: BTreeMap<LabelId, u64> = members.iter().map(|l| (*l, at)).collect();
             let scan = self.engine.run(|tx| Ok(scan(&mut tx.txn, at, &starts)?))?;
             let mut budget = osis_proto::serving::REPLY_BUDGET - 256;
-            let mut events = self.stream_memory(conn, &BTreeSet::new(), &members, &mut budget)?;
-            let (durable, cut) = self.stream_events(conn, &scan.events, &mut budget)?;
+            let (mut events, _) = self.stream_memory(conn, &BTreeSet::new(), &members, &mut budget)?;
+            let (durable, cut) = self.stream_events(conn, &scan.events, &mut budget, events.is_empty())?;
             events.extend(durable);
             let end = cut.unwrap_or(scan.end);
             if let Some(s) = self.streams.get_mut(&conn) {
@@ -482,8 +489,11 @@ impl SyncEngine {
         self.shared_send(conn, Message::Pull(Box::new(pull)), out)
     }
 
-    /// Applies stream events of tracked members, by label in order.
+    /// Applies stream events of tracked members, by label in order. A member no longer open
+    /// here (one opening again) leaves the stream first, at the position it holds: the message's
+    /// cursor then moves only the members whose events were applied.
     fn stream_apply(&mut self, conn: ConnId, events: Vec<(LabelId, Event)>, out: &mut Vec<Action>) -> Result<()> {
+        self.stream_prune(conn)?;
         let Some(p) = self.streams.get(&conn).map(|s| &s.pulling) else { return Ok(()) };
         let mut by_label: BTreeMap<LabelId, Vec<Event>> = BTreeMap::new();
         for (l, e) in events {
