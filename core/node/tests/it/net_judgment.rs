@@ -137,6 +137,7 @@ fn departed_through_a_roster_path_spec_sync_10() {
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, me);
         e.commit(m).unwrap();
+        // bare edges throughout: made-up actors with no keys to grant to, judged by roster alone
         set_edge(e, t, actor, Role::Admin);
         t
     };
@@ -172,6 +173,7 @@ fn node_key_reaches_only_through_rosters_held_spec_sync_10() {
     let (s, account) = account_node(&mut net, 3, host);
     let ts = net.node_tid(s);
     let g = net.group_at(a, &[], vec![]);
+    // bare: the account's keys are not held here; the roster entry alone is judged
     set_edge(net.engine(a), g, account, Role::Read);
     assert_eq!(net.engine(a).core.judge([ts]).of(&g), Judgment::Unknown, "the node's link to its account is not held");
     let _ = account;
@@ -188,6 +190,7 @@ fn an_account_on_the_roster_has_no_static_entry_spec_sync_2() {
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     let g = net.group_at(a, &[], vec![]);
+    // bare: the account already stands above Read on g (a grant cannot lower it); only the roster entry is checked
     set_edge(net.engine(a), g, created.account, Role::Read);
     let gl = net.group_labels(a).iter().find(|(x, _)| *x == g).unwrap().1.id;
     assert!(net.engine(a).core.is_key_actor(&created.account));
@@ -204,6 +207,7 @@ fn proven_account_is_judged_by_its_roles_spec_sync_10() {
     let (s, account) = account_node(&mut net, 3, host);
     let ts = net.tid(s);
     let g = net.group_at(a, &[], vec![]);
+    // bare: the account's keys are not held here; the roster entry alone is judged
     set_edge(net.engine(a), g, account, Role::Read);
     let label = net.group_labels(a).iter().find(|(x, _)| *x == g).unwrap().1.id;
     assert_eq!(net.engine(a).core.judge([account]).of(&g), Judgment::Holder, "the account is on g's roster: J reads it");
@@ -276,6 +280,7 @@ fn judgment_work_does_not_grow_with_things_asked_spec_sync_10() {
         let mut things = Vec::new();
         for i in 0..n {
             let g = net.group_seeded(a, &[], vec![], i as u64 + 1);
+            // bare: a made-up actor with no keys to grant to, judged by roster alone
             set_edge(net.engine(a), g, actor, Role::Read);
             things.push(g);
         }
