@@ -667,10 +667,21 @@ impl SyncEngine {
         };
         s.asked = Asked::Prove;
         let good = osis_proto::prove::verified(proofs, false, &ch, &key);
-        let proven = super::proofs::proven_actors(&mut self.engine, &good)?;
-        let known = self.engine.core.judge(proven.all()).known();
-        let own = super::proofs::own_peer(&self.engine, &proven);
-        let mine: Vec<osis_proto::ActorProof> = if known { super::proofs::provers(&mut self.engine, own)?.iter().map(|p| p.sign(true, &dialer, &key)).collect() } else { Vec::new() };
+        let answer = (|| -> Result<_> {
+            let proven = super::proofs::proven_actors(&mut self.engine, &good)?;
+            let known = self.engine.core.judge(proven.all()).known();
+            let own = super::proofs::own_peer(&self.engine, &proven);
+            let mine: Vec<osis_proto::ActorProof> = if known { super::proofs::provers(&mut self.engine, own)?.iter().map(|p| p.sign(true, &dialer, &key)).collect() } else { Vec::new() };
+            Ok((proven, mine))
+        })();
+        // an engine error is this node's, not the peer's: answered Error 1, the step goes on
+        let (proven, mine) = match answer {
+            Ok(a) => a,
+            Err(e) => {
+                self.diag(format!("serve prove: {e}"));
+                return self.serve(conn, ServingInput::Peer(Box::new(Message::Error { id, code: Code::REFUSED })), out);
+            }
+        };
         if let Some(s) = self.served.get_mut(&conn) {
             s.proven = proven;
             s.proved = mine.iter().map(|p| p.actor()).collect();
@@ -695,7 +706,14 @@ impl SyncEngine {
             self.serve(conn, ServingInput::Peer(Box::new(Message::Error { id, code: Code::REFUSED })), out)?;
             return Ok(None);
         }
-        let ((mine, tag), bound, looked) = super::records::answer_resume(&mut self.engine, &actors, &self.records.live(), &nonce, &tags, (&dialer, &ch, &key))?;
+        let ((mine, tag), bound, looked) = match super::records::answer_resume(&mut self.engine, &actors, &self.records.live(), &nonce, &tags, (&dialer, &ch, &key)) {
+            Ok(a) => a,
+            Err(e) => {
+                self.diag(format!("serve resume: {e}"));
+                self.serve(conn, ServingInput::Peer(Box::new(Message::Error { id, code: Code::REFUSED })), out)?;
+                return Ok(None);
+            }
+        };
         self.records.lookups += looked;
         self.serve(conn, ServingInput::Peer(Box::new(Message::Resumed { id, nonce: mine, tag })), out)?;
         Ok(Some(bound))
