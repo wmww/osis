@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: ephemeral, engine, tests
 
-Replay: `OSIS_SEED_TIMEOUT_SECS=15 OSIS_EPH_START=9130190 OSIS_EPH_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact ephemeral::random_churn_converges_large`. 1 of 300 seeds from 9130000; it hits the 15 CPU-s limit ("hung"). Node 0 on host 0 alternates Upload of a fresh `ContentSnapshot` of `win:cursor+.0` with a Delete of the previous one (about 2400 uploads in 15 CPU-s; not re-traced since memory bodies moved onto the durable sync path).
+Replay: `OSIS_SEED_TIMEOUT_SECS=15 OSIS_EPH_START=9130190 OSIS_EPH_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact ephemeral::random_churn_converges_large`. 1 of 300 seeds from 9130000; it hit the 15 CPU-s limit ("hung"); it no longer reproduces (passes in 1.9 s on main 70093a9b3): the generator or harness moved, so the mechanism below needs a fresh reproducer before a study. Node 0 on host 0 alternates Upload of a fresh `ContentSnapshot` of `win:cursor+.0` with a Delete of the previous one (about 2400 uploads in 15 CPU-s; not re-traced since memory bodies moved onto the durable sync path).
 
 ## Mechanism (traced before the memory path moved onto durable sync)
 Steps (seed's log): node 1 `Set k1` (step 3), node 1 `Remove(<node 1's key>)` (4) undone (10), node 0 `Set k1` (6), node 1 `Put k1, Set k2` (12) undone (13), expiring writes by 0, 2, 3, node 0 restarts (26), node 2 demoted (27), node 0 `Set k1` (29, its new session).
