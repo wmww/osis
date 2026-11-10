@@ -1,9 +1,9 @@
 # History and expiry defaults are a thing's setting
-> Summary: Design study (Tess's proposal): history is set per thing by its admins in one admin-only aspect `retention^.0` (per aspect key: keep window, keep-until, or purge on replace; plus the expiry default a writer fills in), judged from the settings held; per-write history, `required^.0` and schema history defaults go. Rules, costs, what goes, the model and its result, Tess's decisions, build steps. Ready to implement on Tess's go-ahead.
+> Summary: Design study (Tess's proposal): history is set per thing by its admins in one admin-only aspect `retention^.0` (per aspect key: keep window, keep-until, or purge on replace; plus the expiry default a writer fills in), judged from the settings held; per-write history, `required^.0` and schema history defaults go. Rules, costs, what goes, the model and its result, Tess's decisions, build steps. Go-ahead given.
 > Priority: normal
-> Tags: tess-call, retention, spec, engine, sync, api, permissions
+> Tags: retention, spec, engine, sync, api, permissions
 
-**Ready to implement if and when Tess gives the go-ahead; not before.** Her decisions are below (Decisions).
+**Go-ahead given by Tess**: implement when ready (after expiry step 8 and the held_set_decides class study land, since both touch the same files). Her decisions are below (Decisions).
 
 ## Principle
 A thing's admins decide what replaced content is kept and shown, and for how long; the setting never decides who may drop a body (purgeable-by, per write) nor deletes anything promptly (purge, expiry). Every judgment reads only the settings and bodies a node holds.
