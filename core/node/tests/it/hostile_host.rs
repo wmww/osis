@@ -925,6 +925,7 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     let t = net.item(c, g, ct_, "x");
     net.pair(w, c);
     let e = net.engine(c);
+    // bare edges: the rotation below boxes every holder before any pass (a grant by hand)
     set_edge(e, t, wt, Role::Write);
     set_edge(e, t, g, Role::Read);
     let rs = recipients_of(e, &[(ct_, Role::Admin), (wt, Role::Write), (g, Role::Read)]);
@@ -1076,6 +1077,7 @@ fn one_group(dead: bool) -> OneGroup {
     let u = net.item(c, g, g, "u0");
     net.pair(w, c);
     let e = net.engine(c);
+    // bare edges: the rotation below boxes every holder before any pass (a grant by hand)
     set_edge(e, t, wt, Role::Write);
     set_edge(e, t, g, Role::Read);
     let rs = recipients_of(e, &[(ct_, Role::Admin), (wt, Role::Write), (g, Role::Read)]);
