@@ -317,7 +317,6 @@ fn check_view(d: &Data, v: &ViewType, t: Tid, (other, spare): (Tid, Tid), query:
             update(&mut tree, &mut screen).unwrap();
         }
     }
-    drop(check_write);
     reached.moved |= moved;
 }
 
