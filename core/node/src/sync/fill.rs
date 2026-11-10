@@ -7,6 +7,7 @@ use super::{ConnId, HostKey, LConn, Phase, SyncEngine};
 use crate::error::Result;
 use osis_base::{BlobId, LabelId};
 use osis_proto::Cursor;
+use osis_proto::client::STALL_TIMEOUT_MS;
 use std::collections::BTreeSet;
 
 /// Queue rank of what judging needs (order 0).
@@ -122,7 +123,7 @@ impl SyncEngine {
 
     /// Asks for the next batch once the last is answered; ends the fill when nothing is left.
     pub(crate) fn fill_more(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let secrets_now = self.secrets_count();
+        let (secrets_now, now) = (self.secrets_count(), self.raw_now());
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let host = c.host;
         let Some(lc) = c.labels.get_mut(&l) else { return Ok(()) };
@@ -130,8 +131,9 @@ impl SyncEngine {
             return Ok(());
         }
         let Some(mut f) = lc.fill.take() else { return Ok(()) };
-        f.asked.retain(|b| c.req.fetching.contains_key(b));
-        if !f.asked.is_empty() {
+        // the batch is waited on while it counts as asked (`asked`): past the stall time its host
+        // may be trickling the reply, and the fill goes on (what it lacks is asked elsewhere)
+        if f.asked.iter().filter_map(|b| c.req.fetching.get(b)).any(|at| at.saturating_add(STALL_TIMEOUT_MS) > now) {
             if let Some(lc) = self.lc_mut(conn, &l) {
                 lc.fill = Some(f);
             }
@@ -157,7 +159,7 @@ impl SyncEngine {
                 break;
             }
             f.queue.pop_first();
-            if self.state.entries.contains_key(&(l, b)) && self.state.is_present(&host, &l, &b) && !missing(self, &b) && !self.engine.has_blob(&b) && !self.asked_for(l, &b) {
+            if self.state.entries.contains_key(&(l, b)) && self.state.is_present(&host, &l, &b) && !missing(self, &b) && !self.engine.has_blob(&b) && self.may_ask(conn, l, &b) {
                 first = Some(r == FIRST);
                 ids.push(b);
             }
@@ -180,6 +182,8 @@ impl SyncEngine {
             lc.fill = Some(f);
             lc.dirty |= first_now;
         }
+        // looked at again when the batch goes stale (`timers`), if no answer came first
+        self.settle_by(now.saturating_add(STALL_TIMEOUT_MS), l);
         self.fetch_on(conn, l, ids, out)
     }
 

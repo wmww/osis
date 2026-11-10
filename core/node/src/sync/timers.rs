@@ -52,6 +52,11 @@ impl SyncEngine {
         let due: BTreeSet<LabelId> = std::mem::replace(&mut self.settle_at, later).into_values().flatten().collect();
         if !due.is_empty() {
             self.mark_labels(&due);
+            // a fill waiting on a batch looks again: it may have gone stale (`fill_more`)
+            let fills: Vec<(ConnId, LabelId)> = self.conns.iter().flat_map(|(id, c)| due.iter().filter(|l| c.labels.get(l).is_some_and(|x| x.fill.is_some())).map(move |l| (*id, *l))).collect();
+            for (conn, l) in fills {
+                self.fill_more(conn, l, out)?;
+            }
         }
         let due: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.timer.is_some_and(|t| t <= now)).map(|(id, _)| *id).collect();
         for conn in due {
