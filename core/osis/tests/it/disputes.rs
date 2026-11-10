@@ -52,7 +52,7 @@ fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     assert_eq!(ds[0], told);
     let id: osis::DisputeId = told.id().to_string().parse().unwrap();
     assert_eq!(id, told.id());
-    assert!(matches!(c.choose_side(id, Side::Line(told_commit(&told))), Err(osis::Error::Invalid(_))), "a line is no side of a removal");
+    assert!(matches!(c.choose_side(id, Side::Version(told_commit(&told))), Err(osis::Error::Invalid(_))), "a version is no side of a removal");
     c.choose_side(id, Side::Author).unwrap();
     assert!(holds(&c, a.me()) && !holds(&c, b.me()), "a's side: its removal of b counts");
     let (ds, _) = c.disputes().unwrap();
@@ -63,11 +63,11 @@ fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     assert_eq!(a.disputes().unwrap().0[0].side(), Side::Author);
     assert_eq!(b.disputes().unwrap().0[0].side(), Side::Holder);
     assert!(matches!("x".parse::<osis::DisputeId>(), Err(osis::Error::Invalid(_))));
-    // an account's history names its dispute by the account; its sides are lines of it
+    // an account's history names its dispute by the account; its sides are versions of it
     let acct: osis::DisputeId = a.me().to_uri().parse().unwrap();
     assert_eq!(acct.to_string(), a.me().to_uri());
     assert!(matches!(c.choose_side(acct, Side::Author), Err(osis::Error::Invalid(_))), "author is no side of a history");
-    assert!(matches!(c.choose_side(acct, Side::Line(told_commit(&told))), Err(osis::Error::Invalid(_))), "no change of the account's ends a version there");
+    assert!(matches!(c.choose_side(acct, Side::Version(told_commit(&told))), Err(osis::Error::Invalid(_))), "no change of the account's ends a version there");
 }
 
 fn told_commit(d: &Dispute) -> osis::CommitId {

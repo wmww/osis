@@ -642,14 +642,14 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let side = |s: osis::Side| match s {
                 osis::Side::Author => "author".to_string(),
                 osis::Side::Holder => "holder".to_string(),
-                osis::Side::Line(c) => c.to_string(),
+                osis::Side::Version(c) => c.to_string(),
             };
             let chosen = |d: &osis::Dispute| if d.chosen() { " chosen" } else { "" };
             let mut lines: Vec<String> = ds
                 .iter()
                 .map(|d| match d {
                     osis::Dispute::Removal { id, target, author, holder, side: s, .. } => format!("{id} {} {} {} {}{}", target.to_uri(), author.to_uri(), holder.to_uri(), side(*s), chosen(d)),
-                    osis::Dispute::Account { id, lines, side: s, .. } => format!("{id} {} {}{}", lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(","), side(*s), chosen(d)),
+                    osis::Dispute::Account { id, versions, side: s, .. } => format!("{id} {} {}{}", versions.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(","), side(*s), chosen(d)),
                 })
                 .collect();
             if left > 0 {
@@ -663,7 +663,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                         ds.iter()
                             .map(|d| match d {
                                 osis::Dispute::Removal { id, target, author, holder, side: s, .. } => J::obj([("id", J::str(id.to_string())), ("target", J::tid(*target)), ("author", J::tid(*author)), ("holder", J::tid(*holder)), ("side", J::str(side(*s))), ("chosen", flag(d))]),
-                                osis::Dispute::Account { id, account, lines, side: s, .. } => J::obj([("id", J::str(id.to_string())), ("account", J::tid(*account)), ("lines", J::Arr(lines.iter().map(|l| J::str(l.to_string())).collect())), ("side", J::str(side(*s))), ("chosen", flag(d))]),
+                                osis::Dispute::Account { id, account, versions, side: s, .. } => J::obj([("id", J::str(id.to_string())), ("account", J::tid(*account)), ("versions", J::Arr(versions.iter().map(|l| J::str(l.to_string())).collect())), ("side", J::str(side(*s))), ("chosen", flag(d))]),
                             })
                             .collect(),
                     ),
@@ -676,7 +676,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let side = match side.as_str() {
                 "author" => osis::Side::Author,
                 "holder" => osis::Side::Holder,
-                c => osis::Side::Line(c.parse().map_err(|_| exit(2, "side: author, holder or a commit id"))?),
+                c => osis::Side::Version(c.parse().map_err(|_| exit(2, "side: author, holder or a commit id"))?),
             };
             Ok(db.choose_side(id.parse()?, side)?)
         }

@@ -370,7 +370,7 @@ fn account_view_is_built_once_per_rotation() {
     for _ in 0..5 {
         assert_eq!(e.core.account_delete_key(&a.account).unwrap(), next.signing.verifying_key());
     }
-    assert_eq!(e.core.account_view_builds.get(), before + 2, "once for the rotation, once as the seeds held (the side of a node of the account) went");
+    assert_eq!(e.core.account_view_builds.get(), before + 3, "once for the rotation, once each as D's roster and the seeds held (the side of a node of the account) went");
 }
 
 // spec/sync.md §3 (invite requests): the request gate reads an author's signature at the header's epoch: a commit signed at the first epoch verifies only there

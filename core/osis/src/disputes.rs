@@ -18,7 +18,7 @@ pub enum Side {
     /// Of a removal: the removed holder, so the removal does not count.
     Holder,
     /// Of an account's history: the version that ends in this change of the account's.
-    Line(CommitId),
+    Version(CommitId),
 }
 
 /// Names a dispute (`Osis::disputes`). Its text form (`Display`, `FromStr`) keeps it anywhere.
@@ -67,11 +67,11 @@ pub enum Dispute {
     /// unless a node takes `author`'s side. By default a node takes the side its own role
     /// exists on, else whichever write it held first.
     Removal { id: DisputeId, target: Tid, author: Tid, holder: Tid, commit: CommitId, side: Side, chosen: bool },
-    /// Over `account`'s history, which forked into versions ending in `lines` (as when a device
+    /// Over `account`'s history, which forked into versions ending in `versions` (as when a device
     /// removed from the account keeps writing as it): the node reads one, by default the one it
     /// received first. Told only when that may be wrong; the account's own devices read the
     /// version their device list holds.
-    Account { id: DisputeId, account: Tid, lines: Vec<CommitId>, side: Side, chosen: bool },
+    Account { id: DisputeId, account: Tid, versions: Vec<CommitId>, side: Side, chosen: bool },
 }
 
 /// Candidates `disputes` examines at most (each costs a walk of the role history: a removed
@@ -88,8 +88,8 @@ impl Dispute {
         Dispute::Removal { id: DisputeId(Key::Removal { commit: d.commit, op: d.op, holder: d.holder }), target: d.target, author: d.author, holder: d.holder, commit: CommitId(d.commit), side, chosen }
     }
 
-    pub(crate) fn of_account(account: Tid, lines: &[osis_base::CommitId], side: osis_base::CommitId, chosen: bool) -> Dispute {
-        Dispute::Account { id: DisputeId(Key::Account(account)), account, lines: lines.iter().map(|l| CommitId(*l)).collect(), side: Side::Line(CommitId(side)), chosen }
+    pub(crate) fn of_account(account: Tid, versions: &[osis_base::CommitId], side: osis_base::CommitId, chosen: bool) -> Dispute {
+        Dispute::Account { id: DisputeId(Key::Account(account)), account, versions: versions.iter().map(|l| CommitId(*l)).collect(), side: Side::Version(CommitId(side)), chosen }
     }
 
     /// Its name.
@@ -147,7 +147,7 @@ impl Osis {
     }
 
     /// Takes a side in a dispute, for this node, until chosen again: `Author` or `Holder` of a
-    /// removal, a `Line` of an account's history (one of its `lines`, or any change of the
+    /// removal, a `Version` of an account's history (one of its `versions`, or any change of the
     /// account's ending a version). Switching may re-read everything the dispute touches and is
     /// slow on a long history. `Invalid` when no such removal or change is held, or the side is
     /// of another kind of dispute; `Unsupported` on a thin client.
@@ -158,7 +158,7 @@ impl Osis {
         let misfit = || Error::Invalid(format!("{side:?} is no side of dispute {id}"));
         self.locked(|l| match (id.0, side) {
             (Key::Removal { commit, op, holder }, Side::Author | Side::Holder) => Ok(l.engine().choose(commit, op, holder, side == Side::Author)?),
-            (Key::Account(a), Side::Line(c)) => Ok(l.engine().choose_line(a, c.0)?),
+            (Key::Account(a), Side::Version(c)) => Ok(l.engine().choose_line(a, c.0)?),
             _ => Err(misfit()),
         })
     }
