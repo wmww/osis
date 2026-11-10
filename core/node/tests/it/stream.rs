@@ -115,6 +115,38 @@ fn a_refused_pull_is_asked_again_spec_sync_10() {
     assert_eq!(net.read(a, t), Some(s("x")), "b's write reached a");
 }
 
+// spec/sync.md §10 (Shared set): a filter generation answered Error goes again, whole, after
+// `resync_ms`, as a refused Pull does: with both sides' first filters refused nothing is shared
+// until then
+#[test]
+fn a_refused_filter_goes_again_spec_sync_10() {
+    let mut net = Net::new();
+    let refused = std::rc::Rc::new(std::cell::Cell::new(0));
+    let r = refused.clone();
+    let ids = std::rc::Rc::new(std::cell::RefCell::new(std::collections::BTreeSet::new()));
+    net.tamper = Some(Box::new(move |m| match m {
+        osis_proto::Message::Beacons { id, more: false, .. } => {
+            ids.borrow_mut().insert(*id);
+            None
+        }
+        osis_proto::Message::Shared { id, .. } if r.get() < 2 && ids.borrow().contains(id) => {
+            r.set(r.get() + 1);
+            Some(osis_proto::Message::Error { id: *id, code: osis_proto::Code::RATE_LIMITED })
+        }
+        _ => None,
+    }));
+    let (a, b, gs) = pair(&mut net, 1);
+    let t = net.item(b, gs[0], gs[0], "x");
+    net.run();
+    assert_eq!(refused.get(), 2, "each side's filter was refused");
+    let filters = (net.sync(a).pass_stats().filters_sent, net.sync(b).pass_stats().filters_sent);
+    let resync = net.sync(a).config().resync_ms;
+    net.advance(resync + 1);
+    net.run();
+    assert!(net.sync(a).pass_stats().filters_sent > filters.0 && net.sync(b).pass_stats().filters_sent > filters.1, "each sent its filter again");
+    assert_eq!(net.read(a, t), Some(s("x")), "b's write reached a");
+}
+
 /// What the stream replies and pushes carried, as a tamper hook sees them on peer links: per
 /// message, whether it was a stream from the start, its events, and the blobs whose bytes it
 /// carried.
@@ -439,6 +471,48 @@ fn fetch_in_flight(net: &mut Net) -> (usize, usize, Tid, Tid) {
         assert!(net.step(), "a asks for the body");
     }
     (a, b, gs[0], t)
+}
+
+// The stream's settling rule (core/node/src/sync/stream.rs): a body is owed until held or its
+// source answered for it. A co-reader announcing an entry without bytes and serving bytes this
+// node does not keep (a relay-only blob outside its window) holds nothing more of it: the
+// stream settles and stops asking, rather than fetching it again every step
+#[test]
+fn a_body_served_and_not_kept_is_owed_no_more_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b, gs) = pair(&mut net, 1);
+    let l = label_of(&mut net, b, gs[0]);
+    let mut salt = [0u8; 16];
+    salt[0] = 0x5a;
+    let mut junk = osis_label::Prefix::new(salt, Some(osis_base::WallMs(1)), vec![]).unwrap().with_class(osis_label::Class::Relay).to_bytes();
+    junk.extend_from_slice(&[7; 40]);
+    let id = osis_label::blob_id(&junk);
+    let announced = std::rc::Rc::new(std::cell::Cell::new(false));
+    let an = announced.clone();
+    net.tamper = Some(Box::new(move |m| match m {
+        osis_proto::Message::Stream(x) if !an.get() && x.events.iter().any(|(y, _)| *y == l) => {
+            an.set(true);
+            let mut x = (**x).clone();
+            x.events.push((l, osis_proto::Event::Added { blob_id: id, blob: None, wrap: [0; osis_crypto::WRAP_LEN], stamp: None }));
+            Some(osis_proto::Message::Stream(Box::new(x)))
+        }
+        osis_proto::Message::FetchReply { id: fid, items } if items.iter().any(|f| f.blob_id == id) => {
+            let items = items.iter().map(|f| if f.blob_id == id { osis_proto::msg::Fetched { blob_id: id, entry: Some((junk.clone(), [0; osis_crypto::WRAP_LEN], None)) } } else { f.clone() }).collect();
+            Some(osis_proto::Message::FetchReply { id: *fid, items })
+        }
+        _ => None,
+    }));
+    net.item(b, gs[0], gs[0], "a push to carry the announcement");
+    net.run();
+    assert!(announced.get(), "a push carried the announcement");
+    let fetches = net.peer_sent(a, FETCH);
+    for _ in 0..3 {
+        net.advance(1_000);
+        net.run();
+    }
+    assert_eq!(net.peer_sent(a, FETCH), fetches, "not fetched again");
+    let conns = net.peer_conns(a);
+    assert!(conns.iter().any(|(c, m, _)| *m == b && net.sync(a).stream_caught_up(*c)), "a's stream of b settled");
 }
 
 // The stream's invariant (core/node/src/sync/stream.rs): a position covers a body announced

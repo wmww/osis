@@ -954,7 +954,12 @@ impl SyncEngine {
             }
         }
         if !evs.is_empty() && self.records.shared.get(&conn).is_some_and(|s| s.has(&l)) {
+            let delivered: Vec<BlobId> = evs.iter().filter_map(|e| if let Event::Added { blob_id, .. } = e { Some(*blob_id) } else { None }).collect();
             self.reader_events(conn, l, evs, out)?;
+            // bytes served and not kept (a relay-only blob, one past a budget): the source gave
+            // what it holds, so nothing of them is owed on its stream (else asked every step)
+            let unkept: BTreeSet<(LabelId, BlobId)> = delivered.into_iter().filter(|b| self.lacks(&l, b)).map(|b| (l, b)).collect();
+            self.stream_unowe(conn, &unkept);
         }
         if failed.is_empty() {
             return Ok(());

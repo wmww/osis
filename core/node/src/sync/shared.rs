@@ -109,6 +109,10 @@ pub(crate) struct Shared {
     /// Whole filter's entries and additions since, generations.
     sent_gen: u64,
     in_flight: bool,
+    /// The last generation was refused: a whole filter goes again (`again`) at this time (raw
+    /// ms), `resync_ms` after, as a refused Pull does (`stream_refused`).
+    retry_at: Option<u64>,
+    again: bool,
     whole_n: usize,
     added: usize,
     f: u8,
@@ -152,6 +156,8 @@ impl Shared {
             test_due: false,
             sent_gen: 0,
             in_flight: false,
+            retry_at: None,
+            again: false,
             whole_n: 0,
             added: 0,
             f: BEACON_P as u8,
@@ -314,10 +320,11 @@ impl SyncEngine {
 
     fn shared_send_generation(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
-        if !s.filter_out || s.in_flight {
+        if !s.filter_out || s.in_flight || s.retry_at.is_some() {
             return Ok(());
         }
-        let first = s.sent_gen == 0;
+        // a whole filter, also after a refused generation (`shared_retry`)
+        let first = s.sent_gen == 0 || s.again;
         let after = if first { 0 } else { s.sent_pos };
         let (labels, top) = self.shared_changes_after(after)?;
         if !first && labels.is_empty() {
@@ -339,6 +346,7 @@ impl SyncEngine {
         let base = (!whole).then_some(s.sent_gen);
         s.sent_gen += 1;
         let generation = s.sent_gen;
+        s.again = false;
         if whole {
             s.whole_n = n;
             s.added = 0;
@@ -360,6 +368,24 @@ impl SyncEngine {
             self.shared_send(conn, m, out)?;
         }
         Ok(())
+    }
+
+    /// Sends again the filters whose last generation was refused, once their time came.
+    pub(super) fn shared_retry(&mut self, out: &mut Vec<Action>) -> Result<()> {
+        let now = self.raw_now();
+        let due: Vec<ConnId> = self.records.shared.iter().filter(|(_, s)| s.retry_at.is_some_and(|t| t <= now)).map(|(c, _)| *c).collect();
+        for conn in due {
+            if let Some(s) = self.records.shared.get_mut(&conn) {
+                s.retry_at = None;
+            }
+            self.shared_send_generation(conn, out)?;
+        }
+        Ok(())
+    }
+
+    /// When a refused filter goes again (`next_wake`).
+    pub(super) fn shared_wake(&self) -> Option<u64> {
+        self.records.shared.values().filter_map(|s| s.retry_at).min()
     }
 
     pub(super) fn shared_send(&mut self, conn: ConnId, m: Message, out: &mut Vec<Action>) -> Result<()> {
@@ -727,6 +753,7 @@ impl SyncEngine {
     }
 
     fn shared_reply(&mut self, conn: ConnId, id: u32, codes: Vec<osis_proto::msg::SharedCode>, out: &mut Vec<Action>) -> Result<()> {
+        let retry_at = self.raw_now().saturating_add(self.cfg.resync_ms);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         let Some(asked) = s.asked.remove(&id) else { return Ok(()) };
         match asked {
@@ -740,9 +767,12 @@ impl SyncEngine {
                 if code == Code::OK {
                     s.pending.ack = s.pending.ack.max(pos);
                 } else {
-                    // base unknown: the next generation goes whole
+                    // refused (base unknown, an Error): a whole filter goes again after
+                    // `resync_ms`, as a refused Pull does (one rule for refused node requests)
                     s.whole_n = 0;
                     s.added = 0;
+                    s.again = true;
+                    s.retry_at = Some(retry_at);
                 }
                 self.shared_send_generation(conn, out)?;
                 self.shared_rise(conn)
