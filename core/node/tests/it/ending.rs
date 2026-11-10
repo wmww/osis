@@ -560,3 +560,67 @@ fn a_node_joining_after_a_first_admin_ended_reads_its_dependents_spec_commits_5(
     net.run();
     assert_eq!(net.read(a, x), Some(s("x2")), "d, an admin of g, writes x through t's standing edges");
 }
+
+// spec/commits.md §5 (Ending: dependents), issues/ended-first-admin-keep-is-local.md: b is admin of
+// x only by its edge on x's first admin t. t ends by expiry while c holds no dependent of it, so c
+// keeps nothing of t, its edges included; once x reaches c, c's roster of x lacks b's grant that a
+// and b show. A node granted afterwards does not read x at all (cause not yet split out: t's own
+// secrets, or c's deletes at the host). Fails: the keep rule is per node
+#[test]
+#[ignore]
+fn repro_ended_first_admin_edges_lost_where_no_dependent_was_held() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let at = net.now() + 5_000;
+    let mut m = Mutation::new();
+    let t = net.engine(a).new_thing(&mut m, g);
+    m.set(t, &REG, &s("t")).unwrap();
+    let mut items = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(t);
+    m.set(g, &ct::GROUP, &items).unwrap();
+    m.expires_all(osis_base::WallMs(at));
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let tb = net.tid(b);
+    set_edge(net.engine(a), t, tb, Role::Admin);
+    net.run();
+    net.set_online(c, false);
+    let x = net.item(a, g, t, "x");
+    net.run();
+    let ta = net.tid(a);
+    set_edge(net.engine(b), x, ta, Role::Read);
+    net.run();
+    let ra = net.engine(a).roster(&x);
+    assert!(ra.contains_key(&ta), "a: b's grant on x by its admin on t");
+    for _ in 0..2 {
+        net.advance(70_000);
+    }
+    net.set_online(c, true);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    for n in [a, b, c] {
+        assert!(!net.engine(n).knows(&t), "node {n}: t ended");
+        assert_eq!(net.read(n, x), Some(s("x")), "node {n}: x lives on");
+        assert_eq!(net.engine(n).roster(&x), ra, "node {n}: x's roster");
+    }
+    let d = net.joining_node(4, &[0]);
+    let addr = net.address(0);
+    let (made, done) = net.engine(d).create_account(std::slice::from_ref(&addr)).unwrap();
+    let dt = made.account;
+    let acts = net.sync(d).carry_out(done).unwrap();
+    net.actions(d, acts);
+    net.run();
+    net.pair(d, a);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let done = net.engine(a).grant(&g, &dt, &edge).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let acts = net.accept_invites(d);
+    net.actions(d, acts);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.read(d, x), Some(s("x")), "d: x reads");
+    assert_eq!(net.engine(d).roster(&x), ra, "d: x's roster");
+}
