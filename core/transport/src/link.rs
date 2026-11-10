@@ -87,6 +87,8 @@ pub struct Link {
     pub peer: Peer,
     /// Where the connection carrying it comes from (`Connection::source`).
     pub source: Option<Source>,
+    /// A relay carries the connection (`Connection::relayed`).
+    pub relayed: bool,
     /// Set by the driver when the session authenticates as a thin client: `Slots::Pending` then
     /// no longer counts the connection or evicts it. Per connection.
     pub authed: Arc<AtomicBool>,
@@ -142,7 +144,7 @@ fn session<C: Connection>((peer, peer_key, source, authed): (Peer, PublicKey, Op
             }
         }
     });
-    Link { peer_key, peer, source, authed, tx: LinkTx { tx, queued, taken }, rx: LinkRx(rrx) }
+    Link { peer_key, peer, source, relayed: false, authed, tx: LinkTx { tx, queued, taken }, rx: LinkRx(rrx) }
 }
 
 /// Dials `addr` (as `secret`'s static key if given, else with an ephemeral key) and opens one
@@ -153,7 +155,8 @@ pub async fn dial<T: Transport>(t: &T, addr: &Address, secret: Option<&StaticSec
         None => t.dial(addr).await?,
     };
     let (send, recv) = c.open_stream().await?;
-    Ok(session((c.peer(), c.peer_key(), c.source(), Arc::default()), send, recv, Some(c), None, wait))
+    let relayed = c.relayed();
+    Ok(Link { relayed, ..session((c.peer(), c.peer_key(), c.source(), Arc::default()), send, recv, Some(c), None, wait) })
 }
 
 /// Two ends of one in-process session, no transport between them: `a` sees `b_key` as its
@@ -161,7 +164,7 @@ pub async fn dial<T: Transport>(t: &T, addr: &Address, secret: Option<&StaticSec
 pub fn pair(a_key: PublicKey, b_key: PublicKey) -> (Link, Link) {
     let (a_tx, b_rx) = pipe();
     let (b_tx, a_rx) = pipe();
-    (Link { peer_key: b_key, peer: Peer::Key(b_key), source: None, authed: Arc::default(), tx: a_tx, rx: a_rx }, Link { peer_key: a_key, peer: Peer::Key(a_key), source: None, authed: Arc::default(), tx: b_tx, rx: b_rx })
+    (Link { peer_key: b_key, peer: Peer::Key(b_key), source: None, relayed: false, authed: Arc::default(), tx: a_tx, rx: a_rx }, Link { peer_key: a_key, peer: Peer::Key(a_key), source: None, relayed: false, authed: Arc::default(), tx: b_tx, rx: b_rx })
 }
 
 /// One direction of a `pair`: a pump moves what is sent into the receiver's bounded queue,
@@ -273,7 +276,7 @@ pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: m
                 match timeout(idle, c.accept_stream()).await {
                     Ok(Ok((send, recv))) => {
                         live.fetch_add(1, Ordering::AcqRel);
-                        let link = session::<L::Conn>((c.peer(), c.peer_key(), c.source(), authed.clone()), send, recv, None, Some(Live(live.clone())), wait);
+                        let link = Link { relayed: c.relayed(), ..session::<L::Conn>((c.peer(), c.peer_key(), c.source(), authed.clone()), send, recv, None, Some(Live(live.clone())), wait) };
                         if out.send(link).await.is_err() {
                             break;
                         }

@@ -120,9 +120,47 @@ pub(crate) struct Serving {
     /// Blobs whose bytes came over this connection: announced back without them. At most
     /// `MAX_CROSSED` (an optimization: past it the set starts over).
     crossed: BTreeSet<BlobId>,
+    /// The last reply or push left nothing of the log or its memory part unscanned.
+    at_end: bool,
+    /// Members the requester joined on this connection (a Pull's `join` this node shares).
+    pulled: BTreeSet<LabelId>,
+    /// Replies and pushes asked to report and not reported yet, in order: their cursor and
+    /// the members they carried events of. At most `MAX_UNREPORTED`: past it the oldest two
+    /// merge, their members waiting for the later cursor.
+    unreported: std::collections::VecDeque<(Vec<u8>, BTreeSet<LabelId>)>,
 }
 
 const MAX_CROSSED: usize = 1 << 14;
+/// Unreported messages kept apart (`Serving::unreported`). Any value from 1 is correct: fewer
+/// only make a member wait for a later report; it bounds what a requester that never reports
+/// makes this node keep.
+const MAX_UNREPORTED: usize = 16;
+
+impl Serving {
+    /// A reply or push with events of `labels` went with `cursor`, asking for its report.
+    fn sent(&mut self, cursor: &Option<Vec<u8>>, labels: BTreeSet<LabelId>) -> bool {
+        let Some(c) = cursor else { return false };
+        if labels.is_empty() {
+            return false;
+        }
+        self.unreported.push_back((c.clone(), labels));
+        if self.unreported.len() > MAX_UNREPORTED
+            && let Some((_, first)) = self.unreported.pop_front()
+            && let Some((_, next)) = self.unreported.front_mut()
+        {
+            next.extend(first);
+        }
+        true
+    }
+
+    /// The requester reported applying what `cursor` covers: that message and every one
+    /// before it are applied (a requester applies in order).
+    fn reported(&mut self, cursor: &[u8]) {
+        if let Some(i) = self.unreported.iter().position(|(c, _)| c == cursor) {
+            self.unreported.drain(..=i);
+        }
+    }
+}
 
 /// The requesting side of one connection's stream.
 #[derive(Default)]
@@ -205,8 +243,12 @@ impl SyncEngine {
             Message::Pull(p) => self.stream_serve(conn, *p, out),
             Message::PullReply(r) => self.stream_reply(conn, *r, out),
             Message::Stream(s) => self.stream_pushed(conn, *s, out),
-            // a report is asked only by an `until`, which this node never sets
-            Message::Applied { .. } => Ok(()),
+            Message::Applied { cursor } => {
+                if let Some(s) = self.streams.get_mut(&conn) {
+                    s.serving.reported(&cursor);
+                }
+                Ok(())
+            }
             Message::Fetch { id, label, max_reply, ids } => self.stream_serve_fetch(conn, id, label, max_reply, ids, out),
             Message::FetchReply { id, items } => self.stream_fetch_reply(conn, id, items, out),
             Message::Error { id, code } => {
@@ -388,10 +430,15 @@ impl SyncEngine {
             }
             Ok((cursor, joins))
         })?;
+        let labels: BTreeSet<LabelId> = events.iter().map(|(l, _)| *l).collect();
+        let s = &mut self.streams.entry(conn).or_default().serving;
         if p.follow && !more {
-            self.streams.entry(conn).or_default().serving.follow = Some(stream_at);
+            s.follow = Some(stream_at);
         }
-        let reply = PullReply { id: p.id, events, cursor, whole, more, report: false, joins };
+        s.at_end = !more;
+        s.pulled.extend(p.joins.iter().map(|(l, _)| *l).filter(|l| members.contains(l)));
+        let report = s.sent(&cursor, labels);
+        let reply = PullReply { id: p.id, events, cursor, whole, more, report, joins };
         self.shared_send(conn, Message::PullReply(Box::new(reply)), out)
     }
 
@@ -414,18 +461,21 @@ impl SyncEngine {
             let starts: BTreeMap<LabelId, u64> = members.iter().map(|l| (*l, at)).collect();
             let scan = self.engine.run(|tx| Ok(scan(&mut tx.txn, at, &starts)?))?;
             let mut budget = osis_proto::serving::REPLY_BUDGET - 256;
-            let (mut events, _) = self.stream_memory(conn, &BTreeSet::new(), &members, &mut budget)?;
+            let (mut events, memory_cut) = self.stream_memory(conn, &BTreeSet::new(), &members, &mut budget)?;
             let (durable, cut) = self.stream_events(conn, &scan.events, &mut budget, events.is_empty())?;
             events.extend(durable);
             let end = cut.unwrap_or(scan.end);
             if let Some(s) = self.streams.get_mut(&conn) {
                 s.serving.follow = Some(end);
+                s.serving.at_end = end >= log_end && !memory_cut;
             }
             if events.is_empty() {
                 continue;
             }
             let cursor = self.engine.run(|tx| Ok(tx.txn.log_cursor(end)?))?;
-            self.shared_send(conn, Message::Stream(Box::new(Stream { events, cursor, report: false })), out)?;
+            let labels: BTreeSet<LabelId> = events.iter().map(|(l, _)| *l).collect();
+            let report = self.streams.get_mut(&conn).is_some_and(|s| s.serving.sent(&cursor, labels));
+            self.shared_send(conn, Message::Stream(Box::new(Stream { events, cursor, report })), out)?;
         }
         Ok(())
     }
@@ -463,10 +513,12 @@ impl SyncEngine {
         self.stream_ask(conn, false, out)
     }
 
-    /// Member `l` left `conn`'s shared set here: nothing more of it is applied, and its position
-    /// is kept as a lag for a rejoin.
+    /// Member `l` left `conn`'s shared set here: nothing more of it is applied or served, and its
+    /// position is kept as a lag for a rejoin.
     pub(super) fn stream_leave(&mut self, conn: ConnId, l: &LabelId) -> Result<()> {
-        let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
+        let Some(s) = self.streams.get_mut(&conn) else { return Ok(()) };
+        s.serving.pulled.remove(l);
+        let p = &mut s.pulling;
         let stop = if p.in_stream.remove(l) { p.cursor.clone() } else { p.joins.remove(l).flatten() };
         if let Some(id) = p.record {
             self.engine.run(|tx| Ok(tx.txn.record_stop(&id, l, stop)?))?;
@@ -792,9 +844,16 @@ impl SyncEngine {
         self.streams.get(&conn).is_some_and(|s| s.pulling.caught_up)
     }
 
-    /// Whether member `l` is applied to the stream's end on `conn` with no body asked there
-    /// (`label_status`'s idle source).
+    /// Whether `conn`'s reader is caught up on member `l` both ways (`label_status`'s idle
+    /// source): this node applied the reader's stream of `l` to its end with no body asked
+    /// there, and the reader joined `l`, was served this node's log to its end and reported
+    /// applying every message carrying events of `l`.
     pub(crate) fn stream_idle(&self, conn: ConnId, l: &LabelId) -> bool {
-        self.streams.get(&conn).is_some_and(|s| s.pulling.caught_up && s.pulling.in_stream.contains(l) && s.pulling.fetching.is_empty())
+        self.streams.get(&conn).is_some_and(|s| {
+            let pulled = s.pulling.caught_up && s.pulling.in_stream.contains(l) && s.pulling.fetching.is_empty();
+            let v = &s.serving;
+            let served = v.follow.is_some() && v.at_end && v.pulled.contains(l) && !v.unreported.iter().any(|(_, ls)| ls.contains(l));
+            pulled && served
+        })
     }
 }

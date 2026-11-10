@@ -383,7 +383,7 @@ fn label_state(s: &osis_node::sync::LabelStatus) -> SyncState {
         SyncState::Stranded
     } else if s.sources == 0 {
         if s.refused_by.is_empty() { SyncState::NotConnected } else { SyncState::Refused }
-    } else if s.idle == s.sources {
+    } else if s.idle == s.sources && s.opening == 0 {
         SyncState::Synced
     } else {
         SyncState::Syncing

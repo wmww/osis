@@ -339,16 +339,18 @@ fn served_only(seed: u64, role: Role) -> (World, Osis, Osis, Tid) {
     (w, a, b, g)
 }
 
-// spec: none (API surface), notes/api.md Sync configuration and status: a connection only Bob
-// dialed is judged by his pass: `Synced` for him, `Syncing` at Alice, who runs no pass on it.
+// spec/sync.md §10 Stream, notes/api.md Sync configuration and status: a connection only Bob
+// dialed is pulled both ways, so each end judges it alike: Alice's write leaves `Synced` at her
+// end until Bob reported applying it, and both ends are `Synced` once each has the other's log.
 #[test]
-fn a_served_only_connection_is_synced_at_the_dialer_and_syncing_at_the_served_side() {
+fn a_served_only_connection_is_judged_alike_at_both_ends() {
     let (mut w, a, b, g) = served_only(10, Role::Write);
     say(&a, g, "x");
+    assert_eq!(state(&a, g), SyncState::Syncing, "not reported by Bob yet");
     w.advance(pause_ms());
     assert_eq!(heard(&b, g).as_deref(), Some("x"));
     assert_eq!(state(&b, g), SyncState::Synced);
-    assert_eq!(state(&a, g), SyncState::Syncing);
+    assert_eq!(state(&a, g), SyncState::Synced);
 }
 
 // spec: none (API surface), notes/api.md Sync configuration and status: a node connected only to a peer that cannot read
@@ -588,11 +590,11 @@ fn a_thing_wait_leaves_out_a_lonely_group_when_another_has_a_source() {
 }
 
 // spec: none (API surface), notes/api.md Sync configuration and status: `Thing(t)` covers every sync ID carrying `t` with a
-// source: Bob's connection on the group further up is not caught up, so the wait holds though the nearest
-// group is caught up with Carol.
+// source: while Bob, on the group further up, has not reported Alice's write there, the wait holds
+// though the nearest group is caught up with Carol.
 #[test]
 fn a_thing_wait_covers_a_source_further_up() {
-    let (mut w, a, _b, parent) = served_only(250, Role::Write);
+    let (mut w, a, _b, parent) = co_readers(250, Role::Write);
     let c = w.account(252, &[]);
     w.place(&c, &[], Uplink::Public, &[]);
     w.run();
@@ -605,9 +607,22 @@ fn a_thing_wait_covers_a_source_further_up() {
     wr.group(parent).add(osis::Member::Subgroup(near)).unwrap();
     wr.commit().unwrap();
     w.advance(pause_ms());
-    w.until(a.wait_synced(SyncScope::Thing(near)), STEP_MS, STEPS).unwrap();
-    assert_eq!(state(&a, parent), SyncState::Syncing, "the premise: a source further up not caught up");
-    assert!(w.try_until(a.wait_synced(SyncScope::Thing(t)), STEP_MS, 4).is_none(), "resolved past a source that holds more");
+    w.until(a.wait_synced(SyncScope::Thing(t)), STEP_MS, STEPS).unwrap();
+    say(&a, parent, "further up");
+    let mut wait = Box::pin(a.wait_synced(SyncScope::Thing(t)));
+    let mut cx = Context::from_waker(Waker::noop());
+    let mut judged = 0;
+    loop {
+        if state(&a, parent) == SyncState::Syncing && state(&a, near) == SyncState::Synced {
+            judged += 1;
+            assert!(wait.as_mut().poll(&mut cx).is_pending(), "resolved past a source not caught up");
+        }
+        if !w.step(None) {
+            break;
+        }
+    }
+    assert!(judged > 0, "the premise: a step with the source further up not caught up, the nearest caught up");
+    assert!(matches!(poll_for(&mut w, &mut wait, STEPS), Some(Ok(()))), "and it ends once Bob has the write");
 }
 
 // spec/sync.md §2: a grant to a node has no route outside pairing, so a commit stored for it is no delivery: an
@@ -626,15 +641,16 @@ fn a_grant_to_a_node_holds_up_no_later_delivery_wait() {
 // holds a role on it is not forgotten, so the wait does not end as if it were.
 #[test]
 fn a_thing_wait_does_not_end_when_only_its_carrier_went() {
-    let (mut w, a, _b, g) = served_only(280, Role::Write);
+    let (mut w, a, b, g) = co_readers(280, Role::Write);
     let mut wr = a.write();
     let t = wr.create().unwrap();
     wr.commit().unwrap();
     let mut wr = a.write();
     wr.group(g).add(osis::Member::Item(t)).unwrap();
     wr.commit().unwrap();
+    w.set_peer_reachable(&a, &b, false);
     w.advance(pause_ms());
-    assert_eq!(state(&a, g), SyncState::Syncing, "the premise: a source not caught up");
+    assert_eq!(state(&a, g), SyncState::NotConnected, "the premise: no source, so the wait holds");
     let mut f = Box::pin(a.wait_synced(SyncScope::Thing(t)));
     assert!(w.try_until(&mut f, STEP_MS, 2).is_none(), "the premise: pending");
     let mut wr = a.write();

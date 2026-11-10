@@ -201,6 +201,10 @@ pub trait Connection: Clone + Send + Sync + 'static {
     }
     /// Where the connection comes from, when the transport can tell (`Source`).
     fn source(&self) -> Option<Source>;
+    /// Whether a relay carries the connection's bytes (spec/sync.md §10): both ends tell alike.
+    fn relayed(&self) -> bool {
+        false
+    }
     /// A new stream. The peer's `accept_stream` sees it once data (or finish) is sent on it.
     fn open_stream(&self) -> impl Future<Output = Result<(Self::Send, Self::Recv), Error>> + Send;
     fn accept_stream(&self) -> impl Future<Output = Result<(Self::Send, Self::Recv), Error>> + Send;

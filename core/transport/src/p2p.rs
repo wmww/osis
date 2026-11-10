@@ -524,6 +524,10 @@ impl<C: Connection> Connection for P2pConn<C> {
         }
     }
 
+    fn relayed(&self) -> bool {
+        matches!(self, P2pConn::Relayed(_))
+    }
+
     /// A relayed connection carries one stream, which its dialer opens.
     async fn open_stream(&self) -> Result<(P2pSend<C>, P2pRecv<C>), Error> {
         match self {

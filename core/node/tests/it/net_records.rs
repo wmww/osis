@@ -216,6 +216,30 @@ fn two_connections_of_one_dialer_are_one_record_one_closing_spec_sync_10() {
     assert!(net.sync(b).proven(gone).is_none(), "the other closed");
 }
 
+// spec/sync.md §10 (Shared set): of two connections of one record a direct one stays before a
+// relayed one, whatever `connection_order` says: here the relayed one has the smaller order
+#[test]
+fn a_direct_connection_stays_before_a_relayed_one_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b) = dialing_pair(&mut net);
+    let ta = net.node_tid(a);
+    let r = records(&mut net, b, ta)[0].r;
+    net.set_online(a, false);
+    net.run();
+    let mut first = dial_as(&mut net, a, b, [3; 32]);
+    let mut second = dial_as(&mut net, a, b, [4; 32]);
+    let order = |p: &Dialer, c: [u8; 32]| osis_crypto::kdf::connection_order(&r, &c, &p.hello);
+    let (relayed, direct) = if order(&first, [3; 32]) < order(&second, [4; 32]) { (first.conn, second.conn) } else { (second.conn, first.conn) };
+    net.sync(b).set_relayed(relayed);
+    for (p, c, nonce) in [(&mut first, [3; 32], [5; 32]), (&mut second, [4; 32], [6; 32])] {
+        let tag = resume_tag(&r, &LISTENER, &c, &p.hello);
+        resume(&mut net, b, p, nonce, vec![tag]);
+    }
+    let id = the_record(&mut net, b, ta);
+    assert_eq!(net.sync(b).connection_record(direct), Some(id), "the direct one has it");
+    assert!(net.sync(b).proven(relayed).is_none(), "the relayed one closed");
+}
+
 fn peer_routes_up(net: &mut Net, n: usize) -> Vec<ConnId> {
     net.sync(n).proven_connections().into_iter().filter(|(_, p)| !p.is_empty()).map(|(c, _)| c).collect()
 }

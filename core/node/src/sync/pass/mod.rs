@@ -527,11 +527,13 @@ impl SyncEngine {
         full
     }
 
-    /// Local passes over the labels this node syncs with nobody (no host in their `label.0`):
-    /// this node is their host, so a reader pulling its stream (a direct link's redeemer,
-    /// spec/permissions.md §7, or a co-reader either side dialed) finds a complete state, its own
-    /// writes included (spec/sync.md §5, co-reader peer). Passes otherwise run only per host
-    /// connection, and a node serves only the entries they placed.
+    /// Local passes over every label this node syncs, against its own store: what the label
+    /// must hold of this node's is placed there whatever hosts are connected, so a reader
+    /// pulling its stream (a direct link's redeemer, spec/permissions.md §7, or a co-reader
+    /// either side dialed) finds its own writes (spec/sync.md §5, Placed and co-reader peer);
+    /// a host pass uploads what its host lacks of it. A label with no host in its `label.0`
+    /// has this node as its host: its local pass also issues steps, promotes, deletes and
+    /// re-seals, as a host pass does at a host.
     pub(crate) fn local_passes(&mut self) -> Result<()> {
         self.local_dirty = false;
         self.local_last = self.raw_now();
@@ -540,17 +542,17 @@ impl SyncEngine {
             self.local_any = false;
             return Ok(());
         }
-        let labels: Vec<(Tid, LabelId, u64)> = self.labels().into_iter().filter(|(_, l)| !l.replaced && super::peers::hostless(&l.hosts)).map(|(g, l)| (g, l.id, l.index)).collect();
+        let labels: Vec<(Tid, LabelId, u64, bool)> = self.labels().into_iter().filter(|(_, l)| !l.replaced).map(|(g, l)| (g, l.id, l.index, super::peers::hostless(&l.hosts))).collect();
         self.local_any = !labels.is_empty();
         if labels.is_empty() {
             return Ok(());
         }
         let served = self.served_labels();
-        self.local_work.retain(|x, _| labels.iter().any(|(_, l, _)| l == x));
-        for (g, l, index) in labels {
+        self.local_work.retain(|x, _| labels.iter().any(|(_, l, _, _)| l == x));
+        for (g, l, index, host) in labels {
             let Some(head) = served.get(&l).and_then(|s| s.head()) else { continue };
             // one label's failure stops neither the others nor the handle
-            if let Err(e) = self.local_pass(g, l, index, head) {
+            if let Err(e) = self.local_pass(g, l, index, head, host) {
                 self.diag(format!("local pass of {l:?}: {e}"));
             }
             self.schedule_pass(None, l);
@@ -577,17 +579,19 @@ impl SyncEngine {
         Ok((keys, read_ok))
     }
 
-    /// One label's local pass, as a pass at a host would leave that host: a newer
-    /// established epoch first issues a child step of the head when that head is recorded in
-    /// `label.0` (recorded there, so the served head moves; `reregister` without the upload),
-    /// and the pass goes on under it; then what a pass would upload is placed (`body_sends`:
-    /// the must-hold bodies and the blobs they link; inbox copies, certificates, the
-    /// heartbeat), stamped when this node writes; then `local_deletions`.
-    fn local_pass(&mut self, g: Tid, l: LabelId, index: u64, head: &osis_label::Step) -> Result<()> {
+    /// One label's local pass: what a pass would upload is placed in this node's store
+    /// (`body_sends`: the must-hold bodies and the blobs they link; inbox copies,
+    /// certificates), stamped when this node writes. With `host` (no host in `label.0`) it
+    /// leaves this node's store as a pass at a host would leave that host: a newer established
+    /// epoch first issues a child step of the head when that head is recorded in `label.0`
+    /// (recorded there, so the served head moves; `reregister` without the upload), and the pass
+    /// goes on under it; the heartbeat is placed, deposits promoted, then `local_deletions` and
+    /// re-seals.
+    fn local_pass(&mut self, g: Tid, l: LabelId, index: u64, head: &osis_label::Step, host: bool) -> Result<()> {
         let _s = crate::costs::span("pass: local");
         let (mut keys, read_ok) = self.usable_keys(&g, index, head)?;
         let recorded = self.group_label(&g, &l).is_some_and(|gl| gl.steps.contains_key(&head.id()));
-        if recorded && self.step_due(&g, &l, &keys) && self.step_settled(&g, l) {
+        if host && recorded && self.step_due(&g, &l, &keys) && self.step_settled(&g, l) {
             let (step, done) = self.engine.issue_step(&g, &l, &head.id(), false)?;
             self.take_done(done)?;
             if let Some((step, _)) = step {
@@ -603,12 +607,13 @@ impl SyncEngine {
         }
         // the label's work set, as at a host (`judge_label`)
         let p = Head { g, l, host: None, id: head.id(), keys, read_ok };
-        self.with_work(&g, None, l, |s, ctx, w| s.judge_local(&p, ctx, w))
+        self.with_work(&g, None, l, |s, ctx, w| s.judge_local(&p, host, ctx, w))
     }
 
-    /// The local pass after the keys and the step (`local_pass`), over what work set `w`
-    /// names, or everything when it says so or an input of the pass changed.
-    fn judge_local(&mut self, p: &Head, ctx: &BodyCtx, w: &mut Work) -> Result<()> {
+    /// The local pass after the keys and the step (`local_pass`; `host`: this node is the
+    /// label's host), over what work set `w` names, or everything when it says so or an input
+    /// of the pass changed.
+    fn judge_local(&mut self, p: &Head, host: bool, ctx: &BodyCtx, w: &mut Work) -> Result<()> {
         let (g, l, keys) = (p.g, p.l, &p.keys);
         let (full, scope) = self.begin(&g, &l, w, &ctx.closure);
         let J { mut scope, mut left, snaps, mut bodies, judged, snapping, .. } = self.judging(None, p, ctx, w, scope, full)?;
@@ -616,9 +621,11 @@ impl SyncEngine {
         let ours: BTreeSet<BlobId> = sends.iter().filter(|o| o.fresh).map(|o| o.id).collect();
         let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
         self.certificates(&g, l, &authors)?;
-        self.heartbeat(&g, l, keys, false, &ctx.closure)?;
-        if let Some(wk) = &keys.write {
-            self.local_promote(&g, l, wk, &scope, &ours, &mut left)?;
+        if host {
+            self.heartbeat(&g, l, keys, false, &ctx.closure)?;
+            if let Some(wk) = &keys.write {
+                self.local_promote(&g, l, wk, &scope, &ours, &mut left)?;
+            }
         }
         // what the placements just made touched (certificate copies, the heartbeat)
         self.pull(None, &g, l, &mut scope, w);
@@ -635,12 +642,14 @@ impl SyncEngine {
                 }
             }
         }
-        let settled = self.unsettled_sets(!w.unopened.is_empty(), false)?.0.is_empty();
-        self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
-        self.local_deletions(&p.at(&snaps, settled), &bodies, &scope, &mut left)?;
-        // a node serving the label alone decides here: nobody runs a pass at a host for it
-        self.reseal(&g, l, w)?;
-        self.repair_suspects(w)?;
+        if host {
+            let settled = self.unsettled_sets(!w.unopened.is_empty(), false)?.0.is_empty();
+            self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
+            self.local_deletions(&p.at(&snaps, settled), &bodies, &scope, &mut left)?;
+            // a node serving the label alone decides here: nobody runs a pass at a host for it
+            self.reseal(&g, l, w)?;
+            self.repair_suspects(w)?;
+        }
         w.leave(left);
         Ok(())
     }

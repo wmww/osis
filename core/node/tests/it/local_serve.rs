@@ -664,3 +664,29 @@ fn copy_waiting_for_a_wrap_placed_by_local_pass_spec_permissions_4() {
     assert!(net.engine(b).wrap_secret(&g, None).unwrap().is_some(), "re-sealed");
     assert!(copies(&mut net) > 0, "placed");
 }
+
+// spec/sync.md §5 (Placed), §10 (Both sides pull): a node places its own write under a label with
+// hosts in its own store whatever hosts are connected, so a reader pulling its log has it while
+// the hosts are away; the host gets it once back
+#[test]
+fn own_write_placed_under_a_hosted_label_with_no_host_connected_spec_sync_5() {
+    let mut net = Net::new();
+    let h = net.add_host();
+    let a = net.node(1, &[h]);
+    let g = net.group(a, &[], &[h]);
+    let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let l = net.label(a);
+    net.blocked.insert((a, h));
+    net.drop_link(a, h);
+    net.run();
+    let c = net.write(a, g, "while the host is away");
+    net.run();
+    let of_c = |net: &mut Net| net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect::<Vec<_>>();
+    let placed = of_c(&mut net);
+    assert_eq!(placed.len(), 1, "placed in its own store with no host connected");
+    net.blocked.remove(&(a, h));
+    net.advance(60_000);
+    assert!(placed.iter().all(|b| net.host_ids(h, &l).contains(b)), "the host pass uploads that entry");
+}

@@ -535,6 +535,13 @@ impl World {
         peer[..8].copy_from_slice(&self.next_hub.to_le_bytes());
         self.next_hub += 1;
         let (pc, acts) = db.sync_engine(|e| e.accept(address.key, peer));
+        // both ends tell a relayed connection, as the driver does from the transport
+        if matches!(route, Route::Relay(_)) {
+            db.sync_engine(|e| e.set_relayed(pc));
+            if let Some(me) = dbs.get(d).and_then(|x| x.clone()) {
+                me.sync_engine(|e| e.set_relayed(conn));
+            }
+        }
         self.peer_links.insert((d, conn), (m, pc, route));
         self.peer_links.insert((m, pc), (d, conn, route));
         self.send_msg(Msg::Up(d, conn));

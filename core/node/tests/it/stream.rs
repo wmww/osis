@@ -88,15 +88,16 @@ fn a_readers_deletion_leaves_the_entry_spec_sync_10() {
 }
 
 // spec/sync.md §10 (Stream): a Pull answered Error is answered: the stream asks again after
-// `resync_ms` instead of waiting for a reply that never comes
+// `resync_ms` instead of waiting for a reply that never comes. Both sides pull, one Pull in flight
+// each, so the first two replies refused are one per side.
 #[test]
 fn a_refused_pull_is_asked_again_spec_sync_10() {
     let mut net = Net::new();
     let refused = std::rc::Rc::new(std::cell::Cell::new(0));
     let r = refused.clone();
     net.tamper = Some(Box::new(move |m| match m {
-        osis_proto::Message::PullReply(p) if r.get() == 0 => {
-            r.set(1);
+        osis_proto::Message::PullReply(p) if r.get() < 2 => {
+            r.set(r.get() + 1);
             Some(osis_proto::Message::Error { id: p.id, code: osis_proto::Code::RATE_LIMITED })
         }
         _ => None,
@@ -104,12 +105,12 @@ fn a_refused_pull_is_asked_again_spec_sync_10() {
     let (a, b, gs) = pair(&mut net, 1);
     let t = net.item(b, gs[0], gs[0], "x");
     net.run();
-    assert_eq!(refused.get(), 1, "a reply was refused");
-    let pulls = net.peer_sent(a, PULL);
+    assert_eq!(refused.get(), 2, "a reply to each side was refused");
+    let pulls = (net.peer_sent(a, PULL), net.peer_sent(b, PULL));
     let resync = net.sync(a).config().resync_ms;
     net.advance(resync + 1);
     net.run();
-    assert!(net.peer_sent(a, PULL) > pulls, "asked again");
+    assert!(net.peer_sent(a, PULL) > pulls.0 && net.peer_sent(b, PULL) > pulls.1, "each asked again");
     assert_eq!(net.read(a, t), Some(s("x")), "b's write reached a");
 }
 

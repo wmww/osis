@@ -174,6 +174,10 @@ impl<U: Udp> Connection for MultiConn<U> {
         each!(self, c => c.source())
     }
 
+    fn relayed(&self) -> bool {
+        each!(self, c => c.relayed())
+    }
+
     async fn open_stream(&self) -> Result<(MultiSend<U>, MultiRecv<U>), Error> {
         each!(self, c => c.open_stream().await.map(|(s, r)| (s.into(), r.into())))
     }

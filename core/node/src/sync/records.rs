@@ -62,8 +62,10 @@ pub(crate) struct Records {
     bound: BTreeMap<ConnId, ConnRecord>,
     live: BTreeMap<RecordId, ConnId>,
     sent: BTreeMap<ConnId, ResumeSent>,
-    /// Each connection's place among its record's (`connection_order`), and its shared set.
-    order: BTreeMap<ConnId, [u8; 32]>,
+    /// Each connection's place among its record's (`rank`), and its shared set.
+    order: BTreeMap<ConnId, (bool, [u8; 32])>,
+    /// Connections a relay carries (`SyncEngine::set_relayed`).
+    relayed: BTreeSet<ConnId>,
     pub(super) shared: BTreeMap<ConnId, super::shared::Shared>,
     /// Records read for a Resume or its answer (tests count the work).
     pub lookups: u64,
@@ -87,6 +89,7 @@ impl Records {
     pub(crate) fn conn_gone(&mut self, conn: ConnId) {
         self.sent.remove(&conn);
         self.order.remove(&conn);
+        self.relayed.remove(&conn);
         self.shared.remove(&conn);
         if let Some(b) = self.bound.remove(&conn)
             && self.live.get(&b.id) == Some(&conn)
@@ -177,15 +180,23 @@ impl SyncEngine {
         self.bind_record(conn, id, out)
     }
 
+    /// The transport carries `conn` through a relay (the driver says so before the connection's
+    /// first event): it ranks after a direct connection of its record (`bind_record`).
+    pub fn set_relayed(&mut self, conn: ConnId) {
+        self.records.relayed.insert(conn);
+    }
+
     /// `conn` takes record `id`, and its stream and shared set start. Two connections of one
-    /// record are one pair of nodes (r is known to the two alone), whoever dialed each: the
-    /// smaller `connection_order` stays and the other closes, on both ends, whatever order the
-    /// answers arrived in; a dialer whose connection lost to one the peer dialed does not dial
-    /// the peer again while that one lasts (`stand_in`).
+    /// record are one pair of nodes (r is known to the two alone), whoever dialed each: the one
+    /// of smaller rank stays and the other closes, on both ends, whatever order the answers
+    /// arrived in. The rank is the route first, a direct connection before a relayed one (both
+    /// ends tell a relayed connection alike), then `connection_order`. A dialer whose connection
+    /// lost to one the peer dialed does not dial the peer again while that one lasts
+    /// (`stand_in`).
     pub(super) fn bind_record(&mut self, conn: ConnId, id: RecordId, out: &mut Vec<Action>) -> Result<()> {
         let (acked, r) = self.engine.run(|tx| Ok(tx.txn.record(&id)?.map_or((0, [0; 32]), |r| (r.acked_pos, r.r))))?;
         let Some((dialer, listener)) = self.conns.get(&conn).and_then(|c| c.session.binding()).or_else(|| self.served_binding(conn)).map(|(d, l, _)| (d, l)) else { return Ok(()) };
-        let order = connection_order(&r, &dialer, &listener);
+        let order = (self.records.relayed.contains(&conn), connection_order(&r, &dialer, &listener));
         self.records.order.insert(conn, order);
         self.records.bound.insert(conn, ConnRecord::new(id, acked));
         let old = self.records.live.get(&id).copied().filter(|old| *old != conn);

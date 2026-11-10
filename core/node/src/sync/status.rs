@@ -37,10 +37,12 @@ impl SyncEngine {
                     }
                 }
             }
-            // a reader is a source while L is in the connection's shared set, idle once its
-            // stream is read to its end; one still finding what it shares is opening. A node
+            // a reader is a source while L is in the connection's shared set, idle once caught
+            // up both ways (`stream_idle`); one still finding what it shares is opening: a
+            // connection this node dialed, or one it serves whose shared set began. A node
             // counts once whatever connections it has (only a valid proof names one).
-            for id in self.conns.iter().filter(|(_, c)| c.peer && c.up).map(|(id, _)| *id) {
+            let readers: BTreeSet<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && c.up).map(|(id, _)| *id).chain(self.records.shared.keys().copied()).collect();
+            for id in readers {
                 if !self.shared_member(id, &l.id) && !self.shared_settled(id) {
                     st.opening += 1;
                 }

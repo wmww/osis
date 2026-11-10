@@ -144,7 +144,8 @@ pub enum ClientUrls {
 pub type Log = Arc<dyn Fn(&str) + Send + Sync>;
 
 enum Ev {
-    Up(ConnId, LinkTx),
+    /// A dialed connection is up: its sending half, and whether a relay carries it.
+    Up(ConnId, LinkTx, bool),
     Failed(ConnId, String),
     Bytes(ConnId, Vec<u8>),
     Closed(ConnId),
@@ -390,8 +391,8 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                                 return;
                             }
                         };
-                        let Link { tx, rx, .. } = link;
-                        if ev.send(Ev::Up(conn, tx)).await.is_ok() {
+                        let Link { tx, rx, relayed, .. } = link;
+                        if ev.send(Ev::Up(conn, tx, relayed)).await.is_ok() {
                             forward(conn, rx, ev).await;
                         }
                     });
@@ -616,13 +617,16 @@ impl<T: Transport, H: Shared> Driver<T, H> {
 
     /// A peer's session on the listener of key `key`.
     fn accepted(&mut self, key: [u8; 32], l: Link) {
-        let Link { peer, tx, rx, authed, .. } = l;
+        let Link { peer, tx, rx, authed, relayed, .. } = l;
         // the connection exists before its first actions are carried out
         let mut conn = None;
         let shared = &self.shared;
         let acts = blocking(|| {
             shared.with(&mut |s| {
                 let (c, acts) = s.accept_peer(key, peer);
+                if relayed {
+                    s.set_relayed(c);
+                }
                 conn = Some(c);
                 acts
             })
@@ -643,9 +647,15 @@ impl<T: Transport, H: Shared> Driver<T, H> {
 
     fn event(&mut self, ev: Ev) {
         match ev {
-            Ev::Up(conn, tx) => {
+            Ev::Up(conn, tx, relayed) => {
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.tx = Some(tx);
+                    if relayed {
+                        self.call(&mut |s| {
+                            s.set_relayed(conn);
+                            Vec::new()
+                        });
+                    }
                     self.feed(Event::Up { conn });
                 }
             }

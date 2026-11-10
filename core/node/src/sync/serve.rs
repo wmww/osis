@@ -581,11 +581,7 @@ impl SyncEngine {
             self.served.insert(conn, s);
         }
         self.records.lookups += acc.lookups;
-        if let Some(id) = acc.bound.take()
-            && !closed
-        {
-            self.bind_record(conn, id, out)?;
-        }
+        let bound = acc.bound.take().filter(|_| !closed);
         self.charges.full |= acc.full;
         for (l, b, n) in acc.charges {
             self.charges.charge(l, b, charge_key(node, &l), n);
@@ -645,6 +641,11 @@ impl SyncEngine {
                 ServingOutput::Room { budget } => out.push(Action::Room { conn, budget }),
                 ServingOutput::Peer(m) => self.peer_message(conn, *m, out)?,
             }
+        }
+        // after the answer to the Resume: the shared set's first messages follow it on the wire,
+        // so the dialer has begun its own set when they arrive
+        if let Some(id) = bound {
+            self.bind_record(conn, id, out)?;
         }
         // a relay-only entry: delivered here and passed on (the other served sessions, the
         // hosts of the label), held by nobody (spec/sync.md §5)
