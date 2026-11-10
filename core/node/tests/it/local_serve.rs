@@ -818,3 +818,60 @@ fn own_duplicate_dropped_while_the_lower_host_is_away_still_reaches_another_host
     assert!(net.host_ids(h2, &l).contains(&at_h1[0]), "h2 gets the lower copy from a");
     assert_eq!(net.read(a, t), Some(s("z")));
 }
+
+// spec/sync.md §5 (Placed, deleting at a host): an own entry whose upload the host took but
+// whose answer was lost with the connection, covered meanwhile, leaves the host once the node
+// is back, whatever it dropped of it locally: the tombstone keeps what the entry was, so the
+// host announcing it records it as present there and the host pass deletes it; a restart
+// between keeps that too.
+fn lost_answer(restart: bool) {
+    let mut net = Net::new();
+    let h = net.add_host();
+    let a = net.node(1, &[h]);
+    let g = net.group(a, &[], &[h]);
+    let t = net.item(a, g, g, "first");
+    let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let l = net.label(a);
+    net.write(a, t, "v1");
+    net.run();
+    net.held_hosts.insert(h);
+    let c2 = net.write(a, t, "v2");
+    net.advance(1_000);
+    net.run();
+    let of = |net: &mut Net, c| net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect::<Vec<_>>();
+    let e2 = of(&mut net, c2);
+    assert_eq!(e2.len(), 1, "v2 placed");
+    assert!(net.host_ids(h, &l).contains(&e2[0]), "the host took v2's upload");
+    net.blocked.insert((a, h));
+    net.drop_link(a, h);
+    // its answers, held, are for a connection gone
+    net.release_host(h);
+    for v in ["v3", "v4", "v5"] {
+        net.write(a, t, v);
+        net.advance(1_000);
+        net.run();
+    }
+    assert!(of(&mut net, c2).is_empty(), "the covered entry left the node while the host was away");
+    if restart {
+        net.restart(a, 7);
+    }
+    net.blocked.remove(&(a, h));
+    for _ in 0..4 {
+        net.advance(60_000);
+        net.run();
+    }
+    assert!(!net.host_ids(h, &l).contains(&e2[0]), "the covered entry stays at the host");
+    assert_eq!(net.read(a, t), Some(s("v5")));
+}
+
+#[test]
+fn covered_own_entry_whose_answer_was_lost_leaves_the_host_spec_sync_5() {
+    lost_answer(false);
+}
+
+#[test]
+fn covered_own_entry_whose_answer_was_lost_leaves_the_host_after_a_restart_spec_sync_5() {
+    lost_answer(true);
+}

@@ -399,9 +399,10 @@ pub struct State {
     pub memory_bytes: BTreeMap<LabelId, u64>,
     /// Encoded size of each memory entry's blob while held here (tests, diagnostics).
     pub memory_sizes: BTreeMap<(LabelId, BlobId), usize>,
-    /// What a tombstoned memory entry was (`remove_entry`), while its tombstone lasts: a host
-    /// announcing it again within that time (one an upload reached late) gets it recorded as
-    /// present there without a fetch, so the deletion is judged there too (`log_events`).
+    /// What a tombstoned commit entry (no certificate) was (`remove_entry`; stored with the
+    /// tombstone), while its tombstone lasts: a host announcing it again within that time (one
+    /// an upload reached late, its answer lost) gets it recorded as present there without a
+    /// fetch, so the deletion is judged there too (`log_events`).
     pub tomb_kinds: BTreeMap<(LabelId, BlobId), Kind>,
     /// Memory entries judged or placed while their body was in the label's closure here: only
     /// those are deleted for leaving it (`pass/delete`, spec/sync.md §9).
@@ -485,7 +486,11 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
         Some(s) => w.u8(1).raw(&s.0),
         None => w.u8(0),
     };
-    match &e.kind {
+    encode_kind(w, &e.kind).take()
+}
+
+fn encode_kind(w: Wr, kind: &Kind) -> Wr {
+    match kind {
         Kind::Unknown => w.u8(0),
         Kind::Commit { commit, parts, ais, salt } => encode_ais(encode_ais(w.u8(6).raw(&commit.0).raw(salt), parts), ais),
         Kind::Inbox(None) => w.u8(2),
@@ -503,7 +508,6 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
             w
         }
     }
-    .take()
 }
 
 fn decode_entry(b: &[u8]) -> Result<Entry> {
@@ -514,12 +518,16 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
         1 => Some(Signature(r.arr()?)),
         _ => None,
     };
-    let kind = match r.u8()? {
+    Ok(Entry { wrap, stamp, cert, kind: decode_kind(&mut r)?, memory: false })
+}
+
+fn decode_kind(r: &mut Rd) -> Result<Kind> {
+    Ok(match r.u8()? {
         6 => {
             let commit = CommitId(r.arr()?);
             let salt = r.arr()?;
-            let parts = decode_ais(&mut r)?;
-            Kind::Commit { commit, parts, ais: decode_ais(&mut r)?, salt }
+            let parts = decode_ais(r)?;
+            Kind::Commit { commit, parts, ais: decode_ais(r)?, salt }
         }
         0 => Kind::Unknown,
         2 => Kind::Inbox(None),
@@ -538,8 +546,7 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
             Kind::Records(ts)
         }
         _ => return Err(Error::Corrupt("sync entry kind")),
-    };
-    Ok(Entry { wrap, stamp, cert, kind, memory: false })
+    })
 }
 
 impl State {
@@ -614,7 +621,12 @@ impl State {
                     s.carriers.insert(CommitId(r.arr()?), Carriers { by: decode_commits(v.get(8..).unwrap_or_default())?, at, memory: false });
                 }
                 b"x" => {
-                    s.tombs.insert((LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
+                    let k = (LabelId(r.arr()?), BlobId(r.arr()?));
+                    let mut x = Rd::new(&v);
+                    s.tombs.insert(k, x.u64()?);
+                    if !x.is_empty() {
+                        s.tomb_kinds.insert(k, decode_kind(&mut x)?);
+                    }
                 }
                 b"r" => s.reach_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
                 b"z" => s.host_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
@@ -693,7 +705,10 @@ impl State {
         s.entries = entries;
         s.present_by = s.present.iter().map(|(host, l, b)| (*l, *b, *host)).collect();
         s.gone_by = s.gone.keys().map(|(host, l, b)| (*l, *b, *host)).collect();
-        s.deleted = s.tombs.iter().filter_map(|((l, b), t)| s.blobs.get(b).filter(|r| !r.cert).map(|r| ((*l, r.commit, r.parts.clone()), t.saturating_add(osis_base::format::TOMBSTONE_LIFETIME_MS)))).collect();
+        s.deleted = s.tomb_kinds.iter().filter_map(|(k, kind)| match kind {
+            Kind::Commit { commit, parts, .. } => Some(((k.0, *commit, parts.clone()), s.tombs.get(k)?.saturating_add(osis_base::format::TOMBSTONE_LIFETIME_MS))),
+            _ => None,
+        }).collect();
         for (_, c, _) in s.deleted.keys() {
             *s.deleted_commits.entry(*c).or_default() += 1;
         }
@@ -938,8 +953,9 @@ impl State {
         self.set_entry_fed(l, b, e, true);
     }
 
-    /// `set_entry` without announcing the entry to the streams this node serves (`mem_log`): a
-    /// tombstoned entry recorded again only to delete it where a host still holds it.
+    /// `set_entry` without announcing the entry to the streams this node serves (node log,
+    /// `mem_log`): a tombstoned entry recorded again only to delete it where a host still
+    /// holds it.
     pub fn set_entry_quiet(&mut self, l: LabelId, b: BlobId, e: Entry) {
         self.set_entry_fed(l, b, e, false);
     }
@@ -949,7 +965,7 @@ impl State {
         // what a peer is sent: a change of only what this node knows of the blob is no event;
         // `flush_storing` keeps this one only if the bytes are here
         let changed = self.entries.get(&(l, b)).is_none_or(|o| o.wrap != e.wrap || o.stamp != e.stamp);
-        if !e.memory && changed {
+        if fed && !e.memory && changed {
             self.log.push(LogWrite::Added(l, b));
         }
         if fed && e.memory && changed {
@@ -1004,17 +1020,24 @@ impl State {
                 *self.deleted_commits.entry(*commit).or_default() += 1;
             }
         }
-        if let Some(e) = self.entries.get(&(l, b)).filter(|e| e.memory && matches!(e.kind, Kind::Commit { .. })) {
-            self.tomb_kinds.insert((l, b), e.kind.clone());
-        }
+        let kind = self.entries.get(&(l, b)).filter(|e| !e.cert && matches!(e.kind, Kind::Commit { .. })).map(|e| e.kind.clone());
         let memory = self.is_memory(&l, &b);
         if self.drop_entry(l, b) {
             // the class mark stays with the tombstone (`expire_tombs`)
             if memory {
                 self.memory_entries.insert((l, b));
             }
-            self.put_of(&l, &b, key(TOMB, &[&l.0, &b.0]), Wr::new().u64(self.now).take());
+            // the kind is stored with the tombstone (`tomb_kinds`)
+            let mut v = Wr::new().u64(self.now);
+            if let Some(k) = &kind {
+                v = encode_kind(v, k);
+            }
+            self.put_of(&l, &b, key(TOMB, &[&l.0, &b.0]), v.take());
             self.tombs.insert((l, b), self.now);
+            match kind {
+                Some(k) => self.tomb_kinds.insert((l, b), k),
+                None => self.tomb_kinds.remove(&(l, b)),
+            };
         }
     }
 

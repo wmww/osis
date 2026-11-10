@@ -224,8 +224,8 @@ impl SyncEngine {
             // an entry this node deleted or saw deleted, announced again within its tombstone
             // (a host an upload reached late, a stale push crossing the deletion, a peer echoing
             // an announcement): not fetched or served on, as a host's tombstone keeps the
-            // identical blob out (spec/sync.md §5); a memory entry whose body is known is
-            // recorded as present there quietly, so the pass deletes it there too
+            // identical blob out (spec/sync.md §5); a commit entry whose kind the tombstone
+            // keeps is recorded as present there quietly, so the pass deletes it there too
             if let LogEvent::Added { blob_id, wrap, .. } = &ev
                 && self.state.tombs.contains_key(&(l, *blob_id))
             {
@@ -234,7 +234,7 @@ impl SyncEngine {
                 }
                 if let (Some(s), Some(kind)) = (host, self.state.tomb_kinds.get(&(l, *blob_id)).cloned()) {
                     if !self.state.entries.get(&(l, *blob_id)).is_some_and(|e| matches!(e.kind, Kind::Commit { .. })) {
-                        self.state.set_entry_quiet(l, *blob_id, Entry { wrap: *wrap, stamp: None, cert: false, kind, memory: true });
+                        self.state.set_entry_quiet(l, *blob_id, Entry { wrap: *wrap, stamp: None, cert: false, kind, memory: self.state.is_memory(&l, blob_id) });
                     }
                     self.state.set_present(s, l, *blob_id, true);
                     touched.push(*blob_id);
