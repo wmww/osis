@@ -32,15 +32,27 @@ pub(crate) use departures::{departures, key_role};
 pub(crate) use members::{Sealed, grant_keyless, sealed};
 pub(crate) use lost::{arm_untils, boxes_kept, load_lost_due, mark_lost_due};
 
+/// How far `blocked_epoch` follows boxes to holder actors (spec/crypto.md §4, Encrypting under).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Walk {
+    /// For encrypting under: through every holder actor whose boxes this node holds, rights
+    /// aside (what a departed party opens does not depend on who may rotate).
+    Encrypt,
+    /// For placing role commits and certificates under labels (spec/sync.md §5): through the
+    /// holder actors this node may rotate only, so a node that may not rotate an actor still
+    /// places the keysets and revokes that tell that actor's rotators (node-sync's pass).
+    Place,
+}
+
 /// The roles of `a` that `who` (this node, or a key actor it signs as) may not encrypt under
-/// (spec/crypto.md §4, encrypting under): those whose newest held current epoch is blocked
-/// (`blocked_epoch`, `deps` the departures from `a` counted).
-pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure]) -> Result<BTreeSet<Role>> {
+/// (spec/crypto.md §4, encrypting under), or place under (`walk`): those whose newest held
+/// current epoch is blocked (`blocked_epoch`, `deps` the departures from `a` counted).
+pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure], walk: Walk) -> Result<BTreeSet<Role>> {
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
     let mut out = BTreeSet::new();
     for r in ROLES {
         let Some((e, _)) = epochs.role(r).newest_held() else { continue };
-        if blocked_epoch(tx, who, a, r, &e, deps)? {
+        if blocked_epoch(tx, who, a, r, &e, deps, walk)? {
             out.insert(r);
         }
     }
@@ -48,39 +60,44 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure])
 }
 
 /// Whether `who` may not encrypt under epoch `e` of role `r` of `a` (spec/crypto.md §4,
-/// encrypting under), `deps` the departures from `a` counted: `e` does not cover one of them;
-/// or `who` may rotate `r` and `e` has a stale box to a holder actor (rule 2), boxes a holder
-/// whose grant on `a` is keyless (rule 4), or boxes a holder actor M at a keyset of M under which
-/// `who` may not encrypt, by this same rule with every departure from M this node knows (sealing
-/// at that keyset was encrypting under it). The last three bind rotators only: a node that may
-/// not rotate places its chain certificates (and revokes) under the actor's labels meanwhile,
-/// the holder actors' new `keys.0` among them, which is how the rotators learn of the staleness.
-/// Only epochs whose secret this node holds are judged (a node that cannot open a history box
-/// cannot tell what it covers: a holder actor sealed at a keyset it lacks is judged by that
-/// actor's own writers, the stated limit), and only other parties' departures count (`others`).
+/// encrypting under), `deps` the departures from `a` counted: `e` does not cover one of them
+/// (`uncovered`); or `who` may rotate `r` and `e` has a stale box to a holder actor (rule 2) or
+/// boxes a holder whose grant on `a` is keyless (rule 4); or `e` boxes a holder actor M at a
+/// keyset of M under which `who` may not encrypt, by this same rule with every departure from M
+/// this node knows (sealing at that keyset was encrypting under it). Stale and keyless bind
+/// rotators only: they say a rotation is due, not that a departed party opens `e`. The box
+/// clause follows every box at an epoch whose secret this node holds (`Walk::Encrypt`: what a
+/// departed party opens does not depend on who may rotate), or for placing only those of actors
+/// it may rotate (`Walk::Place`): a node that may not rotate places its chain certificates (and
+/// revokes) under the actor's labels meanwhile, the holder actors' new `keys.0` among them, which
+/// is how the rotators learn of the staleness. Only epochs whose secret this node holds are
+/// walked past (it reads that actor's labels, so it learns the actor's next keyset and re-seals
+/// it), and only other parties' departures count (`others`).
 ///
 /// Invariant: a node holding M's secrets that knows a departure from M seals nothing at a keyset
-/// of M not covering it (`members::sealed` leaves M out), and, where it may rotate the role,
-/// writes no content or box under an epoch boxing M at such a keyset, at any height above M: the
-/// party removed from M opens none of it, M's rotation made or not (model `D0_above`,
+/// of M not covering it (`members::sealed` leaves M out), and writes no box or history entry
+/// under an epoch boxing M at such a keyset, at any height above M: the party removed from M
+/// opens none of it, M's rotation made or not (model `D0_above`, `D0_readers_out`,
 /// `NoLeakAbove`). Walked over the boxes without recursion (chains have no depth bound), each
 /// (actor, epoch) once (boxes may cycle).
-pub(crate) fn blocked_epoch(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch, deps: &[Departure]) -> Result<bool> {
+pub(crate) fn blocked_epoch(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch, deps: &[Departure], walk: Walk) -> Result<bool> {
     let mut seen = BTreeSet::from([(*a, *e)]);
     let mut todo = vec![(*a, *e)];
     while let Some((x, k)) = todo.pop() {
-        let Some(epochs) = tx.core.epochs(&x).filter(|ep| ep.role(r).is_established(&k) && ep.role(r).secret(&k).is_some()) else { continue };
-        let known = if x == *a { deps.to_vec() } else { departures(tx, &x)? };
+        let known = if x == *a { deps.to_vec() } else { keyset_departures(tx, &x)? };
         let deps = others(tx.core, known);
-        let held = tx.core.names_held(&x);
-        if !osis_keys::uncovered(&x, &epochs, r, &k, &deps, &held).is_empty() {
+        if uncovered(tx.core, &x, r, &k, &deps) {
             return Ok(true);
         }
-        if !may_rotate(tx.core, who, &x).contains(&r) {
+        if !tx.core.epochs(&x).is_some_and(|ep| ep.role(r).is_established(&k) && ep.role(r).secret(&k).is_some()) {
             continue;
         }
-        if members::stale_at(tx, &x, r, &k)? || members::keyless_at(tx, &x, r, &k)? {
+        let rotator = may_rotate(tx.core, who, &x).contains(&r);
+        if rotator && (members::stale_at(tx, &x, r, &k)? || members::keyless_at(tx, &x, r, &k)?) {
             return Ok(true);
+        }
+        if !rotator && walk == Walk::Place {
+            continue;
         }
         for (m, j) in members::boxed_keysets(tx, &x, r, &k)? {
             if seen.insert((m, j)) {
@@ -89,6 +106,32 @@ pub(crate) fn blocked_epoch(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &os
         }
     }
     Ok(false)
+}
+
+/// The departures from holder actor `x` its keysets must cover, as this node knows them: an
+/// account's are those from its devices actor, which only the account's own nodes hold (a node
+/// removed from it held the account's seed at every epoch minted before).
+fn keyset_departures(tx: &mut Tx<'_>, x: &Tid) -> Result<Vec<Departure>> {
+    match tx.core.accounts.get(x).map(|h| h.devices) {
+        Some(d) => departures(tx, &d),
+        None => departures(tx, x),
+    }
+}
+
+/// Whether epoch `k` of role `r` of `x` does not cover one of `deps` as this node can tell
+/// (spec/crypto.md §4, Encrypting under): by its history entries where it holds `k`'s secret
+/// established; an account's epoch, which has none, covers no departure ordered after the
+/// rotation minting it (its rotator held none of them). An epoch of another actor whose secret
+/// the node lacks is not judged (the stated limit): judged by order, the node left the actor out
+/// where it cannot follow its next keyset (issues/sealer-cannot-judge-holder.md).
+fn uncovered(core: &Core, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &[Departure]) -> bool {
+    if core.is_account(x) {
+        let Some(v) = core.account_view(x) else { return false };
+        let before = |n: &osis_keys::Name| osis_base::Ts::from_u64(n.key.ts).is_some_and(|ts| v.minted_before(k, &osis_perm::Point { ts, node: n.key.node, commit: n.key.commit }));
+        return deps.iter().any(|d| d.concerns(r) && d.at.as_ref().is_some_and(before));
+    }
+    let Some(epochs) = core.epochs(x).filter(|ep| ep.role(r).is_established(k) && ep.role(r).secret(k).is_some()) else { return false };
+    !osis_keys::uncovered(x, &epochs, r, k, deps, &core.names_held(x)).is_empty()
 }
 
 /// `deps` less this node's own departures (its account's or its own): the departed party is the
@@ -104,7 +147,7 @@ fn others(core: &Core, deps: Vec<Departure>) -> Vec<Departure> {
 /// `blocked_roles_of` with every departure of `a` this node knows.
 pub(crate) fn blocked_roles(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTreeSet<Role>> {
     let deps = departures(tx, a)?;
-    blocked_roles_of(tx, who, a, &deps)
+    blocked_roles_of(tx, who, a, &deps, Walk::Encrypt)
 }
 
 /// The roles of `a` that `who` may rotate whose rotation is due
@@ -118,7 +161,7 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTreeSet<Role>> {
     let may = may_rotate(tx.core, who, a);
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
     let deps = departures(tx, a)?;
-    let blocked = blocked_roles_of(tx, who, a, &deps)?;
+    let blocked = blocked_roles_of(tx, who, a, &deps, Walk::Encrypt)?;
     let mut out = BTreeSet::new();
     let roles: Vec<Role> = ROLES.into_iter().filter(|r| may.contains(r) && !epochs.role(*r).current().is_empty()).collect();
     for r in roles {
@@ -657,7 +700,7 @@ pub(crate) fn history_boxes(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<Histo
     let mut hist = osis_keys::history_boxes(a, &epochs, &secrets, &alts, &tx.core.names_held(a));
     let deps = departures(tx, a)?;
     for ((r, e), h) in hist.iter_mut() {
-        if blocked_epoch(tx, who, a, *r, e, &deps)? {
+        if blocked_epoch(tx, who, a, *r, e, &deps, Walk::Encrypt)? {
             h.earlier.retain(|x, _| h.listed.contains(x));
         }
     }

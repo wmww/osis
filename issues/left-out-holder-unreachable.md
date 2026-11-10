@@ -46,9 +46,11 @@ about 2% of seeds, among them 32, 67, 77, 151, 253, 296).
 - **Judge M only while a member** (Depth0 `Judge = "role"`): rejected. `D0_gone_role` fails
   `NoLeakAbove`: c leaves T out for Dave's removal while a member and writes X; gone, it no longer
   judges and re-seals T at the keyset it left T out at, and Dave opens what c wrote knowing his
-  removal (the re-seal hole of issues/blocked-walk-stops-at-readers.md, by one node).
+  removal (the re-seal hole of issues/sealer-cannot-judge-holder.md, by one node).
 - **Stated limit**: needs a removal going alone, or two departures heard together before the
   keyset, then the admin leaving the team before it re-seals.
 
 Recommendation: carry M's keys in the stranded notice; it is the channel the left-out holder
 already uses, made able to say what it needs.
+The same channel would let a node that never read M judge M's keysets by order and leave M out
+safely (issues/sealer-cannot-judge-holder.md, Hole 2).

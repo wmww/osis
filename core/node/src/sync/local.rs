@@ -234,7 +234,7 @@ impl SyncEngine {
         // placing never rotates (a rotation's own copies placed here recursed into rotations):
         // under an epoch that does not cover a known departure it waits for the next pass,
         // which rotates first
-        if self.uncovered(g, false)?.contains(&Role::Read) {
+        if self.uncovered(g, false)?.place.contains(&Role::Read) {
             self.deferred.push((*g, *c, aspects.clone(), owed));
             return Ok(());
         }

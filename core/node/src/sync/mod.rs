@@ -743,27 +743,28 @@ impl SyncEngine {
         self.handle(Event::Local)
     }
 
-    /// The roles of `g`'s secret actor this node may not encrypt under now (`placing`), after
-    /// the rotations due first when `rotate` (flows' `ensure_rotated`, spec/permissions.md §3).
-    pub(crate) fn uncovered(&mut self, g: &Tid, rotate: bool) -> Result<BTreeSet<osis_base::Role>> {
-        let Some(a) = self.engine.core.secret_actor(g) else { return Ok(BTreeSet::new()) };
+    /// The roles of `g`'s secret actor this node may not encrypt under now, and those it may not
+    /// even place under (`placing`), after the rotations due
+    /// first when `rotate` (flows' `ensure_rotated`, spec/permissions.md §3).
+    pub(crate) fn uncovered(&mut self, g: &Tid, rotate: bool) -> Result<Blocked> {
+        let Some(a) = self.engine.core.secret_actor(g) else { return Ok(Blocked::default()) };
         if self.engine.core.is_key_actor(&a) {
-            return Ok(BTreeSet::new());
+            return Ok(Blocked::default());
         }
         if rotate {
             let (done, still) = self.engine.ensure_rotated(&a)?;
             self.take_done(done)?;
             if still.is_empty() {
-                return Ok(still);
+                return Ok(Blocked::default());
             }
         }
         self.placing(&a)
     }
 
-    /// The roles of `a` this node may not encrypt under (`rotation::blocked_roles_of`), a
-    /// departure by this node's own self-removal not counted until that commit is placed
-    /// (spec/crypto.md §4).
-    fn placing(&mut self, a: &Tid) -> Result<BTreeSet<osis_base::Role>> {
+    /// The roles of `a` this node may not encrypt under, and may not place under
+    /// (`rotation::blocked_roles_of` by each `Walk`), a departure by this node's own
+    /// self-removal not counted until that commit is placed (spec/crypto.md §4).
+    fn placing(&mut self, a: &Tid) -> Result<Blocked> {
         let mut deps = Vec::new();
         for (d, own) in self.engine.run(|tx| crate::rotation::departures_placing(tx, a))? {
             if let Some(c) = own
@@ -773,9 +774,19 @@ impl SyncEngine {
             }
             deps.push(d);
         }
-        let Some(me) = self.engine.account_tid() else { return Ok(Default::default()) };
-        self.engine.run(|tx| crate::rotation::blocked_roles_of(tx, &me, a, &deps))
+        let Some(me) = self.engine.account_tid() else { return Ok(Blocked::default()) };
+        use crate::rotation::{Walk, blocked_roles_of};
+        self.engine.run(|tx| Ok(Blocked { encrypt: blocked_roles_of(tx, &me, a, &deps, Walk::Encrypt)?, place: blocked_roles_of(tx, &me, a, &deps, Walk::Place)? }))
     }
+}
+
+/// The roles of an actor a node may not use now (spec/crypto.md §4, Encrypting under).
+#[derive(Default)]
+pub(crate) struct Blocked {
+    /// Not to encrypt under: no content, stamp, step or delete.
+    pub encrypt: BTreeSet<osis_base::Role>,
+    /// Not even to place certificates, its own role commits or its heartbeat under.
+    pub place: BTreeSet<osis_base::Role>,
 }
 
 #[cfg(test)]

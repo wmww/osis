@@ -211,7 +211,7 @@ pub(crate) fn sealed(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -
             Seal::Out => break,
             Seal::Wait => return Ok(Sealed::Wait),
         };
-        if super::blocked_epoch(tx, who, m, r, &k, &deps)? {
+        if super::blocked_epoch(tx, who, m, r, &k, &deps, super::Walk::Encrypt)? {
             break;
         }
         let secret = own.as_ref().filter(|e| e.role(r).is_established(&k)).and_then(|e| e.role(r).secret(&k)).cloned();
@@ -248,7 +248,7 @@ fn sealed_to_account(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -
     let deps = super::departures(tx, m)?;
     let mut top = None;
     for r in ROLES.into_iter().filter(|r| *r <= role) {
-        if super::blocked_epoch(tx, who, m, r, &k, &deps)? {
+        if super::blocked_epoch(tx, who, m, r, &k, &deps, super::Walk::Encrypt)? {
             break;
         }
         top = Some(r);

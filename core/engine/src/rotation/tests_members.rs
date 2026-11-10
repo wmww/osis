@@ -1207,3 +1207,72 @@ fn own_removal_from_holder_actor_keeps_sealing_it_spec_crypto_4() {
     let e_held = held_by(&lp, 3, &[x]);
     assert!(!leaked(&mut lp, 2, &[t, x], e, e_held).contains(&x), "E opens nothing new");
 }
+
+// spec/crypto.md §4 (Encrypting under, the limit for an epoch whose secret the node lacks): X
+// administers A, which M holds; X holds none of M's secrets. E leaves M by self-removal, so M does
+// not rotate. X knows the departure but cannot judge M's keyset: it keeps sealing M there (E opens
+// A's next epoch: the stated limit), and once M's rotation for the departure reaches it, the box
+// is stale and X moves A onto M's new keyset, which E opens nothing of.
+#[test]
+fn departure_from_an_unread_holder_is_judged_by_its_next_keyset_spec_crypto_4() {
+    let mut lp = LocalPeer::new(3, 968, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let e = lp.peers[2].engine.me();
+    let m = group(&mut lp, 1);
+    lp.peers[1].engine.grant(&m, &e, &edge(Role::Read)).unwrap();
+    let a = group(&mut lp, 0);
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let k1 = newest_read(&lp, 1, m).unwrap();
+    assert!(lp.peers[0].engine.epochs(&m).is_none_or(|x| x.read.secret(&k1).is_none()), "X holds none of M's secrets");
+    let start = held_by(&lp, 2, &[m, a]);
+    lp.peers[2].engine.demote(&m, &Demotion { holder: e, new: None, retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    assert!(!lp.peers[0].engine.departures(&m).unwrap().is_empty(), "X knows E left M");
+    rotate_skipping(&mut lp, 0, a, &BTreeSet::from([Role::Read]), &[]);
+    assert_eq!(sealed_at(&mut lp, 0, a, m), Some(k1), "the limit: M sealed at the keyset E opens");
+    settle(&mut lp, &[1, 0], &[m, a]);
+    let k2 = newest_read(&lp, 1, m).unwrap();
+    assert_ne!(k1, k2, "M rotated for E's departure");
+    assert_eq!(sealed_at(&mut lp, 0, a, m), Some(k2), "A moved onto M's new keyset");
+    assert_eq!(newest_read(&lp, 1, a), newest_read(&lp, 0, a), "M's members read A");
+    assert_eq!(leaked(&mut lp, 0, &[m, a], e, start), Vec::<Tid>::new());
+}
+
+// spec/crypto.md §4 (Encrypting under: the box clause follows every box the node holds; model
+// `D0_readers_out`): G {R, A}, A {a1, M}, M {m1, R, E}. m1 removes E from M; R, G's admin, holds
+// M's new keyset but may not rotate A, whose box to M names M's old one. G's epoch boxes A at a
+// keyset E opens, so R rotates G leaving A out and E opens nothing R writes under G; once a1
+// moves A onto M's new keyset, R seals A again.
+#[test]
+fn box_walk_passes_actors_the_node_may_not_rotate_spec_crypto_4() {
+    let mut lp = LocalPeer::new(4, 969, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let [r, _, _, e] = std::array::from_fn(|i| lp.peers[i].engine.me());
+    let g = group(&mut lp, 0);
+    let a = group(&mut lp, 1);
+    let m = group(&mut lp, 2);
+    for h in [r, e] {
+        lp.peers[2].engine.grant(&m, &h, &edge(Role::Read)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    lp.peers[1].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    assert!(newest_read(&lp, 0, a).is_some(), "R reads A through M");
+    let start = held_by(&lp, 3, &[m, a, g]);
+    removal(&mut lp, 2, m, e);
+    lp.sync(2, 0).unwrap();
+    assert!(blocked_at(&mut lp, 0, g).contains(&Role::Read), "G's epoch boxes A at a keyset boxing M at one E opens");
+    let (done, still) = lp.peers[0].engine.ensure_rotated(&g).unwrap();
+    assert!(!done.commits.is_empty() && still.is_empty(), "R rotates G");
+    assert_eq!(sealed_at(&mut lp, 0, g, a), None, "leaving A out");
+    let w = newest_read(&lp, 0, g).unwrap();
+    assert!(!openable(&mut lp, 0, &[m, a, g], e, start.clone()).contains(&(g, Role::Read, w)), "E opens nothing R writes under G");
+    lp.sync_all().unwrap();
+    settle(&mut lp, &[2, 1, 0], &[m, a, g]);
+    assert!(all_boxed(&mut lp, 0, &[m, a, g]), "A boxed at G again");
+    assert_eq!(leaked(&mut lp, 0, &[m, a, g], e, start), Vec::<Tid>::new());
+}

@@ -158,7 +158,7 @@ u2NoSync == {<<"g2", "A">>}
 \* ... with no rotation of A made without knowing the removal (a2 may not
 \* rotate unprompted)
 u2Eager == {<<"a1", "G">>}
-\* readers above (issues/blocked-walk-stops-at-readers.md): M holds A's role,
+\* readers above (issues/sealer-cannot-judge-holder.md): M holds A's role,
 \* A holds G's; R, the one admin of G, reads M (so A through M) and may
 \* rotate neither; a1 the admin of A, m1 of M; m1 removes E from M
 vActs == <<"G", "A", "M">>

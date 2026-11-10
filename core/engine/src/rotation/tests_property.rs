@@ -57,6 +57,9 @@ struct Run {
     log: Vec<String>,
     /// When each peer first held each secret (an index into `log`).
     first: BTreeMap<(usize, Key), usize>,
+    /// Whether an actor holding a role on another rotated: the epochs boxing or proving its
+    /// old keyset go stale, which only a rotation clears (spec/crypto.md §4, Stale).
+    holder_rotated: bool,
 }
 
 impl Drop for Run {
@@ -128,9 +131,13 @@ impl Run {
                     if info.checked().is_some() && !known.contains(&(t, r, *x)) {
                         let own = self.lp.peers[i].engine.core.ix.epoch_intro.get(&(t, r, *x)).map(|v| v.1);
                         // a peer reading a holder actor the epoch boxes reads it rightly (the
-                        // step may remove that actor after its cascade rotated `t` boxing it)
+                        // step may remove that actor after its cascade rotated `t` boxing it);
+                        // a rotator holding no secret of that actor does not judge its keyset
+                        // (spec/crypto.md §4, the limit for an epoch whose secret the node
+                        // lacks), so a peer that held one may open the epoch
                         let via = own.map(|c| self.boxed_actors(i, &c, r)).unwrap_or_default();
-                        let below: BTreeSet<usize> = below.iter().copied().filter(|d| !via.iter().any(|m| access(self, i, *d, *m, r))).collect();
+                        let blind = |m: &Tid| !self.ever[i].iter().any(|k| k.0 == *m && k.1 == r);
+                        let below: BTreeSet<usize> = below.iter().copied().filter(|d| !via.iter().any(|m| access(self, i, *d, *m, r) || (blind(m) && self.ever[*d].iter().any(|k| k.0 == *m && k.1 == r)))).collect();
                         self.log.push(format!("  made actor {} {r:?} n{} {:?} at peer {i}, below {below:?}", self.actors.iter().position(|a| a.0 == t).unwrap(), x.n(), &x.nonce()[..2]));
                         self.made.insert((t, r, *x), (held.iter().copied().chain(own).collect(), below));
                     }
@@ -149,6 +156,19 @@ impl Run {
     /// Peer `i` rotates `rot` of `t`, leaving out each other member (peer or actor) at random, or
     /// everyone (`nobody`: an epoch with no box, a vandal's); refused, nothing. Whether it was made.
     fn rotate(&mut self, i: usize, t: Tid, rot: &BTreeSet<Role>, nobody: bool) -> bool {
+        let made = self.rotate_at(i, t, rot, nobody);
+        self.rotated(i, t, made);
+        made
+    }
+
+    /// Notes that peer `i` rotated `t` (`made`), for `holder_rotated`.
+    fn rotated(&mut self, i: usize, t: Tid, made: bool) {
+        let holder = self.all().iter().any(|a| *a != t && self.lp.peers[i].engine.core.key_holders(a).iter().any(|h| h.0 == t));
+        self.holder_rotated |= made && holder;
+    }
+
+    /// `rotate`, unnoted.
+    fn rotate_at(&mut self, i: usize, t: Tid, rot: &BTreeSet<Role>, nobody: bool) -> bool {
         let mut skip: Vec<(Tid, Option<Role>)> = Vec::new();
         let members: Vec<Tid> = self.tids.iter().copied().chain(self.all()).filter(|m| *m != t).collect();
         for m in members {
@@ -235,7 +255,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
         }
     }
     lp.sync_all().unwrap();
-    let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], made: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new() };
+    let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], made: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
     run.log.push(format!("actors {:?} (owners), peers {:?}", run.actors, run.tids));
     run.note();
     reached.cycle = k > 1;
@@ -353,7 +373,8 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
         let before = run.before(x);
         for t in run.all() {
             let _ = run.lp.peers[x].engine.reseal_due(&t, &Pass);
-            let _ = run.lp.peers[x].engine.ensure_rotated(&t);
+            let made = run.lp.peers[x].engine.ensure_rotated(&t).is_ok_and(|d| !d.0.commits.is_empty());
+            run.rotated(x, t, made);
             if run.rng.next(2) == 0 {
                 let rot: BTreeSet<Role> = ROLES.into_iter().filter(|_| run.rng.next(2) == 0).collect();
                 let _ = run.rotate(x, t, &rot, false);
@@ -386,8 +407,10 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
         run.note();
     }
     // without departures, re-seals alone reach a fixpoint where every holder reads everything
-    // (nobody writing, nobody rotates); then the due rotations too
-    if departing.is_empty() {
+    // (nobody writing, nobody rotates), unless a holder actor rotated: an epoch boxing or proving
+    // its old keyset is stale, so blocked, and takes no history add until its due rotation;
+    // then the due rotations too
+    if departing.is_empty() && !run.holder_rotated {
         settle(&mut run, seed, false);
         check(&mut run, seed, false);
     }

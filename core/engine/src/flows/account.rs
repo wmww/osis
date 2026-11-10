@@ -90,6 +90,12 @@ impl AccountView {
         e.at.as_ref().is_none_or(|a| a < point).then_some(e.signing)
     }
 
+    /// Whether the counting epoch named `name` was minted before `point` (the first epoch stands
+    /// since the account's creation): a node removed from the account after that held its seed.
+    pub(crate) fn minted_before(&self, name: &Epoch, point: &Point) -> bool {
+        self.named(name).is_some_and(|(_, e)| e.at.as_ref().is_none_or(|a| a < point))
+    }
+
     /// The account's keysets as the seal and stale rules read them (spec/crypto.md §4).
     pub(crate) fn keysets(&self) -> Keysets {
         let named = self.epochs.iter().filter_map(|(id, e)| Some((*id, self.name(e)?))).collect();

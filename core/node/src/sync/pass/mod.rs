@@ -560,23 +560,25 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// The keys of `head` this node may use, and whether read is covered: never encrypt under an
-    /// epoch that does not cover a known departure, so rotate first (flows' cascade), else hold
-    /// back what the uncovered roles would sign or wrap.
+    /// The keys of `head` this node may use, and whether it may place under read: never encrypt
+    /// under a blocked epoch, so rotate first (flows' cascade), else hold back what the blocked
+    /// roles would sign or wrap. Read blocked for encrypting but not for placing leaves only
+    /// certificates, the node's own role commits and its heartbeat to place (no write key:
+    /// nothing fresh else).
     fn usable_keys(&mut self, g: &Tid, index: u64, head: &osis_label::Step) -> Result<(HeadKeys, bool)> {
         let mut keys = self.engine.head_keys(g, index, head)?;
         let still = self.uncovered(g, true)?;
-        if still.contains(&Role::Write) {
+        let read = still.encrypt.contains(&Role::Read);
+        if read || still.encrypt.contains(&Role::Write) {
             keys.write = None;
         }
-        if still.contains(&Role::Admin) {
+        if read || still.encrypt.contains(&Role::Admin) {
             keys.delete = None;
         }
-        let read_ok = !still.contains(&Role::Read);
-        if !read_ok {
+        if read {
             keys.sync_established = false;
         }
-        Ok((keys, read_ok))
+        Ok((keys, !still.place.contains(&Role::Read)))
     }
 
     /// One label's local pass: what a pass would upload is placed in this node's store

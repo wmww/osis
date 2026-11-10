@@ -329,3 +329,44 @@ fn a_listing_named_late_names_again_spec_permissions_5_5() {
     assert_eq!(incremental, read(&mut lp, 4, t), "incremental and rebuilt agree");
     assert_eq!(incremental, Some(Value::Str("sibling".into())), "the listing, named, names the write again");
 }
+
+/// The keyset of `m` the box of `a`'s newest read epoch to `m` names, at peer `i`.
+fn read_box_at(lp: &mut LocalPeer, i: usize, a: Tid, m: Tid) -> Option<osis_crypto::Epoch> {
+    let e = super::tests::newest_read(lp, i, a)?;
+    let s = lp.peers[i].engine.get_typed(&a, &ct::SECRETS).unwrap()?;
+    s.boxes.iter().find(|(k, _)| k.holder == m && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == e)).and_then(|(_, b)| osis_keys::box_epoch(b))
+}
+
+// spec/crypto.md §4 (Encrypting under: an account's epochs minted before a node's removal from
+// its devices actor do not cover it): Carol (peer 0) removes her lost node L (peer 1) from her
+// account P, which rotates P. T, a team of peer 2 she only reads, still boxes P at P's first
+// epoch, whose seed L holds. Her X boxes T at that epoch of T, so she rotates X leaving T out and
+// L opens nothing of it; once T's admin moves T onto P's new epoch, she seals T again.
+#[test]
+fn lost_node_opens_nothing_through_a_team_its_account_reads_spec_crypto_4() {
+    use super::tests::{all_boxed, group, held_by, leaked, newest_read, openable, settle};
+    let (mut lp, a, _) = world(3, 2);
+    let p = a.account;
+    let t = group(&mut lp, 2);
+    lp.peers[2].engine.grant(&t, &p, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let x = group(&mut lp, 0);
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let l = lp.peers[1].engine.tid();
+    let p1 = read_box_at(&mut lp, 0, t, p).unwrap();
+    let mut start = held_by(&lp, 1, &[t, x]);
+    start.extend(osis_keys::ROLES.map(|r| (p, r, p1)));
+    remove(&mut lp, 0, a.devices, 1);
+    let (done, still) = lp.peers[0].engine.ensure_rotated(&x).unwrap();
+    assert!(!done.commits.is_empty() && still.is_empty(), "Carol rotates X (its box to P names P's closed epoch)");
+    assert_eq!(read_box_at(&mut lp, 0, x, t), None, "leaving T out");
+    let w = newest_read(&lp, 0, x).unwrap();
+    assert!(!openable(&mut lp, 0, &[t, x], l, start.clone()).contains(&(x, Role::Read, w)), "L opens nothing Carol writes under X");
+    lp.sync_all().unwrap();
+    settle(&mut lp, &[2, 0], &[t, x]);
+    assert!(all_boxed(&mut lp, 0, &[t, x]), "T boxed at X again");
+    assert_ne!(read_box_at(&mut lp, 2, t, p), Some(p1), "T moved onto P's new epoch");
+    assert_eq!(leaked(&mut lp, 0, &[t, x], l, start), Vec::<Tid>::new());
+}

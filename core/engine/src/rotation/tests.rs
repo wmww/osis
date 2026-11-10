@@ -1499,7 +1499,7 @@ fn blocked_epoch_history_carries_nothing_new_spec_crypto_4() {
         .engine
         .run(|tx| {
             let deps = super::departures(tx, &g)?;
-            let blocked = super::blocked_epoch(tx, &me, &g, Role::Read, &e2, &deps)?;
+            let blocked = super::blocked_epoch(tx, &me, &g, Role::Read, &e2, &deps, super::Walk::Encrypt)?;
             Ok((tx.core.epochs(&g).unwrap().read.current(), super::history_boxes(tx, &me, &g)?, blocked))
         })
         .unwrap();
