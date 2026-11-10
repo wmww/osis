@@ -255,7 +255,7 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 
 ### Ending
 - `created.0` has ordinary retention; its schema default is `admin` with no history promised, and a writer gives it `nobody`, history kept forever, in a commit of `nobody` deltas.
-- A record is identity and `created.0` is existence: a thing is known by its creation record, from a `created.0` delta or a record blob (spec/wire.md §3), and what it created lives on when it ends.
+- A record is identity and `created.0` is existence: a thing is known by its creation record, from a `created.0` delta or a record blob (spec/wire.md §3), and parts on it are judged by it; what it created lives on when it ends. A node writes to a thing other than a key actor only while it holds a `created.0` delta of it: one known by a record alone cannot be told from one that ended.
 - A thing whose every held `created.0` delta is held value-less (expired, or purged by a request holding the right, spec/permissions.md §6) is **ended**: in the same transaction the node drops every part on it as a body (spec/sync.md §5 deletes them at hosts) and its states. It **keeps** its creation record, its value-less `created.0` deltas and its `roles.0` parts (no content) while either holds:
   - it ended by purge: for good, since no rule drops a request;
   - a **dependent** is held: a creation record naming it first admin (its chain climbs the thing's standing edges), or, for a key actor, a commit it signed or acted in with a part held on another thing (its record verifies that commit).

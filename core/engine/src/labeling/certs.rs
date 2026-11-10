@@ -173,6 +173,15 @@ impl Engine {
         }
         // the record chain's records
         out.records.extend(self.core.record_chain(g).filter_map(|s| s.thing()));
+        // the record chains of the label's things whose first admin ended: no body under the
+        // label carries that record once the ending dropped it (spec/permissions.md §4). A walk
+        // of the first admins: few beside the label's things
+        let closure = self.closure(g);
+        let ended: Vec<Tid> = self.core.ix.held.first_admins().filter(|e| self.core.ended(e) && self.core.ix.held.first_admin_of(e).any(|d| closure.contains(d))).copied().collect();
+        for e in ended {
+            out.records.insert(e);
+            out.records.extend(self.core.record_chain(&e).filter_map(|s| s.thing()));
+        }
         // the cards of the key actors holding `g` that are no node (a link key: its writes
         // under the label verify by its card, which no chain of this node's carries; a node
         // places its own)

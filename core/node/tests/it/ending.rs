@@ -503,3 +503,60 @@ fn an_ended_account_leaves_what_it_created_running_spec_commits_5() {
     assert_eq!(net.read(d, t), Some(s("from a")));
     assert_eq!(net.read(d, t2), Some(s("from c")));
 }
+
+// spec/commits.md §5 (Ending: dependents), spec/permissions.md §4 (Placing): a thing whose first
+// admin ended by expiry before a node joined the group reads at that node, which learns the ended
+// first admin's record from the group's label (no body there carries it once it ended), and takes
+// no write on that record alone: it cannot tell the thing ended
+#[test]
+fn a_node_joining_after_a_first_admin_ended_reads_its_dependents_spec_commits_5() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let at = net.now() + 1_000;
+    let mut m = Mutation::new();
+    let t = net.engine(a).new_thing(&mut m, g);
+    m.set(t, &REG, &s("t")).unwrap();
+    let mut items = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(t);
+    m.set(g, &ct::GROUP, &items).unwrap();
+    m.expires_all(osis_base::WallMs(at));
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let x = net.item(a, g, t, "x");
+    net.run();
+    for _ in 0..2 {
+        net.advance(70_000);
+    }
+    for n in [a, b, c] {
+        assert!(!net.engine(n).knows(&t), "node {n}: t ended");
+        assert_eq!(net.read(n, x), Some(s("x")), "node {n}: x lives on");
+    }
+    let d = net.joining_node(4, &[0]);
+    let addr = net.address(0);
+    let (made, done) = net.engine(d).create_account(std::slice::from_ref(&addr)).unwrap();
+    let dt = made.account;
+    let acts = net.sync(d).carry_out(done).unwrap();
+    net.actions(d, acts);
+    net.run();
+    net.pair(d, c);
+    let edge = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
+    let done = net.engine(c).grant(&g, &dt, &edge).unwrap();
+    let acts = net.sync(c).carry_out(done).unwrap();
+    net.actions(c, acts);
+    net.run();
+    let acts = net.accept_invites(d);
+    net.actions(d, acts);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(net.engine(d).core.created(&t).is_some(), "t's record, from g's label");
+    assert_eq!(net.read(d, x), Some(s("x")), "d: x reads");
+    assert_eq!(net.read(d, t), None, "d: nothing of t");
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("late")).unwrap();
+    assert!(matches!(net.engine(d).commit(m), Err(osis_node::Error::UnknownThing(_))), "d: a write to t refused, as at a node that saw it end");
+    let mut m = Mutation::new();
+    m.set(x, &REG, &s("x2")).unwrap();
+    net.engine(d).commit(m).unwrap().unwrap();
+    net.run();
+    assert_eq!(net.read(a, x), Some(s("x2")), "d, an admin of g, writes x through t's standing edges");
+}

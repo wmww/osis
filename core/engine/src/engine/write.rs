@@ -748,7 +748,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     }
     let mut aspects = Vec::with_capacity(m.aspects.len());
     for ((tid, ak), mut am) in std::mem::take(&mut m.aspects) {
-        if !base.creates.contains_key(&tid) && !tx.core.exists(&tid) {
+        if !base.creates.contains_key(&tid) && !tx.core.writable(&tid) {
             return Err(Error::UnknownThing(tid));
         }
         if !m.unchecked {

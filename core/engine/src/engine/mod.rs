@@ -1196,10 +1196,18 @@ impl Core {
         }
     }
 
-    /// Whether `t` exists here: its record is held and it has not ended. What may read or write
-    /// a thing asks this; what judges commits on it asks `created`, a record being identity.
+    /// Whether `t` exists here: its record is held and it has not ended. What may read a thing
+    /// asks this; what judges commits on it asks `created`, a record being identity.
     pub fn exists(&self, t: &Tid) -> bool {
         self.created(t).is_some() && !self.ended(t)
+    }
+
+    /// Whether `t` takes writes here: it exists and, but for a key actor (its record is its
+    /// creation's whole content, and only its own nodes see it end), a creation of it is held. A
+    /// node that learned a thing's record raw (a record blob) cannot tell it ended, and a write
+    /// there would be one every node that saw the ending ignores.
+    pub fn writable(&self, t: &Tid) -> bool {
+        self.exists(t) && (matches!(self.created(t), Some(osis_base::CreationRecord::KeyActor { .. })) || Ak::new(osis_commit::retention::CREATED).is_ok_and(|ak| self.ix.by_aspect.get(&(*t, ak)).is_some_and(|s| !s.is_empty())))
     }
 
     /// Whether `t` is ended: a creation of it was held, and each is held value-less or dropped by

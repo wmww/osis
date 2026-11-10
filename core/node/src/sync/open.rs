@@ -105,8 +105,9 @@ impl SyncEngine {
         self.engine.labels_of(g).into_iter().find(|x| x.id == *l)
     }
 
-    /// Open attempts in order: the known head, each recorded step deepest first by its sync key
-    /// (named: a host answers a superseded one's child, verified under it), then by claim key;
+    /// Open attempts in order: the known head, the recorded steps deepest first by sync key, once
+    /// per key at the deepest step bearing it (named: a host answers a superseded one's child,
+    /// verified under it), then by claim key;
     /// for a hint, the sync keys at the index it names.
     fn tries(&mut self, host: &[u8; 32], g: &Tid, l: &LabelId) -> (u64, Vec<Try>) {
         let epochs = self.engine.epochs(g);
@@ -131,9 +132,12 @@ impl SyncEngine {
         }
         let mut steps: Vec<(&Step, &Option<ClaimSet>)> = gl.steps.values().map(|(s, c)| (s, c)).collect();
         steps.sort_by_cached_key(|(s, _)| std::cmp::Reverse(path_to(&gl.steps, s.id()).map_or(0, |p| p.len())));
+        // one try per sync key, at the deepest step bearing it: steps sharing a key are one run of
+        // the path, so a host that refuses the deepest refuses the rest (a step it lacks), and one
+        // holding any of them at its head opens by the head
         for (s, _) in &steps {
             if let Some(key) = sync_key(s, index)
-                && !v.iter().any(|t| t.step().is_some_and(|x| x.id() == s.id()))
+                && !v.iter().any(|t| matches!(t, Try::Sync { key: k, .. } if k.verifying_key() == key.verifying_key()))
             {
                 v.push(Try::Sync { step: Some((*s).clone()), key });
             }

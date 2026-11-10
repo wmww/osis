@@ -60,6 +60,10 @@ impl Held {
     pub fn first_admin_of(&self, t: &Tid) -> impl Iterator<Item = &Tid> {
         self.first_admin_of.get(t).into_iter().flatten()
     }
+    /// The things some held record names first admin.
+    pub fn first_admins(&self) -> impl Iterator<Item = &Tid> {
+        self.first_admin_of.keys()
+    }
     pub fn generation(&self) -> u64 {
         self.generation
     }
