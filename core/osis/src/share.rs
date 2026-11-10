@@ -1076,22 +1076,21 @@ impl Osis {
         // here, so the first read sees what it holds; and the join is at a source of K, so
         // whoever admits this node by it (the sharer's node) can
         self.wait_until(Box::new(move |s, _| {
-            if !held && !delivered(s, k) {
-                return None;
-            }
             let e = s.engine_mut();
             if !held && (!e.roster(&k).contains_key(&me) || pending_on(e, &k)) {
                 return None;
             }
             let role = e.role_on(&target);
-            match crate::read::usable(e, &target, role) {
+            let done = match crate::read::usable(e, &target, role) {
                 // reached before: it is here already (a used single-use link of its own: a call
                 // dropped while waiting for the delete keys)
-                Ok(r) if r == role && held => Some(Ok(())),
-                Ok(r) if r == role => arrived(s, target),
-                Ok(_) => None,
-                Err(x) => Some(Err(x)),
-            }
+                Ok(r) if r == role && held => return Some(Ok(())),
+                Ok(r) if r == role => arrived(s, target)?,
+                Ok(_) => return None,
+                Err(x) => Err(x),
+            };
+            // an error ends the call at once (the join stands); success waits for the delivery
+            (done.is_err() || delivered(s, k)).then_some(done)
         }))
         .await?;
         Ok(target)
