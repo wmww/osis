@@ -111,7 +111,7 @@ pub(crate) fn blocked_epoch(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &os
 /// The departures from holder actor `x` its keysets must cover, as this node knows them: an
 /// account's are those from its devices actor, which only the account's own nodes hold (a node
 /// removed from it held the account's seed at every epoch minted before).
-fn keyset_departures(tx: &mut Tx<'_>, x: &Tid) -> Result<Vec<Departure>> {
+pub(crate) fn keyset_departures(tx: &mut Tx<'_>, x: &Tid) -> Result<Vec<Departure>> {
     match tx.core.accounts.get(x).map(|h| h.devices) {
         Some(d) => departures(tx, &d),
         None => departures(tx, x),

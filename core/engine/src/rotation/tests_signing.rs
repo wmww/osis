@@ -370,3 +370,25 @@ fn lost_node_opens_nothing_through_a_team_its_account_reads_spec_crypto_4() {
     assert_ne!(read_box_at(&mut lp, 2, t, p), Some(p1), "T moved onto P's new epoch");
     assert_eq!(leaked(&mut lp, 0, &[t, x], l, start), Vec::<Tid>::new());
 }
+
+// spec/crypto.md §4 (Encrypting under, an account's epochs; Seal): a node of P holding a removal
+// from D but not yet P's rotation for it seals P at no epoch the removed node holds: it leaves P
+// out of X until that rotation arrives.
+#[test]
+fn node_knowing_a_removal_seals_its_account_at_no_epoch_minted_before_spec_crypto_4() {
+    use super::tests::{group, newest_read, openable};
+    let (mut lp, a, _) = world(3, 3);
+    let p = a.account;
+    let x = group(&mut lp, 2);
+    lp.sync_all().unwrap();
+    let l = lp.peers[1].engine.tid();
+    let p1 = read_box_at(&mut lp, 2, x, p).unwrap();
+    let mut start = super::tests::held_by(&lp, 1, &[x]);
+    start.extend(osis_keys::ROLES.map(|r| (p, r, p1)));
+    let done = remove(&mut lp, 0, a.devices, 1);
+    send(&mut lp, 0, 2, &done.commits[..1]);
+    let _ = lp.peers[2].engine.ensure_rotated(&x).unwrap();
+    let w = newest_read(&lp, 2, x).unwrap();
+    assert_ne!(read_box_at(&mut lp, 2, x, p), Some(p1), "P not sealed at the epoch L holds");
+    assert!(!openable(&mut lp, 2, &[x], l, start).contains(&(x, Role::Read, w)), "L opens nothing of X's new epoch");
+}

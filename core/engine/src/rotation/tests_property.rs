@@ -39,8 +39,9 @@ struct Reached {
 type Key = (Tid, Role, Epoch);
 
 /// A rotator's view when it made an epoch: the commits it held (the rotation commit included),
-/// and the peers below the epoch's role in its view, for keys.
-type Made = BTreeMap<Key, (BTreeSet<CommitId>, BTreeSet<usize>)>;
+/// the peers below the epoch's role in its view, for keys, and the holder actors the epoch
+/// boxes of which the rotator held no secret at that role (`Made::blind`).
+type Made = BTreeMap<Key, (BTreeSet<CommitId>, BTreeSet<usize>, BTreeSet<Tid>)>;
 
 struct Run {
     lp: LocalPeer,
@@ -131,15 +132,15 @@ impl Run {
                     if info.checked().is_some() && !known.contains(&(t, r, *x)) {
                         let own = self.lp.peers[i].engine.core.ix.epoch_intro.get(&(t, r, *x)).map(|v| v.1);
                         // a peer reading a holder actor the epoch boxes reads it rightly (the
-                        // step may remove that actor after its cascade rotated `t` boxing it);
-                        // a rotator holding no secret of that actor does not judge its keyset
-                        // (spec/crypto.md §4, the limit for an epoch whose secret the node
-                        // lacks), so a peer that held one may open the epoch
+                        // step may remove that actor after its cascade rotated `t` boxing it)
                         let via = own.map(|c| self.boxed_actors(i, &c, r)).unwrap_or_default();
-                        let blind = |m: &Tid| !self.ever[i].iter().any(|k| k.0 == *m && k.1 == r);
-                        let below: BTreeSet<usize> = below.iter().copied().filter(|d| !via.iter().any(|m| access(self, i, *d, *m, r) || (blind(m) && self.ever[*d].iter().any(|k| k.0 == *m && k.1 == r)))).collect();
-                        self.log.push(format!("  made actor {} {r:?} n{} {:?} at peer {i}, below {below:?}", self.actors.iter().position(|a| a.0 == t).unwrap(), x.n(), &x.nonce()[..2]));
-                        self.made.insert((t, r, *x), (held.iter().copied().chain(own).collect(), below));
+                        let below: BTreeSet<usize> = below.iter().copied().filter(|d| !via.iter().any(|m| access(self, i, *d, *m, r))).collect();
+                        // a rotator holding no secret of a boxed actor does not judge the keyset
+                        // it seals it at (spec/crypto.md §4, the limit for an epoch whose secret
+                        // the node lacks): a departed peer may open the epoch by that box alone
+                        let blind: BTreeSet<Tid> = via.iter().copied().filter(|m| !self.ever[i].iter().any(|k| k.0 == *m && k.1 == r)).collect();
+                        self.log.push(format!("  made actor {} {r:?} n{} {:?} at peer {i}, below {below:?}, blind {}", self.actors.iter().position(|a| a.0 == t).unwrap(), x.n(), &x.nonce()[..2], blind.len()));
+                        self.made.insert((t, r, *x), (held.iter().copied().chain(own).collect(), below, blind));
                     }
                 }
             }
@@ -543,9 +544,16 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                     }
                 }
                 let last = departure(run, o, t, d);
-                for ((mt, mr, e), (held, below)) in &run.made {
+                for ((mt, mr, e), (held, below, blind)) in &run.made {
                     if *mt == t && *mr == r && below.contains(&d) && last.is_some_and(|c| held.contains(&c)) {
-                        assert!(!opens.contains(&(t, r, *e)), "seed {seed}: peer {d} (now {:?}) opens {t:?} {r:?} epoch {e:?}, made by a rotator that saw it depart (first held at step {:?})", role(d), run.first.get(&(d, (t, r, *e))));
+                        // excused only by that box: without it (and the secret, had its node
+                        // opened it so), the peer opens the epoch no other way
+                        let opened = opens.contains(&(t, r, *e)) && (blind.is_empty() || {
+                            let mut kept = run.ever[d].clone();
+                            kept.remove(&(t, r, *e));
+                            super::tests::openable_but(&mut run.lp, o, &all, run.tids[d], kept, &blind.iter().map(|m| (t, r, *e, *m)).collect()).contains(&(t, r, *e))
+                        });
+                        assert!(!opened, "seed {seed}: peer {d} (now {:?}) opens {t:?} {r:?} epoch {e:?}, made by a rotator that saw it depart (first held at step {:?})", role(d), run.first.get(&(d, (t, r, *e))));
                     }
                 }
             }

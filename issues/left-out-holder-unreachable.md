@@ -1,5 +1,5 @@
 # A holder actor left out by a node gone from it stays cut off
-> Summary: a node that leaves holder actor M out of A's rotation (M's keyset blocked by a departure it knows) must later re-seal M, which needs M's next keyset; a node no longer in M learns M's keysets only as M's members place them under A's labels, and left out they hold no current epoch of A to place under. So when A's admin leaves M out while in M and then leaves M (or leaves with another party), M reads nothing new of A for good. The admin's own removal no longer causes this (built); this residual needs a design choice.
+> Summary: a node that leaves holder actor M out of A's rotation (M's keyset blocked by a departure it knows) must later re-seal M, which needs M's next keyset; a node no longer in M learns M's keysets only as M's members place them under A's labels, and left out they hold no current epoch of A to place under. So when A's admin leaves M out while reading M and then stops reading it (leaves M, leaves with another party, or loses the route it read M through), M reads nothing new of A for good. The admin's own removal no longer causes this (built); this residual needs a design choice.
 > Priority: normal
 > Tags: keys, engine, node-sync, tess-call
 
@@ -14,6 +14,15 @@ current epoch of X to place T's next keyset under X's labels (chain certificates
 the label's newest epoch). Carol never sees T's next keyset, so never re-seals T; nobody else may.
 Their stranded notices reach her inbox but carry nothing she can seal to, and a re-seal by inbox
 needs T's current deposit seed, which lives in the same `keys.0` she lacks.
+
+The same end through a route: the box clause follows boxes through actors the node may not
+rotate, so R, G's admin reading A only through team M, leaves A out of G for a departure from M
+(issues/sealer-cannot-judge-holder.md, The rule). If R then stops reading A (R leaves M with that
+party, or A's admin removes M from A instead of moving A onto M's next keyset), R never sees A's
+next keyset and A's members, left out of G, cannot place it under G's labels: A reads nothing new
+of G for good. Before that walk R sealed A there and the departed party read G's new content until
+A rotated. The recommended fix below covers this shape too (A's members' stranded notice carries
+A's `keys.0`).
 
 Model: `D0_gone_live2` (Depth0, `Follow`: a node follows an actor only while it holds a role on it,
 and learns a holder actor's keysets under a target's label only once a reader of both, holding the

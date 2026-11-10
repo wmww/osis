@@ -149,7 +149,12 @@ impl Rng {
 /// peer `i` holds of them: a box to `party` itself, or to a holder at a keyset (sealed) or
 /// secret (symmetric) epoch known, transitively. What a departed party that kept its secrets
 /// can read, whatever its own node does.
-pub(super) fn openable(lp: &mut LocalPeer, i: usize, actors: &[Tid], party: Tid, mut known: BTreeSet<(Tid, Role, osis_crypto::Epoch)>) -> BTreeSet<(Tid, Role, osis_crypto::Epoch)> {
+pub(super) fn openable(lp: &mut LocalPeer, i: usize, actors: &[Tid], party: Tid, known: BTreeSet<(Tid, Role, osis_crypto::Epoch)>) -> BTreeSet<(Tid, Role, osis_crypto::Epoch)> {
+    openable_but(lp, i, actors, party, known, &BTreeSet::new())
+}
+
+/// `openable` with the boxes in `skip` (actor, role, epoch, holder) left aside.
+pub(super) fn openable_but(lp: &mut LocalPeer, i: usize, actors: &[Tid], party: Tid, mut known: BTreeSet<(Tid, Role, osis_crypto::Epoch)>, skip: &BTreeSet<(Tid, Role, osis_crypto::Epoch, Tid)>) -> BTreeSet<(Tid, Role, osis_crypto::Epoch)> {
     use osis_keys::aspects::from_schema;
     let all: Vec<(Tid, ct::Secrets)> = actors.iter().filter_map(|a| lp.peers[i].engine.get_typed(a, &ct::SECRETS).unwrap().map(|s| (*a, s))).collect();
     // boxes to the party itself (a key actor)
@@ -166,6 +171,9 @@ pub(super) fn openable(lp: &mut LocalPeer, i: usize, actors: &[Tid], party: Tid,
         for (a, s) in &all {
             for (k, b) in &s.boxes {
                 let Ok(e) = from_schema(&k.epoch) else { continue };
+                if skip.contains(&(*a, k.role, e, k.holder)) {
+                    continue;
+                }
                 let via = match b {
                     ct::SecretBox::Sealed(sb) => sb.keyset.as_ref().and_then(|x| from_schema(x).ok()),
                     ct::SecretBox::Symmetric(sb) => from_schema(&sb.epoch).ok(),

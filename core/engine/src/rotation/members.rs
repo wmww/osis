@@ -245,7 +245,7 @@ fn sealed_to_account(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -
         Seal::Out => return Ok(Sealed::Out),
         Seal::Wait => return Ok(Sealed::Wait),
     };
-    let deps = super::departures(tx, m)?;
+    let deps = super::keyset_departures(tx, m)?;
     let mut top = None;
     for r in ROLES.into_iter().filter(|r| *r <= role) {
         if super::blocked_epoch(tx, who, m, r, &k, &deps, super::Walk::Encrypt)? {
