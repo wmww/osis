@@ -635,7 +635,7 @@ pub(crate) fn retain_in_force(core: &Core, tid: &Tid, at: &Point) -> bool {
 
 /// `retain_in_force` for a write this node makes now: after every setting it holds.
 pub(crate) fn retain_now(core: &Core, tid: &Tid) -> bool {
-    retain_in_force(core, tid, &Point { ts: core.hlc.peek(), node: core.account.unwrap_or(Tid::from_bytes([0; 15])), commit: CommitId([0xff; 32]) })
+    retain_in_force(core, tid, &Point { ts: core.hlc.peek(), node: core.account.get().unwrap_or(Tid::from_bytes([0; 15])), commit: CommitId([0xff; 32]) })
 }
 
 /// The requirement in force for a write of `ak` on `tid` by `node` at `ts` (the writer's side).

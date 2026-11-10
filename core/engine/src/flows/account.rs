@@ -372,7 +372,7 @@ impl Core {
 
     /// This node's account and its devices actor, when it holds the account.
     pub fn account_devices(&self) -> Option<(Tid, Tid)> {
-        let p = self.account?;
+        let p = self.account.get()?;
         Some((p, self.accounts.get(&p)?.devices))
     }
 
@@ -548,7 +548,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
         }
     }
     // this node's account: its side moves with D's roster (`AccountView::authorized_by`)
-    if let Some((p, from)) = tx.core.account.filter(|p| tx.core.accounts.contains_key(p)).map(|p| (p, tx.core.judged_from(&p))).filter(|(_, from)| tx.core.epochs_judged_from.as_ref() != Some(from)) {
+    if let Some((p, from)) = tx.core.account.get().filter(|p| tx.core.accounts.contains_key(p)).map(|p| (p, tx.core.judged_from(&p))).filter(|(_, from)| tx.core.epochs_judged_from.as_ref() != Some(from)) {
         // after an open the persisted judgment stands: judged again, sealed to as before
         if tx.core.epochs_judged_from.replace(from).is_some() {
             tx.core.ix.epochs_due.insert(p);
@@ -736,12 +736,12 @@ impl Engine {
         let p = record.tid();
         let d_record = CreationRecord::Thing { admin: p, nonce: *nonce_d.nonce(), link: false };
         let d = d_record.tid();
-        self.core.account = Some(p);
+        self.core.account.set(Some(p));
         self.core.accounts.insert(p, Arc::new(HeldAccount { devices: d, first: signing, seeds: [(signing, seed.clone())].into() }));
         self.core.role_changed();
         let res = self.run(|tx| create_account_in(tx, record, d_record, &keys, &seed, hosts));
         if res.is_err() {
-            self.core.account = None;
+            self.core.account.set(None);
             self.core.accounts.remove(&p);
         }
         let (profile, c) = res?;
@@ -824,7 +824,7 @@ impl Engine {
     /// it stays the account's, unable to sign.
     pub(crate) fn take_account(&mut self) -> Result<()> {
         let Some((p, d)) = self.account()? else { return Ok(()) };
-        self.core.account = Some(p);
+        self.core.account.set(Some(p));
         if self.hold_account(&p, &d).is_err() {
             self.core.accounts.remove(&p);
         }
@@ -888,7 +888,7 @@ impl Engine {
             return Err(Error::Permission { tid: d });
         }
         self.hold_account(p, &d)?;
-        self.core.account = Some(*p);
+        self.core.account.set(Some(*p));
         self.save_account(p, &d)?;
         self.core.role_changed();
         let g = *grant;

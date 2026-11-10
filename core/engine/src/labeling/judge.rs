@@ -93,7 +93,7 @@ impl Judge<'_> {
     /// Whether `x` holds a role on a thing other than itself that is not private to another
     /// account than this node's.
     fn shares(&self, x: &Tid) -> bool {
-        let mine = self.core.account;
+        let mine = self.core.account.get();
         self.timeline(x).is_some_and(|tl| tl.roles_of(x, At::KEYS).keys().any(|t| t != x && self.core.private_to(t).is_none_or(|p| Some(p) == mine)))
     }
 }

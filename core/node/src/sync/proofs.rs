@@ -70,7 +70,7 @@ pub(super) fn proven_actors(engine: &mut Engine, proofs: &[ActorProof]) -> Resul
 /// Whether a peer that proved `proven` gets this node's node key: it proved this node's account
 /// at an open epoch, or its own node key as a node of it (spec/sync.md §10).
 pub(super) fn own_peer(engine: &Engine, proven: &Proven) -> bool {
-    proven.node.is_some() || engine.core.account.is_some_and(|p| proven.accounts.contains(&p))
+    proven.node.is_some() || engine.core.account.get().is_some_and(|p| proven.accounts.contains(&p))
 }
 
 impl SyncEngine {

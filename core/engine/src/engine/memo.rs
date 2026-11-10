@@ -2,7 +2,7 @@
 //!
 //! Every mutable fact a derivation may read sits in a container that stamps its changes
 //! (`Stamps`: the journaled indexes in `journal`, the held set and timelines in `held`,
-//! `Stamped` maps). A read
+//! `Stamped` maps, `Tracked` values). A read
 //! through such a container while a `Memo` computes records the stamp it saw; the memo's answer
 //! holds while every stamp it saw is the current one. So a memo has no key to pick and no
 //! invalidation to call: a write anywhere reaches exactly the memos that read what it changed.
@@ -214,33 +214,50 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
 
     /// The value of `f` for `k`: the one kept while nothing it read has changed.
     pub(crate) fn get(&self, k: &K, f: impl Fn() -> V) -> V {
-        let hit = {
-            let mut entries = self.entries.borrow_mut();
-            match entries.get_mut(k) {
-                Some(e) if e.deps.iter().all(Dep::holds) => {
-                    #[cfg(debug_assertions)]
-                    let check = {
-                        e.hits += 1;
-                        e.hits.is_power_of_two() && e.hits.trailing_zeros() % 2 == 0
-                    };
-                    #[cfg(not(debug_assertions))]
-                    let check = false;
-                    Some((e.value.clone(), e.deps.clone(), check))
-                }
-                _ => None,
-            }
-        };
-        if let Some((value, deps, check)) = hit {
+        match Self::get_in(&mut &*self, |me| *me, k, |_| Ok::<V, std::convert::Infallible>(f())) {
+            Ok(v) => v,
+            Err(e) => match e {},
+        }
+    }
+
+    /// `get` for a function that needs all of `ctx` and may fail (one running a transaction of
+    /// the engine holding this memo, which `memo` finds in `ctx`). A failure is not kept.
+    pub(crate) fn get_in<C, E>(ctx: &mut C, memo: impl Fn(&C) -> &Self, k: &K, f: impl Fn(&mut C) -> Result<V, E>) -> Result<V, E> {
+        if let Some((value, deps, check)) = memo(ctx).kept(k) {
             if check {
-                let fresh = crate::costs::paused(|| recorded(&f).0);
-                assert!(fresh == value, "memo {}: kept {value:?}, a fresh run gives {fresh:?} (a read no stamp covers)", self.name);
+                // a fresh run that fails compares nothing
+                if let Ok(fresh) = crate::costs::paused(|| recorded(|| f(ctx)).0) {
+                    assert!(fresh == value, "memo {}: kept {value:?}, a fresh run gives {fresh:?} (a read no stamp covers)", memo(ctx).name);
+                }
             }
             depend(&deps);
-            return value;
+            return Ok(value);
         }
-        let _s = crate::costs::span(self.name);
-        let (value, deps) = recorded(&f);
+        let _s = crate::costs::span(memo(ctx).name);
+        let (value, deps) = recorded(|| f(ctx));
+        // what a failure read is read by whoever asked, too
         depend(&deps);
+        let value = value?;
+        memo(ctx).keep(k, &value, deps);
+        Ok(value)
+    }
+
+    /// The answer kept for `k` if it still holds, what it read, and whether to compare it with
+    /// a fresh run (debug builds: at its hits 1, 4, 16, ...).
+    fn kept(&self, k: &K) -> Option<(V, Arc<[Dep]>, bool)> {
+        let mut entries = self.entries.borrow_mut();
+        let e = entries.get_mut(k).filter(|e| e.deps.iter().all(Dep::holds))?;
+        #[cfg(debug_assertions)]
+        let check = {
+            e.hits += 1;
+            e.hits.is_power_of_two() && e.hits.trailing_zeros() % 2 == 0
+        };
+        #[cfg(not(debug_assertions))]
+        let check = false;
+        Some((e.value.clone(), e.deps.clone(), check))
+    }
+
+    fn keep(&self, k: &K, value: &V, deps: Arc<[Dep]>) {
         let mut entries = self.entries.borrow_mut();
         entries.insert(k.clone(), Entry {
             value: value.clone(),
@@ -252,7 +269,6 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
             entries.retain(|_, e| e.deps.iter().all(Dep::holds));
             self.kept.set(entries.len());
         }
-        value
     }
 
     /// Entries held (tests).
@@ -321,6 +337,25 @@ impl<K: Ord + Hash, V> Stamped<K, V> {
     pub fn remove(&mut self, k: &K) -> Option<V> {
         self.stamps.wrote(k, false);
         self.map.remove(k)
+    }
+}
+
+/// A value outside the journal whose reads (`get`) and changes (`set`) are stamped
+/// (`Core::account`).
+#[derive(Debug, Default)]
+pub struct Tracked<T> {
+    value: T,
+    stamps: Stamps,
+}
+
+impl<T: Copy> Tracked<T> {
+    pub fn get(&self) -> T {
+        self.stamps.read_all();
+        self.value
+    }
+    pub fn set(&mut self, value: T) {
+        self.stamps.wrote_all();
+        self.value = value;
     }
 }
 

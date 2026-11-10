@@ -1,6 +1,7 @@
 //! Bodies, sealing, wraps, stamps, deposits and delete keys (spec/sync.md §1-§3, §5;
 //! spec/crypto.md §5, §7): what a commit becomes under a label, and the label keys a host's head calls for.
 
+use crate::engine::memo::Memo;
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 use osis_commit::{CommitBlob, Envelope, Section};
@@ -131,9 +132,20 @@ impl HeadKeys {
     }
 
     /// What tells two apart: the public keys and the rest.
-    #[cfg(debug_assertions)]
     fn public(&self) -> ([Option<osis_crypto::VerifyingKey>; 4], bool, [Option<Epoch>; 3]) {
         ([&self.sync, &self.write, &self.delete, &self.deposit].map(|k| k.as_ref().map(SigningSecret::verifying_key)), self.sync_established, self.epochs)
+    }
+}
+
+impl PartialEq for HeadKeys {
+    fn eq(&self, o: &HeadKeys) -> bool {
+        self.public() == o.public()
+    }
+}
+
+impl std::fmt::Debug for HeadKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.public().fmt(f)
     }
 }
 
@@ -568,18 +580,7 @@ impl Engine {
     /// The keys this node holds for `head` of label `index` of `g` (spec/sync.md §2, §5): any
     /// held secret opens; stamps and deletes need an established epoch (spec/crypto.md §4).
     pub fn head_keys(&mut self, g: &Tid, index: u64, head: &Step) -> Result<HeadKeys> {
-        let key = (*g, index, head.id());
-        if let Some(k) = self.core.head_keys.get(&key).cloned() {
-            #[cfg(debug_assertions)]
-            if self.recheck(format!("head_keys {g:?} {index} {:?}", head.id())) {
-                assert_eq!(k.public(), self.head_keys_derived(g, index, head)?.public(), "head_keys of {g:?} went stale");
-            }
-            return Ok(k);
-        }
-        let _s = crate::costs::span("head keys: derive");
-        let k = self.head_keys_derived(g, index, head)?;
-        self.core.head_keys.insert(key, k.clone());
-        Ok(k)
+        Memo::get_in(self, |e| &e.core.head_keys, &(*g, index, head.id()), |e| e.head_keys_derived(g, index, head))
     }
 
     fn head_keys_derived(&mut self, g: &Tid, index: u64, head: &Step) -> Result<HeadKeys> {

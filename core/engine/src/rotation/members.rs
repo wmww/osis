@@ -49,15 +49,9 @@ fn grants(core: &Core, also: &[Tid]) -> Vec<osis_keys::Grant<Order>> {
 }
 
 /// The keyless grants (target, holder) among those this node holds (`grants`,
-/// `osis_keys::key_access`), cached until a roster changes (`Core::role_changed`).
-pub(crate) fn key_access(core: &mut Core) -> Arc<BTreeSet<(Tid, Tid)>> {
-    if let Some(k) = &core.key_access {
-        return k.clone();
-    }
-    let _s = crate::costs::span("key access");
-    let k = Arc::new(osis_keys::key_access(grants(core, &[])));
-    core.key_access = Some(k.clone());
-    k
+/// `osis_keys::key_access`; `Core::key_access`).
+pub(crate) fn key_access(core: &Core) -> Arc<BTreeSet<(Tid, Tid)>> {
+    core.key_access.get(&(), || Arc::new(osis_keys::key_access(grants(core, &[]))))
 }
 
 /// Whether holder actor `h` of `a` has key access to it (a key actor always has).

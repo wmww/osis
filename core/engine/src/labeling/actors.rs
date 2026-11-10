@@ -1,6 +1,7 @@
 //! Actors, entitlement and closure (spec/sync.md §2, §3): a thing's reader actor (the thing if it
 //! has secrets of its own, else its first admin), who may read it, a group's closure and its labels.
 
+use crate::engine::memo::Memo;
 use crate::engine::{Core, Engine};
 use crate::error::Result;
 use osis_base::{ChainStep, LabelId, Role, Tid};
@@ -10,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// A label of a group as its `label.0` records it (spec/sync.md §2).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GroupLabel {
     pub group: Tid,
     pub id: LabelId,
@@ -104,26 +105,19 @@ impl Engine {
     /// `keys.0` names it. Usually one: an admin may write any sync ID there, and a blob is tried
     /// under each, so naming another actor's inbox hides nothing from it.
     pub fn inbox_actors(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
-        if let Some(m) = self.core.inbox_actors.clone() {
-            #[cfg(debug_assertions)]
-            if self.recheck("inbox_actors".to_string()) {
-                assert_eq!(*m, *self.inbox_actors_read(), "inbox_actors cached");
+        let read = |e: &mut Engine| {
+            let mut by: BTreeMap<LabelId, Vec<Tid>> = BTreeMap::new();
+            for a in e.core.ix.secrets.keys().chain(e.core.accounts.keys()).copied().collect::<BTreeSet<_>>() {
+                if let Some(l) = e.inbox(&a) {
+                    by.entry(l).or_default().push(a);
+                }
             }
-            return m;
+            Ok::<_, std::convert::Infallible>(Arc::new(by))
+        };
+        match Memo::get_in(self, |e| &e.core.inbox_actors, &(), read) {
+            Ok(m) => m,
+            Err(e) => match e {},
         }
-        let m = self.inbox_actors_read();
-        self.core.inbox_actors = Some(m.clone());
-        m
-    }
-
-    fn inbox_actors_read(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
-        let mut by: BTreeMap<LabelId, Vec<Tid>> = BTreeMap::new();
-        for a in self.core.ix.secrets.keys().chain(self.core.accounts.keys()).copied().collect::<BTreeSet<_>>() {
-            if let Some(l) = self.inbox(&a) {
-                by.entry(l).or_default().push(a);
-            }
-        }
-        Arc::new(by)
     }
 
     /// Whether `g` has a live (unreplaced) label here.
@@ -137,38 +131,20 @@ impl Engine {
         Ok(self.labels_of(g).iter().map(|l| (**l).clone()).collect())
     }
 
-    /// `group_labels`, shared: decoded once per write of the `label.0` (`Core::labels`, which
-    /// keeps the records it parsed: debug builds check them against the store, `recheck`).
+    /// `group_labels`, shared: decoded once per write of the `label.0` (`Core::labels`). A
+    /// `label.0` the store refuses to read gives none, and is read again at the next ask.
     pub fn labels_of(&mut self, g: &Tid) -> Vec<Arc<GroupLabel>> {
         if self.core.created(g).is_none() {
             return Vec::new();
         }
-        if let Some((v, _records)) = self.core.labels.get(g) {
-            let v = v.clone();
-            #[cfg(debug_assertions)]
-            {
-                let cached = _records.clone();
-                if self.recheck(format!("labels_of {g}")) {
-                    // a read a broken store refused compares nothing
-                    if let Ok(fresh) = self.get_typed(g, &ct::LABEL) {
-                        assert!(fresh.unwrap_or_default() == cached, "labels_of({g}) cached");
-                    }
-                }
+        Memo::get_in(self, |e| &e.core.labels, g, |e| {
+            let mut out = Vec::new();
+            for (id, l) in &e.get_typed(g, &ct::LABEL)?.unwrap_or_default() {
+                let Ok(steps) = osis_label::label_steps(l) else { continue };
+                out.push(Arc::new(GroupLabel { group: *g, id: *id, index: l.index, steps, hosts: l.hosts.clone(), replaced: l.replaced }));
             }
-            return v;
-        }
-        let records = self.label_records(g);
-        let mut out = Vec::new();
-        for (id, l) in &records {
-            let Ok(steps) = osis_label::label_steps(l) else { continue };
-            out.push(Arc::new(GroupLabel { group: *g, id: *id, index: l.index, steps, hosts: l.hosts.clone(), replaced: l.replaced }));
-        }
-        self.core.labels.insert(*g, (out.clone(), records));
-        out
-    }
-
-    /// The `label.0` records of `g` (none if unreadable).
-    fn label_records(&mut self, g: &Tid) -> ct::Labels {
-        self.get_typed(g, &ct::LABEL).ok().flatten().unwrap_or_default()
+            Ok::<_, crate::error::Error>(out)
+        })
+        .unwrap_or_default()
     }
 }

@@ -113,11 +113,12 @@ impl Engine {
     }
 
     /// The links whose seed this node holds (a sharer-only thing's `link:seed.0`, readable on
-    /// every node of the sharer). Cached until a `link:seed.0` changes.
+    /// every node of the sharer; `Core::links`).
     pub fn held_links(&mut self) -> Result<Arc<Vec<HeldLink>>> {
-        if let Some(l) = &self.core.links {
-            return Ok(l.clone());
-        }
+        crate::engine::memo::Memo::get_in(self, |e| &e.core.links, &(), Self::held_links_read)
+    }
+
+    fn held_links_read(&mut self) -> Result<Arc<Vec<HeldLink>>> {
         let keep: Vec<Tid> = self.core.ix.by_aspect.keys().filter(|(_, a)| a.as_str() == LINK_SEED).map(|(t, _)| *t).collect();
         let ak = super::ak(LINK_SEED)?;
         let mut out = Vec::new();
@@ -135,9 +136,7 @@ impl Engine {
         }
         out.sort();
         out.dedup();
-        let out = Arc::new(out);
-        self.core.links = Some(out.clone());
-        Ok(out)
+        Ok(Arc::new(out))
     }
 
     /// The links this node should finalize now (spec/permissions.md §7): it holds the seed and

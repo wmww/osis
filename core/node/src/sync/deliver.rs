@@ -677,7 +677,7 @@ impl SyncEngine {
         let core = &self.engine.core;
         for t in self.peer_received.get(l).into_iter().flatten() {
             // an own node reads what its account reads (it proves the account too)
-            let account = core.account.filter(|_| core.own_node(t));
+            let account = core.account.get().filter(|_| core.own_node(t));
             if core.judge(std::iter::once(*t).chain(account)).of(thing) != super::credentials::Judgment::Holder {
                 continue;
             }

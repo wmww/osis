@@ -63,9 +63,6 @@ pub(crate) fn note_rotation_sigs(core: &mut Core, h: &osis_commit::Header, id: &
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
     for a in &h.aspects {
         core.ix.by_aspect.insert((a.tid, a.ak.clone()), (h.ts, *id));
-        if a.ak.as_str() == crate::flows::LINK_SEED {
-            core.links = None;
-        }
         core.ix.by_thing.insert((a.tid, h.author), *id);
         if h.form.counted() && h.kind.has_own_writes() && a.lo < a.hi {
             core.ix.ranges.insert((a.tid, a.ak.clone(), h.form.own_source(h.author, *id)), (a.lo, *id), a.hi);
@@ -554,7 +551,6 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
     let key = [records::CREATED, t.as_bytes()].concat();
     tx.txn.put_local(&key, &osis_base::encode(&rec.to_value()), Shred::No)?;
     tx.core.ix.held.create(rec);
-    tx.core.inbox_actors = None;
     // the reader actor of the thing's deltas is known now
     let touching: Vec<CommitId> = tx.core.aspects_of(&t).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
     for c in touching {

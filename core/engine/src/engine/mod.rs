@@ -787,16 +787,21 @@ pub struct Core {
     /// `flows::secrets_in` per actor: `secrets.0` decoded, until its state is written (`wrote`) or
     /// freed. A pass reads it many times and it grows with the roster.
     pub secrets_read: HashMap<Tid, Arc<osis_schema::core_types::Secrets>>,
-    /// `Engine::head_keys` per (group, index, step): deriving them is some curve work per pass.
-    /// Cleared by `role_changed` and any role-class write (`wrote`).
-    pub head_keys: HashMap<(Tid, u64, osis_label::StepId), crate::labeling::HeadKeys>,
-    /// `Engine::holders_named` per commit: an admin's pass reads it for every inbox copy, and it
-    /// decodes role parts. Cleared with `head_keys`: a role-class write, `role_changed`.
-    pub holders_named: HashMap<CommitId, Arc<BTreeMap<usize, BTreeSet<Tid>>>>,
+    /// `Engine::head_keys` per (group, index, step) (`memo`): deriving them is some curve work.
+    pub(crate) head_keys: memo::Memo<(Tid, u64, osis_label::StepId), crate::labeling::HeadKeys>,
+    /// `Engine::holders_named` per commit (`memo`): an admin's pass reads it for every inbox
+    /// copy, and it decodes role parts.
+    pub(crate) holders_named: memo::Memo<CommitId, Arc<BTreeMap<usize, BTreeSet<Tid>>>>,
     /// Actors whose re-seal trigger found no holder lacking a box (`rotation::reseal_candidates`):
     /// O(roster) a pass otherwise. Holds while `ix.departures` holds its entry (same roster);
     /// cleared with it.
     pub reseal_quiet: BTreeSet<Tid>,
+    /// Stamps the states by aspect (`memo`): `Tx::load_lazy` reads; `wrote`, `state_changed`
+    /// and a written state's undo change.
+    pub(crate) states_read: memo::Stamps,
+    /// Stamps the stored commit records by ID: `Tx::get_commit` reads; `Tx::put_commit`,
+    /// `Tx::remove_commit` and (all of them) a transaction's undo change.
+    pub(crate) records_read: memo::Stamps,
     /// `Core::epochs` per thing (`memo`).
     pub(crate) epochs_of: memo::Memo<Tid, Option<osis_keys::ActorEpochs>>,
     /// Numbers `Indexes::rotations`; never rolled back.
@@ -808,13 +813,13 @@ pub struct Core {
     /// What this node's account's epochs were last judged from (`flows::account::refresh_epochs`);
     /// empty after an open, when the persisted judgment stands.
     pub(crate) epochs_judged_from: Option<crate::flows::account::JudgedFrom>,
-    /// The keyless actor grants (target, holder) over those held (`rotation::members::key_access`):
-    /// O(edges) to build. Cleared by `role_changed` and a rollback (the timelines move back).
-    pub key_access: Option<Arc<BTreeSet<(Tid, Tid)>>>,
-    /// `acting` at this engine generation (both: memory commits are in `by_actor` too).
-    acting_memo: Option<(u64, u64, Arc<Vec<Tid>>)>,
-    /// `Engine::inbox_actors`.
-    pub inbox_actors: Option<Arc<BTreeMap<LabelId, Vec<Tid>>>>,
+    /// The keyless actor grants (target, holder) over those held (`rotation::members::key_access`;
+    /// `memo`): O(edges) to build.
+    pub(crate) key_access: memo::Memo<(), Arc<BTreeSet<(Tid, Tid)>>>,
+    /// `Core::acting` (`memo`).
+    acting_of: memo::Memo<(), Arc<Vec<Tid>>>,
+    /// `Engine::inbox_actors` (`memo`).
+    pub(crate) inbox_actors: memo::Memo<(), Arc<BTreeMap<LabelId, Vec<Tid>>>>,
     /// Page indexes of the cached states kept paged in the store.
     pub pages: HashMap<(Tid, Ak), pages::PageIndex>,
     pub timelines: held::Timelines,
@@ -914,7 +919,7 @@ pub struct Core {
     pub key_actors: memo::Stamped<Tid, Arc<Identity>>,
     /// The account this node belongs to (`Engine::join_account`): the author of its commits and
     /// the holder of its roles. `None` before it joins one.
-    pub account: Option<Tid>,
+    pub account: memo::Tracked<Option<Tid>>,
     /// Accounts this node signs as, seeds from each one's devices actor (`Engine::hold_account`),
     /// retaken on every open.
     pub accounts: memo::Stamped<Tid, Arc<crate::flows::account::HeldAccount>>,
@@ -1008,15 +1013,13 @@ pub struct Core {
     /// Debug builds: `Store::changes` when the running transaction began (`Tx::recheck`).
     #[cfg(debug_assertions)]
     pub(crate) tx_store: u64,
-    /// `Engine::labels_of` per group, with the records parsed: dropped when its `label.0` state is written (`wrote`) and
-    /// on rollback.
-    pub(crate) labels: BTreeMap<Tid, (Vec<std::sync::Arc<crate::labeling::GroupLabel>>, osis_schema::core_types::Labels)>,
+    /// `Engine::labels_of` per group (`memo`).
+    pub(crate) labels: memo::Memo<Tid, Vec<std::sync::Arc<crate::labeling::GroupLabel>>>,
     /// `Engine::published_under` for every actor, with the counts it was taken at (held
     /// records, `own_keys`, `labeled`).
     pub(crate) published: Option<Published>,
-    /// `Engine::held_links`: dropped when a `link:seed.0` state or index entry changes and on
-    /// rollback.
-    pub(crate) links: Option<std::sync::Arc<Vec<crate::flows::HeldLink>>>,
+    /// `Engine::held_links` (`memo`).
+    pub(crate) links: memo::Memo<(), std::sync::Arc<Vec<crate::flows::HeldLink>>>,
     /// The sync records this engine's transactions write or drop (`SyncRecords`), set by
     /// node-sync (`Engine::set_sync_records`; `None`: no node-sync, no sync records).
     pub sync_records: Option<&'static dyn SyncRecords>,
@@ -1174,22 +1177,11 @@ impl Core {
     /// The actors this node has acted for in a held commit: its chain certificates for them go
     /// under every label it places in (spec/permissions.md §4). O(`by_actor` keys) when the engine
     /// moved, so a pass of a quiet node reads no index of every commit's author.
-    pub fn acting(&mut self) -> Arc<Vec<Tid>> {
-        let read = |c: &Core| -> Vec<Tid> {
-            let me = c.me();
-            c.ix.by_actor.keys().filter(|(_, au)| Some(*au) == me).map(|(a, _)| *a).collect()
-        };
-        match &self.acting_memo {
-            Some((g, m, v)) if (*g, *m) == (self.generation, self.memory_generation) => {
-                debug_assert_eq!(**v, read(self), "acting cached");
-                v.clone()
-            }
-            _ => {
-                let v = Arc::new(read(self));
-                self.acting_memo = Some((self.generation, self.memory_generation, v.clone()));
-                v
-            }
-        }
+    pub fn acting(&self) -> Arc<Vec<Tid>> {
+        self.acting_of.get(&(), || {
+            let me = self.me();
+            Arc::new(self.ix.by_actor.keys().filter(|(_, au)| Some(*au) == me).map(|(a, _)| *a).collect())
+        })
     }
 
     /// Drops what is derived from rosters, `secrets.0` and held epochs (the departures cache):
@@ -1201,11 +1193,7 @@ impl Core {
 
     pub fn role_changed(&mut self) {
         self.role_generation += 1;
-        self.inbox_actors = None;
-        self.head_keys.clear();
-        self.holders_named.clear();
         self.reseal_quiet.clear();
-        self.key_access = None;
         if !self.ix.departures.is_empty() {
             self.ix.departures.retain(|_, _| false);
         }
@@ -1270,6 +1258,7 @@ impl Core {
 
     /// Drops what is derived from the state of `(tid, ak)` (a write changes it).
     fn state_changed(&mut self, tid: &Tid, ak: &Ak) {
+        self.states_read.wrote(&(*tid, ak.clone()), true);
         self.forget_live(tid, ak);
         if osis_schema::core_types::is_role_class(ak.as_str()) {
             self.role_changed();
@@ -1320,23 +1309,13 @@ impl Core {
 
     /// Notes that the running transaction writes the state of `k` (evicted on rollback).
     pub fn wrote(&mut self, k: (Tid, Ak)) {
-        if k.1.as_str() == "keys.0" {
-            self.inbox_actors = None;
-        }
-        if k.1.as_str() == "label.0" {
-            self.labels.remove(&k.0);
-        }
+        self.states_read.wrote(&k, true);
         if k.1.as_str() == "secrets.0" {
             self.secrets_read.remove(&k.0);
         }
         // a holder's `node.0` decides its reader key and route (`flows::is_node`)
         if matches!(k.1.as_str(), "label.0" | "group.0" | "groups.0" | "node.0") || osis_schema::core_types::is_role_class(k.1.as_str()) {
-            self.head_keys.clear();
-            self.holders_named.clear();
             self.reseal_quiet.clear();
-        }
-        if k.1.as_str() == crate::flows::LINK_SEED {
-            self.links = None;
         }
         self.written.push(k);
     }
@@ -1401,25 +1380,23 @@ impl Core {
             self.cover_cache = None;
             self.held_writes = Default::default();
             self.published = None;
+            self.records_read.wrote_all();
             if self.memory_tx {
                 self.memory_generation += 1;
             } else {
                 self.generation += 1;
             }
             self.role_changed();
-            self.labels.clear();
-            self.links = None;
             for k in self.written.split_off(m.written) {
                 if k.1.as_str() == "secrets.0" {
                     self.secrets_read.remove(&k.0);
                 }
+                self.states_read.wrote(&k, true);
                 self.states.remove(&k);
                 self.pages.remove(&k);
             }
         }
         self.dirty = m.dirty;
-        self.inbox_actors = None;
-        self.key_access = None;
         self.ix.rollback_to(m.ix);
         self.schemas.rollback_to(m.schemas);
         self.memory.dropped.truncate(m.dropped);
@@ -1467,22 +1444,27 @@ impl Core {
             memory_tx: _,
             made_labels: _,
             dirty: _,
-            // memos: each answer holds while what it read does (`memo`)
+            // memos: each answer holds while what it read does (`memo`); the stamps of what a
+            // rollback restores move
+            states_read: _,
+            records_read: _,
             epochs_of: _,
             account_views: _,
             account_epochs_of: _,
+            head_keys: _,
+            holders_named: _,
+            key_access: _,
+            inbox_actors: _,
+            acting_of: _,
+            labels: _,
+            links: _,
             // caches, dropped when anything changed (`states` and `pages` per written aspect)
             states: _,
             pages: _,
             secrets_read: _,
-            head_keys: _,
-            holders_named: _,
             reseal_quiet: _,
             rotation_seq: _,
             epochs_judged_from: _,
-            key_access: _,
-            inbox_actors: _,
-            acting_memo: _,
             waits: _,
             live_trees: _,
             live_bodies: _,
@@ -1492,8 +1474,6 @@ impl Core {
             cover_cache: _,
             held_writes: _,
             published: _,
-            labels: _,
-            links: _,
             generation: _,
             role_generation: _,
             memory_generation: _,
@@ -1608,13 +1588,13 @@ impl Core {
     /// The account this node writes as and holds roles as; `None` before it has joined one (it
     /// then writes only its own card, `commit_in`).
     pub(crate) fn me(&self) -> Option<Tid> {
-        self.account
+        self.account.get()
     }
 
     /// The account this node acts as: its own while it is a node of it (holds its seeds). A
     /// node removed from its account reads nothing as it (spec/permissions.md §3, Lost access).
     pub(crate) fn member(&self) -> Option<Tid> {
-        self.account.filter(|p| self.accounts.contains_key(p))
+        self.account.get().filter(|p| self.accounts.contains_key(p))
     }
 
     /// Who writes on `t`: a node writes its own thing as itself, all else as its account.
@@ -1625,7 +1605,7 @@ impl Core {
     /// `me`, for what only an account may do.
     /// A node removed from its account writes nothing as it (`member`).
     pub(crate) fn writer(&self) -> Result<Tid> {
-        let p = self.account.ok_or(Error::Misuse("this node has joined no account"))?;
+        let p = self.account.get().ok_or(Error::Misuse("this node has joined no account"))?;
         self.member().ok_or(Error::Misuse("this node was removed from its account")).map(|_| p)
     }
 
@@ -1636,16 +1616,16 @@ impl Core {
             hlc: Hlc::new(clock, Ts::default()),
             states: HashMap::new(),
             secrets_read: HashMap::new(),
-            head_keys: HashMap::new(),
-            holders_named: HashMap::new(),
+            head_keys: memo::Memo::new("head keys: derive"),
+            holders_named: memo::Memo::new("holders named: read"),
             reseal_quiet: BTreeSet::new(),
             rotation_seq: 0,
             account_views: memo::Memo::new("account view"),
             account_epochs_of: memo::Memo::new("account epochs"),
             epochs_judged_from: None,
-            key_access: None,
-            acting_memo: None,
-            inbox_actors: None,
+            key_access: memo::Memo::new("key access"),
+            acting_of: memo::Memo::new("acting"),
+            inbox_actors: memo::Memo::new("inbox actors"),
             pages: HashMap::new(),
             timelines: held::Timelines::default(),
             sides: crate::sides::Sides::default(),
@@ -1691,7 +1671,9 @@ impl Core {
             step_fault: None,
             key_actors: Default::default(),
             epochs_of: memo::Memo::new("epochs"),
-            account: None,
+            states_read: Default::default(),
+            records_read: Default::default(),
+            account: Default::default(),
             left: BTreeSet::new(),
             signing_due: false,
             accounts: Default::default(),
@@ -1725,9 +1707,9 @@ impl Core {
             rechecked: Default::default(),
             #[cfg(debug_assertions)]
             tx_store: 0,
-            labels: BTreeMap::new(),
+            labels: memo::Memo::new("labels of"),
             published: None,
-            links: None,
+            links: memo::Memo::new("held links"),
             routed_away: BTreeSet::new(),
         }
     }
@@ -2074,6 +2056,7 @@ impl Tx<'_> {
     /// as `ensure_*` and `load` need them).
     pub fn load_lazy(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
         let k = (*tid, ak.clone());
+        self.core.states_read.read(&k);
         if self.core.states.contains_key(&k) {
             return Ok(());
         }
@@ -2405,6 +2388,7 @@ impl Tx<'_> {
         self.core.bodies.remove(id);
         self.core.copy_index.remove(id);
         self.core.decoded.forget(id);
+        self.core.records_read.wrote(id, true);
         self.core.mark_changed(*id);
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
@@ -2431,6 +2415,7 @@ impl Tx<'_> {
         self.core.bodies.remove(id);
         self.core.copy_index.remove(id);
         self.core.decoded.forget(id);
+        self.core.records_read.wrote(id, false);
         self.txn.remove_local(&records::commit_key(id), Shred::Yes)?;
         index::remove_edges(self, id)?;
         index::remove_addenda(self, id)
@@ -2439,6 +2424,7 @@ impl Tx<'_> {
     /// The blob of the stored record of commit `id`, decoded once per write of the record
     /// (`Core::decoded`).
     pub fn get_commit(&mut self, id: &CommitId) -> Result<Option<Arc<CommitBlob>>> {
+        self.core.records_read.read(id);
         if let Some(b) = self.core.decoded.record(id) {
             #[cfg(debug_assertions)]
             if self.recheck(format!("commit record {id:?}")) {
@@ -2694,12 +2680,12 @@ impl Engine {
     #[track_caller]
     #[allow(clippy::expect_used)]
     pub fn me(&self) -> Tid {
-        self.core.account.expect("this node has joined no account")
+        self.core.account.get().expect("this node has joined no account")
     }
 
     /// The account this node belongs to, once it has one.
     pub fn account_tid(&self) -> Option<Tid> {
-        self.core.account
+        self.core.account.get()
     }
 
     pub fn identity(&self) -> &Identity {
@@ -2915,7 +2901,7 @@ impl Engine {
         fresh.skip_writer_rules = self.core.skip_writer_rules;
         fresh.walk_cache_min = self.core.walk_cache_min;
         fresh.sync_records = self.core.sync_records;
-        fresh.account = self.core.account;
+        fresh.account.set(self.core.account.get());
         // caches keyed on it (the sync engine's labels and co-readers) never see an old value again
         fresh.generation = self.core.generation.wrapping_add(1);
         #[cfg(test)]

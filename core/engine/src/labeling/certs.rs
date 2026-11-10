@@ -4,6 +4,7 @@
 //! Labels and steps are role flows' (`Engine::create_label`, `Engine::issue_step`).
 
 use super::blobs::Body;
+use crate::engine::memo::Memo;
 use crate::engine::Engine;
 use crate::error::Result;
 use osis_commit::Decoded;
@@ -103,17 +104,10 @@ impl Engine {
     /// about (spec/sync.md §3): those whose edge a `roles.0` delta writes, those a `secrets.0`
     /// delta boxes. Empty for any other commit kind.
     pub fn holders_named(&mut self, c: &CommitId) -> Arc<BTreeMap<usize, BTreeSet<Tid>>> {
-        if let Some(n) = self.core.holders_named.get(c).cloned() {
-            #[cfg(debug_assertions)]
-            if self.recheck(format!("holders_named {c:?}")) {
-                assert_eq!(*n, self.holders_named_read(c), "holders_named of {c:?} went stale");
-            }
-            return n;
+        match Memo::get_in(self, |e| &e.core.holders_named, c, |e| Ok::<_, std::convert::Infallible>(Arc::new(e.holders_named_read(c)))) {
+            Ok(n) => n,
+            Err(e) => match e {},
         }
-        let _s = crate::costs::span("holders named: read");
-        let n = Arc::new(self.holders_named_read(c));
-        self.core.holders_named.insert(*c, n.clone());
-        n
     }
 
     fn holders_named_read(&mut self, c: &CommitId) -> BTreeMap<usize, BTreeSet<Tid>> {
