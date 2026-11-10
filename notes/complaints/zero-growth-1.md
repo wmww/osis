@@ -6,3 +6,5 @@
 - No way to replay one sim seed from the command line: `sim-sweep --seeds 1 --from S --only X` works but prints no trace; a throwaway `#[ignore]` test calling `osis_sim::replay(..).unwrap()` with `OSIS_SIM_TRACE=1` was needed.
 - Review: sim oracles have no record of the random writes `run` makes, so an excuse about later writes (own replaces) had been read from the node under test; `NetSim::written` now logs every commit.
 - Review: `sim-sweep` prints a failure's message only with `--seeds 1`; a many-seed run lists only `failing:` lines.
+- `tools/bin-at REV` builds the crate's bins too: after it, `target/debug/sim-sweep` is REV's build, not the branch's (a later run silently tested main).
+- `OSIS_SIM_TRACE` shows wire messages and rounds only; tracing a stuck key path (who rotated, who left whom out, which deposit was refused) took temporary eprintln probes across engine and node.
