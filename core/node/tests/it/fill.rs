@@ -659,16 +659,18 @@ struct Times {
     twice: usize,
 }
 
-/// `c`, a new node at `hosts` hosts (default `fill_batch`: order 0 in one batch), fills the
-/// chat's label; with `trickle`, the first host is asked order 0 first (the others held back
+/// `c`, a new node at `hosts` hosts asking `batch` blobs at a time (`None`: the default
+/// `fill_batch`, order 0 in one batch), fills the chat's label; with `trickle`, the first host is asked order 0 first (the others held back
 /// meanwhile) and trickles its reply (16 bytes, then one every 25 s at most, which keeps its
 /// connection). Time moves to `c`'s own wakes; none of `Times` within 10 min is `None`.
-fn fill_with_a_trickling_host(hosts: usize, trickle: bool) -> Times {
+fn fill_with_a_trickling_host(hosts: usize, batch: Option<usize>, trickle: bool) -> Times {
     let mut net = Net::new();
     let hs: Vec<usize> = (0..hosts).map(|_| net.add_host()).collect();
     let h1 = hs[0];
     let a = net.node(1, &hs);
-    let c = net.add_node(3, osis_node::sync::SyncConfig { hosts: hs.iter().map(|h| net.address(*h)).collect(), ..Default::default() });
+    let mut cfg = osis_node::sync::SyncConfig { hosts: hs.iter().map(|h| net.address(*h)).collect(), ..Default::default() };
+    cfg.fill_batch = batch.unwrap_or(cfg.fill_batch);
+    let c = net.add_node(3, cfg);
     let g = net.group(a, &[(c, Role::Read)], &hs);
     let t = net.item(a, g, g, "chat");
     net.set_online(c, false);
@@ -719,36 +721,38 @@ fn fill_with_a_trickling_host(hosts: usize, trickle: bool) -> Times {
 
 // spec/sync.md §6, §10 (Bodies: one rule for "asked"): a host trickling its reply to a fill's
 // order-0 batch holds the label's passes, and the bodies the other host's fill skipped for that
-// fetch, for the stall time only: past it the fill goes on, passes run and ask those bodies of
-// the other host. The messages, fetched from the other host before order 0 brought what opens
-// them, kept no bytes and are fetched again: the trickling host's fill, going on, asks them
-// first, which holds them one stall time more.
+// fetch, for the stall time only: past it passes run and ask those bodies of the other host. The
+// messages, fetched from the other host before order 0 brought what opens them, kept no bytes and
+// are fetched again, of the other host too: the trickling host's fill asks nothing more until its
+// reply is in (a next batch would wait behind it there).
 #[test]
 fn a_trickled_order_0_batch_holds_the_label_for_the_stall_time_only_spec_sync_6() {
     let stall = osis_proto::client::STALL_TIMEOUT_MS;
-    let x = fill_with_a_trickling_host(2, true);
+    let x = fill_with_a_trickling_host(2, None, true);
     let within = |t: Option<u64>, what: &str| assert!(t.is_some_and(|t| (stall..=stall + 1_000).contains(&t)), "{what} {t:?} ms after the other host's release");
     within(x.passed, "first pass");
     within(x.first, "order 0 here");
-    assert!(x.read.is_some_and(|t| t <= 2 * stall + 1_000), "read {:?} ms after the other host's release", x.read);
+    within(x.read, "read");
 }
 
 // spec/sync.md §6: two honest hosts filling: each body fetched once, everything at once
 #[test]
 fn an_honest_fill_at_two_hosts_fetches_each_body_once_spec_sync_6() {
-    let x = fill_with_a_trickling_host(2, false);
+    let x = fill_with_a_trickling_host(2, None, false);
     for (t, what) in [(x.first, "order 0 here"), (x.passed, "first pass"), (x.read, "read")] {
         assert!(t.is_some_and(|t| t < 1_000), "{what} {t:?} ms after the start");
     }
     assert_eq!(x.twice, 0, "blobs fetched twice");
 }
 
-// spec/sync.md §6, §10 (Bodies): a fill waits on its own batch only while it counts as asked: a
-// lone host trickling order 0 holds the label's passes for the stall time, as one answering it
-// without the bytes would not hold them at all
+// spec/sync.md §6, §10 (Bodies): passes wait on a fill's batch only while it counts as asked: a
+// lone host trickling order 0 holds the label's passes for the stall time, however many batches
+// order 0 takes, as one answering it without the bytes would not hold them at all
 #[test]
 fn a_fill_waits_on_its_trickled_batch_for_the_stall_time_only_spec_sync_6() {
     let stall = osis_proto::client::STALL_TIMEOUT_MS;
-    let passed = fill_with_a_trickling_host(1, true).passed;
-    assert!(passed.is_some_and(|t| (stall..=stall + 1_000).contains(&t)), "first pass {passed:?} ms after the start");
+    for batch in [None, Some(1)] {
+        let passed = fill_with_a_trickling_host(1, batch, true).passed;
+        assert!(passed.is_some_and(|t| (stall..=stall + 1_000).contains(&t)), "first pass {passed:?} ms after the start, batch {batch:?}");
+    }
 }

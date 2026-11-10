@@ -28,7 +28,7 @@ pub(crate) struct Fill {
     asked: Vec<BlobId>,
     /// The listing ran to its end.
     listed: bool,
-    /// Rank `FIRST` is fetched: a pass may run.
+    /// Rank `FIRST` is fetched, or a batch went unanswered past the stall time: a pass may run.
     pub first_done: bool,
     /// The host's position: the node's cursor moves when the fill ends (and to the listing's end).
     cursor: Option<Cursor>,
@@ -131,12 +131,16 @@ impl SyncEngine {
             return Ok(());
         }
         let Some(mut f) = lc.fill.take() else { return Ok(()) };
-        // the batch is waited on while it counts as asked (`asked`): past the stall time its host
-        // may be trickling the reply, and the fill goes on (what it lacks is asked elsewhere)
-        if f.asked.iter().filter_map(|b| c.req.fetching.get(b)).any(|at| at.saturating_add(STALL_TIMEOUT_MS) > now) {
-            if let Some(lc) = self.lc_mut(conn, &l) {
-                lc.fill = Some(f);
+        // the batch is waited on: the host answers in order, so a next one would wait behind it.
+        // Passes wait on it only while it counts as asked (`asked`): past the stall time the host
+        // may be trickling the reply, and what the label lacks is asked elsewhere
+        let out_at: Vec<u64> = f.asked.iter().filter_map(|b| c.req.fetching.get(b).copied()).collect();
+        if !out_at.is_empty() {
+            if !f.first_done && out_at.iter().all(|at| at.saturating_add(STALL_TIMEOUT_MS) <= now) {
+                f.first_done = true;
+                lc.dirty = true;
             }
+            lc.fill = Some(f);
             return Ok(());
         }
         // secrets came: what did not open may be anywhere in the order
