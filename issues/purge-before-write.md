@@ -1,7 +1,9 @@
 # A purge reaching a write before the write itself
 > Summary: A purged write a node never held shows the value it had replaced there; a node that held it first shows nothing (`order::held_set_decides` seeds 743309, 452234901986, 632724249436). The same shape as the stated expiry limit; recommended: state it so in requirements and have the order harness make the purger's re-snapshot. Needs Tess for the requirements wording.
 > Priority: normal
-> Tags: engine, held-model, tests, tess-call
+> Tags: engine, held-model, tests
+
+**Decided (Tess): option 1.** Purge joins the requirements' stated limit for expiry: "an expiring or purged edit a node never held may leave it reading what came before it, until a writer next writes it or notices". Then the order harness makes the purger's re-snapshot as node-sync does.
 
 Replay: `OSIS_ORDER_SEED=<seed> OSIS_ORDER_LEN=60 cargo test -p osis-node --test it -- --ignored --exact order::held_set_decides_plain`; 452234901986 is also `order::repro_purge_author_order_452234901986`. `OSIS_ORDER_DUMP=1` prints where the failing node's index differs from the keep-everything node's.
 
