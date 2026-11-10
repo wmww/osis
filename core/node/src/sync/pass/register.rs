@@ -109,10 +109,7 @@ impl SyncEngine {
             None => {
                 let (step, done) = self.engine.issue_step(&g, &l, &head.id(), false)?;
                 self.take_done(done)?;
-                let Some(x) = step else {
-                    self.given(conn);
-                    return Ok(false);
-                };
+                let Some(x) = step else { return Ok(false) };
                 x
             }
         };
@@ -120,7 +117,6 @@ impl SyncEngine {
             lc.registering = Some((step.clone(), set.clone()));
         }
         self.command(conn, Command::Register { label: l, step, claim_set: Some(set) }, out)?;
-        self.given(conn);
         Ok(true)
     }
 

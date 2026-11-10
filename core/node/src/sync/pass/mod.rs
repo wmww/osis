@@ -409,7 +409,7 @@ impl SyncEngine {
     }
 
     /// Gives `uploads` under `l` on `conn` as one Upload, each recorded in flight
-    /// (`upload_busy`) until answered. The caller tags them (`given`).
+    /// (`upload_busy`) until answered.
     pub(super) fn upload(&mut self, conn: ConnId, l: LabelId, uploads: Vec<osis_proto::Entry>, out: &mut Vec<super::Action>) -> Result<()> {
         if uploads.is_empty() {
             return Ok(());
@@ -422,7 +422,9 @@ impl SyncEngine {
         if let Some(c) = self.conns.get_mut(&conn) {
             c.req.sent.extend(ids.into_iter().map(|b| ((l, b), (raw, super::UNTAGGED))));
         }
-        self.command(conn, Command::Upload { label: l, entries: uploads }, out)
+        self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
+        self.given(conn);
+        Ok(())
     }
 
     /// Stamps entry `id` under `l` and keeps the stamp, so a later pass does not promote it again.
