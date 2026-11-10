@@ -94,11 +94,6 @@ impl Stamps {
         }
     }
 
-    /// How many changes the container has seen.
-    pub(crate) fn changes(&self) -> u64 {
-        lock(&self.0).ver
-    }
-
     fn record(&self, key: Option<u64>) {
         FRAMES.with(|f| {
             let mut f = f.borrow_mut();
@@ -240,6 +235,23 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
         let value = value?;
         memo(ctx).keep(k, &value, deps);
         Ok(value)
+    }
+
+    /// The answer kept for `k` while it holds, read by a writer about to change what it was read
+    /// from (`amend`): nothing computing depends on it.
+    pub(crate) fn held(&self, k: &K) -> Option<V> {
+        self.entries.borrow().get(k).filter(|e| e.deps.iter().all(Dep::holds)).map(|e| e.value.clone())
+    }
+
+    /// Keeps `value` as `k`'s answer at the stamps of now. For a writer that held `k`'s answer
+    /// (`held`), changed what it was read from and knows what a fresh run gives after that
+    /// (a state decoded once and patched by each join costs the join, not the state). Nothing
+    /// is kept if `k` has no entry. Debug builds compare it with a fresh run like any hit.
+    pub(crate) fn amend(&self, k: &K, value: V) {
+        if let Some(e) = self.entries.borrow_mut().get_mut(k) {
+            e.value = value;
+            e.deps = e.deps.iter().map(|d| Dep { table: d.table.clone(), key: d.key, seen: lock(&d.table).stamp(d.key) }).collect();
+        }
     }
 
     /// The answer kept for `k` if it still holds, what it read, and whether to compare it with

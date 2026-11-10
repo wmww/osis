@@ -41,8 +41,6 @@ pub struct Held {
     touched: BTreeSet<Tid>,
     /// The same, for `take_moved`.
     moved: BTreeSet<Tid>,
-    /// Counts changes (rollbacks included).
-    generation: u64,
     /// Things whose creation record `create` added since `take_records`.
     records: Vec<Tid>,
     /// Role commits held that do not count (an account's at a closed epoch no word names):
@@ -76,9 +74,6 @@ impl Held {
     pub fn holders(&self) -> impl Iterator<Item = &Tid> {
         self.rest_read.read_all();
         self.holders.keys()
-    }
-    pub fn generation(&self) -> u64 {
-        self.generation
     }
     /// Edge commits with a write on `t`, of any validity.
     pub fn commits_on(&self, t: &Tid) -> &[Arc<RoleCommit>] {
@@ -254,7 +249,6 @@ impl Held {
         }
         self.touched.insert(t);
         self.moved.insert(t);
-        self.generation += 1;
         old
     }
 
@@ -293,7 +287,6 @@ impl Held {
         self.touched.insert(c.author);
         self.moved.insert(c.author);
         self.count(named(&c), true);
-        self.generation += 1;
         self.rest_read.wrote_all();
         self.ids.insert(c.id, c);
     }
@@ -301,7 +294,6 @@ impl Held {
     /// Takes out the commit with this ID (exactly this Arc).
     fn take(&mut self, id: &CommitId) -> Option<Arc<RoleCommit>> {
         let c = self.ids.remove(id)?;
-        self.generation += 1;
         self.rest_read.wrote_all();
         for o in &c.ops {
             if let Some(v) = self.commits.get_mut(&o.target) {
@@ -367,7 +359,6 @@ impl Held {
             let targets: Vec<Tid> = c.ops.iter().map(|o| o.target).chain([c.author]).collect();
             self.moved.extend(targets.iter().copied());
             self.touched.extend(targets);
-            self.generation += 1;
         }
         self.rest_read.wrote_all();
     }

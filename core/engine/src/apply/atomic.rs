@@ -149,7 +149,7 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     let k = (*tid, ak.clone());
     tx.core.touch();
     // `secrets.0` read before: this join's entries read again from the pages it touched
-    let secrets = (ak.as_str() == "secrets.0").then(|| tx.core.secrets_read.get(tid).cloned().map(|s| (s, delta.clone()))).flatten();
+    let secrets = (ak.as_str() == "secrets.0").then(|| tx.core.secrets_read.held(tid).map(|s| (s, delta.clone()))).flatten();
     tx.core.wrote(k.clone());
     let mut st = tx.core.states.get_mut(&k).and_then(Option::take).unwrap_or_default();
     let before = dead.as_ref().map(|_| (Killed::before(&st, &delta), delta.clone()));
@@ -165,7 +165,7 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
         tx.core.states.insert(k, st);
     }
     if let Some(read) = secrets {
-        tx.core.secrets_read.insert(*tid, read);
+        tx.core.secrets_read.amend(tid, read);
     }
     Ok(ch)
 }

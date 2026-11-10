@@ -491,20 +491,12 @@ impl Engine {
 
     /// Labeled groups whose nearest labeled record-chain actor is `g` (its home label publishes
     /// their `label.0`, spec/sync.md §2). Empty unless `g` is an actor with secrets of its own.
-    /// Taken for every actor at once, again only when a creation record, `own_keys` or the
-    /// labeled things changed (`Core::published`): O(labeled things) per change, not per pass.
+    /// Taken for every actor at once (`Core::published`): O(labeled things) per change of what
+    /// it reads, not per pass.
     pub fn published_under(&mut self, g: &Tid) -> std::sync::Arc<std::collections::BTreeSet<Tid>> {
-        let core = &mut self.core;
-        let at = (core.ix.held.generation(), core.ix.own_keys.changes(), core.ix.labeled.changes());
-        if core.published.as_ref().is_none_or(|(k, _)| *k != at) {
-            let map = published_by_actor(core, &core.ix.labeled);
-            core.published = Some((at, map.into_iter().map(|(k, v)| (k, std::sync::Arc::new(v))).collect()));
-        }
-        let out = core.published.as_ref().and_then(|(_, m)| m.get(g).cloned()).unwrap_or_default();
-        // the cache against a fresh walk
-        #[cfg(debug_assertions)]
-        assert_eq!(published_by_actor(core, &core.ix.labeled).remove(g).unwrap_or_default(), *out, "published_under({g}) cached");
-        out
+        let core = &self.core;
+        let all = core.published.get(&(), || std::sync::Arc::new(published_by_actor(core, &core.ix.labeled).into_iter().map(|(k, v)| (k, std::sync::Arc::new(v))).collect()));
+        all.get(g).cloned().unwrap_or_default()
     }
 
     /// The read secret a commit is wrapped under at a label of `g` (spec/crypto.md §5): the

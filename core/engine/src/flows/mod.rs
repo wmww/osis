@@ -307,19 +307,9 @@ pub(crate) fn is_node(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
     Ok(*t == tx.core.id.tid() || tx.has_state(t, &ak("node.0")?)?)
 }
 
-/// `secrets.0` of `actor`, decoded, held until its state changes (`Core::secrets_read`).
+/// `secrets.0` of `actor`, decoded (`Core::secrets_read`).
 pub(crate) fn secrets_in(tx: &mut Tx<'_>, actor: &Tid) -> Result<Arc<Secrets>> {
-    if let Some(s) = tx.core.secrets_read.get(actor).cloned() {
-        #[cfg(debug_assertions)]
-        if tx.recheck(format!("secrets_in {actor}")) {
-            assert_eq!(*s, secrets_decoded(tx, actor)?, "secrets_read of {actor:?} went stale");
-        }
-        return Ok(s);
-    }
-    let _s = crate::costs::span("secrets: decode");
-    let s = Arc::new(secrets_decoded(tx, actor)?);
-    tx.core.secrets_read.insert(*actor, s.clone());
-    Ok(s)
+    crate::engine::memo::Memo::get_in(tx, |tx| &tx.core.secrets_read, actor, |tx| secrets_decoded(tx, actor).map(Arc::new))
 }
 
 fn secrets_decoded(tx: &mut Tx<'_>, actor: &Tid) -> Result<Secrets> {

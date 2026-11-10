@@ -784,9 +784,10 @@ pub struct Core {
     pub id: Identity,
     pub hlc: Hlc,
     pub states: HashMap<(Tid, Ak), Option<Fragment>>,
-    /// `flows::secrets_in` per actor: `secrets.0` decoded, until its state is written (`wrote`) or
-    /// freed. A pass reads it many times and it grows with the roster.
-    pub secrets_read: HashMap<Tid, Arc<osis_schema::core_types::Secrets>>,
+    /// `flows::secrets_in` per actor (`memo`): `secrets.0` decoded once and patched by each
+    /// join (`apply::atomic`, `Memo::amend`). A pass reads it many times and it grows with the
+    /// roster.
+    pub(crate) secrets_read: memo::Memo<Tid, Arc<osis_schema::core_types::Secrets>>,
     /// `Engine::head_keys` per (group, index, step) (`memo`): deriving them is some curve work.
     pub(crate) head_keys: memo::Memo<(Tid, u64, osis_label::StepId), crate::labeling::HeadKeys>,
     /// `Engine::holders_named` per commit (`memo`): an admin's pass reads it for every inbox
@@ -1015,9 +1016,8 @@ pub struct Core {
     pub(crate) tx_store: u64,
     /// `Engine::labels_of` per group (`memo`).
     pub(crate) labels: memo::Memo<Tid, Vec<std::sync::Arc<crate::labeling::GroupLabel>>>,
-    /// `Engine::published_under` for every actor, with the counts it was taken at (held
-    /// records, `own_keys`, `labeled`).
-    pub(crate) published: Option<Published>,
+    /// `Engine::published_under` for every actor (`memo`).
+    pub(crate) published: memo::Memo<(), Published>,
     /// `Engine::held_links` (`memo`).
     pub(crate) links: memo::Memo<(), std::sync::Arc<Vec<crate::flows::HeldLink>>>,
     /// The sync records this engine's transactions write or drop (`SyncRecords`), set by
@@ -1028,8 +1028,8 @@ pub struct Core {
     pub routed_away: BTreeSet<Tid>,
 }
 
-/// `Core::published`: the counts it was taken at, the published things per actor.
-pub(crate) type Published = ((u64, u64, u64), BTreeMap<Tid, std::sync::Arc<BTreeSet<Tid>>>);
+/// `Core::published`: the published things per actor.
+pub(crate) type Published = std::sync::Arc<BTreeMap<Tid, std::sync::Arc<BTreeSet<Tid>>>>;
 
 /// Node-sync's records that engine transactions touch: an inbox delivery a flow's commit owes
 /// (`flows::edges`), its other deliveries (`flows::owe`) and what forgetting drops (`retention::forget`). Implemented by node-sync.
@@ -1310,9 +1310,6 @@ impl Core {
     /// Notes that the running transaction writes the state of `k` (evicted on rollback).
     pub fn wrote(&mut self, k: (Tid, Ak)) {
         self.states_read.wrote(&k, true);
-        if k.1.as_str() == "secrets.0" {
-            self.secrets_read.remove(&k.0);
-        }
         // a holder's `node.0` decides its reader key and route (`flows::is_node`)
         if matches!(k.1.as_str(), "label.0" | "group.0" | "groups.0" | "node.0") || osis_schema::core_types::is_role_class(k.1.as_str()) {
             self.reseal_quiet.clear();
@@ -1379,7 +1376,6 @@ impl Core {
             self.decoded.clear();
             self.cover_cache = None;
             self.held_writes = Default::default();
-            self.published = None;
             self.records_read.wrote_all();
             if self.memory_tx {
                 self.memory_generation += 1;
@@ -1388,9 +1384,6 @@ impl Core {
             }
             self.role_changed();
             for k in self.written.split_off(m.written) {
-                if k.1.as_str() == "secrets.0" {
-                    self.secrets_read.remove(&k.0);
-                }
                 self.states_read.wrote(&k, true);
                 self.states.remove(&k);
                 self.pages.remove(&k);
@@ -1451,6 +1444,8 @@ impl Core {
             epochs_of: _,
             account_views: _,
             account_epochs_of: _,
+            secrets_read: _,
+            published: _,
             head_keys: _,
             holders_named: _,
             key_access: _,
@@ -1461,7 +1456,6 @@ impl Core {
             // caches, dropped when anything changed (`states` and `pages` per written aspect)
             states: _,
             pages: _,
-            secrets_read: _,
             reseal_quiet: _,
             rotation_seq: _,
             epochs_judged_from: _,
@@ -1473,7 +1467,6 @@ impl Core {
             decoded: _,
             cover_cache: _,
             held_writes: _,
-            published: _,
             generation: _,
             role_generation: _,
             memory_generation: _,
@@ -1615,7 +1608,7 @@ impl Core {
             id,
             hlc: Hlc::new(clock, Ts::default()),
             states: HashMap::new(),
-            secrets_read: HashMap::new(),
+            secrets_read: memo::Memo::new("secrets: decode"),
             head_keys: memo::Memo::new("head keys: derive"),
             holders_named: memo::Memo::new("holders named: read"),
             reseal_quiet: BTreeSet::new(),
@@ -1708,7 +1701,7 @@ impl Core {
             #[cfg(debug_assertions)]
             tx_store: 0,
             labels: memo::Memo::new("labels of"),
-            published: None,
+            published: memo::Memo::new("published"),
             links: memo::Memo::new("held links"),
             routed_away: BTreeSet::new(),
         }

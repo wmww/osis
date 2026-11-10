@@ -232,10 +232,6 @@ impl<T: Ord + Clone + Hash> JSet<T> {
         }
         was
     }
-    /// A count that moves whenever the set changed, undone changes included.
-    pub fn changes(&self) -> u64 {
-        self.stamps.changes()
-    }
     pub fn extend(&mut self, it: impl IntoIterator<Item = T>) {
         for t in it {
             self.insert(t);
@@ -553,9 +549,7 @@ mod tests {
         t.insert(1);
         let mark = t.mark();
         t.insert(2);
-        let changes = t.changes();
         t.rollback_to(mark);
         assert_eq!(*t, BTreeSet::from([1]));
-        assert!(t.changes() > changes, "a rollback moves the change count");
     }
 }
