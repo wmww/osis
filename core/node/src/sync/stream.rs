@@ -17,8 +17,10 @@
 //!   one leaving keeps its position as a lag. A connection's start stops every member of the
 //!   record at the position it holds (`record_stop_all`), so one this connection does not open
 //!   claims nothing past what it applied.
-//! - A cursor is stored only after what it covers is applied (state flushed first); a member
-//!   leaves the stream when it leaves S here, before any later message is applied.
+//! - A cursor is stored only after what it covers is applied (state flushed first), an entry
+//!   announced without bytes once its bytes are held (`stream_settle`); Applied and a pass end
+//!   wait alike. A member leaves the stream when it leaves S here, before any later message is
+//!   applied, at the last settled position.
 //! - Within a connection a requester joins L only after the server opened it: the side answering
 //!   an Offer opens and joins after sending its answer, the tester on reading it; and the
 //!   server's `Lost` follows every event it sent for L. So the server's S covers the requester's
@@ -175,6 +177,11 @@ pub(crate) struct Pulling {
     asked: Option<(u32, Vec<LabelId>)>,
     /// Fetches in flight, by id: the member and the blobs asked.
     fetching: BTreeMap<u32, (LabelId, Vec<BlobId>)>,
+    /// Positions reached whose bodies announced without bytes are not all held here yet, oldest
+    /// first (`stream_settle`).
+    unsettled: std::collections::VecDeque<Unsettled>,
+    /// The cursor stored last: what this node holds of the stream for certain.
+    settled: Option<Vec<u8>>,
     /// A Pull went on this connection (the first asks for the live memory entries).
     started: bool,
     /// The `inline_limit` of the last Pull: what the peer's pushes carry inline.
@@ -189,7 +196,27 @@ pub(crate) struct Pulling {
     retry_at: Option<u64>,
 }
 
+/// A position the stream reached that waits for bodies (`Pulling::unsettled`): stored, reported
+/// and counted as a pass end only once every body announced up to it is held here.
+struct Unsettled {
+    cursor: Option<Vec<u8>>,
+    /// Bodies its message announced without bytes that this node lists and does not hold yet.
+    owed: BTreeSet<(LabelId, BlobId)>,
+    /// Members it merged into the stream, and those it left paging with their lag.
+    merged: Vec<LabelId>,
+    paging: Vec<(LabelId, Vec<u8>)>,
+    /// Its message asked for a report.
+    report: bool,
+    /// Members it read the peer's log to its end for.
+    passed: Vec<LabelId>,
+}
+
 impl Pulling {
+    /// Whether any position not settled yet names member `l`.
+    fn unsettled_names(&self, l: &LabelId) -> bool {
+        self.unsettled.iter().any(|u| u.merged.contains(l) || u.paging.iter().any(|(x, _)| x == l))
+    }
+
     fn next(&mut self) -> u32 {
         self.next_id = self.next_id.wrapping_add(1);
         ID_BASE | (self.next_id & ((1 << 30) - 1))
@@ -491,6 +518,7 @@ impl SyncEngine {
         })?;
         let p = &mut self.streams.entry(conn).or_default().pulling;
         p.record = Some(id);
+        p.settled = cursor.clone();
         p.cursor = cursor;
         Ok(())
     }
@@ -519,7 +547,20 @@ impl SyncEngine {
         let Some(s) = self.streams.get_mut(&conn) else { return Ok(()) };
         s.serving.pulled.remove(l);
         let p = &mut s.pulling;
-        let stop = if p.in_stream.remove(l) { p.cursor.clone() } else { p.joins.remove(l).flatten() };
+        // the position it leaves at is the last one settled for it: a member whose merge or
+        // page is not settled yet keeps no newer lag (read again from its last stored one, else
+        // from the start)
+        let named = p.unsettled_names(l);
+        let at = if p.unsettled.is_empty() { p.cursor.clone() } else { p.settled.clone() };
+        let stop = match (p.in_stream.remove(l), p.joins.remove(l)) {
+            _ if named => None,
+            (true, _) => at,
+            (false, j) => j.flatten(),
+        };
+        for u in &mut p.unsettled {
+            u.owed.retain(|(x, _)| x != l);
+            u.passed.retain(|x| x != l);
+        }
         if let Some(id) = p.record {
             self.engine.run(|tx| Ok(tx.txn.record_stop(&id, l, stop)?))?;
         }
@@ -627,27 +668,135 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Applies stream events of tracked members, by label in order.
-    fn stream_apply(&mut self, conn: ConnId, events: Vec<(LabelId, Event)>, out: &mut Vec<Action>) -> Result<()> {
-        let Some(p) = self.streams.get(&conn).map(|s| &s.pulling) else { return Ok(()) };
+    /// Applies stream events of tracked members, by label in order: the bodies they announced
+    /// without bytes that this node lists and lacks (owed until held). A deletion says the source
+    /// no longer holds the entry: nothing of it is owed on this stream.
+    fn stream_apply(&mut self, conn: ConnId, events: Vec<(LabelId, Event)>, out: &mut Vec<Action>) -> Result<BTreeSet<(LabelId, BlobId)>> {
+        let Some(p) = self.streams.get(&conn).map(|s| &s.pulling) else { return Ok(BTreeSet::new()) };
         let mut by_label: BTreeMap<LabelId, Vec<Event>> = BTreeMap::new();
         for (l, e) in events {
             if p.in_stream.contains(&l) || p.joins.contains_key(&l) {
                 by_label.entry(l).or_default().push(e);
             }
         }
+        let (mut owed, mut gone) = (BTreeSet::new(), BTreeSet::new());
         for (l, evs) in by_label {
+            let announced: Vec<BlobId> = evs.iter().filter_map(|e| if let Event::Added { blob_id, blob: None, .. } = e { Some(*blob_id) } else { None }).collect();
+            gone.extend(evs.iter().filter_map(|e| if let Event::Deleted(b) = e { Some((l, *b)) } else { None }));
             self.received_from(conn, l);
             self.reader_events(conn, l, evs, out)?;
+            for b in announced {
+                if self.lacks(&l, &b) {
+                    owed.insert((l, b));
+                }
+            }
+        }
+        self.stream_unowe(conn, &gone);
+        Ok(owed)
+    }
+
+    /// Whether this node lists entry `b` of `l` and lacks its bytes, wanting them (an entry the
+    /// ephemeral cap refused waits for room, not for a fetch).
+    fn lacks(&mut self, l: &LabelId, b: &BlobId) -> bool {
+        self.state.entries.contains_key(&(*l, *b)) && !self.memory_skips(l, b) && !self.engine.has_blob(b)
+    }
+
+    /// `conn`'s source no longer holds these entries: they are owed on its stream no more.
+    fn stream_unowe(&mut self, conn: ConnId, gone: &BTreeSet<(LabelId, BlobId)>) {
+        if gone.is_empty() {
+            return;
+        }
+        if let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) {
+            for u in &mut p.unsettled {
+                u.owed.retain(|x| !gone.contains(x));
+            }
+        }
+    }
+
+    /// Whether some stream owes entry `b` of `l`: its bytes are on their way (or asked again),
+    /// not gone.
+    pub(crate) fn stream_owes(&self, l: &LabelId, b: &BlobId) -> bool {
+        self.streams.values().any(|s| s.pulling.unsettled.iter().any(|u| u.owed.contains(&(*l, *b))))
+    }
+
+    /// The stream on `conn` reached position `u`: settled now if it owes nothing.
+    fn stream_reached(&mut self, conn: ConnId, u: Unsettled, out: &mut Vec<Action>) -> Result<()> {
+        let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
+        p.unsettled.push_back(u);
+        self.stream_settle(conn, out)
+    }
+
+    /// Settles `conn`'s positions in order while every body they owe is held here (or no longer
+    /// listed): the last one settled is stored with the members it covers, reported if one of
+    /// them asked, and is a pass end for the members read to the peer's end. So a position, an
+    /// Applied and a caught-up source never cover a body this node lacks.
+    fn stream_settle(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
+        let mut done: Option<Unsettled> = None;
+        let mut report = None;
+        while let Some(owed) = self.streams.get(&conn).and_then(|s| s.pulling.unsettled.front()).map(|u| u.owed.clone()) {
+            let left: BTreeSet<(LabelId, BlobId)> = owed.into_iter().filter(|(l, b)| self.lacks(l, b)).collect();
+            let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { break };
+            let Some(front) = p.unsettled.front_mut() else { break };
+            if !left.is_empty() {
+                front.owed = left;
+                break;
+            }
+            let Some(u) = p.unsettled.pop_front() else { break };
+            if u.report {
+                report = u.cursor.clone();
+            }
+            done = Some(match done {
+                None => u,
+                Some(mut d) => {
+                    d.cursor = u.cursor;
+                    d.merged.extend(u.merged);
+                    d.paging.extend(u.paging);
+                    d.passed.extend(u.passed);
+                    d
+                }
+            });
+        }
+        let Some(d) = done else { return Ok(()) };
+        if let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) {
+            p.settled = d.cursor.clone();
+        }
+        self.stream_store(conn, d.cursor, &d.merged, &d.paging)?;
+        if let Some(c) = report {
+            self.shared_send(conn, Message::Applied { cursor: c }, out)?;
+        }
+        let passed: BTreeSet<LabelId> = d.passed.into_iter().collect();
+        for l in passed {
+            self.source_passed(conn, l)?;
         }
         Ok(())
     }
 
-    /// Stores the stream's position, and the members it covers, once what it covers is applied.
-    fn stream_store(&mut self, conn: ConnId, merged: &[LabelId], paging: &[(LabelId, Vec<u8>)]) -> Result<()> {
+    /// At the end of each step: every stream's positions settle as far as the bodies held now
+    /// allow, and each body a stream owes that is held nowhere and asked nowhere is fetched from
+    /// the first stream owing it (a fetch lost with its connection, or answered without it).
+    pub(super) fn stream_settle_all(&mut self, out: &mut Vec<Action>) -> Result<()> {
+        let waiting: Vec<ConnId> = self.streams.iter().filter(|(_, s)| !s.pulling.unsettled.is_empty()).map(|(c, _)| *c).collect();
+        for conn in waiting {
+            self.stream_settle(conn, out)?;
+            let owed: BTreeSet<(LabelId, BlobId)> = self.streams.get(&conn).map(|s| s.pulling.unsettled.iter().flat_map(|u| u.owed.iter().copied()).collect()).unwrap_or_default();
+            let mut ask: BTreeMap<LabelId, Vec<BlobId>> = BTreeMap::new();
+            for (l, b) in owed {
+                if !self.fetching(&b) && self.lacks(&l, &b) {
+                    ask.entry(l).or_default().push(b);
+                }
+            }
+            for (l, ids) in ask {
+                self.stream_fetch(conn, l, ids, out)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Stores the stream's position `cursor`, and the members it covers, once what it covers is
+    /// applied (`stream_settle`).
+    fn stream_store(&mut self, conn: ConnId, cursor: Option<Vec<u8>>, merged: &[LabelId], paging: &[(LabelId, Vec<u8>)]) -> Result<()> {
         let Some(p) = self.streams.get(&conn).map(|s| &s.pulling) else { return Ok(()) };
         let Some(id) = p.record else { return Ok(()) };
-        let cursor = p.cursor.clone();
         self.state.flush(&mut self.engine)?;
         self.engine.run(|tx| {
             tx.txn.record_set_cursor(&id, cursor)?;
@@ -668,7 +817,7 @@ impl SyncEngine {
             p.asked = Some((id, sent));
             return Ok(());
         }
-        self.stream_apply(conn, r.events, out)?;
+        let owed = self.stream_apply(conn, r.events, out)?;
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
         let left: BTreeMap<LabelId, Option<Vec<u8>>> = r.joins.into_iter().collect();
         let (mut merged, mut paging) = (Vec::new(), Vec::new());
@@ -698,19 +847,9 @@ impl SyncEngine {
         p.cursor = r.cursor.clone();
         let done = !r.more && p.joins.is_empty();
         p.caught_up = done;
-        let caught: Vec<LabelId> = if done { p.in_stream.iter().copied().collect() } else { Vec::new() };
-        self.stream_store(conn, &merged, &paging)?;
-        if r.report
-            && let Some(c) = r.cursor
-        {
-            self.shared_send(conn, Message::Applied { cursor: c }, out)?;
-        }
-        if done {
-            // the peer's log was read to its end: a pass end there for each member
-            for l in caught {
-                self.source_passed(conn, l)?;
-            }
-        }
+        // the peer's log was read to its end: a pass end there for each member, once settled
+        let passed: Vec<LabelId> = if done { p.in_stream.iter().copied().collect() } else { Vec::new() };
+        self.stream_reached(conn, Unsettled { cursor: r.cursor, owed, merged, paging, report: r.report, passed }, out)?;
         self.stream_ask(conn, false, out)
     }
 
@@ -718,22 +857,15 @@ impl SyncEngine {
         if !self.streams.contains_key(&conn) {
             return Ok(());
         }
-        self.stream_apply(conn, s.events, out)?;
+        let owed = self.stream_apply(conn, s.events, out)?;
         // a push with no cursor carries what no position names (a relay-only entry)
         let Some(c) = s.cursor else { return Ok(()) };
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
         p.cursor = Some(c.clone());
         // a push to a stream read to its end moves it to the server's newer end: a pass end there
         // for each member, as a host's push is (`log_events_from`)
-        let caught: Vec<LabelId> = if p.caught_up && p.asked.is_none() { p.in_stream.iter().copied().collect() } else { Vec::new() };
-        self.stream_store(conn, &[], &[])?;
-        if s.report {
-            self.shared_send(conn, Message::Applied { cursor: c }, out)?;
-        }
-        for l in caught {
-            self.source_passed(conn, l)?;
-        }
-        Ok(())
+        let passed: Vec<LabelId> = if p.caught_up && p.asked.is_none() { p.in_stream.iter().copied().collect() } else { Vec::new() };
+        self.stream_reached(conn, Unsettled { cursor: Some(c), owed, merged: Vec::new(), paging: Vec::new(), report: s.report, passed }, out)
     }
 
     /// A relay-only entry to each reader sharing `l` but `except` (its source): a Stream with
@@ -827,6 +959,9 @@ impl SyncEngine {
         if failed.is_empty() {
             return Ok(());
         }
+        // the source does not hold them: nothing of them is owed on its own stream
+        let gone: BTreeSet<(LabelId, BlobId)> = failed.iter().map(|b| (l, *b)).collect();
+        self.stream_unowe(conn, &gone);
         let next = self.records.shared.iter().find(|(c, s)| **c > conn && s.has(&l)).map(|(c, _)| *c);
         match next {
             Some(c) => self.stream_fetch(c, l, failed, out),
@@ -841,7 +976,7 @@ impl SyncEngine {
 
     /// Whether `conn`'s stream read the peer's log to its end with nothing waiting (tests).
     pub fn stream_caught_up(&self, conn: ConnId) -> bool {
-        self.streams.get(&conn).is_some_and(|s| s.pulling.caught_up)
+        self.streams.get(&conn).is_some_and(|s| s.pulling.caught_up && s.pulling.unsettled.is_empty())
     }
 
     /// Whether `conn`'s reader is caught up on member `l` both ways (`label_status`'s idle
@@ -850,7 +985,7 @@ impl SyncEngine {
     /// applying every message carrying events of `l`.
     pub(crate) fn stream_idle(&self, conn: ConnId, l: &LabelId) -> bool {
         self.streams.get(&conn).is_some_and(|s| {
-            let pulled = s.pulling.caught_up && s.pulling.in_stream.contains(l) && s.pulling.fetching.is_empty();
+            let pulled = s.pulling.caught_up && s.pulling.in_stream.contains(l) && s.pulling.fetching.is_empty() && s.pulling.unsettled.is_empty();
             let v = &s.serving;
             let served = v.follow.is_some() && v.at_end && v.pulled.contains(l) && !v.unreported.iter().any(|(_, ls)| ls.contains(l));
             pulled && served

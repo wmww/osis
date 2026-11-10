@@ -655,6 +655,7 @@ impl SyncEngine {
         self.run_dirty(out)?;
         // after the passes: this step's last sends go first, then what the change ends
         self.shared_changed(out)?;
+        self.stream_settle_all(out)?;
         // pushes after the re-judging: nothing of this step goes to a member it ended
         self.stream_push(out)?;
         Ok(())

@@ -396,6 +396,11 @@ impl SyncEngine {
                 Ok(())
             }
             Message::Shared { id, codes } => self.shared_reply(conn, id, codes, out),
+            // an Error answers what it names as a refusal would (a request refused whole)
+            Message::Error { id, code } => {
+                let code = if code == Code::OK { Code::REFUSED } else { code };
+                self.shared_reply(conn, id, vec![(code, None, None)], out)
+            }
             _ => Ok(()),
         }
     }

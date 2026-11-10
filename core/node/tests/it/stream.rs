@@ -11,6 +11,7 @@ use osis_schema::RawKey;
 const PULL: u64 = 41;
 const SYNC: u64 = 15;
 const SUBSCRIBE: u64 = 21;
+const FETCH: u64 = 19;
 
 /// Nodes `a` and `b` holding `n` groups together, `b` dialable: `a` dials `b` and pulls it.
 fn pair(net: &mut Net, n: usize) -> (usize, usize, Vec<Tid>) {
@@ -296,7 +297,7 @@ fn back_after_aged_deletions_converges_in_one_stream_spec_sync_10() {
 }
 
 /// One differential run: `a` and `b` write, `b` opens new groups with `a`, restarts; `a` goes off
-/// and on, restarts, loses its records. Once settled, each side's stream from the other is
+/// and on, restarts (also mid-stream, a fetch in flight), loses its records. Once settled, each side's stream from the other is
 /// caught up and holds every entry the other serves under a label they share (both pull).
 /// `paged`: every Pull asks the smallest reply with announcements only, so replies page.
 fn stream_run(seed: u64, paged: bool) {
@@ -360,7 +361,17 @@ fn stream_run(seed: u64, paged: bool) {
                 let in_use = std::collections::BTreeSet::new();
                 net.engine(a).run(|tx| Ok(tx.txn.records_evict(0, &in_use)?)).unwrap();
             }
-            _ => {}
+            _ => {
+                // `a` crashes mid-stream: once it asked `b` for a body (bodies announced without
+                // bytes), else once what `b`'s write caused is delivered
+                let g = gs[rnd(gs.len() as u64) as usize];
+                net.item(b, g, g, &format!("w{step}"));
+                net.feed(b, osis_node::sync::Event::Local);
+                let fetches = net.peer_sent(a, FETCH);
+                while net.peer_sent(a, FETCH) == fetches && net.step() {}
+                life += 1;
+                net.restart(a, life);
+            }
         }
         net.advance(1_000 + rnd(90_000));
     }
@@ -405,6 +416,103 @@ fn stream_differential_no_write_dropped_spec_sync_10() {
 fn stream_differential_paged_spec_sync_10() {
     for seed in 1..=3 {
         stream_run(seed, true);
+    }
+}
+
+/// A tamper making every Pull ask announcements only: bodies come by fetches.
+fn announcements_only(m: &osis_proto::Message) -> Option<osis_proto::Message> {
+    let osis_proto::Message::Pull(p) = m else { return None };
+    let mut p = (**p).clone();
+    p.inline_limit = 0;
+    Some(osis_proto::Message::Pull(Box::new(p)))
+}
+
+/// Nodes `a` and `b` (`pair`, bodies by fetches); `b` writes an item and the messages go one at
+/// a time until `a` asks `b` for a body, its answer not delivered yet.
+fn fetch_in_flight(net: &mut Net) -> (usize, usize, Tid, Tid) {
+    net.tamper = Some(Box::new(announcements_only));
+    let (a, b, gs) = pair(net, 1);
+    let t = net.item(b, gs[0], gs[0], "x");
+    let fetches = net.peer_sent(a, FETCH);
+    net.feed(b, osis_node::sync::Event::Local);
+    while net.peer_sent(a, FETCH) == fetches {
+        assert!(net.step(), "a asks for the body");
+    }
+    (a, b, gs[0], t)
+}
+
+// The stream's invariant (core/node/src/sync/stream.rs): a position covers a body announced
+// without bytes only once it is held. A node that crashes while fetching it comes back to a
+// stream that announces it again, so the write arrives
+#[test]
+fn a_body_whose_fetch_was_lost_comes_again_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, _, _, t) = fetch_in_flight(&mut net);
+    net.restart(a, 21);
+    net.run();
+    net.advance(120_000);
+    assert_eq!(net.read(a, t), Some(s("x")), "the write reached a after its fetch was lost");
+}
+
+// spec/sync.md §10 (Stream, reports): a reader reports applying a body only once it holds it, so
+// the writer never reads `Synced` while the reader lacks its write
+#[test]
+fn a_body_is_reported_only_once_held_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b, g, t) = fetch_in_flight(&mut net);
+    let l = label_of(&mut net, b, g);
+    let synced = |net: &mut Net| net.sync(b).label_status().into_iter().any(|x| x.label == l && x.sources > 0 && x.idle == x.sources);
+    loop {
+        if synced(&mut net) {
+            assert_eq!(net.read(a, t), Some(s("x")), "b reads Synced only once a holds its write");
+        }
+        if !net.step() {
+            break;
+        }
+    }
+    net.run();
+    assert!(synced(&mut net), "b reads Synced once a holds the write");
+}
+
+// spec/wire.md §11.2 (Beacons; Error answers a request): an Error answering a filter ends that
+// generation as a refusal does, so the connection settles what it shares: no label of either side
+// reads opening for good (one the peer does not share would never read `Synced`)
+#[test]
+fn a_filter_answered_error_settles_spec_wire_11_2() {
+    let mut net = Net::new();
+    let beacons = std::rc::Rc::new(std::cell::RefCell::new(std::collections::BTreeSet::new()));
+    let refused = std::rc::Rc::new(std::cell::Cell::new(false));
+    let (seen, r) = (beacons.clone(), refused.clone());
+    net.tamper = Some(Box::new(move |m| match m {
+        osis_proto::Message::Beacons { id, .. } => {
+            seen.borrow_mut().insert(*id);
+            None
+        }
+        osis_proto::Message::Shared { id, .. } if !r.get() && seen.borrow().contains(id) => {
+            r.set(true);
+            Some(osis_proto::Message::Error { id: *id, code: osis_proto::Code::RATE_LIMITED })
+        }
+        _ => None,
+    }));
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    reach_ed(&mut net, b);
+    let g = net.group_seeded(b, &[(a, Role::Write)], vec![], 10);
+    // a group each holds alone
+    net.group_seeded(a, &[], vec![], 11);
+    net.group_seeded(b, &[], vec![], 12);
+    net.run();
+    net.item(b, g, g, "x");
+    net.run();
+    assert!(refused.get(), "a filter was answered Error");
+    let l = label_of(&mut net, b, g);
+    for n in [a, b] {
+        for st in net.sync(n).label_status() {
+            assert_eq!(st.opening, 0, "node {n}: {st:?}");
+            if st.label == l {
+                assert!(st.sources > 0 && st.idle == st.sources, "node {n} synced: {st:?}");
+            }
+        }
     }
 }
 

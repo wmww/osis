@@ -10,7 +10,6 @@ Step 1: `sources(L)` in `SyncEngine::label_status`, the states, the `All`/`Thing
 - `Deliveries` is this node's pending deliveries alone: grant-style CLI commands wait on it. A direct commit to a node has no route outside pairing and counts in no scope.
 
 ## Remaining
-- An Error answering a Beacons generation is ignored (`shared_message` handles only Shared for it), so that generation stays in flight for good: the connection never settles, counts as opening, and every label it does not share reads `Syncing` (waits on them hang). Its known cause (Beacons sent before the Resumed answer) is fixed; any other Error there would show the same. The fix that follows the rule: an Error ends the generation like a refusal, and the next goes after `resync_ms`.
 - `Refused` names saved peers answering 14 (the current mechanism's "a node I hold to serve it"); issues/net-shared-set.md's judged holder replaces it.
 - A delivery with nowhere to go (`SentInbox::nowhere`) is retried at `INBOX_LIFETIME`, not when the recipient's inbox gets a node: issues/net-first-contact.md replaces it with offers.
 
