@@ -2942,6 +2942,60 @@ fn superseded_stays_gone_when_newer_removed_spec_sync_9() {
     assert_eq!((net.eph_read(a, w, CURSOR), net.eph_read(b, w, CURSOR)), (gone.clone(), gone));
 }
 
+// spec/sync.md §9 (each part is superseded alone, whatever else its commit holds): a's move
+// writes a flag beside it; once b's snapshot covers the dead flag, b holds the move alone and a,
+// the author (its own bodies go only under its own snapshots), holds both; c gets the move and
+// its superseder before the snapshot. a's next move supersedes the old move at all three, so
+// after b removes the key nobody reads the old move again
+#[test]
+fn superseded_part_goes_whatever_its_commit_holds_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let me = s(&net.tid(a).to_string());
+    let write = |net: &mut Net, cursor: Option<&str>, flag: Option<&str>, ms: Option<u64>| {
+        let mut m = Mutation::new();
+        if let Some(v) = cursor {
+            m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(me.clone())], op: Op::Put(s(v)) }).unwrap();
+        }
+        if let Some(v) = flag {
+            m.set(w, &eph(FLAG), &s(v)).unwrap();
+        }
+        if let Some(ms) = ms {
+            for ak in [CURSOR, FLAG] {
+                let _ = m.expires(w, &eph(ak), osis_base::WallMs(net.now() + ms));
+            }
+        }
+        net.engine(a).write(m).unwrap();
+        local(net, a);
+        net.run();
+        net.advance(33);
+    };
+    write(&mut net, Some("old"), Some("f1"), Some(600_000));
+    write(&mut net, None, Some("f2"), None);
+    net.set_online(c, false);
+    let acts = net.sync(b).compact_ephemeral_now().unwrap();
+    net.actions(b, acts);
+    net.run();
+    write(&mut net, Some("new"), None, Some(900_000));
+    net.set_online(c, true);
+    net.advance(30_000);
+    let mut m = Mutation::new();
+    m.op(w, &eph(CURSOR), PathOp { path: vec![], op: Op::Remove(me.clone()) }).unwrap();
+    net.engine(b).write(m).unwrap();
+    local(&mut net, b);
+    net.run();
+    net.advance(30_000);
+    let reads: Vec<Option<Value>> = [a, b, c].iter().map(|n| net.eph_read(*n, w, CURSOR)).collect();
+    assert_eq!(reads, vec![Some(Value::Map(osis_base::ValueMap::new())); 3], "the old move reads nowhere");
+}
+
 // spec/sync.md §9 (a superseding part's writes are all later than the superseded part's and it
 // carries no reset): an equal earlier write expiring later supersedes no later one, and a replace
 // of the aspect (a reset) supersedes nothing, so each stays held at the author and the holder

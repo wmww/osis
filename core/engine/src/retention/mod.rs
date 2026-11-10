@@ -265,7 +265,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     if stripped {
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
     }
-    m.dropped.insert(ai, Dropped { covered_by, why, stands_in, role, overreach, keysets, shown });
+    m.dropped.insert(ai, Dropped { covered_by, why, stands_in, role, overreach, keysets, shown, superseded_by: BTreeSet::new() });
     if osis_schema::core_types::is_addenda(a.ak.as_str()) {
         crate::apply::validity::forget_addendum_body(tx.core, c, &a.tid);
     }

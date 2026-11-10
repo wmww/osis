@@ -132,6 +132,10 @@ pub struct Dropped {
     /// What a role commit's `secrets.0` or `keys.0` body showed for possession
     /// (`Indexes::shown`).
     pub shown: Option<Arc<Showing>>,
+    /// A memory part vanished as superseded (spec/sync.md §9): the later parts of its author's
+    /// that superseded it (the lane's carriers once its commit is forgotten). Never stored:
+    /// memory commits are not.
+    pub superseded_by: BTreeSet<CommitId>,
 }
 
 /// What a role commit's part shows for possession (spec/crypto.md §4, Holder actors), read from
@@ -709,7 +713,6 @@ pub(crate) struct CoreMark {
     sides: (usize, usize),
     schemas: usize,
     dropped: usize,
-    reasons: BTreeMap<CommitId, MemoryDrop>,
     written: usize,
     events: usize,
     commits_named: usize,
@@ -766,15 +769,6 @@ pub struct MemorySync {
     pub dirty: BTreeSet<(Tid, Ak)>,
     /// Per aspect the snapshot cost last weighed (`Engine::memory_compactions`).
     pub weighed: BTreeMap<(Tid, Ak), usize>,
-    /// Why the memory commits about to be forgotten go (`unindex_commit` reads and clears it;
-    /// `Gone` when unsaid).
-    pub reasons: BTreeMap<CommitId, MemoryDrop>,
-}
-
-impl MemorySync {
-    fn commit(&mut self) {
-        self.reasons.clear();
-    }
 }
 
 /// A decoded commit record: its head (received, origin, dropped parts) and blob.
@@ -1350,7 +1344,6 @@ impl Core {
     fn commit_journal(&mut self) {
         self.ix.commit();
         self.schemas.commit();
-        self.memory.commit();
         self.sides.commit();
         self.written.clear();
         self.dirty = false;
@@ -1368,7 +1361,6 @@ impl Core {
             sides: self.sides.mark(),
             schemas: self.schemas.mark(),
             dropped: self.memory.dropped.len(),
-            reasons: self.memory.reasons.clone(),
             written: self.written.len(),
             events: self.events.queued(),
             commits_named: self.commits_named.len(),
@@ -1419,7 +1411,6 @@ impl Core {
         self.ix.rollback_to(m.ix);
         self.schemas.rollback_to(m.schemas);
         self.memory.dropped.truncate(m.dropped);
-        self.memory.reasons = m.reasons;
         // the timelines follow the restored held set; validity flags are restored with `commits`
         let touched = self.ix.held.take_touched();
         if !touched.is_empty() {

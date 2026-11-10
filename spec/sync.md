@@ -372,16 +372,16 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
   - **Frontier**: a snapshot's frontier stops below a body of a session that is invalid or missing at the writer, so that session's later bodies are not covered until it is valid and held there.
   - **New sessions**: a node one of whose session-form writes under its current sessions turns invalid begins new sessions (spec/crdt.md §2.1) for what it writes from then on.
   - **Deleting at a host**: a writer deletes the entries of a dropped commit at a host (spec/crypto.md §7, level 3) once an entry of a snapshot covering it is held there, or names them as replaced (§5) in that snapshot's upload. One dropped for no coverer (expired, its things freed) goes at once.
-  - **Superseded commits**: a node also drops a held plain ephemeral commit that has `expires` and whose parts carry no reset (spec/crdt.md §4.2; tombstones included) once each part is superseded by a valid held part of another plain ephemeral commit of its author on the same aspect.
+  - **Superseded parts**: a node also drops a held part of a plain ephemeral commit that has `expires` once the part carries no reset (spec/crdt.md §4.2; tombstones included) and is superseded by a valid held part of another plain ephemeral commit of its author on the same aspect, whatever else either commit holds.
     - The superseding commit and part qualify when all of these hold:
       - its `expires` is not earlier;
       - it carries no reset;
       - each of its writes has a later `ts` than every write of the superseded part and is not into a record it does not create;
       - its delta joined with the superseded part reads (spec/crdt.md §4.4) as it does alone.
-    - This is judged when the superseding part is held valid (on arrival, at its build, or when it turns valid) and when a part of the superseded commit goes value-less at its expiry.
-    - The dropped commit's writes then vanish whole, as if never applied, at every node, its author included, so a later removal or undo of the superseding write does not show them again.
-    - Its author deletes its entries at a host once a superseder is held there, and no other node deletes them.
-    - One superseded on arrival is not held.
+    - This is judged when the superseding part is held valid (on arrival, at its build, or when it turns valid) and when the superseded part goes value-less at its expiry.
+    - The dropped part's writes then vanish whole, as if never applied, at every node, its author included, so a later removal or undo of the superseding write does not show them again.
+    - Once a commit with a part so dropped is forgotten, its author deletes its entries at a host once a superseder or coverer of its parts is held there, and no other node deletes them.
+    - One whose every part is superseded on arrival is not held.
     - An own write with `expires` superseded by a later own write before it was sent is never sent.
 - **Caps**:
   - **At a node**: per label, a node holds at most a configured number of bytes of ephemeral bodies from others, each counted at an estimate of the memory it takes held (decoded, with the records beside it; local policy, at least its encoded size).

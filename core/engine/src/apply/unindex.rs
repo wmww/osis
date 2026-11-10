@@ -15,13 +15,19 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     let core = &mut *tx.core;
     let Some(m) = core.take_meta(id) else { return Ok(()) };
     let v = &m.view;
-    // reported to the ephemeral lane with why (`MemorySync::reasons`, else covered by what
-    // the dropped parts record, else gone)
+    // reported to the ephemeral lane with why, from what its dropped parts record: superseded
+    // if a part was (its author's to delete), else covered, else gone
     if v.memory {
-        let why = core.memory.reasons.remove(id).unwrap_or_else(|| {
-            let by: BTreeSet<CommitId> = m.dropped.values().filter(|d| d.why == crate::engine::DropFor::Cover).flat_map(|d| d.covered_by.iter().copied()).collect();
-            if by.is_empty() { crate::engine::MemoryDrop::Gone } else { crate::engine::MemoryDrop::Covered { by } }
-        });
+        let superseders: BTreeSet<CommitId> = m.dropped.values().flat_map(|d| d.superseded_by.iter().copied()).collect();
+        let mut by: BTreeSet<CommitId> = m.dropped.values().filter(|d| d.why == crate::engine::DropFor::Cover).flat_map(|d| d.covered_by.iter().copied()).collect();
+        let why = if !superseders.is_empty() {
+            by.extend(superseders);
+            crate::engine::MemoryDrop::Superseded { by }
+        } else if by.is_empty() {
+            crate::engine::MemoryDrop::Gone
+        } else {
+            crate::engine::MemoryDrop::Covered { by }
+        };
         core.memory.dropped.push((*id, m.header.arc(), why));
         core.memory.dirty.extend(v.aspects.iter().map(|a| (a.tid, a.ak.clone())));
     }
