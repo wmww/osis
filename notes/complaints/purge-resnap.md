@@ -4,3 +4,4 @@
 - A purge committed by a node that was offline can stamp before a write it names (HLC behind): `net.advance` first, or the request names nothing.
 - Review: `snapshots_on` let `addenda.0` through (admin-purgeable, never compacted), so a purge naming it had every writer try a snapshot the engine refuses (a diag each); the snapshot-permitting set lives in two places (`Engine::snapshot`'s refusals, node-sync's `snapshots_on`).
 - The worker ran only osis-node tests: the re-snapshot shows in the public `writes` listing, so osis (`listing::`, `port_clients::`) and osis-cli purge tests fail. Behaviour visible through the API needs the osis and cli crates' tests too.
+- Review: the main checkout's `main` was behind `origin/main`, so `git rebase main` was a silent no-op; rebase onto `origin/main` after a fetch.
