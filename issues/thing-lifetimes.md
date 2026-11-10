@@ -1,9 +1,9 @@
 # Thing lifetimes by reference
 > Summary: Design: a thing may list its retainers (`retainers^.0`, admin-only); it lives while a listed retainer that is itself alive references it, up to a standalone thing; anything else is dropped for good, cycles included. Dropping is an ordinary end written by a node that may end the thing and judges it unreachable from what it holds; a node that cannot judge leaks, never deletes. One node-local reference index serves the judgment and backlinks. Rules, costs, the model and its result, Tess's decisions, build steps.
 > Priority: normal
-> Tags: tess-call, data-model, api, permissions, sync, engine
+> Tags: data-model, api, permissions, sync, engine
 
-**Ready to implement if and when Tess gives the go-ahead; not before.** Her decisions are below (Decisions). Nothing is built but the model.
+**Go-ahead given by Tess**: implement in the order below, work split agreed with Fathom. Her decisions are below (Decisions). Nothing is built but the model.
 
 ## Principle
 A thing's lifetime is decided by whoever may end it. Listing retainers is their standing instruction to end the thing once none of them keeps it; a node carries the instruction out only with the right to end the thing and only on what it holds, so a node that cannot see enough leaks and never deletes. Nothing here is a validity rule: no write is valid or invalid because of a list or a reference.
@@ -58,6 +58,7 @@ No new call, error or type for lifetimes: the list is an aspect.
 - `Permission { needs: Admin }` as for any admin-only aspect.
 - `Invalid` at commit when a write's own change of a thing's `retainers^.0` leaves it unreachable as this node judges it (created with a list and no reference, moved under a thing that does not reference it): caught before it silently vanishes. Not judged when a listed retainer is unknown.
 - A dropped thing reads as any ended thing: absent. No call reads "alive".
+- **One motion** (Tess): writing a reference to X anywhere in R's data and adding R to X's `retainers^.0` should be one call, in one commit (e.g. a typed setter that takes a tid and a `retain` flag, or `w.retain(r_path, x)`); likewise creating X referenced by R. Design it in the API step per notes/api-design.md; it must refuse what it cannot do in one commit (no admin on X) rather than do half.
 - One commit per structural change is what makes part-received data safe; the API gives no way to write a move as two commits by accident beyond writing two `Write`s.
 
 ## Interactions
@@ -104,7 +105,7 @@ Data model, after "References may dangle":
 ## Decisions (Tess)
 1. Who may write the drop: no new right; the nodes that may already end the thing do it.
 2. Only live values count as references (history never keeps a thing alive): otherwise a retainer with history kept forever could never release anything.
-3. No creation-record or creating-commit exception: a writer creates under its own account as first admin and hands admin over in the same commit (Problems 1).
+3. No creation-record or creating-commit exception: a writer creates under its own account as first admin and hands admin over in the same commit (Problems 1). An initial list in the creation record (changeable later through `retainers^.0`, like the first admin through role writes) is allowed if it proves simpler or better in the build; the implementer decides and says why.
 4. Requirements wording as above; partial views leak (stated), no one-sharing-context rule.
 
 ## Steps
