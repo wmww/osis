@@ -718,6 +718,133 @@ fn purge_resnapshot_by_writer_without_schema_spec_commits_5() {
     assert_eq!(ec.get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("secret"))]).unwrap(), None);
 }
 
+/// Node `n` purges `(t, REG)` commit `c` whole, writing `purge.0` only (no reset).
+fn purge_reg(net: &mut Net, n: usize, t: osis_base::Tid, c: osis_base::CommitId) -> osis_base::CommitId {
+    let mut m = Mutation::new();
+    let now = net.engine(n).now();
+    m.set(t, &ct::PURGE, &now).unwrap();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(REG.ak()).unwrap() });
+    net.engine(n).commit(m).unwrap().unwrap()
+}
+
+/// Snapshots of `(t, ak)` node `n` holds that it wrote.
+fn own_snapshots(net: &mut Net, n: usize, t: &osis_base::Tid, ak: &Ak) -> usize {
+    let me = net.engine(n).me();
+    snapshots(net, n, t, ak).into_iter().filter(|c| net.engine(n).header(c).is_some_and(|h| h.author == me)).count()
+}
+
+// spec/commits.md §5 Purge (a writer holding no covering snapshot after applying a request
+// re-snapshots), spec/requirements.md Deterministic: b's write over a's value, purged whole by b
+// (no live write left, so its body goes with no carrier), never reached c. Once c syncs it reads
+// what b reads, nothing, not a's older value: b's re-snapshot carries the write value-less.
+#[test]
+fn purged_delta_never_held_reads_as_purger_spec_commits_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "old");
+    net.run();
+    assert_eq!(net.engine(c).get(&t, &Ak::new(REG.ak()).unwrap()).unwrap(), Some(s("old")));
+    net.set_online(c, false);
+    // kept a while, not forever: no lasting header stays to carry the write
+    let mut m = Mutation::new();
+    m.retention(t, &REG, osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(60_000) }) }).unwrap();
+    m.set(t, &REG, &s("new")).unwrap();
+    let w = net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    let l = net.label(a);
+    let at_host = blobs(&mut net, b, &l, &w);
+    assert!(!at_host.is_empty() && at_host.iter().all(|x| net.host_ids(host, &l).contains(x)));
+    purge_reg(&mut net, b, t, w);
+    net.run();
+    net.advance(60_000);
+    let ids = net.host_ids(host, &l);
+    assert!(at_host.iter().all(|x| !ids.contains(x)), "the purged body left the host");
+    let ak = Ak::new(REG.ak()).unwrap();
+    assert_eq!(net.engine(b).get(&t, &ak).unwrap(), None, "the purged write wins value-less");
+    assert_eq!(own_snapshots(&mut net, b, &t, &ak), 1, "the purger re-snapshotted");
+    net.set_online(c, true);
+    net.advance(10_000);
+    assert!(!net.engine(c).commit_ids().contains(&w), "c never held the purged commit");
+    assert_eq!(net.engine(c).get(&t, &ak).unwrap(), None, "c reads as the purger");
+}
+
+// spec/commits.md §5 Purge: a writer already holding a valid snapshot covering every named body
+// it held writes none after the purge: a dead write, kept for its history and covered by a
+// snapshot, purged.
+#[test]
+fn purge_covered_by_held_snapshot_no_resnapshot_spec_commits_5() {
+    use osis_schema::{History, PurgeBy, Retention};
+    let kept = Retention { by: PurgeBy::Writer, history: Some(History::Keep { until: None, after: Some(86_400_000) }) };
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
+    let t = net.item(a, g, g, "old");
+    let ak = Ak::new(REG.ak()).unwrap();
+    let mut put = |v: &str| {
+        let mut m = Mutation::new();
+        m.retention(t, &REG, kept).unwrap();
+        m.set(t, &REG, &s(v)).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap()
+    };
+    let w = put("one");
+    put("two");
+    net.run();
+    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let snaps = snapshots(&mut net, a, &t, &ak);
+    assert_eq!(snaps.len(), 1);
+    assert!(net.engine(a).body_not_dropped(&w, &t, &ak) && net.engine(a).covered(&snaps[0], &w, &t, &ak).unwrap() == Some(true), "w held, covered");
+    purge_reg(&mut net, a, t, w);
+    net.run();
+    assert!(!net.engine(a).body_not_dropped(&w, &t, &ak), "purged");
+    assert_eq!(net.engine(a).get(&t, &ak).unwrap(), Some(s("two")));
+    assert_eq!(snapshots(&mut net, a, &t, &ak), snaps, "no re-snapshot");
+}
+
+// spec/commits.md §5 Purge, Principle (a node without write writes no snapshot): the reader c
+// applied a's write w, which no snapshot it holds covers; b, offline, purges w before holding it
+// (so b, holding its own earlier snapshot, writes none). c applies the request and writes none
+// either: it reads w purged, nothing.
+#[test]
+fn purge_reader_writes_no_snapshot_spec_commits_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "old");
+    net.run();
+    let ak = Ak::new(REG.ak()).unwrap();
+    let acts = net.sync(b).compact(&t, &ak).unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.set_online(b, false);
+    let mut m = Mutation::new();
+    m.retention(t, &REG, osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: None }).unwrap();
+    m.set(t, &REG, &s("new")).unwrap();
+    let w = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.set_online(a, false);
+    assert_eq!(net.engine(c).get(&t, &ak).unwrap(), Some(s("new")));
+    let n = snapshots(&mut net, c, &t, &ak).len();
+    // stamped after w on b's clock
+    net.advance(1_000);
+    purge_reg(&mut net, b, t, w);
+    net.set_online(b, true);
+    net.advance(10_000);
+    assert_eq!(net.engine(c).get(&t, &ak).unwrap(), None);
+    assert_eq!(snapshots(&mut net, c, &t, &ak).len(), n, "no snapshot reached c");
+    assert_eq!(own_snapshots(&mut net, c, &t, &ak), 0, "the reader wrote none");
+    assert!(!net.diagnostics(c).iter().any(|d| d.contains("re-snapshot")), "nor tried to");
+}
+
 // spec/commits.md §5 (Fixed retention, Covered): a compaction snapshot carrying live a write
 // purged on replace purges on replace, beside one kept for a while (w kept 30 min, x purged on
 // replace), so it does not cover w's body while w is live: w's history outlives the snapshot,

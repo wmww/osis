@@ -758,9 +758,15 @@ fn strict_subset_needs_superset_at_that_host_spec_sync_6() {
     m.remove_aspect(t, &GONE).unwrap();
     let pc = net.engine(a).commit(m).unwrap().unwrap();
     net.feed(a, Event::Local);
-    // b never hears of the purge commit
-    let hide = blobs_of(&mut net, a, &l, &pc);
+    // b never hears of the purge commit, nor of a's re-snapshot after it (spec/commits.md §5
+    // Purge), which carries it
+    let mut hide = blobs_of(&mut net, a, &l, &pc);
     assert!(!hide.is_empty());
+    let e = net.engine(a);
+    let snaps: Vec<_> = e.commit_ids().into_iter().filter(|x| e.header(x).is_some_and(|h| h.kind.is_compaction() && h.aspects.iter().any(|y| y.tid == t && y.ak == gone))).collect();
+    for x in snaps {
+        hide.extend(blobs_of(&mut net, a, &l, &x));
+    }
     net.hide_blobs.insert(b, hide.into_iter().collect());
     net.settle(200_000);
     let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();

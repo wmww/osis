@@ -1061,6 +1061,10 @@ pub struct Changed {
     pub edges: BTreeSet<(Tid, Tid)>,
     /// What node-sync fetches again (`waits::wake`).
     pub wakes: Wakes,
+    /// Purge requests applied, per aspect an item names: the named bodies applied here before
+    /// (`purge::apply_request`); node-sync re-snapshots unless a snapshot the purge left whole
+    /// covers them all (spec/commits.md §5 Purge, `Engine::take_purges`).
+    pub purges: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
 }
 
 /// What brings back what the node could not judge (notes/expiry-creation-design.md §3).
@@ -2713,6 +2717,11 @@ impl Engine {
     /// What changed since the last call (`Core::changed`), keeping it from now on.
     pub fn take_changed(&mut self) -> Changed {
         self.core.changed.replace(Changed::default()).unwrap_or_default()
+    }
+
+    /// Only the purges of `Changed` (`Changed::purges`), the rest kept for `take_changed`.
+    pub fn take_purges(&mut self) -> BTreeMap<(Tid, Ak), BTreeSet<CommitId>> {
+        self.core.changed.as_mut().map(|c| std::mem::take(&mut c.purges)).unwrap_or_default()
     }
 
     /// Only the wakes of `Changed`, the rest kept for `take_changed` (a test standing in for

@@ -560,8 +560,14 @@ fn useless_superset_does_not_cost_a_rewrite_spec_sync_6() {
     net.feed(a, osis_node::sync::Event::Local);
     net.settle(200_000);
     let mine = |net: &mut Net, c| -> Vec<BlobId> { net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect() };
-    let hide = mine(&mut net, pc);
+    let mut hide = mine(&mut net, pc);
     assert!(!hide.is_empty());
+    // nor of a's re-snapshot after it (spec/commits.md §5 Purge), which carries it
+    let e = net.engine(a);
+    let snaps: Vec<_> = e.commit_ids().into_iter().filter(|x| e.header(x).is_some_and(|h| h.kind.is_compaction() && h.aspects.iter().any(|y| y.tid == t && y.ak == gone))).collect();
+    for x in snaps {
+        hide.extend(mine(&mut net, x));
+    }
     net.hide_blobs.insert(b, hide.into_iter().collect());
     let q: Vec<BlobId> = mine(&mut net, c).into_iter().filter(|id| !p.contains(id)).collect();
     assert_eq!(q.len(), 1, "the rewrite placed");

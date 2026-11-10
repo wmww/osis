@@ -16,6 +16,8 @@ impl SyncEngine {
     /// moved, keys, and remote role commits restart `complete_pass` for the actors they
     /// touch.
     pub(crate) fn engine_events(&mut self) -> Result<()> {
+        // first, so the snapshots' own events are drained below
+        self.purge_resnapshots()?;
         for l in std::mem::take(&mut self.engine.core.made_labels) {
             self.state.note_passed(l);
         }

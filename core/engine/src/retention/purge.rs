@@ -476,7 +476,7 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
 
 /// Applies request `pc` to held delta `(c, ai)` if it stands: its values go value-less, its body and
 /// every held body carrying them are held as their leftovers (node-sync re-snapshots where no
-/// covering snapshot is left, spec/commits.md §5).
+/// covering snapshot is left, spec/commits.md §5, `apply_request`).
 pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let (Some(p), Some(m)) = (tx.core.ix.commits.get(pc), tx.core.ix.commits.get(c)) else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
@@ -498,19 +498,29 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
 }
 
 /// Request `id` (header `h`) just applied: against the held deltas it names, then on the lists later
-/// ones find it by.
+/// ones find it by. Each named aspect goes to node-sync with the named bodies applied here before
+/// (`Changed::purges`): a writer re-snapshots unless a snapshot the purge left whole covers them
+/// all (spec/commits.md §5 Purge).
 pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     for item in &h.purge {
         // one that is not by name asks of every delta: the right once per class and actor, so a
         // request with none costs a look per delta
         let mut rights: BTreeMap<(u64, Tid), bool> = BTreeMap::new();
+        let mut held = BTreeSet::new();
         for c in named_by(tx.core, item, h.ts) {
             let core = &*tx.core;
             let Some((m, ai)) = core.ix.commits.get(&c).and_then(|m| Some((m, m.aspect(item.tid(), item.ak())?))) else { continue };
             let Some(a) = m.header.aspects.get(ai) else { continue };
+            // applied here: held, or dropped as covered (its writes in the state through its cover)
+            if !m.view.kind.is_compaction() && (!m.body_gone(ai) || m.dropped.get(&ai).is_some_and(|d| d.as_cover())) {
+                held.insert(c);
+            }
             if matches!(item, PurgeItem::Commit { .. }) || *rights.entry((a.retention.by as u64, m.header.actor)).or_insert_with(|| holds_right(core, h, id, a, &m.header)) {
                 purge_one(tx, id, &c, ai, purged)?;
             }
+        }
+        if let Some(ch) = &mut tx.core.changed {
+            ch.purges.entry((*item.tid(), item.ak().clone())).or_default().extend(held);
         }
     }
     Ok(())

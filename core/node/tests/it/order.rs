@@ -606,7 +606,7 @@ fn pct(x: u64, of: u64) -> String {
     format!("{:.0}%", 100.0 * x as f64 / of.max(1) as f64)
 }
 
-/// The bodies of `(t, a)` peer `e` holds that purge item `item` names (`resnapshot`).
+/// The bodies of `(t, a)` peer `e` applied that purge item `item` names (`resnapshot`).
 fn named_held(e: &osis_node::Engine, item: &osis_commit::PurgeItem, t: Tid, a: &Ak) -> Vec<CommitId> {
     let named = |c: &CommitId, m: &osis_node::engine::Meta| match item {
         osis_commit::PurgeItem::Commit { commit, .. } => c == commit,
@@ -614,12 +614,13 @@ fn named_held(e: &osis_node::Engine, item: &osis_commit::PurgeItem, t: Tid, a: &
         osis_commit::PurgeItem::Author { actor, .. } => m.view.actor == *actor,
     };
     let on = |m: &osis_node::engine::Meta| m.header.aspects.iter().any(|x| x.tid == t && x.ak == *a);
-    e.core.ix.commits.iter().filter(|(c, m)| named(c, m) && !m.view.kind.is_compaction() && on(m) && e.body_not_dropped(c, &t, a)).map(|(c, _)| *c).collect()
+    // applied: held, or dropped as covered (its writes in the state through its cover)
+    e.core.ix.commits.iter().filter(|(c, m)| named(c, m) && !m.view.kind.is_compaction() && on(m) && (e.body_not_dropped(c, &t, a) || !e.coverers_of(c, &t, a).is_empty())).map(|(c, _)| *c).collect()
 }
 
-/// After `by`'s purge request `r` naming `(t, a)`, `held` the named bodies it held before: a
-/// writer holding no covering snapshot after applying it re-snapshots (spec/commits.md §5 Purge;
-/// one held covering every named body carries their writes value-less already). Without it a node
+/// After `by`'s purge request `r` naming `(t, a)`, `held` the named bodies it applied before: a
+/// writer re-snapshots unless it holds a snapshot of the aspect the purge left whole covering every
+/// one (spec/commits.md §5 Purge; a stripped one goes at hosts), as node-sync does. Without it a node
 /// that never held a purged body reads what came before it for good (spec/requirements.md
 /// Deterministic, the limit for expiring or purged edits).
 fn resnapshot<T, E>(lp: &mut LocalPeer, r: &Result<Option<T>, E>, by: usize, t: Tid, a: &Ak, held: &[CommitId]) {
@@ -627,8 +628,8 @@ fn resnapshot<T, E>(lp: &mut LocalPeer, r: &Result<Option<T>, E>, by: usize, t: 
     if !matches!(r, Ok(Some(_))) || e.role_on(&t) < Some(Role::Write) {
         return;
     }
-    let snaps: Vec<CommitId> = e.core.ix.snapshots.get(&(t, a.clone())).into_iter().flatten().map(|x| x.1).collect();
-    let covered = !held.is_empty() && held.iter().all(|b| snaps.iter().any(|s| s != b && e.covered(s, b, &t, a).ok().flatten() == Some(true)));
+    let snaps: Vec<CommitId> = e.core.ix.snapshots.get(&(t, a.clone())).into_iter().flatten().map(|x| x.1).filter(|s| e.body_not_dropped(s, &t, a)).collect();
+    let covered = snaps.iter().any(|s| held.iter().all(|b| s != b && e.covered(s, b, &t, a).ok().flatten() == Some(true)));
     if !covered {
         lp.peers[by].clock.advance(1);
         let _ = lp.peers[by].engine.snapshot(&t, a);
