@@ -70,11 +70,18 @@ impl Engine {
     /// `hold_key_actor(link.seed)` came first so L's boxes open): signing as L, an invite grant
     /// of `grantee` (this node's actor, or this node) to K with the link's role and K's boxes;
     /// `single_use` also removes L's own edge in the same commit. Deposited under K's label
-    /// unless the role is write or above. The seed is dropped afterwards.
+    /// unless the role is write or above. Leaves the seed held as it was: a caller holding it
+    /// keeps it (a redeemer proves L until its join is at a source, spec/permissions.md §7).
     pub fn redeem(&mut self, link: &ShareLink, grantee: &Tid, single_use: bool) -> Result<Done> {
-        let l = self.hold_key_actor(link.seed.clone())?;
+        let l = crate::identity::Identity::from_seed(link.seed.clone()).tid();
+        let held = self.core.key_actors.contains_key(&l);
+        if !held {
+            self.hold_key_actor(link.seed.clone())?;
+        }
         let res = self.redeem_in(l, link, *grantee, single_use);
-        self.drop_key_actor(&l);
+        if !held {
+            self.drop_key_actor(&l);
+        }
         res
     }
 

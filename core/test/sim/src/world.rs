@@ -548,6 +548,11 @@ impl World {
         self.actions(m, acts);
     }
 
+    /// A relay of the reachability model (`Reach::add_relay`).
+    pub fn add_relay(&mut self, seg: Option<Seg>) -> RelayId {
+        self.reach.add_relay(seg)
+    }
+
     /// Places node `db` in the reachability model and has it listen: its `reach.0` published with
     /// the model's items, its dialable key the listener's (what the driver does at start).
     pub fn place(&mut self, db: &Osis, lans: &[Seg], uplink: Uplink, relays: &[RelayId]) {

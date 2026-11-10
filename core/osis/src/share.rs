@@ -548,6 +548,13 @@ fn arrived(sync: &mut SyncEngine, t: Tid) -> Option<Result<()>> {
     (!all.is_empty() && live_labels(&all).all(|s| s.idle > 0)).then_some(Ok(()))
 }
 
+/// Whether what this node wrote under `k` is at a source: a live label of `k` is idle at one (a host
+/// stored the uploads, a reader's node reported applying them).
+fn delivered(sync: &mut SyncEngine, k: Tid) -> bool {
+    let all: Vec<_> = sync.label_status().into_iter().filter(|s| s.group == k).collect();
+    live_labels(&all).any(|s| s.idle > 0)
+}
+
 /// `all` but a replaced label with no peer beside another of its group: it takes nothing (it
 /// retires after ROLE_KEEP), and waiting on it would fail until then.
 fn live_labels(all: &[osis_node::sync::LabelStatus]) -> impl Iterator<Item = &osis_node::sync::LabelStatus> {
@@ -1044,7 +1051,10 @@ impl Osis {
     /// the thing and joins nothing: its maker or a participant pasting it, a joiner pasting it again,
     /// a used single-use link of its own. A lower role, or one that ends, joins as the link says. Returns once the role is
     /// of use, `role_on` reporting it (a write or admin role once the thing's keys are here), and,
-    /// joining, once the thing is here: a read sees what a node that has it holds. Joined but the thing stranded
+    /// joining, once the thing is here: a read sees what a node that has it holds, and once the join is
+    /// at a source of the link's actor (a host stored it, or the sharer's node applied it): until then
+    /// the link key is what admits this node at the sharer's node, so it is held, and a dropped
+    /// connection is dialed again. Joined but the thing stranded
     /// here (`SyncState::Stranded`): `Unsynced`, as `wait_synced`; the join stands, and calling
     /// again after a re-seal returns the thing.
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
@@ -1057,13 +1067,18 @@ impl Osis {
         let (k, target) = (link.k, link.target);
         // nothing to join when this account reaches the target at the link's role already: no link
         // is followed or judged
-        let held = self.engine(|e| reaches(e, &target, &k)) || self.join_link(&link).await?;
+        // the link key and the redemption's redials last this call (`join_link`)
+        let (held, _joining) = if self.engine(|e| reaches(e, &target, &k)) { (true, None) } else { self.join_link(&link).await? };
         let me = self.me();
         // joined: the grant stands in a view with nothing on K pending, and the role is of use
         // (`read::usable`: a direct link's grant comes under K's label with no inbox hint, the
-        // target's delete keys after it), so the first write goes through; and the target is
-        // here, so the first read sees what it holds
+        // target's delete keys after it), so the first write goes through; the target is
+        // here, so the first read sees what it holds; and the join is at a source of K, so
+        // whoever admits this node by it (the sharer's node) can
         self.wait_until(Box::new(move |s, _| {
+            if !held && !delivered(s, k) {
+                return None;
+            }
             let e = s.engine_mut();
             if !held && (!e.roster(&k).contains_key(&me) || pending_on(e, &k)) {
                 return None;
@@ -1083,12 +1098,15 @@ impl Osis {
     }
 
     /// `redeem`'s join: follows the link, waits until it can be judged, and redeems it. `true`:
-    /// this account came to reach the target meanwhile, and joined nothing.
-    async fn join_link(&self, link: &osis_label::ShareLink) -> Result<bool> {
+    /// this account came to reach the target meanwhile, and joined nothing. Returns the link key
+    /// and the redemption's pace, for the caller to hold until the join is at a source: the key
+    /// proves L on a new connection to the sharer's node, which does not know this node before it
+    /// holds the join (spec/permissions.md §7).
+    async fn join_link(&self, link: &osis_label::ShareLink) -> Result<(bool, Option<(KeyGuard, Redeeming)>)> {
         let (k, target) = (link.k, link.target);
         let key = self.follow_link(link)?;
-        // its sharer node is redialed at a host's pace until this call ends, whatever the outcome
-        let _redeeming = Redeeming { db: self.downgrade(), k };
+        // its sharer node is redialed at a host's pace until the redemption ends, whatever the outcome
+        let redeeming = Redeeming { db: self.downgrade(), k };
         let l = key.l;
         // L must be on K's roster in a view with nothing on K pending: a commit on K waiting
         // for its chain may be (or follow) an earlier redemption that removed L
@@ -1136,13 +1154,14 @@ impl Osis {
             let done = self.engine(|e| e.redeem(link, &me, link.single_use))?;
             self.carry(done)?;
         }
-        // joined, by this call or another node: the follow (hint, sharer node) stays
-        if self.engine(|e| e.roster(&k).contains_key(&me)) {
-            let mut key = key;
-            key.link = None;
-            drop(key);
+        // joined, by this call or another node: the follow (hint, sharer node) stays; joined by
+        // this call, the key too until the join is at a source
+        if !self.engine(|e| e.roster(&k).contains_key(&me)) {
+            return Ok((held, None));
         }
-        Ok(held)
+        let mut key = key;
+        key.link = None;
+        Ok((held, (!held).then_some((key, redeeming))))
     }
 
     /// Holds a link's key and follows K's label at its hosts and at the sharer's node when

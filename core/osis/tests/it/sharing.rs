@@ -1826,3 +1826,46 @@ fn leave_refused_on_one_way_writes_nothing() {
     assert!(alice.grants(k).unwrap().contains_key(&team), "the join of K stays");
     assert!(alice.grants(g).unwrap().contains_key(&team));
 }
+
+// spec/permissions.md §7 (Redeem: the redeemer keeps the link key until its join is at a
+// source): Bob redeems Alice's direct link with no host between them; their connection drops
+// right after Bob writes his join and before Alice has it. The link key is what admits him at
+// her node until she holds the join, so the next connection is admitted and the join gets there.
+#[test]
+fn redeem_survives_a_drop_before_the_join_arrives_spec_permissions_7() {
+    let mut w = World::new();
+    let relay = w.add_relay(None);
+    let alice = w.account(1, &[]);
+    let bob = w.account(2, &[]);
+    w.place(&alice, &[], osis_sim::reach::Uplink::Public, &[relay]);
+    w.place(&bob, &[], osis_sim::reach::Uplink::Public, &[relay]);
+    w.run();
+    let g = group(&alice);
+    let link = alice.make_link(g, Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
+    let k = osis_label::ShareLink::from_text(&link.to_string()).unwrap().k;
+    w.run();
+    let f = bob.redeem(&link);
+    let mut f = std::pin::pin!(f);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let b = bob.me();
+    let joined = |db: &Osis| db.engine(|e| e.roster(&k).contains_key(&b));
+    // step until Bob's redeem writes the join, then cut the connection before it is sent
+    for _ in 0..10_000 {
+        assert!(std::future::Future::poll(f.as_mut(), &mut cx).is_pending());
+        if joined(&bob) {
+            break;
+        }
+        if !w.step(None) {
+            w.advance(1000);
+        }
+    }
+    assert!(joined(&bob) && !joined(&alice), "the join written, not at Alice");
+    w.set_peer_reachable(&alice, &bob, false);
+    w.run();
+    w.set_peer_reachable(&alice, &bob, true);
+    assert_eq!(w.try_until(f, 1000, 120).map(Result::unwrap), Some(g), "redeemed once a connection is back");
+    assert!(joined(&alice), "the join reached Alice");
+    let t = item(&bob, g, g, "from bob");
+    w.run();
+    assert_eq!(x(&alice, t), Some(s("from bob")));
+}
