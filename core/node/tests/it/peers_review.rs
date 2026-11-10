@@ -530,8 +530,7 @@ fn complete_pass_drops_removed_coreader_spec_permissions_3() {
     remove_holder(e, g, tx, &rec, 81);
     // a role change of g from elsewhere: b's grant
     let tb = net.tid(b);
-    let e = net.engine(a);
-    set_edge(e, g, tb, Role::Write);
+    net.grant(a, g, tb, Role::Write);
     net.run();
     assert!(net.sync(a).peers().get(&net.sync(x).own_reach().unwrap().dialable).is_some_and(|p| !p.labels.contains(&net_label(&mut net, a, g))), "x still shares g2 only");
     assert!(net.sync(a).complete_pass(&g), "x no longer counts for g");
