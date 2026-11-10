@@ -5,7 +5,7 @@
 //! placed under a label (spec/permissions.md §3, re-seal).
 
 use super::conn::Phase;
-use super::{Action, HostKey, SyncEngine};
+use super::{Action, ConnId, HostKey, SyncEngine};
 use crate::error::Result;
 use crate::flows::{Delivery, Done, SyncState};
 use crate::rotation::{Dropped, Leaving, LostScope};
@@ -619,7 +619,8 @@ impl SyncEngine {
     /// actor's last remote role commit (a Sync from the cursor), where the label is live and its
     /// last pass end there came before the commit: a commit applied from outside a label's
     /// host stream (an inbox, a Deposit item, another host) would otherwise wait for that label's
-    /// next push (spec/permissions.md §3 Complete pass). A Sync in flight ends a pass already.
+    /// next push (spec/permissions.md §3 Complete pass). A Sync in flight is asked again when it
+    /// ends (`synced`): sent before the commit, its end is none after it.
     /// Passes go on meanwhile (`LConn::ending`): the label was read to its end before.
     pub(crate) fn ask_pass_ends(&mut self, out: &mut Vec<Action>) -> Result<()> {
         if self.pass_wanted.is_empty() {
@@ -641,13 +642,18 @@ impl SyncEngine {
             }
         }
         for (conn, label, cursor) in ask {
-            if let Some(x) = self.lc_mut(conn, &label) {
-                (x.syncing, x.ending) = (true, true);
-            }
-            let inline_limit = self.cfg.inline_limit;
-            self.command(conn, osis_proto::Command::Sync { label, cursor: Some(cursor), inline_limit, entries: Vec::new(), gained: Vec::new() }, out)?;
+            self.ask_pass_end(conn, label, cursor, out)?;
         }
         Ok(())
+    }
+
+    /// Asks the host on `conn` for a pass end of live label `label`: a Sync from `cursor`.
+    pub(crate) fn ask_pass_end(&mut self, conn: ConnId, label: LabelId, cursor: osis_proto::Cursor, out: &mut Vec<Action>) -> Result<()> {
+        if let Some(x) = self.lc_mut(conn, &label) {
+            (x.syncing, x.ending) = (true, true);
+        }
+        let inline_limit = self.cfg.inline_limit;
+        self.command(conn, osis_proto::Command::Sync { label, cursor: Some(cursor), inline_limit, entries: Vec::new(), gained: Vec::new() }, out)
     }
 
     /// Whether label `l` passed completely after `since` (spec/permissions.md §3): at each of

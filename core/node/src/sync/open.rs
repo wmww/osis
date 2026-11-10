@@ -202,6 +202,7 @@ impl SyncEngine {
             keys: HeadKeys::default(),
             syncing: false,
             ending: false,
+            sync_seq: 0,
             synced: false,
             dirty: false,
             fill: None,

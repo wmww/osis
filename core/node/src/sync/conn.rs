@@ -58,6 +58,9 @@ pub(crate) struct LConn {
     pub syncing: bool,
     /// The running Sync only asks a live label for a pass end (`ask_pass_ends`): passes go on.
     pub ending: bool,
+    /// `SyncEngine::seq` when the last Sync was sent: its end is no pass end after a role
+    /// commit applied since (`synced`).
+    pub sync_seq: u64,
     /// The log was read to its end at least once on this connection.
     pub synced: bool,
     /// A pass is wanted once the running exchange ends.
@@ -364,7 +367,13 @@ impl SyncEngine {
         if tracing() {
             self.trace(conn, &cmd);
         }
+        let seq = self.seq;
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
+        if let Command::Sync { label, .. } = &cmd
+            && let Some(lc) = c.labels.get_mut(label)
+        {
+            lc.sync_seq = seq;
+        }
         let o = c.session.handle(now, ClientInput::Command(cmd));
         self.outputs(conn, o, out)
     }

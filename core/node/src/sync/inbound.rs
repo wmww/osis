@@ -1616,7 +1616,17 @@ impl SyncEngine {
             lc.synced = true;
             lc.dirty = true;
         }
-        self.bump_pass(host, l)?;
+        // a role commit of the label's actor applied after this Sync was sent may have come
+        // from elsewhere: the host's log as it answered need not hold what came before it there
+        // (spec/permissions.md §3 Complete pass), so a pass is asked again
+        self.engine_events()?;
+        let sent = self.lc(conn, &l).map_or(u64::MAX, |x| x.sync_seq);
+        let later = self.synced.actors.get(&l).and_then(|(a, _)| self.role_change.get(a)).is_some_and(|r| r.0 > sent);
+        if later && let Some(cursor) = self.state.cursors.get(&(host, l)).copied() {
+            self.ask_pass_end(conn, l, cursor, out)?;
+        } else {
+            self.bump_pass(host, l)?;
+        }
         self.fetch_waiting(conn, l, out)
     }
 

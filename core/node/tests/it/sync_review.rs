@@ -5,7 +5,7 @@
 use crate::net;
 use net::*;
 use osis_commit::PurgeItem;
-use osis_base::{Ak, Role, Value, WallMs};
+use osis_base::{Ak, Role, Tid, Value, WallMs};
 use osis_node::Mutation;
 use osis_node::sync::{EntryKind, Event, SyncConfig};
 use osis_schema::RawKey;
@@ -262,6 +262,34 @@ fn complete_pass_after_push_spec_permissions_3() {
 // trip, with no push and no time passing.
 #[test]
 fn complete_pass_after_role_commit_from_elsewhere_spec_permissions_3() {
+    let (mut net, a, b, c, g) = quiet_label();
+    from_elsewhere(&mut net, a, b, c, g, Role::Write);
+    assert!(!net.sync(b).complete_pass(&g), "no pass end after it yet");
+    // the request reaches the host, its reply comes back
+    net.round();
+    net.round();
+    assert!(net.sync(b).complete_pass(&g), "a pass end within one round trip");
+}
+
+// spec/permissions.md §3 (complete pass): a Sync asked before a role commit from elsewhere
+// applied ends no pass after it (the host may have answered before it held what came before
+// the commit there): its end asks again, and the pass ends a round trip later.
+#[test]
+fn sync_sent_before_role_commit_ends_no_pass_after_it_spec_permissions_3() {
+    let (mut net, a, b, c, g) = quiet_label();
+    from_elsewhere(&mut net, a, b, c, g, Role::Write);
+    // the ask reaches the host; its answer is on its way when the next commit applies
+    net.round();
+    from_elsewhere(&mut net, a, b, c, g, Role::Admin);
+    net.round();
+    assert!(!net.sync(b).complete_pass(&g), "the answer to a Sync sent before the commit");
+    net.round();
+    net.round();
+    assert!(net.sync(b).complete_pass(&g), "the Sync asked after it");
+}
+
+/// Reader `b` of `a`'s group `g` at one host, every pass ended; `a` offline.
+fn quiet_label() -> (Net, usize, usize, usize, Tid) {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -272,19 +300,19 @@ fn complete_pass_after_role_commit_from_elsewhere_spec_permissions_3() {
     assert!(net.sync(b).complete_pass(&g));
     net.set_online(a, false);
     net.run();
+    (net, a, b, c, g)
+}
+
+/// `a` gives `c` `role` on `g`; `b` applies it from `a` directly, not by the host.
+fn from_elsewhere(net: &mut Net, a: usize, b: usize, c: usize, g: Tid, role: Role) {
     let tc = net.tid(c);
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&g, &tc, &edge).unwrap();
     // b places it under the label too; that copy's push would end a pass of its own
     net.lose_deposits.extend(done.commits);
     net.pair(a, b);
     net.feed(b, Event::Local);
-    assert_eq!(net.engine(b).roster(&g).get(&tc).map(|e| e.role), Some(Role::Write), "applied from elsewhere");
-    assert!(!net.sync(b).complete_pass(&g), "no pass end after it yet");
-    // the request reaches the host, its reply comes back
-    net.round();
-    net.round();
-    assert!(net.sync(b).complete_pass(&g), "a pass end within one round trip");
+    assert_eq!(net.engine(b).roster(&g).get(&tc).map(|e| e.role), Some(role), "applied from elsewhere");
 }
 
 // spec/sync.md §6-§7 (positive uncovered): a compactor deletes covered bodies; a writer that
