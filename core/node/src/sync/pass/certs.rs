@@ -165,8 +165,8 @@ impl SyncEngine {
     /// with (`held_records_at`) as one record blob of this node's (spec/wire.md §3); records this
     /// node does not hold are left out. Whether every one of `want` is held there now.
     pub(crate) fn place_records(&mut self, g: &Tid, l: LabelId, want: &BTreeSet<Tid>) -> Result<bool> {
-        let hosts: Vec<HostKey> = self.conns.values().filter(|x| x.labels.contains_key(&l)).map(|x| x.host).collect();
-        let held = self.held_records_at(l, Some(&hosts));
+        let hosts = self.counted_at(g, l);
+        let held = self.held_records_at(l, hosts.as_deref());
         let missing: Vec<osis_base::CreationRecord> = want.iter().filter(|t| !held.contains(t)).filter_map(|t| self.engine.core.created(t).cloned()).collect();
         let all = missing.len() == want.iter().filter(|t| !held.contains(t)).count();
         if missing.is_empty() {
@@ -215,13 +215,24 @@ impl SyncEngine {
     }
 
     /// The parts of commit `c` entries under `l` hold, as (this node's certificate copies, all
-    /// that count): another node's copy or body counts once genuine and present at every host
-    /// this node syncs the label with, and, carrying a rotation of the label's actor, only if it
-    /// opens under the newest read secret (spec/permissions.md §4). Not `held_at` (whether this
-    /// node's own commit is placed).
+    /// that count): another node's copy or body counts once genuine and present where the
+    /// label's entries count (`counted_at`), and, carrying a rotation of the label's actor, only
+    /// if it opens under the newest read secret (spec/permissions.md §4). Not `held_at` (whether
+    /// this node's own commit is placed).
     pub(super) fn held_parts(&mut self, g: &Tid, l: LabelId, c: &CommitId) -> Result<(Parts, Parts)> {
-        let hosts: Vec<HostKey> = self.conns.values().filter(|x| x.labels.contains_key(&l)).map(|x| x.host).collect();
-        self.held_parts_at(g, l, c, Some(&hosts))
+        let hosts = self.counted_at(g, l);
+        self.held_parts_at(g, l, c, hosts.as_deref())
+    }
+
+    /// Where another node's entry under `l` counts as held: present at every host this node
+    /// syncs the label with, or, for a label served with no host, in this node's own served
+    /// state (`None`): this node is its host (`local_passes`), so what it places does not move
+    /// with which peers happen to be connected.
+    fn counted_at(&mut self, g: &Tid, l: LabelId) -> Option<Vec<HostKey>> {
+        if self.group_label(g, &l).is_some_and(|gl| crate::sync::peers::hostless(&gl.hosts)) {
+            return None;
+        }
+        Some(self.conns.values().filter(|x| x.labels.contains_key(&l)).map(|x| x.host).collect())
     }
 
     /// `held_parts` with another node's entries counted when present at each of `hosts`
