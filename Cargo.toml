@@ -84,8 +84,7 @@ panic = "deny"
 indexing_slicing = "deny"
 
 # Every test run and sim sweep uses this profile (notes/testing.md, Build hygiene). opt-level 1:
-# tests several times faster for slower compiles; line tables keep backtraces' file:line, and
-# unpacked split debuginfo keeps the rest beside the objects instead of in every test binary.
+# tests several times faster for slower compiles; line tables keep backtraces' file:line.
 [profile.dev]
 debug = "line-tables-only"
 opt-level = 1
@@ -100,6 +99,14 @@ debug = false
 # osis-crypto instantiates the generic AEAD, hash and curve code: optimized like a dependency.
 [profile.dev.package.osis-crypto]
 opt-level = 2
+
+# Build-time code (build scripts, proc macros and their dependencies) gets a profile of its own, so
+# cargo never merges a build-time unit with a run-time one. A merged unit takes the run-time
+# `lto = "off"`, a build-time-only one does not: a dependency both sides reach in one selection
+# (unicode-ident: naga in the GUI, proc-macro2 everywhere) otherwise gives every build-time unit
+# above it, osis-schema and so every osis crate, a second copy (notes/build.md, Feature unification).
+[profile.dev.build-override]
+debug-assertions = false
 
 [profile.release]
 codegen-units = 16
