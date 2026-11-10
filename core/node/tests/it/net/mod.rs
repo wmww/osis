@@ -95,8 +95,8 @@ pub struct Net {
     /// Nodes whose Upload requests to hosts are lost on the way (answered rate-limited for
     /// the host: a request is never left unanswered on an ordered stream).
     pub lose_uploads: BTreeSet<usize>,
-    /// Deposits (to a host or a peer) of blobs carrying these commits, by any node's entry for the
-    /// blob, are lost on the way (answered rate-limited).
+    /// Deposits (to a host) of blobs carrying these commits, by any node's entry for the blob,
+    /// are lost on the way (answered rate-limited), and a reader's stream and fetches drop them.
     pub lose_deposits: BTreeSet<CommitId>,
     /// Hosts whose messages to nodes are held back until `release` (a slow host).
     pub held_hosts: BTreeSet<usize>,
@@ -585,14 +585,35 @@ impl Net {
                         d.push(&bytes);
                         let mut kept = Vec::new();
                         while let Ok(Some(body)) = d.next_frame() {
-                            if let Ok(osis_proto::Message::Deposit { id, label, blob, .. }) = osis_proto::Message::decode(&body)
-                                && self.carries(&label, &osis_label::blob_id(&blob), &self.lose_deposits)
-                            {
-                                let e = osis_proto::Message::Error { id, code: osis_proto::Code::RATE_LIMITED };
-                                self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, conn, osis_proto::encode_frame(&e.encode())));
-                                continue;
+                            let lost = |l: &osis_base::LabelId, b: &osis_base::BlobId| self.carries(l, b, &self.lose_deposits);
+                            let added = |(l, e): &(osis_base::LabelId, osis_proto::Event)| matches!(e, osis_proto::Event::Added { blob_id, .. } if lost(l, blob_id));
+                            match osis_proto::Message::decode(&body) {
+                                Ok(osis_proto::Message::Deposit { id, label, blob, .. }) if lost(&label, &osis_label::blob_id(&blob)) => {
+                                    let e = osis_proto::Message::Error { id, code: osis_proto::Code::RATE_LIMITED };
+                                    self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, conn, osis_proto::encode_frame(&e.encode())));
+                                }
+                                // a reader's own entries reach a co-reader by its stream: lost there
+                                Ok(osis_proto::Message::PullReply(mut r)) => {
+                                    r.events.retain(|x| !added(x));
+                                    kept.extend(osis_proto::encode_frame(&osis_proto::Message::PullReply(r).encode()));
+                                }
+                                Ok(osis_proto::Message::Stream(mut x)) => {
+                                    x.events.retain(|x| !added(x));
+                                    if !x.events.is_empty() {
+                                        kept.extend(osis_proto::encode_frame(&osis_proto::Message::Stream(x).encode()));
+                                    }
+                                }
+                                Ok(osis_proto::Message::FetchReply { id, mut items }) => {
+                                    let labels = self.nodes[m].sync.as_ref().map(|s| s.shared_members(pc)).unwrap_or_default();
+                                    for f in &mut items {
+                                        if labels.iter().any(|l| lost(l, &f.blob_id)) {
+                                            f.entry = None;
+                                        }
+                                    }
+                                    kept.extend(osis_proto::encode_frame(&osis_proto::Message::FetchReply { id, items }.encode()));
+                                }
+                                _ => kept.extend(osis_proto::encode_frame(&body)),
                             }
-                            kept.extend(osis_proto::encode_frame(&body));
                         }
                         bytes = kept;
                     }

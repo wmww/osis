@@ -174,7 +174,7 @@ impl Requests {
 impl SyncEngine {
     /// Whether blob `b` was asked for on some connection and not received yet.
     pub(crate) fn fetching(&self, b: &osis_base::BlobId) -> bool {
-        self.conns.values().any(|c| c.req.fetching.contains(b))
+        self.conns.values().any(|c| c.req.fetching.contains(b)) || self.stream_fetching(b)
     }
 
     /// Blob `b` arrived, or a host said it does not hold it: no longer in flight.
@@ -275,7 +275,12 @@ impl SyncEngine {
         let wanted = self.wanted_hosts();
         // a host no longer wanted keeps no retry time (it would hold the wake in the past)
         self.retry.retain(|k, _| wanted.contains_key(k));
+        // a peer connected by a session it dialed is not dialed (`bind_record`)
+        self.stand_in.retain(|_, c| self.served.contains_key(c));
         for (key, (addr, peer)) in wanted {
+            if self.stand_in.contains_key(&key) {
+                continue;
+            }
             // a co-reader reached off the LAN that is heard on it: its LAN route is dialed beside
             // the running connection, which goes once that is up (`lan_switched`)
             if self.conns.values().any(|c| c.host == key) && !(peer && self.lan_probe(&key, &addr)) {
@@ -499,7 +504,8 @@ impl SyncEngine {
 
     /// Starts every wanted label not yet on a ready connection to one of its hosts.
     pub(super) fn add_new_labels(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        let conns: Vec<(ConnId, HostKey)> = self.conns.iter().filter(|(_, c)| c.session.is_ready()).map(|(id, c)| (*id, c.host)).collect();
+        // a host's: a peer's sync IDs are its shared set's, read by the stream (`stream`)
+        let conns: Vec<(ConnId, HostKey)> = self.conns.iter().filter(|(_, c)| c.session.is_ready() && !c.peer).map(|(id, c)| (*id, c.host)).collect();
         if conns.is_empty() {
             return Ok(());
         }
@@ -529,8 +535,7 @@ impl SyncEngine {
                 // label so): no Open is in flight, so it starts again as what wants it now
                 let index = self.state.hints.get(l).filter(|h| h.via.is_none() && h.thing == *g).map(|h| h.index);
                 let known = self.conns.get(&conn).and_then(|c| c.labels.get(l)).is_some_and(|x| (x.group == *g && index.is_none_or(|i| i == x.index)) || !matches!(x.phase, Phase::Failed | Phase::Refused { .. }));
-                // a host by its listing, a peer by this connection's shared set alone
-                if !known && (hosts.contains(&host) || self.shared_member(conn, l)) {
+                if !known && hosts.contains(&host) {
                     self.start_label(conn, *g, *l, out)?;
                 }
             }

@@ -167,6 +167,13 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Whether a reader may pull this node's stream: it is dialable, or a connection shares a
+    /// sync ID. Only then is a label synced with no host served, so placed locally
+    /// (`local_passes`).
+    pub(crate) fn serves_readers(&mut self) -> bool {
+        self.records.shared.values().any(|s| !s.is_empty()) || self.own_reach().is_some()
+    }
+
     /// This node's `reach.0`, if published.
     pub fn own_reach(&mut self) -> Option<Reach> {
         let me = self.engine.tid();
@@ -487,11 +494,19 @@ impl SyncEngine {
             return;
         }
         let peers = self.peers();
+        // each reader connection's node and the members it shares
+        let readers: Vec<super::ConnId> = self.records.shared.keys().copied().collect();
+        let mut sharing: BTreeMap<[u8; 32], BTreeSet<LabelId>> = BTreeMap::new();
+        for c in readers {
+            if let Some(k) = self.source_key(c) {
+                sharing.entry(k).or_default().extend(self.shared_members(c));
+            }
+        }
         let mut out: BTreeMap<LabelId, BTreeSet<[u8; 32]>> = BTreeMap::new();
         for (l, ks) in &self.peer_received {
             for k in ks {
                 let reads = peers.get(k).is_some_and(|p| p.labels.contains(l));
-                if reads && self.conns.values().any(|c| c.peer && c.up && c.host == *k && c.labels.contains_key(l)) {
+                if reads && sharing.get(k).is_some_and(|m| m.contains(l)) {
                     out.entry(*l).or_default().insert(*k);
                 }
             }
@@ -599,11 +614,29 @@ impl SyncEngine {
         (Some(k), self.handle(Event::Local))
     }
 
-    /// Entries of `label` arrived on `conn`: from a co-reader, a complete pass of the label then
-    /// waits for that co-reader while a connection to it is up (spec/permissions.md §3).
+    /// The co-reader node at the other end of reader connection `conn`, by its dialable key: the
+    /// key dialed, or for a session this node serves the node it proved, known by its `reach.0`.
+    pub(crate) fn source_key(&mut self, conn: super::ConnId) -> Option<[u8; 32]> {
+        if let Some(c) = self.conns.get(&conn) {
+            return c.peer.then_some(c.host);
+        }
+        let node = self.served_proven(conn).and_then(|p| p.node)?;
+        self.reach_nodes().iter().find(|(_, x)| **x == node).map(|(k, _)| *k)
+    }
+
+    /// Entries of `label` arrived from reader `conn`: a complete pass of the label then waits for
+    /// that co-reader while a connection to it is up (spec/permissions.md §3).
     pub(crate) fn received_from(&mut self, conn: super::ConnId, label: LabelId) {
-        if let Some(c) = self.conns.get(&conn).filter(|c| c.peer) {
-            self.peer_received.entry(label).or_default().insert(c.host);
+        if let Some(k) = self.source_key(conn) {
+            self.peer_received.entry(label).or_default().insert(k);
+        }
+    }
+
+    /// Reader `conn`'s stream was read to its end for member `l`: a pass end at that co-reader.
+    pub(crate) fn source_passed(&mut self, conn: super::ConnId, l: LabelId) -> crate::error::Result<()> {
+        match self.source_key(conn) {
+            Some(k) => self.bump_pass(k, l),
+            None => Ok(()),
         }
     }
 

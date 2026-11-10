@@ -108,6 +108,9 @@ pub struct SyncEngine {
     /// Co-readers redialed at once after an up connection ended, and when (raw ms): at most
     /// once per `peer_retry_ms` each.
     redialed: BTreeMap<HostKey, u64>,
+    /// Co-readers whose dialed connection closed as the duplicate of one they dialed here: not
+    /// dialed while that session lasts (`bind_record`).
+    pub(crate) stand_in: BTreeMap<HostKey, ConnId>,
     /// Followed links (by K) whose redemption is under way: their sharer nodes are redialed after
     /// `retry_ms`, not `peer_retry_ms` (`lost`). Memory only: no redemption outlives the process.
     redeeming: BTreeSet<Tid>,
@@ -331,6 +334,7 @@ impl SyncEngine {
             next_conn: 1,
             retry: BTreeMap::new(),
             redialed: BTreeMap::new(),
+            stand_in: BTreeMap::new(),
             redeeming: BTreeSet::new(),
             state,
             seq: 0,

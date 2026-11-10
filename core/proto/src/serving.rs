@@ -83,8 +83,6 @@ pub enum ServingInput {
     Notify(Vec<(Id, crate::api::Payload)>),
     /// A shared-set or stream message to send.
     Peer(Box<Message>),
-    /// `label` opened by this connection's shared set (`Proof::Shared` then finds it), or closed.
-    SharedOpen { label: LabelId, open: bool },
     /// The upper layer has Notifies to send: `ServingOutput::Room` when the push rule allows.
     WantRoom,
 }
@@ -168,23 +166,14 @@ fn check(k: &HeadKeys, key: StepKey, domain: Domain, digest: &[u8; 32], sig: &Si
     Code::REFUSED
 }
 
-/// What an open holds under.
-#[derive(Clone, Copy)]
-enum Under {
-    /// The sync key of the head it was proven at.
-    Sync(osis_crypto::VerifyingKey),
-    /// By a member of this connection's shared set, held across steps (spec/sync.md §5).
-    Shared,
-}
-
 pub struct ServingSession {
     cfg: ServingConfig,
     decoder: FrameDecoder,
     version: Option<u64>,
     closed: bool,
-    /// Opened labels and the sync key each open holds under (spec/sync.md §5): a head with
-    /// another sync key ends it (`still_open`).
-    opened: BTreeMap<LabelId, Under>,
+    /// Opened labels, by the sync key of the head each was proven at (spec/sync.md §5): a head
+    /// with another sync key ends it (`still_open`).
+    opened: BTreeMap<LabelId, osis_crypto::VerifyingKey>,
     /// Subscribed labels and the log position pushed so far.
     subs: BTreeMap<LabelId, u64>,
     /// Last complete Sync per label: its cursor sequence number.
@@ -351,13 +340,12 @@ impl ServingSession {
         self.opened.is_empty() && !self.authed
     }
 
-    /// Whether `label` is opened and its open holds at the head: under the head's sync key, or
-    /// in this connection's shared set, which holds across steps (spec/sync.md §5).
+    /// Whether `label` is opened and its open holds at the head: under the head's sync key
+    /// (spec/sync.md §5).
     fn holds(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<bool, StoreError> {
         Ok(match self.opened.get(label).copied() {
             None => false,
-            Some(Under::Shared) => true,
-            Some(Under::Sync(k)) => self.keys(store, label)?.is_some_and(|h| h.head.keys.sync == k),
+            Some(k) => self.keys(store, label)?.is_some_and(|h| h.head.keys.sync == k),
         })
     }
 
@@ -451,10 +439,6 @@ impl ServingSession {
     fn input(&mut self, now: u64, store: &mut dyn LabelStore, input: ServingInput, out: &mut Vec<ServingOutput>) {
         match input {
             ServingInput::Peer(m) => send(out, *m),
-            ServingInput::SharedOpen { label, open: true } => {
-                self.opened.insert(label, Under::Shared);
-            }
-            ServingInput::SharedOpen { label, open: false } => self.end_open(&label),
             ServingInput::Start => out.push(ServingOutput::Send(encode_frame(&Hello::new(now, self.cfg.challenge).encode()))),
             ServingInput::Bytes(b) => {
                 self.decoder.push(&b);
@@ -818,15 +802,11 @@ impl ServingSession {
         if !self.opened.contains_key(&label) && self.opened.len() >= MAX_OPEN_LABELS {
             return Ok(Message::Error { id, code: Code::RATE_LIMITED });
         }
-        // a member of this connection's shared set: nothing to verify, S says (spec/sync.md §5)
-        if matches!(proof, Proof::Shared) {
-            return Ok(if matches!(self.opened.get(&label), Some(Under::Shared)) { Message::Opened { id, head, entry_box: None } } else { Message::Error { id, code: Code::REFUSED } });
-        }
         Ok(match evaluate_open(&head, &Index { store, label: &label }, &proof, &self.cfg.challenge, &self.cfg.static_key)? {
             // every open proof holds at the head only: under the head's sync key (a claim or
             // static entry is listed by a reader of the head's read epoch)
             OpenOutcome::Opened(entry_box) => {
-                self.opened.insert(label, Under::Sync(head.keys.sync));
+                self.opened.insert(label, head.keys.sync);
                 Message::Opened { id, head, entry_box }
             }
             OpenOutcome::Child(step) => Message::Step { id, step },
@@ -1090,7 +1070,7 @@ impl ServingSession {
             return Ok(());
         }
         let ends = match self.opened.get(label).copied() {
-            Some(Under::Sync(k)) if !self.holds(store, label)? => Some(k),
+            Some(k) if !self.holds(store, label)? => Some(k),
             _ => None,
         };
         let inline_limit = self.inline.get(label).copied().unwrap_or(0);

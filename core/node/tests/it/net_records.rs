@@ -220,10 +220,10 @@ fn peer_routes_up(net: &mut Net, n: usize) -> Vec<ConnId> {
     net.sync(n).proven_connections().into_iter().filter(|(_, p)| !p.is_empty()).map(|(c, _)| c).collect()
 }
 
-// the pair of connections two dialers make to each other stays open until one connection record
-// carries both directions (issues/net-sync-structure.md (a)): one record, the binding the newer's
+// spec/sync.md §10 (Shared set): two connections of one pair are one, whoever dialed each:
+// crossing dials leave one record on each side and one connection, which stays without a redial
 #[test]
-fn crossing_dials_keep_both_connections_on_one_record() {
+fn crossing_dials_leave_one_connection_per_pair_spec_sync_10() {
     let mut net = Net::new();
     let (a, b) = dialing_pair(&mut net);
     let (ta, tb) = (net.node_tid(a), net.node_tid(b));
@@ -231,7 +231,15 @@ fn crossing_dials_keep_both_connections_on_one_record() {
     net.run();
     assert_eq!(records(&mut net, a, tb).len(), 1, "one record at a");
     assert_eq!(records(&mut net, b, ta).len(), 1, "one record at b");
-    assert!(peer_routes_up(&mut net, a).len() >= 2, "both connections stay up");
+    assert_eq!(peer_routes_up(&mut net, a).len(), 1, "one connection at a");
+    assert_eq!(peer_routes_up(&mut net, b).len(), 1, "one connection at b");
+    let dials = net.dialed.len();
+    let retry = net.sync(a).config().peer_retry_ms;
+    for _ in 0..3 {
+        net.advance(retry);
+    }
+    assert_eq!((peer_routes_up(&mut net, a).len(), peer_routes_up(&mut net, b).len()), (1, 1), "it stays the one");
+    assert_eq!(net.dialed.len(), dials, "the side whose connection closed does not dial again");
 }
 
 /// (work reading records for Resumes at `n`, others).

@@ -236,13 +236,16 @@ pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &s
     .await;
     let _ = applied(brx, c).await;
     assert_eq!(call(&bctl, move |s| read(s, t)).await, Some(s_("second")));
-    // with the LAN loop each ends on the other's LAN route alone, whatever it reached first
-    // (spec/sync.md §10: the proven route first)
+    // with the LAN loop the pair ends on one connection, at a LAN route, whatever it reached
+    // first and whichever side's dial was kept (spec/sync.md §10: the proven route first; one
+    // connection per pair)
     if lan_loop {
-        let ctl = actl.clone();
+        let (ca, cb) = (actl.clone(), bctl.clone());
         tokio::time::timeout(GUARD, async move {
             loop {
-                let routes = call(&ctl, |s| s.peer_routes()).await;
+                let mut routes = call(&ca, |s| s.peer_routes()).await;
+                routes.extend(call(&cb, |s| s.peer_routes()).await);
+                routes.retain(|(_, _, up)| *up);
                 if let [(_, a, true)] = routes.as_slice()
                     && osis_transport::peer_items(&a.url).is_some_and(|h| h.iter().any(|x| x.parse::<std::net::SocketAddr>().is_ok()))
                 {
@@ -611,16 +614,19 @@ impl LanRun {
     }
 }
 
-/// Waits until node `ctl`'s peer routes are up at exactly the IPs `want`.
-async fn routes_at(ctl: &mpsc::UnboundedSender<Control>, want: &[&str]) {
-    let want: Vec<std::net::IpAddr> = want.iter().map(|x| ip(x)).collect();
-    let ctl = ctl.clone();
+/// The IPs node `ctl`'s peer routes are up at.
+async fn routes_up(ctl: &mpsc::UnboundedSender<Control>) -> Vec<std::net::IpAddr> {
+    let routes = call(ctl, |s| s.peer_routes()).await;
+    routes.iter().filter(|(_, _, up)| *up).filter_map(|(_, a, _)| osis_transport::peer_items(&a.url)?.first()?.parse::<std::net::SocketAddr>().ok()).map(|a| a.ip()).collect()
+}
+
+/// Waits until nodes `x` and `y` are connected by a route one of them dialed at the other's
+/// address `at_y` or `at_x` (one connection per pair: either side's dial may be the one kept).
+async fn route_between(x: &mpsc::UnboundedSender<Control>, at_y: &str, y: &mpsc::UnboundedSender<Control>, at_x: &str) {
+    let (x, y, at_x, at_y) = (x.clone(), y.clone(), ip(at_x), ip(at_y));
     tokio::time::timeout(GUARD, async move {
         loop {
-            let routes = call(&ctl, |s| s.peer_routes()).await;
-            let mut up: Vec<std::net::IpAddr> = routes.iter().filter(|(_, _, up)| *up).filter_map(|(_, a, _)| osis_transport::peer_items(&a.url)?.first()?.parse::<std::net::SocketAddr>().ok()).map(|a| a.ip()).collect();
-            up.sort();
-            if up == want {
+            if routes_up(&x).await.contains(&at_y) || routes_up(&y).await.contains(&at_x) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -649,8 +655,7 @@ async fn driver_lan_same_segment_finds_and_connects_spec_sync_10() {
     let (a, b) = (lan_host(&tnet, "a", "10.0.0.1", &[("s", "10.0.0.1")]), lan_host(&tnet, "b", "10.0.0.2", &[("s", "10.0.0.2")]));
     let (to, listen) = lan_v4();
     let run = lan_run(vec![a, b], to, listen, LAN_REPEAT).await.write_reaches_last().await;
-    routes_at(&run.ctl[0], &["10.0.0.2"]).await;
-    routes_at(&run.ctl[1], &["10.0.0.1"]).await;
+    route_between(&run.ctl[0], "10.0.0.2", &run.ctl[1], "10.0.0.1").await;
     run.stop().await;
 }
 
@@ -683,8 +688,8 @@ async fn driver_lan_two_segments_found_on_each_spec_sync_10() {
     let b = lan_host(&tnet, "b", "192.168.2.1", &[("s2", "192.168.2.1")]);
     let (to, listen) = lan_v4();
     let run = lan_run(vec![a, m, b], to, listen, LAN_REPEAT).await;
-    routes_at(&run.ctl[0], &["10.0.1.9"]).await;
-    routes_at(&run.ctl[2], &["192.168.2.9"]).await;
+    route_between(&run.ctl[0], "10.0.1.9", &run.ctl[1], "10.0.1.1").await;
+    route_between(&run.ctl[2], "192.168.2.9", &run.ctl[1], "192.168.2.1").await;
     run.stop().await;
 }
 
@@ -717,7 +722,7 @@ async fn driver_lan_source_is_the_segment_address_spec_sync_10() {
     let (to, listen) = lan_v4();
     let run = lan_run(vec![a, b], to, listen, LAN_REPEAT).await;
     heard_from(&ear, ip("172.16.0.5"), 2, &[ip("172.16.0.5"), ip("172.16.0.6")]).await;
-    routes_at(&run.ctl[1], &["172.16.0.5"]).await;
+    route_between(&run.ctl[1], "172.16.0.5", &run.ctl[0], "172.16.0.6").await;
     run.stop().await;
 }
 

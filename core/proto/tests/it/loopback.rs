@@ -316,43 +316,6 @@ fn stale_sync_key_gets_one_signed_step() {
     assert_eq!(ev, vec![ClientEvent::PathSteps { label: l.id, steps: vec![child], more: false }]);
 }
 
-// spec/sync.md §5, spec/wire.md §11.2 (proof 3): proof 3 opens a label only while this connection's
-// shared set holds it: before the upper layer opens it, or after it closes it, the Open is refused
-// and shows no head
-#[test]
-fn proof_3_opens_only_members_of_the_shared_set_spec_sync_5() {
-    let mut net = Net::new(1, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    let open = Command::Open { label: l.id, key: OpenKey::Shared };
-    let ev = net.run(0, open.clone());
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]), "not a member yet: {ev:?}");
-    net.hosts[0].handle(T0, &mut net.store, ServingInput::SharedOpen { label: l.id, open: true });
-    let ev = net.run(0, open.clone());
-    assert!(matches!(&ev[..], [ClientEvent::Opened { head, entry_box: None, .. }] if *head == l.steps[0]), "{ev:?}");
-    let ev = net.run(0, sync(l.id, None, vec![], vec![]));
-    assert!(ev.contains(&ClientEvent::Synced { label: l.id }), "{ev:?}");
-    net.hosts[0].handle(T0, &mut net.store, ServingInput::SharedOpen { label: l.id, open: false });
-    let ev = net.run(0, open);
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]), "closed: {ev:?}");
-}
-
-// spec/sync.md §5 (an ex-holder never learns a later head): a proof on a label whose open a new
-// head ended is no name of an open: the head stays hidden from a key no store knows.
-#[test]
-fn a_proof_on_an_ended_open_shows_no_head() {
-    let mut net = Net::new(1, 0);
-    let mut l = Label::new(3);
-    net.setup(&l);
-    net.run(0, Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) });
-    let (child, _) = l.rotate(20);
-    net.run(0, Command::Register { label: l.id, step: child, claim_set: None });
-    let open = Message::Open { id: 99, label: l.id, proof: osis_label::Proof::Shared };
-    let so = net.hosts[0].handle(T0, &mut net.store, ServingInput::Bytes(encode_frame(&open.encode())));
-    let sent: Vec<Message> = so.into_iter().filter_map(|o| if let ServingOutput::Send(f) = o { Some(Message::decode(&f[4..]).unwrap()) } else { None }).collect();
-    assert_eq!(sent, vec![Message::Error { id: 99, code: Code::REFUSED }]);
-}
-
 // spec/sync.md §5: claim keys open at the head or get the child; static entries open with the entry box; a dropped set serves no claims
 // spec/sync.md §5 (claim refusals), §5 (dropped claim set)
 #[test]

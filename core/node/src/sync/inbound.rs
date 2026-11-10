@@ -81,6 +81,19 @@ fn chain_commits(chain: Vec<osis_base::Value>) -> Vec<(Vec<u8>, osis_commit::Com
     }).collect()
 }
 
+/// Where log events come from (`log_events_from`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Src {
+    /// A file bundle.
+    Bundle,
+    /// A host connection.
+    Host(ConnId),
+    /// A session this node serves, by an upload to it.
+    Served(ConnId),
+    /// A reader's stream, or bodies fetched from it (`stream`).
+    Reader(ConnId),
+}
+
 impl SyncEngine {
     /// The group label `l` belongs to as judged on connection `conn`: the group it is opened
     /// under there. Two connections may hold one label under different groups (a hint names it
@@ -139,18 +152,45 @@ impl SyncEngine {
         }
     }
 
-    /// Log events of a Sync reply, a push, a fetch or a bundle (`conn` none).
+    /// Log events of a host's Sync reply, push or fetch on `conn`, or of a bundle (`conn` none).
     pub(crate) fn log_events(&mut self, conn: Option<ConnId>, l: LabelId, events: Vec<LogEvent>, cursor: Option<Cursor>, out: &mut Vec<super::Action>) -> Result<()> {
-        self.log_events_from(conn, None, l, events, cursor, out)
+        let src = conn.map_or(Src::Bundle, Src::Host);
+        self.log_events_from(src, l, events, cursor, out)
     }
 
-    /// `log_events`, of entries a session this node serves (`served`) uploaded.
-    pub(crate) fn log_events_from(&mut self, conn: Option<ConnId>, served: Option<ConnId>, l: LabelId, events: Vec<LogEvent>, cursor: Option<Cursor>, out: &mut Vec<super::Action>) -> Result<()> {
-        let from = match served {
-            Some(c) => super::memory::RelayFrom::Served(c),
-            None => super::memory::RelayFrom::Host(conn.and_then(|c| self.conns.get(&c)).map(|c| c.host)),
+    /// Events of member `l` in the stream of reader `conn`, or bodies fetched there: judged by
+    /// this node's own rules. A stamp counts only under the head this node serves; a deletion
+    /// says only that this source no longer has the entry, so nothing is done for it (only a
+    /// right holder's drop counts, retention's rule); a head comes by the label's own steps.
+    pub(crate) fn reader_events(&mut self, conn: ConnId, l: LabelId, events: Vec<LogEvent>, out: &mut Vec<super::Action>) -> Result<()> {
+        self.log_events_from(Src::Reader(conn), l, events, None, out)
+    }
+
+    /// `log_events` from `src`.
+    pub(crate) fn log_events_from(&mut self, src: Src, l: LabelId, events: Vec<LogEvent>, cursor: Option<Cursor>, out: &mut Vec<super::Action>) -> Result<()> {
+        let conn = match src {
+            Src::Host(c) => Some(c),
+            _ => None,
+        };
+        let reader = match src {
+            Src::Reader(c) => Some(c),
+            _ => None,
+        };
+        // stamps a source gives unchecked: a bundle's (its importer checked them against its
+        // path) and a served session's (the host engine checked them against the served head)
+        let trusted = matches!(src, Src::Bundle | Src::Served(_));
+        let from = match src {
+            Src::Served(c) => super::memory::RelayFrom::Served(c),
+            Src::Reader(c) => super::memory::RelayFrom::Reader(c),
+            _ => super::memory::RelayFrom::Host(conn.and_then(|c| self.conns.get(&c)).map(|c| c.host)),
+        };
+        let served_write = match reader {
+            Some(_) => self.served_labels().get(&l).and_then(|s| s.head()).map(|h| h.keys.write),
+            None => None,
         };
         let host: Option<HostKey> = conn.and_then(|c| self.conns.get(&c)).map(|c| c.host);
+        let mut crossed = Vec::new();
+        let mut fresh_here = Vec::new();
         let mut blobs = Vec::new();
         let mut memory_blobs = Vec::new();
         let mut touched = Vec::new();
@@ -161,7 +201,7 @@ impl SyncEngine {
         // host cannot make one; a superseded step's key may be a removed writer's)
         let mut unvouched = Vec::new();
         // the head's write key now (a Head event in the batch moves it)
-        let head_write = |s: &Self| conn.and_then(|c| s.lc(c, &l)).and_then(|x| x.head.as_ref()).map(|h| h.keys.write);
+        let head_write = |s: &Self| conn.and_then(|c| s.lc(c, &l)).and_then(|x| x.head.as_ref()).map(|h| h.keys.write).or(served_write);
         let first_write = head_write(self);
         let mut writers: Vec<VerifyingKey> = Vec::new();
         if first_write.is_none() && host.is_some() && events.iter().any(|e| matches!(e, LogEvent::Added { .. })) {
@@ -212,10 +252,10 @@ impl SyncEngine {
                     c.req.fetching.remove(blob_id);
                 }
                 if class == osis_label::Class::Relay {
-                    let head = conn.and_then(|c| self.lc(c, &l)).and_then(|x| x.head.as_ref()).map(|h| h.keys.write);
+                    let head = head_write(self);
                     // a stamp counts if it verifies under the head's write key (a served peer's
                     // upload was checked by the host engine)
-                    let stamp = stamp.filter(|s| head.as_ref().map_or(conn.is_none(), |w| osis_label::verify_stamp(w, &l, blob_id, wrap, s).is_ok()));
+                    let stamp = stamp.filter(|s| head.as_ref().map_or(trusted, |w| osis_label::verify_stamp(w, &l, blob_id, wrap, s).is_ok()));
                     self.relay_in(from, l, *blob_id, blob.clone(), *wrap, stamp, out)?;
                     continue;
                 }
@@ -250,8 +290,15 @@ impl SyncEngine {
                     let held_stamped = stamp.is_some();
                     // a stamp counts only if it verifies under the head's write key (it is relayed);
                     // a bundle's stamps were checked against its path by the importer
-                    let stamp = stamp.filter(|_| if cur.is_some() { by_head } else { conn.is_none() });
+                    let stamp = stamp.filter(|_| if cur.is_some() { by_head } else { trusted });
                     let listed = self.state.entries.contains_key(&(l, blob_id));
+                    if blob.is_some() {
+                        crossed.push(blob_id);
+                        // a reader's bytes new here, under no stamp of the served head: charged
+                        if reader.is_some() && stamp.is_none() && !self.engine.has_blob(&blob_id) {
+                            fresh_here.push(blob_id);
+                        }
+                    }
                     match self.state.entries.get(&(l, blob_id)).cloned() {
                         None => {
                             if host.is_some() && stamp.is_none() && !vouched {
@@ -301,6 +348,8 @@ impl SyncEngine {
                     }
                     touched.push(blob_id);
                 }
+                // a reader's deletion says only that it no longer has the entry
+                LogEvent::Deleted(_) if reader.is_some() => {}
                 LogEvent::Deleted(b) => {
                     self.memory_entry_gone(l, b);
                     // gone from every host of the label: a chunk an own commit may link
@@ -366,6 +415,18 @@ impl SyncEngine {
                 self.fetch_on(c, l, want, out)?;
                 self.fetch_waiting(c, l, out)?;
             }
+        } else if let Some(c) = reader {
+            // every body announced without its bytes, as if it came inline (an inline limit
+            // changes where bytes come from, not which): one that does not open yet is held for
+            // a secret that may come later, which no reader announces again
+            let secrets = self.group_of(&l, None).map(|g| self.read_secrets(&g)).unwrap_or_default();
+            let (mut want, rest): (Vec<BlobId>, Vec<BlobId>) = fetch.into_iter().partition(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some()));
+            want.extend(rest);
+            want.extend(self.waiting_blobs()?);
+            self.stream_fetch(c, l, want, out)?;
+            // bytes that came over this connection are not sent back on it inline
+            self.stream_crossed(c, crossed);
+            self.charge_reader(c, l, &fresh_here)?;
         }
         if pushed && let Some(s) = host {
             self.bump_pass(s, l)?;
@@ -1499,16 +1560,22 @@ impl SyncEngine {
     /// Commits wait for pages: fetch the blobs their headers list that are not held (pages
     /// before apply, spec/sync.md §6; the chunks of other large values stay lazy).
     fn fetch_waiting(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
+        let missing = self.waiting_blobs()?;
+        self.fetch_on(conn, l, missing, out)
+    }
+
+    /// The blobs commits waiting for pages list that are not held: asked of the label whether
+    /// or not an entry was seen (an unstamped one that opened under nothing is not kept,
+    /// `drop_unvouched`).
+    fn waiting_blobs(&mut self) -> Result<Vec<BlobId>> {
         let waiting: Vec<osis_base::CommitId> = self.engine.pending().into_iter().filter(|(_, r)| *r == crate::Reason::WaitBlobs).map(|(c, _)| c).collect();
         let mut missing = BTreeSet::new();
         for c in waiting {
             let Some(bytes) = self.engine.commit_bytes(&c)? else { continue };
             let Ok(cb) = osis_commit::CommitBlob::decode_stored(&bytes) else { continue };
-            // asked of the label whether or not an entry was seen (an unstamped one that opened
-            // under nothing is not kept, `drop_unvouched`)
             missing.extend(cb.header.chunks.iter().map(|ch| ch.blob).filter(|b| !self.engine.has_blob(b)));
         }
-        self.fetch_on(conn, l, missing, out)
+        Ok(missing.into_iter().collect())
     }
 
     /// Fetches `ids` under `l` on `conn`, but those asked for already (on any connection) and

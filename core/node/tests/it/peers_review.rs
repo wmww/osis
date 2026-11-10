@@ -67,13 +67,18 @@ fn command(net: &mut Net, n: usize, p: &mut Dialer, cmd: Command) -> Vec<ClientE
 
 /// A hand dialer of node `n` that proved `proven_as`'s node key and is a member of `l` here.
 fn member_session(net: &mut Net, n: usize, proven_as: usize, l: LabelId) -> Dialer {
+    member_pulled(net, n, proven_as, l).0
+}
+
+/// `member_session`, with what `n` sent it once `l` joined (its Pull).
+fn member_pulled(net: &mut Net, n: usize, proven_as: usize, l: LabelId) -> (Dialer, Vec<ClientEvent>) {
     let (mut p, _) = dial_in(net, n);
     let provers = net.sync(proven_as).provers().unwrap();
     command(net, n, &mut p, Command::Prove(provers));
     let mut out = Vec::new();
     net.sync(n).shared_admit(p.conn, l, &mut out).unwrap();
-    net.actions(n, out);
-    p
+    let evs = exchange(net, n, &mut p, out, Vec::new());
+    (p, evs)
 }
 
 fn reach(net: &mut Net, n: usize, key: u8) {
@@ -116,26 +121,42 @@ fn dropped_entry_refused_from_peer_spec_sync_5() {
     assert!(!net.host_ids(host, &l).contains(&x), "never re-uploaded");
 }
 
-// spec/sync.md §5 (hosts cap storage per label; co-reader peer applies the same rule): a peer's
-// uploads past its byte budget get code 12 and are not kept.
-#[test]
-fn peer_budget_refuses_spec_sync_5() {
+/// Whether node `b`, with `peer_bytes`, keeps an unstamped entry no key here opens, 1000 bytes,
+/// that a reader sharing L brings in reply to `b`'s Pull.
+fn kept_from_reader(peer_bytes: u64) -> bool {
     let mut net = Net::new();
     let a = net.node(1, &[]);
-    let cfg = SyncConfig { peers: false, peer_bytes: 64, ..SyncConfig::default() };
+    let cfg = SyncConfig { peers: false, peer_bytes, ..SyncConfig::default() };
     let b = net.add_node(2, cfg);
     reach(&mut net, a, 0xa1);
     reach(&mut net, b, 0xb1);
-    let g = net.group_at(a, &[(b, Role::Write)], vec![]);
-    let t = net.item(a, g, g, "too big for the budget");
+    net.blocked_peers.insert((a, b));
+    net.group_at(a, &[(b, Role::Write)], vec![]);
     net.run();
-    assert_eq!(net.read(b, t), None, "b dials nobody and refuses a's uploads past 64 bytes");
-    assert!(net.sync(a).take_diagnostics().iter().any(|d| d.contains("code 12")));
+    let l = net.label(b);
+    let (mut p, evs) = member_pulled(&mut net, b, a, l);
+    let id = evs.iter().find_map(|e| if let ClientEvent::Peer(m) = e { if let osis_proto::Message::Pull(x) = &**m { Some(x.id) } else { None } } else { None }).expect("b pulls its member");
+    let blob = vec![0x5a; 1000];
+    let blob_id = osis_label::blob_id(&blob);
+    let ev = osis_proto::Event::Added { blob_id, blob: Some(blob), wrap: [0x11; osis_crypto::WRAP_LEN], stamp: None };
+    let reply = osis_proto::msg::PullReply { id, events: vec![(l, ev)], cursor: Some(vec![1; 8]), whole: false, more: false, report: false, joins: Vec::new() };
+    command(&mut net, b, &mut p, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
+    net.sync(b).entries(&l).iter().any(|(x, _)| *x == blob_id)
 }
 
-// spec/sync.md §5: served sessions are capped: a new one evicts the oldest that has opened
-// nothing (so silent sessions cannot starve holders), and is refused when every running one
-// opened a label; idle ones are closed.
+// spec/sync.md §5 (hosts cap storage per label; co-reader peer applies the same rule), spec/requirements.md
+// (peer input never grows storage unbounded): unopened, unstamped entries a reader's stream brings
+// count against the peer budget, and past it are not kept.
+#[test]
+fn peer_budget_refuses_spec_sync_5() {
+    assert!(kept_from_reader(SyncConfig::default().peer_bytes), "within the budget, kept");
+    assert!(!kept_from_reader(64), "past it, not kept");
+}
+
+// spec/sync.md §5: served sessions are capped: a new one evicts the oldest that serves nothing
+// (so silent sessions cannot starve holders), and is refused when every running one serves a
+// label; idle ones are closed, but one sharing a sync ID, whose stream is quiet while nothing
+// changes.
 #[test]
 fn served_sessions_capped_and_idle_closed_spec_sync_5() {
     let mut net = Net::new();
@@ -150,19 +171,19 @@ fn served_sessions_capped_and_idle_closed_spec_sync_5() {
     let l = net.label(b);
     let (c1, a1) = net.sync(b).accept(LOCAL, [1; 32]);
     assert!(!a1.iter().any(|x| matches!(x, Action::Close { .. })));
-    let mut m = member_session(&mut net, b, a, l);
-    let evs = command(&mut net, b, &mut m, Command::Open { label: l, key: OpenKey::Shared });
-    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Opened { .. })), "{evs:?}");
+    let m = member_session(&mut net, b, a, l);
+    assert!(net.sync(b).served_opened()[&m.conn].contains(&l), "a member of its shared set");
     let (c3, a3) = net.sync(b).accept(LOCAL, [3; 32]);
     assert!(a3.contains(&Action::Close { conn: c1 }), "the silent session makes room: {a3:?}");
     assert!(!a3.contains(&Action::Close { conn: c3 }));
     net.actions(b, a3);
-    let (_, a4) = net.sync(b).accept(LOCAL, [4; 32]);
+    let (c4, a4) = net.sync(b).accept(LOCAL, [4; 32]);
     assert!(a4.contains(&Action::Close { conn: c3 }), "the next silent one goes: {a4:?}");
     assert!(!a4.contains(&Action::Close { conn: m.conn }), "the holder stays");
     net.clock.advance(1_001);
     let acts = net.sync(b).handle(Event::Tick);
-    assert!(acts.contains(&Action::Close { conn: m.conn }), "idle");
+    assert!(acts.contains(&Action::Close { conn: c4 }), "idle: {acts:?}");
+    assert!(!acts.contains(&Action::Close { conn: m.conn }), "a session sharing a sync ID stays while up, however quiet its stream");
 }
 
 // spec/sync.md §5: a stranger without the label's sync key opens nothing.
@@ -357,11 +378,11 @@ fn lan_route_proven_by_up_spec_sync_10() {
     assert!(dials(&acts).iter().all(|d| *d != Address { url: "peer://192.168.7.8:5000".into(), key: lk }), "{acts:?}");
 }
 
-// spec/sync.md §5, spec/wire.md §11.2 (proof 3): proof 3 opens a label only for a member of this
-// connection's shared set: a session that is none is refused, and once the proved node is removed from the
-// group its member closes (issues/net-shared-set.md, Opens) and the same proof is refused
+// spec/sync.md §10 (Shared set): what a session serves is its shared set's, and once the proved
+// node is removed from the group its member closes (issues/net-shared-set.md, Opens); a session
+// with no member opens nothing by a key it does not hold
 #[test]
-fn proof_3_opens_only_for_a_member_and_ends_with_the_right_spec_sync_5() {
+fn a_member_closes_with_the_right_spec_sync_10() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);
@@ -370,12 +391,9 @@ fn proof_3_opens_only_for_a_member_and_ends_with_the_right_spec_sync_5() {
     let g = net.group_at(a, &[(b, Role::Read)], vec![]);
     net.run();
     let l: LabelId = net.label(a);
-    let mut p = member_session(&mut net, a, b, l);
-    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::Shared });
-    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Opened { entry_box: None, .. })), "{evs:?}");
+    let p = member_session(&mut net, a, b, l);
+    assert!(net.sync(a).served_opened()[&p.conn].contains(&l));
     let (mut q, _) = dial_in(&mut net, a);
-    let evs = command(&mut net, a, &mut q, Command::Open { label: l, key: OpenKey::Shared });
-    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "not a member: {evs:?}");
     let stranger = SigningSecret::from_seed(&Secret32::from_bytes([0x99; 32]));
     let evs = command(&mut net, a, &mut q, Command::Open { label: l, key: OpenKey::Sync(stranger) });
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
@@ -387,8 +405,7 @@ fn proof_3_opens_only_for_a_member_and_ends_with_the_right_spec_sync_5() {
     let acts = net.sync(a).handle(Event::Local);
     net.actions(a, acts);
     assert_eq!(net.sync(a).shared_members(p.conn), std::collections::BTreeSet::new(), "the member closed");
-    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::Shared });
-    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
+    assert!(net.sync(a).served_opened()[&p.conn].is_empty(), "serves nothing");
 }
 
 // spec: none (notes/api.md Sync configuration and status): a served session counts apart unless
@@ -411,9 +428,7 @@ fn a_session_of_a_node_not_dialed_is_a_source_not_caught_up() {
     let before = status(&mut net);
     assert_eq!(before.idle, before.sources, "caught up with the connection it dialed: {before:?}");
     let l: LabelId = net.label(a);
-    let mut p = member_session(&mut net, a, c, l);
-    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::Shared });
-    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Opened { .. })), "{evs:?}");
+    let _p = member_session(&mut net, a, c, l);
     let after = status(&mut net);
     assert_eq!(after.sources, before.sources + 1, "its own source: {after:?}");
     assert_eq!(after.idle, before.idle, "not caught up: {after:?}");
@@ -434,9 +449,7 @@ fn a_named_session_whose_dialed_connection_dropped_is_not_caught_up() {
     net.run();
     let status = |net: &mut Net| net.sync(a).label_status().into_iter().find(|s| s.group == g).unwrap();
     let l: LabelId = net.label(a);
-    let mut p = member_session(&mut net, a, b, l);
-    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::Shared });
-    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Opened { .. })), "{evs:?}");
+    let _p = member_session(&mut net, a, b, l);
     let paired = status(&mut net);
     assert_eq!((paired.sources, paired.idle), (1, 1), "one source with the connection dialed: {paired:?}");
     net.set_online(b, false);

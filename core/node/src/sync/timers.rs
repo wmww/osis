@@ -221,10 +221,14 @@ impl SyncEngine {
         out
     }
 
-    /// Syncs every open label at every connection now, live or not: when this returns' replies are
-    /// in, this node has heard all the hosts had (`wait_synced`, a demotion's pre-sync).
+    /// Syncs every open label at every connection now, live or not, and asks every reader's
+    /// stream: when this returns' replies are in, this node has heard all its sources had
+    /// (`wait_synced`, a demotion's pre-sync).
     pub fn sync_now(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
+        if let Err(e) = self.stream_ask_all(&mut out) {
+            self.diag(format!("sync: {e}"));
+        }
         let todo: Vec<(ConnId, LabelId)> = self.conns.iter().flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.phase == Phase::Open && !l.syncing).map(move |(lid, _)| (*id, *lid))).collect();
         for (conn, label) in todo {
             if let Err(e) = self.sync_label(conn, label, &mut out) {
@@ -238,13 +242,6 @@ impl SyncEngine {
     /// Starts a cursor sync of an open label.
     pub(crate) fn sync_label(&mut self, conn: ConnId, label: LabelId, out: &mut Vec<Action>) -> Result<()> {
         let now = self.raw_now();
-        // a co-reader: its stream, read again to its end
-        if self.conns.get(&conn).is_some_and(|c| c.peer) {
-            if let Some(l) = self.lc_mut(conn, &label) {
-                l.last_sync = now;
-            }
-            return self.stream_ask(conn, true, out);
-        }
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let host = c.host;
         let Some(l) = c.labels.get_mut(&label) else { return Ok(()) };

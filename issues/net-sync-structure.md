@@ -44,7 +44,7 @@ A label with no non-`peer://` host gets a **local pass** (`local_passes`, pass/m
 Unblocks: issues/net-one-peer.md step 3.
 
 ## (f) One serving implementation
-Two serve the node-to-node protocol: osis-host's `Hub` (core/host/src/hub.rs: `ServingSession`s and `Replicator`s over `HostStore`, a durable log) and node sync's `serve.rs` (`ServingSession` over `PeerStore`, a `LabelStore` over the engine's entries and blobs, with no per-label log: readers pull its durable node log as one stream (notes/peers.md, The stream); co-reader proofs by `reach_nodes`; per-peer byte charges; `MAX_PEER_STEPS` registered steps in memory). The `Hub` stays, over the node-wide durable log (issues/net-reconnect.md); `PeerStore`, proof 3 and the `Replicator` go (replication is sync with a peer). tools/policy.py's `host_blind` keeps the serving crate without keys (issues/net-one-peer.md step 5).
+Two serve the node-to-node protocol: osis-host's `Hub` (core/host/src/hub.rs: `ServingSession`s and `Replicator`s over `HostStore`, a durable log) and node sync's `serve.rs` (`ServingSession` over `PeerStore`, a `LabelStore` over the engine's entries and blobs, with no per-label log: readers pull its durable node log as one stream (notes/peers.md, The stream); co-reader proofs by `reach_nodes`; per-peer byte charges; `MAX_PEER_STEPS` registered steps in memory). The `Hub` stays, over the node-wide durable log (issues/net-reconnect.md); `PeerStore` and the `Replicator` go (replication is sync with a peer). tools/policy.py's `host_blind` keeps the serving crate without keys (issues/net-one-peer.md step 5).
 Unblocks: issues/net-one-peer.md steps 3-4; issues/net-reconnect.md (the durable log is the hub's).
 
 ## Bugs in the code these replace (low; fixed by the item named, not before)

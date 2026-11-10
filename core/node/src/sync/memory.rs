@@ -33,6 +33,8 @@ pub(crate) enum RelayFrom {
     Host(Option<HostKey>),
     /// A session this node serves.
     Served(ConnId),
+    /// A reader's stream.
+    Reader(ConnId),
 }
 
 /// Entries remembered per label with a weight, at most `max` weight per label, the oldest
@@ -718,8 +720,8 @@ impl SyncEngine {
         self.engine.head_keys(g, index, &head).ok()?.write
     }
 
-    /// Sends a relay-only entry on every connection where `l` is open (and to the served
-    /// sessions, as a co-reader peer would push it), stamped.
+    /// Sends a relay-only entry on every host connection where `l` is open, to each reader
+    /// sharing `l` (`stream_relay`) and to the served sessions, stamped.
     fn send_relay(&mut self, l: LabelId, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<Signature>, out: &mut Vec<Action>) -> Result<()> {
         let blob_id = osis_label::blob_id(&blob);
         if blob.len() > osis_base::format::MAX_RELAY_BLOB {
@@ -738,6 +740,7 @@ impl SyncEngine {
             };
             self.command(conn, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob: blob.clone(), wrap, stamp: st, replaces: Vec::new() }] }, out)?;
         }
+        self.stream_relay(None, l, blob_id, &blob, wrap, stamp, out)?;
         if let Some(stamp) = stamp
             && !self.served.is_empty()
         {
@@ -751,11 +754,11 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// A relay-only entry (a push, a fetch, a served session's upload; `from` where it came
-    /// from): dropped unopened when too large, outside its prefix window or seen before
-    /// (`RelaySeen`); else verified and its signals delivered once, then passed on as a host
-    /// would: to the sessions this node serves, and, from one of them, to the hosts it syncs the
-    /// label with (spec/sync.md §5, §9).
+    /// A relay-only entry (a push, a fetch, a served session's upload, a reader's stream; `from`
+    /// where it came from): dropped unopened when too large, outside its prefix window or seen
+    /// before (`RelaySeen`); else verified and its signals delivered once, then passed on as a
+    /// host would: to the readers sharing the label and the sessions this node serves, and,
+    /// from one of those, to the hosts it syncs the label with (spec/sync.md §5, §9).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn relay_in(&mut self, from: RelayFrom, l: LabelId, b: BlobId, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<Signature>, out: &mut Vec<Action>) -> Result<()> {
         if blob.len() > osis_base::format::MAX_RELAY_BLOB {
@@ -789,6 +792,11 @@ impl SyncEngine {
                 return Ok(());
             }
         }
+        let reader = match from {
+            RelayFrom::Reader(c) => Some(c),
+            _ => None,
+        };
+        self.stream_relay(reader, l, b, &blob, wrap, stamp, out)?;
         let Some(stamp) = stamp else { return Ok(()) };
         let r = osis_proto::Relayed { label: l, blob_id: b, blob: blob.into(), wrap, stamp };
         if !self.served.is_empty() {
@@ -798,7 +806,7 @@ impl SyncEngine {
                 self.serve_with(c, osis_proto::ServingInput::Relay(r.clone()), &labels, out)?;
             }
         }
-        if let RelayFrom::Served(_) = from {
+        if let RelayFrom::Served(_) | RelayFrom::Reader(_) = from {
             for (conn, _, _) in self.open_conns(&l) {
                 self.command(conn, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob: r.blob.to_vec(), wrap: r.wrap, stamp: r.stamp, replaces: Vec::new() }] }, out)?;
             }

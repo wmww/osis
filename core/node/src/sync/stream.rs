@@ -17,19 +17,23 @@
 //!   one leaving keeps its position as a lag. A connection's start stops every member of the
 //!   record at the position it holds (`record_stop_all`), so one this connection does not open
 //!   claims nothing past what it applied.
-//! - A cursor is stored only after what it covers is applied (state flushed first); a member no
-//!   longer open here leaves the stream before a message is applied (`stream_prune`).
-//! - Within a connection a requester opens L only after the server has (the shared set's reply
-//!   order) and the server's `Lost` follows every event it sent for L, so the server's S covers
-//!   the requester's tracked members wherever the stream moves them.
+//! - A cursor is stored only after what it covers is applied (state flushed first); a member
+//!   leaves the stream when it leaves S here, before any later message is applied.
+//! - Within a connection a requester joins L only after the server opened it: the side answering
+//!   an Offer opens and joins after sending its answer, the tester on reading it; and the
+//!   server's `Lost` follows every event it sent for L. So the server's S covers the requester's
+//!   tracked members wherever the stream moves them.
 //!
 //! Checked by the randomized differentials `stream_differential_no_write_dropped_spec_sync_10`
 //! and `stream_differential_paged_spec_sync_10` (core/node/tests/it/stream.rs).
 //!
-//! As built: the dialer pulls; the listener serves (both sides serve). Memory entries are the
-//! log's memory part (`MemLog`), which no cursor names: the first Pull of a connection, and
-//! every join, list the memory events of what they start; later ones follow in counter order on
-//! that connection, paged by the same budget as the durable part.
+//! Both sides of a connection pull and serve: a member of S is pulled by the side it is open at,
+//! whoever dialed. Bodies announced without bytes are fetched from one reader at a time
+//! (`stream_fetch`, by ids in the node's range). Memory entries are the log's memory part
+//! (`MemLog`), which no cursor names: the first Pull of a connection, and every join, list the
+//! memory events of what they start; later ones follow in counter order on that connection,
+//! paged by the same budget as the durable part. Relay-only entries go as a Stream with no
+//! cursor (`stream_relay`): no position names them.
 
 use super::{Action, ConnId, SyncEngine};
 use crate::error::Result;
@@ -131,8 +135,12 @@ pub(crate) struct Pulling {
     joins: BTreeMap<LabelId, Option<Vec<u8>>>,
     /// The Pull in flight: its id and the joins it named.
     asked: Option<(u32, Vec<LabelId>)>,
+    /// Fetches in flight, by id: the member and the blobs asked.
+    fetching: BTreeMap<u32, (LabelId, Vec<BlobId>)>,
     /// A Pull went on this connection (the first asks for the live memory entries).
     started: bool,
+    /// The `inline_limit` of the last Pull: what the peer's pushes carry inline.
+    inline: u64,
     /// The last reply ended the peer's log and nothing waits.
     caught_up: bool,
     next_id: u32,
@@ -141,6 +149,13 @@ pub(crate) struct Pulling {
     pulls: u64,
     /// The last Pull was answered Error: asked again at this time (raw ms), `resync_ms` after.
     retry_at: Option<u64>,
+}
+
+impl Pulling {
+    fn next(&mut self) -> u32 {
+        self.next_id = self.next_id.wrapping_add(1);
+        ID_BASE | (self.next_id & ((1 << 30) - 1))
+    }
 }
 
 /// One connection's stream, either side.
@@ -192,7 +207,14 @@ impl SyncEngine {
             Message::Stream(s) => self.stream_pushed(conn, *s, out),
             // a report is asked only by an `until`, which this node never sets
             Message::Applied { .. } => Ok(()),
-            Message::Error { id, code } if self.stream_refused(conn, id, code) => Ok(()),
+            Message::Fetch { id, label, max_reply, ids } => self.stream_serve_fetch(conn, id, label, max_reply, ids, out),
+            Message::FetchReply { id, items } => self.stream_fetch_reply(conn, id, items, out),
+            Message::Error { id, code } => {
+                if self.stream_refused(conn, id, code, out)? {
+                    return Ok(());
+                }
+                self.shared_message(conn, Message::Error { id, code }, out)
+            }
             m => self.shared_message(conn, m, out),
         }
     }
@@ -423,7 +445,8 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Member `l` is open here on `conn`: it joins the stream, from its lag or the start.
+    /// Member `l` opened in `conn`'s shared set here: it joins the stream, from its lag or the
+    /// start.
     pub(super) fn stream_join(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<Action>) -> Result<()> {
         let tracked = self.streams.get(&conn).is_some_and(|s| s.pulling.in_stream.contains(&l) || s.pulling.joins.contains_key(&l));
         if tracked {
@@ -434,24 +457,14 @@ impl SyncEngine {
             Some(id) => self.engine.run(|tx| Ok(tx.txn.record_take_lag(&id, &l)?))?,
             None => None,
         };
-        // a listing shows what is there now: what was known present there starts over
-        if lag.is_none()
-            && let Some(host) = self.conns.get(&conn).map(|c| c.host)
-        {
-            for b in self.state.present_at(&host, &l) {
-                self.state.set_present(host, l, b, false);
-            }
-        }
-        if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.syncing = true;
-        }
         let p = &mut self.streams.entry(conn).or_default().pulling;
         p.joins.insert(l, lag);
         p.caught_up = false;
         self.stream_ask(conn, false, out)
     }
 
-    /// Member `l` left `conn` here: its position is kept as a lag for a rejoin.
+    /// Member `l` left `conn`'s shared set here: nothing more of it is applied, and its position
+    /// is kept as a lag for a rejoin.
     pub(super) fn stream_leave(&mut self, conn: ConnId, l: &LabelId) -> Result<()> {
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
         let stop = if p.in_stream.remove(l) { p.cursor.clone() } else { p.joins.remove(l).flatten() };
@@ -461,31 +474,33 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Drops what `conn`'s stream tracks that is no longer an open member there.
-    fn stream_prune(&mut self, conn: ConnId) -> Result<()> {
-        let Some(p) = self.streams.get(&conn).map(|s| &s.pulling) else { return Ok(()) };
-        let open = |l: &LabelId| self.lc(conn, l).is_some_and(|x| x.phase == super::Phase::Open);
-        let gone: Vec<LabelId> = p.in_stream.iter().chain(p.joins.keys()).filter(|l| !open(l)).copied().collect();
-        for l in gone {
-            self.stream_leave(conn, &l)?;
-        }
-        Ok(())
+    /// The connections `l` comes by now: hosts with it open, and readers with it in their shared
+    /// set.
+    pub(crate) fn sources_of(&self, l: &LabelId) -> Vec<ConnId> {
+        let hosts = self.conns.iter().filter(|(_, c)| c.up && c.labels.get(l).is_some_and(|x| x.phase == super::Phase::Open)).map(|(id, _)| *id);
+        let readers = self.records.shared.iter().filter(|(_, s)| s.has(l)).map(|(id, _)| *id);
+        hosts.chain(readers).collect()
     }
 
-    /// A request of this node's answered Error: a Pull is no longer in flight and goes again
-    /// after `resync_ms` (`stream_retry`), as a refused Sync would.
-    /// Whether it answered this stream's Pull.
-    fn stream_refused(&mut self, conn: ConnId, id: u32, code: osis_proto::Code) -> bool {
+    /// A refused request of this node's answered Error: a Pull is no longer in flight and goes
+    /// again after `resync_ms` (`stream_retry`), as a refused Sync would; a fetch is a fetch
+    /// answered with nothing. Whether it answered one.
+    fn stream_refused(&mut self, conn: ConnId, id: u32, code: osis_proto::Code, out: &mut Vec<Action>) -> Result<bool> {
         let at = self.raw_now().saturating_add(self.cfg.resync_ms);
-        let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return false };
+        let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(false) };
+        if let Some((l, ids)) = p.fetching.remove(&id) {
+            let none = ids.into_iter().map(|blob_id| osis_proto::msg::Fetched { blob_id, entry: None }).collect();
+            self.stream_fetched(conn, l, none, out)?;
+            return Ok(true);
+        }
         if p.asked.as_ref().is_none_or(|(x, _)| *x != id) {
-            return false;
+            return Ok(false);
         }
         p.asked = None;
         p.caught_up = false;
         p.retry_at = Some(at);
         self.diag(format!("pull refused: code {}", code.0));
-        true
+        Ok(true)
     }
 
     /// Asks again the streams whose Pull was answered Error once their time came.
@@ -506,21 +521,32 @@ impl SyncEngine {
         self.streams.values().filter_map(|s| s.pulling.retry_at).min()
     }
 
+    /// Asks every stream fresh: when the replies are in, this node has what its readers had.
+    pub(super) fn stream_ask_all(&mut self, out: &mut Vec<Action>) -> Result<()> {
+        let conns: Vec<ConnId> = self.streams.keys().copied().collect();
+        for conn in conns {
+            self.stream_ask(conn, true, out)?;
+        }
+        Ok(())
+    }
+
     /// Sends a Pull on `conn` unless one is in flight: with joins waiting, a reply that left
     /// more, or `fresh` (a caller that must hear everything the peer holds now).
+    /// A Pull whose `inline_limit` is no longer the one due (`stream_inline`) also goes, so the
+    /// peer's pushes carry bodies inline only while it is this node's one source.
     pub(super) fn stream_ask(&mut self, conn: ConnId, fresh: bool, out: &mut Vec<Action>) -> Result<()> {
-        self.stream_prune(conn)?;
         let Some(p) = self.streams.get(&conn).map(|s| &s.pulling) else { return Ok(()) };
-        if p.asked.is_some() || p.retry_at.is_some() || (p.in_stream.is_empty() && p.joins.is_empty()) || (p.caught_up && p.joins.is_empty() && !fresh) {
+        if p.asked.is_some() || p.retry_at.is_some() || (p.in_stream.is_empty() && p.joins.is_empty()) {
             return Ok(());
         }
-        // a body crosses once in a mesh: with another source of any member, announcements only
-        let tracked: Vec<LabelId> = p.in_stream.iter().chain(p.joins.keys()).copied().collect();
-        let other = tracked.iter().any(|l| self.conns.iter().any(|(c, x)| *c != conn && x.labels.get(l).is_some_and(|lc| lc.phase == super::Phase::Open)));
-        let inline_limit = if other { 0 } else { self.cfg.inline_limit };
+        let inline_limit = self.stream_inline(conn);
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
-        p.next_id = p.next_id.wrapping_add(1);
-        let id = ID_BASE | (p.next_id & ((1 << 30) - 1));
+        let stale = p.started && p.inline != inline_limit;
+        if p.caught_up && p.joins.is_empty() && !fresh && !stale {
+            return Ok(());
+        }
+        p.inline = inline_limit;
+        let id = p.next();
         let joins: Vec<Join> = p.joins.iter().map(|(l, c)| (*l, c.clone())).collect();
         p.asked = Some((id, joins.iter().map(|(l, _)| *l).collect()));
         let ephemeral = !p.started;
@@ -530,11 +556,27 @@ impl SyncEngine {
         self.shared_send(conn, Message::Pull(Box::new(pull)), out)
     }
 
-    /// Applies stream events of tracked members, by label in order. A member no longer open
-    /// here (one opening again) leaves the stream first, at the position it holds: the message's
-    /// cursor then moves only the members whose events were applied.
+    /// The `inline_limit` due on `conn`'s Pulls: 0 while any member it tracks has another source
+    /// here, so a body crosses once in a mesh (announcements only, fetched from one source),
+    /// else this node's preference.
+    fn stream_inline(&self, conn: ConnId) -> u64 {
+        let Some(p) = self.streams.get(&conn).map(|s| &s.pulling) else { return 0 };
+        let other = p.in_stream.iter().chain(p.joins.keys()).any(|l| self.sources_of(l).iter().any(|c| *c != conn));
+        if other { 0 } else { self.cfg.inline_limit }
+    }
+
+    /// `l` gained a source here (`conn`): every other stream tracking it Pulls again if its
+    /// pushes still carry bodies inline (`stream_ask`).
+    pub(crate) fn stream_source_gained(&mut self, conn: ConnId, l: &LabelId, out: &mut Vec<Action>) -> Result<()> {
+        let others: Vec<ConnId> = self.streams.iter().filter(|(c, s)| **c != conn && (s.pulling.in_stream.contains(l) || s.pulling.joins.contains_key(l))).map(|(c, _)| *c).collect();
+        for c in others {
+            self.stream_ask(c, false, out)?;
+        }
+        Ok(())
+    }
+
+    /// Applies stream events of tracked members, by label in order.
     fn stream_apply(&mut self, conn: ConnId, events: Vec<(LabelId, Event)>, out: &mut Vec<Action>) -> Result<()> {
-        self.stream_prune(conn)?;
         let Some(p) = self.streams.get(&conn).map(|s| &s.pulling) else { return Ok(()) };
         let mut by_label: BTreeMap<LabelId, Vec<Event>> = BTreeMap::new();
         for (l, e) in events {
@@ -543,11 +585,8 @@ impl SyncEngine {
             }
         }
         for (l, evs) in by_label {
-            if self.lc(conn, &l).is_none_or(|x| x.phase != super::Phase::Open) {
-                continue;
-            }
             self.received_from(conn, l);
-            self.log_events(Some(conn), l, evs, None, out)?;
+            self.reader_events(conn, l, evs, out)?;
         }
         Ok(())
     }
@@ -576,17 +615,6 @@ impl SyncEngine {
         if id != r.id {
             p.asked = Some((id, sent));
             return Ok(());
-        }
-        // a stream from the start: every tracked member is listed, presence starts over
-        if r.whole {
-            let all: Vec<LabelId> = p.in_stream.iter().chain(p.joins.keys()).copied().collect();
-            if let Some(host) = self.conns.get(&conn).map(|c| c.host) {
-                for l in &all {
-                    for b in self.state.present_at(&host, l) {
-                        self.state.set_present(host, *l, b, false);
-                    }
-                }
-            }
         }
         self.stream_apply(conn, r.events, out)?;
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
@@ -628,12 +656,8 @@ impl SyncEngine {
         if done {
             // the peer's log was read to its end: a pass end there for each member
             for l in caught {
-                if let Some(lc) = self.lc_mut(conn, &l) {
-                    lc.syncing = false;
-                }
-                self.synced(conn, l, out)?;
+                self.source_passed(conn, l)?;
             }
-            return Ok(());
         }
         self.stream_ask(conn, false, out)
     }
@@ -643,15 +667,119 @@ impl SyncEngine {
             return Ok(());
         }
         self.stream_apply(conn, s.events, out)?;
+        // a push with no cursor carries what no position names (a relay-only entry)
+        let Some(c) = s.cursor else { return Ok(()) };
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
-        p.cursor = s.cursor.clone();
+        p.cursor = Some(c.clone());
+        // a push to a stream read to its end moves it to the server's newer end: a pass end there
+        // for each member, as a host's push is (`log_events_from`)
+        let caught: Vec<LabelId> = if p.caught_up && p.asked.is_none() { p.in_stream.iter().copied().collect() } else { Vec::new() };
         self.stream_store(conn, &[], &[])?;
-        if s.report
-            && let Some(c) = s.cursor
-        {
+        if s.report {
             self.shared_send(conn, Message::Applied { cursor: c }, out)?;
         }
+        for l in caught {
+            self.source_passed(conn, l)?;
+        }
         Ok(())
+    }
+
+    /// A relay-only entry to each reader sharing `l` but `except` (its source): a Stream with
+    /// no cursor, as no position names it (spec/sync.md §9).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn stream_relay(&mut self, except: Option<ConnId>, l: LabelId, blob_id: BlobId, blob: &[u8], wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<osis_crypto::Signature>, out: &mut Vec<Action>) -> Result<()> {
+        let to: Vec<ConnId> = self.records.shared.iter().filter(|(c, s)| Some(**c) != except && s.has(&l)).map(|(c, _)| *c).collect();
+        for c in to {
+            let ev = Event::Added { blob_id, blob: Some(blob.to_vec()), wrap, stamp };
+            self.shared_send(c, Message::Stream(Box::new(Stream { events: vec![(l, ev)], cursor: None, report: false })), out)?;
+        }
+        Ok(())
+    }
+
+    // ---- bodies ----
+
+    /// Whether blob `b` is asked of a reader and not received yet.
+    pub(crate) fn stream_fetching(&self, b: &BlobId) -> bool {
+        self.streams.values().any(|s| s.pulling.fetching.values().any(|(_, ids)| ids.contains(b)))
+    }
+
+    /// Fetches the bodies `ids` of member `l` from `conn`'s peer, but those asked for already
+    /// on any connection: one source at a time per blob.
+    pub(crate) fn stream_fetch(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, out: &mut Vec<Action>) -> Result<()> {
+        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching(b)).collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
+        let mut msgs = Vec::new();
+        for batch in ids.chunks(osis_proto::msg::MAX_ITEMS) {
+            let id = p.next();
+            p.fetching.insert(id, (l, batch.to_vec()));
+            msgs.push(Message::Fetch { id, label: l, max_reply: osis_proto::serving::REPLY_BUDGET as u64, ids: batch.to_vec() });
+        }
+        for m in msgs {
+            self.shared_send(conn, m, out)?;
+        }
+        Ok(())
+    }
+
+    /// Answers a reader's Fetch from what this node holds of a member of the connection's
+    /// shared set, in order within `max_reply`: what does not fit is left out (asked again), what
+    /// is not held is answered with nothing.
+    fn stream_serve_fetch(&mut self, conn: ConnId, id: u32, l: LabelId, max_reply: u64, ids: Vec<BlobId>, out: &mut Vec<Action>) -> Result<()> {
+        let member = self.records.shared.get(&conn).is_some_and(|s| s.has(&l));
+        let mut budget = usize::try_from(max_reply).unwrap_or(usize::MAX).min(osis_proto::serving::REPLY_BUDGET).saturating_sub(256);
+        let mut items = Vec::new();
+        for b in ids {
+            let held = if member { self.state.entries.get(&(l, b)).map(|e| (e.wrap, e.stamp)) } else { None };
+            let entry = match held {
+                Some((wrap, stamp)) => self.engine.blob(&b)?.map(|x| (x, wrap, stamp)),
+                None => None,
+            };
+            let n = entry.as_ref().map_or(40, |(x, ..)| x.len().saturating_add(200));
+            if n > budget && !items.is_empty() {
+                break;
+            }
+            budget = budget.saturating_sub(n);
+            items.push(osis_proto::msg::Fetched { blob_id: b, entry });
+        }
+        self.shared_send(conn, Message::FetchReply { id, items }, out)
+    }
+
+    /// A reader answered a fetch: what it delivered is applied as its events are; what it did
+    /// not is asked of the next source of `l` (by connection order), else waits for an
+    /// announcement; what did not fit is asked again here.
+    fn stream_fetch_reply(&mut self, conn: ConnId, id: u32, items: Vec<osis_proto::msg::Fetched>, out: &mut Vec<Action>) -> Result<()> {
+        let Some((l, asked)) = self.streams.get_mut(&conn).and_then(|s| s.pulling.fetching.remove(&id)) else { return Ok(()) };
+        let answered: BTreeSet<BlobId> = items.iter().map(|f| f.blob_id).collect();
+        self.stream_fetched(conn, l, items, out)?;
+        let rest: Vec<BlobId> = asked.into_iter().filter(|b| !answered.contains(b)).collect();
+        if !rest.is_empty() {
+            self.stream_fetch(conn, l, rest, out)?;
+        }
+        Ok(())
+    }
+
+    fn stream_fetched(&mut self, conn: ConnId, l: LabelId, items: Vec<osis_proto::msg::Fetched>, out: &mut Vec<Action>) -> Result<()> {
+        let mut evs = Vec::new();
+        let mut failed = Vec::new();
+        for f in items {
+            match f.entry {
+                Some((blob, wrap, stamp)) if osis_label::blob_id(&blob) == f.blob_id => evs.push(Event::Added { blob_id: f.blob_id, blob: Some(blob), wrap, stamp }),
+                _ => failed.push(f.blob_id),
+            }
+        }
+        if !evs.is_empty() && self.records.shared.get(&conn).is_some_and(|s| s.has(&l)) {
+            self.reader_events(conn, l, evs, out)?;
+        }
+        if failed.is_empty() {
+            return Ok(());
+        }
+        let next = self.records.shared.iter().find(|(c, s)| **c > conn && s.has(&l)).map(|(c, _)| *c);
+        match next {
+            Some(c) => self.stream_fetch(c, l, failed, out),
+            None => Ok(()),
+        }
     }
 
     /// Pulls sent on `conn` so far (tests count them).
@@ -662,5 +790,11 @@ impl SyncEngine {
     /// Whether `conn`'s stream read the peer's log to its end with nothing waiting (tests).
     pub fn stream_caught_up(&self, conn: ConnId) -> bool {
         self.streams.get(&conn).is_some_and(|s| s.pulling.caught_up)
+    }
+
+    /// Whether member `l` is applied to the stream's end on `conn` with no body asked there
+    /// (`label_status`'s idle source).
+    pub(crate) fn stream_idle(&self, conn: ConnId, l: &LabelId) -> bool {
+        self.streams.get(&conn).is_some_and(|s| s.pulling.caught_up && s.pulling.in_stream.contains(l) && s.pulling.fetching.is_empty())
     }
 }

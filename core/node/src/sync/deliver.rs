@@ -385,7 +385,7 @@ impl SyncEngine {
                 continue;
             }
             let local = super::peers::hostless(&gl.hosts);
-            if local && self.own_reach().is_none() {
+            if local && !self.serves_readers() {
                 continue;
             }
             let ctx = self.engine.body_ctx(&g);

@@ -177,11 +177,11 @@ impl SyncEngine {
         self.bind_record(conn, id, out)
     }
 
-    /// `conn` takes record `id`, and its shared set starts. Two connections of one record with
-    /// one dialer: the smaller `connection_order` stays and the other closes, on both ends, whatever
-    /// order the answers arrived in (a loser that was just dialed is not redialed). Opposite
-    /// dialers both stay: each direction carries its dialer's pass until both sides pull on one
-    /// connection (issues/net-reconnect.md).
+    /// `conn` takes record `id`, and its stream and shared set start. Two connections of one
+    /// record are one pair of nodes (r is known to the two alone), whoever dialed each: the
+    /// smaller `connection_order` stays and the other closes, on both ends, whatever order the
+    /// answers arrived in; a dialer whose connection lost to one the peer dialed does not dial
+    /// the peer again while that one lasts (`stand_in`).
     pub(super) fn bind_record(&mut self, conn: ConnId, id: RecordId, out: &mut Vec<Action>) -> Result<()> {
         let (acked, r) = self.engine.run(|tx| Ok(tx.txn.record(&id)?.map_or((0, [0; 32]), |r| (r.acked_pos, r.r))))?;
         let Some((dialer, listener)) = self.conns.get(&conn).and_then(|c| c.session.binding()).or_else(|| self.served_binding(conn)).map(|(d, l, _)| (d, l)) else { return Ok(()) };
@@ -189,34 +189,32 @@ impl SyncEngine {
         self.records.order.insert(conn, order);
         self.records.bound.insert(conn, ConnRecord::new(id, acked));
         let old = self.records.live.get(&id).copied().filter(|old| *old != conn);
-        if let Some(old) = old
-            && (self.conns.get(&old).zip(self.conns.get(&conn)).is_some_and(|(a, b)| a.host == b.host) || self.served_same_peer(old, conn))
-        {
+        if let Some(old) = old {
             let keep_new = self.records.order.get(&old).is_none_or(|o| order < *o);
-            let lose = if keep_new { old } else { conn };
+            let (keep, lose) = if keep_new { (conn, old) } else { (old, conn) };
             self.records.bound.remove(&lose);
-            if keep_new {
-                self.records.live.insert(id, conn);
-            }
-            self.close_duplicate(lose, out);
+            self.records.live.insert(id, keep);
+            self.close_duplicate(lose, keep, out);
             if !keep_new {
                 return Ok(());
             }
         } else {
             self.records.live.insert(id, conn);
         }
-        // the dialer pulls the listener (as built: one direction per connection)
-        if self.conns.contains_key(&conn) {
-            self.stream_bind(conn, id)?;
-        }
+        self.stream_bind(conn, id)?;
         self.shared_begin(conn, Some(r), out)
     }
 
-    fn close_duplicate(&mut self, conn: ConnId, out: &mut Vec<Action>) {
+    /// Closes `conn`, the duplicate of `keep`. A dialed one is not dialed again at once: its
+    /// peer is connected by `keep` (`stand_in` when the peer dialed it).
+    fn close_duplicate(&mut self, conn: ConnId, keep: ConnId, out: &mut Vec<Action>) {
         if let Some(host) = self.conns.get(&conn).map(|c| c.host) {
             out.push(Action::Close { conn });
             self.lost(conn);
             self.retry.remove(&host);
+            if self.served.contains_key(&keep) {
+                self.stand_in.insert(host, keep);
+            }
         } else {
             self.close_served(conn, out);
         }

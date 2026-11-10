@@ -169,6 +169,16 @@ impl Shared {
         }
     }
 
+    /// Whether L is a member here.
+    pub(crate) fn has(&self, l: &LabelId) -> bool {
+        self.members.contains_key(l)
+    }
+
+    /// Whether S is empty here.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+
     fn side(&self, by_listener: bool) -> Side<'_> {
         (by_listener, &self.key, &self.dialer, &self.listener)
     }
@@ -376,7 +386,7 @@ impl SyncEngine {
             return Ok(());
         }
         match m {
-            Message::NoRecord { id } => self.shared_send(conn, Message::Shared { id, codes: vec![(Code::OK, None)] }, out),
+            Message::NoRecord { id } => self.shared_send(conn, Message::Shared { id, codes: vec![(Code::OK, None, None)] }, out),
             Message::Beacons { id, generation, base, f, lo, hi, gcs, more } => self.shared_beacons(conn, id, (generation, base, f, lo, hi), &gcs, more, out),
             Message::Offer { id, items } => self.shared_offer(conn, id, items, out),
             Message::Lost { id, items } => self.shared_lost(conn, id, items, out),
@@ -405,7 +415,7 @@ impl SyncEngine {
         // a whole filter replaces, additions build on the one held: a base not held is answered 13
         if base.is_some() && s.peer.as_ref().map(|p| p.generation) != base {
             s.pages = None;
-            return self.shared_send(conn, Message::Shared { id, codes: vec![(Code::UNKNOWN_LABEL, None)] }, out);
+            return self.shared_send(conn, Message::Shared { id, codes: vec![(Code::UNKNOWN_LABEL, None, None)] }, out);
         }
         let space = if f >= 64 { None } else { Some(1u64 << f) };
         let ordered = lo < hi && space.is_none_or(|e| hi <= e);
@@ -428,7 +438,7 @@ impl SyncEngine {
         p.values.extend(values);
         p.next_lo = hi;
         if more {
-            return self.shared_send(conn, Message::Shared { id, codes: vec![(Code::OK, None)] }, out);
+            return self.shared_send(conn, Message::Shared { id, codes: vec![(Code::OK, None, None)] }, out);
         }
         let Some(p) = s.pages.take() else { return Ok(()) };
         if space.is_some_and(|e| p.next_lo != e) {
@@ -456,7 +466,7 @@ impl SyncEngine {
         s.peer = Some(fin);
         s.test_due = true;
         self.stats.filters_received += 1;
-        self.shared_send(conn, Message::Shared { id, codes: vec![(Code::OK, None)] }, out)?;
+        self.shared_send(conn, Message::Shared { id, codes: vec![(Code::OK, None, None)] }, out)?;
         self.shared_test(conn, out)
     }
 
@@ -586,6 +596,7 @@ impl SyncEngine {
         self.shared_table(conn)?;
         let things = self.things();
         let Some(actors) = self.connection_proven(conn).map(Proven::all) else { return Ok(()) };
+        let served = self.served_labels();
         let mut judge = self.engine.core.judge(actors);
         let mut codes = Vec::with_capacity(items.len());
         let mut opens: Vec<(LabelId, u8, Option<[u8; 32]>)> = Vec::new();
@@ -596,48 +607,49 @@ impl SyncEngine {
                     Some(c) if c.class != STATIC || self.shared_static_proved(conn, &c.label, &c.value) => {
                         let tag = beacon_reply(&c.value, &c.label.0, &c.beacon, s.side(s.by_listener));
                         opens.push((c.label, c.class, Some(c.value)));
-                        (Code::OK, Some(tag))
+                        // a key actor's node learns the read secret from the head's box for it
+                        let grant = (c.class == STATIC).then(|| served.get(&c.label).and_then(|x| x.grant(&c.value))).flatten().map(Box::new);
+                        (Code::OK, Some(tag), grant)
                     }
-                    _ => (Code::NOT_ADMITTED, None),
+                    _ => (Code::NOT_ADMITTED, None, None),
                 },
                 OfferItem::ByRole(l, hits) => {
                     let listed = hits.iter().filter_map(|h| s.table.as_ref().and_then(|t| t.get(h))).find(|c| c.label == l && (c.class != STATIC || self.shared_static_proved(conn, &c.label, &c.value)));
                     let holder = things.get(&l).is_some_and(|t| judge.of(t) == super::credentials::Judgment::Holder);
                     if holder || listed.is_some() {
                         opens.push((l, listed.map_or(JUDGED, |c| c.class), listed.map(|c| c.value)));
-                        (Code::OK, None)
+                        (Code::OK, None, None)
                     } else {
-                        (Code::NOT_ADMITTED, None)
+                        (Code::NOT_ADMITTED, None, None)
                     }
                 }
             };
             codes.push(answer);
         }
         drop(judge);
-        let opened = !opens.is_empty();
+        // the answer first: the tester opens on reading it, so a Pull joining L after it finds L
+        // open there (stream.rs)
+        self.shared_send(conn, Message::Shared { id, codes }, out)?;
         for (l, class, value) in opens {
             self.shared_open(conn, l, class, value, out)?;
-        }
-        self.shared_send(conn, Message::Shared { id, codes }, out)?;
-        if opened {
-            self.add_new_labels(out)?;
         }
         Ok(())
     }
 
-    /// L joins `conn`'s S on this side; a served session then answers `Proof::Shared` for it.
+    /// L joins `conn`'s S on this side, and this side's stream of the peer.
     fn shared_open(&mut self, conn: ConnId, l: LabelId, class: u8, value: Option<[u8; 32]>, out: &mut Vec<Action>) -> Result<()> {
+        // the first sync ID shared here: what this node holds of labels synced with no host is
+        // placed for its readers from now on (`serves_readers`)
+        self.local_dirty |= self.records.shared.values().all(Shared::is_empty);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         s.members.insert(l, Member { class, value });
-        if self.served_has(conn) {
-            self.serve(conn, ServingInput::SharedOpen { label: l, open: true }, out)?;
-        }
-        Ok(())
+        self.stream_join(conn, l, out)?;
+        self.stream_source_gained(conn, &l, out)
     }
 
     /// L leaves S on this side (a Lost, a judgment): nothing more is served or pulled for it and
     /// the member is pending again for this connection (issues/net-shared-set.md, Re-marking).
-    fn shared_close(&mut self, conn: ConnId, l: &LabelId, out: &mut Vec<Action>) -> Result<()> {
+    fn shared_close(&mut self, conn: ConnId, l: &LabelId) -> Result<()> {
         let at = self.engine.run(|tx| Ok(tx.txn.changed_at(l)?))?.unwrap_or(0);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         s.members.remove(l);
@@ -646,17 +658,7 @@ impl SyncEngine {
         s.pending.remark(at);
         s.acked_pos = s.acked_pos.min(at.saturating_sub(1));
         s.test_due = true;
-        if self.served_has(conn) {
-            self.serve(conn, ServingInput::SharedOpen { label: *l, open: false }, out)?;
-        } else if self.conns.contains_key(&conn) {
-            self.stream_leave(conn, l)?;
-        }
-        if let Some(c) = self.conns.get_mut(&conn) {
-            c.labels.remove(l);
-            c.req.forget(|x| x == l);
-            self.unsubscribe.insert((conn, *l));
-        }
-        Ok(())
+        self.stream_leave(conn, l)
     }
 
     /// Re-judges every member: holders stay; a credential open stays while that credential is
@@ -694,7 +696,7 @@ impl SyncEngine {
             return Ok(());
         }
         for l in &gone {
-            self.shared_close(conn, l, out)?;
+            self.shared_close(conn, l)?;
         }
         for batch in gone.chunks(MAX_SHARED_ITEMS) {
             let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
@@ -712,14 +714,14 @@ impl SyncEngine {
         let n = items.len();
         for (l, _) in items {
             if self.shared_member(conn, &l) {
-                self.shared_close(conn, &l, out)?;
+                self.shared_close(conn, &l)?;
             }
         }
-        self.shared_send(conn, Message::Shared { id, codes: vec![(Code::OK, None); n] }, out)?;
+        self.shared_send(conn, Message::Shared { id, codes: vec![(Code::OK, None, None); n] }, out)?;
         self.shared_test(conn, out)
     }
 
-    fn shared_reply(&mut self, conn: ConnId, id: u32, codes: Vec<(Code, Option<[u8; 32]>)>, out: &mut Vec<Action>) -> Result<()> {
+    fn shared_reply(&mut self, conn: ConnId, id: u32, codes: Vec<osis_proto::msg::SharedCode>, out: &mut Vec<Action>) -> Result<()> {
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         let Some(asked) = s.asked.remove(&id) else { return Ok(()) };
         match asked {
@@ -742,8 +744,7 @@ impl SyncEngine {
             }
             Asked::Offer(items) => {
                 s.pending.offers_unanswered = s.pending.offers_unanswered.saturating_sub(1);
-                let mut opened = false;
-                for (item, (code, tag)) in items.into_iter().zip(codes) {
+                for (item, (code, tag, grant)) in items.into_iter().zip(codes) {
                     if code != Code::OK {
                         continue;
                     }
@@ -754,7 +755,6 @@ impl SyncEngine {
                             let actors = self.connection_proven(conn).map(Proven::all).unwrap_or_default();
                             if things.get(&l).is_some_and(|t| self.engine.core.judge(actors).of(t) == super::credentials::Judgment::Holder) {
                                 self.shared_open(conn, l, JUDGED, None, out)?;
-                                opened = true;
                             }
                         }
                         AskedItem::Hit(c) => {
@@ -763,21 +763,22 @@ impl SyncEngine {
                             if tag != Some(expect) {
                                 continue;
                             }
+                            // a static entry's grant gives the read secret, or opens nothing
+                            let granted = match &grant {
+                                Some(g) if c.class == STATIC => self.granted(c.label, &c.value, g)?,
+                                _ => true,
+                            };
                             // still admissible when the answer came?
                             let set: BTreeSet<LabelId> = [c.label].into();
                             let now = self.shared_creds(conn, Some(&set))?;
-                            if now.iter().any(|x| x.value == c.value) {
+                            if granted && now.iter().any(|x| x.value == c.value) {
                                 self.shared_open(conn, c.label, c.class, Some(c.value), out)?;
-                                opened = true;
                             } else if !self.shared_member(conn, &c.label) {
                                 // this tester's credential is gone (issues/net-shared-set.md, Divergence)
                                 self.shared_lost_send(conn, c.label, out)?;
                             }
                         }
                     }
-                }
-                if opened {
-                    self.add_new_labels(out)?;
                 }
                 match self.records.shared.get(&conn) {
                     Some(s) if s.pending.offers_unanswered > 0 => Ok(()),

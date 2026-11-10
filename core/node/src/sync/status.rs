@@ -13,37 +13,49 @@ impl SyncEngine {
         for (g, l) in self.labels() {
             let leaving = self.leaving().any(|a| *a == self.engine.group_actor(&g));
             let mut failed = BTreeSet::new();
-            let mut dialed: BTreeSet<Tid> = BTreeSet::new();
             let passed = self.state.passed.contains(&l.id);
             let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), sources: 0, idle: 0, opening: 0, stranded: false, refused_by: Vec::new(), leaving, last_sync: None, passed, replaced: l.replaced };
-            for (id, c) in &self.conns {
+            for c in self.conns.values().filter(|c| !c.peer) {
                 let host = l.hosts.iter().find(|a| a.key == c.host);
                 if let Some(a) = host.filter(|_| c.up && c.req.refusals.get(&l.id).is_some_and(|(_, code)| *code == Code::NOT_ADMITTED)) {
                     st.refused_by.push(a.clone());
                 }
                 let Some(x) = c.labels.get(&l.id) else {
                     // labels are started once the session is ready
-                    let finding = c.peer && !self.shared_settled(*id);
-                    st.opening += usize::from(c.up && (!c.session.is_ready() || finding) && (host.is_some() || c.peer));
+                    st.opening += usize::from(c.up && !c.session.is_ready() && host.is_some());
                     continue;
                 };
                 if x.phase == Phase::Failed && host.is_some() {
                     failed.insert(c.host);
                 }
-                st.opening += usize::from(c.up && x.phase == Phase::Opening && (host.is_some() || c.peer));
+                st.opening += usize::from(c.up && x.phase == Phase::Opening && host.is_some());
                 // a host the label no longer names is on its way out: no source of it
-                if c.up && x.phase == Phase::Open && (host.is_some() || c.peer) {
-                    dialed.extend(c.proven.node);
+                if c.up && x.phase == Phase::Open && host.is_some() {
                     st.sources += 1;
                     if x.idle() && c.session.outstanding() == 0 {
                         st.idle += 1;
                     }
                 }
             }
-            // a served session is its own source (not caught up: no pass of this node runs on it)
-            // unless it proved it is a node this node has a connection to; only a valid proof
-            // names one, so no session can make this count smaller for a node it is not
-            st.sources += self.served.values().filter(|s| s.opens(&l.id) && s.named().is_none_or(|k| !dialed.contains(&k))).count();
+            // a reader is a source while L is in the connection's shared set, idle once its
+            // stream is read to its end; one still finding what it shares is opening. A node
+            // counts once whatever connections it has (only a valid proof names one).
+            for id in self.conns.iter().filter(|(_, c)| c.peer && c.up).map(|(id, _)| *id) {
+                if !self.shared_member(id, &l.id) && !self.shared_settled(id) {
+                    st.opening += 1;
+                }
+            }
+            let mut by_node: BTreeMap<Option<Tid>, bool> = BTreeMap::new();
+            let mut unnamed = (0, 0);
+            for id in self.records.shared.keys().filter(|c| self.shared_member(**c, &l.id)) {
+                let idle = self.stream_idle(*id, &l.id);
+                match self.connection_proven(*id).and_then(|p| p.node) {
+                    Some(k) => *by_node.entry(Some(k)).or_default() |= idle,
+                    None => unnamed = (unnamed.0 + 1, unnamed.1 + usize::from(idle)),
+                }
+            }
+            st.sources += by_node.len() + unnamed.0;
+            st.idle += by_node.values().filter(|x| **x).count() + unnamed.1;
             st.stranded = !l.hosts.is_empty() && l.hosts.iter().all(|a| failed.contains(&a.key));
             if !st.stranded && st.sources > 0 && st.idle == st.sources {
                 self.last_synced.insert(l.id, now);
@@ -69,7 +81,7 @@ impl SyncEngine {
 
     /// Sync connections up, whichever side dialed: a client's session is none.
     pub fn connected(&self) -> usize {
-        self.conns.values().filter(|c| c.up).count() + self.served.values().filter(|s| s.syncing()).count()
+        self.conns.values().filter(|c| c.up).count() + self.served.keys().filter(|c| self.records.shared.contains_key(c)).count()
     }
 
     /// The addresses `g` syncs with as this node knows them: its live labels' hosts, then the

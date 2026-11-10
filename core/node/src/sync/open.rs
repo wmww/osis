@@ -29,8 +29,6 @@ pub(crate) enum Try {
     /// A key actor this node holds (a link key) by its static entry; the head's
     /// entry box gives the read secret (spec/sync.md §2, §5).
     Static { kem: osis_crypto::KemSecret, key: SigningSecret },
-    /// A member of this connection's shared set (spec/sync.md §5): no key to show.
-    Shared,
     /// The claim and static tries of a recorded label, made when reached: a claim key per held
     /// read epoch of every actor, nearly always not needed. Never sent.
     Rest,
@@ -42,7 +40,6 @@ impl Try {
             Try::Sync { key, .. } => OpenKey::Sync(key.clone()),
             Try::Claim { step, key } => OpenKey::Claim { step: step.id(), key: key.clone() },
             Try::Static { key, .. } => OpenKey::Static(key.clone()),
-            Try::Shared => OpenKey::Shared,
             Try::Rest => unreachable!("expanded by try_next"),
         }
     }
@@ -50,7 +47,7 @@ impl Try {
         match self {
             Try::Sync { step, .. } => step.as_ref(),
             Try::Claim { step, .. } => Some(step),
-            Try::Static { .. } | Try::Shared | Try::Rest => None,
+            Try::Static { .. } | Try::Rest => None,
         }
     }
 }
@@ -184,17 +181,8 @@ impl SyncEngine {
     }
 
     pub(crate) fn start_label(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some((host, peer)) = self.conns.get(&conn).map(|c| (c.host, c.peer)) else { return Ok(()) };
-        let (index, mut tries) = self.tries(&host, &g, &l);
-        // on a peer connection L is open by the shared set: first, except a hint's (a link
-        // key): its entry box comes with a static-entry open
-        if peer && self.shared_member(conn, &l) {
-            if self.state.hints.contains_key(&l) {
-                tries.push(Try::Shared);
-            } else {
-                tries.insert(0, Try::Shared);
-            }
-        }
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
+        let (index, tries) = self.tries(&host, &g, &l);
         let lc = LConn {
             group: g,
             index,
@@ -384,6 +372,48 @@ impl SyncEngine {
         }
     }
 
+    /// Learns the read secret an accepted static-entry Hit's grant carries (spec/sync.md §10,
+    /// Shared set): the path verified from the genesis step, the head's box opened by the key
+    /// actor whose static entry `entry` is, and its secret deriving the head's sync key, as for
+    /// an Open's (`static_entry_secret`). Whether it held.
+    pub(crate) fn granted(&mut self, l: LabelId, entry: &[u8; 32], grant: &osis_proto::msg::EntryGrant) -> Result<bool> {
+        let things = self.things();
+        let Some(g) = things.get(&l).copied() else { return Ok(false) };
+        let index = self.group_label(&g, &l).map(|gl| gl.index).or_else(|| self.state.hints.get(&l).map(|h| h.index)).unwrap_or(0);
+        let mut prev: Option<&Step> = None;
+        for st in &grant.path {
+            let ok = match prev {
+                None => st.label == l && st.verify_genesis().is_ok(),
+                Some(p) => st.verify_child(p).is_ok(),
+            };
+            if !ok {
+                self.diag("granted path does not verify".into());
+                return Ok(false);
+            }
+            prev = Some(st);
+        }
+        let Some(head) = grant.path.last() else { return Ok(false) };
+        let kem = self.engine.core.key_actors.values().find(|id| osis_crypto::static_entry(&l, &id.keys().signing.verifying_key()) == *entry).map(|id| id.keys().kem.clone());
+        let Some(kem) = kem else { return Ok(false) };
+        let item = match osis_label::open_entry_box(&grant.entry_box, head, &kem, &g) {
+            Ok(x) => x,
+            Err(e) => {
+                self.diag(format!("entry box: {e}"));
+                return Ok(false);
+            }
+        };
+        if osis_label::match_secret(&head.keys.sync, LabelRole::Sync, index, [&item.secret]).is_none() {
+            self.diag("entry box secret does not derive the head's sync key".into());
+            return Ok(false);
+        }
+        self.record_steps(&g, &l, &grant.path, None)?;
+        if let Some((e, s)) = item.earlier {
+            self.engine.learn_read_secret(&g, e, s)?;
+        }
+        self.engine.learn_read_secret(&g, item.epoch, item.secret)?;
+        Ok(true)
+    }
+
     /// Learns the read secret a verified head's entry box carries for the static entry tried,
     /// when it derives the head's sync key (spec/sync.md §2: the step boxes the read secret of
     /// its epoch; anything else is a forged box). False when it does not.
@@ -421,10 +451,7 @@ impl SyncEngine {
             lc.tries.clear();
             (lc.step_retry, lc.step_refusals) = (0, 0);
         }
-        // a co-reader's events come by its node log stream (spec/sync.md §10, Stream)
-        if self.conns.get(&conn).is_some_and(|c| c.peer) {
-            return self.stream_join(conn, l, out);
-        }
+        self.stream_source_gained(conn, &l, out)?;
         if self.cfg.subscribe {
             self.command(conn, Command::Subscribe { labels: vec![l] }, out)?;
         }

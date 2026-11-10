@@ -137,8 +137,8 @@ fn group_peers_names_a_co_reader_not_its_lan_route() {
     assert_eq!(net.sync(a).group_peers(&g), lasting, "a LAN route known");
 }
 
-// notes/api.md Sync configuration: a source is a node with the label open, not one connected on
-// the way to asking.
+// notes/api.md Sync configuration: a source is a node the label is shared with, not one connected
+// on the way to finding what it shares.
 #[test]
 fn a_node_is_a_source_only_once_the_label_is_open() {
     let mut net = Net::new();
@@ -155,8 +155,8 @@ fn a_node_is_a_source_only_once_the_label_is_open() {
         let st = net.sync(a).label_status();
         let Some(s) = st.iter().find(|s| s.group == g) else { continue };
         if s.sources > 0 {
-            let opened = |net: &mut Net, x: usize| net.sync(x).served_opened().values().any(|o| o.contains(&s.label));
-            assert!(opened(&mut net, a) || opened(&mut net, b), "connected before anyone opened it");
+            let conns: Vec<_> = net.sync(a).proven_connections().into_iter().map(|(c, _)| c).collect();
+            assert!(conns.iter().any(|c| net.sync(a).shared_members(*c).contains(&s.label)), "connected before the label was shared");
             told = true;
         }
     }

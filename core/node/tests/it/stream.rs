@@ -34,6 +34,59 @@ fn a_dialer_pulls_its_peer_stream_spec_sync_10() {
     assert_eq!(net.peer_sent(a, SYNC) + net.peer_sent(a, SUBSCRIBE), 0, "no per-label Sync or Subscribe between readers");
 }
 
+// spec/sync.md §10 (Stream: both sides pull): a reader's own write reaches a co-reader by the
+// co-reader pulling it, whoever dialed, with no Upload, Deposit or Open between them
+#[test]
+fn a_readers_write_reaches_a_co_reader_with_no_upload_spec_sync_10() {
+    const OPEN: u64 = 4;
+    const UPLOAD: u64 = 10;
+    const DEPOSIT: u64 = 12;
+    let mut net = Net::new();
+    let (a, b, gs) = pair(&mut net, 1);
+    let t = net.item(b, gs[0], gs[0], "x");
+    net.run();
+    net.write(a, t, "from the dialer");
+    net.run();
+    assert_eq!(net.read(b, t), Some(s("from the dialer")), "the listener pulled the dialer's write");
+    assert!(net.peer_sent(b, PULL) > 0, "b pulls a");
+    for n in [a, b] {
+        assert_eq!(net.peer_sent(n, UPLOAD) + net.peer_sent(n, DEPOSIT) + net.peer_sent(n, OPEN), 0, "node {n}: no upload, deposit or open between readers");
+    }
+}
+
+// spec/sync.md §10 (Stream, Applying), §7: a deletion in a reader's stream says only that the
+// source no longer holds the entry: a co-reader with no other source keeps it
+#[test]
+fn a_readers_deletion_leaves_the_entry_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b, gs) = pair(&mut net, 1);
+    let t = net.item(b, gs[0], gs[0], "kept");
+    net.run();
+    let l = label_of(&mut net, b, gs[0]);
+    let held = |net: &mut Net| net.sync(a).entries(&l).into_iter().find_map(|(id, k)| match k {
+        osis_node::sync::EntryKind::Commit { commit, .. } if net.engine(a).header(&commit).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t)) => Some(id),
+        _ => None,
+    });
+    let entry = held(&mut net).expect("a holds the item's entry");
+    let sent = std::rc::Rc::new(std::cell::Cell::new(false));
+    let carried = sent.clone();
+    net.tamper = Some(Box::new(move |m| match m {
+        // b's push of its next write under l (a writes nothing there)
+        osis_proto::Message::Stream(x) if !carried.get() && x.events.iter().any(|(y, e)| *y == l && matches!(e, osis_proto::Event::Added { .. })) => {
+            carried.set(true);
+            let mut x = (**x).clone();
+            x.events.push((l, osis_proto::Event::Deleted(entry)));
+            Some(osis_proto::Message::Stream(Box::new(x)))
+        }
+        _ => None,
+    }));
+    net.item(b, gs[0], gs[0], "a push to carry the deletion");
+    net.run();
+    assert!(sent.get(), "a push carried the deletion");
+    assert_eq!(held(&mut net), Some(entry), "the entry stays");
+    assert_eq!(net.read(a, t), Some(s("kept")));
+}
+
 // spec/sync.md §10 (Stream): a Pull answered Error is answered: the stream asks again after
 // `resync_ms` instead of waiting for a reply that never comes
 #[test]
@@ -241,12 +294,11 @@ fn back_after_aged_deletions_converges_in_one_stream_spec_sync_10() {
     assert!(p10 <= p1 + 1, "Pulls back: {p1} at n, {p10} at 10n");
 }
 
-/// One differential run: `b` writes, opens new groups with `a`, restarts; `a` goes off and on,
-/// restarts, loses its records. Once settled, `a`'s stream from `b` is caught up and `a` holds
-/// every entry `b` serves under a label they share.
-/// `pages`: every Pull asks the smallest reply with announcements only, so replies page and
-/// joins page at their own positions behind the stream's (counted into it).
-fn stream_run(seed: u64, pages: Option<&std::rc::Rc<std::cell::Cell<usize>>>) {
+/// One differential run: `a` and `b` write, `b` opens new groups with `a`, restarts; `a` goes off
+/// and on, restarts, loses its records. Once settled, each side's stream from the other is
+/// caught up and holds every entry the other serves under a label they share (both pull).
+/// `paged`: every Pull asks the smallest reply with announcements only, so replies page.
+fn stream_run(seed: u64, paged: bool) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut rnd = |n: u64| {
         x ^= x << 13;
@@ -255,21 +307,8 @@ fn stream_run(seed: u64, pages: Option<&std::rc::Rc<std::cell::Cell<usize>>>) {
         x % n
     };
     let mut net = Net::new();
-    let bulk = if let Some(paged) = pages {
-        let paged = paged.clone();
-        net.tamper = Some(Box::new(move |m| match m {
-            osis_proto::Message::Pull(p) => {
-                let mut p = (**p).clone();
-                p.max_reply = osis_proto::client::SMALL_REPLY as u64;
-                p.inline_limit = 0;
-                Some(osis_proto::Message::Pull(Box::new(p)))
-            }
-            osis_proto::Message::PullReply(r) => {
-                paged.set(paged.get() + r.joins.iter().filter(|(_, c)| c.is_some()).count());
-                None
-            }
-            _ => None,
-        }));
+    let bulk = if paged {
+        net.tamper = Some(Box::new(smallest_pulls));
         90
     } else {
         0
@@ -280,18 +319,28 @@ fn stream_run(seed: u64, pages: Option<&std::rc::Rc<std::cell::Cell<usize>>>) {
         match rnd(10) {
             0..=3 => {
                 let g = gs[rnd(gs.len() as u64) as usize];
-                net.item(b, g, g, &format!("v{step}"));
+                // either side writes: each pulls the other
+                let by = if rnd(2) == 0 { a } else { b };
+                net.item(by, g, g, &format!("v{step}"));
             }
             4 => {
-                // a group opened after the stream started: it joins from the start
-                let g = net.group_seeded(b, &[(a, Role::Write)], vec![], 50 + step);
+                // a group shared with `a` once its entries are written and the stream has moved
+                // past them: it joins from the start, behind the stream's position
+                let g = net.group_seeded(b, &[], vec![], 50 + step);
                 let t = net.item(b, g, g, &format!("early{step}"));
                 // more events than one page holds before the join
                 for i in 0..bulk {
                     net.write(b, t, &format!("early{step}.{i}"));
                 }
-                // a write the stream carries past the new group's first events
+                net.run();
                 net.item(b, gs[0], gs[0], &format!("past{step}"));
+                net.run();
+                let (tb, ta) = (net.tid(b), net.tid(a));
+                let e = net.engine(b);
+                set_edge(e, g, ta, Role::Write);
+                let rec = recipients_of(e, &[(tb, Role::Admin), (ta, Role::Write)]);
+                rotation(e, g, &rec, 500 + step, true);
+                net.pair(b, a);
                 gs.push(g);
             }
             5 => {
@@ -317,17 +366,27 @@ fn stream_run(seed: u64, pages: Option<&std::rc::Rc<std::cell::Cell<usize>>>) {
     net.set_online(a, true);
     net.advance(120_000);
     net.advance(120_000);
-    let conns = net.peer_conns(a);
-    assert!(conns.iter().any(|(c, m, _)| *m == b && net.sync(a).stream_caught_up(*c)), "seed {seed}: a caught up with b");
-    for (_, gl) in net.group_labels(b) {
-        let l = gl.id;
-        if !net.sync(a).labels().iter().any(|(_, x)| x.id == l) {
-            continue;
+    for (x, y) in [(a, b), (b, a)] {
+        let conns = net.peer_conns(x);
+        assert!(conns.iter().any(|(c, m, _)| *m == y && net.sync(x).stream_caught_up(*c)), "seed {seed}: {x} caught up with {y}");
+        for (_, gl) in net.group_labels(y) {
+            let l = gl.id;
+            if !net.sync(x).labels().iter().any(|(_, z)| z.id == l) {
+                continue;
+            }
+            // a write is what must arrive: an entry of a commit `x` holds in another encryption
+            // (one `y` kept after `x` dropped it: a reader's Deleted is not acted on) is no gap
+            let at_x: std::collections::BTreeSet<_> = net.sync(x).entries(&l).into_iter().map(|(id, _)| id).collect();
+            let at_y = net.sync(y).entries(&l);
+            let lacking: Vec<_> = at_y
+                .iter()
+                .filter(|(id, k)| match k {
+                    osis_node::sync::EntryKind::Commit { commit, .. } => net.engine(x).header(commit).is_none(),
+                    _ => !at_x.contains(id) && net.engine(y).has_blob(id),
+                })
+                .collect();
+            assert!(lacking.is_empty(), "seed {seed}: {x} lacks {} of {y}'s writes under {l:?}", lacking.len());
         }
-        let at_a: std::collections::BTreeSet<_> = net.sync(a).entries(&l).into_iter().map(|(id, _)| id).collect();
-        let at_b: Vec<_> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).collect();
-        let lacking: Vec<_> = at_b.iter().filter(|id| !at_a.contains(id) && net.engine(b).has_blob(id)).collect();
-        assert!(lacking.is_empty(), "seed {seed}: a lacks {} of b's entries under {l:?}", lacking.len());
     }
 }
 
@@ -336,19 +395,64 @@ fn stream_run(seed: u64, pages: Option<&std::rc::Rc<std::cell::Cell<usize>>>) {
 #[test]
 fn stream_differential_no_write_dropped_spec_sync_10() {
     for seed in 1..=6 {
-        stream_run(seed, None);
+        stream_run(seed, false);
     }
 }
 
-// The same invariant with every reply paged (the smallest `max_reply`, announcements only): joins
-// page at their own positions behind the stream's and merge into it
+// The same invariant with every reply paged (the smallest `max_reply`, announcements only)
 #[test]
 fn stream_differential_paged_spec_sync_10() {
-    let paged = std::rc::Rc::new(std::cell::Cell::new(0));
     for seed in 1..=3 {
-        stream_run(seed, Some(&paged));
+        stream_run(seed, true);
     }
-    assert!(paged.get() > 0, "a join paged behind the stream");
+}
+
+/// A tamper making every Pull ask the smallest reply, announcements only.
+fn smallest_pulls(m: &osis_proto::Message) -> Option<osis_proto::Message> {
+    let osis_proto::Message::Pull(p) = m else { return None };
+    let mut p = (**p).clone();
+    p.max_reply = osis_proto::client::SMALL_REPLY as u64;
+    p.inline_limit = 0;
+    Some(osis_proto::Message::Pull(Box::new(p)))
+}
+
+// spec/sync.md §10 (Stream; spec/wire.md §11.2 PullReply): a join from the start with more events
+// than a reply holds pages at its own position behind the stream's and merges into it, nothing
+// dropped
+#[test]
+fn a_join_pages_behind_the_stream_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b, gs) = pair(&mut net, 1);
+    let paged = std::rc::Rc::new(std::cell::Cell::new(0));
+    let p = paged.clone();
+    net.tamper = Some(Box::new(move |m| {
+        if let osis_proto::Message::PullReply(r) = m {
+            p.set(p.get() + r.joins.iter().filter(|(_, c)| c.is_some()).count());
+        }
+        smallest_pulls(m)
+    }));
+    // a group shared with `a` once its entries are written and the stream moved past them
+    let g = net.group_seeded(b, &[], vec![], 50);
+    let t = net.item(b, g, g, "early");
+    for i in 0..300 {
+        net.write(b, t, &format!("early{i}"));
+    }
+    net.run();
+    let past = net.item(b, gs[0], gs[0], "past");
+    net.run();
+    assert_eq!(net.read(a, past), Some(s("past")), "the stream moved past the group's entries");
+    let (tb, ta) = (net.tid(b), net.tid(a));
+    let e = net.engine(b);
+    set_edge(e, g, ta, Role::Write);
+    let rec = recipients_of(e, &[(tb, Role::Admin), (ta, Role::Write)]);
+    rotation(e, g, &rec, 500, true);
+    net.pair(b, a);
+    net.run();
+    assert!(paged.get() > 0, "the join paged at its own position");
+    let l = label_of(&mut net, b, g);
+    let at_a: std::collections::BTreeSet<_> = net.sync(a).entries(&l).into_iter().map(|(id, _)| id).collect();
+    let lacking = net.sync(b).entries(&l).into_iter().filter(|(id, _)| !at_a.contains(id)).count();
+    assert_eq!(lacking, 0, "a holds every entry b serves under the joined group");
 }
 
 

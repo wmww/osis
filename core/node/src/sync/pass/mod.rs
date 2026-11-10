@@ -528,14 +528,15 @@ impl SyncEngine {
     }
 
     /// Local passes over the labels this node syncs with nobody (no host in their `label.0`):
-    /// this node is their host, so a peer that dials it (a direct link's redeemer,
-    /// spec/permissions.md §7) finds a complete state (spec/sync.md §5, co-reader peer). Passes
-    /// otherwise run only per dialed connection, and a node serves only the entries they placed.
+    /// this node is their host, so a reader pulling its stream (a direct link's redeemer,
+    /// spec/permissions.md §7, or a co-reader either side dialed) finds a complete state, its own
+    /// writes included (spec/sync.md §5, co-reader peer). Passes otherwise run only per host
+    /// connection, and a node serves only the entries they placed.
     pub(crate) fn local_passes(&mut self) -> Result<()> {
         self.local_dirty = false;
         self.local_last = self.raw_now();
-        // nobody can dial a node without `reach.0` (no listener): nothing to serve
-        if self.own_reach().is_none() {
+        // a node no reader can pull (it neither dials co-readers nor is dialable) serves nothing
+        if !self.serves_readers() {
             self.local_any = false;
             return Ok(());
         }

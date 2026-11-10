@@ -199,7 +199,7 @@ pub enum Message {
     /// This side no longer shares these sync IDs (each with where it stopped, when known).
     Lost { id: Id, items: Vec<(LabelId, Option<Vec<u8>>)> },
     /// The answer to a Beacons, Offer or Lost: one entry per item, in order (one for a Beacons).
-    Shared { id: Id, codes: Vec<(Code, Option<[u8; 32]>)> },
+    Shared { id: Id, codes: Vec<SharedCode> },
     /// A pull of the peer's node log stream (spec/sync.md §10, Stream): the events after
     /// `cursor` of the shared set's members, and each join's after its own cursor (from the
     /// start when it has none).
@@ -267,6 +267,19 @@ pub enum OfferItem {
 
 /// Most items in one Offer or Lost.
 pub const MAX_SHARED_ITEMS: usize = 1024;
+
+/// One item's answer in a Shared: its code, the tag of an accepted Hit, and for an accepted Hit
+/// on the tester's static entry the head's entry box for it (spec/sync.md §10, Shared set).
+pub type SharedCode = (Code, Option<[u8; 32]>, Option<Box<EntryGrant>>);
+
+/// What a static entry's holder needs to read the label: the box the head's claim set keeps
+/// for that entry, and the label's path from its genesis step to that head (without claim
+/// sets), which the box is checked against as an Open's is (spec/sync.md §5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntryGrant {
+    pub entry_box: SecretBox,
+    pub path: Vec<Step>,
+}
 /// Most epochs a ByRole lists.
 pub const MAX_BYROLE_HITS: usize = 256;
 
@@ -390,10 +403,11 @@ impl Message {
     }
 
     /// Whether the node answers this itself rather than a session: the shared set's and the
-    /// stream's messages (spec/wire.md §11.2 Beacons to NoRecord, Pull to Applied), and an Error
-    /// answering a request the node drew its id for (`NODE_IDS`).
+    /// stream's messages (spec/wire.md §11.2 Beacons to NoRecord, Pull to Applied), and any
+    /// message with an id in the node's range (`NODE_IDS`): a peer node's own request (a Fetch
+    /// of the stream's bodies) or the answer to one of this node's.
     pub fn for_node(&self) -> bool {
-        matches!(self.kind(), 36..=44) || matches!(self, Message::Error { id, .. } if id & NODE_IDS != 0)
+        matches!(self.kind(), 36..=44) || self.id() & NODE_IDS != 0
     }
 
     /// Whether this kind is a request the other side answers.
@@ -449,7 +463,7 @@ impl Message {
             M::NoRecord { .. } => vec![k, id],
             M::Offer { items, .. } => vec![k, id, Value::List(items.iter().map(OfferItem::to_value).collect())],
             M::Lost { items, .. } => vec![k, id, Value::List(items.iter().map(|(l, c)| Value::List(vec![Value::bytes(&l.0), Value::opt(c.as_ref().map(|c| Value::bytes(c)))])).collect())],
-            M::Shared { codes, .. } => vec![k, id, Value::List(codes.iter().map(|(c, t)| Value::List(vec![Value::uint(c.0), Value::opt(t.as_ref().map(|t| Value::bytes(t)))])).collect())],
+            M::Shared { codes, .. } => vec![k, id, Value::List(codes.iter().map(|(c, t, g)| Value::List(vec![Value::uint(c.0), Value::opt(t.as_ref().map(|t| Value::bytes(t))), Value::opt(g.as_ref().map(|g| Value::List(vec![Value::Bytes(box_bytes(&g.entry_box)), Value::List(g.path.iter().map(step_value).collect())])))])).collect())],
             M::Pull(p) => vec![k, id, opt_cursor(&p.cursor), joins_value(&p.joins), Value::uint(p.inline_limit), Value::uint(p.max_reply), Value::Bool(p.follow), Value::Bool(p.ephemeral)],
             M::PullReply(r) => vec![k, id, stream_events_value(&r.events), opt_cursor(&r.cursor), Value::Bool(r.whole), Value::Bool(r.more), Value::Bool(r.report), joins_value(&r.joins)],
             M::Stream(s) => vec![k, id, stream_events_value(&s.events), opt_cursor(&s.cursor), Value::Bool(s.report)],
@@ -625,10 +639,11 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
                 .list(1, MAX_SHARED_ITEMS, "codes")?
                 .into_iter()
                 .map(|v| {
-                    let mut g = Fields::exact(v, 2, "code")?;
+                    let mut g = Fields::exact(v, 3, "code")?;
                     let c = Code(g.uint()?);
                     let t = g.opt()?.map(|v| dec::fixed(v, "tag")).transpose()?;
-                    Ok((c, t))
+                    let e = g.opt()?.map(entry_grant).transpose()?.map(Box::new);
+                    Ok((c, t, e))
                 })
                 .collect::<Result<_, Error>>()?,
         },
@@ -669,6 +684,13 @@ fn step(f: &mut Fields) -> Result<Step, Error> {
 
 fn claim_set(v: Value) -> Result<ClaimSet, Error> {
     Ok(ClaimSet::parse(&dec::bytes(v, osis_label::step::MAX_CLAIM_SET, "claim set")?)?)
+}
+
+fn entry_grant(v: Value) -> Result<EntryGrant, Error> {
+    let mut f = Fields::exact(v, 2, "entry grant")?;
+    let entry_box = entry_box(f.next()?)?;
+    let path = f.list(1, usize::MAX, "grant path")?.into_iter().map(step_of).collect::<Result<_, _>>()?;
+    Ok(EntryGrant { entry_box, path })
 }
 
 /// A `box` value as canonical bytes; it must re-encode to itself.

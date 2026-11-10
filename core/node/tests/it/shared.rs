@@ -71,7 +71,7 @@ fn dialer_hit(value: &[u8; 32], l: LabelId, r: &[u8; 32], p: &Dialer, challenge:
 
 fn answer(m: &Message) -> Vec<(Code, Option<[u8; 32]>)> {
     match m {
-        Message::Shared { codes, .. } => codes.clone(),
+        Message::Shared { codes, .. } => codes.iter().map(|(c, t, _)| (*c, *t)).collect(),
         o => panic!("{o:?}"),
     }
 }
@@ -135,7 +135,7 @@ fn a_hit_answered_without_a_tag_opens_nothing_spec_wire_11_2() {
     let msgs = shared_of(&send(&mut net, b, &mut p, Message::Beacons { id: 40, generation: 1, base: None, f, lo: 0, hi: 1 << f, gcs, more: false }));
     let Some(Message::Offer { id, items }) = msgs.iter().find(|m| matches!(m, Message::Offer { .. })) else { panic!("no Offer: {msgs:?}") };
     assert!(matches!(items[0], OfferItem::Hit(_)), "{items:?}");
-    send(&mut net, b, &mut p, Message::Shared { id: *id, codes: vec![(Code::OK, None)] });
+    send(&mut net, b, &mut p, Message::Shared { id: *id, codes: vec![(Code::OK, None, None)] });
     assert!(net.sync(b).shared_members(p.conn).is_empty(), "no tag, no open");
 }
 
@@ -188,7 +188,7 @@ fn a_lost_for_what_is_not_shared_costs_no_test() {
     let msgs = shared_of(&send(&mut net, b, &mut p, Message::Beacons { id: 40, generation: 1, base: None, f, lo: 0, hi: 1 << f, gcs: encode_gcs(&[beacon_value(&beacon(&v, &l.0, &r), f)], 0), more: false }));
     let mut msgs = msgs;
     while let Some(Message::Offer { id, items }) = msgs.iter().find(|m| matches!(m, Message::Offer { .. })).cloned() {
-        msgs = shared_of(&send(&mut net, b, &mut p, Message::Shared { id, codes: items.iter().map(|_| (Code::NOT_ADMITTED, None)).collect() }));
+        msgs = shared_of(&send(&mut net, b, &mut p, Message::Shared { id, codes: items.iter().map(|_| (Code::NOT_ADMITTED, None, None)).collect() }));
     }
     let hits = net.sync(b).pass_stats().hits_sent;
     send(&mut net, b, &mut p, Message::Lost { id: 8, items: vec![(LabelId([0x77; 16]), None)] });
@@ -211,6 +211,38 @@ fn a_redeemer_knowing_nothing_sends_no_filter_spec_sync_10() {
     assert_eq!(net.sync(c).pass_stats().filters_sent, 0, "knows no actor of the listener");
     assert!(net.sync(c).pass_stats().filters_received >= 1, "and tests the listener's");
     assert!(net.sync(a).pass_stats().filters_sent >= 1);
+}
+
+// spec/sync.md §10 (Shared set, Offer), spec/wire.md §11.2 (Offer: grant): a link's redeemer
+// reads K by the head's box an accepted static-entry Hit's answer carries, with no Open; a
+// joiner that read K so grants the next redeemer, who cannot reach the sharer, the same way
+#[test]
+fn a_link_redeemed_through_a_joiner_gets_the_box_from_the_hit_reply_spec_sync_10() {
+    const OPEN: u64 = 4;
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, account) = crate::net_judgment::account_node(&mut net, 1, host);
+    let (k, kl, _, seed) = crate::net_judgment::link(&mut net, a, account);
+    let at = |key| vec![osis_label::Address { url: osis_transport::peer_url(&[]), key }];
+    let ka = reach_ed(&mut net, a);
+    let j = net.node(2, &[]);
+    let kj = reach_ed(&mut net, j);
+    let held = net.engine(j).hold_key_actor(seed.clone()).unwrap();
+    net.sync(j).follow_link_peer(k, k, at(ka));
+    let acts = net.sync(j).follow(held, k, kl, vec![]);
+    net.actions(j, acts);
+    net.run();
+    let reads = |net: &mut Net, n: usize| net.engine(n).epochs(&k).is_some_and(|e| e.read.holds_any());
+    assert!(reads(&mut net, j), "the joiner reads K");
+    let r = net.node(3, &[]);
+    net.blocked_peers.insert((r, a));
+    let held = net.engine(r).hold_key_actor(seed).unwrap();
+    net.sync(r).follow_link_peer(k, k, at(kj));
+    let acts = net.sync(r).follow(held, k, kl, vec![]);
+    net.actions(r, acts);
+    net.run();
+    assert!(reads(&mut net, r), "the redeemer reads K through the joiner");
+    assert_eq!(net.peer_sent(j, OPEN) + net.peer_sent(r, OPEN), 0, "no Open between readers");
 }
 
 // issues/net-shared-set.md, Peers: a node with no record for this connection (a stranger) gets no filter and
@@ -381,7 +413,7 @@ fn an_accepted_by_role_opens_at_its_sender_spec_wire_11_2() {
     msgs.extend(shared_of(&send(&mut net, b, &mut p, Message::Beacons { id: 40, generation: 1, base: None, f: filter_width(0), lo: 0, hi: 1 << filter_width(0), gcs: vec![], more: false })));
     let Some(Message::Offer { id, items }) = msgs.iter().find(|m| matches!(m, Message::Offer { .. })) else { panic!("no Offer: {msgs:?}") };
     assert!(matches!(&items[0], OfferItem::ByRole(x, _) if *x == l), "{items:?}");
-    send(&mut net, b, &mut p, Message::Shared { id: *id, codes: vec![(Code::OK, None)] });
+    send(&mut net, b, &mut p, Message::Shared { id: *id, codes: vec![(Code::OK, None, None)] });
     assert!(net.sync(b).shared_members(p.conn).contains(&l), "the sender serves what its peer accepted");
 }
 
