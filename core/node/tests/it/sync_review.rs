@@ -1248,13 +1248,13 @@ fn stranded_message_reseals_the_proved_holder_spec_permissions_4() {
     let (mut net, a, c, g, l, conn) = stranded_pair();
     let before = seals_by(&mut net, a, g);
     for i in 0..3 {
-        net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | (0x7000 + i), label: l });
+        net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | (0x7000 + i), label: l, keys: Default::default() });
         net.run();
         net.advance(61_000);
     }
     assert_eq!(seals_by(&mut net, a, g), before + 1, "one re-seal of c's account");
     // an unknown label: nothing
-    net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | 0x7100, label: osis_base::LabelId([0x44; 16]) });
+    net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | 0x7100, label: osis_base::LabelId([0x44; 16]), keys: Default::default() });
     net.run();
     assert_eq!(seals_by(&mut net, a, g), before + 1);
 }

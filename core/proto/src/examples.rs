@@ -294,7 +294,14 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("subscribe", Message::Subscribe { id: 21, labels: vec![l, LabelId([0x0b; 16])] }),
         ("unsubscribe", Message::Unsubscribe { id: 22, labels: vec![l] }),
         ("push", Message::Push { label: l, events: vec![added.clone()], cursor: Cursor { log_id: [0x1c; 16], seq: 48 } }),
-        ("stranded", Message::Stranded { id: 35, label: l }),
+        (
+            "stranded",
+            Message::Stranded {
+                id: 35,
+                label: l,
+                keys: osis_label::HolderKeys { commits: vec![osis_base::Value::List(vec![osis_base::Value::List(vec![]), osis_base::Value::Int(1), osis_base::Value::List(vec![])])], records: vec![osis_base::CreationRecord::Thing { admin: osis_base::Tid::from_bytes([0x0e; 15]), nonce: [0x0f; 32], link: false }] },
+            },
+        ),
         ("suspect", Message::Suspect { id: 36, label: l, entries: vec![crate::msg::SuspectEntry { thing: osis_base::Tid::from_bytes([0x0c; 15]), ak: osis_base::Ak::new("t:reg.0").expect("an AK"), digest: [0x0d; 16] }] }),
         ("beacons", Message::Beacons { id: 30, generation: 1, base: None, f: 9, lo: 0, hi: 512, gcs: vec![0, 1, 2], more: false }),
         ("offer", Message::Offer { id: 31, items: vec![crate::msg::OfferItem::Hit([9; 32]), crate::msg::OfferItem::ByRole(l, vec![[8; 32]])] }),

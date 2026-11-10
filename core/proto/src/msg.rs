@@ -184,8 +184,9 @@ pub enum Message {
     Prove { id: Id, proofs: Vec<crate::ActorProof> },
     /// The listener's answer: its own proofs, none unless the dialer proved a known actor.
     Proved { id: Id, proofs: Vec<crate::ActorProof> },
-    /// The sender is stranded on this label (spec/permissions.md §4): node to node, answered Ok.
-    Stranded { id: Id, label: LabelId },
+    /// The sender is stranded on this label (spec/permissions.md §4), with the current keys of
+    /// the holder it reads the label's actor through: node to node, answered Ok.
+    Stranded { id: Id, label: LabelId, keys: osis_label::HolderKeys },
     /// Aspects of things in the label's closure the sender flags suspect (spec/permissions.md
     /// §4): node to node, answered Ok.
     Suspect { id: Id, label: LabelId, entries: Vec<SuspectEntry> },
@@ -530,7 +531,10 @@ impl Message {
             ],
             M::Subscribe { labels, .. } | M::Unsubscribe { labels, .. } => vec![k, id, Value::List(labels.iter().map(l).collect())],
             M::Push { label, events, cursor } => vec![k, id, l(label), events_value(events), cursor_value(cursor)],
-            M::Stranded { label, .. } => vec![k, id, l(label)],
+            M::Stranded { label, keys, .. } => {
+                let [commits, records] = keys.to_values();
+                vec![k, id, l(label), commits, records]
+            }
             M::Suspect { label, entries, .. } => vec![k, id, l(label), Value::List(entries.iter().map(|e| Value::List(vec![Value::Tid(e.thing), Value::Str(e.ak.as_str().to_string()), Value::bytes(&e.digest)])).collect())],
             M::Prove { proofs, .. } | M::Proved { proofs, .. } => vec![k, id, Value::List(proofs.iter().map(crate::ActorProof::to_value).collect())],
             M::Resume { nonce, tags, .. } => vec![k, id, Value::bytes(nonce), Value::List(tags.iter().map(|t| Value::bytes(t)).collect())],
@@ -584,9 +588,9 @@ impl Message {
 fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
     let n = match kind {
         1 | 40 => 2,
-        0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 | 26 | 28 | 30 | 32 | 33 | 37 | 38 | 39 | 44 | 45 => 3,
+        0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 | 26 | 28 | 32 | 33 | 37 | 38 | 39 | 44 | 45 => 3,
         4 | 5 | 8 | 9 | 10 | 13 | 14 | 17 | 24 | 27 | 29 | 31 | 34 | 35 => 4,
-        7 | 19 | 23 | 25 => 5,
+        7 | 19 | 23 | 25 | 30 => 5,
         12 => 6,
         16 => 7,
         15 | 41 | 42 => 8,
@@ -663,7 +667,11 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         27 => Message::Sub { id, max_reply: max_reply(&mut f)?, filter: f.next()? },
         28 => Message::Unsub { id, sub: sub_id(&mut f)? },
         29 => Message::Notify { sub: sub_id(&mut f)?, payload: crate::api::Payload::from_value(f.next()?)? },
-        30 => Message::Stranded { id, label: label(&mut f)? },
+        30 => {
+            let label = label(&mut f)?;
+            let (commits, records) = (f.next()?, f.next()?);
+            Message::Stranded { id, label, keys: osis_label::HolderKeys::from_values(&commits, &records).map_err(|_| Error::Malformed("stranded keys"))? }
+        }
         31 => Message::Suspect { id, label: label(&mut f)?, entries: f.list(1, usize::MAX, "suspect entries")?.into_iter().map(suspect_entry).collect::<Result<_, _>>()? },
         32 => Message::Prove { id, proofs: proofs(f.list(0, crate::prove::MAX_PROOFS, "proofs")?)? },
         33 => Message::Proved { id, proofs: proofs(f.list(0, crate::prove::MAX_PROOFS, "proofs")?)? },

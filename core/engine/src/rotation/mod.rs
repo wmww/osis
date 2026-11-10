@@ -120,18 +120,22 @@ pub(crate) fn keyset_departures(tx: &mut Tx<'_>, x: &Tid) -> Result<Vec<Departur
 
 /// Whether epoch `k` of role `r` of `x` does not cover one of `deps` as this node can tell
 /// (spec/crypto.md §4, Encrypting under): by its history entries where it holds `k`'s secret
-/// established; an account's epoch, which has none, covers no departure ordered after the
-/// rotation minting it (its rotator held none of them). An epoch of another actor whose secret
-/// the node lacks is not judged (the stated limit): judged by order, the node left the actor out
-/// where it cannot follow its next keyset (issues/sealer-cannot-judge-holder.md).
+/// established; else by order: an epoch covers no departure ordered after its minting rotation
+/// (its rotator held none of them), read from an account's epoch chain, or from the earliest
+/// held valid body of another actor's keyset (`HeldKeyset::since`). A departure no keyset of
+/// `x` held is known to cover leaves `x` out until one is (a stranded report carries it,
+/// spec/permissions.md §4).
 fn uncovered(core: &Core, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &[Departure]) -> bool {
+    let point = |n: &osis_keys::Name| osis_base::Ts::from_u64(n.key.ts).map(|ts| osis_perm::Point { ts, node: n.key.node, commit: n.key.commit });
+    let after = |before: &dyn Fn(&osis_perm::Point) -> bool| deps.iter().any(|d| d.concerns(r) && d.at.as_ref().and_then(point).is_some_and(|p| before(&p)));
     if core.is_account(x) {
         let Some(v) = core.account_view(x) else { return false };
-        let before = |n: &osis_keys::Name| osis_base::Ts::from_u64(n.key.ts).is_some_and(|ts| v.minted_before(k, &osis_perm::Point { ts, node: n.key.node, commit: n.key.commit }));
-        return deps.iter().any(|d| d.concerns(r) && d.at.as_ref().is_some_and(before));
+        return after(&|p| v.minted_before(k, p));
     }
-    let Some(epochs) = core.epochs(x).filter(|ep| ep.role(r).is_established(k) && ep.role(r).secret(k).is_some()) else { return false };
-    !osis_keys::uncovered(x, &epochs, r, k, deps, &core.names_held(x)).is_empty()
+    match core.epochs(x).filter(|ep| ep.role(r).is_established(k) && ep.role(r).secret(k).is_some()) {
+        Some(epochs) => !osis_keys::uncovered(x, &epochs, r, k, deps, &core.names_held(x)).is_empty(),
+        None => core.ix.keysets.get(&(*x, r, *k)).is_some_and(|held| after(&|p| held.held_before(p))),
+    }
 }
 
 /// `deps` less this node's own departures (its account's or its own): the departed party is the

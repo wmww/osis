@@ -481,7 +481,6 @@ impl SyncEngine {
     /// values, each projected to those deltas, and the chain's raw records: an inbox payload's
     /// `chain` and `records` (spec/wire.md §9). Empty for a commit not applied here.
     fn inbox_chain(&mut self, c: &CommitId, parts: &BTreeSet<usize>, keys_of: &[Tid]) -> Result<(Vec<osis_base::Value>, Vec<osis_base::CreationRecord>)> {
-        let mut out = Vec::new();
         let mut chain = self.chain_under(c, parts).unwrap_or_default();
         for t in keys_of {
             for x in self.engine.current_keys(t) {
@@ -489,6 +488,34 @@ impl SyncEngine {
                 chain.commits.entry(x).or_default().extend(super::pass::parts_of(&h, |i| h.aspects.get(i).is_some_and(|a| a.tid == *t && a.ak.as_str() == "keys.0")));
             }
         }
+        self.chain_values(chain)
+    }
+
+    /// `h`'s current `keys.0` commits, each projected to that delta, with their authors' chains
+    /// for them (`chain_under`), and the chain's raw records: a stranded report's holder keys
+    /// (spec/wire.md §9), from which a reader of the label's actor gone from `h` seals `h` and
+    /// deposits under its inbox.
+    pub(super) fn holder_keys(&mut self, h: &Tid) -> Result<osis_label::HolderKeys> {
+        let mut chain = crate::labeling::Certs::default();
+        for x in self.engine.current_keys(h) {
+            let Some(hd) = self.engine.header(&x) else { continue };
+            let parts = super::pass::parts_of(&hd, |i| hd.aspects.get(i).is_some_and(|a| a.tid == *h && a.ak.as_str() == "keys.0"));
+            if let Some(c) = self.chain_under(&x, &parts) {
+                for (y, q) in c.commits {
+                    chain.commits.entry(y).or_default().extend(q);
+                }
+                chain.records.extend(c.records);
+            }
+            chain.commits.entry(x).or_default().extend(parts);
+        }
+        let (commits, records) = self.chain_values(chain)?;
+        Ok(osis_label::HolderKeys { commits, records })
+    }
+
+    /// The commits of `chain`, each projected to its parts there, as plaintext commit values, and
+    /// its raw records (the ones held).
+    fn chain_values(&mut self, chain: crate::labeling::Certs) -> Result<(Vec<osis_base::Value>, Vec<osis_base::CreationRecord>)> {
+        let mut out = Vec::new();
         for (x, q) in chain.commits {
             let Some(mut blob) = self.engine.run(|tx| tx.get_commit(&x))?.map(std::sync::Arc::unwrap_or_clone) else { continue };
             blob.parts.retain(|p| q.contains(&p.ai));

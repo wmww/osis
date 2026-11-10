@@ -121,26 +121,62 @@ impl InboxPayload {
     }
 }
 
-/// `StrandedNotice := ["stranded", label_id, holder]` (spec/wire.md §9): holder `holder` is
-/// stranded on label `label` (spec/permissions.md §4). It carries no commit.
+/// `StrandedNotice := ["stranded", label_id, holder, [CommitBlobPlaintext*], [creation*]]`
+/// (spec/wire.md §9): holder `holder` is stranded on label `label` (spec/permissions.md §4), with
+/// the holder's current `keys.0` commits and their authors' chains (`HolderKeys`). It carries no
+/// role commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StrandedNotice {
     pub label: LabelId,
     pub holder: Tid,
+    pub keys: HolderKeys,
+}
+
+/// A stranded report's holder keys (spec/wire.md §9): the holder's current `keys.0` commits, each
+/// projected to that delta, with their authors' chain certificates for them, as
+/// `CommitBlobPlaintext` values projected to their chain deltas, and the raw creation records of
+/// that chain, ascending by tid, distinct. A reader of the label's actor that is gone from the
+/// holder seals it at its keyset and deposits under its inbox from these alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HolderKeys {
+    pub commits: Vec<Value>,
+    pub records: Vec<CreationRecord>,
+}
+
+impl HolderKeys {
+    pub fn to_values(&self) -> [Value; 2] {
+        let mut records: Vec<&CreationRecord> = self.records.iter().collect();
+        records.sort_by_key(|r| r.tid());
+        records.dedup_by_key(|r| r.tid());
+        [Value::List(self.commits.clone()), Value::List(records.into_iter().map(CreationRecord::to_value).collect())]
+    }
+
+    pub fn from_values(commits: &Value, records: &Value) -> Result<HolderKeys, Error> {
+        let (Value::List(commits), Value::List(records)) = (commits, records) else { return Err(Error::Malformed("holder keys")) };
+        if !commits.iter().all(|c| matches!(c, Value::List(_))) {
+            return Err(Error::Malformed("holder keys commits"));
+        }
+        let records = records.iter().map(|r| CreationRecord::from_value(r).ok_or(Error::Malformed("holder keys record"))).collect::<Result<Vec<_>, _>>()?;
+        if !records.windows(2).all(|w| matches!(w, [x, y] if x.tid() < y.tid())) {
+            return Err(Error::Malformed("holder keys records not sorted by tid"));
+        }
+        Ok(HolderKeys { commits: commits.clone(), records })
+    }
 }
 
 impl StrandedNotice {
     pub fn to_value(&self) -> Value {
-        Value::List(vec![Value::Str("stranded".into()), Value::bytes(&self.label.0), tid(&self.holder)])
+        let [commits, records] = self.keys.to_values();
+        Value::List(vec![Value::Str("stranded".into()), Value::bytes(&self.label.0), tid(&self.holder), commits, records])
     }
 
     pub fn from_value(v: &Value) -> Result<StrandedNotice, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("stranded notice")) };
-        let [Value::Str(k), label, holder] = items.as_slice() else { return Err(Error::Malformed("stranded notice")) };
+        let [Value::Str(k), label, holder, commits, records] = items.as_slice() else { return Err(Error::Malformed("stranded notice")) };
         if k != "stranded" {
             return Err(Error::Malformed("stranded notice"));
         }
-        Ok(StrandedNotice { label: LabelId(get_bytes(label, "stranded label")?), holder: get_tid(holder, "stranded holder")? })
+        Ok(StrandedNotice { label: LabelId(get_bytes(label, "stranded label")?), holder: get_tid(holder, "stranded holder")?, keys: HolderKeys::from_values(commits, records)? })
     }
 }
 
@@ -243,7 +279,8 @@ mod tests {
         let mut rng = SeededRng::from_u64(2);
         let kem = KemSecret::derive(&Secret32::from_bytes([9; 32]));
         let r = Tid::from_bytes([5; 15]);
-        let n = StrandedNotice { label: LabelId([3; 16]), holder: Tid::from_bytes([7; 15]) };
+        let p = payload();
+        let n = StrandedNotice { label: LabelId([3; 16]), holder: Tid::from_bytes([7; 15]), keys: HolderKeys { commits: p.chain, records: p.records } };
         let b = seal_stranded_notice(&r, kem.public(), &n, WallMs(1000), &mut rng).unwrap();
         let (p, got) = open_inbox_item(&b, &r, &kem).unwrap();
         assert_eq!(got, Inbox::Stranded(n));

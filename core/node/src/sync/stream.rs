@@ -429,10 +429,9 @@ impl SyncEngine {
                 }
                 self.shared_until_due(conn, out)
             }
-            Message::Stranded { id, label } => {
+            Message::Stranded { id, label, keys } => {
                 self.shared_send(conn, Message::Ok { id }, out)?;
-                self.stranded_message(conn, label);
-                Ok(())
+                self.stranded_message(conn, label, keys)
             }
             Message::Suspect { id, label, entries } => {
                 self.shared_send(conn, Message::Ok { id }, out)?;

@@ -1166,8 +1166,8 @@ fn deliver_edges_only(lp: &mut LocalPeer, from: usize, to: usize, x: Tid, ids: &
 // reason to keep X from T: it rotates nothing for it, and a rotation of X it makes (removing E)
 // boxes T at the newest keyset of T it holds, which only C itself left, so T's members read X's
 // new epoch. Once T's new keyset reaches C that box is stale and C rotates X again, sealing T
-// there: B reads it, E opens nothing of it. (C counting its own departure left T out of X for
-// good: gone from T, it never learns T's next keyset, issues/left-out-holder-unreachable.md.)
+// there: B reads it, E opens nothing of it. (C counting its own departure left T out of X until T's
+// members' stranded reports carried T's next keyset to it.)
 #[test]
 fn own_removal_from_holder_actor_keeps_sealing_it_spec_crypto_4() {
     let mut lp = LocalPeer::new(4, 967, WallMs(1_700_000_000_000)).unwrap();
@@ -1208,13 +1208,13 @@ fn own_removal_from_holder_actor_keeps_sealing_it_spec_crypto_4() {
     assert!(!leaked(&mut lp, 2, &[t, x], e, e_held).contains(&x), "E opens nothing new");
 }
 
-// spec/crypto.md §4 (Encrypting under, the limit for an epoch whose secret the node lacks): X
-// administers A, which M holds; X holds none of M's secrets. E leaves M by self-removal, so M does
-// not rotate. X knows the departure but cannot judge M's keyset: it keeps sealing M there (E opens
-// A's next epoch: the stated limit), and once M's rotation for the departure reaches it, the box
-// is stale and X moves A onto M's new keyset, which E opens nothing of.
+// spec/crypto.md §4 (Encrypting under: an epoch whose secret the node lacks is judged by order;
+// model `D0_order`): X administers A, which M holds; X holds none of M's secrets. E leaves M by
+// self-removal, so M does not rotate. X knows the departure; M's keyset was made before it, so it
+// cannot cover it: X's next rotation of A leaves M out (E opens nothing of it). Once M's rotation
+// for the departure reaches X, X seals M there again, and E opens nothing of A's new epochs.
 #[test]
-fn departure_from_an_unread_holder_is_judged_by_its_next_keyset_spec_crypto_4() {
+fn departure_from_an_unread_holder_is_judged_by_order_spec_crypto_4() {
     let mut lp = LocalPeer::new(3, 968, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let e = lp.peers[2].engine.me();
@@ -1231,11 +1231,12 @@ fn departure_from_an_unread_holder_is_judged_by_its_next_keyset_spec_crypto_4() 
     lp.sync_all().unwrap();
     assert!(!lp.peers[0].engine.departures(&m).unwrap().is_empty(), "X knows E left M");
     rotate_skipping(&mut lp, 0, a, &BTreeSet::from([Role::Read]), &[]);
-    assert_eq!(sealed_at(&mut lp, 0, a, m), Some(k1), "the limit: M sealed at the keyset E opens");
+    assert_eq!(sealed_at(&mut lp, 0, a, m), None, "M left out: its keyset was made before E left");
+    assert_eq!(leaked(&mut lp, 0, &[m, a], e, start.clone()), Vec::<Tid>::new());
     settle(&mut lp, &[1, 0], &[m, a]);
     let k2 = newest_read(&lp, 1, m).unwrap();
     assert_ne!(k1, k2, "M rotated for E's departure");
-    assert_eq!(sealed_at(&mut lp, 0, a, m), Some(k2), "A moved onto M's new keyset");
+    assert_eq!(sealed_at(&mut lp, 0, a, m), Some(k2), "A sealed to M's new keyset");
     assert_eq!(newest_read(&lp, 1, a), newest_read(&lp, 0, a), "M's members read A");
     assert_eq!(leaked(&mut lp, 0, &[m, a], e, start), Vec::<Tid>::new());
 }

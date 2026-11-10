@@ -210,7 +210,8 @@ ClaimSet := [[claim+], {entry: box}]
     - the author's chain certificates for the carried parts (spec/permissions.md §4): its commits, each projected to its chain deltas and without any `keys.0` but the author's own, in position 2, and its creation records, ascending by tid and distinct, in position 3;
     - when the commit boxes the recipient (a grant, a re-seal), the current `keys.0` commit of each thing it boxes it on, projected to that delta, in position 2.
 - A recipient ingests the chain before the commit, only once the blob is admitted (spec/sync.md §3), and only its records, `roles.0` and `keys.0` deltas and accounts' rotations.
-- **Stranded notice** (spec/permissions.md §4): an inbox blob whose payload is `StrandedNotice := ["stranded", label_id, holder]` in place of an `InboxPayload`: the label the holder (an actor tid) is stranded on. It carries no commit and asks only for a re-seal the recipient judges itself.
+- **Stranded notice** (spec/permissions.md §4): an inbox blob whose payload is `StrandedNotice := ["stranded", label_id, holder, HolderKeys]` (flattened: `HolderKeys` is two positions) in place of an `InboxPayload`: the label the holder (an actor tid) is stranded on, and its holder keys. It carries no role commit and asks only for a re-seal the recipient judges itself.
+- **Holder keys**: `HolderKeys := [CommitBlobPlaintext*], [creation*]`: the holder's current `keys.0` commits (its newest `keys.0` write and the rotation commits of its newest keyset per role), each projected to its `keys.0` delta on the holder, with their authors' chain certificates for those deltas, each projected to its chain deltas (as position 2 of `InboxPayload`); then that chain's creation records, ascending by tid, distinct. A receiver ingests only their records, `roles.0` and `keys.0` deltas.
 
 ## 10. Links
 ```
@@ -256,7 +257,7 @@ Reply     [26, id, outcome]
 Sub       [27, id, max_reply, filter]          -> Reply | Error
 Unsub     [28, id, sub_id]                     -> Ok
 Notify    [29, 0, sub_id, payload]
-Stranded  [30, id, label_id]                   -> Ok
+Stranded  [30, id, label_id, HolderKeys]       -> Ok
 Suspect   [31, id, label_id, [suspect+]]       -> Ok
 Prove     [32, id, [actor_proof*]]             -> Proved | Error
 Proved    [33, id, [actor_proof*]]
@@ -338,7 +339,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Events**: 0 an entry added or a deposited one stamped, its wrap and stamp replaced (no stamp: deposited), 1 deleted, 3 a new head (without claim set); 2 is unused. Expiry produces no event.
 - **Fetch** (spec/sync.md §5): items in request order, possibly a prefix of the request when the reply would exceed `max_reply` (in `SMALL_REPLY..=REPLY_BUDGET`), possibly none below `REPLY_BUDGET`; the requester asks the rest again under `REPLY_BUDGET`.
 - **Subscribe** (opened labels): the peer then sends Push with each new run of log events after the cursor of the label's last Sync on this connection that returned `more` false (else after the log head at Subscribe), with blobs as in Sync under the connection's last `inline_limit` for that label, and the relay-only entries other connections upload.
-- **Stranded** and **Suspect** (spec/permissions.md §4): node to node only, answered Ok whatever the receiver does with them; on a host address they are answered Error 11. Stranded names a label the sender is stranded on; Suspect carries suspect entries of things in the label's closure, `thing` a tid, `ak` an AK, `digest` 16 bytes, as many as fit `MAX_MESSAGE` per message.
+- **Stranded** and **Suspect** (spec/permissions.md §4): node to node only, answered Ok whatever the receiver does with them; on a host address they are answered Error 11. Stranded names a label the sender is stranded on, with the holder keys (§9) of the holder it reads the label's actor through; Suspect carries suspect entries of things in the label's closure, `thing` a tid, `ak` an AK, `digest` 16 bytes, as many as fit `MAX_MESSAGE` per message.
 - **Client port** (kinds 24-29): served only on a node's own listeners; any other side answers them Error 11. `session_id` is 16 bytes; `secret` is exactly 32 bytes.
   - **Auth**: answered Reply `[0, []]`.
     - A main session (the unix transport, spec/sync.md §10) sends Auth without `secret`.

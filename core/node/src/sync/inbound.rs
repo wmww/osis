@@ -1191,8 +1191,7 @@ impl SyncEngine {
                 self.inbox_opened.insert((l, b), None);
                 e.kind = Kind::Inbox(None);
                 self.state.set_entry(l, b, e);
-                self.stranded_notice(n);
-                return Ok(());
+                return self.stranded_notice(n);
             }
         };
         let (pt, things, chain, records) = payload.split();
@@ -1228,6 +1227,31 @@ impl SyncEngine {
         }
         self.state.set_entry(l, b, e);
         Ok(())
+    }
+
+    /// The holder keys a stranded report carried (spec/wire.md §9): their records, then their
+    /// commits cut to `roles.0` and `keys.0` (`chain_commits`), role commits first by `ts`, each
+    /// judged like a chain certificate, again while one that awaited something applies.
+    pub(super) fn take_holder_keys(&mut self, keys: osis_label::HolderKeys) -> Result<()> {
+        self.engine.learn_records(keys.records)?;
+        let mut todo = chain_commits(keys.commits);
+        todo.sort_by_key(|(_, c)| (!c.header.kind.is_role(), c.header.ts));
+        for _ in 0..MAX_ROUNDS {
+            let mut later = Vec::new();
+            let mut progressed = false;
+            for (pt, c) in std::mem::take(&mut todo) {
+                match self.engine.ingest(&pt, Vec::new()) {
+                    Ok(Ingested::Awaits(..)) => later.push((pt, c)),
+                    Ok(_) => progressed = true,
+                    Err(e) => self.ingest_failed(&c, e)?,
+                }
+            }
+            if later.is_empty() || !progressed {
+                break;
+            }
+            todo = later;
+        }
+        self.engine.reexamine()
     }
 
     /// Whether an opened inbox blob carrying commit `c` is admitted (spec/sync.md §3, invite

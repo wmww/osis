@@ -212,11 +212,12 @@ hNoSync == {<<"a1", "M">>}
 hToday == "keyset"
 hRotation == "rotation"
 hKeys == "keys"
-\* a holder actor's admin removed from it (issues/left-out-holder-unreachable.md
-\* gone): T holds X's role; c, X's one admin, reads T and is removed from it by
-\* a1, T's admin (alone or with T's rotation); with lDeps2, d too. c may rotate
-\* X once unprompted and writes X. Under Follow c syncs T only while it reads
-\* T, and learns T's later keysets only as T's readers place them under X
+\* a holder actor's admin removed from it (gone): T holds X's role; c, X's
+\* one admin, reads T and is removed from it by a1, T's admin (alone or with
+\* T's rotation); with lDeps2, d too. c may rotate X once unprompted and
+\* writes X. Under Follow c syncs T only while it reads
+\* T, and learns T's later keysets only as T's readers place them under X or
+\* report them stranded (Notice)
 lActs == <<"X", "T">>
 lMem == {<<"X", "c">>, <<"X", "T">>, <<"T", "a1">>, <<"T", "c">>, <<"T", "d">>}
 lAdm == {<<"X", "c">>, <<"T", "a1">>}
@@ -228,4 +229,11 @@ lG == << <<"X", "T">> >>
 lSecret == "secret"
 lRole == "role"
 lFollow == TRUE
+\* a departure from a holder actor whose secrets the admin never held
+\* (Order): as lActs, c not in T; a1
+\* removes d (alone or with T's rotation); c learns the removal from T's
+\* placements, T's keysets as T's readers place them under X or report them
+\* stranded
+oMem == {<<"X", "c">>, <<"X", "T">>, <<"T", "a1">>, <<"T", "d">>}
+oDeps == {<<"d", "T", "a1">>}
 =============================================================================
