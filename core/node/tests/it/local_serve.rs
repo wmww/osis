@@ -824,7 +824,7 @@ fn own_duplicate_dropped_while_the_lower_host_is_away_still_reaches_another_host
 // is back, whatever it dropped of it locally: the tombstone keeps what the entry was, so the
 // host announcing it records it as present there and the host pass deletes it; a restart
 // between keeps that too.
-fn lost_answer(restart: bool) {
+fn lost_answer(restart: bool, days: u64) {
     let mut net = Net::new();
     let h = net.add_host();
     let a = net.node(1, &[h]);
@@ -857,21 +857,33 @@ fn lost_answer(restart: bool) {
     if restart {
         net.restart(a, 7);
     }
+    for _ in 0..days {
+        net.advance(86_400_000);
+        net.run();
+    }
     net.blocked.remove(&(a, h));
     for _ in 0..4 {
         net.advance(60_000);
         net.run();
     }
     assert!(!net.host_ids(h, &l).contains(&e2[0]), "the covered entry stays at the host");
+    assert!(of(&mut net, c2).is_empty(), "the node keeps the entry it recorded to delete there");
     assert_eq!(net.read(a, t), Some(s("v5")));
 }
 
 #[test]
 fn covered_own_entry_whose_answer_was_lost_leaves_the_host_spec_sync_5() {
-    lost_answer(false);
+    lost_answer(false, 0);
 }
 
 #[test]
 fn covered_own_entry_whose_answer_was_lost_leaves_the_host_after_a_restart_spec_sync_5() {
-    lost_answer(true);
+    lost_answer(true, 0);
+}
+
+// The same with the node away past its tombstone: the host's announcement is then of an entry
+// unknown here, fetched and judged as any, so the host's copy still goes.
+#[test]
+fn covered_own_entry_whose_answer_was_lost_leaves_the_host_past_the_tombstone_spec_sync_5() {
+    lost_answer(false, 31);
 }
