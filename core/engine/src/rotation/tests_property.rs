@@ -506,8 +506,10 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
         for r in ROLES {
             let ep = |p: usize| run.lp.peers[p].engine.epochs(&t).unwrap_or_default().role(r).clone();
             let at_o = ep(o).current();
-            // every holder agrees on the current epochs, each established by the first admin
-            for &(p, _) in &direct {
+            // every holder at r agrees on the current epochs, each established by the first admin;
+            // a node holding none of r's secrets reads supersession from keysets alone, without
+            // the history boxes (spec/crypto.md §4, Supersedes), so may count more
+            for &(p, _) in direct.iter().filter(|x| x.1 >= r) {
                 assert!(at_o.iter().all(|x| ep(o).is_established(x)), "seed {seed}: {t:?} {r:?}: the first admin counts current {at_o:?}, not all established there");
                 assert_eq!(ep(p).current(), at_o, "seed {seed}: {t:?} {r:?}: peers {o} and {p} count different current epochs (rotated: {rotated})");
             }
