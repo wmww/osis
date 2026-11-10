@@ -1333,6 +1333,10 @@ fn maker_lowered_through_a_holder_actor_opens_nothing_new_spec_crypto_4() {
     assert!(still.is_empty(), "{still:?}");
     assert_eq!(leaked(&mut lp, 0, &[m, a], p, start), Vec::<Tid>::new());
     assert_ne!(newest_read(&lp, 0, m), k2, "M rotated off P's epoch");
+    lp.sync_all().unwrap();
+    for x in [m, a] {
+        assert!(lp.peers[0].engine.ensure_rotated(&x).unwrap().0.commits.is_empty(), "one rotation, no churn");
+    }
 }
 
 // spec/crypto.md §4 (History box: any holder of the epoch's role adds): W, demoted to read, still
@@ -1358,4 +1362,40 @@ fn lowered_holder_adds_no_history_above_its_role_spec_crypto_4() {
     assert!(e.write.current().iter().all(|c| e.write.secret(c).is_some()), "W holds the current write epoch");
     let done = lp.peers[1].engine.reseal_due(&g, &Pass).unwrap();
     assert!(done.commits.is_empty(), "no write history from a reader");
+}
+
+// spec/crypto.md §4 (Departure: a maker that no longer holds r): an honest maker whose role
+// on M runs through team T (keyed) is lowered on T, then re-granted. The admin rotates M once
+// for it; re-granted, P has departed nothing, and no further pass rotates M (bounded: the
+// maker's departure ends with its epoch, superseded).
+#[test]
+fn lowered_maker_rotates_once_spec_crypto_4() {
+    let mut lp = LocalPeer::new(2, 972, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let p = lp.peers[1].engine.me();
+    let t = group(&mut lp, 0);
+    let m = group(&mut lp, 0);
+    for (x, h) in [(m, t), (t, p)] {
+        lp.peers[0].clock.advance(1);
+        lp.peers[0].engine.grant(&x, &h, &edge(Role::Write)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    assert!(boxes(&mut lp, 0, m, t), "M's grant to T is keyed");
+    lp.peers[1].clock.advance(1_000);
+    rotate_skipping(&mut lp, 1, m, &BTreeSet::from([Role::Read, Role::Write]), &[]);
+    lp.sync_all().unwrap();
+    let rotations = |lp: &mut LocalPeer| (0..3).map(|_| {
+        let n = lp.peers[0].engine.ensure_rotated(&t).unwrap().0.commits.len() + lp.peers[0].engine.ensure_rotated(&m).unwrap().0.commits.len();
+        lp.sync_all().unwrap();
+        n
+    }).collect::<Vec<_>>();
+    lp.peers[0].engine.demote(&t, &Demotion { holder: p, new: Some(edge(Role::Read)), retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    let k = newest_read(&lp, 0, m);
+    let first = rotations(&mut lp);
+    assert!(first[0] > 0 && first[1..].iter().all(|n| *n == 0), "one round of rotations, then none: {first:?}");
+    assert_eq!(newest_read(&lp, 0, m), k, "M's read epoch P made stands: P still reads M");
+    lp.peers[0].engine.grant(&t, &p, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(rotations(&mut lp), vec![0, 0, 0], "re-granted: nothing more rotates");
 }
