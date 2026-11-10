@@ -1679,19 +1679,25 @@ impl Builder {
 
     /// Final honest answers after every receipt (delivered at once): node 0 merges, members
     /// list, witnesses answer, until nothing new is written (at most six rounds).
-    /// With `refork`, removed node X forks again after each of node 0's merges, so the world
-    /// ends with a fork unmerged.
+    /// With `refork`, removed node X then forks again once more, so the world ends with a fork
+    /// unmerged (merge-and-re-fork cycles are the timed phase's: here, every one delivered at
+    /// once, they only grew the world, five times the run's cost).
     pub fn settle(&mut self, t0: u32, refork: bool) {
+        let mut t = t0;
         for round in 0..6 {
-            let t = t0 + round;
+            t = t0 + round;
             let before = self.w.items.len();
-            if self.holds_unmerged_fork(0, t) && self.rotate(0, t, &|_| Some(0), &|_, _| Some(0)).is_some() && refork && !self.w.member(X, t) {
-                self.refork(X, t, &|_| Some(0));
+            if self.holds_unmerged_fork(0, t) {
+                self.rotate(0, t, &|_| Some(0), &|_, _| Some(0));
             }
             self.answer(t, &|_| Some(0), &|_, _| Some(0));
             if self.w.items.len() == before {
                 break;
             }
+        }
+        if refork && !self.w.member(X, t + 1) {
+            self.refork(X, t + 1, &|_| Some(0));
+            self.answer(t + 2, &|_| Some(0), &|_, _| Some(0));
         }
     }
 
