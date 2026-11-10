@@ -29,7 +29,7 @@ pub mod records;
 mod shared;
 pub mod credentials;
 pub mod peers;
-mod stopped;
+mod handoff;
 mod serve;
 pub(crate) mod state;
 mod status;
@@ -314,7 +314,6 @@ impl SyncEngine {
         // keeps the changed commits from now on (`Engine::take_changed`)
         engine.take_changed();
         let mut state = State::load(&mut engine)?;
-        engine.core.stopped = state.stopped.clone();
         // deposits not answered before a restart go again
         let outbox = state.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
         let mut rng = rng;
@@ -673,7 +672,7 @@ impl SyncEngine {
         let key = (self.engine.core.generation, self.state.retired.len(), if self.synced.timed { now } else { 0 });
         if self.synced.key == key {
             #[cfg(debug_assertions)]
-            if self.engine.recheck(format!("labels {} {} {}", self.state.version, self.state.retired.len(), self.state.stopped.len())) {
+            if self.engine.recheck(format!("labels {} {} {}", self.state.version, self.state.retired.len(), self.state.handed_off.len())) {
                 let ids = |v: &[(Tid, Arc<GroupLabel>)]| v.iter().map(|(g, l)| (*g, l.id, l.replaced)).collect::<Vec<_>>();
                 let (fresh, _) = self.compute_labels(now);
                 assert_eq!(ids(&fresh), ids(&self.synced.labels), "labels() cached");
@@ -697,8 +696,8 @@ impl SyncEngine {
         let me = self.engine.account_tid();
         let (mut out, mut timed) = (Vec::new(), false);
         for g in self.engine.labeled_groups() {
-            // stopped here (`set_stopped`): never synced
-            if self.state.stopped.contains(&g) || self.engine.epochs(&g).is_none_or(|e| !e.read.holds_any()) {
+            // handed off (`set_handed_off`): never synced
+            if self.state.handed_off.contains(&g) || self.engine.epochs(&g).is_none_or(|e| !e.read.holds_any()) {
                 continue;
             }
             let labels = self.engine.labels_of(&g);

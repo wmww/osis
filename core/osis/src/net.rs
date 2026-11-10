@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::handle::WeakOsis;
 use crate::share::Status;
 use crate::watch::lock;
-use osis_base::{Clock, Value};
+use osis_base::Clock;
 use osis_node::sync::driver::{self, Control, Shared};
 use osis_node::sync::{Action, SyncEngine};
 use osis_transport::p2p::Udp;
@@ -566,52 +566,7 @@ impl crate::Osis {
     }
 }
 
-/// Whether this node syncs a group.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SyncMode {
-    /// It syncs.
-    #[default]
-    Full,
-    /// It does not: nothing of it is downloaded or uploaded from here, and what is already here
-    /// stays, no longer updated.
-    Stopped,
-}
-
-/// How this node syncs a group (`Osis::sync_options`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SyncOptions {
-    /// Whether this node syncs the group.
-    pub mode: SyncMode,
-}
-
 impl crate::Osis {
-    /// How this node syncs `group` (the default when never set).
-    /// `Unsupported` on a client with its own actor.
-    pub fn sync_options(&self, group: osis_base::Tid) -> crate::Result<SyncOptions> {
-        if !self.has_store() {
-            let v = self.rcall(crate::port::method::SYNC_OPTIONS, vec![Value::Tid(group)])?;
-            let mut a = crate::port::codec::Args::new(v)?;
-            return crate::port::codec::sync_options(&mut a);
-        }
-        Ok(self.locked(|x| SyncOptions {
-            mode: if x.sync.stopped().contains(&group) { SyncMode::Stopped } else { SyncMode::Full },
-        }))
-    }
-
-    /// Sets how this node syncs `group` (stored): all of it, so to change one field start from
-    /// `sync_options`.
-    /// `Unsupported` on a client with its own actor.
-    pub fn set_sync_options(&self, group: osis_base::Tid, o: SyncOptions) -> crate::Result<()> {
-        if !self.has_store() {
-            let mut args = vec![Value::Tid(group)];
-            args.extend(crate::port::codec::sync_options_v(&o));
-            return self.rcall(crate::port::method::SET_SYNC_OPTIONS, args).map(drop);
-        }
-        let stop = o.mode == SyncMode::Stopped;
-        self.act(|l| if l.sync.stopped().contains(&group) != stop { l.sync.set_stopped(group, stop) } else { Vec::new() });
-        Ok(())
-    }
-
     /// Serves clients on this store's own unix socket: by default, processes of this uid that
     /// connect (`Osis::connect_socket` with this store's directory) act as this node's main actor
     /// with no authentication (there is no security boundary between them); others are refused by

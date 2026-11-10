@@ -101,9 +101,9 @@ pub(crate) fn labeled(l: &mut Locked, g: &Tid) -> bool {
     l.sync.engine_mut().labels_of(g).iter().any(|x| !x.replaced)
 }
 
-/// The group syncs here: a live label, not stopped.
+/// The group syncs here: a live label, not handed off.
 fn syncs_here(l: &mut Locked, g: &Tid) -> bool {
-    !l.sync.stopped().contains(g) && labeled(l, g)
+    !l.sync.handed_off().contains(g) && labeled(l, g)
 }
 
 /// The things commit `id` touched, when this engine holds it.
@@ -397,7 +397,8 @@ impl ReadOnly {
 
     /// A status of this engine `local`, with what the connections add: each connected and routed
     /// node with whether it is up, the groups a connected one reports where this node does not
-    /// sync them. A disconnected node takes nothing away and adds no group.
+    /// sync them. A group with a source node shows only what that node reports: never this
+    /// engine's copy, which is behind or catching up.
     pub(crate) fn merged_status(&self, mut local: Status) -> Result<Status> {
         if !self.routing() {
             return Ok(local);
@@ -416,6 +417,7 @@ impl ReadOnly {
         if client {
             local = Status::default();
         }
+        local.groups.retain(|g, _| !group_sources.contains_key(g));
         local.two_sources = split;
         for r in connections {
             local.node_connections.push(NodeConnection { address: r.addr.clone(), connected: r.connected() });
@@ -495,7 +497,7 @@ impl Osis {
     /// `UnknownThing`, nothing changed); waits for this node's writes in it to reach a saved peer
     /// (`wait_synced`'s outcomes; failed or dropped, nothing changed; what is written or arrives meanwhile
     /// is waited for too); then this
-    /// node stops syncing it, for itself alone (`SyncMode::Stopped`), and calls go there. `Invalid`: the account's home group, or a
+    /// node stops syncing it, for itself alone, and calls go there. `Invalid`: the account's home group, or a
     /// group still synced here through a parent (its things would have two sources: move the parent).
     ///
     /// To `Local`: this node must hold the group (a program with no store has no keys: `Unsupported`; a node
@@ -511,7 +513,8 @@ impl Osis {
     /// the same node: they would miss the other group's holders.
     ///
     /// Every watch whose source this changes gets one last `Err(Network)` and ends: watch again.
-    /// Where it goes survives a restart; a process with no store has none.
+    /// `status` shows the group as its source node does. Where it goes survives a restart and reads
+    /// back with `group_sources`; a process with no store has none.
     pub async fn group_source(&self, group: Tid, to: GroupSource) -> Result<()> {
         self.local_only("group_source")?;
         match to {
@@ -548,13 +551,12 @@ impl Osis {
                         None => return Ok(false),
                     }
                 }
-                let held = l.engine().knows(&group);
                 self.moving(l, |l| {
                     l.group_sources.insert(group, addr.clone());
                     save_sources(l)?;
                     self.inner.routing.store(true, Ordering::Release);
-                    if held && !l.sync.stopped().contains(&group) {
-                        let acts = l.sync.set_stopped(group, true);
+                    if !l.sync.handed_off().contains(&group) {
+                        let acts = l.sync.set_handed_off(group, true);
                         self.inner.apply(acts);
                     }
                     Ok(())
@@ -568,14 +570,14 @@ impl Osis {
     }
 
     async fn source_local(&self, group: Tid) -> Result<()> {
-        let (held, role, stopped, has_label, at) = self.locked(|l| {
+        let (held, role, away, has_label, at) = self.locked(|l| {
             let held = l.engine().knows(&group);
             let limit = self.inner.limit;
             let role = crate::read::Reader { e: l.engine(), limit, actor: None }.role_on(group);
-            let stopped = l.sync.stopped().contains(&group);
-            (held, role, stopped, labeled(l, &group), l.group_sources.get(&group).cloned())
+            let away = l.sync.handed_off().contains(&group);
+            (held, role, away, labeled(l, &group), l.group_sources.get(&group).cloned())
         });
-        if at.is_none() && !stopped {
+        if at.is_none() && !away {
             return Ok(());
         }
         if !held || role?.is_none() {
@@ -585,8 +587,8 @@ impl Osis {
             // its first label here: needs admin, as `sync`
             self.sync_here(group, &[], true)?;
         }
-        if stopped {
-            self.act(|l| l.sync.set_stopped(group, false));
+        if away {
+            self.act(|l| l.sync.set_handed_off(group, false));
         }
         // what was written at the node reaches a saved peer first, else this engine would catch up
         // without it; not asked of a node that is gone

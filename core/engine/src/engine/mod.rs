@@ -989,9 +989,6 @@ pub struct Core {
     /// The sync records this engine's transactions write or drop (`SyncRecords`), set by
     /// node-sync (`Engine::set_sync_records`; `None`: no node-sync, no sync records).
     pub sync_records: Option<&'static dyn SyncRecords>,
-    /// Groups this node does not sync (set by node sync, `SyncEngine::set_stopped`): what is
-    /// here of them is behind (`readable_by`).
-    pub stopped: BTreeSet<Tid>,
     /// Groups the handle reads and writes at another node (`osis` routes): what is here of them
     /// may be behind, syncing or not (`readable_by`).
     pub routed_away: BTreeSet<Tid>,
@@ -1486,7 +1483,6 @@ impl Core {
             keep_bodies: _,
             list_bound: _,
             sync_records: _,
-            stopped: _,
             routed_away: _,
             #[cfg(debug_assertions)]
             unchecked_tx: _,
@@ -1662,7 +1658,6 @@ impl Core {
             labels: BTreeMap::new(),
             published: None,
             links: None,
-            stopped: BTreeSet::new(),
             routed_away: BTreeSet::new(),
         }
     }

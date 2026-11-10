@@ -715,13 +715,13 @@ fn item_in(net: &mut Net, a: usize, g: Tid) -> Tid {
     t
 }
 
-/// Stopped, then synced again, with nothing but settling in between (no time passes: a retry
+/// Handed off, then synced again, with nothing but settling in between (no time passes: a retry
 /// timer cannot help).
 fn toggle(net: &mut Net, n: usize, g: Tid) {
-    let acts = net.sync(n).set_stopped(g, true);
+    let acts = net.sync(n).set_handed_off(g, true);
     net.actions(n, acts);
     net.run();
-    let acts = net.sync(n).set_stopped(g, false);
+    let acts = net.sync(n).set_handed_off(g, false);
     net.actions(n, acts);
     net.run();
 }
@@ -761,7 +761,7 @@ fn item_grant_then_group_grant_reaches_the_group_spec_wire_9() {
 }
 
 // spec/sync.md §3: a label a group here records is never a hint, whatever a blob calls it: not
-// taken while the group is stopped here, nor in the way when it syncs again.
+// taken while the group is handed off here, nor in the way when it syncs again.
 #[test]
 fn inbox_blob_cannot_rename_a_groups_label_spec_sync_3() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
@@ -780,10 +780,10 @@ fn inbox_blob_cannot_rename_a_groups_label_spec_sync_3() {
     net.advance(61_000);
     let kinds = net.sync(b).entries(&home);
     assert!(kinds.iter().any(|(x, k)| *x == id && matches!(k, EntryKind::Inbox(Some(_)))), "bob opened it: {kinds:?}");
-    let acts = net.sync(b).set_stopped(g, true);
+    let acts = net.sync(b).set_handed_off(g, true);
     net.actions(b, acts);
     net.run();
-    let acts = net.sync(b).set_stopped(g, false);
+    let acts = net.sync(b).set_handed_off(g, false);
     net.actions(b, acts);
     net.run();
     assert!(settled(&mut net, b, g), "{:?}", net.sync(b).label_status());

@@ -689,12 +689,6 @@ impl Worker {
                 nothing()
             }
             method::SYNC_IDS => Value::List(db.sync_ids(a.tid()?)?.iter().map(|x| Value::Str(x.to_string())).collect()),
-            method::SYNC_OPTIONS => Value::List(c::sync_options_v(&db.sync_options(a.tid()?)?)),
-            method::SET_SYNC_OPTIONS => {
-                let g = a.tid()?;
-                db.set_sync_options(g, c::sync_options(&mut a)?)?;
-                nothing()
-            }
             method::ROTATE_PEER_ADDRESS => {
                 db.rotate_peer_address()?;
                 nothing()

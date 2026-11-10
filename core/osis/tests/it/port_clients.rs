@@ -690,7 +690,6 @@ fn watches_and_rows() {
     assert!(matches!(c.contact_card(), Err(Error::Unsupported(_))));
     assert!(matches!(c.pair_offer(), Err(Error::Unsupported(_))));
     assert!(matches!(c.invite_requests(), Err(Error::Unsupported(_))));
-    assert!(matches!(c.sync_options(x.g), Err(Error::Unsupported(_))));
     assert!(matches!(c.rotate_peer_address(), Err(Error::Unsupported(_))));
     assert!(matches!(c.export_bundle(&[x.g], Vec::new()), Err(Error::Unsupported(_))));
     assert!(matches!(c.import_bundle(&b"x"[..]), Err(Error::Unsupported(_))));

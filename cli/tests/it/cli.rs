@@ -376,11 +376,9 @@ fn sharing_commands_local_plan_cli_4() {
     let st = s.ok(&["--json", "status"]).line().to_string();
     assert!(st.starts_with("{\"groups\":[") && st.ends_with("\"connected\":0,\"two_sources\":[]}"), "{st}");
     assert_eq!(s.ok(&["status"]).out.lines().next(), Some("connected 0"));
-    // CLI `group policy`: shows and sets `SyncOptions`
-    assert_eq!(s.ok(&["group", "policy", "me"]).out, "mode full\n");
-    assert_eq!(s.ok(&["group", "policy", "me", "--mode", "stopped"]).out, "mode stopped\n");
-    assert_eq!(s.ok(&["group", "policy", "me"]).out, "mode stopped\n");
-    assert_eq!(s.code(&["group", "policy", "me", "--mode", "some"]), 2);
+    // CLI `group source G`: shows where G's calls go
+    assert_eq!(s.ok(&["group", "source", &g]).out, "local\n");
+    assert_eq!(s.ok(&["--json", "group", "source", &g]).line(), "{\"source\":\"local\"}");
 }
 
 // CLI: commands over API pieces not built yet (queries, backlinks) parse and

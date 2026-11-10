@@ -709,8 +709,8 @@ impl SyncEngine {
     /// Records steps in `label.0` of `g` when this node may write it (an admin; spec/sync.md
     /// §2, §5: "records the steps in label.0"). Steps already recorded are left alone.
     pub(crate) fn record_steps(&mut self, g: &Tid, l: &LabelId, steps: &[Step], claims: Option<(StepId, ClaimSet)>) -> Result<()> {
-        // a stopped group: nothing is placed there from here
-        if self.state.stopped.contains(g) {
+        // a handed-off group: nothing is placed there from here
+        if self.state.handed_off.contains(g) {
             return Ok(());
         }
         let Some(gl) = self.group_label(g, l) else { return Ok(()) };

@@ -12,7 +12,7 @@ The requirements behind sync: spec/requirements.md, Data a node cannot read and 
 - notes/sync-protocol.md: why the wire is so, osis-proto (client and serving engines, reconciliation, reply caps) and osis-label.
 - notes/flow-control.md: request window, push holding, stall timeouts, the hub's per-input bounds and turns.
 - notes/serving.md: hosting as a node feature, osis-host (store, policy, hub, replication, driver), hosting in the node, host abuse.
-- notes/node-sync.md: node sync as built: module map, records, the pass, certificates, inbound, stopped groups, junk copies, first sync, simulator invariants.
+- notes/node-sync.md: node sync as built: module map, records, the pass, certificates, inbound, handed-off groups, junk copies, first sync, simulator invariants.
 - notes/node-sync-work-sets.md: what a pass judges and when a label passes (work sets, idle labels, many labels), with measured costs.
 - notes/networking.md (transports, reachability, first contact) and notes/peers.md (co-reader peers, LAN routes, co-reader serving, local passes).
 - notes/growth.md: every known cause of permanent growth, sync's included.

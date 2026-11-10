@@ -1,18 +1,17 @@
-//! Groups this node does not sync (`set_stopped`): held, their labels left alone. What is stored
-//! of them stays, no longer updated.
+//! Groups handed off to another node (`set_handed_off`): their calls go there (osis
+//! `group_source`), so this node holds them without syncing them. What is stored of them stays,
+//! no longer updated.
 
 use super::{Action, SyncEngine};
 use osis_base::{LabelId, Tid};
 use std::collections::BTreeSet;
 
 impl SyncEngine {
-    /// Stops syncing `group` here (`on`), or syncs it again: a stopped group's labels are not
-    /// synced (no download, no pass, nothing placed there). What is already stored stays, no
-    /// longer updated.
-    pub fn set_stopped(&mut self, group: Tid, on: bool) -> Vec<Action> {
-        self.state.set_stopped(group, on);
+    /// Hands `group` off (`on`), or takes it back: a handed-off group's labels are not synced
+    /// here (no download, no pass, nothing placed there).
+    pub fn set_handed_off(&mut self, group: Tid, on: bool) -> Vec<Action> {
+        self.state.set_handed_off(group, on);
         self.synced.key.0 = u64::MAX;
-        self.engine.core.stopped = self.state.stopped.clone();
         self.served_cache = None;
         if on {
             // its labels' sessions stop here: nothing more runs on them
@@ -27,15 +26,15 @@ impl SyncEngine {
         self.handle(super::Event::Local)
     }
 
-    /// Groups this node does not sync (`set_stopped`).
-    pub fn stopped(&self) -> &BTreeSet<Tid> {
-        &self.state.stopped
+    /// The groups handed off (`set_handed_off`).
+    pub fn handed_off(&self) -> &BTreeSet<Tid> {
+        &self.state.handed_off
     }
 
-    /// The stopped groups holding any of `things` as far as this node knows: the group itself,
+    /// The handed-off groups holding any of `things` as far as this node knows: the group itself,
     /// or a thing its known closure holds (the rest of its closure is not here).
-    pub fn stopped_groups(&mut self, things: &BTreeSet<Tid>) -> Vec<Tid> {
-        let gs: Vec<Tid> = self.state.stopped.iter().copied().collect();
+    pub fn handed_off_groups(&mut self, things: &BTreeSet<Tid>) -> Vec<Tid> {
+        let gs: Vec<Tid> = self.state.handed_off.iter().copied().collect();
         gs.into_iter().filter(|g| things.contains(g) || self.engine.closure(g).iter().any(|t| things.contains(t))).collect()
     }
 }

@@ -223,6 +223,7 @@ fn thin_cli_quic_localhost() {
     };
     let r = route(&["group", "source", &g, &new]);
     assert_eq!(r.0, 0, "{}", r.2);
+    assert_eq!(osis(&m, &["group", "source", &g]), new, "the source reads back");
     let r = route(&["get", &t, "note:title.0"]);
     assert_eq!((r.0, r.1.trim()), (0, "\"from thin\""), "{}", r.2);
     drop(daemon);

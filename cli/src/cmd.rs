@@ -205,7 +205,7 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::Sync { .. }
             | Cmd::Wait { .. }
             | Cmd::Serve { .. }
-            | Cmd::Group(GroupCmd::Source { .. })
+            | Cmd::Group(GroupCmd::Source { to: Some(_), .. })
             | Cmd::Clients(ClientsCmd::RotateAddress)
             | Cmd::Watch { .. }
             | Cmd::Writes { list: ListArgs { follow: true, .. }, .. }
@@ -692,22 +692,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 return Err(exit(1, "group source needs the store itself: stop `osis serve` on this store, run it with --connect, start `serve` again"));
             }
             let g = ctx.tid(&g)?;
+            let Some(to) = to else {
+                let at = db.group_sources().get(&g).map_or("local".to_string(), |a| a.to_string());
+                return ctx.emit(&[at.clone()], J::obj([("source", J::str(at))]));
+            };
             let to = if to == "local" { osis::GroupSource::Local } else { osis::GroupSource::Node(to.parse()?) };
             wait(ctx, db.group_source(g, to))
-        }
-        Cmd::Group(GroupCmd::Policy { g, mode }) => {
-            let g = ctx.tid(&g)?;
-            let mut o = db.sync_options(g)?;
-            if let Some(m) = mode {
-                o.mode = match m.as_str() {
-                    "full" => osis::SyncMode::Full,
-                    "stopped" => osis::SyncMode::Stopped,
-                    _ => return Err(usage(format!("bad --mode {m:?}: full or stopped"))),
-                };
-                db.set_sync_options(g, o)?;
-            }
-            let m = if o.mode == osis::SyncMode::Full { "full" } else { "stopped" };
-            ctx.emit(&[format!("mode {m}")], J::obj([("mode", J::str(m.to_string()))]))
         }
         Cmd::Bundle(BundleCmd::Export { groups }) => {
             let gs = groups.iter().map(|g| ctx.tid(g)).collect::<anyhow::Result<Vec<_>>>()?;

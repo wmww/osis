@@ -194,7 +194,6 @@ fn moving_a_group_both_ways() {
     assert!(x.p.group_sources().is_empty());
     x.to_node();
     assert_eq!(x.p.group_sources().get(&x.g), Some(&x.nc));
-    assert!(x.p.sync_options(x.g).unwrap().mode == osis::SyncMode::Stopped);
     // only for P: N's label lives and syncs
     block_on(x.n.wait_synced(SyncScope::Thing(x.g))).unwrap();
     until("N synced", || x.n.status().unwrap().groups[&x.g].state == SyncState::Synced);
@@ -225,7 +224,6 @@ fn moving_a_group_both_ways() {
     block_on(x.n.wait_synced(SyncScope::Thing(x.g))).unwrap();
     x.move_group(x.g, GroupSource::Local).unwrap();
     assert!(x.p.group_sources().is_empty());
-    assert!(!(x.p.sync_options(x.g).unwrap().mode == osis::SyncMode::Stopped));
     // what P wrote through N is here: no stale read after the move
     assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("p1")));
     assert_eq!(x.p_local_copy(), Some(s("p1")));
@@ -236,6 +234,39 @@ fn moving_a_group_both_ways() {
         let _ = x.n.nudge_sync();
         x.n.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap() == Some(s("p2"))
     });
+    drop(x.host);
+}
+
+// spec: none (API surface); notes/api.md Sync configuration and status: a group's status is its source's: P's own before and after the move, the node's while it is there, absent while that node cannot be asked (its connection shown down); a wait for everything here leaves the group to its node
+#[test]
+fn status_shows_a_group_as_its_source_does() {
+    let x = world();
+    x.connect_p();
+    block_on(x.p.wait_synced(SyncScope::Thing(x.g))).unwrap();
+    assert_eq!(x.p.status().unwrap().groups[&x.g].state, SyncState::Synced, "P's own");
+    x.to_node();
+    // N goes on syncing with the peer, P's copy is cut from it: P shows N's word
+    x.net.partition("p", "s");
+    x.net.disconnect("p", "s");
+    x.set_n("n1");
+    until("the node's state shows", || {
+        let _ = x.n.nudge_sync();
+        let n = x.n.status().unwrap().groups.get(&x.g).map(|s| s.state);
+        n == Some(SyncState::Synced) && x.p.status().unwrap().groups.get(&x.g).map(|s| s.state) == n
+    });
+    // the node down: P has no word for the group
+    assert!(x.p.disconnect_node(&x.nc).unwrap());
+    let st = x.p.status().unwrap();
+    assert!(!st.groups.contains_key(&x.g), "{st:?}");
+    assert_eq!(st.node_connections, vec![osis::NodeConnection { address: x.nc.clone(), connected: false }]);
+    // nothing here waits on it
+    x.net.heal("p", "s");
+    block_on(x.p.wait_synced(SyncScope::All)).unwrap();
+    // home: P's own again, caught up with what N wrote
+    x.connect_p();
+    x.move_group(x.g, GroupSource::Local).unwrap();
+    assert_eq!(x.p.status().unwrap().groups[&x.g].state, SyncState::Synced, "P's own");
+    assert_eq!(x.p_local_copy(), Some(s("n1")));
     drop(x.host);
 }
 
@@ -250,7 +281,6 @@ fn moves_with_pending_writes_refuse() {
     let r = x.move_group(x.g, GroupSource::Node(x.nc.clone()));
     assert!(matches!(r, Err(Error::Network(_) | Error::Unsynced { .. })), "{r:?}");
     assert!(x.p.group_sources().is_empty());
-    assert!(x.p.sync_options(x.g).unwrap().mode != osis::SyncMode::Stopped);
     assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("pending")));
     // another world: away with nothing pending, then home with P cut from the peer
     let x = world_waiting(Duration::from_millis(300));
@@ -795,7 +825,6 @@ fn a_write_overtaken_by_a_move_fails() {
     let (p, g, addr) = (x.p.clone(), x.g, x.nc.clone());
     x.p.after_source(Box::new(move || {
         p.set_source(g, Some(addr.clone()));
-        let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::Stopped });
     }));
     let before = x.p_local_copy();
     let r = x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("stranded?"));
@@ -984,9 +1013,8 @@ fn differential(seed: u64) -> usize {
     let connect = || crate::common::block_on(x.p.connect_node(&NodeLogin { addr: x.nc.clone(), secret: x.secret.clone() })).unwrap();
     connect();
     let addr = x.nc.clone();
-    // the model: the group's source, whether it syncs here, whether the node is connected; the value on each side
+    // the model: the group's source, whether the node is connected; the value on each side
     let mut routed = [false; 3];
-    let mut stopped = [false; 3];
     let mut connected = true;
     let mut local: Vec<String> = vec!["start".into(); things.len()];
     let mut at_node = local.clone();
@@ -998,17 +1026,12 @@ fn differential(seed: u64) -> usize {
         // the rule, for a thing known here
         let via_node = of.iter().any(|g| routed[ix(g)]);
         // the groups other than the first admin only list it: only the first admin's label carries it
-        let split = via_node && !routed[ix(&of[0])] && !stopped[ix(&of[0])];
+        let split = via_node && !routed[ix(&of[0])];
         match r.next(10) {
-            0 | 1 => {
+            0..=2 => {
                 let i = r.next(3) as usize;
                 routed[i] = !routed[i];
                 x.p.set_source(gs[i], routed[i].then(|| addr.clone()));
-            }
-            2 => {
-                let i = r.next(3) as usize;
-                stopped[i] = !stopped[i];
-                x.p.set_sync_options(gs[i], osis::SyncOptions { mode: if stopped[i] { osis::SyncMode::Stopped } else { osis::SyncMode::Full } }).unwrap();
             }
             3 => {
                 if connected {
@@ -1094,7 +1117,6 @@ fn a_sharing_flow_overtaken_by_a_move_fails() {
     x.p.after_source(Box::new(move || {
         if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
             p.set_source(g, Some(addr.clone()));
-            let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::Stopped });
         }
     }));
     let roster = x.p.engine(|e| e.roster(&x.g).len());
@@ -1164,7 +1186,6 @@ fn a_nodes_client_reads_nothing_during_the_catch_up() {
     x.net.partition("p", "s");
     x.net.disconnect("p", "s");
     assert!(x.move_group(x.g, GroupSource::Local).is_err());
-    assert!(x.p.sync_options(x.g).unwrap().mode != osis::SyncMode::Stopped, "syncing again, behind");
     assert_eq!(x.p.group_sources().get(&x.g), Some(&x.nc));
     assert_eq!(client.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), None, "a stale value, as if current");
     drop(x.host);
@@ -1832,7 +1853,6 @@ fn a_split_made_after_the_route_refuses_the_write() {
     let (p, g, addr) = (x.p.clone(), x.g, x.nc.clone());
     x.p.after_source(Box::new(move || {
         p.set_source(g, Some(addr.clone()));
-        let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::Stopped });
     }));
     let r = x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("late"));
     x.p.after_source(Box::new(|| {}));

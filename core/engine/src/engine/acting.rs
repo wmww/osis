@@ -31,18 +31,10 @@ impl Engine {
     /// Whether a client of this node, `actor`, reads `t` here now: `entitled` and this node's copy
     /// is current, or a kept copy it reads (`copy_readable_by`).
     pub fn readable_by(&self, actor: &Tid, t: &Tid) -> bool {
-        // in a group read at another node or still catching up on its way home, or held only
-        // through groups that stopped syncing here: stale here, and this node would serve it to a
-        // client as if current (notes/client-port.md §6)
-        if !self.core.stopped.is_empty() || !self.core.routed_away.is_empty() {
-            let gs = self.groups_of(t);
-            if self.core.routed_away.contains(t) || gs.iter().any(|g| self.core.routed_away.contains(g)) {
-                return false;
-            }
-            let out = |g: &Tid| self.core.stopped.contains(g);
-            if (out(t) || gs.iter().any(out)) && !gs.iter().chain([t]).any(|g| !out(g) && self.core.ix.labeled.contains(g)) {
-                return false;
-            }
+        // in a group read at another node, or still catching up on its way home: stale here, and
+        // this node would serve it to a client as if current (notes/client-port.md §6)
+        if !self.core.routed_away.is_empty() && (self.core.routed_away.contains(t) || self.groups_of(t).iter().any(|g| self.core.routed_away.contains(g))) {
+            return false;
         }
         self.entitled(actor, t) || self.copy_readable_by(actor, t)
     }

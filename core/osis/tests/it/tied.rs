@@ -229,12 +229,12 @@ fn nested_tied_grants() {
 }
 
 
-// spec/permissions.md §2 (tied edge removed): Bob's phone holds his sub-tag but does not sync
-// it. Carol removes it from the tag while Alice and Bob's
+// spec/permissions.md §2 (tied edge removed): Bob's phone holds his sub-tag, whose source is
+// another node, so it does not sync it. Carol removes it from the tag while Alice and Bob's
 // laptop are away: the phone, admin of the sub-tag by Bob, sees the tie die but leaves the
 // grant to the sub-tag's holders; Bob's laptop removes it once back.
 #[test]
-fn stopped_scope_left_to_holders() {
+fn scope_handed_off_left_to_holders() {
     let Setup { mut w, alice, bob, carol, g } = setup();
     let join = osis::internals::pair(w.cfg(4, &[]), &bob.pair_offer().unwrap()).unwrap();
     let (_, reply) = bob.pair_accept(join.request()).unwrap();
@@ -248,9 +248,11 @@ fn stopped_scope_left_to_holders() {
     bob.add_with_grant(Member::Item(sub), g, Role::Read).unwrap();
     assert_eq!(reach_of(&bob, sub, g).map(|r| r.tie), Some(Tie::Tied(Role::Read)));
     w.run();
-    phone.set_sync_options(sub, osis::SyncOptions { mode: osis::SyncMode::Stopped }).unwrap();
+    phone.set_source(sub, Some(osis::Address::new(&"mem://elsewhere".parse().unwrap(), [7; 32])));
     w.run();
-    assert_eq!(phone.grants(sub).unwrap().get(&g).map(|e| e.with_membership), Some(true));
+    // the phone's own copy: its calls on `sub` go to the other node
+    let tied = || phone.engine(|e| e.roster(&sub).get(&g).map(|e| e.tied.is_some()));
+    assert_eq!(tied(), Some(true));
     w.set_online(&alice, false);
     w.set_online(&bob, false);
     carol.commit_with(|w| w.group(g).remove(osis::Member::Item(sub))).unwrap();
@@ -258,7 +260,7 @@ fn stopped_scope_left_to_holders() {
     w.advance(60_000);
     w.run();
     assert!(!listed(&phone, g, sub), "the phone saw the removal");
-    assert!(phone.grants(sub).unwrap().contains_key(&g), "but left the tied grant alone");
+    assert!(tied().is_some(), "but left the tied grant alone");
     w.set_online(&alice, true);
     w.set_online(&bob, true);
     w.advance(60_000);

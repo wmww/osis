@@ -423,8 +423,8 @@ impl SyncEngine {
 
     /// Groups with a label whose closure holds `t` (the thing itself when labeled).
     fn groups_holding(&mut self, t: &Tid) -> Vec<Tid> {
-        // stopped groups: nothing goes under their labels from here
-        let mut out: Vec<Tid> = self.engine.labeled_groups().into_iter().filter(|g| !self.state.stopped.contains(g) && (g == t || self.engine.groups_of(t).contains(g))).collect();
+        // handed-off groups: nothing goes under their labels from here
+        let mut out: Vec<Tid> = self.engine.labeled_groups().into_iter().filter(|g| !self.state.handed_off.contains(g) && (g == t || self.engine.groups_of(t).contains(g))).collect();
         out.dedup();
         out
     }
@@ -532,7 +532,7 @@ impl SyncEngine {
     /// explicit demotion by an admin of T, after a complete pass of every label holding a thing
     /// of its pre-sync scope ended after the last remote role commit of G and of T (its
     /// pre-sync, none for an empty scope); else as a self-removal by an admin of G; nothing when
-    /// this node may do neither, or the pair or its scope meets a stopped group.
+    /// this node may do neither, or the pair or its scope meets a handed-off group.
     pub(crate) fn untie_unplaced(&mut self) -> Result<()> {
         let w = &mut self.tied;
         if w.all || !w.groups.is_empty() || !w.targets.is_empty() {
@@ -552,12 +552,12 @@ impl SyncEngine {
         let due: Vec<(Tid, Tid)> = self.tied.due.iter().filter(|p| !self.tied.failed.contains(p)).copied().collect();
         for (t, g) in due {
             let Some(how) = self.engine.may_remove(&t, &g) else { continue };
-            // a pair or scope reaching a stopped group is left to its holders:
+            // a pair or scope reaching a handed-off group is left to its holders:
             // its state here is stale and nothing would go under its labels from here
             let explicit = how == crate::flows::Untie::Explicit;
             let scope = if explicit { self.engine.removal_scope(&t, &g, None) } else { BTreeSet::new() };
             let reach: BTreeSet<Tid> = scope.iter().copied().chain([t, g]).collect();
-            if !self.stopped_groups(&reach).is_empty() {
+            if !self.handed_off_groups(&reach).is_empty() {
                 continue;
             }
             if explicit {

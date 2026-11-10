@@ -63,4 +63,4 @@ The fixes, their order and what is open: issues/net-rework.md and its job issues
 - **By probe**: rows marked with `p`/`q`, tier 2 tests. In-process results say nothing about finding a peer: only p20, p21 and the tier-2 tests ran real sockets, and all on localhost, never between machines.
 - **By reading only**: 3's "never syncs" (`Runtime::None` under the CLI needs real sockets to see), 31, 32, the "works, read" part of 12; 9's removal notices and re-seals; causes in 21, 24, 33; deny for libs/kit; everything on Android.
 - **Not checked**: real devices, Wi-Fi client isolation, ephemeral values and ephemeral signals over peers beyond existing tests, thin clients with no saved peers, disk-backed restart of link peers.
-- notes/networking.md is out of date where it says a contact card may carry a dialable key, and names `sync_policy` (now `set_sync_options`).
+- notes/networking.md is out of date where it says a contact card may carry a dialable key, and names `sync_policy`, which does not exist.

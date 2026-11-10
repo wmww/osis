@@ -117,10 +117,6 @@ pub(crate) mod method {
     /// `[invite id bytes]` -> `[]`
     pub const ACCEPT_INVITE: u64 = 53;
     pub const DECLINE_INVITE: u64 = 54;
-    /// `[group]` -> `[Opt(reach), headers_only]`
-    pub const SYNC_OPTIONS: u64 = 55;
-    /// `[group, Opt(reach), headers_only]` -> `[]`
-    pub const SET_SYNC_OPTIONS: u64 = 56;
     /// `[]` -> `[]`
     pub const ROTATE_PEER_ADDRESS: u64 = 57;
     /// `[group]` -> `[text*]`

@@ -750,16 +750,10 @@ pub enum GroupCmd {
         #[arg(long, value_name = "ADDR")]
         peer: Vec<String>,
     },
-    /// Where G's calls go: `local`, or ADDR (URL#KEY) of the node connected by --connect; held in the
-    /// store. Local: this store syncs it, and it is caught up before calls come home
-    Source { g: String, to: String },
-    /// How this node syncs G: shows it, and changes what the flags name
-    Policy {
-        g: String,
-        /// Whether this node syncs G: full, stopped
-        #[arg(long, value_name = "MODE")]
-        mode: Option<String>,
-    },
+    /// Where G's calls go: shows it, or moves it to TO: `local`, or ADDR (URL#KEY) of the node
+    /// connected by --connect; held in the store. Local: this store syncs it, and it is caught up
+    /// before calls come home
+    Source { g: String, to: Option<String> },
 }
 
 #[derive(Subcommand, Debug)]

@@ -472,7 +472,7 @@ pub use diagnostic::Diagnostic;
 pub use disputes::{Dispute, DisputeId, Side};
 pub use serving::{Admit, ServingCaps, Serving, ServingPolicy, SyncId};
 pub use handle::{Close, Config, AppConfig, MemStore, Osis, ReadOnly, Store, WeakOsis};
-pub use net::{Lan, Runtime, SyncMode, SyncOptions};
+pub use net::{Lan, Runtime};
 pub use account::{Joining, PairOffer, PairReply, PairRequest};
 pub use keep::KeepAlive;
 pub use keys::{DynamicAspectKey, core};
