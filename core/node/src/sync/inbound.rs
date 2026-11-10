@@ -228,12 +228,12 @@ impl SyncEngine {
             // there as it was (`host_holds`), so the pass judges it there as any. Only bytes
             // this node asked for, of an entry it knows, are taken as any entry's (a dropped
             // chunk fetched for the salt its delete signs)
-            if let LogEvent::Added { blob_id, blob, wrap, .. } = &ev
+            if let LogEvent::Added { blob_id, blob, .. } = &ev
                 && self.state.tombs.contains_key(&(l, *blob_id))
             {
                 let asked = conn.and_then(|c| self.conns.get_mut(&c)).is_some_and(|c| c.req.fetching.remove(blob_id));
                 if let Some(s) = host
-                    && self.host_holds(s, l, *blob_id, *wrap)
+                    && self.host_holds(s, l, *blob_id)
                 {
                     touched.push(*blob_id);
                 }
@@ -1867,11 +1867,11 @@ impl SyncEngine {
     /// fetched, not served on), so the pass judges it there as any present entry, whatever its
     /// kind (spec/sync.md §6 Tombstones): an upload's answer lost or late leaves no copy behind.
     /// One this node does not know gets no record. Whether the presence is new.
-    pub(crate) fn host_holds(&mut self, s: HostKey, l: LabelId, b: BlobId, wrap: [u8; osis_crypto::WRAP_LEN]) -> bool {
+    pub(crate) fn host_holds(&mut self, s: HostKey, l: LabelId, b: BlobId) -> bool {
         if !self.state.entries.contains_key(&(l, b)) {
             let Some(t) = self.state.tombs.get(&(l, b)).cloned() else { return false };
             let memory = self.state.is_memory(&l, &b);
-            self.state.set_entry_quiet(l, b, Entry { wrap, stamp: None, cert: t.cert, kind: t.kind, memory });
+            self.state.set_entry_quiet(l, b, Entry { wrap: t.wrap, stamp: None, cert: t.cert, kind: t.kind, memory });
         }
         let new = !self.state.is_present(&s, &l, &b);
         self.state.set_present(s, l, b, true);
@@ -1938,7 +1938,7 @@ impl SyncEngine {
             }
             match code {
                 Code::OK => {
-                    let new = self.host_holds(host, l, b, [0; osis_crypto::WRAP_LEN]);
+                    let new = self.host_holds(host, l, b);
                     grew |= new;
                     if new {
                         self.reached(&l, &b);

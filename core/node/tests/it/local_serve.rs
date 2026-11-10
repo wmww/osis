@@ -975,11 +975,11 @@ fn purged_chunks_mid_upload_leave_the_host_spec_sync_6() {
     chunks_answered_late(false, false);
 }
 
-// spec/sync.md §6 (Tombstones), §3 (certificate copies' linked blobs), spec/commits.md §5: a
-// certificate copy and the blobs it links, whose upload answers were lost with the connection,
-// leave the host once the copied delta is purged and the host reports them.
-#[test]
-fn certificate_copy_whose_answers_were_lost_leaves_the_host_with_its_links_spec_sync_6() {
+/// spec/sync.md §6 (Tombstones), §3 (certificate copies' linked blobs), spec/commits.md §5: a
+/// certificate copy and the blobs it links, whose upload answers were lost with the connection
+/// (`lost`) or arrive after the purge, leave the host once the copied delta is purged and the
+/// host reports them.
+fn certificate_copy_answered_late(lost: bool) {
     let mut net = Net::new();
     let h = net.add_host();
     let a = net.node(1, &[h]);
@@ -1007,6 +1007,9 @@ fn certificate_copy_whose_answers_were_lost_leaves_the_host_with_its_links_spec_
     net.run();
     let unknown = |net: &mut Net| net.sync(a).entries(&l).into_iter().filter(|(_, k)| *k == EntryKind::Unknown).map(|(id, _)| id).collect::<Vec<_>>();
     let before = unknown(&mut net);
+    if !lost {
+        net.held_hosts.insert(h);
+    }
     let acts = net.sync(a).place_certificate(&g, &c, &[ai].into()).unwrap();
     net.actions(a, acts);
     let copies = |net: &mut Net| net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect::<Vec<_>>();
@@ -1023,9 +1026,11 @@ fn certificate_copy_whose_answers_were_lost_leaves_the_host_with_its_links_spec_
         }
         linked = unknown(&mut net).into_iter().filter(|id| !before.contains(id)).collect();
     }
-    net.blocked.insert((a, h));
-    net.drop_link(a, h);
-    net.run();
+    if lost {
+        net.blocked.insert((a, h));
+        net.drop_link(a, h);
+        net.run();
+    }
     let mut m = osis_node::Mutation::new();
     m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: u, ak: ak.clone() });
     m.remove_aspect(u, &ak).unwrap();
@@ -1035,6 +1040,7 @@ fn certificate_copy_whose_answers_were_lost_leaves_the_host_with_its_links_spec_
     let known = |net: &mut Net| listed(net, a, &l).into_iter().filter(|id| linked.contains(id) || copy.contains(id)).count();
     assert_eq!(known(&mut net), 0, "the purged copy and its linked blobs left the node while the host was away");
     net.blocked.remove(&(a, h));
+    net.release_host(h);
     for _ in 0..4 {
         net.advance(60_000);
         net.run();
@@ -1042,4 +1048,14 @@ fn certificate_copy_whose_answers_were_lost_leaves_the_host_with_its_links_spec_
     let at_host = |net: &mut Net| linked.iter().chain(&copy).filter(|id| net.host_ids(h, &l).contains(id)).count();
     assert_eq!(at_host(&mut net), 0, "the purged copy or its linked blobs stay at the host");
     assert_eq!(known(&mut net), 0, "the node keeps records of them");
+}
+
+#[test]
+fn certificate_copy_whose_answers_were_lost_leaves_the_host_with_its_links_spec_sync_6() {
+    certificate_copy_answered_late(true);
+}
+
+#[test]
+fn certificate_copy_mid_upload_leaves_the_host_with_its_links_spec_sync_6() {
+    certificate_copy_answered_late(false);
 }

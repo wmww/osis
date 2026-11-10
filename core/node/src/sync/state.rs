@@ -119,6 +119,7 @@ enum LogWrite {
 #[derive(Clone, Debug)]
 pub struct Tomb {
     pub at: u64,
+    pub wrap: [u8; WRAP_LEN],
     pub cert: bool,
     pub kind: Kind,
 }
@@ -630,8 +631,9 @@ impl State {
                     let k = (LabelId(r.arr()?), BlobId(r.arr()?));
                     let mut x = Rd::new(&v);
                     let at = x.u64()?;
+                    let wrap = x.arr()?;
                     let cert = x.u8()? == 1;
-                    s.tombs.insert(k, Tomb { at, cert, kind: decode_kind(&mut x)? });
+                    s.tombs.insert(k, Tomb { at, wrap, cert, kind: decode_kind(&mut x)? });
                 }
                 b"r" => s.reach_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
                 b"z" => s.host_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
@@ -1031,8 +1033,8 @@ impl State {
         if e.memory {
             self.memory_entries.insert((l, b));
         }
-        let tomb = Tomb { at: self.now, cert: e.cert, kind: e.kind };
-        let v = encode_kind(Wr::new().u64(tomb.at).u8(u8::from(tomb.cert)), &tomb.kind).take();
+        let tomb = Tomb { at: self.now, wrap: e.wrap, cert: e.cert, kind: e.kind };
+        let v = encode_kind(Wr::new().u64(tomb.at).raw(&tomb.wrap).u8(u8::from(tomb.cert)), &tomb.kind).take();
         self.put_of(&l, &b, key(TOMB, &[&l.0, &b.0]), v);
         self.tombs.insert((l, b), tomb);
     }
