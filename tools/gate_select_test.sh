@@ -88,5 +88,19 @@ git checkout -q --orphan orph; git commit -qm orphan
 check "no merge base" "core=1 gui=1 unify=1 select=all"
 git checkout -q t; git branch -qm main old
 check "no main branch" "core=1 gui=1 unify=1 select=all"
+# the hold's runner (--held): only under tools/heavy (HEAVY_HELD), each `run` line in order with
+# stdin closed, the first failure ending it with that code; `build` lines are not its
+held() {
+  name=$1 want=$2; shift 2
+  rm -f ran; rc=0; got=$(env "$@" sh "$gate" --held runs 2>&1) || rc=$?
+  got="exit $rc: $(printf '%s\n' "$got" | grep -v '^   (' | tr '\n' '|')ran: $(cat ran 2>/dev/null | tr '\n' ' ')"
+  n=$((n + 1)); if [ "$got" = "$want" ]; then :; else echo "FAIL held $name: got '$got', want '$want'"; fail=1; fi
+}
+printf '%s\n' "build echo b >> ran" "run echo 1 >> ran" "run cat; echo 2 >> ran" "run echo 3 >> ran" > runs
+held "unlocked" "exit 2: gate: --held is internal: only the gate's tools/heavy hold runs it|ran: " -u HEAVY_HELD
+held "every run, stdin closed" "exit 0: == sh -c echo 1 >> ran|== sh -c cat; echo 2 >> ran|== sh -c echo 3 >> ran|ran: 1 2 3 " HEAVY_HELD=1
+printf '%s\n' "run echo 1 >> ran" "run exit 7" "run echo 3 >> ran" > runs
+held "first failure ends it" "exit 7: == sh -c echo 1 >> ran|== sh -c exit 7|ran: 1 " HEAVY_HELD=1
+rm -f runs ran
 echo "gate selection: $n cases, $([ $fail = 0 ] && echo ok || echo FAILED)"
 exit $fail

@@ -45,10 +45,13 @@ trap 'rm -f "$tf"' EXIT
 cpu() { times > "$tf"; cpu=$(awk 'function s(t) { split(t, a, /[ms]/); return a[1] * 60 + a[2] } NR == 2 { printf "%d", s($1) + s($2) }' "$tf"); }
 step() { printf '== %s\n' "$*"; step_s=$(date +%s); cpu; step_c=$cpu; "$@"; cpu; printf '   (%ss, %s CPU-s)\n' $(( $(date +%s) - step_s )) $(( cpu - step_c )); }
 # Inside the one heavy-lock hold (the tests step at the end): each `run` line of the selection file
-# as a step, failing fast. Internal: the gate calls itself this way under tools/heavy.
+# as a step, failing fast. Internal: the gate calls itself this way under tools/heavy, which sets
+# HEAVY_HELD; without it this would run the tests unlocked. A step's stdin is /dev/null: one
+# reading stdin would eat the later lines.
 if [ -n "$held" ]; then
+  [ -n "$HEAVY_HELD" ] || { echo "gate: --held is internal: only the gate's tools/heavy hold runs it" >&2; exit 2; }
   while IFS= read -r l; do
-    case "$l" in "run "*) step sh -c "${l#run }" ;; esac
+    case "$l" in "run "*) step sh -c "${l#run }" < /dev/null ;; esac
   done < "$held"
   exit 0
 fi
@@ -162,7 +165,7 @@ step cargo clippy --all-targets --locked -- -D warnings
 gui_lint
 # every binary the tests run, built unlocked with the runs' own cargo arguments, so the hold only runs
 while IFS= read -r l; do
-  case "$l" in "build "*) step sh -c "${l#build }" ;; esac
+  case "$l" in "build "*) step sh -c "${l#build }" < /dev/null ;; esac
 done < "$sel"
 if [ -n "$unify" ]; then
   step unification_check

@@ -8,7 +8,7 @@ One all-core run at a time per box (notes/build.md): the gate's tests (one hold 
 periodic runs, by-hand property and sim runs, TLC and roles-model runs. Builds and single-crate
 test runs stay unlocked. The lock is ${XDG_RUNTIME_DIR:-/tmp}/osis-gate.lock (flock(2), the same lock as
 flock(1)); the command inherits it, so it stays held while the command runs even if this wrapper
-dies.
+dies. The command sees HEAVY_HELD=1; a tools/heavy inside it refuses (it would wait on itself).
 
 Log: ~/.cache/osis/heavy.log, one JSON object per line. Every line carries the box's cumulative
 CPU jiffies (`busy`, `all` from /proc/stat), so any two lines give the box's utilization between
@@ -68,6 +68,9 @@ def via():
 
 
 def run(cmd):
+    # the lock is per open file: a hold inside a hold would wait on itself forever
+    if os.environ.get("HEAVY_HELD"):
+        sys.exit("heavy: already inside a hold (HEAVY_HELD): run the command directly")
     top = git("rev-parse", "--show-toplevel") or os.getcwd()
     who = dict(who=top, branch=git("rev-parse", "--abbrev-ref", "HEAD"), sess=os.environ.get("CLAUDE_CODE_SESSION_ID", ""),
                via=via(), cmd=shlex.join(cmd)[:500])
@@ -82,7 +85,7 @@ def run(cmd):
     log("acq", wait=round(t1 - t0, 1), busy0=b0, all0=a0, **who)
     ru0 = resource.getrusage(resource.RUSAGE_CHILDREN)
     try:
-        p = subprocess.Popen(cmd, pass_fds=(fd,))
+        p = subprocess.Popen(cmd, pass_fds=(fd,), env=dict(os.environ, HEAVY_HELD="1"))
     except OSError as e:
         log("rel", held=round(time.time() - t1, 1), cpu=0, rc=127)
         sys.exit(f"heavy: {cmd[0]}: {e}")

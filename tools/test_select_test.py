@@ -81,6 +81,7 @@ check("notes only", t, "selects nothing: notes/a.md", "crates selected: 0 of 6",
 
 t = out("--paths", "core/mid/src/lib.rs")
 check("dependents", t, "crates selected: 3 of 6", "osis-mid: mid_it_plain mid_prop_plain_spec_crdt_4", "osis-top: top_exhaustive", "every scenario, 15 seeds from 7", "cargo test --locked --no-fail-fast", absent=["osis-base:", "quic_large_transfer ", "held-model:", "repro_big_large "])
+check("replay line", t, "offset: 7 (replay this selection: tools/test_select.py --offset 7 --paths core/mid/src/lib.rs)")
 check("substring filter", t, "--skip mid_it_plain_over_quic")
 check("env", t, "OSIS_ORDER_START=7", "OSIS_CRDT_SEED=7", absent=["OSIS_ORDER_SEED=", "OSIS_ORDER_SEEDS="])
 

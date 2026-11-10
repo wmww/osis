@@ -189,6 +189,7 @@ def main():
         else:
             sys.exit(__doc__)
     os.chdir(run("git", "rev-parse", "--show-toplevel").strip())
+    given = paths is not None
     if paths is None:
         paths = [] if every else changed(base)
     if offset is None:
@@ -231,6 +232,10 @@ def main():
     for u in unread:
         print(f"  not read: {u} (an #[ignore] with no named fn, so not selected: check it by hand)")
     print(f"sim: {'every scenario, ' + str(SIM_SEEDS) + ' seeds from ' + str(offset) if sim else 'none'}")
+    if cmds:
+        # --paths takes the rest of the line, so it goes last
+        how = ["--all"] if every else ["--paths", *paths] if given else ["--base", base] if base else []
+        print(f"offset: {offset} (replay this selection: {shlex.join(['tools/test_select.py', '--offset', str(offset), *how])})")
     if not cmds:
         print("nothing to run")
         return 0
