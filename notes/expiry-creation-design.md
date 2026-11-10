@@ -2,6 +2,8 @@
 > Summary: Design for issues/expiry-knocks-out-commit.md and issues/creation-record-ordinary.md. Expiry and purge take only a commit's own values; an element shows while it is not removed and holds a live value (its creation's or anyone's inside it); records with no write go (virtual anchors place alike); copy expiry leaves the CRDT (only the undo writer rule stays); `created.0` is an ordinary write whose end ends the thing; a part or commit the node cannot judge is thrown out and fetched again, and what it opened keeps the keys to fetch what judges it. Decided where Tess's issues decide; marked **Proposal (Tess)** where it needs her.
 
 ## Principle
+What deletion promises, and which side purge, expiry and ending sit on: notes/deletion.md (erasure keeps a tombstone where needed; reclaim leaves no trace). Ending a thing by purge or expiry of its creation is erasure.
+
 A write's value lives by its own commit: at expiry or purge the commit's values go, and nothing else. Removals, positions and stamps carry no app data and stay. A node keeps no part it cannot judge, and keeps what it needs to fetch what judges it: nothing past the pass that fetched it, except the reading-only secrets its boxes open, and it fetches the rest again once it can judge them.
 
 ## 1. The CRDT rule

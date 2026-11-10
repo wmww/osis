@@ -2,6 +2,8 @@
 > Summary: How the engine keeps spec/commits.md §5-§7 (`retention/`): the one-drop principle, history modes, body classes, when a body was replaced for keep-for-D (a function of the held set), purge on replace as the replacing writer's cover (cost, privacy), own replaces and forgetting, snapshot frontiers, covering and inherited retention, invalid bodies, bodies dropped and coming back, leftovers and the value-less list, purge, waiting parts at expiry or purge, undo's pre-state, and the costs. The spec states the rules; this note keeps reasons, invariants, Tess's decisions, footguns and numbers. Not here: validity and uncovering (notes/engine-validity.md), suspect flags (notes/engine-suspects.md), host deletion judgment (notes/sync.md), memory-class retention (notes/ephemeral.md).
 
 ## Principle
+What each deletion kind promises users (erasure vs storage reclaim): notes/deletion.md.
+
 A body drops in one of four ways: as covered (a valid compaction snapshot whose commit holds the right over the body covers it, or two of its author's own later whole replaces do), by expiry, by purge, or as invalid (it gives the state nothing, spec/permissions.md §5.2). A node without write drops nothing on its own but expired and invalid content. Every rule below follows from it:
 - keep history (until T, D after replaced) only limits when a covered drop may happen, at every node alike;
 - purge on replace is a duty to write the cover: the writer whose transaction replaced the body covers it, and the cover drops it everywhere (`retention/replace.rs`);

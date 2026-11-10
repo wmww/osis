@@ -102,6 +102,13 @@ Not modelled: what a reference reads (validity), hearing out, the end's own vali
 Data model, after "References may dangle":
 > A thing may name the things whose references keep it alive. Once none of them, alive itself, references it, it is dropped for good, with whatever only it kept alive, cycles included. Limit: it is dropped only by a node that may end it and holds what shows it is unreferenced; until then, and where no such node exists, it stays. Limit: a drop decided without a reference written concurrently, or not yet received, stands.
 
+## Deletion purposes (Tess, notes/deletion.md)
+Lifetimes are storage reclaim, not erasure: releasing a thing must leave no trace, and in exchange it may come back (a new write, or a node still holding a copy). Erasure stays a purge or expiry of the creation. This changes two rules above, which the implementer must redo:
+- **The drop** is written today as an ordinary end (a purge request of `created.0`), which leaves a permanent tombstone. A release must leave no trace: either the request that reaches other nodes is forgettable once applied (the bound must pass notes/arbitrary-values.md), or the release needs no request at all. Decide which in step 3/4.
+- **Final** ("an ended thing stays ended") holds for erasure, not for release: a released thing may come back.
+- **The word** is `release` (Tess): `w.release(x)` in place of "Drop now: `w.end(x)`"; the engine keeps "drop" for bodies.
+- **Open, for the implementer**: releasing a thing that still has live retainers: does it release it anyway, or is it a no-op while something retains it? Decide by notes/api-design.md (one obvious behaviour, no surprise loss) and say why.
+
 ## Decisions (Tess)
 1. Who may write the drop: no new right; the nodes that may already end the thing do it.
 2. Only live values count as references (history never keeps a thing alive): otherwise a retainer with history kept forever could never release anything.
