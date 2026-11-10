@@ -1251,8 +1251,8 @@ impl Core {
         }
     }
 
-    /// Forgets the cached liveness of every body with a delta on `(tid, ak)` (its state
-    /// changed): a body's liveness spans every aspect of its class, whichever one was asked.
+    /// Forgets the cached liveness of every delta on `(tid, ak)` (its state changed; a delta's
+    /// liveness reads that aspect's state alone).
     pub fn forget_live(&mut self, tid: &Tid, ak: &Ak) {
         let k = (*tid, ak.clone());
         // whichever is fewer: the commits on the aspect (a roster's, not a chat's messages) or

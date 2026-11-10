@@ -247,3 +247,50 @@ fn delta_live_is_the_deltas_own_spec_sync_7() {
     assert!(e.delta_live(&c, &t, &b).unwrap());
     assert!(e.body_live(&c, &t, &a).unwrap(), "the body's x:b write lives");
 }
+
+// spec/commits.md §5 Own replaces: what stays dropped under own replaces is a function of what
+// is held, as `covered` judges it, not of which replaces it dropped under. Bob writes C and two
+// replaces everyone gets, then a third only the reader Eve gets; Eve drops C under the two
+// newest; Alice removes Bob without the third. Two valid later replaces are still held at Eve,
+// so C stays dropped there, as Alice, holding C, judges it covered.
+#[test]
+fn any_two_held_own_replaces_keep_a_drop_spec_commits_5() {
+    let mut lp = LocalPeer::new(3, 18, T0).unwrap();
+    lp.sync_all().unwrap();
+    let me = lp.peers[0].engine.me();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap();
+    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
+    for (p, r) in [(1, osis_base::Role::Write), (2, osis_base::Role::Read)] {
+        let who = lp.peers[p].engine.me();
+        lp.peers[0].engine.grant(&t, &who, &edge(r)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    let a = ak("x:a.0");
+    let write = |lp: &mut LocalPeer, v: i64| {
+        lp.advance(1000);
+        let mut m = Mutation::new();
+        m.set(t, &a, &Value::Int(v)).unwrap();
+        lp.peers[1].commit(m).unwrap().unwrap()
+    };
+    let c = write(&mut lp, 5);
+    let q0 = write(&mut lp, 6);
+    write(&mut lp, 7);
+    lp.sync_all().unwrap();
+    write(&mut lp, 8);
+    lp.sync(1, 2).unwrap();
+    lp.peers[2].engine.drop_body(&c, &t, &a).unwrap();
+    lp.advance(1000);
+    let bob = lp.peers[1].engine.me();
+    lp.peers[0].engine.demote(&t, &crate::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
+    lp.advance(1000);
+    lp.sync(0, 2).unwrap();
+    assert_eq!(lp.peers[0].engine.covered(&q0, &c, &t, &a).unwrap(), Some(true), "Alice: two own replaces cover C");
+    let e2 = &mut lp.peers[2].engine;
+    assert_eq!(e2.covered(&q0, &c, &t, &a).unwrap(), Some(true), "Eve: the same two");
+    let ai = e2.core.ix.commits.get(&c).unwrap().aspect(&t, &a).unwrap();
+    assert!(!e2.core.ix.commits.get(&c).unwrap().missing.contains(&ai), "Eve: C stays dropped");
+    assert_eq!(lp.peers[2].engine.get(&t, &a).unwrap(), Some(Value::Int(7)), "Eve reads as Alice");
+    assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(Value::Int(7)));
+}
