@@ -339,7 +339,8 @@ pub enum ClientEvent {
     /// The peer broke a protocol rule (diagnostic); a paged exchange it broke is abandoned.
     PeerError(Error),
     /// The peer's connection proofs that verified over this connection's challenge and the
-    /// listener's key (spec/sync.md §10). Only a chain's judgment is left to the node.
+    /// listener's key (spec/sync.md §10). Whether an account's key is at an open epoch is the
+    /// node's to judge.
     Proved { proofs: Vec<crate::ActorProof> },
     /// The answer to an Auth, Call or Sub: a Reply, or the code of the Error answering it.
     Reply { token: u64, reply: Result<crate::api::Outcome, Code> },

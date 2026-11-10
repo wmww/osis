@@ -11,7 +11,7 @@
 //! deposit is charged to the label it went under (dialer keys are fresh per connection) and to a node-wide total (`SyncConfig`
 //! `peer_bytes`, `peer_total_bytes`) until it opens, reaches a host or is dropped; past either,
 //! uploads get code 12 and deposits code 5. A connection's shared set opens a label for a peer
-//! (issues/net-shared-set.md); budgets are then charged to the node it proved.
+//! (issues/net-shared-set.md); budgets are then charged to its source (`Proven::source`).
 
 use super::state::{Entry, Tomb};
 use super::{Action, ConnId, SyncEngine};
@@ -172,21 +172,22 @@ struct PeerStore<'a> {
     /// Corrected wall ms (tombstones of this node's drops).
     wall: u64,
     /// What is charged so far per charge key (`charge_key`), its limit, this session's proven
-    /// node, and this request's charges per key; all peers together may still have `total_left`.
+    /// source, and this request's charges per key; all peers together may still have `total_left`.
     charged: &'a BTreeMap<[u8; 32], u64>,
     limit: u64,
-    node: Option<Tid>,
+    source: Option<Tid>,
     used_here: BTreeMap<[u8; 32], u64>,
     total_left: u64,
     acc: Accepted,
     relays: &'a mut osis_proto::RelayGate,
 }
 
-/// Whom bytes a peer session put here are charged to: the node it proved, else the label they
-/// went under (a dialer key is fresh per connection, so charging it would bound nothing: a link
-/// holder's sessions share its K label's budget).
-fn charge_key(node: Option<Tid>, label: &LabelId) -> [u8; 32] {
-    node.map(|t| {
+/// Whom bytes a peer session put here are charged to: its source (`Proven::source`: its node, for
+/// a node of this node's account, else its account), else the label they went under (a dialer
+/// key is fresh per connection, so charging it would bound nothing: a link holder's sessions
+/// share its K label's budget).
+fn charge_key(source: Option<Tid>, label: &LabelId) -> [u8; 32] {
+    source.map(|t| {
         let mut k = [0u8; 32];
         if let Some(d) = k.get_mut(..15) {
             d.copy_from_slice(t.as_bytes());
@@ -239,7 +240,8 @@ impl LabelStore for PeerStore<'_> {
         let proven = super::proofs::proven_actors(engine, &proofs).map_err(|e| StoreError(e.to_string()))?;
         // this side proves only to a dialer that proved an actor it knows (spec/sync.md §10)
         let known = engine.core.judge(proven.all()).known();
-        let mine: Vec<osis_proto::ActorProof> = if known { super::proofs::provers(engine).map_err(|e| StoreError(e.to_string()))?.iter().map(|p| p.sign(true, challenge, listener_key)).collect() } else { Vec::new() };
+        let own = super::proofs::own_peer(engine, &proven);
+        let mine: Vec<osis_proto::ActorProof> = if known { super::proofs::provers(engine, own).map_err(|e| StoreError(e.to_string()))?.iter().map(|p| p.sign(true, challenge, listener_key)).collect() } else { Vec::new() };
         self.acc.proven = proven;
         self.acc.proved = Some(mine.iter().map(|p| p.actor()).collect());
         Ok(mine)
@@ -319,7 +321,7 @@ impl LabelStore for PeerStore<'_> {
         // a held entry costs nothing more (a stamp; which wrap stays: `take_wrap`)
         if !self.entries.contains_key(&(*label, put.blob_id)) {
             let size = put.blob.len() as u64;
-            let key = charge_key(self.node, label);
+            let key = charge_key(self.source, label);
             if size > self.limit.saturating_sub(self.used(&key)) || size > self.total_left {
                 self.acc.full = true;
                 return Ok(if put.stamp.is_some() { Code::STORAGE_CAP } else { Code::BUDGET_FULL });
@@ -333,7 +335,7 @@ impl LabelStore for PeerStore<'_> {
     }
 
     fn budget(&self, label: &LabelId) -> std::result::Result<Budget, StoreError> {
-        let bytes_left = self.limit.saturating_sub(self.used(&charge_key(self.node, label))).min(self.total_left);
+        let bytes_left = self.limit.saturating_sub(self.used(&charge_key(self.source, label))).min(self.total_left);
         Ok(Budget { entries_left: bytes_left / ENTRY_UNIT, bytes_left })
     }
 
@@ -374,7 +376,7 @@ impl SyncEngine {
     /// A peer dialed this node: a session on its listener. `local` is the key this node's
     /// listener presented (its dialable key, or a LAN transport key; open signatures bind it),
     /// `peer` the key the transport authenticated for the dialer (ephemeral; budgets go to the
-    /// node the session proved, else the label: `charge_key`). Returns the session's handle (its bytes come
+    /// source the session proved, else the label: `charge_key`). Returns the session's handle (its bytes come
     /// as `Event::Bytes`, its end as `Event::Down`) and the actions (the Hello). With
     /// `SyncConfig.max_served` sessions running, the oldest one that serves nothing is closed
     /// to make room (a dialer chooses its key, so a per-key cap would bind nothing); when every
@@ -488,8 +490,8 @@ impl SyncEngine {
         if fresh.is_empty() {
             return Ok(());
         }
-        let node = self.connection_proven(conn).and_then(|p| p.node).filter(|_| self.connection_proven(conn).is_some_and(|p| self.engine.core.judge(p.all()).known()));
-        let key = charge_key(node, &l);
+        let who = self.connection_proven(conn).filter(|p| self.engine.core.judge(p.all()).known()).and_then(super::proofs::Proven::source);
+        let key = charge_key(who, &l);
         let mut gone = Vec::new();
         for b in fresh {
             let unopened = self.state.entries.get(&(l, *b)).is_some_and(|e| matches!(e.kind, super::state::Kind::Unknown | super::state::Kind::Bad) && e.stamp.is_none());
@@ -560,8 +562,8 @@ impl SyncEngine {
         }
         let Some(mut s) = self.served.remove(&conn) else { return Ok(()) };
         let total = self.charges.total;
-        // charged to the proved node only if known here: a fresh key per connection would bound nothing
-        let node = s.proven.node.filter(|_| self.engine.core.judge(s.proven.all()).known());
+        // charged to the proved source only if known here: a fresh key per connection would bound nothing
+        let source = s.proven.source().filter(|_| self.engine.core.judge(s.proven.all()).known());
         if matches!(input, ServingInput::Bytes(_)) {
             s.last = now;
         }
@@ -578,7 +580,7 @@ impl SyncEngine {
                 wall,
                 charged: &self.charges.per,
                 limit: self.cfg.peer_bytes,
-                node,
+                source,
                 used_here: BTreeMap::new(),
                 total_left: self.cfg.peer_total_bytes.saturating_sub(total),
                 acc: Accepted::default(),
@@ -610,12 +612,11 @@ impl SyncEngine {
         let bound = acc.bound.take().filter(|_| !closed);
         self.charges.full |= acc.full;
         for (l, b, n) in acc.charges {
-            self.charges.charge(l, b, charge_key(node, &l), n);
+            self.charges.charge(l, b, charge_key(source, &l), n);
         }
-        // entries from a node known by its `reach.0`: its dialable key counts for the pass wait
+        // entries from a reader: its source counts for the pass wait
         if !acc.entries.is_empty()
-            && let Some(t) = node
-            && let Some(k) = self.reach_nodes().iter().find(|(_, x)| **x == t).map(|(k, _)| *k)
+            && let Some(k) = self.source_key(conn)
         {
             for (l, _) in &acc.entries {
                 self.peer_received.entry(*l).or_default().insert(k);
@@ -796,16 +797,6 @@ impl SyncEngine {
         for c in stale {
             self.close_served(c, out);
         }
-    }
-
-    /// After a role or roster change: co-readers that no longer read a label stop counting for
-    /// its complete pass (what a session keeps open is the shared set's, `shared_changed`).
-    pub(crate) fn holders_changed(&mut self) {
-        let peers = self.peers();
-        for (l, ks) in self.peer_received.iter_mut() {
-            ks.retain(|k| peers.get(k).is_some_and(|p| p.labels.contains(l)));
-        }
-        self.peer_received.retain(|_, ks| !ks.is_empty());
     }
 
     /// A served session's `(dialer challenge, listener challenge, listener key)`, once its

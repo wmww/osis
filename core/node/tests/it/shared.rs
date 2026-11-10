@@ -32,7 +32,8 @@ fn pair(net: &mut Net) -> (usize, usize, LabelId, [u8; 32]) {
 
 pub(crate) fn dial_as(net: &mut Net, a: usize, b: usize, challenge: [u8; 32]) -> Dialer {
     let mut p = dial_with(net, b, challenge);
-    let provers = net.sync(a).provers().unwrap();
+    let own = net.engine(a).account_tid().is_some_and(|x| net.engine(b).account_tid() == Some(x));
+    let provers = net.sync(a).provers(own).unwrap();
     prove(net, b, &mut p, provers);
     p
 }
@@ -310,7 +311,7 @@ fn a_right_gained_and_lost_mid_connection_opens_and_closes_spec_sync_5() {
 fn proving_key_actor(net: &mut Net, a: usize, carrier: usize, seed: &osis_crypto::Secret32, challenge: [u8; 32]) -> Dialer {
     net.engine(carrier).hold_key_actor(seed.clone()).unwrap();
     let id = osis_engine::Identity::from_seed(seed.clone()).tid();
-    let provers: Vec<osis_proto::Prover> = net.sync(carrier).provers().unwrap().into_iter().filter(|p| p.record.tid() == id).collect();
+    let provers: Vec<osis_proto::Prover> = net.sync(carrier).provers(false).unwrap().into_iter().filter(|p| p.record.tid() == id).collect();
     let mut p = dial_with(net, a, challenge);
     prove(net, a, &mut p, provers);
     send(net, a, &mut p, Message::NoRecord { id: 1 << 31 });

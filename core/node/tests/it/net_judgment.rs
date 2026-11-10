@@ -1,6 +1,6 @@
-//! J and credentials (issues/net-shared-set.md, Words, step 3): holder/departed by proven key
-//! actor over the rosters held; a proven account reaches nothing until a removal rotates the
-//! account; `credentials(L)` by class.
+//! J and credentials (issues/net-shared-set.md, Words, step 3): holder/departed by proven actor
+//! (a key actor, or an account at an epoch open here) over the rosters held; `credentials(L)` by
+//! class.
 
 use crate::net;
 use net::*;
@@ -103,7 +103,7 @@ fn key_actor_holder_then_departed_unknown_never_held_spec_sync_10() {
     let (k, label, l, seed) = link(&mut net, a, account);
     let b = net.node(2, &[host]);
     net.engine(b).hold_key_actor(seed.clone()).unwrap();
-    let provers: Vec<Prover> = net.sync(b).provers().unwrap().into_iter().filter(|p| p.record.tid() == l).collect();
+    let provers: Vec<Prover> = net.sync(b).provers(false).unwrap().into_iter().filter(|p| p.record.tid() == l).collect();
     let (conn, answered) = prove(&mut net, a, provers.clone());
     assert_eq!(one(&mut net, a, conn, label), Judgment::Holder, "L on K's roster");
     assert!(answered > 0, "a holder is known: proofs are shown");
@@ -205,16 +205,16 @@ fn proven_account_is_judged_by_its_roles_spec_sync_10() {
     let host = net.add_host();
     let (a, _) = account_node(&mut net, 1, host);
     let (s, account) = account_node(&mut net, 3, host);
-    let ts = net.tid(s);
+    let ts = net.node_tid(s);
     let g = net.group_at(a, &[], vec![]);
     // bare: the account's keys are not held here; the roster entry alone is judged
     set_edge(net.engine(a), g, account, Role::Read);
     let label = net.group_labels(a).iter().find(|(x, _)| *x == g).unwrap().1.id;
     assert_eq!(net.engine(a).core.judge([account]).of(&g), Judgment::Holder, "the account is on g's roster: J reads it");
-    let provers = net.sync(s).provers().unwrap();
+    let provers = net.sync(s).provers(false).unwrap();
     let (conn, answered) = prove(&mut net, a, provers);
     let proven = net.sync(a).proven(conn).unwrap();
-    assert!(proven.contains(&account) && proven.contains(&ts), "reported: {proven:?}");
+    assert!(proven.contains(&account) && !proven.contains(&ts), "the account, not its node: {proven:?}");
     assert_eq!(one(&mut net, a, conn, label), Judgment::Holder, "J reads the proven account's role");
     assert!(answered > 0, "a known actor gets a proof back");
 }

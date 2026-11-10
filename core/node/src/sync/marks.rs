@@ -54,7 +54,6 @@ impl SyncEngine {
                     }
                     if role_commit {
                         self.served_cache = None;
-                        self.holders_moved = true;
                         self.touched.keys = true;
                     }
                     if origin == Origin::Remote && role_commit {
@@ -111,7 +110,6 @@ impl SyncEngine {
                     scoped.insert(thing);
                     self.tied.targets.insert(thing);
                     self.served_cache = None;
-                    self.holders_moved = true;
                 }
                 _ => {}
             }

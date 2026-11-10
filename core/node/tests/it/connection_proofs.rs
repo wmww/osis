@@ -81,7 +81,7 @@ fn prove_raw(net: &mut Net, n: usize, p: &Dialer, id: u32, proofs: Vec<ActorProo
     acts.iter().filter_map(|a| if let Action::Send { bytes, .. } = a { Message::decode(&bytes[4..]).ok() } else { None }).collect()
 }
 
-fn proved_by(evs: &[ClientEvent]) -> Vec<ActorProof> {
+pub(crate) fn proved_by(evs: &[ClientEvent]) -> Vec<ActorProof> {
     evs.iter().find_map(|e| if let ClientEvent::Proved { proofs } = e { Some(proofs.clone()) } else { None }).expect("a Proved answer")
 }
 
@@ -97,7 +97,7 @@ pub(crate) fn account_node(net: &mut Net, seed: u64, host: usize) -> (usize, Tid
 }
 
 /// A second node of `first`'s account: admin on it, chain and all.
-fn paired_node(net: &mut Net, seed: u64, host: usize, first: usize, account: Tid) -> usize {
+pub(crate) fn paired_node(net: &mut Net, seed: u64, host: usize, first: usize, account: Tid) -> usize {
     let n = net.joining_node(seed, &[host]);
     net.pair(n, first);
     let nt = net.node_tid(n);
@@ -135,7 +135,7 @@ fn dialer_proves_then_known_listener_answers_spec_sync_10() {
     let b = paired_node(&mut net, 2, host, a, account);
     let (ta, tb) = (net.node_tid(a), net.node_tid(b));
     let mut p = dial(&mut net, a);
-    let provers = net.sync(b).provers().unwrap();
+    let provers = net.sync(b).provers(true).unwrap();
     let evs = prove(&mut net, a, &mut p, provers);
     assert_eq!(proven(&mut net, a, &p), set(&[tb, account]), "the node and its account");
     let back = proved_by(&evs);
@@ -154,10 +154,11 @@ fn listener_proves_nothing_to_a_stranger_spec_sync_10() {
     let ts = net.node_tid(s);
     assert!(net.engine(a).core.created(&ts).is_none() && net.engine(a).core.created(&account).is_none(), "strangers to a");
     let mut p = dial(&mut net, a);
-    let provers = net.sync(s).provers().unwrap();
+    let provers = net.sync(s).provers(false).unwrap();
     let evs = prove(&mut net, a, &mut p, provers);
     assert_eq!(proved_by(&evs), Vec::new(), "no identity to a stranger");
-    assert_eq!(proven(&mut net, a, &p), set(&[ts, account]), "its own chain still proves what it claims");
+    assert_eq!(proven(&mut net, a, &p), set(&[account]), "its account still proves itself; its node key goes to its own nodes only");
+    assert!(!proven(&mut net, a, &p).contains(&ts));
 }
 
 // spec/sync.md §10: a key actor (a link key) proves itself by its signing key, no chain
@@ -196,7 +197,7 @@ fn proof_for_another_session_or_listener_proves_nothing_spec_sync_10() {
     let (a, account) = account_node(&mut net, 1, host);
     let b = paired_node(&mut net, 2, host, a, account);
     let tb = net.node_tid(b);
-    let provers = net.sync(b).provers().unwrap();
+    let provers = net.sync(b).provers(true).unwrap();
     // proved honestly on one connection
     let mut first = dial(&mut net, a);
     prove(&mut net, a, &mut first, provers.clone());
@@ -239,7 +240,8 @@ fn an_account_is_proved_only_by_its_own_epoch_key_spec_sync_10() {
     let (a, account) = account_node(&mut net, 1, host);
     let (s, other) = account_node(&mut net, 3, host);
     let ts = net.node_tid(s);
-    let provers = net.sync(s).provers().unwrap();
+    // as made for s's own nodes: its node key first, so the forged account proof can borrow it
+    let provers = net.sync(s).provers(true).unwrap();
     let record = net.engine(a).core.created(&account).unwrap().clone();
     // s signs for a's account with its own node key
     let mut forged = provers.clone();
@@ -262,7 +264,7 @@ fn held_group_data_proves_nothing_spec_sync_10() {
     let (a, account) = account_node(&mut net, 1, host);
     let b = paired_node(&mut net, 2, host, a, account);
     let tb = net.node_tid(b);
-    let provers: Vec<Prover> = net.sync(b).provers().unwrap().into_iter().filter(|x| x.record.tid() == tb).collect();
+    let provers: Vec<Prover> = net.sync(b).provers(true).unwrap().into_iter().filter(|x| x.record.tid() == tb).collect();
     let mut p = dial(&mut net, a);
     prove(&mut net, a, &mut p, provers);
     assert_eq!(proven(&mut net, a, &p), set(&[tb]), "the account was not proved on this connection");
@@ -325,8 +327,8 @@ fn no_session_reports_an_actor_it_did_not_prove_spec_sync_10() {
     net.run();
     net.advance(70_000);
     net.run();
-    let h_provers = net.sync(h).provers().unwrap();
-    let m_provers = net.sync(m).provers().unwrap();
+    let h_provers = net.sync(h).provers(false).unwrap();
+    let m_provers = net.sync(m).provers(false).unwrap();
     let h_set: BTreeSet<Tid> = actors(&h_provers.iter().map(|x| x.sign(false, &[0; 32], &[0; 32])).collect::<Vec<_>>());
     const KM: [u8; 32] = [0x77; 32];
     let mut x = 0x9e37_79b9_7f4a_7c15u64;
@@ -377,7 +379,7 @@ fn many_key_actors_prove_the_first_by_tid_spec_wire_11_2() {
     let (a, _) = account_node(&mut net, 1, host);
     let held: BTreeSet<Tid> = (0..MAX_PROOFS + 10).map(|i| net.engine(a).hold_key_actor(Secret32::from_bytes([(i & 255) as u8, (i >> 8) as u8, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7])).unwrap()).collect();
     assert_eq!(held.len(), MAX_PROOFS + 10);
-    let provers = net.sync(a).provers().unwrap();
+    let provers = net.sync(a).provers(true).unwrap();
     assert_eq!(provers.len(), MAX_PROOFS);
     let tids: Vec<Tid> = provers.iter().map(|p| p.record.tid()).collect();
     assert_eq!(tids[0], net.node_tid(a), "this node's own key first");

@@ -23,6 +23,8 @@ pub const LAN_WINDOW_MS: u64 = 600_000;
 pub const LAN_FRESH_MS: u64 = 2 * LAN_WINDOW_MS;
 /// Co-readers are computed again at least this often (edges expire with time).
 const PEERS_TTL_MS: u64 = 60_000;
+/// Local only: what a record's complete-pass source key is derived under (`source_key`).
+const PASS_SOURCE: &str = "pass source";
 /// A co-reader's LAN candidate changes at most once in this long (announcement floods).
 pub const LAN_CHANGE_MS: u64 = 5_000;
 
@@ -281,6 +283,13 @@ impl SyncEngine {
         m
     }
 
+    /// Whether dialable key `key` is a node of this node's account by the `reach.0` held here: a
+    /// dialer proves its node key only then (spec/sync.md §10). The word of its own account's
+    /// data; the listener still proves itself.
+    pub(crate) fn dials_own_node(&mut self, key: &[u8; 32]) -> bool {
+        self.reach_nodes().get(key).is_some_and(|n| self.engine.core.own_node(n))
+    }
+
     /// Co-reader nodes known from their `reach.0`, by dialable key (spec/sync.md §5, §10): node
     /// things other than this one that may read a label this node syncs now. Per label at most
     /// `SyncConfig.max_peers_per_label`, in total at most `max_peers`, by node tid.
@@ -485,14 +494,15 @@ impl SyncEngine {
     }
 
     /// The co-readers a complete pass of each label waits for now (`pass_peers`): those it
-    /// received the label from that still read it, with a connection up that has it started.
+    /// received the label from with a connection up that shares it (its shared set judges that
+    /// the peer may still hold it). A source with no connection up is forgotten: entries it
+    /// brings again count anew.
     pub(crate) fn update_pass_peers(&mut self) {
         if self.peer_received.is_empty() {
             self.pass_peers.clear();
             return;
         }
-        let peers = self.peers();
-        // each reader connection's node and the members it shares
+        // each reader connection's source and the members it shares
         let readers: Vec<super::ConnId> = self.records.shared.keys().copied().collect();
         let mut sharing: BTreeMap<[u8; 32], BTreeSet<LabelId>> = BTreeMap::new();
         for c in readers {
@@ -500,11 +510,16 @@ impl SyncEngine {
                 sharing.entry(k).or_default().extend(self.shared_members(c));
             }
         }
+        let mut live: BTreeSet<[u8; 32]> = sharing.keys().copied().collect();
+        live.extend(self.conns.values().filter(|c| c.peer).map(|c| c.host));
+        for ks in self.peer_received.values_mut() {
+            ks.retain(|k| live.contains(k));
+        }
+        self.peer_received.retain(|_, ks| !ks.is_empty());
         let mut out: BTreeMap<LabelId, BTreeSet<[u8; 32]>> = BTreeMap::new();
         for (l, ks) in &self.peer_received {
             for k in ks {
-                let reads = peers.get(k).is_some_and(|p| p.labels.contains(l));
-                if reads && sharing.get(k).is_some_and(|m| m.contains(l)) {
+                if sharing.get(k).is_some_and(|m| m.contains(l)) {
                     out.entry(*l).or_default().insert(*k);
                 }
             }
@@ -612,14 +627,14 @@ impl SyncEngine {
         (Some(k), self.handle(Event::Local))
     }
 
-    /// The co-reader node at the other end of reader connection `conn`, by its dialable key: the
-    /// key dialed, or for a session this node serves the node it proved, known by its `reach.0`.
-    pub(crate) fn source_key(&mut self, conn: super::ConnId) -> Option<[u8; 32]> {
-        if let Some(c) = self.conns.get(&conn) {
-            return c.peer.then_some(c.host);
+    /// The source a complete pass waits for on reader connection `conn` (spec/permissions.md
+    /// §3): its record, one per pair of nodes whichever side dialed (no node identity: a node
+    /// of another account proves none here), else the key a dialed one went to.
+    pub(crate) fn source_key(&self, conn: super::ConnId) -> Option<[u8; 32]> {
+        if let Some(id) = self.connection_record(conn) {
+            return Some(*osis_crypto::kdf::kdf(PASS_SOURCE, &id, b"record").expose());
         }
-        let node = self.served_proven(conn).and_then(|p| p.node)?;
-        self.reach_nodes().iter().find(|(_, x)| **x == node).map(|(k, _)| *k)
+        self.conns.get(&conn).and_then(|c| c.peer.then_some(c.host))
     }
 
     /// Entries of `label` arrived from reader `conn`: a complete pass of the label then waits for

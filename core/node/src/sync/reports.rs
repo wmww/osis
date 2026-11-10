@@ -94,7 +94,7 @@ impl SyncEngine {
         let Some(g) = self.labels().into_iter().find(|(_, x)| x.id == l).map(|x| x.0) else { return };
         let Some(a) = self.engine.core.secret_actor(&g) else { return };
         let Some(p) = self.connection_proven(conn) else { return };
-        let actors: Vec<Tid> = p.all().into_iter().chain(p.node).collect();
+        let actors: Vec<Tid> = p.all().into_iter().collect();
         let holders: BTreeSet<Tid> = self.engine.core.key_holders(&a).into_iter().map(|x| x.0).collect();
         let holder = actors.iter().find_map(|x| self.engine.record_chain(x).find(|t| holders.contains(t)));
         if let Some(h) = holder {
@@ -198,7 +198,9 @@ impl SyncEngine {
             return Ok(());
         }
         let Some(g) = self.labels().into_iter().find(|(_, x)| x.id == l).map(|x| x.0) else { return Ok(()) };
-        let Some(peer) = self.connection_proven(conn).and_then(|p| p.node.or_else(|| p.all().into_iter().next())) else { return Ok(()) };
+        // per source: a node of this account by its node, any other by its account (its node
+        // key is not proved here), else its first actor
+        let Some(peer) = self.connection_proven(conn).and_then(|p| p.source().or_else(|| p.all().into_iter().next())) else { return Ok(()) };
         let closure = self.engine.closure(&g);
         for s in entries {
             let ak = s.ak;

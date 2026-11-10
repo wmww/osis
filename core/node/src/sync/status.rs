@@ -39,25 +39,25 @@ impl SyncEngine {
             }
             // a reader is a source while L is in the connection's shared set, idle once caught
             // up both ways (`stream_idle`); one still finding what it shares is opening: a
-            // connection this node dialed, or one it serves whose shared set began. A node
-            // counts once whatever connections it has (only a valid proof names one).
+            // connection this node dialed, or one it serves whose shared set began. A peer
+            // counts once whatever connections it has (`source_key`: one per record).
             let readers: BTreeSet<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && c.up).map(|(id, _)| *id).chain(self.records.shared.keys().copied()).collect();
             for id in readers {
                 if !self.shared_member(id, &l.id) && !self.shared_settled(id) {
                     st.opening += 1;
                 }
             }
-            let mut by_node: BTreeMap<Option<Tid>, bool> = BTreeMap::new();
+            let mut by_source: BTreeMap<[u8; 32], bool> = BTreeMap::new();
             let mut unnamed = (0, 0);
             for id in self.records.shared.keys().filter(|c| self.shared_member(**c, &l.id)) {
                 let idle = self.stream_idle(*id, &l.id);
-                match self.connection_proven(*id).and_then(|p| p.node) {
-                    Some(k) => *by_node.entry(Some(k)).or_default() |= idle,
+                match self.source_key(*id) {
+                    Some(k) => *by_source.entry(k).or_default() |= idle,
                     None => unnamed = (unnamed.0 + 1, unnamed.1 + usize::from(idle)),
                 }
             }
-            st.sources += by_node.len() + unnamed.0;
-            st.idle += by_node.values().filter(|x| **x).count() + unnamed.1;
+            st.sources += by_source.len() + unnamed.0;
+            st.idle += by_source.values().filter(|x| **x).count() + unnamed.1;
             st.stranded = !l.hosts.is_empty() && l.hosts.iter().all(|a| failed.contains(&a.key));
             if !st.stranded && st.sources > 0 && st.idle == st.sources {
                 self.last_synced.insert(l.id, now);

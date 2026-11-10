@@ -43,8 +43,16 @@ impl Core {
         self.first_admin(d).filter(|p| seeds && self.is_account(p))
     }
 
-    /// J over `actors`. Invariant: only actors that proved their own key belong here, never an
-    /// account: a chain or an account key proves no removal it omits (`Proven::accounts`).
+    /// Whether `x` is another node of this node's account: not an account, holding a role on the
+    /// account's devices actor D through the rosters held here now (spec/permissions.md §1). A
+    /// node removed from D is not.
+    pub fn own_node(&self, x: &Tid) -> bool {
+        let Some((_, d)) = self.account_devices() else { return false };
+        *x != self.id.tid() && !self.is_account(x) && self.timelines.get(x).is_some_and(|tl| tl.role(x, &d, At::KEYS).is_some())
+    }
+
+    /// J over `actors`: the actors a connection proved by their own key or, for an account, by
+    /// its key at an epoch open here (`Proven`); never one read from group data.
     pub fn judge(&self, actors: impl IntoIterator<Item = Tid>) -> Judge<'_> {
         Judge { core: self, actors: actors.into_iter().collect(), ever: BTreeMap::new() }
     }
@@ -75,10 +83,11 @@ impl Judge<'_> {
 
     /// Whether any actor is **known** here (spec/sync.md §10, Connection proofs): through the
     /// rosters this node holds, it holds a role on a thing other than itself that is not private
-    /// to another account (`Core::private_to`), or it is a node of an account that does. A
-    /// departed actor is not (it holds nothing).
+    /// to another account (`Core::private_to`). A node of another account is known only by the
+    /// account it proves: its node key goes only to its own account's nodes. A departed actor is
+    /// not (it holds nothing).
     pub fn known(&self) -> bool {
-        self.actors.iter().any(|x| self.shares(x) || self.accounts_of(x).iter().any(|p| self.shares(p)))
+        self.actors.iter().any(|x| self.shares(x))
     }
 
     /// Whether `x` holds a role on a thing other than itself that is not private to another
@@ -86,12 +95,6 @@ impl Judge<'_> {
     fn shares(&self, x: &Tid) -> bool {
         let mine = self.core.account;
         self.timeline(x).is_some_and(|tl| tl.roles_of(x, At::KEYS).keys().any(|t| t != x && self.core.private_to(t).is_none_or(|p| Some(p) == mine)))
-    }
-
-    /// The accounts other than `x` whose devices actor `x` holds a role on: those it is a node of
-    /// (spec/permissions.md §1).
-    fn accounts_of(&self, x: &Tid) -> Vec<Tid> {
-        self.timeline(x).map(|tl| tl.roles_of(x, At::KEYS).keys().filter_map(|t| self.core.devices_owner(t)).filter(|p| p != x).collect()).unwrap_or_default()
     }
 }
 

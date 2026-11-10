@@ -1,0 +1,3 @@
+# net-accounts
+- The node test `Net` has `tid(n)` (the account, `me()`) beside `node_tid(n)` (the node): `proven_account_is_judged_by_its_roles` asserted `contains(&account) && contains(&ts)` with `ts = net.tid(s)`, the account twice, so it checked nothing about the node. Easy to mix up; a test reading "node" should use `node_tid`.
+- `Net::group_at` copies every commit of each holder to the admin (`pair`), so a test's verifier holds the other account's D roster and more than a real node would: "knows each other's accounts, not nodes" cannot be set up with it, only checked against what crossed the connection.

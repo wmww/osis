@@ -320,10 +320,8 @@ pub struct SyncEngine {
     /// so an entry goes with its commit's mark (`engine_events`).
     pub(crate) keeps: BTreeMap<osis_base::CommitId, std::sync::Arc<Vec<u64>>>,
     /// Per label, the co-readers a complete pass waits for now (`peer_received` narrowed to
-    /// those still reading it with a connection up that has it started; set by `handle`).
+    /// those with a connection up sharing it; set by `handle`).
     pub(crate) pass_peers: BTreeMap<LabelId, BTreeSet<HostKey>>,
-    /// A role or roster change since the last step (`holders_changed`).
-    pub(crate) holders_moved: bool,
     /// This node's `clients^.0` changed since the last step (`clients_changed`).
     pub(crate) clients_moved: bool,
     /// Commit blobs with linked header lists whose prefix was checked against the resolved
@@ -451,7 +449,6 @@ impl SyncEngine {
             keeps: BTreeMap::new(),
             pass_peers: BTreeMap::new(),
             last_synced: BTreeMap::new(),
-            holders_moved: false,
             clients_moved: false,
             prefix_checked: BTreeSet::new(),
             memory: memory::Memory::default(),
@@ -636,7 +633,10 @@ impl SyncEngine {
                     let lan = c.peer.then(|| (c.host, c.address.clone()));
                     // to a key this node chose to dial; a host needs no proof (spec/sync.md §10)
                     if c.peer {
-                        let provers = proofs::provers(&mut self.engine)?;
+                        let host = c.host;
+                        let own = self.dials_own_node(&host);
+                        let provers = proofs::provers(&mut self.engine, own)?;
+                        let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
                         c.proved = provers.iter().map(|p| p.record.tid()).collect();
                         o.extend(c.session.handle(now, ClientInput::Command(Command::Prove(provers))));
                     }
@@ -687,9 +687,6 @@ impl SyncEngine {
         self.engine_events()?;
         self.retire_replaced();
         self.stamp_changes()?;
-        if std::mem::take(&mut self.holders_moved) {
-            self.holders_changed();
-        }
         if std::mem::take(&mut self.clients_moved) {
             self.clients_changed(out);
         }

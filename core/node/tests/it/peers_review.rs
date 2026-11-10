@@ -73,7 +73,8 @@ fn member_session(net: &mut Net, n: usize, proven_as: usize, l: LabelId) -> Dial
 /// `member_session`, with what `n` sent it once `l` joined (its Pull).
 fn member_pulled(net: &mut Net, n: usize, proven_as: usize, l: LabelId) -> (Dialer, Vec<ClientEvent>) {
     let (mut p, _) = dial_in(net, n);
-    let provers = net.sync(proven_as).provers().unwrap();
+    let own = net.engine(proven_as).account_tid().is_some_and(|x| net.engine(n).account_tid() == Some(x));
+    let provers = net.sync(proven_as).provers(own).unwrap();
     command(net, n, &mut p, Command::Prove(provers));
     let mut out = Vec::new();
     net.sync(n).shared_admit(p.conn, l, &mut out).unwrap();
@@ -408,9 +409,9 @@ fn a_member_closes_with_the_right_spec_sync_10() {
     assert!(net.sync(a).served_opened()[&p.conn].is_empty(), "serves nothing");
 }
 
-// spec: none (notes/api.md Sync configuration and status): a served session counts apart unless
-// it proved it is a node this node has a connection to: one proved by a node with no connection
-// here is its own source, never caught up, so it cannot make the count read caught up.
+// spec: none (notes/api.md Sync configuration and status): sources count per record
+// (`source_key`); a served session with none is its own source, never caught up, so it cannot
+// make the count read caught up.
 #[test]
 fn a_session_of_a_node_not_dialed_is_a_source_not_caught_up() {
     let mut net = Net::new();
@@ -432,30 +433,6 @@ fn a_session_of_a_node_not_dialed_is_a_source_not_caught_up() {
     let after = status(&mut net);
     assert_eq!(after.sources, before.sources + 1, "its own source: {after:?}");
     assert_eq!(after.idle, before.idle, "not caught up: {after:?}");
-}
-
-// spec: none (notes/api.md Sync configuration and status): a session paired with a connection
-// this node dialed is that one source only while the connection is there: once it drops, the
-// session is a source of its own, not caught up.
-#[test]
-fn a_named_session_whose_dialed_connection_dropped_is_not_caught_up() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    for n in [a, b] {
-        reach_ed(&mut net, n);
-    }
-    let g = net.group_at(a, &[(b, Role::Read)], vec![]);
-    net.run();
-    let status = |net: &mut Net| net.sync(a).label_status().into_iter().find(|s| s.group == g).unwrap();
-    let l: LabelId = net.label(a);
-    let _p = member_session(&mut net, a, b, l);
-    let paired = status(&mut net);
-    assert_eq!((paired.sources, paired.idle), (1, 1), "one source with the connection dialed: {paired:?}");
-    net.set_online(b, false);
-    net.run();
-    let alone = status(&mut net);
-    assert_eq!((alone.sources, alone.idle), (1, 0), "the session alone, not caught up: {alone:?}");
 }
 
 // spec/sync.md §5: a served session that opens nothing is closed after `serve_open_ms`, even

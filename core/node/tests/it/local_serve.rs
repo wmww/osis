@@ -564,8 +564,8 @@ fn expired_link_at_no_host_finalized_spec_permissions_7() {
 // spec/permissions.md §3 (re-seal at the end of a complete pass; a label with no host and no
 // peer it was received from passes vacuously, once the peer wait after the role change is
 // over), spec/sync.md §5 (co-reader peer): admin `a` serves g's label alone; admin `b`'s rotation
-// leaves reader `c` out and `b` goes away. `a` re-seals `c` after `peer_pass_wait_ms`, not
-// before, and only once (`c`'s stranded report included), and the box reaches `c`. When `a`
+// leaves reader `c` out and `b` and `c` go away. `a` re-seals `c` after `peer_pass_wait_ms`, not
+// before, and only once, and the box reaches `c`. When `a`
 // restarts after b's rotation reached it, the wait counts from the restart: it hears its peers
 // out before deciding.
 #[test]
@@ -593,6 +593,9 @@ fn hostless_reseal(restart: bool) {
     let rec = recipients_of(e, &[(ta, Role::Admin), (tb, Role::Admin)]);
     rotation(e, g, &rec, 91, false);
     net.pair(b, a);
+    net.run();
+    // c goes away too: a connected co-reader a received g from would be heard out instead
+    net.set_online(c, false);
     net.run();
     if restart {
         net.restart(a, 92);
@@ -623,6 +626,7 @@ fn hostless_reseal(restart: bool) {
     net.advance(wait);
     assert_eq!(reseals(&mut net), after, "once");
     // the app carries it to c: an account with no inbox host has no other way
+    net.set_online(c, true);
     let ids: Vec<_> = net.engine(a).commit_ids().into_iter().filter(|id| net.engine(a).header(id).is_some_and(|h| h.author == ta && h.kind.is_role() && h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "secrets.0"))).collect();
     let pks: Vec<_> = ids.iter().map(|id| net.engine(a).package(id).unwrap().unwrap()).collect();
     for p in pks {
