@@ -1421,7 +1421,8 @@ mod tests {
         }
     }
 
-    /// Runs `own_secrets_due` on `actor` at peer `i` as after a complete pass; the commits made
+    /// Gives `actor`'s `own_secrets_candidates` at peer `i` secrets of their own again, as after a
+    /// complete pass; the commits made
     /// for `t` (each other thing makes none).
     fn own_due(lp: &mut LocalPeer, i: usize, actor: &Tid, t: &Tid) -> usize {
         own_due_done(lp, i, actor, t).0
@@ -1429,16 +1430,10 @@ mod tests {
 
     /// `own_due` with the deliveries made.
     fn own_due_done(lp: &mut LocalPeer, i: usize, actor: &Tid, t: &Tid) -> (usize, Vec<Delivery>) {
-        struct Passed;
-        impl crate::flows::SyncState for Passed {
-            fn complete_pass(&self, _: &Tid) -> bool {
-                true
-            }
-        }
         let (mut n, mut ds) = (0, Vec::new());
-        for (x, r) in lp.peers[i].engine.own_secrets_due(actor, &Passed).unwrap() {
+        for x in lp.peers[i].engine.own_secrets_candidates(actor) {
             assert_eq!(x, *t, "peer {i}: only T");
-            let done = r.unwrap();
+            let done = lp.peers[i].engine.give_own_secrets_again(&x).unwrap();
             n += done.commits.len();
             ds.extend(done.deliveries);
         }

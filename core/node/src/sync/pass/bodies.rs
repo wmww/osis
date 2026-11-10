@@ -95,7 +95,7 @@ impl SyncEngine {
         let mut before = false;
         let mut covered = !aspects.is_empty();
         let mut needed = Vec::new();
-        let keeps = self.engine.body_keeps(&b.commit)?;
+        let keeps = self.keeps(&b.commit)?;
         for (ai, (t, a)) in b.parts.iter().zip(&aspects) {
             let kept = self.part_kept(&h, &keeps, *ai, note);
             before |= kept;
@@ -121,6 +121,26 @@ impl SyncEngine {
         let covered = if covered || known { Some(covered) } else { None };
         let must = classify(&Facts { required: true, closure: true, before_at_least: before, covered, ..Facts::default() }) == Hold::Must;
         Ok(must.then_some(needed))
+    }
+
+    /// `Engine::body_keeps` of `c`, judged once per change: kept until the engine marks `c`
+    /// changed (`SyncEngine::keeps`); one marked but not drained yet is judged anew.
+    pub(super) fn keeps(&mut self, c: &CommitId) -> Result<std::sync::Arc<Vec<u64>>> {
+        let pending = self.engine.core.changed.as_ref().is_some_and(|x| x.commits.contains(c));
+        if !pending && let Some(k) = self.keeps.get(c) {
+            let k = k.clone();
+            #[cfg(debug_assertions)]
+            if self.engine.recheck(format!("keeps {c:?}")) {
+                assert_eq!(*k, crate::costs::paused(|| self.engine.body_keeps(c))?, "body_keeps of {c:?} went stale");
+            }
+            return Ok(k);
+        }
+        let _s = crate::costs::span("pass: body keeps");
+        let k = std::sync::Arc::new(self.engine.body_keeps(c)?);
+        if !pending {
+            self.keeps.insert(*c, k.clone());
+        }
+        Ok(k)
     }
 
     /// Whether part `p` of commit `c` is kept whatever covers it (spec/sync.md §6): before its
@@ -161,7 +181,7 @@ impl SyncEngine {
             return Ok(false);
         }
         let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
-        let keeps = self.engine.body_keeps(&b.commit)?;
+        let keeps = self.keeps(&b.commit)?;
         for ai in parts {
             if self.must_carry(&h, &b.commit, &keeps, *ai, snaps, note)? && !self.carried_by(host, &l, &b.commit, &[*ai]) {
                 return Ok(false);

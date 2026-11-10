@@ -291,6 +291,14 @@ pub struct SyncEngine {
     /// `placed` answers by commit, valid while `State::version` (the first field) is unchanged and
     /// no engine change came (in memory).
     pub(crate) placed_cache: (u64, BTreeMap<osis_base::CommitId, bool>),
+    /// Per secret actor, the roles `ensure_rotated` left blocked (`uncovered`): a function of
+    /// the roles, secrets and record chains (`Core::role_generation`) and of the clock up to the
+    /// actor's roster horizon, so judged once per change of those, not per pass.
+    pub(crate) rotated: BTreeMap<Tid, Rotated>,
+    /// `Engine::body_keeps` per commit judged (`keeps`): a function of the held set that the
+    /// engine marks changed for every commit whose bodies' replacement it may move (notes/node-sync-work-sets.md),
+    /// so an entry goes with its commit's mark (`engine_events`).
+    pub(crate) keeps: BTreeMap<osis_base::CommitId, std::sync::Arc<Vec<u64>>>,
     /// Per label, the co-readers a complete pass waits for now (`peer_received` narrowed to
     /// those still reading it with a connection up that has it started; set by `handle`).
     pub(crate) pass_peers: BTreeMap<LabelId, BTreeSet<HostKey>>,
@@ -412,6 +420,8 @@ impl SyncEngine {
             started,
             rotation_at: BTreeMap::new(),
             placed_cache: (u64::MAX, BTreeMap::new()),
+            rotated: BTreeMap::new(),
+            keeps: BTreeMap::new(),
             pass_peers: BTreeMap::new(),
             last_synced: BTreeMap::new(),
             holders_moved: false,
@@ -754,14 +764,42 @@ impl SyncEngine {
         if self.engine.core.is_key_actor(&a) {
             return Ok(Blocked::default());
         }
-        if rotate {
-            let (done, still) = self.engine.ensure_rotated(&a)?;
-            self.take_done(done)?;
-            if still.is_empty() {
-                return Ok(Blocked::default());
-            }
+        if rotate && self.rotations(&a)?.is_empty() {
+            return Ok(Blocked::default());
         }
         self.placing(&a)
+    }
+
+    /// The roles of `a` still blocked after the rotations due (`Engine::ensure_rotated`), run
+    /// once per change of what it reads: the roles, secrets and record chains
+    /// (`Core::role_generation`) and the clock, up to the next `until` or role commit ahead of it
+    /// in `a`'s component (`horizon`), which holds `a`'s holders and theirs.
+    fn rotations(&mut self, a: &Tid) -> Result<BTreeSet<osis_base::Role>> {
+        let now = self.now();
+        let generation = self.engine.core.role_generation;
+        if let Some(r) = self.rotated.get_mut(a)
+            && r.generation == generation
+            && r.until.is_none_or(|u| now < u)
+        {
+            r.hits += 1;
+            let still = r.still.clone();
+            // debug builds: the answer at a power of four of its hits is what a run gives (a
+            // stale one stays stale until its key moves, so a sample sees it)
+            #[cfg(debug_assertions)]
+            if r.hits.is_power_of_two() && r.hits.trailing_zeros() % 2 == 0 {
+                let (done, fresh) = crate::costs::paused(|| self.engine.ensure_rotated(a))?;
+                assert!(done.commits.is_empty() && fresh == still, "rotations of {a:?} went stale: {still:?}, now {fresh:?} and {} commits", done.commits.len());
+            }
+            return Ok(still);
+        }
+        let _s = crate::costs::span("pass: ensure rotated");
+        let (done, still) = self.engine.ensure_rotated(a)?;
+        // what the rotations themselves moved is a change: judged again at the next ask
+        let generation = if done.commits.is_empty() { generation } else { u64::MAX };
+        let until = self.horizon(std::iter::once(*a));
+        self.rotated.insert(*a, Rotated { generation, until, still: still.clone(), hits: 0 });
+        self.take_done(done)?;
+        Ok(still)
     }
 
     /// The roles of `a` this node may not encrypt under, and may not place under
@@ -781,6 +819,17 @@ impl SyncEngine {
         use crate::rotation::{Walk, blocked_roles_of};
         self.engine.run(|tx| Ok(Blocked { encrypt: blocked_roles_of(tx, &me, a, &deps, Walk::Encrypt)?, place: blocked_roles_of(tx, &me, a, &deps, Walk::Place)? }))
     }
+}
+
+/// `SyncEngine::rotations` of an actor, as last run.
+pub(crate) struct Rotated {
+    /// `Core::role_generation` it ran at (`u64::MAX`: it rotated, so run again).
+    generation: u64,
+    /// The roster horizon then (`SyncEngine::horizon`): the answer may move at that time.
+    until: Option<u64>,
+    still: BTreeSet<osis_base::Role>,
+    /// Asks answered since.
+    hits: u64,
 }
 
 /// The roles of an actor a node may not use now (spec/crypto.md §4, Encrypting under).

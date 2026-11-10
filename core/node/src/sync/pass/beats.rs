@@ -86,9 +86,16 @@ impl SyncEngine {
                 true
             }
         }
-        // plain things under `a` with holders: secrets of their own again
-        for (t, r) in self.engine.own_secrets_due(&a, &Passed)? {
-            match r {
+        // plain things under `a` with holders: secrets of their own again, each left to the
+        // author of the newest role write on it for `SETTLE_MS` after it came (it gives them
+        // with its write, as a grant does): every admin giving them at once forks the thing's
+        // secrets and labels, one each (spec/crypto.md §4)
+        for t in self.engine.own_secrets_candidates(&a) {
+            if let Some(at) = self.own_secrets_wait(&t) {
+                self.settle_by(at, l);
+                continue;
+            }
+            match self.engine.give_own_secrets_again(&t) {
                 Ok(done) => self.take_done(done)?,
                 Err(e) => self.diag(format!("secrets of its own for {t}: {e}")),
             }
@@ -124,6 +131,16 @@ impl SyncEngine {
             }
         }
         Ok(())
+    }
+
+    /// Until when (raw ms) giving `t` secrets of its own again is left to another node: the
+    /// author of the newest role write on `t` held, received less than `SETTLE_MS` ago.
+    fn own_secrets_wait(&self, t: &Tid) -> Option<u64> {
+        let roles = Ak::new(osis_schema::RawKey::ak(&ct::ROLES)).ok()?;
+        let (_, c) = self.engine.core.ix.by_aspect.get(&(*t, roles))?.iter().next_back()?;
+        let m = self.engine.core.ix.commits.get(c).filter(|m| m.origin != crate::events::Origin::Local)?;
+        let (now, due) = (self.now(), m.received.0.saturating_add(SETTLE_MS));
+        (due > now).then(|| self.raw_now().saturating_add(due - now))
     }
 
     /// A heartbeat under `l` at most once per `HEARTBEAT_MIN_INTERVAL` (spec/permissions.md §4),

@@ -18,7 +18,7 @@
 - `Core::key_actors` (held link keys, in memory only: `hold_key_actor`): `Mutation::sign_as` signs as one in commit form, `Core::epochs` derives from it, `ingest_secrets` opens its boxes.
 - `observe_state` calls `flows::reopen_dependents` when secrets of an actor are learned (boxes sealed to it in other actors' `secrets.0` open then; actors found through `boxes_to`).
 - `DiagnosticKind::Removed` when the node drops an actor's secrets.
-- Re-seal and registration are pull hooks for node-sync (`reseal_due`, `own_secrets_due` at the end of a complete pass; `issue_step` per host head); flows only return deliveries.
+- Re-seal and registration are pull hooks for node-sync (`reseal_due`, `own_secrets_candidates` at the end of a complete pass; `issue_step` per host head); flows only return deliveries.
 
 ## Flows readings
 - Departures are recomputed from the timeline (applied lowering edge writes, a finalized timed edge counting as its role's departure) and from state (a box at a current epoch whose holder holds less than that role now), holders re-granted since dropping out, from the actor alone (a holder actor's departures reach it as stale boxes, notes/crypto.md). Keys read no clock: an edge past its `until` is no key departure until finalized.

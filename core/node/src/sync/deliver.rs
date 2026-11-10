@@ -197,6 +197,8 @@ impl SyncEngine {
         self.state = super::state::State::load(&mut self.engine)?;
         // what the passes knew of entries is gone with them: everything is judged again
         self.touched.full = true;
+        self.keeps.clear();
+        self.rotated.clear();
         self.state.mem_log = mem_log;
         self.state.now = now;
         // owed records are taken at start only; a copy waiting to rotate a forgotten group is moot

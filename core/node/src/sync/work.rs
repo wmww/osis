@@ -522,6 +522,13 @@ impl SyncEngine {
     /// label of `g` read (`rotation::departures::direct_departures` has the same horizon per actor): the
     /// components of its actor and of its closure's reader actors.
     fn roster_horizon(&self, closure: &BTreeSet<Tid>, g: &Tid) -> Option<u64> {
+        let core = &self.engine.core;
+        self.horizon(closure.iter().chain([g]).map(|t| core.reader_of(t)).collect::<BTreeSet<Tid>>().into_iter())
+    }
+
+    /// The first time after now that a grant's `until` or a role commit's `ts` falls due in the
+    /// components of `actors` (corrected wall ms).
+    pub(super) fn horizon(&self, actors: impl Iterator<Item = Tid>) -> Option<u64> {
         let now = self.now();
         let core = &self.engine.core;
         let mut seen: Vec<*const osis_perm::Timeline> = Vec::new();
@@ -531,7 +538,7 @@ impl SyncEngine {
                 out = Some(out.map_or(t, |x| x.min(t)));
             }
         };
-        for t in closure.iter().chain([g]).map(|t| core.reader_of(t)).collect::<BTreeSet<Tid>>() {
+        for t in actors {
             let Some(tl) = core.timelines.get(&t) else { continue };
             if seen.contains(&std::ptr::from_ref(tl)) {
                 continue;

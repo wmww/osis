@@ -1235,3 +1235,83 @@ fn stale_walk_claims_are_flat() {
     assert!(small > 0, "b claimed");
     flat("claim keys", small, big);
 }
+
+/// What one change costs the passes of a 3-node group on one host (a admin, b writer, c admin)
+/// holding n things, settled: per node (passes, full passes, bodies
+/// judged), then over all three (rotation runs, body keep bounds judged). The change: one write
+/// (`Change::Write`), b made admin of a thing by a grant (`Grant`), by a bare edge write with no
+/// secrets of its own given (`Edge`), b made admin of the group (`Raise`).
+fn group_change(n: usize, change: Change) -> ([[u64; 3]; 3], [u64; 2]) {
+    let mut net = crate::net::Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Admin)], &[host]);
+    let things: Vec<Tid> = (0..n).map(|i| net.item(a, g, g, &format!("t{i}"))).collect();
+    net.run();
+    net.advance(61_000);
+    let tb = net.tid(b);
+    let s0 = [a, b, c].map(|x| net.sync(x).pass_stats());
+    let admin = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
+    let (_, w) = measured(&osis_store::MemoryBackend::new(), || {
+        match change {
+            Change::Write => drop(net.write(a, things[0], "one more")),
+            Change::Grant | Change::Raise => {
+                let on = if change == Change::Grant { things[0] } else { g };
+                let done = net.engine(a).grant(&on, &tb, &admin).unwrap();
+                let acts = net.sync(a).carry_out(done).unwrap();
+                net.actions(a, acts);
+            }
+            Change::Edge => drop(crate::net::set_edge(net.engine(a), things[0], tb, Role::Admin)),
+        }
+        net.run();
+    });
+    let mut per = [[0; 3]; 3];
+    for (k, x) in [a, b, c].into_iter().enumerate() {
+        let d = pass_work(s0[k], net.sync(x).pass_stats());
+        per[k] = [d[0], d[1], d[2]];
+    }
+    // whatever waited settles with no more forks: one label per thing
+    net.advance(61_000);
+    for x in [a, b, c] {
+        let labels = net.sync(x).labels();
+        assert!(labels.iter().filter(|(t, _)| *t == things[0]).count() <= 1, "{change:?}: one label of the thing at node {x}");
+    }
+    (per, [w.n("pass: ensure rotated"), w.n("pass: body keeps")])
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Change {
+    Write,
+    Grant,
+    Edge,
+    Raise,
+}
+
+// spec/requirements.md, Scale; spec/permissions.md §3; spec/sync.md §6: one change in a small
+// group settles in a few passes per node, flat in the group's history: rotations due are judged
+// once per role change (not per pass), a body's keep bounds once per change of it (not per pass),
+// and a thing left plain with a holder gets secrets of its own from one admin, not one fork each.
+#[test]
+fn a_change_costs_a_few_passes() {
+    for change in [Change::Write, Change::Grant, Change::Edge, Change::Raise] {
+        let (small, big) = (group_change(4, change), group_change(40, change));
+        println!("{change:?}: per node (passes, full, bodies) {:?} / {:?}, (rotation runs, keep bounds) {:?} / {:?}", small.0, big.0, small.1, big.1);
+        for k in 0..3 {
+            for (i, what) in ["passes", "full passes"].iter().enumerate() {
+                flat(&format!("{change:?}, node {k}: {what}"), small.0[k][i], big.0[k][i]);
+            }
+            // a full pass judges the label's bodies
+            linear(&format!("{change:?}, node {k}: bodies judged"), small.0[k][2], big.0[k][2]);
+            // a change's passes: its own commits arriving, pushed back and settled
+            assert!(big.0[k][0] <= 8 && big.0[k][1] <= 2, "{change:?}, node {k}: {:?} passes, full", big.0[k]);
+        }
+        // a rotation run per node and role commit applied, not per pass; keep bounds per commit
+        // the change marks, not per body a pass judges
+        flat(&format!("{change:?}: rotation runs"), small.1[0], big.1[0]);
+        flat(&format!("{change:?}: keep bounds judged"), small.1[1], big.1[1]);
+        let passes: u64 = big.0.iter().map(|x| x[0]).sum();
+        assert!(big.1[0] <= 9, "{change:?}: {} rotation runs over {passes} passes", big.1[0]);
+    }
+}

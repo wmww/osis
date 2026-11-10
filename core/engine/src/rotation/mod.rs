@@ -791,16 +791,19 @@ impl Engine {
         })
     }
 
-    /// Gives secrets of their own again to the plain things whose secrets derive from `actor`
-    /// that this node administers and sees with a current holder other than its first admin (spec/permissions.md
-    /// §3), decided at the end of a complete pass of `actor`'s labels (`sync`); nothing
-    /// otherwise. Each thing in a run of its own: one that fails leaves the others.
-    pub fn own_secrets_due(&mut self, actor: &Tid, sync: &dyn SyncState) -> Result<Vec<(Tid, Result<Done>)>> {
-        if !sync.complete_pass(actor) {
-            return Ok(Vec::new());
-        }
-        let ts = own_secrets_candidates(&self.core, actor);
-        Ok(ts.into_iter().map(|t| (t, self.run(|tx| own_secrets_delivered(tx, t)))).collect())
+    /// The plain things whose secrets derive from `actor` that this node administers and sees
+    /// with a current holder other than their first admin (spec/permissions.md §3): each is
+    /// due secrets of its own again (`give_own_secrets_again`), decided at the end of a complete
+    /// pass of `actor`'s labels (node-sync's).
+    pub fn own_secrets_candidates(&self, actor: &Tid) -> Vec<Tid> {
+        own_secrets_candidates(&self.core, actor)
+    }
+
+    /// Gives `t`, one of `own_secrets_candidates`, secrets of its own again, delivered to the
+    /// holders it boxes and placed under the labels above it.
+    pub fn give_own_secrets_again(&mut self, t: &Tid) -> Result<Done> {
+        let t = *t;
+        self.run(|tx| own_secrets_delivered(tx, t))
     }
 
     /// Re-seals the holders of `actor` the trigger names and adds the history its current epochs

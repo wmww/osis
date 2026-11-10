@@ -1,0 +1,3 @@
+# sync-pass
+- The pass counts that looked like a pass-scheduling bug were one push per pass (each host message is a `handle` step); a per-pass trace (label, full or not, which `Inputs` field moved) plus `OSIS_SYNC_TRACE` found in minutes that a bare `set_edge` on a plain thing made every admin fork its secrets and labels. Tests that write role edges raw (`net::set_edge`) exercise the repair path, not a grant: their costs are not a grant's.
+- Toggling a fix off with `sed` to see a test fail is slow when each toggle rebuilds osis-node (about 50 s each); three toggles in one foreground call ran past the 2-minute tool limit.

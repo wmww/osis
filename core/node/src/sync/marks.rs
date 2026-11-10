@@ -132,6 +132,7 @@ impl SyncEngine {
         self.wake_awaiting(&ch.wakes)?;
         self.note_role_moves(&roots, &ch.edges);
         for c in &ch.commits {
+            self.keeps.remove(c);
             let h = self.engine.header(c);
             // a commit gone from here names no thing: the labels with its entries are unknown
             wide |= h.is_none();
