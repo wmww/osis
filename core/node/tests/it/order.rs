@@ -2736,11 +2736,11 @@ fn held_set_decides_exhaustive() {
 /// The orders the step-4 order harness tried on its long histories: 8 shuffles, 4 partial sets.
 const WIDE: Cfg = Cfg { all_up_to: 0, random: 8, subsets: 4, model: false, ..ORDERS };
 
-// issues/held-set-decisions.md (1) (spec/permissions.md §6): a delta dropped while
+// issues/purge-before-write.md (spec/permissions.md §6): a delta dropped while
 // invalid, valid again and purged by author before its refetch has no leftover, so the node reads
 // the older value where one that held the body reads absent. The history as the order harness made it.
 #[test]
-#[ignore = "open: issues/held-set-decisions.md (1)"]
+#[ignore = "open: issues/purge-before-write.md"]
 fn repro_purge_author_order_452234901986() {
     use Step::*;
     let h = vec![Sync { from: 1, to: 0 }, Sync { from: 2, to: 1 }, Sync { from: 0, to: 2 }, Aim(Box::new(PurgeAuthor { by: 2, t: 2, of: 0 })), Aim(Box::new(Message { by: 0, t: 2, v: 8 })), Aim(Box::new(PurgeAuthor { by: 2, t: 2, of: 1 })), Aim(Box::new(Message { by: 1, t: 2, v: 9 })), Aim(Box::new(Message { by: 1, t: 1, v: 5 })), Aim(Box::new(PurgeAuthor { by: 2, t: 3, of: 1 })), Sync { from: 0, to: 2 }, Aim(Box::new(PurgeAuthor { by: 0, t: 2, of: 2 })), Aim(Box::new(Message { by: 1, t: 3, v: 3 })), Aim(Box::new(Message { by: 0, t: 0, v: 5 })), Advance { who: None, ms: 1069 }, Advance { who: None, ms: 27 }, Aim(Box::new(PurgeAuthor { by: 0, t: 3, of: 2 })), Sync { from: 2, to: 0 }, Aim(Box::new(PurgeAuthor { by: 0, t: 1, of: 0 })), Aim(Box::new(Demote { by: 0, t: 3, holder: 2, at: 3, to_read: true })), Advance { who: None, ms: 1602 }, Aim(Box::new(Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) })), Aim(Box::new(Message { by: 0, t: 0, v: 2 })), Aim(Box::new(Message { by: 1, t: 1, v: 7 })), Aim(Box::new(Message { by: 0, t: 3, v: 2 })), Aim(Box::new(Message { by: 1, t: 3, v: 7 })), Aim(Box::new(Message { by: 2, t: 2, v: 0 })), Aim(Box::new(Message { by: 0, t: 1, v: 5 })), Aim(Box::new(PurgeAuthor { by: 1, t: 3, of: 2 })), Aim(Box::new(Message { by: 0, t: 2, v: 7 })), Aim(Box::new(PurgeAuthor { by: 0, t: 0, of: 1 })), Aim(Box::new(Message { by: 0, t: 1, v: 4 })), Sync { from: 0, to: 1 }, Aim(Box::new(PurgeAuthor { by: 2, t: 0, of: 2 })), Aim(Box::new(Message { by: 0, t: 3, v: 1 })), Advance { who: None, ms: 1887 }, Aim(Box::new(Message { by: 2, t: 1, v: 3 })), Aim(Box::new(Message { by: 1, t: 3, v: 3 })), Aim(Box::new(Message { by: 2, t: 3, v: 9 })), Advance { who: None, ms: 620 }, Sync { from: 2, to: 1 }, Aim(Box::new(Message { by: 0, t: 3, v: 9 })), Sync { from: 2, to: 1 }, Aim(Box::new(Message { by: 0, t: 2, v: 3 })), Aim(Box::new(Message { by: 0, t: 0, v: 7 })), Advance { who: None, ms: 1499 }, Aim(Box::new(Demote { by: 0, t: 1, holder: 0, at: 1, to_read: true })), Aim(Box::new(Message { by: 2, t: 0, v: 1 })), Aim(Box::new(Message { by: 0, t: 1, v: 2 })), Aim(Box::new(PurgeAuthor { by: 0, t: 0, of: 2 })), Aim(Box::new(PurgeAuthor { by: 2, t: 0, of: 2 }))];
@@ -2907,9 +2907,9 @@ fn setup_grant(played: &Played, to: usize) -> usize {
 /// `played`, the history `steps`: when they end with `settled`'s tail (not cut short, as the
 /// exhaustive size's cap cuts it), marked settled from the tail's first commit.
 ///
-/// A thing with a `required^.0` delta settles nothing: no compaction carries one (spec/commits.md
-/// §2), and the setting in force judges every later delta on its thing (§5 Required retention),
-/// so one dropped while invalid and missing again changes their validity until it comes back.
+/// A thing with a `required^.0` delta settles nothing (spec/commits.md §5 Required retention,
+/// Limit): one dropped while invalid and missing again changes the validity of its thing's later
+/// deltas until its copy comes back, and no compaction carries it.
 fn settling(mut played: Played, steps: &[Step]) -> Played {
     let tail = settled(Vec::new());
     let Some(at) = steps.len().checked_sub(tail.len()).filter(|&at| steps[at..] == tail[..]) else { return played };

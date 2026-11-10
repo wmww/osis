@@ -1,0 +1,18 @@
+# A purge reaching a write before the write itself
+> Summary: A purged write a node never held shows the value it had replaced there; a node that held it first shows nothing (`order::held_set_decides` seeds 743309, 452234901986). The same shape as the stated expiry limit; recommended: state it so in requirements and have the order harness make the purger's re-snapshot. Needs Tess for the requirements wording.
+> Priority: normal
+> Tags: engine, held-model, tests, tess-call
+
+Replay: `OSIS_ORDER_SEED=<seed> OSIS_ORDER_LEN=60 cargo test -p osis-node --test it -- --ignored --exact order::held_set_decides_plain`; 452234901986 is also `order::repro_purge_author_order_452234901986`. `OSIS_ORDER_DUMP=1` prints where the failing node's index differs from the keep-everything node's.
+
+## What users see
+Bob writes "b" over Alice's "a"; an admin purges Bob's write. A node that held Bob's body when the purge landed holds it as its leftover (a value-less write, spec/crdt.md §4.7) and shows nothing. A node that did not (it started following the item later: 743309; it had dropped the body as invalid and it turned valid in the step that purged it: 452234901986) holds no leftover: the purged body counts as never received (spec/commits.md §5) and is deleted at hosts, so it shows "a".
+
+## Why it is the expiry limit's twin
+- What each node reads is a function of what it holds: the second node holds less (no leftover). What differs is that what a node holds depends on arrival order (body before purge, or after), which spec/requirements.md allows only under its stated limits. The limit for an expiring edit is exactly this shape ("an expiring edit still incomplete at a node when it expires never applies there, so that node may read what came before it ... until a writer of that data next writes it or notices the difference"), and purge reuses expiry's value-less machinery (spec/crdt.md §4.7: "A node holding a valid purge request treats the value-carrying writes it names the same way").
+- The repair exists: a writer that, after applying the request, holds no covering snapshot re-snapshots (spec/commits.md §5 Purge; node-sync does it, `retention/purge.rs`). That snapshot carries the purged write value-less, and a node holding it shows nothing too. The order harness is engine-only and never makes that re-snapshot, so its nodes differ for good.
+
+## Options
+1. (Recommended) Add purge to the requirements limit: "an expiring or purged edit a node never held may leave it reading what came before it, until a writer next writes it or notices". Then make the harness faithful: after a purge step the purger compacts the aspects it names where it may write, as node-sync does. Small: a requirements sentence (Tess) and a generator change; the after-exchange check stays exact.
+2. A purge takes the named writes out of every state entirely (un-merged as invalid deltas' writes are, snapshot copies included; no purge leftovers). Every node then shows "a" unless the purger resets (the spec already says a request SHOULD name dead writes and reset live content; the API's purge by author writes `purge.0` only, so it would reset too). It does not remove a limit, it swaps one: a body a node dropped as dead under the purged write (covered by a snapshot that superseded it) comes back only as a copy arrives, the invalid-delta limit. Large: spec/crdt.md §4.7, spec/commits.md §5 Purge and §7 Listed parts, spec/permissions.md §6, the engine's purge leftovers (`retention/purge.rs`, `strip_purged`, emptied slots), held-model, many tests.
+3. Fetch a purged write never received while hosts still have it, to form its leftover. Converges only while a host keeps it: the purger deletes it there, so this is a race, not a rule.

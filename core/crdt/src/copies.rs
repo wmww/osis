@@ -1,38 +1,36 @@
 //! The writes a body holds by origin dot (spec/permissions.md §5.2): which dots a snapshot
-//! holds a write under and in which map records (`CopyIndex`, what un-merge keeps of an
-//! invalid delta's records a valid snapshot vouches for), and stripping what a snapshot gave
+//! holds a write or a map record under (`CopyIndex`, what un-merge keeps of an invalid
+//! delta's records a valid snapshot vouches for), and stripping what a snapshot gave
 //! (`Fragment::remove_writes`). Copies of one write are never compared: they join by the copy order
 //! (spec/crdt.md §4.1).
 
 use crate::fragment::{Bag, Enum, Fragment, Map, Set, Slots, Struct};
 use crate::seq::SeqContent;
 use crate::stamp::{Dot, Source, Stamp};
-use osis_base::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-/// Collects the writes whose origin dot `keep` accepts: per dot, the keys of its map entry
-/// creations (`Some`), `None` for any other write. `Derived` writes and the copies of a
+/// Collects the origin dots `keep` accepts of the writes and map records walked. `Derived` writes and the copies of a
 /// register's write inside its embeddings (spec/crdt.md §7) are skipped: they repeat the
 /// register's.
 struct Copies<'a> {
     keep: &'a dyn Fn(&Dot) -> bool,
-    out: BTreeMap<Dot, BTreeSet<Option<Value>>>,
+    out: BTreeSet<Dot>,
     /// A `Slots` register's stamps while its slots are walked.
     embedded: Vec<Stamp>,
-    /// The map records walked (dot, key; `None`: key-erased, §4.7), with or without a creation.
-    records: BTreeMap<Dot, BTreeSet<Option<Value>>>,
+    /// The dots of the map records walked (keyed or key-erased, §4.7), with or without a creation.
+    records: BTreeSet<Dot>,
 }
 
 impl Copies<'_> {
-    fn put(&mut self, s: &Stamp, key: Option<Value>) {
+    fn put(&mut self, s: &Stamp) {
         if s.dot.src.is_derived() || self.embedded.contains(s) || !(self.keep)(&s.dot) {
             return;
         }
-        self.out.entry(s.dot.clone()).or_default().insert(key);
+        self.out.insert(s.dot.clone());
     }
     fn opt(&mut self, s: &Option<Stamp>) {
         if let Some(s) = s {
-            self.put(s, None);
+            self.put(s);
         }
     }
     fn meta(&mut self, m: &crate::fragment::Meta) {
@@ -42,7 +40,7 @@ impl Copies<'_> {
     fn reg(&mut self, r: &crate::fragment::Register) {
         self.opt(&r.reset);
         if let Some(w) = &r.write {
-            self.put(&w.stamp, None);
+            self.put(&w.stamp);
         }
     }
     fn frag(&mut self, f: &Fragment) {
@@ -60,7 +58,7 @@ impl Copies<'_> {
             Fragment::Struct(Struct { meta: m, fields: xs }) | Fragment::Enum(Enum { meta: m, payloads: xs, .. }) => {
                 self.meta(m);
                 if let Fragment::Enum(Enum { case: Some(c), .. }) = f {
-                    self.put(&c.stamp, None);
+                    self.put(&c.stamp);
                 }
                 for x in xs.values() {
                     self.frag(x);
@@ -69,9 +67,11 @@ impl Copies<'_> {
             Fragment::Map(Map { meta: m, entries, .. }) => {
                 self.meta(m);
                 for (id, e) in entries {
-                    self.records.entry(id.dot.clone()).or_default().insert(id.key().cloned());
+                    if (self.keep)(&id.dot) {
+                        self.records.insert(id.dot.clone());
+                    }
                     if let Some(c) = &e.created {
-                        self.put(c, id.key().cloned());
+                        self.put(c);
                     }
                     self.opt(&e.reset);
                     if let Some(f) = &e.frag {
@@ -86,13 +86,13 @@ impl Copies<'_> {
                         continue;
                     }
                     if let Some((st, _)) = &e.created {
-                        self.put(st, None);
+                        self.put(st);
                     }
                     for (st, _, _) in e.pos.iter().filter(|p| p.0.dot != d) {
-                        self.put(st, None);
+                        self.put(st);
                     }
                     if let Some((st, _)) = &e.deleted {
-                        self.put(st, None);
+                        self.put(st);
                     }
                     if let SeqContent::Frag(x) = &e.content {
                         self.frag(x);
@@ -134,11 +134,10 @@ impl Fragment {
     }
 }
 
-/// A fragment's writes by origin dot (`Fragment::copy_index`): per dot, the keys of its map
-/// entry creations (`Some`) and `None` for any other write; and its map records (`None`:
-/// key-erased).
+/// A fragment's writes by origin dot (`Fragment::copy_index`), and the dots of its map records
+/// (keyed or key-erased).
 #[derive(Debug, Default)]
-pub struct CopyIndex(BTreeMap<Dot, BTreeSet<Option<Value>>>, BTreeMap<Dot, BTreeSet<Option<Value>>>);
+pub struct CopyIndex(BTreeSet<Dot>, BTreeSet<Dot>);
 
 impl CopyIndex {
     /// Adds the writes of `f` (a piece of a streamed fragment: the index of a fragment is the
@@ -148,44 +147,32 @@ impl CopyIndex {
         self.add_picked(f, &|_| true);
     }
     fn add_picked(&mut self, f: &Fragment, pick: &dyn Fn(&Dot) -> bool) {
-        let mut c = Copies { keep: pick, out: BTreeMap::new(), embedded: Vec::new(), records: BTreeMap::new() };
+        let mut c = Copies { keep: pick, out: BTreeSet::new(), embedded: Vec::new(), records: BTreeSet::new() };
         c.frag(f);
-        for (d, ks) in c.records {
-            self.1.entry(d).or_default().extend(ks);
-        }
-        for (d, ks) in c.out {
-            self.0.entry(d).or_default().extend(ks);
-        }
+        self.0.extend(c.out);
+        self.1.extend(c.records);
     }
-    /// Entries indexed.
+    /// Dots indexed.
     pub fn len(&self) -> usize {
-        self.0.values().map(BTreeSet::len).sum()
+        self.0.len()
     }
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
     /// Every origin dot indexed.
     pub fn dots(&self) -> impl Iterator<Item = &Dot> {
-        self.0.keys()
+        self.0.iter()
     }
-    /// The records holding the writes indexed under origin dots of `src` with a counter in
-    /// `lo..hi`, as (dot, key): a map entry creation's copy names its record's key (records of
-    /// one dot with different keys are independent, §5.6), any other write `None`; and the
-    /// keyed map records of such dots held, a creation's copy or not (one a reset pruned,
-    /// kept by a later write nested in it, hidden, §5.6 Live).
-    pub fn records_in(&self, src: &Source, lo: u64, hi: u64) -> impl Iterator<Item = (&Dot, Option<&Value>)> {
+    /// The dots of `src` with a counter in `lo..hi` under which a write or a map record is
+    /// held: a creation's copy, or a record alone (one a reset pruned, kept by a later write
+    /// nested in it, hidden, §5.6 Live; a key-erased one, §4.7). The records of a map dot are
+    /// one entry, whatever their keys (§5.6).
+    pub fn held_in(&self, src: &Source, lo: u64, hi: u64) -> impl Iterator<Item = &Dot> {
         let range = Dot::new(src.clone(), lo)..Dot::new(src.clone(), hi);
-        let writes = self.0.range(range.clone()).flat_map(|(d, ks)| ks.iter().map(move |k| (d, k.as_ref())));
-        let records = self.1.range(range).flat_map(|(d, ks)| ks.iter().flatten().map(move |k| (d, Some(k))));
-        writes.chain(records)
-    }
-    /// The dots of `src` with a counter in `lo..hi` whose map record is held key-erased (its
-    /// writer held the dot value-less, §4.7).
-    pub fn erased_in(&self, src: &Source, lo: u64, hi: u64) -> impl Iterator<Item = &Dot> {
-        self.1.range(Dot::new(src.clone(), lo)..Dot::new(src.clone(), hi)).filter(|(_, ks)| ks.contains(&None)).map(|(d, _)| d)
+        self.0.range(range.clone()).chain(self.1.range(range))
     }
     /// Whether a write is indexed under origin dot `d`.
     pub fn holds(&self, d: &Dot) -> bool {
-        self.0.contains_key(d)
+        self.0.contains(d)
     }
 }

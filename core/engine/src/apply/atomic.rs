@@ -386,9 +386,8 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
 /// the snapshot's copy alone.
 pub(crate) struct Unmerge {
     owned: OwnedSet,
-    vouched: copies::Records,
-    /// The dots whose map record a held valid snapshot holds key-erased (spec/crdt.md §4.7).
-    erased: BTreeSet<osis_crdt::Dot>,
+    /// The dots of those deltas under which a held valid snapshot holds a write or a map record.
+    vouched: BTreeSet<osis_crdt::Dot>,
 }
 
 /// A list of `Owned` for a lookup per dot in O(log its length): a fall lists every fallen delta,
@@ -451,15 +450,15 @@ impl Unmerge {
     /// From the held set, reading the valid snapshots' writes when a delta is invalid.
     pub(crate) fn of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Unmerge> {
         let owned = invalid_of(tx.core, tid, ak);
-        let (vouched, erased) = copies::vouched(tx, tid, ak, &owned)?;
-        Ok(Unmerge { owned: OwnedSet::of(&owned), vouched, erased })
+        let vouched = copies::vouched(tx, tid, ak, &owned)?;
+        Ok(Unmerge { owned: OwnedSet::of(&owned), vouched })
     }
     /// `of` for removing from `f` alone: snapshots are read only when `f` holds a write of an
     /// invalid delta.
     pub(crate) fn probe(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<Unmerge> {
         let owned = invalid_of(tx.core, tid, ak);
         if owned.is_empty() || !f.holds_dots(&|d| owned.iter().any(|o| o.owns(d))) {
-            return Ok(Unmerge { owned: OwnedSet::default(), vouched: BTreeSet::new(), erased: BTreeSet::new() });
+            return Ok(Unmerge { owned: OwnedSet::default(), vouched: BTreeSet::new() });
         }
         Unmerge::of(tx, tid, ak)
     }
@@ -470,37 +469,24 @@ impl Unmerge {
     pub(crate) fn bad(&self, d: &osis_crdt::Dot) -> bool {
         self.owned.owns(d)
     }
-    /// Whether a held valid snapshot holds a write in the record of dot `d` and key `key`: of
-    /// a keyed map entry, its creation's copy under that key or the record itself (its
-    /// creation pruned by a reset, alive by a later nested write); else any write under `d`.
-    /// A key-erased record (its writer held the dot value-less, spec/crdt.md §4.7) keeps every
-    /// record of its dot, the state's own key-erased record (asked with no key) included:
-    /// nested writes of other deltas live there, and the answer must not
-    /// change when the dot goes value-less here, since no rebuild runs then.
-    /// Limit: with the dot value-less here, the state's key-erased record is asked with no
-    /// key, so a copy under another key keeps it there but not in a body.
-    fn vouches(&self, d: &osis_crdt::Dot, key: Option<&osis_base::Value>) -> bool {
-        if self.erased.contains(d) {
-            return true;
-        }
-        match key {
-            Some(k) => self.vouched.contains(&(d.clone(), Some(k.clone()))),
-            None => self.vouched.range((d.clone(), None)..).next().is_some_and(|x| x.0 == *d),
-        }
+    /// Whether a held valid snapshot holds the record of dot `d`: a write under it (its
+    /// creation's copy) or a map record of it alone (its creation pruned by a reset, alive by a
+    /// later nested write; key-erased). The records of a map dot are one entry, whatever their
+    /// keys (spec/crdt.md §5.6), and the record is held wherever in the aspect the snapshot holds it.
+    fn vouches(&self, d: &osis_crdt::Dot) -> bool {
+        self.vouched.contains(d)
     }
     /// Whether what a valid snapshot's body holds under origin dot `d` goes.
     pub(crate) fn unvouched(&self, d: &osis_crdt::Dot) -> bool {
-        self.bad(d) && !self.vouches(d, None)
+        self.bad(d) && !self.vouches(d)
     }
     /// Removes from a delta body or the state what un-merging removes (spec/crdt.md
     /// §4.6): the invalid deltas' writes, the records they created and others' writes nested in
     /// them, except in a record a held valid snapshot's copy keeps (`vouches`): the record
-    /// stays in the state, so others' valid writes in it stay too. A copy of a map entry's
-    /// creation under another key keeps its own record, not the delta's; a key-erased one
-    /// keeps them all.
+    /// stays in the state, so others' valid writes in it stay too.
     pub(crate) fn strip(&self, f: &mut Fragment) {
         if !self.is_empty() {
-            f.remove_dots_keeping(&|d| self.bad(d), &|d, k| self.vouches(d, k));
+            f.remove_dots_keeping(&|d| self.bad(d), &|d| self.vouches(d));
         }
     }
 }

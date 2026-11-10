@@ -1004,14 +1004,13 @@ fn entry_created_after_demotion(snapshot_first: bool) {
     assert_eq!(read(&mut lp, 0), read(&mut lp, 3), "Dave, rebuilt");
 }
 
-// spec/crdt.md §4.6 (a record whose creation a valid snapshot's copy keeps stays with the
-// valid writes nested in it), spec/permissions.md §5.2 (a snapshot's copy under another key is
-// its own record): Bob, removed, creates entry "late" offline; Carol writes inside it, then
-// sends a snapshot carrying Bob's creation under another key ("evil"). Bob's record ("late")
-// has no creation left anywhere, so Carol's write nested in it goes with his un-merged writes;
-// the snapshot's own record stays.
+// spec/crdt.md §4.6 (a record a valid snapshot holds, by its dot, stays with the valid writes
+// nested in it), §5.6 (a keyed record is live only with its dot's creation in it): Bob, removed,
+// creates entry "late" offline; Carol writes inside it, then sends a snapshot carrying Bob's
+// creation under another key ("evil"). The snapshot holds Bob's dot, so "late" keeps Carol's
+// write, but no creation under "late" is left: only the snapshot's key shows, in every order.
 #[test]
-fn differing_key_copy_keeps_no_other_record_spec_crdt_4_6() {
+fn differing_key_copy_shows_only_its_key_spec_crdt_4_6() {
     let (mut lp, d, b, _) = setup(65);
     lp.peers.push(osis_node::local_peer::Peer::new(6500, T0).unwrap());
     lp.sync_all().unwrap();

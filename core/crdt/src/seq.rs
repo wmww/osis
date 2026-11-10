@@ -1079,7 +1079,7 @@ pub(crate) fn filter_by(s: &mut Seq, t: &Seq, keep: crate::lifecycle::Keep) {
 /// dot created loses its creation (anchor and char) and, unless `keep` accepts the dot, its list
 /// content, others' writes nested in it included; its record goes where no write is left (what
 /// anchors at it is placed at a virtual anchor, §6.1).
-pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot, Option<&Value>) -> bool) {
+pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot) -> bool) {
     let bad = |st: &Stamp| pred(st.dot.origin());
     let elems = s.elems_mut();
     // a range record may span deltas: edited per element
@@ -1096,7 +1096,7 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keep: &dyn F
         if theirs {
             el.created = None;
             el.valueless = false;
-            if !(keep(d.origin(), None) && matches!(el.content, SeqContent::Frag(_))) {
+            if !(keep(d.origin()) && matches!(el.content, SeqContent::Frag(_))) {
                 el.content = SeqContent::None;
             }
         }

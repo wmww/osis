@@ -217,6 +217,7 @@ Every delta carries **retention** on the wire: who may purge it and what happens
   - Each `required^.0` delta is read alone: its value is the whole setting, and a delta not reading as the aspect's type, with a key in `rules` that is not an AK (spec/data-model.md §2) or with more than `MAX_REQUIRED_ENTRIES` entries in `rules`, requires nothing.
   - A writer fills the required retention and expiry and refuses others, writes `required^.0` whole (never by path, within those bounds, with no entry a write could not meet) and does not undo it.
   - A change judges only later keys; it rewrites no delta's retention.
+  - Limit: no snapshot carries a `required^.0` delta (§2), so one dropped as invalid that turns valid again comes back only as a copy (spec/permissions.md §6 Invalid deltas); until then the node judges its thing's later deltas without it, whatever a writer compacts.
 
 ### Purge
 - **Purge request**: a header field naming earlier deltas (of commits with a smaller `ts`; a later one is not named) by commit, by a whole aspect history (its compaction snapshots included), or by author on an aspect (spec/wire.md §4). A named snapshot's right is judged by its own retention and header. It MUST NOT name role-class deltas.

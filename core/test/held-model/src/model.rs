@@ -570,11 +570,15 @@ fn judge(h: &Held) -> Outcome {
                 }
             }
         }
-        let kept = join(snaps.iter().map(|x| x.1.clone()));
+        // a record is held by its dot, wherever a valid snapshot holds it (spec/crdt.md §4.6, §5.6)
+        let mut held = BTreeSet::new();
+        for (_, f) in &snaps {
+            f.held_records(&mut held);
+        }
         let invalid = |d: &Dot| dots.commit(t, a, d).is_some_and(|c| delta_valid.get(&(c, t, a)) == Some(&false));
         let mut bodies = Vec::new();
         for (id, mut f) in own {
-            f.unmerge(&invalid, Some(&kept));
+            f.unmerge(&invalid, &|d| held.contains(d));
             bodies.push((id, f));
         }
         bodies.extend(snaps);

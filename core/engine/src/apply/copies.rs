@@ -4,7 +4,7 @@
 
 use crate::engine::{Core, Meta, Owned, Tx};
 use crate::error::Result;
-use osis_base::{Ak, CommitId, Tid, Value};
+use osis_base::{Ak, CommitId, Tid};
 use osis_commit::Form;
 use osis_crdt::{Dot, Fragment};
 use std::collections::BTreeSet;
@@ -77,33 +77,27 @@ fn build_copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) -> Result
     Ok(held.map(|_| ix))
 }
 
-/// Records (dot, key) a snapshot holds (`None`: any write but a keyed map entry's creation).
-pub(crate) type Records = BTreeSet<(Dot, Option<Value>)>;
-
-/// The records (dot, key: `CopyIndex::records_in`) among those `owned` matches under which a
-/// held valid snapshot of `(tid, ak)` holds a write: those writes count whatever their own
+/// The dots among those `owned` matches under which a held valid snapshot of `(tid, ak)`
+/// holds a write or a map record (`CopyIndex::held_in`): those records count whatever their own
 /// delta's validity, as the snapshot's writer vouched for them (spec/permissions.md §5.2).
-/// With them, the dots whose map record such a snapshot holds key-erased (`CopyIndex::erased_in`).
-pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned]) -> Result<(Records, BTreeSet<Dot>)> {
+pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned]) -> Result<BTreeSet<Dot>> {
     let mut out = BTreeSet::new();
-    let mut erased = BTreeSet::new();
     if owned.is_empty() {
-        return Ok((out, erased));
+        return Ok(out);
     }
     let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|s| s.1).filter(|s| snapshot_valid(tx.core, s, tid, ak)).collect();
     for s in snaps {
         let Some(ix) = copy_index(tx, &s, tid, ak)? else { continue };
-        vouched_in(&ix, owned, &mut out, &mut erased);
+        vouched_in(&ix, owned, &mut out);
     }
-    Ok((out, erased))
+    Ok(out)
 }
 
 /// `vouched` of one snapshot's writes, indexed `ix`.
-fn vouched_in(ix: &osis_crdt::CopyIndex, owned: &[Owned], out: &mut Records, erased: &mut BTreeSet<Dot>) {
+fn vouched_in(ix: &osis_crdt::CopyIndex, owned: &[Owned], out: &mut BTreeSet<Dot>) {
     for o in owned {
         let (src, lo, hi) = range_of(o);
-        out.extend(ix.records_in(&src, lo, hi).filter(|(d, _)| o.owns(d)).map(|(d, k)| (d.clone(), k.cloned())));
-        erased.extend(ix.erased_in(&src, lo, hi).filter(|d| o.owns(d)).cloned());
+        out.extend(ix.held_in(&src, lo, hi).filter(|d| o.owns(d)).cloned());
     }
 }
 
@@ -130,7 +124,7 @@ pub(crate) fn vouches_any(f: &Fragment, owned: &[Owned]) -> bool {
     }
     let mut ranges: Vec<_> = owned.iter().map(range_of).collect();
     ranges.sort();
-    let (mut out, mut erased) = (Records::new(), BTreeSet::new());
-    vouched_in(&f.copy_index_in(&ranges), owned, &mut out, &mut erased);
-    !out.is_empty() || !erased.is_empty()
+    let mut out = BTreeSet::new();
+    vouched_in(&f.copy_index_in(&ranges), owned, &mut out);
+    !out.is_empty()
 }
