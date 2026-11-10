@@ -1,9 +1,9 @@
 # Thing lifetimes by reference
-> Summary: Design: a thing may list its retainers (`retainers^.0`, admin-only); it lives while a listed retainer that is itself alive references it, up to a standalone thing; anything else is dropped for good, cycles included. Dropping is an ordinary end written by a node that may end the thing and judges it unreachable from what it holds; a node that cannot judge leaks, never deletes. One node-local reference index serves the judgment and backlinks. Rules, costs, the model and its result, questions for Tess, build steps.
+> Summary: Design: a thing may list its retainers (`retainers^.0`, admin-only); it lives while a listed retainer that is itself alive references it, up to a standalone thing; anything else is dropped for good, cycles included. Dropping is an ordinary end written by a node that may end the thing and judges it unreachable from what it holds; a node that cannot judge leaks, never deletes. One node-local reference index serves the judgment and backlinks. Rules, costs, the model and its result, Tess's decisions, build steps.
 > Priority: normal
 > Tags: tess-call, data-model, api, permissions, sync, engine
 
-**Blocked on Tess** (Questions 1-4). Nothing is built but the model. Not to be implemented before her go-ahead.
+**Ready to implement if and when Tess gives the go-ahead; not before.** Her decisions are below (Decisions). Nothing is built but the model.
 
 ## Principle
 A thing's lifetime is decided by whoever may end it. Listing retainers is their standing instruction to end the thing once none of them keeps it; a node carries the instruction out only with the right to end the thing and only on what it holds, so a node that cannot see enough leaks and never deletes. Nothing here is a validity rule: no write is valid or invalid because of a list or a reference.
@@ -21,7 +21,7 @@ A thing's lifetime is decided by whoever may end it. Listing retainers is their 
 - Admin-only is needed, not a preference: nodes end a thing on what its list says, so writing the list is as strong as ending the thing. A list any writer could write would let every writer of any thing, standalone ones included, have it ended for good.
 
 ### What a reference is
-- R **references** X when X's tid occurs in R's **kept history** (issues/thing-history.md: the valid held writes live in R's state, and the replaced bodies still in history), in a durable aspect other than `created.0`, the role-class aspects and `retainers^.0`. So `group.0` counts (a thing may live by its group), and a durable signal's fire counts while it is in history (a chat message keeps its attachment). (Question 2: current values only is the alternative.)
+- R **references** X when X's tid occurs in a **live value** of R (the valid held writes in R's state), in a durable aspect other than `created.0`, the role-class aspects and `retainers^.0`. So `group.0` counts (a thing may live by its group). History never counts, so a retainer's history setting never keeps anything alive (Decisions 2); a signal has no live value and keeps nothing alive (a chat's attachments live by a live value, e.g. the chat's list of them).
 - Not references: a value-less write (expired, purged); an invalid write; ephemeral data (it may be lost by accident, and a drop is final); a tid inside a chunked set element or map key (links are not followed); a tid spelled in text (`osis://...` in a string). The excluded aspects say who has authority over R and what R hangs on, not what R points to.
 - Found without a schema: any tag-1616 value at any depth of the inline canonical value, map keys, set elements and unknown tags' content included.
 
@@ -48,8 +48,8 @@ Judged from what the node holds, per thing, as one of three:
 - A reference whose write turns invalid (its author demoted with a frontier that omits it) stops counting; a drop it caused stands when the write counts again.
 
 ## Index and backlinks
-- One local, rebuildable index of references in held readable data: rows `(target, source thing, AK)` with a count, per class: live durable, live ephemeral, history. `retainers^.0` values are indexed like any value, which gives "who lists X" (they are not references for lifetime).
-- Kept in the transaction that changes the state or the history: apply, un-merge, expiry, purge, a body leaving history, ending, forgetting. A row never outlives the data it came from (spec/commits.md §5 Dropping a body).
+- One local, rebuildable index of references in held readable data: rows `(target, source thing, AK)` with a count, per class: live durable, live ephemeral. `retainers^.0` values are indexed like any value, which gives "who lists X" (they are not references for lifetime).
+- Kept in the transaction that changes the state: apply, un-merge, expiry, purge, ending, forgetting. A row never outlives the data it came from (spec/commits.md §5 Dropping a body).
 - **Backlinks** read the live classes: `db.backlinks(tid)`: the things, with the aspect, whose current values reference the tid, as the acting actor may read them; paged, and live through the same listener rules as `on_change` (initial delivery, then each change, local ones included, after the commit is durable). Shape per the queries pass (notes/api.md Queries); a reference is found only in data this node holds and may read, in history never, and a group listing the thing is a backlink like any other (the direct group index is this index filtered to `group.0`).
 
 ## API (notes/api-design.md)
@@ -61,8 +61,8 @@ No new call, error or type for lifetimes: the list is an aspect.
 - One commit per structural change is what makes part-received data safe; the API gives no way to write a move as two commits by accident beyond writing two `Write`s.
 
 ## Interactions
-- **History** (issues/thing-history.md): a removed reference counts while its body is in the retainer's history, so undo within the window finds the thing, and what leaves history releases what it referenced. With no history set, a removal releases at once. Dropping X ends X's own history with it.
-- **`delete(R)`** resets R's content and memberships: R references nothing live, so what it kept is released as its history leaves. **`delete(X)`** removes X's memberships, so a thing living by its group is dropped once that leaves the group's history.
+- **History** (issues/thing-history.md): independent. A removal releases at once whatever the retainer's history keeps; undo of a removed reference restores a tid that may dangle (reads as gone). Dropping X ends X's own history with it.
+- **`delete(R)`** resets R's content and memberships: R references nothing live, so what it kept is released. **`delete(X)`** removes X's memberships, so a thing living by its group is released at once.
 - **Purge** of the write holding a reference releases at once ("delete for everyone" on a message drops its attachment).
 - **Expiry**: an expiring write's reference counts until T. A thing referenced by an expiring thing should be created in the same expiring commit: then every node drops both at T with nobody online. Otherwise it waits for a node that may end it and held the retainer when it expired. Limit: a thing that reaches such a node only after its expired retainer left nothing behind is unknown-referred there and leaks.
 - **Ending**: `end(R)` on a standalone root drops everything only it kept. Things whose first admin is a dropped thing live on as today (authority is not lifetime).
@@ -76,14 +76,14 @@ No new call, error or type for lifetimes: the list is an aspect.
   - Limit: on a thing with several referencing retainers at the bottom of a deep chain, each change of its support costs the chain's depth. If a measured budget is missed: a support forest with a dynamic-tree ancestor test, O(log n).
 - A change queues: the things whose references from the written thing changed; the thing whose list changed; the listers of a thing that ended, became known or unknown; the pending things of a gained right. Model: one unreference under a root of n children judges 2 things at n = 10 and n = 100.
 - Dropping n things: one end commit with n `purge.0` parts, and per thing what any ending by purge leaves for good (notes/growth.md row 5, about 450 B). Short-lived things should expire instead: an expiry leaves nothing.
-- Growth rows to add: the index (per live or in-history reference, about 50-70 B, local, rebuildable); the work list and `pending` (per unreachable thing not yet ended here); an ended retainer's record kept while a held thing lists it.
+- Growth rows to add: the index (per live reference, about 50-70 B, local, rebuildable); the work list and `pending` (per unreachable thing not yet ended here); an ended retainer's record kept while a held thing lists it.
 
 ## Problems, stated
-1. **A writer who is not an admin cannot create a referenced thing** under a shared first admin (`create_with_admin`): the list needs admin. Same for `retention^.0` (issues/thing-history.md): per-thing settings are an admin's. Question 3.
+1. **Creating a referenced thing under a shared actor** (Decisions 3): a writer of the shared actor creates the thing with its own account as first admin and, in the same commit, sets `retainers^.0` (and `retention^.0`, issues/thing-history.md), grants admin to the shared actor and removes its own record edge. One commit, so no window; no new rule. Cost: two edge writes per such thing, kept for good (a thing's role history is kept whole). The API may offer this as one call.
 2. **Partial views leak** (by choice): a thing readable where its retainers are not is never judged there. Requiring one sharing context would need a validity rule across things that role changes break anyway. The API path that avoids it is the usage rule already in spec/requirements.md Generality (share a set through one actor): create the thing under the retainer's actor.
 3. **Offline nodes drop nothing**, so an unreferenced thing is still found by a search there until the node syncs. An app that means "delete this now" calls `end`.
 4. **Disputes** can drop across sides (Rules, Disputes).
-5. Rejected: a delete right for writers of a listed retainer (Question 1); the list writable by writers (above); the creating commit writing the list without admin (any writer can write a commit carrying a copy of `created.0`, so it equals a writer-writable list); the list writable by "whoever may end" judged per held creation delta (held copies of a creation can differ in purgeable-by, so validity would depend on which copies a node holds); a liveness cache per thing (state to keep right under every arrival order for a cost only deep multi-retainer chains pay); deriving cascades locally without ends (a node without the right deletes only at expiry); treating a not-held retainer as dead (wrong deletes at every partial holder).
+5. Rejected: a delete right for writers of a listed retainer (Decisions 1); the list writable by writers (above); the creating commit writing the list without admin (any writer can write a commit carrying a copy of `created.0`, so it equals a writer-writable list); the list writable by "whoever may end" judged per held creation delta (held copies of a creation can differ in purgeable-by, so validity would depend on which copies a node holds); a liveness cache per thing (state to keep right under every arrival order for a cost only deep multi-retainer chains pay); deriving cascades locally without ends (a node without the right deletes only at expiry); treating a not-held retainer as dead (wrong deletes at every partial holder).
 
 ## Model
 `core/test/held-model/src/lifetimes.rs`, `tests/it/spec_lifetimes.rs` (9 tests, pass, 1 s):
@@ -95,23 +95,22 @@ No new call, error or type for lifetimes: the list is an aspect.
 - 4000 random runs of 14 changes over 5 things (lists, references, ends, lost and learned things, rights gained and lost): judging only what each change touches ends exactly what a from-scratch judgment says the node may end, and `pending` is exactly the rest (two seeded mutations of the propagation fail it);
 - cost: counted at n and 10n.
 
-Not modelled: what a reference reads (history windows, validity), hearing out, the end's own validity and spread (ordinary purge rules), disputes.
+Not modelled: what a reference reads (validity), hearing out, the end's own validity and spread (ordinary purge rules), disputes.
 
 ## Requirements wording (Tess's sign-off)
 Data model, after "References may dangle":
 > A thing may name the things whose references keep it alive. Once none of them, alive itself, references it, it is dropped for good, with whatever only it kept alive, cycles included. Limit: it is dropped only by a node that may end it and holds what shows it is unreferenced; until then, and where no such node exists, it stays. Limit: a drop decided without a reference written concurrently, or not yet received, stands.
 
-## Questions for Tess
-1. **Who may write the drop.** Recommended, and the default: no new right; the nodes that may already end the thing (its admins, or whoever its creation's purgeable-by names, `writer` included) do it. The outline's alternative, a delete right for writers of a listed retainer: an end of X would be judged by R's roles, so a node holding X without R could not judge it and R's role history would have to travel under X's labels; those writers hold no delete keys for X at hosts; and it is a grant outside roles. Its gain is small: where one actor shares R and X, `writer` on the creation gives the same people the right.
-2. **Does a reference in kept history count?** Recommended, default: yes. A thing lives as long as undo or the retainer's history could show the reference; with no history set, as today's outline (current value only). It is what lets a chat message (a signal: no current value) keep an attachment, and what keeps undo of "remove the image" from restoring a dead link. Cost: history rows in the index, and drops that happen when a window passes. Alternative: current values only; undo then restores a dangling reference, signals keep nothing alive.
-3. **Writers creating referenced things in a shared space.** Default: accept; only admins of a thing set its list (and its history setting). Alternative if members who only write must create them: an initial list in the creation record (fixed at creation, needs no authority, cannot be turned on an existing thing), which `retainers^.0` overrides; cost: a record format change and two places to read.
-4. **Requirements wording** above, and that partial views leak rather than requiring one sharing context.
+## Decisions (Tess)
+1. Who may write the drop: no new right; the nodes that may already end the thing do it.
+2. Only live values count as references (history never keeps a thing alive): otherwise a retainer with history kept forever could never release anything.
+3. No creation-record or creating-commit exception: a writer creates under its own account as first admin and hands admin over in the same commit (Problems 1).
+4. Requirements wording as above; partial views leak (stated), no one-sharing-context rule.
 
 ## Steps
-Each one worker and one reviewer, in order. Steps 1-2 are useful alone (backlinks) and wait on nothing; 5 needs issues/thing-history.md steps 3 and 5.
+Each one worker and one reviewer, in order. Steps 1-2 are useful alone (backlinks) and wait on nothing.
 1. **Reference index** (engine). Rows and counts for live durable and ephemeral values, kept on apply, un-merge, rebuild, expiry, purge, ending, forgetting. Tests (through `internals`, then step 2's API): rows follow the value in any arrival order; a validity flip, an expiry and a purge remove them; lost access leaves none; a path write into a map of n and 10n entries changes O(written tids) rows and reads no other entry; notes/growth.md row.
 2. **Backlinks API.** `db.backlinks` and its listener per notes/api-design.md and the queries shape; CLI `backlinks`. Tests: a note linking a note shows and stops showing, locally and after sync; only what the acting actor may read; ephemeral references show; paged at n and 10n.
 3. **List and judgment** (engine, no writes). `retainers^.0` in the core schema; known/ended/unknown; the walk; the work list and `pending`; the ended-retainer dependent clause. Tests: lockstep with held-model `unreachable` and `Node` over generated worlds and changes; losing access to a retainer never yields unreachable; judged counts at n and 10n.
 4. **The drop** (node-sync, osis). Trigger when heard out; batched ends; gained rights; `RETAINERS`, the commit-time `Invalid`; spec (data-model §9 and a lifetimes section, commits §5 Ending), notes/api.md. Tests (observable, several nodes): unreferencing drops at every node; a one-commit move keeps; a subtree and a cycle drop; a node without the right keeps it until an admin's node syncs; a node missing a retainer, and a removed member's node, drop nothing; a two-commit move part-received drops nothing before the pass ends; a concurrent re-reference dangles; an expired retainer.
-5. **References in history** (Question 2). History rows by body, released as bodies leave; signals. Tests: undo inside the window finds the thing, outside it does not; purging a message drops its attachment; a window passing costs the references that leave.
-6. **Notes and bookkeeping.** notes/lifetimes.md (principle, rules, limits), notes/growth.md, notes/api.md, requirements wording as signed off; kit, app and chat adoption is app-layer work.
+5. **Notes and bookkeeping.** notes/lifetimes.md (principle, rules, limits), notes/growth.md, notes/api.md, requirements wording as signed off; kit, app and chat adoption is app-layer work.
