@@ -305,11 +305,17 @@ pub(crate) fn secrets_write(delta: &Fragment) -> SecretsWrite {
     w
 }
 
+/// The paths of the box and history keys `delta` writes: what `secrets_patch` reads of the
+/// state, so every page holding an entry of one must be loaded first (`Tx::ensure_paths`).
+pub(crate) fn secrets_paths(delta: &Fragment) -> Vec<Vec<osis_crdt::PathSeg>> {
+    use osis_crdt::PathSeg;
+    [0u64, 1].iter().flat_map(|i| map(field(delta, *i)).into_iter().flat_map(|m| m.entries()).filter_map(|(_, _, k, _)| Some(vec![PathSeg::Field(*i), PathSeg::Key(k?.clone())])).collect::<Vec<_>>()).collect()
+}
+
 /// Brings `read`, `secrets.0` as decoded before `delta` joined into `state`, up to date: the
-/// delta's keys alone read again, O(log n) each. False when it resets more than its entries, a
-/// key does not read as one value here, or a reset's key reads as gone: decode. That key may
-/// have another live entry (a concurrent put) on a page this join did not load, which `state`
-/// cannot show.
+/// delta's keys alone read again, O(log n) each. `state` holds every entry of those keys
+/// (`secrets_paths`). False when it resets more than its entries, a key does not read as
+/// one value, or a reset's key reads as gone: decode.
 pub(crate) fn secrets_patch(read: &mut ct::Secrets, delta: &Fragment, state: &Fragment) -> bool {
     /// The value of key `k` in map `m`, if it has one; `None` when it does not read as one.
     fn one(m: Option<&osis_crdt::Map>, k: &Value) -> Option<Option<Value>> {

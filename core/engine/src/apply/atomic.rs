@@ -148,8 +148,13 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     // joined in place (evicted on rollback), so a join costs O(delta), not a copy of the state
     let k = (*tid, ak.clone());
     tx.core.touch();
-    // `secrets.0` read before: this join's entries read again from the pages it touched
+    // `secrets.0` read before: this join's keys read again, with every page holding an entry
+    // of one loaded (a key's other live entries, concurrent puts, sit on pages the join's own
+    // dots do not touch)
     let secrets = (ak.as_str() == "secrets.0").then(|| tx.core.secrets_read.held(tid).map(|s| (s, delta.clone()))).flatten();
+    if secrets.is_some() {
+        tx.ensure_paths(tid, ak, &super::keys::secrets_paths(&delta))?;
+    }
     tx.core.wrote(k.clone());
     let mut st = tx.core.states.get_mut(&k).and_then(Option::take).unwrap_or_default();
     let before = dead.as_ref().map(|_| (Killed::before(&st, &delta), delta.clone()));
