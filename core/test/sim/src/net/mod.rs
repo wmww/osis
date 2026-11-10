@@ -1096,8 +1096,11 @@ impl NetSim {
         self.links.iter().filter(|(_, l)| l.dialer.party() == p || l.acceptor.party() == p).map(|(id, _)| *id).collect()
     }
 
-    /// Node `n` stops (crash, power off): its connections drop.
+    /// Node `n` stops (crash, power off): its connections drop, and what is on its way to them
+    /// (a close's late `Down` among it) is lost with the process: connection IDs start again at
+    /// a restart, so it would end a new connection.
     pub fn node_down(&mut self, n: usize) -> Res<()> {
+        self.queue.retain(|m| !matches!(m.to, End::Node(x, _) if x == n));
         for id in self.links_of(Party::N(n)) {
             if let Some(l) = self.links.remove(&id) {
                 for e in [l.dialer, l.acceptor] {
@@ -2020,6 +2023,26 @@ mod tests {
         };
         assert_eq!(left_at_first(), 7);
         assert_eq!(with_arrivals(left_at_first).0, 0);
+    }
+
+    // spec/sync.md §6 (connections): a crash ends a process's connections, the late close of one
+    // the peer cut just before among them. Its connection IDs start again at the restart, so a
+    // `Down` left queued would end the new connection of that ID while the peer kept its end (a
+    // half-open link the node no longer reads, redialed and closed as a duplicate each round).
+    #[test]
+    fn a_crash_loses_what_was_on_its_way_to_the_node_spec_sync_6() {
+        let mut sim = NetSim::new("t", 1, NetConfig { faults: scenarios::lossy(), ..NetConfig::default() });
+        let a = sim.add_node(&[], ClockSpec::default()).unwrap();
+        let b = sim.add_node(&[], ClockSpec::default()).unwrap();
+        sim.calm = false;
+        sim.links.insert(1, Link { dialer: End::Node(a, 1), acceptor: End::Node(b, 1), last: [0; 2], route: None });
+        sim.send(1, End::Node(a, 1), Payload::Bytes(vec![1]));
+        // b closes its end: a hears of it later
+        sim.actions(b, vec![Action::Close { conn: 1 }]).unwrap();
+        let to_a = |sim: &NetSim| sim.queue.iter().filter(|m| matches!(m.to, End::Node(n, _) if n == a)).count();
+        assert!(to_a(&sim) > 0);
+        sim.node_down(a).unwrap();
+        assert_eq!(to_a(&sim), 0);
     }
 
     // spec/sync.md §6 (ordered streams): a message sent on a stream after its cut can be due

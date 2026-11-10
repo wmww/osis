@@ -1,0 +1,12 @@
+# Replies to later requests hold an unanswered one
+> Summary: spec/sync.md §6 Stall lets replies to later requests move the oldest unanswered request's clock (up to `MAX_AHEAD`, about 68 MiB), so a peer that skips one reply and answers the rest holds the connection and its stuck requests indefinitely. Sim evil_host_drops seed 731904455112 never goes idle. Proposed: only bytes that are not replies (pushes, Notifies, the peer's own requests) move it.
+> Priority: normal
+> Tags: proto, sync, security
+
+**What happens** (evil_host_drops 731904455112): the dishonest host drops a few Status replies on node 1's connection, so those requests stay outstanding and the node is never idle. It also drops the Push that told node 1 a blob was deleted there, so node 1 sends a Delete of that blob at every pass. The host no longer holds the blob, so it answers REFUSED (a level signature cannot be checked without the prefix). Each answer is a reply to a later request, so it moves the stalled request's clock, and the stall never fires. Without that one source of movement (an experiment where only the oldest request's own events move it) the seed converges and goes idle.
+
+**Why it is a design question, not a slip**: the rule was chosen in commit 0aef44ece (stall2), and spec/sync.md §6 lists "replies to later requests" among the bytes that move the clock. Its own reasoning says they are not needed: honest peers answer in arrival order, so no honest reply comes before the oldest one's (notes/flow-control.md, Stall: "Ahead of the oldest's reply there are no replies", "a peer answering cheap later requests cannot hold an older one"). The one honest out-of-order case is a client-port `settle`, and it waits behind Notifies, which would still count.
+
+**Proposed fix**: take "replies to later requests" out of the spec's list. In `client::Window`, bytes of reply frames to requests other than the oldest stop counting as movement. Today `received` counts each input's bytes before its frames, so this needs per-frame accounting, including reply frames still arriving (`peek_head` gives their kind and id). Then the scenario's stated expectation holds again: "a request whose reply never comes times out".
+
+Not a fix: making the node stop resending a refused Delete. A dishonest host can always ask for a periodic small request, and that is bounded work. The stall rule is what lets it hold the connection.
