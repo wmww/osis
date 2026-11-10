@@ -5,7 +5,7 @@
 //! (core/test/tla/rotation/Depth0.tla).
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Pass, all_boxed, blocked_at, commit_ids, edge, group, held_by, leaked, newest_read, openable, rotate_leaving_out, send_skipping, settle};
+use super::tests::{Pass, all_boxed, blocked_at, commit_ids, deliver_without_secrets, edge, group, held_by, leaked, newest_read, openable, rotate_leaving_out, send_skipping, settle};
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -1148,4 +1148,62 @@ fn authority_counts_only_rotated_roles_spec_crypto_4() {
     let (done, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
     assert!(!done.commits.is_empty(), "P rotates A once it shows M");
     assert!(still.is_empty(), "{still:?}");
+}
+
+/// Delivers peer `from`'s commits `ids` to peer `to` without any `keys.0` or `secrets.0` delta on
+/// `x` (a notice of a role change without its rotation).
+fn deliver_edges_only(lp: &mut LocalPeer, from: usize, to: usize, x: Tid, ids: &[osis_base::CommitId]) {
+    for pk in lp.packages(from).unwrap().into_iter().filter(|p| ids.contains(&p.id)) {
+        let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        let cut = osis_commit::rewrite(&b, |ai| b.header.aspects.get(ai).is_some_and(|a| a.tid == x && matches!(a.ak.as_str(), "secrets.0" | "keys.0")));
+        let _ = lp.peers[to].receive(&cut.encode(), pk.blobs.clone());
+    }
+}
+
+// spec/crypto.md §4 (Encrypting under: a node's own departure holds back none of its
+// encrypting): C, X's only admin, reads T and is removed from it (T rotated in the removal). C hears
+// of the removal before T's new keyset, still holding T's old secret. Its own departure is no
+// reason to keep X from T: it rotates nothing for it, and a rotation of X it makes (removing E)
+// boxes T at the newest keyset of T it holds, which only C itself left, so T's members read X's
+// new epoch. Once T's new keyset reaches C that box is stale and C rotates X again, sealing T
+// there: B reads it, E opens nothing of it. (C counting its own departure left T out of X for
+// good: gone from T, it never learns T's next keyset, issues/left-out-holder-unreachable.md.)
+#[test]
+fn own_removal_from_holder_actor_keeps_sealing_it_spec_crypto_4() {
+    let mut lp = LocalPeer::new(4, 967, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let [_, b, c, e] = std::array::from_fn(|i| lp.peers[i].engine.me());
+    let t = group(&mut lp, 0);
+    for h in [b, c] {
+        lp.peers[0].engine.grant(&t, &h, &edge(Role::Read)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    let x = group(&mut lp, 2);
+    lp.sync_all().unwrap();
+    lp.peers[2].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
+    lp.peers[2].engine.grant(&x, &e, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(newest_read(&lp, 1, x), newest_read(&lp, 2, x), "B reads X through T");
+    let t1 = newest_read(&lp, 2, t).unwrap();
+    let rm = removal(&mut lp, 0, t, c);
+    deliver_edges_only(&mut lp, 0, 2, t, &rm);
+    assert!(!lp.peers[2].engine.core.current_holders(&t).iter().any(|(h, _, _)| *h == c), "C knows its removal");
+    assert!(lp.peers[2].engine.epochs(&t).unwrap().read.secret(&t1).is_some(), "C still holds T's old secret");
+    let x1 = newest_read(&lp, 2, x);
+    assert!(lp.peers[2].engine.ensure_rotated(&x).unwrap().0.commits.is_empty(), "C's own removal rotates nothing of X");
+    assert_eq!(newest_read(&lp, 2, x), x1);
+    lp.peers[2].engine.demote(&x, &Demotion { holder: e, new: None, retain: None }).unwrap();
+    assert_eq!(sealed_at(&mut lp, 2, x, t), Some(t1), "T sealed at the keyset C holds");
+    lp.sync(2, 1).unwrap();
+    assert_eq!(newest_read(&lp, 1, x), newest_read(&lp, 2, x), "B reads X's new epoch");
+    // T's new keyset reaches B, and C (as a certificate under X's labels): the box is stale
+    lp.sync(0, 1).unwrap();
+    deliver_without_secrets(&mut lp, 0, 2, t);
+    let t2 = newest_read(&lp, 0, t).unwrap();
+    assert!(!lp.peers[2].engine.ensure_rotated(&x).unwrap().0.commits.is_empty(), "C rotates X onto T's new keyset");
+    assert_eq!(sealed_at(&mut lp, 2, x, t), Some(t2));
+    lp.sync(2, 1).unwrap();
+    assert_eq!(newest_read(&lp, 1, x), newest_read(&lp, 2, x), "B reads it");
+    let e_held = held_by(&lp, 3, &[x]);
+    assert!(!leaked(&mut lp, 2, &[t, x], e, e_held).contains(&x), "E opens nothing new");
 }

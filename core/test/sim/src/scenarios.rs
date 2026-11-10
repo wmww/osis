@@ -48,6 +48,7 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("link_redeem", library::link_redeem),
     ("link_race", library::link_race),
     ("chat_join_leave", library::chat_join_leave),
+    ("team_reads_member_thing", library::team_reads_member_thing),
     ("folders", library::folders),
     ("label_replacement", library::label_replacement),
     ("label_replacement_offline", library::label_replacement_offline),

@@ -2,7 +2,8 @@
 (* Depth-0 sealing (notes/keys-requirements-study.md, Q2 decided A): a        *)
 (* rotation, re-seal or write of actor a never looks inside a holder actor h  *)
 (* past what the node itself holds: an epoch of h whose secret it holds and  *)
-(* that misses a departure from h it knows is blocked (Blocked), and so is   *)
+(* that misses a departure from h it knows, not its own, is blocked          *)
+(* (Blocked), and so is                                                      *)
 (* one boxing an actor at a blocked epoch (sealing there was encrypting      *)
 (* under it); h is left out of a rotation at a blocked keyset.              *)
 (* It seals h at h's newest valid keyset it holds that is or lists every     *)
@@ -158,6 +159,19 @@ ProofOnly == {}
 \* a blocked one included (at a keyset Seal allows: nobody new reads under the
 \* epoch); FALSE: carrying counts as encrypting under the carried epoch
 CarryFree == TRUE
+\* spec/crypto.md §4 Encrypting under, Blocked's departure clause: "own" (a
+\* departure of the node itself holds back none of its encrypting: the
+\* departed party is the node, which holds the epoch already), "secret" (every
+\* known departure counts), "role" (rejected: as "secret", but only for an
+\* actor the node holds a role on as it sees it; D0_gone fails: a node that
+\* left h out while a member re-seals it at the same keyset once gone)
+Judge == "own"
+\* TRUE: a node follows an actor only while it holds a role on it (it syncs
+\* its label), and learns an epoch of holder actor h under a target l's label
+\* only once a node reading h and holding l's newest epoch placed it there
+\* (chain certificates go under l wrapped under l's newest epoch); FALSE:
+\* learning is as Vis says
+Follow == FALSE
 
 DK(d) == [t |-> "d", d |-> d, k |-> 0]
 KK(k) == [t |-> "k", d |-> "", k |-> k]
@@ -194,6 +208,11 @@ RECURSIVE AncH(_)
 AncH(e) == LET ps == {p \in ep[e].par : Honest(p)} IN ps \cup UNION {AncH(p) : p \in ps}
 
 Known(x) == UNION {ep[e].knows : e \in kn[x]} \cup {p[1] : p \in kpl[x]}
+\* the actors x holds a role on, as x sees it: directly, or through a holder
+\* actor, by an edge it knows no removal of
+RmKnown(x, h, a) == \E dp \in Known(x) : dp[1] = h /\ dp[2] = a
+RoleSet(x) == Fix(LAMBDA S : S \cup {a \in Acts : \E g \in S \cap ActHolders(a) : ~RmKnown(x, g, a)},
+                  {a \in Acts : x \in Holders(a) /\ ~RmKnown(x, x, a)})
 Syncs(x, l) == <<x, l>> \notin NoSync
 Vis(x, c) == Syncs(x, c) \/ \E l \in Acts : Syncs(x, l) /\ c \in ActHolders(l)
 Through(w, a) == <<w, a>> \in Via
@@ -254,6 +273,11 @@ StaleAt(x, e) == \/ \E b \in BoxesAt(x, e) : b.key.t = "k" /\ StaleK(x, b.key.k)
 \* an epoch whose secret x lacks covers nothing (its history box is closed)
 Covers(x, e, a) == \A dp \in Known(x) : dp[2] = a => (e \in Sec(x) /\ dp \in ep[e].knows)
 IsAdm(x, a) == x \in Learners /\ <<a, x>> \in Adm
+\* Judge "role": x judges the epochs of actor h only while it holds a role on h
+Judged(x, h) == Judge # "role" \/ h \in RoleSet(x) \/ IsAdm(x, h)
+\* e covers the departures from a x knows, x's own aside under Judge "own"
+CoversBlk(x, e, a) == \A dp \in Known(x) : (dp[2] = a /\ ~(Judge = "own" /\ dp[1] = x)) =>
+                        (e \in Sec(x) /\ dp \in ep[e].knows)
 \* epochs x may not encrypt under, of those whose secret it holds: missing a
 \* departure it knows; for an admin, stale or keyless; boxing an actor at
 \* one (sealing there was encrypting under it), any depth: for an admin
@@ -262,7 +286,7 @@ Blocked(x) ==
   LET sx == Sec(x)
   IN Fix(LAMBDA S : S \cup {k \in sx : (Walk # "rotator" \/ IsAdm(x, ep[k].act)) /\
                                      \E b \in BoxesAt(x, k) : b.key.t = "k" /\ b.key.k \in S},
-         {k \in sx : \/ ~Covers(x, k, ep[k].act)
+         {k \in sx : \/ ~CoversBlk(x, k, ep[k].act) /\ Judged(x, ep[k].act)
                      \/ IsAdm(x, ep[k].act) /\ (StaleAt(x, k) \/ Keyless(x, k))})
 
 Anchors(x, a, h) ==
@@ -441,8 +465,19 @@ HalfForge(q) ==
 \* named keysets come along where x sees their actor (carried)
 VisNamed(x, bs) == {k \in Named(bs) : Vis(x, ep[k].act)}
 
+\* x may learn epoch e (Follow: under its actor's label while it holds a role
+\* there; under a target's, once placed there by a reader of e's actor holding
+\* the target's newest epoch)
+Placed(e, l) == \E y \in Learners : e \in kn[y] /\ ep[e].act \in RoleSet(y) /\ l \in RoleSet(y) /\
+                                     Cur(y, l) # {} /\ NewestV(y, l) \in Sec(y)
+VisE(x, e) ==
+  IF ~Follow THEN Vis(x, ep[e].act) ELSE
+  LET h == ep[e].act
+  IN \/ Syncs(x, h) /\ h \in RoleSet(x)
+     \/ \E l \in RoleSet(x) : Syncs(x, l) /\ h \in ActHolders(l) /\ Placed(e, l)
+
 Learn(x, e) ==
-  /\ e \in Ids /\ e \notin kn[x] /\ Vis(x, ep[e].act)
+  /\ e \in Ids /\ e \notin kn[x] /\ VisE(x, e)
   /\ \/ kn' = [kn EXCEPT ![x] = @ \cup {e} \cup VisNamed(x, ep[e].bx)]
      \/ /\ Late
         /\ kn' = [kn EXCEPT ![x] = @ \cup {e}]
@@ -535,7 +570,7 @@ Beaten(x, a, dp) ==
 \* every node holds what it syncs, places what it must and needs no rotation
 Settled ==
   /\ \A y \in Learners :
-       /\ \A e \in Ids : Vis(y, ep[e].act) => e \in kn[y]
+       /\ \A e \in Ids : VisE(y, e) => e \in kn[y]
        /\ \A r \in rs : Vis(y, ep[r.e].act) => r \in krs[y]
        /\ \A p \in pl : Syncs(y, p[2]) => p \in kpl[y]
        /\ \A b \in Acts : ~NeedRot(y, b) /\ ~\E e \in Ids : AddDue(y, b, e)
@@ -567,7 +602,8 @@ Write(x, a) ==
                            p8 |-> IF {r \in rs : r.e = e} \subseteq krs[x]
                                   THEN {dp \in Known(x) : dp[2] \in KClos(a) /\
                                           \A c \in Chain(a, dp[2]) :
-                                            {f \in Ids : ep[f].act = c /\ Honest(f)} \subseteq Sec(x)}
+                                            /\ {f \in Ids : ep[f].act = c /\ Honest(f)} \subseteq Sec(x)
+                                            /\ Judged(x, c)}
                                   ELSE {}]}
   /\ nw' = nw + 1
   /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, done, evd, pl, kpl>>
@@ -598,10 +634,11 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 CurMem(a) == Holders(a) \ {dp[1] : dp \in {q \in done : q[2] = a}}
 \* (through key access only: under rule 4 a keyless grant reads nothing)
 CurDevs(a) == UNION {CurMem(b) \ Acts : b \in {a} \cup KClos(a)}
-\* the reach, for content of a, of removed party p: a device's, or its
-\* direct devices' that do not read a now (an actor's devices still read
-\* the actor itself and what it holds)
-RD(p, a) == IF p \in Acts THEN UNION {ReachD(d) : d \in DevsOf(p) \ CurDevs(a)} ELSE ReachD(p)
+\* the reach, for content of a, of removed party p: its devices' (an actor's:
+\* its direct devices) that do not read a now (an actor's devices still read
+\* the actor itself and what it holds; a device removed from a holder actor
+\* of a may read a another way, as its admin)
+RD(p, a) == UNION {ReachD(d) : d \in DevsOf(p) \ CurDevs(a)}
 GCur(a) == {e \in Ids : ep[e].act = a /\ Honest(e) /\
                         ~\E f \in Ids : Honest(f) /\ e \in AncH(f)}
 
@@ -628,8 +665,8 @@ NoLeakLimit == \A c \in wr : \A dp \in c.p6 : ~Opens(RD(dp[1], c.a), c)
 NoLeakSettled == \A c \in wr : \A dp \in c.p7 : ~Opens(RD(dp[1], c.a), c)
 \* a device removed from an actor h below a (any depth) reads no content of a
 \* written by a writer that knew the removal and held every epoch of h and of
-\* every actor between (and every re-seal box of its epoch), whether or not
-\* they have rotated since (Blocked)
+\* every actor between (Judge "role": and a role on each), and every re-seal
+\* box of its epoch, whether or not they have rotated since (Blocked)
 NoLeakAbove == \A c \in wr : \A dp \in c.p8 : ~Opens(RD(dp[1], c.a), c)
 
 \* eventually every writer's next epoch is closed to every removed device

@@ -325,11 +325,9 @@ fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
     sim.finish()
 }
 
-/// Group join and leave in the old persona shape: chat actor C with its own label, participants
-/// writers of C; each joins with a persona P under its account (secrets of its own), C made a
-/// reader of P, P listed in C's items and subgroups; messages are things under P in P's `group.0`. A
-/// participant is removed: C rotates; it holds no later epoch, the others keep posting and
-/// converge.
+/// Chat join and leave (notes/chat.md, design E): chat actor C with its own label, its own
+/// secrets, participants writers of C, a message a write on C itself. A participant is removed:
+/// C rotates; it holds no later epoch, the others keep posting and converge.
 pub fn chat_join_leave(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xc4);
     let mut sim = sim("chat_join_leave", seed, NetWeights::default());
@@ -346,41 +344,19 @@ pub fn chat_join_leave(seed: u64) -> Res<Report> {
     }
     sim.reconnect_all();
     sim.quiet(40)?;
-    // each participant joins: a persona with secrets of its own, C reads it, listed in C
-    let mut personas = Vec::new();
-    for (n, p) in [(a, pa), (b, pb), (c, pc)] {
-        let persona = persona(&mut sim, n, p, chat)?;
-        personas.push((n, persona));
-        sim.quiet(40)?;
-    }
-    for (n, persona) in personas.clone() {
-        message(&mut sim, n, persona, "hello")?;
+    for n in [a, b, c] {
+        post(&mut sim, n, chat, "hello")?;
     }
     sim.run(80)?;
     sim.quiet(60)?;
     let before = newest_read(&mut sim, a, &chat)?;
-    // C is removed from the chat (its account; its persona stays its own)
     sim.remove(a, chat, pc)?;
     sim.excused.insert(c);
-    for (n, persona) in personas.clone() {
-        if n != c {
-            message(&mut sim, n, persona, "after")?;
-        }
+    for n in [a, b] {
+        post(&mut sim, n, chat, "after")?;
     }
     sim.run(80)?;
     sim.run_until_quiescent(60)?;
-    // C forgets what it lost once the removal applies there (spec/permissions.md §3): the chat
-    // and the others' personas, not its own
-    if sim.engine(c)?.role_on(&chat).is_none() {
-        for (n, persona) in personas.clone() {
-            let held = sim.engine(c)?.get_typed(&persona, &ct::GROUP).map_err(|e| sim.fail(e.to_string()))?.is_some();
-            if held != (n == c) {
-                return Err(sim.fail(format!("C after dropping: persona of node {n} held: {held}")));
-            }
-        }
-        sim.run(40)?;
-        sim.run_until_quiescent(60)?;
-    }
     let now = newest_read(&mut sim, a, &chat)?;
     if now == before {
         return Err(sim.fail("the removal did not rotate the chat"));
@@ -394,36 +370,93 @@ pub fn chat_join_leave(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A persona of account `p` on node `n` for chat `chat`.
-pub fn persona(sim: &mut NetSim, n: usize, p: Tid, chat: Tid) -> Res<Tid> {
-    let e = sim.engine(n)?;
+/// A chat message: node `n`'s write on chat `chat` itself.
+fn post(sim: &mut NetSim, n: usize, chat: Tid, text: &str) -> Res<()> {
     let mut m = Mutation::new();
-    let persona = e.new_thing(&mut m, p);
-    m.set(persona, &ct::GROUP, &ct::Group::default()).map_err(|e| sim.fail(e.to_string()))?;
-    sim.commit(n, m)?;
-    let r = sim.engine(n)?.give_own_secrets(&persona);
-    let done = r.map_err(|e| sim.fail(format!("node {n} persona secrets: {e}")))?;
-    sim.carry(n, done)?;
-    sim.grant(n, persona, chat, Role::Read)?;
-    // an item too: the persona's own writes (`created.0`, `group.0`, secrets) are in C's closure
-    // only as a member (spec/data-model.md §8: members are items and the subgroups' members)
-    let mut grp = sim.engine(n)?.get_typed(&chat, &ct::GROUP).map_err(|e| sim.fail(e.to_string()))?.unwrap_or_default();
-    grp.items.insert(persona);
-    grp.subgroups.insert(persona);
-    let mut m = Mutation::new();
-    m.set(chat, &ct::GROUP, &grp).map_err(|e| sim.fail(e.to_string()))?;
-    sim.commit(n, m)?;
-    sim.groups.push(super::Group { g: persona, first_admin: p, items: Vec::new() });
-    Ok(persona)
+    m.set(chat, &workload::REG, &Value::Str(text.into())).map_err(|e| sim.fail(e.to_string()))?;
+    sim.commit(n, m).map(drop)
 }
 
-/// A chat message: a thing under the persona, a member of its `group.0`.
-pub fn message(sim: &mut NetSim, n: usize, persona: Tid, text: &str) -> Res<Tid> {
-    sim.item(n, persona).and_then(|t| {
+/// A thing shared with a team its admin leaves (spec/crypto.md §4 Holder actors, Encrypting
+/// under): team T (A its admin, B and C writers, its own label); each member's own thing P
+/// (secrets of its own, its account its one admin) read by T and listed in T, its items things
+/// under it. C is removed from T (with T's rotation); everyone keeps writing to their own things.
+/// T's members hold C's P at its newest epoch at rest, whatever reached C first (C's own removal
+/// holds back none of its encrypting: counted, C left T out of its P for good).
+pub fn team_reads_member_thing(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0xc4);
+    let mut sim = sim("team_reads_member_thing", seed, NetWeights::default());
+    let s = sim.add_host()?;
+    let a = sim.add_node(&[s], clock(&mut d))?;
+    let b = sim.add_node(&[s], clock(&mut d))?;
+    let c = sim.add_node(&[s], clock(&mut d))?;
+    let [pa, pb, pc] = persons(&mut sim, [a, b, c], [s, s, s])?;
+    let team = sim.group_with(a, pa, &[s], true)?;
+    sim.quiet(40)?;
+    for p in [pb, pc] {
+        sim.grant(a, team, p, Role::Write)?;
+        sim.quiet(40)?;
+    }
+    sim.reconnect_all();
+    sim.quiet(40)?;
+    let mut things = Vec::new();
+    for (n, p) in [(a, pa), (b, pb), (c, pc)] {
+        let t = member_thing(&mut sim, n, p, team)?;
+        things.push((n, t));
+        sim.quiet(40)?;
+    }
+    for (n, t) in things.clone() {
+        message(&mut sim, n, t, "hello")?;
+    }
+    sim.run(80)?;
+    sim.quiet(60)?;
+    sim.remove(a, team, pc)?;
+    sim.excused.insert(c);
+    for (n, t) in things.clone() {
+        message(&mut sim, n, t, "after")?;
+    }
+    sim.run(80)?;
+    sim.run_until_quiescent(60)?;
+    let pc_thing = things.iter().find(|(n, _)| *n == c).map(|x| x.1).ok_or_else(|| sim.fail("C's thing"))?;
+    let newest = newest_read(&mut sim, c, &pc_thing)?;
+    for n in [a, b] {
+        if newest_read(&mut sim, n, &pc_thing)? != newest {
+            return Err(sim.fail(format!("node {n} of T does not hold C's thing's newest epoch")));
+        }
+    }
+    sim.finish()
+}
+
+/// Node `n`'s thing under account `p` (secrets of its own) read by team `team` and listed there.
+fn member_thing(sim: &mut NetSim, n: usize, p: Tid, team: Tid) -> Res<Tid> {
+    let e = sim.engine(n)?;
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, p);
+    m.set(t, &ct::GROUP, &ct::Group::default()).map_err(|e| sim.fail(e.to_string()))?;
+    sim.commit(n, m)?;
+    let r = sim.engine(n)?.give_own_secrets(&t);
+    let done = r.map_err(|e| sim.fail(format!("node {n} thing secrets: {e}")))?;
+    sim.carry(n, done)?;
+    sim.grant(n, t, team, Role::Read)?;
+    // an item too: the thing's own writes (`created.0`, `group.0`, secrets) are in T's closure
+    // only as a member (spec/data-model.md §8: members are items and the subgroups' members)
+    let mut grp = sim.engine(n)?.get_typed(&team, &ct::GROUP).map_err(|e| sim.fail(e.to_string()))?.unwrap_or_default();
+    grp.items.insert(t);
+    grp.subgroups.insert(t);
+    let mut m = Mutation::new();
+    m.set(team, &ct::GROUP, &grp).map_err(|e| sim.fail(e.to_string()))?;
+    sim.commit(n, m)?;
+    sim.groups.push(super::Group { g: t, first_admin: p, items: Vec::new() });
+    Ok(t)
+}
+
+/// A message: a thing under `t`, a member of its `group.0`.
+fn message(sim: &mut NetSim, n: usize, t: Tid, text: &str) -> Res<Tid> {
+    sim.item(n, t).and_then(|i| {
         let mut m = Mutation::new();
-        m.set(t, &workload::REG, &Value::Str(text.into())).map_err(|e| sim.fail(e.to_string()))?;
+        m.set(i, &workload::REG, &Value::Str(text.into())).map_err(|e| sim.fail(e.to_string()))?;
         sim.commit(n, m)?;
-        Ok(t)
+        Ok(i)
     })
 }
 

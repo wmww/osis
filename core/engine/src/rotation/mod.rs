@@ -57,7 +57,7 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure])
 /// the holder actors' new `keys.0` among them, which is how the rotators learn of the staleness.
 /// Only epochs whose secret this node holds are judged (a node that cannot open a history box
 /// cannot tell what it covers: a holder actor sealed at a keyset it lacks is judged by that
-/// actor's own writers, the stated limit).
+/// actor's own writers, the stated limit), and only other parties' departures count (`others`).
 ///
 /// Invariant: a node holding M's secrets that knows a departure from M seals nothing at a keyset
 /// of M not covering it (`members::sealed` leaves M out), and, where it may rotate the role,
@@ -70,15 +70,10 @@ pub(crate) fn blocked_epoch(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &os
     let mut todo = vec![(*a, *e)];
     while let Some((x, k)) = todo.pop() {
         let Some(epochs) = tx.core.epochs(&x).filter(|ep| ep.role(r).is_established(&k) && ep.role(r).secret(&k).is_some()) else { continue };
-        let known;
-        let deps = if x == *a {
-            deps
-        } else {
-            known = departures(tx, &x)?;
-            &known
-        };
+        let known = if x == *a { deps.to_vec() } else { departures(tx, &x)? };
+        let deps = others(tx.core, known);
         let held = tx.core.names_held(&x);
-        if !osis_keys::uncovered(&x, &epochs, r, &k, deps, &held).is_empty() {
+        if !osis_keys::uncovered(&x, &epochs, r, &k, &deps, &held).is_empty() {
             return Ok(true);
         }
         if !may_rotate(tx.core, who, &x).contains(&r) {
@@ -94,6 +89,16 @@ pub(crate) fn blocked_epoch(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &os
         }
     }
     Ok(false)
+}
+
+/// `deps` less this node's own departures (its account's or its own): the departed party is the
+/// node itself, which holds the epoch already, so its own removal holds back none of its
+/// encrypting (spec/crypto.md §4, Encrypting under). Counted, a node removed from holder actor M
+/// before M's new keyset reached it left M out of what it rotated and, gone from M, could never
+/// re-seal it.
+fn others(core: &Core, deps: Vec<Departure>) -> Vec<Departure> {
+    let own = |h: &Tid| core.me() == Some(*h) || *h == core.id.tid();
+    deps.into_iter().filter(|d| !own(&d.holder)).collect()
 }
 
 /// `blocked_roles_of` with every departure of `a` this node knows.

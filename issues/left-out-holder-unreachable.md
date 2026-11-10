@@ -1,60 +1,55 @@
-# A holder actor left out of a rotation can stay cut off for good
-> Summary: a rotation of A that leaves holder actor M out (M's keyset is blocked at the rotator) relies on a later re-seal reaching M, but a re-seal reaches M only through M's inbox, which refuses a re-sealer without M's current deposit key, and A's labels, which M's holders cannot open or read. M's holders then never read A's new epoch, and their placements under A wait forever. Seen in sim `chat_join_leave` (main and zero-growth-1). Design question, not yet fixed.
+# A holder actor left out by a node gone from it stays cut off
+> Summary: a node that leaves holder actor M out of A's rotation (M's keyset blocked by a departure it knows) must later re-seal M, which needs M's next keyset; a node no longer in M learns M's keysets only as M's members place them under A's labels, and left out they hold no current epoch of A to place under. So when A's admin leaves M out while in M and then leaves M (or leaves with another party), M reads nothing new of A for good. The admin's own removal no longer causes this (built); this residual needs a design choice.
 > Priority: normal
-> Tags: keys, engine, node-sync
+> Tags: keys, engine, node-sync, tess-call
 
-Property violated: a current holder of an actor gets its current epoch (the re-seal invariant in
-`rotation::reseal_candidates` assumes a re-seal reaches its holder). The sim shows it as
-`copies_waiting` ("certificate copies still wait", a copy waiting for a re-seal that cannot come)
-or as `labels` ("label ... not open at host at quiescence": the holder's readers are stranded).
+## Shape
+Carol is the one admin of X, shared with team T (T reads X). Carol reads T. Dave is removed from T
+by a removal that goes without T's rotation (Seal waiting or Authority failing at the remover), or
+Carol and Dave are removed together and Carol hears of it (her inbox notice) before T's new keyset.
+Carol still holds T's old secret (she drops it once the loss is judged), knows Dave's departure, so
+T's old keyset is blocked at her: her next rotation of X leaves T out (spec/crypto.md §4 Seal).
+Once she is no member of T she no longer reads T's label, and T's members, left out of X, hold no
+current epoch of X to place T's next keyset under X's labels (chain certificates are wrapped under
+the label's newest epoch). Carol never sees T's next keyset, so never re-seals T; nobody else may.
+Their stranded notices reach her inbox but carry nothing she can seal to, and a re-seal by inbox
+needs T's current deposit seed, which lives in the same `keys.0` she lacks.
 
-## Mechanism (`chat_join_leave`)
-Chat C (A admin, B writer, C' writer) reads each member's persona; persona P' is C''s, C' its only
-admin. A removes C' from the chat (removal + chat rotation in one commit).
-1. C' learns its removal from the edge-only inbox notice, before the chat's new keyset. P''s epoch
-   boxes the chat at a keyset that does not cover that departure, so P''s read is blocked at C'
-   (`blocked_epoch`), and C' rotates P', leaving the chat out (Seal: blocked keyset, spec/crypto.md
-   §4 Holder actors) and registering P''s label at the new epoch.
-2. A and B (the chat's holders) now lack P''s current epoch: the step's claim set does not list the
-   chat, so they cannot open P''s label; A's chain certificates for P' (the chat's later `keys.0`)
-   wait (`deferred`, unwrapped).
-3. Once C' holds the chat's knowing keyset it re-seals the chat on P'. The re-seal goes to the
-   chat's inbox (its home label), signed with the chat's deposit key as C' knows it; the head's
-   deposit key comes from a newer seed C' never got (the certificate carrying it is the one A
-   cannot place), so the host refuses it (seed 1 on the branch: code 9, then moot; seed 32 on
-   main: code 1). Under P''s label the re-seal is wrapped under P''s new epoch, which the chat
-   lacks, and the label does not admit the chat anyway.
-Nothing else re-seals P' (only C' may), so the chat is cut off from P' for good.
+Model: `D0_gone_live2` (Depth0, `Follow`: a node follows an actor only while it holds a role on it,
+and learns a holder actor's keysets under a target's label only once a reader of both, holding the
+target's newest epoch, placed them) fails `CurrentOpens`: c leaves T out of X and never learns T's
+next keyset.
 
-Whether the deposit lands is luck: on main at seed 1 B merges the chat's fork with a writer
-`keys.0` that keeps the seed C' holds, and C''s deposit is taken; on the branch A merges it,
-moving the label's deposit key past C''s. The inbox path for a departed re-sealer works only
-through the residual of issues/fresh-deposit-seed-readable-by-departed.md; closing that residual
-would make this deterministic.
+## Built: the node's own departure
+The common case (Carol alone removed from T, hearing of it before T's new keyset) had the same end:
+her own departure blocked T's old keyset at her. A departure of the node itself (its account, its
+node) now holds back none of its encrypting (spec/crypto.md §4 Encrypting under): the departed party
+is the node, which holds the epoch. Carol then seals T at the newest keyset she holds, T's members
+keep X's new epochs and carry T's next keyset to her, whose box is then stale, and she rotates onto
+it. Tests: osis-engine `own_removal_from_holder_actor_keeps_sealing_it_spec_crypto_4`, osis
+`shared_with_team::*`; model `D0_gone_live` (passes), `D0_gone_live_secret` (counting the own
+departure: fails `CurrentOpens`), `D0_gone` (invariants with d removed too: pass); sim
+`team_reads_member_thing` (the earlier per-chat persona shape: counting the own departure it failed
+about 2% of seeds, among them 32, 67, 77, 151, 253, 296).
 
-Seeds 0..300: main (96bd7d180) fails 32, 67, 77, 151, 253, 296; zero-growth-1 the same plus 1.
-In each the removed member rotates its persona on a blocked epoch with no departure of its own
-and deposits are refused (codes 1, 9): one cause, not the branch's whole-commit relay rule.
+## Options for the residual
+- **Carry M's keys to the leaver**: a stranded notice (spec/wire.md §9, spec/permissions.md §4) from
+  a holder actor's node carries that actor's current `keys.0` commits (its chain certificates for
+  the label). A's admin then learns M's knowing keyset and deposit seed and re-seals M by M's inbox.
+  Closes it for any leaver, member or not, and for the issue's earlier sim shapes (refused deposits
+  for want of the current seed). Cost: a commit in the notice (about 3.6 KB of `keys.0` per role
+  change), the notice judged like a certificate, a wire change.
+- **Seal waits at a node gone from M**: instead of leaving M out it makes no rotation of A boxing
+  M until M's knowing keyset reaches it (M's members still hold A's epoch, so they carry it).
+  Covers the co-departure case only: a node that left M out while a member and then left M is
+  still stuck. Its rotations of A (removals from A included, which go alone meanwhile) wait on M's
+  rotators.
+- **Judge M only while a member** (Depth0 `Judge = "role"`): rejected. `D0_gone_role` fails
+  `NoLeakAbove`: c leaves T out for Dave's removal while a member and writes X; gone, it no longer
+  judges and re-seals T at the keyset it left T out at, and Dave opens what c wrote knowing his
+  removal (the re-seal hole of issues/blocked-walk-stops-at-readers.md, by one node).
+- **Stated limit**: needs a removal going alone, or two departures heard together before the
+  keyset, then the admin leaving the team before it re-seals.
 
-## Options (none modeled yet)
-- Re-seal reached like a rotation: a commit carrying boxes of a read epoch e is wrapped under the
-  newest held epoch e supersedes (spec/crypto.md §5 says "a commit carrying boxes ... (a
-  rotation)"; extend it to re-seals), and an admin issues a step (no rotation) once the head's
-  read epoch has a box holder its claim set does not list. Needs a way to know who a claim set
-  lists (the registrar erases the step key: e.g. the listed tids in `label.0`'s step record);
-  costs a step per re-seal (and per read grant, unless limited to re-seals). A holder that missed
-  more than one epoch needs the wrap under an epoch it holds, not one step back.
-- Seal waits instead of leaving M out while M's keyset is blocked (as it waits for M's merge):
-  then M's holders keep A's current epoch and place M's knowing `keys.0` under A's labels, and A's
-  rotation boxes M at it. Rejected once for liveness (issues/blocked-walk-stops-at-readers.md,
-  `Walk = "wait"`): every rotation of A at that node waits on M's rotators.
-- Narrow the block: a departure from M blocks A's epoch only for a party that loses A by it (here
-  C' administers P' and loses nothing). Fixes the chat case only; co-departed parties and other
-  re-sealers keep the hole.
-- Stated limit.
-
-The model (core/test/tla/rotation, `Depth0.tla`) has re-seals "by inbox and under the label" with
-no deposit keys or claim lists for holder actors, so it cannot show this; a model change comes
-first. Minimal reproducer shape for tier 1 (node level): group M with members a, b, c and own
-secrets, reading P (c its only admin); a removes c from M and then rotates M again with a fresh
-seed; c gets the removal notice first; assert a reads P's newest epoch at rest.
+Recommendation: carry M's keys in the stranded notice; it is the channel the left-out holder
+already uses, made able to say what it needs.
