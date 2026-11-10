@@ -1,10 +1,11 @@
 //! Departures from an actor (spec/permissions.md §3, spec/crypto.md §4): the ones this node
 //! knows of, read from the role timeline (the points at which a holder's grant for keys was
 //! lowered, by an edge write or an audit drop, whose holder holds less now) and from the
-//! `secrets.0` state (box holders at a current epoch that hold less than that role now), each
-//! attributed to the name a rotation knowing it writes (`events`); the names rotations write
-//! (`names`). A
-//! departure from a holder actor of `a` is none of `a`'s (spec/crypto.md §4, Holder actors).
+//! `secrets.0` state (box holders at a current epoch that hold less than that role now), and
+//! the makers of current epochs that hold less than that role now by any path, each attributed
+//! to the name a rotation knowing it writes (`events`); the names rotations write (`names`). A
+//! departure from a holder actor of `a` is none of `a`'s (spec/crypto.md §4, Holder actors), but
+//! a maker whose role ran through one holds the epoch it made: its lowering departs `a`.
 //! Departures are recomputed on demand (O(edge history)) and cached per actor (`departures`),
 //! never stored. Keys read no clock: an edge counts by its role with its `until` disregarded
 //! (`key_role`), so an edge past its `until` departs only by its removal (a finalize,
@@ -153,16 +154,16 @@ fn events(core: &Core, tl: &Timeline, a: &Tid) -> Vec<(Tid, Role, Role, Name)> {
 }
 
 /// Departures from `a` itself: holders that hold less now (`Core::key_holders`) than a departure event
-/// of theirs (`events`) or a box of the `secrets.0` state at a current epoch had them hold (spec/crypto.md §4), each
-/// concerning the roles above its current one up to the highest it left, and named by its newest
-/// event (a box holder with none: by nothing, so no epoch covers it until a rotation supersedes
-/// the box).
+/// of theirs (`events`) or a box of the `secrets.0` state at a current epoch had them hold, and
+/// makers of a current epoch holding less than its role now (`Timeline::role` at `At::KEYS`,
+/// through holder actors alike) (spec/crypto.md §4), each concerning the roles above its current
+/// one up to the highest it left, and named by its newest event (a box holder or maker with none:
+/// by nothing, so no epoch covers it until a rotation supersedes the epoch).
 fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
     let current: BTreeMap<Tid, Role> = tx.core.key_holders(a).into_iter().collect();
     // per holder: the roles it left that it holds less than now, and its newest event
     let mut left: BTreeMap<Tid, (Role, Role, Option<Name>)> = BTreeMap::new();
-    let mut note = |m: Tid, from: Role, upto: Role, at: Option<Name>| {
-        let cur = current.get(&m).copied();
+    let mut note = |m: Tid, cur: Option<Role>, from: Role, upto: Role, at: Option<Name>| {
         let Some(from) = above_role(cur).map(|x| x.max(from)).filter(|f| *f <= upto) else { return };
         if m == *a {
             return;
@@ -177,15 +178,25 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
     };
     if let Some(tl) = tx.core.timelines.get(a) {
         for (m, from, upto, name) in events(tx.core, tl, a) {
-            note(m, from, upto, Some(name));
+            note(m, current.get(&m).copied(), from, upto, Some(name));
         }
     }
-    // from the `secrets.0` state: a box at a current epoch of a role its holder no longer holds
     if let Some(epochs) = tx.core.epochs(a) {
+        // from the `secrets.0` state: a box at a current epoch of a role its holder no longer holds
         let s = secrets_in(tx, a)?;
         for k in s.boxes.keys() {
             if osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| epochs.role(k.role).is_current(&e)) {
-                note(k.holder, Role::Read, k.role, None);
+                note(k.holder, current.get(&k.holder).copied(), Role::Read, k.role, None);
+            }
+        }
+        // the maker of a current epoch holds its secret whatever the boxes say: one holding
+        // less than that role now, for keys, by any path (its role may have run through a holder
+        // actor, whose departures are none of `a`'s), departed it
+        let tl = tx.core.timelines.get(a);
+        for r in osis_keys::ROLES {
+            for e in epochs.role(r).current() {
+                let Some(author) = tx.core.ix.epoch_intro.get(&(*a, r, e)).and_then(|(_, c)| tx.core.ix.commits.get(c)).map(|m| m.view.author) else { continue };
+                note(author, tl.and_then(|tl| tl.role(&author, a, At::KEYS)), Role::Read, r, None);
             }
         }
     }

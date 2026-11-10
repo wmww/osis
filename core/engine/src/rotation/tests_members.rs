@@ -1276,3 +1276,86 @@ fn box_walk_passes_actors_the_node_may_not_rotate_spec_crypto_4() {
     assert!(all_boxed(&mut lp, 0, &[m, a, g]), "A boxed at G again");
     assert_eq!(leaked(&mut lp, 0, &[m, a, g], e, start), Vec::<Tid>::new());
 }
+
+/// Peer `i` rotates `rot` of `g` boxing every holder it can, past its own writer rules (a
+/// rotation its receivers judge); the epochs it made.
+fn rotate_unchecked(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTreeSet<Role>) -> Opened {
+    lp.peers[i]
+        .engine
+        .run(|tx| {
+            let held = tx.core.epochs(&g).unwrap();
+            let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &[])?.ok_or(super::SEAL_WAITS)?;
+            let mut m = Mutation::new();
+            let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, false)?;
+            m.unchecked();
+            tx.core.skip_writer_rules = true;
+            let c = crate::engine::Engine::commit_tx(tx, m);
+            tx.core.skip_writer_rules = false;
+            c?;
+            super::record(tx, g, &r)?;
+            Ok(r.rotated.iter().map(|x| (g, x.role, x.epoch)).collect())
+        })
+        .unwrap()
+}
+
+// spec/crypto.md §4 (Encrypting under: the maker of an epoch opens it): A and M in a cycle (M
+// holds write on A first, so A's grant on M is keyless: M boxes A nothing). P writes A, so M
+// through it. Demoted to read on A, P, unaware, rotates M (its maker holds M's epoch with no box
+// naming it); re-granted write, P's removal from A lists that rotation in its frontier, so it
+// stands (spec/permissions.md §5.2). P holds no role on M any more: M's epoch it made is uncovered, so the
+// admin rotates M before sealing it into A, and P opens nothing written under A after.
+#[test]
+fn maker_lowered_through_a_holder_actor_opens_nothing_new_spec_crypto_4() {
+    let mut lp = LocalPeer::new(2, 970, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let p = lp.peers[1].engine.me();
+    let a = group(&mut lp, 0);
+    let m = group(&mut lp, 0);
+    for (t, h) in [(a, m), (m, a), (a, p)] {
+        lp.peers[0].clock.advance(1);
+        lp.peers[0].engine.grant(&t, &h, &edge(Role::Write)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    assert!(!boxes(&mut lp, 0, m, a), "A's grant on M is keyless");
+    lp.peers[0].engine.demote(&a, &Demotion { holder: p, new: Some(edge(Role::Read)), retain: None }).unwrap();
+    lp.peers[1].clock.advance(1_000);
+    let made = rotate_unchecked(&mut lp, 1, m, &BTreeSet::from([Role::Read, Role::Write]));
+    let k2 = made.iter().find(|x| x.1 == Role::Read).map(|x| x.2);
+    let start: Opened = held_by(&lp, 1, &[m, a]).into_iter().chain(made).collect();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&a, &p, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    removal(&mut lp, 0, a, p);
+    lp.sync_all().unwrap();
+    assert_eq!(newest_read(&lp, 0, m), k2, "P's epoch of M stands");
+    assert!(lp.peers[0].engine.core.role_now(&p, &m).is_none(), "P holds no role on M");
+    let (_, still) = lp.peers[0].engine.ensure_rotated(&a).unwrap();
+    assert!(still.is_empty(), "{still:?}");
+    assert_eq!(leaked(&mut lp, 0, &[m, a], p, start), Vec::<Tid>::new());
+    assert_ne!(newest_read(&lp, 0, m), k2, "M rotated off P's epoch");
+}
+
+// spec/crypto.md §4 (History box: any holder of the epoch's role adds): W, demoted to read, still
+// holds the current write epoch and an earlier write secret its history lists not. It adds no
+// write history (that needs write): its re-seal pass writes nothing there, and fails nothing.
+#[test]
+fn lowered_holder_adds_no_history_above_its_role_spec_crypto_4() {
+    let mut lp = LocalPeer::new(2, 971, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let [x, w] = std::array::from_fn(|i| lp.peers[i].engine.me());
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &w, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    // W's write epoch leaves X out; X supersedes it lacking its secret, so its history lists it not
+    rotate_skipping(&mut lp, 1, g, &BTreeSet::from([Role::Write]), &[x]);
+    lp.sync_all().unwrap();
+    rotate_skipping(&mut lp, 0, g, &BTreeSet::from([Role::Write]), &[]);
+    lp.sync_all().unwrap();
+    let rm = lp.peers[0].engine.demote(&g, &Demotion { holder: w, new: Some(edge(Role::Read)), retain: None }).unwrap().commits;
+    deliver_edges_only(&mut lp, 0, 1, g, &rm);
+    assert_eq!(lp.peers[1].engine.core.role_now(&w, &g), Some(Role::Read), "W knows its demotion");
+    let e = lp.peers[1].engine.epochs(&g).unwrap();
+    assert!(e.write.current().iter().all(|c| e.write.secret(c).is_some()), "W holds the current write epoch");
+    let done = lp.peers[1].engine.reseal_due(&g, &Pass).unwrap();
+    assert!(done.commits.is_empty(), "no write history from a reader");
+}

@@ -710,17 +710,18 @@ pub(crate) fn history_boxes(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<Histo
 /// The history add for `a` (spec/crypto.md §4, History box): for each current epoch whose
 /// secret this node holds established and may encrypt under (`history_boxes`), an entry carrying
 /// every earlier superseded established secret it holds when one is not listed, put beside the
-/// entries there, by any holder (a reader too: a secret once shared cannot be un-shared, and
+/// entries there, by any holder of the epoch's role now (a reader too: a secret once shared cannot be un-shared, and
 /// every holder of the epoch reads its history). Placed under `a`'s labels like any role commit;
 /// nothing when every secret held is listed.
 pub(crate) fn add_history(tx: &mut Tx<'_>, a: Tid) -> Result<Done> {
     let mut done = Done::default();
     let Some(epochs) = tx.core.epochs(&a) else { return Ok(done) };
     let me = tx.core.writer()?;
-    if tx.core.role_now(&me, &a).is_none() {
-        return Ok(done);
-    }
-    let hist = history_boxes(tx, &me, &a)?;
+    let Some(role) = tx.core.role_now(&me, &a) else { return Ok(done) };
+    // only at roles held: an add needs the role its keys name (a holder lowered still holds
+    // the higher role's secrets, and its own departure does not block it)
+    let mut hist = history_boxes(tx, &me, &a)?;
+    hist.retain(|(r, _), _| *r <= role);
     let w = osis_keys::history_adds(&a, &epochs, &hist)?;
     if w.is_empty() {
         return Ok(done);
