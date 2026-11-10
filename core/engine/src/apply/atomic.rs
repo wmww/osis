@@ -52,10 +52,10 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
     }
 }
 
-/// A merge's signatures, for the signing chain to verify (`Indexes::merge_sigs`).
-pub(crate) fn note_merge(core: &mut Core, h: &osis_commit::Header, id: &CommitId, sigs: &osis_commit::Sigs) {
-    if h.rotation.as_ref().is_some_and(|r| !r.names.is_empty()) {
-        core.ix.merge_sigs.insert(*id, Arc::new(sigs.merge.clone()));
+/// A rotation's inner and merge signatures, for the signing chain (`Indexes::rotation_sigs`).
+pub(crate) fn note_rotation_sigs(core: &mut Core, h: &osis_commit::Header, id: &CommitId, sigs: &osis_commit::Sigs) {
+    if h.rotation.is_some() {
+        core.ix.rotation_sigs.insert(*id, Arc::new(crate::engine::RotationSigs { inner: sigs.inner, merge: sigs.merge.clone() }));
     }
 }
 
@@ -628,7 +628,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         );
     }
     index_commit(tx.core, &id, &view);
-    note_merge(tx.core, &blob.header, &id, &blob.sigs);
+    note_rotation_sigs(tx.core, &blob.header, &id, &blob.sigs);
     validity::note_addenda(tx.core, &h, &id, &parts.whole);
     crate::flows::lists::note_listing(tx, &h, &id, &parts.whole)?;
     if tx.core.accounts.contains_key(&h.author) && origin == Origin::Remote {

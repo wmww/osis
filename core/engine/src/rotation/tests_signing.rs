@@ -502,6 +502,9 @@ fn a_reader_the_fork_reached_first_is_told_and_switches_spec_permissions_5_4() {
     }
     assert_eq!(read(&mut lp, 3, t), Some(Value::Str("merged".into())), "peer 3 had the merged line first");
     assert!(lp.peers[3].engine.account_disputes().is_empty());
+    // the line received first is read from what is held: a rebuilt index reads it alike
+    lp.peers[5].engine.rebuild_index().unwrap();
+    assert_eq!(lp.peers[5].engine.core.account_view(&a.account).unwrap().open(), f2, "peer 5 after a rebuild");
     lp.peers[4].engine.choose_line(a.account, m1).unwrap();
     // the write's body, dropped while it counted for nothing, is offered again
     send(&mut lp, 3, 4, &[w]);
@@ -523,4 +526,31 @@ fn a_reader_the_fork_reached_first_is_told_and_switches_spec_permissions_5_4() {
         assert_eq!(lp.peers[k].engine.core.account_view(&a.account).unwrap().heads(), vec![m2], "peer {k}");
     }
     assert!(lp.peers[5].engine.account_disputes().is_empty(), "the merge ended it");
+}
+
+// spec/permissions.md §5.4 (Nodes of P): a node of the account follows the line D's roster
+// authorizes, as the merge reads it. Node 2 rotates while node 0 removes it; node 1 gets node
+// 2's rotation first and holds its seed. Node 0's merge rejects node 2's fork (a removed node's,
+// unnamed): node 1 follows the merge, so its next write counts at an outsider
+#[test]
+fn a_node_follows_the_merge_over_a_removed_nodes_earlier_rotation_spec_permissions_5_4() {
+    let (mut lp, a, t) = world(4, 3);
+    let x0 = lp.peers[2].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[])).unwrap().unwrap();
+    send(&mut lp, 2, 1, &[x0]);
+    lp.advance(5);
+    let done = remove(&mut lp, 0, a.devices, 2);
+    lp.advance(5);
+    send(&mut lp, 0, 1, &done.commits);
+    send(&mut lp, 2, 0, &[x0]);
+    send(&mut lp, 0, 3, &done.commits[1..]);
+    send(&mut lp, 2, 3, &[x0]);
+    let m = merge(&mut lp, &[0, 1], &[0, 1, 3]);
+    for k in [0, 1, 3] {
+        assert_eq!(lp.peers[k].engine.core.account_view(&a.account).unwrap().open(), m, "peer {k} follows the merge");
+    }
+    let w = write(&mut lp, 1, t, "after");
+    send(&mut lp, 1, 3, &[w]);
+    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("after".into())), "node 1's write counts");
+    lp.peers[1].engine.rebuild_index().unwrap();
+    assert_eq!(lp.peers[1].engine.core.account_view(&a.account).unwrap().open(), m, "node 1 after a rebuild");
 }

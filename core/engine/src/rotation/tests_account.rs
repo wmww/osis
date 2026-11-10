@@ -339,8 +339,8 @@ fn a_rotation_rejudges_possession_and_is_carried_spec_crypto_4() {
     assert!(boxing.iter().all(|c| e.core.stale_commits.contains(c)), "the commits boxing the account are judged again");
 }
 
-// the signing chain is built once per change of the rotations or the seeds it holds, whatever
-// the writes between
+// the signing chain is built once per change of what it is built from (the rotations, the seeds
+// held, the roster), whatever the writes between
 #[test]
 fn account_view_is_built_once_per_rotation() {
     let mut lp = peers(1);

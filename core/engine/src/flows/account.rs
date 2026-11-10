@@ -51,8 +51,8 @@ struct EpochPublic {
 }
 
 /// What an account's signing chain is built from (`Core::account_view`): its `Indexes::rotations`
-/// entry, the side chosen, the number of its seeds held.
-pub(crate) type ViewKey = (u64, Option<CommitId>, usize);
+/// entry, the side chosen, the number of its seeds held and (this node's account) D's roster.
+pub(crate) type ViewKey = (u64, Option<CommitId>, usize, Vec<Tid>);
 
 /// An account's signing chain as this node holds it.
 pub(crate) struct AccountView {
@@ -62,11 +62,14 @@ pub(crate) struct AccountView {
     rule: Epochs<CommitId, Tid>,
     /// The held rotations as the chain reads them.
     rotations: Vec<Rotation<CommitId>>,
-    /// The side the chain is read under: chosen here, else (a node of the account) the first
-    /// received head whose seed it holds, else none (the chain's default).
+    /// The side the chain is read under: chosen here, else (a node of the account) the preferred
+    /// tip of the rotations D's roster authorizes (`authorized`), else none (the chain's default).
     side: Option<CommitId>,
     /// The held rotations in receipt order, earliest first (ties by ID).
     received: Vec<CommitId>,
+    /// This node's account: the held rotations D's roster authorizes, minted (by inner
+    /// signature) by a node D holds as current, with that node.
+    authorized: BTreeMap<CommitId, Tid>,
     epochs: BTreeMap<CommitId, EpochPublic>,
     /// The counting epochs by name: what a write or seal reads, so neither walks the chain (its
     /// length is the account's to choose).
@@ -143,6 +146,12 @@ impl AccountView {
     /// The open epoch: the head this node follows.
     pub(crate) fn open(&self) -> CommitId {
         self.rule.chain().followed()
+    }
+
+    /// The node D's roster authorizes rotation `r` by: its minter, when D holds it as current
+    /// (this node's account only).
+    pub(crate) fn authorized_by(&self, r: &CommitId) -> Option<Tid> {
+        self.authorized.get(r).copied()
     }
 
     /// Whether rotation `r` is on the open epoch's line.
@@ -368,7 +377,7 @@ impl Core {
     /// account here). Built only when the account's rotations held (`rotation_seq`), the side
     /// chosen or the seeds held changed, so a write does not cost O(its rotations).
     pub(crate) fn account_view(&self, p: &Tid) -> Option<Arc<AccountView>> {
-        let key = (self.ix.rotations.get(p).copied().unwrap_or(0), self.sides.account(p), self.accounts.get(p).map_or(0, |a| a.seeds.len()));
+        let key = self.view_key(p);
         if let Some(v) = self.account_views.borrow().get(p).filter(|x| x.0 == key) {
             return Some(v.1.clone());
         }
@@ -376,6 +385,27 @@ impl Core {
         self.account_views.borrow_mut().insert(*p, (key, v.clone()));
         self.account_view_builds.set(self.account_view_builds.get().saturating_add(1));
         Some(v)
+    }
+
+    fn view_key(&self, p: &Tid) -> ViewKey {
+        let a = self.accounts.get(p);
+        let roster = a.map(|a| self.key_holders(&a.devices).into_iter().map(|(m, _)| m).collect()).unwrap_or_default();
+        (self.ix.rotations.get(p).copied().unwrap_or(0), self.sides.account(p), a.map_or(0, |a| a.seeds.len()), roster)
+    }
+
+    /// Whether this node's account `p` was last judged from other inputs than its chain is
+    /// built from now (D's roster moved, say): its epochs are judged again (`refresh_epochs`).
+    pub(crate) fn account_view_stale(&self, p: &Tid) -> bool {
+        self.epochs_judged_at.as_ref() != Some(&self.view_key(p))
+    }
+
+    /// The node that signed `id` (a commit of held account `a` signed at the epoch with signing
+    /// key `at`) inside, read from its sealed inner signature `inner`.
+    fn inner_signer(&self, a: &HeldAccount, at: &VerifyingKey, id: &CommitId, inner: &[u8; osis_crypto::INNER_LEN]) -> Option<Tid> {
+        let keys = AccountEpochKeys::from_seed(a.seeds.get(&at.to_bytes())?);
+        let (node, sig) = open_inner(&keys.inner, &id.0, inner)?;
+        let CreationRecord::KeyActor { public_key, .. } = self.created(&node)? else { return None };
+        verify_inner(&VerifyingKey::from_slice(public_key).ok()?, &id.0, &sig).then_some(node)
     }
 
     fn build_account_view(&self, p: &Tid) -> Option<AccountView> {
@@ -398,8 +428,8 @@ impl Core {
         }
         // a merge accepts a named fork only by that fork's signature (spec/crypto.md §9)
         let signed = |id: &CommitId, r: &osis_commit::RotationHeader| -> BTreeSet<CommitId> {
-            let Some(sigs) = self.ix.merge_sigs.get(id) else { return BTreeSet::new() };
-            r.names.iter().zip(sigs.iter()).filter(|(n, s)| epochs.get(*n).is_some_and(|e: &EpochPublic| osis_commit::verify_merge(id, s, &e.signing))).map(|(n, _)| *n).collect()
+            let Some(sigs) = self.ix.rotation_sigs.get(id) else { return BTreeSet::new() };
+            r.names.iter().zip(sigs.merge.iter()).filter(|(n, s)| epochs.get(*n).is_some_and(|e: &EpochPublic| osis_commit::verify_merge(id, s, &e.signing))).map(|(n, _)| *n).collect()
         };
         let rotations: Vec<Rotation<CommitId>> = rots.iter().map(|(id, at, r, _)| Rotation { id: *id, at: *at, supersedes: r.supersedes.iter().copied().collect(), names: r.names.iter().copied().collect(), signed: signed(id, r) }).collect();
         let mut order: Vec<(osis_base::WallMs, CommitId)> = rots.iter().filter_map(|(id, ..)| Some((self.ix.commits.get(id)?.received, *id))).collect();
@@ -407,20 +437,29 @@ impl Core {
         let received: Vec<CommitId> = order.into_iter().map(|x| x.1).collect();
         let chosen = self.sides.account(p);
         let mut rule = Epochs::new(FIRST_EPOCH, rotations.clone(), chosen, &received, &[], &[]);
-        // a node of the account sides with the line D's roster authorizes: of the rotations
-        // whose seed it holds (D's `account.0` gives them through D's current writers), the
-        // tips, the first received among them (spec/permissions.md §5.4, Nodes of P)
+        // a node of the account sides with the line D's roster authorizes, as its merges read it:
+        // of the held rotations minted by a node D holds as current (by inner signature), the
+        // tips, the preferred among them (spec/permissions.md §5.4, Nodes of P)
         let mut side = chosen;
-        if let (None, Some(a)) = (chosen, self.accounts.get(p)) {
+        let mut authorized = BTreeMap::new();
+        if let Some(a) = self.accounts.get(p) {
+            let roster: BTreeSet<Tid> = self.view_key(p).3.into_iter().collect();
             let c = rule.chain();
-            let mine: BTreeSet<CommitId> = rotations.iter().map(|r| r.id).filter(|id| c.holds(id) && epochs.get(id).is_some_and(|e| a.seeds.contains_key(&e.signing.to_bytes()))).collect();
-            let tips: BTreeSet<CommitId> = mine.iter().copied().filter(|t| !mine.iter().any(|x| x != t && c.line(x).is_some_and(|l| l.contains(t)))).collect();
-            side = c.prefer(&tips, &received);
-            if side.is_some() {
-                rule = Epochs::new(FIRST_EPOCH, rotations.clone(), side, &received, &[], &[]);
+            for (id, at, ..) in &rots {
+                let (Some(e), Some(inner)) = (epochs.get(at), self.ix.rotation_sigs.get(id).and_then(|s| s.inner)) else { continue };
+                if let Some(n) = self.inner_signer(a, &e.signing, id, &inner).filter(|n| c.holds(id) && roster.contains(n)) {
+                    authorized.insert(*id, n);
+                }
+            }
+            if chosen.is_none() {
+                let tips: BTreeSet<CommitId> = authorized.keys().copied().filter(|t| !authorized.keys().any(|x| x != t && c.line(x).is_some_and(|l| l.contains(t)))).collect();
+                side = c.prefer(&tips, &received);
+                if side.is_some() {
+                    rule = Epochs::new(FIRST_EPOCH, rotations.clone(), side, &received, &[], &[]);
+                }
             }
         }
-        let mut v = AccountView { rule, rotations, side, received, epochs, by_name: BTreeMap::new() };
+        let mut v = AccountView { rule, rotations, side, received, authorized, epochs, by_name: BTreeMap::new() };
         // a name repeated (two rotations minting one key) is read as its lowest ID
         for (id, e) in v.epochs.iter().filter(|(id, _)| v.rule.chain().epoch_counts(id)) {
             if let Some(name) = v.name(e) {
@@ -511,6 +550,14 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
         tx.core.ix.names_due.remove(&c);
         if let Some(m) = tx.core.ix.commits.get(&c) {
             by_account.entry(m.view.author).or_default().insert(c);
+        }
+    }
+    // this node's account: its side moves with D's roster (`AccountView::authorized_by`)
+    if let Some(p) = tx.core.account.filter(|p| tx.core.accounts.contains_key(p) && tx.core.account_view_stale(p)) {
+        // after an open the persisted judgment stands: judged again, sealed to as before
+        if tx.core.epochs_judged_at.replace(tx.core.view_key(&p)).is_some() {
+            tx.core.ix.epochs_due.insert(p);
+            crate::apply::keyset_changed(tx.core, &p);
         }
     }
     for p in tx.core.ix.epochs_due.iter().copied().collect::<Vec<_>>() {
@@ -875,11 +922,7 @@ impl Core {
         let a = self.accounts.get(&h.author)?;
         let v = self.account_view(&h.author)?;
         let e = v.epochs.get(&h.epoch?)?;
-        let keys = AccountEpochKeys::from_seed(a.seeds.get(&e.signing.to_bytes())?);
-        let id = h.id();
-        let (node, sig) = open_inner(&keys.inner, &id.0, inner)?;
-        let CreationRecord::KeyActor { public_key, .. } = self.created(&node)? else { return None };
-        verify_inner(&VerifyingKey::from_slice(public_key).ok()?, &id.0, &sig).then_some(node)
+        self.inner_signer(a, &e.signing, &h.id(), inner)
     }
 }
 

@@ -70,7 +70,7 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId]) -> Result<Op
             // its lists (spec/permissions.md §5.4)
             let heads = v.heads();
             let mut named = Vec::new();
-            for h in authorized(tx, &held.devices, &heads)? {
+            for h in heads.iter().copied().filter(|h| v.authorized_by(h).is_some()) {
                 let Some(k) = v.seed_of(&h, &held).map(|s| AccountEpochKeys::from_seed(&s)) else { return Ok(None) };
                 named.push((h, k));
             }
@@ -174,7 +174,7 @@ pub(crate) fn take_seeds(tx: &mut Tx<'_>, d: &Tid) -> Result<()> {
         n.seeds = seeds;
         tx.core.accounts.insert(p, Arc::new(n));
         tx.core.role_changed();
-        // the line this node sides with may move (the seeds it holds are its roster's line)
+        // the epoch it can sign at may move
         tx.core.ix.epochs_due.insert(p);
         crate::apply::keyset_changed(tx.core, &p);
     }
@@ -364,32 +364,17 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>) -> Result<Option<CommitId>> {
         }
     }
     let merging = v.heads().len() > 1;
-    if merging && !merger(tx, &v, &d)? || !merging && unnamed.is_empty() {
+    if merging && !merger(tx, &v) || !merging && unnamed.is_empty() {
         return Ok(None);
     }
     rotate_in(tx, p, &unnamed)
 }
 
-/// The heads among `heads` that D's roster authorizes: minted by a node `d` holds as current, by
-/// inner signature (spec/permissions.md §5.4, Nodes of P), ascending.
-fn authorized(tx: &mut Tx<'_>, d: &Tid, heads: &[CommitId]) -> Result<Vec<CommitId>> {
-    let roster: BTreeSet<Tid> = tx.core.key_holders(d).into_iter().map(|(m, _)| m).collect();
-    let mut out = Vec::new();
-    for h in heads {
-        let by = tx.get_commit(h)?.and_then(|b| tx.core.inner_node(&b));
-        if by.is_some_and(|n| roster.contains(&n)) {
-            out.push(*h);
-        }
-    }
-    Ok(out)
-}
-
 /// Whether this node merges the heads (one merger, so the merges do not fork again): the node
-/// whose rotation is the lowest head D's roster authorizes, by inner signature.
-fn merger(tx: &mut Tx<'_>, v: &super::account::AccountView, d: &Tid) -> Result<bool> {
-    let Some(first) = authorized(tx, d, &v.heads())?.into_iter().next() else { return Ok(false) };
-    let by = tx.get_commit(&first)?.and_then(|b| tx.core.inner_node(&b));
-    Ok(by == Some(tx.core.id.tid()))
+/// whose rotation is the lowest head D's roster authorizes (`AccountView::authorized_by`, the
+/// rule this node's side follows too).
+fn merger(tx: &Tx<'_>, v: &super::account::AccountView) -> bool {
+    v.heads().iter().find_map(|h| v.authorized_by(h)) == Some(tx.core.id.tid())
 }
 
 impl Engine {

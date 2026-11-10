@@ -544,9 +544,9 @@ indexes! {
     /// Per account with a rotation judged, what the epoch rule says of its commits
     /// (`JudgedEpochs`; `Core::refresh_epochs` re-judges what moved). Persisted.
     pub epochs: JMap<Tid, Arc<crate::flows::account::JudgedEpochs>>,
-    /// Per held merge, its merge signatures (spec/wire.md §4), verified when the chain is built
-    /// (`Core::account_view`). Persisted.
-    pub merge_sigs: JMap<CommitId, Arc<Vec<osis_crypto::Signature>>>,
+    /// Per held rotation of an account, its inner and merge signatures (spec/wire.md §4), read
+    /// when the chain is built (`Core::account_view`). Persisted.
+    pub rotation_sigs: JMap<CommitId, Arc<RotationSigs>>,
     /// Held commits of accounts per (account, epoch they are signed at).
     pub by_epoch: JSetMap<(Tid, CommitId), CommitId>,
     /// Held commits of accounts a thing list or listing may name otherwise since they were last
@@ -695,6 +695,14 @@ pub(crate) struct StepFault {
 /// Whether a commit listener is on a thing (`Engine::listen_commits`).
 pub type CommitListeners = Arc<dyn Fn(&Tid) -> bool + Send + Sync>;
 
+/// A held rotation's signatures beyond its outer one (`Indexes::rotation_sigs`): its sealed inner
+/// signature (who minted it, read by the account's nodes) and its merge signatures.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RotationSigs {
+    pub inner: Option<[u8; osis_crypto::INNER_LEN]>,
+    pub merge: Vec<osis_crypto::Signature>,
+}
+
 pub(crate) struct CoreMark {
     ix: IndexesMark,
     sides: (usize, usize),
@@ -800,6 +808,9 @@ pub struct Core {
     pub(crate) account_views: std::cell::RefCell<HashMap<Tid, (crate::flows::account::ViewKey, Arc<crate::flows::account::AccountView>)>>,
     /// How many times `Core::account_view` built one (tests count work).
     pub(crate) account_view_builds: std::cell::Cell<u64>,
+    /// What this node's account's epochs were last judged from (`Core::account_view_stale`); empty
+    /// after an open, so the first pass judges them again.
+    pub(crate) epochs_judged_at: Option<crate::flows::account::ViewKey>,
     /// The keyless actor grants (target, holder) over those held (`rotation::members::key_access`):
     /// O(edges) to build. Cleared by `role_changed` and a rollback (the timelines move back).
     pub key_access: Option<Arc<BTreeSet<(Tid, Tid)>>>,
@@ -1455,6 +1466,7 @@ impl Core {
             rotation_seq: _,
             account_views: _,
             account_view_builds: _,
+            epochs_judged_at: _,
             key_access: _,
             inbox_actors: _,
             acting_memo: _,
@@ -1614,6 +1626,7 @@ impl Core {
             rotation_seq: 0,
             account_views: Default::default(),
             account_view_builds: Default::default(),
+            epochs_judged_at: None,
             key_access: None,
             acting_memo: None,
             inbox_actors: None,

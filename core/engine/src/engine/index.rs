@@ -44,9 +44,9 @@ const SNAPSHOTS: &[u8] = b"node/snapshots";
 /// Per account with a rotation judged, what the epoch rule says of its commits
 /// (`Indexes::epochs`): an open builds no signing chain.
 const EPOCHS: &[u8] = b"node/epochs";
-/// Per held merge (an account's rotation naming forks), its merge signatures as its blob carries
-/// them (`Indexes::merge_sigs`): what the signing chain verifies, so an open reads no blob.
-const MERGE_SIGS: &[u8] = b"node/merge sigs";
+/// Per held rotation of an account, its inner and merge signatures as its blob carries them
+/// (`Indexes::rotation_sigs`): what the signing chain reads, so an open reads no blob.
+const ROTATION_SIGS: &[u8] = b"node/rotation sigs";
 /// What each addendum commit says (`validity::AddendaParts`), by commit ID.
 pub(super) const ADDENDA: &[u8] = b"node/addenda";
 /// Per role commit, what perm's adaptation reads of its held `roles.0` parts (`validity::EdgeParts`): written with the commit record (`Tx::put_commit`), so an open
@@ -116,16 +116,20 @@ impl Rec for Role {
         Role::from_value(v).ok()
     }
 }
-impl Rec for Arc<Vec<osis_crypto::Signature>> {
+impl Rec for Arc<crate::engine::RotationSigs> {
     fn to(&self) -> Value {
-        Value::List(self.iter().map(|s| Value::bytes(&s.0)).collect())
+        let inner = self.inner.as_ref().map_or(Value::bytes(&[]), |i| Value::bytes(i));
+        Value::List(vec![inner, Value::List(self.merge.iter().map(|s| Value::bytes(&s.0)).collect())])
     }
     fn from(v: &Value) -> Option<Self> {
-        let Value::List(xs) = v else { return None };
-        xs.iter().map(|x| match x {
+        let Value::List(top) = v else { return None };
+        let [Value::Bytes(inner), Value::List(xs)] = top.as_slice() else { return None };
+        let inner = if inner.is_empty() { None } else { Some(inner.as_slice().try_into().ok()?) };
+        let merge = xs.iter().map(|x| match x {
             Value::Bytes(b) => Some(osis_crypto::Signature(b.as_slice().try_into().ok()?)),
             _ => None,
-        }).collect::<Option<Vec<_>>>().map(Arc::new)
+        }).collect::<Option<Vec<_>>>()?;
+        Some(Arc::new(crate::engine::RotationSigs { inner, merge }))
     }
 }
 impl Rec for Arc<crate::flows::account::JudgedEpochs> {
@@ -859,7 +863,7 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_setmap(txn, ORIGINALS, &c.ix.originals, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
     put_map(txn, EPOCHS, &c.ix.epochs, all)?;
-    put_map(txn, MERGE_SIGS, &c.ix.merge_sigs, all)?;
+    put_map(txn, ROTATION_SIGS, &c.ix.rotation_sigs, all)?;
     // after the indexes and in their transaction: a saved walk never runs ahead of the
     // commits it covers
     let min = tx.core.walk_cache_min;
@@ -1050,8 +1054,8 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     for (k, v) in scan::<Tid>(tx, EPOCHS)? {
         tx.core.ix.epochs.insert(k, dec(&v)?);
     }
-    for (k, v) in scan::<CommitId>(tx, MERGE_SIGS)? {
-        tx.core.ix.merge_sigs.insert(k, dec(&v)?);
+    for (k, v) in scan::<CommitId>(tx, ROTATION_SIGS)? {
+        tx.core.ix.rotation_sigs.insert(k, dec(&v)?);
     }
     // the epochs as persisted are judged: every change was before the index was written
     let due: Vec<Tid> = tx.core.ix.epochs_due.iter().copied().collect();
