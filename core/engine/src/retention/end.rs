@@ -38,25 +38,36 @@ pub(crate) fn judges_ending(ak: &str) -> bool {
     matches!(ak, CREATED | PURGE | ROLES)
 }
 
-/// Whether a part of commit `id` (header `h`) on ended `t` is written after its ending
-/// (spec/commits.md §5 Ending): stamped after every valid minting of it ended, each at its
-/// expiry (`wall_ms(ts) >= T`) or after a request that drops it. Nobody writes a thing after its
-/// ending: such a part is a part on an unknown thing, whatever its aspect. A minting is not asked:
-/// a request ending the thing names every minting of it (`purge::names`). A walk of the held
-/// requests: asked only of an ended thing's parts.
-pub(crate) fn after_ending(core: &Core, t: &Tid, h: &Header, id: &CommitId) -> bool {
-    if !core.ended(t) {
-        return false;
+/// When each valid minting of an ended thing ended (spec/commits.md §5 Ending): at its expiry
+/// (`wall_ms(ts) >= T`), or after the earliest held request that drops it. A minting is not asked:
+/// a request ending the thing names every minting of it (`purge::names`).
+pub(crate) struct Ending(Vec<(Option<u64>, Option<Point>)>);
+
+impl Ending {
+    /// `t`'s ending, `None` while it is not ended. Its requests are found among the commits on `t`
+    /// (a request has a delta on each thing it names), each judged once per minting.
+    pub(crate) fn of(core: &Core, t: &Tid) -> Option<Ending> {
+        if !core.ended(t) {
+            return None;
+        }
+        let on_t = |p: &Header| p.purge.iter().any(|i| i.tid() == t && i.ak().as_str() == CREATED);
+        let requests: Vec<(CommitId, &Header)> = core.on_thing(t).filter_map(|pc| core.ix.commits.get(&pc).filter(|m| m.view.purges && on_t(&m.header)).map(|m| (pc, &*m.header))).collect();
+        let ends = core.mintings(t).map(|(c, ai)| {
+            let m = core.ix.commits.get(&c)?;
+            let a = m.header.aspects.get(ai)?;
+            let by = requests.iter().filter(|(pc, p)| super::purge::stands(core, p, pc, a, &m.header, &c)).map(|(pc, p)| Point { ts: p.ts, node: p.author, commit: *pc }).min();
+            Some((m.header.expires, by))
+        });
+        Some(Ending(ends.map(|x| x.unwrap_or((None, None))).collect()))
     }
-    let at = Point { ts: h.ts, node: h.author, commit: *id };
-    let wall = h.ts.wall_ms().0;
-    let on_t = |p: &Header| p.purge.iter().any(|i| i.tid() == t && i.ak().as_str() == CREATED);
-    let requests: Vec<(CommitId, &Header)> = core.ix.commits.iter().filter(|(_, m)| m.view.purges && on_t(&m.header)).map(|(pc, m)| (*pc, &*m.header)).filter(|(pc, p)| Point { ts: p.ts, node: p.author, commit: *pc } < at).collect();
-    core.mintings(t).all(|(c, ai)| {
-        let Some(m) = core.ix.commits.get(&c) else { return false };
-        let Some(a) = m.header.aspects.get(ai) else { return false };
-        m.header.expires.is_some_and(|x| x <= wall) || requests.iter().any(|(pc, p)| super::purge::stands(core, p, pc, a, &m.header, &c))
-    })
+
+    /// Whether a part of commit `id` (header `h`) is written after the ending: nobody writes a
+    /// thing after its ending, so such a part is a part on an unknown thing, whatever its aspect.
+    pub(crate) fn after(&self, h: &Header, id: &CommitId) -> bool {
+        let at = Point { ts: h.ts, node: h.author, commit: *id };
+        let wall = h.ts.wall_ms().0;
+        self.0.iter().all(|(x, by)| x.is_some_and(|x| x <= wall) || by.is_some_and(|p| p < at))
+    }
 }
 
 /// Ends the things a value-less list changed on in this transaction (`Core::valueless_dirty`,
@@ -150,8 +161,10 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
     // the actors named on it (its first admin, its holders), read before its record and edges go
     let ups: Vec<Tid> = if keep { Vec::new() } else { tx.core.ix.held.holders_of(t).copied().collect() };
     // the holders its `roles.0` entries keyed go with the entries: read while the parts are held
-    // kept or not, an edge write on it stamped after its ending goes (`after_ending`)
-    let late = |core: &Core, id: &CommitId| core.ix.commits.get(id).is_some_and(|m| after_ending(core, t, &m.header, id));
+    // kept or not, an edge write on it stamped after its ending goes (`Ending::after`), judged
+    // once while the late writes are still held
+    let ending = Ending::of(tx.core, t);
+    let late = |core: &Core, id: &CommitId| ending.as_ref().is_some_and(|e| core.ix.commits.get(id).is_some_and(|m| e.after(&m.header, id)));
     let edge_commits: Vec<CommitId> = tx.core.ix.held.commits_on(t).iter().map(|c| c.id).filter(|c| !keep || late(tx.core, c)).collect();
     for id in &edge_commits {
         let parts = crate::apply::edge_parts(tx, id)?;

@@ -621,7 +621,7 @@ fn thing_wait(
 ) -> Option<Reason> {
     // an ended thing is unknown, but for what judges its ending written before it
     // (`retention::end`); an ending by expiry keeps no record but for a dependent
-    let ended = |id: &CommitId| !crate::retention::end::judges_ending(a.ak.as_str()) || a.ak.as_str() != osis_commit::retention::CREATED && crate::retention::end::after_ending(core, &a.tid, h, id);
+    let ended = |id: &CommitId| !crate::retention::end::judges_ending(a.ak.as_str()) || a.ak.as_str() != osis_commit::retention::CREATED && crate::retention::end::Ending::of(core, &a.tid).is_some_and(|e| e.after(h, id));
     if record(&a.tid).is_none() || core.ended(&a.tid) && ended(&h.id()) {
         return Some(Reason::UnknownCreated(a.tid));
     }

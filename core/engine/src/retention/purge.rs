@@ -58,10 +58,14 @@ pub(super) fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntr
     // an ending is judged by the thing's history before it: nothing written on the thing after it
     // counts (spec/commits.md §5 Ending), so an edge write on it stamped later, held here before
     // the ending arrived, is left out of the walk that judges it. Such a write is not held once
-    // the thing ended (`end::after_ending`): a walk from scratch only while one is
+    // the thing ended (`end::Ending`): a walk from scratch only while one is, and only for
+    // signers that could ever hold the right (held inputs only grow, so neither can a cut's)
     if a.ak.as_str() == osis_commit::retention::CREATED {
         let later: BTreeSet<CommitId> = HeldSet::edge_commits(&core.ix.held, &a.tid).iter().filter(|c| c.point() > point).map(|c| c.id).collect();
         if !later.is_empty() {
+            if !signers_could(core, p, a, ch) {
+                return false;
+            }
             let cut = Cut { held: &core.ix.held, later };
             return judge(&osis_perm::Timeline::evaluate_with(&cut, &core.sides.trust()));
         }
