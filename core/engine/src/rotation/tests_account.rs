@@ -534,7 +534,6 @@ fn rotation_judges_its_epochs_once_and_writes_stay_flat() {
         let mut m = crate::Mutation::new();
         m.set(t, &Ak::new("x:c.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
         lp.peers[1].commit(m).unwrap();
-        let e = &mut lp.peers[1].engine;
         let costs = crate::costs::take();
         (on_rotation, judged(costs.clone()), costs.iter().filter(|x| x.0 == "account view").map(|x| x.2).sum::<u64>())
     };

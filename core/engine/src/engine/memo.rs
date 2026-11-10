@@ -1,7 +1,8 @@
 //! Derived values that depend on exactly what they read (issues/derived-state-recomputed.md).
 //!
 //! Every mutable fact a derivation may read sits in a container that stamps its changes
-//! (`Stamps`: the journaled indexes in `journal`, `Stamped` maps, `Tracked` values). A read
+//! (`Stamps`: the journaled indexes in `journal`, the held set and timelines in `held`,
+//! `Stamped` maps). A read
 //! through such a container while a `Memo` computes records the stamp it saw; the memo's answer
 //! holds while every stamp it saw is the current one. So a memo has no key to pick and no
 //! invalidation to call: a write anywhere reaches exactly the memos that read what it changed.
@@ -320,32 +321,6 @@ impl<K: Ord + Hash, V> Stamped<K, V> {
     pub fn remove(&mut self, k: &K) -> Option<V> {
         self.stamps.wrote(k, false);
         self.map.remove(k)
-    }
-}
-
-/// A value outside the journal whose reads (`Deref`) and changes (`change`) are stamped whole.
-#[derive(Debug, Default)]
-pub struct Tracked<T> {
-    value: T,
-    stamps: Stamps,
-}
-
-impl<T> Tracked<T> {
-    pub fn new(value: T) -> Self {
-        Tracked { value, stamps: Stamps::default() }
-    }
-    /// The value to change.
-    pub fn change(&mut self) -> &mut T {
-        self.stamps.wrote_all();
-        &mut self.value
-    }
-}
-
-impl<T> Deref for Tracked<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        self.stamps.read_all();
-        &self.value
     }
 }
 
