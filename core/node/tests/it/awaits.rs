@@ -150,3 +150,64 @@ fn any_awaited_record_applies_its_part_spec_commits_4() {
         assert!(!e.knows(&ts[1 - first]));
     }
 }
+
+// spec/commits.md §4 (Unjudgeable): a commit whose every part is unjudgeable is thrown out, never
+// pending, though its `ts` is past `MAX_DRIFT` ahead: nothing of it is kept, and it comes again
+// with the record it awaits.
+#[test]
+fn unjudgeable_ahead_is_thrown_out_not_pending_spec_commits_4() {
+    let mut lp = net(2, 615);
+    lp.sync_all().unwrap();
+    let me = lp.peers[0].engine.me();
+    let mut m = osis_node::Mutation::new();
+    let p = lp.peers[0].engine.new_thing(&mut m, me);
+    let rp = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+    let mut m = osis_node::Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, p);
+    m.set(t, &REG, &s("ahead")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let pc = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    assert!(matches!(lp.deliver(1, &pc).unwrap(), Ingested::Awaits(..)), "its chain is unknown");
+    assert!(lp.peers[1].engine.pending().is_empty(), "nothing of it kept");
+    lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+    lp.peers[1].engine.reexamine().unwrap();
+    assert!(lp.peers[1].engine.pending().is_empty() && !lp.peers[1].engine.knows(&t));
+    let pr = lp.peers[0].engine.package(&rp).unwrap().unwrap();
+    lp.deliver(1, &pr).unwrap();
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("ahead")), "fetched again with the record");
+}
+
+// spec/commits.md §4 (Unjudgeable): a commit thrown out whole, one part on a thing whose record is
+// unknown, the other on a known thing its author does not reach yet: the grant that reaches it
+// lets that part apply, whichever wait the entry names.
+#[test]
+fn reach_arriving_applies_its_part_spec_commits_4() {
+    let mut named = std::collections::BTreeSet::new();
+    for seed in 620..628 {
+        let mut lp = net(3, seed);
+        lp.sync_all().unwrap();
+        let w = lp.peers[2].engine.me();
+        let u = new_thing(&mut lp, 0);
+        lp.sync(0, 1).unwrap();
+        let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+        let g = *lp.peers[0].engine.grant(&u, &w, &edge).unwrap().commits.last().unwrap();
+        lp.sync(0, 2).unwrap();
+        let mut m = osis_node::Mutation::new();
+        let t = lp.peers[2].engine.new_thing(&mut m, w);
+        lp.peers[2].commit(m).unwrap().unwrap();
+        let mut m = osis_node::Mutation::new();
+        m.set(t, &REG, &s("both")).unwrap();
+        m.set(u, &REG, &s("both")).unwrap();
+        let c = lp.peers[2].commit(m).unwrap().unwrap();
+        let pc = lp.peers[2].engine.package(&c).unwrap().unwrap();
+        let Ingested::Awaits(_, r) = lp.deliver(1, &pc).unwrap() else { panic!("seed {seed}: thrown out") };
+        named.insert(r == osis_node::Reason::UnknownCreated(t));
+        let pg = lp.peers[0].engine.package(&g).unwrap().unwrap();
+        lp.deliver(1, &pg).unwrap();
+        let e = &mut lp.peers[1].engine;
+        assert_eq!(e.get(&u, &ak("t:reg.0")).unwrap(), Some(s("both")), "seed {seed}, entry names {r:?}: the part its author now reaches");
+        assert!(!e.knows(&t));
+    }
+    assert_eq!(named.len(), 2, "entries naming either wait");
+}

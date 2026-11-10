@@ -380,13 +380,34 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if record(&h.actor).is_none() {
         return Ok(Exam::Awaits(Reason::UnknownCreated(h.actor)));
     }
-    let Some(vk) = author_key(tx.core, &h, &blob.sigs, &author)? else { return Ok(Exam::Pending(Reason::Epoch(h.epoch.unwrap_or(osis_commit::FIRST_EPOCH)), Vec::new())) };
+    // a part it cannot judge (its thing's record, record chain or the author's reach) goes; with
+    // every held part such the commit is unjudgeable, never pending (spec/commits.md §4): thrown
+    // out before a missing epoch or a `ts` ahead could keep its bytes
+    let mut unjudged: BTreeMap<usize, Reason> = BTreeMap::new();
+    for (ai, a) in h.aspects.iter().enumerate() {
+        if skip.contains(&ai) || !blob.parts.iter().any(|p| p.ai == ai) {
+            continue;
+        }
+        if let Some(wait) = thing_wait(tx.core, &h, a, &record, &chain_rec) {
+            unjudged.insert(ai, wait);
+        }
+    }
+    let unjudgeable = unjudged.values().next().cloned().filter(|_| blob.parts.iter().all(|p| skip.contains(&p.ai) || unjudged.contains_key(&p.ai)));
+    let Some(vk) = author_key(tx.core, &h, &blob.sigs, &author)? else {
+        if let Some(r) = unjudgeable {
+            return Ok(throw_out(tx, id, &unjudged, r));
+        }
+        return Ok(Exam::Pending(Reason::Epoch(h.epoch.unwrap_or(osis_commit::FIRST_EPOCH)), Vec::new()));
+    };
     check_signature(tx, blob, id, &vk)?;
     h.validate()?;
     // a frontier that does not decode is bad input, never a demotion without one (spec/wire.md
     // §4 field 12)
     if h.frontier.is_some() && validity::header_frontier(&h).is_none() {
         return Err(Error::BadInput("a frontier that is not a frontier"));
+    }
+    if let Some(r) = unjudgeable {
+        return Ok(throw_out(tx, id, &unjudged, r));
     }
     // the bound is for received commits, a sibling node's too (spec/crdt.md §2.2): this node's
     // own are as far ahead as its HLC, which a clock correction moving back must not turn
@@ -431,23 +452,14 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             tx.core.redeliver.insert(*id);
         }
         blob.parts.retain(|p| !junk.contains(&p.ai));
+        unjudged.retain(|ai, _| !junk.contains(ai));
         let now = tx.now();
         tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(*id), peer: Some(h.author), detail: "delta hash".into() }, now);
     }
     if only_junk {
         return Err(Error::BadInput("delta hash"));
     }
-    // a part it cannot judge (its thing's record, record chain or the author's reach) goes
     let mut aside = Aside::default();
-    let mut unjudged: BTreeMap<usize, Reason> = BTreeMap::new();
-    for (ai, a) in h.aspects.iter().enumerate() {
-        if skip.contains(&ai) || !blob.parts.iter().any(|p| p.ai == ai) {
-            continue;
-        }
-        if let Some(wait) = thing_wait(tx.core, &h, a, &record, &chain_rec) {
-            unjudged.insert(ai, wait);
-        }
-    }
     for (t, rec) in &carried {
         if let Some(held) = tx.core.created(t)
             && held != rec
@@ -507,12 +519,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     }
     // nothing else applies and a part cannot be judged: thrown out whole
     if out.ais().is_empty() && let Some(r) = unjudged.values().next().cloned() {
-        // judged afresh when any one of them comes: a part on another thing may apply (spec/commits.md §4)
-        tx.core.waits.awaits_records(*id, unjudged.values().filter_map(|r| match r {
-            Reason::MissingChain(t) | Reason::UnknownCreated(t) => Some(*t),
-            _ => None,
-        }));
-        return Ok(Exam::Awaits(r));
+        return Ok(throw_out(tx, id, &unjudged, r));
     }
     // every held part waits: the commit (or, already applied, these parts) keeps waiting
     if !aside.keys.is_empty() && out.ais().is_empty() {
@@ -530,6 +537,17 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // what joins of an emptied slot is the part's leftover: no stored copy holds it
     blob.parts.retain(|p| p.delta != emptied || !h.aspects.get(p.ai).is_some_and(|_| out.stripped.contains(&p.ai)));
     Ok(Exam::Ready(out))
+}
+
+/// Commit `id` thrown out whole, its parts unjudgeable for `unjudged` (the entry names `first`):
+/// judged afresh when any one of the records comes, as a part on another thing may apply
+/// (spec/commits.md §4).
+fn throw_out(tx: &mut Tx<'_>, id: &CommitId, unjudged: &BTreeMap<usize, Reason>, first: Reason) -> Exam {
+    tx.core.waits.awaits_records(*id, unjudged.values().filter_map(|r| match r {
+        Reason::MissingChain(t) | Reason::UnknownCreated(t) => Some(*t),
+        _ => None,
+    }));
+    Exam::Awaits(first)
 }
 
 /// What judging a part alone found, short of bad (`judge_part`'s `Err`, `Parked` among those).

@@ -167,6 +167,13 @@ pub(crate) fn wake(core: &mut Core) {
     }
     if !moved.is_empty() {
         undropped.append(&mut core.waits.awaiting.reach);
+        // a thrown-out commit with a reach wait (an author whose record is held) among others:
+        // the entry names only the first, perhaps a record still unknown
+        for (t, cs) in &core.waits.on_record {
+            if core.exists(t) {
+                reread.extend(cs.iter().filter(|c| !core.ix.commits.contains_key(*c)));
+            }
+        }
     }
     if let Some(ch) = &mut core.changed {
         ch.wakes.woken.extend(undropped);

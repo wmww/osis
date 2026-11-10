@@ -100,6 +100,11 @@ pub(crate) enum Step {
     Send { from: usize, to: usize, back: u8 },
     /// Time passes (`who`: one peer's clock, else every one).
     Advance { who: Option<usize>, ms: u64 },
+    /// Every peer takes the walk's side in each admin dispute it detected (`disputes::walk_sides`),
+    /// as every judged node does: `settled`'s compactions are then made under the judged nodes'
+    /// trust set (spec/requirements.md Deterministic: reads are a function of the data and the
+    /// trust set).
+    WalkSides,
     /// The step, its author and thing first pointed at what it can write at play time (`aim`),
     /// so that most drawn steps make a commit.
     Aim(Box<Step>),
@@ -1023,6 +1028,12 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 }
                 None
             }
+            Step::WalkSides => {
+                for p in &mut lp.peers {
+                    crate::disputes::walk_sides(p);
+                }
+                None
+            }
             Step::RecordOnly { by, under } => {
                 let first = under.map_or(ids[by], th);
                 let r = lp.peers[by].engine.create_with_admin(&first);
@@ -1620,7 +1631,10 @@ impl SyncPlan {
 /// The history as the seed's fresh nodes get it, by `seed % 3` (`away`: one of the last two):
 /// as made; each thing synced from the start with probability one half and half of the commits
 /// with parts on several aspects held in part for good (`Syncs::Early`); or things synced at
-/// varying points, with such parts withheld too (`Syncs::Late`). Not withheld when `settled`.
+/// varying points, with such parts withheld too (`Syncs::Late`). As made when `settled`: a part
+/// a node did not sync or never got is not held before the sync exchange, so no compaction
+/// settles it there (a `required^.0` body, never snapshotted, changes validity on its own),
+/// spec/requirements.md Deterministic: the node reads as if it never had it until it arrives.
 fn with_syncs(mut played: Played, seed: u64, settled: bool, away: bool) -> Played {
     let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
     let mut half = |ts: &[Tid]| ts.iter().copied().filter(|_| rng.below(2) == 0).collect::<Vec<_>>();
@@ -1629,16 +1643,14 @@ fn with_syncs(mut played: Played, seed: u64, settled: bool, away: bool) -> Playe
     let prefix: Vec<Tid> = other.into_iter().filter(|t| !on.contains(t)).collect();
     // parts away: always some synced and some parts withheld (the first multi-part commit and
     // half the rest; a parts-away history starts with some)
-    match if away { 1 + seed % 2 } else { seed % 3 } {
+    match if settled { 0 } else if away { 1 + seed % 2 } else { seed % 3 } {
         0 => {}
         mode => {
             let mut first = away;
             for i in played.base..played.packs.len() {
                 let mut b = osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap();
                 let ais: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
-                // not when settled: a part held by a writer and never here is no settled history,
-                // the node reads as if it never had it until it arrives (seed 96410020)
-                if ais.len() > 1 && (std::mem::take(&mut first) || rng.below(2) == 0) && !settled {
+                if ais.len() > 1 && (std::mem::take(&mut first) || rng.below(2) == 0) {
                     let keep = ais.iter().copied().nth(rng.below(ais.len() as u64) as usize).unwrap();
                     b.parts.retain(|x| x.ai == keep);
                     played.packs[i].bytes = b.encode();
@@ -1657,8 +1669,9 @@ fn deliver(played: &Played, order: &[usize]) -> Peer {
 }
 
 /// A fresh node given `packs` in `order`, each commit with parts on several aspects first with
-/// those of one of them only (a seeded pick), the rest of it as late parts at the end, in
-/// reverse (spec/commits.md §4: a late delta joins on arrival).
+/// those of one of them only (a seeded pick), the rest of it as late parts at the end (before a
+/// settled history's settling tail), in reverse (spec/commits.md §4: a late delta joins on
+/// arrival).
 fn deliver_split(played: &Played, order: &[usize], rng: &mut Rng) -> Peer {
     deliver_with(played, order, Some(rng), None, &mut |_| {})
 }
@@ -1722,7 +1735,21 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
     let mut late = Vec::new();
     let mut plan = played.sync.plan(order);
     let mut done = 0;
+    // a settled history's late parts come before its settling tail: one after it is a write
+    // after the writers' last compactions, which then settle nothing
+    let deliver_late = |p: &mut Peer, late: &mut Vec<usize>, plan: &mut SyncPlan, done: &mut usize, each: &mut dyn FnMut(&mut Peer)| {
+        for &i in std::mem::take(late).iter().rev() {
+            plan.upto(p, *done);
+            *done += 1;
+            let pk = &played.packs[i];
+            let _ = p.receive(&pk.bytes, pk.blobs.clone());
+            each(p);
+        }
+    };
     for &i in order {
+        if played.settle_from.is_some_and(|f| i >= f) && !late.is_empty() {
+            deliver_late(&mut p, &mut late, &mut plan, &mut done, &mut each);
+        }
         if clock.is_some_and(|c| c.at == done) {
             move_clock(played, &mut p);
         }
@@ -1749,13 +1776,7 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
         move_clock(played, &mut p);
         each(&mut p);
     }
-    for &i in late.iter().rev() {
-        plan.upto(&mut p, done);
-        done += 1;
-        let pk = &played.packs[i];
-        let _ = p.receive(&pk.bytes, pk.blobs.clone());
-        each(&mut p);
-    }
+    deliver_late(&mut p, &mut late, &mut plan, &mut done, &mut each);
     plan.upto(&mut p, usize::MAX);
     each(&mut p);
     if rng.is_some() {
@@ -1769,6 +1790,55 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
     p
 }
 
+
+
+/// `OSIS_ORDER_DUMP`: on a failure, each commit whose index entry at node `p` differs from the
+/// keep-everything node's holding `held` at the same clock (validity, dropped and why, stood in,
+/// stripped, valued, missing), and both nodes' pending commits: where a read difference starts.
+fn explain(played: &Played, held: &[usize], p: &mut Peer, what: &str) {
+    if std::env::var("OSIS_ORDER_DUMP").is_err() {
+        return;
+    }
+    let mut o = fresh(played.now);
+    o.engine.keep_bodies(true);
+    for t in played.sync.things() {
+        o.engine.set_syncing(*t, true).unwrap();
+    }
+    for &i in held {
+        let pk = &played.packs[i];
+        let _ = o.receive(&pk.bytes, pk.blobs.clone());
+    }
+    o.clock.set(p.engine.now());
+    o.engine.tick().unwrap();
+    crate::disputes::walk_sides(&mut o);
+    fetch_missing(&mut o, played, held);
+    let (a, b) = (p.engine.index_digest(), o.engine.index_digest());
+    let mut out = format!("index differences ({what}), node at {:?}:\n", p.engine.now());
+    let pack = |c: &CommitId| played.packs.iter().position(|q| q.id == *c);
+    for (i, pk) in played.packs.iter().enumerate() {
+        let shown = |e: &osis_node::Engine, c: Option<&osis_node::engine::CommitDigest>| match c {
+            None => "absent".to_string(),
+            Some(c) => {
+                let why: Vec<String> = e.core.ix.commits.get(&pk.id).map(|m| m.dropped.iter().map(|(ai, d)| format!("{ai}: {:?} by {:?}", d.why, d.covered_by.iter().map(pack).collect::<Vec<_>>())).collect()).unwrap_or_default();
+                format!("valid {:?} dropped {:?} {why:?} stands in {:?} stripped {:?} valued {:?} missing {:?}", c.valid, c.dropped, c.stands_in, c.stripped, c.valued, c.missing)
+            }
+        };
+        let (x, y) = (shown(&p.engine, a.commits.get(&pk.id)), shown(&o.engine, b.commits.get(&pk.id)));
+        if x == y {
+            continue;
+        }
+        let h = o.engine.header(&pk.id).or_else(|| p.engine.header(&pk.id));
+        let desc = h.map(|h| format!("{:?} {:?} [{}]", h.kind, h.ts, h.aspects.iter().map(|a| format!("{:?} {}", a.tid, a.ak.as_str())).collect::<Vec<_>>().join(", "))).unwrap_or_default();
+        let _ = writeln!(out, "#{i}{} peer {} {desc}\n  node {x}\n  keep {y}", if held.contains(&i) { "" } else { " (not held)" }, played.authors.get(i).map_or("?".into(), |a| a.to_string()));
+    }
+    for (c, why) in p.engine.pending() {
+        let _ = writeln!(out, "node pending #{:?}: {why:?}", pack(&c));
+    }
+    for (c, why) in o.engine.pending() {
+        let _ = writeln!(out, "keep pending #{:?}: {why:?}", pack(&c));
+    }
+    eprintln!("{out}");
+}
 
 /// `OSIS_ORDER_DUMP`: on an order's failure, prints the packs (index: id, author, kind, aspects)
 /// and what the order's node reads as it changes after every ingest. Every failing check prints,
@@ -2163,7 +2233,10 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             let order = &orders[k];
             if let Some(rng) = split_rng {
                 let mut p = deliver_split(played, order, rng);
-                return node_checks(&mut p, played, &o).map_err(|d| format!("{of}: order #{k} with late parts {order:?}: {d}"));
+                return node_checks(&mut p, played, &o).map_err(|d| {
+                    explain(played, &held, &mut p, &d);
+                    format!("{of}: order #{k} with late parts {order:?}: {d}")
+                });
             }
             let mut p = deliver(played, order);
             let before = shown(&mut p, &played.things);
@@ -2176,6 +2249,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 return Err(format!("{of}, order #{k} {order:?}: reopen differs: {d}"));
             }
             node_checks(&mut p, played, &o).map_err(|d| {
+                explain(played, &held, &mut p, &d);
                 dump_order(played, order);
                 format!("{of}, order #{k} {order:?}: {d}")
             })
@@ -2198,9 +2272,17 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 done += 1;
                 if early.is_none() {
                     early = model_differs(p, played, &o).map(|d| format!("after {done} ingests at {:?}: {d}", p.engine.now()));
+                    if let Some(d) = &early {
+                        explain(played, &held, p, d);
+                    }
                 }
             });
-            early.map_or(Ok(()), Err).and_then(|_| node_checks(&mut p, played, &o)).map_err(|d| format!("{of}: order #{k} at an earlier clock {c:?} {order:?}: {d}"))
+            early
+                .map_or(Ok(()), Err)
+                .and_then(|_| {
+                    node_checks(&mut p, played, &o).inspect_err(|d| explain(played, &held, &mut p, d))
+                })
+                .map_err(|d| format!("{of}: order #{k} at an earlier clock {c:?} {order:?}: {d}"))
         };
         // late parts only matter when a commit has parts on several aspects; without one the
         // sequential modes still deliver the first two again and re-examine
@@ -2654,11 +2736,11 @@ fn held_set_decides_exhaustive() {
 /// The orders the step-4 order harness tried on its long histories: 8 shuffles, 4 partial sets.
 const WIDE: Cfg = Cfg { all_up_to: 0, random: 8, subsets: 4, model: false, ..ORDERS };
 
-// issues/purge-author-order-452234901986.md (spec/permissions.md §6): a delta dropped while
+// issues/held-set-decisions.md (1) (spec/permissions.md §6): a delta dropped while
 // invalid, valid again and purged by author before its refetch has no leftover, so the node reads
 // the older value where one that held the body reads absent. The history as the order harness made it.
 #[test]
-#[ignore = "open: issues/purge-author-order-452234901986.md"]
+#[ignore = "open: issues/held-set-decisions.md (1)"]
 fn repro_purge_author_order_452234901986() {
     use Step::*;
     let h = vec![Sync { from: 1, to: 0 }, Sync { from: 2, to: 1 }, Sync { from: 0, to: 2 }, Aim(Box::new(PurgeAuthor { by: 2, t: 2, of: 0 })), Aim(Box::new(Message { by: 0, t: 2, v: 8 })), Aim(Box::new(PurgeAuthor { by: 2, t: 2, of: 1 })), Aim(Box::new(Message { by: 1, t: 2, v: 9 })), Aim(Box::new(Message { by: 1, t: 1, v: 5 })), Aim(Box::new(PurgeAuthor { by: 2, t: 3, of: 1 })), Sync { from: 0, to: 2 }, Aim(Box::new(PurgeAuthor { by: 0, t: 2, of: 2 })), Aim(Box::new(Message { by: 1, t: 3, v: 3 })), Aim(Box::new(Message { by: 0, t: 0, v: 5 })), Advance { who: None, ms: 1069 }, Advance { who: None, ms: 27 }, Aim(Box::new(PurgeAuthor { by: 0, t: 3, of: 2 })), Sync { from: 2, to: 0 }, Aim(Box::new(PurgeAuthor { by: 0, t: 1, of: 0 })), Aim(Box::new(Demote { by: 0, t: 3, holder: 2, at: 3, to_read: true })), Advance { who: None, ms: 1602 }, Aim(Box::new(Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) })), Aim(Box::new(Message { by: 0, t: 0, v: 2 })), Aim(Box::new(Message { by: 1, t: 1, v: 7 })), Aim(Box::new(Message { by: 0, t: 3, v: 2 })), Aim(Box::new(Message { by: 1, t: 3, v: 7 })), Aim(Box::new(Message { by: 2, t: 2, v: 0 })), Aim(Box::new(Message { by: 0, t: 1, v: 5 })), Aim(Box::new(PurgeAuthor { by: 1, t: 3, of: 2 })), Aim(Box::new(Message { by: 0, t: 2, v: 7 })), Aim(Box::new(PurgeAuthor { by: 0, t: 0, of: 1 })), Aim(Box::new(Message { by: 0, t: 1, v: 4 })), Sync { from: 0, to: 1 }, Aim(Box::new(PurgeAuthor { by: 2, t: 0, of: 2 })), Aim(Box::new(Message { by: 0, t: 3, v: 1 })), Advance { who: None, ms: 1887 }, Aim(Box::new(Message { by: 2, t: 1, v: 3 })), Aim(Box::new(Message { by: 1, t: 3, v: 3 })), Aim(Box::new(Message { by: 2, t: 3, v: 9 })), Advance { who: None, ms: 620 }, Sync { from: 2, to: 1 }, Aim(Box::new(Message { by: 0, t: 3, v: 9 })), Sync { from: 2, to: 1 }, Aim(Box::new(Message { by: 0, t: 2, v: 3 })), Aim(Box::new(Message { by: 0, t: 0, v: 7 })), Advance { who: None, ms: 1499 }, Aim(Box::new(Demote { by: 0, t: 1, holder: 0, at: 1, to_read: true })), Aim(Box::new(Message { by: 2, t: 0, v: 1 })), Aim(Box::new(Message { by: 0, t: 1, v: 2 })), Aim(Box::new(PurgeAuthor { by: 0, t: 0, of: 2 })), Aim(Box::new(PurgeAuthor { by: 2, t: 0, of: 2 }))];
@@ -2784,8 +2866,8 @@ fn sync_learned_after_part_reads_alike_spec_commits_4() {
 }
 
 
-/// `h`, then every peer holds what the others do and each compacts every aspect of every thing it
-/// may write: spec/commits.md §5's waiting part past its expiry and spec/requirements.md
+/// `h`, then every peer holds what the others do, takes the walk's side in each dispute (as the
+/// judged nodes do) and compacts every aspect of every thing it may write: spec/commits.md §5's waiting part past its expiry and spec/requirements.md
 /// Deterministic's limits last until a writer next compacts or writes, so a node given the
 /// compactions last (each counting when it arrives: one dropped while it did not count repairs
 /// nothing, spec/commits.md §5 Invalid) shows what the keep-everything node does before its sync
@@ -2802,6 +2884,7 @@ fn settled(mut h: Vec<Step>) -> Vec<Step> {
     h.push(Advance { who: None, ms: 3 * HOUR });
     sync(&mut h);
     sync(&mut h);
+    h.push(WalkSides);
     for t in 0..12 {
         for op in [0, 1, 3, 6, 8, 10, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 27, 28, 29, 32, 35] {
             h.extend((0..3).map(|by| Compact { by, t, op }));
@@ -2823,10 +2906,16 @@ fn setup_grant(played: &Played, to: usize) -> usize {
 
 /// `played`, the history `steps`: when they end with `settled`'s tail (not cut short, as the
 /// exhaustive size's cap cuts it), marked settled from the tail's first commit.
-fn settling(played: Played, steps: &[Step]) -> Played {
+///
+/// A thing with a `required^.0` delta settles nothing: no compaction carries one (spec/commits.md
+/// §2), and the setting in force judges every later delta on its thing (§5 Required retention),
+/// so one dropped while invalid and missing again changes their validity until it comes back.
+fn settling(mut played: Played, steps: &[Step]) -> Played {
     let tail = settled(Vec::new());
     let Some(at) = steps.len().checked_sub(tail.len()).filter(|&at| steps[at..] == tail[..]) else { return played };
     let from = played.steps_at.get(at).copied().unwrap_or(played.packs.len());
+    let required: BTreeSet<String> = played.packs.iter().filter_map(|pk| osis_commit::CommitBlob::decode_stored(&pk.bytes).ok()).flat_map(|b| b.header.aspects.iter().filter(|a| a.ak.as_str() == "required^.0").map(|a| format!("{:?}", a.tid)).collect::<Vec<_>>()).collect();
+    played.settled_last.retain(|k| !required.contains(&k.0));
     Played { settle_from: Some(from), ..played }
 }
 
