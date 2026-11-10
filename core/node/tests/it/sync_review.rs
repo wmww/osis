@@ -1006,3 +1006,77 @@ fn rotation_wrapped_under_epoch_learned_later_is_read_spec_sync_5() {
     net.run();
     assert_eq!(net.read(b, t), Some(s("after")), "a's write {w:?} left it");
 }
+
+// spec/sync.md §2, §5 (a step's claim set is the registrar's word), spec/permissions.md §5.1, §7:
+// two strangers redeem one single-use link, Y first. The sharer holds only X's redemption when it
+// finalizes the link (its frontier leaves Y's out) and rotates K listing X. X, handed Y's earlier
+// redemption directly, judges itself out of K until it holds the finalize, which only K's new step
+// gives it (the target's label, where K's rotation also goes, is out of its reach): it still claims
+// that step as its account, named on K by its own redemption, and so reads the target.
+#[test]
+fn a_node_judging_itself_out_claims_as_an_actor_a_held_write_names_spec_sync_5() {
+    let mut net = Net::new();
+    // host 0: the accounts' homes and the target's label; host 1: K's label
+    let (s0, s1) = (net.add_host(), net.add_host());
+    let home = vec![net.address(s0)];
+    let a = net.node(50, &[s0, s1]);
+    let x = net.node(51, &[s0, s1]);
+    let y = net.node(52, &[s0, s1]);
+    let pa = account(&mut net, a, &home);
+    let px = account(&mut net, x, &home);
+    let py = account(&mut net, y, &home);
+    net.run();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, pa);
+    m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    let (_, acts) = net.sync(a).create_label(&t, home.clone()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: vec![net.address(s1)], peers: Vec::new(), single_use: true };
+    let (link, _, done) = net.engine(a).create_link(&pa, &spec).unwrap();
+    carry(&mut net, a, done);
+    net.run();
+    let mut keys = Vec::new();
+    for n in [x, y] {
+        let l = net.engine(n).hold_key_actor(link.seed.clone()).unwrap();
+        let acts = net.sync(n).follow(l, link.k, link.k_label, link.hosts.clone());
+        net.actions(n, acts);
+        keys.push(l);
+    }
+    net.run();
+    // Y redeems first and stays away; X's redemption reaches K's host while the sharer is away
+    net.set_online(y, false);
+    net.engine(y).redeem(&link, &py, true).unwrap();
+    net.advance(1_000);
+    net.set_online(a, false);
+    let done = net.engine(x).redeem(&link, &px, true).unwrap();
+    net.engine(x).drop_key_actor(&keys[0]);
+    carry(&mut net, x, done);
+    net.run();
+    net.set_online(x, false);
+    // the sharer finalizes the link holding X's redemption only, rotating K
+    net.set_online(a, true);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    let r = net.engine(a).roster(&link.k);
+    assert!(r.contains_key(&px) && !r.contains_key(&py), "the sharer admits X");
+    net.pair(y, x);
+    assert!(!net.engine(x).roster(&link.k).contains_key(&px), "X, holding Y's earlier redemption, judges itself out");
+    net.blocked.insert((x, s0));
+    net.set_online(x, true);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert!(net.engine(x).roster(&link.k).contains_key(&px), "X opened K's new step and holds the finalize");
+    net.blocked.remove(&(x, s0));
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert_eq!(net.engine(x).role_on(&t), Some(Role::Read), "X reads the target");
+}

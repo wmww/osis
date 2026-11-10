@@ -141,15 +141,15 @@ impl SyncEngine {
     }
 
     /// `Try::Rest` of `l`: by claim key at each recorded step, deepest first, then by static entry.
-    /// Claims only with the keys of `g`'s holders held here: a stale label's walk costs its own
-    /// readers' keys per step, not every actor this node holds.
+    /// Claims only as `claimants`: a stale label's walk costs its own readers' keys per step, not
+    /// every actor this node holds.
     fn rest_tries(&mut self, g: &Tid, l: &LabelId) -> Result<Vec<Try>> {
         let Some(gl) = self.group_label(g, l) else { return Ok(Vec::new()) };
         self.stats.claim_lists += 1;
         let mut v = Vec::new();
         let mut steps: Vec<(&Step, &Option<ClaimSet>)> = gl.steps.values().map(|(s, c)| (s, c)).collect();
         steps.sort_by_cached_key(|(s, _)| std::cmp::Reverse(path_to(&gl.steps, s.id()).map_or(0, |p| p.len())));
-        let only = self.engine.hint_actors(g, [])?;
+        let only = self.claimants(g, false)?;
         let xs = self.claim_keys_of(Some(&only));
         for (s, set) in &steps {
             for x in &xs {
@@ -488,33 +488,37 @@ impl SyncEngine {
         self.walk_on(conn, l, step, out)
     }
 
-    /// The actors a label of `g` known only by a hint is for: the applied holders and those the
-    /// inbox blobs naming `g` say hold it (`Engine::hint_actors`), never any other: presenting
-    /// another's key would link its labels at this host (spec/requirements.md, Data a node cannot
-    /// read).
-    fn hint_actors(&mut self, g: &Tid) -> Result<std::collections::BTreeSet<Tid>> {
-        let inbox: Vec<(LabelId, osis_base::BlobId)> = self.state.entries.iter().filter_map(|((x, id), e)| matches!(e.kind, super::state::Kind::Inbox(Some(_))).then_some((*x, *id))).collect();
-        let mut named: Vec<Tid> = Vec::new();
-        for (x, id) in inbox {
-            if let Some((_, things)) = self.inbox_parts(&x, &id)?
-                && things.contains(g)
-                && let Some(o) = self.inbox_opened(&x, &id)?
-            {
-                named.extend(o.named.get(g).into_iter().flatten().copied());
+    /// The actors a claim on `g`'s label goes as (spec/sync.md §2, §5): those this node is or holds
+    /// that a held edge write names on `g`, of any validity and whatever followed, or `g`'s applied
+    /// `secrets.0` boxes (`Engine::hint_actors`); on a hinted walk also those the inbox blobs
+    /// naming `g` say hold it. Not by this node's judgment of `g`'s roster: the step's claim set is
+    /// the registrar's, and what the open brings may change that judgment (a link's redeemer that
+    /// holds a rival's earlier redemption but not the finalize leaving it out). Never any other
+    /// actor: presenting its key would let a host on a step of its choosing recognise it, and link
+    /// its labels there (spec/requirements.md, Data a node cannot read).
+    fn claimants(&mut self, g: &Tid, hinted: bool) -> Result<std::collections::BTreeSet<Tid>> {
+        let mut named: Vec<Tid> = self.engine.core.ix.held.holders_of(g).copied().collect();
+        if hinted {
+            let inbox: Vec<(LabelId, osis_base::BlobId)> = self.state.entries.iter().filter_map(|((x, id), e)| matches!(e.kind, super::state::Kind::Inbox(Some(_))).then_some((*x, *id))).collect();
+            for (x, id) in inbox {
+                if let Some((_, things)) = self.inbox_parts(&x, &id)?
+                    && things.contains(g)
+                    && let Some(o) = self.inbox_opened(&x, &id)?
+                {
+                    named.extend(o.named.get(g).into_iter().flatten().copied());
+                }
             }
         }
         self.engine.hint_actors(g, named)
     }
 
-    /// Continues a walk at `step` (verified): its sync key if held, else claims on it. On a
-    /// hinted label's walk the step is the host's word until the path verifies (`opened`):
-    /// claims there go only with the keys of the actors the hint is for (`Engine::hint_actors`,
-    /// pending sources only the commits of inbox blobs naming the thing),
-    /// so a host handing out a step of its choosing learns no other actor's pseudonym.
+    /// Continues a walk at `step` (verified): its sync key if held, else claims on it as
+    /// `claimants`. On a hinted label's walk the step is the host's word until the path verifies
+    /// (`opened`), so a host handing out a step of its choosing learns no other actor's pseudonym.
     fn walk_on(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let (g, index, hinted) = (lc.group, lc.index, lc.walk.is_some());
-        let only = if hinted { self.hint_actors(&g)? } else { self.engine.hint_actors(&g, [])? };
+        let only = self.claimants(&g, hinted)?;
         let mut front = Vec::new();
         if let Some(e) = self.engine.epochs(&g)
             && let Some(s) = e.read.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s, index)).find(|k| k.verifying_key() == step.keys.sync)
