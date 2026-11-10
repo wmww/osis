@@ -159,6 +159,9 @@ impl SyncEngine {
                 let r = self.state.entries.get(&(l, b)).map(|e| self.rank(&secrets, host, &l, &b, &e.wrap));
                 f.queue.extend(r.map(|r| (r, b)));
             }
+            for x in f.skipped.iter_mut().filter(|x| x.0 == LAST) {
+                x.0 = self.state.entries.get(&(l, x.1)).map_or(LAST, |e| self.rank(&secrets, host, &l, &x.1, &e.wrap));
+            }
         }
         let first_now = !f.first_done && f.queue.first().is_none_or(|x| x.0 != FIRST);
         f.first_done |= first_now;
