@@ -143,7 +143,7 @@ Terms in this section depend on each other; each is defined once, under its bold
   - signing a stamp, step or delete under a label key derived from it.
   - Signing with a delete key (§7), opening a label and reading are not encrypting under.
 - A node MUST NOT **encrypt under** an epoch e of role r of actor A that is **blocked** at it; one that may rotate r (spec/permissions.md §3) rotates first, another waits for a rotation. e is blocked at a node holding its secret when:
-  - e does not cover a departure from A the node knows of, other than the node's own (its account's or its own node's: the departed party is the node itself, which holds e);
+  - e does not cover a departure from A the node knows of, other than the node's own (its account's or its own node's);
   - the node may rotate r, and e has a stale box (Holder actors, below), a box to a holder whose grant on A is keyless (Holder actors), or a box to a holder actor M naming an epoch of M blocked at the node (the box's sealing was encrypting under it).
   - Limit: a node does not judge an epoch whose secret it lacks; it seals a holder actor M at such a keyset whatever departures from M it knows, and a party removed from M opens what it so seals until M's knowing keyset reaches it (Holder actors).
   - Exception: the wrap of a rotation commit itself (§5).

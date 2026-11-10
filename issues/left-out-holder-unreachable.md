@@ -26,8 +26,7 @@ her own departure blocked T's old keyset at her. A departure of the node itself 
 node) now holds back none of its encrypting (spec/crypto.md §4 Encrypting under): the departed party
 is the node, which holds the epoch. Carol then seals T at the newest keyset she holds, T's members
 keep X's new epochs and carry T's next keyset to her, whose box is then stale, and she rotates onto
-it. Tests: osis-engine `own_removal_from_holder_actor_keeps_sealing_it_spec_crypto_4`, osis
-`shared_with_team::*`; model `D0_gone_live` (passes), `D0_gone_live_secret` (counting the own
+it. Tests: osis-engine `own_removal_from_holder_actor_keeps_sealing_it_spec_crypto_4`; model `D0_gone_live` (passes), `D0_gone_live_secret` (counting the own
 departure: fails `CurrentOpens`), `D0_gone` (invariants with d removed too: pass); sim
 `team_reads_member_thing` (the earlier per-chat persona shape: counting the own departure it failed
 about 2% of seeds, among them 32, 67, 77, 151, 253, 296).

@@ -9,6 +9,15 @@ A's box to M names M's old one, and R, not A's rotator, writes G under its first
 opens through A and M. Window: until M's rotator and then A's rotator next sync, then R finds G's
 box to A stale.
 
+The same hole through the node's own account: Carol removes a lost device L from her account C
+(C rotates), while T, a team she only reads, still boxes C at C's old keyset at T's newest epoch she
+holds (T's admin has not yet moved T onto C's new keyset, or T removed C and its new keyset has not
+reached her). Carol's next rotation of X (shared with T) seals T at that epoch: the walk stops at T,
+and C's own departure from T counts nothing (`rotation::others`), so L opens X's new epoch through
+T's box to C (found by reading the code, no test yet). An option below that descends through held
+epochs ("out", "mark") closes it only if the walk also judges a box to an account at a closed
+account epoch (stale) at the account's own nodes, which may rotate it.
+
 ## Model (core/test/tla/rotation/Depth0.tla, constant `Walk`)
 `NoLeakAbove` now covers chains: a writer knowing a removal from any actor below the written one
 (`KClos`), holding every epoch of it and of each actor between (and every re-seal box of the epoch
