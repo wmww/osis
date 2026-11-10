@@ -729,7 +729,7 @@ fn grant_lost_and_regained_with_the_admin_away() {
 
 // spec/sync.md §3, §6: a thing's grant to a group granted and removed in turn with its admins and a reader going away and back: all end alike, a later reader reads it or not by the last write and never learns a seed it should not, and the label goes quiet
 #[test]
-#[ignore = "tier 2: 40 seeds, about 3 minutes"]
+#[ignore = "property: 40 seeds, about 3 minutes"]
 fn grant_and_removal_orders_large() {
     let seeds = osis_base::testenv::Seeds::from_env("OSIS_TIED_START", "OSIS_TIED_SEEDS", osis_base::testenv::large(0..40));
     seeds.announce("grant_and_removal_orders_large");

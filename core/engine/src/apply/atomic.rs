@@ -1075,7 +1075,7 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
     }
     // a wrong state stays wrong, so a later sample still sees it: an aspect only new commits
     // joined is checked when its held commits passed a power of four (O(1) bodies read per
-    // commit; at every commit the check cost about 40% more tier-1 CPU, at powers of two 20%)
+    // commit; at every commit the check cost about 40% more default-test CPU, at powers of two 20%)
     let core = &*tx.core;
     let quarters = |n: usize| if n == 0 { 0 } else { n.ilog2() / 2 + 1 };
     let sampled = |k: &(Tid, Ak)| match fresh.get(k) {

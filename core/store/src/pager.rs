@@ -1139,7 +1139,7 @@ mod tests {
     // spec/commits.md §5: dropping destroys every local copy; notes/local-store.md, Key tree: three levels of 256 cover 16M units. Same shape at arity 16:
     // a rotation rewrites exactly one node per level, whatever the store size.
     #[test]
-    #[ignore = "tier 2"]
+    #[ignore = "by hand"]
     fn shape_reduced_arity() {
         let cfg = StoreConfig { arity: 16, depth: 6, ..StoreConfig::default() };
         let (mut p, b, _r, mut rng) = fresh(cfg);

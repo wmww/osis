@@ -1,6 +1,6 @@
 //! Scale checks of the role timeline (spec/requirements.md Scale): each counts the work an
 //! operation does (`osis_perm::commits_walked`, the timeline's measures) at n and 10n and asserts
-//! the growth the requirement allows. Tier 1, debug.
+//! the growth the requirement allows. Default tests, debug.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;

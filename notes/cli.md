@@ -65,7 +65,7 @@ One JSON document per command; streaming commands print JSON lines. int → numb
 Every non-zero exit prints why on stderr, absent on `get` included (`error: absent: AK of TID`).
 
 ## Tests
-tests/it/syntax.rs (round trips as properties, printed forms, JSON mapping); tests/it/cli.rs (in-process runs on memory and temp-dir stores: commands, exit codes, lock, `write` atomicity, undo, schema forms, streams, the local sharing commands, commands not built yet). Tier 2: tests/it/localhost.rs runs the binary against a real `osis serve` with three store directories (notes/testing.md).
+tests/it/syntax.rs (round trips as properties, printed forms, JSON mapping); tests/it/cli.rs (in-process runs on memory and temp-dir stores: commands, exit codes, lock, `write` atomicity, undo, schema forms, streams, the local sharing commands, commands not built yet). By hand: tests/it/localhost.rs runs the binary against a real `osis serve` with three store directories (notes/testing.md).
 
 ## Not built
 Proxying through an app that holds the store (only `serve` listens); `edit_text` sessions (keystroke editing is a UI concern; `edit` covers scripts); shell completion, REPL, colour, paging; aliases beyond `me`/`node`/`home`; bearer read (`open_link`); `diag --since` (no stored diagnostics log).

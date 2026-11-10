@@ -1,4 +1,4 @@
-//! Large values stream (spec/requirements.md Scale): work counted at n and 10n MiB (tier 1), and a
+//! Large values stream (spec/requirements.md Scale): work counted at n and 10n MiB (default tests), and a
 //! multi-GB value's peak memory by hand: `OSIS_LARGE_MIB=1024 cargo test --release -p osis-label
 //! --test it -- --ignored scale::multi_gb_value_streams --nocapture` (blobs as files under the
 //! target dir).

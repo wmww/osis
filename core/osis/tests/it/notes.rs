@@ -1,5 +1,5 @@
 //! Notes (notes/std.md): a note is `name.0` plus a markdown `body.0`; a notebook is a tag that is first admin of
-//! its notes. Tier 1.
+//! its notes. Default tests.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common::TestWrites as _;

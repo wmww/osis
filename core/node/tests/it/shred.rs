@@ -724,7 +724,7 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
 // node syncs: its body, its header-only blob, the purge request (or the request's own header-only
 // blob with a snapshot listing its delta), a restart anywhere among them. Each ends with the commit
 // applied without its body, the purge named, nothing waiting, nothing of the value recoverable.
-// Tier 1 runs every third case (orders by restart points); tier 2 all.
+// The default test runs every third case (orders by restart points); the property all.
 #[test]
 fn tombstone_alike_spec_commits_5() {
     tombstone_alike(3);
@@ -732,7 +732,7 @@ fn tombstone_alike_spec_commits_5() {
 
 // As above, every order and restart point.
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "property"]
 fn tombstone_alike_in_every_order_exhaustive_spec_commits_5() {
     tombstone_alike(1);
 }

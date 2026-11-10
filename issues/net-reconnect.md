@@ -158,7 +158,7 @@ An `Added` is logged when an entry becomes servable here, row and bytes both hel
 ## Steps
 issues/net-shared-set.md, Steps: this issue is 4, 6, 7. Step 7 (S restored from the record) brings the test "an idle reconnect sends no per-sync-ID message": until then every reconnect reopens S by the shared set.
 
-## Tests (tier 1, over issues/net-tests.md)
+## Tests (default tests, over issues/net-tests.md)
 An idle reconnect sends no per-sync-ID message (counted); the digest of two equal records matches at any size (counted: 32 bytes each way); a store restored so that S differs finds the difference, closes members only one side holds and reopens by the shared set, and a stopped member's `lag` does not make the digests differ; a followed member gets `Lost` after its rotation (its `Applied` is the only message that ends the wait); a rotation that ends no member sends no `Applied` (counted); a `Lost` costs other peers nothing (counted: no additions sent and no test run for any other record); a restarted node resumes; a lost record is a first contact and converges; a rotation while apart rejoins from its lag and refetches only the missed events (counted); a node back after the peer compacted deletions past its cursor converges with the messages of one stream (counted at n and 10n sync IDs: no term in n beyond pages); a first contact sharing n sync IDs joins them in O(1) Pulls (counted); a mesh body crosses once with announcements per peer (counted); a skewed clock changes nothing.
 
 ## Unsure

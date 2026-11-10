@@ -2603,7 +2603,7 @@ struct Size {
     env: bool,
 }
 
-/// Tier 1: a seed of every emphasis, and one of every emphasis capped to 4 commits after the
+/// Default tests: a seed of every emphasis, and one of every emphasis capped to 4 commits after the
 /// setup, checked in every order of every held set; no environment read.
 fn quick() -> Vec<Size> {
     vec![
@@ -2625,7 +2625,7 @@ fn from_env(name: &'static str, full: std::ops::Range<u64>, len: usize, cfg: Cfg
     Size { name, seeds, len, cfg: Cfg { clock, ..cfg }, exhaustive, env: true }
 }
 
-/// `plain`: 80 seeds of 60 steps at full size (`OSIS_FULL=1`), a tenth by default.
+/// `plain`: 80 seeds of 60 steps at large size (`OSIS_FULL=1`), a tenth at small size.
 fn plain() -> Size {
     from_env("plain", 0..80, 60, Cfg { random: 6, subsets: 4, ..ORDERS }, None)
 }
@@ -2719,16 +2719,16 @@ fn held_set_decides() {
     held_set_decides_at(quick());
 }
 
-// The same at plain size (a tenth of full; `OSIS_FULL=1` full).
+// The same at small size (a tenth of large; `OSIS_FULL=1` large).
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "property"]
 fn held_set_decides_plain() {
     held_set_decides_at(vec![plain()]);
 }
 
 // The same over short histories, in every order of every held set.
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "property"]
 fn held_set_decides_exhaustive() {
     held_set_decides_at(vec![exhaustive()]);
 }
@@ -3368,7 +3368,7 @@ fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
 
 // spec/commits.md §5 (Purge), spec/permissions.md §6: held-model (`held.rs`) judges what each node
 // holds alike: a writer's purge of an admin's delta, without the right, drops nothing; an
-// admin's purge of a writer's delta drops it. Also a tier-1 run of the adapter.
+// admin's purge of a writer's delta drops it. Also a default-test run of the adapter.
 #[test]
 fn held_model_agrees_on_purge_rights_spec_commits_5() {
     use Step::*;

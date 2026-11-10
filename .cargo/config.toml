@@ -1,7 +1,7 @@
 # One artifact set per checkout: never pass CARGO_INCREMENTAL, RUSTFLAGS or CARGO_TARGET_DIR per
 # command (notes/testing.md, Build hygiene).
 
-# Test tier 1 defaults (notes/architecture.md §4). An explicit environment value wins.
+# Default-test settings (notes/testing.md). An explicit environment value wins.
 [env]
 PROPTEST_CASES = "32"
 

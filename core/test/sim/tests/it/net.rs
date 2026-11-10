@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Phase B (sync engines and hosts engine to engine): what the gate's sweep (every scenario at 5
-//! seeds) does not check: that a scenario's faults happen, replay exactness, and examples.
+//! Phase B (sync engines and hosts engine to engine): what the sweeps (every scenario at 15 seeds at the
+//! gate, 150 periodic) do not check: that a scenario's faults happen, replay exactness, and examples.
 //! A failure prints its seed and the `osis_sim::replay` call that reproduces it.
 
 use osis_sim::{Report, replay};
@@ -22,7 +22,7 @@ fn two_nodes_host() {
 // spec/sync.md §5 (replication, push only), §6; spec/sync.md §3 (grants by inbox): three
 // accounts share a group through two replicating hosts with host crashes and partitions.
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "by hand"]
 fn three_accounts_two_hosts() {
     let r = ok("three_accounts_two_hosts", 1);
     assert!(r.writes > 10 && r.held_checked > 0 && r.partitions > 0, "{r:?}");

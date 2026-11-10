@@ -1,4 +1,4 @@
-//! Scale checks over the crdt paging: work counted at n and 10n (tier 1).
+//! Scale checks over the crdt paging: work counted at n and 10n (default tests).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_base::{Link, Tid, Ts, Value};

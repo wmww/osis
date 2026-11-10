@@ -413,7 +413,7 @@ fn epochs_model_agrees() {
     epochs_run(300, 0x5eed_0e00);
 }
 
-/// spec/permissions.md §5.5: as above, more samples (tier 2).
+/// spec/permissions.md §5.5: as above, more samples (a property).
 #[test]
 #[ignore]
 fn epochs_model_agrees_large() {

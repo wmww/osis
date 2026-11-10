@@ -1,6 +1,6 @@
 //! Contacts and profiles (notes/std.md): a profile is contact aspects on the account's profile
 //! thing, read by everyone holding its card; a contact of mine links the profile and overrides
-//! it field by field; a contact without a profile is just my data. Tier 1.
+//! it field by field; a contact without a profile is just my data. Default tests.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common::TestWrites as _;

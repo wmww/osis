@@ -312,7 +312,7 @@ fn moves_with_pending_writes_refuse() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6: the same moves finish once the link heals, and no write was lost (tier 2: each heal waits a sync retry, 5 s)
+// spec/sync.md §10, notes/client-port.md §6: the same moves finish once the link heals, and no write was lost (by hand: each heal waits a sync retry, 5 s)
 #[test]
 #[ignore]
 fn moves_with_pending_writes_finish_after_healing() {

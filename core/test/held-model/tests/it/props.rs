@@ -8,7 +8,7 @@ pub fn reads(h: &Held) -> BTreeMap<(ThingId, Aspect), Value> {
     evaluate(h).reads.into_iter().filter_map(|(k, r)| Some((k, r?))).collect()
 }
 
-/// Tier-1 budget; raise locally to hunt (3000 pass).
+/// Default-test budget; raise locally to hunt (3000 pass).
 const SEEDS: u64 = 300;
 const LEN: usize = 24;
 /// Commit IDs of the covers `settle` writes (the generator's are below 1_000_001).

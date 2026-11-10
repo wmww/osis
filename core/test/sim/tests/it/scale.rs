@@ -337,7 +337,7 @@ fn a_burst_of_shares_costs_each_about_once() {
 // spec/sync.md §5 (Deposit): shares past an inbox's budget wait with the one refused, their bodies
 // unsent, and go as it frees, not all at each deposit it takes.
 #[test]
-#[ignore = "tier 2, minutes in debug"]
+#[ignore = "by hand: minutes in debug"]
 fn a_burst_past_the_budget_sends_each_body_about_once() {
     const BURST: usize = 150;
     let (mut w, a, b, p, _) = labels_world(0);

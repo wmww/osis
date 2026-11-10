@@ -1,29 +1,30 @@
 #!/usr/bin/env python3
-"""Compute a branch's reviewer set of checks from what it touched (notes/testing.md, Reviewer set).
+"""The gate's selection (notes/testing.md, The gate): a branch's properties and sim scenarios at small
+size, computed from what it touched. tools/gate.sh runs them in its one hold of the heavy lock.
 
-  tools/test_select.py [--base REV] [--offset N]     print the selection and the command
-  tools/test_select.py --run [--base REV] [--offset N]   build, then run it under tools/heavy
-  tools/test_select.py --paths PATH...               select for these paths, not a diff
+  tools/test_select.py [--base REV | --all] [--offset N]          print the selection and its commands
+  tools/test_select.py --paths PATH...                            select for these paths, not a diff
+  tools/test_select.py --emit [--base REV | --all] [--offset N]   for the gate: `build CMD` and `run CMD` lines
 
-The set: every property test, at plain size, of the crates the paths touch and their dependents
-(the Cargo graph), and every sim scenario if osis-sim is one of those. A dependent is reached
-through normal and build edges; a dev edge selects that one crate and stops, since a dev
-dependency is linked only into that crate's own tests.
+The set: every property test, at small size, of the crates the paths touch and their dependents
+(the Cargo graph), and every sim scenario if osis-sim is one of those; `--all` selects every crate.
+A dependent is reached through normal and build edges; a dev edge selects that one crate and
+stops, since a dev dependency is linked only into that crate's own tests.
 
 A property test is an `#[ignore]` test whose name ends in a size word (SIZE_WORD), before any
 `_spec_*` suffix. Nothing else names one: a new property test is picked up by its name alone.
 
 Offsets: one random value per run (--offset to repeat one) starts every harness seed range and
-sim sweep, so a review samples seeds no earlier review ran.
+sim sweep, so a gate samples seeds no earlier gate ran.
 """
 import json, os, random, re, shlex, subprocess, sys
 
-SIZE_WORD = re.compile(r"_(large|tier2|plain|exhaustive)(_spec_\w*)?$")
+SIZE_WORD = re.compile(r"_(large|plain|exhaustive)(_spec_\w*)?$")
 IGNORE = re.compile(r"^(?!\s*//).*#\[(ignore\b|cfg_attr\(.*\bignore\b)")
 FN = re.compile(r"^(?!\s*//).*?\bfn\s+(\$?\w+)")
 # How far past `#[ignore]` the test's `fn` can be: only other attributes and comments sit between.
 FN_WITHIN = 10
-# Sim seeds at plain size: a tenth of the 150 of a periodic sweep, as for every harness
+# Sim seeds at small size: a tenth of the 150 of a periodic sweep, as for every harness
 # (osis_base::testenv::large).
 SIM_SEEDS = 15
 # Variables that shift a harness's seeds without choosing one: every `_START`, and the two
@@ -168,12 +169,13 @@ def envs(offset):
 
 def main():
     args = sys.argv[1:]
-    run_it = "--run" in args
+    emit = "--emit" in args
+    every = "--all" in args
     base = offset = paths = None
     i = 0
     while i < len(args):
         a = args[i]
-        if a == "--run":
+        if a in ("--emit", "--all"):
             i += 1
         elif a == "--base":
             base = args[i + 1]
@@ -188,20 +190,37 @@ def main():
             sys.exit(__doc__)
     os.chdir(run("git", "rev-parse", "--show-toplevel").strip())
     if paths is None:
-        paths = changed(base)
+        paths = [] if every else changed(base)
     if offset is None:
-        offset = random.randrange(1 << 31)
+        offset = random.randrange(10**12)
 
     root, dirs, users = metadata()
     touched, whole, nothing = classify(paths, dirs)
+    whole = whole or every
     selected = set(dirs) if whole else closure(touched, users)
     props, others, unread = properties(selected, dirs)
     sim = "osis-sim" in selected
 
-    print(f"paths: {len(paths)}")
+    # unlocked builds first, with the same cargo arguments as the runs, so the runs build nothing
+    build, cmds = [], []
+    if props:
+        pkgs, filters = cargo_args(props, others)
+        build.append(["cargo", "test", "--locked", *pkgs, "--tests", "--no-run"])
+        cmds.append(["env", *envs(offset), "cargo", "test", "--locked", "--no-fail-fast", *pkgs, "--tests", "--", *filters])
+    if sim:
+        build.append(["cargo", "build", "--locked", "--bin", "sim-sweep"])
+        cmds.append(["cargo", "run", "--locked", "--bin", "sim-sweep", "--", "--seeds", str(SIM_SEEDS), "--from", str(offset)])
+    if emit:
+        for b in build:
+            print("build " + shlex.join(b))
+        for c in cmds:
+            print("run " + shlex.join(c))
+        return 0
+
+    print(f"paths: {'every crate (--all)' if every else len(paths)}")
     for p, why in sorted(nothing.items()):
         print(f"  selects nothing: {p} ({why})")
-    print(f"crates touched: {', '.join(sorted(touched)) or 'none'}{' (workspace build config: every crate)' if whole else ''}")
+    print(f"crates touched: {', '.join(sorted(touched)) or 'none'}{' (workspace build config: every crate)' if whole and not every else ''}")
     # more than half: the graph says so, and trimming it by hand would hide a real dependent
     note = " (nearly everything: expected for a crate this far down the graph)" if not whole and len(selected) * 2 > len(dirs) else ""
     print(f"crates selected: {len(selected)} of {len(dirs)}{note}: {', '.join(sorted(selected)) or 'none'}")
@@ -212,32 +231,12 @@ def main():
     for u in unread:
         print(f"  not read: {u} (an #[ignore] with no named fn, so not selected: check it by hand)")
     print(f"sim: {'every scenario, ' + str(SIM_SEEDS) + ' seeds from ' + str(offset) if sim else 'none'}")
-
-    cmds = []
-    build = []
-    if props:
-        pkgs, filters = cargo_args(props, others)
-        test = ["cargo", "test", "--no-fail-fast", *pkgs, "--tests", "--", *filters]
-        build.append(["cargo", "test", *pkgs, "--tests", "--no-run"])
-        cmds.append(shlex.join(["env", *envs(offset), *test]))
-    if sim:
-        build.append(["cargo", "build", "--bin", "sim-sweep"])
-        cmds.append(shlex.join(["cargo", "run", "--bin", "sim-sweep", "--", "--seeds", str(SIM_SEEDS), "--from", str(offset)]))
     if not cmds:
         print("nothing to run")
         return 0
-    # every command runs, so a failing test run still reports the sim's result
-    script = "rc=0; " + " ".join(f"{c} || rc=1;" for c in cmds) + " exit $rc"
-    heavy = ["tools/heavy", "sh", "-c", script]
-    print("command:")
-    for b in build:
-        print("  " + shlex.join(b))
-    print("  " + shlex.join(heavy))
-    if run_it:
-        sys.stdout.flush()
-        for b in build:
-            subprocess.run(b, check=True)
-        return subprocess.run(heavy).returncode
+    print("commands (tools/gate.sh builds, then runs these in its hold of the heavy lock):")
+    for c in build + cmds:
+        print("  " + shlex.join(c))
     return 0
 
 

@@ -119,7 +119,7 @@ fn small_cases() {
     }
 }
 
-// spec/wire.md §11.3, spec/sync.md §6: about log16(n/32) rounds; tier 2 at size
+// spec/wire.md §11.3, spec/sync.md §6: about log16(n/32) rounds; by hand at size
 #[test]
 #[ignore]
 fn large_sets_rounds() {
@@ -132,7 +132,7 @@ fn large_sets_rounds() {
 }
 
 // spec/wire.md §11.3, spec/sync.md §6: a million-blob label with 1% difference reconciles in
-// about log16(n/32) round trips (notes/sync-protocol.md); tier 2 scale check, numbers in notes/testing.md
+// about log16(n/32) round trips (notes/sync-protocol.md); by-hand scale check, numbers in notes/testing.md
 // (`cargo test -p osis-proto --lib -- --ignored --nocapture million_blob_rounds`).
 #[test]
 #[ignore]

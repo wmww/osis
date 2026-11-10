@@ -2197,7 +2197,7 @@ fn incremental_equals_from_scratch() {
 }
 
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "property"]
 fn incremental_equals_from_scratch_large() {
     let mut seen = Seen::default();
     for s in sharded(8_000, 0x5eed_0302, incremental) {

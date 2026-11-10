@@ -1,4 +1,4 @@
-//! The driver over QUIC on localhost (tier 2: touches the network).
+//! The driver over QUIC on localhost (by hand: touches the network).
 //! Run: `cargo test -p osis-host --test it -- --ignored quic::`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 

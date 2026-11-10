@@ -17,7 +17,7 @@
 //!   so switching T, T', T reads as T by construction (the implementation must rebuild D).
 //!
 //! `check` runs every property search on one history; `Stats` sums them (`roles-model --
-//! N disputes`, tier 3).
+//! N disputes`, by hand).
 
 use crate::shrink::{shrink, Shrink};
 use crate::Rng;

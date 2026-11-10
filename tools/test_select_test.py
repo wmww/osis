@@ -17,7 +17,7 @@ CRATES = {
     "core/test/sim": ("osis-sim", 'osis-mid = { path = "../../mid" }\n'),
     "core/leaf": ("osis-leaf", ""),
 }
-PROP = '#[test]\n#[ignore = "tier 2"]\nfn {}() {{}}\n'
+PROP = '#[test]\n#[ignore = "property"]\nfn {}() {{}}\n'
 
 
 def write(path, text):
@@ -59,7 +59,7 @@ for path, (name, deps) in CRATES.items():
     write(f"{path}/Cargo.toml", f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n[lib]\npath = "src/lib.rs"\n[dependencies]\n{deps}')
 write("core/base/src/lib.rs", PROP.format("base_prop_large") + '#[test] #[ignore] fn base_inline_large() {}\n#[test]\n#[ignore]\n// fn decoy_large names nothing\nfn base_after_comment_large() {}\n')
 # a size word in the middle, a repro, an example, a networking test: none are properties
-write("core/mid/src/lib.rs", PROP.format("mid_prop_tier2_spec_crdt_4") + PROP.format("quic_large_transfer") + PROP.format("repro_big_large") + "#[test]\nfn mid_quick() {}\n")
+write("core/mid/src/lib.rs", PROP.format("mid_prop_plain_spec_crdt_4") + PROP.format("quic_large_transfer") + PROP.format("repro_big_large") + "#[test]\nfn mid_quick() {}\n")
 write("core/mid/tests/it/main.rs", PROP.format("mid_it_plain") + PROP.format("mid_it_plain_over_quic"))
 write("core/top/src/lib.rs", PROP.format("top_exhaustive"))
 write("core/test/model/src/lib.rs", PROP.format("model_large"))
@@ -80,7 +80,7 @@ t = out("--paths", "notes/a.md")
 check("notes only", t, "selects nothing: notes/a.md", "crates selected: 0 of 6", "nothing to run", absent=["cargo test"])
 
 t = out("--paths", "core/mid/src/lib.rs")
-check("dependents", t, "crates selected: 3 of 6", "osis-mid: mid_it_plain mid_prop_tier2_spec_crdt_4", "osis-top: top_exhaustive", "every scenario, 15 seeds from 7", "tools/heavy", absent=["osis-base:", "quic_large_transfer ", "held-model:", "repro_big_large "])
+check("dependents", t, "crates selected: 3 of 6", "osis-mid: mid_it_plain mid_prop_plain_spec_crdt_4", "osis-top: top_exhaustive", "every scenario, 15 seeds from 7", "cargo test --locked --no-fail-fast", absent=["osis-base:", "quic_large_transfer ", "held-model:", "repro_big_large "])
 check("substring filter", t, "--skip mid_it_plain_over_quic")
 check("env", t, "OSIS_ORDER_START=7", "OSIS_CRDT_SEED=7", absent=["OSIS_ORDER_SEED=", "OSIS_ORDER_SEEDS="])
 
@@ -114,19 +114,19 @@ write("core/top/new.rs", "// new\n")
 t = out()
 check("diff from merge-base", t, "paths: 2", "crates touched: osis-leaf, osis-top", "leaf_large", "top_exhaustive")
 
-# --run: a failing property reaches the exit code, through tools/heavy
-write("tools/heavy", '#!/bin/sh\nexec "$@"\n')
-os.chmod("tools/heavy", 0o755)
-write("core/leaf/src/lib.rs", '#[test]\n#[ignore]\nfn leaf_large() { panic!() }\n')
-r = subprocess.run([sys.executable, TOOL, "--run", "--offset", "7", "--paths", "core/leaf/src/lib.rs"], capture_output=True, text=True)
-if r.returncode == 0:
-    print(f"FAIL --run: a failing test exited 0\n{r.stdout}{r.stderr}")
+# --emit: the gate's `build` and `run` lines, builds first, with the same packages and offset
+lines = out("--emit", "--paths", "core/mid/src/lib.rs").splitlines()
+kinds = [l.split(" ", 1)[0] for l in lines]
+if kinds != ["build", "build", "run", "run"]:
+    print(f"FAIL --emit: line kinds {kinds}\n" + "\n".join(lines))
     fails = 1
-write("core/leaf/src/lib.rs", PROP.format("leaf_large"))
-r = subprocess.run([sys.executable, TOOL, "--run", "--offset", "7", "--paths", "core/leaf/src/lib.rs"], capture_output=True, text=True)
-if r.returncode != 0:
-    print(f"FAIL --run: a passing test exited {r.returncode}\n{r.stdout}{r.stderr}")
-    fails = 1
+check("--emit", "\n".join(lines), "build cargo test --locked -p osis-mid -p osis-top --tests --no-run", "build cargo build --locked --bin sim-sweep",
+      "OSIS_ORDER_START=7 ", "cargo run --locked --bin sim-sweep -- --seeds 15 --from 7", absent=["paths:", "crates selected"])
+check("--emit nothing", out("--emit", "--paths", "notes/a.md"), absent=["build", "run"])
+
+# --all: every crate, whatever the diff
+t = out("--all")
+check("--all", t, "every crate (--all)", "crates selected: 6 of 6", "leaf_large", "model_large")
 
 # closure, on edges in the order that once lost a dependent: y is reached by a dev edge first
 via = {"x": [("y", {"dev"}), ("z", {"normal"})], "z": [("y", {"normal"})], "y": [("w", {"normal"})]}

@@ -1,6 +1,6 @@
 //! HostStore over the redb file backend and a file key root: state survives closing and
-//! reopening the files (spec/sync.md §4). Tier 2 (disk): `cargo test -p osis-host --test it -- --ignored file::`; the batch-write count runs on
-//! the memory backend (tier 1).
+//! reopening the files (spec/sync.md §4). By hand (disk): `cargo test -p osis-host --test it -- --ignored file::`; the batch-write count runs on
+//! the memory backend (default tests).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_base::{LabelId, ManualClock, WallMs};
@@ -63,7 +63,7 @@ fn redb_store_survives_reopen() {
 // hub-sized batch is one store commit whatever the store holds: durable writes (backend commits
 // and key-root writes) for 64 uploads in one batch, 64 deletes in one batch, and a single upload
 // then its delete (each delete batch a shredding commit) are the same at n and 10n entries held.
-// Counted over the memory backend (tier 1).
+// Counted over the memory backend (default tests).
 #[test]
 fn host_batch_writes_do_not_grow_with_entries() {
     use osis_store::{Faults, MemoryBackend, MemoryRoot};

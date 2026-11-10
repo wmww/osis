@@ -157,7 +157,7 @@ fn old_claim_sets_dropped_spec_sync_2() {
 // spec/requirements.md, Scale; spec/data-model.md §6: a real registration for 2100 readers: its
 // claim set, above `CHUNK_THRESHOLD`, stays inline in `label.0` and its role commit applies.
 #[test]
-#[ignore = "tier 2: 2100 holders"]
+#[ignore = "by hand: 2100 holders"]
 fn registration_of_thousands_of_readers() {
     use osis_base::Value;
     use osis_crdt::{Op, PathOp, PathSeg};

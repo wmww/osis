@@ -1,6 +1,6 @@
 //! Calendar events (notes/std.md): wall-clock times with a zone, civil days, a duration end, a
 //! weekly series with a skipped and an overridden occurrence; a calendar is a tag shared like
-//! any other. Tier 1.
+//! any other. Default tests.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common::TestWrites as _;

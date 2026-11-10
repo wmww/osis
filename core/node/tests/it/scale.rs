@@ -232,7 +232,7 @@ fn text_ops(n: usize) -> Vec<(u64, u64, u64)> {
 // A text pages above `PAGE_TARGET` (about 70k chars), so 10n is 700k chars: writing it takes
 // about 11 s in a debug build. The move is left out: issues/text-move-loads-placement.md.
 #[test]
-#[ignore = "tier 2: a 700k-char text takes 11 s to write in debug"]
+#[ignore = "by hand: a 700k-char text takes 11 s to write in debug"]
 fn text_edits_are_flat() {
     let (small, big) = (text_ops(80_000), text_ops(800_000));
     for (i, what) in ["read of 100 chars", "insert", "delete", "move", "edit", "undo of the edit", "read after them"].iter().enumerate() {

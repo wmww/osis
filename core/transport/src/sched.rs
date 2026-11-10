@@ -1,5 +1,5 @@
 //! `Sched`: a single-threaded executor that polls ready tasks in a seeded order and steps a
-//! `Net` when every task is blocked. Same seed, same interleaving: tier-1 tests of drivers and
+//! `Net` when every task is blocked. Same seed, same interleaving: default tests of drivers and
 //! streams run without tokio, threads or sleeps.
 
 use crate::mem::Net;

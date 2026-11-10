@@ -446,7 +446,7 @@ mod tests {
         }
     }
 
-    // spec/sync.md §10: an announcement sent over UDP is heard (tier 2: localhost socket).
+    // spec/sync.md §10: an announcement sent over UDP is heard (by hand: localhost socket).
     #[tokio::test]
     #[ignore]
     async fn announce_over_udp_spec_sync_10() {
@@ -467,7 +467,7 @@ mod tests {
     }
 
     // spec/sync.md §10: two nodes on one machine both bind the announcement port and both hear
-    // a broadcast to it (tier 2: real sockets).
+    // a broadcast to it (by hand: real sockets).
     #[tokio::test]
     #[ignore]
     async fn two_nodes_share_the_port_spec_sync_10() {
@@ -484,10 +484,10 @@ mod tests {
 
     // spec/sync.md §10: an announcement to the all-nodes group goes out every IPv6 link, each
     // send naming its interface (a scope no interface has fails); copies looped back are heard
-    // from that link's address (tier 2: real sockets and interfaces; a machine whose firewall drops
+    // from that link's address (by hand: real sockets and interfaces; a machine whose firewall drops
     // multicast, as the dev VM's, hears none, so hearing is checked only when something comes).
     // The one test that sends on the real network (every real link is its point), to a free port no
-    // node listens on; run it through tools/heavy with the networking tier 2.
+    // node listens on; run it through tools/heavy with the networking check (notes/testing.md, By hand).
     #[tokio::test]
     #[ignore]
     async fn announce_v6_every_interface_spec_sync_10() {
@@ -514,7 +514,7 @@ mod tests {
         assert!(heard.iter().all(|s| scopes.contains(s)), "{heard:?} {scopes:?}");
     }
 
-    // spec/sync.md §10: a network watch starts and polls the routes (tier 2: real sockets).
+    // spec/sync.md §10: a network watch starts and polls the routes (by hand: real sockets).
     #[tokio::test]
     #[ignore]
     async fn net_watch_starts_spec_sync_10() {

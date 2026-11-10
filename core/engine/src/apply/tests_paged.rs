@@ -338,7 +338,7 @@ fn paged_apply_matches_whole_spec_crdt_8() {
 }
 
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "property"]
 fn paged_apply_matches_whole_large_spec_crdt_8() {
     let seeds = osis_base::testenv::Seeds::from_env("OSIS_PAGED_APPLY_START", "OSIS_PAGED_APPLY_SEEDS", osis_base::testenv::large(1..25));
     let replay = |s: u64| format!("OSIS_PAGED_APPLY_START={s} OSIS_PAGED_APPLY_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8");

@@ -593,7 +593,7 @@ fn tally(runs: &[Reached]) {
 }
 
 fn replay(s: u64) -> String {
-    format!("OSIS_ROTATION_START={s} OSIS_ROTATION_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_property::rotation_holds_tier2_spec_crypto_4")
+    format!("OSIS_ROTATION_START={s} OSIS_ROTATION_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_property::rotation_holds_large_spec_crypto_4")
 }
 
 // spec/crypto.md §4, spec/permissions.md §2-§3: no departed holder reads later content, every
@@ -604,12 +604,12 @@ fn rotation_holds_spec_crypto_4() {
     tally(&osis_base::testenv::run_seeds("rotation::tests_property::rotation_holds_spec_crypto_4", &(8..16).collect::<Vec<u64>>(), false, replay, |s| rotation_history(s, s == 10)));
 }
 
-/// Plain size (a tenth of full) or full under `OSIS_FULL=1`; seeds: OSIS_ROTATION_START,
+/// Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds: OSIS_ROTATION_START,
 /// OSIS_ROTATION_SEEDS.
 #[test]
-#[ignore = "tier 2"]
-fn rotation_holds_tier2_spec_crypto_4() {
+#[ignore = "property"]
+fn rotation_holds_large_spec_crypto_4() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_ROTATION_START", "OSIS_ROTATION_SEEDS", osis_base::testenv::large(0..1_000));
-    tally(&s.run("rotation::tests_property::rotation_holds_tier2_spec_crypto_4", replay, |s| rotation_history(s, false)));
+    tally(&s.run("rotation::tests_property::rotation_holds_large_spec_crypto_4", replay, |s| rotation_history(s, false)));
 }
 

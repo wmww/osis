@@ -1,4 +1,4 @@
-//! QUIC transport on localhost (tier 2: touches the network). spec/sync.md §10.
+//! QUIC transport on localhost (by hand: touches the network). spec/sync.md §10.
 //! Run: `cargo test -p osis-transport --test it -- --ignored quic::`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 

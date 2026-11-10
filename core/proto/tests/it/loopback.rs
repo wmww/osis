@@ -681,7 +681,7 @@ fn round_trips_are_constant_in_the_common_case() {
     }
 }
 
-// spec/sync.md §6, spec/wire.md §11.3: N random entries converge; the reconciliation fallback takes about log16(n) round trips (tier 2)
+// spec/sync.md §6, spec/wire.md §11.3: N random entries converge; the reconciliation fallback takes about log16(n) round trips (by hand)
 #[test]
 #[ignore]
 fn loopback_converges_at_size() {

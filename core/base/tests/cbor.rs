@@ -82,21 +82,21 @@ fn check_mutation(v: &Value, ops: &[(u8, usize, u8)]) -> Result<(), TestCaseErro
     Ok(())
 }
 
-/// Slow tier (notes/architecture.md §4): 20000 cases whatever `PROPTEST_CASES` says.
+/// The properties' size (notes/testing.md, When tests run): 20000 cases whatever `PROPTEST_CASES` says.
 fn slow_runner() -> proptest::test_runner::TestRunner {
     proptest::test_runner::TestRunner::new(ProptestConfig { cases: 20_000, ..ProptestConfig::default() })
 }
 
-// §5, slow tier: `ord_is_byte_order` at size.
+// §5, a property: `ord_is_byte_order` at size.
 #[test]
-#[ignore]
+#[ignore = "property"]
 fn ord_is_byte_order_large() {
     slow_runner().run(&(value(), value()), |(a, b)| check_ord(&a, &b)).unwrap();
 }
 
-// §5, slow tier: `mutation` at size.
+// §5, a property: `mutation` at size.
 #[test]
-#[ignore]
+#[ignore = "property"]
 fn mutation_large() {
     let ops = prop::collection::vec((any::<u8>(), any::<usize>(), any::<u8>()), 1..6);
     slow_runner().run(&(value(), ops), |(v, ops)| check_mutation(&v, &ops)).unwrap();

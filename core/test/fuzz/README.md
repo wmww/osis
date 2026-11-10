@@ -1,6 +1,6 @@
 # Fuzzing
 
-cargo-fuzz targets for every parser of bytes that can come from a peer or from disk. Outside the workspace (needs nightly and libFuzzer); nothing in tier 1 depends on it.
+cargo-fuzz targets for every parser of bytes that can come from a peer or from disk. Outside the workspace (needs nightly and libFuzzer); no default test depends on it.
 
 ## Running
 ```

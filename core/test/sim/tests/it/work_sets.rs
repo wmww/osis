@@ -79,7 +79,7 @@ fn compared_runs_ignore_the_random_stream() {
 // (`OSIS_SIM_SEEDS`) from 0 (`OSIS_SIM_FROM`): work sets give the full passes' run. A line to
 // stderr gives the count either way.
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "by hand"]
 fn work_sets_match_full_passes() {
     let seeds = osis_base::testenv::Seeds::from_env("OSIS_SIM_FROM", "OSIS_SIM_SEEDS", 0..20);
     seeds.announce("work_sets_match_full_passes");
@@ -119,7 +119,7 @@ fn work_sets_match_full_passes() {
 // spec/sync.md §6: honest flows with no faults: everything the full passes' marks send to a host
 // goes at the same moment with narrow marks, nothing waits for its label's next resync.
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "by hand"]
 fn honest_flows_wait_for_no_resync() {
     use osis_sim::net::library::honest_flows;
     let seeds = osis_base::testenv::Seeds::from_env("OSIS_SIM_FROM", "OSIS_SIM_SEEDS", 0..2);

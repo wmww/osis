@@ -951,7 +951,7 @@ fn parked_part_goes_at_its_purge_spec_commits_5() {
 
 // spec/commits.md §4, §5: beside a part past its expiry, a part bad by itself or parked and a true one,
 // with a relay's junk on two of the slots: in any order, each true copy delivered again at the end, the
-// node reads alike, whatever it syncs. Tier 1 takes every seventh of the 120 orders; tier 2 all.
+// node reads alike, whatever it syncs. The default test takes every seventh of the 120 orders; the property all.
 #[test]
 fn forged_parts_beside_a_part_past_expiry_alike_spec_commits_4() {
     forged_parts_beside_a_part_past_expiry(7);
@@ -959,7 +959,7 @@ fn forged_parts_beside_a_part_past_expiry_alike_spec_commits_4() {
 
 // As above, in every order.
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "property"]
 fn forged_parts_beside_a_part_past_expiry_alike_in_every_order_exhaustive_spec_commits_4() {
     forged_parts_beside_a_part_past_expiry(1);
 }

@@ -1,7 +1,7 @@
 //! `P2p`: nodes dialed by dialable key (`peer://`, spec/sync.md §10) over UDP sockets: direct
 //! QUIC, relaying by any willing node, hole punching through the relay, switching to a direct
 //! connection by reconnecting. Generic over the sockets (`Udp`, `Sock`): QUIC (`QuicUdp`) and
-//! the in-process NAT model (`nat::MemUdp`), so tier 1 runs the same code through NATs.
+//! the in-process NAT model (`nat::MemUdp`), so the default tests run the same code through NATs.
 //!
 //! - **Listener**: one socket, bound at the URL's socket address, accepting QUIC connections
 //!   with ALPN `osis` (sessions) and, when this transport relays, `osis-relay`. It registers at

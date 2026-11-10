@@ -3,7 +3,7 @@
 //! filter of beacons of what it may share, tests its own beacons against the peer's filter and
 //! offers the hits; a hit opens L only with the tag or J proving it.
 //!
-//! Invariants the design rests on (each a tier-1 test in tests/it/shared.rs):
+//! Invariants the design rests on (each a default test in tests/it/shared.rs):
 //! - A beacon is equal on both sides, so a filter entry only finds a pair; a Hit is keyed by its
 //!   sender's side and the connection (`osis_crypto::kdf::beacon_hit`): reflected to its sender or
 //!   carried to another connection it shows nothing.

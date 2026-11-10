@@ -2072,7 +2072,7 @@ fn random_window_one_capped_host_spec_sync_9() {
     }
 }
 
-/// A tier-2 random-window run: OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START (default 0).
+/// A property random-window run: OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START (default 0).
 fn eph_large(name: &str, single: bool, inflight: bool) {
     eph_seeds().run(name, |seed| eph_replay(name, seed), |seed| random_window_run_on(seed, single, inflight));
 }
@@ -2104,7 +2104,7 @@ fn random_window_converges_spec_sync_6() {
     }
 }
 
-// the same over more seeds (tier 2): OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START
+// the same over more seeds (a property): OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START
 #[test]
 #[ignore]
 fn random_window_converges_large() {
@@ -2120,7 +2120,7 @@ fn random_window_inflight_spec_sync_9() {
     }
 }
 
-// the same over more seeds (tier 2): OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START
+// the same over more seeds (a property): OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START
 #[test]
 #[ignore]
 fn random_window_inflight_large() {
@@ -2350,7 +2350,7 @@ fn random_churn_converges_spec_sync_9() {
     }
 }
 
-// the same over more seeds (tier 2): OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START
+// the same over more seeds (a property): OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START
 #[test]
 #[ignore]
 fn random_churn_converges_large() {
@@ -2853,14 +2853,14 @@ fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
 // spec/sync.md §9 (an expiring commit superseded by its author's later writes is dropped and its
 // author deletes it, coalescing while an upload is in flight), §5 (hosts rate-limit deletes and
 // cap ephemeral bytes per label): 4 authors at 30 cursor moves a second, scaled to a 1 s window
-// (10 authors took 4.5-12 s: tier 2 below)
+// (10 authors took 4.5-12 s: by hand below)
 #[test]
 fn many_authors_under_host_rates_spec_sync_9() {
     let (up, del, peak, cap) = many_authors_run(4, 1);
     eprintln!("4 authors, 1 s: {up} uploads, {del} deletes, peak {peak} of {cap} ephemeral bytes");
 }
 
-// tier 2: 10 authors for 1 s, then for a whole simulated minute at the default policy
+// by hand: 10 authors for 1 s, then for a whole simulated minute at the default policy
 #[test]
 #[ignore]
 fn many_authors_under_host_rates_by_hand() {

@@ -638,7 +638,7 @@ async fn session<C: Connection>(c: &C) -> Result<(), Error> {
     Ok(())
 }
 
-// spec/sync.md §10 (tier 2, loopback QUIC): a listener registers at a relaying node over ALPN
+// spec/sync.md §10 (by hand, loopback QUIC): a listener registers at a relaying node over ALPN
 // `osis-relay` and learns its observed address; the relay wire runs over real QUIC; a dial
 // through the relay reaches the listener (directly once punched: no NAT on loopback) with the
 // key pinned.
@@ -707,7 +707,7 @@ fn quic_relay_loopback_spec_sync_10() {
     });
 }
 
-// spec/sync.md §10 (registration streams, tier 2: loopback QUIC): relayed sessions whose bytes
+// spec/sync.md §10 (registration streams, by hand: loopback QUIC): relayed sessions whose bytes
 // the target never reads hold only their own stream's window of its registration connection:
 // with more unread in them than a `quic://` connection window (4 MiB), forwarding to the target
 // goes on and a new dial still connects.
@@ -919,7 +919,7 @@ fn allow_rechecked_spec_sync_10() {
     assert!(r.relayed_keys().is_empty());
 }
 
-// spec/sync.md §10 (tier 2, loopback QUIC): a listener bound at `[::]` (as nodes bind) registers
+// spec/sync.md §10 (by hand, loopback QUIC): a listener bound at `[::]` (as nodes bind) registers
 // at an IPv6 relay and at an IPv4 one from its one dual-stack socket, and a dial through either
 // relay reaches it.
 #[test]
@@ -984,7 +984,7 @@ fn quic_relay_dual_stack_spec_sync_10() {
     });
 }
 
-// spec/sync.md §10 (dialing, tier 2: loopback QUIC): a dial reaches each item from a socket of
+// spec/sync.md §10 (dialing, by hand: loopback QUIC): a dial reaches each item from a socket of
 // its address family: with an IPv4 item first (a node of another key) the IPv6 item still
 // connects.
 #[test]

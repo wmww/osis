@@ -244,7 +244,7 @@ fn types(k: u64) -> Vec<Ty> {
     }
 }
 
-/// Mutants per input: 6 in tier 1, 30 with `OSIS_SLOW`.
+/// Mutants per input: 6 in the default tests, 30 with `OSIS_SLOW`.
 fn per() -> usize {
     if std::env::var_os("OSIS_SLOW").is_some() { 30 } else { 6 }
 }
@@ -285,9 +285,9 @@ fn stream_differential_covers_paging_spec_8() {
     assert!(n.0 > 30 && n.1 > 100 && n.2 > 8 && n.3 > 8, "accepted, rejected, paged inputs, streamed in pieces {n:?}");
 }
 
-/// `stream_check_matches_whole_spec_8` at size (tier 2).
+/// `stream_check_matches_whole_spec_8` at size (a property).
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "property"]
 fn stream_check_matches_whole_large_spec_8() {
     for seed in 0..600u64 {
         if let Err(e) = case(seed) {
@@ -584,13 +584,13 @@ fn big_map() -> (Fragment, DeltaCtx, osis_base::Value) {
     (d, DeltaCtx { ts: crate::testutil::ts(1 << 20), own: node, range: w.range(), kind: crate::DeltaKind::Writer }, map)
 }
 
-/// Memory per decode step of a 10^5-key map, as a writer's delta and as a snapshot (tier 2,
+/// Memory per decode step of a 10^5-key map, as a writer's delta and as a snapshot (by hand,
 /// run alone): the whole decode holds the whole map; the stream holds one page; and of
 /// encoding the delta: the whole encoder (`codec::oracle`) holds every element's value and
 /// bytes and the collecting pass's tree, the streaming one a page (`MEM` lines, with
 /// `--nocapture`; peaks above the delta itself).
 #[test]
-#[ignore = "tier 2: memory, run alone"]
+#[ignore = "by hand: memory, run alone"]
 fn stream_memory_big_map() {
     if let Ok(arg) = std::env::var("OSIS_STREAM_PHASE") {
         return stream_memory_child(&arg);

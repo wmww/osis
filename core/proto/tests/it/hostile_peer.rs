@@ -80,7 +80,7 @@ fn stopped_path_not_followed_spec_wire_11_2() {
 // range with full difference lists is abandoned once the differences pass
 // `MAX_RECONCILE_IDS`, long before `MAX_RECONCILE_MESSAGES`
 #[test]
-#[ignore = "tier 2: about 2M IDs"]
+#[ignore = "by hand: about 2M IDs"]
 fn reconcile_differences_capped_spec_wire_11_3() {
     let mut c = ready();
     let out = c.handle(T0, ClientInput::Command(Command::Reconcile { label: L, ids: vec![] }));

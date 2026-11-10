@@ -3,4 +3,4 @@
 > Priority: normal
 > Tags: ephemeral, engine, tests
 
-`apply::atomic::check_rebuilt` panics: the rebuild holds an entry (a `v14` write under a session dot, its reset stamp by another session) the state does not. Replay: `OSIS_EPH_START=103 OSIS_EPH_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact ephemeral::random_churn_converges_large` (under a second). The tier-1 run (4 seeds) and the plain-size range pass.
+`apply::atomic::check_rebuilt` panics: the rebuild holds an entry (a `v14` write under a session dot, its reset stamp by another session) the state does not. Replay: `OSIS_EPH_START=103 OSIS_EPH_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact ephemeral::random_churn_converges_large` (under a second). The default test (4 seeds) and the small-size range pass.

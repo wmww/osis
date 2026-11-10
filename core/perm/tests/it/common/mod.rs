@@ -299,7 +299,7 @@ pub fn seeded(seed: u64) -> u64 {
     osis_base::testenv::u64_var("OSIS_PERM_SEED").map_or(seed, |v| seed ^ v)
 }
 
-/// Tier-2 random runs are split into this many shards, each with its own seed (`shard_seed`);
+/// Property runs are split into this many shards, each with its own seed (`shard_seed`);
 /// fixed, so a failure's seed is the same on every machine.
 pub const SHARDS: u64 = 16;
 

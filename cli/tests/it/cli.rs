@@ -1,4 +1,4 @@
-//! The `osis` binary run in-process (notes/cli.md Tests, tier 1; one test spawns `serve`): commands over memory and
+//! The `osis` binary run in-process (notes/cli.md Tests, default tests; one test spawns `serve`): commands over memory and
 //! temp-dir stores, exit codes per error category, `--json`, `write` scripts, named
 //! keys with a schema, the command table's coverage of the API. No network, no sleeps.
 //! spec: none (client surface: notes/cli.md).

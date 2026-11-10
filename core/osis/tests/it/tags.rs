@@ -1,5 +1,5 @@
 //! Tags (notes/tags.md): sharing a tag per item through one roster, sub-tags, only what you may
-//! share, things under a tag. Tier 1 (the slower cases tier 2).
+//! share, things under a tag. Default tests (the slower cases by hand).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common::TestWrites as _;
@@ -160,7 +160,7 @@ fn sub_tags_chain_rosters_and_only_what_you_may_share() {
 // things under a tag): a reader reads and cannot write; a writer adds a card under the tag; a demoted
 // writer writes no more and what it wrote stays.
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "by hand"]
 fn tag_owned_cards_reader_writer_lowered() {
     let mut w = World::new();
     let host = w.add_host();
@@ -198,7 +198,7 @@ fn tag_owned_cards_reader_writer_lowered() {
 // spec/permissions.md §2 (invite grants: up to the invite role): a `may_grant` holder grants the tag
 // on, not above its `may_grant` role.
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "by hand"]
 fn may_grant_holder_shares_on() {
     let mut w = World::new();
     let host = w.add_host();

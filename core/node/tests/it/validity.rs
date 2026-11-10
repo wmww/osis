@@ -1217,7 +1217,7 @@ fn record_chain_depth_edge_chain_spec_perm_1() {
 // first admin of thousands of things that are first admins of more (more than any walk-size cap): its write on C
 // applies (the chain search goes backward from C, never through the things below n0).
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "by hand"]
 fn chain_found_past_owned_flood_spec_perm_4() {
     let mut lp = net(2, 77);
     lp.sync_all().unwrap();
@@ -1336,11 +1336,11 @@ fn regrant_over_dropped_entry_spec_perm_2() {
 // entry, chars after B's); C, who never saw B's writes, revokes B. A's un-merge (a rebuild per
 // flipped aspect) equals a fresh node given everything with B's writes last, before and after
 // a restart, reads by
-// range included; nothing B wrote reads. Tier 2 (about 7 s: a paged text's join per element under
-// the rebuild check); the engine's `tests_paged` un-merge paged collections in tier 1.
+// range included; nothing B wrote reads. A property, not a default test (about 7 s: a paged text's join per
+// element under the rebuild check); the engine's `tests_paged` un-merge paged collections in the default tests.
 #[test]
-#[ignore = "tier 2"]
-fn unmerge_paged_matches_fresh_tier2_spec_crdt_4_6() {
+#[ignore = "property"]
+fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
     use osis_crdt::{Op, PathOp, PathSeg};
     {
         // each aspect's state past `PAGE_TARGET`, so it pages

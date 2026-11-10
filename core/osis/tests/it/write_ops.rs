@@ -267,7 +267,7 @@ fn state(wd: &World, things: &[Tid]) -> Vec<String> {
     out
 }
 
-/// Cases in tier 1 (`case` seeds 0..CASES): about 1 s per 32; 64 includes a write after a
+/// Cases in the default tests (`case` seeds 0..CASES): about 1 s per 32; 64 includes a write after a
 /// `delete` of the same thing (seed 48), which fails when `commit` reorders path ops.
 const CASES: u64 = 64;
 

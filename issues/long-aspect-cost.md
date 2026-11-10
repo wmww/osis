@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: node, permissions, performance
 
-Counted in tier 1: osis-node `scale::long_aspect_writes_are_flat` (a write and its arrival flat, a writer's removal linear), `scale::repro_purge_flip_rebuilds_once` (issues/purge-flip-rebuilds-per-request.md). The numbers below are release measurements at 10^4..10^6 messages.
+Counted in the default tests: osis-node `scale::long_aspect_writes_are_flat` (a write and its arrival flat, a writer's removal linear), `scale::repro_purge_flip_rebuilds_once` (issues/purge-flip-rebuilds-per-request.md). The numbers below are release measurements at 10^4..10^6 messages.
 
 In order of damage:
 

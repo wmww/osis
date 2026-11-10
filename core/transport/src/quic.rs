@@ -677,7 +677,7 @@ impl crate::p2p::Sock for QuicSock {
 
 #[cfg(test)]
 mod tests {
-    //! Handshake failure modes (tier 2: localhost sockets). spec/sync.md §10.
+    //! Handshake failure modes (by hand: localhost sockets). spec/sync.md §10.
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use crate::{Listener, StaticSecret, Transport};

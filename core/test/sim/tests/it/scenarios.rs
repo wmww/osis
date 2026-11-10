@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Phase A: what the gate's sweep (every scenario at 5 seeds) does not check: that a scenario's
-//! faults happen, and examples; the sweep here is tier 3 (`#[ignore]`, or `sim-sweep`).
+//! Phase A: what the sweeps (`sim-sweep`: every scenario at 15 seeds at the gate, 150 periodic) do
+//! not check: that a scenario's faults happen, and examples; slower ones by hand (`#[ignore]`).
 //! A failure prints its seed and the `osis_sim::replay` call that reproduces it.
 
 use osis_base::{CommitId, Role, Value};
@@ -30,7 +30,7 @@ fn three_nodes_random_delivery() {
 // durable write recovers, the HLC and counters continue without reuse, nodes converge. Also
 // checks seed replay: the same seed gives the same run.
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "by hand"]
 fn crash_and_restart() {
     let r = ok("crash_restart", 1);
     assert!(r.crashes > 0 && r.restarts > 0, "{r:?}");

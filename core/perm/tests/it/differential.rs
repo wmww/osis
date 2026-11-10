@@ -116,7 +116,7 @@ fn joint_model_agrees() {
     joint_run(300, 0x5eed_0001);
 }
 
-/// spec/permissions.md §5.1: as above, more samples (tier 2).
+/// spec/permissions.md §5.1: as above, more samples (a property).
 #[test]
 #[ignore]
 fn joint_model_agrees_large() {
@@ -285,7 +285,7 @@ fn edges_model_agrees() {
     edges_run(300, 0x5eed_0003);
 }
 
-/// spec/permissions.md §2, §5.1, §7: as above, more samples (tier 2).
+/// spec/permissions.md §2, §5.1, §7: as above, more samples (a property).
 #[test]
 #[ignore]
 fn edges_model_agrees_large() {
@@ -482,7 +482,7 @@ fn trust_model_agrees() {
     trust_run(300, 0x5eed_0005);
 }
 
-/// spec/permissions.md §5.1 Trust: as above, more samples (tier 2).
+/// spec/permissions.md §5.1 Trust: as above, more samples (a property).
 #[test]
 #[ignore]
 fn trust_model_agrees_large() {
@@ -581,7 +581,7 @@ fn addenda_model_agrees() {
     addenda_run(400, 0x5eed_0004);
 }
 
-/// spec/permissions.md §5.2: as above, more samples (tier 2).
+/// spec/permissions.md §5.2: as above, more samples (a property).
 #[test]
 #[ignore]
 fn addenda_model_agrees_large() {

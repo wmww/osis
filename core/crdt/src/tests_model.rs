@@ -19,26 +19,26 @@ use crdt_model::state::{Content, Frag as MFrag};
 use crdt_model::wire::Ctx;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// How much the differential runs (notes/test-design.md): `Quick` in tier 1, `Plain` for
-/// reviewers, `Full` before a release. Only the seed count differs, so any seed replays alone at
+/// How much the differential runs (notes/testing.md, Sizes): `Quick` in the default tests,
+/// `Small` at the gate, `Large` in periodic runs. Only the seed count differs, so any seed replays alone at
 /// any size.
 #[derive(Clone, Copy, Debug)]
 enum Size {
     Quick,
-    Plain,
-    Full,
+    Small,
+    Large,
 }
 
 impl Size {
-    /// `Full` under `OSIS_FULL=1`, else `Plain`.
-    fn tier2() -> Size {
-        if osis_base::testenv::u64_var("OSIS_FULL") == Some(1) { Size::Full } else { Size::Plain }
+    /// `Large` under `OSIS_FULL=1`, else `Small`.
+    fn from_env() -> Size {
+        if osis_base::testenv::u64_var("OSIS_FULL") == Some(1) { Size::Large } else { Size::Small }
     }
     fn seeds(self) -> std::ops::Range<u64> {
         match self {
             Size::Quick => 0..100,
-            Size::Plain => 0..1000,
-            Size::Full => 0..10_000,
+            Size::Small => 0..1000,
+            Size::Large => 0..10_000,
         }
     }
 }
@@ -571,16 +571,16 @@ fn check(k: u64) -> (Mode, BTreeSet<&'static str>) {
 fn differential(size: Size) {
     let replay = |k: u64| {
         let env = std::env::var("OSIS_CRDT_SEED").map(|v| format!(" OSIS_CRDT_SEED={v}")).unwrap_or_default();
-        format!("OSIS_CRDT_START={k} OSIS_CRDT_SEEDS=1{env} cargo test -p osis-crdt --lib -- --ignored --exact tests_model::crdt_equals_model_tier2")
+        format!("OSIS_CRDT_START={k} OSIS_CRDT_SEEDS=1{env} cargo test -p osis-crdt --lib -- --ignored --exact tests_model::crdt_equals_model_large")
     };
     let name = format!("crdt_equals_model ({size:?})");
-    // only the tier-2 sizes read a range from the environment
+    // only the property sizes read a range from the environment
     let (range, out) = match size {
         Size::Quick => {
             let seeds: Vec<u64> = size.seeds().collect();
             (size.seeds(), osis_base::testenv::run_seeds(&name, &seeds, false, replay, check))
         }
-        Size::Plain | Size::Full => {
+        Size::Small | Size::Large => {
             let seeds = osis_base::testenv::Seeds::from_env("OSIS_CRDT_START", "OSIS_CRDT_SEEDS", size.seeds());
             (seeds.range.clone(), seeds.run(&name, replay, check))
         }
@@ -602,12 +602,12 @@ fn crdt_equals_model() {
     differential(Size::Quick);
 }
 
-/// Tier 2: `Plain`, or `Full` with `OSIS_FULL=1`; `OSIS_CRDT_START`/`OSIS_CRDT_SEEDS` pick the
+/// `Small`, or `Large` with `OSIS_FULL=1`; `OSIS_CRDT_START`/`OSIS_CRDT_SEEDS` pick the
 /// seeds (one seed replays a failure at any size).
 #[test]
 #[ignore]
-fn crdt_equals_model_tier2() {
-    differential(Size::tier2());
+fn crdt_equals_model_large() {
+    differential(Size::from_env());
 }
 
 /// A map dot whose records' top-2 position writes push a text element's creation out of `pos` in

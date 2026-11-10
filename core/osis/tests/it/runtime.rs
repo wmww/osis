@@ -1,7 +1,7 @@
 //! The background runtime (notes/api.md Design rules: async only where another node is waited
 //! on; sync runs on the handle's tokio runtime): two nodes on `Runtime::Tokio` reach a
 //! third that serves (one on the app's runtime, one on `Runtime::Own`) over in-process sessions
-//! (tier 1, a guard timeout against a hang) and over localhost QUIC (tier 2, ignored).
+//! (default tests, a guard timeout against a hang) and over localhost QUIC (by hand, ignored).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common::TestWrites as _;
@@ -168,7 +168,7 @@ async fn runtime_peers_in_process_spec_sync_5() {
     round_trip(Some(net.endpoint("s")), "mem://s", Some(net.endpoint("a")), Some(net.endpoint("b")), Some(p2p)).await;
 }
 
-// spec/sync.md §10: the same over localhost QUIC (tier 2: touches the network).
+// spec/sync.md §10: the same over localhost QUIC (by hand: touches the network).
 // Run: `cargo test -p osis --test it -- --ignored runtime::`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
@@ -199,7 +199,7 @@ async fn redeem_in_process_spec_permissions_7() {
     redeem_over(Some(net.endpoint("s")), "mem://s", Some(net.endpoint("a")), Some(net.endpoint("b"))).await;
 }
 
-// spec/permissions.md §7, spec/sync.md §10: the same over localhost QUIC (tier 2).
+// spec/permissions.md §7, spec/sync.md §10: the same over localhost QUIC (by hand).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn redeem_quic_localhost_spec_permissions_7() {
@@ -208,9 +208,9 @@ async fn redeem_quic_localhost_spec_permissions_7() {
 
 // notes/api.md Text editing sessions, spec/requirements.md (Generality: one commit per editing
 // pause): with a runtime, a session commits after `idle_commit` without edits, with no further
-// edit or call. Tier 2: it waits on a real 20 ms timer.
+// edit or call. By hand: it waits on a real 20 ms timer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "tier 2"]
+#[ignore = "by hand"]
 async fn text_idle_commit_api_text_sessions() {
     let net = osis_transport::Net::new(4);
     let mut c = cfg(1, vec![], Some(net.endpoint("a")));
@@ -697,10 +697,10 @@ fn rand_suffix() -> u64 {
 
 // notes/api.md Handle and sync: closing a node on the app's runtime (`Runtime::Tokio`)
 // and then shutting that runtime down must not let the driver poll a timer of the shut-down
-// runtime. spec: none (an API property). Tier 2: a race; with `close` not waiting for the
+// runtime. spec: none (an API property). By hand: a race; with `close` not waiting for the
 // driver it panics in about a third of runs at 40 rounds per thread, none at 10.
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "by hand"]
 fn tokio_runtime_close_then_shutdown_no_timer_panic() {
     count_shutdown_panics();
     let net = osis_transport::Net::new(11);

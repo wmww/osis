@@ -60,7 +60,7 @@ pub struct FileDevice {
 }
 
 impl FileDevice {
-    /// A redb file and a file root in a fresh temp directory (tier-1 disk rule: own temp dir only).
+    /// A redb file and a file root in a fresh temp directory (default-test disk rule: own temp dir only).
     pub fn new(name: &str) -> FileDevice {
         let dir = std::env::temp_dir().join(format!("osis-store-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

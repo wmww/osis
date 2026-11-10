@@ -58,9 +58,9 @@ pub struct Seeds {
     vars: String,
 }
 
-/// The per-branch share of a `_large` test's full size (notes/testing.md, Tiers): a tenth, at
-/// least 1; the full size under `OSIS_FULL=1` (periodic checks). Breadth belongs to periodic runs:
-/// per-branch runs at full size found few bugs for their cost (notes/testing.md, What finds bugs).
+/// A property's small size, the gate's (notes/testing.md, Sizes): a tenth of its large size, at
+/// least 1; the large size under `OSIS_FULL=1` (periodic runs). Breadth belongs to periodic runs:
+/// per-branch runs at large size found few bugs for their cost (notes/testing.md, What finds bugs).
 pub fn large_n(full: u64) -> u64 {
     if u64_var("OSIS_FULL") == Some(1) { full } else { (full / 10).max(1) }
 }

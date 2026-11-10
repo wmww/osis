@@ -312,7 +312,7 @@ fn write_copied_across_records_rejected_spec_3_3() {
     assert_eq!(both(&delta(vec![record("a"), record("b")])), (false, false), "the write in two records of the dot");
 }
 
-/// Mutations per commit of a differential history: 8 in tier 1, 40 with `OSIS_SLOW` (about
+/// Mutations per commit of a differential history: 8 in the default tests, 40 with `OSIS_SLOW` (about
 /// 1 s per case in debug at 40). The case count follows `PROPTEST_CASES`.
 fn per() -> usize {
     if std::env::var_os("OSIS_SLOW").is_some() { 40 } else { 8 }

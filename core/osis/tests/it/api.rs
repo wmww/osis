@@ -942,7 +942,7 @@ fn values_past_limits_error_spec_data_model() {
 // spec/data-model.md §5; notes/api.md Errors: as above at an 8 MiB string and a 200k-entry map
 // (over 20 s in debug).
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "by hand"]
 fn values_past_limits_huge_spec_data_model() {
     values_past_limits(8 << 20, 200_000);
 }

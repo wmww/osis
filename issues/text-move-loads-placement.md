@@ -3,4 +3,4 @@
 > Priority: low
 > Tags: engine, performance
 
-A move is O(text) in placement blocks loaded, whether the target is 50 chars away or far: spec/requirements.md Scale wants O(change). Inserts, deletes, edits, undos and reads by index stay flat (`scale::text_edits_are_flat`, tier 2). Start from the `PlaceMisses` the move's `dry_follow` reports per prefetch round.
+A move is O(text) in placement blocks loaded, whether the target is 50 chars away or far: spec/requirements.md Scale wants O(change). Inserts, deletes, edits, undos and reads by index stay flat (`scale::text_edits_are_flat`, by hand). Start from the `PlaceMisses` the move's `dry_follow` reports per prefetch round.

@@ -1,6 +1,6 @@
 //! Op scripts on one sequence position replayed against the reference model (core/test/crdt-model)
 //! and the differentials of the sequence tests (spec/crdt.md §3.3, §4.5, §4.6, §5.7, §6, §8): the
-//! `seq_ops` fuzz target (core/test/fuzz/fuzz_targets/seq_ops.rs) and a tier-1 run of random
+//! `seq_ops` fuzz target (core/test/fuzz/fuzz_targets/seq_ops.rs) and a default-test run of random
 //! scripts. Built for tests and fuzzing only.
 //!
 //! Checked on every step: a writer's delta decodes to itself and re-encodes to the same bytes;
@@ -154,7 +154,7 @@ pub fn replay(s: &Script) -> Stats {
     w.stats
 }
 
-/// A random script (tier 1, and the shape the fuzz target's inputs take).
+/// A random script (default tests, and the shape the fuzz target's inputs take).
 pub fn random_script(r: &mut Rng, steps: usize) -> Script {
     let b = |r: &mut Rng| r.below(256) as u8;
     let w = |r: &mut Rng| r.below(1 << 16) as u16;
