@@ -98,8 +98,9 @@ pub(crate) fn blocked_epoch(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &os
         }
         // sealing at a keyset whose epoch, or one it boxes, names a superseded keyset hands the
         // new secret to what that keyset's departed party opens; the box and keysets are state,
-        // so judged without the epoch's secret
-        if walk == Walk::Seal && members::stale_at(tx, &x, r, &k)? {
+        // so judged without the epoch's secret; an account boxes only its key actors, which have
+        // no keysets to go stale (its `secrets.0` is not read for it)
+        if walk == Walk::Seal && !tx.core.is_account(&x) && members::stale_at(tx, &x, r, &k)? {
             return Ok(true);
         }
         if !tx.core.epochs(&x).is_some_and(|ep| ep.role(r).is_established(&k) && ep.role(r).secret(&k).is_some()) {
