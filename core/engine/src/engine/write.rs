@@ -879,8 +879,11 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         return Ok(None);
     }
     // a request is placed under its thing's labels by a delta on the thing (spec/commits.md §5
-    // Purge): in a commit that expires, one of its own writes there, which may write nothing
-    if let Some(p) = plan.purge.iter().find(|p| !deltas.iter().any(|d| d.tid == *p.tid())) {
+    // Purge): in a commit that expires, one of its own writes there (`place_requests`), which may
+    // write nothing
+    if plan.expires.is_some()
+        && let Some(p) = plan.purge.iter().find(|p| !deltas.iter().any(|d| d.tid == *p.tid()))
+    {
         return Err(Error::Clash(format!("a purge goes under a write of its thing, and this commit writes nothing on {}. Write the purge as a commit of its own", p.tid())));
     }
     let id = build_and_apply(tx, plan, deltas)?;

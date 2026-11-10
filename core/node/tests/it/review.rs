@@ -128,11 +128,12 @@ fn purge_drops_snapshots_spec_commits_5() {
     lp.peers[0].commit(m).unwrap();
     assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
     assert!(!lp.peers[0].engine.body_not_dropped(&snap, &t, &ak("t:reg.0")));
-    // a purge may carry expires, reaching only deltas expiring no later (spec/commits.md §5)
+    // a purge may carry expires, reaching only deltas expiring no later (spec/commits.md §5): a
+    // writer refuses one naming a delta beyond it
     let mut m = Mutation::new();
     m.set(t, &BRIEF, &s("x")).unwrap();
     m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
-    assert!(lp.peers[0].commit(m).is_ok());
+    assert!(matches!(lp.peers[0].commit(m), Err(osis_node::Error::Clash(_))));
 }
 
 // spec/commits.md §5: a purge drops every snapshot body carrying the purged values whatever the

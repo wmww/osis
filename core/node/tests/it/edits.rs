@@ -410,7 +410,10 @@ fn an_expiring_request_reaches_only_earlier_expiries_spec_commits_5() {
         m.purge(named(d, c));
     }
     m.expires_all(WallMs(t + 2 * HOUR));
+    // a writer refuses a request naming what it would not reach: this one is written anyway
+    lp.peers[0].engine.core.skip_writer_rules = true;
     let rq = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.peers[0].engine.core.skip_writer_rules = false;
     lp.sync_all().unwrap();
     let got: BTreeMap<_, _> = list(&mut lp, 1, d).into_iter().map(|x| (x.0, x.2)).collect();
     assert_eq!(got[&permanent], body("kept"), "no expiry: out of reach");
