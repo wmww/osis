@@ -483,6 +483,7 @@ fn an_account_proved_at_an_open_epoch_gets_a_shared_set_spec_sync_10() {
     let (a, _) = crate::net_judgment::account_node(&mut net, 1, host);
     let (s, account) = crate::net_judgment::account_node(&mut net, 3, host);
     let g = net.group_at(a, &[], vec![]);
+    // bare: the account's keys are not held here; the roster entry alone is judged
     set_edge(net.engine(a), g, account, Role::Read);
     assert_eq!(net.engine(a).core.judge([account]).of(&g), osis_node::sync::credentials::Judgment::Holder, "the account holds g here");
     let mut p = dial_as(&mut net, s, a, [7; 32]);
