@@ -1,4 +1,4 @@
-//! osis-bench: a dependency-free bench harness (benches/, `cargo bench --workspace`) and the
+//! osis-bench: a dependency-free bench harness (benches/, `cargo bench`) and the
 //! size budgets (tests/it/budgets.rs, tier 2). Numbers are tracked by the nightly workflow, never
 //! gated; budgets are. Conventions: notes/testing.md.
 //! Layer 9 (notes/architecture.md). Notes: notes/testing.md.

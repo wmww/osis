@@ -153,6 +153,9 @@ else
 fi
 step sh -c 'for f in schema/*.osis; do printf "%s: " "$f"; cargo run --locked --quiet --bin osis -- schema check "$f" || exit 1; done'
 step cargo deny check
+# duplicates in core's graph alone: deny.toml's GUI skip-trees would hide a core duplicate that
+# has one copy in the GUI stack (their roots are absent here, so their warnings are allowed)
+step cargo deny --exclude osis-kit --exclude osis-app --exclude osis-android check bans -A unmatched-skip-root
 if [ "$seeds" -gt 0 ]; then
   step cargo build --locked --bin sim-sweep
   step locked cargo run --locked --bin sim-sweep -- --seeds "$seeds" --budget-secs 900

@@ -53,7 +53,8 @@ skip = [
     { crate = "windows-sys@0.52.0", reason = "ring 0.17 (Windows only); mio/tokio use 0.61" },
 ]
 # The GUI stack (wgpu, winit, windows-*, objc2) carries many duplicates we cannot pick: its trees
-# are left out of duplicate detection (a core duplicate still fails, unless the GUI stack holds a copy).
+# are left out of duplicate detection here; the gate checks core's graph alone for duplicates too
+# (tools/gate.sh), so a core duplicate fails even where the GUI stack holds one copy.
 skip-tree = [
     { crate = "masonry@0.4.0", reason = "the GUI stack: Vello, wgpu, Parley, AccessKit" },
     { crate = "masonry_winit@0.4.0", reason = "the GUI stack: winit and its platform crates" },

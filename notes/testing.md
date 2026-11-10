@@ -207,7 +207,7 @@ Nightly `coverage` job: `cargo llvm-cov`, lcov and summary as artifacts, `contin
 
 ## Policy checks
 - `python3 tools/policy.py`: every workspace member has `[lints] workspace = true` (models: `[lints.rust] unsafe_code = "forbid"`), every crate root under core/, libs/chat/, cli/ has `#![forbid(unsafe_code)]`, no `unsafe` block, fn, impl or trait anywhere in the workspace, every external dependency has a backticked line in notes/architecture.md §5, and targets with tests turned off have none. core/test/fuzz/ is exempt (libfuzzer's macro uses `unsafe`). app/android has the workspace lints with `unsafe_code = "deny"` and no `forbid` in its root, for its one `#[unsafe(no_mangle)]` entry point; any other `unsafe` there fails.
-- `cargo deny check` (deny.toml): licence allowlist (MIT, Apache-2.0, BSD, ISC, Zlib, CC0, Unicode-3.0), duplicate versions denied (a forced duplicate gets a `skip` with a reason), advisories, crates.io only. Members are `publish = false`.
+- `cargo deny check` (deny.toml): licence allowlist (MIT, Apache-2.0, BSD, ISC, Zlib, CC0, Unicode-3.0, BSL-1.0), duplicate versions denied (a forced duplicate gets a `skip` with a reason; the GUI stack's trees are `skip-tree`d, so the gate also checks core's graph alone, GUI members `--exclude`d), advisories, crates.io only. Members are `publish = false`.
 - `cargo tree -e normal` per crate matches notes/architecture.md §5: osis-base/crdt/perm/schema pull only blake3 (and its arrayvec, cfg-if, constant_time_eq, cpufeatures), no tokio, quinn, redb or ML-KEM even with dev dependencies; tokio enters by default only in osis-node (`driver`), osis-host and osis.
 
 ## Spec-to-test map
