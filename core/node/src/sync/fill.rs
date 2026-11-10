@@ -33,6 +33,8 @@ pub(crate) struct Fill {
     cursor: Option<Cursor>,
     /// Secrets held when the ranks were taken.
     secrets: usize,
+    /// Entries of rank `FIRST` fetched again for a record a later batch brought (`fill_more`).
+    retried: BTreeSet<BlobId>,
 }
 
 impl Fill {
@@ -144,6 +146,18 @@ impl SyncEngine {
             for (_, b) in f.queue.split_off(&(LAST, BlobId([0; 32]))) {
                 let r = self.state.entries.get(&(l, b)).map(|e| self.rank(&secrets, host, &l, &b, &e.wrap));
                 f.queue.extend(r.map(|r| (r, b)));
+            }
+        }
+        // a commit of what judging needs that awaited a record a later batch of it brought is
+        // fetched again before the rest (once per fill: one awaiting still goes by its wake)
+        if !f.first_done && f.queue.first().is_none_or(|x| x.0 != FIRST) {
+            let due: BTreeSet<(LabelId, BlobId)> = self.state.by_awaited.iter().filter(|(t, _)| self.engine.core.exists(t)).flat_map(|(_, s)| s.iter().copied()).filter(|(x, b)| *x == l && !f.retried.contains(b)).collect();
+            if !due.is_empty() {
+                let secrets = self.fill_secrets(conn, &l);
+                let again: Vec<BlobId> = due.iter().map(|(_, b)| *b).filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| self.rank(&secrets, host, &l, b, &e.wrap) == FIRST)).collect();
+                self.reopen_awaiting(again.iter().map(|b| (l, *b)).collect());
+                f.retried.extend(again.iter().copied());
+                f.queue.extend(again.into_iter().map(|b| (FIRST, b)));
             }
         }
         let first_now = !f.first_done && f.queue.first().is_none_or(|x| x.0 != FIRST);

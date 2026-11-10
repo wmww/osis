@@ -680,7 +680,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    fn reopen_awaiting(&mut self, ids: BTreeSet<(LabelId, BlobId)>) {
+    pub(crate) fn reopen_awaiting(&mut self, ids: BTreeSet<(LabelId, BlobId)>) {
         // still awaited: it comes back judged or awaiting (`awaits_left` is for entries gone)
         let told = self.state.awaits_left.len();
         let mut labels = BTreeSet::new();

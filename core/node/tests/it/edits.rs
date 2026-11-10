@@ -27,7 +27,7 @@ fn after(d: u64) -> Retention {
 
 fn net_with(n: usize, seed: u64) -> (LocalPeer, Tid, Vec<Tid>) {
     let mut lp = net(n, seed);
-    let ids: Vec<Tid> = (0..n).map(|i| lp.peers[i].engine.tid()).collect();
+    let ids: Vec<Tid> = (0..n).map(|i| lp.peers[i].engine.me()).collect();
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -166,7 +166,7 @@ fn an_edit_after_a_kick_is_not_honored_spec_commits_5() {
 #[test]
 fn a_valid_edit_of_an_invalid_original_stands_alone_spec_commits_5() {
     let mut lp = net(2, 7);
-    let ids = [0, 1].map(|i| lp.peers[i].engine.tid());
+    let ids = [0, 1].map(|i| lp.peers[i].engine.me());
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap().unwrap();
