@@ -457,7 +457,7 @@ impl SyncEngine {
         if conn.is_some() {
             self.check_linked_prefixes(l, &scope)?;
         }
-        let fetching = w.unopened.iter().any(|b| self.fetching(b));
+        let fetching = w.unopened.iter().any(|b| self.asked_for(l, b));
         let sets = self.unsettled_sets(!w.unopened.is_empty(), fetching)?;
         let replaced = self.is_replaced(g, &l);
         let inputs = Inputs {
@@ -814,7 +814,7 @@ impl SyncEngine {
     fn read_first(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<bool> {
         let secrets = self.read_secrets(g);
         let ids: Vec<BlobId> = self.state.of_kind(&l, Kind::TAG_UNKNOWN).into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| e.unopened(b, &secrets))).collect();
-        let busy = ids.iter().any(|b| self.fetching(b));
+        let busy = ids.iter().any(|b| self.asked_for(l, b));
         Ok(self.open_or_fetch(conn, host, l, ids, out)? || busy)
     }
 
@@ -823,7 +823,7 @@ impl SyncEngine {
     /// secrets that arrived later). Whether any was fetched or opened.
     fn open_or_fetch(&mut self, conn: ConnId, host: HostKey, l: LabelId, ids: Vec<BlobId>, out: &mut Vec<super::Action>) -> Result<bool> {
         let missing = |s: &Self, b: &BlobId| s.conns.get(&conn).is_some_and(|c| c.req.missing.contains(b));
-        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching(b) && !missing(self, b) && self.state.is_present(&host, &l, b) && !self.memory_skips(&l, b)).collect();
+        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !missing(self, b) && !self.asked_for(l, b) && self.state.is_present(&host, &l, b) && !self.memory_skips(&l, b)).collect();
         let (held, want): (Vec<BlobId>, Vec<BlobId>) = ids.into_iter().partition(|b| self.engine.has_blob(b));
         if !held.is_empty() {
             self.open_entries(Some(conn), l, &held)?;
@@ -839,8 +839,8 @@ impl SyncEngine {
     /// applied (`unopened`: a snapshot not fetched or applied yet, spec/sync.md §6: may-hold).
     /// And the aspects where a body is not established uncovered yet (spec/sync.md §6), so not
     /// must-hold: those of pending snapshots (pages not fetched, deltas missing), and every aspect
-    /// (`None`) while an entry of the label that opens under a held secret is being fetched
-    /// (`fetching`; it may be a snapshot). Other pending commits settle nothing there, nor do
+    /// (`None`) while an entry of the label that opens under a held secret is asked (`fetching`,
+    /// `asked`; it may be a snapshot). Other pending commits settle nothing there, nor do
     /// entries that do not open as a commit or whose bytes no host delivers.
     pub(super) fn unsettled_sets(&mut self, unopened: bool, fetching: bool) -> Result<(Unsettled, Unsettled)> {
         // what pends moves only with the engine

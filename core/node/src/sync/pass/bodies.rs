@@ -437,7 +437,7 @@ impl SyncEngine {
         let mut w = Work::fresh();
         self.rebuild(&g, l, &mut w);
         let snaps: Snaps = w.snaps.iter().map(|(k, v)| (k.clone(), v.iter().map(|(_, c)| *c).collect())).collect();
-        let fetching = w.unopened.iter().any(|b| self.fetching(b));
+        let fetching = w.unopened.iter().any(|b| self.asked(b).is_some());
         let (unsettled, snapping) = self.unsettled_sets(!w.unopened.is_empty(), fetching)?;
         v.unsettled = unsettled.iter().cloned().collect();
         let mut note = Note::default();

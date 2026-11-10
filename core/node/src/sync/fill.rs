@@ -130,7 +130,7 @@ impl SyncEngine {
             return Ok(());
         }
         let Some(mut f) = lc.fill.take() else { return Ok(()) };
-        f.asked.retain(|b| c.req.fetching.contains(b));
+        f.asked.retain(|b| c.req.fetching.contains_key(b));
         if !f.asked.is_empty() {
             if let Some(lc) = self.lc_mut(conn, &l) {
                 lc.fill = Some(f);
@@ -157,7 +157,7 @@ impl SyncEngine {
                 break;
             }
             f.queue.pop_first();
-            if self.state.entries.contains_key(&(l, b)) && self.state.is_present(&host, &l, &b) && !missing(self, &b) && !self.fetching(&b) && !self.engine.has_blob(&b) {
+            if self.state.entries.contains_key(&(l, b)) && self.state.is_present(&host, &l, &b) && !missing(self, &b) && !self.engine.has_blob(&b) && !self.asked_for(l, &b) {
                 first = Some(r == FIRST);
                 ids.push(b);
             }

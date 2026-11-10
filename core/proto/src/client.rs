@@ -20,10 +20,10 @@ pub const INITIAL_PINGS: usize = 3;
 pub const PING_INTERVAL_MS: u64 = 5 * 60 * 1000;
 /// The oldest request in flight not moving this long (`Window`: no byte of a reply to it received,
 /// none of its frame taken by the transport, no other bytes within `MAX_AHEAD`) closes the
-/// connection, whichever side dialed; the node redials (spec/sync.md §6). A stream body Fetch
-/// unanswered this long is asked of the next source too (node `stream_asked`). Liveness only, any
-/// link speed passes: 0 closes every connection with a request out at once and asks every body
-/// twice, infinity keeps a peer that answers nothing and lets it hold the bodies it announced.
+/// connection, whichever side dialed; the node redials (spec/sync.md §6). A body fetch (of a
+/// host or a reader) unanswered this long is asked of the next source too (node `asked`).
+/// Liveness only, any link speed passes: 0 closes every connection with a request out at once
+/// and asks every body twice, infinity keeps a peer that answers nothing and lets it hold the bodies it announced.
 pub const STALL_TIMEOUT_MS: u64 = 2 * 60 * 1000;
 /// Bytes in flight per session (spec/sync.md §6): per request sent and not answered, its frame
 /// plus its reply allowance. The next request goes while below it, so one always goes: 0 sends

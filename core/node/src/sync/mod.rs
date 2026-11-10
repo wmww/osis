@@ -863,7 +863,8 @@ mod tests {
             let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(965)), cfg).unwrap();
             let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
             let b = osis_base::BlobId([1; 32]);
-            s.conns.get_mut(&conn).unwrap().req.fetching.insert(b);
+            let now = s.raw_now();
+            s.conns.get_mut(&conn).unwrap().req.fetching.insert(b, now);
             let d = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
             s.queue_deposit(LabelId([1; 16]), std::slice::from_ref(&host), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN], None);
             for o in s.outbox.values_mut() {
@@ -874,7 +875,7 @@ mod tests {
             } else {
                 s.outputs(conn, vec![ClientOutput::Close], &mut Vec::new()).unwrap();
             }
-            assert!(!s.fetching(&b));
+            assert!(!s.asked(&b).is_some());
             assert!(s.outbox.values().all(|o| o.sent.is_none()), "the deposit goes again");
             assert_eq!(s.deliveries_pending(), 1);
         }
@@ -893,16 +894,16 @@ mod tests {
         let (l, b) = (LabelId([1; 16]), osis_base::BlobId([1; 32]));
         s.conns.get_mut(&conn).unwrap().req.missing.insert(b);
         s.fetch_on(conn, l, [b], &mut Vec::new()).unwrap();
-        assert!(!s.fetching(&b), "not asked again");
+        assert!(!s.asked(&b).is_some(), "not asked again");
         let added = osis_proto::Event::Added { blob_id: b, blob: None, wrap: [3; osis_crypto::WRAP_LEN], stamp: None };
         s.log_events(Some(conn), l, vec![added], None, &mut Vec::new()).unwrap();
         s.fetch_on(conn, l, [b], &mut Vec::new()).unwrap();
-        assert!(s.fetching(&b), "asked once announced");
+        assert!(s.asked(&b).is_some(), "asked once announced");
         // likewise when a reconciliation finds the host holding it
         let b2 = osis_base::BlobId([2; 32]);
         s.conns.get_mut(&conn).unwrap().req.missing.insert(b2);
         s.reconciled(conn, l, vec![b2], Vec::new(), &mut Vec::new()).unwrap();
-        assert!(s.fetching(&b2), "asked once reconciled");
+        assert!(s.asked(&b2).is_some(), "asked once reconciled");
     }
 
     // spec/sync.md §6: a connection ending before the entries a reconciliation after a start
@@ -923,7 +924,7 @@ mod tests {
             let (l, b) = (LabelId([1; 16]), osis_base::BlobId([1; 32]));
             s.memory.reconciling.insert((conn, l));
             s.reconciled(conn, l, vec![b], Vec::new(), &mut Vec::new()).unwrap();
-            assert!(s.fetching(&b) && s.memory.reconciled.contains(&(key, l)));
+            assert!(s.asked(&b).is_some() && s.memory.reconciled.contains(&(key, l)));
             match case {
                 "answered" => s.session_event(conn, ClientEvent::Fetched { label: l, items: vec![osis_proto::msg::Fetched { blob_id: b, entry: None }] }, &mut Vec::new()).unwrap(),
                 "refused" => s.session_event(conn, ClientEvent::Refused { label: Some(l), kind: osis_proto::Request::Fetch, code: osis_proto::Code::RATE_LIMITED, fetch: vec![b] }, &mut Vec::new()).unwrap(),

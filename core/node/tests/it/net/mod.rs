@@ -142,6 +142,9 @@ pub struct Net {
     /// Peer links (from, to) whose sender trickles: from its first reply there on, what it sends
     /// waits here (the receiver's connection, the bytes) and goes only by `trickle_out`.
     pub trickle: BTreeMap<(usize, usize), (ConnId, Vec<u8>)>,
+    /// Host links (host, node) whose host trickles: from its first fetch reply there on, what it
+    /// sends waits here (the node's connection, the bytes) and goes only by `trickle_host_out`.
+    pub trickle_hosts: BTreeMap<(usize, usize), (ConnId, Vec<u8>)>,
     /// Peer bytes sent on a link before the last ones queued there were delivered join them:
     /// one input of several frames, as a real driver's read (else each send is its own input).
     pub batch_reads: bool,
@@ -233,7 +236,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 impl Net {
     /// A network whose new nodes are each their own account's only node.
     pub fn new() -> Net {
-        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), batch_reads: false, peer_closes: 0 }
+        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), trickle_hosts: BTreeMap::new(), batch_reads: false, peer_closes: 0 }
     }
 
     /// A network whose new nodes join no account: the test makes or pairs them.
@@ -392,6 +395,16 @@ impl Net {
         let pc = *pc;
         if !bytes.is_empty() {
             self.queue.push_back(Msg::ToNode(to, self.nodes[to].life, pc, bytes));
+        }
+    }
+
+    /// Delivers the first `k` bytes a trickling host link (`trickle_hosts`) holds back.
+    pub fn trickle_host_out(&mut self, s: usize, n: usize, k: usize) {
+        let Some((c, held)) = self.trickle_hosts.get_mut(&(s, n)) else { return };
+        let bytes: Vec<u8> = held.drain(..k.min(held.len())).collect();
+        let c = *c;
+        if !bytes.is_empty() {
+            self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, c, bytes));
         }
     }
 
@@ -786,6 +799,13 @@ impl Net {
                                 }
                             }
                             bytes = kept;
+                        }
+                        if let Some((tc, held)) = self.trickle_hosts.get_mut(&(s, *n)) {
+                            *tc = *c;
+                            if !held.is_empty() || !fetched_ids(&bytes).is_empty() {
+                                held.extend(bytes);
+                                continue;
+                            }
                         }
                         let held = self.held_to.contains(n) || self.hold_opened.contains(n) && (has_opened(&bytes) || self.held_messages.iter().any(|m| matches!(m, Msg::ToNode(x, ..) if x == n))) || (!self.hold_blobs.is_empty() && told_ids(&bytes).iter().any(|b| self.hold_blobs.contains(b)));
                         let m = Msg::ToNode(*n, self.nodes[*n].life, *c, bytes);

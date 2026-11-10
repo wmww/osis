@@ -522,6 +522,100 @@ fn a_partial_answer_does_not_restart_the_stall_time_spec_sync_10() {
     assert!(at <= stall + 15_000, "read {at} ms after the write");
 }
 
+/// Node `a` reading label L at host `h` (bodies announced without bytes, so fetched) and from
+/// co-reader `b` (the writer, dialed by `a`, also at `h`); `a` resyncs every 50 s, so only a wake
+/// of its own falls due at the stall time. The source `a` asks first for `b`'s
+/// write trickles its reply (16 bytes, then one byte every 30 s; `host`: `h`, else `b`) and the
+/// other announces the body only after. Then: ms after the write until `a` reads it (none within
+/// 10 min), Fetches `a` sent (to hosts and readers) from the write until it read it and from then
+/// on (the rest of the trickled bytes delivered meanwhile, with `release`), and whether every
+/// stream of `a` then settled with no fetch out.
+fn trickling_first_source(host: bool, release: bool) -> (Option<u64>, usize, usize, bool) {
+    let mut net = Net::new();
+    let h = net.add_host();
+    let a = net.add_node(1, osis_node::sync::SyncConfig { hosts: vec![net.address(h)], inline_limit: 0, resync_ms: 50_000, ..Default::default() });
+    let b = net.node(2, &[h]);
+    reach_ed(&mut net, b);
+    let g = net.group_seeded(b, &[(a, Role::Write)], vec![net.address(h)], 10);
+    net.run();
+    net.advance(120_000);
+    let probe = net.item(b, g, g, "probe");
+    net.run();
+    assert_eq!(net.read(a, probe), Some(s("probe")), "a reads b's writes");
+    let fetches = |net: &Net| net.peer_sent(a, FETCH) + net.sent_kinds.get(&FETCH).copied().unwrap_or(0);
+    let before = fetches(&net);
+    // the first source announces first, the other's announcement is held back meanwhile
+    if host {
+        net.trickle_hosts.insert((h, a), (0, Vec::new()));
+        net.held.insert((b, a));
+    } else {
+        let (ab, _) = conn_to(&net, a, b);
+        net.trickle.insert((b, a), (ab, Vec::new()));
+        net.held_hosts.insert(h);
+    }
+    let start = net.now();
+    let first = net.item(b, g, g, "first");
+    net.run();
+    assert!(fetches(&net) > before, "a asked the first source");
+    assert_eq!(net.read(a, first), None, "held by the Fetch the first source trickles");
+    let out = |net: &mut Net, k: usize| if host { net.trickle_host_out(h, a, k) } else { net.trickle_out(b, a, k) };
+    out(&mut net, 16);
+    net.release();
+    net.run();
+    assert_eq!(net.read(a, first), None, "one source at a time: the other is not asked yet");
+    // time moves to `a`'s wakes, at least every 25 s (a byte trickled each time)
+    let mut at = None;
+    while at.is_none() && net.now() - start < 600_000 {
+        let step = net.nodes[a].wake.map_or(25_000, |w| w.saturating_sub(net.now()).clamp(1, 25_000));
+        net.advance(step);
+        out(&mut net, 1);
+        net.run();
+        if net.read(a, first) == Some(s("first")) {
+            at = Some(net.now() - start);
+        }
+    }
+    let asked = fetches(&net) - before;
+    let fetched = fetches(&net);
+    if release {
+        out(&mut net, usize::MAX);
+        net.trickle_hosts.clear();
+        net.trickle.clear();
+        net.run();
+    }
+    net.advance(60_000);
+    net.run();
+    let after = fetches(&net) - fetched;
+    let settled = net.peer_conns(a).iter().all(|(conn, _, _)| net.sync(a).stream_caught_up(*conn));
+    (at, asked, after, settled)
+}
+
+// spec/sync.md §10 (Bodies: one rule for "asked" across sources): a co-reader trickling its
+// reply to a node's Fetch holds the body's fetch from a host for the stall time only, and a host
+// trickling its reply holds the body from a co-reader that announced it likewise; the other
+// source is asked when the first passes the stall time (a wake of its own, not the next resync)
+#[test]
+fn a_trickling_source_of_either_kind_holds_a_body_for_the_stall_time_only_spec_sync_10() {
+    let stall = osis_proto::client::STALL_TIMEOUT_MS;
+    for host in [false, true] {
+        let (at, asked, _, _) = trickling_first_source(host, false);
+        let at = at.unwrap_or_else(|| panic!("a reads the write from the other source (host trickles: {host})"));
+        assert!((stall..=stall + 1_000).contains(&at), "read {at} ms after the write (host trickles: {host})");
+        assert!(asked <= 2, "{asked} Fetches: the first source's, then the other's (host trickles: {host})");
+    }
+}
+
+// spec/sync.md §10 (Bodies: whichever answers first settles it): a host and a co-reader both
+// answering store the body once, ask nothing more, and every stream settles
+#[test]
+fn a_host_and_a_co_reader_both_answering_store_once_and_settle_spec_sync_10() {
+    for host in [false, true] {
+        let (at, _, after, settled) = trickling_first_source(host, true);
+        assert!(at.is_some(), "host trickles: {host}");
+        assert_eq!(after, 0, "nothing asked again once both answered (host trickles: {host})");
+        assert!(settled, "every stream of a settled, no fetch out (host trickles: {host})");
+    }
+}
+
 /// Pulls node `a` sends once back after `b`'s log aged out the deletions of what `a` held, at
 /// `n` sync IDs, and whether `a` then holds what `b` holds.
 fn back_after_aging(n: usize) -> (usize, bool, bool) {

@@ -1634,13 +1634,16 @@ impl SyncEngine {
         Ok(missing.into_iter().collect())
     }
 
-    /// Fetches `ids` under `l` on `conn`, but those asked for already (on any connection) and
-    /// those its host did not deliver (since it last announced them). Every fetch goes this
-    /// way: a pass waits on the unopened entries in flight (`unsettled_sets`).
+    /// Fetches `ids` under `l` on `conn`, but those asked for already (`may_ask`) and those its
+    /// host did not deliver (since it last announced them). Every host fetch goes this way: a
+    /// pass waits on the unopened entries in flight (`unsettled_sets`).
     pub(crate) fn fetch_on(&mut self, conn: ConnId, l: LabelId, ids: impl IntoIterator<Item = BlobId>, out: &mut Vec<super::Action>) -> Result<()> {
-        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching(b)).collect();
+        let missing = |s: &Self, b: &BlobId| s.conns.get(&conn).is_none_or(|c| c.req.missing.contains(b));
+        let mut seen = BTreeSet::new();
+        let ids: Vec<BlobId> = ids.into_iter().filter(|b| seen.insert(*b) && !missing(self, b) && self.may_ask(conn, l, b)).collect();
+        let now = self.raw_now();
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !c.req.missing.contains(b) && c.req.fetching.insert(*b)).collect();
+        c.req.fetching.extend(ids.iter().map(|b| (*b, now)));
         if ids.is_empty() {
             return Ok(());
         }

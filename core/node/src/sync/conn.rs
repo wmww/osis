@@ -136,8 +136,8 @@ pub(crate) struct Requests {
     /// Uploads sent replacing entries (spec/sync.md §5): those are gone once one is answered OK.
     /// A plain upload of the same blob waits meanwhile (two statuses could not be told apart).
     pub replacing: BTreeMap<(LabelId, osis_base::BlobId), Vec<osis_base::BlobId>>,
-    /// Blobs asked for and not received yet.
-    pub fetching: BTreeSet<osis_base::BlobId>,
+    /// Blobs asked for and not received yet, with when (raw ms; `SyncEngine::asked`).
+    pub fetching: BTreeMap<osis_base::BlobId, u64>,
     /// Blobs the host did not deliver when fetched (since it last announced them).
     pub missing: BTreeSet<osis_base::BlobId>,
     /// Reopens in a row per label.
@@ -171,9 +171,30 @@ impl Requests {
 }
 
 impl SyncEngine {
-    /// Whether blob `b` was asked for on some connection and not received yet.
-    pub(crate) fn fetching(&self, b: &osis_base::BlobId) -> bool {
-        self.conns.values().any(|c| c.req.fetching.contains(b)) || self.stream_fetching(b)
+    /// Until when blob `b` counts as asked (raw ms), `None` when it is asked nowhere now. One rule
+    /// for every source, a host or a reader: a fetch counts while it is younger than
+    /// `STALL_TIMEOUT_MS`; older, it may be held behind a reply its source trickles (the stall
+    /// rule only wants the oldest request to move), so the next source is asked too and whichever
+    /// answers first settles it (spec/sync.md §10, Bodies).
+    pub(crate) fn asked(&self, b: &osis_base::BlobId) -> Option<u64> {
+        let now = self.raw_now();
+        let hosts = self.conns.values().filter_map(|c| c.req.fetching.get(b).copied());
+        hosts.chain(self.stream_asks(b)).map(|at| at.saturating_add(osis_proto::client::STALL_TIMEOUT_MS)).filter(|t| *t > now).max()
+    }
+
+    /// `asked`, with a pass of `l` (`settle_by`) when it ends: what skipped or waited on `b` for
+    /// it (a fill, a pass, a stream) looks again then.
+    pub(crate) fn asked_for(&mut self, l: LabelId, b: &osis_base::BlobId) -> bool {
+        let Some(t) = self.asked(b) else { return false };
+        self.settle_by(t, l);
+        true
+    }
+
+    /// Whether `b` may be fetched of `conn`'s source under `l`: not out there already, whatever
+    /// its age (each source asked once while its fetch is out), and not asked anywhere now.
+    pub(crate) fn may_ask(&mut self, conn: ConnId, l: LabelId, b: &osis_base::BlobId) -> bool {
+        let here = self.conns.get(&conn).is_some_and(|c| c.req.fetching.contains_key(b)) || self.stream_asks_on(conn, b);
+        !here && !self.asked_for(l, b)
     }
 
     /// Blob `b` arrived, or a host said it does not hold it: no longer in flight.

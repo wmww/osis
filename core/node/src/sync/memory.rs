@@ -646,7 +646,7 @@ impl SyncEngine {
     /// at a host only as learned on the connection up now (spec/sync.md §9: a restarted host
     /// lost them, and its durable log says nothing of it), so the next connection's passes
     /// upload what the host lacks and are answered OK for what it kept.
-    pub(crate) fn memory_lost(&mut self, conn: ConnId, host: HostKey, fetching: &BTreeSet<BlobId>) -> Result<()> {
+    pub(crate) fn memory_lost(&mut self, conn: ConnId, host: HostKey, fetching: &BTreeMap<BlobId, u64>) -> Result<()> {
         let gone: Vec<(LabelId, BlobId)> = self.state.memory_entries.iter().filter(|(l, b)| self.state.is_present(&host, l, b)).copied().collect();
         for (l, b) in gone {
             self.state.set_present(host, l, b, false);
@@ -654,7 +654,7 @@ impl SyncEngine {
         // an entry of a forgotten commit the host may have kept (its upload or delete unanswered
         // when the connection ended) stays known until the next connection's Sync says
         // (`memory_gained`: wanted, it is held nowhere and goes; else it is present and deleted)
-        let unanswered: Vec<LabelId> = self.memory.reconcile_fetches.iter().filter(|((c, _), ids)| *c == conn && !ids.is_disjoint(fetching)).map(|((_, l), _)| *l).collect();
+        let unanswered: Vec<LabelId> = self.memory.reconcile_fetches.iter().filter(|((c, _), ids)| *c == conn && ids.iter().any(|b| fetching.contains_key(b))).map(|((_, l), _)| *l).collect();
         for l in unanswered {
             self.memory.reconciled.remove(&(host, l));
         }
