@@ -27,4 +27,4 @@ Issues/net-rework.md's order. Built on main: net-tests step 2; honest status ste
 - After it: steps 6-9 of issues/net-shared-set.md, step 2 of issues/net-honest-status.md with Pull.
 - Step 10 (the epoch signature, Fathom's account signing) decides when a proven account counts. Check what main says before relying on "J counts key actors alone".
 - issues/leaving-not-confirmed-after-rotation.md needs a format change; offered to Fathom.
-- Dogfood channel served from devbox (`~/osis-dogfood`, port 4040, transient units `osis-serving`, `osis-me`): a box stop ends them; restart per notes/dogfood.md with the same stores.
+- Dogfood channel served from devbox (`~/osis-dogfood`, port 4040, transient units `osis-dogfood-host` (serving node; `restart-host.sh`), `osis-dogfood-me`): a box stop ends them; restart per notes/dogfood.md with the same stores.
