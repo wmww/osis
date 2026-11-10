@@ -63,7 +63,7 @@ pub enum EpochStanding<E> {
 /// account's commits at closed epochs. Holds nothing per commit: a commit is judged when asked
 /// (`standing`), so building it costs the rotations, lists and listings held, never the
 /// account's history.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Epochs<E, T> {
     chain: Chain<E>,
     /// The held epoch that is open (the head followed), as a set.

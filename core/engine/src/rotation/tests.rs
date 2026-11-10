@@ -1516,3 +1516,31 @@ fn blocked_epoch_history_carries_nothing_new_spec_crypto_4() {
     assert!(!hist[&(Role::Read, e2)].earlier.contains_key(&f), "A's history at e2 hands P f");
     assert!(hist[&(Role::Read, g1)].earlier.contains_key(&f), "A's history at g1 lacks f");
 }
+
+// spec: none (internal: notes/engine.md, Derived values). A thing's epochs are derived when
+// something they are read from changed, not per ask and not per commit held.
+#[test]
+fn epochs_are_derived_once_per_change_of_what_they_read() {
+    let mut lp = LocalPeer::new(2, 31, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let (t, other) = (group(&mut lp, 0), group(&mut lp, 0));
+    let w = lp.peers[1].engine.me();
+    let derived = |lp: &mut LocalPeer| {
+        crate::costs::take();
+        assert!(lp.peers[0].engine.core.epochs(&t).is_some());
+        crate::costs::take().iter().filter(|x| x.0 == "epochs").map(|x| x.2).sum::<u64>()
+    };
+    derived(&mut lp);
+    assert_eq!(derived(&mut lp), 0, "asked again");
+    let ak = osis_base::Ak::new("x:a.0").unwrap();
+    for i in 0..5 {
+        for on in [t, other] {
+            let mut m = Mutation::new();
+            m.set(on, &ak, &osis_base::Value::Int(i)).unwrap();
+            lp.peers[0].commit(m).unwrap();
+        }
+    }
+    assert_eq!(derived(&mut lp), 0, "content commits, on it and elsewhere");
+    lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
+    assert!(derived(&mut lp) > 0, "a grant on it");
+}

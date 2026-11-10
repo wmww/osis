@@ -148,7 +148,7 @@ impl Journaled for Sides {
 /// hand the walk's side to the backdated write that voided it); it is not told, maybe being
 /// no dispute.
 pub(crate) fn after_update(core: &mut Core) {
-    let det = core.timelines.take_detected();
+    let det = core.timelines.aside().take_detected();
     let mut trusts = false;
     for d in det.found {
         let (op, holder) = (d.dispute.op, d.dispute.holder);
@@ -178,21 +178,21 @@ pub(crate) fn after_update(core: &mut Core) {
 
 /// Drops what an update detected: a rollback's restored held set brings nothing new.
 pub(crate) fn discard(core: &mut Core) {
-    core.timelines.take_detected();
+    core.timelines.aside().take_detected();
 }
 
 /// After a rollback restored the sides: the walk's trust set follows them (the stale flags the
 /// rollback clears; validity flags are restored with the commits).
 pub(crate) fn restored(core: &mut Core) {
     let trust = core.sides.trust();
-    core.timelines.set_trust(&core.ix.held, trust);
+    core.timelines.change().set_trust(&core.ix.held, trust);
 }
 
 /// Feeds the recorded sides to the walk as its trust set; the things whose validity may have
 /// changed wait for `rejudge_all` as after any timeline change.
 fn feed(core: &mut Core) {
     let trust = core.sides.trust();
-    let changed = core.timelines.set_trust(&core.ix.held, trust);
+    let changed = core.timelines.change().set_trust(&core.ix.held, trust);
     core.timelines_changed(changed);
     core.role_changed();
 }
@@ -212,7 +212,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         tx.core.sides = Sides::decode(&b)?;
         let trust = tx.core.sides.trust();
         if !trust.is_empty() {
-            tx.core.timelines.set_trust(&tx.core.ix.held, trust);
+            tx.core.timelines.change().set_trust(&tx.core.ix.held, trust);
         }
     }
     Ok(())

@@ -466,7 +466,7 @@ fn put_rows<K: Rec>(txn: &mut Transaction<'_>, name: &[u8], keys: Vec<K>, value:
 }
 
 /// Writes what the running transaction changed of `m` (`all`: every entry) to index `name`.
-fn put_map<K: Rec + Ord + Clone, V: Rec + Clone>(txn: &mut Transaction<'_>, name: &[u8], m: &JMap<K, V>, all: bool) -> Result<()> {
+fn put_map<K: Rec + Ord + Clone + std::hash::Hash, V: Rec + Clone>(txn: &mut Transaction<'_>, name: &[u8], m: &JMap<K, V>, all: bool) -> Result<()> {
     let keys = if all { m.keys().cloned().collect() } else { m.logged() };
     put_rows(txn, name, keys, |k| m.get(k).map(enc))
 }
@@ -488,7 +488,7 @@ fn put_aspect_map<V: Rec + Clone>(txn: &mut Transaction<'_>, name: &[u8], m: &JM
 }
 
 /// `put_map` of a map of sets: a row per (key, item).
-fn put_setmap<K: Rec + Ord + Clone, T: Rec + Ord + Clone>(txn: &mut Transaction<'_>, name: &[u8], s: &JSetMap<K, T>, all: bool) -> Result<()> {
+fn put_setmap<K: Rec + Ord + Clone + std::hash::Hash, T: Rec + Ord + Clone>(txn: &mut Transaction<'_>, name: &[u8], s: &JSetMap<K, T>, all: bool) -> Result<()> {
     let items = if all { s.iter().flat_map(|(k, x)| x.iter().map(|t| (k.clone(), t.clone()))).collect() } else { s.logged() };
     put_rows(txn, name, items, |(k, t)| s.get(k).is_some_and(|x| x.contains(t)).then(Vec::new))
 }

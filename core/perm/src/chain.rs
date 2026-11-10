@@ -56,7 +56,7 @@ pub struct Rotation<E> {
 
 /// The chain as one node judges it: the held rotations under its side, read along the head it
 /// follows.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chain<E> {
     root: E,
     rots: BTreeMap<E, Rotation<E>>,

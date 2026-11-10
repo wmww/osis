@@ -177,6 +177,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `MAX_HINT_COMMITS` 64 | R (lowest commit ID evicted, not oldest; inbox spam can evict a genuine hint) | the grantee then writes once the thing's `keys.0` syncs, as after a restart (candidates are not persisted): a delay (checked) |
 | `WALK_CACHE_MIN` 64, `MAX_WAIT_BYTES` 64 KiB / 16 MiB, `COPY_CACHE_MAX` 2^20, `HELD_WRITES_MAX` 2^20 (engine `retention/bounds.rs`: other aspects' `HeldWrites` kept beside the last read) | P | |
 | `DECODED_MAX` 16 MiB (engine `engine/decoded.rs`: stored commit records and their decoded parts kept, all forgotten past it) | P | every read decodes its record and parts from the store / every commit read since the open stays decoded in memory |
+| `SWEEP` 2 (engine `engine/memo.rs`: a memo checks every entry and drops those that no longer hold when it has grown to this many times what the last check kept) | P | at 1 every new entry checks them all / an answer nobody asks for again is never dropped |
 | pages `PAGE_BYTES` 8 KiB, `SEQ_PAGE_BYTES` 3 KiB, `MIN_PAGED` 64, `GROUP` 32, `PREFETCH` 8, `OP_RUNS` 8, prefetch budget `max(1024)`, `SCAN_PAGE` 256, pending page 256 | P | |
 | pages run expansion `1 << 20` | R (corrupt local row) | |
 | `MAX_REUSE` 16 GiB | P | |

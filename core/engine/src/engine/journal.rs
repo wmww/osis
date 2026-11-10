@@ -1,10 +1,15 @@
 //! Journaled collections for the engine's in-memory indexes: every change records what it
 //! replaced, so a failed transaction or step undoes exactly its own changes (O(changes)) instead
-//! of restoring a copy of every index taken at its first change. Reads go through `Deref`; only
-//! the journaling methods change the contents.
+//! of restoring a copy of every index taken at its first change. Only the journaling methods
+//! change the contents, and each change and undo stamps what it moved (`memo::Stamps`); a read
+//! is stamped too: `get` and `contains` read one key, `Deref` the whole collection, so a `Memo`
+//! computing depends on what it read here.
 
+use super::memo::Stamps;
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
+use std::hash::Hash;
 use std::ops::Deref;
 
 /// What a journaled collection does at the end of a transaction, and at a step's start and
@@ -27,27 +32,29 @@ pub(crate) trait Journaled {
 /// the first: a value changed many times in one transaction, as a value-less list growing by one
 /// per expiry in a round, costs one copy, not one per change).
 #[derive(Debug)]
-pub struct JMap<K: Ord + Clone, V: Clone> {
+pub struct JMap<K: Ord + Clone + Hash, V: Clone> {
     map: BTreeMap<K, V>,
+    stamps: Stamps,
     log: Vec<(K, Option<V>)>,
     /// The keys `log` holds since the last mark.
     seen: BTreeSet<K>,
 }
 
-impl<K: Ord + Clone, V: Clone> Default for JMap<K, V> {
+impl<K: Ord + Clone + Hash, V: Clone> Default for JMap<K, V> {
     fn default() -> Self {
-        JMap { map: BTreeMap::new(), log: Vec::new(), seen: BTreeSet::new() }
+        JMap { map: BTreeMap::new(), stamps: Stamps::default(), log: Vec::new(), seen: BTreeSet::new() }
     }
 }
 
-impl<K: Ord + Clone, V: Clone> Deref for JMap<K, V> {
+impl<K: Ord + Clone + Hash, V: Clone> Deref for JMap<K, V> {
     type Target = BTreeMap<K, V>;
     fn deref(&self) -> &BTreeMap<K, V> {
+        self.stamps.read_all();
         &self.map
     }
 }
 
-impl<K: Ord + Clone, V: Clone> JMap<K, V> {
+impl<K: Ord + Clone + Hash, V: Clone> JMap<K, V> {
     /// Journals `k`'s value before this transaction's first change of it.
     fn note(&mut self, k: &K, old: impl FnOnce(&BTreeMap<K, V>) -> Option<V>) {
         if !self.seen.contains(k) {
@@ -55,13 +62,29 @@ impl<K: Ord + Clone, V: Clone> JMap<K, V> {
             self.log.push((k.clone(), old(&self.map)));
         }
     }
+    pub fn get<Q: Ord + Hash + ?Sized>(&self, k: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+    {
+        self.stamps.read(k);
+        self.map.get(k)
+    }
+    pub fn contains_key<Q: Ord + Hash + ?Sized>(&self, k: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
+        self.stamps.read(k);
+        self.map.contains_key(k)
+    }
     pub fn insert(&mut self, k: K, v: V) -> Option<V> {
         self.note(&k, |m| m.get(&k).cloned());
+        self.stamps.wrote(&k, true);
         self.map.insert(k, v)
     }
     pub fn remove(&mut self, k: &K) -> Option<V> {
         if self.map.contains_key(k) {
             self.note(k, |m| m.get(k).cloned());
+            self.stamps.wrote(k, false);
         }
         self.map.remove(k)
     }
@@ -79,11 +102,13 @@ impl<K: Ord + Clone, V: Clone> JMap<K, V> {
             return None;
         }
         self.note(k, |m| m.get(k).cloned());
+        self.stamps.wrote(k, true);
         self.map.get_mut(k)
     }
     /// The value of `k`, inserted from `default` if absent, to change in place.
     pub fn entry_or(&mut self, k: K, default: impl FnOnce() -> V) -> &mut V {
         self.note(&k, |m| m.get(&k).cloned());
+        self.stamps.wrote(&k, true);
         self.map.entry(k).or_insert_with(default)
     }
     /// Changes the value of `k` (from `default` if absent) by `f`, journaled only if it changed.
@@ -96,6 +121,7 @@ impl<K: Ord + Clone, V: Clone> JMap<K, V> {
         f(&mut v);
         if old.as_ref() != Some(&v) {
             self.note(&k, |_| old);
+            self.stamps.wrote(&k, true);
             self.map.insert(k, v);
         }
     }
@@ -132,7 +158,7 @@ impl<K: Ord + Clone, V: Clone> JMap<K, V> {
     }
 }
 
-impl<K: Ord + Clone + Debug, V: Clone + Debug> Journaled for JMap<K, V> {
+impl<K: Ord + Clone + Hash + Debug, V: Clone + Debug> Journaled for JMap<K, V> {
     #[cfg(test)]
     fn contents(&self) -> String {
         format!("{:?}", self.map)
@@ -151,6 +177,7 @@ impl<K: Ord + Clone + Debug, V: Clone + Debug> Journaled for JMap<K, V> {
         self.seen.clear();
         while self.log.len() > m {
             let Some((k, old)) = self.log.pop() else { break };
+            self.stamps.wrote(&k, old.is_some());
             match old {
                 Some(v) => self.map.insert(k, v),
                 None => self.map.remove(&k),
@@ -161,46 +188,53 @@ impl<K: Ord + Clone + Debug, V: Clone + Debug> Journaled for JMap<K, V> {
 
 /// A set journaling each change.
 #[derive(Debug)]
-pub struct JSet<T: Ord + Clone> {
+pub struct JSet<T: Ord + Clone + Hash> {
     set: BTreeSet<T>,
+    stamps: Stamps,
     log: Vec<(T, bool)>,
-    /// Counts changes, rollbacks included (`changes`).
-    changes: u64,
 }
 
-impl<T: Ord + Clone> Default for JSet<T> {
+impl<T: Ord + Clone + Hash> Default for JSet<T> {
     fn default() -> Self {
-        JSet { set: BTreeSet::new(), log: Vec::new(), changes: 0 }
+        JSet { set: BTreeSet::new(), stamps: Stamps::default(), log: Vec::new() }
     }
 }
 
-impl<T: Ord + Clone> Deref for JSet<T> {
+impl<T: Ord + Clone + Hash> Deref for JSet<T> {
     type Target = BTreeSet<T>;
     fn deref(&self) -> &BTreeSet<T> {
+        self.stamps.read_all();
         &self.set
     }
 }
 
-impl<T: Ord + Clone> JSet<T> {
+impl<T: Ord + Clone + Hash> JSet<T> {
+    pub fn contains<Q: Ord + Hash + ?Sized>(&self, t: &Q) -> bool
+    where
+        T: Borrow<Q>,
+    {
+        self.stamps.read(t);
+        self.set.contains(t)
+    }
     pub fn insert(&mut self, t: T) -> bool {
         let new = self.set.insert(t.clone());
         if new {
+            self.stamps.wrote(&t, true);
             self.log.push((t, false));
-            self.changes += 1;
         }
         new
     }
     pub fn remove(&mut self, t: &T) -> bool {
         let was = self.set.remove(t);
         if was {
+            self.stamps.wrote(t, false);
             self.log.push((t.clone(), true));
-            self.changes += 1;
         }
         was
     }
-    /// A count that moves whenever the set may have changed (caches derived from it compare it).
+    /// A count that moves whenever the set changed, undone changes included.
     pub fn changes(&self) -> u64 {
-        self.changes
+        self.stamps.changes()
     }
     pub fn extend(&mut self, it: impl IntoIterator<Item = T>) {
         for t in it {
@@ -214,7 +248,7 @@ impl<T: Ord + Clone> JSet<T> {
     }
 }
 
-impl<T: Ord + Clone + Debug> Journaled for JSet<T> {
+impl<T: Ord + Clone + Hash + Debug> Journaled for JSet<T> {
     #[cfg(test)]
     fn contents(&self) -> String {
         format!("{:?}", self.set)
@@ -227,11 +261,9 @@ impl<T: Ord + Clone + Debug> Journaled for JSet<T> {
         self.log.len()
     }
     fn rollback_to(&mut self, m: usize) {
-        if self.log.len() > m {
-            self.changes += 1;
-        }
         while self.log.len() > m {
             let Some((t, was)) = self.log.pop() else { break };
+            self.stamps.wrote(&t, was);
             if was {
                 self.set.insert(t);
             } else {
@@ -243,25 +275,27 @@ impl<T: Ord + Clone + Debug> Journaled for JSet<T> {
 
 /// A map of sets journaling each element change (an emptied set is removed).
 #[derive(Debug)]
-pub struct JSetMap<K: Ord + Clone, T: Ord + Clone> {
+pub struct JSetMap<K: Ord + Clone + Hash, T: Ord + Clone> {
     map: BTreeMap<K, BTreeSet<T>>,
+    stamps: Stamps,
     log: Vec<(K, T, bool)>,
 }
 
-impl<K: Ord + Clone, T: Ord + Clone> Default for JSetMap<K, T> {
+impl<K: Ord + Clone + Hash, T: Ord + Clone> Default for JSetMap<K, T> {
     fn default() -> Self {
-        JSetMap { map: BTreeMap::new(), log: Vec::new() }
+        JSetMap { map: BTreeMap::new(), stamps: Stamps::default(), log: Vec::new() }
     }
 }
 
-impl<K: Ord + Clone, T: Ord + Clone> Deref for JSetMap<K, T> {
+impl<K: Ord + Clone + Hash, T: Ord + Clone> Deref for JSetMap<K, T> {
     type Target = BTreeMap<K, BTreeSet<T>>;
     fn deref(&self) -> &BTreeMap<K, BTreeSet<T>> {
+        self.stamps.read_all();
         &self.map
     }
 }
 
-impl<K: Ord + Clone, T: Ord + Clone> JSetMap<K, T> {
+impl<K: Ord + Clone + Hash, T: Ord + Clone> JSetMap<K, T> {
     fn raw_insert(map: &mut BTreeMap<K, BTreeSet<T>>, k: K, t: T) -> bool {
         map.entry(k).or_default().insert(t)
     }
@@ -273,9 +307,28 @@ impl<K: Ord + Clone, T: Ord + Clone> JSetMap<K, T> {
         }
         was
     }
+    /// The set of `k` (a read of that key: any change of its set moves it).
+    pub fn get<Q: Ord + Hash + ?Sized>(&self, k: &Q) -> Option<&BTreeSet<T>>
+    where
+        K: Borrow<Q>,
+    {
+        self.stamps.read(k);
+        self.map.get(k)
+    }
+    pub fn contains_key<Q: Ord + Hash + ?Sized>(&self, k: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
+        self.stamps.read(k);
+        self.map.contains_key(k)
+    }
+    fn stamp(&mut self, k: &K) {
+        self.stamps.wrote(k, self.map.contains_key(k));
+    }
     pub fn insert(&mut self, k: K, t: T) -> bool {
         let new = Self::raw_insert(&mut self.map, k.clone(), t.clone());
         if new {
+            self.stamp(&k);
             self.log.push((k, t, false));
         }
         new
@@ -283,6 +336,7 @@ impl<K: Ord + Clone, T: Ord + Clone> JSetMap<K, T> {
     pub fn remove(&mut self, k: &K, t: &T) -> bool {
         let was = Self::raw_remove(&mut self.map, k, t);
         if was {
+            self.stamp(k);
             self.log.push((k.clone(), t.clone(), true));
         }
         was
@@ -303,7 +357,7 @@ impl<K: Ord + Clone, T: Ord + Clone> JSetMap<K, T> {
     }
 }
 
-impl<K: Ord + Clone + Debug, T: Ord + Clone + Debug> Journaled for JSetMap<K, T> {
+impl<K: Ord + Clone + Hash + Debug, T: Ord + Clone + Debug> Journaled for JSetMap<K, T> {
     #[cfg(test)]
     fn contents(&self) -> String {
         format!("{:?}", self.map)
@@ -319,35 +373,38 @@ impl<K: Ord + Clone + Debug, T: Ord + Clone + Debug> Journaled for JSetMap<K, T>
         while self.log.len() > m {
             let Some((k, t, was)) = self.log.pop() else { break };
             if was {
-                Self::raw_insert(&mut self.map, k, t);
+                Self::raw_insert(&mut self.map, k.clone(), t);
             } else {
                 Self::raw_remove(&mut self.map, &k, &t);
             }
+            self.stamp(&k);
         }
     }
 }
 
 /// A map of maps journaling each inner entry's previous value (an emptied inner map is removed).
 #[derive(Debug)]
-pub struct JNested<K: Ord + Clone, K2: Ord + Clone, V: Clone> {
+pub struct JNested<K: Ord + Clone + Hash, K2: Ord + Clone, V: Clone> {
     map: BTreeMap<K, BTreeMap<K2, V>>,
+    stamps: Stamps,
     log: Vec<(K, K2, Option<V>)>,
 }
 
-impl<K: Ord + Clone, K2: Ord + Clone, V: Clone> Default for JNested<K, K2, V> {
+impl<K: Ord + Clone + Hash, K2: Ord + Clone, V: Clone> Default for JNested<K, K2, V> {
     fn default() -> Self {
-        JNested { map: BTreeMap::new(), log: Vec::new() }
+        JNested { map: BTreeMap::new(), stamps: Stamps::default(), log: Vec::new() }
     }
 }
 
-impl<K: Ord + Clone, K2: Ord + Clone, V: Clone> Deref for JNested<K, K2, V> {
+impl<K: Ord + Clone + Hash, K2: Ord + Clone, V: Clone> Deref for JNested<K, K2, V> {
     type Target = BTreeMap<K, BTreeMap<K2, V>>;
     fn deref(&self) -> &BTreeMap<K, BTreeMap<K2, V>> {
+        self.stamps.read_all();
         &self.map
     }
 }
 
-impl<K: Ord + Clone, K2: Ord + Clone, V: Clone> JNested<K, K2, V> {
+impl<K: Ord + Clone + Hash, K2: Ord + Clone, V: Clone> JNested<K, K2, V> {
     fn put(map: &mut BTreeMap<K, BTreeMap<K2, V>>, k: K, k2: K2, v: Option<V>) -> Option<V> {
         match v {
             Some(v) => map.entry(k).or_default().insert(k2, v),
@@ -361,21 +418,34 @@ impl<K: Ord + Clone, K2: Ord + Clone, V: Clone> JNested<K, K2, V> {
             }
         }
     }
+    /// The inner map of `k` (a read of that key: any change of its entries moves it).
+    pub fn get<Q: Ord + Hash + ?Sized>(&self, k: &Q) -> Option<&BTreeMap<K2, V>>
+    where
+        K: Borrow<Q>,
+    {
+        self.stamps.read(k);
+        self.map.get(k)
+    }
+    fn stamp(&mut self, k: &K) {
+        self.stamps.wrote(k, self.map.contains_key(k));
+    }
     pub fn insert(&mut self, k: K, k2: K2, v: V) -> Option<V> {
         let old = Self::put(&mut self.map, k.clone(), k2.clone(), Some(v));
+        self.stamp(&k);
         self.log.push((k, k2, old.clone()));
         old
     }
     pub fn remove(&mut self, k: &K, k2: &K2) -> Option<V> {
         let old = Self::put(&mut self.map, k.clone(), k2.clone(), None);
         if old.is_some() {
+            self.stamp(k);
             self.log.push((k.clone(), k2.clone(), old.clone()));
         }
         old
     }
 }
 
-impl<K: Ord + Clone + Debug, K2: Ord + Clone + Debug, V: Clone + Debug> Journaled for JNested<K, K2, V> {
+impl<K: Ord + Clone + Hash + Debug, K2: Ord + Clone + Debug, V: Clone + Debug> Journaled for JNested<K, K2, V> {
     #[cfg(test)]
     fn contents(&self) -> String {
         format!("{:?}", self.map)
@@ -390,7 +460,8 @@ impl<K: Ord + Clone + Debug, K2: Ord + Clone + Debug, V: Clone + Debug> Journale
     fn rollback_to(&mut self, m: usize) {
         while self.log.len() > m {
             let Some((k, k2, old)) = self.log.pop() else { break };
-            Self::put(&mut self.map, k, k2, old);
+            Self::put(&mut self.map, k.clone(), k2, old);
+            self.stamp(&k);
         }
     }
 }

@@ -4,8 +4,13 @@
 //! looked (`take_touched`), so the timelines re-partition only around them. A role commit of an
 //! account that does not count by the epoch rule (spec/permissions.md §5.5) stays held but no
 //! timeline reads it (`set_counted`): the filter runs before the timeline.
+//!
+//! Reads and changes are stamped for memos (`memo::Stamps`): a record by its thing
+//! (`created`), everything else as one whole. `Timelines` holds perm's timelines over it,
+//! stamped per thing.
 
 use super::journal::Journaled;
+use super::memo::Stamps;
 use osis_base::{CommitId, CreationRecord, RecordLink, Role, Tid};
 use osis_perm::{HeldSet, RoleCommit};
 use std::collections::{BTreeMap, BTreeSet};
@@ -44,6 +49,10 @@ pub struct Held {
     /// left out of what perm reads (`HeldSet::edge_commits`). By ID, whether held or not, so a
     /// commit re-derived (`add_commit`) keeps its standing.
     uncounted: BTreeSet<CommitId>,
+    /// Stamps `created`, per thing.
+    records_read: Stamps,
+    /// Stamps everything else, as one.
+    rest_read: Stamps,
 }
 
 fn named(c: &RoleCommit) -> Vec<(Tid, Tid)> {
@@ -53,16 +62,19 @@ fn named(c: &RoleCommit) -> Vec<(Tid, Tid)> {
 impl Held {
     /// The record of `t`.
     pub fn created(&self, t: &Tid) -> Option<&CreationRecord> {
+        self.records_read.read(t);
         self.created.get(t)
     }
     /// The held things whose record names `t` as first admin (one link down the record
     /// chain).
     pub fn first_admin_of(&self, t: &Tid) -> impl Iterator<Item = &Tid> {
+        self.rest_read.read_all();
         self.first_admin_of.get(t).into_iter().flatten()
     }
     /// The actors named as a holder on some thing (edge writes, a creation record naming its
     /// first admin).
     pub fn holders(&self) -> impl Iterator<Item = &Tid> {
+        self.rest_read.read_all();
         self.holders.keys()
     }
     pub fn generation(&self) -> u64 {
@@ -70,15 +82,18 @@ impl Held {
     }
     /// Edge commits with a write on `t`, of any validity.
     pub fn commits_on(&self, t: &Tid) -> &[Arc<RoleCommit>] {
+        self.rest_read.read_all();
         self.commits.get(t).map(Vec::as_slice).unwrap_or_default()
     }
     /// Things `holder` is named on as a holder (edge writes, a creation record naming its first admin).
     pub fn named_on(&self, holder: &Tid) -> impl Iterator<Item = &Tid> {
+        self.rest_read.read_all();
         self.holders.get(holder).into_iter().flat_map(|m| m.keys())
     }
 
     /// Holders named on `thing` (edge writes, a creation record naming its first admin).
     pub fn holders_of(&self, thing: &Tid) -> impl Iterator<Item = &Tid> {
+        self.rest_read.read_all();
         self.named.get(thing).into_iter().flatten()
     }
 
@@ -86,6 +101,7 @@ impl Held {
     /// named on as holders, transitively (spec/permissions.md §1: paths climb record links and
     /// role edges). A change of authority at `from` changes it only there.
     pub fn reach(&self, from: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+        self.rest_read.read_all();
         let mut out = BTreeSet::new();
         let mut stack: Vec<Tid> = from.iter().copied().collect();
         while let Some(t) = stack.pop() {
@@ -201,6 +217,8 @@ impl Held {
     }
 
     fn set_created(&mut self, t: Tid, r: Option<CreationRecord>) -> Option<CreationRecord> {
+        self.records_read.wrote(&t, r.is_some());
+        self.rest_read.wrote_all();
         let old = match r {
             Some(r) => {
                 if let Some(up) = r.first_admin() {
@@ -276,6 +294,7 @@ impl Held {
         self.moved.insert(c.author);
         self.count(named(&c), true);
         self.generation += 1;
+        self.rest_read.wrote_all();
         self.ids.insert(c.id, c);
     }
 
@@ -283,6 +302,7 @@ impl Held {
     fn take(&mut self, id: &CommitId) -> Option<Arc<RoleCommit>> {
         let c = self.ids.remove(id)?;
         self.generation += 1;
+        self.rest_read.wrote_all();
         for o in &c.ops {
             if let Some(v) = self.commits.get_mut(&o.target) {
                 v.retain(|x| !Arc::ptr_eq(x, &c));
@@ -323,6 +343,7 @@ impl Held {
 
     /// The edge commit held under this ID.
     pub fn edge_commit(&self, id: &CommitId) -> Option<&RoleCommit> {
+        self.rest_read.read_all();
         self.ids.get(id).map(|c| &**c)
     }
 
@@ -348,6 +369,7 @@ impl Held {
             self.touched.extend(targets);
             self.generation += 1;
         }
+        self.rest_read.wrote_all();
     }
 
     /// Drops the commit with this ID.
@@ -414,11 +436,13 @@ impl Journaled for Held {
 
 impl HeldSet for Held {
     fn things(&self) -> Vec<Tid> {
+        self.rest_read.read_all();
         let mut s: BTreeSet<Tid> = self.commits.keys().copied().collect();
         s.extend(self.created.keys().copied());
         s.into_iter().collect()
     }
     fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>> {
+        self.rest_read.read_all();
         let Some(cs) = self.commits.get(thing) else { return Vec::new() };
         if self.uncounted.is_empty() {
             return cs.clone();
@@ -426,7 +450,68 @@ impl HeldSet for Held {
         cs.iter().filter(|c| !self.uncounted.contains(&c.id)).cloned().collect()
     }
     fn created(&self, thing: &Tid) -> Option<CreationRecord> {
+        self.records_read.read(thing);
         self.created.get(thing).cloned()
+    }
+}
+
+/// perm's timelines over the held set (`Core::timelines`), stamped per thing: an update stamps
+/// the things whose inputs it was given and those whose timeline it evaluated or continued
+/// (`osis_perm::Timelines::changed`: every other thing's answers are unchanged).
+pub struct Timelines {
+    of: osis_perm::Timelines,
+    stamps: Stamps,
+}
+
+impl Default for Timelines {
+    fn default() -> Self {
+        Timelines { of: osis_perm::Timelines::new(), stamps: Stamps::default() }
+    }
+}
+
+impl std::ops::Deref for Timelines {
+    type Target = osis_perm::Timelines;
+    fn deref(&self) -> &osis_perm::Timelines {
+        self.stamps.read_all();
+        &self.of
+    }
+}
+
+impl Timelines {
+    /// The timeline of the component holding `thing`.
+    pub fn get(&self, thing: &Tid) -> Option<&osis_perm::Timeline> {
+        self.stamps.read(thing);
+        self.of.get(thing)
+    }
+
+    fn moved(&mut self, touched: &BTreeSet<Tid>) {
+        for t in touched.iter().chain(self.of.changed()) {
+            self.stamps.wrote(t, true);
+        }
+    }
+
+    pub fn update_touched(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>) -> osis_perm::Changed {
+        let c = self.of.update_touched(held, touched);
+        self.moved(touched);
+        c
+    }
+
+    pub fn update_touched_cached(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>, saved: &mut dyn FnMut(&Tid) -> Option<Vec<u8>>, salt: &[u8]) -> osis_perm::Changed {
+        let c = self.of.update_touched_cached(held, touched, saved, salt);
+        self.moved(touched);
+        c
+    }
+
+    /// The timelines to change in a way that may move any thing's.
+    pub fn change(&mut self) -> &mut osis_perm::Timelines {
+        self.stamps.wrote_all();
+        &mut self.of
+    }
+
+    /// The timelines' bookkeeping, which moves no timeline: dispute detection's switch and
+    /// findings, what was saved, the tests' path switch.
+    pub fn aside(&mut self) -> &mut osis_perm::Timelines {
+        &mut self.of
     }
 }
 

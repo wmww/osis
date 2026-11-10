@@ -14,6 +14,7 @@ pub(crate) mod held;
 pub mod listing;
 pub(crate) mod index;
 pub(crate) mod journal;
+pub(crate) mod memo;
 pub(crate) mod pages;
 pub(crate) mod large;
 pub(crate) mod read;
@@ -39,7 +40,7 @@ use osis_crdt::{Dot, Fragment, SourceKind};
 use osis_crypto::{CryptoRngCore, SeededRng};
 use osis_keys::ActorEpochs;
 use journal::{JMap, JNested, JSet, JSetMap, Journaled};
-use osis_perm::{Point, Timelines};
+use osis_perm::Point;
 use osis_store::{AspectUnit, Backend, RootStorage, Shred, Store, StoreConfig, Transaction};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -796,16 +797,17 @@ pub struct Core {
     /// O(roster) a pass otherwise. Holds while `ix.departures` holds its entry (same roster);
     /// cleared with it.
     pub reseal_quiet: BTreeSet<Tid>,
+    /// `Core::epochs` per thing (`memo`).
+    pub(crate) epochs_of: memo::Memo<Tid, Option<osis_keys::ActorEpochs>>,
     /// Numbers `Indexes::rotations`; never rolled back.
     pub rotation_seq: u64,
-    /// Signing chains built, with what they were built from: the `Indexes::rotations` entry, the side
-    /// chosen and how many seeds of the account are held.
-    pub(crate) account_views: std::cell::RefCell<HashMap<Tid, (crate::flows::account::ViewKey, Arc<crate::flows::account::AccountView>)>>,
-    /// How many times `Core::account_view` built one (tests count work).
-    pub(crate) account_view_builds: std::cell::Cell<u64>,
-    /// What this node's account's epochs were last judged from (`Core::account_view_stale`); empty
-    /// after an open, so the first pass judges them again.
-    pub(crate) epochs_judged_at: Option<crate::flows::account::ViewKey>,
+    /// `Core::account_view` per account (`memo`).
+    pub(crate) account_views: memo::Memo<Tid, Option<Arc<crate::flows::account::AccountView>>>,
+    /// `Core::account_epochs` per account (`memo`).
+    pub(crate) account_epochs_of: memo::Memo<Tid, Option<osis_keys::ActorEpochs>>,
+    /// What this node's account's epochs were last judged from (`flows::account::refresh_epochs`);
+    /// empty after an open, when the persisted judgment stands.
+    pub(crate) epochs_judged_from: Option<crate::flows::account::JudgedFrom>,
     /// The keyless actor grants (target, holder) over those held (`rotation::members::key_access`):
     /// O(edges) to build. Cleared by `role_changed` and a rollback (the timelines move back).
     pub key_access: Option<Arc<BTreeSet<(Tid, Tid)>>>,
@@ -815,7 +817,7 @@ pub struct Core {
     pub inbox_actors: Option<Arc<BTreeMap<LabelId, Vec<Tid>>>>,
     /// Page indexes of the cached states kept paged in the store.
     pub pages: HashMap<(Tid, Ak), pages::PageIndex>,
-    pub timelines: Timelines,
+    pub timelines: held::Timelines,
     /// The sides taken in admin disputes (`crate::sides`), the walk's trust set; `detect`:
     /// dispute detection is on (after open: a held set loaded again has no arrivals).
     pub sides: crate::sides::Sides,
@@ -909,13 +911,13 @@ pub struct Core {
     /// Key actors other than the node whose seed this node holds for now (a link key from
     /// its card, a link key; role flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
-    pub key_actors: BTreeMap<Tid, Arc<Identity>>,
+    pub key_actors: memo::Stamped<Tid, Arc<Identity>>,
     /// The account this node belongs to (`Engine::join_account`): the author of its commits and
     /// the holder of its roles. `None` before it joins one.
     pub account: Option<Tid>,
     /// Accounts this node signs as, seeds from each one's devices actor (`Engine::hold_account`),
     /// retaken on every open.
-    pub accounts: BTreeMap<Tid, Arc<crate::flows::account::HeldAccount>>,
+    pub accounts: memo::Stamped<Tid, Arc<crate::flows::account::HeldAccount>>,
     /// The account this node was removed from and has not dropped what it read as it yet
     /// (`flows::signing::leave_if_removed`; the lost-access drop takes it).
     pub left: BTreeSet<Tid>,
@@ -1465,6 +1467,10 @@ impl Core {
             memory_tx: _,
             made_labels: _,
             dirty: _,
+            // memos: each answer holds while what it read does (`memo`)
+            epochs_of: _,
+            account_views: _,
+            account_epochs_of: _,
             // caches, dropped when anything changed (`states` and `pages` per written aspect)
             states: _,
             pages: _,
@@ -1473,9 +1479,7 @@ impl Core {
             holders_named: _,
             reseal_quiet: _,
             rotation_seq: _,
-            account_views: _,
-            account_view_builds: _,
-            epochs_judged_at: _,
+            epochs_judged_from: _,
             key_access: _,
             inbox_actors: _,
             acting_memo: _,
@@ -1636,14 +1640,14 @@ impl Core {
             holders_named: HashMap::new(),
             reseal_quiet: BTreeSet::new(),
             rotation_seq: 0,
-            account_views: Default::default(),
-            account_view_builds: Default::default(),
-            epochs_judged_at: None,
+            account_views: memo::Memo::new("account view"),
+            account_epochs_of: memo::Memo::new("account epochs"),
+            epochs_judged_from: None,
             key_access: None,
             acting_memo: None,
             inbox_actors: None,
             pages: HashMap::new(),
-            timelines: Timelines::new(),
+            timelines: held::Timelines::default(),
             sides: crate::sides::Sides::default(),
             detect: false,
             walk_cache_min: index::WALK_CACHE_MIN,
@@ -1685,11 +1689,12 @@ impl Core {
             piece_fault: None,
             #[cfg(test)]
             step_fault: None,
-            key_actors: BTreeMap::new(),
+            key_actors: Default::default(),
+            epochs_of: memo::Memo::new("epochs"),
             account: None,
             left: BTreeSet::new(),
             signing_due: false,
-            accounts: BTreeMap::new(),
+            accounts: Default::default(),
             keep_bodies: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
             valueless_dirty: BTreeSet::new(),
@@ -2856,7 +2861,7 @@ impl Engine {
         match r {
             Ok(v) => {
                 if let Some(d) = self.core.walks_done.take() {
-                    self.core.timelines.saved(d);
+                    self.core.timelines.aside().saved(d);
                 }
                 self.core.commit_journal();
                 self.core.memory_tx = false;
@@ -2998,7 +3003,7 @@ impl Engine {
     /// on may raise one.
     fn start_detection(&mut self) {
         self.core.detect = true;
-        self.core.timelines.detect(true);
+        self.core.timelines.aside().detect(true);
     }
 }
 

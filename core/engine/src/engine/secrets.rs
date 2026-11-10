@@ -44,6 +44,10 @@ impl Core {
     /// epochs learned from a rotation since found invalid (`stale_epochs`) are added for reading
     /// only.
     pub(crate) fn epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
+        self.epochs_of.get(tid, || self.derive_epochs(tid))
+    }
+
+    fn derive_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         let d = self.chain_epochs(tid).or_else(|| self.unboxed_epochs(tid));
         let Some(x) = self.stale_epochs(tid) else { return d };
         // no base actor's epochs held: the leftovers alone, still reading-only

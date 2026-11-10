@@ -352,11 +352,12 @@ fn account_view_is_built_once_per_rotation() {
         lp.peers[0].engine.commit(m).unwrap();
     };
     write(&mut lp);
-    let before = lp.peers[0].engine.core.account_view_builds.get();
+    let builds = || crate::costs::take().into_iter().filter(|x| x.0 == "account view").map(|x| x.2).sum::<u64>();
+    builds();
     for _ in 0..50 {
         write(&mut lp);
     }
-    assert_eq!(lp.peers[0].engine.core.account_view_builds.get(), before, "no write rebuilds it");
+    assert_eq!(builds(), 0, "no write rebuilds it");
     // a rotation builds it once (the epoch rule judges it on arrival), however many reads follow
     let e = &mut lp.peers[0].engine;
     let held = e.core.accounts.get(&a.account).unwrap().clone();
@@ -364,13 +365,13 @@ fn account_view_is_built_once_per_rotation() {
     let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([81; 32]));
     let rec = e.core.created(&a.account).unwrap().clone();
     let ts = Ts::make(e.now(), 0).unwrap();
-    let before = e.core.account_view_builds.get();
+    builds();
     e.ingest(&rotation(rec, &first, &next, ts), Vec::new()).unwrap();
     assert!(!e.core.accounts.contains_key(&a.account), "holding no seed of the new epoch, the node leaves");
     for _ in 0..5 {
         assert_eq!(e.core.account_delete_key(&a.account).unwrap(), next.signing.verifying_key());
     }
-    assert_eq!(e.core.account_view_builds.get(), before + 3, "once for the rotation, once each as D's roster and the seeds held (the side of a node of the account) went");
+    assert_eq!(builds(), 3, "once for the rotation, once each as D's roster and the seeds held (the side of a node of the account) went");
 }
 
 // spec/sync.md §3 (invite requests): the request gate reads an author's signature at the header's epoch: a commit signed at the first epoch verifies only there
@@ -530,12 +531,12 @@ fn rotation_judges_its_epochs_once_and_writes_stay_flat() {
         e.ingest(&rot, Vec::new()).unwrap();
         let judged = |c: Vec<(&'static str, std::time::Duration, u64)>| c.into_iter().find(|x| x.0 == "rejudge: a commit").map_or(0, |x| x.2);
         let on_rotation = judged(crate::costs::take());
-        let builds = e.core.account_view_builds.get();
         let mut m = crate::Mutation::new();
         m.set(t, &Ak::new("x:c.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
         lp.peers[1].commit(m).unwrap();
         let e = &mut lp.peers[1].engine;
-        (on_rotation, judged(crate::costs::take()), e.core.account_view_builds.get() - builds)
+        let costs = crate::costs::take();
+        (on_rotation, judged(costs.clone()), costs.iter().filter(|x| x.0 == "account view").map(|x| x.2).sum::<u64>())
     };
     let (small, large) = (count(5), count(50));
     assert!(large.0 >= 45 && large.0 <= small.0 + 50, "a rotation judges its epoch's commits: {small:?} {large:?}");
