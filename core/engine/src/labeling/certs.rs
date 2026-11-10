@@ -173,14 +173,14 @@ impl Engine {
         }
         // the record chain's records
         out.records.extend(self.core.record_chain(g).filter_map(|s| s.thing()));
-        // the record chains of the label's things whose first admin ended: no body under the
-        // label carries that record once the ending dropped it (spec/permissions.md §4). A walk
-        // of the first admins: few beside the label's things
-        let closure = self.closure(g);
-        let ended: Vec<Tid> = self.core.ix.held.first_admins().filter(|e| self.core.ended(e) && self.core.ix.held.first_admin_of(e).any(|d| closure.contains(d))).copied().collect();
-        for e in ended {
+        // the ended actors on an authority path into the label's closure: their records and
+        // frozen permission history, which no body under the label carries once their ending
+        // dropped their own (spec/permissions.md §4)
+        for e in self.ended_upstream(g) {
             out.records.insert(e);
             out.records.extend(self.core.record_chain(&e).filter_map(|s| s.thing()));
+            let certs = self.history_certificates(&e);
+            self.cert_parts(&certs, &mut out);
         }
         // the cards of the key actors holding `g` that are no node (a link key: its writes
         // under the label verify by its card, which no chain of this node's carries; a node
@@ -203,6 +203,41 @@ impl Engine {
             self.cert_parts(&certs, &mut out);
         }
         out.records.retain(|t| self.core.created(t).is_some());
+        out
+    }
+
+    /// The ended actors held here on an authority path into `g`'s closure (spec/commits.md §5
+    /// Ending): named first admin or holder on a live thing of the closure, or on such an ended
+    /// actor. A walk of the held holders, few beside the closure's things, and up from the
+    /// ended ones among them.
+    pub fn ended_upstream(&self, g: &Tid) -> BTreeSet<Tid> {
+        let closure = self.closure(g);
+        let held = &self.core.ix.held;
+        let ended: Vec<Tid> = held.holders().filter(|e| self.core.ended(e)).copied().collect();
+        let mut out = BTreeSet::new();
+        // to a fixpoint: an ended actor counts once it is named on a live closure thing or on one counted
+        loop {
+            let more: Vec<Tid> = ended.iter().filter(|e| !out.contains(*e) && held.named_on(e).any(|x| x != *e && (closure.contains(x) && !self.core.ended(x) || out.contains(x)))).copied().collect();
+            if more.is_empty() {
+                return out;
+            }
+            out.extend(more);
+        }
+    }
+
+    /// What judges ended actor `t`'s permission history (spec/permissions.md §4): every held
+    /// edge write on `t` with its write certificates (its author's chains, its holder's).
+    fn history_certificates(&self, t: &Tid) -> osis_perm::Certificates {
+        let mut out = osis_perm::Certificates::default();
+        let Some(tl) = self.core.timelines.get(t) else { return out };
+        for cm in self.core.ix.held.commits_on(t) {
+            for (i, _) in cm.ops.iter().enumerate().filter(|(_, o)| o.target == *t) {
+                let Some(cs) = u32::try_from(i).ok().and_then(|i| tl.write_certificates(&osis_perm::WriteId(cm.id, i))) else { continue };
+                out.created.extend(cs.created);
+                out.commits.extend(cs.commits);
+                out.keys.extend(cs.keys);
+            }
+        }
         out
     }
 

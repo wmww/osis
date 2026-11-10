@@ -172,7 +172,7 @@ impl SyncEngine {
         let closure = self.engine.closure(g);
         let mut out = crate::labeling::Certs::default();
         // records travel raw, also those of the label's own things: a creation's body goes when
-        // its thing ends, and what it created lives on (spec/permissions.md §4)
+        // its thing ends, and what depends on it lives on (spec/permissions.md §4)
         let held = self.held_records_at(l, host.as_ref().map(std::slice::from_ref));
         out.records = chain.records.difference(&held).copied().collect();
         for (x, want) in chain.commits {

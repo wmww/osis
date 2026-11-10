@@ -263,8 +263,8 @@ impl<'d> Write<'d> {
     }
 
     /// Ends `tid` for everyone: every node drops the thing, whole, and ignores what is written on
-    /// it later. Unlike `delete` it cannot be undone. What it created lives on: things it made
-    /// stay with their other admins, and what an ended account signed still verifies. Only an
+    /// it later. Unlike `delete` it cannot be undone. What depends on it lives on: rights others
+    /// held through it stand as they were, and what an ended account signed still verifies. Only an
     /// admin of the thing may end it (`Permission` otherwise); an account ends itself. An
     /// expiring commit that creates a thing ends it the same way when it expires.
     pub fn end(&mut self, tid: Tid) -> Result<()> {

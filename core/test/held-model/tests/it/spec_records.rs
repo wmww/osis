@@ -1,7 +1,7 @@
 //! Records as writes (notes/expiry-creation-design.md §3): a thing exists while a creation of it
 //! (`created.0`) is held live; parts on a thing that does not exist are not held, and fetched
 //! again once its creation comes; expiry or purge of the creation ends the thing, and the node
-//! forgets it; things an ended thing created live on. spec/commits.md §4, §5, §6;
+//! forgets it; what depends on an ended thing lives on. spec/commits.md §4, §5, §6;
 //! spec/permissions.md §1.
 use crate::util::*;
 use held_model::gen::{creation, ACCOUNT, CREATION_ID, REG};
@@ -128,7 +128,7 @@ fn write_after_the_end_is_ignored_spec_commits_6() {
 }
 
 // spec/permissions.md §1 (first admins), notes/expiry-creation-design.md §3 (Dependents, B):
-// things an ended thing created live on: thing 12, whose first admin is the account, reads on
+// what depends on an ended thing lives on: thing 12, whose first admin is the account, reads on
 // after the account's creation expires, its chain proved by the account's raw record
 #[test]
 fn things_an_ended_thing_created_live_on_spec_permissions_1() {

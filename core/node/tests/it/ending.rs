@@ -456,6 +456,46 @@ fn an_ended_first_admin_stays_a_chain_proof_until_its_last_dependent_goes_spec_c
     }
 }
 
+// spec/commits.md §5 (Ending: dependents): an ended actor a held edge names holder on another
+// thing is on that thing's authority paths and keeps its record and edges, as a first admin does;
+// once that thing ends too, nothing of either is left
+#[test]
+fn an_ended_holder_stays_until_what_names_it_goes_spec_commits_5() {
+    let mut lp = crate::common::net(2, 0x7e6);
+    lp.sync_all().unwrap();
+    let now = lp.peers[0].engine.now().0;
+    let me = lp.peers[0].engine.me();
+    let made = |lp: &mut osis_node::local_peer::LocalPeer, v: &str, at: u64| {
+        let mut m = Mutation::new();
+        let x = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(x, &crate::common::REG, &s(v)).unwrap();
+        m.expires_all(osis_base::WallMs(at));
+        lp.peers[0].commit(m).unwrap().unwrap();
+        x
+    };
+    let t = made(&mut lp, "t", now + 1_000);
+    let x = made(&mut lp, "x", now + 5_000);
+    let admin = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
+    crate::common::set_edge(&mut lp.peers[0].engine, x, t, Some(admin), None);
+    lp.sync_all().unwrap();
+    lp.advance(2_000);
+    for i in 0..2 {
+        let e = &mut lp.peers[i].engine;
+        e.tick().unwrap();
+        assert!(!e.knows(&t), "peer {i}: t ended");
+        assert!(e.core.created(&t).is_some(), "peer {i}: t's record kept, x names it holder");
+        assert!(e.roster(&x).contains_key(&t), "peer {i}: t's edge on x stands");
+    }
+    lp.advance(4_000);
+    for i in 0..2 {
+        let e = &mut lp.peers[i].engine;
+        e.tick().unwrap();
+        assert!(!e.knows(&x), "peer {i}: x ended");
+        assert!(e.core.created(&x).is_none() && e.core.created(&t).is_none(), "peer {i}: neither leaves a record");
+        assert!(e.core.timelines.get(&t).is_none_or(|tl| tl.roster(&t, osis_perm::At::END).is_empty()), "peer {i}: no edges of t kept");
+    }
+}
+
 // spec/commits.md §5 (Ending: dependents), spec/permissions.md §4 (records travel raw): an account
 // that ends itself leaves the group it created running under its other admins. Its own data is
 // gone; what it wrote there still reads and verifies, the other admin writes on, and a node
@@ -561,48 +601,8 @@ fn a_node_joining_after_a_first_admin_ended_reads_its_dependents_spec_commits_5(
     assert_eq!(net.read(a, x), Some(s("x2")), "d, an admin of g, writes x through t's standing edges");
 }
 
-// spec/commits.md §5 (Ending: dependents), issues/ended-first-admin-keep-is-local.md: b is admin of
-// x only by its edge on x's first admin t. t ends by expiry while c holds no dependent of it, so c
-// keeps nothing of t, its edges included; once x reaches c, c's roster of x lacks b's grant that a
-// and b show. A node granted afterwards does not read x at all (cause not yet split out: t's own
-// secrets, or c's deletes at the host). Fails: the keep rule is per node
-#[test]
-#[ignore]
-fn repro_ended_first_admin_edges_lost_where_no_dependent_was_held() {
-    let Setup { mut net, a, b, c, g } = setup();
-    let at = net.now() + 5_000;
-    let mut m = Mutation::new();
-    let t = net.engine(a).new_thing(&mut m, g);
-    m.set(t, &REG, &s("t")).unwrap();
-    let mut items = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
-    items.items.insert(t);
-    m.set(g, &ct::GROUP, &items).unwrap();
-    m.expires_all(osis_base::WallMs(at));
-    net.engine(a).commit(m).unwrap().unwrap();
-    net.run();
-    let tb = net.tid(b);
-    set_edge(net.engine(a), t, tb, Role::Admin);
-    net.run();
-    net.set_online(c, false);
-    let x = net.item(a, g, t, "x");
-    net.run();
-    let ta = net.tid(a);
-    set_edge(net.engine(b), x, ta, Role::Read);
-    net.run();
-    let ra = net.engine(a).roster(&x);
-    assert!(ra.contains_key(&ta), "a: b's grant on x by its admin on t");
-    for _ in 0..2 {
-        net.advance(70_000);
-    }
-    net.set_online(c, true);
-    for _ in 0..3 {
-        net.advance(70_000);
-    }
-    for n in [a, b, c] {
-        assert!(!net.engine(n).knows(&t), "node {n}: t ended");
-        assert_eq!(net.read(n, x), Some(s("x")), "node {n}: x lives on");
-        assert_eq!(net.engine(n).roster(&x), ra, "node {n}: x's roster");
-    }
+/// A node granted read on `g` by node `by` after the fact, synced a while: its index.
+fn granted_later(net: &mut Net, by: usize, g: Tid) -> usize {
     let d = net.joining_node(4, &[0]);
     let addr = net.address(0);
     let (made, done) = net.engine(d).create_account(std::slice::from_ref(&addr)).unwrap();
@@ -610,17 +610,140 @@ fn repro_ended_first_admin_edges_lost_where_no_dependent_was_held() {
     let acts = net.sync(d).carry_out(done).unwrap();
     net.actions(d, acts);
     net.run();
-    net.pair(d, a);
+    net.pair(d, by);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-    let done = net.engine(a).grant(&g, &dt, &edge).unwrap();
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
+    let done = net.engine(by).grant(&g, &dt, &edge).unwrap();
+    let acts = net.sync(by).carry_out(done).unwrap();
+    net.actions(by, acts);
     net.run();
     let acts = net.accept_invites(d);
     net.actions(d, acts);
     for _ in 0..3 {
         net.advance(70_000);
     }
+    d
+}
+
+/// A thing `t` in `g` (first admin `g`) that ends by expiry in 5 s, with b granted admin on it.
+/// `listed`: `g` lists it in a durable commit of its own, so the ended thing stays in `g`'s
+/// closure; else in its expiring creation commit, so it leaves the closure as it ends.
+fn ending_actor(net: &mut Net, a: usize, b: usize, g: Tid, listed: bool) -> Tid {
+    let at = net.now() + 5_000;
+    let mut m = Mutation::new();
+    let t = net.engine(a).new_thing(&mut m, g);
+    m.set(t, &REG, &s("t")).unwrap();
+    if listed {
+        m.expires_all(osis_base::WallMs(at));
+        net.engine(a).commit(m).unwrap().unwrap();
+        m = Mutation::new();
+    }
+    let mut items = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(t);
+    m.set(g, &ct::GROUP, &items).unwrap();
+    if !listed {
+        m.expires_all(osis_base::WallMs(at));
+    }
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let tb = net.tid(b);
+    set_edge(net.engine(a), t, tb, Role::Admin);
+    net.run();
+    t
+}
+
+/// Lets `t` end (`ending_actor`) with c offline through it, then brings c back.
+fn end_with_c_away(net: &mut Net, c: usize) {
+    for _ in 0..2 {
+        net.advance(70_000);
+    }
+    net.set_online(c, true);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+}
+
+// spec/commits.md §5 (Ending: dependents), spec/permissions.md §4 (Placing): b is admin of x only
+// by its edge on x's first admin t. t ends by expiry while c holds no dependent of it (x reaches c
+// after the ending), so c keeps nothing of t and its ending deletes t's bodies at the host; the
+// holders of x place t's frozen edges under the label again (as closure bodies while g lists t,
+// else as certificate copies), so c judges b's grant on x as a and b do
+#[test]
+fn an_ended_first_admins_edges_reach_a_node_that_held_no_dependent_spec_commits_5() {
+    for listed in [false, true] {
+        let Setup { mut net, a, b, c, g } = setup();
+        let t = ending_actor(&mut net, a, b, g, listed);
+        net.set_online(c, false);
+        let x = net.item(a, g, t, "x");
+        net.run();
+        let ta = net.tid(a);
+        set_edge(net.engine(b), x, ta, Role::Read);
+        net.run();
+        let ra = net.engine(a).roster(&x);
+        assert!(ra.contains_key(&ta), "listed {listed}: a: b's grant on x by its admin on t");
+        end_with_c_away(&mut net, c);
+        for n in [a, b, c] {
+            assert!(!net.engine(n).knows(&t), "listed {listed}: node {n}: t ended");
+            assert_eq!(net.read(n, x), Some(s("x")), "listed {listed}: node {n}: x lives on");
+            assert_eq!(net.engine(n).roster(&x), ra, "listed {listed}: node {n}: x's roster");
+        }
+    }
+}
+
+// spec/commits.md §5 (Ending: dependents), spec/permissions.md §1 (the first admin is history): t,
+// granted admin on x by an edge (x's first admin is g), ends by expiry; b, admin of x only through
+// t, granted on x before the ending and grants again after it through t's frozen edges. Every node
+// agrees on x's roster: those that held x at the ending, c which got the ending first, and a node
+// granted afterwards
+#[test]
+fn authority_through_an_ended_granted_admin_stands_spec_commits_5() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let t = ending_actor(&mut net, a, b, g, true);
+    net.set_online(c, false);
+    let x = net.item(a, g, g, "x");
+    net.run();
+    set_edge(net.engine(a), x, t, Role::Admin);
+    net.run();
+    let ta = net.tid(a);
+    set_edge(net.engine(b), x, ta, Role::Read);
+    net.run();
+    end_with_c_away(&mut net, c);
+    let tc = net.tid(c);
+    set_edge(net.engine(b), x, tc, Role::Write);
+    net.run();
+    for _ in 0..2 {
+        net.advance(70_000);
+    }
+    let ra = net.engine(a).roster(&x);
+    assert!(ra.get(&ta).is_some_and(|e| e.role == Role::Read), "a: b's grant before the ending");
+    assert!(ra.get(&tc).is_some_and(|e| e.role == Role::Write), "a: b's grant after it");
+    for n in [a, b, c] {
+        assert!(!net.engine(n).knows(&t), "node {n}: t ended");
+        assert!(net.engine(n).core.created(&t).is_some(), "node {n}: t's record stays, x names it holder");
+        assert_eq!(net.engine(n).roster(&x), ra, "node {n}: x's roster");
+    }
+    let d = granted_later(&mut net, a, g);
+    assert_eq!(net.read(d, x), Some(s("x")), "d: x reads");
+    assert_eq!(net.engine(d).roster(&x), ra, "d: x's roster");
+}
+
+// spec/commits.md §5 (Ending: dependents), issues/ended-actor-secrets-unreachable.md: as
+// `an_ended_first_admins_edges_reach_a_node_that_held_no_dependent_spec_commits_5`, then a node
+// granted g afterwards: x has secrets of its own, boxed to its holder actor t, whose own secrets
+// nobody boxes to a new reader once t ended, so it does not read x. Fails
+#[test]
+#[ignore]
+fn repro_newcomer_reads_no_dependent_keyed_by_an_ended_actor() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let t = ending_actor(&mut net, a, b, g, false);
+    net.set_online(c, false);
+    let x = net.item(a, g, t, "x");
+    net.run();
+    let ta = net.tid(a);
+    set_edge(net.engine(b), x, ta, Role::Read);
+    net.run();
+    let ra = net.engine(a).roster(&x);
+    end_with_c_away(&mut net, c);
+    let d = granted_later(&mut net, a, g);
     assert_eq!(net.read(d, x), Some(s("x")), "d: x reads");
     assert_eq!(net.engine(d).roster(&x), ra, "d: x's roster");
 }

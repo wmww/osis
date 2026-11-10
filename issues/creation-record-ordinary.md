@@ -1,5 +1,5 @@
 # A thing's creation as an ordinary write
-> Summary: Built (notes/expiry-creation-design.md): `created.0` follows the ordinary purge and expiry rules, purging or expiring a thing's creation ends the thing, and what it created lives on. Open: Tess's sign-off on the requirements wording.
+> Summary: Built (notes/expiry-creation-design.md): `created.0` follows the ordinary purge and expiry rules, purging or expiring a thing's creation ends the thing, and authority that passed through it stands as its frozen history says. Open: Tess's sign-off on the requirements wording.
 > Priority: normal
 > Tags: spec, permissions, api, tess-call
 
