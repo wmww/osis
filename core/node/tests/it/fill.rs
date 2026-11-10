@@ -136,7 +136,7 @@ fn newest_first_after_what_judging_needs_spec_sync_6() {
         say(&mut net, a, t, i);
         if i == N / 2 {
             let holder = net.tid(d);
-            role = Some(net::set_edge(net.engine(a), t, holder, Role::Write));
+            role = Some(net.grant(a, t, holder, Role::Write));
         }
     }
     net.run();
