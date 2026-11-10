@@ -93,6 +93,19 @@ impl Peer {
         r
     }
 
+    /// Runs what is due (`Engine::tick`) and, as node-sync does after it, fetches again what
+    /// the engine threw out that it woke: a commit parked for drift that runs carries the record
+    /// a thrown-out one awaits.
+    pub fn tick(&mut self) -> Result<()> {
+        self.engine.tick()?;
+        self.wake()
+    }
+
+    /// `Engine::reexamine`, then fetches again what it woke (`tick`).
+    pub fn reexamine(&mut self) -> Result<()> {
+        self.wake()
+    }
+
     fn note(&mut self, bytes: &[u8], blobs: &[(BlobId, Vec<u8>)], r: &Result<Ingested>) {
         let Ok(b) = CommitBlob::decode(bytes) else { return };
         let id = b.id();

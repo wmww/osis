@@ -1360,14 +1360,14 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
             assert_ne!(osis_base::Classified::class(&e), osis_base::ErrorClass::Local, "the keep-everything node: {e}");
         }
     }
-    p.engine.tick().unwrap();
+    p.tick().unwrap();
     crate::disputes::walk_sides(&mut p);
     // a purge drops at this node too: what one that fell left missing comes back as anywhere
     fetch_missing(&mut p, played, held);
     let now = shown(&mut p, &played.things);
     let bodies = if played.model.is_some() { crate::held::bodies(&mut p.engine) } else { Default::default() };
     p.clock.set(later_than(played));
-    p.engine.tick().unwrap();
+    p.tick().unwrap();
     fetch_missing(&mut p, played, held);
     let later = shown(&mut p, &played.things);
     Oracle { held: held.to_vec(), now, later, bodies }
@@ -1391,7 +1391,7 @@ fn fetch_missing(p: &mut Peer, played: &Played, held: &[usize]) {
             let pk = &played.packs[i];
             let _ = p.receive(&pk.bytes, pk.blobs.clone());
         }
-        p.engine.reexamine().unwrap();
+        p.reexamine().unwrap();
         let now = missing(p);
         if now == was {
             break;
@@ -1481,7 +1481,7 @@ fn node_checks(p: &mut Peer, played: &Played, o: &Oracle) -> Result<(), String> 
     };
     at(p, &o.now, "now")?;
     p.clock.set(later_than(played));
-    p.engine.tick().unwrap();
+    p.tick().unwrap();
     at(p, &o.later, "later")
 }
 
@@ -1529,7 +1529,7 @@ fn covered_away(played: &Played, o: &Oracle) -> Result<usize, String> {
     for pk in &played.packs {
         let _ = full.receive(&pk.bytes, pk.blobs.clone());
     }
-    full.engine.reexamine().unwrap();
+    full.reexamine().unwrap();
     let snaps: Vec<(CommitId, Tid, Ak)> = full.engine.commit_ids().iter().filter_map(|c| full.engine.header(c).filter(|h| h.kind.is_compaction()).map(|h| h.aspects.iter().map(|a| (*c, a.tid, a.ak.clone())).collect::<Vec<_>>())).flatten().collect();
     let mut packs = played.packs.clone();
     let (mut order, mut ais, mut left) = (Vec::new(), BTreeMap::new(), 0);
@@ -1710,7 +1710,7 @@ fn move_clock(played: &Played, p: &mut Peer) {
     let states = |p: &mut Peer| -> Vec<String> { p.engine.all_aspects().unwrap().into_iter().map(|(t, a)| format!("{:?}", p.engine.state(&t, &a).unwrap())).collect() };
     let (before, index) = (states(p), p.engine.index_digest());
     p.clock.set(played.now);
-    p.engine.tick().unwrap();
+    p.tick().unwrap();
     if states(p) != before || !index.diff(&p.engine.index_digest()).is_empty() {
         played.moved.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -1780,12 +1780,12 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
     plan.upto(&mut p, usize::MAX);
     each(&mut p);
     if rng.is_some() {
-        let _ = p.engine.reexamine();
+        let _ = p.reexamine();
         each(&mut p);
     }
     // what is due runs, as node-sync runs it before every read (`SyncEngine::expire_due`): a
     // purge request's floor passing judges its purge-on-replace bodies again (spec/commits.md §5)
-    p.engine.tick().unwrap();
+    p.tick().unwrap();
     each(&mut p);
     p
 }
@@ -1809,7 +1809,7 @@ fn explain(played: &Played, held: &[usize], p: &mut Peer, what: &str) {
         let _ = o.receive(&pk.bytes, pk.blobs.clone());
     }
     o.clock.set(p.engine.now());
-    o.engine.tick().unwrap();
+    o.tick().unwrap();
     crate::disputes::walk_sides(&mut o);
     fetch_missing(&mut o, played, held);
     let (a, b) = (p.engine.index_digest(), o.engine.index_digest());
@@ -2244,7 +2244,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             if let Some(d) = p.engine.misjudged() {
                 return Err(format!("{of}, order #{k} {order:?}: judged anew after a reopen: {d}"));
             }
-            p.engine.reexamine().unwrap();
+            p.reexamine().unwrap();
             if let Some(d) = shown_differs(&before, &shown(&mut p, &played.things), &|_| false) {
                 return Err(format!("{of}, order #{k} {order:?}: reopen differs: {d}"));
             }
@@ -2829,7 +2829,7 @@ fn chainless_part_creation_missing_spec_commits_4() {
         for t in [first, second] {
             let _ = p.receive(&part(t), last.blobs.clone());
         }
-        p.engine.reexamine().unwrap();
+        p.reexamine().unwrap();
         (p.engine.get(&played.things[0], &ak("t:reg.0")).unwrap(), p.engine.pending().len())
     };
     let (g, t) = (played.things[0], played.things[1]);
@@ -3248,7 +3248,7 @@ fn cover_leftover_outlives_its_cover_spec_perm_5_2() {
     p.engine.drop_body(&c, &g, &ak("t:reg.0")).unwrap();
     p.receive(&by(purge).bytes, by(purge).blobs.clone()).unwrap();
     p.receive(&by(demote).bytes, by(demote).blobs.clone()).unwrap();
-    p.engine.reexamine().unwrap();
+    p.reexamine().unwrap();
     let after = p.engine.get(&g, &ak("t:reg.0")).unwrap();
     p.engine.rebuild_state(&g, &ak("t:reg.0")).unwrap();
     assert_eq!(p.engine.get(&g, &ak("t:reg.0")).unwrap(), after, "rebuilt");
@@ -3301,7 +3301,7 @@ fn expired_late_part_joins_valueless_spec_crdt_4_7() {
             p.receive(&b.encode(), pk.blobs.clone()).unwrap();
         }
         p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
-        let _ = p.engine.reexamine();
+        let _ = p.reexamine();
         got.push(p.engine.get(&g, &ak("t:reg.0")).unwrap());
     }
     assert_eq!(got, vec![None, None]);
@@ -3537,4 +3537,27 @@ fn compaction_dropped_while_invalid_repairs_nothing_spec_commits_5() {
     let first = without().take_while(|&i| i < f).chain([grant]).chain(without().skip_while(|&i| i < f));
     assert_eq!(read(first.collect()), o.now[&g]);
     assert_ne!(o.now[&g], "Ok(Some(Str(\"g\")))");
+}
+
+// spec/commits.md §4 (Unjudgeable): a node whose clock is behind gets a write on a new thing
+// first (thrown out: the thing's record is unknown), then the thing's creation (pending: its
+// `ts` past `MAX_DRIFT` ahead). When the clock catches up the creation applies, its record
+// arrives, and the write is fetched again: the node reads what the node given both on time does.
+#[test]
+fn record_from_drift_parked_creation_wakes_thrown_out_write_spec_commits_4() {
+    use Step::*;
+    let played = play(7, &[NewTop { by: 0 }, Write { by: 0, t: 1, op: 0, k: 0, v: 1 }]);
+    let (creation, write) = (&played.packs[played.base], &played.packs[played.base + 1]);
+    let ts = osis_commit::CommitBlob::decode_stored(&creation.bytes).unwrap().header.ts.wall_ms().0;
+    let mut p = fresh(played.now);
+    for pk in &played.packs[..played.base] {
+        p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    }
+    p.clock.set(WallMs(ts - osis_base::format::MAX_DRIFT_MS - 1));
+    assert!(matches!(p.receive(&write.bytes, write.blobs.clone()).unwrap(), osis_node::Ingested::Awaits(..)));
+    assert!(matches!(p.receive(&creation.bytes, creation.blobs.clone()).unwrap(), osis_node::Ingested::Pending(..)));
+    p.clock.set(played.now);
+    p.tick().unwrap();
+    let all: Vec<usize> = (0..played.packs.len()).collect();
+    assert_eq!(shown(&mut p, &played.things), shown(&mut deliver(&played, &all), &played.things));
 }
