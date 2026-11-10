@@ -694,7 +694,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let g = ctx.tid(&g)?;
             let Some(to) = to else {
                 let at = db.group_sources().get(&g).map_or("local".to_string(), |a| a.to_string());
-                return ctx.emit(&[at.clone()], J::obj([("source", J::str(at))]));
+                return ctx.emit(std::slice::from_ref(&at), J::obj([("source", J::str(at.clone()))]));
             };
             let to = if to == "local" { osis::GroupSource::Local } else { osis::GroupSource::Node(to.parse()?) };
             wait(ctx, db.group_source(g, to))
