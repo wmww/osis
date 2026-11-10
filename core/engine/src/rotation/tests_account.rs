@@ -97,8 +97,9 @@ impl osis_commit::Secrets for Dedup {
     }
 }
 
-/// A rotation of the account of record `rec` from its first epoch to `next`.
-fn rotation(rec: CreationRecord, first: &AccountEpochKeys, next: &AccountEpochKeys, ts: Ts) -> Vec<u8> {
+/// A rotation of the account of record `rec` from its first epoch to `next`, superseding that
+/// epoch alone: what a node removed at the first epoch can make after every merge.
+pub(super) fn rotation(rec: CreationRecord, first: &AccountEpochKeys, next: &AccountEpochKeys, ts: Ts) -> Vec<u8> {
     let p = rec.tid();
     let ak = Ak::new("keys.0").unwrap();
     let view = osis_schema::core_schema().view(ak.as_str()).unwrap();
@@ -164,11 +165,12 @@ fn account_key_open_follows_the_rotations_held_spec_sync_10() {
     assert!(e.account_key_open(&record, &next.signing.verifying_key().to_bytes()), "the new epoch");
 }
 
-// spec/crypto.md §4 (Account keysets), §7: concurrent rotations close each other's epochs, so at a
-// reader holding both no box is sealed to the account and every earlier box is stale; the account
-// still has a delete key, of an epoch that counts
+// spec/permissions.md §5.4, spec/crypto.md §4 (Account keysets), §7: concurrent rotations fork the
+// chain; a reader holding both follows one head (the one received first), so boxes to the account
+// are sealed at it, every other epoch's box is stale, and its key is the delete key; a lone fork
+// is no dispute
 #[test]
-fn forked_account_has_no_open_epoch_spec_crypto_4() {
+fn forked_account_follows_one_head_spec_permissions_5_4() {
     let mut lp = peers(2);
     let (a, bytes) = created(&mut lp);
     let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
@@ -178,19 +180,25 @@ fn forked_account_has_no_open_epoch_spec_crypto_4() {
     assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
     let rec = e.core.created(&a.account).unwrap().clone();
     let ts = Ts::make(e.now(), 0).unwrap();
+    let mut ids = Vec::new();
     for k in [&x, &y] {
-        assert!(matches!(e.ingest(&rotation(rec.clone(), &first, k, ts), Vec::new()).unwrap(), Ingested::Applied(_)));
+        let r = rotation(rec.clone(), &first, k, ts);
+        ids.push(CommitBlob::decode(&r).unwrap().id());
+        assert!(matches!(e.ingest(&r, Vec::new()).unwrap(), Ingested::Applied(_)));
     }
+    let v = e.core.account_view(&a.account).unwrap();
+    assert_eq!(v.heads().len(), 2);
+    // received in one millisecond: the lower ID is the earlier
+    let followed = v.open();
+    assert_eq!(followed, *ids.iter().min().unwrap());
+    let keys = if followed == ids[0] { &x } else { &y };
+    let name = |k: &AccountEpochKeys, h: u64| account_epoch(h, &k.signing.verifying_key()).unwrap();
     let (none, ks) = (BTreeSet::new(), e.run(|tx| keysets_of(tx, &a.account, Role::Read, None)).unwrap());
-    let unknown = account_epoch(2, &AccountEpochKeys::from_seed(&Secret32::from_bytes([72; 32])).signing.verifying_key()).unwrap();
-    for k in [&first, &x, &y] {
-        assert!(stale(&account_epoch(u64::from(k.signing.verifying_key() != first.signing.verifying_key()), &k.signing.verifying_key()).unwrap(), &ks, &none));
-    }
-    assert!(!stale(&unknown, &ks, &none), "an epoch not received yet is not stale");
-    assert_eq!(osis_keys::seal_keyset(&ks, &none, &none), osis_keys::Seal::Out);
-    assert!(e.run(|tx| crate::flows::account::holder_keys(tx, &a.account)).is_err());
-    let want = [x.signing.verifying_key().to_bytes(), y.signing.verifying_key().to_bytes()].into_iter().max().unwrap();
-    assert_eq!(e.core.account_delete_key(&a.account).unwrap().to_bytes(), want);
+    assert_eq!(osis_keys::seal_keyset(&ks, &none, &none), osis_keys::Seal::At(name(keys, 1)));
+    let other = if followed == ids[0] { &y } else { &x };
+    assert!(stale(&name(&first, 0), &ks, &none) && stale(&name(other, 1), &ks, &none) && !stale(&name(keys, 1), &ks, &none));
+    assert_eq!(e.core.account_delete_key(&a.account).unwrap(), keys.signing.verifying_key());
+    assert!(e.account_disputes().is_empty(), "a lone fork is no dispute");
 }
 
 fn edge(r: Role) -> osis_schema::core_types::Edge {
@@ -209,7 +217,7 @@ fn actor_of(lp: &mut LocalPeer, a: &Tid) -> Tid {
     t
 }
 
-// spec/crypto.md §4 (Seal), §3: a grant to an account is boxed at its newest open epoch by that epoch's public keys, not its first
+// spec/crypto.md §4 (Seal), §3: a grant to an account is boxed at its open epoch by that epoch's public keys, not its first
 #[test]
 fn grant_boxes_at_the_open_epoch_spec_crypto_4() {
     let mut lp = peers(2);
@@ -230,7 +238,7 @@ fn grant_boxes_at_the_open_epoch_spec_crypto_4() {
     assert_eq!(named, vec![Some(name)]);
     let key = e.run(|tx| crate::flows::labels::reader_key(tx, &a.account)).unwrap();
     match key {
-        Some(crate::flows::labels::ReaderKey::Dh(x)) => assert_eq!(x, next.kem.public().x25519(), "the newest open epoch's key"),
+        Some(crate::flows::labels::ReaderKey::Dh(x)) => assert_eq!(x, next.kem.public().x25519(), "the open epoch's key"),
         _ => panic!("a claim key"),
     }
 }
@@ -331,7 +339,8 @@ fn a_rotation_rejudges_possession_and_is_carried_spec_crypto_4() {
     assert!(boxing.iter().all(|c| e.core.stale_commits.contains(c)), "the commits boxing the account are judged again");
 }
 
-// the signing chain is built once per rotation it holds, whatever the writes between
+// the signing chain is built once per change of the rotations or the seeds it holds, whatever
+// the writes between
 #[test]
 fn account_view_is_built_once_per_rotation() {
     let mut lp = peers(1);
@@ -357,10 +366,11 @@ fn account_view_is_built_once_per_rotation() {
     let ts = Ts::make(e.now(), 0).unwrap();
     let before = e.core.account_view_builds.get();
     e.ingest(&rotation(rec, &first, &next, ts), Vec::new()).unwrap();
+    assert!(!e.core.accounts.contains_key(&a.account), "holding no seed of the new epoch, the node leaves");
     for _ in 0..5 {
         assert_eq!(e.core.account_delete_key(&a.account).unwrap(), next.signing.verifying_key());
     }
-    assert_eq!(e.core.account_view_builds.get(), before + 1);
+    assert_eq!(e.core.account_view_builds.get(), before + 2, "once for the rotation, once as the seeds held (the side of a node of the account) went");
 }
 
 // spec/sync.md §3 (invite requests): the request gate reads an author's signature at the header's epoch: a commit signed at the first epoch verifies only there

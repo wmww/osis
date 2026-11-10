@@ -42,10 +42,24 @@ pub struct DisputeInfo {
     pub side: Option<Side>,
 }
 
-/// The sides recorded, journaled (`Engine::run` persists them when the transaction changed any).
+/// The sides recorded, journaled (`Engine::run` persists them when the transaction changed any):
+/// per admin dispute, and per account the line chosen in its signing chain (spec/permissions.md
+/// §5.4; with none chosen the chain's default holds, recomputed from the receipt order, so
+/// nothing is recorded for it).
 #[derive(Default)]
 pub struct Sides {
     map: JMap<(WriteId, Tid), Side>,
+    accounts: JMap<Tid, CommitId>,
+}
+
+/// An account whose signing chain this node reads in doubt (`Engine::disputes`): the heads of
+/// its chain and the one followed here, by default or `chosen`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountDisputeInfo {
+    pub account: Tid,
+    pub lines: Vec<CommitId>,
+    pub side: CommitId,
+    pub chosen: bool,
 }
 
 impl Sides {
@@ -53,20 +67,35 @@ impl Sides {
         let bad = || Error::Corrupt("sides");
         let Some(Value::List(items)) = Value::from_bytes(bytes) else { return Err(bad()) };
         let mut map = JMap::default();
+        let mut accounts = JMap::default();
         for it in items {
             let Value::List(f) = it else { return Err(bad()) };
-            let [Value::Bytes(c), Value::Int(op), Value::Tid(holder), Value::Int(flags)] = f.as_slice() else { return Err(bad()) };
-            let commit = CommitId(c.as_slice().try_into().map_err(|_| bad())?);
-            let op = u32::try_from(*op).map_err(|_| bad())?;
-            map.insert((WriteId(commit, op), *holder), Side { trust: flags & 1 == 1, chosen: flags & 2 == 2 });
+            match f.as_slice() {
+                [Value::Bytes(c), Value::Int(op), Value::Tid(holder), Value::Int(flags)] => {
+                    let commit = CommitId(c.as_slice().try_into().map_err(|_| bad())?);
+                    let op = u32::try_from(*op).map_err(|_| bad())?;
+                    map.insert((WriteId(commit, op), *holder), Side { trust: flags & 1 == 1, chosen: flags & 2 == 2 });
+                }
+                [Value::Tid(account), Value::Bytes(c)] => {
+                    accounts.insert(*account, CommitId(c.as_slice().try_into().map_err(|_| bad())?));
+                }
+                _ => return Err(bad()),
+            }
         }
         map.commit();
-        Ok(Sides { map })
+        accounts.commit();
+        Ok(Sides { map, accounts })
     }
 
     fn encode(&self) -> Vec<u8> {
-        let items = self.map.iter().map(|((w, m), s)| Value::List(vec![Value::Bytes(w.0 .0.to_vec()), Value::Int(i64::from(w.1)), Value::Tid(*m), Value::Int(i64::from(s.trust) | i64::from(s.chosen) << 1)])).collect();
+        let mut items: Vec<Value> = self.map.iter().map(|((w, m), s)| Value::List(vec![Value::Bytes(w.0 .0.to_vec()), Value::Int(i64::from(w.1)), Value::Tid(*m), Value::Int(i64::from(s.trust) | i64::from(s.chosen) << 1)])).collect();
+        items.extend(self.accounts.iter().map(|(a, c)| Value::List(vec![Value::Tid(*a), Value::Bytes(c.0.to_vec())])));
         Value::List(items).to_bytes()
+    }
+
+    /// The line chosen in account `p`'s signing chain, if any.
+    pub(crate) fn account(&self, p: &Tid) -> Option<CommitId> {
+        self.accounts.get(p).copied()
     }
 
     /// The trust set: the ops of the sides that trust R.
@@ -82,31 +111,33 @@ impl Sides {
         self.map.insert((op, holder), side);
     }
 
-    /// The journal's length (`Core::rollback_to`).
+    /// The journals' lengths (`Core::rollback_to`).
     pub(crate) fn journaled(&self) -> usize {
-        self.map.journaled()
+        self.map.journaled() + self.accounts.journaled()
     }
 
     /// Whether the running transaction changed a side.
     fn changed(&self) -> bool {
-        self.map.changed()
+        self.map.changed() || self.accounts.changed()
     }
 }
 
 impl Journaled for Sides {
-    type Mark = usize;
+    type Mark = (usize, usize);
     fn commit(&mut self) {
         self.map.commit();
+        self.accounts.commit();
     }
-    fn mark(&mut self) -> usize {
-        self.map.mark()
+    fn mark(&mut self) -> (usize, usize) {
+        (self.map.mark(), self.accounts.mark())
     }
-    fn rollback_to(&mut self, m: usize) {
-        self.map.rollback_to(m);
+    fn rollback_to(&mut self, m: (usize, usize)) {
+        self.map.rollback_to(m.0);
+        self.accounts.rollback_to(m.1);
     }
     #[cfg(test)]
     fn contents(&self) -> String {
-        self.map.contents()
+        format!("{} {}", self.map.contents(), self.accounts.contents())
     }
 }
 
@@ -215,6 +246,37 @@ impl crate::engine::Engine {
             }
         }
         (out.into_values().collect(), left)
+    }
+
+    /// The accounts whose signing chain this node reads in doubt (as told by
+    /// `Event::AccountDisputed`), and those it chose a line in, with the heads and the line
+    /// followed (spec/permissions.md §5.4).
+    pub fn account_disputes(&self) -> Vec<AccountDisputeInfo> {
+        let doubted = self.core.ix.epochs.iter().filter(|(_, j)| j.doubt()).map(|(p, _)| *p);
+        let ps: std::collections::BTreeSet<Tid> = doubted.chain(self.core.sides.accounts.keys().copied()).collect();
+        ps.into_iter()
+            .filter_map(|p| {
+                let v = self.core.account_view(&p)?;
+                let chosen = self.core.sides.account(&p);
+                Some(AccountDisputeInfo { account: p, lines: v.heads(), side: v.open(), chosen: chosen.is_some() })
+            })
+            .collect()
+    }
+
+    /// Follows the line of `line`, a rotation of account `account` held with its chain, in its
+    /// signing chain (spec/permissions.md §5.4: the side overrides the default and holds against
+    /// a merge rejecting it), until chosen again. `UnknownCommit` when it is no such rotation.
+    pub fn choose_line(&mut self, account: Tid, line: CommitId) -> Result<()> {
+        if !self.core.account_view(&account).is_some_and(|v| v.is_rotation(&line) && v.holds(&line)) {
+            return Err(Error::UnknownCommit(line));
+        }
+        self.run(|tx| {
+            tx.core.sides.accounts.insert(account, line);
+            tx.core.ix.epochs_due.insert(account);
+            crate::apply::keyset_changed(tx.core, &account);
+            crate::apply::atomic::rejudged(tx, true)?;
+            Ok(())
+        })
     }
 
     /// Takes a side in the dispute over edge write `op` of `commit` lowering `holder`: trust

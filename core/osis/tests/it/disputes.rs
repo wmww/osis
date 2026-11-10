@@ -3,7 +3,7 @@
 //! held first by default, is told, lists it and can switch.
 
 use crate::scenario::{account, introduce, new_tag};
-use osis::{GrantOpts, Role, Side};
+use osis::{Dispute, GrantOpts, Role, Side};
 use osis_sim::world::World;
 use std::sync::mpsc::channel;
 
@@ -45,20 +45,32 @@ fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     assert!(!holds(&c, a.me()) && holds(&c, b.me()), "b's removal was here first");
     // the contested write is a's removal of b; c sides with its holder, b
     let told = rx.try_iter().last().unwrap();
-    assert_eq!((told.author, told.holder, told.side, told.chosen), (a.me(), b.me(), Side::Holder, false));
+    let Dispute::Removal { author, holder, side, chosen, .. } = told.clone() else { panic!("a removal: {told:?}") };
+    assert_eq!((author, holder, side, chosen), (a.me(), b.me(), Side::Holder, false));
     let (ds, left) = c.disputes().unwrap();
     assert_eq!((ds.len(), left), (1, 0));
     assert_eq!(ds[0], told);
-    let id: osis::DisputeId = told.id.to_string().parse().unwrap();
-    assert_eq!(id, told.id);
+    let id: osis::DisputeId = told.id().to_string().parse().unwrap();
+    assert_eq!(id, told.id());
+    assert!(matches!(c.choose_side(id, Side::Line(told_commit(&told))), Err(osis::Error::Invalid(_))), "a line is no side of a removal");
     c.choose_side(id, Side::Author).unwrap();
     assert!(holds(&c, a.me()) && !holds(&c, b.me()), "a's side: its removal of b counts");
     let (ds, _) = c.disputes().unwrap();
-    assert_eq!((ds[0].side, ds[0].chosen), (Side::Author, true));
+    assert_eq!((ds[0].side(), ds[0].chosen()), (Side::Author, true));
     c.choose_side(id, Side::Holder).unwrap();
     assert!(!holds(&c, a.me()) && holds(&c, b.me()));
     // each party stands with itself
-    assert_eq!(a.disputes().unwrap().0[0].side, Side::Author);
-    assert_eq!(b.disputes().unwrap().0[0].side, Side::Holder);
+    assert_eq!(a.disputes().unwrap().0[0].side(), Side::Author);
+    assert_eq!(b.disputes().unwrap().0[0].side(), Side::Holder);
     assert!(matches!("x".parse::<osis::DisputeId>(), Err(osis::Error::Invalid(_))));
+    // an account's history names its dispute by the account; its sides are lines of it
+    let acct: osis::DisputeId = a.me().to_uri().parse().unwrap();
+    assert_eq!(acct.to_string(), a.me().to_uri());
+    assert!(matches!(c.choose_side(acct, Side::Author), Err(osis::Error::Invalid(_))), "author is no side of a history");
+    assert!(matches!(c.choose_side(acct, Side::Line(told_commit(&told))), Err(osis::Error::Invalid(_))), "no change of the account's ends a version there");
+}
+
+fn told_commit(d: &Dispute) -> osis::CommitId {
+    let Dispute::Removal { commit, .. } = d else { panic!("a removal") };
+    *commit
 }

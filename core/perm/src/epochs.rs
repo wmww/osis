@@ -49,7 +49,7 @@ pub struct Listing<E, T> {
 /// What the epoch rule says of one held commit of the account, before §5.2 judges it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EpochStanding<E> {
-    /// It counts whole: its epoch counts and is open, a counting list or listing names it, or
+    /// It counts whole: its epoch is open, a counting list or listing names it, or
     /// (a rotation) the chain counts it.
     Counts,
     /// It does not count. A counting addendum on a thing against one of `closers` (the counting
@@ -66,7 +66,7 @@ pub enum EpochStanding<E> {
 #[derive(Clone, Debug)]
 pub struct Epochs<E, T> {
     chain: Chain<E>,
-    /// The held epochs that count and are open.
+    /// The held epoch that is open (the head followed), as a set.
     open: BTreeSet<E>,
     /// Per held epoch that counts and is closed, its closers.
     closers: BTreeMap<E, BTreeSet<E>>,
@@ -75,13 +75,13 @@ pub struct Epochs<E, T> {
 }
 
 impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
-    /// Judges the account with first epoch `root`: its held `rotations` under `side` (only
-    /// those held with their chain take part, `Chain::new`) and the held thing lists and
-    /// listings naming its commits.
-    pub fn new(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, side: Option<E>, lists: &[ThingList<E, T>], listings: &[Listing<E, T>]) -> Epochs<E, T> {
+    /// Judges the account with first epoch `root`: its held `rotations` under `side` and
+    /// `received` (only those held with their chain take part, `Chain::new`) and the held thing
+    /// lists and listings naming its commits.
+    pub fn new(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, side: Option<E>, received: &[E], lists: &[ThingList<E, T>], listings: &[Listing<E, T>]) -> Epochs<E, T> {
         let rotations: Vec<Rotation<E>> = rotations.into_iter().collect();
         let held: BTreeSet<E> = rotations.iter().map(|r| r.id).chain([root]).collect();
-        let chain = Chain::new(root, rotations, side);
+        let chain = Chain::new(root, rotations, side, received);
         let held: Vec<E> = held.into_iter().filter(|e| chain.holds(e) && chain.epoch_counts(e)).collect();
         let open = held.iter().filter(|e| chain.open(e)).copied().collect();
         let mut e = Epochs { chain, open, closers: BTreeMap::new(), named: BTreeSet::new() };
@@ -110,7 +110,7 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
     }
 
     /// Whether `c` counts whole: a held rotation counts by the chain alone; any other commit
-    /// iff its epoch counts and is open, or counts and a counting thing list or listing on one
+    /// iff its epoch is open, or counts and a counting thing list or listing on one
     /// of its things names it.
     pub fn counts(&self, c: &AccountCommit<E, T>) -> bool {
         if self.chain.holds(&c.id) {

@@ -50,6 +50,10 @@ struct EpochPublic {
     at: Option<Point>,
 }
 
+/// What an account's signing chain is built from (`Core::account_view`): its `Indexes::rotations`
+/// entry, the side chosen, the number of its seeds held.
+pub(crate) type ViewKey = (u64, Option<CommitId>, usize);
+
 /// An account's signing chain as this node holds it.
 pub(crate) struct AccountView {
     /// The epoch rule over the held rotations (spec/permissions.md §5.4, §5.5) with no word
@@ -58,11 +62,15 @@ pub(crate) struct AccountView {
     rule: Epochs<CommitId, Tid>,
     /// The held rotations as the chain reads them.
     rotations: Vec<Rotation<CommitId>>,
+    /// The side the chain is read under: chosen here, else (a node of the account) the first
+    /// received head whose seed it holds, else none (the chain's default).
+    side: Option<CommitId>,
+    /// The held rotations in receipt order, earliest first (ties by ID).
+    received: Vec<CommitId>,
     epochs: BTreeMap<CommitId, EpochPublic>,
-    /// The counting epochs by name, and the open ones: what a write or seal reads, so neither
-    /// walks the chain (its length is the account's to choose).
+    /// The counting epochs by name: what a write or seal reads, so neither walks the chain (its
+    /// length is the account's to choose).
     by_name: BTreeMap<Epoch, CommitId>,
-    open: Vec<CommitId>,
 }
 
 impl AccountView {
@@ -102,19 +110,14 @@ impl AccountView {
         account_keysets(self.rule.chain(), &named)
     }
 
-    /// Whether `key` is the signing key of an open epoch.
+    /// Whether `key` is the open epoch's signing key.
     pub(crate) fn open_key(&self, key: &[u8; 32]) -> bool {
-        self.open.iter().filter_map(|id| self.epochs.get(id)).any(|e| e.signing.to_bytes() == *key)
+        self.open_epoch().is_some_and(|(_, e)| e.signing.to_bytes() == *key)
     }
 
-    /// The newest open epoch that `held` admits, ties by the greater signing key.
-    fn newest_open(&self, held: impl Fn(&EpochPublic) -> bool) -> Option<(&CommitId, &EpochPublic)> {
-        self.open.iter().filter_map(|id| self.epochs.get_key_value(id)).filter(|(_, e)| held(e)).max_by_key(|(_, e)| (e.height, e.signing.to_bytes()))
-    }
-
-    /// The newest epoch that counts, open or not (concurrent rotations close each other's).
-    fn newest_counting(&self) -> Option<&EpochPublic> {
-        self.epochs.iter().filter(|(id, _)| self.rule.chain().epoch_counts(id)).map(|(_, e)| e).max_by_key(|e| (e.height, e.signing.to_bytes()))
+    /// The open epoch and its keys.
+    fn open_epoch(&self) -> Option<(&CommitId, &EpochPublic)> {
+        self.epochs.get_key_value(&self.open())
     }
 
     /// What the epoch rule says per held epoch (`JudgedEpochs::epochs`).
@@ -123,14 +126,28 @@ impl AccountView {
         self.epochs.keys().map(|e| (*e, (self.rule.unnamed(e), (*e != FIRST_EPOCH && c.holds(e)).then(|| c.counts(e))))).collect()
     }
 
-    /// The heads: counting epochs no counting rotation descends from (signed at it, or a merge
-    /// accepting it), ascending. By descent, never by a supersedes list, which its rotator
-    /// writes as it likes (a removed node's fork superseding the epoch that closed it would
-    /// hide that epoch from the merge).
+    /// The heads: counting epochs no counting rotation descends from, ascending. By descent,
+    /// never by a supersedes list, which its rotator writes as it likes (a removed node's fork
+    /// superseding the epoch that closed it would hide that epoch from the merge). More than
+    /// one is a fork: the account's merger ends it.
     pub(crate) fn heads(&self) -> Vec<CommitId> {
-        let c = self.rule.chain();
-        let below: BTreeSet<CommitId> = self.rotations.iter().filter(|r| c.holds(&r.id) && c.counts(&r.id)).flat_map(|r| std::iter::once(r.at).chain(r.names.intersection(&r.signed).copied())).collect();
-        self.epochs.keys().filter(|e| c.epoch_counts(e) && !below.contains(*e)).copied().collect()
+        self.rule.chain().heads().iter().copied().collect()
+    }
+
+    /// The fork as this node reads it, when it tells its user (`Chain::in_doubt`): the heads,
+    /// and the one followed.
+    pub(crate) fn doubt(&self) -> Option<(Vec<CommitId>, CommitId)> {
+        self.rule.chain().in_doubt().then(|| (self.heads(), self.open()))
+    }
+
+    /// The open epoch: the head this node follows.
+    pub(crate) fn open(&self) -> CommitId {
+        self.rule.chain().followed()
+    }
+
+    /// Whether rotation `r` is on the open epoch's line.
+    pub(crate) fn on_open_line(&self, r: &CommitId) -> bool {
+        self.rule.chain().line(&self.open()).is_some_and(|l| l.contains(r))
     }
 
     /// The seed of held epoch `e` among `held`'s.
@@ -148,11 +165,6 @@ impl AccountView {
         *c != FIRST_EPOCH && self.epochs.contains_key(c)
     }
 
-    /// The epochs open here.
-    pub(crate) fn open(&self) -> &[CommitId] {
-        &self.open
-    }
-
     /// Whether rotation `r` is held with its chain.
     pub(crate) fn holds(&self, r: &CommitId) -> bool {
         self.rule.chain().holds(r)
@@ -168,12 +180,14 @@ impl AccountView {
         self.rule.chain().holds(r) && self.rule.chain().counts(r)
     }
 
-    /// The counting rotations closing epoch `e`.
+    /// The counting rotations closing epoch `e`: every one it does not descend from (the
+    /// followed head's are the other heads, which bound what a merge names of it).
     pub(crate) fn closers(&self, e: &CommitId) -> BTreeSet<CommitId> {
-        match self.rule.unnamed(e) {
-            EpochStanding::Closed(c) => c,
-            EpochStanding::Counts => BTreeSet::new(),
+        let c = self.rule.chain();
+        if !c.holds(e) || !c.epoch_counts(e) {
+            return BTreeSet::new();
         }
+        c.closers(e).into_iter().collect()
     }
 }
 
@@ -187,6 +201,8 @@ impl AccountView {
 pub struct JudgedEpochs {
     epochs: BTreeMap<CommitId, (EpochStanding<CommitId>, Option<bool>)>,
     named: BTreeSet<CommitId>,
+    /// The chain is read in doubt (`AccountView::doubt`), so the user was told.
+    doubt: bool,
 }
 
 impl JudgedEpochs {
@@ -199,6 +215,11 @@ impl JudgedEpochs {
             return EpochStanding::Counts;
         }
         self.epochs.get(epoch).map_or(EpochStanding::Closed(BTreeSet::new()), |x| x.0.clone())
+    }
+
+    /// Whether the chain was read in doubt (`AccountView::doubt`).
+    pub(crate) fn doubt(&self) -> bool {
+        self.doubt
     }
 
     /// What a commit at `epoch` no word names stands as.
@@ -225,7 +246,7 @@ impl JudgedEpochs {
             };
             Value::List(vec![id(e), s, Value::uint(r.map_or(0, |c| 1 + u64::from(c)))])
         }).collect());
-        Value::List(vec![epochs, Value::List(self.named.iter().map(id).collect())])
+        Value::List(vec![epochs, Value::List(self.named.iter().map(id).collect()), Value::Bool(self.doubt)])
     }
 
     pub(crate) fn from_value(v: &osis_base::Value) -> Option<JudgedEpochs> {
@@ -235,7 +256,7 @@ impl JudgedEpochs {
             _ => None,
         };
         let Value::List(top) = v else { return None };
-        let [Value::List(xs), Value::List(named)] = top.as_slice() else { return None };
+        let [Value::List(xs), Value::List(named), Value::Bool(doubt)] = top.as_slice() else { return None };
         let named = named.iter().map(id).collect::<Option<BTreeSet<CommitId>>>()?;
         let mut epochs = BTreeMap::new();
         for x in xs {
@@ -254,7 +275,7 @@ impl JudgedEpochs {
             };
             epochs.insert(id(e)?, (s, r));
         }
-        Some(JudgedEpochs { epochs, named })
+        Some(JudgedEpochs { epochs, named, doubt: *doubt })
     }
 }
 
@@ -344,16 +365,15 @@ impl Core {
     }
 
     /// The signing chain of account `p` from the rotations held (`None`: `p` is not known as an
-    /// account here). Built only when the account's rotations held changed (`rotation_seq`), so a
-    /// write does not cost O(its rotations). A merge's forks stand unaccepted until merges are
-    /// written: the chain is given no verified merge signature.
+    /// account here). Built only when the account's rotations held (`rotation_seq`), the side
+    /// chosen or the seeds held changed, so a write does not cost O(its rotations).
     pub(crate) fn account_view(&self, p: &Tid) -> Option<Arc<AccountView>> {
-        let seq = self.ix.rotations.get(p).copied().unwrap_or(0);
-        if let Some(v) = self.account_views.borrow().get(p).filter(|x| x.0 == seq) {
+        let key = (self.ix.rotations.get(p).copied().unwrap_or(0), self.sides.account(p), self.accounts.get(p).map_or(0, |a| a.seeds.len()));
+        if let Some(v) = self.account_views.borrow().get(p).filter(|x| x.0 == key) {
             return Some(v.1.clone());
         }
         let v = Arc::new(self.build_account_view(p)?);
-        self.account_views.borrow_mut().insert(*p, (seq, v.clone()));
+        self.account_views.borrow_mut().insert(*p, (key, v.clone()));
         self.account_view_builds.set(self.account_view_builds.get().saturating_add(1));
         Some(v)
     }
@@ -382,9 +402,25 @@ impl Core {
             r.names.iter().zip(sigs.iter()).filter(|(n, s)| epochs.get(*n).is_some_and(|e: &EpochPublic| osis_commit::verify_merge(id, s, &e.signing))).map(|(n, _)| *n).collect()
         };
         let rotations: Vec<Rotation<CommitId>> = rots.iter().map(|(id, at, r, _)| Rotation { id: *id, at: *at, supersedes: r.supersedes.iter().copied().collect(), names: r.names.iter().copied().collect(), signed: signed(id, r) }).collect();
-        let rule = Epochs::new(FIRST_EPOCH, rotations.clone(), None, &[], &[]);
-        let mut v = AccountView { rule, rotations, epochs, by_name: BTreeMap::new(), open: Vec::new() };
-        v.open = v.epochs.keys().filter(|id| v.rule.chain().open(id)).copied().collect();
+        let mut order: Vec<(osis_base::WallMs, CommitId)> = rots.iter().filter_map(|(id, ..)| Some((self.ix.commits.get(id)?.received, *id))).collect();
+        order.sort();
+        let received: Vec<CommitId> = order.into_iter().map(|x| x.1).collect();
+        let chosen = self.sides.account(p);
+        let mut rule = Epochs::new(FIRST_EPOCH, rotations.clone(), chosen, &received, &[], &[]);
+        // a node of the account sides with the line D's roster authorizes: of the rotations
+        // whose seed it holds (D's `account.0` gives them through D's current writers), the
+        // tips, the first received among them (spec/permissions.md §5.4, Nodes of P)
+        let mut side = chosen;
+        if let (None, Some(a)) = (chosen, self.accounts.get(p)) {
+            let c = rule.chain();
+            let mine: BTreeSet<CommitId> = rotations.iter().map(|r| r.id).filter(|id| c.holds(id) && epochs.get(id).is_some_and(|e| a.seeds.contains_key(&e.signing.to_bytes()))).collect();
+            let tips: BTreeSet<CommitId> = mine.iter().copied().filter(|t| !mine.iter().any(|x| x != t && c.line(x).is_some_and(|l| l.contains(t)))).collect();
+            side = c.prefer(&tips, &received);
+            if side.is_some() {
+                rule = Epochs::new(FIRST_EPOCH, rotations.clone(), side, &received, &[], &[]);
+            }
+        }
+        let mut v = AccountView { rule, rotations, side, received, epochs, by_name: BTreeMap::new() };
         // a name repeated (two rotations minting one key) is read as its lowest ID
         for (id, e) in v.epochs.iter().filter(|(id, _)| v.rule.chain().epoch_counts(id)) {
             if let Some(name) = v.name(e) {
@@ -416,13 +452,13 @@ impl Core {
         standing_in(self.ix.epochs.get(author).map(|j| &**j), id, &e)
     }
 
-    /// The epoch this node signs as `p` at and its keys: the newest open one it holds a seed of
+    /// The epoch this node signs as `p` at and its keys: the open one, when it holds its seed
     /// (spec/permissions.md §5.5). `None` when `p` is no account held here.
     pub(crate) fn account_signing(&self, p: &Tid) -> Result<Option<(CommitId, AccountEpochKeys)>> {
         let Some(a) = self.accounts.get(p) else { return Ok(None) };
         let v = self.account_view(p).ok_or(Error::Misuse("no signing chain for the account"))?;
-        let (id, e) = v.newest_open(|e| a.seeds.contains_key(&e.signing.to_bytes())).ok_or(Error::Misuse("no open epoch of the account held"))?;
-        let seed = a.seeds.get(&e.signing.to_bytes()).ok_or(Error::Misuse("no open epoch of the account held"))?;
+        let (id, e) = v.open_epoch().filter(|(_, e)| a.seeds.contains_key(&e.signing.to_bytes())).ok_or(Error::Misuse("the account's open epoch is not held"))?;
+        let seed = a.seeds.get(&e.signing.to_bytes()).ok_or(Error::Misuse("the account's open epoch is not held"))?;
         Ok(Some((*id, AccountEpochKeys::from_seed(seed))))
     }
 
@@ -445,14 +481,9 @@ impl Core {
         v.epochs.values().filter_map(|e| Some((v.name(e)?, a.seeds.get(&e.signing.to_bytes())?.clone()))).collect()
     }
 
-    /// An account's delete key (spec/crypto.md §7): the signing key of its newest open epoch
-    /// held, else of its newest open epoch, else (a fork leaves none open) of its newest counting
-    /// one.
+    /// An account's delete key (spec/crypto.md §7): the signing key of its open epoch.
     pub(crate) fn account_delete_key(&self, p: &Tid) -> Option<VerifyingKey> {
-        let v = self.account_view(p)?;
-        let held = self.accounts.get(p);
-        let newest = v.newest_open(|e| held.is_some_and(|a| a.seeds.contains_key(&e.signing.to_bytes()))).or_else(|| v.newest_open(|_| true));
-        Some(newest.map(|n| n.1).or_else(|| v.newest_counting())?.signing)
+        Some(self.account_view(p)?.open_epoch()?.1.signing)
     }
 }
 
@@ -553,7 +584,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
             }
         }
         let listings: Vec<osis_perm::Listing<CommitId, Tid>> = listings.into_iter().filter_map(|((s, t), commits)| Some(osis_perm::Listing { listing: commit_of(&s)?, thing: t, commits })).collect();
-        let rule = Epochs::new(FIRST_EPOCH, v.rotations.iter().cloned(), None, &lists, &listings);
+        let rule = Epochs::new(FIRST_EPOCH, v.rotations.iter().cloned(), v.side, &v.received, &lists, &listings);
         let mut named: BTreeSet<CommitId> = was.as_ref().map(|j| j.named.clone()).unwrap_or_default();
         for c in &cands {
             named.remove(c);
@@ -565,13 +596,18 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
                 named.insert(*c);
             }
         }
-        let judged = Arc::new(JudgedEpochs { epochs: now, named });
+        // a node of the account reads its roster's line: it is never in doubt
+        let doubt = v.doubt().filter(|_| !tx.core.accounts.contains_key(&p));
+        let judged = Arc::new(JudgedEpochs { epochs: now, named, doubt: doubt.is_some() });
         if was.as_deref() == Some(&*judged) {
             continue;
         }
+        if let Some((lines, side)) = doubt.filter(|_| !was.as_ref().is_some_and(|j| j.doubt)) {
+            tx.core.events.queue(crate::events::Event::AccountDisputed { account: p, lines, side });
+        }
         // the first epoch alone, open, named nothing, is what no entry says: the index is a
         // function of what is held, a rotation dropped included
-        if judged.epochs.len() == 1 && judged.named.is_empty() && get(&None, &FIRST_EPOCH) == judged.epochs.get(&FIRST_EPOCH).cloned() {
+        if judged.epochs.len() == 1 && judged.named.is_empty() && !judged.doubt && get(&None, &FIRST_EPOCH) == judged.epochs.get(&FIRST_EPOCH).cloned() {
             tx.core.ix.epochs.remove(&p);
         } else {
             tx.core.ix.epochs.insert(p, judged.clone());
@@ -611,19 +647,19 @@ pub(crate) fn holder_keys_at(tx: &mut Tx<'_>, p: &Tid, name: &Epoch) -> Result<O
     Ok(Some(HolderKeys::Account { epoch: *name, kem, seed }))
 }
 
-/// How a box to account `p` is sealed with no anchors to descend from: at its newest open epoch.
+/// How a box to account `p` is sealed with no anchors to descend from: at its open epoch.
 pub(crate) fn holder_keys(tx: &mut Tx<'_>, p: &Tid) -> Result<HolderKeys> {
     let v = tx.core.account_view(p).ok_or(Error::UnknownThing(*p))?;
-    let (_, e) = v.newest_open(|_| true).ok_or(Error::Misuse("no open epoch of the account"))?;
+    let (_, e) = v.open_epoch().ok_or(Error::Corrupt("the account's open epoch"))?;
     let name = v.name(e).ok_or(Error::Misuse("account epoch"))?;
     holder_keys_at(tx, p, &name)?.ok_or(Error::Misuse("no keys.0 of the account's epoch held"))
 }
 
-/// The reader key of a label for account `p` (spec/sync.md §2): the X25519 half of its newest open
-/// epoch's KEM key. `None`: no open epoch or its KEM key held here.
+/// The reader key of a label for account `p` (spec/sync.md §2): the X25519 half of its open
+/// epoch's KEM key. `None`: its KEM key is not held here.
 pub(crate) fn reader_key(tx: &mut Tx<'_>, p: &Tid) -> Result<Option<ReaderKey>> {
     let Some(v) = tx.core.account_view(p) else { return Ok(None) };
-    let Some((_, e)) = v.newest_open(|_| true) else { return Ok(None) };
+    let Some((_, e)) = v.open_epoch() else { return Ok(None) };
     Ok(epoch_kem(tx, p, e)?.map(|kem| ReaderKey::Dh(kem.x25519())))
 }
 
@@ -696,7 +732,7 @@ impl Engine {
         self.run(super::reopen_all)
     }
 
-    /// How a box to account `p` is sealed: at its newest open epoch.
+    /// How a box to account `p` is sealed: at its open epoch.
     pub fn account_holder_keys(&mut self, p: &Tid) -> Result<HolderKeys> {
         let a = *p;
         self.run(|tx| holder_keys(tx, &a))

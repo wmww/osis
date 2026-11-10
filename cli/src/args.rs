@@ -474,9 +474,11 @@ pub struct OpArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum DisputeCmd {
-    /// List them: `ID TARGET AUTHOR HOLDER SIDE [chosen]`, then how many were not examined
+    /// List them: `ID TARGET AUTHOR HOLDER SIDE [chosen]` for a removal, `ID LINES SIDE
+    /// [chosen]` for an account's history, then how many removals were not examined
     Ls,
-    /// Take a side: `author` (the removal counts) or `holder` (it does not)
+    /// Take a side: of a removal `author` (it counts) or `holder` (it does not); of an account's
+    /// history the commit ID a version ends in
     Choose { id: String, side: String },
 }
 

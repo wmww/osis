@@ -639,19 +639,44 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Disputes(DisputeCmd::Ls) => {
             let (ds, left) = db.disputes()?;
-            let side = |s: osis::Side| if s == osis::Side::Author { "author" } else { "holder" };
-            let mut lines: Vec<String> = ds.iter().map(|d| format!("{} {} {} {} {}{}", d.id, d.target.to_uri(), d.author.to_uri(), d.holder.to_uri(), side(d.side), if d.chosen { " chosen" } else { "" })).collect();
+            let side = |s: osis::Side| match s {
+                osis::Side::Author => "author".to_string(),
+                osis::Side::Holder => "holder".to_string(),
+                osis::Side::Line(c) => c.to_string(),
+            };
+            let chosen = |d: &osis::Dispute| if d.chosen() { " chosen" } else { "" };
+            let mut lines: Vec<String> = ds
+                .iter()
+                .map(|d| match d {
+                    osis::Dispute::Removal { id, target, author, holder, side: s, .. } => format!("{id} {} {} {} {}{}", target.to_uri(), author.to_uri(), holder.to_uri(), side(*s), chosen(d)),
+                    osis::Dispute::Account { id, lines, side: s, .. } => format!("{id} {} {}{}", lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(","), side(*s), chosen(d)),
+                })
+                .collect();
             if left > 0 {
                 lines.push(format!("{left} not examined"));
             }
-            let j = J::obj([("disputes", J::Arr(ds.iter().map(|d| J::obj([("id", J::str(d.id.to_string())), ("target", J::tid(d.target)), ("author", J::tid(d.author)), ("holder", J::tid(d.holder)), ("side", J::str(side(d.side))), ("chosen", J::str(if d.chosen { "true" } else { "false" }))])).collect())), ("unexamined", J::int(left as i64))]);
+            let flag = |d: &osis::Dispute| J::str(if d.chosen() { "true" } else { "false" });
+            let j = J::obj([
+                (
+                    "disputes",
+                    J::Arr(
+                        ds.iter()
+                            .map(|d| match d {
+                                osis::Dispute::Removal { id, target, author, holder, side: s, .. } => J::obj([("id", J::str(id.to_string())), ("target", J::tid(*target)), ("author", J::tid(*author)), ("holder", J::tid(*holder)), ("side", J::str(side(*s))), ("chosen", flag(d))]),
+                                osis::Dispute::Account { id, account, lines, side: s, .. } => J::obj([("id", J::str(id.to_string())), ("account", J::tid(*account)), ("lines", J::Arr(lines.iter().map(|l| J::str(l.to_string())).collect())), ("side", J::str(side(*s))), ("chosen", flag(d))]),
+                            })
+                            .collect(),
+                    ),
+                ),
+                ("unexamined", J::int(left as i64)),
+            ]);
             ctx.emit(&lines, j)
         }
         Cmd::Disputes(DisputeCmd::Choose { id, side }) => {
             let side = match side.as_str() {
                 "author" => osis::Side::Author,
                 "holder" => osis::Side::Holder,
-                _ => return Err(exit(2, "side: author or holder")),
+                c => osis::Side::Line(c.parse().map_err(|_| exit(2, "side: author, holder or a commit id"))?),
             };
             Ok(db.choose_side(id.parse()?, side)?)
         }

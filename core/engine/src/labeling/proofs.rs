@@ -6,8 +6,8 @@ use osis_base::CreationRecord;
 use osis_crypto::SigningSecret;
 
 impl Engine {
-    /// This node's account at the newest open epoch it holds a seed of: the signing key and the
-    /// account's creation record. `None` before it holds one or once no open epoch is held.
+    /// This node's account at its open epoch, when it holds that epoch's seed: the signing key
+    /// and the account's creation record. `None` before it holds one or while it does not.
     pub fn account_prover(&self) -> Result<Option<(SigningSecret, CreationRecord)>> {
         let Some(p) = self.core.account else { return Ok(None) };
         let Some(record) = self.core.created(&p).cloned() else { return Ok(None) };

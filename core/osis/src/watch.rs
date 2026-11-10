@@ -670,6 +670,7 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
             let d = crate::Dispute::of(&osis_node::sides::DisputeInfo { commit: *commit, op: *op, holder: *holder, target: *target, author: *author, side: Some(side) });
             due(&[Slot::Disputes], Delivery::Dispute(d))
         }
+        Msg::Event(Event::AccountDisputed { account, lines, side }) => due(&[Slot::Disputes], Delivery::Dispute(crate::Dispute::of_account(*account, lines, *side, false))),
         Msg::Status(st) => due(&[Slot::Status], Delivery::Status(st.clone())),
         Msg::Port(t, ev) => due(&[Slot::Port(*t)], Delivery::Port(ev.clone())),
         Msg::Due(Watch::Local) => due(&[Slot::Local], Delivery::Due),

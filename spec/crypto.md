@@ -224,7 +224,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
 - **Delete base**: a thing or actor without secrets of its own (§3) uses those of the last actor of its derivation chain (§3), its delete base.
 - **Delete key** of a role secret s: the Ed25519 key with seed `kdf("delete key", s)` (secret scalar a, public key A = a·B, RFC 8032).
   - Each keyset in `keys.0` publishes its epoch's (§3).
-  - A delete base that is a key actor has its signing key (§3) as delete key at every level; an account's is the signing key of the newest of its epochs the writer knows: open ones whose seed it holds first, then open ones, then, where a fork leaves none open, those that count (spec/permissions.md §5.4); newest by height, then signing key.
+  - A delete base that is a key actor has its signing key (§3) as delete key at every level; an account's is the signing key of its open epoch at the writer (spec/permissions.md §5.4).
 - **Header list**: a header lists, per level of each delta, the first of these for the base; a writer holding none of them cannot write:
   - the base's delete key of the newest current epoch of that level's secret the writer holds;
   - the `delete_key` of the base's `keys.0` keyset of that role it holds;
@@ -252,3 +252,4 @@ An account's commits are signed with the key of one of its signing epochs (spec/
 - A named fork is **accepted** iff it is held and its signature verifies. A name without its signature accepts nothing.
 - A rotation's **parents** are the held rotation minting the epoch it is signed at and the forks it accepts. Its **line** is itself and every held rotation reachable over parents. Epoch e **descends from** rotation r iff r is on the line of e's minting rotation; the first epoch descends from none.
 - A rotation is **signed at** the epoch it rotates and at the epoch of each fork it accepts.
+- Rotations signed without each other fork the chain; every node reads one head of it, its side's or the one it received first (spec/permissions.md §5.4), and a merge ends the fork.

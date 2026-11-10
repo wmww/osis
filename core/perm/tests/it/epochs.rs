@@ -81,8 +81,15 @@ impl<T: Ord + Copy> Judged<T> {
 
 type Parts<'a> = (&'a [ThingList<u32, u32>], &'a [Listing<u32, u32>], &'a [RotationAddendum<u32>]);
 
-fn judge(rots: &[Rotation<u32>], commits: &[AccountCommit<u32, u32>], (l, g, a): Parts) -> Judged<u32> {
-    Judged::new(Epochs::new(0, rots.to_vec(), None, l, g), commits.to_vec(), a.to_vec())
+/// Rotations received in ID order.
+fn judge(rots: &[Rotation<u32>], commits: &[AccountCommit<u32, u32>], parts: Parts) -> Judged<u32> {
+    let mut received: Vec<u32> = rots.iter().map(|r| r.id).collect();
+    received.sort();
+    judge_as(rots, &received, commits, parts)
+}
+
+fn judge_as(rots: &[Rotation<u32>], received: &[u32], commits: &[AccountCommit<u32, u32>], (l, g, a): Parts) -> Judged<u32> {
+    Judged::new(Epochs::new(0, rots.to_vec(), None, received, l, g), commits.to_vec(), a.to_vec())
 }
 
 /// The rotator received X's write (100) and lists it; X's later write at the old epoch (101)
@@ -114,15 +121,18 @@ fn write_only_a_witness_received_counts() {
 }
 
 /// Node 2 rotates (1) before X's removal (2) reaches it, boxing X epoch 1. X's later write at
-/// its old epoch (100) and at the sibling's (101) both fall: the removal closes the sibling's
-/// epoch, and node 0's merge (4, signed at 1) closes both again; X's fork (3) counts only in the
-/// window before the merge.
+/// its old epoch (100) and at the sibling's (101) both fall where the removal's line is
+/// followed: the removal closes the sibling's epoch, and node 0's merge (4, signed at 1) closes
+/// both again; X's fork (3) counts only in the window before the merge, as the sibling's line
+/// does at a reader that follows it.
 #[test]
 fn later_write_does_not_count_at_its_old_epoch_or_a_siblings() {
     let commits = [c(100, 0), c(101, 1), c(102, 3)];
     let rots = [rot(1, 0, &[0], &[]), rot(2, 0, &[0], &[]), rot(3, 1, &[1, 2], &[]), rot(4, 2, &[1, 2, 3], &[1])];
-    let e = judge(&rots[..2], &commits, (&[list(1, &[]), list(2, &[])], &[], &[]));
+    let e = judge_as(&rots[..2], &[2, 1], &commits, (&[list(1, &[]), list(2, &[])], &[], &[]));
     assert!(!e.counts(&100) && !e.counts(&101), "the removal closes the sibling's epoch");
+    let e = judge_as(&rots[..2], &[1, 2], &commits, (&[list(1, &[]), list(2, &[])], &[], &[]));
+    assert!(!e.counts(&100) && e.counts(&101), "the fork window at a reader the sibling's rotation reached first");
     let window = judge(&rots[..3], &commits, (&[list(3, &[101])], &[], &[]));
     assert!(window.counts(&101) && window.counts(&102), "the fork window: X's fork rejects the removal");
     let merged = judge(&rots, &commits, (&[list(3, &[101]), list(4, &[])], &[], &[]));
@@ -260,8 +270,9 @@ fn pid_of(w: &World, id: u32) -> u32 {
     if i < w.items.len() { pid(w, i) } else { 1000 + id }
 }
 
-/// Perm's verdict on the model's held set under `side` (a model item index).
-fn perm_epochs(w: &World, held: &[bool], side: Option<usize>) -> Judged<usize> {
+/// Perm's verdict on the model's held set under `side` (a model item index), observer `o`'s
+/// receipt order.
+fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judged<usize> {
     let mut rots = Vec::new();
     let mut commits = Vec::new();
     let mut lists = Vec::new();
@@ -296,26 +307,33 @@ fn perm_epochs(w: &World, held: &[bool], side: Option<usize>) -> Judged<usize> {
             commits.push(c);
         }
     }
-    Judged::new(Epochs::new(0, rots, side.map(|s| pid(w, s)), &lists, &listings), commits, addenda)
+    let mut received: Vec<usize> = (0..w.items.len()).filter(|&i| held[i] && matches!(w.items[i].kind, Kind::Rotation { .. })).collect();
+    received.sort_by_key(|&i| (w.items[i].recv[o], w.items[i].id));
+    let received: Vec<u32> = received.into_iter().map(|i| pid(w, i)).collect();
+    Judged::new(Epochs::new(0, rots, side.map(|s| pid(w, s)), &received, &lists, &listings), commits, addenda)
 }
 
 /// The first difference between the model's `judge` and perm at observer `o` holding `held`.
 fn epochs_diff(w: &World, o: usize, held: &[bool]) -> Option<String> {
     let side = w.default_side(o, held);
-    let v = w.judge(held, side);
-    let e = perm_epochs(w, held, side);
-    // Which rotations take part (held with their chain): the disputes and, off P, the side.
+    let v = w.judge_at(o, held);
+    // P's nodes are given their side (the devices actor's line); anyone else takes perm's
+    // default from its receipt order.
+    let e = perm_epochs(w, o, held, side.filter(|_| o < w.np));
+    // Which rotations take part (held with their chain): the disputes, the side, the head
+    // followed.
     let parties: BTreeSet<u32> = w.parties(held).into_iter().map(|i| pid(w, i)).collect();
     if *e.chain().parties() != parties {
         return Some(format!("observer n{o}: parties model {parties:?}, perm {:?}", e.chain().parties()));
     }
-    if o >= w.np {
-        let mut received: Vec<usize> = (0..w.items.len()).filter(|&i| held[i] && matches!(w.items[i].kind, Kind::Rotation { .. })).collect();
-        received.sort_by_key(|&i| (w.items[i].recv[o], w.items[i].id));
-        let mine = e.chain().default_side(&received.iter().map(|&i| pid(w, i)).collect::<Vec<_>>());
-        if mine != side.map(|s| pid(w, s)) {
-            return Some(format!("observer n{o}: side model {side:?}, perm {mine:?}"));
-        }
+    if e.chain().side() != side.map(|s| pid(w, s)) {
+        return Some(format!("observer n{o}: side model {side:?}, perm {:?}", e.chain().side()));
+    }
+    if e.chain().followed() != v.followed.map_or(0, |f| pid(w, f)) {
+        return Some(format!("observer n{o}: followed model {:?}, perm {:?}", v.followed, e.chain().followed()));
+    }
+    if e.chain().in_doubt() != w.in_doubt(held, &v) {
+        return Some(format!("observer n{o}: in doubt model {}, perm {}", w.in_doubt(held, &v), e.chain().in_doubt()));
     }
     let rooted = w.rooted(held);
     let minted = |ep: u32| ep == 0 || (0..w.items.len()).any(|r| rooted[r] && matches!(w.items[r].kind, Kind::Rotation { new, .. } if new == ep));
@@ -355,7 +373,7 @@ fn epochs_run(samples: u64, seed: u64) {
                 if let Some(d) = epochs_diff(&w, o, &held) {
                     panic!("seed {seed:#x} sample {s}: {d}\n{w:?}");
                 }
-                let v = w.judge(&held, w.default_side(o, &held));
+                let v = w.judge_at(o, &held);
                 closed_named += w.items.iter().enumerate().filter(|(i, it)| v.as_p[*i] && it.epoch.is_some_and(|e| v.closed.contains(&e)) && !matches!(it.kind, Kind::Rotation { .. })).count() as u64;
             }
         }

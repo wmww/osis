@@ -10,7 +10,7 @@ use osis_base::Tid;
 use osis_proto::{ActorProof, MAX_PROOFS, Prover};
 use std::collections::BTreeSet;
 
-/// This node's proofs: its own key, then its account at the newest open epoch it holds a seed of,
+/// This node's proofs: its own key, then its account at its open epoch when it holds the seed,
 /// then the key actors it holds (a link key) by their signing keys, in tid order,
 /// up to `MAX_PROOFS` (spec/wire.md §11.2): any more are not proved on this connection.
 pub(super) fn provers(engine: &mut Engine) -> Result<Vec<Prover>> {

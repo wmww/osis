@@ -32,7 +32,7 @@ pub(crate) struct AccountRotation {
     pub header: RotationHeader,
     pub merge_keys: Vec<SigningSecret>,
     pub lists: Vec<(u64, Vec<[u8; 32]>, ThingList)>,
-    /// A merge's: the head it is signed at and that epoch's keys (else the newest open epoch).
+    /// A merge's: the head it is signed at and that epoch's keys (else the open epoch).
     pub at: Option<(CommitId, AccountEpochKeys)>,
 }
 
@@ -46,10 +46,9 @@ impl AccountRotation {
 type PerThing = (BTreeSet<CommitId>, Vec<(osis_base::WallMs, CommitId)>);
 
 /// Rotates account `p`'s epoch (spec/permissions.md §3, §5.5; spec/crypto.md §9): a role commit
-/// signed at the newest open epoch held, minting one whose seed goes into D's `account.0` (under
-/// D's newest read epoch, so only D's current nodes open it) and its public keys into P's
-/// `keys.0`. With no epoch open (concurrent rotations close each other's) it is a merge of the
-/// heads: superseding each, signed at the lowest one D's roster authorizes and naming the other
+/// signed at the open epoch, minting one whose seed goes into D's `account.0` (under D's newest
+/// read epoch, so only D's current nodes open it) and its public keys into P's `keys.0`. In a
+/// fork (several heads) it is a merge of the heads: superseding each, signed at the lowest one D's roster authorizes and naming the other
 /// authorized ones with a signature by each one's key; a head no current node minted (a removed
 /// node's fork) is superseded unnamed, so the merge rejects it.
 /// Its thing lists name the commits of P this node holds at the epochs it closes that no word
@@ -62,10 +61,10 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId]) -> Result<Op
     let signing = tx.core.account_signing(&p).ok().flatten();
     let mut names = Vec::new();
     let (at, supersedes, merge_keys, closes) = match signing {
-        Some((e, _)) => (None, vec![e], Vec::new(), v.open().to_vec()),
+        Some((e, _)) if v.heads().len() == 1 => (None, vec![e], Vec::new(), vec![e]),
         // an open epoch whose seed is not here yet (its removal has not arrived): nothing to act at
-        None if !v.open().is_empty() => return Ok(None),
-        None => {
+        None if v.heads().len() == 1 => return Ok(None),
+        _ => {
             // the merge supersedes every head and names (accepts) only those D's roster
             // authorizes: a removed node's fork is superseded unnamed, so it is rejected with
             // its lists (spec/permissions.md §5.4)
@@ -175,6 +174,9 @@ pub(crate) fn take_seeds(tx: &mut Tx<'_>, d: &Tid) -> Result<()> {
         n.seeds = seeds;
         tx.core.accounts.insert(p, Arc::new(n));
         tx.core.role_changed();
+        // the line this node sides with may move (the seeds it holds are its roster's line)
+        tx.core.ix.epochs_due.insert(p);
+        crate::apply::keyset_changed(tx.core, &p);
     }
     Ok(())
 }
@@ -191,9 +193,8 @@ pub(crate) fn note_rotation_due(tx: &mut Tx<'_>, r: &CommitId) -> Result<()> {
 /// Answers every account's rotation not yet answered (`Indexes::rotations_due`), each once: a
 /// rotation of this node's account with its listing, another account's with its addenda as a
 /// writer (spec/permissions.md §5.5, Listings, Addenda against a rotation). One waits while it is
-/// pending, while no open epoch is held to sign at (concurrent rotations close each other's: the
-/// merge's), or while an addendum's thing's delete keys are not here; a void one is answered by
-/// nothing.
+/// pending, while the open epoch's seed is not here to sign at, or while an addendum's thing's
+/// delete keys are not here; a void one is answered by nothing.
 pub(crate) fn answer_rotations(tx: &mut Tx<'_>) -> Result<()> {
     let due: Vec<CommitId> = tx.core.ix.rotations_due.iter().copied().collect();
     for r in due {
@@ -215,7 +216,7 @@ fn nameable(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView, epochs: &
     for e in epochs {
         let closers = v.closers(e);
         let earliest = closers.iter().filter_map(|c| tx.core.ix.commits.get(c).map(|m| m.received)).min();
-        let open = v.open().contains(e);
+        let open = v.open() == *e;
         let at: Vec<CommitId> = tx.core.ix.by_epoch.get(&(*p, *e)).into_iter().flatten().copied().collect();
         for c in at {
             let Some(m) = tx.core.ix.commits.get(&c).cloned() else { continue };
@@ -243,6 +244,11 @@ fn answer_rotation(tx: &mut Tx<'_>, r: &CommitId) -> Result<bool> {
         return Ok(true);
     }
     if tx.core.accounts.contains_key(&p) {
+        // a fork off the line this node follows is answered by the merge that ends it, which
+        // closes all it closes: a removed node re-forking costs no listing per fork
+        if !v.on_open_line(r) {
+            return Ok(true);
+        }
         return listing(tx, p, &v, r);
     }
     witness(tx, p, &v, r)
@@ -333,7 +339,7 @@ pub(crate) fn leave(tx: &mut Tx<'_>, p: Tid, d: Tid) -> Result<()> {
 }
 
 /// What a node of this node's account owes its signing chain (spec/permissions.md §3, §5.5),
-/// made now: with no epoch open, the merge of the heads, by one node (`merger`); and the
+/// made now: in a fork, the merge of the heads, by one node (`merger`); and the
 /// rotation a counting removal from D requires that no counting rotation's list names (one made
 /// beside another rotation it did not hold, or by a node that did not rotate), naming it. Looked
 /// at when the account's commits moved (`Core::signing_due`); D's role history is its device
@@ -357,7 +363,7 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>) -> Result<Option<CommitId>> {
             unnamed.push(c);
         }
     }
-    let merging = v.open().is_empty();
+    let merging = v.heads().len() > 1;
     if merging && !merger(tx, &v, &d)? || !merging && unnamed.is_empty() {
         return Ok(None);
     }

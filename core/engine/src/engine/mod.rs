@@ -697,7 +697,7 @@ pub type CommitListeners = Arc<dyn Fn(&Tid) -> bool + Send + Sync>;
 
 pub(crate) struct CoreMark {
     ix: IndexesMark,
-    sides: usize,
+    sides: (usize, usize),
     schemas: usize,
     dropped: usize,
     reasons: BTreeMap<CommitId, MemoryDrop>,
@@ -795,8 +795,9 @@ pub struct Core {
     pub reseal_quiet: BTreeSet<Tid>,
     /// Numbers `Indexes::rotations`; never rolled back.
     pub rotation_seq: u64,
-    /// Signing chains built, with the `Indexes::rotations` entry they were built at.
-    pub(crate) account_views: std::cell::RefCell<HashMap<Tid, (u64, Arc<crate::flows::account::AccountView>)>>,
+    /// Signing chains built, with what they were built from: the `Indexes::rotations` entry, the side
+    /// chosen and how many seeds of the account are held.
+    pub(crate) account_views: std::cell::RefCell<HashMap<Tid, (crate::flows::account::ViewKey, Arc<crate::flows::account::AccountView>)>>,
     /// How many times `Core::account_view` built one (tests count work).
     pub(crate) account_view_builds: std::cell::Cell<u64>,
     /// The keyless actor grants (target, holder) over those held (`rotation::members::key_access`):
@@ -1367,7 +1368,7 @@ impl Core {
     /// a failed read keeps them). The timelines follow the restored held set. Each field's class
     /// is listed in `rollback_classes`.
     pub(crate) fn rollback_to(&mut self, m: CoreMark) {
-        let sides_back = self.sides.journaled() > m.sides;
+        let sides_back = self.sides.journaled() > m.sides.0 + m.sides.1;
         self.sides.rollback_to(m.sides);
         if self.dirty || self.written.len() > m.written || self.ix.mark() != m.ix {
             self.live_trees.clear();

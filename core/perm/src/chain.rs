@@ -1,11 +1,13 @@
 //! An account's signing chain (spec/crypto.md §9, spec/permissions.md §5.4): which held
-//! rotations count, which epochs are open, and account-level disputes. A pure function of the
-//! held rotations and the side; nothing here reads `ts`, counters or signatures (the caller
-//! checks those and states the result in `Rotation::signed`).
+//! rotations count, which head a node follows, and account-level disputes. A pure function of
+//! the held rotations, the side and the receipt order; nothing here reads `ts`, counters or
+//! signatures (the caller checks those and states the result in `Rotation::signed`).
 //!
-//! Principle: an epoch is open only where it descends from every counting rotation held. It is
-//! the key level's anchoring rule (osis-keys `seal_keyset`: a keyset is sealed to only where it
-//! descends from every anchor), so both use `joins`.
+//! Principle: a node reads one line. A fork (several heads, or a dispute) is resolved as every
+//! dispute is: each node follows its side, by default the line it received first; a merge ends
+//! a fork; a side set overrides. The open epoch is the head followed, and every other epoch is
+//! closed. `joins` (descent from every anchor) is the key level's anchoring rule (osis-keys
+//! `seal_keyset`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -30,6 +32,11 @@ pub fn joins<'a, N: Ord + Copy + 'a, I: IntoIterator<Item = N>>(k: N, anchors: i
     anchors.into_iter().all(|a| *a == k || up.contains(a))
 }
 
+/// Each rotation's place in `received`, its first.
+fn ranks<E: Ord + Copy>(received: &[E]) -> BTreeMap<E, usize> {
+    received.iter().enumerate().map(|(i, r)| (*r, i)).rev().collect()
+}
+
 /// A held rotation of the account's signing chain. Its ID names the epoch it mints; the first
 /// epoch (the chain's root) is minted by none.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,7 +54,8 @@ pub struct Rotation<E> {
     pub signed: BTreeSet<E>,
 }
 
-/// The chain as one node judges it: the held rotations under its side.
+/// The chain as one node judges it: the held rotations under its side, read along the head it
+/// follows.
 #[derive(Clone, Debug)]
 pub struct Chain<E> {
     root: E,
@@ -58,14 +66,22 @@ pub struct Chain<E> {
     rejects: BTreeSet<(E, E)>,
     counting: BTreeSet<E>,
     parties: BTreeSet<E>,
+    /// The side taken: the one given, else the default.
+    side: Option<E>,
+    /// The counting epochs no counting rotation descends from.
+    heads: BTreeSet<E>,
+    /// The head followed: the one open epoch.
+    followed: E,
 }
 
 impl<E: Ord + Copy> Chain<E> {
     /// Judges `rotations` (the held ones, one record each) under `side`: the rotation the node
-    /// sides with in a dispute, if any. A rotation counts as held only with its chain back to
-    /// the root (over the epochs it is signed at, spec/permissions.md §5.4); the rest are
-    /// pending and take part in nothing (`holds`).
-    pub fn new(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, side: Option<E>) -> Chain<E> {
+    /// sides with, if set (by the node's user, or a node of the account's own: its roster's
+    /// line); else the default, from `received` (the held rotations in receipt order, earliest
+    /// first; one missing from it ranks after every one in it). A rotation counts as held only
+    /// with its chain back to the root (over the epochs it is signed at, spec/permissions.md
+    /// §5.4); the rest are pending and take part in nothing (`holds`).
+    pub fn new(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, side: Option<E>, received: &[E]) -> Chain<E> {
         let mut pending: BTreeMap<E, Rotation<E>> = rotations.into_iter().filter(|r| r.id != root).map(|r| (r.id, r)).collect();
         let mut rots: BTreeMap<E, Rotation<E>> = BTreeMap::new();
         while let Some(&id) = pending.values().find(|r| r.at == root || rots.contains_key(&r.at)).map(|r| &r.id) {
@@ -73,12 +89,51 @@ impl<E: Ord + Copy> Chain<E> {
                 rots.insert(id, r);
             }
         }
-        let mut c = Chain { root, rots, lines: BTreeMap::new(), rejects: BTreeSet::new(), counting: BTreeSet::new(), parties: BTreeSet::new() };
+        let mut c = Chain { root, rots, lines: BTreeMap::new(), rejects: BTreeSet::new(), counting: BTreeSet::new(), parties: BTreeSet::new(), side: None, heads: BTreeSet::new(), followed: root };
         c.lines = c.rots.keys().map(|&r| (r, c.line_of(r))).collect();
         c.rejects = c.rejections();
-        c.counting = c.count(side);
         c.parties = c.contesting();
+        let rank = ranks(received);
+        c.side = side.filter(|s| c.rots.contains_key(s)).or_else(|| c.first_line(&c.parties, &rank));
+        c.counting = c.count(c.side);
+        c.heads = c.heads_of();
+        let on_side: BTreeSet<E> = c.heads.iter().copied().filter(|h| c.side.is_some_and(|s| c.on_line(*h, s))).collect();
+        c.followed = c.first_line(if on_side.is_empty() { &c.heads } else { &on_side }, &rank).unwrap_or(root);
         c
+    }
+
+    /// Among `candidates`, the one preferred to every other: h is preferred to g when the
+    /// earliest-received rotation on exactly one of their lines is on h's (receipt ties by ID).
+    /// A total order: the lines' rotations by receipt read as one binary number each.
+    fn first_line(&self, candidates: &BTreeSet<E>, rank: &BTreeMap<E, usize>) -> Option<E> {
+        let empty = BTreeSet::new();
+        let line = |c: &E| self.lines.get(c).unwrap_or(&empty);
+        let key = |r: &E| (rank.get(r).copied().unwrap_or(usize::MAX), *r);
+        let order = |a: &E, b: &E| {
+            let (la, lb) = (line(a), line(b));
+            let first = la.symmetric_difference(lb).min_by_key(|r| key(r));
+            match first {
+                Some(r) if la.contains(r) => std::cmp::Ordering::Less,
+                Some(_) => std::cmp::Ordering::Greater,
+                None => a.cmp(b),
+            }
+        };
+        candidates.iter().min_by(|a, b| order(a, b)).copied()
+    }
+
+    /// Of held `candidates`, the one whose line `received` (earliest first) brought first, as
+    /// the default side picks (`first_line`).
+    pub fn prefer(&self, candidates: &BTreeSet<E>, received: &[E]) -> Option<E> {
+        self.first_line(candidates, &ranks(received))
+    }
+
+    /// The counting epochs no counting rotation descends from: the root alone when no rotation
+    /// counts.
+    fn heads_of(&self) -> BTreeSet<E> {
+        if self.counting.is_empty() {
+            return [self.root].into();
+        }
+        self.counting.iter().copied().filter(|h| !self.counting.iter().any(|x| x != h && self.on_line(*x, *h))).collect()
     }
 
     /// The named forks rotation `m` accepts: held, and signed at their epoch.
@@ -199,20 +254,17 @@ impl<E: Ord + Copy> Chain<E> {
         *e == self.root || self.counts(e)
     }
 
-    /// The counting rotations closing epoch `e`: every one it does not descend from.
+    /// The counting rotations closing epoch `e`: every one it does not descend from. The
+    /// followed head has some in a fork (the other heads): they matter once it closes too (the
+    /// cutoff, spec/permissions.md §5.5).
     pub fn closers(&self, e: &E) -> Vec<E> {
         let line = self.lines.get(e);
         self.counting.iter().copied().filter(|r| !line.is_some_and(|l| l.contains(r))).collect()
     }
 
-    /// Whether epoch `e` is closed: some counting rotation closes it.
-    pub fn closed(&self, e: &E) -> bool {
-        !self.closers(e).is_empty()
-    }
-
-    /// Whether epoch `e` is open: it counts and descends from every counting rotation.
+    /// Whether epoch `e` is open: it is the head followed.
     pub fn open(&self, e: &E) -> bool {
-        self.epoch_counts(e) && joins(*e, &self.counting, |x| self.parents(x))
+        *e == self.followed
     }
 
     /// Held rotation `r`'s line: itself and every held rotation it descends from.
@@ -229,14 +281,32 @@ impl<E: Ord + Copy> Chain<E> {
         !self.parties.is_empty()
     }
 
-    /// The default side in a dispute for a node that received the rotations in the order
-    /// `received` (earliest first): the party whose line holds the first-received rotation
-    /// not on every party's line. `None` without a dispute.
-    pub fn default_side(&self, received: &[E]) -> Option<E> {
-        let rank = |r: &E| received.iter().position(|x| x == r).unwrap_or(usize::MAX);
-        let common = |r: &E| self.parties.iter().all(|p| self.on_line(*p, *r));
-        // A party with nothing of its own on its line sorts last.
-        let first = |p: &E| self.lines.get(p).into_iter().flatten().filter(|r| !common(r)).map(|r| (rank(r), *r)).min();
-        self.parties.iter().copied().min_by_key(|p| first(p).map_or((true, None), |k| (false, Some(k))))
+    /// The side taken: the one given, else in a dispute the party whose line holds the
+    /// rotations not on every party's line received first.
+    pub fn side(&self) -> Option<E> {
+        self.side
+    }
+
+    /// The heads: the counting epochs no counting rotation descends from. More than one is a
+    /// fork, which a merge ends.
+    pub fn heads(&self) -> &BTreeSet<E> {
+        &self.heads
+    }
+
+    /// The head followed, the one open epoch: among the heads whose line holds the side (all
+    /// of them when none does), the one whose line holds the rotations not on every one's line
+    /// received first.
+    pub fn followed(&self) -> E {
+        self.followed
+    }
+
+    /// Whether the reading is in doubt: a dispute, or a fork where a head not followed has on
+    /// its line a merge (a rotation superseding more than the epoch it rotates) the followed
+    /// head's line lacks. A lone rotation beside the followed line is what any one node's
+    /// concurrent rotation, or a removed node's fork, looks like, and the next merge ends it.
+    pub fn in_doubt(&self) -> bool {
+        let followed = self.lines.get(&self.followed);
+        let merge = |r: &E| self.rots.get(r).is_some_and(|x| x.supersedes.iter().any(|e| *e != x.at));
+        self.dispute() || self.heads.iter().filter(|h| **h != self.followed).any(|h| self.lines.get(h).into_iter().flatten().any(|r| merge(r) && !followed.is_some_and(|l| l.contains(r))))
     }
 }

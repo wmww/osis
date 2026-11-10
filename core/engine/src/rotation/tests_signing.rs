@@ -171,9 +171,9 @@ fn a_writers_addendum_keeps_what_it_received_spec_permissions_5_5() {
 }
 
 // spec/crypto.md §9, spec/permissions.md §5.4: two nodes removing a third at once fork the
-// chain, leaving no epoch open where both rotations are held; a node holding both merges them,
-// signed at each fork, and an outsider holding the merge has an open epoch again, where the
-// account's next write counts
+// chain; an outsider holding both follows one and is told of nothing; a node holding both
+// merges them, signed at each fork, and the outsider holding the merge reads the merge's epoch,
+// where the account's next write counts
 #[test]
 fn concurrent_rotations_fork_and_a_node_merges_them_spec_crypto_9() {
     let (mut lp, a, t) = world(4, 3);
@@ -194,9 +194,12 @@ fn concurrent_rotations_fork_and_a_node_merges_them_spec_crypto_9() {
     assert_eq!(rh.supersedes.iter().copied().collect::<std::collections::BTreeSet<_>>(), [r0, r1].into());
     assert_eq!(rh.names.len(), 1);
     send(&mut lp, 0, 3, &[r0, r1]);
+    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("p".into())), "the account's earlier write counts through the fork");
+    assert!(lp.peers[3].engine.account_disputes().is_empty(), "honest concurrent rotations warn of nothing");
     let w0 = write(&mut lp, 1 - i, t, "after the merge");
     send(&mut lp, 1 - i, 3, &[merge, w0]);
     assert_eq!(read(&mut lp, 3, t), Some(Value::Str("after the merge".into())), "the merge's epoch is open");
+    assert!(lp.peers[3].engine.account_disputes().is_empty());
     // nothing more is due
     for k in [0, 1] {
         assert!(lp.peers[k].engine.signing_due().unwrap().commits.is_empty(), "peer {k}");
@@ -391,4 +394,133 @@ fn node_knowing_a_removal_seals_its_account_at_no_epoch_minted_before_spec_crypt
     let w = newest_read(&lp, 2, x).unwrap();
     assert_ne!(read_box_at(&mut lp, 2, x, p), Some(p1), "P not sealed at the epoch L holds");
     assert!(!openable(&mut lp, 2, &[x], l, start).contains(&(x, Role::Read, w)), "L opens nothing of X's new epoch");
+}
+
+/// A plain fork of `a`'s chain from its first epoch to a fresh epoch from `seed`, as removed
+/// node `by` (which still holds the first epoch's seed) can sign after every merge.
+fn refork(lp: &mut LocalPeer, by: usize, a: &CreatedAccount, seed: u8) -> Vec<u8> {
+    let e = &lp.peers[by].engine;
+    let rec = e.core.created(&a.account).unwrap().clone();
+    let osis_base::CreationRecord::KeyActor { public_key, .. } = &rec else { panic!("an account") };
+    let first = e.core.accounts.get(&a.account).unwrap().seeds.get(public_key.as_slice()).unwrap().clone();
+    let ts = osis_base::Ts::make(e.now(), 0).unwrap();
+    super::tests_account::rotation(rec, &osis_crypto::AccountEpochKeys::from_seed(&first), &osis_crypto::AccountEpochKeys::from_seed(&osis_crypto::Secret32::from_bytes([seed; 32])), ts)
+}
+
+/// Ingests `bytes` at each of `to`, a millisecond apart; its commit ID.
+fn give(lp: &mut LocalPeer, bytes: &[u8], to: &[usize]) -> CommitId {
+    for &k in to {
+        lp.advance(1);
+        lp.peers[k].engine.ingest(bytes, Vec::new()).unwrap();
+    }
+    osis_commit::CommitBlob::decode(bytes).unwrap().id()
+}
+
+/// The merge one of `nodes` owes, sent to every peer in `to`.
+fn merge(lp: &mut LocalPeer, nodes: &[usize], to: &[usize]) -> CommitId {
+    let mut made = Vec::new();
+    for &k in nodes {
+        let d = lp.peers[k].engine.signing_due().unwrap();
+        made.extend(d.commits.iter().map(|c| (k, *c)));
+    }
+    assert_eq!(made.len(), 1, "one merger: {made:?}");
+    let (by, m) = made[0];
+    for &k in to {
+        if k != by {
+            lp.advance(1);
+            send(lp, by, k, &[m]);
+        }
+    }
+    m
+}
+
+// spec/permissions.md §5.4 (Following): a removed node keeps its old epoch's key and forks the
+// chain plainly from it after every merge, a rotation nothing rejects until the next merge. A
+// reader holding the removal follows the line it already read: the account's earlier and later
+// writes keep counting through every fork, it is told of nothing, and every merge ends the fork
+#[test]
+fn a_removed_nodes_reforks_hide_nothing_spec_permissions_5_4() {
+    let (mut lp, a, t) = world(4, 3);
+    let done = remove(&mut lp, 0, a.devices, 2);
+    send(&mut lp, 0, 1, &done.commits);
+    send(&mut lp, 0, 3, &done.commits[1..]);
+    let one = write(&mut lp, 1, t, "one");
+    send(&mut lp, 1, 3, &[one]);
+    let says = |lp: &mut LocalPeer, v: &str| assert_eq!(read(lp, 3, t), Some(Value::Str(v.into())));
+    says(&mut lp, "one");
+    let mut later = "one".to_string();
+    for (round, seed) in [90u8, 91, 92].into_iter().enumerate() {
+        let f = refork(&mut lp, 2, &a, seed);
+        give(&mut lp, &f, &[0, 1, 3]);
+        let v = lp.peers[3].engine.core.account_view(&a.account).unwrap();
+        assert_eq!(v.heads().len(), 2, "round {round}: the fork stands until the merge");
+        says(&mut lp, &later);
+        assert!(lp.peers[3].engine.account_disputes().is_empty(), "round {round}: a lone fork is told of nowhere");
+        merge(&mut lp, &[0, 1], &[0, 1, 3]);
+        later = format!("after merge {round}");
+        let w = write(&mut lp, 1, t, &later);
+        send(&mut lp, 1, 3, &[w]);
+        says(&mut lp, &later);
+        assert_eq!(lp.peers[3].engine.core.account_view(&a.account).unwrap().heads().len(), 1, "round {round}: the merge ends the fork");
+    }
+}
+
+// spec/permissions.md §5.4 (Following, Doubt): a reader that the removed node's fork reached
+// before the removal and the merge follows that fork; the other line carries a merge, so it is
+// told and lists the dispute, and switching to the merged line shows the account's writes there.
+// Another reader in the same place is set right by the next merge alone, and every reader
+// ends on the same reading whatever the order it received things in
+#[test]
+fn a_reader_the_fork_reached_first_is_told_and_switches_spec_permissions_5_4() {
+    let (mut lp, a, t) = world(6, 3);
+    let done = remove(&mut lp, 0, a.devices, 2);
+    send(&mut lp, 0, 1, &done.commits);
+    send(&mut lp, 0, 3, &done.commits[1..]);
+    let f1 = refork(&mut lp, 2, &a, 80);
+    let f1 = give(&mut lp, &f1, &[0, 1, 3]);
+    let m1 = merge(&mut lp, &[0, 1], &[0, 1, 3]);
+    let w = write(&mut lp, 1, t, "merged");
+    send(&mut lp, 1, 3, &[w]);
+    // the removed node forks again; peers 4 and 5 get that fork before anything else
+    let f2b = refork(&mut lp, 2, &a, 81);
+    let f2 = give(&mut lp, &f2b, &[4, 5, 3]);
+    let told = |lp: &mut LocalPeer, k: usize| lp.peers[k].drain_events().into_iter().filter(|e| matches!(e, crate::events::Event::AccountDisputed { .. })).count();
+    for k in [4, 5] {
+        assert_eq!(told(&mut lp, k), 0, "peer {k}: the fork alone is no doubt");
+        lp.advance(1);
+        send(&mut lp, 0, k, &done.commits[1..]);
+        lp.advance(1);
+        send(&mut lp, 3, k, &[f1, m1, w]);
+        assert_eq!(told(&mut lp, k), 1, "peer {k} is told once");
+    }
+    for k in [4, 5] {
+        assert_ne!(read(&mut lp, k, t), Some(Value::Str("merged".into())), "peer {k} follows the fork it got first");
+        let ds = lp.peers[k].engine.account_disputes();
+        assert_eq!(ds.len(), 1, "peer {k}: in doubt, the other line carries a merge");
+        assert_eq!((ds[0].account, ds[0].side, ds[0].chosen), (a.account, f2, false));
+        assert!(ds[0].lines.contains(&m1));
+    }
+    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("merged".into())), "peer 3 had the merged line first");
+    assert!(lp.peers[3].engine.account_disputes().is_empty());
+    lp.peers[4].engine.choose_line(a.account, m1).unwrap();
+    // the write's body, dropped while it counted for nothing, is offered again
+    send(&mut lp, 3, 4, &[w]);
+    assert_eq!(read(&mut lp, 4, t), Some(Value::Str("merged".into())), "switched");
+    let ds = lp.peers[4].engine.account_disputes();
+    assert_eq!((ds.len(), ds[0].side, ds[0].chosen), (1, m1, true));
+    // the next merge rejects the fork: peer 5 is set right without a choice
+    for k in [0, 1] {
+        lp.advance(1);
+        lp.peers[k].engine.ingest(&f2b, Vec::new()).unwrap();
+    }
+    let m2 = merge(&mut lp, &[0, 1], &[0, 1]);
+    let w2 = write(&mut lp, 1, t, "after");
+    for k in [3, 4, 5] {
+        lp.advance(1);
+        send(&mut lp, 0, k, &[m2]);
+        send(&mut lp, 1, k, &[w2]);
+        assert_eq!(read(&mut lp, k, t), Some(Value::Str("after".into())), "peer {k}");
+        assert_eq!(lp.peers[k].engine.core.account_view(&a.account).unwrap().heads(), vec![m2], "peer {k}");
+    }
+    assert!(lp.peers[5].engine.account_disputes().is_empty(), "the merge ended it");
 }
