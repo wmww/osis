@@ -1701,15 +1701,22 @@ fn suspect_report_on_no_state_writes_nothing_spec_sync_7() {
 }
 
 // spec/permissions.md §4 (Suspect list: to a peer it shares the label with): a list for a label
-// the connection does not share repairs nothing.
+// the writer syncs but the connection does not share (the reporter holds no role there)
+// repairs nothing.
 #[test]
 fn suspect_report_outside_the_shared_set_is_ignored_spec_permissions_4() {
-    let (mut net, [a, b, c], g, _) = suspect_world();
-    let t = net.item(a, g, g, "v1");
+    let (mut net, [a, b, c], _, l) = suspect_world();
+    let addr = net.address(0);
+    let g2 = net.group_seeded(a, &[(b, Role::Write)], vec![addr], 2);
+    let t = net.item(a, g2, g2, "v1");
     net.run();
+    let l2 = net.sync(b).labels().into_iter().find(|x| x.0 == g2).expect("b syncs g2's label").1.id;
+    assert_ne!(l2, l);
     let reg = Ak::new(REG.ak()).unwrap();
     let (conn, ..) = net.peer_conns(c).into_iter().find(|x| x.1 == b).expect("connected");
-    net.inject(c, conn, &osis_proto::Message::Suspect { id: osis_proto::msg::NODE_IDS | 0x7000, label: osis_base::LabelId([0x44; 16]), entries: vec![osis_proto::msg::SuspectEntry { thing: t, ak: reg, digest: [9; 16] }] });
+    let theirs = net.peer_of(c, conn).unwrap().1;
+    assert!(!net.sync(b).shared_members(theirs).contains(&l2), "not shared");
+    net.inject(c, conn, &osis_proto::Message::Suspect { id: osis_proto::msg::NODE_IDS | 0x7000, label: l2, entries: vec![osis_proto::msg::SuspectEntry { thing: t, ak: reg, digest: [9; 16] }] });
     net.run();
     assert!(!net.diagnostics(b).iter().any(|d| d.contains("Repair")));
 }

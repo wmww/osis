@@ -1518,9 +1518,10 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
         last = now;
     }
     assert!(placed.len() >= osis_base::format::INBOX_WAITING / 3, "readers placed: {}", placed.len());
-    // each reader's current card (a replaced one goes as replaced, not by the clearing rule)
-    let held: Vec<_> = last.into_iter().collect();
-    assert!(!held.is_empty());
+    // all but the junk, less the cards a later one replaced (they go as replaced, not by the
+    // clearing rule)
+    let held: Vec<_> = net.host_ids(host, &l).into_iter().filter(|x| !junk.contains(x) && (last.contains(x) || !placed.contains(x))).collect();
+    assert!(!last.is_empty() && last.iter().all(|x| held.contains(x)));
     net.set_online(a, true);
     for _ in 0..4 {
         net.advance(70_000);
