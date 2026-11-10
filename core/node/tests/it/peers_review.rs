@@ -154,6 +154,62 @@ fn peer_budget_refuses_spec_sync_5() {
     assert!(!kept_from_reader(64), "past it, not kept");
 }
 
+/// Whether node `b` (`peer_bytes` 1500) keeps the second of two unopened 1000-byte entries that
+/// reader `a` brings over two sessions, each proving `a`'s account and, with `fresh`, also an
+/// account known by nothing at `b`, below `a`'s in tid order (anyone can make one per session).
+fn second_kept(fresh: bool) -> bool {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let cfg = SyncConfig { peers: false, peer_bytes: 1500, ..SyncConfig::default() };
+    let b = net.add_node(2, cfg);
+    reach(&mut net, a, 0xa1);
+    reach(&mut net, b, 0xb1);
+    net.blocked_peers.insert((a, b));
+    net.group_at(a, &[(b, Role::Write)], vec![]);
+    net.run();
+    let l = net.label(b);
+    let pa = net.tid(a);
+    let mut strangers = Vec::new();
+    for seed in 10.. {
+        let s = net.node(seed, &[]);
+        if net.tid(s) < pa {
+            strangers.push(s);
+        }
+        if strangers.len() == 2 {
+            break;
+        }
+    }
+    let mut kept = false;
+    for (i, s) in strangers.into_iter().enumerate() {
+        let (mut p, _) = dial_in(&mut net, b);
+        let mut provers = net.sync(a).provers(false).unwrap();
+        if fresh {
+            provers.extend(net.sync(s).provers(false).unwrap());
+        }
+        command(&mut net, b, &mut p, Command::Prove(provers));
+        let mut out = Vec::new();
+        net.sync(b).shared_admit(p.conn, l, &mut out).unwrap();
+        let evs = exchange(&mut net, b, &mut p, out, Vec::new());
+        let id = evs.iter().find_map(|e| if let ClientEvent::Peer(m) = e { if let osis_proto::Message::Pull(x) = &**m { Some(x.id) } else { None } } else { None }).expect("b pulls its member");
+        let blob = vec![0x5a + i as u8; 1000];
+        let blob_id = osis_label::blob_id(&blob);
+        let ev = osis_proto::Event::Added { blob_id, blob: Some(blob), wrap: [0x11; osis_crypto::WRAP_LEN], stamp: None };
+        let reply = osis_proto::msg::PullReply { id, events: vec![(l, ev)], cursor: Some(vec![1; 8]), whole: false, more: false, report: false, joins: Vec::new() };
+        command(&mut net, b, &mut p, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
+        kept = net.sync(b).entries(&l).iter().any(|(x, _)| *x == blob_id);
+    }
+    kept
+}
+
+// spec/sync.md §5 (co-reader peer budgets), notes/peers.md Source: a peer's bytes count against
+// the account it proved, not one known by nothing here: proving a fresh account beside its own
+// gives a session no budget of its own.
+#[test]
+fn a_fresh_account_splits_no_budget_spec_sync_5() {
+    assert!(!second_kept(false), "one account, one budget");
+    assert!(!second_kept(true), "a fresh account beside it adds none");
+}
+
 // spec/sync.md §5: served sessions are capped: a new one evicts the oldest that serves nothing
 // (so silent sessions cannot starve holders), and is refused when every running one serves a
 // label; idle ones are closed, but one sharing a sync ID, whose stream is quiet while nothing

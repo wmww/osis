@@ -198,9 +198,10 @@ impl SyncEngine {
             return Ok(());
         }
         let Some(g) = self.labels().into_iter().find(|(_, x)| x.id == l).map(|x| x.0) else { return Ok(()) };
-        // per source: a node of this account by its node, any other by its account (its node
-        // key is not proved here), else its first actor
-        let Some(peer) = self.connection_proven(conn).and_then(|p| p.source().or_else(|| p.all().into_iter().next())) else { return Ok(()) };
+        // per source: a node of this account by its node, any other by its known account (its
+        // node key is not proved here), else its first known actor
+        let core = &self.engine.core;
+        let Some(peer) = self.connection_proven(conn).and_then(|p| p.source(core).or_else(|| p.all().into_iter().find(|t| core.judge([*t]).known()))) else { return Ok(()) };
         let closure = self.engine.closure(&g);
         for s in entries {
             let ak = s.ak;

@@ -564,17 +564,20 @@ fn expired_link_at_no_host_finalized_spec_permissions_7() {
 // spec/permissions.md §3 (re-seal at the end of a complete pass; a label with no host and no
 // peer it was received from passes vacuously, once the peer wait after the role change is
 // over), spec/sync.md §5 (co-reader peer): admin `a` serves g's label alone; admin `b`'s rotation
-// leaves reader `c` out and `b` and `c` go away. `a` re-seals `c` after `peer_pass_wait_ms`, not
-// before, and only once, and the box reaches `c`. When `a`
+// leaves reader `c` out and `b` goes away. With `c` gone too, `a` re-seals `c` after
+// `peer_pass_wait_ms`, not before; with `c` connected (a co-reader `a` received g from), `a` hears
+// it out instead. Either way `a` re-seals only once, and the box reaches `c`. When `a`
 // restarts after b's rotation reached it, the wait counts from the restart: it hears its peers
 // out before deciding.
 #[test]
 fn hostless_label_reseals_spec_permissions_3() {
-    hostless_reseal(false);
-    hostless_reseal(true);
+    for c_online in [false, true] {
+        hostless_reseal(false, c_online);
+        hostless_reseal(true, c_online);
+    }
 }
 
-fn hostless_reseal(restart: bool) {
+fn hostless_reseal(restart: bool, c_online: bool) {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);
@@ -592,10 +595,18 @@ fn hostless_reseal(restart: bool) {
     let e = net.engine(b);
     let rec = recipients_of(e, &[(ta, Role::Admin), (tb, Role::Admin)]);
     rotation(e, g, &rec, 91, false);
+    // a's role commits naming c's boxes (`secrets.0` of g): the re-seals
+    let reseals = |net: &mut Net| {
+        let ids = net.engine(a).commit_ids();
+        ids.iter().filter(|id| net.engine(a).header(id).is_some_and(|h| h.author == ta && h.kind.is_role() && h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "secrets.0"))).count()
+    };
+    let before = reseals(&mut net);
+    if !c_online {
+        // a connected co-reader a received g from is heard out instead
+        net.set_online(c, false);
+        net.run();
+    }
     net.pair(b, a);
-    net.run();
-    // c goes away too: a connected co-reader a received g from would be heard out instead
-    net.set_online(c, false);
     net.run();
     if restart {
         net.restart(a, 92);
@@ -603,16 +614,14 @@ fn hostless_reseal(restart: bool) {
     }
     let newest = |net: &mut Net, n: usize| net.engine(n).epochs(&g).and_then(|e| e.read.newest_held().map(|x| x.0));
     let e1 = newest(&mut net, a).unwrap();
-    assert_ne!(newest(&mut net, c), Some(e1), "c has no box at b's epoch");
-    // a's role commits naming c's boxes (`secrets.0` of g): the re-seals
-    let reseals = |net: &mut Net| {
-        let ids = net.engine(a).commit_ids();
-        ids.iter().filter(|id| net.engine(a).header(id).is_some_and(|h| h.author == ta && h.kind.is_role() && h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "secrets.0"))).count()
-    };
-    let before = reseals(&mut net);
     net.advance(60_000);
-    assert!(!net.sync(a).complete_pass(&g), "within the peer wait");
-    assert_eq!(reseals(&mut net), before, "no re-seal within the peer wait");
+    if !c_online {
+        assert_ne!(newest(&mut net, c), Some(e1), "c has no box at b's epoch");
+        assert!(!net.sync(a).complete_pass(&g), "within the peer wait");
+        assert_eq!(reseals(&mut net), before, "no re-seal within the peer wait");
+    } else {
+        assert!(net.sync(a).complete_pass(&g), "c, which dialed a, heard out within the peer wait");
+    }
     let wait = net.sync(a).config().peer_pass_wait_ms;
     net.advance(wait);
     assert!(net.sync(a).complete_pass(&g), "nothing upstream: passed once the wait is over");

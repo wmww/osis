@@ -48,11 +48,12 @@ impl Proven {
         self.key_actors.is_empty() && self.accounts.is_empty()
     }
 
-    /// Whom the peer counts as here (budgets, repair, pass waits): its node when it is one of
-    /// this node's account, else the account it proved (the lowest tid of several). A node of
-    /// another account proves no node key here, so its account stands for all of its nodes.
-    pub fn source(&self) -> Option<Tid> {
-        self.node.or_else(|| self.accounts.first().copied())
+    /// Whom the peer counts as here (budgets, repair): its node when it is one of this node's
+    /// account, else the first account it proved that is known here (`Judge::known`). A node of
+    /// another account proves no node key here, so its account stands for all of its nodes; an
+    /// account known by nothing is one anyone can make per connection, so it bounds nothing.
+    pub fn source(&self, core: &crate::engine::Core) -> Option<Tid> {
+        self.node.or_else(|| self.accounts.iter().copied().find(|t| core.judge([*t]).known()))
     }
 }
 

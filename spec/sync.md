@@ -420,7 +420,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
   - Nothing a connection proves comes from group data; the serving-node listing on a profile is for dialing only, never proof.
 - **Pair key**: two nodes that each proved a known actor to the other (Connection proofs) keep one record of each other, found by a 32-byte pair key `r` known only to the two. No node key finds a record.
   - After `Proved` the dialer sends `Resume` (spec/wire.md §11.2): a fresh nonce and, for each of its records naming a proven actor of this session (most recent first), `BLAKE3(key = r, "resume" || listener static key || dialer challenge || listener challenge)`, challenges as sent in Hello.
-  - A record is honoured only while a proven actor of this session is named by it and known here now: an account proved at an epoch open here, a key actor, or a node of this node's account.
+  - A record is honoured only while a proven actor of this session is named by it and known here now: an account proved at an epoch open here or a key actor.
   - The listener answers `BLAKE3(key = r, "resumed" || listener static key || dialer challenge || listener challenge)` of the first listed record it holds, else none. An absent or unexpected answer finds nothing.
   - On no match, both sides make a new record with `r = kdf("pair key", dialer nonce, listener nonce)`, written before the listener's answer goes (listener) or when the answer is read (dialer).
   - The listener sends its answer before any message of the connection's shared set.

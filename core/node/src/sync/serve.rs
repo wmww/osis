@@ -183,7 +183,7 @@ struct PeerStore<'a> {
 }
 
 /// Whom bytes a peer session put here are charged to: its source (`Proven::source`: its node, for
-/// a node of this node's account, else its account), else the label they went under (a dialer
+/// a node of this node's account, else its first account known here), else the label they went under (a dialer
 /// key is fresh per connection, so charging it would bound nothing: a link holder's sessions
 /// share its K label's budget).
 fn charge_key(source: Option<Tid>, label: &LabelId) -> [u8; 32] {
@@ -490,7 +490,7 @@ impl SyncEngine {
         if fresh.is_empty() {
             return Ok(());
         }
-        let who = self.connection_proven(conn).filter(|p| self.engine.core.judge(p.all()).known()).and_then(super::proofs::Proven::source);
+        let who = self.connection_proven(conn).and_then(|p| p.source(&self.engine.core));
         let key = charge_key(who, &l);
         let mut gone = Vec::new();
         for b in fresh {
@@ -562,8 +562,8 @@ impl SyncEngine {
         }
         let Some(mut s) = self.served.remove(&conn) else { return Ok(()) };
         let total = self.charges.total;
-        // charged to the proved source only if known here: a fresh key per connection would bound nothing
-        let source = s.proven.source().filter(|_| self.engine.core.judge(s.proven.all()).known());
+        // charged to a source known here only: a fresh key per connection would bound nothing
+        let source = s.proven.source(&self.engine.core);
         if matches!(input, ServingInput::Bytes(_)) {
             s.last = now;
         }
