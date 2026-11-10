@@ -452,9 +452,13 @@ fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<cr
 /// as covered joins only once no cover carries it
 /// (`uncover` makes it missing), one dropped while invalid only once valid (`valid_again`). A memory part dropped other than as covered vanished whole
 /// (superseded, its thing deleted here) and stays gone (`memory::forget_if_spent` forgets a
-/// spent commit).
+/// spent commit). A signal's part past its keep bound is past every bound: no copy is taken
+/// (spec/commits.md §5 Signals), so a peer still holding it resends nothing that sticks.
 pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
+    if m.header.aspects.get(ai).filter(|a| a.ak.signal()).and_then(|a| signal_bound(&m.header, a)).is_some_and(|t| t <= tx.now().0) {
+        return Ok(false);
+    }
     if m.stripped.contains(&ai) {
         return Ok(gone_of(tx.core, &m.header, c, ai).is_empty());
     }

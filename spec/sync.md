@@ -286,7 +286,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - A delta is **kept** while it is before its keep-at-least bound or under `nobody`.
   - **must-hold**: in the required set and, for a closure body, one of:
     - a delta of it kept;
-    - established uncovered: the node can join it and no held snapshot of the aspect under the label covers it (spec/commits.md §5).
+    - established uncovered: the node can join it and no held snapshot of the aspect under the label covers it (spec/commits.md §5); a signal's delta is never joined, so it is must-hold only while kept.
   - **Header-only blob**: in the required set only as the lasting header of a commit lasting on a thing of the closure whose actor the label's reads (spec/commits.md §5), with no other body of the commit wanted there, and then is must-hold, whatever snapshot covers it. One of a commit with a permanent delta or a purge request that is not lasting here is may-hold: another node may judge it lasting.
   - **must-not-hold**, any of:
     - purged;
@@ -324,7 +324,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - A host refusing that blob, a strict subset of the body, for the label's cap (code 12): it is uploaded again naming the body as replaced (§5).
   - Chunk blobs still linked from a retained version are kept.
   - Two snapshots covering each other (equal `ts`, spec/commits.md §5) are covered-equal; a compactor drops the one with the higher commit ID.
-- No node snapshots a signal (spec/commits.md §5 Signals): its bodies leave at their keep bound, by expiry, purge or as invalid.
+- No node snapshots a signal (spec/commits.md §5 Signals): its bodies leave by expiry, purge, as invalid, or past their keep bound.
 - **Sweep**: before a snapshot of a durable content aspect (not role-class, not `required^.0`), a node resets, in one ordinary content commit, each map entry and list element (at any depth below live ones) that is not live (spec/crdt.md §5.6, §5.7) and holds a write beside its removal or an expiry or purge it holds of its creation.
   - A write here: in a map any write under a key, else a value-carrying one or `W`.
   - A record merely lacking its creation is left: the creation may arrive.

@@ -1,5 +1,5 @@
 //! spec/commits.md §5 (Signals): a signal's writes are history from the moment they are
-//! written, never joined into a state, kept until their keep bound, expiry or purge.
+//! written, never joined into a state, kept at least until their keep bound, expiry or purge.
 use crate::util::*;
 use held_model::*;
 
@@ -23,8 +23,8 @@ fn signal_writes_never_join_and_are_history_at_once_spec_commits_5() {
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
 }
 
-// spec/commits.md §5 (Signals): kept until its keep bound (D after written, until T), then gone
-// at every node; for good under forever
+// spec/commits.md §5 (Signals): kept at least until its keep bound (D after written, until T),
+// then a node may drop it and no read shows it; for good under forever
 #[test]
 fn signal_kept_until_its_bound_spec_commits_5() {
     for (r, last) in [(Retention::PLAIN.after(2 * HOUR), 2), (Retention::PLAIN.until(at(4)), 3)] {
@@ -32,15 +32,17 @@ fn signal_kept_until_its_bound_spec_commits_5() {
         assert_eq!(shown(&h(last)), vec![10]);
         assert_eq!(fate(&h(last), 10), Fate::Keep(KeepWhy::Until));
         assert!(shown(&h(last + 1)).is_empty());
-        assert_eq!(fate(&h(last + 1), 10), Fate::MustDrop(DropWhy::PastBound));
+        assert_eq!(fate(&h(last + 1), 10), Fate::MayDrop(DropWhy::PastBound));
+        let dropped = act(&h(last + 1), &evaluate(&h(last + 1)), Some((10, 0)));
+        assert!(shown(&dropped).is_empty(), "dropped or not, it is not listed");
         assert!(evaluate(&h(last)).deadlines.contains(&at(last + 1)));
     }
     let h = held(10_000, vec![reg(10, FIRST_ADMIN, 1, SIG, Retention::PLAIN.until(FOREVER), 7)]);
     assert_eq!(fate(&h, 10), Fate::Keep(KeepWhy::Until));
 }
 
-// spec/commits.md §5 (Signals, Purge), §6: purge and expiry act per write; the leftover goes at
-// the keep bound
+// spec/commits.md §5 (Signals, Purge), §6: purge and expiry act per write; the leftover may go
+// at the keep bound
 #[test]
 fn signal_purge_and_expiry_per_write_spec_commits_5() {
     let r = Retention::PLAIN.after(5 * HOUR);
@@ -52,8 +54,8 @@ fn signal_purge_and_expiry_per_write_spec_commits_5() {
     assert_eq!(o.fates[&(10, 0)], Fate::Leftover(LeftoverWhy::Purged));
     assert_eq!(o.fates[&(11, 0)], Fate::Leftover(LeftoverWhy::Expired));
     assert_eq!(shown(&h(3)), vec![11, 12]);
-    assert_eq!(fate(&h(7), 10), Fate::MustDrop(DropWhy::PastBound));
-    assert_eq!(fate(&h(7), 11), Fate::MustDrop(DropWhy::PastBound));
+    assert_eq!(fate(&h(7), 10), Fate::MayDrop(DropWhy::PastBound));
+    assert_eq!(fate(&h(7), 11), Fate::MayDrop(DropWhy::PastBound));
 }
 
 // spec/permissions.md §5.2, §6: validity decides which writes show; a kick hides its target's

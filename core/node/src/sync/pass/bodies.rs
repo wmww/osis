@@ -87,7 +87,7 @@ impl SyncEngine {
 
     /// Must-hold for a closure body (spec/sync.md §6), judged per part the label's actor reads
     /// (`b.parts`): a part kept (`part_kept`) or established uncovered by the label's
-    /// snapshots. Must-hold: the parts a blob of the commit must hold to hold the body (those
+    /// snapshots (never a signal's). Must-hold: the parts a blob of the commit must hold to hold the body (those
     /// kept, and those of the aspects no snapshot covers).
     pub(super) fn must_hold(&mut self, b: &Body, snaps: &Snaps, unsettled: &Unsettled, note: &mut Note) -> Result<Option<Vec<usize>>> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(None) };
@@ -99,8 +99,10 @@ impl SyncEngine {
         for (ai, (t, a)) in b.parts.iter().zip(&aspects) {
             let kept = self.part_kept(&h, &keeps, *ai, note);
             before |= kept;
-            let mut c = false;
-            for s in snaps.get(&(*t, a.clone())).into_iter().flatten() {
+            // a signal's delta is never joined, so never established uncovered: must-hold only
+            // while kept (spec/sync.md §6, spec/commits.md §5 Signals)
+            let mut c = a.signal();
+            for s in snaps.get(&(*t, a.clone())).into_iter().flatten().filter(|_| !c) {
                 if *s != b.commit && self.covered_noted(s, &b.commit, t, a, note)? == Some(true) {
                     // covered-equal snapshots (equal `ts`): the one with the higher commit ID goes
                     if is_snapshot(h.kind) && self.covered_noted(&b.commit, s, t, a, note)? == Some(true) && b.commit < *s {

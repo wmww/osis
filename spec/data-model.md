@@ -18,7 +18,7 @@
   - `^` **admin-only**: a write of the aspect needs admin on the thing (spec/permissions.md §5.2).
   - `~` in place of the `.` **signal**: the aspect has no current value. A write of it, a **fire**, is one whole-value set, never joined into state; the aspect always reads absent. An API keeps the two kinds apart: a signal is only fired and a value aspect only written; where a key's kind is not known until run time, a write of the other kind is refused before anything applies, and a read of the other kind finds nothing.
   - An ephemeral signal (`+` and `~`) is delivered here and on the nodes connected now, and held by none (relay-only commits, spec/sync.md §9). Listeners hear each fire once where it is fired and once where it is delivered, as its commit as written; no listing shows it.
-  - A signal without `+` is written in durable commits: each write is history from the moment it is written, kept as long as its retention's keep history says, never joined, and heard by listeners as a listed commit. An author may replace its fire with a later whole value (spec/commits.md §5 Signals).
+  - A signal without `+` is written in durable commits: each write is history from the moment it is written, kept at least as long as its retention's keep history says, never joined, and heard by listeners as a listed commit. An author may replace its fire with a later whole value (spec/commits.md §5 Signals).
   - A node decides an aspect's storage class from its AK alone (spec/commits.md §2).
   - Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory).
   - Core aspects are durable, and none is a signal.

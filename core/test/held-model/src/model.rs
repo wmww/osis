@@ -48,7 +48,7 @@ pub enum DropWhy {
     /// fetched again if it turns valid.
     Invalid,
     /// A signal body past its keep bound (spec/commits.md §5 Signals): no state needs it and no
-    /// history keeps it, so it goes at every node, whole or leftover, and counts as never received.
+    /// history lists it, so a node may drop it, whole or leftover, and takes no copy of it again.
     PastBound,
     /// On a thing that does not exist here (no creation joined), or of a commit whose author
     /// record or whose thing's record chain the node lacks: not held, and fetched again once
@@ -793,9 +793,9 @@ fn fate(
         return (Fate::Keep(KeepWhy::Pending), false);
     }
     // a signal body is never covered (no state to snapshot): kept until its keep bound, then it
-    // goes, whole or as an expired or purged leftover (spec/commits.md §5 Signals)
+    // may go, whole or as an expired or purged leftover (spec/commits.md §5 Signals)
     if p.aspect.signal && !signal_kept(c, p, now) {
-        return (Fate::MustDrop(DropWhy::PastBound), false);
+        return (Fate::MayDrop(DropWhy::PastBound), false);
     }
     if expired(c, now) {
         return (Fate::Leftover(LeftoverWhy::Expired), false);
@@ -938,12 +938,16 @@ pub fn act(h: &Held, o: &Outcome, may: Option<PartRef>) -> Held {
                         *f = dots.strip(t, a, f, &drop);
                     }
                 }
-                Fate::MustDrop(DropWhy::Gone | DropWhy::Invalid | DropWhy::PastBound | DropWhy::Unknown | DropWhy::Ended) | Fate::NeverReceived => {
+                Fate::MustDrop(DropWhy::Gone | DropWhy::Invalid | DropWhy::Unknown | DropWhy::Ended) | Fate::NeverReceived => {
                     p.body = Body::Missing;
                     p.stripped.clear();
                 }
                 Fate::MustDrop(DropWhy::Covered { by }) => p.body = Body::Dropped(by),
                 Fate::MayDrop(DropWhy::Covered { by }) if may == Some((c.id, i)) => p.body = Body::Dropped(by),
+                Fate::MayDrop(DropWhy::PastBound) if may == Some((c.id, i)) => {
+                    p.body = Body::Missing;
+                    p.stripped.clear();
+                }
                 _ => {}
             }
         }

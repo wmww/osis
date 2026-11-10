@@ -1,6 +1,6 @@
 //! Signals without `+` (spec/data-model.md §2, spec/commits.md §5 Signals), at the engine: each
-//! write is history from the moment it is written, never joined into a state, kept until its keep
-//! bound, expiry or purge; a validity change rebuilds nothing.
+//! write is history from the moment it is written, never joined into a state, kept at least until
+//! its keep bound, expiry or purge; a validity change rebuilds nothing.
 
 use crate::common::*;
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid};
@@ -78,8 +78,9 @@ fn signal_never_in_state_never_merged_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.snapshot(&d, &log()).unwrap(), None, "nothing to compact");
 }
 
-// spec/commits.md §5 Signals: kept until its keep bound (D after written, or T), then gone at
-// every node, also one receiving it past the bound; kept for good under forever
+// spec/commits.md §5 Signals: kept at least until its keep bound (D after written, or T); past it
+// this engine drops it (a node may), also on receiving it past the bound, so nothing nobody
+// promised to keep is kept for good; kept for good under forever
 #[test]
 fn signal_kept_until_its_bound_spec_commits_5() {
     let (mut lp, d, _) = setup(2);
@@ -105,6 +106,41 @@ fn signal_kept_until_its_bound_spec_commits_5() {
     lp.advance(1000 * 24 * HOUR);
     lp.peers[0].engine.tick().unwrap();
     assert_eq!(body(&mut lp, 0, d, &ever), PartBody::Held(Some(s("f"))));
+}
+
+// spec/commits.md §5 Signals: a node that dropped a signal body past its keep bound does not take
+// a copy offered again by a peer that still holds it (a node may keep it past the bound): the
+// offer is a duplicate, changes nothing and tells no listener, so syncing settles; both nodes list
+// the write alike, as dropped
+#[test]
+fn signal_dropped_past_its_bound_not_taken_again_spec_commits_5() {
+    let (mut lp, d, _) = setup(8);
+    let c = send(&mut lp, 0, d, keep(None, Some(HOUR)), "brief");
+    lp.sync_all().unwrap();
+    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    lp.advance(HOUR - 10_000);
+    lp.peers[1].engine.tick().unwrap();
+    assert_eq!(body(&mut lp, 1, d, &c), PartBody::Held(Some(s("brief"))), "kept at least to its bound");
+    lp.advance(20_000);
+    lp.peers[1].engine.tick().unwrap();
+    assert_eq!(body(&mut lp, 1, d, &c), PartBody::Dropped);
+    // peer 0 has run no timer: it still holds the body past the bound, and lists it as dropped
+    assert!(lp.peers[0].engine.body_not_dropped(&c, &d, &log()));
+    let rows = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.held_parts(&d, &log(), CommitFrom::Oldest, 10, usize::MAX).unwrap().0;
+    assert_eq!(rows(&mut lp, 0), rows(&mut lp, 1));
+    assert_eq!(body(&mut lp, 0, d, &c), PartBody::Dropped);
+    let rx = listen(&mut lp.peers[1]);
+    for _ in 0..3 {
+        let at = lp.peers[1].engine.point();
+        let r = lp.deliver(1, &pk).unwrap();
+        assert!(matches!(r, osis_node::Ingested::Duplicate(_)), "not taken: {r:?}");
+        assert_eq!(lp.peers[1].engine.point(), at, "the offer changes nothing");
+        assert!(!lp.peers[1].engine.body_not_dropped(&c, &d, &log()));
+    }
+    lp.sync_all().unwrap();
+    assert!(!lp.peers[1].engine.body_not_dropped(&c, &d, &log()));
+    assert!(told(&mut lp.peers[1], d, &rx).is_empty(), "no listener told again");
+    assert_eq!(rows(&mut lp, 0), rows(&mut lp, 1));
 }
 
 // spec/commits.md §5 Signals, §6: expiry and purge act per write, before the keep bound

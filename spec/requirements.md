@@ -70,7 +70,7 @@ Terms:
 - Secrets that must stay secret for years resist a future quantum attacker. Signatures need not.
 
 ## Deletion
-- Retention per edit: who may purge it (nobody, admins, the author, the author or admins, any writer) and what happens to its history once it is replaced (by default nothing is promised; kept until a time and/or a while after it is replaced; or purged once replaced). Defaults per aspect, overridable per write, immutable once written.
+- Retention per edit: who may purge it (nobody, admins, the author, the author or admins, any writer) and what happens to its history once it is replaced (by default nothing is promised; kept at least until a time and/or a while after it is replaced; or purged once replaced). Defaults per aspect, overridable per write, immutable once written.
 - A purge counts only if its author had the right to make it, judged as the validity of an edit is (removals and re-grants included). Limit: at nodes that cannot read the data, a demoted holder can still delete what its old role allowed, until a writer holding the data uploads it again.
 - Data may carry an expiry at which every node, whether or not it can read it, drops it with nobody online.
 - Purging or expiring a thing's creation ends the thing: every node drops it and ignores later writes to it. Things it created live on. Limit: an ending that later turns out invalid brings the thing back only if some node still holds a copy; otherwise it is gone, as with any purge.
@@ -86,7 +86,7 @@ Terms:
 ## Ephemeral data
 - Ephemeral state lives in memory, converges among the nodes holding it like any state, outlives contact with its author, and may be lost when no node holds it. A node that restarts gets it back from those that still do.
 - A value that should live only while its author is there (a cursor, a selection) is ephemeral with an expiry its author renews by rewriting it while there; once the author is gone it is gone everywhere by its last write's expiry, with no departure seen by anyone.
-- A signal has no current value, only entries. If a signal is ephemeral it is held by nobody: it reaches the nodes connected at the time, once, with no delivery guarantee. Otherwise its entries are kept in history as long as its settings say.
+- A signal has no current value, only entries. If a signal is ephemeral it is held by nobody: it reaches the nodes connected at the time, once, with no delivery guarantee. Otherwise its entries are kept in history at least as long as its settings say.
 - Ephemeral writes need the rights the durable write would need and are verified like it; readers cannot write ephemeral data. Memory spent on others' ephemeral data is bounded per group, with a defined outcome past the bound.
 - "Deterministic" and "Convergence" bind ephemeral data too.
 - Nothing is kept "until everyone has seen it". Whether others are alive is never a protocol condition.
