@@ -122,7 +122,8 @@ if kinds != ["build", "build", "run", "run"]:
     print(f"FAIL --emit: line kinds {kinds}\n" + "\n".join(lines))
     fails = 1
 check("--emit", "\n".join(lines), "build cargo test --locked -p osis-mid -p osis-top --tests --no-run", "build cargo build --locked --bin sim-sweep",
-      "OSIS_ORDER_START=7 ", "cargo run --locked --bin sim-sweep -- --seeds 15 --from 7", absent=["paths:", "crates selected"])
+      "run gate.properties env ", "OSIS_ORDER_START=7 ", "run gate.sim cargo run --locked --bin sim-sweep -- --seeds 15 --from 7",
+      absent=["paths:", "crates selected"])
 check("--emit nothing", out("--emit", "--paths", "notes/a.md"), absent=["build", "run"])
 
 # --all: every crate, whatever the diff

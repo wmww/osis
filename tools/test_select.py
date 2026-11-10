@@ -4,7 +4,7 @@ size, computed from what it touched. tools/gate.sh runs them in its one hold of 
 
   tools/test_select.py [--base REV | --all] [--offset N]          print the selection and its commands
   tools/test_select.py --paths PATH...                            select for these paths, not a diff
-  tools/test_select.py --emit [--base REV | --all] [--offset N]   for the gate: `build CMD` and `run CMD` lines
+  tools/test_select.py --emit [--base REV | --all] [--offset N]   for the gate: `build CMD` and `run LIMIT CMD` lines
 
 The set: every property test, at small size, of the crates the paths touch and their dependents
 (the Cargo graph), and every sim scenario if osis-sim is one of those; `--all` selects every crate.
@@ -207,15 +207,15 @@ def main():
     if props:
         pkgs, filters = cargo_args(props, others)
         build.append(["cargo", "test", "--locked", *pkgs, "--tests", "--no-run"])
-        cmds.append(["env", *envs(offset), "cargo", "test", "--locked", "--no-fail-fast", *pkgs, "--tests", "--", *filters])
+        cmds.append(("gate.properties", ["env", *envs(offset), "cargo", "test", "--locked", "--no-fail-fast", *pkgs, "--tests", "--", *filters]))
     if sim:
         build.append(["cargo", "build", "--locked", "--bin", "sim-sweep"])
-        cmds.append(["cargo", "run", "--locked", "--bin", "sim-sweep", "--", "--seeds", str(SIM_SEEDS), "--from", str(offset)])
+        cmds.append(("gate.sim", ["cargo", "run", "--locked", "--bin", "sim-sweep", "--", "--seeds", str(SIM_SEEDS), "--from", str(offset)]))
     if emit:
         for b in build:
             print("build " + shlex.join(b))
-        for c in cmds:
-            print("run " + shlex.join(c))
+        for n, c in cmds:
+            print(f"run {n} " + shlex.join(c))
         return 0
 
     print(f"paths: {'every crate (--all)' if every else len(paths)}")
@@ -240,7 +240,7 @@ def main():
         print("nothing to run")
         return 0
     print("commands (tools/gate.sh builds, then runs these in its hold of the heavy lock):")
-    for c in build + cmds:
+    for c in build + [c for _, c in cmds]:
         print("  " + shlex.join(c))
     return 0
 

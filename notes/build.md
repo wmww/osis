@@ -34,7 +34,7 @@ Dev profile for all branch work (Cargo.toml): workspace crates `opt-level = 1`, 
 3. Lints: core clippy, then the GUI's (Components below).
 4. Builds, unlocked: `cargo test --no-run` and the selection's test binaries and `sim-sweep`, each with its run's own cargo arguments, so the hold builds nothing (doctests still compile inside it, at run time).
 5. The rest unlocked: the unification check when a `Cargo.toml` (any), `Cargo.lock` or `.cargo/` changed since the merge base (`--plan` says `unify=1`), the schema check, `cargo deny check` and core's bans alone.
-6. The tests, in one `tools/heavy` hold: the default tests (`cargo test --locked --no-fail-fast`), then the selected properties, then the selected sim scenarios at 15 seeds. Each prints its own wall and CPU-s, and the hold's total after. Time limits (notes/coordination.md) hook in here: this hold is the gate's limited run.
+6. The tests, in one `tools/heavy` hold: the default tests (`cargo test --locked --no-fail-fast`), then the selected properties, then the selected sim scenarios at 15 seeds. Each prints its own wall and CPU-s and its time-limit line, and the hold's after (Time limits below; every other step checks its own too).
 7. The GUI tests, when libs/kit/ or app/ changed.
 
 `--base REV` compares against REV instead of the merge base; `--plan` prints the step selection (`core`, `gui`, `unify`, `select=all|diff|none`; tested on fabricated histories by `tools/gate_select_test.sh`, a gate step). Then the coordinator runs `git checkout main && git merge --ff-only <branch> && git push`. Task branches are never pushed; history is linear. The generated notes/testing-map.md is gitignored.
@@ -58,6 +58,33 @@ A package's features are the union of what everything in the build asks for, so 
 
 ## Heavy lock
 `tools/heavy <cmd...>` runs a command under the box-wide lock (`$XDG_RUNTIME_DIR/osis-gate.lock`, flock): the gate's tests (one hold per gate, after every build, Merge gate above), release checks, by-hand property and sim runs at size, TLC and roles-model runs. Builds and single-crate test runs stay unlocked (bursty, partly using the cores). The command sees `HEAVY_HELD=1`: a `tools/heavy` inside a hold refuses (flock is per open file, so it would wait on itself), and the gate's internal `--held` runner refuses without it. It logs each run to `~/.cache/osis/heavy.log` (JSON lines: who, command, wait, hold, the command's CPU-s, the box's /proc/stat counters at each event and every 10 s held). `tools/heavy --report [--since HOURS]` lists runs (own and box utilization while held, the box while each waited, the box with the lock held or free); `tools/agent-times.py` adds each agent's lock wait, hold, CPU-s and cores used.
+
+## Time limits
+Every timed run has a CPU limit (tight: other work on the box barely moves CPU-s) and a wall limit (looser: it also catches waiting, idle cores, a demoted process), as multiples of the box's base unit `u` (notes/coordination.md, Time limits). `u` is the CPU-s of one fixed work quantum of `tools/baseunit.c` (hashing, random access over 32 MB, allocation, sorting) with every hardware thread busy: a CPU limit is `k u`, a wall limit `k u 16/threads` (the 16 quanta spread over the box's threads; on ostrich `u` seconds). Measure a box's with `tools/heavy tools/limits.py unit` (median of 5, a few seconds; it varies 2-4% with load) and add its row. Ostrich: 2.26-2.29 at load 12, 2.34-2.36 at load 5-8 (an older, 4x longer quantum: 9.3 alone, 10.4-11.3 at load 32-44). The other rows are what a run takes on ostrich now plus a little, except `gate` and `gate.hold`: Tess's 5-minute cap, which every every-crate gate exceeds about 4x until issues/gate-five-minutes.md is done. A hit is reported and logged, never fatal (a cap that failed the gate would fail every gate today).
+
+| box | unit (CPU-s) |
+|---|---|
+| ostrich | 2.3 |
+
+| limit | CPU (u) | wall (u) | what, measured on ostrich (main of this table's commit; CPU-s / wall at load) |
+|---|---|---|---|
+| `test` | 4.5 | 6.5 | one default test alone (`tools/limits.py tests`): over 10 s needs a reason |
+| `rebuild` | 70 | 13 | an osis-base edit, `cargo build --all-targets` (by hand: `tools/limits.py run rebuild cargo build --all-targets`): 120-137 / 15-19 s at load 12-14, 8 or 16 jobs alike, and `cargo test --no-run` after it compiles nothing; an osis-engine edit, `cargo test --no-run`: 64-70 / 10-11.5 s |
+| `build` | 1650 | 350 | the gate's builds, at most a clean `cargo test --no-run`: 2350-3180 / 220-480 s at load 10-30 (8 or 16 jobs alike in CPU-s; 16 jobs 10-35% less wall when the box has room); 7 hours of main behind with a lockfile change, 2750-3780 / 426-747 s; after a rebase over a day's main 943 / 121 s |
+| `default-tests` | 2200 | 260 | `cargo test --no-fail-fast`, built: 4100-4730 / 385-495 s at load 17-30, 10,745 G instructions |
+| `gate.checks` | 15 | 20 | the instant checks: 3-10 / 3-14 s |
+| `gate.clippy` | 30 | 25 | core clippy, warm (cold: 318 / 80 s) |
+| `gate.gui-lint` | 10 | 10 | the GUI's clippy after core's: 7 / 3 s (cold: 445 / 71 s) |
+| `gate.unify` | 200 | 60 | the unification check (a manifest changed): 1770 / 116 s when the GUI builds anew |
+| `gate.deny` | 10 | 10 | schema check, deny, core bans: 5 / 4 s |
+| `gate.properties` | 1700 | 175 | the selected properties, every crate: 3600 / 352 s at load 17 (35 tests) |
+| `gate.sim` | 1250 | 150 | the sim scenarios at 15 seeds: about 2540 / 297 s at load 17 (52 scenarios) |
+| `gate.gui-tests` | 100 | 60 | GUI tests, when libs/kit/ or app/ changed |
+| `gate.hold` | 1650 | 105 | the gate's one heavy-lock hold, every crate selected: 10,240 / 1048 s at load 17 (issues/gate-five-minutes.md) |
+| `gate` | 1780 | 130 | the whole gate but its lock wait: 5 minutes, Tess's cap (wall); its CPU what 5 minutes at the box's usual 85% busy allows. Every-crate gate: about 1300 s |
+| `heavy` | 2200 | 260 | any other heavy-lock hold, the largest of these |
+
+How they are checked: `tools/limits.py check NAME CPU WALL` prints `limit NAME: CPU a/b s, wall c/d s`, and `LIMIT NAME ...` for each one exceeded (with `over 2x` when it starts an investigation), and appends the check to `~/.cache/osis/limits.log`; it never fails the run. `tools/gate.sh` checks each stage (`gate.*`, `build`, `default-tests`) and itself (`gate`, its lock wait left out); `tools/heavy` checks each hold (`--limit NAME`, default `heavy`; the gate's is `gate.hold`). `tools/limits.py run NAME CMD` wraps a by-hand run; `tools/limits.py tests` runs every default test as its own process, 8 at a time, and times again alone every one past half a `test` limit (under the lock: about 35 min with its retimes). `tools/limits.py summary [--since H]` lists the box's hits, flags the investigation triggers (the same limit 5 times in 3 hours, a run over 2x) and prints the hits notes/time-limits.md does not hold yet, in its format, to be added with their reasons.
 
 ## Footguns
 - Waiting: a command that may pass a few minutes runs with `run_in_background`, awaited with `claudewait ID`. Never a shell wait loop, never `timeout` around any cargo command (it kills a test run with a green-looking log, and a build killed mid-link leaves the crate unable to link until `cargo clean -p <crate>`). A foreground call past 120 s moves to the background and its later steps keep running: keep edits and reverts out of a call that may run long.

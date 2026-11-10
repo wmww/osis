@@ -18,6 +18,7 @@
 # A diff whose non-GUI paths are all Markdown under spec/, notes/ and issues/ (core=docs) runs the
 # instant checks only (plus the GUI steps if it touched libs/kit/ or app/): no build, tests, lints or deny.
 set -e
+tools=$(cd "$(dirname "$0")" && pwd)
 cd "$(git rev-parse --show-toplevel)"
 # a gate on a half-rebased tree passes on the wrong code (watchdog 13i: eight agents piped a
 # stopped rebase into the gate)
@@ -43,15 +44,21 @@ done
 tf=$(mktemp)
 trap 'rm -f "$tf"' EXIT
 cpu() { times > "$tf"; cpu=$(awk 'function s(t) { split(t, a, /[ms]/); return a[1] * 60 + a[2] } NR == 2 { printf "%d", s($1) + s($2) }' "$tf"); }
-step() { printf '== %s\n' "$*"; step_s=$(date +%s); cpu; step_c=$cpu; "$@"; cpu; printf '   (%ss, %s CPU-s)\n' $(( $(date +%s) - step_s )) $(( cpu - step_c )); }
-# Inside the one heavy-lock hold (the tests step at the end): each `run` line of the selection file
-# as a step, failing fast. Internal: the gate calls itself this way under tools/heavy, which sets
-# HEAVY_HELD; without it this would run the tests unlocked. A step's stdin is /dev/null: one
+step() {
+  printf '== %s\n' "$*"; local s c; s=$(date +%s); cpu; c=$cpu; "$@"; cpu
+  step_wall=$(( $(date +%s) - s )); step_cpu=$(( cpu - c )); printf '   (%ss, %s CPU-s)\n' $step_wall $step_cpu
+}
+# A step with time limits (notes/build.md, Time limits): over one prints a `LIMIT` line and logs
+# the hit; it never fails the gate.
+limited() { local n; n=$1; shift; step "$@"; python3 "$tools/limits.py" check "$n" $step_cpu $step_wall || true; }
+# Inside the one heavy-lock hold (the tests step at the end): each `run LIMIT CMD` line of the
+# selection file as a step against that limit, failing fast. Internal: the gate calls itself this
+# way under tools/heavy, which sets HEAVY_HELD; without it this would run the tests unlocked. A step's stdin is /dev/null: one
 # reading stdin would eat the later lines.
 if [ -n "$held" ]; then
   [ -n "$HEAVY_HELD" ] || { echo "gate: --held is internal: only the gate's tools/heavy hold runs it" >&2; exit 2; }
   while IFS= read -r l; do
-    case "$l" in "run "*) step sh -c "${l#run }" < /dev/null ;; esac
+    case "$l" in "run "*) l=${l#run }; limited "${l%% *}" sh -c "${l#* }" < /dev/null ;; esac
   done < "$held"
   exit 0
 fi
@@ -116,16 +123,16 @@ t0=$(date +%s)
 # and build here reuses core's artifacts for the core crates (Feature unification).
 gui_pkgs="-p osis-kit -p osis-app -p osis-android"
 # shellcheck disable=SC2086
-gui_lint() { step cargo clippy $gui_pkgs --all-targets --locked -- -D warnings; }
+gui_lint() { limited gate.gui-lint cargo clippy $gui_pkgs --all-targets --locked -- -D warnings; }
 # shellcheck disable=SC2086
-gui_test() { step cargo test $gui_pkgs --locked; }
+gui_test() { limited gate.gui-tests cargo test $gui_pkgs --locked; }
 # A change of the GUI and docs alone: no core build or test. Called from `if` bodies only: in an
 # `a || f` list `set -e` is off inside f.
 gui_only() {
   gui_lint
   gui_test
-  if [ -n "$unify" ]; then step unification_check; fi
-  step cargo deny check
+  if [ -n "$unify" ]; then limited gate.unify unification_check; fi
+  limited gate.deny cargo deny check
   echo "== gate passed, $1: core build and tests skipped ($(( $(date +%s) - t0 ))s)"
   exit 0
 }
@@ -139,10 +146,13 @@ step locks
 step python3 tools/policy.py
 if [ -z "$core" ]; then gui_only "GUI-only change"; fi
 # instant checks first, so a missing citation fails before minutes of tests
-step sh tools/gate_select_test.sh
-step python3 tools/test_select_test.py
-step python3 tools/spec_map.py --uncited
-step python3 tools/spec_map.py --gaps
+instant() {
+  step sh tools/gate_select_test.sh
+  step python3 tools/test_select_test.py
+  step python3 tools/spec_map.py --uncited
+  step python3 tools/spec_map.py --gaps
+}
+limited gate.checks instant
 if [ "$core" = docs ]; then
   if [ -n "$gui" ]; then gui_only "docs and GUI change"; fi
   echo "== gate passed, docs-only change: builds, tests, lints and deny skipped ($(( $(date +%s) - t0 ))s)"
@@ -152,7 +162,7 @@ fi
 # selection (properties and sim scenarios at small size, on one random offset)
 sel=$(mktemp)
 trap 'rm -f "$tf" "$sel"' EXIT
-printf '%s\n' "build cargo test --locked --no-fail-fast --no-run" "run cargo test --locked --no-fail-fast" > "$sel"
+printf '%s\n' "build cargo test --locked --no-fail-fast --no-run" "run default-tests cargo test --locked --no-fail-fast" > "$sel"
 offset=$(python3 -c 'import random; print(random.randrange(10**12))')
 if [ "$select" = all ]; then from=--all; else from="--base $base"; fi
 # shellcheck disable=SC2086
@@ -161,25 +171,38 @@ step python3 tools/test_select.py $from --offset "$offset"
 python3 tools/test_select.py --emit $from --offset "$offset" >> "$sel"
 # lints before tests: a lint failure found after minutes of tests wasted them (watchdog 13h);
 # core's, then the GUI's on the same artifacts (the core crates are linted already)
-step cargo clippy --all-targets --locked -- -D warnings
+limited gate.clippy cargo clippy --all-targets --locked -- -D warnings
 gui_lint
 # every binary the tests run, built unlocked with the runs' own cargo arguments, so the hold only runs
-while IFS= read -r l; do
-  case "$l" in "build "*) step sh -c "${l#build }" < /dev/null ;; esac
-done < "$sel"
+builds() {
+  while IFS= read -r l; do
+    case "$l" in "build "*) step sh -c "${l#build }" < /dev/null ;; esac
+  done < "$sel"
+}
+limited build builds
 if [ -n "$unify" ]; then
-  step unification_check
+  limited gate.unify unification_check
 else
   echo "== unification check skipped (no Cargo.toml, Cargo.lock or .cargo/ change since main)"
 fi
-step sh -c 'for f in schema/*.osis; do printf "%s: " "$f"; cargo run --locked --quiet --bin osis -- schema check "$f" || exit 1; done'
-step cargo deny check
-# duplicates in core's graph alone: deny.toml's GUI skip-trees would hide a core duplicate that
-# has one copy in the GUI stack (their roots are absent here, so their warnings are allowed)
-step cargo deny --exclude osis-kit --exclude osis-app --exclude osis-android check bans -A unmatched-skip-root
+deny() {
+  step sh -c 'for f in schema/*.osis; do printf "%s: " "$f"; cargo run --locked --quiet --bin osis -- schema check "$f" || exit 1; done'
+  step cargo deny check
+  # duplicates in core's graph alone: deny.toml's GUI skip-trees would hide a core duplicate that
+  # has one copy in the GUI stack (their roots are absent here, so their warnings are allowed)
+  step cargo deny --exclude osis-kit --exclude osis-app --exclude osis-android check bans -A unmatched-skip-root
+}
+limited gate.deny deny
 # The tests, in one hold of the box-wide heavy lock (tools/heavy, notes/build.md, Heavy lock): two
 # all-core runs at once each take about twice as long. Doctests compile inside it, at run time.
-# Time limits (notes/coordination.md) hook in here: this hold is the gate's run stage.
-step tools/heavy sh tools/gate.sh --held "$sel"
+# tools/heavy checks the hold against `gate.hold` and writes its lock wait to $wf, which the
+# gate's own limit leaves out.
+wf=$(mktemp)
+trap 'rm -f "$tf" "$sel" "$wf"' EXIT
+export HEAVY_WAIT_FILE="$wf"
+step tools/heavy --limit gate.hold sh tools/gate.sh --held "$sel"
+wait_s=$(cat "$wf" 2>/dev/null || echo 0)
 if [ -n "$gui" ]; then gui_test; fi
-echo "== gate passed ($(( $(date +%s) - t0 ))s)"
+cpu
+python3 "$tools/limits.py" check gate "$cpu" $(( $(date +%s) - t0 - ${wait_s%.*} )) || true
+echo "== gate passed ($(( $(date +%s) - t0 ))s, ${wait_s%.*}s of it waiting for the heavy lock)"

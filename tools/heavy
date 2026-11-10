@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run a command that uses every core under the box-wide heavy lock, logging what it cost.
 
-  tools/heavy CMD [ARGS...]     wait for the lock, run CMD, release; exits with CMD's code
+  tools/heavy [--limit NAME] CMD [ARGS...]   wait for the lock, run CMD, release; exits with CMD's code
   tools/heavy --report [--since HOURS]   the lock's use and the box's CPU from the log
 
 One all-core run at a time per box (notes/build.md): the gate's tests (one hold per gate),
@@ -15,8 +15,16 @@ CPU jiffies (`busy`, `all` from /proc/stat), so any two lines give the box's uti
 them. Events: `acq` (lock taken: who, cmd, wait, and the box at the request), `smp` (every
 SAMPLE_S while held), `rel` (released: held, the command's CPU-s from its rusage, exit code).
 tools/agent-times.py charges each acquisition to the agent whose command ran it.
+
+Time limits (notes/build.md): the hold's CPU-s and wall are checked against NAME's limits
+(default `heavy`, a hold's own; the gate's is `gate.hold`) by tools/limits.py, which prints an
+over-limit line and logs the hit. The wait is not part of the hold: with HEAVY_WAIT_FILE set, its
+seconds are written there (the gate's own limit leaves them out).
 """
 import fcntl, json, os, resource, shlex, signal, subprocess, sys, time
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import limits  # noqa: E402
 
 LOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "osis-gate.lock")
 LOG = os.path.expanduser("~/.cache/osis/heavy.log")
@@ -67,7 +75,7 @@ def via():
     return os.path.basename(argv[0])
 
 
-def run(cmd):
+def run(cmd, name):
     # the lock is per open file: a hold inside a hold would wait on itself forever
     if os.environ.get("HEAVY_HELD"):
         sys.exit("heavy: already inside a hold (HEAVY_HELD): run the command directly")
@@ -83,6 +91,14 @@ def run(cmd):
         fcntl.flock(fd, fcntl.LOCK_EX)
     t1 = time.time()
     log("acq", wait=round(t1 - t0, 1), busy0=b0, all0=a0, **who)
+    if t1 - t0 >= 1:
+        print(f"heavy: waited {t1 - t0:.0f} s for the lock", file=sys.stderr)
+    if os.environ.get("HEAVY_WAIT_FILE"):
+        try:
+            with open(os.environ["HEAVY_WAIT_FILE"], "w") as f:
+                f.write(f"{t1 - t0:.0f}\n")
+        except OSError as e:
+            print(f"heavy: {e}", file=sys.stderr)
     ru0 = resource.getrusage(resource.RUSAGE_CHILDREN)
     try:
         p = subprocess.Popen(cmd, pass_fds=(fd,), env=dict(os.environ, HEAVY_HELD="1"))
@@ -100,7 +116,9 @@ def run(cmd):
             log("smp")
     ru = resource.getrusage(resource.RUSAGE_CHILDREN)
     cpu = ru.ru_utime + ru.ru_stime - ru0.ru_utime - ru0.ru_stime
-    log("rel", held=round(time.time() - t1, 1), cpu=round(cpu, 1), rc=rc)
+    held = time.time() - t1
+    log("rel", held=round(held, 1), cpu=round(cpu, 1), rc=rc)
+    limits.check(name, cpu, held)
     return 128 - rc if rc < 0 else rc
 
 
@@ -177,7 +195,9 @@ if __name__ == "__main__":
     a = sys.argv[1:]
     if a[:1] == ["--report"]:
         report(float(a[2]) if a[1:2] == ["--since"] and len(a) > 2 else 0)
+    elif a[:1] == ["--limit"] and len(a) > 2:
+        sys.exit(run(a[2:], a[1]))
     elif not a or a[0].startswith("-"):
         sys.exit(__doc__)
     else:
-        sys.exit(run(a))
+        sys.exit(run(a, "heavy"))
