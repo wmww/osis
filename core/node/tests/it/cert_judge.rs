@@ -117,6 +117,7 @@ fn regranted_node_card_placed_again_spec_permissions_4() {
     let at = net.tid(a);
     let holder = net.tid(r);
     let e = net.engine(a);
+    // bare edge: the rotation below boxes the holder before any pass (a grant by hand)
     set_edge(e, g, holder, Role::Read);
     let rcpt = recipients_of(e, &[(at, Role::Admin), (holder, Role::Read)]);
     rotation(e, g, &rcpt, 9, false);
