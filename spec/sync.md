@@ -149,8 +149,8 @@ Across labels:
 ## 5. Operations and authorization
 Each operation names a label. Writes are signed with the role keys of the host's head; reads need the label opened on the connection:
 - **Open** (sync key or claim key): a signature under `"osis v1 label open"` over (label ID, the host's connection challenge from the handshake, its static key). Opens the label on that connection for download, specific-blob fetch, reconciliation and subscription.
-  - A sync key is matched against the head first, then against the newest superseded step on the path bearing it (a step without a rotation shares its parent's keys).
-  - A signature under a superseded step's sync key is answered with that step's child on the path (without its claim set) and nothing else. The client verifies it under the step's delete key before using it.
+  - A sync key is matched against the head first, then against the superseded step on the path the open names, if it bears that key, else (naming none) against the newest superseded step on the path bearing it. A step without a rotation shares its parent's keys, so a client holding a step names it: only that step's child verifies under it.
+  - A signature under a superseded step's sync key is answered with that step's child on the path (without its claim set) and nothing else. The client verifies it under the step's delete key before using it. An open naming a step off the path, or one not bearing the key, is refused like an unknown key.
   - An open holds under the sync key of the head it was made at (by a claim or static entry too). Once the head is a step with another sync key, the host ends it on that connection with the label's subscription (the last push carries that head's event, §8) and answers its reads 8 until the label is opened again.
   - An open by a connection's shared set (Proof 3, §10) is not tied to steps: it holds while the shared set holds it.
   - A client whose open head gains a child with another sync key (its own registration included) opens again.

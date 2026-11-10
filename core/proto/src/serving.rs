@@ -140,6 +140,9 @@ impl PathIndex for Index<'_> {
     fn step_with_sync(&self, pk: &osis_crypto::VerifyingKey) -> Result<Option<StepId>, StoreError> {
         self.store.step_with_sync(self.label, pk)
     }
+    fn step(&self, step: &StepId) -> Result<Option<Step>, StoreError> {
+        self.store.step(self.label, step)
+    }
     fn claim(&self, step: &StepId, key: &[u8; 32]) -> Result<Option<Option<SecretBox>>, StoreError> {
         self.store.claim(self.label, step, key)
     }
@@ -1298,7 +1301,7 @@ mod tests {
         let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
         let mut feed = |c: &mut ServingSession, body: Vec<u8>| c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&body)));
         feed(&mut c, Hello::new(0, [2; 32]).encode());
-        let out = feed(&mut c, Message::Open { id: 1, label: f.label, proof: Proof::sync(&f.sync, &f.label, &CHALLENGE, &STATIC_KEY) }.encode());
+        let out = feed(&mut c, Message::Open { id: 1, label: f.label, proof: Proof::sync(None, &f.sync, &f.label, &CHALLENGE, &STATIC_KEY) }.encode());
         assert!(out.iter().any(|o| matches!(o, ServingOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::Opened { .. })))));
         let n = MAX_CROSSED / 2 + 1;
         for round in 0..3u32 {
@@ -1312,7 +1315,7 @@ mod tests {
     fn opened(f: &Fixture, store: &mut MemoryLabelStore) -> ServingSession {
         let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
         c.handle(0, store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
-        let open = Message::Open { id: 1, label: f.label, proof: Proof::sync(&f.sync, &f.label, &CHALLENGE, &STATIC_KEY) };
+        let open = Message::Open { id: 1, label: f.label, proof: Proof::sync(None, &f.sync, &f.label, &CHALLENGE, &STATIC_KEY) };
         let out = c.handle(0, store, ServingInput::Bytes(encode_frame(&open.encode())));
         assert!(out.iter().any(|o| matches!(o, ServingOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::Opened { .. })))));
         c
@@ -1502,7 +1505,7 @@ mod tests {
             let set = (i == 500).then(|| ClaimSet { claims: vec![claim.verifying_key().to_bytes()], entries: BTreeMap::new() });
             store.push_step(&f.label, s.clone(), set).unwrap();
         }
-        let proof = |k: u8| Proof::sync(&secret(k), &f.label, &CHALLENGE, &STATIC_KEY);
+        let proof = |k: u8| Proof::sync(None, &secret(k), &f.label, &CHALLENGE, &STATIC_KEY);
         let claim_at = |i: usize, k: &osis_crypto::SigningSecret| Proof::claim(path[i].id(), k, &f.label, &CHALLENGE, &STATIC_KEY);
         // the expected reply: refused (none), else the step sent (Step, or Opened with the head)
         let cases = [
@@ -1560,7 +1563,7 @@ mod tests {
             let mut cases: Vec<(Proof, Option<(usize, bool)>)> = Vec::new();
             for k in 1..=pool + 1 {
                 let want = path.iter().rposition(|s| s.keys.sync == secret(k).verifying_key()).and_then(|i| if i + 1 == n { Some((i, true)) } else { child(i) });
-                cases.push((Proof::sync(&secret(k), &f.label, &CHALLENGE, &STATIC_KEY), want));
+                cases.push((Proof::sync(None, &secret(k), &f.label, &CHALLENGE, &STATIC_KEY), want));
             }
             for i in 0..n {
                 for (key, ok) in [(&claim, held[i]), (&secret(241), false)] {
@@ -1605,7 +1608,7 @@ mod tests {
         let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
         c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         let head_key = crate::store::tests::secret(1 + ((path.len() - 1) % 200) as u8);
-        let open = Message::Open { id: 1, label: f.label, proof: Proof::sync(&head_key, &f.label, &CHALLENGE, &STATIC_KEY) };
+        let open = Message::Open { id: 1, label: f.label, proof: Proof::sync(None, &head_key, &f.label, &CHALLENGE, &STATIC_KEY) };
         assert!(matches!(reply(&c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&open.encode())))), Message::Opened { .. }));
         let ask = |c: &mut ServingSession, store: &mut MemoryLabelStore, id: u32, after: Option<StepId>| {
             store.step_reads.set(0);

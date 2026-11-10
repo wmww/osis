@@ -284,7 +284,7 @@ impl World {
     }
 
     pub fn open(&mut self, c: usize, l: &Label) {
-        let ev = self.run(c, Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) });
+        let ev = self.run(c, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } });
         assert!(matches!(&ev[..], [ClientEvent::Opened { .. }]), "{ev:?}");
     }
 }

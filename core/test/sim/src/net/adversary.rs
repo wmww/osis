@@ -151,7 +151,7 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
     // the replay, by hand
     let mut r = sim.rogue(s)?;
     let k = old.keys.sync.clone().ok_or_else(|| sim.fail("M held no sync key"))?;
-    let opened = sim.rogue_do(&mut r, Command::Open { label: old.label, key: OpenKey::Sync(k) })?;
+    let opened = sim.rogue_do(&mut r, Command::Open { label: old.label, key: OpenKey::Sync { step: None, key: k } })?;
     let stale = sim.rogue_do(&mut r, Command::Register { label: old.label, step: old.head.clone(), claim_set: None })?;
     if stale.iter().any(|e| matches!(e, ClientEvent::Registered { .. })) {
         return Err(sim.fail(format!("the host accepted a stale step from the removed holder: {stale:?}; open {opened:?}")));

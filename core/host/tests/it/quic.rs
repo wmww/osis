@@ -18,11 +18,11 @@ async fn quic_clients_and_replication() {
     let l = Label::new(3);
     let mut b = s2.client(&Quic::new()).await;
     b.run(l.register_cmd(0)).await;
-    b.run(Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) }).await;
+    b.run(Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } }).await;
     b.run(Command::Subscribe { labels: vec![l.id] }).await;
     let mut a = s1.client(&Quic::new()).await;
     assert_eq!(a.run(l.register_cmd(0)).await, vec![ClientEvent::Registered { label: l.id }]);
-    let ev = a.run(Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) }).await;
+    let ev = a.run(Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } }).await;
     assert!(matches!(&ev[..], [ClientEvent::Opened { .. }]), "{ev:?}");
     let ev = a.run(sync(l.id, None, (0..5).map(|n| l.entry(blob(n))).collect(), vec![])).await;
     assert_eq!(statuses(&ev), vec![Code::OK; 5]);

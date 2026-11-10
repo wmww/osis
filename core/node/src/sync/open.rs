@@ -22,7 +22,8 @@ const MAX_REOPENS: u32 = 3;
 /// An open attempt.
 #[derive(Clone)]
 pub(crate) enum Try {
-    /// The sync key of a step (`step`: its ID when recorded).
+    /// The sync key of a step, named when known (a hint knows none): steps without a rotation
+    /// share a sync key, and the host answers the named one's child (spec/sync.md §5).
     Sync { step: Option<Step>, key: SigningSecret },
     /// A claim at a step.
     Claim { step: Step, key: SigningSecret },
@@ -37,7 +38,7 @@ pub(crate) enum Try {
 impl Try {
     fn open_key(&self) -> OpenKey {
         match self {
-            Try::Sync { key, .. } => OpenKey::Sync(key.clone()),
+            Try::Sync { step, key } => OpenKey::Sync { step: step.as_ref().map(Step::id), key: key.clone() },
             Try::Claim { step, key } => OpenKey::Claim { step: step.id(), key: key.clone() },
             Try::Static { key, .. } => OpenKey::Static(key.clone()),
             Try::Rest => unreachable!("expanded by try_next"),
@@ -104,8 +105,9 @@ impl SyncEngine {
         self.engine.labels_of(g).into_iter().find(|x| x.id == *l)
     }
 
-    /// Open attempts in order: the known head, recorded steps deepest first by sync key, then
-    /// by claim key; for a hint, the sync keys at the index it names.
+    /// Open attempts in order: the known head, each recorded step deepest first by its sync key
+    /// (named: a host answers a superseded one's child, verified under it), then by claim key;
+    /// for a hint, the sync keys at the index it names.
     fn tries(&mut self, host: &[u8; 32], g: &Tid, l: &LabelId) -> (u64, Vec<Try>) {
         let epochs = self.engine.epochs(g);
         let held: Vec<osis_crypto::Secret32> = epochs.as_ref().map(|e| e.read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect()).unwrap_or_default();
@@ -131,7 +133,7 @@ impl SyncEngine {
         steps.sort_by_cached_key(|(s, _)| std::cmp::Reverse(path_to(&gl.steps, s.id()).map_or(0, |p| p.len())));
         for (s, _) in &steps {
             if let Some(key) = sync_key(s, index)
-                && !v.iter().any(|t| matches!(t, Try::Sync { key: k, .. } if k.verifying_key() == key.verifying_key()))
+                && !v.iter().any(|t| t.step().is_some_and(|x| x.id() == s.id()))
             {
                 v.push(Try::Sync { step: Some((*s).clone()), key });
             }

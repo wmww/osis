@@ -23,7 +23,7 @@ async fn clients_end_to_end() {
     let l = Label::new(3);
     assert_eq!(a.run(l.register_cmd(0)).await, vec![ClientEvent::Registered { label: l.id }]);
     for c in [&mut a, &mut b] {
-        let ev = c.run(Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) }).await;
+        let ev = c.run(Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } }).await;
         assert!(matches!(&ev[..], [ClientEvent::Opened { .. }]), "{ev:?}");
     }
     b.run(Command::Subscribe { labels: vec![l.id] }).await;
@@ -46,7 +46,7 @@ async fn hosts_replicate_through_dialed_links() {
     // a reader of the label waits at the peer, subscribed
     let mut b = s2.client(&clients).await;
     b.run(l.register_cmd(0)).await;
-    b.run(Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) }).await;
+    b.run(Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } }).await;
     b.run(Command::Subscribe { labels: vec![l.id] }).await;
     let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
     let s1 = Host::start(net.endpoint("s1"), "mem://s1", 0x51, store_on(&backend, &root), vec![s2.addr.clone()]).await;
@@ -78,7 +78,7 @@ async fn flood_does_not_delay_others() {
     let l = Label::new(3);
     let mut a = host.client(&net.endpoint("a")).await;
     a.run(l.register_cmd(0)).await;
-    let open = Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) };
+    let open = Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } };
     a.run(open.clone()).await;
     let mut b = host.client(&net.endpoint("b")).await;
     b.run(open).await;

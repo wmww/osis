@@ -273,7 +273,7 @@ Stream    [43, 0, [[label_id, event]+], Opt(cursor), report]
 Applied   [44, 0, cursor]
 
 actor_proof := [creation, key, sig]
-proof  := [0, sync_pk, sig] | [1, step_id, claim_pk, sig] | [2, signing_pk, sig]
+proof  := [0, Opt(step_id), sync_pk, sig] | [1, step_id, claim_pk, sig] | [2, signing_pk, sig]
 item   := [0, hit] | [1, label_id, [hit+]]
 grant  := [entry_box, [step+]]
 join   := [label_id, Opt(cursor)]
@@ -300,7 +300,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Fetch** between such nodes (spec/sync.md §10, Stream), with a top-bit id: `label_id` a member of the connection's shared set; an ID it does not hold, or of a sync ID it does not share there, is answered with none.
 - Between such nodes nothing else syncs: no Open, Upload, Deposit or Delete is sent. A session served with no per-label log answers Sync, Subscribe and Reconcile Error 11, and a Delete 0, removing nothing.
 - **Resume** (spec/sync.md §10, Pair key): dialer to listener, after the dialer's `Proved`, at most one per connection (a second, or one before a Prove, is answered Error 2; a listener keeping no record for this connection answers Error 1). `nonce` 32 random bytes; each `tag` 32 bytes, at most `MAX_RESUME_TAGS` of them, as many as fit one message. **Resumed**: the listener's own `nonce`, and `tag` when it holds a listed record.
-- **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry). An unknown label is answered Error 13. Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
+- **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, at step `step_id` when present (spec/sync.md §5), 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry). An unknown label is answered Error 13. Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
 - **Register**: replies Ok (also when the step already is the head), or an Error without the head (spec/sync.md §5):
   - 2 when the step's label is not the message's or the claim set does not hash to `claims_hash`;
   - 1 for a genesis step that does not verify;

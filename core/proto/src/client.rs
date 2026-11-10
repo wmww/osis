@@ -84,7 +84,8 @@ pub struct ClientConfig {
 /// The key an Open is signed with (spec/sync.md §5).
 #[derive(Clone)]
 pub enum OpenKey {
-    Sync(SigningSecret),
+    /// A sync key, at the step it is for when known (spec/sync.md §5).
+    Sync { step: Option<StepId>, key: SigningSecret },
     Claim { step: StepId, key: SigningSecret },
     /// A key actor's signing key (its static entry).
     Static(SigningSecret),
@@ -541,7 +542,7 @@ impl ClientSession {
                 let Some(peer) = &self.peer else { return };
                 let (ch, sk) = (peer.challenge, self.cfg.peer_static_key);
                 let proof = match &key {
-                    OpenKey::Sync(k) => Proof::sync(k, &label, &ch, &sk),
+                    OpenKey::Sync { step, key } => Proof::sync(*step, key, &label, &ch, &sk),
                     OpenKey::Claim { step, key } => Proof::claim(*step, key, &label, &ch, &sk),
                     OpenKey::Static(k) => Proof::static_entry(k, &label, &ch, &sk),
                 };

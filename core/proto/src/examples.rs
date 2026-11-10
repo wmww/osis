@@ -222,7 +222,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("ok", Message::Ok { id: 2 }),
         ("ping", Message::Ping { id: 3, wall_ms: 1_700_000_000_000 }),
         ("pong", Message::Pong { id: 3, wall_ms: 1_700_000_000_123 }),
-        ("open sync key", Message::Open { id: 4, label: l, proof: Proof::sync(&f.sync, &l, &CHALLENGE, &STATIC_KEY) }),
+        ("open sync key", Message::Open { id: 4, label: l, proof: Proof::sync(None, &f.sync, &l, &CHALLENGE, &STATIC_KEY) }),
         ("open claim key", Message::Open { id: 5, label: l, proof: Proof::claim(f.genesis.id(), &claim, &l, &CHALLENGE, &STATIC_KEY) }),
         ("open static entry", Message::Open { id: 6, label: l, proof: Proof::static_entry(&f.key_actor, &l, &CHALLENGE, &STATIC_KEY) }),
         ("opened", Message::Opened { id: 4, head: f.child.clone(), entry_box: None }),

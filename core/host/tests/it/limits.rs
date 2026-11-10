@@ -33,7 +33,7 @@ fn stale_sync_key_gets_exactly_one_step() {
     w.run(c, Command::Register { label: l.id, step: s1.clone(), claim_set: Some(cs1) });
     let (s2, cs2) = l.rotate(40);
     w.run(c, Command::Register { label: l.id, step: s2, claim_set: Some(cs2) });
-    let ev = w.run(c, Command::Open { label: l.id, key: OpenKey::Sync(old.sync.clone()) });
+    let ev = w.run(c, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: old.sync.clone() } });
     assert!(matches!(&ev[..], [ClientEvent::Step { step, .. }] if *step == s1), "{ev:?}");
     for cmd in [sync(l.id, None, vec![], vec![]), Command::Fetch { label: l.id, ids: vec![bid(1)] }, Command::Path { label: l.id, after: None }, Command::Reconcile { label: l.id, ids: vec![] }] {
         let ev = w.run(c, cmd);
@@ -126,7 +126,7 @@ fn budget_tombstone_and_fetch_scope() {
     let ev = w.run(c, Command::Fetch { label: l2.id, ids: vec![bid(1)] });
     assert!(matches!(&ev[..], [ClientEvent::Fetched { items, .. }] if items[0].entry.is_none()), "{ev:?}");
     // an unknown label
-    let ev = w.run(c, Command::Open { label: LabelId([0xee; 16]), key: OpenKey::Sync(l.head_keys().sync.clone()) });
+    let ev = w.run(c, Command::Open { label: LabelId([0xee; 16]), key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } });
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::UNKNOWN_LABEL, .. }]), "{ev:?}");
 }
 

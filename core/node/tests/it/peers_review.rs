@@ -200,7 +200,7 @@ fn stranger_refused_spec_sync_5() {
     let l: LabelId = net.label(b);
     let (mut p, _) = dial_in(&mut net, b);
     let key = SigningSecret::from_seed(&Secret32::from_bytes([0x99; 32]));
-    let evs = command(&mut net, b, &mut p, Command::Open { label: l, key: OpenKey::Sync(key) });
+    let evs = command(&mut net, b, &mut p, Command::Open { label: l, key: OpenKey::Sync { step: None, key: key } });
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
     assert!(!evs.iter().any(|e| matches!(e, ClientEvent::Opened { .. })));
     assert!(net.sync(b).served_opened()[&p.conn].is_empty());
@@ -395,7 +395,7 @@ fn a_member_closes_with_the_right_spec_sync_10() {
     assert!(net.sync(a).served_opened()[&p.conn].contains(&l));
     let (mut q, _) = dial_in(&mut net, a);
     let stranger = SigningSecret::from_seed(&Secret32::from_bytes([0x99; 32]));
-    let evs = command(&mut net, a, &mut q, Command::Open { label: l, key: OpenKey::Sync(stranger) });
+    let evs = command(&mut net, a, &mut q, Command::Open { label: l, key: OpenKey::Sync { step: None, key: stranger } });
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
     // b removed from g
     let (ta, tb) = (net.tid(a), net.tid(b));
@@ -468,7 +468,7 @@ fn silent_session_closed_spec_sync_5() {
     let (mut p, _) = dial_in(&mut net, b);
     net.clock.advance(1_001);
     let now = net.now();
-    let outs = p.cs.handle(now, ClientInput::Command(Command::Open { label: LabelId([1; 16]), key: OpenKey::Sync(SigningSecret::from_seed(&Secret32::from_bytes([3; 32]))) }));
+    let outs = p.cs.handle(now, ClientInput::Command(Command::Open { label: LabelId([1; 16]), key: OpenKey::Sync { step: None, key: SigningSecret::from_seed(&Secret32::from_bytes([3; 32])) } }));
     exchange(&mut net, b, &mut p, Vec::new(), outs);
     let acts = net.sync(b).handle(Event::Tick);
     assert!(acts.contains(&Action::Close { conn: p.conn }), "{acts:?}");

@@ -146,7 +146,7 @@ fn round_trip(n: u64, size: usize, rate: usize, step_ms: u64) -> Run {
     let l = Label::new(1);
     r.settle(rate, step_ms);
     r.command(Command::Register { label: l.id, step: l.steps[0].clone(), claim_set: Some(l.sets[0].clone()) }, rate, step_ms);
-    let ev = r.command(Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) }, rate, step_ms);
+    let ev = r.command(Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } }, rate, step_ms);
     assert!(ev.iter().any(|e| matches!(e, ClientEvent::Opened { .. })), "{ev:?}");
     let entries: Vec<Entry> = (0..n).map(|i| l.entry(blob_sized(i, 0, vec![], size))).collect();
     let ids: Vec<_> = entries.iter().map(|e| osis_label::blob_id(&e.blob)).collect();
@@ -209,7 +209,7 @@ fn pushes_to_slow_subscriber_spec_sync_6() {
     let l = Label::new(1);
     r.settle(rate, step_ms);
     r.command(Command::Register { label: l.id, step: l.steps[0].clone(), claim_set: Some(l.sets[0].clone()) }, rate, step_ms);
-    r.command(Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) }, rate, step_ms);
+    r.command(Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } }, rate, step_ms);
     r.command(Command::Sync { label: l.id, cursor: None, inline_limit: 8 << 20, entries: vec![], gained: vec![] }, rate, step_ms);
     r.command(Command::Subscribe { labels: vec![l.id] }, rate, step_ms);
     // another connection uploads 72 MiB at once
@@ -296,7 +296,7 @@ fn subscribe(r: &mut Run, labels: &[&Label], rate: usize, step_ms: u64) {
     r.settle(rate, step_ms);
     for l in labels {
         r.command(Command::Register { label: l.id, step: l.steps[0].clone(), claim_set: Some(l.sets[0].clone()) }, rate, step_ms);
-        r.command(Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) }, rate, step_ms);
+        r.command(Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } }, rate, step_ms);
         r.command(Command::Sync { label: l.id, cursor: None, inline_limit: 8 << 20, entries: vec![], gained: vec![] }, rate, step_ms);
     }
     r.command(Command::Subscribe { labels: labels.iter().map(|l| l.id).collect() }, rate, step_ms);

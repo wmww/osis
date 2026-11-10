@@ -131,7 +131,7 @@ impl Net {
     }
 
     fn open(&mut self, i: usize, l: &Label) {
-        let ev = self.run(i, Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) });
+        let ev = self.run(i, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } });
         assert!(matches!(&ev[..], [ClientEvent::Opened { .. }]), "{ev:?}");
     }
 }
@@ -295,14 +295,14 @@ fn stale_sync_key_gets_one_signed_step() {
     let (child, cs) = l.rotate(20);
     let ev = net.run(0, Command::Register { label: l.id, step: child.clone(), claim_set: Some(cs) });
     assert_eq!(ev, vec![ClientEvent::Registered { label: l.id }]);
-    let ev = net.run(0, Command::Open { label: l.id, key: OpenKey::Sync(old.sync.clone()) });
+    let ev = net.run(0, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: old.sync.clone() } });
     let [ClientEvent::Step { step, .. }] = &ev[..] else { panic!("{ev:?}") };
     assert_eq!(step, &child);
     step.verify_child(&l.steps[0]).unwrap();
     // not opened: reads refused
     let ev = net.run(0, sync(l.id, None, vec![], vec![]));
     assert!(matches!(&ev[..], [ClientEvent::Refused { kind: osis_proto::Request::Sync, code: Code::NOT_OPENED, .. }]), "{ev:?}");
-    let ev = net.run(0, Command::Open { label: l.id, key: OpenKey::Sync(SigningSecret::from_seed(&s32(99))) });
+    let ev = net.run(0, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: SigningSecret::from_seed(&s32(99)) } });
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]));
     // a step on another branch is refused with code 9 alone, never the head (spec/sync.md §5)
     let mut fork = Label::new(3);
@@ -590,7 +590,7 @@ fn new_sync_key_ends_opens_spec_sync_5() {
     }
     assert_eq!(net.hosts[1].opened().count(), 0);
     // the old key gets the child only; the new one opens and syncs on from the cursor
-    let ev = net.run(1, Command::Open { label: l.id, key: OpenKey::Sync(l.keys[0].sync.clone()) });
+    let ev = net.run(1, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.keys[0].sync.clone() } });
     assert!(matches!(&ev[..], [ClientEvent::Step { .. }]), "{ev:?}");
     net.open(1, &l);
     let (evs, _) = events_of(&net.run(1, sync(l.id, cursors[1], vec![], vec![])));
