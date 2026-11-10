@@ -276,21 +276,6 @@ aspect reach.0: struct {
     account 3: option<tid>,
 };
 
-/// An aspect a device reports as damaged, with a 16-byte digest of its state.
-type suspect = struct {
-    thing 0: tid,
-    ak 1: string,
-    digest 2: blob,
-};
-
-/// The device's last sync of a group (spec/permissions.md §4). `stranded`: it cannot read the
-/// group's current secrets; `suspect`: damaged aspects it asks others to repair.
-aspect seen.0: struct {
-    ts 0: timestamp,
-    stranded 1: bool,
-    suspect 2: set<suspect>,
-};
-
 /// Which labels a host takes: its own account's groups, or anyone's.
 type admit = enum {
     own 0,

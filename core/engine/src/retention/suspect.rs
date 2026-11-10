@@ -1,9 +1,10 @@
-//! Suspect aspects (spec/permissions.md §4 heartbeat, spec/commits.md §5): an aspect whose
+//! Suspect aspects (spec/permissions.md §4 Suspect, spec/commits.md §5): an aspect whose
 //! state this node may have computed from less than another holder, because it dropped data a
 //! validity flip or a late creation record would have needed: a dropped body missing again (its
 //! cover turned invalid, spec/permissions.md §5.2, or its purge fell, spec/permissions.md §6), a
 //! part held pending
-//! at its expiry (counts as never received). The node reports them in its heartbeats; a writer
+//! at its expiry (counts as never received). The node reports them in suspect lists to the
+//! peers it shares a label with; a writer
 //! re-snapshots such an aspect (spec/sync.md §7). A flag names the bodies it is about; an entry
 //! goes as its body comes back (held again: what the aspect lacked for it is in). An
 //! Uncovered entry is dormant while a held snapshot valid here is stamped after its commit
@@ -14,9 +15,9 @@
 //! dormant: its part's writes reach this node only as a snapshot's copies, and no test on what a
 //! snapshot holds tells whether they repaired it (a listing snapshot may carry nothing of the part;
 //! a write key-erased at expiry, spec/crdt.md §4.7, lands outside the entry record the part wrote; writes
-//! of one delta share a dot). The heartbeat's digests say whether nodes agree; such an entry goes
+//! of one delta share a dot). The lists' digests say whether nodes agree; such an entry goes
 //! only with its thing (`forget`), yields to any flag raised after it (`suspects_under`: most
-//! recent first) and so cannot keep a newer one out of a heartbeat.
+//! recent first).
 
 use crate::engine::records;
 use crate::engine::{Core, Engine, Tx};
@@ -72,6 +73,8 @@ fn store(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: u64, bodies: &[Entry]) -> Resu
     } else {
         tx.txn.put_local(&key, &write(at, bodies), Shred::No)?;
     }
+    // what reads the flags (node sync's suspect lists) is taken again
+    tx.core.touch();
     Ok(())
 }
 

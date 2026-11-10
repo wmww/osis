@@ -118,7 +118,7 @@ fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
         }
         assert_eq!(net.engine(n).get(&t, &ak).unwrap(), Some(s("v3")));
     }
-    // the dead bodies' blobs only: heartbeats replaced by the next ones go too
+    // the dead bodies' blobs only
     let _ = before;
     (deletions_of(&net, host, &l, &seen), seen.len())
 }

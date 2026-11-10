@@ -416,7 +416,7 @@ impl SyncEngine {
         Ok(here)
     }
 
-    /// Whether this node placed the entry (its certificates, heartbeats, role writes).
+    /// Whether this node placed the entry (its certificates, role writes).
     pub(super) fn mine(&self, e: &Entry) -> bool {
         e.cert || matches!(&e.kind, Kind::Commit { commit, .. } if self.own(commit))
     }

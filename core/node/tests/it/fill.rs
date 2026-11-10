@@ -307,9 +307,9 @@ fn secrets_arriving_order_the_rest_spec_sync_6() {
         s.assert_newest();
         s.held().len() == N
     });
-    // no stranded heartbeat: it holds the head's read secret from what it fetched first, and no
+    // not stranded: it holds the head's read secret from what it fetched first, and no
     // pass judged before that
-    assert!(!f.net.sync(c).stranded_at(&l), "no stranded heartbeat");
+    assert!(!f.net.sync(c).stranded_at(&l), "not stranded");
     f.finish();
 }
 
@@ -367,31 +367,26 @@ fn no_repair_from_a_state_part_way_spec_sync_6() {
     let g = net.group(a, &[(r, Role::Read), (c, Role::Write)], &[host]);
     net.set_online(c, false);
     net.run();
-    // the suspect reader, as in `suspect_aspect_repaired_by_writer_snapshot_spec_permissions_4`
-    net.set_online(r, false);
     let t = net.item(a, g, g, "chat");
-    let mut m = Mutation::new();
-    m.set(t, &crate::net::REG, &net::s("v2")).unwrap();
-    m.expires(t, &crate::net::REG, osis_base::WallMs(net.now() + 60_000)).unwrap();
-    let w = net.engine(a).commit(m).unwrap().unwrap();
-    net.run();
-    net.advance(120_000);
-    let reg = Ak::new("t:reg.0").unwrap();
-    net.engine(r).flag_suspect(&t, &reg, osis_node::retention::suspect::Why::PendingExpiry, &[(w, 0)]).unwrap();
-    assert!(!net.engine(r).suspects().unwrap().is_empty());
     for i in 0..N {
         say(&mut net, a, t, i);
     }
-    net.set_online(r, true);
     net.run();
-    net.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 60_000);
+    // r dialable, but blocked until c is part way: c's fill comes from the host alone
+    crate::peers::reach_ed(&mut net, r);
+    net.blocked_peers.insert((c, r));
+    net.run();
     let l = net.label(a);
     let mut f = Chat { net, host, a, c, g, t, l };
     f.part_way();
-    // a pass, the fill going on
+    f.net.blocked_peers.remove(&(c, r));
+    // c dials r; r reports an aspect of the label suspect
     f.net.tick(61_000);
+    let reg = Ak::new("t:reg.0").unwrap();
+    let Some((conn, ..)) = f.net.peer_conns(r).into_iter().find(|x| x.1 == c) else { panic!("connected") };
+    f.net.inject(r, conn, &osis_proto::Message::Suspect { id: osis_proto::msg::NODE_IDS | 0x7000, label: l, entries: vec![osis_proto::msg::SuspectEntry { thing: t, ak: reg, digest: [9; 16] }] });
     f.net.round();
-    assert!(f.held().len() < N);
+    assert!(f.held().len() < N, "the fill going on");
     let d = f.net.diagnostics(c);
     assert!(!d.iter().any(|x| x.contains("Repair")), "{d:?}");
     f.finish();
@@ -422,7 +417,7 @@ fn junk_listed_goes_when_it_comes_spec_sync_6() {
 }
 
 /// `c`, a new node, past the listing, the rotation that brings the head's read secret held back:
-/// no pass runs, so no stranded heartbeat, whatever wants one: `write` an own write, and with two
+/// no pass runs, so not stranded, whatever wants one: `write` an own write, and with two
 /// hosts the second host's fill, which finds order 0 in flight on the first and goes on.
 fn no_pass_before_order_0(hosts: usize, write: bool) {
     let mut net = Net::new();
@@ -477,7 +472,7 @@ fn no_pass_before_order_0(hosts: usize, write: bool) {
     f.net.release();
     f.net.run();
     f.net.advance(61_000);
-    assert!(!f.net.sync(c).stranded_at(&l), "no stranded heartbeat");
+    assert!(!f.net.sync(c).stranded_at(&l), "not stranded");
     assert_eq!(f.held().len(), N / 2);
 }
 

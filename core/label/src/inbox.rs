@@ -121,23 +121,80 @@ impl InboxPayload {
     }
 }
 
+/// `StrandedNotice := ["stranded", label_id, holder]` (spec/wire.md §9): holder `holder` is
+/// stranded on label `label` (spec/permissions.md §4). It carries no commit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StrandedNotice {
+    pub label: LabelId,
+    pub holder: Tid,
+}
+
+impl StrandedNotice {
+    pub fn to_value(&self) -> Value {
+        Value::List(vec![Value::Str("stranded".into()), Value::bytes(&self.label.0), tid(&self.holder)])
+    }
+
+    pub fn from_value(v: &Value) -> Result<StrandedNotice, Error> {
+        let Value::List(items) = v else { return Err(Error::Malformed("stranded notice")) };
+        let [Value::Str(k), label, holder] = items.as_slice() else { return Err(Error::Malformed("stranded notice")) };
+        if k != "stranded" {
+            return Err(Error::Malformed("stranded notice"));
+        }
+        Ok(StrandedNotice { label: LabelId(get_bytes(label, "stranded label")?), holder: get_tid(holder, "stranded holder")? })
+    }
+}
+
+/// What an inbox blob carries: a role commit with what it names, or a stranded notice.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Inbox {
+    Payload(InboxPayload),
+    Stranded(StrandedNotice),
+}
+
+impl Inbox {
+    pub fn from_value(v: Value) -> Result<Inbox, Error> {
+        match &v {
+            Value::List(items) if matches!(items.first(), Some(Value::Str(_))) => StrandedNotice::from_value(&v).map(Inbox::Stranded),
+            _ => InboxPayload::from_value(v).map(Inbox::Payload),
+        }
+    }
+}
+
+/// Seals a stranded notice to `recipient`'s newest read keyset KEM key, as `seal_inbox_blob`.
+pub fn seal_stranded_notice(recipient: &Tid, kem: &KemPublicKey, notice: &StrandedNotice, now: WallMs, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
+    seal(recipient, kem, &notice.to_value(), now, rng)
+}
+
 /// Seals an inbox blob to `recipient`'s newest read keyset KEM key: prefix with expiry `now`
 /// (the sender's corrected wall ms) + `INBOX_LIFETIME`, no commitments. Its entry's wrap is a
 /// filler (`osis_crypto::filler_wrap`).
 pub fn seal_inbox_blob(recipient: &Tid, kem: &KemPublicKey, payload: &InboxPayload, now: WallMs, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
+    seal(recipient, kem, &payload.to_value()?, now, rng)
+}
+
+fn seal(recipient: &Tid, kem: &KemPublicKey, v: &Value, now: WallMs, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
     let prefix = Prefix::new(Prefix::random_salt(rng), Some(now.saturating_add(INBOX_LIFETIME_MS)), vec![])?;
-    seal_inbox(&prefix.to_bytes(), recipient, kem, &encode(&payload.to_value()?), rng).map_err(|e| match e {
+    seal_inbox(&prefix.to_bytes(), recipient, kem, &encode(v), rng).map_err(|e| match e {
         osis_crypto::Error::TooLarge => Error::TooLarge("inbox blob above MAX_BLOB"),
         e => Error::Crypto(e),
     })
 }
 
-/// Opens an inbox blob addressed to `recipient` with its read KEM secret.
+/// Opens an inbox blob addressed to `recipient` with its read KEM secret: a role commit's
+/// payload (a stranded notice is an error here, `open_inbox_item`).
 pub fn open_inbox_blob(blob: &[u8], recipient: &Tid, kem: &KemSecret) -> Result<(Prefix, InboxPayload), Error> {
+    match open_inbox_item(blob, recipient, kem)? {
+        (p, Inbox::Payload(x)) => Ok((p, x)),
+        (_, Inbox::Stranded(_)) => Err(Error::Malformed("inbox payload")),
+    }
+}
+
+/// Opens an inbox blob addressed to `recipient` with its read KEM secret, whatever it carries.
+pub fn open_inbox_item(blob: &[u8], recipient: &Tid, kem: &KemSecret) -> Result<(Prefix, Inbox), Error> {
     crate::blob::check_size(blob)?;
     let prefix = Prefix::parse(blob)?;
     let pt = open_inbox(blob, prefix.len(), recipient, kem)?;
-    Ok((prefix, InboxPayload::from_value(decode(&pt, &OBJECT_LIMITS)?)?))
+    Ok((prefix, Inbox::from_value(decode(&pt, &OBJECT_LIMITS)?)?))
 }
 
 #[cfg(test)]
@@ -177,6 +234,23 @@ mod tests {
         assert!(open_inbox_blob(&b, &Tid::from_bytes([6; 15]), &kem).is_err());
         let other = KemSecret::derive(&Secret32::from_bytes([8; 32]));
         assert!(open_inbox_blob(&b, &r, &other).is_err());
+    }
+
+    // spec/wire.md §9 (stranded notice): a stranded notice seals and opens as an inbox blob,
+    // never as a role commit's payload.
+    #[test]
+    fn stranded_notice_round_trip() {
+        let mut rng = SeededRng::from_u64(2);
+        let kem = KemSecret::derive(&Secret32::from_bytes([9; 32]));
+        let r = Tid::from_bytes([5; 15]);
+        let n = StrandedNotice { label: LabelId([3; 16]), holder: Tid::from_bytes([7; 15]) };
+        let b = seal_stranded_notice(&r, kem.public(), &n, WallMs(1000), &mut rng).unwrap();
+        let (p, got) = open_inbox_item(&b, &r, &kem).unwrap();
+        assert_eq!(got, Inbox::Stranded(n));
+        assert_eq!(p.expiry(), Some(WallMs(1000 + INBOX_LIFETIME_MS)));
+        assert!(open_inbox_blob(&b, &r, &kem).is_err());
+        let b = seal_inbox_blob(&r, kem.public(), &payload(), WallMs(1000), &mut rng).unwrap();
+        assert_eq!(open_inbox_item(&b, &r, &kem).unwrap().1, Inbox::Payload(payload()));
     }
 
     // spec/wire.md §9: things sorted by tid and distinct; layout positions.

@@ -47,7 +47,7 @@ Severity: **fails** (error or never happens), **silent** (claims success or does
 | 33 | Lost announcement | A join announces 3 times in its first 2 s; a later loss waits for the next 30 s repeat | `driver_lan_join_repeats_its_announcement` | ok |
 | 34 | LAN tag vs clock | Tags tolerate 10-20 min of skew, `MAX_DRIFT` allows 60. Past it nodes never match, and a connection is what would correct the clock | peers.rs:525; p10 window | fails |
 | 35 | Clock pulled by a peer | The offset is the median over all connections, peers included, with no cap: one peer can set it. Alice 120 min behind: Bob's `redeem` fails `own commit not applicable`. +120, ±30, -5 fine. Against "a wrong local clock harms only that node's own writes" | conn.rs:386; apply/mod.rs:817; p10 | fails |
-| 36 | Co-reader cap | At most 8 per label, chosen by newest `seen.0`, and LAN tags come from that same list: an unreachable 8 hide a reachable 9th | peers.rs:303-315,524 (read) | degraded |
+| 36 | Co-reader cap | At most 8 per label, chosen by node tid, and LAN tags come from that same list: an unreachable 8 hide a reachable 9th | peers.rs:303-315,524 (read) | degraded |
 | 37 | Link expiry, K with no saved peer | Only the node that made the link finalizes it (`h.here`) | deliver.rs:485 (read) | degraded |
 
 ## Builds (`lan` on by default)

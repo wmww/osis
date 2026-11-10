@@ -1,8 +1,8 @@
 //! The sync engine's durable state, in the engine's local records under `y/` (one write batch
 //! per `SyncEngine::handle`): label entries this node knows (wrap, stamp, what the blob is),
 //! presence per host, cursors and heads per (host, label), blob keys of commit blobs,
-//! certificates and heartbeats placed, blobs a host tombstoned, label hints from inbox blobs,
-//! inbox deliveries to re-send, stranded heartbeat times, direct commits for the app, flows'
+//! certificates placed, blobs a host tombstoned, label hints from inbox blobs, inbox
+//! deliveries to re-send, direct commits for the app, flows'
 //! deliveries owed (`y/y`).
 
 use crate::engine::{Engine, Tx};
@@ -29,7 +29,6 @@ const BLOB: &[u8] = b"y/b";
 const CERT: &[u8] = b"y/k";
 /// Thing lists placed: label, rotation, thing (`State::listed`).
 const LISTED: &[u8] = b"y/L";
-const BEAT: &[u8] = b"y/t";
 const GONE: &[u8] = b"y/g";
 const DOUBT: &[u8] = b"y/3";
 const HINT: &[u8] = b"y/i";
@@ -47,8 +46,6 @@ const FORGET: &[u8] = b"y/f";
 const RETIRED: &[u8] = b"y/q";
 /// Inbox deliveries re-sent after `INBOX_LIFETIME` while unanswered (`SyncEngine::resend_inbox`).
 const SENT_INBOX: &[u8] = b"y/v";
-/// When a stranded heartbeat last went under a label.
-const STRANDED: &[u8] = b"y/u";
 /// Commits for a node over a direct connection, until the app takes them (`take_direct`).
 const DIRECT: &[u8] = b"y/j";
 /// Persons marked as contacts (`SyncEngine::set_contact`).
@@ -328,7 +325,6 @@ pub struct State {
     pub certs: BTreeSet<(LabelId, CommitId)>,
     /// The thing lists this node placed under a label: (label, rotation, thing).
     pub listed: BTreeSet<(LabelId, CommitId, Tid)>,
-    pub beats: BTreeMap<LabelId, u64>,
     /// Blob IDs of no use at a host, by when (corrected wall ms): uploads it refused as
     /// tombstoned, and entries it holds under a wrap not opening to the blob's key (a stamped
     /// entry's wrap never changes there, spec/sync.md §5). Forgotten after `TOMBSTONE_LIFETIME`,
@@ -382,8 +378,6 @@ pub struct State {
     pub replaced_seen: BTreeMap<LabelId, u64>,
     /// Inbox deliveries by (holder, commit), until the holder acts or the re-sends run out.
     pub sent_inbox: BTreeMap<(Tid, CommitId), SentInbox>,
-    /// When a stranded heartbeat last went under each label (corrected wall ms).
-    pub stranded: BTreeMap<LabelId, u64>,
     /// Commits for nodes over a direct connection (pairing), until the app takes them.
     pub direct: BTreeMap<Tid, Vec<CommitId>>,
     /// Groups handed off to another node (`y/w`).
@@ -632,9 +626,6 @@ impl State {
                 b"L" => {
                     s.listed.insert((LabelId(r.arr()?), CommitId(r.arr()?), Tid::from_bytes(r.arr()?)));
                 }
-                b"t" => {
-                    s.beats.insert(LabelId(r.arr()?), Rd::new(&v).u64()?);
-                }
                 b"g" => {
                     s.gone.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
                 }
@@ -678,9 +669,6 @@ impl State {
                     if let Ok(x) = decode_sent(&v) {
                         s.sent_inbox.insert((x.holder, x.commit), x);
                     }
-                }
-                b"u" => {
-                    s.stranded.insert(LabelId(r.arr()?), Rd::new(&v).u64()?);
                 }
                 b"j" => {
                     s.direct.insert(r.tid()?, decode_commits(&v)?);
@@ -1395,11 +1383,6 @@ impl State {
         }
     }
 
-    pub fn set_stranded(&mut self, l: LabelId, t: u64) {
-        self.put(key(STRANDED, &[&l.0]), Wr::new().u64(t).take());
-        self.stranded.insert(l, t);
-    }
-
     /// Adds commits for node `to` (direct connection).
     pub fn add_direct(&mut self, to: Tid, commits: &[CommitId]) {
         let list = self.direct.entry(to).or_default();
@@ -1442,11 +1425,6 @@ impl State {
         if self.listed.insert((l, r, t)) {
             self.put(key(LISTED, &[&l.0, &r.0, t.as_bytes()]), Vec::new());
         }
-    }
-
-    pub fn set_beat(&mut self, l: LabelId, t: u64) {
-        self.put(key(BEAT, &[&l.0]), Wr::new().u64(t).take());
-        self.beats.insert(l, t);
     }
 
     pub fn set_gone(&mut self, s: HostKey, l: LabelId, b: BlobId) {

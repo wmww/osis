@@ -454,7 +454,7 @@ fn an_until_ended_out_of_reach_goes_past_role_keep_spec_permissions_2() {
     }
 }
 
-// spec/permissions.md §2 (an `until` passing), §3 (re-seal): a holder online past its `until`, the renewal made only later: it erased, and is re-sealed through the stranded heartbeat: it returns, not at once
+// spec/permissions.md §2 (an `until` passing), §3 (re-seal): a holder online past its `until`, the renewal made only later: it erased, and is re-sealed through a stranded report: it returns, not at once
 #[test]
 fn a_late_renewal_comes_back_by_a_re_seal_spec_permissions_2() {
     let (mut w, a, b, bob, g, m, t0, hour) = timed(None);

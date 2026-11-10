@@ -560,7 +560,7 @@ fn later_snapshot_settles(lp: &mut LocalPeer, t: Tid, asp: &Ak) {
 }
 
 // spec/permissions.md §4: a flag about a dropped snapshot body settles like any other. Its dormancy
-// read `Absorbed`, which never lists a snapshot, so it never did, and it filled the heartbeat.
+// read `Absorbed`, which never lists a snapshot, so it never did, and it filled the suspect list.
 #[test]
 fn flip_flag_on_a_snapshot_body_settles_spec_permissions_4() {
     let mut lp = net(4, 0x5e85);

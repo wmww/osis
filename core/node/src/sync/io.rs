@@ -15,21 +15,15 @@ pub struct SyncConfig {
     /// Blobs above this many bytes are announced without their bytes and fetched when needed
     /// (lazy chunks, spec/sync.md §6).
     pub inline_limit: u64,
-    /// Place heartbeats (spec/permissions.md §4; policy, notes/sync.md).
-    pub heartbeats: bool,
-    /// Heartbeat lifetime (`expires` after the commit's `ts`).
-    pub heartbeat_lifetime_ms: u64,
     /// Re-sync interval of opened labels without a subscription.
     pub resync_ms: u64,
     /// Pause before re-dialing a host.
     pub retry_ms: u64,
-    /// Deposits skip heartbeats when fewer entries are left in the budget.
-    pub tight_budget: u64,
     /// Dial co-reader nodes known from their `reach.0` (spec/sync.md §5, §10).
     pub peers: bool,
     /// Pause before re-dialing a co-reader node.
     pub peer_retry_ms: u64,
-    /// Co-readers dialed per label and in total (newest heartbeat first).
+    /// Co-readers dialed per label and in total (by node tid).
     pub max_peers_per_label: usize,
     pub max_peers: usize,
     /// Bytes one peer key, and all peers together, may have uploaded or deposited here that
@@ -78,11 +72,8 @@ impl Default for SyncConfig {
             hosts: Vec::new(),
             subscribe: true,
             inline_limit: osis_base::format::MAX_BLOB as u64,
-            heartbeats: true,
-            heartbeat_lifetime_ms: 2 * osis_base::format::HEARTBEAT_MIN_LIFETIME_MS,
             resync_ms: 60_000,
             retry_ms: 5_000,
-            tight_budget: 16,
             peers: true,
             peer_retry_ms: 60_000,
             max_peers_per_label: 8,

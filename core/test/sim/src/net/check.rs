@@ -537,7 +537,7 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                         let Some((c, _)) = sim.known.get(&(l, *db)).cloned() else { continue };
                         let Some(sync) = sim.nodes.get(n).and_then(|x| x.sync.as_ref()) else { continue };
                         let Some(h) = sync.engine().header(&c) else { continue };
-                        if h.aspects.iter().any(|a| a.ak.as_str() == "seen.0") || !sync.entries(&l).iter().any(|(x, _)| x == db) {
+                        if !sync.entries(&l).iter().any(|(x, _)| x == db) {
                             continue;
                         }
                         let ek = sync.entries(&l).into_iter().find(|(x, _)| x == db).map(|x| x.1);

@@ -1002,7 +1002,7 @@ fn rotator_lacking_read_rotates_read_too_spec_permissions_3() {
     assert!(still.is_empty(), "{still:?}");
     let ep = lp.peers[1].engine.epochs(&a).unwrap();
     assert!(ep.read.newest_held().is_some() && !ep.read.is_current(&lacked), "A's read rotated over the epoch P lacks");
-    assert!(matches!(osis_keys::wrap_epoch(&ep.read), osis_keys::WrapEpoch::Current(_)), "P is not stranded");
+    assert!(osis_keys::wrap_epoch(&ep.read).is_some(), "P is not stranded");
     settle(&mut lp, &[1, 2, 0], &[m, a]);
     assert!(lp.peers[1].engine.epochs(&a).unwrap().read.secret(&lacked).is_some(), "P holds the superseded secret by history");
     let (_, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
@@ -1055,7 +1055,7 @@ fn lacking_write_rotates(seed: u64) {
     let e = lp.peers[1].engine.epochs(&a).unwrap();
     assert!(e.write.newest_held().is_some() && !e.write.is_current(&lacked), "seed {seed}: A's write rotated over the epoch P lacks");
     assert!(e.write.secret(&lacked).is_none(), "seed {seed}");
-    assert!(matches!(osis_keys::wrap_epoch(&e.read), osis_keys::WrapEpoch::Current(_)), "seed {seed}: P's read is current: no heartbeat");
+    assert!(osis_keys::wrap_epoch(&e.read).is_some(), "seed {seed}: P's read is current: not stranded");
     settle(&mut lp, &[2, 0], &[m, a]);
     let e = lp.peers[1].engine.epochs(&a).unwrap();
     assert!(e.write.secret(&lacked).is_some(), "seed {seed}: P holds the superseded write secret by history");

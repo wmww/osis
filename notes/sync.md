@@ -56,7 +56,6 @@ The requirements behind sync: spec/requirements.md, Data a node cannot read and 
 
 ## Policy defaults (non-normative, tune freely)
 - Compaction: a right holder compacts an aspect when superseded/live bodies pass a threshold, on its next write, after a randomized delay so concurrent writers do not all snapshot; a schema that wants no automatic compaction says retain at least forever. Nothing calls `SyncEngine::compact` automatically yet (notes/growth.md).
-- Heartbeats: the intended policy is under the home label and labels with more than one reader actor, not under a thousand single-note labels. As built, node sync places one under every label it passes, at most once per `HEARTBEAT_MIN_INTERVAL` (6 h) per label, and a non-writer skips it when the deposit budget is tight (`SyncConfig::tight_budget`).
 - Deposit budget and deposit order: notes/inbox.md. `TOMBSTONE_LIFETIME` 30 days (notes/sync-convergence.md). `INBOX_LIFETIME` 90 days (format constant, matching `ROLE_KEEP`).
 - Fetching from a node that cannot read them, a client cannot put permission commits first before decrypting, so it downloads everything and applies role commits first.
 - Clients may batch uploads to blur timing.

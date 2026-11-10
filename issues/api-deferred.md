@@ -1,5 +1,5 @@
 # API pieces not built yet
-> Summary: What an app developer cannot do with the `osis` crate yet, and the workaround: list or search things (read the group and every item), find what references a thing, restore deleted text or cut/paste it (undo), set heartbeats per group, read a link without an account (redeem it), stream a huge value in (it is read into memory), see pending uploads in status (`wait_synced`), pair over a direct connection (carry three texts). Client conveniences; nothing on the wire depends on them.
+> Summary: What an app developer cannot do with the `osis` crate yet, and the workaround: list or search things (read the group and every item), find what references a thing, restore deleted text or cut/paste it (undo), read a link without an account (redeem it), stream a huge value in (it is read into memory), see pending uploads in status (`wait_synced`), pair over a direct connection (carry three texts). Client conveniences; nothing on the wire depends on them.
 > Priority: low
 > Tags: api
 
@@ -7,7 +7,6 @@ Repro: osis-cli `unbuilt_commands_say_so_plan_cli_4` (the CLI reports queries an
 
 - **Queries and backlinks** (`query(in_group, with, order, page) -> Live`, `backlinks(tid)`): need local rebuildable indexes per aspect (notes/local-store.md) and a live result over the dispatcher; a design pass first (notes/api.md, Open). Apps list group items with `members(g)` plus per-thing reads meanwhile (O(items) per change); `Osis::created(t)` gives a sort time. The CLI's `ls`/`backlinks` report Unsupported.
 - **`undelete` and text cut/paste**: a deleted text range is named by its elements' dots, which no visible range reaches, so an API needs an opaque clipboard handle remembered across edits (`cut(range) -> Clip`, `paste(clip, at)`: a move plus undelete when the clipboard still matches, notes/crdt.md; osis-crdt's `Op::Paste` exists). Workaround: undo.
-- **Per-group heartbeats**: not built: `SyncConfig.heartbeats` is per node and read in `sync/pass/`.
 - **Bearer `open_link`**: read-only use of a link without an account (flows' `bear` exists).
 - **Streaming writes**: `set_stream` reads the value into memory before the commit; a chunk tree built while reading needs the commit's framing (delete keys, header blind, expiry) known up front (osis-node write path).
 - **`pending_uploads`** in `GroupSync`: a count of must-hold bodies not yet at a peer per sync ID costs a pass's body computation, and status is recomputed after every API call; it needs a count the pass caches.

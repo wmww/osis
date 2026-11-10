@@ -781,12 +781,12 @@ fn watch_status_and_stranded_spec_permissions_3() {
     assert!(!db.grants(home).unwrap().contains_key(&da.node()));
 }
 
-// spec/permissions.md §4 (stranded heartbeat), §7: the sharer's other node opens a link's
-// K label as soon as it is registered, before K's own secrets reach the peer (it sees K as
-// deriving from the account then); it deposits no heartbeat under a key the head does not
-// register, and reads K once they arrive (they are boxed to the account).
+// spec/permissions.md §4 (stranded), §7: the sharer's other node opens a link's K label as soon
+// as it is registered, before K's own secrets reach the peer (it sees K as deriving from the
+// account then); it deposits nothing under a key the head does not register, and reads K once
+// they arrive (they are boxed to the account).
 #[test]
-fn sharers_other_node_deposits_no_foreign_heartbeat_spec_permissions_4() {
+fn sharers_other_node_deposits_nothing_foreign_spec_permissions_4() {
     let mut w = World::new();
     let host = w.add_host();
     let alice = w.account(1, &[host]);

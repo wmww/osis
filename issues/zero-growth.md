@@ -1,5 +1,5 @@
 # Unbounded writes leave no per-write data
-> Summary: First target built: a writer's own whole replaces cover its older commits and nodes forget them, heartbeats included (spec/commits.md §5 Own replaces, Forgetting; `growth::single_writer_replace_grows_nothing`, flat with writes and with idle time). Left: receipts for commits covered by another writer, forgetting compaction snapshots, keep-previous for snapshot chains, automatic client compaction.
+> Summary: First target built: a writer's own whole replaces cover its older commits and nodes forget them (spec/commits.md §5 Own replaces, Forgetting; `growth::single_writer_replace_grows_nothing`, flat with writes and with idle time). Left: receipts for commits covered by another writer, forgetting compaction snapshots, keep-previous for snapshot chains, automatic client compaction.
 > Priority: normal
 > Tags: engine, perm, spec
 

@@ -543,9 +543,9 @@ fn replacement(name: &str, seed: u64, offline: bool) -> Res<Report> {
     }
     if offline {
         // the old label keeps role-class commits and certificates (chain certificates,
-        // node cards, heartbeats: they verify what stays, spec/permissions.md §4) only
+        // node cards: they verify what stays, spec/permissions.md §4) only
         let live = sim.hub(s).map(|h| h.store().live_ids(&old).unwrap_or_default()).unwrap_or_default();
-        let kept = |ak: &str| ct::is_role_class(ak) || matches!(ak, "created.0" | "node.0" | "reach.0" | "seen.0" | "keys.0");
+        let kept = |ak: &str| ct::is_role_class(ak) || matches!(ak, "created.0" | "node.0" | "reach.0" | "keys.0");
         let mut content = 0;
         for ((l, b), (c, parts)) in &sim.known {
             if *l != old || !live.contains(b) {

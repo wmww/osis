@@ -42,7 +42,7 @@ pub fn open(dir: &Path, peers: Vec<Address>, wake: Arc<dyn Fn() + Send + Sync>) 
 }
 
 /// The aspects that are the system's, not the user's: no view accounts for them, raw hides them.
-pub const SYSTEM: [&str; 10] = ["created.0", "group.0", "groups.0", "roles.0", "keys.0", "secrets.0", "label.0", "reach.0", "seen.0", "node.0"];
+pub const SYSTEM: [&str; 9] = ["created.0", "group.0", "groups.0", "roles.0", "keys.0", "secrets.0", "label.0", "reach.0", "node.0"];
 
 /// The registry of what a Data knows: its facets and view types.
 pub use crate::view::registry::Registry;

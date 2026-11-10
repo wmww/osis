@@ -232,20 +232,16 @@ pub(crate) struct Work {
     pub unopened: BTreeSet<BlobId>,
     /// Commit entries judged invalid or not judged yet, with their authors.
     pub unjudged: BTreeMap<CommitId, Tid>,
-    /// Other nodes' heartbeats under the label.
-    pub beats: BTreeMap<Tid, BTreeSet<(osis_base::Ts, CommitId)>>,
-    /// Nodes of `beats` `repair_suspects` has yet to read, and those `reseal` has: a heartbeat
-    /// touched since, or (repair) one reporting a suspect. O(new beats) a pass, not O(nodes).
-    pub beats_repair: BTreeSet<Tid>,
-    pub beats_reseal: BTreeSet<Tid>,
     /// Other nodes' card commits under the label (`stale_card` reads their author's roster).
     pub cards: BTreeSet<CommitId>,
     /// The last pass left something only another pass finds out about (`Left`), or the label's
     /// own records were touched or a wait woken since: passes at its next resync.
     pub again: bool,
     /// When time alone next wants a pass (corrected wall ms, as the due times it comes from;
-    /// `SyncEngine::schedule_pass`). 0: at the next resync.
-    pub pass_at: u64,
+    /// `SyncEngine::schedule_pass`): `Some(0)` at the next resync, none never.
+    pub pass_at: Option<u64>,
+    /// When `pass_at` was set (corrected wall ms): a clock now before it went back.
+    pub scheduled: u64,
 }
 
 impl Work {
@@ -261,10 +257,10 @@ impl Work {
         !self.touched.full && !self.again && self.unopened.is_empty() && self.waits.held_back.is_empty() && self.unsettled.is_empty()
     }
 
-    /// Whether a resync at `now` (corrected wall ms) passes this label. A `pass_at` further off
-    /// than one is ever set: the clock went back.
+    /// Whether a resync at `now` (corrected wall ms) passes this label: also once when the clock
+    /// went back since `pass_at` was set (it was set at a later time).
     pub fn resync_due(&self, now: u64) -> bool {
-        !self.quiet() || self.pass_at <= now || self.pass_at - now > osis_base::format::HEARTBEAT_MIN_INTERVAL_MS
+        !self.quiet() || self.pass_at.is_some_and(|t| t <= now) || now < self.scheduled
     }
 
     /// Whether changes `t` wake a verdict waiting here (`prepare`): the next resync judges it.
@@ -579,7 +575,6 @@ impl SyncEngine {
         w.snaps.clear();
         w.unopened.clear();
         w.unjudged.clear();
-        w.beats.clear();
         w.cards.clear();
         let cs: BTreeSet<CommitId> = self.state.label_commits(l).collect();
         let bs: BTreeSet<BlobId> = self.state.of_kind(l, Kind::TAG_UNKNOWN).into_iter().collect();
@@ -588,7 +583,7 @@ impl SyncEngine {
 
     /// Brings the aggregates of `w` up to date for commits `cs` and blobs `bs`.
     fn aggregate(&mut self, g: &Tid, l: &LabelId, w: &mut Work, cs: &BTreeSet<CommitId>, bs: &BTreeSet<BlobId>) {
-        // cards and heartbeats are written by the node itself
+        // cards are written by the node itself
         let me = self.engine.tid();
         for c in cs {
             let entries: Vec<Vec<usize>> = self.state.entries_of(l, c).filter_map(|(_, e)| if let Kind::Commit { parts, .. } = &e.kind { Some(parts.clone()) } else { None }).collect();
@@ -619,18 +614,6 @@ impl SyncEngine {
                 w.cards.insert(*c);
             } else {
                 w.cards.remove(c);
-            }
-            if h.author != me && h.aspects.iter().any(|x| x.ak.as_str() == "seen.0" && x.tid == h.author) {
-                let set = w.beats.entry(h.author).or_default();
-                set.retain(|(_, x)| x != c);
-                if !blobs.is_empty() {
-                    set.insert((h.ts, *c));
-                }
-                if set.is_empty() {
-                    w.beats.remove(&h.author);
-                }
-                w.beats_repair.insert(h.author);
-                w.beats_reseal.insert(h.author);
             }
         }
         if bs.is_empty() {

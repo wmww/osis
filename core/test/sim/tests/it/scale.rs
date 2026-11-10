@@ -68,13 +68,13 @@ fn chat_of(m: usize) -> (World, usize, Osis, Vec<Osis>, Tid, Vec<Tid>) {
 
 // spec: none (costs, spec/requirements.md Scale): a post in a chat of many re-derives nothing at
 // any node: no `secrets.0` decoded, no held-actors view, no departures walked, no head keys
-// derived, no holder decoded, no re-seal scan, no heartbeat read. So a post's cost per node reads
+// derived, no holder decoded, no re-seal scan. So a post's cost per node reads
 // nothing per member, kicked member or not.
 #[test]
 fn post_reads_nothing_per_member() {
     let (mut w, _, a, members, c, tids) = chat_of(5);
     let check = |n: &BTreeMap<&'static str, u64>, when: &str| {
-        for k in ["secrets: decode", "held actors", "departures: collect", "head keys: derive", "holders named: read", "reseal: scan", "heartbeat: read", "reexamine: read pending"] {
+        for k in ["secrets: decode", "held actors", "departures: collect", "head keys: derive", "holders named: read", "reseal: scan", "reexamine: read pending"] {
             assert_eq!(n.get(k).copied().unwrap_or(0), 0, "{k} {when}: {n:?}");
         }
     };
@@ -228,9 +228,8 @@ fn label_costs_do_not_grow_with_labels() {
     assert!(large.2.label_reads <= small.2.label_reads + 8, "connect: {} label reads against {}", large.2.label_reads, small.2.label_reads);
 }
 
-// spec/sync.md §6: resyncs of settled, subscribed labels run no pass, however many there are;
-// what time alone wants still comes, for the labels it is due on: a heartbeat interval later,
-// each label passes about once. Counted.
+// spec/sync.md §6: resyncs of settled, subscribed labels run no pass, however many there are, a
+// day on included: only a mark or a due time passes a label. Counted.
 #[test]
 fn idle_labels_pass_only_when_due() {
     const N: usize = 6;
@@ -255,18 +254,15 @@ fn idle_labels_pass_only_when_due() {
     assert_eq!(read(&b, things[0]), Some(Value::Bytes(format!("text {}", N + 1).into_bytes())));
     let idle = counted_work(&[&a, &b], || w.advance(61_000));
     assert_eq!(idle.passes, 0, "resyncs after a write ran passes");
-    // labels at both nodes, each with its heartbeat due once in the interval
+    // a day on, nothing due: no label passes by the clock alone
     let day = counted_work(&[&a, &b], || {
-        w.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 61_000);
+        w.advance(DAY_MS + 61_000);
         w.advance(61_000);
     });
-    assert!(day.passes >= 2 * N as u64, "{} passes a heartbeat interval on", day.passes);
-    let idle = counted_work(&[&a, &b], || {
-        w.advance(61_000);
-        w.advance(61_000);
-    });
-    assert_eq!(idle.passes, 0, "resyncs after the heartbeats ran passes");
+    assert_eq!(day.passes, 0, "a day on, quiet labels passed");
 }
+
+const DAY_MS: u64 = 24 * 3_600_000;
 
 // spec/sync.md §6, spec/permissions.md §3: a grant's `until` is a time only the clock brings: the
 // label it departs from passes then, though nothing else marks it (counted).
@@ -412,8 +408,8 @@ fn add_judges_nothing_per_message() {
     assert_eq!((busy.0, busy.3), (0, 0), "no full pass, no decode");
 }
 
-// spec/sync.md §6: a quiet label's slowest pass stays one heartbeat interval away when the clock
-// goes back: its own `pass_at` and resync do not wait for the clock to catch up (counted).
+// spec/sync.md §6: when the clock goes back, a quiet label passes once at its next resync: its own
+// `pass_at` does not wait for the clock to catch up (counted).
 #[test]
 fn a_clock_gone_back_keeps_a_quiet_labels_bound() {
     const N: usize = 4;
@@ -424,7 +420,7 @@ fn a_clock_gone_back_keeps_a_quiet_labels_bound() {
     w.advance(61_000);
     let idle = counted_work(&[&a, &b], || w.advance(61_000));
     assert_eq!(idle.passes, 0, "quiet before the clock moves");
-    w.clock.set(osis_base::WallMs(w.now() - 10 * osis_base::format::HEARTBEAT_MIN_INTERVAL_MS));
+    w.clock.set(osis_base::WallMs(w.now() - 10 * DAY_MS));
     let back = counted_work(&[&a, &b], || {
         w.advance(61_000);
         w.advance(61_000);
@@ -433,29 +429,4 @@ fn a_clock_gone_back_keeps_a_quiet_labels_bound() {
     w.advance(61_000);
     let idle = counted_work(&[&a, &b], || w.advance(61_000));
     assert_eq!(idle.passes, 0, "quiet again");
-    let day = counted_work(&[&a, &b], || {
-        w.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 61_000);
-        w.advance(61_000);
-    });
-    assert!(day.passes >= 2 * N as u64, "{} passes a heartbeat interval on", day.passes);
-}
-
-// spec/sync.md §6: a heartbeat a pass cannot send is no reason to pass at every resync (a label
-// stranded once keeps that time for good; here, with heartbeats off) (counted).
-#[test]
-fn a_past_heartbeat_leaves_a_label_quiet() {
-    use osis::internals::Internals;
-    let (mut w, a, _, _, _) = labels_world(3);
-    w.advance(310_000);
-    w.advance(61_000);
-    a.sync_engine(|s| s.config_mut().heartbeats = false);
-    for _ in 0..2 {
-        w.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 61_000);
-        w.advance(61_000);
-    }
-    let idle = counted_work(&[&a], || {
-        w.advance(61_000);
-        w.advance(61_000);
-    });
-    assert_eq!(idle.passes, 0, "a past heartbeat passes the label at every resync");
 }

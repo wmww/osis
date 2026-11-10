@@ -11,14 +11,7 @@ impl SyncEngine {
         for id in self.cert_entries(&l, scope) {
             let Some(e) = self.state.entries.get(&(l, id)) else { continue };
             let c = if let Kind::Commit { commit, .. } = &e.kind { Some(*commit) } else { None };
-            let beat = c.and_then(|c| self.engine.header(&c)).is_some_and(|h| is_beat(&h));
-            let prio = if c.is_some_and(|c| self.first.contains(&c)) {
-                0
-            } else if beat {
-                4
-            } else {
-                2
-            };
+            let prio = if c.is_some_and(|c| self.first.contains(&c)) { 0 } else { 2 };
             sends.push(Out { prio, id, fresh: false, of: Some(c.map_or(Touch::Blob(id), Touch::Commit)) });
         }
         sends

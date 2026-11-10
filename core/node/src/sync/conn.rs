@@ -71,7 +71,6 @@ pub(crate) struct LConn {
     pub step_refusals: u32,
     /// What the next pass judges (`work`).
     pub work: work::Work,
-    pub budget: Option<u64>,
     pub last_sync: u64,
     pub path: Vec<Step>,
     /// A hinted open walked to an unverified step: the host's path is checked after the open.

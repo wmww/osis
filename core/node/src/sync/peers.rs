@@ -283,7 +283,7 @@ impl SyncEngine {
 
     /// Co-reader nodes known from their `reach.0`, by dialable key (spec/sync.md §5, §10): node
     /// things other than this one that may read a label this node syncs now. Per label at most
-    /// `SyncConfig.max_peers_per_label`, in total at most `max_peers`, newest heartbeat first.
+    /// `SyncConfig.max_peers_per_label`, in total at most `max_peers`, by node tid.
     /// Cached until the engine's state changes, and at most a minute (edges expire).
     pub fn peers(&mut self) -> Arc<BTreeMap<[u8; 32], Peer>> {
         self.peers_fresh();
@@ -293,17 +293,15 @@ impl SyncEngine {
         let mut reaches = Vec::new();
         for n in self.reach_nodes().values() {
             if let Ok(Some(r)) = self.engine.get_typed(n, &ct::REACH) {
-                let seen = self.engine.get_typed(n, &ct::SEEN).ok().flatten().map(|s| s.ts.0);
-                reaches.push((seen, *n, r));
+                reaches.push((*n, r));
             }
         }
         let mut out: BTreeMap<[u8; 32], Peer> = BTreeMap::new();
         if !reaches.is_empty() {
-            // newest heartbeat first, unknown last
-            reaches.sort_by_key(|x| std::cmp::Reverse(x.0));
+            reaches.sort_by_key(|x| x.0);
             for (g, l) in self.labels() {
                 let mut n_label = 0;
-                for (_, n, r) in &reaches {
+                for (n, r) in &reaches {
                     if n_label >= self.cfg.max_peers_per_label {
                         break;
                     }

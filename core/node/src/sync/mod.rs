@@ -8,7 +8,8 @@
 //! verify the head, download (cursor sync, reconciliation fallback), apply role commits
 //! first, then the pass: re-registration when an admin holds newer epochs (the actor's
 //! role commits the host lacks first, then the step, then the rest), uploads of
-//! must-hold bodies, relays, certificates and heartbeats, deletions of must-not-hold bodies.
+//! must-hold bodies, relays, certificates, deletions of must-not-hold bodies. Stranded and
+//! suspect reports go over connections and inboxes (`reports`).
 
 mod bundle;
 mod conn;
@@ -24,6 +25,7 @@ mod marks;
 mod memory;
 mod open;
 mod pass;
+mod reports;
 pub mod proofs;
 pub mod records;
 mod shared;
@@ -214,11 +216,22 @@ pub struct SyncEngine {
     /// This node's uploads a host refused for the label's cap (code 12), until taken there
     /// or no longer held: a purged body they would carry goes first (spec/sync.md §7).
     pub(crate) capped: BTreeSet<(HostKey, LabelId, osis_base::BlobId)>,
-    /// Stranded heartbeats already answered by a re-seal.
-    pub(crate) resealed: BTreeSet<osis_base::CommitId>,
-    /// Suspect entries of heartbeats already judged for repair (`repair_suspects`): (heartbeat
-    /// commit, thing, aspect). In memory: after a restart each is judged once more.
-    pub(crate) repaired: BTreeSet<(osis_base::CommitId, Tid, osis_base::Ak)>,
+    /// Stranded reports sent (`reports::stranded`): (label, sync key of the step reached,
+    /// recipient). In memory: after a restart each goes once more.
+    pub(crate) stranded_sent: BTreeSet<(LabelId, [u8; 32], reports::To)>,
+    /// Labels this node found itself stranded on (tests).
+    pub(crate) stranded_on: BTreeSet<LabelId>,
+    /// Holders reported stranded, by the actor to re-seal them on, until its labels' complete
+    /// pass (`reseal`).
+    pub(crate) stranded_asks: BTreeMap<Tid, BTreeSet<Tid>>,
+    /// Per (actor, holder) re-sealed on a report, the actor's current read epochs then: the
+    /// same epochs are not boxed to it again. In memory.
+    pub(crate) resealed: BTreeMap<(Tid, Tid), Vec<osis_keys::Epoch>>,
+    /// Suspect lists last sent per (connection, label) (`reports::send_suspects`), the engine
+    /// generation they were taken at, and whether a label joined a shared set since.
+    pub(crate) suspects_sent: BTreeMap<(ConnId, LabelId), Vec<osis_proto::msg::SuspectEntry>>,
+    pub(crate) suspects_gen: Option<u64>,
+    pub(crate) suspects_due: bool,
     /// Per (node reporting, thing, aspect) a repair snapshotted, this node's state digest just after:
     /// the same state does not snapshot again for that node however often its report differs. In
     /// memory: a restart may write one more.
@@ -389,8 +402,13 @@ impl SyncEngine {
             local_work: BTreeMap::new(),
             deposit_seen: BTreeMap::new(),
             capped: BTreeSet::new(),
-            resealed: BTreeSet::new(),
-            repaired: BTreeSet::new(),
+            stranded_sent: BTreeSet::new(),
+            stranded_on: BTreeSet::new(),
+            stranded_asks: BTreeMap::new(),
+            resealed: BTreeMap::new(),
+            suspects_sent: BTreeMap::new(),
+            suspects_gen: None,
+            suspects_due: false,
             repair_state: BTreeMap::new(),
             links_failed: BTreeSet::new(),
             tied: deliver::TiedWork { all: true, ..Default::default() },
@@ -672,6 +690,7 @@ impl SyncEngine {
         self.run_dirty(out)?;
         // after the passes: this step's last sends go first, then what the change ends
         self.shared_changed(out)?;
+        self.send_suspects(out)?;
         self.stream_settle_all(out)?;
         // pushes after the re-judging: nothing of this step goes to a member it ended
         self.stream_push(out)?;
@@ -841,7 +860,7 @@ pub(crate) struct Rotated {
 pub(crate) struct Blocked {
     /// Not to encrypt under: no content, stamp, step or delete.
     pub encrypt: BTreeSet<osis_base::Role>,
-    /// Not even to place certificates, its own role commits or its heartbeat under.
+    /// Not even to place certificates or its own role commits under.
     pub place: BTreeSet<osis_base::Role>,
 }
 

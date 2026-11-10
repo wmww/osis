@@ -119,8 +119,8 @@ pub enum DiagnosticKind {
     /// A local storage condition: a store file or directory readable by others whose mode
     /// could not be tightened (the `osis` file store).
     Storage,
-    /// A heartbeat reported an aspect suspect (spec/permissions.md §4): this node re-snapshotted
-    /// it, or holds the same state (`tids`: the reporting node, the thing; `commit`: the
+    /// A connected peer's suspect list named an aspect (spec/permissions.md §4): this node
+    /// re-snapshotted it, or holds the same state (`tids`: the reporting peer's node, the thing; `commit`: the
     /// snapshot written).
     Repair,
     /// A commit of this node's turned invalid after it was written: a required retention it had

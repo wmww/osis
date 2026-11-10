@@ -1465,7 +1465,7 @@ fn fresh_node_keeps_requests_over_junk_spec_sync_5() {
     assert!(junk.iter().filter(|x| held.contains(x)).count() <= osis_base::format::INBOX_WAITING - real.len());
 }
 
-// spec/sync.md §5, §2: a shared group's label is its own inbox, and its readers' heartbeats are deposits past the cap: its admin keeps them all
+// spec/sync.md §5, §2: a shared group's label is its own inbox, and its readers' card changes are deposits past the cap: its admin keeps them all
 #[test]
 fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     let mut net = Net::bare();
@@ -1504,14 +1504,23 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     net.set_online(a, false);
     let until = net.now() + INBOX_LIFETIME_MS;
     let junk = deposit_junk(&mut net, readers[0], (host, &l), o, 40, until);
-    // what the readers placed since, each heartbeat counted though the next replaces it
+    // what the readers placed since, each card counted though the next replaces it
     let mut placed = std::collections::BTreeSet::new();
-    for _ in 0..3 {
-        net.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 1_000);
-        placed.extend(net.host_ids(host, &l).into_iter().filter(|x| !junk.contains(x) && !before.contains(x)));
+    let mut last = std::collections::BTreeSet::new();
+    for round in 0..3u8 {
+        for (i, r) in readers.iter().enumerate() {
+            let acts = net.sync(*r).publish_reach([round * 16 + i as u8 + 1; 32], vec![]).unwrap();
+            net.actions(*r, acts);
+        }
+        net.advance(70_000);
+        let now: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().filter(|x| !junk.contains(x) && !before.contains(x) && !placed.contains(x)).collect();
+        placed.extend(now.iter().copied());
+        last = now;
     }
     assert!(placed.len() >= osis_base::format::INBOX_WAITING / 3, "readers placed: {}", placed.len());
-    let held: Vec<_> = net.host_ids(host, &l).into_iter().filter(|x| !junk.contains(x)).collect();
+    // each reader's current card (a replaced one goes as replaced, not by the clearing rule)
+    let held: Vec<_> = last.into_iter().collect();
+    assert!(!held.is_empty());
     net.set_online(a, true);
     for _ in 0..4 {
         net.advance(70_000);

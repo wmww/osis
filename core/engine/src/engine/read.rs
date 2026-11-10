@@ -4,7 +4,7 @@
 
 use super::{Core, Engine, records};
 use crate::error::{Error, Result};
-use osis_base::{Ak, CommitId, Role, Tid, Value};
+use osis_base::{Ak, Role, Tid, Value};
 use osis_crdt::Fragment;
 use osis_perm::{At, Edge};
 use osis_schema::RawKey;
@@ -46,20 +46,6 @@ impl Engine {
             _ => self.run(|tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read)))?,
         };
         Ok(v)
-    }
-
-    /// What held commit `c`'s own part on `(tid, ak)` reads, alone (not the aspect's joined
-    /// state): `None` when not held. A heartbeat is read per commit (spec/permissions.md §4).
-    pub fn part_value(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Value>> {
-        let (c, tid, ak) = (*c, *tid, ak.clone());
-        let Some(ai) = self.core.ix.commits.get(&c).and_then(|m| m.aspect(&tid, &ak).filter(|ai| m.holds(*ai))) else { return Ok(None) };
-        self.run(|tx| {
-            let mut st: Option<Fragment> = None;
-            if let Some(f) = crate::apply::held_fragment(tx, &c, ai)? {
-                st.get_or_insert_default().join(f);
-            }
-            Ok(st.as_ref().and_then(Fragment::read))
-        })
     }
 
     /// `path` with its map keys in the form the state holds them (a large one as its link,

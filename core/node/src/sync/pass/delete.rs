@@ -12,8 +12,8 @@ impl SyncEngine {
     /// as `deletable` says
     /// (a live body only with a carrier, a covering snapshot asked for meanwhile, even when its
     /// bytes are gone), an expired one outright; any other entry whose bytes this node no longer
-    /// holds serves nothing and goes, one past its prefix's expiry goes outright (a heartbeat's
-    /// chunk, an inbox blob); chunks of dropped deltas go, and the blobs a gone certificate copy
+    /// holds serves nothing and goes, one past its prefix's expiry goes outright (an inbox
+    /// blob); chunks of dropped deltas go, and the blobs a gone certificate copy
     /// linked. Removed entries are tombstoned (`State::remove_entry`), expired ones not. What
     /// waits goes into `left`.
     pub(super) fn local_deletions(&mut self, at: &At, bodies: &[Body], scope: &Scope, left: &mut Left) -> Result<()> {
@@ -242,12 +242,12 @@ impl SyncEngine {
                 if settled && self.stale_card(at, commit, &h, opened) {
                     return Ok(Some((Hold::MustNot(Why::Outside), false, aspects)));
                 }
-                // other certificates (role-class, node cards, heartbeats, creation records of
+                // other certificates (role-class, node cards, creation records of
                 // things outside the closure) are not ours to judge; by this entry's parts: a
                 // creation record's commit usually writes more (a group's first placement, a
                 // thing's first value)
                 let closure = self.engine.closure(g);
-                let card = opened.iter().filter_map(|ai| h.aspects.get(*ai)).all(|a| matches!(a.ak.as_str(), "keys.0" | "node.0" | "reach.0" | "seen.0") || a.ak.as_str() == "created.0" && !closure.contains(&a.tid));
+                let card = opened.iter().filter_map(|ai| h.aspects.get(*ai)).all(|a| matches!(a.ak.as_str(), "keys.0" | "node.0" | "reach.0") || a.ak.as_str() == "created.0" && !closure.contains(&a.tid));
                 if h.kind.is_role() || card {
                     return Ok(None);
                 }

@@ -222,9 +222,9 @@ impl SyncEngine {
         std::mem::take(&mut self.diagnostics)
     }
 
-    /// Whether a stranded heartbeat went under a label (tests).
+    /// Whether this node found itself stranded on a label (tests).
     pub fn stranded_at(&self, l: &LabelId) -> bool {
-        self.state.stranded.contains_key(l)
+        self.stranded_on.contains(l)
     }
 
     /// Entries this node knows under a label (tests).

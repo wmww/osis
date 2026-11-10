@@ -39,7 +39,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Session pings, periodic re-syncs, heartbeats and retries.
+    /// Session pings, periodic re-syncs and retries.
     pub(super) fn timers(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let (now, corrected) = (self.raw_now(), self.now());
         // the clock went back: resyncs count from now, not from a time still ahead
@@ -106,7 +106,7 @@ impl SyncEngine {
             let capped = self.conns.get(&conn).is_some_and(|c| self.capped.range((c.host, label, osis_base::BlobId([0; 32]))..=(c.host, label, osis_base::BlobId([0xff; 32]))).next().is_some());
             if let Some(l) = self.lc_mut(conn, &label) {
                 // subscribed: a pass when something waits for it (`Work::resync_due`: what a pass
-                // left, a heartbeat, a timed bound); unsubscribed, the Sync's end uploads those
+                // left, a timed bound); unsubscribed, the Sync's end uploads those
                 l.last_sync = now;
                 l.dirty |= l.fill.is_some() || l.work.resync_due(corrected) || capped;
             }

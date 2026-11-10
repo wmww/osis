@@ -293,9 +293,11 @@ impl Hub {
                 ServingOutput::PeerError(e) => out.push(HubOutput::Diagnostic(format!("connection {id}: {e}"))),
                 ServingOutput::StoreError(e) => out.push(HubOutput::Diagnostic(e.to_string())),
                 // proving no actor, a host has no shared set: a request of the shared set or the
-                // stream is answered 14 (spec/sync.md §10)
+                // stream is answered 14 (spec/sync.md §10); Stranded and Suspect are node to node
+                // only, 11 (spec/wire.md §11.2)
                 ServingOutput::Peer(m) if m.is_request() => {
-                    let reply = osis_proto::Message::Error { id: m.id(), code: osis_proto::Code::NOT_ADMITTED };
+                    let code = if matches!(*m, osis_proto::Message::Stranded { .. } | osis_proto::Message::Suspect { .. }) { osis_proto::Code::UNSUPPORTED } else { osis_proto::Code::NOT_ADMITTED };
+                    let reply = osis_proto::Message::Error { id: m.id(), code };
                     self.serve(now, id, ServingInput::Peer(Box::new(reply)), out);
                 }
                 // a host serves no client port (its sessions answer those kinds Error 11)

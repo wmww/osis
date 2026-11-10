@@ -286,14 +286,16 @@ fn refused_step_uploads_still_spec_sync_5() {
     assert_ne!(net.read(c, t), Some(s("after")), "nothing new readable to the removed reader");
 }
 
-// spec/sync.md §5 (re-registration, upload order), spec/permissions.md §3-§4 (stranded
-// heartbeat): an admin rotating out a holder issues a child step at the host after uploading
-// the rotation commit; the remaining writer follows; the removed holder's open walks to the new
-// step, its claim is refused and it places a stranded heartbeat by deposit.
-// spec/permissions.md §4 (stranded heartbeat), spec/crypto.md §4 (removed holder)
+// spec/sync.md §5 (re-registration, upload order), spec/permissions.md §3-§4 (stranded): an
+// admin rotating out a holder issues a child step at the host after uploading the rotation
+// commit; the remaining writer follows; the removed holder's open walks to the new step, its
+// claim is refused and it sends a stranded notice to the admin's inbox, which re-seals nobody:
+// it is no current holder (spec/crypto.md §4, removed holder).
 #[test]
 fn reregistration_after_rotation_spec_sync_5() {
     let mut net = Net::new();
+    // the admin's inbox is at the host
+    net.home_at_hosts = true;
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
@@ -318,18 +320,20 @@ fn reregistration_after_rotation_spec_sync_5() {
     net.write(b, t, "from b");
     net.run();
     assert_eq!(net.read(a, t), Some(s("from b")), "the writer stamps under the new step");
-    // the removed holder comes back: walked to the new step, claim refused, stranded heartbeat
+    // the removed holder comes back: walked to the new step, claim refused, stranded
     let n_before = net.host_ids(host, &l).len();
     net.blocked_peers.extend([(a, c), (b, c)]);
     net.set_online(c, true);
     net.advance(10_000);
     assert_eq!(net.read(c, t), Some(s("before")), "nothing new readable");
-    assert!(net.host_ids(host, &l).len() > n_before, "a stranded heartbeat was deposited");
-    net.run();
-    // a heartbeat is the node's own write
-    let ctn = net.node_tid(c);
-    let seen = net.engine(a).get_typed(&ctn, &ct::SEEN).unwrap();
-    assert!(seen.is_some_and(|x| x.stranded), "co-holders read the stranded heartbeat");
+    assert!(net.sync(c).stranded_at(&l), "stranded");
+    assert_eq!(net.host_ids(host, &l).len(), n_before, "nothing deposited under the label");
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    let diags = net.diagnostics(a);
+    assert!(diags.iter().any(|d| d.contains("re-seal of stranded") && d.contains("not a current holder")), "the admin read the notice and re-sealed nobody: {diags:?}");
 }
 
 /// A record (about 73 KB) with a secret entry on aspect `asp` (a purge-on-replace map) in one

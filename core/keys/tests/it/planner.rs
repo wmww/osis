@@ -7,7 +7,7 @@ use common::*;
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts};
 use osis_crypto::{Epoch, Secret32, label_role_key};
 use osis_keys::{
-    ActorEpochs, Graph, MemoryGraph, PermGraph, WrapEpoch, label_role, lost_access, newer_than_head, reached,
+    ActorEpochs, Graph, MemoryGraph, PermGraph, label_role, lost_access, newer_than_head, reached,
     registered_epoch, registration_epochs, roles_up_to, delete_candidates, delete_key, wrap_epoch,
 };
 use osis_perm::{At, Edge, EdgeOp, RoleCommit, MemoryHeldSet, Timeline};
@@ -105,22 +105,22 @@ fn perm_graph() {
     assert_eq!(reached(&g, p, tid(99)), BTreeSet::from([t, a2]));
 }
 
-// spec/crypto.md §5: wrap under the newest current read epoch held; stranded: the newest held;
+// spec/crypto.md §5: wrap under the newest current read epoch held; stranded: none;
 // a rotation commit under the newest read epoch it supersedes.
 #[test]
 fn wrap_epochs() {
     let mut a = person(0x20);
-    assert_eq!(wrap_epoch(&a.read), WrapEpoch::Current(ep(1, 0x20)));
+    assert_eq!(wrap_epoch(&a.read), Some(ep(1, 0x20)));
     a.read.rotation(ep(2, 5), [ep(1, 0x20)]);
     a.read.set_established(ep(2, 5), osis_keys::Provenance::Fixed);
-    assert_eq!(wrap_epoch(&a.read), WrapEpoch::Stranded(ep(1, 0x20)));
-    assert_eq!(wrap_epoch(&ActorEpochs::default().read), WrapEpoch::None);
+    assert_eq!(wrap_epoch(&a.read), None);
+    assert_eq!(wrap_epoch(&ActorEpochs::default().read), None);
     let pe = person(0x20);
     let mut view = ActorEpochs::derived(&pe, &tid(1));
     let r = osis_keys::rotate(&tid(1), &roles_up_to(Role::Admin), &view, &Default::default(), &[], &osis_keys::Names::default(), &mut rng(1)).unwrap();
     assert_eq!(r.wrap_epoch(), ActorEpochs::derived(&pe, &tid(1)).read.newest());
     view = r.preview(&view).unwrap();
-    assert_eq!(wrap_epoch(&view.read), WrapEpoch::Current(r.rotated[0].epoch));
+    assert_eq!(wrap_epoch(&view.read), Some(r.rotated[0].epoch));
     let w = osis_keys::rotate(&tid(1), &set(&[Role::Write]), &view, &Default::default(), &[], &osis_keys::Names::default(), &mut rng(2)).unwrap();
     assert_eq!(w.wrap_epoch(), None);
 }
@@ -204,7 +204,7 @@ fn jumped_base_forks_derive_base_newest() {
         let ds = osis_crypto::thing_role_secret(a.read.secret(&want).unwrap(), Role::Read, &u);
         let de = Epoch::derive(&u, Role::Read, osis_keys::MAX_FREE_N - 1, &ds).unwrap();
         assert_eq!(d.read.newest(), Some(de), "seed {b}");
-        assert_eq!(wrap_epoch(&d.read), WrapEpoch::Current(de), "seed {b}");
+        assert_eq!(wrap_epoch(&d.read), Some(de), "seed {b}");
         // nested: V under plain U carries P's order through U's derived epochs
         let v = tid(12);
         let vs = osis_crypto::thing_role_secret(&ds, Role::Read, &v);

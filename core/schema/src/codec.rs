@@ -278,7 +278,7 @@ pub mod rt {
     }
 }
 
-/// A struct with field IDs and its `Codec`: `codec_struct! { pub struct Seen { 0 ts: WallMs, 1 stranded: bool } }`.
+/// A struct with field IDs and its `Codec`: `codec_struct! { pub struct Reach { 0 dialable: [u8; 32], 1 items: Vec<String> } }`.
 /// Type parameters must be `Codec`.
 #[macro_export]
 macro_rules! codec_struct {

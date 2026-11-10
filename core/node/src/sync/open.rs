@@ -1,7 +1,7 @@
 //! Opening a label at a host (spec/sync.md §2, §5): the sync key of the head, else the newest
 //! recorded step this node holds the key of; a superseded key or a claim answered with the next
 //! step is a walk, each step verified under its parent's delete key; a host lacking the label
-//! gets the recorded path registered; no key left to try places a stranded heartbeat. An opened head
+//! gets the recorded path registered; no key left to try reports it stranded (`reports`). An opened head
 //! not recorded in `label.0` is checked against the host's path.
 
 use super::{ConnId, LConn, Phase, SyncEngine};
@@ -207,7 +207,6 @@ impl SyncEngine {
             registering: None,
             step_retry: 0,
             step_refusals: 0,
-            budget: None,
             last_sync: 0,
             path: Vec::new(),
             walk: None,

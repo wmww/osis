@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Certificates and heartbeats, pages and lazy chunks, reconciliation, inbox blobs through a
+//! Certificates, suspect reports, pages and lazy chunks, reconciliation, inbox blobs through a
 //! host (spec/sync.md §3, §6; spec/permissions.md §4).
 
 use crate::net;
@@ -28,9 +28,9 @@ fn commits_under(net: &mut Net, n: usize, l: &osis_base::LabelId) -> Vec<(osis_b
 }
 
 // spec/permissions.md §4, spec/sync.md §3, §5: every node placing under a label puts its node
-// card and heartbeat there, a reader by deposit; co-holders apply them.
+// card there, a reader by deposit; co-holders apply it.
 #[test]
-fn certificates_and_heartbeats_spec_permissions_4() {
+fn certificates_spec_permissions_4() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -45,10 +45,7 @@ fn certificates_and_heartbeats_spec_permissions_4() {
     let under = commits_under(&mut net, a, &l);
     let by_r: Vec<&BTreeSet<String>> = under.iter().filter(|(_, au, _)| *au == rt).map(|(_, _, a)| a).collect();
     assert!(by_r.iter().any(|a| a.contains("node.0")), "the reader's node card: {under:?}");
-    assert!(by_r.iter().any(|a| a.contains("seen.0")), "the reader's heartbeat");
-    let seen = net.engine(a).get_typed(&rt, &ct::SEEN).unwrap().unwrap();
-    assert!(!seen.stranded);
-    // the writer promoted the reader's deposited card (re-uploaded stamped); never a heartbeat
+    // the writer promoted the reader's deposited card (re-uploaded stamped)
     let entries = net.sync(a).entries(&l);
     let store = net.hosts[host].hub.store();
     let mut card = 0;
@@ -59,15 +56,13 @@ fn certificates_and_heartbeats_spec_permissions_4() {
             continue;
         }
         let stamped = osis_proto::LabelStore::entry(store, &l, &id).unwrap().unwrap().stamp.is_some();
-        if aks.contains("seen.0") {
-            assert!(!stamped, "heartbeats are never promoted");
-        } else if aks.contains("node.0") {
+        if aks.contains("node.0") {
             assert!(stamped, "the card was promoted");
             card += 1;
         }
     }
     assert!(card > 0);
-    // a heartbeat at most once per interval
+    // a quiet label places nothing more
     let n = net.host_ids(host, &l).len();
     net.advance(60_000);
     assert_eq!(net.host_ids(host, &l).len(), n);
@@ -651,26 +646,6 @@ fn grant_by_inbox_reads_earlier_content_spec_crypto_4() {
     net.trace(&[a, b]);
     assert!(net.engine(b).pending().is_empty(), "the grant applied: {:?}", net.engine(b).pending());
     assert_eq!(net.read(b, t), Some(s("before bob")));
-}
-
-// spec/crdt.md §9, §4.7; spec/permissions.md §4: a heartbeat writes `seen.0` whole, so the
-// expiry of an earlier heartbeat takes no field of a later one.
-#[test]
-fn heartbeat_outlives_earlier_spec_permissions_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let r = net.node(2, &[host]);
-    let _g = net.group(a, &[(r, Role::Read)], &[host]);
-    net.run();
-    let at = net.node_tid(a);
-    // a second heartbeat shortly before the first one's expiry (two days), which then passes
-    // within the interval (no third heartbeat yet)
-    net.advance(44 * 3_600_000);
-    net.advance(5 * 3_600_000);
-    let seen = net.engine(a).get_typed(&at, &ct::SEEN).unwrap().unwrap();
-    assert!(!seen.stranded);
-    assert!(net.sync(a).take_diagnostics().iter().all(|d| !d.contains("missing field")));
 }
 
 /// Seeded pseudo-random bytes.
@@ -1637,7 +1612,7 @@ fn flip_after_drop_only_a_reader_holds_it_lasts_to_the_next_write_spec_sync_7() 
     net.set_online(c, true);
     net.run();
     for _ in 0..3 {
-        net.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 60_000);
+        net.advance(24 * 3_600_000);
     }
     assert_eq!(net.engine(c).get(&t, &gone).unwrap(), Some(s("v1")), "kept at the reader");
     assert_eq!(net.engine(a).get(&t, &gone).unwrap(), None, "dropped at the writer");
@@ -1649,30 +1624,64 @@ fn flip_after_drop_only_a_reader_holds_it_lasts_to_the_next_write_spec_sync_7() 
     assert_eq!(net.engine(c).get(&t, &gone).unwrap(), Some(s("next")));
 }
 
-// spec/sync.md §7 (repair, one snapshot per state): a report no snapshot can settle (order seed
-// 5288: a reader's digest that never agrees) costs a writer one snapshot, not one per heartbeat.
-#[test]
-fn unsettled_suspect_report_snapshots_once_spec_sync_7() {
+/// Writer `b` and reader `c` of a group `a` administers, at a host, `b` dialable: `c` dials it,
+/// and they share the group's label (spec/sync.md §10).
+fn suspect_world() -> (Net, [usize; 3], osis_base::Tid, osis_base::LabelId) {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
     let c = net.node(3, &[host]);
+    crate::peers::reach_ed(&mut net, b);
     let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
+    net.run();
+    let l = net.label(a);
+    (net, [a, b, c], g, l)
+}
+
+/// `from`'s suspect list for `l` on its connection to `to`, sent by hand (a hand peer's message).
+fn report(net: &mut Net, from: usize, to: usize, l: osis_base::LabelId, entries: Vec<osis_proto::msg::SuspectEntry>) {
+    let (conn, ..) = net.peer_conns(from).into_iter().find(|x| x.1 == to).expect("connected");
+    let theirs = net.peer_of(from, conn).unwrap().1;
+    assert!(net.sync(to).shared_members(theirs).contains(&l), "the label is shared");
+    net.inject(from, conn, &osis_proto::Message::Suspect { id: osis_proto::msg::NODE_IDS | 0x7000, label: l, entries });
+    net.run();
+}
+
+// spec/permissions.md §4 (Suspect list), spec/sync.md §7: a reader's flagged aspect reaches a
+// writer it is connected to as a Suspect message, once while its flags stay as they are, and the
+// writer judges it (no host in between); a writer's snapshot for a differing state:
+// `unsettled_suspect_report_snapshots_once_spec_sync_7`.
+#[test]
+fn suspect_list_goes_over_a_connection_spec_permissions_4() {
+    let (mut net, [a, b, c], g, _) = suspect_world();
+    let t = net.item(a, g, g, "v1");
+    net.run();
+    let w = net.write(a, t, "v2");
+    net.run();
+    let reg = Ak::new(REG.ak()).unwrap();
+    assert_eq!(net.peer_sent(c, 31), 0, "nothing flagged, nothing sent");
+    net.engine(c).flag_suspect(&t, &reg, osis_node::retention::suspect::Why::PendingExpiry, &[(w, 0)]).unwrap();
+    net.tick(1_000);
+    net.run();
+    for _ in 0..3 {
+        net.advance(61_000);
+    }
+    assert_eq!(net.peer_sent(c, 31), 1, "c sent its list once");
+    let diags = net.diagnostics(b);
+    assert!(diags.iter().any(|d| d.contains("Repair") && d.contains(&format!("suspect {t} {reg}")) && d.contains("same state here")), "{diags:?}");
+}
+
+// spec/sync.md §7 (repair, one snapshot per state): a report no snapshot can settle (order seed
+// 5288: a reader's digest that never agrees) costs a writer one snapshot, not one per list.
+#[test]
+fn unsettled_suspect_report_snapshots_once_spec_sync_7() {
+    let (mut net, [a, b, c], g, l) = suspect_world();
     let t = net.item(a, g, g, "v1");
     net.run();
     let reg = Ak::new(REG.ak()).unwrap();
-    // c's heartbeat commit, written by hand just before one is due: its next pass places it (a
-    // commit within the interval is reused, `heartbeat_commit`)
     for _ in 0..3 {
-        net.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS - 60_000);
-        let me = net.engine(c).tid();
-        let ts = osis_base::WallMs(net.now());
-        let mut m = Mutation::new();
-        let suspect = [ct::Suspect { thing: t, ak: reg.as_str().to_string(), digest: [9; 16] }].into();
-        m.replace(me, &ct::SEEN, &ct::Seen { ts, stranded: false, suspect }).unwrap();
-        net.engine(c).commit(m).unwrap().unwrap();
-        net.advance(120_000);
+        report(&mut net, c, b, l, vec![osis_proto::msg::SuspectEntry { thing: t, ak: reg.clone(), digest: [9; 16] }]);
     }
     let diags = net.diagnostics(b);
     assert_eq!(diags.iter().filter(|d| d.contains("re-snapshotted")).count(), 1, "{diags:?}");
@@ -1682,32 +1691,34 @@ fn unsettled_suspect_report_snapshots_once_spec_sync_7() {
 // spec/sync.md §7: a writer holding no state of the aspect writes nothing for a report on it.
 #[test]
 fn suspect_report_on_no_state_writes_nothing_spec_sync_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
+    let (mut net, [a, b, c], g, l) = suspect_world();
     let t = net.item(a, g, g, "v1");
     net.run();
     let gone = Ak::new(GONE.ak()).unwrap();
-    net.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS - 60_000);
-    let me = net.engine(c).tid();
-    let ts = osis_base::WallMs(net.now());
-    let mut m = Mutation::new();
-    let suspect = [ct::Suspect { thing: t, ak: gone.as_str().to_string(), digest: [9; 16] }].into();
-    m.replace(me, &ct::SEEN, &ct::Seen { ts, stranded: false, suspect }).unwrap();
-    net.engine(c).commit(m).unwrap().unwrap();
-    net.advance(120_000);
+    report(&mut net, c, b, l, vec![osis_proto::msg::SuspectEntry { thing: t, ak: gone.clone(), digest: [9; 16] }]);
     assert!(net.diagnostics(b).iter().any(|d| d.contains("no state here")));
     assert!(!net.engine(b).core.ix.by_aspect.contains_key(&(t, gone)));
 }
 
+// spec/permissions.md §4 (Suspect list: to a peer it shares the label with): a list for a label
+// the connection does not share repairs nothing.
+#[test]
+fn suspect_report_outside_the_shared_set_is_ignored_spec_permissions_4() {
+    let (mut net, [a, b, c], g, _) = suspect_world();
+    let t = net.item(a, g, g, "v1");
+    net.run();
+    let reg = Ak::new(REG.ak()).unwrap();
+    let (conn, ..) = net.peer_conns(c).into_iter().find(|x| x.1 == b).expect("connected");
+    net.inject(c, conn, &osis_proto::Message::Suspect { id: osis_proto::msg::NODE_IDS | 0x7000, label: osis_base::LabelId([0x44; 16]), entries: vec![osis_proto::msg::SuspectEntry { thing: t, ak: reg, digest: [9; 16] }] });
+    net.run();
+    assert!(!net.diagnostics(b).iter().any(|d| d.contains("Repair")));
+}
+
 // spec/permissions.md §4: a pass with no current read secret places nothing and marks nothing:
 // `c` learns of a rotation it has no box for before its first pass; once re-sealed, its node card
-// and heartbeat land under the label.
+// lands under the label.
 #[test]
-fn card_and_beat_wait_for_a_wrap_spec_permissions_4() {
+fn card_waits_for_a_wrap_spec_permissions_4() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -1738,7 +1749,7 @@ fn card_and_beat_wait_for_a_wrap_spec_permissions_4() {
     let acts = net.sync(c).place_certificate(&g, &own, &ais).unwrap();
     net.actions(c, acts);
     assert_eq!(copies(&mut net), before, "nothing wraps it");
-    // a rotation boxing c, before any heartbeat interval has passed since the pass above
+    // a rotation boxing c
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (tc, Role::Read)]);
     let rot = rotation(e, g, &rs, 78, false);
@@ -1752,6 +1763,5 @@ fn card_and_beat_wait_for_a_wrap_spec_permissions_4() {
     assert!(net.engine(c).wrap_secret(&g, None).unwrap().is_some(), "re-sealed");
     let under = commits_under(&mut net, a, &l);
     assert!(under.iter().any(|(_, au, aks)| *au == tn && aks.contains("node.0")), "c's card: {under:?}");
-    assert!(net.engine(a).get_typed(&tn, &ct::SEEN).unwrap().is_some(), "c's heartbeat");
 }
 

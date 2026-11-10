@@ -24,16 +24,16 @@ fn core_schema_parses_spec_data_model_9() {
     let aks: Vec<&str> = s.aspects.keys().map(String::as_str).collect();
     for ak in [
         "tid.0", "aspects.0", "created.0", "roles.0", "keys.0", "secrets.0", "label.0", "node.0",
-        "reach.0", "seen.0", "host^.0", "clients^.0", "group.0", "groups.0", "name.0", "body.0", "tag.0", "addenda.0", "account.0", "listing.0",
+        "reach.0", "host^.0", "clients^.0", "group.0", "groups.0", "name.0", "body.0", "tag.0", "addenda.0", "account.0", "listing.0",
     ] {
         assert!(aks.contains(&ak), "{ak}");
     }
-    assert_eq!(aks.len(), 22);
+    assert_eq!(aks.len(), 21);
     let holders = &s.aspects["roles.0"];
     assert_eq!(holders.retention.by, PurgeBy::Admin);
     assert_eq!(holders.retention.history, None);
     assert_eq!(s.aspects["created.0"].retention.by, PurgeBy::Admin);
-    assert_eq!(s.aspects["seen.0"].retention, DefaultRetention::default());
+    assert_eq!(s.aspects["node.0"].retention, DefaultRetention::default());
     assert!(s.aspects["groups.0"].flags.contains(&Flag::Synthetic));
 }
 

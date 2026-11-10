@@ -2,16 +2,16 @@
 //! spec/permissions.md §4): re-registration first when this admin holds newer epochs than the
 //! head (the actor's role commits the host lacks, then the step; the rest after it is
 //! registered), then uploads of must-hold bodies (role commits first) or relays of stamped ones,
-//! this node's certificates and node card, heartbeats, and deletions of must-not-hold bodies
-//! (`delete`: by the label delete key or a delete key, carriers first).
+//! this node's certificates and node card, and deletions of must-not-hold bodies (`delete`: by
+//! the label delete key or a delete key, carriers first), then re-seals (`reseal`).
 
-mod beats;
 mod bodies;
 mod certs;
 mod delete;
 mod inbox;
 mod promote;
 mod register;
+mod reseal;
 
 use super::state::{BlobRec, Entry, Kind, HostKey, Touch};
 use super::work::{Inputs, Left, Note, Scope, Work};
@@ -19,7 +19,6 @@ use super::{ConnId, SyncEngine};
 use crate::error::Result;
 use crate::labeling::{Body, BodyCtx, Facts, HeadKeys, Hold, Parts, Why, classify, delete_item, may_delete};
 use osis_commit::Kind as CKind;
-use osis_base::format::HEARTBEAT_MIN_INTERVAL_MS;
 use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, WallMs};
 use osis_proto::Command;
 use osis_schema::core_types as ct;
@@ -54,8 +53,7 @@ const SETTLE_MS: u64 = 30_000;
 /// others skip it: writers online together otherwise each sent a copy (spec/sync.md §6, §7).
 const RELAY_MIN_MS: u64 = 5_000;
 
-/// An entry to send, by priority (role and certificates before content before
-/// heartbeats).
+/// An entry to send, by priority (role and certificates before content).
 struct Out {
     prio: u8,
     id: BlobId,
@@ -153,11 +151,6 @@ struct At<'a> {
 /// A deposited entry due for promotion: (blob, entry, commit, its parts).
 type Deposit = (BlobId, Entry, CommitId, Vec<usize>);
 
-/// Whether a commit writes a heartbeat (`seen.0`).
-fn is_beat(h: &osis_commit::Header) -> bool {
-    h.aspects.iter().any(|a| a.ak.as_str() == "seen.0")
-}
-
 pub(super) fn is_snapshot(k: CKind) -> bool {
     matches!(k, CKind::ContentSnapshot | CKind::RoleSnapshot)
 }
@@ -169,7 +162,7 @@ pub(super) fn is_card(ak: &str) -> bool {
 
 /// What stays under a replaced label besides role-class commits (spec/sync.md §2).
 pub(super) fn kept_when_replaced(ak: &str) -> bool {
-    ct::is_role_class(ak) || matches!(ak, "created.0" | "node.0" | "reach.0" | "seen.0")
+    ct::is_role_class(ak) || matches!(ak, "created.0" | "node.0" | "reach.0")
 }
 
 /// Every part of `h` on the aspects `keep` admits.
@@ -190,18 +183,15 @@ impl SyncEngine {
         r
     }
 
-    /// When time alone next wants a pass of `l` (`Work::pass_at`): a due time of the work set, the
-    /// roster's clock horizon, the next heartbeat. With none of those, one heartbeat interval from
-    /// now: what no trigger names, should anything, waits no longer than a heartbeat does.
+    /// When time alone next wants a pass of `l` (`Work::pass_at`): a due time of the work set or
+    /// the roster's clock horizon; with neither, none (a label passes when marked).
     fn schedule_pass(&mut self, conn: Option<ConnId>, l: LabelId) {
         let now = self.now();
-        // not one past due: the pass just run had its chance (a label no more stranded, no budget)
-        let beats: Vec<u64> = self.state.beats.get(&l).into_iter().chain(self.state.stranded.get(&l)).map(|t| t.saturating_add(HEARTBEAT_MIN_INTERVAL_MS)).filter(|t| *t > now).collect();
         let full_passes = self.cfg.full_passes;
         let Some(w) = self.work_mut(conn, l) else { return };
-        let due = w.waits.due.keys().next().into_iter().chain(w.until.as_ref()).copied();
-        let t = due.chain(beats).fold(now.saturating_add(HEARTBEAT_MIN_INTERVAL_MS), u64::min);
-        w.pass_at = if full_passes { 0 } else { t };
+        let t = w.waits.due.keys().next().into_iter().chain(w.until.as_ref()).copied().min();
+        w.pass_at = if full_passes { Some(0) } else { t };
+        w.scheduled = now;
     }
 
     /// `pass`, at a host.
@@ -311,8 +301,6 @@ impl SyncEngine {
         if !replaced && (keys.is_writer() || keys.deposit.is_some()) && read_ok {
             let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
             self.certificates(&g, l, &authors)?;
-            let tight = self.lc(conn, &l).and_then(|x| x.budget).is_some_and(|b| b < self.cfg.tight_budget);
-            self.heartbeat(&g, l, keys, tight, &ctx.closure)?;
         }
         if keys.write.is_some() && read_ok {
             self.complete_chains(conn, host, &g, l)?;
@@ -336,11 +324,7 @@ impl SyncEngine {
         if quiet && settled {
             self.retire_at(host, &g, l)?;
         }
-        self.reseal(&g, l, w)?;
-        // a snapshot from a state not whole yet repairs nothing
-        if !self.filling(&l) {
-            self.repair_suspects(w)?;
-        }
+        self.reseal(&g, l)?;
         w.leave(left);
         Ok(())
     }
@@ -566,8 +550,7 @@ impl SyncEngine {
     /// The keys of `head` this node may use, and whether it may place under read: never encrypt
     /// under a blocked epoch, so rotate first (flows' cascade), else hold back what the blocked
     /// roles would sign or wrap. Read blocked for encrypting but not for placing leaves only
-    /// certificates, the node's own role commits and its heartbeat to place (no write key:
-    /// nothing fresh else).
+    /// certificates and the node's own role commits to place (no write key: nothing fresh else).
     fn usable_keys(&mut self, g: &Tid, index: u64, head: &osis_label::Step) -> Result<(HeadKeys, bool)> {
         let mut keys = self.engine.head_keys(g, index, head)?;
         let still = self.uncovered(g, true)?;
@@ -590,8 +573,8 @@ impl SyncEngine {
     /// host in `label.0`) it leaves this node's store as a pass at a host would leave that host:
     /// a newer established epoch first issues a child step of the head when that head is
     /// recorded in `label.0` (recorded there, so the served head moves; `reregister` without the
-    /// upload), and the pass goes on under it; the heartbeat is placed, deposits promoted, and
-    /// after the deletions re-seals.
+    /// upload), and the pass goes on under it; deposits are promoted, and after the deletions
+    /// re-seals.
     fn local_pass(&mut self, g: Tid, l: LabelId, index: u64, head: &osis_label::Step, host: bool) -> Result<()> {
         let _s = crate::costs::span("pass: local");
         let (mut keys, read_ok) = self.usable_keys(&g, index, head)?;
@@ -626,13 +609,10 @@ impl SyncEngine {
         let ours: BTreeSet<BlobId> = sends.iter().filter(|o| o.fresh).map(|o| o.id).collect();
         let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
         self.certificates(&g, l, &authors)?;
-        if host {
-            self.heartbeat(&g, l, keys, false, &ctx.closure)?;
-            if let Some(wk) = &keys.write {
-                self.local_promote(&g, l, wk, &scope, &ours, &mut left)?;
-            }
+        if host && let Some(wk) = &keys.write {
+            self.local_promote(&g, l, wk, &scope, &ours, &mut left)?;
         }
-        // what the placements just made touched (certificate copies, the heartbeat)
+        // what the placements just made touched (certificate copies)
         self.pull(None, &g, l, &mut scope, w);
         if let Some(wk) = &keys.write {
             // stamped as an upload would be (another node's deposits: `local_promote`)
@@ -654,8 +634,7 @@ impl SyncEngine {
         self.local_deletions(&p.at(&snaps, settled), &bodies, &scope, &mut left)?;
         if host {
             // a node serving the label alone decides here: nobody runs a pass at a host for it
-            self.reseal(&g, l, w)?;
-            self.repair_suspects(w)?;
+            self.reseal(&g, l)?;
         }
         w.leave(left);
         Ok(())

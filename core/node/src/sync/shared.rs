@@ -185,6 +185,11 @@ impl Shared {
         self.members.is_empty()
     }
 
+    /// The members of S here.
+    pub(crate) fn member_ids(&self) -> impl Iterator<Item = LabelId> + '_ {
+        self.members.keys().copied()
+    }
+
     fn side(&self, by_listener: bool) -> Side<'_> {
         (by_listener, &self.key, &self.dialer, &self.listener)
     }
@@ -394,6 +399,15 @@ impl SyncEngine {
         } else {
             self.serve(conn, ServingInput::Peer(Box::new(m)), out)
         }
+    }
+
+    /// A request of this node to `conn`'s peer outside the shared set's own exchange (Stranded,
+    /// Suspect), with an id of the set's: answered Ok, nothing waits on the answer. None goes
+    /// on a connection keeping no shared set.
+    pub(super) fn shared_request(&mut self, conn: ConnId, make: impl FnOnce(u32) -> Message, out: &mut Vec<Action>) -> Result<()> {
+        let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
+        let id = s.next();
+        self.shared_send(conn, make(id), out)
     }
 
     /// A shared-set message from `conn`'s peer. A connection with no shared set answers refused
@@ -674,6 +688,7 @@ impl SyncEngine {
         self.local_dirty |= self.records.shared.values().all(Shared::is_empty);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         s.members.insert(l, Member { class, value });
+        self.suspects_due = true;
         self.stream_join(conn, l, out)?;
         self.stream_source_gained(conn, &l, out)
     }

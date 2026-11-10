@@ -147,7 +147,7 @@ Terms in this section depend on each other; each is defined once, under its bold
   - e has a box to a holder actor M naming an epoch of M blocked at the node (the box's sealing was encrypting under it), whatever the node's role on A or M;
   - the node may rotate r, and e has a stale box (Holder actors, below) or a box to a holder whose grant on A is keyless (Holder actors).
   - An account's epoch is blocked at a node of the account (it holds the epoch's seed) when a departure from the account's devices actor (a node's removal) is ordered (spec/permissions.md §5.1) after the rotation minting the epoch (the first epoch: after the account's creation): the removed node held its seed.
-  - Placing a commit as a certificate, or the node's own role commit or heartbeat, under A's labels (spec/sync.md §5) is held back by the box clause only through actors whose r the node may rotate: a node that may not still places the keysets and revokes that tell their rotators.
+  - Placing a commit as a certificate, or the node's own role commit, under A's labels (spec/sync.md §5) is held back by the box clause only through actors whose r the node may rotate: a node that may not still places the keysets and revokes that tell their rotators.
   - Limit: a node does not judge an epoch whose secret it lacks; it seals a holder actor M at such a keyset whatever departures from M it knows, and a party removed from M opens what it so seals until M's knowing keyset reaches it (Holder actors).
   - Limit: leaving a holder actor out of a rotation records nothing: a writer of A that does not hold the epochs the box clause followed re-seals M where a knowing node left it out, and the removed party opens what the knowing node wrote under that epoch.
   - Exception: the wrap of a rotation commit itself (§5).
@@ -197,7 +197,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
 - A wrap names no epoch: a reader tries the read secrets it holds, newest first.
 - **Who wraps under what**:
   - An uploader wraps under the newest current read epoch whose secret it holds (§4).
-  - A node holding no current secret places nothing: it is stranded (spec/permissions.md §4; target, issues/account-signing.md step 8).
+  - A node holding no current secret places nothing: it is stranded (spec/permissions.md §4).
   - Exception: a commit carrying boxes of a read epoch e (a rotation) is wrapped, under every label whose read secret derives from that actor's, under the read epoch e supersedes whose secret the rotator holds with the greatest n, ties by lowest nonce (n, not order n, §4).
 - Label role keys for a host are those of the epochs its current step registers (spec/sync.md §5).
 - **Inbox blob** (spec/sync.md §3): a role commit (header and deltas) about the recipient, plus the label IDs and host addresses of the things it names, sealed to the recipient actor's read-role KEM key. Bytes: spec/wire.md §9.

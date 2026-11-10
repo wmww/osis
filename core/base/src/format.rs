@@ -100,15 +100,6 @@ pub const INBOX_LIFETIME_MS: u64 = 90 * DAY_MS;
 pub const INBOX_WAITING: usize = 32;
 /// See `INBOX_WAITING`, in bytes: that many recommended budget entries of 32 KiB.
 pub const INBOX_WAITING_BYTES: usize = INBOX_WAITING * 32 * 1024;
-/// Heartbeat bounds (spec/wire.md §2, spec/permissions.md §4). fixed.
-pub const HEARTBEAT_MIN_LIFETIME_MS: u64 = DAY_MS;
-/// See `HEARTBEAT_MIN_LIFETIME_MS`. fixed.
-pub const HEARTBEAT_MAX_LIFETIME_MS: u64 = 14 * DAY_MS;
-/// See `HEARTBEAT_MIN_LIFETIME_MS`. fixed.
-pub const HEARTBEAT_MIN_INTERVAL_MS: u64 = 6 * HOUR_MS;
-/// Most suspect aspects one heartbeat reports (spec/wire.md §2, spec/permissions.md §4); the
-/// rest wait for those to clear. fixed.
-pub const MAX_HEARTBEAT_SUSPECTS: usize = 32;
 /// Most first-admin links from a thing up its record chain to its key actor
 /// (spec/wire.md §2, spec/permissions.md §1). fixed.
 pub const MAX_CHAIN_DEPTH: usize = 64;

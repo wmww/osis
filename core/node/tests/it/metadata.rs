@@ -1,8 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! What a host learns (spec/requirements.md Data a node cannot read; notes/unreadable-data.md): real engines sync scripted scenarios through an osis-host hub, then the
 //! hub's stored bytes are searched for every secret and identifier of the scenario, blob sizes
-//! checked against Padmé, labels checked for shared bytes, claim sets for reader counts and
-//! heartbeats for content beyond `seen.0`.
+//! checked against Padmé, labels checked for shared bytes, claim sets for reader counts.
 
 use crate::net;
 use net::*;
@@ -47,7 +46,7 @@ const MARK_A: &str = "plaintext-marker-alpha-7f3a91";
 const MARK_B: &str = "plaintext-marker-beta-c4e82d";
 const MAP_KEY: &str = "map-key-marker-5b0e66";
 
-/// Admin a, writer b, reader c in one group at one host: values, a map key, heartbeats.
+/// Admin a, writer b, reader c in one group at one host: values, a map key.
 fn scenario() -> (Net, usize, [usize; 3], Tid, Tid) {
     let mut net = Net::new();
     let host = net.add_host();
@@ -63,7 +62,7 @@ fn scenario() -> (Net, usize, [usize; 3], Tid, Tid) {
     m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s(MAP_KEY))], op: Op::Set(s("v")) }).unwrap();
     net.engine(a).commit(m).unwrap();
     net.run();
-    net.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 60_000);
+    net.advance(60_000);
     net.run();
     assert_eq!(net.read(c, t), Some(s(MARK_B)));
     (net, host, [a, b, c], g, t)
@@ -82,7 +81,7 @@ fn peer_that_cannot_read_stores_nothing_forbidden() {
         ("group tid".into(), g.as_bytes().to_vec()),
         ("item tid".into(), t.as_bytes().to_vec()),
     ];
-    for ak in ["t:reg.0", "t:big.0", "roles.0", "secrets.0", "keys.0", "label.0", "seen.0", "node.0", "reach.0", "group.0", "created.0"] {
+    for ak in ["t:reg.0", "t:big.0", "roles.0", "secrets.0", "keys.0", "label.0", "node.0", "reach.0", "group.0", "created.0"] {
         needles.push((format!("ak {ak}"), ak.as_bytes().to_vec()));
     }
     for n in nodes {
@@ -198,31 +197,5 @@ fn claim_sets_hide_reader_counts() {
     let mut sorted = s5.clone();
     sorted.sort();
     assert_ne!(s5, sorted, "claims in random order");
-}
-
-// spec/permissions.md §4 (heartbeat): a heartbeat commit writes `seen.0` on its own node thing
-// and nothing else, expiring within the heartbeat bounds
-#[test]
-fn heartbeats_carry_only_seen() {
-    let (mut net, _, [a, b, c], _, _) = scenario();
-    let mut authors = BTreeSet::new();
-    let e = net.engine(a);
-    for id in e.commit_ids() {
-        let h = e.header(&id).unwrap();
-        if !h.aspects.iter().any(|x| x.ak.as_str() == "seen.0") {
-            continue;
-        }
-        authors.insert(h.author);
-        assert_eq!(h.kind, osis_commit::Kind::Content);
-        assert!(h.chunks.is_empty() && h.purge.is_empty() && h.undoes.is_none() && h.frontier.is_none());
-        let ts = h.ts.wall_ms().0;
-        for x in &h.aspects {
-            assert_eq!((x.ak.as_str(), x.tid), ("seen.0", h.author), "a heartbeat carried more than seen.0");
-            let exp = h.expires.unwrap();
-            assert!(exp >= ts + osis_base::format::HEARTBEAT_MIN_LIFETIME_MS && exp <= ts + osis_base::format::HEARTBEAT_MAX_LIFETIME_MS);
-        }
-    }
-    let want: BTreeSet<Tid> = [b, c].iter().map(|n| net.node_tid(*n)).collect();
-    assert!(want.is_subset(&authors), "heartbeats of b and c seen by a");
 }
 

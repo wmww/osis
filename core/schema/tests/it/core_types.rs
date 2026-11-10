@@ -49,7 +49,6 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("label", "label.0", LABEL.encode(&labels)),
         ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into() })),
         ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], items: vec!["https://relay.example".into()], lan_secret: [28; 32], account: None })),
-        ("seen", "seen.0", SEEN.encode(&Seen { ts: WallMs(1_700_000_000_000), stranded: false, suspect: Default::default() })),
         ("host", "host^.0", HOST.encode(&Host {
             listen: vec!["quic://0.0.0.0:7400".into()],
             admit: Admit::Open,
@@ -86,7 +85,6 @@ fn core_aspects_round_trip_spec_data_model_9() {
             "label.0" => LABEL.encode(&LABEL.decode(v).unwrap()),
             "node.0" => NODE.encode(&NODE.decode(v).unwrap()),
             "reach.0" => REACH.encode(&REACH.decode(v).unwrap()),
-            "seen.0" => SEEN.encode(&SEEN.decode(v).unwrap()),
             "host^.0" => HOST.encode(&HOST.decode(v).unwrap()),
             "clients^.0" => CLIENTS.encode(&CLIENTS.decode(v).unwrap()),
             "group.0" => GROUP.encode(&GROUP.decode(v).unwrap()),
@@ -142,7 +140,7 @@ fn key_defaults_and_identity_spec_commits_5() {
     }
     assert!(!is_role_class("group.0"));
     assert_eq!(CREATED.defaults().retention, osis_schema::Retention { by: PurgeBy::Admin, history: None });
-    assert_eq!(SEEN.defaults(), AspectDefaults::default());
+    assert_eq!(NODE.defaults(), AspectDefaults::default());
     assert!(GROUP.schema().is_some_and(Schema::declares_core));
     let untyped = Ak::new("x:y.0").unwrap();
     assert!(untyped.schema().is_none());

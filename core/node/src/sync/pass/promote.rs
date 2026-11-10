@@ -5,7 +5,7 @@ use super::*;
 
 impl SyncEngine {
     /// Deposited commit entries at `host` a writer may promote now: past this node's wait
-    /// (`RELAY_MIN_MS`: a co-writer may promote it first), not in flight, never a heartbeat.
+    /// (`RELAY_MIN_MS`: a co-writer may promote it first), not in flight.
     pub(super) fn due_entries(&mut self, conn: ConnId, host: HostKey, l: LabelId) -> Vec<(BlobId, Entry)> {
         let ids: Vec<(BlobId, Entry)> = self.state.deposited_at(&host, &l).into_iter().filter_map(|b| self.state.entries.get(&(l, b)).map(|e| (b, e.clone()))).collect();
         let raw = self.raw_now();
@@ -30,13 +30,12 @@ impl SyncEngine {
         out
     }
 
-    /// The commit deposits among `due_entries`, but a heartbeat: due for promotion.
+    /// The commit deposits among `due_entries`: due for promotion.
     pub(super) fn due_deposits(&mut self, conn: ConnId, host: HostKey, l: LabelId) -> Vec<Deposit> {
         let mut out = Vec::new();
         for (id, e) in self.due_entries(conn, host, l) {
             let Kind::Commit { commit, parts, .. } = &e.kind else { continue };
-            let Some(h) = self.engine.header(commit) else { continue };
-            if is_beat(&h) {
+            if self.engine.header(commit).is_none() {
                 continue;
             }
             let (commit, parts) = (*commit, parts.clone());
@@ -45,14 +44,10 @@ impl SyncEngine {
         out
     }
 
-    /// Whether entry `b` under `l`, deposited, is one a writer may yet promote: a commit, never a
-    /// heartbeat (`due_deposits`).
+    /// Whether entry `b` under `l`, deposited, is one a writer may yet promote: a commit
+    /// (`due_deposits`).
     pub(super) fn promotable(&self, l: &LabelId, b: &BlobId) -> bool {
-        match self.state.entries.get(&(*l, *b)).map(|e| &e.kind) {
-            Some(Kind::Commit { commit, .. }) => !self.engine.header(commit).is_some_and(|h| is_beat(&h)),
-            Some(Kind::Parked(_)) => true,
-            _ => false,
-        }
+        matches!(self.state.entries.get(&(*l, *b)).map(|e| &e.kind), Some(Kind::Commit { .. } | Kind::Parked(_)))
     }
 
     /// A promoter completes the chain it holds (spec/sync.md §5; spec/permissions.md §4): for
@@ -100,7 +95,7 @@ impl SyncEngine {
     /// A writer serving `l` with no host promotes the deposits there as at a host
     /// (`complete_chains`, `promote`; spec/sync.md §5): another node's deposited commit it
     /// applied, past the relay wait since it arrived (a co-writer or the author may place the
-    /// chain first), never a heartbeat, gets the missing parts of its author's chain placed as
+    /// chain first), gets the missing parts of its author's chain placed as
     /// this node's certificate copies, then its stamp; one whose chain it cannot complete
     /// stays a deposit and is judged again next pass (one not applied yet, once applied). Of
     /// the entries `scope` names, but `ours` (this pass's placements).
@@ -109,7 +104,7 @@ impl SyncEngine {
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             let Kind::Commit { commit, parts, .. } = &e.kind else { continue };
             let (commit, parts) = (*commit, parts.clone());
-            if e.stamp.is_some() || e.cert || self.own(&commit) || self.engine.header(&commit).is_none_or(|h| is_beat(&h)) {
+            if e.stamp.is_some() || e.cert || self.own(&commit) || self.engine.header(&commit).is_none() {
                 continue;
             }
             if let Some(t) = self.relay_at(l, &commit) {
@@ -131,7 +126,7 @@ impl SyncEngine {
 
     /// A writer re-uploads stamped the deposited entries it verified (spec/sync.md §5): applied
     /// commits whose author's chain is under the label (`complete_chains` placed what it held
-    /// of it), never a heartbeat; per host (a blob may be deposited at several).
+    /// of it); per host (a blob may be deposited at several).
     pub(super) fn promote(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
         for (id, e, c, parts) in self.due_deposits(conn, host, l) {
             if uploads.iter().any(|u| osis_label::blob_id(&u.blob) == id) || !self.chain_missing(Some(host), g, l, &c, &parts)?.is_some_and(|m| m.is_empty()) {

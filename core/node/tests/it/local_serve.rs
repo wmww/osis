@@ -447,7 +447,7 @@ fn local_inbox_blob_expires_spec_sync_5() {
 // spec/sync.md §5 (a writer promotes a deposit it verified, completing the author's chain first;
 // co-reader peer: served as a host's sync would leave it): a reader that dials the writer serving
 // a label with no host (the writer cannot dial back: no `reach.0`) deposits its node card; the
-// writer's local pass stamps it as a promotion would, never the reader's heartbeat.
+// writer's local pass stamps it as a promotion would.
 #[test]
 fn deposit_promoted_on_local_label_spec_sync_5() {
     let mut net = Net::new();
@@ -471,9 +471,7 @@ fn deposit_promoted_on_local_label_spec_sync_5() {
         }
         let stamped = net.sync(a).entry_meta(&l, &id).unwrap().1.is_some();
         let aks: Vec<&str> = h.aspects.iter().map(|x| x.ak.as_str()).collect();
-        if aks.contains(&"seen.0") {
-            assert!(!stamped, "heartbeats are never promoted");
-        } else if aks.contains(&"node.0") {
+        if aks.contains(&"node.0") {
             assert!(stamped, "the card was promoted");
             card += 1;
         }
@@ -567,7 +565,7 @@ fn expired_link_at_no_host_finalized_spec_permissions_7() {
 // peer it was received from passes vacuously, once the peer wait after the role change is
 // over), spec/sync.md §5 (co-reader peer): admin `a` serves g's label alone; admin `b`'s rotation
 // leaves reader `c` out and `b` goes away. `a` re-seals `c` after `peer_pass_wait_ms`, not
-// before, and only once (`c`'s stranded heartbeat included), and the box reaches `c`. When `a`
+// before, and only once (`c`'s stranded report included), and the box reaches `c`. When `a`
 // restarts after b's rotation reached it, the wait counts from the restart: it hears its peers
 // out before deciding.
 #[test]

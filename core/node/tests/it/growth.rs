@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 // one small register n and 10n times, no membership change, stores the same bytes and rows at
 // the writer, a reader and their host once tombstones have aged out; the writer keeps its newest
 // body and the one before. Each step ends with a month of no writes. A further month with no
-// writes at all holds steady too: the idle heartbeats leave nothing either.
+// writes at all holds steady too.
 #[test]
 fn single_writer_replace_grows_nothing() {
     let mut net = Net::new();
@@ -37,7 +37,7 @@ fn single_writer_replace_grows_nothing() {
         net.advance(32 * 24 * 3600 * 1000);
         (census(net, a), census(net, b), host(net), net.engine(a).held_bodies(&t, &reg))
     };
-    // the heartbeats settle first: a node holds its last few, each until its next two expire
+    // what setting up left settles first
     at(&mut net, 0, 0);
     at(&mut net, 0, 0);
     let (a1, b1, h1, _) = at(&mut net, 0, 20);

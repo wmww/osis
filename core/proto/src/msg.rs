@@ -184,6 +184,11 @@ pub enum Message {
     Prove { id: Id, proofs: Vec<crate::ActorProof> },
     /// The listener's answer: its own proofs, none unless the dialer proved a known actor.
     Proved { id: Id, proofs: Vec<crate::ActorProof> },
+    /// The sender is stranded on this label (spec/permissions.md §4): node to node, answered Ok.
+    Stranded { id: Id, label: LabelId },
+    /// Aspects of things in the label's closure the sender flags suspect (spec/permissions.md
+    /// §4): node to node, answered Ok.
+    Suspect { id: Id, label: LabelId, entries: Vec<SuspectEntry> },
     /// The dialer's records for this peer (spec/sync.md §10, Pair key); at most one per
     /// connection, after Proved.
     Resume { id: Id, nonce: [u8; 32], tags: Vec<[u8; 32]> },
@@ -217,6 +222,21 @@ pub enum Message {
     Sub { id: Id, max_reply: u64, filter: Value },
     Unsub { id: Id, sub: Id },
     Notify { sub: Id, payload: crate::api::Payload },
+}
+
+/// A suspect entry (spec/wire.md §11.2 Suspect): the aspect and its keyed state digest.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SuspectEntry {
+    pub thing: osis_base::Tid,
+    pub ak: osis_base::Ak,
+    pub digest: [u8; 16],
+}
+
+impl SuspectEntry {
+    /// Its encoded size within a Suspect message, an upper bound.
+    pub fn size(&self) -> usize {
+        self.ak.as_str().len() + 48
+    }
 }
 
 /// A member entering a Pull's stream, from its own cursor or (none) the start.
@@ -334,7 +354,7 @@ pub fn peek_head(body: &[u8]) -> Option<(u64, Id)> {
 
 /// Kinds that are requests (spec/wire.md §11.2: those with `->`).
 pub fn is_request_kind(kind: u64) -> bool {
-    matches!(kind, 2 | 4 | 7 | 8 | 10 | 12 | 14 | 15 | 17 | 19 | 21 | 22 | 24 | 25 | 27 | 28 | 32 | 36 | 37 | 38 | 40 | 41)
+    matches!(kind, 2 | 4 | 7 | 8 | 10 | 12 | 14 | 15 | 17 | 19 | 21 | 22 | 24 | 25 | 27 | 28 | 30 | 31 | 32 | 36 | 37 | 38 | 40 | 41)
 }
 
 impl OfferItem {
@@ -401,6 +421,8 @@ impl Message {
             Sub { .. } => 27,
             Unsub { .. } => 28,
             Notify { .. } => 29,
+            Stranded { .. } => 30,
+            Suspect { .. } => 31,
             Prove { .. } => 32,
             Proved { .. } => 33,
             Resume { .. } => 34,
@@ -421,19 +443,20 @@ impl Message {
     pub fn id(&self) -> Id {
         use Message::*;
         match self {
-            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Open { id, .. } | Opened { id, .. } | Step { id, .. } | Register { id, .. } | Path { id, .. } | PathReply { id, .. } | Upload { id, .. } | Status { id, .. } | Deposit { id, .. } | Budget { id, .. } | Delete { id, .. } | Sync { id, .. } | SyncReply { id, .. } | Reconcile { id, .. } | ReconcileReply { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Subscribe { id, .. } | Unsubscribe { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id,
+            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Open { id, .. } | Opened { id, .. } | Step { id, .. } | Register { id, .. } | Path { id, .. } | PathReply { id, .. } | Upload { id, .. } | Status { id, .. } | Deposit { id, .. } | Budget { id, .. } | Delete { id, .. } | Sync { id, .. } | SyncReply { id, .. } | Reconcile { id, .. } | ReconcileReply { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Subscribe { id, .. } | Unsubscribe { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Suspect { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id,
             Pull(p) => p.id,
             PullReply(r) => r.id,
             Push { .. } | Notify { .. } | Stream(_) | Applied { .. } => 0,
         }
     }
 
-    /// Whether the node answers this itself rather than a session: the shared set's and the
-    /// stream's messages (spec/wire.md §11.2 Beacons to NoRecord, Pull to Applied), and any
+    /// Whether the node answers this itself rather than a session: Stranded and Suspect, the
+    /// shared set's and the stream's messages (spec/wire.md §11.2 Beacons to NoRecord, Pull to
+    /// Applied), and any
     /// message with an id in the node's range (`NODE_IDS`): a peer node's own request (a Fetch
     /// of the stream's bodies) or the answer to one of this node's.
     pub fn for_node(&self) -> bool {
-        matches!(self.kind(), 36..=44) || self.id() & NODE_IDS != 0
+        matches!(self.kind(), 30 | 31 | 36..=44) || self.id() & NODE_IDS != 0
     }
 
     /// Whether this kind is a request the other side answers.
@@ -482,6 +505,8 @@ impl Message {
             ],
             M::Subscribe { labels, .. } | M::Unsubscribe { labels, .. } => vec![k, id, Value::List(labels.iter().map(l).collect())],
             M::Push { label, events, cursor } => vec![k, id, l(label), events_value(events), cursor_value(cursor)],
+            M::Stranded { label, .. } => vec![k, id, l(label)],
+            M::Suspect { label, entries, .. } => vec![k, id, l(label), Value::List(entries.iter().map(|e| Value::List(vec![Value::Tid(e.thing), Value::Str(e.ak.as_str().to_string()), Value::bytes(&e.digest)])).collect())],
             M::Prove { proofs, .. } | M::Proved { proofs, .. } => vec![k, id, Value::List(proofs.iter().map(crate::ActorProof::to_value).collect())],
             M::Resume { nonce, tags, .. } => vec![k, id, Value::bytes(nonce), Value::List(tags.iter().map(|t| Value::bytes(t)).collect())],
             M::Resumed { nonce, tag, .. } => vec![k, id, Value::bytes(nonce), Value::opt(tag.as_ref().map(|t| Value::bytes(t)))],
@@ -532,8 +557,8 @@ impl Message {
 fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
     let n = match kind {
         1 | 40 => 2,
-        0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 | 26 | 28 | 32 | 33 | 37 | 38 | 39 | 44 => 3,
-        4 | 5 | 8 | 9 | 10 | 13 | 14 | 17 | 24 | 27 | 29 | 34 | 35 => 4,
+        0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 | 26 | 28 | 30 | 32 | 33 | 37 | 38 | 39 | 44 => 3,
+        4 | 5 | 8 | 9 | 10 | 13 | 14 | 17 | 24 | 27 | 29 | 31 | 34 | 35 => 4,
         7 | 19 | 23 | 25 => 5,
         12 => 6,
         16 => 7,
@@ -610,6 +635,8 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         27 => Message::Sub { id, max_reply: max_reply(&mut f)?, filter: f.next()? },
         28 => Message::Unsub { id, sub: sub_id(&mut f)? },
         29 => Message::Notify { sub: sub_id(&mut f)?, payload: crate::api::Payload::from_value(f.next()?)? },
+        30 => Message::Stranded { id, label: label(&mut f)? },
+        31 => Message::Suspect { id, label: label(&mut f)?, entries: f.list(1, usize::MAX, "suspect entries")?.into_iter().map(suspect_entry).collect::<Result<_, _>>()? },
         32 => Message::Prove { id, proofs: proofs(f.list(0, crate::prove::MAX_PROOFS, "proofs")?)? },
         33 => Message::Proved { id, proofs: proofs(f.list(0, crate::prove::MAX_PROOFS, "proofs")?)? },
         34 => Message::Resume { id, nonce: f.fixed()?, tags: f.list(0, crate::prove::MAX_RESUME_TAGS, "tags")?.into_iter().map(|v| dec::fixed(v, "tag")).collect::<Result<_, _>>()? },
@@ -677,6 +704,15 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
     };
     f.end()?;
     Ok(msg)
+}
+
+/// `suspect := [thing, ak, digest]`.
+fn suspect_entry(v: Value) -> Result<SuspectEntry, Error> {
+    let mut g = Fields::exact(v, 3, "suspect")?;
+    let Value::Tid(thing) = g.next()? else { return Err(Error::Malformed("suspect thing")) };
+    let Value::Str(ak) = g.next()? else { return Err(Error::Malformed("suspect ak")) };
+    let ak = osis_base::Ak::new(&ak).map_err(|_| Error::Malformed("suspect ak"))?;
+    Ok(SuspectEntry { thing, ak, digest: g.fixed()? })
 }
 
 /// A reply allowance: `SMALL_REPLY..=REPLY_BUDGET` (spec/wire.md §11.2).

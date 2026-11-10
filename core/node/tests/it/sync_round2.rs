@@ -185,8 +185,8 @@ fn deposits_in_flight_not_resent_spec_sync_5() {
     let t = net.item(a, g, g, "v1");
     net.run();
     net.sent_kinds.clear();
-    // a heartbeat is due (no tick: nothing else moves)
-    net.clock.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 1);
+    // the reader's card changes: its next pass deposits it (no tick: nothing else moves)
+    crate::peers::reach_ed(&mut net, r);
     // a burst of commits reaching the reader, a pass after each, nothing answered in between
     for i in 0..5 {
         let c = net.write(a, t, &format!("w{i}"));

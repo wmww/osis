@@ -5,26 +5,10 @@ use crate::epoch::{ActorEpochs, ROLES, RoleEpochs};
 use osis_base::Role;
 use osis_crypto::{Epoch, LabelRole, Secret32, VerifyingKey, label_role_key};
 
-/// The wrap epoch for an upload.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WrapEpoch {
-    /// The newest current (established) read epoch whose secret is held.
-    Current(Epoch),
-    /// No current secret held: only the stranded heartbeat is placed, under the newest
-    /// established secret held (spec/permissions.md §4).
-    Stranded(Epoch),
-    /// No established read secret at all.
-    None,
-}
-
-pub fn wrap_epoch(read: &RoleEpochs) -> WrapEpoch {
-    if let Some((e, _)) = read.newest_held() {
-        return WrapEpoch::Current(e);
-    }
-    match read.newest_secret() {
-        Some((e, _)) => WrapEpoch::Stranded(e),
-        None => WrapEpoch::None,
-    }
+/// The wrap epoch for an upload: the newest current (established) read epoch whose secret is
+/// held. None: the node is stranded and places nothing (spec/crypto.md §5).
+pub fn wrap_epoch(read: &RoleEpochs) -> Option<Epoch> {
+    read.newest_held().map(|(e, _)| e)
 }
 
 /// The label role a group role secret derives.

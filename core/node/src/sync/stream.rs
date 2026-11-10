@@ -313,6 +313,15 @@ impl SyncEngine {
                 }
                 Ok(())
             }
+            Message::Stranded { id, label } => {
+                self.shared_send(conn, Message::Ok { id }, out)?;
+                self.stranded_message(conn, label);
+                Ok(())
+            }
+            Message::Suspect { id, label, entries } => {
+                self.shared_send(conn, Message::Ok { id }, out)?;
+                self.suspect_message(conn, label, entries)
+            }
             Message::Fetch { id, label, max_reply, ids } => self.stream_serve_fetch(conn, id, label, max_reply, ids, out),
             Message::FetchReply { id, items } => self.stream_fetch_reply(conn, id, items, out),
             Message::Error { id, code } => {

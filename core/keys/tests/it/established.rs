@@ -121,7 +121,7 @@ impl World {
 }
 
 // spec/crypto.md §4 (established; history boxes of established secrets only), spec/sync.md §5
-// (register before upload), spec/permissions.md §3–§4 (stranded heartbeat, re-seal); TLC R9: a1
+// (register before upload), spec/permissions.md §3–§4 (stranded, re-seal); TLC R9: a1
 // re-seals a2 at e1 before e1's commit reaches a2. a2 holds e1's secret but not the removal: it
 // boxes e1 nowhere (re-seal, grant, history box), so m1 opens nothing of e1 through a2's fork.
 #[test]

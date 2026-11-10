@@ -425,8 +425,7 @@ impl RoleEpochs {
         self.newest_with(self.held().filter(|(e, _)| self.is_current(e)))
     }
 
-    /// The newest established epoch whose secret is held, current or not (a stranded node's
-    /// heartbeat, spec/permissions.md §4).
+    /// The newest established epoch whose secret is held, current or not.
     pub fn newest_secret(&self) -> Option<(Epoch, &Secret32)> {
         self.newest_with(self.held_established())
     }

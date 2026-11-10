@@ -1082,14 +1082,13 @@ fn a_node_judging_itself_out_claims_as_an_actor_a_held_write_names_spec_sync_5()
 }
 
 // spec/permissions.md §3, §4 (stranded: the node cannot read the label's current epoch by any
-// key it holds, wherever its walk stopped), spec/sync.md §5: X bears a link (reads K through L's
-// static entry) while the sharer grants X's node on K, the grant not reaching it, and K rotates
-// leaving L out. X's walk reaches K's new step with no actor it holds named on K and L's entry
-// gone: no key left to try, no claim tried. It is stranded all the same: its stranded heartbeat
-// makes the sharer re-seal it, and K's label opens again. The rotation keeps the deposit seed
-// and the grant names X's node: the only shape the built heartbeat delivers in (notes/label-access.md
-// Limits); the natural one (an admin's rotation, a grant to X's account) is a step-8 test
-// (issues/account-signing.md).
+// key it holds, wherever its walk stopped; a stranded notice under the admins' inboxes), spec/sync.md
+// §5: X, reading as its account, bears a link (reads K through L's static entry) while the sharer
+// grants X's account on K, the grant not reaching X, and an admin read rotation of K leaves L out
+// and refreshes K's deposit seed. X's walk reaches K's new step with no actor it holds named on K
+// and L's entry gone: no key left to try, no claim tried. It is stranded all the same, with no
+// deposit key of the label and no peer connected: its stranded notice under the sharer's inbox
+// makes the sharer re-seal X's account, and K's label opens again.
 #[test]
 fn walk_out_of_keys_is_stranded_spec_permissions_4() {
     let mut net = Net::new();
@@ -1098,7 +1097,7 @@ fn walk_out_of_keys_is_stranded_spec_permissions_4() {
     let a = net.node(60, &[s0]);
     let x = net.node(61, &[s0]);
     let pa = account(&mut net, a, &home);
-    let xn = net.node_tid(x);
+    let px = account(&mut net, x, &home);
     net.run();
     net.pair(x, a);
     let e = net.engine(a);
@@ -1122,38 +1121,104 @@ fn walk_out_of_keys_is_stranded_spec_permissions_4() {
     }
     let lk = link.k_label;
     let e0 = net.engine(x).epochs(&k).unwrap().read.newest().unwrap();
-    // X away: the sharer grants X's node on K (its delivery lost), and K rotates boxing the
-    // sharer and X's node, not L (a rotation keeping the deposit seed)
+    let head0 = net.host_path(s0, &lk).last().unwrap().keys.deposit;
+    // X away: the sharer grants X's account on K (its delivery lost), and K's admin read
+    // rotation boxes the sharer and X's account, not L, with a fresh deposit seed
     net.set_online(x, false);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-    net.engine(a).grant(&k, &xn, &edge).unwrap();
+    net.engine(a).grant(&k, &px, &edge).unwrap();
     let e = net.engine(a);
-    let rs = recipients_of(e, &[(pa, Role::Admin), (xn, Role::Read)]);
-    rotation(e, k, &rs, 61, false);
+    let rs = recipients_of(e, &[(pa, Role::Admin), (px, Role::Read)]);
+    rotation(e, k, &rs, 61, true);
     for _ in 0..3 {
         net.run();
         net.advance(61_000);
     }
     let e1 = net.engine(a).epochs(&k).unwrap().read.newest().unwrap();
     assert_ne!(e0, e1);
-    assert!(!net.engine(x).roster(&k).contains_key(&xn), "X does not hold its grant");
+    assert_ne!(net.host_path(s0, &lk).last().unwrap().keys.deposit, head0, "the head's deposit key is a new one");
+    assert!(!net.engine(x).roster(&k).contains_key(&px), "X does not hold its grant");
     net.set_online(x, true);
-    for _ in 0..4 {
+    for _ in 0..8 {
         net.run();
         net.advance(61_000);
     }
     assert!(net.sync(x).stranded_at(&lk), "X's walk ran out of keys: stranded");
-    // the sharer's re-seal goes to X's node over a direct connection
-    for _ in 0..4 {
-        for (_, pks) in net.sync(a).take_direct() {
-            for p in pks {
-                let _ = net.engine(x).ingest(&p.bytes, p.blobs);
-            }
-        }
-        net.run();
-        net.advance(61_000);
-    }
+    assert!(net.peer_conns(x).is_empty(), "no peer connected: the notice went by inbox");
     assert_eq!(net.engine(x).epochs(&k).unwrap().read.newest(), Some(e1), "re-sealed: X reads K's new epoch");
     let st = net.sync(x).label_status().into_iter().find(|s| s.label == lk).unwrap();
     assert!(!st.stranded && st.sources == 1, "K's label open again: {st:?}");
+}
+
+/// Commits of node `n`'s that write `g`'s `secrets.0` (rotations, re-seals).
+fn seals_by(net: &mut Net, n: usize, g: osis_base::Tid) -> usize {
+    let e = net.engine(n);
+    let me = e.me();
+    e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.author == me && h.aspects.iter().any(|a| a.tid == g && a.ak.as_str() == "secrets.0"))).count()
+}
+
+/// Admin `a` (dialable) and reader `c` of a group at a host, connected: (net, a, c, g, label, c's
+/// end of the connection).
+fn stranded_pair() -> (Net, usize, usize, osis_base::Tid, osis_base::LabelId, osis_node::sync::ConnId) {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let c = net.node(2, &[host]);
+    crate::peers::reach_ed(&mut net, a);
+    let g = net.group(a, &[(c, Role::Read)], &[host]);
+    net.run();
+    net.advance(61_000);
+    let l = net.label(a);
+    let (conn, ..) = net.peer_conns(c).into_iter().find(|x| x.1 == a).expect("c dialed a");
+    (net, a, c, g, l, conn)
+}
+
+// spec/permissions.md §4 (Stranded message), §3 (re-seal): a Stranded message from a connected
+// peer that proved a current holder makes a node that may rotate re-seal that holder at the end
+// of a complete pass, once at the actor's current epochs, however often it comes.
+#[test]
+fn stranded_message_reseals_the_proved_holder_spec_permissions_4() {
+    let (mut net, a, c, g, l, conn) = stranded_pair();
+    let before = seals_by(&mut net, a, g);
+    for i in 0..3 {
+        net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | (0x7000 + i), label: l });
+        net.run();
+        net.advance(61_000);
+    }
+    assert_eq!(seals_by(&mut net, a, g), before + 1, "one re-seal of c's account");
+    // an unknown label: nothing
+    net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | 0x7100, label: osis_base::LabelId([0x44; 16]) });
+    net.run();
+    assert_eq!(seals_by(&mut net, a, g), before + 1);
+}
+
+// spec/permissions.md §4 (Stranded: to a connected peer that proved an account holding write or
+// above, else an inbox notice): a rotation leaves reader `c` out while it is away; back, stranded
+// at the host, it tells the admin it is connected to over the connection, once per step reached,
+// deposits no notice, and is re-sealed.
+#[test]
+fn stranded_goes_to_a_connected_admin_spec_permissions_4() {
+    let (mut net, a, c, g, l, _) = stranded_pair();
+    net.set_online(c, false);
+    let at = net.tid(a);
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin)]);
+    rotation(e, g, &rs, 41, false);
+    net.run();
+    net.advance(61_000);
+    let inbox = |net: &mut Net| -> usize {
+        let ls: Vec<osis_base::LabelId> = net.sync(a).labels().iter().map(|x| x.1.id).filter(|x| *x != l).collect();
+        ls.iter().map(|x| net.sync(a).entries(x).len()).sum()
+    };
+    let before = inbox(&mut net);
+    let e1 = net.engine(a).epochs(&g).unwrap().read.newest();
+    net.set_online(c, true);
+    for _ in 0..4 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert!(net.sync(c).stranded_at(&l), "stranded");
+    assert_eq!(net.peer_sent(c, 30), 1, "one Stranded message for the step it reached");
+    assert_eq!(inbox(&mut net), before, "no notice under the admin's inbox");
+    assert_eq!(net.engine(c).epochs(&g).unwrap().read.newest(), e1, "re-sealed");
 }

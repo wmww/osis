@@ -1165,7 +1165,7 @@ fn keyset_before_box_reads_only_spec_permissions_4() {
     assert!(held.read.holds_any() && held.read.current().is_empty(), "read epochs, none established");
     assert!(!held.write.holds_any() && !held.admin.holds_any());
     assert!(e.read_secrets(&k).iter().any(|s| held.read.held().any(|(_, x)| x.expose() == s.expose())));
-    assert!(e.wrap_secret(&k, None).unwrap().is_none() && e.stranded_secret(&k).is_none(), "wraps nothing");
+    assert!(e.wrap_secret(&k, None).unwrap().is_none(), "wraps nothing");
     let before = e.core.ix.commits.len();
     assert!(e.ensure_rotated(&k).unwrap().1.is_empty());
     assert!(e.grant(&k, &c, &admin).is_err(), "boxes nothing");

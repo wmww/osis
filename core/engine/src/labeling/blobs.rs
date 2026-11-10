@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use osis_commit::{CommitBlob, Envelope, Section};
 use osis_base::{BlobId, CommitId, LabelId, Role, Tid, WallMs};
 use osis_crypto::{CryptoRngCore, DeleteSecret, Epoch, LabelRole, Secret32, SigningSecret, deposit_key, label_role_key};
-use osis_keys::{ActorEpochs, WrapEpoch};
+use osis_keys::ActorEpochs;
 use osis_label::Step;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
@@ -196,8 +196,8 @@ impl Engine {
     }
 
     /// Seals a body's parts (`b.parts` alone) as a fresh blob of one section under `secret`,
-    /// the read secret the label's wrap goes under (spec/sync.md §3): a certificate copy, a
-    /// heartbeat or a per-label copy (`Body::to_label`), readable by whoever opens the label.
+    /// the read secret the label's wrap goes under (spec/sync.md §3): a certificate copy or a
+    /// per-label copy (`Body::to_label`), readable by whoever opens the label.
     pub fn seal_to(&mut self, b: &Body, class: osis_label::Class, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<Option<Sealed>> {
         let pt = self.body_plaintext(b)?;
         if pt.is_empty() {
@@ -498,7 +498,7 @@ impl Engine {
     /// The read secret a commit is wrapped under at a label of `g` (spec/crypto.md §5): the
     /// newest current read epoch held, except a rotation commit of the actor `g`'s secrets
     /// derive from, which goes under the newest epoch its rotation supersedes. `None`: no
-    /// current secret held (only a stranded heartbeat may be placed).
+    /// current secret held (stranded: nothing is placed).
     pub fn wrap_secret(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>) -> Result<Option<Secret32>> {
         let Some(e) = self.epochs(g) else { return Ok(None) };
         if let Some((c, parts)) = c
@@ -508,10 +508,7 @@ impl Engine {
         {
             return Ok(Some(s.clone()));
         }
-        Ok(match osis_keys::wrap_epoch(&e.read) {
-            WrapEpoch::Current(ep) => e.read.secret(&ep).cloned(),
-            _ => None,
-        })
+        Ok(osis_keys::wrap_epoch(&e.read).and_then(|ep| e.read.secret(&ep).cloned()))
     }
 
     /// Held read secrets of a group, newest first; then those derived from its first admin's (a
@@ -542,16 +539,6 @@ impl Engine {
         let Some(a) = self.core.secret_actor(g) else { return false };
         let Some(h) = self.header(c) else { return false };
         parts.iter().filter_map(|ai| h.aspects.get(*ai)).any(|x| x.tid == a && matches!(x.ak.as_str(), "secrets.0" | "keys.0"))
-    }
-
-    /// The newest established read secret held, current or not (a stranded heartbeat's wrap,
-    /// spec/permissions.md §4).
-    pub fn stranded_secret(&self, g: &Tid) -> Option<Secret32> {
-        let e = self.epochs(g)?;
-        match osis_keys::wrap_epoch(&e.read) {
-            WrapEpoch::Current(ep) | WrapEpoch::Stranded(ep) => e.read.secret(&ep).cloned(),
-            WrapEpoch::None => None,
-        }
     }
 
     /// For a rotation commit of the read role of `g`'s secret actor (its `keys.0` delta writes a

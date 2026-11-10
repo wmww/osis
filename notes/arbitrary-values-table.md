@@ -29,8 +29,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `MAX_DELTA_BARE` 2^18 | R | no content-less runs / a small delta creates unbounded records |
 | `MAX_PAGE_ITEMS` 2^21 | R (validity rule, every durable reader alike; honest worst case about 1.4 x 2^20, notes/crdt.md Page items) | every delta invalid / one blob decodes to GBs |
 | `MAX_RELAY_BLOB` 64 KiB | R | no relay-only blobs / relays as big as blobs |
-| `MAX_DRIFT`, `ROLE_KEEP`, `INBOX_LIFETIME`, `HEARTBEAT_*`, `TOMBSTONE_LIFETIME`, `MAX_CLAIMS`, LAN window | O | sign-off list |
-| `MAX_HEARTBEAT_SUSPECTS` 32 | R | no repair at all / a heartbeat as long as the label's flagged aspects (a deposit, budgeted); past it the newest flags are reported and the rest wait for those to clear (repair a few intervals late, nothing lost: flags stay until repaired) |
+| `MAX_DRIFT`, `ROLE_KEEP`, `INBOX_LIFETIME`, `TOMBSTONE_LIFETIME`, `MAX_CLAIMS`, LAN window | O | sign-off list |
 | `MAX_REQUIRED_ENTRIES` 64 | R | no setting can say anything / `MAX_VALUE_BYTES` of AKs in every node's memory per `required^.0` delta; past it the delta requires nothing, a writer refuses it |
 | `LIST_TREE_DEPTH` 32 (format) | R | levels of a rotation's list tree: a rotator listing more than 2^32 things refuses the rotation (0: one thing per rotation, infinity: unbounded paths); fixed at the largest useful size so a path (1 KiB) shows nothing of how many things a rotator lists, where padding to the actual depth shows its log |
 | `MAX_CHAIN_DEPTH` 64 | R | only key actors / unbounded chain walks; deeper is invalid everywhere alike |
@@ -155,8 +154,8 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `PASS_AGAIN` 8 (sync/mod.rs) | M (past it a marked label waits for the next event, a resync at the latest) | |
 | `RELINK_BACKOFF_MS` 1 h - 7 days | R (a host deleting fresh chunks) | |
 | `sync_now` pings a connection quiet for `retry_ms`, nothing outstanding (`SyncEngine::refresh`) | M (existing knob) | a ping per poll per connection / a dead connection found only by the periodic ping |
-| a quiet label's slowest pass: `HEARTBEAT_MIN_INTERVAL_MS` from its last (`schedule_pass`), no number of its own | M (a trigger missed waits that long; 0: every resync passes every label; infinity: a missed trigger waits for a reconnect) | |
-| `SyncConfig` defaults: `resync_ms` 60 s, `retry_ms` 5 s, `peer_retry_ms` 60 s, `tight_budget` 16, `peer_pass_wait_ms` 5 min, `heartbeat_lifetime_ms` 2 days | M | |
+| a quiet label's slowest pass: none by the clock (`schedule_pass`), infinity chosen (0: every resync passes every label; infinity: a missed trigger waits for a mark or a reconnect) | M | |
+| `SyncConfig` defaults: `resync_ms` 60 s, `retry_ms` 5 s, `peer_retry_ms` 60 s, `peer_pass_wait_ms` 5 min | M | |
 | `SyncConfig` defaults: `max_peers_per_label` 8, `max_peers` 64, `peer_bytes` 64 MiB, `peer_total_bytes` 1 GiB, `unvouched_cap` 2^16, `ephemeral_bytes` 16 MiB (memory held, decoded: `Engine::memory_charge`; 16 MiB is about 4,000 tiny map entries or 7,000 small parts per label, far above cursors and selections, while 0 holds nothing of others and infinity lets a writer fill memory; a commit is decoded part by part only within the room left, each part's pre-decode bound `part_bound` fitting, else refused with a diagnostic) | R | |
 | diagnostics kept 256 | M | |
 

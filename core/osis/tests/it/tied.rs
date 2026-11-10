@@ -792,7 +792,7 @@ fn grant_and_removal_orders_large() {
         w.run();
         for (n, db) in [("alice", &alice), ("eve", &eve), ("carol", &carol), ("bob", &bob), ("dave", &dave)] {
             let tally = w.tally(db);
-            // a heartbeat an hour is all that goes up
+            // next to nothing goes up in an idle hour
             assert!(!tally.contains_key("Delete") && tally.get("Upload").is_none_or(|u| u.0 < 4), "seed {seed}: {n}: {tally:?}");
         }
     }

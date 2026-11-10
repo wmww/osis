@@ -218,7 +218,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Removal under 10 MB upload at 100,000 members (nested rosters) and 100 channels? | yes | yes⁴² |
 | Does a member's lost device or leave cost the next poster the top realm's whole rotation? | no | yes! |
 | Is demoting a mod as cheap as a kick? | yes | no!⁴³ |
-| Does each member's device download every other member's chains, cards and heartbeats under the top realm's label? | no | yes⁴⁴! core r |
+| Does each member's device download every other member's chains and cards under the top realm's label? | no | yes⁴⁴! core r |
 | Kick pre-sync across 100 channels under a minute? | yes | ? |
 | Can a mod mute one member in one channel while they hold the top realm? | yes | opt*⁴⁵ |
 | Can a mod ban one member from one channel while they hold the top realm? | yes | no! |
@@ -254,7 +254,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 - **m** Erasable per-device KEM keys with per-device boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and requirements line 48.
 - **n** History-less grant: a read rotation at the add with earlier secrets sealed per prior holder, no shared history box, chain certificates re-placed (issues/history-less-grant.md); segments (footnote 33) are the fallback without core change.
 - **o** Newest-first fetch of a label: built (spec/sync.md §6); a device that stops fetching: issues/partial-history-fetch.md.
-- **r** Pure readers place nothing under big labels: no chain certificates, node card or heartbeats from a reader unless asked (realms past a few thousand members).
+- **r** Pure readers place nothing under big labels: no chain certificates or node card from a reader unless asked (realms past a few thousand members).
 - **s** Default-off sync: a device holding a realm's secret does not sync the labels of the things the realm holds until the app chooses (today `compute_labels` syncs every label whose secret the node holds).
 
 ## Footnotes
@@ -282,7 +282,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 41. The removal and the top realm's rotation are one commit (2.7 KB per member); each child re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each child to register a step at each serving node; until then the removed member reads ciphertext and can upload.
 42. At 1000: 2.7 MB plus about 11 KB per child, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top realm (100 boxes), then children; estimated.
 43. All three roles rotate on every realm and chat the mod administered, admins only; the ex-mod keeps delete keys until each label is stepped.
-44. Every syncing node places its chain (11.5 KB per account), card (1.5 KB) and four heartbeats a day under each label it reads: about 13 MB once and 2.4 MB a day at 1000; about 1.4 GB and 240 MB a day at 100,000.
+44. Every syncing node places its chain (11.5 KB per account) and card (1.5 KB) under each label it reads: about 13 MB once at 1000; about 1.4 GB at 100,000.
 45. By rights no: a role is the maximum over paths and `until` only ends a grant. Mods write a muted set with a time; honest clients hide and mods purge; a modified client posts on.
 46. Messages on a thing under the chat with an admin grant for the delete role (spec/permissions.md §1): purge without roster or lock; one more rotation per kick.
 47. Admin passes only through admin, and admins of a realm manage its roster; direct per-channel admin grants avoid it at one grant per channel.
@@ -290,7 +290,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 49. Adding a channel is a grant for the realm on the chat, needing admin on the chat and on the realm's layout; a member creates a chat and asks an admin to add it.
 50. The realm's grants are its contents (every member holds them through the realm's inbox copies); names and categories are a chat-app layout aspect on the realm. Channels are not in the realm's group, so nothing of theirs is under its label.
 51. Grant the private channel only to a role realm. Left: its serving nodes see its label, a device-removal frontier head names its tid under public labels (frontier-study format), and a purge across children shows their tids.
-52. Entry counts are drowned by heartbeats and certificates (no kind in the log); a latest-time register per child on the parent, written by posters, is the cheap source.
+52. Entry counts are drowned by certificates (no kind in the log); a latest-time register per child on the parent, written by posters, is the cheap source.
 53. Threads and forum posts are reply chains inside the channel, grouped by the app.
 54. A thing under the realm or holding a grant for it is in the realm; as a member of the realm's group it syncs under the realm's label, one with its own label syncs under that. With plain grants (notes/realms.md open question 1) a writer's removing it from the group only stops the auto-sync; removing it from the realm is an admin's grant removal.
 55. Every thing's role history is kept forever and readable by its holders.

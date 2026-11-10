@@ -215,16 +215,6 @@ codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Reach { 0 dialable: [u8; 32], 1 items: Vec<String>, 2 lan_secret: [u8; 32], 3 account: Option<Tid> }
 }
-codec_struct! {
-    /// `seen.0`: heartbeat (wall ms of the commit's ts), the aspects its node reports suspect.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Seen { 0 ts: WallMs, 1 stranded: bool, 2 suspect: BTreeSet<Suspect> }
-}
-codec_struct! {
-    /// A suspect aspect in a heartbeat: thing, AK, keyed state digest (spec/permissions.md §4).
-    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-    pub struct Suspect { 0 thing: Tid, 1 ak: String, 2 digest: [u8; 16] }
-}
 codec_enum! {
     /// Which groups a serving node takes: `Own`, groups whose record chain reaches the node or its
     /// account and that name its serving address (a group it only reads or administers by a grant is
@@ -421,7 +411,6 @@ pub const ACCOUNT: Aspect<Account> = Aspect::new("account.0", &CORE);
 pub const LISTING: Aspect<Listings> = Aspect::new("listing.0", &CORE);
 pub const NODE: Aspect<NodeInfo> = Aspect::new("node.0", &CORE);
 pub const REACH: Aspect<Reach> = Aspect::new("reach.0", &CORE);
-pub const SEEN: Aspect<Seen> = Aspect::new("seen.0", &CORE);
 pub const HOST: Aspect<Host> = Aspect::new("host^.0", &CORE);
 /// `clients^.0`: by client actor.
 pub const CLIENTS: Aspect<BTreeMap<Tid, Client>> = Aspect::new("clients^.0", &CORE);

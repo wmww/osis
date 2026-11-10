@@ -1183,7 +1183,18 @@ impl SyncEngine {
             }
             return Ok(());
         }
-        let Some((actor, prefix, payload)) = self.open_inbox_as(&l, &bytes) else { return Ok(()) };
+        let Some((actor, prefix, item)) = self.open_inbox_as(&l, &bytes) else { return Ok(()) };
+        let payload = match item {
+            osis_label::Inbox::Payload(p) => p,
+            // a stranded notice carries no commit (spec/permissions.md §4)
+            osis_label::Inbox::Stranded(n) => {
+                self.inbox_opened.insert((l, b), None);
+                e.kind = Kind::Inbox(None);
+                self.state.set_entry(l, b, e);
+                self.stranded_notice(n);
+                return Ok(());
+            }
+        };
         let (pt, things, chain, records) = payload.split();
         let c = osis_commit::CommitBlob::decode(&pt).ok();
         let o = c.as_ref().map(|c| Opened::new(&prefix, c, things.clone()));
@@ -1360,11 +1371,14 @@ impl SyncEngine {
     /// prefix no inbox blob has (an expiry, no commitments: spec/wire.md §9) costs no KEM: a group's
     /// home label is its inbox too, with every chunk of its content under it.
     fn open_inbox(&mut self, l: &LabelId, bytes: &[u8]) -> Option<(osis_label::Prefix, osis_label::InboxPayload)> {
-        self.open_inbox_as(l, bytes).map(|x| (x.1, x.2))
+        match self.open_inbox_as(l, bytes)? {
+            (_, p, osis_label::Inbox::Payload(x)) => Some((p, x)),
+            (_, _, osis_label::Inbox::Stranded(_)) => None,
+        }
     }
 
-    /// `open_inbox`, with the actor it is sealed to.
-    fn open_inbox_as(&mut self, l: &LabelId, bytes: &[u8]) -> Option<(Tid, osis_label::Prefix, osis_label::InboxPayload)> {
+    /// What inbox blob `bytes` carries, with the actor it is sealed to.
+    fn open_inbox_as(&mut self, l: &LabelId, bytes: &[u8]) -> Option<(Tid, osis_label::Prefix, osis_label::Inbox)> {
         let p = osis_label::Prefix::parse(bytes).ok()?;
         if p.expiry().is_none() || !p.groups().is_empty() {
             return None;
@@ -1375,7 +1389,7 @@ impl SyncEngine {
             let kems: Vec<osis_crypto::KemSecret> = if self.engine.core.is_account(&a) { self.engine.account_kems(&a) } else { self.read_secrets(&a).iter().map(role_kem).collect() };
             for kem in &kems {
                 self.stats.inbox_keys += 1;
-                if let Ok((p, x)) = osis_label::open_inbox_blob(bytes, &a, kem) {
+                if let Ok((p, x)) = osis_label::open_inbox_item(bytes, &a, kem) {
                     return Some((a, p, x));
                 }
             }
@@ -2085,9 +2099,6 @@ impl SyncEngine {
         c.req.sent.remove(&(l, b));
         if let Some(n) = entries_left {
             self.deposit_room.insert((host, l), n);
-            if let Some(lc) = self.lc_mut(conn, &l) {
-                lc.budget = Some(n);
-            }
         }
         // a queued deposit's answer
         let now = self.raw_now();

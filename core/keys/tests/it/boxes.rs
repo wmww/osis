@@ -250,7 +250,7 @@ fn unchecked_boxes_are_reading_only() {
         gv.read.set_established(e, osis_keys::Provenance::Rotated);
     }
     assert!(gv.read.newest_held().is_none() && gv.read.newest_secret().is_none() && gv.read.held_established().next().is_none());
-    assert_eq!(osis_keys::wrap_epoch(&gv.read), osis_keys::WrapEpoch::None);
+    assert_eq!(osis_keys::wrap_epoch(&gv.read), None);
     assert!(gv.read.held_newest_first().len() >= 2, "still tried for reading");
     // the grant applies: checked
     ingest(&f.a, &s, &Opener::Actor { holder: g, epochs: &ge }, &mut gv, None).unwrap();
