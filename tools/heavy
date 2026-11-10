@@ -5,7 +5,7 @@
   tools/heavy --report [--since HOURS]   the lock's use and the box's CPU from the log
 
 One all-core run at a time per box (notes/build.md): the gate's tests (one hold per gate),
-periodic runs, by-hand property and sim runs, TLC and roles-model runs. Builds and single-crate
+release checks, by-hand property and sim runs, TLC and roles-model runs. Builds and single-crate
 test runs stay unlocked. The lock is ${XDG_RUNTIME_DIR:-/tmp}/osis-gate.lock (flock(2), the same lock as
 flock(1)); the command inherits it, so it stays held while the command runs even if this wrapper
 dies. The command sees HEAVY_HELD=1; a tools/heavy inside it refuses (it would wait on itself).

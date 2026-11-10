@@ -59,7 +59,7 @@ pub struct Seeds {
 }
 
 /// A property's small size, the gate's (notes/testing.md, Sizes): a tenth of its large size, at
-/// least 1; the large size under `OSIS_FULL=1` (periodic runs). Breadth belongs to periodic runs:
+/// least 1; the large size under `OSIS_FULL=1` (release checks). Breadth belongs to release checks:
 /// per-branch runs at large size found few bugs for their cost (notes/testing.md, What finds bugs).
 pub fn large_n(full: u64) -> u64 {
     if u64_var("OSIS_FULL") == Some(1) { full } else { (full / 10).max(1) }

@@ -20,7 +20,7 @@ use crdt_model::wire::Ctx;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// How much the differential runs (notes/testing.md, Sizes): `Quick` in the default tests,
-/// `Small` at the gate, `Large` in periodic runs. Only the seed count differs, so any seed replays alone at
+/// `Small` at the gate, `Large` in release checks. Only the seed count differs, so any seed replays alone at
 /// any size.
 #[derive(Clone, Copy, Debug)]
 enum Size {

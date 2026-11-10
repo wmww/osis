@@ -24,7 +24,7 @@ IGNORE = re.compile(r"^(?!\s*//).*#\[(ignore\b|cfg_attr\(.*\bignore\b)")
 FN = re.compile(r"^(?!\s*//).*?\bfn\s+(\$?\w+)")
 # How far past `#[ignore]` the test's `fn` can be: only other attributes and comments sit between.
 FN_WITHIN = 10
-# Sim seeds at small size: a tenth of the 150 of a periodic sweep, as for every harness
+# Sim seeds at small size: a tenth of the 150 of a release-check sim run, as for every harness
 # (osis_base::testenv::large).
 SIM_SEEDS = 15
 # Variables that shift a harness's seeds without choosing one: every `_START`, and the two

@@ -24,7 +24,7 @@ Rules for every step:
 ## Measured (main 8f3cd8d0, osis-node `it` default tests, each test alone, load about 85)
 - 1147 tests, 1404 CPU-s; the 252 at 1 CPU-s or more cost 81%. `order::` 92 tests, 604 CPU-s (43%); `arrival_order_found_histories` alone 160. Alike/any-order/every-order tests across modules: 114, 461 CPU-s, all checking G1's property.
 - Seed-named tests: 30 node `order::` (osis-sim has none), plus 37 `check(<seed>, ..)` pinned histories and the `found()` lists.
-- Last periodic run (e3cdd005f): properties 54,474 CPU-s; order alike + exhaustive 19,650; sweep 35,350; TLC 8,800 (Depth0 79%: fairness re-evaluates its recursive operators on every transition; `D0_nc` 23 CPU-s safety-only against 203 with liveness).
+- Last release-check run (e3cdd005f): properties 54,474 CPU-s; order alike + exhaustive 19,650; sweep 35,350; TLC 8,800 (Depth0 79%: fairness re-evaluates its recursive operators on every transition; `D0_nc` 23 CPU-s safety-only against 203 with liveness).
 - Running test binaries in parallel is not worth building: the default tests are CPU-bound and every-binary-at-once was measured not to help. Only less work shortens it.
 
 ## Steps
@@ -60,4 +60,4 @@ Any time, small: a deterministic test of `close` on `Runtime::Tokio` (notes/api.
 Follow-up, the `waited_at_expiry` excuse: it spares any read on an aspect a part may have waited at its expiry on. Tighter would accept only the oracle's read or the read without the waited parts, but it is not simple: the set is "may have waited" (the ready rule is conservative), so a node may hold any subset of those parts applied, and a keep-everything node given the packs without them counts them missing and refetches them, where a part gone at T is never received. Needs an oracle that drops a part at T as the node does, and per-part readiness from the history. Until then the drop rule is checked by `held_set_decides`'s `reopens_alike` (no excuse) and `waits::part_waiting_at_expiry_goes_whatever_the_ticks_spec_commits_5`.
 
 ## What notes say after the steps
-- **coordination.md Periodic checks**: before a release only, properties and the sim at large size; the command list becomes one tool call per component; after a design step, that component's properties at large size.
+- **coordination.md Release checks**: before a release only, properties and the sim at large size; the command list becomes one tool call per component; after a design step, that component's properties at large size.
