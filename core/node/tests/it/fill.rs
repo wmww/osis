@@ -653,6 +653,8 @@ struct Times {
     first: Option<u64>,
     /// A pass of the label ran.
     passed: Option<u64>,
+    /// `c` holds the blobs it asked first (of the trickling host, with `trickle`).
+    trickled: Option<u64>,
     /// `c` reads every message.
     read: Option<u64>,
     /// Blobs fetched from a host more than once.
@@ -662,8 +664,9 @@ struct Times {
 /// `c`, a new node at `hosts` hosts asking `batch` blobs at a time (`None`: the default
 /// `fill_batch`, order 0 in one batch), fills the chat's label; with `trickle`, the first host is asked order 0 first (the others held back
 /// meanwhile) and trickles its reply (16 bytes, then one every 25 s at most, which keeps its
-/// connection). Time moves to `c`'s own wakes; none of `Times` within 10 min is `None`.
-fn fill_with_a_trickling_host(hosts: usize, batch: Option<usize>, trickle: bool) -> Times {
+/// connection); with `slow`, the others answer one round per step after. Time moves to `c`'s
+/// own wakes (25 s at most), for 10 min at most (`None`: not within them).
+fn fill_with_a_trickling_host(hosts: usize, batch: Option<usize>, trickle: bool, slow: bool) -> Times {
     let mut net = Net::new();
     let hs: Vec<usize> = (0..hosts).map(|_| net.add_host()).collect();
     let h1 = hs[0];
@@ -689,12 +692,16 @@ fn fill_with_a_trickling_host(hosts: usize, batch: Option<usize>, trickle: bool)
     }
     net.set_online(c, true);
     net.run();
+    // what the trickling host answers first (whole frames, before it starts)
+    let asked_first: Vec<BlobId> = net.trickle_hosts.get(&(h1, c)).map_or(Vec::new(), |x| net::fetched_ids(&x.1));
     net.trickle_host_out(h1, c, 16);
-    net.release();
+    if !slow {
+        net.release();
+    }
     net.run();
     let start = net.now();
     let mut f = Chat { net, host: h1, a, c, g, t, l };
-    let mut x = Times { first: None, passed: None, read: None, twice: 0 };
+    let mut x = Times { first: None, passed: None, trickled: None, read: None, twice: 0 };
     while x.read.is_none() || x.passed.is_none() || x.first.is_none() {
         let now = f.net.now() - start;
         if now > 600_000 {
@@ -702,6 +709,9 @@ fn fill_with_a_trickling_host(hosts: usize, batch: Option<usize>, trickle: bool)
         }
         if x.first.is_none() && first.iter().all(|b| f.net.engine(c).has_blob(b)) {
             x.first = Some(now);
+        }
+        if x.trickled.is_none() && !asked_first.is_empty() && asked_first.iter().all(|b| f.net.engine(c).has_blob(b)) {
+            x.trickled = Some(now);
         }
         if x.passed.is_none() && f.net.sync(c).pass_stats().passes > 0 {
             x.passed = Some(now);
@@ -712,6 +722,10 @@ fn fill_with_a_trickling_host(hosts: usize, batch: Option<usize>, trickle: bool)
         let step = f.net.nodes[c].wake.map_or(25_000, |w| w.saturating_sub(f.net.now()).clamp(1, 25_000));
         f.net.advance(step);
         f.net.trickle_host_out(h1, c, 1);
+        for &h in hs[1..].iter().filter(|_| slow) {
+            f.net.release_host(h);
+            f.net.held_hosts.insert(h);
+        }
         f.net.run();
     }
     let fetched = &f.net.fetched[&c];
@@ -728,7 +742,7 @@ fn fill_with_a_trickling_host(hosts: usize, batch: Option<usize>, trickle: bool)
 #[test]
 fn a_trickled_order_0_batch_holds_the_label_for_the_stall_time_only_spec_sync_6() {
     let stall = osis_proto::client::STALL_TIMEOUT_MS;
-    let x = fill_with_a_trickling_host(2, None, true);
+    let x = fill_with_a_trickling_host(2, None, true, false);
     let within = |t: Option<u64>, what: &str| assert!(t.is_some_and(|t| (stall..=stall + 1_000).contains(&t)), "{what} {t:?} ms after the other host's release");
     within(x.passed, "first pass");
     within(x.first, "order 0 here");
@@ -738,7 +752,7 @@ fn a_trickled_order_0_batch_holds_the_label_for_the_stall_time_only_spec_sync_6(
 // spec/sync.md §6: two honest hosts filling: each body fetched once, everything at once
 #[test]
 fn an_honest_fill_at_two_hosts_fetches_each_body_once_spec_sync_6() {
-    let x = fill_with_a_trickling_host(2, None, false);
+    let x = fill_with_a_trickling_host(2, None, false, false);
     for (t, what) in [(x.first, "order 0 here"), (x.passed, "first pass"), (x.read, "read")] {
         assert!(t.is_some_and(|t| t < 1_000), "{what} {t:?} ms after the start");
     }
@@ -752,7 +766,19 @@ fn an_honest_fill_at_two_hosts_fetches_each_body_once_spec_sync_6() {
 fn a_fill_waits_on_its_trickled_batch_for_the_stall_time_only_spec_sync_6() {
     let stall = osis_proto::client::STALL_TIMEOUT_MS;
     for batch in [None, Some(1)] {
-        let passed = fill_with_a_trickling_host(1, batch, true).passed;
+        let passed = fill_with_a_trickling_host(1, batch, true, false).passed;
         assert!(passed.is_some_and(|t| (stall..=stall + 1_000).contains(&t)), "first pass {passed:?} ms after the start, batch {batch:?}");
     }
+}
+
+// spec/sync.md §10 (Bodies): what a fill passed over while another host's fetch of it was fresh is
+// asked of this host once that fetch goes stale, not at this fill's end: the other host slow
+// (a batch per 25 s step, one blob each, longer than the stall time in all), the trickled
+// batch still comes from it within the stall time and two steps
+#[test]
+fn a_body_skipped_for_a_trickled_fetch_comes_from_a_slow_host_by_the_stall_time_spec_sync_10() {
+    let stall = osis_proto::client::STALL_TIMEOUT_MS;
+    let x = fill_with_a_trickling_host(2, Some(1), true, true);
+    assert!(x.trickled.is_some_and(|t| t <= stall + 50_000), "the trickled batch here {:?} ms after the start", x.trickled);
+    assert!(x.read.is_none_or(|t| t > stall + 50_000), "the other host's fill not slower: read {:?} ms after the start", x.read);
 }

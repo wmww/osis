@@ -26,6 +26,10 @@ pub(crate) struct Fill {
     queue: BTreeSet<(u64, BlobId)>,
     /// The batch asked for.
     asked: Vec<BlobId>,
+    /// Entries passed over while asked elsewhere (`may_ask`), with their ranks: queued again once
+    /// that fetch counts as asked no longer, so a source trickling it holds it for the stall time
+    /// only, not until this fill's end.
+    skipped: Vec<(u64, BlobId)>,
     /// The listing ran to its end.
     listed: bool,
     /// Rank `FIRST` is fetched, or a batch went unanswered past the stall time: a pass may run.
@@ -143,6 +147,10 @@ impl SyncEngine {
             lc.fill = Some(f);
             return Ok(());
         }
+        // what was passed over for a fetch elsewhere that failed or went stale is this host's to ask
+        let (back, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut f.skipped).into_iter().partition(|(_, b)| self.asked(b).is_none());
+        f.skipped = keep;
+        f.queue.extend(back);
         // secrets came: what did not open may be anywhere in the order
         if f.secrets != secrets_now {
             f.secrets = secrets_now;
@@ -163,9 +171,13 @@ impl SyncEngine {
                 break;
             }
             f.queue.pop_first();
-            if self.state.entries.contains_key(&(l, b)) && self.state.is_present(&host, &l, &b) && !missing(self, &b) && !self.engine.has_blob(&b) && self.may_ask(conn, l, &b) {
-                first = Some(r == FIRST);
-                ids.push(b);
+            if self.state.entries.contains_key(&(l, b)) && self.state.is_present(&host, &l, &b) && !missing(self, &b) && !self.engine.has_blob(&b) {
+                if self.may_ask(conn, l, &b) {
+                    first = Some(r == FIRST);
+                    ids.push(b);
+                } else {
+                    f.skipped.push((r, b));
+                }
             }
         }
         if ids.is_empty() {

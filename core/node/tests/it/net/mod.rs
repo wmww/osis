@@ -217,7 +217,7 @@ fn without_blobs(b: &[u8], hide: &BTreeSet<osis_base::BlobId>, bare: bool) -> Ve
 }
 
 /// Blob IDs whole frames `b` from a host carry in fetch replies.
-fn fetched_ids(b: &[u8]) -> Vec<osis_base::BlobId> {
+pub fn fetched_ids(b: &[u8]) -> Vec<osis_base::BlobId> {
     let mut d = osis_proto::FrameDecoder::new();
     d.push(b);
     let mut v = Vec::new();
