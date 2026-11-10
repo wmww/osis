@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: retention, spec, engine, sync, api, permissions
 
-**Go-ahead given by Tess**: implement when ready (after expiry step 8 and the held_set_decides class study land, since both touch the same files). Her decisions are below (Decisions).
+**Go-ahead given by Tess**: implement when ready (after expiry step 8 and the held_set_decides class study land, since both touch the same files). Halyard runs the lane, steps in order; Fathom reviews steps 1 and 3. Her decisions are below (Decisions).
 
 ## Principle
 A thing's admins decide what replaced content is kept and shown, and for how long; the setting never decides who may drop a body (purgeable-by, per write) nor deletes anything promptly (purge, expiry). Every judgment reads only the settings and bodies a node holds.
