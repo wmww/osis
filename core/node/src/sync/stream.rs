@@ -216,8 +216,9 @@ pub(crate) struct Pulling {
 }
 
 /// A Fetch of the stream not answered yet: its place in send order (`Pulling::sent`), the member,
-/// the blobs, the `max_reply` asked and when it was made (raw ms: past `STALL_TIMEOUT_MS` its
-/// bodies are asked of the next source too, `stream_asked`).
+/// the blobs, the `max_reply` asked and when they were first asked there (raw ms; the rest of an
+/// answered Fetch keeps it: past `STALL_TIMEOUT_MS` its bodies are asked of the next source too,
+/// `stream_asked`).
 struct Fetching {
     seq: u64,
     label: LabelId,
@@ -859,7 +860,7 @@ impl SyncEngine {
                 }
             }
             for (l, ids) in ask {
-                self.stream_fetch(conn, l, ids, false, out)?;
+                self.stream_fetch(conn, l, ids, None, out)?;
             }
         }
         Ok(())
@@ -987,8 +988,9 @@ impl SyncEngine {
     /// Fetches the bodies `ids` of member `l` from `conn`'s peer, but those asked for already
     /// (`stream_asked`): one source at a time per blob, a second only once the first is slower
     /// than the stall time. As any Fetch (spec/wire.md §11.3): `FIRST_REPLY` per ID, or
-    /// `REPLY_BUDGET` for the rest of an answered one (`again`).
-    pub(crate) fn stream_fetch(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, again: bool, out: &mut Vec<Action>) -> Result<()> {
+    /// `REPLY_BUDGET` for the rest of an answered one (`again`: when that one was asked, which the
+    /// rest keeps, so answering one body at a time does not hold the others longer).
+    pub(crate) fn stream_fetch(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, again: Option<u64>, out: &mut Vec<Action>) -> Result<()> {
         let now = self.raw_now();
         let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.stream_asked(conn, b, now)).collect();
         if ids.is_empty() {
@@ -999,8 +1001,8 @@ impl SyncEngine {
         let mut msgs = Vec::new();
         for batch in ids.chunks(osis_proto::msg::MAX_ITEMS) {
             let (id, seq) = p.next();
-            let max_reply = if again { budget } else { osis_proto::client::FIRST_REPLY.saturating_mul(batch.len()).min(budget) } as u64;
-            p.fetching.insert(id, Fetching { seq, label: l, ids: batch.to_vec(), max_reply, at: now });
+            let max_reply = if again.is_some() { budget } else { osis_proto::client::FIRST_REPLY.saturating_mul(batch.len()).min(budget) } as u64;
+            p.fetching.insert(id, Fetching { seq, label: l, ids: batch.to_vec(), max_reply, at: again.unwrap_or(now) });
             msgs.push(Message::Fetch { id, label: l, max_reply, ids: batch.to_vec() });
         }
         for m in msgs {
@@ -1049,7 +1051,7 @@ impl SyncEngine {
         } else if none && f.max_reply >= osis_proto::serving::REPLY_BUDGET as u64 {
             self.stream_unfetched(conn, l, rest, out)
         } else {
-            self.stream_fetch(conn, l, rest, true, out)
+            self.stream_fetch(conn, l, rest, Some(f.at), out)
         }
     }
 
@@ -1078,7 +1080,7 @@ impl SyncEngine {
         self.stream_unowe(conn, &gone);
         let next = self.records.shared.iter().find(|(c, s)| **c > conn && s.has(&l)).map(|(c, _)| *c);
         match next {
-            Some(c) => self.stream_fetch(c, l, failed, false, out),
+            Some(c) => self.stream_fetch(c, l, failed, None, out),
             None => Ok(()),
         }
     }

@@ -434,7 +434,7 @@ impl SyncEngine {
             let (mut want, rest): (Vec<BlobId>, Vec<BlobId>) = fetch.into_iter().partition(|b| self.state.entries.get(&(l, *b)).map(|e| &e.wrap).or(unlisted.get(b)).is_some_and(|w| osis_label::unwrap_any(secrets.iter(), b, w).is_some()));
             want.extend(rest);
             want.extend(self.waiting_blobs()?);
-            self.stream_fetch(c, l, want, false, out)?;
+            self.stream_fetch(c, l, want, None, out)?;
             // bytes that came over this connection are not sent back on it inline
             self.stream_crossed(c, crossed);
             self.charge_reader(c, l, &fresh_here)?;

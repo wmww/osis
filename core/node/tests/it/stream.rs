@@ -383,8 +383,8 @@ fn silent_co_reader(a_dials: bool, wait: u64) -> bool {
 fn a_silent_co_reader_holds_a_body_for_the_stall_time_only_spec_sync_6() {
     let stall = osis_proto::client::STALL_TIMEOUT_MS;
     for a_dials in [true, false] {
-        assert!(!silent_co_reader(a_dials, stall - 30_000), "not closed before the stall time (a dials: {a_dials})");
-        assert!(silent_co_reader(a_dials, stall + 60_000), "from c once b's connection closed (a dials: {a_dials})");
+        assert!(!silent_co_reader(a_dials, stall - 30_000), "not from c before the stall time (a dials: {a_dials})");
+        assert!(silent_co_reader(a_dials, stall + 60_000), "from c after the stall time (a dials: {a_dials})");
     }
 }
 
@@ -467,6 +467,59 @@ fn both_sources_answering_store_once_and_settle_spec_sync_10() {
     assert!(at.is_some());
     assert_eq!(after, 0, "nothing asked again once both answered");
     assert!(settled, "every stream of a settled, no fetch out");
+}
+
+// spec/sync.md §10 (Bodies: a source slower than the stall time): a co-reader answering a
+// Fetch of two bodies with one, just before the stall time, and holding the rest, holds the
+// other body for about one stall time from when it was first asked, not one more per answer
+#[test]
+fn a_partial_answer_does_not_restart_the_stall_time_spec_sync_10() {
+    let stall = osis_proto::client::STALL_TIMEOUT_MS;
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    let c = net.node(3, &[]);
+    reach_ed(&mut net, b);
+    reach_ed(&mut net, c);
+    let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
+    net.pair(c, a);
+    net.pair(b, c);
+    net.run();
+    net.advance(120_000);
+    let probe = net.item(b, g, g, "probe");
+    net.run();
+    assert_eq!(net.read(a, probe), Some(s("probe")), "a reads b's writes");
+    let (ab, _) = conn_to(&net, a, b);
+    net.trickle.insert((b, a), (ab, Vec::new()));
+    net.tamper = Some(Box::new(|m| match m {
+        osis_proto::Message::FetchReply { id, items } if items.len() > 1 => Some(osis_proto::Message::FetchReply { id: *id, items: items[..1].to_vec() }),
+        _ => None,
+    }));
+    net.tamper_link = Some((b, a));
+    let fetches = net.peer_sent(a, FETCH);
+    let start = net.now();
+    let x = net.item(b, g, g, "x");
+    let y = net.item(b, g, g, "y");
+    net.run();
+    assert_eq!(net.peer_sent(a, FETCH) - fetches, 1, "both bodies in one Fetch to b");
+    assert_eq!((net.read(c, x), net.read(c, y)), (Some(s("x")), Some(s("y"))), "c holds both");
+    // b answers with one body 90 s on, then holds the Fetch of the other, trickling
+    net.advance(90_000);
+    net.trickle_out(b, a, usize::MAX);
+    net.run();
+    let one = [x, y].into_iter().filter(|t| net.read(a, *t).is_some()).count();
+    assert_eq!(one, 1, "one body from b's partial answer");
+    let mut at = None;
+    while at.is_none() && net.now() - start < 600_000 {
+        net.advance(15_000);
+        net.trickle_out(b, a, 1);
+        net.run();
+        if net.read(a, x).is_some() && net.read(a, y).is_some() {
+            at = Some(net.now() - start);
+        }
+    }
+    let at = at.expect("a reads both");
+    assert!(at <= stall + 15_000, "read {at} ms after the write");
 }
 
 /// Pulls node `a` sends once back after `b`'s log aged out the deletions of what `a` held, at
