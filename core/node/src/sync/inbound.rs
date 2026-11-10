@@ -1612,6 +1612,7 @@ impl SyncEngine {
         }
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.syncing = false;
+            lc.ending = false;
             lc.synced = true;
             lc.dirty = true;
         }

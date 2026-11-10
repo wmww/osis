@@ -86,11 +86,13 @@ pub(crate) struct Synced {
     /// Per label, the actor its keys derive from and its hosts, `peer://` nodes left out
     /// (`complete_pass`, `peers::host_keys`).
     pub actors: BTreeMap<LabelId, (Tid, Vec<HostKey>)>,
+    /// `actors` by actor: the labels of each.
+    pub by_actor: BTreeMap<Tid, BTreeSet<LabelId>>,
 }
 
 impl Default for Synced {
     fn default() -> Synced {
-        Synced { key: (u64::MAX, 0, 0), timed: false, labels: Vec::new(), ids: BTreeSet::new(), actors: BTreeMap::new() }
+        Synced { key: (u64::MAX, 0, 0), timed: false, labels: Vec::new(), ids: BTreeSet::new(), actors: BTreeMap::new(), by_actor: BTreeMap::new() }
     }
 }
 
@@ -297,6 +299,9 @@ pub struct SyncEngine {
     /// The last remote role commit of each actor applied: its `seq`, and when (raw ms; the peer
     /// part of `complete_pass` waits at most `peer_pass_wait_ms` from it).
     pub(crate) role_change: BTreeMap<Tid, (u64, u64)>,
+    /// Actors with a remote role commit applied this step: each host of their labels is asked
+    /// for a pass end (`ask_pass_ends`).
+    pub(crate) pass_wanted: BTreeSet<Tid>,
     /// When this engine was built (raw ms): a role change applied before it came no later,
     /// so the peer wait of an actor with none in `role_change` counts from here.
     pub(crate) started: u64,
@@ -438,6 +443,7 @@ impl SyncEngine {
             shared_dirty: false,
             changed_moved: BTreeSet::new(),
             role_change: BTreeMap::new(),
+            pass_wanted: BTreeSet::new(),
             started,
             rotation_at: BTreeMap::new(),
             placed_cache: (u64::MAX, BTreeMap::new()),
@@ -692,6 +698,7 @@ impl SyncEngine {
         self.send_inbox()?;
         self.send_outbox(out)?;
         self.run_dirty(out)?;
+        self.ask_pass_ends(out)?;
         // after the passes: this step's last sends go first, then what the change ends
         self.shared_changed(out)?;
         self.send_suspects(out)?;
@@ -728,11 +735,15 @@ impl SyncEngine {
         } else {
             self.stats.label_reads += 1;
             let (labels, timed) = self.compute_labels(now);
-            let actors = labels.iter().map(|(g, l)| (l.id, (self.keys_actor(g), peers::host_keys(&l.hosts).collect()))).collect();
+            let actors: BTreeMap<LabelId, (Tid, Vec<HostKey>)> = labels.iter().map(|(g, l)| (l.id, (self.keys_actor(g), peers::host_keys(&l.hosts).collect()))).collect();
+            let mut by_actor: BTreeMap<Tid, BTreeSet<LabelId>> = BTreeMap::new();
+            for (l, (a, _)) in &actors {
+                by_actor.entry(*a).or_default().insert(*l);
+            }
             let ids: BTreeSet<LabelId> = labels.iter().map(|(_, l)| l.id).collect();
             self.changed_due |= ids != self.synced.ids;
             let key = (key.0, key.1, if timed { now } else { 0 });
-            self.synced = Synced { key, timed, labels, ids, actors };
+            self.synced = Synced { key, timed, labels, ids, actors, by_actor };
         }
         self.synced.labels.clone()
     }

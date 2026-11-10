@@ -201,6 +201,7 @@ impl SyncEngine {
             head: None,
             keys: HeadKeys::default(),
             syncing: false,
+            ending: false,
             synced: false,
             dirty: false,
             fill: None,
@@ -623,6 +624,7 @@ impl SyncEngine {
             (Request::Sync, _) => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.syncing = false;
+                    lc.ending = false;
                 }
                 self.diag(format!("sync refused: code {}", code.0));
                 Ok(())

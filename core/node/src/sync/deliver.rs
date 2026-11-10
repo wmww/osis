@@ -229,6 +229,9 @@ impl SyncEngine {
         }
         self.synced.key.0 = u64::MAX;
         self.synced.actors.retain(|l, _| !gone(l));
+        for ls in self.synced.by_actor.values_mut() {
+            ls.retain(|l| !gone(l));
+        }
         self.passes.retain(|(_, l), _| !gone(l));
         self.peer_received.retain(|l, _| !gone(l));
         self.served_cache = None;
@@ -481,7 +484,7 @@ impl SyncEngine {
         self.labels();
         for (h, until) in due {
             let k = h.k;
-            let labels: Vec<(LabelId, &Vec<HostKey>)> = self.synced.actors.iter().filter(|(_, (a, _))| *a == k).map(|(id, (_, s))| (*id, s)).collect();
+            let labels: Vec<(LabelId, &Vec<HostKey>)> = self.synced.by_actor.get(&k).into_iter().flatten().filter_map(|id| self.synced.actors.get(id).map(|(_, s)| (*id, s))).collect();
             let hostless = !labels.is_empty() && labels.iter().all(|(_, s)| s.is_empty());
             let after = labels.iter().all(|(id, s)| s.iter().all(|host| self.passes.get(&(*host, *id)).is_some_and(|p| until.is_none_or(|u| p.1 >= u.0))));
             let ready = if hostless { h.here } else { after && self.complete_pass(&k) };
@@ -612,6 +615,41 @@ impl SyncEngine {
         self.role_change.get(actor).map_or(self.started, |x| x.1).saturating_add(self.cfg.peer_pass_wait_ms)
     }
 
+    /// Asks each host of the labels of every actor in `pass_wanted` for a pass end after that
+    /// actor's last remote role commit (a Sync from the cursor), where the label is live and its
+    /// last pass end there came before the commit: a commit applied from outside a label's
+    /// host stream (an inbox, a Deposit item, another host) would otherwise wait for that label's
+    /// next push (spec/permissions.md §3 Complete pass). A Sync in flight ends a pass already.
+    /// Passes go on meanwhile (`LConn::ending`): the label was read to its end before.
+    pub(crate) fn ask_pass_ends(&mut self, out: &mut Vec<Action>) -> Result<()> {
+        if self.pass_wanted.is_empty() {
+            return Ok(());
+        }
+        self.labels();
+        let mut ask = Vec::new();
+        for a in std::mem::take(&mut self.pass_wanted) {
+            let since = self.role_change.get(&a).map_or(0, |x| x.0);
+            for l in self.synced.by_actor.get(&a).into_iter().flatten() {
+                let Some((_, hosts)) = self.synced.actors.get(l) else { continue };
+                for (id, c) in self.conns.iter().filter(|(_, c)| !c.peer && hosts.contains(&c.host)) {
+                    let live = c.labels.get(l).is_some_and(|x| x.phase == Phase::Open && x.synced && !x.syncing && x.fill.is_none());
+                    let cursor = self.state.cursors.get(&(c.host, *l)).copied();
+                    if let Some(cursor) = cursor.filter(|_| live && self.passes.get(&(c.host, *l)).is_none_or(|p| p.0 <= since)) {
+                        ask.push((*id, *l, cursor));
+                    }
+                }
+            }
+        }
+        for (conn, label, cursor) in ask {
+            if let Some(x) = self.lc_mut(conn, &label) {
+                (x.syncing, x.ending) = (true, true);
+            }
+            let inline_limit = self.cfg.inline_limit;
+            self.command(conn, osis_proto::Command::Sync { label, cursor: Some(cursor), inline_limit, entries: Vec::new(), gained: Vec::new() }, out)?;
+        }
+        Ok(())
+    }
+
     /// Whether label `l` passed completely after `since` (spec/permissions.md §3): at each of
     /// `hosts` and, until `waited`, at each co-reader it was received from with a connection up
     /// (`pass_peers`). With neither, nothing upstream holds what it lacks: it passes once
@@ -634,7 +672,7 @@ impl SyncState for SyncEngine {
         let since = self.role_change.get(actor).map_or(0, |x| x.0);
         let waited = self.peers_waited(actor);
         // no label of the actor known (at start, before `labels()`): no pass yet
-        let mut labels = self.synced.actors.iter().filter(|(_, (a, _))| a == actor).peekable();
+        let mut labels = self.synced.by_actor.get(actor).into_iter().flatten().filter_map(|l| self.synced.actors.get(l).map(|x| (l, x))).peekable();
         labels.peek().is_some() && labels.all(|(l, (_, hosts))| self.label_passed(l, hosts.iter().copied(), since, waited))
     }
 }

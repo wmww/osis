@@ -56,6 +56,8 @@ pub(crate) struct LConn {
     pub keys: HeadKeys,
     /// A Sync exchange is running.
     pub syncing: bool,
+    /// The running Sync only asks a live label for a pass end (`ask_pass_ends`): passes go on.
+    pub ending: bool,
     /// The log was read to its end at least once on this connection.
     pub synced: bool,
     /// A pass is wanted once the running exchange ends.
@@ -85,7 +87,7 @@ pub(crate) struct LConn {
 impl LConn {
     /// The log was read to its end and nothing runs.
     pub(super) fn ready(&self) -> bool {
-        self.synced && !self.syncing && self.registering.is_none()
+        self.synced && (!self.syncing || self.ending) && self.registering.is_none()
     }
 
     /// A fill here has not all that judging needs.

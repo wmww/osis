@@ -505,10 +505,7 @@ fn complete_pass_counts_peers_spec_permissions_3() {
     assert!(!net.sync(a).complete_pass(&g), "b's pass is held back");
     net.release();
     // b's rotation boxed only b: its re-seal of a comes by a's inbox over b's link once released,
-    // a role change after a's last pass at the host; the removal's step registration (a push of
-    // g's label) gives a the host pass after it
-    net.run();
-    net.advance(60_000);
+    // a role change after a's last pass at the host, which a then asks the host for
     net.run();
     assert!(net.sync(a).complete_pass(&g));
 }

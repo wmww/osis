@@ -256,6 +256,37 @@ fn complete_pass_after_push_spec_permissions_3() {
     assert!(net.sync(b).complete_pass(&g), "the push run counts as a pass end");
 }
 
+// spec/permissions.md §3 (complete pass): a role commit applied from outside a quiet label's
+// host stream (handed over directly, as an inbox or a Deposit item brings one) after the label's
+// last push: the node asks the host for a pass end, so `complete_pass` holds within one round
+// trip, with no push and no time passing.
+#[test]
+fn complete_pass_after_role_commit_from_elsewhere_spec_permissions_3() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Read), (c, Role::Read)], &[host]);
+    net.run();
+    assert!(net.sync(b).complete_pass(&g));
+    net.set_online(a, false);
+    net.run();
+    let tc = net.tid(c);
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+    let done = net.engine(a).grant(&g, &tc, &edge).unwrap();
+    // b places it under the label too; that copy's push would end a pass of its own
+    net.lose_deposits.extend(done.commits);
+    net.pair(a, b);
+    net.feed(b, Event::Local);
+    assert_eq!(net.engine(b).roster(&g).get(&tc).map(|e| e.role), Some(Role::Write), "applied from elsewhere");
+    assert!(!net.sync(b).complete_pass(&g), "no pass end after it yet");
+    // the request reaches the host, its reply comes back
+    net.round();
+    net.round();
+    assert!(net.sync(b).complete_pass(&g), "a pass end within one round trip");
+}
+
 // spec/sync.md §6-§7 (positive uncovered): a compactor deletes covered bodies; a writer that
 // has not fetched the snapshot yet treats them as may-hold and re-uploads nothing.
 #[test]

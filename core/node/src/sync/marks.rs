@@ -63,6 +63,7 @@ impl SyncEngine {
                         for a in &h.aspects {
                             let actor = self.keys_actor(&a.tid);
                             self.role_change.insert(actor, (self.seq, at));
+                            self.pass_wanted.insert(actor);
                             // only an admin registers its rotation's step: another's (a writer
                             // rotating for a departure) is this admin's to register at once
                             if a.ak.as_str() == "secrets.0" && self.engine.core.role_now(&h.author, &actor) == Some(osis_base::Role::Admin) {
