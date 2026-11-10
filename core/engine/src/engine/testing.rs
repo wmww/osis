@@ -626,20 +626,73 @@ impl Engine {
 
 }
 
+/// One index of `IndexDigest::tables`: compared typed (`Core::same_index`), shown as its `Debug`
+/// text.
+trait Table: std::fmt::Debug {
+    fn same(&self, o: &dyn Table) -> bool;
+    fn any(&self) -> &dyn std::any::Any;
+}
+
+impl<T: std::fmt::Debug + PartialEq + 'static> Table for T {
+    fn same(&self, o: &dyn Table) -> bool {
+        o.any().downcast_ref::<T>().is_some_and(|o| self == o)
+    }
+    fn any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// The indexes `IndexDigest::tables` holds as text, by name.
+fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 26] {
+    [
+        ("by_thing", &*ix.by_thing),
+        ("by_actor", &*ix.by_actor),
+        ("by_aspect", &*ix.by_aspect),
+        ("originals", &*ix.originals),
+        ("versions", &*ix.versions),
+        ("bounded_held", &*ix.bounded_held),
+        ("invalid", &*ix.invalid),
+        ("ranges", &*ix.ranges),
+        ("rotation_role", &*ix.rotation_role),
+        ("grant_overreach", &*ix.grant_overreach),
+        ("required", &*ix.required),
+        ("addenda", &*ix.addenda),
+        ("boxes_to", &*ix.boxes_to),
+        ("epoch_intro", &*ix.epoch_intro),
+        ("keysets", &*ix.keysets),
+        ("own_keys", &*ix.own_keys),
+        ("keyset_parts", &*ix.keyset_parts),
+        ("holder_keys", &*ix.holder_keys),
+        ("unresolved", &*ix.unresolved),
+        ("groups", &ix.groups.of),
+        ("secrets", &*ix.secrets),
+        ("void", &*ix.void),
+        ("valueless", &*ix.valueless),
+        ("labeled", &*ix.labeled),
+        ("epochs", &*ix.epochs),
+        ("by_epoch", &*ix.by_epoch),
+    ]
+}
+
+/// A commit's `CommitDigest`, its `rest` empty, and what `rest` shows.
+fn commit_digest(m: &super::Meta) -> (CommitDigest, (&osis_base::WallMs, &crate::events::Origin, &super::View)) {
+    let stands_in = m.dropped.iter().filter(|(_, d)| d.stands_in).map(|(ai, _)| *ai).collect();
+    let d = CommitDigest { kind: m.view.kind, valid: m.valid.clone(), dropped: m.dropped.keys().copied().collect(), stands_in, stripped: m.stripped.clone(), valued: m.valued.clone(), missing: m.missing.clone(), rest: String::new() };
+    (d, (&m.received, &m.origin, &*m.view))
+}
+
+/// The role timelines' verdicts `Core::perm_digest` shows: per held thing its roster (`None`: no
+/// timeline), then every applied and dropped edge write.
+type PermParts = (Vec<(Tid, Option<BTreeMap<Tid, osis_perm::Edge>>)>, BTreeMap<osis_perm::WriteId, osis_perm::Applied>, BTreeMap<osis_perm::WriteId, osis_perm::Point>);
+
 impl super::Core {
     /// `Engine::index_digest`.
     pub(crate) fn index_digest(&self) -> IndexDigest {
         let ix = &self.ix;
         let commits = ix.commits.iter().map(|(id, m)| {
-            let stands_in = m.dropped.iter().filter(|(_, d)| d.stands_in).map(|(ai, _)| *ai).collect();
-            let rest = format!("{:?} {:?} {:?}", m.received, m.origin, m.view);
-            (*id, CommitDigest { kind: m.view.kind, valid: m.valid.clone(), dropped: m.dropped.keys().copied().collect(), stands_in, stripped: m.stripped.clone(), valued: m.valued.clone(), missing: m.missing.clone(), rest })
-        }).collect();
-        let held = osis_perm::HeldSet::things(&ix.held).into_iter().map(|t| {
-            // sorted: the held set keeps arrival order, which nothing it answers depends on
-            let mut cs: Vec<CommitId> = osis_perm::HeldSet::edge_commits(&ix.held, &t).iter().map(|x| x.id).collect();
-            cs.sort();
-            (t, (cs, ix.held.created(&t).is_some()))
+            let (mut d, rest) = commit_digest(m);
+            d.rest = format!("{:?} {:?} {:?}", rest.0, rest.1, rest.2);
+            (*id, d)
         }).collect();
         let mut snapshots: BTreeMap<CommitId, Vec<(Tid, Ak, String)>> = BTreeMap::new();
         for ((t, a), v) in ix.snapshots.iter() {
@@ -653,54 +706,64 @@ impl super::Core {
                 dropped_snapshots.entry(*c).or_default().push((*t, a.clone()));
             }
         }
-        let tables = [
-            ("by_thing", format!("{:?}", *ix.by_thing)),
-            ("by_actor", format!("{:?}", *ix.by_actor)),
-            ("by_aspect", format!("{:?}", *ix.by_aspect)),
-            ("originals", format!("{:?}", *ix.originals)),
-            ("versions", format!("{:?}", *ix.versions)),
-            ("bounded_held", format!("{:?}", *ix.bounded_held)),
-            ("invalid", format!("{:?}", *ix.invalid)),
-            ("ranges", format!("{:?}", *ix.ranges)),
-            ("rotation_role", format!("{:?}", *ix.rotation_role)),
-            ("grant_overreach", format!("{:?}", *ix.grant_overreach)),
-            ("required", format!("{:?}", *ix.required)),
-            ("addenda", format!("{:?}", *ix.addenda)),
-            ("boxes_to", format!("{:?}", *ix.boxes_to)),
-            ("epoch_intro", format!("{:?}", *ix.epoch_intro)),
-            ("keysets", format!("{:?}", *ix.keysets)),
-            ("own_keys", format!("{:?}", *ix.own_keys)),
-            ("keyset_parts", format!("{:?}", *ix.keyset_parts)),
-            ("holder_keys", format!("{:?}", *ix.holder_keys)),
-            ("unresolved", format!("{:?}", *ix.unresolved)),
-            ("groups", format!("{:?}", ix.groups.of)),
-            ("secrets", format!("{:?}", *ix.secrets)),
-            ("void", format!("{:?}", *ix.void)),
-            ("valueless", format!("{:?}", *ix.valueless)),
-            ("labeled", format!("{:?}", *ix.labeled)),
-            ("epochs", format!("{:?}", *ix.epochs)),
-            ("by_epoch", format!("{:?}", *ix.by_epoch)),
-        ].into_iter().collect();
-        IndexDigest { commits, held, by_chunk: (*ix.by_chunk).clone(), snapshots, dropped_snapshots, tables }
+        let tables = tables(ix).into_iter().map(|(n, t)| (n, format!("{t:?}"))).collect();
+        IndexDigest { commits, held: self.held_digest(), by_chunk: (*ix.by_chunk).clone(), snapshots, dropped_snapshots, tables }
+    }
+
+    /// `IndexDigest::held`.
+    fn held_digest(&self) -> BTreeMap<Tid, (Vec<CommitId>, bool)> {
+        let ix = &self.ix;
+        osis_perm::HeldSet::things(&ix.held).into_iter().map(|t| {
+            // sorted: the held set keeps arrival order, which nothing it answers depends on
+            let mut cs: Vec<CommitId> = osis_perm::HeldSet::edge_commits(&ix.held, &t).iter().map(|x| x.id).collect();
+            cs.sort();
+            (t, (cs, ix.held.created(&t).is_some()))
+        }).collect()
+    }
+
+    /// Whether `index_digest` and `perm_digest(false)` of `self` and `o` are equal, compared
+    /// without text (`Engine::check_index`; its failure message shows the digests). At least as
+    /// strict as the digests: snapshots compared in their held order.
+    pub(crate) fn same_index(&self, o: &Self) -> bool {
+        let (a, b) = (&self.ix, &o.ix);
+        a.commits.len() == b.commits.len()
+            && a.commits.iter().zip(b.commits.iter()).all(|((x, m), (y, n))| x == y && commit_digest(m) == commit_digest(n))
+            && self.held_digest() == o.held_digest()
+            && *a.by_chunk == *b.by_chunk
+            && *a.snapshots == *b.snapshots
+            && *a.dropped_snapshots == *b.dropped_snapshots
+            && tables(a).iter().zip(tables(b).iter()).all(|((_, x), (_, y))| x.same(*y))
+            && self.perm_parts(false) == o.perm_parts(false)
+    }
+
+    /// `PermParts` of the components as held (`false`) or of one from-scratch evaluation.
+    fn perm_parts(&self, from_scratch: bool) -> PermParts {
+        let held = &self.ix.held;
+        let full = from_scratch.then(|| osis_perm::Timeline::evaluate(held));
+        let get = |t: &Tid| full.as_ref().or_else(|| self.timelines.get(t));
+        let (mut rosters, mut applied, mut dropped) = (Vec::new(), BTreeMap::new(), BTreeMap::new());
+        for t in osis_perm::HeldSet::things(held) {
+            let Some(tl) = get(&t) else {
+                rosters.push((t, None));
+                continue;
+            };
+            rosters.push((t, Some(tl.roster(&t, osis_perm::At::END))));
+            applied.extend(tl.applied().iter().map(|(k, v)| (*k, *v)));
+            dropped.extend(tl.dropped().iter().map(|(k, v)| (*k, *v)));
+        }
+        (rosters, applied, dropped)
     }
 
     /// `Engine::perm_digest`.
     pub(crate) fn perm_digest(&self, from_scratch: bool) -> String {
         use std::fmt::Write;
-        let held = &self.ix.held;
-        let full = from_scratch.then(|| osis_perm::Timeline::evaluate(held));
-        let get = |t: &Tid| full.as_ref().or_else(|| self.timelines.get(t));
+        let (rosters, applied, dropped) = self.perm_parts(from_scratch);
         let mut out = String::new();
-        let mut applied = BTreeMap::new();
-        let mut dropped = BTreeMap::new();
-        for t in osis_perm::HeldSet::things(held) {
-            let Some(tl) = get(&t) else {
-                let _ = writeln!(out, "{t:?} no timeline");
-                continue;
+        for (t, r) in rosters {
+            let _ = match r {
+                Some(r) => writeln!(out, "{t:?} {r:?}"),
+                None => writeln!(out, "{t:?} no timeline"),
             };
-            let _ = writeln!(out, "{t:?} {:?}", tl.roster(&t, osis_perm::At::END));
-            applied.extend(tl.applied().iter().map(|(k, v)| (*k, *v)));
-            dropped.extend(tl.dropped().iter().map(|(k, v)| (*k, *v)));
         }
         let _ = writeln!(out, "applied {applied:?}\ndropped {dropped:?}");
         out

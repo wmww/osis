@@ -2928,7 +2928,6 @@ impl Engine {
     /// a reproducer's point is.
     #[doc(hidden)]
     pub fn check_index(&mut self) {
-        let had = (self.core.index_digest(), self.core.perm_digest(false));
         for rebuild in [false, true] {
             let mut fresh = self.blank_core();
             fresh.key_actors = self.core.key_actors.clone();
@@ -2953,9 +2952,12 @@ impl Engine {
             if !matches!(r, Ok(true)) {
                 return;
             }
-            let d = had.0.first_diff(&fresh.index_digest());
-            assert!(d.is_none(), "{at}, the {}", d.unwrap_or_default());
-            assert_eq!(fresh.perm_digest(false), had.1, "{at}: role timelines");
+            // compared typed; the digests' text only for the message
+            if !self.core.same_index(&fresh) {
+                let d = self.core.index_digest().first_diff(&fresh.index_digest());
+                assert!(d.is_none(), "{at}, the {}", d.unwrap_or_default());
+                assert_eq!(fresh.perm_digest(false), self.core.perm_digest(false), "{at}: role timelines");
+            }
             if !rebuild {
                 let decoded = fresh.ix.commits.values().filter(|m| !m.view.linked && m.header.is_decoded()).count();
                 assert_eq!(decoded, 0, "{at}: headers decoded");
