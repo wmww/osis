@@ -916,3 +916,56 @@ fn pushes_past_the_bound_grow_nothing_and_lose_nothing_spec_sync_10() {
     assert_eq!(net.read(a, t), Some(s("during the flood")), "the write pushed during the flood arrived");
     assert_eq!(net.sync(a).stream_waiting(c), (0, 0), "settled");
 }
+
+// The stream's bound drops a push only until a reply reads it again (`Pulling::dropped`): a push
+// taken after a dropped one would store a position past the dropped one's events, so a write it
+// carried is lost if that reply never comes (here: lost, then a restart)
+#[test]
+fn a_position_never_passes_a_dropped_push_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b, gs) = pair(&mut net, 1);
+    net.item(b, gs[0], gs[0], "x");
+    net.run();
+    let l = label_of(&mut net, b, gs[0]);
+    // b's fetch answers and pull replies to a are lost: a stays full
+    net.tamper_link = Some((b, a));
+    net.tamper = Some(Box::new(|m| matches!(m, osis_proto::Message::FetchReply { .. } | osis_proto::Message::PullReply(_)).then(|| osis_proto::Message::Applied { cursor: vec![] })));
+    flood(&mut net, a, b, l, 20, 100);
+    net.run();
+    let (c, pc) = conn_to(&net, a, b);
+    assert!(net.sync(a).stream_waiting(c).1 >= 1024, "a waits on bodies");
+    let t = net.item(b, gs[0], gs[0], "pushed while full");
+    net.run();
+    // the source says it holds none of what a waits on: a settles and pulls again, its reply lost
+    for i in 0..20 {
+        let events = (0..100).map(|j| (l, osis_proto::Event::Deleted(osis_label::blob_id(format!("unserved {i} {j}").as_bytes())))).collect();
+        net.inject(b, pc, &osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false })));
+    }
+    net.run();
+    assert_eq!(net.sync(a).stream_waiting(c), (0, 0), "settled");
+    net.item(b, gs[0], gs[0], "pushed after");
+    net.run();
+    net.tamper = None;
+    net.restart(a, 1);
+    net.run();
+    net.advance(60_000);
+    assert_eq!(net.read(a, t), Some(s("pushed while full")));
+}
+
+// spec/sync.md §10 (Bodies): an announcement without bytes in a Stream with no cursor is
+// ignored. No position would ever settle it, so a co-reader sending them would make this node
+// ask (and keep asked) a fetch per announcement, unbounded
+#[test]
+fn cursorless_announcements_are_not_fetched_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b, gs) = pair(&mut net, 1);
+    net.item(b, gs[0], gs[0], "x");
+    net.run();
+    let l = label_of(&mut net, b, gs[0]);
+    let (_, pc) = conn_to(&net, a, b);
+    let fetches = net.peer_sent(a, 19);
+    let events = (0..100).map(|j| (l, osis_proto::Event::Added { blob_id: osis_label::blob_id(format!("unserved {j}").as_bytes()), blob: None, wrap: [0; osis_crypto::WRAP_LEN], stamp: None })).collect();
+    net.inject(b, pc, &osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false })));
+    net.run();
+    assert_eq!(net.peer_sent(a, 19), fetches, "no fetch asked");
+}
