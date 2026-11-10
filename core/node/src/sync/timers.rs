@@ -11,8 +11,8 @@ impl SyncEngine {
             .iter()
             .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.dirty && l.phase == Phase::Open && l.ready()).map(move |(lid, _)| (*id, *lid)))
             .collect();
-        // no pass before a fill has what judging needs, on any connection: it would call this node
-        // stranded
+        // no pass before a fill has what judging needs, on any connection: it would ask what it
+        // lacks at once, out of the fill's order (`read_first`)
         todo.into_iter().filter(|(_, l)| !self.fill_first_waits(l)).collect()
     }
 

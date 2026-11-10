@@ -7,7 +7,7 @@ use osis_base::{Ak, BlobId, LabelId, Role, Tid, Value};
 use osis_node::Mutation;
 use osis_node::sync::EntryKind;
 use osis_schema::{Aspect, StaticSchema};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 static KEPT: StaticSchema = StaticSchema::new("fill.osis", "revision 1; purgeable_by(author) keep_history(forever) aspect f:msg.0: string;\n");
 const MSG: Aspect<Value> = Aspect::new("f:msg.0", &KEPT);
@@ -417,9 +417,9 @@ fn junk_listed_goes_when_it_comes_spec_sync_6() {
 }
 
 /// `c`, a new node, past the listing, the rotation that brings the head's read secret held back
-/// for less than the stall time: no pass runs, so not stranded, whatever wants one: `write` an
-/// own write, and with two hosts the second host's fill, which finds order 0 in flight on the
-/// first and goes on.
+/// for less than the stall time: no pass runs (it would ask every message at once, in ID order),
+/// so not stranded and messages come newest first, whatever wants one: `write` an own write, and
+/// with two hosts the second host's fill, which finds order 0 in flight on the first and goes on.
 fn no_pass_before_order_0(hosts: usize, write: bool) {
     let mut net = Net::new();
     let hs: Vec<usize> = (0..hosts).map(|_| net.add_host()).collect();
@@ -458,6 +458,7 @@ fn no_pass_before_order_0(hosts: usize, write: bool) {
         f.net.feed(c, osis_node::sync::Event::Local);
     }
     // while the fetch counts as asked (past it, `a_fill_waits_on_its_trickled_batch_...`)
+    f.net.fetched.insert(c, Vec::new());
     let start = f.net.now();
     while f.net.now() + 1_000 < start + osis_proto::client::STALL_TIMEOUT_MS {
         f.net.round();
@@ -471,6 +472,10 @@ fn no_pass_before_order_0(hosts: usize, write: bool) {
     let ids = f.net.host_ids(hs[0], &l);
     let posts: BTreeSet<BlobId> = f.net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if f.net.engine(a).header(commit).is_some_and(|h| h.aspects.iter().any(|x| x.ak.as_str() == "f:msg.0")))).map(|x| x.0).collect();
     let fetched = ids.iter().filter(|b| posts.contains(b) && f.net.engine(c).has_blob(b)).count();
+    let ts: BTreeMap<BlobId, osis_base::Ts> = f.net.sync(a).entries(&l).into_iter().filter_map(|(b, k)| match k { EntryKind::Commit { commit, .. } => f.net.engine(a).header(&commit).map(|h| (b, h.ts)), _ => None }).collect();
+    let seq: Vec<_> = f.net.fetched[&c].iter().filter(|b| posts.contains(b)).map(|b| ts[b]).collect();
+    // a pass would ask what it lacks at once, in ID order (`read_first`)
+    assert!(seq.windows(2).all(|w| w[0] > w[1]), "messages fetched newest first before order 0");
     assert_eq!(fetched > FILL_BATCH / 2, hosts == 2, "{fetched} messages fetched at {hosts} host(s)");
     f.net.release();
     f.net.run();
