@@ -663,9 +663,9 @@ impl SyncEngine {
     }
 
     /// Whether this node writes compaction snapshots of `(t, a)`: it may write there, and the
-    /// aspect is compacted (`created.0` is kept forever and never compacted).
+    /// aspect is compacted (`created.0` is kept forever, `addenda.0` read whole: never compacted).
     fn snapshots_on(&self, t: &Tid, a: &Ak) -> bool {
-        !is_role(a) && a.as_str() != "created.0" && self.engine.role_on(t) >= Some(Role::Write)
+        !is_role(a) && a.as_str() != "created.0" && !osis_schema::core_types::is_addenda(a.as_str()) && self.engine.role_on(t) >= Some(Role::Write)
     }
 
     /// After purge requests applied (`Engine::take_purges`): on each named aspect this node
