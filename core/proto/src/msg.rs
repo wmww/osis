@@ -362,6 +362,12 @@ pub fn peek_head(body: &[u8]) -> Option<(u64, Id)> {
     Some((kind, Id::try_from(id).ok()?))
 }
 
+/// Kinds that answer a request, by its id: every kind with an id that is no request (Push,
+/// Notify and the stream's Stream, Applied, Digest and Members answer none).
+pub fn is_reply_kind(kind: u64) -> bool {
+    kind <= 46 && !is_request_kind(kind) && !matches!(kind, 23 | 29 | 43..=46)
+}
+
 /// Kinds that are requests (spec/wire.md §11.2: those with `->`).
 pub fn is_request_kind(kind: u64) -> bool {
     matches!(kind, 2 | 4 | 7 | 8 | 10 | 12 | 14 | 15 | 17 | 19 | 21 | 22 | 24 | 25 | 27 | 28 | 30 | 31 | 32 | 34 | 36 | 37 | 38 | 40 | 41)

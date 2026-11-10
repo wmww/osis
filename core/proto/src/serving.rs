@@ -458,7 +458,6 @@ impl ServingSession {
             ServingInput::Peer(m) => send(out, *m),
             ServingInput::Start => out.push(ServingOutput::Send(encode_frame(&Hello::new(now, self.cfg.challenge).encode()))),
             ServingInput::Bytes(b) => {
-                self.requests.received(b.len(), now);
                 self.decoder.push(&b);
                 // frame bytes plus reply allowances of this input's requests, all unanswered
                 // when the last was sent, and of client-port requests handed out earlier and
@@ -469,6 +468,7 @@ impl ServingSession {
                     self.decoder.set_max(if self.version.is_some() { osis_base::format::MAX_MESSAGE } else { crate::frame::MAX_HELLO_BYTES });
                     match self.decoder.next_frame() {
                         Ok(Some(body)) => {
+                            self.requests.frame_in(&body, now);
                             self.frame(now, store, &body, &mut charged, out);
                             // a peer within its window (spec/sync.md §6) never has more replies
                             // unwritten: one that pipelines past it is closed here, before its
@@ -488,7 +488,7 @@ impl ServingSession {
                         }
                     }
                 }
-                self.requests.arriving(self.decoder.partial(), now);
+                self.requests.tail_in(self.decoder.partial(), self.decoder.pending(), now);
             }
             // while pushes are held, a label waits its turn (`owed`)
             ServingInput::Changed(label) if self.held() => {

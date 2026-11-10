@@ -745,8 +745,8 @@ fn quiet_session() -> ClientSession {
 
 // spec/sync.md §6 (stall): the oldest request in flight not moving closes the connection at the
 // deadline (the node redials). Its frame taken by the transport moves it, and so do the first
-// bytes of a reply to it; other bytes (a push, the peer's own request, a reply to a later
-// request) move it only until `MAX_AHEAD` of them arrived since it last moved by its own
+// bytes of a reply to it; a reply to a later request moves nothing, other bytes (a push, the
+// peer's own request) only until `MAX_AHEAD` of them arrived since it last moved by its own
 #[test]
 fn stalled_requests_time_out() {
     let t = client::STALL_TIMEOUT_MS;
@@ -866,6 +866,37 @@ fn a_pusher_answering_nothing_is_closed_after_max_ahead_spec_sync_6() {
     }
     let late = c.handle(T0 + 1 + t, ClientInput::Timer);
     assert!(late.iter().any(|o| matches!(o, ClientOutput::Close)), "{late:?}");
+}
+
+// spec/sync.md §6 (stall: replies to other requests move nothing): a peer that answers every
+// later request, whole or in pieces, while the oldest goes unanswered is closed at the stall time;
+// Notifies beside those replies (a client-port `settle` waiting behind them) keep it
+#[test]
+fn answering_later_requests_holds_no_older_one_spec_sync_6() {
+    let t = client::STALL_TIMEOUT_MS;
+    let fetch = |id| Message::Fetch { id: osis_proto::msg::NODE_IDS | id, label: LabelId([7; 16]), max_reply: client::FIRST_REPLY as u64, ids: vec![bid(1)] };
+    let closed = |out: &[ClientOutput]| out.iter().any(|o| matches!(o, ClientOutput::Close));
+    for notifies in [false, true] {
+        let mut c = quiet_session();
+        c.handle(T0 + 1, ClientInput::Command(Command::Peer(Box::new(fetch(1)))));
+        let (mut now, mut k) = (T0 + 1, 2);
+        while now < T0 + 1 + t - 10_000 {
+            now += 10_000;
+            c.handle(now, ClientInput::Command(Command::Peer(Box::new(fetch(k)))));
+            let reply = encode_frame(&Message::FetchReply { id: osis_proto::msg::NODE_IDS | k, items: Vec::new() }.encode());
+            let (a, b) = reply.split_at(reply.len() / 2);
+            c.handle(now, ClientInput::Bytes(a.to_vec()));
+            c.handle(now, ClientInput::Bytes(b.to_vec()));
+            if notifies {
+                c.handle(now, ClientInput::Bytes(encode_frame(&Message::Notify { sub: 1, payload: osis_proto::api::Payload::Lapsed }.encode())));
+            }
+            k += 1;
+            assert!(!closed(&c.handle(now, ClientInput::Timer)), "notifies {notifies}: closed early at {} s", (now - T0) / 1000);
+        }
+        assert!(c.in_flight() < 2 * client::FIRST_REPLY, "notifies {notifies}: the later ones answered");
+        let late = c.handle(T0 + 1 + t, ClientInput::Timer);
+        assert_eq!(closed(&late), !notifies, "notifies {notifies}: {late:?}");
+    }
 }
 
 // spec/sync.md §6 (a node's own requests count as any): a peer silent on a stream Fetch is
