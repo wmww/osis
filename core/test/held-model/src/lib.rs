@@ -7,6 +7,7 @@
 pub mod edits;
 pub mod fetch;
 pub mod gen;
+pub mod lifetimes;
 pub mod model;
 pub mod roles;
 pub mod thing_history;
