@@ -1101,7 +1101,7 @@ fn setting_before_its_grant_comes_back_spec_perm_6() {
     net.set_online(a, false);
     net.drop_link(c, h2);
     net.drop_link(d, h1);
-    let grant = set_edge(net.engine(c), t, bob, Some(edge(Role::Admin)), None);
+    let grant = net.grant(c, t, bob, Role::Admin);
     net.run();
     assert!(net.engine(b).core.ix.commits.get(&grant).is_some());
     let at_host = net.host_ids(h2, &l).len();
