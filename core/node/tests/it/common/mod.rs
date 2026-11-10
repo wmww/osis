@@ -143,7 +143,9 @@ pub fn edge(role: Role) -> ct::Edge {
 /// optional frontier: a write that needs one given none carries an empty one (an explicit
 /// removal, one with no frontier being a finalize, or a write that audits, spec/permissions.md
 /// §2, §5.1). A hand-built frontier says exactly what this node lists: it answers the write
-/// with no addendum of its own (`Engine::write_addenda`), which would list the rest.
+/// with no addendum of its own (`Engine::write_addenda`), which would list the rest. A bare edge
+/// write (no secrets): `LocalPeer` runs no sync passes, so no repair follows it here; on a
+/// `Net`, set up access with `Net::grant`.
 pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>, frontier: Option<Value>) -> CommitId {
     if frontier.is_some() || e.needs_frontier(&thing, &holder, edge.as_ref()) {
         e.write_addenda(false);
