@@ -73,13 +73,10 @@ type BodyKey = (osis_base::CommitId, Vec<usize>);
 pub(crate) const RELINK_BACKOFF_MS: u64 = 3_600_000;
 pub(crate) const RELINK_BACKOFF_MAX_MS: u64 = 7 * 24 * 3_600_000;
 
-/// The labels this node syncs (`SyncEngine::labels`) as last computed, valid within one step
-/// while the engine's generation, the retired labels and the time are unchanged.
+/// The labels this node syncs (`SyncEngine::labels`): a memo's answer (`SyncEngine::synced_of`),
+/// and the one last asked for (`SyncEngine::synced`).
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Synced {
-    /// Engine generation, retired labels, the time if `labels` read it.
-    pub(crate) key: (u64, usize, u64),
-    /// A replaced label was judged: an admin edge's `until` makes the answer depend on the time.
-    timed: bool,
     labels: Vec<(Tid, Arc<GroupLabel>)>,
     /// The IDs of `labels`.
     pub(crate) ids: BTreeSet<LabelId>,
@@ -88,12 +85,6 @@ pub(crate) struct Synced {
     pub actors: BTreeMap<LabelId, (Tid, Vec<HostKey>)>,
     /// `actors` by actor: the labels of each.
     pub by_actor: BTreeMap<Tid, BTreeSet<LabelId>>,
-}
-
-impl Default for Synced {
-    fn default() -> Synced {
-        Synced { key: (u64::MAX, 0, 0), timed: false, labels: Vec::new(), ids: BTreeSet::new(), actors: BTreeMap::new(), by_actor: BTreeMap::new() }
-    }
 }
 
 /// An opened inbox payload kept while it awaits: the commit's plaintext, its chain, its records.
@@ -253,7 +244,14 @@ pub struct SyncEngine {
     /// Sessions of forgotten labels whose pushes the host is still to stop.
     pub(crate) unsubscribe: BTreeSet<(ConnId, LabelId)>,
     /// The synced labels as last computed (`labels()`).
-    pub(crate) synced: Synced,
+    /// The labels synced as `labels` last answered: what reads between two asks go by.
+    pub(crate) synced: Arc<Synced>,
+    /// `labels` (`engine::memo`): built again when what it read of the engine, of the retired
+    /// and handed-off sets or, where it judged an admin role, of the time (`wall`) changed.
+    synced_of: crate::engine::memo::Memo<(), Arc<Synced>>,
+    /// The time `labels` was last asked at, read by its memo only where the answer depends on
+    /// it (a replaced label's admin, whose edge may have an `until`).
+    wall: crate::engine::memo::Tracked<u64>,
     /// (snapshot, body, aspect) judgments settled with the body kept (spec/sync.md §7); a pair
     /// goes once either body is dropped.
     pub(crate) covered_judged: BTreeSet<(osis_base::CommitId, osis_base::CommitId, Tid, osis_base::Ak)>,
@@ -421,7 +419,9 @@ impl SyncEngine {
             repair_state: BTreeMap::new(),
             links_failed: BTreeSet::new(),
             tied: deliver::TiedWork { all: true, ..Default::default() },
-            synced: Synced::default(),
+            synced: Default::default(),
+            synced_of: crate::engine::memo::Memo::new("labels synced"),
+            wall: Default::default(),
             unsubscribe: BTreeSet::new(),
             served: BTreeMap::new(),
             covered_judged: BTreeSet::new(),
@@ -724,51 +724,45 @@ impl SyncEngine {
     /// (spec/sync.md §2: it places the role-class commits there, the replacement's
     /// `label.0` among them, and deletes the content entries; `retire_at`, `retire_replaced`).
     pub fn labels(&mut self) -> Vec<(Tid, Arc<GroupLabel>)> {
-        // the inputs: engine state, retirements, and the time (an admin edge's `until`)
         let now = self.now();
-        let key = (self.engine.core.generation, self.state.retired.len(), if self.synced.timed { now } else { 0 });
-        if self.synced.key == key {
-            #[cfg(debug_assertions)]
-            if self.engine.recheck(format!("labels {} {} {}", self.state.retired.len(), self.state.handed_off.len(), key.2)) {
-                let ids = |v: &[(Tid, Arc<GroupLabel>)]| v.iter().map(|(g, l)| (*g, l.id, l.replaced)).collect::<Vec<_>>();
-                let (fresh, _) = self.compute_labels(now);
-                assert_eq!(ids(&fresh), ids(&self.synced.labels), "labels() cached");
-            }
-        } else {
+        self.wall.set(now);
+        let s = match crate::engine::memo::Memo::get_in(self, |s| &s.synced_of, &(), |s| Ok::<_, std::convert::Infallible>(Arc::new(s.compute_synced()))) {
+            Ok(s) => s,
+            Err(e) => match e {},
+        };
+        // built again since the last ask
+        if !Arc::ptr_eq(&s, &self.synced) {
             self.stats.label_reads += 1;
-            let (labels, timed) = self.compute_labels(now);
-            let actors: BTreeMap<LabelId, (Tid, Vec<HostKey>)> = labels.iter().map(|(g, l)| (l.id, (self.keys_actor(g), peers::host_keys(&l.hosts).collect()))).collect();
-            let mut by_actor: BTreeMap<Tid, BTreeSet<LabelId>> = BTreeMap::new();
-            for (l, (a, _)) in &actors {
-                by_actor.entry(*a).or_default().insert(*l);
-            }
-            let ids: BTreeSet<LabelId> = labels.iter().map(|(_, l)| l.id).collect();
-            self.changed_due |= ids != self.synced.ids;
-            let key = (key.0, key.1, if timed { now } else { 0 });
-            self.synced = Synced { key, timed, labels, ids, actors, by_actor };
+            self.changed_due |= s.ids != self.synced.ids;
+            self.synced = s;
         }
         self.synced.labels.clone()
     }
 
-    /// `labels`, computed with roles at `now`.
-    /// Whether it asked for a role (a replaced label): only then does the time matter.
-    fn compute_labels(&mut self, now: u64) -> (Vec<(Tid, Arc<GroupLabel>)>, bool) {
-        let ts = osis_base::Ts::make(osis_base::WallMs(now), 0).unwrap_or_default();
+    /// `labels`, with roles at the time last asked (`wall`), read only where a replaced label
+    /// asks for a role.
+    fn compute_synced(&mut self) -> Synced {
         let me = self.engine.account_tid();
-        let (mut out, mut timed) = (Vec::new(), false);
+        let mut labels = Vec::new();
         for g in self.engine.labeled_groups() {
             // handed off (`set_handed_off`): never synced
             if self.state.handed_off.contains(&g) || self.engine.epochs(&g).is_none_or(|e| !e.read.holds_any()) {
                 continue;
             }
-            let labels = self.engine.labels_of(&g);
-            let admin = labels.iter().any(|l| l.replaced) && {
-                timed = true;
+            let of = self.engine.labels_of(&g);
+            let admin = of.iter().any(|l| l.replaced) && {
+                let ts = osis_base::Ts::make(osis_base::WallMs(self.wall.get()), 0).unwrap_or_default();
                 me.is_some_and(|me| crate::engine::write::role_of(&self.engine.core, &me, &g, ts) == Some(osis_base::Role::Admin))
             };
-            out.extend(labels.into_iter().filter(|l| !l.replaced || admin && !self.state.retired.contains(&l.id)).map(|l| (g, l)));
+            labels.extend(of.into_iter().filter(|l| !l.replaced || admin && !self.state.retired.contains(&l.id)).map(|l| (g, l)));
         }
-        (out, timed)
+        let actors: BTreeMap<LabelId, (Tid, Vec<HostKey>)> = labels.iter().map(|(g, l)| (l.id, (self.keys_actor(g), peers::host_keys(&l.hosts).collect()))).collect();
+        let mut by_actor: BTreeMap<Tid, BTreeSet<LabelId>> = BTreeMap::new();
+        for (l, (a, _)) in &actors {
+            by_actor.entry(*a).or_default().insert(*l);
+        }
+        let ids = labels.iter().map(|(_, l)| l.id).collect();
+        Synced { labels, ids, actors, by_actor }
     }
 
     /// Retires the replaced labels an admin still syncs once `ROLE_KEEP_MS` passed since it

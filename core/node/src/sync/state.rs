@@ -392,7 +392,7 @@ pub struct State {
     /// Things forgotten whose opened inbox blobs are not yet checked (`y/f`).
     pub forget: BTreeSet<Tid>,
     /// Replaced labels this admin no longer syncs (`y/q`, spec/sync.md §2).
-    pub retired: BTreeSet<LabelId>,
+    pub retired: crate::engine::memo::StampedSet<LabelId>,
     /// When this admin first saw each replaced label it still syncs (corrected wall ms, `y/q`
     /// with a time): retired after `ROLE_KEEP` whatever its hosts say.
     pub replaced_seen: BTreeMap<LabelId, u64>,
@@ -401,7 +401,7 @@ pub struct State {
     /// Commits for nodes over a direct connection (pairing), until the app takes them.
     pub direct: BTreeMap<Tid, Vec<CommitId>>,
     /// Groups handed off to another node (`y/w`).
-    pub handed_off: BTreeSet<Tid>,
+    pub handed_off: crate::engine::memo::StampedSet<Tid>,
     /// Labels with no first download outstanding: a pass finished once, or this node made them
     /// (`y/B`). History `complete` reads it, so it outlives the run.
     pub passed: BTreeSet<LabelId>,

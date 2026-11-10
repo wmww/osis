@@ -227,11 +227,13 @@ impl SyncEngine {
             c.labels.retain(|l, _| !gone(l));
             c.req.forget(gone);
         }
-        self.synced.key.0 = u64::MAX;
-        self.synced.actors.retain(|l, _| !gone(l));
-        for ls in self.synced.by_actor.values_mut() {
+        // until `labels` is asked again, the forgotten labels are no actor's
+        let mut s = (*self.synced).clone();
+        s.actors.retain(|l, _| !gone(l));
+        for ls in s.by_actor.values_mut() {
             ls.retain(|l| !gone(l));
         }
+        self.synced = std::sync::Arc::new(s);
         self.passes.retain(|(_, l), _| !gone(l));
         self.peer_received.retain(|l, _| !gone(l));
         self.peer_passes.retain(|(_, l), _| !gone(l));

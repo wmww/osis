@@ -11,7 +11,6 @@ impl SyncEngine {
     /// here (no download, no pass, nothing placed there).
     pub fn set_handed_off(&mut self, group: Tid, on: bool) -> Vec<Action> {
         self.state.set_handed_off(group, on);
-        self.synced.key.0 = u64::MAX;
         self.served_cache = None;
         if on {
             // its labels' sessions stop here: nothing more runs on them

@@ -57,11 +57,11 @@ fn hash<Q: Hash + ?Sized>(k: &Q) -> u64 {
 /// A container's change stamps, owned by the container: its writes call `wrote`, its reads
 /// `read`. Dropped with the container, after which nothing that read it holds.
 #[derive(Debug, Default)]
-pub(crate) struct Stamps(Arc<Mutex<Table>>);
+pub struct Stamps(Arc<Mutex<Table>>);
 
 impl Stamps {
     /// Key `k` was written (`present`) or removed.
-    pub(crate) fn wrote<Q: Hash + ?Sized>(&mut self, k: &Q, present: bool) {
+    pub fn wrote<Q: Hash + ?Sized>(&mut self, k: &Q, present: bool) {
         let mut t = lock(&self.0);
         t.ver += 1;
         let v = t.ver;
@@ -73,7 +73,7 @@ impl Stamps {
     }
 
     /// The container changed in a way no key names.
-    pub(crate) fn wrote_all(&mut self) {
+    pub fn wrote_all(&mut self) {
         let mut t = lock(&self.0);
         t.ver += 1;
         t.absent = t.ver;
@@ -81,14 +81,14 @@ impl Stamps {
     }
 
     /// Key `k` is read: the memo computing, if any, depends on it.
-    pub(crate) fn read<Q: Hash + ?Sized>(&self, k: &Q) {
+    pub fn read<Q: Hash + ?Sized>(&self, k: &Q) {
         if RECORDING.load(Ordering::Relaxed) != 0 {
             self.record(Some(hash(k)));
         }
     }
 
     /// The whole container is read.
-    pub(crate) fn read_all(&self) {
+    pub fn read_all(&self) {
         if RECORDING.load(Ordering::Relaxed) != 0 {
             self.record(None);
         }
@@ -189,7 +189,7 @@ struct Entry<V> {
 ///
 /// An answer no longer asked for stays until the memo has doubled since entries were last
 /// checked (`SWEEP`), so a memo holds at most twice what is current plus what was asked since.
-pub(crate) struct Memo<K, V> {
+pub struct Memo<K, V> {
     /// Names the memo in costs (`costs::span`, one per computation) and failures.
     name: &'static str,
     entries: RefCell<HashMap<K, Entry<V>>>,
@@ -203,12 +203,12 @@ pub(crate) struct Memo<K, V> {
 const SWEEP: usize = 2;
 
 impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
-    pub(crate) fn new(name: &'static str) -> Self {
+    pub fn new(name: &'static str) -> Self {
         Memo { name, entries: RefCell::new(HashMap::new()), kept: Cell::new(0) }
     }
 
     /// The value of `f` for `k`: the one kept while nothing it read has changed.
-    pub(crate) fn get(&self, k: &K, f: impl Fn() -> V) -> V {
+    pub fn get(&self, k: &K, f: impl Fn() -> V) -> V {
         match Self::get_in(&mut &*self, |me| *me, k, |_| Ok::<V, std::convert::Infallible>(f())) {
             Ok(v) => v,
             Err(e) => match e {},
@@ -217,7 +217,7 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
 
     /// `get` for a function that needs all of `ctx` and may fail (one running a transaction of
     /// the engine holding this memo, which `memo` finds in `ctx`). A failure is not kept.
-    pub(crate) fn get_in<C, E>(ctx: &mut C, memo: impl Fn(&C) -> &Self, k: &K, f: impl Fn(&mut C) -> Result<V, E>) -> Result<V, E> {
+    pub fn get_in<C, E>(ctx: &mut C, memo: impl Fn(&C) -> &Self, k: &K, f: impl Fn(&mut C) -> Result<V, E>) -> Result<V, E> {
         if let Some((value, deps, check)) = memo(ctx).kept(k) {
             if check {
                 // a fresh run that fails compares nothing
@@ -239,7 +239,7 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
 
     /// The answer kept for `k` while it holds, read by a writer about to change what it was read
     /// from (`amend`): nothing computing depends on it.
-    pub(crate) fn held(&self, k: &K) -> Option<V> {
+    pub fn held(&self, k: &K) -> Option<V> {
         self.entries.borrow().get(k).filter(|e| e.deps.iter().all(Dep::holds)).map(|e| e.value.clone())
     }
 
@@ -247,7 +247,7 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
     /// (`held`), changed what it was read from and knows what a fresh run gives after that
     /// (a state decoded once and patched by each join costs the join, not the state). Nothing
     /// is kept if `k` has no entry. Debug builds compare it with a fresh run like any hit.
-    pub(crate) fn amend(&self, k: &K, value: V) {
+    pub fn amend(&self, k: &K, value: V) {
         if let Some(e) = self.entries.borrow_mut().get_mut(k) {
             e.value = value;
             e.deps = e.deps.iter().map(|d| Dep { table: d.table.clone(), key: d.key, seen: lock(&d.table).stamp(d.key) }).collect();
@@ -360,14 +360,53 @@ pub struct Tracked<T> {
     stamps: Stamps,
 }
 
-impl<T: Copy> Tracked<T> {
+impl<T: Copy + PartialEq> Tracked<T> {
     pub fn get(&self) -> T {
         self.stamps.read_all();
         self.value
     }
+    /// Sets the value; a change only if it differs.
     pub fn set(&mut self, value: T) {
-        self.stamps.wrote_all();
-        self.value = value;
+        if self.value != value {
+            self.stamps.wrote_all();
+            self.value = value;
+        }
+    }
+}
+
+/// A set outside the journal whose reads and writes are stamped (node-sync's state).
+#[derive(Debug)]
+pub struct StampedSet<T> {
+    set: std::collections::BTreeSet<T>,
+    stamps: Stamps,
+}
+
+impl<T> Default for StampedSet<T> {
+    fn default() -> Self {
+        StampedSet { set: Default::default(), stamps: Stamps::default() }
+    }
+}
+
+impl<T> Deref for StampedSet<T> {
+    type Target = std::collections::BTreeSet<T>;
+    fn deref(&self) -> &std::collections::BTreeSet<T> {
+        self.stamps.read_all();
+        &self.set
+    }
+}
+
+impl<T: Ord + Hash> StampedSet<T> {
+    pub fn contains(&self, t: &T) -> bool {
+        self.stamps.read(t);
+        self.set.contains(t)
+    }
+    pub fn insert(&mut self, t: T) -> bool {
+        self.stamps.wrote(&t, true);
+        self.set.insert(t)
+    }
+    pub fn remove(&mut self, t: &T) -> bool {
+        self.stamps.wrote(t, false);
+        self.set.remove(t)
     }
 }
 

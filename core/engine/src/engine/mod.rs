@@ -14,7 +14,7 @@ pub(crate) mod held;
 pub mod listing;
 pub(crate) mod index;
 pub(crate) mod journal;
-pub(crate) mod memo;
+pub mod memo;
 pub(crate) mod pages;
 pub(crate) mod large;
 pub(crate) mod read;
