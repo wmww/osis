@@ -582,7 +582,7 @@ fn role_passes(n: usize) -> [([u64; 5], [u64; 5]); 2] {
     for (k, on) in [u, groups[0]].into_iter().enumerate() {
         net.advance(61_000);
         let s0 = (net.sync(a).pass_stats(), net.sync(b).pass_stats());
-        crate::net::set_edge(net.engine(a), on, other, Role::Read);
+        net.grant(a, on, other, Role::Read);
         net.run();
         out[k] = (pass_work(s0.0, net.sync(a).pass_stats()), pass_work(s0.1, net.sync(b).pass_stats()));
     }
@@ -1206,7 +1206,7 @@ fn stale_walk_claims(n: usize) -> u64 {
     for i in 0..n {
         net.group_seeded(b, &[], addrs.clone(), 100 + i as u64);
         let f = net.group_seeded(a, &[], addrs.clone(), 200 + i as u64);
-        crate::net::set_edge(net.engine(a), g, f, Role::Read);
+        net.grant(a, g, f, Role::Read);
     }
     let t = net.item(a, g, g, "before");
     net.run();
@@ -1263,6 +1263,7 @@ fn group_change(n: usize, change: Change) -> ([[u64; 3]; 3], [u64; 2]) {
                 let acts = net.sync(a).carry_out(done).unwrap();
                 net.actions(a, acts);
             }
+            // the bare edge write is the change measured: the own-secrets repair path's cost
             Change::Edge => drop(crate::net::set_edge(net.engine(a), things[0], tb, Role::Admin)),
         }
         net.run();
