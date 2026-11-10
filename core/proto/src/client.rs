@@ -54,8 +54,9 @@ pub fn allowance(msg: &Message) -> usize {
     match msg {
         M::Reconcile { .. } | M::Prove { .. } => MAX_MESSAGE,
         M::Sync { max_reply, .. } | M::Fetch { max_reply, .. } | M::Call { max_reply, .. } | M::Sub { max_reply, .. } => usize::try_from(*max_reply).unwrap_or(usize::MAX),
+        M::Pull(p) => usize::try_from(p.max_reply).unwrap_or(usize::MAX),
         M::Ping { .. } | M::Path { .. } | M::Open { .. } | M::Register { .. } | M::Upload { .. } | M::Deposit { .. } | M::Delete { .. } | M::Subscribe { .. } | M::Unsubscribe { .. } | M::Auth { .. } | M::Unsub { .. } | M::Resume { .. } | M::Beacons { .. } | M::Offer { .. } | M::Lost { .. } | M::NoRecord { .. } => SMALL_REPLY,
-        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::Budget { .. } | M::SyncReply { .. } | M::ReconcileReply { .. } | M::FetchReply { .. } | M::Push { .. } | M::Reply { .. } | M::Notify { .. } | M::Proved { .. } | M::Resumed { .. } | M::Shared { .. } => 0,
+        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::Budget { .. } | M::SyncReply { .. } | M::ReconcileReply { .. } | M::FetchReply { .. } | M::Push { .. } | M::Reply { .. } | M::Notify { .. } | M::Proved { .. } | M::Resumed { .. } | M::Shared { .. } | M::PullReply(_) | M::Stream(_) | M::Applied { .. } => 0,
     }
 }
 /// Clock samples kept.
@@ -101,8 +102,9 @@ pub enum Command {
     Prove(Vec<crate::Prover>),
     /// This node's records for the peer (spec/sync.md §10, Pair key): answered by `Resumed`.
     Resume { nonce: [u8; 32], tags: Vec<[u8; 32]> },
-    /// A shared-set message (spec/wire.md §11.2 Beacons, Offer, Lost, Shared), sent as is.
-    Shared(Box<Message>),
+    /// A shared-set or stream message (spec/wire.md §11.2 Beacons to NoRecord, Pull to
+    /// Applied), sent as is: the node answers these itself.
+    Peer(Box<Message>),
     Register { label: LabelId, step: Step, claim_set: Option<ClaimSet> },
     /// The registration path after `after` (from the genesis step when none), all pages.
     Path { label: LabelId, after: Option<StepId> },
@@ -181,8 +183,8 @@ pub enum ClientEvent {
     /// A request was answered by Error, or could not be sent (code 2: a delete item whose time
     /// cannot be encoded). `fetch`: a Fetch's blob IDs left unanswered (empty for other kinds).
     Refused { label: Option<LabelId>, kind: Request, code: Code, fetch: Vec<BlobId> },
-    /// A shared-set message from the peer.
-    Shared(Box<Message>),
+    /// A shared-set or stream message from the peer, for the node to answer.
+    Peer(Box<Message>),
     /// The answer to a Resume: the listener's nonce and the tag of a record it holds.
     Resumed { nonce: [u8; 32], tag: Option<[u8; 32]> },
     /// The peer broke a protocol rule (diagnostic); a paged exchange it broke is abandoned.
@@ -562,7 +564,7 @@ impl ClientSession {
                 }
                 self.request(|id| Message::Resume { id, nonce, tags }, Pending::Resume);
             }
-            Command::Shared(m) => send(out, *m),
+            Command::Peer(m) => send(out, *m),
             Command::Register { label, step, claim_set } => self.request(|id| Message::Register { id, label, step, claim_set }, Pending::Register(label)),
             Command::Path { label, after } => self.request(|id| Message::Path { id, label, after }, Pending::Path(label)),
             Command::Sync { label, cursor, inline_limit, entries, gained } => {
@@ -774,7 +776,7 @@ impl ClientSession {
                     self.api_subs.remove(&sub);
                 }
             }
-            m @ (Message::Beacons { .. } | Message::Offer { .. } | Message::Lost { .. } | Message::Shared { .. } | Message::NoRecord { .. }) => event(out, ClientEvent::Shared(Box::new(m))),
+            m if m.for_node() => event(out, ClientEvent::Peer(Box::new(m))),
             m if m.is_request() => send(out, Message::Error { id: m.id(), code: Code::UNSUPPORTED }),
             m => self.reply(now, m, out),
         }

@@ -8,7 +8,7 @@
 | Found by | fixed address in `label.0`, link and card text | `reach.0`, LAN, a link's sharer |
 | Who can be one | a node with `host^.0` that admits the label | a node that reads the group |
 | Serving code | `ServingSession` in the hub (`osis-host`, `HostStore`) | `ServingSession` in `sync/serve.rs` (`PeerStore`); local passes when no host is listed (notes/peers.md) |
-| Store | `host.redb` (entries, blobs, durable log) | node sync's entries and the engine's blobs; log in memory (`Feed`) |
+| Store | `host.redb` (entries, blobs, durable log) | node sync's entries and the engine's blobs; the durable node log (notes/peers.md, The stream) |
 | Key | host key | dialable key; the client port has its own |
 | Opens by | sync key, claim, static entry | those and proof 3 (a member of the connection's shared set) |
 | Registration | first come, by parent's delete key | steps recorded in `label.0`, plus child steps peers register (memory only); new labels refused |

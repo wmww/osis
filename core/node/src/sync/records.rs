@@ -137,7 +137,7 @@ impl SyncEngine {
             // side tests a filter it receives (first contact, issues/net-first-contact.md)
             let now = self.raw_now();
             if let Some(c) = self.conns.get_mut(&conn) {
-                let o = c.session.handle(now, ClientInput::Command(Command::Shared(Box::new(osis_proto::Message::NoRecord { id: super::shared::NO_RECORD_ID }))));
+                let o = c.session.handle(now, ClientInput::Command(Command::Peer(Box::new(osis_proto::Message::NoRecord { id: super::shared::NO_RECORD_ID }))));
                 self.outputs(conn, o, out)?;
             }
             return self.shared_begin(conn, None, out);
@@ -204,6 +204,10 @@ impl SyncEngine {
             }
         } else {
             self.records.live.insert(id, conn);
+        }
+        // the dialer pulls the listener (as built: one direction per connection)
+        if self.conns.contains_key(&conn) {
+            self.stream_bind(conn, id)?;
         }
         self.shared_begin(conn, Some(r), out)
     }

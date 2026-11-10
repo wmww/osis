@@ -421,6 +421,10 @@ impl SyncEngine {
             lc.tries.clear();
             (lc.step_retry, lc.step_refusals) = (0, 0);
         }
+        // a co-reader's events come by its node log stream (spec/sync.md §10, Stream)
+        if self.conns.get(&conn).is_some_and(|c| c.peer) {
+            return self.stream_join(conn, l, out);
+        }
         if self.cfg.subscribe {
             self.command(conn, Command::Subscribe { labels: vec![l] }, out)?;
         }

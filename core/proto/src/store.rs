@@ -239,6 +239,12 @@ pub trait LabelStore {
     /// Removes an entry, leaving a tombstone, and logs the deletion
     /// (or refuses, e.g. code 4).
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError>;
+    /// Whether this store keeps the per-label log Sync, Subscribe and Reconcile read. A reader
+    /// serves its node log stream instead (spec/sync.md §10, Stream): those are answered
+    /// Error 11 and the log methods below are never asked.
+    fn serves_log(&self) -> bool {
+        true
+    }
     /// The label log's instance ID and its last sequence number (0: empty).
     fn log_head(&self, label: &LabelId) -> Result<([u8; 16], u64), StoreError>;
     /// Records with sequence numbers above `after`, at most `max`; `None` when the log no longer

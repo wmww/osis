@@ -440,6 +440,21 @@ impl Transaction<'_> {
         Ok(ended.iter().find(|(id, _)| *id == incarnation).filter(|(_, end)| pos <= *end).map(|_| pos))
     }
 
+    /// Up to `limit` events after position `after` in log order, and the position the read
+    /// covers: its last event's when more remain, else the log's end. Costs what it returns.
+    pub fn log_after(&mut self, after: u64, limit: usize) -> Result<(Vec<LoggedEvent>, u64, bool), Error> {
+        let end = self.log_end()?;
+        let rows = self.cat_scan(EVENT, &after.saturating_add(1).to_be_bytes(), limit.saturating_add(1))?;
+        let more = rows.len() > limit;
+        let mut events = Vec::with_capacity(rows.len().min(limit));
+        for (k, v) in rows.into_iter().take(limit) {
+            let pos = R::new(k.get(2..).ok_or(Error::Corrupt("node log"))?).u64()?;
+            events.push(LoggedEvent { pos, event: decode_event(&v)? });
+        }
+        let at = if more { events.last().map_or(after, |e| e.pos) } else { end.max(after) };
+        Ok((events, at, more))
+    }
+
     /// Up to `limit` events after `cursor` in log order, or from the start with no cursor or one
     /// that is no cursor (`whole`). Costs what it returns, however large the log.
     pub fn log_read(&mut self, cursor: Option<&[u8]>, limit: usize) -> Result<LogRead, Error> {

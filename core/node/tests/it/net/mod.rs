@@ -80,6 +80,8 @@ pub struct Net {
     held_messages: Vec<Msg>,
     /// Message kinds nodes sent to hosts, by kind.
     pub sent_kinds: BTreeMap<u64, usize>,
+    /// Messages sent on peer links, by sender and kind.
+    pub peer_kinds: BTreeMap<(usize, u64), usize>,
     /// Bytes nodes sent to hosts.
     pub sent_bytes: usize,
     /// Every dial: (node, address).
@@ -204,7 +206,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 impl Net {
     /// A network whose new nodes are each their own account's only node.
     pub fn new() -> Net {
-        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None }
+        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None }
     }
 
     /// A network whose new nodes join no account: the test makes or pairs them.
@@ -344,6 +346,16 @@ impl Net {
     pub fn take(&mut self, n: usize) -> SyncEngine {
         self.nodes[n].online = false;
         self.nodes[n].sync.take().unwrap()
+    }
+
+    /// Node `n`'s peer connections: its end, the other node, the other end.
+    pub fn peer_conns(&self, n: usize) -> Vec<(ConnId, usize, ConnId)> {
+        self.plinks.iter().filter(|((x, _), _)| *x == n).map(|((_, c), (m, pc))| (*c, *m, *pc)).collect()
+    }
+
+    /// Messages of `kind` node `n` sent on peer links so far.
+    pub fn peer_sent(&self, n: usize, kind: u64) -> usize {
+        self.peer_kinds.get(&(n, kind)).copied().unwrap_or(0)
     }
 
     /// The other end of peer connection `(n, c)`.
@@ -547,6 +559,15 @@ impl Net {
                 }
                 Action::Send { conn, mut bytes } if self.plinks.contains_key(&(n, conn)) => {
                     let (m, pc) = self.plinks[&(n, conn)];
+                    {
+                        let mut d = osis_proto::FrameDecoder::new();
+                        d.push(&bytes);
+                        while let Ok(Some(body)) = d.next_frame() {
+                            if let Ok(x) = osis_proto::Message::decode(&body) {
+                                *self.peer_kinds.entry((n, x.kind())).or_default() += 1;
+                            }
+                        }
+                    }
                     if let Some(t) = &mut self.tamper {
                         let mut d = osis_proto::FrameDecoder::new();
                         d.push(&bytes);

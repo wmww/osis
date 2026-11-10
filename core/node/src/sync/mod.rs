@@ -27,6 +27,7 @@ mod pass;
 pub mod proofs;
 pub mod records;
 mod shared;
+mod stream;
 pub mod credentials;
 pub mod peers;
 mod handoff;
@@ -239,6 +240,8 @@ pub struct SyncEngine {
     pub(crate) stats: PassStats,
     /// Records and their connections (`records`).
     pub(crate) records: records::Records,
+    /// Each connection's node log stream, both sides (`stream`).
+    pub(crate) streams: BTreeMap<ConnId, stream::ConnStream>,
     /// `changed_at` must be stamped again (`stamp_changes`); a start checks everything once.
     pub(crate) changed_due: bool,
     /// `Core::role_generation` at the last `changed_at` pass.
@@ -313,11 +316,9 @@ impl SyncEngine {
         engine.set_sync_records(&state::Records);
         // keeps the changed commits from now on (`Engine::take_changed`)
         engine.take_changed();
-        let mut state = State::load(&mut engine)?;
+        let state = State::load(&mut engine)?;
         // deposits not answered before a restart go again
         let outbox = state.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
-        let mut rng = rng;
-        rng.fill_bytes(&mut state.feed.log_id);
         let started = clock.now_wall_ms().0;
         Ok(SyncEngine {
             forget_seeded: false,
@@ -384,6 +385,7 @@ impl SyncEngine {
             covered_judged: BTreeSet::new(),
             stats: PassStats::default(),
             records: records::Records::default(),
+            streams: BTreeMap::new(),
             changed_due: true,
             changed_gen: 0,
             touched: work::Touched::default(),
@@ -647,7 +649,7 @@ impl SyncEngine {
         self.send_inbox()?;
         self.send_outbox(out)?;
         self.run_dirty(out)?;
-        self.notify_served(out)?;
+        self.stream_push(out)?;
         // after the passes: this step's last sends go first, then what the change ends
         self.shared_changed(out)?;
         Ok(())

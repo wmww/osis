@@ -373,6 +373,33 @@ impl Transaction<'_> {
         Ok(acked)
     }
 
+    /// `l` leaves this record's stream (issues/net-reconnect.md, Joining and rejoining): out of
+    /// S, `stop` kept as its lag unless an older one is. Pending is untouched: the shared set
+    /// re-marks a close itself (`record_close`).
+    pub fn record_stop(&mut self, id: &RecordId, l: &LabelId, stop: Option<Vec<u8>>) -> Result<(), Error> {
+        let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
+        let before = rec.cost();
+        self.record_drop_member(&mut rec, l)?;
+        if let Some(c) = stop
+            && self.cat_get(&lag_key(id, l))?.is_none()
+        {
+            rec.member_bytes += self.record_put_lag(id, l, c)?;
+        }
+        self.record_store(&rec, before)
+    }
+
+    /// A connection of this record starts: every member leaves the stream at the position it
+    /// holds (its own lag while in pages, else the record's cursor), so one the new connection
+    /// does not reopen claims nothing past what it applied. O(S).
+    pub fn record_stop_all(&mut self, id: &RecordId) -> Result<(), Error> {
+        let Some(rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
+        for (l, m) in self.record_members(id)? {
+            let stop = m.lag.or_else(|| rec.cursor.clone());
+            self.record_stop(id, &l, stop)?;
+        }
+        Ok(())
+    }
+
     /// The lag kept for `l`'s rejoin.
     pub fn record_lag(&mut self, id: &RecordId, l: &LabelId) -> Result<Option<Vec<u8>>, Error> {
         self.cat_get(&lag_key(id, l))

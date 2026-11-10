@@ -294,11 +294,21 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ),
         ("subscribe", Message::Subscribe { id: 21, labels: vec![l, LabelId([0x0b; 16])] }),
         ("unsubscribe", Message::Unsubscribe { id: 22, labels: vec![l] }),
-        ("push", Message::Push { label: l, events: vec![added], cursor: Cursor { log_id: [0x1c; 16], seq: 48 } }),
+        ("push", Message::Push { label: l, events: vec![added.clone()], cursor: Cursor { log_id: [0x1c; 16], seq: 48 } }),
         ("beacons", Message::Beacons { id: 30, generation: 1, base: None, f: 9, lo: 0, hi: 512, gcs: vec![0, 1, 2], more: false }),
         ("offer", Message::Offer { id: 31, items: vec![crate::msg::OfferItem::Hit([9; 32]), crate::msg::OfferItem::ByRole(l, vec![[8; 32]])] }),
         ("lost", Message::Lost { id: 32, items: vec![(l, None)] }),
         ("shared", Message::Shared { id: 31, codes: vec![(Code::OK, Some([7; 32])), (Code::NOT_ADMITTED, None)] }),
         ("no record", Message::NoRecord { id: 33 }),
+        (
+            "pull",
+            Message::Pull(Box::new(crate::msg::Pull { id: 34, cursor: Some(vec![0x2c; 72]), joins: vec![(l, None), (LabelId([0x0b; 16]), Some(vec![0x2d; 72]))], inline_limit: 0, max_reply: 65_536, follow: true, ephemeral: true })),
+        ),
+        (
+            "pull reply",
+            Message::PullReply(Box::new(crate::msg::PullReply { id: 34, events: vec![(l, added.clone()), (l, Event::Deleted(id(0xb7)))], cursor: Some(vec![0x2e; 72]), whole: false, more: true, report: false, joins: vec![(LabelId([0x0b; 16]), Some(vec![0x2f; 72]))] })),
+        ),
+        ("stream", Message::Stream(Box::new(crate::msg::Stream { events: vec![(l, added.clone())], cursor: Some(vec![0x30; 72]), report: true }))),
+        ("applied", Message::Applied { cursor: vec![0x30; 72] }),
     ]
 }

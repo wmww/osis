@@ -114,7 +114,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `MAX_FILTER_ENTRIES` 2^22 (shared set) | R (a filter past it closes the connection: nothing opens) | no filter taken / a known actor's filter is this node's memory |
 | `PAGE_BYTES` 256 KiB (a filter's page), `MAX_SHARED_ITEMS` 1024, `MAX_BYROLE_HITS` 256 | P (more messages) / a message beyond `MAX_MESSAGE` | |
 | `MAX_PEER_STEPS` 64, `LAN_HEARD` 4, `LAN_BOUND` 64 (announcements bound to their source per co-reader; past it only a self-flooding co-reader reopens replays of its own), `LAN_CHANGE_MS` 5 s | R | |
-| `LOG_KEEP` 4096 | M (a cursor below replays) | |
+| stream `SCAN_ROWS` 2^16, `MAX_CROSSED` 2^14 | R (rows a reply reads) / M (bytes inlined back past it) | no reply moves / one request reads the whole log; nothing remembered / unbounded set |
 | `MAX_QUEUED` 64 MiB (at least `SEND_QUEUE`, asserted) | R (a peer that does not read) | sessions keeping the window closed / unbounded buffer |
 | link `WRITE_CHUNK` 16 KiB | M (grain of send progress for the stall timeout) | no progress shown / a link under a chunk per stall timeout counts as stalled |
 | `SERVE_IDLE` / `serve_idle_ms` 120 s, `serve_open_ms` 30 s, `max_served` 64 | R | |

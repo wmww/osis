@@ -352,11 +352,11 @@ impl SyncEngine {
         Ok(())
     }
 
-    fn shared_send(&mut self, conn: ConnId, m: Message, out: &mut Vec<Action>) -> Result<()> {
+    pub(super) fn shared_send(&mut self, conn: ConnId, m: Message, out: &mut Vec<Action>) -> Result<()> {
         if self.conns.contains_key(&conn) {
-            self.command(conn, Command::Shared(Box::new(m)), out)
+            self.command(conn, Command::Peer(Box::new(m)), out)
         } else {
-            self.serve(conn, ServingInput::Shared(Box::new(m)), out)
+            self.serve(conn, ServingInput::Peer(Box::new(m)), out)
         }
     }
 
@@ -647,7 +647,10 @@ impl SyncEngine {
         s.test_due = true;
         if self.served_has(conn) {
             self.serve(conn, ServingInput::SharedOpen { label: *l, open: false }, out)?;
-        } else if let Some(c) = self.conns.get_mut(&conn) {
+        } else if self.conns.contains_key(&conn) {
+            self.stream_leave(conn, l)?;
+        }
+        if let Some(c) = self.conns.get_mut(&conn) {
             c.labels.remove(l);
             c.req.forget(|x| x == l);
             self.unsubscribe.insert((conn, *l));

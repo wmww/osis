@@ -198,6 +198,7 @@ impl SyncEngine {
         // its requests not answered go with it (asked again on the next connection)
         if let Some(c) = self.conns.remove(&conn) {
             self.records.conn_gone(conn);
+            self.streams.remove(&conn);
             if let Err(e) = self.memory_lost(conn, c.host, &c.req.fetching) {
                 self.diag(format!("forgetting a connection's memory entries: {e}"));
             }
@@ -390,7 +391,7 @@ impl SyncEngine {
                 self.send_resume(conn, out)?;
             }
             E::Resumed { nonce, tag } => self.resumed(conn, nonce, tag, out)?,
-            E::Shared(m) => self.shared_message(conn, *m, out)?,
+            E::Peer(m) => self.peer_message(conn, *m, out)?,
             // Hellos done: every label this host holds starts opening
             E::Ready { .. } => self.add_new_labels(out)?,
             E::ClockOffset { offset_ms, .. } => {

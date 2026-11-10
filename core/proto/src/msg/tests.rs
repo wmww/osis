@@ -59,8 +59,9 @@ fn round_trip_every_kind() {
     let ms = messages();
     let mut kinds: Vec<u64> = ms.iter().map(|(_, m)| m.kind()).collect();
     kinds.dedup();
-    // kinds 24-29 (client port): tests/it/port.rs; 30-35 elsewhere; 36-40 the shared set
-    assert_eq!(kinds, (0..=23).chain(36..=40).collect::<Vec<_>>());
+    // kinds 24-29 (client port): tests/it/port.rs; 30-35 elsewhere; 36-40 the shared set; 41-44
+    // the stream
+    assert_eq!(kinds, (0..=23).chain(36..=44).collect::<Vec<_>>());
     for (name, m) in ms {
         assert_eq!(Message::decode(&m.encode()), Ok(m.clone()), "{name}");
     }

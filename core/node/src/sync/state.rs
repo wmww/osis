@@ -319,8 +319,8 @@ pub struct State {
     /// The transport secret its host listens with, while it hosts.
     pub host_secret: Option<Secret32>,
     pub client_listen: Option<Secret32>,
-    /// The label logs co-reader-peer sessions see (in memory).
-    pub feed: super::serve::Feed,
+    /// The node log's memory part: memory entries' events, which the durable log never holds.
+    pub mem_log: super::stream::MemLog,
     /// Entries this node dropped, by when (corrected wall ms): refused from peers for
     /// `TOMBSTONE_LIFETIME` (spec/sync.md §5), so a peer cannot replay a deleted body.
     pub tombs: BTreeMap<(LabelId, BlobId), u64>,
@@ -902,7 +902,7 @@ impl State {
         self.set_entry_fed(l, b, e, true);
     }
 
-    /// `set_entry` without announcing the entry to the sessions this node serves (`feed`): a
+    /// `set_entry` without announcing the entry to the streams this node serves (`mem_log`): a
     /// tombstoned entry recorded again only to delete it where a host still holds it.
     pub fn set_entry_quiet(&mut self, l: LabelId, b: BlobId, e: Entry) {
         self.set_entry_fed(l, b, e, false);
@@ -912,8 +912,12 @@ impl State {
         debug_assert!(self.entries.get(&(l, b)).is_none_or(|o| o.memory == e.memory), "an entry changes class");
         // what a peer is sent: a change of only what this node knows of the blob is no event;
         // `flush_storing` keeps this one only if the bytes are here
-        if !e.memory && self.entries.get(&(l, b)).is_none_or(|o| o.wrap != e.wrap || o.stamp != e.stamp) {
+        let changed = self.entries.get(&(l, b)).is_none_or(|o| o.wrap != e.wrap || o.stamp != e.stamp);
+        if !e.memory && changed {
             self.log.push(LogWrite::Added(l, b));
+        }
+        if fed && e.memory && changed {
+            self.mem_log.added(l, b, self.now);
         }
         if e.memory {
             self.memory_entries.insert((l, b));
@@ -930,9 +934,6 @@ impl State {
         self.index(l, b, &e, true);
         self.entries.insert((l, b), e);
         self.touch(l, b);
-        if fed {
-            self.feed.added(l, b);
-        }
         self.version += 1;
     }
 
@@ -1005,7 +1006,9 @@ impl State {
             self.del(key(ENTRY, &[&l.0, &b.0]));
             self.log.push(LogWrite::Deleted(l, b, self.now));
         }
-        self.feed.deleted(l, b);
+        if e.memory {
+            self.mem_log.deleted(l, b, self.now);
+        }
         true
     }
 

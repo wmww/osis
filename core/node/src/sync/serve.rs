@@ -28,99 +28,13 @@ use osis_base::{BlobId, LabelId};
 use osis_label::{ClaimSet, Step, StepId};
 use osis_proto::{Budget, Code, EntryMeta, LabelStore, LogRecord, Put, ServingConfig, ServingSession, ServingInput, ServingOutput, StoreError};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// Log records kept per label; a cursor below them replays.
-const LOG_KEEP: usize = 4096;
-/// Rounds of "a served change grew a log" per `handle`.
-const MAX_NOTIFY: usize = 8;
 /// Budget entries reported per this many bytes left (the recommended deposit unit).
 const ENTRY_UNIT: u64 = 32 * 1024;
 /// Steps peers registered kept per label.
 const MAX_PEER_STEPS: usize = 64;
-
-/// The in-memory log of each label as peers see it (spec/sync.md §4).
-#[derive(Default)]
-pub(crate) struct Feed {
-    pub log_id: [u8; 16],
-    labels: BTreeMap<LabelId, LabelLog>,
-    /// Labels whose log grew since the last notification.
-    grown: BTreeSet<LabelId>,
-}
-
-impl Feed {
-    /// Forgets a label's log (this node no longer reads it).
-    pub(crate) fn forget(&mut self, l: &LabelId) {
-        self.labels.remove(l);
-        self.grown.remove(l);
-    }
-}
-
-#[derive(Default)]
-struct LabelLog {
-    recs: VecDeque<(u64, LogRecord)>,
-    /// Records at or below this sequence number were dropped.
-    horizon: u64,
-    seq: u64,
-    /// Sequence number of each entry's latest add (entries from before this start: none).
-    adds: BTreeMap<BlobId, u64>,
-    head: Option<StepId>,
-    /// Deleted for peers: when.
-    gone: BTreeMap<BlobId, u64>,
-}
-
-impl Feed {
-    fn append(&mut self, l: LabelId, r: LogRecord) -> u64 {
-        self.grown.insert(l);
-        let x = self.labels.entry(l).or_default();
-        x.seq += 1;
-        x.recs.push_back((x.seq, r));
-        if x.recs.len() > LOG_KEEP
-            && let Some((s, _)) = x.recs.pop_front()
-        {
-            x.horizon = s;
-        }
-        x.seq
-    }
-
-    /// An entry was added or its wrap or stamp changed.
-    pub fn added(&mut self, l: LabelId, b: BlobId) {
-        let s = self.append(l, LogRecord::Added(b));
-        if let Some(x) = self.labels.get_mut(&l) {
-            x.adds.insert(b, s);
-        }
-    }
-
-    pub fn deleted(&mut self, l: LabelId, b: BlobId) {
-        if let Some(x) = self.labels.get_mut(&l) {
-            x.adds.remove(&b);
-        }
-        self.append(l, LogRecord::Deleted(b));
-    }
-
-    /// Forgets peer deletions past the tombstone lifetime.
-    pub fn expire(&mut self, now: u64) {
-        let live = |t: &u64| t.saturating_add(TOMBSTONE_LIFETIME_MS) > now;
-        for x in self.labels.values_mut() {
-            x.gone.retain(|_, t| live(t));
-        }
-    }
-
-    /// Logs a head record where the served head moved.
-    fn heads(&mut self, labels: &BTreeMap<LabelId, ServedLabel>) {
-        for (l, s) in labels {
-            let Some(h) = s.path.last() else { continue };
-            let id = h.id();
-            if self.labels.get(l).and_then(|x| x.head) != Some(id) {
-                self.append(*l, LogRecord::Head(h.clone()));
-                if let Some(x) = self.labels.get_mut(l) {
-                    x.head = Some(id);
-                }
-            }
-        }
-    }
-}
 
 /// A served label: its group, its path to the head and the claim sets held, with the path
 /// indexes an Open or a Path page reads (step ID → position, sync key → newest position) and the
@@ -243,8 +157,6 @@ struct Accepted {
     charges: Vec<(LabelId, BlobId, u64)>,
     /// A put was refused for the budget.
     full: bool,
-    /// Entries accepted uploads replaced: hidden from peers once the uploads are applied.
-    removed: Vec<(LabelId, BlobId)>,
     /// What the dialer proved by its Prove (`proofs`).
     proven: super::proofs::Proven,
     /// The record this connection's Resume found or made, and records read for it.
@@ -257,7 +169,6 @@ struct PeerStore<'a> {
     engine: RefCell<&'a mut Engine>,
     entries: &'a BTreeMap<(LabelId, BlobId), Entry>,
     tombs: &'a BTreeMap<(LabelId, BlobId), u64>,
-    feed: &'a mut Feed,
     labels: &'a BTreeMap<LabelId, ServedLabel>,
     /// What this session proved so far (`Accepted.proven` for a Prove in the same input).
     proven_before: &'a super::proofs::Proven,
@@ -265,7 +176,6 @@ struct PeerStore<'a> {
     in_use: BTreeSet<osis_store::RecordId>,
     /// Blob sizes seen (`live` reads a blob only once).
     sizes: RefCell<&'a mut BTreeMap<BlobId, u64>>,
-    now: u64,
     /// Corrected wall ms (tombstones of this node's drops).
     wall: u64,
     /// What is charged so far per charge key (`charge_key`), its limit, this session's proven
@@ -319,17 +229,13 @@ impl PeerStore<'_> {
     }
 
     fn live(&self, l: &LabelId, b: &BlobId) -> std::result::Result<Option<EntryMeta>, StoreError> {
-        let log = self.feed.labels.get(l);
         let Some(e) = self.entries.get(&(*l, *b)) else { return Ok(None) };
-        if log.is_some_and(|x| x.gone.contains_key(b)) {
-            return Ok(None);
-        }
         let Some(size) = self.blob_len(b)? else { return Ok(None) };
         Ok(Some(EntryMeta {
             wrap: e.wrap,
             stamp: e.stamp,
             size,
-            add_seq: log.and_then(|x| x.adds.get(b)).copied().unwrap_or(0),
+            add_seq: 0,
         }))
     }
 }
@@ -407,11 +313,7 @@ impl LabelStore for PeerStore<'_> {
 
     fn tombstoned(&self, label: &LabelId, blob_id: &BlobId) -> std::result::Result<bool, StoreError> {
         // dropped here (a host's deletion, our own delete or drop): never back from a peer
-        if self.tombs.get(&(*label, *blob_id)).is_some_and(|t| t.saturating_add(TOMBSTONE_LIFETIME_MS) > self.wall) {
-            return Ok(true);
-        }
-        let Some(x) = self.feed.labels.get(label) else { return Ok(false) };
-        Ok(x.gone.get(blob_id).is_some_and(|t| t.saturating_add(TOMBSTONE_LIFETIME_MS) > self.now))
+        Ok(self.tombs.get(&(*label, *blob_id)).is_some_and(|t| t.saturating_add(TOMBSTONE_LIFETIME_MS) > self.wall))
     }
 
     fn blob(&self, blob_id: &BlobId) -> std::result::Result<Option<Vec<u8>>, StoreError> {
@@ -419,13 +321,7 @@ impl LabelStore for PeerStore<'_> {
     }
 
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> std::result::Result<Code, StoreError> {
-        // replacements (spec/sync.md §5)
-        let mut removed = Vec::new();
-        for &b in put.replaces {
-            if b != put.blob_id && self.live(label, &b)?.is_some() {
-                removed.push((*label, b));
-            }
-        }
+        // what an upload replaces stays: this node's own rules judge what it holds
         // a held entry costs nothing more (a stamp; which wrap stays: `take_wrap`)
         if !self.entries.contains_key(&(*label, put.blob_id)) {
             let size = put.blob.len() as u64;
@@ -438,11 +334,7 @@ impl LabelStore for PeerStore<'_> {
             self.total_left -= size;
             self.acc.charges.push((*label, put.blob_id, size));
         }
-        if let Some(x) = self.feed.labels.get_mut(label) {
-            x.gone.remove(&put.blob_id);
-        }
         self.acc.entries.push((*label, osis_proto::Event::Added { blob_id: put.blob_id, blob: Some(put.blob.to_vec()), wrap: put.wrap, stamp: put.stamp }));
-        self.acc.removed.extend(removed);
         Ok(Code::OK)
     }
 
@@ -451,48 +343,27 @@ impl LabelStore for PeerStore<'_> {
         Ok(Budget { entries_left: bytes_left / ENTRY_UNIT, bytes_left })
     }
 
-    fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> std::result::Result<Code, StoreError> {
-        if self.live(label, blob_id)?.is_some() {
-            self.feed.labels.entry(*label).or_default().gone.insert(*blob_id, now);
-            self.feed.deleted(*label, *blob_id);
-        }
+    /// A reader's Delete changes nothing here: what this node holds follows its own rules, and
+    /// a deletion reaches other readers by the deleter's own stream.
+    fn delete(&mut self, _label: &LabelId, _blob_id: &BlobId, _now: u64) -> std::result::Result<Code, StoreError> {
         Ok(Code::OK)
     }
 
-    fn log_head(&self, label: &LabelId) -> std::result::Result<([u8; 16], u64), StoreError> {
-        Ok((self.feed.log_id, self.feed.labels.get(label).map_or(0, |x| x.seq)))
+    /// Readers serve the node log stream (`stream`), never a per-label log.
+    fn serves_log(&self) -> bool {
+        false
     }
 
-    fn log_after(&self, label: &LabelId, after: u64, max: usize) -> std::result::Result<Option<Vec<(u64, LogRecord)>>, StoreError> {
-        let Some(x) = self.feed.labels.get(label) else { return Ok((after == 0).then(Vec::new)) };
-        if after < x.horizon || after > x.seq {
-            return Ok(None);
-        }
-        Ok(Some(x.recs.iter().filter(|(s, _)| *s > after).take(max).cloned().collect()))
+    fn log_head(&self, _label: &LabelId) -> std::result::Result<([u8; 16], u64), StoreError> {
+        Ok(([0; 16], 0))
     }
 
-    fn live_by_id(&self, label: &LabelId, after: Option<&BlobId>, max: usize) -> std::result::Result<Vec<(BlobId, EntryMeta)>, StoreError> {
-        let start = after.copied().unwrap_or(BlobId([0; 32]));
-        let mut ids: BTreeSet<BlobId> = BTreeSet::new();
-        for ((l, b), _) in self.entries.range((*label, start)..) {
-            if l != label || ids.len() >= max.saturating_add(1) {
-                break;
-            }
-            ids.insert(*b);
-        }
-        let mut out = Vec::new();
-        for b in ids {
-            if out.len() >= max {
-                break;
-            }
-            if after == Some(&b) {
-                continue;
-            }
-            if let Some(m) = self.live(label, &b)? {
-                out.push((b, m));
-            }
-        }
-        Ok(out)
+    fn log_after(&self, _label: &LabelId, _after: u64, _max: usize) -> std::result::Result<Option<Vec<(u64, LogRecord)>>, StoreError> {
+        Ok(None)
+    }
+
+    fn live_by_id(&self, _label: &LabelId, _after: Option<&BlobId>, _max: usize) -> std::result::Result<Vec<(BlobId, EntryMeta)>, StoreError> {
+        Ok(Vec::new())
     }
 
     fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, _now: u64) -> std::result::Result<osis_proto::RelayVerdict, StoreError> {
@@ -500,16 +371,8 @@ impl LabelStore for PeerStore<'_> {
         Ok(self.relays.admit(label, blob_id, size, expiry, self.wall))
     }
 
-    fn live_ids_in(&self, label: &LabelId, lower: &BlobId, upper: Option<&BlobId>) -> std::result::Result<Vec<BlobId>, StoreError> {
-        let below = |b: &BlobId| upper.is_none_or(|u| b < u);
-        let ids: BTreeSet<BlobId> = self.entries.range((*label, *lower)..).take_while(|((l, b), _)| l == label && below(b)).map(|((_, b), _)| *b).collect();
-        let mut out = Vec::new();
-        for b in ids {
-            if self.live(label, &b)?.is_some() {
-                out.push(b);
-            }
-        }
-        Ok(out)
+    fn live_ids_in(&self, _label: &LabelId, _lower: &BlobId, _upper: Option<&BlobId>) -> std::result::Result<Vec<BlobId>, StoreError> {
+        Ok(Vec::new())
     }
 }
 
@@ -640,7 +503,6 @@ impl SyncEngine {
         let total = self.charges.total;
         // charged to the proved node only if known here: a fresh key per connection would bound nothing
         let node = s.proven.node.filter(|_| self.engine.core.judge(s.proven.all()).known());
-        self.state.feed.heads(labels);
         if matches!(input, ServingInput::Bytes(_)) {
             s.last = now;
         }
@@ -652,10 +514,8 @@ impl SyncEngine {
                 in_use: self.records.live(),
                 entries: &self.state.entries,
                 tombs: &self.state.tombs,
-                feed: &mut self.state.feed,
                 labels,
                 sizes: RefCell::new(&mut self.blob_sizes),
-                now,
                 wall,
                 charged: &self.charges.per,
                 limit: self.cfg.peer_bytes,
@@ -677,6 +537,7 @@ impl SyncEngine {
         }
         if closed {
             self.records.conn_gone(conn);
+            self.streams.remove(&conn);
             if s.ported {
                 out.push(Action::Ended { conn });
             }
@@ -712,6 +573,7 @@ impl SyncEngine {
             }
             self.served_cache = None;
         }
+        let uploaded: Vec<BlobId> = acc.entries.iter().filter_map(|(_, e)| if let osis_proto::Event::Added { blob_id, .. } = e { Some(*blob_id) } else { None }).collect();
         let mut by_label: BTreeMap<LabelId, Vec<osis_proto::Event>> = BTreeMap::new();
         for (l, ev) in acc.entries {
             by_label.entry(l).or_default().push(ev);
@@ -720,12 +582,9 @@ impl SyncEngine {
             // stamps were checked against the served head by the host engine
             self.log_events_from(None, Some(conn), l, evs, None, out)?;
         }
-        // what the uploads replaced goes after them (peers see the new entry first)
-        for (l, b) in acc.removed {
-            let x = self.state.feed.labels.entry(l).or_default();
-            if x.gone.insert(b, now).is_none() {
-                self.state.feed.deleted(l, b);
-            }
+        // bytes uploaded here are announced back without them (spec/wire.md §11.2, Inline bytes)
+        if !uploaded.is_empty() {
+            self.stream_crossed(conn, uploaded);
         }
         let mut relays = Vec::new();
         let mut refused = Vec::new();
@@ -733,9 +592,7 @@ impl SyncEngine {
             match o {
                 ServingOutput::Send(bytes) => out.push(Action::Send { conn, bytes }),
                 ServingOutput::Close => out.push(Action::Close { conn }),
-                ServingOutput::Changed(l) => {
-                    self.state.feed.grown.insert(l);
-                }
+                ServingOutput::Changed(_) => {}
                 ServingOutput::Relay(r) => relays.push(r),
                 ServingOutput::PeerError(e) => self.diag(format!("peer: {e}")),
                 ServingOutput::StoreError(e) => self.diag(format!("serve: {e}")),
@@ -750,7 +607,7 @@ impl SyncEngine {
                     Err(r) => refused.push(r),
                 },
                 ServingOutput::Room { budget } => out.push(Action::Room { conn, budget }),
-                ServingOutput::Shared(m) => self.shared_message(conn, *m, out)?,
+                ServingOutput::Peer(m) => self.peer_message(conn, *m, out)?,
             }
         }
         // a relay-only entry: delivered here and passed on (the other served sessions, the
@@ -905,6 +762,7 @@ impl SyncEngine {
 
     pub(crate) fn end_served(&mut self, conn: ConnId, out: &mut Vec<Action>) {
         self.records.conn_gone(conn);
+        self.streams.remove(&conn);
         if self.served.remove(&conn).is_some_and(|s| s.ported) {
             out.push(Action::Ended { conn });
         }
@@ -914,28 +772,6 @@ impl SyncEngine {
     pub(crate) fn close_served(&mut self, conn: ConnId, out: &mut Vec<Action>) {
         self.end_served(conn, out);
         out.push(Action::Close { conn });
-    }
-
-    /// Pushes grown logs to subscribed peer sessions.
-    pub(crate) fn notify_served(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        if self.served.is_empty() {
-            self.state.feed.grown.clear();
-            return Ok(());
-        }
-        for _ in 0..MAX_NOTIFY {
-            let grown = std::mem::take(&mut self.state.feed.grown);
-            if grown.is_empty() {
-                break;
-            }
-            let labels = self.served_labels();
-            let conns: Vec<ConnId> = self.served.keys().copied().collect();
-            for c in conns {
-                for l in &grown {
-                    self.serve_with(c, ServingInput::Changed(*l), &labels, out)?;
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Closes served sessions without bytes for `SyncConfig.serve_idle_ms`, and those that
@@ -964,7 +800,7 @@ impl SyncEngine {
             self.close_served(c, out);
         }
         let wall = self.state.now;
-        self.state.feed.expire(wall);
+        self.state.mem_log.expire(wall);
         self.state.expire_tombs(wall);
         self.sweep_forgotten();
         // these scan every entry and placement: at most once per `RECORD_SWEEP_MS`

@@ -234,6 +234,13 @@ impl SyncEngine {
     /// Starts a cursor sync of an open label.
     pub(crate) fn sync_label(&mut self, conn: ConnId, label: LabelId, out: &mut Vec<Action>) -> Result<()> {
         let now = self.raw_now();
+        // a co-reader: its stream, read again to its end
+        if self.conns.get(&conn).is_some_and(|c| c.peer) {
+            if let Some(l) = self.lc_mut(conn, &label) {
+                l.last_sync = now;
+            }
+            return self.stream_ask(conn, true, out);
+        }
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let host = c.host;
         let Some(l) = c.labels.get_mut(&label) else { return Ok(()) };

@@ -50,12 +50,12 @@ fn resumed(net: &mut Net, a: usize, b: usize, r: &[u8; 32], challenge: [u8; 32])
 
 fn send(net: &mut Net, b: usize, p: &mut Dialer, m: Message) -> Vec<ClientEvent> {
     let now = net.now();
-    let outs = p.cs.handle(now, ClientInput::Command(Command::Shared(Box::new(m))));
+    let outs = p.cs.handle(now, ClientInput::Command(Command::Peer(Box::new(m))));
     pump(net, b, p, Vec::new(), outs)
 }
 
 fn shared_of(evs: &[ClientEvent]) -> Vec<Message> {
-    evs.iter().filter_map(|e| if let ClientEvent::Shared(m) = e { Some((**m).clone()) } else { None }).collect()
+    evs.iter().filter_map(|e| if let ClientEvent::Peer(m) = e { Some((**m).clone()) } else { None }).collect()
 }
 
 /// `a`'s read-secret match value for L (it holds L's read role).

@@ -266,10 +266,15 @@ Offer     [37, id, [item+]]                    -> Shared
 Lost      [38, id, [[label_id, Opt(cursor)]+]]  -> Shared
 Shared    [39, id, [[code, Opt(tag)]+]]
 NoRecord  [40, id]                             -> Shared
+Pull      [41, id, Opt(cursor), [join*], inline_limit, max_reply, follow, ephemeral]
+                                               -> PullReply [42, id, [[label_id, event]*], Opt(cursor), whole, more, report, [join*]]
+Stream    [43, 0, [[label_id, event]+], Opt(cursor), report]
+Applied   [44, 0, cursor]
 
 actor_proof := [creation, key, sig]
 proof  := [0, sync_pk, sig] | [1, step_id, claim_pk, sig] | [2, signing_pk, sig] | [3]
 item   := [0, hit] | [1, label_id, [hit+]]
+join   := [label_id, Opt(cursor)]
 entry  := [blob, wrap, stamp] | [blob, wrap, stamp, [replace+]]
 replace := [blob_id, [[level, dsig]*], sig]
 item   := [blob_id, [[level, dsig]*], sig]
@@ -288,7 +293,9 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Offer**: `hit` 32 bytes, at most 1024 items and 256 hits in an item. Shared gives one code per item in order, a 32-byte tag for a Hit accepted, none for a ByRole; code 14 refuses one, for no stated reason.
 - **Lost**: at most 1024 items, `cursor` at most 256 bytes. Shared answers 0 per item.
 - **NoRecord** (spec/sync.md §10, Shared set): from a dialer that keeps no record for this listener; id `2^31`.
-- **Shared-set request ids**: `id`s of Beacons, Offer, Lost and NoRecord are chosen by each side with its top bit set, so they cannot equal an id of that side's other requests.
+- **Shared-set request ids**: `id`s of Beacons, Offer, Lost, NoRecord and Pull are chosen by each side with its top bit set, so they cannot equal an id of that side's other requests.
+- **Pull** (spec/sync.md §10, Stream), between two nodes that read the sync IDs they share: a `cursor` (here and in `join`, PullReply, Stream and Applied) is at most 256 opaque bytes the serving node sealed; `max_reply` as for a Sync. PullReply carries, in log order, the events after `cursor` of each member of the connection's shared set, and of each `join`'s member after the join's cursor (from the start of the log when it has none); with no `cursor`, or one that names no position of the server's log, every member from the start, `whole` true, joins ignored. Its `cursor` is the position the reply covers for the stream; its `join` list names each join not at that position: one still in pages, with its own cursor, to name again in the next Pull, or one the server does not share, with none. `more` true: pull again from the returned cursors. `ephemeral` true: the reply also lists the live entries of the ephemeral class of every member; a join from the start lists its member's. `follow` true: once a reply has `more` false, the server pushes each later run of events as a Stream from the reply's cursor, under the Push rule of spec/sync.md §6, until the next Pull. `report` asks for Applied once the requester applied and stored the message's cursor. Events are as in Sync, an add only for an entry whose bytes the server holds, its bytes inline only within `inline_limit` and not for a blob that crossed this connection.
+- Between such nodes (a session served with no per-label log), Sync, Subscribe and Reconcile are answered Error 11, and a Delete is answered 0 and removes nothing.
 - **Resume** (spec/sync.md §10, Pair key): dialer to listener, after the dialer's `Proved`, at most one per connection (a second, or one before a Prove, is answered Error 2; a listener keeping no record for this connection answers Error 1). `nonce` 32 random bytes; each `tag` 32 bytes, at most `MAX_RESUME_TAGS` of them, as many as fit one message. **Resumed**: the listener's own `nonce`, and `tag` when it holds a listed record.
 - **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry). Proof 3 carries nothing: it opens a label only if it is a member of this connection's shared set (spec/sync.md §5, §10). An unknown label is answered Error 13. Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
 - **Register**: replies Ok (also when the step already is the head), or an Error without the head (spec/sync.md §5):

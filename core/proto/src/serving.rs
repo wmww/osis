@@ -81,8 +81,8 @@ pub enum ServingInput {
     /// Notify pushes, sent in order (as many as the last `ServingOutput::Room` allowed); one for
     /// a subscription no longer live is dropped, one above its `max_reply` goes as `Lapsed`.
     Notify(Vec<(Id, crate::api::Payload)>),
-    /// A shared-set message to send.
-    Shared(Box<Message>),
+    /// A shared-set or stream message to send.
+    Peer(Box<Message>),
     /// `label` opened by this connection's shared set (`Proof::Shared` then finds it), or closed.
     SharedOpen { label: LabelId, open: bool },
     /// The upper layer has Notifies to send: `ServingOutput::Room` when the push rule allows.
@@ -117,8 +117,8 @@ pub enum ServingOutput {
     /// (already answered: drop the subscription).
     Request(Box<Message>),
     /// A shared-set message (spec/wire.md §11.2 Beacons, Offer, Lost, Shared) for the upper layer,
-    /// which answers and sends by `ServingInput::Shared`.
-    Shared(Box<Message>),
+    /// which answers and sends by `ServingInput::Peer`; likewise the stream's (Pull to Applied).
+    Peer(Box<Message>),
     /// Notifies of up to `budget` bytes may go now (after `ServingInput::WantRoom`).
     Room { budget: usize },
 }
@@ -450,7 +450,7 @@ impl ServingSession {
 
     fn input(&mut self, now: u64, store: &mut dyn LabelStore, input: ServingInput, out: &mut Vec<ServingOutput>) {
         match input {
-            ServingInput::Shared(m) => send(out, *m),
+            ServingInput::Peer(m) => send(out, *m),
             ServingInput::SharedOpen { label, open: true } => {
                 self.opened.insert(label, Under::Shared);
             }
@@ -655,9 +655,12 @@ impl ServingSession {
             return Ok(Some(Message::Error { id: msg.id(), code: Code::UNSUPPORTED }));
         }
         use Message as M;
-        if matches!(msg, M::Beacons { .. } | M::Offer { .. } | M::Lost { .. } | M::Shared { .. } | M::NoRecord { .. }) {
-            out.push(ServingOutput::Shared(Box::new(msg)));
+        if msg.for_node() {
+            out.push(ServingOutput::Peer(Box::new(msg)));
             return Ok(None);
+        }
+        if !store.serves_log() && matches!(msg, M::Sync { .. } | M::Reconcile { .. } | M::Subscribe { .. }) {
+            return Ok(Some(M::Error { id: msg.id(), code: Code::UNSUPPORTED }));
         }
         Ok(Some(match msg {
             M::Ping { id, .. } => M::Pong { id, wall_ms: now },

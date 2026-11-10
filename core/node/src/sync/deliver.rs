@@ -192,12 +192,12 @@ impl SyncEngine {
         if f.things.is_empty() && f.labels.is_empty() {
             return Ok(leaving);
         }
-        let feed = std::mem::take(&mut self.state.feed);
+        let mem_log = std::mem::take(&mut self.state.mem_log);
         let now = self.state.now;
         self.state = super::state::State::load(&mut self.engine)?;
         // what the passes knew of entries is gone with them: everything is judged again
         self.touched.full = true;
-        self.state.feed = feed;
+        self.state.mem_log = mem_log;
         self.state.now = now;
         // owed records are taken at start only; a copy waiting to rotate a forgotten group is moot
         self.state.owed.clear();
@@ -215,7 +215,7 @@ impl SyncEngine {
         }
         let gone = |l: &LabelId| f.labels.contains(l);
         for l in &f.labels {
-            self.state.feed.forget(l);
+            self.state.mem_log.forget(l);
             self.state.forget_passed(l);
         }
         for (id, c) in self.conns.iter_mut() {
