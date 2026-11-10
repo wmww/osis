@@ -42,6 +42,9 @@ impl AccountRotation {
     }
 }
 
+/// A thing's listed commits: role-class and purge-request ones, then plain ones by receipt.
+type PerThing = (BTreeSet<CommitId>, Vec<(osis_base::WallMs, CommitId)>);
+
 /// Rotates account `p`'s epoch (spec/permissions.md §3, §5.5; spec/crypto.md §9): a role commit
 /// signed at the newest open epoch held, minting one whose seed goes into D's `account.0` (under
 /// D's newest read epoch, so only D's current nodes open it) and its public keys into P's
@@ -72,7 +75,7 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId]) -> Result<Op
         }
     };
     // per thing: role-class and purge-request commits, then plain ones by receipt
-    let mut per: BTreeMap<Tid, (BTreeSet<CommitId>, Vec<(osis_base::WallMs, CommitId)>)> = BTreeMap::new();
+    let mut per: BTreeMap<Tid, PerThing> = BTreeMap::new();
     let mut listed = nameable(tx, &p, &v, &closes, true)?;
     for c in also {
         if !listed.iter().any(|x| x.0 == *c)
