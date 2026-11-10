@@ -12,8 +12,23 @@ use osis_perm::At;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// `Engine::body_live` in `tx`, through `Core::live_bodies`.
+/// `Engine::body_live` in `tx`: any delta of the body's class live (`delta_live`).
 pub(crate) fn body_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+    // an unknown commit counts live (its apply may change nothing here)
+    let Some(ai) = aspect_index(tx.core, c, tid, ak) else { return Ok(true) };
+    let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(true) };
+    for x in body_class(tx.core, &h, ai) {
+        let Some(a) = h.aspects.get(x) else { continue };
+        if delta_live(tx, c, &a.tid, &a.ak)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// `Engine::delta_live` in `tx`, through `Core::live_bodies` (per delta: what forgets it is a
+/// change of that aspect's state alone).
+pub(crate) fn delta_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
     let key = (*c, *tid, ak.clone());
     if let Some(v) = tx.core.live_bodies.get(&key.0).and_then(|m| m.get(&(key.1, key.2.clone()))) {
         return Ok(*v);
@@ -322,36 +337,30 @@ pub(crate) fn drop_from(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Re
     Ok(Some(body_keep(tx, c, tid, ak)?.saturating_add(osis_base::format::MAX_DRIFT_MS)))
 }
 
-/// `Engine::body_live` of the body holding aspect `ai` of `c`, judged against the state in
+/// `Engine::delta_live` of delta `ai` of `c`, judged against the state in
 /// `tx`: a function of the commits applied (the join's), so alike at nodes that applied the
 /// same ones.
 pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(true) };
-    let holders = body_class(tx.core, &h, ai);
     if h.kind.is_compaction() {
-        return snapshot_live(tx, &h, c, &holders);
+        return snapshot_live(tx, &h, c, ai);
     }
-    for x in holders {
-        let Some(a) = h.aspects.get(x) else { continue };
-        let own = writes_of(&h, c, x);
-        let owns = |st: &Fragment| st.holds_owned_write(&|src, lo, hi| own.iter().any(|o| o.owns_range(src, lo, hi)));
-        // per piece of each delta of the body, the state at its positions (O(piece), whatever
-        // the state's size; all of it when none is held)
-        let mut live = false;
-        let held = crate::apply::each_held_piece(tx, c, x, &mut |tx, f| {
-            if !live {
-                live = tx.state_part_at(&a.tid, &a.ak, &f)?.as_ref().is_some_and(owns);
-            }
-            Ok(())
-        })?;
-        if held.is_none() {
-            live = tx.state(&a.tid, &a.ak)?.is_some_and(owns);
+    let Some(a) = h.aspects.get(ai) else { return Ok(false) };
+    let own = writes_of(&h, c, ai);
+    let owns = |st: &Fragment| st.holds_owned_write(&|src, lo, hi| own.iter().any(|o| o.owns_range(src, lo, hi)));
+    // per piece of the delta, the state at its positions (O(piece), whatever the state's size;
+    // all of it when none is held)
+    let mut live = false;
+    let held = crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
+        if !live {
+            live = tx.state_part_at(&a.tid, &a.ak, &f)?.as_ref().is_some_and(owns);
         }
-        if live {
-            return Ok(true);
-        }
+        Ok(())
+    })?;
+    if held.is_none() {
+        live = tx.state(&a.tid, &a.ak)?.is_some_and(owns);
     }
-    Ok(false)
+    Ok(live)
 }
 
 /// Whether a compaction snapshot carries a write still live in this node's state (`body_live`;
@@ -361,35 +370,27 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
 /// is live while the state holds a write stamped at or before its `ts` (the header's `ts` bounds
 /// what it carried) or one without a `ts` (a sequence record whose creation is gone): an
 /// over-approximation, so its delete at hosts waits for a carrier (spec/sync.md §7).
-pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -> Result<bool> {
-    for x in holders {
-        let Some(a) = h.aspects.get(*x) else { continue };
-        // by dot: records without a `ts` count too
-        let valid = crate::apply::copies::snapshot_valid(tx.core, c, &a.tid, &a.ak);
-        let mut live = false;
-        let held = crate::apply::each_held_piece(tx, c, *x, &mut |tx, f| {
-            let carried: BTreeSet<osis_crdt::Dot> = f.live_writes().into_iter().map(|(d, _)| d).collect();
-            if !live && !carried.is_empty() {
-                // a valid snapshot is joined in the state, so a dot it shares with the state sits
-                // at a position it holds; an invalid one's may sit elsewhere (one delta stamp
-                // covers many positions)
-                let st = if valid { tx.state_part_at(&a.tid, &a.ak, &f)? } else { tx.state_at(&a.tid, &a.ak, &f)? };
-                live = st.is_some_and(|st| st.live_writes().into_iter().any(|(d, _)| carried.contains(&d)));
-            }
-            Ok(())
-        })?;
-        if live {
-            return Ok(true);
+pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<bool> {
+    let Some(a) = h.aspects.get(ai) else { return Ok(false) };
+    // by dot: records without a `ts` count too
+    let valid = crate::apply::copies::snapshot_valid(tx.core, c, &a.tid, &a.ak);
+    let mut live = false;
+    let held = crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
+        let carried: BTreeSet<osis_crdt::Dot> = f.live_writes().into_iter().map(|(d, _)| d).collect();
+        if !live && !carried.is_empty() {
+            // a valid snapshot is joined in the state, so a dot it shares with the state sits
+            // at a position it holds; an invalid one's may sit elsewhere (one delta stamp
+            // covers many positions)
+            let st = if valid { tx.state_part_at(&a.tid, &a.ak, &f)? } else { tx.state_at(&a.tid, &a.ak, &f)? };
+            live = st.is_some_and(|st| st.live_writes().into_iter().any(|(d, _)| carried.contains(&d)));
         }
-        if held.is_some() {
-            continue;
-        }
-        let Some(st) = tx.state(&a.tid, &a.ak)? else { continue };
-        if st.live_writes().iter().any(|(_, t)| t.is_none_or(|t| t <= h.ts)) {
-            return Ok(true);
-        }
+        Ok(())
+    })?;
+    if live || held.is_some() {
+        return Ok(live);
     }
-    Ok(false)
+    let Some(st) = tx.state(&a.tid, &a.ak)? else { return Ok(false) };
+    Ok(st.live_writes().iter().any(|(_, t)| t.is_none_or(|t| t <= h.ts)))
 }
 
 impl Engine {
@@ -431,14 +432,22 @@ impl Engine {
     /// goes only after its carrier (spec/commits.md §5). Writes the state does not hold count
     /// dead: superseded, purged or expired ones, and those of deltas invalid here or undone (they
     /// are stripped from the state; they count live again once a validity flip or a redo puts
-    /// them back). Any write counts: resets (a tombstone's, for its remover) and value-less writes too. Kept per body
-    /// until its aspect's state changes (`Core::live_bodies`).
+    /// them back). Any write counts: resets (a tombstone's, for its remover) and value-less writes too. Any
+    /// delta of the body's class live (`delta_live`).
     pub fn body_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+        let (c, tid, ak) = (*c, *tid, ak.clone());
+        self.run(|tx| body_live(tx, &c, &tid, &ak))
+    }
+
+    /// Whether a write of `c`'s delta on `(tid, ak)` itself is still in this node's state, as
+    /// `body_live` asks of the body: what only a blob of `c` can carry (spec/sync.md §6, §7).
+    /// Kept until the aspect's state changes (`Core::live_bodies`).
+    pub fn delta_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
         if let Some(v) = self.core.live_bodies.get(c).and_then(|m| m.get(&(*tid, ak.clone()))) {
             return Ok(*v);
         }
         let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.run(|tx| body_live(tx, &c, &tid, &ak))
+        self.run(|tx| delta_live(tx, &c, &tid, &ak))
     }
 
     /// Whether delta `ai` of `c` holds writes of its own and is held value-less for all of them: a

@@ -55,38 +55,24 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
 
 pub(crate) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(true) };
-    let holders = super::body_class(tx.core, &h, ai);
     if h.kind.is_compaction() {
-        return snapshot_live(tx, &h, c, &holders);
+        return snapshot_live(tx, &h, c, ai);
     }
-    for x in holders {
-        let Some(a) = h.aspects.get(x) else { continue };
-        let own = super::writes_of(&h, c, x);
-        if tx.state(&a.tid, &a.ak)?.is_some_and(|st| st.holds_owned_write(&|src, lo, hi| own.iter().any(|o| o.owns_range(src, lo, hi)))) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    let Some(a) = h.aspects.get(ai) else { return Ok(false) };
+    let own = super::writes_of(&h, c, ai);
+    Ok(tx.state(&a.tid, &a.ak)?.is_some_and(|st| st.holds_owned_write(&|src, lo, hi| own.iter().any(|o| o.owns_range(src, lo, hi)))))
 }
 
-fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -> Result<bool> {
-    for x in holders {
-        let Some(a) = h.aspects.get(*x) else { continue };
-        let part = crate::apply::held_fragment(tx, c, *x)?;
-        let Some(st) = tx.state(&a.tid, &a.ak)? else { continue };
-        let writes = st.live_writes();
-        let Some(f) = part else {
-            if writes.iter().any(|(_, t)| t.is_none_or(|t| t <= h.ts)) {
-                return Ok(true);
-            }
-            continue;
-        };
-        let live: BTreeSet<osis_crdt::Dot> = writes.into_iter().map(|(d, _)| d).collect();
-        if f.live_writes().into_iter().any(|(d, _)| live.contains(&d)) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<bool> {
+    let Some(a) = h.aspects.get(ai) else { return Ok(false) };
+    let part = crate::apply::held_fragment(tx, c, ai)?;
+    let Some(st) = tx.state(&a.tid, &a.ak)? else { return Ok(false) };
+    let writes = st.live_writes();
+    let Some(f) = part else {
+        return Ok(writes.iter().any(|(_, t)| t.is_none_or(|t| t <= h.ts)));
+    };
+    let live: BTreeSet<osis_crdt::Dot> = writes.into_iter().map(|(d, _)| d).collect();
+    Ok(f.live_writes().into_iter().any(|(d, _)| live.contains(&d)))
 }
 
 /// The writes `bounds::deaths` finds: the held part whole joined into the whole state.

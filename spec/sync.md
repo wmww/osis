@@ -319,7 +319,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - it may purge the body;
     - the body's keep-at-least bound (spec/commits.md §5) is `MAX_DRIFT` past on its clock.
   - **Other right holders**: every right holder that holds a snapshot under the label, its author included whatever it wrote it for, does the same for its bodies, judging a body again while it is before that time or not established covered or uncovered.
-  - **Live writes**: a body with live writes (in any of its deltas) is deleted at a label only while other entries under it carry each of them: a snapshot under the label covering it, or another blob of the commit holding it that is not must-not-hold and not an identical body with a higher blob ID (of two duplicates the higher goes without waiting).
+  - **Live writes**: a body with live writes (in any of its deltas) is deleted at a label only while other entries under it carry each of them, per delta holding one of its own: a snapshot under the label covering it (a held delta by the join of spec/commits.md §5 Covered, whatever carrier was recorded for it before), or another blob of the commit holding it that is not must-not-hold and not an identical body with a higher blob ID (of two duplicates the higher goes without waiting).
   - **No carrier**: a right holder that must delete a body with live writes and finds no carrier uploads a covering snapshot first when it may write the aspect, unless it holds a blob of the commit that will carry them (a purge's rewrite).
     - A host refusing that blob, a strict subset of the body, for the label's cap (code 12): it is uploaded again naming the body as replaced (§5).
   - Chunk blobs still linked from a retained version are kept.

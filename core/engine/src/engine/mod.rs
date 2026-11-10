@@ -961,7 +961,7 @@ pub struct Core {
     /// its creation record, and all when an actor gets secrets of its own (reader actors move);
     /// only commits whose things' record chains are known are kept.
     pub bodies: BTreeMap<CommitId, Option<crate::labeling::Body>>,
-    /// `Engine::body_live` per body, forgotten per aspect when its state changes (`forget_live`)
+    /// `Engine::delta_live` per delta, forgotten per aspect when its state changes (`forget_live`)
     /// and wholly on rollback.
     pub live_bodies: BTreeMap<CommitId, BTreeMap<(Tid, Ak), bool>>,
     /// Bodies judged for when they were replaced (`retention::bounds::replaced_at`), for cost

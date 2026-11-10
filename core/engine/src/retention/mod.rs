@@ -327,11 +327,17 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         let Some(ai) = m.aspect(tid, ak) else { return false };
         m.valid_at(ai) && !m.dropped.contains_key(&ai) && !m.missing.contains(&ai)
     };
+    // the cover test that dropped it (`snapshot::covered`): one snapshot, or two own replaces
+    let still = |c: &CommitId, ai: usize| {
+        let by: BTreeSet<CommitId> = coverers(core, c, ai).into_iter().filter(&carries).collect();
+        let own = by.iter().filter(|s| core.ix.commits.get(*s).is_some_and(|m| !m.view.kind.is_compaction())).count();
+        own < by.len() || own >= 2
+    };
     let mut lost = Vec::new();
     for (_, c) in core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten() {
         let Some(m) = core.ix.commits.get(c) else { continue };
         let Some(ai) = m.aspect(tid, ak) else { continue };
-        if m.dropped.get(&ai).is_some_and(|d| d.as_cover()) && !coverers(core, c, ai).iter().any(&carries) {
+        if m.dropped.get(&ai).is_some_and(|d| d.as_cover()) && !still(c, ai) {
             lost.push((*c, ai));
         }
     }

@@ -524,7 +524,7 @@ impl SyncEngine {
         if self.engine.part_valueless(h, c, ai) {
             return false;
         }
-        self.engine.body_live(c, &a.tid, &a.ak).unwrap_or(true)
+        self.engine.delta_live(c, &a.tid, &a.ak).unwrap_or(true)
     }
 
     /// Whether other entries under the label at the host carry every live write of
@@ -597,13 +597,14 @@ impl SyncEngine {
     }
 
     /// Whether a later snapshot of `(t, a)` under the label at the host carries body `body`'s
-    /// writes there: one covering it, or for a `dropped` delta (its content is gone, so `covered`
-    /// checks only the frontier) the snapshot that covered it when it was dropped, or one
-    /// covering that whose frontier holds the body's counters (a co-writer's that went up in its
-    /// place).
+    /// writes there. A held delta: one covering it, the same test its holders' must-hold asks
+    /// (a recorded carrier that covers it no more, turned invalid, carries nothing). A `dropped`
+    /// delta (its content is gone, so `covered` checks only the frontier): the snapshot that
+    /// covered it when it was dropped, or one covering that whose frontier holds the body's
+    /// counters (a co-writer's that went up in its place).
     fn snapshot_carries(&mut self, at: &At, body: &CommitId, t: &Tid, a: &Ak, dropped: bool) -> Result<bool> {
         let (l, host, snaps) = (&at.l, at.host.as_ref(), at.snaps);
-        let carrier = self.carrier_of(body, t, a);
+        let carrier = if dropped { self.carrier_of(body, t, a) } else { None };
         let candidates: Vec<CommitId> = match carrier {
             None if dropped => Vec::new(),
             _ => carrier.into_iter().chain(snaps.get(&(*t, a.clone())).cloned().unwrap_or_default()).collect(),
@@ -613,11 +614,11 @@ impl SyncEngine {
                 continue;
             }
             let covers = self.engine.covered(&s, body, t, a)? == Some(true);
-            let stand_in = match carrier {
+            let carries = match carrier {
                 Some(k) => k == s || (covers && self.engine.covered(&s, &k, t, a)? == Some(true)),
-                None => false,
+                None => covers,
             };
-            if stand_in || (!dropped && covers) {
+            if carries {
                 return Ok(true);
             }
         }

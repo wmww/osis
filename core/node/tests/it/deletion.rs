@@ -1276,3 +1276,63 @@ fn one_commit_disappearing_message_spec_commits_6() {
     }
 }
 
+/// Host log records of label `l` (entries added and deleted) so far.
+fn log_len(net: &Net, host: usize, l: &osis_base::LabelId) -> usize {
+    use osis_proto::LabelStore;
+    net.hosts[host].hub.store().log_after(l, 0, 1 << 20).unwrap().unwrap_or_default().len()
+}
+
+// spec/sync.md §6, §7 (what a node deletes it would not upload): B writes C on t:reg and t:seq
+// (`author` only), compacts t:seq, and, the admin A away, t:reg; it drops C under both snapshots
+// and deletes it at the host. A demotes B to read with a frontier not listing the t:reg snapshot:
+// it falls, C's t:reg write is live and covered by nothing, so A, which kept C (no right over its
+// t:seq delta), uploads it. B takes C's t:reg delta back; its blob is must-not-hold for B (the
+// t:seq delta dropped), and the fallen snapshot B recorded as the t:reg delta's carrier carries
+// nothing: B leaves the blob (a reader writes no snapshot) and the label goes quiet.
+#[test]
+fn fallen_carrier_carries_nothing_spec_sync_7() {
+    use osis_schema::{PurgeBy, Retention};
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    let (reg, seq) = (Ak::new(REG.ak()).unwrap(), Ak::new(SEQ.ak()).unwrap());
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("r")).unwrap();
+    m.retention(t, &SEQ, Retention { by: PurgeBy::Author, history: None }).unwrap();
+    m.op(t, &SEQ, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Insert { at: 0, items: vec![s("h")] } }).unwrap();
+    let c = net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    let blobs = blobs_of(&mut net, b, &l, c);
+    let acts = net.sync(b).compact(&t, &seq).unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.set_online(a, false);
+    let acts = net.sync(b).compact(&t, &reg).unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.advance(2 * 3_600_000);
+    net.run();
+    assert!(!net.engine(b).body_not_dropped(&c, &t, &reg) && !net.engine(b).body_not_dropped(&c, &t, &seq), "B dropped C");
+    assert!(blobs.iter().all(|id| !net.host_ids(host, &l).contains(id)), "B deleted C at the host");
+    let bt = net.tid(b);
+    demote(&mut net, a, g, bt, Role::Read);
+    net.set_online(a, true);
+    net.run();
+    net.advance(61_000);
+    net.run();
+    let before = log_len(&net, host, &l);
+    for _ in 0..6 {
+        net.advance(5 * 60_000);
+        net.run();
+    }
+    assert_eq!(log_len(&net, host, &l), before, "no upload and delete loop");
+    assert!(net.engine(b).body_not_dropped(&c, &t, &reg), "B took C's t:reg delta back");
+    assert!(!net.engine(b).body_not_dropped(&c, &t, &seq));
+    assert!(blobs_of(&mut net, a, &l, c).iter().any(|id| net.host_ids(host, &l).contains(id)), "A placed C again");
+    assert_eq!(net.engine(b).get_typed(&t, &REG).unwrap(), net.engine(a).get_typed(&t, &REG).unwrap());
+}

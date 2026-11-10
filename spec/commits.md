@@ -165,7 +165,7 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 - A commit with several parts goes under own replaces only whole: every part it still holds must be covered by own replaces whose author holds the right over it, and it goes once the latest of the parts' keep-at-least bounds passes.
 - A body not held and not dropped (not fetched yet) is not established as covered; a dropped one joins nothing and is.
 - An own replace drops C only where its author holds the right over C (Between the bounds), which every node reads alike: every node, reader or writer, drops C under own replaces once its keep-at-least bound passes (`MAX_DRIFT` past it), as under a snapshot it holds the right for, and judges C covered for must-hold (spec/sync.md §6) by the same test.
-- An own replace that turns invalid, or drops other than as covered, gives nothing: what it alone covered is missing again, as under a snapshot (spec/permissions.md §5.2).
+- An own replace that turns invalid, or drops other than as covered, gives nothing: a commit dropped under own replaces stays dropped only while two of them (or a valid snapshot covering it) are still held valid; otherwise it is missing again, as under a snapshot (spec/permissions.md §5.2).
 - A delta with an expiry is judged by the join, not by its own lifetime: a later own whole replace covers it whether its values have expired or not.
 
 ### Forgetting
