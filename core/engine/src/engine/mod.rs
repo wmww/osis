@@ -2528,7 +2528,7 @@ pub struct Engine {
     pub(crate) cfg: Config,
     /// Debug builds: this open's durable transactions that changed a state or a commit's
     /// parts, and those of them that changed more than valid joins (`check_index` runs when
-    /// either count reaches a power of four).
+    /// either count reaches a power of 16: 1, 16, 256).
     #[cfg(debug_assertions)]
     index_checks: [u64; 2],
     /// Tests: an index was edited in memory past the store, so `check_index` does not run.
@@ -2826,8 +2826,8 @@ impl Engine {
                             let n = &mut self.index_checks;
                             n[0] += 1;
                             n[1] += u64::from(more);
-                            let quarter = |n: u64| n.is_power_of_two() && n.trailing_zeros().is_multiple_of(2);
-                            sample = quarter(n[0]) || (more && quarter(n[1]));
+                            let sixteenth = |n: u64| n.is_power_of_two() && n.trailing_zeros().is_multiple_of(4);
+                            sample = sixteenth(n[0]) || (more && sixteenth(n[1]));
                             #[cfg(test)]
                             {
                                 sample |= self.check_every_tx;
