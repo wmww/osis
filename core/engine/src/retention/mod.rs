@@ -830,6 +830,12 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
     let mut purged = BTreeSet::new();
     on_parts(tx, id, &h, &(0..h.aspects.len()).collect(), &mut purged, changed)?;
     purge::apply_request(tx, id, &h, &mut purged)?;
+    // a further minting of a held thing may bring it back after its expiry (`end::end_ended`)
+    for a in h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED) {
+        if tx.core.mintings(&a.tid).nth(1).is_some() {
+            tx.core.valueless_dirty.insert((a.tid, a.ak.clone()));
+        }
+    }
     purged_changed(tx, purged, changed);
     Ok(())
 }

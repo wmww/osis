@@ -695,7 +695,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     let core_schema = Arc::new(osis_schema::core_schema().clone());
     let memory = tx.txn.is_memory();
     for &t in m.creates.keys() {
-        if tx.core.created(&t).is_some() {
+        if tx.core.created(&t).is_some() && !tx.core.skip_writer_rules {
             return Err(Error::Misuse("thing already exists"));
         }
     }
@@ -846,8 +846,10 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));
         // map removals carry their key only where keys are public ids (spec/crdt.md §5.6)
         let keyed = osis_schema::core_types::is_role_class(ak.as_str());
+        // a hostile writer (tests) mints a held record again: as over no state
+        let remint = tx.core.skip_writer_rules && ak.as_str() == CREATED.ak();
         let run = |tx: &Tx<'_>| {
-            let state = tx.cached(&tid, &ak).unwrap_or(&empty);
+            let state = if remint { &empty } else { tx.cached(&tid, &ak).unwrap_or(&empty) };
             let w = Writer::new(ts, own_source(form, node), lo).keyed_removals(keyed);
             match &view {
                 Some(v) => run_ops(state, w, &am.ops, v),

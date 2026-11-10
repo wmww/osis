@@ -20,10 +20,12 @@
 //! unknown thing.
 
 use crate::engine::records;
-use crate::engine::{DropFor, Tx};
+use crate::engine::{Core, DropFor, Tx};
 use crate::error::Result;
 use crate::events::{Cause, Event};
 use osis_base::{Ak, CommitId, Tid};
+use osis_commit::Header;
+use osis_perm::Point;
 use osis_store::Shred;
 use std::collections::BTreeSet;
 
@@ -34,6 +36,27 @@ const ROLES: &str = "roles.0";
 /// Aspects whose parts an ended thing still takes (`thing_wait`), so its ending is judged alike.
 pub(crate) fn judges_ending(ak: &str) -> bool {
     matches!(ak, CREATED | PURGE | ROLES)
+}
+
+/// Whether a part of commit `id` (header `h`) on ended `t` is written after its ending
+/// (spec/commits.md §5 Ending): stamped after every valid minting of it ended, each at its
+/// expiry (`wall_ms(ts) >= T`) or after a request that drops it. Nobody writes a thing after its
+/// ending: such a part is a part on an unknown thing, whatever its aspect. A minting is not asked:
+/// a request ending the thing names every minting of it (`purge::names`). A walk of the held
+/// requests: asked only of an ended thing's parts.
+pub(crate) fn after_ending(core: &Core, t: &Tid, h: &Header, id: &CommitId) -> bool {
+    if !core.ended(t) {
+        return false;
+    }
+    let at = Point { ts: h.ts, node: h.author, commit: *id };
+    let wall = h.ts.wall_ms().0;
+    let on_t = |p: &Header| p.purge.iter().any(|i| i.tid() == t && i.ak().as_str() == CREATED);
+    let requests: Vec<(CommitId, &Header)> = core.ix.commits.iter().filter(|(_, m)| m.view.purges && on_t(&m.header)).map(|(pc, m)| (*pc, &*m.header)).filter(|(pc, p)| Point { ts: p.ts, node: p.author, commit: *pc } < at).collect();
+    core.mintings(t).all(|(c, ai)| {
+        let Some(m) = core.ix.commits.get(&c) else { return false };
+        let Some(a) = m.header.aspects.get(ai) else { return false };
+        m.header.expires.is_some_and(|x| x <= wall) || requests.iter().any(|(pc, p)| super::purge::stands(core, p, pc, a, &m.header, &c))
+    })
 }
 
 /// Ends the things a value-less list changed on in this transaction (`Core::valueless_dirty`,
@@ -98,7 +121,7 @@ fn reads_again(t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) {
 /// purge requests it also holds.
 fn every_creation_expired(tx: &Tx<'_>, t: &Tid) -> bool {
     let now = tx.now().0;
-    tx.core.aspects_of(t).filter(|((_, ak), _)| ak.as_str() == CREATED).flat_map(|(_, s)| s.iter()).all(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.header.expires.is_some_and(|x| x <= now)))
+    tx.core.mintings(t).all(|(c, _)| tx.core.ix.commits.get(&c).is_some_and(|m| m.header.expires.is_some_and(|x| x <= now)))
 }
 
 /// Whether something held here depends on `t` (the module doc): `t` is on an authority path of
@@ -127,30 +150,47 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
     // the actors named on it (its first admin, its holders), read before its record and edges go
     let ups: Vec<Tid> = if keep { Vec::new() } else { tx.core.ix.held.holders_of(t).copied().collect() };
     // the holders its `roles.0` entries keyed go with the entries: read while the parts are held
-    let edge_commits: Vec<CommitId> = if keep { Vec::new() } else { tx.core.ix.held.commits_on(t).iter().map(|c| c.id).collect() };
+    // kept or not, an edge write on it stamped after its ending goes (`after_ending`)
+    let late = |core: &Core, id: &CommitId| core.ix.commits.get(id).is_some_and(|m| after_ending(core, t, &m.header, id));
+    let edge_commits: Vec<CommitId> = tx.core.ix.held.commits_on(t).iter().map(|c| c.id).filter(|c| !keep || late(tx.core, c)).collect();
     for id in &edge_commits {
         let parts = crate::apply::edge_parts(tx, id)?;
         let view = tx.core.ix.commits.get(id).map(|m| m.view.clone());
         for (ai, es) in &parts.0 {
-            if view.as_ref().and_then(|v| v.aspects.get(*ai)).is_some_and(|a| a.tid == *t) {
-                for (d, _, _) in es {
-                    tx.core.ix.holder_keys.remove(&(*t, d.clone()));
-                }
+            let Some(v) = view.as_ref().filter(|v| v.aspects.get(*ai).is_some_and(|a| a.tid == *t)) else { continue };
+            // the entries it created (a reset of another's entry keys nothing: that one's commit
+            // may stay)
+            let own = crate::engine::Owned::of_view(v, id, *ai);
+            for (d, _, _) in es.iter().filter(|(d, _, _)| own.as_ref().is_some_and(|o| o.owns(d.origin()))) {
+                tx.core.ix.holder_keys.remove(&(*t, d.clone()));
             }
         }
     }
     let aspects: Vec<(Ak, Vec<CommitId>)> = tx.core.aspects_of(t).filter(|((_, ak), _)| !keep || !judges_ending(ak.as_str())).map(|((_, ak), s)| (ak.clone(), s.iter().map(|x| x.1).collect())).collect();
-    for (ak, commits) in &aspects {
+    // what it keeps but for its parts written after the ending
+    let partly: Vec<(Ak, Vec<CommitId>)> = if keep {
+        tx.core.aspects_of(t).filter(|((_, ak), _)| judges_ending(ak.as_str()) && ak.as_str() != CREATED).map(|((_, ak), s)| (ak.clone(), s.iter().map(|x| x.1).filter(|c| late(tx.core, c)).collect::<Vec<_>>())).filter(|(_, cs)| !cs.is_empty()).collect()
+    } else {
+        Vec::new()
+    };
+    for (ak, commits) in aspects.iter().chain(&partly) {
         for c in commits {
             if let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(t, ak)) {
                 super::drop_part_for(tx, c, ai, DropFor::Ended)?;
             }
         }
     }
+    for (ak, _) in &partly {
+        crate::apply::rebuild(tx, t, ak)?;
+        changed.insert((*t, ak.clone()));
+    }
+    let held_changed = !edge_commits.is_empty();
     for id in edge_commits {
         // a role commit keeps its row and its place, empty once its last edge goes: as an open reads it
-        let parts = crate::apply::edge_parts(tx, &id)?;
-        let Some(view) = tx.core.ix.commits.get(&id).map(|m| m.view.clone()) else { continue };
+        let mut parts = crate::apply::edge_parts(tx, &id)?;
+        let Some((view, m)) = tx.core.ix.commits.get(&id).map(|m| (m.view.clone(), m.clone())) else { continue };
+        // the parts it dropped are not held (a role commit's record keeps them)
+        parts.0.retain(|(ai, _)| m.holds(*ai));
         tx.core.ix.held.remove(&id);
         crate::apply::validity::add_role_commit(tx.core, &view, &id, &parts);
         crate::engine::index::put_edges(tx, &id, &parts, Shred::Yes)?;
@@ -183,5 +223,5 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
         }
     }
     tx.core.role_changed();
-    Ok(!keep)
+    Ok(held_changed || !keep)
 }

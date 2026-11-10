@@ -747,3 +747,201 @@ fn repro_newcomer_reads_no_dependent_keyed_by_an_ended_actor() {
     assert_eq!(net.read(d, x), Some(s("x")), "d: x reads");
     assert_eq!(net.engine(d).roster(&x), ra, "d: x's roster");
 }
+
+/// A commit of node `n` minting `t`'s record again, durable, past the writer's rules: what anyone
+/// holding the record can sign. Its bytes as sent.
+fn remint(net: &mut Net, n: usize, t: Tid) -> Vec<u8> {
+    let rec = net.engine(n).core.created(&t).cloned().expect("t's record");
+    let mut m = Mutation::new();
+    m.create(rec);
+    let c = net.engine(n).commit_hostile(m).unwrap().unwrap();
+    net.engine(n).take_forged().unwrap_or_else(|| net.engine(n).package(&c).unwrap().unwrap().bytes)
+}
+
+/// `setup` with a fourth node, r, a reader of `g`: it holds the records of `g`'s things.
+fn setup_reader() -> (Setup, usize) {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let r = net.node(4, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Admin), (r, Role::Read)], &[host]);
+    net.run();
+    (Setup { net, a, b, c, g }, r)
+}
+
+// spec/commits.md §5 (Ending): an ending is final. A reader of `g` (it holds t's record) mints t
+// again before and after an admin purges t's creation, and a writer of t mints it again after the
+// ending: c takes the three and the ending in every order, and t reads gone everywhere
+#[test]
+fn a_minting_again_never_brings_back_a_purged_thing_spec_commits_5() {
+    for order in [[0, 1, 2, 3], [1, 0, 2, 3], [2, 3, 1, 0], [3, 2, 0, 1]] {
+        let (Setup { mut net, a, b, c, g }, r) = setup_reader();
+        let (t, _) = made(&mut net, a, g);
+        net.run();
+        assert!(net.engine(r).core.created(&t).is_some(), "order {order:?}: r holds t's record");
+        net.set_online(c, false);
+        for n in [a, b, r] {
+            net.set_online(n, false);
+        }
+        net.advance(10);
+        let before = remint(&mut net, r, t);
+        net.advance(10);
+        let ending = end(&mut net, a, t);
+        let ending = net.engine(a).package(&ending).unwrap().unwrap().bytes;
+        net.advance(10);
+        let after = remint(&mut net, r, t);
+        let by_writer = remint(&mut net, b, t);
+        let lots = [&before, &ending, &after, &by_writer];
+        for i in order {
+            let _ = net.engine(c).ingest(lots[i], Vec::new());
+            net.engine(c).reexamine().unwrap();
+        }
+        gone(&mut net, c, t);
+        for n in [a, b, c, r] {
+            net.set_online(n, true);
+        }
+        for _ in 0..3 {
+            net.advance(70_000);
+        }
+        for n in [a, b, c, r] {
+            gone(&mut net, n, t);
+        }
+    }
+}
+
+// spec/commits.md §5 (Ending): a reader holding an expiring thing's record mints it again durable
+// before its expiry and after it: neither keeps it, wherever the minting arrives before or after the
+// thing ended there
+#[test]
+fn a_reader_minting_again_never_keeps_an_expiring_thing_spec_commits_5() {
+    for remint_first in [true, false] {
+        let (Setup { mut net, a, b, c, g }, r) = setup_reader();
+        let at = net.now() + 5_000;
+        let mut m = Mutation::new();
+        let t = net.engine(a).new_thing(&mut m, g);
+        m.set(t, &REG, &s("x")).unwrap();
+        m.expires_all(osis_base::WallMs(at));
+        net.engine(a).commit(m).unwrap().unwrap();
+        let mut m = Mutation::new();
+        let mut items = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+        items.items.insert(t);
+        m.set(g, &ct::GROUP, &items).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap();
+        net.run();
+        net.set_online(c, false);
+        net.set_online(r, false);
+        let before = remint(&mut net, r, t);
+        if remint_first {
+            let _ = net.engine(c).ingest(&before, Vec::new());
+        }
+        net.advance(10_000);
+        // c is offline: its expiry runs by its own clock
+        net.engine(c).tick().unwrap();
+        assert!(net.engine(c).core.ended(&t), "first {remint_first}: t ended at c");
+        let after = remint(&mut net, r, t);
+        if !remint_first {
+            let _ = net.engine(c).ingest(&before, Vec::new());
+        }
+        let _ = net.engine(c).ingest(&after, Vec::new());
+        net.engine(c).reexamine().unwrap();
+        gone(&mut net, c, t);
+        net.set_online(c, true);
+        net.set_online(r, true);
+        for _ in 0..3 {
+            net.advance(70_000);
+        }
+        for n in [a, b, c, r] {
+            gone(&mut net, n, t);
+        }
+    }
+}
+
+// spec/commits.md §5 (Ending: nobody writes a thing after its ending): t, first admin of x, is
+// purged; c, an admin of t that has not heard of it, grants r admin on t afterwards. r gains nothing on x through t at b whether the grant reaches it before or after the
+// ending, nor anywhere once all have synced
+#[test]
+fn an_edge_write_after_an_ending_counts_nowhere_spec_commits_5() {
+    for grant_first in [true, false] {
+        let (Setup { mut net, a, b, c, g }, r) = setup_reader();
+        let (t, _) = made(&mut net, a, g);
+        let x = net.item(a, g, t, "x");
+        net.run();
+        let tr = net.tid(r);
+        assert_eq!(net.engine(r).role_on(&x), Some(Role::Read), "grant first {grant_first}: r reads x through g");
+        // c, offline, has not heard of the ending: its grant is a writer's, stamped after it
+        net.set_online(b, false);
+        net.set_online(c, false);
+        net.advance(10);
+        let ending = end(&mut net, a, t);
+        let ending = net.engine(a).package(&ending).unwrap().unwrap().bytes;
+        net.run();
+        net.advance(10);
+        let grant = set_edge(net.engine(c), t, tr, Role::Admin);
+        let grant = net.engine(c).package(&grant).unwrap().unwrap().bytes;
+        let lots = if grant_first { [&grant, &ending] } else { [&ending, &grant] };
+        for p in lots {
+            let _ = net.engine(b).ingest(p, Vec::new());
+            net.engine(b).reexamine().unwrap();
+        }
+        assert!(net.engine(b).core.ended(&t), "grant first {grant_first}: t ended at b");
+        assert!(!net.engine(b).roster(&x).is_empty(), "grant first {grant_first}: x lives at b");
+        net.set_online(b, true);
+        net.set_online(c, true);
+        for _ in 0..3 {
+            net.advance(70_000);
+        }
+        for n in [a, b, c, r] {
+            assert_eq!(net.read(n, x), Some(s("x")), "grant first {grant_first}: node {n}: x lives on");
+        }
+        assert_eq!(net.engine(r).role_on(&x), Some(Role::Read), "grant first {grant_first}: r: nothing through t's late edge");
+        let rb = net.engine(b).roster(&x);
+        for n in [a, c, r] {
+            assert_eq!(net.engine(n).roster(&x), rb, "grant first {grant_first}: node {n}: x's roster");
+        }
+    }
+}
+
+// spec/commits.md §5 (Ending is judged by the history before it), spec/permissions.md §6: c, admin
+// of t by its own grant on t alone, ends t; a, not having heard, demotes c on t afterwards with a
+// frontier that omits the request. The demotion is a write after the ending: whether b takes it
+// before or after the request, the ending stands at every node
+#[test]
+fn a_demotion_after_an_ending_does_not_undo_it_spec_commits_5() {
+    for demotion_first in [true, false] {
+        let Setup { mut net, a, b, c, g } = setup();
+        let (t, _) = made(&mut net, a, g);
+        let tc = net.tid(c);
+        set_edge(net.engine(a), t, tc, Role::Admin);
+        demote(&mut net, a, g, tc, Role::Read);
+        net.run();
+        net.set_online(a, false);
+        net.set_online(b, false);
+        net.advance(10);
+        let ending = end(&mut net, c, t);
+        let ending = net.engine(c).package(&ending).unwrap().unwrap().bytes;
+        net.advance(10);
+        let mut m = Mutation::new();
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+        m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(tc)) }).unwrap();
+        m.op(t, &ct::ROLES, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(tc))], op: Op::Set(edge.to_value()) }).unwrap();
+        m.frontier(ct::Frontier::default().to_value());
+        let d = net.engine(a).commit(m).unwrap().unwrap();
+        let demotion = net.engine(a).package(&d).unwrap().unwrap().bytes;
+        let lots = if demotion_first { [&demotion, &ending] } else { [&ending, &demotion] };
+        for p in lots {
+            let _ = net.engine(b).ingest(p, Vec::new());
+            net.engine(b).reexamine().unwrap();
+        }
+        assert!(net.engine(b).core.ended(&t), "demotion first {demotion_first}: the ending stands at b");
+        net.set_online(a, true);
+        net.set_online(b, true);
+        for _ in 0..3 {
+            net.advance(70_000);
+        }
+        for n in [a, b, c] {
+            gone(&mut net, n, t);
+        }
+    }
+}

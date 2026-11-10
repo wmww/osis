@@ -10,12 +10,19 @@ use crate::engine::{Core, Engine, LazyHeader, Tx};
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::{AspectEntry, Header, PurgeItem};
-use osis_perm::Point;
+use osis_perm::{HeldSet, Point};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A held request: its ID and header.
 type Request = (CommitId, LazyHeader);
+
+/// Whether a request stamped `at` may name a delta on `ak` stamped `ts`: one stamped before it, or
+/// any minting (`created.0`): a request ending a thing ends every minting of it, so a later minting
+/// is held value-less as the earlier ones (spec/commits.md §5 Ending).
+fn stamped_before(at: Ts, ak: &Ak, ts: Ts) -> bool {
+    ts < at || ak.as_str() == osis_commit::retention::CREATED
+}
 
 /// Whether `item` reaches commit `c` (header `ch`) on its aspect: by commit, the whole aspect, or
 /// by its actor.
@@ -31,7 +38,7 @@ fn reaches(item: &PurgeItem, ch: &Header, c: &CommitId) -> bool {
 /// aspect reaches it, it is stamped before the request, and a request that expires reaches only
 /// deltas expiring no later than it (spec/commits.md §5).
 fn names(p: &Header, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
-    ch.ts < p.ts && p.expires.is_none_or(|e| ch.expires.is_some_and(|x| x <= e)) && p.purge.iter().any(|i| i.tid() == &a.tid && i.ak() == &a.ak && reaches(i, ch, c))
+    stamped_before(p.ts, &a.ak, ch.ts) && p.expires.is_none_or(|e| ch.expires.is_some_and(|x| x <= e)) && p.purge.iter().any(|i| i.tid() == &a.tid && i.ak() == &a.ak && reaches(i, ch, c))
 }
 
 /// Whether commit `pc` (header `p`: a purge request or a compaction snapshot) holds the right over
@@ -47,7 +54,37 @@ pub(super) fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntr
     }
     let point = Point { ts: p.ts, node: p.author, commit: *pc };
     let (by, actor) = (a.retention.by, ch.actor);
-    core.timelines.get(&a.tid).is_some_and(|tl| tl.purge_stands(&p.author, &a.tid, by, &actor, point) && (p.actor == p.author || tl.purge_stands(&p.actor, &a.tid, by, &actor, point)))
+    let judge = |tl: &osis_perm::Timeline| tl.purge_stands(&p.author, &a.tid, by, &actor, point) && (p.actor == p.author || tl.purge_stands(&p.actor, &a.tid, by, &actor, point));
+    // an ending is judged by the thing's history before it: nothing written on the thing after it
+    // counts (spec/commits.md §5 Ending), so an edge write on it stamped later, held here before
+    // the ending arrived, is left out of the walk that judges it. Such a write is not held once
+    // the thing ended (`end::after_ending`): a walk from scratch only while one is
+    if a.ak.as_str() == osis_commit::retention::CREATED {
+        let later: BTreeSet<CommitId> = HeldSet::edge_commits(&core.ix.held, &a.tid).iter().filter(|c| c.point() > point).map(|c| c.id).collect();
+        if !later.is_empty() {
+            let cut = Cut { held: &core.ix.held, later };
+            return judge(&osis_perm::Timeline::evaluate_with(&cut, &core.sides.trust()));
+        }
+    }
+    core.timelines.get(&a.tid).is_some_and(judge)
+}
+
+/// The held set without commits `later` (`holds_right`).
+struct Cut<'a> {
+    held: &'a crate::engine::held::Held,
+    later: BTreeSet<CommitId>,
+}
+
+impl HeldSet for Cut<'_> {
+    fn things(&self) -> Vec<Tid> {
+        self.held.things()
+    }
+    fn edge_commits(&self, thing: &Tid) -> Vec<std::sync::Arc<osis_perm::RoleCommit>> {
+        self.held.edge_commits(thing).into_iter().filter(|c| !self.later.contains(&c.id)).collect()
+    }
+    fn created(&self, thing: &Tid) -> Option<osis_base::CreationRecord> {
+        HeldSet::created(self.held, thing)
+    }
 }
 
 /// The writer's check of its own request `pc` (header `p`), built but not applied: each item that
@@ -62,7 +99,7 @@ pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()
         if let Some(e) = p.expires {
             for c in named_by(core, item, p.ts) {
                 let Some(m) = core.ix.commits.get(&c).filter(|m| !m.header.kind.is_compaction() && m.aspect(item.tid(), item.ak()).is_some()) else { continue };
-                if m.header.ts < p.ts && reaches(item, &m.header, &c) && m.header.expires.is_none_or(|x| x > e) {
+                if stamped_before(p.ts, item.ak(), m.header.ts) && reaches(item, &m.header, &c) && m.header.expires.is_none_or(|x| x > e) {
                     return Err(Error::Clash(format!("a purge in a commit that expires reaches only commits expiring no later, and {c:?} on {} {} expires later or never. Write the purge as a commit of its own", item.tid(), item.ak())));
                 }
             }
@@ -84,7 +121,7 @@ pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()
 }
 
 /// Whether request `pc` (header `p`) drops delta `a` of commit `c` (header `ch`).
-fn stands(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
+pub(crate) fn stands(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
     names(p, a, ch, c) && holds_right(core, p, pc, a, ch)
 }
 
@@ -205,7 +242,7 @@ fn named_by(core: &Core, item: &PurgeItem, at: Ts) -> Vec<CommitId> {
         PurgeItem::Author { actor, .. } => core.ix.commits.get(c).is_some_and(|m| m.view.actor == *actor),
         _ => true,
     };
-    held.take_while(|x| x.0 < at).map(|x| x.1).filter(by).collect()
+    held.take_while(|x| stamped_before(at, item.ak(), x.0)).map(|x| x.1).filter(by).collect()
 }
 
 /// The earliest held request by `(ts, ID)` that purges delta `ai` of commit `c`, what a history
@@ -316,7 +353,7 @@ impl AspectRequests {
 
     /// A request of these that drops delta `a` of commit `c` (header `ch`).
     fn standing(&mut self, core: &Core, a: &AspectEntry, ch: &Header, c: &CommitId) -> Option<CommitId> {
-        let by_name = self.named.get(c).into_iter().flatten().find(|(pc, p)| ch.ts < p.ts && holds_right(core, p, pc, a, ch));
+        let by_name = self.named.get(c).into_iter().flatten().find(|(pc, p)| stamped_before(p.ts, &a.ak, ch.ts) && holds_right(core, p, pc, a, ch));
         if let Some((pc, _)) = by_name {
             return Some(*pc);
         }
@@ -326,7 +363,7 @@ impl AspectRequests {
             let on = wide.iter().filter(|x| !matches!(&x.1, PurgeItem::Author { actor: of, .. } if *of != actor));
             on.filter(|x| holds_right(core, &x.2, &x.0, a, ch)).map(|x| (x.2.ts, x.0)).max()
         });
-        newest.filter(|n| ch.ts < n.0).map(|n| n.1)
+        newest.filter(|n| stamped_before(n.0, &a.ak, ch.ts)).map(|n| n.1)
     }
 }
 

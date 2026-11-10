@@ -619,9 +619,10 @@ fn thing_wait(
     record: &dyn Fn(&Tid) -> Option<CreationRecord>,
     chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>,
 ) -> Option<Reason> {
-    // an ended thing is unknown, but for what judges its ending (`retention::end`); an ending by
-    // expiry keeps no record, so this is a purge's
-    if record(&a.tid).is_none() || core.ended(&a.tid) && !crate::retention::end::judges_ending(a.ak.as_str()) {
+    // an ended thing is unknown, but for what judges its ending written before it
+    // (`retention::end`); an ending by expiry keeps no record but for a dependent
+    let ended = |id: &CommitId| !crate::retention::end::judges_ending(a.ak.as_str()) || a.ak.as_str() != osis_commit::retention::CREATED && crate::retention::end::after_ending(core, &a.tid, h, id);
+    if record(&a.tid).is_none() || core.ended(&a.tid) && ended(&h.id()) {
         return Some(Reason::UnknownCreated(a.tid));
     }
     let mut chain = vec![a.tid];

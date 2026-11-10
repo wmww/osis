@@ -1216,24 +1216,39 @@ impl Core {
     }
 
     /// Whether `t` takes writes here: it exists and, but for a key actor (its record is its
-    /// creation's whole content, and only its own nodes see it end), a creation of it is held. A
-    /// node that learned a thing's record raw (a record blob) cannot tell it ended, and a write
-    /// there would be one every node that saw the ending ignores.
+    /// creation's whole content, and only its own nodes see it end), a valid minting of it is
+    /// held. A node that learned a thing's record raw (a record blob) cannot tell it ended, and a
+    /// write there would be one every node that saw the ending ignores.
     pub fn writable(&self, t: &Tid) -> bool {
-        self.exists(t) && (matches!(self.created(t), Some(osis_base::CreationRecord::KeyActor { .. })) || Ak::new(osis_commit::retention::CREATED).is_ok_and(|ak| self.ix.by_aspect.get(&(*t, ak)).is_some_and(|s| !s.is_empty())))
+        self.exists(t) && (matches!(self.created(t), Some(osis_base::CreationRecord::KeyActor { .. })) || self.mintings(t).next().is_some())
     }
 
-    /// Whether `t` is ended: a creation of it was held, and each is held value-less or dropped by
-    /// a purge or the ending (`retention::end`). One missing may yet come. A thing never held is
+    /// The held valid mintings of `t` (`created.0` deltas): a minting is a write on its thing
+    /// (spec/commits.md §5 Ending), so one its writer could not write is no creation.
+    pub(crate) fn mintings<'s>(&'s self, t: &Tid) -> impl Iterator<Item = (CommitId, usize)> + 's {
+        let ak = Ak::new(osis_commit::retention::CREATED).ok();
+        let held = ak.as_ref().and_then(|ak| self.ix.by_aspect.get(&(*t, ak.clone())));
+        let t = *t;
+        held.into_iter().flatten().filter_map(move |(_, c)| {
+            let m = self.ix.commits.get(c)?;
+            let ai = m.aspect(&t, ak.as_ref()?)?;
+            m.valid_at(ai).then_some((*c, ai))
+        })
+    }
+
+    /// Whether `t` is ended: a valid minting of it was held (`mintings`), and each is held
+    /// value-less or dropped by a purge or the ending (`retention::end`). One missing may yet come. A thing never held is
     /// unknown, not ended.
     pub fn ended(&self, t: &Tid) -> bool {
-        let Ok(ak) = Ak::new(osis_commit::retention::CREATED) else { return false };
-        let gone = |c: &CommitId| {
-            let Some(m) = self.ix.commits.get(c) else { return false };
-            let Some(ai) = m.aspect(t, &ak) else { return false };
-            crate::retention::valueless(self, c, ai) || m.dropped.get(&ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Ended))
+        let gone = |(c, ai): (CommitId, usize)| {
+            let Some(m) = self.ix.commits.get(&c) else { return false };
+            crate::retention::valueless(self, &c, ai) || m.dropped.get(&ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Ended))
         };
-        self.ix.by_aspect.get(&(*t, ak.clone())).is_some_and(|held| !held.is_empty() && held.iter().all(|(_, c)| gone(c)))
+        let mut any = false;
+        self.mintings(t).all(|x| {
+            any = true;
+            gone(x)
+        }) && any
     }
 
     /// Re-evaluates the timelines around the things whose held inputs changed; the things of
