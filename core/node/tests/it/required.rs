@@ -1054,8 +1054,10 @@ fn writers_setting_reads_as_never_seen_spec_commits_4() {
         orders = orders.iter().flat_map(|o: &Vec<usize>| (0..items.len()).filter(|i| !o.contains(i)).map(|i| [o.clone(), vec![i]].concat()).collect::<Vec<_>>()).collect();
     }
     assert_eq!(orders.len(), 120);
+    // a fresh node holding `base`, copied for each order
+    let start = fresh(&mut lp, &base, &[]);
     for order in &orders {
-        let (mut x, mut y) = (fresh(&mut lp, &base, &[]), fresh(&mut lp, &base, &[]));
+        let (mut x, mut y) = (start.fork(1).unwrap(), start.fork(2).unwrap());
         x.engine.set_syncing(d, true).unwrap();
         y.engine.set_syncing(d, true).unwrap();
         for (n, i) in order.iter().enumerate() {

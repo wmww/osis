@@ -572,7 +572,9 @@ pub(crate) struct Fresh {
 }
 
 fn sync_over(engine: Engine, clock: &Arc<dyn Clock>, cfg: &Config, hosts: &[Address]) -> Result<SyncEngine> {
-    let scfg = SyncConfig { hosts: hosts.iter().map(|s| s.0.clone()).collect(), peers: cfg.direct_sync, ..SyncConfig::default() };
+    let d = SyncConfig::default();
+    let fill_batch = cfg.app.internals.fill_batch.unwrap_or(d.fill_batch);
+    let scfg = SyncConfig { hosts: hosts.iter().map(|s| s.0.clone()).collect(), peers: cfg.direct_sync, fill_batch, ..d };
     Ok(SyncEngine::new(engine, clock.clone(), rng(cfg, 7), scfg)?)
 }
 

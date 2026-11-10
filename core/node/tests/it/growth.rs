@@ -40,14 +40,14 @@ fn single_writer_replace_grows_nothing() {
     // the heartbeats settle first: a node holds its last few, each until its next two expire
     at(&mut net, 0, 0);
     at(&mut net, 0, 0);
-    let (a1, b1, h1, _) = at(&mut net, 0, 50);
-    let (a2, b2, h2, held) = at(&mut net, 50, 500);
+    let (a1, b1, h1, _) = at(&mut net, 0, 20);
+    let (a2, b2, h2, held) = at(&mut net, 20, 200);
     // a month settles the last write's deletes at the host, then a month alone adds nothing
-    let (a2b, b2b, h2b, _) = at(&mut net, 500, 500);
-    let (a3, b3, h3, _) = at(&mut net, 500, 500);
+    let (a2b, b2b, h2b, _) = at(&mut net, 200, 200);
+    let (a3, b3, h3, _) = at(&mut net, 200, 200);
     assert_eq!(held, 3, "the newest body, the writer's previous and the creating commit, whole");
-    assert_eq!(net.read(a, t), Some(s("v00000499")), "writer reads the newest");
-    assert_eq!(net.read(b, t), Some(s("v00000499")), "reader reads the newest");
+    assert_eq!(net.read(a, t), Some(s("v00000199")), "writer reads the newest");
+    assert_eq!(net.read(b, t), Some(s("v00000199")), "reader reads the newest");
     for (who, x1, x2, x2b, x3) in [("writer", &a1, &a2, &a2b, &a3), ("reader", &b1, &b2, &b2b, &b3), ("host", &h1, &h2, &h2b, &h3)] {
         flat(who, "n to 10n writes", x1, x2);
         flat(who, "a month with no writes", x2b, x3);

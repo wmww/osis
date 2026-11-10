@@ -140,6 +140,8 @@ pub struct Knobs {
     pub host: Option<MemUdp>,
     /// Called by a text session's save between taking its snapshot and committing it.
     pub text_save: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    /// In place of `SyncConfig::fill_batch`: a fill of a few messages takes several batches.
+    pub fill_batch: Option<usize>,
 }
 
 /// How `status` folds labels into groups (tests).

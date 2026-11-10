@@ -449,12 +449,14 @@ fn purge_by_author_any_order_spec_perm_6() {
             let dm = set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Read)), Some(f.to_value()));
             let pd = pack(&mut lp, 0, &dm);
             let items = [&pc, &setting, &pd, &prq];
+            // a fresh node holding `base`, copied for each order
+            let start = fresh(&mut lp, &base, 500);
             for (k, order) in perms(4).iter().enumerate() {
                 // only the author's own request by the first class: the orders are the same work
                 if k > 0 && by != PurgeBy::AuthorOrAdmin && order[0] != 0 {
                     continue;
                 }
-                let mut p = fresh(&mut lp, &base, 500 + k as u64);
+                let mut p = start.fork(k as u64).unwrap();
                 // another's on the first order, held before the request; after it on the rest
                 if k == 0 {
                     p.engine.ingest(&po.bytes, po.blobs.clone()).unwrap();

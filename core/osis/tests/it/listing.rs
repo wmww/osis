@@ -443,7 +443,9 @@ fn page_says_when_it_may_miss_commits() {
 // `complete` false, then true, and every page's commits the newest there are.
 #[test]
 fn a_new_node_reads_newest_first_spec_sync_6() {
-    const N: usize = 400;
+    // the new node fills `BATCH` messages at a time, so a few batches are part way
+    const BATCH: usize = 8;
+    const N: usize = 6 * BATCH;
     let mut w = World::new();
     let host = w.add_host();
     let db = w.account(1, &[host]);
@@ -457,21 +459,24 @@ fn a_new_node_reads_newest_first_spec_sync_6() {
         say(&db, t, &format!("{i:05}"));
     }
     w.run();
-    let join = osis::internals::pair(w.cfg(2, &[]), &db.pair_offer().unwrap()).unwrap();
+    let mut cfg = w.cfg(2, &[]);
+    cfg.app.internals.fill_batch = Some(BATCH);
+    let join = osis::internals::pair(cfg, &db.pair_offer().unwrap()).unwrap();
     let (_, reply) = db.pair_accept(join.request()).unwrap();
     let phone = join.finish(&reply).unwrap();
     let mut partly = false;
     for _ in 0..100_000 {
         let got = phone.at(t, untyped(msg())).writes(&page(CommitFrom::Newest, 10)).unwrap();
         if !got.commits.is_empty() {
-            let shown = got.commits.iter().map(|c| part(c, t, &msg()).body).filter(|b| *b != Body::Held(Some(s("first"))));
-            for (i, b) in shown.enumerate() {
-                assert_eq!(b, Body::Held(Some(s(&format!("{:05}", N - 1 - i)))), "newest first");
+            let shown: Vec<_> = got.commits.iter().map(|c| part(c, t, &msg()).body).filter(|b| *b != Body::Held(Some(s("first")))).collect();
+            for (i, b) in shown.iter().enumerate() {
+                assert_eq!(*b, Body::Held(Some(s(&format!("{:05}", N - 1 - i)))), "newest first");
             }
             if got.complete {
                 break;
             }
-            partly = true;
+            // the newest held while older ones are missing
+            partly |= !shown.is_empty() && shown.len() < 10;
         }
         // one hop; nothing queued: time for a tick
         if !w.step(None) {

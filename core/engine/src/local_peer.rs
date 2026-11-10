@@ -65,6 +65,7 @@ pub struct Peer {
 
 /// A package this peer's engine threw out, as hosts keep it: fetched again as node-sync does
 /// (`Peer::receive`).
+#[derive(Clone)]
 pub struct Discarded {
     bytes: Vec<u8>,
     blobs: Vec<(BlobId, Vec<u8>)>,
@@ -161,6 +162,21 @@ impl Peer {
         engine.take_wakes();
         self.engine = engine;
         self.fetch_discarded()
+    }
+
+    /// An independent copy of this node as it is now, opened over a copy of its durable state on
+    /// a clock of its own: one setup, then several paths from it.
+    pub fn fork(&self, seed: u64) -> Result<Peer> {
+        let clock = Arc::new(ManualClock::new(self.clock.now_wall_ms()));
+        let (backend, root) = (self.backend.copy(), self.root.copy());
+        let c: Arc<dyn Clock> = clock.clone();
+        let seed = seed.wrapping_add((self.restarts + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        let mut engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
+        let events = engine.subscribe();
+        engine.take_wakes();
+        let mut p = Peer { engine, clock, backend, root, events, restarts: self.restarts + 1, discarded: self.discarded.clone(), discards: self.discards };
+        p.fetch_discarded()?;
+        Ok(p)
     }
 
     /// What node-sync does at a start: every awaiting entry is fetched again.
