@@ -4,3 +4,5 @@
 > Tags: osis, node-sync
 
 Options: on a repeat call while the join is not at a source, follow the link and hold L again (the link text is at hand); or keep the seed with the link follow (`y/l`, persisted) until delivered. Reproducer shape: `sharing::redeem_survives_a_drop_before_the_join_arrives_spec_permissions_7`, dropping the future (or restarting Bob) right after the join.
+
+A restart earlier, while `redeem` still waits on K's grant, leaves K's hint (`via` L) and the link follow (`y/l`) persisted with L gone: the node dials K's hosts and the sharer for that label until `redeem` is called again, opening nothing. Keeping the seed with `y/l` would cover this too.
