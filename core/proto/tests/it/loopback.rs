@@ -884,7 +884,8 @@ fn answering_later_requests_holds_no_older_one_spec_sync_6() {
             now += 10_000;
             c.handle(now, ClientInput::Command(Command::Peer(Box::new(fetch(k)))));
             let reply = encode_frame(&Message::FetchReply { id: osis_proto::msg::NODE_IDS | k, items: Vec::new() }.encode());
-            let (a, b) = reply.split_at(reply.len() / 2);
+            // the first piece holds its kind and id
+            let (a, b) = reply.split_at(reply.len() - 1);
             c.handle(now, ClientInput::Bytes(a.to_vec()));
             c.handle(now, ClientInput::Bytes(b.to_vec()));
             if notifies {

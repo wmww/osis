@@ -184,7 +184,7 @@ impl Window {
     fn frame_bytes(&mut self, head: Option<(u64, Id)>, n: usize, now: u64) {
         match head {
             Some((kind, id)) if crate::msg::is_reply_kind(kind) => {
-                if self.oldest() == Some(id) {
+                if n > 0 && self.oldest() == Some(id) {
                     self.own_move(now);
                 }
             }
