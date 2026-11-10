@@ -264,7 +264,8 @@ fn grant_on_first_admin_keyless_until_record_edge_goes_spec_crypto_4() {
 // spec/crypto.md §4, spec/permissions.md §3 (model `D0_nc_below`): X and Y readers of each
 // other (X granted on Y first, Y's grant on X keyless), Z a reader of X, D a reader of Z: D reads
 // Z, X and Y. D's removal from Z makes X's box to Z stale, then Y's to X: the cascade rotates
-// each once, nothing is re-sealed, and D opens no epoch a writer encrypts under.
+// each once (Y in the same step as X, `rotate_above`), nothing is re-sealed, and D opens no epoch
+// a writer encrypts under.
 #[test]
 fn departure_below_cycle_spec_crypto_4() {
     let mut lp = LocalPeer::new(2, 953, WallMs(1_700_000_000_000)).unwrap();
@@ -283,8 +284,7 @@ fn departure_below_cycle_spec_crypto_4() {
     removal(&mut lp, 0, z, d);
     let (done, still) = lp.peers[0].engine.ensure_rotated(&x).unwrap();
     assert!(still.is_empty(), "{still:?}");
-    assert_eq!(done.commits.len(), 1, "X");
-    assert!(blocked_at(&mut lp, 0, y).contains(&Role::Read), "Y's box to X stale");
+    assert_eq!(done.commits.len(), 2, "X, then Y above it (its box to X stale)");
     let gs: Vec<(Tid, usize)> = all.iter().map(|t| (*t, 0)).collect();
     assert_eq!(leaks_after_cascade(&mut lp, &gs, d, &start), vec![]);
     assert_eq!(settle(&mut lp, &[0], &all), 0, "settled");
@@ -1399,4 +1399,106 @@ fn lowered_maker_rotates_once_spec_crypto_4() {
     lp.peers[0].engine.grant(&t, &p, &edge(Role::Write)).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(rotations(&mut lp), vec![0, 0, 0], "re-granted: nothing more rotates");
+}
+
+// spec/crypto.md §4 (holder actors: stale; rotation due): one cause, one rotation. D's removal
+// from G goes alone (no rotation, as while Seal waits); G's rotation, due at G's admin, makes T's
+// box to G stale at each of T's three admins. The admin rotates T in the same step
+// (`rotate_above`), so T's other admins, judging after, find nothing due: T moves one epoch,
+// unforked, where each admin rotating T for the stale box forked it three ways.
+#[test]
+fn holder_rotation_rotates_above_at_once_spec_crypto_4() {
+    let mut lp = LocalPeer::new(4, 973, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let [_, b, c, d] = std::array::from_fn(|i| lp.peers[i].engine.me());
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &d, &edge(Role::Read)).unwrap();
+    let t = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&t, &g, &edge(Role::Read)).unwrap();
+    for h in [b, c] {
+        lp.peers[0].engine.grant(&t, &h, &edge(Role::Admin)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    let k = newest_read(&lp, 0, t).unwrap();
+    lp.peers[0]
+        .engine
+        .run(|tx| {
+            let mut m = Mutation::new();
+            m.ts = Some(tx.core.hlc.next());
+            crate::flows::edges::removal(tx, &mut m, g, d)?;
+            m.frontier(osis_schema::Codec::to_value(&ct::Frontier::default()));
+            crate::engine::Engine::commit_tx(tx, m).map(|_| ())
+        })
+        .unwrap();
+    assert_eq!(lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.len(), 2, "G's rotation, then T's");
+    lp.sync_all().unwrap();
+    let after: Vec<usize> = [1, 2, 0].into_iter().map(|p| lp.peers[p].engine.ensure_rotated(&t).unwrap().0.commits.len()).collect();
+    assert_eq!(after, vec![0, 0, 0], "T's other admins, then its rotator, find nothing due");
+    let cur = lp.peers[1].engine.epochs(&t).unwrap().read.current();
+    assert_eq!((cur.len(), cur[0].n()), (1, k.n() + 1), "one rotation of T");
+}
+
+// spec/crypto.md §4 (merge: the merger): three admins rotate T at once; holding the same three
+// forks, one of them merges (the maker of the newest fork but one), not every maker of a fork
+// but the newest, whose merges would fork again.
+#[test]
+fn three_forks_take_one_merge_spec_crypto_4() {
+    let mut lp = LocalPeer::new(3, 974, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let [_, b, c] = std::array::from_fn(|i| lp.peers[i].engine.me());
+    let t = group(&mut lp, 0);
+    for h in [b, c] {
+        lp.peers[0].engine.grant(&t, &h, &edge(Role::Admin)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    for p in 0..3 {
+        lp.peers[p].clock.advance(1);
+        rotate_skipping(&mut lp, p, t, &BTreeSet::from([Role::Read]), &[]);
+    }
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[0].engine.epochs(&t).unwrap().read.current().len(), 3, "three forks");
+    let merges: usize = (0..3).map(|p| lp.peers[p].engine.ensure_rotated(&t).unwrap().0.commits.len()).sum();
+    assert_eq!(merges, 1, "one merger");
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[1].engine.epochs(&t).unwrap().read.current().len(), 1, "merged");
+}
+
+// spec/crypto.md §4 (Encrypting under; holder actors: stale, Seal): G {R, W, A}, A {a1, M},
+// M {m1, R, E}. m1 removes E from M, rotating M; a1 never rotates A, whose epoch boxes M at the
+// keyset E opens. R knows the removal, so rotates G leaving A out. W, G's other admin, holds
+// none of M's secrets but holds M's new keyset: A's box to M is stale there, so W leaves A out
+// too rather than re-sealing it (each re-seal made G's epoch blocked at R, which rotated again,
+// for good while A's rotation never came).
+#[test]
+fn co_writer_seals_no_keyset_with_a_stale_box_spec_crypto_4() {
+    let mut lp = LocalPeer::new(5, 975, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let [r, _, _, e, w] = std::array::from_fn(|i| lp.peers[i].engine.me());
+    let m = group(&mut lp, 2);
+    for h in [r, e] {
+        lp.peers[2].engine.grant(&m, &h, &edge(Role::Read)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    let a = group(&mut lp, 1);
+    lp.peers[1].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &w, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let start = held_by(&lp, 3, &[m, a, g]);
+    removal(&mut lp, 2, m, e);
+    lp.sync_all().unwrap();
+    assert!(lp.peers[4].engine.epochs(&m).is_none_or(|x| x.read.held().next().is_none()), "W holds none of M's secrets");
+    let mut counts = Vec::new();
+    for _ in 0..3 {
+        let rot = lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.len();
+        lp.sync_all().unwrap();
+        let reseal = lp.peers[4].engine.reseal_due(&g, &Pass).unwrap().commits.len();
+        lp.sync_all().unwrap();
+        counts.push((rot, reseal));
+    }
+    assert_eq!(counts, vec![(1, 0), (0, 0), (0, 0)], "R rotates G once; W re-seals nothing");
+    assert_eq!(sealed_at(&mut lp, 4, g, a), None, "A left out");
+    assert_eq!(leaked(&mut lp, 0, &[m, a, g], e, start), vec![a], "E opens only A, which a1 never rotates");
 }

@@ -38,6 +38,9 @@ pub enum Walk {
     /// For encrypting under: through every holder actor whose boxes this node holds, rights
     /// aside (what a departed party opens does not depend on who may rotate).
     Encrypt,
+    /// For sealing a holder actor into an actor this node rotates or grants on: as `Encrypt`, and
+    /// a stale box at any epoch walked blocks (the sealer is that actor's rotator).
+    Seal,
     /// For placing role commits and certificates under labels (spec/sync.md §5): through the
     /// holder actors this node may rotate only, so a node that may not rotate an actor still
     /// places the keysets and revokes that tell that actor's rotators (node-sync's pass).
@@ -65,8 +68,11 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure],
 /// boxes a holder whose grant on `a` is keyless (rule 4); or `e` boxes a holder actor M at a
 /// keyset of M under which `who` may not encrypt, by this same rule with every departure from M
 /// this node knows (sealing at that keyset was encrypting under it). Stale and keyless bind
-/// rotators only: they say a rotation is due, not that a departed party opens `e`. The box
-/// clause follows every box at an epoch whose secret this node holds (`Walk::Encrypt`: what a
+/// rotators only: they say a rotation is due, not that a departed party opens `e`. Sealing a
+/// holder actor at keyset `e` (`Walk::Seal`, from `members::sealed`) is held back too by a stale
+/// box at any epoch walked, whoever may rotate it and whether or not its secret is held: the
+/// sealer rotates the actor sealed into, and a co-writer that cannot judge M's departure would
+/// otherwise re-seal M where a knowing node left it out, over and over. The box clause follows every box at an epoch whose secret this node holds (`Walk::Encrypt`: what a
 /// departed party opens does not depend on who may rotate), or for placing only those of actors
 /// it may rotate (`Walk::Place`): a node that may not rotate places its chain certificates (and
 /// revokes) under the actor's labels meanwhile, the holder actors' new `keys.0` among them, which
@@ -87,6 +93,12 @@ pub(crate) fn blocked_epoch(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &os
         let known = if x == *a { deps.to_vec() } else { keyset_departures(tx, &x)? };
         let deps = others(tx.core, known);
         if uncovered(tx.core, &x, r, &k, &deps) {
+            return Ok(true);
+        }
+        // sealing at a keyset whose epoch, or one it boxes, names a superseded keyset hands the
+        // new secret to what that keyset's departed party opens; the box and keysets are state,
+        // so judged without the epoch's secret
+        if walk == Walk::Seal && members::stale_at(tx, &x, r, &k)? {
             return Ok(true);
         }
         if !tx.core.epochs(&x).is_some_and(|ep| ep.role(r).is_established(&k) && ep.role(r).secret(&k).is_some()) {
@@ -396,8 +408,9 @@ pub(crate) fn above(core: &Core, a: &Tid) -> Vec<Tid> {
 /// actors of `a` with key access that `who` may rotate (boxing `a` to one is encrypting under
 /// its epoch, so its rotation due goes first and `a`'s boxes then name its new keyset), each
 /// once, then `a`'s (`rotation_due`). Each of those actors first gets the finalize `who` may
-/// write of its edges past their `until` (`finalize_due`). Returns the roles of `a` still
-/// blocked: it must not encrypt under them.
+/// write of its edges past their `until` (`finalize_due`). Then, for each actor rotated, the
+/// same for the actors it is a holder of, upward (`rotate_above`). Returns the roles of `a`
+/// still blocked: it must not encrypt under them.
 pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done) -> Result<BTreeSet<Role>> {
     ensure_rotated_but(tx, who, a, &[], done)
 }
@@ -405,21 +418,50 @@ pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done)
 /// `ensure_rotated`, finalizing on `a` no edge of a holder in `rewriting`: the commit about to
 /// be written writes those edges anew (a removal, which is their departure, or a renewal).
 pub(crate) fn ensure_rotated_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], done: &mut Done) -> Result<BTreeSet<Role>> {
-    let target = a;
-    // a plain thing follows the epochs of the next actor up its record chain
-    let mut found = None;
-    for step in tx.core.record_chain(&a) {
-        let Some(t) = step.thing() else { break };
-        if tx.core.has_own_secrets(&t) {
-            found = Some(t);
-            break;
-        }
-        match step {
-            osis_base::ChainStep::Up { admin: up, .. } if !tx.core.is_key_actor(&up) => {}
-            _ => break,
+    let rotated = rotate_below(tx, who, a, rewriting, done)?;
+    rotate_above(tx, who, rotated, done)?;
+    let Some(a) = secret_actor_up(tx.core, &a) else { return Ok(BTreeSet::new()) };
+    blocked_roles(tx, &who, &a)
+}
+
+/// After `who` rotated each of `rotated`: the rotations due (`rotate_below`) on the actors they
+/// are holders of (`above`) that `who` may rotate, upward, each once. A rotation of M makes the
+/// boxes to M at its old keyset stale; answered by M's rotator at once, no other rotator above M
+/// meets them and answers with a fork of its own.
+pub(crate) fn rotate_above(tx: &mut Tx<'_>, who: Tid, mut rotated: Vec<Tid>, done: &mut Done) -> Result<()> {
+    let mut entered: BTreeSet<Tid> = rotated.iter().copied().collect();
+    while let Some(x) = rotated.pop() {
+        for y in above(tx.core, &x) {
+            if tx.core.has_own_secrets(&y) && !may_rotate(tx.core, &who, &y).is_empty() && entered.insert(y) {
+                rotated.extend(rotate_below(tx, who, y, &[], done)?);
+            }
         }
     }
-    let Some(a) = found else { return Ok(BTreeSet::new()) };
+    Ok(())
+}
+
+/// The actor whose epochs `a` follows: itself with secrets of its own, else a plain thing follows
+/// the next actor up its record chain that has them.
+fn secret_actor_up(core: &Core, a: &Tid) -> Option<Tid> {
+    for step in core.record_chain(a) {
+        let t = step.thing()?;
+        if core.has_own_secrets(&t) {
+            return Some(t);
+        }
+        match step {
+            osis_base::ChainStep::Up { admin: up, .. } if !core.is_key_actor(&up) => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// The rotations due on `a` and the holder actors below it (`ensure_rotated`, the downward
+/// cascade): the actors rotated.
+fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], done: &mut Done) -> Result<Vec<Tid>> {
+    let target = a;
+    let mut rotated = Vec::new();
+    let Some(a) = secret_actor_up(tx.core, &a) else { return Ok(rotated) };
     let members = |tx: &mut Tx<'_>, x: &Tid| -> Vec<Tid> {
         let ms: Vec<Tid> = tx.core.key_holders(x).into_iter().map(|m| m.0).filter(|m| m != x && !tx.core.is_key_actor(m) && tx.core.has_own_secrets(m)).collect();
         let mut out: Vec<Tid> = ms.into_iter().filter(|m| members::keyed(tx.core, x, m) && !may_rotate(tx.core, &who, m).is_empty()).collect();
@@ -450,9 +492,10 @@ pub(crate) fn ensure_rotated_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &
             && possessed(tx.core, &who, &x, &mine, &holders)
         {
             done.extend(rotate_boxing(tx, who, x, &mine, &holders)?);
+            rotated.push(x);
         }
     }
-    blocked_roles(tx, &who, &a)
+    Ok(rotated)
 }
 
 /// The finalize `who` may write of the edges on `a` past their `until` by this node's clock

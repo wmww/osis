@@ -54,8 +54,9 @@ fn removed_holding(s: &mut Shape, hold_x1: bool) -> (BTreeSet<(Tid, Role, Epoch)
     s.lp.peers[B].engine.demote(&s.x2, &Demotion { holder: w, new: None, retain: None }).unwrap();
     let rm: BTreeSet<CommitId> = commit_ids(&mut s.lp, B).difference(&before).copied().collect();
     let before = commit_ids(&mut s.lp, B);
-    let (done, still) = s.lp.peers[B].engine.ensure_rotated(&s.x1).unwrap();
-    assert!(still.is_empty() && !done.commits.is_empty(), "B rotates X1");
+    let (b, x1) = (s.lp.peers[B].engine.me(), s.x1);
+    let done = s.lp.peers[B].engine.run(|tx| super::rotate_now(tx, b, x1, &BTreeSet::from([Role::Read, Role::Write]))).unwrap();
+    assert!(!done.commits.is_empty(), "B rotates X1 (alone: B syncs no G, so rotates nothing above X1)");
     let x1_rot: BTreeSet<CommitId> = commit_ids(&mut s.lp, B).difference(&before).copied().collect();
     if !hold_x1 {
         send_skipping(&mut s.lp, B, A, &rm);

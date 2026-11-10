@@ -1448,8 +1448,8 @@ fn unheld_holder_judged_by_keyset_spec_crypto_4() {
 // (Encrypting under: an epoch boxing a holder actor at a blocked keyset; Seal): o0 leaves K1 by
 // self-removal (no rotation). late, a reader of K1 and a writer of C through K2, may not rotate
 // K1 and nothing departed from C, but C's read epoch boxes K1 at a keyset missing o0's departure:
-// late rotates C once, leaving K1 out, to an epoch o0 does not hold. Alice rotates K1, and
-// re-seals K1 to C.
+// late rotates C once, leaving K1 out, to an epoch o0 does not hold. Alice rotates K1 and at
+// once C's write (its box to K1 stale), and re-seals K1 to C's read.
 #[test]
 fn inside_member_departure_leaves_holder_out_spec_perm_3() {
     let (mut lp, c, k1, po) = two_links(518, true);
@@ -1463,7 +1463,7 @@ fn inside_member_departure_leaves_holder_out_spec_perm_3() {
     spread(&mut lp);
     assert!(lp.peers[1].engine.epochs(&c).is_none_or(|e| e.read.secret(&top).is_none()), "o0 does not hold C's new epoch");
     let (rot, _) = lp.peers[0].engine.ensure_rotated(&k1).unwrap();
-    assert_eq!(rot.commits.len(), 1, "alice rotates K1");
+    assert_eq!(rot.commits.len(), 2, "alice rotates K1, then C's write, whose box to K1 that made stale");
     spread(&mut lp);
     assert!(!lp.peers[0].engine.reseal_due(&c, &Pass).unwrap().commits.is_empty(), "alice re-seals K1 to C");
     spread(&mut lp);
@@ -1717,7 +1717,7 @@ fn write_link_rotates_as_signer_spec_perm_3() {
     let e0 = newest_read(&lp, 0, link.k).unwrap();
     let done = lp.peers[2].engine.redeem(&link, &ps2, false).unwrap();
     let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
-    assert_eq!(done.commits.len(), 2, "L's rotation, then the grant");
+    assert_eq!(done.commits.len(), 3, "L's rotation, D's (its box to K that made stale), then the grant");
     assert_eq!(lp.peers[2].engine.header(&done.commits[0]).unwrap().author, l);
     let e1 = newest_read(&lp, 2, link.k).unwrap();
     assert_ne!(e0, e1);

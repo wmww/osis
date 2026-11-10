@@ -337,10 +337,10 @@ fn reregistration_after_rotation_spec_sync_5() {
 }
 
 // spec/sync.md §5 (re-registration): two admins holding epochs newer than the head while one's
-// rotation is fresh (a grant, then at once a demotion with no rotation): neither uploads for a
-// step that cannot go yet, and nothing is sent again unchanged (same entry, same stamp: neither
-// while in flight nor after a refusal under an older head), so the role commits travel once and
-// no admin places its own copy of another's (deleted again as a duplicate).
+// rotation is fresh (a grant, then at once a demotion with no rotation, whose rotation of g
+// rotates t at once too): neither uploads for a step that cannot go yet, and nothing is sent
+// again unchanged (same entry, same stamp), so the role commits travel once and no admin places
+// its own copy of another's (deleted again as a duplicate).
 #[test]
 fn reregistration_waits_and_sends_once_spec_sync_5() {
     let mut net = Net::new();
@@ -361,12 +361,6 @@ fn reregistration_waits_and_sends_once_spec_sync_5() {
     net.run();
     let again: Vec<_> = net.uploaded.iter().filter(|(_, n)| **n > 1).collect();
     assert!(again.is_empty(), "sent again unchanged: {again:?}");
-    // c's uploads under t's first head were refused (code 9) and went again under the next
-    let mut stamps = std::collections::BTreeMap::new();
-    for (n, l, id, _) in net.uploaded.keys() {
-        *stamps.entry((*n, *l, *id)).or_insert(0) += 1;
-    }
-    assert!(stamps.iter().any(|((n, _, _), k)| *n == c && *k > 1), "a refusal went again under the new head");
     assert_eq!(net.sent_kinds.get(&14), None, "no duplicate entries to delete");
     // the role commits the grant and the rotations it causes write, each once per label
     let uploads = net.sent_kinds.get(&10).copied().unwrap_or(0);

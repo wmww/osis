@@ -119,16 +119,18 @@ pub struct Maker {
 }
 
 /// Merge of a fork (spec/crypto.md §4, encrypting under): whether `r` has more than one current
-/// epoch and this node is its merger: it made (`maker`; `None`: unknown) a current epoch other
-/// than the newest, or no maker of one may rotate `r`. The merger rotates, listing every
-/// current epoch.
+/// epoch and this node is its merger: the maker (`maker`; `None`: unknown) of the newest current
+/// epoch other than the newest whose maker may rotate `r`, or anyone when there is none. The
+/// merger rotates, listing every current epoch.
 ///
 /// Invariant: a holder actor's boxes at A's current epochs anchor it (`members::seal_keyset`);
 /// A forked across two keysets of M, neither listing the other, anchors M at both, and only a
 /// keyset of M listing both (M's merge) can seal M again. Nodes holding the same fork agree on
-/// its newest epoch, so its maker never merges beside another maker: two nodes merging alike
-/// would fork again on every round of a sync that delivers both merges together. The merges of
-/// nodes holding different forks fork again at most once per epoch made concurrently.
+/// its merger, so concurrent rotations take one merge however many forks they made: two nodes
+/// merging alike fork again (every maker of a non-newest epoch merging made two merges of three
+/// forks, then a third; the newest's maker merging beside them, a fork on every round of a sync
+/// delivering both merges together). The merges of nodes holding different forks fork again at
+/// most once per epoch made concurrently.
 pub fn fork_merger(epochs: &ActorEpochs, r: Role, maker: impl Fn(&Epoch) -> Option<Maker>) -> bool {
     let rs = epochs.role(r);
     let cur = rs.current();
@@ -136,8 +138,14 @@ pub fn fork_merger(epochs: &ActorEpochs, r: Role, maker: impl Fn(&Epoch) -> Opti
     if cur.len() < 2 {
         return false;
     }
-    let others: Vec<Option<Maker>> = cur.iter().filter(|e| **e != newest).map(&maker).collect();
-    others.iter().flatten().any(|m| m.me) || !others.iter().flatten().any(|m| m.may_rotate)
+    let mut merger: Option<(Epoch, Maker)> = None;
+    for e in cur.iter().filter(|e| **e != newest) {
+        let Some(m) = maker(e).filter(|m| m.may_rotate) else { continue };
+        if merger.as_ref().is_none_or(|(x, _)| rs.is_newer(e, x)) {
+            merger = Some((*e, m));
+        }
+    }
+    merger.is_none_or(|(_, m)| m.me)
 }
 
 /// A current holder as a re-sealer sees it: its role on the actor.
