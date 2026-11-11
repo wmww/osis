@@ -208,13 +208,13 @@ impl World {
         let Some(h) = self.hosts.get_mut(s) else { return };
         match cfg {
             Some(cfg) => {
-                let mut st = h.hub.store_mut();
+                let mut st = h.hub.store();
                 st.set_policy(cfg.policy.clone());
                 st.set_admission(cfg.admission.clone(), cfg.caps.clone());
             }
             None => {
                 {
-                    let mut st = h.hub.store_mut();
+                    let mut st = h.hub.store();
                     st.set_policy(HostPolicy::default());
                     st.set_admission(osis_host::Admission::Only(Default::default()), Default::default());
                 }

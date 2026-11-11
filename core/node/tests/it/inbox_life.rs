@@ -200,7 +200,7 @@ fn inbox_copy_names_only_touched_things_spec_sync_3() {
     let id = osis_label::blob_id(&blob);
     net.set_online(b, false);
     let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(now.0 + osis_base::format::INBOX_LIFETIME_MS), ephemeral: false, replaces: &[], now: 0 };
-    osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store_mut(), &home, put).unwrap();
+    osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &home, put).unwrap();
     net.set_online(b, true);
     for _ in 0..3 {
         net.advance(70_000);
@@ -248,7 +248,7 @@ fn plant_bytes(net: &mut Net, from: usize, (host, l): (usize, &LabelId), to: Tid
     let blob = osis_label::seal_inbox_blob(&to, &kem, &payload, osis_base::WallMs(expiry - INBOX_LIFETIME_MS), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
     let id = osis_label::blob_id(&blob);
     let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(expiry), ephemeral: false, replaces: &[], now: 0 };
-    osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store_mut(), l, put).unwrap();
+    osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), l, put).unwrap();
     id
 }
 
@@ -298,7 +298,7 @@ fn grant_undelivered(net: &mut Net, a: usize, b: usize, host: usize, home: &Labe
     let fresh: Vec<osis_base::BlobId> = net.host_ids(host, home).into_iter().filter(|x| !before.contains(x)).collect();
     assert_eq!(fresh.len(), 1, "the genuine inbox blob");
     let now = net.now();
-    osis_proto::LabelStore::delete(&mut *net.hosts[host].hub.store_mut(), home, &fresh[0], now).unwrap();
+    osis_proto::LabelStore::delete(&mut *net.hosts[host].hub.store(), home, &fresh[0], now).unwrap();
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
     (c, osis_label::InboxThing { tid: g, label: Some(osis_label::InboxLabel { id: gl.id, index: gl.index, hosts: gl.hosts.clone() }), delete_keys: None })
 }
@@ -480,7 +480,7 @@ fn an_inbox_chain_applies_only_chain_deltas_spec_wire_9() {
     let now = net.now();
     let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, osis_base::WallMs(now), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
     let put = osis_proto::Put { blob_id: osis_label::blob_id(&blob), blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(now + INBOX_LIFETIME_MS), ephemeral: false, replaces: &[], now: 0 };
-    osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store_mut(), &home, put).unwrap();
+    osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &home, put).unwrap();
     net.set_online(b, true);
     for _ in 0..3 {
         net.advance(70_000);
@@ -946,7 +946,7 @@ fn claiming_host(net: &mut Net, evil: usize, host: usize, l: &LabelId) {
     let path = net.host_path(host, l);
     for st in &path {
         let set = osis_proto::LabelStore::claim_set(&*net.hosts[host].hub.store(), l, &st.id()).unwrap().map(|x| (*x).clone());
-        osis_proto::LabelStore::push_step(&mut *net.hosts[evil].hub.store_mut(), l, st.clone(), set).unwrap();
+        osis_proto::LabelStore::push_step(&mut *net.hosts[evil].hub.store(), l, st.clone(), set).unwrap();
     }
     net.walk_to.insert(evil, (*l, path.last().unwrap().clone()));
 }
@@ -1572,7 +1572,7 @@ fn hostile_inbox_blob_peak_is_bounded_spec_sync_3() {
     // stop a stranger at about 2 MiB (spec/sync.md §5), the host of an inbox label has no such limit
     let stamp = Some(osis_crypto::Signature([0; 64]));
     let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp, expiry: Some(now.0 + osis_base::format::INBOX_LIFETIME_MS), ephemeral: false, replaces: &[], now: 0 };
-    assert_eq!(osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store_mut(), &home, put).unwrap(), osis_proto::Code::OK);
+    assert_eq!(osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &home, put).unwrap(), osis_proto::Code::OK);
     drop(blob);
     let _ = std::fs::write("/proc/self/clear_refs", "5");
     let rss0 = status("VmRSS");

@@ -115,7 +115,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. `schem
 - `retention^.0`: what the thing keeps of replaced content per AK, the expiry a writer gives its writes there, `final` (a writer replaces no fire there) (spec/commits.md §5 The setting), and its removal default (`retain`, spec/permissions.md §2, §3); admin-only, fixed retention.
 - `purge.0`: the delta a purge request naming no aspect to reset carries (spec/commits.md §5).
 - `group.0`, `groups.0`: §8. `tag.0` marks a group as a user-facing tag (§8).
-- **`host^.0`** present: the node hosts (spec/sync.md §4). Absent: it does not, and holds no host store (stopping erases it, at the latest when the node next runs sync; a later start begins empty). Never placed under a label.
+- **`host^.0`** present: the node hosts (spec/sync.md §4). Absent: it does not, and keeps nothing for others (stopping drops what it kept, at the latest when the node next runs sync; a later start begins empty). Never placed under a label.
   - `admit` `own`: it takes registrations of the labels of its account's own groups whose hosts name its key (spec/sync.md §10, One key), and of `labels`. Its account's own group: its account (the account it is a node of) is on the group's record chain (spec/permissions.md §1) through record edges that stand at the node; no other role edge, on the group or a thing above it, held by the account, qualifies. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5).
   - `admit` `open`: it takes registrations of any label.
   - `replicate`: peer hosts. `policy`, `caps`: local policy.

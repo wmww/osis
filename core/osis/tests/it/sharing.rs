@@ -648,7 +648,7 @@ fn one_peer_refusing_is_no_end_spec_permissions_7() {
     w.until(bob.redeem(&link), 1000, 30).unwrap();
     w.run();
     let policy = osis_host::HostPolicy { cap_bytes: 1, ..osis_host::HostPolicy::default() };
-    w.hosts[capped].hub.store_mut().set_policy(policy);
+    w.hosts[capped].hub.store().set_policy(policy);
     let k = alice.links_of(g).unwrap()[0].id.actor();
     bob.set_role(k, bob.me(), None, skip_sync()).unwrap();
     w.run();
@@ -669,7 +669,7 @@ fn one_peer_refusing_is_no_end_spec_permissions_7() {
     // revoked: a redeemer with one peer down waits it out, with every peer refusing is told at once
     alice.revoke_link(alice.links_of(g).unwrap()[0].id).unwrap();
     w.run();
-    w.hosts[capped].hub.store_mut().set_policy(osis_host::HostPolicy::default());
+    w.hosts[capped].hub.store().set_policy(osis_host::HostPolicy::default());
     w.advance(70_000);
     w.run();
     let dave = w.account(4, &[own]);

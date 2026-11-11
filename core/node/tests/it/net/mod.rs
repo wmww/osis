@@ -419,7 +419,12 @@ impl Net {
                     }
                     _ => std::sync::mpsc::channel().1,
                 };
-                Node { sync, clock: nc, hub: n.hub.test_copy(clock.clone()).unwrap(), backend: n.backend.test_copy(), root: n.root.test_copy(), online: n.online, wake: n.wake, life: n.life, accepts: n.accepts, events }
+                // the copied engine's copy of the store it shares with the hub
+                let hub = match &sync {
+                    Some(s) => n.hub.test_copy_over(s.hub_store()),
+                    None => n.hub.test_copy(nc.clone()).unwrap(),
+                };
+                Node { sync, clock: nc, hub, backend: n.backend.test_copy(), root: n.root.test_copy(), online: n.online, wake: n.wake, life: n.life, accepts: n.accepts, events }
             }).collect();
             let hosts = self.hosts.iter().map(|h| {
                 let c: Arc<dyn Clock> = clock.clone();
@@ -502,7 +507,9 @@ impl Net {
     /// A node's hub over its one store (`SyncEngine::hub_store`): an empty one in memory,
     /// admitting nothing.
     fn node_hub(&self, sync: &mut SyncEngine, seed: u64) -> Hub {
-        let mut store = self.host_store(&MemoryBackend::new(), &MemoryRoot::new(), HostPolicy::default(), seed ^ 0x40b);
+        let store = Store::open_or_create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut SeededRng::from_u64(seed ^ 0x40b)).unwrap();
+        // on the node's clock, as a node's (`SyncEngine::open_hub_store`)
+        let mut store = HostStore::open(store, sync.engine().clock(), HostPolicy::default(), Box::new(SeededRng::from_u64(seed ^ 0x40b ^ 0x570e))).unwrap();
         store.set_admission(osis_host::Admission::Only(Default::default()), Default::default());
         sync.set_hub_store(store);
         Hub::new(sync.hub_store(), Box::new(SeededRng::from_u64(seed ^ 0x4ab)))

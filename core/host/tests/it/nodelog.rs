@@ -174,7 +174,7 @@ fn dropping_a_label_leaves_nothing_of_it() {
     assert!(only1.iter().all(|b| h.s.blob(b).unwrap().is_none()), "its blobs go");
     assert!(h.s.blob(&shared).unwrap().is_some(), "a blob another label holds stays");
     let rows = h.s.all_rows().unwrap();
-    assert!(!rows.iter().any(|(k, _)| k.starts_with(b"L") && k.get(1..17) == Some(l1.0.as_slice())), "no meta");
+    assert!(!rows.iter().any(|(k, _)| k.windows(16).any(|w| w == l1.0)), "no row names it");
     assert!(rows.len() >= base, "{} rows", rows.len());
     // what stays is what named only the other label, the totals and its sweep rows
     for (k, v) in &kept_rows {

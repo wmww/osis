@@ -272,7 +272,7 @@ fn fill_budget(net: &mut Net, host: usize, l: &osis_base::LabelId, spare: u64) -
         let blob = [&i.to_be_bytes()[..], &[0; 24]].concat();
         let id = osis_label::blob_id(&blob);
         let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
-        osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store_mut(), l, put).unwrap();
+        osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), l, put).unwrap();
         junk.push(id);
     }
     junk
@@ -310,7 +310,7 @@ fn taken_deposit_ends_the_back_off_of_others_spec_sync_5() {
     assert_ne!(net.engine(b).role_on(&waiting[0]), Some(Role::Read), "refused");
     let now = net.now();
     for id in &junk {
-        osis_proto::LabelStore::delete(&mut *net.hosts[host].hub.store_mut(), &home, id, now).unwrap();
+        osis_proto::LabelStore::delete(&mut *net.hosts[host].hub.store(), &home, id, now).unwrap();
     }
     let fresh = grants(&mut net, a, alice, bob, 1);
     net.set_online(b, true);
@@ -362,7 +362,7 @@ fn stranger_fill_in_bytes_ends_with_a_pass_spec_sync_5() {
         let mut blob = osis_label::Prefix::new([i; 16], None, Vec::new()).unwrap().to_bytes();
         blob.resize(size, 0);
         let put = osis_proto::Put { blob_id: osis_label::blob_id(&blob), blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
-        osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store_mut(), &home, put).unwrap();
+        osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &home, put).unwrap();
         i += 1;
     }
     assert!(i < 32, "under the cap in entries: {i}");
@@ -402,7 +402,7 @@ fn junk_under_another_label_stays_spec_sync_5() {
     for id in &junk {
         let blob = net.engine(a).blob(id).unwrap().unwrap();
         let put = osis_proto::Put { blob_id: *id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
-        assert_eq!(osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store_mut(), &l, put).unwrap(), osis_proto::Code::OK);
+        assert_eq!(osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &l, put).unwrap(), osis_proto::Code::OK);
     }
     net.set_online(a, true);
     for _ in 0..4 {
@@ -447,7 +447,7 @@ fn cleared_share_sent_again_after_the_holder_acted_elsewhere_spec_sync_3() {
     assert!(!cleared.is_empty(), "the share was deposited");
     let now = net.now();
     for x in &cleared {
-        osis_proto::LabelStore::delete(&mut *net.hosts[host].hub.store_mut(), &home, x, now).unwrap();
+        osis_proto::LabelStore::delete(&mut *net.hosts[host].hub.store(), &home, x, now).unwrap();
     }
     net.set_online(b, true);
     let item = net.item(b, g, g, "from bob");

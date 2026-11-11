@@ -162,9 +162,18 @@ impl Hub {
     /// on with the same stream. Never in a product: two hubs with one key and rng stream.
     #[doc(hidden)]
     pub fn test_copy(&self, clock: std::sync::Arc<dyn osis_base::Clock>) -> Result<Hub, osis_store::Error> {
+        let store = Arc::new(Mutex::new(self.store().test_copy(clock)?));
+        Ok(self.test_copy_over(store))
+    }
+
+    /// Tests only: `test_copy` over `store`, a copy of this hub's store already made (a node's
+    /// copy: its sync engine's copy of the store it shares with this hub, `SyncEngine::test_copy`),
+    /// so the copied engine and hub share one store as these two do.
+    #[doc(hidden)]
+    pub fn test_copy_over(&self, store: Arc<Mutex<HostStore>>) -> Hub {
         osis_base::copying::copying(|| {
-            Ok(Hub {
-                store: Arc::new(Mutex::new(self.store().test_copy(clock)?)),
+            Hub {
+                store,
                 rng: self.rng.test_copy(),
                 conns: self.conns.clone(),
                 sweep_hold: self.sweep_hold,
@@ -178,17 +187,14 @@ impl Hub {
                 now: self.now,
                 relays_delivered: self.relays_delivered,
                 ended: self.ended.clone(),
-            })
+            }
         })
     }
 
-    /// The store, locked (never across a call of this hub's).
+    /// The store, locked: hold the guard for one statement, never across another call of this
+    /// hub's (each locks it) or a second `store()` (the lock is not re-entrant).
     pub fn store(&self) -> MutexGuard<'_, HostStore> {
         self.store.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
-    pub fn store_mut(&mut self) -> MutexGuard<'_, HostStore> {
-        self.store()
     }
 
     /// Hosting stopped: the labels `drop` names go from the store (`HostStore::drop_labels`),

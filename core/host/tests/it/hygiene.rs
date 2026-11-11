@@ -49,7 +49,7 @@ fn stored_bytes_hold_no_plaintext_identifiers() {
     w.advance(1_000);
     let mut history = w.backends[h].history();
     assert!(!history.is_empty());
-    let keys = w.hubs[h].store_mut().store_mut().unwrap().forensic_keys().unwrap();
+    let keys = w.hubs[h].store().store_mut().unwrap().forensic_keys().unwrap();
     let plain = osis_store::attack(&osis_store::Evidence { store_keys: keys, rows: history.clone(), ..Default::default() }, None).into_iter().map(|r| r.plain).collect::<Vec<_>>();
     // control: what the host may know (the label ID) is found by the same search
     assert!(plain.iter().any(|p| contains(p, &l.id.0)));
@@ -69,7 +69,7 @@ fn stored_bytes_hold_no_plaintext_identifiers() {
 
 // spec/requirements.md Deletion (forward secure), spec/sync.md §4: a node hosting a label it can
 // also read holds the read secret, so a wrap it kept would open the blob: after a delete, an
-// expiry and a replaced-then-deleted wrap, an attacker holding the device (every key the
+// expiry, a replaced-then-deleted wrap and the label dropped (hosting stopped), an attacker holding the device (every key the
 // current root yields) and every row the host store ever wrote finds none of those wraps
 #[test]
 fn deleted_wraps_unrecoverable() {
@@ -120,4 +120,7 @@ fn deleted_wraps_unrecoverable() {
         assert!(!found(&mut s, w), "a deleted wrap recovered");
     }
     assert!(found(&mut s, &live), "a live wrap is still found");
+    // hosting stopped: the label kept for others goes, its live wraps with it
+    assert_eq!(s.drop_labels(&|_| true).unwrap(), [l]);
+    assert!(!found(&mut s, &live), "a dropped label's wrap recovered");
 }

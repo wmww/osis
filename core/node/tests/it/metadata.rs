@@ -99,7 +99,7 @@ fn peer_that_cannot_read_stores_nothing_forbidden() {
     }
     // every row the host store wrote, and every one an attacker holding the device decrypts
     let mut history = net.hosts[host].backend.history();
-    let keys = net.hosts[host].hub.store_mut().store_mut().unwrap().forensic_keys().unwrap();
+    let keys = net.hosts[host].hub.store().store_mut().unwrap().forensic_keys().unwrap();
     let plain = osis_store::attack(&osis_store::Evidence { store_keys: keys, rows: history.clone(), ..Default::default() }, None).into_iter().map(|r| r.plain).collect::<Vec<_>>();
     history.extend(plain.into_iter().map(|p| (Vec::new(), p)));
     let blobs = stored(&net, host);

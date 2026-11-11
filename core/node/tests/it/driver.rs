@@ -119,9 +119,6 @@ async fn driver_quic_localhost_spec_sync_10() {
     converge(&format!("quic://127.0.0.1:{port}"), Quic::new(), Quic::new(), || {}).await;
 }
 
-// spec/requirements.md Deletion, notes/serving.md The hub in the node: a run of hosting lives
-// only while `host^.0` is set. Removing it ends the run, and a config the driver takes late is
-// no longer current (its store is not the one to open); a new start is a new run.
 fn s_(x: &str) -> Value {
     Value::Str(x.into())
 }

@@ -706,7 +706,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
             self.hub.cfg = None;
             self.hub.replicate(&self.transport, &[], None);
             {
-                let mut st = self.hub.hub_mut().store_mut();
+                let mut st = self.hub.hub_mut().store();
                 st.set_policy(HostPolicy::default());
                 st.set_admission(osis_host::Admission::Only(Default::default()), Default::default());
             }
@@ -717,7 +717,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         };
         let cfg = *cfg;
         {
-            let mut st = self.hub.hub_mut().store_mut();
+            let mut st = self.hub.hub_mut().store();
             st.set_policy(cfg.policy.clone());
             st.set_admission(cfg.admission.clone(), cfg.caps.clone());
         }

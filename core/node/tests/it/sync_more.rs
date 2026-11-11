@@ -866,7 +866,7 @@ fn forged_certificate_copy_ignored_spec_commits_4() {
         let s = net.engine(w).seal_to(&fake, osis_label::Class::Durable, &secret, &mut osis_crypto::SeededRng::from_u64(7)).unwrap().unwrap();
         let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, 1).unwrap();
         let put = osis_proto::Put { blob_id: s.id, blob: &s.blob, wrap, stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
-        osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store_mut(), &l, put).unwrap();
+        osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &l, put).unwrap();
         forged.push(s.id);
     }
     net.set_online(w, true);
@@ -896,7 +896,7 @@ fn deleted_copy_placed_again_spec_permissions_4() {
     net.set_online(r, false);
     for (id, _) in &before {
         let now = net.now();
-        osis_proto::LabelStore::delete(&mut *net.hosts[host].hub.store_mut(), &l, id, now).unwrap();
+        osis_proto::LabelStore::delete(&mut *net.hosts[host].hub.store(), &l, id, now).unwrap();
     }
     net.set_online(r, true);
     net.run();
@@ -1112,7 +1112,7 @@ fn reencrypt_loop_bounded_spec_sync_1() {
         let ids = net.host_ids(0, &l);
         for id in ids {
             if live.contains(&id) {
-                osis_proto::LabelStore::delete(&mut *net.hosts[0].hub.store_mut(), &l, &id, now).unwrap();
+                osis_proto::LabelStore::delete(&mut *net.hosts[0].hub.store(), &l, &id, now).unwrap();
             }
         }
         net.set_online(b, false);

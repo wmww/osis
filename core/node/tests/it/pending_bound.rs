@@ -114,7 +114,7 @@ fn pending_row_goes_with_its_last_entry_spec_commits_4() {
     assert!(!ids.is_empty());
     let now = net.now();
     for id in &ids {
-        net.hosts[host].hub.store_mut().delete(&l, id, now).unwrap();
+        net.hosts[host].hub.store().delete(&l, id, now).unwrap();
     }
     let acts = net.sync(a).sync_now();
     net.actions(a, acts);

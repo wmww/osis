@@ -1378,8 +1378,7 @@ impl HostStore {
 
     /// Drops every label `drop` names, whole and shredded (hosting stopped: the store keeps no
     /// sync ID for others), with no tombstone, record or deletion event: nobody deleted its
-    /// entries, the store stopped holding them. Its blobs go once no other label references them;
-    /// sweep index rows left naming it are dropped by the sweep (they name a label not held).
+    /// entries, the store stopped holding them. Its blobs go once no other label references them.
     /// Commits. The labels dropped.
     pub fn drop_labels(&mut self, drop: &dyn Fn(&LabelId) -> bool) -> Result<Vec<LabelId>, StoreError> {
         let mut gone = Vec::new();
@@ -1392,6 +1391,28 @@ impl HostStore {
         }
         for l in &gone {
             self.drop_label(l)?;
+        }
+        // rows naming a dropped label past their first part, in one pass: the sweep indexes
+        // (`X`/`Y`/`Z t label …`) and replication positions (`Q peer label`)
+        let set: BTreeSet<&LabelId> = gone.iter().collect();
+        for (tag, at) in [(b'X', 9), (b'Y', 9), (b'Z', 9), (b'Q', 33)] {
+            let mut from = vec![tag];
+            let end = osis_store::prefix_end(&from);
+            loop {
+                let rows = self.scan(&from, end.as_deref(), 1024)?;
+                let n = rows.len();
+                let mut page = Writes::default();
+                for (k, _) in &rows {
+                    if k.get(at..at + 16).and_then(|x| <[u8; 16]>::try_from(x).ok()).is_some_and(|x| set.contains(&LabelId(x))) {
+                        page.delete(k.clone());
+                    }
+                }
+                self.write_open(page)?;
+                match rows.last() {
+                    Some((k, _)) if n == 1024 => from = [k.as_slice(), &[0]].concat(),
+                    _ => break,
+                }
+            }
         }
         if let Some(e) = self.failed.take() {
             self.db.get_mut().open = None;
@@ -1444,12 +1465,6 @@ impl HostStore {
                 if n < 1024 {
                     break;
                 }
-            }
-        }
-        // replication positions: `Q peer label`
-        for (k, _) in self.scan_prefix(b"Q", usize::MAX)? {
-            if k.get(33..49) == Some(l.0.as_slice()) {
-                w.delete(k);
             }
         }
         let t = self.totals()?;
