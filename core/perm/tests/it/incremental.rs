@@ -2066,13 +2066,18 @@ fn answers(inc: &Timelines, nodes: &BTreeSet<Tid>, things: &BTreeSet<Tid>, point
     out
 }
 
-/// The writes applied, each with its author, target and whether it is an invite grant: what
-/// `validity::valid_on` reads of a write beside roles (a self-removal's class moves with its
-/// author's roles, reported as those move).
-fn applied(inc: &Timelines, things: &BTreeSet<Tid>) -> BTreeMap<WriteId, (Tid, Tid, bool)> {
+/// The writes applied, each with its author, target and class kind (0: an invite grant, 1: an
+/// audited write, 2: a self-removal or finalize): what `validity::valid_on` reads of a write
+/// beside roles is whether it applies as an invite grant.
+fn applied(inc: &Timelines, things: &BTreeSet<Tid>) -> BTreeMap<WriteId, (Tid, Tid, u8)> {
+    use osis_perm::{Attr, Class};
     let mut out = BTreeMap::new();
     for tl in things.iter().filter_map(|t| inc.get(t)) {
-        out.extend(tl.applied().iter().map(|(w, a)| (*w, (a.author, a.target, matches!(a.attr, osis_perm::Attr::By(osis_perm::Class::Invite(_)))))));
+        out.extend(tl.applied().iter().map(|(w, a)| (*w, (a.author, a.target, match a.attr {
+            Attr::By(Class::Invite(_)) => 0,
+            Attr::By(_) => 1,
+            _ => 2,
+        }))));
     }
     out
 }
@@ -2140,9 +2145,20 @@ fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osi
     }
     let now = applied(inc, &things);
     let old_ids: BTreeSet<osis_base::CommitId> = prev.commits.values().flatten().map(|c| c.id).collect();
-    for (w, a) in was.iter().filter(|(w, a)| now.get(*w) != Some(*a)).chain(now.iter().filter(|(w, a)| was.get(*w) != Some(*a))) {
-        // the engine judges again the commits reported (`Core::timelines_changed`)
-        assert!(!old_ids.contains(&w.0) || c.commits.contains(&w.0) || c.evaluated.contains(&a.1), "write {w:?} of {:?} on {:?} applies otherwise, unreported: commits {:?}", a.0, a.1, c.commits);
+    for w in was.keys().chain(now.keys()).filter(|w| old_ids.contains(&w.0)) {
+        let (x, y) = (was.get(w), now.get(w));
+        if x == y {
+            continue;
+        }
+        let a = x.or(y).unwrap();
+        // started or stopped applying, or turned between an audited write and another class:
+        // its change in the history differs, so it is listed
+        let listed = x.map(|x| x.2 == 1) != y.map(|y| y.2 == 1);
+        // the engine judges again the commits reported and its authors' under what moved
+        // (`Core::timelines_changed`); an invite grant turned self-removal (or back) has its
+        // author's own edge, or one of a holder it is admin of, moved before it
+        let judged = c.commits.contains(&w.0) || c.evaluated.contains(&a.1) || !listed && covered(&a.0, &a.1);
+        assert!(judged, "write {w:?} of {:?} on {:?} applies otherwise ({x:?} -> {y:?}), unreported: commits {:?}, edges {:?}", a.0, a.1, c.commits, c.edges);
     }
     c
 }
@@ -2207,4 +2223,35 @@ fn incremental_equals_from_scratch_large() {
     }
     eprintln!("appended {} placed {} restored {} per shape {:?}", seen.appended, seen.placed, seen.restored, seen.shapes);
     reached(&seen);
+}
+
+/// §2, §5.1: an invite grant to its own author turns self-removal when a grant of the author's
+/// own edge before it arrives late: its change in the history is the same (no audit either
+/// way), and the engine judges it again as its author's write under the moved edge.
+#[test]
+fn invite_grant_turned_self_removal_is_judged_again_spec_permissions_2() {
+    use osis_base::Role::{Admin, Read, Write};
+    MOVES.set(true);
+    let mut w = World::new();
+    let n = w.nodes(2);
+    let (a, b) = (n[0], n[1]);
+    let t = w.thing(a);
+    let g = w.thing(a);
+    w.set(a, t, g, edge_inv(Write, Some(Write), None), 1, &[]);
+    w.set(a, g, b, edge(Admin), 2, &[]);
+    let late = w.set(a, t, b, edge(Write), 5, &[]);
+    let own = w.set(b, t, b, edge(Read), 10, &[(a, LATE)]);
+    let prev = w.held_without(&BTreeSet::from([late]));
+    let held = w.held();
+    let attr = |inc: &Timelines| inc.get(&t).unwrap().applied().get(&WriteId(own, 0)).map(|x| x.attr);
+    for general_only in [false, true] {
+        let mut inc = Timelines::new();
+        inc.set_general_only(general_only);
+        inc.update(&prev);
+        assert!(matches!(attr(&inc), Some(osis_perm::Attr::By(osis_perm::Class::Invite(_)))));
+        let ch = update_moved(&mut inc, &held, &prev);
+        assert!(matches!(attr(&inc), Some(osis_perm::Attr::SelfRemoval(..))), "general only {general_only}");
+        assert!(ch.edges.contains(&(b, t)), "general only {general_only}: {ch:?}");
+    }
+    MOVES.set(false);
 }

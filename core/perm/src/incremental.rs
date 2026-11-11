@@ -64,8 +64,9 @@ pub struct Changed {
     pub edges: BTreeSet<(Tid, Tid)>,
     /// The commits with a write whose change in the walk's history differs after the update:
     /// of the commits on things not `evaluated`, only these may have started or stopped
-    /// applying, or changed between an invite grant and an audited write (a self-removal's
-    /// class moves with its author's roles, as `edges` reports).
+    /// applying, or changed between an invite grant and an audited write. A write turning
+    /// between an invite grant and a self-removal keeps its change: the edge it lowers moved
+    /// before it, on its author or a holder its author is admin of, as `edges` reports.
     pub commits: BTreeSet<CommitId>,
     /// Things whose `created.0` record came or went.
     pub created: BTreeSet<Tid>,

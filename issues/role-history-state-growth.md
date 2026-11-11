@@ -1,0 +1,9 @@
+# Role-history writes grow with the history
+> Summary: Every write to a thing's `roles.0` rewrites the whole `roles.0` state while it is under `PAGE_TARGET` (a tombstone per ended entry, never pruned), and a grant or removal resets every past entry of its holder, so a holder's k-th grant or removal carries k resets: per-write bytes grow with the history (quadratic in total) until paging caps the first and never for the second.
+> Priority: normal
+> Tags: permissions, node, growth
+
+Both show in osis-node `scale::role_history_join_is_linear`, which counts store rows but not bytes for this reason (notes/complaints/role-join.md).
+
+- **State rewrite.** `roles.0` is never compaction-snapshotted (spec/commits.md §5) and its map is never reset, so every ended entry stays as a tombstone forever (spec/crdt.md §5.6: tombstones live until the map fragment is reset). Under `PAGE_TARGET` (64 KB) a state is written whole on each write (notes/engine-paged.md), so each edge write, at the writer and at every receiver, rewrites O(history) bytes, up to 64 KB; above it, page writes are flat. Bounded per write, but a group with a few hundred role writes rewrites tens of KB per grant. Fix is implementation only: a smaller paging threshold for map states that only grow, or tombstones kept outside the state (no spec change).
+- **Holder resets.** spec/permissions.md §2: a grant or change is a reset of every entry of the holder the writer holds, live or not, plus a new entry. A holder granted and removed k times has k entries, so its next grant or removal delta holds k resets: unbounded per write, O(k^2) in total for one holder's churn (a member who leaves and rejoins a group often). Needs a spec change, e.g. resetting only the holder's live entries (as crdt `remove` does), since an ended entry is already reset by the write that ended it; check first that the waiting rule (a reset names the write it ends, §2) and concurrent puts still decide alike.
