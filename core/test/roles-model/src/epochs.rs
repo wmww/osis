@@ -2738,11 +2738,13 @@ mod tests {
         assert_eq!(st.hard_failures(), 0, "{st:?}");
     }
 
+    /// 300 worlds reach every dimension `Stats::print` lists and every hard check's case; the
+    /// rarest counted shapes (one world in 30 to 300) come in the `_large` twin.
     #[test]
     fn random_worlds_hold() {
         let mut rng = Rng(0);
         let mut st = Stats::default();
-        for _ in 0..3000 {
+        for _ in 0..300 {
             let w = random_world(&mut rng);
             check(&w, &mut st);
         }
@@ -2750,5 +2752,29 @@ mod tests {
             print_world(w);
         }
         assert_eq!(st.hard_failures(), 0, "{st:?}");
+    }
+
+    /// Worlds from `OSIS_ROLES_START` (default 0), `OSIS_ROLES_SEEDS` many (3000, 30000 under
+    /// `OSIS_FULL=1`), a thread per core, each thread its own stream. This crate depends on no
+    /// osis crate, so it reads the environment itself.
+    #[test]
+    #[ignore = "property"]
+    fn random_worlds_hold_large() {
+        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).map(|v| v.parse::<u64>().unwrap_or_else(|_| panic!("{k}={v:?} is not a decimal u64")));
+        let start = var("OSIS_ROLES_START").unwrap_or(0);
+        let n = var("OSIS_ROLES_SEEDS").unwrap_or(if var("OSIS_FULL") == Some(1) { 30_000 } else { 3000 });
+        eprintln!("epochs::random_worlds_hold_large: {n} worlds from {start}");
+        let (_, st) = parallel(|th, threads, st| {
+            let mut rng = Rng((start ^ (th as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1);
+            for _ in 0..n.div_ceil(threads as u64) {
+                check(&random_world(&mut rng), st);
+            }
+            0
+        });
+        st.print("epochs");
+        if let Some(w) = &st.fail {
+            print_world(w);
+        }
+        assert_eq!(st.hard_failures(), 0, "OSIS_ROLES_START={start}: {st:?}");
     }
 }
