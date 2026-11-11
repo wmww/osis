@@ -26,78 +26,35 @@ pub fn open(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ad: &[u8], ciphertext: &[u8
 /// of ciphertexts sealed under them, NOT authenticated. Forensic tests only (`osis_store::attack`
 /// tries tens of thousands of candidate keys): a byte every plaintext of its kind has (a padded
 /// one ends in 0x80 or 0x00) rules a key out without `open`'s pass over the whole ciphertext.
-/// One ChaCha20 block per byte (RFC 8439 §2.3; HChaCha20, draft-irtf-cfrg-xchacha §2.2),
-/// computed here: the `chacha20` crate's vector backend makes four.
 #[doc(hidden)]
 pub struct Keystream {
-    subkey: Zeroizing<[u32; 8]>,
-    /// The last 8 bytes of XChaCha's nonce (ChaCha20's: four zero bytes, then these).
-    nonce: [u32; 2],
-}
-
-/// "expand 32-byte k"
-const SIGMA: [u32; 4] = [0x6170_7865, 0x3320_646e, 0x7962_2d32, 0x6b20_6574];
-
-fn words<const N: usize>(b: &[u8]) -> [u32; N] {
-    let mut w = [0u32; N];
-    for (x, c) in w.iter_mut().zip(b.as_chunks::<4>().0) {
-        *x = u32::from_le_bytes(*c);
-    }
-    w
-}
-
-/// A ChaCha20 input: constants, key, then counter and nonce (`n`).
-fn input(k: &[u32; 8], n: [u32; 4]) -> [u32; 16] {
-    let [s0, s1, s2, s3] = SIGMA;
-    let [k0, k1, k2, k3, k4, k5, k6, k7] = *k;
-    let [n0, n1, n2, n3] = n;
-    [s0, s1, s2, s3, k0, k1, k2, k3, k4, k5, k6, k7, n0, n1, n2, n3]
-}
-
-fn quarter(a: u32, b: u32, c: u32, d: u32) -> (u32, u32, u32, u32) {
-    let a = a.wrapping_add(b);
-    let d = (d ^ a).rotate_left(16);
-    let c = c.wrapping_add(d);
-    let b = (b ^ c).rotate_left(12);
-    let a = a.wrapping_add(b);
-    let d = (d ^ a).rotate_left(8);
-    let c = c.wrapping_add(d);
-    let b = (b ^ c).rotate_left(7);
-    (a, b, c, d)
-}
-
-/// ChaCha20's 20 rounds over an input, without the final addition.
-fn rounds(s: &[u32; 16]) -> [u32; 16] {
-    let [mut x0, mut x1, mut x2, mut x3, mut x4, mut x5, mut x6, mut x7, mut x8, mut x9, mut x10, mut x11, mut x12, mut x13, mut x14, mut x15] = *s;
-    for _ in 0..10 {
-        (x0, x4, x8, x12) = quarter(x0, x4, x8, x12);
-        (x1, x5, x9, x13) = quarter(x1, x5, x9, x13);
-        (x2, x6, x10, x14) = quarter(x2, x6, x10, x14);
-        (x3, x7, x11, x15) = quarter(x3, x7, x11, x15);
-        (x0, x5, x10, x15) = quarter(x0, x5, x10, x15);
-        (x1, x6, x11, x12) = quarter(x1, x6, x11, x12);
-        (x2, x7, x8, x13) = quarter(x2, x7, x8, x13);
-        (x3, x4, x9, x14) = quarter(x3, x4, x9, x14);
-    }
-    [x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15]
+    subkey: Zeroizing<[u8; 32]>,
+    /// ChaCha20's nonce: four zero bytes, then the last 8 of XChaCha's.
+    nonce: [u8; 12],
 }
 
 impl Keystream {
     pub fn new(key: &[u8; 32], nonce: &[u8; NONCE_LEN]) -> Keystream {
         let (head, tail) = nonce.split_at(16);
-        // HChaCha20: the rounds over the key and the nonce's first 16 bytes; words 0-3 and 12-15
-        let [x0, x1, x2, x3, _, _, _, _, _, _, _, _, x12, x13, x14, x15] = rounds(&input(&Zeroizing::new(words(key)), words(head)));
-        Keystream { subkey: Zeroizing::new([x0, x1, x2, x3, x12, x13, x14, x15]), nonce: words(tail) }
+        let mut subkey = Zeroizing::new([0u8; 32]);
+        let mut h = chacha20::hchacha::<chacha20::cipher::consts::U10>(key.into(), head.into());
+        subkey.copy_from_slice(&h);
+        zeroize::Zeroize::zeroize(h.as_mut_slice());
+        let mut n = [0u8; 12];
+        n.get_mut(4..).unwrap_or_default().copy_from_slice(tail);
+        Keystream { subkey, nonce: n }
     }
 
     /// Keystream byte `i` of the message (block 0 is the Poly1305 key; the message starts at
     /// block 1).
     pub fn byte(&self, i: usize) -> u8 {
-        let [n0, n1] = self.nonce;
-        let s = input(&self.subkey, [u32::try_from(i / 64 + 1).unwrap_or(u32::MAX), 0, n0, n1]);
-        let w = (i % 64) / 4;
-        let word = rounds(&s).get(w).copied().unwrap_or(0).wrapping_add(s.get(w).copied().unwrap_or(0));
-        word.to_le_bytes().get(i % 4).copied().unwrap_or(0)
+        use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
+        let mut c = chacha20::ChaCha20::new((&*self.subkey).into(), (&self.nonce).into());
+        c.seek(64 + i as u64);
+        let mut b = [0u8];
+        c.apply_keystream(&mut b);
+        let [b] = b;
+        b
     }
 
     /// Plaintext byte `i` of `ciphertext` (with its tag); `None`: the plaintext has no byte `i`.
@@ -172,7 +129,7 @@ mod tests {
     // plaintext's, at every length across block boundaries
     #[test]
     fn keystream_bytes_are_the_plaintexts() {
-        // bytes all distinct: a word out of place shows
+        // bytes all distinct: a key or nonce byte out of place shows
         let key: [u8; 32] = std::array::from_fn(|i| i as u8 * 7 + 1);
         let nonce: [u8; NONCE_LEN] = std::array::from_fn(|i| i as u8 * 5 + 100);
         for n in 0..200usize {
