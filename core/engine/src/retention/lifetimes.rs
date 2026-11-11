@@ -2,7 +2,9 @@
 //! thing listing retainers (`retainers^.0`) is kept while a listed retainer that is itself kept
 //! references it, or a listed retainer is unknown here; a thing with no list is standalone and
 //! kept. A thing judged unreachable is released by a node holding the right to end it; one
-//! without is remembered (`PENDING`) until the right comes.
+//! without is remembered (`PENDING`) until the right comes, as is a released one until its
+//! ending clears the row (`queue_with_listers`), so a release request that fails to be written is
+//! judged again (`judge_lifetimes`).
 //!
 //! Judged from what the node holds, per thing: **known** (a live minting held, not a kept copy),
 //! **ended** (an ending held), else **unknown**. The judgment of one thing is a walk up its list
@@ -31,7 +33,8 @@ use std::collections::BTreeSet;
 
 /// `lw/<tid>`: things to judge.
 pub(crate) const WORK: &[u8] = b"lw/";
-/// `lp/<tid>`: things judged unreachable that this node may not end.
+/// `lp/<tid>`: things judged unreachable and not ended here: this node may not end them, or the
+/// release request for them is not applied yet.
 pub(crate) const PENDING: &[u8] = b"lp/";
 
 /// What the node holds of a thing, for the judgment.
@@ -213,7 +216,8 @@ pub(crate) fn judge(tx: &mut Tx<'_>, heard: &dyn Fn(&Tid) -> bool, rights: bool)
             if may_end(tx, &x) {
                 gone.insert(x);
                 out.release.push(x);
-                set(tx, PENDING, &x, false)?;
+                // until the request ends it (`judge_lifetimes`)
+                set(tx, PENDING, &x, true)?;
                 queue.extend(below(tx, &x)?);
             } else if !pending {
                 set(tx, PENDING, &x, true)?;
@@ -228,7 +232,7 @@ pub(crate) fn judge(tx: &mut Tx<'_>, heard: &dyn Fn(&Tid) -> bool, rights: bool)
     Ok(out)
 }
 
-/// The things judged unreachable here that this node may not end.
+/// The things judged unreachable here and not ended (`PENDING`).
 pub(crate) fn pending(tx: &mut Tx<'_>) -> Result<Vec<Tid>> {
     rows(tx, PENDING)
 }
@@ -245,8 +249,10 @@ impl crate::engine::Engine {
     /// walk read only things `heard` says are heard out (node-sync: every label holding it is;
     /// a thing under no label is), the rest left queued. The unreachable things this node may
     /// end, with what only they kept, it releases in one request (`release`); the others it may
-    /// not end are pending. A request refused leaves its things judged and not pending: they
-    /// leak until judged again.
+    /// not end are pending. A released thing is pending too until the request, applied, ends it:
+    /// one whose request is refused or fails to be written (an `Err` here) is judged again at the
+    /// next change of the role timelines or the next open, or once its list or a reference to
+    /// it changes.
     pub fn judge_lifetimes(&mut self, heard: &dyn Fn(&Tid) -> bool) -> Result<Judged> {
         let rights = self.core.lifetimes_rights;
         let mut out = self.run(|tx| judge(tx, heard, rights))?;
@@ -271,7 +277,7 @@ impl crate::engine::Engine {
         self.commit(m)
     }
 
-    /// The things judged unreachable here that this node may not end.
+    /// The things judged unreachable here and not ended (`PENDING`).
     pub fn lifetimes_pending(&mut self) -> Result<Vec<Tid>> {
         self.run(pending)
     }

@@ -280,3 +280,41 @@ fn a_cascade_releases_an_actor_and_what_it_kept_in_one_commit() {
     net.run();
     assert_eq!(net.engine(a).get(&y, &refs_ak()).unwrap(), Some(Value::Set([Value::Tid(root)].into())), "y written through r's frozen edges");
 }
+
+// issues/thing-lifetimes.md (The release): the judgment and the release request are two
+// transactions; a released thing stays pending until the request, applied, ends it, so a request
+// that fails to be written (here the store refuses it once) is judged again at the next open
+// and released then. Without the pending row nothing would queue it again.
+#[test]
+fn a_release_that_fails_to_be_written_is_judged_again_at_the_next_open() {
+    let f = osis_store::Faults::new();
+    let mut net = Net::new();
+    let a = net.forensic_node(1, &[], &f);
+    let me = net.tid(a);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let r = e.new_thing(&mut m, me);
+    let x = e.new_thing(&mut m, me);
+    list(&mut m, x, Some([r].into()));
+    refs(&mut m, r, Value::Set([Value::Tid(x)].into()));
+    e.commit(m).unwrap();
+    assert!(e.judge_lifetimes(&|_| true).unwrap().release.is_empty());
+    let mut m = Mutation::new();
+    refs(&mut m, r, Value::Set(Default::default()));
+    e.commit(m).unwrap();
+    // the judgment's transaction is write 0, the request's first write fails
+    f.at(1, osis_store::Fault::Fail);
+    assert!(e.judge_lifetimes(&|_| true).is_err(), "the request is not written");
+    // a failed write breaks the store until the node opens again
+    net.restart(a, 2);
+    let e = net.engine(a);
+    assert_eq!(e.lifetime_status(&x), Status::Known);
+    assert_eq!(e.lifetimes_pending().unwrap(), vec![x], "judged, pending until ended");
+    assert!(e.lifetimes_due().unwrap(), "the open judges what is pending");
+    let got = e.judge_lifetimes(&|_| true).unwrap();
+    assert_eq!(got.release, vec![x]);
+    assert!(got.request.is_some());
+    assert_eq!(e.lifetime_status(&x), Status::Ended);
+    assert!(e.lifetimes_pending().unwrap().is_empty());
+    assert!(!e.lifetimes_due().unwrap());
+}

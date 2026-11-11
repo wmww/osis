@@ -2,7 +2,7 @@
 > Summary: How the engine judges thing lifetimes and releases (`retention/lifetimes.rs`; design issues/thing-lifetimes.md, oracle held-model `lifetimes`): known/ended/unknown, the walk, the work list and `pending` as local rows, what queues, the release request as a purge of the creation, the engine API node-sync calls, and what is not built yet (forgetting, What is kept for listers, node-sync trigger).
 
 ## Principle
-A walk reads only the current held state, so a release never rests on a queue or a cache: a missed queue only leaks. The kept state is two local row sets, `lw/` (work: things a change touched) and `lp/` (pending: judged unreachable, right not held).
+A walk reads only the current held state, so a release never rests on a queue or a cache: a missed queue only leaks. The kept state is two local row sets, `lw/` (work: things a change touched) and `lp/` (pending: judged unreachable, not ended here: right not held, or its release request not applied yet).
 
 ## Reading
 - Status (`lifetimes::status`): ended (`Core::ended`, or released earlier in the run), known (`exists`, a minting held, not a kept copy `forget::copy_of`), else unknown.
@@ -25,7 +25,7 @@ Only a known thing is queued; a thing turning ended or unknown loses its `lw/` a
 - Keep: an ending by request keeps the record, value-less creation, `roles.0` and the request parts (`end::judges_ending`: `created.0`, `roles.0`, `ENDING_REQUESTS`) while the request is held. Evidence for dependents: `ending_evidence` and node-sync's `ended_certificate` carry `ENDING_REQUESTS` parts, purge and release alike.
 
 ## API (engine, through `internals` in osis tests)
-`Engine::judge_lifetimes(heard)` judges the work list (and pending when rights moved); a thing whose walk read a thing `heard` refuses stays queued. The unreachable things the node's account may end (`purge::would_hold_right` over every held minting), with their cascade, go in one release request it writes in a second transaction (`Engine::release`; a refusal leaves them judged, not pending: a leak). Returns `Judged { release, waiting, judged, request }`. `Engine::release(xs)` writes a request for any things (`Permission` without the right; `w.release` builds on it). `lifetimes_due`, `lifetimes_pending`, `lifetime_status`.
+`Engine::judge_lifetimes(heard)` judges the work list (and pending when rights moved); a thing whose walk read a thing `heard` refuses stays queued. The unreachable things the node's account may end (`purge::would_hold_right` over every held minting), with their cascade, go in one release request it writes in a second transaction (`Engine::release`); they stay pending until the request, applied, ends them (`queue_with_listers` clears the row), so a request refused or failing to be written is judged again at the next role-timeline change or open. Returns `Judged { release, waiting, judged, request }`. `Engine::release(xs)` writes a request for any things (`Permission` without the right; `w.release` builds on it). `lifetimes_due`, `lifetimes_pending`, `lifetime_status`.
 
 ## Not built yet (issues/thing-lifetimes.md step 3)
 Forgetting the request and the released thing at its `expires`, What is kept for listers and referencers (`ending_evidence`/`ended_certificate`), the node-sync trigger when heard out.

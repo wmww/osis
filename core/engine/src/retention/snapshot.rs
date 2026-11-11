@@ -321,6 +321,10 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
 /// receiver judges invalid). `write_snapshot`'s check, so what a purge-on-replace cover asks
 /// (`replace::settle_none`).
 pub(crate) fn may_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts: Ts) -> Result<MayWrite> {
+    // a release request is a content commit of its own (spec/wire.md §4): never compacted
+    if ak.as_str() == osis_commit::retention::RELEASED {
+        return Ok(MayWrite::No);
+    }
     let Ok(node) = tx.core.writer_for(tid) else { return Ok(MayWrite::No) };
     let skip = tx.core.skip_writer_rules;
     let need = match (skip, memory) {
@@ -399,6 +403,9 @@ impl Engine {
         }
         if ak.as_str() == "created.0" {
             return Err(Error::Misuse("created.0 is never compacted"));
+        }
+        if ak.as_str() == osis_commit::retention::RELEASED {
+            return Err(Error::Misuse("released.0 is never compacted"));
         }
         // the judgment reads every addendum delta (spec/permissions.md §5.2)
         if osis_schema::core_types::is_addenda(ak.as_str()) {

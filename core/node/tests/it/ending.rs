@@ -65,7 +65,7 @@ fn gone(net: &mut Net, n: usize, t: Tid) {
     assert!(!e.knows(&t), "node {n}: known");
     assert!(!e.has_content(&t).unwrap(), "node {n}: content");
     assert!(e.roster(&t).is_empty(), "node {n}: roster");
-    for ak in ["tid.0", "aspects.0", "groups.0", "roles.0", ct::PURGE.ak(), ct::CREATED.ak()] {
+    for ak in ["tid.0", "aspects.0", "groups.0", "roles.0", ct::PURGE.ak(), ct::RELEASED.ak(), ct::CREATED.ak()] {
         assert_eq!(e.get(&t, &Ak::new(ak).unwrap()).unwrap(), None, "node {n}: {ak}");
     }
     let mut m = Mutation::new();
@@ -1313,6 +1313,8 @@ fn a_release_without_the_right_ends_nothing_spec_permissions_6() {
         assert!(net.engine(n).knows(&t), "node {n}: t lives");
         assert_eq!(net.read(n, t), Some(s("x")), "node {n}: its value");
     }
+    // a release request is a content commit of its own: its aspect is never compacted
+    assert!(matches!(net.engine(a).snapshot(&t, &Ak::new(ct::RELEASED.ak()).unwrap()), Err(osis_node::Error::Misuse(_))));
 }
 
 // spec/commits.md §5 (Ending: dependents), spec/crypto.md §4 (Holder actors, Ended): as

@@ -246,7 +246,7 @@ Every delta carries **retention** on the wire: who may purge it (its purgeable-b
 - **Fixed retention**:
   - role-class deltas and `addenda.0`: `admin`, no history promised; each node keeps a replaced one `ROLE_KEEP` after replaced (a keep at least, §5 Keep bounds: compaction snapshots or later writes replace them; `roles.0` is never compaction-snapshotted, §2, so its deltas stay);
   - `retention^.0`: `nobody`, never out of history, never undone; it is never snapshotted (§2), carries no `expires` and goes with a commit of any purgeable-by;
-  - `purge.0` and `released.0`: `author_or_admin`, no history promised, their snapshots too;
+  - `purge.0` and `released.0`: `author_or_admin`, no history promised, `purge.0`'s snapshots too (`released.0` is never compacted, spec/wire.md §4);
   - a certificate copy carries its commit's;
   - snapshots of role-class aspects keep it.
 - Other compaction-snapshot deltas are `writer` (a receiver checks this); their history is the thing's setting, like any body's.
