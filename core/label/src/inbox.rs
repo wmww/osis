@@ -246,7 +246,7 @@ mod tests {
         let a = Address { url: "quic://s".into(), key: [1; 32] };
         InboxPayload {
             chain: vec![Value::List(vec![Value::List(vec![]), Value::Int(1), Value::List(vec![])])],
-            records: vec![CreationRecord::Thing { admin: Tid::from_bytes([4; 15]), nonce: [4; 32], link: false }],
+            records: vec![CreationRecord::Thing { admin: Tid::from_bytes([4; 15]), nonce: [4; 32], link: None }],
             commit: Value::List(vec![Value::List(vec![]), Value::Int(0), Value::List(vec![])]),
             things: vec![
                 InboxThing { tid: Tid::from_bytes([1; 15]), label: Some(InboxLabel { id: LabelId([2; 16]), index: 0, hosts: vec![a.clone()] }), delete_keys: None },

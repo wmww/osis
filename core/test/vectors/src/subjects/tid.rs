@@ -13,7 +13,7 @@ const SPEC: &str = "spec/wire.md §3";
 pub fn thing() -> VecFile {
     let admin = Tid::from_bytes([1; 15]);
     let nonce = [2u8; 32];
-    let rec = CreationRecord::Thing { admin, nonce, link: false };
+    let rec = CreationRecord::Thing { admin, nonce, link: None };
     let bytes = encode(&rec.to_value());
     let tid = rec.tid();
     assert_eq!(osis_base::hash::hash(&bytes)[..15], tid.as_bytes()[..], "tid is BLAKE3 of the record");
@@ -36,7 +36,7 @@ pub fn thing() -> VecFile {
         (Value::Int(2), Value::Bytes(nonce.to_vec())),
     ]);
     let neither = BTreeMap::from([(Value::Int(2), Value::Bytes(nonce.to_vec()))]);
-    let extra = BTreeMap::from([(Value::Int(0), Value::Tid(admin)), (Value::Int(2), Value::Bytes(nonce.to_vec())), (Value::Int(3), Value::Tid(admin))]);
+    let extra = BTreeMap::from([(Value::Int(0), Value::Tid(admin)), (Value::Int(2), Value::Bytes(nonce.to_vec())), (Value::Int(5), Value::Tid(admin))]);
     for (name, m) in [("both admin and key", both), ("neither admin nor key", neither), ("an unknown field", extra)] {
         let v = Value::Map(m.into_iter().collect());
         assert!(CreationRecord::from_value(&v).is_none(), "{name} must be rejected");

@@ -734,7 +734,7 @@ impl Engine {
         let signing = keys.signing.verifying_key().to_bytes();
         let record = CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: signing.to_vec(), nonce, account: true };
         let p = record.tid();
-        let d_record = CreationRecord::Thing { admin: p, nonce: *nonce_d.nonce(), link: false };
+        let d_record = CreationRecord::Thing { admin: p, nonce: *nonce_d.nonce(), link: None };
         let d = d_record.tid();
         self.core.account.set(Some(p));
         self.core.accounts.insert(p, Arc::new(HeldAccount { devices: d, first: signing, seeds: [(signing, seed.clone())].into() }));

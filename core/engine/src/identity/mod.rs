@@ -51,15 +51,15 @@ pub fn key_actor_record(keys: &KeyActorKeys, seed: &Secret32) -> CreationRecord 
     CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: keys.signing.verifying_key().to_bytes().to_vec(), nonce: creation_nonce(seed), account: false }
 }
 
-/// A fresh record for a link's actor K of `admin` (spec/permissions.md §7).
-pub fn link_record(admin: Tid, rng: &mut dyn CryptoRngCore) -> CreationRecord {
+/// A fresh record for a link's actor K of `admin`, made for `target` (spec/permissions.md §7).
+pub fn link_record(admin: Tid, target: Tid, rng: &mut dyn CryptoRngCore) -> CreationRecord {
     let CreationRecord::Thing { nonce, .. } = thing_record(admin, rng) else { unreachable!() };
-    CreationRecord::Thing { admin, nonce, link: true }
+    CreationRecord::Thing { admin, nonce, link: Some(target) }
 }
 
 /// A fresh record for a thing whose first admin is `admin` (32 random nonce bytes).
 pub fn thing_record(admin: Tid, rng: &mut dyn CryptoRngCore) -> CreationRecord {
     let mut nonce = [0u8; 32];
     rng.fill_bytes(&mut nonce);
-    CreationRecord::Thing { admin, nonce, link: false }
+    CreationRecord::Thing { admin, nonce, link: None }
 }

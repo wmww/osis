@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn record_of_a_thing_proves_nothing_spec_wire_11_2() {
         let mut p = prover(9).sign(false, &[1; 32], &[2; 32]);
-        p.record = CreationRecord::Thing { admin: Tid::from_bytes([1; 15]), nonce: [0; 32], link: false };
+        p.record = CreationRecord::Thing { admin: Tid::from_bytes([1; 15]), nonce: [0; 32], link: None };
         assert!(!p.verify(false, &[1; 32], &[2; 32]));
     }
 

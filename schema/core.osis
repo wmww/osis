@@ -22,14 +22,14 @@ type signing_key = enum {
 /// - `key`: the thing is a key actor, an account, device or share-link key
 ///   identified by this public key (an account's: its first). It has no admin; whoever holds
 ///   the key's secret acts as it.
-/// `link`, only ever set to true and only beside `admin`: the thing is a share link's actor.
+/// `link`, only beside `admin`: the thing is a share link's actor, made for this target.
 /// `account`, only ever set to true and only beside `key`: the thing is an account, whose keys
 /// change by rotations (spec/crypto.md §9).
 type creation = struct {
     admin 0: tid,
     key 1: signing_key,
     nonce 2: blob,
-    link 3: bool,
+    link 3: tid,
     account 4: bool,
 };
 

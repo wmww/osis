@@ -300,7 +300,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
                 id: 35,
                 label: l,
                 holder: osis_base::Tid::from_bytes([0x0d; 15]),
-                keys: osis_label::HolderKeys { commits: vec![osis_base::Value::List(vec![osis_base::Value::List(vec![]), osis_base::Value::Int(1), osis_base::Value::List(vec![])])], records: vec![osis_base::CreationRecord::Thing { admin: osis_base::Tid::from_bytes([0x0e; 15]), nonce: [0x0f; 32], link: false }] },
+                keys: osis_label::HolderKeys { commits: vec![osis_base::Value::List(vec![osis_base::Value::List(vec![]), osis_base::Value::Int(1), osis_base::Value::List(vec![])])], records: vec![osis_base::CreationRecord::Thing { admin: osis_base::Tid::from_bytes([0x0e; 15]), nonce: [0x0f; 32], link: None }] },
             },
         ),
         ("suspect", Message::Suspect { id: 36, label: l, entries: vec![crate::msg::SuspectEntry { thing: osis_base::Tid::from_bytes([0x0c; 15]), ak: osis_base::Ak::new("t:reg.0").expect("an AK"), digest: [0x0d; 16] }] }),

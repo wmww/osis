@@ -30,7 +30,7 @@ mod tests {
         let first = AccountEpochKeys::from_seed(&Secret32::from_bytes([seed; 32]));
         let p = CreationRecord::KeyActor { alg: 1, public_key: first.signing.verifying_key().to_bytes().to_vec(), nonce: [seed; 32], account: true };
         let pt = p.tid();
-        let t = CreationRecord::Thing { admin: pt, nonce: [seed ^ 1; 32], link: false };
+        let t = CreationRecord::Thing { admin: pt, nonce: [seed ^ 1; 32], link: None };
         let ak = Ak::new("created.0").unwrap();
         let view = osis_schema::core_schema().view(ak.as_str()).unwrap();
         let mut cb = CommitBuilder::new(Kind::Role, ts, pt, pt, Form::Commit);

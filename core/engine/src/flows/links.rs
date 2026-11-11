@@ -105,12 +105,13 @@ impl Engine {
         self.core.timelines.get(thing).is_some_and(|tl| tl.ended(thing, ts).contains_key(holder))
     }
 
-    /// The links this account joined that have ended (spec/permissions.md §7), among those
-    /// whose K or a thing K holds is in `touched` (`None`: all): it holds a live edge on a K (a
-    /// thing whose record has the link flag) not by K's record (the sharer's admin), and the held
-    /// role history shows K's edge on a thing K was put on removed or past `until`. The caller
-    /// leaves each K. Idempotent across this account's nodes: once one's leave is here, its edge
-    /// is gone. O(touched things' holders), and the history of each link K's things.
+    /// The links this account joined that have ended (spec/permissions.md §7, Joiner's leave),
+    /// among those whose K or K's target is in `touched` (`None`: all): it holds K by a grant
+    /// (the sharer holds it by K's record), and the held role history shows K's edge on the
+    /// target K's record names removed or past `until`. The caller leaves each K. Only K's
+    /// creator wrote that target, and it may remove any joiner anyway. Idempotent across this
+    /// account's nodes: once one's leave is here, its edge is gone. O(touched things' holders),
+    /// and the target's history for each joined K among them.
     pub fn joined_links_ended(&mut self, touched: Option<&BTreeSet<Tid>>) -> Vec<Tid> {
         let Some(me) = self.core.me() else { return Vec::new() };
         let ts = super::now_ts(&self.core);
@@ -121,14 +122,9 @@ impl Engine {
         };
         let mut out = Vec::new();
         for k in cands {
-            if !self.core.created(&k).is_some_and(|r| r.is_link()) || self.first_admin(&k) == Some(me) {
-                continue;
-            }
-            if !self.core.timelines.get(&k).is_some_and(|tl| tl.edges_at(None).get(&me, &k).is_some_and(|e| e.alive_at(Some(ts)))) {
-                continue;
-            }
-            let things: Vec<Tid> = self.core.ix.held.named_on(&k).copied().filter(|t| *t != k).collect();
-            if things.iter().any(|t| self.edge_gone(t, &k)) {
+            let Some(target) = self.core.created(&k).and_then(|r| r.link_target()) else { continue };
+            let granted = self.first_admin(&k) != Some(me) && self.core.timelines.get(&k).is_some_and(|tl| tl.edges_at(None).get(&me, &k).is_some_and(|e| e.alive_at(Some(ts))));
+            if granted && self.edge_gone(&target, &k) {
                 out.push(k);
             }
         }
@@ -257,7 +253,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     done.add(lc);
     // K, with secrets of its own
     let mut m = Mutation::new();
-    let k = m.create(crate::identity::link_record(sharer, &mut *tx.rng));
+    let k = m.create(crate::identity::link_record(sharer, spec.target, &mut *tx.rng));
     done.add(Engine::commit_tx(tx, m)?);
     // K's secrets, its home label listing L, its inbox: one commit
     let lvk = lkeys.signing.verifying_key();
