@@ -1211,8 +1211,8 @@ fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
 // compaction snapshots (peer 3's writes reach node 4 only as snapshot copies, some others'
 // never), delivered to node 4 in a random order with snapshots and writes dropped as they come.
 // Node 5 takes the same commits keeping every body (`keep_bodies`). A body node 4 dropped at its
-// bound is replaced at node 5. Every body node 4 holds is replaced iff node 5's is, and no
-// earlier (node 4 holds fewer bodies). Seeds 0..8; more in `_large`.
+// bound is replaced at node 5. Every body node 4 holds is dated never earlier than node 5's
+// (`never_early`; node 4 holds fewer bodies). Seeds 0..8; more in `_large`.
 #[test]
 fn deaths_never_early_random_spec_commits_5() {
     let seeds: Vec<u64> = (0..8).collect();
@@ -1228,6 +1228,24 @@ fn deaths_never_early_random_large() {
 
 fn dating_replay(s: u64) -> String {
     format!("OSIS_STRAYS_START={s} OSIS_STRAYS_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact retention::deaths_never_early_random_large")
+}
+
+/// A node's replaced date `x` for a body is never earlier than `y`, a fully informed node's.
+/// None is no keep bound at all (not replaced), so (Some, None) keeps longer: a node lacking a
+/// carrying body (dropped, never received, withheld) may date what the informed node does not.
+fn never_early(x: Option<osis_base::Ts>, y: Option<osis_base::Ts>) -> bool {
+    match (x, y) {
+        (Some(x), Some(y)) => x >= y,
+        (_, None) => true,
+        (None, Some(_)) => false,
+    }
+}
+
+#[test]
+fn never_early_compares_dates() {
+    let (a, b) = (osis_base::Ts::from_u64(1), osis_base::Ts::from_u64(2));
+    assert!(never_early(None, None) && never_early(a, None) && never_early(b, a) && never_early(a, a));
+    assert!(!never_early(None, a) && !never_early(a, b));
 }
 
 /// One history of `deaths_never_early_random_*`.
@@ -1375,12 +1393,7 @@ fn dating_history(seed: u64) {
             }
             let x = lp.peers[4].engine.replaced_at(c, &t, a).unwrap();
             let y = lp.peers[5].engine.replaced_at(c, &t, a).unwrap();
-            let ok = match (x, y) {
-                (Some(x), Some(y)) => x >= y,
-                (None, None) => true,
-                _ => false,
-            };
-            assert!(ok, "seed {seed} {a:?} {c:?} (snapshot {snap}): replaced here {x:?}, with every body {y:?}");
+            assert!(never_early(x, y), "seed {seed} {a:?} {c:?} (snapshot {snap}): replaced here {x:?}, with every body {y:?}");
         }
     }
 }
