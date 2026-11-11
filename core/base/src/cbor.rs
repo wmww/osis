@@ -412,6 +412,14 @@ impl<'a> Reader<'a> {
         self.0.link_content()
     }
 
+    /// The bytes of the next item, found by its heads alone: nothing inside it is decoded or
+    /// checked (`item_prefix`).
+    pub fn item(&mut self) -> Result<&'a [u8], DecodeError> {
+        let start = self.0.pos;
+        self.0.skip(0)?;
+        Ok(self.since(start))
+    }
+
     /// The whole input has been read.
     pub fn end(&self) -> Result<(), DecodeError> {
         if self.0.pos == self.0.buf.len() { Ok(()) } else { Err(DecodeError::Trailing) }

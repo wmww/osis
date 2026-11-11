@@ -610,9 +610,10 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     // creation records first: perm and dedup secrets need them
     let mut held_changed = note_created(tx, &h, &parts.whole)?;
     let view = Arc::new(crate::engine::View::of(&h));
+    let read = super::PartsRead::of(&h, &parts.whole);
     if h.kind.is_role() {
-        validity::note_required(tx.core, &h, &id, &parts.whole);
-        validity::add_role_commit(tx.core, &view, &id, &validity::EdgeParts::of(&h, &parts.whole));
+        validity::note_required(tx.core, &h, &id, &read);
+        validity::add_role_commit(tx.core, &view, &id, read.edges());
         held_changed = true;
     }
     if held_changed {
@@ -657,7 +658,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     tx.core.index_validity(&id);
     crate::retention::note_requests(tx, &id, &h)?;
 
-    let pend = super::keys::before_join(tx, &h, &id, &parts.whole, &valid)?;
+    let pend = super::keys::before_join(tx, &h, &id, &read, &valid)?;
     let mut j = joins(tx, &h, &id, blob, &parts, &valid)?;
     // an invalid aspect whose part is not held: others' writes under its creations go too (the
     // part may never come, or come late)
@@ -668,7 +669,8 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
     {
         let _s = crate::costs::span("apply: put_commit");
-        tx.put_commit(&id, blob, &meta, Shred::No, None)?;
+        // role-class parts join whole: the record holds the parts read
+        tx.put_commit(&id, blob, &meta, Shred::No, h.kind.is_role().then(|| read.edges()))?;
     }
     note_held_rules(tx, &h, &id, &parts)?;
     after_store(tx, &mut j)?;
@@ -816,15 +818,17 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     if edges && meta.view.frontier.is_some() {
         note_addenda_due(tx, id)?;
     }
+    let (held, n) = with_held(tx, &h, id, &parts)?;
+    let read = super::PartsRead::of(&h, &held);
     if h.kind.is_role() {
-        held_changed |= judge_late(tx, &h, id, &parts, &mut meta)?;
+        held_changed |= judge_late(tx, &h, id, &parts, &read, &mut meta)?;
     }
-    let with_keys = with_keys(tx, &h, id, &parts)?;
+    let with_keys = read.first(n);
     let pend = super::keys::before_join(tx, &h, id, &with_keys, &meta.valid)?;
     let mut j = joins(tx, &h, id, merged, &parts, &meta.valid)?;
-    // the record's `node/edges` row, read once: it is also the commit's edge writes again
-    let all = if h.kind.is_role() { Some(super::edge_parts_of(tx, id, &h, merged.clone())?) } else { None };
-    tx.put_commit(id, merged, &meta, Shred::No, all.as_ref())?;
+    // the record's `node/edges` row: the commit's held parts read, also its edge writes again
+    let edge_parts = h.kind.is_role().then(|| read.edges());
+    tx.put_commit(id, merged, &meta, Shred::No, edge_parts)?;
     // a leftover set aside at a purge's fall is stale once a copy joined whole
     crate::retention::forget_joined_leftovers(tx, &h, id, &late)?;
     note_held_rules(tx, &h, id, &parts)?;
@@ -840,7 +844,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     // expiry and purges for the late parts (a late snapshot part carrying purged values too)
     crate::retention::stripped_joined(tx, id, &parts.stripped_joined(), &mut j.changed)?;
     crate::retention::on_late(tx, id, &late, &mut j.changed)?;
-    if edges && let Some(all) = &all {
+    if edges && let Some(all) = edge_parts {
         tx.core.ix.held.remove(id);
         validity::add_role_commit(tx.core, &meta.view, id, all);
         held_changed = true;
@@ -849,7 +853,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         tx.core.update_timelines();
     }
     observe_all(tx, &j)?;
-    super::keys::after_join(tx, &h, &with_keys, &meta.valid, pend)?;
+    super::keys::after_join(tx, &h, with_keys.all(), &meta.valid, pend)?;
     let flipped = rejudged(tx, held_changed)?;
     if edges {
         let rosters: Vec<Tid> = h.aspects.iter().filter(|a| validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect();
@@ -881,10 +885,8 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
 /// part names what its `secrets.0` part may box): what that judged (an overreaching late
 /// `secrets.0` part) holds for their join; other aspects' flips go through the re-judge
 /// (`invalidated`, `revalidated`). Whether a late part's validity changed (`meta` updated).
-fn judge_late(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, meta: &mut Meta) -> Result<bool> {
-    let mut all = parts.whole.clone();
-    all.extend(super::held_parts_at(tx, id, &|ai| !parts.has(ai))?);
-    validity::note_required(tx.core, h, id, &all);
+fn judge_late(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, all: &super::PartsRead<'_>, meta: &mut Meta) -> Result<bool> {
+    validity::note_required(tx.core, h, id, all);
     let mut flipped = false;
     for ai in parts.ais() {
         let v = validity::part_valid(tx.core, h, id, ai);
@@ -904,34 +906,39 @@ fn judge_late(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, meta: &
     Ok(flipped)
 }
 
-/// The late parts of commit `id` with, for a role commit, the held `keys.0` parts of the things
-/// of its late `secrets.0` parts and the held `secrets.0` parts of those of its late `keys.0`
-/// parts: late `secrets.0` parts establish epochs like the first ones, with the commit's
-/// `keys.0`. The keysets "before" are the current `keys.0` state, which already holds this
-/// commit's `keys.0` when that part joined earlier: an approximation like `revalidated`'s (a
-/// keyset the commit replaced is no longer known; its removed keys come from the index of held
-/// keyed entries, and a write whose removed keys are unknown waits as usual). A late `keys.0`
-/// part likewise applies the held `secrets.0` of its thing again: applied without the keyset (a
-/// role commit applies from any held part), they made no rotation.
-fn with_keys(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) -> Result<Vec<(usize, Decoded)>> {
+/// The late parts of commit `id` and, for a role commit, its other held parts (`judge_late`
+/// judges with them), with the count of those its join applies with (`before_join`, first): the
+/// late parts and, for a plain role commit, the held `keys.0` parts of the things of its late
+/// `secrets.0` parts and the held `secrets.0` parts of those of its late `keys.0` parts: late
+/// `secrets.0` parts establish epochs like the first ones, with the commit's `keys.0`. The
+/// keysets "before" are the current `keys.0` state, which already holds this commit's `keys.0`
+/// when that part joined earlier: an approximation like `revalidated`'s (a keyset the commit
+/// replaced is no longer known; its removed keys come from the index of held keyed entries, and
+/// a write whose removed keys are unknown waits as usual). A late `keys.0` part likewise applies
+/// the held `secrets.0` of its thing again: applied without the keyset (a role commit applies
+/// from any held part), they made no rotation.
+fn with_held(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) -> Result<(Vec<(usize, Decoded)>, usize)> {
     let mut out = parts.whole.clone();
-    if h.kind != osis_commit::Kind::Role {
-        return Ok(out);
+    if !h.kind.is_role() {
+        let n = out.len();
+        return Ok((out, n));
     }
     let late = parts.ais();
     let late_on = |ak: &str| -> BTreeSet<Tid> { late.iter().filter_map(|ai| h.aspects.get(*ai)).filter(|a| a.ak.as_str() == ak).map(|a| a.tid).collect() };
     let (late_secrets, late_keys) = (late_on("secrets.0"), late_on("keys.0"));
-    for (ai, a) in h.aspects.iter().enumerate() {
-        let want = match a.ak.as_str() {
-            "keys.0" => late_secrets.contains(&a.tid),
-            "secrets.0" => late_keys.contains(&a.tid),
-            _ => false,
-        };
-        if want && !parts.has(ai) {
-            out.extend(super::held_part(tx, id, ai)?.map(|d| (ai, d)));
-        }
-    }
-    Ok(out)
+    let want = |ai: usize| {
+        h.kind == osis_commit::Kind::Role
+            && h.aspects.get(ai).is_some_and(|a| match a.ak.as_str() {
+                "keys.0" => late_secrets.contains(&a.tid),
+                "secrets.0" => late_keys.contains(&a.tid),
+                _ => false,
+            })
+    };
+    let (with, rest): (Vec<_>, Vec<_>) = super::held_parts_at(tx, id, &|ai| !parts.has(ai))?.into_iter().partition(|(ai, _)| want(*ai));
+    out.extend(with);
+    let n = out.len();
+    out.extend(rest);
+    Ok((out, n))
 }
 
 /// The `secrets.0` entries a commit's joins touched, per aspect (`None`: anything may have

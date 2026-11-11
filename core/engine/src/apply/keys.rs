@@ -48,28 +48,39 @@ pub(crate) fn keysets_of(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<Keys
     }
     let mut out = std::collections::BTreeSet::new();
     for b in bodies {
-        out.extend(keyset_recs(b));
+        out.extend(KeysBody::of(b).recs);
     }
     out.into_iter().collect()
 }
 
-/// Each keyset a `keys.0` body writes: its role, epoch, listed epochs, KEM key (suite 1),
-/// possession key, names digest and left-out keysets.
-fn keyset_recs(body: &Fragment) -> Vec<KeysetRec> {
-    keys_write(body)
-        .keysets
-        .into_iter()
-        .filter_map(|(role, ks)| {
-            let epoch = osis_keys::aspects::from_schema(&ks.epoch).ok()?;
-            let lists = ks.supersedes.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect();
-            let ct::KemKey::X25519MlKem768(b) = ks.kem_key;
-            let kem = (ks.suite == osis_keys::SUITE).then(|| osis_crypto::KemPublicKey::from_slice(&b).ok()).flatten();
-            let ct::SigningKey::Ed25519(p) = ks.possession_key;
-            let possession = osis_crypto::VerifyingKey::from_slice(&p).ok();
-            let left_out = ks.left_out.iter().flat_map(|(m, xs)| xs.iter().filter_map(|x| Some((*m, osis_keys::aspects::from_schema(x).ok()?)))).collect();
-            Some(KeysetRec { role, epoch, lists, kem, possession, names: ks.names, left_out })
-        })
-        .collect()
+/// A `keys.0` body read: the keysets it writes, typed (whole keysets: a rotation replaces the
+/// field), and each as noted (`KeysetRec`: its role, epoch, listed epochs, KEM key (suite 1),
+/// possession key, names digest and left-out keysets).
+#[derive(Clone, Default)]
+pub(crate) struct KeysBody {
+    pub write: KeysWrite,
+    pub recs: Vec<KeysetRec>,
+}
+
+impl KeysBody {
+    pub(crate) fn of(body: &Fragment) -> KeysBody {
+        let write = keys_write(body);
+        let recs = write
+            .keysets
+            .iter()
+            .filter_map(|(role, ks)| {
+                let epoch = osis_keys::aspects::from_schema(&ks.epoch).ok()?;
+                let lists = ks.supersedes.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect();
+                let ct::KemKey::X25519MlKem768(b) = &ks.kem_key;
+                let kem = (ks.suite == osis_keys::SUITE).then(|| osis_crypto::KemPublicKey::from_slice(b).ok()).flatten();
+                let ct::SigningKey::Ed25519(p) = &ks.possession_key;
+                let possession = osis_crypto::VerifyingKey::from_slice(p).ok();
+                let left_out = ks.left_out.iter().flat_map(|(m, xs)| xs.iter().filter_map(|x| Some((*m, osis_keys::aspects::from_schema(x).ok()?)))).collect();
+                Some(KeysetRec { role: *role, epoch, lists, kem, possession, names: ks.names, left_out })
+            })
+            .collect();
+        KeysBody { write, recs }
+    }
 }
 
 /// The boxes a `secrets.0` delta writes (removals aside): typed key and key value.
@@ -111,7 +122,7 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
     Ok(())
 }
 
-/// Notes the keysets a valid `keys.0` body of `actor` writes (`keyset_recs`, or a dropped part's
+/// Notes the keysets a valid `keys.0` body of `actor` writes (`KeysBody::recs`, or a dropped part's
 /// record): each is a held valid keyset (`keysets`); a role
 /// commit's also record the commit as the epoch's introduction if earliest: a rotation writes
 /// the rotated roles' keysets, nothing else does, so the epoch's introducer
@@ -197,7 +208,7 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
                 note_keysets(tx.core, &m.header, &id, a, &d.keysets);
             }
             if let Some(d) = super::held_part(tx, &id, ai)? {
-                note_keysets(tx.core, &m.header, &id, a, &keyset_recs(d.fragment()));
+                note_keysets(tx.core, &m.header, &id, a, &KeysBody::of(d.fragment()).recs);
             }
         }
     }
@@ -208,15 +219,15 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
 /// Notes the `keys.0` parts of role commit `h` whose bodies write a keyset, whatever their
 /// validity (`records::OWN_KEYS`: a fact of the body, kept once it drops or goes missing), then
 /// re-derives `own_keys` of their things.
-fn note_keyset_parts(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) -> Result<()> {
+fn note_keyset_parts(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &super::PartsRead<'_>) -> Result<()> {
     if !h.kind.is_role() {
         return Ok(());
     }
     let id = *id;
     let mut things = std::collections::BTreeSet::new();
-    for (ai, d) in parts {
+    for (i, (ai, _)) in parts.all().iter().enumerate() {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() != "keys.0" || keys_write(d.fragment()).keysets.is_empty() {
+        if parts.keys(i).is_none_or(|k| k.write.keysets.is_empty()) {
             continue;
         }
         if tx.core.ix.keyset_parts.insert(a.tid, id) {
@@ -400,21 +411,21 @@ pub(crate) struct Pending {
     keys: KeysWrite,
 }
 
-pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize, Decoded)], valid: &[bool]) -> Result<Vec<Pending>> {
+pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &super::PartsRead<'_>, valid: &[bool]) -> Result<Vec<Pending>> {
     note_keyset_parts(tx, h, id, parts)?;
     let mut out = Vec::new();
-    for (ai, d) in parts {
+    for (i, (ai, _)) in parts.all().iter().enumerate() {
         if let Some(a) = h.aspects.get(*ai)
-            && a.ak.as_str() == "keys.0"
             && valid.get(*ai).copied().unwrap_or(false)
+            && let Some(k) = parts.keys(i)
         {
-            note_keysets(tx.core, h, id, &a.tid, &keyset_recs(d.fragment()));
+            note_keysets(tx.core, h, id, &a.tid, &k.recs);
         }
     }
     if h.kind != Kind::Role {
         return Ok(out);
     }
-    for (ai, d) in parts {
+    for (ai, d) in parts.all() {
         let Some(a) = h.aspects.get(*ai) else { continue };
         if a.ak.as_str() != "secrets.0" {
             continue;
@@ -425,10 +436,9 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(
         if !valid.get(*ai).copied().unwrap_or(false) {
             continue;
         }
-        let keys = parts
-            .iter()
-            .find_map(|(x, k)| match (h.aspects.get(*x), k) {
-                (Some(b), Decoded::Delta(k)) if b.tid == a.tid && b.ak.as_str() == "keys.0" => Some(keys_write(&k.fragment)),
+        let keys = (parts.all().iter().enumerate())
+            .find_map(|(i, (x, k))| match (h.aspects.get(*x), k) {
+                (Some(b), Decoded::Delta(_)) if b.tid == a.tid => parts.keys(i).map(|k| k.write.clone()),
                 _ => None,
             })
             .unwrap_or_default();

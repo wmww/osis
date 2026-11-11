@@ -35,6 +35,8 @@ pub(crate) use atomic::{check_rebuilt, TxChange};
 pub(crate) use atomic::{Unmerge, apply_verified, carries_any, forget_snapshot, index_commit, note_stands_in, ingest_secrets_keys, observe_state, rebuild, rejudged, run_batched, strip_valueless};
 
 use crate::engine::blobs::TxBlobs;
+use std::borrow::Cow;
+use std::cell::OnceCell;
 use crate::engine::{Engine, Meta, Step, Tx, decode_commit_record, records};
 use crate::error::{Error, Result};
 use crate::events::{Diagnostic, DiagnosticKind, Origin};
@@ -149,6 +151,47 @@ pub(crate) struct Streamed {
     pub dedup: osis_crypto::Secret32,
     /// A snapshot's frontiers and `Absorbed`.
     pub gives: Option<crate::engine::Gives>,
+}
+
+/// A commit's decoded parts, with what is read of them, each read once on first ask: each
+/// `keys.0` part's keysets (`keys::KeysBody`) and perm's reading of its `roles.0` parts
+/// (`validity::EdgeParts`, also its record's `node/edges` row). A part may come as several
+/// deltas (pages of one rotation): each entry is read alone.
+pub(crate) struct PartsRead<'a> {
+    h: &'a Header,
+    parts: &'a [(usize, Decoded)],
+    keys: Cow<'a, [OnceCell<keys::KeysBody>]>,
+    edges: OnceCell<validity::EdgeParts>,
+}
+
+impl<'a> PartsRead<'a> {
+    pub(crate) fn of(h: &'a Header, parts: &'a [(usize, Decoded)]) -> Self {
+        PartsRead { h, parts, keys: parts.iter().map(|_| OnceCell::new()).collect(), edges: OnceCell::new() }
+    }
+
+    /// The first `n` parts, sharing what is read of their `keys.0` parts.
+    pub(crate) fn first(&self, n: usize) -> PartsRead<'_> {
+        PartsRead { h: self.h, parts: self.parts.get(..n).unwrap_or(self.parts), keys: Cow::Borrowed(self.keys.get(..n).unwrap_or(&self.keys)), edges: OnceCell::new() }
+    }
+
+    /// The parts: aspect index and decoded delta or snapshot.
+    pub(crate) fn all(&self) -> &'a [(usize, Decoded)] {
+        self.parts
+    }
+
+    /// Entry `i` of the parts read, if it is a `keys.0` part.
+    pub(crate) fn keys(&self, i: usize) -> Option<&keys::KeysBody> {
+        let (ai, d) = self.parts.get(i)?;
+        if !self.h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "keys.0") {
+            return None;
+        }
+        Some(self.keys.get(i)?.get_or_init(|| keys::KeysBody::of(d.fragment())))
+    }
+
+    /// What perm's adaptation reads of the `roles.0` parts.
+    pub(crate) fn edges(&self) -> &validity::EdgeParts {
+        self.edges.get_or_init(|| validity::EdgeParts::of(self.h, self.parts))
+    }
 }
 
 /// A commit's examined parts. Those of role-class aspects, `created.0` and `addenda.0` are
@@ -1708,27 +1751,27 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let id = blob.id();
             let b = blob;
             let parts = examine_stored(tx, &b, &id)?;
+            let read = PartsRead::of(&b.header, &parts);
             atomic::note_rotation_sigs(tx.core, &b.header, &id, &b.sigs);
-            validity::note_required(tx.core, &b.header, &id, &parts);
+            validity::note_required(tx.core, &b.header, &id, &read);
             validity::note_settings(tx.core, &b.header, &id, &parts);
             validity::note_addenda(tx.core, &b.header, &id, &parts);
             if !b.header.kind.is_role() {
                 continue;
             }
-            for (ai, d) in &parts {
+            for (i, (ai, d)) in parts.iter().enumerate() {
                 if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d) {
-                    match a.ak.as_str() {
-                        "secrets.0" => keys::note_boxes_to(tx.core, &a.tid, &d.fragment),
-                        "keys.0" => keys::note_keysets(tx.core, &b.header, &id, &a.tid, &keys::keysets_of(&b.header, *ai, std::slice::from_ref(&d.fragment))),
-                        _ => {}
+                    if a.ak.as_str() == "secrets.0" {
+                        keys::note_boxes_to(tx.core, &a.tid, &d.fragment);
+                    } else if let Some(k) = read.keys(i) {
+                        keys::note_keysets(tx.core, &b.header, &id, &a.tid, &k.recs);
                     }
                 }
             }
             let v = tx.core.ix.commits.get(&id).map(|m| m.view.clone()).ok_or(Error::Corrupt("commit meta"))?;
-            let edges = validity::EdgeParts::of(&b.header, &parts);
-            validity::add_role_commit(tx.core, &v, &id, &edges);
+            validity::add_role_commit(tx.core, &v, &id, read.edges());
             #[cfg(debug_assertions)]
-            tx.core.rebuilt_edges.insert(id, edges);
+            tx.core.rebuilt_edges.insert(id, read.edges().clone());
         }
     }
     // which role commits of accounts count (spec/permissions.md §5.5), before any timeline

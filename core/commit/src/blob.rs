@@ -115,21 +115,9 @@ impl CommitBlob {
     /// Decodes the opened form. Linked header lists stay unresolved; part indices are checked
     /// against the header by [`crate::verify_part`].
     pub fn decode(b: &[u8]) -> Result<CommitBlob, Error> {
-        Self::decode_as(b, false)
-    }
-
-    /// `decode` of a commit this node stored, checked when it arrived: its delete keys are not
-    /// decompressed again (a third of what re-reading an aspect's bodies cost). Only for bytes
-    /// this node wrote from a blob `decode` accepted (stored and pending rows: a parked row of
-    /// raw bytes fails here as there, on its version); never for bytes from a peer or a bundle.
-    pub fn decode_stored(b: &[u8]) -> Result<CommitBlob, Error> {
-        Self::decode_as(b, true)
-    }
-
-    fn decode_as(b: &[u8], stored: bool) -> Result<CommitBlob, Error> {
         let v = osis_base::decode(b, &LIMITS)?;
         let [hv, sv, iv, mv, pv] = as_list(&v)? else { return Err(Error::Malformed("commit blob arity")) };
-        let header = if stored { Header::from_stored_value(hv)? } else { Header::from_value(hv)? };
+        let header = Header::from_value(hv)?;
         let sigs = Sigs::from_values(sv, iv, mv)?;
         let parts = decode_parts(pv)?;
         let blob = CommitBlob { header, sigs, parts };
@@ -137,6 +125,38 @@ impl CommitBlob {
             return Err(Error::Malformed("commit blob not canonical"));
         }
         Ok(blob)
+    }
+
+    /// `decode` of a commit this node stored, checked when it arrived and written canonical by
+    /// `encode`: decode-only (no canonical re-encode), its delete keys not decompressed again (a
+    /// third of what re-reading an aspect's bodies cost) and each part's delta kept as its stored
+    /// bytes, never decoded here. Only for bytes this node wrote from a blob `decode` accepted
+    /// (stored and pending rows: a parked row of raw bytes fails here as there, on its version);
+    /// never for bytes from a peer or a bundle.
+    pub fn decode_stored(b: &[u8]) -> Result<CommitBlob, Error> {
+        let mut r = osis_base::cbor::Reader::new(b);
+        if r.array()? != 5 {
+            return Err(Error::Malformed("commit blob arity"));
+        }
+        let mut next = || -> Result<Value, Error> { Ok(osis_base::decode(r.item()?, &LIMITS)?) };
+        let header = Header::from_stored_value(&next()?)?;
+        let sigs = Sigs::from_values(&next()?, &next()?, &next()?)?;
+        let mut parts = Vec::new();
+        for _ in 0..r.array()? {
+            if r.array()? != 2 {
+                return Err(Error::Malformed("part arity"));
+            }
+            let ai = usize::try_from(r.uint()?).map_err(|_| Error::Malformed("index too large"))?;
+            if r.peek_major() != Some(MAJOR_ARRAY) {
+                return Err(Error::Malformed("part delta"));
+            }
+            parts.push(Part { ai, delta: r.item()?.to_vec() });
+        }
+        r.end()?;
+        if !strictly_ascending(&parts, |p| p.ai) {
+            return Err(Error::Malformed("parts not sorted and distinct"));
+        }
+        Ok(CommitBlob { header, sigs, parts })
     }
 
     /// Aspects whose delta this blob does not hold (purged, or in a section not opened).

@@ -192,6 +192,8 @@ impl EdgeParts {
                 .collect();
             out.push((*ai, es));
         }
+        // by aspect, as the record holds them, whatever order the parts came in
+        out.sort_by_key(|x| x.0);
         EdgeParts(out)
     }
 }
@@ -434,8 +436,7 @@ fn showing_of(actor: &Tid, f: &Fragment) -> crate::engine::Showing {
 /// What a role commit's `keys.0` delta on `actor` shows for possession (spec/crypto.md §4):
 /// whether it writes a keyset (a rotation), the highest role it writes one of, and the proofs its
 /// keysets carry.
-fn proofs_of(actor: &Tid, f: &Fragment) -> crate::engine::Showing {
-    let w = super::keys::keys_write(f);
+fn proofs_of(actor: &Tid, w: &osis_keys::KeysWrite) -> crate::engine::Showing {
     let shown = w.keysets.iter().flat_map(|(r, ks)| osis_keys::possession::Shown::of_keyset(actor, *r, ks)).collect();
     crate::engine::Showing { rotates: !w.keysets.is_empty(), top: w.keysets.keys().max().copied(), removed: Vec::new(), shown, checked: Default::default() }
 }
@@ -446,9 +447,10 @@ pub(crate) fn note_shown(core: &mut Core, id: &CommitId, ai: usize, x: Arc<crate
 }
 
 /// Records the roles `secrets.0` and `keys.0` deltas of a commit need, and the `secrets.0` parts
-/// of a role commit that write beyond its grantees' boxes. `parts`: every held part of the
+/// of a role commit that write beyond its grantees' boxes. `read`: every held part of the
 /// commit (a late `secrets.0` part is judged with the `roles.0` part held before it).
-pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) {
+pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &super::PartsRead<'_>) {
+    let parts = read.all();
     core.stale_commits.insert(*id);
     for (ai, d) in parts {
         if let Some(a) = h.aspects.get(*ai)
@@ -462,11 +464,11 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
     }
     // a part's deltas (pages of one rotation) show together
     let mut showing: BTreeMap<usize, crate::engine::Showing> = BTreeMap::new();
-    for (ai, d) in parts {
+    for (i, (ai, d)) in parts.iter().enumerate() {
         let (Some(a), Decoded::Delta(d)) = (h.aspects.get(*ai), d) else { continue };
-        let x = match a.ak.as_str() {
-            "secrets.0" => showing_of(&a.tid, &d.fragment),
-            "keys.0" => proofs_of(&a.tid, &d.fragment),
+        let x = match (a.ak.as_str(), read.keys(i)) {
+            ("secrets.0", _) => showing_of(&a.tid, &d.fragment),
+            (_, Some(k)) => proofs_of(&a.tid, &k.write),
             _ => continue,
         };
         let e = showing.entry(*ai).or_insert_with(|| core.ix.shown.get(&(*id, *ai)).map(|x| (**x).clone()).unwrap_or_default());
@@ -484,13 +486,11 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
     }
     // the edges this commit puts, per target: what an invite grant may box
     let mut granted: BTreeMap<(Tid, Tid), Role> = BTreeMap::new();
-    for (ai, d) in parts {
+    for (ai, es) in &read.edges().0 {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() == "roles.0" {
-            for (_, k, frag) in entries(d.fragment()) {
-                if let (Some(Value::Tid(m)), Some(e)) = (k, frag.and_then(|f| f.read()).as_ref().and_then(edge_of)) {
-                    granted.insert((a.tid, m), e.role);
-                }
+        for (_, m, e) in es {
+            if let (Some(m), Some(e)) = (m, e) {
+                granted.insert((a.tid, *m), e.role);
             }
         }
     }
