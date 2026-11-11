@@ -53,18 +53,16 @@ fn with_list(m: Message, n: usize) -> Value {
     Value::List(items)
 }
 
-// spec/wire.md §11.2: every kind round trips
+// spec/wire.md §11.2: the examples name every kind but the ones listed (the vectors generator
+// round-trips each example)
 #[test]
-fn round_trip_every_kind() {
+fn examples_name_every_kind() {
     let ms = messages();
     let mut kinds: Vec<u64> = ms.iter().map(|(_, m)| m.kind()).collect();
     kinds.dedup();
     // kinds 24-29 (client port): tests/it/port.rs; 30-31 reports; 32-35 elsewhere; 36-40 the
     // shared set; 41-44 the stream; 45-46 the digest
     assert_eq!(kinds, (0..=23).chain(30..=31).chain(36..=46).collect::<Vec<_>>());
-    for (name, m) in ms {
-        assert_eq!(Message::decode(&m.encode()), Ok(m.clone()), "{name}");
-    }
 }
 
 // spec/wire.md §11.2 Pull: a Stream with a cursor and no events (an ended member reaching its
