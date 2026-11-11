@@ -439,28 +439,30 @@ fn nested(depth: usize, item: &[u8]) -> Vec<u8> {
     [&vec![0x81; depth][..], item].concat()
 }
 
-/// The inputs `decode_peak_within_the_bound` measures: name, bytes. Each decodes.
-fn hostile_shapes(n: usize) -> Vec<(&'static str, Vec<u8>)> {
-    let tid = [&[0xd9, 0x06, 0x50, 0x4f][..], &[1; 15][..]].concat();
+/// A shape of input: its name, and its bytes at about n bytes.
+type Shape = (&'static str, fn(usize) -> Vec<u8>);
+
+/// The inputs `decode_peak_within_the_bound` measures. Each decodes.
+fn hostile_shapes() -> Vec<Shape> {
     vec![
-        ("{0:0}", repeated(n, &[0xa1, 0, 0])),
-        ("{}", repeated(n, &[0xa0])),
-        ("[]", repeated(n, &[0x80])),
-        ("[[]]", repeated(n, &[0x81, 0x80])),
-        ("[0]", repeated(n, &[0x81, 0])),
-        ("0", repeated(n, &[0])),
-        ("empty str", repeated(n, &[0x60])),
-        ("one-byte str", repeated(n, &[0x61, b'a'])),
-        ("one-byte bytes", repeated(n, &[0x41, 1])),
-        ("set of one", repeated(n, &[0xd9, 0x01, 0x02, 0x81, 0])),
-        ("enum of one", repeated(n, &[0xd9, 0x06, 0x51, 0x82, 0, 0])),
-        ("unknown tag", repeated(n, &[0xc0, 0])),
-        ("unknown tag around a list", [&[0xc0][..], &repeated(n, &[0])].concat()),
-        ("unknown tags at the depth limit", repeated(n, &[&[0xc0; 63][..], &[0]].concat())),
-        ("tid", repeated(n, &tid)),
-        ("lists at the depth limit", repeated(n, &nested(63, &[0]))),
-        ("maps at the depth limit", repeated(n, &[&[0xa1, 0][..]; 63].concat().into_iter().chain([0]).collect::<Vec<u8>>())),
-        ("big map", {
+        ("{0:0}", |n| repeated(n, &[0xa1, 0, 0])),
+        ("{}", |n| repeated(n, &[0xa0])),
+        ("[]", |n| repeated(n, &[0x80])),
+        ("[[]]", |n| repeated(n, &[0x81, 0x80])),
+        ("[0]", |n| repeated(n, &[0x81, 0])),
+        ("0", |n| repeated(n, &[0])),
+        ("empty str", |n| repeated(n, &[0x60])),
+        ("one-byte str", |n| repeated(n, &[0x61, b'a'])),
+        ("one-byte bytes", |n| repeated(n, &[0x41, 1])),
+        ("set of one", |n| repeated(n, &[0xd9, 0x01, 0x02, 0x81, 0])),
+        ("enum of one", |n| repeated(n, &[0xd9, 0x06, 0x51, 0x82, 0, 0])),
+        ("unknown tag", |n| repeated(n, &[0xc0, 0])),
+        ("unknown tag around a list", |n| [&[0xc0][..], &repeated(n, &[0])].concat()),
+        ("unknown tags at the depth limit", |n| repeated(n, &[&[0xc0; 63][..], &[0]].concat())),
+        ("tid", |n| repeated(n, &[&[0xd9, 0x06, 0x50, 0x4f][..], &[1; 15][..]].concat())),
+        ("lists at the depth limit", |n| repeated(n, &nested(63, &[0]))),
+        ("maps at the depth limit", |n| repeated(n, &[&[0xa1, 0][..]; 63].concat().into_iter().chain([0]).collect::<Vec<u8>>())),
+        ("big map", |n| {
             let count = n / 10;
             let mut out = Vec::with_capacity(n);
             osis_base::cbor::head(&mut out, osis_base::cbor::MAJOR_MAP, count as u64);
@@ -473,25 +475,33 @@ fn hostile_shapes(n: usize) -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
+/// A list claiming n - 9 items, filled with `items` to n bytes: it fails, after its head claimed
+/// space its bytes never fill.
+fn claim(n: usize, items: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(n);
+    osis_base::cbor::head(&mut out, osis_base::cbor::MAJOR_ARRAY, (n - 9) as u64);
+    while out.len() + items.len() <= n {
+        out.extend_from_slice(items);
+    }
+    out
+}
+
 /// Inputs that fail, after a head has claimed space their bytes never fill. A claim is space
 /// allocated but untouched, until an item lands in it.
-fn lying_shapes(n: usize) -> Vec<(&'static str, Vec<u8>)> {
-    use osis_base::cbor::{MAJOR_ARRAY, head};
-    let claim = |items: &[u8]| {
-        let mut out = Vec::with_capacity(n);
-        head(&mut out, MAJOR_ARRAY, (n - 9) as u64);
-        while out.len() + items.len() <= n {
-            out.extend_from_slice(items);
-        }
-        out
-    };
-    // each of the depth limit's lists claims its share of what is left
-    let mut spine = Vec::with_capacity(n);
-    for _ in 0..osis_base::format::MAX_VALUE_DEPTH {
-        head(&mut spine, MAJOR_ARRAY, (n / 2) as u64);
-    }
-    spine.resize(n, 0);
-    vec![("one claim, unknown tags", claim(&[0xc0, 0])), ("one claim, zeros", claim(&[0])), ("claims at the depth limit", spine)]
+fn lying_shapes() -> Vec<Shape> {
+    vec![
+        ("one claim, unknown tags", |n| claim(n, &[0xc0, 0])),
+        ("one claim, zeros", |n| claim(n, &[0])),
+        // each of the depth limit's lists claims its share of what is left
+        ("claims at the depth limit", |n| {
+            let mut spine = Vec::with_capacity(n);
+            for _ in 0..osis_base::format::MAX_VALUE_DEPTH {
+                osis_base::cbor::head(&mut spine, osis_base::cbor::MAJOR_ARRAY, (n / 2) as u64);
+            }
+            spine.resize(n, 0);
+            spine
+        }),
+    ]
 }
 
 fn encode_into_int(out: &mut Vec<u8>, i: i64) {
@@ -520,9 +530,10 @@ const DECODE_CLAIM_MAX: usize = 104;
 #[test]
 fn decode_peak_within_the_bound() {
     const CHILD: &str = "OSIS_DECODE_PEAK_SHAPE";
-    let shapes = |n| hostile_shapes(n).into_iter().chain(lying_shapes(n)).collect::<Vec<_>>();
+    let shapes: Vec<Shape> = hostile_shapes().into_iter().chain(lying_shapes()).collect();
     if let Ok(which) = std::env::var(CHILD) {
-        let (_, bytes) = shapes(PEAK_INPUT).swap_remove(which.parse().unwrap());
+        // this child's shape alone: building them all costs more than the decode
+        let bytes = (shapes[which.parse::<usize>().unwrap()].1)(PEAK_INPUT);
         let _ = std::fs::write("/proc/self/clear_refs", "5");
         let (rss0, vm0) = (status_kib("VmRSS"), status_kib("VmSize"));
         let v = decode(&bytes, &Limits::DEFAULT);
@@ -530,12 +541,12 @@ fn decode_peak_within_the_bound() {
         std::hint::black_box(&v);
         return;
     }
-    for (name, bytes) in hostile_shapes(1 << 12) {
-        decode(&bytes, &Limits::DEFAULT).unwrap_or_else(|e| panic!("{name}: {e}"));
+    for (name, make) in hostile_shapes() {
+        decode(&make(1 << 12), &Limits::DEFAULT).unwrap_or_else(|e| panic!("{name}: {e}"));
     }
     let exe = std::env::current_exe().unwrap();
     let mut over = Vec::new();
-    for (i, (name, _)) in shapes(1 << 12).iter().enumerate() {
+    for (i, (name, _)) in shapes.iter().enumerate() {
         let out = std::process::Command::new(&exe)
             .args(["--exact", "decode_peak_within_the_bound", "--nocapture", "--test-threads=1"])
             .env(CHILD, i.to_string())
