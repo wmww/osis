@@ -172,28 +172,28 @@ pub struct Showing {
 /// function of those bytes alone, kept while the part's `Showing` is, so judging the part again
 /// checks no signature again. Equal to any other: it says nothing of the part.
 #[derive(Default)]
-pub struct Checked(std::sync::Mutex<Vec<Verdict>>);
+pub struct Checked(std::sync::Mutex<HashMap<Signed, bool>>);
 
-/// A signature's digest and bytes, the key it was checked under, and whether it verified.
-type Verdict = ([u8; 32], [u8; 64], [u8; 32], bool);
+/// A signature's digest and bytes, and the key it was checked under.
+type Signed = ([u8; 32], [u8; 64], [u8; 32]);
 
 impl Checked {
-    fn verdicts(&self) -> std::sync::MutexGuard<'_, Vec<Verdict>> {
+    fn verdicts(&self) -> std::sync::MutexGuard<'_, HashMap<Signed, bool>> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// `s.verifies(pk)`, checked once.
     pub fn verifies(&self, s: &osis_keys::possession::Shown, pk: &osis_crypto::VerifyingKey) -> bool {
         let Some((d, sig)) = &s.signed else { return false };
-        let k = pk.to_bytes();
-        if let Some(v) = self.verdicts().iter().find(|x| x.0 == *d && x.1 == *sig && x.2 == k) {
-            return v.3;
+        let k = (*d, *sig, pk.to_bytes());
+        if let Some(v) = self.verdicts().get(&k) {
+            return *v;
         }
         let v = {
             let _s = crate::costs::span("possession: signature");
             s.verifies(pk)
         };
-        self.verdicts().push((*d, *sig, k, v));
+        self.verdicts().insert(k, v);
         v
     }
 }
