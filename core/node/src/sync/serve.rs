@@ -76,7 +76,7 @@ impl ServedLabel {
 
 /// An incoming peer session.
 pub(crate) struct Served {
-    conn: ServingSession,
+    conn: Session,
     tier: super::Tier,
     /// It made a client-port request (`Action::Ended` when it goes).
     ported: bool,
@@ -96,6 +96,40 @@ pub(crate) struct Served {
     /// A thin client's: the hash of the secret it authenticated with and its entry's end
     /// (corrected wall ms). The session ends with the entry, with that hash, at that end.
     client: Option<ClientBinding>,
+}
+
+/// Who runs a served connection's session.
+enum Session {
+    /// This node, for its dialable, LAN and client listeners.
+    Own(Box<ServingSession>),
+    /// The node's hub, for its connection `id` (issues/net-one-peer.md step 3): node sync is the
+    /// session's upper layer, taking what the hub hands up and handing its messages down; the
+    /// hub keeps its own limits (idle, connections, stalls).
+    Hub { id: osis_host::ConnId, binding: ([u8; 32], [u8; 32], [u8; 32]), room: Room },
+}
+
+/// A hub session's push room for the stream (`Down::WantRoom`, `Up::Room`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Room {
+    Idle,
+    Asked,
+    Granted(usize),
+}
+
+impl Session {
+    fn binding(&self) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
+        match self {
+            Session::Own(c) => c.binding(),
+            Session::Hub { binding, .. } => Some(*binding),
+        }
+    }
+
+    fn own(&self) -> Option<&ServingSession> {
+        match self {
+            Session::Own(c) => Some(&**c),
+            Session::Hub { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -376,8 +410,9 @@ impl SyncEngine {
         let conn = self.next_conn;
         self.next_conn += 1;
         let mut out = Vec::new();
-        if self.served.values().filter(|s| s.tier == tier && s.public == public).count() >= cap {
-            let idle = self.served.iter().filter(|(c, s)| s.tier == tier && s.public == public && self.serves_nothing(**c, s)).min_by_key(|(c, s)| (s.since, **c)).map(|(c, _)| *c);
+        let pool = |s: &Served| s.tier == tier && s.public == public && s.conn.own().is_some();
+        if self.served.values().filter(|s| pool(s)).count() >= cap {
+            let idle = self.served.iter().filter(|(c, s)| pool(s) && self.serves_nothing(**c, s)).min_by_key(|(c, s)| (s.since, **c)).map(|(c, _)| *c);
             match idle {
                 Some(old) => self.close_served(old, &mut out),
                 None => {
@@ -391,7 +426,7 @@ impl SyncEngine {
         self.rng.fill_bytes(&mut challenge);
         let last = self.raw_now();
         let session = ServingSession::new(ServingConfig { static_key: local, challenge });
-        self.served.insert(conn, Served { conn: if public { session.port_only() } else { session.with_port() }, tier, public, ported: false, proven: super::proofs::Proven::default(), proved: BTreeSet::new(), asked: Asked::Nothing, last, since: last, client: None });
+        self.served.insert(conn, Served { conn: Session::Own(Box::new(if public { session.port_only() } else { session.with_port() })), tier, public, ported: false, proven: super::proofs::Proven::default(), proved: BTreeSet::new(), asked: Asked::Nothing, last, since: last, client: None });
         if let Err(e) = self.serve(conn, ServingInput::Start, &mut out) {
             self.diag(format!("serve: {e}"));
         }
@@ -399,22 +434,81 @@ impl SyncEngine {
         (conn, out)
     }
 
-    /// Label IDs each served session serves: those it opened and its shared set's members
-    /// (tests, diagnostics).
+    /// What the node's hub handed up for its connection `id` (`osis_host::Up`): its start makes
+    /// a served session whose session the hub runs, its node-kind messages are judged here as a
+    /// served session's are, its push room goes to the stream, its end ends the session.
+    pub(super) fn hub_up(&mut self, id: osis_host::ConnId, up: osis_host::Up, out: &mut Vec<Action>) -> Result<()> {
+        match up {
+            osis_host::Up::Start(b) => {
+                let conn = self.next_conn;
+                self.next_conn += 1;
+                let last = self.raw_now();
+                let session = Session::Hub { id, binding: (b.dialer, b.listener, b.key), room: Room::Idle };
+                self.served.insert(conn, Served { conn: session, tier: super::Tier::Keyed, public: false, ported: false, proven: super::proofs::Proven::default(), proved: BTreeSet::new(), asked: Asked::Nothing, last, since: last, client: None });
+                self.hub_conns.insert(id, conn);
+            }
+            osis_host::Up::Message(m) => {
+                let Some(conn) = self.hub_conns.get(&id).copied() else { return Ok(()) };
+                self.state.now = self.now();
+                if let Some(bound) = self.served_peer(conn, *m, out)? {
+                    self.bind_record(conn, bound, out)?;
+                }
+            }
+            osis_host::Up::Room { budget } => {
+                if let Some(Session::Hub { room, .. }) = self.hub_conns.get(&id).and_then(|c| self.served.get_mut(c)).map(|s| &mut s.conn) {
+                    *room = Room::Granted(budget);
+                }
+            }
+            osis_host::Up::End => {
+                if let Some(conn) = self.hub_conns.get(&id).copied() {
+                    self.end_served(conn, out);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Bytes a stream push on `conn` may take now: a whole reply's on any connection but a hub
+    /// session, which pushes only within the room its session granted; none: it waits (room
+    /// asked of the session, once).
+    pub(super) fn push_room(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Option<usize> {
+        let Some(Session::Hub { id, room, .. }) = self.served.get_mut(&conn).map(|s| &mut s.conn) else { return Some(osis_proto::serving::REPLY_BUDGET) };
+        match *room {
+            Room::Granted(b) => Some(b),
+            Room::Asked => None,
+            Room::Idle => {
+                *room = Room::Asked;
+                out.push(Action::Hub { conn: *id, down: osis_host::Down::WantRoom });
+                None
+            }
+        }
+    }
+
+    /// A push went on `conn` under its granted room: the next waits for room again.
+    pub(super) fn room_used(&mut self, conn: ConnId) {
+        if let Some(Session::Hub { room, .. }) = self.served.get_mut(&conn).map(|s| &mut s.conn) {
+            *room = Room::Idle;
+        }
+    }
+
+    /// Label IDs each served session serves: those it opened (here; a hub session's opens are
+    /// the hub's) and its shared set's members (tests, diagnostics).
     pub fn served_opened(&self) -> BTreeMap<ConnId, BTreeSet<LabelId>> {
-        self.served.iter().map(|(c, s)| (*c, s.conn.opened().copied().chain(self.shared_members(*c)).collect())).collect()
+        self.served.iter().map(|(c, s)| (*c, s.conn.own().into_iter().flat_map(|x| x.opened()).copied().chain(self.shared_members(*c)).collect())).collect()
     }
 
     /// Whether served session `c` is exempt from the idle bound while its connection is up: an
-    /// authenticated client (notes/client-port.md §3), or a reader sharing a sync ID here, whose
-    /// stream is silent while nothing changes (the transport ends a dead connection).
+    /// authenticated client (notes/client-port.md §3), a reader sharing a sync ID here, whose
+    /// stream is silent while nothing changes (the transport ends a dead connection), or a hub
+    /// session (the hub's limits hold it).
     fn kept_while_up(&self, c: ConnId, s: &Served) -> bool {
-        s.conn.authed() || self.records.shared.get(&c).is_some_and(|x| !x.is_empty())
+        s.conn.own().is_none_or(ServingSession::authed) || self.records.shared.get(&c).is_some_and(|x| !x.is_empty())
     }
 
-    /// Whether served session `c` serves nothing: no open and no member of its shared set.
+    /// Whether served session `c` serves nothing: no open and no member of its shared set (never
+    /// a hub session: the hub's limits hold it).
     fn serves_nothing(&self, c: ConnId, s: &Served) -> bool {
-        s.conn.none_opened() && self.records.shared.get(&c).is_none_or(|x| x.is_empty())
+        s.conn.own().is_some_and(ServingSession::none_opened) && self.records.shared.get(&c).is_none_or(|x| x.is_empty())
     }
 
     pub(super) fn served_proven_all(&self) -> Vec<(ConnId, BTreeSet<Tid>)> {
@@ -535,7 +629,18 @@ impl SyncEngine {
         if self.charges.full && now >= self.charges.pruned.saturating_add(1000) {
             self.prune_charges();
         }
+        if let Some(Session::Hub { id, .. }) = self.served.get(&conn).map(|s| &s.conn) {
+            // the hub's session takes its own bytes, relays and pushes; node sync's messages go down
+            let id = *id;
+            match input {
+                ServingInput::Peer(m) => out.push(Action::Hub { conn: id, down: osis_host::Down::Message(m) }),
+                ServingInput::WantRoom => out.push(Action::Hub { conn: id, down: osis_host::Down::WantRoom }),
+                _ => {}
+            }
+            return Ok(());
+        }
         let Some(mut s) = self.served.remove(&conn) else { return Ok(()) };
+        let Session::Own(session) = &mut s.conn else { return Ok(()) };
         let total = self.charges.total;
         // charged to a source known here only: a fresh key per connection would bound nothing
         let source = s.proven.source(&self.engine.core);
@@ -559,10 +664,10 @@ impl SyncEngine {
                 acc: Accepted::default(),
                 relays: &mut self.relay_gate,
             };
-            let o = s.conn.handle(now, &mut store, input);
+            let o = session.handle(now, &mut store, input);
             (o, store.acc)
         };
-        let closed = s.conn.is_closed();
+        let closed = session.is_closed();
         if outputs.iter().any(|o| matches!(o, ServingOutput::Request(_))) {
             s.ported = true;
         }
@@ -632,16 +737,10 @@ impl SyncEngine {
                     Err(r) => refused.push(r),
                 },
                 ServingOutput::Room { budget } => out.push(Action::Room { conn, budget }),
-                ServingOutput::Peer(m) => match *m {
-                    osis_proto::Message::Prove { id, proofs } => self.served_prove(conn, id, proofs, out)?,
-                    osis_proto::Message::Resume { id, nonce, tags } => bound = self.served_resume(conn, id, nonce, tags, out)?.or(bound),
-                    m => self.peer_message(conn, m, out)?,
-                },
+                ServingOutput::Peer(m) => bound = self.served_peer(conn, *m, out)?.or(bound),
             }
         }
-        // after the answer to the Resume: the shared set's first messages follow it on the wire,
-        // so the dialer has begun its own set when they arrive
-        if let Some(id) = bound.filter(|_| self.served.contains_key(&conn)) {
+        if let Some(id) = bound {
             self.bind_record(conn, id, out)?;
         }
         // a relay-only entry: delivered here and passed on (the other served sessions, the
@@ -653,6 +752,18 @@ impl SyncEngine {
             self.serve_with(conn, ServingInput::Reply { id, reply: Err(code) }, labels, out)?;
         }
         Ok(())
+    }
+
+    /// A node-kind message from served session `conn`'s dialer. Returns the record a Resume
+    /// bound, for `bind_record` once the answer is out: the shared set's first messages follow
+    /// it on the wire, so the dialer has begun its own set when they arrive.
+    fn served_peer(&mut self, conn: ConnId, m: osis_proto::Message, out: &mut Vec<Action>) -> Result<Option<(osis_store::RecordId, bool)>> {
+        match m {
+            osis_proto::Message::Prove { id, proofs } => self.served_prove(conn, id, proofs, out)?,
+            osis_proto::Message::Resume { id, nonce, tags } => return Ok(self.served_resume(conn, id, nonce, tags, out)?.filter(|_| self.served.contains_key(&conn))),
+            m => self.peer_message(conn, m, out)?,
+        }
+        Ok(None)
     }
 
     /// A served dialer's Prove (spec/sync.md §10): its proofs over this side's challenge and
@@ -846,15 +957,26 @@ impl SyncEngine {
     pub(crate) fn end_served(&mut self, conn: ConnId, out: &mut Vec<Action>) {
         self.records.conn_gone(conn);
         self.streams.remove(&conn);
-        if self.served.remove(&conn).is_some_and(|s| s.ported) {
+        let Some(s) = self.served.remove(&conn) else { return };
+        if let Session::Hub { id, .. } = s.conn {
+            self.hub_conns.remove(&id);
+        }
+        if s.ported {
             out.push(Action::Ended { conn });
         }
     }
 
     /// Ends served session `conn` from this side.
     pub(crate) fn close_served(&mut self, conn: ConnId, out: &mut Vec<Action>) {
+        let hub = match self.served.get(&conn).map(|s| &s.conn) {
+            Some(Session::Hub { id, .. }) => Some(*id),
+            _ => None,
+        };
         self.end_served(conn, out);
-        out.push(Action::Close { conn });
+        out.push(match hub {
+            Some(id) => Action::Hub { conn: id, down: osis_host::Down::Close },
+            None => Action::Close { conn },
+        });
     }
 
     /// Closes served sessions without bytes for `SyncConfig.serve_idle_ms` (but those kept while
@@ -874,7 +996,7 @@ impl SyncEngine {
                 let opened_nothing = self.serves_nothing(**c, s) && s.since.saturating_add(open) <= now;
                 // a thin client's `until` passed: no other change is needed to end it
                 let ended = s.client.is_some_and(|b| b.until.is_some_and(|u| u <= corrected));
-                let stalled = s.conn.stall_at().is_some_and(|t| t <= now);
+                let stalled = s.conn.own().and_then(ServingSession::stall_at).is_some_and(|t| t <= now);
                 idled || opened_nothing || ended || stalled
             })
             .map(|(c, _)| *c)
@@ -907,8 +1029,8 @@ impl SyncEngine {
     /// When the next served session goes idle.
     pub(crate) fn serve_wake(&self) -> Option<u64> {
         // a session holding pushes back: `Event::Sent` at the next tick may give them room
-        let poll = self.served.values().any(|s| s.conn.held()).then(|| self.raw_now().saturating_add(osis_proto::serving::PUSH_POLL_MS));
-        let stall = self.served.values().filter_map(|s| s.conn.stall_at()).min();
+        let poll = self.served.values().any(|s| s.conn.own().is_some_and(ServingSession::held)).then(|| self.raw_now().saturating_add(osis_proto::serving::PUSH_POLL_MS));
+        let stall = self.served.values().filter_map(|s| s.conn.own().and_then(ServingSession::stall_at)).min();
         // a thin client's `until`, corrected wall ms, on the raw clock
         let (raw, wall) = (self.raw_now(), self.now());
         let until = self.served.values().filter_map(|s| s.client.and_then(|b| b.until)).map(|u| u.saturating_add(raw).saturating_sub(wall)).min();

@@ -1,15 +1,18 @@
-//! `Hub`: the host's connections over one store, sans-I/O (spec/sync.md §5-§9). One
+//! `Hub`: the host's connections over one store, sans-I/O (spec/sync.md §5-§10). One
 //! osis-proto `ServingSession` per accepted connection, one `Replicator` per connection this
 //! node dialed to a peer host; cross-connection notices (`Changed` to every connection and
-//! replicator, `Relay` to every other connection), bounded sweeps, Hello deadlines, the
-//! connection cap and timers. The node's driver and the simulator only move bytes and call `tick`
-//! when `next_due` says.
+//! replicator, `Relay` to every other connection), bounded sweeps, Hello deadlines, stalls of the
+//! upper layer's requests, the connection cap and timers. Node sync is every session's upper
+//! layer (issues/net-one-peer.md step 3): the hub hands it each connection's start, node-kind
+//! messages, push room and end (`HubOutput::Up`) and takes its messages down (`Hub::down`),
+//! judging none of them. The node's driver and the simulator only move bytes, pass `Up` and
+//! `Down` between the hub and node sync, and call `tick` when `next_due` says.
 
 use crate::replicate::Replicator;
 use crate::store::HostStore;
 use osis_base::LabelId;
 use osis_crypto::CryptoRngCore;
-use osis_proto::{ClientInput, ClientOutput, ServingConfig, ServingSession, ServingInput, ServingOutput};
+use osis_proto::{ClientInput, ClientOutput, Message, ServingConfig, ServingSession, ServingInput, ServingOutput};
 use osis_transport::Source;
 use std::collections::BTreeMap;
 
@@ -29,12 +32,53 @@ pub enum HubOutput {
     Close(ConnId),
     /// Something worth logging (a peer's protocol error, a storage failure, a refused replication).
     Diagnostic(String),
+    /// For node sync, the session's upper layer.
+    Up(ConnId, Up),
+}
+
+/// What a served connection hands node sync.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Up {
+    /// What the connection binds, just before its first `Message` (a connection that sends
+    /// node sync nothing never starts).
+    Start(Binding),
+    /// A node-kind message (`Message::for_node`): node sync answers each request by `Down`.
+    Message(Box<Message>),
+    /// Pushes of up to `budget` bytes may go now (after `Down::WantRoom`).
+    Room { budget: usize },
+    /// The connection is gone (after a `Start`).
+    End,
+}
+
+/// A served connection's binding (spec/sync.md §10, Connection proofs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Binding {
+    /// The dialer's and this side's Hello challenges, and the listener's static key.
+    pub dialer: [u8; 32],
+    pub listener: [u8; 32],
+    pub key: [u8; 32],
+    /// The key the transport authenticated for the dialer, and where it comes from.
+    pub peer: [u8; 32],
+    pub source: Option<Source>,
+}
+
+/// What node sync hands a served connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Down {
+    /// A message to send: a request within the session's request window, anything else at once
+    /// (a relay-only push without room is dropped).
+    Message(Box<Message>),
+    /// Pushes wait: `Up::Room` when the session's push rule allows.
+    WantRoom,
+    /// Close the connection.
+    Close,
 }
 
 enum Conn {
     /// `buffered`: partial frame bytes after the last input; `source`: where it comes from
     /// (slots are shared by it).
-    Served { c: Box<ServingSession>, peer: [u8; 32], hello_by: Option<u64>, buffered: usize, source: Option<Source> },
+    /// `started`: its `Up::Start` went.
+    Served { c: Box<ServingSession>, peer: [u8; 32], hello_by: Option<u64>, buffered: usize, source: Option<Source>, started: bool },
     Peer { r: Box<Replicator>, timer: Option<u64> },
 }
 
@@ -51,12 +95,14 @@ pub struct Hub {
     buffered: usize,
     /// Relay-only entries handed to connections so far (`relays_delivered`).
     relays_delivered: u64,
+    /// Started connections removed since the last batch ended (`Up::End`).
+    ended: Vec<ConnId>,
 }
 
 impl Hub {
     /// `static_key`: this node's transport key (bound by open signatures).
     pub fn new(store: HostStore, static_key: [u8; 32], rng: Box<dyn CryptoRngCore + Send>) -> Hub {
-        Hub { store, static_key, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0, relays_delivered: 0 }
+        Hub { store, static_key, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0, relays_delivered: 0, ended: Vec::new() }
     }
 
     pub fn store(&self) -> &HostStore {
@@ -114,7 +160,7 @@ impl Hub {
         }
         let cfg = ServingConfig { static_key: self.static_key, challenge: self.challenge() };
         let hello_by = Some(now.saturating_add(self.store.policy().hello_ms));
-        self.conns.insert(id, Conn::Served { c: Box::new(ServingSession::new(cfg)), peer, hello_by, buffered: 0, source });
+        self.conns.insert(id, Conn::Served { c: Box::new(ServingSession::new(cfg)), peer, hello_by, buffered: 0, source, started: false });
         out.extend(self.batch(|h, out| h.serve(now, id, ServingInput::Start, out)));
         out
     }
@@ -147,11 +193,11 @@ impl Hub {
             for id in dead {
                 if self.conns.contains_key(&id) {
                     self.remove(id);
-                    self.conns.remove(&id);
                     out.push(HubOutput::Close(id));
                 }
             }
         }
+        out.extend(self.ended.drain(..).map(|id| HubOutput::Up(id, Up::End)));
         out
     }
 
@@ -189,10 +235,33 @@ impl Hub {
         self.batch(|h, _| h.remove(id))
     }
 
-    /// Forgets a connection and its partial frame bytes.
+    /// Node sync's messages, push room requests and closes for served connections, in order
+    /// (one batch). Those of a connection gone are dropped.
+    pub fn down(&mut self, now: u64, downs: Vec<(ConnId, Down)>) -> Vec<HubOutput> {
+        self.batch(|h, out| {
+            for (id, d) in downs {
+                if !matches!(h.conns.get(&id), Some(Conn::Served { .. })) {
+                    continue;
+                }
+                match d {
+                    Down::Message(m) => h.serve(now, id, ServingInput::Peer(m), out),
+                    Down::WantRoom => h.serve(now, id, ServingInput::WantRoom, out),
+                    Down::Close => {
+                        h.remove(id);
+                        out.push(HubOutput::Close(id));
+                    }
+                }
+            }
+        })
+    }
+
+    /// Forgets a connection and its partial frame bytes (`Up::End` once the batch ends).
     fn remove(&mut self, id: ConnId) {
-        let Some(Conn::Served { buffered, .. }) = self.conns.remove(&id) else { return };
+        let Some(Conn::Served { buffered, started, .. }) = self.conns.remove(&id) else { return };
         self.buffered = self.buffered.saturating_sub(buffered);
+        if started {
+            self.ended.push(id);
+        }
     }
 
     /// Partial frame bytes held for all served connections.
@@ -212,7 +281,8 @@ impl Hub {
     }
 
     /// Runs what is due: a bounded sweep (expiry, tombstones, claim sets), Hello
-    /// deadlines, replication work and timers.
+    /// deadlines, stalls of node sync's requests (spec/sync.md §6 Stall), replication work and
+    /// timers.
     pub fn tick(&mut self, now: u64) -> Vec<HubOutput> {
         self.batch(|h, out| h.tick_in(now, out))
     }
@@ -232,6 +302,12 @@ impl Hub {
         for id in late {
             self.remove(id);
             out.push(HubOutput::Close(id));
+        }
+        let stalled: Vec<ConnId> = self.conns.iter().filter(|(_, c)| matches!(c, Conn::Served { c, .. } if c.stall_at().is_some_and(|t| t <= now))).map(|(id, _)| *id).collect();
+        for id in stalled {
+            self.remove(id);
+            out.push(HubOutput::Close(id));
+            out.push(HubOutput::Diagnostic(format!("connection {id}: closed, a request stalled")));
         }
         let due: Vec<(ConnId, bool)> = self
             .conns
@@ -256,20 +332,28 @@ impl Hub {
     pub fn next_due(&self, now: u64) -> Option<u64> {
         let sweep = if self.sweep_more { Some(now) } else { self.store.next_due().ok().flatten() }.map(|t| t.max(self.sweep_hold));
         let conns = self.conns.values().filter_map(|c| match c {
-            Conn::Served { c, .. } if c.held() => Some(now.saturating_add(osis_proto::serving::PUSH_POLL_MS)),
-            Conn::Served { hello_by, .. } => *hello_by,
+            Conn::Served { c, hello_by, .. } => [c.held().then(|| now.saturating_add(osis_proto::serving::PUSH_POLL_MS)), *hello_by, c.stall_at()].into_iter().flatten().min(),
             Conn::Peer { r, timer } => [*timer, r.next_due(now)].into_iter().flatten().min(),
         });
         sweep.into_iter().chain(conns).min()
     }
 
     fn serve(&mut self, now: u64, id: ConnId, input: ServingInput, out: &mut Vec<HubOutput>) {
-        let Some(Conn::Served { c, peer, hello_by, buffered, .. }) = self.conns.get_mut(&id) else { return };
+        let Some(Conn::Served { c, peer, hello_by, buffered, source, started }) = self.conns.get_mut(&id) else { return };
         self.store.set_origin(Some(*peer));
         let outputs = c.handle(now, &mut self.store, input);
         self.store.set_origin(None);
         if c.version().is_some() {
             *hello_by = None;
+        }
+        // node sync learns the connection with its first message for node sync, not before: a
+        // host client's connection costs it nothing
+        if !*started
+            && outputs.iter().any(|o| matches!(o, ServingOutput::Peer(_)))
+            && let Some((dialer, listener, key)) = c.binding()
+        {
+            *started = true;
+            out.push(HubOutput::Up(id, Up::Start(Binding { dialer, listener, key, peer: *peer, source: *source })));
         }
         let now_buffered = c.buffered();
         self.buffered = self.buffered.saturating_sub(*buffered).saturating_add(now_buffered);
@@ -292,22 +376,11 @@ impl Hub {
                 }
                 ServingOutput::PeerError(e) => out.push(HubOutput::Diagnostic(format!("connection {id}: {e}"))),
                 ServingOutput::StoreError(e) => out.push(HubOutput::Diagnostic(e.to_string())),
-                // serving no identity, a host proves nothing and keeps no record (spec/wire.md
-                // §11.2); proving no actor, it has no shared set: a request of the shared set or
-                // the stream is answered 14 (spec/sync.md §10); Stranded and Suspect are node to
-                // node only, 11 (spec/wire.md §11.2)
-                ServingOutput::Peer(m) if m.is_request() => {
-                    use osis_proto::{Code, Message as M};
-                    let reply = match *m {
-                        M::Prove { id, .. } => M::Proved { id, proofs: Vec::new() },
-                        M::Resume { id, .. } => M::Error { id, code: Code::REFUSED },
-                        M::Stranded { id, .. } | M::Suspect { id, .. } => M::Error { id, code: Code::UNSUPPORTED },
-                        m => M::Error { id: m.id(), code: Code::NOT_ADMITTED },
-                    };
-                    self.serve(now, id, ServingInput::Peer(Box::new(reply)), out);
-                }
-                // a host serves no client port (its sessions answer those kinds Error 11)
-                ServingOutput::Request(_) | ServingOutput::Room { .. } | ServingOutput::Peer(_) => {}
+                // node sync's, judged there (proofs, records, the shared set, the stream)
+                ServingOutput::Peer(m) => out.push(HubOutput::Up(id, Up::Message(m))),
+                ServingOutput::Room { budget } => out.push(HubOutput::Up(id, Up::Room { budget })),
+                // no client port here (its sessions answer those kinds Error 11)
+                ServingOutput::Request(_) => {}
             }
         }
     }

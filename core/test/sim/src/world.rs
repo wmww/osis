@@ -182,9 +182,8 @@ impl World {
                 let gone: Vec<((usize, ConnId), u64)> = self.links.iter().filter(|(_, (x, _))| *x == s).map(|(k, (_, hc))| (*k, *hc)).collect();
                 for ((db, c), hc) in gone {
                     self.links.remove(&(db, c));
-                    if let Some(h) = self.hosts.get_mut(s) {
-                        let _ = h.hub.closed(hc);
-                    }
+                    let out = self.hosts.get_mut(s).map(|h| h.hub.closed(hc)).unwrap_or_default();
+                    self.hub_out(s, out);
                     self.send_msg(Msg::Down(db, c));
                 }
             }
@@ -509,6 +508,12 @@ impl World {
                     }
                 }
                 Action::Host(cfg) => self.host(d, cfg),
+                Action::Hub { conn, down } => {
+                    let now = self.now();
+                    let Some(s) = self.host_of(d) else { continue };
+                    let out = self.hosts.get_mut(s).map(|h| h.hub.down(now, vec![(conn, down)])).unwrap_or_default();
+                    self.hub_out(s, out);
+                }
                 // no client port in the sim
                 Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } | Action::Authed { .. } => {}
                 Action::Reach => {
@@ -664,6 +669,7 @@ impl World {
     }
 
     fn hub_out(&mut self, s: usize, out: Vec<HubOutput>) {
+        let mut ups = Vec::new();
         for o in out {
             match o {
                 HubOutput::Send(hc, bytes) => {
@@ -678,7 +684,13 @@ impl World {
                     }
                 }
                 HubOutput::Diagnostic(_) => {}
+                HubOutput::Up(hc, up) => ups.push((hc, up)),
             }
+        }
+        // node sync above the hub of a node, by function call as the node's driver does
+        let node = self.hosts.get(s).and_then(|h| h.node);
+        if let Some(d) = node.filter(|_| !ups.is_empty()) {
+            self.with(d, |db| db.feed(Event::Hub { ups }));
         }
     }
 
@@ -731,6 +743,7 @@ impl World {
                             Action::Wake { .. } => "wake",
                             Action::Reach => "reach",
                             Action::Host(_) => "host",
+                            Action::Hub { .. } => "hub",
                             Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } | Action::Authed { .. } => "port",
                         };
                         *seen.entry(format!("db {d} action {k}")).or_default() += 1;

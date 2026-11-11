@@ -2,7 +2,8 @@
 //! `HostStore` (osis-proto's `LabelStore` over its own osis-store `Store`, removals shredded,
 //! with the `HostPolicy` and the admission) and `Hub` (sans-I/O: a serving session per
 //! connection, cross-connection notices, sweeps, push replication to peer hosts). The node's
-//! driver drives the hub in its own loop from its `host^.0` (`HostConfig`, public data only);
+//! driver drives the hub in its own loop from its `host^.0` (`HostConfig`, public data only),
+//! node sync above every session (`Up`, `Down`: node-kind messages pass through unjudged);
 //! osis-node depends on it, never the reverse: hosting reaches no engine, key or sync state.
 //! Layer 6 (notes/architecture.md). Notes: notes/serving.md.
 #![forbid(unsafe_code)]
@@ -15,7 +16,7 @@ use osis_base::LabelId;
 use osis_label::Address;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub use hub::{ConnId, Hub, HubOutput};
+pub use hub::{Binding, ConnId, Down, Hub, HubOutput, Up};
 pub use replicate::Replicator;
 pub use store::{HostStore, DEPOSIT_ENTRY_BYTES, HostPolicy, Swept, Totals};
 

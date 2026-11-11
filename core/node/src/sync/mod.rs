@@ -269,8 +269,10 @@ pub struct SyncEngine {
     pub(crate) changed_moved: BTreeSet<LabelId>,
     /// Engine changes not yet spread to the labels' work sets (`spread_touches`).
     pub(crate) touched: work::Touched,
-    /// Peer sessions this node serves (co-reader peer, spec/sync.md §5).
+    /// Peer sessions this node serves (co-reader peer, spec/sync.md §5), its hub's sessions too.
     pub(crate) served: BTreeMap<ConnId, serve::Served>,
+    /// The served sessions the hub runs, by the hub's connection ID.
+    pub(crate) hub_conns: BTreeMap<osis_host::ConnId, ConnId>,
     /// Steps peers registered here since start, by label.
     pub(crate) peer_steps: BTreeMap<LabelId, Vec<(Step, Option<osis_label::ClaimSet>)>>,
     /// Co-readers found on the LAN: their address there and when (raw ms).
@@ -424,6 +426,7 @@ impl SyncEngine {
             wall: Default::default(),
             unsubscribe: BTreeSet::new(),
             served: BTreeMap::new(),
+            hub_conns: BTreeMap::new(),
             covered_judged: BTreeSet::new(),
             stats: PassStats::default(),
             records: records::Records::default(),
@@ -658,6 +661,11 @@ impl SyncEngine {
             Event::Reply { conn, id, reply } => self.serve(conn, osis_proto::ServingInput::Reply { id, reply }, out)?,
             Event::Notify { conn, notes } => self.serve(conn, osis_proto::ServingInput::Notify(notes), out)?,
             Event::WantRoom { conn } => self.serve(conn, osis_proto::ServingInput::WantRoom, out)?,
+            Event::Hub { ups } => {
+                for (id, up) in ups {
+                    self.hub_up(id, up, out)?;
+                }
+            }
             Event::End { conn } => {
                 if self.served.contains_key(&conn) {
                     self.close_served(conn, out);

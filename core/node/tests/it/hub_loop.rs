@@ -1,12 +1,17 @@
 //! The hub in the node driver's loop over osis-transport's `InProcess` (perfect network: under
 //! tokio nothing needs stepping): a node hosting by its `host^.0` serves scripted host clients
-//! (osis-proto `ClientSession`) end to end, replicates to a peer host through `dial_as`
-//! sessions across a restart, and serves connections in turns (spec/sync.md §5-§10).
+//! (osis-proto `ClientSession`) end to end, with node sync above every hub session (proofs, the
+//! shared set, the stream), replicates to a peer host through `dial_as` sessions across a
+//! restart, and serves connections in turns (spec/sync.md §5-§10).
 //! Event-driven only: a timeout guards against a hang. The slow-reader cap is a unit test of
 //! `osis_transport::link` (`InProcess` has no flow control to stall a writer).
 
 use crate::net::{Net, T0};
-use osis_base::{BlobId, Clock, LabelId};
+use crate::peers::reach_ed;
+use crate::shared::read_value;
+use osis_base::{BlobId, Clock, LabelId, Role};
+use osis_crypto::kdf::{beacon, beacon_hit, pair_key};
+use osis_proto::msg::{NODE_IDS, OfferItem, Pull};
 use osis_label::Address;
 use osis_node::sync::driver::{self, Control, Shared};
 use osis_node::sync::{Action, Event as SyncEvent, HostStatus, SyncEngine};
@@ -48,6 +53,11 @@ struct Host {
 impl Host {
     fn node(net: &mut Net, seed: u64, url: &str, peers: Vec<Address>) -> Keep {
         let n = net.add_node(seed, Default::default());
+        Host::keep(net, n, url, peers)
+    }
+
+    /// Node `n` of `net` set to host (any label admitted), taken out of `net` for a driver.
+    fn keep(net: &mut Net, n: usize, url: &str, peers: Vec<Address>) -> Keep {
         let me = net.node_tid(n);
         let mut m = osis_node::Mutation::new();
         let replicate = peers.into_iter().map(|a| ct::Address { url: a.url, key: a.key }).collect();
@@ -178,6 +188,25 @@ impl Client {
             self.recv().await;
         }
         std::mem::take(&mut self.events)
+    }
+
+    /// Sends a node-kind message; returns the node-kind messages that came, up to its answer.
+    async fn peer(&mut self, m: Message) -> Vec<Message> {
+        let id = m.id();
+        let out = self.s.handle(T0, ClientInput::Command(Command::Peer(Box::new(m))));
+        self.out(out);
+        let mut got = vec![];
+        loop {
+            for e in self.next().await {
+                if let ClientEvent::Peer(m) = e {
+                    let done = m.id() == id && !m.is_request();
+                    got.push(*m);
+                    if done {
+                        return got;
+                    }
+                }
+            }
+        }
     }
 
     /// Waits until pushes added `n` entries; returns their blob IDs sorted.
@@ -361,4 +390,96 @@ async fn quic_clients_and_replication() {
     assert_eq!(added(&a.run(sync(l.id, vec![])).await), sorted((0..5).map(bid).collect()));
     s1.stop().await;
     s2.stop().await;
+}
+
+// issues/net-one-peer.md 3c, spec/sync.md §5, §10: node sync above the hub. One connection to the
+// host key of a node carries a label the node hosts and cannot read (Register, Open, Sync: the
+// hub's store) and a group the node reads (proofs, NoRecord, a Hit, the stream: node sync), each
+// answered by its layer
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_connection_serves_hosted_and_read_labels() {
+    let tnet = osis_transport::Net::new(1);
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let n = net.node(2, &[]);
+    reach_ed(&mut net, n);
+    let g = net.group_at(n, &[(a, Role::Read)], vec![]);
+    let t = net.item(n, g, g, "read here");
+    net.run();
+    let m = net.engine(n).labels_of(&g)[0].id;
+    let held: Vec<BlobId> = sorted(net.sync(n).entries(&m).into_iter().map(|(b, _)| b).collect());
+    assert!(!held.is_empty());
+    let provers = net.sync(a).provers(false).unwrap();
+    let value = read_value(&mut net, a, m);
+    let keep = Host::keep(&mut net, n, "mem://s", vec![]);
+    let host = Host::start(keep, tnet.endpoint("s"), net.clock.clone()).await;
+    let mut c = host.client(&tnet.endpoint("clients")).await;
+    // L, which the node cannot read: the hub's store
+    let l = Label::new(3);
+    assert_eq!(c.run(l.register_cmd(0)).await, vec![ClientEvent::Registered { label: l.id }]);
+    assert!(matches!(&c.run(open(&l)).await[..], [ClientEvent::Opened { .. }]));
+    assert_eq!(statuses(&c.run(sync(l.id, (0..3).map(|k| l.entry(blob(k))).collect())).await), vec![Code::OK; 3]);
+    // M, which it reads: node sync proves to a dialer it knows and runs the shared set
+    let ev = c.run(Command::Prove(provers)).await;
+    assert!(matches!(&ev[..], [ClientEvent::Proved { proofs }] if !proofs.is_empty()), "{ev:?}");
+    let got = c.peer(Message::NoRecord { id: 1 << 31 }).await;
+    assert!(matches!(got.last(), Some(Message::Shared { codes, .. }) if codes[0].0 == Code::OK), "{got:?}");
+    let (dialer, listener, key) = c.s.binding().unwrap();
+    let r = *pair_key(&dialer, &listener).expose();
+    let hit = beacon_hit(&value, &m.0, &beacon(&value, &m.0, &r), (false, &key, &dialer, &listener));
+    let got = c.peer(Message::Offer { id: NODE_IDS | 77, items: vec![OfferItem::Hit(hit)] }).await;
+    assert!(matches!(got.last(), Some(Message::Shared { codes, .. }) if codes[0].0 == Code::OK), "{got:?}");
+    let pull = Pull { id: NODE_IDS | 1 << 30 | 7, cursor: None, joins: vec![(m, None)], inline_limit: 1 << 20, max_reply: 1 << 20, follow: true, ephemeral: true };
+    let got = c.peer(Message::Pull(Box::new(pull))).await;
+    let Some(Message::PullReply(reply)) = got.last() else { panic!("{got:?}") };
+    let pulled: Vec<BlobId> = sorted(reply.events.iter().filter_map(|(x, e)| if let osis_proto::Event::Added { blob_id, .. } = e { (*x == m).then_some(*blob_id) } else { None }).collect());
+    assert_eq!(pulled, held);
+    // a write after it comes as a push, within the room the hub's session granted
+    host.call(move |s| {
+        let mut w = osis_node::Mutation::new();
+        w.set(t, &crate::net::REG, &crate::net::s("again")).unwrap();
+        s.engine_mut().commit(w).unwrap();
+    })
+    .await;
+    let pushed = tokio::time::timeout(GUARD, async {
+        loop {
+            for e in c.next().await {
+                if let ClientEvent::Peer(x) = e
+                    && let Message::Stream(st) = *x
+                    && st.cursor.is_some()
+                {
+                    return st.events;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(pushed.iter().any(|(x, e)| *x == m && matches!(e, osis_proto::Event::Added { blob_id, .. } if !held.contains(blob_id))), "{pushed:?}");
+    // and L still, on the same connection
+    assert_eq!(added(&c.run(sync(l.id, vec![])).await), sorted((0..3).map(bid).collect()));
+    host.stop().await;
+}
+
+// spec/sync.md §10 (Connection proofs, Pair key): a dialer at the host key proving an actor the
+// node does not know gets no proof back, no record and no shared set
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stranger_gets_no_proof_spec_sync_10() {
+    let tnet = osis_transport::Net::new(1);
+    let mut net = Net::new();
+    let z = net.node(1, &[]);
+    let n = net.node(2, &[]);
+    net.group_at(n, &[], vec![]);
+    net.run();
+    let provers = net.sync(z).provers(false).unwrap();
+    let keep = Host::keep(&mut net, n, "mem://s", vec![]);
+    let host = Host::start(keep, tnet.endpoint("s"), net.clock.clone()).await;
+    let mut c = host.client(&tnet.endpoint("clients")).await;
+    let ev = c.run(Command::Prove(provers)).await;
+    assert!(matches!(&ev[..], [ClientEvent::Proved { proofs }] if proofs.is_empty()), "{ev:?}");
+    let ev = c.run(Command::Resume { nonce: [5; 32], tags: vec![[6; 32]] }).await;
+    assert!(matches!(&ev[..], [ClientEvent::Refused { kind: Request::Resume, code: Code::REFUSED, .. }]), "{ev:?}");
+    let got = c.peer(Message::NoRecord { id: 1 << 31 }).await;
+    assert_eq!(got, vec![Message::Error { id: 1 << 31, code: Code::NOT_ADMITTED }]);
+    host.stop().await;
 }

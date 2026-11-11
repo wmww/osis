@@ -122,6 +122,9 @@ pub enum Event {
     WantRoom { conn: ConnId },
     /// The holder of the engine ends a served session (its client was revoked).
     End { conn: ConnId },
+    /// What the node's hub handed up for its connections, in order (`osis_host::Up`): node sync
+    /// is every hub session's upper layer.
+    Hub { ups: Vec<(osis_host::ConnId, osis_host::Up)> },
 }
 
 /// Authenticated connections per thin client (a further Auth is Error 4), and the write sessions
@@ -171,6 +174,9 @@ pub enum Action {
     /// This served session authenticated as a thin client: its connection leaves the listener's
     /// pending slots (`link::Slots::Pending`). For the driver.
     Authed { conn: ConnId },
+    /// For the node's hub (`osis_host::Hub::down`, consecutive ones in one call): a message, a
+    /// push room request or a close for one of its connections.
+    Hub { conn: osis_host::ConnId, down: osis_host::Down },
 }
 
 /// Counters of the work passes did (`SyncEngine::pass_stats`; scale checks).

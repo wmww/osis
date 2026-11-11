@@ -7,11 +7,13 @@
 //! Per link a reader task hands the loop one read at a time (the next once the hub took the
 //! last), served in turns round-robin by source (`Turns`); writes go to the link's queue (more
 //! than `max_queued_bytes` the transport has not taken drops the session). No task waits on the
-//! loop and the loop waits on no connection.
+//! loop and the loop waits on no connection. What the hub hands node sync (`HubOutput::Up`) waits
+//! in `ups` until the driver feeds it to the engine (`Event::Hub`); the engine's `Action::Hub`
+//! come back by `down`, in the same pass of the loop.
 
 use super::{FINISH_WAIT, Log, MAX_IDLE};
 use osis_base::Clock;
-use osis_host::{ConnId, HostConfig, Hub, HubOutput};
+use osis_host::{ConnId, Down, HostConfig, Hub, HubOutput, Up};
 use osis_label::Address;
 use osis_transport::link::{self, Link, LinkRx, LinkTx, blocking};
 use osis_transport::{Backoff, Source, StaticSecret, Transport};
@@ -141,6 +143,8 @@ pub(super) struct HubRun {
     clock: Arc<dyn Clock>,
     log: Log,
     ev: mpsc::UnboundedSender<HubEv>,
+    /// What the hub handed up for node sync, not yet fed to it.
+    ups: Vec<(ConnId, Up)>,
 }
 
 impl HubRun {
@@ -165,11 +169,12 @@ impl HubRun {
                 }
             }
         }));
-        HubRun { cfg, hub, run, next: next + 1, conns: HashMap::new(), turns: Turns::default(), at: None, tasks, clock, log, ev }
+        HubRun { cfg, hub, run, next: next + 1, conns: HashMap::new(), turns: Turns::default(), at: None, tasks, clock, log, ev, ups: Vec::new() }
     }
 
-    /// Closes every connection and stops the tasks; returns the hub and the next free ID.
-    pub fn stop(mut self) -> (Hub, u64) {
+    /// Closes every connection and stops the tasks; returns the hub, the next free ID and what
+    /// is left for node sync (the connections' ends).
+    pub fn stop(mut self) -> (Hub, u64, Vec<(ConnId, Up)>) {
         for t in std::mem::take(&mut self.tasks) {
             t.abort();
         }
@@ -177,7 +182,19 @@ impl HubRun {
         for id in ids {
             self.drop_conn(id);
         }
-        (self.hub, self.next)
+        (self.hub, self.next, self.ups)
+    }
+
+    /// What the hub handed up since the last call, for node sync (`Event::Hub`).
+    pub fn take_ups(&mut self) -> Vec<(ConnId, Up)> {
+        std::mem::take(&mut self.ups)
+    }
+
+    /// Node sync's messages, room requests and closes for the hub's connections.
+    pub fn down(&mut self, downs: Vec<(ConnId, Down)>) {
+        let now = self.now();
+        let out = blocking(|| self.hub.down(now, downs));
+        self.apply(out);
     }
 
     pub fn hub_mut(&mut self) -> &mut Hub {
@@ -271,6 +288,7 @@ impl HubRun {
                 }
                 HubOutput::Close(id) => self.drop_conn(id),
                 HubOutput::Diagnostic(d) => (self.log)(&d),
+                HubOutput::Up(id, up) => self.ups.push((id, up)),
             }
         }
     }

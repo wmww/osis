@@ -733,7 +733,7 @@ impl NetSim {
                 }
                 Action::Wake { at } => self.node(n)?.wake = Some(at),
                 Action::Reach => self.relisten(n)?,
-                Action::Host(_) | Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } | Action::Authed { .. } => {}
+                Action::Host(_) | Action::Hub { .. } | Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } | Action::Authed { .. } => {}
             }
         }
         Ok(())
@@ -1040,6 +1040,8 @@ impl NetSim {
                         self.notify_closed(to);
                     }
                 }
+                // no node above these hosts: node kinds go unanswered (honest nodes send them none)
+                HubOutput::Up(..) => {}
                 HubOutput::Diagnostic(d) => {
                     self.report.diagnostics = self.report.diagnostics.saturating_add(1);
                     self.note(format!("host {s} diagnostic: {}", d.chars().take(160).collect::<String>()));

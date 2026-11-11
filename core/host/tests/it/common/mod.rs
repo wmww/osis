@@ -6,7 +6,7 @@ use osis_base::{BlobId, Clock, LabelId, ManualClock, WallMs};
 use osis_crypto::{SeededRng, Secret32};
 use osis_proto::*;
 pub use osis_proto::examples::{Label, bid, blob, blob_with, salt};
-use osis_host::{HostStore, ConnId, Hub, HubOutput, HostPolicy};
+use osis_host::{HostStore, ConnId, Down, Hub, HubOutput, HostPolicy, Up};
 use osis_store::{Faults, MemoryBackend, MemoryRoot, Store, StoreConfig};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -44,6 +44,8 @@ pub struct World {
     pub clients: Vec<ClientSession>,
     pub events: Vec<Vec<ClientEvent>>,
     pub diagnostics: Vec<String>,
+    /// What hubs handed up for node sync (none runs here): (hub, connection, up).
+    pub ups: Vec<(usize, ConnId, Up)>,
     links: Vec<Link>,
     next_conn: ConnId,
 }
@@ -54,7 +56,7 @@ pub fn hub_key(i: usize) -> [u8; 32] {
 
 impl World {
     pub fn new() -> World {
-        World { clock: Arc::new(ManualClock::new(WallMs(T0))), hubs: vec![], backends: vec![], roots: vec![], faults: vec![], clients: vec![], events: vec![], diagnostics: vec![], links: vec![], next_conn: 1 }
+        World { clock: Arc::new(ManualClock::new(WallMs(T0))), hubs: vec![], backends: vec![], roots: vec![], faults: vec![], clients: vec![], events: vec![], diagnostics: vec![], ups: vec![], links: vec![], next_conn: 1 }
     }
 
     pub fn now(&self) -> u64 {
@@ -170,6 +172,7 @@ impl World {
                 HubOutput::Send(c, b) => self.route(End::Hub(h, c), b),
                 HubOutput::Close(c) => self.close(End::Hub(h, c)),
                 HubOutput::Diagnostic(d) => self.diagnostics.push(d),
+                HubOutput::Up(c, u) => self.ups.push((h, c, u)),
             }
         }
     }
@@ -213,6 +216,14 @@ impl World {
                 return;
             }
         }
+    }
+
+    /// Hands hub `h` what node sync would (`Hub::down`) and delivers what follows.
+    pub fn down(&mut self, h: usize, downs: Vec<(ConnId, Down)>) {
+        let now = self.now();
+        let out = self.hubs[h].down(now, downs);
+        self.hub_out(h, out);
+        self.pump();
     }
 
     /// Hands a command to client `c` without delivering anything yet.

@@ -470,30 +470,68 @@ fn restart_keeps_state() {
     assert_eq!(evs, vec![Event::Deleted(bid(0))]);
 }
 
-// spec/sync.md §10 (Shared set, Stream): a host keeps no shared set, so a node's Pull, or any
-// request of the shared set, is answered Error 14, never left unanswered
-#[test]
-fn node_requests_answered_14_spec_sync_10() {
-    let mut w = World::new();
-    let h = w.add_hub(HostPolicy::default());
-    let a = w.connect(h);
-    let id = osis_proto::msg::NODE_IDS | 7;
-    let pull = osis_proto::msg::Pull { id, cursor: None, joins: vec![], inline_limit: 0, max_reply: osis_proto::serving::REPLY_BUDGET as u64, follow: true, ephemeral: false };
-    for m in [Message::Pull(Box::new(pull)), Message::NoRecord { id }] {
-        let ev = w.run(a, Command::Peer(Box::new(m)));
-        assert!(matches!(&ev[..], [ClientEvent::Peer(r)] if matches!(**r, Message::Error { id: i, code: Code::NOT_ADMITTED } if i == id)), "{ev:?}");
-    }
+/// The connection hub `h` handed up last started (its `Up::Start`).
+fn started(w: &World, h: usize) -> osis_host::ConnId {
+    w.ups.iter().rev().find_map(|(x, c, u)| (*x == h && matches!(u, osis_host::Up::Start(_))).then_some(*c)).expect("a start")
 }
 
-// spec/wire.md §11.2 (Prove, Resume): a host serves no identity and keeps no record: a Prove is
-// answered with no proofs, a Resume Error 1
+// issues/net-one-peer.md step 3 (The hub calls up for nothing; spec/wire.md §11.2): a session's
+// start with its binding goes up with its first node-kind message, then the messages unjudged in
+// arrival order; node sync's answers come down and go out; the end goes up once the connection
+// is gone. A host client's connection never starts
 #[test]
-fn prove_answered_with_none_spec_wire_11_2() {
+fn node_kinds_go_up_answers_come_down() {
     let mut w = World::new();
     let h = w.add_hub(HostPolicy::default());
     let a = w.connect(h);
-    let ev = w.run(a, Command::Prove(vec![]));
-    assert!(matches!(&ev[..], [ClientEvent::Proved { proofs }] if proofs.is_empty()), "{ev:?}");
-    let ev = w.run(a, Command::Resume { nonce: [5; 32], tags: vec![[6; 32]] });
-    assert!(matches!(&ev[..], [ClientEvent::Refused { kind: osis_proto::Request::Resume, code: Code::REFUSED, .. }]), "{ev:?}");
+    let l = Label::new(3);
+    w.setup(a, &l);
+    w.open(a, &l);
+    assert!(w.ups.is_empty(), "{:?}", w.ups);
+    w.send(a, Command::Prove(vec![]));
+    w.pump();
+    let conn = started(&w, h);
+    let Some((_, _, osis_host::Up::Start(b))) = w.ups.first() else { panic!("{:?}", w.ups) };
+    assert_eq!((b.dialer, b.key, b.peer), ([0xc0 + a as u8; 32], hub_key(h), [0xe0 + a as u8; 32]));
+    w.ups.remove(0);
+    let pull = osis_proto::msg::Pull { id: osis_proto::msg::NODE_IDS | 7, cursor: None, joins: vec![], inline_limit: 0, max_reply: osis_proto::serving::REPLY_BUDGET as u64, follow: true, ephemeral: false };
+    w.send(a, Command::Peer(Box::new(Message::Pull(Box::new(pull.clone())))));
+    w.pump();
+    let ups: Vec<Message> = w.ups.drain(..).map(|(_, c, u)| match u {
+        osis_host::Up::Message(m) if c == conn => *m,
+        u => panic!("{u:?}"),
+    }).collect();
+    assert!(matches!(&ups[..], [Message::Prove { .. }, Message::Pull(p)] if **p == pull), "{ups:?}");
+    assert!(w.events[a].is_empty(), "nothing answered before node sync does");
+    let prove_id = ups[0].id();
+    w.down(h, vec![(conn, osis_host::Down::Message(Box::new(Message::Proved { id: prove_id, proofs: vec![] }))), (conn, osis_host::Down::Message(Box::new(Message::Error { id: pull.id, code: Code::NOT_ADMITTED })))]);
+    let ev = std::mem::take(&mut w.events[a]);
+    assert!(matches!(&ev[..], [ClientEvent::Proved { proofs }, ClientEvent::Peer(e)] if proofs.is_empty() && matches!(**e, Message::Error { id, code: Code::NOT_ADMITTED } if id == pull.id)), "{ev:?}");
+    w.down(h, vec![(conn, osis_host::Down::Close)]);
+    assert_eq!(w.ups, vec![(h, conn, osis_host::Up::End)]);
+}
+
+// spec/sync.md §6 (Stall): node sync's requests on a hub session go within the session's
+// window and stall there as any requester's: unanswered past `STALL_TIMEOUT_MS`, the hub closes
+// the connection and hands up its end
+#[test]
+fn a_stalled_node_request_closes_spec_sync_6() {
+    let mut w = World::new();
+    let h = w.add_hub(HostPolicy::default());
+    let a = w.connect(h);
+    w.run(a, Command::Prove(vec![]));
+    let conn = started(&w, h);
+    let Some((_, _, osis_host::Up::Message(prove))) = w.ups.last() else { panic!("{:?}", w.ups) };
+    let id = prove.id();
+    w.down(h, vec![(conn, osis_host::Down::Message(Box::new(Message::Proved { id, proofs: vec![] })))]);
+    w.events[a].clear();
+    w.ups.clear();
+    let pull = osis_proto::msg::Pull { id: osis_proto::msg::NODE_IDS | 7, cursor: None, joins: vec![], inline_limit: 0, max_reply: osis_proto::serving::REPLY_BUDGET as u64, follow: true, ephemeral: false };
+    w.down(h, vec![(conn, osis_host::Down::Message(Box::new(Message::Pull(Box::new(pull)))))]);
+    assert!(matches!(&w.events[a][..], [ClientEvent::Peer(m)] if matches!(**m, Message::Pull(_))), "{:?}", w.events[a]);
+    w.advance(osis_proto::client::STALL_TIMEOUT_MS - 1);
+    assert!(w.ups.is_empty() && w.hubs[h].connections() == 1);
+    w.advance(1);
+    assert_eq!(w.ups, vec![(h, conn, osis_host::Up::End)]);
+    assert_eq!(w.hubs[h].connections(), 0);
 }

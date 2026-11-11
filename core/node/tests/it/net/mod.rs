@@ -789,7 +789,7 @@ impl Net {
                 }
                 Action::Wake { at } => self.nodes[n].wake = Some(at),
                 // peers are found by their current `reach.0`
-                Action::Reach | Action::Host(_) | Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } | Action::Authed { .. } => {}
+                Action::Reach | Action::Host(_) | Action::Hub { .. } | Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } | Action::Authed { .. } => {}
             }
         }
     }
@@ -841,7 +841,8 @@ impl Net {
                         self.queue.push_back(Msg::Close(n, self.nodes[n].life, c));
                     }
                 }
-                HubOutput::Diagnostic(_) => {}
+                // no node above these hosts (honest nodes send them no node kinds)
+                HubOutput::Diagnostic(_) | HubOutput::Up(..) => {}
             }
         }
     }

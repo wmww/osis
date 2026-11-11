@@ -322,6 +322,10 @@ struct Driver<T: Transport, H: Shared> {
     /// The next hub connection ID and run tag (`HubRun::start`).
     hub_next: u64,
     hub_tx: mpsc::UnboundedSender<HubEv>,
+    /// Between the hub and node sync (`hub_pump`): the engine's `Action::Hub` not yet handed to
+    /// the hub, and what a stopped run handed up not yet fed to the engine.
+    hub_downs: Vec<(osis_host::ConnId, osis_host::Down)>,
+    hub_ups: Vec<(osis_host::ConnId, osis_host::Up)>,
 }
 
 impl<T: Transport, H: Shared> Driver<T, H> {
@@ -416,6 +420,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                     }
                 }
                 Action::Host(_) => {}
+                Action::Hub { conn, down } => self.hub_downs.push((conn, down)),
                 // the client port is the engine holder's (`osis`); a bare driver answers none
                 Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } => {}
             }
@@ -850,9 +855,30 @@ impl<T: Transport, H: Shared> Driver<T, H> {
 
     /// Stops the hub (closing its connections); returns it.
     fn host_stop(&mut self) -> Option<osis_host::Hub> {
-        let (hub, next) = self.host.take()?.stop();
+        let (hub, next, ups) = self.host.take()?.stop();
         self.hub_next = next;
+        self.hub_ups.extend(ups);
         Some(hub)
+    }
+
+    /// Passes what the hub handed up to node sync and node sync's answers down, until neither
+    /// has more (one function call each way, no channel). Downs for a hub that stopped are
+    /// dropped (their connections ended with it).
+    fn hub_pump(&mut self) {
+        while !self.gone {
+            let downs = std::mem::take(&mut self.hub_downs);
+            if let Some(h) = self.host.as_mut() {
+                if !downs.is_empty() {
+                    h.down(downs);
+                }
+                self.hub_ups.extend(h.take_ups());
+            }
+            if self.hub_ups.is_empty() {
+                return;
+            }
+            let ups = std::mem::take(&mut self.hub_ups);
+            self.feed(Event::Hub { ups });
+        }
     }
 
     /// Carries out the last `Action::Host`: stops the host, starts it, or changes it in place
@@ -1020,6 +1046,8 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
         host_pending: Vec::new(),
         hub_next: 1,
         hub_tx,
+        hub_downs: Vec::new(),
+        hub_ups: Vec::new(),
     };
     for l in listeners {
         d.serve(l);
@@ -1077,11 +1105,14 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
                 d.tick();
             }
         }
+        d.hub_pump();
         d.after_rotation().await;
         d.host_update().await;
+        d.hub_pump();
     }
     d.host_want = Some(None);
     d.host_update().await;
+    d.hub_pump();
     if let Some(x) = d.lan.take() {
         x.tasks.iter().for_each(JoinHandle::abort);
     }

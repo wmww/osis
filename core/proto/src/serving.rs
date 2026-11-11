@@ -82,7 +82,8 @@ pub enum ServingInput {
     /// a subscription no longer live is dropped, one above its `max_reply` goes as `Lapsed`.
     Notify(Vec<(Id, crate::api::Payload)>),
     /// A shared-set or stream message to send: a request within the request window (spec/sync.md
-    /// §6), sent once it fits.
+    /// §6), sent once it fits; an answer to a request handed up frees its charge; a relay-only
+    /// push (a Stream without cursor) without room is dropped.
     Peer(Box<Message>),
     /// The upper layer has Notifies to send: `ServingOutput::Room` when the push rule allows.
     WantRoom,
@@ -122,6 +123,7 @@ pub enum ServingOutput {
     Request(Box<Message>),
     /// A shared-set message (spec/wire.md §11.2 Beacons, Offer, Lost, Shared) for the upper layer,
     /// which answers and sends by `ServingInput::Peer`; likewise the stream's (Pull to Applied).
+    /// A request keeps its frame and reply allowance against `MAX_UNANSWERED` until answered.
     Peer(Box<Message>),
     /// Notifies of up to `budget` bytes may go now (after `ServingInput::WantRoom`).
     Room { budget: usize },
@@ -209,7 +211,10 @@ pub struct ServingSession {
     /// Client-port requests handed out and not answered: their kind (24 Auth, 25 Call, 27 Sub),
     /// reply bound and charge (frame bytes plus reply allowance).
     asked: BTreeMap<Id, (u64, usize, usize)>,
-    /// The charges in `asked`: counted against `MAX_UNANSWERED` by every input until answered.
+    /// Node-kind requests handed up (`ServingOutput::Peer`) and not answered: their charge.
+    node_asked: BTreeMap<Id, usize>,
+    /// The charges in `asked` and `node_asked`: counted against `MAX_UNANSWERED` by every input
+    /// until answered.
     asked_bytes: usize,
     /// Live subscriptions by id (reserved from their Sub until Unsub or a lapse) with their
     /// `max_reply`.
@@ -288,6 +293,7 @@ impl ServingSession {
             taken: None,
             owed: VecDeque::new(),
             asked: BTreeMap::new(),
+            node_asked: BTreeMap::new(),
             asked_bytes: 0,
             api_subs: BTreeMap::new(),
             authed: false,
@@ -455,7 +461,16 @@ impl ServingSession {
     fn input(&mut self, now: u64, store: &mut dyn LabelStore, input: ServingInput, out: &mut Vec<ServingOutput>) {
         match input {
             ServingInput::Peer(m) if m.is_request() => self.requests.queue(*m),
-            ServingInput::Peer(m) => send(out, *m),
+            // a relay-only push (no cursor) without room is dropped, as the session's own relays
+            ServingInput::Peer(m) if matches!(&*m, Message::Stream(s) if s.cursor.is_none() && self.no_room(out, s.events.iter().map(|(_, e)| event_size(e)).sum())) => {}
+            ServingInput::Peer(m) => {
+                if crate::msg::is_reply_kind(m.kind())
+                    && let Some(c) = self.node_asked.remove(&m.id())
+                {
+                    self.asked_bytes = self.asked_bytes.saturating_sub(c);
+                }
+                send(out, *m)
+            }
             ServingInput::Start => out.push(ServingOutput::Send(encode_frame(&Hello::new(now, self.cfg.challenge).encode()))),
             ServingInput::Bytes(b) => {
                 self.decoder.push(&b);
@@ -637,7 +652,7 @@ impl ServingSession {
             return;
         }
         self.struck = false;
-        match self.dispatch(now, store, msg, out) {
+        match self.dispatch(now, store, msg, frame_bytes.saturating_add(allowance), out) {
             Ok(Some(reply)) => send(out, reply),
             Ok(None) => {}
             Err(e) => {
@@ -655,7 +670,9 @@ impl ServingSession {
         Ok(self.keys(store, label)?.map(|k| k.head.clone()))
     }
 
-    fn dispatch(&mut self, now: u64, store: &mut dyn LabelStore, msg: Message, out: &mut Vec<ServingOutput>) -> Result<Option<Message>, StoreError> {
+    /// `charge`: the request's frame bytes plus reply allowance (a node request handed up keeps it
+    /// against `MAX_UNANSWERED` until the upper layer answers).
+    fn dispatch(&mut self, now: u64, store: &mut dyn LabelStore, msg: Message, charge: usize, out: &mut Vec<ServingOutput>) -> Result<Option<Message>, StoreError> {
         if self.port_only && !matches!(msg, Message::Ping { .. } | Message::Auth { .. } | Message::Call { .. } | Message::Sub { .. } | Message::Unsub { .. }) {
             return Ok(Some(Message::Error { id: msg.id(), code: Code::UNSUPPORTED }));
         }
@@ -663,6 +680,11 @@ impl ServingSession {
         if msg.for_node() {
             if !msg.is_request() {
                 self.requests.answered(msg.id(), now);
+            } else if let std::collections::btree_map::Entry::Vacant(e) = self.node_asked.entry(msg.id()) {
+                e.insert(charge);
+                self.asked_bytes = self.asked_bytes.saturating_add(charge);
+            } else {
+                return Ok(Some(M::Error { id: msg.id(), code: Code::MALFORMED }));
             }
             out.push(ServingOutput::Peer(Box::new(msg)));
             return Ok(None);
@@ -1340,6 +1362,41 @@ mod tests {
             assert_eq!(reply(&out), m);
         }
         assert!(!c.is_closed());
+    }
+
+    // spec/sync.md §6 (request window): a node request handed up counts against `MAX_UNANSWERED`
+    // until the upper layer answers it, input after input: answered, it frees its room; left
+    // unanswered, a peer adding more is closed before the one past the bound goes up
+    #[test]
+    fn node_requests_count_until_answered_spec_sync_6() {
+        let mut store = MemoryLabelStore::new([1; 32]);
+        let fetch = |k: u32| Message::Fetch { id: crate::msg::NODE_IDS | k, label: LabelId([9; 16]), max_reply: REPLY_BUDGET as u64, ids: vec![BlobId([1; 32])] };
+        let start = |store: &mut MemoryLabelStore| {
+            let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+            c.handle(0, store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+            c
+        };
+        let mut c = start(&mut store);
+        for k in 0..10 {
+            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&fetch(k).encode())));
+            assert_eq!(out, vec![ServingOutput::Peer(Box::new(fetch(k)))]);
+            let out = c.handle(0, &mut store, ServingInput::Peer(Box::new(Message::FetchReply { id: crate::msg::NODE_IDS | k, items: vec![] })));
+            assert!(matches!(reply(&out), Message::FetchReply { .. }));
+        }
+        assert!(!c.is_closed());
+        let mut c = start(&mut store);
+        let mut up = 0;
+        for k in 0..10 {
+            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&fetch(k).encode())));
+            up += out.iter().filter(|o| matches!(o, ServingOutput::Peer(_))).count();
+            if c.is_closed() {
+                assert!(out.iter().any(|o| matches!(o, ServingOutput::PeerError(Error::Cap("requests past the request window")))), "{out:?}");
+                break;
+            }
+        }
+        assert!(c.is_closed());
+        let each = encode_frame(&fetch(0).encode()).len() + crate::client::allowance(&fetch(0));
+        assert_eq!(up, crate::client::MAX_UNANSWERED / each);
     }
 
     // spec/sync.md §6 (request window), spec/requirements.md (peer input never causes unbounded

@@ -599,9 +599,12 @@ impl SyncEngine {
     fn shared_kill(&mut self, conn: ConnId, id: u32, what: &str, out: &mut Vec<Action>) -> Result<()> {
         self.diag(format!("closing peer: {what}"));
         self.shared_send(conn, Message::Error { id, code: Code::MALFORMED }, out)?;
-        out.push(Action::Close { conn });
-        self.lost(conn);
-        self.end_served(conn, out);
+        if self.served_has(conn) {
+            self.close_served(conn, out);
+        } else {
+            out.push(Action::Close { conn });
+            self.lost(conn);
+        }
         Ok(())
     }
 

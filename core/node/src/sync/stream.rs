@@ -650,7 +650,8 @@ impl SyncEngine {
 
     /// Pushes what the log gained to each connection following its stream, at most one page
     /// each per step (the next goes at the next step). A push also goes, with no events, when it
-    /// brings a member being ended to its `until` with no report awaited there (`until_due`).
+    /// brings a member being ended to its `until` with no report awaited there (`until_due`). On a
+    /// hub session a push waits for the room the session grants (`push_room`), within it.
     pub(super) fn stream_push(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let following: Vec<(ConnId, u64, u64)> = self.streams.iter().filter_map(|(c, s)| s.serving.follow.map(|f| (*c, f, s.serving.mem_seq))).collect();
         if following.is_empty() {
@@ -666,10 +667,11 @@ impl SyncEngine {
             if at >= log_end && seen >= mem_seq && !due(self, at) {
                 continue;
             }
+            let Some(room) = self.push_room(conn, out) else { continue };
             let members = self.stream_members(conn);
             let starts: BTreeMap<LabelId, (u64, u64)> = members.iter().map(|l| (*l, (at, untils.get(l).copied().unwrap_or(u64::MAX)))).collect();
             let scan = self.engine.run(|tx| Ok(scan(&mut tx.txn, at, &starts)?))?;
-            let mut budget = osis_proto::serving::REPLY_BUDGET - 256;
+            let mut budget = room.min(osis_proto::serving::REPLY_BUDGET).saturating_sub(256);
             let live: BTreeSet<LabelId> = members.iter().filter(|l| !untils.contains_key(l)).copied().collect();
             let (mut events, memory_cut) = self.stream_memory(conn, &BTreeSet::new(), &live, &mut budget)?;
             let (durable, cut) = self.stream_events(conn, &scan.events, &mut budget, events.is_empty())?;
@@ -686,6 +688,7 @@ impl SyncEngine {
             let labels: BTreeSet<LabelId> = events.iter().map(|(l, _)| *l).collect();
             let Some(s) = self.streams.get_mut(&conn).map(|s| &mut s.serving) else { continue };
             let report = s.sent(&cursor, labels, end, &[], Vec::new(), &untils);
+            self.room_used(conn);
             self.shared_send(conn, Message::Stream(Box::new(Stream { events, cursor, report })), out)?;
         }
         Ok(())
