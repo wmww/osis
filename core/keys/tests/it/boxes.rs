@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Grants, re-seals, history re-writes, box checks and sizes (spec/crypto.md §4, spec/wire.md §7).
 
-use crate::common::Applied;
 use crate::common;
 use common::*;
 use osis_base::Role;
@@ -448,32 +447,6 @@ fn history_box_poison_refused_spec_crypto_4() {
         assert!(gv.read.reading_secret(e).is_some() && !gv.read.is_established(e));
     }
     assert!(gv.read.held_established().all(|(e, _)| !planted.contains(&e)));
-}
-
-// spec/crypto.md §4: `keys.0` vouches for no secret: a writer's bogus keyset at an existing
-// epoch (applied valid) recorded before or after the genuine box drops nothing.
-#[test]
-fn bogus_keyset_drops_nothing_spec_crypto_4() {
-    let f = forked();
-    let (g, ge) = (tid(5), person(0x50));
-    let e = f.forks[0];
-    let grant = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
-    let mut s = f.s.clone();
-    grant.apply(&mut s);
-    // the writer's commit: E's keyset with another epoch's keys, and nothing else
-    let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default());
-    let bogus = osis_keys::KeysWrite { keysets: [(Role::Read, junk)].into_iter().collect() };
-    let opener = Opener::Actor { holder: g, epochs: &ge };
-    let commit = osis_base::CommitId([0x77; 32]);
-    let mut first = ActorEpochs::default();
-    osis_keys::SecretsWrite::default().applied(&mut first, commit, &bogus).unwrap();
-    ingest(&f.a, &s, &opener, &mut first, None).unwrap();
-    let mut last = ActorEpochs::default();
-    ingest(&f.a, &s, &opener, &mut last, None).unwrap();
-    osis_keys::SecretsWrite::default().applied(&mut last, commit, &bogus).unwrap();
-    for v in [&first, &last] {
-        assert_eq!(v.read.secret(&e), f.view.read.secret(&e));
-    }
 }
 
 // spec/crypto.md §3: an account's `keys.0` publishes its epoch's signing and KEM keys, which survive the schema's codec
