@@ -126,16 +126,15 @@ impl Fragment {
         }
     }
 
-    /// Keeps only the writes `j` holds as well, at the same position and as the same copy (§4.1
-    /// copy order: of two copies the join holds one): a map record against the join of its
-    /// dot's records (§5.6). `j` is pruned; the result is for a prune, which gives it canonical
-    /// form.
+    /// Keeps only the writes `j` holds a copy of, at the same position and stamp: the join of a
+    /// map dot's records against one record, which takes its writes as their join of copies
+    /// (§5.6). The result is for a prune, which gives it canonical form.
     pub(crate) fn restrict(&mut self, j: &Fragment) {
         self.filter_by(j, Keep::Held);
     }
 
     /// Drops the writes `j` holds at the same position and stamp, any copy: a map record against
-    /// its dot's records with greater keys, whose copies win (§5.6).
+    /// its dot's records with greater keys, where those writes sit (§5.6).
     pub(crate) fn without(&mut self, j: &Fragment) {
         self.filter_by(j, Keep::NotHeld);
     }
@@ -183,10 +182,10 @@ impl Fragment {
             return;
         };
         if let (Some(m), Some(tm)) = (self.meta_mut(), t.meta()) {
-            if !keep.stays(m.reset == tm.reset, m.reset.is_some() && m.reset == tm.reset) {
+            if !keep.stays(m.reset.is_some() && m.reset == tm.reset) {
                 m.reset = None;
             }
-            if !keep.stays((&m.w, m.w_valueless) == (&tm.w, tm.w_valueless), m.w.is_some() && m.w == tm.w) {
+            if !keep.stays(m.w.is_some() && m.w == tm.w) {
                 m.w = None;
                 m.w_valueless = false;
             }
@@ -205,7 +204,7 @@ impl Fragment {
         let elems = |es: &mut BTreeMap<Dot, Elem>, te: &BTreeMap<Dot, Elem>| {
             es.retain(|d, el| {
                 let Some(t) = te.get(d) else { return missing };
-                if !keep.stays(el.reset == t.reset, el.reset.is_some() && el.reset == t.reset) {
+                if !keep.stays(el.reset.is_some() && el.reset == t.reset) {
                     el.reset = None;
                 }
                 sub(&mut el.frag, t.frag.as_deref());
@@ -221,11 +220,11 @@ impl Fragment {
         };
         match (&mut *self, &t) {
             (Fragment::Register(r), Fragment::Register(tr)) => {
-                if !keep.stays(r.reset == tr.reset, r.reset.is_some() && r.reset == tr.reset) {
+                if !keep.stays(r.reset.is_some() && r.reset == tr.reset) {
                     r.reset = None;
                 }
                 let held = r.write.is_some() && r.write.as_ref().map(|w| &w.stamp) == tr.write.as_ref().map(|w| &w.stamp);
-                if !keep.stays(r.write == tr.write, held) {
+                if !keep.stays(held) {
                     r.write = None;
                 }
             }
@@ -233,7 +232,7 @@ impl Fragment {
             (Fragment::Struct(a), Fragment::Struct(b)) => children(&mut a.fields, &b.fields),
             (Fragment::Enum(a), Fragment::Enum(b)) => {
                 let held = a.case.is_some() && a.case.as_ref().map(|c| &c.stamp) == b.case.as_ref().map(|c| &c.stamp);
-                if !keep.stays(a.case == b.case, held) {
+                if !keep.stays(held) {
                     a.case = None;
                 }
                 children(&mut a.payloads, &b.payloads);
@@ -241,10 +240,10 @@ impl Fragment {
             (Fragment::Map(a), Fragment::Map(b)) => {
                 a.entries.retain(|id, en| {
                     let Some(t) = b.entries.get(id) else { return missing };
-                    if !keep.stays(en.reset == t.reset, en.reset.is_some() && en.reset == t.reset) {
+                    if !keep.stays(en.reset.is_some() && en.reset == t.reset) {
                         en.reset = None;
                     }
-                    if !keep.stays(en.created == t.created, en.created.is_some() && en.created == t.created) {
+                    if !keep.stays(en.created.is_some() && en.created == t.created) {
                         en.created = None;
                     }
                     sub(&mut en.frag, t.frag.as_deref());
@@ -584,18 +583,17 @@ fn remove_dots_elems(elems: &mut BTreeMap<Dot, Elem>, pred: &dyn Fn(&Dot) -> boo
 /// What `Fragment::filter_by` keeps of a fragment against another.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Keep {
-    /// The writes the other holds as the same copy.
+    /// The writes the other holds a copy of at their position and stamp.
     Held,
     /// The writes the other holds none of at their position and stamp.
     NotHeld,
 }
 
 impl Keep {
-    /// Whether a write stays: `copy`, the other holds the same copy; `held`, it holds a write
-    /// of that stamp there.
-    pub(crate) fn stays(self, copy: bool, held: bool) -> bool {
+    /// Whether a write stays: `held`, the other holds a write of that stamp there.
+    pub(crate) fn stays(self, held: bool) -> bool {
         match self {
-            Keep::Held => copy,
+            Keep::Held => held,
             Keep::NotHeld => !held,
         }
     }

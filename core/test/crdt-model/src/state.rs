@@ -603,8 +603,8 @@ impl Frag {
                     }
                 }
                 // the records of a dot are one entry (§5.6): every reset of the dot reaches each of them, and each write
-                // of the dot's join sits in the record whose key its copy carries: of copies in several records, the
-                // greatest key's (the key-erased record's lowest)
+                // of the dot's join sits in the record carrying the greatest key of its copies (the key-erased record's
+                // lowest), as the join of every copy (§4.1 copy order: the key is a part of its own)
                 let dots: Vec<Dot> = entries.keys().map(|(d, _)| d.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
                 for d in dots {
                     let ids: Vec<Eid> = entries.keys().filter(|(x, _)| *x == d).cloned().collect();
@@ -620,11 +620,19 @@ impl Frag {
                         }
                     }
                     let c = recs.values().fold(None, |m, en| max_opt(m, en.created.clone()));
-                    // every write once, under the greatest key holding a copy of it
+                    // every write once, under the greatest key holding a copy of it, as the join of its copies
                     let mut at: BTreeMap<crate::writes::Name, (Eid, Frag)> = BTreeMap::new();
                     for (id, en) in recs.iter().rev() {
                         for (n, w) in en.frag.as_deref().map(crate::writes::writes).unwrap_or_default() {
-                            at.entry(n).or_insert((id.clone(), w));
+                            match at.entry(n) {
+                                std::collections::btree_map::Entry::Vacant(v) => {
+                                    v.insert((id.clone(), w));
+                                }
+                                std::collections::btree_map::Entry::Occupied(mut o) => {
+                                    let x = &mut o.get_mut().1;
+                                    *x = join_any(x.clone(), w);
+                                }
+                            }
                         }
                     }
                     // of those, the ones the dot's join holds, as the join holds them (a creation pushed out of the

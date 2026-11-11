@@ -678,6 +678,47 @@ fn stripped_entry_keeps_others_creation_spec_perm_5_2() {
     assert!(alone.read().is_none_or(|v| v == Value::Map(osis_base::ValueMap::new())), "a creation alone joins nothing: {alone:?}");
 }
 
+/// §4.1 copy order, §4.7, §5.6: two copies of one delta (a forged snapshot's beside the
+/// writer's) put one map entry under two keys, its text element anchored apart. The key is a part
+/// of its own: the element joins as the greater anchor and char under the greater key, so
+/// expiring the delta after the join equals expiring each copy before it (the key decided the
+/// anchor, and the copies held key-erased joined to the other one).
+#[test]
+fn copies_under_two_keys_expire_alike_spec_4_7() {
+    use crate::fragment::{Eid, Entry, Map, Meta};
+    use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
+    use crate::stamp::Stamp;
+    use std::collections::BTreeMap;
+    let s = sess(Tid::from_bytes([1; 15]));
+    let st = |c: u64| Stamp::new(ts(1 << 16), s.clone(), c);
+    let (d, e, f) = (Dot::new(s.clone(), 1), Dot::new(s.clone(), 2), Dot::new(s.clone(), 3));
+    let copy = |key: &str, anchor: Anchor, c: char| {
+        let mut el = SeqElem::bare();
+        el.created = Some((st(2), anchor.clone()));
+        el.content = SeqContent::Char(c);
+        el.pos = vec![(st(2), anchor, None)];
+        let text = Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(e.clone(), el)])));
+        let entry = Entry { reset: None, frag: Some(Box::new(text)), created: Some(st(1)) };
+        let mut m = Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(Eid::new(d.clone(), Some(Value::Str(key.into()))), entry)])));
+        m.prune(None, &mut crate::Changes::new());
+        m
+    };
+    let (a, b) = (copy("b", Anchor::Head, 'x'), copy("a", Anchor::Dot(f), 'y'));
+    let both = join(&a, &b);
+    assert_eq!(both, join(&b, &a));
+    assert_eq!(both.read(), Some(Value::Map(osis_base::ValueMap::from([(Value::Str("b".into()), Value::Str("y".into()))]))), "the greater key, anchor and char");
+    let exp = |x: &Dot| x.src == s;
+    let strip = |x: &Fragment| {
+        let mut y = x.clone();
+        y.strip(&exp);
+        y
+    };
+    let late = strip(&both);
+    assert_eq!(strip(&join(&strip(&a), &strip(&b))), late, "expired before the join");
+    assert_eq!(strip(&join(&a, &strip(&b))), late, "one copy expired before the join");
+    assert_eq!(strip(&join(&strip(&a), &b)), late, "the other");
+}
+
 /// spec/commits.md §5 (a body's live writes): a removed map entry's tombstone, keyed by its dot,
 /// holds the remover's reset, not the creator's write.
 #[test]

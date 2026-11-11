@@ -255,12 +255,12 @@ fn join_coll(meta: &mut Meta, elems: &mut BTreeMap<Dot, Elem>, dm: Meta, de: BTr
 }
 
 /// Prunes the records of one dot (§5.6): they are one entry, so every reset of the dot reaches
-/// each of them, and each keeps only its writes their join holds (§4.8 Which write), as the copy
-/// that join holds: of copies in several records the one carrying the greatest key (the
-/// key-erased record's lowest, `Eid` order), then §4.1 copy order. So a write sits in one record:
-/// the greatest one holding a copy of it yields nothing (`Fragment::without`), and what is left
-/// keeps what the join of the records' fragments holds (`Fragment::restrict`). Records left with
-/// no write go.
+/// each of them, and each write their join holds (§4.8 Which write) sits in one record, the one
+/// carrying the greatest key of its copies (the key-erased record's lowest, `Eid` order), as the
+/// join of all its copies (§4.1 copy order: the key is a part of its own, so a key expiry erases
+/// decides no other part). So a record yields what a greater one holds a copy of
+/// (`Fragment::without`), and takes its writes as the records' join holds them
+/// (`Fragment::restrict`). Records left with no write go.
 fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) {
     for (_, en) in recs.iter_mut() {
         prune_write(&mut en.reset, e, ch);
@@ -272,6 +272,17 @@ fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) 
         prune_write(&mut en.created, ee.as_ref(), ch);
     }
     let c = recs.iter().fold(None, |m, (_, en)| max_opt(m, en.created.clone()));
+    // every write of the dot as the join of its copies
+    let mut frags = recs.iter().filter_map(|(_, en)| en.frag.as_deref());
+    let joined = match (frags.next(), frags.next()) {
+        (Some(a), Some(b)) => {
+            let mut j = a.clone();
+            j.join_into(b.clone(), ee.as_ref(), &mut Changes::new());
+            frags.for_each(|f| j.join_into(f.clone(), ee.as_ref(), &mut Changes::new()));
+            Some(j)
+        }
+        _ => None,
+    };
     // `recs` is in `Eid` order: from the greatest key down, each record yields what a greater one
     // holds a copy of
     let (mut r_at, mut c_at) = (false, false);
@@ -285,46 +296,25 @@ fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) 
             en.created = None;
             ch.touch();
         }
-        let Some(f) = &mut en.frag else { continue };
+        let (Some(f), Some(j)) = (&mut en.frag, &joined) else { continue };
         let own = (**f).clone();
         if let Some(g) = &greater {
             f.without(g);
-            if **f != own {
-                f.prune(ee.as_ref(), &mut Changes::new());
-                ch.touch();
-            }
-            if f.is_empty() {
-                en.frag = None;
-            }
+        }
+        let mut x = j.clone();
+        x.restrict(f);
+        x.prune(ee.as_ref(), &mut Changes::new());
+        if x != own {
+            ch.touch();
+        }
+        if x.is_empty() {
+            en.frag = None;
+        } else {
+            **f = x;
         }
         match &mut greater {
             None => greater = Some(own),
             Some(g) => g.join_into(own, ee.as_ref(), &mut Changes::new()),
-        }
-    }
-    let mut frags = recs.iter().filter_map(|(_, en)| en.frag.as_deref());
-    let joined = match (frags.next(), frags.next()) {
-        (Some(a), Some(b)) => {
-            let mut j = a.clone();
-            j.join_into(b.clone(), ee.as_ref(), &mut Changes::new());
-            frags.for_each(|f| j.join_into(f.clone(), ee.as_ref(), &mut Changes::new()));
-            Some(j)
-        }
-        _ => None,
-    };
-    if let Some(j) = joined {
-        for (_, en) in recs.iter_mut() {
-            if let Some(f) = &mut en.frag {
-                let before = f.clone();
-                f.restrict(&j);
-                if **f != *before {
-                    f.prune(ee.as_ref(), &mut Changes::new());
-                    ch.touch();
-                }
-                if f.is_empty() {
-                    en.frag = None;
-                }
-            }
         }
     }
     recs.retain(|(_, en)| en.holds());

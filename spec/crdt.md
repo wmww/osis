@@ -232,15 +232,10 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
 ### 4.1 Join
 `join(A, B)` where both are the same encoding: take the union of all writes, keeping for each register the write with the greatest stamp, for each reset the greatest stamp, for each collection the union of elements by dot (joining records of one dot recursively), then **prune** (§4.2). Different encodings: §7. Join of a state with a delta is the same operation; a state is just a fragment with every stamp written in full.
 
-**Copy order.** Two copies of one write (equal stamps; a valid snapshot's copy joins beside the write's own delta's, never compared with it, spec/permissions.md §5.2, so copies may differ) join to the greater in this total order:
-1. in a map dot's records (§5.6), the copy carrying the greater key (canonical encoding, bytewise; the key-erased record's copy carries none, lowest): a map write's key is its own value;
-2. a valued copy over a value-less one (§4.7; a `W` or a list creation too);
-3. then the greater payload:
-   - a register value by its canonical encoding, bytewise (spec/data-model.md §5, links by their bytes);
-   - an enum case by its id;
-   - a text char by its scalar value;
-   - a creation or position write by its anchor (`HEAD` lowest, then dot order, §2.2), then a position write by its carried sibling key (none lowest, §5.7);
-   - a flag `true` over `false`, then by the undelete's char (none lowest).
+**Copy order.** Two copies of one write (equal stamps; a valid snapshot's copy joins beside the write's own delta's, never compared with it, spec/permissions.md §5.2, so copies may differ) join part by part, each part to the greater. What expiry and purge take from a copy (its key, its value, §4.7) is a part of its own, so it decides no other part:
+1. in a map dot's records (§5.6), the key: the greater (canonical encoding, bytewise; the key-erased record's copy carries none, lowest); a map write's key is its own value;
+2. the value: a valued copy over a value-less one (§4.7; a `W` or a list creation too), then the greater: a register value by its canonical encoding, bytewise (spec/data-model.md §5, links by their bytes); an enum case by its id; a text char by its scalar value;
+3. the rest: a creation or position write by its anchor (`HEAD` lowest, then dot order, §2.2), then a position write by its carried sibling key (none lowest, §5.7); a flag write `true` over `false`, its undelete's char (a value) then taken from the copies of that flag.
 
 A text char is a payload of the write carrying it: the creation's goes with the creation's stamp, an undelete's with its flag write's (§5.7). Copies of one creation under different stamps are one write (§5.7 Join). In a `Slots` position, a text slot's embedded records follow the register's winning copy (§7).
 
@@ -405,7 +400,7 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
   - The records of a dot are one entry (§4.8 Which write).
 - Join: union by `(dot, key)`; per record `R` max, fragment join, creation by stamp; then prune:
   - every record of a dot under `E_rec = max(E_parent, every R_rec of the dot)`: every reset of the dot reaches each of its records;
-  - each write of the join of the dot's records (§4.8 Which write) sits in the record whose key its copy carries (§4.1 copy order: of copies in several records, the greatest key's, the key-erased record's lowest), and no record holds another write: the dot's greatest `R_rec` and creation, and of the records' fragments (pruned under `E_rec`) what their join holds at the same position;
+  - each write of the join of the dot's records (§4.8 Which write) sits in one record, the one carrying the greatest key of its copies (the key-erased record's lowest), as the join of every copy (§4.1 copy order), and no record holds another write: the dot's greatest `R_rec` and creation, and of the records' fragments (pruned under `E_rec`) what their join holds;
   - the creation `(ts, dot)` is a write of its own, pruned like any other (under `E_rec`), and a record holding only it (its content un-merged, §4.6) stays, on the wire as `[Dot, Ci, R, key, []]`;
   - tombstone = a record left with only its `R_rec`; a record with no write goes.
 - **Removal**:

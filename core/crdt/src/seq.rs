@@ -1045,13 +1045,12 @@ pub(crate) fn filter_by(s: &mut Seq, t: &Seq, keep: crate::lifecycle::Keep) {
             }
             continue;
         };
-        let char_of = |e: &SeqElem| if let SeqContent::Char(c) = e.content { Some(c) } else { None };
-        if !keep.stays((&el.created, el.valueless, char_of(&el)) == (&te.created, te.valueless, char_of(&te)), el.created.is_some() && st(&el.created) == st(&te.created)) {
+        if !keep.stays(el.created.is_some() && st(&el.created) == st(&te.created)) {
             el.created = None;
             el.valueless = false;
         }
-        el.pos.retain(|p| keep.stays(te.pos.contains(p), te.pos.iter().any(|q| q.0 == p.0)));
-        if !keep.stays((&el.deleted, el.undel) == (&te.deleted, te.undel), el.deleted.is_some() && el.deleted.as_ref().map(|x| &x.0) == te.deleted.as_ref().map(|x| &x.0)) {
+        el.pos.retain(|p| keep.stays(te.pos.iter().any(|q| q.0 == p.0)));
+        if !keep.stays(el.deleted.is_some() && el.deleted.as_ref().map(|x| &x.0) == te.deleted.as_ref().map(|x| &x.0)) {
             el.deleted = None;
             el.undel = None;
         }
