@@ -261,6 +261,20 @@ fn members_is_heard() {
     assert_eq!(fired(&db, &n), 1);
 }
 
+// notes/api.md Backlinks: a tracked backlinks page hears a reference to its thing appear, and
+// nothing of a reference to another.
+#[test]
+fn tracked_backlinks_hear_their_thing() {
+    let db = pumped(14);
+    let (a, x, y) = (thing(&db), thing(&db), thing(&db));
+    let (_set, n, h) = tracked(&db);
+    assert!(h.backlinks(x, &Default::default()).unwrap().backlinks.is_empty());
+    db.commit_with(|w| w.at(a, untyped("t:a.0")).set(&Value::Tid(y))).unwrap();
+    assert_eq!(fired(&db, &n), 0);
+    db.commit_with(|w| w.at(a, untyped("t:b.0")).set(&Value::Tid(x))).unwrap();
+    assert_eq!(fired(&db, &n), 1);
+}
+
 // spec/commits.md §7 listing: a tracked page hears a commit at its address (and none elsewhere).
 #[test]
 fn tracked_listing_hears_the_address() {

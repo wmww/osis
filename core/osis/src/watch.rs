@@ -114,12 +114,15 @@ pub(crate) enum Watch {
     Roles,
     /// A record of this node's alone changed: a contact imported, its saved peers.
     Local,
+    /// The thing's backlinks (a reference index row naming it); with an acting actor (`true`),
+    /// also what it may read: a roster or key change anywhere, as `Roles`.
+    Backlinks(Tid, bool),
 }
 
 impl Watch {
     fn thing(&self) -> Option<Tid> {
         match self {
-            Watch::Thing(t) | Watch::CommitsOf(t) | Watch::Groups(t) => Some(*t),
+            Watch::Thing(t) | Watch::CommitsOf(t) | Watch::Groups(t) | Watch::Backlinks(t, _) => Some(*t),
             Watch::Roles | Watch::Local => None,
         }
     }
@@ -142,6 +145,7 @@ enum Slot {
     Groups(Tid),
     Roles,
     Local,
+    Backlinks(Tid),
 }
 
 impl Filter {
@@ -166,6 +170,8 @@ impl Filter {
             Filter::Due(Watch::Groups(t)) => vec![Slot::Groups(*t)],
             Filter::Due(Watch::Roles) => vec![Slot::Roles],
             Filter::Due(Watch::Local) => vec![Slot::Local],
+            Filter::Due(Watch::Backlinks(t, false)) => vec![Slot::Backlinks(*t)],
+            Filter::Due(Watch::Backlinks(t, true)) => vec![Slot::Backlinks(*t), Slot::Roles],
         }
     }
 
@@ -664,6 +670,7 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
             out
         }
         Msg::Event(Event::Groups(things)) => due(&things.iter().map(|t| Slot::Groups(*t)).collect::<Vec<_>>(), Delivery::Due),
+        Msg::Event(Event::References(targets)) => due(&targets.iter().map(|t| Slot::Backlinks(*t)).collect::<Vec<_>>(), Delivery::Due),
         Msg::Event(Event::Diagnostic(d)) => due(&[Slot::Diagnostics], Delivery::Diagnostic(d.clone())),
         Msg::Event(Event::DisputeDetected { commit, op, holder, target, author, trust }) => {
             let side = osis_node::sides::Side { trust: *trust, chosen: false };

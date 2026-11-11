@@ -35,6 +35,17 @@ impl Engine {
         self.run(|tx| super::refs::to(tx, target))
     }
 
+    /// Up to `n` of the reference index's rows naming `target` after `after` (source, AK;
+    /// exclusive), in (source, AK) order: O(n) rows read.
+    pub fn references_page(&mut self, target: &Tid, after: Option<(&Tid, &Ak)>, n: usize) -> Result<Vec<(Tid, Ak)>> {
+        self.run(|tx| super::refs::to_page(tx, target, after, n))
+    }
+
+    /// Turns `Event::References` on for this open; it stays on (as `watch_commits`).
+    pub fn watch_references(&mut self) {
+        self.core.refs_watched = true;
+    }
+
     /// The reference index's rows of `source`'s values, every aspect.
     pub fn references_from(&mut self, source: &Tid) -> Result<Vec<super::refs::Reference>> {
         self.run(|tx| super::refs::from(tx, source))

@@ -836,3 +836,42 @@ pub(crate) fn error_of(code: u64, detail: Vec<Value>) -> Error {
     })();
     r.unwrap_or_else(|e| e)
 }
+
+fn backlink_v(b: &crate::Backlink) -> Value {
+    Value::List(vec![Value::Tid(b.tid), ak_v(&b.ak)])
+}
+
+fn backlink(v: Value) -> Result<crate::Backlink> {
+    let mut a = Args::new(v)?;
+    let b = crate::Backlink { tid: a.tid()?, ak: a.ak()? };
+    a.end()?;
+    Ok(b)
+}
+
+/// `[Opt([tid, ak]), Opt(limit)]`
+pub(crate) fn backlink_query_v(q: &crate::BacklinkQuery) -> Value {
+    Value::List(vec![opt(q.after.as_ref(), backlink_v), opt(q.limit, |n| u(n as u64))])
+}
+
+pub(crate) fn backlink_query(v: Value) -> Result<crate::BacklinkQuery> {
+    let mut a = Args::new(v)?;
+    let q = crate::BacklinkQuery {
+        after: a.opt()?.map(backlink).transpose()?,
+        limit: a.opt()?.map(|n| n.as_uint().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad("limit"))).transpose()?,
+    };
+    a.end()?;
+    Ok(q)
+}
+
+/// `[[[tid, ak]*], more]`
+pub(crate) fn backlink_page_v(p: &crate::BacklinkPage) -> Value {
+    Value::List(vec![Value::List(p.backlinks.iter().map(backlink_v).collect()), Value::Bool(p.more)])
+}
+
+pub(crate) fn backlink_page(v: Value) -> Result<crate::BacklinkPage> {
+    let mut a = Args::new(v)?;
+    let backlinks = a.list()?.into_iter().map(backlink).collect::<Result<_>>()?;
+    let more = a.bool()?;
+    a.end()?;
+    Ok(crate::BacklinkPage { backlinks, more })
+}

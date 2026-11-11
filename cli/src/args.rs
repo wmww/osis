@@ -239,11 +239,15 @@ pub enum Cmd {
         #[arg(long)]
         follow: bool,
     },
-    /// Things whose values reference T (not built yet)
+    /// Things whose current values reference T, as `tid aspect` lines: every page; with --watch
+    /// the first page, again on each change
     Backlinks {
         t: String,
         #[arg(long)]
-        follow: bool,
+        watch: bool,
+        /// With --watch: stop after N changes (the first line, the page now, not counted)
+        #[arg(long)]
+        count: Option<usize>,
     },
     /// Print changes of a thing (or one aspect, or the value at PATH in it, as `get` reads it),
     /// initial value first, until Ctrl-C

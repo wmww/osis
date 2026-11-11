@@ -95,6 +95,8 @@ pub(crate) mod method {
     pub const LISTING: u64 = 41;
     /// `[address, commit id]` -> `Opt(commit)`: the commit as listed at the address
     pub const LISTED_COMMIT: u64 = 74;
+    /// `[tid, query]` -> page (`codec::backlink_query`, `codec::backlink_page`)
+    pub const BACKLINKS: u64 = 75;
     /// `[]` -> `[[node, role]*]`
     pub const NODES: u64 = 44;
     /// `[address text]` -> `[]`
@@ -145,7 +147,7 @@ pub(crate) mod method {
     /// this node's authority and take no actor (they would be a confused deputy). `LEAVE` is such a
     /// flow, and only ever on the actor's own grant (`Osis::leave`).
     pub fn for_client(m: u64) -> bool {
-        matches!(m, WHOAMI | GET | ASPECTS | HAS_CONTENT | HOLDS | GROUPS_OF | GRANTS | HOLDERS | LEAVE | ROLE_ON | CREATED | CHANGED | WRITE | UNDO_TARGET | REDO_TARGET | UNDO | REDO | REVERT | STATUS | BYTE_LEN | STREAM_READ | SETTLE | NOW | RETAINED_COPIES | LISTING | LISTED_COMMIT)
+        matches!(m, WHOAMI | GET | ASPECTS | HAS_CONTENT | HOLDS | GROUPS_OF | GRANTS | HOLDERS | LEAVE | ROLE_ON | CREATED | CHANGED | WRITE | UNDO_TARGET | REDO_TARGET | UNDO | REDO | REVERT | STATUS | BYTE_LEN | STREAM_READ | SETTLE | NOW | RETAINED_COPIES | LISTING | LISTED_COMMIT | BACKLINKS)
     }
 }
 
@@ -155,7 +157,8 @@ pub(crate) mod method {
 /// without holding its worker: the Reply and at most one Notify carry `Opt(outcome)`, the outcome
 /// once known; an Unsub or the connection's end cancels it, as dropping the future does locally;
 /// `[6, address]` the commits listed at an address (`codec::address`): each Notify `[commit id,
-/// Opt(commit)]`, the commit read when sent.
+/// Opt(commit)]`, the commit read when sent; `[7, tid, query]` a page of the thing's backlinks
+/// (`codec::backlink_query`): each Notify the page when it reads otherwise.
 pub(crate) mod filter {
     pub const ASPECT: u64 = 0;
     pub const THING: u64 = 1;
@@ -164,6 +167,7 @@ pub(crate) mod filter {
     pub const DIAGNOSTICS: u64 = 4;
     pub const TASK: u64 = 5;
     pub const COMMITS: u64 = 6;
+    pub const BACKLINKS: u64 = 7;
 }
 
 /// Write outcomes a node remembers per (tier identity, session) for retries under the same

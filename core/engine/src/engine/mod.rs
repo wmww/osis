@@ -905,6 +905,8 @@ pub struct Core {
     pub skip_writer_rules: bool,
     /// Someone may listen to commit changes (`Engine::watch_commits`).
     pub(crate) commits_watched: bool,
+    /// Someone may listen to backlinks (`Engine::watch_references`).
+    pub(crate) refs_watched: bool,
     /// What `Core::commits_named` noted in the running transaction.
     commits_named: Vec<(Tid, Ak, CommitId)>,
     /// Whether a commit listener is on a thing (`Engine::listen_commits`).
@@ -1145,6 +1147,7 @@ impl Core {
             written: self.written.clone(),
             skip_writer_rules: self.skip_writer_rules.clone(),
             commits_watched: self.commits_watched.clone(),
+            refs_watched: self.refs_watched.clone(),
             commits_named: self.commits_named.clone(),
             commit_listeners: None,
             listed_before: self.listed_before.clone(),
@@ -1716,6 +1719,7 @@ impl Core {
             addenda_on: _,
             skip_writer_rules: _,
             commits_watched: _,
+            refs_watched: _,
             commit_listeners: _,
             forge_bad: _,
             forged: _,
@@ -1859,6 +1863,7 @@ impl Core {
             written: Vec::new(),
             skip_writer_rules: false,
             commits_watched: false,
+            refs_watched: false,
             commits_named: Vec::new(),
             commit_listeners: None,
             listed_before: Vec::new(),
@@ -3202,6 +3207,7 @@ impl Engine {
         fresh.later_sessions = self.core.later_sessions;
         fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
         fresh.commits_watched = self.core.commits_watched;
+        fresh.refs_watched = self.core.refs_watched;
         fresh.commit_listeners = self.core.commit_listeners.clone();
         fresh.skip_writer_rules = self.core.skip_writer_rules;
         fresh.walk_cache_min = self.core.walk_cache_min;

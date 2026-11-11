@@ -186,6 +186,14 @@ fn truncate(s: String, width: usize) -> String {
 }
 
 /// A command over an API piece that does not exist yet.
+fn backlink_lines(b: &[osis::Backlink]) -> Vec<String> {
+    b.iter().map(|b| format!("{} {}", b.tid.to_uri(), b.ak.as_str())).collect()
+}
+
+fn backlinks_json(b: &[osis::Backlink]) -> J {
+    J::Arr(b.iter().map(|b| J::obj([("tid", J::tid(b.tid)), ("ak", J::str(b.ak.as_str()))])).collect())
+}
+
 pub(crate) fn not_built(what: &'static str) -> anyhow::Error {
     exit(1, format!("not built yet: {what}"))
 }
@@ -210,6 +218,7 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::Writes { list: ListArgs { follow: true, .. }, .. }
             | Cmd::Fired { list: ListArgs { follow: true, .. }, .. }
             | Cmd::Grants { watch: true, .. }
+            | Cmd::Backlinks { watch: true, .. }
             | Cmd::Diag { follow: true }
     ) || delivers(c)
 }
@@ -225,6 +234,7 @@ fn stays_up(c: &Cmd) -> bool {
             | Cmd::Writes { list: ListArgs { follow: true, .. }, .. }
             | Cmd::Fired { list: ListArgs { follow: true, .. }, .. }
             | Cmd::Grants { watch: true, .. }
+            | Cmd::Backlinks { watch: true, .. }
             | Cmd::Diag { follow: true }
     )
 }
@@ -462,7 +472,37 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             ctx.emit(&a.iter().map(|a| a.as_str().to_string()).collect::<Vec<_>>(), J::Arr(a.iter().map(|a| J::str(a.as_str())).collect()))
         }
         Cmd::Ls { .. } => Err(not_built("query")),
-        Cmd::Backlinks { .. } => Err(not_built("backlinks")),
+        Cmd::Backlinks { t, watch: false, .. } => {
+            let t = ctx.tid(&t)?;
+            let (mut q, mut all) = (osis::BacklinkQuery::default(), Vec::new());
+            loop {
+                let p = db.backlinks(t, &q)?;
+                all.extend(p.backlinks);
+                if !p.more {
+                    break;
+                }
+                q.after = all.last().cloned();
+            }
+            ctx.emit(&backlink_lines(&all), backlinks_json(&all))
+        }
+        Cmd::Backlinks { t, watch: true, count } => {
+            let t = ctx.tid(&t)?;
+            let json_out = ctx.g.json;
+            let (tx, rx) = mpsc::channel::<(String, bool)>();
+            // the first call is the page now: printed, not counted
+            let mut initial = true;
+            let _sub = db.on_backlinks_change(t, &osis::BacklinkQuery::default(), move |_, r| {
+                let l = match (r, json_out) {
+                    (Ok(p), true) => backlinks_json(&p.backlinks).text(),
+                    (Ok(p), false) => backlink_lines(&p.backlinks).join(", "),
+                    (Err(e), true) => J::obj([("error", J::str(e.to_string()))]).text(),
+                    (Err(e), false) => format!("(error: {e})"),
+                };
+                let _ = tx.send((l, !std::mem::take(&mut initial)));
+            })?;
+            let timeout = ctx.timeout_or(None)?;
+            stream(ctx, &rx, count, timeout, "change", false, |_, (l, counts)| (l, counts))
+        }
         Cmd::Watch { t, ak, path, count } => watch(ctx, &t, ak.as_deref(), path.as_deref(), count),
         Cmd::Writes { t, ak, scope: s, list, next } => {
             let sc = match (t, ak) {

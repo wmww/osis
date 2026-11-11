@@ -720,6 +720,41 @@ fn watches_and_rows() {
     assert_eq!(x.n.serving().unwrap(), None);
 }
 
+// notes/client-port.md §2 (Backlinks), notes/api.md Backlinks: a client's backlinks are what its
+// actor may read, whoever may read the target; paged through the port; its listener hears the
+// page at once, then a change of it, and nothing of what it may not read.
+#[test]
+fn backlinks_are_the_actors() {
+    let x = node();
+    let link = osis::DynamicAspectKey::untyped(ak("t:link.0"));
+    let (_, _, c) = x.client(Role::Read);
+    for s in [x.t, x.u] {
+        x.n.commit_set(s, link.clone(), &Value::Tid(x.out)).unwrap();
+    }
+    let bl = |t: Tid| osis::Backlink { tid: t, ak: ak("t:link.0") };
+    let q = osis::BacklinkQuery::default();
+    assert_eq!(c.backlinks(x.out, &q).unwrap().backlinks, vec![bl(x.t)], "not the thing under another group");
+    assert_eq!(x.n.backlinks(x.out, &q).unwrap().backlinks.len(), 2);
+    let (tx, rx) = channel();
+    let _s = c.on_backlinks_change(x.out, &q, move |_, p| tx.send(p.unwrap().backlinks).unwrap()).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(20)).unwrap(), vec![bl(x.t)], "initial");
+    x.n.commit_set(x.u, link.clone(), &Value::Int(0)).unwrap();
+    c.settle();
+    assert!(rx.try_recv().is_err(), "a change of what it may not read is none");
+    x.n.commit_set(x.member, link.clone(), &Value::Tid(x.out)).unwrap();
+    c.settle();
+    assert!(rx.try_recv().is_err(), "a member it may not read is none either");
+    x.n.commit_set(x.t, osis::DynamicAspectKey::untyped(ak("t:also.0")), &Value::Tid(x.out)).unwrap();
+    c.settle();
+    let want = vec![osis::Backlink { tid: x.t, ak: ak("t:also.0") }, bl(x.t)];
+    assert_eq!(rx.recv_timeout(Duration::from_secs(20)).unwrap(), want);
+    // paged
+    let p = c.backlinks(x.out, &osis::BacklinkQuery { after: None, limit: Some(1) }).unwrap();
+    assert_eq!((p.backlinks.clone(), p.more), (vec![want[0].clone()], true));
+    let p = c.backlinks(x.out, &osis::BacklinkQuery { after: p.backlinks.last().cloned(), limit: Some(1) }).unwrap();
+    assert_eq!((p.backlinks, p.more), (vec![want[1].clone()], false));
+}
+
 // spec/wire.md §11.2 (Error 4), notes/client-port.md §3: the API's view of the connection cap: the ninth connection fails Network, one going frees a slot
 #[test]
 fn connections_past_the_cap() {

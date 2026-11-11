@@ -4,10 +4,13 @@
 //! kept in the transaction that changes a state: a join counts the tids at its reach before and
 //! after (`Delta::reach`), a whole write (a rebuild: validity, expiry, purge, ending) the whole
 //! state against the stored rows (`resync`), a dropped aspect clears them. An ephemeral aspect's
-//! rows are memory rows, as its state is. spec: none (local; notes/engine-refs.md).
+//! rows are memory rows, as its state is. A row appearing or going is told as
+//! `Event::References` once someone listens (`Engine::watch_references`). spec: none (local;
+//! notes/engine-refs.md).
 
 use super::{Tx, records, scan_table};
 use crate::error::{Error, Result};
+use crate::events::Event;
 use osis_base::{Ak, Tid, Value};
 use osis_crdt::Fragment;
 use osis_store::Shred;
@@ -115,6 +118,8 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
     if !indexed(ak) || d.0.values().all(|n| *n == 0) {
         return Ok(());
     }
+    // the rows that appeared or went, for backlinks listeners
+    let mut moved = Vec::new();
     tx.in_class(ak.ephemeral(), |tx| {
         let (to, from) = (tx.txn.index(TO)?, tx.txn.index(FROM)?);
         let pre = from_prefix(source, ak);
@@ -128,15 +133,21 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
                 // the data it came from went: no local copy of the row stays
                 tx.txn.table_remove(from, &fk, Shred::Yes)?;
                 tx.txn.table_remove(to, &tk, Shred::Yes)?;
+                moved.push(target);
             } else {
                 tx.txn.table_put(from, &fk, new.to_be_bytes().to_vec(), Shred::No)?;
                 if old == 0 {
                     tx.txn.table_put(to, &tk, Vec::new(), Shred::No)?;
+                    moved.push(target);
                 }
             }
         }
         Ok(())
-    })
+    })?;
+    if tx.core.refs_watched && !moved.is_empty() {
+        tx.core.events.queue(Event::References(std::sync::Arc::new(moved)));
+    }
+    Ok(())
 }
 
 /// The stored counts of `(source, ak)` by target.
@@ -188,6 +199,29 @@ pub(crate) fn to(tx: &mut Tx<'_>, target: &Tid) -> Result<Vec<Reference>> {
         let fk = [from_prefix(&source, &ak).as_slice(), target.as_bytes()].concat();
         let count = tx.txn.table_get(from, &fk)?.map(|v| count_of(&v)).transpose()?.ok_or_else(bad)?;
         out.push(Reference { target: *target, source, ak, count });
+    }
+    Ok(out)
+}
+
+/// Up to `n` rows naming `target` after `after` (a source and AK, exclusive; `None`: from the
+/// first), in (source, AK) order: the sources and AKs, `n` rows read.
+pub(crate) fn to_page(tx: &mut Tx<'_>, target: &Tid, after: Option<(&Tid, &Ak)>, n: usize) -> Result<Vec<(Tid, Ak)>> {
+    let to = tx.txn.index(TO)?;
+    let pre = target.as_bytes().to_vec();
+    let start = match after {
+        Some((s, ak)) => [pre.as_slice(), s.as_bytes(), ak.as_str().as_bytes(), &[0]].concat(),
+        None => pre.clone(),
+    };
+    let end = [pre.as_slice(), &[0xff; 16]].concat();
+    let mut out = Vec::new();
+    for (k, _) in tx.txn.table_range(to, &start, Some(&end), n)? {
+        drop(crate::costs::span("refs: row read"));
+        let bad = || Error::Corrupt("reference row");
+        let rest = k.get(pre.len()..).ok_or_else(bad)?;
+        let (s, a) = rest.split_at_checked(osis_base::format::TID_LEN).ok_or_else(bad)?;
+        let source = Tid::from_bytes(s.try_into().map_err(|_| bad())?);
+        let ak = std::str::from_utf8(a).ok().and_then(|a| Ak::new(a).ok()).ok_or_else(bad)?;
+        out.push((source, ak));
     }
     Ok(out)
 }

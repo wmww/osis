@@ -64,6 +64,9 @@ pub enum Event {
     Created { thing: Tid },
     /// What `Engine::groups_of` and `listed_in` answer for these things changed.
     Groups(Arc<Vec<Tid>>),
+    /// A reference index row naming each of these targets appeared or went (`refs`): their
+    /// backlinks changed. Only once a backlinks watch was asked for (`Engine::watch_references`).
+    References(Arc<Vec<Tid>>),
     /// Ephemeral state changed in memory (notes/ephemeral.md). `id` is the ephemeral commit that
     /// carried the change, or the durable commit (a delete, an undone creation) that dropped its
     /// things' ephemeral state.

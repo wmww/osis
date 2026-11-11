@@ -1,5 +1,5 @@
 # Reference index
-> Summary: The engine's local, rebuildable index of references in held readable data (`engine/refs.rs`): rows (target, source thing, AK) with a count, what counts as a reference, how every state change keeps the rows in its own transaction, costs and checks. Serves backlinks and the lifetime judgment (issues/thing-lifetimes.md).
+> Summary: The engine's local, rebuildable index of references in held readable data (`engine/refs.rs`): rows (target, source thing, AK) with a count, what counts as a reference, how every state change keeps the rows in its own transaction, the paged read and change event backlinks use, costs and checks. Serves backlinks (notes/api.md Backlinks) and the lifetime judgment (issues/thing-lifetimes.md).
 
 ## Principle
 A row says exactly what the source's held state on that aspect holds: it changes in the transaction that changes the state and never outlives the value it came from.
@@ -9,6 +9,10 @@ A row says exactly what the source's held state on that aspect holds: it changes
 - Class by AK: an ephemeral (`+`) aspect's rows are memory rows, as its state is (live ephemeral), the rest durable. `retainers^.0` rows are kept like any (`Reference::lists`): who lists a target, not a reference for lifetime.
 - Indexed: every aspect with a state but `created.0` and the role-class aspects (`refs::indexed`).
 - Counted: every tid (`Value::Tid`, tag 1616) at any depth of a value the state holds as written (`Fragment::each_value`: register and slot values, set elements, list items, the keys of map records holding their creation), map keys, enum payloads and unknown tags' content included. Not counted: a value-less write (the state holds none), an invalid write (un-merged), a link's chunked content, a tid spelled in a string, text chars.
+
+## Reading it
+- `Engine::references_page(target, after, n)`: up to n `(source, AK)` after a cursor, by a range read of `node/refs to`, O(n) rows (cost span `refs: row read`); backlinks pages over it.
+- `Event::References(targets)`: queued by `refs::note` when a row appears or goes (a count staying above zero is no change), in the transaction, so a rollback drops it; only once `Engine::watch_references` turned it on for the open (sticky, as `watch_commits`): a resync of a fall of an aspect would otherwise list every target with no one to tell.
 
 ## Keeping it
 - A join (`atomic::join_into_state`, the oracle's): the tids at the delta's reach (`Fragment::reach`, all a join can change) before and after, the difference noted (`refs::note`). O(the reach): a path write reads the entries it writes and replaces, no other.

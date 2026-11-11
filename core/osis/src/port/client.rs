@@ -1381,6 +1381,38 @@ impl crate::handle::ReadOnly {
 }
 
 impl crate::handle::ReadOnly {
+    /// `backlinks` at the connected node.
+    pub(crate) fn node_backlinks(&self, r: &Connection, tid: Tid, q: &crate::BacklinkQuery) -> Result<crate::BacklinkPage> {
+        c::backlink_page(r.call(method::BACKLINKS, vec![Value::Tid(tid), c::backlink_query_v(q)])?)
+    }
+
+    /// `on_backlinks_change` at the connected node.
+    pub(crate) fn node_on_backlinks_change(&self, r: &Arc<Connection>, tid: Tid, q: &crate::BacklinkQuery, mut f: CallbackOf<Result<crate::BacklinkPage>>) -> Result<Subscription> {
+        let mut last = None;
+        let cb: Callback = Box::new(move |db, d| {
+            let Delivery::Port(ev) = d else { return };
+            match ev {
+                PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v }) => match c::backlink_page(v) {
+                    Ok(p) if last.as_ref() == Some(&p) => {}
+                    Ok(p) => {
+                        last = Some(p.clone());
+                        f(db, Ok(p));
+                    }
+                    Err(e) => f(db, Err(e)),
+                },
+                PortEvent::Notify(Payload::TooLarge { .. }) => f(db, Err(Error::TooLarge { limit: REPLY_BUDGET })),
+                PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => {
+                    last = None;
+                    f(db, Err(sub_ended()));
+                }
+            }
+        });
+        let filter = Value::List(vec![u(super::filter::BACKLINKS), Value::Tid(tid), c::backlink_query_v(q)]);
+        Ok(self.node_sub(r, Some(tid), filter, true, cb)?.0)
+    }
+}
+
+impl crate::handle::ReadOnly {
     fn primary(&self) -> &Arc<Connection> {
         self.inner.client.get().map(|t| &t.primary).unwrap_or_else(|| unreachable!("a process-wide node call on a node's own handle"))
     }

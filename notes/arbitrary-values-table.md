@@ -138,6 +138,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `STREAM_CHUNK` 1 MiB (osis `port`, `stream_read` page) | P | nothing moves / one page bounded by `REPLY_BUDGET` |
 | `MAX_AUTHOR_ITEMS` 32 (osis-base `format`, by-author items of one commit's purge) | R (bad input; more in further commits) | no purge by author / one commit stalls every node for items x the aspect's length |
 | `COMMIT_PAGE` 256 (osis `commits`, commits of a page) | R (a page ends early, `more`) | reads nothing / a whole scope in one call under `eng` |
+| `BACKLINK_PAGE` 256 (osis `backlinks`, backlinks of a page) | R (a page ends early, `more`) | reads nothing / every backlink of a thing in one call under `eng` |
 | cli `PAGE` 256 (`history --max`'s default, `chat watch --after`'s fetch) | M (past it the next page) | reads nothing / the cap of the API's own page |
 | `COMMIT_DIRTY_BYTES` 64 (osis `port`, an ID waiting in a commit subscription against `PUSH_BYTES`) | R (lapse; the client reads again) | nothing counted, unbounded for a slow client / the first ID lapses |
 | `COMMIT_SEND` 64 (osis `port`, commits read per send) | P | nothing sent / every waiting commit read per send, most not fitting |

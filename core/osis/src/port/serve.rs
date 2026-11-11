@@ -210,6 +210,8 @@ enum Kind {
     Thing(Tid),
     Grants(Tid),
     Commits(crate::commits::Address),
+    /// A page of a thing's backlinks: what its actor may read of them, whoever may read the thing.
+    Backlinks(Tid, crate::BacklinkQuery),
     Status,
     Diagnostics,
     /// A row that waits (`filter::TASK`), until its outcome went.
@@ -591,6 +593,10 @@ impl Worker {
                 }
                 c::opt(db.commit_told_here(&at, id, None)?.as_ref(), c::commit_v)
             }
+            method::BACKLINKS => {
+                let (t, q) = (a.tid()?, c::backlink_query(a.next()?)?);
+                c::backlink_page_v(&db.backlinks(t, &q)?)
+            }
             method::STATUS => c::status_v(&db.status()?),
             method::REGISTER_SCHEMA => {
                 let (file, src) = (a.text()?, a.text()?);
@@ -795,6 +801,10 @@ impl Worker {
                 }
                 (Kind::Commits(at.clone()), Filter::Commits(at))
             }
+            filter::BACKLINKS => {
+                let (t, q) = (thing(a.tid()?)?, c::backlink_query(a.next()?)?);
+                (Kind::Backlinks(t, q), Filter::Due(crate::watch::Watch::Backlinks(t, acting.is_some())))
+            }
             filter::STATUS => (Kind::Status, Filter::Status),
             filter::DIAGNOSTICS => (Kind::Diagnostics, Filter::Diagnostics),
             _ => return Err(c::bad("filter")),
@@ -847,7 +857,7 @@ impl Worker {
                     queue(&mut lock(&p), Value::List(vec![c::commit_id_v(&id), c::opt(Some(&e), c::commit_v)]))
                 }
                 Delivery::Commit { id, fired: None, .. } => lock(&p).note_commit(id, &held2),
-                Delivery::Grants | Delivery::Status(_) => lock(&p).dirty = true,
+                Delivery::Grants | Delivery::Status(_) | Delivery::Due => lock(&p).dirty = true,
                 // this node's own source for it moved: the client's subscription ends
                 Delivery::Moved => lock(&p).lapsed = true,
                 Delivery::Diagnostic(x) => queue(&mut lock(&p), c::diag_v(&x)),
@@ -865,6 +875,10 @@ impl Worker {
                 }
                 Kind::Thing(t) => initial = r.aspects(*t).map(|aks| Value::List(aks.iter().map(|ak| Value::List(vec![c::ak_v(ak), c::read_v(&r.value(*t, ak))])).collect())),
                 Kind::Grants(t) => initial = Ok(c::grants_v(&r.grants(*t))),
+                Kind::Backlinks(t, q) => {
+                    r.e.watch_references();
+                    initial = r.backlinks(*t, q).map(|p| c::backlink_page_v(&p));
+                }
                 _ => {}
             }
             cb
@@ -1033,6 +1047,12 @@ fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::
             }
         }
         Kind::Grants(t) if g.dirty => out.push((c::grants_v(&db.read_local(|r| r.grants(*t))), None)),
+        // a page that cannot be read now goes at the next change
+        Kind::Backlinks(t, q) if g.dirty => {
+            if let Ok(p) = db.read_local(|r| r.backlinks(*t, q)) {
+                out.push((c::backlink_page_v(&p), None));
+            }
+        }
         Kind::Status if g.dirty => {
             // a store that cannot answer: the client hears something changed and asks for itself
             out.push((db.status().map_or_else(|_| Value::List(vec![]), |st| c::status_v(&st)), None));

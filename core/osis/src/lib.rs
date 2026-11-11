@@ -203,6 +203,23 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
+//! # Backlinks
+//! `backlinks(t, query)` pages through the things whose current values hold `t`'s tid, with the
+//! aspect; a group listing `t` is one. `on_backlinks_change` hears a page now and on each change.
+//! ```
+//! # use osis::{BacklinkQuery, Config, MemStore, Osis, Store, Value};
+//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! let link = db.aspect_key("note:link.0")?;
+//! let mut w = db.write();
+//! let (a, b) = (w.create()?, w.create()?);
+//! w.at(a, link.clone()).set(&Value::Tid(b))?;
+//! w.commit()?;
+//! let page = db.backlinks(b, &BacklinkQuery::default())?;
+//! let found: Vec<_> = page.backlinks.iter().map(|l| (l.tid, l.ak.as_str())).collect();
+//! assert_eq!(found, vec![(a, "note:link.0")]);
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
 //! # Commits, undo, redo, revert
 //! `writes` lists the commits in a scope, anyone's, each with its parts: those still in the read or
 //! kept by history (`fired` lists a signal's). `undo` and `redo` revert this actor's own newest
@@ -448,6 +465,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod backlinks;
 mod commit_id;
 mod clients;
 mod diagnostic;
@@ -474,6 +492,7 @@ mod watch;
 mod write;
 
 mod port;
+pub use backlinks::{Backlink, BacklinkPage, BacklinkQuery};
 pub use commit_id::{CommitFrom, CommitId, CommitPos};
 pub use clients::{Client, ClientSecret};
 pub use error::{Error, Result};

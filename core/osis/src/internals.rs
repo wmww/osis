@@ -5,6 +5,7 @@ use crate::Osis;
 use osis_node::sync::{Action, Event, SyncEngine};
 use osis_node::Engine;
 
+pub use crate::backlinks::BACKLINK_PAGE;
 pub use crate::commits::COMMIT_PAGE;
 pub use crate::net::ManualNet;
 pub use crate::account::OFFER_LIFETIME_MS;

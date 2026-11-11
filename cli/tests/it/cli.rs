@@ -388,17 +388,28 @@ fn sharing_commands_local_plan_cli_4() {
     assert_eq!(s.ok(&["--json", "group", "source", &g]).line(), "{\"source\":\"local\"}");
 }
 
-// CLI: commands over API pieces not built yet (queries, backlinks) parse and
-// report it; sharing commands without a runtime or peers fail as the API does.
+// CLI `backlinks T`: the things whose values reference T, one `tid aspect` line each.
+#[test]
+fn backlinks_lists_the_referrers() {
+    let s = S::mem();
+    let (a, t) = (s.thing(), s.thing());
+    // the group it was created in lists it
+    let before = s.ok(&["backlinks", &t]).out;
+    assert!(before.lines().count() == 1 && before.ends_with(" group.0\n"), "{before}");
+    s.ok(&["set", &a, "note:link.0", &t]);
+    let out = s.ok(&["backlinks", &t]).out;
+    assert!(out.lines().count() == 2 && out.contains(&format!("{a} note:link.0\n")), "{out}");
+    assert!(s.ok(&["--json", "backlinks", &t]).line().contains(&format!("{{\"tid\":\"{a}\",\"ak\":\"note:link.0\"}}")));
+}
+
+// CLI: commands over API pieces not built yet (queries) parse and report it; sharing commands
+// without a runtime or peers fail as the API does.
 #[test]
 fn unbuilt_commands_say_so_plan_cli_4() {
     let s = S::mem();
-    let t = s.thing();
-    for args in [vec!["ls", "me"], vec!["backlinks", &t]] {
-        let o = s.call(&args, "");
-        assert_eq!(o.code, 1, "{args:?}: {}", o.err);
-        assert!(o.err.contains("not built yet"), "{args:?}: {}", o.err);
-    }
+    let o = s.call(&["ls", "me"], "");
+    assert_eq!(o.code, 1, "{}", o.err);
+    assert!(o.err.contains("not built yet"), "{}", o.err);
     assert_eq!(s.ok(&["node", "ls"]).out.lines().count(), 1, "this node");
     assert_eq!(s.ok(&["peers", "ls"]).out, "");
     assert_eq!(s.code(&["link", "redeem", "x"]), 7, "malformed link");
