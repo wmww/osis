@@ -138,6 +138,12 @@ impl SyncEngine {
         s
     }
 
+    /// This node's key: the Ed25519 key of its dialable secret, under which every listener of
+    /// it but the LAN's listens (spec/sync.md §10).
+    pub fn dialable_key(&mut self) -> [u8; 32] {
+        SigningSecret::from_seed(&self.dialable_secret()).verifying_key().to_bytes()
+    }
+
     /// Rotates this node's reach now (`Osis::rotate_peer_address`): a new dialable secret and lan
     /// secret, `reach.0` written with the new key and the same relays, and `Action::Reach` so
     /// the driver listens with the new key and joins the LAN with a fresh one. Only when asked: nothing
@@ -145,12 +151,6 @@ impl SyncEngine {
     /// longer dial this node or recognise it on a LAN. Direct links still open lose first
     /// contact (they work through hosts).
     #[must_use]
-    /// This node's key: the Ed25519 key of its dialable secret, under which every listener of
-    /// it but the LAN's listens (spec/sync.md §10).
-    pub fn dialable_key(&mut self) -> [u8; 32] {
-        SigningSecret::from_seed(&self.dialable_secret()).verifying_key().to_bytes()
-    }
-
     pub fn rotate_reach(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
         if let Err(e) = self.rotate_now(&mut out) {

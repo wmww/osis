@@ -1,5 +1,5 @@
 # Node sync structure for the rework
-> Summary: The structural refactors in core/node/src/sync that the networking rework's jobs need, each tied to the job it unblocks: one connection record (`Conn` + `Served`), one `sources(L)` in place of five per-label peer sets, the LAN route machinery deleted with issues/net-connect.md, one retry rule for ten, local passes as the empty-source pass, one serving implementation (osis-host's `Hub`; serve.rs's `PeerStore` goes). Three low bugs in the code they replace. Part of issues/net-rework.md.
+> Summary: The structural refactors in core/node/src/sync that the networking rework's jobs need, each tied to the job it unblocks: one connection record (`Conn` + `Served`), one `sources(L)` in place of five per-label peer sets, the LAN route machinery deleted with issues/net-connect.md, one retry rule for ten, local passes as the empty-source pass, one serving implementation (osis-host's `Hub`, built: issues/net-one-peer.md 3d). Three low bugs in the code they replace. Part of issues/net-rework.md.
 > Priority: normal
 > Tags: node, sync
 

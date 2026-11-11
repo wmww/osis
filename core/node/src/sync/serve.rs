@@ -422,6 +422,7 @@ impl SyncEngine {
         if fresh.is_empty() {
             return Ok(());
         }
+        self.prune_due();
         let who = self.connection_proven(conn).and_then(|p| p.source(&self.engine.core));
         let key = charge_key(who, &l);
         let mut gone = Vec::new();
@@ -454,6 +455,7 @@ impl SyncEngine {
     /// Charges a Deposit item's blob `b` (`size` bytes under `l`) from `conn`'s peer as an upload
     /// is charged (`charge_key`); false, charging nothing, past either budget.
     pub(crate) fn charge_deposit(&mut self, conn: ConnId, l: LabelId, b: BlobId, size: u64) -> bool {
+        self.prune_due();
         let node = self.connection_proven(conn).and_then(|p| p.node).filter(|_| self.connection_proven(conn).is_some_and(|p| self.engine.core.judge(p.all()).known()));
         let key = charge_key(node, &l);
         let used = self.charges.per.get(&key).copied().unwrap_or(0);
@@ -485,6 +487,13 @@ impl SyncEngine {
             Kind::Unknown | Kind::Bad | Kind::Parked(_) | Kind::Awaits { .. } => true,
             Kind::Commit { commit, .. } => ix.pending.contains_key(commit) && !ix.commits.contains_key(commit),
             _ => false,
+        }
+    }
+
+    /// A budget was reached: charges that no longer count go first, at most once a second.
+    fn prune_due(&mut self) {
+        if self.charges.full && self.now() >= self.charges.pruned.saturating_add(1000) {
+            self.prune_charges();
         }
     }
 

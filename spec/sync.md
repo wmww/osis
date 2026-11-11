@@ -109,8 +109,7 @@
     - while the blob is unexpired and its commit is applied, or held unjudged, and not judged invalid;
     - for a thing it knows no label of, whose read secret the commit gave it (a `secrets.0` delta valid, or a box of it that opens while the commit is unjudged or pending);
     - for a label no `label.0` it has applied records;
-    - at most one per blob;
-    - never at a `peer://` address.
+    - at most one per blob.
 - **Label hints**: the label an inbox blob names is its sender's word until a `label.0` the node holds records it.
   - Blobs naming one label under different things are tried in turn: under the first thing not failed since the label's last retry, at the hosts all of them name, each retried after `resync_ms`.
   - A hinted open by a sync key holds only at a head of that key, whatever the host answers.
