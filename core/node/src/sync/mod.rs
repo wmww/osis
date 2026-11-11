@@ -716,15 +716,14 @@ impl SyncEngine {
                     c.up = true;
                     let mut o = c.session.handle(now, ClientInput::Start);
                     let lan = c.peer.then(|| (c.host, c.address.clone()));
-                    // to a key this node chose to dial; a host needs no proof (spec/sync.md §10)
-                    if c.peer {
-                        let host = c.host;
-                        let own = self.dials_own_node(&host);
-                        let provers = proofs::provers(&mut self.engine, own)?;
-                        let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-                        c.proved = provers.iter().map(|p| p.record.tid()).collect();
-                        o.extend(c.session.handle(now, ClientInput::Command(Command::Prove(provers))));
-                    }
+                    // to a key this node chose to dial, a co-reader's or a host's (spec/sync.md
+                    // §10): the shared set follows on either
+                    let host = c.host;
+                    let own = self.dials_own_node(&host);
+                    let provers = proofs::provers(&mut self.engine, own)?;
+                    let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
+                    c.proved = provers.iter().map(|p| p.record.tid()).collect();
+                    o.extend(c.session.handle(now, ClientInput::Command(Command::Prove(provers))));
                     self.outputs(conn, o, out)?;
                     if let Some((k, a)) = lan
                         && self.lan_up(k, &a)

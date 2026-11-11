@@ -140,20 +140,10 @@ impl SyncEngine {
     /// The peer's proofs are in: a dialer that met a known actor lists its records for it.
     pub(super) fn send_resume(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         let Some(c) = self.conns.get(&conn) else { return Ok(()) };
-        if !c.peer {
-            return Ok(());
-        }
         let Some((dialer, listener, key)) = c.session.binding() else { return Ok(()) };
         let actors = counted_actors(&self.engine, &c.proven);
         if actors.is_empty() {
-            // no record: the listener runs the connection's set if it knows this dialer, and this
-            // side tests a filter it receives (first contact, issues/net-first-contact.md)
-            let now = self.now();
-            if let Some(c) = self.conns.get_mut(&conn) {
-                let o = c.session.handle(now, ClientInput::Command(Command::Peer(Box::new(osis_proto::Message::NoRecord { id: super::shared::NO_RECORD_ID }))));
-                self.outputs(conn, o, out)?;
-            }
-            return self.shared_begin(conn, None, out);
+            return self.no_record(conn, out);
         }
         let mut nonce = [0u8; 32];
         self.rng.fill_bytes(&mut nonce);
@@ -166,6 +156,20 @@ impl SyncEngine {
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let o = c.session.handle(now, ClientInput::Command(Command::Resume { nonce, tags }));
         self.outputs(conn, o, out)
+    }
+
+    /// This dialed connection keeps no record (the listener proved no known actor, or refused
+    /// this side's Resume: it knows none of its actors): NoRecord, so the listener runs the set
+    /// under the connection's pair key (its unread entries go to any dialer), and this side tests
+    /// the filter it receives (first contact, issues/net-first-contact.md).
+    pub(super) fn no_record(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
+        self.records.sent.remove(&conn);
+        let now = self.now();
+        if let Some(c) = self.conns.get_mut(&conn) {
+            let o = c.session.handle(now, ClientInput::Command(Command::Peer(Box::new(osis_proto::Message::NoRecord { id: super::shared::NO_RECORD_ID }))));
+            self.outputs(conn, o, out)?;
+        }
+        self.shared_begin(conn, None, out)
     }
 
     /// The answer to this connection's Resume. A tag not one this node expected, or for a record
