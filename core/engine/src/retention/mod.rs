@@ -56,10 +56,10 @@ pub(crate) use bounds::{Killed, mark_killed, mark_bounded};
 const T_EXPIRY: u8 = 1;
 /// A purge-on-replace body kept to its commit's purge floor: judged again then (`replace`).
 const T_FLOOR: u8 = 2;
-/// A part kept past leaving history by a purge request's header (its commit's purge floor, a
-/// purged fire's tombstone): a signal's body goes then (`signal_bound`); a value part leaves the
-/// listing then (`listing::kept_passed`). Leaving history by the timeline alone is `leaving`'s
-/// one timer per aspect.
+/// A part kept by a purge request's header (its commit's purge floor, a purged fire's tombstone):
+/// a signal's body goes then (`signal_bound`); a value part is told at its floor, armed when it
+/// arrives (`listing::kept_passed`). Leaving history by the timeline alone is `leaving`'s one
+/// timer per aspect.
 pub(crate) const T_KEPT: u8 = 3;
 
 /// A signal delta's keep bound, wall ms (spec/commits.md §5 Signals): any body's keep at least
@@ -415,6 +415,7 @@ pub(crate) fn drop_invalid(tx: &mut Tx<'_>) -> Result<()> {
 pub(crate) fn settings_changed(tx: &mut Tx<'_>) -> Result<()> {
     while let Some(t) = tx.core.settings_due.pop_first() {
         tx.core.settings_generation += 1;
+        tx.core.settings_moved.insert(t, tx.core.settings_generation);
         let aspects: Vec<Ak> = tx.core.ix.by_aspect.range((t, Ak::MIN)..).take_while(|((x, _), _)| *x == t).map(|((_, a), _)| a.clone()).collect();
         for ak in aspects {
             if osis_commit::retention::fixed_retention(ak.as_str()).is_some() {
@@ -901,6 +902,13 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, p
         }
         purge::purge_arrived(tx, id, h, ai, purged)?;
         drop_gone(tx, id, ai, purged)?;
+        // a value part a purge request's header keeps listed to its floor, replaced or not by then,
+        // whatever its aspect keeps: told when the floor passes (`listing::kept_passed`)
+        if let Some(t) = osis_commit::retention::purge_keep_until(h).filter(|t| *t > tx.now().0 && *t < osis_commit::FOREVER)
+            && h.aspects.get(ai).is_some_and(|a| !a.ak.signal())
+        {
+            tx.put_timer(t, id, ai, T_KEPT)?;
+        }
         // a signal body goes at its keep bound, whole or as its leftover: by its aspect's walk
         // while its timeline keeps it (`leaving`), then by its commit's purge floor if later
         if let Some(a) = h.aspects.get(ai).filter(|a| a.ak.signal()) {

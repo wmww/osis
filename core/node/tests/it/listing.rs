@@ -594,3 +594,27 @@ fn first_set_undo_with_concurrent_set_spec_commits_7() {
         assert_eq!(lp.peers[i].engine.get(&d, &reg()).unwrap(), None, "peer {i}");
     }
 }
+
+// spec/commits.md §5 Purge, notes/api.md Commits: a part of a commit carrying a purge request,
+// replaced on an aspect no setting keeps, is listed to the commit's purge floor and told leaving
+// the listing then, to a listener added after the replacement too.
+#[test]
+fn purge_floor_part_told_at_its_floor_spec_commits_5() {
+    let (mut lp, d, _) = setup(431);
+    let other = write(&mut lp, 0, d, crate::common::purgeable_by(PurgeBy::AuthorOrAdmin), "other");
+    let mut m = Mutation::new();
+    m.set(d, &reg(), &s("x")).unwrap();
+    let now = lp.peers[0].engine.now();
+    m.set(d, &ct::PURGE, &now).unwrap();
+    m.purge(PurgeItem::Commit { commit: other, tid: d, ak: reg() });
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    write(&mut lp, 0, d, crate::common::purgeable_by(PurgeBy::AuthorOrAdmin), "y");
+    assert!(held(&mut lp.peers[0], d, &c).body != PartBody::Dropped, "kept to its floor");
+    // a listener added after the replacement
+    lp.peers[0].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true), &[d]).unwrap();
+    lp.peers[0].drain_events();
+    lp.advance(osis_base::format::ROLE_KEEP_MS + 10_000);
+    lp.peers[0].tick().unwrap();
+    assert!(told_of(&mut lp.peers[0], d).contains(&c), "left the listing at its floor");
+}

@@ -216,21 +216,18 @@ fn keep_bound(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<u64>> {
     })
 }
 
-/// The timer of value part `ai` of `c`, kept past leaving history by its commit's purge floor
-/// (`retention::leaving::left`), ran: told when its bound has passed, armed again when it moved
-/// later.
+/// The purge floor of value part `ai` of `c` passed (its timer, armed when the part arrived,
+/// `retention::on_parts`): told when that ends its listing. One its history keeps longer is told
+/// as it leaves (`retention::leaving`).
 pub(crate) fn kept_passed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     if !tx.core.commits_watched {
         return Ok(());
     }
-    let Some(t) = keep_bound(tx, c, ai)? else { return Ok(()) };
-    if t <= tx.now().0 {
-        if let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)) {
-            let (tid, ak) = (a.tid, a.ak.clone());
-            tx.core.commits_named(tid, ak, *c);
-        }
-    } else if t < osis_commit::FOREVER {
-        tx.put_timer(t, c, ai, crate::retention::T_KEPT)?;
+    if keep_bound(tx, c, ai)?.is_some_and(|t| t <= tx.now().0)
+        && let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai))
+    {
+        let (tid, ak) = (a.tid, a.ak.clone());
+        tx.core.commits_named(tid, ak, *c);
     }
     Ok(())
 }

@@ -17,9 +17,11 @@
 //! node-sync marked at the row's time, never before the body leaves.
 //!
 //! What leaving does: a value part is told to commit listeners (`listing`) and marked for
-//! node-sync (`Core::mark_changed`: its keep bound passed); a fire's body drops. A part whose
-//! commit carries a purge request is kept past it to the purge floor (spec/commits.md §5 Purge):
-//! a timer of its own then (`T_KEPT`), as a purge tombstone of a fire has (`edits::settle`).
+//! node-sync (`Core::mark_changed`: its keep bound passed); a fire's body drops. A purge
+//! request's header keeps its commit's parts to its purge floor (spec/commits.md §5 Purge), a time
+//! no setting moves, as an expiry: a per-part `T_KEPT` timer, armed at the floor when a value part
+//! arrives (`on_parts`), and for a fire the walk reaches before it (as a purged fire's tombstone,
+//! `edits::settle`).
 
 use super::{T_KEPT, history};
 use crate::engine::records::{self, Rd, Wr};
@@ -137,7 +139,7 @@ fn moved(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId) {
 }
 
 /// Place `p` of `(tid, ak)` left history at `now` (its timeline's bound passed): a value part is
-/// told, a held fire's body drops; one kept by its commit's purge floor gets a timer of its own.
+/// told, a held fire's body drops; a fire its commit's purge floor keeps gets a timer at the floor.
 fn left(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place, now: u64) -> Result<()> {
     drop(crate::costs::span("leaving: place left"));
     let c = p.1;
@@ -145,12 +147,20 @@ fn left(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place, now: u64) -> Result<()> {
     let Some(ai) = m.aspect(tid, ak) else { return Ok(()) };
     let h = m.header.clone();
     let held = m.holds(ai);
+    #[cfg(debug_assertions)]
+    let whole = held && !m.bare(ai) && m.valid_at(ai);
     let floor = osis_commit::retention::purge_keep_until(&h).filter(|t| *t > now);
     if !ak.signal() {
-        moved(tx, tid, ak, &c);
-        if let Some(t) = floor {
-            tx.put_timer(t, &c, ai, T_KEPT)?;
+        // never early: a row's part is out of history by a fresh judgment when its row leaves (a
+        // row may be late: an earlier superseder of a dead write arriving moves no row)
+        #[cfg(debug_assertions)]
+        if whole && tx.core.recheck_at((tx.core.tx_store, tx.core.generation, tx.core.memory_generation), format!("leaving {tid:?} {ak:?}")) {
+            let fresh = crate::costs::paused(|| super::bounds::dated_replaced_at(tx, &h, &c, ai))?;
+            let k = history::of(tx.core, tid, ak);
+            assert!(fresh.is_some_and(|f| leaves(&k, f) <= now), "{c:?} on {tid:?} {ak:?} left at row {p:?} while in history (replaced at {fresh:?})");
         }
+        // one its purge floor keeps listed is told again then, by its floor's timer (`on_parts`)
+        moved(tx, tid, ak, &c);
         return Ok(());
     }
     if !held {
@@ -399,8 +409,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Things `things` forgotten (`forget`): their cursors and rows go.
+/// Things `things` forgotten (`forget`): their cursors, rows and settings moves go.
 pub(crate) fn forget_things(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
+    tx.core.settings_moved.retain(|t, _| !things.contains(t));
     let keys: Vec<(Tid, Ak)> = tx.core.ix.leave_from.keys().filter(|(t, _)| things.contains(t)).cloned().collect();
     for (tid, ak) in keys {
         let rows: Vec<Place> = tx.core.ix.leaving.get(&(tid, ak.clone())).into_iter().flatten().copied().collect();

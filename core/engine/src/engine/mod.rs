@@ -1010,11 +1010,13 @@ pub struct Core {
     /// Things whose `retention^.0` deltas arrived, flipped or dropped this transaction: what their
     /// timeline judges is judged again at its end (`retention::settings_changed`).
     pub settings_due: BTreeSet<Tid>,
-    /// Bumped whenever a thing's settings change (`retention::settings_changed`): node-sync's
-    /// cached keep bounds of bodies whose leaving no setting dated are judged again
-    /// (`Engine::settings_generation`). Only moves forward: a bump a rollback undid costs a
-    /// re-judgment.
+    /// Bumped whenever a thing's settings change (`retention::settings_changed`), and the thing's
+    /// entry in `settings_moved` set to it: node-sync's cached keep bounds of the thing's bodies
+    /// are judged again (`Engine::settings_moved_after`). Only moves forward: a bump a rollback
+    /// undid costs a re-judgment.
     pub settings_generation: u64,
+    /// Per thing, the `settings_generation` of its last settings change in this run.
+    pub settings_moved: BTreeMap<Tid, u64>,
     /// Commits with a part judged invalid this transaction (`Core::index_validity`): dropped at
     /// its end where held (`retention::drop_invalid`).
     pub drop_due: BTreeSet<CommitId>,
@@ -1181,6 +1183,7 @@ impl Core {
             none_due: self.none_due.clone(),
             settings_due: self.settings_due.clone(),
             settings_generation: self.settings_generation,
+            settings_moved: self.settings_moved.clone(),
             cover_candidates: self.cover_candidates.clone(),
             drop_due: self.drop_due.clone(),
             cut_subs: self.cut_subs.clone(),
@@ -1688,6 +1691,7 @@ impl Core {
             cover_candidates: _,
             settings_due: _,
             settings_generation: _,
+            settings_moved: _,
             valueless_dirty: _,
             changed: _,
             redeliver: _,
@@ -1898,6 +1902,7 @@ impl Core {
             cover_candidates: BTreeMap::new(),
             settings_due: BTreeSet::new(),
             settings_generation: 0,
+            settings_moved: BTreeMap::new(),
             drop_due: BTreeSet::new(),
             cut_subs: BTreeSet::new(),
             refold: BTreeSet::new(),
@@ -2903,6 +2908,13 @@ impl Engine {
     /// `Core::settings_generation`: what node-sync's cached keep bounds hold for.
     pub fn settings_generation(&self) -> u64 {
         self.core.settings_generation
+    }
+
+    /// Whether the settings of a thing `c` writes changed after generation `at`
+    /// (`Core::settings_moved`): its keep bounds judged at `at` may have moved.
+    pub fn settings_moved_after(&self, c: &CommitId, at: u64) -> bool {
+        let moved = &self.core.settings_moved;
+        !moved.is_empty() && self.core.ix.commits.get(c).is_none_or(|m| m.view.aspects.iter().any(|a| moved.get(&a.tid).is_some_and(|g| *g > at)))
     }
 
     /// What changed since the last call (`Core::changed`), keeping it from now on.
