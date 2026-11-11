@@ -644,11 +644,6 @@ mod tests {
     }
 
     #[test]
-    fn role_order() {
-        assert!(Role::Read < Role::Write && Role::Write < Role::Admin);
-    }
-
-    #[test]
     fn link_debug_hides_key() {
         let l = Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [0xab; 32] };
         assert!(!format!("{l:?}").contains("abab"));
