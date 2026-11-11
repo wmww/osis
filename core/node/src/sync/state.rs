@@ -775,7 +775,64 @@ impl State {
         for (_, c, _) in s.deleted.keys() {
             *s.deleted_commits.entry(*c).or_default() += 1;
         }
+        s.reconcile(engine)?;
         Ok(s)
+    }
+
+    /// The hub's store is the truth for ciphertext (issues/net-one-peer.md step 4), and the two
+    /// stores commit apart, the hub's first: an entry whose bytes this node holds with no row
+    /// there is dropped (a removal the engine's store did not commit), one whose row differs
+    /// takes the row's wrap and stamp, and a row under a label of node sync's with no entry here
+    /// (an arrival the engine's store did not commit, or another's upload) is derived again: an
+    /// entry not opened yet, opened when its bytes are fetched. Brute force at open: every entry
+    /// and row once.
+    fn reconcile(&mut self, engine: &mut Engine) -> Result<()> {
+        let mine: Vec<(LabelId, BlobId, [u8; WRAP_LEN], Option<Signature>)> = self.entries.iter().filter(|(_, e)| !e.memory).map(|((l, b), e)| (*l, *b, e.wrap, e.stamp)).collect();
+        let (gone, differ, stray) = engine.run(|tx| {
+            let (mut gone, mut differ, mut stray) = (Vec::new(), Vec::new(), Vec::new());
+            for (l, b, wrap, stamp) in &mine {
+                if !tx.blobs.held(b)? {
+                    continue;
+                }
+                match hub(tx)?.reader_entry(l, b).map_err(hub_err)? {
+                    None => gone.push((*l, *b)),
+                    Some((w, st)) if (w, st) != (*wrap, *stamp) => differ.push((*l, *b, w, st)),
+                    Some(_) => {}
+                }
+            }
+            let mut after = None;
+            loop {
+                let labels = hub(tx)?.reader_labels(after.as_ref(), 256).map_err(hub_err)?;
+                for l in &labels {
+                    let mut from = None;
+                    loop {
+                        let rows = hub(tx)?.reader_rows(l, from.as_ref(), 1024).map_err(hub_err)?;
+                        stray.extend(rows.iter().filter(|(b, ..)| !self.entries.contains_key(&(*l, *b))).map(|(b, w, st)| (*l, *b, *w, *st)));
+                        match rows.last() {
+                            Some((b, ..)) if rows.len() == 1024 => from = Some(*b),
+                            _ => break,
+                        }
+                    }
+                }
+                match labels.last() {
+                    Some(l) if labels.len() == 256 => after = Some(*l),
+                    _ => break,
+                }
+            }
+            Ok((gone, differ, stray))
+        })?;
+        for (l, b, wrap, stamp) in stray {
+            self.set_entry_quiet(l, b, Entry { wrap, stamp, cert: false, salt: None, kind: Kind::Unknown, memory: false });
+        }
+        for (l, b) in gone {
+            self.drop_entry(l, b);
+        }
+        for (l, b, wrap, stamp) in differ {
+            if let Some(e) = self.entries.get(&(l, b)).cloned() {
+                self.set_entry(l, b, Entry { wrap, stamp, ..e });
+            }
+        }
+        Ok(())
     }
 
     /// Adds (or removes) an entry to (from) the indexes over `entries`.
@@ -967,16 +1024,20 @@ impl State {
             }
             let stored = tx.store_blobs(blobs)?;
             // the hub's store, committed first: an entry whose bytes are held is its row there
-            let mut put = BTreeSet::new();
+            // in the order the changes came, each once
+            let mut put = Vec::new();
+            let mut seen = BTreeSet::new();
             for e in &log {
-                if let LogWrite::Added(l, b) = *e {
-                    put.insert((l, b));
+                if let LogWrite::Added(l, b) = *e
+                    && seen.insert((l, b))
+                {
+                    put.push((l, b));
                 }
             }
             for b in &stored {
                 for l in self.labels_of(b) {
-                    if !self.is_memory(&l, b) {
-                        put.insert((l, *b));
+                    if !self.is_memory(&l, b) && seen.insert((l, *b)) {
+                        put.push((l, *b));
                     }
                 }
             }
@@ -2153,13 +2214,14 @@ mod tests {
         assert!(s.log.is_empty(), "an ephemeral entry draws nothing");
         s.remove_entry(l, b);
         s.flush(e).unwrap();
-        assert_eq!(logged(e), [Deleted { label: l, blob: b, at: 5 }]);
+        assert_eq!(logged(e), [Deleted { label: l, blob: b, at: e.now().0 }]);
         // expiry and junk go without a tombstone, by the same event
-        let c = BlobId([4; 32]);
+        let c = bytes(e, 4);
         s.set_entry(l, c, entry(1));
+        s.flush(e).unwrap();
         s.drop_entry(l, c);
         s.flush(e).unwrap();
-        assert!(logged(e).contains(&Deleted { label: l, blob: c, at: 5 }));
+        assert!(logged(e).contains(&Deleted { label: l, blob: c, at: e.now().0 }));
     }
 
     // spec: none (issues/net-reconnect.md, Built): an `Added` is logged when an entry becomes
@@ -2221,9 +2283,8 @@ mod tests {
     // record are one atomic unit): a crash at any write of a flush leaves the entry row and its
     // event both or neither.
     #[test]
-    fn crash_during_flush_never_splits_entry_and_event() {
+    fn a_crash_between_the_two_commits_converges_on_the_hub_row() {
         let (l, b) = (LabelId([1; 16]), osis_label::blob_id(&[2; 40]));
-        let ek = key(ENTRY, &[&l.0, &b.0]);
         let (mut seen_absent, mut seen_present) = (false, false);
         for k in 0..64 {
             let faults = osis_store::Faults::new();
@@ -2241,7 +2302,8 @@ mod tests {
             drop(e);
             faults.revive();
             let mut e = Engine::open(Box::new(backend), Box::new(root), crate::sync::hub_store_on(Box::new(disk.0.clone()), Box::new(disk.1.clone()), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(8))).unwrap(), crate::Config::default(), clock, Box::new(osis_crypto::SeededRng::from_u64(10))).unwrap();
-            let present = e.run(|tx| Ok(tx.txn.get_local(&ek)?)).unwrap().is_some();
+            // the reconcile at load: the hub's row is the truth
+            let present = State::load(&mut e).unwrap().entries.contains_key(&(l, b));
             assert_eq!(present, !logged(&mut e).is_empty(), "crash at write {k}: the entry and its event split");
             seen_absent |= !present;
             seen_present |= present;

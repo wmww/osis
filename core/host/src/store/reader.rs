@@ -18,9 +18,9 @@ impl HostStore {
         self.read = labels;
     }
 
-    /// Whether node sync reads `label`.
+    /// Whether `label` is node sync's: it reads it, or wrote entry rows under it.
     pub fn reads(&self, label: &LabelId) -> bool {
-        self.read.contains(label)
+        self.read.contains(label) || self.get(&key(b'n', &[&label.0])).ok().flatten().is_some()
     }
 
     /// Node sync holds entry `blob` of `label` with its bytes (held in this store's blob area):
@@ -39,6 +39,10 @@ impl HostStore {
             return Ok(false);
         }
         let mut tx = Tx { label: *label, before: (meta.entries, meta.bytes, new), meta, batch: Writes::default() };
+        // the label is node sync's (`reader_labels`: the reconcile at open walks these)
+        if self.get(&key(b'n', &[&label.0]))?.is_none() {
+            tx.batch.put(key(b'n', &[&label.0]), Vec::new());
+        }
         let seq = tx.append(&LogRecord::Added(*blob));
         let l = label.0;
         let row = match held {
@@ -85,10 +89,29 @@ impl HostStore {
         Ok(true)
     }
 
+    /// The labels node sync wrote entry rows under (`reader_put`), after `after`, at most `max`.
+    pub fn reader_labels(&self, after: Option<&LabelId>, max: usize) -> Result<Vec<LabelId>, StoreError> {
+        let start = match after {
+            Some(a) => key(b'n', &[&a.0, &[0]]),
+            None => vec![b'n'],
+        };
+        let rows = self.scan(&start, Some(b"o"), max)?;
+        rows.iter().map(|(k, _)| Ok(LabelId(read_arr(k, 1)?))).collect()
+    }
+
+    /// Node sync's entry rows of `label` after `after`, at most `max`: blob, wrap, stamp.
+    pub fn reader_rows(&self, label: &LabelId, after: Option<&BlobId>, max: usize) -> Result<Vec<(BlobId, [u8; WRAP_LEN], Option<Signature>)>, StoreError> {
+        use osis_proto::LabelStore;
+        Ok(self.live_by_id(label, after, max)?.into_iter().map(|(b, m)| (b, m.wrap, m.stamp)).collect())
+    }
+
     /// Node sync forgot `label` (the group is gone here): every row of it, shredded, its node log
     /// events with no deletion event, into the open transaction.
     pub fn reader_forget(&mut self, label: &LabelId) -> Result<(), StoreError> {
         self.read.remove(label);
+        let mut w = Writes::default();
+        w.0.push(Write::Unmark(key(b'n', &[&label.0])));
+        self.write(w)?;
         self.drop_label(label)
     }
 

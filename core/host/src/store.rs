@@ -1444,7 +1444,7 @@ impl HostStore {
             let page = self.labels_after(after.as_ref(), 256)?;
             let Some(last) = page.last().copied() else { break };
             // node sync's sync IDs are its own, kept whatever is kept for others
-            gone.extend(page.into_iter().filter(|l| drop(l) && !self.read.contains(l)));
+            gone.extend(page.into_iter().filter(|l| drop(l) && !self.reads(l)));
             after = Some(last);
         }
         for l in &gone {
