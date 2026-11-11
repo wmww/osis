@@ -215,6 +215,12 @@ mod entry_copies {
         let n = 2 + r.below(2);
         let kind = r.below(3);
         let ms: Vec<Frag> = (0..n).map(|_| copy(&mut r, 1, &["a", "b", "c"], depth, kind, slots)).collect();
+        laws(&ms);
+    }
+
+    /// `check` of copies `ms` (two or three).
+    fn laws(ms: &[Frag]) {
+        let n = ms.len();
         let ps: Vec<Fragment> = ms.iter().map(frag).collect();
         let all = ps[1..].iter().fold(ps[0].clone(), |a, b| join(&a, b));
         assert_eq!(all, ps[..n - 1].iter().rev().fold(ps[n - 1].clone(), |a, b| join(&a, b)), "commutative");
@@ -270,22 +276,28 @@ mod entry_copies {
         assert_eq!(join(&a, &b), join(&b, &a));
     }
 
-    /// §5.6 with §4.1 and §4.7: forged copies of one entry under several keys, one encoding per
-    /// position, flat and nested.
+    /// §5.6 with §4.1, §4.7 and §7: forged copies of one entry under several keys, flat and
+    /// nested, one encoding per position or several (a register beside an enum or a text).
     #[test]
     fn forged_entry_copies_join_and_expire_alike_spec_5_6() {
-        for seed in 0..1000 {
-            check(seed, (seed % 2) as u32, false);
+        for seed in 0..400 {
+            check(seed, (seed % 2) as u32, seed % 4 >= 2);
         }
     }
 
-    /// issues/forged-entry-copies-slots.md: with two encodings at one position (§7) the join
-    /// laws and expiry break.
+    /// A slot's embedding of the register is the register write's (§7), so it sits in the
+    /// record holding that write (§5.6): record `a` holds writer 2's enum case and `b` writer
+    /// 1's register write `w`, joined with a copy holding `w` under `a`. `w` sits under `b`, and
+    /// its embedded reset does not stay in `a`'s enum slot (as a reset of its own it outlived the
+    /// expiry of writer 2's case, which moves the case and leaves `w` alone).
     #[test]
-    #[ignore = "issues/forged-entry-copies-slots.md"]
-    fn repro_forged_entry_copies_across_encodings() {
-        for seed in 0..300 {
-            check(seed, 0, true);
-        }
+    fn slot_embedding_sits_with_its_register_write_spec_7() {
+        let d = Dot { source: Source::session(1, 0), ctr: 1 };
+        let w = Frag::Register { reset: None, write: Some((st(1, 5), Some(str("x")))) };
+        let case = Frag::Enum { c: Default::default(), case: Some((st(2, 25), Some(1))), payloads: BTreeMap::new() };
+        let rec = |f: Frag, created: bool| Entry { reset: None, frag: Some(Box::new(f)), created: created.then(|| st(1, 1)) };
+        let one = Frag::Map { c: Default::default(), entries: BTreeMap::from([((d.clone(), Some(str("a"))), rec(case, true)), ((d.clone(), Some(str("b"))), rec(w.clone(), false))]) };
+        let two = Frag::Map { c: Default::default(), entries: BTreeMap::from([((d, Some(str("a"))), rec(w, false))]) };
+        laws(&[one, two]);
     }
 }

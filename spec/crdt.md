@@ -330,7 +330,7 @@ A write is **dead** at a node once the join has superseded it:
 - its element deleted or tombstoned;
 - its value gone by expiry (§4.7).
 
-**Which write.** A write is its position, kind and stamp, never its stamp alone (one op stamps many writes: every value of a map set). Positions: a struct field, an enum payload, a set or bag element, a map entry by its dot (the dot's records are one entry, §5.6), a sequence element per element (a range record is one per element), and the content of an entry or element, below that one's own writes; a `Slots` position's slots are one position (§7). A fragment's **winning writes** are the writes it holds but:
+**Which write.** A write is its position, kind and stamp, never its stamp alone (one op stamps many writes: every value of a map set). Positions: a struct field, an enum payload, a set or bag element, a map entry by its dot (the dot's records are one entry, §5.6), a sequence element per element (a range record is one per element), and the content of an entry or element, below that one's own writes; a `Slots` position's slots are one position, a slot's embedding of the register the register's writes (§7). A fragment's **winning writes** are the writes it holds but:
 - of a sequence element's position writes only `cur`, when it is not the creation's own (`prev` is beaten);
 - not a text element's creation while its winning flag is a delete, but for an embedded char (§7), which dies with its register's write;
 - of a map dot's records, the writes of their join (a write beaten at its position by one in another record of the dot is beaten).
@@ -401,7 +401,7 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
   - The records of a dot are one entry (§4.8 Which write).
 - Join: union by `(dot, key)`; per record `R` max, fragment join, creation by stamp; then prune:
   - every record of a dot under `E_rec = max(E_parent, every R_rec of the dot)`: every reset of the dot reaches each of its records;
-  - each write of the join of the dot's records (§4.8 Which write: a nested entry too is its dot, whatever its records' keys) sits in one record, the one carrying the greatest key of its copies (the key-erased record's lowest), as the join of every copy (§4.1 copy order), and no record holds another write: the dot's greatest `R_rec` and creation, and of the records' fragments (pruned under `E_rec`) what their join holds;
+  - each write of the join of the dot's records (§4.8 Which write: a nested entry too is its dot, whatever its records' keys, and a slot's embedding is its register's write, §7) sits in one record, the one carrying the greatest key of its copies (the key-erased record's lowest), as the join of every copy (§4.1 copy order), and no record holds another write: the dot's greatest `R_rec` and creation, and of the records' fragments (pruned under `E_rec`) what their join holds;
   - the creation `(ts, dot)` is a write of its own, pruned like any other (under `E_rec`), and a record holding only it (its content un-merged, §4.6) stays, on the wire as `[Dot, Ci, R, key, []]`;
   - tombstone = a record left with only its `R_rec`; a record with no write goes.
 - **Removal**:
@@ -496,6 +496,8 @@ A position may see fragments of different encodings: an aspect upgraded from `st
 A register with no write embeds as reset `r` only. A contribution that is not an int or float reads as nothing (§5.2). The edges are total, so a value-less write (§4.7) embeds like its valued copy, except into text: it embeds no chars (an embedded char goes with its value, §4.7).
 
 A text slot's records `(Derived(s.dot), i)` hold, as creation writes and chars, exactly the embedding of the register slot's winning copy of the write with dot `s.dot` (§4.1 copy order): a join replaces any others (other writes on those records stay; a record left with none goes).
+
+**The embedding is the register's.** What `embed` puts into a slot is the register slot's writes (its write and reset), not the slot's: a write in a slot at the position and stamp of one of the embedding's is a copy of that register write. So wherever a position's writes are told apart (the records of a map dot, §5.6; un-merge and expiry by dot, §4.6, §4.7, where the embedding carries the register write's dot), the embedding goes with the register write it comes from, and a record holds it only with that write.
 
 **One reset per position.** The effective reset of a `Slots` position is the greatest reset among its slots (and the parent's); prune uses it for every slot (§4.2). So a `replace` or `remove_aspect` in any encoding removes everything older at the position, whatever encoding wrote it, and a register write (an old app's save) is a reset of everything older in every slot plus its content where an edge exists.
 

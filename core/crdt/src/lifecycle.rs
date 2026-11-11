@@ -139,9 +139,22 @@ impl Fragment {
         self.filter_by(j, Keep::NotHeld);
     }
 
+    /// A `Slots` position's writes are its register slot's and each slot's own: a slot's
+    /// embedding of the register is the register's writes (§7), so it is left out here and
+    /// stays or goes with them (embedded again into the result).
     pub(crate) fn filter_by(&mut self, j: &Fragment, keep: Keep) {
         if let Fragment::Slots(_) = self {
             let Fragment::Slots(Slots { reg, slots }) = std::mem::take(self) else { return };
+            let slots: BTreeMap<_, _> = slots
+                .into_iter()
+                .map(|(k, mut f)| {
+                    if let Some(e) = reg.as_ref().and_then(|r| embedding(r, k)) {
+                        f.filter_slot(&e, Keep::NotHeld);
+                    }
+                    f.filter_slot(j, keep);
+                    (k, f)
+                })
+                .collect();
             let reg = reg.and_then(|r| {
                 let mut f = Fragment::Register(r);
                 f.filter_slot(j, keep);
@@ -150,28 +163,20 @@ impl Fragment {
                     _ => None,
                 }
             });
-            let slots = slots.into_iter().map(|(k, mut f)| {
-                f.filter_slot(j, keep);
-                (k, f)
-            });
-            *self = crate::state::assemble(reg, slots.collect());
+            *self = crate::state::prune_slots(reg, slots, None, &mut Changes::new());
             return;
         }
         self.filter_slot(j, keep);
     }
 
     /// `filter_by` of one slot, against `j`'s slot of its encoding or else the embedding of
-    /// `j`'s register slot (§7).
+    /// `j`'s register (§7).
     fn filter_slot(&mut self, j: &Fragment, keep: Keep) {
-        use crate::fragment::Encoding;
         let enc = self.encoding();
         let t = match j.slot(enc) {
             Some(t) => Some(t.to_fragment()),
-            None => match j.slot(Encoding::Register) {
-                Some(crate::state::SlotRef::Reg(r)) if enc != Encoding::Register => crate::state::embed(r, enc).map(|mut t| {
-                    t.prune(None, &mut Changes::new());
-                    t
-                }),
+            None => match j {
+                Fragment::Register(r) | Fragment::Slots(Slots { reg: Some(r), .. }) => embedding(r, enc),
                 _ => None,
             },
         };
@@ -592,6 +597,14 @@ fn remove_dots_elems(elems: &mut BTreeMap<Dot, Elem>, pred: &dyn Fn(&Dot) -> boo
         }
         el.reset.is_some() || el.frag.is_some()
     });
+}
+
+/// The embedding of register `r` into slot encoding `enc`, pruned (§7); `None` for the register.
+fn embedding(r: &Register, enc: crate::fragment::Encoding) -> Option<Fragment> {
+    crate::state::embed(r, enc).map(|mut t| {
+        t.prune(None, &mut Changes::new());
+        t
+    })
 }
 
 /// What `Fragment::filter_by` keeps of a fragment against another.

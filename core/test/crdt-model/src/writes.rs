@@ -26,7 +26,7 @@ pub enum Step {
 pub type Name = Vec<Step>;
 
 /// Every write of `f`, each alone in a fragment of its own. A `Slots` position leaves out what its register's
-/// embedding writes into a slot (§7): those are the register write's, not the slot's.
+/// embedding writes into a slot: those are the register write's, not the slot's (§7 The embedding is the register's).
 pub fn writes(f: &Frag) -> Vec<(Name, Frag)> {
     match f {
         Frag::Slots { reg, slots } => {
