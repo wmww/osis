@@ -11,7 +11,7 @@
 //!
 //! What a memo's function reads elsewhere (a field of `Core` in no such container, the store)
 //! must be immutable or stamped by hand (`Stamps::wrote`); debug builds compare a hit with a
-//! fresh run to find a read that was missed.
+//! fresh run to find a read that was missed (`Checks`).
 
 use std::borrow::Borrow;
 use std::cell::{Cell, RefCell};
@@ -198,6 +198,15 @@ thread_local! {
     static FRAMES: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
     /// The frame whose reads `accounted` marks, while one runs (its place in `FRAMES`).
     static ACCOUNTING: Cell<Option<usize>> = const { Cell::new(None) };
+    /// Debug comparisons running on this thread (`Memo::compare`).
+    static COMPARING: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Whether a memo's debug comparison is running on this thread: what it reads is the
+/// comparison's, so a memo hit inside it counts toward no comparison of its own (`Checks`), and
+/// `Core::recheck_at` rechecks no cache there.
+pub fn comparing() -> bool {
+    COMPARING.get() > 0
 }
 
 /// A frame of reads opened on this thread (`recorded`, `unrecorded`): reads while it is open
@@ -292,9 +301,54 @@ fn depend(deps: &[Dep]) {
 struct Entry<V> {
     value: V,
     deps: Arc<[Dep]>,
-    /// Debug builds: hits so far (`Memo::get` compares at powers of four).
     #[cfg(debug_assertions)]
-    hits: u64,
+    checks: Checks,
+}
+
+/// Debug builds: when a kept answer is compared with a fresh run (`Memo::compare`). A hit can
+/// differ from a fresh run only when something changed since the answer was last known right
+/// (kept, amended or compared): not a key it read (the answer would not hold), so another key of
+/// a container it read, or a container it read nothing of. A hit is compared at the 1st, 4th,
+/// 16th, ... time a container it read has changed since its last such hit (`moves`); an amend
+/// is such a time. A read the function made without its stamp shows when its container changes;
+/// one of a container the function reads nothing else of, only when a container it reads changes
+/// too. A hit inside a comparison (`comparing`) counts for nothing: the outer hit is compared.
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, Debug)]
+struct Checks {
+    /// `moves` of the reads at the last time counted.
+    at: u128,
+    /// Times counted.
+    moved: u64,
+}
+
+#[cfg(debug_assertions)]
+impl Checks {
+    fn new(deps: &[Dep]) -> Checks {
+        Checks { at: moves(deps), moved: 0 }
+    }
+
+    /// A hit on an answer that read `deps` (`amended`: brought up to date at this hit): whether
+    /// to compare it.
+    fn hit(&mut self, deps: &[Dep], amended: bool) -> bool {
+        if comparing() {
+            return false;
+        }
+        let at = moves(deps);
+        if !amended && at == self.at {
+            return false;
+        }
+        self.at = at;
+        self.moved += 1;
+        self.moved.is_power_of_two() && self.moved.trailing_zeros().is_multiple_of(2)
+    }
+}
+
+/// The changes so far of the containers `deps` read, summed: it moves exactly when one of them
+/// changed (each count only grows; a dropped container's goes to `u64::MAX`).
+#[cfg(debug_assertions)]
+fn moves(deps: &[Dep]) -> u128 {
+    deps.iter().map(|d| u128::from(lock(&d.table).ver)).sum()
 }
 
 /// A function of `K` and of what it reads through stamped containers, computed again only when
@@ -354,8 +408,8 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
     /// writes added, `retention::bounds::held_writes`); its other reads (a new body's) are
     /// recorded as any memo's. A stamp shared by two keys (`Stamps`) is accounted only when every
     /// read of it was, so a move it covers is one of the inputs the amend compares by value. An
-    /// amend counts as a hit for the debug comparison: an answer amended at every change is
-    /// compared with a fresh run at its changes 1, 4, 16, ...
+    /// amend counts for the debug comparison as a hit after a change (`Checks`): an answer amended
+    /// at every change is compared with a fresh run at its changes 1, 4, 16, ...
     pub fn get_amended_in<C, E>(ctx: &mut C, memo: impl Fn(&C) -> &Self, k: &K, f: impl Fn(&mut C) -> Result<V, E>, amend: impl Fn(&mut C, &V) -> Result<Option<V>, E>) -> Result<V, E> {
         if let Some((value, deps, check)) = memo(ctx).kept(k) {
             Self::compare(ctx, &memo, check, &value, &f, "a read no stamp covers");
@@ -391,9 +445,21 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
     }
 
     /// Debug builds, when `check`: `value` is what `fresh` gives now (a fresh run that fails
-    /// compares nothing).
+    /// compares nothing). The run reads unrecorded, uncounted (`costs::paused`) and as a
+    /// comparison (`comparing`).
     fn compare<C, E>(ctx: &mut C, memo: &impl Fn(&C) -> &Self, check: bool, value: &V, fresh: &impl Fn(&mut C) -> Result<V, E>, why: &str) {
-        if check && let Ok(fresh) = crate::costs::paused(|| unrecorded(|| fresh(ctx))) {
+        struct Comparing;
+        impl Drop for Comparing {
+            fn drop(&mut self) {
+                COMPARING.set(COMPARING.get() - 1);
+            }
+        }
+        if !check {
+            return;
+        }
+        COMPARING.set(COMPARING.get() + 1);
+        let _comparing = Comparing;
+        if let Ok(fresh) = crate::costs::paused(|| unrecorded(|| fresh(ctx))) {
             assert!(fresh == *value, "memo {}: kept {value:?}, a fresh run gives {fresh:?} ({why})", memo(ctx).name);
         }
     }
@@ -427,22 +493,19 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
     }
 
     /// The answer kept for `k` if it still holds, what it read, and whether to compare it with
-    /// a fresh run (debug builds: at its hits 1, 4, 16, ...).
+    /// a fresh run (debug builds, `Checks`).
     fn kept(&self, k: &K) -> Option<(V, Arc<[Dep]>, bool)> {
         let mut entries = self.entries.borrow_mut();
         let e = entries.get_mut(k).filter(|e| e.deps.iter().all(Dep::holds))?;
         #[cfg(debug_assertions)]
-        let check = {
-            e.hits += 1;
-            e.hits.is_power_of_two() && e.hits.trailing_zeros() % 2 == 0
-        };
+        let check = e.checks.hit(&e.deps, false);
         #[cfg(not(debug_assertions))]
         let check = false;
         Some((e.value.clone(), e.deps.clone(), check))
     }
 
-    /// Keeps an amended answer for `k` (`get_amended_in`), counted as a hit: whether to compare
-    /// it with a fresh run.
+    /// Keeps an amended answer for `k` (`get_amended_in`), counted as a hit after a change:
+    /// whether to compare it with a fresh run.
     fn keep_amended(&self, k: &K, value: &V, deps: Arc<[Dep]>) -> bool {
         let mut entries = self.entries.borrow_mut();
         let Some(e) = entries.get_mut(k) else { return false };
@@ -450,8 +513,7 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
         e.deps = deps;
         #[cfg(debug_assertions)]
         {
-            e.hits += 1;
-            e.hits.is_power_of_two() && e.hits.trailing_zeros() % 2 == 0
+            e.checks.hit(&e.deps, true)
         }
         #[cfg(not(debug_assertions))]
         false
@@ -461,9 +523,9 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
         let mut entries = self.entries.borrow_mut();
         entries.insert(k.clone(), Entry {
             value: value.clone(),
-            deps,
             #[cfg(debug_assertions)]
-            hits: 0,
+            checks: Checks::new(&deps),
+            deps,
         });
         if entries.len() >= SWEEP.saturating_mul(self.kept.get().max(1)) {
             entries.retain(|_, e| e.deps.iter().all(Dep::holds));
@@ -828,6 +890,33 @@ mod tests {
             clock.set(t);
         }
         assert!(lock(&clock.stamps.0).keys.len() <= 1, "keys kept: {}", lock(&clock.stamps.0).keys.len());
+    }
+
+    // spec: none (internal). Debug builds compare a hit with a fresh run at the 1st, 4th, 16th,
+    // ... hit after a change of a container it read (`Checks`): a read made without its stamp
+    // (`hidden`) is found once a container it read changes, never while nothing it read changed.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_hit_is_compared_after_what_it_read_changed() {
+        let mut m: JMap<u8, u8> = JMap::default();
+        m.insert(1, 1);
+        let hidden = Cell::new(0u8);
+        let memo: Memo<u8, u8> = Memo::new("test compared");
+        // whether the comparison failed
+        let ask = |m: &JMap<u8, u8>| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| memo.get(&1, || m.get(&1).copied().unwrap_or(0) + hidden.get()))).is_err();
+        assert!(!ask(&m));
+        hidden.set(1);
+        assert!(!ask(&m), "nothing it read changed: not compared");
+        m.insert(2, 2);
+        assert!(ask(&m), "another key of a container it read changed: compared");
+        hidden.set(0);
+        assert!(!ask(&m));
+        hidden.set(1);
+        let failed: Vec<bool> = (3..6).map(|v| {
+            m.insert(2, v);
+            ask(&m)
+        }).collect();
+        assert_eq!(failed, [false, false, true], "compared at the 4th hit after a change");
     }
 
     // spec: none (internal). A memo read inside another passes on what it read; a container

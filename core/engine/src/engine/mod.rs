@@ -2068,9 +2068,14 @@ impl Core {
         self.hlc.wall()
     }
 
-    /// `Engine::recheck` at point `at`.
+    /// `Engine::recheck` at point `at`. Never inside a memo's comparison (`memo::comparing`): it
+    /// checks the memo, and the hits of the caches it reads are checked where they are read
+    /// outside one.
     #[cfg(debug_assertions)]
     pub(crate) fn recheck_at(&mut self, at: (u64, u64, u64), what: String) -> bool {
+        if memo::comparing() {
+            return false;
+        }
         if self.rechecked.0 != at {
             self.rechecked = (at, BTreeSet::new());
         }
