@@ -113,7 +113,7 @@ fn serving_listed_then_open_spec_sync_5() {
     assert_eq!(hosted(&w, s), vec![la]);
 }
 
-// notes/api.md Serving, issues/net-one-peer.md step 4: a node serves the groups it reads from its one
+// spec/data-model.md §9, spec/sync.md §4; notes/api.md Serving, issues/net-one-peer.md step 4: a node serves the groups it reads from its one
 // store with no setup and no peer of its own: Alice, not serving for others, listens; her group
 // names her address alone; Bob, granted it, syncs it there and reads it.
 #[test]

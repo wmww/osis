@@ -2429,7 +2429,7 @@ mod tests {
         if create { Engine::create(b, r, hub, crate::Config::default(), clock, rng).unwrap() } else { Engine::open(b, r, hub, crate::Config::default(), clock, rng).unwrap() }
     }
 
-    // issues/net-one-peer.md step 4 (add before, remove after): a crash at any write of a flush
+    // spec: none (issues/net-one-peer.md step 4, add before, remove after): a crash at any write of a flush
     // removing an entry leaves it both here and as the hub's row, or neither, once reopened (the
     // engine's commit decides; `Engine::settle_blobs` finishes the row's removal).
     #[test]
@@ -2464,7 +2464,7 @@ mod tests {
         assert!(seen_gone && seen_kept, "the crash points reach both outcomes");
     }
 
-    // issues/net-one-peer.md step 4 (cost: two stores), notes/coordination.md (count work): a
+    // spec: none (issues/net-one-peer.md step 4, cost: two stores; notes/coordination.md, count work): a
     // flush storing a batch of entries with their bytes writes each store a fixed number of
     // times, the same at n and 10n entries.
     #[test]
