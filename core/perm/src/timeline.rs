@@ -708,6 +708,13 @@ impl Timeline {
         assert!(on.iter().eq(self.walked.applied.keys().filter(|w| self.edge_write(w).is_some_and(|(_, o)| o.target == *t))), "on_target of {t:?} went stale");
         on.iter().filter_map(|w| self.edge_write(w))
     }
+    /// The commit of the edge write in force on (`holder`, `target`): the last applied one, when
+    /// it set a value (spec/permissions.md §2: the next edge write resets the entry it created).
+    /// O(the writes applied on `target`).
+    pub fn in_force(&self, holder: &Tid, target: &Tid) -> Option<CommitId> {
+        let (c, o) = self.applied_on(target).filter(|(_, o)| o.holder == *holder).max_by_key(|(c, _)| c.point())?;
+        o.edge.is_some().then_some(c.id)
+    }
     /// Indexes `applied_on` built (a measure).
     pub fn applied_on_built(&self) -> u64 {
         self.memo.on_target_built.load(std::sync::atomic::Ordering::Relaxed)

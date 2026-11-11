@@ -33,9 +33,9 @@
 
 ## 2. Role grant writes
 - **Edge writes**: granting, changing and removing a grant are writes to the target's `roles.0`, each in its own role commit (spec/commits.md §2), by a node with admin on the target (a finalize, below: with write).
-  - A removal of an absent grant is an edge write too (a reset of the holder's entry).
-  - A removal of a holder no entry holds (a record edge, §1) resets an entry of its own delta: a record keyed by the holder at a fresh counter of the delta, holding the reset alone (spec/crdt.md §5.6). Its creation is that delta, so it is never waited for.
-  - A grant or change is remove + put: a reset of every entry of the holder the writer holds, live or not, and a new entry holding the whole grant (spec/crdt.md §5.6 `remove`, then `put` of an absent key).
+  - Every edge write resets the holder's **current entry**: the entry created by the edge write in force on that grant in its writer's walk (§5.1: the last applied write on it, when it put an entry), whatever the `roles.0` state holds of it.
+  - A removal of a holder with no current entry (a record edge, §1, or a grant already removed) resets an entry of its own delta: a record keyed by the holder at a fresh counter of the delta, holding the reset alone (spec/crdt.md §5.6). Its creation is that delta, so it is never waited for. A removal of an absent grant is an edge write too.
+  - A grant or change also writes a new entry holding the whole grant (spec/crdt.md §5.6 `put_new`).
   - A `roles.0` delta writing inside an entry it does not create is bad input (judged from the delta and its header: the entry's dot is outside the delta's own dots).
   - A reset names the write it ends: its entry's creation. A role commit with a removal (a write leaving the holder no grant for keys: none, or `until` 0) resetting an entry whose creation the reader does not hold applies none of its edge writes until that creation is held; a commit's edge writes apply together or not at all. A reset beside a put of a live grant for its key decides nothing (the put sets the grant) and is not waited for. Limit: one whose creation the reader never gets never applies there. A reset carrying another key than its entry's creation removes no grant (spec/crdt.md §5.6).
 - A grant may carry `until: timestamp`: the grant counts as removed from `wall_ms(t) >= until`.

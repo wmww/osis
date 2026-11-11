@@ -3,7 +3,7 @@
 //! the frontier, inbox delivery and acceptance
 //! (spec/sync.md §3, spec/crypto.md §5).
 
-use super::{Delivery, Done, inbox_of, now_ts, own_label, put_edge, put_secrets, remove_edge};
+use super::{Delivery, Done, inbox_of, now_ts, own_label, put_edge, put_secrets};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use crate::rotation;
@@ -181,16 +181,11 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
         let hist = rotation::history_boxes(tx, &who, &target)?;
         Some(box_holder(&target, &epochs, &hist, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?)
     };
-    // an edge past its `until` is out of the roster but still in the state: a set over it would
-    // keep its fields the new edge leaves out (the `until` among them)
-    let held = old.is_some() || tx.core.timelines.get(&target).is_some_and(|tl| tl.edges_at(None).get(&holder, &target).is_some());
     let mut m = Mutation::new();
-    if held {
-        remove_edge(&mut m, target, holder)?;
-    }
+    reset_current(tx, &mut m, target, holder)?;
     put_edge(&mut m, target, holder, edge)?;
     if leave {
-        remove_edge(&mut m, target, who)?;
+        removal(tx, &mut m, target, who)?;
     }
     if let Some(w) = &boxes {
         put_secrets(&mut m, target, w, !admin)?;
@@ -218,25 +213,33 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     Ok(done)
 }
 
-/// The dots of `holder`'s `roles.0` entries on `target` this node has seen, live or dead.
-fn entry_dots(tx: &Tx<'_>, target: &Tid, holder: &Tid) -> Vec<(osis_crdt::Dot, osis_base::Value)> {
-    tx.core.ix.holder_keys.iter().filter(|((t, _), m)| t == target && *m == holder).map(|((_, d), m)| (d.clone(), osis_base::Value::Tid(*m))).collect()
+/// `holder`'s current entry on `target`: the one the edge write in force there in this node's
+/// walk created (spec/permissions.md §2), whatever the `roles.0` state says of it (a void
+/// finalize resets it in the state while the edge stands). At most one: a role commit creates
+/// one entry per holder.
+fn current_entry(tx: &Tx<'_>, target: &Tid, holder: &Tid) -> Option<(osis_crdt::Dot, osis_base::Value)> {
+    let c = tx.core.timelines.get(target)?.in_force(holder, target)?;
+    let view = &tx.core.ix.commits.get(&c)?.view;
+    let ai = view.aspects.iter().position(|a| a.tid == *target && a.ak.as_str() == "roles.0")?;
+    let own = crate::engine::Owned::of_view(view, &c, ai)?;
+    tx.core.ix.holder_keys.iter().find(|((t, d), m)| t == target && *m == holder && own.owns(d.origin())).map(|((_, d), m)| (d.clone(), osis_base::Value::Tid(*m)))
 }
 
-/// The reset of `holder`'s edge on `target` in `m`: its live entry and every entry of it the node
-/// saw, so it resets also an entry an earlier write reset in the state while applying nothing on
-/// the timeline (a void finalize, spec/permissions.md §2), where the edge still stands. A holder
-/// with no entry at all (a first admin's record edge, stored nowhere) gets an entry of this delta
-/// reset in it: a removal naming the holder whose creation every reader holds (spec/permissions.md
-/// §2), so it applies in any arrival order.
+/// Resets `holder`'s current entry on `target` in `m`, if it has one (spec/permissions.md §2):
+/// every edge write does, so a holder's k-th write carries one reset, not k.
+pub(crate) fn reset_current(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: Tid) -> Result<bool> {
+    let Some(e) = current_entry(tx, &target, &holder) else { return Ok(false) };
+    m.dead_resets.entry((target, super::ak("roles.0")?)).or_default().push(e);
+    Ok(true)
+}
+
+/// The removal of `holder`'s edge on `target` in `m`: a reset of its current entry. A holder
+/// with none (a first admin's record edge, stored nowhere, or an edge already removed) gets an
+/// entry of this delta reset in it: a removal naming the holder whose creation every reader
+/// holds (spec/permissions.md §2), so it applies in any arrival order.
 pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: Tid) -> Result<()> {
-    remove_edge(m, target, holder)?;
-    let dots = entry_dots(tx, &target, &holder);
-    let key = (target, super::ak("roles.0")?);
-    if dots.is_empty() {
-        m.fresh_resets.entry(key).or_default().push(osis_base::Value::Tid(holder));
-    } else {
-        m.dead_resets.entry(key).or_default().extend(dots);
+    if !reset_current(tx, m, target, holder)? {
+        m.fresh_resets.entry((target, super::ak("roles.0")?)).or_default().push(osis_base::Value::Tid(holder));
     }
     Ok(())
 }
@@ -300,19 +303,10 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     if let Some(s) = signer {
         m.sign_as(s);
     }
-    match old {
-        Some(_) => removal(tx, &mut m, target, holder)?,
-        None => {
-            if d.new.is_some() {
-                return Err(Error::Misuse("no edge to lower"));
-            }
-            let dots = entry_dots(tx, &target, &holder);
-            if dots.is_empty() {
-                return Err(Error::Misuse("no edge of that holder was ever seen"));
-            }
-            m.dead_resets.insert((target, super::ak("roles.0")?), dots);
-        }
+    if old.is_none() && d.new.is_some() {
+        return Err(Error::Misuse("no edge to lower"));
     }
+    removal(tx, &mut m, target, holder)?;
     if let Some(n) = &new {
         put_edge(&mut m, target, holder, n)?;
     }

@@ -174,17 +174,11 @@ pub(crate) fn put_keysets(m: &mut Mutation, actor: Tid, w: &KeysWrite) -> Result
     Ok(())
 }
 
-/// An edge put (a change is remove + put, notes/engine-roles.md).
-/// Writes `holder`'s edge on `target` as remove + put (spec/permissions.md §2): whatever entry
-/// the state holds for it, valid or one the timeline dropped, is reset, never written into.
+/// A new entry holding `holder`'s whole edge on `target` (spec/crdt.md §5.6 `put_new`): never
+/// written into a held entry. The reset of the holder's current entry is the caller's
+/// (`edges::reset_current`, spec/permissions.md §2).
 pub(crate) fn put_edge(m: &mut Mutation, target: Tid, holder: Tid, e: &ct::Edge) -> Result<()> {
-    remove_edge(m, target, holder)?;
-    m.op(target, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(e.to_value()) })?;
-    Ok(())
-}
-
-pub(crate) fn remove_edge(m: &mut Mutation, target: Tid, holder: Tid) -> Result<()> {
-    m.op(target, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) })?;
+    m.op(target, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Put(e.to_value()) })?;
     Ok(())
 }
 

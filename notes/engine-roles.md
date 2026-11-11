@@ -1,10 +1,10 @@
 # Engine: role commits, keys and rotation
 > Summary: How the engine reads and writes role-class data: edge writes from `roles.0` deltas, `secrets.0` ingestion and established epochs, the roles `secrets.0`/`keys.0` deltas need, invite-grant boxes, key actors and other flows hooks, the flows' readings (departures, finalizes, the cascade), the rotation and secrets invariants, the cover check's own self-removals, head keys and `groups.0`. Rules: spec/permissions.md, spec/crypto.md §4; reasons: notes/permissions.md, notes/crypto.md (flows implementation: notes/permissions.md, Implementation (role flows)). Not here: dropping lost access (notes/engine-lost-access.md), writer-side role rules (notes/engine-apply.md, Writer side).
 
-## Edge writes from `roles.0` deltas (spec/permissions.md §2: a grant change is remove + put)
+## Edge writes from `roles.0` deltas (spec/permissions.md §2)
 - An entry the delta creates (it carries the entry's dot) sets the grant it reads; a reset of a known entry dot removes it (keys learned from the creating deltas, `ix.holder_keys`); a delta writing inside an entry it did not create is bad input (`check_holders_parts`, in `examine`, so the writer refuses it too).
 - A reset whose key is unknown (its creation not held) names no holder: the commit's other writes go to perm and the commit stays in `unresolved`, derived again when keys arrive (`resolve_unresolved`) and once after an open has read every commit (it reads them in `ts` order).
-- `flows::put_edge` always writes remove + put, so a grant over an entry the walk dropped (still live in the state) resets it (`regrant_over_dropped_entry_spec_perm_2`). Nested field writes over the entry's creation would compose two changes wrongly (a role raise losing an `until`) and write a grant over a dropped entry into it, leaving the grantee unresolved for good.
+- A grant writes a new entry (`flows::put_edge`, `Op::Put`: crdt `put_new`) beside the reset of the holder's current entry (`edges::reset_current`), never into a held entry: nested field writes would compose two changes wrongly (a role raise losing an `until`), and one into an entry the walk dropped (still live in the state) left the grantee unresolved for good (`regrant_over_dropped_entry_spec_perm_2`). Entries the walk dropped stay live in the state; nothing reads it.
 - Perm consumes these as abstract edge-write records (`validity::add_role_commit`, `EdgeParts`), persisted per commit in `node/edges` (notes/engine-store.md).
 
 ## `secrets.0`, `keys.0` and established epochs

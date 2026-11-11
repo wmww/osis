@@ -1301,6 +1301,48 @@ fn carry(lp: &mut LocalPeer, from: usize, done: &osis_node::flows::Done) {
     }
 }
 
+/// The entry resets in the `roles.0` deltas on `d` of `done`'s commits at peer 0.
+fn roles_resets(lp: &mut LocalPeer, d: Tid, done: &osis_node::flows::Done) -> usize {
+    let mut n = 0;
+    for c in &done.commits {
+        let Some(f) = lp.peers[0].engine.body_fragment(c, &d, &ak("roles.0")).unwrap() else { continue };
+        if let Some(osis_crdt::SlotRef::Frag(osis_crdt::Fragment::Map(m))) = f.slot(osis_crdt::Encoding::Map) {
+            n += m.entries().filter(|(_, r, _, _)| r.is_some()).count();
+        }
+    }
+    n
+}
+
+/// A grants B write and removes it `k` times on one thing: the entry resets of the last grant
+/// and the last removal.
+fn churn_resets(k: usize) -> (usize, usize) {
+    use osis_node::flows::Demotion;
+    let mut lp = net(2, 0);
+    let ps = persons(&mut lp);
+    let mut m = Mutation::new();
+    let d = lp.peers[0].engine.new_thing(&mut m, ps[0]);
+    m.set(d, &REG, &s("x")).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    let mut last = (0, 0);
+    for _ in 0..k {
+        lp.advance(10);
+        let g = lp.peers[0].engine.grant(&d, &ps[1], &edge(Role::Write)).unwrap();
+        lp.advance(10);
+        let r = lp.peers[0].engine.demote(&d, &Demotion { holder: ps[1], new: None, retain: None }).unwrap();
+        last = (roles_resets(&mut lp, d, &g), roles_resets(&mut lp, d, &r));
+    }
+    last
+}
+
+// spec/permissions.md §2: an edge write resets the holder's current entry alone, so a holder's
+// k-th grant and removal carry as many resets at 3 and at 30 rounds of churn.
+#[test]
+fn holder_churn_resets_are_flat_spec_perm_2() {
+    let (small, big) = (churn_resets(3), churn_resets(30));
+    assert_eq!(small, (0, 1), "a grant after a removal resets nothing; a removal its grant's entry");
+    assert_eq!(small, big);
+}
+
 // spec/permissions.md §2, §5.1: C grants B write; A removes C with a frontier that misses the
 // grant, so the walk drops it, but its entry stays live in the `roles.0` state. A grants B
 // again (same role or another): the grant resets that entry and puts a new one, and B reads its
