@@ -311,7 +311,7 @@ fn relay_replay_flood_bounded_spec_sync_5() {
 }
 
 // spec/sync.md §4, §5: ephemeral entries are held in memory: synced and pushed like any, no store
-// row, refused past the label's ephemeral cap, deposits refused, gone after a restart while the
+// row, refused past the label's ephemeral cap (deposits too), gone after a restart while the
 // log goes on (a cursor from before the restart misses nothing durable added after it)
 #[test]
 fn ephemeral_entries_in_memory() {
@@ -336,7 +336,7 @@ fn ephemeral_entries_in_memory() {
     let ids: Vec<BlobId> = eph[..2].iter().map(|e| osis_label::blob_id(e)).collect();
     assert_eq!(sorted(added(&evs)), sorted(ids.clone()));
     let ev = w.run(b, l.deposit(eph[2].clone(), &l.head_keys().deposit.clone()));
-    assert!(ev.iter().any(|e| matches!(e, ClientEvent::Budget { code: Code::REFUSED, .. })), "{ev:?}");
+    assert!(ev.iter().any(|e| matches!(e, ClientEvent::Budget { code: Code::STORAGE_CAP, .. })), "{ev:?}");
     // a restart loses them; the log does not reuse their numbers
     w.restart(h, policy);
     let (a, b) = (w.connect(h), w.connect(h));

@@ -456,11 +456,11 @@ fn deposit_budget() {
     assert!(evs.iter().any(|e| matches!(e, Event::Added { stamp: None, .. })));
 }
 
-// spec/sync.md §5 (readers write no ephemeral data; security review M5): an ephemeral or
-// relay-only blob deposited (no stamp) is refused by the host engine itself, whatever the store
-// behind it checks (a co-reader peer's store did not), and nothing is stored or pushed
+// spec/sync.md §5 Deposit: an ephemeral blob deposited (no stamp) is held deposited and pushed
+// like any deposit; a relay-only one is refused by the host engine itself, whatever the store
+// behind it checks, and nothing of it is stored or pushed
 #[test]
-fn ephemeral_deposit_refused_spec_sync_5() {
+fn deposit_ephemeral_held_relay_only_refused_spec_sync_5() {
     let mut net = Net::new(2, 0);
     let l = Label::new(3);
     net.setup(&l);
@@ -473,10 +473,17 @@ fn ephemeral_deposit_refused_spec_sync_5() {
         let wrap: Wrap = [7; osis_crypto::WRAP_LEN];
         let sig = sign_deposit(&dk, &l.id, &osis_label::blob_id(&b), &wrap);
         let ev = net.run(0, Command::Deposit { label: l.id, blob: b.clone(), wrap, sig });
-        assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::REFUSED, .. }]), "{ev:?}");
-        assert!(net.store.entry(&l.id, &osis_label::blob_id(&b)).unwrap().is_none());
+        let held = net.store.entry(&l.id, &osis_label::blob_id(&b)).unwrap();
+        if class == osis_label::Class::Relay {
+            assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::REFUSED, .. }]), "{ev:?}");
+            assert!(held.is_none());
+        } else {
+            assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::OK, .. }]), "{ev:?}");
+            assert!(held.is_some_and(|m| m.stamp.is_none()), "held deposited");
+            assert!(!std::mem::take(&mut net.events[1]).is_empty(), "pushed");
+        }
     }
-    assert!(net.events[1].is_empty(), "nothing pushed");
+    assert!(net.events[1].is_empty(), "nothing of the relay-only blob pushed");
 }
 
 // spec/sync.md §5, spec/crypto.md §7: deletes by key and by a level's delete key (level 3 write key, levels 1-2 sync key)

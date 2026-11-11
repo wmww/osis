@@ -147,6 +147,44 @@ fn deposit_budget() {
     assert_eq!(e.store.budget(&l).unwrap().entries_left, 64u64.saturating_sub(max - 3));
 }
 
+// spec/sync.md §5 Deposit: an ephemeral deposit is held in memory under the one deposit budget
+// (durable and ephemeral alike) and the ephemeral cap; promoting it logs it again and frees its
+// share; a delete frees it too; a restart forgets it with the budget it held
+#[test]
+fn ephemeral_deposits_share_the_budget() {
+    let mut e = env(HostPolicy::default());
+    let l = e.f.label;
+    let max = 64 + 4 * e.f.genesis_claims.claims.len() as u64;
+    let eph: Vec<Vec<u8>> = (0..max as u32 / 2).map(|n| eph_blob(n, 40)).collect();
+    for b in &eph {
+        assert_eq!(e.store.put(&l, Put { stamp: None, ..eph_put(b, None) }).unwrap(), Code::OK);
+    }
+    let durable: Vec<Vec<u8>> = (0..max - eph.len() as u64).map(|n| [&n.to_be_bytes()[..], &[0; 24]].concat()).collect();
+    for b in &durable {
+        assert_eq!(e.store.put(&l, put(b, false, None)).unwrap(), Code::OK);
+    }
+    assert_eq!(e.store.budget(&l).unwrap().entries_left, 0);
+    let extra = eph_blob(9_999, 40);
+    assert_eq!(e.store.put(&l, Put { stamp: None, ..eph_put(&extra, None) }).unwrap(), Code::BUDGET_FULL);
+    assert_eq!(e.store.put(&l, put(&[0xee; 40], false, None)).unwrap(), Code::BUDGET_FULL);
+    let eph_id = osis_label::blob_id(&eph[0]);
+    assert_eq!(e.store.entry(&l, &eph_id).unwrap().unwrap().stamp, None);
+    // promoted: stamped, logged again, out of the budget
+    let seq = e.store.log_head(&l).unwrap().1;
+    assert_eq!(e.store.put(&l, eph_put(&eph[0], None)).unwrap(), Code::OK);
+    let m = e.store.entry(&l, &eph_id).unwrap().unwrap();
+    assert_eq!((m.stamp.is_some(), m.add_seq), (true, seq + 1));
+    assert_eq!(e.store.budget(&l).unwrap().entries_left, 1);
+    // a deposit of a held stamped entry changes nothing
+    assert_eq!(e.store.put(&l, Put { stamp: None, ..eph_put(&eph[0], None) }).unwrap(), Code::OK);
+    assert!(e.store.entry(&l, &eph_id).unwrap().unwrap().stamp.is_some());
+    e.store.delete(&l, &osis_label::blob_id(&eph[1]), T0).unwrap();
+    assert_eq!(e.store.budget(&l).unwrap().entries_left, 2);
+    let again = open(e.backend.clone(), &e.root, e.clock.clone(), HostPolicy::default(), 2);
+    assert_eq!(again.budget(&l).unwrap().entries_left, max - durable.len() as u64);
+    assert_eq!(again.entry(&l, &osis_label::blob_id(&eph[2])).unwrap(), None);
+}
+
 // spec/sync.md §5: hosts cap storage per label (code 12); replacing a held entry is not capped
 #[test]
 fn storage_cap() {

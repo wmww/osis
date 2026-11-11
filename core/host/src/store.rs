@@ -593,6 +593,9 @@ struct EphLabel {
     bytes: u64,
     /// Memory of its tombstones (charged to the host-wide total only).
     tombs: u64,
+    /// Deposited (unstamped) entries and their blob bytes: the deposit budget's ephemeral part.
+    dep_n: u64,
+    dep_bytes: u64,
 }
 
 impl EphLabel {
@@ -1022,6 +1025,10 @@ impl HostStore {
         let Some(e) = self.eph.labels.get_mut(label) else { return Ok(false) };
         let Some(x) = e.entries.remove(blob) else { return Ok(false) };
         e.order.remove(&x.meta.add_seq);
+        if x.meta.stamp.is_none() {
+            e.dep_n = e.dep_n.saturating_sub(1);
+            e.dep_bytes = e.dep_bytes.saturating_sub(x.meta.size);
+        }
         if let Some(t) = x.expiry {
             self.eph.due.remove(&(t, *label, *blob));
         }
@@ -1072,19 +1079,44 @@ impl HostStore {
         Ok(true)
     }
 
-    /// Adds an ephemeral entry (spec/sync.md §4, §5): stamped only; past the label's ephemeral
-    /// cap (after trimming its log) code 12; past the node's, the label charged most gives way.
+    /// Adds an ephemeral entry or promotes a deposited one (spec/sync.md §4, §5): past the
+    /// label's ephemeral cap (after trimming its log) code 12; past the node's, the label charged
+    /// most gives way; a deposit within the deposit budget, as a durable one.
     fn eph_put(&mut self, label: &LabelId, put: Put<'_>, plan: &Plan) -> Result<Code, StoreError> {
-        let Some(stamp) = put.stamp else { return Ok(Code::REFUSED) };
-        // always stamped: a held one never changes (`LabelStore::put`)
-        if self.eph.labels.get(label).is_some_and(|e| e.entries.contains_key(&put.blob_id)) {
-            return Ok(Code::OK);
-        }
-        // the planned removals' memory still held (an eviction below may take one first)
-        let freed = |s: &Self| plan.gone.iter().filter_map(|b| s.eph_entry(label, b)).map(|e| e.meta.size.saturating_add(ENTRY_OVERHEAD)).fold(0u64, u64::saturating_add);
         let now = self.now();
         self.rates.roll(now, self.policy.window_ms);
         let size = put.blob.len() as u64;
+        // a held one never changes but by its promotion (`LabelStore::put`)
+        if let Some(held) = self.eph_entry(label, &put.blob_id).map(|e| e.meta.clone()) {
+            if put.stamp.is_none() || held.stamp.is_some() {
+                return Ok(Code::OK);
+            }
+            let seq = self.eph_append(label, EphRec::Added(put.blob_id))?;
+            if let Some(e) = self.eph.labels.get_mut(label) {
+                e.dep_n = e.dep_n.saturating_sub(1);
+                e.dep_bytes = e.dep_bytes.saturating_sub(held.size);
+                e.order.remove(&held.add_seq);
+                e.order.insert(seq, put.blob_id);
+                if let Some(x) = e.entries.get_mut(&put.blob_id) {
+                    x.meta = EntryMeta { wrap: put.wrap, stamp: put.stamp, add_seq: seq, ..held };
+                }
+            }
+            self.note_origin(label, &put.blob_id);
+            return Ok(Code::OK);
+        }
+        if put.stamp.is_none() {
+            let m = self.meta(label)?.ok_or_else(unknown)?;
+            let max = self.budget_max(&m);
+            let (n, bytes) = self.deposited(label, &m);
+            if n.saturating_add(1) > max || bytes.saturating_add(size) > max.saturating_mul(DEPOSIT_ENTRY_BYTES) {
+                return Ok(Code::BUDGET_FULL);
+            }
+            if !self.rates.take(label, Rate::Deposit, self.policy.deposits) {
+                return Ok(Code::RATE_LIMITED);
+            }
+        }
+        // the planned removals' memory still held (an eviction below may take one first)
+        let freed = |s: &Self| plan.gone.iter().filter_map(|b| s.eph_entry(label, b)).map(|e| e.meta.size.saturating_add(ENTRY_OVERHEAD)).fold(0u64, u64::saturating_add);
         let need = size.saturating_add(ENTRY_OVERHEAD).saturating_add(REC_OVERHEAD);
         let used = |s: &Self| s.eph.labels.get(label).map_or(0, |e| e.bytes).saturating_sub(plan.eph_label);
         while used(self).saturating_add(need) > self.policy.ephemeral_bytes && self.eph.trim_log(label) {}
@@ -1099,23 +1131,17 @@ impl HostStore {
         let seq = self.eph_append(label, EphRec::Added(put.blob_id))?;
         let e = self.eph.labels.entry(*label).or_default();
         e.order.insert(seq, put.blob_id);
-        e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), size, add_seq: seq }, expiry: put.expiry });
+        if put.stamp.is_none() {
+            e.dep_n += 1;
+            e.dep_bytes = e.dep_bytes.saturating_add(size);
+        }
+        e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, size, add_seq: seq }, expiry: put.expiry });
         if let Some(t) = put.expiry {
             self.eph.due.insert((t, *label, put.blob_id));
         }
         self.eph.charge(label, size.saturating_add(ENTRY_OVERHEAD), Charge::Label);
         self.eph.blobs.entry(put.blob_id).or_insert_with(|| (put.blob.to_vec(), 0)).1 += 1;
-        match self.origin {
-            Some(o) => {
-                if self.origins.len() >= MAX_ORIGINS {
-                    self.origins.clear();
-                }
-                self.origins.insert((*label, put.blob_id), o);
-            }
-            None => {
-                self.origins.remove(&(*label, put.blob_id));
-            }
-        }
+        self.note_origin(label, &put.blob_id);
         Ok(Code::OK)
     }
 
@@ -1149,7 +1175,8 @@ impl HostStore {
                 }
                 if put.stamp.is_none() {
                     let max = self.budget_max(m);
-                    if m.dep_n.saturating_add(1) > max || m.dep_bytes.saturating_add(size) > max.saturating_mul(DEPOSIT_ENTRY_BYTES) {
+                    let (n, bytes) = self.deposited(label, m);
+                    if n.saturating_add(1) > max || bytes.saturating_add(size) > max.saturating_mul(DEPOSIT_ENTRY_BYTES) {
                         return Ok(Code::BUDGET_FULL);
                     }
                     if !self.rates.take(label, Rate::Deposit, p.deposits) {
@@ -1190,17 +1217,7 @@ impl HostStore {
         tx.batch.put(key(b'E', &[&l, &put.blob_id.0]), row.encode());
         tx.batch.log(Write::LogAdded(*label, put.blob_id));
         self.finish(tx)?;
-        match self.origin {
-            Some(o) => {
-                if self.origins.len() >= MAX_ORIGINS {
-                    self.origins.clear();
-                }
-                self.origins.insert((*label, put.blob_id), o);
-            }
-            None => {
-                self.origins.remove(&(*label, put.blob_id));
-            }
-        }
+        self.note_origin(label, &put.blob_id);
         Ok(Code::OK)
     }
 
@@ -1333,6 +1350,27 @@ impl HostStore {
 
     fn budget_max(&self, m: &Meta) -> u64 {
         self.policy.deposit_factor.max(1).saturating_mul(64u64.saturating_add(m.head_claims.saturating_mul(4)))
+    }
+
+    /// Records the connection the entry came on (`origins`), or forgets an earlier one.
+    fn note_origin(&mut self, label: &LabelId, blob: &BlobId) {
+        match self.origin {
+            Some(o) => {
+                if self.origins.len() >= MAX_ORIGINS {
+                    self.origins.clear();
+                }
+                self.origins.insert((*label, *blob), o);
+            }
+            None => {
+                self.origins.remove(&(*label, *blob));
+            }
+        }
+    }
+
+    /// Deposited entries under `label` and their bytes, durable (`m`) and ephemeral: one budget.
+    fn deposited(&self, label: &LabelId, m: &Meta) -> (u64, u64) {
+        let (n, b) = self.eph.labels.get(label).map_or((0, 0), |e| (e.dep_n, e.dep_bytes));
+        (m.dep_n.saturating_add(n), m.dep_bytes.saturating_add(b))
     }
 
     /// Removes a held entry at `now` within `tx`: counters, indexes, blob reference; a tombstone
@@ -1869,7 +1907,8 @@ impl LabelStore for HostStore {
     fn budget(&self, label: &LabelId) -> Result<Budget, StoreError> {
         let m = self.meta(label)?.ok_or_else(unknown)?;
         let max = self.budget_max(&m);
-        Ok(Budget { entries_left: max.saturating_sub(m.dep_n), bytes_left: max.saturating_mul(DEPOSIT_ENTRY_BYTES).saturating_sub(m.dep_bytes) })
+        let (n, bytes) = self.deposited(label, &m);
+        Ok(Budget { entries_left: max.saturating_sub(n), bytes_left: max.saturating_mul(DEPOSIT_ENTRY_BYTES).saturating_sub(bytes) })
     }
 
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError> {

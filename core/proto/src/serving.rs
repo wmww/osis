@@ -1368,13 +1368,8 @@ impl ServingSession {
         let Ok(prefix) = host_prefix(blob) else { return Ok(Code::MALFORMED) };
         let class = prefix.as_ref().map(|p| p.class()).unwrap_or_default();
         let expiry = prefix.and_then(|p| p.expiry()).map(|t| t.0);
-        // readers write no ephemeral data: an ephemeral or relay-only blob needs a stamp, at
-        // every store (spec/sync.md §5)
-        if class != Class::Durable && stamp.is_none() {
-            return Ok(Code::REFUSED);
-        }
         if class == Class::Relay {
-            // held by nobody, so it replaces nothing
+            // held by nobody, so it is neither deposited nor replaces anything (spec/sync.md §5)
             let Some(stamp) = stamp.filter(|_| replaces.is_empty()) else { return Ok(Code::REFUSED) };
             return Ok(match store.relay(label, &blob_id, blob.len(), expiry, now)? {
                 RelayVerdict::Push => {

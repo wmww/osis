@@ -725,6 +725,47 @@ fn wiped_host_gets_bodies_back_from_restarted_node_spec_sync_6() {
     assert!(!again.is_empty() && again.iter().all(|id| net.host_ids(host, &l).contains(id)), "{again:?}");
 }
 
+// spec/sync.md §5 Deposit, durable alike: c's write is held only by the reader b once the host
+// lost its data with every writer lacking it (a was away, c is gone), and a's demotion of b
+// rotates the write key: b's copy, stamped under a key the head no longer takes, goes as a
+// deposit and a promotes it
+#[test]
+fn reader_copy_after_rotation_goes_as_a_deposit_durable_spec_sync_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "t");
+    net.run();
+    net.advance(15_000);
+    net.set_online(a, false);
+    net.write(c, t, "v");
+    net.run();
+    net.advance(15_000);
+    assert_eq!(net.read(b, t), Some(s("v")));
+    net.set_online(b, false);
+    net.set_online(c, false);
+    net.wipe_host(host);
+    net.set_online(a, true);
+    net.run();
+    net.advance(15_000);
+    assert_eq!(net.read(a, t), Some(s("t")));
+    let tb = net.tid(b);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.set_online(b, true);
+    for _ in 0..4 {
+        net.advance(15_000);
+    }
+    assert_eq!(net.read(a, t), Some(s("v")));
+}
+
 // spec/sync.md §6 (no upload of a body a delete removed, keyed per body): commit c writes a plain
 // register and a purge-on-replace one, two bodies; both are overwritten, the second's body is
 // deleted past its bound, and the host is wiped: the first's body (must-hold, uncovered) goes up

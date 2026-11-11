@@ -126,6 +126,8 @@ struct Head {
     l: LabelId,
     host: Option<HostKey>,
     id: osis_label::StepId,
+    /// The head's write key: the stamps it takes (spec/sync.md §5 Stamp).
+    stamps: osis_crypto::VerifyingKey,
     keys: HeadKeys,
     read_ok: bool,
 }
@@ -221,7 +223,7 @@ impl SyncEngine {
         if self.reregister(conn, l, out)? {
             return Ok(());
         }
-        let p = Head { g, l, host: Some(host), id: head.id(), keys, read_ok };
+        let p = Head { g, l, host: Some(host), id: head.id(), stamps: head.keys.write, keys, read_ok };
         self.with_work(&g, Some(conn), l, |s, ctx, w| s.judge_label(conn, host, &p, ctx, w, out))
     }
 
@@ -331,8 +333,9 @@ impl SyncEngine {
 
     /// Sends what a pass at `conn`'s host found to send, by priority: what the host lacks
     /// and is not in flight, stamped when this node writes (promoting due deposits too), else
-    /// relayed with its stamp, else deposited (this node's own role writes queued in the
-    /// outbox). What the host lacks is judged again next pass (`left`).
+    /// relayed with a stamp the head takes, else deposited: a body (its author's rights judge
+    /// it, spec/sync.md §5 Deposit) or this node's own placements (its own role writes queued
+    /// in the outbox). What the host lacks is judged again next pass (`left`).
     fn send(&mut self, conn: ConnId, host: HostKey, p: &Head, mut sends: Vec<Out>, left: &mut Left, out: &mut Vec<super::Action>) -> Result<()> {
         let (g, l, keys) = (p.g, p.l, &p.keys);
         sends.sort_by_key(|o| o.prio);
@@ -361,20 +364,20 @@ impl SyncEngine {
             let Some(blob) = self.engine.blob(&o.id)? else { continue };
             if let Some(w) = &keys.write {
                 uploads.push(self.stamped_upload(l, o.id, e, blob, w));
-            } else if let Some(stamp) = e.stamp {
+            } else if let Some(stamp) = e.stamp.filter(|s| osis_label::verify_stamp(&p.stamps, &l, &o.id, &e.wrap, s).is_ok()) {
                 uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp, replaces: Vec::new() });
             } else if let Some(d) = &keys.deposit
-                && self.mine(&e)
+                && (self.mine(&e) || matches!(o.of, Some(Touch::Commit(_))))
                 // a queued deposit goes from the outbox
                 && !self.state.outbox.contains_key(&(host, l, o.id))
             {
-                if e.cert || !matches!(e.kind, Kind::Commit { .. }) {
+                if e.stamp.is_none() && !e.cert && matches!(e.kind, Kind::Commit { .. }) && self.mine(&e) {
+                    // this node's own role write placed for deposit (`may_deposit`): queued,
+                    // so neither a crash nor forgetting the label recalls it
+                    queue.push((blob, e.wrap, d.clone()));
+                } else {
                     let sig = osis_label::sign_deposit(d, &l, &o.id, &e.wrap);
                     deposits.push((blob, e.wrap, sig));
-                } else {
-                    // this node's own role write: queued, so neither a crash nor
-                    // forgetting the label recalls it
-                    queue.push((blob, e.wrap, d.clone()));
                 }
             }
         }
@@ -613,7 +616,7 @@ impl SyncEngine {
             return Ok(());
         }
         // the label's work set, as at a host (`judge_label`)
-        let p = Head { g, l, host: None, id: head.id(), keys, read_ok };
+        let p = Head { g, l, host: None, id: head.id(), stamps: head.keys.write, keys, read_ok };
         self.with_work(&g, None, l, |s, ctx, w| s.judge_local(&p, host, ctx, w))
     }
 
