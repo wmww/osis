@@ -39,6 +39,7 @@ pub(crate) mod snapshot;
 #[cfg(test)]
 mod oracle;
 pub(crate) mod end;
+pub mod lifetimes;
 pub(crate) mod forget;
 pub(crate) mod memory;
 pub(crate) use snapshot::{frontiers_now, reaches, snapshot_state};

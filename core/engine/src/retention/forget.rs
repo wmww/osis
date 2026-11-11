@@ -229,6 +229,8 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     }
     for t in &out.things {
         tx.txn.remove_local(&[records::SYNCING, t.as_bytes()].concat(), Shred::No)?;
+        // unknown now: what lists it is judged again
+        super::lifetimes::queue_with_listers(tx, t)?;
     }
     // the things' history cursors and rows (`leaving`)
     super::leaving::forget_things(tx, &out.things)?;

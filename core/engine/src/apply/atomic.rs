@@ -570,6 +570,7 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
     if tx.core.ended(&t) {
         crate::retention::end::record_back(tx, &t)?;
     }
+    crate::retention::lifetimes::queue_with_listers(tx, &t)?;
     // the reader actor of the thing's deltas is known now
     let touching: Vec<CommitId> = tx.core.aspects_of(&t).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
     for c in touching {

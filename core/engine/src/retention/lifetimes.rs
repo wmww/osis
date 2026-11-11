@@ -1,0 +1,250 @@
+//! Thing lifetimes by reference (issues/thing-lifetimes.md; oracle: held-model `lifetimes`). A
+//! thing listing retainers (`retainers^.0`) is kept while a listed retainer that is itself kept
+//! references it, or a listed retainer is unknown here; a thing with no list is standalone and
+//! kept. A thing judged unreachable is released by a node holding the right to end it; one
+//! without is remembered (`PENDING`) until the right comes.
+//!
+//! Judged from what the node holds, per thing: **known** (a live minting held, not a kept copy),
+//! **ended** (an ending held), else **unknown**. The judgment of one thing is a walk up its list
+//! through retainers that reference what is below them, stopping at the first standalone or
+//! unknown thing (`walk`). No liveness is cached: the kept state is the work list (`WORK`: things
+//! a change touched, judged once every thing their walk read is heard out) and `PENDING`. A walk
+//! passes through a pending thing like any known thing: `PENDING` may be stale for a thing the
+//! same run made reachable (held-model `a_stale_pending_thing_is_walked_through`).
+//!
+//! What queues (`queue`): a reference to a thing appearing or going, a thing's list changing
+//! (`refs::note`); a thing becoming known, ended or forgotten, with its listers; every pending
+//! thing once the role timelines change (a right gained). A missed queue only leaks; a walk reads
+//! the current held state, so a release never rests on a queue.
+
+use crate::engine::refs;
+use crate::engine::{Core, Tx};
+use crate::error::Result;
+use osis_base::{Ak, Tid, Value};
+use osis_store::Shred;
+use std::collections::BTreeSet;
+
+/// `lw/<tid>`: things to judge.
+pub(crate) const WORK: &[u8] = b"lw/";
+/// `lp/<tid>`: things judged unreachable that this node may not end.
+pub(crate) const PENDING: &[u8] = b"lp/";
+
+/// What the node holds of a thing, for the judgment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    Known,
+    Ended,
+    Unknown,
+}
+
+/// `t` as the judgment reads it; `gone`: released in this run.
+pub(crate) fn status(core: &Core, t: &Tid, gone: &BTreeSet<Tid>) -> Status {
+    if gone.contains(t) || core.ended(t) {
+        Status::Ended
+    } else if core.exists(t) && core.mintings(t).next().is_some() && crate::retention::forget::copy_of(core, t).is_none() {
+        Status::Known
+    } else {
+        Status::Unknown
+    }
+}
+
+/// Queues `t` for judgment (durable transactions only: no reference or list is ephemeral).
+pub(crate) fn queue(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    if tx.txn.is_memory() {
+        return Ok(());
+    }
+    tx.txn.put_local(&[WORK, t.as_bytes()].concat(), &[], Shred::No)?;
+    Ok(())
+}
+
+/// Queues `t` and the things listing it: its status changed (known, ended, unknown).
+pub(crate) fn queue_with_listers(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    if tx.txn.is_memory() {
+        return Ok(());
+    }
+    queue(tx, t)?;
+    for l in refs::listers(tx, t)? {
+        queue(tx, &l)?;
+    }
+    Ok(())
+}
+
+/// `t`'s list: `None` standalone (no list, or one that does not read as `set<tid>`: it cannot be
+/// judged, so it is kept).
+fn list(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<BTreeSet<Tid>>> {
+    let Ok(ak) = Ak::new(refs::RETAINERS) else { return Ok(None) };
+    let v = tx.state(t, &ak)?.and_then(osis_crdt::Fragment::read);
+    let Some(Value::Set(s)) = v else { return Ok(None) };
+    let mut out = BTreeSet::new();
+    for x in s {
+        let Value::Tid(x) = x else { return Ok(None) };
+        out.insert(x);
+    }
+    Ok(Some(out))
+}
+
+/// The things listing `x` that `x` references: whose judgment follows `x`'s.
+fn below(tx: &mut Tx<'_>, x: &Tid) -> Result<Vec<Tid>> {
+    let mut out = Vec::new();
+    for y in refs::listers(tx, x)? {
+        if refs::references(tx, x, &y)? {
+            out.push(y);
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `x` (known) is unreachable: a walk up its list through retainers referencing what is
+/// below them finds no standalone or unknown thing. `read`: every thing it read.
+fn walk(tx: &mut Tx<'_>, x: &Tid, gone: &BTreeSet<Tid>, read: &mut BTreeSet<Tid>) -> Result<bool> {
+    read.insert(*x);
+    let mut seen = BTreeSet::from([*x]);
+    let mut stack = vec![*x];
+    while let Some(y) = stack.pop() {
+        crate::costs::count("lifetimes: walked", 1);
+        let Some(l) = list(tx, &y)? else { return Ok(false) };
+        for r in l {
+            read.insert(r);
+            match status(tx.core, &r, gone) {
+                Status::Unknown => return Ok(false),
+                Status::Ended => {}
+                Status::Known => {
+                    if !seen.contains(&r) && refs::references(tx, &r, &y)? {
+                        seen.insert(r);
+                        stack.push(r);
+                    }
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Whether this node may end `x`: its writer holds the purge right over every held minting of
+/// it (spec/permissions.md §6), as `end` would be judged.
+fn may_end(tx: &Tx<'_>, x: &Tid) -> bool {
+    let Ok(who) = tx.core.writer_for(x) else { return false };
+    let Some(ts) = osis_base::Ts::make(tx.now(), 0) else { return false };
+    let Ok(ak) = Ak::new(osis_commit::retention::CREATED) else { return false };
+    let mut any = false;
+    tx.core.mintings(x).all(|(c, _)| {
+        any = true;
+        super::purge::would_hold_right(tx.core, &who, ts, &c, x, &ak)
+    }) && any
+}
+
+fn has(tx: &mut Tx<'_>, prefix: &[u8], t: &Tid) -> Result<bool> {
+    Ok(tx.txn.get_local(&[prefix, t.as_bytes()].concat())?.is_some())
+}
+
+fn set(tx: &mut Tx<'_>, prefix: &[u8], t: &Tid, on: bool) -> Result<()> {
+    let k = [prefix, t.as_bytes()].concat();
+    if on {
+        tx.txn.put_local(&k, &[], Shred::No)?;
+    } else {
+        tx.txn.remove_local(&k, Shred::No)?;
+    }
+    Ok(())
+}
+
+fn rows(tx: &mut Tx<'_>, prefix: &[u8]) -> Result<Vec<Tid>> {
+    let mut out = Vec::new();
+    tx.scan(prefix, |k, _| {
+        out.push(Tid::from_bytes(k.try_into().map_err(|_| crate::error::Error::Corrupt("lifetimes row"))?));
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// What one judgment did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Judged {
+    /// Unreachable things this node may end, in the order judged (each thing's cascade after it).
+    pub release: Vec<Tid>,
+    /// Things left queued: a thing their walk read is not heard out.
+    pub waiting: usize,
+    /// Things judged.
+    pub judged: usize,
+}
+
+/// Judges the work list (and every pending thing when `rights` may have changed): each thing whose
+/// walk read only things `heard` says are heard out. Unreachable ones this node may end go in
+/// `release` with their cascade; the rest of the unreachable ones are pending.
+pub(crate) fn judge(tx: &mut Tx<'_>, heard: &dyn Fn(&Tid) -> bool, rights: bool) -> Result<Judged> {
+    let mut queue = rows(tx, WORK)?;
+    if rights {
+        queue.extend(rows(tx, PENDING)?);
+    }
+    let mut out = Judged::default();
+    let mut gone = BTreeSet::new();
+    let mut waiting = BTreeSet::new();
+    while let Some(x) = queue.pop() {
+        if status(tx.core, &x, &gone) != Status::Known {
+            set(tx, WORK, &x, false)?;
+            set(tx, PENDING, &x, false)?;
+            continue;
+        }
+        out.judged += 1;
+        let mut read = BTreeSet::new();
+        let unreachable = walk(tx, &x, &gone, &mut read)?;
+        if !read.iter().all(heard) {
+            set(tx, WORK, &x, true)?;
+            waiting.insert(x);
+            continue;
+        }
+        waiting.remove(&x);
+        set(tx, WORK, &x, false)?;
+        let pending = has(tx, PENDING, &x)?;
+        if unreachable {
+            if may_end(tx, &x) {
+                gone.insert(x);
+                out.release.push(x);
+                set(tx, PENDING, &x, false)?;
+                queue.extend(below(tx, &x)?);
+            } else if !pending {
+                set(tx, PENDING, &x, true)?;
+                queue.extend(below(tx, &x)?);
+            }
+        } else if pending {
+            set(tx, PENDING, &x, false)?;
+            queue.extend(below(tx, &x)?);
+        }
+    }
+    out.waiting = waiting.len();
+    Ok(out)
+}
+
+/// The things judged unreachable here that this node may not end.
+pub(crate) fn pending(tx: &mut Tx<'_>) -> Result<Vec<Tid>> {
+    rows(tx, PENDING)
+}
+
+impl crate::engine::Engine {
+    /// Whether the lifetime judgment has work (`judge_lifetimes`): a thing queued, or the role
+    /// timelines changed while a thing is pending.
+    pub fn lifetimes_due(&mut self) -> Result<bool> {
+        let rights = self.core.lifetimes_rights;
+        self.run(|tx| Ok(!tx.txn.scan_local(WORK, &[], 1)?.is_empty() || (rights && !tx.txn.scan_local(PENDING, &[], 1)?.is_empty())))
+    }
+
+    /// Judges the things changes touched (issues/thing-lifetimes.md, The judgment): each whose
+    /// walk read only things `heard` says are heard out (node-sync: every label holding it is;
+    /// a thing under no label is), the rest left queued. Returns the unreachable things this
+    /// node may end, each followed by what only it kept; the others it may not end are pending.
+    pub fn judge_lifetimes(&mut self, heard: &dyn Fn(&Tid) -> bool) -> Result<Judged> {
+        let rights = self.core.lifetimes_rights;
+        let out = self.run(|tx| judge(tx, heard, rights))?;
+        self.core.lifetimes_rights = false;
+        Ok(out)
+    }
+
+    /// The things judged unreachable here that this node may not end.
+    pub fn lifetimes_pending(&mut self) -> Result<Vec<Tid>> {
+        self.run(pending)
+    }
+
+    /// How the lifetime judgment reads `t` here (known, ended, unknown).
+    pub fn lifetime_status(&self, t: &Tid) -> Status {
+        status(&self.core, t, &BTreeSet::new())
+    }
+}

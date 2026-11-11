@@ -106,6 +106,10 @@ pub(crate) fn end_ended(tx: &mut Tx<'_>) -> Result<()> {
             }
         }
     }
+    // known again or ended: judged, with what lists it
+    for t in due.iter().chain(&fell) {
+        super::lifetimes::queue_with_listers(tx, t)?;
+    }
     let mut changed = BTreeSet::new();
     for t in &fell {
         reopen_fallen(tx, t)?;

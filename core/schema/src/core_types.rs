@@ -406,6 +406,8 @@ pub const RETENTION: Aspect<RetentionSetting> = Aspect::new("retention^.0", &COR
 pub const PURGE: Aspect<WallMs> = Aspect::new("purge.0", &CORE);
 pub const GROUP: Aspect<Group> = Aspect::new("group.0", &CORE);
 pub const GROUPS: Aspect<BTreeSet<Tid>> = Aspect::new("groups.0", &CORE);
+/// `retainers^.0`: the things that keep this thing alive (issues/thing-lifetimes.md); admin-only.
+pub const RETAINERS: Aspect<BTreeSet<Tid>> = Aspect::new("retainers^.0", &CORE);
 pub const NAME: Aspect<String> = Aspect::new("name.0", &CORE);
 pub const BODY: Aspect<String> = Aspect::new("body.0", &CORE);
 pub const TAG: Aspect<Tag> = Aspect::new("tag.0", &CORE);

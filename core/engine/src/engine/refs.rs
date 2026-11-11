@@ -115,7 +115,14 @@ fn count_of(v: &[u8]) -> Result<u64> {
 
 /// Applies the count changes `d` to the rows of `(source, ak)`.
 pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<()> {
-    if !indexed(ak) || d.0.values().all(|n| *n == 0) {
+    if !indexed(ak) {
+        return Ok(());
+    }
+    // the thing whose list changed is judged (also a list set empty or removed, no row moving)
+    if ak.as_str() == RETAINERS {
+        crate::retention::lifetimes::queue(tx, source)?;
+    }
+    if d.0.values().all(|n| *n == 0) {
         return Ok(());
     }
     // the rows that appeared or went, for backlinks listeners
@@ -144,6 +151,12 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
         }
         Ok(())
     })?;
+    // a thing a durable reference to which appeared or went is judged
+    if !ak.ephemeral() && ak.as_str() != RETAINERS {
+        for t in &moved {
+            crate::retention::lifetimes::queue(tx, t)?;
+        }
+    }
     if tx.core.refs_watched && !moved.is_empty() {
         tx.core.events.queue(Event::References(std::sync::Arc::new(moved)));
     }
@@ -201,6 +214,42 @@ pub(crate) fn to(tx: &mut Tx<'_>, target: &Tid) -> Result<Vec<Reference>> {
         out.push(Reference { target: *target, source, ak, count });
     }
     Ok(out)
+}
+
+/// The things whose `retainers^.0` lists `target` (its durable rows of that AK).
+pub(crate) fn listers(tx: &mut Tx<'_>, target: &Tid) -> Result<Vec<Tid>> {
+    let to = tx.txn.index(TO)?;
+    let pre = target.as_bytes().to_vec();
+    let end = [pre.as_slice(), &[0xff; 16]].concat();
+    let mut out = Vec::new();
+    scan_table(&mut tx.txn, to, &pre, Some(&end), |k, _| {
+        let rest = k.get(pre.len()..).ok_or(Error::Corrupt("reference row"))?;
+        let (s, a) = rest.split_at_checked(osis_base::format::TID_LEN).ok_or(Error::Corrupt("reference row"))?;
+        if a == RETAINERS.as_bytes() {
+            out.push(Tid::from_bytes(s.try_into().map_err(|_| Error::Corrupt("reference row"))?));
+        }
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// Whether `source` references `target` for lifetime: a durable row other than `retainers^.0`
+/// (issues/thing-lifetimes.md, What a reference is).
+pub(crate) fn references(tx: &mut Tx<'_>, source: &Tid, target: &Tid) -> Result<bool> {
+    let to = tx.txn.index(TO)?;
+    let pre = [target.as_bytes().as_slice(), source.as_bytes()].concat();
+    let end = [pre.as_slice(), &[0xff]].concat();
+    let mut any = false;
+    for (k, _) in tx.txn.table_range(to, &pre, Some(&end), usize::MAX)? {
+        drop(crate::costs::span("refs: row read"));
+        let a = k.get(pre.len()..).ok_or(Error::Corrupt("reference row"))?;
+        let ak = std::str::from_utf8(a).ok().and_then(|a| Ak::new(a).ok()).ok_or(Error::Corrupt("reference row"))?;
+        if !ak.ephemeral() && ak.as_str() != RETAINERS {
+            any = true;
+            break;
+        }
+    }
+    Ok(any)
 }
 
 /// Up to `n` rows naming `target` after `after` (a source and AK, exclusive; `None`: from the

@@ -21,6 +21,7 @@ mod corrupt;
 mod crash;
 mod deletion;
 mod ending;
+mod lifetimes;
 mod disputes;
 mod edits;
 mod deposit_queue;

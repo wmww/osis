@@ -907,6 +907,9 @@ pub struct Core {
     pub(crate) commits_watched: bool,
     /// Someone may listen to backlinks (`Engine::watch_references`).
     pub(crate) refs_watched: bool,
+    /// The role timelines changed since the lifetime judgment last ran: its pending things are
+    /// judged again, a right may have come (`retention::lifetimes`).
+    pub(crate) lifetimes_rights: bool,
     /// What `Core::commits_named` noted in the running transaction.
     commits_named: Vec<(Tid, Ak, CommitId)>,
     /// Whether a commit listener is on a thing (`Engine::listen_commits`).
@@ -1148,6 +1151,7 @@ impl Core {
             skip_writer_rules: self.skip_writer_rules.clone(),
             commits_watched: self.commits_watched.clone(),
             refs_watched: self.refs_watched.clone(),
+            lifetimes_rights: self.lifetimes_rights.clone(),
             commits_named: self.commits_named.clone(),
             commit_listeners: None,
             listed_before: self.listed_before.clone(),
@@ -1454,6 +1458,7 @@ impl Core {
         if !touched.is_empty() {
             let changed = self.timelines.update_touched(&self.ix.held, &touched);
             self.timelines_changed(changed);
+            self.lifetimes_rights = true;
             if self.detect {
                 crate::sides::after_update(self);
             }
@@ -1697,6 +1702,7 @@ impl Core {
             settings_generation: _,
             settings_moved: _,
             valueless_dirty: _,
+            lifetimes_rights: _,
             changed: _,
             redeliver: _,
             pended: _,
@@ -1864,6 +1870,7 @@ impl Core {
             skip_writer_rules: false,
             commits_watched: false,
             refs_watched: false,
+            lifetimes_rights: true,
             commits_named: Vec::new(),
             commit_listeners: None,
             listed_before: Vec::new(),
