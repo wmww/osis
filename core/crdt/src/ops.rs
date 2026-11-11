@@ -279,10 +279,10 @@ pub(crate) fn present_slot(st: Option<&Fragment>, enc: Encoding) -> Option<std::
     let st = st?;
     let slot = match st.slot(enc) {
         Some(crate::state::SlotRef::Frag(f)) => std::borrow::Cow::Borrowed(f),
+        Some(_) if matches!(st, Fragment::Register(_)) => std::borrow::Cow::Borrowed(st),
         Some(m) => std::borrow::Cow::Owned(m.to_fragment()),
         None => match st.slot(Encoding::Register)? {
             crate::state::SlotRef::Reg(r) => std::borrow::Cow::Owned(crate::state::embed(r, enc)?),
-            crate::state::SlotRef::Frag(Fragment::Register(r)) => std::borrow::Cow::Owned(crate::state::embed(r, enc)?),
             crate::state::SlotRef::Frag(_) => return None,
         },
     };

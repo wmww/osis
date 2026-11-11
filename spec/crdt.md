@@ -495,7 +495,7 @@ A position may see fragments of different encodings: an aspect upgraded from `st
 | struct, enum, set, map, list | reset `max(r, s)` only |
 A register with no write embeds as reset `r` only. A contribution that is not an int or float reads as nothing (§5.2). The edges are total, so a value-less write (§4.7) embeds like its valued copy, except into text: it embeds no chars (an embedded char goes with its value, §4.7).
 
-A text slot's records `(Derived(s.dot), i)` hold, as creation writes and chars, exactly the embedding of the register slot's winning copy of the write with dot `s.dot` (§4.1 copy order): a join replaces any others (other writes on those records stay; a record left with none goes).
+A slot's copies of the register slot's write with dot `s.dot` (a text slot's records `(Derived(s.dot), i)` as creation writes and chars, a bag's contribution `s.dot` as its write of dot `s.dot`) are exactly the embedding of the register slot's winning copy of that write (§4.1 copy order): a join replaces any others (other writes on those records stay; a record left with none goes).
 
 **The embedding is the register's.** What `embed` puts into a slot is the register slot's writes (its write and reset), not the slot's: a write in a slot at the position and stamp of one of the embedding's is a copy of that register write. So wherever a position's writes are told apart (the records of a map dot, §5.6; un-merge and expiry by dot, §4.6, §4.7, where the embedding carries the register write's dot), the embedding goes with the register write it comes from, and a record holds it only with that write.
 

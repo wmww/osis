@@ -664,11 +664,13 @@ impl Fragment {
         }
     }
 
-    /// The slot of encoding `enc` at this position (§7: ops write into their schema's slot).
+    /// The slot of encoding `enc` at this position (§7: ops write into their schema's slot); a
+    /// register slot is `SlotRef::Reg`, a plain register's too.
     pub fn slot(&self, enc: Encoding) -> Option<SlotRef<'_>> {
         match self {
             Fragment::Slots(s) if enc == Encoding::Register => s.reg.as_ref().map(SlotRef::Reg),
             Fragment::Slots(s) => s.slots.get(&enc).map(SlotRef::Frag),
+            Fragment::Register(r) if enc == Encoding::Register => Some(SlotRef::Reg(r)),
             f if f.encoding() == enc => Some(SlotRef::Frag(f)),
             _ => None,
         }
@@ -794,6 +796,7 @@ impl Fragment {
                 }
                 best.map_or(SlotRef::Frag(self), |(m, _)| m)
             }
+            Fragment::Register(r) => SlotRef::Reg(r),
             f => SlotRef::Frag(f),
         }
     }
@@ -877,7 +880,7 @@ impl Fragment {
     }
 }
 
-/// A slot of a position: the register slot or another fragment.
+/// A slot of a position: the register slot (a plain register too) or another fragment.
 #[derive(Clone, Copy, Debug)]
 pub enum SlotRef<'a> {
     Reg(&'a Register),
@@ -1003,8 +1006,8 @@ fn join_slots_kept(mut sa: Slots, b: Fragment, e: Option<&Stamp>, ch: &mut Chang
         *ra = join_regs(std::mem::take(ra), rb, ch);
     }
     for (k, mut fb) in mb {
-        if let (Fragment::Seq(x), Some(r)) = (&mut fb, sa.reg.as_ref()) {
-            seq::fit_embedding(x, r);
+        if let Some(r) = sa.reg.as_ref() {
+            fit_embedding(&mut fb, r);
         }
         match sa.slots.get_mut(&k) {
             Some(fa) => fa.join_into(fb, e, ch),
@@ -1051,6 +1054,24 @@ fn join_slots_whole(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut
     prune_slots(reg, ma, e_parent, ch)
 }
 
+/// Makes slot `f`'s copies of register `r`'s write (a text slot's `Derived` records, a bag's
+/// contribution) equal its embedding (§7): a copy of the write with another value goes, and the
+/// embedding is joined in after.
+fn fit_embedding(f: &mut Fragment, r: &Register) {
+    match f {
+        Fragment::Seq(x) => seq::fit_embedding(x, r),
+        Fragment::Bag(b) => {
+            let Some(w) = &r.write else { return };
+            if let Some(Fragment::Register(x)) = b.elems.get_mut(&w.stamp.dot).and_then(|el| el.frag.as_deref_mut())
+                && x.write.as_ref().is_some_and(|y| y.stamp.dot == w.stamp.dot && *y != *w)
+            {
+                x.write = Some(w.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Prunes a position's slots under its one effective reset (an own reset below it goes,
 /// §4.2, §7) and assembles the canonical form.
 pub(crate) fn prune_slots(reg: Option<Register>, slots: BTreeMap<Encoding, Fragment>, e_parent: Option<&Stamp>, ch: &mut Changes) -> Fragment {
@@ -1059,9 +1080,7 @@ pub(crate) fn prune_slots(reg: Option<Register>, slots: BTreeMap<Encoding, Fragm
     let mut slots = slots;
     if let Some(r) = &reg {
         for (k, f) in slots.iter_mut() {
-            if let Fragment::Seq(x) = f {
-                seq::fit_embedding(x, r);
-            }
+            fit_embedding(f, r);
             if let Some(e) = embed(r, *k) {
                 f.join_into(e, None, ch);
             }

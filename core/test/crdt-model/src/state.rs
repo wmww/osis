@@ -510,9 +510,10 @@ impl Frag {
             // every slot holds the register's embedding, however the slots arrived
             if let Some(r) = &reg {
                 for (k, f) in slots.iter_mut() {
-                    // a text slot's embedded records are the embedding of the register's winning copy (§7)
-                    if let (Frag::Seq { elems, .. }, Frag::Register { write: Some(w), .. }) = (&mut *f, r) {
-                        elems.retain(|d, e| {
+                    // a slot's copies of the register's write (a text slot's embedded records, a bag's contribution)
+                    // are the embedding of the register's winning copy (§7)
+                    match (&mut *f, r) {
+                        (Frag::Seq { elems, .. }, Frag::Register { write: Some(w), .. }) => elems.retain(|d, e| {
                             if matches!(&d.source, Source::Derived(x) if **x == w.0.dot) {
                                 e.created = None;
                                 if matches!(e.content, Content::Char(_)) {
@@ -521,7 +522,15 @@ impl Frag {
                                 e.pos.retain(|p| p.0.dot != *d);
                             }
                             e.is_record()
-                        });
+                        }),
+                        (Frag::Bag { elems, .. }, Frag::Register { write: Some(w), .. }) => {
+                            if let Some(Frag::Register { write, .. }) = elems.get_mut(&w.0.dot).and_then(|el| el.frag.as_deref_mut()) {
+                                if write.as_ref().is_some_and(|x| x.0.dot == w.0.dot) {
+                                    *write = None;
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                     let e = crate::embed::embed(r, *k).expect("embedding is total from a register");
                     *f = std::mem::replace(f, Frag::empty(0)).join_raw(e);

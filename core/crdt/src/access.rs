@@ -157,8 +157,7 @@ impl Fragment {
         use crate::ops::PathSeg;
         let Some((seg, rest)) = path.split_first() else { return self.read() };
         let f = match self.chosen_slot() {
-            SlotRef::Reg(r) => return value_at(&Fragment::Register(r.clone()).read()?, path).cloned(),
-            SlotRef::Frag(f @ Fragment::Register(_)) => return value_at(&f.read()?, path).cloned(),
+            SlotRef::Reg(r) => return value_at(r.write.as_ref()?.value.as_ref()?, path).cloned(),
             SlotRef::Frag(f) => f,
         };
         // a struct reads as a map by field id: a field step and an integer key step are one
