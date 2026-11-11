@@ -7,6 +7,8 @@ use osis_base::{Ak, CommitId, Tid};
 
 /// The node's seed.
 pub const SEED: &[u8] = b"seed";
+/// The last ciphertext-store transaction this store committed (`blobs::Cipher`, `Engine::settle_blobs`).
+pub const BLOB_SEQ: &[u8] = b"blobseq";
 /// The last `ts` issued or seen (the HLC survives restarts).
 pub const HLC: &[u8] = b"hlc";
 /// Applied commit records: `c/` + commit ID.

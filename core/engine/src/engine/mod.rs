@@ -2698,6 +2698,10 @@ pub struct Engine {
     /// The node's one store of ciphertext (`osis_store::Ciphertext`): every blob the engine
     /// holds, committed before the engine's own store.
     blobs: Arc<dyn osis_store::Ciphertext>,
+    /// The next transaction's sequence in the ciphertext store's notes (`blobs::Cipher`).
+    blob_seq: u64,
+    /// A transaction's commit or its releases failed: `settle_blobs` runs before the next.
+    blobs_unsettled: bool,
     pub(crate) rng: Box<dyn osis_crypto::NodeRng>,
     #[doc(hidden)]
     pub core: Core,
@@ -2774,7 +2778,7 @@ impl Engine {
         let store_rng = SeededRng::from_seed(seed);
         let id = Identity::generate(&mut *rng);
         let (session, expiring) = sessions(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, blobs, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let mut e = Engine { store, store_rng, blobs, blob_seq: 1, blobs_unsettled: false, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -2799,12 +2803,40 @@ impl Engine {
         let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
         let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
         let (session, expiring) = sessions(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, blobs, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let mut e = Engine { store, store_rng, blobs, blob_seq: 1, blobs_unsettled: false, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        e.settle_blobs()?;
         e.reload()?;
         e.take_account()?;
         e.reexamine()?;
         e.core.timer_floor = e.next_timer()?.unwrap_or(u64::MAX);
         Ok(e)
+    }
+
+    /// The ciphertext store's notes against this store (`blobs::Cipher`): a transaction this
+    /// store committed (its sequence at most the one recorded) gets its releases, one it did not
+    /// gets its holds released. Then the next sequence follows every one seen. At open, and after
+    /// a commit whose outcome is unknown.
+    fn settle_blobs(&mut self) -> Result<()> {
+        let committed = {
+            let mut txn = self.store.transaction(&mut self.store_rng)?;
+            let v = txn.get_local(records::BLOB_SEQ)?;
+            v.map(|b| <[u8; 8]>::try_from(b.as_slice()).map(u64::from_be_bytes).map_err(|_| Error::Corrupt("blob sequence"))).transpose()?.unwrap_or(0)
+        };
+        let mut t = self.blobs.begin();
+        let notes = t.notes()?;
+        let mut last = committed;
+        for (seq, holds, releases) in &notes {
+            let undo = if *seq <= committed { releases } else { holds };
+            for id in undo {
+                t.release(id, false)?;
+            }
+            t.unnote(*seq)?;
+            last = last.max(*seq);
+        }
+        t.commit()?;
+        self.blob_seq = self.blob_seq.max(last + 1);
+        self.blobs_unsettled = false;
+        Ok(())
     }
 
     /// The node thing's first commits: `created.0` with `node.0`, then `keys.0` (its KEM key).
@@ -2963,6 +2995,9 @@ impl Engine {
     /// Runs `f` in one store transaction; events go out once it is durable.
     pub fn run<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
         let _s = crate::costs::span("tx");
+        if self.blobs_unsettled {
+            self.settle_blobs()?;
+        }
         // changes made outside a transaction are not this one's to undo
         self.core.commit_journal();
         self.core.memory_tx = false;
@@ -2977,7 +3012,7 @@ impl Engine {
         let mut sample = false;
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
-                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs), core: &mut self.core, rng: &mut *self.rng };
+                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
                 // the persisted index follows the in-memory indexes in the same transaction
                 let mut r = f(&mut tx);
                 // explicit demotions applied get this node's addenda (spec/permissions.md §5.2)
@@ -3063,10 +3098,29 @@ impl Engine {
                 };
                 match persisted {
                     Ok(v) => {
-                        let Tx { txn, mut blobs, .. } = tx;
+                        let Tx { mut txn, mut blobs, .. } = tx;
                         let _s = crate::costs::span("tx: store commit");
-                        // ciphertext first: engine state is a cache of it
-                        blobs.commit().and_then(|()| txn.commit().map_err(Error::from)).map(|_| v)
+                        // add before, remove after: the ciphertext store's holds commit first,
+                        // the engine's store records this transaction's sequence with its own
+                        // commit, the releases follow it (`blobs::Cipher`)
+                        let noted = blobs.noted();
+                        let r = (if noted { txn.put_local(records::BLOB_SEQ, &self.blob_seq.to_be_bytes(), Shred::No).map_err(Error::from) } else { Ok(()) })
+                            .and_then(|()| blobs.commit())
+                            .and_then(|()| txn.commit().map_err(Error::from));
+                        match r {
+                            Ok(()) => {
+                                if noted {
+                                    self.blob_seq += 1;
+                                }
+                                // a failure leaves the note: the next settle finishes it
+                                self.blobs_unsettled |= blobs.after().is_err();
+                                Ok(v)
+                            }
+                            Err(e) => {
+                                self.blobs_unsettled = true;
+                                Err(e)
+                            }
+                        }
                     }
                     Err(e) => Err(e),
                 }
@@ -3115,7 +3169,7 @@ impl Engine {
         self.core = fresh;
         let r = {
             let txn = self.store.transaction(&mut self.store_rng)?;
-            let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs), core: &mut self.core, rng: &mut *self.rng };
+            let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
             crate::apply::load(&mut tx, rebuild)
         };
         crate::apply::load_awaiting(&mut self.core);
@@ -3160,7 +3214,7 @@ impl Engine {
             let mut store_rng = SeededRng::from_u64(0);
             let load = || -> Result<bool> {
                 let txn = self.store.transaction(&mut store_rng)?;
-                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs), core: &mut fresh, rng: &mut rng };
+                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, 0), core: &mut fresh, rng: &mut rng };
                 // a transaction that left the index stale (`index::invalidate`: commit records
                 // changed outside the in-memory indexes) is followed by a reload
                 if !index::current(&mut tx)? {

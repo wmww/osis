@@ -25,6 +25,9 @@ pub trait Ciphertext: Send + Sync + Any {
     fn test_copy(self: Arc<Self>, clock: Arc<dyn osis_base::Clock>) -> Result<Arc<dyn Ciphertext>, Error>;
 }
 
+/// An engine transaction's note (`CipherTx::note`): its sequence, durable holds and releases.
+pub type Note = (u64, Vec<BlobId>, Vec<BlobId>);
+
 /// One engine transaction's view of the ciphertext store. Blobs the engine holds stay until it
 /// releases them; others (what the store keeps for others) may be read too.
 pub trait CipherTx {
@@ -38,6 +41,13 @@ pub trait CipherTx {
     /// The engine holds `id` no more: its bytes go once nothing else keeps them. `memory`: the
     /// transaction works on memory data, so a durable blob stays.
     fn release(&mut self, id: &BlobId, memory: bool) -> Result<(), Error>;
+    /// Records, in this transaction, engine transaction `seq`'s durable holds and releases
+    /// (`settle` reads them back after a crash).
+    fn note(&mut self, seq: u64, holds: &[BlobId], releases: &[BlobId]) -> Result<(), Error>;
+    /// The engine transactions noted and not cleared (`unnote`): seq, holds, releases.
+    fn notes(&mut self) -> Result<Vec<Note>, Error>;
+    /// Clears engine transaction `seq`'s note.
+    fn unnote(&mut self, seq: u64) -> Result<(), Error>;
     /// Makes this transaction's writes durable.
     fn commit(&mut self) -> Result<(), Error>;
     /// The store itself, for a holder that knows its type (node sync and the hub's store).
@@ -52,6 +62,8 @@ pub trait CipherHost: Send + Any {
     fn read(&mut self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, Error>;
     fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> Result<bool, Error>;
     fn release(&mut self, id: &BlobId, memory: bool) -> Result<(), Error>;
+    /// Runs `f` in the store's open transaction (the engine's notes live in its local records).
+    fn local(&mut self, f: &mut dyn FnMut(&mut crate::Transaction<'_>) -> Result<(), Error>) -> Result<(), Error>;
     fn commit(&mut self) -> Result<(), Error>;
     fn abort(&mut self);
     /// Tests only: an exact copy, on `clock` where it keeps time.
@@ -60,6 +72,9 @@ pub trait CipherHost: Send + Any {
     where
         Self: Sized;
 }
+
+/// Local record prefix of the engine transactions' notes (`CipherTx::note`).
+const NOTE: &[u8] = b"cipher/note/";
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -101,6 +116,35 @@ impl<T: CipherHost> CipherTx for HostTx<'_, T> {
     }
     fn release(&mut self, id: &BlobId, memory: bool) -> Result<(), Error> {
         self.g.release(id, memory)
+    }
+    fn note(&mut self, seq: u64, holds: &[BlobId], releases: &[BlobId]) -> Result<(), Error> {
+        let mut v = Vec::with_capacity(8 + 32 * (holds.len() + releases.len()));
+        v.extend_from_slice(&(holds.len() as u64).to_be_bytes());
+        for id in holds.iter().chain(releases) {
+            v.extend_from_slice(&id.0);
+        }
+        let k = [NOTE, &seq.to_be_bytes()].concat();
+        self.g.local(&mut |t| t.put_local(&k, &v, crate::Shred::No))
+    }
+    fn notes(&mut self) -> Result<Vec<Note>, Error> {
+        let mut rows = Vec::new();
+        self.g.local(&mut |t| {
+            rows = t.scan_local(NOTE, &[], usize::MAX)?;
+            Ok(())
+        })?;
+        let mut out = Vec::new();
+        for (k, v) in rows {
+            let seq = k.get(NOTE.len()..).and_then(|x| <[u8; 8]>::try_from(x).ok()).map(u64::from_be_bytes).ok_or(Error::Corrupt("blob note"))?;
+            let n = v.get(..8).and_then(|x| <[u8; 8]>::try_from(x).ok()).map(u64::from_be_bytes).ok_or(Error::Corrupt("blob note"))?;
+            let mut ids: Vec<BlobId> = v.get(8..).unwrap_or_default().as_chunks::<32>().0.iter().map(|c| BlobId(*c)).collect();
+            let releases = ids.split_off(usize::try_from(n).unwrap_or(usize::MAX).min(ids.len()));
+            out.push((seq, ids, releases));
+        }
+        Ok(out)
+    }
+    fn unnote(&mut self, seq: u64) -> Result<(), Error> {
+        let k = [NOTE, &seq.to_be_bytes()].concat();
+        self.g.local(&mut |t| t.remove_local(&k, crate::Shred::No).map(drop))
     }
     fn commit(&mut self) -> Result<(), Error> {
         self.done = true;
@@ -158,6 +202,10 @@ impl BlobArea {
 }
 
 impl CipherHost for BlobArea {
+    fn local(&mut self, f: &mut dyn FnMut(&mut crate::Transaction<'_>) -> Result<(), Error>) -> Result<(), Error> {
+        self.run(|t| f(t))
+    }
+
     fn held(&mut self, id: &BlobId) -> Result<bool, Error> {
         Ok(self.read(id, 0, 0)?.is_some())
     }

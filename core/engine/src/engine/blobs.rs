@@ -5,20 +5,33 @@ use osis_base::{Ak, BlobId, CommitId, Link, Tid, WallMs};
 use osis_crypto::{CryptoRngCore, Secret32};
 use osis_store::{CipherTx, Ciphertext};
 
-/// One engine transaction's blobs: the ciphertext store locked at the first use, committed
-/// before the engine's store (`Engine::run`). What it newly held is journaled, so a step rolled
-/// back (`Tx::step`) or a transaction dropped releases it again.
+/// One engine transaction's blobs: the ciphertext store locked at the first use. Add before,
+/// remove after: what it holds is held in the ciphertext store, committed before the engine's
+/// store (`Engine::run`); what it releases is released only after the engine's store committed
+/// (`after`), so engine state never names a blob gone. Its durable holds and releases are noted
+/// there under the transaction's sequence (`CipherTx::note`), which the engine's store records
+/// with its commit: `Engine::settle_blobs` undoes the holds of a transaction the engine's store
+/// never committed and finishes the releases of one it did. A step rolled back (`Tx::step`)
+/// releases what it held and keeps none of its releases.
 pub struct Cipher<'a> {
     src: &'a dyn Ciphertext,
     tx: Option<Box<dyn CipherTx + 'a>>,
+    /// This transaction's sequence (`Engine::blob_seq`).
+    seq: u64,
     /// Blobs this transaction newly held, with whether in memory, in order.
     held: Vec<(BlobId, bool)>,
+    /// Blobs it releases once the engine's store committed, with whether in memory.
+    releases: Vec<(BlobId, bool)>,
     done: bool,
 }
 
+/// A point `Cipher::rollback_to` goes back to.
+#[derive(Clone, Copy)]
+pub struct CipherMark(usize, usize);
+
 impl<'a> Cipher<'a> {
-    pub fn new(src: &'a dyn Ciphertext) -> Cipher<'a> {
-        Cipher { src, tx: None, held: Vec::new(), done: false }
+    pub fn new(src: &'a dyn Ciphertext, seq: u64) -> Cipher<'a> {
+        Cipher { src, tx: None, seq, held: Vec::new(), releases: Vec::new(), done: false }
     }
 
     fn tx(&mut self) -> &mut (dyn CipherTx + 'a) {
@@ -31,8 +44,11 @@ impl<'a> Cipher<'a> {
         self.tx().any()
     }
 
-    /// Whether the engine holds blob `id`.
+    /// Whether the engine holds blob `id` (a release this transaction made counts).
     pub fn held(&mut self, id: &BlobId) -> crate::error::Result<bool> {
+        if self.releases.iter().any(|(x, _)| x == id) {
+            return Ok(false);
+        }
         Ok(self.tx().held(id)?)
     }
 
@@ -48,6 +64,11 @@ impl<'a> Cipher<'a> {
 
     /// The engine holds `id` (`memory`: in memory only); whether it did not before.
     pub fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> crate::error::Result<bool> {
+        if let Some(i) = self.releases.iter().position(|(x, _)| x == id) {
+            // released and held again in one transaction: kept
+            self.releases.remove(i);
+            return Ok(true);
+        }
         let new = self.tx().hold(id, blob, memory)?;
         if new {
             self.held.push((*id, memory));
@@ -55,41 +76,75 @@ impl<'a> Cipher<'a> {
         Ok(new)
     }
 
-    /// The engine holds `id` no more (`memory`: memory data's work, a durable blob stays).
+    /// The engine holds `id` no more (`memory`: memory data's work, a durable blob stays), once
+    /// the engine's store committed.
     pub fn release(&mut self, id: &BlobId, memory: bool) -> crate::error::Result<()> {
-        Ok(self.tx().release(id, memory)?)
+        if !self.releases.iter().any(|(x, _)| x == id) {
+            self.releases.push((*id, memory));
+        }
+        Ok(())
     }
 
-    /// A point `rollback_to` releases back to.
-    pub fn mark(&self) -> usize {
-        self.held.len()
+    /// A point `rollback_to` goes back to.
+    pub fn mark(&self) -> CipherMark {
+        CipherMark(self.held.len(), self.releases.len())
     }
 
-    /// Releases what was newly held since `m`.
-    pub fn rollback_to(&mut self, m: usize) {
-        let undo: Vec<_> = self.held.drain(m.min(self.held.len())..).rev().collect();
+    /// Releases what was newly held since `m` and forgets the releases made since.
+    pub fn rollback_to(&mut self, m: CipherMark) {
+        self.releases.truncate(m.1);
+        let undo: Vec<_> = self.held.drain(m.0.min(self.held.len())..).rev().collect();
         if let Some(t) = self.tx.as_mut() {
             for (id, memory) in undo {
-                // a failure leaves a blob nothing names: space only
+                // a failure leaves a held blob nothing names, released at the next settle
                 let _ = t.release(&id, memory);
             }
         }
     }
 
-    /// Commits the ciphertext store's writes (the engine's store commits after).
+    /// Whether this transaction holds or releases a durable blob (its sequence is recorded).
+    pub fn noted(&self) -> bool {
+        self.held.iter().chain(&self.releases).any(|(_, memory)| !memory)
+    }
+
+    /// Notes the durable holds and releases and commits the ciphertext store's writes (the
+    /// engine's store commits after).
     pub fn commit(&mut self) -> crate::error::Result<()> {
+        if self.noted() {
+            let durable = |v: &[(BlobId, bool)]| -> Vec<BlobId> { v.iter().filter(|(_, m)| !m).map(|(id, _)| *id).collect() };
+            let (holds, releases) = (durable(&self.held), durable(&self.releases));
+            let seq = self.seq;
+            self.tx().note(seq, &holds, &releases)?;
+        }
         self.done = true;
         match self.tx.as_mut() {
             Some(t) => Ok(t.commit()?),
             None => Ok(()),
         }
     }
+
+    /// After the engine's store committed: the releases, and the note cleared.
+    pub fn after(&mut self) -> crate::error::Result<()> {
+        if self.releases.is_empty() && !self.noted() {
+            return Ok(());
+        }
+        let (noted, seq) = (self.noted(), self.seq);
+        let releases = std::mem::take(&mut self.releases);
+        let t = self.tx();
+        for (id, memory) in &releases {
+            t.release(id, *memory)?;
+        }
+        if noted {
+            t.unnote(seq)?;
+        }
+        Ok(t.commit()?)
+    }
 }
 
 impl Drop for Cipher<'_> {
     fn drop(&mut self) {
         if !self.done {
-            self.rollback_to(0);
+            self.rollback_to(CipherMark(0, 0));
         }
     }
 }
@@ -221,5 +276,43 @@ impl crate::engine::Tx<'_> {
             self.core.commits_touched(entries);
         }
         Ok(stored)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use crate::error::Error;
+
+    fn blob(n: u8) -> (BlobId, Vec<u8>) {
+        let b = vec![n; 64];
+        (osis_label::blob_id(&b), b)
+    }
+    use osis_base::BlobId;
+
+    // spec: none (notes/local-store.md, Ciphertext store): a step rolled back keeps none of its
+    // releases and none of its holds; a committed release takes effect
+    #[test]
+    fn a_rolled_back_step_releases_nothing_and_holds_nothing() {
+        let mut p = crate::local_peer::Peer::new(1, osis_base::WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut p.engine;
+        let ((x, xb), (y, yb)) = (blob(1), blob(2));
+        e.put_blobs(vec![(x, xb)]).unwrap();
+        e.run(|tx| {
+            let r: crate::error::Result<()> = tx.step(super::super::Step::Commit, |tx| {
+                tx.blobs.release(&x, false)?;
+                assert!(!tx.blobs.held(&x)?, "released within the transaction");
+                tx.blobs.hold(&y, yb.clone(), false)?;
+                Err(Error::BadInput("rolled back"))
+            });
+            assert!(r.is_err());
+            assert!(tx.blobs.held(&x)? && !tx.blobs.held(&y)?);
+            Ok(())
+        })
+        .unwrap();
+        assert!(e.has_blob(&x) && !e.has_blob(&y));
+        e.run(|tx| tx.blobs.release(&x, false)).unwrap();
+        assert!(!e.has_blob(&x));
+        assert_eq!(e.run(|tx| tx.blobs.get(&x)).unwrap(), None, "its bytes go once the engine's store committed");
     }
 }

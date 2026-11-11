@@ -79,7 +79,8 @@ fn crash_every_write_of_a_purging_commit() {
         dev.faults.at(n, Fault::Crash);
         let r = e.commit(purge(t, secret));
         let crashed = dev.faults.crashed();
-        assert_eq!(r.is_err(), crashed, "write {n}");
+        // a crash at the releases after the engine's commit leaves the commit done
+        assert!(r.is_ok() || crashed, "write {n}");
         drop(e);
         dev.faults.revive();
         // a crash during recovery as well
@@ -163,8 +164,8 @@ fn two_live_copies_of_one_store_converge_spec_crdt_2_1() {
 
 // spec/commits.md §4 (all or none), notes/local-store.md (Ciphertext store): a crash at any write
 // of a commit whose value is chunked, between the ciphertext store's commit and the engine's
-// included, leaves the node, reopened, at the state before or after it, the value whole (a crash
-// between the two leaves the chunks held with nothing naming them: issues/net-one-peer.md, 3f)
+// included, leaves the node, reopened, at the state before or after it, the value whole; one that
+// did not land leaves no blob behind (`Engine::settle_blobs` releases what it held)
 #[test]
 fn crash_every_write_of_a_chunked_commit() {
     let mut big = vec![0u8; 300 * 1024];
@@ -174,21 +175,25 @@ fn crash_every_write_of_a_chunked_commit() {
         let dev = Dev::new();
         let (mut e, t, _) = setup(&dev);
         let blobs = || dev.blob_disk.0.held_split().2;
+        let before = blobs();
         dev.faults.at(n, Fault::Crash);
         let mut m = Mutation::new();
         m.set(t, &BLOB, &Value::Bytes(big.clone())).unwrap();
         let r = e.commit(m);
         let crashed = dev.faults.crashed();
-        assert_eq!(r.is_err(), crashed, "write {n}");
+        // a crash at the releases after the engine's commit leaves the commit done
+        assert!(r.is_ok() || crashed, "write {n}");
         drop(e);
         dev.faults.revive();
         let mut e = dev.open().unwrap();
         let v = e.get(&t, &blob).unwrap();
         let landed = v.is_some();
+        assert!(landed || r.is_err(), "write {n}: a commit answered done is there");
         if let Some(Value::Link(l)) = v {
             assert_eq!(e.read_large(&t, &l).unwrap(), Value::Bytes(big.clone()), "write {n}");
         } else {
             assert_eq!(v, None, "write {n}");
+            assert_eq!(blobs(), before, "write {n}: a commit that did not land leaves no blob");
         }
         if !crashed {
             assert!(landed && blobs() > 0);

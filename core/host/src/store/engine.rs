@@ -62,6 +62,10 @@ impl CipherHost for HostStore {
         self.db.get_mut().apply(w)
     }
 
+    fn local(&mut self, f: &mut dyn FnMut(&mut osis_store::Transaction<'_>) -> Result<(), Error>) -> Result<(), Error> {
+        self.db.get_mut().run(|t, _| f(t))
+    }
+
     fn commit(&mut self) -> Result<(), Error> {
         // a failed commit recovered the store in place: the outcome is unknown
         HostStore::commit(self).map_err(|_| Error::Broken)
