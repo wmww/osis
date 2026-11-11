@@ -466,12 +466,16 @@ impl Unmerge {
         let vouched = copies::vouched(tx, tid, ak, &owned)?;
         Ok(Unmerge { owned: OwnedSet::of(&owned), vouched })
     }
+    /// Nothing invalid: removes nothing.
+    pub(crate) fn none() -> Unmerge {
+        Unmerge { owned: OwnedSet::default(), vouched: BTreeSet::new() }
+    }
     /// `of` for removing from `f` alone: snapshots are read only when `f` holds a write of an
     /// invalid delta.
     pub(crate) fn probe(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<Unmerge> {
         let owned = invalid_of(tx.core, tid, ak);
         if owned.is_empty() || !f.holds_dots(&|d| owned.iter().any(|o| o.owns(d))) {
-            return Ok(Unmerge { owned: OwnedSet::default(), vouched: BTreeSet::new() });
+            return Ok(Unmerge::none());
         }
         Unmerge::of(tx, tid, ak)
     }

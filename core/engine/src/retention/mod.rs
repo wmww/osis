@@ -1246,6 +1246,91 @@ mod tests {
         assert!(judged(&mut lp).1 > 0, "a write on its aspect");
     }
 
+    /// One peer, a thing whose `x:m.0` keeps history an hour (so replaced bodies are dated), and
+    /// a write of `x:m.0` 10 ms after the last.
+    fn kept_register(seed: u64) -> (LocalPeer, osis_base::Tid, Ak) {
+        let mut lp = LocalPeer::new(1, seed, WallMs(1_700_000_000_000)).unwrap();
+        let a = lp.peers[0].engine.me();
+        let x = Ak::new("x:m.0").unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        (lp, t, x)
+    }
+
+    fn write_x(lp: &mut LocalPeer, t: osis_base::Tid, x: &Ak, v: i64) -> CommitId {
+        let mut m = Mutation::new();
+        m.set(t, x, &Value::Int(v)).unwrap();
+        lp.advance(10);
+        lp.peers[0].commit(m).unwrap().unwrap()
+    }
+
+    // spec: none (internal: issues/derived-state-recomputed.md step 4). Dating a replaced body
+    // reads its aspect's held writes, amended by each join: a write decodes its own body however
+    // many the aspect holds (read anew, the aspect's every body: n at n, 10n at 10n).
+    #[test]
+    fn a_join_decodes_its_own_body_not_the_aspects() {
+        let per_join = |n: i64| {
+            let (mut lp, t, x) = kept_register(957);
+            let mut prev = write_x(&mut lp, t, &x, 0);
+            for v in 1..=n {
+                let c = write_x(&mut lp, t, &x, v);
+                lp.peers[0].engine.body_keeps(&prev).unwrap();
+                prev = c;
+            }
+            crate::costs::take();
+            write_x(&mut lp, t, &x, n + 1);
+            assert!(lp.peers[0].engine.body_keeps(&prev).unwrap().iter().any(|k| *k > 0), "dated");
+            let c = crate::costs::take();
+            let count = |name: &str| c.iter().filter(|s| s.0 == name).map(|s| s.2).sum::<u64>();
+            (count("deaths: a body"), count("held writes"))
+        };
+        assert_eq!(per_join(8), (1, 0), "at 8 bodies");
+        assert_eq!(per_join(80), (1, 0), "at 80 bodies");
+    }
+
+    // spec: none (internal: notes/engine.md, Derived values). The aspect's held writes, amended or
+    // read anew, are what a fresh read gives: after a join, a snapshot's join, a join undone by a
+    // failed transaction that asked for them, and a body dropped as covered.
+    #[test]
+    fn held_writes_kept_are_a_fresh_reads() {
+        use crate::error::Error;
+        let (mut lp, t, x) = kept_register(958);
+        let check = |lp: &mut LocalPeer, what: &str| {
+            lp.peers[0]
+                .engine
+                .run(|tx| {
+                    let kept = super::bounds::held_writes(tx, &t, &x)?;
+                    assert_eq!(*kept, super::bounds::read_held_writes(tx, &t, &x)?, "{what}");
+                    Ok(())
+                })
+                .unwrap();
+        };
+        let first = write_x(&mut lp, t, &x, 0);
+        check(&mut lp, "read anew");
+        write_x(&mut lp, t, &x, 1);
+        check(&mut lp, "a join");
+        lp.advance(10);
+        let snap = lp.peers[0].engine.snapshot(&t, &x).unwrap().unwrap();
+        check(&mut lp, "a snapshot's join");
+        let r = lp.peers[0].engine.run(|tx| {
+            let mut m = Mutation::new();
+            m.set(t, &x, &Value::Int(2)).unwrap();
+            crate::engine::write::commit_in(tx, m)?;
+            super::bounds::held_writes(tx, &t, &x)?;
+            Err::<(), _>(Error::Misuse("test: undo"))
+        });
+        assert!(r.is_err());
+        check(&mut lp, "a join undone after it was amended");
+        write_x(&mut lp, t, &x, 3);
+        check(&mut lp, "a join after the undone one");
+        lp.advance(3_600_000);
+        lp.peers[0].engine.drop_body(&first, &t, &x).unwrap();
+        check(&mut lp, "a body dropped");
+        assert!(lp.peers[0].engine.core.ix.commits.get(&snap).is_some());
+    }
+
     // spec: none (internal: notes/engine.md, Derived values). A memo reading a commit's leftover,
     // or its copy index from the cache, runs again when the record is written, and again when a
     // failed transaction undoes that write.

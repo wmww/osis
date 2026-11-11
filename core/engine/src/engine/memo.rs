@@ -110,7 +110,11 @@ impl Stamps {
     fn record(&self, key: Option<u64>) {
         FRAMES.with(|f| {
             let mut f = f.borrow_mut();
+            let at = f.len().checked_sub(1);
             let Some(top) = f.last_mut() else { return };
+            if ACCOUNTING.get().is_some() && ACCOUNTING.get() == at {
+                top.accounted.insert((Arc::as_ptr(&self.0) as usize, key));
+            }
             if top.seen.insert((Arc::as_ptr(&self.0) as usize, key)) {
                 let seen = lock(&self.0).stamp(key);
                 top.deps.push(Dep { table: self.0.clone(), key, seen });
@@ -154,6 +158,10 @@ impl Dep {
     fn holds(&self) -> bool {
         lock(&self.table).stamp(self.key) == self.seen
     }
+    /// The container and key read, whatever the stamp.
+    fn id(&self) -> (usize, Option<u64>) {
+        (Arc::as_ptr(&self.table) as usize, self.key)
+    }
 }
 
 /// What the memo computing on this thread has read so far.
@@ -161,6 +169,9 @@ impl Dep {
 struct Frame {
     deps: Vec<Dep>,
     seen: HashSet<(usize, Option<u64>)>,
+    /// What it read inside `accounted` (an amend's reads of the inputs it brings its answer up
+    /// to date with).
+    accounted: HashSet<(usize, Option<u64>)>,
 }
 
 /// Memos computing, on any thread: reads look at their thread's frames only while it is not 0.
@@ -168,6 +179,8 @@ static RECORDING: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     static FRAMES: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
+    /// The frame whose reads `accounted` marks, while one runs.
+    static ACCOUNTING: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
 /// A frame of reads opened on this thread (`recorded`, `unrecorded`): reads while it is open
@@ -207,10 +220,31 @@ impl Unrecorded {
 
 /// Runs `f` and returns what it read.
 fn recorded<T>(f: impl FnOnce() -> T) -> (T, Arc<[Dep]>) {
+    let (out, frame) = recorded_frame(f);
+    (out, frame.deps.into())
+}
+
+/// Runs `f` and returns its frame.
+fn recorded_frame<T>(f: impl FnOnce() -> T) -> (T, Frame) {
     let _open = Open::start();
     let out = f();
     let frame = FRAMES.with(|fr| fr.borrow_mut().pop()).unwrap_or_default();
-    (out, frame.deps.into())
+    (out, frame)
+}
+
+/// Runs `f`, an amend's read of an input it brings its answer up to date with
+/// (`Memo::get_amended_in`): a move of what it reads leaves the kept answer amendable. Outside
+/// an amend it is a plain read.
+pub fn accounted<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<usize>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ACCOUNTING.set(self.0);
+        }
+    }
+    let top = FRAMES.with(|fr| fr.borrow().len().checked_sub(1));
+    let _restore = Restore(ACCOUNTING.replace(top));
+    f()
 }
 
 /// Runs `f` without the memo computing, if any, depending on what it reads: for a debug check
@@ -228,8 +262,13 @@ fn depend(deps: &[Dep]) {
     }
     FRAMES.with(|f| {
         let mut f = f.borrow_mut();
+        let at = f.len().checked_sub(1);
         let Some(top) = f.last_mut() else { return };
+        let accounting = ACCOUNTING.get().is_some() && ACCOUNTING.get() == at;
         for d in deps {
+            if accounting {
+                top.accounted.insert(d.id());
+            }
             if top.seen.insert((Arc::as_ptr(&d.table) as usize, d.key)) {
                 top.deps.push(d.clone());
             }
@@ -288,15 +327,62 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
     /// something is due and fails so, `SyncEngine::rotations`).
     pub fn get_checked_in<C, E>(ctx: &mut C, memo: impl Fn(&C) -> &Self, k: &K, f: impl Fn(&mut C) -> Result<V, E>, fresh: impl Fn(&mut C) -> Result<V, E>) -> Result<V, E> {
         if let Some((value, deps, check)) = memo(ctx).kept(k) {
-            if check {
-                // a fresh run that fails compares nothing
-                if let Ok(fresh) = crate::costs::paused(|| unrecorded(|| fresh(ctx))) {
-                    assert!(fresh == value, "memo {}: kept {value:?}, a fresh run gives {fresh:?} (a read no stamp covers)", memo(ctx).name);
-                }
-            }
+            Self::compare(ctx, &memo, check, &value, &fresh, "a read no stamp covers");
             depend(&deps);
             return Ok(value);
         }
+        Self::run(ctx, &memo, k, &f)
+    }
+
+    /// `get_in` for an answer `amend` can bring up to date from the one kept. When that one no
+    /// longer holds, `amend` runs on it; its answer (`Some`) is kept if every read of the kept
+    /// answer that moved was read again inside `accounted` by the amend, else `f` runs. So
+    /// `amend` gives what `f` would wherever the inputs it reads inside `accounted` moved (an
+    /// aspect's held commits grew: their bodies' writes added, `retention::bounds::held_writes`);
+    /// its other reads (a new body's) are recorded as any memo's. Two keys sharing a hash share
+    /// a stamp (`Stamps`), so an accounted read of one covers a move of the other: a stale amend
+    /// at odds of 2^-64 a pair. An amend counts as a hit for the debug comparison: an answer
+    /// amended at every change is compared with a fresh run at its changes 1, 4, 16, ...
+    pub fn get_amended_in<C, E>(ctx: &mut C, memo: impl Fn(&C) -> &Self, k: &K, f: impl Fn(&mut C) -> Result<V, E>, amend: impl Fn(&mut C, &V) -> Result<Option<V>, E>) -> Result<V, E> {
+        if let Some((value, deps, check)) = memo(ctx).kept(k) {
+            Self::compare(ctx, &memo, check, &value, &f, "a read no stamp covers");
+            depend(&deps);
+            return Ok(value);
+        }
+        let stale = memo(ctx).entries.borrow().get(k).map(|e| (e.value.clone(), e.deps.clone()));
+        if let Some((old, old_deps)) = stale {
+            let _s = crate::costs::span("memo amend");
+            let (value, frame) = recorded_frame(|| amend(ctx, &old));
+            let new: Arc<[Dep]> = frame.deps.into();
+            let value = match value {
+                Ok(v) => v,
+                Err(e) => {
+                    depend(&new);
+                    return Err(e);
+                }
+            };
+            if let Some(value) = value.filter(|_| old_deps.iter().all(|d| frame.accounted.contains(&d.id()) || d.holds())) {
+                let read: HashSet<(usize, Option<u64>)> = new.iter().map(Dep::id).collect();
+                let deps: Arc<[Dep]> = new.iter().cloned().chain(old_deps.iter().filter(|d| !read.contains(&d.id())).cloned()).collect();
+                depend(&deps);
+                let check = memo(ctx).keep_amended(k, &value, deps);
+                Self::compare(ctx, &memo, check, &value, &f, "an amend that is not what a fresh run gives");
+                return Ok(value);
+            }
+        }
+        Self::run(ctx, &memo, k, &f)
+    }
+
+    /// Debug builds, when `check`: `value` is what `fresh` gives now (a fresh run that fails
+    /// compares nothing).
+    fn compare<C, E>(ctx: &mut C, memo: &impl Fn(&C) -> &Self, check: bool, value: &V, fresh: &impl Fn(&mut C) -> Result<V, E>, why: &str) {
+        if check && let Ok(fresh) = crate::costs::paused(|| unrecorded(|| fresh(ctx))) {
+            assert!(fresh == *value, "memo {}: kept {value:?}, a fresh run gives {fresh:?} ({why})", memo(ctx).name);
+        }
+    }
+
+    /// `f` run and kept.
+    fn run<C, E>(ctx: &mut C, memo: &impl Fn(&C) -> &Self, k: &K, f: &impl Fn(&mut C) -> Result<V, E>) -> Result<V, E> {
         let _s = crate::costs::span(memo(ctx).name);
         let (value, deps) = recorded(|| f(ctx));
         // what a failure read is read by whoever asked, too
@@ -336,6 +422,22 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
         #[cfg(not(debug_assertions))]
         let check = false;
         Some((e.value.clone(), e.deps.clone(), check))
+    }
+
+    /// Keeps an amended answer for `k` (`get_amended_in`), counted as a hit: whether to compare
+    /// it with a fresh run.
+    fn keep_amended(&self, k: &K, value: &V, deps: Arc<[Dep]>) -> bool {
+        let mut entries = self.entries.borrow_mut();
+        let Some(e) = entries.get_mut(k) else { return false };
+        e.value = value.clone();
+        e.deps = deps;
+        #[cfg(debug_assertions)]
+        {
+            e.hits += 1;
+            e.hits.is_power_of_two() && e.hits.trailing_zeros() % 2 == 0
+        }
+        #[cfg(not(debug_assertions))]
+        false
     }
 
     fn keep(&self, k: &K, value: &V, deps: Arc<[Dep]>) {
@@ -591,6 +693,53 @@ mod tests {
         s.insert(2);
         assert_eq!(n(&s), 2);
         assert_eq!(runs("test count"), 1);
+    }
+
+    // spec: none (internal). An answer no longer holding is amended when each read of it that
+    // moved was read again inside `accounted` by the amend; a move of any other read runs the
+    // function anew, as does an amend giving no answer.
+    #[test]
+    fn an_amend_is_kept_only_over_what_it_accounts_for() {
+        let mut list: JMap<u8, Vec<u8>> = JMap::default();
+        let mut other: JMap<u8, u8> = JMap::default();
+        list.insert(0, vec![1]);
+        other.insert(0, 10);
+        // (elements summed, their sum plus `other`'s)
+        let memo: Memo<u8, (usize, u64)> = Memo::new("test amended");
+        let ask = |list: &JMap<u8, Vec<u8>>, other: &JMap<u8, u8>| {
+            Memo::get_amended_in(
+                &mut &memo,
+                |m| *m,
+                &0,
+                |_| {
+                    let l = list.get(&0).cloned().unwrap_or_default();
+                    Ok::<_, std::convert::Infallible>((l.len(), l.iter().map(|x| u64::from(*x)).sum::<u64>() + other.get(&0).map_or(0, |x| u64::from(*x))))
+                },
+                |_, old| {
+                    let l = accounted(|| list.get(&0).cloned().unwrap_or_default());
+                    Ok((l.len() >= old.0).then(|| (l.len(), old.1 + l.iter().skip(old.0).map(|x| u64::from(*x)).sum::<u64>())))
+                },
+            )
+            .unwrap()
+        };
+        let ran = || {
+            let c = crate::costs::take();
+            let n = |name: &str| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
+            (n("test amended"), n("memo amend"))
+        };
+        crate::costs::take();
+        assert_eq!(ask(&list, &other), (1, 11));
+        assert_eq!(ran(), (1, 0));
+        list.get_mut(&0).unwrap().push(5);
+        assert_eq!(ask(&list, &other), (2, 16), "an accounted read moved");
+        assert_eq!(ran(), (0, 1));
+        other.insert(0, 20);
+        list.get_mut(&0).unwrap().push(1);
+        assert_eq!(ask(&list, &other), (3, 27), "a read not accounted for moved too");
+        assert_eq!(ran(), (1, 1));
+        list.insert(0, vec![2]);
+        assert_eq!(ask(&list, &other), (1, 22), "the amend gave nothing");
+        assert_eq!(ran(), (1, 1));
     }
 
     // spec: none (internal). A key present with no stamp of its own (there before the stamps
