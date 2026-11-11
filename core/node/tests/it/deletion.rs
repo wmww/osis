@@ -873,9 +873,11 @@ fn host_delete_waits_drift_past_history_spec_sync_7() {
     assert!(blobs.iter().all(|id| !left.contains(id)), "gone from the host past it");
 }
 
-// spec/commits.md §5, spec/sync.md §6: bodies in history are must-hold, covered or not, so a label
-// a thing joins gets them, and holders keep their copies when the thing leaves the first label; a
-// covered body out of history is neither, and goes at its holders under the cover.
+// spec/commits.md §5, spec/sync.md §6: bodies in history are must-hold, covered or not, whoever's
+// snapshot covers them (here a plain writer's, without the purge right),
+// so a label a thing joins and a host that lost its copies get them, and holders keep their copies
+// when the thing leaves the first label; a covered body out of history is neither, and goes at its
+// holders under the cover.
 #[test]
 fn second_label_gets_kept_bodies_spec_sync_6() {
     for (kept, carried) in [(true, true), (false, false)] {
@@ -883,7 +885,8 @@ fn second_label_gets_kept_bodies_spec_sync_6() {
         let host = net.add_host();
         let a = net.node(1, &[host]);
         let b = net.node(2, &[host]);
-        let g = net.group(a, &[(b, Role::Write)], &[host]);
+        let w = net.node(3, &[host]);
+        let g = net.group(a, &[(b, Role::Write), (w, Role::Write)], &[host]);
         let t = net.item(a, g, g, "x");
         net.run();
         let k = Ak::new(REG.ak()).unwrap();
@@ -894,8 +897,8 @@ fn second_label_gets_kept_bodies_spec_sync_6() {
         net.run();
         net.write(a, t, "new");
         net.run();
-        let acts = net.sync(a).compact(&t, &k).unwrap();
-        net.actions(a, acts);
+        let acts = net.sync(w).compact(&t, &k).unwrap();
+        net.actions(w, acts);
         net.run();
         let l = net.label(a);
         let addrs = vec![net.hosts[host].address.clone()];
@@ -915,6 +918,20 @@ fn second_label_gets_kept_bodies_spec_sync_6() {
         net.run();
         let there = blobs_of(&mut net, a, &l2, c).into_iter().filter(|id| net.host_ids(host, &l2).contains(id)).count();
         assert_eq!(there > 0, carried, "kept {kept}: under the label it joined");
+        for x in [a, b, w] {
+            net.set_online(x, false);
+        }
+        net.wipe_host(host);
+        for x in [a, b, w] {
+            net.set_online(x, true);
+        }
+        net.run();
+        net.advance(120_000);
+        net.run();
+        for x in [l, l2] {
+            let there = blobs_of(&mut net, a, &x, c).into_iter().filter(|id| net.host_ids(host, &x).contains(id)).count();
+            assert_eq!(there > 0, carried, "kept {kept}: placed again at the wiped host");
+        }
         let e = net.engine(a);
         let mut grp = e.get_typed(&g, &ct::GROUP).unwrap().unwrap();
         grp.items.remove(&t);

@@ -284,7 +284,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   Per node, a body it holds is **must-hold**, **must-not-hold** or **may-hold** at a label. A body meeting a must-not-hold condition is must-not-hold whatever else holds of it.
   - A delta is **kept** while it is before its keep-at-least bound (in history by the settings the node holds, spec/commits.md §5 The setting). One out of history is neither must-hold nor fetched; a node that dropped it fetches it none when a later setting puts it back in history.
   - **must-hold**: in the required set and, for a closure body, one of:
-    - a delta of it kept;
+    - a delta of it kept, whatever snapshot covers it;
     - established uncovered: the node can join it and no held snapshot of the aspect under the label covers it (spec/commits.md §5); a signal's delta is never joined, so it is must-hold only while kept.
   - **Header-only blob**: in the required set only as the lasting header of a commit lasting on a thing of the closure whose actor the label's reads (spec/commits.md §5), with no other body of the commit wanted there, and then is must-hold, whatever snapshot covers it. One of a commit with a permanent delta or a purge request that is not lasting here is may-hold: another node may judge it lasting.
   - **must-not-hold**, any of:
