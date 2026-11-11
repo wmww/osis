@@ -238,20 +238,25 @@ mod tests {
             }
         }
         assert!(seen > 0);
-        // the check by bytes agrees with recompressing every point dalek decodes, at the boundary
-        for lo in 0xe0u8..=0xff {
-            for hi in [0x7fu8, 0xff] {
-                let mut b = [0xffu8; 32];
-                b[0] = lo;
-                b[31] = hi;
-                let by_point = ed25519_dalek::VerifyingKey::from_bytes(&b).is_ok_and(|d| !d.is_weak() && d.to_edwards().compress().to_bytes() == b);
-                assert_eq!(VerifyingKey::from_bytes(&b).is_ok(), by_point, "{lo:x} {hi:x}");
-            }
+        // the check by bytes agrees with recompressing every point dalek decodes: on the 8-torsion
+        // (x = 0 at y = 1 and y = -1) and every y below 256, below 2^255 by 256 (p - 237 .. p + 18,
+        // y = 0 .. 18 non-canonically) and random, each with the sign bit clear and set
+        let by_point = |b: &[u8; 32]| ed25519_dalek::VerifyingKey::from_bytes(b).is_ok_and(|d| !d.is_weak() && d.to_edwards().compress().to_bytes() == *b);
+        let mut cases: Vec<[u8; 32]> = curve25519_dalek::constants::EIGHT_TORSION.iter().map(|t| t.compress().to_bytes()).collect();
+        for lo in 0u8..=255 {
+            let mut small = [0u8; 32];
+            small[0] = lo;
+            let mut top = [0xffu8; 32];
+            top[0] = lo;
+            top[31] = 0x7f;
+            cases.extend([small, top]);
         }
-        for i in 0u32..512 {
-            let b = *blake3::hash(&i.to_le_bytes()).as_bytes();
-            let by_point = ed25519_dalek::VerifyingKey::from_bytes(&b).is_ok_and(|d| !d.is_weak() && d.to_edwards().compress().to_bytes() == b);
-            assert_eq!(VerifyingKey::from_bytes(&b).is_ok(), by_point, "{b:?}");
+        cases.extend((0u32..512).map(|i| *blake3::hash(&i.to_le_bytes()).as_bytes()));
+        for mut b in cases {
+            for sign in [0, 0x80] {
+                b[31] = b[31] & 0x7f | sign;
+                assert_eq!(VerifyingKey::from_bytes(&b).is_ok(), by_point(&b), "{b:?}");
+            }
         }
         let sk = SigningSecret::from_seed(&Secret32::from_bytes([5; 32]));
         let pk = sk.verifying_key();

@@ -384,32 +384,43 @@ mod tests {
     }
 
     // spec/crypto.md §1: the low-order check by comparison is the non-contributory DH check: on
-    // the curve's 8-torsion (from Edwards), on each listed value with bit 255 set or not, and on
-    // random keys.
+    // the curve's 8-torsion (from Edwards), every u below 256, below 2^255 by 256 (p - 237 ..
+    // p + 18: -1 and 0, 1 non-canonically), the order-8 values and their neighbours, and random
+    // keys, each with bit 255 clear and set; the 7 listed values (14 with bit 255) are all it
+    // rejects among them.
     #[test]
     fn low_order_is_non_contributory() {
         let by_dh = |u: &[u8; 32]| X25519Secret::from_secret(&Secret32::from_bytes([1; 32])).dh(u).is_err();
-        for t in curve25519_dalek::constants::EIGHT_TORSION {
-            let u = t.to_montgomery().to_bytes();
-            assert!(low_order(&u) && by_dh(&u), "{u:?}");
+        let mut cases: Vec<[u8; 32]> = curve25519_dalek::constants::EIGHT_TORSION.iter().map(|t| t.to_montgomery().to_bytes()).collect();
+        for lo in 0u8..=255 {
+            let mut small = [0u8; 32];
+            small[0] = lo;
+            let mut top = [0xffu8; 32];
+            top[0] = lo;
+            top[31] = 0x7f;
+            cases.extend([small, top]);
         }
-        let mut listed = vec![[0u8; 32]; 2];
-        listed[1][0] = 1;
-        for lo in [0xec, 0xed, 0xee] {
-            let mut u = [0xff; 32];
-            u[0] = lo;
-            u[31] = 0x7f;
-            listed.push(u);
+        let order_8 = cases[..8].iter().filter(|u| u[0] != 0 && u[0] != 1).copied().collect::<Vec<_>>();
+        for u in order_8 {
+            for d in 0u8..=4 {
+                let (mut up, mut down) = (u, u);
+                up[0] += d;
+                down[0] -= d;
+                cases.extend([up, down]);
+            }
         }
-        for mut u in listed {
-            assert!(low_order(&u) && by_dh(&u), "{u:?}");
-            u[31] |= 0x80;
-            assert!(low_order(&u) && by_dh(&u), "{u:?}");
+        cases.extend((0u32..1024).map(|i| *blake3::hash(&i.to_le_bytes()).as_bytes()));
+        let mut rejected = std::collections::BTreeSet::new();
+        for mut u in cases {
+            for top in [0, 0x80] {
+                u[31] = u[31] & 0x7f | top;
+                assert_eq!(low_order(&u), by_dh(&u), "{u:?}");
+                if low_order(&u) {
+                    rejected.insert(u);
+                }
+            }
         }
-        for i in 0u32..256 {
-            let u = *blake3::hash(&i.to_le_bytes()).as_bytes();
-            assert_eq!(low_order(&u), by_dh(&u), "{u:?}");
-        }
+        assert_eq!(rejected.len(), 14);
     }
 
     // spec: none (notes/architecture.md §3: Debug of secrets redacted)
