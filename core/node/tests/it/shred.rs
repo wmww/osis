@@ -29,7 +29,7 @@ fn peer(seed: u64) -> Peer {
     engine.create_account(&[]).unwrap();
     engine.take_wakes();
     let events = engine.subscribe();
-    Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0 }
+    Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0 }
 }
 
 /// `p` restarted over its durable state, as `peer` opens it.
@@ -39,7 +39,7 @@ fn reopened(p: Peer, seed: u64) -> Peer {
     let c: Arc<dyn Clock> = clock.clone();
     let mut engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), osis_node::local_peer::blob_area(&blob_disk, seed).unwrap(), cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
     let events = engine.subscribe();
-    let mut p = Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded, discards: 0 };
+    let mut p = Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded, discards: 0, redelivered: 0 };
     p.fetch_discarded().unwrap();
     p
 }

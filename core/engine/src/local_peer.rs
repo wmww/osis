@@ -68,6 +68,9 @@ pub struct Peer {
     pub discarded: Vec<Discarded>,
     /// How many packages the engine threw out so far.
     pub discards: u64,
+    /// How many carriers of a commit named for redelivery were ingested again (node-sync's
+    /// `SyncEngine::redelivered`).
+    pub redelivered: u64,
 }
 
 /// A package this peer's engine threw out, as hosts keep it: fetched again as node-sync does
@@ -173,6 +176,7 @@ impl Peer {
                 return Ok(());
             }
             for d in now {
+                self.redelivered += u64::from(d.carries);
                 let r = self.engine.ingest(&d.bytes, d.blobs.clone());
                 if matches!(&r, Err(e) if e.class() == osis_base::ErrorClass::BadInput) {
                     self.engine.forget_awaiting(&d.commit)?;
@@ -199,7 +203,7 @@ impl Peer {
         let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
         engine.take_wakes();
         let events = engine.subscribe();
-        Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0 })
+        Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0 })
     }
 
     /// Drops the engine and opens it again over the same durable state.
@@ -230,7 +234,7 @@ impl Peer {
         let mut engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
         let events = engine.subscribe();
         engine.take_wakes();
-        let mut p = Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts + 1, discarded: self.discarded.clone(), discards: self.discards };
+        let mut p = Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts + 1, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered };
         p.fetch_discarded()?;
         Ok(p)
     }
@@ -249,7 +253,7 @@ impl Peer {
             let events = engine.test_subscribe_with(pending, false);
             let (backend, root) = (self.backend.test_copy(), self.root.test_copy());
             let blob_disk = (self.blob_disk.0.test_copy(), self.blob_disk.1.test_copy());
-            Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts, discarded: self.discarded.clone(), discards: self.discards })
+            Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered })
         })
     }
 

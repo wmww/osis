@@ -447,45 +447,6 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     }
 }
 
-/// What a node keeps of what it is given, for the tests here at the engine: every copy, ingested again
-/// as `SyncEngine::redeliver` does but for its look at which slots a copy brings (`parts_relay` runs the
-/// real one, restarts and lost names included).
-#[derive(Default)]
-struct Relay {
-    copies: Vec<(CommitBlob, Vec<u8>)>,
-    /// Copies ingested again.
-    again: usize,
-}
-
-impl Relay {
-    fn give(&mut self, p: &mut Peer, bytes: &[u8], blobs: Vec<(osis_base::BlobId, Vec<u8>)>) {
-        let c = CommitBlob::decode(bytes).unwrap();
-        let _ = p.engine.ingest(bytes, blobs);
-        self.copies.push((c, bytes.to_vec()));
-        self.settle(p);
-    }
-    // the engine's own reexamine: `Peer::reexamine` delivers its carriers again itself, taking the names
-    fn settle(&mut self, p: &mut Peer) {
-        p.engine.reexamine().unwrap();
-        for _ in 0..=self.copies.len() {
-            let names = p.engine.take_redeliver();
-            if names.is_empty() {
-                return;
-            }
-            for c in names {
-                for (b, bytes) in &self.copies {
-                    if b.id() == c && p.engine.parts_genuine(b) != Some(false) {
-                        self.again += 1;
-                        let _ = p.engine.ingest(bytes, Vec::new());
-                    }
-                }
-            }
-            p.engine.reexamine().unwrap();
-        }
-        assert!(p.engine.take_redeliver().is_empty(), "a name for every round");
-    }
-}
-
 /// Pack `i` cut into parts by aspect.
 fn cuts(played: &Played, i: usize) -> Vec<Vec<u8>> {
     let b = CommitBlob::decode(&played.packs[i].bytes).unwrap();
@@ -660,11 +621,11 @@ fn wrong_class_delta_is_not_waited_for_spec_commits_4() {
     for pk0 in &known {
         p.engine.ingest(&pk0.bytes, pk0.blobs.clone()).unwrap();
     }
-    let mut relay = Relay::default();
-    relay.give(p, &bytes, Vec::new());
-    relay.give(p, &bytes, Vec::new());
+    for _ in 0..2 {
+        let _ = p.receive(&bytes, Vec::new());
+    }
     assert!(!p.engine.commit_ids().contains(&id));
-    assert_eq!(relay.again, 0);
+    assert_eq!(p.redelivered, 0);
 }
 
 // spec/commits.md §4 Unjudgeable: a commit pending for drift whose parts are one on a thing whose
@@ -689,6 +650,7 @@ fn pending_commit_judged_unjudgeable_keeps_nothing_spec_commits_4() {
     lp.peers[1].clock.advance(2 * MAX_DRIFT_MS);
     lp.peers[1].tick().unwrap();
     assert!(lp.peers[1].engine.pending().is_empty(), "thrown out once judged");
+    assert_eq!(lp.peers[1].redelivered, 1, "its carrier delivered again, to await");
     assert!(!lp.peers[1].engine.commit_ids().contains(&id));
     for pk in packages(&mut lp, 0).into_iter().filter(|pk| pk.id != id) {
         lp.deliver(1, &pk).unwrap();
