@@ -24,9 +24,10 @@ Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s 
 - 2026-11-11 ostrich `gate.hold` CPU 7284/3795 s, wall 676/241 s at load 11; `gate` CPU 8327/4094 s, wall 967/299 s; `gate.clippy` CPU 100/69 s at load 19: decoded-recheck-cost review, every crate selected; persistent, issues/gate-five-minutes.md.
 - 2026-11-11 ostrich `gate.hold` wall 966/241 s; `gate` wall 1090/299 s: order-seeds review; persistent, issues/gate-five-minutes.md.
 - 2026-11-11 ostrich `gate` wall 1386/299 s, CPU 2.1x; `gate.hold` wall 5x at load 38: rotation-seeds review; persistent, issues/gate-five-minutes.md.
+- 2026-11-11 ostrich `gate.hold` wall 628/241 s; `gate` wall 717/299 s: keyset-parse-once review (23 of 26 crates); persistent, issues/gate-five-minutes.md.
+- 2026-11-11 ostrich `gate` wall 725/299 s, CPU 1.7x; `gate.hold` wall 521/241 s, CPU 1.6x at load 13: test-profile-3 review (10 of 26 crates); persistent, issues/gate-five-minutes.md.
 
 ## Investigations
 One section per investigation: date and box, the trigger (hits or the run over 2x), what was tried, the outcome (fixed, or a raised limit with why no good solution was found). Tess reviews every raise.
 
 - 2026-11-10 ostrich, the gate against the 5-minute cap (`gate`, `gate.hold` 4.3x): issues/gate-five-minutes.md (what was measured and profiled, what was fixed, what each remaining fix would save). No limit raised.
-- 2026-11-11 ostrich `gate.hold` wall 628/241 s; `gate` wall 717/299 s: keyset-parse-once review (23 of 26 crates); persistent, issues/gate-five-minutes.md.
