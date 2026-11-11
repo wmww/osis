@@ -5,6 +5,4 @@
 order::held_set_decides_plain OSIS_ORDER_START=539131766525 issues/order-required-floor-plain.md held_set_decides: \w+ seeds ran, but not
 keep::any_order_until_keeps_no_more_large OSIS_KEEP_START=636109736897 issues/keep-until-order-seed.md kept only by order
 ephemeral::random_churn_converges_large OSIS_EPH_START=235597868743 issues/churn-cursor-rebuild-differs.md differs from a rebuild from held bodies
-rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=500107895400 issues/reseal-due-permission-seed.md Permission \{ tid
-rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=192411102837 issues/rotation-holder-lacks-box-seed.md with key access lacks a box
 order::held_set_decides_plain OSIS_ORDER_SEED=833299603861 issues/order-held-model-unknown-record-applied.md ^seed \d+, PartsAway \(replay:

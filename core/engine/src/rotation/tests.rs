@@ -415,6 +415,58 @@ fn forked_role_resealed_without_a_node_holding_every_fork_spec_permissions_3() {
     }
 }
 
+// spec/permissions.md §3 (re-seal: the trigger boxes the epochs the holder lacks a box at),
+// spec/crypto.md §4 (Authority: a box replaced is a removal): B and D, writers of G, rotate its
+// write concurrently, D leaving B out. A, holding both forks and the merger of neither, re-seals
+// B at D's fork alone: B's box at its own fork stays as it was (a re-seal replacing it removed a
+// box, which a re-sealer holding its role through a holder actor it does not show may not).
+#[test]
+fn reseal_puts_missing_boxes_replaces_none_spec_permissions_3() {
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Write)]);
+    let b = tids[1];
+    rotate_leaving_out(&mut lp, 1, g, &[Role::Write].into(), &[]);
+    rotate_leaving_out(&mut lp, 2, g, &[Role::Write].into(), &[1]);
+    lp.sync_all().unwrap();
+    let e = lp.peers[0].engine.epochs(&g).unwrap();
+    assert_eq!(e.write.current().len(), 2, "write forked");
+    assert_eq!(lp.peers[0].engine.rotated_already(&g).unwrap(), Some(BTreeSet::new()), "A merges nothing");
+    let before = lp.peers[0].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap();
+    let had: BTreeMap<ct::BoxKey, ct::SecretBox> = before.boxes.iter().filter(|(k, _)| k.holder == b).map(|(k, v)| (k.clone(), v.clone())).collect();
+    assert!(!all_boxed(&mut lp, 0, &[g]), "B lacks a box at D's fork");
+    lp.peers[0].engine.reseal_due(&g, &Pass).unwrap();
+    let after = lp.peers[0].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap();
+    for (k, v) in &had {
+        assert_eq!(after.boxes.get(k), Some(v), "B's box at {k:?} replaced");
+    }
+    assert!(all_boxed(&mut lp, 0, &[g]), "B boxed at both forks");
+}
+
+// spec/crypto.md §4 (a node that may rotate r rotates while a current epoch of r is orphaned),
+// spec/permissions.md §3 (every holder ends reading everything): writer W rotates G's read
+// leaving A, the first admin, out, and A demotes W to read: the readers alone hold W's epoch, so
+// nobody may re-seal A at it. A rotates read; the readers add W's epoch to the new epoch's
+// history, and A reads it.
+#[test]
+fn orphaned_epoch_rotated_spec_crypto_4() {
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Read)]);
+    rotate_leaving_out(&mut lp, 1, g, &[Role::Read].into(), &[0]);
+    lp.sync_all().unwrap();
+    let w = newest_read(&lp, 1, g).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(edge(Role::Read)), retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    for _ in 0..3 {
+        for p in 0..3 {
+            lp.peers[p].engine.ensure_rotated(&g).unwrap();
+            lp.peers[p].engine.reseal_due(&g, &Pass).unwrap();
+        }
+        lp.sync_all().unwrap();
+    }
+    assert!(lp.peers[0].engine.epochs(&g).unwrap().read.secret(&w).is_some(), "A reads W's epoch");
+    for p in 0..3 {
+        assert!(all_boxed(&mut lp, p, &[g]), "peer {p}: every holder boxed");
+    }
+}
+
 // spec/crypto.md §4 (established by its own valid rotation commit): peer 1's rotation G of read
 // (epoch s, boxing peers 2 and 4 only) falls invalid, peer 0 demoting 1 to read concurrently;
 // peer 4's rotation of read is a valid fork beside it. Unaware of the demotion, 2 and 4 re-grant
@@ -1427,7 +1479,7 @@ fn ended_holder_not_resealed_spec_permissions_2() {
     let _ = lp.peers[2].engine.reseal_due(&g, &Pass);
     let _ = lp.peers[2].engine.reshare(&g, &tids[1]);
     let d = tids[1];
-    let _ = lp.peers[2].engine.run(|tx| super::reseal_one(tx, g, d, &BTreeSet::from([Role::Read])));
+    let _ = lp.peers[2].engine.run(|tx| super::reseal_one(tx, g, d, &BTreeSet::from([Role::Read]), super::Reseal::Missing));
     assert!(!boxes_of(&mut lp, 2, g, tids[1]).contains(&osis_keys::aspects::box_key(tids[1], Role::Read, &e)), "X boxed ended D at the new read epoch");
 }
 

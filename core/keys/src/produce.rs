@@ -355,7 +355,7 @@ pub fn history_adds(actor: &Tid, held: &ActorEpochs, hist: &HistoryBoxes) -> Res
     Ok(out)
 }
 
-/// A grant or re-seal (spec/crypto.md §4, spec/permissions.md §3): `rcpt`'s boxes for `roles`
+/// A grant or a re-share (spec/crypto.md §4, spec/permissions.md §3): `rcpt`'s boxes for `roles`
 /// (those at or below its role) at each of their current (established) epochs whose secret is
 /// held, with those epochs' history boxes written again from `hist` (`history_boxes`: what the
 /// live entries list and what this node holds). `Ok(None)` when a needed keyset is unknown;
@@ -368,11 +368,40 @@ pub fn box_holder(
     roles: &BTreeSet<Role>,
     rng: &mut dyn CryptoRngCore,
 ) -> Result<Option<SecretsWrite>, Error> {
+    box_at(actor, held, hist, rcpt, roles, &|_, _| true, rng)
+}
+
+/// The re-seal the trigger asks for (`reseal_needed`): `box_holder` at only the current epochs
+/// `rcpt` has no box at in `boxed` (`reseal_missing`), so it puts boxes and replaces none (a box
+/// replaced is a removal, judged by Authority, spec/crypto.md §4); `Error::NoSecret` when a role
+/// has no such epoch held.
+pub fn reseal_holder(
+    actor: &Tid,
+    held: &ActorEpochs,
+    boxed: &Secrets,
+    hist: &HistoryBoxes,
+    rcpt: &Recipient,
+    roles: &BTreeSet<Role>,
+    rng: &mut dyn CryptoRngCore,
+) -> Result<Option<SecretsWrite>, Error> {
+    box_at(actor, held, hist, rcpt, roles, &|r, e| !boxed.boxes.contains_key(&box_key(rcpt.holder, r, e)), rng)
+}
+
+/// `box_holder` at the current epochs `want` names.
+fn box_at(
+    actor: &Tid,
+    held: &ActorEpochs,
+    hist: &HistoryBoxes,
+    rcpt: &Recipient,
+    roles: &BTreeSet<Role>,
+    want: &dyn Fn(Role, &Epoch) -> bool,
+    rng: &mut dyn CryptoRngCore,
+) -> Result<Option<SecretsWrite>, Error> {
     let mut items = Vec::new();
     for &r in roles.iter().filter(|r| **r <= rcpt.role) {
         let re = held.role(r);
         let mut any = false;
-        for e in re.current() {
+        for e in re.current().into_iter().filter(|e| want(r, e)) {
             if let Some(s) = re.secret(&e) {
                 items.push(Item { role: r, epoch: e, secret: s });
                 any = true;
