@@ -8,22 +8,59 @@ pub fn reads(h: &Held) -> BTreeMap<(ThingId, Aspect), Value> {
     evaluate(h).reads.into_iter().filter_map(|(k, r)| Some((k, r?))).collect()
 }
 
-/// Default-test budget; raise locally to hunt (3000 pass).
-const SEEDS: u64 = 300;
+/// The default tests' seeds before `covering` adds the generator's rarer shapes: a tenth of the
+/// `_large` twins' small size.
+const SEEDS: u64 = 30;
 const LEN: usize = 24;
+/// The `_large` twins' seeds: from `OSIS_HELD_START` (default 0), `OSIS_HELD_SEEDS` many, else 300,
+/// 3000 under `OSIS_FULL=1` (notes/testing.md, Sizes). This crate reads the environment itself:
+/// it depends on no osis crate.
+fn large() -> Vec<u64> {
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).map(|v| v.parse::<u64>().unwrap_or_else(|_| panic!("{k}={v:?} is not a decimal u64")));
+    let start = var("OSIS_HELD_START").unwrap_or(0);
+    let n = var("OSIS_HELD_SEEDS").unwrap_or(if var("OSIS_FULL") == Some(1) { 3000 } else { 300 });
+    assert!(n > 0, "zero seeds");
+    eprintln!("held-model props: seeds {start}..{}", start + n);
+    (start..start + n).collect()
+}
+
+/// Runs `f` on every seed of `seeds`, a thread per core; a failing seed's panic names it.
+fn each(seeds: Vec<u64>, f: impl Fn(u64) + Sync) {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(seeds.len()).max(1);
+    std::thread::scope(|sc| {
+        for _ in 0..threads {
+            sc.spawn(|| loop {
+                let Some(&seed) = seeds.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
+                f(seed);
+            });
+        }
+    });
+}
+
 /// Commit IDs of the covers `settle` writes (the generator's are below 1_000_001).
 const COVER_ID: CommitId = 5_000_000;
 
 // spec/commits.md §4 (Order independence), spec/permissions.md §5: a function of the held set
 #[test]
 fn output_is_a_function_of_the_held_set_spec_commits_4() {
-    for seed in 0..SEEDS {
+    output_is_a_function_of_the_held_set(covering(SEEDS));
+}
+
+#[test]
+#[ignore = "property"]
+fn output_is_a_function_of_the_held_set_large_spec_commits_4() {
+    output_is_a_function_of_the_held_set(large());
+}
+
+fn output_is_a_function_of_the_held_set(seeds: Vec<u64>) {
+    each(seeds, |seed| {
         let h = history(seed, LEN);
         let o = evaluate(&h);
         for k in 0..3 {
-            assert_eq!(evaluate(&shuffle(&h, seed * 7 + k)), o, "seed {seed}");
+            assert_eq!(evaluate(&shuffle(&h, seed.wrapping_mul(7).wrapping_add(k))), o, "seed {seed}");
         }
-    }
+    });
 }
 
 /// Carries out every forced fate until nothing changes: `act`, the covering snapshots `me` owes
@@ -121,16 +158,26 @@ fn right_now(h: &Held, c: &Commit, p: &Part) -> bool {
 // history(): a covered body, and a signal's out of history, read alike held or not.
 #[test]
 fn settled_histories_keep_their_laws_spec_commits_5() {
-    let mut past_bound = 0;
-    for seed in 0..SEEDS {
+    settled_histories_keep_their_laws(covering(SEEDS));
+}
+
+#[test]
+#[ignore = "property"]
+fn settled_histories_keep_their_laws_large_spec_commits_5() {
+    settled_histories_keep_their_laws(large());
+}
+
+fn settled_histories_keep_their_laws(seeds: Vec<u64>) {
+    let past_bound = std::sync::atomic::AtomicUsize::new(0);
+    each(seeds, |seed| {
         let h = settle(history(seed, LEN), None, seed, &mut Seen::default());
         let o = evaluate(&h);
         assert!(o.forbidden.is_empty(), "seed {seed}: {:?}", o.forbidden);
         purge_on_replace_gone(&h, &o, seed);
         changes_only_at_deadlines(&h, o, seed);
-        past_bound += optional_drops_keep_reads(h, seed);
-    }
-    assert!(past_bound > 0, "no signal dropped past its bound");
+        past_bound.fetch_add(optional_drops_keep_reads(h, seed), std::sync::atomic::Ordering::Relaxed);
+    });
+    assert!(past_bound.into_inner() > 0, "no signal dropped past its bound");
 }
 
 /// Once a node holding the right has acted, no body under purge on replace is held, none dropped
@@ -211,9 +258,19 @@ fn signal_history(h: &Held, gone: &BTreeSet<(ThingId, Aspect)>) -> BTreeMap<(Thi
 // whose cover or purge fell is fetched again; a part gone at its expiry while waiting excepted
 #[test]
 fn late_commit_converges_after_repair_spec_commits_5() {
-    for seed in 0..SEEDS {
+    late_commit_converges_after_repair(covering(SEEDS));
+}
+
+#[test]
+#[ignore = "property"]
+fn late_commit_converges_after_repair_large_spec_commits_5() {
+    late_commit_converges_after_repair(large());
+}
+
+fn late_commit_converges_after_repair(seeds: Vec<u64>) {
+    each(seeds, |seed| {
         let full = history(seed, LEN);
-        let late = (seed as usize * 7) % full.commits.len();
+        let late = (seed % full.commits.len() as u64 * 7) as usize % full.commits.len();
         let mut early = full.clone();
         let c = early.commits.remove(late);
         let mut seen = Seen::default();
@@ -227,7 +284,7 @@ fn late_commit_converges_after_repair_spec_commits_5() {
         seen.gone.extend(other.gone);
         assert_eq!(reads_off(&a, &seen.gone), reads_off(&b, &seen.gone), "seed {seed}: late {:?}", full.commits[late]);
         assert_eq!(signal_history(&a, &seen.gone), signal_history(&b, &seen.gone), "seed {seed}: late {:?}", full.commits[late]);
-    }
+    });
 }
 
 // spec/requirements.md (Deterministic), spec/commits.md §5 (Signals): nodes given the same commits one at a
@@ -235,14 +292,25 @@ fn late_commit_converges_after_repair_spec_commits_5() {
 // are fetched again; aspects where a part went at its expiry while waiting excepted
 #[test]
 fn arrival_orders_read_alike_after_repair_spec_commits_5() {
-    for seed in 0..SEEDS / 3 {
+    arrival_orders_read_alike_after_repair(covering(SEEDS / 3));
+}
+
+#[test]
+#[ignore = "property"]
+fn arrival_orders_read_alike_after_repair_large_spec_commits_5() {
+    let seeds = large();
+    arrival_orders_read_alike_after_repair(seeds[..seeds.len().div_ceil(3)].to_vec());
+}
+
+fn arrival_orders_read_alike_after_repair(seeds: Vec<u64>) {
+    each(seeds, |seed| {
         let full = history(seed, LEN);
         let mut first = Seen::default();
         let settled = settle(full.clone(), Some(&full), seed, &mut first);
         let mut gone = first.gone;
         for k in 0..2 {
             let mut order: Vec<usize> = (0..full.commits.len()).collect();
-            Rng::new(seed * 5 + k).shuffle(&mut order);
+            Rng::new(seed.wrapping_mul(5).wrapping_add(k)).shuffle(&mut order);
             let mut h = Held { commits: vec![], ..full.clone() };
             let mut seen = Seen::default();
             for i in order {
@@ -263,7 +331,7 @@ fn arrival_orders_read_alike_after_repair_spec_commits_5() {
                 panic!("seed {seed} order {k}: {diff:?}\n{bodies:#?}");
             }
         }
-    }
+    });
 }
 
 // notes/expiry-creation-design.md §3 (Throw out and revisit), spec/commits.md §4: a node given
@@ -271,7 +339,18 @@ fn arrival_orders_read_alike_after_repair_spec_commits_5() {
 // again what it threw out, as one given the creations first
 #[test]
 fn creations_last_read_like_creations_first_spec_commits_4() {
-    for seed in 0..SEEDS / 3 {
+    creations_last_read_like_creations_first(covering(SEEDS / 3));
+}
+
+#[test]
+#[ignore = "property"]
+fn creations_last_read_like_creations_first_large_spec_commits_4() {
+    let seeds = large();
+    creations_last_read_like_creations_first(seeds[..seeds.len().div_ceil(3)].to_vec());
+}
+
+fn creations_last_read_like_creations_first(seeds: Vec<u64>) {
+    each(seeds, |seed| {
         let full = history(seed, LEN);
         let (made, rest): (Vec<Commit>, Vec<Commit>) = full.commits.iter().cloned().partition(held_model::gen::creates);
         let mut seen = Seen::default();
@@ -286,40 +365,82 @@ fn creations_last_read_like_creations_first_spec_commits_4() {
         let first = settle(full.clone(), Some(&full), seed, &mut other);
         seen.gone.extend(other.gone);
         assert_eq!(reads_off(&h, &seen.gone), reads_off(&first, &seen.gone), "seed {seed}");
+    });
+}
+
+/// The shapes `histories_reach_endings_unknown_things_and_settings` asks the generator for.
+const SHAPES: [&str; 8] = ["expiry", "purge", "unknown", "late setting", "invalid setting", "history", "signal history", "purge on replace"];
+
+/// How often seed's history reaches each of `SHAPES`: things ended by expiry and by purge, then
+/// one each for parts thrown out as unknown, a late and an invalid setting, a body in history, a
+/// signal's, a body under purge on replace.
+fn shapes(seed: u64) -> [u64; 8] {
+    let h = history(seed, LEN);
+    let o = evaluate(&h);
+    let settings = || h.commits.iter().enumerate().filter(|(_, c)| c.parts.iter().any(|p| p.aspect == Aspect::RETENTION));
+    let (mut expired, mut purged) = (0, 0);
+    for &t in &o.ended {
+        let c = h.commits.iter().find(|c| c.id == held_model::gen::CREATION_ID + t).unwrap();
+        if c.expires.is_some_and(|x| h.now >= x) {
+            expired += 1;
+        } else {
+            purged += 1;
+        }
     }
+    [
+        expired,
+        purged,
+        o.fates.values().any(|f| *f == Fate::MustDrop(DropWhy::Unknown)) as u64,
+        // late: stamped before a commit written before it
+        settings().any(|(i, c)| h.commits[..i].iter().any(|x| x.ts > c.ts)) as u64,
+        settings().any(|(_, c)| o.valid.get(&(c.id, 0)) == Some(&false)) as u64,
+        o.history.keys().any(|k| !k.1.signal) as u64,
+        o.history.keys().any(|k| k.1.signal) as u64,
+        !o.under_purge.is_empty() as u64,
+    ]
+}
+
+/// A default test's seeds: 0..n, then the first seeds past it that bring each of `SHAPES` to two
+/// seeds (the generator reaches some in one seed in fifteen).
+fn covering(n: u64) -> Vec<u64> {
+    static SETS: std::sync::Mutex<BTreeMap<u64, Vec<u64>>> = std::sync::Mutex::new(BTreeMap::new());
+    let mut sets = SETS.lock().unwrap_or_else(|e| e.into_inner());
+    sets.entry(n)
+        .or_insert_with(|| {
+            let mut hit = [0u64; 8];
+            let mut set = Vec::new();
+            for seed in 0..1000 {
+                let here = shapes(seed);
+                if seed < n || here.iter().zip(&hit).any(|(k, h)| *k > 0 && *h < 2) {
+                    set.push(seed);
+                    for (h, k) in hit.iter_mut().zip(here) {
+                        *h += (k > 0) as u64;
+                    }
+                }
+                if seed + 1 >= n && hit.iter().all(|h| *h >= 2) {
+                    return set;
+                }
+            }
+            panic!("the generator reaches {:?} in under two of 1000 seeds", SHAPES.iter().zip(hit).filter(|x| x.1 < 2).collect::<Vec<_>>())
+        })
+        .clone()
 }
 
 // spec: none (the generator's reach): the histories end things by expiry and by purge, throw
 // parts out on things a node holds no creation of, and hold settings (late ones, invalid ones),
-// bodies in history (signals too) and bodies under purge on replace, in a share of seeds that does
-// not depend on the run's size
+// bodies in history (signals too) and bodies under purge on replace, each in at least one seed in
+// a hundred
 #[test]
 fn histories_reach_endings_unknown_things_and_settings() {
-    let (mut expired, mut purged, mut thrown) = (0, 0, 0);
-    let (mut late, mut invalid, mut kept, mut sig, mut under) = (0, 0, 0, 0, 0);
-    for seed in 0..SEEDS {
-        let h = history(seed, LEN);
-        let o = evaluate(&h);
-        let settings = || h.commits.iter().enumerate().filter(|(_, c)| c.parts.iter().any(|p| p.aspect == Aspect::RETENTION));
-        // late: stamped before a commit written before it
-        late += settings().any(|(i, c)| h.commits[..i].iter().any(|x| x.ts > c.ts)) as u64;
-        invalid += settings().any(|(_, c)| o.valid.get(&(c.id, 0)) == Some(&false)) as u64;
-        kept += o.history.keys().any(|k| !k.1.signal) as u64;
-        sig += o.history.keys().any(|k| k.1.signal) as u64;
-        under += !o.under_purge.is_empty() as u64;
-        for &t in &o.ended {
-            let c = h.commits.iter().find(|c| c.id == held_model::gen::CREATION_ID + t).unwrap();
-            if c.expires.is_some_and(|x| h.now >= x) {
-                expired += 1;
-            } else {
-                purged += 1;
-            }
+    const N: u64 = 100;
+    let mut seen = [0u64; 8];
+    for seed in 0..N {
+        for (s, n) in seen.iter_mut().zip(shapes(seed)) {
+            *s += n;
         }
-        thrown += o.fates.values().any(|f| *f == Fate::MustDrop(DropWhy::Unknown)) as u64;
     }
-    eprintln!("of {SEEDS}: {expired} ended by expiry, {purged} by purge, {thrown} throwing parts out; settings {late} late, {invalid} invalid; history {kept}, signal {sig}, under purge on replace {under}");
-    for (what, n) in [("expiry", expired), ("purge", purged), ("unknown", thrown), ("late setting", late), ("invalid setting", invalid), ("history", kept), ("signal history", sig), ("purge on replace", under)] {
-        assert!(n * 100 >= SEEDS, "{what}: {n} of {SEEDS}");
+    eprintln!("of {N}: {:?}", SHAPES.iter().zip(seen).collect::<Vec<_>>());
+    for (what, n) in SHAPES.iter().zip(seen) {
+        assert!(n > 0, "{what}: none of {N}");
     }
 }
-
