@@ -1448,8 +1448,9 @@ fn unheld_holder_judged_by_keyset_spec_crypto_4() {
 // (Encrypting under: an epoch boxing a holder actor at a blocked keyset; Seal): o0 leaves K1 by
 // self-removal (no rotation). late, a reader of K1 and a writer of C through K2, may not rotate
 // K1 and nothing departed from C, but C's read epoch boxes K1 at a keyset missing o0's departure:
-// late rotates C once, leaving K1 out, to an epoch o0 does not hold. Alice rotates K1 and at
-// once C's write (its box to K1 stale), and re-seals K1 to C's read.
+// late rotates C once, leaving K1 out, to an epoch o0 does not hold. Its write too: late lacks
+// K1's write secret, so it judges K1's write keyset by order, made before o0's departure. Alice
+// rotates K1 (C, boxing no K1, has no stale box), and re-seals K1 to C.
 #[test]
 fn inside_member_departure_leaves_holder_out_spec_perm_3() {
     let (mut lp, c, k1, po) = two_links(518, true);
@@ -1460,10 +1461,11 @@ fn inside_member_departure_leaves_holder_out_spec_perm_3() {
     assert!(still.is_empty() && rot.commits.len() == 1, "late rotates C once: {still:?}");
     assert!(lp.peers[2].engine.ensure_rotated(&c).unwrap().0.commits.is_empty(), "and no more");
     let top = newest_read(&lp, 2, c).unwrap();
+    let write = lp.peers[2].engine.epochs(&c).unwrap().write.newest_held().unwrap().0;
     spread(&mut lp);
-    assert!(lp.peers[1].engine.epochs(&c).is_none_or(|e| e.read.secret(&top).is_none()), "o0 does not hold C's new epoch");
+    assert!(lp.peers[1].engine.epochs(&c).is_none_or(|e| e.read.secret(&top).is_none() && e.write.secret(&write).is_none()), "o0 does not hold C's new epochs");
     let (rot, _) = lp.peers[0].engine.ensure_rotated(&k1).unwrap();
-    assert_eq!(rot.commits.len(), 2, "alice rotates K1, then C's write, whose box to K1 that made stale");
+    assert_eq!(rot.commits.len(), 1, "alice rotates K1; C boxes no K1, so nothing is stale above");
     spread(&mut lp);
     assert!(!lp.peers[0].engine.reseal_due(&c, &Pass).unwrap().commits.is_empty(), "alice re-seals K1 to C");
     spread(&mut lp);
