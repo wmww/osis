@@ -42,7 +42,7 @@
 - **An `until` passing** is a loss (§3) the node judges by its own clock, with no role commit behind it. A node whose read access only an `until` ended (walked with every grant's time ahead, it has a role):
   - First hears out the labels it tracks whose closure holds a thing it would forget. For each such label, one of these holds:
     - with a host: it has a pass ended with nothing outstanding at every host it is open at, and is open at one; or some host refuses it (stranded, or not admitted);
-    - with no host: each of its own commits with an entry under it is placed (spec/sync.md §5) and, since it found the role gone, it read some co-reader's stream of the label to its end (spec/sync.md §10); or a co-reader refuses it: a peer it dials for the label, or whose proven actors it judges holders of it, settled its shared set on a connection without the label.
+    - with no host: each of its own commits with an entry under it is placed (spec/sync.md §5) and, since it found the role gone, it read some co-reader's stream of the label to its end (spec/sync.md §10); or a co-reader refuses it: on a connection whose shared set settled without the label, the peer proved an actor it judges a holder of the label (spec/sync.md §10, J). Limit: a co-reader that proves nothing to it (one that judges it departed and knows it by nothing else) is no refusal, so with only such co-readers reachable it keeps what it lost until `LOST_HEARD_WAIT_MS`.
   - Meanwhile its writes from before the `until` go up (a host that already serves a later step refuses them, a co-reader that judges it departed shares nothing with it), and a renewal held by then keeps its role.
   - Then it drops.
   - It drops anyway `LOST_HEARD_WAIT_MS` after it first found the role gone.

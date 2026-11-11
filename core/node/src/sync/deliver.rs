@@ -100,6 +100,8 @@ impl SyncEngine {
         let mut timed_labels = std::mem::take(&mut l.timed_labels);
         if !timed.is_empty() {
             let labels = self.labels();
+            // the labels co-readers refuse, judged once per run (`co_readers_refusing`)
+            let mut refused: Option<BTreeSet<LabelId>> = None;
             for (a, since) in &timed {
                 if !timed_labels.contains_key(a) {
                     let lost = BTreeSet::from([*a]);
@@ -116,7 +118,13 @@ impl SyncEngine {
                     for (id, h) in timed_labels.get(a).into_iter().flatten() {
                         heard = match h {
                             Hear::Hosts => self.heard(id),
-                            Hear::CoReaders(c) => self.heard_by_co_readers(id, *c, *since)?,
+                            Hear::CoReaders(c) => {
+                                if refused.is_none() {
+                                    let hostless: BTreeSet<LabelId> = timed_labels.values().flatten().filter(|(_, h)| matches!(h, Hear::CoReaders(_))).map(|(x, _)| *x).collect();
+                                    refused = Some(self.co_readers_refusing(&hostless));
+                                }
+                                refused.as_ref().is_some_and(|r| r.contains(id)) || self.heard_by_co_readers(id, *c, *since)?
+                            }
                         };
                         if !heard {
                             break;
@@ -151,33 +159,35 @@ impl SyncEngine {
         self.forget_lost(LostScope::Only(&ready)).map(|_| ())
     }
 
-    /// Whether label `l` (one with no host) is heard out by its co-readers (spec/permissions.md
-    /// §2), the loss found at `since`: this node's writes there are held at a source (`last`,
-    /// its last own commit under `l`, is `placed`: a co-reader reported a position past every
-    /// own entry) and the stream of `l` from a co-reader source was read to its end since (a
-    /// renewal it held has come); or a co-reader refuses `l` here (`co_reader_refuses`), as a
-    /// host refusing it does.
+    /// Whether label `l` (one with no host) is heard out by its co-readers' writes and passes
+    /// (spec/permissions.md §2), the loss found at `since`: this node's writes there are held at
+    /// a source (`last`, its last own commit under `l`, is `placed`: a co-reader reported a
+    /// position past every own entry) and the stream of `l` from a co-reader source was read to
+    /// its end since (a renewal it held has come). A co-reader refusing it is the other way
+    /// (`co_readers_refusing`).
     fn heard_by_co_readers(&mut self, l: &LabelId, last: Option<CommitId>, since: u64) -> Result<bool> {
-        if self.co_reader_refuses(l) {
-            return Ok(true);
-        }
         let passed = self.peer_passes.iter().any(|((_, x), (_, at))| x == l && *at >= since);
         Ok(passed && last.map_or(Ok(true), |c| self.placed(&c))?)
     }
 
-    /// Whether a co-reader of `l` (a peer this node dials for it, or one whose proven actors
-    /// hold it here) settled its shared set on a live connection without `l`: it judged this
-    /// node departed (a finalize it wrote or applied), so nothing of this node's goes there.
-    fn co_reader_refuses(&mut self, l: &LabelId) -> bool {
-        let peers = self.peers();
-        let conns: Vec<ConnId> = self.records.shared.keys().copied().filter(|c| self.shared_settled(*c) && !self.shared_member(*c, l)).collect();
+    /// Of `labels` (with no host), those a co-reader refuses here, as a host refusing one does:
+    /// on a live connection whose shared set settled without the label, the peer proved an
+    /// actor holding it as this node judges (J holder). Only a proof counts: a dial list is
+    /// built from self-declared `reach.0`, so any peer could claim a co-reader's account and
+    /// send a filter without the label. One judgment per settled connection.
+    fn co_readers_refusing(&mut self, labels: &BTreeSet<LabelId>) -> BTreeSet<LabelId> {
+        let mut out = BTreeSet::new();
+        let conns: Vec<ConnId> = self.records.shared.keys().copied().filter(|c| self.shared_settled(*c)).collect();
         for c in conns {
-            let dialed = self.conns.get(&c).is_some_and(|x| x.peer && peers.get(&x.host).is_some_and(|p| p.labels.contains(l)));
-            if dialed || self.judgments(c, &[*l]).is_some_and(|j| j.get(l) == Some(&super::credentials::Judgment::Holder)) {
-                return true;
+            let missing: Vec<LabelId> = labels.iter().filter(|l| !out.contains(*l) && !self.shared_member(c, l)).copied().collect();
+            if missing.is_empty() {
+                continue;
+            }
+            if let Some(j) = self.judgments(c, &missing) {
+                out.extend(j.into_iter().filter(|(_, x)| *x == super::credentials::Judgment::Holder).map(|(l, _)| l));
             }
         }
-        false
+        out
     }
 
     /// This node's own commit whose entry under `l` its node log first held last, if any: once

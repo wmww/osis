@@ -119,7 +119,7 @@ fn a_strangers_report_counts_for_nothing_spec_sync_5() {
 }
 
 /// Under `a`'s group `g` with no host: `b` writes `g` until an hour from now, `c` reads it (`a`
-/// and `c` dialable). `b` wrote item `t` while `a` and `c` were offline; the `until` has passed.
+/// and `c` dialable; `c` and `b` share `c`'s group too). `b` wrote item `t` while `a` and `c` were offline; the `until` has passed.
 fn timed_while_apart() -> (Net, [usize; 3], Tid, Tid) {
     let mut net = Net::new();
     let a = net.node(1, &[]);
@@ -128,6 +128,8 @@ fn timed_while_apart() -> (Net, [usize; 3], Tid, Tid) {
     reach_ed(&mut net, a);
     reach_ed(&mut net, c);
     let g = net.group_seeded(a, &[(b, Role::Write), (c, Role::Read)], vec![], 13);
+    // `c` also shares `h` with `b`, so it proves its account to `b` whatever it judges of `g`
+    net.group_seeded(c, &[(b, Role::Read)], vec![], 14);
     let until = osis_base::WallMs(net.now() + 3_600_000);
     let tb = net.tid(b);
     let edge = osis_schema::core_types::Edge { role: Role::Write, until: Some(until), invite: None, tied: None };
@@ -174,16 +176,54 @@ fn an_until_under_no_host_kept_by_a_renewal_spec_perm_2() {
     assert_eq!(net.read(c, t), Some(s("unsent")));
 }
 
-// spec/permissions.md §2: a co-reader that judges the node departed (here the admin, which
-// finalizes the ended grant on its first pass) refuses the label, as a host refusing it does:
-// the node drops though that co-reader never took its write.
+// spec/permissions.md §2: a co-reader that judges the node departed and proves an actor holding
+// the label refuses it, as a host refusing it does: the node drops though that co-reader never
+// took its write: `c` applied the admin's finalize of `b`'s ended grant before `b` reached it.
 #[test]
-fn an_until_under_no_host_refused_by_a_co_reader_drops_spec_perm_2() {
+fn an_until_under_no_host_refused_by_a_proven_co_reader_drops_spec_perm_2() {
+    let (mut net, [a, b, c], g, t) = timed_while_apart();
+    net.set_online(c, true);
+    net.set_online(b, false);
+    net.set_online(a, true);
+    net.advance(60_000);
+    let tb = net.tid(b);
+    assert!(net.engine(c).core.judge([tb]).of(&g) == osis_engine::labeling::Judgment::Departed, "c applied the finalize");
+    net.set_online(b, true);
+    net.advance(60_000);
+    assert_eq!(net.read(c, t), None, "the refusing co-reader took nothing");
+    assert!(!holds(&mut net, b, g), "refused: dropped");
+}
+
+// spec/permissions.md §2 (limit): an admin co-reader finalizes the ended grant and then proves
+// nothing to the departed node, so its silence is no refusal: with only such co-readers, the
+// node keeps what it lost until `LOST_HEARD_WAIT_MS`.
+#[test]
+fn an_until_under_no_host_with_only_a_finalizing_admin_waits_spec_perm_2() {
     let (mut net, [a, b, _], g, t) = timed_while_apart();
     net.set_online(a, true);
     net.advance(60_000);
-    assert_eq!(net.read(a, t), None, "the finalizing co-reader took nothing");
-    assert!(!holds(&mut net, b, g), "refused: dropped");
+    assert_eq!(net.read(a, t), None, "the finalizing admin took nothing");
+    assert!(holds(&mut net, b, g), "no proven refusal: kept");
+}
+
+// spec/permissions.md §2: only a proof counts for a refusal: a node sharing another group with
+// `b` whose `reach.0` claims co-reader `c`'s account is dialed, settles its shared set without
+// `g`, and refuses nothing.
+#[test]
+fn an_until_under_no_host_a_forged_reach_refuses_nothing_spec_perm_2() {
+    let (mut net, [_, b, c], g, _) = timed_while_apart();
+    let d = net.node(4, &[]);
+    reach_ed(&mut net, d);
+    let mut r = net.sync(d).own_reach().unwrap();
+    r.account = net.sync(c).own_reach().unwrap().account;
+    let me = net.engine(d).tid();
+    let mut m = osis_engine::Mutation::new();
+    m.replace(me, &osis_schema::core_types::REACH, &r).unwrap();
+    net.engine(d).commit(m).unwrap();
+    net.group_seeded(d, &[(b, Role::Read)], vec![], 15);
+    net.advance(60_000);
+    net.advance(60_000);
+    assert!(holds(&mut net, b, g), "a non-co-reader claiming c's account refused nothing");
 }
 
 // spec/permissions.md §2: with no co-reader reachable, it drops `LOST_HEARD_WAIT_MS` after it
