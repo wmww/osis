@@ -110,8 +110,8 @@ pub type HistoryAlts = BTreeMap<HistoryKey, Vec<Vec<u8>>>;
 /// entries of a key opened with a secret not reading-only list and name replaces what its epoch
 /// had (`RoleEpochs::set_history`: superseded once it is established, established once some
 /// entry's names are met, spec/crypto.md §4), so `secrets` must hold every live entry of each
-/// history key it holds. A key absent from `secrets` leaves its epoch's record alone: the caller
-/// clears those whose key left the state (`clear_history`).
+/// history key it holds. A key not opened so leaves its epoch's record alone: the caller first
+/// clears the epochs of the keys its read stands for (`clear_history`).
 /// `from`: the source when `secrets` is a pending commit's: what its history boxes list is
 /// reading-only, and so is what a reading-only secret opens (it inherits that secret's sources);
 /// neither supersedes anything.

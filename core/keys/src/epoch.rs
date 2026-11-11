@@ -203,7 +203,8 @@ impl RoleEpochs {
         info.supersedes = listed.into_iter().filter(|s| s.n() < e.n()).collect();
     }
 
-    /// `e`'s history box has no live entry: it names and lists nothing.
+    /// `e`'s history box says nothing (no live entry opened under its secret held): it names and
+    /// lists nothing.
     pub fn clear_history(&mut self, e: &Epoch) {
         if let Some(i) = self.map.get_mut(e) {
             i.names.clear();

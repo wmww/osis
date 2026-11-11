@@ -267,24 +267,20 @@ impl Core {
             return None;
         }
         let mut epochs = before.clone().unwrap_or_default();
-        // an epoch whose history key the read stands for, with no live entry there, names and
-        // lists nothing (the keys it holds are set whole as they open, `open_histories`)
+        // an epoch whose history key the read stands for names and lists only what its live
+        // entries there say once opened under its held secret (`open_histories` sets that below)
         for r in ROLES {
             let re = epochs.role_mut(r);
-            let gone: Vec<Epoch> = re
+            let covered: Vec<Epoch> = re
                 .epochs()
                 .map(|(e, _)| *e)
-                .filter(|e| {
-                    let k = osis_keys::aspects::history_key(r, e);
-                    let covered = match read {
-                        SecretsRead::State => true,
-                        SecretsRead::Keys(ks) => ks.contains(&k),
-                        SecretsRead::Pending(_) => false,
-                    };
-                    covered && !secrets.history.contains_key(&k)
+                .filter(|e| match read {
+                    SecretsRead::State => true,
+                    SecretsRead::Keys(ks) => ks.contains(&osis_keys::aspects::history_key(r, e)),
+                    SecretsRead::Pending(_) => false,
                 })
                 .collect();
-            for e in &gone {
+            for e in &covered {
                 re.clear_history(e);
             }
         }
@@ -409,10 +405,10 @@ impl Core {
 /// What a `secrets.0` read handed to `Core::ingest_secrets` stands for.
 #[derive(Clone, Copy)]
 pub(crate) enum SecretsRead<'a> {
-    /// The applied valid state, whole: an epoch whose history key it lacks has no live entry.
+    /// The applied valid state, whole: what each epoch's history box says is read from it anew.
     State,
     /// Entries of the applied valid state, each history key it holds with every live entry;
-    /// these keys stand whole (one it lacks has no live entry), others are left as they were.
+    /// what these keys say is read anew (one it lacks has no live entry), others are left.
     Keys(&'a std::collections::BTreeSet<HistoryKey>),
     /// A pending commit's boxes: what they open is kept for reading only (spec/crypto.md §4).
     Pending(Unchecked),
@@ -900,6 +896,28 @@ mod tests {
         assert_eq!(b, a);
         assert!(b.read.is_reading_only(&e2) && b.read.secret(&e2).is_none());
         assert_eq!(b.read.newest_held().map(|x| x.0), Some(e1));
+    }
+
+    // spec/crypto.md §4 (Established: some live entry opened under its secret; Supersedes: what
+    // its history box lists): a whole read of the state leaves an epoch only what its live
+    // entries say under its held secret. A record seeded with names and a list (a derived view)
+    // at an epoch whose key the state holds but whose secret is not held keeps neither.
+    #[test]
+    fn whole_read_keeps_only_what_live_entries_say() {
+        let mut lp = crate::local_peer::LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
+        let actor = Tid::from_bytes([3; 15]);
+        let (held, unheld) = (Epoch::new(1, [1; 32]).unwrap(), Epoch::new(2, [2; 32]).unwrap());
+        let mut seed = ActorEpochs::default();
+        seed.read.set_secret(held, Secret32::from_bytes([1; 32]));
+        let n = osis_keys::Names { list: [Name { thing: actor, key: osis_keys::Key { ts: 1, node: actor, commit: osis_base::CommitId([1; 32]) } }].into(), departs: None };
+        seed.read.set_history(unheld, [n].into(), [held]);
+        let core = &mut lp.peers[0].engine.core;
+        core.ix.secrets.insert(actor, seed);
+        let mut secrets = Secrets::default();
+        secrets.history.insert(osis_keys::aspects::history_key(Role::Read, &unheld), vec![0; 48]);
+        let got = core.ingest_view(&actor, &secrets, SecretsRead::State, &HistoryAlts::new()).unwrap();
+        let i = got.read.get(&unheld).unwrap();
+        assert!(i.names.is_empty() && i.supersedes.is_empty(), "{i:?}");
     }
 
     // spec/crypto.md §4: every live entry of a history key with several (puts by different
