@@ -469,6 +469,14 @@ impl Engine {
         super::history::permanent(&self.core, h, a, self.now().0)
     }
 
+    /// Whether a header of `h` may be a lasting header on `t` (spec/commits.md §5): it carries a
+    /// purge request, or a permanent delta on `t` unless `t` ended by release alone (no header of
+    /// it lasts).
+    pub fn may_last_on(&self, h: &Header, t: &osis_base::Tid) -> bool {
+        let now = self.now().0;
+        !h.purge.is_empty() || h.aspects.iter().any(|a| a.tid == *t && super::history::permanent(&self.core, h, a, now)) && !super::end::released(&self.core, t, now)
+    }
+
     /// From when any node may drop held body `(tid, ak)` of `c` as covered (`drop_from`), under a
     /// snapshot or its author's own whole replaces.
     pub fn drop_from(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<u64> {

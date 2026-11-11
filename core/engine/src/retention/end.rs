@@ -268,6 +268,7 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
     let keep = keeps(tx, t)?;
     // released, every request past its expiry: with what it drops the node forgets it
     let forget = !keep && release_state(tx.core, t, tx.now().0) == Some(true);
+    tx.core.note_ended_kept(t, keep);
     if keep {
         // what stays still reads as gone (`Core::exists`): observers hear it
         reads_again(t, changed);

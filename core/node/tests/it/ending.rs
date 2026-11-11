@@ -1368,3 +1368,163 @@ fn a_released_actors_dependents_see_it_ended_spec_crypto_4() {
         assert_eq!(net.read(n, x), Some(s("x2")), "node {n}: d's write");
     }
 }
+
+/// Whether host 0 holds an entry of commit `c` under label `l`, as node `n` knows the entries.
+fn at_host_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: CommitId) -> bool {
+    let host = net.host_ids(0, l);
+    net.sync(n).entries(l).into_iter().any(|(id, k)| host.contains(&id) && matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c))
+}
+
+/// `r`, an item of `g` (first admin `g`), referencing `x`, made in the same commit listing `r` as
+/// its retainer: that commit.
+fn retained(net: &mut Net, n: usize, g: Tid) -> (Tid, Tid, CommitId) {
+    let e = net.engine(n);
+    let mut m = Mutation::new();
+    let r = e.new_thing(&mut m, g);
+    let x = e.new_thing(&mut m, g);
+    m.set(x, &ct::RETAINERS, &std::collections::BTreeSet::from([r])).unwrap();
+    m.set(r, &Ak::new("t:refs.0").unwrap(), &Value::Set([Value::Tid(x)].into())).unwrap();
+    let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.extend([r, x]);
+    m.set(g, &ct::GROUP, &items).unwrap();
+    let c = e.commit(m).unwrap().unwrap();
+    net.run();
+    (r, x, c)
+}
+
+// issues/thing-lifetimes.md (What is kept; The release: Final while held), spec/commits.md §5
+// (Ending, Forgetting): x, listing r and referenced by it, is released on purpose. Past its
+// request's expiry every node still holds that x ended (r references it), and a node granted g
+// afterwards gets that evidence under g's label: it reads x ended, not unknown, and a stale copy
+// of x's creation ends again on arrival. No header of x lasts meanwhile
+#[test]
+fn a_referenced_released_thing_stays_ended_past_its_expiry_and_for_a_newcomer_spec_commits_5() {
+    use osis_node::retention::lifetimes::Status;
+    let Setup { mut net, a, b, c, g } = setup();
+    let l = net.label(a);
+    let (_r, x, made) = retained(&mut net, a, g);
+    let w = net.write(b, x, "y");
+    net.run();
+    let stale = net.engine(a).package(&made).unwrap().unwrap();
+    net.engine(a).release(&[x]).unwrap().unwrap();
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(!at_host_of(&mut net, a, &l, w), "x's write left the host whole: a release leaves no lasting header");
+    net.advance(osis_base::format::ROLE_KEEP_MS + 1_000);
+    for _ in 0..2 {
+        net.advance(70_000);
+    }
+    for n in [a, b, c] {
+        assert_eq!(net.engine(n).lifetime_status(&x), Status::Ended, "node {n}: x ended past the request's expiry");
+    }
+    let d = granted_later(&mut net, a, g);
+    assert_eq!(net.engine(d).lifetime_status(&x), Status::Ended, "d: told x ended under g's label");
+    let _ = net.engine(d).ingest(&stale.bytes, stale.blobs);
+    net.run();
+    assert_eq!(net.engine(d).lifetime_status(&x), Status::Ended, "d: a stale copy ends again");
+    assert!(!net.engine(d).knows(&x));
+}
+
+// issues/thing-lifetimes.md (What is kept; Interactions: Expiry): rr, an expiring retainer,
+// references cx, which lists it. rr expires; nobody judges cx yet. A node granted g afterwards
+// receives cx with rr's ending under g's label (cx lists rr), so it reads rr ended, judges cx
+// unreachable and releases it, rather than reading rr unknown and keeping cx for good
+#[test]
+fn an_expired_retainers_child_is_judged_and_released_at_a_later_node_spec_commits_5() {
+    use osis_node::retention::lifetimes::Status;
+    let Setup { mut net, a, g, .. } = setup();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let rr = e.new_thing(&mut m, g);
+    let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(rr);
+    m.set(g, &ct::GROUP, &items).unwrap();
+    m.expires_all(osis_base::WallMs(net.now() + 5_000));
+    net.engine(a).commit(m).unwrap().unwrap();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let cx = e.new_thing(&mut m, g);
+    m.set(cx, &ct::RETAINERS, &std::collections::BTreeSet::from([rr])).unwrap();
+    m.set(rr, &Ak::new("t:refs.0").unwrap(), &Value::Set([Value::Tid(cx)].into())).unwrap();
+    let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(cx);
+    m.set(g, &ct::GROUP, &items).unwrap();
+    e.commit(m).unwrap().unwrap();
+    net.run();
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(a).lifetime_status(&rr), Status::Ended, "rr expired");
+    assert_eq!(net.engine(a).lifetime_status(&cx), Status::Known, "nobody judged cx yet");
+    let d = granted_later_as(&mut net, a, g, Role::Admin);
+    assert_eq!(net.engine(d).lifetime_status(&rr), Status::Ended, "d: told rr ended under g's label");
+    assert_eq!(net.engine(d).lifetime_status(&cx), Status::Known);
+    assert_eq!(net.engine(d).judge_lifetimes(&|_| true).unwrap().release, vec![cx], "d: cx judged unreachable");
+    net.run();
+    assert_eq!(net.engine(a).lifetime_status(&cx), Status::Ended, "a: released");
+}
+
+// issues/thing-lifetimes.md (The release: Applying; Limits 5), spec/sync.md §6: a right holder
+// places the release request at a host before any of the released thing's blobs is deleted
+// there, so no host holds neither (else a holder that missed the request uploads the thing
+// again and right holders release it again, round for good): checked after every message
+#[test]
+fn a_release_request_is_at_the_host_before_the_things_blobs_leave_spec_sync_6() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let l = net.label(a);
+    let (t, _) = made(&mut net, a, g);
+    let w = net.write(b, t, "y");
+    net.run();
+    assert!(at_host_of(&mut net, a, &l, w), "t's write at the host");
+    let req = net.engine(c).release(&[t]).unwrap().unwrap();
+    for n in [a, b, c] {
+        net.feed(n, osis_node::sync::Event::Local);
+    }
+    loop {
+        let (w_at, req_at) = (at_host_of(&mut net, c, &l, w), at_host_of(&mut net, c, &l, req));
+        assert!(w_at || req_at, "neither t's write nor the request at the host");
+        if !net.step() {
+            break;
+        }
+    }
+    net.run();
+    assert!(!at_host_of(&mut net, c, &l, w) && at_host_of(&mut net, c, &l, req), "t's write deleted at the host, the request there");
+}
+
+// issues/thing-lifetimes.md (Cost; The release: Not erasure, Forgotten), spec/commits.md §5
+// (Lasting, Forgetting), spec/sync.md §6: t is released and g's list lets go of it, so nothing
+// held lists or references it. No header of t lasts (its write leaves the host whole), and past
+// the request's expiry nothing of t is held anywhere: no node holds the request or t's write, and
+// the host holds no entry of either
+#[test]
+fn nothing_of_a_released_thing_nothing_needs_outlasts_its_request_spec_commits_5() {
+    use osis_node::retention::lifetimes::Status;
+    let Setup { mut net, a, b, c, g } = setup();
+    let l = net.label(a);
+    let (t, _) = made(&mut net, a, g);
+    let w = net.write(b, t, "y");
+    net.run();
+    let req = net.engine(c).release(&[t]).unwrap().unwrap();
+    net.run();
+    let mut items = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.remove(&t);
+    let mut m = Mutation::new();
+    m.set(g, &ct::GROUP, &items).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(!at_host_of(&mut net, a, &l, w), "t's write left the host whole: no lasting header");
+    net.advance(osis_base::format::ROLE_KEEP_MS);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    for n in [a, b, c] {
+        let e = net.engine(n);
+        assert_eq!(e.lifetime_status(&t), Status::Unknown, "node {n}: t forgotten");
+        assert!(e.header(&req).is_none() && e.header(&w).is_none(), "node {n}: no header of t's commits");
+        assert!(!at_host_of(&mut net, n, &l, req) && !at_host_of(&mut net, n, &l, w), "node {n}: nothing of t at the host");
+        assert!(!net.sync(n).entries(&l).iter().any(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == req || *commit == w)), "node {n}: no entry of t's commits known");
+    }
+}

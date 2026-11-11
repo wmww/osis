@@ -568,6 +568,7 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
     tx.txn.put_local(&key, &osis_base::encode(&rec.to_value()), Shred::No)?;
     tx.core.ix.held.create(rec);
     if tx.core.ended(&t) {
+        tx.core.note_ended_kept(&t, true);
         crate::retention::end::record_back(tx, &t)?;
     }
     crate::retention::lifetimes::queue_with_listers(tx, &t)?;

@@ -994,6 +994,9 @@ pub struct Core {
     /// Ended things whose keep is judged again at the end of the transaction (`retention::end`):
     /// what needs their evidence may have gone.
     pub ended_due: BTreeSet<Tid>,
+    /// Ended things whose record may be kept here (`retention::end`, `Engine::ended_needed`): a
+    /// superset, read through `Core::ended_kept`; `None` until first read after an open.
+    pub ended_kept: Option<BTreeSet<Tid>>,
     /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
     /// when it ends (`apply::run_batched`).
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
@@ -1189,6 +1192,7 @@ impl Core {
             list_bound: self.list_bound.clone(),
             valueless_dirty: self.valueless_dirty.clone(),
             ended_due: self.ended_due.clone(),
+            ended_kept: self.ended_kept.clone(),
             batched: self.batched.clone(),
             cover_cache: self.cover_cache.clone(),
             held_writes: self.held_writes.clone(),
@@ -1439,6 +1443,31 @@ impl Core {
         let held = ak.as_ref().and_then(|ak| self.ix.by_aspect.get(&(*t, ak.clone())));
         let t = *t;
         held.into_iter().flatten().filter_map(move |(_, c)| Some((*c, self.ix.commits.get(c)?.aspect(&t, ak.as_ref()?)?)))
+    }
+
+    /// The ended things whose record is held here (their evidence kept: `retention::end`). Read
+    /// from every record once after an open, then kept by the endings.
+    pub fn ended_kept(&mut self) -> Vec<Tid> {
+        if self.ended_kept.is_none() {
+            let all: BTreeSet<Tid> = self.ix.held.things().copied().filter(|t| self.ended(t)).collect();
+            self.ended_kept = Some(all);
+        }
+        let kept: Vec<Tid> = self.ended_kept.iter().flatten().copied().filter(|t| self.ended(t) && self.created(t).is_some()).collect();
+        if let Some(s) = &mut self.ended_kept {
+            s.retain(|t| kept.contains(t));
+        }
+        kept
+    }
+
+    /// Notes ended thing `t` as kept here or not (`ended_kept`).
+    pub(crate) fn note_ended_kept(&mut self, t: &Tid, kept: bool) {
+        if let Some(s) = &mut self.ended_kept {
+            if kept {
+                s.insert(*t);
+            } else {
+                s.remove(t);
+            }
+        }
     }
 
     /// Whether `t` is ended: a minting of it was held (`mintings`), and each is held value-less or
@@ -1709,6 +1738,7 @@ impl Core {
             settings_moved: _,
             valueless_dirty: _,
             ended_due: _,
+            ended_kept: _,
             lifetimes_rights: _,
             changed: _,
             redeliver: _,
@@ -1914,6 +1944,7 @@ impl Core {
             list_bound: osis_commit::MAX_LIST_BYTES,
             valueless_dirty: BTreeSet::new(),
             ended_due: BTreeSet::new(),
+            ended_kept: None,
             batched: None,
             cover_cache: None,
             held_writes: memo::Memo::new("held writes"),

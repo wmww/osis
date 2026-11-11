@@ -63,6 +63,11 @@ impl Held {
         self.records_read.read(t);
         self.created.get(t)
     }
+    /// Every thing whose record is held.
+    pub fn things(&self) -> impl Iterator<Item = &Tid> {
+        self.records_read.read_all();
+        self.created.keys()
+    }
     /// The held things whose record names `t` as first admin (one link down the record
     /// chain).
     pub fn first_admin_of(&self, t: &Tid) -> impl Iterator<Item = &Tid> {

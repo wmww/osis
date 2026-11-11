@@ -168,10 +168,12 @@ impl Engine {
         }
         // the record chain's records
         out.records.extend(self.core.record_chain(g).filter_map(|s| s.thing()));
-        // the ended actors on an authority path into the label's closure: their records and
-        // frozen permission history, which no body under the label carries once their ending
-        // dropped their own (spec/permissions.md §4)
-        for e in self.ended_upstream(g) {
+        // the ended things the label's closure needs told ended: on an authority path into it,
+        // or listed or referenced there; their records and frozen permission history, which no
+        // body under the label carries once their ending dropped their own (spec/permissions.md
+        // §4, spec/commits.md §5 Ending)
+        let needed = self.ended_needed(g).unwrap_or_else(|_| self.ended_upstream(g));
+        for e in needed {
             out.records.insert(e);
             out.records.extend(self.core.record_chain(&e).filter_map(|s| s.thing()));
             let certs = self.history_certificates(&e);
@@ -225,13 +227,34 @@ impl Engine {
         }
     }
 
+    /// The ended things held here whose evidence the closure of `g` needs (spec/commits.md §5
+    /// Ending, issues/thing-lifetimes.md What is kept): on an authority path into it
+    /// (`ended_upstream`), or listed in `retainers^.0` or referenced in a live durable value by
+    /// a live thing of it. O(kept ended things and the reference rows naming them): what is kept
+    /// is bounded by live things.
+    pub fn ended_needed(&mut self, g: &Tid) -> Result<BTreeSet<Tid>> {
+        let mut out = self.ended_upstream(g);
+        let closure = self.closure(g);
+        for x in self.core.ended_kept() {
+            if out.contains(&x) {
+                continue;
+            }
+            let rows = self.references_to(&x)?;
+            if rows.iter().any(|r| r.source != x && !r.ephemeral() && closure.contains(&r.source) && self.core.exists(&r.source)) {
+                out.insert(x);
+            }
+        }
+        Ok(out)
+    }
+
     /// What tells ended actor `t` ended, added to `out` (spec/commits.md §5 Ending): whatever
     /// lets a node judge `t`'s frozen history also tells it the ending (`cert_parts` adds it
-    /// for every ended thing whose record goes). Each held minting as a header alone (its
-    /// `expires` dates an expiry; a value-less part is never uploaded), and each held request
-    /// dropping one by its ending request part on `t`, `purge.0` or `released.0` (its header
-    /// names the mintings, `t`'s frozen history judges its right), each with its author's chains
-    /// to `t` and to its actor. Once per `out`: its mintings among `out`'s headers.
+    /// for every ended thing whose record goes). Each held minting and each held request
+    /// dropping one, as a header alone: a minting's `expires` dates an expiry (a value-less part
+    /// is never uploaded), a request's header names what it ends (`Header::requests`; `t`'s frozen
+    /// history judges its right), and a header-only blob has no prefix expiry, so a release's
+    /// copy outlives the request's own blobs (spec/sync.md §1). Each with its author's chains to
+    /// `t` and to its actor. Once per `out`: its mintings among `out`'s headers.
     fn ending_evidence(&mut self, t: &Tid, out: &mut Certs) {
         let mintings: Vec<CommitId> = self.core.mintings(t).map(|(c, _)| c).collect();
         if mintings.iter().all(|c| out.headers.contains(c)) {
@@ -239,10 +262,7 @@ impl Engine {
         }
         out.headers.extend(mintings.iter().copied());
         let requests = crate::retention::end::ending_requests(&self.core, t);
-        let on_t = BTreeSet::from([*t]);
-        for pc in &requests {
-            out.add(*pc, self.parts_of(pc, &on_t, &osis_commit::retention::ENDING_REQUESTS));
-        }
+        out.headers.extend(requests.iter().copied());
         for c in mintings.iter().chain(&requests) {
             let Some(h) = self.header(c) else { continue };
             for x in [*t, h.actor, h.author] {
