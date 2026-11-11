@@ -2823,7 +2823,6 @@ dependencies = [
  "osis-store",
  "osis-transport",
  "proptest",
- "tokio",
 ]
 
 [[package]]

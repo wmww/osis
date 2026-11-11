@@ -1,4 +1,4 @@
-//! Connection helpers for node and host drivers: reconnect with backoff, graceful close.
+//! Connection helpers for the node driver: reconnect with backoff, graceful close.
 //! Runtime-free: the caller passes its sleep (`tokio::time::sleep`, `Net::sleep`).
 //! One connection serves many labels: proto multiplexes them on a session stream by message id.
 

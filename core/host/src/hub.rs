@@ -2,7 +2,7 @@
 //! osis-proto `ServingSession` per accepted connection, one `Replicator` per connection this
 //! node dialed to a peer host; cross-connection notices (`Changed` to every connection and
 //! replicator, `Relay` to every other connection), bounded sweeps, Hello deadlines, the
-//! connection cap and timers. The async driver and the simulator only move bytes and call `tick`
+//! connection cap and timers. The node's driver and the simulator only move bytes and call `tick`
 //! when `next_due` says.
 
 use crate::replicate::Replicator;

@@ -20,12 +20,6 @@ osis-label.workspace = true
 osis-proto.workspace = true
 osis-store.workspace = true
 osis-transport.workspace = true
-tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
-
-[features]
-default = ["driver"]
-# The async driver and network adapter (tokio); off, the crate is the sans-I/O store and hub.
-driver = ["dep:tokio"]

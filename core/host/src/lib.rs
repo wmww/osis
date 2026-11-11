@@ -1,15 +1,12 @@
 //! osis-host: hosting, a node storing and serving labels it need not read (spec/sync.md §4-§9):
 //! `HostStore` (osis-proto's `LabelStore` over its own osis-store `Store`, removals shredded,
-//! with the `HostPolicy` and the admission), `Hub` (sans-I/O: a serving session per connection, cross-connection
-//! notices, sweeps, push replication to peer hosts) and the async `driver` over any
-//! osis-transport `Transport` (feature `driver`, default). The node runs it from its `host^.0`
-//! (`HostConfig`, public data only); osis-node depends on it, never the reverse: hosting reaches
-//! no engine, key or sync state.
+//! with the `HostPolicy` and the admission) and `Hub` (sans-I/O: a serving session per
+//! connection, cross-connection notices, sweeps, push replication to peer hosts). The node's
+//! driver drives the hub in its own loop from its `host^.0` (`HostConfig`, public data only);
+//! osis-node depends on it, never the reverse: hosting reaches no engine, key or sync state.
 //! Layer 6 (notes/architecture.md). Notes: notes/serving.md.
 #![forbid(unsafe_code)]
 
-#[cfg(feature = "driver")]
-pub mod driver;
 pub mod hub;
 pub mod replicate;
 pub mod store;
@@ -18,8 +15,6 @@ use osis_base::LabelId;
 use osis_label::Address;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[cfg(feature = "driver")]
-pub use driver::{Control, Endpoint, Log, run};
 pub use hub::{ConnId, Hub, HubOutput};
 pub use replicate::Replicator;
 pub use store::{HostStore, DEPOSIT_ENTRY_BYTES, HostPolicy, Swept, Totals};

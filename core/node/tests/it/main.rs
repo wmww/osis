@@ -28,6 +28,8 @@ mod growth;
 mod finalize;
 #[cfg(feature = "driver")]
 mod driver;
+#[cfg(feature = "driver")]
+mod hub_loop;
 mod encodings;
 mod ephemeral;
 mod flows;

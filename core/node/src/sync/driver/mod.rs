@@ -9,15 +9,19 @@
 //! `Action`. Engine calls run under `block_in_place` on a multi-thread runtime. The engine lives
 //! in a `Shared`: owned by the driver (`run`), or shared with the app (`run_shared`: the `osis` handle
 //! keeps it behind its own lock and hands the driver the actions of its calls).
-//! While the node hosts (`Action::Host`, from its `host^.0`) the driver runs osis-host's driver
-//! as a task beside it over the same transport: its listeners use the host secret, its store is
-//! its own osis-store `Store`, opened by the holder (`Shared::host_store`), and the node's own dials of the host address go to it
-//! over an in-process link pair, no socket (notes/serving.md, Hosting in the node).
+//! While the node hosts (`Action::Host`, from its `host^.0`) the driver also drives osis-host's
+//! sans-I/O `Hub` in this loop (`hub`): its listeners use the host secret, its store is its own
+//! osis-store `Store`, opened by the holder (`Shared::host_store`), and the node's own dials of
+//! the host address reach it over an in-process link pair, no socket (notes/serving.md, Hosting
+//! in the node).
+
+mod hub;
 
 use super::{Action, ConnId, Event, HostStatus, SyncEngine};
 use osis_base::Clock;
 use osis_crypto::RngCore;
-use osis_host::{HostConfig, driver as host};
+use hub::{HubEv, HubRun};
+use osis_host::HostConfig;
 use osis_transport::link::{self, Link, LinkTx, blocking};
 use osis_transport::lan::Announce;
 use osis_transport::{Address, ListenConfig, Listener, StaticSecret, Transport};
@@ -213,13 +217,6 @@ fn open_host_store(shared: &dyn Shared, key: &[u8; 32]) -> Result<osis_store::St
     Ok(s)
 }
 
-/// The host task while the node hosts.
-struct HostTask {
-    cfg: HostConfig,
-    ctl: mpsc::Sender<host::Control>,
-    task: JoinHandle<osis_host::Hub>,
-}
-
 /// A holder of the engine itself (`run`).
 pub struct Owned(std::sync::Mutex<SyncEngine>);
 
@@ -316,12 +313,15 @@ struct Driver<T: Transport, H: Shared> {
     relisten_at: Option<tokio::time::Instant>,
     /// Sessions each listener accepted, by its key: they close with it.
     served_by: HashMap<[u8; 32], Vec<ConnId>>,
-    /// The running host, and a config change for it not yet carried out (`host_update`).
-    host: Option<HostTask>,
+    /// The running hub, and a config change for it not yet carried out (`host_update`).
+    host: Option<HubRun>,
     host_want: Option<Option<Box<HostConfig>>>,
-    /// The control channel of a host about to start: dials of its address made before it runs
-    /// wait there.
-    host_chan: Option<(mpsc::Sender<host::Control>, mpsc::Receiver<host::Control>)>,
+    /// The node's own sessions to a host about to start (dials of its address made before it
+    /// runs): served once it does, dropped (closed) if it does not.
+    host_pending: Vec<Link>,
+    /// The next hub connection ID and run tag (`HubRun::start`).
+    hub_next: u64,
+    hub_tx: mpsc::UnboundedSender<HubEv>,
 }
 
 impl<T: Transport, H: Shared> Driver<T, H> {
@@ -369,19 +369,20 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                     let t = self.transport.clone();
                     let ev = self.ev_tx.clone();
                     let addr = Address { url: address.url, key: address.key };
-                    let own = self.own_host(&addr.key);
+                    // the host this node runs: an in-process session with an ephemeral key
+                    let own = self.own_host(&addr.key).then(|| {
+                        let mut k = [0u8; 32];
+                        osis_crypto::OsRng.fill_bytes(&mut k);
+                        let (mine, theirs) = link::pair(k, addr.key);
+                        match self.host.as_mut().filter(|h| h.cfg.key == addr.key) {
+                            Some(h) => h.accept(theirs),
+                            None => self.host_pending.push(theirs),
+                        }
+                        mine
+                    });
                     let task = tokio::spawn(async move {
                         let dialed = match own {
-                            // the host this node runs: an in-process session with an ephemeral key
-                            Some(ctl) => {
-                                let mut k = [0u8; 32];
-                                osis_crypto::OsRng.fill_bytes(&mut k);
-                                let (mine, theirs) = link::pair(k, addr.key);
-                                match ctl.send(host::Control::Accept(theirs)).await {
-                                    Ok(()) => Ok(mine),
-                                    Err(_) => Err("own host stopped".to_string()),
-                                }
-                            }
+                            Some(mine) => Ok(mine),
                             None => link::dial(&*t, &addr, None, FINISH_WAIT).await.map_err(|e| e.to_string()),
                         };
                         let link = match dialed {
@@ -842,13 +843,16 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         true
     }
 
-    /// The control channel of the host this node runs (or is about to start) under `key`.
-    fn own_host(&mut self, key: &[u8; 32]) -> Option<mpsc::Sender<host::Control>> {
-        if let Some(h) = self.host.as_ref().filter(|h| h.cfg.key == *key) {
-            return Some(h.ctl.clone());
-        }
-        let Some(Some(c)) = &self.host_want else { return None };
-        (c.key == *key).then(|| self.host_chan.get_or_insert_with(|| mpsc::channel(64)).0.clone())
+    /// Whether `key` is the host this node runs or is about to start.
+    fn own_host(&self, key: &[u8; 32]) -> bool {
+        self.host.as_ref().is_some_and(|h| h.cfg.key == *key) || matches!(&self.host_want, Some(Some(c)) if c.key == *key)
+    }
+
+    /// Stops the hub (closing its connections); returns it.
+    fn host_stop(&mut self) -> Option<osis_host::Hub> {
+        let (hub, next) = self.host.take()?.stop();
+        self.hub_next = next;
+        Some(hub)
     }
 
     /// Carries out the last `Action::Host`: stops the host, starts it, or changes it in place
@@ -856,13 +860,10 @@ impl<T: Transport, H: Shared> Driver<T, H> {
     async fn host_update(&mut self) {
         let Some(want) = self.host_want.take() else { return };
         // dials waiting for a host that does not start fail
-        let chan = self.host_chan.take();
+        let pending = std::mem::take(&mut self.host_pending);
         let Some(cfg) = want else {
-            if let Some(h) = self.host.take() {
-                let _ = h.ctl.send(host::Control::Shutdown).await;
-                // the hub, and with it the host store, closes here
-                drop(h.task.await);
-            }
+            // the hub, and with it the host store, closes here
+            drop(self.host_stop());
             // hosting stopped (not the driver): the host store goes with the host secret
             if self.read(|s| s.host_key().is_none()) == Some(true) {
                 let shared = &self.shared;
@@ -876,21 +877,14 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         if let Some(h) = self.host.as_mut()
             && (HostConfig { admission: cfg.admission.clone(), caps: cfg.caps.clone(), ..h.cfg.clone() }) == cfg
         {
-            let _ = h.ctl.send(host::Control::Admit(cfg.admission.clone(), cfg.caps.clone())).await;
+            h.hub_mut().store_mut().set_admission(cfg.admission.clone(), cfg.caps.clone());
             h.cfg = cfg;
             return;
         }
         // a config whose key is no longer the node's (hosting stopped and maybe started again
         // since it was emitted): the newer `Action::Host` is on its way
         let Some(Some(secret)) = self.read(|s| s.host_secret_for(&cfg.key).map(|x| transport_secret(&x))) else { return };
-        let hub = match self.host.take() {
-            Some(h) => {
-                let _ = h.ctl.send(host::Control::Shutdown).await;
-                h.task.await.ok()
-            }
-            None => None,
-        };
-        let hub = match hub {
+        let hub = match self.host_stop() {
             Some(mut hub) if hub.static_key() == cfg.key => {
                 hub.store_mut().set_policy(cfg.policy.clone());
                 hub
@@ -920,10 +914,11 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 Err(e) => return self.host_status(HostStatus::Failed(format!("listen {url}: {e}"))),
             }
         }
-        let (ctl, rx) = chan.unwrap_or_else(|| mpsc::channel(64));
-        let ep = host::Endpoint { transport: self.transport.clone(), listeners, secret };
-        let task = tokio::spawn(host::run(hub, ep, cfg.replicate.clone(), self.clock.clone(), rx, self.log.clone()));
-        self.host = Some(HostTask { cfg, ctl, task });
+        let mut run = HubRun::start(cfg, hub, self.hub_next, &self.transport, listeners, secret, self.clock.clone(), self.log.clone(), self.hub_tx.clone());
+        for l in pending {
+            run.accept(l);
+        }
+        self.host = Some(run);
         self.host_status(HostStatus::Listening(addrs));
     }
 
@@ -987,6 +982,9 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
     let (link_tx, mut link_rx) = mpsc::channel::<([u8; 32], Link)>(64);
     let (lan_tx, mut lan_rx) = mpsc::channel(64);
     let (net_tx, mut net_rx) = mpsc::channel::<()>(1);
+    // unbounded, yet at most a read and an end per hub connection, a link per dial task and the
+    // listeners' accepts (`link::serve`'s slots)
+    let (hub_tx, mut hub_rx) = mpsc::unbounded_channel();
     let mut max = 0;
     let mut client_pending = 0;
     let _ = shared.with(&mut |s| {
@@ -1019,7 +1017,9 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
         served_by: HashMap::new(),
         host: None,
         host_want: None,
-        host_chan: None,
+        host_pending: Vec::new(),
+        hub_next: 1,
+        hub_tx,
     };
     for l in listeners {
         d.serve(l);
@@ -1035,6 +1035,8 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
     while !d.gone {
         let idle = d.idle();
         let lan_due = d.lan_due();
+        let hub_idle = d.host.as_ref().map(HubRun::idle);
+        let hub_waiting = d.host.as_ref().is_some_and(HubRun::waiting);
         // timers wait while control has a message: a `Shutdown` queued just before the holder's
         // runtime shuts down (the task resuming after an engine call's `block_in_place`) is
         // seen before a timer of the shut-down runtime is polled (tokio panics)
@@ -1050,6 +1052,25 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
             _ = sleep_until(lan_due), if quiet => d.lan_check().await,
             Some((a, from)) = lan_rx.recv() => d.call(&mut |s| s.lan_seen(&a, from).1),
             Some(()) = net_rx.recv() => d.lan_rejoin(false).await,
+            Some(ev) = hub_rx.recv() => {
+                if let Some(h) = d.host.as_mut() {
+                    h.event(ev);
+                }
+            }
+            () = std::future::ready(()), if hub_waiting => {
+                // every read that arrived takes its place in the turns first
+                if let Some(h) = d.host.as_mut() {
+                    while let Ok(ev) = hub_rx.try_recv() {
+                        h.event(ev);
+                    }
+                    h.serve();
+                }
+            }
+            _ = sleep_for(hub_idle), if quiet => {
+                if let Some(h) = d.host.as_mut() {
+                    h.tick();
+                }
+            }
             _ = sleep_until(d.relisten_at), if quiet => {}
             _ = tokio::time::sleep(idle), if quiet => {
                 d.wake = None;
@@ -1073,6 +1094,14 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
         d.close(id);
     }
     d.shared
+}
+
+/// For `d`, else never.
+async fn sleep_for(d: Option<Duration>) {
+    match d {
+        Some(d) => tokio::time::sleep(d).await,
+        None => std::future::pending::<()>().await,
+    }
 }
 
 /// Until `at`, else never.
