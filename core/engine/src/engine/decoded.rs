@@ -1,23 +1,24 @@
 //! Stored commit records (their blobs, spec/wire.md §4) decoded once per write of the record (`Core::decoded`).
 //!
 //! A record's blob and each of its decoded parts are functions of the record's bytes alone (a
-//! part also of its header, its thing's dedup secret and the blobs its pages name, all fixed by
-//! the commit's ID), so they are kept from the first read until the record is written again or
-//! removed (`Tx::put_commit`, `Tx::remove_commit`: the only writers) or a changing transaction
-//! rolls back.
+//! part also of its header and its thing's dedup secret, both fixed by the commit's ID, and of
+//! the pages its links name, fixed by each link's blob ID and hash), so they are kept from the
+//! first read until the record is written again or removed (`Tx::put_commit`,
+//! `Tx::remove_commit`: the only writers) or a changing transaction rolls back.
 //!
 //! Debug builds keep with each entry the bytes it was decoded from and compare them at every hit
 //! with the bytes read now: the record's stored bytes, the part in the record read. A stale or
 //! misfiled entry differs; decoding the same bytes again would only repeat a pure function, and
-//! an entry is never changed in place (`Arc`).
+//! an entry is never changed in place (`Arc`). Whether a part's pages are still held is not this
+//! cache's to check: `apply::check_rebuilt` reads held bodies with their pages past it.
 
 use osis_base::CommitId;
 use osis_commit::{CommitBlob, Decoded, Part};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-/// Bytes `DecodedCommits` may hold: records by their blob's encoded parts, decoded parts by
-/// `Fragment::approx_bytes`. Performance switch: past it everything kept is forgotten. 0: every
+/// Bytes `DecodedCommits` may hold: records by their stored bytes, decoded parts by
+/// `Fragment::approx_bytes`, each with the bytes debug builds keep beside it. Performance switch: past it everything kept is forgotten. 0: every
 /// read decodes its record and parts from the store; infinity: every commit read since the
 /// open stays decoded in memory.
 const DECODED_MAX: usize = 16 << 20;
@@ -64,19 +65,23 @@ impl DecodedCommits {
         Some(k.decoded.clone())
     }
 
-    /// Keeps `blob`, decoded from the record's stored bytes `_stored`.
-    pub(crate) fn keep_record(&mut self, id: CommitId, blob: Arc<CommitBlob>, _stored: &[u8]) {
-        let n = blob.parts.iter().fold(0usize, |n, p| n.saturating_add(p.delta.len()));
-        if self.room(n) {
-            self.records.insert(id, KeptRecord { blob, #[cfg(debug_assertions)] stored: _stored.to_vec() });
+    /// Keeps `blob`, decoded from the record's stored bytes `stored`.
+    pub(crate) fn keep_record(&mut self, id: CommitId, blob: Arc<CommitBlob>, stored: &[u8]) {
+        if self.room(stored.len().saturating_add(Self::debug_copy(stored.len()))) {
+            self.records.insert(id, KeptRecord { blob, #[cfg(debug_assertions)] stored: stored.to_vec() });
         }
     }
 
     /// Keeps `decoded`, decoded from `p`.
     pub(crate) fn keep_part(&mut self, id: CommitId, p: &Part, decoded: Arc<Decoded>) {
-        if self.room(decoded.fragment().approx_bytes()) {
+        if self.room(decoded.fragment().approx_bytes().saturating_add(Self::debug_copy(p.delta.len()))) {
             self.parts.entry(id).or_default().insert(p.ai, KeptPart { decoded, #[cfg(debug_assertions)] from: p.clone() });
         }
+    }
+
+    /// The bytes debug builds keep beside an entry decoded from `n` bytes (none in release).
+    fn debug_copy(n: usize) -> usize {
+        if cfg!(debug_assertions) { n } else { 0 }
     }
 
     /// Whether `n` more bytes are kept, forgetting everything first when they do not fit beside
