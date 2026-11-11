@@ -8,8 +8,10 @@
 
 use super::account::things_of;
 use super::Done;
-use crate::engine::{Engine, Tx, records};
+use crate::engine::write::writable_now;
+use crate::engine::{Engine, Step, Tx, records};
 use crate::error::{Error, Result};
+use crate::events::{Diagnostic, DiagnosticKind};
 use crate::Mutation;
 use osis_base::format::CHUNK_THRESHOLD;
 use osis_base::{CommitId, Tid, Value};
@@ -193,14 +195,24 @@ pub(crate) fn note_rotation_due(tx: &mut Tx<'_>, r: &CommitId) -> Result<()> {
 /// Answers every account's rotation not yet answered (`Indexes::rotations_due`), each once: a
 /// rotation of this node's account with its listing, another account's with its addenda as a
 /// writer (spec/permissions.md §5.5, Listings, Addenda against a rotation). One waits while it is
-/// pending, while the open epoch's seed is not here to sign at, or while an addendum's thing's
-/// delete keys are not here; a void one is answered by nothing.
+/// pending, while the open epoch's seed is not here to sign at, or while a thing it writes on may
+/// be written only later (`write::MayWrite::Later`: its minting or delete keys are not here); a
+/// void one is answered by nothing. Each answer is one step (`Tx::step`): one that fails leaves
+/// nothing, is reported (`DiagnosticKind::OwnWriteFailed`) and stays due, and the transaction
+/// goes on, so a receive never fails for this node's own answer.
 pub(crate) fn answer_rotations(tx: &mut Tx<'_>) -> Result<()> {
     let due: Vec<CommitId> = tx.core.ix.rotations_due.iter().copied().collect();
     for r in due {
-        if answer_rotation(tx, &r)? {
-            tx.core.ix.rotations_due.remove(&r);
-            tx.txn.remove_local(&[records::ROTATIONS_DUE, &r.0[..]].concat(), Shred::No)?;
+        let answered = tx.step(Step::Rotation, |tx| {
+            if answer_rotation(tx, &r)? {
+                tx.core.ix.rotations_due.remove(&r);
+                tx.txn.remove_local(&[records::ROTATIONS_DUE, &r.0[..]].concat(), Shred::No)?;
+            }
+            Ok(())
+        });
+        if let Err(e) = answered {
+            let now = tx.now();
+            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::OwnWriteFailed, tids: Vec::new(), commit: Some(r), peer: None, detail: e.to_string() }, now);
         }
     }
     Ok(())
@@ -256,7 +268,8 @@ fn answer_rotation(tx: &mut Tx<'_>, r: &CommitId) -> Result<bool> {
 
 /// A node of account `p` answers its rotation `r` with a listing: per thing, the commits of `p`
 /// at the epochs `r` closes that no word held names, this node's own (by inner signature) and
-/// others' by the cutoff (spec/permissions.md §5.5, Listings).
+/// others' by the cutoff (spec/permissions.md §5.5, Listings). A listing needs no role on a thing;
+/// one it may write on only later waits whole, one that is gone here is left out.
 fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitId) -> Result<bool> {
     if tx.core.accounts.get(&p).is_none_or(|a| !tx.core.of_devices(&a.devices)) {
         return Ok(true);
@@ -270,13 +283,14 @@ fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitI
             names.entry(t).or_default().insert(c);
         }
     }
-    if names.is_empty() {
+    let Some(on) = writable_now(tx, p, names, "listing.0", None)? else { return Ok(false) };
+    if on.is_empty() {
         return Ok(true);
     }
     let mut m = Mutation::new();
     m.sign_as(p);
     m.unchecked();
-    for (t, ids) in names {
+    for (t, ids) in on {
         let set = Value::Set(ids.iter().map(|c| Value::bytes(&c.0)).collect());
         m.op(t, &ct::LISTING, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(set) })?;
     }
@@ -286,8 +300,8 @@ fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitI
 
 /// A writer of a thing answers another account's rotation `r` with an addendum on each thing it
 /// writes: the account's plain-content commits there it names by the cutoff (spec/permissions.md
-/// §5.5, Addenda against a rotation), one addendum per thing, so none crosses a label. Waits for a
-/// thing whose delete keys are not here yet.
+/// §5.5, Addenda against a rotation), one addendum per thing, so none crosses a label. Waits whole
+/// for a thing it may write on only later (`write::may_write`).
 fn witness(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitId) -> Result<bool> {
     let Some(me) = tx.core.member().filter(|_| tx.core.addenda_on) else { return Ok(true) };
     let mut out: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
@@ -297,17 +311,11 @@ fn witness(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitI
             continue;
         }
         for t in w.aspects.iter().filter(|a| super::addenda::plain_ak(&a.ak)).map(|a| a.tid).chain((w.actor != w.author).then_some(w.actor)) {
-            if tx.core.role_now(&me, &t) >= Some(osis_base::Role::Write) {
-                out.entry(t).or_default().insert(c);
-            }
+            out.entry(t).or_default().insert(c);
         }
     }
-    for n in out.keys() {
-        if !crate::engine::secrets::holds_delete_keys_in(tx, n)? {
-            return Ok(false);
-        }
-    }
-    for (n, lists) in out {
+    let Some(on) = writable_now(tx, me, out, ct::ADDENDA_AK, Some(osis_base::Role::Write))? else { return Ok(false) };
+    for (n, lists) in on {
         let mut mu = Mutation::new();
         mu.op(n, &ct::ADDENDA, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(ct::Frontier { commits: lists }.to_value()) })?;
         Engine::commit_tx(tx, mu)?;

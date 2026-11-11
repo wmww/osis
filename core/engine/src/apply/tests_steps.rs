@@ -192,7 +192,7 @@ fn failing_answer_never_blocks_ingest() {
     assert!(e.core.ix.commits.contains_key(&c), "ingest goes on");
     assert_eq!(e.get(&t, &ak("x:a.0")).unwrap(), Some(Value::Int(9)));
     assert!(e.core.ix.addenda_due.contains(&r), "still due");
-    let reported: Vec<_> = rx.try_iter().filter_map(|e| if let Event::Diagnostic(d) = e { Some(d) } else { None }).filter(|d| d.kind == DiagnosticKind::AddendaFailed).collect();
+    let reported: Vec<_> = rx.try_iter().filter_map(|e| if let Event::Diagnostic(d) = e { Some(d) } else { None }).filter(|d| d.kind == DiagnosticKind::OwnWriteFailed).collect();
     assert_eq!(reported.len(), 1, "reported once: {reported:?}");
     assert_eq!(reported[0].commit, Some(r));
     e.core.step_fault = None;

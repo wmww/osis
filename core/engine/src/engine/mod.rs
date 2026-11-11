@@ -689,6 +689,11 @@ indexes! {
     pub departures: JMap<Tid, Vec<osis_keys::Departure>>,
     /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
     pub hint_candidates: JMap<CommitId, Vec<(Tid, osis_base::Value)>>,
+    /// Things holding a purge-on-replace body this node would cover but may not write on yet
+    /// (`MayWrite::Later`: their minting or delete keys are not here), under every thing on
+    /// their record chain: what may move them (`retention::replace::wake_covers`). Not
+    /// persisted: an open judges every held purge-on-replace aspect again (`Core::index_none`).
+    pub cover_waits: JSetMap<Tid, Tid>,
 }
 
 /// The steps run inside a transaction, each applied fully or not at all (`Tx::step`).
@@ -702,6 +707,9 @@ pub(crate) enum Step {
     Answer,
     /// One purge-on-replace cover written (`retention::settle_none`).
     Cover,
+    /// One account rotation answered with this node's listing or addenda
+    /// (`flows::signing::answer_rotations`).
+    Rotation,
 }
 
 /// Tests: after `skip` more steps of kind `site` run, every later one fails (`BadInput`), before
@@ -2925,6 +2933,9 @@ impl Engine {
                     r = r.and_then(|v| crate::retention::settings_changed(&mut tx).map(|_| v));
                 }
                 tx.core.settings_due.clear();
+                if r.is_ok() && !tx.core.ix.cover_waits.is_empty() && !tx.txn.is_memory() {
+                    r = r.and_then(|v| crate::retention::replace::wake_covers(&mut tx).map(|_| v));
+                }
                 if r.is_ok() && !tx.core.none_due.is_empty() {
                     r = r.and_then(|v| crate::retention::settle_none(&mut tx).map(|_| v));
                 }

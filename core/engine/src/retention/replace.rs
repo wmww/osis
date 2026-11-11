@@ -8,13 +8,16 @@
 //! keep the promise. A node without write writes none and drops only under a writer's snapshot. Judged at the end of each transaction over the aspects whose
 //! purge-on-replace bodies, snapshots or roles changed (`Core::none_due`), from what is held then: a
 //! function of the held set, whatever the order things arrived in. "May write" is the snapshot's
-//! own check (`snapshot::snapshot_writer`: role and the thing's delete keys), and a cover it
-//! refuses leaves the body, never fails the transaction. Limit: delete keys arriving last are no
-//! trigger (issues/purge-cover-on-delete-keys.md).
+//! own check (`snapshot::may_snapshot`: role, the thing's minting and delete keys); a writer that
+//! may only later waits (`Indexes::cover_waits`) and is judged again when what it waits for
+//! arrives (`wake_covers`), so the last to arrive of body, replacement, role and keys triggers the
+//! cover. A cover that fails leaves the body and never fails the transaction.
 
 use super::covered;
-use crate::engine::{DropFor, Step, Tx};
-use crate::error::{Error, Result};
+use crate::engine::write::{MayWrite, may_write_on};
+use crate::engine::{Core, DropFor, Step, Tx};
+use crate::error::Result;
+use crate::events::{Diagnostic, DiagnosticKind};
 use osis_base::{Ak, CommitId, Tid, Ts};
 use std::collections::BTreeSet;
 
@@ -112,10 +115,17 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
             }
         }
         // a node that may write a snapshot (every writer holds the right over a `writer` body,
-        // spec/permissions.md §6), judged at the stamp it would carry
+        // spec/permissions.md §6), judged at the stamp it would carry; one that may later waits
+        // for what moves that (`wake_covers`)
         let mut owed = false;
         let ts = tx.core.hlc.peek();
-        if !written.contains(&k) && !uncovered.is_empty() && super::snapshot::snapshot_writer(tx, &tid, &ak, false, ts)?.is_some() {
+        let may = if !written.contains(&k) && !uncovered.is_empty() { super::snapshot::may_snapshot(tx, &tid, &ak, false, ts)? } else { MayWrite::No };
+        match may {
+            MayWrite::Later => await_cover(tx.core, &tid),
+            MayWrite::Yes if tx.core.ix.cover_waits.get(&tid).is_some_and(|w| w.contains(&tid)) => end_wait(tx.core, &tid),
+            _ => {}
+        }
+        if may == MayWrite::Yes {
             for (c, ai) in &uncovered {
                 if under_purge(tx, c, *ai, &tid, &ak, &kept)? {
                     owed = true;
@@ -126,10 +136,11 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
         if owed {
             written.insert(k.clone());
             // the write's own check has the last word (a removal sweep before it moves its stamp
-            // on): a refusal leaves the body to the writers that may, never fails the transaction
-            match tx.step(Step::Cover, |tx| super::snapshot::write_snapshot(tx, &tid, &ak, false)) {
-                Ok(_) | Err(Error::Permission { .. }) => {}
-                Err(e) => return Err(e),
+            // on): a cover that fails leaves nothing and the body to the writers that may, and is
+            // reported, never failing the transaction
+            if let Err(e) = tx.step(Step::Cover, |tx| super::snapshot::write_snapshot(tx, &tid, &ak, false)) {
+                let now = tx.now();
+                tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::OwnWriteFailed, tids: vec![tid], commit: None, peer: None, detail: e.to_string() }, now);
             }
         }
         for (c, ai) in held {
@@ -175,6 +186,60 @@ fn under_purge(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, kep
     }
     tx.core.replaced_reads += 1;
     Ok(super::bounds::dated_replaced_at(tx, &h, c, ai)?.is_some_and(|r| kept.purge_on_replace(r.wall_ms().0)))
+}
+
+/// `t` waits to be written on before this node covers its bodies (`Indexes::cover_waits`).
+fn await_cover(core: &mut Core, t: &Tid) {
+    let chain: Vec<Tid> = core.record_chain(t).filter_map(|s| s.thing()).collect();
+    for a in chain {
+        core.ix.cover_waits.insert(a, *t);
+    }
+}
+
+/// `t` waits no more (`Indexes::cover_waits`).
+fn end_wait(core: &mut Core, t: &Tid) {
+    let chain: Vec<Tid> = core.record_chain(t).filter_map(|s| s.thing()).collect();
+    for a in chain {
+        core.ix.cover_waits.remove(&a, t);
+    }
+}
+
+/// The things waiting in `Indexes::cover_waits` that this transaction may have made writable here:
+/// those with a thing on their record chain whose `created.0`, `keys.0` or `secrets.0` commits,
+/// opened epochs, own keys or delete-key hints changed (the journals of what it changed: O(what
+/// changed), nothing when nothing waits). Each that may be written on now leaves the waits with
+/// its purge-on-replace aspects due (`settle_none`), so whether a writer covers is a function of
+/// the held set, whatever came last (spec/requirements.md Purge on replace).
+pub(crate) fn wake_covers(tx: &mut Tx<'_>) -> Result<()> {
+    // an inbox hint is taken up once its commit applies (`Core::promote_hints`)
+    tx.core.promote_hints();
+    let core = &*tx.core;
+    let mut moved: BTreeSet<Tid> = core.ix.secrets.before().into_keys().copied().collect();
+    moved.extend(core.ix.own_keys.logged());
+    moved.extend(core.ix.delete_hints.before().into_keys().copied());
+    for (id, old) in core.ix.commits.before() {
+        let Some(m) = core.ix.commits.get(id).or(old) else { continue };
+        moved.extend(m.view.aspects.iter().filter(|a| matches!(a.ak.as_str(), "created.0" | "keys.0" | "secrets.0")).map(|a| a.tid));
+    }
+    let woken: BTreeSet<Tid> = moved.iter().filter_map(|a| core.ix.cover_waits.get(a)).flatten().copied().collect();
+    for t in woken {
+        let may = may_write_on(tx, &t)?;
+        end_wait(tx.core, &t);
+        match may {
+            // the chain may have grown (a record arrived): kept under all of it
+            MayWrite::Later => await_cover(tx.core, &t),
+            MayWrite::Yes => {
+                let on: Vec<Ak> = tx.core.ix.by_aspect.range((t, Ak::MIN)..).take_while(|((x, _), _)| *x == t).map(|((_, a), _)| a.clone()).collect();
+                for ak in on {
+                    if super::history::of(tx.core, &t, &ak).purges() {
+                        tx.core.none_due.insert((t, ak));
+                    }
+                }
+            }
+            MayWrite::No => {}
+        }
+    }
+    Ok(())
 }
 
 /// Part `ai` of `c` reached its purge floor (`T_FLOOR`): its aspect is judged again at the end of

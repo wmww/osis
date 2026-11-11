@@ -33,7 +33,7 @@ pub(crate) mod history;
 pub(crate) mod leftover;
 mod pending;
 mod purge;
-mod replace;
+pub(crate) mod replace;
 pub(crate) mod snapshot;
 #[cfg(test)]
 mod oracle;
@@ -1194,57 +1194,72 @@ mod tests {
         assert_eq!(walks(200), w, "walks per judgment grow with the deaths");
     }
 
-    // spec/commits.md §5, spec/crypto.md §7: a writer whose delete keys of the thing are not here
-    // writes nothing on it, so the cover of a replaced purge-on-replace body it holds is left to
-    // the writers that may: the replacement applies there (no refused own snapshot fails the
-    // receive), the replaced body stays, and a writer's cover drops it once it comes.
+    // spec/commits.md §5, spec/crypto.md §7, spec/requirements.md Purge on replace: a writer whose
+    // delete keys of the thing are not here writes nothing on it, so the replacement applies there
+    // (no refused own snapshot fails the receive) and the replaced body stays; once the keys come it
+    // covers it, so the end is the one of the keys coming first: whatever arrives last of body,
+    // replacement, role and keys triggers the cover
     #[test]
-    fn writer_without_delete_keys_leaves_the_cover_spec_commits_5() {
-        let mut lp = LocalPeer::new(3, 961, WallMs(1_700_000_000_000)).unwrap();
-        lp.sync_all().unwrap();
-        let (alice, bob, carol) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
-        let (x, keys) = (Ak::new("x:v.0").unwrap(), Ak::new("keys.0").unwrap());
-        let none = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
-        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
-        // bob writes `t` by a raw edge write: `t` keeps its first admin's secrets
-        let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, alice);
-        m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(bob))], op: Op::Set(edge(Role::Write).to_value()) }).unwrap();
-        lp.peers[0].commit(m).unwrap();
-        let mut m = Mutation::new();
-        m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::PurgeOnReplace)).unwrap();
-        lp.peers[0].commit(m).unwrap();
-        lp.sync(0, 1).unwrap();
-        assert!(lp.peers[1].engine.holds_delete_keys(&t).unwrap());
-        // alice keeps both bodies uncovered (as when her cover is still on its way)
-        lp.peers[0].engine.keep_bodies(true);
-        let mut puts = Vec::new();
-        for v in [1, 2] {
-            lp.advance(1000);
+    fn writer_covers_once_its_delete_keys_come_in_any_order_spec_commits_5() {
+        let end = |keys_first: bool| {
+            let mut lp = LocalPeer::new(3, 961, WallMs(1_700_000_000_000)).unwrap();
+            lp.sync_all().unwrap();
+            let (alice, bob, carol) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+            let (x, keys) = (Ak::new("x:v.0").unwrap(), Ak::new("keys.0").unwrap());
+            let none = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
+            let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
+            // bob writes `t` by a raw edge write: `t` keeps its first admin's secrets
             let mut m = Mutation::new();
-            m.set(t, &x, &Value::Int(v)).unwrap().retention(t, &x, none).unwrap();
-            puts.push(lp.peers[0].commit(m).unwrap().unwrap());
-        }
-        // a first holder by the flow gives `t` secrets of its own, its `keys.0` in that commit:
-        // bob gets the rest, then the two puts
-        lp.peers[0].engine.grant(&t, &carol, &edge(Role::Read)).unwrap();
-        lp.peers[0].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
-        let pks = lp.packages(0).unwrap();
-        let carries = |id: &CommitId| lp.peers[0].engine.header(id).unwrap().aspects.iter().any(|a| a.tid == t && a.ak == keys);
-        let (rest, put_pks): (Vec<_>, Vec<_>) = pks.into_iter().filter(|pk| !carries(&pk.id)).partition(|pk| !puts.contains(&pk.id));
-        for pk in rest.iter().chain(&put_pks) {
-            lp.deliver(1, pk).unwrap();
-        }
-        let e = &mut lp.peers[1].engine;
-        assert!(!e.holds_delete_keys(&t).unwrap(), "bob's write is here, t's delete keys are not");
-        assert_eq!(e.get(&t, &x).unwrap(), Some(Value::Int(2)));
-        assert!(super::held_part(&e.core, &puts[0], &t, &x).is_some(), "no cover here: the replaced body stays");
-        lp.peers[0].engine.keep_bodies(false);
-        lp.peers[0].engine.snapshot(&t, &x).unwrap().unwrap();
-        lp.sync(0, 1).unwrap();
-        let e = &mut lp.peers[1].engine;
-        assert_eq!(e.get(&t, &x).unwrap(), Some(Value::Int(2)));
-        assert!(super::held_part(&e.core, &puts[0], &t, &x).is_none(), "alice's cover drops it");
+            let t = lp.peers[0].engine.new_thing(&mut m, alice);
+            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(bob))], op: Op::Set(edge(Role::Write).to_value()) }).unwrap();
+            lp.peers[0].commit(m).unwrap();
+            let mut m = Mutation::new();
+            m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::PurgeOnReplace)).unwrap();
+            lp.peers[0].commit(m).unwrap();
+            lp.sync(0, 1).unwrap();
+            assert!(lp.peers[1].engine.holds_delete_keys(&t).unwrap());
+            // alice keeps both bodies uncovered (as when her cover is still on its way)
+            lp.peers[0].engine.keep_bodies(true);
+            let mut puts = Vec::new();
+            for v in [1, 2] {
+                lp.advance(1000);
+                let mut m = Mutation::new();
+                m.set(t, &x, &Value::Int(v)).unwrap().retention(t, &x, none).unwrap();
+                puts.push(lp.peers[0].commit(m).unwrap().unwrap());
+            }
+            // a first holder by the flow gives `t` secrets of its own, its `keys.0` in that
+            // commit: bob gets the rest, then the two puts and the keys in either order
+            lp.peers[0].engine.grant(&t, &carol, &edge(Role::Read)).unwrap();
+            lp.peers[0].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
+            let pks = lp.packages(0).unwrap();
+            let carries = |id: &CommitId| lp.peers[0].engine.header(id).unwrap().aspects.iter().any(|a| a.tid == t && a.ak == keys);
+            let (key_pks, other): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| carries(&pk.id));
+            let (put_pks, rest): (Vec<_>, Vec<_>) = other.into_iter().partition(|pk| puts.contains(&pk.id));
+            for pk in &rest {
+                lp.deliver(1, pk).unwrap();
+            }
+            let (first, last) = if keys_first { (&key_pks, &put_pks) } else { (&put_pks, &key_pks) };
+            for pk in first {
+                lp.deliver(1, pk).unwrap();
+            }
+            if !keys_first {
+                let e = &mut lp.peers[1].engine;
+                assert!(!e.holds_delete_keys(&t).unwrap(), "bob's write is here, t's delete keys are not");
+                assert_eq!(e.get(&t, &x).unwrap(), Some(Value::Int(2)));
+                assert!(super::held_part(&e.core, &puts[0], &t, &x).is_some(), "no cover yet: the replaced body stays");
+            }
+            for pk in last {
+                lp.deliver(1, pk).unwrap();
+            }
+            let e = &mut lp.peers[1].engine;
+            let held: Vec<bool> = puts.iter().map(|c| super::held_part(&e.core, c, &t, &x).is_some()).collect();
+            let own = e.core.ix.snapshots.get(&(t, x.clone())).into_iter().flatten().filter(|s| e.core.ix.commits.get(&s.1).is_some_and(|m| m.view.author == bob)).count();
+            (e.get(&t, &x).unwrap(), held, own)
+        };
+        let keys_first = end(true);
+        // the live put is read on its own (`bounds::read_alone`): only the replaced one goes
+        assert_eq!(keys_first, (Some(Value::Int(2)), vec![false, true], 1), "bob covers on the replacement");
+        assert_eq!(end(false), keys_first, "bob covers once the keys come");
     }
 
     // spec/sync.md §3 Entitlement: a thing's reader actor is the nearest actor up its record

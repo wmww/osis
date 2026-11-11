@@ -143,6 +143,52 @@ fn an_offline_siblings_write_counts_by_its_listing_spec_permissions_5_5() {
     assert_eq!(read(&mut lp, 3, t), Some(Value::Str("offline".into())), "named by its author's listing");
 }
 
+// spec/permissions.md §5.5 (Listings), spec/crypto.md §7: a node of the account whose listing goes
+// on a thing whose delete keys are not here yet takes the rotation in (its own answer never fails
+// the receive) and writes the listing once the keys come
+#[test]
+fn a_listing_waits_for_its_things_delete_keys_spec_permissions_5_5() {
+    let (mut lp, a, _) = world(4, 3);
+    let keys = Ak::new("keys.0").unwrap();
+    // the outsider's thing `u`: the account writes there by a raw edge write, then a grant by the
+    // flow gives `u` secrets of its own, its `keys.0` in that commit
+    let q = lp.peers[3].engine.me();
+    let mut m = crate::Mutation::new();
+    let u = lp.peers[3].engine.new_thing(&mut m, q);
+    m.op(u, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(a.account))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
+    lp.peers[3].commit(m).unwrap();
+    lp.peers[3].engine.grant(&u, &a.account, &edge(Role::Write)).unwrap();
+    let pks = lp.packages(3).unwrap();
+    let carries = |id: &CommitId| lp.peers[3].engine.header(id).unwrap().aspects.iter().any(|h| h.tid == u && h.ak == keys);
+    let (key_pks, rest): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| carries(&pk.id));
+    for pk in rest.iter().chain(&key_pks) {
+        lp.deliver(1, pk).unwrap();
+    }
+    for pk in &rest {
+        lp.deliver(2, pk).unwrap();
+    }
+    assert!(!lp.peers[2].engine.holds_delete_keys(&u).unwrap(), "u's delete keys are not at node 2");
+    let w = write(&mut lp, 1, u, "sibling");
+    send(&mut lp, 1, 2, &[w]);
+    lp.advance(10);
+    // received before the rotation (the cutoff), and the rotator never received it: node 2 owes a
+    // listing on `u`
+    let done = remove(&mut lp, 0, a.devices, 1);
+    send(&mut lp, 0, 2, &done.commits);
+    let listing_on = |lp: &LocalPeer| {
+        let e = &lp.peers[2].engine;
+        e.commit_ids().into_iter().find(|c| e.header(c).is_some_and(|h| h.author == a.account && h.aspects.iter().any(|x| x.ak.as_str() == "listing.0" && x.tid == u)))
+    };
+    assert_eq!(listing_on(&lp), None, "the listing waits for u's delete keys");
+    for pk in &key_pks {
+        lp.deliver(2, pk).unwrap();
+    }
+    assert!(listing_on(&lp).is_some(), "written once the keys came");
+    let named = lp.peers[2].engine.get(&u, &Ak::new("listing.0").unwrap()).unwrap();
+    let Some(Value::Map(entries)) = named else { panic!("{named:?}") };
+    assert!(entries.values().any(|s| matches!(s, Value::Set(ids) if ids.contains(&Value::bytes(&w.0)))), "it names the sibling's write: {entries:?}");
+}
+
 // spec/permissions.md §5.5 (Addenda against a rotation): a writer of the thing that received the
 // account's write before the rotation vouches for it, for the readers that hold no word of the
 // account naming it

@@ -14,7 +14,7 @@ use osis_perm::Point;
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use osis_store::Shred;
-use crate::engine::secrets::holds_delete_keys_in;
+use crate::engine::write::writable_now;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Whether a part on `ak` is plain content an addendum may list (spec/permissions.md §5.2,
@@ -27,10 +27,11 @@ pub(crate) fn plain_ak(ak: &osis_base::Ak) -> bool {
 /// Answers every explicit demotion applied here and not yet answered (`Indexes::addenda_due`)
 /// with this node's addenda, in this transaction (so a witness lists what it still holds), each
 /// once: an answered removal leaves the due set, and an addendum is a content commit, never a
-/// removal to answer. A removal whose answer goes on a thing whose delete keys this node does not
-/// hold yet stays due, answered whole by the first transaction that holds them (spec/permissions.md
-/// §5.2, Addenda: "writes it once it can"). Each answer is one step (`Tx::step`): one that fails
-/// leaves nothing, is reported (`DiagnosticKind::AddendaFailed`) and stays due, and the
+/// removal to answer. A removal whose answer goes on a thing this node may write on only later
+/// (its minting or delete keys not here, `write::MayWrite::Later`) stays due, answered whole by
+/// the first transaction that holds them (spec/permissions.md §5.2, Addenda: "writes it once it
+/// can"). Each answer is one step (`Tx::step`): one that fails
+/// leaves nothing, is reported (`DiagnosticKind::OwnWriteFailed`) and stays due, and the
 /// transaction goes on.
 pub(crate) fn answer_removals(tx: &mut Tx<'_>) -> Result<()> {
     if !tx.core.addenda_on {
@@ -41,7 +42,7 @@ pub(crate) fn answer_removals(tx: &mut Tx<'_>) -> Result<()> {
     for r in due {
         if let Err(e) = tx.step(Step::Answer, |tx| answer_removal(tx, &r, me)) {
             let now = tx.now();
-            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::AddendaFailed, tids: Vec::new(), commit: Some(r), peer: None, detail: e.to_string() }, now);
+            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::OwnWriteFailed, tids: Vec::new(), commit: Some(r), peer: None, detail: e.to_string() }, now);
         }
     }
     Ok(())
@@ -64,7 +65,7 @@ fn answer_removal(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<()> {
 }
 
 /// This node's addenda to removal `r`: per thing, what it lists (`answer_removals`). `None`: a
-/// thing to answer on whose delete keys this node does not hold yet.
+/// thing to answer on that this node may write on only later (`write::may_write`).
 fn answer(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<Option<BTreeMap<Tid, BTreeSet<CommitId>>>> {
     let r = *r;
     let mut out: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
@@ -80,7 +81,7 @@ fn answer(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<Option<BTreeMap<Tid,
         }
     }
     for (x, n) in demoted {
-        if x == me || tx.core.role_now(&me, &n) < Some(Role::Write) {
+        if x == me {
             continue;
         }
         let core = &*tx.core;
@@ -101,10 +102,6 @@ fn answer(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<Option<BTreeMap<Tid,
             out.entry(n).or_default().insert(*c);
         }
     }
-    for n in out.keys() {
-        if !holds_delete_keys_in(tx, n)? {
-            return Ok(None);
-        }
-    }
-    Ok(Some(out))
+    // one thing this node may write on only later waits the whole answer
+    writable_now(tx, me, out, ct::ADDENDA_AK, Some(Role::Write))
 }

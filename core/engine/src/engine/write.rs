@@ -311,6 +311,60 @@ pub(crate) fn check_role_with(core: &Core, node: Tid, records: Records<'_>, tid:
     if role >= Some(need) && (ak == CREATED.ak() || core.skip_writer_rules || within_depth(core, records, tid)) { Ok(()) } else { Err(Error::Permission { tid: *tid }) }
 }
 
+/// Whether this node may write on a held thing now (`may_write`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MayWrite {
+    Yes,
+    /// Not yet: the thing's minting or the delete keys every write on it lists are not here
+    /// (spec/crypto.md §7); they may arrive.
+    Later,
+    /// Not on what is held: the thing does not exist here (or ended), or the node lacks the role.
+    No,
+}
+
+/// Whether `node` may write `ak` of held thing `tid` at `ts` needing role `need` (`None`: a write
+/// needing none, a listing): the checks `commit_in` and `framing_for` make of a write there, asked
+/// first by every write this node makes on its own (answers, covers), so a write it may not make
+/// yet waits and never fails the transaction around it.
+pub(crate) fn may_write(tx: &mut Tx<'_>, node: Tid, tid: &Tid, ak: &str, need: Option<Role>, ts: Ts) -> Result<MayWrite> {
+    if !tx.core.exists(tid) {
+        return Ok(MayWrite::No);
+    }
+    if let Some(need) = need
+        && check_role_with(tx.core, node, &|_| None, tid, ak, need, ts).is_err()
+    {
+        return Ok(MayWrite::No);
+    }
+    may_write_on(tx, tid)
+}
+
+/// `by_thing` with only the things `node` may write `ak` on now, needing `need` (`may_write`, at the
+/// next stamp): `None` while one of them may be written on only later, so a write this node owes
+/// across things (an answer) waits whole.
+pub(crate) fn writable_now<V>(tx: &mut Tx<'_>, node: Tid, by_thing: BTreeMap<Tid, V>, ak: &str, need: Option<Role>) -> Result<Option<BTreeMap<Tid, V>>> {
+    let ts = tx.core.hlc.peek();
+    let mut out = BTreeMap::new();
+    for (t, v) in by_thing {
+        match may_write(tx, node, &t, ak, need, ts)? {
+            MayWrite::Yes => {
+                out.insert(t, v);
+            }
+            MayWrite::Later => return Ok(None),
+            MayWrite::No => {}
+        }
+    }
+    Ok(Some(out))
+}
+
+/// `may_write` but for the role: whether the thing takes writes here (`Core::writable`) and this
+/// node holds the delete keys every write on it lists.
+pub(crate) fn may_write_on(tx: &mut Tx<'_>, tid: &Tid) -> Result<MayWrite> {
+    if !tx.core.exists(tid) {
+        return Ok(MayWrite::No);
+    }
+    Ok(if tx.core.writable(tid) && super::secrets::holds_delete_keys_in(tx, tid)? { MayWrite::Yes } else { MayWrite::Later })
+}
+
 /// May `node` act for `actor` at `ts`: it is the actor or holds write on it? A receiver judges a
 /// commit invalid otherwise (`validity::acts_for`, spec/permissions.md §5.2).
 pub(crate) fn check_acts(core: &Core, node: Tid, records: Records<'_>, actor: &Tid, ts: Ts) -> Result<()> {

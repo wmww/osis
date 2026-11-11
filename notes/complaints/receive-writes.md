@@ -1,0 +1,4 @@
+# receive-writes
+- A listing test that names another node's commit needs `lp.advance` between receiving it and the rotation: the cutoff compares `received` strictly against the closer's, and LocalPeer's clock does not move per delivery, so a same-ms receive is silently not listed (no listing at all, nothing due).
+- Delete-key inputs are spread over many indexes (`ix.secrets`, `own_keys`, `delete_hints` promoted lazily, `keys.0` states, account views, key actors); there is no single "keys of base b changed" event, so the cover wake reads the transaction's journals instead.
+- Review: the rollback classes' "a superset is harmless" class silently admits a field that also removes entries (a wait ended in a transaction that then fails is gone for good); worth a line in `rollback_classes`' doc that a field there must only grow inside a transaction.

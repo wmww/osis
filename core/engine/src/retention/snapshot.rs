@@ -4,7 +4,7 @@
 use super::aspect_index;
 #[cfg(test)]
 use super::oracle;
-use crate::engine::write::{CommitPlan, Resolved, build_and_apply};
+use crate::engine::write::{CommitPlan, MayWrite, Resolved, build_and_apply};
 use crate::engine::{Engine, Owned, Tx, Core};
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid, Ts};
@@ -315,23 +315,20 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     Ok(Some(crate::engine::state::encode(&part)? == before))
 }
 
-/// The node a snapshot of `(tid, ak)` stamped `ts` is written as, or `None` where this node may not
-/// write it: the thing takes writes here (`Core::writable`), the node writes on it (`writer_for`:
-/// not one removed from its account), it holds the strictest role a write the snapshot carries
-/// could need (`snapshot_role`; tests may write one a receiver judges invalid) and the delete keys
-/// every write on the thing lists (spec/crypto.md §7, `framing_for`). `write_snapshot`'s check, so
-/// what a purge-on-replace cover asks (`replace::settle_none`).
-pub(crate) fn snapshot_writer(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts: Ts) -> Result<Option<Tid>> {
-    let core = &*tx.core;
-    let Ok(node) = core.writer_for(tid) else { return Ok(None) };
-    if !core.writable(tid) {
-        return Ok(None);
-    }
-    let need = if core.skip_writer_rules { crate::engine::write::required_role(ak.as_str()) } else { crate::engine::write::snapshot_role(ak.as_str()) };
-    if !(memory && core.skip_writer_rules) && crate::engine::write::check_role_with(core, node, &|_| None, tid, ak.as_str(), need, ts).is_err() {
-        return Ok(None);
-    }
-    Ok(crate::engine::secrets::holds_delete_keys_in(tx, tid)?.then_some(node))
+/// Whether this node may write a snapshot of `(tid, ak)` stamped `ts` (`write::may_write`): as the
+/// node that writes on the thing (`writer_for`: not one removed from its account), holding the
+/// strictest role a write the snapshot carries could need (`snapshot_role`; tests may write one a
+/// receiver judges invalid). `write_snapshot`'s check, so what a purge-on-replace cover asks
+/// (`replace::settle_none`).
+pub(crate) fn may_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts: Ts) -> Result<MayWrite> {
+    let Ok(node) = tx.core.writer_for(tid) else { return Ok(MayWrite::No) };
+    let skip = tx.core.skip_writer_rules;
+    let need = match (skip, memory) {
+        (true, true) => None,
+        (true, false) => Some(crate::engine::write::required_role(ak.as_str())),
+        (false, _) => Some(crate::engine::write::snapshot_role(ak.as_str())),
+    };
+    crate::engine::write::may_write(tx, node, tid, ak.as_str(), need, ts)
 }
 
 /// `Engine::snapshot` in `tx` (`memory`: the aspect is ephemeral, `tx` in the memory class):
@@ -347,7 +344,10 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
         crate::engine::write::commit_in(tx, m)?;
     }
     let ts = tx.core.hlc.next();
-    let Some(node) = snapshot_writer(tx, &tid, &ak, memory, ts)? else { return Err(Error::Permission { tid }) };
+    if may_snapshot(tx, &tid, &ak, memory, ts)? != MayWrite::Yes {
+        return Err(Error::Permission { tid });
+    }
+    let node = tx.core.writer_for(&tid)?;
     if tx.state(&tid, &ak)?.is_none() {
         return Ok(None);
     }

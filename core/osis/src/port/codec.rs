@@ -361,7 +361,7 @@ const KINDS: [DiagnosticKind; 21] = [
     DiagnosticKind::Unreadable,
     DiagnosticKind::SyncStopped,
     DiagnosticKind::DisputesUnexamined,
-    DiagnosticKind::AddendaFailed,
+    DiagnosticKind::OwnWriteFailed,
     DiagnosticKind::ClockSkew,
     DiagnosticKind::InputCapped,
 ];
@@ -372,7 +372,7 @@ const KINDS: [DiagnosticKind; 21] = [
 fn kinds_listed(k: DiagnosticKind) {
     use DiagnosticKind::*;
     match k {
-        BadInput | CollidingRecord | Parked | Pending | OverlappingCounters | Removed | Callback | NotSynced | Stranded | Uncommitted | EphemeralRefused | Mismatch | Storage | Repair | OwnWriteInvalid | Unreadable | SyncStopped | DisputesUnexamined | AddendaFailed | ClockSkew | InputCapped => {}
+        BadInput | CollidingRecord | Parked | Pending | OverlappingCounters | Removed | Callback | NotSynced | Stranded | Uncommitted | EphemeralRefused | Mismatch | Storage | Repair | OwnWriteInvalid | Unreadable | SyncStopped | DisputesUnexamined | OwnWriteFailed | ClockSkew | InputCapped => {}
     }
 }
 
