@@ -171,9 +171,9 @@ fn paged_state_edits_and_restart() {
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
     let (am, aset) = (ak("app:big.0"), ak("app:bigset.0"));
-    let pad = "x".repeat(40);
-    let mut model: osis_base::ValueMap = (0..3000i64).map(|i| (Value::Int(i), Value::Str(format!("{pad}{i}")))).collect();
-    let mut smodel: osis_base::ValueSet = (0..3000i64).map(|i| Value::Str(format!("{pad}{i}"))).collect();
+    // a few hundred entries of a few hundred bytes page as thousands of small ones would
+    let mut model: osis_base::ValueMap = (0..300i64).map(|i| (Value::Int(i), hexed(i as u64, 214))).collect();
+    let mut smodel: osis_base::ValueSet = (0..300i64).map(|i| hexed(i as u64, 214)).collect();
     m.set(t, &am, &Value::Map(model.clone())).unwrap();
     m.set(t, &aset, &Value::Set(smodel.clone())).unwrap();
     // kept: the undo below writes back an entry's value (spec/crdt.md §4.6)
@@ -189,7 +189,7 @@ fn paged_state_edits_and_restart() {
     let mut last_edit = None;
     for round in 0..40 {
         let mut m = Mutation::new();
-        let k = Value::Int((next() % 4000) as i64);
+        let k = Value::Int((next() % 400) as i64);
         match next() % 4 {
             0 if model.contains_key(&k) => {
                 m.op(t, &am, PathOp { path: vec![], op: Op::Remove(k.clone()) }).unwrap();
@@ -197,9 +197,9 @@ fn paged_state_edits_and_restart() {
             }
             1 => {
                 // a bulk insert lands in the last page and splits it
-                for j in 0..300 {
-                    let k = Value::Int(10_000 + round * 300 + j);
-                    let v = Value::Str(format!("{pad}{round}"));
+                for j in 0..30 {
+                    let k = Value::Int(10_000 + round * 30 + j);
+                    let v = hexed(1_000_000 + round as u64, 214);
                     m.op(t, &am, PathOp { path: vec![PathSeg::Key(k.clone())], op: Op::Set(v.clone()) }).unwrap();
                     model.insert(k, v);
                 }
@@ -210,7 +210,7 @@ fn paged_state_edits_and_restart() {
                 model.insert(k, v);
             }
         }
-        let s = Value::Str(format!("{pad}{}", next() % 4000));
+        let s = hexed(next() % 400, 214);
         if smodel.contains(&s) {
             m.op(t, &aset, PathOp { path: vec![], op: Op::Remove(s.clone()) }).unwrap();
             smodel.remove(&s);
@@ -224,7 +224,7 @@ fn paged_state_edits_and_restart() {
         }
         assert_eq!(p.engine.get(&t, &am).unwrap(), Some(Value::Map(model.clone())), "round {round}");
         assert_eq!(p.engine.get(&t, &aset).unwrap(), Some(Value::Set(smodel.clone())), "round {round}");
-        let k = Value::Int((next() % 4000) as i64);
+        let k = Value::Int((next() % 400) as i64);
         assert_eq!(p.engine.get_at(&t, &am, &[PathSeg::Key(k.clone())]).unwrap(), model.get(&k).cloned());
     }
     // a path edit, then its undo
@@ -236,6 +236,13 @@ fn paged_state_edits_and_restart() {
     p.engine.revert(&id).unwrap();
     assert_eq!(p.engine.get(&t, &am).unwrap(), before);
     assert!(last_edit.is_some());
+}
+
+/// About `2 * n` bytes of hex drawn from `i` (not periodic, so content-defined cuts fall as in
+/// any other bytes), led by `i`.
+fn hexed(i: u64, n: usize) -> Value {
+    let pad: String = noise(n, i).iter().map(|b| format!("{b:02x}")).collect();
+    Value::Str(format!("{i}-{pad}"))
 }
 
 /// Seeded pseudo-random bytes.
