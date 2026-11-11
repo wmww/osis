@@ -11,7 +11,7 @@ use osis_crypto::{DeleteSecret, Epoch, Secret32, VerifyingKey, dedup_secret};
 use osis_keys::{ActorEpochs, HistoryAlts, Name, Opener, Own, Provenance, ROLES, Unchecked};
 use osis_perm::At;
 use osis_schema::RawKey;
-use osis_schema::core_types::{Keys, Secrets, SigningKey};
+use osis_schema::core_types::{HistoryKey, Keys, Secrets, SigningKey};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -232,12 +232,10 @@ impl Core {
     }
 
     /// Opens what `secrets.0` of `actor` holds for this node or for actors it holds secrets of
-    /// (spec/crypto.md §4). `unchecked`: `None` when `secrets` is the applied valid state; the
-    /// source for the boxes of a pending commit, whose secrets are kept for reading only.
-    /// Returns whether anything new was learned.
+    /// (spec/crypto.md §4), `secrets` read as `read` says. Returns whether anything changed.
     /// `alts`: the live entries of history keys holding several (each tried).
-    pub(crate) fn ingest_secrets(&mut self, actor: &Tid, secrets: &Secrets, unchecked: Option<Unchecked>, alts: &HistoryAlts) -> bool {
-        let Some(epochs) = self.ingest_view(actor, secrets, unchecked, alts) else { return false };
+    pub(crate) fn ingest_secrets(&mut self, actor: &Tid, secrets: &Secrets, read: SecretsRead<'_>, alts: &HistoryAlts) -> bool {
+        let Some(epochs) = self.ingest_view(actor, secrets, read, alts) else { return false };
         self.ix.secrets.insert(*actor, epochs);
         self.role_changed();
         true
@@ -258,13 +256,38 @@ impl Core {
     }
 
     /// What `ingest_secrets` would make of `actor`'s epochs, when it changes them.
-    pub(crate) fn ingest_view(&self, actor: &Tid, secrets: &Secrets, unchecked: Option<Unchecked>, alts: &HistoryAlts) -> Option<ActorEpochs> {
+    pub(crate) fn ingest_view(&self, actor: &Tid, secrets: &Secrets, read: SecretsRead<'_>, alts: &HistoryAlts) -> Option<ActorEpochs> {
         let before = self.ix.secrets.get(actor).cloned();
+        let unchecked = match read {
+            SecretsRead::Pending(u) => Some(u),
+            SecretsRead::State | SecretsRead::Keys(_) => None,
+        };
         // a bounded number of actors held through reading-only secrets alone
         if unchecked.is_some() && self.reading_full(actor) {
             return None;
         }
         let mut epochs = before.clone().unwrap_or_default();
+        // an epoch whose history key the read stands for, with no live entry there, names and
+        // lists nothing (the keys it holds are set whole as they open, `open_histories`)
+        for r in ROLES {
+            let re = epochs.role_mut(r);
+            let gone: Vec<Epoch> = re
+                .epochs()
+                .map(|(e, _)| *e)
+                .filter(|e| {
+                    let k = osis_keys::aspects::history_key(r, e);
+                    let covered = match read {
+                        SecretsRead::State => true,
+                        SecretsRead::Keys(ks) => ks.contains(&k),
+                        SecretsRead::Pending(_) => false,
+                    };
+                    covered && !secrets.history.contains_key(&k)
+                })
+                .collect();
+            for e in &gone {
+                re.clear_history(e);
+            }
+        }
         let me = self.id.tid();
         // only a holder with a box here opens anything: not O(actors known) per ingest
         let holders: std::collections::BTreeSet<Tid> = secrets.boxes.keys().map(|k| k.holder).filter(|t| t != actor).collect();
@@ -321,9 +344,11 @@ impl Core {
         for k in history {
             add(&mut s, &mut alts, k);
         }
+        // the touched keys, each read whole (an absent one has no live entry now)
+        let whole: std::collections::BTreeSet<HistoryKey> = history.iter().filter_map(|k| typed_as::<HistoryKey>(k, "history_key")).collect();
         let mut learned = false;
         loop {
-            learned |= self.ingest_secrets(actor, &s, None, &alts);
+            learned |= self.ingest_secrets(actor, &s, SecretsRead::Keys(&whole), &alts);
             let Some(e) = self.ix.secrets.get(actor) else { break };
             let candidates: Vec<Value> = ROLES
                 .iter()
@@ -351,16 +376,19 @@ impl Core {
     /// A thing that got secrets of its own keeps its earlier derived epochs (by history box):
     /// those derived from an established epoch of the next actor up its record chain are
     /// established (spec/crypto.md §4), so the rotation from them establishes
-    /// and labels registered under them can be stepped. A derived epoch's ID names its secret, so
-    /// only a base actor epoch whose secret is held matches. Computed whenever the view is
-    /// (`own_epochs`), never stored: the base actor's establishment changes with what is held.
+    /// and labels registered under them can be stepped, and supersede what they derive from the
+    /// base actor's (spec/crypto.md §3). A derived epoch's ID names its secret, so only a base
+    /// actor epoch whose secret is held matches. Computed whenever the view is (`own_epochs`),
+    /// never stored: the base actor's epochs change with what is held.
     fn adopt_derived(&self, actor: &Tid, epochs: &mut ActorEpochs) {
         let Some(d) = self.base_derived(actor) else { return };
         for r in ROLES {
             for (ep, info) in d.role(r).epochs() {
                 let sticky = epochs.role(r).get(ep).is_some_and(|i| i.established.is_some_and(Provenance::sticky));
                 if info.established.is_some() && info.secret.is_some() && epochs.role(r).get(ep).is_some() && !sticky {
-                    epochs.role_mut(r).set_established(*ep, Provenance::Derived);
+                    let own = epochs.role_mut(r).observe(*ep);
+                    own.established = Some(Provenance::Derived);
+                    own.supersedes.extend(info.supersedes.iter().copied());
                 }
             }
         }
@@ -376,6 +404,18 @@ impl Core {
             self.role_changed();
         }
     }
+}
+
+/// What a `secrets.0` read handed to `Core::ingest_secrets` stands for.
+#[derive(Clone, Copy)]
+pub(crate) enum SecretsRead<'a> {
+    /// The applied valid state, whole: an epoch whose history key it lacks has no live entry.
+    State,
+    /// Entries of the applied valid state, each history key it holds with every live entry;
+    /// these keys stand whole (one it lacks has no live entry), others are left as they were.
+    Keys(&'a std::collections::BTreeSet<HistoryKey>),
+    /// A pending commit's boxes: what they open is kept for reading only (spec/crypto.md §4).
+    Pending(Unchecked),
 }
 
 /// The names a node holds (spec/crypto.md §4) for epochs of `actor`: applied commits, and the
@@ -855,7 +895,7 @@ mod tests {
         a.read.set_rotation(e2, osis_base::CommitId([9; 32]), [Epoch::new(1, [3; 32]).unwrap()].into());
         let k = |n: u8| osis_keys::Key { ts: u64::from(n), node: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
         a.read.set_snapshot(e2, osis_base::CommitId([8; 32]));
-        a.read.add_names(e2, osis_keys::Names { list: [Name { thing: Tid::from_bytes([6; 15]), key: k(5) }].into(), departs: Some(Own { ts: 7, author: Tid::from_bytes([7; 15]), blind: [0; 16] }) });
+        a.read.set_history(e2, [osis_keys::Names { list: [Name { thing: Tid::from_bytes([6; 15]), key: k(5) }].into(), departs: Some(Own { ts: 7, author: Tid::from_bytes([7; 15]), blind: [0; 16] }) }].into(), [Epoch::new(1, [4; 32]).unwrap()]);
         let b = decode_epochs(&encode_epochs(&a)).unwrap();
         assert_eq!(b, a);
         assert!(b.read.is_reading_only(&e2) && b.read.secret(&e2).is_none());

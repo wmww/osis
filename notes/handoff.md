@@ -9,7 +9,7 @@ Big features and refactors first; chase a bug only when it could threaten their 
 Signal edits: reuse the existing edit machinery rather than add a second mechanism; full-replace-only is fine (Tess), with API questions to settle. App re-rendering (listener step 8) goes ahead without a session with Tess.
 
 ## Large designs, in order
-- **Rotation leak fix**: merged (keysets carry possession proofs; one verdict per rotation; derived establishment computed from held commits). Open: issues/keys-depth0-removed-member-rotates.md, issues/history-entry-inputs-outlive-their-entry.md, issues/rotation-keyset-gone-before-its-boxes.md.
+- **Rotation leak fix**: merged (keysets carry possession proofs; one verdict per rotation; derived establishment computed from held commits). Open: issues/keys-depth0-removed-member-rotates.md, issues/rotation-keyset-gone-before-its-boxes.md.
 - **Test refactor** (notes/test-design.md): steps 1-8, 5b and 10 done or in review (step 7 on `crdt-differential`); left: 9 (ephemeral, after connection-lived data), 11, 12. Open: issues/held-model-role-commit-scope.md.
 - **Expiry and creation records** (notes/expiry-creation-design.md): steps 1-3 built. Left: the creation-record steps and step 4's osis-API examples.
 - **Listener API** (notes/listener-design.md): steps 1-4 built. Left: 5 (path listeners), 6 (sessions follow every write), 7 (callers), 8 (node-state granularity, an app session with Tess).

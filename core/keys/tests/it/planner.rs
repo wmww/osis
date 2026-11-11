@@ -112,7 +112,7 @@ fn wrap_epochs() {
     let rg = &mut rng(0);
     let mut a = person(0x20);
     assert_eq!(wrap_epoch(&a.read), Some(ep(1, 0x20)));
-    a.read.rotation(ep(2, 5), [ep(1, 0x20)]);
+    a.read.set_history(ep(2, 5), BTreeSet::new(), [ep(1, 0x20)]);
     a.read.set_established(ep(2, 5), osis_keys::Provenance::Fixed);
     assert_eq!(wrap_epoch(&a.read), None);
     assert_eq!(wrap_epoch(&ActorEpochs::default().read), None);
@@ -134,7 +134,7 @@ fn label_epochs() {
     let [r, w, ad] = registration_epochs(&a).unwrap();
     assert_eq!((r.0, w.0, ad.0), (ep(1, 0x20), ep(1, 0x20), ep(1, 0x20)));
     let key = label_role_key(label_role(Role::Read), r.1, 3).verifying_key();
-    a.read.rotation(ep(2, 1), [ep(1, 0x20)]);
+    a.read.set_history(ep(2, 1), BTreeSet::new(), [ep(1, 0x20)]);
     a.read.set_established(ep(2, 1), osis_keys::Provenance::Fixed);
     a.read.set_secret(ep(2, 1), Secret32::from_bytes([9; 32]));
     assert_eq!(registered_epoch(&a.read, Role::Read, 3, &key), Some(ep(1, 0x20)));
@@ -144,7 +144,7 @@ fn label_epochs() {
     assert!(!newer_than_head(&a, [Some(ep(2, 1)), Some(ep(1, 0x20)), Some(ep(1, 0x20))]));
     assert!(!newer_than_head(&a, [None, Some(ep(1, 0x20)), Some(ep(1, 0x20))]));
     a.admin.observe(ep(2, 2));
-    a.admin.rotation(ep(2, 2), [ep(1, 0x20)]);
+    a.admin.set_history(ep(2, 2), BTreeSet::new(), [ep(1, 0x20)]);
     a.admin.set_established(ep(2, 2), osis_keys::Provenance::Fixed);
     assert!(registration_epochs(&a).is_none());
 }
@@ -226,7 +226,7 @@ fn delete_keys() {
     assert_eq!(delete_key(2, &thing, None), None);
     let ks = osis_keys::keyset(&ep(1, 0x20), thing.admin.secret(&ep(1, 0x20)).unwrap(), &Default::default(), &Default::default());
     assert_eq!(ks.delete_key, osis_schema::core_types::SigningKey::Ed25519(delete_key(1, &thing, None).unwrap().to_bytes().to_vec()));
-    thing.write.rotation(ep(2, 0), [ep(1, 0x20)]);
+    thing.write.set_history(ep(2, 0), BTreeSet::new(), [ep(1, 0x20)]);
     thing.write.set_established(ep(2, 0), osis_keys::Provenance::Fixed);
     thing.write.set_secret(ep(2, 0), Secret32::from_bytes([5; 32]));
     assert_eq!(delete_key(3, &thing, None), Some(dk(&Secret32::from_bytes([5; 32]))));

@@ -381,7 +381,7 @@ fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
             let s = secrets_in(tx, a)?;
             let alts = secrets_alts(tx, a)?;
             tx.core.touch();
-            if tx.core.ingest_secrets(a, &s, None, &alts) {
+            if tx.core.ingest_secrets(a, &s, crate::engine::secrets::SecretsRead::State, &alts) {
                 save_epochs(tx, a)?;
                 reopen_dependents(tx, *a)?;
                 any = true;

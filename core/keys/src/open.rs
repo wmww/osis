@@ -8,7 +8,7 @@ use crate::Error;
 use osis_base::{Role, Tid};
 use osis_crypto::{AccountEpochKeys, BoxForm, BoxSlot, Epoch, KeyActorKeys, Secret32, key_actor_role_secret, open_box, open_history, open_symmetric_box, role_kem};
 use osis_schema::core_types::{BoxKey, HistoryKey, Sealed, SecretBox, Secrets};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// Who opens: a key actor by its keys, or an actor holder by the role secrets it holds.
@@ -106,9 +106,12 @@ pub type HistoryAlts = BTreeMap<HistoryKey, Vec<Vec<u8>>>;
 /// Opens the history boxes of every epoch whose secret `epochs` holds, repeatedly. Every live
 /// entry of a key (`alts`: each live entry of keys with several) is tried, since any writer of
 /// the key may put one (spec/crypto.md §4); each secret an entry lists names its own epoch
-/// (osis-crypto recomputes it), so a lying entry only names an epoch of its own. The epochs
-/// listed are marked superseded by the opening one (counted once it is established), and its
-/// names recorded (spec/crypto.md §4: what establishes it once met).
+/// (osis-crypto recomputes it), so a lying entry only names an epoch of its own. What the live
+/// entries of a key opened with a secret not reading-only list and name replaces what its epoch
+/// had (`RoleEpochs::set_history`: superseded once it is established, established once some
+/// entry's names are met, spec/crypto.md §4), so `secrets` must hold every live entry of each
+/// history key it holds. A key absent from `secrets` leaves its epoch's record alone: the caller
+/// clears those whose key left the state (`clear_history`).
 /// `from`: the source when `secrets` is a pending commit's: what its history boxes list is
 /// reading-only, and so is what a reading-only secret opens (it inherits that secret's sources);
 /// neither supersedes anything.
@@ -136,16 +139,15 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs
             done.insert(k.clone(), checked);
             progress = true;
             let mut opened_any = false;
+            let (mut named, mut listed) = (BTreeSet::new(), BTreeSet::new());
             for c in std::iter::once(ct).chain(alts.get(k).into_iter().flatten()) {
                 let Ok((earlier, names)) = open_history(&s, actor, k.role, &e, c) else { continue };
                 // an entry whose names do not parse opens nothing
                 let Some(names) = Names::from_value(&names) else { continue };
                 opened_any = true;
+                named.insert(names);
+                listed.extend(earlier.iter().map(|(x, _)| *x));
                 let re = epochs.role_mut(k.role);
-                if checked {
-                    re.rotation(e, earlier.iter().map(|(x, _)| *x));
-                    re.add_names(e, names);
-                }
                 for (x, sx) in earlier {
                     if checked {
                         re.set_secret(x, sx);
@@ -155,6 +157,9 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs
                         }
                     }
                 }
+            }
+            if checked {
+                epochs.role_mut(k.role).set_history(e, named, listed);
             }
             if opened_any {
                 failed.remove(k);

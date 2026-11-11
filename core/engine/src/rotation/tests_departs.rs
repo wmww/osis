@@ -328,3 +328,47 @@ fn account_leaving_a_group_it_administers_spec_permissions_2() {
         assert!(!lp.peers[i].engine.core.key_holders(&g).iter().any(|h| h.0 == u), "peer {i}: U removed");
     }
 }
+
+/// What `x`'s epochs of each role are established and superseded by (spec/crypto.md §4): per
+/// epoch, its live history entries' names and what it supersedes; and the role's current epochs.
+type Inputs = Vec<(Role, Vec<(Epoch, BTreeSet<Names>, BTreeSet<Epoch>)>, Vec<Epoch>)>;
+
+fn inputs(x: &osis_keys::ActorEpochs) -> Inputs {
+    osis_keys::ROLES.into_iter().map(|r| (r, x.role(r).epochs().map(|(e, i)| (*e, i.names.clone(), i.superseded_epochs())).collect(), x.role(r).current())).collect()
+}
+
+// spec/crypto.md §4 (Established: some *live* entry; Supersedes: what its history box lists):
+// W puts a history entry with names of its own at the current read epoch, unaware A is removing
+// it, so the entry's commit is invalid once the removal is held. X applies it before the removal
+// (the entry joins, then is stripped), A after (it never joins). Holding the same commits, both
+// read the epochs alike: the stripped entry names and supersedes nothing at X.
+#[test]
+fn stripped_history_entry_leaves_nothing_spec_crypto_4() {
+    let (mut lp, g, tids) = shape(Role::Write);
+    let removal = lp.peers[A].engine.demote(&g, &Demotion { holder: tids[W], new: None, retain: None }).unwrap().commits;
+    assert!(!removal.is_empty());
+    lp.advance(1000);
+    let name = osis_keys::Name { thing: g, key: osis_keys::Key { ts: 1, node: tids[W], commit: osis_base::CommitId([0x5a; 32]) } };
+    let odd = Names { list: [name].into(), departs: None };
+    let entry = lp.peers[W]
+        .engine
+        .run(|tx| {
+            let mut m = Mutation::new();
+            forged_entry(tx, &mut m, g, &odd)?;
+            crate::engine::Engine::commit_tx(tx, m)
+        })
+        .unwrap()
+        .unwrap();
+    let pk = lp.peers[W].engine.package(&entry).unwrap().unwrap();
+    // X: the entry, then the removal; A: the removal (its own), then the entry
+    lp.peers[X].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    let opened = lp.peers[X].engine.epochs(&g).unwrap();
+    assert!(opened.read.epochs().any(|(_, i)| i.names.contains(&odd)), "X opened W's entry while it was live");
+    send_skipping(&mut lp, A, X, &BTreeSet::new());
+    lp.peers[A].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    lp.sync(A, X).unwrap();
+    lp.sync(X, A).unwrap();
+    let (x, a) = (lp.peers[X].engine.epochs(&g).unwrap(), lp.peers[A].engine.epochs(&g).unwrap());
+    assert!(!x.read.epochs().any(|(_, i)| i.names.contains(&odd)), "the stripped entry names nothing at X");
+    assert_eq!(inputs(&x), inputs(&a), "X and A read the epochs alike");
+}

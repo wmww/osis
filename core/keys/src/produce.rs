@@ -159,9 +159,8 @@ impl Rotation {
     pub fn record(&self, epochs: &mut ActorEpochs) {
         for r in &self.rotated {
             let re = epochs.role_mut(r.role);
-            re.rotation(r.epoch, r.supersedes.iter().copied());
+            re.set_history(r.epoch, [self.names.clone()].into(), r.supersedes.iter().copied());
             re.set_secret(r.epoch, r.secret.clone());
-            re.add_names(r.epoch, self.names.clone());
         }
     }
 

@@ -54,8 +54,11 @@ impl Provenance {
 /// What a node knows of one epoch.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EpochInfo {
-    /// Epochs its opened history box lists (and its rotator's own record). With its rotation
-    /// commits' lists (`superseded_epochs`), what it supersedes; counts only once established.
+    /// Epochs the live entries of its history box list, opened under its secret (an account's
+    /// or derived epoch's: what its source supersedes). With its rotation commits' lists
+    /// (`superseded_epochs`), what it supersedes; counts only once established. Set whole with
+    /// `names` (`RoleEpochs::set_history`): a function of the entries live now, so an entry that
+    /// leaves the state (stripped as invalid, overwritten) leaves nothing behind.
     pub supersedes: BTreeSet<Epoch>,
     /// The held valid rotation commits of it (writing its keyset and history box), each with the
     /// epochs its keyset lists: a holder may re-write an epoch's keyset in a later commit, and
@@ -64,7 +67,8 @@ pub struct EpochInfo {
     /// The held valid `secrets.0` compaction snapshots keying it; one found invalid leaves the
     /// others.
     pub snapshots: BTreeSet<CommitId>,
-    /// The names of each history entry of it opened under its secret (spec/crypto.md §4).
+    /// The names of each live entry of its history box opened under its secret (spec/crypto.md
+    /// §4), set with `supersedes`.
     pub names: BTreeSet<Names>,
     /// Established (spec/crypto.md §4): `Fixed` and `Derived` set and persisted; `Rotated`
     /// computed from the held state (`RoleEpochs::establish`), never persisted. Unestablished
@@ -89,8 +93,8 @@ pub struct EpochInfo {
 
 impl EpochInfo {
     /// What it supersedes (spec/crypto.md §4): the epochs its valid rotation commits' keysets
-    /// list, and those its opened history box lists. A function of the held rotation commits, so
-    /// one found invalid leaves nothing behind.
+    /// list, and those the live entries of its history box list. A function of the held rotation
+    /// commits and live entries, so one found invalid leaves nothing behind.
     pub fn superseded_epochs(&self) -> BTreeSet<Epoch> {
         self.superseded_iter().copied().collect()
     }
@@ -191,10 +195,20 @@ impl RoleEpochs {
         self.map.entry(e).or_default()
     }
 
-    /// Records the rotation that created `e` and what it superseded.
-    pub fn rotation(&mut self, e: Epoch, supersedes: impl IntoIterator<Item = Epoch>) {
+    /// Sets what `e`'s history box says (spec/crypto.md §4): the names of its live entries and
+    /// the epochs they list (only those below `e`'s n count), replacing what it said before.
+    pub fn set_history(&mut self, e: Epoch, names: BTreeSet<Names>, listed: impl IntoIterator<Item = Epoch>) {
         let info = self.observe(e);
-        info.supersedes.extend(supersedes.into_iter().filter(|s| s.n() < e.n()));
+        info.names = names;
+        info.supersedes = listed.into_iter().filter(|s| s.n() < e.n()).collect();
+    }
+
+    /// `e`'s history box has no live entry: it names and lists nothing.
+    pub fn clear_history(&mut self, e: &Epoch) {
+        if let Some(i) = self.map.get_mut(e) {
+            i.names.clear();
+            i.supersedes.clear();
+        }
     }
 
     /// Sets `e`'s secret, known from a source that is no pending commit (an applied valid box, a
@@ -294,11 +308,6 @@ impl RoleEpochs {
     /// new.
     pub fn set_snapshot(&mut self, e: Epoch, commit: CommitId) -> bool {
         self.observe(e).snapshots.insert(commit)
-    }
-
-    /// Records the names of a history entry of `e` opened under its secret.
-    pub fn add_names(&mut self, e: Epoch, names: Names) {
-        self.observe(e).names.insert(names);
     }
 
     /// Computes `Rotated` establishment (spec/crypto.md §4) from the held state: a valid rotation
@@ -540,7 +549,7 @@ impl ActorEpochs {
                 let re = a.role_mut(r);
                 re.set_secret(e, key_actor_role_secret(seed, r));
                 re.set_established(e, Provenance::Fixed);
-                re.rotation(e, sup);
+                re.set_history(e, BTreeSet::new(), sup);
             }
         }
         Ok(a)
@@ -651,8 +660,8 @@ mod tests {
     fn current_and_newest() {
         let mut r = RoleEpochs::default();
         r.set_secret(ep(1, 0), Secret32::from_bytes([1; 32]));
-        r.rotation(ep(2, 5), [ep(1, 0)]);
-        r.rotation(ep(2, 3), [ep(1, 0)]);
+        r.set_history(ep(2, 5), BTreeSet::new(), [ep(1, 0)]);
+        r.set_history(ep(2, 3), BTreeSet::new(), [ep(1, 0)]);
         for e in [ep(1, 0), ep(2, 5), ep(2, 3)] {
             r.set_established(e, Provenance::Fixed);
         }
@@ -662,13 +671,13 @@ mod tests {
         assert_eq!(r.newest_secret().map(|x| x.0), Some(ep(1, 0)));
         r.set_secret(ep(2, 5), Secret32::from_bytes([2; 32]));
         assert_eq!(r.newest_held().map(|x| x.0), Some(ep(2, 5)));
-        r.rotation(ep(3, 9), [ep(2, 5)]);
+        r.set_history(ep(3, 9), BTreeSet::new(), [ep(2, 5)]);
         r.set_established(ep(3, 9), Provenance::Fixed);
         assert_eq!(r.current(), vec![ep(2, 3), ep(3, 9)]);
         assert_eq!(r.newest(), Some(ep(3, 9)));
         // An unestablished rotation (not applied, pending or invalid) supersedes nothing and is not
         // current.
-        r.rotation(ep(4, 1), [ep(3, 9), ep(2, 3)]);
+        r.set_history(ep(4, 1), BTreeSet::new(), [ep(3, 9), ep(2, 3)]);
         assert_eq!(r.current(), vec![ep(2, 3), ep(3, 9)]);
         r.set_rotation(ep(4, 1), cid(1), set(&[ep(3, 9), ep(2, 3)]));
         assert!(r.establish(&AllHeld));
@@ -730,7 +739,7 @@ mod tests {
         r.set_secret(ep(3, 0), Secret32::from_bytes([3; 32]));
         r.establish(&none);
         assert!(!r.is_established(&ep(3, 0)), "secret held, no history entry opened");
-        r.add_names(ep(3, 0), names(&[7, 8], Some(3)));
+        r.set_history(ep(3, 0), [names(&[7, 8], Some(3))].into(), []);
         r.establish(&none);
         assert!(!r.is_established(&ep(3, 0)));
         r.establish(&Holding { have: [3, 7].into() });
@@ -741,14 +750,14 @@ mod tests {
         r.establish(&all);
         assert!(r.is_established(&ep(3, 0)));
         // another entry (a forger holding e3) with fewer names: any entry met suffices
-        r.add_names(ep(3, 0), names(&[7], None));
+        r.set_history(ep(3, 0), [names(&[7, 8], Some(3)), names(&[7], None)].into(), []);
         r.establish(&Holding { have: [7].into() });
         assert!(r.is_established(&ep(3, 0)));
         // by snapshot alone, alike
         let mut x = RoleEpochs::default();
         x.set_snapshot(ep(4, 0), CommitId([4; 32]));
         x.set_secret(ep(4, 0), Secret32::from_bytes([4; 32]));
-        x.add_names(ep(4, 0), names(&[7], Some(4)));
+        x.set_history(ep(4, 0), [names(&[7], Some(4))].into(), []);
         x.establish(&Holding { have: [7].into() });
         assert!(!x.is_established(&ep(4, 0)));
         x.establish(&Holding { have: [4, 7].into() });
@@ -795,7 +804,7 @@ mod tests {
         let mut base = ActorEpochs::default();
         base.read.set_secret(ep(1, 1), Secret32::from_bytes([1; 32]));
         base.read.set_secret(ep(1, 2), Secret32::from_bytes([2; 32]));
-        base.read.rotation(ep(2, 0), [ep(1, 1)]);
+        base.read.set_history(ep(2, 0), BTreeSet::new(), [ep(1, 1)]);
         for e in [ep(1, 1), ep(1, 2), ep(2, 0)] {
             base.read.set_established(e, Provenance::Rotated);
         }
@@ -822,7 +831,7 @@ mod tests {
             let s = |x: u8| Secret32::from_bytes([x; 32]);
             base.read.set_secret(ep(1, 1), s(b));
             base.read.set_secret(ep(2, 2), s(b ^ 0x80));
-            base.read.rotation(ep(2, 2), [ep(1, 1)]);
+            base.read.set_history(ep(2, 2), BTreeSet::new(), [ep(1, 1)]);
             for e in [ep(1, 1), ep(2, 2)] {
                 base.read.set_established(e, Provenance::Rotated);
             }
@@ -848,7 +857,7 @@ mod tests {
             base.read.set_secret(e, Secret32::from_bytes([7; 32]));
             base.read.set_established(e, Provenance::Rotated);
         }
-        base.read.rotation(b, [a]);
+        base.read.set_history(b, BTreeSet::new(), [a]);
         let d = ActorEpochs::derived(&base, &t);
         assert_eq!(d.read.current().len(), 1);
     }
@@ -941,7 +950,7 @@ mod tests {
             }
             for _ in 0..rnd(3) {
                 let (a, b) = (es[rnd(es.len() as u64) as usize], es[rnd(es.len() as u64) as usize]);
-                r.rotation(a, [b]);
+                r.set_history(a, BTreeSet::new(), [b]);
             }
             for a in &es {
                 for b in &es {

@@ -275,6 +275,8 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
             if let Some(b) = base {
                 tx.core.ix.secrets.insert(*t, b.into_record());
                 crate::flows::save_epochs(tx, t)?;
+                // what its history boxes say is the state's (the derived view's is its base's)
+                super::atomic::observe_state(tx, t, &crate::flows::ak("secrets.0")?)?;
             }
         } else {
             tx.core.ix.own_keys.remove(t);
@@ -564,7 +566,7 @@ pub(crate) fn sealed_key(c: &CommitId, a: &Tid) -> Vec<u8> {
 pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<()> {
     for (a, s, from) in pending_boxes(tx, blob, id)? {
         tx.core.touch();
-        if tx.core.ingest_secrets(&a, &s, Some(from), &osis_keys::HistoryAlts::new()) {
+        if tx.core.ingest_secrets(&a, &s, crate::engine::secrets::SecretsRead::Pending(from), &osis_keys::HistoryAlts::new()) {
             tx.core.waits.read_from(*id);
             crate::flows::save_epochs(tx, &a)?;
         } else if tx.core.reading_full(&a) {
@@ -694,7 +696,7 @@ impl crate::engine::Engine {
             tx.core.ix.secrets.entry_or_default(g).role_mut(Role::Read).set_secret(e, secret);
             // what the secret opens: `g`'s own history boxes, then the boxes sealed to `g`
             let (s, alts) = (crate::flows::secrets_in(tx, &g)?, crate::flows::secrets_alts(tx, &g)?);
-            tx.core.ingest_secrets(&g, &s, None, &alts);
+            tx.core.ingest_secrets(&g, &s, crate::engine::secrets::SecretsRead::State, &alts);
             crate::flows::save_epochs(tx, &g)?;
             crate::flows::reopen_dependents(tx, g)?;
             Ok(true)

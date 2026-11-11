@@ -140,7 +140,7 @@ fn reseal_to_newest_keyset() {
     let m = tid(3);
     let mut me = person(0x30);
     for (i, r) in ROLES.into_iter().enumerate() {
-        me.role_mut(r).rotation(ep(2, 0x31), [ep(1, 0x30)]);
+        me.role_mut(r).set_history(ep(2, 0x31), BTreeSet::new(), [ep(1, 0x30)]);
         me.role_mut(r).set_established(ep(2, 0x31), osis_keys::Provenance::Fixed);
         me.role_mut(r).set_secret(ep(2, 0x31), Secret32::from_bytes([0x70 + i as u8; 32]));
     }

@@ -90,7 +90,7 @@ fn wrap_under_held_superseded() {
     let e1 = view.read.newest().unwrap();
     // A fork the rotator knows (its box to P held) but holds no secret of, newer than its own.
     let fork = Epoch::new(e1.n(), [0; 32]).unwrap();
-    view.read.rotation(fork, view.read.get(&e1).unwrap().supersedes.clone());
+    view.read.set_history(fork, BTreeSet::new(), view.read.get(&e1).unwrap().supersedes.clone());
     view.read.set_established(fork, osis_keys::Provenance::Fixed);
     assert_eq!(view.read.newest(), Some(fork));
     let mut s = s;
@@ -113,7 +113,7 @@ fn wrap_without_current_secret() {
     let (a, p, pe, mut view, s) = switched(&[], rg);
     let e1 = view.read.newest().unwrap();
     let ew = Epoch::new(e1.n() + 1, [7; 32]).unwrap();
-    view.read.rotation(ew, [e1]);
+    view.read.set_history(ew, BTreeSet::new(), [e1]);
     view.read.set_established(ew, osis_keys::Provenance::Fixed);
     assert_eq!(view.read.newest_held(), None);
     let rot = rotate(&a, &set(&[Role::Read]), &view, &s, &[admin(p, &pe)], &osis_keys::Names::default(), &mut *rg).unwrap();

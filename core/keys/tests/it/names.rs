@@ -142,10 +142,10 @@ fn fixed() -> Epoch {
 }
 
 /// spec/crypto.md §4 read directly over the final held set.
-fn reference(h: &History, flips: &[bool]) -> (BTreeSet<Epoch>, Vec<Epoch>) {
-    // a history entry is in the state while its commit applied valid (an invalid one's deltas are
-    // stripped; names recorded while it was valid stay), or a snapshot keys it
-    let carried = |i: usize, e: &Epoch| h.held.contains(&i) && (h.commits[i].valid || flips[i % 16]) || h.snapshots.contains(e);
+fn reference(h: &History) -> (BTreeSet<Epoch>, Vec<Epoch>) {
+    // a history entry is live while its commit is held valid (an invalid one's deltas are
+    // stripped, and what it named or listed goes with them), or a snapshot keys it
+    let carried = |i: usize, e: &Epoch| h.held.contains(&i) && h.commits[i].valid || h.snapshots.contains(e);
     let epochs: BTreeSet<Epoch> = h.commits.iter().filter_map(|c| if let Kind::Rotation { epoch, .. } = c.kind { Some(epoch) } else { None }).chain(h.snapshots.iter().copied()).chain(h.secrets.iter().copied()).chain(h.reading.iter().copied()).chain([fixed()]).collect();
     let mut est = BTreeSet::from([fixed()]);
     for e in &epochs {
@@ -210,35 +210,33 @@ fn apply(h: &History, steps: &[Step]) -> RoleEpochs {
                 }
             }
         }
-        // what opening its history entries records, once its secret is held and they are
-        let opened: Vec<(Epoch, Vec<Names>, BTreeSet<Epoch>)> = r
+        // what opening its live history entries says, once its secret is held (not for reading
+        // only): replaces what it said before
+        let opened: Vec<(Epoch, BTreeSet<Names>, BTreeSet<Epoch>)> = r
             .epochs()
-            .filter(|(e, i)| i.secret.is_some() && **e != fixed())
-            .map(|(e, _)| (*e, h.rotations_of(*e).filter(|(i, c)| seen(steps, s, *i, c) || snapshot_seen(steps, s, e)).flat_map(|(i, _)| h.entries(i)).collect(), history_seen(h, steps, s, e)))
+            .filter(|(e, i)| i.checked().is_some() && **e != fixed())
+            .map(|(e, _)| {
+                let held_live: Vec<(usize, &Commit)> = h.rotations_of(*e).filter(|(i, c)| live(steps, s, *i, c) || snapshot_seen(steps, s, e)).collect();
+                let names = held_live.iter().flat_map(|(i, _)| h.entries(*i)).collect();
+                let list = held_live.iter().flat_map(|(_, c)| if let Kind::Rotation { list, .. } = &c.kind { list.clone() } else { BTreeSet::new() }).collect();
+                (*e, names, list)
+            })
             .collect();
         for (e, names, list) in opened {
-            for n in names {
-                if !r.is_reading_only(&e) {
-                    r.add_names(e, n);
-                }
-            }
-            if !r.is_reading_only(&e) {
-                r.rotation(e, list);
-            }
+            r.set_history(e, names, list);
         }
         r.establish(&Observer(h));
     }
     r
 }
 
-/// Whether commit `i` is among the steps up to `upto`, applied valid at some point (its history
-/// entries were in the state).
-fn seen(steps: &[Step], upto: &Step, i: usize, c: &Commit) -> bool {
+/// Whether commit `i` is among the steps up to `upto` and valid: its history entries are live.
+fn live(steps: &[Step], upto: &Step, i: usize, c: &Commit) -> bool {
     for s in steps {
-        if let Step::Commit(j, flip) = s
+        if let Step::Commit(j, _) = s
             && *j == i
         {
-            return c.valid || *flip;
+            return c.valid;
         }
         if std::ptr::eq(s, upto) {
             break;
@@ -259,10 +257,6 @@ fn snapshot_seen(steps: &[Step], upto: &Step, e: &Epoch) -> bool {
         }
     }
     false
-}
-
-fn history_seen(h: &History, steps: &[Step], upto: &Step, f: &Epoch) -> BTreeSet<Epoch> {
-    h.rotations_of(*f).filter(|(i, c)| seen(steps, upto, *i, c) || snapshot_seen(steps, upto, f)).flat_map(|(_, c)| if let Kind::Rotation { list, .. } = &c.kind { list.clone() } else { BTreeSet::new() }).collect()
 }
 
 fn established(r: &RoleEpochs) -> BTreeSet<Epoch> {
@@ -292,13 +286,13 @@ proptest! {
         steps.sort_by_key(|x| x.0);
         let steps: Vec<Step> = steps.into_iter().map(|x| x.1).collect();
         let r = apply(&h, &steps);
-        let (est, current) = reference(&h, &flips);
+        let (est, current) = reference(&h);
         prop_assert_eq!(established(&r), est.clone(), "established");
         prop_assert_eq!(r.current(), current, "current");
         // the invariant: an epoch used here (established, secret held) whose entries are all
         // honest has, among its rotations whose entries are here, one whose rotator's departures
         // (its own included) are all met here
-        let carried = |i: usize, e: &Epoch| h.held.contains(&i) && (h.commits[i].valid || flips[i % 16]) || h.snapshots.contains(e);
+        let carried = |i: usize, e: &Epoch| h.held.contains(&i) && h.commits[i].valid || h.snapshots.contains(e);
         for e in est.iter().filter(|e| h.secrets.contains(e) && **e != fixed()) {
             if h.rotations_of(*e).any(|(_, c)| c.forged.is_some()) {
                 continue;
@@ -318,10 +312,11 @@ fn forged_entry_by_a_holder_is_accepted() {
     r.set_rotation(e, cid(1), BTreeSet::new());
     r.set_secret(e, Secret32::from_bytes([1; 32]));
     let h = History { commits: Vec::new(), held: BTreeSet::new(), secrets: BTreeSet::new(), reading: BTreeSet::new(), snapshots: BTreeSet::new() };
-    r.add_names(e, Names { list: [Name { thing: THING, key: key(0) }].into(), departs: None });
+    let genuine = Names { list: [Name { thing: THING, key: key(0) }].into(), departs: None };
+    r.set_history(e, [genuine.clone()].into(), []);
     r.establish(&Observer(&h));
     assert!(!r.is_established(&e));
-    r.add_names(e, Names::default());
+    r.set_history(e, [genuine, Names::default()].into(), []);
     r.establish(&Observer(&h));
     assert!(r.is_established(&e));
 }

@@ -1010,7 +1010,7 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
         let st = tx.state(actor, &ak)?.cloned();
         let alts = st.as_ref().map(crate::engine::secrets::history_alts).unwrap_or_default();
         if let Some(s) = st.as_ref().and_then(Fragment::read).as_ref().and_then(crate::engine::secrets::secrets_value)
-            && tx.core.ingest_secrets(actor, &s, None, &alts)
+            && tx.core.ingest_secrets(actor, &s, crate::engine::secrets::SecretsRead::State, &alts)
         {
             match before {
                 Some(b) => tx.core.ix.secrets.insert(*actor, b),
@@ -1032,8 +1032,9 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     match ak.as_str() {
         "secrets.0" => {
             let alts = tx.state(tid, ak)?.map(crate::engine::secrets::history_alts).unwrap_or_default();
-            if let Some(s) = v.as_ref().and_then(crate::engine::secrets::secrets_value)
-                && tx.core.ingest_secrets(tid, &s, None, &alts)
+            // no state (every delta stripped) holds no live entry
+            let s = v.as_ref().and_then(crate::engine::secrets::secrets_value).unwrap_or_default();
+            if tx.core.ingest_secrets(tid, &s, crate::engine::secrets::SecretsRead::State, &alts)
                 && let Some(e) = tx.core.ix.secrets.get(tid)
             {
                 let b = crate::engine::secrets::encode_epochs(e);
