@@ -389,6 +389,7 @@ fn role_history_arrivals(n: usize) -> (u64, u64, usize) {
 fn role_history_arrival_moves_flat() {
     let (a, b) = (role_history_arrivals(N), role_history_arrivals(10 * N));
     assert_eq!((a.2, b.2), (20, 20), "each placed: {a:?} -> {b:?}");
-    assert!(b.0 <= 3 * a.0 + 20, "commits walked: {a:?} -> {b:?}");
-    assert!(b.1 <= 3 * a.1 + 200, "entries moved: {a:?} -> {b:?}");
+    // flat (notes/testing.md, Scale checks)
+    assert!(b.0 <= 2 * a.0 + 2, "commits walked: {a:?} -> {b:?}");
+    assert!(b.1 <= 2 * a.1 + 2, "entries moved: {a:?} -> {b:?}");
 }
