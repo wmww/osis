@@ -44,6 +44,17 @@ fn names(p: &Header, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
         && stamped_before(p.ts, &a.ak, ch.ts) && p.expires.is_none_or(|e| ch.expires.is_some_and(|x| x <= e)) && p.purge.iter().any(|i| i.tid() == &a.tid && i.ak() == &a.ak && reaches(i, ch, c))
 }
 
+/// Whether a snapshot this node would write as `who` stamped `ts` (author and actor `who`) holds
+/// the right over held body `(tid, ak)` of `c` (`holds_right` for a snapshot not written yet; its ID
+/// sorts after every commit of `who` at `ts`). A purge-on-replace cover asks it
+/// (`replace::settle_none`).
+pub(super) fn would_hold_right(core: &Core, who: &Tid, ts: Ts, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
+    let Some(m) = core.ix.commits.get(c) else { return false };
+    let Some(a) = m.aspect(tid, ak).and_then(|ai| m.header.aspects.get(ai)) else { return false };
+    let point = Point { ts, node: *who, commit: CommitId([0xff; 32]) };
+    core.timelines.get(&a.tid).is_some_and(|tl| tl.purge_stands(who, &a.tid, a.retention.by, &m.header.actor, point))
+}
+
 /// Whether commit `pc` (header `p`: a purge request or a compaction snapshot) holds the right over
 /// delta `a` of a commit with header `ch`, at its own key (spec/permissions.md §6): its author
 /// does, and the actor it acts for, neither by a role a demotion's frontier took from this commit.

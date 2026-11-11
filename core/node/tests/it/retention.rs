@@ -2844,6 +2844,55 @@ fn replaced_ahead_of_the_clock_waits_only_where_kept_spec_commits_5() {
     assert!(e.drop_from(&r1, &t, &reg).unwrap() <= e.now().0);
 }
 
+// spec/commits.md §5 (purge on replace cover): a writer whose own snapshot would hold no right
+// over a replaced body writes no cover while another held cover drops it there; the right holder
+// still writes one. Purge set `admin`: peer 2 replaces peer 1's body and covers it (no cover
+// held, it writes one without the right); peer 1, a plain writer, takes that cover then the
+// replacement and drops the body under it with no snapshot of its own; peer 0, the admin, covers.
+#[test]
+fn none_writer_without_the_right_adds_no_cover_spec_commits_5() {
+    use osis_schema::{PurgeBy, Retention};
+    let mut lp = net(3, 0x6e05);
+    let t = new_thing(&mut lp, 0);
+    for i in [1, 2] {
+        let p = lp.peers[i].engine.me();
+        set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
+    }
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    sync(&mut lp, 2, 1);
+    lp.advance(10);
+    let k = ak("t:gone.0");
+    let admin_only = |v: &str| {
+        let mut m = Mutation::new();
+        m.retention(t, &GONE, Retention { by: PurgeBy::Admin }).unwrap();
+        m.set(t, &GONE, &s(v)).unwrap();
+        m
+    };
+    let c1 = lp.peers[1].commit(admin_only("one")).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    sync(&mut lp, 1, 2);
+    lp.advance(10);
+    let c2 = lp.peers[2].commit(admin_only("two")).unwrap().unwrap();
+    let cover = snapshots_held(&mut lp, 2, t, &k);
+    assert_eq!(cover.len(), 1, "no cover held: the editor writes one, right or not");
+    let pk = packages(&mut lp, 2);
+    for id in [cover[0], c2] {
+        let p = pk.iter().find(|p| p.id == id).unwrap();
+        lp.deliver(1, p).unwrap();
+        lp.peers[1].reexamine().unwrap();
+    }
+    let e = &mut lp.peers[1].engine;
+    assert!(!e.body_not_dropped(&c1, &t, &k), "dropped under the editor's cover");
+    assert_eq!(snapshots_held(&mut lp, 1, t, &k), cover, "no cover of its own: it would hold no right either");
+    assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(s("two")));
+    sync(&mut lp, 2, 0);
+    assert!(!lp.peers[0].engine.body_not_dropped(&c1, &t, &k));
+    let admin = lp.peers[0].engine.me();
+    let own: Vec<_> = snapshots_held(&mut lp, 0, t, &k).into_iter().filter(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.author == admin)).collect();
+    assert_eq!(own.len(), 1, "the admin covers it with the right");
+}
+
 // spec/commits.md §5 (purge on replace cover): an editor that never held the body it replaced
 // (a concurrent write) covers it once the body arrives; a reader holding both drops it when that
 // cover arrives.

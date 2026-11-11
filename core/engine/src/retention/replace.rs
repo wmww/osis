@@ -3,7 +3,8 @@
 //! covers goes as covered at every node, the snapshot's writer holding the purge right over it or
 //! not; a writer holding a replaced purge-on-replace body that no snapshot holding the right
 //! covers writes one in the transaction it comes to hold one (the replacing write or the body
-//! applied, a validity flip, a role change making it a writer, a setting arriving), so the body
+//! applied, a validity flip, a role change making it a writer, a setting arriving), unless its own
+//! would hold no right either and another held cover already drops it, so the body
 //! goes there at once and everywhere else when that snapshot arrives: the right holders' covers
 //! keep the promise. A node without write writes none and drops only under a writer's snapshot. Judged at the end of each transaction over the aspects whose
 //! purge-on-replace bodies, snapshots or roles changed (`Core::none_due`), from what is held then: a
@@ -116,7 +117,9 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
         }
         // a node that may write a snapshot (every writer holds the right over a `writer` body,
         // spec/permissions.md §6), judged at the stamp it would carry; one that may later waits
-        // for what moves that (`wake_covers`)
+        // for what moves that (`wake_covers`). One whose snapshot would hold no right over a body
+        // another held cover already drops here owes none for it: its own would add nothing
+        // (spec/commits.md §5 Purge on replace)
         let mut owed = false;
         let ts = tx.core.hlc.peek();
         let may = if !written.contains(&k) && !uncovered.is_empty() { super::snapshot::may_snapshot(tx, &tid, &ak, false, ts)? } else { MayWrite::No };
@@ -125,12 +128,18 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
             MayWrite::Yes if tx.core.ix.cover_waits.get(&tid).is_some_and(|w| w.contains(&tid)) => end_wait(tx.core, &tid),
             _ => {}
         }
-        if may == MayWrite::Yes {
+        if may == MayWrite::Yes
+            && let Ok(me) = tx.core.writer_for(&tid)
+        {
             for (c, ai) in &uncovered {
-                if under_purge(tx, c, *ai, &tid, &ak, &kept)? {
-                    owed = true;
-                    break;
+                if !under_purge(tx, c, *ai, &tid, &ak, &kept)? {
+                    continue;
                 }
+                if !super::purge::would_hold_right(tx.core, &me, ts, c, &tid, &ak) && coverer(tx, c, &tid, &ak, false)?.is_some() {
+                    continue;
+                }
+                owed = true;
+                break;
             }
         }
         if owed {

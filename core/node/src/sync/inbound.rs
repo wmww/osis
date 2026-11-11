@@ -656,8 +656,10 @@ impl SyncEngine {
             created.extend(commits.iter().flat_map(|o| o.commit.header.aspects.iter().filter(|a| a.ak.as_str() == "created.0").map(|a| a.tid)));
             // the retries are of every label's entries: each under its own group
             on = None;
-            // creations first, then role commits by `ts` (spec/commits.md §4)
-            commits.sort_by_key(|o| (!carries_creation(&o.commit), !o.commit.header.kind.is_role(), o.commit.header.ts));
+            // creations first, then role commits by `ts` (spec/commits.md §4), then compaction
+            // snapshots: a replacing write that came with its writer's cover finds it held, so no
+            // writer here owes a purge-on-replace cover of its own (spec/commits.md §5)
+            commits.sort_by_key(|o| (!carries_creation(&o.commit), !o.commit.header.kind.is_role(), !o.commit.header.kind.is_compaction(), o.commit.header.ts));
             let mut unjudged: Vec<(ToIngest, crate::Reason)> = Vec::new();
             for o in commits {
                 // a memory commit applies within the room the label's cap leaves (spec/sync.md §9)

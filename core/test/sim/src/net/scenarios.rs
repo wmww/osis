@@ -770,9 +770,10 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
 
 /// Snapshot rights end to end (spec/commits.md §5, spec/sync.md §6, §7, spec/permissions.md §6):
 /// the seed picks a purge set, the thing's setting and a mix of compacters among an admin and two
-/// plain writers, under faults. A body stays at the host and reaches a node coming fresh unless a
-/// compacter wrote a snapshot after it (once out of history any writer's cover drops it); such a
-/// body leaves the host (a node that never held that snapshot, superseded early, may keep its copy).
+/// plain writers, under faults. A body stays at the host and reaches a node coming fresh unless it
+/// is replaced and a compacter wrote a snapshot after it (once out of history any writer's cover
+/// drops it; a live body is read on its own and stays, spec/commits.md §5 Covered); such a body
+/// leaves the host (a node that never held that snapshot, superseded early, may keep its copy).
 /// Everyone reads alike, the fresh node too, whichever bodies it got; the labels go quiet
 /// (`finish`: no upload and delete loop).
 pub fn snapshot_rights(seed: u64) -> Res<Report> {
@@ -805,8 +806,8 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
         sim.commit(a, m)?;
         sim.quiet(40)?;
     }
-    // every node here writes: any writer's cover drops a body out of history, the purge right or
-    // not (spec/commits.md §5 Out of history), and at the end every body is out
+    // every node here writes: any writer's cover drops a replaced body out of history, the purge
+    // right or not (spec/commits.md §5 Out of history), and at the end every body is out
     // two rounds of overwrites, each followed by the seed's compacters
     let mut written: Vec<(osis_base::CommitId, usize, bool)> = Vec::new();
     for round in 0..2 {
@@ -854,18 +855,19 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
     let entries = sim.sync(a)?.entries(&l);
     let at_host = |c: &osis_base::CommitId| entries.iter().any(|(id, x)| live.contains(id) && matches!(x, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c));
     for (c, author, gone) in &written {
-        // purge on replace: replaced at a (its write not live there), gone everywhere once the
-        // writers acted
+        // a live body is read on its own: no cover drops it (spec/commits.md §5 Covered). Purge on
+        // replace: replaced at a (its write not live there), gone everywhere once the writers acted
         let e = sim.engine(a)?;
-        let dead = bound == 2 && !e.body_live(c, &t, &k).map_err(|x| sim.fail(x.to_string()))?;
-        let gone = &(*gone || dead);
+        let is_live = e.body_live(c, &t, &k).map_err(|x| sim.fail(x.to_string()))?;
+        let dead = bound == 2 && !is_live;
+        let gone = &(!is_live && (*gone || dead));
         // under keep at least a compacter's snapshot may be superseded before the bound passes: the
         // body then waits for the next snapshot with the right, so only what stays is certain
         // the author's own whole replaces cover it too (spec/commits.md §5 Own replaces): it wrote
         // two later commits, scenario or random (fresh writes as b's device)
         let later = sim.written.iter().skip_while(|x| x.1 != *c).skip(1).filter(|x| (if x.0 == fresh { b } else { x.0 }) == *author).count();
         let own = later >= 2;
-        let may_go = *gone || bound == 2 || fresh_compacted || own;
+        let may_go = !is_live && (*gone || bound == 2 || fresh_compacted || own);
         if (*gone && bound != 1 && at_host(c)) || (!may_go && !at_host(c)) {
             return Err(sim.fail(format!("{by:?} bound {bound}: body of node {author} at the host {}, should be gone {gone}", !*gone)));
         }
