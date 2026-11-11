@@ -370,22 +370,23 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
 }
 
 /// Forgets released `t` once its release requests are past their expiry and nothing keeps it
-/// (spec/commits.md §5 Forgetting; `end_thing` dropped every part of it and its record): the
-/// commits whose every part is on it, or on a thing not held here, go whole, header and ID
-/// included (node-sync deletes their entries where it may, then forgets them); a commit with parts on a
-/// held thing keeps its header and forgets the drop marks of its parts on `t`, which count as
-/// never received: not fetched, joined and judged again if a copy comes (spec/commits.md §5
-/// Never received). `t` is then unknown here, as on a node that never held it.
+/// (spec/commits.md §5 Forgetting; `end_thing` dropped every part of it and its record). A commit
+/// whose every part is on `t` or marked forgotten (`Meta::forgot`: on a released thing forgotten
+/// here before, this transaction's included) goes whole, header and ID included (node-sync deletes
+/// its entries where it may, then forgets them). Any other commit has a part on a thing that is
+/// not dead here, held or not (a thing whose record is not held may live elsewhere, its part in
+/// these entries): it keeps its header, and its parts on `t` count as never received, marked
+/// forgotten: not fetched, joined (the mark going) if a copy comes (spec/commits.md §5 Never
+/// received). `t` is then unknown here, as on a node that never held it.
 fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     let aks: Vec<Ak> = tx.core.aspects_of(t).map(|((_, ak), _)| ak.clone()).collect();
     let commits: Vec<CommitId> = tx.core.on_thing(t).collect();
-    // aspects of things not held that a commit going whole had parts on (a thing forgotten
-    // earlier whose header this commit kept for `t`)
+    // aspects of things forgotten earlier that a commit going whole had marked parts on
     let mut others: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     for c in commits {
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-        let whole = m.header.aspects.iter().all(|a| a.tid == *t || tx.core.created(&a.tid).is_none());
-        if whole {
+        let on_t: Vec<usize> = m.header.aspects.iter().enumerate().filter(|(_, a)| a.tid == *t).map(|(ai, _)| ai).collect();
+        if (0..m.header.aspects.len()).all(|ai| on_t.contains(&ai) || m.forgot.contains(&ai)) {
             others.extend(m.header.aspects.iter().filter(|a| a.tid != *t).map(|a| (a.tid, a.ak.clone())));
             let header = m.header.arc();
             crate::apply::unindex_commit(tx, &c)?;
@@ -394,10 +395,16 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
             tx.core.memory.dropped.push((c, header, crate::engine::MemoryDrop::Gone));
             continue;
         }
-        let on: Vec<usize> = m.header.aspects.iter().enumerate().filter(|(ai, a)| a.tid == *t && m.dropped.contains_key(ai)).map(|(ai, _)| ai).collect();
-        for ai in on {
+        let dropped: Vec<usize> = on_t.iter().copied().filter(|ai| m.dropped.contains_key(ai)).collect();
+        for ai in dropped {
             super::reopen(tx, &c, ai)?;
         }
+        let Some(mut m) = tx.core.ix.commits.get(&c).cloned() else { continue };
+        m.forgot.extend(on_t.into_iter().filter(|ai| m.missing.contains(ai)));
+        if let Some(blob) = tx.get_commit(&c)? {
+            tx.put_commit(&c, &blob, &m, Shred::No, None)?;
+        }
+        tx.core.put_meta(c, m);
         tx.core.mark_changed(c);
     }
     // as a node that never held it: no per-aspect row of it stays

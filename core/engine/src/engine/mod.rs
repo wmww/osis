@@ -92,6 +92,10 @@ pub struct Meta {
     /// Held plain parts whose delta replaces the aspect whole (`retention::snapshot::replaces`):
     /// what stands as an own replace (`Indexes::own_replaces`).
     pub whole: BTreeSet<usize>,
+    /// Those of `missing` dropped with a released thing forgotten here (spec/commits.md §5
+    /// Forgetting): dead at every node, so they keep no header; a copy arriving joins them as
+    /// any missing part, and the mark goes with it.
+    pub forgot: BTreeSet<usize>,
 }
 
 /// Why a part dropped, where that decides whether it can come back.
@@ -222,7 +226,7 @@ pub(crate) type CoverCache = (CommitId, usize, Vec<osis_crdt::Fragment>, Option<
 impl Meta {
     /// A commit's meta from its decoded header.
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing, whole: BTreeSet::new() }
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing, whole: BTreeSet::new(), forgot: BTreeSet::new() }
     }
     /// The index of aspect `(tid, ak)` in the commit.
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
@@ -2092,7 +2096,9 @@ impl Core {
 
     /// Sets `id`'s meta: every change to what a part holds goes through here or `take_meta`, so
     /// the indexes derived from it stay exact.
-    pub(crate) fn put_meta(&mut self, id: CommitId, m: Meta) {
+    pub(crate) fn put_meta(&mut self, id: CommitId, mut m: Meta) {
+        // a part joined or dropped since is no longer marked forgotten
+        m.forgot.retain(|ai| m.missing.contains(ai));
         self.index_own(&id, &m, true);
         // a part held invalid (a late part joining, a leftover kept) goes at the transaction's end
         if (0..m.valid.len()).any(|ai| !m.valid_at(ai) && m.holds(ai)) {
