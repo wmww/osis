@@ -97,7 +97,7 @@ Terms:
 - A thing's permission history is kept whole: every role change ever made, a few hundred bytes each, and a node that starts holding the thing fetches and checks all of it.
 - Cost the app chooses: under "purge on replace", every edit that replaces earlier content costs O(the aspect's state) at each writer holding the replaced content, where an edit with no history promised costs O(the change).
 - Direct rosters hold thousands of holders; larger ones nest.
-- Every wire object has a fixed maximum size. Peer input never causes a panic or unbounded allocation, work, storage or diagnostics.
+- Every wire object has a fixed maximum size. Peer input never causes a panic or unbounded allocation, work, storage or diagnostics. Limit: memory for open connections grows with how many peers are connected; a node does not yet shed connections when memory runs low.
 - Large values stream; no whole value is ever needed in memory.
 
 ## Generality (goal)
