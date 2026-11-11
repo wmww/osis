@@ -6,7 +6,7 @@ and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources
 osis-host cannot reach decryption (`host_blind`), and no test can bind the real LAN port or
 announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`), and only the engine's `apply::checked`
 vouches for checked delta bytes (`checked_bytes`), and every tools/known_failures.txt line names
-an existing issue file and an existing test or sim scenario (`known_failures`).
+an existing issue file, an existing test or sim scenario and a valid pattern (`known_failures`).
 Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
 libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
 import glob, os, re, sys, tomllib

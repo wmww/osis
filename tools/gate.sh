@@ -147,7 +147,9 @@ results=$sel.res
 passed() {
   cpu
   python3 "$tools/limits.py" check gate "$cpu" $(( $(date +%s) - t0 - $1 )) || true
-  if [ -e "$results" ]; then
+  # once a stage is expected (`$sel` exists), the summary decides: a hold that never ran (a
+  # refused or failed tools/heavy) leaves its stages unrun, which the summary counts NEW
+  if [ -e "$sel" ] || [ -e "$results" ]; then
     rc=0; python3 "$tools/gate_failures.py" "$sel" "$results" || rc=$?
     [ "$rc" = 0 ] || exit "$rc"
   fi
@@ -159,7 +161,7 @@ gui_pkgs="-p osis-kit -p osis-app -p osis-android"
 # shellcheck disable=SC2086
 gui_lint() { limited gate.gui-lint cargo clippy $gui_pkgs --all-targets --locked -- -D warnings; }
 # shellcheck disable=SC2086
-gui_test() { tested gate.gui-tests "$tmp/gui.log" cargo test $gui_pkgs --locked; }
+gui_test() { echo "expect gate.gui-tests" >> "$sel"; tested gate.gui-tests "$tmp/gui.log" cargo test $gui_pkgs --locked --no-fail-fast; }
 # A change of the GUI and docs alone: no core build or test. Called from `if` bodies only: in an
 # `a || f` list `set -e` is off inside f.
 gui_only() {
