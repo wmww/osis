@@ -86,6 +86,8 @@ impl SyncEngine {
                 suspects_due: self.suspects_due.clone(),
                 repair_state: self.repair_state.clone(),
                 links_failed: self.links_failed.clone(),
+                joined_touched: self.joined_touched.clone(),
+                joined_failed: self.joined_failed.clone(),
                 tied: self.tied.clone(),
                 first: self.first.clone(),
                 left: self.left.clone(),

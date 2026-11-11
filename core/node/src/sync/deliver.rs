@@ -522,11 +522,12 @@ impl SyncEngine {
     /// changed (everywhere at start). Whether it wrote any. A leave that failed is not tried
     /// again in this run.
     pub(crate) fn leave_ended_links(&mut self) -> Result<bool> {
+        // no account yet: keep what was noted (a full check included) for when it has one
+        let Some(me) = self.engine.account_tid() else { return Ok(false) };
         let touched = self.joined_touched.replace(BTreeSet::new());
         if touched.as_ref().is_some_and(BTreeSet::is_empty) {
             return Ok(false);
         }
-        let Some(me) = self.engine.account_tid() else { return Ok(false) };
         let mut wrote = false;
         for k in self.engine.joined_links_ended(touched.as_ref()) {
             if self.joined_failed.contains(&k) {
