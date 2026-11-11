@@ -138,10 +138,10 @@ fn two_accounts_three_nodes_one_peer_localhost() {
     assert_eq!(absent.status.code(), Some(3), "Alice's last change undone everywhere: absent");
 
     // a bundle carries the home group to the other node by hand
-    let n = osis(&a1, &["create", "--in", "me", "t:x.0", "\"by hand\""]);
+    let n = osis(&a1, &["create", "--in", "home", "t:x.0", "\"by hand\""]);
     // a bundle holds what is uploaded under the sync ID: a pass uploads it (the node syncs; a2 does not)
     osis(&a1, &["sync"]);
-    let bundle = osis_in(&a1, &["bundle", "export", "me"], b"");
+    let bundle = osis_in(&a1, &["bundle", "export", "home"], b"");
     osis_in(&a2, &["bundle", "import"], &bundle);
     assert_eq!(osis(&a2, &["get", &n, "t:x.0"]), "\"by hand\"");
     assert!(osis(&a2, &["inspect", "thing", &n]).contains("t:x.0"));
@@ -332,7 +332,7 @@ fn chat_channel_localhost() {
 // spec/data-model.md §9 (`host^.0` `own`), notes/cli.md Serving: a dedicated peer node of
 // Alice's, paired and then serving under `own` with no other setup (its address from `serving show`, before it
 // serves, so one port picked up front), the only peer she has: her home, a group made afterwards and a
-// link to it reach it; Bob, on that peer only, redeems the link (his own home it refuses:
+// link to it reach it; Bob, on that peer only, redeems the link (his home group it refuses:
 // his `sync` exits 6 naming the peer that does not admit it).
 #[test]
 #[ignore]
@@ -362,7 +362,7 @@ fn own_serving_node_localhost() {
     let o = cmd().arg("-s").arg(&b).args(["--timeout", "5s", "sync"]).output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(6), "{err}");
-    assert!(err.contains(&format!("{addr} does not admit group {} (yet)", field(&home, "me"))), "{err}");
+    assert!(err.contains(&format!("{addr} does not admit group {} (yet)", field(&home, "home"))), "{err}");
 }
 
 /// Runs `osis` once; (exit code, stdout, stderr).

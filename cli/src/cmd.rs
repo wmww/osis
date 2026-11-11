@@ -745,12 +745,13 @@ fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     };
     let peers = own_peers(&db)?;
     let sw = format!("osis {}", env!("CARGO_PKG_VERSION"));
-    let mut lines = vec![format!("me\t{}", db.me().to_uri()), format!("node\t{}", db.node().to_uri())];
+    let mut lines = vec![format!("me\t{}", db.me().to_uri()), format!("home\t{}", db.home().to_uri()), format!("node\t{}", db.node().to_uri())];
     lines.extend(peers.iter().map(|s| format!("peer\t{s}")));
     lines.push(format!("store\t{store}"));
     lines.push(format!("software\t{sw}"));
     let j = J::obj([
         ("me", J::tid(db.me())),
+        ("home", J::tid(db.home())),
         ("node", J::tid(db.node())),
         ("peers", J::Arr(peers.iter().map(|s| J::str(s.to_string())).collect())),
         ("store", J::str(store)),

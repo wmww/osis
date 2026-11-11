@@ -179,7 +179,7 @@ pub enum Cmd {
         #[arg(long = "client-listen", value_name = "URL")]
         client_listen: Vec<String>,
     },
-    /// Create a thing, optionally setting aspects: create --in me note:title.0 '"x"'
+    /// Create a thing, optionally setting aspects: create --in home note:title.0 '"x"'
     Create(CreateArgs),
     /// Read an aspect (or a path in it); absent exits 3
     Get {
