@@ -54,6 +54,7 @@ impl SyncEngine {
                 vetted: self.vetted.clone(),
                 hint_failed: self.hint_failed.clone(),
                 inbox_copied: self.inbox_copied.clone(),
+                inbox_moved: self.inbox_moved.clone(),
                 secrets_counted: self.secrets_counted.clone(),
                 reading_counted: self.reading_counted.clone(),
                 unsettled_memo: self.unsettled_memo.clone(),

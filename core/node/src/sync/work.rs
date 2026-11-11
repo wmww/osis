@@ -51,16 +51,35 @@ pub(crate) struct Touched {
 }
 
 /// The inbox blobs whose copy a home label's pass found all there (`inbox_certificates`), so
-/// passes do not walk them again: a person's grants of 90 days per pass. Dropped when a thing that
-/// moves the answer changes, when an entry or a host's copy goes, and by a pass that judges all.
+/// passes do not walk them again: a person's grants of 90 days per pass. Kept per label under
+/// what "held" was counted against (`InboxAt`); dropped when a thing that moves the answer
+/// changes, when an entry or a host's copy goes, and by a pass that judges all.
 #[derive(Clone, Default)]
 pub(crate) struct InboxCopied {
     blobs: BTreeMap<(LabelId, BlobId), BTreeSet<Tid>>,
     by_thing: BTreeSet<(Tid, LabelId, BlobId)>,
+    at: BTreeMap<LabelId, InboxAt>,
     losses: u64,
 }
 
+/// What a label's held parts are counted against (`held_parts`): the hosts another node's entry
+/// must be present at (`counted_at`, sorted; `None`: served with no host) and the newest read
+/// epoch a copy carrying a rotation must open under.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct InboxAt {
+    pub hosts: Option<Vec<super::state::HostKey>>,
+    pub epoch: Option<osis_crypto::Epoch>,
+}
+
 impl InboxCopied {
+    /// Counts under `l` are now against `at`: what was found there against anything else goes.
+    pub fn counted(&mut self, l: LabelId, at: InboxAt) {
+        if self.at.get(&l) != Some(&at) {
+            self.forget_label(&l);
+            self.at.insert(l, at);
+        }
+    }
+
     pub fn has(&self, l: &LabelId, b: &BlobId) -> bool {
         self.blobs.contains_key(&(*l, *b))
     }
@@ -94,6 +113,7 @@ impl InboxCopied {
     }
 
     pub fn forget_label(&mut self, l: &LabelId) {
+        self.at.remove(l);
         let hit: Vec<(LabelId, BlobId)> = self.blobs.keys().filter(|(x, _)| x == l).copied().collect();
         for (x, b) in hit {
             self.remove(x, b);

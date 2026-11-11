@@ -97,7 +97,7 @@
     - a re-seal of G;
     - a rotation boxing G where G held no box at the read epoch before it.
   - **Placement**: under G's inbox (§2) by deposit, or by upload when the sender holds the inbox label's write key. The inbox group's admins may delete it earlier than its expiry.
-  - **Re-send**: its prefix expiry is `INBOX_LIFETIME`, after which the sender re-sends unless the recipient has since acted on it: a commit by it writing a thing the blob names or a thing whose record chain (spec/permissions.md §1) reaches such a thing. Acting elsewhere does not count. A sender MAY bound the number of re-sends.
+  - **Re-send**: its prefix expiry is `INBOX_LIFETIME`, after which the sender re-sends, and sooner once the label it went under is no longer the recipient's inbox (`keys.0`), unless the recipient has since acted on it: a commit by it writing a thing the blob names or a thing whose record chain (spec/permissions.md §1) reaches such a thing. Acting elsewhere does not count. A sender MAY bound the number of re-sends.
   - **Stamping in place**: a writer of the inbox's group stamps a deposited inbox blob in place (§5).
     - It does so when either:
       - its commit is applied, valid in every part the blob carries, and about an actor whose inbox the label is (it has parts a copy below would take for that actor); or

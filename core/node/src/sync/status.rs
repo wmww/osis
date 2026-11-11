@@ -226,6 +226,13 @@ impl SyncEngine {
         self.stranded_on.contains(l)
     }
 
+    /// Inbox deliveries to `holder` this node keeps: commit, re-sends so far and the label it
+    /// last went under (tests).
+    #[doc(hidden)]
+    pub fn inbox_deliveries(&self, holder: &Tid) -> Vec<(osis_base::CommitId, u32, Option<LabelId>)> {
+        self.state.sent_inbox.values().filter(|s| s.holder == *holder).map(|s| (s.commit, s.tries, s.label)).collect()
+    }
+
     /// Entries this node knows under a label (tests).
     pub fn entries(&self, l: &LabelId) -> Vec<(osis_base::BlobId, EntryKind)> {
         self.state.label_entries(l).map(|(b, e)| (b, e.kind.clone())).collect()

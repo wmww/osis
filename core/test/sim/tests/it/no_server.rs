@@ -943,8 +943,7 @@ fn writes_cross_a_reader_both_ways_row_24_spec_sync_3() {
 // spec/sync.md §3: as above, A writing first: a pass must not find a grant's copy wanted after
 // an earlier pass found it all there (`inbox_certificates`' debug assertion).
 #[test]
-#[ignore = "issues/inbox-copied-stale.md"]
-fn repro_a_write_then_a_reply_over_a_reader_keeps_the_inbox_copy_cache_true() {
+fn a_write_then_a_reply_over_a_reader_spec_sync_3() {
     let (mut w, a, _b, c, g) = over_a_reader();
     say(&a, g, "a to c");
     w.advance(LONG_MS);

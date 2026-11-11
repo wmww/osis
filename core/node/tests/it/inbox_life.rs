@@ -1703,3 +1703,45 @@ fn an_actor_naming_someone_elses_inbox_hides_nothing_spec_sync_2() {
     }
     assert_eq!(net.engine(b).role_on(&t), Some(Role::Read), "his inbox still opens for him");
 }
+
+// spec/sync.md §3: a grant deposited under Bob's inbox after he replaced it, by a sender still
+// holding his earlier `keys.0`, is read by nobody there: once the sender sees the new inbox it
+// sends again at once (one re-send per replacement it sees, none for another `keys.0` change),
+// not after `INBOX_LIFETIME`.
+#[test]
+fn a_delivery_under_a_replaced_inbox_is_sent_again_spec_sync_3() {
+    let (mut net, _, a, b, _, bob, g, home) = alice_and_bob();
+    let d = net.engine(b).account().unwrap().unwrap().1;
+    let (new, acts) = net.sync(b).replace_label(&d, &home).unwrap();
+    net.actions(b, acts);
+    net.run();
+    grant(&mut net, a, g, bob);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(b).role_on(&g), None, "nobody reads the replaced inbox");
+    let sent = net.sync(a).inbox_deliveries(&bob);
+    assert!(matches!(sent.as_slice(), [(_, 0, Some(l))] if *l == home), "{sent:?}");
+    net.pair(b, a);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(b).role_on(&g), Some(Role::Read));
+    let sent = net.sync(a).inbox_deliveries(&bob);
+    assert!(matches!(sent.as_slice(), [(_, 1, Some(l))] if *l == new), "one re-send: {sent:?}");
+    // churn: each replacement the sender sees costs one re-send, within `MAX_INBOX_RESENDS` in all
+    let mut l = new;
+    for n in 2..=4u32 {
+        let (next, acts) = net.sync(b).replace_label(&d, &l).unwrap();
+        net.actions(b, acts);
+        net.run();
+        net.pair(b, a);
+        for _ in 0..2 {
+            net.advance(70_000);
+        }
+        l = next;
+        let sent = net.sync(a).inbox_deliveries(&bob);
+        let want = if n <= 3 { vec![(n, Some(l))] } else { Vec::new() };
+        assert_eq!(sent.iter().map(|x| (x.1, x.2)).collect::<Vec<_>>(), want, "replacement {n}");
+    }
+}

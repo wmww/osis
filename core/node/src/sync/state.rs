@@ -206,8 +206,8 @@ pub struct OutRec {
 }
 
 /// A role commit delivered by inbox to `holder` (spec/sync.md §3): re-sealed and sent
-/// again once `INBOX_LIFETIME` passed since `at` (wall ms) unless the holder acted;
-/// `at` 0: not sent yet (`SyncEngine::send_inbox`).
+/// again once `INBOX_LIFETIME` passed since `at` (wall ms), or once `label` is no longer the
+/// holder's inbox, unless the holder acted; `at` 0: not sent yet (`SyncEngine::send_inbox`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SentInbox {
     pub holder: Tid,
@@ -218,6 +218,8 @@ pub struct SentInbox {
     pub at: u64,
     /// Re-sends so far.
     pub tries: u32,
+    /// The inbox label it last went under (`None`: not sent yet).
+    pub label: Option<LabelId>,
 }
 
 impl SentInbox {
@@ -1434,12 +1436,13 @@ impl State {
     }
 
     /// Records an inbox delivery, or a re-send of one (counted).
-    pub fn note_sent(&mut self, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool, at: u64) {
+    pub fn note_sent(&mut self, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool, at: u64, label: LabelId) {
+        let label = Some(label);
         let x = match self.sent_inbox.get(&(holder, commit)) {
             // the first send of a delivery queued unsent (`at` 0) is no re-send
-            Some(old) if old.at == 0 => SentInbox { at, ..old.clone() },
-            Some(old) => SentInbox { at, tries: old.tries.saturating_add(1), ..old.clone() },
-            None => SentInbox { holder, commit, things, edge_only, at, tries: 0 },
+            Some(old) if old.at == 0 => SentInbox { at, label, ..old.clone() },
+            Some(old) => SentInbox { at, label, tries: old.tries.saturating_add(1), ..old.clone() },
+            None => SentInbox { holder, commit, things, edge_only, at, tries: 0, label },
         };
         self.put(key(SENT_INBOX, &[holder.as_bytes(), &commit.0]), encode_sent(&x));
         self.sent_inbox.insert((holder, commit), x);
@@ -1451,7 +1454,7 @@ impl State {
         if self.sent_inbox.contains_key(&(holder, commit)) {
             return;
         }
-        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0 };
+        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0, label: None };
         self.put(key(SENT_INBOX, &[holder.as_bytes(), &commit.0]), encode_sent(&x));
         self.sent_inbox.insert((holder, commit), x);
     }
@@ -1766,7 +1769,10 @@ fn encode_sent(x: &SentInbox) -> Vec<u8> {
     for t in &x.things {
         w = w.raw(t.as_bytes());
     }
-    w.take()
+    match &x.label {
+        Some(l) => w.u8(1).raw(&l.0).take(),
+        None => w.u8(0).take(),
+    }
 }
 
 /// `State::note_unsent` inside a flow's transaction (the commit's own): a crash before
@@ -1774,7 +1780,7 @@ fn encode_sent(x: &SentInbox) -> Vec<u8> {
 fn note_unsent_tx(tx: &mut Tx<'_>, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()> {
     let k = key(SENT_INBOX, &[holder.as_bytes(), &commit.0]);
     if tx.txn.get_local(&k)?.is_none() {
-        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0 };
+        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0, label: None };
         tx.txn.put_local(&k, &encode_sent(&x), Shred::No)?;
     }
     Ok(())
@@ -1885,7 +1891,8 @@ fn decode_sent(v: &[u8]) -> Result<SentInbox> {
     for _ in 0..n {
         things.push(r.tid()?);
     }
-    Ok(SentInbox { holder, commit, things, edge_only, at, tries })
+    let label = if r.u8()? == 1 { Some(LabelId(r.arr()?)) } else { None };
+    Ok(SentInbox { holder, commit, things, edge_only, at, tries, label })
 }
 
 /// The records engine transactions touch (`Engine::set_sync_records`).

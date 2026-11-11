@@ -154,6 +154,12 @@ impl SyncEngine {
         wide |= !undropped.is_empty();
         narrow.extend(ch.aspects.iter().cloned());
         self.touched.states.extend(ch.aspects);
+        // a holder's inbox may have moved: its deliveries are looked at (`send_inbox`)
+        for (t, _) in narrow.iter().filter(|(_, a)| a.as_str() == "keys.0") {
+            if self.state.sent_inbox.range((*t, osis_base::CommitId([0; 32]))..).next().is_some_and(|((h, _), _)| h == t) {
+                self.inbox_moved.insert(*t);
+            }
+        }
         let cs = ch.commits;
         // this node's own write passes a filling label too (`LConn::want_pass`)
         if own {

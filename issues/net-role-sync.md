@@ -6,7 +6,7 @@
 ## Replacement (index > 0)
 Decided (Tess): replacement goes, after issues/net-one-peer.md.
 - Its one cause: a removed admin still holding the delete key registers a child with keys only it knows at a server before the honest step gets there, locking holders out there (notes/label-access.md, Replacement labels). After net-one-peer a serving node that reads the group needs no first-come registration, and a peer that cannot read is by default the user's own node, where the remedy is local (drop the registration, or the group's readers drop the peer).
-- Then going: the index in key derivation, `replaced`, `replace_label`, retiring, `register_path` for replaced labels, the index in hints and payloads, "one live" in place of "one", issues/replaced-inbox-resend.md. Stays: re-registering a recorded path at a peer that lost its data.
+- Then going: the index in key derivation, `replaced`, `replace_label`, retiring, `register_path` for replaced labels, the index in hints and payloads, "one live" in place of "one", the early re-send of a delivery under a replaced inbox (`SentInbox::label`). Stays: re-registering a recorded path at a peer that lost its data.
 - Checked no other cause of a lost sync ID exists: with `unsync` gone, nothing in the engine or the API marks a label replaced except `replace_label`, and only tests and the sim call it; a label a host lost is re-registered from its recorded path; a group's readers keep the keys; concurrent admins giving a thing secrets make two live sync IDs of index 0, which both sync (an accepted fork, not a loss).
 
 ## Stays, and why

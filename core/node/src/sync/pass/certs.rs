@@ -221,7 +221,7 @@ impl SyncEngine {
     /// syncs the label with, or, for a label served with no host, in this node's own served
     /// state (`None`): this node is its host (`local_passes`), so what it places does not move
     /// with which peers happen to be connected.
-    fn counted_at(&mut self, g: &Tid, l: LabelId) -> Option<Vec<HostKey>> {
+    pub(super) fn counted_at(&mut self, g: &Tid, l: LabelId) -> Option<Vec<HostKey>> {
         if self.group_label(g, &l).is_some_and(|gl| crate::sync::peers::hostless(&gl.hosts)) {
             return None;
         }

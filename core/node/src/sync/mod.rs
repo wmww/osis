@@ -158,6 +158,9 @@ pub struct SyncEngine {
     /// (`vet_inbox_hints`); at most one per inbox blob, and a restart forgets them: tried again.
     pub(crate) hint_failed: BTreeSet<(LabelId, Tid, u64)>,
     pub(crate) inbox_copied: work::InboxCopied,
+    /// Holders of recorded inbox deliveries whose `keys.0` changed since `send_inbox` last
+    /// looked (every one at a start): a delivery under a label no longer their inbox is due.
+    pub(crate) inbox_moved: BTreeSet<osis_base::Tid>,
     /// `secrets_count` at this engine generation (both).
     pub(crate) secrets_counted: std::cell::Cell<Option<((u64, u64), usize)>>,
     /// `secrets_shape`'s count of reading-only secrets, per engine state.
@@ -373,6 +376,7 @@ impl SyncEngine {
         let state = State::load(&mut engine)?;
         // deposits not answered before a restart go again
         let outbox = state.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
+        let inbox_moved = state.sent_inbox.keys().map(|k| k.0).collect();
         let started = engine.now().0;
         let hub_store = std::sync::Arc::new(std::sync::Mutex::new(host::memory_store(engine.clock())?));
         Ok(SyncEngine {
@@ -407,6 +411,7 @@ impl SyncEngine {
             vetted: None,
             hint_failed: BTreeSet::new(),
             inbox_copied: work::InboxCopied::default(),
+            inbox_moved,
             secrets_counted: std::cell::Cell::new(None),
             reading_counted: std::cell::Cell::new(None),
             unsettled_memo: None,

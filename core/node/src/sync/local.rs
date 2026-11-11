@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) const DEPOSIT_RETRY_CAP_MS: u64 = 3_600_000;
 
 /// Re-sends of an inbox delivery whose holder never acts (local policy; one per
-/// `INBOX_LIFETIME`).
+/// `INBOX_LIFETIME`, or at once for each replacement of its inbox the sender sees).
 const MAX_INBOX_RESENDS: u32 = 3;
 
 /// Where a queued deposit (`State::outbox`, `SyncEngine::queue_deposit`) stands, in memory: a
@@ -353,13 +353,24 @@ impl SyncEngine {
     }
 
     /// Inbox deliveries from their records (spec/sync.md §3, §5): one not sent yet (`at` 0) is
-    /// sealed and sent at once; one `INBOX_LIFETIME` old whose holder has not acted is sealed
-    /// again (to its newest keyset) and sent again, at most `MAX_INBOX_RESENDS` times; one whose
-    /// commit is gone, or whose holder acted or (for a grant or re-seal) left, is forgotten.
+    /// sealed and sent at once; one whose holder has not acted is sealed again (to its newest
+    /// keyset) and sent again when `INBOX_LIFETIME` old or once the label it went under is no
+    /// longer the holder's inbox (replaced: nobody reads it), at most `MAX_INBOX_RESENDS` times
+    /// in all; one whose commit is gone, or whose holder acted or (for a grant or re-seal) left,
+    /// is forgotten.
     pub(crate) fn send_inbox(&mut self) -> Result<()> {
         let now = self.now();
-        let due: Vec<super::state::SentInbox> = self.state.sent_inbox.values().filter(|s| s.at == 0 || s.at.saturating_add(osis_base::format::INBOX_LIFETIME_MS) <= now).cloned().collect();
-        for s in due {
+        let mut due: BTreeMap<(Tid, CommitId), super::state::SentInbox> =
+            self.state.sent_inbox.iter().filter(|(_, s)| s.at == 0 || s.at.saturating_add(osis_base::format::INBOX_LIFETIME_MS) <= now).map(|(k, s)| (*k, s.clone())).collect();
+        for h in std::mem::take(&mut self.inbox_moved) {
+            let inbox = self.engine.inbox(&h);
+            for (k, s) in self.state.sent_inbox.range((h, CommitId([0; 32]))..=(h, CommitId([0xff; 32]))) {
+                if s.label.is_some() && s.label != inbox {
+                    due.insert(*k, s.clone());
+                }
+            }
+        }
+        for s in due.into_values() {
             let first = s.at == 0;
             let ts = self.engine.header(&s.commit).map(|h| h.ts);
             let gone = match ts {
@@ -391,16 +402,16 @@ impl SyncEngine {
             }
             // a new seal replaces the earlier one still queued
             self.drop_delivery_out(&s.holder, &s.commit);
-            let mut sent = false;
+            let mut sent = None;
             for d in r.unwrap_or_default() {
                 if let crate::flows::Delivery::Inbox { to, inbox, blob, .. } = d {
                     let inbox_actor = self.inbox_actor(&to, &inbox.label)?.unwrap_or(to);
                     self.queue_inbox(&inbox_actor, inbox.label, &inbox.hosts, blob, Some((s.holder, s.commit)))?;
-                    sent = true;
+                    sent = Some(inbox.label);
                 }
             }
-            if sent {
-                self.state.note_sent(s.holder, s.commit, s.things.clone(), s.edge_only, now);
+            if let Some(label) = sent {
+                self.state.note_sent(s.holder, s.commit, s.things.clone(), s.edge_only, now, label);
             } else {
                 // no inbox or keys for the holder any more
                 self.forget_delivery(&s.holder, &s.commit);
