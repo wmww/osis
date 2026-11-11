@@ -45,9 +45,14 @@ fn row_key(tid: &Tid, ak: &Ak, p: &Place) -> Vec<u8> {
     [records::aspect_key(records::LEAVING, tid, ak).as_slice(), &p.0.to_u64().to_be_bytes(), &p.1.0].concat()
 }
 
-/// When a body of `k` replaced at `ts` leaves history (wall ms; 0: never in it).
+/// When a body of `k` replaced at `ts` leaves history (wall ms): the first time at or after its
+/// replacement at which no setting keeps it (spec/commits.md §5 The setting), so places leave in
+/// replaced order whatever the clock. `leaves_at` reads one replaced under no history as out at
+/// once (0), also when replaced ahead of the clock; here it leaves at its replacement, which only
+/// tells it late, never early.
 fn leaves(k: &history::Kept, ts: Ts) -> u64 {
-    k.leaves_at(Some(ts.wall_ms().0))
+    let r = ts.wall_ms().0;
+    k.leaves_at(Some(r)).max(r)
 }
 
 /// Writes local row `key` (`val`; `None`: removed) in `(tid, ak)`'s class.

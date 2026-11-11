@@ -1490,6 +1490,20 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
     Oracle { held: held.to_vec(), now, later }
 }
 
+/// spec/requirements.md Deterministic's limit for expiring edits: "an expiring edit still
+/// incomplete at a node when it expires never applies there, so that node may read what came
+/// before it, and so may a node that never held an expiring edit", until a writer compacts. Every
+/// node checked is given the history at `played.now` or earlier, the keep-everything node at
+/// `played.now`, so a commit whose expiry is at or before it reaches some node only past its
+/// expiry, and one part of it missing there for any reason (unjudgeable, dropped while invalid,
+/// late) when it arrives or is purged counts as never received (spec/commits.md §4 Unjudgeable,
+/// §5 Never received): what nodes read on the aspects its header lists may differ. One expiring
+/// later reaches every node before its expiry, and each fetches what it counts missing before
+/// then. From the history alone.
+fn expired_by_now(played: &Played) -> BTreeSet<(String, String)> {
+    played.packs.iter().filter_map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).ok()).filter(|b| b.header.expires.is_some_and(|t| t <= played.now.0)).flat_map(|b| b.header.aspects.iter().map(|a| (format!("{:?}", a.tid), a.ak.as_str().to_string())).collect::<Vec<_>>()).collect()
+}
+
 /// Past every keep bound and expiry the ops draw (30 min) from any death by `played.now`; close
 /// enough that a body held long past its bound shows.
 fn later_than(played: &Played) -> WallMs {
@@ -1586,11 +1600,12 @@ fn node_checks(p: &mut Peer, played: &Played, o: &Oracle) -> Result<(), String> 
         }
         fetch_missing(p, played, &o.held);
         let after = shown(p, &played.things);
+        let ex = expired_by_now(played);
         if let Some(d) = value_past_end(p, played, at) {
             return Err(format!("{when}, after the sync exchange: {d}"));
         }
         played.judged[0].fetch_add(after.len() as u64, std::sync::atomic::Ordering::Relaxed);
-        if let Some(d) = shown_differs(want, &after, &|_| false) {
+        if let Some(d) = shown_differs(want, &after, &|k| ex.contains(k)) {
             return Err(format!("{when}, after the sync exchange: shows other than the node keeping every body: {d}"));
         }
         let back = after.iter().filter(|(k, v)| before.get(*k) != Some(*v)).count();
@@ -3730,4 +3745,57 @@ fn covered_away_judged_on_the_walks_side() {
     use Step::*;
     let h = vec![Mixed { by: 0, t: 0, op: 17, k: 0, v: 8 }, Mixed { by: 2, t: 0, op: 18, k: 2, v: 1 }, Aim(Box::new(Compact { by: 2, t: 0, op: 24 })), Aim(Box::new(RemoveFlow { by: 1, t: 1, holder: 0, lower: false })), Aim(Box::new(Setting { by: 2, t: 0, op: 18, rule: 3 })), Aim(Box::new(Edge { by: 0, t: 7, holder: 2, role: Some(Role::Read) })), Aim(Box::new(Nested { by: 0, other: 1, t: 1, k: 2, text: true, compact: true, also: true })), RecordOnly { by: 2, under: None }];
     check(0, &h, Cfg { away: true, ..NAMED }).unwrap();
+}
+
+// spec/requirements.md Deterministic, the limit for expiring edits (spec/commits.md §4
+// Unjudgeable): 0 makes a thing reading "n", then writes G and the thing's register in one commit
+// expiring in a second. A node given that commit past its expiry before the thing's record throws
+// the thing's part out, and once the record comes the part counts as never received: it reads
+// "n" where a node given the record first reads nothing. So the order property compares no aspect
+// a commit expired by the history's end lists (`expired_by_now`).
+#[test]
+fn expired_part_given_before_its_record_reads_what_came_before_spec_requirements() {
+    use Step::*;
+    let h = vec![New { by: 0, parent: 0, write: true }, Forged { by: 0, a: 1, b: 0, how: 1, op: 27, k: 2, v: 4 }, Advance { who: None, ms: 2_000 }];
+    let played = play(0, &h);
+    let n = played.packs.len();
+    let read = |order: Vec<usize>| {
+        let mut p = deliver(&played, &order);
+        fetch_missing(&mut p, &played, &order);
+        shown(&mut p, &played.things)
+    };
+    let k = (format!("{:?}", played.things[1]), "t:reg.0".to_string());
+    assert_eq!(read((0..n).collect())[&k], "Ok(None)");
+    assert_eq!(read((0..n).rev().collect())[&k], "Ok(Some(Str(\"n\")))");
+    assert!(expired_by_now(&played).contains(&k));
+    check(0, &h, NAMED).unwrap();
+}
+
+// spec/commits.md §5 The setting (a body leaves history no earlier than replaced) and Bodies and
+// deaths (a write of a delta invalid here supersedes nothing): 0's setting keeps G's register 30
+// min after replaced and writes it; 2, unaware 0 removed it before all its writes, keeps no
+// history, replaces the register and compacts; 0 replaces it again hours later. Given the removal last,
+// 2's writes and setting turn invalid in one step: 0's first write is replaced only by 0's later
+// write, and the new timeline walks its row only once the transaction has dated it so (the
+// leaving debug check fails on a row left early).
+#[test]
+fn a_superseder_turning_invalid_dates_its_victim_before_the_timeline_walks_spec_commits_5() {
+    use Step::*;
+    let h = vec![
+        Setting { by: 0, t: 0, op: 16, rule: 3 },
+        Sync { from: 0, to: 2 },
+        Demote { by: 0, t: 0, holder: 2, at: 0, to_read: false },
+        Setting { by: 2, t: 0, op: 16, rule: 2 },
+        Write { by: 2, t: 0, op: 0, k: 0, v: 1 },
+        Compact { by: 2, t: 0, op: 0 },
+        Advance { who: None, ms: 2 * HOUR },
+        Write { by: 0, t: 0, op: 0, k: 0, v: 2 },
+    ];
+    let played = play(0, &h);
+    let n = played.packs.len();
+    let role = |i: &usize| osis_commit::CommitBlob::decode(&played.packs[*i].bytes).is_ok_and(|b| b.header.kind.is_role());
+    let demote: Vec<usize> = (played.base..n).filter(role).collect();
+    assert_eq!(demote.len(), 1, "{:?}", played.tally.show());
+    let order: Vec<usize> = (0..n).filter(|i| !demote.contains(i)).chain(demote.iter().copied()).collect();
+    assert_eq!(order_checks(&played, &order), Ok(()));
 }

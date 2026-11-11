@@ -2,14 +2,9 @@
 # NAME REPRO ISSUE PATTERN. NAME: a libtest path or sim-sweep:SCENARIO; REPRO: the setting that
 # fails on main; ISSUE: its issues/ file; PATTERN: a regex every failing unit of NAME (each seed
 # line of its panic, or its whole panic) must match (tools/gate_failures.py).
-order::held_set_decides_plain OSIS_ORDER_SEED=438123470748 issues/order-lists-seed-diverges.md ^seed \d+, Lists \(replay:
 order::held_set_decides_plain OSIS_ORDER_START=539131766525 issues/order-required-floor-plain.md held_set_decides: \w+ seeds ran, but not
 keep::any_order_until_keeps_no_more_large OSIS_KEEP_START=636109736897 issues/keep-until-order-seed.md kept only by order
-order::held_set_decides_plain OSIS_ORDER_SEED=28067082 issues/order-settings-seed-diverges.md ^seed \d+, Settings \(replay:
 ephemeral::random_churn_converges_large OSIS_EPH_START=235597868743 issues/churn-cursor-rebuild-differs.md differs from a rebuild from held bodies
-order::held_set_decides_plain OSIS_ORDER_SEED=458968566693 issues/order-partsaway-seed-diverges.md ^seed \d+, PartsAway \(replay:
-order::held_set_decides_plain OSIS_ORDER_SEED=458968566698 issues/order-left-while-in-history.md ^seed \d+, Settings \(replay:
-order::held_set_decides_plain OSIS_ORDER_SEED=939670910565 issues/order-parts-away-seed-diverges.md ^seed \d+, PartsAway \(replay:
 rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=500107895400 issues/reseal-due-permission-seed.md Permission \{ tid
 rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=192411102837 issues/rotation-holder-lacks-box-seed.md with key access lacks a box
-order::held_set_decides_plain OSIS_ORDER_SEED=562324602051 issues/order-recordonly-seed-diverges.md ^seed \d+, RecordOnly \(replay:
+order::held_set_decides_plain OSIS_ORDER_SEED=833299603861 issues/order-held-model-unknown-record-applied.md ^seed \d+, PartsAway \(replay:

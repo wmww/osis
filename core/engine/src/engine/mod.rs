@@ -3188,6 +3188,10 @@ impl Engine {
                     tx.core.drop_due.clear();
                 }
                 if r.is_ok() && !tx.core.settings_due.is_empty() {
+                    // the new timelines walk rows dated by this transaction's kills and
+                    // validity changes: a row is never early (a superseder turning invalid moves
+                    // its victims' rows later), so the walk tells no body early
+                    r = r.and_then(|v| crate::retention::leaving::date_due(&mut tx).map(|_| v));
                     r = r.and_then(|v| crate::retention::settings_changed(&mut tx).map(|_| v));
                 }
                 tx.core.settings_due.clear();

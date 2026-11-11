@@ -814,3 +814,44 @@ fn a_snapshot_is_told_leaving_history_spec_commits_5() {
         assert!(!listed(&mut lp.peers[0], &c, d) && told.contains(&c), "{c:?} left history, told");
     }
 }
+
+// spec/commits.md §5 The setting: a body leaves history at the first time at or after its
+// replacement at which no setting keeps it, so bodies leave in replaced order whatever the clock.
+// Alice keeps the register 10 min after replaced and writes it; Bob replaces it; Alice then keeps
+// nothing; Carol replaces it again. A node whose clock is behind all of it gets Carol's write
+// before Bob's, so Alice's write is scheduled to leave from Carol's stamp (late: Bob's replaced
+// it first), where no setting keeps anything. Alice's second setting arriving last leaves
+// Alice's write in history (Bob replaced it under the keep, ahead of the clock): it is not told
+// as leaving. Bob's, replaced by Carol under no history, is out, told once the clock reaches it.
+#[test]
+fn a_late_row_under_no_history_leaves_no_earlier_than_replaced_spec_commits_5() {
+    let (mut lp, d) = setup();
+    let base = base(&mut lp);
+    let early = lp.peers[0].engine.now();
+    let keep = set(&mut lp, 0, d, &setting(&[(A, keep(10 * 60_000))]));
+    let v = put(&mut lp, 0, d, "alice");
+    lp.sync_all().unwrap();
+    let b = put(&mut lp, 1, d, "bob");
+    let none = set(&mut lp, 0, d, &ct::RetentionSetting::default());
+    lp.sync_all().unwrap();
+    let c = put(&mut lp, 2, d, "carol");
+    let packs: Vec<Package> = [(0, keep), (0, v), (2, c), (1, b)].iter().map(|(i, x)| pack(&mut lp, *i, x)).collect();
+    let mut p = fresh(&base, &packs.iter().collect::<Vec<_>>(), FRESH, early);
+    p.engine.listen_commits(std::sync::Arc::new(|_: &Tid| true), &[d]).unwrap();
+    p.drain_events();
+    let x = pack(&mut lp, 0, &none);
+    p.engine.ingest(&x.bytes, x.blobs.clone()).unwrap();
+    let mut told = Vec::new();
+    for e in p.drain_events() {
+        if let osis_node::Event::Commits(ch) = e {
+            told.extend(ch.iter().filter(|x| x.tid == d).map(|x| x.id));
+        }
+    }
+    assert!(listed(&mut p, &v, d) && !told.contains(&v), "Alice's write stays in history, not told: {told:?}");
+    // Bob's is out, told (late, never early) once the clock reaches Carol's stamp
+    assert!(!listed(&mut p, &b, d));
+    p.clock.set(lp.peers[0].engine.now());
+    p.tick().unwrap();
+    let told: Vec<CommitId> = p.drain_events().into_iter().filter_map(|e| if let osis_node::Event::Commits(ch) = e { Some(ch.iter().filter(|x| x.tid == d).map(|x| x.id).collect::<Vec<_>>()) } else { None }).flatten().collect();
+    assert!(told.contains(&b), "{told:?}");
+}
