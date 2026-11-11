@@ -213,7 +213,7 @@ fn a_readers_minted_key_actors_cards_are_not_promoted_spec_sync_5() {
         let seed = osis_crypto::Secret32::from_bytes([i + 1; 32]);
         let k = e.hold_key_actor(seed.clone()).unwrap();
         let mut m = osis_node::Mutation::new();
-        assert_eq!(m.create(osis_node::identity::key_actor_record(&osis_crypto::KeyActorKeys::from_seed(&seed), &seed)), k);
+        assert_eq!(m.create(osis_node::identity::key_actor_record(&osis_crypto::KeyActorKeys::from_seed(&seed).signing.verifying_key(), &seed)), k);
         m.sign_as(k);
         let reach = osis_schema::core_types::Reach { dialable: [0; 32], items: vec![format!("{i}{}", "x".repeat(4000))], lan_secret: [0; 32], account: None };
         m.set(k, &osis_schema::core_types::REACH, &reach).unwrap();
