@@ -157,6 +157,11 @@ pub(crate) struct Serving {
     own: BTreeMap<LabelId, Own>,
     /// Replies and pushes sent, counted (`Own::merged`, `Unreported::seq`).
     seq: u64,
+    /// Per member, the highest position a reported message carrying its events brought it to
+    /// (an ended member's at most its `until`): what the requester stored of it, standing
+    /// after the member closed (`placed`: a co-reader that judged this node departed closes
+    /// the member in the step it applied the removal, before its Applied arrives).
+    carried: BTreeMap<LabelId, u64>,
 }
 
 /// A join the requester stores at its own position (`Serving::own`).
@@ -178,6 +183,8 @@ struct Unreported {
     seq: u64,
     at: u64,
     paging: Vec<(LabelId, u64)>,
+    /// The `until` of each ended member among `labels` when sent.
+    untils: Vec<(LabelId, u64)>,
 }
 
 const MAX_CROSSED: usize = 1 << 14;
@@ -193,6 +200,13 @@ impl Serving {
             Some(o) => o.at,
             None => self.reported.filter(|_| self.pulled.contains(l)),
         }
+    }
+
+    /// What the requester reported storing of member `l`'s events on this connection, member
+    /// now (`position`, capped at `until`) or not (`carried`): what `placed` counts.
+    fn stored(&self, l: &LabelId, member: bool, until: Option<u64>) -> Option<u64> {
+        let now = self.position(l).filter(|_| member).map(|p| until.map_or(p, |u| p.min(u)));
+        now.max(self.carried.get(l).copied())
     }
 
     /// Where message `seq`, bringing the stream to `at` and leaving `paging` in pages, brings
@@ -232,12 +246,18 @@ impl Serving {
         if labels.is_empty() && !self.until_due(seq, at, &paging, untils) {
             return false;
         }
-        self.unreported.push_back(Unreported { cursor: c.clone(), labels, seq, at, paging });
+        let ended = labels.iter().filter_map(|l| untils.get(l).map(|u| (*l, *u))).collect();
+        self.unreported.push_back(Unreported { cursor: c.clone(), labels, seq, at, paging, untils: ended });
         if self.unreported.len() > MAX_UNREPORTED
             && let Some(first) = self.unreported.pop_front()
             && let Some(next) = self.unreported.front_mut()
         {
             next.labels.extend(first.labels);
+            for (l, u) in first.untils {
+                if !next.untils.iter().any(|(x, _)| *x == l) {
+                    next.untils.push((l, u));
+                }
+            }
             for (l, p) in first.paging {
                 if !next.paging.iter().any(|(x, _)| *x == l) {
                     next.paging.push((l, p));
@@ -264,6 +284,12 @@ impl Serving {
         let done: Vec<Unreported> = self.unreported.drain(..=i).collect();
         for x in done {
             self.reported = Some(self.reported.map_or(x.at, |r| r.max(x.at)));
+            for l in &x.labels {
+                let at = x.paging.iter().find(|(y, _)| y == l).map_or(x.at, |(_, p)| *p);
+                let at = x.untils.iter().find(|(y, _)| y == l).map_or(at, |(_, u)| at.min(*u));
+                let c = self.carried.entry(*l).or_default();
+                *c = (*c).max(at);
+            }
             for (l, p) in x.paging {
                 if let Some(o) = self.own.get_mut(&l) {
                     o.at = Some(o.at.map_or(p, |a| a.max(p)));
@@ -467,9 +493,9 @@ impl SyncEngine {
     }
 
     /// Records the entries of own commits `cs` that `conn`'s requester reported holding
-    /// (spec/sync.md §5 Placed): under a member L it shares (it proved reading L), its reported
-    /// position at or past where the node log first held the entry, and an ended member's
-    /// `until` too (what it was served). Kept by its source (`pass_source`): a peer known by
+    /// (spec/sync.md §5 Placed): under a label L served to it as a member (it proved reading
+    /// L), its reported position at or past where the node log first held the entry, and an
+    /// ended member's `until` too (what it was served). Kept by its source (`pass_source`): a peer known by
     /// nothing here reports nothing. Whether it recorded any.
     pub(super) fn note_applied(&mut self, conn: ConnId, cs: &[CommitId]) -> Result<bool> {
         let Some(source) = self.pass_source(conn) else { return Ok(false) };
@@ -479,8 +505,7 @@ impl SyncEngine {
         let mut due = Vec::new();
         for c in cs {
             for (_, l) in self.state.commit_labels.range((*c, LabelId([0; 16]))..=(*c, LabelId([0xff; 16]))) {
-                let Some(at) = serving.position(l).filter(|_| members.contains(l)) else { continue };
-                let at = at.min(untils.get(l).copied().unwrap_or(u64::MAX));
+                let Some(at) = serving.stored(l, members.contains(l), untils.get(l).copied()) else { continue };
                 for (b, _) in self.state.entries_of(l, c) {
                     if !self.state.applied.contains(&(*l, b, source)) {
                         due.push((*l, b, at));

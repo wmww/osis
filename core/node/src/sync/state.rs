@@ -1261,9 +1261,9 @@ impl State {
         }
     }
 
-    /// Whether some co-reader source reported holding the entry (`applied`).
-    pub fn applied_anywhere(&self, l: &LabelId, b: &BlobId) -> bool {
-        self.applied.range((*l, *b, Tid::from_bytes([0; 15]))..=(*l, *b, Tid::from_bytes([0xff; 15]))).next().is_some()
+    /// The co-reader sources that reported holding the entry (`applied`).
+    pub fn applied_by<'a>(&'a self, l: &LabelId, b: &BlobId) -> impl Iterator<Item = Tid> + 'a {
+        self.applied.range((*l, *b, Tid::from_bytes([0; 15]))..=(*l, *b, Tid::from_bytes([0xff; 15]))).map(|x| x.2)
     }
 
     pub fn is_present(&self, s: &HostKey, l: &LabelId, b: &BlobId) -> bool {

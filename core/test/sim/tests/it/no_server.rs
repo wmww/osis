@@ -492,6 +492,90 @@ fn a_removal_a_co_reader_applied_is_placed_spec_sync_5() {
     assert!(b.status().unwrap().groups.get(&g).is_none_or(|s| !s.leaving), "the removal is held");
 }
 
+fn leaving(n: &Osis, g: Tid) -> bool {
+    n.status().unwrap().groups.get(&g).is_some_and(|s| s.leaving)
+}
+
+// spec/permissions.md §3 (a node drops once a self-removal by its account is placed), spec/sync.md §5 (Placed): Bob's
+// laptop pulls his phone's removal while Alice is away from both; the laptop waits for it to be placed as the phone
+// does, so at no point have both forgotten while Alice lacks it; the phone's removal reaches Alice and it stops leaving.
+#[test]
+fn own_nodes_never_both_forget_before_an_outside_source_spec_permissions_3() {
+    let (mut w, a, b, g) = co_readers(900, Role::Write);
+    let r = w.reach.add_relay(None);
+    let b2 = pair(&w, &b, 905);
+    w.place(&b2, &[], Uplink::Public, &[r]);
+    w.run();
+    w.advance(LONG_MS);
+    let bob = b.me();
+    w.set_peer_reachable(&a, &b, false);
+    w.set_peer_reachable(&a, &b2, false);
+    w.advance(pause_ms());
+    b.leave(bob, g).unwrap();
+    w.advance(LONG_MS);
+    assert!(leaving(&b, g) && leaving(&b2, g), "both own nodes wait while nobody outside has the removal");
+    w.set_peer_reachable(&a, &b, true);
+    for _ in 0..6 * STEPS {
+        w.advance(STEP_MS);
+        let reached = !a.holders(g).unwrap().iter().any(|h| h.actor == bob);
+        assert!(reached || leaving(&b, g) || leaving(&b2, g), "both own nodes forgot before Alice had the removal");
+    }
+    assert!(!a.holders(g).unwrap().iter().any(|h| h.actor == bob), "the leave reached Alice");
+    assert!(!leaving(&b, g), "the phone stopped leaving");
+}
+
+// spec/sync.md §5 (Placed: under a label with hosts, a co-reader's report counts only from an admin, which carries
+// the actor's role commits to the hosts when it re-registers): Bob, cut from the host, leaves; Carol (a writer) pulls
+// and reports his removal, which places nothing; Alice (the admin) pulls and reports it, which does, and the host ends
+// up holding the removal: Dave, who reaches only the host, sees Bob gone.
+#[test]
+fn under_a_hosted_label_only_an_admins_report_places_spec_sync_5() {
+    let mut w = World::new();
+    let h = w.add_host();
+    let r = w.reach.add_relay(None);
+    let a = w.account(70, &[h]);
+    let b = w.account(71, &[h]);
+    let c = w.account(72, &[h]);
+    let d = w.account(73, &[h]);
+    for n in [&a, &b, &c, &d] {
+        w.place(n, &[], Uplink::Public, &[r]);
+    }
+    w.run();
+    let g = {
+        let mut x = a.write();
+        let g = x.create().unwrap();
+        x.commit().unwrap();
+        a.sync(g, &[w.addr(h).unwrap()]).unwrap();
+        g
+    };
+    say(&a, g, "first");
+    w.run();
+    for n in [&b, &c, &d] {
+        let link = a.make_link(g, Role::Write, direct()).unwrap();
+        w.run();
+        assert_eq!(w.until(n.redeem(&link), 1000, 40).unwrap(), g);
+        w.run();
+    }
+    w.advance(LONG_MS);
+    for n in [&a, &b, &c] {
+        w.set_peer_reachable(&d, n, false);
+    }
+    w.set_reachable(&b, h, false);
+    // Alice gets the removal from Bob alone: from Carol she would judge Bob gone and pull nothing of him
+    w.set_peer_reachable(&a, &c, false);
+    w.set_online(&a, false);
+    w.advance(pause_ms());
+    let bob = b.me();
+    b.leave(bob, g).unwrap();
+    w.advance(LONG_MS);
+    assert!(c.holders(g).unwrap().iter().all(|x| x.actor != bob), "Carol pulled the removal");
+    assert!(leaving(&b, g), "a writer's report places nothing under a hosted label");
+    w.set_online(&a, true);
+    w.advance(3 * LONG_MS);
+    assert!(!leaving(&b, g), "the admin's report placed it");
+    assert!(d.holders(g).unwrap().iter().all(|x| x.actor != bob), "the host holds the removal");
+}
+
 // spec: none (API surface), notes/api.md Sync configuration and status: a dropped wait leaves nothing behind.
 #[test]
 fn a_dropped_wait_leaves_nothing() {

@@ -722,7 +722,6 @@ impl SyncEngine {
         if std::mem::take(&mut self.clients_moved) {
             self.clients_changed(out);
         }
-        self.drop_unwanted_peers(out);
         self.connect(out);
         self.send_inbox()?;
         self.send_outbox(out)?;
@@ -732,6 +731,9 @@ impl SyncEngine {
         self.shared_changed(out)?;
         self.send_suspects(out)?;
         self.stream_settle_all(out)?;
+        // after the re-judging and settling: a peer no longer wanted gets this node's reports
+        // of what it applied from it (spec/sync.md §5 Placed: its removal's Applied) first
+        self.drop_unwanted_peers(out);
         // pushes after the re-judging: nothing of this step goes to a member it ended
         self.stream_push(out)?;
         self.keep_served(out);

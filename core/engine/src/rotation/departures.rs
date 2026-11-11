@@ -229,11 +229,13 @@ pub fn departures_placing(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Departure, Op
 }
 
 /// The commit of departure `d` from `a` when it is this node's own self-removal (spec/permissions.md §2): the newest applied write on the
-/// holder's edge there lowers it and is a commit made here (signed by this node or a key actor
-/// it holds). From stored commits only, so a restart keeps it.
+/// holder's edge there lowers it and it was made here or its author is this node, its account
+/// or a key actor it holds, whichever node of the account made it: each waits for it to be placed, so a sibling
+/// that pulled it from the maker keeps it until a source has it. From stored commits only, so
+/// a restart keeps it.
 fn own_leaving(core: &Core, a: &Tid, d: &Departure) -> Option<osis_base::CommitId> {
     let tl = core.timelines.get(a)?;
     let (mc, op) = edge_writes(tl, a).filter(|(_, op)| op.holder == d.holder).max_by_key(|(mc, _)| mc.point())?;
-    let own = core.ix.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local);
+    let own = core.ix.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local) || mc.author == core.id.tid() || core.account.get() == Some(mc.author) || core.key_actors.contains_key(&mc.author);
     (own && departure_of(tl, a, mc, op).is_some() && crate::apply::validity::self_removal(core, &mc.author, a, &op.holder, mc.ts)).then_some(mc.id)
 }

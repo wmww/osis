@@ -1,3 +1,5 @@
 # leaving-study
 - The sim world closed a node's connection before delivering what it sent in the same step (`Action::Close` ran `hub.closed` at once), unlike the transport (a `LinkTx` finishes after what is queued) and node `Net` (which queues the close). A co-reader's Applied sent in the step it dropped a removed peer never arrived; it took a debug trace to find. Fixed: `Msg::Closed` queued after the sends.
 - The hostless "skipped while no reader can pull it" clause made a crash-safety test pass for the wrong reason (after a restart with no connection the leaver counted its removal placed). Check a durability test fails with the durable write disabled.
+- A co-reader that judged the leaver departed closed the connection (`drop_unwanted_peers`, early in the step) before settling, so its Applied never went; the hosted-label sim test showed it only after tracing every message of the reconnect. Moved after the step's settle.
+- `git checkout <file>` to undo a temporary probe edit also reverted my uncommitted fix in that file; probe with a reversible sed instead.

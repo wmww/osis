@@ -407,7 +407,7 @@ impl SyncEngine {
     fn placed_now(&mut self, c: &CommitId) -> Result<bool> {
         let queued: Vec<LabelId> = self.state.outbox.iter().filter(|((_, _, b), _)| self.state.blobs.get(b).is_some_and(|r| r.commit == *c)).map(|(_, o)| o.label).collect();
         for l in queued {
-            if !self.held_at(&l, c, None) {
+            if !self.held_at(&l, c, None, |_| false) {
                 return Ok(false);
             }
         }
@@ -423,7 +423,23 @@ impl SyncEngine {
             if parts.is_empty() {
                 continue;
             }
-            if !self.held_at(&gl.id, c, Some(&parts)) && !self.parts_covered_at(&gl.id, c, &h, &parts)? {
+            // a report counts from a source that passes the commit on to whoever this node
+            // would have reached: under a label with no host any co-reader's; under one with
+            // hosts only an admin of the label's actor, which uploads the actor's role commits
+            // a host lacks when it re-registers there (spec/sync.md §5, Re-registration)
+            let carrier = if super::peers::hostless(&gl.hosts) {
+                None
+            } else {
+                let ka = self.keys_actor(&g);
+                Some((ka, h.aspects.iter().any(|a| a.tid == ka && a.ak.as_str() == "roles.0")))
+            };
+            let ts = osis_base::Ts::make(osis_base::WallMs(self.wall.get()), 0).unwrap_or_default();
+            let core = &self.engine.core;
+            let counts = |s: &Tid| match carrier {
+                None => true,
+                Some((ka, role)) => role && crate::engine::write::role_of(core, s, &ka, ts) == Some(osis_base::Role::Admin),
+            };
+            if !self.held_at(&gl.id, c, Some(&parts), counts) && !self.parts_covered_at(&gl.id, c, &h, &parts)? {
                 return Ok(false);
             }
         }
@@ -431,16 +447,16 @@ impl SyncEngine {
     }
 
     /// Whether entries of `c` under `l` held at a source hold `parts` (any part when `None`):
-    /// present at a host, or reported by a co-reader source (`State::applied`). For `placed` of
-    /// this node's own commit: any entry counts, at any one source. Not `held_parts` (`pass/`),
-    /// which asks whether another node's entries spare this node a certificate copy, and so
-    /// counts them only genuine, at every host and, with a rotation, readable under the newest
-    /// secret.
-    fn held_at(&self, l: &LabelId, c: &CommitId, parts: Option<&[usize]>) -> bool {
+    /// present at a host, or reported by a co-reader source (`State::applied`) that `counts`.
+    /// For `placed` of this node's own commit: any entry counts, at any one source. Not
+    /// `held_parts` (`pass/`), which asks whether another node's entries spare this node a
+    /// certificate copy, and so counts them only genuine, at every host and, with a rotation,
+    /// readable under the newest secret.
+    fn held_at(&self, l: &LabelId, c: &CommitId, parts: Option<&[usize]>, counts: impl Fn(&Tid) -> bool) -> bool {
         let mut held: BTreeSet<usize> = BTreeSet::new();
         for (id, e) in self.state.entries_of(l, c) {
             if let super::state::Kind::Commit { parts: p, .. } = &e.kind
-                && (self.state.held_anywhere(l, &id) || self.state.applied_anywhere(l, &id))
+                && (self.state.held_anywhere(l, &id) || self.state.applied_by(l, &id).any(|s| counts(&s)))
             {
                 held.extend(p.iter().copied());
             }
