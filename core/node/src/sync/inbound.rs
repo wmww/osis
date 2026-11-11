@@ -1225,6 +1225,15 @@ impl SyncEngine {
         let Some(bytes) = self.engine.blob(&b)? else { return Ok(()) };
         let Some(g) = self.group_of(&l, conn) else { return Ok(()) };
         let secrets = self.read_secrets(&g);
+        // whatever it opens as, if at all, it goes at its prefix expiry (`expire_entries`): bytes
+        // held without a fetch (a row another wrote to the hub's store) pass no `keep_salts`
+        let prefix = osis_label::Prefix::parse(&bytes).ok();
+        if e.expires.is_none()
+            && let Some(t) = prefix.as_ref().and_then(|p| p.expiry())
+        {
+            e.expires = Some(t.0);
+            self.state.set_entry(l, b, e.clone());
+        }
         if let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, &e.wrap) {
             // this group's closure is synced (spec/sync.md §3) from the first entry it opens: a
             // label named by another's word, with no entry readable, asks for nothing
@@ -1238,9 +1247,7 @@ impl SyncEngine {
                     if !self.state.blobs.contains_key(&b) {
                         self.state.add_blob(b, BlobRec { commit, parts: parts.clone(), ais: o.ais.clone(), key, cert: e.cert || o.copy, memory: e.memory });
                     }
-                    let prefix = osis_label::Prefix::parse(&bytes).ok();
                     e.salt = prefix.as_ref().map(|p| *p.salt());
-                    e.expires = prefix.and_then(|p| p.expiry()).map(|t| t.0);
                     e.kind = Kind::Commit { commit, parts, ais: o.ais };
                     self.state.set_entry(l, b, e);
                     self.state.note_memory_size(l, b, bytes.len());

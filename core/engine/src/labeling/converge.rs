@@ -10,8 +10,6 @@ pub struct Facts {
     pub closure: bool,
     /// Holds a delta that was purged, expired or dropped as covered.
     pub dropped: bool,
-    /// Its prefix expiry has passed.
-    pub expired: bool,
     /// Its delta set is a strict subset of another blob of the commit under the label.
     pub strict_subset: bool,
     /// Another blob of the commit with the same delta set and a lower blob ID is under the label.
@@ -29,7 +27,6 @@ pub struct Facts {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Why {
     Dropped,
-    Expired,
     Outside,
     StrictSubset,
     Duplicate,
@@ -46,8 +43,6 @@ pub enum Hold {
 pub fn classify(f: &Facts) -> Hold {
     let not = if f.dropped {
         Some(Why::Dropped)
-    } else if f.expired {
-        Some(Why::Expired)
     } else if !f.required {
         Some(Why::Outside)
     } else if f.strict_subset {
@@ -66,10 +61,11 @@ pub fn classify(f: &Facts) -> Hold {
     if f.before_at_least || f.covered == Some(false) { Hold::Must } else { Hold::May }
 }
 
-/// Whether a must-not-hold body may go now (spec/sync.md §7): an expired one at once; one with
-/// live writes only while other entries under the label carry them.
-pub fn may_delete(why: Why, live_writes: bool, carried: bool) -> bool {
-    why == Why::Expired || !live_writes || carried
+/// Whether a must-not-hold body may go now (spec/sync.md §7): one with live writes only while
+/// other entries under the label carry them. An expired one is no body here: node sync drops
+/// every entry at its prefix expiry before judging any (`SyncEngine::expire_entries`).
+pub fn may_delete(live_writes: bool, carried: bool) -> bool {
+    !live_writes || carried
 }
 
 #[cfg(test)]
@@ -93,14 +89,12 @@ mod tests {
             ("parked or pages unfetched", Facts { covered: None, ..c }, Hold::May),
             ("purged while uncovered", Facts { dropped: true, covered: Some(false), ..c }, Hold::MustNot(Why::Dropped)),
             ("purged before keep-at-least", Facts { dropped: true, before_at_least: true, ..c }, Hold::MustNot(Why::Dropped)),
-            ("expired", Facts { expired: true, before_at_least: true, ..c }, Hold::MustNot(Why::Expired)),
             ("outside the required set", Facts { required: false, before_at_least: true, ..c }, Hold::MustNot(Why::Outside)),
             ("strict subset blob", Facts { strict_subset: true, covered: Some(false), ..c }, Hold::MustNot(Why::StrictSubset)),
             ("duplicate with the higher blob ID", Facts { duplicate_higher: true, before_at_least: true, ..c }, Hold::MustNot(Why::Duplicate)),
             ("certificate", Facts { required: true, ..Facts::default() }, Hold::Must),
             ("sole certificate", Facts { required: true, sole_certificate: true, ..Facts::default() }, Hold::May),
             ("certificate no longer placed", Facts::default(), Hold::MustNot(Why::Outside)),
-            ("expired inbox blob", Facts { required: true, expired: true, ..Facts::default() }, Hold::MustNot(Why::Expired)),
         ];
         for (name, f, want) in cases {
             assert_eq!(classify(&f), want, "{name}");
@@ -111,13 +105,8 @@ mod tests {
     // them; dead content goes at once.
     #[test]
     fn carrier_rule_spec_sync_7() {
-        assert!(may_delete(Why::Expired, true, false));
-        assert!(may_delete(Why::Dropped, false, false));
-        assert!(!may_delete(Why::Dropped, true, false));
-        assert!(may_delete(Why::Dropped, true, true));
-        assert!(!may_delete(Why::StrictSubset, true, false));
-        assert!(may_delete(Why::Duplicate, true, true));
-        assert!(!may_delete(Why::Outside, true, false));
-        assert!(may_delete(Why::Outside, false, false));
+        assert!(may_delete(false, false));
+        assert!(!may_delete(true, false));
+        assert!(may_delete(true, true));
     }
 }

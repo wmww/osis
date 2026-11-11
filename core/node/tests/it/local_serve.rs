@@ -1191,3 +1191,29 @@ fn a_release_request_leaves_the_serving_node_alone_at_its_expiry_spec_sync_5() {
     let rows = rows(&mut net);
     assert!(!ids.iter().any(|i| rows.contains(i) || net.sync(a).holds_blob(i)), "no row, no bytes of it");
 }
+
+// spec/sync.md §2, §5: a row another client wrote to the hub's store under a label the node
+// serves, which the node cannot open, goes with its entry and bytes at its prefix expiry as at
+// any host
+#[test]
+fn an_unopened_row_another_wrote_leaves_the_serving_node_at_its_expiry_spec_sync_5() {
+    let (mut net, [a, b]) = local_nodes::<2>();
+    let _g = net.group(a, &[(b, Role::Write)], &[]);
+    net.run();
+    let l = net.label(a);
+    let t = net.now() + 3_600_000;
+    let mut blob = osis_label::Prefix::for_groups([5; 16], &[6; 16], Some(WallMs(t)), &[]).unwrap().to_bytes();
+    blob.extend_from_slice(&[9; 64]);
+    let id = osis_label::blob_id(&blob);
+    let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(t), ephemeral: false, replaces: &[], now: net.now() };
+    osis_proto::LabelStore::put(&mut *net.sync(a).hub_store().lock().unwrap(), &l, put).unwrap();
+    net.feed(a, Event::Hub { ups: Vec::new() });
+    net.run();
+    assert!(net.sync(a).entries(&l).iter().any(|(x, _)| *x == id), "derived from the row");
+    net.advance(3_600_000);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    let rows = osis_proto::LabelStore::live_ids(&*net.sync(a).hub_store().lock().unwrap(), &l).unwrap();
+    assert!(!net.sync(a).entries(&l).iter().any(|(x, _)| *x == id) && !rows.contains(&id) && !net.sync(a).holds_blob(&id), "no entry, row or bytes of it");
+}

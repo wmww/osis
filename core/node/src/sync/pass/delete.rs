@@ -86,7 +86,7 @@ impl SyncEngine {
             Why::Duplicate | Why::StrictSubset => (true, Vec::new(), None),
             _ => self.carried(at, e)?,
         };
-        if !may_delete(why, live, carried) {
+        if !may_delete(live, carried) {
             if carrier && let Kind::Commit { commit, .. } = &e.kind {
                 self.snapshot_first(&need, commit)?;
             }
