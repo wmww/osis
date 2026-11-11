@@ -481,5 +481,15 @@ async fn a_stranger_gets_no_proof_spec_sync_10() {
     assert!(matches!(&ev[..], [ClientEvent::Refused { kind: Request::Resume, code: Code::REFUSED, .. }]), "{ev:?}");
     let got = c.peer(Message::NoRecord { id: 1 << 31 }).await;
     assert_eq!(got, vec![Message::Error { id: 1 << 31, code: Code::NOT_ADMITTED }]);
+    // node sync keeps the session while the connection lasts and forgets it at its end
+    assert_eq!(host.call(|s| s.served_opened().len()).await, 1);
+    drop(c);
+    tokio::time::timeout(GUARD, async {
+        while host.call(|s| s.served_opened().len()).await != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     host.stop().await;
 }
