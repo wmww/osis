@@ -1,5 +1,5 @@
-//! When bodies leave history, as events (spec/commits.md §5 History; issues/thing-history.md
-//! Cost). Bodies of one aspect of a thing leave in the order they were replaced, so each such
+//! When bodies leave history, as events (spec/commits.md §5 The setting; notes/engine-retention.md
+//! Leaving history). Bodies of one aspect of a thing leave in the order they were replaced, so each such
 //! aspect keeps the bodies in replaced order, a cursor (every place at or before it is out of
 //! history) and one timer, at the leaving of the first place past the cursor
 //! (`Indexes::leave_from`, `leave_due`). The places: a signal's fires by `ts` (`by_aspect`: a fire

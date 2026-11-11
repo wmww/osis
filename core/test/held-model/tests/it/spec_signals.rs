@@ -1,5 +1,5 @@
 //! spec/commits.md §5 (Signals): a signal's writes are history from the moment they are
-//! written under the entry governing their AK (issues/thing-history.md, Signals), never joined
+//! written under the entry governing their AK (spec/commits.md §5 Signals), never joined
 //! into a state, kept while in history, until expiry or purge.
 use crate::util::*;
 use held_model::*;

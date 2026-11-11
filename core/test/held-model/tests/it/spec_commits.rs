@@ -111,7 +111,7 @@ fn snapshot_copy_of_a_purged_value_is_a_leftover_spec_commits_5() {
     assert!(evaluate(&act(&h, &o, None)).forbidden.is_empty());
 }
 
-// issues/thing-history.md (Purge on replace): gone once replaced under a setting saying so. A
+// spec/commits.md §5 (Purge on replace): gone once replaced under a setting saying so. A
 // writer holding the body that applies the kill owes a covering snapshot in that transaction; once
 // a valid cover with the right is held the body must go, at every node; a node without the right
 // owes nothing and keeps it until such a cover comes
@@ -165,7 +165,7 @@ fn purge_request_floor_beats_none_spec_commits_5() {
     assert_eq!(fate(&held(1 + ROLE_KEEP / HOUR, cs), 10), Fate::MustDrop(DropWhy::Covered { by: 12 }));
 }
 
-// issues/thing-history.md (Purge on replace): a body partly replaced (its entry creation live, its
+// spec/commits.md §5 (Purge on replace): a body partly replaced (its entry creation live, its
 // value dead) is covered by the snapshot of the whole state, which carries the live creation
 #[test]
 fn none_body_partly_replaced_is_covered_by_the_state_snapshot_spec_commits_5() {
@@ -183,7 +183,7 @@ fn none_body_partly_replaced_is_covered_by_the_state_snapshot_spec_commits_5() {
     assert_eq!(read(&h3, MAP), read(&h, MAP));
 }
 
-// issues/thing-history.md (History): a snapshot is judged by the setting like any body: carrying
+// spec/commits.md §5 (The setting): a snapshot is judged by the setting like any body: carrying
 // a write live, then replaced under purge on replace, a right holder's cover drops it everywhere
 #[test]
 fn snapshot_under_purge_on_replace_drops_covered_spec_commits_5() {
@@ -215,7 +215,7 @@ fn covered_equal_snapshots_lower_id_covers_spec_sync_7() {
     assert_eq!(o.fates[&(12, 0)], Fate::Keep(KeepWhy::Plain));
 }
 
-// issues/thing-history.md (History, keep until T): never compacted before T, droppable after; the
+// spec/commits.md §5 (The setting, keep until T): never compacted before T, droppable after; the
 // replaced write shows in history() until T
 #[test]
 fn keep_until_blocks_compaction_spec_commits_5() {
@@ -235,7 +235,7 @@ fn keep_until_blocks_compaction_spec_commits_5() {
     assert!(o.history.is_empty());
 }
 
-// issues/thing-history.md (History, keep D after replaced): no node drops a body earlier than D
+// spec/commits.md §5 (The setting, keep D after replaced): no node drops a body earlier than D
 // after the earliest valid replacing write it holds, by its signed ts, and history() shows the
 // replaced write until then; readers and writers holding the same data judge alike
 #[test]
@@ -268,7 +268,7 @@ fn keep_after_replaced_limits_the_compactor_spec_commits_5() {
     assert_eq!(o.history[&(T, REG)].len(), 2);
 }
 
-// issues/thing-history.md (Purge on replace, last rule; Decisions 4): a body out of history drops
+// spec/commits.md §5 (The setting, Out of history; notes/engine-retention.md History, Tess's decision 4): a body out of history drops
 // under any valid writer's cover, the right or not; under purge on replace only a right holder's
 // cover forces the drop, and a right holder owes one until it is held
 #[test]
@@ -426,7 +426,7 @@ fn snapshot_replaced_at_last_death_no_later_snapshot_carries_spec_commits_5() {
     assert_eq!((o.replaced_at[&(12, 0)], o.replaced_at[&(14, 0)]), (Some(at(3)), Some(at(5))));
 }
 
-// issues/thing-history.md (History): a snapshot is judged by the setting like any body, from its
+// spec/commits.md §5 (The setting): a snapshot is judged by the setting like any body, from its
 // replacement: carrying a write live, it keeps that write's history for D after it is replaced
 #[test]
 fn snapshot_kept_like_any_body_spec_commits_5() {

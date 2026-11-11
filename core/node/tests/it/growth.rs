@@ -219,7 +219,7 @@ fn own_cover_work_per_write_is_flat() {
 
 // spec/commits.md §5 (Own replaces, Out of history): a single writer's whole replaces cover its
 // older commits even where only admins may purge them (`admin`): nothing promises to keep them, so
-// the writer and a reader stay flat (issues/thing-history.md Decisions 4)
+// the writer and a reader stay flat (notes/engine-retention.md History, Tess's decision 4)
 #[test]
 fn a_writer_without_the_right_stays_flat() {
     let (mut net, _h, [_a, b, r], _g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Read)], ["first"], true);

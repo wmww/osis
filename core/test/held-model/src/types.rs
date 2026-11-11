@@ -50,7 +50,7 @@ impl Aspect {
     pub const fn signal(name: u32) -> Aspect {
         Aspect { name, admin_only: false, signal: true }
     }
-    /// `retention^.0`: the thing's history setting (issues/thing-history.md; `Delta::Retention`).
+    /// `retention^.0`: the thing's history setting (spec/commits.md §5 The setting; `Delta::Retention`).
     pub const RETENTION: Aspect = Aspect { name: 8, admin_only: true, signal: false };
     /// `addenda.0` (spec/permissions.md §5.2 Addenda).
     pub const ADDENDA: Aspect = Aspect { name: 10, admin_only: false, signal: false };
@@ -112,7 +112,7 @@ impl EdgeWrite {
     }
 }
 
-/// One entry of a `retention^.0` setting (issues/thing-history.md, The setting): what it promises
+/// One entry of a `retention^.0` setting (spec/commits.md §5 The setting): what it promises
 /// for replaced content of the AKs it governs, and the expiry default a writer fills in
 /// (`wall_ms(ts)` + duration; only the writer reads it: a commit is valid with the expiry it
 /// carries).
@@ -169,7 +169,7 @@ pub enum Body {
 }
 
 /// Who may purge a write (spec/commits.md §5): admins always may. `Nobody` is fixed retention's
-/// only (`created.0`, `retention^.0`); content has the other three (Decisions 2).
+/// only (`created.0`, `retention^.0`); content has the other three (Tess's decision 2, notes/engine-retention.md History).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PurgeBy {
     Nobody,

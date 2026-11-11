@@ -1442,7 +1442,7 @@ fn fallen_carrier_carries_nothing_spec_sync_7() {
     assert_eq!(net.engine(b).get_typed(&t, &GONEMAP).unwrap(), net.engine(a).get_typed(&t, &GONEMAP).unwrap());
 }
 
-// spec/commits.md §5 Convergence, spec/sync.md §7: one side lacking the thing's setting (writer b
+// spec/commits.md §5 The setting, spec/sync.md §7: one side lacking the thing's setting (writer b
 // never hears of its blob) judges X, its own register write, out of history: it compacts, drops X
 // and deletes it at the host. Admin a holds the setting keeping the register for good, so X is in
 // history there and a keeps it; b's snapshot under the label covers it, so a never places it

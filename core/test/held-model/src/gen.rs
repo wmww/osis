@@ -132,7 +132,7 @@ pub const TARGETS: [(ThingId, NodeId); 6] = [(10, 0), (11, 1), (12, 2), (13, 3),
 pub const HOLDERS: [NodeId; 7] = [0, 1, 2, 3, ACCOUNT, LINK_K, LINK_L];
 pub const START: u64 = 1_000_000_000;
 
-/// Who may purge a content write: the three options content has (Decisions 2).
+/// Who may purge a content write: the three options content has (Tess's decision 2, notes/engine-retention.md History).
 pub const RETENTIONS: [Retention; 3] = [Retention::PLAIN, Retention::WRITER, Retention::ADMIN];
 
 /// The history options a setting's entry draws from, at wall `now`: none, kept an hour or six

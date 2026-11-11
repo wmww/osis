@@ -167,7 +167,7 @@ fn setting_after_reopen_spec_commits_5() {
     assert!(listed(&mut lp.peers[2], &v1, d));
 }
 
-// spec/commits.md §5 Convergence: what is listed follows the setting, whatever order the setting
+// spec/commits.md §5 The setting: what is listed follows the setting, whatever order the setting
 // and the bodies arrive in: kept an hour after replaced, then not
 #[test]
 fn history_follows_the_setting_in_any_order_spec_commits_5() {
@@ -366,7 +366,7 @@ fn two_admins_at_one_stamp_ordered_by_key_spec_commits_5() {
     assert!(seen.contains(&true) && seen.contains(&false), "{seen:?}");
 }
 
-// issues/thing-history.md Dating, spec/crdt.md §4.8 When: a write dies at its superseder's own
+// notes/engine-retention.md Replaced (When), spec/crdt.md §4.8 When: a write dies at its superseder's own
 // stamp, read from any held body holding it. x1 is replaced by x2, kept 10 minutes; a snapshot
 // taken later carries x2, and x2's body drops under it: x1 still dies at x2's stamp, so its
 // listing and keep stay (dated at the snapshot, x1 was listed again)
@@ -394,7 +394,7 @@ fn a_covered_drop_redates_nothing_spec_commits_5() {
 /// Drops, in `order`, each held body of `(d, a)` that `s` covers once its keep-at-least bound
 /// allows (`Engine::drop_from` on the node's clock, as node-sync does), and checks after each
 /// drop that every commit in `watch` still held is listed and kept (in history: its keep bound
-/// ahead of the clock) as before (issues/thing-history.md Dating, the invariant). Returns the
+/// ahead of the clock) as before (notes/engine-retention.md Replaced, Invariant). Returns the
 /// bodies dropped.
 fn drop_allowed(p: &mut Peer, d: Tid, a: &str, s: CommitId, order: &[CommitId], watch: &[CommitId]) -> Vec<CommitId> {
     let k = ak(a);
@@ -417,7 +417,7 @@ fn drop_allowed(p: &mut Peer, d: Tid, a: &str, s: CommitId, order: &[CommitId], 
     dropped
 }
 
-// issues/thing-history.md Dating D2, spec/commits.md §5 Bodies and deaths: a body is replaced at
+// notes/engine-retention.md Replaced (When), spec/commits.md §5 Bodies and deaths: a body is replaced at
 // the latest death among its writes. W sets field 1; B sets fields 0 and 1; C replaces B's field
 // 0 at once, X its field 1 twelve minutes later (kept 10 minutes). B stays in history from X's
 // stamp, so it drops only after every dead write it alone holds has left; W, which only B's
@@ -452,7 +452,7 @@ fn a_body_dies_at_its_latest_death_spec_commits_5() {
     }
 }
 
-// issues/thing-history.md Dating D3, spec/crdt.md §4.8 When: a text element's creation dies at
+// notes/engine-retention.md Replaced (When, text), spec/crdt.md §4.8 When: a text element's creation dies at
 // the earliest held delete stamped after its latest held undelete. Inserted, deleted, undeleted
 // (an undo of the delete) and deleted again twelve minutes later (kept 10 minutes): the
 // creation dies at the second delete, so dropping the first delete's body (out of history,
@@ -712,7 +712,7 @@ fn leaving_history_is_told_in_any_order_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 Convergence (Decisions 1): a setting arriving late, stamped while a body was
+// spec/commits.md §5 The setting (notes/engine-retention.md History, Tess's decision 1): a setting arriving late, stamped while a body was
 // still in history, brings back a body that left meanwhile where it is still held: listed and told
 // again; a later shortening by its stamp takes it out again, told
 #[test]
@@ -739,7 +739,7 @@ fn late_setting_brings_back_and_is_told_spec_commits_5() {
     assert!(told(&mut lp.peers[0], d).contains(&v1), "told as it leaves");
 }
 
-// spec/commits.md §5 Convergence: the first setting keeping an aspect, arriving after bodies
+// spec/commits.md §5 The setting: the first setting keeping an aspect, arriving after bodies
 // replaced since its stamp, shows the held ones and tells them
 #[test]
 fn first_keeping_setting_arriving_late_shows_and_tells_spec_commits_5() {

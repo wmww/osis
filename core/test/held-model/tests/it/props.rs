@@ -27,7 +27,7 @@ fn output_is_a_function_of_the_held_set_spec_commits_4() {
 }
 
 /// Carries out every forced fate until nothing changes: `act`, the covering snapshots `me` owes
-/// (issues/thing-history.md, Purge on replace), and, with `full`, the fetch again of bodies whose cover
+/// (spec/commits.md §5 Purge on replace), and, with `full`, the fetch again of bodies whose cover
 /// or purge fell (`Outcome::uncovered`, `Fate::NeverReceived`) or that turned valid again after
 /// their drop as invalid (copies taken from `full`). Each
 /// round changes no read. Commits thrown out whole are fetched again from `full` each round
@@ -111,7 +111,7 @@ fn right_now(h: &Held, c: &Commit, p: &Part) -> bool {
 // One settled history per seed, four properties of it:
 // spec/commits.md §5 (Never received, Dropping a body), spec/crdt.md §4.7: dropping and stripping
 // what the fates say changes no read, and leaves no value of a purged or expired write.
-// spec/commits.md §5 (purge on replace, keep at least), issues/thing-history.md: once a node
+// spec/commits.md §5 (purge on replace, keep at least; The setting): once a node
 // holding the right has acted, it holds no body under purge on replace (its covering snapshot
 // dropped it), no body is dropped before a purge request's floor but by purge, and history()
 // shows no body the node may drop.

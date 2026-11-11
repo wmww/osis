@@ -1,4 +1,4 @@
-//! Thing-level history (issues/thing-history.md, held_model::thing_history): the judgment's
+//! Thing-level history (spec/commits.md §5 The setting, notes/engine-retention.md History; held_model::thing_history): the judgment's
 //! properties, each over every small world, so a failure names a minimal counterexample: first on
 //! the greenfield functions, then (`ev_`) through `evaluate`, on held sets of settings and register
 //! writes or fires of one thing, in hours.
@@ -184,7 +184,7 @@ fn nothing_late_dropping_loses_no_history() {
 /// In any arrival order, at any pace, a node that drops at the first allowed moment never
 /// shows what a node holding everything does not, but a body that arrived after a superseder
 /// of its was dropped (dated by what is held, so later: an arrival, as a late setting is,
-/// Decisions 1); what it lacks it dropped itself; nodes that drop nothing show alike whatever
+/// Tess's decision 1); what it lacks it dropped itself; nodes that drop nothing show alike whatever
 /// the order (the judgment reads only what is held).
 #[test]
 fn any_order_dropping_shows_a_subset() {
@@ -271,7 +271,7 @@ fn world(now: u64, tl: &[(u64, Opt)], fire: bool, bodies: Vec<Commit>) -> Held {
     held(now, [settings_of(aspect(fire), tl), bodies].concat())
 }
 
-// issues/thing-history.md (History): bodies leave in the order they were replaced, and holding
+// spec/commits.md §5 (The setting): bodies leave in the order they were replaced, and holding
 // more bodies (an earlier replacement) never keeps one longer
 #[test]
 fn ev_leaves_in_replaced_order() {
@@ -295,7 +295,7 @@ fn left(tl: &[(u64, Opt)], fire: bool, from: u64) -> Option<u64> {
     (from..15).find(|&now| !listed(&world(now, tl, fire, bodies3(fire)), aspect(fire)).contains(&10))
 }
 
-// issues/thing-history.md (History): out is for good: a setting stamped after a body left never
+// spec/commits.md §5 (The setting): out is for good: a setting stamped after a body left never
 // brings it back
 #[test]
 fn ev_a_later_setting_never_brings_back() {
@@ -315,7 +315,7 @@ fn ev_a_later_setting_never_brings_back() {
     }
 }
 
-// issues/thing-history.md (In force): a setting acts from its own stamp: before it, held or not,
+// spec/commits.md §5 (The setting, In force): a setting acts from its own stamp: before it, held or not,
 // it changes nothing of a body replaced before it (one replaced after it, ahead of the clock, is
 // governed by it: AMBIGUITIES 68)
 #[test]
@@ -338,7 +338,7 @@ fn ev_a_later_setting_acts_from_its_stamp() {
     }
 }
 
-// issues/thing-history.md (In force): a setting is in force from its own commit on: one in the
+// spec/commits.md §5 (The setting, In force): a setting is in force from its own commit on: one in the
 // replacing commit governs the body it replaces
 #[test]
 fn ev_in_force_from_its_own_commit() {
@@ -350,7 +350,7 @@ fn ev_in_force_from_its_own_commit() {
     assert!(listed(&h, REG).is_empty());
 }
 
-// issues/thing-history.md (In force, Decisions 3): settings are in force by key from their own
+// spec/commits.md §5 (The setting, In force; notes/engine-retention.md History, Tess's decision 3): settings are in force by key from their own
 // stamps, whatever order they are held in. From a newer setting's stamp on, a node also holding
 // an older-stamped one shows what a node holding only the newer shows, unless the older set purge
 // on replace and the newer keeps (one way: then neither keeps anything). Of two admins' settings at
@@ -393,7 +393,7 @@ fn ev_in_force_by_key_from_its_own_stamp() {
     }
 }
 
-// issues/thing-history.md (Decisions 1): a setting arriving late (stamped before ones already
+// notes/engine-retention.md History (Tess's decision 1): a setting arriving late (stamped before ones already
 // held) can put a body still held back in history
 #[test]
 fn ev_a_late_setting_can_reshow_a_held_body() {
@@ -406,7 +406,7 @@ fn ev_a_late_setting_can_reshow_a_held_body() {
     assert!(listed(&world(3, &[long, short], false, bodies()), REG).is_empty());
 }
 
-// issues/thing-history.md (Purge on replace, Decisions 3): content replaced under purge on replace
+// spec/commits.md §5 (Purge on replace; notes/engine-retention.md History, Tess's decision 3): content replaced under purge on replace
 // is never history, however late a node dates the replacement (holding fewer bodies)
 #[test]
 fn ev_purge_on_replace_content_is_never_history_however_dated() {
@@ -426,7 +426,7 @@ fn ev_purge_on_replace_content_is_never_history_however_dated() {
     assert!(reached > 0);
 }
 
-// issues/thing-history.md (One way): the greenfield counterexample, judged by `evaluate`: a keep
+// spec/commits.md §5 (The setting, One way): the greenfield counterexample, judged by `evaluate`: a keep
 // after purge on replace keeps nothing, so a node dating the replacement after the keep shows none
 #[test]
 fn ev_keep_after_purge_on_replace_keeps_nothing() {
@@ -439,7 +439,7 @@ fn ev_keep_after_purge_on_replace_keeps_nothing() {
     assert!(listed(&world(5, &tl, false, vec![body(10, 3, false), body(11, 4, false)]), REG).is_empty());
 }
 
-// issues/thing-history.md (Decisions 2): who may purge a body changes nothing of its history
+// notes/engine-retention.md History (Tess's decision 2): who may purge a body changes nothing of its history
 #[test]
 fn ev_who_may_purge_changes_no_history() {
     for tl in ev_timelines(1, &[0, 2, 4, 6], &all_opts()) {
@@ -455,7 +455,7 @@ fn ev_who_may_purge_changes_no_history() {
     }
 }
 
-// issues/thing-history.md (The setting): a setting is an admin-only delta: one by a writer is no
+// spec/commits.md §5 (The setting): a setting is an admin-only delta: one by a writer is no
 // setting until the writer is admin; one in an expiring commit is none; no validity depends on one
 #[test]
 fn ev_only_valid_settings_are_in_force_and_none_judges_validity() {
@@ -514,7 +514,7 @@ fn shown_writes(h: &Held, a: Aspect) -> BTreeSet<Stamp> {
     evaluate(h).history.get(&(T, a)).map(|s| s.iter().map(|x| x.0.clone()).collect()).unwrap_or_default()
 }
 
-// issues/thing-history.md (Convergence): with nothing late a node that drops at the first allowed
+// spec/commits.md §5 (The setting: a function of the settings and bodies held): with nothing late a node that drops at the first allowed
 // moment shows, at every moment, the writes a node keeping everything shows, and a write that left
 // never shows again
 #[test]
@@ -543,7 +543,7 @@ fn ev_nothing_late_dropping_loses_no_history() {
     assert!(dropped > 0);
 }
 
-// issues/thing-history.md (Convergence, Dropped stays dropped): in any arrival order, late, a node
+// spec/commits.md §5 (The setting, Dropped stays dropped): in any arrival order, late, a node
 // dropping at the first allowed moment never shows what a node holding everything does not, and
 // what it lacks it dropped itself
 #[test]
@@ -573,7 +573,7 @@ fn ev_any_order_dropping_shows_a_subset() {
     }
 }
 
-// issues/thing-history.md (Purge on replace), AMBIGUITIES 68: content replaced under purge on
+// spec/commits.md §5 (Purge on replace), AMBIGUITIES 68: content replaced under purge on
 // replace is never history, even while its replacement is stamped ahead of the node's clock; a
 // keep entry lists it from the moment it is held
 #[test]

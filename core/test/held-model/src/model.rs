@@ -105,7 +105,7 @@ pub struct Outcome {
     /// `history()`: per aspect, the replaced writes (stamp, carrying commit) of held valid bodies
     /// in history (`Outcome::in_history` at their replaced-at), not purged. A function of the held set.
     pub history: BTreeMap<(ThingId, Aspect), BTreeSet<(Stamp, CommitId)>>,
-    /// Per thing, its held valid `retention^.0` settings in key order: its timeline (issues/thing-history.md, In force).
+    /// Per thing, its held valid `retention^.0` settings in key order: its timeline (spec/commits.md §5 The setting, In force).
     pub settings: BTreeMap<ThingId, Vec<(Key, Setting)>>,
     /// Replaced value bodies under purge on replace: the entry governing their AK in the setting
     /// in force at their replaced-at says so (never a signal's).
@@ -138,8 +138,8 @@ impl Outcome {
         let s = self.settings.get(&t).map_or(&[][..], |v| &v[..]);
         s.iter().enumerate().map(|(i, (k, x))| thing_history::Setting { ts: wall(k.0), id: i as u32, opt: x.entry(a.name).map_or(Opt::None, |e| e.history) }).collect()
     }
-    /// The moment a body of `(t, a)` replaced at wall ms `r` leaves history (issues/thing-history.md,
-    /// History): the first moment from `r` at which the setting in force does not keep it, one way
+    /// The moment a body of `(t, a)` replaced at wall ms `r` leaves history (spec/commits.md §5
+    /// The setting): the first moment from `r` at which the setting in force does not keep it, one way
     /// (purge on replace once in force, a later keep reads as none). `NEVER`: a fixed-retention
     /// aspect, or a setting keeping it for good.
     pub fn out(&self, t: ThingId, a: Aspect, r: u64) -> u64 {
@@ -496,7 +496,7 @@ fn judge(h: &Held) -> Outcome {
             let v = match c.kind {
                 _ if p.aspect == Aspect::CREATED => true,
                 CommitKind::Role => tl.applied_part(c.id, i),
-                // no validity depends on a setting (issues/thing-history.md, The setting)
+                // no validity depends on a setting (spec/commits.md §5 The setting)
                 _ => tl.valid_delta(c, p.thing, p.aspect),
             };
             o.valid.insert((c.id, i), v);
@@ -508,7 +508,7 @@ fn judge(h: &Held) -> Outcome {
         .flat_map(|c| c.parts.iter().enumerate().map(|(i, p)| ((c.id, p.thing, p.aspect), o.valid[&(c.id, i)])))
         .collect();
 
-    // The settings (issues/thing-history.md, The setting): every held valid `retention^.0` delta
+    // The settings (spec/commits.md §5 The setting): every held valid `retention^.0` delta
     // of an applied commit, by key; one in an expiring commit is no setting (it carries no `expires`)
     for c in view.iter().filter(|c| c.kind == CommitKind::Content && c.expires.is_none()) {
         for (i, p) in c.parts.iter().enumerate() {
@@ -889,10 +889,10 @@ fn fate(
     let by_right = covering.iter().find(|x| x.1).map(|x| x.0);
     let by_any = by_right.or(covering.first().map(|x| x.0));
     let right = tl.right(me, me, (u64::MAX, me, u32::MAX), u32::MAX, p.retention.by, c.actor, t);
-    // issues/thing-history.md: in history, kept (compaction may not drop it); under purge on
+    // spec/commits.md §5 The setting: in history, kept (compaction may not drop it); under purge on
     // replace, gone at every node once a right holder covers it and the clock reaches its
     // replacement, owed by a right holder until then; out of history, any valid writer's cover
-    // drops it (Decisions 4); a live delta (not replaced) is the state, so no cover drops it
+    // drops it (Tess's decision 4, notes/engine-retention.md History); a live delta (not replaced) is the state, so no cover drops it
     // (spec/commits.md §5 Covered: only a purge, expiry or invalidity removes it)
     if c.kind != CommitKind::Snapshot && !o.replaced.contains(&pr) {
         return (keep(KeepWhy::Plain), false);

@@ -62,7 +62,7 @@ No new call, error or type for lifetimes: the list is an aspect.
 - One commit per structural change is what makes part-received data safe; the API gives no way to write a move as two commits by accident beyond writing two `Write`s.
 
 ## Interactions
-- **History** (issues/thing-history.md): independent. A removal releases at once whatever the retainer's history keeps; undo of a removed reference restores a tid that may dangle (reads as gone). Dropping X ends X's own history with it.
+- **History** (notes/engine-retention.md History): independent. A removal releases at once whatever the retainer's history keeps; undo of a removed reference restores a tid that may dangle (reads as gone). Dropping X ends X's own history with it.
 - **`delete(R)`** resets R's content and memberships: R references nothing live, so what it kept is released. **`delete(X)`** removes X's memberships, so a thing living by its group is released at once.
 - **Purge** of the write holding a reference releases at once ("delete for everyone" on a message drops its attachment).
 - **Expiry**: an expiring write's reference counts until T. A thing referenced by an expiring thing should be created in the same expiring commit: then every node drops both at T with nobody online. Otherwise it waits for a node that may end it and held the retainer when it expired. Limit: a thing that reaches such a node only after its expired retainer left nothing behind is unknown-referred there and leaks.
@@ -80,7 +80,7 @@ No new call, error or type for lifetimes: the list is an aspect.
 - Growth rows to add: the index (per live reference, about 50-70 B, local, rebuildable); the work list and `pending` (per unreachable thing not yet ended here); an ended retainer's record kept while a held thing lists it.
 
 ## Problems, stated
-1. **Creating a referenced thing under a shared actor** (Decisions 3): a writer of the shared actor creates the thing with its own account as first admin and, in the same commit, sets `retainers^.0` (and `retention^.0`, issues/thing-history.md), grants admin to the shared actor and removes its own record edge. One commit, so no window; no new rule. Cost: two edge writes per such thing, kept for good (a thing's role history is kept whole). The API may offer this as one call.
+1. **Creating a referenced thing under a shared actor** (Decisions 3): a writer of the shared actor creates the thing with its own account as first admin and, in the same commit, sets `retainers^.0` (and `retention^.0`), grants admin to the shared actor and removes its own record edge. One commit, so no window; no new rule. Cost: two edge writes per such thing, kept for good (a thing's role history is kept whole). The API may offer this as one call.
 2. **Partial views leak** (by choice): a thing readable where its retainers are not is never judged there. Requiring one sharing context would need a validity rule across things that role changes break anyway. The API path that avoids it is the usage rule already in spec/requirements.md Generality (share a set through one actor): create the thing under the retainer's actor.
 3. **Offline nodes drop nothing**, so an unreferenced thing is still found by a search there until the node syncs. An app that means "delete this now" calls `end`.
 4. **Disputes** can drop across sides (Rules, Disputes).

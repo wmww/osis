@@ -1,4 +1,4 @@
-//! The thing-level history judgment (issues/thing-history.md): history is set per thing by
+//! The thing-level history judgment (spec/commits.md §5 The setting): history is set per thing by
 //! `retention^.0`, never per write. One aspect of one thing; times are wall ms. `evaluate` judges
 //! every replaced body by `out` over the thing's held valid settings (`Outcome::out`); `Eager`
 //! and `history` here are the greenfield small worlds `tests/it/spec_thing_history.rs` checks.

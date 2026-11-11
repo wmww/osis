@@ -1,5 +1,5 @@
 # Retention: what is left of the history-modes work
-> Summary: Open items after history became the thing's setting (issues/thing-history.md): the order-oracle redesign, the ephemeral map-key question, the swept hidden write; Tess's standing decisions on naming, the purge-on-replace fallback and small values.
+> Summary: Open items of the retention work: the order-oracle redesign, the ephemeral map-key question, the swept hidden write; Tess's standing decisions on naming, the purge-on-replace fallback and small values.
 > Priority: normal
 > Tags: engine, spec, retention
 

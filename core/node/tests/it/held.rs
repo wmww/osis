@@ -28,7 +28,7 @@
 //! writes apply, every known thing's roster (`roles.0` as read), reads, no forbidden value held
 //! (expired or purged), and no held body under purge on replace a right holder's held snapshot
 //! covers (the option's promise: the content is gone). History is the thing's `retention^.0`
-//! settings, fed as `Delta::Retention` (issues/thing-history.md). Which other bodies a node holds,
+//! settings, fed as `Delta::Retention` (spec/commits.md §5 The setting). Which other bodies a node holds,
 //! and when it dates a death, are its own. Every difference is tallied by kind
 //! (`Coverage::differs`); the first is reported. The order harness also compares after every
 //! ingest of its clocked deliveries, between ticks.
@@ -744,7 +744,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
     // covered drops since the last judgment, each against the settings held now, the body as
     // last seen held, with every fresh drop held: in history, or dated ahead of the clock where
     // a setting keeps the aspect, it was kept (spec/commits.md §5 Keep bounds). A covered drop
-    // redates nothing in history (D1, D2 in issues/thing-history.md Dating), so the step's
+    // redates nothing in history (notes/engine-retention.md Replaced, When), so the step's
     // drops are judged together
     if let Some(d) = drops {
         let mut back = input.held.clone();
