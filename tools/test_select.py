@@ -26,7 +26,7 @@ FN = re.compile(r"^(?!\s*//).*?\bfn\s+(\$?\w+)")
 FN_WITHIN = 10
 # Sim seeds at small size: a tenth of the 150 of a release-check sim run, as for every harness
 # (osis_base::testenv::large).
-SIM_SEEDS = 5
+SIM_SEEDS = 15
 # Variables that shift a harness's seeds without choosing one: every `_START`, and the two
 # xor'ed into each run's seed. `OSIS_ORDER_SEED` and the like pick a single seed: never set.
 XOR_SEEDS = ("OSIS_CRDT_SEED", "OSIS_PERM_SEED")

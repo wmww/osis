@@ -33,7 +33,7 @@ Read, not measured per seed (35 property tests by `tools/test_select.py`'s rules
 - **Checks after every step**: paged `stored_each`, held-model after every clocked ingest, resume's check, the engine-only sweep scenarios reading every aspect of every node each step.
 - **Fixed-seed properties run in every gate** (forged_parts, tombstone, unmerge_paged, crdt stream and paging, base proptests): the same run each time; only worth it when the branch touches what they reach.
 - **Wall, not CPU**: two single-threaded paged seeds hold the engine property step for 35-83 s with the other cores idle; tied's four seeds run one after another.
-- Seed counts: the seed-found bugs in git history came from fresh offsets, almost all "fails on main too", and none needed a large count. Set: 5 seeds per sweep scenario (`tools/test_select.py` `SIM_SEEDS`), the exhaustive order property at 2 seeds per gate. Open: one shared seed range for same-generator properties; a failing gate seed rerun on main automatically, so a main failure becomes an issue and not a blocked branch.
+- Seed counts stay (15 per sweep scenario; the exhaustive order property 8, one per emphasis: its seed picks the emphasis, so fewer drops emphases). Tried at 5 and 2: the gate ran 363 s against 480-625 s, but the time is to come from the work each seed does, not from fewer seeds. Open: one shared seed range for same-generator properties; a failing gate seed rerun on main automatically, so a main failure becomes an issue and not a blocked branch.
 
 ## Order of work
 1. The derived-state memos for node-sync's passes (pattern 2), as their blockers land.

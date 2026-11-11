@@ -34,7 +34,7 @@ Dev profile for all branch work (Cargo.toml): workspace crates `opt-level = 1`, 
 3. Lints: core clippy, then the GUI's (Components below).
 4. Builds, unlocked: `cargo test --no-run` and the selection's test binaries and `sim-sweep`, each with its run's own cargo arguments, so the hold builds nothing (doctests still compile inside it, at run time).
 5. The rest unlocked: the unification check when a `Cargo.toml` (any), `Cargo.lock` or `.cargo/` changed since the merge base (`--plan` says `unify=1`), the schema check, `cargo deny check` and core's bans alone.
-6. The tests, in one `tools/heavy` hold: the default tests (`cargo test --locked --no-fail-fast`), then the selected properties, then the selected sim scenarios at 5 seeds. Each prints its own wall and CPU-s and its time-limit line, and the hold's after (Time limits below; every other step checks its own too).
+6. The tests, in one `tools/heavy` hold: the default tests (`cargo test --locked --no-fail-fast`), then the selected properties, then the selected sim scenarios at 15 seeds. Each prints its own wall and CPU-s and its time-limit line, and the hold's after (Time limits below; every other step checks its own too).
 7. The GUI tests, when libs/kit/ or app/ changed.
 
 `--base REV` compares against REV instead of the merge base; `--plan` prints the step selection (`core`, `gui`, `unify`, `select=all|diff|none`; tested on fabricated histories by `tools/gate_select_test.sh`, a gate step). Then the coordinator runs `git checkout main && git merge --ff-only <branch> && git push`. Task branches are never pushed; history is linear. The generated notes/testing-map.md is gitignored.
@@ -79,7 +79,7 @@ Every timed run has a CPU limit (tight: other work on the box barely moves CPU-s
 | `gate.unify` | 200 | 60 | the unification check (a manifest changed): 1770 / 116 s when the GUI builds anew |
 | `gate.deny` | 10 | 10 | schema check, deny, core bans: 5 / 4 s |
 | `gate.properties` | 1700 | 175 | the selected properties, every crate: 3600 / 352 s at load 17 (35 tests) |
-| `gate.sim` | 1250 | 150 | the sim scenarios at 5 seeds (limits set at 15 seeds: about 2540 / 297 s at load 17, 52 scenarios) |
+| `gate.sim` | 1250 | 150 | the sim scenarios at 15 seeds: about 2540 / 297 s at load 17 (52 scenarios) |
 | `gate.gui-tests` | 100 | 60 | GUI tests, when libs/kit/ or app/ changed |
 | `gate.hold` | 1650 | 105 | the gate's one heavy-lock hold, every crate selected: 10,240 / 1048 s at load 17 (issues/gate-five-minutes.md) |
 | `gate` | 1780 | 130 | the whole gate but its lock wait: 5 minutes, Tess's cap (wall); its CPU what 5 minutes at the box's usual 85% busy allows. Every-crate gate: about 1300 s |
