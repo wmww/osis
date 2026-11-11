@@ -1953,3 +1953,68 @@ fn team_left_out_reads_again_by_its_stranded_report_spec_crypto_4() {
     assert_eq!(x(&bob, after), Some(s("after T rotated")));
     assert_eq!(x(&dave, after), None);
 }
+
+// spec/crypto.md §4 (Seal: a keyset with a stale box is skipped; Reported), spec/permissions.md
+// §4 (a stranded report carries the holder's keys): Alice, G's one admin, holds none of team A's
+// secrets (she left A); A (Bob its admin) holds team M (Carol, Dave). Carol removes Dave from M
+// while Bob is away, and M's new keyset reaches Alice under G's labels, so A's box to M is stale
+// there: removing Erin from G, Alice leaves A out. Bob comes back and rotates A; A's members,
+// left out, hold no current epoch of G to place A's new keyset under, so only their stranded
+// report brings it to Alice, who re-seals A. Carol reads what Alice wrote meanwhile and after.
+#[test]
+fn team_left_out_by_a_sealer_reading_none_of_it_reads_again_spec_crypto_4() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let [alice, bob, carol, dave, erin] = [1, 2, 3, 4, 5].map(|i| w.account(i, &[host]));
+    w.run();
+    let card = |w: &mut World, from: &Osis, to: &Osis| {
+        let c = from.contact_card().unwrap();
+        w.run();
+        w.until(to.import_contact(&c), 1000, 10).unwrap()
+    };
+    let alice_at_bob = card(&mut w, &alice, &bob);
+    let bob_at_carol = card(&mut w, &bob, &carol);
+    let dave_at_carol = card(&mut w, &dave, &carol);
+    let erin_at_alice = card(&mut w, &erin, &alice);
+    let m = group(&carol);
+    carol.grant(m, bob_at_carol, Role::Read, Default::default()).unwrap();
+    carol.grant(m, dave_at_carol, Role::Read, Default::default()).unwrap();
+    w.run();
+    let a = group(&bob);
+    bob.grant(a, alice_at_bob, Role::Read, Default::default()).unwrap();
+    bob.grant(a, m, Role::Read, Default::default()).unwrap();
+    w.run();
+    let g = group(&alice);
+    alice.grant(g, a, Role::Read, Default::default()).unwrap();
+    alice.grant(g, erin_at_alice, Role::Read, Default::default()).unwrap();
+    w.run();
+    alice.leave(alice.me(), a).unwrap();
+    let settle = |w: &mut World, rounds: usize| {
+        for _ in 0..rounds {
+            w.advance(70_000);
+            w.run();
+        }
+    };
+    settle(&mut w, 3);
+    assert!(held_read(&alice, a).is_empty(), "Alice dropped A's secrets");
+    let before = item(&alice, g, g, "before");
+    w.run();
+    assert_eq!(x(&carol, before), Some(s("before")));
+    w.set_online(&bob, false);
+    carol.set_role(m, dave_at_carol, None, Default::default()).unwrap();
+    settle(&mut w, 3);
+    alice.set_role(g, erin_at_alice, None, Default::default()).unwrap();
+    settle(&mut w, 3);
+    let mid = item(&alice, g, g, "mid");
+    w.run();
+    assert_eq!(sealed_keyset(&alice, g, a), None, "A left out of G");
+    assert_eq!(x(&carol, mid), None);
+    w.set_online(&bob, true);
+    settle(&mut w, 6);
+    let after = item(&alice, g, g, "after");
+    settle(&mut w, 2);
+    assert!(sealed_keyset(&alice, g, a).is_some(), "A sealed again");
+    assert_eq!(x(&carol, mid), Some(s("mid")));
+    assert_eq!(x(&carol, after), Some(s("after")));
+    assert_eq!(x(&dave, after), None);
+}
