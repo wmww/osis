@@ -3,3 +3,4 @@
 - Depth0MC.tla shares one namespace across every instance: short prefixes (`e`, `r`) collide with existing ones.
 - `run.sh depth0` now takes about 420 s at 4 workers under `tools/heavy`, near its 598 s wall limit (D0_nc3 and D0_gone_live dominate).
 - Review: `ending::` node tests take about 4 min to build-and-run cold after an engine change; fine, but the brief's six audit questions needed reading 25 callers by hand: a short "who calls this and which roster it means" list in the note saved a reviewer that work.
+- Review gate: gate.hold CPU 7332/3795 s (1.93x), wall 769/241 s (3.19x) at load 25; `held_set_decides_exhaustive`/`_plain` alone took 267 s wall. It stopped on `held_set_decides_plain` seed 438123470748 (Lists, fails on main too: issues/order-lists-seed-diverges.md), so the sim stage ran by hand after (`tools/heavy`, 780 runs, 0 failing). A known-failing property ends the gate before the sims: the gate could run every stage and report all failures.
