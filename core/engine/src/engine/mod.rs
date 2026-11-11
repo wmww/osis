@@ -994,8 +994,9 @@ pub struct Core {
     /// Ended things whose keep is judged again at the end of the transaction (`retention::end`):
     /// what needs their evidence may have gone.
     pub ended_due: BTreeSet<Tid>,
-    /// Ended things whose record may be kept here (`retention::end`, `Engine::ended_needed`): a
-    /// superset, read through `Core::ended_kept`; `None` until first read after an open.
+    /// Ended things kept here that a held thing may need (`retention::end::needs_evidence`,
+    /// `Engine::ended_needed`): a superset, read through `Core::ended_kept`; `None` until first
+    /// read after an open.
     pub ended_kept: Option<BTreeSet<Tid>>,
     /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
     /// when it ends (`apply::run_batched`).
@@ -1445,8 +1446,9 @@ impl Core {
         held.into_iter().flatten().filter_map(move |(_, c)| Some((*c, self.ix.commits.get(c)?.aspect(&t, ak.as_ref()?)?)))
     }
 
-    /// The ended things whose record is held here (their evidence kept: `retention::end`). Read
-    /// from every record once after an open, then kept by the endings.
+    /// The ended things kept here that a held thing may need (`retention::end`): every ended
+    /// thing with a held record once after an open, then kept by the endings and the references
+    /// moving to them (`end_ended`); `Engine::ended_needed` leaves out those it finds unneeded.
     pub fn ended_kept(&mut self) -> Vec<Tid> {
         if self.ended_kept.is_none() {
             let all: BTreeSet<Tid> = self.ix.held.things().copied().filter(|t| self.ended(t)).collect();

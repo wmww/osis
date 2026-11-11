@@ -125,15 +125,18 @@ pub(crate) fn needs_evidence(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
     Ok(crate::engine::refs::to(tx, t)?.iter().any(|r| r.source != *t && !r.ak.ephemeral()))
 }
 
-/// Whether ended `t` keeps its record and what tells it ended: something needs the evidence,
-/// or a request ending it is still in force here (a purge for good, a release until its
-/// expiry); an ending by expiry alone keeps it only for what needs it.
+/// Whether a request ending `t` is still in force here: a purge for good, a release until its
+/// expiry; an ending by expiry alone has none.
+fn in_force(tx: &Tx<'_>, t: &Tid) -> bool {
+    !every_creation_expired(tx, t) && release_state(tx.core, t, tx.now().0) != Some(true)
+}
+
+/// Whether ended `t` keeps its record and what tells it ended (`in_force`, `needs_evidence`),
+/// noting it in `Core::ended_kept` while something needs it.
 fn keeps(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
-    if needs_evidence(tx, t)? {
-        return Ok(true);
-    }
-    let now = tx.now().0;
-    Ok(!every_creation_expired(tx, t) && release_state(tx.core, t, now) != Some(true))
+    let needs = needs_evidence(tx, t)?;
+    tx.core.note_ended_kept(t, needs);
+    Ok(needs || in_force(tx, t))
 }
 
 /// Ends the things a value-less list changed on in this transaction (`Core::valueless_dirty`,
@@ -268,7 +271,6 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
     let keep = keeps(tx, t)?;
     // released, every request past its expiry: with what it drops the node forgets it
     let forget = !keep && release_state(tx.core, t, tx.now().0) == Some(true);
-    tx.core.note_ended_kept(t, keep);
     if keep {
         // what stays still reads as gone (`Core::exists`): observers hear it
         reads_again(t, changed);

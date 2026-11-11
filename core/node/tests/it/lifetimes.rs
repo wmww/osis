@@ -402,3 +402,69 @@ fn a_commit_on_a_forgotten_thing_and_a_live_one_keeps_its_header() {
     assert_eq!(e.lifetime_status(&x), Status::Known, "x's parts join again");
     assert_eq!(e.judge_lifetimes(&|_| true).unwrap().release, vec![x]);
 }
+
+// spec/commits.md §5 (Forgetting: role commits included): a released thing with an edge write of
+// its own (a role commit on it alone) is forgotten whole at its request's expiry, the grant's header
+// too, and stays so over a restart
+#[test]
+fn a_forgotten_released_thing_takes_its_role_commits() {
+    let (mut net, [a, b]) = local_nodes::<2>();
+    let me = net.tid(a);
+    let tb = net.tid(b);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let r = e.new_thing(&mut m, me);
+    e.commit(m).unwrap();
+    let mut m = Mutation::new();
+    let x = e.new_thing(&mut m, me);
+    list(&mut m, x, Some([r].into()));
+    e.commit(m).unwrap();
+    let mut m = Mutation::new();
+    refs(&mut m, r, Value::Set([Value::Tid(x)].into()));
+    e.commit(m).unwrap();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let edge = ct::Edge { role: osis_base::Role::Write, until: None, invite: None, tied: None };
+    m.op(x, &ct::ROLES, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(tb))], op: Op::Set(osis_schema::Codec::to_value(&edge)) }).unwrap();
+    let grant = e.commit(m).unwrap().unwrap();
+    assert!(!e.roster(&x).is_empty());
+    let mut m = Mutation::new();
+    refs(&mut m, r, Value::Set(Default::default()));
+    e.commit(m).unwrap();
+    assert_eq!(e.judge_lifetimes(&|_| true).unwrap().release, vec![x]);
+    assert!(e.header(&grant).is_some());
+    net.advance(osis_base::format::ROLE_KEEP_MS + 1_000);
+    let e = net.engine(a);
+    assert_eq!(e.lifetime_status(&x), Status::Unknown);
+    assert!(e.header(&grant).is_none(), "the edge write forgotten with x");
+    assert!(e.roster(&x).is_empty());
+    net.restart(a, 3);
+    assert_eq!(net.engine(a).lifetime_status(&x), Status::Unknown);
+}
+
+// issues/thing-lifetimes.md (What is kept; Cost): what a label's certificates read of ended things
+// is bounded by what live things need, not by what ended: with n and 10n purged things nothing
+// references, finding the one released thing r references reads as many candidates (after the
+// first look leaves out the unneeded)
+#[test]
+fn finding_needed_endings_reads_what_live_things_need_at_n_and_10n() {
+    let count = |n: usize| {
+        let (mut net, [a]) = local_nodes::<1>();
+        let t = things(&mut net, a, n + 2);
+        let (r, x, gone) = (t[0], t[1], &t[2..]);
+        let mut m = Mutation::new();
+        refs(&mut m, r, Value::Set([Value::Tid(x)].into()));
+        net.engine(a).commit(m).unwrap();
+        for g in gone {
+            end(&mut net, a, *g);
+        }
+        net.engine(a).release(&[x]).unwrap().unwrap();
+        let e = net.engine(a);
+        assert_eq!(e.ended_needed(&r).unwrap(), [x].into());
+        osis_node::costs::take();
+        assert_eq!(e.ended_needed(&r).unwrap(), [x].into());
+        osis_node::costs::take().into_iter().find(|(k, _, _)| *k == "ended needed: candidates").map_or(0, |x| x.2)
+    };
+    let (small, big) = (count(10), count(100));
+    assert!(small >= 1 && big == small, "{small} at n, {big} at 10n");
+}

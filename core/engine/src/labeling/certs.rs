@@ -230,18 +230,22 @@ impl Engine {
     /// The ended things held here whose evidence the closure of `g` needs (spec/commits.md §5
     /// Ending, issues/thing-lifetimes.md What is kept): on an authority path into it
     /// (`ended_upstream`), or listed in `retainers^.0` or referenced in a live durable value by
-    /// a live thing of it. O(kept ended things and the reference rows naming them): what is kept
-    /// is bounded by live things.
+    /// a live thing of it. O(kept ended things something needs and the reference rows naming
+    /// them): bounded by live things, not by what ended.
     pub fn ended_needed(&mut self, g: &Tid) -> Result<BTreeSet<Tid>> {
         let mut out = self.ended_upstream(g);
         let closure = self.closure(g);
         for x in self.core.ended_kept() {
+            crate::costs::count("ended needed: candidates", 1);
             if out.contains(&x) {
                 continue;
             }
-            let rows = self.references_to(&x)?;
-            if rows.iter().any(|r| r.source != x && !r.ephemeral() && closure.contains(&r.source) && self.core.exists(&r.source)) {
+            let rows: Vec<_> = self.references_to(&x)?.into_iter().filter(|r| r.source != x && !r.ephemeral()).collect();
+            if rows.iter().any(|r| closure.contains(&r.source) && self.core.exists(&r.source)) {
                 out.insert(x);
+            } else if rows.is_empty() && !crate::retention::end::dependents(&self.core, &x) {
+                // needed by nothing held: no candidate until a reference to it comes (`end_ended`)
+                self.core.note_ended_kept(&x, false);
             }
         }
         Ok(out)
