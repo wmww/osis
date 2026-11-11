@@ -211,3 +211,31 @@ fn a_path_write_costs_what_it_writes() {
     assert_eq!(small, vec![("refs: value read", 4), ("refs: row written", 2)], "the key and value of the old entry and of the new");
     assert_eq!(count(2000), small);
 }
+
+// notes/engine-refs.md (Rows): the index is rebuildable and its classes follow their states: a
+// rebuild of the persisted index over held ephemeral state keeps its rows, a reopen keeps the
+// durable rows and none of the ephemeral ones (its state went with memory), and a reopen that
+// rebuilds the index finds the same.
+#[test]
+fn rows_survive_what_their_states_survive() {
+    let (c, store) = (clock(), MemStore::new());
+    let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap();
+    let [r, x] = things(&db, 2)[..] else { panic!() };
+    db.commit_with(|w| w.at(r, key("t:a.0")).set(&Value::Tid(x))).unwrap();
+    db.commit_with(|w| w.at(r, key("t:e+.0")).set(&Value::Tid(x))).unwrap();
+    let both = [row(x, "t:a.0", 1), row(x, "t:e+.0", 1)].into();
+    assert_eq!(rows(&db, r), both);
+    db.engine(|e| {
+        e.damage_index(false).unwrap();
+        e.reload().unwrap()
+    });
+    assert_eq!(rows(&db, r), both, "rebuilt in place");
+    drop(db);
+    let durable: BTreeSet<Row> = [row(x, "t:a.0", 1)].into();
+    let db = osis::internals::open(cfg(2, store.clone(), &c)).unwrap();
+    assert_eq!(rows(&db, r), durable, "reopened");
+    db.engine(|e| e.damage_index(false).unwrap());
+    drop(db);
+    let db = osis::internals::open(cfg(3, store, &c)).unwrap();
+    assert_eq!(rows(&db, r), durable, "reopened, rebuilt");
+}

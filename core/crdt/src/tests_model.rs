@@ -304,6 +304,20 @@ fn piece_laws(x: &Fragment, y: &Fragment, honest: bool) {
     }
 }
 
+/// A join of `y` changes the values a state holds (`each_value`) only at `y`'s reach
+/// (`Fragment::reach`): `before` and `after` differ as their pieces at the reach do (the engine's
+/// reference index counts a join there alone, notes/engine-refs.md).
+fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fragment) {
+    let diff = |a: &Fragment, b: &Fragment| {
+        let mut m: BTreeMap<osis_base::Value, i64> = BTreeMap::new();
+        a.each_value(&mut |v| *m.entry(v.clone()).or_default() -= 1);
+        b.each_value(&mut |v| *m.entry(v.clone()).or_default() += 1);
+        m.retain(|_, n| *n != 0);
+        m
+    };
+    assert_eq!(diff(&before.reach(y), &after.reach(y)), diff(before, after), "a join changes held values only at its reach");
+}
+
 /// The history joined in creation order, then twice in a random order with duplicates, by the
 /// model and the crdt in lockstep: state and read equal after every join, the cached placement a
 /// whole pass's (`check_lin`).
@@ -337,7 +351,9 @@ fn joins(r: &mut Rng, c: &Case) -> Option<MFrag> {
                     piece_laws(&ours, &fd, c.honest);
                 }
                 mapply(&mut model, d.clone());
+                let before = ours.clone();
                 ours.join(fd.clone());
+                reach_holds_the_change(&before, &ours, &fd);
                 check_lin(&ours);
                 assert_eq!(ours, ostate(&model), "state after joining delta {k}");
                 assert_eq!(ours.read(), mread(&model), "read after delta {k}");

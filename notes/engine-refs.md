@@ -19,4 +19,4 @@ A row says exactly what the source's held state on that aspect holds: it changes
 - Check: `apply::check_rebuilt` (debug, end of transaction, sampled like the state check) asserts each checked aspect's rows equal its whole state's count (`refs::check`).
 
 ## Tests
-osis `references::` (rows follow values; any arrival order; expiry and purge; a validity flip; lost access; a path write counted at n and 10n, a paged reset), engine `refs::tests`.
+osis `references::` (rows follow values; any arrival order; expiry and purge; a validity flip; lost access; a path write counted at n and 10n, a paged reset; a rebuild in place, a reopen), engine `refs::tests`, and the crdt differential's law that a join changes held values only at its reach (`tests_model::reach_holds_the_change`, every mode, hostile included).
