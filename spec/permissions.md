@@ -126,7 +126,7 @@
   - A held pending role commit signed by its author that boxes the node a read epoch newer than every one it held keeps its boxes through the drop (it may still apply and then gives the node the secrets with the role). The node reads nothing from them before it applies. Boxes only at epochs it held are dropped.
   - A held redemption (a commit removing its signer's own grant on a thing beside a grant there) granting the node, that stands void only because an applied redemption by the same signer removed that grant first, with no explicit write on that grant since (an unfinalized single-use link race, §7), is no loss yet: the node keeps what that grant would give and keeps syncing its labels until such a write arrives.
   - A node removed from its account's D (a counting removal of it held) is no node of P: it drops P's seeds and loses everything it read as P (an account's retain default does not reach its nodes, §2).
-  - A node that lost read access through a self-removal (§2) by itself, its account or a key actor it holds, whichever node of the account made it, drops once that commit is placed (spec/sync.md §5, Placed), so it can place it (above).
+  - A node that lost read access through a self-removal (§2) it made, or one by itself, its account or a key actor it holds, whichever node of the account made it, drops once that commit is placed (spec/sync.md §5, Placed), so it can place it (above).
   - One that lost it by an `until` passing alone (a finalize counting as its `until`) drops as §2 says.
 - **Retain**: a node that lost read access to actor A retains a read-only copy of A's things when one of its ways to A retains.
   - A **way** is a holder H of A, in one of these forms (a record edge is a grant here):
