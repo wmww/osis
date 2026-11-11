@@ -4,17 +4,17 @@
 //! history) and one timer, at the leaving of the first place past the cursor
 //! (`Indexes::leave_from`, `leave_due`). The places: a signal's fires by `ts` (`by_aspect`: a fire
 //! is replaced when written); a value aspect's rows (`Indexes::leaving`), one per held valid
-//! part replaced on a dated aspect (`history::Kept::dated`), at its replaced-at (a purged part
+//! part replaced on a dated aspect (`history::Kept::dated`), no earlier than its replaced-at (a purged part
 //! at its request's `ts`), kept for parts out of history too (a late setting may bring them
 //! back). A window passing walks the places that leave; a setting change those that leave or come
 //! back; each once, reading no body and walking none that stays.
 //!
 //! Rows only time events, never a read: listing, keep bounds and undo judge history from the held
-//! set when asked (`bounds`). A row is dated where a part's date may move (`date_due`, at a
-//! transaction's end): a kill and a rebuild (`mark_killed`, `mark_bounded`), and a part's own
-//! change (dropped, stripped, its validity). A date that moves earlier with no kill (an earlier
-//! superseder of an already dead write arriving) leaves its row late: listeners are told and
-//! node-sync marked at the row's time, never before the body leaves.
+//! set when asked (`bounds`). A row is a schedule never earlier than its part's replaced-at, set
+//! where that may move (`date_due`, at a transaction's end, `Dating`): a kill from the killing
+//! writes' stamps, no body read; a rebuild and an aspect turning dated from the held set; a part's
+//! own change (dropped, stripped, its validity). A late row tells listeners and marks node-sync
+//! late, never before the body leaves.
 //!
 //! What leaving does: a value part is told to commit listeners (`listing`) and marked for
 //! node-sync (`Core::mark_changed`: its keep bound passed); a fire's body drops. A purge
@@ -251,7 +251,7 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()
         (None, false) => Ok(()),
         (None, true) => {
             let on: Vec<CommitId> = tx.core.ix.by_aspect.get(&key).into_iter().flatten().map(|x| x.1).collect();
-            tx.core.to_date.extend(on.into_iter().map(|c| (*tid, ak.clone(), c, true)));
+            tx.core.to_date.extend(on.into_iter().map(|c| (*tid, ak.clone(), c, Dating::Full(true))));
             set_from(tx, tid, ak, Some((u64::MAX, None)))
         }
         (Some((_, out)), false) => {
@@ -280,10 +280,26 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()
     }
 }
 
-/// When value part `(tid, ak)` of `c` was replaced, for its row: a held valid part with values
-/// at its date (`bounds::dated_replaced_at`), a purged one at its request's `ts`; `None`: no row
-/// (live, never dated, not held, invalid).
-fn row_at(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts>> {
+/// How a part's row is set at a transaction's end (`date_due`), weakest first (a part asked for
+/// more than once takes the strongest).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Dating {
+    /// Its meta changed: its row goes if it is no longer held whole and valid (a purged part's
+    /// is its request's `ts`), else stays.
+    Kept,
+    /// A write of it died under writes stamped up to this (`Killed::at`): its row is set no
+    /// earlier, never moved earlier, no body read.
+    Killed(Ts),
+    /// Dated from the held set (`bounds::dated_replaced_at`: the aspect's held bodies read once
+    /// per transaction): a rebuild, and every held part of an aspect turning dated (`true`: a row
+    /// landing in history is told).
+    Full(bool),
+}
+
+/// The row of value part `(tid, ak)` of `c` by `how` (`old`: its row now): a held valid part with
+/// values by `how`, a purged one at its request's `ts`; `None`: no row (not held, invalid, live
+/// when dated whole).
+fn row_at(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, how: Dating, old: Option<Ts>) -> Result<Option<Ts>> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(ai) = m.aspect(tid, ak) else { return Ok(None) };
     if !m.valid_at(ai) {
@@ -291,21 +307,29 @@ fn row_at(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts
     }
     let h = m.header.clone();
     if m.holds(ai) && !m.bare(ai) {
-        return super::bounds::dated_replaced_at(tx, &h, c, ai);
+        return match how {
+            Dating::Kept => Ok(old),
+            Dating::Killed(t) => Ok(old.max(Some(t))),
+            Dating::Full(_) => super::bounds::dated_replaced_at(tx, &h, c, ai),
+        };
     }
     let by = super::purged_by(tx, &h, c, ai)?;
     Ok(by.and_then(|b| tx.core.ix.commits.get(&b)).map(|m| m.view.ts))
 }
 
-/// At a transaction's end: the rows of the parts whose date may have moved (`Core::to_date`: kills
-/// and rebuilds on dated aspects; and every part with a row or stripped whose meta changed)
-/// dated again, the aspect's held bodies read once for all (`Core::held_writes_memo`). A row that
-/// moves is marked for node-sync, and told where it crosses the clock; the cursor moves back past a row that lands in history
-/// before it; each aspect touched rearms.
+/// At a transaction's end: the rows of the parts whose date may have moved (`Core::to_date`: a
+/// kill sets the dying writes' own commits' rows no earlier than the killing writes, reading no
+/// body; a rebuild and an aspect turning dated date whole, the aspect's held bodies read once for
+/// all, `Core::held_writes_memo`), and of every part with a row or stripped whose meta changed. So
+/// a row is a schedule that is never early: the date it holds is the part's replaced-at or later
+/// (an earlier superseder arriving, or the killing writes stamped after the first superseder,
+/// leave it late). A row that moves is marked for node-sync, and told where it crosses the clock;
+/// the cursor moves back past a row that lands in history before it; each aspect touched rearms.
 pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
-    let mut items: BTreeMap<(Tid, Ak, CommitId), bool> = BTreeMap::new();
-    for (t, a, c, fresh) in std::mem::take(&mut tx.core.to_date) {
-        *items.entry((t, a, c)).or_default() |= fresh;
+    let mut items: BTreeMap<(Tid, Ak, CommitId), Dating> = BTreeMap::new();
+    for (t, a, c, how) in std::mem::take(&mut tx.core.to_date) {
+        let e = items.entry((t, a, c)).or_insert(how);
+        *e = (*e).max(how);
     }
     let state = |m: &crate::engine::Meta, ai: usize| (m.valid_at(ai), m.dropped.contains_key(&ai), m.stripped.contains(&ai), m.missing.contains(&ai));
     for (id, old) in tx.core.ix.commits.before() {
@@ -317,7 +341,7 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
             }
             let k = (*id, a.tid, a.ak.clone());
             if tx.core.ix.dated.contains_key(&k) || new.is_some_and(|n| n.stripped.contains(&ai)) {
-                items.entry((a.tid, a.ak.clone(), *id)).or_default();
+                items.entry((a.tid, a.ak.clone(), *id)).or_insert(Dating::Kept);
             }
         }
     }
@@ -328,13 +352,13 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
     let mut kept: BTreeMap<(Tid, Ak), history::Kept> = BTreeMap::new();
     tx.core.held_writes_memo = Some(BTreeMap::new());
     let r = (|| -> Result<()> {
-        for ((tid, ak, c), fresh) in items {
+        for ((tid, ak, c), how) in items {
             if ak.signal() {
                 continue;
             }
             let k = kept.entry((tid, ak.clone())).or_insert_with(|| history::of(tx.core, &tid, &ak)).clone();
-            let new = if k.dated() { row_at(tx, &c, &tid, &ak)? } else { None };
             let old = tx.core.ix.dated.get(&(c, tid, ak.clone())).copied();
+            let new = if k.dated() { row_at(tx, &c, &tid, &ak, how, old)? } else { None };
             if old == new {
                 continue;
             }
@@ -342,7 +366,7 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
             // a part replaced or dropped is told by its own change (`listing_moved`,
             // `commit_changes`); a row dated anew, where it crosses the clock
             let was = old.is_some_and(|o| leaves(&k, o) > now);
-            let crossed = (old.is_some() || fresh) && was != new.is_some_and(|n| leaves(&k, n) > now);
+            let crossed = (old.is_some() || how == Dating::Full(true)) && was != new.is_some_and(|n| leaves(&k, n) > now);
             if let Some(t) = old {
                 remove_row(tx, &tid, &ak, (t, c))?;
             }

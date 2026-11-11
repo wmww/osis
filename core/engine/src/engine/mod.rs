@@ -915,9 +915,9 @@ pub struct Core {
     /// (`listing::listing_moved`).
     pub(crate) killed: Vec<(Tid, Ak, CommitId)>,
     /// Parts on dated aspects whose replaced-at the running transaction may have moved (a kill, a
-    /// rebuild; `true`: its aspect turned dated, so a row landing in history is told): their
-    /// history rows are dated again at its end (`retention::leaving::date_due`).
-    pub(crate) to_date: Vec<(Tid, Ak, CommitId, bool)>,
+    /// rebuild, `retention::leaving::Dating`): their history rows are set again at its end
+    /// (`retention::leaving::date_due`).
+    pub(crate) to_date: Vec<(Tid, Ak, CommitId, crate::retention::leaving::Dating)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look.
     pub(crate) redeliver: BTreeSet<CommitId>,

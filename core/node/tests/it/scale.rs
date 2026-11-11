@@ -1387,3 +1387,33 @@ fn setting_change_and_window_passing_are_flat_spec_commits_5() {
         flat(&format!("{what}: store rows read"), a[i].io.reads, b[i].io.reads);
     }
 }
+
+/// A thing keeping `t:kept.0` a day, overwritten n times by its admin, a minute apart: the work of
+/// one more overwrite.
+fn kept_overwrite(n: usize) -> Work {
+    let mut lp = net(1, 47);
+    let t = new_thing(&mut lp, 0);
+    let kept = ak("t:kept.0");
+    let put = |lp: &mut LocalPeer, v: String| {
+        lp.advance(60_000);
+        let mut m = Mutation::new();
+        m.set(t, &kept, &Value::Str(v)).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    for i in 0..n {
+        put(&mut lp, format!("v{i}"));
+    }
+    measured_at(&mut lp, 0, |lp| put(lp, "last".into())).1
+}
+
+// issues/thing-history.md Cost; spec/requirements.md, Scale: an overwrite of a kept register sets
+// the replaced body's history row from the killing write's stamp (`leaving::Dating::Killed`),
+// reading no held body, at n and 10n.
+#[test]
+fn kept_overwrite_reads_no_body_spec_commits_5() {
+    let (a, b) = (kept_overwrite(20), kept_overwrite(200));
+    for k in ["deaths: a body", "death walks", "replaced reads"] {
+        assert_eq!((a.n(k), b.n(k)), (0, 0), "{k}");
+    }
+    all_flat("an overwrite of a kept register", &a, &b);
+}

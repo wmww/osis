@@ -329,18 +329,26 @@ fn bounded_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> 
 }
 
 /// The writes joins on an aspect superseded (spec/crdt.md §4.8), for `mark_killed`: by dot, or
-/// `all` when a join is not judged write by write (a reset joined by pages).
+/// `all` when a join is not judged write by write (a reset joined by pages); `at`, the latest
+/// stamp among the writes winning where one died: no earlier than any of their deaths (each dead
+/// write's superseder wins there, or is beaten by a later winner), so a date never early.
 #[derive(Debug, Default)]
 pub(crate) struct Killed {
     pub dots: BTreeSet<osis_crdt::Dot>,
     pub all: bool,
+    pub at: Option<Ts>,
 }
 
 impl Killed {
     /// Notes the writes the join of `d` into `st` superseded: `before`, the winners of `st` at
     /// `d`'s reach and of `d` (`Killed::before`), against `st` after the join.
     pub(crate) fn note(&mut self, before: &Winners, st: &Fragment, d: &Fragment) {
-        self.dots.extend(before.minus(&st.reach(d).winners()).into_iter().map(|w| w.stamp.dot));
+        let after = st.reach(d).winners();
+        let dead = before.minus(&after);
+        if !dead.is_empty() {
+            self.at = self.at.max(after.iter().map(|w| w.stamp.ts).max());
+            self.dots.extend(dead.into_iter().map(|w| w.stamp.dot));
+        }
     }
     /// What `note` compares with: the winners `st ⊔ d` may supersede.
     pub(crate) fn before(st: &Fragment, d: &Fragment) -> Winners {
@@ -352,8 +360,9 @@ impl Killed {
 
 /// A join on `(tid, ak)` superseded `dead`: the held bodies with a relative bound it may have
 /// replaced (the dying writes' own commits, and the aspect's snapshots, which may carry them) are
-/// judged again by node-sync (`Core::changed`) and their history rows dated again
-/// (`Core::to_date`); with `Killed::all`, every one (`mark_bounded`).
+/// judged again by node-sync (`Core::changed`), and the history row of each dying write's own
+/// commit is set no earlier than `Killed::at` (`Core::to_date`, `Dating::Killed`: no body read);
+/// with `Killed::all`, every one dated whole (`mark_bounded`).
 /// On any aspect the dying writes' own commits are marked and become cover candidates: a body
 /// read on its own may not be now (`read_alone`); with `Killed::all`, every held body of the
 /// aspect (a reset joined by pages: rare).
@@ -372,7 +381,7 @@ pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
     for c in &owners {
         tx.core.mark_changed(*c);
     }
-    let held: Vec<CommitId> = owners.into_iter().filter(|c| super::held_part(tx.core, c, tid, ak).is_some()).collect();
+    let held: Vec<CommitId> = owners.iter().copied().filter(|c| super::held_part(tx.core, c, tid, ak).is_some()).collect();
     tx.core.cover_candidates.entry((*tid, ak.clone())).or_default().extend(held);
     if !bounded(tx.core, tid, ak) {
         return;
@@ -380,7 +389,9 @@ pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
     for c in on {
         if bounded_part(tx.core, &c, tid, ak).is_some() {
             tx.core.mark_changed(c);
-            tx.core.to_date.push((*tid, ak.clone(), c, false));
+            if let Some(t) = dead.at.filter(|_| owners.contains(&c)) {
+                tx.core.to_date.push((*tid, ak.clone(), c, super::leaving::Dating::Killed(t)));
+            }
         }
     }
 }
@@ -404,7 +415,7 @@ pub(crate) fn mark_bounded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) {
     for c in on {
         if bounded_part(tx.core, &c, tid, ak).is_some() {
             tx.core.mark_changed(c);
-            tx.core.to_date.push((*tid, ak.clone(), c, false));
+            tx.core.to_date.push((*tid, ak.clone(), c, super::leaving::Dating::Full(false)));
         }
     }
 }
