@@ -171,6 +171,8 @@ Width (tests-4x pattern 4), no coverage loss:
 - crdt-model `props.rs:280–325`: one type per case | medium
 - `large_text_batch_is_net_effect`: one seed | low
 
+Width, not applied: crdt `tests_winners` (`seq_winners_from_scratch`, `winners_from_scratch`) run 8 and 2 variants per proptest case. One variant per case would cut 5.6 s to under 1 s, but the saved regression seeds (`proptest-regressions`) would then replay one variant each and may miss the one they were saved for: first turn each saved seed into a named case with its variant.
+
 ## Helpers to add or unify
 
 | helper | replaces | where |

@@ -235,25 +235,23 @@ fn first_superseding_check(bodies: &[Fragment]) {
     }
 }
 
-// Each case runs one variant, picked by the seed: bit 0 (unused by `winners_check`'s generator)
-// honest or not, the next bits the types.
 proptest! {
     /// §4.8: `winners` against the pairwise definition, maps, structs, registers and bags.
     #[test]
     fn winners_from_scratch_spec_4_8(seed in any::<u64>()) {
-        winners_check(seed, &[sink_no_seq()], seed & 1 == 1);
+        winners_check(seed, &[sink_no_seq()], false);
+        winners_check(seed, &[sink_no_seq()], true);
     }
 
     /// §4.8, §5.6, §5.7, §7: sequences at any depth, and positions written in several encodings.
     #[test]
     fn seq_winners_from_scratch_spec_4_8(seed in any::<u64>()) {
-        let types = match (seed >> 1) % 4 {
-            0 => vec![Ty::Text],
-            1 => vec![Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect())))],
-            2 => vec![Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text))],
-            _ => vec![Ty::Text, Ty::Register, sink_no_seq()],
-        };
-        winners_check(seed, &types, seed & 1 == 1);
+        for honest in [false, true] {
+            winners_check(seed, &[Ty::Text], honest);
+            winners_check(seed, &[Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect())))], honest);
+            winners_check(seed, &[Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text))], honest);
+            winners_check(seed, &[Ty::Text, Ty::Register, sink_no_seq()], honest);
+        }
     }
 }
 
