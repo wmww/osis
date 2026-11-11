@@ -292,6 +292,15 @@ impl Transaction<'_> {
         Ok(())
     }
 
+    /// Whether this open of the store has drawn its node log incarnation (`pager::Meta`).
+    pub(crate) fn log_drawn(&self) -> bool {
+        self.d.meta.log_drawn
+    }
+
+    pub(crate) fn set_log_drawn(&mut self) {
+        self.d.meta.log_drawn = true;
+    }
+
     /// Sets the transaction aside, uncommitted (`Store::resume`). In memory mode or holding
     /// memory-overlay rows it fails `Misuse` and aborts (a dropped `Suspended` could not undo them).
     pub fn suspend(self) -> Result<Suspended, Error> {

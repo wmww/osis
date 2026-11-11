@@ -123,6 +123,10 @@ pub(crate) struct Meta {
     pub next_ver: u64,
     /// Slot of the catalog table's root page (`u64::MAX` before the store layer sets it).
     pub catalog: u64,
+    /// This open of the store has drawn its node log incarnation (nodelog.rs). Never encoded, so
+    /// false after every open; carried in the transaction like the rest, so a transaction that
+    /// draws and aborts, suspended or not, leaves it undrawn.
+    pub log_drawn: bool,
 }
 
 impl Meta {
@@ -130,7 +134,7 @@ impl Meta {
         w.u32(self.arity).u32(self.depth).u32(self.page_max).u64(self.next_slot).u64(self.next_ver).u64(self.catalog);
     }
     fn decode(r: &mut R) -> Result<Meta, Error> {
-        Ok(Meta { arity: r.u32()?, depth: r.u32()?, page_max: r.u32()?, next_slot: r.u64()?, next_ver: r.u64()?, catalog: r.u64()? })
+        Ok(Meta { arity: r.u32()?, depth: r.u32()?, page_max: r.u32()?, next_slot: r.u64()?, next_ver: r.u64()?, catalog: r.u64()?, log_drawn: false })
     }
 }
 
@@ -479,7 +483,7 @@ impl Pager {
         }
         let root_key = Secret32::random(rng);
         let page_max = u32::try_from(cfg.page_max).map_err(|_| Error::Misuse("config"))?;
-        let meta = Meta { arity: cfg.arity, depth: cfg.depth, page_max, next_slot: 0, next_ver: 1, catalog: u64::MAX };
+        let meta = Meta { arity: cfg.arity, depth: cfg.depth, page_max, next_slot: 0, next_ver: 1, catalog: u64::MAX, log_drawn: false };
         let mut p = Pager::new(backend, root, cfg, 1, root_key, 0, meta, Node::default());
         let mut d = p.begin()?;
         let slot = p.alloc(&mut d)?;

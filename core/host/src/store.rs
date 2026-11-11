@@ -239,6 +239,12 @@ enum Write {
     Delete(Vec<u8>),
     PutBlob(BlobId, Vec<u8>),
     DeleteBlob(BlobId),
+    /// Node log events (notes/local-store.md, Node log), beside the per-label log.
+    LogAdded(LabelId, BlobId),
+    LogDeleted(LabelId, BlobId, u64),
+    LogHead(LabelId, StepId),
+    /// A page of the node log's sweep at a wall time.
+    LogSweep(u64),
 }
 
 impl Writes {
@@ -253,6 +259,9 @@ impl Writes {
     }
     fn delete_blob(&mut self, id: BlobId) {
         self.0.push(Write::DeleteBlob(id));
+    }
+    fn log(&mut self, w: Write) {
+        self.0.push(w);
     }
     fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -298,6 +307,10 @@ impl Db {
                     Write::Delete(k) => t.table_remove(*table, &k, Shred::Yes).map(drop)?,
                     Write::PutBlob(id, b) => t.put_blob(&id, b)?,
                     Write::DeleteBlob(id) => t.delete_blob(&id),
+                    Write::LogAdded(l, b) => drop(t.log_added(l, b)?),
+                    Write::LogDeleted(l, b, at) => drop(t.log_deleted(l, b, at)?),
+                    Write::LogHead(l, h) => drop(t.log_head(l, &h.0)?),
+                    Write::LogSweep(now) => drop(t.log_sweep(now)?),
                 }
             }
             t.suspend()
@@ -1164,6 +1177,7 @@ impl HostStore {
             }
         };
         tx.batch.put(key(b'E', &[&l, &put.blob_id.0]), row.encode());
+        tx.batch.log(Write::LogAdded(*label, put.blob_id));
         self.finish(tx)?;
         match self.origin {
             Some(o) => {
@@ -1339,6 +1353,8 @@ impl HostStore {
             tx.meta.next_seq
         };
         tx.batch.put(key(b'Y', &[&be(drop), &l, &blob.0]), [be(seq).as_slice(), &[u8::from(tombstone)]].concat());
+        // the node log takes every removal, an expiry too: the entry left the node
+        tx.batch.log(Write::LogDeleted(tx.label, *blob, now));
         let (refs, prefix) = self.refs(blob)?;
         if refs <= 1 {
             tx.batch.delete(key(b'R', &[&blob.0]));
@@ -1364,9 +1380,10 @@ impl HostStore {
         Ok(rows.into_iter().map(|(k, v)| (k.clone(), k.get(9..).unwrap_or(&[]).to_vec(), v)).collect())
     }
 
-    /// Expires entries (no tombstone, no event), drops old tombstones
-    /// and the log up to removals that old, and claim sets superseded for `claim_keep_ms`; at
-    /// most `budget` index and log rows, one commit per label. An index row that does not parse, or names a label not held, is dropped.
+    /// Expires entries (no tombstone, no per-label record; a node log deletion), drops old
+    /// tombstones and the log up to removals that old, and claim sets superseded for
+    /// `claim_keep_ms`; at most `budget` index and log rows, one commit per label; then a page of
+    /// the node log's sweep. An index row that does not parse, or names a label not held, is dropped.
     pub fn sweep(&mut self, now: u64, budget: usize) -> Result<Swept, StoreError> {
         let mut out = Swept::default();
         let mut left = budget.max(1);
@@ -1491,7 +1508,14 @@ impl HostStore {
             self.write(b)?;
         }
         left -= self.eph_sweep(now, left)?;
-        out.more = left == 0;
+        // the node log's deletion events past their lifetime, a page a sweep
+        let log_due = |s: &mut Self| s.db.get_mut().run(|t, _| t.log_next_due()).map(|d| d.is_some_and(|t| t <= now)).map_err(err);
+        if log_due(self)? {
+            let mut log = Writes::default();
+            log.log(Write::LogSweep(now));
+            self.write(log)?;
+        }
+        out.more = left == 0 || log_due(self)?;
         Ok(out)
     }
 
@@ -1507,7 +1531,10 @@ impl HostStore {
 
     /// Next due sweep time (earliest index row), if any.
     pub fn next_due(&self) -> Result<Option<u64>, StoreError> {
-        let mut next: Option<u64> = self.eph_next_due();
+        let mut next = self.eph_next_due();
+        if let Some(t) = self.db.borrow_mut().run(|t, _| t.log_next_due()).map_err(err)? {
+            next = Some(next.map_or(t, |n| n.min(t)));
+        }
         for tag in *b"XPYZ" {
             if let Some((k, _)) = self.scan_prefix(&[tag], 1)?.first() {
                 let t = read_u64(k, 1)?;
@@ -1645,6 +1672,7 @@ impl LabelStore for HostStore {
             }
         }
         tx.append(&LogRecord::Head(step));
+        tx.batch.log(Write::LogHead(*label, id));
         self.finish(tx)?;
         Ok(Code::OK)
     }

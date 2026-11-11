@@ -7,3 +7,4 @@ mod file;
 mod hub;
 mod hygiene;
 mod limits;
+mod nodelog;

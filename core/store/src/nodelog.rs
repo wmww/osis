@@ -17,11 +17,16 @@
 //!
 //! Rows, all catalog rows under `kind::LOG`:
 //! `m` meta (cursor key, log ID, current incarnation, end position); `n` the ended incarnations;
-//! `s` a memory-only marker that this store start has drawn; `e pos` an event; `i label blob` an
-//! entry's slot (its latest event's position and the position it was first logged at); `h label`
-//! a head's slot; `d at pos` the deletion events by when they were
-//! logged, for the sweep; `c label` a sync ID's `changed_at` and what it was computed from;
-//! `C pos label` the sync IDs by `changed_at`.
+//! `e pos` an event; `i label blob` an entry's slot (its latest event's position and the
+//! position it was first logged at); `h label` a head's slot; `d at pos` the deletion events by
+//! when they were logged, for the sweep; `c label` a sync ID's `changed_at` and what it was
+//! computed from; `C pos label` the sync IDs by `changed_at`. Whether this open of the store has
+//! drawn is the pager's `Meta::log_drawn`, memory only and carried in the transaction, so a
+//! suspended transaction may append.
+//!
+//! Rows hold positions and IDs only (a blob ID is no fingerprint, notes/local-store.md): an
+//! overwrite, and a subject's event replaced by its later one, shred nothing; a removal (the
+//! sweep, `log_forget`) shreds, as every removal does.
 
 use crate::codec::{R, W};
 use crate::store::{Shred, Transaction, kind};
@@ -45,7 +50,6 @@ const PAGE: usize = 256;
 
 const META: &[u8] = &[kind::LOG, b'm'];
 const ENDED: &[u8] = &[kind::LOG, b'n'];
-const STARTED: &[u8] = &[kind::LOG, b's'];
 const EVENT: &[u8] = &[kind::LOG, b'e'];
 const ENTRY_SLOT: &[u8] = &[kind::LOG, b'i'];
 const HEAD_SLOT: &[u8] = &[kind::LOG, b'h'];
@@ -172,7 +176,7 @@ impl Transaction<'_> {
 
     /// The meta row, this start's incarnation drawn: the first durable advance of a start.
     fn log_started(&mut self) -> Result<Meta, Error> {
-        let drawn = self.cat_get(STARTED)?.is_some();
+        let drawn = self.log_drawn();
         let m = match self.log_meta()? {
             Some(mut m) => {
                 if !drawn {
@@ -200,10 +204,8 @@ impl Transaction<'_> {
                 m
             }
         };
-        if !drawn {
-            // a memory row: gone with this store start, by a reopen or a crash alike
-            self.cat_put_to(STARTED, Vec::new(), Shred::No, true)?;
-        }
+        // gone with this open of the store, by a reopen or a crash alike
+        self.set_log_drawn();
         Ok(m)
     }
 
@@ -288,13 +290,13 @@ impl Transaction<'_> {
     }
 
     /// Removes the event at `pos` with what ages it. The caller handles the slot.
-    fn log_drop_event(&mut self, pos: u64) -> Result<(), Error> {
+    fn log_drop_event(&mut self, pos: u64, shred: Shred) -> Result<(), Error> {
         let key = pos_key(EVENT, pos);
         if let Some(v) = self.cat_get(&key)? {
             if let NodeEvent::Deleted { at, .. } = decode_event(&v)? {
-                self.cat_remove(&deleted_key(at, pos), Shred::Yes)?;
+                self.cat_remove(&deleted_key(at, pos), shred)?;
             }
-            self.cat_remove(&key, Shred::Yes)?;
+            self.cat_remove(&key, shred)?;
         }
         Ok(())
     }
@@ -305,11 +307,14 @@ impl Transaction<'_> {
     fn log_place(&mut self, slot: Vec<u8>, e: NodeEvent, extra: impl FnOnce(u64, Option<&[u8]>) -> Vec<u8>) -> Result<u64, Error> {
         let pos = self.log_advance()?;
         let old = self.cat_get(&slot)?;
+        // the subject's earlier event is replaced, not removed: it names what the new one does
         if let Some(v) = &old {
-            self.log_drop_event(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?)?;
+            self.log_drop_event(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?, Shred::No)?;
         }
         let extra = extra(pos, old.as_ref().and_then(|v| v.get(8..)));
-        self.cat_put_to(&slot, W::new().u64(pos).raw(&extra).take(), Shred::Yes, false)?;
+        // an overwrite keeps the slot's key: what it replaces is positions, so it shreds nothing
+        // (removals do)
+        self.cat_put_to(&slot, W::new().u64(pos).raw(&extra).take(), Shred::No, false)?;
         self.cat_put_to(&pos_key(EVENT, pos), encode_event(&e), Shred::No, false)?;
         if let NodeEvent::Deleted { at, .. } = e {
             self.cat_put_to(&deleted_key(at, pos), Vec::new(), Shred::No, false)?;
@@ -372,7 +377,7 @@ impl Transaction<'_> {
             let rows = self.cat_scan(&prefix, b"", PAGE)?;
             let n = rows.len();
             for (k, v) in rows {
-                self.log_drop_event(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?)?;
+                self.log_drop_event(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?, Shred::Yes)?;
                 self.cat_remove(&k, Shred::Yes)?;
             }
             if n < PAGE {
@@ -381,7 +386,7 @@ impl Transaction<'_> {
         }
         let slot = head_slot(&l);
         if let Some(v) = self.cat_get(&slot)? {
-            self.log_drop_event(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?)?;
+            self.log_drop_event(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?, Shred::Yes)?;
             self.cat_remove(&slot, Shred::Yes)?;
         }
         self.changed_forget(&l)
@@ -405,9 +410,16 @@ impl Transaction<'_> {
             if let NodeEvent::Deleted { label, blob, .. } = decode_event(&v)? {
                 self.cat_remove(&entry_slot(&label, &blob), Shred::Yes)?;
             }
-            self.log_drop_event(pos)?;
+            self.log_drop_event(pos, Shred::Yes)?;
         }
         Ok(full)
+    }
+
+    /// When `log_sweep` next has a deletion event to drop: `None` with none held.
+    pub fn log_next_due(&mut self) -> Result<Option<u64>, Error> {
+        let Some((k, _)) = self.cat_scan(DELETED, b"", 1)?.into_iter().next() else { return Ok(None) };
+        let at = R::new(k.get(2..).ok_or(Error::Corrupt("node log"))?).u64()?;
+        Ok(Some(at.saturating_add(TOMBSTONE_LIFETIME_MS)))
     }
 
     fn seal_cursor(&mut self, m: &Meta, pos: u64) -> Result<Vec<u8>, Error> {
