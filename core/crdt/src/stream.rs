@@ -39,15 +39,16 @@ pub(crate) struct Deferred {
 }
 
 /// Delta bytes that passed the full check on this node (`stream_delta`, `stream_snapshot`,
-/// `decode_delta`, `decode_snapshot`) against the same context and pages: the only input of the
+/// `decode_delta`, `decode_snapshot`) against the same context and pages, or that this node's
+/// own `encode_delta`/`encode_snapshot` wrote (canonical as written): the only input of the
 /// decode-only readers (`stream_checked`, `decode_checked`). Never bytes from a peer not yet
 /// checked.
 #[derive(Clone, Copy)]
 pub struct Checked<'a>(&'a [u8]);
 
 impl<'a> Checked<'a> {
-    /// `bytes`, which passed the full check: just now, or before the node stored them (its store
-    /// keeps only checked deltas and returns what it was given).
+    /// `bytes`, which passed the full check (just now, or before the node stored them: its store
+    /// keeps only checked deltas and returns what it was given) or are this node's own encoding.
     pub fn verified(bytes: &'a [u8]) -> Checked<'a> {
         Checked(bytes)
     }

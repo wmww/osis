@@ -3390,13 +3390,14 @@ impl Engine {
                     return Ok(false);
                 }
                 crate::apply::load(&mut tx, rebuild)?;
-                // every role commit's persisted edges row is what its record reads
+                // the persisted edges rows are what the role commits' records read, one each
                 #[cfg(debug_assertions)]
                 if rebuild {
                     let mut rows = index::load_edges(&mut tx)?;
                     for (id, parts) in std::mem::take(&mut tx.core.rebuilt_edges) {
                         assert_eq!(rows.remove(&id), Some(parts), "node/edges row of {id:?} is stale");
                     }
+                    assert!(rows.is_empty(), "node/edges rows without a role commit: {:?}", rows.keys().collect::<Vec<_>>());
                 }
                 Ok(true)
             };
