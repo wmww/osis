@@ -3,7 +3,7 @@
 
 ## Re-judging (`apply/validity.rs` `rejudge_all`)
 - After a held-set change only the deltas whose validity may have moved are judged again, so the cost follows the change, not the held set:
-  - the deltas of authors whose role may have moved, on things it may have moved on (`Core::stale_authors`, `stale_under`: `Held::upstream` and `Held::reach` of what `osis_perm::Changed` reports; `by_thing` is keyed by (thing, author) for this), and the commits writing a reported grant whoever signed them (an invite grant overtaken on its grant stops applying and its boxes lose their exemption with no role of its author moving);
+  - the deltas of authors whose role may have moved, on things it may have moved on (`Core::stale_authors`, `stale_under`: `Held::upstream` and `Held::reach` of what `osis_perm::Changed` reports; `by_thing` is keyed by (thing, author) for this), and the commits whose writes apply otherwise, whoever signed them (`Changed::commits`: an invite grant overtaken on its grant stops applying and its boxes lose their exemption with no role of its author moving), never every commit on a changed edge (a long role history would re-judge per arrival all its holder's writes);
   - every delta on the things a component walked anew or a new record's record chain reaches (`Core::stale_things`);
   - commits whose void, required-role or overreach inputs changed (`stale_commits`), and those acting for a thing whose timeline changed (`acts_for`). No delta's validity depends on its thing's `retention^.0` setting: a setting is judged as an admin-only delta and only moves what history keeps (notes/engine-retention.md History);
   - everything after a rebuild at open (`stale_all`).

@@ -2066,11 +2066,13 @@ fn answers(inc: &Timelines, nodes: &BTreeSet<Tid>, things: &BTreeSet<Tid>, point
     out
 }
 
-/// The invite grants applied, by write: (author, target), what `validity::valid_on` reads beside roles.
-fn invite_grants(inc: &Timelines, things: &BTreeSet<Tid>) -> BTreeMap<WriteId, (Tid, Tid)> {
+/// The writes applied, each with its author, target and whether it is an invite grant: what
+/// `validity::valid_on` reads of a write beside roles (a self-removal's class moves with its
+/// author's roles, reported as those move).
+fn applied(inc: &Timelines, things: &BTreeSet<Tid>) -> BTreeMap<WriteId, (Tid, Tid, bool)> {
     let mut out = BTreeMap::new();
     for tl in things.iter().filter_map(|t| inc.get(t)) {
-        out.extend(tl.applied().iter().filter(|(_, a)| matches!(a.attr, osis_perm::Attr::By(osis_perm::Class::Invite(_)))).map(|(w, a)| (*w, (a.author, a.target))));
+        out.extend(tl.applied().iter().map(|(w, a)| (*w, (a.author, a.target, matches!(a.attr, osis_perm::Attr::By(osis_perm::Class::Invite(_)))))));
     }
     out
 }
@@ -2126,7 +2128,7 @@ fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osi
     // a thing with no timeline holds no delta to judge (a node only named till now)
     things.retain(|t| inc.get(t).is_some() || held.created.contains_key(t));
     let before = answers(inc, &nodes, &things, &points);
-    let grants = invite_grants(inc, &things);
+    let was = applied(inc, &things);
     let c = inc.update_touched(held, &t);
     let after = answers(inc, &nodes, &things, &points);
     let holders: BTreeSet<Tid> = c.edges.iter().map(|p| p.0).chain(c.created.iter().copied()).collect();
@@ -2136,13 +2138,11 @@ fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osi
     for (k, a) in &after {
         assert!(*a == before[k] || covered(&k.0, &k.1), "an answer about {:?} on {:?} moved unreported: edges {:?}, created {:?}\nwas {}\nnow {a}", k.0, k.1, c.edges, c.created, before[k]);
     }
-    let new = invite_grants(inc, &things);
+    let now = applied(inc, &things);
     let old_ids: BTreeSet<osis_base::CommitId> = prev.commits.values().flatten().map(|c| c.id).collect();
-    for (w, k) in grants.iter().filter(|(w, _)| !new.contains_key(*w)).chain(new.iter().filter(|(w, _)| !grants.contains_key(*w))) {
-        let held_before = old_ids.contains(&w.0);
-        // the engine judges again the commits writing a reported edge (`Core::timelines_changed`)
-        let own = held.commits.values().flatten().find(|x| x.id == w.0).and_then(|x| x.ops.get(w.1 as usize)).is_some_and(|o| c.edges.contains(&(o.holder, o.target)));
-        assert!(!held_before || own || covered(&k.0, &k.1), "invite grant {w:?} of {:?} on {:?} moved unreported: edges {:?}", k.0, k.1, c.edges);
+    for (w, a) in was.iter().filter(|(w, a)| now.get(*w) != Some(*a)).chain(now.iter().filter(|(w, a)| was.get(*w) != Some(*a))) {
+        // the engine judges again the commits reported (`Core::timelines_changed`)
+        assert!(!old_ids.contains(&w.0) || c.commits.contains(&w.0) || c.evaluated.contains(&a.1), "write {w:?} of {:?} on {:?} applies otherwise, unreported: commits {:?}", a.0, a.1, c.commits);
     }
     c
 }

@@ -62,39 +62,52 @@ pub struct Changed {
     /// the update, however the walk got there: a late write's or a dropped one's effects on
     /// others' edges included. A role at any point changes only through these or `created`.
     pub edges: BTreeSet<(Tid, Tid)>,
+    /// The commits with a write whose change in the walk's history differs after the update:
+    /// of the commits on things not `evaluated`, only these may have started or stopped
+    /// applying, or changed between an invite grant and an audited write (a self-removal's
+    /// class moves with its author's roles, as `edges` reports).
+    pub commits: BTreeSet<CommitId>,
     /// Things whose `created.0` record came or went.
     pub created: BTreeSet<Tid>,
 }
 
-/// Adds the (holder, target) pairs whose changes differ between `old` and `new`: past their
-/// common beginning, each by (point, pair). `flipped` gets the explicit writes of `old` that
-/// `new` no longer applies as such (dispute detection, `Timelines::detect`).
-fn history_diff<'a>(old: &[&'a Change], new: &[&'a Change], out: &mut BTreeSet<(Tid, Tid)>, flipped: &mut Vec<ExplicitKey>) {
+impl Changed {
+    /// Notes the changes `keys` (`history_diff`) as differing.
+    fn note(&mut self, keys: &BTreeSet<ExplicitKey>) {
+        self.edges.extend(keys.iter().map(|k| (k.1, k.2)));
+        self.commits.extend(keys.iter().map(|k| k.0.commit));
+    }
+}
+
+/// Adds the changes (point, holder, target) that differ between `old` and `new`: past their
+/// common beginning, each by its key. `flipped` gets the explicit writes of `old` that `new` no
+/// longer applies as such (dispute detection, `Timelines::detect`).
+fn history_diff<'a>(old: &[&'a Change], new: &[&'a Change], out: &mut BTreeSet<ExplicitKey>, flipped: &mut Vec<ExplicitKey>) {
     // how it was written too: the same edge by an invite grant or by an audited write demotes
     // differently
     let n = old.iter().zip(new).take_while(|(a, b)| a == b).count();
     let map = |l: &[&'a Change]| -> BTreeMap<ExplicitKey, &'a Change> { l.iter().skip(n).map(|c| ((c.point, c.holder, c.target), *c)).collect() };
     let (a, b) = (map(old), map(new));
-    out.extend(a.iter().filter(|(k, e)| b.get(k) != Some(*e)).chain(b.iter().filter(|(k, e)| a.get(k) != Some(*e))).map(|(k, _)| (k.1, k.2)));
+    out.extend(a.iter().filter(|(k, e)| b.get(k) != Some(*e)).chain(b.iter().filter(|(k, e)| a.get(k) != Some(*e))).map(|(k, _)| *k));
     flipped.extend(a.iter().filter(|(k, e)| e.explicit.is_some() && !b.get(k).is_some_and(|x| x.explicit.is_some())).map(|(k, _)| *k));
 }
 
-/// Adds the (holder, target) pairs whose changes the last `Timeline::append` of `tl` changed
+/// Adds the changes (`history_diff`) the last `Timeline::append` of `tl` changed
 /// (`a`, its `Timeline::appended`), in O(what it placed and walked again): its placed changes the walk
 /// kept before where it went on, and past there what `history_diff` finds between the history
 /// before (without the placed changes) and now. Returns the explicit writes it no longer
 /// applies as such. Edges change only through changes, so their final state needs no look.
-fn appended_diff(a: &Appended, tl: &Timeline, out: &mut BTreeSet<(Tid, Tid)>) -> Vec<ExplicitKey> {
+fn appended_diff(a: &Appended, tl: &Timeline, out: &mut BTreeSet<ExplicitKey>) -> Vec<ExplicitKey> {
     let mut flipped = Vec::new();
     let key = |c: &Change| (c.point, c.holder, c.target);
     let placed: BTreeSet<ExplicitKey> = a.placed.iter().map(key).collect();
     let Some((n, before)) = &a.undone else {
-        out.extend(placed.iter().map(|k| (k.1, k.2)));
+        out.extend(placed);
         return flipped;
     };
     let old: Vec<&Change> = before.iter().filter(|c| !placed.contains(&key(c))).collect();
     let undone: BTreeSet<ExplicitKey> = before.iter().map(key).filter(|k| placed.contains(k)).collect();
-    out.extend(placed.difference(&undone).map(|k| (k.1, k.2)));
+    out.extend(placed.difference(&undone).copied());
     let now: Vec<&Change> = tl.history().get(*n..).unwrap_or_default().iter().collect();
     crate::walk::count_moved(before.len() + now.len());
     history_diff(&old, &now, out, &mut flipped);
@@ -115,12 +128,13 @@ impl WalkWas {
         WalkWas { edges: tl.edges().clone(), history: tl.history().to_vec() }
     }
 
-    /// Checks `appended_diff`'s answer (`edges`, `flipped`) for `tl`, which this walk became.
-    fn check(&self, tl: &Timeline, edges: &BTreeSet<(Tid, Tid)>, flipped: &[ExplicitKey]) {
-        let (mut want, mut f) = (BTreeSet::new(), Vec::new());
-        tl.edges().diff(&self.edges, &mut want);
+    /// Checks `appended_diff`'s answer (`keys`, `flipped`) for `tl`, which this walk became:
+    /// the changes that differ, and every edge whose state differs among theirs.
+    fn check(&self, tl: &Timeline, keys: &BTreeSet<ExplicitKey>, flipped: &[ExplicitKey]) {
+        let (mut want, mut f, mut edges) = (BTreeSet::new(), Vec::new(), BTreeSet::new());
         history_diff(&self.history.iter().collect::<Vec<_>>(), &tl.history().iter().collect::<Vec<_>>(), &mut want, &mut f);
-        debug_assert!(want == *edges && f == flipped, "appended_diff: {edges:?} {flipped:?}, whole walk: {want:?} {f:?}");
+        tl.edges().diff(&self.edges, &mut edges);
+        debug_assert!(want == *keys && f == flipped && edges.iter().all(|e| keys.iter().any(|k| (k.1, k.2) == *e)), "appended_diff: {keys:?} {flipped:?}, whole walk: {want:?} {f:?}, edges {edges:?}");
     }
 }
 
@@ -374,6 +388,7 @@ impl Timelines {
         if let Some((c, things, _)) = fast {
             changed.extended.extend(c.extended);
             changed.edges.extend(c.edges);
+            changed.commits.extend(c.commits);
             changed.created.extend(c.created);
             self.changed.extend(things);
         }
@@ -553,14 +568,14 @@ impl Timelines {
             }
             c.per.extend(per);
             if !new.is_empty() {
-                let mut edges = BTreeSet::new();
+                let mut keys = BTreeSet::new();
                 let a = std::mem::take(&mut c.tl.appended);
-                let flipped = appended_diff(&a, &c.tl, &mut edges);
+                let flipped = appended_diff(&a, &c.tl, &mut keys);
                 #[cfg(debug_assertions)]
                 if let Some(w) = &was {
-                    w.check(&c.tl, &edges, &flipped);
+                    w.check(&c.tl, &keys, &flipped);
                 }
-                changed.edges.extend(edges);
+                changed.note(&keys);
                 if self.detect {
                     self.pending.push((i, flipped, new.keys().copied().collect()));
                 }
@@ -732,8 +747,9 @@ impl Timelines {
             self.retire(&k, basis);
         }
         after.diff(&before, &mut changed.edges);
-        let mut flipped = Vec::new();
-        history_diff(&history.iter().collect::<Vec<_>>(), &new_history.iter().collect::<Vec<_>>(), &mut changed.edges, &mut flipped);
+        let (mut keys, mut flipped) = (BTreeSet::new(), Vec::new());
+        history_diff(&history.iter().collect::<Vec<_>>(), &new_history.iter().collect::<Vec<_>>(), &mut keys, &mut flipped);
+        changed.note(&keys);
         for (i, inputs) in fresh_comps {
             let was = flipped.iter().filter(|k| inputs.1.contains(&k.0.commit)).copied().collect();
             let new = inputs.1.difference(&old_ids).copied().collect();

@@ -381,7 +381,7 @@ fn role_history_arrivals(n: usize) -> (u64, u64, usize) {
     (walks, osis_perm::entries_moved() - m0, placed)
 }
 
-// issues/role-history-join-cost.md; spec/requirements.md Scale (no operation O(history)): a node
+// spec/requirements.md Scale (no operation O(history)): a node
 // receiving a long role history on one thing one write at a time (every write at the end, half
 // of them removals that audit, spec/permissions.md §5.1) places each without walking again, moving flat work per arrival:
 // no copy of the history or rebuild of the undo log per write.

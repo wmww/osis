@@ -621,13 +621,13 @@ fn repro_kill_judges_label_entries() {
 }
 
 /// `measured` at peer `i` of `lp`, with the engine's counters: (death walks, replaced reads,
-/// pending commits read again, perm commits walked) added as spans.
+/// pending commits read again, perm commits walked and entries moved) added as spans.
 fn measured_at<T>(lp: &mut LocalPeer, i: usize, f: impl FnOnce(&mut LocalPeer) -> T) -> (T, Work) {
     let b = lp.peers[i].backend.clone();
-    let c = |lp: &LocalPeer| [lp.peers[i].engine.death_walks(), lp.peers[i].engine.replaced_reads(), lp.peers[i].engine.examined(), osis_perm::commits_walked()];
+    let c = |lp: &LocalPeer| [lp.peers[i].engine.death_walks(), lp.peers[i].engine.replaced_reads(), lp.peers[i].engine.examined(), osis_perm::commits_walked(), osis_perm::entries_moved()];
     let c0 = c(lp);
     let (r, mut w) = measured(&b, || f(&mut *lp));
-    for (k, (x, y)) in ["death walks", "replaced reads", "examined", "perm commits walked"].into_iter().zip(c0.into_iter().zip(c(lp))) {
+    for (k, (x, y)) in ["death walks", "replaced reads", "examined", "perm commits walked", "perm entries moved"].into_iter().zip(c0.into_iter().zip(c(lp))) {
         w.spans.insert(k, y - x);
     }
     (r, w)
@@ -1158,38 +1158,65 @@ fn long_aspect_writes_are_flat() {
     all_linear("a writer removed", &a[2], &b[2]);
 }
 
-/// n edge writes on one thing by its first admin (holders granted and removed), then a fresh
-/// node ingesting them one by one: its work.
-fn role_history_join(n: usize) -> Work {
+/// n edge writes on one thing by its first admin (5 holders granted and removed in turn), then
+/// a fresh node ingesting them one by one: (its work; then the first admin's grant to a new
+/// holder, its removal of a holder, and the joiner ingesting those two).
+fn role_history_join(n: usize) -> [Work; 4] {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let base: BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
     for i in 0..n {
-        let h = Tid::from_bytes([(i % 50) as u8 + 1; 15]);
-        let e = (i / 50 % 2 == 0).then(|| edge(Role::Read));
+        let h = Tid::from_bytes([(i % 5) as u8 + 1; 15]);
+        let e = (i / 5 % 2 == 0).then(|| edge(Role::Read));
         set_edge(&mut lp.peers[0].engine, t, h, e, None);
     }
     let pks = lp.packages(0).unwrap();
     for p in pks.iter().filter(|p| base.contains(&p.id)) {
         lp.deliver(1, p).unwrap();
     }
-    let (_, w) = measured_at(&mut lp, 1, |lp| {
+    let (_, join) = measured_at(&mut lp, 1, |lp| {
         for p in pks.iter().filter(|p| !base.contains(&p.id)) {
             lp.deliver(1, p).unwrap();
         }
     });
+    let (g, grant) = measured_at(&mut lp, 0, |lp| set_edge(&mut lp.peers[0].engine, t, Tid::from_bytes([99; 15]), Some(edge(Role::Read)), None));
+    let (r, removal) = measured_at(&mut lp, 0, |lp| set_edge(&mut lp.peers[0].engine, t, Tid::from_bytes([99; 15]), None, None));
+    let pks: Vec<_> = [g, r].iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap()).collect();
+    let (_, arrive) = measured_at(&mut lp, 1, |lp| {
+        for p in &pks {
+            lp.deliver(1, p).unwrap();
+        }
+    });
     assert_eq!(lp.peers[1].engine.roster(&t), lp.peers[0].engine.roster(&t));
-    w
+    [join, grant, removal, arrive]
 }
 
-// issues/role-history-join-cost.md; spec/permissions.md §5.1; spec/requirements.md, Scale (a node that starts holding a
-// thing fetches and judges all of its role history: O(the history)): a fresh node ingesting n
-// and 10n edge writes on one thing one by one does linear work. Today the commits it re-judges
-// and the store bytes it writes grow about with the square.
+/// `all_linear` (`flat` with `per_change`) but for store bytes: `roles.0` keeps a tombstone per
+/// ended entry (spec/crdt.md §5.6; role history is never compacted) and a state up to
+/// `PAGE_TARGET` is written whole (notes/engine-paged.md), so below it every write there
+/// rewrites O(history) bytes, at most `PAGE_TARGET`; paged writes are flat (`map_edit_is_flat`).
+#[track_caller]
+fn all_counted(what: &str, small: &Work, big: &Work, per_change: bool) {
+    let f = if per_change { flat } else { linear };
+    for k in small.spans.keys().chain(big.spans.keys()) {
+        f(&format!("{what}: {k}"), small.n(k), big.n(k));
+    }
+    f(&format!("{what}: store rows written"), small.io.writes, big.io.writes);
+}
+
+// spec/permissions.md §5.1; spec/requirements.md, Scale (a node that starts holding a thing
+// fetches and judges all of its role history: O(the history)): a fresh node ingesting n and 10n
+// edge writes on one thing one by one does linear work, and at the end of the history a grant,
+// a removal and their arrival do flat work: perm places each write without walking the
+// history, and the node re-judges only the commits whose writes apply otherwise
+// (`Changed::commits`).
 #[test]
-#[ignore = "issues/role-history-join-cost.md"]
-fn repro_role_history_join_is_linear() {
-    all_linear("a joiner ingesting a role history", &role_history_join(30), &role_history_join(300));
+fn role_history_join_is_linear() {
+    let (a, b) = (role_history_join(30), role_history_join(300));
+    all_counted("a joiner ingesting a role history", &a[0], &b[0], false);
+    for (i, what) in ["a grant", "a removal", "their arrival"].iter().enumerate() {
+        all_counted(&format!("at the end of a role history, {what}"), &a[i + 1], &b[i + 1], true);
+    }
 }
 
 
