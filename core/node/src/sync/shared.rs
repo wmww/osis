@@ -807,7 +807,11 @@ impl SyncEngine {
         if self.records.shared.get(&conn).is_none_or(|s| s.table.is_some()) {
             return Ok(());
         }
-        let creds = self.shared_creds(conn, None, ALL)?;
+        // what its filter shows: a Hit on a read credential only from a known actor, so a stranger
+        // holding a read secret learns nothing of what this node reads (issues/net-shared-set.md,
+        // The rule)
+        let which = Which { read: self.shared_known(conn), unread: true };
+        let creds = self.shared_creds(conn, None, which)?;
         self.stats.tables_built += 1;
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         let peer_side = (!s.by_listener, &s.key, &s.dialer, &s.listener);

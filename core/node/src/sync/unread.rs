@@ -33,6 +33,8 @@ pub(crate) struct Unread {
     stamped: Option<u64>,
     /// The unread sync IDs some shared set holds (the hub's store keeps their ephemeral events).
     streamed: BTreeSet<LabelId>,
+    /// A head moved since the last step: its opens are judged before the step's event.
+    pub(super) moved: bool,
 }
 
 impl SyncEngine {
@@ -79,6 +81,7 @@ impl SyncEngine {
         };
         if self.unread.stamped != Some(generation) {
             self.unread.stamped = Some(generation);
+            self.unread.moved = true;
             self.changed_due = true;
         }
         let now = self.now();

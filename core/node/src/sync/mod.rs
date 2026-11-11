@@ -697,6 +697,12 @@ impl SyncEngine {
         // purge's bytes are gone before a peer's Fetch reads them (spec/commits.md §5), a role
         // change's served set is fresh before a request is judged by it
         self.engine_events()?;
+        // a head the hub moved ends the opens by its old credentials before this event is
+        // answered: the hub logged it already, so a Pull would read past it (spec/sync.md §10 Lost)
+        if std::mem::take(&mut self.unread.moved) {
+            self.stamp_changes()?;
+            self.shared_changed(out)?;
+        }
         match ev {
             Event::Tick => {
                 self.timers(out)?;

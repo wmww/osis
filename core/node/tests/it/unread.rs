@@ -131,6 +131,21 @@ fn a_strangers_filter_holds_only_unread_entries_spec_sync_10() {
     }
 }
 
+// issues/net-shared-set.md, The rule (unknown actors see nothing of what a node reads): a
+// stranger holding a read secret of what the node reads opens nothing by a Hit on it, though
+// it never saw its entry
+#[test]
+fn a_strangers_hit_on_a_read_secret_opens_nothing_spec_sync_10() {
+    let mut s = setup();
+    let read = s.read;
+    let secrets = s.net.sync(s.b).credentials(&[read]).unwrap();
+    let items: Vec<OfferItem> = secrets[&read].iter().map(|c| OfferItem::Hit(hit(&s.p, &c.match_value(), &read), None)).collect();
+    assert!(!items.is_empty());
+    let ans = offer(&mut s.net, s.b, &mut s.p, items);
+    assert!(ans.iter().all(|(c, t)| *c == Code::NOT_ADMITTED && t.is_none()), "{ans:?}");
+    assert!(s.net.sync(s.b).shared_members(s.p.conn).is_empty());
+}
+
 // spec/sync.md §10 Shared set, Stream: a reader opens an unread L by its sync key, pulls what the
 // node keeps of it, and its uploads and deletes there reach its stream
 #[test]
@@ -203,6 +218,34 @@ fn a_head_change_ends_the_open_after_its_event_spec_sync_10() {
     let sig = open_sig(&s.p, &s.l);
     let ans = offer(&mut s.net, s.b, &mut s.p, vec![OfferItem::Hit(h, Some(sig))]);
     assert_eq!(ans[0].0, Code::OK, "the current sync key reopens");
+}
+
+// spec/sync.md §10 Shared set (Lost): a head the hub's store moved ends an open by its old sync
+// key before node sync answers anything after it: a Pull handled in the step that takes the move
+// in is served nothing past the new head's event
+#[test]
+fn a_pull_after_a_head_change_gets_nothing_past_its_event_spec_sync_10() {
+    use osis_proto::LabelStore;
+    let mut s = setup();
+    let l = s.l.id;
+    let reply = opened(&mut s);
+    send(&mut s.net, s.b, &mut s.p, Message::Applied { cursor: reply.cursor.clone().unwrap() });
+    let (step, set) = s.l.rotate(0x61);
+    let e4 = s.l.entry(blob(4));
+    let now = s.net.now();
+    {
+        // another connection's register and upload, in the hub before node sync's next step
+        let hub = s.net.sync(s.b).hub_store();
+        let mut hub = hub.lock().unwrap();
+        assert_eq!(hub.push_step(&l, step, Some(set)).unwrap(), Code::OK);
+        let put = osis_proto::Put { blob_id: osis_label::blob_id(&e4.blob), blob: &e4.blob, wrap: e4.wrap, stamp: Some(e4.stamp), expiry: None, ephemeral: false, replaces: &[], now };
+        assert_eq!(hub.put(&l, put).unwrap(), Code::OK);
+    }
+    let m = Message::Pull(Box::new(Pull { id: PULL_ID, cursor: reply.cursor.clone(), joins: vec![], inline_limit: 1 << 20, max_reply: 1 << 20, follow: true, ephemeral: false }));
+    let msgs = shared_of(&send(&mut s.net, s.b, &mut s.p, m));
+    let mut events: Vec<(LabelId, Ev)> = pushed(&msgs);
+    events.extend(msgs.iter().filter_map(|m| if let Message::PullReply(r) = m { Some(r.events.clone()) } else { None }).flatten());
+    assert!(!added(&events, l).contains(&osis_label::blob_id(&e4.blob)), "nothing past the head's event: {msgs:?}");
 }
 
 // issues/net-shared-set.md, Deposits: a depositor's Deposit item at a node keeping the inbox
