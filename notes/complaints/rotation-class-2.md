@@ -3,3 +3,4 @@
 - testenv rejects unknown env vars (core/base/testenv-known.txt), so an ad hoc debug toggle in a property run panics until named in the list; reusing an existing name or a plain eprintln is quicker.
 - A passing test hides its eprintln output; tracing a passing seed needs `--nocapture`.
 - The asked-for 2000-seed `rotation_holds_large` run hit the `heavy` limit (CPU 6424/5060 s, wall 641/598 s, load 18): the limit is sized for a smaller by-hand run, not a task-requested 2000 seeds.
+- Review: a seeded mutation probe in `recipients` fired once in 8 small seeds; probing the oracle needed 120 large seeds under `tools/heavy` (minutes waiting on the lock behind gates). Copying the test binary aside lets edits continue while it waits.
