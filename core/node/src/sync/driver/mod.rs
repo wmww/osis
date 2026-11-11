@@ -1035,7 +1035,7 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
     while !d.gone {
         let idle = d.idle();
         let lan_due = d.lan_due();
-        let hub_idle = d.host.as_ref().map(HubRun::idle);
+        let hub_due = d.host.as_mut().map(HubRun::due);
         let hub_waiting = d.host.as_ref().is_some_and(HubRun::waiting);
         // timers wait while control has a message: a `Shutdown` queued just before the holder's
         // runtime shuts down (the task resuming after an engine call's `block_in_place`) is
@@ -1066,7 +1066,7 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
                     h.serve();
                 }
             }
-            _ = sleep_for(hub_idle), if quiet => {
+            _ = sleep_until(hub_due), if quiet => {
                 if let Some(h) = d.host.as_mut() {
                     h.tick();
                 }
@@ -1094,14 +1094,6 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
         d.close(id);
     }
     d.shared
-}
-
-/// For `d`, else never.
-async fn sleep_for(d: Option<Duration>) {
-    match d {
-        Some(d) => tokio::time::sleep(d).await,
-        None => std::future::pending::<()>().await,
-    }
 }
 
 /// Until `at`, else never.

@@ -79,6 +79,36 @@ impl Host {
         Host { addr, ctl, task }
     }
 
+    /// Runs `f` on the engine (then `Event::Local`), returning its result.
+    async fn call<R: Send + 'static>(&self, f: impl FnOnce(&mut SyncEngine) -> R + Send + 'static) -> R {
+        let (tx, rx) = oneshot::channel();
+        let mut f = Some(f);
+        let c: driver::Call = Box::new(move |s: &mut SyncEngine| {
+            if let Some(f) = f.take() {
+                let _ = tx.send(f(s));
+            }
+            s.handle(SyncEvent::Local)
+        });
+        assert!(self.ctl.send(Control::Call(c)).is_ok());
+        rx.await.unwrap()
+    }
+
+    /// Waits until the node listens at `url`; returns that address.
+    async fn listening(&self, url: &str) -> Address {
+        tokio::time::timeout(GUARD, async {
+            loop {
+                if let HostStatus::Listening(a) = self.call(|s| s.host_status().clone()).await
+                    && let Some(a) = a.into_iter().find(|a| a.url == url)
+                {
+                    return a;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+
     /// A host client dialed on `transport` with an ephemeral key.
     async fn client<T: Transport>(&self, transport: &T) -> Client {
         let target = osis_transport::Address { url: self.addr.url.clone(), key: self.addr.key };
@@ -231,6 +261,41 @@ async fn hosts_replicate_through_dialed_links() {
     a.run(Command::Upload { label: l.id, entries: vec![l.entry(blob(5))] }).await;
     assert_eq!(added(&b.next().await), vec![bid(5)]);
     s1.stop().await;
+    s2.stop().await;
+}
+
+// spec/data-model.md §9, spec/sync.md §5: a `host^.0` change other than admission or caps (here its listen URL) closes the hub's connections and listeners and serves again over the same store at the new address
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_change_serves_the_same_store_again() {
+    let tnet = osis_transport::Net::new(1);
+    let mut net = Net::new();
+    let keep = Host::node(&mut net, 1, "mem://s", vec![]);
+    let host = Host::start(keep, tnet.endpoint("s"), net.clock.clone()).await;
+    let clients = tnet.endpoint("clients");
+    let mut a = host.client(&clients).await;
+    let l = Label::new(3);
+    a.run(l.register_cmd(0)).await;
+    a.run(open(&l)).await;
+    let ev = a.run(sync(l.id, (0..3).map(|n| l.entry(blob(n))).collect())).await;
+    assert_eq!(statuses(&ev), vec![Code::OK; 3]);
+    host.call(move |s| {
+        let me = s.engine_mut().tid();
+        let mut m = osis_node::Mutation::new();
+        m.replace(me, &ct::HOST, &ct::Host { listen: vec!["mem://s2".into()], admit: ct::Admit::Open, ..Default::default() }).unwrap();
+        s.engine_mut().commit(m).unwrap();
+    })
+    .await;
+    let addr = host.listening("mem://s2").await;
+    assert_eq!(addr.key, host.addr.key);
+    // the old session is closed
+    assert!(tokio::time::timeout(GUARD, async { while a.link.rx.recv().await.is_some() {} }).await.is_ok());
+    // the old listener is gone
+    let old = osis_transport::Address { url: host.addr.url.clone(), key: host.addr.key };
+    assert!(osis_transport::link::dial(&clients, &old, None, GUARD).await.is_err());
+    let s2 = Host { addr, ..host };
+    let mut b = s2.client(&clients).await;
+    b.run(open(&l)).await;
+    assert_eq!(added(&b.run(sync(l.id, vec![])).await), sorted((0..3).map(bid).collect()));
     s2.stop().await;
 }
 

@@ -134,6 +134,9 @@ pub(super) struct HubRun {
     next: ConnId,
     conns: HashMap<ConnId, ConnState>,
     turns: Turns,
+    /// When `tick` is due: moved only earlier until it runs, so a due counted from now (a held
+    /// connection's push poll, the idle beat) is not put off by every pass of the loop.
+    at: Option<tokio::time::Instant>,
     tasks: Vec<JoinHandle<()>>,
     clock: Arc<dyn Clock>,
     log: Log,
@@ -162,7 +165,7 @@ impl HubRun {
                 }
             }
         }));
-        HubRun { cfg, hub, run, next: next + 1, conns: HashMap::new(), turns: Turns::default(), tasks, clock, log, ev }
+        HubRun { cfg, hub, run, next: next + 1, conns: HashMap::new(), turns: Turns::default(), at: None, tasks, clock, log, ev }
     }
 
     /// Closes every connection and stops the tasks; returns the hub and the next free ID.
@@ -274,6 +277,7 @@ impl HubRun {
 
     /// Reports what the transport took since the last report, then runs what is due.
     pub fn tick(&mut self) {
+        self.at = None;
         let now = self.now();
         let mut moved = Vec::new();
         for (id, c) in &mut self.conns {
@@ -302,10 +306,13 @@ impl HubRun {
         }
     }
 
-    /// How long until `tick` has work (at most `MAX_IDLE`).
-    pub fn idle(&self) -> Duration {
+    /// When `tick` has work (at most `MAX_IDLE` after the last).
+    pub fn due(&mut self) -> tokio::time::Instant {
         let now = self.now();
-        self.hub.next_due(now).map_or(MAX_IDLE, |t| Duration::from_millis(t.saturating_sub(now)).min(MAX_IDLE))
+        let wait = self.hub.next_due(now).map_or(MAX_IDLE, |t| Duration::from_millis(t.saturating_sub(now)).min(MAX_IDLE));
+        let at = self.at.map_or(tokio::time::Instant::now() + wait, |a| a.min(tokio::time::Instant::now() + wait));
+        self.at = Some(at);
+        at
     }
 }
 
