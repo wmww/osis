@@ -1729,6 +1729,11 @@ fn a_delivery_under_a_replaced_inbox_is_sent_again_spec_sync_3() {
     assert_eq!(net.engine(b).role_on(&g), Some(Role::Read));
     let sent = net.sync(a).inbox_deliveries(&bob);
     assert!(matches!(sent.as_slice(), [(_, 1, Some(l))] if *l == new), "one re-send: {sent:?}");
+    // a start looks at every holder: one still under its inbox is not sent again
+    net.restart(a, 7);
+    net.advance(70_000);
+    let sent = net.sync(a).inbox_deliveries(&bob);
+    assert!(matches!(sent.as_slice(), [(_, 1, Some(l))] if *l == new), "no re-send at a start: {sent:?}");
     // churn: each replacement the sender sees costs one re-send, within `MAX_INBOX_RESENDS` in all
     let mut l = new;
     for n in 2..=4u32 {

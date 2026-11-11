@@ -433,7 +433,8 @@ pub struct State {
     /// Bumped by every change of entries, presence or the outbox (`SyncEngine::placed` caches
     /// by it; in memory).
     pub version: u64,
-    /// Entries and hosts' copies gone so far, in memory (`InboxCopied`).
+    /// Entries, commit entries' kinds or wraps, and hosts' copies gone so far, in memory
+    /// (`InboxCopied`).
     pub losses: u64,
     /// Memory-class entries (`Entry::memory`) and the memory commits they are of: nothing
     /// recorded about them is written (`put`, `del` skip them).
@@ -1072,6 +1073,10 @@ impl State {
         }
         self.touch(l, b);
         if let Some(old) = self.entries.get(&(l, b)).cloned() {
+            // a commit entry judged bad, reopened or shredded may hold less than it did
+            if matches!(old.kind, Kind::Commit { .. }) && (old.kind != e.kind || old.wrap != e.wrap) {
+                self.losses += 1;
+            }
             self.index(l, b, &old, false);
         }
         self.index(l, b, &e, true);
