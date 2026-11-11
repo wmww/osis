@@ -278,26 +278,11 @@ fn access_ended_stops_dialing((mut w, a, b, g): (World, Osis, Osis, Tid), end: i
     assert_eq!(dials_after_a_drop(&mut w, &a, &b), 0, "the sharer is not dialed again");
 }
 
-/// Bob joined Alice's group by a direct link, both with a host: a host takes a leave of K (with
-/// none it never counts as arrived: issues/leaving-not-confirmed-after-rotation.md).
-fn hosted_joiner() -> (World, Osis, Osis, Tid) {
-    let mut w = World::new();
-    let h = w.add_host();
-    let r = w.reach.add_relay(None);
-    let a = w.account(1, &[h]);
-    let b = w.account(2, &[h]);
-    w.place(&a, &[], Uplink::Public, &[r]);
-    w.place(&b, &[], Uplink::Public, &[r]);
-    w.run();
-    let g = join(&mut w, &a, &b, Role::Read);
-    (w, a, b, g)
-}
-
 // spec/permissions.md §7 (the redeemer keeps dialing the sharer for K's labels and the target's,
 // nothing else): a joiner who left stops dialing the link's sharer.
 #[test]
 fn a_joiner_who_left_stops_dialing_the_sharer_spec_permissions_7() {
-    access_ended_stops_dialing(hosted_joiner(), |_, b, g| b.leave(b.me(), g).unwrap());
+    access_ended_stops_dialing(co_readers(3, Role::Read), |_, b, g| b.leave(b.me(), g).unwrap());
 }
 
 // spec/permissions.md §7: a kicked joiner stops dialing the link's sharer.
@@ -310,7 +295,7 @@ fn a_kicked_joiner_stops_dialing_the_sharer_spec_permissions_7() {
 // link (K) was removed from the target stops dialing the link's sharer.
 #[test]
 fn a_joiner_whose_link_was_removed_stops_dialing_the_sharer_spec_permissions_7() {
-    access_ended_stops_dialing(hosted_joiner(), |a, _, g| {
+    access_ended_stops_dialing(co_readers(5, Role::Read), |a, _, g| {
         let k = a.links().unwrap()[0].id.actor();
         a.set_role(g, k, None, SetRoleOpts::default()).unwrap();
     });
@@ -491,12 +476,11 @@ fn a_local_write_leaves_synced_and_last_sync_says_when() {
     assert!(st.last_sync >= before, "still names the last time: {st:?}");
 }
 
-// spec: none (API surface), notes/api.md Sync configuration and status: `leaving` stays until a source has the removal.
-// Bob's removal reaches Alice by her own pull; she rotates, so his upload answers code 9 and his reopens code 1:
-// `leaving` never clears though she holds the removal (issues/leaving-not-confirmed-after-rotation.md).
+// spec/sync.md §5 (Placed), §10 (Reports): a leaver's removal pulled by a co-reader that rotates at once is placed by
+// that co-reader's Applied: `leaving` clears though the leaver's upload to it as host answers code 9 and its reopens
+// code 1.
 #[test]
-#[ignore = "issues/leaving-not-confirmed-after-rotation.md"]
-fn repro_leaving_stays_until_a_source_has_the_removal() {
+fn a_removal_a_co_reader_applied_is_placed_spec_sync_5() {
     let (mut w, a, b, g) = co_readers(60, Role::Write);
     w.set_peer_reachable(&a, &b, false);
     w.advance(pause_ms());

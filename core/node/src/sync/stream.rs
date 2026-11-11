@@ -46,7 +46,7 @@
 
 use super::{Action, ConnId, SyncEngine};
 use crate::error::Result;
-use osis_base::{BlobId, LabelId};
+use osis_base::{BlobId, CommitId, LabelId};
 use osis_proto::msg::{Join, Pull, PullReply, Stream};
 use osis_proto::{Event, Message};
 use osis_store::{At, LoggedEvent, NodeEvent, RecordId};
@@ -431,6 +431,7 @@ impl SyncEngine {
                 if let Some(s) = self.streams.get_mut(&conn) {
                     s.serving.reported(&cursor);
                 }
+                self.note_waiting(conn)?;
                 self.shared_until_due(conn, out)
             }
             Message::Stranded { id, label, holder, keys } => {
@@ -453,6 +454,56 @@ impl SyncEngine {
             }
             m => self.shared_message(conn, m, out),
         }
+    }
+
+    /// `conn`'s requester reported positions: what they cover of the commits `placed` waits on
+    /// is recorded (`note_applied`).
+    fn note_waiting(&mut self, conn: ConnId) -> Result<()> {
+        if !self.placed_waiting.is_empty() {
+            let waiting: Vec<CommitId> = self.placed_waiting.iter().copied().collect();
+            self.note_applied(conn, &waiting)?;
+        }
+        Ok(())
+    }
+
+    /// Records the entries of own commits `cs` that `conn`'s requester reported holding
+    /// (spec/sync.md §5 Placed): under a member L it shares (it proved reading L), its reported
+    /// position at or past where the node log first held the entry, and an ended member's
+    /// `until` too (what it was served). Kept by its source (`pass_source`): a peer known by
+    /// nothing here reports nothing. Whether it recorded any.
+    pub(super) fn note_applied(&mut self, conn: ConnId, cs: &[CommitId]) -> Result<bool> {
+        let Some(source) = self.pass_source(conn) else { return Ok(false) };
+        let Some(serving) = self.streams.get(&conn).map(|s| &s.serving) else { return Ok(false) };
+        let members = self.stream_members(conn);
+        let untils = self.shared_untils(conn);
+        let mut due = Vec::new();
+        for c in cs {
+            for (_, l) in self.state.commit_labels.range((*c, LabelId([0; 16]))..=(*c, LabelId([0xff; 16]))) {
+                let Some(at) = serving.position(l).filter(|_| members.contains(l)) else { continue };
+                let at = at.min(untils.get(l).copied().unwrap_or(u64::MAX));
+                for (b, _) in self.state.entries_of(l, c) {
+                    if !self.state.applied.contains(&(*l, b, source)) {
+                        due.push((*l, b, at));
+                    }
+                }
+            }
+        }
+        if due.is_empty() {
+            return Ok(false);
+        }
+        let held = self.engine.run(|tx| {
+            let mut held = Vec::new();
+            for (l, b, at) in due {
+                if tx.txn.log_entry_first(&l, &b)?.is_some_and(|f| f <= at) {
+                    held.push((l, b));
+                }
+            }
+            Ok(held)
+        })?;
+        for (l, b) in &held {
+            self.state.set_applied(*l, *b, source);
+        }
+        Ok(!held.is_empty())
     }
 
     /// The members of `conn`'s S on this side.
@@ -584,6 +635,7 @@ impl SyncEngine {
             let reports: Vec<(LabelId, Option<u64>)> = p.joins.iter().zip(&join_at).filter(|((l, _), _)| members.contains(l)).map(|((l, c), (_, at))| (*l, at.filter(|_| c.is_some()))).collect();
             self.streams.entry(conn).or_default().serving.pull_reports(base, &reports);
         }
+        self.note_waiting(conn)?;
         self.shared_until_due(conn, out)?;
         let members = self.stream_members(conn);
         let untils = self.shared_untils(conn);

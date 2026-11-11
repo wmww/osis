@@ -123,6 +123,7 @@ impl SyncEngine {
                 started: self.started.clone(),
                 rotation_at: self.rotation_at.clone(),
                 placed_cache: self.placed_cache.clone(),
+                placed_waiting: self.placed_waiting.clone(),
                 rotated: self.rotated.clone(),
                 keeps: self.keeps.clone(),
                 clients_moved: self.clients_moved.clone(),

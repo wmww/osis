@@ -59,6 +59,8 @@ const PASSED: &[u8] = b"y/B";
 /// A flow's delivery (not an inbox blob) not carried out yet, by the hash of its encoding
 /// (`owe_tx`, `SyncEngine::take_done`).
 const OWED: &[u8] = b"y/y";
+/// Own entries a co-reader source reported holding (`State::applied`).
+const APPLIED: &[u8] = b"y/A";
 
 /// A followed link's sharer node (spec/permissions.md §7): dialed at the link's `peer://`
 /// addresses for K's labels and the target's, nothing else.
@@ -324,6 +326,11 @@ pub struct State {
     /// Present entries the host holds deposited (no stamp there; spec/sync.md §5): a writer
     /// promotes them at that host, whatever stamp this node knows.
     pub deposited: BTreeSet<(HostKey, LabelId, BlobId)>,
+    /// Own entries a co-reader source (`SyncEngine::pass_source`) reported holding: its
+    /// Applied position at or past where the node log first held them (spec/sync.md §5
+    /// Placed). Recorded only for commits `placed` waits on (`SyncEngine::note_applied`), kept
+    /// only while it waits.
+    pub applied: BTreeSet<(LabelId, BlobId, Tid)>,
     pub cursors: BTreeMap<(HostKey, LabelId), Cursor>,
     /// `FILLING`.
     pub filling: BTreeSet<(HostKey, LabelId)>,
@@ -632,6 +639,9 @@ impl State {
                     let k = (r.arr()?, LabelId(r.arr()?));
                     let mut c = Rd::new(&v);
                     s.cursors.insert(k, Cursor { log_id: c.arr()?, seq: c.u64()? });
+                }
+                b"A" => {
+                    s.applied.insert((LabelId(r.arr()?), BlobId(r.arr()?), r.tid()?));
                 }
                 b"4" => {
                     let k: (HostKey, LabelId) = (r.arr()?, LabelId(r.arr()?));
@@ -1123,6 +1133,11 @@ impl State {
         self.touch(l, b);
         let Some(e) = self.entries.remove(&(l, b)) else { return false };
         self.index(l, b, &e, false);
+        let applied: Vec<Tid> = self.applied.range((l, b, Tid::from_bytes([0; 15]))..=(l, b, Tid::from_bytes([0xff; 15]))).map(|x| x.2).collect();
+        for t in applied {
+            self.applied.remove(&(l, b, t));
+            self.del_of(&l, &b, key(APPLIED, &[&l.0, &b.0, t.as_bytes()]));
+        }
         for c in self.inbox_chain.remove(&(l, b)).unwrap_or_default() {
             self.carry(c, false);
         }
@@ -1236,6 +1251,19 @@ impl State {
             self.touch(l, b);
             self.put_of(&l, &b, key(PRESENT, &[&s, &l.0, &b.0]), if on { vec![1] } else { Vec::new() });
         }
+    }
+
+    /// Records that `source` reported holding own entry `b` of `l` (`applied`).
+    pub fn set_applied(&mut self, l: LabelId, b: BlobId, source: Tid) {
+        if self.applied.insert((l, b, source)) {
+            self.version += 1;
+            self.put_of(&l, &b, key(APPLIED, &[&l.0, &b.0, source.as_bytes()]), Vec::new());
+        }
+    }
+
+    /// Whether some co-reader source reported holding the entry (`applied`).
+    pub fn applied_anywhere(&self, l: &LabelId, b: &BlobId) -> bool {
+        self.applied.range((*l, *b, Tid::from_bytes([0; 15]))..=(*l, *b, Tid::from_bytes([0xff; 15]))).next().is_some()
     }
 
     pub fn is_present(&self, s: &HostKey, l: &LabelId, b: &BlobId) -> bool {
@@ -1699,7 +1727,7 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
                 gone
             }
             b"p" | b"c" | b"h" | b"g" | b"3" | b"d" => lab(rest.get(32..).unwrap_or_default())?,
-            b"t" => lab(rest)?,
+            b"t" | b"A" => lab(rest)?,
             b"k" => {
                 let mut r = Rd::new(rest);
                 let l = LabelId(r.arr()?);

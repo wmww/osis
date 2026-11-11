@@ -330,6 +330,10 @@ pub struct SyncEngine {
     /// `placed` answers by commit, valid while `State::version` (the first field) is unchanged and
     /// no engine change came (in memory).
     pub(crate) placed_cache: (u64, BTreeMap<osis_base::CommitId, bool>),
+    /// Own commits `placed` last found not placed: the co-reader reports covering them are
+    /// recorded (`note_applied`). In memory: the first ask after a start notes again what the
+    /// connections reported.
+    pub(crate) placed_waiting: BTreeSet<osis_base::CommitId>,
     /// Per secret actor, the roles `ensure_rotated` left blocked (`uncovered`): a function of
     /// the roles, secrets and record chains (`Core::role_generation`) and of the clock up to the
     /// actor's roster horizon, so judged once per change of those, not per pass.
@@ -466,6 +470,7 @@ impl SyncEngine {
             started,
             rotation_at: BTreeMap::new(),
             placed_cache: (u64::MAX, BTreeMap::new()),
+            placed_waiting: BTreeSet::new(),
             rotated: BTreeMap::new(),
             keeps: BTreeMap::new(),
             last_synced: BTreeMap::new(),

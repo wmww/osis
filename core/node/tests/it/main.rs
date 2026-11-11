@@ -9,6 +9,7 @@ mod net_records;
 mod net_accounts;
 mod shared;
 mod stream;
+mod leaving;
 mod reconnect;
 mod until;
 mod nodelog;

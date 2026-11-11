@@ -51,6 +51,9 @@ enum Msg {
     ToHub(usize, u64, Vec<u8>),
     ToDb(usize, ConnId, Vec<u8>),
     Down(usize, ConnId),
+    /// A node closed its end: the hub connection ends after the bytes sent before it, as a
+    /// transport link finishes after what is queued (`osis_transport::link::LinkTx`).
+    Closed(usize, u64),
 }
 
 /// Bytes a node exchanged with hosts.
@@ -533,8 +536,7 @@ impl World {
                 Action::Close { conn } => {
                     self.peer_links.remove(&(d, conn));
                     if let Some((s, hc)) = self.links.remove(&(d, conn)) {
-                        let out = self.hosts.get_mut(s).map(|host| host.hub.closed(hc)).unwrap_or_default();
-                        self.hub_out(s, out);
+                        self.send_msg(Msg::Closed(s, hc));
                     }
                 }
                 Action::Host(cfg) => self.host(d, cfg),
@@ -792,6 +794,7 @@ impl World {
                 Msg::ToHub(s, hc, b) => format!("db {:?} -> host {s}: {}", self.links.iter().find(|(_, v)| **v == (*s, *hc)).map(|(k, _)| k.0), kind(b)),
                 Msg::ToDb(d, _, b) => format!("host -> db {d}: {}", kind(b)),
                 Msg::Down(d, c) => format!("down db {d} conn {c:?}"),
+                Msg::Closed(s, _) => format!("closed at host {s}"),
             };
             *seen.entry(k).or_default() += 1;
         }
@@ -815,6 +818,10 @@ impl World {
                 self.with(d, |db| db.feed(Event::Bytes { conn: c, bytes: b }))
             }
             Msg::Down(d, c) => self.with(d, |db| db.feed(Event::Down { conn: c })),
+            Msg::Closed(s, hc) => {
+                let out = self.hosts.get_mut(s).map(|host| host.hub.closed(hc)).unwrap_or_default();
+                self.hub_out(s, out);
+            }
         }
         true
     }

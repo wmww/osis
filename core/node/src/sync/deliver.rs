@@ -370,10 +370,12 @@ impl SyncEngine {
 
     /// Whether this node's commit `c` is placed (spec/sync.md §5): no deposit of it queued here
     /// under a label where no entry of it is present yet, and under every label this node syncs
-    /// of the things it touches, each body of it the label must hold is in an entry present at
-    /// one of the label's hosts (a label with no host: an entry this node serves, if it
-    /// serves any) or covered by a snapshot there. Cached until entries, presence, the outbox or
-    /// the engine change.
+    /// of the things it touches, each body of it the label must hold is in an entry held at a
+    /// source (present at one of the label's hosts, or reported by a co-reader source: `held_at`)
+    /// or covered by a snapshot there. A commit found not placed waits (`placed_waiting`): the
+    /// co-reader reports covering it are recorded (`note_applied`), those already in from the
+    /// moment it starts waiting. Cached until entries, presence, reports, the outbox or the
+    /// engine change.
     pub(crate) fn placed(&mut self, c: &CommitId) -> Result<bool> {
         if self.placed_cache.0 != self.state.version {
             self.placed_cache = (self.state.version, Default::default());
@@ -381,7 +383,23 @@ impl SyncEngine {
         if let Some(x) = self.placed_cache.1.get(c) {
             return Ok(*x);
         }
-        let x = self.placed_now(c)?;
+        let mut x = self.placed_now(c)?;
+        if !x && self.placed_waiting.insert(*c) {
+            let conns: Vec<ConnId> = self.streams.keys().copied().collect();
+            let mut noted = false;
+            for conn in conns {
+                noted |= self.note_applied(conn, &[*c])?;
+            }
+            if noted {
+                x = self.placed_now(c)?;
+            }
+        }
+        if x {
+            self.placed_waiting.remove(c);
+        }
+        if self.placed_cache.0 != self.state.version {
+            self.placed_cache = (self.state.version, Default::default());
+        }
         self.placed_cache.1.insert(*c, x);
         Ok(x)
     }
@@ -389,7 +407,7 @@ impl SyncEngine {
     fn placed_now(&mut self, c: &CommitId) -> Result<bool> {
         let queued: Vec<LabelId> = self.state.outbox.iter().filter(|((_, _, b), _)| self.state.blobs.get(b).is_some_and(|r| r.commit == *c)).map(|(_, o)| o.label).collect();
         for l in queued {
-            if !self.held_at(&l, c, None, true) {
+            if !self.held_at(&l, c, None) {
                 return Ok(false);
             }
         }
@@ -399,33 +417,30 @@ impl SyncEngine {
             if gl.replaced || !self.under_own_label(&g, c) {
                 continue;
             }
-            let local = super::peers::hostless(&gl.hosts);
-            if local && !self.serves_readers() {
-                continue;
-            }
             let ctx = self.engine.body_ctx(&g);
             let inside: Vec<usize> = body.parts.iter().filter(|ai| h.aspects.get(**ai).is_some_and(|a| ctx.closure.contains(&a.tid))).copied().collect();
             let parts = self.engine.readable_parts(&ctx, c, &inside);
             if parts.is_empty() {
                 continue;
             }
-            if !self.held_at(&gl.id, c, Some(&parts), true) && !self.parts_covered_at(&gl.id, c, &h, &parts)? {
+            if !self.held_at(&gl.id, c, Some(&parts)) && !self.parts_covered_at(&gl.id, c, &h, &parts)? {
                 return Ok(false);
             }
         }
         Ok(true)
     }
 
-    /// Whether entries of `c` under `l` (present at a host when `present`) hold `parts`
-    /// (any part when `None`). For `placed` of this node's own commit: any entry counts, at any
-    /// one host. Not `held_parts` (`pass/`), which asks whether another node's entries spare
-    /// this node a certificate copy, and so counts them only genuine, at every host and, with
-    /// a rotation, readable under the newest secret.
-    fn held_at(&self, l: &LabelId, c: &CommitId, parts: Option<&[usize]>, present: bool) -> bool {
+    /// Whether entries of `c` under `l` held at a source hold `parts` (any part when `None`):
+    /// present at a host, or reported by a co-reader source (`State::applied`). For `placed` of
+    /// this node's own commit: any entry counts, at any one source. Not `held_parts` (`pass/`),
+    /// which asks whether another node's entries spare this node a certificate copy, and so
+    /// counts them only genuine, at every host and, with a rotation, readable under the newest
+    /// secret.
+    fn held_at(&self, l: &LabelId, c: &CommitId, parts: Option<&[usize]>) -> bool {
         let mut held: BTreeSet<usize> = BTreeSet::new();
         for (id, e) in self.state.entries_of(l, c) {
             if let super::state::Kind::Commit { parts: p, .. } = &e.kind
-                && (!present || self.state.held_anywhere(l, &id))
+                && (self.state.held_anywhere(l, &id) || self.state.applied_anywhere(l, &id))
             {
                 held.extend(p.iter().copied());
             }
