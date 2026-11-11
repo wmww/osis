@@ -155,11 +155,13 @@ fn is_flag(k: Kind) -> bool {
 }
 
 /// Whether `s` beats `w` at its position: a greater stamp of the same kind (a flag of a flag),
-/// or a text creation above a flag of its element (the char is one register over both, §5.7);
-/// of copies of one flag write, a delete beats an undelete (§4.1 copy order).
+/// a creation above a position write of its element (the creation is one of its position writes,
+/// §5.7, held as `created` even once `pos` lets it go), or a text creation above a flag of its
+/// element (the char is one register over both); of copies of one flag write, a delete beats an
+/// undelete (§4.1 copy order).
 fn beats(s: &Raw, w: &Raw) -> bool {
     let tie = s.w.stamp == w.w.stamp && s.w.kind == Kind::Delete && w.w.kind == Kind::Undelete;
-    s.w.path == w.w.path && (tie || s.w.stamp > w.w.stamp && (s.w.kind == w.w.kind || is_flag(s.w.kind) && is_flag(w.w.kind) || s.w.kind == Kind::Created && is_flag(w.w.kind)))
+    s.w.path == w.w.path && (tie || s.w.stamp > w.w.stamp && (s.w.kind == w.w.kind || is_flag(s.w.kind) && is_flag(w.w.kind) || s.w.kind == Kind::Created && (is_flag(w.w.kind) || w.w.kind == Kind::Pos)))
 }
 
 /// §4.8 from scratch: `w` is superseded among `all` when it is pruned there, a write there beats
