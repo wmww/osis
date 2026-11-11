@@ -691,7 +691,7 @@ fn process_wide_rows_through_the_socket() {
     c.add_peer(&addr).unwrap();
     // serving: shown, set, and up without a restart; off
     assert_eq!(c.serving().unwrap(), None);
-    let h = osis::Serving { admit: osis::Admit::Own, ..Default::default() };
+    let h = osis::Serving { admit: osis::Admit::Listed, ..Default::default() };
     c.set_serving(Some(h.clone())).unwrap();
     assert_eq!(n.serving().unwrap(), Some(h.clone()));
     assert_eq!(c.serving().unwrap(), Some(h));

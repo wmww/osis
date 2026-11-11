@@ -4,7 +4,7 @@
 //! carries out; calls that wait for another node are `async` (runtime-agnostic futures).
 
 use crate::error::{Error, Result};
-use crate::handle::{Locked, Osis, ReadOnly, SERVING_PEER, save_peers};
+use crate::handle::{Locked, Osis, ReadOnly, save_peers};
 use crate::watch::{Delivery, Filter, Subscription};
 use osis_base::{Ak, Role, Tid, Value, Time};
 use osis_node::flows;
@@ -633,8 +633,7 @@ impl ReadOnly {
         t.parse().map(Some).map_err(|_| Error::Storage("profile record".into()))
     }
 
-    /// The peers this node saved with `add_peer`, and its own address while it serves: it
-    /// stays connected to them, and groups sync with them unless `sync` names others. `Unsupported` on a client with its own actor: they are its
+    /// The peers this node saved with `add_peer`: it stays connected to them, and groups sync with them unless `sync` names others. `Unsupported` on a client with its own actor: they are its
     /// node's.
     pub fn saved_peers(&self) -> Result<Vec<Address>> {
         if !self.has_store() {
@@ -1447,8 +1446,7 @@ impl Osis {
     }
 
     /// Removes a saved peer, from the list and the groups that follow it (`add_peer`); a group with
-    /// holders besides this account's nodes keeps its last one. Its own address stays
-    /// while it serves. `Unsupported` on a client with its own actor.
+    /// holders besides this account's nodes keeps its last one. `Unsupported` on a client with its own actor.
     pub fn remove_peer(&self, peer: &Address) -> Result<()> {
         if !self.has_store() {
             return self.rcall(crate::port::method::REMOVE_PEER, vec![Value::Str(peer.to_string())]).map(drop);
@@ -1462,11 +1460,6 @@ impl Osis {
     fn set_hosts(&self, v: Vec<Address>) -> Result<()> {
         let me = self.me();
         self.locked(|x| {
-            // its own serving address stays while it serves (`upkeep_serving_peer`)
-            let mut v = v;
-            if let Some(p) = x.serving_peer.as_ref().filter(|p| !v.contains(p)) {
-                v.push(p.clone());
-            }
             move_hosts(x, me, &v).map(|()| self.saved_peers_moved(x))
         })?;
         self.nudge_sync()
@@ -1812,46 +1805,6 @@ fn pending_on(e: &mut osis_node::Engine, k: &Tid) -> bool {
 impl crate::handle::ReadOnly {
     fn host_addrs(&self) -> Vec<osis_label::Address> {
         self.locked(|x| x.sync.config().hosts.clone())
-    }
-}
-
-impl crate::handle::ReadOnly {
-    /// A serving node syncs with its own address as with any saved peer (notes/api.md Serving):
-    /// while it serves and listens (`listen`), its first address is in the saved list
-    /// (`remove_peer` keeps it); a new address replaces the one it added, and stopping serving
-    /// removes it. Starting up, or not listening yet, changes nothing: the address it had stays.
-    /// Under the lock, after every call.
-    pub(crate) fn upkeep_serving_peer(&self, l: &mut Locked) {
-        let want = match (l.sync.hosts(), l.listening.first()) {
-            (false, _) => None,
-            (true, Some(a)) => Some(a.clone()),
-            (true, None) => return,
-        };
-        if l.serving_peer == want && want.as_ref().is_none_or(|w| l.sync.config().hosts.contains(&w.0)) {
-            return;
-        }
-        let mut v: Vec<Address> = l.sync.config().hosts.iter().cloned().map(Address).collect();
-        if let Some(p) = l.serving_peer.as_ref().filter(|p| Some(*p) != want.as_ref()) {
-            v.retain(|x| x != p);
-        }
-        if let Some(w) = want.as_ref().filter(|w| !v.contains(w)) {
-            v.push(w.clone());
-        }
-        let me = self.inner.me;
-        let r = move_hosts(l, me, &v).and_then(|()| {
-            let text = want.as_ref().map(ToString::to_string).unwrap_or_default();
-            Ok(l.engine().set_app_record(SERVING_PEER, text.as_bytes())?)
-        });
-        match r {
-            Ok(()) => {
-                l.serving_peer = want;
-                self.saved_peers_moved(l);
-            }
-            Err(e) => l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: format!("own serving address as a saved peer: {e}") }),
-        }
-        let mut acts = l.sync.handle(osis_node::sync::Event::Local);
-        acts.extend(l.sync.refresh());
-        self.inner.apply(acts);
     }
 }
 

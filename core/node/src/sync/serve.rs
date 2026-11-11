@@ -406,9 +406,8 @@ impl SyncEngine {
         let mut m = BTreeMap::new();
         for (_, gl) in self.labels() {
             if let Some(s) = ServedLabel::new(&gl.steps) {
-                if let Some(h) = s.path.last() {
-                    self.state.note_head(gl.id, h.id().0);
-                }
+                // the hub's store keeps the path this node serves
+                self.state.note_path(gl.id, s.path.iter().map(|x| (x.clone(), s.claims.get(&x.id()).map(|c| (**c).clone()))).collect());
                 m.insert(gl.id, s);
             }
         }

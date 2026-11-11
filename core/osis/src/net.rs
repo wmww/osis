@@ -577,11 +577,6 @@ impl crate::Osis {
             }
             net => net.listen(urls.iter().map(ToString::to_string).collect())?.into_iter().map(|a| crate::Address(osis_label::Address { url: a.url, key: a.key })).collect(),
         };
-        self.locked(|l| {
-            l.listening = a.clone();
-            // its own address joins the saved peers while it serves
-            self.upkeep_serving_peer(l);
-        });
         Ok(a)
     }
 
@@ -597,14 +592,7 @@ impl crate::Osis {
             return self.rcall(crate::port::method::ROTATE_PEER_ADDRESS, vec![]).map(drop);
         }
         self.act(|l| {
-            let acts = l.sync.rotate_reach();
-            // the driver listens again at the same URLs under the new key
-            let key = l.sync.dialable_key();
-            for a in &mut l.listening {
-                a.0.key = key;
-            }
-            self.upkeep_serving_peer(l);
-            acts
+            l.sync.rotate_reach()
         });
         Ok(())
     }

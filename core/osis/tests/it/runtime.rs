@@ -668,22 +668,22 @@ fn tokio_runtime_close_then_shutdown_no_timer_panic() {
     assert_eq!(shutdown_panics("tk-close"), 0);
 }
 
-// spec/data-model.md §9 (`host^.0` `own`), notes/cli.md Serving (a dedicated peer node): a
-// node paired to Alice's account serves under `own` on the handle's driver (the account set
-// before the driver starts), the only peer either node knows: her home, a group she makes
-// afterwards and a link to it all reach it; Bob, on that peer only, reads the group as soon as his
-// redemption of the link returns.
+// spec/data-model.md §9, notes/cli.md Serving (a dedicated peer node), issues/net-one-peer.md step
+// 4: a node paired to Alice's account, admitting nothing for others, serves what it reads on the
+// handle's driver, the only peer either node knows: her home, a group she makes afterwards and a
+// link to it all reach it; Bob, on that peer only, reads the group as soon as his redemption of
+// the link returns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn own_serving_node_in_process_spec_data_model_9() {
+async fn a_paired_serving_node_in_process_spec_data_model_9() {
     let net = osis_transport::Net::new(6);
     let alice = osis::internals::create(cfg(1, vec![], Some(net.endpoint("a")))).unwrap();
     let j = osis::internals::pair(cfg(2, vec![], Some(net.endpoint("h"))), &alice.pair_offer().unwrap()).unwrap();
     let (_, reply) = alice.pair_accept(j.request()).unwrap();
     let dev = j.finish(&reply).unwrap();
     assert_eq!(dev.me(), alice.me());
-    // the refused-for-now back-off (5 s) shortened: the test waits it once per new label
+    // the refused-for-now back-off (5 s) shortened: a new label waits until the peer reads it
     alice.sync_engine(|s| s.config_mut().retry_ms = 100);
-    dev.set_serving(Some(osis::Serving { admit: osis::Admit::Own, ..Default::default() })).unwrap();
+    dev.set_serving(Some(osis::Serving { admit: osis::Admit::Listed, ..Default::default() })).unwrap();
     let ha = dev.listen(&["mem://h".parse().unwrap()]).unwrap().remove(0);
     alice.add_peer(&ha).unwrap();
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All)).await.unwrap().unwrap();

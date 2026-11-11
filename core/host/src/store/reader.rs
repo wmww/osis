@@ -5,10 +5,11 @@
 //! of them. Its bytes-less knowledge (entries announced and not fetched, tombstones) stays in the
 //! engine's store. A read sync ID is neither replicated nor dropped when hosting stops.
 
-use super::{HostStore, Meta, Row, Tx, Write, Writes, be, corrupt, key, read_arr};
+use super::{HostStore, Row, Tx, Write, Writes, be, corrupt, key, read_arr};
 use osis_base::{BlobId, LabelId};
 use osis_crypto::Signature;
 use osis_proto::msg::WRAP_LEN;
+use osis_label::{ClaimSet, Step};
 use osis_proto::{EntryMeta, LogRecord, StoreError};
 use std::collections::BTreeSet;
 
@@ -24,6 +25,25 @@ impl HostStore {
         self.read = labels;
     }
 
+    /// Whether something other than node sync changed a sync ID it reads since the last ask
+    /// (an upload, a delete, the sweep): node sync reads the node log past what it applied.
+    pub fn take_moved(&mut self) -> bool {
+        std::mem::take(&mut self.moved)
+    }
+
+    /// `take_moved` without taking it.
+    pub fn moved(&self) -> bool {
+        self.moved
+    }
+
+    /// Runs node sync's own change `f`, which leaves `moved` as it was.
+    fn own<R>(&mut self, f: impl FnOnce(&mut HostStore) -> R) -> R {
+        let moved = self.moved;
+        let r = f(self);
+        self.moved = moved;
+        r
+    }
+
     /// Whether `label` is node sync's: it reads it, or wrote entry rows under it.
     pub fn reads(&self, label: &LabelId) -> bool {
         self.read.contains(label) || self.get(&key(b'n', &[&label.0])).ok().flatten().is_some()
@@ -32,14 +52,12 @@ impl HostStore {
     /// Node sync holds entry `blob` of `label` with its bytes (held in this store's blob area):
     /// its row, blob reference and node log `Added`, written into the open transaction. Whether
     /// anything changed (a row with the same wrap and stamp is left alone).
-    pub fn reader_put(&mut self, label: &LabelId, blob: &BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature>, expiry: Option<u64>) -> Result<bool, StoreError> {
-        let (meta, new) = match self.meta(label)? {
-            Some(m) => (m, false),
-            None => {
-                let h = osis_base::hash::hash(&[&self.seed[..], &label.0[..]].concat());
-                (Meta { log_id: read_arr(&h, 0)?, ..Meta::default() }, true)
-            }
-        };
+    pub fn reader_put(&mut self, label: &LabelId, blob: &BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature>) -> Result<bool, StoreError> {
+        self.own(|s| s.own_put(label, blob, wrap, stamp))
+    }
+
+    fn own_put(&mut self, label: &LabelId, blob: &BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature>) -> Result<bool, StoreError> {
+        let (meta, new) = self.meta_or_new(label)?;
         let held = self.row(label, blob)?;
         if held.as_ref().is_some_and(|r| r.meta.wrap == wrap && r.meta.stamp == stamp) {
             return Ok(false);
@@ -68,12 +86,11 @@ impl HostStore {
                     tx.meta.dep_n += 1;
                     tx.meta.dep_bytes = tx.meta.dep_bytes.saturating_add(size);
                 }
-                if let Some(t) = expiry {
-                    tx.batch.put(key(b'X', &[&be(t), &l, &blob.0]), vec![]);
-                }
                 let (refs, _) = self.refs(blob)?;
                 tx.batch.put(key(b'R', &[&blob.0]), [&be(refs + 1)[..], osis_label::prefix_bytes(&bytes)].concat());
-                Row { meta: EntryMeta { wrap, stamp, size, add_seq: seq }, expiry }
+                // no expiry: node sync judges when an entry of a sync ID it reads expires (its
+                // pass removes the row), the one expiry path there
+                Row { meta: EntryMeta { wrap, stamp, size, add_seq: seq }, expiry: None }
             }
         };
         tx.batch.put(key(b'E', &[&l, &blob.0]), row.encode());
@@ -83,10 +100,44 @@ impl HostStore {
         Ok(true)
     }
 
+    /// The steps of `label` node sync judged from its `label.0` (`path`: genesis to the head
+    /// it serves, with claim sets where recorded): those past this store's head on the path are
+    /// written, the last the head, each logged as `push_step` does; none when this store's head
+    /// is not on it (a peer's child step not recorded yet, another branch). No admission, cap or
+    /// rate. Whether any was written.
+    pub fn reader_steps(&mut self, label: &LabelId, path: &[(Step, Option<ClaimSet>)]) -> Result<bool, StoreError> {
+        self.own(|s| s.own_steps(label, path))
+    }
+
+    fn own_steps(&mut self, label: &LabelId, path: &[(Step, Option<ClaimSet>)]) -> Result<bool, StoreError> {
+        use osis_proto::LabelStore;
+        let from = match self.head(label)? {
+            None => 0,
+            Some(h) => match path.iter().position(|(s, _)| s.id() == h) {
+                Some(i) => i + 1,
+                None => return Ok(false),
+            },
+        };
+        let Some(todo) = path.get(from..).filter(|t| !t.is_empty()) else { return Ok(false) };
+        if self.get(&key(b'n', &[&label.0]))?.is_none() {
+            let mut w = Writes::default();
+            w.put(key(b'n', &[&label.0]), Vec::new());
+            self.write(w)?;
+        }
+        for (step, claims) in todo {
+            self.put_step(label, step.clone(), claims.clone(), false)?;
+        }
+        Ok(true)
+    }
+
     /// Node sync no longer holds entry `blob` of `label` with its bytes (`tombstone`: deleted,
     /// so the store refuses it for its tombstone time): its row goes as any removal. Whether
     /// there was one.
     pub fn reader_remove(&mut self, label: &LabelId, blob: &BlobId, tombstone: bool) -> Result<bool, StoreError> {
+        self.own(|s| s.own_remove(label, blob, tombstone))
+    }
+
+    fn own_remove(&mut self, label: &LabelId, blob: &BlobId, tombstone: bool) -> Result<bool, StoreError> {
         let Some(row) = self.row(label, blob)? else { return Ok(false) };
         let mut tx = self.tx(label)?;
         let now = self.now();
@@ -114,6 +165,10 @@ impl HostStore {
     /// Node sync forgot `label` (the group is gone here): every row of it, shredded, its node log
     /// events with no deletion event, into the open transaction.
     pub fn reader_forget(&mut self, label: &LabelId) -> Result<(), StoreError> {
+        self.own(|s| s.own_forget(label))
+    }
+
+    fn own_forget(&mut self, label: &LabelId) -> Result<(), StoreError> {
         self.read.remove(label);
         let mut w = Writes::default();
         w.0.push(Write::Unmark(key(b'n', &[&label.0])));

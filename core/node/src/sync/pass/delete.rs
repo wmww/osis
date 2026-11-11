@@ -13,7 +13,8 @@ impl SyncEngine {
     /// (a live body only with a carrier, a covering snapshot asked for meanwhile, even when its
     /// bytes are gone), an expired one outright; any other entry whose bytes this node no longer
     /// holds serves nothing and goes, one past its prefix's expiry goes outright (an inbox
-    /// blob); chunks of dropped deltas go, and the blobs a gone certificate copy
+    /// blob, its row in the hub's store with it: node sync alone expires a sync ID it reads);
+    /// chunks of dropped deltas go, and the blobs a gone certificate copy
     /// linked. Removed entries are tombstoned (`State::remove_entry`), expired ones not. What
     /// waits goes into `left`.
     pub(super) fn local_deletions(&mut self, at: &At, bodies: &[Body], scope: &Scope, left: &mut Left) -> Result<()> {

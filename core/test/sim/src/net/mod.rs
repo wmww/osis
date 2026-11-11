@@ -1035,8 +1035,10 @@ impl NetSim {
     /// What node `n`'s hub handed out: bytes and closes on its peer links, ups to its node sync.
     fn node_hub_out(&mut self, n: usize, out: Vec<HubOutput>) -> Res<()> {
         let mut ups = Vec::new();
+        let mut moved = false;
         for o in out {
             match o {
+                HubOutput::Moved => moved = true,
                 HubOutput::Send(hc, bytes) => {
                     if let Some((id, to)) = self.peer_end(End::NodeHub(n, hc)) {
                         self.send(id, to, Payload::Bytes(bytes));
@@ -1052,7 +1054,7 @@ impl NetSim {
                 HubOutput::Diagnostic(d) => self.note(format!("node {n} hub diagnostic: {}", d.chars().take(160).collect::<String>())),
             }
         }
-        if ups.is_empty() {
+        if ups.is_empty() && !moved {
             return Ok(());
         }
         self.feed(n, Event::Hub { ups })
@@ -1091,7 +1093,7 @@ impl NetSim {
                     }
                 }
                 // no node above these hosts: node kinds go unanswered (honest nodes send them none)
-                HubOutput::Up(..) => {}
+                HubOutput::Up(..) | HubOutput::Moved => {}
                 HubOutput::Diagnostic(d) => {
                     self.report.diagnostics = self.report.diagnostics.saturating_add(1);
                     self.note(format!("host {s} diagnostic: {}", d.chars().take(160).collect::<String>()));

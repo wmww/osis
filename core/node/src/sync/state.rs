@@ -104,12 +104,11 @@ pub enum Kind {
 
 /// A change of the hub's store (the node's ciphertext and its node log) waiting for the flush
 /// that writes its effect: an entry row put where its bytes are held, an entry row gone
-/// (tombstoned there when deleted), a head logged.
+/// (tombstoned there when deleted).
 #[derive(Clone, Copy, Debug)]
 enum LogWrite {
     Added(LabelId, BlobId),
     Deleted(LabelId, BlobId, bool),
-    Head(LabelId, [u8; 32]),
 }
 
 /// The node's one store (the hub's) inside engine transaction `tx` (its ciphertext store).
@@ -120,6 +119,18 @@ pub(crate) fn hub<'a>(tx: &'a mut osis_engine::engine::Tx<'_>) -> Result<&'a mut
 pub(crate) fn hub_err(e: osis_proto::StoreError) -> Error {
     let _ = e;
     Error::Corrupt("hub store")
+}
+
+/// An entry row of the hub's store: wrap and stamp.
+type HubRow = ([u8; WRAP_LEN], Option<Signature>);
+
+/// What the hub's rows changed here (`State::hub_changes`).
+#[derive(Clone, Debug, Default)]
+pub struct HubChanges {
+    /// Entries derived from rows with their bytes held, to open.
+    pub derived: Vec<(LabelId, BlobId)>,
+    /// Blobs of entries dropped (their rows gone there), forgotten unless named.
+    pub gone: Vec<BlobId>,
 }
 
 /// A tombstone (`State::tombs`): when (wall ms) and what the entry was.
@@ -465,13 +476,19 @@ pub struct State {
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     /// Node log events of those writes, in order: they go in the same transaction.
     log: Vec<LogWrite>,
-    /// The head last logged per label, so an unchanged head costs no transaction.
-    logged_heads: BTreeMap<LabelId, [u8; 32]>,
+    /// The head last handed the hub's store per label, so an unchanged head costs no
+    /// transaction.
+    hub_heads: BTreeMap<LabelId, [u8; 32]>,
+    /// Paths to hand the hub's store (`note_path`), by label.
+    paths: BTreeMap<LabelId, Vec<(osis_label::Step, Option<osis_label::ClaimSet>)>>,
     /// A hint came or went (`SyncEngine::stamp_changes`).
     pub hints_moved: bool,
-    /// Entries derived again from the hub's rows at load with their bytes held (`reconcile`):
-    /// opened by node sync's start (`SyncEngine::new`).
-    pub rederived: Vec<(LabelId, BlobId)>,
+    /// What the hub's rows changed at load (`reconcile`), for node sync's start
+    /// (`SyncEngine::new`): entries derived again with their bytes held, to open, and the blobs of
+    /// entries dropped, to forget.
+    pub rederived: HubChanges,
+    /// The node log position up to which the hub's changes are applied here (`hub_changes`).
+    hub_pos: u64,
 }
 
 fn key(prefix: &[u8], parts: &[&[u8]]) -> Vec<u8> {
@@ -630,8 +647,8 @@ impl State {
             })?;
             Ok(v)
         })?;
-        let logged_heads = engine.run(|tx| Ok(hub(tx)?.node_log(|t| t.log_heads())?))?.into_iter().collect();
-        let mut s = State { logged_heads, ..State::default() };
+        let hub_heads = engine.run(|tx| Ok(hub(tx)?.node_log(|t| t.log_heads())?))?.into_iter().collect();
+        let mut s = State { hub_heads, ..State::default() };
         for (k, v) in recs {
             let (p, rest) = k.split_at_checked(1).ok_or(Error::Corrupt("sync record"))?;
             let mut r = Rd::new(rest);
@@ -782,26 +799,19 @@ impl State {
         Ok(s)
     }
 
-    /// The hub's store is the truth for ciphertext (issues/net-one-peer.md step 4), and the two
-    /// stores commit apart, the hub's first: an entry whose bytes this node holds with no row
-    /// there is dropped (a removal the engine's store did not commit), one whose row differs
-    /// takes the row's wrap and stamp, and a row under a label of node sync's with no entry here
-    /// (an arrival the engine's store did not commit, or another's upload) is derived again: an
-    /// entry not opened yet, opened when its bytes are fetched. Brute force at open: every entry
-    /// and row once.
+    /// The hub's store is the truth for ciphertext (issues/net-one-peer.md step 4): at load every
+    /// entry and row once (brute force), then the node log past `hub_pos` as the hub changes it
+    /// (`hub_changes`). Add before, remove after (`HostStore::removal`), so a row with no entry
+    /// here is an arrival the engine's store did not commit or another's upload, derived again (an
+    /// entry not opened yet, its bytes held again where its row keeps them: opened at start,
+    /// `rederived`); an entry whose bytes are held with no row was removed there (the hub's sweep,
+    /// a delete), dropped here; a row whose wrap or stamp differs is taken.
     fn reconcile(&mut self, engine: &mut Engine) -> Result<()> {
-        let mine: Vec<(LabelId, BlobId, [u8; WRAP_LEN], Option<Signature>)> = self.entries.iter().filter(|(_, e)| !e.memory).map(|((l, b), e)| (*l, *b, e.wrap, e.stamp)).collect();
-        let (gone, differ, stray, held) = engine.run(|tx| {
-            let (mut gone, mut differ, mut stray) = (Vec::new(), Vec::new(), Vec::new());
-            for (l, b, wrap, stamp) in &mine {
-                if !tx.blobs.held(b)? {
-                    continue;
-                }
-                match hub(tx)?.reader_entry(l, b).map_err(hub_err)? {
-                    None => gone.push((*l, *b)),
-                    Some((w, st)) if (w, st) != (*wrap, *stamp) => differ.push((*l, *b, w, st)),
-                    Some(_) => {}
-                }
+        let mine: Vec<(LabelId, BlobId)> = self.entries.iter().filter(|(_, e)| !e.memory).map(|(k, _)| *k).collect();
+        let (rows, end) = engine.run(|tx| {
+            let mut rows = Vec::new();
+            for (l, b) in &mine {
+                rows.push((*l, *b, hub(tx)?.reader_entry(l, b).map_err(hub_err)?));
             }
             let mut after = None;
             loop {
@@ -809,10 +819,10 @@ impl State {
                 for l in &labels {
                     let mut from = None;
                     loop {
-                        let rows = hub(tx)?.reader_rows(l, from.as_ref(), 1024).map_err(hub_err)?;
-                        stray.extend(rows.iter().filter(|(b, _)| !self.entries.contains_key(&(*l, *b))).map(|(b, (w, st))| (*l, *b, *w, *st)));
-                        match rows.last() {
-                            Some((b, ..)) if rows.len() == 1024 => from = Some(*b),
+                        let page = hub(tx)?.reader_rows(l, from.as_ref(), 1024).map_err(hub_err)?;
+                        rows.extend(page.iter().filter(|(b, _)| !self.entries.contains_key(&(*l, *b))).map(|(b, r)| (*l, *b, Some(*r))));
+                        match page.last() {
+                            Some((b, _)) if page.len() == 1024 => from = Some(*b),
                             _ => break,
                         }
                     }
@@ -822,31 +832,96 @@ impl State {
                     _ => break,
                 }
             }
-            // a stray row's bytes are here (its row keeps them): the engine holds them again,
-            // as if they arrived (an uncommitted hold was settled away at open)
-            let mut held = Vec::new();
-            for (l, b, ..) in &stray {
-                if let Some(bytes) = tx.blobs.get(b)? {
-                    tx.store_blobs(vec![(*b, bytes)])?;
-                    held.push((*l, *b));
+            Ok((rows, hub(tx)?.node_log(|t| t.log_end())?))
+        })?;
+        self.rederived = self.take_rows(engine, rows)?;
+        self.hub_pos = end;
+        Ok(())
+    }
+
+    /// The hub's changes past `hub_pos` (`HostStore::take_moved`): entries others uploaded to a
+    /// sync ID this node reads, and removals there (its sweep, a delete). The entries derived
+    /// with their bytes held, to open (`SyncEngine::open_entries`).
+    pub fn hub_changes(&mut self, engine: &mut Engine) -> Result<HubChanges> {
+        // what this node did is in the hub's store before it is compared
+        self.flush(engine)?;
+        let from = self.hub_pos;
+        let (rows, end) = engine.run(|tx| {
+            let mut rows = Vec::new();
+            let mut pos = from;
+            loop {
+                let (events, at, more) = hub(tx)?.node_log(|t| t.log_after(pos, 1024))?;
+                for e in events {
+                    let (l, b) = match e.event {
+                        osis_store::NodeEvent::Added(l, b) => (l, b),
+                        osis_store::NodeEvent::Deleted { label, blob, .. } => (label, blob),
+                        osis_store::NodeEvent::Head(_) => continue,
+                    };
+                    let h = hub(tx)?;
+                    if h.reads(&l) {
+                        rows.push((l, b, h.reader_entry(&l, &b).map_err(hub_err)?));
+                    }
+                }
+                pos = at;
+                if !more {
+                    break;
                 }
             }
-            Ok((gone, differ, stray, held))
+            Ok((rows, pos))
+        })?;
+        self.hub_pos = end;
+        self.take_rows(engine, rows)
+    }
+
+    /// Takes what the hub's store holds of entries `rows` (`None`: no row): see `reconcile`.
+    fn take_rows(&mut self, engine: &mut Engine, rows: Vec<(LabelId, BlobId, Option<HubRow>)>) -> Result<HubChanges> {
+        if rows.is_empty() {
+            return Ok(HubChanges::default());
+        }
+        let (gone, held, refused) = engine.run(|tx| {
+            let (mut gone, mut held, mut refused) = (Vec::new(), Vec::new(), Vec::new());
+            for (l, b, row) in &rows {
+                let here = self.entries.get(&(*l, *b)).filter(|e| !e.memory);
+                match (here, row) {
+                    (Some(_), None) => {
+                        if tx.blobs.held(b)? {
+                            gone.push((*l, *b));
+                        }
+                    }
+                    // deleted here: the row goes too
+                    (None, Some(_)) if self.tombs.contains_key(&(*l, *b)) => refused.push((*l, *b)),
+                    (None, Some(_)) => {
+                        // its bytes are here (its row keeps them): the engine holds them again
+                        if let Some(bytes) = tx.blobs.get(b)? {
+                            tx.store_blobs(vec![(*b, bytes)])?;
+                            held.push((*l, *b));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for (l, b) in &refused {
+                tx.blobs.defer(osis_host::HostStore::removal(l, b, true));
+            }
+            Ok((gone, held, refused))
         })?;
         engine.blobs_stored();
-        self.rederived = held;
-        for (l, b, wrap, stamp) in stray {
-            self.set_entry_quiet(l, b, Entry { wrap, stamp, cert: false, salt: None, kind: Kind::Unknown, memory: false });
-        }
-        for (l, b) in gone {
-            self.drop_entry(l, b);
-        }
-        for (l, b, wrap, stamp) in differ {
-            if let Some(e) = self.entries.get(&(l, b)).cloned() {
-                self.set_entry(l, b, Entry { wrap, stamp, ..e });
+        let _ = refused;
+        for (l, b, row) in rows {
+            let Some((wrap, stamp)) = row else { continue };
+            match self.entries.get(&(l, b)) {
+                None if !self.tombs.contains_key(&(l, b)) => self.set_entry_quiet(l, b, Entry { wrap, stamp, cert: false, salt: None, kind: Kind::Unknown, memory: false }),
+                Some(e) if !e.memory && (e.wrap, e.stamp) != (wrap, stamp) => {
+                    let e = Entry { wrap, stamp, ..e.clone() };
+                    self.set_entry_quiet(l, b, e);
+                }
+                _ => {}
             }
         }
-        Ok(())
+        for (l, b) in &gone {
+            self.drop_entry(*l, *b);
+        }
+        Ok(HubChanges { derived: held, gone: gone.into_iter().map(|(_, b)| b).collect() })
     }
 
     /// Adds (or removes) an entry to (from) the indexes over `entries`.
@@ -1021,12 +1096,16 @@ impl State {
     /// completes the pair. So a queued `Added` of an entry whose bytes are not here is dropped
     /// (the arrival logs it), and a blob newly stored logs every entry that names it.
     pub fn flush_storing(&mut self, engine: &mut Engine, blobs: Vec<(BlobId, Vec<u8>)>) -> Result<()> {
-        if self.writes.is_empty() && self.log.is_empty() && blobs.is_empty() {
+        if self.writes.is_empty() && self.log.is_empty() && self.paths.is_empty() && blobs.is_empty() {
             return Ok(());
         }
         let writes = std::mem::take(&mut self.writes);
         let log = std::mem::take(&mut self.log);
+        let paths = std::mem::take(&mut self.paths);
         let r = engine.run(|tx| {
+            for (l, path) in &paths {
+                hub(tx)?.reader_steps(l, path).map_err(hub_err)?;
+            }
             for (k, v) in writes.clone() {
                 match v {
                     // a replaced wrap or key leaves no copy behind
@@ -1067,13 +1146,12 @@ impl State {
                             tx.blobs.defer(osis_host::HostStore::removal(&l, &b, tomb));
                         }
                     }
-                    LogWrite::Head(l, head) => drop(hub(tx)?.node_log(|t| t.log_head(l, &head))?),
                 }
             }
             for (l, b) in put {
                 let Some(e) = self.entries.get(&(l, b)).filter(|e| !e.memory) else { continue };
                 if tx.blobs.held(&b)? {
-                    hub(tx)?.reader_put(&l, &b, e.wrap, e.stamp, None).map_err(hub_err)?;
+                    hub(tx)?.reader_put(&l, &b, e.wrap, e.stamp).map_err(hub_err)?;
                 }
             }
             Ok(!stored.is_empty())
@@ -1092,17 +1170,22 @@ impl State {
                     self.writes.entry(k).or_insert(v);
                 }
                 self.log.splice(0..0, log);
+                for (l, p) in paths {
+                    self.paths.entry(l).or_insert(p);
+                }
                 Err(e)
             }
         }
     }
 
-    /// Logs `head` as `l`'s head where it moved: derived from group data, so a head a crash
-    /// kept from the log is logged by the next comparison.
-    pub fn note_head(&mut self, l: LabelId, head: [u8; 32]) {
-        if self.logged_heads.get(&l) != Some(&head) {
-            self.logged_heads.insert(l, head);
-            self.log.push(LogWrite::Head(l, head));
+    /// Hands the hub's store `l`'s path (from its `label.0`, to the head this node serves)
+    /// where its head moved (`HostStore::reader_steps`, the steps logged there): derived from
+    /// group data, so a path a crash kept from the store goes by the next comparison.
+    pub fn note_path(&mut self, l: LabelId, path: Vec<(osis_label::Step, Option<osis_label::ClaimSet>)>) {
+        let Some(head) = path.last().map(|(s, _)| s.id().0) else { return };
+        if self.hub_heads.get(&l) != Some(&head) {
+            self.hub_heads.insert(l, head);
+            self.paths.insert(l, path);
         }
     }
 
@@ -2334,5 +2417,80 @@ mod tests {
             }
         }
         assert!(seen_absent && seen_present, "the crash points reach both outcomes");
+    }
+
+    /// A node's engine over a hub store, both on `faults`' disks (`disks`, kept across a reopen).
+    fn faulty(faults: &osis_store::Faults, disks: &[(osis_store::MemoryBackend, osis_store::MemoryRoot); 2], create: bool, seed: u64) -> Engine {
+        let clock: std::sync::Arc<dyn osis_base::Clock> = std::sync::Arc::new(osis_base::ManualClock::new(osis_base::WallMs(1_700_000_000_000)));
+        let _ = faults;
+        let hub = crate::sync::hub_store_on(Box::new(disks[1].0.clone()), Box::new(disks[1].1.clone()), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(8))).unwrap();
+        let (b, r): (Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>) = (Box::new(disks[0].0.clone()), Box::new(disks[0].1.clone()));
+        let rng = Box::new(osis_crypto::SeededRng::from_u64(seed));
+        if create { Engine::create(b, r, hub, crate::Config::default(), clock, rng).unwrap() } else { Engine::open(b, r, hub, crate::Config::default(), clock, rng).unwrap() }
+    }
+
+    // issues/net-one-peer.md step 4 (add before, remove after): a crash at any write of a flush
+    // removing an entry leaves it both here and as the hub's row, or neither, once reopened (the
+    // engine's commit decides; `Engine::settle_blobs` finishes the row's removal).
+    #[test]
+    fn a_crash_in_a_removal_converges() {
+        let (l, b) = (LabelId([1; 16]), osis_label::blob_id(&[2; 40]));
+        let (mut seen_gone, mut seen_kept) = (false, false);
+        for k in 0..64 {
+            let faults = osis_store::Faults::new();
+            let disk = || (osis_store::MemoryBackend::with_faults(faults.clone()), osis_store::MemoryRoot::with_faults(faults.clone()));
+            let disks = [disk(), disk()];
+            let mut e = faulty(&faults, &disks, true, 9);
+            let mut s = State::default();
+            e.put_blobs(vec![(b, vec![2; 40])]).unwrap();
+            s.set_entry(l, b, entry(1));
+            s.flush(&mut e).unwrap();
+            s.remove_entry(l, b);
+            faults.at(k, osis_store::Fault::Crash);
+            let crashed = s.flush(&mut e).is_err() || faults.crashed();
+            let wrote = faults.writes();
+            drop(e);
+            faults.revive();
+            let mut e = faulty(&faults, &disks, false, 10);
+            let here = State::load(&mut e).unwrap().entries.contains_key(&(l, b));
+            let row = e.run(|tx| hub(tx)?.reader_entry(&l, &b).map_err(hub_err)).unwrap().is_some();
+            assert_eq!(here, row, "crash at write {k}: the entry and its row split");
+            seen_gone |= !here;
+            seen_kept |= here;
+            if !crashed && k > wrote {
+                break;
+            }
+        }
+        assert!(seen_gone && seen_kept, "the crash points reach both outcomes");
+    }
+
+    // issues/net-one-peer.md step 4 (cost: two stores), notes/coordination.md (count work): a
+    // flush storing a batch of entries with their bytes writes each store a fixed number of
+    // times, the same at n and 10n entries.
+    #[test]
+    fn a_batchs_commits_do_not_grow_with_it() {
+        let commits = |n: usize| {
+            let faults = osis_store::Faults::new();
+            let disk = || (osis_store::MemoryBackend::with_faults(faults.clone()), osis_store::MemoryRoot::with_faults(faults.clone()));
+            let disks = [disk(), disk()];
+            let mut e = faulty(&faults, &disks, true, 9);
+            let mut s = State::default();
+            let l = LabelId([1; 16]);
+            let blobs: Vec<(BlobId, Vec<u8>)> = (0..n).map(|i| (i as u32).to_be_bytes().repeat(10)).map(|x| (osis_label::blob_id(&x), x)).collect();
+            for (b, _) in &blobs {
+                s.set_entry(l, *b, entry(1));
+            }
+            let w0 = (disks[0].0.syncs(), disks[1].0.syncs());
+            s.flush_storing(&mut e, blobs).unwrap();
+            let rows = e.run(|tx| hub(tx)?.reader_rows(&l, None, 1000).map_err(hub_err)).unwrap().len();
+            assert_eq!(rows, n);
+            (disks[0].0.syncs() - w0.0, disks[1].0.syncs() - w0.1)
+        };
+        // n and 10n past the first table split (a split commits shredded: two backend writes)
+        let (small, large) = (commits(25), commits(250));
+        assert_eq!(small, large, "commits per batch do not grow with it");
+        // the engine's store: one shredding commit (two writes); the hub's: its commit (here
+        // shredding: two) and the transaction's note cleared after the engine's
+        assert!(small.0 <= 2 && small.1 <= 3, "{small:?}");
     }
 }

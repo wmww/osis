@@ -619,7 +619,7 @@ fn serving_commands_plan_cli_4() {
     assert_eq!(home_label.len(), 32, "{ids}");
     assert!(!s.ok(&["--json", "status"]).out.contains(&home_label), "the id stays with serving");
     let show = s.ok(&["serving", "show"]).out;
-    assert_eq!(show, format!("admit own\nadmitted {home_label}\npolicy group_entries 10\ncap {home_label} 5 500\n"));
+    assert_eq!(show, format!("admit listed\nadmitted {home_label}\npolicy group_entries 10\ncap {home_label} 5 500\n"));
     // one flag replaces its field, the rest kept; '' clears
     let other = "00112233445566778899aabbccddeeff";
     s.ok(&["serving", "set", "--admit", "open", "--admitted", other, "--policy", ""]);
@@ -636,7 +636,7 @@ fn serving_commands_plan_cli_4() {
     s.ok(&["serving", "off"]);
     assert_eq!(s.code(&["serving", "show"]), 3);
     s.ok(&["serving", "set"]);
-    assert_eq!(s.ok(&["serving", "show"]).out, "admit own\n");
+    assert_eq!(s.ok(&["serving", "show"]).out, "admit listed\n");
 }
 
 // notes/cli.md Design `-v`: a command that syncs prints the node's diagnostics on stderr

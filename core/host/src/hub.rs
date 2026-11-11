@@ -35,6 +35,9 @@ pub enum HubOutput {
     Diagnostic(String),
     /// For node sync, the session's upper layer.
     Up(ConnId, Up),
+    /// The batch changed a sync ID node sync reads (`HostStore::take_moved`): node sync runs
+    /// again (`Event::Hub`, with no `Up` if none).
+    Moved,
 }
 
 /// What a served connection hands node sync.
@@ -284,6 +287,9 @@ impl Hub {
             }
         }
         out.extend(self.ended.drain(..).map(|id| HubOutput::Up(id, Up::End)));
+        if st.moved() {
+            out.push(HubOutput::Moved);
+        }
         out
     }
 

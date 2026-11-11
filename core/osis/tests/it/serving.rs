@@ -8,9 +8,7 @@ use crate::common::CreateIn;
 use osis::internals::Internals as _;
 use osis::{Admit, Address, Serving, Osis, Role, Tid, Value};
 use osis::internals::{LabelId};
-use osis_host::Admission;
 use osis_sim::world::World;
-use std::collections::BTreeSet;
 
 fn item(db: &Osis, g: Tid, v: &str) -> Tid {
     let mut w = db.write();
@@ -34,15 +32,14 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 // spec/wire.md §11.2 (an unadmitted genesis step gets code 14), notes/serving.md, spec/requirements.md
-// Data a node cannot read: Alice serves with `own` admission (its key known before it listens): her home label, once its peers name her
-// peer address, is admitted and served from her serving store (her own copy placed there like
-// anyone's); Bob's is refused until she opens admission (his status names her peer, his home
-// synced at his other peer; Carol's, at her peer only, `Refused`, and `wait_synced` waits: it may
-// yet be admitted), then served unread (she holds none of
-// its keys) and served to Bob's paired node. Her serving store holds no tid or AK of either
-// label in any row it ever wrote.
+// Data a node cannot read, issues/net-one-peer.md step 4: Alice serves admitting nothing for others: her
+// home label, which she reads, is in her one store with no setup (no saved peer of her own); Bob's is
+// refused until she opens admission (his status names her peer, his home synced at his other peer;
+// Carol's, at her peer only, `Refused`, and `wait_synced` waits: it may yet be admitted), then
+// served unread (she holds none of its keys) and served to Bob's paired node. Her store holds no
+// tid or AK of either label in any row it ever wrote.
 #[test]
-fn serving_own_then_open_spec_sync_5() {
+fn serving_listed_then_open_spec_sync_5() {
     let mut w = World::new();
     let base = w.add_host();
     // Alice's one store records every write (the hygiene check below)
@@ -55,15 +52,14 @@ fn serving_own_then_open_spec_sync_5() {
     let bob = w.account(2, &[base]);
     let carol = w.account(3, &[base]);
     w.run();
-    alice.set_serving(Some(Serving { admit: Admit::Own, ..Default::default() })).unwrap();
+    alice.set_serving(Some(Serving { admit: Admit::Listed, ..Default::default() })).unwrap();
     let ha = alice.listen(&["quic://alice:1".parse().unwrap()]).unwrap().remove(0);
     w.run();
-    assert_eq!(alice.serving().unwrap().unwrap().admit, Admit::Own);
+    assert_eq!(alice.serving().unwrap().unwrap().admit, Admit::Listed);
     let ai = w.index(&alice).unwrap();
     let s = w.host_of(ai).unwrap();
 
-    // own: Alice's home label names her peer, Bob's too: only hers is admitted
-    alice.add_peer(&ha).unwrap();
+    // Bob's home label names her peer: refused; hers is in her store, read
     bob.add_peer(&ha).unwrap();
     carol.add_peer(&ha).unwrap();
     carol.remove_peer(&w.addr(base).unwrap()).unwrap();
@@ -72,8 +68,8 @@ fn serving_own_then_open_spec_sync_5() {
     w.run();
     w.advance(120_000);
     let (la, lb) = (home_label(&alice), home_label(&bob));
-    assert!(hosted(&w, s).contains(&la), "own: admitted");
-    assert!(!hosted(&w, s).contains(&lb), "own: another account's label refused");
+    assert!(hosted(&w, s).contains(&la), "a label she reads");
+    assert!(!hosted(&w, s).contains(&lb), "another account's label refused");
     let st = bob.status().unwrap().groups[&bob.home()].clone();
     assert_eq!((st.state, st.refused_by), (osis::SyncState::Synced, vec![ha.clone()]), "not admitted, not full; synced at base");
     w.until(bob.wait_synced(osis::SyncScope::Thing(bob.home())), 1000, 10).unwrap();
@@ -110,39 +106,37 @@ fn serving_own_then_open_spec_sync_5() {
         }
     }
 
-    // stopping: what was stored for others goes
+    // stopping: what was stored for others goes, what she reads stays
     alice.set_serving(None).unwrap();
     w.run();
     assert!(!alice.sync_engine(|e| e.hosts()));
-    assert!(hosted(&w, s).is_empty());
+    assert_eq!(hosted(&w, s), vec![la]);
 }
 
-// notes/api.md Serving, spec/data-model.md §9 (`own`): a serving node needs no setup to serve its own
-// groups. Alice, with no peer, serves under `own`: once it listens its address is a saved peer like
-// any (`remove_peer` keeps it), her home and a group made afterwards sync there and are
-// served from her own store; stopping takes the address off the list.
+// notes/api.md Serving, issues/net-one-peer.md step 4: a node serves the groups it reads from its one
+// store with no setup and no peer of its own: Alice, not serving for others, listens; her group
+// names her address alone; Bob, granted it, syncs it there and reads it.
 #[test]
-fn serving_node_needs_no_setup_spec_data_model_9() {
+fn a_reader_serves_what_it_reads_with_no_setup_spec_data_model_9() {
     let mut w = World::new();
-    let alice = w.account(1, &[]);
-    alice.sync_engine(|s| s.config_mut().retry_ms = 100);
-    alice.set_serving(Some(Serving { admit: Admit::Own, ..Default::default() })).unwrap();
+    let base = w.add_host();
+    let alice = w.account(1, &[base]);
+    let bob = w.account(2, &[base]);
     let ha = alice.listen(&["quic://alice:1".parse().unwrap()]).unwrap().remove(0);
     w.run();
-    assert_eq!(alice.saved_peers().unwrap(), vec![ha.clone()]);
-    let g = group_of(&alice, alice.me(), alice.home(), &[]);
-    item(&alice, g, "x");
-    w.until(alice.wait_synced(osis::SyncScope::All), 1000, 30).unwrap();
+    let b = w.until(alice.import_contact(&bob.contact_card().unwrap()), 1000, 10).unwrap();
+    let g = group_of(&alice, alice.me(), alice.home(), &[ha]);
+    let mut tx = alice.write();
+    let t = tx.create_in(g, &[g]).unwrap();
+    tx.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str("x".into())).unwrap();
+    tx.commit().unwrap();
+    alice.grant(g, b, Role::Read, Default::default()).unwrap();
+    w.run();
+    w.until(bob.wait_synced(osis::SyncScope::Thing(g)), 1000, 30).unwrap();
+    assert_eq!(bob.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), Some(Value::Str("x".into())));
     let ai = w.index(&alice).unwrap();
     let s = w.host_of(ai).unwrap();
-    for l in [home_label(&alice), label_of(&alice, g)] {
-        assert!(hosted(&w, s).contains(&l), "served from her own store");
-    }
-    alice.remove_peer(&ha).unwrap();
-    assert_eq!(alice.saved_peers().unwrap(), vec![ha.clone()], "always a saved peer while it serves");
-    alice.set_serving(None).unwrap();
-    w.run();
-    assert_eq!(alice.saved_peers().unwrap(), vec![]);
+    assert!(hosted(&w, s).contains(&label_of(&alice, g)), "served from her own store");
 }
 
 /// A group whose first admin is `admin` (held by `db`), added to `within`, synced on `hosts`.
@@ -158,22 +152,14 @@ fn label_of(db: &Osis, g: Tid) -> LabelId {
     db.sync_engine(|s| s.labels().into_iter().find(|(x, _)| *x == g).map(|(_, l)| l.id)).expect("Alice reads it")
 }
 
-fn admitted(db: &Osis) -> BTreeSet<LabelId> {
-    match db.sync_engine(|s| s.host_config()).expect("hosting").admission {
-        Admission::Only(ids) => ids,
-        Admission::Open => panic!("own expected"),
-    }
-}
-
-/// Alice (serving under `own` on a test peer) and Bob, contacts both ways: (world, alice, bob,
-/// base peer, Alice's peer address, Alice's account as Bob knows it, Bob's as Alice knows it).
-fn own_pair(seed: u64) -> (World, Osis, Osis, usize, Address, Tid, Tid) {
+/// Alice (listening on a test peer) and Bob, contacts both ways: (world, alice, bob, base peer,
+/// Alice's peer address, Alice's account as Bob knows it, Bob's as Alice knows it).
+fn pair(seed: u64) -> (World, Osis, Osis, usize, Address, Tid, Tid) {
     let mut w = World::new();
     let base = w.add_host();
     let alice = w.account(seed * 2 + 1, &[base]);
     let bob = w.account(seed * 2 + 2, &[base]);
     w.run();
-    alice.set_serving(Some(Serving { admit: Admit::Own, ..Default::default() })).unwrap();
     let ha = alice.listen(&["quic://alice:1".parse().unwrap()]).unwrap().remove(0);
     w.run();
     let (ca, cb) = (alice.contact_card().unwrap(), bob.contact_card().unwrap());
@@ -183,81 +169,6 @@ fn own_pair(seed: u64) -> (World, Osis, Osis, usize, Address, Tid, Tid) {
     (w, alice, bob, base, ha, a, b)
 }
 
-// spec/data-model.md §9 (`host^.0` `own`), spec/requirements.md Data a node cannot read: `own` admits
-// the groups whose record chain reaches Alice's account, not every group she reads. Bob, a contact,
-// grants her account read, then admin, and her node admin, on a group he owns that names her
-// peer: not admitted; nor a group under an actor of Bob's that Bob made her account admin of
-// (grants need no consent). A group under an actor her account owns is.
-#[test]
-fn own_admits_only_owned_groups_spec_data_model_9() {
-    let (mut w, alice, bob, base, ha, a, _) = own_pair(0);
-    let hosts = [w.addr(base).unwrap(), ha.clone()];
-
-    // Bob's group naming Alice's peer, Alice a reader: not hers
-    let x = group_of(&bob, bob.me(), bob.home(), &hosts);
-    bob.grant(x, a, Role::Read, Default::default()).unwrap();
-    w.run();
-    assert_eq!(alice.role_on(x).unwrap(), Some(Role::Read));
-    let lx = label_of(&alice, x);
-    assert!(!admitted(&alice).contains(&lx), "own: a group Alice only reads");
-
-    // nor when she co-administers it: Bob still owns it
-    bob.grant(x, a, Role::Admin, Default::default()).unwrap();
-    w.run();
-    assert_eq!(alice.role_on(x).unwrap(), Some(Role::Admin));
-    assert!(!admitted(&alice).contains(&lx), "own: a group Bob owns that Alice co-administers");
-    for _ in 0..3 {
-        w.advance(120_000);
-    }
-    let ai = w.index(&alice).unwrap();
-    let s = w.host_of(ai).unwrap();
-    assert!(!hosted(&w, s).contains(&lx), "own: refused at registration");
-
-    // an actor Bob made and made Alice's account admin of: still Bob's
-    let fam = group_of(&bob, bob.me(), bob.home(), &[]);
-    bob.grant(fam, a, Role::Admin, Default::default()).unwrap();
-    let shared = group_of(&bob, fam, fam, &hosts);
-    w.run();
-    let ls = label_of(&alice, shared);
-    assert!(!admitted(&alice).contains(&ls), "own: owned by an actor Bob made Alice's account admin of");
-
-    // her own group naming her peer, and one under an actor she owns
-    let mine = group_of(&alice, alice.me(), alice.home(), &hosts);
-    let y = group_of(&alice, alice.me(), alice.home(), &[]);
-    let under = group_of(&alice, y, y, &hosts);
-    w.run();
-    let got = admitted(&alice);
-    assert!(got.contains(&label_of(&alice, mine)), "own: Alice's own group");
-    assert!(got.contains(&label_of(&alice, under)), "own: under an actor Alice's account owns");
-    // a driver's start (`host_restart`; the World's runtime never restarts one) keeps the account
-    alice.sync_engine(|s| s.host_restart());
-    assert!(admitted(&alice).contains(&label_of(&alice, mine)), "own: the account kept across a driver restart");
-}
-
-// spec/data-model.md §9 (`host^.0` `own`, record edges standing at the node): Alice makes Y and
-// G under Y naming her peer; Bob, admin of Y by her grant, gives her account a read grant on G
-// and removes her record edge on Y. She still reads G, but its record chain reaches her only
-// through the cut edge: no longer admitted.
-#[test]
-fn own_stops_at_a_cut_record_edge_spec_data_model_9() {
-    let (mut w, alice, bob, base, ha, a, b) = own_pair(5);
-    let hosts = [w.addr(base).unwrap(), ha.clone()];
-    let y = group_of(&alice, alice.me(), alice.home(), &[]);
-    let g = group_of(&alice, y, y, &hosts);
-    alice.grant(y, b, Role::Admin, Default::default()).unwrap();
-    w.run();
-    let lg = label_of(&alice, g);
-    assert!(admitted(&alice).contains(&lg), "own: under an actor Alice's account made");
-    bob.grant(g, a, Role::Read, Default::default()).unwrap();
-    w.run();
-    bob.set_role(y, a, None, Default::default()).unwrap();
-    w.run();
-    w.advance(70_000);
-    assert_eq!(alice.role_on(y).unwrap(), None, "her record edge on Y is gone");
-    assert_eq!(alice.role_on(g).unwrap(), Some(Role::Read), "she still reads G");
-    assert!(!admitted(&alice).contains(&label_of(&alice, g)), "own: a cut record edge on the way up");
-}
-
 // spec/sync.md §3 (the nearest home label up a group's chain carries its `label.0` and
 // `created.0`), spec/commits.md §4: Bob, granted a parent group after a labeled child group was made
 // under it, has neither the child's record nor its label's key. The copy under the parent's label,
@@ -265,126 +176,13 @@ fn own_stops_at_a_cut_record_edge_spec_data_model_9() {
 // its role with no direct grant.
 #[test]
 fn home_label_copy_reaches_the_labeled_child_spec_sync_3() {
-    let (mut w, alice, bob, base, ha, _a, b) = own_pair(6);
+    let (mut w, alice, bob, base, ha, _a, b) = pair(6);
     let hosts = [w.addr(base).unwrap(), ha.clone()];
     let y = group_of(&alice, alice.me(), alice.me(), &[]);
     let g = group_of(&alice, y, y, &hosts);
     alice.grant(y, b, Role::Admin, Default::default()).unwrap();
     w.run();
     assert_eq!(bob.role_on(g).unwrap(), Some(Role::Admin));
-}
-
-// spec/data-model.md §9 (`host^.0` `own`): the invariant (`SyncEngine::owns`) over random record and grant graphs: Alice
-// admits exactly the groups she reads that name her peer and whose record chain (no record
-// edge is removed here) reaches her account, whatever read or admin grants Bob gives her account or node, or she gives
-// Bob (who then creates under her actors). Seeds picked so each fails with the rule that also
-// counted admin grants (on the group, or on a first admin above it).
-#[test]
-fn own_admits_record_chain_random_0_spec_data_model_9() {
-    own_random(2);
-}
-
-// spec/data-model.md §9: as above, another seed.
-#[test]
-fn own_admits_record_chain_random_1_spec_data_model_9() {
-    own_random(3);
-}
-
-// spec/data-model.md §9: as above, another seed.
-#[test]
-fn own_admits_record_chain_random_2_spec_data_model_9() {
-    own_random(7);
-}
-
-fn own_random(seed: u64) {
-    {
-        let (mut w, alice, bob, base, ha, a, b) = own_pair(10 + seed);
-        let (plain, named) = (vec![w.addr(base).unwrap()], vec![w.addr(base).unwrap(), ha.clone()]);
-        let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-        let mut next = move |n: usize| {
-            rng ^= rng << 13;
-            rng ^= rng >> 7;
-            rng ^= rng << 17;
-            (rng % n as u64) as usize
-        };
-        // created groups: first admin, whether they name Alice's peer
-        let mut first: std::collections::BTreeMap<Tid, Tid> = Default::default();
-        // the setup's groups (her home, both contact cards' profile and link groups): Bob's are
-        // the ones he admins; hers follow her saved peers, her own serving address among them
-        let setup: std::collections::BTreeMap<Tid, Tid> = alice.sync_engine(|s| s.labels().into_iter().map(|(g, _)| g).collect::<BTreeSet<_>>()).into_iter().filter(|g| *g != alice.me()).map(|g| (g, if bob.role_on(g).unwrap() == Some(Role::Admin) { bob.me() } else { alice.me() })).collect();
-        let mut names: BTreeSet<Tid> = std::iter::once(alice.me()).chain(setup.iter().filter(|(_, o)| **o == alice.me()).map(|(g, _)| *g)).collect();
-        // direct admin grants given to Bob's account (by Alice)
-        let mut bob_admin: BTreeSet<Tid> = BTreeSet::new();
-        let mut granted: BTreeSet<(Tid, Tid)> = BTreeSet::new();
-        let chain = |first: &std::collections::BTreeMap<Tid, Tid>, g: Tid| std::iter::successors(Some(g), |t| first.get(t).copied()).collect::<Vec<_>>();
-        let mut ops = Vec::new();
-        for _ in 0..10 {
-            let groups: Vec<Tid> = first.keys().copied().collect();
-            let op = [0, 0, 1, 1, 2, 2, 2, 4][next(8)];
-            let hosts = if next(2) == 0 { &plain } else { &named };
-            match op {
-                // Alice creates under her account or one of her own groups
-                0 => {
-                    let mine: Vec<Tid> = std::iter::once(alice.me()).chain(groups.iter().copied().filter(|g| chain(&first, *g).contains(&alice.me()))).collect();
-                    let o = mine[next(mine.len())];
-                    let g = group_of(&alice, o, if o == alice.me() { alice.me() } else { o }, hosts);
-                    first.insert(g, o);
-                    if hosts.len() > 1 {
-                        names.insert(g);
-                    }
-                    ops.push(format!("alice creates {g:?} under {o:?} named {}", hosts.len() > 1));
-                }
-                // Bob creates under his account or a group he admins
-                1 => {
-                    let his: Vec<Tid> = std::iter::once(bob.me()).chain(groups.iter().copied().filter(|g| chain(&first, *g).iter().any(|x| *x == bob.me() || bob_admin.contains(x)))).collect();
-                    let o = his[next(his.len())];
-                    if bob.role_on(o).unwrap() != Some(Role::Admin) {
-                        continue;
-                    }
-                    let g = group_of(&bob, o, if o == bob.me() { bob.me() } else { o }, hosts);
-                    first.insert(g, o);
-                    if hosts.len() > 1 {
-                        names.insert(g);
-                    }
-                    ops.push(format!("bob creates {g:?} under {o:?} named {}", hosts.len() > 1));
-                }
-                // Bob grants Alice's account read or admin on a group he admins
-                2 => {
-                    let his: Vec<Tid> = groups.iter().copied().filter(|g| bob.role_on(*g).unwrap() == Some(Role::Admin)).collect();
-                    if his.is_empty() {
-                        continue;
-                    }
-                    let g = his[next(his.len())];
-                    let (who, role) = if next(2) == 0 { (a, Role::Read) } else { (a, Role::Admin) };
-                    // one grant per holder: a change down would lower a role
-                    if !granted.insert((g, who)) {
-                        continue;
-                    }
-                    bob.grant(g, who, role, Default::default()).unwrap();
-                    ops.push(format!("bob grants {who:?} {role:?} on {g:?}"));
-                }
-                // Alice grants Bob's account admin on one of her groups
-                _ => {
-                    let mine: Vec<Tid> = groups.iter().copied().filter(|g| chain(&first, *g).contains(&alice.me())).collect();
-                    if mine.is_empty() {
-                        continue;
-                    }
-                    let g = mine[next(mine.len())];
-                    if !bob_admin.insert(g) {
-                        continue;
-                    }
-                    alice.grant(g, b, Role::Admin, Default::default()).unwrap();
-                    ops.push(format!("alice grants bob admin on {g:?}"));
-                }
-            }
-            w.run();
-        }
-        let reads: Vec<(Tid, LabelId)> = alice.sync_engine(|s| s.labels().into_iter().map(|(g, l)| (g, l.id)).collect());
-        first.extend(setup);
-        let got = admitted(&alice);
-        let want: BTreeSet<LabelId> = reads.iter().filter(|(g, _)| names.contains(g) && chain(&first, *g).contains(&alice.me())).map(|(_, l)| *l).collect();
-        assert_eq!(got, want, "seed {seed}: ops {ops:#?}");
-    }
 }
 
 /// Waits (up to 30 s) for `f` to hold.
@@ -396,14 +194,14 @@ fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
     }
 }
 
-/// The labels in the serving store at `dir` (the node closed).
+/// The labels the store at `dir` keeps for others (the node closed): not those it reads.
 fn host_store_labels(dir: &std::path::Path) -> Vec<LabelId> {
     let b = osis_store::RedbBackend::open(&dir.join("host.redb")).unwrap();
     let r = osis_store::FileRoot::new(dir.join("host.root"));
     let s = osis_store::Store::open(Box::new(b), Box::new(r), osis_store::StoreConfig::default()).unwrap();
     let clock: std::sync::Arc<dyn osis::internals::Clock> = std::sync::Arc::new(osis_base::SystemClock);
     let h = osis_host::HostStore::open(s, clock, osis_host::HostPolicy::default(), Box::new(osis_crypto::OsRng)).unwrap();
-    h.labels_after(None, 1000).unwrap()
+    h.labels_after(None, 1000).unwrap().into_iter().filter(|l| !h.reads(l)).collect()
 }
 
 // spec/data-model.md §9 (`host^.0` absent: it does not serve), spec/requirements.md Deletion,
@@ -425,28 +223,40 @@ fn stop_serving_drops_what_it_kept_spec_data_model_9() {
         }
         c
     };
-    let kept = |db: &Osis| db.sync_engine(|s| s.hub_store().lock().unwrap().labels_after(None, 1000).unwrap());
+    let kept = |db: &Osis| {
+        db.sync_engine(|s| {
+            let h = s.hub_store();
+            let h = h.lock().unwrap();
+            h.labels_after(None, 1000).unwrap().into_iter().filter(|l| !h.reads(l)).collect::<Vec<_>>()
+        })
+    };
     let hosting = || Some(Serving { admit: Admit::Open, ..Default::default() });
     let listen = |db: &Osis| db.listen(&["mem://e".parse().unwrap()]).unwrap().remove(0);
 
-    // serving, with the home label and another node's registered there
+    // another node's home label, registered at `addr`
+    let theirs = |seed: u64, addr: &Address| {
+        let mut c = osis::internals::Opening::at(osis::Store::Memory(osis::MemStore::new()));
+        c.app.internals.seed = Some(seed);
+        c.direct_sync = false;
+        c.runtime = osis::Runtime::Own;
+        c.app.internals.transport = Some(net.endpoint(&format!("other{seed}")));
+        let other = osis::internals::create(c).unwrap();
+        other.add_peer(addr).unwrap();
+        common::block_on(other.wait_synced(osis::SyncScope::All)).unwrap();
+        let l = home_label(&other);
+        assert_eq!(other.close().unwrap(), osis::Close::Closed);
+        l
+    };
+
+    // serving, with another node's label registered there (its own home label it reads: never
+    // kept for others)
     let db = osis::internals::create(at(1, true)).unwrap();
     db.set_serving(hosting()).unwrap();
     let addr = listen(&db);
-    db.add_peer(&addr).unwrap();
-    common::block_on(db.wait_synced(osis::SyncScope::All)).unwrap();
+    let l = theirs(100, &addr);
+    assert_eq!(kept(&db), vec![l]);
     let home = home_label(&db);
-    let mut c = osis::internals::Opening::at(osis::Store::Memory(osis::MemStore::new()));
-    c.app.internals.seed = Some(100);
-    c.direct_sync = false;
-    c.runtime = osis::Runtime::Own;
-    c.app.internals.transport = Some(net.endpoint("other"));
-    let other = osis::internals::create(c).unwrap();
-    other.add_peer(&addr).unwrap();
-    common::block_on(other.wait_synced(osis::SyncScope::All)).unwrap();
-    let theirs = home_label(&other);
-    assert_eq!(other.close().unwrap(), osis::Close::Closed);
-    assert_eq!(kept(&db).into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([home, theirs]));
+    assert!(db.sync_engine(|s| s.hub_store().lock().unwrap().labels_after(None, 1000).unwrap()).contains(&home));
 
     // stopped on a running driver: what it kept goes, the store stays
     db.set_serving(None).unwrap();
@@ -458,13 +268,14 @@ fn stop_serving_drops_what_it_kept_spec_data_model_9() {
     // stopped with no driver running: the next driver start drops it
     let db = osis::internals::open(at(5, true)).unwrap();
     db.set_serving(hosting()).unwrap();
-    listen(&db);
-    wait_for("the home label kept", || kept(&db) == vec![home]);
+    let addr = listen(&db);
+    let l = theirs(101, &addr);
+    wait_for("their label kept", || kept(&db) == vec![l]);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     let db = osis::internals::open(at(6, false)).unwrap();
     db.set_serving(None).unwrap();
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
-    assert_eq!(host_store_labels(&dir), vec![home]);
+    assert_eq!(host_store_labels(&dir), vec![l]);
     let db = osis::internals::open(at(7, true)).unwrap();
     wait_for("what it kept dropped", || kept(&db).is_empty());
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
@@ -487,11 +298,11 @@ fn own_runtime_close_frees_serving_store() {
         c.app.internals.transport = Some(net.endpoint(&format!("o{i}")));
         c
     };
-    // its own home served from its own store: a store that could not open admits nothing
+    // its own home served from its own store, open
     let served = |db: &Osis| {
         db.listen(&["mem://o".parse().unwrap()]).unwrap();
-        let home = db.home();
-        wait_for("served", || db.status().unwrap().groups.get(&home).is_some_and(|g| g.state == osis::SyncState::Synced));
+        let home = home_label(db);
+        wait_for("served", || db.sync_engine(|s| s.hub_store().lock().unwrap().labels_after(None, 1000).unwrap()).contains(&home));
     };
     let db = osis::internals::create(at(0)).unwrap();
     db.set_serving(Some(Serving { admit: Admit::Open, ..Default::default() })).unwrap();

@@ -684,8 +684,10 @@ impl World {
 
     fn hub_out(&mut self, s: usize, out: Vec<HubOutput>) {
         let mut ups = Vec::new();
+        let mut moved = false;
         for o in out {
             match o {
+                HubOutput::Moved => moved = true,
                 HubOutput::Send(hc, bytes) => {
                     if let Some((d, c)) = self.link_of(s, hc) {
                         self.send_msg(Msg::ToDb(d, c, bytes));
@@ -703,7 +705,7 @@ impl World {
         }
         // node sync above the hub of a node, by function call as the node's driver does
         let node = self.hosts.get(s).and_then(|h| h.node);
-        if let Some(d) = node.filter(|_| !ups.is_empty()) {
+        if let Some(d) = node.filter(|_| moved || !ups.is_empty()) {
             self.with(d, |db| db.feed(Event::Hub { ups }));
         }
     }

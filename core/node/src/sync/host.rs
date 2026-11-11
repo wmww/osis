@@ -1,17 +1,16 @@
 //! Hosting (notes/serving.md, Hosting in the node): the node reads its own `host^.0`
 //! (spec/data-model.md §9) and hands its driver a `HostConfig` (`Action::Host`), public data
-//! only: the admitted label IDs (`own`: the labels of groups whose standing record chain reaches
-//! this node or its person and whose hosts name its key, plus `labels`), replication peers,
-//! policy and caps. The hub's store is the node's for good (`hub_store`); hosting stopping drops
-//! the labels it kept for others. The hub serves on the node's own listeners, under its one key.
+//! only: which sync IDs it stores for others (`open`, or `labels`), replication peers, policy and
+//! caps. The sync IDs it reads are node sync's whatever that says (`osis_host`'s `reader_*`). The
+//! hub's store is the node's for good (`hub_store`); hosting stopping drops the labels it kept for
+//! others. The hub serves on the node's own listeners, under its one key.
 
 use super::{Action, SyncEngine};
-use osis_base::{LabelId, Tid};
 use osis_host::{Admission, HostConfig, HostPolicy, HostStore, LabelCaps};
 use std::sync::{Arc, Mutex};
 use osis_label::Address;
 use osis_schema::core_types::{self as ct, Admit};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 /// The node's one store (the hub's, `HostStore`) over `store`, admitting nothing under the
 /// default policy until `host^.0` says otherwise: the engine's ciphertext store
@@ -85,36 +84,16 @@ impl SyncEngine {
         self.engine.get_typed(&me, &ct::HOST).ok().flatten()
     }
 
-    /// Whether group `g` is this node's own for `own` admission (spec/data-model.md §9): its
-    /// record chain reaches the node or its account through standing record edges
-    /// (`Core::standing_chain`), so an account removed from a group it made stops hosting it.
-    /// Invariant: no role edge but a record edge counts, on `g` or on any thing above it, held
-    /// by the node or the account: a stranger may grant either one admin without consent, and
-    /// must not make this node spend its storage that way (the inbox accept step's principle).
-    /// Record links are fixed by the creation record (the tid commits to it); anyone may mint a
-    /// record naming the account as first admin, but the group's `label.0` takes admin on it,
-    /// which that chain gives only the account's admins (or whom they granted).
-    fn owns(&self, g: &Tid) -> bool {
-        let (node, account) = (self.engine.tid(), self.engine.account_tid());
-        self.engine.core.standing_chain(g).into_iter().any(|x| x == node || Some(x) == account)
-    }
-
     /// What the host runs with now: from `host^.0` (none: not hosting).
     pub fn host_config(&mut self) -> Option<HostConfig> {
         let h = self.hosting()?;
-        let key = self.dialable_key();
         let (policy, unknown) = host_policy_known(&h.policy);
         if !unknown.is_empty() {
             self.diag(format!("host^.0 policy: limits not run by, the defaults apply: {unknown:?}"));
         }
         let admission = match h.admit {
             Admit::Open => Admission::Open,
-            Admit::Own => {
-                let mut ids: BTreeSet<LabelId> = h.labels.clone();
-                let labels = self.labels();
-                ids.extend(labels.iter().filter(|(g, l)| l.hosts.iter().any(|a| a.key == key) && self.owns(g)).map(|(_, l)| l.id));
-                Admission::Only(ids)
-            }
+            Admit::Listed => Admission::Only(h.labels),
         };
         Some(HostConfig {
             admission,
@@ -139,8 +118,7 @@ impl SyncEngine {
         }
     }
 
-    /// The driver starts afresh: the next step hands it the host config again. The person
-    /// stays (the app set it before the driver started).
+    /// The driver starts afresh: the next step hands it the host config again.
     pub fn host_restart(&mut self) {
         self.hosting = Hosting::default();
     }

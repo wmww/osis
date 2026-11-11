@@ -154,7 +154,10 @@ impl Engine {
     /// opened as osis-label does. Shredding tests.
     #[doc(hidden)]
     pub fn forensic(&mut self, backend: &osis_store::MemoryBackend, blobs: &osis_store::MemoryBackend) -> Result<Vec<osis_store::Recovered>> {
-        let mut ev = osis_store::Evidence::of(self.store.forensic_keys()?, backend);
+        // the one store: the engine's and its ciphertext store's (the hub's, its entry rows)
+        let mut keys = self.store.forensic_keys()?;
+        keys.extend(self.blobs.begin().forensic_keys()?);
+        let mut ev = osis_store::Evidence::of(keys, backend);
         ev.rows.extend(blobs.history());
         ev.blobs.extend(blobs.blob_history());
         let tids: std::collections::BTreeSet<Tid> = self.all_aspects()?.into_iter().map(|(t, _)| t).collect();

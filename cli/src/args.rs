@@ -560,7 +560,7 @@ pub enum ServingCmd {
 /// once as `''` clears it.
 #[derive(clap::Args, Debug, Default)]
 pub struct ServingFlags {
-    /// Which groups this node takes: its own (made under it or its account) naming its address, or any
+    /// Which groups this node stores for others: those --admitted names, or any (it serves the groups it reads either way)
     #[arg(long, value_enum)]
     pub admit: Option<AdmitArg>,
     /// Also admit a group (one synced here) or a sync ID, 32 hex digits (repeatable)
@@ -645,7 +645,7 @@ pub enum ChatCmd {
         /// A kicked participant erases what it holds, unless the kick says otherwise
         #[arg(long)]
         no_retain_copy: bool,
-        /// Who it syncs with (default: the store's saved peers); another account's serving node must admit it (`admit own` takes only the maker's)
+        /// Who it syncs with (default: the store's saved peers); a serving node that does not read the group must admit it
         #[arg(long, value_name = "ADDR")]
         peer: Vec<String>,
     },
@@ -809,6 +809,6 @@ pub enum ScriptCmd {
 /// `--admit`.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdmitArg {
-    Own,
+    Listed,
     Open,
 }

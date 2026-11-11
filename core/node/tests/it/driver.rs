@@ -51,7 +51,7 @@ fn read(s: &mut SyncEngine, t: Tid) -> Option<Value> {
 }
 
 /// Two nodes of one group under the tokio driver converge through a's host (notes/serving.md,
-/// The hub in the node): a's `host^.0` has `own` admission, a listens at `url` under its one key,
+/// The hub in the node): a's `host^.0` admits nothing for others, a listens at `url` under its one key,
 /// and the group's label names that address. b is served from a's host store; a's own copy
 /// reaches its hub over the in-process loopback (`cut` then cuts a's transport from itself, so
 /// nothing else could).
@@ -62,14 +62,14 @@ async fn converge<T: Transport>(url: &str, a_ep: T, b_ep: T, cut: impl FnOnce())
     let b = net.add_node(2, Default::default());
     let me = net.node_tid(a);
     let mut m = osis_node::Mutation::new();
-    m.replace(me, &ct::HOST, &ct::Host { admit: ct::Admit::Own, ..Default::default() }).unwrap();
+    m.replace(me, &ct::HOST, &ct::Host { admit: ct::Admit::Listed, ..Default::default() }).unwrap();
     net.engine(a).commit(m).unwrap();
     let key = net.sync(a).dialable_key();
     let addr = Address { url: url.into(), key };
     let g = net.group_at(a, &[(b, Role::Write)], vec![addr.clone()]);
     let t = net.item(a, g, g, "first");
-    let l = net.label(a);
-    assert_eq!(net.sync(a).host_config().unwrap().admission, osis_host::Admission::Only([l].into()), "own: the label naming this host");
+    // a reads the label: served from its one store with nothing admitted for others
+    assert_eq!(net.sync(a).host_config().unwrap().admission, osis_host::Admission::Only(Default::default()));
     cut();
     let brx = net.engine(b).subscribe();
     let (sa, sb) = (net.take(a), net.take(b));

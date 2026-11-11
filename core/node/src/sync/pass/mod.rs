@@ -740,7 +740,7 @@ impl SyncEngine {
 
     /// Drops the bytes of a blob whose entry under a label synced with nobody went: a commit
     /// blob's record and bytes once no entry names it, any other blob's bytes likewise.
-    fn forget_entry_blob(&mut self, id: &BlobId) -> Result<()> {
+    pub(crate) fn forget_entry_blob(&mut self, id: &BlobId) -> Result<()> {
         if self.state.named(id) {
             return Ok(());
         }

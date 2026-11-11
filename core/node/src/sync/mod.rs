@@ -497,13 +497,8 @@ impl SyncEngine {
             // a forgetting a crash interrupted before its inbox check
             s.forget_inbox()?;
             // entries the hub's store holds that the engine's store never committed
-            let mut rederived: BTreeMap<LabelId, Vec<osis_base::BlobId>> = BTreeMap::new();
-            for (l, b) in std::mem::take(&mut s.state.rederived) {
-                rederived.entry(l).or_default().push(b);
-            }
-            for (l, bs) in rederived {
-                s.open_entries(None, l, &bs)?;
-            }
+            let rederived = std::mem::take(&mut s.state.rederived);
+            s.take_hub_changes(rederived)?;
             s.reopen_undropped(None)?;
             s.reopen_all_awaiting();
             // the keys and ciphertexts of bodies the engine dropped before a crash cut this layer
@@ -519,6 +514,29 @@ impl SyncEngine {
 
     pub fn engine(&self) -> &Engine {
         &self.engine
+    }
+
+    /// Applies the hub's changes to the sync IDs this node reads (`State::hub_changes`).
+    fn hub_changed(&mut self) -> Result<()> {
+        let c = self.state.hub_changes(&mut self.engine)?;
+        self.take_hub_changes(c)
+    }
+
+    /// Opens entries derived from the hub's rows, their bytes held, and forgets the blobs of
+    /// those dropped.
+    fn take_hub_changes(&mut self, c: state::HubChanges) -> Result<()> {
+        for b in &c.gone {
+            self.forget_entry_blob(b)?;
+        }
+        let mut by: BTreeMap<LabelId, Vec<osis_base::BlobId>> = BTreeMap::new();
+        for (l, b) in c.derived {
+            by.entry(l).or_default().push(b);
+        }
+        for (l, bs) in by {
+            self.open_entries(None, l, &bs)?;
+            self.touched.blobs.extend(bs);
+        }
+        Ok(())
     }
 
     /// The engine, for local writes; follow with `handle(Event::Local)`.
@@ -602,6 +620,12 @@ impl SyncEngine {
         if matches!(ev, Event::Tick) {
             self.wake = None;
             self.last_tick = self.now();
+        }
+        // what the hub changed of the sync IDs this node reads (others' uploads, its sweep)
+        if self.hub_store.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take_moved()
+            && let Err(e) = self.hub_changed()
+        {
+            self.diag(format!("the hub's changes: {e}"));
         }
         let mut ok = self.settled_step(ev, &mut out);
         // what the passes marked (a refetch applied commits, an admin recorded a step) passes now,

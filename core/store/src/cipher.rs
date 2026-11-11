@@ -62,6 +62,9 @@ pub trait CipherTx {
     fn unnote(&mut self, seq: u64) -> Result<(), Error>;
     /// Makes this transaction's writes durable.
     fn commit(&mut self) -> Result<(), Error>;
+    /// Tests only: every key the store's tree yields (`Store::forensic_keys`).
+    #[doc(hidden)]
+    fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>, Error>;
     /// The store itself, for a holder that knows its type (node sync and the hub's store).
     fn any(&mut self) -> &mut dyn Any;
 }
@@ -87,6 +90,9 @@ pub trait CipherHost: Send + Any {
     fn local(&mut self, f: &mut dyn FnMut(&mut crate::Transaction<'_>) -> Result<(), Error>) -> Result<(), Error>;
     fn commit(&mut self) -> Result<(), Error>;
     fn abort(&mut self);
+    /// Tests only: every key the store's tree yields, its open writes committed first.
+    #[doc(hidden)]
+    fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>, Error>;
     /// Tests only: an exact copy, on `clock` where it keeps time.
     #[doc(hidden)]
     fn test_copy(&self, clock: Arc<dyn osis_base::Clock>) -> Result<Self, Error>
@@ -190,6 +196,9 @@ impl<T: CipherHost> CipherTx for HostTx<'_, T> {
         self.done = true;
         self.g.commit()
     }
+    fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>, Error> {
+        self.g.forensic_keys()
+    }
     fn any(&mut self) -> &mut dyn Any {
         &mut *self.g
     }
@@ -292,6 +301,11 @@ impl CipherHost for BlobArea {
     fn abort(&mut self) {
         // a suspended transaction dropped aborts
         self.open = None;
+    }
+
+    fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>, Error> {
+        self.commit()?;
+        self.store.forensic_keys()
     }
 
     fn test_copy(&self, _clock: Arc<dyn osis_base::Clock>) -> Result<BlobArea, Error> {

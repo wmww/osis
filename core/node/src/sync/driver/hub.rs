@@ -166,12 +166,14 @@ pub(super) struct HubRun {
     ev: mpsc::UnboundedSender<HubEv>,
     /// What the hub handed up for node sync, not yet fed to it.
     ups: Vec<(ConnId, Up)>,
+    /// The hub changed a sync ID node sync reads (`HubOutput::Moved`): fed as an `Event::Hub`.
+    moved: bool,
 }
 
 impl HubRun {
     pub fn new(hub: Hub, clock: Arc<dyn Clock>, log: Log, ev: mpsc::UnboundedSender<HubEv>) -> HubRun {
         let slots = link::Slots::new(hub.store().policy().max_connections);
-        HubRun { cfg: None, hub, own: None, next: 1, conns: HashMap::new(), turns: Turns::default(), parked: Default::default(), slots, groups: HashMap::new(), next_group: 1, repl: Vec::new(), repl_run: 0, at: None, clock, log, ev, ups: Vec::new() }
+        HubRun { cfg: None, hub, own: None, next: 1, conns: HashMap::new(), turns: Turns::default(), parked: Default::default(), slots, groups: HashMap::new(), next_group: 1, repl: Vec::new(), repl_run: 0, at: None, clock, log, ev, ups: Vec::new(), moved: false }
     }
 
     /// Serves the sessions `listeners` accept, under their key `key`; returns their group.
@@ -244,6 +246,11 @@ impl HubRun {
     /// What the hub handed up since the last call, for node sync (`Event::Hub`).
     pub fn take_ups(&mut self) -> Vec<(ConnId, Up)> {
         std::mem::take(&mut self.ups)
+    }
+
+    /// Whether the hub changed a sync ID node sync reads since the last ask.
+    pub fn take_moved(&mut self) -> bool {
+        std::mem::take(&mut self.moved)
     }
 
     /// Node sync's messages, answers, room requests and closes for the hub's connections; its
@@ -381,6 +388,7 @@ impl HubRun {
                 HubOutput::Close(id) => self.drop_conn(id),
                 HubOutput::Diagnostic(d) => (self.log)(&d),
                 HubOutput::Up(id, up) => self.ups.push((id, up)),
+                HubOutput::Moved => self.moved = true,
             }
         }
         for id in self.hub.take_resumed() {

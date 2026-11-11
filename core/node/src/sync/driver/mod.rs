@@ -689,7 +689,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 self.hub.down(downs);
             }
             self.hub_ups.extend(self.hub.take_ups());
-            if self.hub_ups.is_empty() {
+            if self.hub_ups.is_empty() && !self.hub.take_moved() {
                 return;
             }
             let ups = std::mem::take(&mut self.hub_ups);

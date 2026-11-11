@@ -1410,7 +1410,7 @@ fn serve(ctx: &mut Ctx<'_>, serving: ServingFlags, listen: &[String]) -> anyhow:
 }
 
 /// Sets the terms of serving: each flag given replaces its field (one `''` clears it), the rest kept;
-/// starts serving (`own`) when it was off.
+/// starts serving (`listed`) when it was off.
 fn set_serving(ctx: &mut Ctx<'_>, f: ServingFlags) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     let mut h = db.serving()?.unwrap_or_default();
@@ -1418,7 +1418,7 @@ fn set_serving(ctx: &mut Ctx<'_>, f: ServingFlags) -> anyhow::Result<()> {
     let given = |v: &[String]| (!v.is_empty()).then(|| v.iter().filter(|x| !(v.len() == 1 && x.is_empty())).cloned().collect::<Vec<_>>());
     if let Some(a) = f.admit {
         h.admit = match a {
-            AdmitArg::Own => osis::Admit::Own,
+            AdmitArg::Listed => osis::Admit::Listed,
             AdmitArg::Open => osis::Admit::Open,
         };
     }
@@ -1480,12 +1480,12 @@ fn clients(ctx: &mut Ctx<'_>, c: &ClientsCmd) -> anyhow::Result<()> {
     }
 }
 
-/// The terms of serving as lines (`admit own|open`, `admitted ID`, `replicate ADDR`, `policy NAME N`,
+/// The terms of serving as lines (`admit listed|open`, `admitted ID`, `replicate ADDR`, `policy NAME N`,
 /// `cap ID ENTRIES BYTES`) or one JSON object; exit 3 when not serving.
 fn serving_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     let h = ctx.db.serving()?.ok_or_else(|| exit(3, "not serving"))?;
     let admit = match h.admit {
-        osis::Admit::Own => "own",
+        osis::Admit::Listed => "listed",
         osis::Admit::Open => "open",
     };
     let mut lines = vec![format!("admit {admit}")];

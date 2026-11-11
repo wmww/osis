@@ -216,11 +216,10 @@ codec_struct! {
     pub struct Reach { 0 dialable: [u8; 32], 1 items: Vec<String>, 2 lan_secret: [u8; 32], 3 account: Option<Tid> }
 }
 codec_enum! {
-    /// Which groups a serving node takes: `Own`, groups whose record chain reaches the node or its
-    /// account and that name its serving address (a group it only reads or administers by a grant is
-    /// not one); `Open`, any group within the caps.
+    /// Which groups a serving node stores for others (it serves the groups it reads whatever this
+    /// says): `Listed`, those `labels` names; `Open`, any group within the caps.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub enum Admit { #[default] 0 Own, 1 Open }
+    pub enum Admit { #[default] 0 Listed, 1 Open }
 }
 codec_struct! {
     /// One group's limits at a serving node, in place of its policy's.

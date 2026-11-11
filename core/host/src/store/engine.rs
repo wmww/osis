@@ -81,6 +81,10 @@ impl CipherHost for HostStore {
         self.durable().map_err(|_| Error::Broken)
     }
 
+    fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>, Error> {
+        self.store_mut().map_err(store_err)?.forensic_keys()
+    }
+
     fn abort(&mut self) {
         self.lazy = false;
         self.failed = None;

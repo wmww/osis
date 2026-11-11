@@ -137,9 +137,10 @@ impl ServingPolicy {
 /// (`Osis::add_peer`): a node with no stable address cannot be reached this way yet.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Serving {
-    /// Which groups it takes, beside `admitted`.
+    /// Which groups it stores for others: `Listed`, those in `admitted`; `Open`, any. The groups it
+    /// reads it serves whatever this says.
     pub admit: Admit,
-    /// Groups it takes whatever `admit` says.
+    /// Groups it stores for others under `Admit::Listed`.
     pub admitted: BTreeSet<SyncId>,
     /// Other serving nodes it pushes what it stores to.
     pub replicate: Vec<Address>,
@@ -167,10 +168,8 @@ impl Osis {
         }))
     }
 
-    /// Starts, changes or (none) stops serving. While it serves and listens (`listen`), its first
-    /// address is one of its saved peers (`saved_peers`), so it syncs its own groups there with no
-    /// setup. Stopping erases what it stored for others, and its address from the saved peers: a
-    /// later start begins empty. Fails `Invalid` on a policy it cannot run by.
+    /// Starts, changes or (none) stops serving. Stopping erases what it stored for others: a later
+    /// start begins empty. Fails `Invalid` on a policy it cannot run by.
     pub fn set_serving(&self, serving: Option<Serving>) -> Result<()> {
         let node = self.node();
         let mut w = self.write();

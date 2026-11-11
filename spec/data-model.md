@@ -116,8 +116,8 @@ The core aspects form the core schema, evolving under spec/versioning.md. `schem
 - `purge.0`: the delta a purge request naming no aspect to reset carries (spec/commits.md §5).
 - `group.0`, `groups.0`: §8. `tag.0` marks a group as a user-facing tag (§8).
 - **`host^.0`** present: the node hosts (spec/sync.md §4). Absent: it does not, and keeps nothing for others (stopping drops what it kept, at the latest when the node next runs sync; a later start begins empty). Never placed under a label.
-  - `admit` `own`: it takes registrations of the labels of its account's own groups whose hosts name its key (spec/sync.md §10, One key), and of `labels`. Its account's own group: its account (the account it is a node of) is on the group's record chain (spec/permissions.md §1) through record edges that stand at the node; no other role edge, on the group or a thing above it, held by the account, qualifies. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5).
-  - `admit` `open`: it takes registrations of any label.
+  - `admit` `listed`: it takes registrations of the labels in `labels`. `admit` `open`: of any label.
+  - A label the node syncs (it reads the group, spec/sync.md §2) it stores and serves whatever `admit` says, `host^.0` present or not, and keeps when hosting stops (spec/sync.md §4).
   - `replicate`: peer hosts. `policy`, `caps`: local policy.
 - **`clients^.0`**: clients with an actor of their own, by client actor (spec/sync.md §10). Never placed under a label.
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.

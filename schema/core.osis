@@ -279,9 +279,9 @@ aspect reach.0: struct {
     account 3: option<tid>,
 };
 
-/// Which labels a host takes: its own account's groups, or anyone's.
+/// Which labels a host stores for others: those `labels` lists, or anyone's.
 type admit = enum {
-    own 0,
+    listed 0,
     open 1,
 };
 
@@ -294,7 +294,7 @@ type host_caps = struct {
 /// The device acts as a host, storing others' synced groups (spec/sync.md §4); absent: it does not.
 admin aspect host^.0: struct {
     admit 0: admit,
-    /// Label IDs (16 bytes) taken beyond what `admit` allows.
+    /// Label IDs (16 bytes) taken under `listed`.
     labels 1: set<blob>,
     /// Other hosts to copy to.
     replicate 2: list<address>,

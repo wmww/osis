@@ -815,6 +815,8 @@ pub struct HostStore {
     caps: BTreeMap<LabelId, LabelCaps>,
     /// The sync IDs node sync reads (`reader.rs`).
     read: BTreeSet<LabelId>,
+    /// Something other than node sync changed a sync ID it reads (`take_moved`).
+    moved: bool,
     /// Memory blobs the engine holds (`osis_store::CipherTx::hold` in memory): gone at a restart.
     engine_mem: HashMap<BlobId, Vec<u8>>,
 }
@@ -844,6 +846,7 @@ impl HostStore {
             caps: self.caps.clone(),
             engine_mem: self.engine_mem.clone(),
             read: self.read.clone(),
+            moved: self.moved,
         })
     }
 
@@ -864,7 +867,7 @@ impl HostStore {
         t.commit().map_err(err)?;
         let relays = osis_proto::RelayGate::default();
         let db = RefCell::new(Db { store, table, rng, open: None });
-        let mut s = HostStore { db, failed: None, seed, clock, policy: HostPolicy::default(), rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, admission: Admission::Open, caps: BTreeMap::new(), engine_mem: HashMap::new(), read: BTreeSet::new() };
+        let mut s = HostStore { db, failed: None, seed, clock, policy: HostPolicy::default(), rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, admission: Admission::Open, caps: BTreeMap::new(), engine_mem: HashMap::new(), read: BTreeSet::new(), moved: false };
         s.set_policy(policy);
         Ok(s)
     }
@@ -879,6 +882,55 @@ impl HostStore {
 
     /// Which labels new registrations are taken for, and per-label caps in place of the
     /// policy's (`HostConfig`).
+    /// Label `label`'s meta, or a fresh one (its log ID from the instance seed) and true.
+    fn meta_or_new(&self, label: &LabelId) -> Result<(Meta, bool), StoreError> {
+        Ok(match self.meta(label)? {
+            Some(m) => (m, false),
+            None => {
+                let h = osis_base::hash::hash(&[&self.seed[..], &label.0[..]].concat());
+                (Meta { log_id: read_arr(&h, 0)?, ..Meta::default() }, true)
+            }
+        })
+    }
+
+    /// Writes `step` as `label`'s new head with its claim set (`over`: taken past the cap, the
+    /// next such step waits `over_cap_step_ms`), into the open transaction.
+    fn put_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>, over: bool) -> Result<(), StoreError> {
+        let (meta, new) = self.meta_or_new(label)?;
+        let keys = match meta.head {
+            Some(_) => self.head_keys(label)?.ok_or_else(|| corrupt("head keys"))?.child(step.clone()),
+            None => HeadKeys::genesis(step.clone()),
+        };
+        let step_bytes = step.to_bytes();
+        let id = step.id();
+        let set_rows = claim_set.as_ref().map(|c| set_rows(label, &id, c));
+        let size = step_bytes.len() as u64 + set_rows.as_ref().map_or(0, rows_bytes);
+        let mut tx = Tx { label: *label, before: (meta.entries, meta.bytes, new), meta, batch: Writes::default() };
+        tx.meta.bytes = tx.meta.bytes.saturating_add(size);
+        if over {
+            tx.meta.over_cap_until = self.now().saturating_add(self.policy.over_cap_step_ms);
+        }
+        tx.batch.put(key(b'K', &[&label.0]), encode_older(&keys.older));
+        if let Some(prev) = tx.meta.head {
+            let drop = self.now().saturating_add(self.policy.claim_keep_ms.max(ROLE_KEEP_MS));
+            tx.batch.put(key(b'Z', &[&be(drop), &label.0, &prev.0]), vec![]);
+        }
+        tx.meta.head = Some(id);
+        tx.meta.head_claims = claim_set.as_ref().map_or(0, |c| c.claims.len() as u64);
+        tx.batch.put(key(b'S', &[&label.0, &id.0]), step_bytes);
+        tx.batch.put(key(b'V', &[&label.0, &step.keys.sync.to_bytes()]), id.0.to_vec());
+        tx.batch.put(key(b'W', &[&label.0, step.prev.as_ref().map_or(&[][..], |p| &p.0[..])]), id.0.to_vec());
+        if let Some((c, index)) = set_rows {
+            tx.batch.put(key(b'C', &[&label.0, &id.0]), c);
+            for (k, v) in index {
+                tx.batch.put(k, v);
+            }
+        }
+        tx.append(&LogRecord::Head(step));
+        tx.batch.log(Write::LogHead(*label, id));
+        self.finish(tx)
+    }
+
     pub fn set_admission(&mut self, admission: Admission, caps: BTreeMap<LabelId, LabelCaps>) {
         self.admission = admission;
         self.caps = caps;
@@ -1206,6 +1258,8 @@ impl HostStore {
         }
         let seq = tx.append(&LogRecord::Added(put.blob_id));
         let l = label.0;
+        // node sync alone expires an entry of a sync ID it reads (its pass removes the row)
+        let expiry = put.expiry.filter(|_| !self.reads(label));
         let row = match held {
             Some(old) => {
                 if old.meta.stamp.is_none() {
@@ -1221,7 +1275,7 @@ impl HostStore {
                     tx.meta.dep_n += 1;
                     tx.meta.dep_bytes = tx.meta.dep_bytes.saturating_add(size);
                 }
-                if let Some(t) = put.expiry {
+                if let Some(t) = expiry {
                     tx.batch.put(key(b'X', &[&be(t), &l, &put.blob_id.0]), vec![]);
                 }
                 let (refs, _) = self.refs(&put.blob_id)?;
@@ -1230,7 +1284,7 @@ impl HostStore {
                 }
                 let prefix = osis_label::prefix_bytes(put.blob);
                 tx.batch.put(key(b'R', &[&put.blob_id.0]), [&be(refs + 1)[..], prefix].concat());
-                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, size, add_seq: seq }, expiry: put.expiry }
+                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, size, add_seq: seq }, expiry }
             }
         };
         tx.batch.put(key(b'E', &[&l, &put.blob_id.0]), row.encode());
@@ -1351,6 +1405,7 @@ impl HostStore {
             tx.meta.records = tx.meta.records.saturating_sub(rows.len() as u64);
         }
         tx.batch.put(key(b'L', &[&tx.label.0]), tx.meta.encode());
+        self.moved |= self.read.contains(&tx.label);
         if let Some(s) = self.eph.seq.get_mut(&tx.label) {
             *s = (*s).max(tx.meta.next_seq);
         }
@@ -1789,6 +1844,11 @@ impl LabelStore for HostStore {
     }
 
     fn admit_label(&self, label: &LabelId) -> Result<Code, StoreError> {
+        // node sync's sync ID: its genesis comes from `label.0`, never first come (refused for
+        // now: node sync puts it)
+        if self.reads(label) {
+            return Ok(Code::RATE_LIMITED);
+        }
         if !self.admission.admits(label) {
             return Ok(Code::NOT_ADMITTED);
         }
@@ -1802,35 +1862,30 @@ impl LabelStore for HostStore {
     /// step kept without its set (past them even so: once per `over_cap_step_ms`);
     /// registrations are rate-limited per label.
     fn push_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>) -> Result<Code, StoreError> {
-        let (meta, new) = match self.meta(label)? {
-            Some(m) => (m, false),
-            None => {
-                let h = osis_base::hash::hash(&[&self.seed[..], &label.0[..]].concat());
-                (Meta { log_id: read_arr(&h, 0)?, ..Meta::default() }, true)
-            }
-        };
-        let keys = match meta.head {
-            Some(_) => self.head_keys(label)?.ok_or_else(|| corrupt("head keys"))?.child(step.clone()),
-            None => HeadKeys::genesis(step.clone()),
-        };
-        let step_bytes = step.to_bytes();
+        // node sync's sync IDs: no cap or rate (their steps come from `label.0`, a peer's
+        // registration only as a valid child of the head, `admit_label`)
+        if self.reads(label) {
+            self.put_step(label, step, claim_set, false)?;
+            return Ok(Code::OK);
+        }
+        let (meta, new) = self.meta_or_new(label)?;
         let id = step.id();
-        let mut set_rows = claim_set.as_ref().map(|c| set_rows(label, &id, c));
+        let set_bytes = claim_set.as_ref().map_or(0, |c| rows_bytes(&set_rows(label, &id, c)));
+        let step_bytes = step.to_bytes().len() as u64;
         let cap_bytes = self.label_caps(label).1;
         let fits = |n: u64, total: u64| meta.bytes.saturating_add(n) <= cap_bytes && total.saturating_add(n) <= self.policy.max_bytes;
         let total = self.totals()?.bytes;
-        let mut size = step_bytes.len() as u64 + set_rows.as_ref().map_or(0, rows_bytes);
+        let mut claim_set = claim_set;
         let mut over = false;
-        if !fits(size, total) {
+        if !fits(step_bytes + set_bytes, total) {
             // a new label is refused; a child step is taken without its claim set (a refused
             // rotation keeps a removed holder's open and write keys valid here), even past the
             // cap once per `over_cap_step_ms`, so the label's own admin alone spends that room
             if new {
                 return Ok(Code::STORAGE_CAP);
             }
-            set_rows = None;
-            size = step_bytes.len() as u64;
-            over = !fits(size, total);
+            claim_set = None;
+            over = !fits(step_bytes, total);
             // a wait longer than the interval (a clock set back, a shorter interval configured)
             // is over: a label never waits more than one interval
             let wait = meta.over_cap_until.saturating_sub(self.now());
@@ -1842,30 +1897,7 @@ impl LabelStore for HostStore {
         if !self.rates.take(label, Rate::Register, self.policy.registers) {
             return Ok(Code::RATE_LIMITED);
         }
-        let mut tx = Tx { label: *label, before: (meta.entries, meta.bytes, new), meta, batch: Writes::default() };
-        tx.meta.bytes = tx.meta.bytes.saturating_add(size);
-        if over {
-            tx.meta.over_cap_until = self.now().saturating_add(self.policy.over_cap_step_ms);
-        }
-        tx.batch.put(key(b'K', &[&label.0]), encode_older(&keys.older));
-        if let Some(prev) = tx.meta.head {
-            let drop = self.now().saturating_add(self.policy.claim_keep_ms.max(ROLE_KEEP_MS));
-            tx.batch.put(key(b'Z', &[&be(drop), &label.0, &prev.0]), vec![]);
-        }
-        tx.meta.head = Some(id);
-        tx.meta.head_claims = claim_set.as_ref().map_or(0, |c| c.claims.len() as u64);
-        tx.batch.put(key(b'S', &[&label.0, &id.0]), step_bytes);
-        tx.batch.put(key(b'V', &[&label.0, &step.keys.sync.to_bytes()]), id.0.to_vec());
-        tx.batch.put(key(b'W', &[&label.0, step.prev.as_ref().map_or(&[][..], |p| &p.0[..])]), id.0.to_vec());
-        if let Some((c, index)) = set_rows {
-            tx.batch.put(key(b'C', &[&label.0, &id.0]), c);
-            for (k, v) in index {
-                tx.batch.put(k, v);
-            }
-        }
-        tx.append(&LogRecord::Head(step));
-        tx.batch.log(Write::LogHead(*label, id));
-        self.finish(tx)?;
+        self.put_step(label, step, claim_set, over)?;
         Ok(Code::OK)
     }
 

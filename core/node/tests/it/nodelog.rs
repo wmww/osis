@@ -214,3 +214,32 @@ fn a_crash_taking_bytes_leaves_no_cursor_ahead_of_its_data() {
         }
     }
 }
+
+// issues/net-one-peer.md step 4 (one store): co-readers with no host, each serving the group to the
+// other from its one store: every entry a node holds bytes of is one row there, and the blobs on
+// its disk are exactly the distinct blobs of those entries (a body read and served is stored once).
+#[test]
+fn a_group_read_and_served_is_stored_once() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    crate::peers::reach_ed(&mut net, a);
+    let g = net.group_seeded(a, &[(b, Role::Write)], vec![], 11);
+    let t = net.item(a, g, g, "one");
+    net.run();
+    net.write(b, t, "two");
+    net.run();
+    assert_eq!(net.read(a, t), Some(s("two")));
+    for n in [a, b] {
+        let mut held = BTreeSet::new();
+        for (_, gl) in net.sync(n).labels() {
+            let l = gl.id;
+            let mine: BTreeSet<BlobId> = net.sync(n).entries(&l).into_iter().map(|(x, _)| x).filter(|x| net.engine(n).has_blob(x)).collect();
+            let rows: BTreeSet<BlobId> = net.sync(n).hub_store().lock().unwrap().reader_rows(&l, None, 1 << 16).unwrap().into_iter().map(|(x, _)| x).collect();
+            assert_eq!(rows, mine, "node {n}: one row per entry it holds");
+            held.extend(mine);
+        }
+        assert!(!held.is_empty());
+        assert_eq!(net.blobs_on_disk(n), held.len() as u64, "node {n}: each blob once");
+    }
+}

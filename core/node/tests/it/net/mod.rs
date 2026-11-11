@@ -583,6 +583,11 @@ impl Net {
         self.add_node_on(seed, cfg, disks.0, disks.1, Config { store, ..Config::default() })
     }
 
+    /// The blobs on node `n`'s one store's disk (the hub's: the engine's and its entry rows').
+    pub fn blobs_on_disk(&self, n: usize) -> u64 {
+        self.nodes[n].hub_disk.0.held_split().2
+    }
+
     /// Where an attacker holding node `n`'s device recovers `marker` (`Engine::forensic`; the
     /// node must record, `forensic_node`).
     pub fn forensic(&mut self, n: usize, marker: &[u8]) -> Vec<osis_store::Source> {
@@ -1194,8 +1199,10 @@ impl Net {
     /// What node `n`'s hub handed out: bytes and closes on its peer links, ups to its node sync.
     fn node_hub_out(&mut self, n: usize, out: Vec<HubOutput>) {
         let mut ups = Vec::new();
+        let mut moved = false;
         for o in out {
             match o {
+                HubOutput::Moved => moved = true,
                 HubOutput::Send(hc, bytes) if self.hands.contains_key(&(n, hc)) => {
                     let mut d = osis_proto::FrameDecoder::new();
                     d.push(&bytes);
@@ -1226,7 +1233,7 @@ impl Net {
                 HubOutput::Up(hc, up) => ups.push((hc, up)),
             }
         }
-        if !ups.is_empty() {
+        if moved || !ups.is_empty() {
             self.feed(n, Event::Hub { ups });
         }
     }
@@ -1279,7 +1286,7 @@ impl Net {
                     }
                 }
                 // no node above these hosts (honest nodes send them no node kinds)
-                HubOutput::Diagnostic(_) | HubOutput::Up(..) => {}
+                HubOutput::Diagnostic(_) | HubOutput::Up(..) | HubOutput::Moved => {}
             }
         }
     }

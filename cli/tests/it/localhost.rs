@@ -321,20 +321,20 @@ fn chat_channel_localhost() {
     assert!(osis(&b, &["chat", "read", &c]).contains("from bob, fixed"), "a kicked member keeps a copy");
 }
 
-// spec/data-model.md §9 (`host^.0` `own`), notes/cli.md Serving: a dedicated peer node of
-// Alice's, paired and then serving under `own` with no other setup (its address the one `serve --listen`
-// prints), the only peer she has: her home, a group made afterwards and a
-// link to it reach it; Bob, on that peer only, redeems the link (his home group it refuses:
-// his `sync` exits 6 naming the peer that does not admit it).
+// spec/data-model.md §9, notes/cli.md Serving: a dedicated peer node of Alice's, paired and then
+// serving with nothing admitted for others and no other setup (its address the one `serve
+// --listen` prints), the only peer she has: it reads her groups, so her home, a group made
+// afterwards and a link to it reach it; Bob, on that peer only, redeems the link (his home group
+// it refuses: his `sync` exits 6 naming the peer that does not admit it).
 #[test]
 #[ignore]
-fn own_serving_node_localhost() {
+fn paired_serving_node_localhost() {
     let (a, h, b) = (dir("own-alice"), dir("own-peer"), dir("own-bob"));
     osis(&a, &["init"]);
     pair(&a, &h, None);
     let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let url = format!("quic://127.0.0.1:{port}");
-    osis(&h, &["serving", "set", "--admit", "own"]);
+    osis(&h, &["serving", "set", "--admit", "listed"]);
     let (_peer, addr) = serve(&h, &["--listen", &url]);
     assert!(addr.starts_with(&format!("{url}#")), "{addr}");
     osis(&a, &["peers", "add", &addr]);

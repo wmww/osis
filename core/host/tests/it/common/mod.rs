@@ -173,6 +173,7 @@ impl World {
                 HubOutput::Close(c) => self.close(End::Hub(h, c)),
                 HubOutput::Diagnostic(d) => self.diagnostics.push(d),
                 HubOutput::Up(c, u) => self.ups.push((h, c, u)),
+                HubOutput::Moved => {}
             }
         }
     }

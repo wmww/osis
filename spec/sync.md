@@ -143,6 +143,7 @@ Per label:
 
 Across labels:
 - Blob bytes are stored once per host and deleted when no label references them.
+- A label the host syncs itself (it reads the group, §2) is held as the node holds it: its path is the one the node serves from the steps its `label.0` records (§10), its entries those the node holds with their bytes, each blob once for the node and the host. Admission, caps and rates (spec/data-model.md §9) govern only the labels it does not read; an entry of a label it reads leaves at its expiry by the node's judgment (§6), not the host's.
 - Ephemeral entries, their log events and their tombstones are held in memory only and lost at a restart. No sequence number handed out before a restart is handed out again.
 - Relay-only blobs are never held.
 
@@ -160,7 +161,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - A holder that missed n steps walks them in n round trips, verifying each step under its parent's delete key (the genesis step against the label ID), then downloads the rotations and derives the current keys. The claim is bootstrap only.
   - A claim at a step whose set the host has dropped is refused; such a holder is stranded (spec/permissions.md §4) and is reached only by re-seal (spec/permissions.md §3).
 - **Register** (delete key of the parent). Relayable by any node.
-  - Accept a genesis step only if its delete key hashes to the label ID and the label is new.
+  - Accept a genesis step only if its delete key hashes to the label ID and the label is new. A host that syncs the label takes no genesis step by Register (refused for now, code 4): its path comes from `label.0` (§4).
   - Accept a step whose `prev` is the head.
   - Otherwise refuse anything else (a step with another `prev`, an operation under keys of a step it does not hold) with code 9 and nothing more (other codes: spec/wire.md §11.2). A refused registration never carries the head (a registrar learns it by opening).
   - A step is registered with its claim set when the registrar holds it (it MUST hash to the step's). A step held without its set serves no claims at it.

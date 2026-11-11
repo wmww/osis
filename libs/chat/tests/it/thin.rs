@@ -126,9 +126,9 @@ fn wait_state(db: &Osis, c: osis::Tid, done: impl Fn(&osis::GroupSync) -> bool) 
     }
 }
 
-// notes/chat.md Create, spec/data-model.md §9 (`host^.0` `own`): a chat's first admin is its maker's account, so the maker's serving node takes it under `admit own`; another account's chat it refuses
+// notes/chat.md Create, spec/data-model.md §9: the maker's own serving node reads its chat, so serves it with nothing admitted for others; another account's chat it refuses
 #[test]
-fn own_serving_node_takes_a_chat_spec_data_model_9() {
+fn a_serving_node_takes_its_accounts_chat_spec_data_model_9() {
     use osis::internals::Internals;
     let net = osis_transport::Net::new(7);
     let cfg = |ep: &str, hosts: Vec<Address>| {
@@ -141,11 +141,11 @@ fn own_serving_node_takes_a_chat_spec_data_model_9() {
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let dev = j.finish(&reply).unwrap();
     let url: osis::Url = "mem://h".parse().unwrap();
-    dev.set_serving(Some(osis::Serving { admit: osis::Admit::Own, ..Default::default() })).unwrap();
+    dev.set_serving(Some(osis::Serving { admit: osis::Admit::Listed, ..Default::default() })).unwrap();
     let addr = dev.listen(&[url]).unwrap().remove(0);
     a.add_peer(&addr).unwrap();
     let b = osis::internals::create(cfg("b", vec![addr.clone()])).unwrap();
-    // the refused-for-now back-off (5 s) shortened: a new label is refused until the host has its record
+    // the refused-for-now back-off (5 s) shortened: a new label is refused until the peer reads it
     for x in [&a, &b] {
         x.sync_engine(|s| s.config_mut().retry_ms = 100);
     }
