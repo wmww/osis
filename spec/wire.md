@@ -153,7 +153,7 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
 - Commitments, blinded by the blob's own salt and the blind of the header listing it (for a chunk, tree node or page: of the header that introduced it), one per level within a group (spec/crypto.md §7):
   - a commit blob carries one group per distinct delete-key set among the aspects its sections list (opened or not), each group the keys of that set in header key order, groups in order of their first aspect; a `nobody` aspect's set is empty, so its group is (a Delete by level then never verifies, spec/sync.md §5); a header-only blob carries no group;
   - a chunk, tree node or page carries one group: the delete keys of the delta that created it;
-  - a chunk or tree node of a linked header list (§4) carries one group holding the commitment of the commit's level-2 key only; its expiry is the commit's `expires`.
+  - a chunk or tree node of a linked header list (§4) carries one group holding the commitment of the commit's level-2 key only (empty when the header lists none); its expiry is the commit's `expires`.
 - **Wrap**: XChaCha20-Poly1305 under `kdf("wrap", label read secret)`, nonce = first 24 bytes of the blob ID, empty AD, plaintext `suite (1) || blob key (32) || order (8, little-endian)`: 57 bytes. A filler is 57 random bytes.
 - A node that does not know a blob's framing version stores and relays it as a durable blob with no expiry and no commitments.
 
