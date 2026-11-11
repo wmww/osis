@@ -22,28 +22,96 @@ pub fn open(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ad: &[u8], ciphertext: &[u8
         .map_err(|_| Error::Decrypt)
 }
 
-/// Plaintext byte `i` of `ciphertext` (with its tag) under `key` and `nonce`, NOT
-/// authenticated: forensic tests only (`osis_store::attack`). A byte every plaintext of its kind
-/// has (a padded one ends in 0x80 or 0x00) rules a key out without `open`'s pass over the whole
-/// ciphertext. `None`: the plaintext has no byte `i`.
+/// XChaCha20's keystream under one key and nonce, its HChaCha20 step done once: plaintext bytes
+/// of ciphertexts sealed under them, NOT authenticated. Forensic tests only (`osis_store::attack`
+/// tries tens of thousands of candidate keys): a byte every plaintext of its kind has (a padded
+/// one ends in 0x80 or 0x00) rules a key out without `open`'s pass over the whole ciphertext.
+/// One ChaCha20 block per byte (RFC 8439 §2.3; HChaCha20, draft-irtf-cfrg-xchacha §2.2),
+/// computed here: the `chacha20` crate's vector backend makes four.
 #[doc(hidden)]
-pub fn plain_byte(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ciphertext: &[u8], i: usize) -> Option<u8> {
-    use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
-    if i >= ciphertext.len().checked_sub(TAG_LEN)? {
-        return None;
-    }
-    let mut c = chacha20::XChaCha20::new(key.into(), nonce.into());
-    // keystream block 0 is the Poly1305 key; the message starts at block 1
-    c.seek(64 + i as u64);
-    let mut b = [*ciphertext.get(i)?];
-    c.apply_keystream(&mut b);
-    Some(b[0])
+pub struct Keystream {
+    subkey: Zeroizing<[u32; 8]>,
+    /// The last 8 bytes of XChaCha's nonce (ChaCha20's: four zero bytes, then these).
+    nonce: [u32; 2],
 }
 
-/// `plain_byte` of the last plaintext byte.
-#[doc(hidden)]
-pub fn last_plain_byte(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ciphertext: &[u8]) -> Option<u8> {
-    plain_byte(key, nonce, ciphertext, ciphertext.len().checked_sub(TAG_LEN + 1)?)
+/// "expand 32-byte k"
+const SIGMA: [u32; 4] = [0x6170_7865, 0x3320_646e, 0x7962_2d32, 0x6b20_6574];
+
+fn words<const N: usize>(b: &[u8]) -> [u32; N] {
+    let mut w = [0u32; N];
+    for (x, c) in w.iter_mut().zip(b.as_chunks::<4>().0) {
+        *x = u32::from_le_bytes(*c);
+    }
+    w
+}
+
+/// A ChaCha20 input: constants, key, then counter and nonce (`n`).
+fn input(k: &[u32; 8], n: [u32; 4]) -> [u32; 16] {
+    let [s0, s1, s2, s3] = SIGMA;
+    let [k0, k1, k2, k3, k4, k5, k6, k7] = *k;
+    let [n0, n1, n2, n3] = n;
+    [s0, s1, s2, s3, k0, k1, k2, k3, k4, k5, k6, k7, n0, n1, n2, n3]
+}
+
+fn quarter(a: u32, b: u32, c: u32, d: u32) -> (u32, u32, u32, u32) {
+    let a = a.wrapping_add(b);
+    let d = (d ^ a).rotate_left(16);
+    let c = c.wrapping_add(d);
+    let b = (b ^ c).rotate_left(12);
+    let a = a.wrapping_add(b);
+    let d = (d ^ a).rotate_left(8);
+    let c = c.wrapping_add(d);
+    let b = (b ^ c).rotate_left(7);
+    (a, b, c, d)
+}
+
+/// ChaCha20's 20 rounds over an input, without the final addition.
+fn rounds(s: &[u32; 16]) -> [u32; 16] {
+    let [mut x0, mut x1, mut x2, mut x3, mut x4, mut x5, mut x6, mut x7, mut x8, mut x9, mut x10, mut x11, mut x12, mut x13, mut x14, mut x15] = *s;
+    for _ in 0..10 {
+        (x0, x4, x8, x12) = quarter(x0, x4, x8, x12);
+        (x1, x5, x9, x13) = quarter(x1, x5, x9, x13);
+        (x2, x6, x10, x14) = quarter(x2, x6, x10, x14);
+        (x3, x7, x11, x15) = quarter(x3, x7, x11, x15);
+        (x0, x5, x10, x15) = quarter(x0, x5, x10, x15);
+        (x1, x6, x11, x12) = quarter(x1, x6, x11, x12);
+        (x2, x7, x8, x13) = quarter(x2, x7, x8, x13);
+        (x3, x4, x9, x14) = quarter(x3, x4, x9, x14);
+    }
+    [x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15]
+}
+
+impl Keystream {
+    pub fn new(key: &[u8; 32], nonce: &[u8; NONCE_LEN]) -> Keystream {
+        let (head, tail) = nonce.split_at(16);
+        // HChaCha20: the rounds over the key and the nonce's first 16 bytes; words 0-3 and 12-15
+        let [x0, x1, x2, x3, _, _, _, _, _, _, _, _, x12, x13, x14, x15] = rounds(&input(&Zeroizing::new(words(key)), words(head)));
+        Keystream { subkey: Zeroizing::new([x0, x1, x2, x3, x12, x13, x14, x15]), nonce: words(tail) }
+    }
+
+    /// Keystream byte `i` of the message (block 0 is the Poly1305 key; the message starts at
+    /// block 1).
+    pub fn byte(&self, i: usize) -> u8 {
+        let [n0, n1] = self.nonce;
+        let s = input(&self.subkey, [u32::try_from(i / 64 + 1).unwrap_or(u32::MAX), 0, n0, n1]);
+        let w = (i % 64) / 4;
+        let word = rounds(&s).get(w).copied().unwrap_or(0).wrapping_add(s.get(w).copied().unwrap_or(0));
+        word.to_le_bytes().get(i % 4).copied().unwrap_or(0)
+    }
+
+    /// Plaintext byte `i` of `ciphertext` (with its tag); `None`: the plaintext has no byte `i`.
+    pub fn plain_byte(&self, ciphertext: &[u8], i: usize) -> Option<u8> {
+        if i >= ciphertext.len().checked_sub(TAG_LEN)? {
+            return None;
+        }
+        Some(ciphertext.get(i)? ^ self.byte(i))
+    }
+
+    /// The last plaintext byte.
+    pub fn last_plain_byte(&self, ciphertext: &[u8]) -> Option<u8> {
+        self.plain_byte(ciphertext, ciphertext.len().checked_sub(TAG_LEN + 1)?)
+    }
 }
 
 /// A 49-byte `suite || key` sealing (spec/wire.md §7): symmetric boxes.
@@ -103,15 +171,18 @@ mod tests {
     // spec: none (forensic test support): the unauthenticated first and last bytes are the
     // plaintext's, at every length across block boundaries
     #[test]
-    fn last_plain_byte_is_the_plaintexts() {
-        let (key, nonce) = ([3u8; 32], [5u8; NONCE_LEN]);
+    fn keystream_bytes_are_the_plaintexts() {
+        // bytes all distinct: a word out of place shows
+        let key: [u8; 32] = std::array::from_fn(|i| i as u8 * 7 + 1);
+        let nonce: [u8; NONCE_LEN] = std::array::from_fn(|i| i as u8 * 5 + 100);
         for n in 0..200usize {
             let pt: Vec<u8> = (0..n).map(|i| (i * 7 + n) as u8).collect();
             let ct = seal(&key, &nonce, b"ad", &pt).unwrap();
-            assert_eq!(last_plain_byte(&key, &nonce, &ct), pt.last().copied(), "length {n}");
-            assert_eq!(plain_byte(&key, &nonce, &ct, 0), pt.first().copied(), "length {n}");
-            assert_eq!(plain_byte(&key, &nonce, &ct, n), None);
+            let ks = Keystream::new(&key, &nonce);
+            assert_eq!(ks.last_plain_byte(&ct), pt.last().copied(), "length {n}");
+            assert_eq!(ks.plain_byte(&ct, 0), pt.first().copied(), "length {n}");
+            assert_eq!(ks.plain_byte(&ct, n), None);
         }
-        assert_eq!(last_plain_byte(&key, &nonce, &[0; TAG_LEN]), None);
+        assert_eq!(Keystream::new(&key, &nonce).last_plain_byte(&[0; TAG_LEN]), None);
     }
 }

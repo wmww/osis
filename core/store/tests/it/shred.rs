@@ -88,6 +88,29 @@ fn shredded_content_is_unrecoverable() {
     assert!(dev.backend.history().iter().all(|(k, v)| !contains(k, marker) && !contains(v, marker)));
 }
 
+// spec: none (forensic test support): the record of which key sealed each row
+// (`Evidence::sealed`) changes only the keys the attack tries, never what it recovers: with it
+// and without it the attack recovers the same, while the content is live and once shredded
+#[test]
+fn sealed_keys_change_no_recovery() {
+    let dev = MemDevice::new();
+    dev.backend.record_history();
+    let mut rng = SeededRng::from_u64(0);
+    let mut s = create(&dev, &mut rng);
+    let both = |s: &mut Store| {
+        let ev = Evidence::of(s.forensic_keys().unwrap(), &dev.backend);
+        assert!(!ev.sealed.is_empty());
+        let got = |ev: &Evidence| osis_store::attack(ev, None).into_iter().map(|r| (r.from, r.plain)).collect::<Vec<_>>();
+        let with = got(&ev);
+        assert_eq!(with, got(&Evidence { sealed: Default::default(), ..ev }));
+        with
+    };
+    plant(&mut s, &mut rng, b"MARKER-sealed");
+    assert!(both(&mut s).iter().any(|(_, p)| contains(p, b"MARKER-sealed")));
+    shred_all(&mut s, &mut rng);
+    assert!(!both(&mut s).iter().any(|(_, p)| contains(p, b"MARKER-sealed")));
+}
+
 // spec/commits.md §5: a whole-aspect purge drops the units: nothing of the aspect survives.
 #[test]
 fn dropped_aspect_is_unrecoverable() {
@@ -222,9 +245,8 @@ fn file_backend_holds_no_plaintext() {
 
 /// Blobs as osis-label frames them, without a prefix: enough for the attack's blob paths.
 const CIPHERS: osis_store::Ciphers = osis_store::Ciphers {
+    prefix: |_| Some(0),
     open: |blob, key| osis_crypto::decrypt_blob(blob, 0, &osis_crypto::Secret32::from_bytes(*key)).ok(),
-    unwrap: |secret, blob, wrap| osis_crypto::unwrap(&osis_crypto::Secret32::from_bytes(*secret), blob, wrap).ok().map(|k| *k.expose()),
-    wrap_len: osis_crypto::WRAP_LEN,
     sections: |_, _, _| Vec::new(),
 };
 

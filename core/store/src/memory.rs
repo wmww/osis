@@ -102,6 +102,9 @@ struct Data {
     history: Option<Vec<KeyValue>>,
     /// Every blob put (`Some`) and free (`None`), if recording.
     blob_history: Vec<(BlobId, Option<Vec<u8>>)>,
+    /// If recording, the key each row value was sealed under, by its AEAD tag (its last 16
+    /// bytes): not evidence, only which key a row opens under (`forensic::Evidence::sealed`).
+    sealed: HashMap<[u8; 16], [u8; 32]>,
     /// Commits so far (what a file backend fsyncs).
     syncs: u64,
     io: Io,
@@ -157,6 +160,12 @@ impl MemoryBackend {
     pub fn blob_history(&self) -> Vec<(BlobId, Option<Vec<u8>>)> {
         self.lock().blob_history.clone()
     }
+    /// The key each row value written while recording was sealed under, by its tag (debug
+    /// builds, `Backend::note_sealed`).
+    #[doc(hidden)]
+    pub fn sealed(&self) -> HashMap<[u8; 16], [u8; 32]> {
+        self.lock().sealed.clone()
+    }
     /// The bytes held: row keys and values, and blobs (measures).
     pub fn held_bytes(&self) -> u64 {
         let d = self.lock();
@@ -173,14 +182,14 @@ impl MemoryBackend {
     /// history).
     pub fn copy(&self) -> MemoryBackend {
         let d = self.lock();
-        let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: None, blob_history: Vec::new(), syncs: 0, io: Io::default() };
+        let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: None, blob_history: Vec::new(), sealed: HashMap::new(), syncs: 0, io: Io::default() };
         MemoryBackend { data: Arc::new(Mutex::new(data)), faults: self.faults.clone() }
     }
     /// An independent copy of the durable state and of what was recorded (sharing the faults):
     /// one device set up once, then run down several paths.
     pub fn fork(&self) -> MemoryBackend {
         let d = self.lock();
-        let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: d.history.clone(), blob_history: d.blob_history.clone(), syncs: d.syncs, io: d.io };
+        let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: d.history.clone(), blob_history: d.blob_history.clone(), sealed: d.sealed.clone(), syncs: d.syncs, io: d.io };
         MemoryBackend { data: Arc::new(Mutex::new(data)), faults: self.faults.clone() }
     }
     /// Tests only (world copies, `osis_base::copying`): an exact copy of the data, recorded
@@ -280,6 +289,15 @@ impl Backend for MemoryBackend {
         Ok(())
     }
 
+    fn note_sealed(&self, value: &[u8], key: &[u8; 32]) {
+        let mut d = self.lock();
+        if d.history.is_some()
+            && let Some(tag) = value.len().checked_sub(16).and_then(|n| value.get(n..)).and_then(|t| <[u8; 16]>::try_from(t).ok())
+        {
+            d.sealed.insert(tag, *key);
+        }
+    }
+
     fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
         let mut d = self.lock();
         let b = d.blobs.get(id).cloned();
@@ -343,5 +361,8 @@ impl<B: Backend> Backend for FaultyBackend<B> {
     }
     fn blob_len(&self, id: &BlobId) -> Result<Option<u64>, BackendError> {
         self.inner.blob_len(id)
+    }
+    fn note_sealed(&self, value: &[u8], key: &[u8; 32]) {
+        self.inner.note_sealed(value, key);
     }
 }

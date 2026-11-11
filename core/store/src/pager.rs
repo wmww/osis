@@ -810,6 +810,15 @@ impl Pager {
         Ok(self.backend.read_blob(id, offset, len)?)
     }
 
+    /// `seal`, the key noted to the backend in debug builds (the forensic attack,
+    /// `Backend::note_sealed`).
+    fn seal(&self, key: &Secret32, row: &[u8], plaintext: &[u8], rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
+        let v = seal(key, row, plaintext, rng)?;
+        #[cfg(debug_assertions)]
+        self.backend.note_sealed(&v, key.expose());
+        Ok(v)
+    }
+
     /// Writes plain units and blobs early, under a journal record.
     fn spill(&mut self, d: &mut Dirty, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
@@ -818,7 +827,7 @@ impl Pager {
             if let DirtyUnit::Plain { data, shred, .. } = u {
                 let key = Secret32::random(rng);
                 let row = unit_row(*slot, d.ver);
-                batch.put(row.clone(), seal(&key, &row, data, rng)?);
+                batch.put(row.clone(), self.seal(&key, &row, data, rng)?);
                 j.new_rows.push(row);
                 *u = DirtyUnit::Spilled { key, shred: *shred };
             }
@@ -873,7 +882,7 @@ impl Pager {
             let entry = match u {
                 DirtyUnit::Plain { data, page, .. } => {
                     let key = Secret32::random(rng);
-                    batch.put(row.clone(), seal(&key, &row, &data, rng)?);
+                    batch.put(row.clone(), self.seal(&key, &row, &data, rng)?);
                     j.new_rows.push(row);
                     cached.push((slot, Some((data, page))));
                     Some(Entry { key, ver })
@@ -928,7 +937,7 @@ impl Pager {
                     let mut w = W::new();
                     node.encode(&mut w);
                     let plain = Zeroizing::new(w.0);
-                    batch.put(row.clone(), seal(&key, &row, &plain, rng)?);
+                    batch.put(row.clone(), self.seal(&key, &row, &plain, rng)?);
                     j.new_rows.push(row);
                     new_nodes.push(((level, idx), Some(node)));
                     Some(Entry { key, ver })
@@ -958,7 +967,7 @@ impl Pager {
         meta.encode(&mut w);
         top.encode(&mut w);
         let plain = Zeroizing::new(w.0);
-        batch.put(top_row.clone(), seal(&top_key, &top_row, &plain, rng)?);
+        batch.put(top_row.clone(), self.seal(&top_key, &top_row, &plain, rng)?);
         j.new_rows.push(top_row);
         j.old_rows.push(self::top_row(self.top_ver));
         for (id, b) in d.blobs.drain() {
@@ -1053,7 +1062,7 @@ pub fn forensic_open(row: &[u8], value: &[u8], key: &[u8; 32]) -> Option<Vec<u8>
     // a padded row ends in 0x80 or 0x00 (`open`): another last byte rules the key out without
     // the whole AEAD pass (an attack tries every key on every row)
     let (nonce, ct) = value.split_at_checked(NONCE_LEN)?;
-    if !matches!(aead::last_plain_byte(key, nonce.try_into().ok()?, ct), Some(0 | 0x80)) {
+    if !matches!(aead::Keystream::new(key, nonce.try_into().ok()?).last_plain_byte(ct), Some(0 | 0x80)) {
         return None;
     }
     open(&Secret32::from_bytes(*key), row, value).ok()

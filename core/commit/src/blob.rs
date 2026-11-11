@@ -230,13 +230,13 @@ impl Section {
         Ok(Section { ais, chain, wrap, ciphertext })
     }
 
-    /// Whether `key` may be this section's key, judged by its first plaintext bytes alone (an
-    /// array of parts, each a 2-array; `encode_parts`), NOT authenticated: forensic tests only,
-    /// to rule a candidate out before `open_section`'s pass over the whole ciphertext. Never
-    /// false for the section's own key.
+    /// Whether the key of keystream `zero` (under nonce zero) may be this section's key, judged
+    /// by its first plaintext bytes alone (an array of parts, each a 2-array; `encode_parts`),
+    /// NOT authenticated: forensic tests only, to rule a candidate out before `open_section`'s
+    /// pass over the whole ciphertext. Never false for the section's own key.
     #[doc(hidden)]
-    pub fn may_open_with(&self, key: &[u8; 32]) -> bool {
-        let at = |i| osis_crypto::aead::plain_byte(key, &osis_crypto::aead::ZERO_NONCE, &self.ciphertext, i);
+    pub fn may_open_with(&self, zero: &osis_crypto::aead::Keystream) -> bool {
+        let at = |i| zero.plain_byte(&self.ciphertext, i);
         let Some(b0) = at(0) else { return false };
         // an empty array, or a count past one byte's head, leaves byte 1 unknown
         b0 >> 5 == MAJOR_ARRAY && (b0 == MAJOR_ARRAY << 5 || b0 & 0x1f >= 24 || at(1) == Some(MAJOR_ARRAY << 5 | 2))

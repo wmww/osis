@@ -431,8 +431,9 @@ fn section_key_filter_keeps_the_key() {
         let parts: Vec<Part> = (0..n).map(|ai| Part::new(ai * 30, osis_base::encode(&Value::Int(ai as i64)))).collect();
         let s = Section::seal(&commit, &parts, vec![t(1)], &secret, &mut rng).unwrap();
         let key = osis_crypto::unwrap_section(&secret, &commit, &s.wrap).unwrap();
-        assert!(s.may_open_with(key.expose()), "{n} parts");
-        wrong += (0..64u8).filter(|i| s.may_open_with(&[*i; 32])).count();
+        let zero = |k: &[u8; 32]| osis_crypto::aead::Keystream::new(k, &osis_crypto::aead::ZERO_NONCE);
+        assert!(s.may_open_with(&zero(key.expose())), "{n} parts");
+        wrong += (0..64u8).filter(|i| s.may_open_with(&zero(&[*i; 32]))).count();
     }
     assert!(wrong < 64, "{wrong} of {} wrong keys pass", 6 * 64);
 }

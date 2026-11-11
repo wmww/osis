@@ -97,6 +97,11 @@ pub trait Backend: Send {
         None
     }
 
+    /// Debug builds (the forensic attack, `MemoryBackend::sealed`): the row value `value`, about
+    /// to be written, was sealed under `key`.
+    #[doc(hidden)]
+    fn note_sealed(&self, _value: &[u8], _key: &[u8; 32]) {}
+
     /// Up to `limit` pairs whose key starts with `prefix`.
     fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<KeyValue>, BackendError> {
         let end = prefix_end(prefix);

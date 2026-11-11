@@ -89,7 +89,7 @@ pub fn wrap(read_secret: &Secret32, blob: &BlobId, blob_key: &Secret32, order: u
     if let Some(o) = pt.get_mut(33..) {
         o.copy_from_slice(&order.to_le_bytes());
     }
-    aead::seal(kdf(kdf::WRAP, read_secret.expose(), b"").expose(), &wrap_nonce(blob), b"", &pt[..])?.try_into().map_err(|_| Error::Malformed("wrap length"))
+    aead::seal(wrap_key(read_secret).expose(), &wrap_nonce(blob), b"", &pt[..])?.try_into().map_err(|_| Error::Malformed("wrap length"))
 }
 
 /// Opens a wrap; a reader tries its read secrets newest first.
@@ -99,10 +99,20 @@ pub fn unwrap(read_secret: &Secret32, blob: &BlobId, wrap: &[u8]) -> Result<Secr
 
 /// `unwrap`, with the wrap's fetch order; an unknown suite parks.
 pub fn unwrap_order(read_secret: &Secret32, blob: &BlobId, wrap: &[u8]) -> Result<(Secret32, u64), Error> {
+    unwrap_under(&wrap_key(read_secret), blob, wrap)
+}
+
+/// The key a read secret seals its wraps under.
+fn wrap_key(read_secret: &Secret32) -> Secret32 {
+    kdf(kdf::WRAP, read_secret.expose(), b"")
+}
+
+/// `unwrap_order` under the read secret's `wrap_key`.
+fn unwrap_under(wrap_key: &Secret32, blob: &BlobId, wrap: &[u8]) -> Result<(Secret32, u64), Error> {
     if wrap.len() != WRAP_LEN {
         return Err(Error::Malformed("wrap length"));
     }
-    let pt = Zeroizing::new(aead::open(kdf(kdf::WRAP, read_secret.expose(), b"").expose(), &wrap_nonce(blob), b"", wrap)?);
+    let pt = Zeroizing::new(aead::open(wrap_key.expose(), &wrap_nonce(blob), b"", wrap)?);
     let (suite, rest) = pt.split_first().ok_or(Error::Decrypt)?;
     if *suite != SUITE_1 {
         return Err(Error::UnknownSuite(u64::from(*suite)));
@@ -111,6 +121,48 @@ pub fn unwrap_order(read_secret: &Secret32, blob: &BlobId, wrap: &[u8]) -> Resul
     let k: [u8; 32] = k.try_into().map_err(|_| Error::Decrypt)?;
     let o: [u8; 8] = o.try_into().map_err(|_| Error::Decrypt)?;
     Ok((Secret32::from_bytes(k), u64::from_le_bytes(o)))
+}
+
+/// A candidate key prepared once for many trials, NOT authenticated until the AEAD pass:
+/// forensic tests only (`osis_store::attack` tries tens of thousands of candidates on every
+/// blob). As a key sealing under nonce zero (a blob's, `encrypt_blob`; a section's,
+/// `seal_section`: its keystream's HChaCha20 step done) and as a read secret (`wrap`: the key
+/// it wraps under derived).
+#[doc(hidden)]
+pub struct Trial {
+    key: Secret32,
+    zero: aead::Keystream,
+    wrap: Secret32,
+}
+
+impl Trial {
+    pub fn new(key: &[u8; 32]) -> Trial {
+        let key = Secret32::from_bytes(*key);
+        Trial { zero: aead::Keystream::new(key.expose(), &ZERO_NONCE), wrap: wrap_key(&key), key }
+    }
+
+    pub fn key(&self) -> &Secret32 {
+        &self.key
+    }
+
+    /// The key's keystream under nonce zero.
+    pub fn zero(&self) -> &aead::Keystream {
+        &self.zero
+    }
+
+    /// Whether a blob's ciphertext (`encrypt_blob`'s, its prefix stripped) may open under this
+    /// key: its last plaintext byte is padding's (0x80 or 0x00). Never false for the blob's key.
+    pub fn may_open_blob(&self, ciphertext: &[u8]) -> bool {
+        matches!(self.zero().last_plain_byte(ciphertext), Some(0 | 0x80))
+    }
+
+    /// The blob keys `wraps` of blob `id` give with this key as their read secret. A wrap's
+    /// first plaintext byte is its suite: one keystream byte, shared by every wrap of a blob,
+    /// rules this key out for all of them.
+    pub fn unwraps(&self, id: &BlobId, wraps: &[Vec<u8>]) -> Vec<Secret32> {
+        let k0 = aead::Keystream::new(self.wrap.expose(), &wrap_nonce(id)).byte(0);
+        wraps.iter().filter(|w| w.len() == WRAP_LEN && w.first().map(|c| c ^ k0) == Some(SUITE_1)).filter_map(|w| unwrap_under(&self.wrap, id, w).ok().map(|x| x.0)).collect()
+    }
 }
 
 /// A section wrap: a random nonce, then the section key sealed under the reader actor's section
@@ -288,6 +340,26 @@ mod tests {
         assert_eq!(unwrap(&Secret32::from_bytes([5; 32]), &id, &w), Err(Error::Decrypt));
         let f = filler_wrap(&mut SeededRng::from_u64(0));
         assert!(unwrap(&s, &id, &f).is_err());
+    }
+
+    // spec: none (forensic test support): a prepared candidate never rules out a blob's own
+    // key or a wrap's read secret, finds the key of every wrap it opens among filler, and
+    // gives nothing for a wrong secret or blob
+    #[test]
+    fn trial_keeps_every_real_key() {
+        let mut rng = SeededRng::from_u64(0);
+        for n in [0usize, 1, 62, 63, 64, 200] {
+            let pt: Vec<u8> = (0..n).map(|i| i as u8).collect();
+            let (k, b) = encrypt_blob(&[1; 9], &pt, &mut rng).unwrap();
+            assert!(Trial::new(k.expose()).may_open_blob(&b[9..]), "length {n}");
+        }
+        let (s, k, id) = (Secret32::from_bytes([1; 32]), Secret32::from_bytes([2; 32]), BlobId([3; 32]));
+        let other = Secret32::from_bytes([6; 32]);
+        let wraps = vec![filler_wrap(&mut rng).to_vec(), wrap(&other, &id, &k, 1).unwrap().to_vec(), wrap(&s, &id, &k, 7).unwrap().to_vec()];
+        assert_eq!(Trial::new(s.expose()).unwraps(&id, &wraps), vec![k.clone()]);
+        assert_eq!(Trial::new(other.expose()).unwraps(&id, &wraps), vec![k]);
+        assert!(Trial::new(&[5; 32]).unwraps(&id, &wraps).is_empty());
+        assert!(Trial::new(s.expose()).unwraps(&BlobId([4; 32]), &wraps).is_empty());
     }
 
     // spec/wire.md §9: inbox blob AD binds recipient and prefix.
