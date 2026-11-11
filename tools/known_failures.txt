@@ -5,4 +5,3 @@
 order::held_set_decides_plain OSIS_ORDER_START=539131766525 issues/order-required-floor-plain.md held_set_decides: \w+ seeds ran, but not
 keep::any_order_until_keeps_no_more_large OSIS_KEEP_START=636109736897 issues/keep-until-order-seed.md kept only by order
 ephemeral::random_churn_converges_large OSIS_EPH_START=235597868743 issues/churn-cursor-rebuild-differs.md differs from a rebuild from held bodies
-order::held_set_decides_plain OSIS_ORDER_SEED=833299603861 issues/order-held-model-unknown-record-applied.md ^seed \d+, PartsAway \(replay:

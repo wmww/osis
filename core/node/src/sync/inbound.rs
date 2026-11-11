@@ -1070,8 +1070,10 @@ impl SyncEngine {
                 if opened.len() > parts.len() {
                     self.state.note_opened(&b, &opened, o.copy);
                 }
-                self.ingest_again(&c, &o.plaintext);
-                held.extend(opened);
+                let Some(l) = self.state.labels_of(&b).into_iter().next() else { continue };
+                if !self.ingest_again(&c, &o.plaintext, (l, b), false)? {
+                    held.extend(opened);
+                }
             }
             for (l, b) in inbox {
                 let Some(bytes) = self.engine.blob(b)? else { continue };
@@ -1081,8 +1083,9 @@ impl SyncEngine {
                 if (!forced && blob.parts.iter().all(|p| held.contains(&p.ai))) || self.engine.parts_genuine(&blob) == Some(false) {
                     continue;
                 }
-                self.ingest_again(&c, &pt);
-                held.extend(blob.parts.iter().map(|p| p.ai));
+                if !self.ingest_again(&c, &pt, (*l, *b), true)? {
+                    held.extend(blob.parts.iter().map(|p| p.ai));
+                }
             }
             self.engine.reexamine()?;
             todo.extend(self.engine.take_redeliver());
@@ -1095,10 +1098,25 @@ impl SyncEngine {
         self.forget_dropped(Some(&visits.into_keys().collect()))
     }
 
-    fn ingest_again(&mut self, c: &CommitId, plaintext: &[u8]) {
+    /// Ingests entry `at` (an inbox blob: `inbox`) of commit `c` again; thrown out, it awaits as
+    /// on its first arrival (`settle_batch`): a pending commit judged unjudgeable is named so
+    /// (`Engine::take_redeliver`). Whether it was thrown out.
+    fn ingest_again(&mut self, c: &CommitId, plaintext: &[u8], at: (LabelId, BlobId), inbox: bool) -> Result<bool> {
         self.redelivered += 1;
-        if let Err(e) = self.engine.ingest(plaintext, Vec::new()) {
-            self.diag(format!("ingest {c:?} again: {e}"));
+        match self.engine.ingest(plaintext, Vec::new()) {
+            Ok(Ingested::Awaits(_, r)) if !self.engine.core.ix.commits.contains_key(c) => {
+                if inbox {
+                    self.inbox_awaits.entry(at).or_default().insert(awaited(&r));
+                } else {
+                    self.mark_awaits(at.0, at.1, *c, r)?;
+                }
+                Ok(true)
+            }
+            Ok(_) => Ok(false),
+            Err(e) => {
+                self.diag(format!("ingest {c:?} again: {e}"));
+                Ok(false)
+            }
         }
     }
 

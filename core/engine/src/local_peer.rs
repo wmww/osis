@@ -64,7 +64,7 @@ pub struct Peer {
     /// Opens so far: mixed into each restart's rng seed, so no two opens of one store draw
     /// the same session nonce (spec/crdt.md §2.1) however a test seeds them.
     pub restarts: u64,
-    /// What the engine threw out (`receive`).
+    /// What the engine threw out (`receive`), and the copies carrying a pending commit.
     pub discarded: Vec<Discarded>,
     /// How many packages the engine threw out so far.
     pub discards: u64,
@@ -79,6 +79,16 @@ pub struct Discarded {
     pub commit: CommitId,
     /// `None`: a part of an applied commit (`Wakes::woken`).
     pub awaits: Option<Tid>,
+    /// A copy carrying a pending commit, as node-sync keeps its entry: delivered again when the
+    /// engine names the commit (`Engine::take_redeliver`), kept while the commit pends.
+    carries: bool,
+}
+
+impl Discarded {
+    /// Whether this is a pending commit's carrier, not a copy thrown out.
+    pub fn carries(&self) -> bool {
+        self.carries
+    }
 }
 
 impl Peer {
@@ -126,6 +136,10 @@ impl Peer {
             Ingested::Applied(x) | Ingested::Duplicate(x) | Ingested::Pending(x, _) | Ingested::Awaits(x, _) | Ingested::Parked(x) | Ingested::TooLarge(x) => *x,
         };
         let applied = self.engine.core.ix.commits.get(&id);
+        if applied.is_none() && self.engine.core.ix.pending.contains_key(&id) {
+            self.discarded.push(Discarded { bytes: bytes.to_vec(), blobs: blobs.to_vec(), commit: id, awaits: None, carries: true });
+            return;
+        }
         let awaits = match i {
             Ingested::Awaits(_, crate::Reason::MissingChain(t) | crate::Reason::UnknownCreated(t)) if applied.is_none() => Some(*t),
             // the blob decoded only where a held commit misses a part
@@ -133,15 +147,21 @@ impl Peer {
             _ => return,
         };
         self.discards += 1;
-        self.discarded.push(Discarded { bytes: bytes.to_vec(), blobs: blobs.to_vec(), commit: id, awaits });
+        self.discarded.push(Discarded { bytes: bytes.to_vec(), blobs: blobs.to_vec(), commit: id, awaits, carries: false });
     }
 
     fn wake(&mut self) -> Result<()> {
         loop {
             self.engine.reexamine()?;
             let w = self.engine.take_wakes();
+            let again = self.engine.take_redeliver();
             let core = &self.engine.core;
+            // a carrier goes once its commit pends no more, unless named to deliver again
+            self.discarded.retain(|d| !d.carries || core.ix.pending.contains_key(&d.commit) || again.contains(&d.commit));
             let due = |d: &Discarded| {
+                if d.carries {
+                    return again.contains(&d.commit);
+                }
                 w.reopen_awaits || w.reread.contains(&d.commit) || match &d.awaits {
                     Some(t) => w.records.contains(t) || (w.moved && core.exists(t)),
                     None => w.woken.contains(&d.commit),

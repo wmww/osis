@@ -666,6 +666,62 @@ fn wrong_class_delta_is_not_waited_for_spec_commits_4() {
     assert_eq!(relay.again, 0);
 }
 
+// spec/commits.md §4 Unjudgeable: a commit pending for drift whose parts are one on a thing whose
+// record is unknown and one bad holds nothing once judged: no byte of it stays (it pends no more),
+// and it applies when the record comes (its carrier delivers it again).
+#[test]
+fn pending_commit_judged_unjudgeable_keeps_nothing_spec_commits_4() {
+    use crate::common::*;
+    use osis_base::format::MAX_DRIFT_MS;
+    let mut lp = net(2, 0);
+    let g = new_thing(&mut lp, 0);
+    for pk in packages(&mut lp, 0) {
+        lp.deliver(1, &pk).unwrap();
+    }
+    let h = new_thing(&mut lp, 0);
+    lp.peers[0].clock.advance(2 * MAX_DRIFT_MS);
+    let mut m = Mutation::new();
+    m.set(h, &REG, &s("h")).unwrap();
+    m.set(g, &REG, &s("bad")).unwrap();
+    let (id, bytes) = lp.peers[0].engine.commit_forged(m, [(g, ak("t:reg.0"))].into()).unwrap().unwrap();
+    assert!(matches!(lp.peers[1].receive(&bytes, Vec::new()).unwrap(), Ingested::Pending(_, Reason::Drift)));
+    lp.peers[1].clock.advance(2 * MAX_DRIFT_MS);
+    lp.peers[1].tick().unwrap();
+    assert!(lp.peers[1].engine.pending().is_empty(), "thrown out once judged");
+    assert!(!lp.peers[1].engine.commit_ids().contains(&id));
+    for pk in packages(&mut lp, 0).into_iter().filter(|pk| pk.id != id) {
+        lp.deliver(1, &pk).unwrap();
+    }
+    assert!(lp.peers[1].engine.commit_ids().contains(&id), "fetched again with the record");
+    assert_eq!(lp.peers[1].engine.get(&h, &ak("t:reg.0")).unwrap(), Some(s("h")));
+}
+
+// spec/commits.md §4 Unjudgeable: a commit pending for its linked aspect list, on a thing whose
+// record is unknown, holds nothing once the pages resolve its header: no byte of it stays, and it
+// applies when the record comes.
+#[test]
+fn pending_for_pages_then_unjudgeable_keeps_nothing_spec_commits_4() {
+    use crate::common::*;
+    let mut lp = net(2, 0);
+    for pk in packages(&mut lp, 0) {
+        lp.deliver(1, &pk).unwrap();
+    }
+    let h = new_thing(&mut lp, 0);
+    lp.peers[0].clock.advance(10);
+    let mut m = Mutation::new();
+    let a = link_aspects(&mut m, h);
+    let id = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
+    assert!(matches!(lp.peers[1].receive(&pk.bytes, Vec::new()).unwrap(), Ingested::Pending(_, Reason::WaitBlobs)));
+    assert!(matches!(lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap(), Ingested::Awaits(..)));
+    assert!(lp.peers[1].engine.pending().is_empty(), "thrown out once its header resolves");
+    for pk in packages(&mut lp, 0).into_iter().filter(|pk| pk.id != id) {
+        lp.deliver(1, &pk).unwrap();
+    }
+    assert!(lp.peers[1].engine.commit_ids().contains(&id), "fetched again with the record");
+    assert_eq!(lp.peers[1].engine.get(&h, &a).unwrap(), Some(s("v")));
+}
+
 // A false signature from a held author goes before the linked lists are fetched: with them away it is
 // refused, it never waits for them (issues/header-list-decode-memory.md).
 #[test]

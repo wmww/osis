@@ -2030,7 +2030,7 @@ fn explain(played: &Played, held: &[usize], p: &mut Peer, what: &str) {
     }
     // thrown out and not fetched again: no wake named what it awaits
     for (who, q) in [("node", &*p), ("keep", &o)] {
-        for d in &q.discarded {
+        for d in q.discarded.iter().filter(|d| !d.carries()) {
             let _ = writeln!(out, "{who} thrown out #{:?}: {}", pack(&d.commit), d.awaits.map_or("a part of an applied commit".into(), |t| format!("awaits {t:?}")));
         }
     }

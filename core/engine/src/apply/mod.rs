@@ -422,7 +422,8 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     }
     // a part it cannot judge (its thing's record, record chain or the author's reach) goes; with
     // every held part such the commit is unjudgeable, never pending (spec/commits.md §4): thrown
-    // out before a missing epoch or a `ts` ahead could keep its bytes
+    // out before a missing epoch or a `ts` ahead could keep its bytes. One pending that judges
+    // so later (its bad parts dropped, its pages resolving its header) goes then (`ingest_class`)
     let mut unjudged: BTreeMap<usize, Reason> = BTreeMap::new();
     for (ai, a) in h.aspects.iter().enumerate() {
         if skip.contains(&ai) || !blob.parts.iter().any(|p| p.ai == ai) {
@@ -742,6 +743,14 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
         }
         Exam::Awaits(r) => {
             keys::read_pending_boxes(tx, &blob, &id)?;
+            // a stored copy judged unjudgeable (once judged, its bad parts dropped, it holds only
+            // unjudgeable ones; pages resolved its header): nothing of it is kept (spec/commits.md
+            // §4), and its carriers deliver it again, each copy thrown out as on arrival
+            if tx.core.ix.pending.contains_key(&id) {
+                crate::retention::forget_waiting_leftovers(tx, &id)?;
+                unpend(tx, &id)?;
+                tx.core.redeliver.insert(id);
+            }
             tx.core.waits.awaits(id, blob.header.aspects.iter().map(|a| a.tid).collect());
             Ingested::Awaits(id, r)
         }
