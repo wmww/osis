@@ -1202,7 +1202,7 @@ fn refreshed_value_lives_while_author_present_spec_crdt_4_7() {
         net.engine(a).write(m).unwrap();
         local(net, a);
     };
-    let entries = |net: &Net| osis_proto::LabelStore::live_ids(net.hosts[host].hub.store(), &l).unwrap().len();
+    let entries = |net: &Net| osis_proto::LabelStore::live_ids(&*net.hosts[host].hub.store(), &l).unwrap().len();
     let base = entries(&net);
     refresh(&mut net, "c1");
     net.run();
@@ -1815,9 +1815,11 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     // and the refusal is genuine: the host keeps no plain entry that no node holds (one every
     // holder dropped as absorbed, whose deletion never came, would fill it and excuse divergence)
     if refused {
+        let ids = net.host_ids(s1, &l);
         let store = net.hosts[s1].hub.store();
-        let plain: Vec<osis_base::BlobId> = net.host_ids(s1, &l).into_iter().filter(|b| osis_proto::LabelStore::blob(store, b).ok().flatten().and_then(|x| osis_label::Prefix::parse(&x).ok()).is_some_and(|p| p.class() == osis_label::Class::Ephemeral)).collect();
+        let plain: Vec<osis_base::BlobId> = ids.into_iter().filter(|b| osis_proto::LabelStore::blob(&*store, b).ok().flatten().and_then(|x| osis_label::Prefix::parse(&x).ok()).is_some_and(|p| p.class() == osis_label::Class::Ephemeral)).collect();
         let held: BTreeSet<osis_base::BlobId> = nodes.iter().flat_map(|n| net.nodes[*n].sync.as_ref().unwrap().ephemeral_held_entries(&l).into_iter().map(|x| x.0)).collect();
+        drop(store);
         let stale: Vec<_> = plain.iter().filter(|b| !held.contains(b)).collect();
         if !stale.is_empty() {
             panic!("seed {seed}: the full host keeps entries {stale:?} no node holds (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &hosts, &l, w));
@@ -2576,7 +2578,7 @@ fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
     let t = net.item(ns[0], g, g, "doc");
     net.run();
     let l = net.label(ns[0]);
-    let live = |net: &Net| osis_proto::LabelStore::live_ids(net.hosts[host].hub.store(), &l).unwrap().len();
+    let live = |net: &Net| osis_proto::LabelStore::live_ids(&*net.hosts[host].hub.store(), &l).unwrap().len();
     let held = live(&net);
     let up_del = |net: &Net| (uploads_sent(net), net.sent_kinds.get(&14).copied().unwrap_or(0));
     let (up, del) = up_del(&net);
@@ -3747,7 +3749,7 @@ fn moving_cursor_one_entry_per_author_spec_sync_9() {
     net.run();
     let l = net.label(a);
     let me = s(&net.tid(a).to_string());
-    let entries = |net: &Net| osis_proto::LabelStore::live_ids(net.hosts[host].hub.store(), &l).unwrap().len();
+    let entries = |net: &Net| osis_proto::LabelStore::live_ids(&*net.hosts[host].hub.store(), &l).unwrap().len();
     let base = entries(&net);
     let held = |net: &mut Net, n: usize| net.engine(n).memory_commits().len();
     let (ha, hb) = (held(&mut net, a), held(&mut net, b));

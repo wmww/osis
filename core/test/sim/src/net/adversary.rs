@@ -204,7 +204,8 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
     let (ta, tb) = (sim.tid(a)?, sim.tid(b)?);
     let hub = sim.hub(s).ok_or_else(|| sim.fail("host down"))?;
     let mut checked = 0;
-    for id in hub.store().live_ids(&old.label).unwrap_or_default() {
+    let held = hub.store().live_ids(&old.label).unwrap_or_default();
+    for id in held {
         let Some((c, _)) = sim.known.get(&(old.label, id)) else { continue };
         // honest commits written after their author had applied the removal (spec/requirements.md,
         // Out of scope: revocation reaches a writer when it next syncs; M's own are M's)

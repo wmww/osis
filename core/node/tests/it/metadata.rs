@@ -23,7 +23,8 @@ fn stored(net: &Net, host: usize) -> Vec<(LabelId, BlobId, Vec<u8>, [u8; osis_cr
     let s = &net.hosts[host];
     let mut out = Vec::new();
     for l in net.labels_at(host) {
-        for id in s.hub.store().live_ids(&l).unwrap() {
+        let held = s.hub.store().live_ids(&l).unwrap();
+        for id in held {
             let blob = s.backend.get_blob(&id).unwrap().unwrap();
             let wrap = s.hub.store().entry(&l, &id).unwrap().unwrap().wrap;
             out.push((l, id, blob, wrap));

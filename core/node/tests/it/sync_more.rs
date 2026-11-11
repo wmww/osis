@@ -51,13 +51,14 @@ fn certificates_spec_permissions_4() {
         if *au != rt {
             continue;
         }
-        let stamped = osis_proto::LabelStore::entry(store, &l, &id).unwrap().unwrap().stamp.is_some();
+        let stamped = osis_proto::LabelStore::entry(&*store, &l, &id).unwrap().unwrap().stamp.is_some();
         if aks.contains("node.0") {
             assert!(stamped, "the card was promoted");
             card += 1;
         }
     }
     assert!(card > 0);
+    drop(store);
     // a quiet label places nothing more
     let n = net.host_ids(host, &l).len();
     net.advance(60_000);
@@ -112,7 +113,7 @@ fn promotion_waits_for_the_chain_at_the_host_spec_sync_5() {
     let mut cards = 0;
     for (id, k) in net.sync(r).entries(&l) {
         let EntryKind::Commit { commit, parts, .. } = k else { continue };
-        let at_host = osis_proto::LabelStore::entry(net.hosts[host].hub.store(), &l, &id).unwrap();
+        let at_host = osis_proto::LabelStore::entry(&*net.hosts[host].hub.store(), &l, &id).unwrap();
         if keys.contains(&commit) {
             assert!(at_host.is_none(), "the keyset never reached the host");
         }
@@ -865,7 +866,7 @@ fn forged_certificate_copy_ignored_spec_commits_4() {
         let s = net.engine(w).seal_to(&fake, osis_label::Class::Durable, &secret, &mut osis_crypto::SeededRng::from_u64(7)).unwrap().unwrap();
         let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, 1).unwrap();
         let put = osis_proto::Put { blob_id: s.id, blob: &s.blob, wrap, stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
-        osis_proto::LabelStore::put(net.hosts[host].hub.store_mut(), &l, put).unwrap();
+        osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store_mut(), &l, put).unwrap();
         forged.push(s.id);
     }
     net.set_online(w, true);
@@ -895,7 +896,7 @@ fn deleted_copy_placed_again_spec_permissions_4() {
     net.set_online(r, false);
     for (id, _) in &before {
         let now = net.now();
-        osis_proto::LabelStore::delete(net.hosts[host].hub.store_mut(), &l, id, now).unwrap();
+        osis_proto::LabelStore::delete(&mut *net.hosts[host].hub.store_mut(), &l, id, now).unwrap();
     }
     net.set_online(r, true);
     net.run();
@@ -957,7 +958,8 @@ fn newcomer_after_rotation_reads_older_copies_spec_crypto_4() {
     let (cc, _) = chain_commit(&mut net, w, g, wn, "node.0");
     let cards: Vec<osis_base::BlobId> = net.sync(w).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cc)).map(|(id, _)| id).collect();
     let store = net.hosts[host].hub.store();
-    assert!(!cards.is_empty() && cards.iter().all(|id| osis_proto::LabelStore::entry(store, &l, id).unwrap().is_some_and(|m| osis_crypto::unwrap(&old, id, &m.wrap).is_ok())));
+    assert!(!cards.is_empty() && cards.iter().all(|id| osis_proto::LabelStore::entry(&*store, &l, id).unwrap().is_some_and(|m| osis_crypto::unwrap(&old, id, &m.wrap).is_ok())));
+    drop(store);
     net.set_online(r, true);
     net.run();
     assert_eq!(net.read(r, t), Some(s("after")), "the newcomer verified the writer");
@@ -1110,7 +1112,7 @@ fn reencrypt_loop_bounded_spec_sync_1() {
         let ids = net.host_ids(0, &l);
         for id in ids {
             if live.contains(&id) {
-                osis_proto::LabelStore::delete(net.hosts[0].hub.store_mut(), &l, &id, now).unwrap();
+                osis_proto::LabelStore::delete(&mut *net.hosts[0].hub.store_mut(), &l, &id, now).unwrap();
             }
         }
         net.set_online(b, false);

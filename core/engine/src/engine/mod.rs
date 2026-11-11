@@ -2832,6 +2832,11 @@ impl Engine {
         &self.core.id
     }
 
+    /// The clock the node runs on.
+    pub fn clock(&self) -> Arc<dyn Clock> {
+        self.clock.clone()
+    }
+
     /// The wall clock.
     pub fn now(&self) -> WallMs {
         self.core.now()

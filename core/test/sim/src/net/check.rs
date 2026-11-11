@@ -456,31 +456,35 @@ fn labels(sim: &mut NetSim) -> Res<()> {
             continue;
         }
         let Some(hub) = sim.hub(s) else { continue };
-        let st = hub.store();
-        let ls = st.labels_after(None, 4096).map_err(|e| sim.fail(e.to_string()))?;
-        let mut lives: BTreeMap<LabelId, BTreeSet<BlobId>> = BTreeMap::new();
-        let mut deposited: Vec<(LabelId, BlobId)> = Vec::new();
-        let mut newly_tombed = Vec::new();
-        for l in &ls {
-            let live: BTreeSet<BlobId> = st.live_ids(l).map_err(|e| sim.fail(e.to_string()))?.into_iter().collect();
-            for b in &live {
-                if st.tombstoned(l, b).unwrap_or(false) {
-                    return Err(sim.fail(format!("host {s}: live entry {b:?} under {l:?} is tombstoned")));
+        let scanned = (|| -> Result<_, String> {
+            let st = hub.store();
+            let ls = st.labels_after(None, 4096).map_err(|e| e.to_string())?;
+            let mut lives: BTreeMap<LabelId, BTreeSet<BlobId>> = BTreeMap::new();
+            let mut deposited: Vec<(LabelId, BlobId)> = Vec::new();
+            let mut newly_tombed = Vec::new();
+            for l in &ls {
+                let live: BTreeSet<BlobId> = st.live_ids(l).map_err(|e| e.to_string())?.into_iter().collect();
+                for b in &live {
+                    if st.tombstoned(l, b).unwrap_or(false) {
+                        return Err(format!("host {s}: live entry {b:?} under {l:?} is tombstoned"));
+                    }
+                    if sim.tombs.get(&s).is_some_and(|t| t.contains(&(*l, *b))) {
+                        return Err(format!("host {s}: blob {b:?} under {l:?} came back after its tombstone"));
+                    }
+                    if st.entry(l, b).ok().flatten().is_some_and(|e| e.stamp.is_none()) {
+                        deposited.push((*l, *b));
+                    }
                 }
-                if sim.tombs.get(&s).is_some_and(|t| t.contains(&(*l, *b))) {
-                    return Err(sim.fail(format!("host {s}: blob {b:?} under {l:?} came back after its tombstone")));
+                for (kl, kb) in sim.known.keys() {
+                    if kl == l && !live.contains(kb) && st.tombstoned(l, kb).unwrap_or(false) {
+                        newly_tombed.push((*l, *kb));
+                    }
                 }
-                if st.entry(l, b).ok().flatten().is_some_and(|e| e.stamp.is_none()) {
-                    deposited.push((*l, *b));
-                }
+                lives.insert(*l, live);
             }
-            for (kl, kb) in sim.known.keys() {
-                if kl == l && !live.contains(kb) && st.tombstoned(l, kb).unwrap_or(false) {
-                    newly_tombed.push((*l, *kb));
-                }
-            }
-            lives.insert(*l, live);
-        }
+            Ok((lives, deposited, newly_tombed))
+        })();
+        let (lives, deposited, newly_tombed) = scanned.map_err(|e| sim.fail(e))?;
         sim.tombs.entry(s).or_default().extend(newly_tombed);
         let key = sim.hosts.get(s).map(|x| x.key).unwrap_or([0; 32]);
         for n in 0..sim.nodes.len() {
@@ -510,15 +514,20 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                         if !held {
                             // the node's entries of that commit, and what the host says of them
                             let ents: Vec<(BlobId, osis_node::sync::EntryKind)> = sim.nodes.get(n).and_then(|x| x.sync.as_ref()).map(|x| x.entries(&l)).unwrap_or_default().into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c)).collect();
-                            let st = sim.hub(s).map(|h| h.store());
                             // an ephemeral body the host's cap keeps out, by its own accounting:
                             // the defined outcome past a cap (spec/sync.md §5, §9), not a lack
                             let sizes = sim.nodes.get(n).and_then(|x| x.sync.as_ref()).map(|x| x.ephemeral_held_entries(&l)).unwrap_or_default();
-                            if ents.iter().any(|(b, _)| sizes.iter().any(|(sb, size)| sb == b && st.is_some_and(|x| !x.ephemeral_fits(&l, *size as u64)))) {
+                            let (capped, at) = {
+                                let st = sim.hub(s).map(|h| h.store());
+                                let st = st.as_deref();
+                                let capped = ents.iter().any(|(b, _)| sizes.iter().any(|(sb, size)| sb == b && st.is_some_and(|x| !x.ephemeral_fits(&l, *size as u64))));
+                                let at: Vec<String> = ents.iter().map(|(b, k)| format!("{b:?} {k:?} live {} tombstoned {}", live.contains(b), st.and_then(|x| x.tombstoned(&l, b).ok()).unwrap_or(false))).collect();
+                                (capped, at)
+                            };
+                            if capped {
                                 sim.note(format!("host {s}: label {l:?} keeps out body {c:?} of node {n} for its ephemeral cap"));
                                 continue;
                             }
-                            let at: Vec<String> = ents.iter().map(|(b, k)| format!("{b:?} {k:?} live {} tombstoned {}", live.contains(b), st.and_then(|x| x.tombstoned(&l, b).ok()).unwrap_or(false))).collect();
                             return Err(sim.fail(format!("host {s}: label {l:?} lacks body {c:?} {parts:?} that writer node {n} judges must-hold; its entries {at:?}")));
                         }
                     }
@@ -615,7 +624,8 @@ pub fn log_heads(sim: &NetSim) -> Heads {
             continue;
         }
         let Some(hub) = sim.hub(s) else { continue };
-        for l in hub.store().labels_after(None, 4096).unwrap_or_default() {
+        let held = hub.store().labels_after(None, 4096).unwrap_or_default();
+        for l in held {
             if let Ok(h) = hub.store().log_head(&l) {
                 m.insert((s, l), h);
             }

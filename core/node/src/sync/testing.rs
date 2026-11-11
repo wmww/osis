@@ -22,7 +22,9 @@ impl SyncEngine {
             let pending: Vec<Event> = self.events.try_iter().collect();
             self.events = self.engine.test_subscribe_with(pending.clone(), true);
             let events = engine.test_subscribe_with(pending, true);
+            let hub_store = std::sync::Arc::new(std::sync::Mutex::new(self.hub_store.lock().unwrap_or_else(|p| p.into_inner()).test_copy(engine.clock())?));
             Ok(SyncEngine {
+                hub_store,
                 engine,
                 forget_seeded: self.forget_seeded.clone(),
                 pending_seeded: self.pending_seeded.clone(),

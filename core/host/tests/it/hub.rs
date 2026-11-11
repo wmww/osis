@@ -119,7 +119,7 @@ fn deletes_and_tombstones() {
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(plain.clone())] })), vec![Code::TOMBSTONED]);
     w.advance(osis_base::format::TOMBSTONE_LIFETIME_MS);
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(plain)] })), vec![Code::OK]);
-    let ids = osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap();
+    let ids = osis_proto::LabelStore::live_ids(&*w.hubs[h].store(), &l.id).unwrap();
     assert_eq!(ids, vec![osis_label::blob_id(&blob(12))]);
 }
 
@@ -145,8 +145,8 @@ fn deletes_and_expiry() {
     w.advance(3_000);
     assert!(w.take(b).is_empty(), "expiry pushes nothing");
     let eid = osis_label::blob_id(&expiring);
-    assert_eq!(osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap(), vec![tid]);
-    assert!(!osis_proto::LabelStore::tombstoned(w.hubs[h].store(), &l.id, &eid).unwrap());
+    assert_eq!(osis_proto::LabelStore::live_ids(&*w.hubs[h].store(), &l.id).unwrap(), vec![tid]);
+    assert!(!osis_proto::LabelStore::tombstoned(&*w.hubs[h].store(), &l.id, &eid).unwrap());
     assert_eq!(statuses(&w.run(a, Command::Delete { label: l.id, items: vec![DeleteItem::sign(&dk, &l.id, tid).unwrap()] })), vec![Code::OK]);
     let (pushed, _) = events_of(&w.take(b));
     assert_eq!(pushed, vec![Event::Deleted(tid)]);
@@ -372,7 +372,7 @@ fn upload_replaces_by_delete_proof_at_cap_spec_sync_5() {
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(3, vec![bad])] })), vec![Code::REFUSED]);
     let good = item(0, &l.head_keys().delete.clone());
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(3, vec![good])] })), vec![Code::OK]);
-    let live = osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap();
+    let live = osis_proto::LabelStore::live_ids(&*w.hubs[h].store(), &l.id).unwrap();
     assert_eq!(live, sorted(vec![bid(1), bid(2), bid(3)]));
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(0))] })), vec![Code::TOMBSTONED]);
 }
@@ -412,13 +412,13 @@ fn two_hosts_replicate() {
     w.run(a, Command::Delete { label: l.id, items: vec![item] });
     assert!(w.take(b).is_empty());
     // the acknowledged position is kept: a new connection sends nothing new
-    let (log_id, head) = osis_proto::LabelStore::log_head(w.hubs[s1].store(), &l.id).unwrap();
+    let (log_id, head) = osis_proto::LabelStore::log_head(&*w.hubs[s1].store(), &l.id).unwrap();
     assert_eq!(w.hubs[s1].store().replica_pos(&hub_key(s2), &l.id).unwrap(), Some((log_id, head)));
     w.cut(link);
-    let peer_head = osis_proto::LabelStore::log_head(w.hubs[s2].store(), &l.id).unwrap();
+    let peer_head = osis_proto::LabelStore::log_head(&*w.hubs[s2].store(), &l.id).unwrap();
     w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(11))] });
     w.peer(s1, s2);
-    assert_eq!(osis_proto::LabelStore::log_head(w.hubs[s2].store(), &l.id).unwrap().1, peer_head.1 + 1);
+    assert_eq!(osis_proto::LabelStore::log_head(&*w.hubs[s2].store(), &l.id).unwrap().1, peer_head.1 + 1);
     assert_eq!(added(&events_of(&w.take(b)).0), vec![bid(11)]);
     let (evs, _) = events_of(&w.run(b, sync(l.id, cursor, vec![], vec![])));
     assert_eq!(added(&evs), vec![bid(10), bid(11)]);
@@ -438,11 +438,11 @@ fn replication_replays_past_the_horizon() {
     let (child, set) = l.rotate(20);
     w.run(a, Command::Register { label: l.id, step: child, claim_set: Some(set) });
     w.run(a, Command::Upload { label: l.id, entries: (100..300).map(|n| l.entry(blob(n))).collect() });
-    assert!(osis_proto::LabelStore::log_after(w.hubs[s1].store(), &l.id, 0, 1).unwrap().is_none());
+    assert!(osis_proto::LabelStore::log_after(&*w.hubs[s1].store(), &l.id, 0, 1).unwrap().is_none());
     w.peer(s1, s2);
     let b = w.connect(s2);
     w.open(b, &l);
-    assert_eq!(osis_proto::LabelStore::path(w.hubs[s2].store(), &l.id).unwrap(), l.steps);
+    assert_eq!(osis_proto::LabelStore::path(&*w.hubs[s2].store(), &l.id).unwrap(), l.steps);
     let (evs, _) = events_of(&w.run(b, Command::Sync { label: l.id, cursor: None, inline_limit: 0, entries: vec![], gained: vec![] }));
     assert_eq!(added(&evs), sorted((0..300).map(bid).collect()));
     assert!(w.diagnostics.is_empty(), "{:?}", w.diagnostics);

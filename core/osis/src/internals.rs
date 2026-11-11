@@ -107,6 +107,8 @@ pub trait MemStoreMeasures {
     /// An independent copy of the store as it is now, as a node backup takes it (the host store
     /// left out): opening it later is a restore.
     fn backup(&self) -> crate::MemStore;
+    /// The backend of the node's one store beside the engine (the hub's), shared with it.
+    fn hub_backend(&self) -> osis_store::MemoryBackend;
 }
 
 impl MemStoreMeasures for crate::MemStore {
@@ -121,6 +123,9 @@ impl MemStoreMeasures for crate::MemStore {
     }
     fn backup(&self) -> crate::MemStore {
         crate::MemStore::backup(self)
+    }
+    fn hub_backend(&self) -> osis_store::MemoryBackend {
+        self.host.clone()
     }
 }
 

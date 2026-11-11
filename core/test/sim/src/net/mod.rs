@@ -544,7 +544,7 @@ impl NetSim {
         let store = store.and_then(|st| HostStore::open(st, clock, policy, Box::new(SeededRng::from_u64(seed ^ 0x570e))).map_err(|e| e.to_string()));
         let store = store.map_err(|e| self.fail(format!("host {s} open: {e}")))?;
         let host = self.host(s)?;
-        host.hub = Some(Hub::new(store, Box::new(SeededRng::from_u64(seed ^ 0x5eed))));
+        host.hub = Some(Hub::new(Arc::new(std::sync::Mutex::new(store)), Box::new(SeededRng::from_u64(seed ^ 0x5eed))));
         host.up = true;
         Ok(())
     }
@@ -603,15 +603,17 @@ impl NetSim {
         engine.watch_commits();
         let node = self.node(n)?;
         let sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed)), node.cfg.clone());
-        let sync = sync.map_err(|e| self.fail(format!("node {n} sync start: {e}")))?;
+        let mut sync = sync.map_err(|e| self.fail(format!("node {n} sync start: {e}")))?;
         let clock: Arc<dyn Clock> = self.node(n)?.clock.clone();
         let st = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut SeededRng::from_u64(seed ^ 0x40b)).map_err(|e| e.to_string());
         let st = st.and_then(|st| HostStore::open(st, clock, HostPolicy::default(), Box::new(SeededRng::from_u64(seed ^ 0x40c))).map_err(|e| e.to_string()));
         let mut st = st.map_err(|e| self.fail(format!("node {n} hub: {e}")))?;
         st.set_admission(osis_host::Admission::Only(Default::default()), Default::default());
+        sync.set_hub_store(st);
+        let store = sync.hub_store();
         let node = self.node(n)?;
         node.sync = Some(sync);
-        node.hub = Some(Hub::new(st, Box::new(SeededRng::from_u64(seed ^ 0x4ab))));
+        node.hub = Some(Hub::new(store, Box::new(SeededRng::from_u64(seed ^ 0x4ab))));
         node.events = Some(events);
         node.up = true;
         node.wake = None;
@@ -765,7 +767,8 @@ impl NetSim {
                 _ => continue,
             };
             for name in items.iter().filter_map(|i| self.names.get(&i.blob)) {
-                let held = hub.store().labels_after(None, 4096).unwrap_or_default().into_iter().any(|l| hub.store().live_ids(&l).unwrap_or_default().iter().any(|b| self.names.get(b) == Some(name)));
+                let labels = hub.store().labels_after(None, 4096).unwrap_or_default();
+                let held = labels.into_iter().any(|l| hub.store().live_ids(&l).unwrap_or_default().iter().any(|b| self.names.get(b) == Some(name)));
                 if !held {
                     ARRIVALS.with(|a| {
                         if let Some(a) = a.borrow_mut().as_mut() {
@@ -1968,7 +1971,8 @@ impl NetSim {
         for s in &self.hosts {
             let Some(h) = &s.hub else { continue };
             use osis_proto::LabelStore;
-            for l in h.store().labels_after(None, 4096).unwrap_or_default() {
+            let held = h.store().labels_after(None, 4096).unwrap_or_default();
+            for l in held {
                 v.push(h.store().log_head(&l).map(|x| x.1).unwrap_or(0));
             }
         }
@@ -2002,7 +2006,8 @@ impl NetSim {
             use osis_proto::LabelStore;
             // the commits it holds, not under which label: which copy stayed is the lower blob ID
             let mut holds = BTreeSet::new();
-            for l in hub.store().labels_after(None, 4096).unwrap_or_default() {
+            let held = hub.store().labels_after(None, 4096).unwrap_or_default();
+            for l in held {
                 let live = hub.store().live_ids(&l).unwrap_or_default();
                 holds.extend(live.iter().filter_map(|b| self.known.get(&(l, *b))).cloned());
                 for b in &live {

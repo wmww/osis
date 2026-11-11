@@ -40,10 +40,6 @@ pub struct Host {
     pub node: Option<usize>,
     /// It runs (a node's stops with the node).
     pub up: bool,
-    /// Its store's rows, every write recorded (`MemoryBackend::history`).
-    pub backend: MemoryBackend,
-    /// A node's run of hosting its store belongs to (`HostConfig::store_id`; none: not hosting).
-    pub run: Option<[u8; 32]>,
 }
 
 enum Msg {
@@ -164,34 +160,18 @@ impl World {
         let i = self.hosts.len();
         let b = 0x50u8.wrapping_add(i as u8);
         let key = [b; 32];
-        let backend = MemoryBackend::new();
-        let store = match host_store(&backend, 900 + i as u64).and_then(|st| HostStore::open(st, self.clock.clone(), HostPolicy::default(), Box::new(SeededRng::from_u64(900 + i as u64)))) {
+        let store = match host_store(&MemoryBackend::new(), 900 + i as u64).and_then(|st| HostStore::open(st, self.clock.clone(), HostPolicy::default(), Box::new(SeededRng::from_u64(900 + i as u64)))) {
             Ok(s) => s,
             Err(e) => panic!("host store: {e:?}"),
         };
-        let hub = Hub::new(store, Box::new(SeededRng::from_u64(950 + i as u64)));
-        self.hosts.push(Host { hub, addr: format!("quic://host{i}:1#{}", osis_schema::osis_base::base64url::encode(&key)).parse().unwrap_or_else(|e| panic!("{e:?}")), node: None, up: true, backend, run: None });
+        let hub = Hub::new(std::sync::Arc::new(std::sync::Mutex::new(store)), Box::new(SeededRng::from_u64(950 + i as u64)));
+        self.hosts.push(Host { hub, addr: format!("quic://host{i}:1#{}", osis_schema::osis_base::base64url::encode(&key)).parse().unwrap_or_else(|e| panic!("{e:?}")), node: None, up: true });
         i
     }
 
     /// The hub node `d` runs, if it ever did.
     pub fn host_of(&self, d: usize) -> Option<usize> {
         self.hosts.iter().position(|h| h.node == Some(d))
-    }
-
-    /// An empty host store in memory, every write recorded, and its device.
-    #[allow(clippy::panic)] // test harness: fail the test loudly
-    fn node_store(&self, d: usize, policy: HostPolicy) -> (HostStore, MemoryBackend) {
-        let backend = MemoryBackend::new();
-        backend.record_history();
-        match host_store(&backend, 700 + d as u64).and_then(|st| HostStore::open(st, self.clock.clone(), policy, Box::new(SeededRng::from_u64(700 + d as u64)))) {
-            Ok(mut s) => {
-                // admitting nothing until a config says otherwise
-                s.set_admission(osis_host::Admission::Only(Default::default()), Default::default());
-                (s, backend)
-            }
-            Err(e) => panic!("host store: {e:?}"),
-        }
     }
 
     /// Node `d`'s hub (made on first use), as a host index; its key now names the node.
@@ -203,9 +183,10 @@ impl World {
         if let Some(s) = self.host_of(d) {
             return s;
         }
-        let (store, backend) = self.node_store(d, HostPolicy::default());
+        // the node's one store, beside its engine
+        let Some(store) = self.dbs().get(d).and_then(|x| x.as_ref()).map(|db| db.sync_engine(|s| s.hub_store())) else { panic!("node {d} is not open") };
         let hub = Hub::new(store, Box::new(SeededRng::from_u64(750 + d as u64)));
-        self.hosts.push(Host { hub, addr: format!("quic://node{d}:1#{}", osis_schema::osis_base::base64url::encode(&[0; 32])).parse().unwrap_or_else(|e| panic!("{e:?}")), node: Some(d), up: true, backend, run: None });
+        self.hosts.push(Host { hub, addr: format!("quic://node{d}:1#{}", osis_schema::osis_base::base64url::encode(&[0; 32])).parse().unwrap_or_else(|e| panic!("{e:?}")), node: Some(d), up: true });
         self.hosts.len() - 1
     }
 
@@ -220,28 +201,26 @@ impl World {
         Some(m)
     }
 
-    /// Node `d` serves with `cfg`, or stops (none): its hub takes the host store of the run
-    /// (a new one in memory, every write recorded: `Host::backend`) and the config, or an empty
-    /// store again (connections that opened something there close).
+    /// Node `d` serves with `cfg`, or stops (none: what its store kept for others goes, and
+    /// connections that opened something there close), as the node driver's `host_update`.
     fn host(&mut self, d: usize, cfg: Option<Box<osis_host::HostConfig>>) {
         let s = self.node_hub(d);
-        let run = self.hosts.get(s).and_then(|h| h.run);
-        let want = cfg.as_ref().map(|c| c.store_id);
-        if run != want {
-            let (store, backend) = self.node_store(d, cfg.as_ref().map_or_else(HostPolicy::default, |c| c.policy.clone()));
-            let out = match self.hosts.get_mut(s) {
-                Some(h) => {
-                    h.run = want;
-                    h.backend = backend;
-                    h.hub.replace_store(store).1
+        let Some(h) = self.hosts.get_mut(s) else { return };
+        match cfg {
+            Some(cfg) => {
+                let mut st = h.hub.store_mut();
+                st.set_policy(cfg.policy.clone());
+                st.set_admission(cfg.admission.clone(), cfg.caps.clone());
+            }
+            None => {
+                {
+                    let mut st = h.hub.store_mut();
+                    st.set_policy(HostPolicy::default());
+                    st.set_admission(osis_host::Admission::Only(Default::default()), Default::default());
                 }
-                None => return,
-            };
-            self.hub_out(s, out);
-        }
-        if let (Some(cfg), Some(h)) = (cfg, self.hosts.get_mut(s)) {
-            h.hub.store_mut().set_policy(cfg.policy.clone());
-            h.hub.store_mut().set_admission(cfg.admission.clone(), cfg.caps.clone());
+                let out = h.hub.stop_hosting(&|_| true);
+                self.hub_out(s, out);
+            }
         }
     }
 
@@ -680,6 +659,10 @@ impl World {
     pub fn restart(&mut self, db: Osis, cfg: osis::internals::Opening) -> Osis {
         let Some(old) = self.index(&db) else { panic!("restart: not a node of this world") };
         self.set_online(&db, false);
+        // its hub's store is the closed node's: the new node gets a hub of its own
+        for h in self.hosts.iter_mut().filter(|h| h.node == Some(old)) {
+            h.up = false;
+        }
         match db.close() {
             Ok(osis::Close::Closed) => {}
             other => panic!("restart: close: {other:?}"),

@@ -980,7 +980,7 @@ fn sweep_junk_and_failures() {
     let mut junk = Writes::default();
     junk.put([&b"X"[..], &0u64.to_be_bytes(), &[1, 2, 3]].concat(), vec![]);
     store.write(junk).unwrap();
-    let mut hub = crate::Hub::new(store, Box::new(SeededRng::from_seed([2; 32])));
+    let mut hub = crate::Hub::new(std::sync::Arc::new(std::sync::Mutex::new(store)), Box::new(SeededRng::from_seed([2; 32])));
     assert_eq!(hub.next_due(T0), Some(0));
     faults.at(0, osis_store::Fault::Fail);
     let out = hub.tick(T0);

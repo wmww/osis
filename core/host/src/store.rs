@@ -253,6 +253,8 @@ enum Write {
     LogHead(LabelId, StepId),
     /// A page of the node log's sweep at a wall time.
     LogSweep(u64),
+    /// A label's every node log event and slot, with no deletion event.
+    LogForget(LabelId),
 }
 
 impl Writes {
@@ -319,6 +321,7 @@ impl Db {
                     Write::LogDeleted(l, b, at) => drop(t.log_deleted(l, b, at)?),
                     Write::LogHead(l, h) => drop(t.log_head(l, &h.0)?),
                     Write::LogSweep(now) => drop(t.log_sweep(now)?),
+                    Write::LogForget(l) => t.log_forget(l)?,
                 }
             }
             t.suspend()
@@ -1371,6 +1374,114 @@ impl HostStore {
             tx.batch.put(key(b'R', &[&blob.0]), [&be(refs - 1)[..], &prefix].concat());
         }
         Ok(())
+    }
+
+    /// Drops every label `drop` names, whole and shredded (hosting stopped: the store keeps no
+    /// sync ID for others), with no tombstone, record or deletion event: nobody deleted its
+    /// entries, the store stopped holding them. Its blobs go once no other label references them;
+    /// sweep index rows left naming it are dropped by the sweep (they name a label not held).
+    /// Commits. The labels dropped.
+    pub fn drop_labels(&mut self, drop: &dyn Fn(&LabelId) -> bool) -> Result<Vec<LabelId>, StoreError> {
+        let mut gone = Vec::new();
+        let mut after = None;
+        loop {
+            let page = self.labels_after(after.as_ref(), 256)?;
+            let Some(last) = page.last().copied() else { break };
+            gone.extend(page.into_iter().filter(|l| drop(l)));
+            after = Some(last);
+        }
+        for l in &gone {
+            self.drop_label(l)?;
+        }
+        if let Some(e) = self.failed.take() {
+            self.db.get_mut().open = None;
+            return Err(err(e));
+        }
+        self.db.get_mut().commit().map_err(err)?;
+        Ok(gone)
+    }
+
+    fn drop_label(&mut self, l: &LabelId) -> Result<(), StoreError> {
+        let Some(meta) = self.raw_meta(l)? else { return Ok(()) };
+        let mut w = Writes::default();
+        // blob references, one per entry (`R` counts labels holding the blob)
+        let mut refs: BTreeMap<BlobId, u64> = BTreeMap::new();
+        let prefix = key(b'E', &[&l.0]);
+        let mut from = prefix.clone();
+        let end = osis_store::prefix_end(&prefix);
+        loop {
+            let rows = self.scan(&from, end.as_deref(), 1024)?;
+            let n = rows.len();
+            for (k, _) in &rows {
+                *refs.entry(BlobId(read_arr(k, 17)?)).or_default() += 1;
+            }
+            match rows.last() {
+                Some((k, _)) if n == 1024 => from = [k.as_slice(), &[0]].concat(),
+                _ => break,
+            }
+        }
+        for (b, n) in refs {
+            let (have, pre) = self.refs(&b)?;
+            if have <= n {
+                w.delete(key(b'R', &[&b.0]));
+                w.delete_blob(b);
+            } else {
+                w.put(key(b'R', &[&b.0]), [&be(have - n)[..], &pre].concat());
+            }
+        }
+        for tag in *b"LKSCHVWETG" {
+            let prefix = key(tag, &[&l.0]);
+            let end = osis_store::prefix_end(&prefix);
+            loop {
+                let rows = self.scan(&prefix, end.as_deref(), 1024)?;
+                let n = rows.len();
+                // deletes apply to the open transaction at once, so the next scan moves on
+                let mut page = Writes::default();
+                for (k, _) in rows {
+                    page.delete(k);
+                }
+                self.write_open(page)?;
+                if n < 1024 {
+                    break;
+                }
+            }
+        }
+        // replication positions: `Q peer label`
+        for (k, _) in self.scan_prefix(b"Q", usize::MAX)? {
+            if k.get(33..49) == Some(l.0.as_slice()) {
+                w.delete(k);
+            }
+        }
+        let t = self.totals()?;
+        let t = Totals { labels: t.labels.saturating_sub(1), entries: t.entries.saturating_sub(meta.entries), bytes: t.bytes.saturating_sub(meta.bytes) };
+        w.put(b"N".to_vec(), [be(t.labels), be(t.entries), be(t.bytes)].concat());
+        w.log(Write::LogForget(*l));
+        self.write_open(w)?;
+        // its ephemeral side
+        if let Some(e) = self.eph.labels.remove(l) {
+            self.eph.by_bytes.remove(&(e.all(), *l));
+            self.eph.total = self.eph.total.saturating_sub(e.all());
+            for x in e.entries.keys() {
+                if let Some((_, n)) = self.eph.blobs.get_mut(x) {
+                    *n = n.saturating_sub(1);
+                    if *n == 0 {
+                        self.eph.blobs.remove(x);
+                    }
+                }
+            }
+        }
+        self.eph.seq.remove(l);
+        self.origins.retain(|(x, _), _| x != l);
+        Ok(())
+    }
+
+    /// Applies `w` to the open transaction without committing it (`drop_labels` commits once).
+    fn write_open(&mut self, w: Writes) -> Result<(), StoreError> {
+        let r = self.db.get_mut().apply(w);
+        if let Err(e) = &r {
+            self.failed = Some(e.clone());
+        }
+        r.map_err(err)
     }
 
     /// A blob's reference count and its prefix bytes (`R` row; 0 and none when not held).

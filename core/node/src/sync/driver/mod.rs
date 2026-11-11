@@ -10,9 +10,9 @@
 //! here: every input is an `Event`, every output an `Action`. Engine calls run under
 //! `block_in_place` on a multi-thread runtime. The engine lives in a `Shared`: owned by the
 //! driver (`run`), or shared with the app (`run_shared`: the `osis` handle keeps it behind its own
-//! lock and hands the driver the actions of its calls). While the node hosts (`Action::Host`,
-//! from its `host^.0`) the hub's store is the host store, opened by the holder
-//! (`Shared::host_store`); else an empty one in memory. The node's own dials of a key it listens
+//! lock and hands the driver the actions of its calls). The hub's store is the node's one store
+//! beside the engine (`SyncEngine::hub_store`); its `host^.0` (`Action::Host`) sets what it keeps
+//! for others. The node's own dials of a key it listens
 //! under reach the hub over an in-process link pair, no socket (notes/serving.md, The hub in the
 //! node).
 
@@ -20,13 +20,13 @@ mod hub;
 
 use super::{Action, ConnId, Event, SyncEngine};
 use osis_base::Clock;
+use osis_host::HostPolicy;
 use osis_crypto::RngCore;
 use hub::HubRun;
 use osis_host::HostConfig;
 use osis_transport::link::{self, Link, LinkTx, blocking};
 use osis_transport::lan::Announce;
 use osis_transport::{Address, ListenConfig, Listener, StaticSecret, Transport};
-use osis_host::HostPolicy;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
@@ -162,41 +162,6 @@ struct Conn {
 pub trait Shared: Send + Sync + 'static {
     /// Runs `f` on the engine; returns its actions. `None`: the engine is gone (the driver stops).
     fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>>;
-    /// Opens the store the node's host keeps, its own beside the node's (once per start of
-    /// hosting; closed, then erased, when it stops). In memory unless the holder says otherwise.
-    fn host_store(&self) -> Result<osis_store::Store, String> {
-        let (b, r) = (Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()));
-        osis_store::Store::create(b, r, osis_store::StoreConfig::default(), &mut osis_crypto::OsRng).map_err(|e| e.to_string())
-    }
-    /// Erases the host store (its key root first: that crypto-shreds it), never while it is
-    /// open; the next `host_store` is empty.
-    fn erase_host_store(&self) -> Result<(), String> {
-        Ok(())
-    }
-}
-
-/// The local record of the host store naming the run of hosting it belongs to.
-const HOST_RUN_RECORD: &[u8] = b"host run";
-
-/// Opens the host store of run of hosting `key` (`HostConfig::store_id`). One not recording
-/// `key` (another run's: hosting stopped and started again while no driver ran, or before it
-/// carried out the stop; recording none: new, or half erased by a crash) is erased first, then
-/// records `key` before any entry goes in.
-fn open_host_store(shared: &dyn Shared, key: &[u8; 32]) -> Result<osis_store::Store, String> {
-    let e = |e: osis_store::Error| e.to_string();
-    let mut s = shared.host_store()?;
-    let mut rng = osis_crypto::OsRng;
-    let kept = s.transaction(&mut rng).and_then(|mut t| t.get_local(HOST_RUN_RECORD)).map_err(e)?;
-    if kept.as_deref() == Some(key.as_slice()) {
-        return Ok(s);
-    }
-    drop(s);
-    shared.erase_host_store()?;
-    let mut s = shared.host_store()?;
-    let mut t = s.transaction(&mut rng).map_err(e)?;
-    t.put_local(HOST_RUN_RECORD, key, osis_store::Shred::No).map_err(e)?;
-    t.commit().map_err(e)?;
-    Ok(s)
 }
 
 /// A holder of the engine itself (`run`).
@@ -297,19 +262,6 @@ struct Driver<T: Transport, H: Shared> {
     /// the hub, and what the hub handed up not yet fed to the engine.
     hub_downs: Vec<(osis_host::ConnId, osis_host::Down)>,
     hub_ups: Vec<(osis_host::ConnId, osis_host::Up)>,
-}
-
-/// A host store in memory, empty and admitting nothing, under the default policy: the hub's
-/// while the node hosts nothing.
-fn empty_store(clock: Arc<dyn Clock>) -> osis_host::HostStore {
-    let (b, r) = (Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()));
-    #[allow(clippy::expect_used)]
-    let s = osis_store::Store::create(b, r, osis_store::StoreConfig::default(), &mut osis_crypto::OsRng).expect("a store in memory");
-    #[allow(clippy::expect_used)]
-    let mut store = osis_host::HostStore::open(s, clock, HostPolicy::default(), Box::new(osis_crypto::OsRng)).expect("a host store in memory");
-    // it takes no label
-    store.set_admission(osis_host::Admission::Only(Default::default()), Default::default());
-    store
 }
 
 impl<T: Transport, H: Shared> Driver<T, H> {
@@ -745,63 +697,30 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         }
     }
 
-    /// Serves `store` from now on; the one served before is dropped (closed).
-    fn hub_store(&mut self, store: osis_host::HostStore) {
-        let (old, out) = self.hub.hub_mut().replace_store(store);
-        drop(old);
-        self.hub.policy_changed();
-        self.hub.applied(out);
-    }
-
-    /// Carries out the last `Action::Host`: hosting stops (the hub's store goes back to an empty
-    /// one, the host store is erased once the engine no longer hosts), starts (the host store of
-    /// its run opened), or changes in place (admission, caps, policy, replication peers).
+    /// Carries out the last `Action::Host`: hosting stops (the labels it kept for others go from
+    /// the store, under the default policy admitting nothing), starts or changes in place
+    /// (admission, caps, policy, replication peers).
     async fn host_update(&mut self) {
         let Some(want) = self.host_want.take() else { return };
         let Some(cfg) = want else {
-            let hosted = self.hub.cfg.take().is_some();
+            self.hub.cfg = None;
             self.hub.replicate(&self.transport, &[], None);
-            if hosted {
-                self.hub_store(empty_store(self.clock.clone()));
+            {
+                let mut st = self.hub.hub_mut().store_mut();
+                st.set_policy(HostPolicy::default());
+                st.set_admission(osis_host::Admission::Only(Default::default()), Default::default());
             }
-            // hosting stopped (not the driver): the host store goes with the run
-            if self.read(|s| !s.hosts()) == Some(true) {
-                let shared = &self.shared;
-                if let Err(e) = blocking(|| shared.erase_host_store()) {
-                    (self.log)(&format!("erasing the host store: {e}"));
-                }
-            }
+            let out = blocking(|| self.hub.hub_mut().stop_hosting(&|_| true));
+            self.hub.policy_changed();
+            self.hub.applied(out);
             return;
         };
         let cfg = *cfg;
-        // a config of a run that is over (hosting stopped and maybe started again since it was
-        // emitted): the newer `Action::Host` is on its way
-        if self.read(|s| s.host_current(&cfg)) != Some(true) {
-            return;
+        {
+            let mut st = self.hub.hub_mut().store_mut();
+            st.set_policy(cfg.policy.clone());
+            st.set_admission(cfg.admission.clone(), cfg.caps.clone());
         }
-        if self.hub.cfg.as_ref().is_none_or(|c| c.store_id != cfg.store_id) {
-            // the store of an older run closes before the new one opens
-            if self.hub.cfg.take().is_some() {
-                self.hub_store(empty_store(self.clock.clone()));
-            }
-            let shared = &self.shared;
-            let opened = blocking(|| open_host_store(shared, &cfg.store_id).and_then(|s| osis_host::HostStore::open(s, self.clock.clone(), cfg.policy.clone(), Box::new(osis_crypto::OsRng)).map_err(|e| e.to_string())));
-            match opened {
-                Ok(store) => self.hub_store(store),
-                Err(e) => {
-                    let e = format!("hosting: host store: {e}");
-                    (self.log)(&e);
-                    self.call(&mut |s| {
-                        s.diag(e.clone());
-                        Vec::new()
-                    });
-                    return;
-                }
-            }
-        }
-        let store = self.hub.hub_mut().store_mut();
-        store.set_policy(cfg.policy.clone());
-        store.set_admission(cfg.admission.clone(), cfg.caps.clone());
         self.hub.policy_changed();
         if self.hub.cfg.as_ref().is_none_or(|c| c.replicate != cfg.replicate) {
             let secret = self.dialable_secret();
@@ -873,7 +792,16 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
     // unbounded, yet at most a read and an end per hub connection, a link per dial task and the
     // listeners' accepts (`link::serve`'s slots)
     let (hub_tx, mut hub_rx) = mpsc::unbounded_channel();
-    let mut hub = HubRun::new(osis_host::Hub::new(empty_store(clock.clone()), Box::new(osis_crypto::OsRng)), clock.clone(), log.clone(), hub_tx);
+    let mut store = None;
+    let _ = blocking(|| {
+        shared.with(&mut |s| {
+            store = Some(s.hub_store());
+            Vec::new()
+        })
+    });
+    // the engine is gone: nothing to drive
+    let Some(store) = store else { return shared };
+    let mut hub = HubRun::new(osis_host::Hub::new(store, Box::new(osis_crypto::OsRng)), clock.clone(), log.clone(), hub_tx);
     for l in listeners {
         let key = l.address().key;
         hub.listen(key, vec![l]);
@@ -907,8 +835,10 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
         Vec::new()
     });
     d.hub.own = d.read(SyncEngine::dialable_key);
-    // a host store left by a stop no driver carried out (not hosting: erased)
-    d.host_want = Some(None);
+    // labels kept for others by a hosting that stopped while no driver ran go
+    if d.read(|s| !s.hosts()) == Some(true) {
+        d.host_want = Some(None);
+    }
     d.host_update().await;
     d.feed(Event::Tick);
     while !d.gone {

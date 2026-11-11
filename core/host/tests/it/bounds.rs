@@ -13,7 +13,7 @@ use osis_host::{HostPolicy, HubOutput};
 use osis_store::Fault;
 
 fn live(w: &World, h: usize, l: &Label) -> Vec<BlobId> {
-    LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap()
+    LabelStore::live_ids(&*w.hubs[h].store(), &l.id).unwrap()
 }
 
 // spec: none (host policy): a connection without a Hello within `hello_ms` is closed
@@ -523,7 +523,7 @@ fn replication_retries_after_refusal() {
     w.run(a, Command::Upload { label: l.id, entries: (0..5).map(|n| l.entry(blob(n))).collect() });
     w.peer(s1, s2);
     assert_eq!(live(&w, s2, &l).len(), 3);
-    let head = LabelStore::log_head(w.hubs[s1].store(), &l.id).unwrap();
+    let head = LabelStore::log_head(&*w.hubs[s1].store(), &l.id).unwrap();
     let pos = w.hubs[s1].store().replica_pos(&hub_key(s2), &l.id).unwrap();
     assert!(pos.is_none_or(|p| p.1 < head.1), "{pos:?}");
     assert!(w.diagnostics.iter().any(|d| d.contains("retrying")), "{:?}", w.diagnostics);
@@ -558,7 +558,7 @@ fn mutual_replication_settles() {
     w.pump();
     w.settle();
     w.run(a, Command::Upload { label: l.id, entries: (0..10).map(|n| l.entry(blob(n))).collect() });
-    let heads = |w: &World| [s1, s2].map(|h| LabelStore::log_head(w.hubs[h].store(), &l.id).unwrap().1);
+    let heads = |w: &World| [s1, s2].map(|h| LabelStore::log_head(&*w.hubs[h].store(), &l.id).unwrap().1);
     let settled = heads(&w);
     // genesis and 11 adds: the side holding one wrap keeps it
     assert!(settled.iter().all(|h| *h == 12), "{settled:?}");

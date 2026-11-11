@@ -45,7 +45,13 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 fn serving_own_then_open_spec_sync_5() {
     let mut w = World::new();
     let base = w.add_host();
-    let alice = w.account(1, &[base]);
+    // Alice's one store records every write (the hygiene check below)
+    let mut c = w.cfg(1, &[base]);
+    let mem = osis::MemStore::new();
+    let hub_rows = osis::internals::MemStoreMeasures::hub_backend(&mem);
+    hub_rows.record_history();
+    c.store = osis::Store::Memory(mem);
+    let alice = osis::internals::create(c).unwrap();
     let bob = w.account(2, &[base]);
     let carol = w.account(3, &[base]);
     w.run();
@@ -93,7 +99,7 @@ fn serving_own_then_open_spec_sync_5() {
     assert_eq!(paired.at(tb, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), Some(Value::Str("bob's".into())));
 
     // hygiene: no tid or AK of the label Alice reads or the one she does not
-    let mut history = w.hosts[s].backend.history();
+    let mut history = hub_rows.history();
     assert!(!history.is_empty());
     let keys = w.hosts[s].hub.store_mut().store_mut().unwrap().forensic_keys().unwrap();
     let plain = osis_store::attack(&osis_store::Evidence { store_keys: keys, rows: history.clone(), ..Default::default() }, None).into_iter().map(|r| r.plain).collect::<Vec<_>>();
@@ -400,15 +406,13 @@ fn host_store_labels(dir: &std::path::Path) -> Vec<LabelId> {
     h.labels_after(None, 1000).unwrap()
 }
 
-// spec/data-model.md §9 (`host^.0` absent: it does not serve; stopping erases the serving store),
-// spec/requirements.md Deletion: stopping serving erases the serving store (`host.redb`,
-// `host.root`) once the peer closes it, on a running driver or at the next driver start when
-// it stopped while none ran; a start after a stop no driver carried out (a new run) serves
-// nothing of the old store (another node's label goes; the node's own home is registered again
-// at its address, its own saved peer).
+// spec/data-model.md §9 (`host^.0` absent: it does not serve), spec/requirements.md Deletion,
+// issues/net-one-peer.md step 4: stopping serving drops what the node kept for others from its
+// one store (shredded), not the store: on a running driver, or at the next driver start when it
+// stopped while none ran.
 #[test]
-fn stop_serving_erases_its_store_spec_data_model_9() {
-    let dir = std::env::temp_dir().join(format!("osis-host-erase-{}", std::process::id()));
+fn stop_serving_drops_what_it_kept_spec_data_model_9() {
+    let dir = std::env::temp_dir().join(format!("osis-host-drop-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let net = osis_transport::Net::new(41);
     let at = |i: u64, run: bool| {
@@ -421,7 +425,7 @@ fn stop_serving_erases_its_store_spec_data_model_9() {
         }
         c
     };
-    let files = || dir.join("host.redb").exists() || dir.join("host.root").exists();
+    let kept = |db: &Osis| db.sync_engine(|s| s.hub_store().lock().unwrap().labels_after(None, 1000).unwrap());
     let hosting = || Some(Serving { admit: Admit::Open, ..Default::default() });
     let listen = |db: &Osis| db.listen(&["mem://e".parse().unwrap()]).unwrap().remove(0);
 
@@ -442,41 +446,27 @@ fn stop_serving_erases_its_store_spec_data_model_9() {
     common::block_on(other.wait_synced(osis::SyncScope::All)).unwrap();
     let theirs = home_label(&other);
     assert_eq!(other.close().unwrap(), osis::Close::Closed);
-    assert_eq!(db.close().unwrap(), osis::Close::Closed);
-    assert_eq!(host_store_labels(&dir).into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([home, theirs]));
+    assert_eq!(kept(&db).into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([home, theirs]));
 
-    // stopped and started again with no driver running: the new run keeps nothing of the old
-    // store, and holds the home label once the node syncs with it
-    let db = osis::internals::open(at(2, false)).unwrap();
+    // stopped on a running driver: what it kept goes, the store stays
     db.set_serving(None).unwrap();
-    db.set_serving(hosting()).unwrap();
+    wait_for("what it kept dropped", || kept(&db).is_empty());
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
-    let db = osis::internals::open(at(3, true)).unwrap();
-    listen(&db);
-    common::block_on(db.wait_synced(osis::SyncScope::All)).unwrap();
-    assert_eq!(db.close().unwrap(), osis::Close::Closed);
-    assert_eq!(host_store_labels(&dir), vec![home]);
+    assert!(dir.join("host.redb").exists() && dir.join("host.root").exists());
+    assert!(host_store_labels(&dir).is_empty());
 
-    // stopped on a running driver: the files go
-    let db = osis::internals::open(at(4, true)).unwrap();
-    listen(&db);
-    wait_for("the host store", files);
-    db.set_serving(None).unwrap();
-    wait_for("the host store erased", || !files());
-    assert_eq!(db.close().unwrap(), osis::Close::Closed);
-
-    // stopped with no driver running: the next driver start erases
+    // stopped with no driver running: the next driver start drops it
     let db = osis::internals::open(at(5, true)).unwrap();
     db.set_serving(hosting()).unwrap();
-    wait_for("the host store", files);
+    listen(&db);
+    wait_for("the home label kept", || kept(&db) == vec![home]);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
-    assert!(files());
     let db = osis::internals::open(at(6, false)).unwrap();
     db.set_serving(None).unwrap();
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
-    assert!(files());
+    assert_eq!(host_store_labels(&dir), vec![home]);
     let db = osis::internals::open(at(7, true)).unwrap();
-    wait_for("the host store erased", || !files());
+    wait_for("what it kept dropped", || kept(&db).is_empty());
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     let _ = std::fs::remove_dir_all(&dir);
 }

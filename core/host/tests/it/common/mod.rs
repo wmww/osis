@@ -70,7 +70,7 @@ impl World {
         self.roots.push(MemoryRoot::with_faults(faults.clone()));
         self.faults.push(faults);
         let store = self.host_store(i, policy, i as u8);
-        self.hubs.push(Hub::new(store, Box::new(SeededRng::from_seed([0x70 + i as u8; 32]))));
+        self.hubs.push(Hub::new(std::sync::Arc::new(std::sync::Mutex::new(store)), Box::new(SeededRng::from_seed([0x70 + i as u8; 32]))));
         i
     }
 
@@ -89,7 +89,7 @@ impl World {
             }
         }
         let store = self.host_store(i, policy, 0xff);
-        self.hubs[i] = Hub::new(store, Box::new(SeededRng::from_seed([0x90 + i as u8; 32])));
+        self.hubs[i] = Hub::new(std::sync::Arc::new(std::sync::Mutex::new(store)), Box::new(SeededRng::from_seed([0x90 + i as u8; 32])));
     }
 
     /// A client connected to hub `h`; returns the client index.

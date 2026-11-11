@@ -59,7 +59,8 @@ fn hosted_commits(sim: &mut NetSim) -> Res<BTreeSet<CommitId>> {
     let mut live = Vec::new();
     for s in 0..sim.hosts.len() {
         let Some(hub) = sim.hub(s) else { continue };
-        for l in hub.store().labels_after(None, 4096).unwrap_or_default() {
+        let held = hub.store().labels_after(None, 4096).unwrap_or_default();
+        for l in held {
             live.extend(hub.store().live_ids(&l).unwrap_or_default().into_iter().map(|b| (l, b)));
         }
     }

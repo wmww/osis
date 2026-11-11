@@ -212,7 +212,8 @@ fn deletions(sim: &NetSim, s: usize) -> usize {
     use osis_proto::LabelStore;
     let Some(h) = sim.hub(s) else { return 0 };
     let mut k = 0;
-    for l in h.store().labels_after(None, 4096).unwrap_or_default() {
+    let held = h.store().labels_after(None, 4096).unwrap_or_default();
+    for l in held {
         let recs = h.store().log_after(&l, 0, 1 << 20).ok().flatten().unwrap_or_default();
         k += recs.iter().filter(|(_, r)| matches!(r, osis_proto::LogRecord::Deleted(_))).count();
     }

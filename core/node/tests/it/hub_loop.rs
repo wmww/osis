@@ -18,7 +18,6 @@ use osis_node::sync::{Action, Event as SyncEvent, SyncEngine};
 use osis_proto::examples::{Label, bid, blob};
 use osis_proto::*;
 use osis_schema::core_types as ct;
-use osis_store::{MemoryBackend, MemoryRoot, StoreConfig};
 use osis_transport::{Link, Transport};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -26,21 +25,16 @@ use tokio::sync::{mpsc, oneshot};
 
 const GUARD: Duration = Duration::from_secs(30);
 
-/// An engine holder whose host store lives in one memory backend across driver runs.
+/// An engine holder (its one store, the hub's, lives with the engine across driver runs).
 struct Keep {
     engine: Mutex<SyncEngine>,
     /// Where the driver listens (`Control::Listen`).
     url: String,
-    backend: MemoryBackend,
-    root: MemoryRoot,
 }
 
 impl Shared for Keep {
     fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>> {
         Some(f(&mut self.engine.lock().unwrap()))
-    }
-    fn host_store(&self) -> Result<osis_store::Store, String> {
-        osis_store::Store::open_or_create(Box::new(self.backend.clone()), Box::new(self.root.clone()), StoreConfig::default(), &mut osis_crypto::OsRng).map_err(|e| e.to_string())
     }
 }
 
@@ -65,7 +59,7 @@ impl Host {
         let replicate = peers.into_iter().map(|a| ct::Address { url: a.url, key: a.key }).collect();
         m.replace(me, &ct::HOST, &ct::Host { admit: ct::Admit::Open, replicate, ..Default::default() }).unwrap();
         net.engine(n).commit(m).unwrap();
-        Keep { engine: Mutex::new(net.take(n)), url: url.into(), backend: MemoryBackend::new(), root: MemoryRoot::new() }
+        Keep { engine: Mutex::new(net.take(n)), url: url.into() }
     }
 
     /// Runs the driver for `keep` on `transport`, listening at its URL.

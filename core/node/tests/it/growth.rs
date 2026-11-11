@@ -17,7 +17,8 @@ fn single_writer_replace_grows_nothing() {
     let census = |net: &mut Net, n: usize| net.engine(n).local_census().unwrap();
     let host = |net: &mut Net| {
         let mut c: BTreeMap<String, (usize, usize)> = BTreeMap::new();
-        for (k, v) in net.hosts[h].hub.store().all_rows().unwrap() {
+        let held = net.hosts[h].hub.store().all_rows().unwrap();
+        for (k, v) in held {
             let e = c.entry(String::from_utf8_lossy(&k[..1.min(k.len())]).into_owned()).or_default();
             e.0 += 1;
             e.1 += k.len() + v.len();

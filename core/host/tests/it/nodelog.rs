@@ -148,3 +148,45 @@ fn a_restored_store_issues_no_cursor() {
     assert!(!from_early.whole, "a cursor the restored history holds is honoured");
     assert_eq!(from_early.events.iter().map(|e| e.event).collect::<Vec<_>>(), [NodeEvent::Added(f.label, osis_label::blob_id(&blob(3)))]);
 }
+
+// issues/net-one-peer.md step 4 (`host^.0` going drops the sync IDs kept for others, not the
+// store): a dropped label leaves no row, no event and no blob only it held; the others stay whole
+#[test]
+fn dropping_a_label_leaves_nothing_of_it() {
+    let mut h = host();
+    let (f1, f2) = (Fixture::new(0x50), Fixture::new(0x60));
+    let (l1, l2) = (f1.label, f2.label);
+    let base = h.s.all_rows().unwrap().len();
+    h.s.push_step(&l1, f1.genesis.clone(), Some(f1.genesis_claims.clone())).unwrap();
+    h.s.push_step(&l2, f2.genesis.clone(), Some(f2.genesis_claims.clone())).unwrap();
+    let only1: Vec<BlobId> = (0..4).map(|n| put(&mut h.s, &l1, n, n != 3, None, &[])).collect();
+    // one blob under both labels: it stays with the label kept
+    let shared = put(&mut h.s, &l1, 9, true, None, &[]);
+    put(&mut h.s, &l2, 9, true, None, &[]);
+    h.s.delete(&l1, &only1[0], T0).unwrap();
+    let kept_rows: Vec<_> = {
+        let before = h.s.all_rows().unwrap();
+        before.into_iter().filter(|(k, _)| !k.windows(16).any(|w| w == l1.0)).collect()
+    };
+    let gone = h.s.drop_labels(&|l| *l == l1).unwrap();
+    assert_eq!(gone, [l1]);
+    assert_eq!(h.s.labels_after(None, 10).unwrap(), [l2]);
+    assert!(only1.iter().all(|b| h.s.blob(b).unwrap().is_none()), "its blobs go");
+    assert!(h.s.blob(&shared).unwrap().is_some(), "a blob another label holds stays");
+    let rows = h.s.all_rows().unwrap();
+    assert!(!rows.iter().any(|(k, _)| k.starts_with(b"L") && k.get(1..17) == Some(l1.0.as_slice())), "no meta");
+    assert!(rows.len() >= base, "{} rows", rows.len());
+    // what stays is what named only the other label, the totals and its sweep rows
+    for (k, v) in &kept_rows {
+        if !k.starts_with(b"N") && !k.starts_with(b"R") && !k.starts_with(b"Y") {
+            assert!(rows.iter().any(|(k2, v2)| k2 == k && v2 == v), "row {k:?} of the label kept stays");
+        }
+    }
+    let t = h.s.totals().unwrap();
+    assert_eq!((t.labels, t.entries), (1, 1));
+    let e = listing(&mut h.s);
+    assert!(e.iter().all(|e| match e {
+        NodeEvent::Added(l, _) | NodeEvent::Head(l) => *l == l2,
+        NodeEvent::Deleted { label, .. } => *label == l2,
+    }), "no event of the dropped label: {e:?}");
+}

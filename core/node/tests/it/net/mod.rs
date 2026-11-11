@@ -494,16 +494,18 @@ impl Net {
         let i = self.hosts.len();
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let store = self.host_store(&backend, &root, policy, 900 + i as u64);
-        let hub = Hub::new(store, Box::new(SeededRng::from_u64(950 + i as u64)));
+        let hub = Hub::new(Arc::new(std::sync::Mutex::new(store)), Box::new(SeededRng::from_u64(950 + i as u64)));
         self.hosts.push(Host { hub, backend, root, address: Address { url: format!("quic://host{i}:1"), key: host_key(i) }, skew: 0 });
         i
     }
 
-    /// A node's hub: an empty store in memory, admitting nothing.
-    fn node_hub(&self, seed: u64) -> Hub {
+    /// A node's hub over its one store (`SyncEngine::hub_store`): an empty one in memory,
+    /// admitting nothing.
+    fn node_hub(&self, sync: &mut SyncEngine, seed: u64) -> Hub {
         let mut store = self.host_store(&MemoryBackend::new(), &MemoryRoot::new(), HostPolicy::default(), seed ^ 0x40b);
         store.set_admission(osis_host::Admission::Only(Default::default()), Default::default());
-        Hub::new(store, Box::new(SeededRng::from_u64(seed ^ 0x4ab)))
+        sync.set_hub_store(store);
+        Hub::new(sync.hub_store(), Box::new(SeededRng::from_u64(seed ^ 0x4ab)))
     }
 
     /// A host store over `backend` and `root` (created on first use).
@@ -516,7 +518,7 @@ impl Net {
     pub fn wipe_host(&mut self, s: usize) {
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let store = self.host_store(&backend, &root, HostPolicy::default(), 990 + s as u64);
-        let hub = Hub::new(store, Box::new(SeededRng::from_u64(995 + s as u64)));
+        let hub = Hub::new(Arc::new(std::sync::Mutex::new(store)), Box::new(SeededRng::from_u64(995 + s as u64)));
         let (address, skew) = (self.hosts[s].address.clone(), self.hosts[s].skew);
         self.hosts[s] = Host { hub, backend, root, address, skew };
     }
@@ -536,7 +538,7 @@ impl Net {
         }
         let (backend, root) = (self.hosts[s].backend.clone(), self.hosts[s].root.clone());
         let store = self.host_store(&backend, &root, policy, 980 + s as u64);
-        let hub = Hub::new(store, Box::new(SeededRng::from_u64(985 + s as u64)));
+        let hub = Hub::new(Arc::new(std::sync::Mutex::new(store)), Box::new(SeededRng::from_u64(985 + s as u64)));
         let (address, skew) = (self.hosts[s].address.clone(), self.hosts[s].skew);
         self.hosts[s] = Host { hub, backend, root, address, skew };
     }
@@ -588,7 +590,7 @@ impl Net {
         let mut sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         let events = sync.engine_mut().subscribe_durable();
         let acts = done.map(|d| sync.carry_out(d).unwrap());
-        let hub = self.node_hub(seed);
+        let hub = self.node_hub(&mut sync, seed);
         self.nodes.push(Node { sync: Some(sync), clock, hub, backend, root, online: true, wake: None, life: 0, accepts: true, events });
         let n = self.nodes.len() - 1;
         if let Some(acts) = acts {
@@ -607,7 +609,7 @@ impl Net {
         let engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed))).unwrap();
         let mut sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         let events = sync.engine_mut().subscribe_durable();
-        let hub = self.node_hub(seed);
+        let hub = self.node_hub(&mut sync, seed);
         self.nodes.push(Node { sync: Some(sync), clock, hub, backend, root, online: true, wake: None, life: 0, accepts: true, events });
         self.nodes.len() - 1
     }
@@ -733,8 +735,10 @@ impl Net {
         let engine = Engine::open(Box::new(node.backend.clone()), Box::new(node.root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed))).unwrap();
         let mut sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         node.events = sync.engine_mut().subscribe_durable();
+        let hub = self.node_hub(&mut sync, seed);
+        let node = &mut self.nodes[n];
         node.sync = Some(sync);
-        self.nodes[n].hub = self.node_hub(seed);
+        node.hub = hub;
     }
 
     /// Node `n`'s diagnostics since the last call: the sync engine's and the engine's (refusals

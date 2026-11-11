@@ -30,7 +30,7 @@ const DEFAULT_IDLE_COMMIT: Duration = Duration::from_secs(2);
 pub struct MemStore {
     backend: MemoryBackend,
     root: MemoryRoot,
-    /// The store of the node's host, its own key root beside it, while it serves (`set_serving`).
+    /// The node's one store beside the engine (the hub's), its own key root beside it.
     pub(crate) host: MemoryBackend,
     /// Opens under a test seed, this store's and its backups' (`open_salt`).
     opens: Arc<std::sync::atomic::AtomicU64>,
@@ -531,6 +531,16 @@ fn open_salt(store: &Store, cfg: &Config) -> Result<u64> {
     Ok(n.wrapping_add(1).wrapping_mul(0x9e37_79b9_7f4a_7c15))
 }
 
+/// The node's one store beside the engine (the hub's: what it serves, notes/serving.md):
+/// `<store>/host.redb` with its key root `<store>/host.root`, or the memory store's.
+fn hub_store(store: &Store) -> Result<osis_store::Store> {
+    let (b, r): (Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>) = match store {
+        Store::Memory(m) => (Box::new(m.host.clone()), Box::new(m.host_root.clone())),
+        Store::Dir(p) => (Box::new(osis_store::RedbBackend::open(&p.join("host.redb")).map_err(|e| Error::Storage(e.to_string()))?), Box::new(osis_store::FileRoot::new(p.join("host.root")))),
+    };
+    osis_store::Store::open_or_create(b, r, osis_store::StoreConfig::default(), &mut osis_crypto::OsRng).map_err(|e| Error::Storage(e.to_string()))
+}
+
 fn clock(cfg: &Config) -> Arc<dyn Clock> {
     cfg.app.internals.clock.clone().unwrap_or_else(|| Arc::new(SystemClock))
 }
@@ -607,12 +617,13 @@ impl Osis {
         // store files open to group or others: tightened where possible (best effort), else
         // reported
         if let Store::Dir(p) = &store {
-            for f in [p.clone(), p.join("db.redb"), p.join("root")] {
+            for f in [p.clone(), p.join("db.redb"), p.join("root"), p.join("host.redb"), p.join("host.root")] {
                 if let Some(why) = osis_store::restrict_to_owner(&f) {
                     sync.engine_mut().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: why });
                 }
             }
         }
+        sync.open_hub_store(hub_store(&store)?)?;
         let node = sync.engine().tid();
         let events = sync.engine_mut().subscribe();
         let dispatch = Dispatch::new(&cfg.app.dispatch);
@@ -629,7 +640,7 @@ impl Osis {
         let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, home, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, text_save: cfg.app.internals.text_save.clone(), transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.direct_sync, connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
-            inner.net.spawn_driver(ctl, store, cfg, clock, WeakOsis(Arc::downgrade(&inner)))?;
+            inner.net.spawn_driver(ctl, cfg, clock.clone(), WeakOsis(Arc::downgrade(&inner)))?;
         }
         let db = Osis::user(inner);
         if let Runtime::Manual(m) = &cfg.runtime {

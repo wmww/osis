@@ -570,7 +570,7 @@ fn group_removal_deposit_promoted_without_new_keys() {
     let ids: Vec<_> = alice.sync_engine(|s| s.entries(&l)).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == r)).map(|(id, _)| id).collect();
     assert!(!ids.is_empty(), "the removal is under G's label");
     for id in &ids {
-        let e = osis_proto::store::LabelStore::entry(w.hosts[0].hub.store(), &l, id).unwrap().unwrap();
+        let e = osis_proto::store::LabelStore::entry(&*w.hosts[0].hub.store(), &l, id).unwrap().unwrap();
         assert!(e.stamp.is_some(), "promoted");
     }
     alice.grant(g, z, Role::Read, GrantOpts::default()).unwrap();

@@ -351,6 +351,9 @@ pub struct SyncEngine {
     pub(crate) memory: memory::Memory,
     /// The host config handed to the driver (`host_step`).
     pub(crate) hosting: host::Hosting,
+    /// The node's one store beside the engine (notes/serving.md, Hosting in the node): the
+    /// hub's, opened by the holder for every node (`set_hub_store`; in memory until then).
+    pub(crate) hub_store: std::sync::Arc<std::sync::Mutex<osis_host::HostStore>>,
 }
 
 /// A certificate copy waiting for a rotation (`SyncEngine::deferred`): group, commit, aspects,
@@ -369,7 +372,9 @@ impl SyncEngine {
         // deposits not answered before a restart go again
         let outbox = state.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
         let started = engine.now().0;
+        let hub_store = std::sync::Arc::new(std::sync::Mutex::new(host::memory_store(engine.clock())?));
         Ok(SyncEngine {
+            hub_store,
             forget_seeded: false,
             pending_seeded: false,
             unvouched_reported: BTreeSet::new(),

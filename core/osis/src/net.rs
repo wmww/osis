@@ -215,14 +215,13 @@ impl Net {
         }
     }
 
-    /// Starts the driver task over one transport for every node it dials (`Multi`; what it serves
-    /// for others stored beside the node). With `p2p` (`Config::direct_sync`) it listens with the
+    /// Starts the driver task over one transport for every node it dials (`Multi`). With `p2p` (`Config::direct_sync`) it listens with the
     /// dialable secret (registered at `relays`) and publishes `reach.0`; with `P2p` (QUIC, or a
     /// test's in-process host) it relays for its co-readers (spec/sync.md §10) and, unless
     /// `Config::lan` is off, runs the LAN loop: over real sockets, or a test's model of them.
-    pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, store: crate::Store, cfg: &crate::Config, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
+    pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, cfg: &crate::Config, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
         let Net::Driver { ctl, stop, .. } = self else { return Ok(()) };
-        let shared = OsisShared(db.clone(), store);
+        let shared = OsisShared(db.clone());
         let (mem, host, p2p, relays) = (cfg.app.internals.transport.clone(), cfg.app.internals.host.clone(), cfg.direct_sync, cfg.relays.iter().filter_map(crate::share::Address::relay_item).collect::<Vec<String>>());
         // where the dialable-key listener goes (the first URL that listens), and whether the
         // LAN loop runs (`Some`), watching the machine's real routes (true)
@@ -408,41 +407,14 @@ fn log_line(m: &str) {
     }
 }
 
-/// The driver's view of the handle: the sync engine behind the node lock, and where the
-/// node lives (the host's store goes beside it).
-struct OsisShared(WeakOsis, crate::Store);
+/// The driver's view of the handle: the sync engine behind the node lock.
+struct OsisShared(WeakOsis);
 
 impl Shared for OsisShared {
     fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>> {
         let db = self.0.hold()?;
         db.handled(|l| f(&mut l.sync));
         Some(Vec::new())
-    }
-
-    fn host_store(&self) -> std::result::Result<osis_store::Store, String> {
-        let (b, r): (Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>) = match &self.1 {
-            crate::Store::Memory(m) => (Box::new(m.host.clone()), Box::new(m.host_root.clone())),
-            crate::Store::Dir(p) => (Box::new(osis_store::RedbBackend::open(&p.join("host.redb")).map_err(|e| e.to_string())?), Box::new(osis_store::FileRoot::new(p.join("host.root")))),
-        };
-        osis_store::Store::open_or_create(b, r, osis_store::StoreConfig::default(), &mut osis_crypto::OsRng).map_err(|e| e.to_string())
-    }
-
-    fn erase_host_store(&self) -> std::result::Result<(), String> {
-        use osis_store::RootStorage as _;
-        match &self.1 {
-            crate::Store::Memory(m) => {
-                m.host_root.clone().erase().map_err(|e| e.to_string())?;
-                m.host.erase();
-            }
-            crate::Store::Dir(p) => {
-                osis_store::FileRoot::new(p.join("host.root")).erase().map_err(|e| e.to_string())?;
-                match std::fs::remove_file(p.join("host.redb")) {
-                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.to_string()),
-                    _ => {}
-                }
-            }
-        }
-        Ok(())
     }
 }
 

@@ -51,10 +51,6 @@ pub struct LabelCaps {
 /// What the node hands its host (from its `host^.0`, spec/data-model.md §9): public data only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostConfig {
-    /// Which run of hosting this is: drawn when hosting starts, gone when it stops. The host
-    /// store records it, and one recording another (hosting stopped and started again since) is
-    /// erased before use.
-    pub store_id: [u8; 32],
     pub admission: Admission,
     /// Peer hosts it pushes its labels to.
     pub replicate: Vec<Address>,

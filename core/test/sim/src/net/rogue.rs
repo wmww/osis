@@ -162,7 +162,8 @@ impl NetSim {
     pub fn label_keys(&mut self, n: usize, s: usize, g: &Tid) -> Res<LabelKeys> {
         let gl = self.sync(n)?.labels().into_iter().find(|(t, _)| t == g).map(|x| x.1).ok_or_else(|| self.fail(format!("node {n} knows no label of {g}")))?;
         let hub = self.hub(s).ok_or_else(|| self.fail(format!("host {s} is down")))?;
-        let head = hub.store().head(&gl.id).ok().flatten().and_then(|h| hub.store().step(&gl.id, &h).ok().flatten());
+        let head = hub.store().head(&gl.id).ok().flatten();
+        let head = head.and_then(|h| hub.store().step(&gl.id, &h).ok().flatten());
         let head = head.ok_or_else(|| self.fail(format!("host {s} holds no head of {:?}", gl.id)))?;
         let keys = self.engine(n)?.head_keys(g, gl.index, &head);
         let keys = keys.map_err(|x| self.fail(format!("head keys: {x}")))?;

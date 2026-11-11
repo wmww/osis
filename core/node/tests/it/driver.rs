@@ -122,36 +122,6 @@ async fn driver_quic_localhost_spec_sync_10() {
 // spec/requirements.md Deletion, notes/serving.md The hub in the node: a run of hosting lives
 // only while `host^.0` is set. Removing it ends the run, and a config the driver takes late is
 // no longer current (its store is not the one to open); a new start is a new run.
-#[test]
-fn a_stale_host_config_is_not_current_spec_sync_10() {
-    use osis_node::sync::Action;
-    let mut net = Net::new();
-    let a = net.add_node(1, Default::default());
-    let me = net.node_tid(a);
-    let host = ct::Host::default();
-    let set = |net: &mut Net, on: bool| {
-        let mut m = osis_node::Mutation::new();
-        if on {
-            m.replace(me, &ct::HOST, &host).unwrap();
-        } else {
-            m.remove_aspect(me, &ct::HOST).unwrap();
-        }
-        net.engine(a).commit(m).unwrap();
-        net.sync(a).handle(Event::Local).into_iter().find_map(|x| match x {
-            Action::Host(c) => Some(c),
-            _ => None,
-        })
-    };
-    let c1 = set(&mut net, true).flatten().expect("a host config");
-    assert!(net.sync(a).hosts() && net.sync(a).host_current(&c1));
-    assert_eq!(set(&mut net, false), Some(None), "stop");
-    assert!(!net.sync(a).hosts(), "the run is over");
-    assert!(!net.sync(a).host_current(&c1));
-    let c2 = set(&mut net, true).flatten().expect("a host config");
-    assert_ne!(c1.store_id, c2.store_id, "a new start is a new run");
-    assert!(!net.sync(a).host_current(&c1) && net.sync(a).host_current(&c2));
-}
-
 fn s_(x: &str) -> Value {
     Value::Str(x.into())
 }
