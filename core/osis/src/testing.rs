@@ -18,14 +18,18 @@ impl Osis {
     /// yet taken, the dispatcher's sequence. Fresh: the dispatcher (callbacks queued so far run on
     /// the original first; the copy has no subscriptions, so the engine has no commit listener),
     /// user handles. Refused (`Invalid`) where a part cannot be copied: a thin client, a store in
-    /// a directory, in-process transport, `Dispatcher::Pump`, a runtime other than `None` or
-    /// `Manual`, a call still waiting for another node, a connection to another node, a client
-    /// port that ran. Inside a world copy (`osis_base::copying`) with the nodes beside it.
+    /// a directory, in-process transport, a `text_save` hook, `Dispatcher::Pump`, a runtime
+    /// other than `None` or `Manual`, a call still waiting for another node, a connection to
+    /// another node, a client port that ran. Inside a world copy (`osis_base::copying`) with the nodes beside it.
     pub(crate) fn test_copy(&self, clock: Arc<dyn Clock>, runtime: &Runtime) -> Result<Osis> {
         let i = &self.inner;
         let refuse = |why: &str| Err(Error::Invalid(format!("test_copy: {why}")));
         if i.client.get().is_some() || i.store_dir.is_some() || i.transport.is_some() {
             return refuse("a thin client, a store in a directory or in-process transport");
+        }
+        if i.text_save.is_some() {
+            // a closure the two would share
+            return refuse("a text_save hook");
         }
         if i.dispatch.pumps() {
             return refuse("Dispatcher::Pump");
@@ -65,7 +69,7 @@ impl Osis {
             home: i.home,
             limit: i.limit,
             idle_commit: i.idle_commit,
-            text_save: i.text_save.clone(),
+            text_save: None,
             transport: None,
             store_dir: None,
             dials_peers: i.dials_peers,

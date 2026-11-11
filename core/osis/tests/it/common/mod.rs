@@ -309,7 +309,7 @@ impl CreateIn for osis::Write<'_> {
 /// once per `n` (`World::cached`).
 pub fn people(n: usize) -> (World, Osis, Vec<Osis>, Vec<Tid>) {
     fn build<const N: usize, const M: usize>() -> (World, Osis, Vec<Osis>, Vec<Tid>) {
-        let (w, dbs, ids) = World::cached(&format!("sync::people/{N}"), || {
+        let (w, dbs, ids) = World::cached(&format!("common::people/{N}"), || {
             let mut w = World::new();
             let host = w.add_host();
             let alice = w.account(1, &[host]);
