@@ -1,6 +1,6 @@
 //! The client side of the client port (notes/client-port.md §1, §2, §6): a `Connection` is one
 //! connection to a node: a proto `ClientSession` on a thread of its own that a call blocks on until
-//! its Reply. A handle routes tid-addressed calls to it (`crate::sources`). Watches are
+//! its Reply. A handle sends tid-addressed calls to it (`crate::sources`). Watches are
 //! subscriptions whose Reply and Notifies enter the handle's dispatcher queue in wire order, so
 //! node callbacks run on the dispatcher like local ones. Writes carry a nonce from 1 per session.
 //!
@@ -938,7 +938,7 @@ impl Osis {
         let (Some(primary), Some(who)) = (list.first().cloned(), who) else { return Err(net("no connection")) };
         self.locked(|l| l.connections = list);
         let _ = self.inner.client.set(crate::handle::ClientOf { primary, who });
-        self.inner.routing.store(true, Ordering::Release);
+        self.inner.has_sources.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -967,7 +967,7 @@ impl Osis {
             None => {
                 let r = spawn_client(login, &self.inner.transport, self.inner.limit, self.inner.connection_wait, self.inner.clock.clone())?;
                 self.locked(|l| l.connections.push(r.clone()));
-                self.inner.routing.store(true, Ordering::Release);
+                self.inner.has_sources.store(true, Ordering::Release);
                 r
             }
         };

@@ -33,7 +33,7 @@ impl Engine {
     pub fn readable_by(&self, actor: &Tid, t: &Tid) -> bool {
         // in a group read at another node, or still catching up on its way home: stale here, and
         // this node would serve it to a client as if current (notes/client-port.md §6)
-        if !self.core.routed_away.is_empty() && (self.core.routed_away.contains(t) || self.groups_of(t).iter().any(|g| self.core.routed_away.contains(g))) {
+        if !self.core.sourced_elsewhere.is_empty() && (self.core.sourced_elsewhere.contains(t) || self.groups_of(t).iter().any(|g| self.core.sourced_elsewhere.contains(g))) {
             return false;
         }
         self.entitled(actor, t) || self.copy_readable_by(actor, t)

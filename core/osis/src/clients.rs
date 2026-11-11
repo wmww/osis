@@ -129,7 +129,7 @@ impl Osis {
             w.commit()?;
         }
         for t in self.engine(|x| x.grants_of(&actor)) {
-            self.not_routed("remove_client", t)?;
+            self.require_local("remove_client", t)?;
             let done = self.guarded(&[t], |x| Ok(x.demote(&t, &Demotion { holder: actor, new: None, retain: None })?))?;
             self.carry(done)?;
         }

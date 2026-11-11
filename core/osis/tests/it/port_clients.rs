@@ -1591,7 +1591,7 @@ fn commit_listener_past_its_budget_lapses() {
     let (busy_tx, busy) = channel();
     let (go, wait) = channel::<()>();
     let (busy_tx, wait) = (Mutex::new(busy_tx), Mutex::new(wait));
-    x.n.set_source(x.h, None); // the hook runs only with routing on; no route is set
+    x.n.set_source(x.h, None); // the hook runs only with sources on; no source is set
     x.n.after_source(Box::new(move || {
         busy_tx.lock().unwrap().send(()).unwrap();
         let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(60));

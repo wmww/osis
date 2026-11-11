@@ -210,7 +210,7 @@ pub(crate) struct Inner {
     /// A process with no store of its own (`Osis::connect`): the scratch node stands in.
     pub client: std::sync::OnceLock<ClientOf>,
     /// Any connection or group source exists: only then is a source looked up (no cost on a local path).
-    pub routing: std::sync::atomic::AtomicBool,
+    pub has_sources: std::sync::atomic::AtomicBool,
     /// User handles and whether the store closed (the last field: it drops after `eng`).
     pub life: LifeGuard,
 }
@@ -625,11 +625,11 @@ impl Osis {
         let dispatch = Dispatch::new(&cfg.app.dispatch);
         let (net, ctl) = Net::new(&cfg.runtime)?;
         let group_sources = crate::sources::load_sources(sync.engine_mut())?;
-        sync.engine_mut().core.routed_away = group_sources.keys().copied().collect();
-        let routing = !group_sources.is_empty();
+        sync.engine_mut().core.sourced_elsewhere = group_sources.keys().copied().collect();
+        let has_sources = !group_sources.is_empty();
         let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), connections: Vec::new(), group_sources, status_failed: false };
         let port = crate::port::serve::Port::new();
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, home, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, text_save: cfg.app.internals.text_save.clone(), transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.direct_sync, connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, home, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, text_save: cfg.app.internals.text_save.clone(), transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.direct_sync, connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), has_sources: has_sources.into(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
             inner.net.spawn_driver(ctl, cfg, clock.clone(), WeakOsis(Arc::downgrade(&inner)))?;
@@ -850,7 +850,7 @@ impl Osis {
     pub fn settle(&self) {
         // connected nodes' deliveries so far reach the queue first (not from a callback: the reply
         // would wait for this very dispatcher)
-        if self.routing() && self.may_wait() {
+        if self.has_sources() && self.may_wait() {
             self.node_settle();
         }
         self.inner.dispatch.settle(Arc::downgrade(&self.inner));

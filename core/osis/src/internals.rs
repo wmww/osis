@@ -249,7 +249,7 @@ impl Internals for Osis {
         *crate::watch::lock(&self.inner.port.after_source) = Some(f);
     }
     fn set_source(&self, group: osis_base::Tid, to: Option<crate::Address>) {
-        self.inner.routing.store(true, std::sync::atomic::Ordering::Release);
+        self.inner.has_sources.store(true, std::sync::atomic::Ordering::Release);
         let away = to.is_some();
         self.locked(|l| match to {
             Some(a) => l.group_sources.insert(group, a),

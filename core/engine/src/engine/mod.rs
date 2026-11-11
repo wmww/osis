@@ -1115,9 +1115,9 @@ pub struct Core {
     /// The sync records this engine's transactions write or drop (`SyncRecords`), set by
     /// node-sync (`Engine::set_sync_records`; `None`: no node-sync, no sync records).
     pub sync_records: Option<&'static dyn SyncRecords>,
-    /// Groups the handle reads and writes at another node (`osis` routes): what is here of them
+    /// Groups the handle reads and writes at another node (`osis` sources): what is here of them
     /// may be behind, syncing or not (`readable_by`).
-    pub routed_away: BTreeSet<Tid>,
+    pub sourced_elsewhere: BTreeSet<Tid>,
 }
 
 impl Core {
@@ -1238,7 +1238,7 @@ impl Core {
             published: self.published.clone(),
             links: self.links.clone(),
             sync_records: self.sync_records.clone(),
-            routed_away: self.routed_away.clone(),
+            sourced_elsewhere: self.sourced_elsewhere.clone(),
         }
     }
 }
@@ -1785,7 +1785,7 @@ impl Core {
             keep_bodies: _,
             list_bound: _,
             sync_records: _,
-            routed_away: _,
+            sourced_elsewhere: _,
             #[cfg(debug_assertions)]
             unchecked_tx: _,
             #[cfg(debug_assertions)]
@@ -1991,7 +1991,7 @@ impl Core {
             labels: memo::Memo::new("labels of"),
             published: memo::Memo::new("published"),
             links: memo::Memo::new("held links"),
-            routed_away: BTreeSet::new(),
+            sourced_elsewhere: BTreeSet::new(),
         }
     }
 

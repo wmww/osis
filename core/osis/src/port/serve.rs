@@ -583,7 +583,7 @@ impl Worker {
             }
             method::LISTING => {
                 let (at, q, bytes) = (c::address(a.next()?)?, c::query(a.next()?)?, a.uint()?);
-                // the main actor's handle routes: this engine's copy would be stale
+                // the main actor's handle reads at the source node: this engine's copy would be stale
                 if at.things().iter().any(|t| !db.is_local(*t)) {
                     return Err(unsupported("commits of a group this node reads at another node"));
                 }
@@ -757,7 +757,7 @@ impl Worker {
         let held = c.held.clone();
         let acting = db.acting;
         let mut a = Args::new(f)?;
-        // the main actor's handle routes; this subscription would watch this engine's stale copy
+        // the main actor's handle reads at the source node; this subscription would watch this engine's stale copy
         let thing = |t: Tid| {
             if !db.is_local(t) {
                 return Err(unsupported("a watch of a group this node reads at another node"));

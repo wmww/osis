@@ -1,7 +1,7 @@
 //! Sources per group (notes/client-port.md §1, §6): a process's calls go to its own engine or to a
 //! node it is connected to, group by group.
 //!
-//! **Routing invariant.** Each call goes to exactly one source, decided once, under the one lock
+//! **Source invariant.** Each call goes to exactly one source, decided once, under the one lock
 //! that also orders every change of the table (`eng`), and never falls back to another source: an
 //! unreachable source is that call's `Network`, not another source's answer. No source, result or
 //! membership is cached outside that table; a thing's groups are read from the engine's own index
@@ -145,8 +145,8 @@ fn decide_in(l: &mut Locked, client: bool, tid: Tid) -> Decided {
 /// group with the source node, that group). A membership in a group that does not sync carries nothing: no holder of it misses a write.
 fn split_in(l: &mut Locked, tid: Tid) -> Option<(Tid, Tid)> {
     let s = scope_of(l.sync.engine(), tid);
-    let (routed, addr) = s.iter().find_map(|g| l.group_sources.get(g).map(|a| (*g, a.clone())))?;
-    // `t`'s own sync ID is no other source: the routed group's node, a holder of `t`, syncs it too
+    let (sourced, addr) = s.iter().find_map(|g| l.group_sources.get(g).map(|a| (*g, a.clone())))?;
+    // `t`'s own sync ID is no other source: the sourced group's node, a holder of `t`, syncs it too
     let other = s.into_iter().filter(|g| *g != tid).find(|g| {
         let elsewhere = match l.group_sources.get(g) {
             Some(a) => *a != addr,
@@ -155,7 +155,7 @@ fn split_in(l: &mut Locked, tid: Tid) -> Option<(Tid, Tid)> {
         let e = l.sync.engine();
         elsewhere && e.entitled(&e.group_actor(g), &tid)
     })?;
-    Some((routed, other))
+    Some((sourced, other))
 }
 
 /// Every split thing: they are all in the closure of a group with a source node.
@@ -197,24 +197,24 @@ impl ReadOnly {
         !crate::port::serve::on_worker() && !self.inner.dispatch.shared.on_dispatcher()
     }
 
-    /// Whether routing applies: an acting handle (the port worker's, for a client of this node)
-    /// is never routed on: reading through this node's connection would run as this node's
+    /// Whether sources apply: an acting handle (the port worker's, for a client of this node)
+    /// always reads here: reading through this node's connection would run as this node's
     /// actor there, and it reads only what this engine syncs (`Engine::readable_by`).
     #[inline]
-    fn routed(&self) -> bool {
-        self.acting.is_none() && self.routing()
+    fn sources_apply(&self) -> bool {
+        self.acting.is_none() && self.has_sources()
     }
 
     /// Any connection or group source exists.
     #[inline]
-    pub(crate) fn routing(&self) -> bool {
-        self.inner.routing.load(Ordering::Acquire)
+    pub(crate) fn has_sources(&self) -> bool {
+        self.inner.has_sources.load(Ordering::Acquire)
     }
 
     /// The source of calls on `tid`, a thing or a group (the module's invariant).
     #[inline]
     pub(crate) fn source(&self, tid: Tid) -> Source {
-        if !self.routed() {
+        if !self.sources_apply() {
             return Source::Local;
         }
         match self.decide(tid) {
@@ -249,7 +249,7 @@ impl ReadOnly {
         self.after_source();
         match scope {
             crate::commits::Scope::Thing(t) => self.check_split(&[*t])?,
-            crate::commits::Scope::Group(g) if self.routed() => {
+            crate::commits::Scope::Group(g) if self.sources_apply() => {
                 let things: Vec<Tid> = self.locked(|l| {
                     let e = l.sync.engine();
                     e.closure(g).iter().copied().collect()
@@ -267,7 +267,7 @@ impl ReadOnly {
     pub(crate) fn source_write_commit(&self, id: RawCommitId) -> Result<Source> {
         let s = self.source_commit(id)?;
         self.after_source();
-        if self.routed() && self.has_store() {
+        if self.sources_apply() && self.has_store() {
             match self.locked(|l| touched_by(l.engine(), id)) {
                 Some(touched) => self.check_split(&touched)?,
                 None => {
@@ -281,7 +281,7 @@ impl ReadOnly {
     }
 
     fn check_split(&self, things: &[Tid]) -> Result<()> {
-        if !self.routed() || !self.has_store() {
+        if !self.sources_apply() || !self.has_store() {
             return Ok(());
         }
         let mut l = crate::watch::lock(&self.inner.eng);
@@ -295,12 +295,12 @@ impl ReadOnly {
 
     /// Whether calls on `t` run on this engine, as far as the lock can say (no network).
     pub(crate) fn is_local(&self, t: Tid) -> bool {
-        !self.routed() || matches!(self.decide(t), Decided::Local)
+        !self.sources_apply() || matches!(self.decide(t), Decided::Local)
     }
 
     /// `is_local` under the lock.
     pub(crate) fn local_in(&self, l: &mut Locked, t: Tid) -> bool {
-        !self.routed() || matches!(decide_in(l, !self.has_store(), t), Decided::Local)
+        !self.sources_apply() || matches!(decide_in(l, !self.has_store(), t), Decided::Local)
     }
 
     /// The one source of calls on all of `things`; `Invalid` when they resolve to two. None: as
@@ -338,7 +338,7 @@ impl ReadOnly {
     /// The source holding commit `id`: of what it touched when this engine holds it; else an
     /// only connection. `Invalid` among several: a commit id does not say whose it is.
     pub(crate) fn source_commit(&self, id: RawCommitId) -> Result<Source> {
-        if !self.routed() {
+        if !self.sources_apply() {
             return Ok(Source::Local);
         }
         let client = !self.has_store();
@@ -353,7 +353,7 @@ impl ReadOnly {
 
     /// Under the commit's lock: every thing of a local write is still this engine's.
     pub(crate) fn guard_local(&self, l: &mut Locked, things: &[Tid]) -> Result<()> {
-        if !self.routing() {
+        if !self.has_sources() {
             return Ok(());
         }
         let client = !self.has_store();
@@ -379,7 +379,7 @@ impl ReadOnly {
 
     /// A test's way into the gap between a source decision and its lock (`Internals::after_source`).
     pub(crate) fn after_source(&self) {
-        if self.routing()
+        if self.has_sources()
             && let Some(f) = crate::watch::lock(&self.inner.port.after_source).as_ref()
         {
             f();
@@ -388,19 +388,19 @@ impl ReadOnly {
 
     /// `guard_local` for a revert: what the commit touched.
     pub(crate) fn guard_commit(&self, l: &mut Locked, id: RawCommitId) -> Result<()> {
-        if !self.routing() {
+        if !self.has_sources() {
             return Ok(());
         }
         let things = touched_by(l.engine(), id).unwrap_or_default();
         self.guard_local(l, &things)
     }
 
-    /// A status of this engine `local`, with what the connections add: each connected and routed
+    /// A status of this engine `local`, with what the connections add: each connected or source
     /// node with whether it is up, the groups a connected one reports where this node does not
     /// sync them. A group with a source node shows only what that node reports: never this
     /// engine's copy, which is behind or catching up.
     pub(crate) fn merged_status(&self, mut local: Status) -> Result<Status> {
-        if !self.routing() {
+        if !self.has_sources() {
             return Ok(local);
         }
         let client = !self.has_store();
@@ -444,7 +444,7 @@ impl ReadOnly {
     /// that is the caller's error on a process with no store, nothing on a node's own handle,
     /// whose schema stays local for what it reads.
     pub(crate) fn mirror_schema(&self, file: &str, src: &str) -> Result<()> {
-        if !self.routing() || crate::port::serve::on_worker() {
+        if !self.has_sources() || crate::port::serve::on_worker() {
             return Ok(());
         }
         let client = !self.has_store();
@@ -555,7 +555,7 @@ impl Osis {
                 self.moving(l, |l| {
                     l.group_sources.insert(group, addr.clone());
                     save_sources(l)?;
-                    self.inner.routing.store(true, Ordering::Release);
+                    self.inner.has_sources.store(true, Ordering::Release);
                     if !l.sync.handed_off().contains(&group) {
                         let acts = l.sync.set_handed_off(group, true);
                         self.inner.apply(acts);
@@ -634,10 +634,10 @@ fn save_sources(l: &mut Locked) -> Result<()> {
 }
 
 impl Locked {
-    /// Tells the engine which groups are routed (`Engine::readable_by`).
+    /// Tells the engine which groups are sourced at another node (`Engine::readable_by`).
     pub(crate) fn show_sources(&mut self) {
-        let routed = self.group_sources.keys().copied().collect();
-        self.engine().core.routed_away = routed;
+        let sourced = self.group_sources.keys().copied().collect();
+        self.engine().core.sourced_elsewhere = sourced;
     }
 }
 

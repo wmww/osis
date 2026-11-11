@@ -1,4 +1,4 @@
-//! Sources per group (notes/client-port.md §1, §5, §6): routing, moving a group, reconnects, the
+//! Sources per group (notes/client-port.md §1, §5, §6): deciding sources, moving a group, reconnects, the
 //! node's one key. Two nodes P and N of one account sync through a peer; P connects to N where it
 //! listens (`Osis::listen`) as a thin client whose actor N minted.
 
@@ -157,7 +157,7 @@ fn known_stays_here_and_unknown_goes_to_the_node() {
         Ok(o)
     }).unwrap();
     x.set_n("n's");
-    // no route: P reads its own synced copy, not N's newer one
+    // no source: P reads its own synced copy, not N's newer one
     assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("first")));
     // known here nowhere: the connected node answers
     assert_eq!(x.p.at(only_n, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("at n")));
@@ -204,7 +204,7 @@ fn moving_a_group_both_ways() {
     x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("p1")).unwrap();
     assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("p1")));
     assert_eq!(x.p_local_copy(), Some(s("first")));
-    // a new thing in the routed group is made there; this engine never hears of it
+    // a new thing in the sourced group is made there; this engine never hears of it
     let mut w = x.p.write();
     let o = w.create_with_admin(x.g).unwrap();
     w.group(x.g).add(osis::Member::Item(o)).unwrap();
@@ -214,12 +214,12 @@ fn moving_a_group_both_ways() {
     assert_eq!(x.n.at(made, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("made through p")));
     assert!(!x.p.engine(|e| e.knows(&made)));
     assert_eq!(x.p.at(made, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("made through p")));
-    // merged status: the node's state for the routed group, the connection up
+    // merged status: the node's state for the sourced group, the connection up
     until("the node's state shows", || x.p.status().unwrap().groups[&x.g].state == SyncState::Synced);
     assert!(x.p.status().unwrap().node_connections[0].connected);
     // a node it reaches as a thin client adds no links
     assert!(x.p.links().unwrap().is_empty());
-    // home: nothing left to catch up with a peer gone is a failure that keeps the route
+    // home: nothing left to catch up with a peer gone is a failure that keeps the source
     block_on(x.n.wait_synced(SyncScope::Thing(x.g))).unwrap();
     x.move_group(x.g, GroupSource::Local).unwrap();
     assert!(x.p.group_sources().is_empty());
@@ -273,7 +273,7 @@ fn status_shows_a_group_as_its_source_does() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6: moves with writes pending on either side refuse, changing nothing, and each write stays where it is readable: a local write not yet at a peer holds the move away; going home while this engine cannot catch up, or while the node holds a write no peer has, keeps the route, so calls still go to the node and the local copy never answers behind
+// spec/sync.md §10, notes/client-port.md §6: moves with writes pending on either side refuse, changing nothing, and each write stays where it is readable: a local write not yet at a peer holds the move away; going home while this engine cannot catch up, or while the node holds a write no peer has, keeps the source, so calls still go to the node and the local copy never answers behind
 #[test]
 fn moves_with_pending_writes_refuse() {
     let x = world_waiting(Duration::from_millis(300));
@@ -295,7 +295,7 @@ fn moves_with_pending_writes_refuse() {
     let r = x.move_group(x.g, GroupSource::Local);
     assert!(r.is_err(), "{r:?}");
     assert_eq!(x.p.group_sources().get(&x.g), Some(&x.nc));
-    assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("newer")), "the route stays until caught up");
+    assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("newer")), "the source stays until caught up");
     assert_eq!(x.p_local_copy(), Some(s("first")));
     // another: home while only the node holds a write
     let x = world_waiting(Duration::from_millis(300));
@@ -794,12 +794,12 @@ fn config_connections_and_the_persisted_source() {
     let st = p2.status().unwrap();
     assert_eq!(st.node_connections, vec![osis::NodeConnection { address: x.nc.clone(), connected: false }]);
     assert_eq!(p2.close().unwrap(), osis::Close::Closed);
-    // reopened with it: the route works, nothing to redo
+    // reopened with it: the source works, nothing to redo
     let p3 = osis::internals::open(cfg_on(&net, "p", &pstore, vec![addr.clone()])).unwrap();
     crate::common::block_on(p3.connect_node(&NodeLogin { addr: x.nc.clone(), secret: x.secret.clone() })).unwrap();
     until("the connection came up", || p3.at(x.t, osis::DynamicAspectKey::untyped(title())).get().ok().flatten() == Some(s("n1")));
     assert_eq!(p3.close().unwrap(), osis::Close::Closed);
-    // a route naming a node gone for good: home works with no node connection at all
+    // a source naming a node gone for good: home works with no node connection at all
     let p4 = osis::internals::open(cfg_on(&net, "p", &pstore, vec![addr])).unwrap();
     block_on(p4.group_source(x.g, GroupSource::Local)).unwrap();
     assert!(p4.group_sources().is_empty());
@@ -925,9 +925,9 @@ impl Rng {
     }
 }
 
-// spec/sync.md §10, notes/client-port.md §6, the invariant of core/osis/src/sources.rs: random groups, routes, syncs and node connections against a model of the rule: each call reaches exactly the source the model names, a value only from it, a write only to it, Network when that one is down, never another's answer
+// spec/sync.md §10, notes/client-port.md §6, the invariant of core/osis/src/sources.rs: random groups, sources, syncs and node connections against a model of the rule: each call reaches exactly the source the model names, a value only from it, a write only to it, Network when that one is down, never another's answer
 #[test]
-fn routing_differential_against_a_model() {
+fn sources_differential_against_a_model() {
     let refused: usize = (0..2).map(differential).sum();
     assert!(refused > 0, "the seeds wrote on no split thing");
 }
@@ -980,7 +980,7 @@ fn differential(seed: u64) -> usize {
     connect();
     let addr = x.nc.clone();
     // the model: the group's source, whether the node is connected; the value on each side
-    let mut routed = [false; 3];
+    let mut sourced = [false; 3];
     let mut connected = true;
     let mut local: Vec<String> = vec!["start".into(); things.len()];
     let mut at_node = local.clone();
@@ -990,14 +990,14 @@ fn differential(seed: u64) -> usize {
         let which = r.next(things.len() as u64) as usize;
         let (t, of) = &things[which];
         // the rule, for a thing known here
-        let via_node = of.iter().any(|g| routed[ix(g)]);
+        let via_node = of.iter().any(|g| sourced[ix(g)]);
         // the groups other than the first admin only list it: only the first admin's label carries it
-        let split = via_node && !routed[ix(&of[0])];
+        let split = via_node && !sourced[ix(&of[0])];
         match r.next(10) {
             0..=2 => {
                 let i = r.next(3) as usize;
-                routed[i] = !routed[i];
-                x.p.set_source(gs[i], routed[i].then(|| addr.clone()));
+                sourced[i] = !sourced[i];
+                x.p.set_source(gs[i], sourced[i].then(|| addr.clone()));
             }
             3 => {
                 if connected {
@@ -1049,7 +1049,7 @@ fn differential(seed: u64) -> usize {
 
 // spec/permissions.md §3, notes/client-port.md §6: lowering the role of a holder of a group this node reads at another node is refused: run here it would commit to a copy that no longer syncs, and the revocation would silently never leave
 #[test]
-fn lowering_a_role_on_a_routed_group_is_refused() {
+fn lowering_a_role_on_a_sourced_group_is_refused() {
     let x = world();
     x.connect_p();
     x.to_node();
@@ -1061,7 +1061,7 @@ fn lowering_a_role_on_a_routed_group_is_refused() {
     assert!(matches!(r, Err(Error::Unsupported(_))), "{r:?}");
     assert!(x.n.grants(x.g).unwrap().contains_key(&x.actor));
     assert!(x.p.engine(|e| e.roster(&x.g).contains_key(&x.actor)), "nothing written to the local copy");
-    // a raise, and `grant` by its route: a thin client's connection carries neither (`method::for_client`)
+    // a raise, and `grant` through the node: a thin client's connection carries neither (`method::for_client`)
     assert!(matches!(x.p.set_role(x.g, x.actor, Some(Role::Admin), d), Err(Error::Unsupported(_))));
     assert!(matches!(x.p.grant(x.g, x.actor, Role::Admin, Default::default()), Err(Error::Unsupported(_))));
     drop(x.host);
@@ -1135,7 +1135,7 @@ fn a_move_tells_a_client_nothing_of_what_it_never_read() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6, §3: while a group's move home catches up, the node's own clients read nothing of it: the route stands, the copy here is behind
+// spec/sync.md §10, notes/client-port.md §6, §3: while a group's move home catches up, the node's own clients read nothing of it: the source stands, the copy here is behind
 #[test]
 fn a_nodes_client_reads_nothing_during_the_catch_up() {
     let x = world_waiting(Duration::from_millis(300));
@@ -1181,7 +1181,7 @@ fn a_watch_started_while_down_fails_and_works_once_up() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §8: the port worker never waits on another node: a main-actor call on a routed group answers at once, so one silent node holds no other client of this node
+// spec/sync.md §10, notes/client-port.md §8: the port worker never waits on another node: a main-actor call on a sourced group answers at once, so one silent node holds no other client of this node
 #[test]
 fn a_silent_node_holds_no_client_of_this_node() {
     let x = world();
@@ -1220,7 +1220,7 @@ fn a_silent_node_holds_no_client_of_this_node() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §1, §6: a differential of `group_source` with the peer up: random real moves, drops and lost replies against a model holding every value a write may have left: a read never shows an older acknowledged value through a settled route, no write is applied twice, a failed move changes no source; a thing in a second group that carries it refuses writes while routed (no write acknowledged and silently never sent), and a thing added to a second group while routed still reads there
+// spec/sync.md §10, notes/client-port.md §1, §6: a differential of `group_source` with the peer up: random real moves, drops and lost replies against a model holding every value a write may have left: a read never shows an older acknowledged value through a settled source, no write is applied twice, a failed move changes no source; a thing in a second group that carries it refuses writes while sourced (no write acknowledged and silently never sent), and a thing added to a second group while sourced still reads there
 #[test]
 fn group_source_differential_against_a_model() {
     let (mut refused, mut added) = (0, 0);
@@ -1229,7 +1229,7 @@ fn group_source_differential_against_a_model() {
         refused += r;
         added += p;
     }
-    assert!(refused > 0 && added > 0, "the seeds reached neither: {refused} refused, {added} added while routed");
+    assert!(refused > 0 && added > 0, "the seeds reached neither: {refused} refused, {added} added while sourced");
 }
 
 /// One thing of the differential: the last acknowledged value and later ones of unknown outcome.
@@ -1245,7 +1245,7 @@ fn tracked(t: Tid) -> Tracked {
     Tracked { t, acked: "first".into(), maybe: Vec::new(), ok: 0, unknown: 0 }
 }
 
-/// Returns how many writes on the split thing were refused, and whether a thing was added while routed.
+/// Returns how many writes on the split thing were refused, and whether a thing was added while sourced.
 fn moves_differential(seed: u64) -> (usize, usize) {
     let x = world_waiting(Duration::from_millis(600));
     // a second synced group H: `both` is carried by it too, `added` is only added there later
@@ -1269,7 +1269,7 @@ fn moves_differential(seed: u64) -> (usize, usize) {
     });
     x.connect_p();
     let mut r = Rng(seed);
-    // writes on `both` are only ever made here, and refused while routed
+    // writes on `both` are only ever made here, and refused while sourced
     let mut both_acked = "first".to_string();
     let mut things = [tracked(x.t), tracked(added)];
     let count = count_key(&[&x.n, &x.p]);
@@ -1359,12 +1359,12 @@ fn moves_differential(seed: u64) -> (usize, usize) {
                 Err(e) => panic!("step {step}: {e:?}"),
             },
         }
-        // after every step, while routed: `both` refuses a write, which would miss H; both of the
+        // after every step, while sourced: `both` refuses a write, which would miss H; both of the
         // second-group things read at the node, never this engine's copy
         if at_node {
             let v = format!("refused{step}");
             let write = x.p.commit_set(both, osis::DynamicAspectKey::untyped(title()), &s(&v));
-            assert!(matches!(write, Err(Error::Invalid(_))), "step {step} seed {seed}: a write through the route misses H: {write:?}");
+            assert!(matches!(write, Err(Error::Invalid(_))), "step {step} seed {seed}: a write through the node misses H: {write:?}");
             refused += 1;
             assert!(x.p.status().unwrap().two_sources.contains(&both), "step {step}");
             assert!(!x.p.status().unwrap().two_sources.contains(&added), "step {step}: H does not carry it");
@@ -1436,10 +1436,10 @@ fn third_node(x: &World) -> Osis {
     w_db
 }
 
-// spec/sync.md §2, §10: a routed thing given its own sync ID by a grant elsewhere keeps its one source:
-// the node holding the route syncs that ID too, so writes through it reach every holder
+// spec/sync.md §2, §10: a sourced thing given its own sync ID by a grant elsewhere keeps its one source:
+// the source node syncs that ID too, so writes through it reach every holder
 #[test]
-fn a_routed_thing_given_its_own_sync_id_is_not_split() {
+fn a_sourced_thing_given_its_own_sync_id_is_not_split() {
     let x = world();
     x.connect_p();
     x.to_node();
@@ -1456,9 +1456,9 @@ fn a_routed_thing_given_its_own_sync_id_is_not_split() {
     drop(x.host);
 }
 
-// spec/sync.md §10, the invariant of core/osis/src/sources.rs: `t` in routed G and in H, which carries it and syncs here: reads go through the route and see what only G carries; a write is refused, not acknowledged and left missing G's or H's other holders; `status` lists it; home again it writes, and every holder gets it
+// spec/sync.md §10, the invariant of core/osis/src/sources.rs: `t` in sourced G and in H, which carries it and syncs here: reads go to the source and see what only G carries; a write is refused, not acknowledged and left missing G's or H's other holders; `status` lists it; home again it writes, and every holder gets it
 #[test]
-fn a_split_thing_reads_at_the_route_and_refuses_writes() {
+fn a_split_thing_reads_at_its_source_and_refuses_writes() {
     let x = world();
     let w_db = third_node(&x);
     let h = second_group(&x);
@@ -1474,7 +1474,7 @@ fn a_split_thing_reads_at_the_route_and_refuses_writes() {
         let _ = x.n.nudge_sync();
         x.n.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap() == Some(s("from w"))
     });
-    assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("from w")), "the route answers");
+    assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("from w")), "the source answers");
     let r = x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("from p"));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     assert!(matches!(x.p.grant(x.t, x.actor, Role::Read, Default::default()), Err(Error::Invalid(_))));
@@ -1496,7 +1496,7 @@ fn a_split_thing_reads_at_the_route_and_refuses_writes() {
     drop(x.host);
 }
 
-// spec/sync.md §10: a split can arrive from elsewhere, where nothing could refuse it: another holder of H shares routed `t` into H; reads stay where they were, the next write here says why it is refused, and `status` shows it
+// spec/sync.md §10: a split can arrive from elsewhere, where nothing could refuse it: another holder of H shares sourced `t` into H; reads stay where they were, the next write here says why it is refused, and `status` shows it
 #[test]
 fn a_split_arriving_from_another_node_refuses_the_next_write() {
     let x = world();
@@ -1522,9 +1522,9 @@ fn a_split_arriving_from_another_node_refuses_the_next_write() {
     drop(x.host);
 }
 
-// spec/sync.md §10: adding a routed thing to a group synced here changes no source: a write acknowledged through the route does not read as gone; with no grant H does not carry it, so writes go on
+// spec/sync.md §10: adding a sourced thing to a group synced here changes no source: a write acknowledged through the node does not read as gone; with no grant H does not carry it, so writes go on
 #[test]
-fn adding_a_routed_thing_to_a_local_group_changes_nothing() {
+fn adding_a_sourced_thing_to_a_local_group_changes_nothing() {
     let x = world();
     let h = second_group(&x);
     x.connect_p();
@@ -1543,7 +1543,7 @@ fn adding_a_routed_thing_to_a_local_group_changes_nothing() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §8: a client of this node reads no copy of a routed thing, even one a local group still feeds
+// spec/sync.md §10, notes/client-port.md §8: a client of this node reads no copy of a sourced thing, even one a local group still feeds
 #[test]
 fn a_client_of_this_node_reads_no_split_thing() {
     let x = world();
@@ -1558,9 +1558,9 @@ fn a_client_of_this_node_reads_no_split_thing() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §3: what routing asks answers for a thing the client's actor may not read exactly as for a tid nobody knows: no existence oracle.
+// spec/sync.md §10, notes/client-port.md §3: what deciding a source asks answers for a thing the client's actor may not read exactly as for a tid nobody knows: no existence oracle.
 #[test]
-fn routing_to_what_the_actor_may_not_read_is_as_to_nothing() {
+fn the_source_of_what_the_actor_may_not_read_is_as_of_nothing() {
     let x = world();
     x.connect_p();
     let mut w = x.n.write();
@@ -1590,7 +1590,7 @@ fn a_secret_of_another_node_is_refused() {
 
 // spec/sync.md §10, notes/client-port.md §6 Moving: a group with no content yet is held at the node all the same: it can be moved there, though `has_content` reads `false`.
 #[test]
-fn an_empty_group_at_the_node_can_be_routed_to() {
+fn an_empty_group_can_be_sourced_at_the_node() {
     let x = world();
     x.connect_p();
     let mut w = x.n.write();
@@ -1639,7 +1639,7 @@ fn a_move_waits_again_for_a_write_after_its_wait() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6 Moving: a group held here without a live label comes home: this engine's role decides (the route would ask the node, where the client's actor reads nothing of it), and its first label is written while the route still stands
+// spec/sync.md §10, notes/client-port.md §6 Moving: a group held here without a live label comes home: this engine's role decides (the source would ask the node, where the client's actor reads nothing of it), and its first label is written while the source still stands
 #[test]
 fn a_group_without_a_label_here_comes_home() {
     let x = world();
@@ -1656,7 +1656,7 @@ fn a_group_without_a_label_here_comes_home() {
 
 // spec/data-model.md §9, notes/client-port.md §3, §6: removing a client granted on a group this node reads at another node ends its sessions and refuses the role removal rather than commit it to a copy that does not sync; home again, the same call finishes
 #[test]
-fn removing_a_client_of_a_routed_group_waits_for_it_to_come_home() {
+fn removing_a_client_of_a_sourced_group_waits_for_it_to_come_home() {
     let x = world();
     let (a, _sec) = x.p.add_client(None).unwrap();
     x.p.grant(x.g, a, Role::Read, Default::default()).unwrap();
@@ -1745,7 +1745,7 @@ fn moving_home_after_a_grant_to_a_second_group() {
     drop(x.host);
 }
 
-// spec/sync.md §10: undo and revert refuse what they would write on a split thing, also when the call names only the routed group, or a commit this engine never held
+// spec/sync.md §10: undo and revert refuse what they would write on a split thing, also when the call names only the sourced group, or a commit this engine never held
 #[test]
 fn undo_and_revert_refuse_a_split_thing_they_cannot_name() {
     let x = world();
@@ -1777,7 +1777,7 @@ fn undo_and_revert_refuse_a_split_thing_they_cannot_name() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6, cli `status`: a process connected to the node as its main actor sees what the node's status lists as split; so does a reopened node, whose routes come from its record
+// spec/sync.md §10, notes/client-port.md §6, cli `status`: a process connected to the node as its main actor sees what the node's status lists as split; so does a reopened node, whose sources come from its record
 #[test]
 fn split_shows_through_the_port_and_after_a_restart() {
     let mut x = world();
@@ -1808,9 +1808,9 @@ fn split_shows_through_the_port_and_after_a_restart() {
     drop(x.host);
 }
 
-// spec/sync.md §10, the invariant of core/osis/src/sources.rs: a move landing between a write's route and its split check: the check sees the route, so a write that would miss H's other holders is refused, not sent where the route it never saw leads
+// spec/sync.md §10, the invariant of core/osis/src/sources.rs: a move landing between a write's source decision and its split check: the check sees the source, so a write that would miss H's other holders is refused, not sent to the source it never saw
 #[test]
-fn a_split_made_after_the_route_refuses_the_write() {
+fn a_split_made_after_the_source_decision_refuses_the_write() {
     let x = world();
     let h = second_group(&x);
     x.p.add_with_grant(Member::Item(x.t), h, Role::Write).unwrap();

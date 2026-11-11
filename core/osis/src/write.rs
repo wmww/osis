@@ -353,7 +353,7 @@ impl<'d> Write<'d> {
         let limit = db.inner.limit;
         let expires = self.expires.map(|e| expiry_at(db, e)).transpose()?;
         let (r, removed) = db.locked(|l| {
-            // the routing invariant's second half: under the lock this commit takes, every thing it
+            // the source invariant's second half: under the lock this commit takes, every thing it
             // writes is still this engine's. A write decided Local before a move fails here, never
             // lands in a group that no longer syncs (crate::sources)
             db.guard_local(l, &deciders)?;

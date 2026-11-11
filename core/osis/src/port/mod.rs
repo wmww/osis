@@ -1,7 +1,7 @@
 //! The client port (notes/client-port.md): the `osis` API over the node-to-node protocol's
 //! client-port kinds (spec/wire.md §11.2). `serve`: a node answers the requests its served
 //! sessions make, on a worker thread off the handle lock; `client`: a process connected to such
-//! a node (`Osis::connect_socket`, `Osis::connect`) routes its tid-addressed calls there
+//! a node (`Osis::connect_socket`, `Osis::connect`) sends its tid-addressed calls there
 //! (`Source::Node`). Sessions: the node's own user (the unix socket, `Peer::Unix`), acting as its
 //! main actor, and thin clients (a bearer secret matching `clients^.0`), whose rows run as the
 //! client's actor (`serve`).
@@ -22,7 +22,7 @@ pub(crate) mod method {
     pub const ASPECTS: u64 = 2;
     /// `[tid]` -> bool
     pub const HAS_CONTENT: u64 = 3;
-    /// `[tid]` -> bool: its creation is here, content or not (what routing asks of a node)
+    /// `[tid]` -> bool: its creation is here, content or not (what deciding a source asks of a node)
     pub const HOLDS: u64 = 69;
     /// `[tid]` -> groups
     pub const GROUPS_OF: u64 = 4;

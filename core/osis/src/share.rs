@@ -665,7 +665,7 @@ impl ReadOnly {
 
 impl Osis {
     /// `Unsupported` when calls on `t` go to another node: a flow the port does not carry.
-    pub(crate) fn not_routed(&self, what: &str, t: Tid) -> Result<()> {
+    pub(crate) fn require_local(&self, what: &str, t: Tid) -> Result<()> {
         match self.source(t) {
             crate::sources::Source::Local => Ok(()),
             crate::sources::Source::Node(_) => Err(Error::Unsupported(format!("{what} of a thing this node reads at another node: move its group home first"))),
@@ -841,7 +841,7 @@ impl Osis {
         if !self.has_store() {
             return self.rcall(crate::port::method::SET_ROLE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o)]).map(drop);
         }
-        self.not_routed("set_role", target)?;
+        self.require_local("set_role", target)?;
         self.change_role(target, holder, role, o)
     }
 
@@ -1205,7 +1205,7 @@ impl Osis {
         if !self.has_store() {
             return self.rcall(crate::port::method::REVOKE_LINK, vec![Value::Tid(id.0)]).map(drop);
         }
-        self.not_routed("revoke_link", id.0)?;
+        self.require_local("revoke_link", id.0)?;
         let l = self.link_key(id.0)?;
         self.lower(id.0, l, None, SetRoleOpts::default())
     }
@@ -1214,7 +1214,7 @@ impl Osis {
     /// (spec/permissions.md §7: a joiner may keep the seed); the other joiners stay holders of K and
     /// need a new link to invite anyone.
     fn remove_joiner(&self, k: Tid, joiner: Tid, o: SetRoleOpts) -> Result<()> {
-        self.not_routed("set_role", k)?;
+        self.require_local("set_role", k)?;
         let l = self.link_key(k)?;
         let done = self.guarded(&[k], |e| e.revoke_joiner(&k, &l, &joiner, o.retain_copy).map_err(needs_admin))?;
         self.carry(done)
@@ -1715,7 +1715,7 @@ fn move_hosts(x: &mut Locked, me: Tid, v: &[Address]) -> Result<()> {
     let old: BTreeSet<osis_label::Address> = x.sync.config().hosts.iter().cloned().collect();
     let new: Vec<osis_label::Address> = v.iter().map(|s| s.0.clone()).collect();
     // links, whichever node made them, and the contact card name their label's hosts in
-    // their text: they stay; a routed group too: nothing written here leaves, and a stale
+    // their text: they stay; a sourced group too: nothing written here leaves, and a stale
     // list would move it on the way home
     let links = person_links(x.engine(), me)?;
     let mut fixed: BTreeSet<Tid> = links.iter().map(|h| h.k).chain(x.group_sources.keys().copied()).collect();
