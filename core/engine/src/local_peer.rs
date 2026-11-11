@@ -85,7 +85,10 @@ impl Peer {
     /// `receive` with the list blobs that came with it (`Engine::ingest_with_lists`).
     pub fn receive_with(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, lists: &[Vec<u8>]) -> Result<Ingested> {
         let r = self.engine.ingest_with_lists(bytes, blobs.clone(), None, lists);
-        if let (Err(e), Ok(b)) = (&r, CommitBlob::decode(bytes)) && e.class() == osis_base::ErrorClass::BadInput {
+        if let Err(e) = &r
+            && e.class() == osis_base::ErrorClass::BadInput
+            && let Ok(b) = CommitBlob::decode(bytes)
+        {
             self.engine.forget_awaiting(&b.id())?;
         }
         self.note(bytes, &blobs, &r);
@@ -106,14 +109,20 @@ impl Peer {
         self.wake()
     }
 
+    /// Keeps what node-sync would fetch again: a commit thrown out to await a chain or record,
+    /// or one held with a part of these bytes missing. Any earlier copy of the same bytes goes
+    /// (only decodable bytes are kept, so only those match).
     fn note(&mut self, bytes: &[u8], blobs: &[(BlobId, Vec<u8>)], r: &Result<Ingested>) {
-        let Ok(b) = CommitBlob::decode(bytes) else { return };
-        let id = b.id();
         self.discarded.retain(|d| d.bytes != bytes);
+        let Ok(i) = r else { return };
+        let id = match i {
+            Ingested::Applied(x) | Ingested::Duplicate(x) | Ingested::Pending(x, _) | Ingested::Awaits(x, _) | Ingested::Parked(x) | Ingested::TooLarge(x) => *x,
+        };
         let applied = self.engine.core.ix.commits.get(&id);
-        let awaits = match r {
-            Ok(Ingested::Awaits(_, crate::Reason::MissingChain(t) | crate::Reason::UnknownCreated(t))) if applied.is_none() => Some(*t),
-            Ok(_) if applied.is_some_and(|m| b.parts.iter().any(|p| m.missing.contains(&p.ai))) => None,
+        let awaits = match i {
+            Ingested::Awaits(_, crate::Reason::MissingChain(t) | crate::Reason::UnknownCreated(t)) if applied.is_none() => Some(*t),
+            // the blob decoded only where a held commit misses a part
+            _ if applied.is_some_and(|m| !m.missing.is_empty() && CommitBlob::decode(bytes).is_ok_and(|b| b.parts.iter().any(|p| m.missing.contains(&p.ai)))) => None,
             _ => return,
         };
         self.discards += 1;

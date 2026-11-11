@@ -210,8 +210,17 @@ pub struct Verdict {
     pub as_p: Vec<bool>,
     pub valid: Vec<bool>,
     pub visible: Vec<bool>,
+    /// The side taken (`trust`): the rotation sided with, if any.
+    pub side: Option<usize>,
+    /// Rotations in a mutual contest (`parties`): a dispute when any.
+    pub parties: Vec<usize>,
+}
+
+impl Verdict {
     /// Two held merges reject each other.
-    pub dispute: bool,
+    pub fn dispute(&self) -> bool {
+        !self.parties.is_empty()
+    }
 }
 
 impl World {
@@ -489,7 +498,7 @@ impl World {
             c.dedup();
             c
         };
-        let dispute = !self.parties(held).is_empty();
+        let parties = self.parties(held);
         // A's demotion (at most one held).
         let dem = (0..n).find(|&i| held[i] && matches!(self.items[i].kind, Kind::Demotion { .. }));
         let thing = |i: usize| self.items[i].kind.thing();
@@ -573,7 +582,7 @@ impl World {
                     && (valid[i] || (0..n).any(|s| valid[s] && matches!(&self.items[s].kind, Kind::Snap { carries, .. } if carries.contains(&self.items[i].id))))
             })
             .collect();
-        Verdict { counting, closed: closed_list, followed, heads, as_p, valid, visible, dispute }
+        Verdict { counting, closed: closed_list, followed, heads, as_p, valid, visible, side: trust, parties }
     }
 
     /// The reading `v` of `held` is in doubt (the node tells its user): a dispute, or a head
@@ -584,7 +593,7 @@ impl World {
         let line = |r: usize| self.line_of(held, r);
         let followed = v.followed.map(line).unwrap_or_default();
         let merge = |r: usize| matches!(&self.items[r].kind, Kind::Rotation { at, supersedes, .. } if supersedes.iter().any(|e| e != at));
-        v.dispute || v.heads.iter().any(|&h| Some(h) != v.followed && line(h).into_iter().any(|r| merge(r) && !followed.contains(&r)))
+        v.dispute() || v.heads.iter().any(|&h| Some(h) != v.followed && line(h).into_iter().any(|r| merge(r) && !followed.contains(&r)))
     }
 
     /// What observer o holds by `tau`.
@@ -927,7 +936,7 @@ pub fn check(w: &World, st: &mut Stats) {
                     st.removal_voided += 1;
                     failed = true;
                     if debug() {
-                        println!("removal voided: observer n{o} tau {tau} removal #{} side {:?} counting {:?} dispute {}", w.items[r0].id, trust.map(|t| w.items[t].id), v.counting, v.dispute);
+                        println!("removal voided: observer n{o} tau {tau} removal #{} side {:?} counting {:?} dispute {}", w.items[r0].id, trust.map(|t| w.items[t].id), v.counting, v.dispute());
                     }
                 }
             }
@@ -939,7 +948,7 @@ pub fn check(w: &World, st: &mut Stats) {
                 st.thief_followed_in_doubt += u64::from(w.in_doubt(&held, &v));
             } else if v.heads.len() > 1 && w.in_doubt(&held, &v) {
                 st.owner_followed_in_doubt += 1;
-                st.owner_followed_in_doubt_honest += u64::from(!v.dispute && !(0..n).any(|r| held[r] && w.items[r].hostile && w.items[r].kind.is_rot()));
+                st.owner_followed_in_doubt_honest += u64::from(!v.dispute() && !(0..n).any(|r| held[r] && w.items[r].hostile && w.items[r].kind.is_rot()));
             }
             // A removed node's plain forks (rejecting nothing, nothing built on them) hide
             // nothing at an observer following node 0's line: dropping them shows no more
@@ -966,7 +975,7 @@ pub fn check(w: &World, st: &mut Stats) {
                     }
                 }
             }
-            if v.dispute {
+            if v.dispute() {
                 disputed = true;
                 if !w.owner_sided(trust) {
                     st.thief_sided_observers += 1;
@@ -2429,9 +2438,9 @@ mod tests {
         assert!(!w.judge(&merged, None).valid[2], "a removed node's fork is void once the owner's merge is held");
         let both = all(&w);
         let v = w.judge(&both, Some(3));
-        assert!(v.dispute && !v.valid[2] && v.counting[0] && !v.counting[1]);
+        assert!(v.dispute() && !v.valid[2] && v.counting[0] && !v.counting[1]);
         let vx = w.judge(&both, Some(4));
-        assert!(vx.dispute && vx.valid[2] && !vx.counting[3] && vx.counting[1] && vx.counting[4]);
+        assert!(vx.dispute() && vx.valid[2] && !vx.counting[3] && vx.counting[1] && vx.counting[4]);
         // The outsider received the owner's merge (6) before the thief's (8).
         assert_eq!(w.default_side(4, &both), Some(3));
     }
@@ -2635,7 +2644,7 @@ mod tests {
         let all = all(&w);
         for o in [0, 2, 3, 4] {
             let v = w.judge(&all, w.default_side(o, &all));
-            assert!(v.counting[r] && v.counting[m] && !v.counting[f] && !v.dispute && !v.valid[x], "observer {o}: {v:?}");
+            assert!(v.counting[r] && v.counting[m] && !v.counting[f] && !v.dispute() && !v.valid[x], "observer {o}: {v:?}");
         }
     }
 
@@ -2707,7 +2716,7 @@ mod tests {
         let all = all(&w);
         for o in [0, 2] {
             let v = w.judge_at(o, &all);
-            assert!(v.counting[l2] && !v.counting[l1] && v.counting[m] && v.counting[r] && !v.dispute, "observer {o}: {v:?}");
+            assert!(v.counting[l2] && !v.counting[l1] && v.counting[m] && v.counting[r] && !v.dispute(), "observer {o}: {v:?}");
             assert!(v.followed == Some(m) && v.visible[c1] && v.visible[c2] && !w.in_doubt(&all, &v), "observer {o}: {v:?}");
         }
         // The outsider received the second fork first.

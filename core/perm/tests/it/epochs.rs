@@ -9,7 +9,7 @@ use crate::common::seeded;
 use osis_perm::epochs::{fit_list, list_bytes, list_leaf, list_tree};
 use osis_perm::{AccountCommit, EpochStanding, Epochs, ListPath, Listing, Rotation, ThingList};
 use std::collections::BTreeMap;
-use roles_model::epochs::{self as model, Kind, World};
+use roles_model::epochs::{self as model, Kind, Verdict, World};
 use roles_model::Rng;
 use std::collections::BTreeSet;
 
@@ -313,16 +313,16 @@ fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judge
     Judged::new(Epochs::new(0, rots, side.map(|s| pid(w, s)), &received, &lists, &listings), commits, addenda)
 }
 
-/// The first difference between the model's `judge` and perm at observer `o` holding `held`.
-fn epochs_diff(w: &World, o: usize, held: &[bool]) -> Option<String> {
-    let side = w.default_side(o, held);
-    let v = w.judge_at(o, held);
+/// The first difference between the model's verdict `v` (`judge_at`) and perm at observer `o`
+/// holding `held`.
+fn epochs_diff(w: &World, o: usize, held: &[bool], v: &Verdict) -> Option<String> {
+    let side = v.side;
     // P's nodes are given their roster's side (the devices actor's line); without one, or for
     // anyone else, perm takes its default from the receipt order.
     let e = perm_epochs(w, o, held, w.roster_side(o, held));
     // Which rotations take part (held with their chain): the disputes, the side, the head
     // followed.
-    let parties: BTreeSet<u32> = w.parties(held).into_iter().map(|i| pid(w, i)).collect();
+    let parties: BTreeSet<u32> = v.parties.iter().map(|&i| pid(w, i)).collect();
     if *e.chain().parties() != parties {
         return Some(format!("observer n{o}: parties model {parties:?}, perm {:?}", e.chain().parties()));
     }
@@ -332,8 +332,8 @@ fn epochs_diff(w: &World, o: usize, held: &[bool]) -> Option<String> {
     if e.chain().followed() != v.followed.map_or(0, |f| pid(w, f)) {
         return Some(format!("observer n{o}: followed model {:?}, perm {:?}", v.followed, e.chain().followed()));
     }
-    if e.chain().in_doubt() != w.in_doubt(held, &v) {
-        return Some(format!("observer n{o}: in doubt model {}, perm {}", w.in_doubt(held, &v), e.chain().in_doubt()));
+    if e.chain().in_doubt() != w.in_doubt(held, v) {
+        return Some(format!("observer n{o}: in doubt model {}, perm {}", w.in_doubt(held, v), e.chain().in_doubt()));
     }
     let rooted = w.rooted(held);
     let minted = |ep: u32| ep == 0 || (0..w.items.len()).any(|r| rooted[r] && matches!(w.items[r].kind, Kind::Rotation { new, .. } if new == ep));
@@ -366,15 +366,22 @@ fn epochs_run(samples: u64, seed: u64) {
         times.sort_unstable();
         times.dedup();
         for o in 0..w.nodes {
+            let mut last: Option<Vec<bool>> = None;
             for &t in &times {
                 let held = w.held_at(o, t);
+                // what is checked is a function of the world, the observer and its held set: a
+                // time that brought this observer nothing checks nothing new
+                if last.as_ref() == Some(&held) {
+                    continue;
+                }
                 checked += 1;
                 unrooted += u64::from(w.rooted(&held) != held);
-                if let Some(d) = epochs_diff(&w, o, &held) {
+                let v = w.judge_at(o, &held);
+                if let Some(d) = epochs_diff(&w, o, &held, &v) {
                     panic!("seed {seed:#x} sample {s}: {d}\n{w:?}");
                 }
-                let v = w.judge_at(o, &held);
                 closed_named += w.items.iter().enumerate().filter(|(i, it)| v.as_p[*i] && it.epoch.is_some_and(|e| v.closed.contains(&e)) && !matches!(it.kind, Kind::Rotation { .. })).count() as u64;
+                last = Some(held);
             }
         }
     }
@@ -403,7 +410,7 @@ fn node_of_p_without_a_roster_line_takes_the_preferred_party() {
     assert_eq!(w.parties(&all), vec![2, 3]);
     assert_eq!((w.roster_side(3, &all), w.default_side(3, &all)), (None, Some(3)));
     assert_eq!(perm_epochs(&w, 3, &all, None).chain().side(), Some(4));
-    assert_eq!(epochs_diff(&w, 3, &all), None);
+    assert_eq!(epochs_diff(&w, 3, &all, &w.judge_at(3, &all)), None);
 }
 
 /// spec/permissions.md §5.4-§5.5: the epoch rule agrees with core/test/roles-model `epochs` at

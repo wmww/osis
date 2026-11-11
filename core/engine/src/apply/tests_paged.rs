@@ -45,6 +45,8 @@ struct World {
     lp: LocalPeer,
     t: Tid,
     log: Vec<String>,
+    /// Per node and aspect, the read point and cached state at its last stored check (`seen`).
+    checked: BTreeMap<(usize, Ak), (crate::engine::ReadPoint, Option<osis_crdt::Fragment>)>,
 }
 
 fn world(seed: u64, whole: bool) -> World {
@@ -63,7 +65,7 @@ fn world(seed: u64, whole: bool) -> World {
         lp.peers[0].commit(m).unwrap();
     }
     lp.sync_all().unwrap();
-    World { lp, t, log: Vec::new() }
+    World { lp, t, log: Vec::new(), checked: BTreeMap::new() }
 }
 
 /// A string about 24 bytes long, so a few thousand entries page (`PAGE_TARGET`).
@@ -236,12 +238,20 @@ impl World {
         let mut out = Vec::new();
         for (i, p) in self.lp.peers.iter_mut().enumerate() {
             for a in aks() {
-                // the stored pages, not only what loading them gives (it prunes again)
-                assert_eq!(p.engine.stale_page_writes(&t, &a).unwrap(), 0, "node {i} {a}: a page holds writes its skeleton prunes");
                 let st = p.engine.state(&t, &a).unwrap();
-                if stored {
+                // both checks below are reads: while the read point stands they repeat
+                // themselves (`Engine::point`), so a node and aspect checked at this point with
+                // this cached state passes again
+                let at = p.engine.point();
+                let repeat = stored && self.checked.get(&(i, a.clone())).is_some_and(|(x, s)| *x == at && *s == st);
+                if !repeat {
+                    // the stored pages, not only what loading them gives (it prunes again)
+                    assert_eq!(p.engine.stale_page_writes(&t, &a).unwrap(), 0, "node {i} {a}: a page holds writes its skeleton prunes");
+                }
+                if stored && !repeat {
                     let s = p.engine.stored_state(&t, &a).unwrap();
                     assert!(s == st, "node {i} {a}: the store does not hold the cached state\n{}", first_diff(&format!("{s:#?}"), &format!("{st:#?}"), ["stored", "cached"]));
+                    self.checked.insert((i, a.clone()), (at, st.clone()));
                 }
                 out.push(if pretty { format!("{i} {a} state {st:#?}") } else { format!("{i} {a} state {st:?}") });
                 if judged {

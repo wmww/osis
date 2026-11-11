@@ -2047,10 +2047,12 @@ fn answers(inc: &Timelines, nodes: &BTreeSet<Tid>, things: &BTreeSet<Tid>, point
         let tl = inc.get(t);
         for n in nodes {
             let mut a = format!("{:?} {:?} {:?}", tl.map_or(osis_perm::Class::None, |tl| tl.class(n, t, At::END)), tl.and_then(|tl| tl.role(n, t, At::END)), tl.map_or(&[][..], |tl| tl.demotions(n, t)));
+            for r in [osis_base::Role::Read, osis_base::Role::Write, osis_base::Role::Admin] {
+                let _ = write!(a, " {:?}", tl.and_then(|tl| tl.valid_from(n, t, r)));
+            }
             for p in points {
                 let _ = write!(a, " {:?}", tl.and_then(|tl| tl.role(n, t, At::before(*p))));
                 for r in [osis_base::Role::Read, osis_base::Role::Write, osis_base::Role::Admin] {
-                    let _ = write!(a, " {:?}", tl.and_then(|tl| tl.valid_from(n, t, r)));
                     let any = osis_perm::Point { node: *n, commit: osis_base::CommitId([0xee; 32]), ..*p };
                     let _ = write!(a, " {:?}", tl.map_or(none, |tl| tl.delta_valid(any, t, r)));
                     if p.node == *n {
