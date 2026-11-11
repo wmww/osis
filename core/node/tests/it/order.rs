@@ -1914,6 +1914,7 @@ fn deliver_with(played: &Played, order: &[usize], rng: Option<&mut Rng>, clock: 
 /// `deliver_with` from node `p` given the first `start` of `order` (`first_of`; with `rng` or
 /// `clock`, none).
 fn deliver_from(played: &Played, order: &[usize], (mut p, start): (Peer, usize), mut rng: Option<&mut Rng>, clock: Option<Clock>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
+    assert!(start == 0 || (rng.is_none() && clock.is_none()), "`first_of` gives no late parts and no clock");
     let mut each = |p: &mut Peer| {
         crate::disputes::walk_sides(p);
         each(p)

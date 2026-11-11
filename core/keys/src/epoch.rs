@@ -968,3 +968,54 @@ mod tests {
         assert!(tie_diffs > 0);
     }
 }
+
+#[cfg(test)]
+mod current_oracle {
+    use super::*;
+
+    /// spec/crypto.md §4 Current, stated directly: established, and no established epoch's
+    /// `superseded_epochs` names it (no transitivity; self- and cyclic supersedes included).
+    fn superseded_by_spec(r: &RoleEpochs, e: &Epoch) -> bool {
+        r.map.values().any(|i| i.established.is_some() && i.superseded_epochs().contains(e))
+    }
+
+    // `current`, `superseded` and `newest_held` agree with the spec's definition over random epoch
+    // sets: forks (one n, several nonces), cycles, self-supersedes, unestablished supersessors,
+    // supersedes of unknown epochs, and lists split between history box and rotation commits.
+    #[test]
+    fn current_matches_spec_definition() {
+        let mut s = 0u64;
+        let mut next = |m: u64| {
+            s = s.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = s;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            (z ^ (z >> 31)) % m
+        };
+        let pool: Vec<Epoch> = (1..=4).flat_map(|n| (0..2).map(move |c| Epoch::new(n, [c; 32]).unwrap())).collect();
+        for _ in 0..4000 {
+            let mut r = RoleEpochs::default();
+            for e in &pool {
+                if next(3) == 0 {
+                    continue;
+                }
+                let pick = |next: &mut dyn FnMut(u64) -> u64| pool.iter().filter(|_| next(4) == 0).copied().collect::<BTreeSet<Epoch>>();
+                let mut i = EpochInfo { supersedes: pick(&mut next), ..Default::default() };
+                for c in 0..next(3) {
+                    i.rotations.insert(CommitId([c as u8; 32]), pick(&mut next));
+                }
+                i.established = [None, Some(Provenance::Fixed), Some(Provenance::Rotated)][next(3) as usize];
+                i.secret = (next(2) == 0).then(|| Secret32::from_bytes([e.n() as u8; 32]));
+                r.map.insert(*e, i);
+            }
+            let want: Vec<Epoch> = r.map.keys().filter(|e| r.is_established(e) && !superseded_by_spec(&r, e)).copied().collect();
+            assert_eq!(r.current(), want, "{r:?}");
+            for e in &pool {
+                assert_eq!(r.superseded(e), superseded_by_spec(&r, e));
+                assert_eq!(r.is_current(e), want.contains(e));
+            }
+            let held = r.held().filter(|(e, _)| want.contains(e)).max_by_key(|(e, _)| r.by_order(e)).map(|x| x.0);
+            assert_eq!(r.newest_held().map(|x| x.0), held);
+        }
+    }
+}
