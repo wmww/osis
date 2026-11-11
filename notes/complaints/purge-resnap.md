@@ -5,3 +5,4 @@
 - Review: `snapshots_on` let `addenda.0` through (admin-purgeable, never compacted), so a purge naming it had every writer try a snapshot the engine refuses (a diag each); the snapshot-permitting set lives in two places (`Engine::snapshot`'s refusals, node-sync's `snapshots_on`).
 - The worker ran only osis-node tests: the re-snapshot shows in the public `writes` listing, so osis (`listing::`, `port_clients::`) and osis-cli purge tests fail. Behaviour visible through the API needs the osis and cli crates' tests too.
 - Review: the main checkout's `main` was behind `origin/main`, so `git rebase main` was a silent no-op; rebase onto `origin/main` after a fetch.
+- Rewording a spec sentence that holds a `tools/spec_map.py` rule anchor (`It MUST NOT name role-class deltas`) fails the gate's first step; workers' per-crate tests never run `spec_map.py --gaps`, so run it after any spec edit.
