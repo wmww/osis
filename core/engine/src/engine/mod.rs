@@ -1058,6 +1058,7 @@ impl Core {
     pub(crate) fn test_copy(&self, clock: Arc<dyn Clock>) -> Core {
         Core {
             ix: self.ix.clone(),
+            pended: self.pended.clone(),
             id: self.id.clone(),
             hlc: Hlc::new(clock, self.hlc.last()),
             states: self.states.clone(),

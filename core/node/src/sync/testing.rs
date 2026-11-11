@@ -25,6 +25,8 @@ impl SyncEngine {
             Ok(SyncEngine {
                 engine,
                 forget_seeded: self.forget_seeded.clone(),
+                pending_seeded: self.pending_seeded.clone(),
+                unvouched_reported: self.unvouched_reported.clone(),
                 events,
                 rng: self.rng.test_copy(),
                 cfg: self.cfg.clone(),
