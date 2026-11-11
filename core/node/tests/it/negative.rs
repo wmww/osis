@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Retention bounds a compactor must not cross (spec/commits.md §5), through a host.
 
+use crate::net::{hosted, hosted_nodes};
 use crate::net;
 use net::*;
 use osis_base::{Ak, Value};
@@ -22,11 +23,7 @@ const ADMIN_KEPT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:admin
 // bodies nor deletes them at the host; once the bound has passed (by MAX_DRIFT) it does both.
 #[test]
 fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    let t = net.item(a, g, g, "x");
+    let (mut net, host, [a], _g, [t]) = hosted::<1, 1>(&[], ["x"], false);
     let mut bodies = Vec::new();
     for v in ["v1", "v2", "v3"] {
         let mut m = Mutation::new();
@@ -75,10 +72,7 @@ fn deletions(net: &Net, host: usize, l: &osis_base::LabelId) -> usize {
 /// keep-at-least bound. Returns the host's log deletions over the crossing and how many blobs of
 /// those bodies either node knew.
 fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
+    let (mut net, host, [a, b]) = hosted_nodes::<2>();
     net.set_skew(if a_ahead { a } else { b }, osis_base::format::MAX_DRIFT_MS as i64);
     let g = net.group(a, &[(b, osis_base::Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
@@ -152,11 +146,7 @@ fn deletion_across_local_dating_no_churn_spec_sync_6() {
 /// The scenario of `deletion_across_local_dating_no_churn_*`: the host's deletions of X's
 /// blobs and how many blobs of X either node knew.
 fn local_dating_churn() -> (usize, usize) {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
+    let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
     let g = net.group(a, &[(b, osis_base::Role::Write), (c, osis_base::Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
     let k = &KEPT;
@@ -226,11 +216,7 @@ fn local_dating_churn() -> (usize, usize) {
 // day (sim `snapshot_rights` seed 9317).
 #[test]
 fn covered_drop_stays_out_across_local_dating_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
+    let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
     let g = net.group(a, &[(b, osis_base::Role::Write), (c, osis_base::Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
     net.run();

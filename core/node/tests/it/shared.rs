@@ -2,6 +2,7 @@
 //! The shared set over real sessions (issues/net-shared-set.md, spec/wire.md §11.2 Beacons, Offer,
 //! Lost): a hand dialer that is `a` in everything but the code, against a real node `b`.
 
+use crate::net::local_nodes;
 use crate::connection_proofs::{CHALLENGE, Dialer, LISTENER, dial_with, prove, pump};
 use crate::net;
 use crate::peers::reach_ed;
@@ -286,9 +287,7 @@ fn the_conn(net: &mut Net, n: usize) -> ConnId {
 // additions and a Hit, and losing it closes the member on both sides and stops the data
 #[test]
 fn a_right_gained_and_lost_mid_connection_opens_and_closes_spec_sync_5() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, b);
     net.group_at(a, &[(b, Role::Write)], vec![]);
     net.run();
@@ -350,9 +349,7 @@ fn a_static_entry_hit_opens_only_for_its_proved_key_actor_spec_wire_11_2() {
 }
 
 fn first_contact_cost(n: usize) -> (u64, u64, u64) {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, b);
     for i in 0..n {
         net.group_seeded(a, &[(b, Role::Write)], vec![], i as u64 + 1);
@@ -442,9 +439,7 @@ fn an_accepted_by_role_opens_at_its_sender_spec_wire_11_2() {
 // an admissible credential of; only the filter stops
 #[test]
 fn a_credential_open_outlasts_the_peers_being_known_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, b);
     let g1 = net.group_at(b, &[(a, Role::Read)], vec![]);
     let g2 = net.group_seeded(b, &[], vec![], 2);

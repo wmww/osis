@@ -2,6 +2,7 @@
 //! Revokes about authors seen under a label (spec/permissions.md §4): a holder that syncs the
 //! label and holds the revoke places it there, so verifiers judge the author's writes alike.
 
+use crate::net::hosted_nodes;
 use crate::net;
 use net::*;
 use osis_base::Role;
@@ -16,12 +17,7 @@ use std::collections::BTreeSet;
 // keys, and G's admin, finding its box to X stale, rotates: W reads nothing new.
 #[test]
 fn revoke_about_author_placed_spec_permissions_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let w = net.node(3, &[host]);
-    let r = net.node(4, &[host]);
+    let (mut net, host, [a, b, w, r]) = hosted_nodes::<4>();
     let x = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(host)], 1);
     net.name_inbox_elsewhere(b, x);
     net.pair(b, a);
@@ -72,12 +68,7 @@ fn revoke_about_author_placed_spec_permissions_4() {
 // keyset, so it may not rotate G (spec/crypto.md §4, Possession): it waits, and G's admin rotates.
 #[test]
 fn nested_departure_removed_writer_waits_spec_crypto_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let w = net.node(3, &[host]);
-    let r = net.node(4, &[host]);
+    let (mut net, host, [a, b, w, r]) = hosted_nodes::<4>();
     let x2 = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(host)], 1);
     let x1 = net.group_seeded(b, &[], vec![net.address(host)], 2);
     net.name_inbox_elsewhere(b, x2);
@@ -132,12 +123,7 @@ fn nested_departure_removed_writer_waits_spec_crypto_4() {
 // spec/permissions.md §4: a revoke on a thing the label's actor has no holder path from carries no keyset: W's removal from M, a stranger to G, has M's fresh deposit seed
 #[test]
 fn revoke_on_an_unrelated_thing_brings_no_keys() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let w = net.node(3, &[host]);
-    let r = net.node(4, &[host]);
+    let (mut net, host, [a, b, w, r]) = hosted_nodes::<4>();
     let x = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(host)], 1);
     net.name_inbox_elsewhere(b, x);
     let m = net.group_seeded(b, &[(w, Role::Read), (r, Role::Read)], vec![net.address(host)], 3);

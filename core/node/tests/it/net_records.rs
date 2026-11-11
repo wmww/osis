@@ -2,6 +2,7 @@
 //! Records and the pair key on connections (spec/sync.md §10, Pair key; issues/net-reconnect.md,
 //! Resume), and `changed_at` (issues/net-reconnect.md, Changes).
 
+use crate::net::{hosted, hosted_nodes, local_nodes};
 use crate::connection_proofs::{CHALLENGE, Dialer, LISTENER, dial_with, prove, pump};
 use crate::net;
 use crate::peers::reach_ed;
@@ -172,9 +173,7 @@ fn an_unknown_account_resumes_nothing_spec_sync_10() {
 // resumes its record
 #[test]
 fn a_removed_node_no_longer_resumes_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, b);
     let g = net.group_at(b, &[(a, Role::Write)], vec![]);
     net.run();
@@ -319,12 +318,7 @@ fn changed(net: &mut Net, n: usize, l: LabelId) -> Option<u64> {
 // write and a restart with nothing changed do not, and append nothing
 #[test]
 fn changed_at_moves_on_a_role_change_only() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, host, [a, _b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let l = net.label(a);
     let first = changed(&mut net, a, l).expect("a held label has a changed_at");
     let t = net.item(a, g, g, "x");
@@ -397,9 +391,7 @@ fn an_echoed_answer_finds_nothing_end_to_end_spec_sync_10() {
 // one record however many routes it ran over
 #[test]
 fn a_lan_switch_keeps_one_record_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, a);
     reach_ed(&mut net, b);
     net.group_at(a, &[(b, Role::Write)], vec![]);
@@ -619,9 +611,7 @@ fn resume_invariant_random_large() {
 
 /// (changed_at passes, labels fingerprinted) for one role change at a node holding `n` groups.
 fn stamp_work(n: u64) -> (u64, u64) {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let addr = net.address(host);
     let mut last = None;
     for i in 0..n {

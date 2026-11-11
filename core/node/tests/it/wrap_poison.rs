@@ -73,6 +73,14 @@ struct Fx {
 
 /// Author `a` and hostile writer `h` syncing the label at `n` hosts; reader `f` not connected.
 fn fixture(n: usize, seed: u64) -> Fx {
+    let (net, (hosts, a, h, f, g, l)) = Net::cached(&format!("wrap_poison::fixture/{n}/{seed}"), || {
+        let Fx { net, hosts, a, h, f, g, l } = fixture_built(n, seed);
+        (net, (hosts, a, h, f, g, l))
+    });
+    Fx { net, hosts, a, h, f, g, l }
+}
+
+fn fixture_built(n: usize, seed: u64) -> Fx {
     let mut net = Net::new();
     let hosts: Vec<usize> = (0..n).map(|_| net.add_host()).collect();
     let a = net.node(seed * 10 + 1, &hosts);

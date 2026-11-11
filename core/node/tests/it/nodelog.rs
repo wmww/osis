@@ -2,6 +2,7 @@
 //! spec: none (issues/net-reconnect.md, One node log): the node log follows every path that
 //! changes a held entry, so a listing from its start is the node's live set of every label.
 
+use crate::net::{hosted, hosted_nodes};
 use crate::net;
 use net::*;
 use osis_base::{Ak, BlobId, LabelId, Role, Value};
@@ -43,13 +44,7 @@ fn deletions(net: &mut Net, n: usize) -> usize {
 // compaction's drop of what it covers
 #[test]
 fn log_follows_every_entry_path() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "one");
-    net.run();
+    let (mut net, _host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["one"], true);
     assert!(compare(&mut net, a) > 0, "a commit logs");
     assert!(compare(&mut net, b) > 0, "an applied commit logs");
     net.write(a, t, "two");
@@ -71,12 +66,7 @@ fn log_follows_every_entry_path() {
 // an entry that actually expires leaves the log as a deletion event, and a listing no longer shows it
 #[test]
 fn an_expired_entry_is_a_deletion_in_the_log() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    let t = net.item(a, g, g, "v1");
-    net.run();
+    let (mut net, _host, [a], _g, [t]) = hosted::<1, 1>(&[], ["v1"], true);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("v2")).unwrap();
     m.expires(t, &REG, osis_base::WallMs(net.now() + 5_000)).unwrap();
@@ -110,9 +100,7 @@ fn cursor_at_end(net: &mut Net, n: usize) -> Vec<u8> {
 // that point of the log learns the entry from the arrival of the bytes
 #[test]
 fn a_commit_blob_is_logged_when_its_bytes_arrive() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     let l = net.label(a);
@@ -140,9 +128,7 @@ fn a_commit_blob_is_logged_when_its_bytes_arrive() {
 // a chunk gets no entry write as its bytes arrive; they log it all the same
 #[test]
 fn a_chunk_is_logged_when_its_bytes_arrive() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");

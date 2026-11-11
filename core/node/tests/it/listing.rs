@@ -20,6 +20,14 @@ fn reg() -> Ak {
 
 /// Alice (0) is first admin of D, Bob (1) and Dan (3) write, Carol (2) is an admin.
 fn setup(seed: u64) -> (LocalPeer, Tid, [Tid; 4]) {
+    let (lp, (d, ids)) = LocalPeer::cached(&format!("listing::setup/{seed}"), || {
+        let (lp, d, ids) = setup_built(seed);
+        (lp, (d, ids))
+    });
+    (lp, d, ids)
+}
+
+fn setup_built(seed: u64) -> (LocalPeer, Tid, [Tid; 4]) {
     let mut lp = net(4, seed);
     let ids = [0, 1, 2, 3].map(|i| lp.peers[i].engine.me());
     let mut m = Mutation::new();

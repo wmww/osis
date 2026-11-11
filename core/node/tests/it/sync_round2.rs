@@ -3,6 +3,7 @@
 //! commits and must-hold, wakes, purge-on-replace drops, deletes lost with a connection, deposits in flight, clock
 //! offsets.
 
+use crate::net::{hosted, local_nodes};
 use crate::net;
 use net::*;
 use osis_base::{Ak, Role};
@@ -23,13 +24,7 @@ fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::Comm
 // spec/versioning.md §2 (reject malformed)
 #[test]
 fn junk_entry_does_not_stall_uploads_spec_versioning_2() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "v1");
-    net.run();
+    let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["v1"], true);
     let (_, gl) = net.group_labels(a).into_iter().next().unwrap();
     let head = gl.steps.values().next().unwrap().0.clone();
     let keys = net.engine(a).head_keys(&g, gl.index, &head).unwrap();
@@ -60,13 +55,7 @@ fn junk_entry_does_not_stall_uploads_spec_versioning_2() {
 // may-hold (two writers' pending commits used to withhold exactly what the other waited for).
 #[test]
 fn pending_commit_does_not_withhold_uploads_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "v1");
-    net.run();
+    let (mut net, host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["v1"], true);
     // b writes two hours ahead: a holds it pending for drift
     net.set_skew(b, 2 * 3_600_000);
     net.write(b, t, "ahead");
@@ -100,8 +89,7 @@ fn a_skewed_host_is_reported_not_followed_spec_sync_6() {
 // node's HLC never stops it from committing.
 #[test]
 fn own_commit_after_clock_moves_back_spec_crdt_2() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
+    let (mut net, [a]) = local_nodes::<1>();
     let g = net.group(a, &[], &[]);
     let t = net.item(a, g, g, "v1");
     net.set_skew(a, 12 * 3_600_000);
@@ -115,8 +103,7 @@ fn own_commit_after_clock_moves_back_spec_crdt_2() {
 // for its next expiry, and every Tick asks again (a wake left unchanged was never re-armed).
 #[test]
 fn wake_for_expiry_and_after_every_tick_spec_commits_5() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
+    let (mut net, [a]) = local_nodes::<1>();
     let g = net.group(a, &[], &[]);
     let t = net.item(a, g, g, "v1");
     let mut m = Mutation::new();
@@ -139,11 +126,7 @@ fn wake_for_expiry_and_after_every_tick_spec_commits_5() {
 // under purge on replace also drops its blob and key at the node.
 #[test]
 fn purge_on_replace_drop_forgets_blob_spec_commits_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    let t = net.item(a, g, g, "v1");
+    let (mut net, _host, [a], _g, [t]) = hosted::<1, 1>(&[], ["v1"], false);
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("one")).unwrap();
     let c1 = net.engine(a).commit(m).unwrap().unwrap();
@@ -164,11 +147,7 @@ fn purge_on_replace_drop_forgets_blob_spec_commits_5() {
 // with its connection, goes again on the next one.
 #[test]
 fn delete_resent_after_cut_spec_sync_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    let t = net.item(a, g, g, "v1");
+    let (mut net, host, [a], _g, [t]) = hosted::<1, 1>(&[], ["v1"], false);
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("one")).unwrap();
     let c1 = net.engine(a).commit(m).unwrap().unwrap();
@@ -193,13 +172,7 @@ fn delete_resent_after_cut_spec_sync_7() {
 // spec/sync.md §5 (deposits): deposits not answered yet are not sent again by later passes.
 #[test]
 fn deposits_in_flight_not_resent_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let r = net.node(2, &[host]);
-    let g = net.group(a, &[(r, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "v1");
-    net.run();
+    let (mut net, _host, [a, r], _g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["v1"], true);
     net.sent_kinds.clear();
     // the reader's card changes: its next pass deposits it (no tick: nothing else moves)
     crate::peers::reach_ed(&mut net, r);

@@ -4,6 +4,7 @@
 //! account and goes only to the nodes of its own account; a node removed from its account, once
 //! the removal's rotation is held, proves the account nowhere.
 
+use crate::net::local_nodes;
 use crate::connection_proofs::{LISTENER, account_node, dial_with, paired_node, prove, proved_by};
 use crate::net;
 use crate::peers::reach_ed;
@@ -30,9 +31,7 @@ fn node_keys_proved(net: &mut Net, n: usize, nodes: &BTreeSet<Tid>) -> Vec<BTree
 // record names the account
 #[test]
 fn accounts_find_their_groups_and_resume_with_no_node_identity_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, b);
     let g = net.group_at(a, &[(b, Role::Write)], vec![]);
     net.run();
@@ -67,9 +66,7 @@ fn accounts_find_their_groups_and_resume_with_no_node_identity_spec_sync_10() {
 // a record nor a shared set
 #[test]
 fn a_node_key_alone_reaches_nothing_at_another_account_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let x = net.node(2, &[]);
+    let (mut net, [a, x]) = local_nodes::<2>();
     let g = net.group_at(a, &[(x, Role::Write)], vec![]);
     net.run();
     let tx = net.node_tid(x);

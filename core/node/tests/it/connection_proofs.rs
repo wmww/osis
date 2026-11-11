@@ -2,6 +2,7 @@
 //! Connection proofs (spec/sync.md §10, Connection proofs; issues/net-shared-set.md step 2): what
 //! `SyncEngine::proven` reports comes from the connection's own exchange and nothing else.
 
+use crate::net::local_nodes;
 use crate::net;
 use net::*;
 use crate::peers::reach_ed;
@@ -164,8 +165,7 @@ fn listener_proves_nothing_to_a_stranger_spec_sync_10() {
 // spec/sync.md §10: a key actor (a link key) proves itself by its signing key, no chain
 #[test]
 fn key_actor_proved_by_its_signing_key_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
+    let (mut net, [a]) = local_nodes::<1>();
     let key = SigningSecret::from_seed(&Secret32::from_bytes([9; 32]));
     let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [9; 32], account: false };
     let actor = record.tid();
@@ -177,8 +177,7 @@ fn key_actor_proved_by_its_signing_key_spec_sync_10() {
 // spec/sync.md §10: a proof by a key that is not the record's proves nothing
 #[test]
 fn forged_key_proves_nothing_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
+    let (mut net, [a]) = local_nodes::<1>();
     let real = SigningSecret::from_seed(&Secret32::from_bytes([9; 32]));
     let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: real.verifying_key().to_bytes().to_vec(), nonce: [9; 32], account: false };
     let thief = SigningSecret::from_seed(&Secret32::from_bytes([8; 32]));
@@ -219,8 +218,7 @@ fn proof_for_another_session_or_listener_proves_nothing_spec_sync_10() {
 // spec/wire.md §11.2: one Prove per connection, a second is an error and changes nothing
 #[test]
 fn second_prove_refused_spec_wire_11_2() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
+    let (mut net, [a]) = local_nodes::<1>();
     let key = SigningSecret::from_seed(&Secret32::from_bytes([9; 32]));
     let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [9; 32], account: false };
     let mut p = dial(&mut net, a);
@@ -274,8 +272,7 @@ fn held_group_data_proves_nothing_spec_sync_10() {
 // nothing of its own unasked
 #[test]
 fn a_session_with_no_prove_proves_nothing_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
+    let (mut net, [a]) = local_nodes::<1>();
     let p = dial(&mut net, a);
     assert_eq!(proven(&mut net, a, &p), set(&[]));
     assert_eq!(net.sync(a).proven(ConnId::MAX), None, "no such connection");

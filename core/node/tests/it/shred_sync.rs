@@ -4,6 +4,7 @@
 //! (`Engine::forensic`) opens them (spec/commits.md §5: dropping a body destroys every local
 //! copy; spec/requirements.md, Deletion: forward secure).
 
+use crate::net::hosted_nodes;
 use crate::net;
 use net::*;
 use osis_base::{Ak, Role};
@@ -22,9 +23,7 @@ const MARK: &str = "SYNCED-PURGE-MARK-6b2d";
 /// Node b (forensic, faults `f`) holds a's write of `MARK` to `t`, synced through a host under
 /// a group label: (net, b, t, commit).
 fn synced(f: &Faults) -> (Net, usize, osis_base::Tid, osis_base::CommitId) {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let b = net.forensic_node(2, &[host], f);
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");

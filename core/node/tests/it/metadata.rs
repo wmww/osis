@@ -3,6 +3,7 @@
 //! hub's stored bytes are searched for every secret and identifier of the scenario, blob sizes
 //! checked against Padmé, labels checked for shared bytes, claim sets for reader counts.
 
+use crate::net::hosted_nodes;
 use crate::net;
 use net::*;
 use osis_base::{BlobId, CommitId, LabelId, Role, Tid};
@@ -144,10 +145,7 @@ fn stored_sizes_are_padme() {
 // wrap; the commits under both (the node card, chain certificates) are fresh encryptions per label
 #[test]
 fn no_linkage_across_labels() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
+    let (mut net, host, [a, b]) = hosted_nodes::<2>();
     let addr = vec![net.address(host)];
     let g1 = net.group_seeded(a, &[(b, Role::Write)], addr.clone(), 11);
     let g2 = net.group_seeded(a, &[(b, Role::Write)], addr, 12);

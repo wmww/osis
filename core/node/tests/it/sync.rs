@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Node sync engines through hosts, in process (spec/sync.md §2-§9, §11).
 
+use crate::net::{hosted, hosted_nodes};
 use crate::net;
 use net::*;
 use osis_base::{Ak, Role, Value};
@@ -11,13 +12,7 @@ use osis_node::sync::Event;
 // bodies uploaded stamped, downloaded, unwrapped and applied, both ways.
 #[test]
 fn two_nodes_converge_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "hello");
-    net.run();
+    let (mut net, _host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["hello"], true);
     net.trace(&[a, b]);
     assert_eq!(net.read(b, t), Some(s("hello")));
     net.write(b, t, "back");
@@ -55,13 +50,7 @@ fn reader_relays_spec_sync_6() {
 // spec/sync.md §8: a subscribed node gets new log events pushed without asking.
 #[test]
 fn subscription_push_spec_sync_8() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "one");
-    net.run();
+    let (mut net, _host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["one"], true);
     assert_eq!(net.read(b, t), Some(s("one")));
     net.write(a, t, "two");
     // only the writer acts; the other node hears by push
@@ -75,14 +64,7 @@ fn subscription_push_spec_sync_8() {
 // a reader cannot fire one.
 #[test]
 fn ephemeral_signals_relay_only_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
+    let (mut net, host, [a, b, c], _g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Read)], ["x"], true);
     let rx: Vec<_> = [a, b, c].iter().map(|n| net.listen(*n)).collect();
     let rows = net.hosts[host].hub.store().rows().unwrap();
     let ring = crate::common::ak("t:typing+~0");
@@ -105,9 +87,7 @@ fn ephemeral_signals_relay_only_spec_sync_5() {
 // reached a host ends up with the content.
 #[test]
 fn bundle_round_trip_spec_sync_11() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let b = net.node(2, &[]);
     net.blocked.insert((b, host));
     let g = net.group(a, &[(b, Role::Read)], &[host]);
@@ -126,13 +106,7 @@ fn bundle_round_trip_spec_sync_11() {
 // was and re-uploads nothing it placed before.
 #[test]
 fn restart_resumes_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "one");
-    net.run();
+    let (mut net, host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["one"], true);
     let l = net.label(a);
     let n = net.host_ids(host, &l).len();
     net.restart(b, 22);
@@ -147,11 +121,7 @@ fn restart_resumes_spec_sync_6() {
 // one host, across a rotation, a compaction and an expiring write.
 #[test]
 fn briefly_online_nodes_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], false);
     net.set_online(b, false);
     let t = net.item(a, g, g, "a1");
     let mut m = osis_node::Mutation::new();

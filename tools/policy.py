@@ -4,7 +4,7 @@ workspace lints on, every external dependency has its line in notes/architecture
 target marked `test = false` / `doctest = false` has unit tests / doctests that would silently not run,
 and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name, and
 osis-host cannot reach decryption (`host_blind`), and no test can bind the real LAN port or
-announce on the real LAN (`real_lan_tests`).
+announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`).
 Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
 libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
 import glob, os, re, sys, tomllib
@@ -164,7 +164,7 @@ def paths_of(text, crate):
     return out
 
 HOST_DEPS = {"osis-base", "osis-crypto", "osis-label", "osis-proto", "osis-store", "osis-transport"}
-HOST_CRYPTO = {"VerifyingKey", "Signature", "WRAP_LEN", "OsRng", "RngCore", "CryptoRngCore"}
+HOST_CRYPTO = {"VerifyingKey", "Signature", "WRAP_LEN", "OsRng", "RngCore", "CryptoRngCore", "NodeRng"}
 HOST_LABEL = {"blob_id", "Prefix", "prefix_bytes", "verify_stamp", "step::parse_entry_box", "step::entry_box_bytes", "Address", "address_to_text", "address_from_text", "ClaimSet", "Step", "StepId"}
 HOST_PROTO_DENY = {"examples"}
 NODE_HOST = {"Hub", "HubOutput", "ConnId", "Up", "Down", "HostStore", "HostConfig", "HostPolicy", "Admission", "LabelCaps"}
@@ -288,6 +288,26 @@ def peer_ticks():
                     if PEER_TICK.search(line.split("//", 1)[0]):
                         yield f"{os.path.relpath(path, ROOT)}:{n}: engine.tick()/reexamine() on a peer skips its wake (use Peer::tick/reexamine)"
 
+# notes/testing.md (Copied worlds): a test copy is the same node twice (identity, session, rng
+# stream), so product code never makes one. Product sources name the copy hooks only in the
+# files that define them; tests, the test crates and the LocalPeer harness may use them freely.
+COPY_HOOKS = re.compile(r"\btest_copy\b|\btest_copy_boxed\b|\bcopying::|\btest_subscribe_with\b")
+COPY_DEFS = {"core/base/src/copying.rs", "core/base/src/lib.rs", "core/crypto/src/rng.rs", "core/store/src/memory.rs", "core/store/src/root.rs",
+             "core/store/src/backend.rs", "core/store/src/pager.rs", "core/store/src/store.rs", "core/engine/src/engine/testing.rs",
+             "core/engine/src/engine/mod.rs", "core/engine/src/engine/memo.rs", "core/engine/src/events/mod.rs",
+             "core/engine/src/local_peer.rs", "core/engine/src/tests_copy.rs", "core/node/src/sync/testing.rs", "core/host/src/store.rs", "core/host/src/hub.rs"}
+
+def test_copies():
+    for m in members:
+        for path in glob.glob(os.path.join(m, "src/**/*.rs"), recursive=True):
+            rel = os.path.relpath(path, ROOT)
+            if rel in COPY_DEFS or rel.startswith("core/test/"):
+                continue
+            for n, line in enumerate(open(path, errors="replace"), 1):
+                if COPY_HOOKS.search(line.split("//", 1)[0]):
+                    yield f"{rel}:{n}: a world-copy hook outside tests (notes/testing.md, Copied worlds)"
+
+errs.extend(test_copies())
 errs.extend(real_lan_tests())
 errs.extend(peer_ticks())
 errs.extend(env_vars())

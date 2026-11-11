@@ -2,6 +2,7 @@
 //! fetched in the wraps' order, the pass ending with the fill. Order independence of what is read
 //! at each step: `order` (`fill_order`).
 
+use crate::net::hosted_nodes;
 use crate::net::{self, Net};
 use osis_base::{Ak, BlobId, LabelId, Role, Tid, Value};
 use osis_node::Mutation;
@@ -53,9 +54,7 @@ fn chat(role: Role) -> Chat {
 
 /// `chat` with `setup(net, a, g, t)` run before the messages.
 fn chat_with(role: Role, setup: impl FnOnce(&mut Net, usize, Tid, Tid)) -> Chat {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let c = filler(&mut net, &[host]);
     let g = net.group(a, &[(c, role)], &[host]);
     let t = net.item(a, g, g, "chat");
@@ -122,9 +121,7 @@ impl Chat {
 // on every role commit, wherever in the log it was written.
 #[test]
 fn newest_first_after_what_judging_needs_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let c = filler(&mut net, &[host]);
     let d = net.node(4, &[]);
     let g = net.group(a, &[(c, Role::Read), (d, Role::Read)], &[host]);
@@ -277,9 +274,7 @@ fn a_deposit_comes_after_order_0_spec_sync_6() {
 // arrive: messages under a rotation's new epoch, its rotation fetched first.
 #[test]
 fn secrets_arriving_order_the_rest_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let c = filler(&mut net, &[host]);
     let d = net.node(4, &[]);
     let g = net.group(a, &[(c, Role::Read), (d, Role::Read)], &[host]);
@@ -359,10 +354,7 @@ fn a_covered_body_stays_gone_during_a_fill_spec_sync_6() {
 // its snapshot would be of a state not whole yet.
 #[test]
 fn no_repair_from_a_state_part_way_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let r = net.node(2, &[host]);
+    let (mut net, host, [a, r]) = hosted_nodes::<2>();
     let c = filler(&mut net, &[host]);
     let g = net.group(a, &[(r, Role::Read), (c, Role::Write)], &[host]);
     net.set_online(c, false);

@@ -1967,6 +1967,14 @@ fn undecided_write_keeps_its_body_spec_commits_5() {
 /// Peers 0 (first admin), `x` (1, admin) and `w` (2, writer) of a new thing; `w`'s message `c` and `x`'s
 /// request naming it, its own delta on another aspect if `beside`, all synced.
 fn rightful(seed: u64, beside: bool) -> (LocalPeer, osis_base::Tid, osis_base::CommitId, osis_base::CommitId) {
+    let (lp, (t, c, p)) = LocalPeer::cached(&format!("retention::rightful/{seed}/{beside}"), || {
+        let (lp, t, c, p) = rightful_built(seed, beside);
+        (lp, (t, c, p))
+    });
+    (lp, t, c, p)
+}
+
+fn rightful_built(seed: u64, beside: bool) -> (LocalPeer, osis_base::Tid, osis_base::CommitId, osis_base::CommitId) {
     let mut lp = net(3, seed);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
@@ -2561,6 +2569,14 @@ fn one_write_is_one_commit_or_refused_spec_commits_6() {
 /// given), admin 2 purged `c`, admin 1 demoted 2 unseen by 0, whose demotion of 1 leaves it out
 /// (the purge falls where 1's demotion is held). Packages of each, the base delivered to 4 and 5.
 fn fall_rig(seed: u64, expires: Option<u64>) -> (LocalPeer, Tid, [osis_node::local_peer::Package; 5]) {
+    let (lp, (t, pks)) = LocalPeer::cached(&format!("retention::fall_rig/{seed}/{expires:?}"), || {
+        let (lp, t, pks) = fall_rig_built(seed, expires);
+        (lp, (t, pks))
+    });
+    (lp, t, pks)
+}
+
+fn fall_rig_built(seed: u64, expires: Option<u64>) -> (LocalPeer, Tid, [osis_node::local_peer::Package; 5]) {
     let mut lp = net(6, seed);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);

@@ -1,5 +1,6 @@
 //! Growth with the number of writes (notes/growth.md): counts stored bytes and rows, never time.
 
+use crate::net::hosted;
 use crate::net::*;
 use osis_base::Role;
 use std::collections::BTreeMap;
@@ -11,13 +12,7 @@ use std::collections::BTreeMap;
 // writes at all holds steady too.
 #[test]
 fn single_writer_replace_grows_nothing() {
-    let mut net = Net::new();
-    let h = net.add_host();
-    let a = net.node(1, &[h]);
-    let b = net.node(2, &[h]);
-    let g = net.group(a, &[(b, Role::Read)], &[h]);
-    let t = net.item(a, g, g, "first");
-    net.run();
+    let (mut net, h, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["first"], true);
     let reg = osis_base::Ak::new("t:reg.0").unwrap();
     let census = |net: &mut Net, n: usize| net.engine(n).local_census().unwrap();
     let host = |net: &mut Net| {
@@ -65,12 +60,7 @@ fn flat(who: &str, step: &str, a: &BTreeMap<String, (usize, usize)>, b: &BTreeMa
 #[test]
 #[ignore = "probe"]
 fn replace_census_probe() {
-    let mut net = Net::new();
-    let h = net.add_host();
-    let a = net.node(1, &[h]);
-    let g = net.group(a, &[], &[h]);
-    let t = net.item(a, g, g, "first");
-    net.run();
+    let (mut net, h, [a], _g, [t]) = hosted::<1, 1>(&[], ["first"], true);
     let run = |net: &mut Net, from: usize, to: usize| {
         for i in from..to {
             net.write(a, t, &format!("v{i:08}"));
@@ -107,13 +97,7 @@ fn replace_census_probe() {
 // nothing and every body stays; another writer's whole replace covers none of a first's bodies.
 #[test]
 fn only_a_whole_own_replace_covers() {
-    let mut net = Net::new();
-    let h = net.add_host();
-    let a = net.node(1, &[h]);
-    let b = net.node(2, &[h]);
-    let g = net.group(a, &[(b, Role::Write)], &[h]);
-    let t = net.item(a, g, g, "first");
-    net.run();
+    let (mut net, _h, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["first"], true);
     let bag = osis_base::Ak::new("t:big.0").unwrap();
     for i in 0..4 {
         let mut m = osis_node::Mutation::new();
@@ -140,13 +124,7 @@ fn only_a_whole_own_replace_covers() {
 // can still relay its other part.
 #[test]
 fn own_replace_of_one_part_keeps_the_other() {
-    let mut net = Net::new();
-    let h = net.add_host();
-    let a = net.node(1, &[h]);
-    let b = net.node(2, &[h]);
-    let g = net.group(a, &[(b, Role::Read)], &[h]);
-    let t = net.item(a, g, g, "first");
-    net.run();
+    let (mut net, h, [a, _b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["first"], true);
     let reg = osis_base::Ak::new("t:reg.0").unwrap();
     let other = osis_base::Ak::new("t:other.0").unwrap();
     let mut m = osis_node::Mutation::new();
@@ -174,13 +152,7 @@ fn own_replace_of_one_part_keeps_the_other() {
 // holds no more bodies than the writer, and judges nothing the host holds must-not.
 #[test]
 fn late_reader_and_restored_device_catch_up() {
-    let mut net = Net::new();
-    let h = net.add_host();
-    let a = net.node(1, &[h]);
-    let late = net.node(2, &[h]);
-    let g = net.group(a, &[(late, Role::Read)], &[h]);
-    let t = net.item(a, g, g, "first");
-    net.run();
+    let (mut net, h, [a, late], _g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["first"], true);
     let reg = osis_base::Ak::new("t:reg.0").unwrap();
     net.set_online(late, false);
     for i in 0..10 {
@@ -248,14 +220,7 @@ fn own_cover_work_per_write_is_flat() {
 // keeps every other part of the commit too, at the writer and a reader.
 #[test]
 fn a_part_without_the_right_keeps_its_commit_whole() {
-    let mut net = Net::new();
-    let h = net.add_host();
-    let a = net.node(1, &[h]);
-    let b = net.node(2, &[h]);
-    let r = net.node(3, &[h]);
-    let g = net.group(a, &[(b, Role::Write), (r, Role::Read)], &[h]);
-    let t = net.item(a, g, g, "first");
-    net.run();
+    let (mut net, _h, [_a, b, r], _g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Read)], ["first"], true);
     let reg = osis_base::Ak::new("t:reg.0").unwrap();
     let kept = osis_base::Ak::new("t:kept.0").unwrap();
     for i in 0..3 {

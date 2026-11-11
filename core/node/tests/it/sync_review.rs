@@ -2,6 +2,7 @@
 //! Regression tests from the node-sync review (spec/sync.md §3, §5-§7; spec/crypto.md §4;
 //! spec/commits.md §5; spec/permissions.md §3).
 
+use crate::net::{hosted, hosted_nodes};
 use crate::net;
 use net::*;
 use osis_commit::PurgeItem;
@@ -23,12 +24,7 @@ fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::Comm
 // spec/crypto.md §4 (encrypt under covering epoch), spec/permissions.md §3 (required rotation)
 #[test]
 fn rotates_before_wrapping_after_until_spec_crypto_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write)], [], false);
     net.pair(c, a);
     let ct_ = net.tid(c);
     let until = WallMs(net.now() + 1_000);
@@ -59,13 +55,7 @@ fn rotates_before_wrapping_after_until_spec_crypto_4() {
 // host by delete key.
 #[test]
 fn purge_leaves_no_copy_spec_commits_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let r = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (r, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "x");
+    let (mut net, host, [a, b, r], _g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Read)], ["x"], false);
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("secret")).unwrap();
     let c = net.engine(a).commit(m).unwrap().unwrap();
@@ -95,13 +85,7 @@ fn purge_leaves_no_copy_spec_commits_5() {
 // once writer b (offline through the purge, p was its body) is back and applies the purge.
 #[test]
 fn purged_superset_holds_nothing_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    let t2 = net.item(a, g, g, "y");
+    let (mut net, host, [a, b], _g, [t, t2]) = hosted::<2, 2>(&[(1, Role::Write)], ["x", "y"], false);
     let gone = Ak::new(GONE.ak()).unwrap();
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("secret")).unwrap();
@@ -142,13 +126,7 @@ fn purged_superset_holds_nothing_spec_sync_6() {
 // the way, so p stays (and the live write with it) until q is at the host.
 #[test]
 fn purged_body_waits_for_its_rewrite_spec_sync_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    let t2 = net.item(a, g, g, "y");
+    let (mut net, host, [a, b], _g, [t, t2]) = hosted::<2, 2>(&[(1, Role::Write)], ["x", "y"], false);
     let gone = Ak::new(GONE.ak()).unwrap();
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("secret")).unwrap();
@@ -189,13 +167,7 @@ fn purged_body_waits_for_its_rewrite_spec_sync_7() {
 // q (the kept live write is never absent), and ends with q only.
 #[test]
 fn purged_body_leaves_full_label_spec_sync_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    let t2 = net.item(a, g, g, "y");
+    let (mut net, host, [a, b], _g, [t, t2]) = hosted::<2, 2>(&[(1, Role::Write)], ["x", "y"], false);
     let gone = Ak::new(GONE.ak()).unwrap();
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("secret")).unwrap();
@@ -239,10 +211,7 @@ fn purged_body_leaves_full_label_spec_sync_7() {
 // with a pass: `complete_pass` holds without another Sync.
 #[test]
 fn complete_pass_after_push_spec_permissions_3() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
+    let (mut net, host, [a, b]) = hosted_nodes::<2>();
     let c = net.node(3, &[]);
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     net.run();
@@ -290,13 +259,7 @@ fn sync_sent_before_role_commit_ends_no_pass_after_it_spec_permissions_3() {
 
 /// Reader `b` of `a`'s group `g` at one host, every pass ended; `a` offline.
 fn quiet_label() -> (Net, usize, usize, usize, Tid) {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Read), (c, Role::Read)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Read), (2, Role::Read)], [], true);
     assert!(net.sync(b).complete_pass(&g));
     net.set_online(a, false);
     net.run();
@@ -319,9 +282,7 @@ fn from_elsewhere(net: &mut Net, a: usize, b: usize, c: usize, g: Tid, role: Rol
 // has not fetched the snapshot yet treats them as may-hold and re-uploads nothing.
 #[test]
 fn no_reupload_ping_pong_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "v1");
@@ -347,12 +308,7 @@ fn no_reupload_ping_pong_spec_sync_6() {
 // only the shared section and applies it.
 #[test]
 fn private_and_shared_split_spec_sync_3() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "shared");
+    let (mut net, _host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["shared"], false);
     let at = net.tid(a);
     let e = net.engine(a);
     let mut m = Mutation::new();
@@ -386,10 +342,7 @@ fn private_and_shared_split_spec_sync_3() {
 // directly) restarts it.
 #[test]
 fn complete_pass_survives_disconnect_spec_permissions_3() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
+    let (mut net, host, [a, b]) = hosted_nodes::<2>();
     let c = net.node(3, &[]);
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     net.run();
@@ -494,14 +447,7 @@ fn self_removal_crash_still_drops_spec_permissions_3() {
 // removal, the admin learns it and the leaver drops the group.
 #[test]
 fn self_removal_kept_by_trigger_until_placed_spec_permissions_3() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "marker");
-    net.run();
+    let (mut net, host, [a, b, c], g, [t]) = hosted::<3, 1>(&[(1, Role::Write)], ["marker"], true);
     assert_eq!(net.read(b, t), Some(s("marker")));
     net.set_online(b, false);
     let (bt, ct_) = (net.tid(b), net.tid(c));
@@ -648,13 +594,7 @@ fn self_removal_shared_subgroup_spec_permissions_3() {
 // when back, so the host holds two; the admin deletes the higher one.
 #[test]
 fn duplicate_encryptions_higher_goes_spec_sync_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
+    let (mut net, host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
     // neither hears from the host meanwhile
     net.held_to.extend([a, b]);
     let c = net.write(a, t, "y");
@@ -762,11 +702,7 @@ fn strict_subset_needs_superset_at_that_host_spec_sync_6() {
 // disk: every must-hold body goes up again.
 #[test]
 fn wiped_host_gets_bodies_back_from_restarted_node_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    let t = net.item(a, g, g, "v1");
+    let (mut net, host, [a], _g, [t]) = hosted::<1, 1>(&[], ["v1"], false);
     let c = net.write(a, t, "v2");
     net.run();
     let l = net.label(a);
@@ -789,11 +725,7 @@ fn wiped_host_gets_bodies_back_from_restarted_node_spec_sync_6() {
 // again though another body of c was deleted
 #[test]
 fn deleted_body_withholds_only_itself_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    let t = net.item(a, g, g, "v1");
+    let (mut net, host, [a], _g, [t]) = hosted::<1, 1>(&[], ["v1"], false);
     let both = |net: &mut Net, v: &str| {
         let mut m = Mutation::new();
         m.set(t, &REG, &s(v)).unwrap();
@@ -921,12 +853,7 @@ fn link_joiner_leave_forks_converge_spec_crypto_4() {
 // refused: R is stranded at G, not synced, until M's keyset reaches it.
 #[test]
 fn no_secret_of_the_heads_read_epoch_is_stranded_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let r = net.node(3, &[host]);
-    let c = net.node(4, &[host]);
+    let (mut net, host, [a, b, r, c]) = hosted_nodes::<4>();
     let m = net.group_seeded(b, &[(r, Role::Read), (c, Role::Read)], vec![net.address(host)], 1);
     net.name_inbox_elsewhere(b, m);
     net.pair(b, a);
@@ -1197,10 +1124,7 @@ fn seals_by(net: &mut Net, n: usize, g: osis_base::Tid) -> usize {
 /// Admin `a` (dialable) and reader `c` of a group at a host, connected: (net, a, c, g, label, c's
 /// end of the connection).
 fn stranded_pair() -> (Net, usize, usize, osis_base::Tid, osis_base::LabelId, osis_node::sync::ConnId) {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let c = net.node(2, &[host]);
+    let (mut net, host, [a, c]) = hosted_nodes::<2>();
     crate::peers::reach_ed(&mut net, a);
     let g = net.group(a, &[(c, Role::Read)], &[host]);
     net.run();

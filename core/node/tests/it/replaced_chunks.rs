@@ -2,6 +2,7 @@
 //! A replaced label keeps role-class commits and certificates only (spec/sync.md §2): the
 //! chunk and page entries of its content commits go with them.
 
+use crate::net::hosted;
 use crate::net;
 use net::*;
 use osis_base::{Role, Value};
@@ -12,12 +13,7 @@ use osis_node::sync::EntryKind;
 // of a large value written under the old label go too, and the admin then retires the label.
 #[test]
 fn replaced_label_chunks_deleted_spec_sync_2() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
+    let (mut net, host, [a, _b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], false);
     let big: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
     let mut m = Mutation::new();
     m.set(t, &BLOB, &Value::Bytes(big)).unwrap();

@@ -2,6 +2,7 @@
 //! (a key actor, or an account at an epoch open here) over the rosters held; `credentials(L)` by
 //! class.
 
+use crate::net::local_nodes;
 use crate::net;
 use net::*;
 use osis_base::{LabelId, Role, Tid};
@@ -128,8 +129,7 @@ fn key_actor_holder_then_departed_unknown_never_held_spec_sync_10() {
 // from the thing has left it too; it never counts a thing whose secrets are not its own actor's
 #[test]
 fn departed_through_a_roster_path_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
+    let (mut net, [a]) = local_nodes::<1>();
     let me = net.tid(a);
     let actor = Tid::from_bytes([9; 15]);
     let team = {

@@ -2,6 +2,7 @@
 //! Labeling on hand-built groups (spec/sync.md §1-§3, §5; spec/crypto.md §5, §7): entitlement,
 //! one blob per commit with its prefix groups, wraps, head keys, delete keys.
 
+use crate::net::local_nodes;
 use crate::net;
 use net::*;
 use osis_base::{Role, WallMs};
@@ -14,9 +15,7 @@ use osis_crypto::SeededRng;
 // an edge is silently not shared (only the folder's `group.0` delta goes).
 #[test]
 fn shared_folder_entitlement_spec_sync_3() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     let g = net.group(a, &[(b, Role::Write)], &[]);
     let inside = net.item(a, g, g, "in");
     let at = net.tid(a);
@@ -42,9 +41,7 @@ fn shared_folder_entitlement_spec_sync_3() {
 // opens against its header.
 #[test]
 fn one_blob_prefix_groups_per_key_set_spec_wire_5() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     let g = net.group(a, &[(b, Role::Write)], &[]);
     let t = net.item(a, g, g, "x");
     let mut m = Mutation::new();
@@ -78,9 +75,7 @@ fn one_blob_prefix_groups_per_key_set_spec_wire_5() {
 // under the epoch it supersedes, so the holders it seals to can open it.
 #[test]
 fn rotation_wrap_exception_spec_crypto_5() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     let g = net.group(a, &[(b, Role::Write)], &[]);
     let bt = net.tid(b);
     let at = net.tid(a);
@@ -100,10 +95,7 @@ fn rotation_wrap_exception_spec_crypto_5() {
 // write secret signs for the level-3 commitment of a `writer` body; a reader holds no delete key.
 #[test]
 fn head_keys_and_delete_keys_spec_sync_5() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    let r = net.node(3, &[]);
+    let (mut net, [a, b, r]) = local_nodes::<3>();
     let g = net.group(a, &[(b, Role::Write), (r, Role::Read)], &[]);
     let (_, l) = net.group_labels(a).into_iter().next().unwrap();
     let head = l.steps.values().next().unwrap().0.clone();

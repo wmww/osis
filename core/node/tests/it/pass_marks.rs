@@ -3,6 +3,7 @@
 //! the engine marks the commits whose parts, validity or deaths changed, not every commit on
 //! their aspect, and an unchanged closure is reused.
 
+use crate::net::hosted;
 use crate::net;
 use net::*;
 use osis_base::{CommitId, LabelId, Role, Tid, Value};
@@ -31,12 +32,7 @@ fn known(net: &mut Net, n: usize, l: &LabelId, c: &CommitId) -> usize {
 // commits of its aspect are not.
 #[test]
 fn expiry_judges_only_the_expired_commit_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Read)], &[host]);
-    let u = net.item(a, g, g, "u");
+    let (mut net, host, [a, _b], _g, [u]) = hosted::<2, 1>(&[(1, Role::Read)], ["u"], false);
     let x = put_key(&mut net, a, u, &BRIEFMAP, "first", "v");
     net.run();
     net.advance(1_800_000);
@@ -58,12 +54,7 @@ fn expiry_judges_only_the_expired_commit_spec_sync_5() {
 // judged (its commits go up).
 #[test]
 fn closure_reused_until_it_changes_spec_sync_3() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    let t = net.item(a, g, g, "t");
-    net.run();
+    let (mut net, host, [a], g, [t]) = hosted::<1, 1>(&[], ["t"], true);
     net.advance(61_000);
     let l = net.label(a);
     let s0 = net.sync(a).pass_stats();
@@ -91,11 +82,7 @@ fn map_op(net: &mut Net, n: usize, t: Tid, asp: &osis_schema::Aspect<Value>, op:
 // tombstone keyed by its dot holds the remover's reset, not its creation), so no grace.
 #[test]
 fn purge_on_replace_removed_entry_no_live_write_spec_commits_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    let t = net.item(a, g, g, "t");
+    let (mut net, host, [a], _g, [t]) = hosted::<1, 1>(&[], ["t"], false);
     let b = put_key(&mut net, a, t, &GONEMAP, "k1", "v");
     net.run();
     net.advance(61_000);
@@ -112,13 +99,7 @@ fn purge_on_replace_removed_entry_no_live_write_spec_commits_5() {
 // it: passes do not judge it again.
 #[test]
 fn nobody_bodies_not_judged_again_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
+    let (mut net, _host, [a, _b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
     let tags = |i: u32| format!("v{i}");
     for i in 0..20 {
         let mut m = Mutation::new();

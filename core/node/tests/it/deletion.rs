@@ -2,6 +2,7 @@
 //! Deletions, compaction and re-registration through a host (spec/sync.md §5-§7;
 //! spec/commits.md §5; spec/permissions.md §3, §4).
 
+use crate::net::{hosted, hosted_nodes};
 use crate::net;
 use net::*;
 use osis_base::{Ak, Role};
@@ -14,13 +15,7 @@ use osis_schema::core_types as ct;
 // bodies out of the folder's label; a writer without the label delete key deletes them by delete key.
 #[test]
 fn thing_leaving_deleted_by_delete_key_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
+    let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
     let c = net.write(b, t, "by b");
     net.run();
     let l = net.label(a);
@@ -46,11 +41,7 @@ fn thing_leaving_deleted_by_delete_key_spec_sync_5() {
 // value-less); past it the write's leftover is covered by that snapshot and dropped like any body
 #[test]
 fn expired_leftover_dropped_once_covered_spec_commits_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    let t = net.item(a, g, g, "v1");
+    let (mut net, _host, [a], _g, [t]) = hosted::<1, 1>(&[], ["v1"], false);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("v2")).unwrap();
     m.expires(t, &REG, osis_base::WallMs(net.now() + 5_000)).unwrap();
@@ -73,9 +64,7 @@ fn expired_leftover_dropped_once_covered_spec_commits_5() {
 // live value from the snapshot; the carriers go `TOMBSTONE_LIFETIME` after the deletions.
 #[test]
 fn compaction_then_deletion_spec_sync_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let c = net.node(3, &[host]);
     net.blocked.insert((c, host));
     let g = net.group(a, &[(c, Role::Read)], &[host]);
@@ -121,13 +110,7 @@ fn compaction_then_deletion_spec_sync_7() {
 // admin's open stays (not stranded) and the step lands once the time has passed.
 #[test]
 fn rotation_at_full_host_waits_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let d = net.node(4, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Read), (d, Role::Read)], &[host]);
+    let (mut net, host, [a, b, c, d], g, []) = hosted::<4, 0>(&[(1, Role::Write), (2, Role::Read), (3, Role::Read)], [], false);
     net.item(a, g, g, "x");
     net.run();
     let l = net.label(a);
@@ -164,15 +147,7 @@ fn rotation_at_full_host_waits_spec_sync_5() {
 // admin's own writes (each a pass) do not send it again each time.
 #[test]
 fn refused_step_backs_off_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let d = net.node(4, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Read), (d, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
+    let (mut net, host, [a, b, c, d], g, [t]) = hosted::<4, 1>(&[(1, Role::Write), (2, Role::Read), (3, Role::Read)], ["x"], true);
     let l = net.label(a);
     net.restart_host_with(host, osis_host::HostPolicy { max_bytes: 1, ..osis_host::HostPolicy::default() });
     net.run();
@@ -203,13 +178,7 @@ fn refused_step_backs_off_spec_sync_5() {
 // there what the label must not hold, which is what frees room.
 #[test]
 fn refused_step_deletes_still_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let d = net.node(4, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Read), (d, Role::Read)], &[host]);
+    let (mut net, host, [a, b, c, d], g, []) = hosted::<4, 0>(&[(1, Role::Write), (2, Role::Read), (3, Role::Read)], [], false);
     net.item(a, g, g, "x");
     let u = net.item(a, g, g, "y");
     net.run();
@@ -252,14 +221,7 @@ fn refused_step_deletes_still_spec_sync_5() {
 // whose sync key still opens that head, cannot.
 #[test]
 fn refused_step_uploads_still_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "before");
-    net.run();
+    let (mut net, host, [a, b, c], g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Read)], ["before"], true);
     assert_eq!(net.read(c, t), Some(s("before")));
     let l = net.label(a);
     net.restart_host_with(host, osis_host::HostPolicy { registers: 0, ..osis_host::HostPolicy::default() });
@@ -352,14 +314,7 @@ fn reregistration_after_rotation_spec_sync_5() {
 // its own copy of another's (deleted again as a duplicate).
 #[test]
 fn reregistration_waits_and_sends_once_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Admin)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
+    let (mut net, _host, [a, _b, c], g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Admin)], ["x"], true);
     let tc = net.tid(c);
     net.sent_kinds.clear();
     net.uploaded.clear();
@@ -382,9 +337,7 @@ fn reregistration_waits_and_sends_once_spec_sync_5() {
 // step may go
 #[test]
 fn reregistration_skips_uploads_in_flight_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let c = net.node(3, &[host]);
     let g = net.group(a, &[(c, Role::Admin)], &[host]);
     net.run();
@@ -742,14 +695,7 @@ fn own_snapshots(net: &mut Net, n: usize, t: &osis_base::Tid, ak: &Ak) -> usize 
 // what b reads, nothing, not a's older value: b's re-snapshot carries the write value-less.
 #[test]
 fn purged_delta_never_held_reads_as_purger_spec_commits_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "old");
-    net.run();
+    let (mut net, host, [a, b, c], _g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Read)], ["old"], true);
     assert_eq!(net.engine(c).get(&t, &Ak::new(REG.ak()).unwrap()).unwrap(), Some(s("old")));
     net.set_online(c, false);
     // kept a while, not forever: no lasting header stays to carry the write
@@ -816,14 +762,7 @@ fn purge_covered_by_held_snapshot_no_resnapshot_spec_commits_5() {
 // either: it reads w purged, nothing.
 #[test]
 fn purge_reader_writes_no_snapshot_spec_commits_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "old");
-    net.run();
+    let (mut net, _host, [a, b, c], _g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Read)], ["old"], true);
     let ak = Ak::new(REG.ak()).unwrap();
     let acts = net.sync(b).compact(&t, &ak).unwrap();
     net.actions(b, acts);
@@ -1316,9 +1255,7 @@ fn gap_covers_nothing_kept_spec_commits_5() {
 // fresh reader f and r, away through the compaction, all read the live value.
 #[test]
 fn purge_naming_a_cover_keeps_its_writes_spec_commits_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let r = net.node(3, &[host]);
     let f = net.node(4, &[host]);
     net.blocked.insert((f, host));
@@ -1356,12 +1293,7 @@ fn purge_naming_a_cover_keeps_its_writes_spec_commits_5() {
 // whole only at a. Every node reads c's value again, the reader r and a fresh reader f too.
 #[test]
 fn purge_fall_after_cover_reads_alike_spec_perm_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let x = net.node(2, &[host]);
-    let r = net.node(3, &[host]);
-    let f = net.node(4, &[host]);
+    let (mut net, host, [a, x, r, f]) = hosted_nodes::<4>();
     net.set_online(f, false);
     let g = net.group(a, &[(x, Role::Admin), (r, Role::Read), (f, Role::Read)], &[host]);
     let t = net.item(a, g, g, "v1");
@@ -1405,13 +1337,7 @@ fn purge_fall_after_cover_reads_alike_spec_perm_6() {
 
 /// A plain thing in a group shared by a and b, with a value by a, its creation purgeable by admins.
 fn ending_setup() -> (Net, usize, usize, usize, osis_base::Tid, osis_base::Tid) {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
+    let (net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
     (net, host, a, b, g, t)
 }
 

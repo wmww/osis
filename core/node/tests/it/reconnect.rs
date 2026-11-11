@@ -3,6 +3,7 @@
 //! restored, the two records are compared by one digest each way, and a reconnect sends what
 //! changed: counted, at n and 10n sync IDs.
 
+use crate::net::local_nodes;
 use crate::net;
 use crate::peers::reach_ed;
 use net::*;
@@ -152,10 +153,7 @@ fn a_record_restored_so_s_differs_is_repaired_by_the_shared_set_spec_sync_10() {
 // node receiving it sends nothing and tests nothing on its connection to another peer
 #[test]
 fn a_lost_costs_other_peers_nothing_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    let c = net.node(3, &[]);
+    let (mut net, [a, b, c]) = local_nodes::<3>();
     reach_ed(&mut net, b);
     let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
     net.run();

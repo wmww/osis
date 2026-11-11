@@ -2,6 +2,7 @@
 //! Co-reader nodes syncing labels peer to peer, in process (spec/sync.md §5, §10;
 //! spec/data-model.md §9).
 
+use crate::net::local_nodes;
 use crate::net;
 use net::*;
 use osis_base::Role;
@@ -22,9 +23,7 @@ fn reach(net: &mut Net, n: usize, key: u8) {
 // through the host engine over the other's label state; writes flow both ways.
 #[test]
 fn co_readers_sync_without_host_spec_sync_5() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach(&mut net, a, 0xa1);
     reach(&mut net, b, 0xb1);
     let g = net.group_at(a, &[(b, Role::Write)], vec![]);
@@ -41,9 +40,7 @@ fn co_readers_sync_without_host_spec_sync_5() {
 // content; the peer relays nothing it may not originate.
 #[test]
 fn reader_served_by_co_reader_peer_spec_sync_5() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let r = net.node(2, &[]);
+    let (mut net, [a, r]) = local_nodes::<2>();
     reach(&mut net, a, 0xa2);
     reach(&mut net, r, 0xb2);
     let g = net.group_at(a, &[(r, Role::Read)], vec![]);
@@ -57,10 +54,7 @@ fn reader_served_by_co_reader_peer_spec_sync_5() {
 // while it is the only one known.
 #[test]
 fn co_reader_selection_spec_sync_5() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    let c = net.node(3, &[]);
+    let (mut net, [a, b, c]) = local_nodes::<3>();
     reach(&mut net, a, 0xa3);
     reach(&mut net, b, 0xb3);
     reach(&mut net, c, 0xc3);
@@ -121,9 +115,7 @@ fn dials(acts: &[Action]) -> Vec<Address> {
 // not by the LAN route of the moment, whose key is another and which only dialing expires.
 #[test]
 fn group_peers_names_a_co_reader_not_its_lan_route() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, a);
     let kb = reach_ed(&mut net, b);
     net.blocked_peers.insert((a, b));
@@ -141,9 +133,7 @@ fn group_peers_names_a_co_reader_not_its_lan_route() {
 // on the way to finding what it shares.
 #[test]
 fn a_node_is_a_source_only_once_the_label_is_open() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach(&mut net, a, 0xa7);
     reach(&mut net, b, 0xb7);
     let g = net.group_at(a, &[(b, Role::Write)], vec![]);
@@ -171,9 +161,7 @@ fn a_node_is_a_source_only_once_the_label_is_open() {
 // address within `LAN_CHANGE_MS` is ignored.
 #[test]
 fn lan_match_dials_announced_key_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, a);
     let kb = reach_ed(&mut net, b);
     net.blocked_peers.insert((a, b));
@@ -228,9 +216,7 @@ fn lan_match_dials_announced_key_spec_sync_10() {
 // earlier window than the newest verified, whatever its source.
 #[test]
 fn lan_replay_from_other_source_ignored_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, a);
     let kb = reach_ed(&mut net, b);
     net.blocked_peers.insert((a, b));
@@ -267,8 +253,7 @@ fn lan_replay_from_other_source_ignored_spec_sync_10() {
 // the dialable secret's Ed25519 key.
 #[test]
 fn lan_announcement_needs_own_key_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
+    let (mut net, [a]) = local_nodes::<1>();
     assert!(net.sync(a).lan_announcement([1; 32], 1).is_none(), "no reach.0 yet");
     reach(&mut net, a, 0xa5);
     assert!(net.sync(a).lan_announcement([1; 32], 1).is_none(), "not the secret's key");
@@ -281,9 +266,7 @@ fn lan_announcement_needs_own_key_spec_sync_10() {
 // the other connection closes and the label goes on over the LAN.
 #[test]
 fn lan_replaces_relay_route_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, a);
     let kb = reach_ed(&mut net, b);
     let g = net.group_at(a, &[(b, Role::Write)], vec![]);
@@ -318,10 +301,7 @@ fn lan_replaces_relay_route_spec_sync_10() {
 // to listen again, and the new `reach.0` reaches them too.
 #[test]
 fn reach_under_every_label_and_rotation_spec_permissions_4() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    let c = net.node(3, &[]);
+    let (mut net, [a, b, c]) = local_nodes::<3>();
     reach_ed(&mut net, a);
     reach_ed(&mut net, b);
     reach_ed(&mut net, c);
@@ -351,9 +331,7 @@ fn reach_under_every_label_and_rotation_spec_permissions_4() {
 // whose dial fails beside a running relay connection leaves that connection in place.
 #[test]
 fn failed_lan_route_keeps_relay_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, a);
     let kb = reach_ed(&mut net, b);
     let g = net.group_at(a, &[(b, Role::Write)], vec![]);

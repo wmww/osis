@@ -2,6 +2,7 @@
 //! The node log stream between readers (spec/sync.md §10, Stream; issues/net-reconnect.md, One
 //! node log, one cursor): counted costs, and the invariant `osis_node::sync` stream.rs states.
 
+use crate::net::local_nodes;
 use crate::net;
 use crate::peers::reach_ed;
 use net::*;
@@ -245,10 +246,7 @@ fn a_lost_record_is_a_first_contact_and_converges_spec_sync_10() {
 // sent announcements and fetches the body from one source
 #[test]
 fn a_mesh_body_crosses_once_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    let c = net.node(3, &[]);
+    let (mut net, [a, b, c]) = local_nodes::<3>();
     reach_ed(&mut net, b);
     reach_ed(&mut net, c);
     let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
@@ -308,10 +306,7 @@ fn mesh_bodies_of_many_labels_fetched_at_once_spec_sync_6() {
 // than being asked of it without end
 #[test]
 fn a_source_answering_fetches_with_nothing_is_failed_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    let c = net.node(3, &[]);
+    let (mut net, [a, b, c]) = local_nodes::<3>();
     reach_ed(&mut net, b);
     reach_ed(&mut net, c);
     let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
@@ -336,10 +331,7 @@ fn a_source_answering_fetches_with_nothing_is_failed_spec_sync_10() {
 /// dials `a`. Then `b` answers none of `a`'s requests while it keeps writing and pushing every
 /// 30 s: whether `a` reads `b`'s first write, fetched from `c`, after `wait` ms.
 fn silent_co_reader(a_dials: bool, wait: u64) -> bool {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    let c = net.node(3, &[]);
+    let (mut net, [a, b, c]) = local_nodes::<3>();
     reach_ed(&mut net, if a_dials { b } else { a });
     reach_ed(&mut net, c);
     let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
@@ -387,10 +379,7 @@ fn a_silent_co_reader_holds_a_body_for_the_stall_time_only_spec_sync_6() {
 /// write until it read it and from then on (the rest of `b`'s bytes delivered meanwhile, with
 /// `release`), and whether every stream of `a` then settled with no fetch out.
 fn trickling_co_reader(release: bool) -> (Option<u64>, bool, usize, usize, bool) {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    let c = net.node(3, &[]);
+    let (mut net, [a, b, c]) = local_nodes::<3>();
     reach_ed(&mut net, b);
     reach_ed(&mut net, c);
     let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
@@ -1235,10 +1224,7 @@ fn announcements_never_served_keep_nothing_spec_sync_10() {
 // when a later request's answer arrives was skipped, so its bodies come from another source
 #[test]
 fn a_skipped_fetch_is_asked_elsewhere_spec_wire_11_2() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    let c = net.node(3, &[]);
+    let (mut net, [a, b, c]) = local_nodes::<3>();
     reach_ed(&mut net, b);
     reach_ed(&mut net, c);
     let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);

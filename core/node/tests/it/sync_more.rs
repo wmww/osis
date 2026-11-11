@@ -2,6 +2,7 @@
 //! Certificates, suspect reports, pages and lazy chunks, reconciliation, inbox blobs through a
 //! host (spec/sync.md §3, §6; spec/permissions.md §4).
 
+use crate::net::{hosted, hosted_nodes};
 use crate::net;
 use net::*;
 use osis_base::{Ak, Role, Value};
@@ -31,12 +32,7 @@ fn commits_under(net: &mut Net, n: usize, l: &osis_base::LabelId) -> Vec<(osis_b
 // card there, a reader by deposit; co-holders apply it.
 #[test]
 fn certificates_spec_permissions_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let r = net.node(2, &[host]);
-    let _g = net.group(a, &[(r, Role::Read)], &[host]);
-    net.run();
+    let (mut net, host, [a, r], _g, []) = hosted::<2, 0>(&[(1, Role::Read)], [], true);
     // a deposit is promoted after a writer's relay wait (spec/sync.md §5)
     net.advance(30_000);
     net.trace(&[a, r]);
@@ -76,11 +72,7 @@ fn certificates_spec_permissions_4() {
 // without its chain.
 #[test]
 fn promotion_waits_for_the_chain_at_the_host_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let w = net.node(2, &[host]);
-    let r = net.node(3, &[host]);
+    let (mut net, host, [a, w, r]) = hosted_nodes::<3>();
     let (at, wt, rt) = (net.tid(a), net.tid(w), net.tid(r));
     let rn = net.node_tid(r);
     let keys: BTreeSet<osis_base::CommitId> = net.engine(r).commit_ids().into_iter().filter(|c| net.engine(r).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == rn && x.ak.as_str() == "keys.0"))).collect();
@@ -144,12 +136,7 @@ fn promotion_waits_for_the_chain_at_the_host_spec_sync_5() {
 // entries under the label.
 #[test]
 fn certificates_once_per_label_spec_permissions_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let w = net.node(2, &[host]);
-    let r = net.node(3, &[host]);
-    let _g = net.group(a, &[(w, Role::Write), (r, Role::Read)], &[host]);
+    let (mut net, host, [a, w, r], _g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Read)], [], false);
     net.set_online(w, false);
     net.set_online(r, false);
     net.run();
@@ -179,9 +166,7 @@ fn certificates_once_per_label_spec_permissions_4() {
 // applies; chunks of a large value are fetched lazily, on demand.
 #[test]
 fn pages_and_lazy_chunks_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
@@ -320,12 +305,7 @@ fn other_log_reconcile_keeps_entries_spec_sync_6() {
 // `created.0` part (kept forever) keeps the record.
 #[test]
 fn certificate_records_stay_while_a_part_is_held_spec_permissions_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let w = net.node(2, &[host]);
-    let _g = net.group(a, &[(w, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, w], _g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let l = net.label(a);
     let me = net.node_tid(w);
     let before = net.sync(w).sync_rows(b'k');
@@ -349,11 +329,7 @@ fn certificate_records_stay_while_a_part_is_held_spec_permissions_4() {
 // deposited under its inbox (its home label) is opened by a holder node and applied.
 #[test]
 fn inbox_delivery_spec_sync_3() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let s_ = net.node(3, &[host]);
+    let (mut net, host, [a, b, s_]) = hosted_nodes::<3>();
     // P: an actor of A (admin) and B, its home label its inbox
     let p = net.group(a, &[(b, Role::Write)], &[host]);
     let (_, home) = net.group_labels(a).into_iter().next().unwrap();
@@ -386,12 +362,7 @@ use osis_schema::Codec;
 // label of the nearest record-chain actor that has one, so that actor's other nodes find it.
 #[test]
 fn label_published_under_home_label_spec_sync_2() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let p = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, host, [a, b], p, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     // a group under P, labeled, never delivered to B
     let e = net.engine(a);
     let mut m = Mutation::new();
@@ -422,13 +393,7 @@ fn label_published_under_home_label_spec_sync_2() {
 // deletes its content entries there, and then stops syncing it.
 #[test]
 fn label_replacement_spec_sync_2() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "kept");
-    net.run();
+    let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["kept"], true);
     let old = net.label(a);
     let before: BTreeSet<_> = commits_under(&mut net, a, &old).into_iter().map(|x| x.0).collect();
     let admin0 = net.engine(a).epochs(&g).unwrap().admin.newest_held().unwrap().0;
@@ -635,12 +600,7 @@ fn noise(n: usize, seed: u64) -> Vec<u8> {
 // reader that fetches them afterwards.
 #[test]
 fn purge_shreds_only_unique_chunks_spec_sync_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "x");
+    let (mut net, host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["x"], false);
     let blob_ak = Ak::new(BLOB.ak()).unwrap();
     let v1 = noise(1 << 20, 7);
     let mut m = Mutation::new();
@@ -777,10 +737,7 @@ fn reused_blob(net: &mut Net, a: usize, b: usize, role: Role, host: usize) -> (o
 // the new label with the live body, so a reader there reads the value.
 #[test]
 fn reused_chunks_follow_a_new_label_spec_sync_3() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
+    let (mut net, host, [a, b]) = hosted_nodes::<2>();
     let (t, blob_ak, [c1, _], v2, shared, _) = reused_blob(&mut net, a, b, Role::Read, host);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("purged v1")).unwrap();
@@ -807,12 +764,7 @@ fn reused_chunks_follow_a_new_label_spec_sync_3() {
 // deltas link: never the outside thing's large value.
 #[test]
 fn body_links_stay_in_the_closure_spec_sync_3() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Read)], &[host]);
-    let t1 = net.item(a, g, g, "in");
+    let (mut net, host, [a, b], g, [t1]) = hosted::<2, 1>(&[(1, Role::Read)], ["in"], false);
     // t2: under g, not in its group.0
     let mut m = Mutation::new();
     let t2 = net.engine(a).new_thing(&mut m, g);
@@ -842,9 +794,7 @@ fn body_links_stay_in_the_closure_spec_sync_3() {
 // a node that holds the tree, and keeps the shared ones.
 #[test]
 fn lazy_node_shreds_dropped_chunks_spec_sync_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     // b fetches chunk and tree-node blobs only on demand
     let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..SyncConfig::default() });
     let (t, blob_ak, [c1, c2], v2, shared, unique) = reused_blob(&mut net, a, b, Role::Admin, host);
@@ -896,11 +846,7 @@ fn entries_of(net: &mut Net, n: usize, host: usize, l: &osis_base::LabelId, c: &
 // own copy.
 #[test]
 fn forged_certificate_copy_ignored_spec_commits_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let w = net.node(2, &[host]);
-    let g = net.group(a, &[(w, Role::Write)], &[host]);
+    let (mut net, host, [a, w], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], false);
     net.set_online(w, false);
     net.run();
     let l = net.label(a);
@@ -935,11 +881,7 @@ fn forged_certificate_copy_ignored_spec_commits_4() {
 // places its own.
 #[test]
 fn deleted_copy_placed_again_spec_permissions_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let r = net.node(2, &[host]);
-    let g = net.group(a, &[(r, Role::Read)], &[host]);
+    let (mut net, host, [a, r], g, []) = hosted::<2, 0>(&[(1, Role::Read)], [], false);
     net.set_online(r, false);
     net.run();
     net.set_online(r, true);
@@ -968,12 +910,7 @@ fn deleted_copy_placed_again_spec_permissions_4() {
 // the admin is offline, holds back its copy, and places it once the wait is over.
 #[test]
 fn others_fresh_keys_left_to_author_spec_permissions_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let r = net.node(2, &[host]);
-    let g = net.group(a, &[(r, Role::Read)], &[host]);
-    net.run();
+    let (mut net, host, [a, r], g, []) = hosted::<2, 0>(&[(1, Role::Read)], [], true);
     let l = net.label(a);
     let at = net.tid(a);
     net.set_online(a, false);
@@ -997,12 +934,7 @@ fn others_fresh_keys_left_to_author_spec_permissions_4() {
 // went up before the rotation (why copies under older epochs count for newcomers).
 #[test]
 fn newcomer_after_rotation_reads_older_copies_spec_crypto_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let w = net.node(2, &[host]);
-    let r = net.node(3, &[host]);
-    let g = net.group(a, &[(w, Role::Write)], &[host]);
+    let (mut net, host, [a, w, r], g, []) = hosted::<3, 0>(&[(1, Role::Write)], [], false);
     net.set_online(r, false);
     net.run();
     let l = net.label(a);
@@ -1036,11 +968,7 @@ fn newcomer_after_rotation_reads_older_copies_spec_crypto_4() {
 // them re-encrypted, so every reader still reads it whole.
 #[test]
 fn purged_chunk_reused_concurrently_is_reencrypted_spec_sync_1() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
+    let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
     // an admin co-writer: it holds the admin secret, so its framing keeps a's chunks
     let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
@@ -1095,13 +1023,7 @@ fn own_writes(net: &mut Net, n: usize, t: osis_base::Tid, ak: &Ak) -> Vec<Option
 /// A writer `b` edits an untyped `{big, note}` value offline, reusing v1's chunks, while the
 /// admin `a` purges v1 (deleting every chunk at the host) and writes `note` offline.
 fn reuse_race(expires: Option<u64>) -> (Net, [usize; 3], osis_base::Tid, Ak, Vec<u8>) {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "x");
+    let (mut net, _host, [a, b, c], _g, [t]) = hosted::<3, 1>(&[(1, Role::Admin), (2, Role::Read)], ["x"], false);
     let doc = Ak::new("u:doc.0").unwrap();
     let k = |s: &str| Value::Str(s.into());
     // the entries come from a kept commit; the purged one overwrites `big` in place, so the
@@ -1339,11 +1261,7 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
 // judges no body and no pass judges everything.
 #[test]
 fn role_change_judges_only_its_labels_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
+    let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
     let addr = net.address(host);
     let g0 = net.group_seeded(a, &[(b, Role::Read)], vec![addr.clone()], 1);
     let g1 = net.group_seeded(a, &[(b, Role::Read)], vec![addr], 2);
@@ -1381,11 +1299,7 @@ fn role_change_judges_only_its_labels_spec_sync_6() {
 // that step: another step right after has nothing to pass.
 #[test]
 fn marked_by_a_pass_passes_in_the_same_step_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
+    let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
     let addr = net.address(host);
     let g = net.group_seeded(a, &[(b, Role::Read)], vec![addr], 1);
     for i in 0..3 {
@@ -1410,10 +1324,7 @@ fn marked_by_a_pass_passes_in_the_same_step_spec_sync_6() {
 // only up to `work_max`; past it that label's next pass judges everything, and the set is empty after.
 #[test]
 fn work_waiting_bounded_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
+    let (mut net, host, [a, b]) = hosted_nodes::<2>();
     let addr = net.address(host);
     let g0 = net.group_seeded(a, &[(b, Role::Read)], vec![addr.clone()], 1);
     let _idle = net.group_seeded(a, &[(b, Role::Read)], vec![addr], 2);
@@ -1483,12 +1394,7 @@ fn work_left_by_a_pass_is_not_waiting_spec_sync_6() {
 // same connections, reopened under the new key with their cursors (no reconciliation).
 #[test]
 fn departed_reader_connected_across_new_step_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let r = net.node(2, &[host]);
-    let x = net.node(3, &[host]);
-    let g = net.group(a, &[(r, Role::Read), (x, Role::Read)], &[host]);
+    let (mut net, host, [a, r, x], g, []) = hosted::<3, 0>(&[(1, Role::Read), (2, Role::Read)], [], false);
     net.item(a, g, g, "x");
     net.run();
     let l = net.label(a);
@@ -1602,11 +1508,7 @@ fn flip_after_drop_only_a_reader_holds_it_lasts_to_the_next_write_spec_sync_7() 
 /// Writer `b` and reader `c` of a group `a` administers, at a host, `b` dialable: `c` dials it,
 /// and they share the group's label (spec/sync.md §10).
 fn suspect_world() -> (Net, [usize; 3], osis_base::Tid, osis_base::LabelId) {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
+    let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
     crate::peers::reach_ed(&mut net, b);
     let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
     net.run();
@@ -1701,10 +1603,7 @@ fn suspect_report_outside_the_shared_set_is_ignored_spec_permissions_4() {
 // lands under the label.
 #[test]
 fn card_waits_for_a_wrap_spec_permissions_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let c = net.node(2, &[host]);
+    let (mut net, host, [a, c]) = hosted_nodes::<2>();
     net.set_online(c, false);
     let g = net.group(a, &[(c, Role::Read)], &[host]);
     net.run();

@@ -2,6 +2,7 @@
 //! Co-reader-peer serving limits and LAN routes (spec/sync.md §5, §10): tombstones, budgets,
 //! session caps, refused strangers and removed holders, LAN candidates, co-reader caps.
 
+use crate::net::{hosted, hosted_nodes, local_nodes};
 use crate::net;
 use net::*;
 use osis_base::{LabelId, Role};
@@ -95,13 +96,7 @@ fn upload_codes(evs: &[ClientEvent]) -> Vec<Code> {
 // uploads it again (code 6), and never goes back to the host.
 #[test]
 fn dropped_entry_refused_from_peer_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "one");
-    net.run();
+    let (mut net, host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["one"], true);
     let c = net.write(a, t, "two");
     net.run();
     let l = net.label(b);
@@ -125,8 +120,7 @@ fn dropped_entry_refused_from_peer_spec_sync_5() {
 /// Whether node `b`, with `peer_bytes`, keeps an unstamped entry no key here opens, 1000 bytes,
 /// that a reader sharing L brings in reply to `b`'s Pull.
 fn kept_from_reader(peer_bytes: u64) -> bool {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
+    let (mut net, [a]) = local_nodes::<1>();
     let cfg = SyncConfig { peers: false, peer_bytes, ..SyncConfig::default() };
     let b = net.add_node(2, cfg);
     reach(&mut net, a, 0xa1);
@@ -201,8 +195,7 @@ fn pending_from_reader_counts_against_peer_budget_spec_sync_5() {
 /// reader `a` brings over two sessions, each proving `a`'s account and, with `fresh`, also an
 /// account known by nothing at `b`, below `a`'s in tid order (anyone can make one per session).
 fn second_kept(fresh: bool) -> bool {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
+    let (mut net, [a]) = local_nodes::<1>();
     let cfg = SyncConfig { peers: false, peer_bytes: 1500, ..SyncConfig::default() };
     let b = net.add_node(2, cfg);
     reach(&mut net, a, 0xa1);
@@ -259,8 +252,7 @@ fn a_fresh_account_splits_no_budget_spec_sync_5() {
 // changes.
 #[test]
 fn served_sessions_capped_and_idle_closed_spec_sync_5() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
+    let (mut net, [a]) = local_nodes::<1>();
     let cfg = SyncConfig { max_served: 2, serve_idle_ms: 1_000, ..SyncConfig::default() };
     let b = net.add_node(2, cfg);
     reach_ed(&mut net, a);
@@ -290,9 +282,7 @@ fn served_sessions_capped_and_idle_closed_spec_sync_5() {
 // spec/sync.md §5 (co-reader peer)
 #[test]
 fn stranger_refused_spec_sync_5() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach(&mut net, a, 0xa1);
     reach(&mut net, b, 0xb1);
     net.group_at(a, &[(b, Role::Write)], vec![]);
@@ -312,9 +302,7 @@ fn stranger_refused_spec_sync_5() {
 // spec/sync.md §5 (co-reader peer)
 #[test]
 fn removed_holder_not_dialed_nor_served_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let r = net.node(2, &[]);
     reach(&mut net, a, 0xa1);
     reach(&mut net, r, 0xb1);
@@ -369,9 +357,7 @@ fn src(ip: &str) -> std::net::SocketAddr {
 // and a repeat of its announcement is not dialed while backed off.
 #[test]
 fn lan_candidate_failure_keeps_route_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, a);
     let kb = reach_ed(&mut net, b);
     net.blocked_peers.insert((a, b));
@@ -398,9 +384,7 @@ fn lan_candidate_failure_keeps_route_spec_sync_10() {
 // rejoin's announcement from a second address that is not reachable, then the first again).
 #[test]
 fn lan_candidate_falls_back_to_most_heard_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, a);
     reach_ed(&mut net, b);
     net.blocked_peers.insert((a, b));
@@ -445,9 +429,7 @@ fn lan_candidate_falls_back_to_most_heard_spec_sync_10() {
 // does not displace a running connection.
 #[test]
 fn lan_route_proven_by_up_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, a);
     reach_ed(&mut net, b);
     net.blocked_peers.insert((a, b));
@@ -483,9 +465,7 @@ fn lan_route_proven_by_up_spec_sync_10() {
 // with no member opens nothing by a key it does not hold
 #[test]
 fn a_member_closes_with_the_right_spec_sync_10() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, a);
     reach_ed(&mut net, b);
     let g = net.group_at(a, &[(b, Role::Read)], vec![]);
@@ -513,10 +493,7 @@ fn a_member_closes_with_the_right_spec_sync_10() {
 // make the count read caught up.
 #[test]
 fn a_session_of_a_node_not_dialed_is_a_source_not_caught_up() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    let c = net.node(3, &[]);
+    let (mut net, [a, b, c]) = local_nodes::<3>();
     for n in [a, b, c] {
         reach_ed(&mut net, n);
     }
@@ -591,11 +568,7 @@ fn complete_pass_counts_peers_spec_permissions_3() {
 // stays silent past `peer_pass_wait_ms`.
 #[test]
 fn complete_pass_drops_removed_coreader_spec_permissions_3() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let x = net.node(2, &[host]);
-    let b = net.node(3, &[host]);
+    let (mut net, host, [a, x, b]) = hosted_nodes::<3>();
     reach_ed(&mut net, a);
     reach_ed(&mut net, x);
     let g = net.group(a, &[(x, Role::Write), (b, Role::Read)], &[host]);
@@ -620,10 +593,7 @@ fn complete_pass_drops_removed_coreader_spec_permissions_3() {
 // a group at a host learn each other's dialable key there and dial each other.
 #[test]
 fn reach_under_every_label_spec_permissions_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
+    let (mut net, host, [a, b]) = hosted_nodes::<2>();
     net.group(a, &[(b, Role::Read)], &[host]);
     let ka = reach_ed(&mut net, a);
     let kb = reach_ed(&mut net, b);

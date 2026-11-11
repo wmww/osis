@@ -12,7 +12,16 @@ use osis_base::{Role, Tid};
 /// Node `a` (`a_seed`) gets an entry of group g from `src` by their direct connection alone (src
 /// cut from the host); src goes offline; then a remote role commit on g (admin `d`'s grant)
 /// reaches a by the host, and the host passes after it. `make` builds a and src.
-fn gone_source(make: impl FnOnce(&mut Net, usize) -> (usize, usize)) -> (Net, usize, usize, Tid) {
+fn gone_source(make: fn(&mut Net, usize) -> (usize, usize)) -> (Net, usize, usize, Tid) {
+    // `make` is a function of this file: its address names it in this process
+    let (net, (a, src, g)) = Net::cached(&format!("pass_sources::gone_source/{:p}", make as *const ()), || {
+        let (net, a, src, g) = gone_source_built(make);
+        (net, (a, src, g))
+    });
+    (net, a, src, g)
+}
+
+fn gone_source_built(make: fn(&mut Net, usize) -> (usize, usize)) -> (Net, usize, usize, Tid) {
     let mut net = Net::new();
     let host = net.add_host();
     let (a, src) = make(&mut net, host);

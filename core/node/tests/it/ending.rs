@@ -2,6 +2,7 @@
 //! Ending a thing at the node level (spec/commits.md §5 Ending, spec/permissions.md §6): what
 //! outlasts it, restarts, stale copies, a fall, and its cost.
 
+use crate::net::hosted;
 use crate::net;
 use net::*;
 use osis_base::{Ak, CommitId, Role, Tid, Value};
@@ -22,13 +23,7 @@ struct Setup {
 
 /// A group on one host: a its admin, b a writer, c an admin too.
 fn setup() -> Setup {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Admin)], &[host]);
-    net.run();
+    let (net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Admin)], [], true);
     Setup { net, a, b, c, g }
 }
 
@@ -755,14 +750,7 @@ fn remint(net: &mut Net, n: usize, t: Tid) -> Vec<u8> {
 
 /// `setup` with a fourth node, r, a reader of `g`: it holds the records of `g`'s things.
 fn setup_reader() -> (Setup, usize) {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let r = net.node(4, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Admin), (r, Role::Read)], &[host]);
-    net.run();
+    let (net, _host, [a, b, c, r], g, []) = hosted::<4, 0>(&[(1, Role::Write), (2, Role::Admin), (3, Role::Read)], [], true);
     (Setup { net, a, b, c, g }, r)
 }
 

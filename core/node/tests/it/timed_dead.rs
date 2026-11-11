@@ -2,6 +2,7 @@
 //! Deletes of bodies whose writes all died (spec/sync.md §7): under purge on replace the
 //! replacing writer's cover is the one snapshot.
 
+use crate::net::hosted;
 use crate::net;
 use net::*;
 use osis_node::Mutation;
@@ -11,11 +12,7 @@ use osis_node::sync::EntryKind;
 // replaced whole goes under the writer's one cover, here and at the host in the same sync.
 #[test]
 fn replaced_register_goes_under_its_cover_spec_sync_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    let t = net.item(a, g, g, "x");
+    let (mut net, host, [a], _g, [t]) = hosted::<1, 1>(&[], ["x"], false);
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("v1")).unwrap();
     net.engine(a).commit(m).unwrap();

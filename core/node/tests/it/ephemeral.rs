@@ -2,6 +2,7 @@
 //! in memory at nodes and hosts, carried by the ordinary sync path; signals as relay-only
 //! commits.
 
+use crate::net::{hosted, hosted_nodes, local_nodes};
 use crate::net;
 use net::*;
 use osis_base::{CommitId, Role, Tid, Value};
@@ -174,11 +175,7 @@ pub(crate) fn rows(b: &osis_store::MemoryBackend) -> usize {
 // (the host reserves log numbers in its label meta, the same row)
 #[test]
 fn window_reaches_holder_no_store_rows_spec_sync_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let (mut net, host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], false);
     let w = made(&mut net, a, g, Some(g));
     net.run();
     let (rb, rs) = (rows(&net.nodes[b].backend), rows(&net.hosts[host].backend));
@@ -203,12 +200,7 @@ fn window_reaches_holder_no_store_rows_spec_sync_4() {
 // back: `ephemeral::random_churn_converges_large` seed 203) goes with it, under its expiry
 #[test]
 fn expiring_write_before_entering_closure_goes_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = made(&mut net, a, g, None);
     net.eph_write(a, w, &eph(STATE), s("local"));
     let mut m = Mutation::new();
@@ -232,12 +224,7 @@ fn expiring_write_before_entering_closure_goes_spec_sync_9() {
 // while its thing was in no labeled closure still goes once one holds it.
 #[test]
 fn write_before_add_goes_after_a_step_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = made(&mut net, a, g, None);
     net.run();
     net.eph_write(a, w, &eph(STATE), s("local"));
@@ -256,12 +243,7 @@ fn write_before_add_goes_after_a_step_spec_sync_9() {
 // closure, so nothing of it syncs any more and its entries leave the label.
 #[test]
 fn removed_member_stops_syncing_spec_sync_3() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "v");
     note(&mut net, a, w, "k0", "v0");
     net.run();
@@ -314,9 +296,7 @@ fn entries_under(net: &mut Net, n: usize, l: &osis_base::LabelId) -> BTreeSet<os
 // B leaves A's label (its entries there are deleted, nothing new reaches it) and goes on under B's.
 #[test]
 fn moved_thing_leaves_old_label_spec_sync_3() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let c = net.node(3, &[host]);
     let addr = net.hosts[host].address.clone();
     let x = net.group_seeded(a, &[], vec![addr], 1);
@@ -349,12 +329,7 @@ fn moved_thing_leaves_old_label_spec_sync_3() {
 // one: a durable membership, a label made after the write.
 #[test]
 fn written_outside_goes_on_any_way_in_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let me = net.tid(a);
     // a durable thing of `g`'s record chain, written while listed nowhere
     let e = net.engine(a);
@@ -409,12 +384,7 @@ fn sub_add(net: &mut Net, a: usize, g: Tid, sub: Tid) {
 // subgroup of a synced one.
 #[test]
 fn subgroup_edge_brings_parked_writes_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let e = net.engine(a);
     let mut m = Mutation::new();
     let sub = e.new_thing(&mut m, g);
@@ -440,9 +410,7 @@ fn subgroup_edge_brings_parked_writes_spec_sync_9() {
 // label's readers (a writer holding its bodies places them under the new label).
 #[test]
 fn second_label_gets_held_state_spec_sync_3() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let c = net.node(3, &[host]);
     let addr = net.hosts[host].address.clone();
     let x = net.group_seeded(a, &[], vec![addr], 1);
@@ -461,12 +429,7 @@ fn second_label_gets_held_state_spec_sync_3() {
 // holder keeps its copy: the stated limit).
 #[test]
 fn deleted_thing_stays_deleted_at_holders_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "secret");
     note(&mut net, a, w, "k1", "v1");
     net.run();
@@ -503,12 +466,7 @@ fn memory_ids(net: &mut Net, n: usize) -> std::collections::BTreeSet<osis_base::
 // offline; on reconnect both converge on the merge, through a host
 #[test]
 fn shared_window_merges_after_offline_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "shared");
     note(&mut net, a, w, "x", "1");
     net.run();
@@ -530,9 +488,7 @@ fn shared_window_merges_after_offline_spec_sync_6() {
 // edits while apart merge on reconnect
 #[test]
 fn shared_window_merges_over_peer_link_spec_sync_5() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     for (n, k) in [(a, 0xa7), (b, 0xb7)] {
         let acts = net.sync(n).publish_reach([k; 32], vec!["https://relay.example".into()]).unwrap();
         net.actions(n, acts);
@@ -559,12 +515,7 @@ fn shared_window_merges_over_peer_link_spec_sync_5() {
 // the host (its first sync of the label reconciles: its cursor had passed those entries)
 #[test]
 fn restarted_node_gets_state_back_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "kept");
     net.run();
     note(&mut net, b, w, "b", "before");
@@ -581,12 +532,7 @@ fn restarted_node_gets_state_back_spec_sync_6() {
 // node arriving later still gets the state
 #[test]
 fn host_restart_holders_upload_again_spec_sync_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
+    let (mut net, host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Read)], [], false);
     net.set_online(c, false);
     net.run();
     let w = window(&mut net, a, g, "survives");
@@ -636,12 +582,7 @@ fn bridge_node_carries_between_hosts_spec_sync_6() {
 // frontier, which lists none, covers none): a removed writer's ephemeral writes are un-merged
 #[test]
 fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     note(&mut net, a, w, "a", "1");
     net.run();
@@ -755,9 +696,7 @@ fn host_cap_one_huge_write_reports_spec_sync_5() {
 // at its decoded size
 #[test]
 fn node_cap_bounds_decoded_size_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let cap = 236_000;
     let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[host]);
@@ -795,9 +734,7 @@ fn node_cap_bounds_decoded_size_spec_sync_9() {
 // (`EphemeralRefused`)
 #[test]
 fn ephemeral_flood_bounded_spec_requirements_scale() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], ephemeral_bytes: 400_000, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     net.run();
@@ -824,12 +761,7 @@ fn ephemeral_flood_bounded_spec_requirements_scale() {
 // refused at the writer; one forged anyway is invalid at every receiver
 #[test]
 fn reader_cannot_write_ephemeral_spec_permissions_1() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let r = net.node(2, &[host]);
-    let g = net.group(a, &[(r, Role::Read)], &[host]);
-    net.run();
+    let (mut net, _host, [a, r], g, []) = hosted::<2, 0>(&[(1, Role::Read)], [], true);
     let w = window(&mut net, a, g, "mine");
     net.run();
     assert_eq!(net.eph_read(r, w, STATE), Some(s("mine")), "the reader reads it");
@@ -849,12 +781,7 @@ fn reader_cannot_write_ephemeral_spec_permissions_1() {
 // unmarked key is invalid at the receiver; the same forged write on a `+` key joins
 #[test]
 fn ephemeral_part_on_unmarked_key_invalid_spec_commits_2() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "mine");
     net.run();
     for (k, joins) in [("win:plain.0", false), ("win:other+.0", true)] {
@@ -901,14 +828,7 @@ fn ephemeral_signal_once_to_connected_nodes_spec_sync_5() {
 // (two sections, spec/wire.md §4) delivers every part's signals, each once
 #[test]
 fn ephemeral_signal_commit_in_two_sections_all_delivered_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t1 = net.item(a, g, g, "x");
-    let t2 = net.item(a, g, g, "y");
-    net.run();
+    let (mut net, _host, [a, b], _g, [t1, t2]) = hosted::<2, 2>(&[(1, Role::Write)], ["x", "y"], true);
     let mut m = Mutation::new();
     m.set(t1, &crate::common::ak("t:ring+~0"), &s("one")).unwrap();
     m.set(t2, &crate::common::ak("t:ring+~0"), &s("two")).unwrap();
@@ -936,14 +856,7 @@ fn ephemeral_signal_commit_in_two_sections_all_delivered_spec_sync_5() {
 // they repeated the aspect and the build failed, so neither went)
 #[test]
 fn ephemeral_signal_writes_one_commit_each_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    let u = net.item(a, g, g, "y");
-    net.run();
+    let (mut net, _host, [a, b], _g, [t, u]) = hosted::<2, 2>(&[(1, Role::Write)], ["x", "y"], true);
     for (x, v) in [(t, "one"), (t, "two"), (u, "three")] {
         let mut m = Mutation::new();
         m.set(x, &crate::common::ak("t:ring+~0"), &s(v)).unwrap();
@@ -967,12 +880,7 @@ fn ephemeral_signal_writes_one_commit_each_spec_sync_9() {
 // everywhere at its time, hosts included
 #[test]
 fn ephemeral_expiry_everywhere_spec_crdt_4_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let mut m = Mutation::new();
@@ -996,13 +904,7 @@ fn ephemeral_expiry_everywhere_spec_crdt_4_7() {
 // expiry); once a writer compacts, the snapshot carries the removal to C too
 #[test]
 fn expired_removal_stays_spec_crdt_4_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     note(&mut net, a, w, "k", "v");
@@ -1038,13 +940,7 @@ fn expired_removal_stays_spec_crdt_4_7() {
 // held, as at a node that never saw them) and all read alike
 #[test]
 fn expired_leftover_dropped_once_covered_spec_commits_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Read)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let t = net.now() + 5_000;
@@ -1078,13 +974,7 @@ fn expired_leftover_dropped_once_covered_spec_commits_5() {
 // removal stays and no expired value reads anywhere
 #[test]
 fn expiry_round_drops_leftovers_a_held_snapshot_covers_spec_commits_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Read)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     note(&mut net, a, w, "p", "v");
@@ -1130,13 +1020,7 @@ fn expiry_round_drops_leftovers_a_held_snapshot_covers_spec_commits_5() {
 /// `i`, after `start` set without expiry) expire at once: (bodies its rebuilds read, parts it
 /// decoded).
 fn expiry_work<K: osis_schema::RawKey<T = Value>>(n: usize, key: &K, start: Value, op: &dyn Fn(usize) -> PathOp) -> (u64, u64) {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let x = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (x, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b, x], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let mut m = Mutation::new();
@@ -1184,12 +1068,7 @@ fn expiry_round_work_linear() {
 // note's time, not the undo's or never
 #[test]
 fn undo_of_removal_keeps_expiry_spec_crdt_4_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let t = net.now() + 5_000;
@@ -1222,12 +1101,7 @@ fn undo_of_removal_keeps_expiry_spec_crdt_4_6() {
 // spec/crdt.md §4.6, §4.7: past the note's expiry, undoing its removal brings nothing back
 #[test]
 fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     // B's note, removed by A: a remote write, its part dropped at its time
@@ -1272,12 +1146,7 @@ fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
 // B's value from what it restores, which then finds A's, also gone: nothing expired comes back
 #[test]
 fn undo_of_set_past_expiry_restores_no_shadowed_entry_spec_crdt_4_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let t = net.now() + 5_000;
@@ -1367,12 +1236,7 @@ fn refreshed_value_lives_while_author_present_spec_crdt_4_7() {
 // ephemeral aspect reads at a holder too (its delta once carried a reset there and was refused)
 #[test]
 fn eph_replace_at_map_key_read_at_holder_spec_crdt_5_1() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let mut m = Mutation::new();
@@ -1389,12 +1253,7 @@ fn eph_replace_at_map_key_read_at_holder_spec_crdt_5_1() {
 // durable thing that arrives before the thing's own commit joins once that commit is here
 #[test]
 fn ephemeral_part_waits_for_its_record_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     net.set_online(b, false);
     let t = net.item(a, g, g, "durable");
     net.run();
@@ -1416,10 +1275,7 @@ fn ephemeral_part_waits_for_its_record_spec_sync_9() {
 // whole cap) is remembered: a drop under the cap reconciles the label without fetching it again
 #[test]
 fn never_fitting_blob_not_fetched_again_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let x = net.node(2, &[host]);
+    let (mut net, host, [a, x]) = hosted_nodes::<2>();
     let cap = 330_000;
     let b = net.add_node(3, SyncConfig { hosts: vec![net.address(host)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let g = net.group(a, &[(x, Role::Write), (b, Role::Write)], &[host]);
@@ -1445,13 +1301,7 @@ fn never_fitting_blob_not_fetched_again_spec_sync_9() {
 // of a held ephemeral commit, the same header with a junk delta or signature, is refused
 #[test]
 fn forged_copy_of_held_commit_refused_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "durable");
-    net.run();
+    let (mut net, _host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["durable"], true);
     let mut m = Mutation::new();
     m.set(t, &eph("doc:cursor+.0"), &Value::Int(7)).unwrap();
     net.engine(a).write(m).unwrap();
@@ -1473,13 +1323,7 @@ fn forged_copy_of_held_commit_refused_spec_sync_9() {
 // nonce is only the ID's first 24 bytes, so it still opens) adds no entry and charges nothing
 #[test]
 fn ephemeral_blob_under_wrong_id_dropped_spec_sync_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "durable");
-    net.run();
+    let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["durable"], true);
     let mut m = Mutation::new();
     m.set(t, &eph("doc:cursor+.0"), &Value::Int(7)).unwrap();
     net.engine(a).write(m).unwrap();
@@ -1508,13 +1352,7 @@ fn ephemeral_blob_under_wrong_id_dropped_spec_sync_4() {
 // writer's compacted one stay, and the holders agree
 #[test]
 fn snapshot_survives_rebuild_spec_crdt_4_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     note(&mut net, a, w, "a", "1");
@@ -1560,14 +1398,7 @@ fn snapshot_survives_rebuild_spec_crdt_4_6() {
 // delete tombstone).
 #[test]
 fn compacted_write_of_removed_holder_stays_spec_permissions_5_2() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let d = net.node(4, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Write), (d, Role::Read)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b, c, d], g, []) = hosted::<4, 0>(&[(1, Role::Write), (2, Role::Write), (3, Role::Read)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     note(&mut net, c, w, "c", "from c");
@@ -1607,13 +1438,7 @@ fn compacted_write_of_removed_holder_stays_spec_permissions_5_2() {
 // again once C fell (durable's residual, spec/sync.md §9).
 #[test]
 fn snapshot_invalidated_by_self_removal_residual_spec_permissions_5_2() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let w = net.node(2, &[host]);
-    let b = net.node(3, &[host]);
-    let g = net.group(a, &[(w, Role::Write), (b, Role::Read)], &[host]);
-    net.run();
+    let (mut net, _host, [a, w, b], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Read)], [], true);
     let wn = window(&mut net, a, g, "w");
     net.run();
     note(&mut net, w, wn, "x", "X");
@@ -1670,11 +1495,7 @@ fn session_dots(net: &mut Net, n: usize, t: Tid, ak: &str) -> Vec<(osis_crdt::Se
 // from 1, contiguous, in each session
 #[test]
 fn restart_starts_a_new_session_spec_crdt_2_1() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    net.run();
+    let (mut net, _host, [a], g, []) = hosted::<1, 0>(&[], [], true);
     let w = window(&mut net, a, g, "w");
     note(&mut net, a, w, "k1", "v");
     note(&mut net, a, w, "k2", "v");
@@ -1742,12 +1563,7 @@ fn sessions_of_one_node_never_collide_spec_crdt_2_1() {
 // lost those writes there for good: the tombstones keep holders from bringing them back)
 #[test]
 fn author_crash_before_cover_lands_keeps_state_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     // two notes: under the compaction trigger, so the snapshot is this test's
@@ -1817,12 +1633,7 @@ fn cover_refused_for_rate_retried_spec_sync_9() {
 // (they carried another connection's challenge: every open there was refused)
 #[test]
 fn restarted_node_gets_no_old_host_bytes() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     // b's first connection since a restart (numbered 1): the host's greeting held back
@@ -2428,10 +2239,7 @@ fn promoted_after_hosts_restart_reaches_hosts_spec_sync_6() {
 // reopened the label at that host)
 #[test]
 fn restart_mid_handshake_reopens() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
+    let (mut net, host, [a, b]) = hosted_nodes::<2>();
     net.group(a, &[(b, Role::Write)], &[host]);
     net.run();
     net.restart(a, 50);
@@ -2493,12 +2301,7 @@ fn unverified_ephemeral_not_kept_or_spread_spec_sync_9() {
 // absorbs is not held again, and a writer deletes it where it was found
 #[test]
 fn replayed_covered_entry_dropped_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let l = net.label(a);
@@ -2528,13 +2331,7 @@ fn replayed_covered_entry_dropped_spec_sync_9() {
 // node had not seen) joins once the durable set makes it valid
 #[test]
 fn invalid_on_arrival_held_once_valid_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let r = net.node(2, &[host]);
-    let d = net.node(3, &[host]);
-    let g = net.group(a, &[(r, Role::Read), (d, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, r, d], g, []) = hosted::<3, 0>(&[(1, Role::Read), (2, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let ak = osis_base::Ak::new(NOTES).unwrap();
@@ -2566,10 +2363,7 @@ fn invalid_on_arrival_held_once_valid_spec_sync_9() {
 // the big write decoded (`osis_crdt::decoded_bound`: strings, so mostly their bytes), not both
 #[test]
 fn capped_label_reconciles_once_room_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let x = net.node(2, &[host]);
+    let (mut net, host, [a, x]) = hosted_nodes::<2>();
     let b = net.add_node(3, SyncConfig { hosts: vec![net.address(host)], ephemeral_bytes: 330_000, ..SyncConfig::default() });
     let g = net.group(a, &[(x, Role::Write), (b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "doc");
@@ -2592,13 +2386,7 @@ fn capped_label_reconciles_once_room_spec_sync_9() {
 // part on a core aspect other than `group.0` (here `reach.0`) is invalid: never joined
 #[test]
 fn core_aspect_part_refused_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "durable");
-    net.run();
+    let (mut net, _host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["durable"], true);
     let ak = osis_base::Ak::new("reach.0").unwrap();
     let forged = forge_memory(&mut net, a, t, &ak, osis_schema::Codec::to_value(&ct::Reach { dialable: [1; 32], items: vec![], account: None, lan_secret: [2; 32] }));
     deliver(&mut net, b, &forged.blob);
@@ -2609,11 +2397,7 @@ fn core_aspect_part_refused_spec_sync_9() {
 // ephemeral signals that peer receives from a host, and its own reach the nodes at the host; each once
 #[test]
 fn ephemeral_signals_through_co_reader_peer_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
+    let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
     for (n, k) in [(b, 0xb5), (c, 0xc5)] {
         let acts = net.sync(n).publish_reach([k; 32], vec!["https://relay.example".into()]).unwrap();
         net.actions(n, acts);
@@ -2642,9 +2426,7 @@ fn ephemeral_signals_through_co_reader_peer_spec_sync_5() {
 // held). Entry, presence and blob rows (`y/e`, `y/p`, `y/b`) are counted before and after.
 #[test]
 fn announced_ephemeral_leaves_no_sync_record_spec_sync_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     net.run();
@@ -2751,12 +2533,7 @@ fn uploads_sent(net: &Net) -> usize {
 // holders converge on every edit; B, also writing meanwhile, merges with it
 #[test]
 fn burst_coalesced_while_upload_in_flight_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "shared");
     net.run();
     let up = uploads_sent(&net);
@@ -2875,12 +2652,7 @@ fn many_authors_under_host_rates_by_hand() {
 // go as one commit, the last move's, not one per expiry
 #[test]
 fn superseded_unsent_moves_one_commit_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, _b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let me = s(&net.tid(a).to_string());
@@ -2903,12 +2675,7 @@ fn superseded_unsent_moves_one_commit_spec_sync_9() {
 // the key gone; the older entry does not show again at the author
 #[test]
 fn superseded_stays_gone_when_newer_removed_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let me = s(&net.tid(a).to_string());
@@ -2949,13 +2716,7 @@ fn superseded_stays_gone_when_newer_removed_spec_sync_9() {
 // after b removes the key nobody reads the old move again
 #[test]
 fn superseded_part_goes_whatever_its_commit_holds_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let me = s(&net.tid(a).to_string());
@@ -3001,12 +2762,7 @@ fn superseded_part_goes_whatever_its_commit_holds_spec_sync_9() {
 // of the aspect (a reset) supersedes nothing, so each stays held at the author and the holder
 #[test]
 fn superseding_needs_later_stamps_and_no_reset_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let me = s(&net.tid(a).to_string());
@@ -3037,13 +2793,7 @@ fn superseding_needs_later_stamps_and_no_reset_spec_sync_9() {
 // tombstones the plain entry alone and the expiring move read again at c alone
 #[test]
 fn superseding_part_expires_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let me = s(&net.tid(a).to_string());
@@ -3089,12 +2839,7 @@ fn superseding_part_expires_spec_sync_9() {
 // read as the author throughout
 #[test]
 fn superseding_needs_later_expiry_and_own_records_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let me = s(&net.tid(a).to_string());
@@ -3126,13 +2871,7 @@ fn superseding_needs_later_expiry_and_own_records_spec_sync_9() {
 // upload of the label is in flight is its own relay-only commit at once, and each fires once at B
 #[test]
 fn ephemeral_signals_not_held_back_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
+    let (mut net, _host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
     let w = window(&mut net, a, g, "busy");
     let up = uploads_sent(&net);
     let rb = net.listen(b);
@@ -3227,12 +2966,7 @@ fn covered_while_slow_deleted_after_reconnect_spec_sync_9() {
 // Each expired commit no later write supersedes stays held (value-less) until a restart.
 #[test]
 fn expired_commit_held_as_leftover_spec_crdt_4_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let held = |net: &mut Net, n: usize| net.engine(n).memory_commits().len();
     let mut base;
     for round in 0..3 {
@@ -3329,14 +3063,7 @@ fn delta_past_a_blob_refused_spec_commits_2() {
 // uploads b's offline note (once it counted the refused Sync's list as held there and never did).
 #[test]
 fn offline_note_uploaded_after_refused_sync_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let x = net.node(4, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Write), (x, Role::Read)], &[host]);
-    net.run();
+    let (mut net, host, [a, b, c, x], g, []) = hosted::<4, 0>(&[(1, Role::Write), (2, Role::Write), (3, Role::Read)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     net.set_online(b, false);
@@ -3363,14 +3090,7 @@ fn offline_note_uploaded_after_refused_sync_spec_sync_5() {
 // stamped again under the new head's key and sent again, it reaches the other readers there.
 #[test]
 fn offline_entry_across_rotation_restamped_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let x = net.node(4, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Write), (x, Role::Read)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b, c, x], g, []) = hosted::<4, 0>(&[(1, Role::Write), (2, Role::Write), (3, Role::Read)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     net.set_online(b, false);
@@ -3392,13 +3112,7 @@ fn offline_entry_across_rotation_restamped_spec_sync_5() {
 // when the entry was already waiting for a key then), and the note reaches nobody.
 #[test]
 fn demoted_writer_entry_stops_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     net.set_online(b, false);
@@ -3430,9 +3144,7 @@ fn cover_across_unread_rotation_lands_spec_sync_9() {
 }
 
 fn cover_across_unread_rotation(subscribe: bool) {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], subscribe, ..SyncConfig::default() });
     let c = net.node(3, &[host]);
     let x = net.node(4, &[host]);
@@ -4070,13 +3782,7 @@ fn moving_cursor_one_entry_per_author_spec_sync_9() {
 // expiry, spec/commits.md §5) and reads alike once a writer compacts
 #[test]
 fn set_into_expiring_entry_reads_alike_spec_crdt_4_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let wr = |net: &mut Net, n: usize, op: Op, ms: u64| {
@@ -4633,11 +4339,7 @@ fn memory_regranted_writer_covered_spec_sync_9() {
 // still undo.
 #[test]
 fn ephemeral_revert_needs_write_spec_crdt_4_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let (mut net, host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], false);
     let addr = net.hosts[host].address.clone();
     let keep = net.group_seeded(a, &[(b, Role::Write)], vec![addr], 2);
     let t = net.item(a, g, g, "t");
@@ -4841,11 +4543,7 @@ fn ephemeral_reverts_within_rights_alike_large_spec_crdt_4_6() {
 
 /// A net with writer `b` in group `g` of admin `a`, and `b`'s commit making a window a member of `g`.
 fn undo_world() -> (Net, usize, usize, Tid, Tid, Tid, CommitId) {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], false);
     let tb = net.tid(b);
     let (w, id) = made_window(&mut net, b, g, "v");
     local(&mut net, b);
@@ -4948,12 +4646,7 @@ fn reverting_second_undo_leaves_thing_undone_spec_crdt_4_6() {
 // the last entries
 #[test]
 fn typing_leaves_nothing_stored_or_kept_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     net.advance(1000);
@@ -4991,9 +4684,7 @@ fn typing_leaves_nothing_stored_or_kept_spec_sync_9() {
 // here, is compacted like a synced one: its bodies do not pile up per write
 #[test]
 fn local_only_bodies_do_not_pile_up_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     net.group(a, &[], &[host]);
     net.run();
     let root = net.engine(a).me();
@@ -5014,12 +4705,7 @@ fn local_only_bodies_do_not_pile_up_spec_sync_9() {
 // thing written beside the window
 #[test]
 fn memory_commit_part_on_private_thing_stays_out_of_label_spec_sync_3() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let me = net.tid(a);
     let private = made(&mut net, a, me, None);
     let w = made(&mut net, a, g, Some(g));
@@ -5041,12 +4727,7 @@ fn memory_commit_part_on_private_thing_stays_out_of_label_spec_sync_3() {
 // stays to its expiry.
 #[test]
 fn dead_expiring_ephemeral_write_covered_before_expiry_spec_commits_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     let put = |net: &mut Net, n: usize, v: &str| {

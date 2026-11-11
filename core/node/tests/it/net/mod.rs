@@ -60,6 +60,7 @@ pub struct Node {
 
 /// Messages to a node carry its `life` when sent: one sent before it restarted is dropped (it
 /// numbers connections from 1 again, so the old connection's bytes would land on a new one).
+#[derive(Clone)]
 enum Msg {
     /// node, life, conn -> hub
     Up(usize, u64, ConnId),
@@ -168,6 +169,123 @@ pub struct Net {
     pub peer_closes: usize,
 }
 
+/// A `Net` without its tampers (closures, not `Send`): what `Net::cached` keeps between tests.
+struct Parts {
+    clock: Arc<ManualClock>,
+    nodes: Vec<Node>,
+    hosts: Vec<Host>,
+    links: BTreeMap<(usize, ConnId), (usize, u64)>,
+    queue: VecDeque<Msg>,
+    next_hub_conn: u64,
+    steps: usize,
+    blocked: BTreeSet<(usize, usize)>,
+    plinks: BTreeMap<(usize, ConnId), (usize, ConnId)>,
+    blocked_peers: BTreeSet<(usize, usize)>,
+    lan_keys: BTreeMap<[u8; 32], usize>,
+    held: BTreeSet<(usize, usize)>,
+    held_messages: Vec<Msg>,
+    sent_kinds: BTreeMap<u64, usize>,
+    uploaded: BTreeMap<(usize, osis_base::LabelId, osis_base::BlobId, [u8; 64]), usize>,
+    peer_kinds: BTreeMap<(usize, u64), usize>,
+    sent_bytes: usize,
+    dialed: Vec<(usize, Address)>,
+    full_passes: bool,
+    bare: bool,
+    home_at_hosts: bool,
+    lose_uploads: BTreeSet<usize>,
+    lose_deposits: BTreeSet<CommitId>,
+    held_hosts: BTreeSet<usize>,
+    busy: BTreeMap<usize, std::time::Duration>,
+    hub_busy: std::time::Duration,
+    told: BTreeMap<usize, BTreeSet<osis_base::BlobId>>,
+    fetched: BTreeMap<usize, Vec<osis_base::BlobId>>,
+    deaf: BTreeSet<usize>,
+    hold_opened: BTreeSet<usize>,
+    held_to: BTreeSet<usize>,
+    gained: BTreeMap<usize, Vec<Vec<osis_base::BlobId>>>,
+    hold_blobs: BTreeSet<osis_base::BlobId>,
+    hide_blobs: BTreeMap<usize, BTreeSet<osis_base::BlobId>>,
+    bare_blobs: BTreeMap<usize, BTreeSet<osis_base::BlobId>>,
+    walk_to: BTreeMap<usize, (osis_base::LabelId, osis_label::Step)>,
+    tamper_link: Option<(usize, usize)>,
+    silent: BTreeSet<(usize, usize)>,
+    trickle: BTreeMap<(usize, usize), (ConnId, Vec<u8>)>,
+    trickle_hosts: BTreeMap<(usize, usize), (ConnId, Vec<u8>)>,
+    batch_reads: bool,
+    peer_closes: usize,
+}
+
+impl Net {
+    fn into_parts(self) -> Parts {
+        assert!(self.tamper.is_none() && self.host_tamper.is_none(), "a tamper cannot be kept");
+        Parts { clock: self.clock, nodes: self.nodes, hosts: self.hosts, links: self.links, queue: self.queue, next_hub_conn: self.next_hub_conn, steps: self.steps, blocked: self.blocked, plinks: self.plinks, blocked_peers: self.blocked_peers, lan_keys: self.lan_keys, held: self.held, held_messages: self.held_messages, sent_kinds: self.sent_kinds, uploaded: self.uploaded, peer_kinds: self.peer_kinds, sent_bytes: self.sent_bytes, dialed: self.dialed, full_passes: self.full_passes, bare: self.bare, home_at_hosts: self.home_at_hosts, lose_uploads: self.lose_uploads, lose_deposits: self.lose_deposits, held_hosts: self.held_hosts, busy: self.busy, hub_busy: self.hub_busy, told: self.told, fetched: self.fetched, deaf: self.deaf, hold_opened: self.hold_opened, held_to: self.held_to, gained: self.gained, hold_blobs: self.hold_blobs, hide_blobs: self.hide_blobs, bare_blobs: self.bare_blobs, walk_to: self.walk_to, tamper_link: self.tamper_link, silent: self.silent, trickle: self.trickle, trickle_hosts: self.trickle_hosts, batch_reads: self.batch_reads, peer_closes: self.peer_closes }
+    }
+
+    fn from_parts(p: Parts) -> Net {
+        let Parts { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, uploaded, peer_kinds, sent_bytes, dialed, full_passes, bare, home_at_hosts, lose_uploads, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes } = p;
+        Net { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, uploaded, peer_kinds, sent_bytes, dialed, full_passes, bare, home_at_hosts, lose_uploads, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, tamper: None, host_tamper: None }
+    }
+}
+
+impl Net {
+    /// A copy (`copy`) of the world `build` makes, with what it returned: built once per test
+    /// process per `key`, which names the build and every parameter it takes
+    /// (`osis_base::copying::cached`).
+    pub fn cached<T: Clone + Send + 'static>(key: &str, build: impl FnOnce() -> (Net, T)) -> (Net, T) {
+        let (parts, t) = osis_base::copying::cached(key, || {
+            let (n, t) = build();
+            (Some(n.into_parts()), t)
+        }, |(parts, t)| {
+            let mut net = Net::from_parts(parts.take().expect("kept"));
+            let copy = net.copy();
+            *parts = Some(net.into_parts());
+            (Some(copy.into_parts()), t.clone())
+        });
+        (Net::from_parts(parts.expect("copied")), t)
+    }
+}
+
+/// `Net::new`, one host, `N` nodes at it (seeds 1 to `N`, in order): built once (`Net::cached`).
+pub fn hosted_nodes<const N: usize>() -> (Net, usize, [usize; N]) {
+    let (net, (host, nodes)) = Net::cached(&format!("hosted_nodes/{N}"), || {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let nodes = std::array::from_fn(|i| net.node(i as u64 + 1, &[host]));
+        (net, (host, nodes))
+    });
+    (net, host, nodes)
+}
+
+/// `hosted_nodes`, then a group of node 0's at the host with `holders` (node, role), items
+/// `items` written by node 0 in it (each `net.item(0, g, g, v)`), and `net.run()` if `settle`:
+/// built once per parameter value (`Net::cached`).
+pub fn hosted<const N: usize, const I: usize>(holders: &[(usize, Role)], items: [&str; I], settle: bool) -> (Net, usize, [usize; N], Tid, [Tid; I]) {
+    let key = format!("hosted/{N}/{holders:?}/{items:?}/{settle}");
+    let holders = holders.to_vec();
+    let items: Vec<String> = items.iter().map(|v| v.to_string()).collect();
+    let (net, (host, nodes, g, ts)) = Net::cached(&key, move || {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let nodes: [usize; N] = std::array::from_fn(|i| net.node(i as u64 + 1, &[host]));
+        let g = net.group(nodes[0], &holders, &[host]);
+        let ts: Vec<Tid> = items.iter().map(|v| net.item(nodes[0], g, g, v)).collect();
+        if settle {
+            net.run();
+        }
+        (net, (host, nodes, g, ts))
+    });
+    (net, host, nodes, g, ts.try_into().unwrap())
+}
+
+/// `Net::new` and `N` nodes syncing with no host (seeds 1 to `N`): built once (`Net::cached`).
+pub fn local_nodes<const N: usize>() -> (Net, [usize; N]) {
+    Net::cached(&format!("local_nodes/{N}"), || {
+        let mut net = Net::new();
+        let nodes = std::array::from_fn(|i| net.node(i as u64 + 1, &[]));
+        (net, nodes)
+    })
+}
+
 /// Whether whole frames `b` hold an Opened reply.
 fn has_opened(b: &[u8]) -> bool {
     let mut d = osis_proto::FrameDecoder::new();
@@ -253,6 +371,85 @@ impl Net {
     /// A network whose new nodes are each their own account's only node.
     pub fn new() -> Net {
         Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), uploaded: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), trickle_hosts: BTreeMap::new(), batch_reads: false, peer_closes: 0 }
+    }
+
+    /// An exact copy of this network as it stands (notes/testing.md, Copied worlds): every node
+    /// (`SyncEngine::test_copy`) and host (`Hub::test_copy`) with its device, on one new clock at
+    /// the same time (each node's skew kept), the queues, links and counters: run the same steps
+    /// on both and they do the same. Unread engine events stay readable on both (`&mut`). A net
+    /// with a `tamper` set cannot be copied (a closure); a node taken out (`take`) stays out.
+    // every field `clone`d, whatever its type: none is left out by accident
+    #[allow(clippy::clone_on_copy)]
+    pub fn copy(&mut self) -> Net {
+        assert!(self.tamper.is_none() && self.host_tamper.is_none(), "a tamper cannot be copied");
+        osis_base::copying::copying(|| {
+            let clock = Arc::new(ManualClock::new(self.clock.now_wall_ms()));
+            let nodes = self.nodes.iter_mut().map(|n| {
+                let nc = Arc::new(NodeClock { base: clock.clone(), skew: n.clock.skew.load(std::sync::atomic::Ordering::SeqCst).into() });
+                let c: Arc<dyn Clock> = nc.clone();
+                let mut sync = n.sync.as_mut().map(|s| s.test_copy(c).unwrap());
+                let pending: Vec<osis_node::Event> = n.events.try_iter().collect();
+                // the node's own receiver needs an engine to subscribe to: a node taken out keeps its own
+                let events = match (n.sync.as_mut(), sync.as_mut()) {
+                    (Some(o), Some(cp)) => {
+                        n.events = o.engine_mut().test_subscribe_with(pending.clone(), true);
+                        cp.engine_mut().test_subscribe_with(pending, true)
+                    }
+                    _ => std::sync::mpsc::channel().1,
+                };
+                Node { sync, clock: nc, backend: n.backend.test_copy(), root: n.root.test_copy(), online: n.online, wake: n.wake, life: n.life, accepts: n.accepts, events }
+            }).collect();
+            let hosts = self.hosts.iter().map(|h| {
+                let c: Arc<dyn Clock> = clock.clone();
+                Host { hub: h.hub.test_copy(c).unwrap(), backend: h.backend.test_copy(), root: h.root.test_copy(), address: h.address.clone(), skew: h.skew }
+            }).collect();
+            Net {
+                clock,
+                nodes,
+                hosts,
+                links: self.links.clone(),
+                queue: self.queue.clone(),
+                next_hub_conn: self.next_hub_conn.clone(),
+                steps: self.steps.clone(),
+                blocked: self.blocked.clone(),
+                plinks: self.plinks.clone(),
+                blocked_peers: self.blocked_peers.clone(),
+                lan_keys: self.lan_keys.clone(),
+                held: self.held.clone(),
+                held_messages: self.held_messages.clone(),
+                sent_kinds: self.sent_kinds.clone(),
+                uploaded: self.uploaded.clone(),
+                peer_kinds: self.peer_kinds.clone(),
+                sent_bytes: self.sent_bytes.clone(),
+                dialed: self.dialed.clone(),
+                full_passes: self.full_passes.clone(),
+                bare: self.bare.clone(),
+                home_at_hosts: self.home_at_hosts.clone(),
+                lose_uploads: self.lose_uploads.clone(),
+                lose_deposits: self.lose_deposits.clone(),
+                held_hosts: self.held_hosts.clone(),
+                busy: self.busy.clone(),
+                hub_busy: self.hub_busy.clone(),
+                told: self.told.clone(),
+                fetched: self.fetched.clone(),
+                deaf: self.deaf.clone(),
+                hold_opened: self.hold_opened.clone(),
+                held_to: self.held_to.clone(),
+                gained: self.gained.clone(),
+                hold_blobs: self.hold_blobs.clone(),
+                hide_blobs: self.hide_blobs.clone(),
+                bare_blobs: self.bare_blobs.clone(),
+                walk_to: self.walk_to.clone(),
+                tamper: None,
+                tamper_link: self.tamper_link.clone(),
+                host_tamper: None,
+                silent: self.silent.clone(),
+                trickle: self.trickle.clone(),
+                trickle_hosts: self.trickle_hosts.clone(),
+                batch_reads: self.batch_reads.clone(),
+                peer_closes: self.peer_closes.clone(),
+            }
+        })
     }
 
     /// A network whose new nodes join no account: the test makes or pairs them.

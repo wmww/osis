@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Lazy chunks (spec/sync.md §6): a read that misses a chunk fetches that value's tree only.
 
+use crate::net::hosted_nodes;
 use crate::net;
 use net::*;
 use osis_base::{Ak, Role, Value};
@@ -13,9 +14,7 @@ use osis_schema::RawKey;
 // large value.
 #[test]
 fn read_fetches_its_tree_only_spec_sync_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");

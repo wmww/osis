@@ -2,6 +2,7 @@
 //! Others' certificates judged (spec/permissions.md §4; spec/sync.md §6): a node card
 //! superseded by a newer one, and the dialing parts of a departed node's card, leave the label.
 
+use crate::net::{hosted, hosted_nodes};
 use crate::net;
 use net::*;
 use osis_base::{BlobId, CommitId, LabelId, Role, Tid};
@@ -40,11 +41,7 @@ fn settle(net: &mut Net) {
 // `reach.0` is under the label, the admin deletes the superseded card commit's entries.
 #[test]
 fn superseded_card_deleted_spec_permissions_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let r = net.node(2, &[host]);
-    let _g = net.group(a, &[(r, Role::Read)], &[host]);
+    let (mut net, host, [a, r], _g, []) = hosted::<2, 0>(&[(1, Role::Read)], [], false);
     let acts = net.sync(r).publish_reach([1; 32], Vec::new()).unwrap();
     net.actions(r, acts);
     settle(&mut net);
@@ -63,11 +60,7 @@ fn superseded_card_deleted_spec_permissions_4() {
 // `node.0` go from the label; its `keys.0`, which chains of its old writes may need, stays.
 #[test]
 fn departed_node_card_deleted_spec_permissions_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let r = net.node(2, &[host]);
-    let g = net.group(a, &[(r, Role::Read)], &[host]);
+    let (mut net, host, [a, r], g, []) = hosted::<2, 0>(&[(1, Role::Read)], [], false);
     let acts = net.sync(r).publish_reach([1; 32], Vec::new()).unwrap();
     net.actions(r, acts);
     settle(&mut net);
@@ -95,11 +88,7 @@ fn departed_node_card_deleted_spec_permissions_4() {
 // when it is back, though its `reach.0` did not change.
 #[test]
 fn regranted_node_card_placed_again_spec_permissions_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let r = net.node(2, &[host]);
-    let g = net.group(a, &[(r, Role::Read)], &[host]);
+    let (mut net, host, [a, r], g, []) = hosted::<2, 0>(&[(1, Role::Read)], [], false);
     let acts = net.sync(r).publish_reach([1; 32], Vec::new()).unwrap();
     net.actions(r, acts);
     settle(&mut net);
@@ -164,10 +153,7 @@ fn account_reader(net: &mut Net, a: usize, r: usize, host: usize, until: Option<
 // its `keys.0` stays.
 #[test]
 fn account_removed_node_card_deleted_spec_permissions_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let r = net.node(2, &[host]);
+    let (mut net, host, [a, r]) = hosted_nodes::<2>();
     let (g, p, l) = account_reader(&mut net, a, r, host, None);
     let rt = net.node_tid(r);
     assert!(!card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the reader's card is under the group's label");
@@ -187,10 +173,7 @@ fn account_removed_node_card_deleted_spec_permissions_4() {
 // the label's `reach.0` and `node.0` once the clock passes it (no write says so).
 #[test]
 fn until_expired_node_card_deleted_spec_permissions_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let r = net.node(2, &[host]);
+    let (mut net, host, [a, r]) = hosted_nodes::<2>();
     let until = osis_base::WallMs(net.now() + 3_600_000);
     let (_, _, l) = account_reader(&mut net, a, r, host, Some(until));
     let rt = net.node_tid(r);
@@ -210,10 +193,7 @@ fn until_expired_node_card_deleted_spec_permissions_4() {
 // removes the old entry first). Then its card goes back under the label.
 #[test]
 fn regrant_after_until_reads_again_spec_permissions_2() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let r = net.node(2, &[host]);
+    let (mut net, host, [a, r]) = hosted_nodes::<2>();
     let until = osis_base::WallMs(net.now() + 3_600_000);
     let (g, p, l) = account_reader(&mut net, a, r, host, Some(until));
     let rt = net.node_tid(r);

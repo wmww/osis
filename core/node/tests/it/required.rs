@@ -2,6 +2,7 @@
 //! A thing's required retention (spec/commits.md §5, spec/permissions.md §5.2, §6): judged at the
 //! delta's key on the role timeline, in any arrival order; broken deltas stay held, invalid.
 
+use crate::net::hosted;
 use crate::common;
 use crate::net;
 use common::*;
@@ -452,13 +453,7 @@ fn broken_element_anchors_valid_insert_spec_crdt_4_6() {
 // reads nothing at every node and goes but at its author
 #[test]
 fn junk_reads_nothing_and_goes_spec_commits_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "v1");
-    net.run();
+    let (mut net, _host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["v1"], true);
     let mut m = Mutation::new();
     m.set(t, &ct::REQUIRED, &all(permanent())).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
@@ -544,18 +539,6 @@ fn setting_as_late_part_spec_perm_5_2() {
     p.engine.ingest(&whole.bytes, whole.blobs.clone()).unwrap();
     assert_eq!(read(&mut p, d, MSG), None, "bound once the part is held");
     assert!(!valid(&p, &bad, &d, MSG));
-}
-
-// Alice (0) is first admin of the group and of D's first admin, Bob (1) writes, Carol (2) is an admin, Dan (3) reads.
-fn on_host(net: &mut Net, host: usize) -> (usize, usize, usize, usize, Tid, Tid) {
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let d = net.node(4, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Admin), (d, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "v1");
-    net.run();
-    (a, b, c, d, g, t)
 }
 
 fn settle(net: &mut Net) {
@@ -645,9 +628,7 @@ fn undo_after_change_fills_spec_commits_5() {
 // setting falls everyone reads it again, the body fetched from the host, which kept it.
 #[test]
 fn setting_below_a_body_goes_and_comes_back_spec_perm_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let (a, b, c, d, g, t) = on_host(&mut net, host);
+    let (mut net, _host, [a, b, c, d], g, [t]) = hosted::<4, 1>(&[(1, Role::Write), (2, Role::Admin), (3, Role::Read)], ["v1"], true);
     net.set_online(d, false);
     net.set_online(c, false);
     let mut m = Mutation::new();
@@ -700,9 +681,7 @@ fn setting_below_a_body_goes_and_comes_back_spec_perm_6() {
 #[test]
 fn broken_delta_falls_alone_spec_commits_5() {
     for same_class in [true, false] {
-        let mut net = Net::new();
-        let host = net.add_host();
-        let (a, b, c, d, g, t) = on_host(&mut net, host);
+        let (mut net, _host, [a, b, c, d], g, [t]) = hosted::<4, 1>(&[(1, Role::Write), (2, Role::Admin), (3, Role::Read)], ["v1"], true);
         let u = net.item(a, g, g, "u");
         net.run();
         net.set_online(d, false);
@@ -1136,9 +1115,7 @@ fn setting_before_its_grant_comes_back_spec_perm_6() {
 #[test]
 fn purge_beside_invalid_delta_leaves_host_spec_perm_6() {
     for with_bad in [false, true] {
-        let mut net = Net::new();
-        let host = net.add_host();
-        let (a, b, c, d, _g, t) = on_host(&mut net, host);
+        let (mut net, host, [a, b, c, d], _g, [t]) = hosted::<4, 1>(&[(1, Role::Write), (2, Role::Admin), (3, Role::Read)], ["v1"], true);
         net.set_online(d, false);
         let l = net.label(a);
         let (bad, good) = (ak("t:bad.0"), ak("t:good.0"));

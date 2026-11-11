@@ -4,6 +4,7 @@
 //! served state too, and a removal moves its head; under a label with hosts the node's own
 //! entries are placed in its store, and what it must not hold of those no host took leaves it.
 
+use crate::net::{hosted, local_nodes};
 use crate::net;
 use net::*;
 use osis_base::format::INBOX_LIFETIME_MS;
@@ -25,9 +26,7 @@ const KMAP: osis_schema::Aspect<osis_base::Value> = osis_schema::Aspect::new("k:
 /// Node `a` (dialable: `reach.0` published) with group `g` labeled at no host, and `b` a
 /// writer of it.
 fn setup() -> (Net, usize, usize, Tid, LabelId) {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
+    let (mut net, [a, b]) = local_nodes::<2>();
     let g = net.group(a, &[(b, Role::Write)], &[]);
     let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
     net.actions(a, acts);
@@ -151,10 +150,7 @@ fn purge_on_replace_body_carried_on_local_label_spec_sync_7() {
 // rotation gives the label one new step at every node, not one per admin or per connection.
 #[test]
 fn one_step_per_rotation_without_host_spec_sync_5() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    let c = net.node(3, &[]);
+    let (mut net, [a, b, c]) = local_nodes::<3>();
     for (n, k) in [(a, 0xa3), (b, 0xb3), (c, 0xc3)] {
         let acts = net.sync(n).publish_reach([k; 32], Vec::new()).unwrap();
         net.actions(n, acts);
@@ -450,9 +446,7 @@ fn local_inbox_blob_expires_spec_sync_5() {
 // writer's local pass stamps it as a promotion would.
 #[test]
 fn deposit_promoted_on_local_label_spec_sync_5() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let r = net.node(2, &[]);
+    let (mut net, [a, r]) = local_nodes::<2>();
     let acts = net.sync(a).publish_reach([0xa7; 32], Vec::new()).unwrap();
     net.actions(a, acts);
     let _g = net.group_at(a, &[(r, Role::Read)], vec![]);
@@ -578,10 +572,7 @@ fn hostless_label_reseals_spec_permissions_3() {
 }
 
 fn hostless_reseal(restart: bool, c_online: bool) {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    let c = net.node(3, &[]);
+    let (mut net, [a, b, c]) = local_nodes::<3>();
     let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[]);
     let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
     net.actions(a, acts);
@@ -682,10 +673,7 @@ fn copy_waiting_for_a_wrap_placed_by_local_pass_spec_permissions_4() {
 // the hosts are away; the host gets it once back
 #[test]
 fn own_write_placed_under_a_hosted_label_with_no_host_connected_spec_sync_5() {
-    let mut net = Net::new();
-    let h = net.add_host();
-    let a = net.node(1, &[h]);
-    let g = net.group(a, &[], &[h]);
+    let (mut net, h, [a], g, []) = hosted::<1, 0>(&[], [], false);
     let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
     net.actions(a, acts);
     net.run();
@@ -710,11 +698,7 @@ fn own_write_placed_under_a_hosted_label_with_no_host_connected_spec_sync_5() {
 // once back.
 #[test]
 fn own_entries_covered_while_the_host_is_away_leave_spec_sync_5() {
-    let mut net = Net::new();
-    let h = net.add_host();
-    let a = net.node(1, &[h]);
-    let g = net.group(a, &[], &[h]);
-    let t = net.item(a, g, g, "first");
+    let (mut net, h, [a], _g, [t]) = hosted::<1, 1>(&[], ["first"], false);
     let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
     net.actions(a, acts);
     net.run();
@@ -749,11 +733,7 @@ fn own_entries_covered_while_the_host_is_away_leave_spec_sync_5() {
 // records it again as present there, so the host pass deletes it there too.
 #[test]
 fn covered_own_entry_mid_upload_leaves_the_host_too_spec_sync_5() {
-    let mut net = Net::new();
-    let h = net.add_host();
-    let a = net.node(1, &[h]);
-    let g = net.group(a, &[], &[h]);
-    let t = net.item(a, g, g, "first");
+    let (mut net, h, [a], _g, [t]) = hosted::<1, 1>(&[], ["first"], false);
     let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
     net.actions(a, acts);
     net.run();
@@ -850,11 +830,7 @@ fn own_duplicate_case(v: &str) -> bool {
 // host announcing it records it as present there and the host pass deletes it; a restart
 // between keeps that too.
 fn lost_answer(restart: bool, days: u64) {
-    let mut net = Net::new();
-    let h = net.add_host();
-    let a = net.node(1, &[h]);
-    let g = net.group(a, &[], &[h]);
-    let t = net.item(a, g, g, "first");
+    let (mut net, h, [a], _g, [t]) = hosted::<1, 1>(&[], ["first"], false);
     let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
     net.actions(a, acts);
     net.run();
@@ -943,12 +919,7 @@ fn advance_unheld(net: &mut Net, n: usize, chunks: &[BlobId], ms: u64) {
 /// bytes, kept across a restart when `lost`): from the purge on it stores no byte of them and
 /// logs none, so a co-reader pulling it gets none, and it fetches none.
 fn chunks_answered_late(lost: bool, writer: bool) {
-    let mut net = Net::new();
-    let h = net.add_host();
-    let a = net.node(1, &[h]);
-    let b = net.node(2, &[h]);
-    let g = net.group(a, &[(b, Role::Write)], &[h]);
-    let t = net.item(a, g, g, "x");
+    let (mut net, h, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], false);
     let (w, other) = if writer { (b, a) } else { (a, b) };
     // a node serving co-readers runs local passes: its store drops what it must not hold
     let acts = net.sync(w).publish_reach([w as u8 + 1; 32], Vec::new()).unwrap();
@@ -1025,13 +996,7 @@ fn purged_chunks_mid_upload_leave_the_host_by_delete_key_spec_sync_6() {
 // serves none of them. `hostile`: the host first answers those fetches with another chunk's
 // bytes (a wrong salt), then honestly: no wrong salt sticks, so the deletes go through.
 fn never_held_chunks_deleted(hostile: bool) {
-    let mut net = Net::new();
-    let h = net.add_host();
-    let a = net.node(1, &[h]);
-    let b = net.node(2, &[h]);
-    let g = net.group(a, &[(b, Role::Write)], &[h]);
-    let t = net.item(a, g, g, "x");
-    net.run();
+    let (mut net, h, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
     let l = net.label(a);
     let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
     let mut m = osis_node::Mutation::new();
@@ -1103,10 +1068,7 @@ fn wrong_bytes_for_a_chunk_give_no_salt_spec_sync_6() {
 /// (`lost`) or arrive after the purge, leave the host once the copied delta is purged and the
 /// host reports them.
 fn certificate_copy_answered_late(lost: bool) {
-    let mut net = Net::new();
-    let h = net.add_host();
-    let a = net.node(1, &[h]);
-    let g = net.group(a, &[], &[h]);
+    let (mut net, h, [a], g, []) = hosted::<1, 0>(&[], [], false);
     let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
     net.actions(a, acts);
     net.run();

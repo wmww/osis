@@ -2,6 +2,7 @@
 //! Past bugs the sim once found, by seed; sim seeds do not last, so each has its scenario here by
 //! hand. Each test's comment names the bug and the sim scenario.
 
+use crate::net::hosted;
 use crate::net;
 use net::*;
 use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, Value};
@@ -192,12 +193,7 @@ fn step_uploads_no_second_encryption_of_a_present_role_commit_spec_sync_5() {
 /// `crossed_snapshots_drop_alike_*`: the host's deletions of `l` from before the bound on, and the
 /// blobs of the shared commit either writer knew.
 fn crossed_snapshots() -> (usize, usize) {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
+    let (mut net, host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], false);
     let both = |net: &mut Net, n: usize, v: &str| {
         let mut m = Mutation::new();
         m.set(t, &ONE, &s(v)).unwrap();
@@ -257,13 +253,7 @@ fn record_step_again(net: &mut Net, n: usize, g: Tid, l: LabelId) {
 // node claimed through.
 #[test]
 fn label_record_delays_no_step_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Admin), (c, Role::Write)], &[host]);
-    net.run();
+    let (mut net, host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Admin), (2, Role::Write)], [], true);
     let l = net.label(a);
     let steps = |net: &mut Net, n: usize| net.engine(n).group_labels(&g).unwrap().into_iter().find(|x| x.id == l).unwrap().steps.len();
     let path = net.host_path(host, &l).len();

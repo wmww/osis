@@ -3,6 +3,7 @@
 //! have their own pool, an authenticated client is exempt from the idle bound, a ported
 //! session's end is reported.
 
+use crate::net::local_nodes;
 use crate::net::*;
 use osis_base::{Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
@@ -63,8 +64,7 @@ fn auth(net: &mut Net, n: usize, conn: ConnId, cs: &mut ClientSession) -> Vec<Ac
 // spec/sync.md §10 (client port), notes/client-port.md §0, §5: main only from Peer::Unix; a keyed peer's Auth is refused by the sync engine (Error 1) whatever its key, never handed up
 #[test]
 fn tier_is_the_transport_types() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
+    let (mut net, [a]) = local_nodes::<1>();
     let uid = osis_transport::unix::own_uid().unwrap();
     let (c, mut cs, _) = client(&mut net, a, Peer::Unix { uid });
     let got = auth(&mut net, a, c, &mut cs);
@@ -82,8 +82,7 @@ fn tier_is_the_transport_types() {
 // spec/wire.md §11.2, notes/client-port.md §3: Auths pipelined by a keyed peer, one per input, are each refused (Error 1) by the sync engine; none reaches the port worker
 #[test]
 fn keyed_auth_flood_never_goes_up() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
+    let (mut net, [a]) = local_nodes::<1>();
     let (k, _, _) = client(&mut net, a, Peer::Key([9; 32]));
     let mut refused = 0;
     for id in 1..=20_000u32 {
@@ -184,8 +183,7 @@ fn request(acts: &[Action]) -> Option<(Tier, &Message)> {
 // spec/wire.md §11.2 (Auth), spec/sync.md §10, notes/client-port.md §3: a keyed session's Auth goes up only when its secret's hash is a current entry, bound to that entry's actor with the secret stripped; an unknown secret, no secret, and an entry past its until are Error 1 and never reach the worker; a second Auth on a bound session is Error 1; a main session's Auth with a secret is Error 1
 #[test]
 fn bearer_auth_gated_in_the_sync_engine() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
+    let (mut net, [a]) = local_nodes::<1>();
     let actor = Tid::from_bytes([5; 15]);
     set_entry(&mut net, a, actor, Some(entry(&SECRET, None)));
     for bad in [Some([1u8; 32]), None] {
@@ -223,8 +221,7 @@ fn bearer_auth_gated_in_the_sync_engine() {
 // spec/data-model.md §9, spec/sync.md §10, notes/client-port.md §3: a session ends when its entry goes, when its secret rotates, and at its until by the timer alone (a wake is asked for it, with no other change); an extended until moves the timer; client_of agrees before any of that reaches the session's connection
 #[test]
 fn bound_sessions_end_with_their_entry() {
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
+    let (mut net, [a]) = local_nodes::<1>();
     let actor = Tid::from_bytes([5; 15]);
     let until = net.now() + 10_000;
     set_entry(&mut net, a, actor, Some(entry(&SECRET, Some(until))));

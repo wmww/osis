@@ -2,6 +2,7 @@
 //! An inbox blob's life (spec/sync.md §3): the grantee's certificate copy, re-sending after
 //! `INBOX_LIFETIME`; direct packages kept until the app takes them.
 
+use crate::net::hosted_nodes;
 use crate::net;
 use net::*;
 use osis_base::format::INBOX_LIFETIME_MS;
@@ -18,11 +19,11 @@ fn alice_and_bob() -> (Net, usize, usize, usize, Tid, Tid, Tid, LabelId) {
 
 /// `alice_and_bob` with `extra` addresses in g's label host list.
 fn alice_and_bob_at(extra: Vec<osis_label::Address>) -> (Net, usize, usize, usize, Tid, Tid, Tid, LabelId) {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let (a, b, alice, bob, g, home) = alice_and_bob_on(&mut net, host, a, b, extra);
+    let (net, (host, a, b, alice, bob, g, home)) = Net::cached(&format!("inbox_life::alice_and_bob_at/{extra:?}"), || {
+        let (mut net, host, [a, b]) = hosted_nodes::<2>();
+        let (a, b, alice, bob, g, home) = alice_and_bob_on(&mut net, host, a, b, extra);
+        (net, (host, a, b, alice, bob, g, home))
+    });
     (net, host, a, b, alice, bob, g, home)
 }
 
@@ -1605,9 +1606,7 @@ fn hostile_inbox_blob_peak_is_bounded_spec_sync_3() {
 // label is no inbox until the group is shared (secrets of its own).
 #[test]
 fn a_home_label_is_named_the_inbox_spec_sync_2() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
+    let (mut net, host, [a]) = hosted_nodes::<1>();
     let c = net.node(3, &[host]);
     let g = net.group(a, &[(c, Role::Read)], &[host]);
     let l = net.engine(a).labels_of(&g).iter().find(|x| !x.replaced).unwrap().id;
