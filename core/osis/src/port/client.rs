@@ -1381,9 +1381,12 @@ impl crate::handle::ReadOnly {
 }
 
 impl crate::handle::ReadOnly {
-    /// `backlinks` at the connected node.
+    /// `backlinks` at the connected node, bounded by the largest page: a page always fits.
     pub(crate) fn node_backlinks(&self, r: &Connection, tid: Tid, q: &crate::BacklinkQuery) -> Result<crate::BacklinkPage> {
-        c::backlink_page(r.call(method::BACKLINKS, vec![Value::Tid(tid), c::backlink_query_v(q)])?)
+        // a backlink's encoding: its AK and a tid, each with a few bytes of framing
+        const PAGE_BYTES: usize = crate::backlinks::BACKLINK_PAGE * (osis_base::format::MAX_AK_BYTES + 64) + SMALL_REPLY;
+        const _: () = assert!(PAGE_BYTES <= REPLY_BUDGET);
+        c::backlink_page(r.call_big(method::BACKLINKS, vec![Value::Tid(tid), c::backlink_query_v(q)], PAGE_BYTES)?)
     }
 
     /// `on_backlinks_change` at the connected node.

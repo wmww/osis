@@ -210,8 +210,11 @@ enum Kind {
     Thing(Tid),
     Grants(Tid),
     Commits(crate::commits::Address),
-    /// A page of a thing's backlinks: what its actor may read of them, whoever may read the thing.
-    Backlinks(Tid, crate::BacklinkQuery),
+    /// A page of a thing's backlinks: what its actor may read of them, whoever may read the thing;
+    /// the digest of the page the client was last sent. A wake that reads the same page sends
+    /// nothing: a wake may come from what the actor may not read (a hidden source's reference, any
+    /// roster change), and a Notify would tell it.
+    Backlinks(Tid, crate::BacklinkQuery, Option<crate::watch::Digest>),
     Status,
     Diagnostics,
     /// A row that waits (`filter::TASK`), until its outcome went.
@@ -761,7 +764,7 @@ impl Worker {
             }
             Ok(t)
         };
-        let (kind, filter) = match a.uint()? {
+        let (mut kind, filter) = match a.uint()? {
             // the sharing and sync flows take no actor (`method::for_client`)
             filter::TASK if acting.is_some() => return Err(unsupported("a row that waits, for a thin client")),
             filter::TASK => {
@@ -803,7 +806,7 @@ impl Worker {
             }
             filter::BACKLINKS => {
                 let (t, q) = (thing(a.tid()?)?, c::backlink_query(a.next()?)?);
-                (Kind::Backlinks(t, q), Filter::Due(crate::watch::Watch::Backlinks(t, acting.is_some())))
+                (Kind::Backlinks(t, q, None), Filter::Due(crate::watch::Watch::Backlinks(t, acting.is_some())))
             }
             filter::STATUS => (Kind::Status, Filter::Status),
             filter::DIAGNOSTICS => (Kind::Diagnostics, Filter::Diagnostics),
@@ -875,7 +878,7 @@ impl Worker {
                 }
                 Kind::Thing(t) => initial = r.aspects(*t).map(|aks| Value::List(aks.iter().map(|ak| Value::List(vec![c::ak_v(ak), c::read_v(&r.value(*t, ak))])).collect())),
                 Kind::Grants(t) => initial = Ok(c::grants_v(&r.grants(*t))),
-                Kind::Backlinks(t, q) => {
+                Kind::Backlinks(t, q, _) => {
                     r.e.watch_references();
                     initial = r.backlinks(*t, q).map(|p| c::backlink_page_v(&p));
                 }
@@ -884,6 +887,9 @@ impl Worker {
             cb
         });
         let mut initial = initial?;
+        if let Kind::Backlinks(_, _, sent) = &mut kind {
+            *sent = Some(page_digest(&initial));
+        }
         if let Kind::Status = kind {
             initial = c::status_v(&db.status()?);
         }
@@ -975,6 +981,11 @@ impl Worker {
                 // read at the next send: no reason to hold back the other subscriptions now
                 more_commits |= !g.commits.is_empty();
             }
+            if let (Kind::Backlinks(_, _, last), Some((v, _))) = (&mut s.kind, out.last())
+                && sent == out.len()
+            {
+                *last = Some(page_digest(v));
+            }
             if sent == out.len() {
                 g.dirty = false;
                 g.aks.clear();
@@ -1018,6 +1029,11 @@ fn value_read(db: &Osis, t: Tid, ak: &Ak, path: osis_schema::Path) -> Result<cra
     Ok(crate::watch::ReadAt::new(move |r| r.get_path(t, &key, &path)))
 }
 
+/// A sent backlinks page's digest (`Kind::Backlinks`).
+fn page_digest(v: &Value) -> crate::watch::Digest {
+    *blake3::hash(&osis_base::cbor::encode(v)).as_bytes()
+}
+
 /// What a subscription would send now, oldest first: queued deliveries, then what changed
 /// (a value, with its source when it has one), read now.
 fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::Origin>)> {
@@ -1048,9 +1064,12 @@ fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::
         }
         Kind::Grants(t) if g.dirty => out.push((c::grants_v(&db.read_local(|r| r.grants(*t))), None)),
         // a page that cannot be read now goes at the next change
-        Kind::Backlinks(t, q) if g.dirty => {
+        Kind::Backlinks(t, q, sent) if g.dirty => {
             if let Ok(p) = db.read_local(|r| r.backlinks(*t, q)) {
-                out.push((c::backlink_page_v(&p), None));
+                let v = c::backlink_page_v(&p);
+                if *sent != Some(page_digest(&v)) {
+                    out.push((v, None));
+                }
             }
         }
         Kind::Status if g.dirty => {

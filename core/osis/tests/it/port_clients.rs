@@ -755,6 +755,27 @@ fn backlinks_are_the_actors() {
     assert_eq!((p.backlinks, p.more), (vec![want[1].clone()], false));
 }
 
+// notes/client-port.md §2 (Backlinks): on the wire, a backlinks subscription sends a page only
+// when it reads otherwise: a reference from a source the actor may not read and a roster change
+// it may not see send nothing (the client's own check would hide either).
+#[test]
+fn backlinks_notify_only_a_changed_page() {
+    let x = node();
+    let link = osis::DynamicAspectKey::untyped(ak("t:link.0"));
+    let (_, s, _c) = x.client(Role::Read);
+    let mut r = x.raw(&s);
+    let filter = Value::List(vec![Value::uint(7), Value::Tid(x.out), Value::List(vec![Value::opt(None), Value::opt(None)])]);
+    r.ask(Command::Sub { token: 1, max_reply: osis_proto::client::SMALL_REPLY as u64, filter }, 1).unwrap();
+    x.n.commit_set(x.u, link.clone(), &Value::Tid(x.out)).unwrap();
+    let (other, _) = x.n.add_client(None).unwrap();
+    x.n.grant(x.h, other, Role::Read, Default::default()).unwrap();
+    x.n.settle();
+    assert_eq!(r.notifies(1, 300), vec![], "nothing it may read changed");
+    x.n.commit_set(x.t, link, &Value::Tid(x.out)).unwrap();
+    x.n.settle();
+    assert_eq!(r.notifies(1, 300).len(), 1, "a source it reads");
+}
+
 // spec/wire.md §11.2 (Error 4), notes/client-port.md §3: the API's view of the connection cap: the ninth connection fails Network, one going frees a slot
 #[test]
 fn connections_past_the_cap() {

@@ -244,6 +244,19 @@ impl Raw {
         self.rt.block_on(async { tokio::time::sleep(Duration::from_millis(ms)).await });
     }
 
+    /// Notifies of `token` received by now, read off the link for `ms` first.
+    pub(crate) fn notifies(&mut self, token: u64, ms: u64) -> Vec<osis_proto::api::Payload> {
+        let until = std::time::Instant::now() + Duration::from_millis(ms);
+        while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+            let Ok(Some(b)) = self.rt.block_on(async { tokio::time::timeout(left, self.link.rx.recv()).await }) else { break };
+            let o = self.cs.handle(0, ClientInput::Bytes(b));
+            self.out(o);
+        }
+        let (got, rest) = std::mem::take(&mut self.events).into_iter().partition(|e| matches!(e, ClientEvent::Notify { token: t, .. } if *t == token));
+        self.events = rest;
+        got.into_iter().filter_map(|e| if let ClientEvent::Notify { payload, .. } = e { Some(payload) } else { None }).collect()
+    }
+
     fn auth(&mut self, session: [u8; 16]) -> Result<Outcome, Code> {
         self.ask(Command::Auth { token: 0, session, secret: None }, 0)
     }
