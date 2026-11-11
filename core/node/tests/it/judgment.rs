@@ -187,6 +187,20 @@ fn hash_hex(b: &[u8]) -> String {
     osis_base::hex::encode(&osis_base::hash::hash(b))
 }
 
+/// `replay`, once per input in this process: generating a file judges each case, and replaying it
+/// from its text then finds the same inputs (the text carries all of them exactly) or judges anew.
+fn judged(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(String, String)> {
+    type Key = (String, Vec<String>, u64, String);
+    static SEEN: std::sync::Mutex<BTreeMap<Key, Vec<(String, String)>>> = std::sync::Mutex::new(BTreeMap::new());
+    let key = (hash_hex(bytes), reads.iter().map(|r| osis_base::hex::encode(r.expose())).collect(), now.0, render_order(order));
+    if let Some(v) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return v.clone();
+    }
+    let v = replay(bytes, reads, now, order);
+    SEEN.lock().unwrap_or_else(|e| e.into_inner()).insert(key, v.clone());
+    v
+}
+
 /// Delivers `order` of the bundle's entries to a fresh node at `now`; what it judges, as the
 /// expected fields of a case (README.md, `judgment/`).
 fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(String, String)> {
@@ -336,7 +350,7 @@ fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool) -> VecFile {
             let mut r = Rec::new().with("case", &name).with("spec", sc.spec).with("source", sc.source).with("read-secret", &reads_hex).with("now", played.now.0.to_string());
             r = if i == 0 { r.with("bundle", osis_base::hex::encode(&laid.bytes[n..])) } else { r.with("bundle", format!("as in {first}")) };
             r = r.with("order", render_order(&order));
-            for (k, v) in replay(&laid.bytes, &reads, played.now, &order) {
+            for (k, v) in judged(&laid.bytes, &reads, played.now, &order) {
                 r = r.with(&k, v);
             }
             cases.push(r);
@@ -845,7 +859,7 @@ fn replay_cases(path: &str, text: &str, only: Option<&str>) -> Result<usize, Str
             reads.push(Secret32::from_bytes(b.try_into().map_err(|_| "read-secret length")?));
         }
         let now = WallMs(c.req("now")?.parse().map_err(|_| "bad now")?);
-        let mut got = replay(&bytes, &reads, now, &parse_order(c.req("order")?));
+        let mut got = judged(&bytes, &reads, now, &parse_order(c.req("order")?));
         if let Some(f) = shared.iter().find(|f| !got.contains(f)) {
             return Err(format!("{path}, case `{name}`: judged no `{}: {}` (a header line)", f.0, f.1));
         }
@@ -861,7 +875,7 @@ fn replay_cases(path: &str, text: &str, only: Option<&str>) -> Result<usize, Str
 
 // spec/permissions.md §5, spec/commits.md §5: every judgment vector (core/test/vectors/README.md,
 // `judgment/`), generated in memory, has its inputs and a bundle that imports, and replayed from
-// its text through a fresh engine judges as generated.
+// its text judges as generated (each input judged once by a fresh engine: `judged`).
 #[test]
 fn judgment_vectors_spec_permissions_5_2() {
     for (path, text) in files() {
