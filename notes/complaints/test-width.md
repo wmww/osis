@@ -4,3 +4,6 @@
 - held-model and roles-model depend on no osis crate, so they cannot use `testenv`: each reads its own `OSIS_*` range, and nothing checks those names against core/base/testenv-known.txt at run time.
 - issues/tests-4x.md pattern 5's must-fail `try_until` walks (sharing.rs, 200 steps) cost little: quiet steps are cheap (200 -> 130 steps saved under 4% of the test).
 - A before/after re-measure of six crates (main and branch, every default test as its own process) in one heavy hold took 5391 CPU-s, over the 5060 hold limit (1.07x at load 32): measure the two trees in two holds.
+- Review: "each of 8 named shapes twice" was not the old default's coverage. A per-seed fingerprint (fate kinds, the withheld commit's fates) over 0..300 against `covering` showed kinds only the wide set met; checking a covering set against the width it replaces, by fingerprint, catches what a named list misses.
+- Review: a mutation run of 16 held-model mutants under `tools/heavy` held the lock 1111 s wall (limit 598) for 3150 CPU-s: each mutant's build and single-threaded runs sat inside the hold. Build all mutants first, then take the lock only for the all-core runs.
+- Review: held-model `settled_histories_keep_their_laws`' floor (a signal dropped past its bound) is not derived from the run's size: `OSIS_HELD_SEEDS=6` at a gate offset fails it with no property broken.
