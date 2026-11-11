@@ -167,7 +167,7 @@ Synchronous unless noted; each is one role commit made locally (spec/permissions
 
 ## Diagnostics
 A place to dump problems such as a colliding record from a peer, rejected writes from a revoked actor, a thing created into an unsynced group, a thing whose sync is stranded. Apps may log, surface or ignore it; correctness never depends on anyone seeing it.
-- `Diagnostic` (`core/osis/src/diagnostic.rs`, translated from the engine's kinds, which the port keeps carrying) has a variant per thing an app can act on, and `Handled` for the rest (bad, parked, pending, colliding, repaired data: log material). `Parked` is never constructed yet (issues/parked-diagnostic.md).
+- `Diagnostic` (`core/osis/src/diagnostic.rs`, translated from the engine's kinds, which the port keeps carrying) has a variant per thing an app can act on, and `Handled` for the rest (bad, pending, colliding, repaired data: log material). `Parked` (a commit from a newer format: an update may read it) fires once per commit as it first parks (`apply::park`).
 - A peer must not be able to flood it: dedupe per (kind, tid), rate-limit per peer.
 - Must include: "this node was removed from actor X by node N at time T" (a stolen node's removal otherwise looks like a silent lockout) and "stranded on group G" (also in status).
 

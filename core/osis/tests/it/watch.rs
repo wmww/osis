@@ -442,12 +442,39 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
     assert_eq!(calls.lock().unwrap().last(), Some(&(id, Some(Value::Int(4)))));
 }
 
-// spec: none (API surface); notes/api.md Diagnostics, issues/parked-diagnostic.md: a commit from a newer format is told apart from what needs no part from an app
+// spec/versioning.md §2: a commit from a newer format version waits here as parked, and the app
+// hears so once (`Diagnostic::Parked`, naming the commit): an update may read it. Receiving it again
+// tells nothing new.
 #[test]
-fn a_parked_commit_has_its_own_diagnostic() {
-    use osis::internals::node::{Diagnostic, DiagnosticKind};
-    let d = Diagnostic { kind: DiagnosticKind::Parked, tids: Vec::new(), commit: None, peer: None, detail: "x".into() };
-    assert!(matches!(osis::Diagnostic::from(d), osis::Diagnostic::Parked { .. }));
+fn a_parked_commit_is_told_once_spec_versioning_2() {
+    use osis::internals::schema::osis_base::{self as base, Value as V};
+    let (a, b) = (db(1), db(2));
+    let t = thing(&a);
+    deliver(&a, &b);
+    a.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &Value::Int(1)).unwrap();
+    let known = b.engine(|e| e.commit_ids());
+    let pk = a.engine(|e| e.commit_ids().into_iter().filter(|id| !known.contains(id)).find_map(|id| e.package(&id).unwrap())).unwrap();
+    // the same commit as a newer format version would write it
+    let mut v = base::decode(&pk.bytes, &base::Limits::DEFAULT).unwrap();
+    if let V::List(items) = &mut v
+        && let Some(V::List(h)) = items.first_mut()
+    {
+        h[0] = V::Int(2);
+    }
+    let bytes = base::encode(&v);
+    let (tx, diags) = channel();
+    let _d = b.on_diagnostic(move |_, d| {
+        if matches!(d, osis::Diagnostic::Parked { .. }) {
+            tx.send(d).unwrap();
+        }
+    }).unwrap();
+    let r = b.engine(|e| e.ingest(&bytes, pk.blobs.clone()).unwrap());
+    let osis::internals::node::Ingested::Parked(id) = r else { panic!("{r:?}") };
+    assert!(matches!(recv(&diags), osis::Diagnostic::Parked { commit: Some(c), .. } if c == osis::CommitId::from(id)));
+    b.engine(|e| e.ingest(&bytes, pk.blobs.clone()).unwrap());
+    b.engine(|e| e.reexamine().unwrap());
+    b.settle();
+    assert!(diags.try_recv().is_err(), "told once");
 }
 
 // Path listeners (notes/listener-design.md, step 5): a path listener is called exactly when the

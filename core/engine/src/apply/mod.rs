@@ -703,7 +703,7 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             if blob.parts.len() != n {
                 return ingest_class(tx, blob, origin);
             }
-            pend(tx, &id, PendingKind::Parked, &blob.encode(), Reason::Parked)?;
+            park(tx, &id, &blob.encode(), blob.header.aspects.iter().map(|a| a.tid).collect(), Some(blob.header.author))?;
             Ingested::Parked(id)
         }
     };
@@ -742,6 +742,19 @@ fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, bytes: &[u8], reason:
     Ok(())
 }
 
+/// Keeps commit `id` parked (`bytes` as stored, spec/versioning.md §2), telling the app the first
+/// time it parks: an update may read it. `things`: what its header names, `peer`: its author, or
+/// who sent it when the header does not decode.
+fn park(tx: &mut Tx<'_>, id: &CommitId, bytes: &[u8], things: Vec<Tid>, peer: Option<Tid>) -> Result<()> {
+    let first = tx.core.ix.pending.get(id) != Some(&Reason::Parked);
+    pend(tx, id, PendingKind::Parked, bytes, Reason::Parked)?;
+    if first {
+        let now = tx.now();
+        tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::Parked, tids: things, commit: Some(*id), peer, detail: "from a newer format".into() }, now);
+    }
+    Ok(())
+}
+
 /// Keeps the parts of applied commit `id` that wait alone pending under its ID. `applied`: its
 /// blob. The `reexamine` an applied commit is followed by reads their boxes (`late_parts`).
 fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) -> Result<()> {
@@ -753,9 +766,10 @@ fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) 
     if rest.parts.is_empty() {
         return Ok(());
     }
-    let kind = if w.reason == Reason::Parked { PendingKind::Parked } else { PendingKind::Pending };
-    pend(tx, id, kind, &rest.encode(), w.reason.clone())?;
-    Ok(())
+    if w.reason == Reason::Parked {
+        return park(tx, id, &rest.encode(), rest.header.aspects.iter().map(|a| a.tid).collect(), Some(rest.header.author));
+    }
+    pend(tx, id, PendingKind::Pending, &rest.encode(), w.reason.clone())
 }
 
 /// Commit `id` pends no more: its stored bytes go. Whether it was pending.
@@ -925,7 +939,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             if blob.parts.len() != n {
                 return late_parts(tx, id, blob);
             }
-            pend(tx, id, PendingKind::Parked, &blob.encode(), Reason::Parked)?;
+            park(tx, id, &blob.encode(), blob.header.aspects.iter().map(|a| a.tid).collect(), Some(blob.header.author))?;
             Ingested::Parked(*id)
         }
     };
@@ -1199,7 +1213,7 @@ impl Engine {
                 Ok(blob) => ingest_blob(tx, blob, Origin::Remote),
                 Err(e) if e.class() == ErrorClass::Parked => {
                     let id = raw_id(bytes)?;
-                    pend(tx, &id, PendingKind::Parked, bytes, Reason::Parked)?;
+                    park(tx, &id, bytes, Vec::new(), peer)?;
                     Ok(Ingested::Parked(id))
                 }
                 Err(e) => Err(e.into()),
