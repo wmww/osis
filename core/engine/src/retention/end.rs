@@ -78,6 +78,20 @@ pub(crate) fn end_ended(tx: &mut Tx<'_>) -> Result<()> {
     if due.is_empty() && fell.is_empty() {
         return Ok(());
     }
+    // the things whose holders for keys these were (named on them, or on an ended actor so
+    // named): possession counts their frozen holders in their place (spec/crypto.md §4, Holder
+    // actors, Ended), so their verdicts are judged again
+    let mut seen: BTreeSet<Tid> = due.union(&fell).copied().collect();
+    let mut work: Vec<Tid> = seen.iter().copied().collect();
+    while let Some(t) = work.pop() {
+        let on: Vec<Tid> = tx.core.ix.held.named_on(&t).copied().filter(|x| *x != t).collect();
+        for x in on {
+            tx.core.stale_things.insert(x);
+            if tx.core.ended_actor(&x) && seen.insert(x) {
+                work.push(x);
+            }
+        }
+    }
     let mut changed = BTreeSet::new();
     for t in &fell {
         reopen_fallen(tx, t)?;

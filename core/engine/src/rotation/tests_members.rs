@@ -1727,3 +1727,89 @@ fn merger_holds_its_role_over_keyed_grants_spec_crypto_4() {
     assert_eq!(lp.peers[0].engine.epochs(&m).unwrap().write.current().len(), 1, "M's write fork is merged");
     assert!(blocked_at(&mut lp, 0, g).is_empty(), "G's admin may encrypt under G");
 }
+
+/// An ended holder actor's world (spec/crypto.md §4, Holder actors, Ended): peer 0 makes T,
+/// expiring at `T0 + 50 s` (first admin peer 0, secrets of its own) and X (secrets of its own),
+/// grants T read on X; peer 2 makes G and peer 0 grants G read on T; peer 1 reads T, and peer
+/// 3 reads G. Synced: T, X, G.
+fn ended_world(seed: u64) -> (LocalPeer, Tid, Tid, Tid) {
+    let mut lp = LocalPeer::new(4, seed, T0).unwrap();
+    let me = lp.peers[0].engine.me();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
+    m.expires_all(WallMs(T0.0 + 50_000));
+    lp.peers[0].commit(m).unwrap();
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    let x = group(&mut lp, 0);
+    let g = group(&mut lp, 2);
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&t, &g, &edge(Role::Read)).unwrap();
+    let n1 = lp.peers[1].engine.tid();
+    lp.peers[0].engine.grant(&t, &n1, &edge(Role::Read)).unwrap();
+    let n3 = lp.peers[3].engine.tid();
+    lp.peers[2].engine.grant(&g, &n3, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    (lp, t, x, g)
+}
+
+const T0: WallMs = WallMs(1_700_000_000_000);
+
+/// T ends: time passes it and every peer ticks, synced.
+fn end_t(lp: &mut LocalPeer, t: Tid) {
+    lp.advance(100_000);
+    for i in 0..lp.peers.len() {
+        lp.peers[i].tick().unwrap();
+    }
+    lp.sync_all().unwrap();
+    for i in 0..lp.peers.len() {
+        assert!(lp.peers[i].engine.core.ended(&t) || lp.peers[i].engine.core.created(&t).is_none(), "peer {i}: T ended");
+    }
+}
+
+// spec/crypto.md §4 (Holder actors, Ended): an ended actor holds no keys, so X's admin, once T
+// ended, rotates X (its box to T is a departure) boxing T's frozen holders in T's place: G and
+// itself, never peer 1, removed from T before the ending. Peer 1 opens none of X's new epoch from
+// every secret it held; peer 3, reading X only through G and T, reads it
+#[test]
+fn ended_holder_actor_boxes_its_frozen_holders_never_one_removed_before_spec_crypto_4() {
+    let (mut lp, t, x, g) = ended_world(961);
+    let n1 = lp.peers[1].engine.tid();
+    let start = held_by(&lp, 1, &[t, x]);
+    assert!(start.iter().any(|k| k.0 == x), "peer 1 reads X through T");
+    lp.peers[0].engine.demote(&t, &Demotion { holder: n1, new: None, retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    end_t(&mut lp, t);
+    let holders = lp.peers[0].engine.core.key_holders(&x);
+    assert!(holders.iter().any(|h| h.0 == g) && !holders.iter().any(|h| h.0 == t || h.0 == n1), "T's frozen holders in its place: {holders:?}");
+    let before = newest_read(&lp, 0, x);
+    settle(&mut lp, &[0], &[x]);
+    let w = newest_read(&lp, 0, x).unwrap();
+    assert_ne!(Some(w), before, "X rotated past its box to T");
+    assert!(boxes(&mut lp, 0, x, g), "G boxed on X");
+    assert!(!openable(&mut lp, 0, &[t, x, g], n1, start).contains(&(x, Role::Read, w)), "peer 1 opens nothing of X's new epoch");
+    assert!(all_boxed(&mut lp, 0, &[x]), "every holder of X boxed");
+    assert_eq!(newest_read(&lp, 3, x), Some(w), "peer 3 reads X through G");
+}
+
+// spec/crypto.md §4 (Holder actors, Ended; Stale): X's rotation after T's ending boxes T's frozen
+// holder G at its current keyset as any holder actor: G's admin removes peer 3 from G, so X's box
+// to G goes stale and X rotates onto G's new keyset, which peer 3 opens nothing of
+#[test]
+fn rotation_after_an_ending_seals_a_frozen_holder_at_its_current_keyset_spec_crypto_4() {
+    let (mut lp, t, x, g) = ended_world(962);
+    end_t(&mut lp, t);
+    settle(&mut lp, &[0], &[x]);
+    assert!(boxes(&mut lp, 0, x, g), "G boxed on X");
+    let n3 = lp.peers[3].engine.tid();
+    let start = held_by(&lp, 3, &[g, x]);
+    assert!(start.iter().any(|k| k.0 == x), "peer 3 reads X through G");
+    lp.peers[2].engine.demote(&g, &Demotion { holder: n3, new: None, retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    let gk = newest_read(&lp, 2, g).unwrap();
+    settle(&mut lp, &[0, 2], &[g, x]);
+    assert_eq!(sealed_at(&mut lp, 0, x, g), Some(gk), "X sealed at G's keyset past the removal");
+    let w = newest_read(&lp, 0, x).unwrap();
+    assert!(!openable(&mut lp, 0, &[t, x, g], n3, start).contains(&(x, Role::Read, w)), "peer 3 opens nothing of X's new epoch");
+}

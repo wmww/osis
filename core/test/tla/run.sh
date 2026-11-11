@@ -46,6 +46,8 @@ instances=(
   "depth0 rotation Depth0MC D0_gone_live.cfg pass" # a node's own departure blocks nothing (spec/crypto.md §4)
   "depth0 rotation Depth0MC D0_gone_role.cfg fail" # negative control: judging a holder actor only while in it re-seals into a leave-out
   "depth0 rotation Depth0MC D0_order.cfg pass"   # a keyset whose secret the node lacks is judged by order (spec/crypto.md §4)
+  "depth0 rotation Depth0MC D0_end_live.cfg pass" # an ended holder actor's frozen holders boxed in its place (spec/crypto.md §4 Ended)
+  "depth0 rotation Depth0MC D0_end_off.cfg fail"  # negative control: an ended actor boxed as any other strands a newcomer
   "lockout rotation Lockout L_rogue.cfg pass"    # notes/crypto.md (Lockouts)
   "lockout rotation Lockout L_none.cfg fail"     # negative control: no re-key
   "finalize rotation Finalize F_named_bogus.cfg pass" # notes/permissions.md (Keys)

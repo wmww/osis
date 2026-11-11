@@ -40,7 +40,7 @@ use osis_perm::At;
 use osis_schema::core_types::{self as ct, Inbox, Keys, Secrets};
 use osis_schema::{RawKey, Codec};
 use osis_store::Shred;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// Something a flow produced that must travel (node-sync carries it out).
@@ -226,7 +226,7 @@ impl Core {
             let Some(thing) = step.thing() else { break };
             out.push(thing);
             let osis_base::ChainStep::Up { admin, .. } = step else { break };
-            if !self.key_holders(&thing).iter().any(|(m, _)| *m == admin) {
+            if !self.edge_holders(&thing).iter().any(|(m, _)| *m == admin) {
                 break;
             }
         }
@@ -247,11 +247,46 @@ impl Core {
     /// `rotation::key_role` (its record edge included while it stands), every held applied
     /// write in effect and `until` disregarded: keys read no clock, so an edge past its `until`
     /// stays until it is finalized (spec/permissions.md §2).
+    /// An ended actor holds no keys: in its place come its frozen holders (its edges as they
+    /// stood at its ending: nobody writes it after), each at the lesser of its role there and
+    /// the ended actor's here, and so on through ended actors among them, each once (spec/crypto.md
+    /// §4, Holder actors, Ended); `actor` itself never.
     pub fn key_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
+        let mut out: BTreeMap<Tid, Role> = BTreeMap::new();
+        let mut seen = BTreeSet::from([*actor]);
+        let mut work = vec![(*actor, Role::Admin)];
+        while let Some((t, cap)) = work.pop() {
+            for (m, r) in self.edge_holders(&t) {
+                let r = r.min(cap);
+                if self.ended_actor(&m) {
+                    if seen.insert(m) {
+                        work.push((m, r));
+                    }
+                    continue;
+                }
+                if m != *actor {
+                    let x = out.entry(m).or_insert(r);
+                    *x = (*x).max(r);
+                }
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    /// The direct holders of `actor` for keys (`key_holders` without the ended actors' frozen
+    /// holders in their place): every edge on it by `rotation::key_role`, its record edge
+    /// included while it stands.
+    pub(crate) fn edge_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
         match self.timelines.get(actor) {
             Some(tl) => tl.edges_at(None).holders(actor).filter_map(|(m, e)| Some((*m, crate::rotation::key_role(Some(e))?))).collect(),
             None => self.first_admin(actor).map(|a| (a, Role::Admin)).into_iter().collect(),
         }
+    }
+
+    /// Whether `m` is an ended actor other than a key actor (a key actor's keys are its seed's:
+    /// its own nodes still hold them).
+    pub(crate) fn ended_actor(&self, m: &Tid) -> bool {
+        matches!(self.created(m), Some(CreationRecord::Thing { .. })) && self.ended(m)
     }
 
     /// Whether `tid` has role secrets of its own (else a plain thing derives them from its first

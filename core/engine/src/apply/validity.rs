@@ -887,9 +887,30 @@ impl osis_keys::possession::View for Possession<'_> {
     fn author_on(&self, t: &Tid) -> Option<Role> {
         self.roles.get(t).copied()
     }
+    /// The roster before the commit, an actor ended before it (the commit is stamped after its
+    /// ending) in place of its frozen holders, and so on (spec/crypto.md §4, Holder actors, Ended).
     fn holder_actors(&self) -> BTreeSet<Tid> {
         let held = |m: &Tid| self.core.is_account(m) || self.core.keysets_of(m).any(|(_, _, x)| x.held_before(&self.point));
-        self.tl.roster(&self.actor, self.at).into_keys().filter(|m| *m != self.author && !self.key_actor(m) && held(m)).collect()
+        let header = self.core.ix.commits.get(&self.point.commit).map(|m| m.header.clone());
+        let ended_before = |m: &Tid| {
+            self.core.ended_actor(m) && header.as_ref().is_some_and(|h| crate::retention::end::Ending::of(self.core, m).is_some_and(|e| e.after(h, &self.point.commit)))
+        };
+        let mut out = BTreeSet::new();
+        let mut seen = BTreeSet::from([self.actor]);
+        let mut work = vec![self.actor];
+        while let Some(t) = work.pop() {
+            for m in self.tl.roster(&t, self.at).into_keys() {
+                if ended_before(&m) {
+                    if seen.insert(m) {
+                        work.push(m);
+                    }
+                } else if m != self.actor {
+                    out.insert(m);
+                }
+            }
+        }
+        out.retain(|m| *m != self.author && !self.key_actor(m) && held(m));
+        out
     }
     fn role_on_actor(&self, avoid: &BTreeSet<Tid>) -> Option<Role> {
         self.tl.roles_avoiding(&self.author, self.at, avoid).get(&self.actor).copied()

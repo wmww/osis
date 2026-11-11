@@ -593,6 +593,11 @@ fn a_node_joining_after_a_first_admin_ended_reads_its_dependents_spec_commits_5(
 
 /// A node granted read on `g` by node `by` after the fact, synced a while: its index.
 fn granted_later(net: &mut Net, by: usize, g: Tid) -> usize {
+    granted_later_as(net, by, g, Role::Read)
+}
+
+/// `granted_later` at `role`.
+fn granted_later_as(net: &mut Net, by: usize, g: Tid, role: Role) -> usize {
     let d = net.joining_node(4, &[0]);
     let addr = net.address(0);
     let (made, done) = net.engine(d).create_account(std::slice::from_ref(&addr)).unwrap();
@@ -601,7 +606,7 @@ fn granted_later(net: &mut Net, by: usize, g: Tid) -> usize {
     net.actions(d, acts);
     net.run();
     net.pair(d, by);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role, until: None, invite: None, tied: None };
     let done = net.engine(by).grant(&g, &dt, &edge).unwrap();
     let acts = net.sync(by).carry_out(done).unwrap();
     net.actions(by, acts);
@@ -716,13 +721,13 @@ fn authority_through_an_ended_granted_admin_stands_spec_commits_5() {
     assert_eq!(net.engine(d).roster(&x), ra, "d: x's roster");
 }
 
-// spec/commits.md §5 (Ending: dependents), issues/ended-actor-secrets-unreachable.md: as
+// spec/crypto.md §4 (Holder actors, Ended): as
 // `an_ended_first_admins_edges_reach_a_node_that_held_no_dependent_spec_commits_5`, then a node
 // granted g afterwards: x has secrets of its own, boxed to its holder actor t, whose own secrets
-// nobody boxes to a new reader once t ended, so it does not read x. Fails
+// nobody boxes once t ended; x's admins box t's frozen holders (g, b's account) in its place, so
+// the newcomer reads x through g
 #[test]
-#[ignore]
-fn repro_newcomer_reads_no_dependent_keyed_by_an_ended_actor() {
+fn newcomer_reads_a_dependent_keyed_by_an_ended_actor_spec_crypto_4() {
     let Setup { mut net, a, b, c, g } = setup();
     let t = ending_actor(&mut net, a, b, g, false);
     net.set_online(c, false);
@@ -736,6 +741,32 @@ fn repro_newcomer_reads_no_dependent_keyed_by_an_ended_actor() {
     let d = granted_later(&mut net, a, g);
     assert_eq!(net.read(d, x), Some(s("x")), "d: x reads");
     assert_eq!(net.engine(d).roster(&x), ra, "d: x's roster");
+}
+
+// spec/crypto.md §4 (Holder actors, Ended, the known-by-record limit),
+// issues/ended-actor-known-by-record.md: as
+// `newcomer_reads_a_dependent_keyed_by_an_ended_actor_spec_crypto_4` with d an admin of g. d
+// never learns t's ending, so t stays x's holder there and x's boxes to t's frozen holders are
+// boxes to holders without a role: d rotates x boxing t, a rotation a (which knows the ending)
+// judges invalid (it shows no frozen holder actor), and x's current epochs differ. Fails
+#[test]
+#[ignore]
+fn repro_newcomer_admin_unaware_of_an_ending_rotates_a_dependent_apart() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let t = ending_actor(&mut net, a, b, g, false);
+    net.set_online(c, false);
+    let x = net.item(a, g, t, "x");
+    net.run();
+    let ta = net.tid(a);
+    net.grant(b, x, ta, Role::Read);
+    net.run();
+    end_with_c_away(&mut net, c);
+    let d = granted_later_as(&mut net, a, g, Role::Admin);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    let cur = |net: &mut Net, n: usize| net.engine(n).epochs(&x).map(|e| e.read.current());
+    assert_eq!(cur(&mut net, d), cur(&mut net, a), "x's current epochs agree");
 }
 
 /// A commit of node `n` minting `t`'s record again, durable, past the writer's rules: what anyone

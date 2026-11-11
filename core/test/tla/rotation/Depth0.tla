@@ -88,10 +88,15 @@ CONSTANTS ActSeq,     \* actor names; initial epoch i is ActSeq[i]'s
                       \* secrets from its first admin; its initial epoch is
                       \* its own-secrets rotation, history boxing the derived
                       \* secret of the first admin's initial epoch
-          Unaware     \* {<<node, actor>>}: the node lacks the actor's initial
+          Unaware,    \* {<<node, actor>>}: the node lacks the actor's initial
                       \* epoch at first (learns it fairly); a plain thing it
                       \* holds no own epoch of is plain to it: it writes under
                       \* the derived secret of the first admin's newest epoch
+          Ends        \* actors that may end, once each (spec/commits.md \S 5
+                      \* Ending): nobody writes one after (no rotation, box,
+                      \* removal, add or content), its epochs and re-seals are
+                      \* learned by nobody new (its bodies are dropped), and
+                      \* its removals travel as placements (frozen history)
 
 Acts == {ActSeq[i] : i \in 1..Len(ActSeq)}
 PlainActs == {q[1] : q \in Plain}
@@ -100,6 +105,7 @@ PlainOf(t) == CHOOSE f \in Acts : <<t, f>> \in Plain
 ActDep(dp) == dp[1] \in Acts
 Holders(a) == {m[2] : m \in {q \in Mem : q[1] = a}}
 ActHolders(a) == Holders(a) \cap Acts
+AllHolders == {m[2] : m \in Mem}
 
 Named(bs) == {b.key.k : b \in {c \in bs : c.key.t = "k"}}
 
@@ -182,6 +188,13 @@ Notice == TRUE
 \* and whose bodies all precede a departure it knows is blocked (Before);
 \* FALSE: an epoch whose secret the node lacks is not judged (the limit)
 Order == TRUE
+\* spec/crypto.md \S 4 Holder actors, Ended: boxing to an ended holder actor
+\* boxes its frozen holders instead (recursively), and a box at a current
+\* epoch to a holder neither current nor direct (an ended actor, a frozen
+\* holder since removed) is a departure; FALSE: an ended actor is boxed as any
+\* other (the negative control: a newcomer reading it
+\* through its holders never reads)
+Expand == TRUE
 
 DK(d) == [t |-> "d", d |-> d, k |-> 0]
 KK(k) == [t |-> "k", d |-> "", k |-> k]
@@ -201,12 +214,20 @@ VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged, half, ra
           pl,     \* removal placements <<dep, label>>
           kpl,    \* kpl[x]: placements x holds
           done,   \* removals made
+          en,     \* ended actors
           evd,    \* Eager pairs, Forgers and HalfForgers used
           nw
-vars == <<ep, rs, ha, kn, krs, wr, kg, pl, kpl, done, evd, nw>>
+vars == <<ep, rs, ha, kn, krs, wr, kg, pl, kpl, done, evd, nw, en>>
 \* the true key holders (every grant held; removed actor edges end theirs),
 \* for the properties
 KeyAct(a) == KeyIn(GNow(done), a) \cap Acts
+\* the true key holders of a with ended actors' holders added (Expand)
+TExp(a) == IF ~Expand THEN KeyIn(GNow(done), a) ELSE
+  Fix(LAMBDA S : S \cup UNION {KeyIn(GNow(done), t) : t \in S \cap en}, KeyIn(GNow(done), a))
+\* the ended actors whose frozen holders are a's holders (through ended ones)
+EndedIn(a) == Fix(LAMBDA S : S \cup (en \cap UNION {Holders(t) : t \in S}), en \cap Holders(a))
+\* the holder actors of a for keys: its frozen ones in an ended actor's place
+FrozenAct(a) == IF Expand THEN (TExp(a) \cap Acts) \ (en \cup {a}) ELSE KeyAct(a)
 KClos(h) == Fix(LAMBDA S : S \cup UNION {KeyAct(b) : b \in S}, KeyAct(h))
 
 Ids == DOMAIN ep
@@ -250,11 +271,20 @@ Newest(S) == CHOOSE e \in S : \A f \in S \ {e} : Newer(e, f)
 NewestV(x, a) == Newest(Cur(x, a))
 \* key access over the grants x holds, less actor edges x knows removed
 KH(x, a) == KeyIn(kg[x] \ {<<dp[2], dp[1]>> : dp \in {q \in Known(x) : ActDep(q)}}, a)
-MemV(x, a, extra) == KH(x, a) \ {dp[1] : dp \in {q \in Known(x) \cup extra : q[2] = a}}
+MemD(x, a, extra) == KH(x, a) \ {dp[1] : dp \in {q \in Known(x) \cup extra : q[2] = a}}
+\* the holders x boxes for a: an ended one replaced by its frozen holders as x
+\* sees them, and so on (Expand); a itself never
+MemV(x, a, extra) == IF ~Expand THEN MemD(x, a, extra) ELSE
+  Fix(LAMBDA S : S \cup UNION {MemD(x, t, {}) : t \in S \cap en}, MemD(x, a, extra)) \ (en \cup {a})
 
 RsBox(r) == [h |-> r.h, key |-> r.key, by |-> r.by]
 BoxesAt(x, e) == ep[e].bx \cup {RsBox(r) : r \in {q \in krs[x] : q.e = e}}
 AllBoxesAt(e) == ep[e].bx \cup {RsBox(r) : r \in {q \in rs : q.e = e}}
+\* a box of a's epoch to b.h, neither a current holder of a as x sees it
+\* nor a direct holder still boxed (one removed: a departure x covers or
+\* not, Covers): an ended actor, or a frozen holder x since knows removed
+GoneBox(x, k) == Expand /\ \E b \in BoxesAt(x, k) :
+  b.h \notin MemV(x, ep[k].act, {}) /\ (b.h \in en \/ b.h \notin Holders(ep[k].act))
 
 \* epochs whose secret device d gets from boxes BX over commits ids and the
 \* history adds H
@@ -275,7 +305,7 @@ DSec(S, t) == {e \in S : ep[e].act = PlainOf(t)} \cup UNION {ep[f].dhist : f \in
 Opens(S, c) == IF c.der THEN c.e \in DSec(S, c.a) ELSE c.e \in S
 
 \* rule 4: an epoch of a boxing an actor with no key access to a (x's view)
-Keyless(x, k) == \E b \in BoxesAt(x, k) : b.h \in Acts /\ b.h \notin KH(x, ep[k].act)
+Keyless(x, k) == \E b \in BoxesAt(x, k) : b.h \in Acts /\ b.h \notin KH(x, ep[k].act) \cup MemV(x, ep[k].act, {})
 StaleK(x, k) == k \in kn[x] /\ (~Valid(x, k) \/ Keyless(x, k)
                                 \/ \E j \in KOf(x, ep[k].act) : k \in AncV(x, j))
 StaleAt(x, e) == \/ \E b \in BoxesAt(x, e) : b.key.t = "k" /\ StaleK(x, b.key.k)
@@ -304,7 +334,8 @@ Blocked(x) ==
   IN Fix(LAMBDA S : S \cup {k \in sx : (Walk # "rotator" \/ IsAdm(x, ep[k].act)) /\
                                      \E b \in BoxesAt(x, k) : b.key.t = "k" /\ b.key.k \in S},
          {k \in sx : \/ ~CoversBlk(x, k, ep[k].act) /\ Judged(x, ep[k].act)
-                     \/ IsAdm(x, ep[k].act) /\ (StaleAt(x, k) \/ Keyless(x, k))}
+                     \/ IsAdm(x, ep[k].act) /\ (StaleAt(x, k) \/ Keyless(x, k))
+                     \/ GoneBox(x, k)}
          \cup {k \in kn[x] \ sx : Order /\ Before(x, k)})
 
 Anchors(x, a, h) ==
@@ -323,9 +354,9 @@ Forked(x, a, h) == Anchors(x, a, h) # {} /\ ~\E k \in KOf(x, h) : \A q \in Ancho
 SealK(x, a, h) == IF SealSet(x, a, h) = {} THEN 0 ELSE Newest(SealSet(x, a, h))
 
 \* boxes of a to holders hs add blind ones only within MaxBlind
-Blinds == UNION {{<<e, b.h>> : b \in {c \in AllBoxesAt(e) : c.h \in Acts \ KeyIn(GNow(done), ep[e].act)}} :
+Blinds == UNION {{<<e, b.h>> : b \in {c \in AllBoxesAt(e) : c.h \in Acts \ TExp(ep[e].act)}} :
                  e \in Ids}
-BlindOK(a, hs) == (hs \cap Acts) \ KeyIn(GNow(done), a) # {} => Cardinality(Blinds) < MaxBlind
+BlindOK(a, hs) == (hs \cap Acts) \ TExp(a) # {} => Cardinality(Blinds) < MaxBlind
 
 \* a rotation of a by x would box an actor whose anchors fork ("wait": or
 \* leave out one at a blocked keyset that x may not rotate)
@@ -379,6 +410,7 @@ Init ==
   /\ pl = {}
   /\ kpl = [x \in Learners |-> {}]
   /\ done = {}
+  /\ en = {}
   /\ evd = {}
   /\ nw = 0
 
@@ -406,7 +438,7 @@ OtherDue(x, a) ==
   LET e == NewestV(x, a)
   IN \/ e \in Blocked(x)
      \/ \E f \in Cur(x, a) : ~Covers(x, f, a) \/ StaleAt(x, f)
-     \/ \E f \in Cur(x, a) : Keyless(x, f)
+     \/ \E f \in Cur(x, a) : Keyless(x, f) \/ GoneBox(x, f)
 \* a plain thing given secrets of its own: x wrote it under a derived secret
 \* that no history of a current epoch carries (x lacked the own-secrets
 \* rotation when it wrote): it is a current epoch beside the own ones, merged
@@ -414,14 +446,14 @@ DerivedDue(x, a) == \E c \in wr : c.w = x /\ c.a = a /\ c.der /\
                        c.e \notin UNION {ep[f].dhist : f \in Cur(x, a)}
 \* no current secret is needed: any secret of a to wrap the commit under
 NeedRot(x, a) ==
-  /\ Writer(x, a) /\ Possess(x, a) /\ Est(x, a) # {}
+  /\ a \notin en /\ Writer(x, a) /\ Possess(x, a) /\ Est(x, a) # {}
   /\ \E f \in Sec(x) : ep[f].act = a
   /\ OtherDue(x, a) \/ MergeDue(x, a) \/ DerivedDue(x, a)
 \* x lacks an epoch of a some node made: a rotation now may fork
 Racing(x, a) == \E f \in Ids : ep[f].act = a /\ Honest(f) /\ f \notin kn[x]
 
 Remove(dp) ==
-  /\ dp \notin done
+  /\ dp \notin done /\ dp[2] \notin en
   /\ IsAdm(dp[3], dp[2])
   /\ \/ /\ Len(ep) < MaxE
         /\ Rotate(dp[3], dp[2], {dp}, FALSE, FALSE)
@@ -438,13 +470,13 @@ Remove(dp) ==
         /\ kpl' = [kpl EXCEPT ![dp[3]] = @ \cup {<<dp, dp[2]>>}]
         /\ UNCHANGED <<ep, kn>>
   /\ done' = done \cup {dp}
-  /\ UNCHANGED <<kg, rs, krs, ha, wr, evd, nw>>
+  /\ UNCHANGED <<kg, rs, krs, ha, wr, evd, nw, en>>
 
 EagerRot(p) ==
-  /\ p \notin evd /\ Len(ep) < MaxE /\ Writer(p[1], p[2]) /\ Possess(p[1], p[2])
+  /\ p \notin evd /\ p[2] \notin en /\ Len(ep) < MaxE /\ Writer(p[1], p[2]) /\ Possess(p[1], p[2])
   /\ Rotate(p[1], p[2], {}, FALSE, p \in ProofOnly)
   /\ evd' = evd \cup {p}
-  /\ UNCHANGED <<kg, rs, krs, ha, wr, done, nw, pl, kpl>>
+  /\ UNCHANGED <<kg, rs, krs, ha, wr, done, nw, en, pl, kpl>>
 
 \* a merge of knowing forks alone, racing, only within MaxRace
 ForcedRot(x, a) ==
@@ -452,12 +484,12 @@ ForcedRot(x, a) ==
   /\ LET race == ~OtherDue(x, a) /\ Racing(x, a)
      IN /\ race => Cardinality({e \in Ids : ep[e].race}) < MaxRace
         /\ Rotate(x, a, {}, race, FALSE)
-  /\ UNCHANGED <<kg, rs, krs, ha, wr, done, evd, nw, pl, kpl>>
+  /\ UNCHANGED <<kg, rs, krs, ha, wr, done, evd, nw, en, pl, kpl>>
 
 Forge(d) ==
   /\ d \in Forgers /\ <<d, "forge">> \notin evd /\ Len(ep) < MaxE
   /\ \E dp \in done :
-       /\ dp[1] = d /\ <<dp[2], d>> \in Adm
+       /\ dp[1] = d /\ <<dp[2], d>> \in Adm /\ dp[2] \notin en
        /\ LET ms == {e \in Ids : ep[e].act = dp[2] /\ Honest(e)}
           IN ep' = Append(ep, [act |-> dp[2],
                                n |-> 1 + ep[Newest(ms)].n,
@@ -465,7 +497,7 @@ Forge(d) ==
                                bx |-> {[h |-> d, key |-> DK(d), by |-> d]},
                                hist |-> {}, dhist |-> {}, knows |-> {}, forged |-> TRUE, half |-> FALSE, race |-> FALSE, out |-> {}, pf |-> {}, at |-> done])
   /\ evd' = evd \cup {<<d, "forge">>}
-  /\ UNCHANGED <<kg, rs, kn, krs, ha, wr, done, nw, pl, kpl>>
+  /\ UNCHANGED <<kg, rs, kn, krs, ha, wr, done, nw, en, pl, kpl>>
 
 \* q = <<device f, holder actor S, actor M>>: f removes S from M (a self-removal
 \* through its admin on S) in one commit with a rotation of M failing Authority
@@ -473,17 +505,17 @@ HalfForge(q) ==
   /\ q \in HalfForgers /\ q \notin evd /\ Len(ep) < MaxE
   /\ LET dp == <<q[2], q[3], q[1]>>
          ms == {e \in Ids : ep[e].act = q[3] /\ Honest(e)}
-     IN /\ dp \in Deps \ done
+     IN /\ dp \in Deps \ done /\ q[3] \notin en
         /\ ep' = Append(ep, [act |-> q[3], n |-> 1 + ep[Newest(ms)].n,
                              par |-> ms, by |-> q[1], bx |-> {},
                              hist |-> {}, dhist |-> {}, knows |-> {dp},
                              forged |-> FALSE, half |-> TRUE, race |-> FALSE, out |-> {}, pf |-> {}, at |-> done \cup {dp}])
         /\ done' = done \cup {dp}
   /\ evd' = evd \cup {q}
-  /\ UNCHANGED <<kg, rs, kn, krs, ha, wr, nw, pl, kpl>>
+  /\ UNCHANGED <<kg, rs, kn, krs, ha, wr, nw, en, pl, kpl>>
 
 \* named keysets come along where x sees their actor (carried)
-VisNamed(x, bs) == {k \in Named(bs) : Vis(x, ep[k].act)}
+VisNamed(x, bs) == {k \in Named(bs) : Vis(x, ep[k].act) /\ ep[k].act \notin en}
 
 \* x may learn epoch e (Follow: under its actor's label while it holds a role
 \* there; under a target's, once placed there by a reader of e's actor holding
@@ -504,29 +536,29 @@ VisE(x, e) ==
      \/ Notice /\ Reported(x, e)
 
 Learn(x, e) ==
-  /\ e \in Ids /\ e \notin kn[x] /\ VisE(x, e)
+  /\ e \in Ids /\ e \notin kn[x] /\ VisE(x, e) /\ ep[e].act \notin en
   /\ \/ kn' = [kn EXCEPT ![x] = @ \cup {e} \cup VisNamed(x, ep[e].bx)]
      \/ /\ Late
         /\ kn' = [kn EXCEPT ![x] = @ \cup {e}]
      \/ /\ Split /\ \E l \in Acts : Syncs(x, l) /\ ep[e].act \in ActHolders(l)
         /\ kn' = [kn EXCEPT ![x] = @ \cup {e}]
-  /\ UNCHANGED <<kg, ep, rs, krs, ha, wr, done, evd, nw, pl, kpl>>
+  /\ UNCHANGED <<kg, ep, rs, krs, ha, wr, done, evd, nw, en, pl, kpl>>
 
 LearnRs(x, r) ==
-  /\ r \in rs /\ r \notin krs[x] /\ Vis(x, ep[r.e].act)
+  /\ r \in rs /\ r \notin krs[x] /\ Vis(x, ep[r.e].act) /\ ep[r.e].act \notin en
   /\ krs' = [krs EXCEPT ![x] = @ \cup {r}]
   /\ kn' = [kn EXCEPT ![x] = @ \cup VisNamed(x, {r})]
-  /\ UNCHANGED <<kg, ep, rs, ha, wr, done, evd, nw, pl, kpl>>
+  /\ UNCHANGED <<kg, ep, rs, ha, wr, done, evd, nw, en, pl, kpl>>
 
 LearnG(x, g) ==
   /\ g \in GAll \ kg[x]
   /\ kg' = [kg EXCEPT ![x] = @ \cup {g}]
-  /\ UNCHANGED <<ep, rs, kn, krs, ha, wr, done, evd, nw, pl, kpl>>
+  /\ UNCHANGED <<ep, rs, kn, krs, ha, wr, done, evd, nw, en, pl, kpl>>
 
 LearnPl(x, p) ==
   /\ p \in pl /\ p \notin kpl[x] /\ Syncs(x, p[2])
   /\ kpl' = [kpl EXCEPT ![x] = @ \cup {p}]
-  /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, wr, done, evd, nw, pl>>
+  /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, wr, done, evd, nw, en, pl>>
 
 \* x places dp under label l (spec/permissions.md \S 4 Placing revokes: about
 \* the author of an entry there)
@@ -538,11 +570,11 @@ Place(x, dp, l) ==
   /\ PlaceOK(x, dp, l)
   /\ pl' = pl \cup {<<dp, l>>}
   /\ kpl' = [kpl EXCEPT ![x] = @ \cup {<<dp, l>>}]
-  /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, wr, done, evd, nw>>
+  /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, wr, done, evd, nw, en>>
 
 \* a re-seal of holder h (a device at its key, an actor at its Seal keyset)
 Reseal(x, a, h) ==
-  /\ Writer(x, a) /\ h \in MemV(x, a, {})
+  /\ a \notin en /\ Writer(x, a) /\ h \in MemV(x, a, {})
   /\ \E e \in Cur(x, a) \cap Sec(x) :
        /\ CarryFree \/ (Covers(x, e, a) /\ e \notin Blocked(x))
        /\ ~\E b \in BoxesAt(x, e) : b.h = h
@@ -553,7 +585,7 @@ Reseal(x, a, h) ==
              /\ BlindOK(a, {h})
              /\ rs' = rs \cup {r}
              /\ krs' = [krs EXCEPT ![x] = @ \cup {r}]
-  /\ UNCHANGED <<kg, ep, kn, ha, wr, done, evd, nw, pl, kpl>>
+  /\ UNCHANGED <<kg, ep, kn, ha, wr, done, evd, nw, en, pl, kpl>>
 
 \* what the history entries x holds at e list, with the epoch's own
 ListedAt(x, e) == ep[e].hist \cup {p[2] : p \in {q \in ha : q[1] = e}}
@@ -563,13 +595,14 @@ Carry(x, e) == {f \in Sec(x) \ Cur(x, ep[e].act) : ep[e].act = ep[f].act /\ Hone
 \* x holds an earlier secret no entry at current epoch e (held, not blocked)
 \* lists: a history add is due (spec/crypto.md §4, History box)
 AddDue(x, a, e) ==
+  /\ a \notin en
   /\ e \in Cur(x, a) \cap Sec(x) /\ Covers(x, e, a) /\ e \notin Blocked(x)
   /\ ~(Carry(x, e) \subseteq ListedAt(x, e))
 HistAdd(x, a, e) ==
   /\ AddDue(x, a, e)
   /\ LET new == {<<e, f>> : f \in Carry(x, e) \ ListedAt(x, e)}
      IN ha' = ha \cup new
-  /\ UNCHANGED <<kg, ep, rs, kn, krs, wr, done, evd, nw, pl, kpl>>
+  /\ UNCHANGED <<kg, ep, rs, kn, krs, wr, done, evd, nw, en, pl, kpl>>
 
 \* the inside-member premise: x knows d left M (a holder of a) and holds a
 \* keyset of M made knowing it that lists every honest keyset of M made
@@ -604,7 +637,7 @@ Settled ==
   /\ ~\E y \in Learners, dp \in done, l \in Acts : PlaceOK(y, dp, l)
 
 Write(x, a) ==
-  /\ a \in WriteTo /\ Writer(x, a) /\ nw < Writes
+  /\ a \in WriteTo /\ a \notin en /\ Writer(x, a) /\ nw < Writes
   /\ LET der == PlainAt(x, a)
          ea == IF der THEN PlainOf(a) ELSE a
          e == NewestV(x, ea)
@@ -632,18 +665,28 @@ Write(x, a) ==
                                             /\ {f \in Ids : ep[f].act = c /\ Honest(f)} \subseteq Sec(x)
                                             /\ Judged(x, c)}
                                   ELSE {},
-                           p9 |-> {dp \in Known(x) : dp[2] \in KeyAct(a) /\ dp[1] # x /\
-                                     \A k \in Ids : (ep[k].act = dp[2] /\ Honest(k) /\ dp \in ep[k].at) => dp \in ep[k].knows}]}
+                           p9 |-> {dp \in Known(x) : dp[2] \in FrozenAct(a) /\ dp[1] # x /\
+                                     \A k \in Ids : (ep[k].act = dp[2] /\ Honest(k) /\ dp \in ep[k].at) => dp \in ep[k].knows},
+                           p10 |-> {dp \in Known(x) : dp[2] \in EndedIn(a) /\ dp[1] # x}]}
   /\ nw' = nw + 1
-  /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, done, evd, pl, kpl>>
+  /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, done, evd, en, pl, kpl>>
+
+\* t ends (spec/commits.md \S 5): its removals travel with its dependents
+\* (frozen history: placed where each node learns them)
+End(t) ==
+  /\ t \in Ends /\ t \notin en
+  /\ en' = en \cup {t}
+  /\ pl' = pl \cup {<<dp, t>> : dp \in {q \in done : q[2] = t}}
+  /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, wr, done, evd, nw, kpl>>
 
 Next ==
+  \/ \E t \in Ends : End(t)
   \/ \E dp \in Deps : Remove(dp)
   \/ \E p \in Eager : EagerRot(p)
   \/ \E d \in Forgers : Forge(d)
   \/ \E q \in HalfForgers : HalfForge(q)
   \/ \E x \in Learners, a \in Acts : ForcedRot(x, a) \/ Write(x, a)
-  \/ \E x \in Learners, a \in Acts : \E h \in Holders(a) : Reseal(x, a, h)
+  \/ \E x \in Learners, a \in Acts : \E h \in AllHolders : Reseal(x, a, h)
   \/ \E x \in Learners, a \in Acts, e \in Ids : HistAdd(x, a, e)
   \/ \E x \in Learners : (\E e \in Ids : Learn(x, e)) \/ (\E r \in rs : LearnRs(x, r))
                           \/ (\E g \in GAll : LearnG(x, g)) \/ (\E p \in pl : LearnPl(x, p))
@@ -655,7 +698,7 @@ Fairness ==
   /\ \A x \in Learners, a \in Acts : WF_vars(\E e \in Ids : HistAdd(x, a, e))
   /\ \A x \in Learners : WF_vars(\E dp \in Deps, l \in Acts : Place(x, dp, l))
   /\ \A x \in Learners, a \in Acts : WF_vars(ForcedRot(x, a))
-  /\ \A x \in Learners, a \in Acts : WF_vars(\E h \in Holders(a) : Reseal(x, a, h))
+  /\ \A x \in Learners, a \in Acts : WF_vars(\E h \in AllHolders : Reseal(x, a, h))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -704,19 +747,25 @@ NoLeakAbove == \A c \in wr : \A dp \in c.p8 : ~Opens(RD(dp[1], c.a), c)
 \* ignorant rotation: the limit; Order)
 NoLeakOrder == \A c \in wr : \A dp \in c.p9 : ~Opens(RD(dp[1], c.a), c)
 
+\* a device removed from an ended actor whose frozen holders stand in its
+\* place among a's (through ended ones) reads no content of a written by a
+\* writer that knew the removal (Expand); a departure deeper (below a live
+\* actor) is the depth-0 limit, as without an ending
+NoLeakEnded == \A c \in wr : \A dp \in c.p10 : ~Opens(RD(dp[1], c.a), c)
+
 \* eventually every writer's next epoch is closed to every removed device
 \* that no longer reaches the actor (any depth, cycles included)
-Excludes == <>[](\A dp \in done : \A a \in Acts : \A x \in Learners : \A d \in DevsOf(dp[1]) :
+Excludes == <>[](\A dp \in done : \A a \in Acts \ en : \A x \in Learners : \A d \in DevsOf(dp[1]) :
                    (d \notin CurDevs(a) /\ IsAdm(x, a) /\ Est(x, a) # {}) => NewestV(x, a) \notin ReachD(d))
 \* no lockout: every current device of an actor eventually holds every
 \* current epoch of it and every epoch content was written under
-CurrentOpens == <>[](\A a \in Acts : \A v \in CurDevs(a) \cap Learners :
+CurrentOpens == <>[](\A a \in Acts \ en : \A v \in CurDevs(a) \cap Learners :
                        Syncs(v, a) => GCur(a) \subseteq Sec(v))
 ReadsAll == <>[](\A c \in wr : \A v \in CurDevs(c.a) \cap Learners : Syncs(v, c.a) => Opens(Sec(v), c))
 \* no lockout of a holder actor: every admin of a eventually has a keyset to
 \* seal each holder actor with key access at (a rotation of another role
 \* would leave it out otherwise: cycle harness seed 1838)
-SealsAll == <>[](\A a \in Acts : \A h \in KeyAct(a) : \A x \in Learners :
+SealsAll == <>[](\A a \in Acts \ en : \A h \in KeyAct(a) \ en : \A x \in Learners :
                    IsAdm(x, a) => SealK(x, a, h) # 0)
 \* rotations and history adds stop within MaxE (no ping-pong)
 Settles == <>[](\A x \in Learners, a \in Acts : ~NeedRot(x, a) /\ ~\E e \in Ids : AddDue(x, a, e))
