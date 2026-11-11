@@ -4,7 +4,8 @@ workspace lints on, every external dependency has its line in notes/architecture
 target marked `test = false` / `doctest = false` has unit tests / doctests that would silently not run,
 and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name, and
 osis-host cannot reach decryption (`host_blind`), and no test can bind the real LAN port or
-announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`).
+announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`), and only the engine's `apply::checked`
+vouches for checked delta bytes (`checked_bytes`).
 Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
 libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
 import glob, os, re, sys, tomllib
@@ -307,7 +308,29 @@ def test_copies():
                 if COPY_HOOKS.search(line.split("//", 1)[0]):
                     yield f"{rel}:{n}: a world-copy hook outside tests (notes/testing.md, Copied worlds)"
 
+# notes/engine-paged.md (Checked once): `osis_crdt::Checked` vouches that bytes passed the full
+# check on this node, and the decode-only readers trust it. Product code builds one only in the
+# engine's `apply::checked` (a part `examine` accepted, or of a stored record); test modules may
+# build them freely.
+CHECKED = re.compile(r"\bChecked::verified\b|\bChecked\(")
+CHECKED_DEFS = {"core/crdt/src/stream.rs", "core/engine/src/apply/mod.rs"}
+
+def checked_bytes():
+    for m in members:
+        for path in glob.glob(os.path.join(m, "src/**/*.rs"), recursive=True):
+            rel = os.path.relpath(path, ROOT)
+            if rel in CHECKED_DEFS or os.path.basename(rel).startswith("tests_") or rel.startswith("core/test/"):
+                continue
+            for n, line in enumerate(open(path, errors="replace"), 1):
+                if CHECKED.search(line.split("//", 1)[0]):
+                    yield f"{rel}:{n}: osis_crdt::Checked built outside the engine's apply::checked (notes/engine-paged.md, Checked once)"
+    # within the engine's file, the one helper
+    n = sum(len(CHECKED.findall(l.split("//", 1)[0])) for l in open(os.path.join(ROOT, "core/engine/src/apply/mod.rs")))
+    if n != 1:
+        yield f"core/engine/src/apply/mod.rs: {n} Checked::verified uses, want 1 (apply::checked)"
+
 errs.extend(test_copies())
+errs.extend(checked_bytes())
 errs.extend(real_lan_tests())
 errs.extend(peer_ticks())
 errs.extend(env_vars())

@@ -12,8 +12,9 @@
 //! input (the tables, the leaf links, a writer's claimed counters).
 //!
 //! Bytes this node checked once are read again decode-only (`Checked`, `stream_checked`):
-//! the same walk without any re-encode or prune check, positions in the order the root decode
-//! met them, which for canonical bytes is the order the check's root re-encode meets them.
+//! the same walk and limits without any re-encode, prune or table check, positions in the order
+//! the root decode met them, which for canonical bytes is the order the check's root re-encode
+//! meets them.
 
 use crate::codec::{Pager, absorbed_value, canonical, check_root, decode_entries, decode_elem_items, decode_fields, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, fetch_page, links, nonce, prune_stable, root_tables, snapshot_tail, LIMITS};
 use crate::error::Error;
@@ -120,11 +121,11 @@ pub fn decode_checked<'a>(bytes: Checked<'_>, cx: &DeltaCtx, interner: &'a mut I
 const NOT_CANONICAL: Error = Error::Malformed("not canonical");
 
 /// Decodes the delta at `bytes` and hands `each` its pieces in wire order; `check`: bad input
-/// unless canonical (rules 1-5 by re-encoding), else decode-only (`Checked` bytes).
+/// unless canonical (rules 1-5 by re-encoding), else decode-only (`Checked` bytes). The grammar,
+/// ranges and structural limits (items per page or root, links, fan-out, levels) hold either way,
+/// so a decode-only read of bytes that changed fails, bounded, rather than trusting them.
 pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>, snapshot: bool, check: bool, each: &mut dyn FnMut(Raw) -> Result<(), Error>) -> Result<Head, Error> {
-    if check {
-        check_root(bytes, pages.as_deref())?;
-    }
+    check_root(bytes, pages.as_deref())?;
     let top = osis_base::decode(bytes, &LIMITS)?;
     let (n, sources, commits, frag, tail) = match (snapshot, as_array(&top)?) {
         (false, [n, s, c, f]) => (n, s, c, f, None),

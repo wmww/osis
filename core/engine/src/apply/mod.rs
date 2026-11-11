@@ -1785,8 +1785,16 @@ pub(crate) fn load_awaiting(core: &mut crate::engine::Core) {
     }
 }
 
-/// Decodes a stored commit's parts whole, decode-only: a stored record holds only parts
-/// `examine` checked in full (`osis_commit::read_part_whole`).
+/// The delta of part `p` of a blob `examine` accepted (`Exam::Ready`), or of a stored commit
+/// record, as checked bytes, to read decode-only. A record holds only parts `examine` checked in
+/// full: bad, junk, unjudged and waiting parts leave the blob before `Tx::put_commit`, and every
+/// rewrite of a record only removes parts. The engine's one `Checked::verified` (tools/policy.py).
+fn checked(p: &osis_commit::Part) -> osis_crdt::Checked<'_> {
+    osis_crdt::Checked::verified(&p.delta)
+}
+
+/// Decodes the parts of a stored commit record (or of one about to be stored: a blob `examine`
+/// accepted) whole, decode-only (`checked`, `osis_commit::read_part_whole`).
 fn examine_stored(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<Vec<(usize, Decoded)>> {
     let h = blob.header.clone();
     let mut out = Vec::new();
@@ -1798,7 +1806,7 @@ fn examine_stored(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<V
         let mut paged = BlobReader::new(&dedup, &mut blobs);
         let mut unpaged = osis_crdt::Unpaged;
         let reader: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut paged };
-        out.push((p.ai, osis_commit::read_part_whole(&h, id, p.ai, osis_crdt::Checked::verified(&p.delta), &mut interner, Some(reader)).map_err(|_| Error::Corrupt("stored delta"))?));
+        out.push((p.ai, osis_commit::read_part_whole(&h, id, p.ai, checked(p), &mut interner, Some(reader)).map_err(|_| Error::Corrupt("stored delta"))?));
     }
     Ok(out)
 }
@@ -1844,8 +1852,7 @@ pub(crate) fn each_held_piece(tx: &mut Tx<'_>, id: &CommitId, ai: usize, f: &mut
     let Some(blob) = tx.get_commit(id)? else { return Ok(None) };
     let Some(p) = blob.parts.iter().find(|p| p.ai == ai) else { return Ok(None) };
     let dedup = tx.core.dedup(&a.tid).ok_or(Error::Corrupt("dedup"))?;
-    // a stored record holds only parts `examine` checked in full
-    Ok(Some(atomic::stream_stored(tx, &h, id, ai, osis_crdt::Checked::verified(&p.delta), &dedup, f)?))
+    Ok(Some(atomic::stream_stored(tx, &h, id, ai, checked(p), &dedup, f)?))
 }
 
 /// Whether commit `id` holds a body on aspect `ai` to read (what `each_held_piece` reads): a

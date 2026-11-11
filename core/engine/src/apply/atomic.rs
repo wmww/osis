@@ -229,7 +229,7 @@ pub(super) fn each_piece(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &Comm
         PartRef::Streamed(s) => s,
     };
     let p = blob.parts.iter().find(|p| p.ai == s.ai).ok_or(Error::Corrupt("streamed part"))?;
-    stream_stored(tx, h, id, s.ai, osis_crdt::Checked::verified(&p.delta), &s.dedup, f).map(|_| ())
+    stream_stored(tx, h, id, s.ai, super::checked(p), &s.dedup, f).map(|_| ())
 }
 
 /// Decodes the checked delta of commit `id`'s part on aspect `ai` (header `h`, its thing's
