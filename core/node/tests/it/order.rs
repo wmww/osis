@@ -2718,11 +2718,11 @@ fn quick() -> Vec<Size> {
 }
 
 /// The environment's range (`OSIS_ORDER_START`, `OSIS_ORDER_SEEDS`, or `OSIS_ORDER_SEED` alone),
-/// a tenth of `full` unless `OSIS_FULL=1`; `OSIS_ORDER_LEN` sets the steps, `OSIS_ORDER_CLOCK`
-/// the orders per held set at an earlier clock.
-fn from_env(name: &'static str, full: std::ops::Range<u64>, len: usize, cfg: Cfg, exhaustive: Option<usize>) -> Size {
-    use osis_base::testenv::{Seeds, large, u64_var};
-    let range = Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", large(full));
+/// else `default`; `OSIS_ORDER_LEN` sets the steps, `OSIS_ORDER_CLOCK` the orders per held set at
+/// an earlier clock.
+fn from_env(name: &'static str, default: std::ops::Range<u64>, len: usize, cfg: Cfg, exhaustive: Option<usize>) -> Size {
+    use osis_base::testenv::{Seeds, u64_var};
+    let range = Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", default);
     range.announce(&format!("order::held_set_decides ({name})"));
     let seeds = u64_var("OSIS_ORDER_SEED").map_or_else(|| range.range.collect(), |s| vec![s]);
     let len = u64_var("OSIS_ORDER_LEN").map_or(len, |n| n as usize);
@@ -2732,14 +2732,17 @@ fn from_env(name: &'static str, full: std::ops::Range<u64>, len: usize, cfg: Cfg
 
 /// `plain`: 80 seeds of 60 steps at large size (`OSIS_FULL=1`), a tenth at small size.
 fn plain() -> Size {
-    from_env("plain", 0..80, 60, Cfg { random: 6, subsets: 4, ..ORDERS }, None)
+    from_env("plain", osis_base::testenv::large(0..80), 60, Cfg { random: 6, subsets: 4, ..ORDERS }, None)
 }
 
 /// Every order of the whole set and of every held set, each with late parts, of histories of at
 /// most 6 commits after the setup (720 orders), 24 of them at an earlier clock; a seed's orders
-/// run on a thread each.
+/// run on a thread each. 80 seeds at large size (`OSIS_FULL=1`), 2 at small: the default test
+/// already runs every order of a seed of each emphasis at 4 commits, and this size is three
+/// quarters of the order properties' cost per gate.
 fn exhaustive() -> Size {
-    from_env("exhaustive", 0..80, 40, Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: 24, par_orders: true, ..ORDERS }, Some(6))
+    let seeds = if osis_base::testenv::u64_var("OSIS_FULL") == Some(1) { 0..80 } else { 0..2 };
+    from_env("exhaustive", seeds, 40, Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: 24, par_orders: true, ..ORDERS }, Some(6))
 }
 
 impl Size {

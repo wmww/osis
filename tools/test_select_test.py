@@ -80,7 +80,7 @@ t = out("--paths", "notes/a.md")
 check("notes only", t, "selects nothing: notes/a.md", "crates selected: 0 of 6", "nothing to run", absent=["cargo test"])
 
 t = out("--paths", "core/mid/src/lib.rs")
-check("dependents", t, "crates selected: 3 of 6", "osis-mid: mid_it_plain mid_prop_plain_spec_crdt_4", "osis-top: top_exhaustive", "every scenario, 15 seeds from 7", "cargo test --locked --no-fail-fast", absent=["osis-base:", "quic_large_transfer ", "held-model:", "repro_big_large "])
+check("dependents", t, "crates selected: 3 of 6", "osis-mid: mid_it_plain mid_prop_plain_spec_crdt_4", "osis-top: top_exhaustive", "every scenario, 5 seeds from 7", "cargo test --locked --no-fail-fast", absent=["osis-base:", "quic_large_transfer ", "held-model:", "repro_big_large "])
 check("replay line", t, "offset: 7 (replay this selection: tools/test_select.py --offset 7 --paths core/mid/src/lib.rs)")
 check("substring filter", t, "--skip mid_it_plain_over_quic")
 check("env", t, "OSIS_ORDER_START=7", "OSIS_CRDT_SEED=7", absent=["OSIS_ORDER_SEED=", "OSIS_ORDER_SEEDS="])
@@ -122,7 +122,7 @@ if kinds != ["build", "build", "run", "run"]:
     print(f"FAIL --emit: line kinds {kinds}\n" + "\n".join(lines))
     fails = 1
 check("--emit", "\n".join(lines), "build cargo test --locked -p osis-mid -p osis-top --tests --no-run", "build cargo build --locked --bin sim-sweep",
-      "run gate.properties env ", "OSIS_ORDER_START=7 ", "run gate.sim cargo run --locked --bin sim-sweep -- --seeds 15 --from 7",
+      "run gate.properties env ", "OSIS_ORDER_START=7 ", "run gate.sim cargo run --locked --bin sim-sweep -- --seeds 5 --from 7",
       absent=["paths:", "crates selected"])
 check("--emit nothing", out("--emit", "--paths", "notes/a.md"), absent=["build", "run"])
 
