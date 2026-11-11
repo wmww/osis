@@ -1,0 +1,3 @@
+- `tools/cpuprof` given a relative binary path (`../../target/debug/deps/it-*` from a crate dir) samples fine but the report symbolizes every frame as `??`: pass an absolute path (or copy the binary to the scratch dir).
+- notes/testing.md points at `valgrind --tool=callgrind` for exact call splits; valgrind is not installed on this box, so the split came from cpuprof samples per parent frame (a small script over the sample file).
+- At load 30 every engine edit cost a 5-6 min rebuild of osis-node's `it`, most of the session's wall time.

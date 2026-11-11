@@ -4,7 +4,7 @@
 
 use crate::error::{Error, Result};
 use osis_base::{BlobId, CommitId, Link, Ts, Value};
-use osis_crdt::{CounterRange, DeltaCtx, DeltaKind, Fragment, Frontiers, Interner, PageError, PageSink, PageSource, Snapshot, Source, decode_snapshot, encode_snapshot};
+use osis_crdt::{CounterRange, DeltaCtx, DeltaKind, Fragment, Frontiers, Interner, PageError, PageSink, PageSource, Snapshot, Source, encode_snapshot};
 use std::collections::BTreeMap;
 
 /// Pages of a locally stored state: link hash = BLAKE3 of the plaintext, key zero, blob ID
@@ -58,8 +58,9 @@ pub fn decode(b: &[u8]) -> Result<Fragment> {
         }
     }
     let mut interner = Interner::new();
-    let s = decode_snapshot(snap, &ctx(), &mut interner, Some(&mut lp)).map_err(|_| Error::Corrupt("state"))?;
-    Ok(s.fragment)
+    // this node's own encoding: decode-only (`apply::checked`)
+    let (_, f) = osis_crdt::decode_checked(crate::apply::checked(snap), &ctx(), &mut interner, Some(&mut lp)).map_err(|_| Error::Corrupt("state"))?;
+    Ok(f)
 }
 
 #[cfg(test)]

@@ -313,7 +313,7 @@ def test_copies():
 
 # notes/engine-paged.md (Checked once): `osis_crdt::Checked` vouches that bytes passed the full
 # check on this node, and the decode-only readers trust it. Product code builds one only in the
-# engine's `apply::checked` (a part `examine` accepted, or of a stored record); test modules may
+# engine's `apply::checked` (a part `examine` accepted, of a stored record, or a stored state); test modules may
 # build them freely.
 CHECKED = re.compile(r"\bChecked::verified\b|\bChecked\(")
 CHECKED_DEFS = {"core/crdt/src/stream.rs", "core/engine/src/apply/mod.rs"}

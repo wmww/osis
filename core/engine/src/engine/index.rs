@@ -1030,9 +1030,8 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             }
         }
         let view = Arc::new(view);
-        let header = if view.linked || cfg!(debug_assertions) {
-            // lists by link resolve from blobs now; a debug build decodes every header and
-            // checks the persisted view against it
+        let header = if view.linked {
+            // lists by link resolve from blobs now
             let mut h = super::decode_stored_header(&id, &bytes).ok_or(Error::Corrupt("commit record header"))?;
             if !h.is_resolved()
                 && let Some(dedup) = tx.core.dedup(&h.actor)
@@ -1040,8 +1039,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
                 h.resolve(&mut super::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).map_err(|_| Error::Corrupt("header lists"))?;
             }
             debug_assert_eq!(super::View::of(&h), *view, "meta row of {id:?} is stale");
-            if view.linked { super::LazyHeader::ready(Arc::new(h)) } else { super::LazyHeader::stored(id, bytes, view.clone(), fault.clone()) }
+            super::LazyHeader::ready(Arc::new(h))
         } else {
+            // a debug build checks the view against the header where it decodes
             super::LazyHeader::stored(id, bytes, view.clone(), fault.clone())
         };
         if view.aspects.len() != valid.len() {

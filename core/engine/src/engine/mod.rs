@@ -453,7 +453,12 @@ impl LazyHeader {
 impl StoredHeader {
     fn decode(&self) -> std::result::Result<Arc<Header>, Arc<Header>> {
         match decode_stored_header(&self.id, &self.bytes) {
-            Some(h) => Ok(Arc::new(h)),
+            Some(h) => {
+                // the persisted view is the header's (index check: an open from the index
+                // equals a rebuild from the commit records)
+                debug_assert_eq!(View::of(&h), *self.view, "meta row of {:?} is stale", self.id);
+                Ok(Arc::new(h))
+            }
             None => {
                 self.fault.store(true, std::sync::atomic::Ordering::Relaxed);
                 Err(Arc::new(fallback_header(&self.view)))
@@ -997,6 +1002,10 @@ pub struct Core {
     /// another build's rules), so the rebuild check (`apply::check_rebuilt`) skips it.
     #[cfg(debug_assertions)]
     pub(crate) unchecked_tx: bool,
+    /// Debug builds: what a load from the commit records read of each role commit's edge writes
+    /// (`apply::load`), for `Engine::check_index` to compare with the persisted rows.
+    #[cfg(debug_assertions)]
+    pub(crate) rebuilt_edges: BTreeMap<CommitId, crate::apply::validity::EdgeParts>,
     /// The blob `Engine::commit_forged` built (its own node drops the bad part).
     pub(crate) forged: Option<Vec<u8>>,
     /// This open's session (spec/crdt.md §2.1): the own source of its content commits, durable
@@ -1230,6 +1239,8 @@ impl Core {
             forge_bad: self.forge_bad.clone(),
             #[cfg(debug_assertions)]
             unchecked_tx: self.unchecked_tx.clone(),
+            #[cfg(debug_assertions)]
+            rebuilt_edges: self.rebuilt_edges.clone(),
             forged: self.forged.clone(),
             session: self.session.clone(),
             expiring: self.expiring.clone(),
@@ -1857,6 +1868,8 @@ impl Core {
             #[cfg(debug_assertions)]
             unchecked_tx: _,
             #[cfg(debug_assertions)]
+            rebuilt_edges: _,
+            #[cfg(debug_assertions)]
             rechecked: _,
             #[cfg(debug_assertions)]
             tx_store: _,
@@ -1997,6 +2010,8 @@ impl Core {
             forge_bad: BTreeSet::new(),
             #[cfg(debug_assertions)]
             unchecked_tx: false,
+            #[cfg(debug_assertions)]
+            rebuilt_edges: BTreeMap::new(),
             forged: None,
             session,
             expiring,
@@ -3324,6 +3339,8 @@ impl Engine {
             crate::apply::load(&mut tx, rebuild)
         };
         crate::apply::load_awaiting(&mut self.core);
+        #[cfg(debug_assertions)]
+        self.core.rebuilt_edges.clear();
         self.core.commit_journal();
         r
     }
@@ -3373,6 +3390,14 @@ impl Engine {
                     return Ok(false);
                 }
                 crate::apply::load(&mut tx, rebuild)?;
+                // every role commit's persisted edges row is what its record reads
+                #[cfg(debug_assertions)]
+                if rebuild {
+                    let mut rows = index::load_edges(&mut tx)?;
+                    for (id, parts) in std::mem::take(&mut tx.core.rebuilt_edges) {
+                        assert_eq!(rows.remove(&id), Some(parts), "node/edges row of {id:?} is stale");
+                    }
+                }
                 Ok(true)
             };
             // its work is not the measured code's (scale checks count work)

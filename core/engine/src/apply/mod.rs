@@ -1604,10 +1604,9 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         for (_, id) in ids {
             // the view, not the header
             let Some(v) = tx.core.ix.commits.get(&id).map(|m| m.view.clone()) else { continue };
+            // every row is what its record reads now (rewritten with it: late parts, drops;
+            // `Engine::check_index` compares them)
             let parts = edges.remove(&id).ok_or(Error::Corrupt("edges row missing"))?;
-            // every row is what its record reads now (rewritten with it: late parts, drops)
-            #[cfg(debug_assertions)]
-            debug_assert_eq!(parts, edge_parts(tx, &id)?, "node/edges row of {id:?} is stale");
             validity::add_role_commit(tx.core, &v, &id, &parts);
         }
         // what each addendum says, from its row
@@ -1617,21 +1616,30 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         }
         drop(_s);
     } else {
-        // applied commits
+        // applied commits, each record decoded once (kept as `Tx::get_commit` reads it)
         let mut recs = Vec::new();
-        tx.scan(records::COMMIT, |_, v| {
-            recs.push(decode_commit_record(&v)?);
+        tx.scan(records::COMMIT, |k, v| {
+            let id = CommitId(k.try_into().map_err(|_| Error::Corrupt("commit record key"))?);
+            let (head, blob) = decode_commit_record(&v)?;
+            recs.push((id, head, Arc::new(blob)));
             Ok(())
         })?;
         let mut bodies = Vec::new();
         let mut snaps = Vec::new();
-        for (head, mut blob) in recs {
+        for (id, head, stored) in recs {
+            // read fresh at this point of the store: no cache hit to compare
+            #[cfg(debug_assertions)]
+            let _ = tx.recheck(format!("commit record {id:?}"));
+            tx.core.decoded.keep_record(id, stored.clone());
+            let mut blob = Arc::unwrap_or_clone(stored);
             if !blob.header.is_resolved()
                 && let Some(dedup) = tx.core.dedup(&blob.header.actor)
             {
                 blob.header.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).map_err(|_| Error::Corrupt("header lists"))?;
             }
-            let id = blob.id();
+            if blob.id() != id {
+                return Err(Error::Corrupt("commit record key"));
+            }
             let h = Arc::new(blob.header.clone());
             let valid = vec![true; h.aspects.len()];
             let missing = (0..h.aspects.len()).filter(|ai| !blob.parts.iter().any(|p| p.ai == *ai) && !head.dropped.contains_key(ai) && !head.stripped.contains(ai)).collect();
@@ -1648,7 +1656,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                     validity::note_shown(tx.core, &id, *ai, x.clone());
                 }
                 if let Some(a) = h.aspects.get(*ai) {
-                    keys::note_keysets(tx.core, &h, &a.tid, &d.keysets);
+                    keys::note_keysets(tx.core, &h, &id, &a.tid, &d.keysets);
                 }
             }
             atomic::index_commit(tx.core, &id, &m.view);
@@ -1674,7 +1682,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 let keys = a.ak.as_str() == "keys.0";
                 if let Some(g) = each_held_piece(tx, &id, ai, &mut |tx, f| {
                     if keys {
-                        keys::note_keysets(tx.core, &blob.header, &a.tid, &keys::keysets_of(&blob.header, ai, std::slice::from_ref(&f)));
+                        keys::note_keysets(tx.core, &blob.header, &id, &a.tid, &keys::keysets_of(&blob.header, ai, std::slice::from_ref(&f)));
                     }
                     Ok(())
                 })?
@@ -1684,15 +1692,14 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 }
             }
         }
-        // what is a whole replace (`Meta::whole`), from each held plain body
-        let plain: Vec<CommitId> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind == Kind::Content && !m.view.memory).map(|(id, _)| *id).collect();
-        for id in plain {
-            for (ai, d) in held_parts_at(tx, &id, &|_| true)? {
-                let Some(mut m) = tx.core.ix.commits.get(&id).cloned() else { continue };
-                if m.view.aspects.get(ai).is_some_and(|a| crate::retention::snapshot::own_aspect(&a.ak)) && matches!(&d, Decoded::Delta(x) if crate::retention::snapshot::replaces(&x.fragment)) {
-                    m.whole.insert(ai);
-                    tx.core.put_meta(id, m);
-                }
+        // what is a whole replace (`Meta::whole`), from each held plain body on an own aspect
+        let plain: Vec<(CommitId, Arc<crate::engine::View>)> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind == Kind::Content && !m.view.memory).map(|(id, m)| (*id, m.view.clone())).collect();
+        for (id, view) in plain {
+            let own = |ai: usize| view.aspects.get(ai).is_some_and(|a| crate::retention::snapshot::own_aspect(&a.ak));
+            let whole: BTreeSet<usize> = held_parts_at(tx, &id, &own)?.into_iter().filter(|(_, d)| matches!(d, Decoded::Delta(x) if crate::retention::snapshot::replaces(&x.fragment))).map(|(ai, _)| ai).collect();
+            if let Some(mut m) = tx.core.ix.commits.get(&id).cloned().filter(|_| !whole.is_empty()) {
+                m.whole.extend(whole);
+                tx.core.put_meta(id, m);
             }
         }
         // perm inputs from role bodies, oldest first
@@ -1712,13 +1719,16 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d) {
                     match a.ak.as_str() {
                         "secrets.0" => keys::note_boxes_to(tx.core, &a.tid, &d.fragment),
-                        "keys.0" => keys::note_keysets(tx.core, &b.header, &a.tid, &keys::keysets_of(&b.header, *ai, std::slice::from_ref(&d.fragment))),
+                        "keys.0" => keys::note_keysets(tx.core, &b.header, &id, &a.tid, &keys::keysets_of(&b.header, *ai, std::slice::from_ref(&d.fragment))),
                         _ => {}
                     }
                 }
             }
             let v = tx.core.ix.commits.get(&id).map(|m| m.view.clone()).ok_or(Error::Corrupt("commit meta"))?;
-            validity::add_role_commit(tx.core, &v, &id, &validity::EdgeParts::of(&b.header, &parts));
+            let edges = validity::EdgeParts::of(&b.header, &parts);
+            validity::add_role_commit(tx.core, &v, &id, &edges);
+            #[cfg(debug_assertions)]
+            tx.core.rebuilt_edges.insert(id, edges);
         }
     }
     // which role commits of accounts count (spec/permissions.md §5.5), before any timeline
@@ -1768,7 +1778,10 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 let v = tx.state(&tid, &ak)?.and_then(osis_crdt::Fragment::read);
                 tx.core.ix.groups.set_def(tid, atomic::group_def(v));
             }
-            "secrets.0" | "keys.0" if fast => {}
+            // what observing a `keys.0` state derives is the delete hints it ends, which a load
+            // reads from the index or not at all (a rebuild holds none to end)
+            "keys.0" => {}
+            "secrets.0" if fast => {}
             // a state-list row is a state (`Tx::derive`)
             "label.0" => {
                 tx.core.ix.labeled.insert(tid);
@@ -1824,12 +1837,14 @@ pub(crate) fn load_awaiting(core: &mut crate::engine::Core) {
     }
 }
 
-/// The delta of part `p` of a blob `examine` accepted (`Exam::Ready`), or of a stored commit
-/// record, as checked bytes, to read decode-only. A record holds only parts `examine` checked in
-/// full: bad, junk, unjudged and waiting parts leave the blob before `Tx::put_commit`, and every
-/// rewrite of a record only removes parts. The engine's one `Checked::verified` (tools/policy.py).
-fn checked(p: &osis_commit::Part) -> osis_crdt::Checked<'_> {
-    osis_crdt::Checked::verified(&p.delta)
+/// Bytes to read decode-only, as checked: the delta of a part of a blob `examine` accepted
+/// (`Exam::Ready`) or of a stored commit record, or a stored state, state page or leftover body
+/// (`state::encode`'s snapshot bytes). A record holds only parts `examine` checked in full: bad,
+/// junk, unjudged and waiting parts leave the blob before `Tx::put_commit`, and every rewrite of a
+/// record only removes parts; a state is this node's own encoding, canonical as written. The
+/// engine's one `Checked::verified` (tools/policy.py).
+pub(crate) fn checked(bytes: &[u8]) -> osis_crdt::Checked<'_> {
+    osis_crdt::Checked::verified(bytes)
 }
 
 /// Decodes the parts of a stored commit record (or of one about to be stored: a blob `examine`
@@ -1845,7 +1860,7 @@ fn examine_stored(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<V
         let mut paged = BlobReader::new(&dedup, &mut blobs);
         let mut unpaged = osis_crdt::Unpaged;
         let reader: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut paged };
-        out.push((p.ai, osis_commit::read_part_whole(&h, id, p.ai, checked(p), &mut interner, Some(reader)).map_err(|_| Error::Corrupt("stored delta"))?));
+        out.push((p.ai, osis_commit::read_part_whole(&h, id, p.ai, checked(&p.delta), &mut interner, Some(reader)).map_err(|_| Error::Corrupt("stored delta"))?));
     }
     Ok(out)
 }
@@ -1891,7 +1906,7 @@ pub(crate) fn each_held_piece(tx: &mut Tx<'_>, id: &CommitId, ai: usize, f: &mut
     let Some(blob) = tx.get_commit(id)? else { return Ok(None) };
     let Some(p) = blob.parts.iter().find(|p| p.ai == ai) else { return Ok(None) };
     let dedup = tx.core.dedup(&a.tid).ok_or(Error::Corrupt("dedup"))?;
-    Ok(Some(atomic::stream_stored(tx, &h, id, ai, checked(p), &dedup, f)?))
+    Ok(Some(atomic::stream_stored(tx, &h, id, ai, checked(&p.delta), &dedup, f)?))
 }
 
 /// Whether commit `id` holds a body on aspect `ai` to read (what `each_held_piece` reads): a

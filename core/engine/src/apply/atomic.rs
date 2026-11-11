@@ -237,7 +237,7 @@ pub(super) fn each_piece(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &Comm
         PartRef::Streamed(s) => s,
     };
     let p = blob.parts.iter().find(|p| p.ai == s.ai).ok_or(Error::Corrupt("streamed part"))?;
-    stream_stored(tx, h, id, s.ai, super::checked(p), &s.dedup, f).map(|_| ())
+    stream_stored(tx, h, id, s.ai, super::checked(&p.delta), &s.dedup, f).map(|_| ())
 }
 
 /// Decodes the checked delta of commit `id`'s part on aspect `ai` (header `h`, its thing's
@@ -657,7 +657,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     tx.core.index_validity(&id);
     crate::retention::note_requests(tx, &id, &h)?;
 
-    let pend = super::keys::before_join(tx, &h, &parts.whole, &valid)?;
+    let pend = super::keys::before_join(tx, &h, &id, &parts.whole, &valid)?;
     let mut j = joins(tx, &h, &id, blob, &parts, &valid)?;
     // an invalid aspect whose part is not held: others' writes under its creations go too (the
     // part may never come, or come late)
@@ -820,7 +820,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         held_changed |= judge_late(tx, &h, id, &parts, &mut meta)?;
     }
     let with_keys = with_keys(tx, &h, id, &parts)?;
-    let pend = super::keys::before_join(tx, &h, &with_keys, &meta.valid)?;
+    let pend = super::keys::before_join(tx, &h, id, &with_keys, &meta.valid)?;
     let mut j = joins(tx, &h, id, merged, &parts, &meta.valid)?;
     // the record's `node/edges` row, read once: it is also the commit's edge writes again
     let all = if h.kind.is_role() { Some(super::edge_parts_of(tx, id, &h, merged.clone())?) } else { None };

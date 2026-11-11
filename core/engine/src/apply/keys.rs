@@ -117,14 +117,14 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
 /// the rotated roles' keysets, nothing else does, so the epoch's introducer
 /// (`Core::epoch_intro`) is its rotation commit, or unknown while that `keys.0` part is not held
 /// (synced after a compaction, or missing again after `retention::uncover`).
-pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, keysets: &[KeysetRec]) {
+pub(crate) fn note_keysets(core: &mut Core, h: &Header, id: &CommitId, actor: &Tid, keysets: &[KeysetRec]) {
     if keysets.is_empty() {
         return;
     }
-    let at = osis_perm::Point { ts: h.ts, node: h.author, commit: h.id() };
+    let at = osis_perm::Point { ts: h.ts, node: h.author, commit: *id };
     for k in keysets {
         if h.kind == Kind::Role {
-            note_intro(core, h, actor, k.role, k.epoch);
+            note_intro(core, h, id, actor, k.role, k.epoch);
         }
         let key = (*actor, k.role, k.epoch);
         let mut held = core.ix.keysets.get(&key).cloned().unwrap_or_default();
@@ -194,10 +194,10 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
                 continue;
             }
             if let Some(d) = m.dropped.get(&ai) {
-                note_keysets(tx.core, &m.header, a, &d.keysets);
+                note_keysets(tx.core, &m.header, &id, a, &d.keysets);
             }
             if let Some(d) = super::held_part(tx, &id, ai)? {
-                note_keysets(tx.core, &m.header, a, &keyset_recs(d.fragment()));
+                note_keysets(tx.core, &m.header, &id, a, &keyset_recs(d.fragment()));
             }
         }
     }
@@ -208,11 +208,11 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
 /// Notes the `keys.0` parts of role commit `h` whose bodies write a keyset, whatever their
 /// validity (`records::OWN_KEYS`: a fact of the body, kept once it drops or goes missing), then
 /// re-derives `own_keys` of their things.
-fn note_keyset_parts(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]) -> Result<()> {
+fn note_keyset_parts(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) -> Result<()> {
     if !h.kind.is_role() {
         return Ok(());
     }
-    let id = h.id();
+    let id = *id;
     let mut things = std::collections::BTreeSet::new();
     for (ai, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
@@ -274,8 +274,8 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
     Ok(())
 }
 
-pub(crate) fn note_intro(core: &mut Core, h: &Header, actor: &Tid, r: Role, e: osis_crypto::Epoch) {
-    let v = (h.ts, h.id());
+pub(crate) fn note_intro(core: &mut Core, h: &Header, id: &CommitId, actor: &Tid, r: Role, e: osis_crypto::Epoch) {
+    let v = (h.ts, *id);
     core.ix.epoch_intro.upsert((*actor, r, e), || v, |slot| *slot = (*slot).min(v));
 }
 
@@ -400,15 +400,15 @@ pub(crate) struct Pending {
     keys: KeysWrite,
 }
 
-pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)], valid: &[bool]) -> Result<Vec<Pending>> {
-    note_keyset_parts(tx, h, parts)?;
+pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize, Decoded)], valid: &[bool]) -> Result<Vec<Pending>> {
+    note_keyset_parts(tx, h, id, parts)?;
     let mut out = Vec::new();
     for (ai, d) in parts {
         if let Some(a) = h.aspects.get(*ai)
             && a.ak.as_str() == "keys.0"
             && valid.get(*ai).copied().unwrap_or(false)
         {
-            note_keysets(tx.core, h, &a.tid, &keyset_recs(d.fragment()));
+            note_keysets(tx.core, h, id, &a.tid, &keyset_recs(d.fragment()));
         }
     }
     if h.kind != Kind::Role {
@@ -432,7 +432,7 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)
                 _ => None,
             })
             .unwrap_or_default();
-        out.push(Pending { id: h.id(), ai: *ai, actor: a.tid, keys });
+        out.push(Pending { id: *id, ai: *ai, actor: a.tid, keys });
     }
     Ok(out)
 }
