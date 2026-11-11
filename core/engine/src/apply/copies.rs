@@ -54,7 +54,7 @@ pub(crate) fn copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) -> R
         // cache is forgotten with every change to them, `Core::copy_index`)
         #[cfg(debug_assertions)]
         {
-            let fresh = crate::costs::paused(|| build_copy_index(tx, s, tid, ak))?;
+            let fresh = crate::costs::paused(|| crate::engine::memo::unrecorded(|| build_copy_index(tx, s, tid, ak)))?;
             assert_eq!(fresh.map(|x| format!("{x:?}")), Some(format!("{ix:?}")), "stale copy index of {s:?} on {tid:?} {}", ak.as_str());
         }
         return Ok(Some(ix));

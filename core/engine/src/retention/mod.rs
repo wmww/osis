@@ -1243,6 +1243,63 @@ mod tests {
         assert!(judged(&mut lp).1 > 0, "a write on its aspect");
     }
 
+    // spec: none (internal: notes/engine.md, Derived values). A memo reading a commit's leftover,
+    // or its copy index from the cache, runs again when the record is written, and again when a
+    // failed transaction undoes that write.
+    #[test]
+    fn memos_follow_leftovers_and_cached_copy_indexes_through_writes_and_undo() {
+        use crate::engine::{Tx, memo::Memo};
+        use crate::error::Error;
+        let mut lp = LocalPeer::new(1, 956, WallMs(1_700_000_000_000)).unwrap();
+        let a = lp.peers[0].engine.me();
+        let x = Ak::new("x:m.0").unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &x, &Value::Int(1)).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let e = &mut lp.peers[0].engine;
+        let ai = e.core.ix.commits.get(&c).unwrap().aspect(&t, &x).unwrap();
+        let runs = |name: &str| crate::costs::take().iter().filter(|s| s.0 == name).map(|s| s.2).sum::<u64>();
+        let undo = || Err::<(), _>(Error::Misuse("test: undo"));
+
+        // leaked: `Memo::get_in` finds its memo through the transaction's borrow
+        let memo: &'static Memo<u8, String> = Box::leak(Box::new(Memo::new("test record")));
+        let left = |tx: &mut Tx<'_>| Memo::get_in(tx, |_| memo, &0, |tx| Ok::<_, Error>(format!("{:?}", super::leftover::get(tx, &t, &x, &c, ai)?.map(|l| l.fragment))));
+        let put = |tx: &mut Tx<'_>, f: osis_crdt::Fragment| super::leftover::put(tx, &t, &x, &c, ai, &super::leftover::Leftover { fragment: f, gives: None });
+        e.run(|tx| {
+            let f = crate::apply::held_fragment(tx, &c, ai)?.unwrap();
+            put(tx, f)
+        })
+        .unwrap();
+        crate::costs::take();
+        let one = e.run(left).unwrap();
+        assert_eq!((e.run(left).unwrap(), runs("test record")), (one.clone(), 1), "asked again");
+        e.run(|tx| put(tx, osis_crdt::Fragment::default())).unwrap();
+        let two = e.run(left).unwrap();
+        assert_ne!(two, one, "a leftover written");
+        let r = e.run(|tx| {
+            let f = crate::apply::held_fragment(tx, &c, ai)?.unwrap();
+            put(tx, f)?;
+            assert_eq!(left(tx).unwrap(), one, "written in the transaction");
+            undo()
+        });
+        assert!(r.is_err());
+        assert_eq!(e.run(left).unwrap(), two, "the write undone");
+
+        let memo: &'static Memo<u8, String> = Box::leak(Box::new(Memo::new("test copy index")));
+        let ix = |tx: &mut Tx<'_>| Memo::get_in(tx, |_| memo, &1, |tx| Ok::<_, Error>(format!("{:?}", crate::apply::copies::copy_index(tx, &c, &t, &x)?)));
+        e.run(|tx| crate::apply::copies::copy_index(tx, &c, &t, &x).map(drop)).unwrap();
+        let whole = e.run(ix).unwrap();
+        let r = e.run(|tx| {
+            let (blob, m) = (tx.get_commit(&c)?.unwrap(), tx.core.ix.commits.get(&c).cloned().unwrap());
+            tx.put_commit(&c, &osis_commit::rewrite(&blob, |x| x == ai), &m, osis_store::Shred::No, None)?;
+            assert_ne!(ix(tx).unwrap(), whole, "its record written in the transaction");
+            undo()
+        });
+        assert!(r.is_err());
+        assert_eq!(e.run(ix).unwrap(), whole, "the write undone");
+    }
+
     // spec/commits.md §5, spec/crypto.md §7, spec/requirements.md Purge on replace: a writer whose
     // delete keys of the thing are not here writes nothing on it, so the replacement applies there
     // (no refused own snapshot fails the receive) and the replaced body stays; once the keys come it

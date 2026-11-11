@@ -763,6 +763,8 @@ pub(crate) struct CoreMark {
     batched: Option<BTreeMap<(Tid, Ak), Batched>>,
     memory_tx: bool,
     dirty: bool,
+    /// `records_read.changes()`: a record or leftover written since moves every record.
+    records: u64,
 }
 
 /// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, author).
@@ -1575,6 +1577,7 @@ impl Core {
             batched: self.batched.clone(),
             memory_tx: self.memory_tx,
             dirty: self.dirty,
+            records: self.records_read.changes(),
         }
     }
 
@@ -1585,7 +1588,8 @@ impl Core {
     pub(crate) fn rollback_to(&mut self, m: CoreMark) {
         let sides_back = self.sides.journaled() > m.sides.0 + m.sides.1;
         self.sides.rollback_to(m.sides);
-        if self.dirty || self.written.len() > m.written || self.ix.mark() != m.ix {
+        // a record written alone (`put_commit`, `leftover::put`) changes no index: its stamp says
+        if self.dirty || self.written.len() > m.written || self.ix.mark() != m.ix || self.records_read.changes() != m.records {
             self.live_trees.clear();
             self.live_bodies.clear();
             self.bodies.clear();

@@ -83,6 +83,11 @@ impl Stamps {
         t.keys.clear();
     }
 
+    /// Counts the container's changes: equal at two times, nothing in it changed between.
+    pub fn changes(&self) -> u64 {
+        lock(&self.0).ver
+    }
+
     /// Key `k` is read: the memo computing, if any, depends on it.
     pub fn read<Q: Hash + ?Sized>(&self, k: &Q) {
         if RECORDING.load(Ordering::Relaxed) != 0 {
@@ -180,6 +185,12 @@ fn recorded<T>(f: impl FnOnce() -> T) -> (T, Arc<[Dep]>) {
     let out = f();
     let frame = FRAMES.with(|fr| fr.borrow_mut().pop()).unwrap_or_default();
     (out, frame.deps.into())
+}
+
+/// Runs `f` without the memo computing, if any, depending on what it reads: for a debug check
+/// beside a read, so the check's own reads do not cover a read the code missed.
+pub fn unrecorded<T>(f: impl FnOnce() -> T) -> T {
+    recorded(f).0
 }
 
 /// The memo computing on this thread, if any, depends on `deps` too (it read a memo's answer).

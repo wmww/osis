@@ -70,5 +70,6 @@ pub(crate) fn remove(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usiz
 
 /// Whether a leftover of part `ai` of `c` is kept.
 pub(crate) fn has(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Result<bool> {
+    tx.core.records_read.read(c);
     Ok(tx.txn.get_local(&records::leftover_key(tid, ak, c, ai))?.is_some())
 }
