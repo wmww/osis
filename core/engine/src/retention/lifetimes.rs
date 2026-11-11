@@ -140,6 +140,15 @@ fn walk(tx: &mut Tx<'_>, x: &Tid, gone: &BTreeSet<Tid>, read: &mut BTreeSet<Tid>
     Ok(true)
 }
 
+/// Whether `x` is known and unreachable on the current held state, heard out or not
+/// (`Mutation::require_kept`: a writer refusing its own write, the safe side).
+pub(crate) fn unreachable_now(tx: &mut Tx<'_>, x: &Tid) -> Result<bool> {
+    if status(tx.core, x, &BTreeSet::new()) != Status::Known {
+        return Ok(false);
+    }
+    walk(tx, x, &BTreeSet::new(), &mut BTreeSet::new())
+}
+
 /// Whether this node may end `x`: its account, which writes the request (`release`), holds the
 /// purge right over every held minting of it (spec/permissions.md §6), as `end` would be judged.
 fn may_end(tx: &Tx<'_>, x: &Tid) -> bool {

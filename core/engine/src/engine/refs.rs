@@ -260,6 +260,16 @@ pub(crate) fn references(tx: &mut Tx<'_>, source: &Tid, target: &Tid) -> Result<
     Ok(any)
 }
 
+/// Whether `source`'s aspect `ak` references `target` in a live durable value (a durable row).
+pub(crate) fn references_in(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, target: &Tid) -> Result<bool> {
+    if ak.ephemeral() || !indexed(ak) {
+        return Ok(false);
+    }
+    let to = tx.txn.index(TO)?;
+    let k = [target.as_bytes().as_slice(), source.as_bytes(), ak.as_str().as_bytes()].concat();
+    Ok(tx.txn.table_get(to, &k)?.is_some())
+}
+
 /// Up to `n` rows naming `target` after `after` (a source and AK, exclusive; `None`: from the
 /// first), in (source, AK) order: the sources and AKs, `n` rows read.
 pub(crate) fn to_page(tx: &mut Tx<'_>, target: &Tid, after: Option<(&Tid, &Ak)>, n: usize) -> Result<Vec<(Tid, Ak)>> {

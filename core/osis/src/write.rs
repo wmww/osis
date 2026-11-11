@@ -19,7 +19,7 @@ use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use crate::commit_id::CommitId;
 use osis_node::Mutation;
 use osis_schema::{AspectKey, SignalKey, ValueKey};
-use osis_schema::core_types::{GROUP, is_role_class};
+use osis_schema::core_types::{GROUP, RELEASED, RETAINERS, is_role_class};
 use osis_schema::{RawKey, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
 use crate::commits::Commit;
 use std::collections::BTreeMap;
@@ -75,6 +75,11 @@ pub(crate) enum WriteOp {
     Delete(Tid),
     /// Ends the thing for everyone: purges its creation.
     End(Tid),
+    /// Releases the thing: a release request on it.
+    Release(Tid),
+    /// Adds `by` to `thing`'s retainers; `by`'s aspect `key` must reference `thing` after the
+    /// commit.
+    Retain { by: Tid, key: u32, thing: Tid },
 }
 
 impl WriteOp {
@@ -82,7 +87,7 @@ impl WriteOp {
     fn tid(&self) -> Option<Tid> {
         match self {
             WriteOp::Create(_) => None,
-            WriteOp::Delete(t) | WriteOp::End(t) | WriteOp::Group { g: t, .. } => Some(*t),
+            WriteOp::Delete(t) | WriteOp::End(t) | WriteOp::Release(t) | WriteOp::Group { g: t, .. } | WriteOp::Retain { by: t, .. } => Some(*t),
             WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => Some(*tid),
         }
     }
@@ -142,6 +147,9 @@ fn read_only(ak: &str) -> bool {
 fn not_writable(ak: &str) -> Option<String> {
     if ak == GROUP.ak() {
         return Some(format!("{ak} is written only by Write::group"));
+    }
+    if ak == RELEASED.ak() {
+        return Some(format!("{ak} is written only by Write::release"));
     }
     (read_only(ak) || is_role_class(ak)).then(|| format!("{ak} is written only by the engine or the sharing calls"))
 }
@@ -272,6 +280,21 @@ impl<'d> Write<'d> {
         Ok(())
     }
 
+    /// Releases `tid`: it goes from every node, as an ended thing does, but as storage reclaim,
+    /// not erasure: nothing of it is kept for good, so a node still holding a copy of it may bring
+    /// it back later. It goes whatever lists or references it (a reference to it then reads as
+    /// gone, as after `end`), and stays gone wherever a thing listing or referencing it is held.
+    /// What only it kept alive (things listing it as their retainer) is released after it, by the
+    /// node's own judgment. Needs the right to end it (`Permission` otherwise, as `end`). A
+    /// release is a commit of its own: `commit` fails `Invalid` beside any other op or an
+    /// `expires`. Beside `end`, which erases: release is for a thing no longer needed, `end` for
+    /// one that must be gone for good.
+    pub fn release(&mut self, tid: Tid) -> Result<()> {
+        let t = self.known(tid)?;
+        self.ops.push(WriteOp::Release(t));
+        Ok(())
+    }
+
     /// A raw path op through `key` (text sessions).
     pub(crate) fn raw_op(&mut self, tid: Tid, key: &DynamicAspectKey, op: PathOp) -> Result<()> {
         let t = self.known(tid)?;
@@ -375,6 +398,8 @@ impl<'d> Write<'d> {
                     WriteOp::Purge { tid, key } => vec![u(6), t(*tid), u(u64::from(*key))],
                     WriteOp::Delete(x) => vec![u(7), t(*x)],
                     WriteOp::End(x) => vec![u(11), t(*x)],
+                    WriteOp::Release(x) => vec![u(12), t(*x)],
+                    WriteOp::Retain { by, key, thing } => vec![u(13), t(*by), u(u64::from(*key)), t(*thing)],
                     WriteOp::PurgeCommit { tid, key, commit } => vec![u(8), t(*tid), u(u64::from(*key)), Value::bytes(&commit.0)],
                     WriteOp::PurgeAuthor { tid, key, actor } => vec![u(9), t(*tid), u(u64::from(*key)), t(*actor)],
                     WriteOp::Fire { tid, key, v, replaces } => vec![u(10), t(*tid), u(u64::from(*key)), v.clone(), opt(replaces.as_ref(), |c| Value::bytes(&c.0))],
@@ -394,6 +419,11 @@ impl<'d> Write<'d> {
         let gk = DynamicAspectKey { ak: Ak::new(GROUP.ak()).unwrap_or_else(|_| unreachable!("a core AK")), schema: Some(crate::keys::core_schema()) };
         let mut b = Built { m: Mutation::new(), added: Vec::new(), removed: Vec::new() };
         let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its write".into()));
+        // a release request carries `released.0` deltas alone (spec/commits.md §5 Ending)
+        let releases = ops.iter().filter(|o| matches!(o, WriteOp::Release(_))).count();
+        if releases > 0 && (releases < ops.len() || expires.is_some()) {
+            return Err(Error::Invalid("a release is a commit of its own: write it in a Write with no other op and no expiry".into()));
+        }
         for op in ops {
             match op {
                 WriteOp::Create(rec) => {
@@ -415,7 +445,24 @@ impl<'d> Write<'d> {
                     if k.signal() {
                         return Err(Error::Invalid(format!("{} is a signal: it is fired, not written (fire)", k.ak)));
                     }
+                    // the writer refuses its own change of a list that leaves the thing
+                    // unreachable (issues/thing-lifetimes.md, API)
+                    if k.ak.as_str() == RETAINERS.ak() {
+                        b.m.require_kept(tid);
+                    }
                     b.m.op(tid, k, op)?;
+                }
+                WriteOp::Retain { by, key: k, thing } => {
+                    let k = key(k)?;
+                    if k.signal() || k.ak.ephemeral() {
+                        return Err(Error::Invalid(format!("{} holds no live durable value: it retains nothing", k.ak)));
+                    }
+                    b.m.op(thing, &RETAINERS, PathOp { path: Vec::new(), op: Op::Add(Value::Tid(by)) })?;
+                    b.m.require_reference(by, k, thing)?;
+                    b.m.require_kept(thing);
+                }
+                WriteOp::Release(tid) => {
+                    b.m.op(tid, &RELEASED, PathOp { path: Vec::new(), op: Op::Set(r.e.now().to_value()) })?;
                 }
                 WriteOp::Fire { tid, key: k, v, replaces } => {
                     let k = key(k)?;
@@ -560,6 +607,8 @@ impl Osis {
                 6 => WriteOp::Purge { tid: o.tid()?, key: key(o.uint()?)? },
                 7 => WriteOp::Delete(w.known(o.tid()?)?),
                 11 => WriteOp::End(w.known(o.tid()?)?),
+                12 => WriteOp::Release(w.known(o.tid()?)?),
+                13 => WriteOp::Retain { by: o.tid()?, key: key(o.uint()?)?, thing: o.tid()? },
                 8 => WriteOp::PurgeCommit { tid: o.tid()?, key: key(o.uint()?)?, commit: crate::port::codec::raw_commit_id(o.next()?)? },
                 9 => WriteOp::PurgeAuthor { tid: o.tid()?, key: key(o.uint()?)?, actor: o.tid()? },
                 10 => {
@@ -575,7 +624,7 @@ impl Osis {
             o.end()?;
             w.ops.push(op);
         }
-        for t in w.ops.iter().filter_map(WriteOp::tid).collect::<Vec<_>>() {
+        for t in w.ops.iter().flat_map(|o| o.tid().into_iter().chain(if let WriteOp::Retain { thing, .. } = o { Some(*thing) } else { None })).collect::<Vec<_>>() {
             w.known(t)?;
         }
         w.commit()
@@ -762,6 +811,38 @@ impl<K: SignalKey> AspectWrite<'_, '_, K> {
 
 /// The value writes. `Invalid` at `commit` on a dynamic key of a signal.
 impl<'w, 'd, K: ValueKey> AspectWrite<'w, 'd, K> {
+    /// Makes this aspect keep `thing` alive: adds this thing to `thing`'s retainers
+    /// (`core::RETAINERS`), for the reference to it that this aspect holds or the ops after
+    /// this call write, in the same commit. One call for the list entry and the reference it
+    /// stands on, so neither goes without the other: `commit` fails `Invalid` unless, after it,
+    /// this aspect references `thing` in its value (a tid at any depth), and `Permission` without
+    /// admin on `thing` (writing its list is as strong as releasing it), applying nothing.
+    /// ```
+    /// # use osis::{Config, MemStore, Osis, Store, p};
+    /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:files.0: set<tid>;\n");
+    /// # const FILES: osis::Aspect<std::collections::BTreeSet<osis::Tid>> = osis::Aspect::new("t:files.0", &S);
+    /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+    /// # let mut w = db.write();
+    /// # let chat = w.create().unwrap();
+    /// # w.commit().unwrap();
+    /// // a file that lives while the chat lists it, made in one commit
+    /// let mut w = db.write();
+    /// let file = w.create()?;
+    /// w.at(chat, FILES).retaining(file).path(p![]).add(&file)?;
+    /// w.commit()?;
+    /// # Ok::<(), osis::Error>(())
+    /// ```
+    /// Taking it out of the list is a write of `core::RETAINERS` (move: `retaining` the new place,
+    /// the old reference and list entry removed, in one `Write`). Beside a plain write of
+    /// `core::RETAINERS`, which also adds a retainer, because this one checks the reference the
+    /// entry needs.
+    pub fn retaining(mut self, thing: Tid) -> Self {
+        if let Ok(key) = self.ix {
+            self.push(WriteOp::Retain { by: self.tid, key, thing });
+        }
+        self
+    }
+
     fn op(&mut self, op: PathOp) -> Result<()> {
         let key = self.ok()?;
         self.push(WriteOp::Path { tid: self.tid, key, op });

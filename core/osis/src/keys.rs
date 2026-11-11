@@ -91,6 +91,15 @@ pub mod core {
     /// What a thing keeps of replaced content, by aspect, and the expiry its writes get. An admin
     /// sets it, at any time.
     pub const RETENTION: osis_schema::Aspect<RetentionSetting> = osis_schema::Aspect::new("retention^.0", &osis_schema::CORE);
+    /// The things that keep a thing alive. Absent, the thing lives until ended, released or
+    /// expired. Present, it lives while a thing listed here that is itself alive references it in
+    /// a current value (a tid at any depth of a durable aspect), or while a listed thing is not
+    /// held here; otherwise it is released by itself, cycles included, once a node holding the
+    /// right to end it has heard everything relevant. An admin writes it; `commit` fails `Invalid`
+    /// when a write's own change of it leaves the thing unreachable as this node sees it (to let a
+    /// thing go on purpose, `Write::release` it). Add an entry with `AspectWrite::retaining`, which
+    /// writes it with the reference it stands on.
+    pub use osis_schema::core_types::RETAINERS;
 }
 
 /// Which calls each key kind takes, checked at compile time: value operations do not compile on

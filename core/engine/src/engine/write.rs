@@ -73,6 +73,11 @@ pub struct Mutation {
     pub(crate) blind: Option<[u8; 16]>,
     /// Memberships (thing, group) the commit must not leave unsynced (`require_synced`).
     pub(crate) synced: Vec<(Tid, Tid)>,
+    /// Things the commit must not leave unreachable (`require_kept`).
+    pub(crate) kept: Vec<Tid>,
+    /// (source, AK, target): the source's aspect must reference the target after the commit
+    /// (`require_reference`).
+    pub(crate) references: Vec<(Tid, Ak, Tid)>,
     /// A rotation of the signing account's chain, with the key of each fork it names
     /// (spec/crypto.md §9; `flows::signing`).
     pub(crate) rotation: Option<crate::flows::signing::AccountRotation>,
@@ -90,7 +95,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new(), rotation: None }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new(), kept: Vec::new(), references: Vec::new(), rotation: None }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -162,6 +167,21 @@ impl Mutation {
     pub fn require_synced(&mut self, tid: Tid, group: Tid) -> &mut Self {
         self.synced.push((tid, group));
         self
+    }
+
+    /// The commit fails `Error::Clash` when, after it, `tid` is known and unreachable as this
+    /// node judges it (issues/thing-lifetimes.md, The judgment): the writer refusing its own
+    /// change of a thing's retainers, never a rule receivers apply.
+    pub fn require_kept(&mut self, tid: Tid) -> &mut Self {
+        self.kept.push(tid);
+        self
+    }
+
+    /// The commit fails `Error::Clash` unless, after it, `source`'s aspect `ak` references
+    /// `target` in a live durable value (the reference index).
+    pub fn require_reference<K: RawKey>(&mut self, source: Tid, key: &K, target: Tid) -> Result<&mut Self> {
+        self.references.push((source, ak_of(key)?, target));
+        Ok(self)
     }
 
     /// An op at a path (validated by the crdt against the writer's view).
@@ -946,7 +966,23 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     }
     let id = build_and_apply(tx, plan, deltas)?;
     check_synced(tx.core, &m.synced)?;
+    check_lifetimes(tx, &m.kept, &m.references)?;
     Ok(Some(id))
+}
+
+/// `Mutation::require_reference`, then `Mutation::require_kept`, over the state the commit left.
+fn check_lifetimes(tx: &mut Tx<'_>, kept: &[Tid], references: &[(Tid, Ak, Tid)]) -> Result<()> {
+    for (s, ak, t) in references {
+        if !super::refs::references_in(tx, s, ak, t)? {
+            return Err(Error::Clash(format!("{ak} of {s} does not reference {t} after this write: write the reference where it retains")));
+        }
+    }
+    for t in kept {
+        if crate::retention::lifetimes::unreachable_now(tx, t)? {
+            return Err(Error::Clash(format!("{t} would be unreachable after this write: no retainer it lists that is itself kept references it (list one that does, or release it)")));
+        }
+    }
+    Ok(())
 }
 
 /// `Mutation::require_synced`, over the state the commit left.

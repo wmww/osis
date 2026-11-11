@@ -220,6 +220,27 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
+//! # Lifetimes
+//! A thing that lists retainers (`core::RETAINERS`) lives while one of them that is itself alive
+//! holds its tid in a current value, and is released by itself afterwards. `retaining` writes the
+//! list entry with the reference in one call; `release` lets a thing go at once.
+//! ```
+//! # use osis::{Config, MemStore, Osis, Store, Value, p};
+//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! let files = db.aspect_key("chat:files.0")?;
+//! # let mut w = db.write(); let chat = w.create()?; w.commit()?;
+//! let mut w = db.write();
+//! let file = w.create()?;
+//! w.at(chat, files.clone()).retaining(file).path(p![]).add(&Value::Tid(file))?;
+//! w.commit()?;
+//! // unreferenced, the file goes by itself
+//! let mut w = db.write();
+//! w.at(chat, files).remove()?;
+//! w.commit()?;
+//! assert_eq!(db.created(file)?, None);
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
 //! # Commits, undo, redo, revert
 //! `writes` lists the commits in a scope, anyone's, each with its parts: those still in the read or
 //! kept by history (`fired` lists a signal's). `undo` and `redo` revert this actor's own newest

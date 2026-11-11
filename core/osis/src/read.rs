@@ -404,9 +404,9 @@ impl Reader<'_> {
     }
 
     /// When the thing was created: the oldest valid commit carrying its `created.0` that is no
-    /// snapshot; `None` while it is unknown or only a snapshot carrying its `created.0` is here.
+    /// snapshot; `None` while it is unknown or ended, or only a snapshot carrying its `created.0` is here.
     pub fn created(&self, tid: Tid) -> Option<ThingStamp> {
-        if self.hidden(tid) {
+        if self.hidden(tid) || self.e.ended(&tid) {
             return None;
         }
         self.e.creation(&tid).map(stamp)
@@ -417,7 +417,7 @@ impl Reader<'_> {
     /// `shown()`, else its creation. A delete is one. A commit known here only from a
     /// snapshot is not seen.
     pub fn changed(&self, tid: Tid) -> Option<ThingStamp> {
-        if self.hidden(tid) {
+        if self.hidden(tid) || self.e.ended(&tid) {
             return None;
         }
         self.e.changed(&tid).map(stamp)
@@ -509,7 +509,7 @@ impl ReadOnly {
     }
 
     /// When the thing was created: the oldest valid commit carrying its creation; `None` while it
-    /// is unknown here.
+    /// is unknown here, or once it ended (`Write::end`, `Write::release`, an expiry).
     pub fn created(&self, tid: Tid) -> Result<Option<ThingStamp>> {
         if let crate::sources::Source::Node(r) = self.source(tid) {
             self.track_remote_thing(&r, tid, thing_key("created", tid))?;

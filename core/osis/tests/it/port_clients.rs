@@ -1799,3 +1799,33 @@ fn a_client_leaves_alone() {
     assert!(x.n.grants(x.g).unwrap().contains_key(&other));
     assert!(!c.has_content(x.g).unwrap());
 }
+
+// issues/thing-lifetimes.md (API), notes/client-port.md §3: `retaining` and `release` go through
+// the port's write as the actor's: a thing created retained by a thing under the group, released
+// by an admin; a writer may not release (the right to end it), nor list it (admin-only).
+#[test]
+fn retaining_and_release_are_the_actors() {
+    let x = node();
+    let files = osis::DynamicAspectKey::untyped(ak("t:files.0"));
+    let (_, _, admin) = x.client(Role::Admin);
+    let (_, _, writer) = x.client(Role::Write);
+    let mut w = admin.write();
+    let f = w.create_with_admin(x.g).unwrap();
+    w.at(x.t, files.clone()).retaining(f).path(osis::p![]).add(&Value::Tid(f)).unwrap();
+    w.commit().unwrap();
+    assert_eq!(x.n.at(f, osis::core::RETAINERS).get().unwrap(), Some([x.t].into()));
+    // a writer: no list (it writes, not administers, what it makes under the group), no release
+    let mut w = writer.write();
+    let g = w.create_with_admin(x.g).unwrap();
+    w.at(x.t, files.clone()).retaining(g).path(osis::p![]).add(&Value::Tid(g)).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Permission { .. })));
+    assert!(x.n.created(g).unwrap().is_none(), "nothing applied");
+    let mut w = writer.write();
+    w.release(f).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Permission { .. })), "no right to end it");
+    assert!(x.n.created(f).unwrap().is_some());
+    let mut w = admin.write();
+    w.release(f).unwrap();
+    w.commit().unwrap();
+    assert!(x.n.created(f).unwrap().is_none(), "released at the node");
+}

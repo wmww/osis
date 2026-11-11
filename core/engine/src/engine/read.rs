@@ -162,7 +162,7 @@ impl Engine {
     /// Whether the thing holds content: some present aspect a content write sets (not
     /// `created.0`, not role-class), durable or ephemeral. Stops at the first.
     pub fn has_content(&mut self, tid: &Tid) -> Result<bool> {
-        let content = |ak: &Ak| ct::is_content(ak.as_str());
+        let content = |ak: &Ak| ct::deletable(ak.as_str());
         if !self.core.exists(tid) {
             return Ok(false);
         }
@@ -223,6 +223,12 @@ impl Engine {
         self.core.exists(tid)
     }
 
+    /// Whether `tid` ended here (purged, expired or released, spec/commits.md §5 Ending): it
+    /// reads as absent, its kept record and creation included.
+    pub fn ended(&self, tid: &Tid) -> bool {
+        self.core.ended(tid)
+    }
+
     /// Every aspect with a held state, as `(tid, ak)` (simulator invariants).
     pub fn all_aspects(&mut self) -> Result<Vec<(Tid, Ak)>> {
         self.run(|tx| {
@@ -238,7 +244,7 @@ impl Engine {
 }
 
 /// The aspects a delete of `t` resets (spec/crdt.md §4.6): of its durable content aspects some held
-/// commit header names (not `created.0`, role-class, signal or ephemeral ones), each that may hold
+/// commit header names (not `created.0`, `retainers^.0`, role-class, signal or ephemeral ones), each that may hold
 /// content: present here, or written by a valid part not received yet that no held root reset
 /// stamped after it covers (one so covered may never arrive: holders drop it). So once synced a
 /// delete leaves the same reads at every node, whichever bodies it held; an aspect that cannot
@@ -248,7 +254,7 @@ pub(crate) fn deleted_aspects(tx: &mut super::Tx<'_>, t: &Tid) -> Result<Vec<Ak>
     let named: Vec<(Ak, Option<osis_base::Ts>)> = tx
         .core
         .aspects_of(t)
-        .filter(|((_, ak), _)| ct::is_content(ak.as_str()) && !ak.ephemeral() && !ak.signal())
+        .filter(|((_, ak), _)| ct::deletable(ak.as_str()) && !ak.ephemeral() && !ak.signal())
         .map(|((_, ak), cs)| (ak.clone(), cs.iter().rev().find(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(t, ak).is_some_and(|ai| m.valid_at(ai) && m.missing.contains(&ai)))).map(|(ts, _)| *ts)))
         .collect();
     let mut out = Vec::new();

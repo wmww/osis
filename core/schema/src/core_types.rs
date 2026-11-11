@@ -32,6 +32,13 @@ pub fn is_content(ak: &str) -> bool {
     !is_role_class(ak) && !is_addenda(ak) && ak != "created.0" && ak != "retention^.0"
 }
 
+/// Whether a delete resets `ak` and `has_content` reads it: content, but the thing's retainer
+/// list, which says what keeps the thing, not what it holds (a deleted thing stays judged by its
+/// retainers, issues/thing-lifetimes.md Interactions).
+pub fn deletable(ak: &str) -> bool {
+    is_content(ak) && ak != "retainers^.0"
+}
+
 /// Whether `ak` is a core schema key by its form: one name segment, no tid (spec/data-model.md
 /// §2), declared there or not.
 pub fn is_core_key(ak: &str) -> bool {

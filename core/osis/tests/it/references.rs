@@ -59,7 +59,7 @@ fn rows_follow_the_values() {
     db.commit_with(|w| w.at(r, key("t:a.0")).remove()).unwrap();
     assert!(!rows(&db, r).iter().any(|x| x.1 == "t:a.0"));
     db.commit_with(|w| w.delete(r)).unwrap();
-    assert_eq!(rows(&db, r), BTreeSet::new(), "the deleter drops its ephemeral state too");
+    assert_eq!(rows(&db, r), [row(y, "retainers^.0", 1)].into(), "the deleter drops its ephemeral state too; a delete leaves the list");
 }
 
 // issues/thing-lifetimes.md (Index): another node's rows are the writer's, in any arrival order of
