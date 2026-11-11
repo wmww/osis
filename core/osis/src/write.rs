@@ -265,8 +265,9 @@ impl<'d> Write<'d> {
     /// memberships in every group this node may write (one it may not keeps listing it; it reads
     /// deleted there), as held when the write commits. Afterwards `has_content(tid)` is `false`; the tid stays
     /// valid and a later write recreates the thing. Its ephemeral (`+`) values are dropped here
-    /// and not written: other nodes holding them keep them until they restart or the values end
-    /// (expiry, their author leaving), in no group they read.
+    /// and not written (their listeners hear `DerivedFrom::Deleted`; with nothing durable to
+    /// remove the write commits nothing): other nodes holding them keep them until they restart
+    /// or the values end (expiry, their author leaving), in no group they read.
     pub fn delete(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
         self.ops.push(WriteOp::Delete(t));
@@ -332,7 +333,8 @@ impl<'d> Write<'d> {
         self.ops.iter().filter_map(|o| if let WriteOp::Create(CreationRecord::Thing { admin, .. }) = o { Some(*admin) } else { None }).filter(|t| !self.created.contains(t)).collect()
     }
 
-    /// Writes every op as one commit (two for what `Write` names); `None` when nothing changes. Fails before anything applies
+    /// Writes every op as one commit (two for what `Write` names); `None` when it writes none (nothing
+    /// changes, or only a `delete`'s ephemeral values here). Fails before anything applies
     /// with `Permission`, `UnknownThing`, or `Invalid` (also when the ops cannot share a commit:
     /// `Write`, or past 1024 ops through another node); `OutcomeUnknown`, only through another node,
     /// may have applied: read before repeating it.

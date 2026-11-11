@@ -4,7 +4,7 @@
 //! durable data. `Engine::write` splits a `Mutation` by key: a commit, durable or memory (plain
 //! writes under this open's session, expiring ones under its second session, spec/crdt.md §2.1),
 //! or `Clash` when it asks for both. A `delete` drops its things' ephemeral state here beside its
-//! durable commit, writing none. Ephemeral signal writes go as relay-only commits (`signal`). Reads come
+//! durable commit (if any), writing none. Ephemeral signal writes go as relay-only commits (`signal`). Reads come
 //! from Core as for any aspect, and an ephemeral commit is undone as a durable one is (`undo`). This
 //! module keeps only what belongs to the local write path: unsent and delivered relay-only commits.
 
@@ -17,8 +17,10 @@ pub use signal::{EphCommit, MAX_DELIVERED};
 use crate::engine::write::{AspectMut, check_authority, commit_in};
 use crate::engine::{Engine, Mutation};
 use crate::error::{Error, Result};
-use crate::events::{Event, Origin};
+use crate::events::{Cause, Event, Origin};
 use osis_base::{Ak, CommitId, Tid, Ts};
+use osis_schema::RawKey;
+use osis_schema::core_types::CREATED;
 use std::collections::BTreeMap;
 
 /// The local ephemeral write path's own state (everything else is Core's).
@@ -58,8 +60,9 @@ impl Engine {
     /// Writes `m` as one commit, durable or memory. `Clash` when the ops ask for both (a new
     /// thing's record is durable, so a `+` write on a thing created in the same batch is one), or
     /// signals beside either. A delete (`Mutation::deleting`) drops its things' ephemeral state
-    /// here with its durable commit and writes none (`retention::memory::drop_things`). When the
-    /// commit or any op fails, nothing applies. `None` when nothing changes.
+    /// here in its durable commit's transaction and writes none (`retention::memory::drop_things`),
+    /// with no commit when nothing durable changes. When the commit or any op fails, nothing
+    /// applies. `None` when no commit is written.
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
         let node = self.core.writer()?;
         let actor = m.actor.unwrap_or(node);
@@ -80,16 +83,17 @@ impl Engine {
         }
         if eph_ops.is_empty() {
             let deleting = m.deleting.clone();
-            let Some((id, dropped)) = self.run(|tx| {
-                let Some(id) = commit_in(tx, m)? else { return Ok(None) };
-                Ok(Some((id, crate::retention::memory::drop_things(tx, &deleting)?)))
-            })?
-            else {
-                return Ok(None);
-            };
-            let ts = self.core.ix.commits.get(&id).map(|c| c.view.ts).unwrap_or_default();
-            self.dropped_event(id, actor, ts, dropped);
-            return Ok(Some(Written { id, ts }));
+            if !m.unchecked {
+                let ts = Ts::make(self.now(), 0).unwrap_or_default();
+                for t in &deleting {
+                    check_authority(&self.core, node, &m.creates, t, CREATED.ak(), ts)?;
+                }
+            }
+            // a delete drops its things' ephemeral state whether or not it has durable writes
+            // to commit: one with none is a drop alone, no commit
+            let (id, dropped) = self.run(|tx| Ok((commit_in(tx, m)?, crate::retention::memory::drop_things(tx, &deleting)?)))?;
+            self.dropped_event(dropped);
+            return Ok(id.map(|id| Written { id, ts: self.core.ix.commits.get(&id).map(|c| c.view.ts).unwrap_or_default() }));
         }
         // a memory commit's writes and a durable commit's are not one (spec/commits.md §2)
         let durable = m.aspects.keys().next().map(|(t, k)| format!("{t} {k}")).or_else(|| m.creates.keys().next().map(|t| format!("the creation of {t}")));
@@ -185,15 +189,13 @@ impl Engine {
         Written { id, ts }
     }
 
-    /// The change event of the ephemeral aspects durable commit `c` (a delete, an undone
-    /// creation) dropped here (`retention::memory::drop_things`).
-    pub(crate) fn dropped_event(&mut self, c: CommitId, actor: Tid, ts: Ts, changed: Vec<(Tid, Ak)>) {
+    /// The change of the ephemeral aspects a delete or an undone creation dropped here
+    /// (`retention::memory::drop_things`): no commit carries it, so it is told as derived.
+    pub(crate) fn dropped_event(&mut self, changed: Vec<(Tid, Ak)>) {
         if changed.is_empty() {
             return;
         }
-        let now = self.now();
-        let author = self.core.me().unwrap_or(self.core.id.tid());
-        self.core.events.queue(Event::Ephemeral { id: c, origin: Origin::Local, author, actor, ts, received: now, changed });
+        self.core.events.queue(Event::Changed { cause: Cause::Deleted, changed });
         self.core.events.flush();
     }
 

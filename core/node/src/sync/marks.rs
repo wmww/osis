@@ -80,8 +80,9 @@ impl SyncEngine {
                         }
                     }
                 }
-                // an expiry of ephemeral state only: nothing to sync
-                crate::Event::Changed { cause: crate::events::Cause::Expiry, changed: aspects } if aspects.iter().all(|(_, a)| a.ephemeral()) => {}
+                // an expiry or delete of ephemeral state only: nothing to sync (a delete's dropped
+                // entries come as memory drops)
+                crate::Event::Changed { cause: crate::events::Cause::Expiry | crate::events::Cause::Deleted, changed: aspects } if aspects.iter().all(|(_, a)| a.ephemeral()) => {}
                 crate::Event::Changed { cause, changed: aspects } => {
                     changed = true;
                     narrow.extend(aspects.iter().cloned());

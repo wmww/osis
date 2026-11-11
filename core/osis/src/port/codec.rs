@@ -246,13 +246,13 @@ pub(crate) fn grants(v: Value) -> Result<Grants> {
     Ok(out)
 }
 
-const REASONS: [DerivedFrom; 5] = [DerivedFrom::ValidityChanged, DerivedFrom::Expired, DerivedFrom::Purged, DerivedFrom::Arrived, DerivedFrom::LostAccess];
+const REASONS: [DerivedFrom; 6] = [DerivedFrom::ValidityChanged, DerivedFrom::Expired, DerivedFrom::Purged, DerivedFrom::Arrived, DerivedFrom::LostAccess, DerivedFrom::Deleted];
 
 /// Fails to compile when a reason is added: list it in `REASONS` too.
 #[allow(dead_code)]
 fn reasons_listed(c: DerivedFrom) {
     match c {
-        DerivedFrom::ValidityChanged | DerivedFrom::Expired | DerivedFrom::Purged | DerivedFrom::Arrived | DerivedFrom::LostAccess => {}
+        DerivedFrom::ValidityChanged | DerivedFrom::Expired | DerivedFrom::Purged | DerivedFrom::Arrived | DerivedFrom::LostAccess | DerivedFrom::Deleted => {}
     }
 }
 

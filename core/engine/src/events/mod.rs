@@ -30,6 +30,9 @@ pub enum Cause {
     LostAccess,
     /// A blob arrived that a read of these aspects had missed (spec/data-model.md §6).
     Fetched,
+    /// A delete or an undone creation here dropped its things' ephemeral state, which no commit
+    /// carries (notes/ephemeral.md Deletion).
+    Deleted,
 }
 
 /// A commit whose listed form at one aspect may read otherwise (`Event::Commits`).
@@ -67,9 +70,8 @@ pub enum Event {
     /// A reference index row naming each of these targets appeared or went (`refs`): their
     /// backlinks changed. Only once a backlinks watch was asked for (`Engine::watch_references`).
     References(Arc<Vec<Tid>>),
-    /// Ephemeral state changed in memory (notes/ephemeral.md). `id` is the ephemeral commit that
-    /// carried the change, or the durable commit (a delete, an undone creation) that dropped its
-    /// things' ephemeral state.
+    /// Ephemeral state changed in memory (notes/ephemeral.md): `id` is the ephemeral commit that
+    /// carried the change.
     Ephemeral { id: CommitId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)> },
     /// What these commits' parts on these aspects hold or are judged changed: new, turned valid or
     /// invalid, body arrived, dropped, purged (`Engine::commit_row` reads them), and ephemeral

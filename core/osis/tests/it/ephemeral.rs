@@ -451,6 +451,48 @@ fn delete_resets_ephemeral_aspects_spec_data_model_1() {
     assert!(!group_of(&db, db.me()).items.contains(&x), "its membership goes with it");
 }
 
+// notes/ephemeral.md Deletion: a delete of a thing whose only content left is ephemeral (its
+// durable aspects removed, in no group) has nothing durable to commit, yet drops its ephemeral
+// values here as any delete does, with their backlinks; their listeners hear it once, as derived
+// (no commit carries it), and `retainers^.0` stays (a delete keeps it)
+// spec/data-model.md §1
+#[test]
+fn delete_of_ephemeral_only_thing_drops_its_values_spec_data_model_1() {
+    let (db, _c) = setup(0);
+    let key = |k: &str| osis::DynamicAspectKey::untyped(ak(k));
+    let cursor = key("app:cursor+.0");
+    let [x, y, keep] = db.commit_with(|w| Ok([w.create()?, w.create()?, w.create()?])).unwrap();
+    db.commit_with(|w| {
+        w.at(x, key("app:note.0")).set(&Value::Int(1))?;
+        w.at(keep, key("app:k.0")).set(&Value::Tid(x))?;
+        w.at(x, key("retainers^.0")).set(&Value::Set([Value::Tid(keep)].into_iter().collect()))
+    })
+    .unwrap();
+    db.commit_with(|w| w.at(x, key("app:note.0")).remove()).unwrap();
+    db.commit_set(x, cursor.clone(), &Value::Tid(y)).unwrap();
+    assert_eq!(db.backlinks(y, &Default::default()).unwrap().backlinks.len(), 1);
+    let (tx, rx) = channel();
+    let _sub = db.at(x, cursor.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
+    recv(&rx);
+    let (btx, brx) = channel();
+    let _bsub = db.on_backlinks_change(y, &Default::default(), move |_, p| btx.send(p.unwrap().backlinks.len()).unwrap()).unwrap();
+    assert_eq!(recv(&brx), 1);
+    let marks = durable_marks(&db);
+    let mut w = db.write();
+    w.delete(x).unwrap();
+    assert!(w.commit().unwrap().is_none(), "nothing durable to commit");
+    assert_eq!(durable_marks(&db), marks);
+    let c = recv(&rx);
+    assert_eq!((c.value, c.origin), (Ok(None), Origin::Derived(osis::DerivedFrom::Deleted)));
+    assert_eq!(db.at(x, cursor).get().unwrap(), None);
+    assert_eq!(recv(&brx), 0, "its backlinks go with it");
+    assert!(db.backlinks(y, &Default::default()).unwrap().backlinks.is_empty());
+    db.settle();
+    assert!(rx.try_recv().is_err() && brx.try_recv().is_err(), "told once");
+    assert!(!db.has_content(x).unwrap());
+    assert_eq!(db.at(x, key("retainers^.0")).get().unwrap(), Some(Value::Set([Value::Tid(keep)].into_iter().collect())), "the list stays");
+}
+
 /// Alice's synced group `g` with Bob granted `role` on it, through one host.
 fn shared(role: Role) -> (World, Osis, Osis, osis::Tid) {
     let mut w = World::new();

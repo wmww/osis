@@ -515,7 +515,7 @@ impl Engine {
         if memory {
             self.ephemeral_written(u, actor);
         } else {
-            self.dropped_event(u, actor, ts, dropped);
+            self.dropped_event(dropped);
         }
         Ok(Reverted::Written(Written { id: u, ts }))
     }

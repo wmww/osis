@@ -484,6 +484,31 @@ fn deleted_thing_stays_deleted_at_holders_spec_sync_9() {
     assert_eq!(net.eph_read(a, w, STATE), None, "nor back at the deleter");
 }
 
+// notes/ephemeral.md Deletion: a synced thing (g itself) in no group with only ephemeral content:
+// its delete writes no commit, yet drops the values at the deleter, whose entries leave the host
+// as any delete's do
+#[test]
+fn delete_of_ephemeral_only_thing_leaves_the_host_spec_sync_9() {
+    let (mut net, host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
+    let w = g;
+    let mut m = Mutation::new();
+    m.set(w, &eph(STATE), &s("secret")).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("secret")));
+    let l = net.label(a);
+    let before = net.hosts[host].hub.store().ephemeral_bytes(&l);
+    let mut m = Mutation::new();
+    m.deleting(w);
+    assert_eq!(net.engine(a).write(m).unwrap(), None, "nothing durable to commit");
+    assert_eq!(net.eph_read(a, w, STATE), None, "dropped at the deleter");
+    local(&mut net, a);
+    net.run();
+    assert!(net.hosts[host].hub.store().ephemeral_bytes(&l) < before, "its entry left the host");
+    assert_eq!(net.eph_read(a, w, STATE), None, "nor back at the deleter");
+}
+
 /// The memory commits `n` holds.
 fn memory_ids(net: &mut Net, n: usize) -> std::collections::BTreeSet<osis_base::CommitId> {
     net.engine(n).memory_commits().into_iter().map(|(c, _, _)| c).collect()
