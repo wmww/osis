@@ -172,10 +172,14 @@ struct Frame {
 impl Frame {
     /// A read of `id`, inside `accounted` or not; `dep` makes its dep when it is the first.
     fn note(&mut self, id: (usize, Option<u64>), accounted: bool, dep: impl FnOnce() -> Dep) {
-        match self.seen.get(&id).and_then(|&i| self.deps.get_mut(i)) {
-            Some(d) => d.accounted &= accounted,
-            None => {
-                self.seen.insert(id, self.deps.len());
+        match self.seen.entry(id) {
+            std::collections::hash_map::Entry::Occupied(i) => {
+                if let Some(d) = self.deps.get_mut(*i.get()) {
+                    d.accounted &= accounted;
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(self.deps.len());
                 self.deps.push(dep());
             }
         }
