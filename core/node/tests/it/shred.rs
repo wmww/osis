@@ -608,16 +608,25 @@ fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.state_digest(&t, &ak("t:reg.0")).unwrap(), lp.peers[1].engine.state_digest(&t, &ak("t:reg.0")).unwrap());
 }
 
-/// Of each 5040 orders of `past_expiry_and_purge_alike_in_every_order`, this stride's: 1 runs them all
-/// (with the sync sets and clocks 75600 cases, 670 s on 16 threads at load).
-const ORDER_STRIDE: usize = 389;
-
 // spec/commits.md §4, §5: a purged part, a part past its expiry, an unchecked first copy of a slot and
 // a relay's empty slots (the bytes of a stripped one, no record behind them or one), in any order, T
 // passing and a restart anywhere among them: each true copy delivered again at the end, the node reads
 // alike whatever it syncs, its commit applied, no flag left, nothing of either value recoverable.
+// The default test runs the 7 rotations of the items' order in every shape: each item first and
+// last, each pair both ways round.
 #[test]
-fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
+fn past_expiry_and_purge_alike_spec_commits_5() {
+    past_expiry_and_purge_alike(false);
+}
+
+// As above, all 5040 orders in every shape (75600 cases, about 670 s on 16 threads at load).
+#[test]
+#[ignore = "by hand: every order"]
+fn past_expiry_and_purge_alike_in_every_order_by_hand_spec_commits_5() {
+    past_expiry_and_purge_alike(true);
+}
+
+fn past_expiry_and_purge_alike(every: bool) {
     let mut lp = net2();
     let (t2, t3) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     let setup = lp.packages(0).unwrap();
@@ -654,13 +663,17 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
         (part_on(&whole, t2, &brief, true), Vec::new()),
         (rec[0].bytes.clone(), rec[0].blobs.clone()),
     ];
-    let mut orders: Vec<Vec<usize>> = vec![Vec::new()];
-    for i in 0..items.len() {
-        orders = orders.iter().flat_map(|q| (0..=q.len()).map(move |at| { let mut x = q.clone(); x.insert(at, i); x })).collect();
+    let n = items.len();
+    let mut orders: Vec<Vec<usize>> = (0..n).map(|r| (0..n).map(|i| (r + i) % n).collect()).collect();
+    if every {
+        orders = vec![Vec::new()];
+        for i in 0..n {
+            orders = orders.iter().flat_map(|q| (0..=q.len()).map(move |at| { let mut x = q.clone(); x.insert(at, i); x })).collect();
+        }
     }
     // (what it syncs, deliveries before T, whether a tick follows T)
     let shapes: Vec<(usize, usize, bool)> = (0..3).flat_map(|sync| [(0, false), (2, false), (2, true), (4, false), (4, true)].map(|(k, tick)| (sync, k, tick))).collect();
-    let cases: Vec<(usize, usize)> = shapes.iter().enumerate().flat_map(|(n, _)| (0..orders.len()).step_by(ORDER_STRIDE).map(move |o| (n, o))).collect();
+    let cases: Vec<(usize, usize)> = shapes.iter().enumerate().flat_map(|(n, _)| (0..orders.len()).map(move |o| (n, o))).collect();
     let outcomes = std::sync::Mutex::new(std::collections::BTreeMap::<String, String>::new());
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
