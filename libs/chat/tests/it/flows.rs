@@ -457,6 +457,15 @@ fn watch_hears_a_chunk_arrive_spec_dm_6() {
             })
         })
         .unwrap();
+        // and its entry rows in the one store, which keep the bytes too
+        b.sync_engine(|s| {
+            let ls: Vec<_> = s.labels().into_iter().map(|(_, l)| l.id).collect();
+            let h = s.hub_store();
+            let mut h = h.lock().unwrap();
+            for l in ls {
+                h.reader_remove(&l, &blob, false).unwrap();
+            }
+        });
         (blob, bytes)
     });
     let (_s, rx) = watch(&b, c);
