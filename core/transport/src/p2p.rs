@@ -134,9 +134,25 @@ pub trait Sock: Send + Sync + 'static {
     fn dial(&self, to: SocketAddr, key: PublicKey, own: Option<StaticSecret>, alpn: Alpn) -> impl Future<Output = Result<Self::Conn, Error>> + Send;
     /// The next connection that reached this socket, its protocol and where it came from.
     fn accept(&self) -> impl Future<Output = Result<(Self::Conn, Alpn, SocketAddr), Error>> + Send;
-    /// Sends a packet to `to`, so this socket's NAT lets `to`'s packets in.
+    /// Sends one datagram to `to` that no QUIC endpoint answers (`PUNCH`), so this socket's
+    /// NAT lets `to`'s packets in.
     fn punch(&self, to: SocketAddr);
     fn close(&self);
+}
+
+/// A punch's whole datagram: one byte, shorter than any QUIC packet, so a QUIC endpoint drops it
+/// unanswered.
+pub const PUNCH: [u8; 1] = [0];
+
+/// Whether an address a relayed connection's peer sent (spec/sync.md §10, hole punching) may be
+/// punched to or dialed: a unicast address with a port, and global unless the relay `via` is not
+/// (a relay on a LAN or loopback sees its peers there). Anything else the peer chose would turn
+/// this node's packets on a host it never meant to reach.
+pub fn punchable(to: SocketAddr, via: SocketAddr) -> bool {
+    let (ip, via) = (to.ip().to_canonical(), via.ip().to_canonical());
+    let broadcast = matches!(ip, IpAddr::V4(v) if v.is_broadcast());
+    let unicast = !(ip.is_unspecified() || ip.is_multicast() || broadcast);
+    unicast && to.port() != 0 && (crate::lan::is_global(ip) || !crate::lan::is_global(via))
 }
 
 pub(crate) type SConn<U> = <<U as Udp>::Sock as Sock>::Conn;
@@ -1028,7 +1044,9 @@ async fn relayed<U: Udp>(udp: U, sock: Arc<U::Sock>, relay: Relay, key: PublicKe
         };
         let (mut ts, mut tr) = tls_stream(tls, s, r, raw);
         let theirs = exchange(&mut ts, &mut tr, seen).await?;
-        direct(&udp, &sock, theirs, key, own.clone(), tx.clone());
+        if punchable(theirs, relay.addr) {
+            direct(&udp, &sock, theirs, key, own.clone(), tx.clone());
+        }
         Ok(P2pConn::Relayed(Arc::new(Relayed::new(key, ip_source(relay.addr.ip()), true, (ts, tr), Some(rc)))))
     };
     let r = tokio::select! {
@@ -1115,7 +1133,7 @@ impl<U: Udp> Registration<U> {
             loop {
                 match c.accept_stream().await {
                     Ok((bs, br)) => {
-                        self.udp.spawn(incoming::<U>(self.sock.clone(), self.secret.clone(), at, bs, br, self.tx.clone(), self.fwd.clone()));
+                        self.udp.spawn(incoming::<U>(self.sock.clone(), self.secret.clone(), self.relay.addr, at, (bs, br), self.tx.clone(), self.fwd.clone()));
                     }
                     Err(e) => return Err::<(), Error>(e),
                 }
@@ -1132,16 +1150,16 @@ impl<U: Udp> Registration<U> {
     }
 }
 
-/// A stream a relay forwarded: serve TLS over it, exchange addresses (ours `at`, as that relay
-/// sees it) and punch to the dialer's, then queue the connection for `accept`. Counted in `fwd`
+/// A stream the relay at `via` forwarded: serve TLS over it, exchange addresses (ours `at`, as
+/// that relay sees it) and punch to the dialer's if `punchable`, then queue the connection for `accept`. Counted in `fwd`
 /// until queued, which may end it first.
-async fn incoming<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, at: SocketAddr, s: <SConn<U> as Connection>::Send, r: <SConn<U> as Connection>::Recv, tx: mpsc::Sender<P2pConn<SConn<U>>>, fwd: Arc<Forwarded>) {
+async fn incoming<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, via: SocketAddr, at: SocketAddr, (s, r): (<SConn<U> as Connection>::Send, <SConn<U> as Connection>::Recv), tx: mpsc::Sender<P2pConn<SConn<U>>>, fwd: Arc<Forwarded>) {
     let (id, gate) = fwd.start();
-    let _ = race(&gate, serve_forwarded::<U>(sock, secret, at, s, r, tx)).await;
+    let _ = race(&gate, serve_forwarded::<U>(sock, secret, via, at, s, r, tx)).await;
     fwd.end(id);
 }
 
-async fn serve_forwarded<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, at: SocketAddr, mut s: <SConn<U> as Connection>::Send, mut r: <SConn<U> as Connection>::Recv, tx: mpsc::Sender<P2pConn<SConn<U>>>) -> Result<(), Error> {
+async fn serve_forwarded<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, via: SocketAddr, at: SocketAddr, mut s: <SConn<U> as Connection>::Send, mut r: <SConn<U> as Connection>::Recv, tx: mpsc::Sender<P2pConn<SConn<U>>>) -> Result<(), Error> {
     let res: Result<Relayed<SConn<U>>, Error> = async {
         let mut tag: Source = [0; 16];
         read_exact(&mut r, &mut tag).await?;
@@ -1151,7 +1169,10 @@ async fn serve_forwarded<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, at: S
         let raw = handshake(&mut tls, &mut s, &mut r).await?;
         let peer = tls.peer_certificates().and_then(|c| c.first()).and_then(|d| quic::key_of_spki(d.as_ref())).ok_or_else(|| Error::Protocol("no client key".into()))?;
         let (mut ts, mut tr) = tls_stream(tls, s, r, raw);
-        sock.punch(exchange(&mut ts, &mut tr, at).await?);
+        let theirs = exchange(&mut ts, &mut tr, at).await?;
+        if punchable(theirs, via) {
+            sock.punch(theirs);
+        }
         Ok(Relayed::new(peer, tag, false, (ts, tr), None))
     }
     .await;

@@ -90,6 +90,8 @@ pub(crate) struct Udp {
     lan_loss: BTreeMap<String, (u64, u64)>,
     /// `Net::set_dial_ms`; `None`: `DIAL_MS`.
     dial_ms: Option<u64>,
+    /// Punch packets sent (`Net::punches`).
+    punches: u64,
 }
 
 struct Host {
@@ -287,6 +289,11 @@ impl Net {
     /// now on.
     pub fn set_lan_loss(&self, segment: &str, pct: u64) {
         self.state().udp.lan_loss.entry(segment.to_owned()).or_default().0 = pct;
+    }
+
+    /// How many punch packets this net's sockets have sent.
+    pub fn punches(&self) -> u64 {
+        self.state().udp.punches
     }
 
     /// How many deliveries segment `segment` has lost.
@@ -498,7 +505,9 @@ impl Sock for MemSock {
     }
 
     fn punch(&self, to: SocketAddr) {
-        let _ = self.net.state().udp.route(self.addr, to);
+        let mut st = self.net.state();
+        st.udp.punches += 1;
+        let _ = st.udp.route(self.addr, to);
     }
 
     fn close(&self) {

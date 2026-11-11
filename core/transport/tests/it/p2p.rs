@@ -124,16 +124,26 @@ use osis_transport::p2p::{P2pRecv, P2pSend};
 
 /// A dials B (behind `nat_b`) through the relay only; returns whether the first connection was
 /// direct and whether a direct one exists after the punch settled. Checks the session both ways.
+/// A host with no NAT is at its public address.
 fn punch(seed: u64, nat_a: Option<Nat>, nat_b: Option<Nat>) -> (bool, bool) {
-    let w = world(seed, anyone());
-    let (a, b) = (host(&w.net, "a", "10.0.1.2", "203.0.113.1", nat_a), host(&w.net, "b", "10.0.0.2", "203.0.113.2", nat_b));
-    punch_in(w, a, b, if nat_b.is_some() { "203.0.113.2" } else { "10.0.0.2" })
+    punch_counted(seed, nat_a, nat_b).0
 }
 
-/// `punch` between hosts `a` and `b` of world `w`; the relay must see `b` at `seen`.
-fn punch_in(mut w: World, a: MemUdp, b: MemUdp, seen: &str) -> (bool, bool) {
+/// `punch`, and how many punch packets went out.
+fn punch_counted(seed: u64, nat_a: Option<Nat>, nat_b: Option<Nat>) -> ((bool, bool), u64) {
+    let w = world(seed, anyone());
+    let at = |inside, public, nat: Option<Nat>| if nat.is_some() { inside } else { public };
+    let b_at = at("10.0.0.2", "203.0.113.2", nat_b);
+    let (a, b) = (host(&w.net, "a", at("10.0.1.2", "203.0.113.1", nat_a), "203.0.113.1", nat_a), host(&w.net, "b", b_at, "203.0.113.2", nat_b));
+    let net = w.net.clone();
+    let r = punch_in(w, a, b, b_at, "203.0.113.2");
+    (r, net.punches())
+}
+
+/// `punch` between hosts `a` and `b` (at `b_at`) of world `w`; the relay must see `b` at `seen`.
+fn punch_in(mut w: World, a: MemUdp, b: MemUdp, b_at: &str, seen: &str) -> (bool, bool) {
     let b = P2p::new(b);
-    let url = format!("peer://10.0.0.2:7000 {}", w.relay.item());
+    let url = format!("peer://{b_at}:7000 {}", w.relay.item());
     let lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
     w.sched.run();
     let kb = lb.address().key;
@@ -238,6 +248,67 @@ fn punch_by_nat_type_spec_sync_10() {
     }
 }
 
+// spec/sync.md §10 (hole punching): a relayed connection makes the target send one punch
+// datagram to the dialer's address, and none to an address the dialer may not have it punch:
+// here a dialer at a private address seen through a global relay (as one that lied in the
+// exchange), which stays relayed. Which addresses: `punchable_addresses_spec_sync_10`.
+#[test]
+fn one_punch_and_none_to_a_refused_address_spec_sync_10() {
+    let (_, sent) = punch_counted(1, Some(Nat::CONE), Some(Nat::CONE));
+    assert_eq!(sent, 1, "one datagram per relayed connection");
+    let mut w = world(2, anyone());
+    let b = host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::CONE));
+    let a = host(&w.net, "a", "10.0.1.2", "", None);
+    let b = P2p::new(b);
+    let url = format!("peer://10.0.0.2:7000 {}", w.relay.item());
+    let lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
+    w.sched.run();
+    let addr = Address { url: peer_url(&[w.relay.item()]), key: lb.address().key };
+    let _seen = echo(&w.sched, lb);
+    let a = P2p::new(a);
+    w.sched
+        .block_on(async move {
+            let c = a.dial(&addr).await.unwrap();
+            let _s = round_trip(&c, b"relayed").await;
+            assert!(c.is_relayed());
+        })
+        .unwrap();
+    w.sched.run();
+    assert_eq!(w.net.punches(), 0);
+}
+
+// spec/sync.md §10 (hole punching): a punch or a direct dial goes only to a unicast address with
+// a port, global unless the relay is not.
+#[test]
+fn punchable_addresses_spec_sync_10() {
+    let global = sa("198.51.100.1:4040");
+    for (to, via, want) in [
+        ("203.0.113.1:5000", global, true),
+        ("[2001:db8::1]:5000", global, true),
+        ("[::ffff:203.0.113.1]:5000", global, true),
+        ("203.0.113.1:0", global, false),
+        ("10.0.0.2:5000", global, false),
+        ("192.168.1.2:5000", global, false),
+        ("100.64.0.1:5000", global, false),
+        ("127.0.0.1:5000", global, false),
+        ("[::1]:5000", global, false),
+        ("[fe80::1]:5000", global, false),
+        ("[::ffff:10.0.0.2]:5000", global, false),
+        ("0.0.0.0:5000", global, false),
+        ("255.255.255.255:5000", global, false),
+        ("224.0.0.1:5000", global, false),
+        ("[ff02::1]:5000", global, false),
+        ("10.0.0.2:5000", sa("10.0.0.9:4040"), true),
+        ("127.0.0.1:5000", sa("127.0.0.1:4040"), true),
+        ("203.0.113.1:5000", sa("10.0.0.9:4040"), true),
+        ("10.0.0.2:0", sa("10.0.0.9:4040"), false),
+        ("255.255.255.255:5000", sa("10.0.0.9:4040"), false),
+        ("[ff02::1]:5000", sa("[fe80::9]:4040"), false),
+    ] {
+        assert_eq!(osis_transport::p2p::punchable(sa(to), via), want, "{to} via {via}");
+    }
+}
+
 // spec/sync.md §10: `nat::punch_opens`, the rule the sims apply, is what the packet machine does
 // for every mapping and filtering on either side, not only the table above.
 #[test]
@@ -268,7 +339,7 @@ fn punch_over_a_relay_on_the_pairs_lan_is_direct_spec_sync_10() {
             w
         };
         let (a, b) = (w.net.udp("a", ip("10.0.0.1"), Some(public)), w.net.udp("b", ip("10.0.0.2"), Some(public)));
-        let (_, direct) = punch_in(w, a, b, "10.0.0.2");
+        let (_, direct) = punch_in(w, a, b, "10.0.0.2", "10.0.0.2");
         assert!(direct, "{nat:?}");
     }
 }

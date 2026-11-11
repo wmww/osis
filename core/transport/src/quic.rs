@@ -567,12 +567,22 @@ impl crate::p2p::Udp for QuicUdp {
     }
 
     fn bind(&self, at: SocketAddr, secret: Option<&crate::StaticSecret>) -> Result<QuicSock, Error> {
-        let ep = match secret {
-            Some(s) => quinn::Endpoint::server(server_config(keypair(s.as_bytes())?.1, &[ALPN, crate::p2p::RELAY_ALPN])?, at),
-            None => quinn::Endpoint::client(at),
+        let io = |e: std::io::Error| Error::Io(e.to_string());
+        let server = match secret {
+            Some(s) => Some(server_config(keypair(s.as_bytes())?.1, &[ALPN, crate::p2p::RELAY_ALPN])?),
+            None => None,
+        };
+        // bound here, as quinn binds (an IPv6 socket serves both families), so punches can go
+        // out of the same socket
+        let raw = socket2::Socket::new(socket2::Domain::for_address(at), socket2::Type::DGRAM, Some(socket2::Protocol::UDP)).map_err(io)?;
+        if at.is_ipv6() {
+            let _ = raw.set_only_v6(false);
         }
-        .map_err(|e| Error::Io(e.to_string()))?;
-        let local = ep.local_addr().map_err(|e| Error::Io(e.to_string()))?;
+        raw.bind(&at.into()).map_err(io)?;
+        let udp: std::net::UdpSocket = raw.into();
+        let punch = udp.try_clone().map_err(io)?;
+        let ep = quinn::Endpoint::new(quinn::EndpointConfig::default(), server, udp, std::sync::Arc::new(quinn::TokioRuntime)).map_err(io)?;
+        let local = ep.local_addr().map_err(io)?;
         let rx = match secret {
             Some(_) => {
                 let e2 = ep.clone();
@@ -601,7 +611,7 @@ impl crate::p2p::Udp for QuicUdp {
             }
             None => tokio::sync::mpsc::channel(1).1,
         };
-        Ok(QuicSock { ep, local, rx: tokio::sync::Mutex::new(rx) })
+        Ok(QuicSock { ep, punch, local, rx: tokio::sync::Mutex::new(rx) })
     }
 
     fn now_ms(&self) -> u64 {
@@ -625,6 +635,8 @@ impl crate::p2p::Udp for QuicUdp {
 /// lives while they do); `close` ends them all.
 pub struct QuicSock {
     ep: quinn::Endpoint,
+    /// The endpoint's socket, for punches.
+    punch: std::net::UdpSocket,
     local: SocketAddr,
     rx: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<(QuicConn, crate::p2p::Alpn, SocketAddr)>>,
 }
@@ -656,17 +668,13 @@ impl crate::p2p::Sock for QuicSock {
         self.rx.lock().await.recv().await.ok_or(Error::Closed)
     }
 
-    /// A QUIC handshake toward `to` that nobody completes (the peer's dialing socket accepts no
-    /// connections, and the pinned key is none): its Initial packets open this socket's NAT.
+    /// Best effort, as any UDP datagram: a send that fails is a punch lost on the way.
     fn punch(&self, to: SocketAddr) {
-        let cfg = random_seed().and_then(|s| keypair(&s)).and_then(|(_, me)| client_config(me, PinnedHost::new([0; 32]), ALPN, crate::p2p::dialer_limits(crate::p2p::Alpn::Osis, false)));
-        if let Some(connecting) = cfg.ok().and_then(|cfg| self.ep.connect_with(cfg, to, SNI_NAME).ok()) {
-            tokio::spawn(async move {
-                if let Ok(c) = connecting.await {
-                    c.close(0u32.into(), b"");
-                }
-            });
-        }
+        let to = match to {
+            SocketAddr::V4(v) if self.local.is_ipv6() => SocketAddr::new(std::net::IpAddr::V6(v.ip().to_ipv6_mapped()), v.port()),
+            _ => to,
+        };
+        let _ = self.punch.send_to(&crate::p2p::PUNCH, to);
     }
 
     fn close(&self) {
