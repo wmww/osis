@@ -923,7 +923,7 @@ impl State {
         for (l, b, row) in rows {
             let Some((wrap, stamp)) = row else { continue };
             match self.entries.get(&(l, b)) {
-                None if !self.tombs.contains_key(&(l, b)) => self.set_entry_quiet(l, b, Entry { wrap, stamp, cert: false, salt: None, kind: Kind::Unknown, memory: false }),
+                None if !self.tombs.contains_key(&(l, b)) => self.set_entry_quiet(l, b, Entry { wrap, stamp, cert: false, salt: None, size: None, kind: Kind::Unknown, memory: false }),
                 Some(e) if !e.memory && (e.wrap, e.stamp) != (wrap, stamp) => {
                     let e = Entry { wrap, stamp, ..e.clone() };
                     self.set_entry_quiet(l, b, e);

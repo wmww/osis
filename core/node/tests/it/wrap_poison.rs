@@ -802,10 +802,11 @@ fn other_epoch(lag: bool) -> (Vec<BlobId>, Vec<BlobId>, Vec<BlobId>, Vec<BlobId>
 // rotation (or any time before the node acts) the entry stays and no copy is made.
 #[test]
 fn other_epoch_wrap_heard_with_its_rotation_stays_spec_sync_5() {
-    let (ids, before, at, _, read) = other_epoch(false);
+    let (ids, before, at, mine, read) = other_epoch(false);
     assert_eq!(read, Some(s("message")));
     assert!(ids.iter().all(|id| at.contains(id)), "a good entry stays");
-    assert!(at.iter().all(|b| before.contains(b)), "no fresh copy");
+    // of the message (promoters place chain copies of their own meanwhile)
+    assert!(at.iter().filter(|b| mine.contains(b)).all(|b| before.contains(b)), "no fresh copy");
 }
 
 // spec/sync.md §5: heard with no sign of the rotation, it cannot be told from garbage: the node puts

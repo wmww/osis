@@ -60,7 +60,7 @@ impl SyncEngine {
             }
         }
         // the records, raw: they outlive the commits that minted them (spec/permissions.md §4)
-        self.place_records(g, l, &wanted.records)?;
+        self.place_records(g, l, &wanted.records, false)?;
         for (c, want) in wanted.commits {
             let (mine, have) = self.held_parts(g, l, &c)?;
             // what the label's closure bodies carry is never copied (a copy duplicating closure
@@ -149,14 +149,16 @@ impl SyncEngine {
     }
 
     /// The records entries under `l` hold: this node's own record blobs, another node's present at
-    /// each of `hosts` (`None`: every one), as `held_parts_at` counts copies. A record blob proves
-    /// itself, so every opened one counts.
-    pub(super) fn held_records_at(&self, l: LabelId, hosts: Option<&[HostKey]>) -> BTreeSet<Tid> {
+    /// each of `hosts` (`None`: every one), as `held_parts_at` counts copies; for a promotion
+    /// (`stamped`), another node's only stamped. A record blob proves itself, but a deposited one
+    /// is a reader's word on what to store (any made-up records may pad one real one): a promoter
+    /// never counts it, so never stamps it, and places its own; it waits for clearing.
+    pub(super) fn held_records_at(&self, l: LabelId, hosts: Option<&[HostKey]>, stamped: bool) -> BTreeSet<Tid> {
         let mut out = BTreeSet::new();
         for id in self.state.of_kind(&l, Kind::TAG_RECORDS) {
             let Some(e) = self.state.entries.get(&(l, id)) else { continue };
             let Kind::Records(ts) = &e.kind else { continue };
-            if e.cert || hosts.is_none_or(|ss| !ss.is_empty() && ss.iter().all(|s| self.state.holds_at(s, &l, &id))) {
+            if e.cert || (!stamped || e.stamp.is_some()) && hosts.is_none_or(|ss| !ss.is_empty() && ss.iter().all(|s| self.state.holds_at(s, &l, &id))) {
                 out.extend(ts.iter().copied());
             }
         }
@@ -165,10 +167,11 @@ impl SyncEngine {
 
     /// Places the records of `want` that no entry under `l` holds at the hosts this node syncs it
     /// with (`held_records_at`) as one record blob of this node's (spec/wire.md §3); records this
-    /// node does not hold are left out. Whether every one of `want` is held there now.
-    pub(crate) fn place_records(&mut self, g: &Tid, l: LabelId, want: &BTreeSet<Tid>) -> Result<bool> {
+    /// node does not hold are left out (`stamped`: as a promoter counts them). Whether every one of
+    /// `want` is held there now.
+    pub(crate) fn place_records(&mut self, g: &Tid, l: LabelId, want: &BTreeSet<Tid>, stamped: bool) -> Result<bool> {
         let hosts = self.counted_at(g, l);
-        let held = self.held_records_at(l, hosts.as_deref());
+        let held = self.held_records_at(l, hosts.as_deref(), stamped);
         let missing: Vec<osis_base::CreationRecord> = want.iter().filter(|t| !held.contains(t)).filter_map(|t| self.engine.core.created(t).cloned()).collect();
         let all = missing.len() == want.iter().filter(|t| !held.contains(t)).count();
         if missing.is_empty() {

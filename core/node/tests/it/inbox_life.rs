@@ -1451,7 +1451,7 @@ fn fresh_node_keeps_requests_over_junk_spec_sync_5() {
     assert!(junk.iter().filter(|x| held.contains(x)).count() <= osis_base::format::DEPOSITS_WAITING - real.len());
 }
 
-// spec/sync.md §5, §2: a shared group's label is its own inbox, and its readers' card changes are deposits past the cap: its admin keeps them all; the record blobs of their chains go up stamped with them
+// spec/sync.md §5, §2: a shared group's label is its own inbox, and its readers' card changes are deposits past the cap: its admin keeps them all
 #[test]
 fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     let mut net = Net::bare();
@@ -1487,9 +1487,10 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     }
     assert!(readers.iter().all(|r| net.engine(*r).role_on(&o) == Some(Role::Read)));
     let before: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
-    // the readers' cards and the record blobs of their chains went up stamped
-    let waiting = before.iter().filter(|b| osis_proto::LabelStore::entry(&*net.hosts[host].hub.store(), &l, b).unwrap().is_some_and(|m| m.stamp.is_none())).count();
-    assert_eq!(waiting, 0, "nothing waits in the budget");
+    // the readers' cards went up stamped; what waits is at most each reader's record blob (never
+    // promoted: the promoter placed its own), left to clearing
+    let leftover: Vec<_> = before.iter().filter(|b| osis_proto::LabelStore::entry(&*net.hosts[host].hub.store(), &l, b).unwrap().is_some_and(|m| m.stamp.is_none())).copied().collect();
+    assert!(leftover.len() <= readers.len(), "{}", leftover.len());
     net.set_online(a, false);
     let until = net.now() + INBOX_LIFETIME_MS;
     let junk = deposit_junk(&mut net, readers[0], (host, &l), o, 40, until);
@@ -1509,7 +1510,7 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     assert!(placed.len() >= osis_base::format::DEPOSITS_WAITING / 3, "readers placed: {}", placed.len());
     // all but the junk, less the cards a later one replaced (they go as replaced, not by the
     // clearing rule)
-    let held: Vec<_> = net.host_ids(host, &l).into_iter().filter(|x| !junk.contains(x) && (last.contains(x) || !placed.contains(x))).collect();
+    let held: Vec<_> = net.host_ids(host, &l).into_iter().filter(|x| !junk.contains(x) && !leftover.contains(x) && (last.contains(x) || !placed.contains(x))).collect();
     assert!(!last.is_empty() && last.iter().all(|x| held.contains(x)));
     net.set_online(a, true);
     for _ in 0..4 {
@@ -1752,4 +1753,71 @@ fn a_delivery_under_a_replaced_inbox_is_sent_again_spec_sync_3() {
         let want = if n <= 3 { vec![(n, Some(l))] } else { Vec::new() };
         assert_eq!(sent.iter().map(|x| (x.1, x.2)).collect::<Vec<_>>(), want, "replacement {n}");
     }
+}
+
+// spec/sync.md §5 (Promotion): records are unsigned with a free nonce, so a reader can pad one
+// record of its own chain with made-up ones; such a deposited record blob counts toward no chain
+// and is never stamped, though the reader's later card is promoted (the promoter places its own
+// record blob)
+#[test]
+fn a_padded_record_blob_is_never_stamped_spec_sync_5() {
+    let mut net = Net::bare();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let addr = net.address(host);
+    let (alice, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let (o, done) = net.engine(a).create_with_admin(&alice.account).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let (l, acts) = net.sync(a).create_label(&o, vec![addr.clone()]).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let r = net.node(10, &[host]);
+    let (p, done) = net.engine(r).create_account(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(r).carry_out(done).unwrap();
+    net.actions(r, acts);
+    net.run();
+    net.pair(r, a);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let done = net.engine(a).grant(&o, &p.account, &edge).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(r).role_on(&o), Some(Role::Read));
+    // the real records r placed for its chains, padded with 200 made-up ones
+    let mut rng = osis_crypto::SeededRng::from_u64(7);
+    let real: std::collections::BTreeSet<Tid> = net.sync(r).entries(&l).into_iter().filter_map(|x| if let EntryKind::Records(ts) = x.1 { Some(ts) } else { None }).flatten().collect();
+    let mut records: Vec<_> = real.iter().map(|t| net.engine(r).core.created(t).unwrap().clone()).collect();
+    for i in 0..200u32 {
+        let mut nonce = [0u8; 32];
+        nonce[..4].copy_from_slice(&i.to_be_bytes());
+        records.push(osis_base::CreationRecord::Thing { admin: p.account, nonce, link: None });
+    }
+    let plain = osis_commit::record_blob::encode_record_blob(&records);
+    let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(&mut rng), None, Vec::new()).unwrap();
+    let (key, blob) = osis_label::frame(&prefix, &plain, &mut rng).unwrap();
+    let id = osis_label::blob_id(&blob);
+    let secret = net.engine(r).wrap_secret(&o, None).unwrap().unwrap();
+    let wrap = osis_crypto::wrap(&secret, &id, &key, 0).unwrap();
+    let seed = net.engine(r).deposit_seed(&o).unwrap().unwrap();
+    let sig = osis_label::sign_deposit(&osis_crypto::deposit_key(&seed, &l), &l, &id, &wrap);
+    crate::wrap_poison::send(&mut net, r, host, osis_proto::Message::Deposit { id: 0x4000_0001, label: l, blob, wrap, sig });
+    assert!(net.host_ids(host, &l).contains(&id), "the host took it");
+    let before: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+    // a card of r's to promote, whose chain holds r's record
+    let acts = net.sync(r).publish_reach([9; 32], vec![]).unwrap();
+    net.actions(r, acts);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    let fresh: Vec<_> = net.host_ids(host, &l).into_iter().filter(|b| !before.contains(b)).collect();
+    let store = net.hosts[host].hub.store();
+    let promoted = fresh.iter().any(|b| osis_proto::LabelStore::entry(&*store, &l, b).unwrap().is_some_and(|m| m.stamp.is_some()));
+    assert!(promoted, "the card went up stamped");
+    assert!(osis_proto::LabelStore::entry(&*store, &l, &id).unwrap().is_none_or(|m| m.stamp.is_none()), "never stamped");
 }

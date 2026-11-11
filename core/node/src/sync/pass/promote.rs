@@ -91,7 +91,7 @@ impl SyncEngine {
             complete &= self.place_copy(g, l, x, &Parts::new(), b)?;
         }
         if !missing.records.is_empty() {
-            complete &= self.place_records(g, l, &missing.records)? && host.is_none();
+            complete &= self.place_records(g, l, &missing.records, true)? && host.is_none();
         }
         Ok(Some(complete))
     }
@@ -194,11 +194,8 @@ impl SyncEngine {
 
     /// A writer re-uploads stamped the deposited entries it verified (spec/sync.md §5): applied
     /// commits whose author's chain is under the label (`complete_chains` placed what it held
-    /// of it), with the deposited record blobs carrying records of that chain (a record blob
-    /// is no commit: promoted only so, else it would wait for clearing); per host (a blob may
-    /// be deposited at several).
+    /// of it); per host (a blob may be deposited at several).
     pub(super) fn promote(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
-        let mut records = BTreeSet::new();
         for (id, e, c, parts) in self.due_deposits(conn, host, l) {
             if uploads.iter().any(|u| osis_label::blob_id(&u.blob) == id) || !self.chain_missing(Some(host), g, l, &c, &parts)?.is_some_and(|m| m.is_empty()) {
                 continue;
@@ -207,19 +204,6 @@ impl SyncEngine {
             uploads.push(self.stamped_upload(l, id, e, blob, write));
             // still deposited there until the host takes the stamped upload (a refusal, say a
             // step registered meanwhile, leaves it for the next pass)
-            records.extend(self.chain_under(&c, &parts.iter().copied().collect()).map(|x| x.records).unwrap_or_default());
-        }
-        if records.is_empty() {
-            return Ok(());
-        }
-        for id in self.state.deposited_at(&host, &l) {
-            let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
-            let Kind::Records(ts) = &e.kind else { continue };
-            if !ts.iter().any(|t| records.contains(t)) || uploads.iter().any(|u| osis_label::blob_id(&u.blob) == id) || self.conns.get(&conn).is_some_and(|c| crate::sync::in_flight(c, &c.req.sent, (l, id), self.now())) {
-                continue;
-            }
-            let Some(blob) = self.engine.blob(&id)? else { continue };
-            uploads.push(self.stamped_upload(l, id, e, blob, write));
         }
         Ok(())
     }
@@ -252,7 +236,7 @@ impl SyncEngine {
         let mut out = crate::labeling::Certs::default();
         // records travel raw, also those of the label's own things: a creation's body goes when
         // its thing ends, and what depends on it lives on (spec/permissions.md §4)
-        let held = self.held_records_at(l, host.as_ref().map(std::slice::from_ref));
+        let held = self.held_records_at(l, host.as_ref().map(std::slice::from_ref), true);
         out.records = chain.records.difference(&held).copied().collect();
         for (x, want) in chain.commits {
             let (_, held) = self.held_parts_at(g, l, &x, host.as_ref().map(std::slice::from_ref))?;

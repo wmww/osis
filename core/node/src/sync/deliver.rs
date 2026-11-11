@@ -338,7 +338,7 @@ impl SyncEngine {
         let minted: BTreeSet<Tid> = self.engine.header(c).map(|h| h.aspects.iter().filter(|a| a.ak.as_str() == "created.0").map(|a| a.tid).collect()).unwrap_or_default();
         if !minted.is_empty() {
             for l in self.engine.group_labels(g)?.into_iter().filter(|l| !l.replaced) {
-                self.place_records(g, l.id, &minted)?;
+                self.place_records(g, l.id, &minted, false)?;
             }
         }
         self.place_aspects(g, c, owed, |a| matches!(a.ak.as_str(), "roles.0" | "keys.0") && !closure.contains(&a.tid))

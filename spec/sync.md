@@ -208,7 +208,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - **Moot**: an inbox blob once its delivery is forgotten or sealed again (§3), any deposit under a label the client sees replaced.
   - **Promotion**: a writer that verifies a deposited commit the label must hold re-uploads it stamped (promotes it), only once its author's chain for the deposited deltas (spec/permissions.md §4) is under the label.
     - A promoter completes the chain it holds, placing the missing deltas as its own certificate copies with the promotion.
-    - With it, the promoter re-uploads stamped each record blob deposited there that carries a record of that chain.
+    - A record blob counts toward the chain only stamped or the promoter's own; a deposited record blob is never promoted (it waits for clearing).
     - A writer that holds neither the commit applied nor the chain leaves the deposit unpromoted.
     - The author's chain under a label leaves out every `keys.0` but the author's own.
     - A certificate copy is never deleted for an incomplete chain.

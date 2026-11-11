@@ -293,13 +293,15 @@ fn reregistration_after_rotation_spec_sync_5() {
     net.run();
     assert_eq!(net.read(a, t), Some(s("from b")), "the writer stamps under the new step");
     // the removed holder comes back: walked to the new step, claim refused, stranded
-    let n_before = net.host_ids(host, &l).len();
+    let ids_before = net.host_ids(host, &l);
     net.blocked_peers.extend([(a, c), (b, c)]);
     net.set_online(c, true);
     net.advance(10_000);
     assert_eq!(net.read(c, t), Some(s("before")), "nothing new readable");
     assert!(net.sync(c).stranded_at(&l), "stranded");
-    assert_eq!(net.host_ids(host, &l).len(), n_before, "nothing deposited under the label");
+    // (a writer may place its own record blob meanwhile: a promoter counts no deposited one)
+    let deposited = net.host_ids(host, &l).into_iter().filter(|x| !ids_before.contains(x)).filter(|x| osis_proto::LabelStore::entry(&*net.hosts[host].hub.store(), &l, x).unwrap().is_some_and(|m| m.stamp.is_none())).count();
+    assert_eq!(deposited, 0, "nothing deposited under the label");
     for _ in 0..3 {
         net.run();
         net.advance(61_000);
