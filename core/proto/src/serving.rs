@@ -363,7 +363,7 @@ impl ServingSession {
     /// request's frame, a push; none while nothing waits for room.
     pub fn need(&self) -> Option<usize> {
         if let Some(p) = self.pending.front() {
-            return Some(p.allowance);
+            return Some(p.need());
         }
         self.flush_need.or_else(|| self.held().then_some(self.push_need.max(1)))
     }

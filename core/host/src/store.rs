@@ -95,8 +95,8 @@ pub struct HostPolicy {
     pub max_queued_bytes: usize,
     /// Bytes the hub holds for connections in each direction, over all of them: partially
     /// received frames (past it the connection holding the most is closed), and bytes written
-    /// and not yet taken by the transport (past it the hub is full: no input or push until
-    /// readers drain it; `Hub::full`). With `max_connections` times
+    /// and not yet taken by the transport with the reply allowances reserved (never passed:
+    /// output waits for room, `Hub::held`). With `max_connections` times
     /// `osis_transport::link::CONN_MEMORY`, the node's memory bound for its connections.
     pub max_buffered_bytes: usize,
 }
