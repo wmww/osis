@@ -136,7 +136,7 @@ fn losts(msgs: &[Message]) -> Vec<(LabelId, Option<Vec<u8>>)> {
 fn rotate(net: &mut Net, b: usize, g: Tid) -> CommitId {
     let tb = net.tid(b);
     let rec = recipients_of(net.engine(b), &[(tb, Role::Admin)]);
-    rotation(net.engine(b), g, &rec, 10, false)
+    rotation(net.engine(b), g, &rec, 9, false)
 }
 
 /// The entries of commit `c` `b` holds under `l`.
@@ -324,13 +324,19 @@ fn a_member_being_ended_is_relayed_no_signal_spec_sync_10() {
 // where the step that judged it ended. An app write made after the rotation, between the same two
 // steps, is placed by the same pass: logged after the rotation, it reaches the member being ended
 // neither by a Pull answered in the next step's event (nothing of either is logged by then), nor
-// by push, nor by a Pull from before the rotation after it
+// by push, nor by a Pull from before the rotation after it. A pass places its bodies in commit-ID
+// order (`Engine::label_bodies_meta`), so the write is repeated until one sorts after the rotation
 #[test]
 fn a_write_logged_after_the_rotation_in_its_step_is_not_served_spec_sync_10() {
     let Setup { mut net, b, g, l, mut p, cursor, .. } = opened();
     let held: BTreeSet<BlobId> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).collect();
     let c = rotate(&mut net, b, g);
-    net.item(b, g, g, "after");
+    let t = net.item(b, g, g, "after");
+    for i in 0.. {
+        if net.write(b, t, &format!("after {i}")) > c {
+            break;
+        }
+    }
     let mut served = added_of(&pull(&mut net, b, &mut p, Some(cursor.clone()), vec![]).events, l);
     served.extend(pushes(&step(&mut net, b, &mut p)).iter().flat_map(|s| added_of(&s.events, l)));
     let rotated = entries_of(&mut net, b, l, c);

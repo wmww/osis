@@ -164,10 +164,18 @@ fn anchors(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<BTreeSet<Epoch>
 }
 
 /// The keysets of holder actor `m` of role `r` that `a`'s current keysets of `r` record `m` was
-/// left out at (spec/crypto.md §4, Left out): Seal seals `m` only past each.
-fn left_out_at(core: &Core, a: &Tid, m: &Tid, r: Role) -> BTreeSet<Epoch> {
-    let Some(epochs) = core.epochs(a) else { return BTreeSet::new() };
-    epochs.role(r).current().iter().filter_map(|e| core.ix.keysets.get(&(*a, r, *e))?.left_out.get(m)).flatten().copied().collect()
+/// left out at (spec/crypto.md §4, Left out), each with the latest key of those keysets'
+/// earliest bodies: Seal seals `m` only past each (`osis_keys::Keysets::past`).
+fn left_out_at(core: &Core, a: &Tid, m: &Tid, r: Role) -> BTreeMap<Epoch, osis_perm::Point> {
+    let mut out = BTreeMap::new();
+    let Some(epochs) = core.epochs(a) else { return out };
+    for x in epochs.role(r).current().iter().filter_map(|e| core.ix.keysets.get(&(*a, r, *e))) {
+        let (Some(at), Some(ks)) = (x.since, x.left_out.get(m)) else { continue };
+        for q in ks {
+            out.entry(*q).and_modify(|p: &mut osis_perm::Point| *p = (*p).max(at)).or_insert(at);
+        }
+    }
+    out
 }
 
 /// How a rotation, grant or re-seal of an actor boxes one holder (`sealed`).
@@ -259,10 +267,12 @@ pub(crate) fn sealing(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) 
 /// left-out keysets; left out where a role of it is blocked at this node.
 fn sealed_to_account(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<(Sealed, BTreeMap<Role, Epoch>)> {
     let mut blocked = BTreeMap::new();
-    let (mut anchored, mut out) = (BTreeSet::new(), BTreeSet::new());
+    let (mut anchored, mut out) = (BTreeSet::new(), BTreeMap::new());
     for r in ROLES.into_iter().filter(|r| *r <= role) {
         anchored.extend(anchors(tx, a, m, r)?);
-        out.extend(left_out_at(tx.core, a, m, r));
+        for (q, at) in left_out_at(tx.core, a, m, r) {
+            out.entry(q).and_modify(|p: &mut osis_perm::Point| *p = (*p).max(at)).or_insert(at);
+        }
     }
     let held = keysets_of(tx, m, role, None)?;
     let k = match osis_keys::seal_keyset(&held, &anchored, &BTreeSet::new(), &out) {
@@ -302,7 +312,7 @@ pub(crate) fn left_out(tx: &mut Tx<'_>, a: &Tid, m: &Tid, role: Role, boxed: Opt
         return Ok(());
     }
     for r in ROLES.into_iter().filter(|r| *r <= role && Some(*r) > boxed) {
-        let mut ks = left_out_at(tx.core, a, m, r);
+        let mut ks: BTreeSet<Epoch> = left_out_at(tx.core, a, m, r).into_keys().collect();
         ks.extend(blocked.get(&r));
         if ks.is_empty() {
             continue;
