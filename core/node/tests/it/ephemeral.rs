@@ -4756,3 +4756,44 @@ fn dead_expiring_ephemeral_write_covered_before_expiry_spec_commits_5() {
         assert_eq!(net.eph_read(n, w, STATE), Some(s("y")));
     }
 }
+
+// spec/requirements.md Ephemeral data (a restarted node gets ephemeral state back from the nodes
+// that still hold it): a's write is held only by b once the host and a restart, and a demotion
+// rotates the write key before b is back; b, now a reader, may only relay its copy under the old
+// stamp, which the host refuses (code 9), so a never gets it back
+#[test]
+#[ignore = "issues/eph-reader-copy-after-rotation.md"]
+fn repro_reader_copy_after_rotation_spec_sync_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "t");
+    net.run();
+    let mut m = Mutation::new();
+    m.set(t, &eph(STATE), &s("v")).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    net.advance(15_000);
+    assert_eq!(net.eph_read(b, t, STATE), Some(s("v")));
+    net.set_online(b, false);
+    net.restart_host(host);
+    net.restart(a, 5);
+    net.run();
+    net.advance(15_000);
+    let tb = net.tid(b);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.set_online(b, true);
+    for _ in 0..4 {
+        net.advance(15_000);
+    }
+    assert_eq!(net.eph_read(b, t, STATE), Some(s("v")));
+    assert_eq!(net.eph_read(a, t, STATE), Some(s("v")));
+}
