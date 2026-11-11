@@ -87,8 +87,8 @@ pub enum ServingInput {
     Peer(Box<Message>),
     /// The upper layer has Notifies to send: `ServingOutput::Room` when the push rule allows.
     WantRoom,
-    /// The node is no longer full (`ServingSession::set_full`): held pushes and room go on as
-    /// at a `Taken`.
+    /// The node no longer holds back this connection's output (`ServingSession::set_full`):
+    /// held pushes and room go on as at a `Taken`.
     Unfull,
 }
 
@@ -227,7 +227,8 @@ pub struct ServingSession {
     authed: bool,
     /// The upper layer waits for push room (`WantRoom`).
     room_wanted: bool,
-    /// The node holds all the output it may (`set_full`): no push goes, none is granted room.
+    /// The node holds all the output it may for this connection (`set_full`): no push goes, none
+    /// is granted room.
     full: bool,
     /// The node's own requests to the dialer (`ServingInput::Peer`), within the request window.
     requests: crate::client::Window,
@@ -305,10 +306,10 @@ impl ServingSession {
         }
     }
 
-    /// Whether the node holds all the unread output it may over its connections (its upper
-    /// layer's bound, spec/sync.md §10 Served connections): while it does, pushes wait as for a
+    /// Whether the node holds all the unread output it may for this connection (its upper
+    /// layer's share, spec/sync.md §10 Served connections): while it does, pushes wait as for a
     /// full send queue (`owed`, relay-only ones dropped) and no room is granted. Pushes resume
-    /// at the next `Taken` after it is lifted.
+    /// at `Unfull` or the next `Taken` after it is lifted.
     pub fn set_full(&mut self, full: bool) {
         self.full = full;
     }

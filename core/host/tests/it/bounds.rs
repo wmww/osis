@@ -91,23 +91,23 @@ fn written(out: &[HubOutput], id: u64) -> u64 {
     out.iter().map(|o| if let HubOutput::Send(i, b) = o && *i == id { b.len() as u64 } else { 0 }).sum()
 }
 
-// spec/sync.md §10 (Served connections): past `max_buffered_bytes` unread the hub is full: it
-// grants no push room and its driver hands it no input, and readers that read, however slowly,
-// all keep their connections while they drain it; below it again, room is granted
+// spec/sync.md §10 (Served connections): a connection holding more than its share of
+// `max_buffered_bytes` unread waits (no input, no push room) while its reader drains it; readers
+// that read, however slowly, all keep their connections; under its share again, room is granted
 #[test]
-fn slow_readers_drain_a_full_hub() {
+fn slow_readers_drain_their_shares() {
     let mut w = World::new();
     let mib = 1 << 20;
     let h = unread_hub(&mut w, 4 * mib, 6);
     let mut now = w.now();
     let hub = &mut w.hubs[h];
-    // six readers, 2 MiB each: three times the bound
+    // six readers, 2 MiB each: three times the bound, each over its sixth
     for id in 1..=6u64 {
         let out = hub.down(now, vec![(id, push(id as u8, 2 * mib - 4096))]);
         assert!(closed(&out).is_empty());
     }
-    assert!(hub.full(), "unread {}", hub.unread());
-    // no room while full
+    assert!((1..=6).all(|id| hub.waits(id)), "unread {}", hub.unread());
+    // no room while it waits
     let out = hub.down(now, vec![(1, osis_host::Down::WantRoom)]);
     assert!(!out.iter().any(|o| matches!(o, HubOutput::Up(_, osis_host::Up::Room { .. }))));
     // each reads 512 KiB per report period, and 6 only 64 KiB (Hello included)
@@ -125,19 +125,98 @@ fn slow_readers_drain_a_full_hub() {
         out.extend(hub.tick(now));
         assert!(closed(&out).is_empty(), "a reader closed: {out:?}");
         if out.iter().any(|o| matches!(o, HubOutput::Up(1, osis_host::Up::Room { .. }))) {
-            assert!(!hub.full() && room.is_none());
+            assert!(!hub.waits(1) && room.is_none());
             room = Some(rounds);
         }
     }
-    assert!(!hub.full());
-    assert!(room.is_some(), "room once no longer full");
+    assert!((1..=6).all(|id| !hub.waits(id)));
+    assert!(room.is_some(), "room once under its share");
     assert_eq!(hub.connections(), 6);
 }
 
+// spec/sync.md §10 (Served connections): fifteen readers trickling their shares full slow only
+// themselves: a newcomer holding nothing is served at its first input, its reply in the same
+// batch, every time; as holders leave, shares grow and those back under theirs are resumed
+#[test]
+fn tricklers_slow_only_themselves() {
+    let mut w = World::new();
+    let mib = 1 << 20;
+    let h = unread_hub(&mut w, 15 * mib, 15);
+    let mut now = w.now();
+    let hub = &mut w.hubs[h];
+    for id in 1..=15u64 {
+        assert!(closed(&hub.down(now, vec![(id, push(id as u8, mib + (256 << 10)))])).is_empty());
+    }
+    assert!(hub.unread() > 15 * mib);
+    assert!((1..=15).all(|id| hub.waits(id)));
+    // the newcomer, a reader whose bytes the transport takes
+    let mut t16 = written(&hub.accept(now, 16, [9; 32], osis_host::Remote::key([16; 32])), 16);
+    hub.input(now, 16, encode_frame(&Hello::new(now, [2; 32]).encode()));
+    hub.take_resumed();
+    // the tricklers take 16 KiB a period; the newcomer asks each period: answered in that input
+    let mut taken = [0u64; 16];
+    for round in 1..=10u64 {
+        let mut reports: Vec<(u64, u64)> = (1..=15u64).map(|id| {
+            taken[id as usize] += 16 << 10;
+            (id, taken[id as usize])
+        }).collect();
+        reports.push((16, t16));
+        now += osis_proto::serving::PUSH_POLL_MS;
+        let mut out = hub.sent(now, &reports);
+        out.extend(hub.tick(now));
+        assert!(closed(&out).is_empty(), "round {round}: {out:?}");
+        assert!(!hub.waits(16), "a connection holding nothing never waits");
+        assert!((1..=15).all(|id| hub.waits(id)), "round {round}: the tricklers still over their shares");
+        let out = hub.input(now, 16, encode_frame(&Message::Ping { id: round as _, wall_ms: now }.encode()));
+        assert!(written(&out, 16) > 0, "round {round}: the newcomer's Ping answered at once");
+        t16 += written(&out, 16);
+    }
+    // the newcomer pulls 4 MiB and holds it: it waits, nobody is closed
+    hub.sent(now, &[(16, t16)]);
+    let before = hub.unread();
+    let out = hub.down(now, vec![(16, push(16, 4 * mib))]);
+    assert!(closed(&out).is_empty() && hub.unread() > before);
+    assert!(hub.waits(16));
+    // tricklers leave: the shares grow, the rest of them resume as theirs pass what they hold,
+    // and 16 last, with no byte of it taken
+    for id in 1..=15u64 {
+        hub.closed(id);
+    }
+    assert!(!hub.waits(16));
+    assert_eq!(hub.take_resumed().last(), Some(&16));
+}
+
+// spec/sync.md §10 (Served connections): shares follow the number of holders: a connection
+// over a smaller share, after another starts holding output, just waits (nobody is closed), and
+// resumes when that one leaves
+#[test]
+fn shares_follow_the_holders() {
+    let mut w = World::new();
+    let mib = 1 << 20;
+    let h = unread_hub(&mut w, 4 * mib, 2);
+    let now = w.now();
+    let hub = &mut w.hubs[h];
+    // two holders (their Hellos unread): 1's 1.5 MiB is under its 2 MiB share
+    assert!(closed(&hub.down(now, vec![(1, push(1, 3 * mib / 2))])).is_empty());
+    assert!(!hub.waits(1));
+    // a third holder: shares of 4/3 MiB, 1 waits
+    hub.accept(now, 3, [9; 32], osis_host::Remote::key([3; 32]));
+    hub.input(now, 3, encode_frame(&Hello::new(now, [2; 32]).encode()));
+    let out = hub.sent(now, &[(3, 0)]);
+    assert!(closed(&out).is_empty());
+    assert!(hub.waits(1) && !hub.waits(2) && !hub.waits(3));
+    hub.take_resumed();
+    let out = hub.closed(3);
+    assert!(closed(&out).is_empty());
+    assert!(!hub.waits(1));
+    assert_eq!(hub.take_resumed(), vec![1]);
+}
+
 // spec/requirements.md (peer input never causes unbounded allocation), spec/sync.md §10 (Served
-// connections): connections that never read and fill the bound are closed once a report period
-// passes with none of their bytes taken, the one holding the most first and only until the hub
-// is no longer full; a reader taking its bytes keeps its connection however much it holds
+// connections): connections that never read and put the node over its bound are closed once a
+// report period passes with none of their bytes taken, the one holding the most first and only
+// until the node is back under it; a reader taking its bytes keeps its connection however much
+// it holds
 #[test]
 fn stuck_output_closed_biggest_first() {
     let mut w = World::new();
@@ -146,15 +225,11 @@ fn stuck_output_closed_biggest_first() {
     let now = w.now();
     let hub = &mut w.hubs[h];
     // 1 never reads 3 MiB, 2 never reads 2 MiB, 3 reads its 2 MiB slowly
-    let mut sent3 = 0;
     for (id, n) in [(1, 1), (1, 2), (1, 3), (2, 4), (2, 5), (3, 6), (3, 7)] {
         let out = hub.down(now, vec![(id, push(n, mib - 4096))]);
         assert!(closed(&out).is_empty());
-        if id == 3 {
-            sent3 += written(&out, 3);
-        }
     }
-    assert!(hub.full() && hub.unread() > 4 * mib);
+    assert!(hub.unread() > 4 * mib);
     // within the report period nothing closes
     let half = now + osis_proto::serving::PUSH_POLL_MS / 2;
     let out = [hub.sent(half, &[(3, 64 << 10)]), hub.tick(half)].concat();
@@ -162,9 +237,8 @@ fn stuck_output_closed_biggest_first() {
     let at = now + osis_proto::serving::PUSH_POLL_MS;
     let out = [hub.sent(at, &[(3, 128 << 10)]), hub.tick(at)].concat();
     assert_eq!(closed(&out), vec![1], "the biggest of those not moving, and only it");
-    assert!(!hub.full(), "unread {}", hub.unread());
+    assert!(hub.unread() <= 4 * mib, "unread {}", hub.unread());
     assert_eq!(hub.connections(), 2);
-    assert!(sent3 > 128 << 10);
 }
 
 // spec/requirements.md (peer input never causes unbounded work): a message's entries reach disk

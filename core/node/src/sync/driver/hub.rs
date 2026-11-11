@@ -6,8 +6,9 @@
 //! (`accept_own`); replication dials (`dial_as` with the dialable secret, so the peer sees this
 //! node's key: echo suppression) run while it hosts. Per link a reader task hands the loop one
 //! read at a time (the next once the hub took the last), served in turns round-robin by source
-//! (`Turns`), none while the hub is full (`Hub::full`: what it wrote waits to be read, and the
-//! reads wait in the transport's window); writes go to the link's queue (more than `max_queued_bytes` the transport has not
+//! (`Turns`); a connection over its share of the hub's output bound (`Hub::waits`) is parked
+//! with its read until the hub resumes it (its reads wait in the transport's window, the
+//! others go on); writes go to the link's queue (more than `max_queued_bytes` the transport has not
 //! taken drops the session). No task waits on the loop and the loop waits on no connection.
 //! What the hub hands node sync (`HubOutput::Up`) waits in `ups` until the driver feeds it to
 //! the engine (`Event::Hub`); the engine's `Action::Hub` come back by `down`, in the same pass of
@@ -143,6 +144,9 @@ pub(super) struct HubRun {
     next: ConnId,
     conns: HashMap<ConnId, ConnState>,
     turns: Turns,
+    /// Connections with a read waiting that the hub holds back (`Hub::waits`), out of `turns`
+    /// until `Hub::take_resumed` names them.
+    parked: std::collections::HashSet<ConnId>,
     /// Transport connections of every listener (`max_connections` of them).
     slots: Arc<link::Slots>,
     /// The node's dialable key: its own dials of it reach the hub whether or not a listener
@@ -167,7 +171,7 @@ pub(super) struct HubRun {
 impl HubRun {
     pub fn new(hub: Hub, clock: Arc<dyn Clock>, log: Log, ev: mpsc::UnboundedSender<HubEv>) -> HubRun {
         let slots = link::Slots::new(hub.store().policy().max_connections);
-        HubRun { cfg: None, hub, own: None, next: 1, conns: HashMap::new(), turns: Turns::default(), slots, groups: HashMap::new(), next_group: 1, repl: Vec::new(), repl_run: 0, at: None, clock, log, ev, ups: Vec::new() }
+        HubRun { cfg: None, hub, own: None, next: 1, conns: HashMap::new(), turns: Turns::default(), parked: Default::default(), slots, groups: HashMap::new(), next_group: 1, repl: Vec::new(), repl_run: 0, at: None, clock, log, ev, ups: Vec::new() }
     }
 
     /// Serves the sessions `listeners` accept, under their key `key`; returns their group.
@@ -326,15 +330,21 @@ impl HubRun {
         }
     }
 
-    /// A read waits for its turn, and the hub takes input (none while it is full: readers drain
-    /// what it holds first, `Hub::full`).
+    /// A read waits for its turn.
     pub fn waiting(&self) -> bool {
-        !self.turns.is_empty() && !self.hub.full()
+        !self.turns.is_empty()
     }
 
-    /// Feeds the hub the read of the connection whose turn it is, then lets its reader go on.
+    /// Feeds the hub the read of the connection whose turn it is, then lets its reader go on;
+    /// one over its share of the output bound is parked instead.
     pub fn serve(&mut self) {
         let Some(id) = self.turns.next() else { return };
+        if self.hub.waits(id) {
+            if self.conns.get(&id).is_some_and(|c| c.input.is_some()) {
+                self.parked.insert(id);
+            }
+            return;
+        }
         let Some(b) = self.conns.get_mut(&id).and_then(|c| c.input.take()) else { return };
         let now = self.now();
         self.moved(now, id);
@@ -346,6 +356,7 @@ impl HubRun {
     }
 
     fn drop_conn(&mut self, id: ConnId) {
+        self.parked.remove(&id);
         if let Some(c) = self.conns.remove(&id) {
             c.reader.abort();
             if let Some(d) = c.done {
@@ -370,6 +381,13 @@ impl HubRun {
                 HubOutput::Close(id) => self.drop_conn(id),
                 HubOutput::Diagnostic(d) => (self.log)(&d),
                 HubOutput::Up(id, up) => self.ups.push((id, up)),
+            }
+        }
+        for id in self.hub.take_resumed() {
+            if self.parked.remove(&id)
+                && let Some(c) = self.conns.get(&id)
+            {
+                self.turns.push(c.source, id);
             }
         }
     }

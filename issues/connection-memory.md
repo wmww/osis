@@ -1,12 +1,10 @@
-# Slow readers can hold a full hub
-> Summary: while the hub is full (`max_buffered_bytes` unread), served input waits for readers to drain it and only output that does not move is closed for; readers that take a little each report period (16 KiB/s) and together hold the bound keep every served connection's input waiting until they drained it.
+# Output bound passed by one input per connection
+> Summary: fair shares of `max_buffered_bytes` let each connection under its share take an input whose replies reach `SEND_QUEUE` (about 34 MiB), so unread output is bounded by `max_buffered_bytes` + `max_connections` × `SEND_QUEUE` (about 9 GiB at the defaults), not by `max_buffered_bytes`.
 > Priority: normal
-> Tags: security, node, tess-call
+> Tags: security, node, host
 
 ## The case
-The design (notes/serving.md, Connection memory): past the bound the node reads no input and pushes nothing until readers drain, and closes only connections the transport took nothing of in a report period (`PUSH_POLL_MS`, one `WRITE_CHUNK`). About 15 connections sharing one group (a public link) that each pull a full request window (about 34 MiB) and then read at 16 KiB/s keep the hub full for about half an hour, and do it again once drained: served input waits that long, and peers whose requests wait past `STALL_TIMEOUT_MS` close their connections. A slow honest reader and such a trickler look the same.
+notes/serving.md, Connection memory: a served connection holding more than its share waits; one under it is served, and an input's replies are made at once. Connections sharing one group (a public link) that each ask a full request window and then read 16 KiB per `PUSH_POLL_MS` are moving, so never closed, and each holds up to its share plus one window: at `max_connections` 256, about 8.7 GiB beside the 512 MiB bound. Honest readers slow only themselves, as wanted; only the strictness of the bound is lost.
 
-## Options
-- Accept it as a stated limit (now).
-- Judge "moving" against what a connection holds: closed while full when at its pace it would not drain its holding within `STALL_TIMEOUT_MS` (a 34 MiB holder needs about 290 KB/s). Bounds the wait at the stall time, closes slow honest readers under load again.
-- Close the biggest holder once the hub stayed full for `STALL_TIMEOUT_MS` (the wait could not be longer without peers' own stall timers closing anyway). Bounds the wait; the trickle attack still stalls the node up to 2 min per round.
+## Way out
+A pausable `ServingSession`: take a waiting connection's requests (they are already within its request window) but answer each only when its reply fits the connection's share, so output never passes the bound; the turns then only order work. Needs the session to queue parsed requests and the hub to resume them as shares free (notes/flow-control.md, serving-side back-pressure).
