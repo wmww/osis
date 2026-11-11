@@ -244,33 +244,26 @@ fn arb(schema: &Schema, ty: &Type, depth: u32) -> BoxedStrategy<Value> {
 }
 
 proptest! {
-    /// spec/versioning.md §5: a value a writer writes reads back as itself through its type,
-    /// also after the canonical encoding round trip.
-    #[test]
-    fn typed_read_of_written_is_identity(v in arb(core_schema(), &core_schema().aspects["keys.0"].ty, 2)) {
-        let sc = core_schema();
-        let ty = &sc.aspects["keys.0"].ty;
-        validate_write(sc, &v, ty).unwrap();
-        let back = osis_base::decode(&osis_base::encode(&v), &Limits::DEFAULT).unwrap();
-        prop_assert_eq!(typed_read(sc, &back, ty).unwrap(), v);
-    }
-
     #[test]
     fn typed_read_identity_app(v in arb(&schema(2, V2), &Type::named("task"), 2)) {
         let sc = schema(2, V2);
         validate_write(&sc, &v, &Type::named("task")).unwrap();
         prop_assert_eq!(typed_read(&sc, &v, &Type::named("task")).unwrap(), v);
     }
+}
 
-    #[test]
-    fn every_core_aspect_round_trips(seed in 0usize..15) {
-        let sc = core_schema();
-        let (_, a) = sc.aspects.iter().nth(seed).unwrap();
-        let mut runner = proptest::test_runner::TestRunner::deterministic();
-        for _ in 0..4 {
+/// spec/versioning.md §5: a value a writer writes reads back as itself through its type,
+/// also after the canonical encoding round trip.
+#[test]
+fn every_core_aspect_round_trips() {
+    let sc = core_schema();
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    for a in sc.aspects.values() {
+        for _ in 0..8 {
             let v = arb(sc, &a.ty, 2).new_tree(&mut runner).unwrap().current();
             validate_write(sc, &v, &a.ty).unwrap();
-            prop_assert_eq!(typed_read(sc, &v, &a.ty).unwrap(), v);
+            let back = osis_base::decode(&osis_base::encode(&v), &Limits::DEFAULT).unwrap();
+            assert_eq!(typed_read(sc, &back, &a.ty).unwrap(), v);
         }
     }
 }
