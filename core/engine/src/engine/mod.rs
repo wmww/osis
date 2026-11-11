@@ -2771,23 +2771,16 @@ impl Tx<'_> {
     /// (`Core::decoded`).
     pub fn get_commit(&mut self, id: &CommitId) -> Result<Option<Arc<CommitBlob>>> {
         self.core.records_read.read(id);
-        if let Some(b) = self.core.decoded.record(id) {
-            #[cfg(debug_assertions)]
-            if self.recheck(format!("commit record {id:?}")) {
-                assert_eq!(crate::costs::paused(|| self.read_commit(id))?.as_ref(), Some(&*b), "decoded record of {id:?} went stale");
-            }
+        let key = records::commit_key(id);
+        let txn = &mut self.txn;
+        if let Some(b) = self.core.decoded.record(id, || crate::costs::paused(|| txn.get_local(&key)))? {
             return Ok(Some(b));
         }
-        let Some(b) = self.read_commit(id)? else { return Ok(None) };
-        let b = Arc::new(b);
-        self.core.decoded.keep_record(*id, b.clone());
-        Ok(Some(b))
-    }
-
-    fn read_commit(&mut self, id: &CommitId) -> Result<Option<CommitBlob>> {
         drop(crate::costs::span("commit read"));
-        let Some(v) = self.txn.get_local(&records::commit_key(id))? else { return Ok(None) };
-        Ok(Some(decode_commit_record(&v)?.1))
+        let Some(v) = self.txn.get_local(&key)? else { return Ok(None) };
+        let b = Arc::new(decode_commit_record(&v)?.1);
+        self.core.decoded.keep_record(*id, b.clone(), &v);
+        Ok(Some(b))
     }
 
     /// Scans local records under `prefix` (keys returned without it).

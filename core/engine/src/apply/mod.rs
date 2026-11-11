@@ -1926,22 +1926,13 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
     // each stored part decoded once per write of the record (`Core::decoded`)
     let mut out = Vec::new();
     for p in stored.parts.iter().filter(|p| keep(p.ai)) {
-        let fresh = |tx: &mut Tx<'_>| -> Result<Decoded> {
-            let one = CommitBlob { header: (*m.header).clone(), sigs: stored.sigs.clone(), parts: vec![p.clone()] };
-            drop(crate::costs::span("part decode"));
-            examine_stored(tx, &one, id)?.pop().map(|x| x.1).ok_or(Error::Corrupt("stored delta"))
-        };
-        let d = match tx.core.decoded.part(id, p.ai) {
-            Some(d) => {
-                #[cfg(debug_assertions)]
-                if tx.recheck(format!("commit part {id:?} {}", p.ai)) {
-                    assert_eq!(crate::costs::paused(|| fresh(tx))?, *d, "decoded part {} of {id:?} went stale", p.ai);
-                }
-                d
-            }
+        let d = match tx.core.decoded.part(id, p) {
+            Some(d) => d,
             None => {
-                let d = Arc::new(fresh(tx)?);
-                tx.core.decoded.keep_part(*id, p.ai, d.clone());
+                let one = CommitBlob { header: (*m.header).clone(), sigs: stored.sigs.clone(), parts: vec![p.clone()] };
+                drop(crate::costs::span("part decode"));
+                let d = Arc::new(examine_stored(tx, &one, id)?.pop().map(|x| x.1).ok_or(Error::Corrupt("stored delta"))?);
+                tx.core.decoded.keep_part(*id, p, d.clone());
                 d
             }
         };

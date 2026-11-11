@@ -157,7 +157,7 @@ fn left(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place, now: u64) -> Result<()> {
         // revived: a tick that tells nothing new; the death that replaces it sets the row again).
         // A row may be late: an earlier superseder of a dead write arriving moves no row
         #[cfg(debug_assertions)]
-        if whole && tx.core.recheck_at((tx.core.tx_store, tx.core.generation, tx.core.memory_generation), format!("leaving {tid:?} {ak:?}")) {
+        if whole && tx.recheck(format!("leaving {tid:?} {ak:?}")) {
             let fresh = crate::costs::paused(|| super::bounds::fresh_replaced_at(tx, &h, &c, ai))?;
             let k = history::of(tx.core, tid, ak);
             assert!(fresh.is_none_or(|f| leaves(&k, f) <= now), "{c:?} on {tid:?} {ak:?} left at row {p:?} while in history (replaced at {fresh:?})");
