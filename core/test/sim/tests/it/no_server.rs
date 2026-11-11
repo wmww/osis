@@ -306,7 +306,7 @@ fn a_kicked_joiner_stops_dialing_the_sharer_spec_permissions_7() {
     access_ended_stops_dialing(co_readers(1, Role::Read), |a, b, g| a.set_role(g, b.me(), None, SetRoleOpts::default()).unwrap());
 }
 
-// spec/permissions.md §7 (a joiner leaves K once K's grant on the target ended): a joiner whose
+// spec/permissions.md §7 (joiner's leave): a joiner whose
 // link (K) was removed from the target stops dialing the link's sharer.
 #[test]
 fn a_joiner_whose_link_was_removed_stops_dialing_the_sharer_spec_permissions_7() {

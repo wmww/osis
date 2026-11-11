@@ -150,6 +150,7 @@ RULES = [
     ("spec/permissions.md", "5.2", "dot reuse", "One dot names one write"),
     ("spec/permissions.md", "7", "removed node's links", "MUST tell the one removing a node"),
     ("spec/permissions.md", "7", "link finalized", "MUST write it once L's edge expired or was self-removed"),
+    ("spec/permissions.md", "7", "joiner's leave", "A node of the account MUST write it once it holds that history"),
     ("spec/sync.md", "2", "home label", "MUST also create its label"),
     ("spec/sync.md", "5", "stale sync key", "is answered with that step's child on the path"),
     ("spec/sync.md", "5", "claim refusals", "Otherwise refused like an unknown key"),

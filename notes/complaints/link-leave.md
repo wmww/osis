@@ -3,3 +3,4 @@
 - `Core::me` is private while `Engine::me` panics; `account_tid` is the one to use from node-sync.
 - `wt claim link-leave` for a branch already claimed by this worktree exited 128 with no message; the worktree was fine.
 - Review: after rebasing onto main the branch did not compile: `SyncEngine::test_copy` (sync/testing.rs) is an exhaustive struct literal, so a new SyncEngine field must be copied there too.
+- Review: the gate's spec_map --gaps stage stopped on the new MUST: a new MUST sentence needs a RULES anchor in tools/spec_map.py and a test citing it; run `python3 tools/spec_map.py --gaps` before handing off.

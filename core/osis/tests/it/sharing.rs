@@ -2026,7 +2026,7 @@ fn left_k(w: &mut World, alice: &Osis, bob: &[&Osis], g: Tid, k: Tid) {
     }
 }
 
-// spec/permissions.md §7 (the link has ended: a joiner leaves K): K taken off the target, a
+// spec/permissions.md §7 (joiner's leave): K taken off the target, a
 // joiner leaves K, with two nodes seeing it at once and one of them offline when it happened
 #[test]
 fn a_joiner_leaves_k_once_k_left_the_target_spec_permissions_7() {
@@ -2040,8 +2040,8 @@ fn a_joiner_leaves_k_once_k_left_the_target_spec_permissions_7() {
     left_k(&mut w, &alice, &[&laptop, &phone], g, k);
 }
 
-// spec/permissions.md §7 (the link has ended: K's grant on the target past `until`): K's grant
-// ending while every node of the joiner is offline: back online, the joiner leaves K
+// spec/permissions.md §7 (joiner's leave): K's grant on the target past `until`
+// while every node of the joiner is offline: back online, the joiner leaves K
 #[test]
 fn a_joiner_leaves_k_once_ks_grant_expired_spec_permissions_7() {
     let mut w = World::new();
@@ -2059,7 +2059,7 @@ fn a_joiner_leaves_k_once_ks_grant_expired_spec_permissions_7() {
     left_k(&mut w, &alice, &[&laptop, &phone], g, k);
 }
 
-// spec/permissions.md §7 (Joiner's leave): only K's edge on the link's target ends a link. Carol,
+// spec/permissions.md §7 (joiner's leave): only K's edge on the link's target ends a link. Carol,
 // a fellow joiner, puts K on a group of hers and takes it off: Bob keeps the link.
 #[test]
 fn a_fellow_joiner_cannot_end_anothers_link_spec_permissions_7() {
