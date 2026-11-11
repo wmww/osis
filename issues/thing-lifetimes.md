@@ -1,7 +1,7 @@
 # Thing lifetimes by reference
-> Summary: Design: a thing may list its retainers (`retainers^.0`, admin-only); it lives while a listed retainer that is itself alive references it, up to a standalone thing; anything else is released (storage reclaim, not erasure), cycles included. A node that may end the thing and judges it unreachable from what it holds writes a release request (a part on each thing's `created.0`, expiring at `ROLE_KEEP`), applied as an ending, never lasting; with it the node forgets the thing. One rule for every ending: its evidence is kept and travels while a held thing depends on, lists or references the ended thing, so what is kept is bounded by live things; elsewhere a stale copy may bring a released thing back. A node that cannot judge leaks, never deletes. `w.release(x)` releases even a retained thing. One node-local reference index serves the judgment and backlinks. Rules, costs, the model and what it must add, Tess's decisions, build steps.
+> Summary: Design: a thing may list its retainer set (`retainers^.0`, a `set<tid>`, admin-only); it lives while a listed retainer that is itself alive references it, up to a standalone thing; anything else is released (storage reclaim, not erasure), cycles included. A node that may end the thing and judges it unreachable from what it holds writes a release request (a part on each thing's `created.0`, expiring at `ROLE_KEEP`), applied as an ending, never lasting; with it the node forgets the thing. One rule for every ending: its evidence is kept and travels while a held thing depends on, lists or references the ended thing, so what is kept is bounded by live things; elsewhere a stale copy may bring a released thing back. A node that cannot judge leaks, never deletes. `w.release(x)` releases even a retained thing. One node-local reference index serves the judgment and backlinks. Rules, costs, the model and what it must add, Tess's decisions, build steps.
 > Priority: normal
-> Tags: data-model, api, permissions, sync, engine, tess-call
+> Tags: data-model, api, permissions, sync, engine
 
 **Go-ahead given by Tess**: implement in the order below. Halyard runs the lane; Fathom reviews steps 1 and 3. Tess: additive, so it comes after the simplifications, fixes and changes in flight (thing-history, the network rework, open fixes); then steps 1-2, and 3-4 after Fathom's ending-cluster worker and thing-history step 1 (held-model). Her decisions are below (Decisions). Built: the model, step 1 (the reference index, notes/engine-refs.md) and step 2 (backlinks, notes/api.md Backlinks).
 
@@ -130,9 +130,8 @@ To add before step 3 (the model's `End` is erasure; release needs):
 
 Not modelled: what a reference reads (validity), hearing out, the request's own validity and spread (the purge right), disputes.
 
-## Requirements wording (Tess's sign-off)
-Rewritten for release (Tess: lifetimes are storage reclaim, notes/deletion.md): Decisions 4 approved "dropped for good", which release contradicts, so this wording needs her sign-off again (`tess-call`). Data model, after "References may dangle":
-> A thing may name the things whose references keep it alive. Once none of them that is reachable, through such references, from a thing naming none references it, it is released, with whatever only it kept alive, cycles included: removed to reclaim storage, not erased, so a copy kept somewhere may bring it back, and it is then released again if still unreferenced. A thing released on purpose stays released while anything still references it or names it. Limit: a thing is released only by a node that may end it and holds what shows it is unreferenced; until then, and where no such node exists, it stays. Limit: a reference written while the last one was being removed may arrive too late and dangle.
+## Requirements wording
+In spec/requirements.md Data model (Tess wrote and approved it): garbage collection by retainer set; released, purged or expired retainers keep nothing; no promise of prompt or permanent deletion; it may only function where one node syncs, reads all relevant things and may release the thing; an unretained cycle is released whole; things with no retainer set are roots.
 
 ## Decisions (Tess)
 1. Who may write the drop: no new right; the nodes that may already end the thing do it.

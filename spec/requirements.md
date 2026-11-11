@@ -119,6 +119,7 @@ Binds released formats only; until a stable release formats change in place.
 ## Data model
 - One canonical serialization and one hash function: equal values compare equal on every node.
 - Every datum is an aspect of a thing. Values are typed by the writer's schema. References may dangle.
+- If a thing has a retainer set, it is automatically released by garbage collection once all its retainers either do not contain references to it, or are themselves released, purged or expired. Garbage collection is not a guarantee of prompt or permanent deletion, and may only function when a single node syncs, can read all relevant things, and may release the thing. If a retain cycle is not retained by anything outside the cycle, the whole cycle is released. Things with no retainer set act as garbage-collection roots.
 - Per-aspect merge with one conflict rule everywhere: at a position the later write wins, and a removal is final.
   - At a position (a register, a struct's field, an aspect) a write newer than a concurrent reset shows.
   - A write inside a map entry, list element or enum case shows while the entry is not removed (the case not switched away from) and holds content from any write; an expired or purged write takes only its own content. A write never brings back what was removed or switched away from; only a new creation does. So an edit concurrent with the removal of what it is in is lost.
