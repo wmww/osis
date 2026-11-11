@@ -1325,6 +1325,55 @@ fn cutting_a_subgroup_reports_what_it_strands() {
     assert_eq!(told, BTreeSet::from([stranded]), "a subgroup is no member: its own aspects never went through this group");
 }
 
+// notes/api.md Group ops: a subgroup whose membership expires strands what it held as a write
+// cutting it does, told by the same diagnostic.
+// spec: none (API surface, notes/api.md)
+#[test]
+fn an_expiring_subgroup_reports_what_it_strands() {
+    let c = clock();
+    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let k = ak("t:x.0");
+    let (tx, rx) = std::sync::mpsc::channel();
+    db.on_diagnostic(move |_, d| {
+        if let osis::Diagnostic::NotSynced { thing, group: None, detail } = d {
+            let _ = tx.send((thing, detail));
+        }
+    }).unwrap().detach();
+    let synced = db.commit_with(|w| w.create()).unwrap();
+    db.sync(synced, &[osis::Address::new(&"mem://a".parse().unwrap(), [1; 32])]).unwrap();
+    let mut w = db.write();
+    let (cut, kept) = (w.create().unwrap(), w.create_with_admin(synced).unwrap());
+    let (in_cut, in_expiring) = (w.create().unwrap(), w.create().unwrap());
+    for t in [in_cut, in_expiring, kept] {
+        w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)).unwrap();
+    }
+    w.group(synced).add(osis::Member::Subgroup(cut)).unwrap();
+    w.group(synced).add(osis::Member::Item(kept)).unwrap();
+    w.group(cut).add(osis::Member::Item(in_cut)).unwrap();
+    w.commit().unwrap();
+    let expiring = db.commit_with(|w| w.create()).unwrap();
+    let mut w = db.write();
+    w.expires(osis::Expiry::In(std::time::Duration::from_secs(60)));
+    w.group(synced).add(osis::Member::Subgroup(expiring)).unwrap();
+    w.commit().unwrap();
+    commit_with(&db, |w| {
+        w.group(expiring).add(osis::Member::Item(in_expiring))?;
+        w.group(expiring).add(osis::Member::Item(kept))
+    });
+    db.settle();
+    assert_eq!(rx.try_iter().count(), 0);
+    commit_with(&db, |w| w.group(synced).remove(osis::Member::Subgroup(cut)));
+    db.settle();
+    let by_write: Vec<_> = rx.try_iter().collect();
+    assert_eq!(by_write.iter().map(|d| d.0).collect::<Vec<_>>(), vec![in_cut]);
+    c.advance(61_000);
+    db.engine(|e| e.tick()).unwrap();
+    db.settle();
+    assert!(db.members(synced).unwrap().iter().all(|m| *m != osis::Member::Subgroup(expiring)), "it left by itself");
+    let by_expiry: Vec<_> = rx.try_iter().collect();
+    assert_eq!(by_expiry, vec![(in_expiring, by_write[0].1.clone())], "the stranded item, as a write cutting it tells; not what another way still carries");
+}
+
 // spec: none (client surface: notes/api.md Writes). The empty path is the whole value: each whole-value op there reads as the aspect's
 // own, the collection ops take it too
 #[test]

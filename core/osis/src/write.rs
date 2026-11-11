@@ -22,7 +22,7 @@ use osis_schema::{AspectKey, SignalKey, ValueKey};
 use osis_schema::core_types::{GROUP, is_role_class};
 use osis_schema::{RawKey, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
 use crate::commits::Commit;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::time::Duration;
 
@@ -337,8 +337,7 @@ impl<'d> Write<'d> {
             let actor = db.acting;
             let who = self.actor;
             let sharing = self.sharing;
-            let Built { mut m, added, removed, cut } = self.build(&mut Reader { e, limit, actor }, expires)?;
-            let carried = carried_under(e, &cut);
+            let Built { mut m, added, removed } = self.build(&mut Reader { e, limit, actor }, expires)?;
             // whatever actor the write names, an acting handle's write is that actor's alone
             if let Some(a) = actor {
                 m.confine(a);
@@ -347,7 +346,6 @@ impl<'d> Write<'d> {
                 Some(w) => {
                     if !e.holds_memory(&w.id) {
                         not_synced(e, &added, sharing);
-                        cut_off(e, carried);
                     }
                     Some(crate::commits::written_in(&mut Reader { e, limit, actor }, w, who)?.reporting(db))
                 }
@@ -395,7 +393,7 @@ impl<'d> Write<'d> {
         let (acting, db) = (self.db.acting, self.db);
         let Write { ops, keys, actor, created, .. } = self;
         let gk = DynamicAspectKey { ak: Ak::new(GROUP.ak()).unwrap_or_else(|_| unreachable!("a core AK")), schema: Some(crate::keys::core_schema()) };
-        let mut b = Built { m: Mutation::new(), added: Vec::new(), removed: Vec::new(), cut: Vec::new() };
+        let mut b = Built { m: Mutation::new(), added: Vec::new(), removed: Vec::new() };
         let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its write".into()));
         for op in ops {
             match op {
@@ -614,8 +612,6 @@ struct Built {
     /// (thing, group) memberships removed, items and subgroups: their tied grants go after the
     /// commit where that is a self-removal (`Osis::untie_now`).
     removed: Vec<(Tid, Tid)>,
-    /// Subgroups cut from a parent (the `NotSynced` check).
-    cut: Vec<Tid>,
 }
 
 impl Built {
@@ -627,39 +623,8 @@ impl Built {
         }
         if !add {
             self.removed.push((member, g));
-            if !items {
-                self.cut.push(member);
-            }
         }
         Ok(())
-    }
-}
-
-/// Whether a label carries `t` (a subgroup's own aspects go by its own memberships, not its parents).
-fn carried(e: &osis_node::Engine, labeled: &BTreeSet<Tid>, t: &Tid) -> bool {
-    labeled.contains(t) || e.groups_of(t).iter().any(|g| labeled.contains(g))
-}
-
-/// What the cut subgroups hold that a label carries, before the commit cuts them.
-fn carried_under(e: &osis_node::Engine, cut: &[Tid]) -> BTreeSet<Tid> {
-    if cut.is_empty() {
-        return BTreeSet::new();
-    }
-    let labeled: BTreeSet<Tid> = e.labeled_groups().into_iter().collect();
-    cut.iter().flat_map(|sub| e.closure(sub).iter().filter(|t| *t != sub && carried(e, &labeled, t)).copied().collect::<Vec<_>>()).collect()
-}
-
-/// Reports what the commit took out of every synced group, of `was` (`carried_under`): it stays on
-/// this node from now on.
-fn cut_off(e: &mut osis_node::Engine, was: BTreeSet<Tid>) {
-    if was.is_empty() {
-        return;
-    }
-    let labeled: BTreeSet<Tid> = e.labeled_groups().into_iter().collect();
-    for t in was {
-        if !carried(e, &labeled, &t) {
-            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![t], commit: None, peer: None, detail: "a subgroup left the synced group that held it: this stays on this node".into() });
-        }
     }
 }
 
@@ -677,7 +642,7 @@ fn not_synced(e: &mut osis_node::Engine, added: &[(Tid, Tid)], sharing: bool) {
                 continue;
             }
             e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t, *g], commit: None, peer: None, detail: "in a group whose holders may not read it: it does not reach them (add_with_grant)".into() });
-        } else if !carried(e, &labeled.iter().copied().collect(), t) {
+        } else if !e.carried(t) {
             e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "only in groups no synced group holds: it stays on this node".into() });
         }
     }
@@ -708,7 +673,7 @@ impl<'w, 'd> GroupWrite<'w, 'd> {
     /// Removes a member. A grant made with the membership (`Osis::add_with_grant`) goes in a
     /// commit right after when this node may remove it as a self-removal; otherwise a node that
     /// may remove it does so later. What a removed subgroup was the last way into a synced group
-    /// for stops syncing, each reported `NotSynced`. `commit` fails `Invalid` in a commit that
+    /// for stops syncing, each reported `NotSynced` (as when a subgroup's expiring membership ends). `commit` fails `Invalid` in a commit that
     /// expires.
     pub fn remove(&mut self, member: Member) -> Result<()> {
         self.w.member(self.group, member, false)

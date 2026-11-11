@@ -100,8 +100,9 @@ pub enum DiagnosticKind {
     Removed,
     /// An app callback panicked (the `osis` dispatcher reports it and lives on).
     Callback,
-    /// A thing was placed only in groups whose closure no synced group holds (the `osis` API,
-    /// spec/requirements.md Offline and network).
+    /// A thing reaches no synced group (spec/requirements.md Offline and network): placed only
+    /// in groups none holds (the `osis` API), or a subgroup cut here by any cause, a write here
+    /// or elsewhere or an expiry, held it and no synced group carries it now (`Core::report_cut`).
     NotSynced,
     /// This node cannot open a label it should read: it waits for a re-seal
     /// (spec/permissions.md §3).

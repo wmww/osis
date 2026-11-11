@@ -983,6 +983,9 @@ pub struct Core {
     /// Commits with a part judged invalid this transaction (`Core::index_validity`): dropped at
     /// its end where held (`retention::drop_invalid`).
     pub drop_due: BTreeSet<CommitId>,
+    /// Subgroups cut this transaction from under a synced group (`Core::note_cut`): what they
+    /// held is reported at its end where nothing carries it now (`Core::report_cut`).
+    pub cut_subs: BTreeSet<Tid>,
     /// The commits on durable signal aspects `edits::settle` refolds besides those the journal
     /// names: a keep bound passed with no meta changing (`edits::time_passed`).
     pub refold: BTreeSet<(Tid, Ak, CommitId)>,
@@ -1139,6 +1142,7 @@ impl Core {
             timer_floor: self.timer_floor.clone(),
             none_due: self.none_due.clone(),
             drop_due: self.drop_due.clone(),
+            cut_subs: self.cut_subs.clone(),
             refold: self.refold.clone(),
             changed: self.changed.clone(),
             live_trees: self.live_trees.clone(),
@@ -1617,6 +1621,7 @@ impl Core {
             // work lists and hints a superset of which is harmless (the consumer re-checks each
             // entry against the restored state), and what a step only moves forward
             drop_due: _,
+            cut_subs: _,
             refold: _,
             none_due: _,
             valueless_dirty: _,
@@ -1825,6 +1830,7 @@ impl Core {
             timer_floor: 0,
             none_due: BTreeSet::new(),
             drop_due: BTreeSet::new(),
+            cut_subs: BTreeSet::new(),
             refold: BTreeSet::new(),
             changed: None,
             sync_records: None,
@@ -2995,6 +3001,8 @@ impl Engine {
                 if let Some(d) = self.core.walks_done.take() {
                     self.core.timelines.aside().saved(d);
                 }
+                let now = self.now();
+                self.core.report_cut(now);
                 self.core.commit_journal();
                 self.core.memory_tx = false;
                 self.core.events.flush();
@@ -3008,6 +3016,7 @@ impl Engine {
             }
             Err(e) => {
                 self.core.walks_done = None;
+                self.core.cut_subs.clear();
                 self.core.rollback_to(start);
                 Err(e)
             }

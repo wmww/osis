@@ -1022,7 +1022,14 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             }
         }
         // every path that changes a `group.0` (late deltas, re-judging) updates `groups.0`
-        "group.0" => tx.core.ix.groups.set(*tid, group_def(v)),
+        "group.0" => {
+            let def = group_def(v);
+            // an ephemeral membership carries nothing durable away (`Core::note_cut`)
+            if !tx.core.memory_tx {
+                tx.core.note_cut(tid, def.as_ref());
+            }
+            tx.core.ix.groups.set(*tid, def)
+        }
         // an account's devices actor: its nodes take up the seeds a rotation added
         "account.0" => crate::flows::signing::take_seeds(tx, tid)?,
         _ => {}

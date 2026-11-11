@@ -54,6 +54,47 @@ impl Engine {
     }
 }
 
+impl Engine {
+    /// Whether a synced group carries `t`: `t` has a label, or a labeled group contains it. A
+    /// subgroup's own aspects go by its own memberships, not by what it contains.
+    pub fn carried(&self, t: &Tid) -> bool {
+        self.core.carried(t)
+    }
+}
+
+impl super::Core {
+    /// `Engine::carried`.
+    pub(crate) fn carried(&self, t: &Tid) -> bool {
+        let l = &self.ix.labeled;
+        l.contains(t) || self.ix.groups.of.get(t).is_some_and(|gs| gs.iter().any(|g| l.contains(g)))
+    }
+
+    /// Before group `g`'s definition becomes `def`: each subgroup it cuts while a synced group
+    /// carries `g` (`cut_subs`), whatever cut it (a write here or elsewhere, an expiry).
+    pub(crate) fn note_cut(&mut self, g: &Tid, def: Option<&Def>) {
+        let Some((_, was)) = self.ix.groups.defs.get(g) else { return };
+        let cut: Vec<Tid> = was.iter().filter(|s| !def.is_some_and(|d| d.1.contains(*s))).copied().collect();
+        if !cut.is_empty() && self.ix.groups.above(g).iter().any(|a| self.ix.labeled.contains(a)) {
+            self.cut_subs.extend(cut);
+        }
+    }
+
+    /// At the end of a transaction (before its journal is committed): a `NotSynced` diagnostic
+    /// for each thing the subgroups it cut held when it began and that no synced group carries
+    /// now (spec/requirements.md, Offline and network): it stays on this node. An ended thing
+    /// stays as nothing.
+    pub(crate) fn report_cut(&mut self, now: osis_base::WallMs) {
+        for s in std::mem::take(&mut self.cut_subs) {
+            for t in self.ix.groups.reach_before(&s) {
+                if t != s && !self.carried(&t) && !self.ended(&t) {
+                    let detail = "a subgroup left the synced group that held it: this stays on this node".into();
+                    self.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::NotSynced, tids: vec![t], commit: None, peer: None, detail }, now);
+                }
+            }
+        }
+    }
+}
+
 /// The `group.0` definitions and what they derive.
 #[derive(Clone, Debug, Default)]
 pub struct Groups {
@@ -91,8 +132,30 @@ impl Groups {
         out
     }
 
+    /// What `g` reached when the running transaction began: `reach` over the definitions its
+    /// journal replaced.
+    fn reach_before(&self, g: &Tid) -> BTreeSet<Tid> {
+        let mut was: BTreeMap<Tid, Option<&Def>> = BTreeMap::new();
+        for (x, d) in &self.log {
+            was.entry(*x).or_insert(d.as_ref());
+        }
+        let mut out = BTreeSet::new();
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![*g];
+        while let Some(x) = stack.pop() {
+            if !seen.insert(x) {
+                continue;
+            }
+            if let Some((items, subs)) = was.get(&x).copied().unwrap_or(self.defs.get(&x)) {
+                out.extend(items.iter().copied());
+                stack.extend(subs.iter().copied());
+            }
+        }
+        out
+    }
+
     /// `g` and every group above it through subgroup lists.
-    fn above(&self, g: &Tid) -> BTreeSet<Tid> {
+    pub(crate) fn above(&self, g: &Tid) -> BTreeSet<Tid> {
         let mut seen = BTreeSet::new();
         let mut stack = vec![*g];
         while let Some(x) = stack.pop() {
