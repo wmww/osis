@@ -743,6 +743,7 @@ fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, bytes: &[u8], reason:
     tx.core.touch();
     tx.txn.put_pending(id, kind, bytes)?;
     tx.core.ix.pending.insert(*id, reason);
+    tx.core.pended.insert(*id);
     Ok(())
 }
 
@@ -1035,6 +1036,11 @@ impl Engine {
         std::mem::take(&mut self.core.redeliver)
     }
 
+    /// Commits stored pending since the last call (node-sync's `sweep_pending`).
+    pub fn take_pended(&mut self) -> BTreeSet<CommitId> {
+        std::mem::take(&mut self.core.pended)
+    }
+
     /// Names commit `id` for `take_redeliver`.
     pub fn name_redeliver(&mut self, id: CommitId) {
         self.core.redeliver.insert(id);
@@ -1241,6 +1247,31 @@ impl Engine {
     /// Commit `id`'s last entry left: what it was noted under goes.
     pub fn no_entry_left(&mut self, id: &CommitId) {
         self.core.waits.unawaits(id);
+    }
+
+    /// Drops the stored pending copy of durable commit `id` (a pending or parked commit, or an
+    /// applied one's parts that wait alone): the last entry carrying it left (node-sync's
+    /// `sweep_pending`, notes/node-sync.md Unjudged input). Its parts count as never received;
+    /// the next entry carrying it brings it back. Whether there was one.
+    pub fn forget_pending(&mut self, id: &CommitId) -> Result<bool> {
+        if !self.core.ix.pending.contains_key(id) {
+            return Ok(false);
+        }
+        let id = *id;
+        self.run(|tx| {
+            // a memory commit's copy is the memory lane's, under its own share
+            let Some((_, bytes)) = tx.txn.get_pending(&id)? else { return Ok(false) };
+            let things: Vec<Tid> = CommitBlob::decode_stored(&bytes).ok().filter(|b| b.header.kind.is_role()).map(|b| b.header.aspects.iter().map(|a| a.tid).collect()).unwrap_or_default();
+            tx.core.touch();
+            crate::retention::forget_waiting_leftovers(tx, &id)?;
+            tx.txn.remove_pending(&id, Shred::Yes)?;
+            tx.core.ix.pending.remove(&id);
+            tx.core.waits.unawaits(&id);
+            keys::forget_unchecked(tx, &id)?;
+            // secrets read from its boxes go unless something else reads them
+            crate::rotation::mark_lost_due(tx, things)?;
+            Ok(true)
+        })
     }
 
     /// The commits reading-only secrets came from (node-sync's sweep of entries gone).

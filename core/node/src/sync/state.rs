@@ -334,6 +334,15 @@ pub struct State {
     pub by_commit: BTreeMap<CommitId, BTreeSet<BlobId>>,
     /// How many inbox or request entries carry each commit.
     pub inbox_commits: BTreeMap<CommitId, usize>,
+    /// How many held entries carry each commit (notes/node-sync.md, Unjudged input): label
+    /// entries naming it (`Commit`, `Parked`, `Awaits`), inbox entries carrying it as their
+    /// commit (`Inbox`, `Request`) or in their author's chain (`inbox_chain`).
+    pub carried: BTreeMap<CommitId, usize>,
+    /// Commits whose last carrying entry left, not swept yet (`SyncEngine::sweep_pending`).
+    pub uncarried: BTreeSet<CommitId>,
+    /// The chain commits each opened inbox entry carries, in memory: noted when its payload is
+    /// ingested (every inbox entry is retried at a start, which notes them again).
+    pub inbox_chain: BTreeMap<(LabelId, BlobId), Vec<CommitId>>,
     /// Entries a wake reopened (`Kind::Unknown` again) and the commit each was awaiting for: its
     /// reading-only secrets stay until the entry is judged again or leaves (`SyncEngine::sweep_unchecked`).
     pub awaits_reopened: BTreeMap<(LabelId, BlobId), CommitId>,
@@ -810,10 +819,37 @@ impl State {
         if let (Kind::Inbox(Some(c)), Some(_)) = (&e.kind, &e.stamp) {
             set(&mut self.stamped_inbox, (l, *c, b), add);
         }
+        if let Kind::Commit { commit: c, .. } | Kind::Parked(c) | Kind::Awaits { commit: c, .. } | Kind::Inbox(Some(c)) | Kind::Request(c) = &e.kind {
+            self.carry(*c, add);
+        }
         if e.cert {
             set(&mut self.cert_entries, (l, b), add);
         }
         set(&mut self.blob_labels, (b, l), add);
+    }
+
+    /// One more (or one fewer) entry carries commit `c`; the last gone, it is swept.
+    fn carry(&mut self, c: CommitId, add: bool) {
+        let n = self.carried.entry(c).or_default();
+        *n = if add { n.saturating_add(1) } else { n.saturating_sub(1) };
+        if *n == 0 {
+            self.carried.remove(&c);
+            self.uncarried.insert(c);
+        }
+    }
+
+    /// Inbox entry `b` under `l` carries `chain` (its author's chain commits).
+    pub(crate) fn note_chain(&mut self, l: LabelId, b: BlobId, chain: Vec<CommitId>) {
+        if !self.entries.get(&(l, b)).is_some_and(|e| matches!(e.kind, Kind::Inbox(_))) {
+            return;
+        }
+        for c in self.inbox_chain.remove(&(l, b)).unwrap_or_default() {
+            self.carry(c, false);
+        }
+        for c in &chain {
+            self.carry(*c, true);
+        }
+        self.inbox_chain.insert((l, b), chain);
     }
 
     /// Notes that what is known of entry `b` under `l` changed (its passes judge it again).
@@ -1073,6 +1109,9 @@ impl State {
         self.touch(l, b);
         let Some(e) = self.entries.remove(&(l, b)) else { return false };
         self.index(l, b, &e, false);
+        for c in self.inbox_chain.remove(&(l, b)).unwrap_or_default() {
+            self.carry(c, false);
+        }
         self.version += 1;
         self.losses += 1;
         if e.memory {

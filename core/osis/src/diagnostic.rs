@@ -38,6 +38,10 @@ pub enum Diagnostic {
     /// A clock far behind holds back others' writes here; one far ahead has this node's writes
     /// held back elsewhere. Fix the device's clock if it is this one.
     ClockSkew { detail: String },
+    /// Other nodes sent more unverified data under a group than this node keeps: what came past
+    /// the bound was dropped. Real data among it arrives again from the nodes that hold it; a
+    /// lasting flood means another node or a host misbehaves.
+    InputCapped { detail: String },
     /// Background sync died: nothing syncs until the node is opened again, and waits fail
     /// `Network`.
     SyncStopped { detail: String },
@@ -66,6 +70,7 @@ impl From<osis_node::Diagnostic> for Diagnostic {
             (K::Callback, ..) => Diagnostic::Callback { detail },
             (K::SyncStopped, ..) => Diagnostic::SyncStopped { detail },
             (K::ClockSkew, ..) => Diagnostic::ClockSkew { detail },
+            (K::InputCapped, ..) => Diagnostic::InputCapped { detail },
             (K::Parked, ..) => Diagnostic::Parked { things: tids, commit: commit.map(Into::into), peer, detail },
             _ => Diagnostic::Handled { things: tids, commit: commit.map(Into::into), peer, detail: format!("{kind:?}: {detail}") },
         }
@@ -87,6 +92,7 @@ impl std::fmt::Display for Diagnostic {
             Diagnostic::Callback { detail } => ("callback", detail),
             Diagnostic::SyncStopped { detail } => ("sync stopped", detail),
             Diagnostic::ClockSkew { detail } => ("clock skew", detail),
+            Diagnostic::InputCapped { detail } => ("unverified input capped", detail),
             Diagnostic::Parked { detail, .. } => ("from a newer format", detail),
             Diagnostic::Handled { detail, .. } => ("handled", detail),
         };

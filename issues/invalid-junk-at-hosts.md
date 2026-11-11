@@ -3,4 +3,4 @@
 > Priority: low
 > Tags: sync, security, retention
 
-Options: a right holder deletes invalid bodies at hosts (then a re-grant restores only what an author or another node still holds, as for a body no holder has), maybe only bodies never valid at any key a removal could reopen; or accept, stated. The author keeps its own invalid bodies either way and re-uploads them (must-hold), so deleting the author's copy at hosts while it lives is a delete/re-upload loop to avoid. Related: issues/pending-unbounded.md (the same class of member flood, for pending commits).
+Options: a right holder deletes invalid bodies at hosts (then a re-grant restores only what an author or another node still holds, as for a body no holder has), maybe only bodies never valid at any key a removal could reopen; or accept, stated. The author keeps its own invalid bodies either way and re-uploads them (must-hold), so deleting the author's copy at hosts while it lives is a delete/re-upload loop to avoid.

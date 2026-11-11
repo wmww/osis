@@ -82,6 +82,7 @@ Encoding: spec/wire.md §4. Fields:
   - its `ts` is more than `MAX_DRIFT` ahead (spec/crdt.md §2.2);
   - a header list or frontier given by link (spec/wire.md §4) is not resolved;
   - the node holds parts of it and every one waits.
+- **Pending storage**: a pending commit, and a held part that waits, is kept only while the node holds an entry carrying its commit (a label entry of it, or an inbox blob carrying it or its author's chain, spec/sync.md §3). With none left it counts as never received until an entry brings it again. Unstamped entries a node has not judged (unopened, parked, unjudgeable, or their commit pending) count against its local bounds on unvouched input per label and source; past them it keeps neither the entry nor what pends from it, and reports that to the app.
 - **Unjudgeable**: a node keeps no part it cannot judge and keeps what it needs to fetch what judges it.
   - A commit is unjudgeable while its author's or actor's `created.0` record is unknown; so is a held part while its thing's record or a record on its thing's chain (spec/permissions.md §1) is unknown, or the author is not on that chain and no record edge or holder named by an applied part's edge write, whether the walk applies it or not, leads from the author to it.
   - No byte of such a commit or part is kept past the pass that fetched it. A node judges one pass's fetch together: commits carrying `created.0` first, then role commits by `ts`; it discards only what is still unjudgeable at the end of the pass.

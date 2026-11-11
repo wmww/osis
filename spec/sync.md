@@ -133,7 +133,7 @@
   - A node runs this whenever it opens an inbox blob, its commit held or not.
 - **Inbox blob order**: a sender still opening or registering a label an inbox blob names at a host it is connected to, open at none of them, deposits the blob after that ends. A node told a label is unknown at a host, with no step of it to register, opens it again after a back-off of `retry_ms` doubling per refusal up to `resync_ms` (local policy).
 - **Contact card**: a link (spec/permissions.md §7) with read role to an account's profile thing P, a group of itself with no items: its label carries P's own aspects, the account's record (a record blob) and, as certificate copies, its `keys.0` commits and rotations (spec/permissions.md §5.5).
-- **Unjudged blobs**: a receiver keeps blobs a peer placed under a label even if its own closure disagrees, while it cannot judge them: a commit it holds pending (not parked) or an entry of the label it can open and has not applied, an entry awaiting a record included; then §6 decides.
+- **Unjudged blobs**: a receiver keeps blobs a peer placed under a label even if its own closure disagrees, while it cannot judge them: a commit it holds pending (not parked) or an entry of the label it can open and has not applied, an entry awaiting a record included, within its bounds on unjudged input (spec/commits.md §4 Pending storage); then §6 decides.
 
 ## 4. Host state
 Per label:

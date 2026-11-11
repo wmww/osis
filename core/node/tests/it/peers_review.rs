@@ -154,6 +154,49 @@ fn peer_budget_refuses_spec_sync_5() {
     assert!(!kept_from_reader(64), "past it, not kept");
 }
 
+/// Whether node `b`, with `peer_bytes`, keeps a commit that opens and pends here (drift: its
+/// author's clock two hours ahead) that a reader sharing L brings, unstamped, in reply to `b`'s
+/// Pull; and whether `b` then holds it pending.
+fn pending_kept_from_reader(peer_bytes: u64) -> (bool, bool) {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let cfg = SyncConfig { peers: false, peer_bytes, ..SyncConfig::default() };
+    let b = net.add_node(2, cfg);
+    reach(&mut net, a, 0xa1);
+    reach(&mut net, b, 0xb1);
+    net.blocked_peers.insert((a, b));
+    let g = net.group_at(a, &[(b, Role::Write)], vec![]);
+    net.run();
+    net.set_skew(a, 2 * 3_600_000);
+    let c = net.write(a, g, "ahead");
+    let acts = net.sync(a).handle(Event::Local);
+    net.actions(a, acts);
+    net.run();
+    net.set_skew(a, 0);
+    let l = net.label(b);
+    let la = net.label(a);
+    let blob_id = net.sync(a).entries(&la).into_iter().find(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).expect("a placed it").0;
+    let (wrap, _) = net.sync(a).entry_meta(&la, &blob_id).unwrap();
+    let blob = net.engine(a).blob(&blob_id).unwrap().unwrap();
+    let (mut p, evs) = member_pulled(&mut net, b, a, l);
+    let id = evs.iter().find_map(|e| if let ClientEvent::Peer(m) = e { if let osis_proto::Message::Pull(x) = &**m { Some(x.id) } else { None } } else { None }).expect("b pulls its member");
+    let ev = osis_proto::Event::Added { blob_id, blob: Some(blob), wrap, stamp: None };
+    let reply = osis_proto::msg::PullReply { id, events: vec![(l, ev)], cursor: Some(vec![1; 8]), whole: false, more: false, report: false, joins: Vec::new() };
+    command(&mut net, b, &mut p, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
+    let kept = net.sync(b).entries(&l).iter().any(|(x, _)| *x == blob_id);
+    let pending = net.engine(b).pending().iter().any(|(x, _)| *x == c);
+    (kept, pending)
+}
+
+// notes/node-sync.md (Unjudged input), spec/requirements.md (peer input never grows storage
+// unbounded): an entry from a reader that opens to a commit pending here counts against the peer
+// budget as an unopened one does; past it neither the entry nor the pending commit is kept.
+#[test]
+fn pending_from_reader_counts_against_peer_budget_spec_sync_5() {
+    assert_eq!(pending_kept_from_reader(SyncConfig::default().peer_bytes), (true, true), "within the budget, kept pending");
+    assert_eq!(pending_kept_from_reader(64), (false, false), "past it, neither kept");
+}
+
 /// Whether node `b` (`peer_bytes` 1500) keeps the second of two unopened 1000-byte entries that
 /// reader `a` brings over two sessions, each proving `a`'s account and, with `fresh`, also an
 /// account known by nothing at `b`, below `a`'s in tid order (anyone can make one per session).

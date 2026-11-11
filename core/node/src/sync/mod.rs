@@ -95,6 +95,12 @@ pub struct SyncEngine {
     pub(crate) engine: Engine,
     /// Whether `forget_own_covered` has looked at every held commit since this open.
     pub(crate) forget_seeded: bool,
+    /// `sweep_pending` has looked at every pending commit since the start (a crash may have come
+    /// between an entry leaving and its sweep).
+    pub(crate) pending_seeded: bool,
+    /// Labels whose `unvouched_cap` refusal was reported (`InputCapped`), until a batch there
+    /// fits again.
+    pub(crate) unvouched_reported: BTreeSet<LabelId>,
     events: Receiver<crate::Event>,
     pub(crate) rng: Box<dyn CryptoRngCore + Send>,
     pub(crate) cfg: SyncConfig,
@@ -356,6 +362,8 @@ impl SyncEngine {
         let started = engine.now().0;
         Ok(SyncEngine {
             forget_seeded: false,
+            pending_seeded: false,
+            unvouched_reported: BTreeSet::new(),
             engine,
             events,
             rng,
@@ -520,6 +528,14 @@ impl SyncEngine {
         }
         let now = self.engine.now();
         self.engine.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: None, peer: None, detail }, now);
+        self.engine.core.events.flush();
+    }
+
+    /// A bound on unverified input from other nodes was reached and what came past it was not
+    /// kept (notes/node-sync.md, Unjudged input): the app hears of it.
+    pub(crate) fn report_capped(&mut self, detail: String) {
+        let now = self.engine.now();
+        self.engine.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::InputCapped, tids: Vec::new(), commit: None, peer: None, detail }, now);
         self.engine.core.events.flush();
     }
 

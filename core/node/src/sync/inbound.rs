@@ -576,16 +576,19 @@ impl SyncEngine {
         // under a smaller cap
         let inbox = !self.inbox_actors_at(&l).is_empty();
         let cap = if inbox { self.cfg.unvouched_cap >> 4 } else { self.cfg.unvouched_cap };
-        let mut held = self.state.present_at(&host, &l).into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind == Kind::Unknown && e.stamp.is_none())).count();
+        let mut held = self.state.present_at(&host, &l).into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| e.stamp.is_none() && self.unjudged(e))).count();
         let mut gone = Vec::new();
         let mut over = 0usize;
         for (b, fresh) in ids {
-            let unopened = !listed.contains(b) && self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind == Kind::Unknown && e.stamp.is_none() && osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_none());
-            if !unopened {
+            // unopened under what is held, or opened and not judged (its commit pending, parked,
+            // awaiting): notes/node-sync.md, Unjudged input
+            let unjudged = !listed.contains(b) && self.state.entries.get(&(l, *b)).is_some_and(|e| e.stamp.is_none() && self.unjudged(e) && (e.kind != Kind::Unknown || osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_none()));
+            if !unjudged {
                 continue;
             }
+            let opened = self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind != Kind::Unknown);
             let drop = held > cap;
-            if *fresh && !self.state.blobs.contains_key(b) && (drop || !inbox) {
+            if *fresh && !opened && !self.state.blobs.contains_key(b) && (drop || !inbox) {
                 gone.push(*b);
             }
             if drop {
@@ -593,13 +596,21 @@ impl SyncEngine {
                 if !self.state.present_anywhere(&l, b) {
                     self.state.drop_entry(l, *b);
                     self.fetched(b);
+                    if opened {
+                        self.forget_blob(b)?;
+                        if !self.state.blobs.contains_key(b) && !self.state.named(b) {
+                            gone.push(*b);
+                        }
+                    }
                 }
                 held -= 1;
                 over += 1;
             }
         }
-        if over > 0 {
-            self.diag(format!("label {l:?}: {over} unopened unstamped entries over the cap dropped"));
+        if over == 0 {
+            self.unvouched_reported.remove(&l);
+        } else if self.unvouched_reported.insert(l) {
+            self.report_capped(format!("label {l:?}: {over} unstamped entries not judged here over the cap (`unvouched_cap` {cap}) dropped"));
         }
         self.delete_blobs(&gone)
     }
@@ -848,8 +859,10 @@ impl SyncEngine {
             };
             self.inbox_plain.insert((l, b), (pt.clone(), chain.clone(), records.clone()));
             self.engine.learn_records(records)?;
+            let chain = chain_commits(chain);
+            self.state.note_chain(l, b, chain.iter().map(|(_, c)| c.id()).collect());
             // the author's chain first; what still cannot be judged is looked at again later
-            for plain in chain_commits(chain).into_iter().map(|(plain, _)| plain).chain([pt]) {
+            for plain in chain.into_iter().map(|(plain, _)| plain).chain([pt]) {
                 match self.engine.ingest(&plain, Vec::new()) {
                     Ok(Ingested::Awaits(_, r)) => {
                         self.inbox_awaits.entry((l, b)).or_default().insert(awaited(&r));
@@ -869,6 +882,24 @@ impl SyncEngine {
         let waiting = &self.inbox_awaits;
         self.inbox_plain.retain(|k, _| waiting.contains_key(k));
         self.engine.reexamine()
+    }
+
+    /// Pending rows no held entry carries go (notes/node-sync.md, Unjudged input): what pends
+    /// never outlives what holds it. Looked at: commits whose last carrying entry left, commits
+    /// stored pending since the last look (one from no entry, a stranded report's keys, goes at
+    /// once), and every pending one once per start.
+    fn sweep_pending(&mut self) -> Result<()> {
+        let mut look = std::mem::take(&mut self.state.uncarried);
+        look.append(&mut self.engine.take_pended());
+        if !std::mem::replace(&mut self.pending_seeded, true) {
+            look.extend(self.engine.core.ix.pending.keys().copied());
+        }
+        for c in look {
+            if !self.state.carried.contains_key(&c) && !self.state.by_commit.contains_key(&c) {
+                self.engine.forget_pending(&c)?;
+            }
+        }
+        Ok(())
     }
 
     /// Reading-only secrets whose source has no entry left go (`by_commit` empties, the last
@@ -927,6 +958,7 @@ impl SyncEngine {
             }
         }
         self.sweep_unchecked()?;
+        self.sweep_pending()?;
         if std::mem::take(&mut self.start_look) {
             self.name_after_crash();
         }
@@ -1205,6 +1237,7 @@ impl SyncEngine {
             return Ok(());
         };
         let id = c.id();
+        let mut carried = Vec::new();
         if self.state.declined.contains(&id) {
             e.kind = Kind::Inbox(Some(id));
         } else if !self.admits(&id, &o, &mut None) {
@@ -1215,7 +1248,9 @@ impl SyncEngine {
             // the author's chain first (spec/wire.md §9): the commit applies with no label of the
             // thing read
             self.engine.learn_records(records)?;
-            commits.extend(chain_commits(chain).into_iter().map(|(plaintext, commit)| ToIngest { label: l, blob: b, size: 0, plaintext, commit }));
+            let chain = chain_commits(chain);
+            carried = chain.iter().map(|(_, c)| c.id()).collect();
+            commits.extend(chain.into_iter().map(|(plaintext, commit)| ToIngest { label: l, blob: b, size: 0, plaintext, commit }));
             commits.push(ToIngest { label: l, blob: b, size: 0, plaintext: pt, commit: c });
             // the pass of the inbox's label stamps it, the home label's of the actor it is sealed
             // to or one above it places its copy (`inbox_certificates`); applying starts them only
@@ -1226,6 +1261,7 @@ impl SyncEngine {
             self.mark_labels(&[l]);
         }
         self.state.set_entry(l, b, e);
+        self.state.note_chain(l, b, carried);
         Ok(())
     }
 
@@ -1356,8 +1392,10 @@ impl SyncEngine {
                 self.state.set_entry(l, b, e);
             }
             self.engine.note_delete_hints(x, &things)?;
+            let chain = chain_commits(chain);
+            self.state.note_chain(l, b, chain.iter().map(|(_, c)| c.id()).collect());
             // the author's chain first; what cannot be judged yet is looked at again on a wake
-            for (plain, cb) in chain_commits(chain).into_iter().chain([(pt, blob)]) {
+            for (plain, cb) in chain.into_iter().chain([(pt, blob)]) {
                 match self.engine.ingest(&plain, Vec::new()) {
                     Ok(Ingested::Awaits(_, r)) => {
                         self.inbox_awaits.entry((l, b)).or_default().insert(awaited(&r));

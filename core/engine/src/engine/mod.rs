@@ -878,6 +878,9 @@ pub struct Core {
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look.
     pub(crate) redeliver: BTreeSet<CommitId>,
+    /// Commits stored pending since node-sync last looked (`Engine::take_pended`): it drops those
+    /// no entry carries. Not journaled: one a rollback undid costs a look.
+    pub(crate) pended: BTreeSet<CommitId>,
     /// Aspects whose deltas `Engine::commit_forged` replaces by bytes that do not decode.
     pub(crate) forge_bad: BTreeSet<(Tid, Ak)>,
     /// Tests: the running transaction writes states no held body gives (`Engine::damage_index`:
@@ -1482,6 +1485,7 @@ impl Core {
             valueless_dirty: _,
             changed: _,
             redeliver: _,
+            pended: _,
             missed: _,
             timer_floor: _,
             hlc: _,
@@ -1649,6 +1653,7 @@ impl Core {
             listed_before: Vec::new(),
             killed: Vec::new(),
             redeliver: BTreeSet::new(),
+            pended: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
             #[cfg(debug_assertions)]
             unchecked_tx: false,
@@ -2874,6 +2879,7 @@ impl Engine {
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
         fresh.accounts = std::mem::take(&mut self.core.accounts);
         fresh.redeliver = std::mem::take(&mut self.core.redeliver);
+        fresh.pended = std::mem::take(&mut self.core.pended);
         fresh.waits = std::mem::take(&mut self.core.waits);
         fresh.changed = self.core.changed.take();
         self.core = fresh;

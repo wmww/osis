@@ -162,6 +162,8 @@ pub(crate) struct Charges {
     /// When charges were last pruned (wall ms), and whether a budget was reached since.
     pruned: u64,
     full: bool,
+    /// A reached budget was reported (`InputCapped`), and nothing was pruned since.
+    reported: bool,
 }
 
 impl Charges {
@@ -562,8 +564,7 @@ impl SyncEngine {
         let key = charge_key(who, &l);
         let mut gone = Vec::new();
         for b in fresh {
-            let unopened = self.state.entries.get(&(l, *b)).is_some_and(|e| matches!(e.kind, super::state::Kind::Unknown | super::state::Kind::Bad) && e.stamp.is_none());
-            if !unopened {
+            if !self.state.entries.get(&(l, *b)).is_some_and(|e| e.stamp.is_none() && self.unjudged(e)) {
                 continue;
             }
             let size = match self.engine.blob(b)? {
@@ -572,10 +573,13 @@ impl SyncEngine {
             };
             let used = self.charges.per.get(&key).copied().unwrap_or(0);
             if size > self.cfg.peer_bytes.saturating_sub(used) || size > self.cfg.peer_total_bytes.saturating_sub(self.charges.total) {
-                self.charges.full = true;
+                self.budget_reached(Some(l));
                 self.state.drop_entry(l, *b);
                 self.fetched(b);
-                if !self.state.blobs.contains_key(b) {
+                // an opened one's blob record goes with it (`forget_blob`), so nothing carries
+                // its pending commit (`sweep_pending`)
+                self.forget_blob(b)?;
+                if !self.state.blobs.contains_key(b) && !self.state.named(b) {
                     gone.push(*b);
                 }
                 continue;
@@ -592,18 +596,42 @@ impl SyncEngine {
         let key = charge_key(node, &l);
         let used = self.charges.per.get(&key).copied().unwrap_or(0);
         if size > self.cfg.peer_bytes.saturating_sub(used) || size > self.cfg.peer_total_bytes.saturating_sub(self.charges.total) {
-            self.charges.full = true;
+            self.budget_reached(Some(l));
             return false;
         }
         self.charges.charge(l, b, key, size);
         true
     }
 
-    /// Drops charges that no longer count: entries no longer held, opened since, or present at
+    /// A peer budget refused what a peer sent (under `l`): the app hears of it once until
+    /// charges are freed (`InputCapped`).
+    fn budget_reached(&mut self, l: Option<LabelId>) {
+        self.charges.full = true;
+        if !std::mem::replace(&mut self.charges.reported, true) {
+            let at = l.map(|l| format!(" under label {l:?}")).unwrap_or_default();
+            self.report_capped(format!("peer budget reached{at}: unverified entries from peers refused (`peer_bytes` {}, `peer_total_bytes` {})", self.cfg.peer_bytes, self.cfg.peer_total_bytes));
+        }
+    }
+
+    /// Whether entry `e` is not judged here (notes/node-sync.md, Unjudged input): unopened, bad,
+    /// parked, awaiting, or its commit pending and not applied. Such an entry no writer vouched
+    /// for counts against the unvouched bounds (`unvouched_cap`, the peer budgets).
+    pub(crate) fn unjudged(&self, e: &Entry) -> bool {
+        use super::state::Kind;
+        let ix = &self.engine.core.ix;
+        match &e.kind {
+            Kind::Unknown | Kind::Bad | Kind::Parked(_) | Kind::Awaits { .. } => true,
+            Kind::Commit { commit, .. } => ix.pending.contains_key(commit) && !ix.commits.contains_key(commit),
+            _ => false,
+        }
+    }
+
+    /// Drops charges that no longer count: entries no longer held, judged since, or present at
     /// a host or peer.
     pub(crate) fn prune_charges(&mut self) {
         let st = &self.state;
-        let stale: Vec<(LabelId, BlobId)> = self.charges.by_entry.keys().filter(|(l, b)| !(st.entries.get(&(*l, *b)).is_some_and(|e| matches!(e.kind, super::state::Kind::Unknown | super::state::Kind::Bad | super::state::Kind::Parked(_))) && !st.present_anywhere(l, b))).copied().collect();
+        let stale: Vec<(LabelId, BlobId)> = self.charges.by_entry.keys().filter(|(l, b)| !(st.entries.get(&(*l, *b)).is_some_and(|e| self.unjudged(e)) && !st.present_anywhere(l, b))).copied().collect();
+        self.charges.reported &= stale.is_empty();
         for k in stale {
             if let Some((p, n)) = self.charges.by_entry.remove(&k) {
                 self.charges.uncharge(p, n);
@@ -679,7 +707,9 @@ impl SyncEngine {
         } else {
             self.served.insert(conn, s);
         }
-        self.charges.full |= acc.full;
+        if acc.full {
+            self.budget_reached(None);
+        }
         for (l, b, n) in acc.charges {
             self.charges.charge(l, b, charge_key(source, &l), n);
         }
