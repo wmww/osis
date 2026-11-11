@@ -19,6 +19,9 @@ Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s 
 - 2026-11-10 21:49 ostrich `gate.hold` CPU 9698/3795 s, wall 794/241 s and `gate` CPU 11657/4094 s, wall 1236/299 s at load 13 (1725 s of it waiting for the lock): every crate selected (receive-writes review); persistent, issues/gate-five-minutes.md.
 - 2026-11-10 ostrich `gate.hold` CPU 7544/3795 s, wall 1138/241 s and `default-tests` wall 814/598 s at load 23-24: 20 of 26 crates selected (crdt-slots review, osis-crdt and crdt-model changed); persistent, issues/gate-five-minutes.md.
 - 2026-11-10 22:40 ostrich `gate.hold` CPU 7563/3795 s, wall 836/241 s at load 16: 20 of 26 crates selected (crdt-slots re-review, osis-crdt and crdt-model changed); persistent, issues/gate-five-minutes.md.
+- 2026-11-11 ostrich `gate.hold` CPU 7972/3795 s, wall 862/241 s at load 20; `gate` CPU 8449/4094 s; `gate.clippy` CPU 83/69 s: memo-check-cost, 9 of 26 crates selected; persistent, issues/gate-five-minutes.md.
+- 2026-11-11 ostrich `gate.hold` wall 781/241 s at load 17-35; `gate` wall 1145/299 s: open-cost review, 18 of 26 crates selected (an osis-crdt doc edit); persistent, issues/gate-five-minutes.md.
+- 2026-11-11 ostrich `gate.hold` CPU 7284/3795 s, wall 676/241 s at load 11; `gate` CPU 8327/4094 s, wall 967/299 s; `gate.clippy` CPU 100/69 s at load 19: decoded-recheck-cost review, every crate selected; persistent, issues/gate-five-minutes.md.
 
 ## Investigations
 One section per investigation: date and box, the trigger (hits or the run over 2x), what was tried, the outcome (fixed, or a raised limit with why no good solution was found). Tess reviews every raise.

@@ -1621,16 +1621,16 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         tx.scan(records::COMMIT, |k, v| {
             let id = CommitId(k.try_into().map_err(|_| Error::Corrupt("commit record key"))?);
             let (head, blob) = decode_commit_record(&v)?;
-            recs.push((id, head, Arc::new(blob)));
+            recs.push((id, head, Arc::new(blob), v.to_vec()));
             Ok(())
         })?;
         let mut bodies = Vec::new();
         let mut snaps = Vec::new();
-        for (id, head, stored) in recs {
+        for (id, head, stored, bytes) in recs {
             // read fresh at this point of the store: no cache hit to compare
             #[cfg(debug_assertions)]
             let _ = tx.recheck(format!("commit record {id:?}"));
-            tx.core.decoded.keep_record(id, stored.clone());
+            tx.core.decoded.keep_record(id, stored.clone(), &bytes);
             let mut blob = Arc::unwrap_or_clone(stored);
             if !blob.header.is_resolved()
                 && let Some(dedup) = tx.core.dedup(&blob.header.actor)
