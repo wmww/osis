@@ -72,7 +72,7 @@ fn sibling_opens_the_inner_signature_spec_crypto_3() {
     let creation = blob.header.id();
     let sealed = lp.sealed(0, &[creation]).unwrap();
     assert!(!sealed.is_empty());
-    let seed = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().seeds.values().next().unwrap().expose().to_owned();
+    let seed = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().keys.values().next().unwrap().seed().expose().to_owned();
     for (_, b) in sealed.iter().flat_map(|p| &p.blobs) {
         assert!(!contains(b, &seed), "the seed is sealed");
         assert!(!contains(b, me.as_bytes()), "the node is sealed");
@@ -128,7 +128,7 @@ fn box_to_a_closed_epoch_reads_stale_spec_crypto_4() {
     assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
     let rec = e.core.created(&a.account).unwrap().clone();
     let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
-    let first = AccountEpochKeys::from_seed(held.seeds.values().next().unwrap());
+    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
     let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([77; 32]));
     let first_name = account_epoch(0, &first.signing.verifying_key()).unwrap();
     let next_name = account_epoch(1, &next.signing.verifying_key()).unwrap();
@@ -159,7 +159,7 @@ fn account_key_open_follows_the_rotations_held_spec_sync_10() {
     e.ingest(&bytes, Vec::new()).unwrap();
     assert!(e.account_key_open(&record, &first), "held: still open");
     let seed = Secret32::from_bytes([3; 32]);
-    let (first_keys, next) = (AccountEpochKeys::from_seed(&lp.peers[0].engine.core.accounts[&a.account].seeds[&first]), AccountEpochKeys::from_seed(&seed));
+    let (first_keys, next) = (AccountEpochKeys::from_seed(lp.peers[0].engine.core.accounts[&a.account].keys[&osis_crypto::VerifyingKey::from_bytes(&first).unwrap()].seed()), AccountEpochKeys::from_seed(&seed));
     let rot = rotation(record.clone(), &first_keys, &next, Ts::make(WallMs(1_700_000_000_100), 0).unwrap());
     let e = &mut lp.peers[1].engine;
     e.ingest(&rot, Vec::new()).unwrap();
@@ -176,7 +176,7 @@ fn forked_account_follows_one_head_spec_permissions_5_4() {
     let mut lp = peers(2);
     let (a, bytes) = created(&mut lp);
     let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
-    let first = AccountEpochKeys::from_seed(held.seeds.values().next().unwrap());
+    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
     let (x, y) = (AccountEpochKeys::from_seed(&Secret32::from_bytes([70; 32])), AccountEpochKeys::from_seed(&Secret32::from_bytes([71; 32])));
     let e = &mut lp.peers[1].engine;
     assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
@@ -225,7 +225,7 @@ fn grant_boxes_at_the_open_epoch_spec_crypto_4() {
     let mut lp = peers(2);
     let (a, bytes) = created(&mut lp);
     let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
-    let first = AccountEpochKeys::from_seed(held.seeds.values().next().unwrap());
+    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
     let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([77; 32]));
     let e = &mut lp.peers[1].engine;
     assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
@@ -251,7 +251,7 @@ fn possession_key_is_the_epochs_signing_key_spec_crypto_4() {
     let mut lp = peers(2);
     let (a, bytes) = created(&mut lp);
     let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
-    let first = AccountEpochKeys::from_seed(held.seeds.values().next().unwrap());
+    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
     let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([78; 32]));
     let e = &mut lp.peers[1].engine;
     e.ingest(&bytes, Vec::new()).unwrap();
@@ -320,7 +320,7 @@ fn a_rotation_rejudges_possession_and_is_carried_spec_crypto_4() {
     let mut lp = peers(2);
     let (a, bytes) = created(&mut lp);
     let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
-    let first = AccountEpochKeys::from_seed(held.seeds.values().next().unwrap());
+    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
     let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([80; 32]));
     let e = &mut lp.peers[1].engine;
     e.ingest(&bytes, Vec::new()).unwrap();
@@ -363,7 +363,7 @@ fn account_view_is_built_once_per_rotation() {
     // a rotation builds it once (the epoch rule judges it on arrival), however many reads follow
     let e = &mut lp.peers[0].engine;
     let held = e.core.accounts.get(&a.account).unwrap().clone();
-    let first = AccountEpochKeys::from_seed(held.seeds.values().next().unwrap());
+    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
     let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([81; 32]));
     let rec = e.core.created(&a.account).unwrap().clone();
     let ts = Ts::make(e.now(), 0).unwrap();
@@ -382,7 +382,7 @@ fn request_gate_reads_the_header_epoch_spec_sync_3() {
     let mut lp = peers(2);
     let (a, bytes) = created(&mut lp);
     let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
-    let first = AccountEpochKeys::from_seed(held.seeds.values().next().unwrap());
+    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
     let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([79; 32]));
     let e = &mut lp.peers[1].engine;
     e.ingest(&bytes, Vec::new()).unwrap();
@@ -455,7 +455,7 @@ fn closed_world() -> (LocalPeer, Tid, Tid, CommitId, CommitId, Vec<u8>) {
         lp.sync_all().unwrap();
         lp.advance(1000);
         let e = &lp.peers[0].engine;
-        let first = AccountEpochKeys::from_seed(e.core.accounts[&a].seeds.values().next().unwrap());
+        let first = AccountEpochKeys::from_seed(e.core.accounts[&a].keys.values().next().unwrap().seed());
         let rot = rotation(e.core.created(&a).unwrap().clone(), &first, &AccountEpochKeys::from_seed(&Secret32::from_bytes([90; 32])), Ts::make(e.now(), 0).unwrap());
         (lp, (a, t, c, g, rot))
     });

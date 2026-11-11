@@ -6,16 +6,17 @@ use crate::epoch::{ActorEpochs, Unchecked};
 use crate::names::Names;
 use crate::Error;
 use osis_base::{Role, Tid};
-use osis_crypto::{BoxForm, BoxSlot, Epoch, KeyActorKeys, KemSecret, Secret32, key_actor_role_secret, open_box, open_history, open_symmetric_box, role_kem};
+use osis_crypto::{AccountEpochKeys, BoxForm, BoxSlot, Epoch, KeyActorKeys, Secret32, key_actor_role_secret, open_box, open_history, open_symmetric_box, role_kem};
 use osis_schema::core_types::{BoxKey, HistoryKey, Sealed, SecretBox, Secrets};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-/// Who opens: a key actor by its seed, or an actor holder by the role secrets it holds.
+/// Who opens: a key actor by its keys, or an actor holder by the role secrets it holds.
 pub enum Opener<'a> {
-    KeyActor { holder: Tid, seed: &'a Secret32 },
+    KeyActor { holder: Tid, keys: &'a KeyActorKeys },
     Actor { holder: Tid, epochs: &'a ActorEpochs },
-    /// An account by the seeds it holds, by epoch name (spec/crypto.md §3).
-    Account { holder: Tid, seeds: &'a BTreeMap<Epoch, Secret32> },
+    /// An account by the epoch keys it holds, by epoch name (spec/crypto.md §3).
+    Account { holder: Tid, keys: &'a BTreeMap<Epoch, Arc<AccountEpochKeys>> },
 }
 
 impl Opener<'_> {
@@ -38,11 +39,10 @@ pub struct Opened {
 /// it does not hold, bad bytes) are returned with the reason; they are not fatal.
 pub fn open_boxes(actor: &Tid, secrets: &Secrets, opener: &Opener) -> (Vec<Opened>, Vec<(BoxKey, Error)>) {
     let holder = opener.holder();
-    let mut kem_cache: Option<KemSecret> = None;
     let mut out = Vec::new();
     let mut failed = Vec::new();
     for (k, b) in secrets.boxes.iter().filter(|(k, _)| k.holder == holder) {
-        match open_one(actor, k, b, opener, &mut kem_cache) {
+        match open_one(actor, k, b, opener) {
             Ok(Some(o)) => out.push(o),
             Ok(None) => {}
             Err(e) => failed.push((k.clone(), e)),
@@ -52,40 +52,44 @@ pub fn open_boxes(actor: &Tid, secrets: &Secrets, opener: &Opener) -> (Vec<Opene
 }
 
 /// `Ok(None)`: the opener holds no key for this box.
-fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener, kem_cache: &mut Option<KemSecret>) -> Result<Option<Opened>, Error> {
+fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<Option<Opened>, Error> {
     let epoch = from_schema(&k.epoch)?;
     let slot = BoxSlot::Secrets { actor: *actor, holder: k.holder, role: k.role, epoch };
     match b {
         SecretBox::Sealed(sb) => {
             let keyset = sb.keyset.as_ref().map(from_schema).transpose()?;
+            let role;
             let kem = match (opener, keyset) {
-                (Opener::KeyActor { seed, .. }, None) => kem_cache.get_or_insert_with(|| KeyActorKeys::from_seed(seed).kem).clone(),
+                (Opener::KeyActor { keys, .. }, None) => &keys.kem,
                 (Opener::Actor { epochs, .. }, Some(ks)) => match epochs.role(k.role).secret(&ks) {
-                    Some(s) => role_kem(s),
+                    Some(s) => {
+                        role = role_kem(s);
+                        &role
+                    }
                     None => return Ok(None),
                 },
-                (Opener::Account { seeds, .. }, Some(ks)) => match seeds.get(&ks) {
-                    Some(seed) => KeyActorKeys::from_seed(seed).kem,
+                (Opener::Account { keys, .. }, Some(ks)) => match keys.get(&ks) {
+                    Some(e) => &e.kem,
                     None => return Ok(None),
                 },
                 _ => return Err(Error::Mismatch("sealed form does not fit the holder kind")),
             };
             let Sealed::X25519MlKem768(bytes) = &sb.sealed;
             // osis-crypto checks the item is the key's (role, epoch)
-            let i = open_box(&kem, &slot, BoxForm::Sealed { keyset, suite: sb.suite }, bytes)?;
+            let i = open_box(kem, &slot, BoxForm::Sealed { keyset, suite: sb.suite }, bytes)?;
             Ok(Some(Opened { role: i.role, epoch: i.epoch, secret: i.secret }))
         }
         SecretBox::Symmetric(sym) => {
             let epoch_s = from_schema(&sym.epoch)?;
             let s = match opener {
-                Opener::KeyActor { seed, .. } if epoch_s == Epoch::ZERO => key_actor_role_secret(seed, k.role),
+                Opener::KeyActor { keys, .. } if epoch_s == Epoch::ZERO => key_actor_role_secret(keys.seed(), k.role),
                 Opener::KeyActor { .. } => return Ok(None),
                 Opener::Actor { epochs, .. } => match epochs.role(k.role).secret(&epoch_s) {
                     Some(s) => s.clone(),
                     None => return Ok(None),
                 },
-                Opener::Account { seeds, .. } => match seeds.get(&epoch_s) {
-                    Some(seed) => key_actor_role_secret(seed, k.role),
+                Opener::Account { keys, .. } => match keys.get(&epoch_s) {
+                    Some(e) => key_actor_role_secret(e.seed(), k.role),
                     None => return Ok(None),
                 },
             };

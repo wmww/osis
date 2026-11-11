@@ -27,9 +27,9 @@ use std::sync::Arc;
 pub struct HeldAccount {
     pub devices: Tid,
     /// The first epoch's signing key (the creation record's).
-    pub first: [u8; 32],
-    /// Epoch seeds held, by signing public key.
-    pub seeds: BTreeMap<[u8; 32], Secret32>,
+    pub first: VerifyingKey,
+    /// The keys of the epochs whose seeds are held, by signing public key.
+    pub keys: BTreeMap<VerifyingKey, Arc<AccountEpochKeys>>,
 }
 
 /// An account this node created.
@@ -162,9 +162,9 @@ impl AccountView {
         self.rule.chain().line(&self.open()).is_some_and(|l| l.contains(r))
     }
 
-    /// The seed of held epoch `e` among `held`'s.
-    pub(crate) fn seed_of(&self, e: &CommitId, held: &HeldAccount) -> Option<Secret32> {
-        held.seeds.get(&self.epochs.get(e)?.signing.to_bytes()).cloned()
+    /// The keys of held epoch `e` among `held`'s.
+    pub(crate) fn keys_of(&self, e: &CommitId, held: &HeldAccount) -> Option<Arc<AccountEpochKeys>> {
+        held.keys.get(&self.epochs.get(e)?.signing).cloned()
     }
 
     /// The held rotations.
@@ -389,14 +389,13 @@ impl Core {
     fn judged_from(&self, p: &Tid) -> JudgedFrom {
         let a = self.accounts.get(p);
         let roster = a.map(|a| self.key_holders(&a.devices).into_iter().map(|(m, _)| m).collect()).unwrap_or_default();
-        (self.ix.rotations.get(p).copied().unwrap_or(0), self.sides.account(p), a.map_or(0, |a| a.seeds.len()), roster)
+        (self.ix.rotations.get(p).copied().unwrap_or(0), self.sides.account(p), a.map_or(0, |a| a.keys.len()), roster)
     }
 
     /// The node that signed `id` (a commit of held account `a` signed at the epoch with signing
     /// key `at`) inside, read from its sealed inner signature `inner`.
     fn inner_signer(&self, a: &HeldAccount, at: &VerifyingKey, id: &CommitId, inner: &[u8; osis_crypto::INNER_LEN]) -> Option<Tid> {
-        let keys = AccountEpochKeys::from_seed(a.seeds.get(&at.to_bytes())?);
-        let (node, sig) = open_inner(&keys.inner, &id.0, inner)?;
+        let (node, sig) = open_inner(&a.keys.get(at)?.inner, &id.0, inner)?;
         let CreationRecord::KeyActor { public_key, .. } = self.created(&node)? else { return None };
         verify_inner(&VerifyingKey::from_slice(public_key).ok()?, &id.0, &sig).then_some(node)
     }
@@ -405,7 +404,7 @@ impl Core {
         let first = match self.created(p) {
             Some(CreationRecord::KeyActor { public_key, account: true, .. }) => VerifyingKey::from_slice(public_key).ok()?,
             Some(_) => return None,
-            None => VerifyingKey::from_bytes(&self.accounts.get(p)?.first).ok()?,
+            None => self.accounts.get(p)?.first,
         };
         let ak = osis_base::Ak::new("keys.0").ok()?;
         let rots: Vec<(CommitId, CommitId, osis_commit::RotationHeader, Point)> = self.ix.by_aspect.get(&(*p, ak)).into_iter().flatten().filter_map(|(_, c)| {
@@ -486,12 +485,11 @@ impl Core {
 
     /// The epoch this node signs as `p` at and its keys: the open one, when it holds its seed
     /// (spec/permissions.md §5.5). `None` when `p` is no account held here.
-    pub(crate) fn account_signing(&self, p: &Tid) -> Result<Option<(CommitId, AccountEpochKeys)>> {
+    pub(crate) fn account_signing(&self, p: &Tid) -> Result<Option<(CommitId, Arc<AccountEpochKeys>)>> {
         let Some(a) = self.accounts.get(p) else { return Ok(None) };
         let v = self.account_view(p).ok_or(Error::Misuse("no signing chain for the account"))?;
-        let (id, e) = v.open_epoch().filter(|(_, e)| a.seeds.contains_key(&e.signing.to_bytes())).ok_or(Error::Misuse("the account's open epoch is not held"))?;
-        let seed = a.seeds.get(&e.signing.to_bytes()).ok_or(Error::Misuse("the account's open epoch is not held"))?;
-        Ok(Some((*id, AccountEpochKeys::from_seed(seed))))
+        let (id, keys) = v.open_epoch().and_then(|(id, e)| Some((*id, a.keys.get(&e.signing)?.clone()))).ok_or(Error::Misuse("the account's open epoch is not held"))?;
+        Ok(Some((id, keys)))
     }
 
     /// The role epochs of account `p` this node holds seeds of (spec/crypto.md §3), internal to
@@ -500,7 +498,7 @@ impl Core {
         self.account_epochs_of.get(p, || {
             let a = self.accounts.get(p)?;
             let v = self.account_view(p)?;
-            let seed = |e: &EpochPublic| a.seeds.get(&e.signing.to_bytes()).cloned();
+            let seed = |e: &EpochPublic| a.keys.get(&e.signing).map(|k| k.seed().clone());
             let held: Vec<_> = v.epochs.values().filter_map(|e| {
                 let sup = e.supersedes.iter().filter_map(|s| v.epochs.get(s)).filter_map(|x| Some((x.height?, seed(x)?))).collect();
                 Some((e.height?, seed(e)?, sup))
@@ -509,10 +507,10 @@ impl Core {
         })
     }
 
-    /// The seeds of `p` held, by epoch name (spec/crypto.md §3).
-    pub(crate) fn account_seeds_by_name(&self, p: &Tid) -> BTreeMap<Epoch, Secret32> {
+    /// The epoch keys of `p` held, by epoch name (spec/crypto.md §3).
+    pub(crate) fn account_keys_by_name(&self, p: &Tid) -> BTreeMap<Epoch, Arc<AccountEpochKeys>> {
         let (Some(a), Some(v)) = (self.accounts.get(p), self.account_view(p)) else { return BTreeMap::new() };
-        v.epochs.values().filter_map(|e| Some((v.name(e)?, a.seeds.get(&e.signing.to_bytes())?.clone()))).collect()
+        v.epochs.values().filter_map(|e| Some((v.name(e)?, a.keys.get(&e.signing)?.clone()))).collect()
     }
 
     /// An account's delete key (spec/crypto.md §7): the signing key of its open epoch.
@@ -685,8 +683,8 @@ pub(crate) fn holder_keys_at(tx: &mut Tx<'_>, p: &Tid, name: &Epoch) -> Result<O
     let v = tx.core.account_view(p).ok_or(Error::UnknownThing(*p))?;
     let Some((_, e)) = v.named(name) else { return Ok(None) };
     let Some(kem) = epoch_kem(tx, p, e)? else { return Ok(None) };
-    let seed = tx.core.accounts.get(p).and_then(|a| a.seeds.get(&e.signing.to_bytes()).cloned());
-    Ok(Some(HolderKeys::Account { epoch: *name, kem, seed }))
+    let keys = tx.core.accounts.get(p).and_then(|a| a.keys.get(&e.signing).cloned());
+    Ok(Some(HolderKeys::Account { epoch: *name, kem, keys }))
 }
 
 /// How a box to account `p` is sealed with no anchors to descend from: at its open epoch.
@@ -730,16 +728,16 @@ impl Engine {
             tx.rng.fill_bytes(&mut n);
             Ok((Secret32::random(&mut *tx.rng), n, thing_record(Tid::from_bytes([0; 15]), &mut *tx.rng)))
         })?;
-        let keys = AccountEpochKeys::from_seed(&seed);
-        let signing = keys.signing.verifying_key().to_bytes();
-        let record = CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: signing.to_vec(), nonce, account: true };
+        let keys = Arc::new(AccountEpochKeys::from_seed(&seed));
+        let signing = keys.signing.verifying_key();
+        let record = CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: signing.to_bytes().to_vec(), nonce, account: true };
         let p = record.tid();
         let d_record = CreationRecord::Thing { admin: p, nonce: *nonce_d.nonce(), link: None };
         let d = d_record.tid();
         self.core.account.set(Some(p));
-        self.core.accounts.insert(p, Arc::new(HeldAccount { devices: d, first: signing, seeds: [(signing, seed.clone())].into() }));
+        self.core.accounts.insert(p, Arc::new(HeldAccount { devices: d, first: signing, keys: [(signing, keys.clone())].into() }));
         self.core.role_changed();
-        let res = self.run(|tx| create_account_in(tx, record, d_record, &keys, &seed, hosts));
+        let res = self.run(|tx| create_account_in(tx, record, d_record, &keys, hosts));
         if res.is_err() {
             self.core.account.set(None);
             self.core.accounts.remove(&p);
@@ -755,21 +753,19 @@ impl Engine {
     /// as a node of the account): this node signs as it and its boxes open.
     pub fn hold_account(&mut self, p: &Tid, d: &Tid) -> Result<()> {
         let Some(CreationRecord::KeyActor { public_key, account: true, .. }) = self.core.created(p).cloned() else { return Err(Error::UnknownThing(*p)) };
-        let first: [u8; 32] = public_key.as_slice().try_into().map_err(|_| Error::Misuse("account key"))?;
+        let first = VerifyingKey::from_slice(&public_key).map_err(|_| Error::Misuse("account key"))?;
         let stored = self.get_typed(d, &ct::ACCOUNT)?.ok_or(Error::UnknownThing(*d))?;
-        let mut seeds = BTreeMap::new();
+        let mut keys = BTreeMap::new();
         for (k, v) in stored.seeds {
-            let (Ok(k), Ok(v)) = (<[u8; 32]>::try_from(k), <[u8; 32]>::try_from(v)) else { continue };
-            let seed = Secret32::from_bytes(v);
             // an entry that is not its epoch's seed opens and signs nothing
-            if AccountEpochKeys::from_seed(&seed).signing.verifying_key().to_bytes() == k {
-                seeds.insert(k, seed);
+            if let Some((k, e)) = super::signing::epoch_keys(&k, &v) {
+                keys.insert(k, e);
             }
         }
-        if seeds.is_empty() || !self.core.of_devices(d) {
+        if keys.is_empty() || !self.core.of_devices(d) {
             return Err(Error::Misuse("no seed of the account readable here"));
         }
-        self.core.accounts.insert(*p, Arc::new(HeldAccount { devices: *d, first, seeds }));
+        self.core.accounts.insert(*p, Arc::new(HeldAccount { devices: *d, first, keys }));
         self.core.role_changed();
         self.run(super::reopen_all)
     }
@@ -804,7 +800,7 @@ impl Engine {
     /// The KEM secrets of account `p`'s epochs held here: what opens an inbox blob sealed to it
     /// (spec/crypto.md §5).
     pub fn account_kems(&self, p: &Tid) -> Vec<osis_crypto::KemSecret> {
-        self.core.accounts.get(p).map(|a| a.seeds.values().map(|s| AccountEpochKeys::from_seed(s).kem).collect()).unwrap_or_default()
+        self.core.accounts.get(p).map(|a| a.keys.values().map(|k| k.kem.clone()).collect()).unwrap_or_default()
     }
 
     /// The account this node belongs to and its devices actor, once it has joined one.
@@ -921,7 +917,7 @@ impl Core {
     }
 }
 
-fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: CreationRecord, keys: &AccountEpochKeys, seed: &Secret32, hosts: &[Address]) -> Result<(Tid, Option<CommitId>)> {
+fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: CreationRecord, keys: &AccountEpochKeys, hosts: &[Address]) -> Result<(Tid, Option<CommitId>)> {
     let p = record.tid();
     let me = tx.core.id.tid();
     let mut m = Mutation::new();
@@ -940,7 +936,7 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     m.set(p, &ct::KEYS, &Keys { inbox: Some(ct::Inbox { label, hosts: hosts.to_vec() }), deposit_seed: Some(dep), ..osis_keys::aspects::account_keys(keys) })?;
     put_edge(&mut m, d, me, &admin_edge())?;
     let signing = keys.signing.verifying_key().to_bytes().to_vec();
-    m.set(d, &ct::ACCOUNT, &ct::Account { seeds: [(signing, seed.expose().to_vec())].into() })?;
+    m.set(d, &ct::ACCOUNT, &ct::Account { seeds: [(signing, keys.seed().expose().to_vec())].into() })?;
     let c = Engine::commit_tx(tx, m)?;
     rotation::record(tx, d, &rot)?;
     Ok((profile, c))

@@ -74,7 +74,7 @@ impl Engine {
     /// unless the role is write or above. Leaves the seed held as it was: a caller holding it
     /// keeps it (a redeemer proves L until its join is at a source, spec/permissions.md §7).
     pub fn redeem(&mut self, link: &ShareLink, grantee: &Tid, single_use: bool) -> Result<Done> {
-        let l = crate::identity::Identity::from_seed(link.seed.clone()).tid();
+        let l = crate::identity::key_actor_tid(&link.seed);
         let held = self.core.key_actors.contains_key(&l);
         if !held {
             self.hold_key_actor(link.seed.clone())?;
@@ -158,7 +158,7 @@ impl Engine {
             {
                 let ids: Vec<osis_base::CommitId> = self.core.on_thing(&t).collect();
                 let here = ids.iter().any(|c| self.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local && m.view.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == LINK_SEED)));
-                out.push(HeldLink { k: *k, l: crate::identity::Identity::from_seed(Secret32::from_bytes(seed)).tid(), first_admin, target: *target, single_use: *single_use, here });
+                out.push(HeldLink { k: *k, l: crate::identity::key_actor_tid(&Secret32::from_bytes(seed)), first_admin, target: *target, single_use: *single_use, here });
             }
         }
         out.sort();
@@ -246,7 +246,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     // L: creation and keys.0, signed by itself
     let lkeys = KeyActorKeys::from_seed(seed);
     let mut m = Mutation::new();
-    m.create(key_actor_record(&lkeys, seed));
+    m.create(key_actor_record(&lkeys.signing.verifying_key(), seed));
     m.sign_as(l);
     key_actor_keys(&mut m, l, &lkeys)?;
     let lc = Engine::commit_tx(tx, m)?;

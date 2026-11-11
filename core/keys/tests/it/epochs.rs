@@ -105,7 +105,7 @@ fn own_secrets_switch() {
     assert!(none.read.held().next().is_none());
 
     let mut la = ActorEpochs::default();
-    ingest(&w.a, &s, &Opener::KeyActor { holder: w.l, seed: &w.lseed }, &mut la, None).unwrap();
+    ingest(&w.a, &s, &Opener::KeyActor { holder: w.l, keys: &osis_crypto::KeyActorKeys::from_seed(&w.lseed) }, &mut la, None).unwrap();
     applied(&mut la);
     assert_eq!(la.read.newest_held().unwrap().0, e(Role::Read));
     assert_eq!(la.write.newest_held().unwrap().0, e(Role::Write));

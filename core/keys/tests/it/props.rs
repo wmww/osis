@@ -146,9 +146,13 @@ impl Sim {
     fn opened(&self, i: usize) -> ActorEpochs {
         let (t, k) = &self.pool[i];
         let mut v = ActorEpochs::default();
+        let keys;
         let opener = match k {
             Kind::Actor(e) => Opener::Actor { holder: *t, epochs: e },
-            Kind::Key(seed) => Opener::KeyActor { holder: *t, seed },
+            Kind::Key(seed) => {
+                keys = osis_crypto::KeyActorKeys::from_seed(seed);
+                Opener::KeyActor { holder: *t, keys: &keys }
+            }
         };
         let errs = ingest(&self.a, &self.s, &opener, &mut v, None).unwrap();
         assert!(errs.is_empty(), "{errs:?}");

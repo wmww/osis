@@ -11,6 +11,7 @@ use ed25519_dalek::Sha512;
 pub struct DeleteSecret {
     seed: Secret32,
     esk: ExpandedSecretKey,
+    vk: VerifyingKey,
 }
 
 impl DeleteSecret {
@@ -21,7 +22,8 @@ impl DeleteSecret {
     /// From an Ed25519 seed (a key actor's signing seed `kdf("sign", seed)`, spec/crypto.md §3).
     pub fn from_seed(seed: Secret32) -> DeleteSecret {
         let esk = ExpandedSecretKey::from(seed.expose());
-        DeleteSecret { seed, esk }
+        let vk = VerifyingKey(ed25519_dalek::VerifyingKey::from(&esk));
+        DeleteSecret { seed, esk, vk }
     }
 
     /// The Ed25519 seed.
@@ -31,14 +33,14 @@ impl DeleteSecret {
 
     /// The delete verification key, listed in headers and published in `keys.0`.
     pub fn verifying_key(&self) -> VerifyingKey {
-        VerifyingKey(ed25519_dalek::VerifyingKey::from(&self.esk))
+        self.vk
     }
 
     /// Signs `"osis v1 delete" || digest` under the key blinded by the prefix `salt` and the
     /// header's `hb` (the commitment's key, [`blind`]): scalar `h·a mod ℓ`, nonce prefix
     /// `kdf("delete nonce", seed, salt || hb)`.
     pub fn sign(&self, salt: &[u8; 16], hb: &[u8; 16], digest: &[u8; 32]) -> Signature {
-        let h = factor(&self.verifying_key(), salt, hb);
+        let h = factor(&self.vk, salt, hb);
         let blinded = ExpandedSecretKey { scalar: h * self.esk.scalar, hash_prefix: *kdf(kdf::DELETE_NONCE, self.seed.expose(), &cat(salt, hb)).expose() };
         let vk = ed25519_dalek::VerifyingKey::from(&blinded);
         let mut m = Vec::with_capacity(Domain::Delete.as_str().len() + 32);

@@ -195,12 +195,12 @@ impl Core {
         for step in self.record_chain(tid) {
             let Some(cur) = step.thing() else { break };
             if let Some(a) = self.accounts.get(&cur) {
-                out.extend(a.seeds.values().map(|seed| DeleteSource::KeyActor(DeleteSecret::from_seed(osis_crypto::kdf::kdf(osis_crypto::kdf::SIGN, seed.expose(), b"")))));
+                out.extend(a.keys.values().map(|k| DeleteSource::key_actor(k.seed(), &k.signing)));
                 break;
             }
-            let seed = if cur == self.id.tid() { Some(self.id.seed().clone()) } else { self.key_actors.get(&cur).map(|k| k.seed().clone()) };
-            if let Some(seed) = seed {
-                out.push(DeleteSource::KeyActor(DeleteSecret::from_seed(osis_crypto::kdf::kdf(osis_crypto::kdf::SIGN, seed.expose(), b""))));
+            let keys = if cur == self.id.tid() { Some(self.id.keys()) } else { self.key_actors.get(&cur).map(|k| k.keys()) };
+            if let Some(k) = keys {
+                out.push(DeleteSource::key_actor(k.seed(), &k.signing));
                 break;
             }
             if let Some(e) = self.ix.secrets.get(&cur) {
@@ -217,8 +217,8 @@ impl Core {
         let chain = if level == osis_base::format::DELETE_AUTHOR { author } else { thing };
         for src in chain {
             match src {
-                DeleteSource::KeyActor(d) if d.verifying_key().to_bytes() == *key => return Some(DeleteSecret::from_seed(d.seed().clone())),
-                DeleteSource::KeyActor(_) => {}
+                DeleteSource::KeyActor { seed, public } if public.as_bytes() == key => return Some(DeleteSecret::from_seed(seed.clone())),
+                DeleteSource::KeyActor { .. } => {}
                 DeleteSource::Epochs(e) => {
                     let found = osis_keys::delete_candidates(level, e, Some(e)).into_iter().map(|(_, s)| DeleteSecret::derive(s)).find(|d| d.verifying_key().to_bytes() == *key);
                     if found.is_some() {
@@ -264,21 +264,20 @@ impl Core {
             return None;
         }
         let mut epochs = before.clone().unwrap_or_default();
-        let seed = self.id.seed().clone();
         let me = self.id.tid();
         // only a holder with a box here opens anything: not O(actors known) per ingest
         let holders: std::collections::BTreeSet<Tid> = secrets.boxes.keys().map(|k| k.holder).filter(|t| t != actor).collect();
         let openers: Vec<(Tid, &ActorEpochs)> = holders.iter().filter_map(|t| Some((*t, self.ix.secrets.get(t)?))).collect();
-        let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::KeyActor { holder: me, seed: &seed }, &mut epochs, unchecked);
+        let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::KeyActor { holder: me, keys: self.id.keys() }, &mut epochs, unchecked);
         for (t, k) in &self.key_actors {
-            let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::KeyActor { holder: *t, seed: k.seed() }, &mut epochs, unchecked);
+            let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::KeyActor { holder: *t, keys: k.keys() }, &mut epochs, unchecked);
         }
         for (m, e) in &openers {
             let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Actor { holder: *m, epochs: e }, &mut epochs, unchecked);
         }
         for t in self.accounts.keys().filter(|t| holders.contains(t)) {
-            let seeds = self.account_seeds_by_name(t);
-            let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Account { holder: *t, seeds: &seeds }, &mut epochs, unchecked);
+            let keys = self.account_keys_by_name(t);
+            let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Account { holder: *t, keys: &keys }, &mut epochs, unchecked);
         }
         let held_any = epochs.holds_any();
         (held_any && Some(&epochs) != before.as_ref()).then_some(epochs)
@@ -457,8 +456,14 @@ pub(crate) enum DeleteBase {
 /// A held source of delete secrets along a record chain.
 pub(crate) enum DeleteSource {
     Epochs(ActorEpochs),
-    /// A key actor's signing key.
-    KeyActor(DeleteSecret),
+    /// A key actor's signing key: its Ed25519 seed `kdf("sign", seed)` and public key.
+    KeyActor { seed: Secret32, public: VerifyingKey },
+}
+
+impl DeleteSource {
+    fn key_actor(seed: &Secret32, signing: &osis_crypto::SigningSecret) -> DeleteSource {
+        DeleteSource::KeyActor { seed: osis_crypto::kdf::kdf(osis_crypto::kdf::SIGN, seed.expose(), b""), public: signing.verifying_key() }
+    }
 }
 
 /// What a commit build asks for (osis-commit `Secrets`).

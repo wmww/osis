@@ -254,11 +254,7 @@ pub(crate) fn sealing(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) 
         }
         let secret = own.as_ref().filter(|e| e.role(r).is_established(&k)).and_then(|e| e.role(r).secret(&k)).cloned();
         let written = tx.core.ix.keysets.get(&(*m, r, k)).and_then(|x| x.kem.clone());
-        let kem = match (written, &secret) {
-            (Some(b), _) => osis_crypto::KemPublicKey::from_slice(&b).ok(),
-            (None, Some(s)) => Some(osis_crypto::role_kem(s).public().clone()),
-            (None, None) => None,
-        };
+        let kem = written.or_else(|| secret.as_ref().map(|s| osis_crypto::role_kem(s).public().clone()));
         let Some(kem) = kem else {
             cut = true;
             continue;
@@ -353,7 +349,7 @@ pub(crate) fn authority(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>,
     let proves = |h: &Recipient| match &h.keys {
         HolderKeys::Actor { own, keysets } => roles.contains(&needed) && needed <= h.role && own.get(&needed).is_some_and(|(es, _)| osis_keys::symmetric_box(es, keysets.get(&needed).map(|k| &k.0))),
         // one keyset for every role: a proof at any rotated role shows it
-        HolderKeys::Account { seed, .. } => seed.is_some() && roles.iter().any(|r| *r <= h.role),
+        HolderKeys::Account { keys, .. } => keys.is_some() && roles.iter().any(|r| *r <= h.role),
         HolderKeys::KeyActor { .. } => false,
     };
     let shown: BTreeSet<Tid> = holders.iter().filter(|h| proves(h)).map(|h| h.holder).collect();

@@ -54,7 +54,7 @@ fn key_actor_grant_raced_by_read_rotation() {
     w.apply(&mut s);
     assert!(reseal_needed(&s, &v, &holders).is_empty());
     let mut kv = ActorEpochs::default();
-    ingest(&a, &s, &Opener::KeyActor { holder: k, seed: &seed }, &mut kv, None).unwrap();
+    ingest(&a, &s, &Opener::KeyActor { holder: k, keys: &osis_crypto::KeyActorKeys::from_seed(&seed) }, &mut kv, None).unwrap();
     assert!(kv.read.secret(&er2).is_some());
 }
 
@@ -75,7 +75,7 @@ fn key_actor_demoted_keeps_lower_roles() {
     let (er, ew) = (v.read.newest().unwrap(), v.write.newest().unwrap());
     assert_eq!(s.boxes.keys().filter(|b| b.holder == k).cloned().collect::<Vec<_>>(), vec![box_key(k, Role::Read, &er), box_key(k, Role::Write, &ew)]);
     let mut kv = ActorEpochs::default();
-    ingest(&a, &s, &Opener::KeyActor { holder: k, seed: &seed }, &mut kv, None).unwrap();
+    ingest(&a, &s, &Opener::KeyActor { holder: k, keys: &osis_crypto::KeyActorKeys::from_seed(&seed) }, &mut kv, None).unwrap();
     assert!(kv.read.secret(&er).is_some());
     assert!(kv.write.secret(&ew).is_some());
     assert!(kv.admin.secret(&rot.rotated[0].epoch).is_none());

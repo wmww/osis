@@ -11,7 +11,7 @@ impl Engine {
     pub fn account_prover(&self) -> Result<Option<(SigningSecret, CreationRecord)>> {
         let Some(p) = self.core.account.get() else { return Ok(None) };
         let Some(record) = self.core.created(&p).cloned() else { return Ok(None) };
-        Ok(self.core.account_signing(&p)?.map(|(_, keys)| (keys.signing, record)))
+        Ok(self.core.account_signing(&p)?.map(|(_, keys)| (keys.signing.clone(), record)))
     }
 
     /// Whether `key` signs for the account `record` creates at an epoch open by the rotations

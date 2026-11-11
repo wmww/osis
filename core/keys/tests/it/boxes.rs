@@ -88,7 +88,7 @@ fn grant_to_key_actor() {
     let mut s = f.s.clone();
     w.apply(&mut s);
     let mut kv = ActorEpochs::default();
-    ingest(&f.a, &s, &Opener::KeyActor { holder: k, seed: &seed }, &mut kv, None).unwrap();
+    ingest(&f.a, &s, &Opener::KeyActor { holder: k, keys: &osis_crypto::KeyActorKeys::from_seed(&seed) }, &mut kv, None).unwrap();
     // Establishment from the state as a snapshot (the grantee's commits elided).
     osis_keys::snapshot_keyed(&s, osis_base::CommitId([1; 32]), &mut kv).unwrap();
     kv.establish(&osis_keys::AllHeld);
@@ -102,7 +102,7 @@ fn grant_to_key_actor() {
     let mut s = f.s.clone();
     w.apply(&mut s);
     let mut kv = ActorEpochs::default();
-    ingest(&f.a, &s, &Opener::KeyActor { holder: k, seed: &seed }, &mut kv, None).unwrap();
+    ingest(&f.a, &s, &Opener::KeyActor { holder: k, keys: &osis_crypto::KeyActorKeys::from_seed(&seed) }, &mut kv, None).unwrap();
     assert!(f.forks.iter().all(|e| kv.read.secret(e).is_some()));
 }
 
@@ -129,7 +129,7 @@ fn rotation_keeps_other_roles_boxes() {
     assert!(reseal_missing(&s, &v, &k, Role::Read).is_empty());
     assert!(reseal_needed(&s, &v, &holders).is_empty());
     let mut kv = ActorEpochs::default();
-    ingest(&f.a, &s, &Opener::KeyActor { holder: k, seed: &seed }, &mut kv, None).unwrap();
+    ingest(&f.a, &s, &Opener::KeyActor { holder: k, keys: &osis_crypto::KeyActorKeys::from_seed(&seed) }, &mut kv, None).unwrap();
     assert!(f.forks.iter().all(|e| kv.read.secret(e).is_some()), "both read forks held");
 }
 
@@ -472,13 +472,14 @@ fn box_to_an_account_names_its_epoch_spec_crypto_4() {
     let vk = e.signing.verifying_key();
     let name = osis_keys::account_epoch(4, &vk).unwrap();
     let held = ActorEpochs::derived(&ActorEpochs::key_actor(&Secret32::from_bytes([5; 32])), &a);
-    let seeds = [(name, seed.clone())].into_iter().collect();
-    for writer_holds in [None, Some(seed.clone())] {
-        let r = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::Account { epoch: name, kem: e.kem.public().clone(), seed: writer_holds.clone() } };
+    let e = std::sync::Arc::new(e);
+    let seeds = [(name, e.clone())].into_iter().collect();
+    for writer_holds in [None, Some(e.clone())] {
+        let r = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::Account { epoch: name, kem: e.kem.public().clone(), keys: writer_holds.clone() } };
         let rot = rotate(&a, &ROLES.into_iter().collect(), &held, &Default::default(), &[r], &Default::default(), &mut *rg).unwrap();
         let mut s = Secrets::default();
         rot.secrets.apply(&mut s);
-        let (opened, failed) = open_boxes(&a, &s, &Opener::Account { holder: p, seeds: &seeds });
+        let (opened, failed) = open_boxes(&a, &s, &Opener::Account { holder: p, keys: &seeds });
         assert!(failed.is_empty(), "{failed:?}");
         assert_eq!(opened.len(), ROLES.len());
         for (k, b) in s.boxes.iter().filter(|(k, _)| k.holder == p) {

@@ -923,7 +923,7 @@ impl osis_keys::possession::View for Possession<'_> {
             return self.core.account_view(m)?.possession_key(k, &self.point).map(|pk| vec![pk]);
         }
         let x = self.core.ix.keysets.get(&(*m, r, *k)).filter(|x| x.held_before(&self.point))?;
-        Some(x.possession.iter().filter(|(_, p)| **p < self.point).filter_map(|(pk, _)| osis_crypto::VerifyingKey::from_bytes(pk).ok()).collect())
+        Some(x.possession.iter().filter(|(_, p)| **p < self.point).map(|(pk, _)| *pk).collect())
     }
 }
 

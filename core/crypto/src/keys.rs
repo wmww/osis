@@ -4,9 +4,11 @@ use crate::kdf::{self, DEDUP, kdf};
 use crate::{Domain, KemSecret, Secret32, Signature, SigningSecret, VerifyingKey};
 use osis_base::{Role, Tid};
 
-/// A key actor's keys (node, link key), all from its 32-byte seed.
+/// A key actor's keys (node, link key), all from its 32-byte seed, derived once and held with
+/// it: zeroized on drop with it; `Debug` shows public keys only.
 #[derive(Clone, Debug)]
 pub struct KeyActorKeys {
+    seed: Secret32,
     /// From `kdf("sign", seed)`; the creation record commits to its public key.
     pub signing: SigningSecret,
     /// From `kdf("kem", seed)`; its X25519 half is the claim key.
@@ -15,15 +17,24 @@ pub struct KeyActorKeys {
 
 impl KeyActorKeys {
     pub fn from_seed(seed: &Secret32) -> KeyActorKeys {
-        let signing = SigningSecret::from_seed(&kdf(kdf::SIGN, seed.expose(), b""));
-        KeyActorKeys { signing, kem: KemSecret::derive(seed) }
+        KeyActorKeys { seed: seed.clone(), signing: KeyActorKeys::signing_of(seed), kem: KemSecret::derive(seed) }
+    }
+    /// The signing key alone (what its creation record names), without the KEM key pair.
+    pub fn signing_of(seed: &Secret32) -> SigningSecret {
+        SigningSecret::from_seed(&kdf(kdf::SIGN, seed.expose(), b""))
+    }
+    /// The seed the keys derive from (its role secrets, `key_actor_role_secret`).
+    pub fn seed(&self) -> &Secret32 {
+        &self.seed
     }
 }
 
-/// One epoch of an account's signing chain, all from its 32-byte seed (spec/crypto.md §3):
-/// signing and KEM keys as a key actor's, its inner secret and its role secrets.
+/// One epoch of an account's signing chain, all from its 32-byte seed (spec/crypto.md §3),
+/// derived once and held with it: signing and KEM keys as a key actor's, its inner secret and
+/// (through the seed) its role secrets.
 #[derive(Clone, Debug)]
 pub struct AccountEpochKeys {
+    seed: Secret32,
     pub signing: SigningSecret,
     pub kem: KemSecret,
     /// `kdf("inner secret", seed)`: keys the inner signatures of commits signed at this epoch.
@@ -32,8 +43,13 @@ pub struct AccountEpochKeys {
 
 impl AccountEpochKeys {
     pub fn from_seed(seed: &Secret32) -> AccountEpochKeys {
-        let KeyActorKeys { signing, kem } = KeyActorKeys::from_seed(seed);
-        AccountEpochKeys { signing, kem, inner: kdf(kdf::INNER_SECRET, seed.expose(), b"") }
+        let KeyActorKeys { seed, signing, kem } = KeyActorKeys::from_seed(seed);
+        let inner = kdf(kdf::INNER_SECRET, seed.expose(), b"");
+        AccountEpochKeys { seed, signing, kem, inner }
+    }
+    /// The epoch's seed (its role secrets, `key_actor_role_secret`; stored in `account.0`).
+    pub fn seed(&self) -> &Secret32 {
+        &self.seed
     }
 }
 

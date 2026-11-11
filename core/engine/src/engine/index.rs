@@ -142,9 +142,9 @@ impl Rec for Arc<crate::flows::account::JudgedEpochs> {
 }
 impl Rec for super::HeldKeyset {
     fn to(&self) -> Value {
-        let kem = Value::List(self.kem.iter().map(|b| Value::bytes(b)).collect());
+        let kem = Value::List(self.kem.iter().map(|k| Value::bytes(k.as_bytes())).collect());
         let lists: Vec<osis_crypto::Epoch> = self.lists.iter().copied().collect();
-        let possession = Value::List(self.possession.iter().map(|(b, p)| Value::List(vec![Value::bytes(b), p.to()])).collect());
+        let possession = Value::List(self.possession.iter().map(|(k, p)| Value::List(vec![Value::bytes(k.as_bytes()), p.to()])).collect());
         let since = Value::List(self.since.iter().map(Rec::to).collect());
         let names = Value::List(self.names.iter().map(|(d, a)| Value::List(vec![Value::bytes(d), Value::bytes(a.as_bytes())])).collect());
         let left_out = Value::List(self.left_out.iter().flat_map(|(m, xs)| xs.iter().map(|x| Value::List(vec![Value::bytes(m.as_bytes()), x.to()]))).collect());
@@ -176,12 +176,12 @@ impl Rec for super::HeldKeyset {
             .iter()
             .map(|x| match x {
                 Value::List(p) => match p.as_slice() {
-                    [Value::Bytes(b), p] => Some((<[u8; 32]>::try_from(b.as_slice()).ok()?, Rec::from(p)?)),
+                    [Value::Bytes(b), p] => Some((osis_crypto::VerifyingKey::from_slice(b).ok()?, Rec::from(p)?)),
                     _ => None,
                 },
                 _ => None,
             })
-            .collect::<Option<BTreeMap<[u8; 32], osis_perm::Point>>>()?;
+            .collect::<Option<BTreeMap<osis_crypto::VerifyingKey, osis_perm::Point>>>()?;
         let since = match since {
             Value::List(x) => match x.as_slice() {
                 [] => None,
@@ -193,7 +193,7 @@ impl Rec for super::HeldKeyset {
         let kem = match kem {
             Value::List(x) => match x.as_slice() {
                 [] => None,
-                [Value::Bytes(b)] => Some(b.clone()),
+                [Value::Bytes(b)] => Some(osis_crypto::KemPublicKey::from_slice(b).ok()?),
                 _ => return None,
             },
             _ => return None,
@@ -616,11 +616,11 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
                 w = w.u64(x.n()).raw(x.nonce());
             }
             w = match &k.kem {
-                Some(b) => w.u8(1).bytes(b),
+                Some(x) => w.u8(1).bytes(x.as_bytes()),
                 None => w.u8(0),
             };
             w = match &k.possession {
-                Some(b) => w.u8(1).raw(b),
+                Some(x) => w.u8(1).raw(x.as_bytes()),
                 None => w.u8(0),
             };
             w = w.raw(&k.names).u32(k.left_out.len() as u32);
@@ -814,8 +814,9 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
             for _ in 0..r.u32()? {
                 lists.push(osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped keyset epoch"))?);
             }
-            let kem = if r.u8()? != 0 { Some(r.bytes()?.to_vec()) } else { None };
-            let possession = if r.u8()? != 0 { Some(r.arr()?) } else { None };
+            let key = || Error::Corrupt("dropped keyset key");
+            let kem = if r.u8()? != 0 { Some(osis_crypto::KemPublicKey::from_slice(r.bytes()?).map_err(|_| key())?) } else { None };
+            let possession = if r.u8()? != 0 { Some(osis_crypto::VerifyingKey::from_bytes(&r.arr()?).map_err(|_| key())?) } else { None };
             let names = r.arr()?;
             let mut left_out = Vec::new();
             for _ in 0..r.u32()? {

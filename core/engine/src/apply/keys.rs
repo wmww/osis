@@ -63,9 +63,9 @@ fn keyset_recs(body: &Fragment) -> Vec<KeysetRec> {
             let epoch = osis_keys::aspects::from_schema(&ks.epoch).ok()?;
             let lists = ks.supersedes.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect();
             let ct::KemKey::X25519MlKem768(b) = ks.kem_key;
-            let kem = (ks.suite == osis_keys::SUITE && osis_crypto::KemPublicKey::from_slice(&b).is_ok()).then_some(b);
+            let kem = (ks.suite == osis_keys::SUITE).then(|| osis_crypto::KemPublicKey::from_slice(&b).ok()).flatten();
             let ct::SigningKey::Ed25519(p) = ks.possession_key;
-            let possession = <[u8; 32]>::try_from(p.as_slice()).ok().filter(|p| osis_crypto::VerifyingKey::from_bytes(p).is_ok());
+            let possession = osis_crypto::VerifyingKey::from_slice(&p).ok();
             let left_out = ks.left_out.iter().flat_map(|(m, xs)| xs.iter().filter_map(|x| Some((*m, osis_keys::aspects::from_schema(x).ok()?)))).collect();
             Some(KeysetRec { role, epoch, lists, kem, possession, names: ks.names, left_out })
         })

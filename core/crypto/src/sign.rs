@@ -88,16 +88,20 @@ impl fmt::Debug for SigningSecret {
     }
 }
 
-/// Ed25519 public key, canonically encoded and not of small order. The agility enum
-/// `signing_key` case 1 (spec/wire.md §3).
+/// Ed25519 public key, canonically encoded and not of small order: its bytes and the
+/// decompressed point, so it is parsed once, where it is decoded. The agility enum `signing_key`
+/// case 1 (spec/wire.md §3). Ordered and hashed by its bytes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct VerifyingKey(pub(crate) ed25519_dalek::VerifyingKey);
 
 impl VerifyingKey {
     /// Rejects non-canonical encodings and small-order points (spec/crypto.md §1).
     pub fn from_bytes(b: &[u8; 32]) -> Result<VerifyingKey, Error> {
+        if !canonical_y(b) {
+            return Err(Error::BadKey);
+        }
         let k = ed25519_dalek::VerifyingKey::from_bytes(b).map_err(|_| Error::BadKey)?;
-        if k.is_weak() || k.to_edwards().compress().to_bytes() != *b {
+        if k.is_weak() {
             return Err(Error::BadKey);
         }
         Ok(VerifyingKey(k))
@@ -107,6 +111,9 @@ impl VerifyingKey {
     }
     pub fn to_bytes(&self) -> [u8; 32] {
         self.0.to_bytes()
+    }
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        self.0.as_bytes()
     }
     /// Strict verification of `sig` over `domain || digest`.
     pub fn verify(&self, domain: Domain, digest: &[u8; 32], sig: &Signature) -> Result<(), Error> {
@@ -119,6 +126,30 @@ impl VerifyingKey {
     }
     pub fn from_value(v: &Value) -> Result<VerifyingKey, Error> {
         VerifyingKey::from_slice(agility_bytes(v, Some(32))?)
+    }
+}
+
+/// Whether `b` encodes its y below p = 2^255 - 19 (the sign bit aside). That is all of
+/// canonical a decompressible point needs: the only points with x = 0, whose sign bit is free,
+/// are of small order.
+fn canonical_y(b: &[u8; 32]) -> bool {
+    let [lo, mid @ .., hi] = b;
+    *hi & 0x7f != 0x7f || mid.iter().any(|x| *x != 0xff) || *lo < 0xed
+}
+
+impl std::hash::Hash for VerifyingKey {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.as_bytes().hash(h);
+    }
+}
+impl PartialOrd for VerifyingKey {
+    fn partial_cmp(&self, other: &VerifyingKey) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for VerifyingKey {
+    fn cmp(&self, other: &VerifyingKey) -> std::cmp::Ordering {
+        self.as_bytes().cmp(other.as_bytes())
     }
 }
 
@@ -207,6 +238,21 @@ mod tests {
             }
         }
         assert!(seen > 0);
+        // the check by bytes agrees with recompressing every point dalek decodes, at the boundary
+        for lo in 0xe0u8..=0xff {
+            for hi in [0x7fu8, 0xff] {
+                let mut b = [0xffu8; 32];
+                b[0] = lo;
+                b[31] = hi;
+                let by_point = ed25519_dalek::VerifyingKey::from_bytes(&b).is_ok_and(|d| !d.is_weak() && d.to_edwards().compress().to_bytes() == b);
+                assert_eq!(VerifyingKey::from_bytes(&b).is_ok(), by_point, "{lo:x} {hi:x}");
+            }
+        }
+        for i in 0u32..512 {
+            let b = *blake3::hash(&i.to_le_bytes()).as_bytes();
+            let by_point = ed25519_dalek::VerifyingKey::from_bytes(&b).is_ok_and(|d| !d.is_weak() && d.to_edwards().compress().to_bytes() == b);
+            assert_eq!(VerifyingKey::from_bytes(&b).is_ok(), by_point, "{b:?}");
+        }
         let sk = SigningSecret::from_seed(&Secret32::from_bytes([5; 32]));
         let pk = sk.verifying_key();
         let digest = [1u8; 32];

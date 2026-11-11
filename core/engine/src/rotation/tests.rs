@@ -187,9 +187,9 @@ pub(super) fn openable_but(lp: &mut LocalPeer, i: usize, actors: &[Tid], party: 
     let all: Vec<(Tid, ct::Secrets)> = actors.iter().filter_map(|a| lp.peers[i].engine.get_typed(a, &ct::SECRETS).unwrap().map(|s| (*a, s))).collect();
     // boxes to the party itself (a key actor)
     if let Some(p) = lp.peers.iter().find(|p| p.engine.me() == party) {
-        let seed = p.engine.core.id.seed().clone();
+        let keys = p.engine.core.id.keys().clone();
         for (a, s) in &all {
-            for o in osis_keys::open_boxes(a, s, &osis_keys::Opener::KeyActor { holder: party, seed: &seed }).0 {
+            for o in osis_keys::open_boxes(a, s, &osis_keys::Opener::KeyActor { holder: party, keys: &keys }).0 {
                 known.insert((*a, o.role, o.epoch));
             }
         }
@@ -894,9 +894,9 @@ fn finalize_applies_whole_or_not_spec_permissions_2() {
     lp.sync_all().unwrap();
     let _ = lp.peers[0].engine.ensure_rotated(&g);
     let state = lp.peers[0].engine.run(|tx| crate::flows::secrets_in(tx, &g)).unwrap();
-    let seed_d = lp.peers[3].engine.core.id.seed().clone();
+    let keys_d = lp.peers[3].engine.core.id.keys().clone();
     let mut got = lp.peers[3].engine.epochs(&g).unwrap_or_default();
-    let _ = osis_keys::ingest(&g, &state, &osis_keys::Opener::KeyActor { holder: tids[3], seed: &seed_d }, &mut got, None);
+    let _ = osis_keys::ingest(&g, &state, &osis_keys::Opener::KeyActor { holder: tids[3], keys: &keys_d }, &mut got, None);
     for e in lp.peers[0].engine.epochs(&g).unwrap().read.current() {
         assert!(got.read.reading_secret(&e).is_none(), "D1 opens read epoch {e:?}, current at A");
     }

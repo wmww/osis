@@ -3,7 +3,7 @@
 
 use crate::epoch::{ActorEpochs, ROLES, RoleEpochs};
 use osis_base::Role;
-use osis_crypto::{Epoch, LabelRole, Secret32, VerifyingKey, label_role_key};
+use osis_crypto::{Epoch, LabelRole, Secret32, SigningSecret, VerifyingKey, label_role_key};
 
 /// The wrap epoch for an upload: the newest current (established) read epoch whose secret is
 /// held. None: the node is stranded and places nothing (spec/crypto.md §5).
@@ -36,13 +36,13 @@ pub fn registration_epochs(a: &ActorEpochs) -> Option<[(Epoch, &Secret32); 3]> {
 /// or not: opening a label is not encrypting under (spec/crypto.md §4). A stamp, step or delete
 /// under it needs `RoleEpochs::is_established`.
 pub fn registered_epoch(re: &RoleEpochs, r: Role, index: u64, key: &VerifyingKey) -> Option<Epoch> {
-    registered_secret(re, r, index, key).map(|(e, _)| e)
+    registered_key(re, r, index, key).map(|(e, _)| e)
 }
 
-/// `registered_epoch` with the secret that derives `key` (reading-only ones
-/// included).
-pub fn registered_secret<'a>(re: &'a RoleEpochs, r: Role, index: u64, key: &VerifyingKey) -> Option<(Epoch, &'a Secret32)> {
-    re.held_newest_first().into_iter().find(|(_, s)| label_role_key(label_role(r), s, index).verifying_key() == *key)
+/// `registered_epoch` with the label key it derives (reading-only secrets included): found by
+/// deriving each held secret's, so the one found is not derived again.
+pub fn registered_key(re: &RoleEpochs, r: Role, index: u64, key: &VerifyingKey) -> Option<(Epoch, SigningSecret)> {
+    re.held_newest_first().into_iter().map(|(e, s)| (e, label_role_key(label_role(r), s, index))).find(|(_, k)| k.verifying_key() == *key)
 }
 
 /// Whether an admin holds an established epoch newer than a head registers, per role

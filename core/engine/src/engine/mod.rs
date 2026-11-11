@@ -176,8 +176,8 @@ pub struct KeysetRec {
     pub role: osis_base::Role,
     pub epoch: osis_crypto::Epoch,
     pub lists: Vec<osis_crypto::Epoch>,
-    pub kem: Option<Vec<u8>>,
-    pub possession: Option<[u8; 32]>,
+    pub kem: Option<osis_crypto::KemPublicKey>,
+    pub possession: Option<osis_crypto::VerifyingKey>,
     /// The digest of the rotation's names it publishes (spec/crypto.md §4).
     pub names: osis_keys::NamesDigest,
     /// The keysets of holder actors it records its rotation left them out at (spec/crypto.md §4,
@@ -197,8 +197,8 @@ pub struct KeysetRec {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeldKeyset {
     pub lists: BTreeSet<osis_crypto::Epoch>,
-    pub kem: Option<Vec<u8>>,
-    pub possession: BTreeMap<[u8; 32], osis_perm::Point>,
+    pub kem: Option<osis_crypto::KemPublicKey>,
+    pub possession: BTreeMap<osis_crypto::VerifyingKey, osis_perm::Point>,
     /// The key of its earliest valid body; `None` only before one is noted.
     pub since: Option<osis_perm::Point>,
     pub names: BTreeSet<(osis_keys::NamesDigest, Tid)>,

@@ -3,13 +3,12 @@
 //! of new things (spec/data-model.md §1).
 
 use osis_base::{CreationRecord, SIGNING_KEY_ED25519, Tid};
-use osis_crypto::{CryptoRngCore, KeyActorKeys, Secret32, creation_nonce};
+use osis_crypto::{CryptoRngCore, KeyActorKeys, Secret32, VerifyingKey, creation_nonce};
 use osis_keys::ActorEpochs;
 
 /// A key actor this node signs as: the node itself.
 #[derive(Clone)]
 pub struct Identity {
-    seed: Secret32,
     keys: KeyActorKeys,
     record: CreationRecord,
     tid: Tid,
@@ -18,9 +17,9 @@ pub struct Identity {
 impl Identity {
     pub fn from_seed(seed: Secret32) -> Identity {
         let keys = KeyActorKeys::from_seed(&seed);
-        let record = key_actor_record(&keys, &seed);
+        let record = key_actor_record(&keys.signing.verifying_key(), keys.seed());
         let tid = record.tid();
-        Identity { seed, keys, record, tid }
+        Identity { keys, record, tid }
     }
 
     pub fn generate(rng: &mut dyn CryptoRngCore) -> Identity {
@@ -38,17 +37,22 @@ impl Identity {
     }
     #[doc(hidden)]
     pub fn seed(&self) -> &Secret32 {
-        &self.seed
+        self.keys.seed()
     }
     /// The node's own role secrets (never rotated).
     pub fn epochs(&self) -> ActorEpochs {
-        ActorEpochs::key_actor(&self.seed)
+        ActorEpochs::key_actor(self.keys.seed())
     }
 }
 
-/// The creation record of a key actor with these keys (spec/wire.md §3).
-pub fn key_actor_record(keys: &KeyActorKeys, seed: &Secret32) -> CreationRecord {
-    CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: keys.signing.verifying_key().to_bytes().to_vec(), nonce: creation_nonce(seed), account: false }
+/// The creation record of the key actor of `seed`, whose signing key is `signing` (spec/wire.md §3).
+pub fn key_actor_record(signing: &VerifyingKey, seed: &Secret32) -> CreationRecord {
+    CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: signing.to_bytes().to_vec(), nonce: creation_nonce(seed), account: false }
+}
+
+/// The tid of the key actor of `seed`, without deriving its KEM key pair.
+pub fn key_actor_tid(seed: &Secret32) -> Tid {
+    key_actor_record(&KeyActorKeys::signing_of(seed).verifying_key(), seed).tid()
 }
 
 /// A fresh record for a link's actor K of `admin`, made for `target` (spec/permissions.md §7).

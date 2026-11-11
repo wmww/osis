@@ -13,6 +13,7 @@ use osis_crypto::{
 };
 use osis_schema::core_types::{BoxKey, KemKey, Keys, Sealed, SealedBox, SecretBox, Secrets, Signature, SymmetricBox};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// What the writer knows of a holder's keys.
 #[derive(Clone, Debug)]
@@ -22,9 +23,9 @@ pub enum HolderKeys {
     /// The holder's newest keysets per role the writer holds, and its newest role secrets the
     /// writer holds (symmetric boxes, e.g. a thing's base actor).
     Actor { keysets: BTreeMap<Role, (Epoch, KemPublicKey)>, own: BTreeMap<Role, (Epoch, Secret32)> },
-    /// An account at its epoch (spec/crypto.md §3): the epoch's name and KEM key, and its seed
+    /// An account at its epoch (spec/crypto.md §3): the epoch's name and KEM key, and its keys
     /// when the writer holds it (symmetric boxes, possession by the epoch's signing key).
-    Account { epoch: Epoch, kem: KemPublicKey, seed: Option<Secret32> },
+    Account { epoch: Epoch, kem: KemPublicKey, keys: Option<Arc<AccountEpochKeys>> },
 }
 
 impl HolderKeys {
@@ -83,8 +84,8 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
         let b = match &rcpt.keys {
             HolderKeys::KeyActor { kem, seed: None } => sealed(kem, &slot, None, i, rng)?,
             HolderKeys::KeyActor { seed: Some(seed), .. } => symmetric(&slot, i, &key_actor_role_secret(seed, i.role), Epoch::ZERO, None)?,
-            HolderKeys::Account { epoch, seed: Some(seed), .. } => symmetric(&slot, i, &key_actor_role_secret(seed, i.role), *epoch, Some(&AccountEpochKeys::from_seed(seed).signing))?,
-            HolderKeys::Account { epoch, kem, seed: None } => sealed(kem, &slot, Some(*epoch), i, rng)?,
+            HolderKeys::Account { epoch, keys: Some(k), .. } => symmetric(&slot, i, &key_actor_role_secret(k.seed(), i.role), *epoch, Some(&k.signing))?,
+            HolderKeys::Account { epoch, kem, keys: None } => sealed(kem, &slot, Some(*epoch), i, rng)?,
             HolderKeys::Actor { keysets, own } => {
                 let ks = keysets.get(&i.role);
                 match own.get(&i.role) {
@@ -277,7 +278,7 @@ fn prove_boxed(actor: &Tid, m: &Recipient, rotated: &[Rotated], secrets: &Secret
         let Some(SecretBox::Symmetric(b)) = secrets.boxes.get(&box_key(m.holder, x.role, &x.epoch)) else { continue };
         let key = match &m.keys {
             HolderKeys::Actor { own, .. } => own.get(&x.role).map(|(es, s)| (*es, crate::possession::possession_secret(s))),
-            HolderKeys::Account { epoch, seed: Some(seed), .. } => Some((*epoch, AccountEpochKeys::from_seed(seed).signing)),
+            HolderKeys::Account { epoch, keys: Some(k), .. } => Some((*epoch, k.signing.clone())),
             _ => None,
         };
         let (Some((es, k)), Some(ks)) = (key, keys.keysets.get_mut(&x.role)) else { continue };

@@ -122,7 +122,7 @@ fn removal_rotates_the_account_and_its_lists_keep_its_writes_spec_permissions_5_
 }
 
 fn seeds(lp: &LocalPeer, peer: usize, p: Tid) -> usize {
-    lp.peers[peer].engine.core.accounts.get(&p).map_or(0, |a| a.seeds.len())
+    lp.peers[peer].engine.core.accounts.get(&p).map_or(0, |a| a.keys.len())
 }
 
 // spec/permissions.md §5.5 (Listings): a node of the account whose write the rotator had not
@@ -451,7 +451,7 @@ fn refork(lp: &mut LocalPeer, by: usize, a: &CreatedAccount, seed: u8) -> Vec<u8
     let e = &lp.peers[by].engine;
     let rec = e.core.created(&a.account).unwrap().clone();
     let osis_base::CreationRecord::KeyActor { public_key, .. } = &rec else { panic!("an account") };
-    let first = e.core.accounts.get(&a.account).unwrap().seeds.get(public_key.as_slice()).unwrap().clone();
+    let first = e.core.accounts.get(&a.account).unwrap().keys.get(&osis_crypto::VerifyingKey::from_slice(public_key).unwrap()).unwrap().seed().clone();
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
     super::tests_account::rotation(rec, &osis_crypto::AccountEpochKeys::from_seed(&first), &osis_crypto::AccountEpochKeys::from_seed(&osis_crypto::Secret32::from_bytes([seed; 32])), ts)
 }

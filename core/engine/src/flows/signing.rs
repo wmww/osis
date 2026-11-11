@@ -19,7 +19,7 @@ use osis_crdt::{Op, PathOp, PathSeg};
 use osis_store::Shred;
 use osis_commit::RotationHeader;
 use osis_commit::thing_list::{ListIds, ThingCert, ThingList};
-use osis_crypto::{AccountEpochKeys, Secret32, SigningSecret};
+use osis_crypto::{AccountEpochKeys, Secret32, SigningSecret, VerifyingKey};
 use osis_perm::epochs::{fit_list, list_leaf, list_tree};
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
@@ -35,7 +35,7 @@ pub(crate) struct AccountRotation {
     pub merge_keys: Vec<SigningSecret>,
     pub lists: Vec<(u64, Vec<[u8; 32]>, ThingList)>,
     /// A merge's: the head it is signed at and that epoch's keys (else the open epoch).
-    pub at: Option<(CommitId, AccountEpochKeys)>,
+    pub at: Option<(CommitId, Arc<AccountEpochKeys>)>,
 }
 
 impl AccountRotation {
@@ -73,12 +73,12 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId]) -> Result<Op
             let heads = v.heads();
             let mut named = Vec::new();
             for h in heads.iter().copied().filter(|h| v.authorized_by(h).is_some()) {
-                let Some(k) = v.seed_of(&h, &held).map(|s| AccountEpochKeys::from_seed(&s)) else { return Ok(None) };
+                let Some(k) = v.keys_of(&h, &held) else { return Ok(None) };
                 named.push((h, k));
             }
             let Some((first, k)) = named.first().cloned() else { return Ok(None) };
             names = named.iter().skip(1).map(|x| x.0).collect();
-            (Some((first, k)), heads.clone(), named.into_iter().skip(1).map(|x| x.1.signing).collect(), heads)
+            (Some((first, k)), heads.clone(), named.into_iter().skip(1).map(|x| x.1.signing.clone()).collect(), heads)
         }
     };
     // per thing: role-class and purge-request commits, then plain ones by receipt
@@ -153,6 +153,14 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId]) -> Result<Op
     Engine::commit_tx(tx, m)
 }
 
+/// An `account.0` entry's epoch keys, by their signing key: `None` when the entry is not that
+/// key's seed.
+pub(crate) fn epoch_keys(key: &[u8], seed: &[u8]) -> Option<(VerifyingKey, Arc<AccountEpochKeys>)> {
+    let keys = AccountEpochKeys::from_seed(&Secret32::from_bytes(seed.try_into().ok()?));
+    let pk = keys.signing.verifying_key();
+    (pk.as_bytes()[..] == *key).then(|| (pk, Arc::new(keys)))
+}
+
 /// Takes up the seeds D's `account.0` holds as it now reads, where D is the devices actor of an
 /// account held here (a rotation of it applied): an entry that is not its epoch's seed opens and
 /// signs nothing.
@@ -163,17 +171,18 @@ pub(crate) fn take_seeds(tx: &mut Tx<'_>, d: &Tid) -> Result<()> {
     }
     let ak = osis_base::Ak::new("account.0").map_err(|_| Error::Misuse("ak"))?;
     let Some(acct) = tx.state(d, &ak)?.and_then(osis_crdt::Fragment::read).and_then(|x| <ct::Account as osis_schema::Codec>::from_value(&x).ok()) else { return Ok(()) };
-    let mut seeds = a.seeds.clone();
+    let mut keys = a.keys.clone();
     for (k, v) in acct.seeds {
-        let (Ok(k), Ok(v)) = (<[u8; 32]>::try_from(k), <[u8; 32]>::try_from(v)) else { continue };
-        let seed = Secret32::from_bytes(v);
-        if !seeds.contains_key(&k) && AccountEpochKeys::from_seed(&seed).signing.verifying_key().to_bytes() == k {
-            seeds.insert(k, seed);
+        if let Ok(pk) = VerifyingKey::from_slice(&k)
+            && !keys.contains_key(&pk)
+            && let Some((pk, e)) = epoch_keys(&k, &v)
+        {
+            keys.insert(pk, e);
         }
     }
-    if seeds.len() != a.seeds.len() {
+    if keys.len() != a.keys.len() {
         let mut n = (*a).clone();
-        n.seeds = seeds;
+        n.keys = keys;
         tx.core.accounts.insert(p, Arc::new(n));
         tx.core.role_changed();
         // the epoch it can sign at may move

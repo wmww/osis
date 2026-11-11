@@ -7,6 +7,7 @@ use libcrux_ml_kem::mlkem768;
 use osis_base::Value;
 use rand_core::CryptoRngCore;
 use std::fmt;
+use std::sync::Arc;
 use zeroize::{Zeroize, Zeroizing};
 
 const MLKEM_PK_LEN: usize = 1184;
@@ -48,19 +49,18 @@ impl fmt::Debug for X25519Secret {
     }
 }
 
-/// Hybrid public key `pk_x || pk_m`, 1216 bytes, validated: the agility enum `kem_key` case 1.
+/// Hybrid public key `pk_x || pk_m`, 1216 bytes, validated where it is decoded: the agility enum
+/// `kem_key` case 1. Ordered and hashed by its bytes.
 #[derive(Clone, PartialEq, Eq)]
-pub struct KemPublicKey(Box<[u8; KEM_PUBLIC_LEN]>);
+pub struct KemPublicKey(Arc<[u8; KEM_PUBLIC_LEN]>);
 
 impl KemPublicKey {
     /// Rejects a wrong length, a low-order X25519 half and an ML-KEM key failing the FIPS 203
     /// modulus check.
     pub fn from_slice(b: &[u8]) -> Result<KemPublicKey, Error> {
         let arr: [u8; KEM_PUBLIC_LEN] = b.try_into().map_err(|_| Error::BadKey)?;
-        let k = KemPublicKey(Box::new(arr));
-        // Any scalar exposes a low-order point: the clamped scalar is a multiple of the cofactor.
-        X25519Secret::from_secret(&Secret32::from_bytes([1; 32])).dh(&k.x25519()).map_err(|_| Error::BadKey)?;
-        if !mlkem768::validate_public_key(&k.mlkem()) {
+        let k = KemPublicKey(Arc::new(arr));
+        if low_order(&k.x25519()) || !mlkem768::validate_public_key(&k.mlkem()) {
             return Err(Error::BadKey);
         }
         Ok(k)
@@ -84,6 +84,43 @@ impl KemPublicKey {
     }
     pub fn from_value(v: &Value) -> Result<KemPublicKey, Error> {
         KemPublicKey::from_slice(agility_bytes(v, Some(KEM_PUBLIC_LEN))?)
+    }
+}
+
+/// Whether X25519 public key `u` is of low order (on the curve or its twist): every clamped
+/// scalar, a multiple of the cofactor, takes it to the all-zero shared secret. These are u = 0,
+/// 1, -1 and the two of order 8, and the non-canonical p and p + 1 (bit 255 is ignored).
+fn low_order(u: &[u8; 32]) -> bool {
+    const ORDER_8: [[u8; 32]; 2] = [
+        [
+            0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f, 0xc4, 0x6a, 0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd, 0x86, 0x62, 0x05, 0x16, 0x5f, 0x49, 0xb8, 0x00,
+        ],
+        [
+            0x5f, 0x9c, 0x95, 0xbc, 0xa3, 0x50, 0x8c, 0x24, 0xb1, 0xd0, 0xb1, 0x55, 0x9c, 0x83, 0xef, 0x5b, 0x04, 0x44, 0x5c, 0xc4, 0x58, 0x1c, 0x8e, 0x86, 0xd8, 0x22, 0x4e, 0xdd, 0xd0, 0x9f, 0x11, 0x57,
+        ],
+    ];
+    let mut m = *u;
+    m[31] &= 0x7f;
+    let [lo, rest @ ..] = m;
+    let small = rest.iter().all(|x| *x == 0) && lo <= 1;
+    // p - 1, p, p + 1: 0xec..0xee then all ones
+    let near_p = (0xec..=0xee).contains(&lo) && rest.iter().take(30).all(|x| *x == 0xff) && rest.last() == Some(&0x7f);
+    small || near_p || ORDER_8.contains(&m)
+}
+
+impl std::hash::Hash for KemPublicKey {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.0[..].hash(h);
+    }
+}
+impl PartialOrd for KemPublicKey {
+    fn partial_cmp(&self, other: &KemPublicKey) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for KemPublicKey {
+    fn cmp(&self, other: &KemPublicKey) -> std::cmp::Ordering {
+        self.0[..].cmp(&other.0[..])
     }
 }
 
@@ -140,14 +177,14 @@ impl KemSecret {
         mlkem_seed.zeroize();
         let m = MlKemSk(Box::new(sk));
         let x = X25519Secret::from_secret(x25519);
-        let mut public = Box::new([0u8; KEM_PUBLIC_LEN]);
+        let mut public = [0u8; KEM_PUBLIC_LEN];
         if let Some(dst) = public.get_mut(..32) {
             dst.copy_from_slice(&x.public());
         }
         if let Some(dst) = public.get_mut(32..) {
             dst.copy_from_slice(pk.as_slice());
         }
-        KemSecret { x, m, public: KemPublicKey(public) }
+        KemSecret { x, m, public: KemPublicKey(Arc::new(public)) }
     }
 
     pub fn public(&self) -> &KemPublicKey {
@@ -291,11 +328,11 @@ mod tests {
         assert_eq!(k.public().as_bytes()[32..], acvp("keygen-ek")[..]);
         assert_eq!(k.m.0.as_slice()[..], acvp("keygen-dk")[..]);
         let with_dk = |dk: Vec<u8>, ek: &[u8]| {
-            let mut public = Box::new([0u8; KEM_PUBLIC_LEN]);
+            let mut public = [0u8; KEM_PUBLIC_LEN];
             public[..32].copy_from_slice(&k.public().x25519());
             public[32..].copy_from_slice(ek);
             let dk: [u8; 2400] = dk.try_into().unwrap();
-            KemSecret { x: k.x.clone(), m: MlKemSk(Box::new(dk.into())), public: KemPublicKey(public) }
+            KemSecret { x: k.x.clone(), m: MlKemSk(Box::new(dk.into())), public: KemPublicKey(Arc::new(public)) }
         };
         let e = with_dk(acvp("encap-dk"), &acvp("encap-ek"));
         let (ct, ss) = encapsulate(e.public(), &acvp("encap-m").try_into().unwrap());
@@ -344,6 +381,35 @@ mod tests {
         big[33] |= 0x0f; // first 12-bit coefficient = 4095 >= q
         assert_eq!(KemPublicKey::from_slice(&big), Err(Error::BadKey));
         assert_eq!(KemPublicKey::from_value(&k.public().to_value()), Ok(k.public().clone()));
+    }
+
+    // spec/crypto.md §1: the low-order check by comparison is the non-contributory DH check: on
+    // the curve's 8-torsion (from Edwards), on each listed value with bit 255 set or not, and on
+    // random keys.
+    #[test]
+    fn low_order_is_non_contributory() {
+        let by_dh = |u: &[u8; 32]| X25519Secret::from_secret(&Secret32::from_bytes([1; 32])).dh(u).is_err();
+        for t in curve25519_dalek::constants::EIGHT_TORSION {
+            let u = t.to_montgomery().to_bytes();
+            assert!(low_order(&u) && by_dh(&u), "{u:?}");
+        }
+        let mut listed = vec![[0u8; 32]; 2];
+        listed[1][0] = 1;
+        for lo in [0xec, 0xed, 0xee] {
+            let mut u = [0xff; 32];
+            u[0] = lo;
+            u[31] = 0x7f;
+            listed.push(u);
+        }
+        for mut u in listed {
+            assert!(low_order(&u) && by_dh(&u), "{u:?}");
+            u[31] |= 0x80;
+            assert!(low_order(&u) && by_dh(&u), "{u:?}");
+        }
+        for i in 0u32..256 {
+            let u = *blake3::hash(&i.to_le_bytes()).as_bytes();
+            assert_eq!(low_order(&u), by_dh(&u), "{u:?}");
+        }
     }
 
     // spec: none (notes/architecture.md §3: Debug of secrets redacted)

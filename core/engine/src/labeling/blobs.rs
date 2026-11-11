@@ -6,7 +6,7 @@ use crate::engine::Engine;
 use crate::error::{Error, Result};
 use osis_commit::{CommitBlob, Envelope, Section};
 use osis_base::{BlobId, CommitId, LabelId, Role, Tid, WallMs};
-use osis_crypto::{CryptoRngCore, DeleteSecret, Epoch, LabelRole, Secret32, SigningSecret, deposit_key, label_role_key};
+use osis_crypto::{CryptoRngCore, DeleteSecret, Epoch, LabelRole, Secret32, SigningSecret, deposit_key};
 use osis_keys::ActorEpochs;
 use osis_label::Step;
 use osis_schema::core_types as ct;
@@ -149,12 +149,12 @@ impl std::fmt::Debug for HeadKeys {
     }
 }
 
-/// The held epoch of `role` whose label key at `index` is `pk`, with the secret deriving it
+/// The held epoch of `role` whose label key at `index` is `pk`, with that key
 /// and whether that secret may be encrypted under (not reading-only, spec/crypto.md §4).
-fn matching(e: &ActorEpochs, role: Role, index: u64, pk: &osis_crypto::VerifyingKey) -> Option<(Epoch, Secret32, bool)> {
+fn matching(e: &ActorEpochs, role: Role, index: u64, pk: &osis_crypto::VerifyingKey) -> Option<(Epoch, SigningSecret, bool)> {
     let re = e.role(role);
-    let (ep, s) = osis_keys::registered_secret(re, role, index, pk)?;
-    Some((ep, s.clone(), re.secret(&ep).is_some()))
+    let (ep, k) = osis_keys::registered_key(re, role, index, pk)?;
+    Some((ep, k, re.secret(&ep).is_some()))
 }
 
 impl Engine {
@@ -581,20 +581,20 @@ impl Engine {
         let mut k = HeadKeys::default();
         if let Some(e) = self.epochs(g) {
             if let Some((ep, s, _)) = matching(&e, Role::Read, index, &head.keys.sync) {
-                k.sync = Some(label_role_key(LabelRole::Sync, &s, index));
+                k.sync = Some(s);
                 k.sync_established = self.established(g, &e, Role::Read, &ep);
                 k.epochs[0] = Some(ep);
             }
             // stamps and deletes are encrypting under: never from a reading-only secret
             if let Some((ep, s, checked)) = matching(&e, Role::Write, index, &head.keys.write) {
                 if checked && self.established(g, &e, Role::Write, &ep) {
-                    k.write = Some(label_role_key(LabelRole::Write, &s, index));
+                    k.write = Some(s);
                 }
                 k.epochs[1] = Some(ep);
             }
             if let Some((ep, s, checked)) = matching(&e, Role::Admin, index, &head.keys.delete) {
                 if checked && self.established(g, &e, Role::Admin, &ep) {
-                    k.delete = Some(label_role_key(LabelRole::Delete, &s, index));
+                    k.delete = Some(s);
                 }
                 k.epochs[2] = Some(ep);
             }
@@ -822,9 +822,9 @@ mod tests {
         let mut a = ActorEpochs::default();
         a.write.set_reading_secret(e, s.clone(), osis_keys::Unchecked { author: Tid::from_bytes([1; 15]), commit: CommitId([1; 32]) });
         a.write.set_established(e, osis_keys::Provenance::Rotated);
-        let pk = label_role_key(osis_keys::label_role(Role::Write), &s, 0).verifying_key();
+        let pk = osis_crypto::label_role_key(osis_keys::label_role(Role::Write), &s, 0).verifying_key();
         let (ep, got, checked) = matching(&a, Role::Write, 0, &pk).unwrap();
-        assert_eq!((ep, &got, checked), (e, &s, false));
+        assert_eq!((ep, got.verifying_key(), checked), (e, pk, false));
         a.write.set_secret(e, s.clone());
         assert!(matching(&a, Role::Write, 0, &pk).unwrap().2);
     }
