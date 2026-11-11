@@ -633,3 +633,59 @@ fn a_role_change_is_one_pass_over_the_sync_ids() {
     assert_eq!(stamp_work(4), (1, 5));
     assert_eq!(stamp_work(40), (1, 41));
 }
+
+/// Messages node sync sent on `conn` in `acts`.
+fn sent_on(acts: &[osis_node::sync::Action], conn: ConnId) -> Vec<Message> {
+    let mut d = osis_proto::FrameDecoder::new();
+    for a in acts {
+        if let osis_node::sync::Action::Send { conn: c, bytes } = a
+            && *c == conn
+        {
+            d.push(bytes);
+        }
+    }
+    std::iter::from_fn(|| d.next_frame().ok().flatten()).filter_map(|b| Message::decode(&b).ok()).collect()
+}
+
+/// A dial from a node knowing `b` to a listener played by hand, which refuses the dialer's Prove
+/// (`at_prove`) or its Resume: what the dialer sends after the refusal.
+fn refused_dial(at_prove: bool) -> Vec<Message> {
+    let (mut net, host, [a, b]) = hosted_nodes::<2>();
+    let addr = net.address(host);
+    net.group_at(a, &[(b, Role::Write)], vec![addr.clone()]);
+    net.run();
+    let provers = net.sync(b).provers(false).unwrap();
+    // a listener a has no connection to, played by hand
+    let addr = osis_label::Address { url: "quic://listener:1".into(), key: [0x44; 32] };
+    let ka = net.engine(a).hold_key_actor(osis_crypto::Secret32::from_bytes([0x3e; 32])).unwrap();
+    let mut se = net.take(a);
+    let acts = se.follow(ka, ka, LabelId([0x42; 16]), vec![addr.clone()]);
+    let conn = acts.iter().find_map(|x| if let osis_node::sync::Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
+    let mut acts = se.handle(osis_node::sync::Event::Up { conn });
+    let hello = osis_proto::Hello::new(net.now(), [9; 32]);
+    acts.extend(se.handle(osis_node::sync::Event::Bytes { conn, bytes: osis_proto::encode_frame(&hello.encode()) }));
+    // the dialer's Hello is its first frame: its challenge signs the listener's proofs
+    let mut d = osis_proto::FrameDecoder::new();
+    acts.iter().for_each(|x| if let osis_node::sync::Action::Send { conn: c, bytes } = x && *c == conn { d.push(bytes) });
+    let challenge = osis_proto::Hello::decode(&d.next_frame().unwrap().unwrap()).unwrap().challenge;
+    let id = sent_on(&acts, conn).into_iter().find_map(|m| if let Message::Prove { id, .. } = m { Some(id) } else { None }).expect("a dial to a host proves too");
+    if at_prove {
+        return sent_on(&se.handle(osis_node::sync::Event::Bytes { conn, bytes: osis_proto::encode_frame(&Message::Error { id, code: Code::REFUSED }.encode()) }), conn);
+    }
+    let proofs = provers.iter().map(|p| p.sign(true, &challenge, &addr.key)).collect();
+    let acts = se.handle(osis_node::sync::Event::Bytes { conn, bytes: osis_proto::encode_frame(&Message::Proved { id, proofs }.encode()) });
+    let id = sent_on(&acts, conn).into_iter().find_map(|m| if let Message::Resume { id, .. } = m { Some(id) } else { None }).expect("b is known: Resume");
+    assert!(!sent_on(&acts, conn).iter().any(|m| matches!(m, Message::NoRecord { .. })));
+    let acts = se.handle(osis_node::sync::Event::Bytes { conn, bytes: osis_proto::encode_frame(&Message::Error { id, code: Code::REFUSED }.encode()) });
+    assert_eq!(se.connection_record(conn), None);
+    sent_on(&acts, conn)
+}
+
+// spec/sync.md §10 (Pair key, Shared set): a dialer whose Prove or Resume is refused keeps no
+// record and sends NoRecord, so the listener still runs the shared set with it
+#[test]
+fn a_refused_prove_or_resume_sends_no_record_spec_sync_10() {
+    for at_prove in [false, true] {
+        assert!(refused_dial(at_prove).iter().any(|m| matches!(m, Message::NoRecord { .. })), "refused at the Prove: {at_prove}");
+    }
+}

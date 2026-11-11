@@ -501,8 +501,9 @@ impl SyncEngine {
                 self.log_events(Some(conn), label, evs, None, out)?;
             }
             E::Subscribed { .. } => {}
-            // the listener knows none of this side's actors: no record, the set still runs
-            E::Refused { kind: osis_proto::client::Request::Resume, .. } => self.no_record(conn, out)?,
+            // the listener keeps no record of this side (it refused the proofs or the Resume): the
+            // set still runs
+            E::Refused { kind: osis_proto::client::Request::Prove | osis_proto::client::Request::Resume, .. } => self.no_record(conn, out)?,
             E::Refused { label, kind, code, fetch } => {
                 // no longer in flight on this connection: a pass asks again (after a reopen);
                 // a reconciliation's ephemeral ones only a reconciliation names again

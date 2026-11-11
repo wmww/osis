@@ -159,7 +159,7 @@ impl SyncEngine {
     }
 
     /// This dialed connection keeps no record (the listener proved no known actor, or refused
-    /// this side's Resume: it knows none of its actors): NoRecord, so the listener runs the set
+    /// this side's Prove or Resume): NoRecord, so the listener runs the set
     /// under the connection's pair key (its unread entries go to any dialer), and this side tests
     /// the filter it receives (first contact, issues/net-first-contact.md).
     pub(super) fn no_record(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
