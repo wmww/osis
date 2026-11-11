@@ -84,12 +84,16 @@ impl super::Core {
     /// now (spec/requirements.md, Offline and network): it stays on this node. An ended thing
     /// stays as nothing.
     pub(crate) fn report_cut(&mut self, now: osis_base::WallMs) {
-        for s in std::mem::take(&mut self.cut_subs) {
-            for t in self.ix.groups.reach_before(&s) {
-                if t != s && !self.carried(&t) && !self.ended(&t) {
-                    let detail = "a subgroup left the synced group that held it: this stays on this node".into();
-                    self.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::NotSynced, tids: vec![t], commit: None, peer: None, detail }, now);
-                }
+        let cut = std::mem::take(&mut self.cut_subs);
+        if cut.is_empty() {
+            return;
+        }
+        let was = self.ix.groups.before();
+        let held: BTreeSet<Tid> = cut.iter().flat_map(|s| self.ix.groups.reach_before(&was, s).into_iter().filter(move |t| t != s)).collect();
+        for t in held {
+            if !self.carried(&t) && !self.ended(&t) {
+                let detail = "a subgroup left the synced group that held it: this stays on this node".into();
+                self.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::NotSynced, tids: vec![t], commit: None, peer: None, detail }, now);
             }
         }
     }
@@ -132,13 +136,18 @@ impl Groups {
         out
     }
 
-    /// What `g` reached when the running transaction began: `reach` over the definitions its
-    /// journal replaced.
-    fn reach_before(&self, g: &Tid) -> BTreeSet<Tid> {
-        let mut was: BTreeMap<Tid, Option<&Def>> = BTreeMap::new();
+    /// The definitions the running transaction's journal replaced, as they were when it began.
+    fn before(&self) -> BTreeMap<Tid, Option<&Def>> {
+        let mut was = BTreeMap::new();
         for (x, d) in &self.log {
             was.entry(*x).or_insert(d.as_ref());
         }
+        was
+    }
+
+    /// What `g` reached when the running transaction began: `reach` over `was` (`before`) and
+    /// the definitions it did not replace.
+    fn reach_before(&self, was: &BTreeMap<Tid, Option<&Def>>, g: &Tid) -> BTreeSet<Tid> {
         let mut out = BTreeSet::new();
         let mut seen = BTreeSet::new();
         let mut stack = vec![*g];

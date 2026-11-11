@@ -984,7 +984,8 @@ pub struct Core {
     /// its end where held (`retention::drop_invalid`).
     pub drop_due: BTreeSet<CommitId>,
     /// Subgroups cut this transaction from under a synced group (`Core::note_cut`): what they
-    /// held is reported at its end where nothing carries it now (`Core::report_cut`).
+    /// held is reported at its end where nothing carries it now (`Core::report_cut`); forgotten with
+    /// the journal.
     pub cut_subs: BTreeSet<Tid>,
     /// The commits on durable signal aspects `edits::settle` refolds besides those the journal
     /// names: a keep bound passed with no meta changing (`edits::time_passed`).
@@ -1482,6 +1483,7 @@ impl Core {
         self.schemas.commit();
         self.sides.commit();
         self.written.clear();
+        self.cut_subs.clear();
         self.dirty = false;
     }
 
