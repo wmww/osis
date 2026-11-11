@@ -349,7 +349,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
             let skip: Vec<(Tid, Option<Role>)> = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
             // while Seal waits, or Authority would fail, the removal goes alone (spec/permissions.md §3)
             if let Some(holders) = rotation::recipients(tx, &who, &target, &skip)?
-                && rotation::possessed(tx.core, &who, &target, &roles, &holders.holders)
+                && let Some(roles) = rotation::shown_roles(tx.core, &who, &target, &roles, &holders.holders)
             {
                 let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, !pending.is_empty())?;
                 if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
@@ -481,7 +481,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
         let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
         let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
         if let Some(holders) = rotation::recipients(tx, &who, &target, &skip)?
-            && rotation::possessed(tx.core, &who, &target, &roles, &holders.holders)
+            && let Some(roles) = rotation::shown_roles(tx.core, &who, &target, &roles, &holders.holders)
         {
             let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, !pending.is_empty())?;
             if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {

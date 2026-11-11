@@ -1,7 +1,7 @@
 //! Holder actors as this node judges them (spec/crypto.md §4, Holder actors): key access over the
 //! actor grants it holds (cached), a holder actor's held keysets, the recipient a box seals it
 //! to, stale and keyless boxes of an actor, and the writer's side of possession (a rotation only
-//! with the authority its signed boxes show). The rules
+//! with the authority its proofs show). The rules
 //! are osis-keys' (`osis_keys::members`, `osis_keys::possession`); this gathers their inputs.
 //! A departure from a holder actor counts only as what this node may encrypt under
 //! (`super::blocked_epoch`): sealing at a keyset is encrypting under it.
@@ -56,8 +56,8 @@ pub(crate) fn key_access(core: &Core) -> Arc<BTreeSet<(Tid, Tid)>> {
 
 /// The roles of `a` that `who` may rotate over grants with key access only (spec/crypto.md §4,
 /// Merger): a role through a keyless grant is a role, but its holder never gets the secret of
-/// that role of the holder actor it reaches `a` through, so its merge of the role alone carries
-/// no proof for that actor (Possession) and is invalid at every node.
+/// that role of the holder actor it reaches `a` through, so no rotation of `a` by it shows that
+/// actor at the role it needs (Possession): every node judges it invalid.
 pub(crate) fn may_rotate_keyed(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
     let Some(tl) = core.timelines.get(a) else { return BTreeSet::new() };
     let role = tl.roles_without(who, osis_perm::At::now(crate::flows::now_ts(core)), &key_access(core)).get(a).copied();
@@ -344,13 +344,16 @@ fn roles_avoiding(core: &Core, who: &Tid, a: &Tid, avoid: &BTreeSet<Tid>) -> BTr
 
 /// Whether `who` may make a rotation of `roles` of `a` needing `needed`, boxing `holders`
 /// (`sealed`) (spec/crypto.md §4, Possession, Authority): `who` does not hold `needed` on `a`
-/// only through holder actors of `a` with a keyset held that the rotation's keysets carry no
-/// proof for (`osis_keys::rotate` proves a holder at each rotated role it boxes symmetric under
-/// the holder's secret). Otherwise it waits: every node would judge that rotation invalid.
+/// only through holder actors of `a` with a keyset held that the rotation's keyset of `needed`
+/// carries no proof for (`osis_keys::rotate` proves a holder at each rotated role it boxes
+/// symmetric under the holder's secret: so none at `needed` in a rotation of read alone; an
+/// account, one keyset for every role, at any). Otherwise it waits (`shown_roles` rotates write
+/// with read): every node would judge that rotation invalid.
 pub(crate) fn authority(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>, needed: Role, holders: &[Recipient]) -> bool {
     let proves = |h: &Recipient| match &h.keys {
-        HolderKeys::Actor { own, keysets } => own.iter().any(|(r, (es, _))| roles.contains(r) && *r <= h.role && osis_keys::symmetric_box(es, keysets.get(r).map(|k| &k.0))),
-        HolderKeys::Account { seed, .. } => seed.is_some(),
+        HolderKeys::Actor { own, keysets } => roles.contains(&needed) && needed <= h.role && own.get(&needed).is_some_and(|(es, _)| osis_keys::symmetric_box(es, keysets.get(&needed).map(|k| &k.0))),
+        // one keyset for every role: a proof at any rotated role shows it
+        HolderKeys::Account { seed, .. } => seed.is_some() && roles.iter().any(|r| *r <= h.role),
         HolderKeys::KeyActor { .. } => false,
     };
     let shown: BTreeSet<Tid> = holders.iter().filter(|h| proves(h)).map(|h| h.holder).collect();

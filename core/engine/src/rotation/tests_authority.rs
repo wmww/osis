@@ -161,7 +161,7 @@ fn rotation_without_its_keyset_shows_nothing_until_it_comes_spec_crypto_4() {
 
 // A 3-cycle of holder actors X <- Y <- Z <- X (model `A_order_3`): three rotations, each by
 // an author reaching its actor only through the next actor, each proving it by a bad signature
-// naming the keyset the next one writes. Read as held now, each is valid iff the next is not:
+// naming the write keyset the next one writes. Read as held now, each is valid iff the next is not:
 // no result, and re-judging loops. Read as of just before each commit's key, validity follows
 // the key order: one result, the same in every arrival order.
 #[test]
@@ -178,7 +178,7 @@ fn authority_cycle_has_one_result_spec_crypto_4() {
         lp.sync_all().unwrap();
     }
     let secrets: Vec<Secret32> = (0..n).map(|i| Secret32::from_bytes([40 + i as u8; 32])).collect();
-    let epochs: Vec<Epoch> = (0..n).map(|i| Epoch::derive(&acts[i], Role::Read, 2, &secrets[i]).unwrap()).collect();
+    let epochs: Vec<Epoch> = (0..n).map(|i| Epoch::derive(&acts[i], Role::Write, 2, &secrets[i]).unwrap()).collect();
     let mut rots: Vec<CommitId> = Vec::new();
     for i in 0..n {
         let (by, next) = ((i + 1) % n, (i + 1) % n);
@@ -189,9 +189,9 @@ fn authority_cycle_has_one_result_spec_crypto_4() {
             .engine
             .run(|tx| {
                 let mut ks = osis_keys::aspects::keyset(&e, &sec, &BTreeSet::new(), &osis_keys::Names::default());
-                let p = osis_keys::possession::prove(&t, Role::Read, &ks, &h, named, &osis_keys::possession::possession_secret(&Secret32::from_bytes([99; 32])));
+                let p = osis_keys::possession::prove(&t, Role::Write, &ks, &h, named, &osis_keys::possession::possession_secret(&Secret32::from_bytes([99; 32])));
                 ks.proofs.insert(h, p);
-                let keys = osis_keys::KeysWrite { keysets: BTreeMap::from([(Role::Read, ks)]) };
+                let keys = osis_keys::KeysWrite { keysets: BTreeMap::from([(Role::Write, ks)]) };
                 let mut m = Mutation::new();
                 m.unchecked();
                 crate::flows::put_keysets(&mut m, t, &keys)?;

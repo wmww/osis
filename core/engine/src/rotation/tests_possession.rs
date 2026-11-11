@@ -5,7 +5,7 @@
 //! Shape: G <- X1 <- X2 <- W, X2 removing W where G's admin never learns of it.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{blocked_at, commit_ids, edge, group, held_by, newest_read, openable, send_skipping};
+use super::tests::{blocked_at, commit_ids, edge, group, held_by, newest_read, openable, rotate_unchecked, send_skipping};
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -48,14 +48,20 @@ fn shape(seed: u64) -> Shape {
 /// (its removal never reaches it), and so does A (which never syncs X2) unless `hold_x1`, when A
 /// gets nothing yet. Returns W's secrets before, and the commits of B's rotation of X1.
 fn removed_holding(s: &mut Shape, hold_x1: bool) -> (BTreeSet<(Tid, Role, Epoch)>, BTreeSet<CommitId>) {
+    demoted_holding(s, None, hold_x1)
+}
+
+/// `removed_holding` with W demoted on X2 to `to` (`None`: removed); X1 rotates the roles W left.
+fn demoted_holding(s: &mut Shape, to: Option<Role>, hold_x1: bool) -> (BTreeSet<(Tid, Role, Epoch)>, BTreeSet<CommitId>) {
     let start = held_by(&s.lp, W, &[s.g, s.x1, s.x2]);
     let w = s.lp.peers[W].engine.me();
     let before = commit_ids(&mut s.lp, B);
-    s.lp.peers[B].engine.demote(&s.x2, &Demotion { holder: w, new: None, retain: None }).unwrap();
+    s.lp.peers[B].engine.demote(&s.x2, &Demotion { holder: w, new: to.map(edge), retain: None }).unwrap();
     let rm: BTreeSet<CommitId> = commit_ids(&mut s.lp, B).difference(&before).copied().collect();
     let before = commit_ids(&mut s.lp, B);
     let (b, x1) = (s.lp.peers[B].engine.me(), s.x1);
-    let done = s.lp.peers[B].engine.run(|tx| super::rotate_now(tx, b, x1, &BTreeSet::from([Role::Read, Role::Write]))).unwrap();
+    let left: BTreeSet<Role> = [Role::Read, Role::Write].into_iter().filter(|r| to < Some(*r)).collect();
+    let done = s.lp.peers[B].engine.run(|tx| super::rotate_now(tx, b, x1, &left)).unwrap();
     assert!(!done.commits.is_empty(), "B rotates X1 (alone: B syncs no G, so rotates nothing above X1)");
     let x1_rot: BTreeSet<CommitId> = commit_ids(&mut s.lp, B).difference(&before).copied().collect();
     if !hold_x1 {
@@ -311,4 +317,81 @@ fn possession_judged_again_when_keyset_arrives_spec_crypto_4() {
     skip.retain(|x| !x1_rot.contains(x));
     send_skipping(&mut s.lp, B, A, &skip);
     refused_at(&mut s, A, c, Some(e));
+}
+
+// spec/crypto.md §4 (Possession, Writers): a rotation of read alone needs write (the right to
+// rotate), and shows X1 at write only by a keyset of write. W, writing G only through X1, so
+// rotates G's write with its read: valid at every node, its write keyset proving X1 by X1's write
+// keyset. Read alone (its read keyset proving X1 at read only) is invalid at every node.
+#[test]
+fn writer_through_a_holder_rotates_write_with_read_spec_crypto_4() {
+    let mut s = shape(7_009);
+    let (w, g, x1) = (s.lp.peers[W].engine.me(), s.g, s.x1);
+    let read = BTreeSet::from([Role::Read]);
+    let roles = s
+        .lp
+        .peers[W]
+        .engine
+        .run(|tx| {
+            let holders = super::recipients(tx, &w, &g, &[])?.unwrap().holders;
+            Ok(super::shown_roles(tx.core, &w, &g, &read, &holders))
+        })
+        .unwrap();
+    assert_eq!(roles, Some(BTreeSet::from([Role::Read, Role::Write])), "W rotates write with read");
+    let before = commit_ids(&mut s.lp, W);
+    assert!(!s.lp.peers[W].engine.run(|tx| super::rotate_now(tx, w, g, &roles.unwrap())).unwrap().commits.is_empty());
+    let c = *commit_ids(&mut s.lp, W).difference(&before).next().unwrap();
+    deliver_w(&mut s);
+    let k = s.lp.peers[W].engine.epochs(&x1).unwrap().write.newest_held().unwrap().0;
+    for i in [A, B] {
+        let m = s.lp.peers[i].engine.core.ix.commits.get(&c).cloned().expect("held");
+        assert!(m.valid.iter().all(|v| *v), "peer {i}: W's rotation valid");
+        let ki = m.header.aspects.iter().position(|x| x.tid == g && x.ak.as_str() == "keys.0").unwrap();
+        let shown = s.lp.peers[i].engine.core.ix.shown.get(&(c, ki)).cloned().unwrap();
+        assert!(shown.shown.iter().any(|p| p.holder == x1 && p.role == Role::Write && p.keyset == k), "peer {i}: proved at X1's write keyset");
+    }
+    let (alone, _) = rotate_unchecked(&mut s.lp, W, g, &read);
+    deliver_w(&mut s);
+    refused_at(&mut s, A, alone, None);
+    refused_at(&mut s, B, alone, None);
+}
+
+// spec/crypto.md §4 (Authority: shown at the role needed). B demotes W on X2 to read and rotates
+// X1's write: W still holds X1's read secret, not its new write one. A holds X1's rotation but
+// not the demotion, so W's role on G (write, only through X1) stands there. W's read and write
+// rotation of G, as its engine would make it, seals X1's write at X1's new keyset and proves X1
+// at read only: no proof at write, so it shows X1 at no role its write needs and is invalid at
+// every node, A included (a proof at read once made it valid there: A wrote under an epoch W
+// boxed itself, sealed at X1's knowing keyset, so fresh). A rotates on its stale box to X1, and
+// W opens no write epoch of G that A uses.
+#[test]
+fn demoted_member_shows_no_write_spec_crypto_4() {
+    let mut s = shape(7_010);
+    let start = demoted_holding(&mut s, Some(Role::Read), false).0;
+    let (w, g, x1) = (s.lp.peers[W].engine.me(), s.g, s.x1);
+    let em = s.lp.peers[W].engine.epochs(&x1).unwrap();
+    assert!(em.write.newest_held().is_none_or(|(e, _)| !em.write.is_current(&e)) && em.read.newest_held().is_some(), "W holds X1's read secret, not its new write one");
+    let rot = BTreeSet::from([Role::Read, Role::Write]);
+    let can = s.lp.peers[W].engine.run(|tx| {
+        let holders = super::recipients(tx, &w, &g, &[])?.unwrap().holders;
+        Ok(super::shown_roles(tx.core, &w, &g, &rot, &holders))
+    })
+    .unwrap();
+    assert_eq!(can, None, "W's engine waits");
+    let (c, made) = rotate_unchecked(&mut s.lp, W, g, &rot);
+    let e = made.iter().find(|x| x.1 == Role::Write).unwrap().2;
+    deliver_w(&mut s);
+    refused_at(&mut s, A, c, None);
+    refused_at(&mut s, B, c, None);
+    for i in [A, B] {
+        assert!(!s.lp.peers[i].engine.epochs(&g).unwrap().write.is_established(&e), "peer {i}: W's write epoch established");
+    }
+    let (done, still) = s.lp.peers[A].engine.ensure_rotated(&g).unwrap();
+    assert!(still.is_empty(), "{still:?}");
+    assert!(!done.commits.is_empty(), "A rotates: its write box to X1 is stale");
+    let mut known = start;
+    known.extend(held_by(&s.lp, W, &[g, x1]));
+    let opened = openable(&mut s.lp, A, &[g, x1, s.x2], w, known);
+    let ew = s.lp.peers[A].engine.epochs(&g).unwrap().write.newest_held().unwrap().0;
+    assert!(!opened.contains(&(g, Role::Write, ew)), "W opens A's newest write epoch of G");
 }

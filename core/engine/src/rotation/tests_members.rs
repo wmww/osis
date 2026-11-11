@@ -5,7 +5,7 @@
 //! (core/test/tla/rotation/Depth0.tla).
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Pass, all_boxed, blocked_at, commit_ids, deliver_without_secrets, edge, group, held_by, leaked, newest_read, openable, rotate_leaving_out, send_skipping, settle};
+use super::tests::{Pass, all_boxed, blocked_at, commit_ids, deliver_without_secrets, edge, group, held_by, leaked, newest_read, openable, rotate_leaving_out, rotate_unchecked, send_skipping, settle};
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -1317,27 +1317,6 @@ fn box_walk_passes_actors_the_node_may_not_rotate_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[m, a, g], e, start), Vec::<Tid>::new());
 }
 
-/// Peer `i` rotates `rot` of `g` boxing every holder it can, past its own writer rules (a
-/// rotation its receivers judge); the epochs it made.
-fn rotate_unchecked(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTreeSet<Role>) -> Opened {
-    lp.peers[i]
-        .engine
-        .run(|tx| {
-            let held = tx.core.epochs(&g).unwrap();
-            let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &[])?.ok_or(super::SEAL_WAITS)?;
-            let mut m = Mutation::new();
-            let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, false)?;
-            m.unchecked();
-            tx.core.skip_writer_rules = true;
-            let c = crate::engine::Engine::commit_tx(tx, m);
-            tx.core.skip_writer_rules = false;
-            c?;
-            super::record(tx, g, &r)?;
-            Ok(r.rotated.iter().map(|x| (g, x.role, x.epoch)).collect())
-        })
-        .unwrap()
-}
-
 // spec/crypto.md §4 (Encrypting under: the maker of an epoch opens it): A and M in a cycle (M
 // holds write on A first, so A's grant on M is keyless: M boxes A nothing). P writes A, so M
 // through it. Demoted to read on A, P, unaware, rotates M (its maker holds M's epoch with no box
@@ -1359,7 +1338,7 @@ fn maker_lowered_through_a_holder_actor_opens_nothing_new_spec_crypto_4() {
     assert!(!boxes(&mut lp, 0, m, a), "A's grant on M is keyless");
     lp.peers[0].engine.demote(&a, &Demotion { holder: p, new: Some(edge(Role::Read)), retain: None }).unwrap();
     lp.peers[1].clock.advance(1_000);
-    let made = rotate_unchecked(&mut lp, 1, m, &BTreeSet::from([Role::Read, Role::Write]));
+    let made = rotate_unchecked(&mut lp, 1, m, &BTreeSet::from([Role::Read, Role::Write])).1;
     let k2 = made.iter().find(|x| x.1 == Role::Read).map(|x| x.2);
     let start: Opened = held_by(&lp, 1, &[m, a]).into_iter().chain(made).collect();
     lp.sync_all().unwrap();
@@ -1685,17 +1664,16 @@ fn reseal_candidates_follow_the_finalize_before_them_spec_permissions_3() {
     assert_eq!(sealed_at(&mut lp, 1, g, m), newest_read(&lp, 0, m));
 }
 
-// spec/crypto.md §4 (Merger; Key access; Possession): a fork's merger is a maker that may rotate
-// over grants with key access. Cycle G -> H -> M -> G (M admin on G, H admin on M, then G admin
-// on H: keyless). X writes G and reads H, so writes M through G's keyless grant on H. X (proving
-// H at read) rotates M's read and write while A rotates M's write twice: A's second epoch is the
-// newest, so X would be the merger, but its write-only merge proves nothing for H (it lacks H's
-// write secret, which it reaches only through the keyless grant) and every node judges it
-// invalid: M stays forked, and G, holding M, waits in Seal for good. X holds only read on M for
-// keys, so A merges.
+// spec/crypto.md §4 (Possession, Authority; Key access; Merger): a role reached only through a
+// keyless grant makes no valid rotation, whatever roles it rotates. Cycle G -> H -> M -> G (M
+// admin on G, H admin on M, then G admin on H: keyless). X writes G and reads H, so writes M only
+// through G's keyless grant on H: it holds H's read secret, never its write one. Its rotations
+// of M, read and write or write alone, show H at no role its write needs: invalid at every node,
+// so they fork nothing (a proof at read once made the first valid and the second not, so a fork
+// whose maker was X stayed forked when X merged write alone). Nor is X a merger
+// (`may_rotate_keyed`).
 #[test]
-fn merger_holds_its_role_over_keyed_grants_spec_crypto_4() {
-    let write = BTreeSet::from([Role::Write]);
+fn keyless_route_makes_no_valid_rotation_spec_crypto_4() {
     let mut lp = LocalPeer::new(2, 5_100, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let x = lp.peers[1].engine.me();
@@ -1707,24 +1685,17 @@ fn merger_holds_its_role_over_keyed_grants_spec_crypto_4() {
     lp.peers[0].engine.grant(&h, &x, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     assert!(lp.peers[0].engine.run(|tx| Ok(super::members::key_access(tx.core).contains(&(h, g)))).unwrap(), "G's grant on H is keyless");
-    rotate_leaving_out(&mut lp, 1, m, &BTreeSet::from([Role::Read, Role::Write]), &[]);
-    let ex = lp.peers[1].engine.epochs(&m).unwrap().write.newest().unwrap();
-    rotate_leaving_out(&mut lp, 0, m, &write, &[]);
-    rotate_leaving_out(&mut lp, 0, m, &write, &[]);
-    let e0 = lp.peers[0].engine.epochs(&m).unwrap().write.newest().unwrap();
-    lp.sync_all().unwrap();
-    let w = lp.peers[0].engine.epochs(&m).unwrap().write;
-    assert_eq!(w.current().into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([ex, e0]), "M's write forks, X's epoch valid");
-    assert_eq!(w.newest(), Some(e0), "A's second epoch is the newest");
     let (maybe, keyed) = lp.peers[0].engine.run(|tx| Ok((super::may_rotate(tx.core, &x, &m), super::members::may_rotate_keyed(tx.core, &x, &m)))).unwrap();
     assert!(maybe.contains(&Role::Write) && !keyed.contains(&Role::Write), "X writes M only through the keyless grant: {maybe:?} {keyed:?}");
-    for _ in 0..2 {
-        for i in 0..2 {
-            lp.peers[i].engine.ensure_rotated(&m).unwrap();
+    let made = [BTreeSet::from([Role::Read, Role::Write]), BTreeSet::from([Role::Write])].map(|rot| rotate_unchecked(&mut lp, 1, m, &rot).0);
+    lp.sync_all().unwrap();
+    for i in 0..2 {
+        for c in &made {
+            let meta = lp.peers[i].engine.core.ix.commits.get(c).cloned().expect("held");
+            assert!(meta.view.aspects.iter().enumerate().filter(|(_, a)| a.tid == m).all(|(ai, _)| !meta.valid_at(ai)), "peer {i}: X's rotation of M valid");
         }
-        lp.sync_all().unwrap();
+        assert_eq!(lp.peers[i].engine.epochs(&m).unwrap().write.current().len(), 1, "peer {i}: M's write forked");
     }
-    assert_eq!(lp.peers[0].engine.epochs(&m).unwrap().write.current().len(), 1, "M's write fork is merged");
     assert!(blocked_at(&mut lp, 0, g).is_empty(), "G's admin may encrypt under G");
 }
 

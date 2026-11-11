@@ -711,6 +711,29 @@ pub(super) fn rotate_leaving_out(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTr
     });
 }
 
+/// Peer `i` rotates `rot` of `g` boxing every holder it can, past its own writer rules (a
+/// rotation its receivers judge): the commit and the epochs it made.
+pub(super) fn rotate_unchecked(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTreeSet<Role>) -> (osis_base::CommitId, BTreeSet<(Tid, Role, osis_crypto::Epoch)>) {
+    let before = commit_ids(lp, i);
+    let made = lp.peers[i]
+        .engine
+        .run(|tx| {
+            let held = tx.core.epochs(&g).unwrap();
+            let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &[])?.ok_or(super::SEAL_WAITS)?;
+            let mut m = Mutation::new();
+            let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, false)?;
+            m.unchecked();
+            tx.core.skip_writer_rules = true;
+            let c = crate::engine::Engine::commit_tx(tx, m);
+            tx.core.skip_writer_rules = false;
+            c?;
+            super::record(tx, g, &r)?;
+            Ok(r.rotated.iter().map(|x| (g, x.role, x.epoch)).collect())
+        })
+        .unwrap();
+    (*commit_ids(lp, i).difference(&before).next().unwrap(), made)
+}
+
 /// Syncs everything, then runs rounds of every remaining node's re-seals and rotations until
 /// nothing is written, and checks the re-seal invariant (`reseal_candidates`), history adds and
 /// that no departed peer holds an epoch a remaining holder encrypts under (`was`: the highest
@@ -941,7 +964,7 @@ fn named_commit_without_its_edge_write_unmet_spec_crypto_4() {
 // actor, named by the thing the demotion is on): G's first admin is actor O (peer 0's); W (1) an
 // admin of O grants D (2) read on G through the record chain (C). First admin A demotes W to write on
 // O, not having received C (its frontier misses it), so C is audited away; A then gets C and
-// rotates G's read to e: no edge write on G departs anyone, and O's read keyset is unchanged, so
+// rotates G's read to e (and its write): no edge write on G departs anyone, and O's read keyset is unchanged, so
 // only the audit names W's demotion. X (3, G's admin) holds C but not the demotion: e must not
 // be established there (X sees D a reader and would re-seal e to it). Once it arrives, e is.
 #[test]
@@ -966,7 +989,8 @@ fn audit_dropped_grant_named_spec_crypto_4() {
     let dem: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
     lp.sync(1, 0).unwrap();
     assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "C audited away at A");
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
+    // write with read: A writes G only through O, shown at write by a keyset of write
+    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read, Role::Write]), &[]);
     let e = newest_read(&lp, 0, g).unwrap();
     let mut all = lp.packages(0).unwrap();
     all.extend(lp.packages(1).unwrap());

@@ -299,8 +299,20 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
 /// role every node judges the rotation's `secrets.0` delta by (`apply::validity::secrets_role`):
 /// the highest rotated, and at least write. A removal or finalize whose rotation fails it goes
 /// alone (`flows::edges::demote_in`).
-pub(crate) fn possessed(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>, holders: &[Recipient]) -> bool {
+fn possessed(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>, holders: &[Recipient]) -> bool {
     roles.iter().max().is_none_or(|top| members::authority(core, who, a, roles, (*top).max(Role::Write), holders))
+}
+
+/// The roles `who` rotates for a rotation of `roles` of `a` boxing `holders` (spec/crypto.md §4,
+/// Possession, Writers): `roles` where Authority holds; with write added where `roles` is read
+/// alone and Authority holds only so (a holder actor `who` writes `a` through is shown at write
+/// only by a proof in a keyset of write); `None` where it fails either way: the rotation waits.
+pub(crate) fn shown_roles(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>, holders: &[Recipient]) -> Option<BTreeSet<Role>> {
+    if possessed(core, who, a, roles, holders) {
+        return Some(roles.clone());
+    }
+    let with_write: BTreeSet<Role> = roles.iter().copied().chain([Role::Write]).collect();
+    (roles.iter().all(|r| *r == Role::Read) && possessed(core, who, a, &with_write, holders)).then_some(with_write)
 }
 
 /// Holders a rotation `rot` of `a` boxes that hold no box at a current read epoch before it: its
@@ -501,7 +513,7 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], done: &mut
         // a rotation due waits (its roles stay blocked) while Seal waits for a holder actor's
         // keyset, or for want of possession: every node would judge it invalid
         if let Some(holders) = recipients(tx, &who, &x, &[])?
-            && possessed(tx.core, &who, &x, &mine, &holders.holders)
+            && let Some(mine) = shown_roles(tx.core, &who, &x, &mine, &holders.holders)
         {
             done.extend(rotate_boxing(tx, who, x, &mine, &holders)?);
             rotated.push(x);

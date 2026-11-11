@@ -1,7 +1,10 @@
 //! Possession (spec/crypto.md §4, Holder actors): a rotation's keyset carries, per holder actor
 //! M its rotator holds the role through, a proof that the rotator holds the secret of a keyset of
 //! M (a signature over the new keyset by that keyset's possession key); a rotation counts its
-//! author's role on the actor through M only where it shows that (Authority). The proof travels
+//! author's role on the actor through M only where it shows that at the role the rotation needs
+//! (a keyset's proof names M's keyset of that keyset's role: a proof at a lower role says nothing
+//! of the path the right to rotate runs through, and a party demoted on M still holds its lower
+//! secrets). The proof travels
 //! with the keyset, so every node holding the keyset (one holding it as a certificate, without
 //! the boxes, included) judges the rotation alike: keyset, establishment and boxes share one
 //! verdict. A removal of a box to M that is no rotation (a re-seal replacing it) shows the same
@@ -59,6 +62,7 @@ pub fn prove(actor: &Tid, role: Role, ks: &Keyset, holder: &Tid, k: Epoch, key: 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Shown {
     pub holder: Tid,
+    /// The role of the holder's keyset it names (a box's role; a proof's keyset's).
     pub role: Role,
     pub keyset: Epoch,
     pub signed: Option<([u8; 32], [u8; 64])>,
@@ -110,6 +114,9 @@ impl Shown {
 pub trait View {
     /// Whether `t` is a key actor (boxed by its one KEM key or seed, never a holder actor).
     fn key_actor(&self, t: &Tid) -> bool;
+    /// Whether `t` is an account (one keyset for every role: a proof or box at any role shows it
+    /// at all).
+    fn account(&self, t: &Tid) -> bool;
     /// The author's role on `t`, on paths not through A (through it, `t` holding a role on A, is
     /// a cycle: no key access).
     fn author_on(&self, t: &Tid) -> Option<Role>;
@@ -127,7 +134,7 @@ pub trait View {
 /// boxes of `removed` (holder, role) passes possession (spec/crypto.md §4, Authority): when it
 /// `rotates` or removes a box of role r to a holder actor the author holds r or above on without
 /// putting it again with a valid signature, the author does not hold `needed` on the actor only
-/// through holder actors it shows no possession of.
+/// through holder actors it shows no possession of at `needed` or above.
 pub fn holds(shown: &[Shown], removed: &[(Tid, Role)], rotates: bool, needed: Role, v: &dyn View) -> bool {
     // a keyset the node holds no valid body of (before the commit) is not judged by (a box naming
     // it is not stale either: within the stated limit until the body arrives, and judged again)
@@ -143,7 +150,9 @@ pub fn holds(shown: &[Shown], removed: &[(Tid, Role)], rotates: bool, needed: Ro
         return true;
     }
     // (where the author holds no such role at all, the rest of §5.2 judges it: re-grants, frontiers)
-    let shown_in: BTreeSet<Tid> = actors().filter(|s| valid(s)).map(|s| s.holder).collect();
+    // shown at the role the author's path through it needs: holding a lower role's secret of M
+    // (a party demoted on M keeps it) is no right to rotate through M
+    let shown_in: BTreeSet<Tid> = actors().filter(|s| (s.role >= needed || v.account(&s.holder)) && valid(s)).map(|s| s.holder).collect();
     let avoid: BTreeSet<Tid> = v.holder_actors().difference(&shown_in).copied().collect();
     avoid.is_empty() || v.role_on_actor(&avoid) >= Some(needed) || v.role_on_actor(&BTreeSet::new()) < Some(needed)
 }
@@ -183,6 +192,9 @@ mod tests {
     impl View for V {
         fn key_actor(&self, t: &Tid) -> bool {
             *t == tid(X)
+        }
+        fn account(&self, _: &Tid) -> bool {
+            false
         }
         fn author_on(&self, t: &Tid) -> Option<Role> {
             (*t == tid(M)).then_some(self.author_on_m).flatten()
@@ -315,7 +327,24 @@ mod tests {
         let ks = proved(k, &s);
         let mut v = v;
         v.keys.insert((tid(M), Role::Read, k), possession_key(&s));
-        assert!(!holds(&Shown::of_keyset(&tid(A), Role::Read, &ks), &[], true, Role::Write, &v), "read as another role's keyset");
+        assert!(!holds(&Shown::of_keyset(&tid(A), Role::Read, &ks), &[], true, Role::Read, &v), "read as another role's keyset");
+    }
+
+    // spec/crypto.md §4 (Authority: shown at the role needed): X demoted on M from write to read
+    // still holds M's read secret; a proof or signed box at read says nothing of the write path
+    // through M that a rotation of A needs, a rotation of A's read alone included
+    #[test]
+    fn showing_below_the_needed_role_gives_no_authority() {
+        let s = Secret32::from_bytes([5; 32]);
+        let k = Epoch::derive(&tid(M), Role::Read, 3, &s).unwrap();
+        let v = V { author_on_m: Some(Role::Write), m_on_a: Some(Role::Write), direct: None, keys: BTreeMap::from([((tid(M), Role::Read, k), possession_key(&s))]) };
+        let b = boxed(&s, k, Role::Read, Some(&s));
+        assert!(holds(&shown(&b), &[], true, Role::Read, &v), "a valid read showing");
+        assert!(!holds(&shown(&b), &[], true, Role::Write, &v), "a signed read box shows M below write");
+        let e = Epoch::derive(&tid(A), Role::Read, 2, &Secret32::from_bytes([9; 32])).unwrap();
+        let mut ks = crate::aspects::keyset(&e, &Secret32::from_bytes([9; 32]), &BTreeSet::new(), &crate::Names::default());
+        ks.proofs.insert(tid(M), prove(&tid(A), Role::Read, &ks, &tid(M), k, &possession_secret(&s)));
+        assert!(!holds(&Shown::of_keyset(&tid(A), Role::Read, &ks), &[], true, Role::Write, &v), "a read keyset's proof");
     }
 
     #[test]
