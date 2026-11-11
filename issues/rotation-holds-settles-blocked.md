@@ -4,6 +4,6 @@
 > Priority: normal
 > Tags: engine, keys, tests
 
-Replay: `OSIS_ROTATION_START=777063 OSIS_ROTATION_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_property::rotation_holds_large_spec_crypto_4`.
+Seed 415184714975 fails alike (main too). Replay: `OSIS_ROTATION_START=777063 OSIS_ROTATION_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_property::rotation_holds_large_spec_crypto_4`.
 
 Shape (three actors, all first-admined by peer 0): peer 4 boxes nobody on actor 1 (a vandal's lockout, hostile); peer 3 forges a self-removal on actor 1 (hostile); peer 2 grants peer 4 on actor 0; peer 0 receives all but 18 commits, then removes hostile peers 4 from actors 0-2; settle runs re-seals and rotations on actors 0 and 1 and ends with actor 0's read blocked at peer 0. First step: print which departure the blocked read epoch fails to cover (`blocked_epoch`) and why peer 0's `ensure_rotated` makes nothing for it.

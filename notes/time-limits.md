@@ -18,6 +18,7 @@ Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s 
 - 2026-11-10 ostrich `gate.hold` CPU 9144/3795 s, wall 792/241 s and `gate` CPU 11278/4094 s, wall 1178/299 s at load 18, no lock wait: every crate selected (sealer-mark review); persistent, issues/gate-five-minutes.md.
 - 2026-11-10 21:49 ostrich `gate.hold` CPU 9698/3795 s, wall 794/241 s and `gate` CPU 11657/4094 s, wall 1236/299 s at load 13 (1725 s of it waiting for the lock): every crate selected (receive-writes review); persistent, issues/gate-five-minutes.md.
 - 2026-11-10 ostrich `gate.hold` CPU 7544/3795 s, wall 1138/241 s and `default-tests` wall 814/598 s at load 23-24: 20 of 26 crates selected (crdt-slots review, osis-crdt and crdt-model changed); persistent, issues/gate-five-minutes.md.
+- 2026-11-10 22:40 ostrich `gate.hold` CPU 7563/3795 s, wall 836/241 s at load 16: 20 of 26 crates selected (crdt-slots re-review, osis-crdt and crdt-model changed); persistent, issues/gate-five-minutes.md.
 
 ## Investigations
 One section per investigation: date and box, the trigger (hits or the run over 2x), what was tried, the outcome (fixed, or a raised limit with why no good solution was found). Tess reviews every raise.
