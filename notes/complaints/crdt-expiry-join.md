@@ -1,2 +1,3 @@
 # crdt-expiry-join
 - The seed was relayed as "seed 952327621198" (the failing index) without the gate's offset, which the gate also sets as `OSIS_CRDT_SEED` (xor'ed into every seed): the seed alone passes. The replay line the harness prints carries both (`OSIS_CRDT_START=952327621198 OSIS_CRDT_SEEDS=1 OSIS_CRDT_SEED=952327620837`); relays should copy that whole line. Found the offset by scanning the 1000 offsets that could have started the gate's range.
+- Review: a 200k-seed probe in a debug test ran past 13 min with no output (piped through grep); size probes at a few thousand seeds and print progress, or write to a file and read it.

@@ -620,11 +620,12 @@ impl Frag {
                         }
                     }
                     let c = recs.values().fold(None, |m, en| max_opt(m, en.created.clone()));
-                    // every write once, under the greatest key holding a copy of it, as the join of its copies
+                    // every write once, under the greatest key holding a copy of it, as the join of its copies (a nested
+                    // map entry is its dot, whichever of its records holds the copy: `death::key`)
                     let mut at: BTreeMap<crate::writes::Name, (Eid, Frag)> = BTreeMap::new();
                     for (id, en) in recs.iter().rev() {
                         for (n, w) in en.frag.as_deref().map(crate::writes::writes).unwrap_or_default() {
-                            match at.entry(n) {
+                            match at.entry(crate::death::key(&n)) {
                                 std::collections::btree_map::Entry::Vacant(v) => {
                                     v.insert((id.clone(), w));
                                 }
@@ -639,7 +640,7 @@ impl Frag {
                     // dot's top-2 positions keeps no position write, §5.7)
                     let held = crate::writes::join_all(at.values().map(|x| x.1.clone())).map(|mut j| {
                         j.prune(ee.as_ref());
-                        crate::writes::by_name(&j)
+                        crate::writes::writes(&j).into_iter().map(|(n, w)| (crate::death::key(&n), w)).collect::<BTreeMap<_, _>>()
                     });
                     let held = held.unwrap_or_default();
                     let reset_at = recs.iter().rev().find(|(_, en)| r.is_some() && en.reset == r).map(|x| x.0.clone());

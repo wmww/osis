@@ -238,8 +238,22 @@ impl Fragment {
                 children(&mut a.payloads, &b.payloads);
             }
             (Fragment::Map(a), Fragment::Map(b)) => {
+                // a map entry is its dot, whichever of the dot's records holds a copy (§4.8 Which
+                // write): `b`'s records of a dot, joined, against each of `a`'s
+                let mut by_dot: BTreeMap<&Dot, Entry> = BTreeMap::new();
+                for (id, en) in &b.entries {
+                    let t = by_dot.entry(&id.dot).or_insert_with(|| Entry { reset: None, frag: None, created: None });
+                    t.reset = crate::stamp::max_opt(t.reset.take(), en.reset.clone());
+                    t.created = crate::stamp::max_opt(t.created.take(), en.created.clone());
+                    if let Some(f) = en.frag.as_deref() {
+                        match &mut t.frag {
+                            Some(x) => x.join_into(f.clone(), None, &mut Changes::new()),
+                            None => t.frag = Some(Box::new(f.clone())),
+                        }
+                    }
+                }
                 a.entries.retain(|id, en| {
-                    let Some(t) = b.entries.get(id) else { return missing };
+                    let Some(t) = by_dot.get(&id.dot) else { return missing };
                     if !keep.stays(en.reset.is_some() && en.reset == t.reset) {
                         en.reset = None;
                     }
