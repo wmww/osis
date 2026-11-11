@@ -176,6 +176,7 @@ fn check(k: &HeadKeys, key: StepKey, domain: Domain, digest: &[u8; 32], sig: &Si
     *struck = true;
     Code::REFUSED
 }
+#[derive(Clone)]
 
 pub struct ServingSession {
     cfg: ServingConfig,

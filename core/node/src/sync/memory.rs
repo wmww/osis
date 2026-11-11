@@ -39,6 +39,7 @@ pub(crate) enum RelayFrom {
 
 /// Entries remembered per label with a weight, at most `max` weight per label, the oldest
 /// forgotten past it (`Memory::unfit`).
+#[derive(Clone)]
 pub(crate) struct PerLabel {
     map: BTreeMap<(LabelId, BlobId), usize>,
     /// Per label, its entries oldest first and their total weight.
@@ -110,7 +111,7 @@ impl Default for PerLabel {
 const RELAYS_REMEMBERED: usize = 1 << 16;
 
 /// Relay-only entries received: (label, blob) until their prefix expiry, and a floor per label.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct RelaySeen {
     ids: std::collections::HashSet<(LabelId, BlobId)>,
     by_expiry: BTreeSet<(u64, LabelId, BlobId)>,
@@ -161,7 +162,7 @@ impl RelaySeen {
 /// Entries of a label refused for its cap or share here, with the label's held and pending
 /// charges when the last was refused: fetched again once either dropped below that (room
 /// appeared), never while nothing changed.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Refused {
     pub used_at: u64,
     pub ids: BTreeSet<BlobId>,
@@ -169,13 +170,14 @@ pub(crate) struct Refused {
 
 /// A memory commit the engine forgot (covered, superseded, expired, freed) whose entries this
 /// node still knows: what deleting them at a host needs of its header, and why it went.
+#[derive(Clone)]
 pub(crate) struct Forgotten {
     pub header: Arc<osis_commit::Header>,
     pub why: MemoryDrop,
 }
 
 /// The memory class's state beside the sync records (all in memory).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Memory {
     /// (host, label) reconciled since this node started (`sync_label`).
     pub reconciled: BTreeSet<(HostKey, LabelId)>,

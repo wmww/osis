@@ -37,6 +37,12 @@ pub trait RootStorage: Send {
     }
     /// Destroys the record durably (crypto-shredding the store it keys) and whatever holds it.
     fn erase(&mut self) -> Result<(), BackendError>;
+    /// Tests only: an exact copy sharing nothing with this root (`MemoryRoot::test_copy`), for a
+    /// world copy (`Store::test_copy`); `None`: this root has none.
+    #[doc(hidden)]
+    fn test_copy_boxed(&self) -> Option<Box<dyn RootStorage>> {
+        None
+    }
 }
 
 /// In-memory root. Clones share the slot (a test reopens the store over it); obeys the device's
@@ -61,7 +67,19 @@ impl MemoryRoot {
     }
 }
 
+impl MemoryRoot {
+    /// Tests only (world copies): an exact copy of the record and fault plan, sharing neither
+    /// (`MemoryBackend::test_copy`).
+    #[doc(hidden)]
+    pub fn test_copy(&self) -> MemoryRoot {
+        MemoryRoot { slot: osis_base::copying::remap(&self.slot, |m| Mutex::new(m.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())), faults: self.faults.test_copy() }
+    }
+}
+
 impl RootStorage for MemoryRoot {
+    fn test_copy_boxed(&self) -> Option<Box<dyn RootStorage>> {
+        Some(Box::new(self.test_copy()))
+    }
     fn load(&self) -> Result<Option<RootRecord>, BackendError> {
         Ok(self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
     }

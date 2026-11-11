@@ -7,6 +7,35 @@ use rand_core::{CryptoRng, RngCore};
 /// production code uses the OS generator.
 pub struct SeededRng(blake3::OutputReader);
 
+/// A node's generator: a secure one, which a test's world copy can copy (`test_copy`).
+pub trait NodeRng: rand_core::CryptoRngCore + Send {
+    /// Tests only (world copies, notes/testing.md): a generator continuing as this one would,
+    /// the same stream for a seeded one. Never in a product: two nodes drawing one stream draw
+    /// the same nonces and keys.
+    #[doc(hidden)]
+    fn test_copy(&self) -> Box<dyn NodeRng>;
+}
+
+impl NodeRng for SeededRng {
+    fn test_copy(&self) -> Box<dyn NodeRng> {
+        Box::new(SeededRng(self.0.clone()))
+    }
+}
+
+impl NodeRng for rand_core::OsRng {
+    fn test_copy(&self) -> Box<dyn NodeRng> {
+        Box::new(rand_core::OsRng)
+    }
+}
+
+impl SeededRng {
+    /// Tests only: `NodeRng::test_copy` unboxed.
+    #[doc(hidden)]
+    pub fn test_copy(&self) -> SeededRng {
+        SeededRng(self.0.clone())
+    }
+}
+
 impl SeededRng {
     pub fn from_seed(seed: [u8; 32]) -> SeededRng {
         SeededRng(blake3::Hasher::new_keyed(&seed).finalize_xof())

@@ -7,6 +7,8 @@ pub mod base64url;
 pub mod cbor;
 mod chain;
 pub mod chunker;
+#[doc(hidden)]
+pub mod copying;
 mod error;
 pub mod format;
 pub mod hash;

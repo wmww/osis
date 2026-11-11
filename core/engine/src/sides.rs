@@ -46,7 +46,7 @@ pub struct DisputeInfo {
 /// per admin dispute, and per account the line chosen in its signing chain (spec/permissions.md
 /// §5.4; with none chosen the chain's default holds, recomputed from the receipt order, so
 /// nothing is recorded for it).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Sides {
     map: JMap<(WriteId, Tid), Side>,
     accounts: JMap<Tid, CommitId>,

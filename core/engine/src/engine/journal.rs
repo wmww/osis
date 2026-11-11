@@ -31,7 +31,7 @@ pub(crate) trait Journaled {
 /// A map journaling each key's previous value, once per transaction or step (a rollback restores
 /// the first: a value changed many times in one transaction, as a value-less list growing by one
 /// per expiry in a round, costs one copy, not one per change).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct JMap<K: Ord + Clone + Hash, V: Clone> {
     map: BTreeMap<K, V>,
     stamps: Stamps,
@@ -187,7 +187,7 @@ impl<K: Ord + Clone + Hash + Debug, V: Clone + Debug> Journaled for JMap<K, V> {
 }
 
 /// A set journaling each change.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct JSet<T: Ord + Clone + Hash> {
     set: BTreeSet<T>,
     stamps: Stamps,
@@ -270,7 +270,7 @@ impl<T: Ord + Clone + Hash + Debug> Journaled for JSet<T> {
 }
 
 /// A map of sets journaling each element change (an emptied set is removed).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct JSetMap<K: Ord + Clone + Hash, T: Ord + Clone> {
     map: BTreeMap<K, BTreeSet<T>>,
     stamps: Stamps,
@@ -379,7 +379,7 @@ impl<K: Ord + Clone + Hash + Debug, T: Ord + Clone + Debug> Journaled for JSetMa
 }
 
 /// A map of maps journaling each inner entry's previous value (an emptied inner map is removed).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct JNested<K: Ord + Clone + Hash, K2: Ord + Clone, V: Clone> {
     map: BTreeMap<K, BTreeMap<K2, V>>,
     stamps: Stamps,

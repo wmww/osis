@@ -90,6 +90,13 @@ pub trait Backend: Send {
     fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError>;
     fn blob_len(&self, id: &BlobId) -> Result<Option<u64>, BackendError>;
 
+    /// Tests only: an exact copy sharing nothing with this backend (`MemoryBackend::test_copy`),
+    /// for a world copy (`Store::test_copy`); `None`: this backend has none.
+    #[doc(hidden)]
+    fn test_copy_boxed(&self) -> Option<Box<dyn Backend>> {
+        None
+    }
+
     /// Up to `limit` pairs whose key starts with `prefix`.
     fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<KeyValue>, BackendError> {
         let end = prefix_end(prefix);

@@ -201,6 +201,23 @@ impl Peer {
         Ok(p)
     }
 
+    /// An exact copy of this node as it stands (`Engine::test_copy`), on a clock of its own at
+    /// the same time: it goes on exactly as this one would. Its event receiver holds the events
+    /// this one's had not read (`&mut`: this one's receiver is replaced by one holding them
+    /// too). Inside a world copy (`osis_base::copying`) with the peers it is copied beside.
+    pub fn copy(&mut self) -> Result<Peer> {
+        osis_base::copying::copying(|| {
+            let clock = Arc::new(ManualClock::new(self.clock.now_wall_ms()));
+            let c: Arc<dyn Clock> = clock.clone();
+            let mut engine = self.engine.test_copy(c)?;
+            let pending: Vec<Event> = self.events.try_iter().collect();
+            self.events = self.engine.test_subscribe_with(pending.clone(), false);
+            let events = engine.test_subscribe_with(pending, false);
+            let (backend, root) = (self.backend.test_copy(), self.root.test_copy());
+            Ok(Peer { engine, clock, backend, root, events, restarts: self.restarts, discarded: self.discarded.clone(), discards: self.discards })
+        })
+    }
+
     /// What node-sync does at a start: every awaiting entry is fetched again.
     pub fn fetch_discarded(&mut self) -> Result<()> {
         self.engine.take_wakes();
@@ -321,7 +338,7 @@ pub struct LocalPeer {
 }
 
 /// What `sync_all` need not do again (`Engine::point`: nothing a delivery reads moved).
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct SyncMemo {
     /// Per sender: its packages, with a hash of each, at a point of its engine.
     sent: HashMap<usize, (ReadPoint, Hashed)>,
@@ -347,6 +364,22 @@ impl LocalPeer {
     /// Peers made elsewhere; `seed` seeds the sealing rng.
     pub fn of(peers: Vec<Peer>, seed: u64) -> LocalPeer {
         LocalPeer { peers, rng: SeededRng::from_u64(seed ^ 0x5ea1), memo: SyncMemo::default() }
+    }
+
+    /// An exact copy of every peer, the sealing rng and what `sync_all` keeps (`Peer::copy`).
+    pub fn copy(&mut self) -> Result<LocalPeer> {
+        osis_base::copying::copying(|| {
+            let peers = self.peers.iter_mut().map(Peer::copy).collect::<Result<Vec<_>>>()?;
+            Ok(LocalPeer { peers, rng: self.rng.test_copy(), memo: self.memo.clone() })
+        })
+    }
+
+    /// A copy (`copy`) of the peers `build` makes, with what it returned: built once per test
+    /// process per `key`, which names the build and every parameter it takes
+    /// (`osis_base::copying::cached`).
+    #[allow(clippy::panic)] // test harness: a copy that fails fails the test
+    pub fn cached<T: Clone + Send + 'static>(key: &str, build: impl FnOnce() -> (LocalPeer, T)) -> (LocalPeer, T) {
+        osis_base::copying::cached(key, build, |(lp, t)| (lp.copy().unwrap_or_else(|e| panic!("copy of {key}: {e}")), t.clone()))
     }
 
     pub fn peer(&mut self, i: usize) -> Option<&mut Peer> {

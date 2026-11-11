@@ -36,6 +36,7 @@ mod handoff;
 mod serve;
 pub(crate) mod state;
 mod status;
+mod testing;
 mod timers;
 mod work;
 
@@ -44,7 +45,6 @@ use crate::error::Result;
 use crate::events::{Diagnostic, DiagnosticKind, Origin};
 use crate::labeling::{GroupLabel, HeadKeys};
 use osis_base::{Ak, LabelId, Tid};
-use osis_crypto::CryptoRngCore;
 use osis_label::{Address, Step};
 use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command};
 use state::{HostKey, State};
@@ -102,7 +102,7 @@ pub struct SyncEngine {
     /// fits again.
     pub(crate) unvouched_reported: BTreeSet<LabelId>,
     events: Receiver<crate::Event>,
-    pub(crate) rng: Box<dyn CryptoRngCore + Send>,
+    pub(crate) rng: Box<dyn osis_crypto::NodeRng>,
     pub(crate) cfg: SyncConfig,
     pub(crate) conns: BTreeMap<ConnId, Conn>,
     next_conn: ConnId,
@@ -350,7 +350,7 @@ pub(crate) type Deferred = (Tid, osis_base::CommitId, BTreeSet<usize>, Option<[u
 
 impl SyncEngine {
     /// Wraps an engine; its wall clock is the node's (spec/sync.md §6).
-    pub fn new(mut engine: Engine, rng: Box<dyn CryptoRngCore + Send>, cfg: SyncConfig) -> Result<SyncEngine> {
+    pub fn new(mut engine: Engine, rng: Box<dyn osis_crypto::NodeRng>, cfg: SyncConfig) -> Result<SyncEngine> {
         // a memory commit marks itself changed like any (`Engine::take_changed`), not by event
         let events = engine.subscribe_durable();
         engine.set_sync_records(&state::Records);
@@ -870,6 +870,7 @@ impl SyncEngine {
 }
 
 /// `SyncEngine::rotations` of an actor, as last run.
+#[derive(Clone)]
 pub(crate) struct Rotated {
     /// `Core::role_generation` it ran at (`u64::MAX`: it rotated, so run again).
     generation: u64,

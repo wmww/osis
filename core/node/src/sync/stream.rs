@@ -70,7 +70,7 @@ const MAX_WAITING: usize = 1024;
 /// The node log's memory part: one latest event per memory entry, ordered by an in-memory
 /// counter, a deletion kept `MAX_DRIFT_MS` (a memory entry's tombstone). Bounded by the live
 /// memory entries plus recent deletions; nothing of it outlives the process.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct MemLog {
     seq: u64,
     /// By counter: entry, added (else deleted), when (wall ms).
@@ -125,7 +125,7 @@ impl MemLog {
 }
 
 /// The serving side of one connection's stream.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Serving {
     /// Following: pushes go on from this durable position.
     follow: Option<u64>,
@@ -160,6 +160,7 @@ pub(crate) struct Serving {
 }
 
 /// A join the requester stores at its own position (`Serving::own`).
+#[derive(Clone)]
 struct Own {
     /// Its reported position; none for a join from the start.
     at: Option<u64>,
@@ -170,6 +171,7 @@ struct Own {
 /// A reply or push asked to report (`Serving::unreported`): its cursor, the members it carried
 /// events of, its count (`Serving::seq`), the stream position it brings the requester to and
 /// the joins it left in pages at theirs.
+#[derive(Clone)]
 struct Unreported {
     cursor: Vec<u8>,
     labels: BTreeSet<LabelId>,
@@ -273,7 +275,7 @@ impl Serving {
 }
 
 /// The requesting side of one connection's stream.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Pulling {
     /// The stream's position in the peer's log.
     cursor: Option<Vec<u8>>,
@@ -314,6 +316,7 @@ pub(crate) struct Pulling {
 /// the blobs, the `max_reply` asked and when they were first asked there (wall ms; the rest of an
 /// answered Fetch keeps it: past `STALL_TIMEOUT_MS` its bodies are asked of the next source too,
 /// `SyncEngine::asked`).
+#[derive(Clone)]
 struct Fetching {
     seq: u64,
     label: LabelId,
@@ -324,6 +327,7 @@ struct Fetching {
 
 /// A position the stream reached that waits for bodies (`Pulling::unsettled`): stored, reported
 /// and counted as a pass end only once every body announced up to it is held here.
+#[derive(Clone)]
 struct Unsettled {
     cursor: Option<Vec<u8>>,
     /// Bodies its message announced without bytes that this node lists and does not hold yet.
@@ -368,7 +372,7 @@ pub(crate) enum Stop {
 }
 
 /// One connection's stream, either side.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ConnStream {
     pub(crate) serving: Serving,
     pub(crate) pulling: Pulling,

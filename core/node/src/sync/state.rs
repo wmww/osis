@@ -299,7 +299,7 @@ pub struct Carriers {
     pub memory: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     pub entries: BTreeMap<(LabelId, BlobId), Entry>,
     /// Indexes over `entries`, kept by the setters (`index`): commit entries by (label,

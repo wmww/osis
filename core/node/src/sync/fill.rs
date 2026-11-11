@@ -20,7 +20,7 @@ const DEPOSITED: u64 = 1;
 const LAST: u64 = u64::MAX;
 
 /// One label's fill on one connection.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Fill {
     /// Entries to fetch, by rank.
     queue: BTreeSet<(u64, BlobId)>,

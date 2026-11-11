@@ -23,6 +23,7 @@ pub(crate) fn send<O: From<Vec<u8>>>(out: &mut Vec<O>, msg: crate::Message) {
 pub const MAX_HELLO_BYTES: usize = 256;
 
 /// Incremental frame splitter. Holds at most one frame plus the last pushed chunk.
+#[derive(Clone)]
 pub struct FrameDecoder {
     buf: Vec<u8>,
     /// Bytes of `buf` already handed out.

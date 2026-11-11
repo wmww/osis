@@ -44,6 +44,7 @@ pub(crate) enum Phase {
 }
 
 /// One label on one connection.
+#[derive(Clone)]
 pub(crate) struct LConn {
     pub group: Tid,
     /// The label's index (recorded, or the hint's).
@@ -110,6 +111,7 @@ impl LConn {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Conn {
     /// A host's address key, or a co-reader node's dialable key (its LAN address may present
     /// another transport key).
@@ -130,7 +132,7 @@ pub(crate) struct Conn {
 
 /// Requests on a connection not answered yet, and what its host would not deliver: they go
 /// with the connection (asked again on the next one).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Requests {
     /// Entries uploaded or deposited, with when (wall ms) and the tag of the command carrying them
     /// (`ClientSession::commands`): passes skip them while unanswered or within `RESEND_MS`

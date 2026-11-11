@@ -26,7 +26,7 @@ pub enum HostStatus {
 }
 
 /// What `host_step` last handed the driver, and from which engine generation.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Hosting {
     emitted: Option<HostConfig>,
     generation: Option<u64>,

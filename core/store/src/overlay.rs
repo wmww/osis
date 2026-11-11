@@ -12,7 +12,7 @@ pub(crate) const MEM_TABLE: u64 = 1 << 63;
 
 type Rows = BTreeMap<Vec<u8>, Vec<u8>>;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Overlay {
     /// Catalog rows held in memory.
     pub cat: Rows,

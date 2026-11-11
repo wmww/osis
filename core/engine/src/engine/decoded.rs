@@ -17,7 +17,7 @@ use std::sync::Arc;
 /// open stays decoded in memory.
 const DECODED_MAX: usize = 16 << 20;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct DecodedCommits {
     records: HashMap<CommitId, Arc<CommitBlob>>,
     parts: HashMap<CommitId, BTreeMap<usize, Arc<Decoded>>>,

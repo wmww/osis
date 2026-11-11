@@ -9,7 +9,7 @@ use crate::net::{Net, Runtime, Waiter};
 use crate::share::{Address, Status};
 use crate::watch::{Dispatch, Dispatcher, Msg, lock};
 use osis_base::{Clock, SystemClock, Tid};
-use osis_crypto::{CryptoRngCore, OsRng, SeededRng};
+use osis_crypto::{OsRng, SeededRng};
 use osis_node::sync::{Action, Event as SyncEvent, SyncConfig, SyncEngine};
 use osis_node::{Engine, Event};
 use osis_schema::Schema;
@@ -503,7 +503,7 @@ fn parts(store: &Store) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_st
     }
 }
 
-fn rng(cfg: &Config, salt: u64) -> Box<dyn CryptoRngCore + Send> {
+fn rng(cfg: &Config, salt: u64) -> Box<dyn osis_crypto::NodeRng> {
     match cfg.app.internals.seed {
         Some(s) => Box::new(SeededRng::from_u64(s.wrapping_add(salt))),
         None => Box::new(OsRng),

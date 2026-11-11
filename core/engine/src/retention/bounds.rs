@@ -163,7 +163,7 @@ impl HeldWrites {
 /// `HeldWrites` of some aspects, kept while `at` is the engine's (`generation`,
 /// `memory_generation`): built and read only in a transaction that changed nothing yet
 /// (`Core::dirty`), so every change to a held body, its validity or a state forgets them.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct HeldWritesCache {
     at: (u64, u64),
     aspects: BTreeMap<(Tid, Ak), Arc<HeldWrites>>,

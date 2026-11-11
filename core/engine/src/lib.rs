@@ -19,6 +19,8 @@ pub mod retention;
 pub mod rotation;
 pub mod sides;
 pub mod undo;
+#[cfg(test)]
+mod tests_copy;
 
 pub use apply::{Creation, Ingested, Reason};
 pub use engine::{Config, Engine, Mutation};

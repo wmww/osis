@@ -11,7 +11,6 @@
 use crate::replicate::Replicator;
 use crate::store::HostStore;
 use osis_base::LabelId;
-use osis_crypto::CryptoRngCore;
 use osis_proto::{ClientInput, ClientOutput, Message, ServingConfig, ServingSession, ServingInput, ServingOutput};
 use osis_transport::Source;
 use std::collections::BTreeMap;
@@ -74,6 +73,7 @@ pub enum Down {
     Close,
 }
 
+#[derive(Clone)]
 enum Conn {
     /// `buffered`: partial frame bytes after the last input; `source`: where it comes from
     /// (slots are shared by it).
@@ -85,7 +85,7 @@ enum Conn {
 pub struct Hub {
     store: HostStore,
     static_key: [u8; 32],
-    rng: Box<dyn CryptoRngCore + Send>,
+    rng: Box<dyn osis_crypto::NodeRng>,
     conns: BTreeMap<ConnId, Conn>,
     /// Sweeps wait until then (after a failure).
     sweep_hold: u64,
@@ -101,8 +101,28 @@ pub struct Hub {
 
 impl Hub {
     /// `static_key`: this node's transport key (bound by open signatures).
-    pub fn new(store: HostStore, static_key: [u8; 32], rng: Box<dyn CryptoRngCore + Send>) -> Hub {
+    pub fn new(store: HostStore, static_key: [u8; 32], rng: Box<dyn osis_crypto::NodeRng>) -> Hub {
         Hub { store, static_key, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0, relays_delivered: 0, ended: Vec::new() }
+    }
+
+    /// Tests only: an exact copy of this hub as it stands, on `clock`, sharing no mutable state
+    /// with it: its store (`HostStore::test_copy`), connections and their sessions, its rng going
+    /// on with the same stream. Never in a product: two hubs with one key and rng stream.
+    #[doc(hidden)]
+    pub fn test_copy(&self, clock: std::sync::Arc<dyn osis_base::Clock>) -> Result<Hub, osis_store::Error> {
+        osis_base::copying::copying(|| {
+            Ok(Hub {
+                store: self.store.test_copy(clock)?,
+                static_key: self.static_key,
+                rng: self.rng.test_copy(),
+                conns: self.conns.clone(),
+                sweep_hold: self.sweep_hold,
+                sweep_more: self.sweep_more,
+                buffered: self.buffered,
+                relays_delivered: self.relays_delivered,
+                ended: self.ended.clone(),
+            })
+        })
     }
 
     pub fn store(&self) -> &HostStore {

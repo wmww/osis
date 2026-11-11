@@ -16,7 +16,7 @@ use osis_perm::{HeldSet, RoleCommit};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum Undo {
     Created(Tid, Option<CreationRecord>),
     AddedCommit(Arc<RoleCommit>),
@@ -24,7 +24,7 @@ enum Undo {
     Counted(CommitId, bool),
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Held {
     commits: BTreeMap<Tid, Vec<Arc<RoleCommit>>>,
     created: BTreeMap<Tid, CreationRecord>,
@@ -449,6 +449,7 @@ impl HeldSet for Held {
 /// perm's timelines over the held set (`Core::timelines`), stamped per thing: an update stamps
 /// the things whose inputs it was given and those whose timeline it evaluated or continued
 /// (`osis_perm::Timelines::changed`: every other thing's answers are unchanged).
+#[derive(Clone)]
 pub struct Timelines {
     of: osis_perm::Timelines,
     stamps: Stamps,

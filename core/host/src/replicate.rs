@@ -37,6 +37,7 @@ enum Done {
     /// The replay is complete.
     Replayed,
 }
+#[derive(Clone)]
 
 struct Inflight {
     label: LabelId,
@@ -47,6 +48,7 @@ struct Inflight {
 
 /// A replay in progress: the log head taken at its start, the path's runs of steps sharing a
 /// write key, the current run, whether its steps were sent, the last ID sent in it.
+#[derive(Clone)]
 struct Replay {
     start: u64,
     runs: Vec<(Vec<Step>, VerifyingKey)>,
@@ -57,6 +59,7 @@ struct Replay {
 
 /// A batch: the log ID it refers to, its commands, what completing it records.
 type Batch = ([u8; 16], Vec<Command>, Done);
+#[derive(Clone)]
 
 pub struct Replicator {
     peer: [u8; 32],

@@ -14,7 +14,7 @@ use osis_base::{CommitId, LabelId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What `drop_left` last found, and when.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct LeftCheck {
     /// Engine generation `leaving` was computed at.
     generation: Option<u64>,
@@ -510,7 +510,7 @@ impl SyncEngine {
 }
 
 /// The obligation to remove tied edges whose placement is gone (`SyncEngine::untie_unplaced`).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct TiedWork {
     /// Derive every pair again (at start).
     pub all: bool,

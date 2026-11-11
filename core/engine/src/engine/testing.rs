@@ -18,6 +18,35 @@ pub struct HeldBody {
 }
 
 impl Engine {
+    /// Tests only: an exact copy of this engine as it stands, on `clock`, sharing no mutable
+    /// state with it (notes/testing.md, Copied worlds): its store over test copies of the backend
+    /// and root (`osis_store::Store::test_copy`), its indexes, caches and memos, its rngs
+    /// continuing the same streams (`NodeRng::test_copy`). It goes on exactly as this one would.
+    /// Not copied: event subscribers and commit listeners (their owner subscribes and listens
+    /// again). Never in a product: the copy is the same node, its identity, session and rng
+    /// stream twice, so the two would reuse nonces, counters and commit IDs. Called inside a
+    /// world copy (`osis_base::copying`) to copy several nodes and what they share as one.
+    #[doc(hidden)]
+    pub fn test_copy(&self, clock: std::sync::Arc<dyn osis_base::Clock>) -> Result<Engine> {
+        osis_base::copying::copying(|| {
+            Ok(Engine {
+                store: self.store.test_copy()?,
+                store_rng: self.store_rng.test_copy(),
+                rng: self.rng.test_copy(),
+                core: self.core.test_copy(clock.clone()),
+                eph: self.eph.clone(),
+                clock,
+                cfg: self.cfg.clone(),
+                #[cfg(debug_assertions)]
+                index_checks: self.index_checks,
+                #[cfg(test)]
+                index_poked: self.index_poked,
+                #[cfg(test)]
+                check_every_tx: self.check_every_tx,
+            })
+        })
+    }
+
     /// Commits `m` past the writer's rules, as a hostile node would: its role check, commit
     /// shape rules and refusal to emit a delta it judges invalid. A receiver's judgment of what
     /// no writer makes can be tested so.

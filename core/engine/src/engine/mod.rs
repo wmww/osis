@@ -313,10 +313,8 @@ pub type ReadPoint = (u64, u64, u64, u64);
 /// does not fail; if it does (a bug, damaged memory) the header reads as its view with every
 /// other field empty, the running transaction fails (`Error::Corrupt`) and readers outside one
 /// (`Engine::header`) see none (`decoded`).
-#[derive(Clone)]
 pub struct LazyHeader(Lazy);
 
-#[derive(Clone)]
 enum Lazy {
     Ready(Arc<Header>),
     /// Decoded: `Ok`, else `Err` with the fallback header.
@@ -328,6 +326,26 @@ struct StoredHeader {
     bytes: Box<[u8]>,
     view: Arc<View>,
     fault: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// A clone shares the bytes; in a world copy (`osis_base::copying`) a header not decoded yet sets
+/// the copy's fault flag (`Core::header_fault`), not the original's.
+impl Clone for LazyHeader {
+    fn clone(&self) -> LazyHeader {
+        LazyHeader(match &self.0 {
+            Lazy::Ready(h) => Lazy::Ready(h.clone()),
+            Lazy::Stored(got, s) if got.get().is_none() && osis_base::copying::in_copy() => {
+                let s = osis_base::copying::remap(s, |s| StoredHeader {
+                    id: s.id,
+                    bytes: s.bytes.clone(),
+                    view: s.view.clone(),
+                    fault: osis_base::copying::remap(&s.fault, |f| std::sync::atomic::AtomicBool::new(f.load(std::sync::atomic::Ordering::Relaxed))),
+                });
+                Lazy::Stored(std::sync::OnceLock::new(), s)
+            }
+            Lazy::Stored(got, s) => Lazy::Stored(got.clone(), s.clone()),
+        })
+    }
 }
 
 impl LazyHeader {
@@ -497,7 +515,7 @@ macro_rules! indexes {
     ($($(#[$a:meta])* pub $f:ident: $t:ty,)*) => {
         /// `Core`'s journaled indexes (`journal`).
         #[doc(hidden)]
-        #[derive(Default)]
+        #[derive(Clone, Default)]
         pub struct Indexes {
             $($(#[$a])* pub $f: $t,)*
         }
@@ -758,7 +776,7 @@ pub enum MemoryDrop {
 /// `dropped` grows inside transactions and is cut back to its length at the start of a
 /// transaction or step that fails (`Core::rollback_to`); a reader checks a listed commit is still
 /// held before acting.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct MemorySync {
     /// Memory commits forgotten since the last take, with their header (node-sync deletes
     /// their entries at hosts by it) and why (`Engine::take_memory_drops`).
@@ -1031,6 +1049,117 @@ pub struct Core {
     pub routed_away: BTreeSet<Tid>,
 }
 
+impl Core {
+    /// Tests only (`Engine::test_copy`): this state for a copy of the node on `clock`, inside a
+    /// world copy (`osis_base::copying`). Commit listeners are not copied (their owner listens
+    /// again); event subscribers neither (`Events`).
+    // every field `clone`d, whatever its type: none is left out by accident
+    #[allow(clippy::clone_on_copy)]
+    pub(crate) fn test_copy(&self, clock: Arc<dyn Clock>) -> Core {
+        Core {
+            ix: self.ix.clone(),
+            id: self.id.clone(),
+            hlc: Hlc::new(clock, self.hlc.last()),
+            states: self.states.clone(),
+            secrets_read: self.secrets_read.clone(),
+            head_keys: self.head_keys.clone(),
+            holders_named: self.holders_named.clone(),
+            reseal_quiet: self.reseal_quiet.clone(),
+            states_read: self.states_read.clone(),
+            records_read: self.records_read.clone(),
+            epochs_of: self.epochs_of.clone(),
+            rotation_seq: self.rotation_seq.clone(),
+            account_views: self.account_views.clone(),
+            account_epochs_of: self.account_epochs_of.clone(),
+            epochs_judged_from: self.epochs_judged_from.clone(),
+            key_access: self.key_access.clone(),
+            acting_of: self.acting_of.clone(),
+            inbox_actors: self.inbox_actors.clone(),
+            pages: self.pages.clone(),
+            timelines: self.timelines.clone(),
+            sides: self.sides.clone(),
+            detect: self.detect.clone(),
+            walk_cache_min: self.walk_cache_min.clone(),
+            walks_done: self.walks_done.clone(),
+            dirty: self.dirty.clone(),
+            key_salt: self.key_salt.clone(),
+            waits: self.waits.clone(),
+            stale_things: self.stale_things.clone(),
+            stale_authors: self.stale_authors.clone(),
+            addenda_on: self.addenda_on.clone(),
+            stale_under: self.stale_under.clone(),
+            stale_commits: self.stale_commits.clone(),
+            stale_all: self.stale_all.clone(),
+            schemas: self.schemas.clone(),
+            events: self.events.clone(),
+            written: self.written.clone(),
+            skip_writer_rules: self.skip_writer_rules.clone(),
+            commits_watched: self.commits_watched.clone(),
+            commits_named: self.commits_named.clone(),
+            commit_listeners: None,
+            listed_before: self.listed_before.clone(),
+            killed: self.killed.clone(),
+            redeliver: self.redeliver.clone(),
+            forge_bad: self.forge_bad.clone(),
+            #[cfg(debug_assertions)]
+            unchecked_tx: self.unchecked_tx.clone(),
+            forged: self.forged.clone(),
+            session: self.session.clone(),
+            expiring: self.expiring.clone(),
+            later_sessions: self.later_sessions.clone(),
+            memory: self.memory.clone(),
+            header_fault: osis_base::copying::remap(&self.header_fault, |f| std::sync::atomic::AtomicBool::new(f.load(std::sync::atomic::Ordering::Relaxed))),
+            #[cfg(test)]
+            check_ingest: self.check_ingest.clone(),
+            #[cfg(test)]
+            whole_apply: self.whole_apply.clone(),
+            #[cfg(test)]
+            piece_fault: self.piece_fault.clone(),
+            #[cfg(test)]
+            step_fault: self.step_fault.clone(),
+            key_actors: self.key_actors.clone(),
+            account: self.account.clone(),
+            accounts: self.accounts.clone(),
+            left: self.left.clone(),
+            signing_due: self.signing_due.clone(),
+            keep_bodies: self.keep_bodies.clone(),
+            list_bound: self.list_bound.clone(),
+            valueless_dirty: self.valueless_dirty.clone(),
+            batched: self.batched.clone(),
+            cover_cache: self.cover_cache.clone(),
+            held_writes: self.held_writes.clone(),
+            timer_floor: self.timer_floor.clone(),
+            none_due: self.none_due.clone(),
+            drop_due: self.drop_due.clone(),
+            refold: self.refold.clone(),
+            changed: self.changed.clone(),
+            live_trees: self.live_trees.clone(),
+            missed: self.missed.clone(),
+            bodies: self.bodies.clone(),
+            live_bodies: self.live_bodies.clone(),
+            replaced_reads: self.replaced_reads.clone(),
+            death_walks: self.death_walks.clone(),
+            rebuilds: self.rebuilds.clone(),
+            copy_index: self.copy_index.clone(),
+            decoded: self.decoded.clone(),
+            generation: self.generation.clone(),
+            role_generation: self.role_generation.clone(),
+            memory_generation: self.memory_generation.clone(),
+            memory_tx: self.memory_tx.clone(),
+            made_labels: self.made_labels.clone(),
+            #[cfg(debug_assertions)]
+            rechecked: self.rechecked.clone(),
+            #[cfg(debug_assertions)]
+            tx_store: self.tx_store.clone(),
+            labels: self.labels.clone(),
+            published: self.published.clone(),
+            links: self.links.clone(),
+            sync_records: self.sync_records.clone(),
+            routed_away: self.routed_away.clone(),
+        }
+    }
+}
+
 /// `Core::published`: the published things per actor.
 pub(crate) type Published = std::sync::Arc<BTreeMap<Tid, std::sync::Arc<BTreeSet<Tid>>>>;
 
@@ -1050,7 +1179,7 @@ pub trait SyncRecords: Sync {
 }
 
 /// What node-sync judges again (`Core::changed`).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Changed {
     /// Commits whose record, parts, validity, bodies, replacement or timers changed.
     pub commits: BTreeSet<CommitId>,
@@ -1071,7 +1200,7 @@ pub struct Changed {
 }
 
 /// What brings back what the node could not judge (notes/expiry-creation-design.md §3).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Wakes {
     /// Records added: entries awaiting them are fetched again.
     pub records: BTreeSet<Tid>,
@@ -2512,7 +2641,7 @@ pub(crate) fn decode_commit_record(v: &[u8]) -> Result<CommitRecord> {
 pub struct Engine {
     store: Store,
     store_rng: SeededRng,
-    pub(crate) rng: Box<dyn CryptoRngCore + Send>,
+    pub(crate) rng: Box<dyn osis_crypto::NodeRng>,
     #[doc(hidden)]
     pub core: Core,
     /// The local ephemeral write path's own state (`crate::ephemeral`): the undo log,
@@ -2581,7 +2710,7 @@ impl Engine {
 
     /// A new node over an empty backend: fresh identity, its node thing with `created.0`,
     /// `node.0` and `keys.0` (spec/permissions.md §4 node card).
-    pub fn create(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn CryptoRngCore + Send>) -> Result<Engine> {
+    pub fn create(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Engine> {
         let store = Store::create(backend, root, cfg.store, &mut *rng)?;
         let mut seed = [0u8; 32];
         rng.fill_bytes(&mut seed);
@@ -2601,7 +2730,7 @@ impl Engine {
     }
 
     /// Opens an existing node and re-examines its pending commits.
-    pub fn open(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn CryptoRngCore + Send>) -> Result<Engine> {
+    pub fn open(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Engine> {
         let mut store = Store::open(backend, root, cfg.store)?;
         let mut seed = [0u8; 32];
         rng.fill_bytes(&mut seed);
@@ -2707,6 +2836,13 @@ impl Engine {
     /// `subscribe` without `Event::Ephemeral`.
     pub fn subscribe_durable(&mut self) -> Receiver<Event> {
         self.core.events.subscribe_durable()
+    }
+
+    /// Tests only (world copies): a subscription whose receiver holds `pending` first
+    /// (`Events::test_subscribe_with`).
+    #[doc(hidden)]
+    pub fn test_subscribe_with(&mut self, pending: Vec<Event>, durable: bool) -> Receiver<Event> {
+        self.core.events.test_subscribe_with(pending, durable)
     }
 
     /// Installs node-sync's records (`Core::sync_records`).

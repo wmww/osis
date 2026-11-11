@@ -26,7 +26,7 @@ pub struct Certificates {
 }
 
 /// Held role commits by the holder and target of their edge writes.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct CertIndex {
     by_edge: BTreeMap<Tid, BTreeMap<Tid, Vec<Arc<RoleCommit>>>>,
 }

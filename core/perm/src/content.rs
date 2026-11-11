@@ -13,6 +13,7 @@ use std::sync::Arc;
 /// A node's roles replayed over the history up to change `pos` (`first_held_uncached`), and
 /// the first change after which it held the replayed role on each thing (`None`: from the
 /// beginning).
+#[derive(Clone)]
 pub(crate) struct Replay {
     pos: usize,
     best: BTreeMap<Tid, Role>,

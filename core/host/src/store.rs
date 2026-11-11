@@ -31,7 +31,7 @@
 
 use osis_base::format::{MAX_DRIFT_MS, ROLE_KEEP_MS, TOMBSTONE_LIFETIME_MS};
 use osis_base::{BlobId, Clock, LabelId};
-use osis_crypto::{CryptoRngCore, Signature};
+use osis_crypto::Signature;
 use osis_proto::msg::{ClaimSet, Code, SecretBox, Step, StepId, WRAP_LEN};
 use osis_proto::{Budget, EntryMeta, HeadKeys, LabelStore, LogRecord, Put, StoreError};
 use osis_store::{KeyValue, Shred, Store, Suspended, Table, Transaction};
@@ -257,7 +257,7 @@ impl Writes {
 struct Db {
     store: Store,
     table: Table,
-    rng: Box<dyn CryptoRngCore + Send>,
+    rng: Box<dyn osis_crypto::NodeRng>,
     open: Option<Suspended>,
 }
 
@@ -549,7 +549,7 @@ impl EphRec {
 }
 
 /// A label's ephemeral entries, tombstones and log records (in memory).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct EphLabel {
     entries: BTreeMap<BlobId, EphEntry>,
     /// Entries by their latest add's sequence number, oldest first (eviction order).
@@ -601,7 +601,7 @@ const EPH_LOG_KEEP: usize = 1 << 16;
 const EPH_TOMBSTONE_MS: u64 = MAX_DRIFT_MS;
 
 /// The ephemeral side of the store (in memory).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Ephemeral {
     labels: HashMap<LabelId, EphLabel>,
     blobs: HashMap<BlobId, (Vec<u8>, usize)>,
@@ -663,7 +663,7 @@ enum EphRemove {
 }
 
 /// Fixed-window counters, kept in memory only (a restart resets them).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Rates {
     window: u64,
     labels: HashMap<(LabelId, Rate), u32>,
@@ -770,9 +770,34 @@ pub struct HostStore {
 }
 
 impl HostStore {
+    /// Tests only: an exact copy of this host store as it stands, on `clock`, sharing no mutable
+    /// state with it: its store and open transaction (`Store::test_copy`), rates, ephemeral
+    /// entries and gates, its rng going on with the same stream. Never in a product: two hosts
+    /// with one instance seed and rng stream.
+    #[doc(hidden)]
+    pub fn test_copy(&self, clock: Arc<dyn Clock>) -> Result<HostStore, osis_store::Error> {
+        let db = self.db.borrow();
+        let db = Db { store: db.store.test_copy()?, table: db.table, rng: db.rng.test_copy(), open: db.open.as_ref().map(Suspended::test_copy) };
+        Ok(HostStore {
+            db: RefCell::new(db),
+            failed: self.failed.clone(),
+            seed: self.seed,
+            clock,
+            policy: self.policy.clone(),
+            rates: self.rates.clone(),
+            origin: self.origin,
+            origins: self.origins.clone(),
+            eph: self.eph.clone(),
+            relays: self.relays.clone(),
+            lazy: self.lazy,
+            admission: self.admission.clone(),
+            caps: self.caps.clone(),
+        })
+    }
+
     /// Opens the host store over `store` (the host's own, never the node's), creating its table
     /// and the instance seed (log IDs derive from it) on first use. `rng` keys the store's units.
-    pub fn open(mut store: Store, clock: Arc<dyn Clock>, policy: HostPolicy, mut rng: Box<dyn CryptoRngCore + Send>) -> Result<HostStore, StoreError> {
+    pub fn open(mut store: Store, clock: Arc<dyn Clock>, policy: HostPolicy, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<HostStore, StoreError> {
         let mut fresh = [0u8; 32];
         rng.fill_bytes(&mut fresh);
         let mut t = store.transaction(&mut *rng).map_err(err)?;

@@ -241,6 +241,7 @@ fn read_pointer(b: &[u8]) -> Result<(u64, u64), Error> {
 }
 
 /// A unit's state inside a transaction.
+#[derive(Clone)]
 enum DirtyUnit {
     /// `page`: the table page `data` encodes, when it was written or read as one.
     Plain { data: Vec<u8>, shred: bool, page: Option<Arc<Page>> },
@@ -258,6 +259,7 @@ impl DirtyUnit {
 }
 
 /// A transaction's uncommitted changes.
+#[derive(Clone)]
 pub(crate) struct Dirty {
     ver: u64,
     pub meta: Meta,
@@ -278,6 +280,7 @@ pub(crate) struct Dirty {
 }
 
 /// A change undone by a rollback to a savepoint: what it replaced.
+#[derive(Clone)]
 enum DirtyUndo {
     /// The slot's previous state, and whether it was in `dead_spills`.
     Unit(u64, Option<DirtyUnit>, bool),
@@ -518,6 +521,31 @@ impl Pager {
 
     pub fn changes(&self) -> u64 {
         self.changes
+    }
+
+    /// Tests only (`Store::test_copy`).
+    pub fn test_copy(&self) -> Result<Pager, Error> {
+        let none = || Error::Misuse("test copy: the backend or root has none");
+        let backend = self.backend.test_copy_boxed().ok_or_else(none)?;
+        let root = self.root.test_copy_boxed().ok_or_else(none)?;
+        Ok(Pager {
+            backend,
+            root,
+            cfg: self.cfg,
+            epoch: self.epoch,
+            root_key: self.root_key.clone(),
+            top_ver: self.top_ver,
+            next_ver: self.next_ver,
+            open_spills: self.open_spills.clone(),
+            meta: self.meta,
+            top: self.top.clone(),
+            nodes: self.nodes.clone(),
+            units: self.units.clone(),
+            unit_bytes: self.unit_bytes,
+            decoded: self.decoded,
+            broken: self.broken,
+            changes: self.changes,
+        })
     }
 
     /// The memory overlay changed in a commit (`Store::changes`).

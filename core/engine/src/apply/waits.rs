@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// the most a peer's input can keep; a restart loses them all and fetches again.
 const MAX_REMEMBERED: usize = 4096;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Awaiting {
     by_record: BTreeMap<Tid, BTreeSet<CommitId>>,
     reach: BTreeSet<CommitId>,
@@ -24,7 +24,7 @@ pub(crate) struct Awaiting {
 
 /// The budget's refused commits, and what reading-only secrets were read from: not journaled, and
 /// rebuilt at load (`load_reading`).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Waits {
     /// Commits read again by `reexamine` so far (scale checks).
     pub examined: u64,

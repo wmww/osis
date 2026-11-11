@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 /// The change stamps of one container: one per key present, one for every absent key, one for
 /// the whole.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Table {
     /// Counts changes: the whole container's stamp.
     ver: u64,
@@ -109,6 +109,20 @@ impl Stamps {
     }
 }
 
+/// A table of the world being copied (`osis_base::copying`): the copy's one table for it, its
+/// stamps as they are; outside a copy, a table of its own.
+fn copied(t: &Arc<Mutex<Table>>) -> Arc<Mutex<Table>> {
+    osis_base::copying::remap(t, |m| Mutex::new(lock(m).clone()))
+}
+
+/// A copy's stamps: the same stamps on a table of the copy's own (`copied`), so the copied memos
+/// that read the original's hold in the copy exactly while they would in the original.
+impl Clone for Stamps {
+    fn clone(&self) -> Stamps {
+        Stamps(copied(&self.0))
+    }
+}
+
 impl Drop for Stamps {
     fn drop(&mut self) {
         let mut t = lock(&self.0);
@@ -184,6 +198,7 @@ fn depend(deps: &[Dep]) {
     });
 }
 
+#[derive(Clone)]
 struct Entry<V> {
     value: V,
     deps: Arc<[Dep]>,
@@ -298,6 +313,20 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
     }
 }
 
+/// Inside a world copy (`osis_base::copying`) the copy keeps every answer, its reads moved to
+/// the copy's tables, so it computes again exactly when the original would; outside one it
+/// starts empty (its answers' reads are the original's).
+impl<K: Hash + Eq + Clone, V: Clone> Clone for Memo<K, V> {
+    fn clone(&self) -> Self {
+        let entries = match osis_base::copying::in_copy() {
+            true => self.entries.borrow().iter().map(|(k, e)| (k.clone(), Entry { deps: e.deps.iter().map(|d| Dep { table: copied(&d.table), key: d.key, seen: d.seen }).collect(), ..e.clone() })).collect(),
+            false => HashMap::new(),
+        };
+        let kept = if osis_base::copying::in_copy() { self.kept.get() } else { 0 };
+        Memo { name: self.name, entries: RefCell::new(entries), kept: Cell::new(kept) }
+    }
+}
+
 /// A map outside the journal whose reads and writes are stamped (`Core::key_actors`,
 /// `Core::accounts`).
 #[derive(Debug)]
@@ -314,7 +343,7 @@ impl<K, V> Default for Stamped<K, V> {
 
 impl<K: Ord + Clone, V: Clone> Clone for Stamped<K, V> {
     fn clone(&self) -> Self {
-        Stamped { map: self.map.clone(), stamps: Stamps::default() }
+        Stamped { map: self.map.clone(), stamps: self.stamps.clone() }
     }
 }
 
@@ -362,7 +391,7 @@ impl<K: Ord + Hash, V> Stamped<K, V> {
 
 /// A value outside the journal whose reads (`get`) and changes (`set`) are stamped
 /// (`Core::account`).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Tracked<T> {
     value: T,
     stamps: Stamps,
@@ -383,7 +412,7 @@ impl<T: Copy + PartialEq> Tracked<T> {
 }
 
 /// A set outside the journal whose reads and writes are stamped (node-sync's state).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct StampedSet<T> {
     set: std::collections::BTreeSet<T>,
     stamps: Stamps,

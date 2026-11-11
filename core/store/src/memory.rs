@@ -15,7 +15,7 @@ pub enum Fault {
     Crash,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct FaultState {
     writes: u64,
     plan: Option<(u64, Fault)>,
@@ -83,12 +83,18 @@ impl Faults {
             _ => Ok(()),
         }
     }
+    /// Tests only (world copies, `osis_base::copying`): the copy's plan, as this one stands. One
+    /// plan shared by a device's backend and root stays one plan in the copy.
+    #[doc(hidden)]
+    pub fn test_copy(&self) -> Faults {
+        Faults(osis_base::copying::remap(&self.0, |m| Mutex::new(m.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())))
+    }
     fn lock(&self) -> MutexGuard<'_, FaultState> {
         self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Data {
     kv: BTreeMap<Vec<u8>, Vec<u8>>,
     blobs: HashMap<BlobId, Vec<u8>>,
@@ -176,6 +182,14 @@ impl MemoryBackend {
         let d = self.lock();
         let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: d.history.clone(), blob_history: d.blob_history.clone(), syncs: d.syncs, io: d.io };
         MemoryBackend { data: Arc::new(Mutex::new(data)), faults: self.faults.clone() }
+    }
+    /// Tests only (world copies, `osis_base::copying`): an exact copy of the data, recorded
+    /// history, counters and fault plan (`Faults::test_copy`), sharing none of them; two handles
+    /// on one data stay one data in the copy. A copy of a live node's store, never for a
+    /// product: a node and its copy would reuse one identity, session and rng stream.
+    #[doc(hidden)]
+    pub fn test_copy(&self) -> MemoryBackend {
+        MemoryBackend { data: osis_base::copying::remap(&self.data, |m| Mutex::new(m.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())), faults: self.faults.test_copy() }
     }
     /// Drops every value and blob (a removed database file).
     pub fn erase(&self) {
@@ -282,6 +296,10 @@ impl Backend for MemoryBackend {
 
     fn blob_len(&self, id: &BlobId) -> Result<Option<u64>, BackendError> {
         Ok(self.lock().blobs.get(id).map(|b| b.len() as u64))
+    }
+
+    fn test_copy_boxed(&self) -> Option<Box<dyn Backend>> {
+        Some(Box::new(self.test_copy()))
     }
 }
 

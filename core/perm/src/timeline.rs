@@ -40,6 +40,7 @@ impl At {
 }
 
 /// Layer 1 evaluated over a held set.
+#[derive(Clone)]
 pub struct Timeline {
     /// The inputs walked (`append` adds to them).
     pub(crate) input: Input,
@@ -102,6 +103,33 @@ pub(crate) struct Memo {
     pub on_target_built: std::sync::atomic::AtomicU64,
     /// `Timeline::disputes`.
     pub disputes: std::sync::OnceLock<Vec<Dispute>>,
+}
+
+/// A copy holding the same answers and measures (world copies, notes/testing.md).
+impl Clone for Memo {
+    fn clone(&self) -> Memo {
+        fn get<T: Clone>(m: &Mutex<T>) -> Mutex<T> {
+            Mutex::new(m.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+        fn n(a: &std::sync::atomic::AtomicU64) -> std::sync::atomic::AtomicU64 {
+            std::sync::atomic::AtomicU64::new(a.load(std::sync::atomic::Ordering::Relaxed))
+        }
+        Memo {
+            first_held: get(&self.first_held),
+            replays: get(&self.replays),
+            valid: get(&self.valid),
+            roles_end: get(&self.roles_end),
+            roles_now: get(&self.roles_now),
+            roles_walks: n(&self.roles_walks),
+            forward: get(&self.forward),
+            forward_walks: n(&self.forward_walks),
+            ever_walks: n(&self.ever_walks),
+            certs: self.certs.clone(),
+            on_target: self.on_target.clone(),
+            on_target_built: n(&self.on_target_built),
+            disputes: self.disputes.clone(),
+        }
+    }
 }
 
 /// Kept edge states (`Timeline::checkpoints`).

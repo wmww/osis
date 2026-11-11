@@ -190,7 +190,7 @@ pub fn respond_in(ranges: &[Range], mine: &[impl AsRef<[BlobId]>]) -> Result<Vec
 
 /// The requester's side: ranges still to send, ranges asked per outstanding batch, and both
 /// differences found so far. Reply ranges outside what a batch asked are dropped.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Reconciler {
     queue: Vec<Range>,
     /// Per batch token: the ranges sent, and whether each carried our ID list (mode 1).

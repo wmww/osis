@@ -75,6 +75,7 @@ impl ServedLabel {
 }
 
 /// An incoming peer session.
+#[derive(Clone)]
 pub(crate) struct Served {
     conn: Session,
     tier: super::Tier,
@@ -99,6 +100,7 @@ pub(crate) struct Served {
 }
 
 /// Who runs a served connection's session.
+#[derive(Clone)]
 enum Session {
     /// This node, for its dialable, LAN and client listeners.
     Own(Box<ServingSession>),
@@ -154,7 +156,7 @@ impl ClientBinding {
 
 /// Bytes peers uploaded or deposited here, per entry: (peer key, bytes), with running sums per
 /// peer key and in all (stale charges pruned at ticks and when a budget is reached).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Charges {
     by_entry: BTreeMap<(LabelId, BlobId), ([u8; 32], u64)>,
     per: BTreeMap<[u8; 32], u64>,

@@ -80,7 +80,7 @@ pub fn allowance(msg: &Message) -> usize {
 /// Replies to other requests never move it (honest peers answer in arrival order). Bytes of any
 /// other kind (pushes, Notifies, the peer's own requests) move it too until `MAX_AHEAD` of them
 /// arrived since it last moved by its own: past that an honest peer's reply would have started.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Window {
     waiting: VecDeque<Message>,
     /// Requests sent and not answered: their send order, cost, and the end of their frame in
@@ -465,6 +465,7 @@ impl Pending {
 
 /// A request not answered yet: the command it serves (`ClientSession::commands`; `NO_COMMAND`
 /// for pings). The node's own requests (`Command::Peer`) are in the window only.
+#[derive(Clone)]
 struct Req {
     cmd: u64,
     p: Pending,
@@ -472,6 +473,7 @@ struct Req {
 
 /// The command tag of a request no command asked for (pings).
 const NO_COMMAND: u64 = u64::MAX;
+#[derive(Clone)]
 
 struct Rec {
     r: Reconciler,
@@ -479,6 +481,7 @@ struct Rec {
     sent: usize,
 }
 
+#[derive(Clone)]
 pub struct ClientSession {
     cfg: ClientConfig,
     decoder: FrameDecoder,

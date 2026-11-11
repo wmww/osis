@@ -28,7 +28,7 @@ pub(crate) fn same_closure(a: &Arc<BTreeSet<Tid>>, b: &Arc<BTreeSet<Tid>>) -> bo
 }
 
 /// Changes for every label (`SyncEngine::engine_events`, `spread_touches`).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Touched {
     pub full: bool,
     /// The engine's changed commits (`Engine::take_changed`) and this node's own drops.
@@ -53,7 +53,7 @@ pub(crate) struct Touched {
 /// The inbox blobs whose copy a home label's pass found all there (`inbox_certificates`), so
 /// passes do not walk them again: a person's grants of 90 days per pass. Dropped when a thing that
 /// moves the answer changes, when an entry or a host's copy goes, and by a pass that judges all.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct InboxCopied {
     blobs: BTreeMap<(LabelId, BlobId), BTreeSet<Tid>>,
     by_thing: BTreeSet<(Tid, LabelId, BlobId)>,
@@ -177,7 +177,7 @@ impl Inputs {
 
 /// What verdicts wait on: a time, an aspect's state, a linked blob, a key, settling. Filled by a
 /// pass (`Left`), kept by the set until the wait ends or a pass judges everything.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Waits {
     /// Entries and commits whose verdict changes at a time (wall ms).
     pub due: BTreeMap<u64, BTreeSet<Touch>>,
@@ -211,7 +211,7 @@ impl Waits {
 }
 
 /// One label's work set at one connection's host (`LConn::work`).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Work {
     /// What changed: judged by the next pass.
     pub touched: Touched,

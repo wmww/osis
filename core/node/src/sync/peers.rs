@@ -106,6 +106,7 @@ pub(crate) type LanTags = BTreeMap<[u8; 16], ([u8; 32], [u8; 32], u64)>;
 
 /// What `peers()`, `reach_nodes()` and `lan_seen` computed, valid for one (engine generation,
 /// minute) (`peers_fresh`).
+#[derive(Clone)]
 pub(crate) struct PeerCache {
     key: (u64, u64),
     pub peers: Option<Arc<BTreeMap<[u8; 32], Peer>>>,

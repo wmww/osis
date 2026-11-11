@@ -22,7 +22,7 @@ use osis_base::{Ak, CommitId, Tid, Ts};
 use std::collections::BTreeMap;
 
 /// The local ephemeral write path's own state (everything else is Core's).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Eph {
     /// Relay-only commits of own ephemeral signal writes not yet sent.
     signals: Vec<EphCommit>,

@@ -179,10 +179,30 @@ pub struct Events {
     per_peer: BTreeMap<(Option<Tid>, Option<DiagnosticKind>), (u64, usize)>,
 }
 
+/// A world copy's (notes/testing.md, Copied worlds): the queue and the diagnostics' dedup and
+/// windows as they are, no subscriber (a copy's owner subscribes again).
+impl Clone for Events {
+    fn clone(&self) -> Events {
+        Events { subs: Vec::new(), queued: self.queued.clone(), seen: self.seen.clone(), per_peer: self.per_peer.clone() }
+    }
+}
+
 impl Events {
     pub fn subscribe(&mut self) -> Receiver<Event> {
         let (tx, rx) = channel();
         self.subs.push((tx, true));
+        rx
+    }
+
+    /// Tests only (world copies): `subscribe` (`durable`: `subscribe_durable`) whose receiver
+    /// holds `pending` first, the events a copied receiver had not read.
+    #[doc(hidden)]
+    pub fn test_subscribe_with(&mut self, pending: Vec<Event>, durable: bool) -> Receiver<Event> {
+        let (tx, rx) = channel();
+        for e in pending {
+            let _ = tx.send(e);
+        }
+        self.subs.push((tx, !durable));
         rx
     }
 

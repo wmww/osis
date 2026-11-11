@@ -48,6 +48,7 @@ impl ConnRecord {
         self.tested = self.tested.min(changed_at.saturating_sub(1));
     }
 }
+#[derive(Clone)]
 
 struct ResumeSent {
     nonce: [u8; 32],
@@ -57,7 +58,7 @@ struct ResumeSent {
 }
 
 /// Which record each connection has, and the Resumes waiting for their answer.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Records {
     bound: BTreeMap<ConnId, ConnRecord>,
     live: BTreeMap<RecordId, ConnId>,

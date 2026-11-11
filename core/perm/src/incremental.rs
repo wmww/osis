@@ -99,6 +99,7 @@ impl WalkWas {
 }
 
 /// One component's timeline.
+#[derive(Clone)]
 struct Comp {
     inputs: Inputs,
     tl: Timeline,
@@ -110,7 +111,7 @@ struct Comp {
 }
 
 /// Timelines per component, cached across held-set changes.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Timelines {
     comps: BTreeMap<u64, Comp>,
     next: u64,
@@ -155,7 +156,7 @@ pub struct Saves {
 }
 
 /// What a durable `Saves` changes in `Timelines`.
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct SaveDone {
     looked: Vec<u64>,
     based: Vec<(u64, usize)>,

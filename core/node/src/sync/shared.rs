@@ -69,6 +69,7 @@ struct Cred {
 }
 
 /// One item of an Offer this side sent.
+#[derive(Clone)]
 enum AskedItem {
     Hit(Cred),
     ByRole(LabelId),
@@ -77,6 +78,7 @@ enum AskedItem {
 }
 
 /// What a request of this side waits for.
+#[derive(Clone)]
 enum Asked {
     Beacons { generation: u64, pos: u64, last: bool },
     /// Items in order.
@@ -85,6 +87,7 @@ enum Asked {
 }
 
 /// The peer's filter as received.
+#[derive(Clone)]
 struct PeerFilter {
     generation: u64,
     f: u8,
@@ -96,6 +99,7 @@ struct PeerFilter {
 }
 
 /// A generation of the peer's arriving in pages.
+#[derive(Clone)]
 struct Pages {
     generation: u64,
     base: Option<u64>,
@@ -105,6 +109,7 @@ struct Pages {
 }
 
 /// One member of S (issues/net-shared-set.md, Opens).
+#[derive(Clone)]
 struct Member {
     class: u8,
     /// The credential's beacon, for an open by a credential (none for JUDGED): the open stands
@@ -116,6 +121,7 @@ struct Member {
 }
 
 /// The shared set state of one connection with a record.
+#[derive(Clone)]
 pub(crate) struct Shared {
     r: [u8; 32],
     by_listener: bool,

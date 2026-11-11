@@ -130,6 +130,15 @@ impl Store {
         Ok(())
     }
 
+    /// Tests only: an exact copy of this store, its caches, memory overlay and versions as they
+    /// stand, over test copies of its backend and root (`Backend::test_copy_boxed`), inside a
+    /// world copy (`osis_base::copying`). Never in a product: the copy continues this store's key
+    /// versions and its node's session, so two live copies reuse them.
+    #[doc(hidden)]
+    pub fn test_copy(&self) -> Result<Store, Error> {
+        osis_base::copying::copying(|| Ok(Store { pager: self.pager.test_copy()?, mem: self.mem.clone() }))
+    }
+
     /// A stamp of the last commit that changed anything, memory rows included; unique in the
     /// process across stores and opens. While it stands, a read of the store repeats itself
     /// (`Engine::point`).
@@ -201,6 +210,15 @@ impl Store {
 /// resuming, it aborts. It holds no memory-overlay rows (`suspend` refuses them).
 pub struct Suspended {
     d: Dirty,
+}
+
+impl Suspended {
+    /// Tests only: this transaction set aside, for the test copy of its store
+    /// (`Store::test_copy`); resumed only on that copy.
+    #[doc(hidden)]
+    pub fn test_copy(&self) -> Suspended {
+        Suspended { d: self.d.clone() }
+    }
 }
 
 /// A point in a transaction to undo back to (`Transaction::rollback_to`) or keep
