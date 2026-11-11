@@ -51,11 +51,12 @@ struct Run {
     actors: Vec<(Tid, usize)>,
     /// Every secret each peer held or made at any point: what a departed peer keeps.
     ever: Vec<BTreeSet<Key>>,
-    /// The secrets each peer was handed by a grant: those its granter held at the grant's roles
-    /// that it held not yet. Any holder of a key may hand it on (spec/requirements.md
-    /// Permissions), and a grant judged invalid (its author lowered concurrently) still opens
-    /// (spec/crypto.md §4, Boxes).
-    handed: Vec<BTreeSet<Key>>,
+    /// The secrets each peer was handed by a grant, each with the grant's index into `log`: the
+    /// epochs the grant boxed it that its granter held before it, and the earlier secrets of
+    /// their roles the granter held (its history boxes), none the grantee held yet. Any holder
+    /// of a key may hand it on (spec/requirements.md Permissions), and a grant judged invalid
+    /// (its author lowered concurrently) still opens (spec/crypto.md §4, Boxes).
+    handed: Vec<BTreeMap<Key, usize>>,
     made: Made,
     rng: Rng,
     /// Peers that forged: their nodes no longer act, and nothing is checked of them.
@@ -106,9 +107,15 @@ impl Run {
 
     /// Peer `i` granted peer `j` role `r` on `t`: notes what that handed `j` (`handed`).
     fn grant(&mut self, i: usize, j: usize, t: Tid, r: Role) {
+        let had: BTreeSet<Key> = self.held(i).into_iter().filter(|k| k.0 == t).collect();
+        let before = openable(&mut self.lp, i, &[t], self.tids[j], BTreeSet::new());
         if self.lp.peers[i].engine.grant(&t, &self.tids[j], &edge(r)).is_ok() {
-            let new: Vec<Key> = self.held(i).into_iter().filter(|k| k.0 == t && k.1 <= r && !self.ever[j].contains(k)).collect();
-            self.handed[j].extend(new);
+            let after = openable(&mut self.lp, i, &[t], self.tids[j], BTreeSet::new());
+            let boxed: BTreeSet<Key> = after.difference(&before).filter(|k| had.contains(k)).copied().collect();
+            let carried = had.iter().filter(|k| boxed.iter().any(|b| b.1 == k.1 && k.2.n() < b.2.n()));
+            for k in boxed.iter().chain(carried).filter(|k| !self.ever[j].contains(k)) {
+                self.handed[j].entry(*k).or_insert(self.log.len());
+            }
         }
     }
 
@@ -287,7 +294,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
         }
     }
     lp.sync_all().unwrap();
-    let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeSet::new(); N], made: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
+    let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
     run.log.push(format!("actors {:?} (owners), peers {:?}", run.actors, run.tids));
     run.note();
     reached.cycle = k > 1;
@@ -569,7 +576,8 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
             let gone: Vec<usize> = (0..N).filter(|d| !access(run, o, *d, t, r)).collect();
             for &d in &gone {
                 let opens = openable(&mut run.lp, o, &all, run.tids[d], run.ever[d].clone());
-                let own: BTreeSet<Key> = run.ever[d].difference(&run.handed[d]).copied().collect();
+                // a secret of `t` first held since a grant handed it, not before
+                let own: BTreeSet<Key> = run.ever[d].iter().filter(|k| k.0 != t || run.handed[d].get(k).is_none_or(|g| run.first.get(&(d, **k)).is_some_and(|f| f <= g))).copied().collect();
                 let opens_own = openable(&mut run.lp, o, &all, run.tids[d], own.clone());
                 for &(h, hr) in direct.iter().filter(|x| x.1 >= r.max(Role::Write)) {
                     if super::tests::blocked_at(&mut run.lp, h, t).contains(&r) {

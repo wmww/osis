@@ -1,0 +1,9 @@
+# rotation_holds checks no knowing rotator's epoch on an actor with a holder actor
+
+> Summary: `Run::record` records no epoch of an actor that has a holder actor (it skips the whole actor), so the check "no epoch made by a rotator that saw the peer depart opens to it" never runs where holder actors are, only the check on what writers encrypt under. Dropping the skip fails 3 of 400 seeds; the one read looks like an oracle gap (the peer's removal from the holder actor comes in the step after the rotation boxed that actor), not a leak. Close the gap with an oracle that judges a holder actor's box by what the peer could open when it was sealed.
+> Priority: normal
+> Tags: tests, keys, security
+
+The skip, in `rotation::tests_property::Run::record`: `if key_holders(t).any(not a peer) { continue }`. With it disabled, seeds from 777000 (400 seeds, branch rotation-maker-departure) fail at 777174, 777283, 777307 with "peer d opens actor 0 Read epoch e, made by a rotator that saw it depart".
+
+777174 (actors G = 0 and M = 1, M holding a role on G): peer 4 self-removes from G (plain, not forged); everything syncs; peer 0 removes peer 4 from M; in that step peer 0 makes G Read n2, recorded with peer 4 below; peer 4 opens it. Likely: G's rotation boxed M at a keyset peer 4 held while still in M, and `record` judges `via` (`access` through the boxed actors) after the whole step, when peer 4 is already out of M. If so it is in the rules (peer 4 was in M when G was sealed to it; M's removal rotation makes that box stale and G rotates again), and the oracle needs access as of each rotation, not as of the step's end. 777283 and 777307 (not traced) involve hostile peers removed from both actors in turn ("removes hostile peer ... from actor 0 / 1"), the peer opening an epoch of actor 0 made during those removals. Each has to be traced before the skip goes; a seed whose box was sealed knowing the peer's removal from M is a leak.
