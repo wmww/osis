@@ -1159,3 +1159,35 @@ fn certificate_copy_whose_answers_were_lost_leaves_the_host_with_its_links_spec_
 fn certificate_copy_mid_upload_leaves_the_host_with_its_links_spec_sync_6() {
     certificate_copy_answered_late(false);
 }
+
+// spec/commits.md §5 (a release request expires at ts + ROLE_KEEP), spec/sync.md §5: c releases
+// x under a label a serves with no host, then b and c go away. At the request's expiry a, alone,
+// forgets it and its entry: no entry, no row, no bytes
+#[test]
+fn a_release_request_leaves_the_serving_node_alone_at_its_expiry_spec_sync_5() {
+    let (mut net, [a, b, c]) = local_nodes::<3>();
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Admin)], &[]);
+    let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.pair(a, c);
+    net.run();
+    let l = net.label(a);
+    let x = net.item(c, g, g, "x");
+    net.run();
+    let req = net.engine(c).release(&[x]).unwrap().unwrap();
+    net.run();
+    let of_req = |net: &mut Net| -> Vec<BlobId> { net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == req)).map(|(id, _)| id).collect() };
+    let ids = of_req(&mut net);
+    let rows = |net: &mut Net| -> Vec<BlobId> { osis_proto::LabelStore::live_ids(&*net.sync(a).hub_store().lock().unwrap(), &l).unwrap() };
+    assert!(!ids.is_empty() && ids.iter().all(|i| rows(&mut net).contains(i)), "served at a");
+    net.set_online(b, false);
+    net.set_online(c, false);
+    net.advance(osis_base::format::ROLE_KEEP_MS);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(net.engine(a).header(&req).is_none() && of_req(&mut net).is_empty(), "forgotten with its entry");
+    let rows = rows(&mut net);
+    assert!(!ids.iter().any(|i| rows.contains(i) || net.sync(a).holds_blob(i)), "no row, no bytes of it");
+}

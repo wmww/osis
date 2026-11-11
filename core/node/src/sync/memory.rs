@@ -233,6 +233,14 @@ impl SyncEngine {
         self.engine.memory_compactions(false)?;
         let (awaits, dropped): (Vec<_>, Vec<_>) = self.engine.take_memory_drops().into_iter().partition(|(_, _, why)| matches!(why, MemoryDrop::Awaits { .. }));
         self.memory_dropped(&dropped);
+        // their bytes no entry names go now (an entry's go with it, `forget_blob`): an entry may
+        // have left before the engine forgot the commit (a host's expiry ahead of this clock)
+        for (c, _, _) in &dropped {
+            let ids: Vec<BlobId> = self.state.by_commit.get(c).into_iter().flatten().copied().collect();
+            for b in ids {
+                self.forget_blob(&b)?;
+            }
+        }
         // durable commits forgotten here, a part on a thing whose record is not held: their
         // entries stay at hosts, skipped as awaiting that record (spec/commits.md §5 Forgetting)
         for (c, _, why) in awaits {

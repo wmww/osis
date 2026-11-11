@@ -144,6 +144,7 @@ pub struct Tomb {
     pub wrap: [u8; WRAP_LEN],
     pub cert: bool,
     pub salt: Option<[u8; 16]>,
+    pub expires: Option<u64>,
     pub kind: Kind,
 }
 
@@ -157,6 +158,9 @@ pub struct Entry {
     /// The blob's prefix salt, once its bytes were here (spec/sync.md §6 Tombstones): a
     /// delete-key signature is made for it (spec/crypto.md §7), so it outlives the bytes.
     pub salt: Option<[u8; 16]>,
+    /// The blob's prefix expiry, once its bytes were here: the entry goes at it, whatever its
+    /// kind or what the engine knows of its commit (`SyncEngine::expire_entries`).
+    pub expires: Option<u64>,
     /// The blob's length, once its bytes were here: what a clearer counts of a deposit whose
     /// bytes it no longer holds (spec/sync.md §5, Clearing deposits).
     pub size: Option<u32>,
@@ -340,6 +344,8 @@ pub struct State {
     pub commit_labels: BTreeSet<(CommitId, LabelId)>,
     pub by_kind: BTreeSet<(LabelId, u8, BlobId)>,
     pub by_tag: BTreeSet<(u8, LabelId, BlobId)>,
+    /// Entries by their blob's prefix expiry (`Entry::expires`).
+    pub by_expiry: BTreeSet<(u64, LabelId, BlobId)>,
     pub cert_entries: BTreeSet<(LabelId, BlobId)>,
     pub blob_labels: BTreeSet<(BlobId, LabelId)>,
     /// `present` and `gone` by (label, blob, host).
@@ -569,7 +575,7 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
         Some(s) => w.u8(1).raw(&s.0),
         None => w.u8(0),
     };
-    let w = encode_kind(encode_salt(w, &e.salt), &e.kind);
+    let w = encode_kind(encode_prefix(w, &e.salt, e.expires), &e.kind);
     match e.size {
         Some(n) => w.u8(1).u32(n),
         None => w.u8(0),
@@ -612,27 +618,37 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
         1 => Some(Signature(r.arr()?)),
         _ => None,
     };
-    let salt = decode_salt(&mut r)?;
+    let (salt, expires) = decode_prefix(&mut r)?;
     let kind = decode_kind(&mut r)?;
     let size = match r.u8()? {
         1 => Some(r.u32()?),
         _ => None,
     };
-    Ok(Entry { wrap, stamp, cert, salt, size, kind, memory: false })
+    Ok(Entry { wrap, stamp, cert, salt, expires, size, kind, memory: false })
 }
 
-fn encode_salt(w: Wr, salt: &Option<[u8; 16]>) -> Wr {
-    match salt {
+/// What an entry keeps of its blob's prefix: salt and expiry.
+fn encode_prefix(w: Wr, salt: &Option<[u8; 16]>, expires: Option<u64>) -> Wr {
+    let w = match salt {
         Some(s) => w.u8(1).raw(s),
+        None => w.u8(0),
+    };
+    match expires {
+        Some(t) => w.u8(1).u64(t),
         None => w.u8(0),
     }
 }
 
-fn decode_salt(r: &mut Rd) -> Result<Option<[u8; 16]>> {
-    Ok(match r.u8()? {
+fn decode_prefix(r: &mut Rd) -> Result<(Option<[u8; 16]>, Option<u64>)> {
+    let salt = match r.u8()? {
         1 => Some(r.arr()?),
         _ => None,
-    })
+    };
+    let expires = match r.u8()? {
+        1 => Some(r.u64()?),
+        _ => None,
+    };
+    Ok((salt, expires))
 }
 
 fn decode_kind(r: &mut Rd) -> Result<Kind> {
@@ -747,8 +763,8 @@ impl State {
                     let at = x.u64()?;
                     let wrap = x.arr()?;
                     let cert = x.u8()? == 1;
-                    let salt = decode_salt(&mut x)?;
-                    s.tombs.insert(k, Tomb { at, wrap, cert, salt, kind: decode_kind(&mut x)? });
+                    let (salt, expires) = decode_prefix(&mut x)?;
+                    s.tombs.insert(k, Tomb { at, wrap, cert, salt, expires, kind: decode_kind(&mut x)? });
                 }
                 b"r" => s.reach_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
                 b"o" => {
@@ -948,7 +964,7 @@ impl State {
         for (l, b, row) in rows {
             let Some((wrap, stamp)) = row else { continue };
             match self.entries.get(&(l, b)) {
-                None if !self.tombs.contains_key(&(l, b)) => self.set_entry_quiet(l, b, Entry { wrap, stamp, cert: false, salt: None, size: None, kind: Kind::Unknown, memory: false }),
+                None if !self.tombs.contains_key(&(l, b)) => self.set_entry_quiet(l, b, Entry { wrap, stamp, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, memory: false }),
                 Some(e) if !e.memory && (e.wrap, e.stamp) != (wrap, stamp) => {
                     let e = Entry { wrap, stamp, ..e.clone() };
                     self.set_entry_quiet(l, b, e);
@@ -970,6 +986,9 @@ impl State {
             } else {
                 s.remove(&x);
             }
+        }
+        if let Some(t) = e.expires {
+            set(&mut self.by_expiry, (t, l, b), add);
         }
         match (&e.kind, e.kind.tag()) {
             (Kind::Commit { commit, .. }, _) => {
@@ -1349,8 +1368,8 @@ impl State {
         if e.memory {
             self.memory_entries.insert((l, b));
         }
-        let tomb = Tomb { at: self.now, wrap: e.wrap, cert: e.cert, salt: e.salt, kind: e.kind };
-        let v = encode_kind(encode_salt(Wr::new().u64(tomb.at).raw(&tomb.wrap).u8(u8::from(tomb.cert)), &tomb.salt), &tomb.kind).take();
+        let tomb = Tomb { at: self.now, wrap: e.wrap, cert: e.cert, salt: e.salt, expires: e.expires, kind: e.kind };
+        let v = encode_kind(encode_prefix(Wr::new().u64(tomb.at).raw(&tomb.wrap).u8(u8::from(tomb.cert)), &tomb.salt, tomb.expires), &tomb.kind).take();
         self.put_of(&l, &b, key(TOMB, &[&l.0, &b.0]), v);
         self.tombs.insert((l, b), tomb);
     }
@@ -1397,11 +1416,31 @@ impl State {
     /// (its blob's prefix class, spec/sync.md §9): it is recorded again as a memory entry (no
     /// tombstone).
     pub fn forget_class(&mut self, l: LabelId, b: BlobId) {
+        self.forget_entry(l, b);
+    }
+
+    /// Forgets an entry and its presence at every host, no tombstone.
+    fn forget_entry(&mut self, l: LabelId, b: BlobId) {
         let hosts: Vec<HostKey> = self.present_by.range((l, b, [0u8; 32])..).take_while(|(x, y, _)| *x == l && *y == b).map(|(_, _, s)| *s).collect();
         for s in hosts {
             self.set_present(s, l, b, false);
         }
         self.drop_entry(l, b);
+    }
+
+    /// Forgets every entry past its blob's prefix expiry (`by_expiry`) with its presence, no
+    /// tombstone: every host drops it unattended then (spec/sync.md §5). The blobs they named.
+    pub fn expire_entries(&mut self, now: u64) -> Vec<BlobId> {
+        let mut out = Vec::new();
+        while let Some((t, l, b)) = self.by_expiry.first().copied()
+            && t <= now
+        {
+            self.forget_entry(l, b);
+            // an entry whose index row outlived it (not expected): never loops
+            self.by_expiry.remove(&(t, l, b));
+            out.push(b);
+        }
+        out
     }
 
     /// Forgets tombstones, and hosts' tombstoned answers, past their lifetime.
@@ -2174,7 +2213,7 @@ mod tests {
     fn memory_entry_dropped_leaves_no_mark() {
         let mut s = State::default();
         let (l, b) = (LabelId([1; 16]), BlobId([2; 32]));
-        s.set_entry(l, b, Entry { wrap: [0; WRAP_LEN], stamp: None, cert: false, salt: None, size: None, kind: Kind::Unknown, memory: true });
+        s.set_entry(l, b, Entry { wrap: [0; WRAP_LEN], stamp: None, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, memory: true });
         assert!(s.is_memory(&l, &b));
         s.drop_entry(l, b);
         assert!(!s.is_memory(&l, &b));
@@ -2183,9 +2222,9 @@ mod tests {
     // spec: none (local store format): an entry keeps its blob's salt and round trips.
     #[test]
     fn entry_salt_round_trips() {
-        let e = Entry { wrap: [3; WRAP_LEN], stamp: None, cert: false, salt: Some([9; 16]), size: None, kind: Kind::Commit { commit: CommitId([1; 32]), parts: vec![0], ais: vec![0, 2] }, memory: false };
+        let e = Entry { wrap: [3; WRAP_LEN], stamp: None, cert: false, salt: Some([9; 16]), expires: Some(7), size: None, kind: Kind::Commit { commit: CommitId([1; 32]), parts: vec![0], ais: vec![0, 2] }, memory: false };
         let back = decode_entry(&encode_entry(&e)).unwrap();
-        assert!(back.salt == Some([9; 16]) && matches!(&back.kind, Kind::Commit { ais, .. } if *ais == vec![0, 2]));
+        assert!(back.salt == Some([9; 16]) && back.expires == Some(7) && matches!(&back.kind, Kind::Commit { ais, .. } if *ais == vec![0, 2]));
     }
 
     // spec/sync.md §3 (re-sends are the sender's policy): an inbox delivery record that does not
@@ -2308,7 +2347,7 @@ mod tests {
         s.set_present(h, l, b, true);
         s.set_doubtful(h, l, b, [3; WRAP_LEN]);
         // body carried by mid, itself dropped and carried by snap; other's carrier stands alone
-        s.set_entry(l, BlobId([9; 32]), Entry { wrap: [1; WRAP_LEN], stamp: None, cert: false, salt: None, size: None, kind: Kind::Commit { commit: body, parts: vec![0], ais: vec![0] }, memory: false });
+        s.set_entry(l, BlobId([9; 32]), Entry { wrap: [1; WRAP_LEN], stamp: None, cert: false, salt: None, expires: None, size: None, kind: Kind::Commit { commit: body, parts: vec![0], ais: vec![0] }, memory: false });
         s.set_carrier(body, mid);
         s.set_carrier(mid, snap);
         s.set_carrier(other, snap);
@@ -2353,7 +2392,7 @@ mod tests {
     }
 
     fn entry(wrap: u8) -> Entry {
-        Entry { wrap: [wrap; WRAP_LEN], stamp: None, cert: false, salt: None, size: None, kind: Kind::Unknown, memory: false }
+        Entry { wrap: [wrap; WRAP_LEN], stamp: None, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, memory: false }
     }
 
     // spec: none (issues/net-reconnect.md, One node log): what a peer would be sent is one event;

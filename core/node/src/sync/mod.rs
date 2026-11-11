@@ -210,8 +210,6 @@ pub struct SyncEngine {
     pub(crate) local_dirty: bool,
     pub(crate) local_last: u64,
     pub(crate) local_any: bool,
-    /// Prefix expiries of entries under labels synced with nobody (raw unix ms; read once).
-    pub(crate) local_expiry: BTreeMap<osis_base::BlobId, Option<u64>>,
     /// The work sets of the local passes, by label (`LConn::work` for a label served here).
     pub(crate) local_work: BTreeMap<osis_base::LabelId, work::Work>,
     /// When this node first saw each entry deposited at a host (wall ms; the promotion wait).
@@ -443,7 +441,6 @@ impl SyncEngine {
             local_dirty: true,
             local_last: 0,
             local_any: false,
-            local_expiry: BTreeMap::new(),
             local_work: BTreeMap::new(),
             deposit_seen: BTreeMap::new(),
             capped: BTreeSet::new(),
@@ -616,6 +613,19 @@ impl SyncEngine {
         }
     }
 
+    /// Every entry past its blob's prefix expiry goes, its bytes with it unless another entry
+    /// names them (spec/sync.md §5): whatever its kind or what the engine still knows of its
+    /// commit (a request forgotten at its expiry, an entry awaiting a record), at hosts, served
+    /// or both, connected or not. Hosts drop it unattended then, and the hub's rows of a sync ID
+    /// this node reads expire only here (notes/serving.md), so they agree.
+    fn expire_entries(&mut self) -> Result<()> {
+        let now = self.now();
+        for b in self.state.expire_entries(now) {
+            self.forget_entry_blob(&b)?;
+        }
+        Ok(())
+    }
+
     /// The engine's due expiry timers, durable and ephemeral (spec/commits.md §6).
     fn run_engine_timers(&mut self) -> Result<()> {
         self.engine.tick()?;
@@ -710,6 +720,7 @@ impl SyncEngine {
         // purge's bytes are gone before a peer's Fetch reads them (spec/commits.md §5), a role
         // change's served set is fresh before a request is judged by it
         self.engine_events()?;
+        self.expire_entries()?;
         // a head the hub moved ends the opens by its old credentials before this event is
         // answered: the hub logged it already, so a Pull would read past it (spec/sync.md §10 Lost)
         if std::mem::take(&mut self.unread.moved) {

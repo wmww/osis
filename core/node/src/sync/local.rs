@@ -261,12 +261,13 @@ impl SyncEngine {
                 continue;
             };
             let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, b.order)?;
+            let expires = osis_label::Prefix::parse(&s.blob).ok().and_then(|p| p.expiry()).map(|t| t.0);
             if let Some(d) = &deposit {
                 self.queue_deposit(l, &hosts, d, s.blob.clone(), wrap, None);
             }
             self.engine.put_blobs(vec![(s.id, s.blob)])?;
             self.state.add_blob(s.id, super::state::BlobRec { commit: b.commit, parts: b.parts.clone(), ais: s.ais.clone(), key: s.key.clone(), cert: true, memory: false });
-            self.state.set_entry(l, s.id, Entry { wrap, stamp: None, cert: true, salt: Some(s.salt), size: None, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), ais: s.ais }, memory: false });
+            self.state.set_entry(l, s.id, Entry { wrap, stamp: None, cert: true, salt: Some(s.salt), expires, size: None, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), ais: s.ais }, memory: false });
             self.place_linked(l, c, &parts)?;
             if let Some(d) = &deposit {
                 for id in self.engine.linked_blobs(c, &parts)? {
@@ -321,7 +322,8 @@ impl SyncEngine {
         for b in self.engine.linked_blobs(c, parts)? {
             if !self.state.entries.contains_key(&(l, b)) {
                 let wrap = osis_crypto::filler_wrap(&mut *self.rng);
-                self.state.set_entry(l, b, Entry { wrap, stamp: None, cert: true, salt: None, size: None, kind: Kind::Unknown, memory: false });
+                let expires = self.held_expiry(&b)?;
+                self.state.set_entry(l, b, Entry { wrap, stamp: None, cert: true, salt: None, expires, size: None, kind: Kind::Unknown, memory: false });
             }
         }
         Ok(())

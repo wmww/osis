@@ -89,8 +89,6 @@ enum Fate {
     /// Must-not-hold, but its live writes wait for a carrier (a covering snapshot was asked
     /// for), or this node holds no delete item for it.
     Wait,
-    /// Past its expiry: goes unattended.
-    Expired,
     /// Goes, for this reason, by this delete item; with this node's rewrite the host refused
     /// for the label's cap that carries it (`carried`), only as a replacement in that rewrite's
     /// upload (spec/sync.md §5, §7).
@@ -741,6 +739,12 @@ impl SyncEngine {
             out.extend(self.engine.linked_blobs(&c, &parts)?);
         }
         Ok(out)
+    }
+
+    /// The prefix expiry of blob `b` held here: an entry placed of it records it at once
+    /// (`Entry::expires`, `expire_entries`).
+    pub(crate) fn held_expiry(&mut self, b: &BlobId) -> Result<Option<u64>> {
+        Ok(self.engine.blob(b)?.and_then(|x| osis_label::Prefix::parse(&x).ok()).and_then(|p| p.expiry()).map(|t| t.0))
     }
 
     /// Drops the bytes of a blob whose entry under a label synced with nobody went: a commit

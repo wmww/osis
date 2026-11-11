@@ -1739,8 +1739,7 @@ fn a_commit_on_a_forgotten_thing_and_a_never_held_one_leaves_nothing_spec_commit
     assert!(net.engine(c).header(&w).is_none() && net.engine(b).header(&w).is_none(), "w forgotten at c and b");
     let known = net.sync(b).entries(&l).into_iter().any(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } | osis_node::sync::EntryKind::Awaits { commit, .. } if commit == w));
     assert!(!known, "no entry of w known at b");
-    // the request on x and y went too, its purge items with it: nothing names y but the node-sync
-    // entry of the request's blob, awaiting y's record
+    // the request on x and y went too, its purge items with it: no engine row names y
     let rows: Vec<Vec<u8>> = net.engine(b).local_rows_naming(y.as_bytes()).unwrap().into_iter().map(|(k, _)| k).filter(|k| !k.starts_with(b"y/")).collect();
     assert!(rows.is_empty(), "no row names y at b");
     assert!(net.engine(b).header(&req).is_none(), "the request gone at b");
@@ -1785,5 +1784,46 @@ fn released_things_stay_forgotten_over_a_restart_spec_commits_5() {
     }
     for t in [x, z] {
         assert_eq!(net.engine(b).lifetime_status(&t), Status::Unknown, "still forgotten after a restart");
+    }
+}
+
+// spec/commits.md §5 (a release request expires at ts + ROLE_KEEP), spec/sync.md §5 (an entry
+// goes at its prefix expiry): x and y released together, b never having held y's record (its
+// entry of the request awaits it). At the expiry every node forgets the request and its entry
+// goes there too, whatever is known of its commit: no entry, no row in the node's own hub (it
+// serves what it reads), no bytes; past the tombstones nothing names it (the forgotten header
+// included)
+#[test]
+fn a_release_requests_entry_goes_everywhere_at_its_expiry_spec_sync_5() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let l = net.label(b);
+    let (x, _) = made(&mut net, c, g);
+    let e = net.engine(c);
+    let mut m = Mutation::new();
+    let y = e.new_thing(&mut m, g);
+    m.set(y, &REG, &s("y")).unwrap();
+    e.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(x, &REG, &s("x2")).unwrap();
+    m.set(y, &REG, &s("y2")).unwrap();
+    net.engine(c).commit(m).unwrap().unwrap();
+    net.run();
+    let req = net.engine(c).release(&[x, y]).unwrap().unwrap();
+    net.run();
+    let of_req = |net: &mut Net, n: usize| -> Vec<osis_base::BlobId> { net.sync(n).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } | osis_node::sync::EntryKind::Awaits { commit, .. } if *commit == req)).map(|(id, _)| id).collect() };
+    let ids = of_req(&mut net, c);
+    assert!(!ids.is_empty(), "the request placed");
+    net.advance(osis_base::format::ROLE_KEEP_MS);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    for n in [a, b, c] {
+        assert!(of_req(&mut net, n).is_empty(), "node {n}: no entry of the request");
+        let rows = osis_proto::LabelStore::live_ids(&*net.sync(n).hub_store().lock().unwrap(), &l).unwrap();
+        assert!(!ids.iter().any(|i| rows.contains(i) || net.sync(n).holds_blob(i)), "node {n}: no row, no bytes of it");
+    }
+    net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 1_000);
+    for n in [a, b, c] {
+        assert!(net.engine(n).local_rows_naming(&req.0).unwrap().is_empty(), "node {n}: nothing names it past the tombstones");
     }
 }

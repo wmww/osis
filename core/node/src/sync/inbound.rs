@@ -282,7 +282,7 @@ impl SyncEngine {
                 }
                 if !self.state.entries.contains_key(&(l, *blob_id)) {
                     // recorded before its presence (`State::put_of` goes by the record's class)
-                    self.state.set_entry(l, *blob_id, Entry { wrap: *wrap, stamp: None, cert: false, salt: None, size: None, kind: Kind::Unknown, memory: true });
+                    self.state.set_entry(l, *blob_id, Entry { wrap: *wrap, stamp: None, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, memory: true });
                 }
             }
             match ev {
@@ -332,7 +332,7 @@ impl SyncEngine {
                                 let fresh = blob.is_some() && !self.engine.has_blob(&blob_id);
                                 unvouched.push((blob_id, fresh));
                             }
-                            self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, salt: None, size: None, kind: Kind::Unknown, memory: false })
+                            self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, memory: false })
                         }
                         Some(mut e) if e.wrap != wrap || (stamp.is_some() && e.stamp != stamp) => {
                             if self.take_wrap(conn, host, l, blob_id, &mut e, &wrap, stamp.is_some(), held_stamped) {
@@ -1238,7 +1238,9 @@ impl SyncEngine {
                     if !self.state.blobs.contains_key(&b) {
                         self.state.add_blob(b, BlobRec { commit, parts: parts.clone(), ais: o.ais.clone(), key, cert: e.cert || o.copy, memory: e.memory });
                     }
-                    e.salt = osis_label::Prefix::parse(&bytes).ok().map(|p| *p.salt());
+                    let prefix = osis_label::Prefix::parse(&bytes).ok();
+                    e.salt = prefix.as_ref().map(|p| *p.salt());
+                    e.expires = prefix.and_then(|p| p.expiry()).map(|t| t.0);
                     e.kind = Kind::Commit { commit, parts, ais: o.ais };
                     self.state.set_entry(l, b, e);
                     self.state.note_memory_size(l, b, bytes.len());
@@ -1941,8 +1943,8 @@ impl SyncEngine {
         Ok(listed && self.dropped_chunks(&BTreeSet::from([*b]))?.0.contains_key(b))
     }
 
-    /// Records blob `b`'s prefix salt (spec/sync.md §6 Tombstones) and size (§5 Clearing
-    /// deposits) with every entry naming it that lacks them, from `bytes` (checked to be `b`'s,
+    /// Records blob `b`'s prefix salt (spec/sync.md §6 Tombstones), expiry (§5: it goes then,
+    /// `expire_entries`) and size (§5 Clearing deposits) with every entry naming it that lacks them, from `bytes` (checked to be `b`'s,
     /// `log_events_from`) or the bytes held here: both outlive the bytes.
     pub(crate) fn keep_salts(&mut self, b: &BlobId, bytes: Option<&[u8]>) -> Result<()> {
         let ls: Vec<LabelId> = self.state.labels_of(b).into_iter().filter(|l| self.state.entries.get(&(*l, *b)).is_some_and(|e| e.salt.is_none() || e.size.is_none())).collect();
@@ -1954,11 +1956,14 @@ impl SyncEngine {
             None => self.engine.blob(b)?,
         };
         let Some(x) = bytes.or(held.as_deref()) else { return Ok(()) };
-        let salt = osis_label::Prefix::parse(x).ok().map(|p| *p.salt());
+        let prefix = osis_label::Prefix::parse(x).ok();
+        let salt = prefix.as_ref().map(|p| *p.salt());
+        let expires = prefix.and_then(|p| p.expiry()).map(|t| t.0);
         let size = u32::try_from(x.len()).ok();
         for l in ls {
             if let Some(mut e) = self.state.entries.get(&(l, *b)).cloned() {
                 e.salt = e.salt.or(salt);
+                e.expires = e.expires.or(expires);
                 e.size = size;
                 self.state.set_entry(l, *b, e);
             }
@@ -2111,7 +2116,7 @@ impl SyncEngine {
         if !self.state.entries.contains_key(&(l, b)) {
             let Some(t) = self.state.tombs.get(&(l, b)).cloned() else { return false };
             let memory = self.state.is_memory(&l, &b);
-            self.state.set_entry_quiet(l, b, Entry { wrap: t.wrap, stamp: None, cert: t.cert, salt: t.salt, size: None, kind: t.kind, memory });
+            self.state.set_entry_quiet(l, b, Entry { wrap: t.wrap, stamp: None, cert: t.cert, salt: t.salt, expires: t.expires, size: None, kind: t.kind, memory });
         }
         let new = !self.state.is_present(&s, &l, &b);
         self.state.set_present(s, l, b, true);

@@ -143,7 +143,7 @@ Per label:
 
 Across labels:
 - Blob bytes are stored once per host and deleted when no label references them.
-- A label the host syncs itself (it reads the group, §2) is held as the node holds it: its path is the one the node serves from the steps its `label.0` records (§10), its entries those the node holds with their bytes, each blob once for the node and the host. Admission, caps and rates (spec/data-model.md §9) govern only the labels it does not read; an entry of a label it reads leaves at its expiry by the node's judgment (§6), not the host's.
+- A label the host syncs itself (it reads the group, §2) is held as the node holds it: its path is the one the node serves from the steps its `label.0` records (§10), its entries those the node holds with their bytes, each blob once for the node and the host. Admission, caps and rates (spec/data-model.md §9) govern only the labels it does not read; an entry of a label it reads leaves at its prefix expiry as at any host (§5 Expiry), whatever the node knows of its commit.
 - Ephemeral entries, their log events and their tombstones are held in memory only and lost at a restart. No sequence number handed out before a restart is handed out again.
 - Relay-only blobs are never held.
 

@@ -76,7 +76,8 @@ impl SyncEngine {
                     let fresh = !self.state.entries.contains_key(&(l, cb));
                     if fresh {
                         let wrap = osis_crypto::filler_wrap(&mut *self.rng);
-                        self.state.set_entry(l, cb, Entry { wrap, stamp: None, cert: false, salt: None, size: None, kind: Kind::Unknown, memory: false });
+                        let expires = self.held_expiry(&cb)?;
+                        self.state.set_entry(l, cb, Entry { wrap, stamp: None, cert: false, salt: None, expires, size: None, kind: Kind::Unknown, memory: false });
                     }
                     sends.push(Out { prio, id: cb, fresh, of });
                 }
@@ -373,9 +374,9 @@ impl SyncEngine {
             }
         };
         let Some(bytes) = self.engine.blob(&id)? else { return Ok(None) };
-        let Some(salt) = osis_label::Prefix::parse(&bytes).ok().map(|p| *p.salt()) else { return Ok(None) };
+        let Some((salt, expires)) = osis_label::Prefix::parse(&bytes).ok().map(|p| (*p.salt(), p.expiry().map(|t| t.0))) else { return Ok(None) };
         let wrap = osis_crypto::wrap(&secret, &id, &key, b.order)?;
-        self.state.set_entry(l, id, Entry { wrap, stamp: None, cert, salt: Some(salt), size: None, kind: Kind::Commit { commit: b.commit, parts, ais }, memory });
+        self.state.set_entry(l, id, Entry { wrap, stamp: None, cert, salt: Some(salt), expires, size: None, kind: Kind::Commit { commit: b.commit, parts, ais }, memory });
         self.state.note_memory_size(l, id, bytes.len());
         if memory {
             self.state.memory_in_closure.insert((l, id));

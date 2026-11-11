@@ -182,6 +182,9 @@ impl SyncEngine {
         if let Ok(Some(x)) = self.engine.next_link_expiry() {
             at(x);
         }
+        if let Some((x, _, _)) = self.state.by_expiry.first() {
+            at(*x);
+        }
         t.map(|x| x.max(self.last_tick.saturating_add(MIN_WAKE_MS)))
     }
 

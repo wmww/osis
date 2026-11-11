@@ -11,17 +11,14 @@ impl SyncEngine {
     /// takes after this is recorded again from its tombstone, `host_holds`): a commit entry goes
     /// as `deletable` says
     /// (a live body only with a carrier, a covering snapshot asked for meanwhile, even when its
-    /// bytes are gone), an expired one outright; any other entry whose bytes this node no longer
-    /// holds serves nothing and goes, one past its prefix's expiry goes outright (an inbox
-    /// blob, its row in the hub's store with it: node sync alone expires a sync ID it reads);
-    /// chunks of dropped deltas go, and the blobs a gone certificate copy
-    /// linked. Removed entries are tombstoned (`State::remove_entry`), expired ones not. What
-    /// waits goes into `left`.
+    /// bytes are gone); any other entry whose bytes this node no longer holds serves nothing and
+    /// goes; chunks of dropped deltas go, and the blobs a gone certificate copy linked. Removed
+    /// entries are tombstoned (`State::remove_entry`). Expired ones went before
+    /// (`expire_entries`). What waits goes into `left`.
     pub(super) fn local_deletions(&mut self, at: &At, bodies: &[Body], scope: &Scope, left: &mut Left) -> Result<()> {
         let (l, settled) = (at.l, at.settled);
         let ids: Vec<BlobId> = self.scope_entries(&l, scope).into_iter().filter(|id| self.state.entries.contains_key(&(l, *id)) && !self.state.present_anywhere(&l, id)).collect();
         self.stats.entries += ids.len() as u64;
-        let now = self.now();
         let desired = desired(bodies);
         // chunks of dropped deltas (a purge, spec/commits.md §5), first: tombstoned, whether or
         // not their bytes are here (those went with the purge, `forget_dropped`), never taken
@@ -34,7 +31,6 @@ impl SyncEngine {
             // the bytes first: the salt goes into the tombstone (`keep_salts`)
             self.forget_chunk(&b)?;
             self.state.remove_entry(l, b);
-            self.local_expiry.remove(&b);
         }
         let mut note = Note::default();
         for id in ids {
@@ -48,11 +44,6 @@ impl SyncEngine {
                 }
                 match fate {
                     Fate::Wait => continue,
-                    Fate::Expired => {
-                        self.state.drop_entry(l, id);
-                        self.forget_entry_blob(&id)?;
-                        continue;
-                    }
                     Fate::Delete(..) => {
                         self.state.remove_entry(l, id);
                         self.forget_entry_blob(&id)?;
@@ -64,27 +55,6 @@ impl SyncEngine {
             }
             if !held {
                 self.state.drop_entry(l, id);
-                self.local_expiry.remove(&id);
-                continue;
-            }
-            let expiry = match self.local_expiry.get(&id) {
-                Some(x) => *x,
-                None => {
-                    let x = self.engine.blob(&id)?.and_then(|b| osis_label::Prefix::parse(&b).ok()).and_then(|p| p.expiry()).map(|t| t.0);
-                    self.local_expiry.insert(id, x);
-                    x
-                }
-            };
-            match expiry {
-                Some(t) if t <= now => {
-                    self.state.drop_entry(l, id);
-                    self.local_expiry.remove(&id);
-                    self.forget_entry_blob(&id)?;
-                }
-                Some(t) => {
-                    left.at(t, Touch::Blob(id));
-                }
-                None => {}
             }
         }
         // the blobs certificate copies linked, as a pass at a host deletes them (the bytes
@@ -101,7 +71,6 @@ impl SyncEngine {
         }
         for b in gone {
             self.state.remove_entry(l, b);
-            self.local_expiry.remove(&b);
         }
         Ok(())
     }
@@ -112,9 +81,6 @@ impl SyncEngine {
     /// `None`: this node's own served state.
     pub(super) fn deletable(&mut self, at: &At, id: &BlobId, e: &Entry, desired: &Desired, carrier: bool, note: &mut Note) -> Result<Fate> {
         let Some((Hold::MustNot(why), live, aspects)) = self.judge(at, id, e, desired, note)? else { return Ok(Fate::Keep) };
-        if why == Why::Expired {
-            return Ok(Fate::Expired);
-        }
         let (carried, need, via) = match why {
             _ if !live => (true, Vec::new(), None),
             Why::Duplicate | Why::StrictSubset => (true, Vec::new(), None),
@@ -144,19 +110,11 @@ impl SyncEngine {
     fn judge(&mut self, at: &At, id: &BlobId, e: &Entry, desired: &Desired, note: &mut Note) -> Result<Option<Judged>> {
         let (g, l, host, snaps, settled) = (&at.g, &at.l, at.host.as_ref(), at.snaps, at.settled);
         let now = self.now();
-        let Kind::Commit { commit, parts: opened, ais } = &e.kind else { return Ok(None) };
+        let Kind::Commit { commit, parts: opened, .. } = &e.kind else { return Ok(None) };
         // judged on the parts the label's actor reads (`readable`), as every node of it does
         let parts = &self.readable(g, commit, opened);
         let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok(self.judge_forgotten(commit, opened, note)) };
         let h = m.header.clone();
-        // a blob expires whole at its prefix's expiry, as the host drops it (spec/sync.md §3, §5),
-        // whatever of it the label's actor still reads
-        if let Some(t) = osis_commit::prefix_expiry(&h, ais) {
-            if t <= now {
-                return Ok(Some((Hold::MustNot(Why::Expired), false, Vec::new())));
-            }
-            note.at(t);
-        }
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         // a certificate of ended things (their frozen edges or a request ending one outside the
         // closure, a minting's or a request's header alone: spec/permissions.md §4, spec/commits.md
@@ -471,10 +429,6 @@ impl SyncEngine {
             }
             match fate {
                 Fate::Keep | Fate::Wait => {}
-                Fate::Expired => {
-                    // the host drops it unattended (spec/sync.md §5)
-                    self.absent_at(Some(host), l, id)?;
-                }
                 Fate::Delete(_, item, via) => {
                     left.commits.insert(commit);
                     if !busy(self, &id) {

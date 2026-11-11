@@ -77,7 +77,6 @@ impl SyncEngine {
                 local_dirty: self.local_dirty.clone(),
                 local_last: self.local_last.clone(),
                 local_any: self.local_any.clone(),
-                local_expiry: self.local_expiry.clone(),
                 local_work: self.local_work.clone(),
                 deposit_seen: self.deposit_seen.clone(),
                 capped: self.capped.clone(),
