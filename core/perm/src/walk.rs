@@ -251,6 +251,33 @@ pub fn commits_walked() -> u64 {
     panic!("commits_walked counts in debug builds only");
 }
 
+#[cfg(debug_assertions)]
+thread_local! {
+    /// History and undo-log entries placing commits moved on this thread (`entries_moved`).
+    static MOVED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts `n` history or undo-log entries copied, compared or shifted to place a commit in a
+/// walk or to report what placing it changed (`entries_moved`).
+pub(crate) fn count_moved(n: usize) {
+    #[cfg(debug_assertions)]
+    MOVED.with(|m| m.set(m.get() + n as u64));
+    #[cfg(not(debug_assertions))]
+    let _ = n;
+}
+
+/// History and undo-log entries copied, compared or shifted on this thread so far to place
+/// commits in a walk without walking again and to report what that changed (scale checks:
+/// per arrival, flat in the history). Debug builds only, as `commits_walked`.
+#[doc(hidden)]
+#[allow(clippy::panic)]
+pub fn entries_moved() -> u64 {
+    #[cfg(debug_assertions)]
+    return MOVED.with(|m| m.get());
+    #[cfg(not(debug_assertions))]
+    panic!("entries_moved counts in debug builds only");
+}
+
 /// Runs `f` with this thread's walk count off (debug checks: their work is not the measured
 /// code's).
 #[doc(hidden)]
@@ -530,6 +557,7 @@ impl Walked {
         }
         let (log, hist) = (std::mem::replace(&mut self.log, log), std::mem::replace(&mut self.history, hist));
         let (nl, nh) = (log.len(), hist.len());
+        count_moved(self.log.len() - l + nl + self.history.len() - h + nh);
         self.log.splice(l..l, log);
         self.history.splice(h..h, hist);
         for m in self.marks.iter_mut().skip(i) {
@@ -638,31 +666,27 @@ impl Walked {
             cur.splice(0..0, v);
         }
         self.copy_records(&own, keys);
-        let nh = own.history.len();
-        let mut c_log = own.log;
-        let old = std::mem::take(&mut self.log);
-        let n = self.marks.len();
-        let mut log = Vec::with_capacity(old.len() + c_log.len() + extra_log.len());
-        let mut marks = Vec::with_capacity(n + 1);
-        let mut it = old.into_iter();
-        let first = self.marks.first().map_or(0, |m| m.0);
-        log.extend(it.by_ref().take(first));
-        for k in 0..=n {
-            if k == i {
-                marks.push((log.len(), h));
-                log.append(&mut c_log);
-            }
-            let Some(&(lk, hk)) = self.marks.get(k) else { break };
-            let lk1 = self.marks.get(k + 1).map_or(end.0, |m| m.0);
-            marks.push((log.len(), if k >= i { hk + nh } else { hk }));
-            log.extend(it.by_ref().take(lk1 - lk));
-            if let Some(v) = extra_log.remove(&k) {
-                log.extend(v);
+        // spliced in at its mark as `place_plain` does; the falls `moved` brings at the end of
+        // their items' log segments (item j now at j + 1), the latest first
+        let (nl, nh) = (own.log.len(), own.history.len());
+        let l = self.marks.get(i).map_or(end.0, |m| m.0);
+        count_moved(self.log.len() - l + nl + self.history.len() - h + nh);
+        self.log.splice(l..l, own.log);
+        self.history.splice(h..h, own.history);
+        for m in self.marks.iter_mut().skip(i) {
+            m.0 += nl;
+            m.1 += nh;
+        }
+        self.marks.insert(i, (l, h));
+        for (j, v) in extra_log.into_iter().rev() {
+            let at = self.marks.get(j + 2).map_or(self.log.len(), |m| m.0);
+            count_moved(self.log.len() - at + v.len());
+            let n = v.len();
+            self.log.splice(at..at, v);
+            for m in self.marks.iter_mut().skip(j + 2) {
+                m.0 += n;
             }
         }
-        self.log = log;
-        self.marks = marks;
-        self.history.splice(h..h, own.history);
         for (id, a) in own.applied {
             if id.commit() != c.id {
                 continue;
@@ -1045,6 +1069,9 @@ pub(crate) struct Outcome {
     /// with the walk it continued, and the point of that walk's first change not shared
     /// (`None`: it shares them all).
     pub common: Option<(usize, Option<Point>)>,
+    /// For a continued walk: the first history change it rolled back over, and the continued
+    /// walk's changes from there (`Timeline::appended`; `None`: not continued).
+    pub undone: Option<(usize, Vec<Change>)>,
 }
 
 /// A converged evaluation to continue: its outcome, and the earliest point of the commits
@@ -1832,6 +1859,7 @@ fn drive(input: &Input, seeds: Option<BTreeMap<WriteId, Point>>, resume: Option<
         }
     }
     let common = p.common();
+    let undone = p.untouched.take();
     let (walked, dropped) = p.finish();
-    Outcome { walked, dropped, passes, reach, items: Some(it), common }
+    Outcome { walked, dropped, passes, reach, items: Some(it), common, undone }
 }

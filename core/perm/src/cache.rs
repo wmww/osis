@@ -679,5 +679,5 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
         return None;
     }
     let walked = Walked { history, edges, applied, demotions, falls, prior, dead, prior_node, by_author_target, setter, log, marks, found };
-    Some(Outcome { walked, dropped, passes, reach, items: None, common: None })
+    Some(Outcome { walked, dropped, passes, reach, items: None, common: None, undone: None })
 }

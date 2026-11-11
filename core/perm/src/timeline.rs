@@ -60,12 +60,23 @@ pub struct Timeline {
     pub(crate) memo: Memo,
     /// Commits the last `append` placed without walking again.
     pub(crate) placed: usize,
+    /// What the last `append` changed in the history (`Changed::edges`; `Timelines` takes it).
+    pub(crate) appended: Appended,
     /// The trust set this was evaluated under (`crate::trust`).
     pub(crate) trust: Trust,
     /// Its ops in force: trustable here and applied (the void ones shrunk out).
     active: BTreeSet<WriteId>,
     /// Their seeds: D before the first walk, each with its op's point.
     seeds: BTreeMap<WriteId, Point>,
+}
+
+/// What `Timeline::append` changed in the history: the changes it placed without walking
+/// again, and, when the walk went on (`walk::Outcome::undone`), the first change it rolled
+/// back over and the changes from there before (placed ones among them).
+#[derive(Clone, Default)]
+pub(crate) struct Appended {
+    pub placed: Vec<walk::Change>,
+    pub undone: Option<(usize, Vec<walk::Change>)>,
 }
 
 /// `first_held` by (node, thing, role).
@@ -346,7 +357,7 @@ impl Timeline {
         let (dropped, checkpoints) = (self.dropped.clone(), self.checkpoints.clone());
         let (trust, active, seeds) = (self.trust.clone(), self.active.clone(), self.seeds.clone());
         let Timeline { passes, reach, .. } = *self;
-        Timeline { input, items, walked, dropped, passes, reach, checkpoints, memo: Memo::default(), placed: 0, trust, active, seeds }
+        Timeline { input, items, walked, dropped, passes, reach, checkpoints, memo: Memo::default(), placed: 0, appended: Appended::default(), trust, active, seeds }
     }
 
     pub(crate) fn from_outcome(input: Input, out: walk::Outcome) -> Timeline {
@@ -369,6 +380,7 @@ impl Timeline {
             checkpoints,
             memo: Memo { first_held: Mutex::new(first_held), ..Memo::default() },
             placed: 0,
+            appended: Appended::default(),
             trust: Trust::default(),
             active: BTreeSet::new(),
             seeds: BTreeMap::new(),
@@ -413,23 +425,24 @@ impl Timeline {
         walked.alias_leaves(&leaves, &input.nodes, cut)?;
         let Some(from) = from else {
             let common = Some((walked.history.len(), None));
-            let out = walk::Outcome { walked, dropped, passes, reach, items: None, common };
+            let out = walk::Outcome { walked, dropped, passes, reach, items: None, common, undone: None };
             return Some(Timeline::from_kept(input, out, Some(kept)));
         };
-        Some(Timeline::resumed(input, walk::Resume { walked, dropped, from, items: None, fresh }, kept, joins))
+        Some(Timeline::resumed(input, walk::Resume { walked, dropped, from, items: None, fresh }, kept, joins).0)
     }
 
     /// `walk::resume` of `r` over `input`, carrying `kept`; debug builds check the walk
     /// against one from scratch when `check`.
     #[cfg_attr(not(debug_assertions), allow(unused_variables))]
-    fn resumed(input: Input, r: walk::Resume, kept: Kept, check: bool) -> Timeline {
-        let out = walk::resume(&input, r);
+    fn resumed(input: Input, r: walk::Resume, kept: Kept, check: bool) -> (Timeline, Option<(usize, Vec<walk::Change>)>) {
+        let mut out = walk::resume(&input, r);
+        let undone = out.undone.take();
         let tl = Timeline::from_kept(input, out, Some(kept));
         #[cfg(debug_assertions)]
         if check {
             tl.walked.check_scratch(&tl.input, &tl.dropped);
         }
-        tl
+        (tl, undone)
     }
 
     /// What `input` (this timeline's, grown) adds that the walk may meet before its new commits
@@ -478,6 +491,7 @@ impl Timeline {
     /// it. `Err(self)`, unchanged, when `extend` would not hold or the inputs would change
     /// otherwise (`Input::can_append`).
     pub fn append(mut self, new: &[Arc<RoleCommit>], keys: &[(Tid, CreationRecord)]) -> Result<Timeline, Box<Timeline>> {
+        self.appended = Appended::default();
         if new.is_empty() {
             return Ok(self);
         }
@@ -532,10 +546,11 @@ impl Timeline {
                     self.input.append(joined);
                     self.items.add(rest);
                     let kept = Kept::of(&mut self);
-                    let Timeline { input, items, walked, dropped, placed, .. } = self;
+                    let Timeline { input, items, walked, dropped, placed, appended, .. } = self;
                     let r = walk::Resume { walked, dropped, from, items: Some(items), fresh: Vec::new() };
-                    let tl = Timeline::resumed(input, r, kept, matches!(pl, walk::Placement::From(..)));
-                    return Ok(Timeline { placed, ..tl });
+                    let (tl, undone) = Timeline::resumed(input, r, kept, matches!(pl, walk::Placement::From(..)));
+                    let appended = Appended { placed: appended.placed, undone };
+                    return Ok(Timeline { placed, appended, ..tl });
                 }
             }
         }
@@ -605,6 +620,7 @@ impl Timeline {
     /// moves by `n` and takes them; answers past `p` go.
     fn inserted(&mut self, h: usize, n: usize, p: Point) {
         let changes: Vec<(Tid, Tid, Option<Edge>)> = self.walked.history.iter().skip(h).take(n).map(|c| (c.holder, c.target, c.edge)).collect();
+        self.appended.placed.extend(self.walked.history.iter().skip(h).take(n).cloned());
         // a history that was empty kept no state: the initial one, so later gaps get split
         if self.checkpoints.is_empty() {
             self.checkpoints.push((0, Arc::new(Edges::default())));

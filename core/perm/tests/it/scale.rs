@@ -351,3 +351,44 @@ fn record_leaves_walk_nothing_per_leaf() {
     }
     assert_eq!(per, [(2, 0), (2, 0)], "the two role commits walked once; a leaf walks nothing");
 }
+
+/// One thing whose first admin writes `n` edges on it (50 holders granted read, then removed,
+/// in turns of 50: each removal audits), the last 20 arriving one by one through
+/// `update_touched`: the commits walked and the history and undo-log entries moved
+/// (`osis_perm::entries_moved`) over those 20, and how many were placed without walking again.
+fn role_history_arrivals(n: usize) -> (u64, u64, usize) {
+    let mut w = World::new();
+    let nodes = w.nodes(51);
+    let (k, holders) = (nodes[0], &nodes[1..]);
+    let t = w.thing(k);
+    let ids: Vec<CommitId> = (0..n).map(|i| w.set(k, t, holders[i % 50], if i / 50 % 2 == 0 { edge(Read) } else { None }, 1 + i as u64, &[])).collect();
+    let last: BTreeSet<CommitId> = ids[n - 20..].iter().copied().collect();
+    let full = w.held();
+    let mut held = w.held_without(&last);
+    let mut inc = Timelines::new();
+    inc.update(&held);
+    let arriving: Vec<RoleCommit> = ids[n - 20..].iter().map(|id| full.edge_commits(&t).into_iter().find(|c| c.id == *id).unwrap().as_ref().clone()).collect();
+    let (m0, mut placed) = (osis_perm::entries_moved(), 0);
+    let (walks, ()) = walked(|| {
+        for c in arriving {
+            held.add_commit(c);
+            inc.update_touched(&held, &BTreeSet::from([t]));
+            placed += inc.placed();
+        }
+    });
+    let tl = inc.get(&t).unwrap();
+    assert_eq!(tl.roster(&t, At::END), Timeline::evaluate(&full).roster(&t, At::END));
+    (walks, osis_perm::entries_moved() - m0, placed)
+}
+
+// issues/role-history-join-cost.md; spec/requirements.md Scale (no operation O(history)): a node
+// receiving a long role history on one thing one write at a time (every write at the end, half
+// of them removals that audit) places each without walking again, moving flat work per arrival:
+// no copy of the history or rebuild of the undo log per write.
+#[test]
+fn role_history_arrival_moves_flat() {
+    let (a, b) = (role_history_arrivals(N), role_history_arrivals(10 * N));
+    assert_eq!((a.2, b.2), (20, 20), "each placed: {a:?} -> {b:?}");
+    assert!(b.0 <= 3 * a.0 + 20, "commits walked: {a:?} -> {b:?}");
+    assert!(b.1 <= 3 * a.1 + 200, "entries moved: {a:?} -> {b:?}");
+}
