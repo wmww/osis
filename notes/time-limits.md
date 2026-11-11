@@ -22,6 +22,7 @@ Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s 
 - 2026-11-11 ostrich `gate.hold` CPU 7972/3795 s, wall 862/241 s at load 20; `gate` CPU 8449/4094 s; `gate.clippy` CPU 83/69 s: memo-check-cost, 9 of 26 crates selected; persistent, issues/gate-five-minutes.md.
 - 2026-11-11 ostrich `gate.hold` wall 781/241 s at load 17-35; `gate` wall 1145/299 s: open-cost review, 18 of 26 crates selected (an osis-crdt doc edit); persistent, issues/gate-five-minutes.md.
 - 2026-11-11 ostrich `gate.hold` CPU 7284/3795 s, wall 676/241 s at load 11; `gate` CPU 8327/4094 s, wall 967/299 s; `gate.clippy` CPU 100/69 s at load 19: decoded-recheck-cost review, every crate selected; persistent, issues/gate-five-minutes.md.
+- 2026-11-11 ostrich `gate.hold` wall 966/241 s; `gate` wall 1090/299 s: order-seeds review; persistent, issues/gate-five-minutes.md.
 
 ## Investigations
 One section per investigation: date and box, the trigger (hits or the run over 2x), what was tried, the outcome (fixed, or a raised limit with why no good solution was found). Tess reviews every raise.
