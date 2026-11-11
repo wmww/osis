@@ -1637,6 +1637,23 @@ fn reseal_candidates_follow_the_finalize_before_them_spec_permissions_3() {
     assert_eq!(sealed_at(&mut lp, 1, g, m), newest_read(&lp, 0, m));
 }
 
+// spec/permissions.md §2 (finalize), §3 (re-seal): a holder lacking a box is a re-seal candidate
+// until its grant's `until` passes, then a departure due and no candidate: the clock alone moves
+// the candidates (`reseal_candidates` is a memo, its time read up to the component's horizon).
+#[test]
+fn reseal_candidates_follow_the_clock_spec_permissions_2() {
+    let mut lp = synced(1);
+    let (g, m) = (group(&mut lp, 0), group(&mut lp, 0));
+    let until = WallMs(lp.peers[0].engine.core.now().0 + 1_000);
+    lp.peers[0].engine.grant(&g, &m, &ct::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    rotate_skipping(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[m]);
+    let cands = |lp: &mut LocalPeer| lp.peers[0].engine.run(|tx| super::reseal_candidates(tx, &g)).unwrap();
+    assert!(cands(&mut lp).iter().any(|c| c.0 == m), "M lacks its box at G's newest epoch");
+    lp.peers[0].clock.advance(2_000);
+    let after = cands(&mut lp);
+    assert!(after.iter().all(|c| c.0 != m), "M's grant ended: a departure due, no re-seal: {after:?}");
+}
+
 // spec/crypto.md §4 (Possession, Authority; Key access; Merger): a role reached only through a
 // keyless grant makes no valid rotation, whatever roles it rotates. Cycle G -> H -> M -> G (M
 // admin on G, H admin on M, then G admin on H: keyless). X writes G and reads H, so writes M only

@@ -263,11 +263,8 @@ pub struct SyncEngine {
     /// The labels synced as `labels` last answered: what reads between two asks go by.
     pub(crate) synced: Arc<Synced>,
     /// `labels` (`engine::memo`): built again when what it read of the engine, of the retired
-    /// and handed-off sets or, where it judged an admin role, of the time (`wall`) changed.
+    /// and handed-off sets or, where it judged an admin role, of the time (`Core::time`) changed.
     synced_of: crate::engine::memo::Memo<(), Arc<Synced>>,
-    /// The time `labels` was last asked at, read by its memo only where the answer depends on
-    /// it (a replaced label's admin, whose edge may have an `until`).
-    wall: crate::engine::memo::Tracked<u64>,
     /// (snapshot, body, aspect) judgments settled with the body kept (spec/sync.md §7); a pair
     /// goes once either body is dropped.
     pub(crate) covered_judged: BTreeSet<(osis_base::CommitId, osis_base::CommitId, Tid, osis_base::Ak)>,
@@ -342,10 +339,9 @@ pub struct SyncEngine {
     /// recorded (`note_applied`). In memory: the first ask after a start notes again what the
     /// connections reported.
     pub(crate) placed_waiting: BTreeSet<osis_base::CommitId>,
-    /// Per secret actor, the roles `ensure_rotated` left blocked (`uncovered`): a function of
-    /// the roles, secrets and record chains (`Core::role_generation`) and of the clock up to the
-    /// actor's roster horizon, so judged once per change of those, not per pass.
-    pub(crate) rotated: BTreeMap<Tid, Rotated>,
+    /// Per secret actor, the roles `ensure_rotated` left blocked when it had nothing to do
+    /// (`rotations`, `engine::memo`).
+    rotated: crate::engine::memo::Memo<Tid, BTreeSet<osis_base::Role>>,
     /// This node's `clients^.0` changed since the last step (`clients_changed`).
     pub(crate) clients_moved: bool,
     /// Commit blobs with linked header lists whose prefix was checked against the resolved
@@ -452,7 +448,6 @@ impl SyncEngine {
             tied: deliver::TiedWork { all: true, ..Default::default() },
             synced: Default::default(),
             synced_of: crate::engine::memo::Memo::new("labels synced"),
-            wall: Default::default(),
             unsubscribe: BTreeSet::new(),
             served: BTreeMap::new(),
             hub_conns: BTreeMap::new(),
@@ -485,7 +480,7 @@ impl SyncEngine {
             rotation_at: BTreeMap::new(),
             placed_cache: (u64::MAX, BTreeMap::new()),
             placed_waiting: BTreeSet::new(),
-            rotated: BTreeMap::new(),
+            rotated: crate::engine::memo::Memo::new("ensure rotated"),
             last_synced: BTreeMap::new(),
             clients_moved: false,
             prefix_checked: BTreeSet::new(),
@@ -830,7 +825,7 @@ impl SyncEngine {
     /// `label.0` among them, and deletes the content entries; `retire_at`, `retire_replaced`).
     pub fn labels(&mut self) -> Vec<(Tid, Arc<GroupLabel>)> {
         let now = self.now();
-        self.wall.set(now);
+        self.engine.core.time.set(now);
         // a `label.0` the store refused to read: the labels last answered stand
         let Ok(s) = crate::engine::memo::Memo::get_in(self, |s| &s.synced_of, &(), |s| s.compute_synced().map(Arc::new)) else { return self.synced.labels.clone() };
         // built again since the last ask
@@ -846,7 +841,7 @@ impl SyncEngine {
         self.synced.labels.clone()
     }
 
-    /// `labels`, with roles at the time last asked (`wall`), read only where a replaced label
+    /// `labels`, with roles at the time last asked (`Core::time`), read only where a replaced label
     /// asks for a role.
     fn compute_synced(&mut self) -> Result<Synced> {
         let me = self.engine.account_tid();
@@ -858,7 +853,7 @@ impl SyncEngine {
             }
             let of = self.engine.labels_read(&g)?;
             let admin = of.iter().any(|l| l.replaced) && {
-                let ts = osis_base::Ts::make(osis_base::WallMs(self.wall.get()), 0).unwrap_or_default();
+                let ts = osis_base::Ts::make(osis_base::WallMs(self.engine.core.time.get()), 0).unwrap_or_default();
                 me.is_some_and(|me| crate::engine::write::role_of(&self.engine.core, &me, &g, ts) == Some(osis_base::Role::Admin))
             };
             labels.extend(of.into_iter().filter(|l| !l.replaced || admin && !self.state.retired.contains(&l.id)).map(|l| (g, l)));
@@ -912,35 +907,35 @@ impl SyncEngine {
     }
 
     /// The roles of `a` still blocked after the rotations due (`Engine::ensure_rotated`), run
-    /// once per change of what it reads: the roles, secrets and record chains
-    /// (`Core::role_generation`) and the clock, up to the next `until` or role commit ahead of it
-    /// in `a`'s component (`horizon`), which holds `a`'s holders and theirs.
+    /// once per change of what it reads (a memo of its answer when it had nothing to do): the
+    /// roles, secrets and record chains, and the clock up to the next `until` or role commit
+    /// ahead of it in `a`'s component (`horizon`), which holds `a`'s holders and theirs. A run
+    /// that did something is not kept: the next ask runs again.
     fn rotations(&mut self, a: &Tid) -> Result<BTreeSet<osis_base::Role>> {
         let now = self.now();
-        let generation = self.engine.core.role_generation;
-        if let Some(r) = self.rotated.get_mut(a)
-            && r.generation == generation
-            && r.until.is_none_or(|u| now < u)
-        {
-            r.hits += 1;
-            let still = r.still.clone();
-            // debug builds: the answer at a power of four of its hits is what a run gives (a
-            // stale one stays stale until its key moves, so a sample sees it)
-            #[cfg(debug_assertions)]
-            if r.hits.is_power_of_two() && r.hits.trailing_zeros() % 2 == 0 {
-                let (done, fresh) = crate::costs::paused(|| self.engine.ensure_rotated(a))?;
-                assert!(done.commits.is_empty() && fresh == still, "rotations of {a:?} went stale: {still:?}, now {fresh:?} and {} commits", done.commits.len());
+        self.engine.core.time.set(now);
+        let run = |s: &mut Self| {
+            let (done, still) = s.engine.ensure_rotated(a).map_err(Rotating::Failed)?;
+            if !done.commits.is_empty() || !done.deliveries.is_empty() || done.drop_lost {
+                return Err(Rotating::Did(done, still));
             }
-            return Ok(still);
+            s.engine.core.time.until(s.engine.core.horizon(std::iter::once(*a)));
+            Ok(still)
+        };
+        // a debug comparison rotates nothing: what a run would leave, rolled back
+        let fresh = |s: &mut Self| {
+            let still = s.engine.rotated_already(a).map_err(Rotating::Failed)?;
+            assert!(still.is_some(), "rotations of {a:?} went stale: a rotation is due");
+            Ok(still.unwrap_or_default())
+        };
+        match crate::engine::memo::Memo::get_checked_in(self, |s| &s.rotated, a, run, fresh) {
+            Ok(still) => Ok(still),
+            Err(Rotating::Did(done, still)) => {
+                self.take_done(done)?;
+                Ok(still)
+            }
+            Err(Rotating::Failed(e)) => Err(e),
         }
-        let _s = crate::costs::span("pass: ensure rotated");
-        let (done, still) = self.engine.ensure_rotated(a)?;
-        // what the rotations themselves moved is a change: judged again at the next ask
-        let generation = if done.commits.is_empty() { generation } else { u64::MAX };
-        let until = self.horizon(std::iter::once(*a));
-        self.rotated.insert(*a, Rotated { generation, until, still: still.clone(), hits: 0 });
-        self.take_done(done)?;
-        Ok(still)
     }
 
     /// The roles of `a` this node may not encrypt under, and may not place under
@@ -962,16 +957,11 @@ impl SyncEngine {
     }
 }
 
-/// `SyncEngine::rotations` of an actor, as last run.
-#[derive(Clone)]
-pub(crate) struct Rotated {
-    /// `Core::role_generation` it ran at (`u64::MAX`: it rotated, so run again).
-    generation: u64,
-    /// The roster horizon then (`SyncEngine::horizon`): the answer may move at that time.
-    until: Option<u64>,
-    still: BTreeSet<osis_base::Role>,
-    /// Asks answered since.
-    hits: u64,
+/// Why `SyncEngine::rotations`' run gave no answer to keep.
+enum Rotating {
+    /// It rotated (or owes deliveries): what it did, and the roles still blocked.
+    Did(crate::flows::Done, BTreeSet<osis_base::Role>),
+    Failed(crate::error::Error),
 }
 
 /// The roles of an actor a node may not use now (spec/crypto.md §4, Encrypting under).

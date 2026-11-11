@@ -753,8 +753,6 @@ indexes! {
     pub timed_lost: JMap<Tid, u64>,
     /// Kept copies (`rotation::lost`): each lost actor kept and the holders it hangs on.
     pub kept: JMap<Tid, BTreeSet<Tid>>,
-    /// `rotation::departures` per actor; cleared by `role_changed`.
-    pub departures: JMap<Tid, Vec<osis_keys::Departure>>,
     /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
     pub hint_candidates: JMap<CommitId, Vec<(Tid, osis_base::Value)>>,
     /// Things holding a purge-on-replace body this node would cover but may not write on yet
@@ -895,10 +893,11 @@ pub struct Core {
     /// `Engine::holders_named` per commit (`memo`): an admin's pass reads it for every inbox
     /// copy, and it decodes role parts.
     pub(crate) holders_named: memo::Memo<CommitId, Arc<BTreeMap<usize, BTreeSet<Tid>>>>,
-    /// Actors whose re-seal trigger found no holder lacking a box (`rotation::reseal_candidates`):
-    /// O(roster) a pass otherwise. Holds while `ix.departures` holds its entry (same roster);
-    /// cleared with it.
-    pub reseal_quiet: BTreeSet<Tid>,
+    /// `rotation::departures` per actor (`memo`).
+    pub(crate) departures: memo::Memo<Tid, Vec<osis_keys::Departure>>,
+    /// The holders lacking a box of each actor (`rotation::reseal_candidates`, `memo`): O(roster)
+    /// a pass otherwise.
+    pub(crate) reseal_scans: memo::Memo<Tid, Vec<(Tid, BTreeSet<osis_base::Role>)>>,
     /// Stamps the states by aspect (`memo`): `Tx::load_lazy` reads; `wrote`, `state_changed`
     /// and a written state's undo change.
     pub(crate) states_read: memo::Stamps,
@@ -1035,6 +1034,10 @@ pub struct Core {
     /// The account this node belongs to (`Engine::join_account`): the author of its commits and
     /// the holder of its roles. `None` before it joins one.
     pub account: memo::Tracked<Option<Tid>>,
+    /// The wall clock as memos read it (`memo::Clock`, wall ms): set at each transaction and by
+    /// node-sync before it asks its memos; a memo reads it whole (`get`) or up to the next time
+    /// that moves its answer (`until`, `Core::horizon`).
+    pub time: memo::Clock,
     /// Accounts this node signs as, seeds from each one's devices actor (`Engine::hold_account`),
     /// retaken on every open.
     pub accounts: memo::Stamped<Tid, Arc<crate::flows::account::HeldAccount>>,
@@ -1184,7 +1187,8 @@ impl Core {
             secrets_read: self.secrets_read.clone(),
             head_keys: self.head_keys.clone(),
             holders_named: self.holders_named.clone(),
-            reseal_quiet: self.reseal_quiet.clone(),
+            departures: self.departures.clone(),
+            reseal_scans: self.reseal_scans.clone(),
             states_read: self.states_read.clone(),
             records_read: self.records_read.clone(),
             epochs_of: self.epochs_of.clone(),
@@ -1242,6 +1246,7 @@ impl Core {
             step_fault: self.step_fault.clone(),
             key_actors: self.key_actors.clone(),
             account: self.account.clone(),
+            time: self.time.clone(),
             accounts: self.accounts.clone(),
             left: self.left.clone(),
             signing_due: self.signing_due.clone(),
@@ -1469,14 +1474,40 @@ impl Core {
         self.ix.keysets.range((*m, osis_base::Role::Read, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *m).map(|(k, v)| (k.1, k.2, v))
     }
 
-    /// Drops what is derived from rosters, `secrets.0` and held epochs and is not a memo yet (the
-    /// departures cache, `reseal_quiet`): called wherever those change.
+    /// The first time after now that a grant's `until` or a role commit's `ts` falls due in the
+    /// components of `actors` (wall ms): until then the clock alone moves no role there.
+    pub fn horizon(&self, actors: impl Iterator<Item = Tid>) -> Option<u64> {
+        let now = self.now().0;
+        let mut seen: Vec<*const osis_perm::Timeline> = Vec::new();
+        let mut out: Option<u64> = None;
+        let mut later = |t: u64| {
+            if t > now {
+                out = Some(out.map_or(t, |x| x.min(t)));
+            }
+        };
+        for t in actors {
+            let Some(tl) = self.timelines.get(&t) else { continue };
+            if seen.contains(&std::ptr::from_ref(tl)) {
+                continue;
+            }
+            seen.push(std::ptr::from_ref(tl));
+            for (_, _, e) in tl.edges_at(None).iter() {
+                if let Some(u) = e.until {
+                    later(u.0);
+                }
+            }
+            for wid in tl.applied().keys() {
+                if let Some(ts) = tl.role_commit(&wid.0).map(|m| m.ts) {
+                    later(ts.wall_ms().0);
+                }
+            }
+        }
+        out
+    }
+
+    /// Moves `role_generation`: called wherever rosters, `secrets.0` or held epochs change.
     pub fn role_changed(&mut self) {
         self.role_generation += 1;
-        self.reseal_quiet.clear();
-        if !self.ix.departures.is_empty() {
-            self.ix.departures.retain(|_, _| false);
-        }
     }
 
     /// Whether `t` exists here: its record is held and it has not ended. What may read a thing
@@ -1617,10 +1648,6 @@ impl Core {
     /// Notes that the running transaction writes the state of `k` (evicted on rollback).
     pub fn wrote(&mut self, k: (Tid, Ak)) {
         self.states_read.wrote(&k, true);
-        // a holder's `node.0` decides its reader key and route (`flows::is_node`)
-        if matches!(k.1.as_str(), "label.0" | "group.0" | "groups.0" | "node.0") || osis_schema::core_types::is_role_class(k.1.as_str()) {
-            self.reseal_quiet.clear();
-        }
         self.written.push(k);
     }
 
@@ -1768,10 +1795,11 @@ impl Core {
             held_writes: _,
             replaced_dates: _,
             body_bounds: _,
+            departures: _,
+            reseal_scans: _,
             // caches, dropped when anything changed (`states` and `pages` per written aspect)
             states: _,
             pages: _,
-            reseal_quiet: _,
             rotation_seq: _,
             epochs_judged_from: _,
             waits: _,
@@ -1825,6 +1853,7 @@ impl Core {
             header_fault: _,
             key_actors: _,
             account: _,
+            time: _,
             accounts: _,
             left: _,
             signing_due: _,
@@ -1933,7 +1962,8 @@ impl Core {
             secrets_read: memo::Memo::new("secrets: decode"),
             head_keys: memo::Memo::new("head keys: derive"),
             holders_named: memo::Memo::new("holders named: read"),
-            reseal_quiet: BTreeSet::new(),
+            departures: memo::Memo::new("departures"),
+            reseal_scans: memo::Memo::new("reseal: scan"),
             rotation_seq: 0,
             account_views: memo::Memo::new("account view"),
             account_epochs_of: memo::Memo::new("account epochs"),
@@ -1993,6 +2023,7 @@ impl Core {
             states_read: Default::default(),
             records_read: Default::default(),
             account: Default::default(),
+            time: Default::default(),
             left: BTreeSet::new(),
             signing_due: false,
             accounts: Default::default(),
@@ -3111,6 +3142,8 @@ impl Engine {
             memo::unrecorded(|| self.settle_blobs())?;
         }
         let _after;
+        let now = self.now().0;
+        self.core.time.set(now);
         // changes made outside a transaction are not this one's to undo
         self.core.commit_journal();
         self.core.memory_tx = false;

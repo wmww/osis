@@ -1280,7 +1280,7 @@ fn group_change(n: usize, change: Change) -> ([[u64; 3]; 3], [u64; 2]) {
         let labels = net.sync(x).labels();
         assert!(labels.iter().filter(|(t, _)| *t == things[0]).count() <= 1, "{change:?}: one label of the thing at node {x}");
     }
-    (per, [w.n("pass: ensure rotated"), w.n("body bounds")])
+    (per, [w.n("ensure rotated"), w.n("body bounds")])
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1314,7 +1314,7 @@ fn a_change_costs_a_few_passes() {
         flat(&format!("{change:?}: rotation runs"), small.1[0], big.1[0]);
         flat(&format!("{change:?}: keep bounds judged"), small.1[1], big.1[1]);
         let passes: u64 = big.0.iter().map(|x| x[0]).sum();
-        assert!(big.1[0] <= 9, "{change:?}: {} rotation runs over {passes} passes", big.1[0]);
+        assert!(big.1[0] <= 6, "{change:?}: {} rotation runs over {passes} passes", big.1[0]);
     }
 }
 

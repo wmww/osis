@@ -203,16 +203,10 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
     Ok(left.into_iter().map(|(m, (from, upto, at))| Departure::holder(m, from).upto(upto).at(at)).collect())
 }
 
-/// Every departure `a`'s epochs must cover: its own (`direct_departures`). Cached per actor
-/// (`Core::departures`) until a roster, `secrets.0` or held epochs change.
+/// Every departure `a`'s epochs must cover: its own (`direct_departures`). A memo
+/// (`Core::departures`).
 pub(crate) fn departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
-    if let Some(d) = tx.core.ix.departures.get(a) {
-        return Ok(d.clone());
-    }
-    let _s = crate::costs::span("departures");
-    let out: Vec<Departure> = direct_departures(tx, a)?.into_iter().collect();
-    tx.core.ix.departures.insert(*a, out.clone());
-    Ok(out)
+    crate::engine::memo::Memo::get_in(tx, |tx| &tx.core.departures, a, |tx| Ok(direct_departures(tx, a)?.into_iter().collect()))
 }
 
 /// The roles of `a` that `who` (this node, or a key actor it signs as) may rotate now: write

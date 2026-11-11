@@ -98,7 +98,6 @@ impl SyncEngine {
                 unsubscribe: self.unsubscribe.clone(),
                 synced: self.synced.clone(),
                 synced_of: self.synced_of.clone(),
-                wall: self.wall.clone(),
                 covered_judged: self.covered_judged.clone(),
                 stats: self.stats.clone(),
                 records: self.records.clone(),

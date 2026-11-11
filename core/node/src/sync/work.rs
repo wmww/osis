@@ -549,39 +549,7 @@ impl SyncEngine {
     /// components of its actor and of its closure's reader actors.
     fn roster_horizon(&self, closure: &BTreeSet<Tid>, g: &Tid) -> Option<u64> {
         let core = &self.engine.core;
-        self.horizon(closure.iter().chain([g]).map(|t| core.reader_of(t)).collect::<BTreeSet<Tid>>().into_iter())
-    }
-
-    /// The first time after now that a grant's `until` or a role commit's `ts` falls due in the
-    /// components of `actors` (wall ms).
-    pub(super) fn horizon(&self, actors: impl Iterator<Item = Tid>) -> Option<u64> {
-        let now = self.now();
-        let core = &self.engine.core;
-        let mut seen: Vec<*const osis_perm::Timeline> = Vec::new();
-        let mut out: Option<u64> = None;
-        let mut later = |t: u64| {
-            if t > now {
-                out = Some(out.map_or(t, |x| x.min(t)));
-            }
-        };
-        for t in actors {
-            let Some(tl) = core.timelines.get(&t) else { continue };
-            if seen.contains(&std::ptr::from_ref(tl)) {
-                continue;
-            }
-            seen.push(std::ptr::from_ref(tl));
-            for (_, _, e) in tl.edges_at(None).iter() {
-                if let Some(u) = e.until {
-                    later(u.0);
-                }
-            }
-            for wid in tl.applied().keys() {
-                if let Some(ts) = tl.role_commit(&wid.0).map(|m| m.ts) {
-                    later(ts.wall_ms().0);
-                }
-            }
-        }
-        out
+        core.horizon(closure.iter().chain([g]).map(|t| core.reader_of(t)).collect::<BTreeSet<Tid>>().into_iter())
     }
 
     /// Readies `w` for a pass judging everything: what it named and waited on goes, the

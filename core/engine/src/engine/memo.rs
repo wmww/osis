@@ -265,10 +265,17 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
     /// `get` for a function that needs all of `ctx` and may fail (one running a transaction of
     /// the engine holding this memo, which `memo` finds in `ctx`). A failure is not kept.
     pub fn get_in<C, E>(ctx: &mut C, memo: impl Fn(&C) -> &Self, k: &K, f: impl Fn(&mut C) -> Result<V, E>) -> Result<V, E> {
+        Self::get_checked_in(ctx, memo, k, &f, &f)
+    }
+
+    /// `get_in` whose debug comparison runs `fresh`, which gives what `f` gives and changes
+    /// nothing: for an `f` with effects where its answer is not kept (one that writes when
+    /// something is due and fails so, `SyncEngine::rotations`).
+    pub fn get_checked_in<C, E>(ctx: &mut C, memo: impl Fn(&C) -> &Self, k: &K, f: impl Fn(&mut C) -> Result<V, E>, fresh: impl Fn(&mut C) -> Result<V, E>) -> Result<V, E> {
         if let Some((value, deps, check)) = memo(ctx).kept(k) {
             if check {
                 // a fresh run that fails compares nothing
-                if let Ok(fresh) = crate::costs::paused(|| recorded(|| f(ctx)).0) {
+                if let Ok(fresh) = crate::costs::paused(|| unrecorded(|| fresh(ctx))) {
                     assert!(fresh == value, "memo {}: kept {value:?}, a fresh run gives {fresh:?} (a read no stamp covers)", memo(ctx).name);
                 }
             }
@@ -410,6 +417,53 @@ impl<K: Ord + Hash, V> Stamped<K, V> {
     pub fn remove(&mut self, k: &K) -> Option<V> {
         self.stamps.wrote(k, false);
         self.map.remove(k)
+    }
+}
+
+/// A clock outside the journal (node-sync's time) whose readers say how long their answer
+/// holds: `get` is a read of the time itself (any move of it moves the reader), `until(t)` of
+/// the time only as far as `t` (the reader's answer holds while the clock is before `t`). A move
+/// back moves every reader: an answer judged later need not hold earlier.
+#[derive(Clone, Debug, Default)]
+pub struct Clock {
+    now: u64,
+    stamps: Stamps,
+    /// The `until` times read and not passed yet.
+    ahead: RefCell<std::collections::BTreeSet<u64>>,
+}
+
+impl Clock {
+    pub fn get(&self) -> u64 {
+        self.stamps.read_all();
+        self.now
+    }
+
+    /// The time, for a reader whose answer holds until `t` (`None`: at every later time).
+    pub fn until(&self, t: Option<u64>) -> u64 {
+        let k = t.unwrap_or(u64::MAX);
+        self.stamps.read(&k);
+        if t.is_some() {
+            self.ahead.borrow_mut().insert(k);
+        }
+        self.now
+    }
+
+    pub fn set(&mut self, now: u64) {
+        if now == self.now {
+            return;
+        }
+        if now < self.now {
+            self.stamps.wrote_all();
+            self.ahead.get_mut().clear();
+        } else {
+            let later = self.ahead.get_mut().split_off(&now.saturating_add(1));
+            for t in std::mem::replace(self.ahead.get_mut(), later) {
+                self.stamps.wrote(&t, true);
+            }
+            // the time itself moved (`get`), and every `until` at or before `now` passed
+            self.stamps.wrote(&now, true);
+        }
+        self.now = now;
     }
 }
 

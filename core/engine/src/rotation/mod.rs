@@ -653,25 +653,15 @@ fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
 /// it re-seals; and every holder of a current epoch holds every earlier established secret any
 /// holder of that epoch holds (`add_history`: a current epoch only non-rotators hold is superseded
 /// by the next rotation and its secret added by them). `tests_property::rotation_holds_*` checks it.
+/// A memo (`Core::reseal_scans`).
 pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
-    if tx.core.reseal_quiet.contains(a) && tx.core.ix.departures.contains_key(a) {
-        #[cfg(debug_assertions)]
-        assert_eq!(reseal_scan(tx, a)?, Vec::new(), "reseal_quiet of {a:?} went stale");
-        return Ok(Vec::new());
-    }
-    let _s = crate::costs::span("reseal: scan");
-    let out = reseal_scan(tx, a)?;
-    if out.is_empty() {
-        // held while `departures` holds its entry (same rosters, secrets and epochs)
-        departures(tx, a)?;
-        tx.core.reseal_quiet.insert(*a);
-    } else {
-        tx.core.reseal_quiet.remove(a);
-    }
-    Ok(out)
+    crate::engine::memo::Memo::get_in(tx, |tx| &tx.core.reseal_scans, a, |tx| reseal_scan(tx, a))
 }
 
 fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
+    // the roles at now it reads (`may_rotate`, `ended_holders`) hold until the clock reaches the
+    // next `until` or role commit in `a`'s component, which holds its holders
+    tx.core.time.until(tx.core.horizon(std::iter::once(*a)));
     let me = tx.core.writer()?;
     let may = may_rotate(tx.core, &me, a);
     if may.is_empty() {
@@ -821,6 +811,25 @@ impl Engine {
             let still = ensure_rotated(tx, me, a, &mut done)?;
             Ok((done, still))
         })
+    }
+
+    /// What `ensure_rotated` would leave blocked of `actor`, changing nothing: the roles, or
+    /// `None` when it would write or deliver something (that run rolled back; one with nothing
+    /// to do commits nothing, so it moves no stamp).
+    pub fn rotated_already(&mut self, actor: &Tid) -> Result<Option<BTreeSet<Role>>> {
+        const DUE: &str = "a rotation is due";
+        let a = *actor;
+        let r = self.run(|tx| {
+            let mut done = Done::default();
+            let me = tx.core.writer()?;
+            let still = ensure_rotated(tx, me, a, &mut done)?;
+            if done.commits.is_empty() && done.deliveries.is_empty() && !done.drop_lost { Ok(still) } else { Err(Error::Misuse(DUE)) }
+        });
+        match r {
+            Ok(still) => Ok(Some(still)),
+            Err(Error::Misuse(DUE)) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// Every rotation this node may make that a known departure requires, now (the eager
