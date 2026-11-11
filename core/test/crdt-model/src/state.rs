@@ -510,22 +510,24 @@ impl Frag {
             // every slot holds the register's embedding, however the slots arrived
             if let Some(r) = &reg {
                 for (k, f) in slots.iter_mut() {
-                    // a slot's copies of the register's write (a text slot's embedded records, a bag's contribution)
-                    // are the embedding of the register's winning copy (§7)
+                    // a slot's copies of the register's write `s` (its writes at the embedding's stamps: a text
+                    // slot's creations `(s.ts, Derived(s.dot), i)` with their chars, a bag's contribution `s`) are
+                    // the embedding of the register's winning copy (§7)
                     match (&mut *f, r) {
                         (Frag::Seq { elems, .. }, Frag::Register { write: Some(w), .. }) => elems.retain(|d, e| {
-                            if matches!(&d.source, Source::Derived(x) if **x == w.0.dot) {
+                            let copy = |st: &Stamp| matches!(&d.source, Source::Derived(x) if **x == w.0.dot) && st.ts == w.0.ts && st.dot == *d;
+                            if e.created.as_ref().is_some_and(|c| copy(&c.0)) {
                                 e.created = None;
-                                if matches!(e.content, Content::Char(_)) {
-                                    e.content = Content::None;
-                                }
-                                e.pos.retain(|p| p.0.dot != *d);
                             }
+                            if e.created.is_none() && matches!(e.content, Content::Char(_)) {
+                                e.content = Content::None;
+                            }
+                            e.pos.retain(|p| !copy(&p.0));
                             e.is_record()
                         }),
                         (Frag::Bag { elems, .. }, Frag::Register { write: Some(w), .. }) => {
                             if let Some(Frag::Register { write, .. }) = elems.get_mut(&w.0.dot).and_then(|el| el.frag.as_deref_mut()) {
-                                if write.as_ref().is_some_and(|x| x.0.dot == w.0.dot) {
+                                if write.as_ref().is_some_and(|x| x.0 == w.0) {
                                     *write = None;
                                 }
                             }

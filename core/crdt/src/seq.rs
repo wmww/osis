@@ -1126,9 +1126,9 @@ pub(crate) fn embed_text(r: &Register) -> BTreeMap<Dot, SeqElem> {
     out
 }
 
-/// Makes the creation writes and chars of the `Derived` records of register `r`'s write equal
-/// its embedding (§7): a copy of the write with another value (§4.1 copy order) embeds other
-/// chars, which go with it. Records left holding nothing go (§4.2); the embedding is joined in
+/// Makes the copies of register `r`'s write `s` in its `Derived` records (creations and their
+/// positions at stamps `(s.ts, Derived(s.dot), i)`, their chars) equal its embedding (§7): a copy
+/// of the write with another value (§4.1 copy order) embeds other chars, which go with it. Records left holding nothing go (§4.2); the embedding is joined in
 /// after. The placement cache is kept when nothing differs.
 pub(crate) fn fit_embedding(s: &mut Seq, r: &Register) {
     let Some(w) = &r.write else { return };
@@ -1138,11 +1138,14 @@ pub(crate) fn fit_embedding(s: &mut Seq, r: &Register) {
         return;
     }
     let emb = embed_text(r);
+    // the embedding's stamp for record `d`: a creation under another stamp is a write of its own
+    let copy = |d: &Dot, st: &Stamp| st.ts == w.stamp.ts && st.dot == *d;
     let differs = |d: &Dot, e: &SeqElem| {
         let x = emb.get(d).and_then(|x| x.created.as_ref().map(|c| (c, &x.content)));
-        e.created.as_ref().is_some_and(|c| Some(c) != x.map(|x| x.0))
-            || e.pos.iter().any(|p| p.0.dot == *d && !x.is_some_and(|x| is_creation(p, x.0)))
-            || matches!(e.content, SeqContent::Char(c) if x.is_none_or(|x| *x.1 != SeqContent::Char(c)))
+        let own = e.created.as_ref().is_some_and(|c| !copy(d, &c.0));
+        e.created.as_ref().is_some_and(|c| copy(d, &c.0) && Some(c) != x.map(|x| x.0))
+            || e.pos.iter().any(|p| copy(d, &p.0) && !x.is_some_and(|x| is_creation(p, x.0)))
+            || !own && matches!(e.content, SeqContent::Char(c) if x.is_none_or(|x| *x.1 != SeqContent::Char(c)))
     };
     let bad = s.elems.range(range.clone()).any(|(d, e)| if e.span == 1 { differs(d, e) } else { crate::seq_span::expand(BTreeMap::from([(d.clone(), e.clone())])).iter().any(|(d, e)| differs(d, e)) });
     if !bad {
@@ -1153,11 +1156,13 @@ pub(crate) fn fit_embedding(s: &mut Seq, r: &Register) {
     let held: Elems = keys.into_iter().filter_map(|k| elems.remove(&k).map(|e| (k, e))).collect();
     for (d, mut e) in crate::seq_span::expand(held) {
         if differs(&d, &e) {
-            e.created = None;
-            if matches!(e.content, SeqContent::Char(_)) {
+            if e.created.as_ref().is_some_and(|c| copy(&d, &c.0)) {
+                e.created = None;
+            }
+            if e.created.is_none() && matches!(e.content, SeqContent::Char(_)) {
                 e.content = SeqContent::None;
             }
-            e.pos.retain(|p| p.0.dot != d);
+            e.pos.retain(|p| !copy(&d, &p.0));
         }
         if e.is_record() {
             elems.insert(d, e);

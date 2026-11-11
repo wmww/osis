@@ -3,3 +3,4 @@
 - `Fragment::slot(Register)` returns `SlotRef::Frag` for a plain register and `SlotRef::Reg` only inside `Slots`: a match on `SlotRef::Reg` silently misses plain registers (the bug here).
 - Review: `Fragment::slot(Register)` and `chosen_slot` now give `SlotRef::Reg` for a plain register too, so that confusion is gone. The random entry-copies generator gave one leaf per record and only three kinds, so a forged bag copy of the register write (model disagreement) needed a by-hand widening to show up.
 - Review gate stopped on a rotation seed that fails on main too (issue filed); sim stage then rerun by hand under tools/heavy, 25 min of it waiting for the lock.
+- Re-review: at load 30 the crdt law tests' wall times swung 1.2-7 s run to run; only `/usr/bin/time` user seconds on the test binary told whether a new check cost anything.

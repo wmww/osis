@@ -150,7 +150,12 @@ mod entry_copies {
     use std::collections::BTreeMap;
 
     fn st(src: u8, c: u64) -> Stamp {
-        Stamp::new(1 << 16, Source::session(src, 0), c)
+        st_at(0, src, c)
+    }
+
+    /// `st` at a later time `dt`.
+    fn st_at(dt: u64, src: u8, c: u64) -> Stamp {
+        Stamp::new((1 << 16) + dt, Source::session(src, 0), c)
     }
 
     fn str(s: &str) -> Value {
@@ -161,8 +166,9 @@ mod entry_copies {
     /// element, 2 an enum case, 3 a counter contribution, 4 a list element, 5 an inner map entry;
     /// beside a register only (§7: copies of what its embedding writes, or its own reset): 6 a
     /// text delete or undelete of an embedded char, 7 a counter contribution copying the
-    /// register write with another value, 8 an enum reset at the register write's stamp, 9 a
-    /// register reset.
+    /// register write with another value (or under a later stamp of its dot), 8 an enum reset at
+    /// the register write's stamp, 9 a register reset, 10 an embedded char's creation copying
+    /// the register write with another char (or under a later stamp).
     fn leaf(r: &mut Rng, kind: usize) -> Frag {
         let src = 1 + r.below(2) as u8;
         let int = |r: &mut Rng| Some(Value::Int(r.below(2) as i64));
@@ -198,9 +204,14 @@ mod entry_copies {
                 let el = SeqElem::write(Content::None, vec![], Some((st(2, 17), r.chance(1, 2))));
                 Frag::Seq { text: true, c: Default::default(), elems: BTreeMap::from([(d, el)]) }
             }
-            7 => bag(dot(src, 5), (st(src, 5), [None, Some(Value::Int(0)), Some(Value::Int(7))][r.below(3)].clone())),
+            7 => bag(dot(src, 5), (st_at([0, 0, 4][r.below(3)], src, 5), [None, Some(Value::Int(0)), Some(Value::Int(7))][r.below(3)].clone())),
             8 => Frag::Enum { c: crdt_model::state::Composite { reset: Some(st(src, 5)), ..Default::default() }, case: None, payloads: BTreeMap::new() },
-            _ => Frag::Register { reset: Some(st(2, [3, 7][r.below(2)])), write: r.chance(1, 2).then(|| (st(src, 5), Some(str("x")))) },
+            9 => Frag::Register { reset: Some(st(2, [3, 7][r.below(2)])), write: r.chance(1, 2).then(|| (st(src, 5), Some(str("x")))) },
+            _ => {
+                let d = Dot { source: Source::Derived(Box::new(dot(src, 5))), ctr: 1 };
+                let el = SeqElem::new(Stamp { ts: (1 << 16) + [0, 0, 4][r.below(3)], dot: d.clone() }, Anchor::Head, [Content::Char('x'), Content::Char('z')][r.below(2)].clone());
+                Frag::Seq { text: true, c: Default::default(), elems: BTreeMap::from([(d, el)]) }
+            }
         }
     }
 
@@ -216,7 +227,7 @@ mod entry_copies {
                 copy(r, ctr + 1, &["q", "z"], depth - 1, kind, slots)
             } else {
                 // a register (twice as likely) beside every other kind
-                let k = if slots { [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9][r.below(11)] } else { kind };
+                let k = if slots { [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10][r.below(12)] } else { kind };
                 leaf(r, k)
             };
             entries.insert((Dot { source: Source::session(1, 0), ctr }, key), Entry { reset, frag: Some(Box::new(inner)), created });
@@ -253,8 +264,12 @@ mod entry_copies {
         assert_eq!(all, ps[..n - 1].iter().rev().fold(ps[n - 1].clone(), |a, b| join(&a, b)), "commutative");
         assert_eq!(join(&all, &ps[0]), all, "absorbing");
         if n == 3 {
-            assert_eq!(join(&ps[0], &join(&ps[1], &ps[2])), all, "associative");
-            assert_eq!(join(&join(&ps[0], &ps[2]), &ps[1]), all, "any order");
+            for [a, b, c] in [[0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+                assert_eq!(join(&join(&ps[a], &ps[b]), &ps[c]), all, "order {a} {b} {c}");
+            }
+            for [a, b, c] in [[0, 1, 2], [1, 0, 2], [2, 0, 1]] {
+                assert_eq!(join(&ps[a], &join(&ps[b], &ps[c])), all, "associative {a} ({b} {c})");
+            }
         }
         let model = ms[1..].iter().fold(ms[0].clone(), |mut a, b| {
             a.join(b.clone());
@@ -283,6 +298,24 @@ mod entry_copies {
             let mut ml = model.clone();
             ml.strip(*me);
             assert_eq!(late, ostate(&Some(ml)), "expiry {i}, the model's");
+            // un-merge of each copy (§4.6), joined in either order
+            let un = |x: &Fragment| {
+                let mut y = x.clone();
+                y.remove_dots(*e);
+                y
+            };
+            let fwd = ps[1..].iter().fold(un(&ps[0]), |a, b| join(&a, &un(b)));
+            assert_eq!(fwd, ps[..n - 1].iter().rev().fold(un(&ps[n - 1]), |a, b| join(&a, &un(b))), "un-merge {i}, commutative");
+            let mu = ms.iter().map(|m| {
+                let mut m = m.clone();
+                m.unmerge(*me, &|_| false);
+                m
+            });
+            let mu = mu.reduce(|mut a, b| {
+                a.join(b);
+                a
+            });
+            assert_eq!(fwd, ostate(&mu), "un-merge {i}, the model's");
         }
     }
 
@@ -327,6 +360,24 @@ mod entry_copies {
         laws(&[rec("a", &forged), rec("b", &w)]);
     }
 
+    /// Copies of the register write `s` in a slot are told by stamp (§7): a bag contribution or
+    /// an embedded char's creation under a later stamp of `s.dot` is a write of its own, so it
+    /// outlives a greater register write `g` that beats `s` in every arrival order (fitting it
+    /// to `s` would drop it only where `s` came before `g`).
+    #[test]
+    fn slot_copies_of_the_register_write_are_told_by_stamp_spec_7() {
+        let s = Frag::Register { reset: None, write: Some((st(1, 5), Some(str("a")))) };
+        let g = Frag::Register { reset: None, write: Some((st_at(2, 2, 6), Some(Value::Int(2)))) };
+        let bag = Frag::Bag { kind: BagKind::Counter, c: Default::default(), elems: BTreeMap::from([(Dot { source: Source::session(1, 0), ctr: 5 }, Elem { reset: None, frag: Some(Box::new(Frag::Register { reset: None, write: Some((st_at(4, 1, 5), Some(Value::Int(7)))) })) })]) };
+        let d = Dot { source: Source::Derived(Box::new(Dot { source: Source::session(1, 0), ctr: 5 })), ctr: 1 };
+        let el = SeqElem::new(Stamp { ts: (1 << 16) + 4, dot: d.clone() }, Anchor::Head, Content::Char('z'));
+        let text = Frag::Seq { text: true, c: Default::default(), elems: BTreeMap::from([(d, el)]) };
+        for forged in [bag, text] {
+            laws(&[s.clone(), forged.clone(), g.clone()]);
+            assert_ne!(join(&frag(&forged), &frag(&g)), frag(&g), "the forged write stays");
+        }
+    }
+
     /// A slot's embedding of the register is the register write's (§7), so it sits in the
     /// record holding that write (§5.6): record `a` holds writer 2's enum case and `b` writer
     /// 1's register write `w`, joined with a copy holding `w` under `a`. `w` sits under `b`, and
@@ -343,3 +394,4 @@ mod entry_copies {
         laws(&[one, two]);
     }
 }
+

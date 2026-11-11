@@ -1054,16 +1054,19 @@ fn join_slots_whole(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut
     prune_slots(reg, ma, e_parent, ch)
 }
 
-/// Makes slot `f`'s copies of register `r`'s write (a text slot's `Derived` records, a bag's
-/// contribution) equal its embedding (§7): a copy of the write with another value goes, and the
-/// embedding is joined in after.
+/// Makes slot `f`'s copies of register `r`'s write (writes at the stamps of its embedding: a text
+/// slot's `Derived` creations and chars, a bag's contribution) equal its embedding (§7): a copy
+/// of the write with another value goes, and the embedding is joined in after. Copies are told by
+/// stamp, as everywhere: a write of the dot under another stamp is its own, and a greater write
+/// or reset that beats `s` beats every copy too, so the result does not depend on whether `s`
+/// arrived before it was beaten.
 fn fit_embedding(f: &mut Fragment, r: &Register) {
     match f {
         Fragment::Seq(x) => seq::fit_embedding(x, r),
         Fragment::Bag(b) => {
             let Some(w) = &r.write else { return };
             if let Some(Fragment::Register(x)) = b.elems.get_mut(&w.stamp.dot).and_then(|el| el.frag.as_deref_mut())
-                && x.write.as_ref().is_some_and(|y| y.stamp.dot == w.stamp.dot && *y != *w)
+                && x.write.as_ref().is_some_and(|y| y.stamp == w.stamp && *y != *w)
             {
                 x.write = Some(w.clone());
             }
