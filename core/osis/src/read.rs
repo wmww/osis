@@ -116,8 +116,8 @@ fn read_link(e: &mut Engine, tid: &Tid, l: &osis_base::Link, limit: usize, budge
     let too_large = Error::TooLarge { limit };
     let x = match e.read_large_max(tid, l, *budget) {
         Ok(x) => x,
-        Err(osis_node::Error::Label(osis_label::Error::TooLarge(_))) => return Err(too_large),
-        Err(osis_node::Error::Label(err)) if err == osis_label::Error::Missing || err.class() != ErrorClass::Local => {
+        Err(osis_node::Error::Data(osis_label::Error::TooLarge(_))) => return Err(too_large),
+        Err(osis_node::Error::Data(err)) if err == osis_label::Error::Missing || err.class() != ErrorClass::Local => {
             bad.push(err);
             return Ok(None);
         }

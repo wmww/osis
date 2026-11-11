@@ -168,7 +168,7 @@ fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
     let d = recv(&diags);
     let osis::Diagnostic::Unreadable { thing, detail } = d else { panic!("{d:?}") };
     assert_eq!(thing, n);
-    assert!(detail.contains("blob missing") && detail.contains("verification failed"), "{detail}");
+    assert!(detail.contains("blob missing") && detail.contains("failed its content hash"), "{detail}");
     assert_eq!(db.at(n, example::TASKS).path(p![0, task::TAGS]).get::<BTreeSet<String>>().unwrap(), Some(["kept".to_string()].into()));
     assert_eq!(db.at(n, example::TASKS).path(p![1]).get::<Task>().unwrap(), Some(task("b")));
     // on_change: the write with the link; the watch holds it too

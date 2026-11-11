@@ -22,7 +22,7 @@ impl DiskBlobs {
 
 impl BlobSink for DiskBlobs {
     fn put(&mut self, id: BlobId, blob: Vec<u8>) -> Result<(), Error> {
-        std::fs::write(self.path(&id), blob).map_err(|_| Error::Storage)
+        std::fs::write(self.path(&id), blob).map_err(|_| Error::Storage("blob file"))
     }
 }
 

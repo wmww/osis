@@ -160,7 +160,7 @@ impl Engine {
             for x in batches.into_values() {
                 // a delta past what one unpaged delta may hold is refused (spec/commits.md §2)
                 let c = tx.in_class(true, |tx| commit_in(tx, x)).map_err(|e| match e {
-                    Error::Commit(osis_commit::Error::Delta(_)) => Error::Misuse("an ephemeral delta does not fit a blob"),
+                    Error::Data(osis_commit::Error::Delta(_)) => Error::Misuse("an ephemeral delta does not fit a blob"),
                     e => e,
                 })?;
                 memory = memory.or(c);

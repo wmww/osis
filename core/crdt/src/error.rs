@@ -3,7 +3,7 @@
 use crate::page::PageError;
 use osis_base::{Classified, DecodeError, ErrorClass};
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// Not canonical CBOR, or outside the decoder limits. BadInput.
     Cbor(DecodeError),

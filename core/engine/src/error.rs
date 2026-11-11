@@ -5,10 +5,11 @@ use osis_base::{Classified, CommitId, ErrorClass, Tid};
 #[derive(Debug)]
 pub enum Error {
     Store(osis_store::Error),
-    Commit(osis_commit::Error),
+    /// A commit, chunk tree, label object or blob failed to decode, verify, read or write
+    /// (osis-commit's error, which osis-label shares).
+    Data(osis_commit::Error),
     Crdt(osis_crdt::Error),
     Keys(osis_keys::Error),
-    Label(osis_label::Error),
     Crypto(osis_crypto::Error),
     Path(osis_schema::PathError),
     /// This node may not write that aspect (local writes, checked before signing).
@@ -34,10 +35,9 @@ pub enum Error {
 
 osis_base::impl_error!(Error {
     Store(e) => ("store: {e}"),
-    Commit(e) => ("commit: {e}"),
+    Data(e) => ("{e}"),
     Crdt(e) => ("crdt: {e}"),
     Keys(e) => ("keys: {e}"),
-    Label(e) => ("label: {e}"),
     Crypto(e) => ("crypto: {e}"),
     Path(e) => ("value: {e}"),
     Permission { tid } => ("no permission to write {tid}"),
@@ -55,10 +55,9 @@ impl Classified for Error {
     fn class(&self) -> ErrorClass {
         match self {
             Error::Store(e) => e.class(),
-            Error::Commit(e) => e.class(),
+            Error::Data(e) => e.class(),
             Error::Crdt(e) => e.class(),
             Error::Keys(e) => e.class(),
-            Error::Label(e) => e.class(),
             Error::Crypto(e) => e.class(),
             Error::Path(e) => e.class(),
             Error::BadInput(_) => ErrorClass::BadInput,
@@ -77,10 +76,9 @@ macro_rules! from {
     };
 }
 from!(osis_store::Error, Store);
-from!(osis_commit::Error, Commit);
+from!(osis_commit::Error, Data);
 from!(osis_crdt::Error, Crdt);
 from!(osis_keys::Error, Keys);
-from!(osis_label::Error, Label);
 from!(osis_crypto::Error, Crypto);
 from!(osis_schema::PathError, Path);
 

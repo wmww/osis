@@ -161,7 +161,7 @@ impl TreeSink for BlobWriter<'_> {
             self.reused += 1;
             return Ok(old);
         }
-        Ok(self.put_blob(hash, bytes)?)
+        self.put_blob(hash, bytes)
     }
     fn node(&mut self, level: u64, kids: &[Kid]) -> Result<Link, osis_commit::Error> {
         let hash = node_hash(&self.framing.dedup, level, kids);
@@ -172,7 +172,7 @@ impl TreeSink for BlobWriter<'_> {
             self.reused += 1;
             return Ok(old);
         }
-        Ok(self.put_blob(hash, &node_plaintext(level, kids)?)?)
+        self.put_blob(hash, &node_plaintext(level, kids)?)
     }
 }
 
@@ -190,7 +190,7 @@ impl PageSink for BlobWriter<'_> {
 fn open_held(fetch: &mut dyn BlobFetch, link: &Link) -> Result<Option<(Prefix, Vec<u8>)>, Error> {
     let blob = match fetch.fetch(&link.blob) {
         Ok(b) => b,
-        Err(Error::Storage) => return Err(Error::Storage),
+        Err(e @ Error::Storage(_)) => return Err(e),
         Err(_) => return Ok(None),
     };
     if link.suite != SUITE_1 || crate::blob::blob_id(&blob) != link.blob {
@@ -314,7 +314,7 @@ impl BlobReader<'_> {
 
 impl LinkSource for BlobReader<'_> {
     fn plaintext(&mut self, link: &Link) -> Result<Vec<u8>, osis_commit::Error> {
-        Ok(self.open_link(link)?)
+        self.open_link(link)
     }
 }
 

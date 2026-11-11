@@ -69,7 +69,7 @@ fn get_hosts(v: &Value) -> Result<Vec<Address>, Error> {
 fn format_of(v: &Value) -> Result<(), Error> {
     match get_uint(v, "format")? {
         1 => Ok(()),
-        n => Err(Error::UnknownFormat(n)),
+        n => Err(Error::UnknownVersion(n)),
     }
 }
 
@@ -247,7 +247,7 @@ pub(crate) mod tests {
         if let Value::List(items) = &mut v {
             items[0] = Value::Int(2);
         }
-        assert_eq!(ShareLink::from_value(&v), Err(Error::UnknownFormat(2)));
+        assert_eq!(ShareLink::from_value(&v), Err(Error::UnknownVersion(2)));
         assert!(ShareLink::from_text("osis://link/!!").is_err());
     }
 }

@@ -99,7 +99,7 @@ fn frame_out(w: &mut dyn Write, v: &Value) -> Result<(), Error> {
         return Err(Error::TooLarge("bundle record above MAX_MESSAGE"));
     }
     let len = u32::try_from(b.len()).map_err(|_| Error::TooLarge("bundle record"))?;
-    w.write_all(&len.to_be_bytes()).and_then(|()| w.write_all(&b)).map_err(|_| Error::Storage)
+    w.write_all(&len.to_be_bytes()).and_then(|()| w.write_all(&b)).map_err(|_| Error::Storage("bundle"))
 }
 
 /// Writes a bundle: the magic and format record on creation, then records in order.
@@ -109,7 +109,7 @@ pub struct BundleWriter<W: Write> {
 
 impl<W: Write> BundleWriter<W> {
     pub fn new(mut w: W) -> Result<BundleWriter<W>, Error> {
-        w.write_all(MAGIC).map_err(|_| Error::Storage)?;
+        w.write_all(MAGIC).map_err(|_| Error::Storage("bundle"))?;
         frame_out(&mut w, &Value::List(vec![Value::Int(0), uint(FORMAT)?]))?;
         Ok(BundleWriter { w })
     }
@@ -119,7 +119,7 @@ impl<W: Write> BundleWriter<W> {
     }
 
     pub fn finish(mut self) -> Result<W, Error> {
-        self.w.flush().map_err(|_| Error::Storage)?;
+        self.w.flush().map_err(|_| Error::Storage("bundle"))?;
         Ok(self.w)
     }
 }
@@ -144,7 +144,7 @@ impl<R: Read> BundleReader<R> {
             Value::List(items) => match items.as_slice() {
                 [Value::Int(0), f] => match get_uint(f, "bundle format")? {
                     FORMAT => Ok(br),
-                    n => Err(Error::UnknownFormat(n)),
+                    n => Err(Error::UnknownVersion(n)),
                 },
                 _ => Err(Error::Malformed("bundle format record")),
             },
@@ -162,7 +162,7 @@ impl<R: Read> BundleReader<R> {
                 Ok(0) => return Err(Error::Malformed("truncated frame")),
                 Ok(n) => got += n,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => return Err(Error::Storage),
+                Err(_) => return Err(Error::Storage("bundle")),
             }
         }
         let len = usize::try_from(u32::from_be_bytes(len)).map_err(|_| Error::Malformed("frame length"))?;
@@ -170,7 +170,7 @@ impl<R: Read> BundleReader<R> {
             return Err(Error::Malformed("frame length"));
         }
         let mut buf = Vec::new();
-        let n = (&mut self.r).take(u64::try_from(len).unwrap_or(0)).read_to_end(&mut buf).map_err(|_| Error::Storage)?;
+        let n = (&mut self.r).take(u64::try_from(len).unwrap_or(0)).read_to_end(&mut buf).map_err(|_| Error::Storage("bundle"))?;
         if n != len {
             return Err(Error::Malformed("truncated frame"));
         }
@@ -376,7 +376,7 @@ pub(crate) mod tests {
         assert!(last.is_err());
         let mut w = Vec::from(&MAGIC[..]);
         frame_out(&mut w, &Value::List(vec![Value::Int(0), Value::Int(2)])).unwrap();
-        assert_eq!(BundleReader::new(&w[..]).err(), Some(Error::UnknownFormat(2)));
+        assert_eq!(BundleReader::new(&w[..]).err(), Some(Error::UnknownVersion(2)));
         let mut w = Vec::from(&MAGIC[..]);
         w.extend([0, 0, 0, 0]);
         assert!(BundleReader::new(&w[..]).is_err());

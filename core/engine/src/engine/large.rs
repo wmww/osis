@@ -470,7 +470,7 @@ pub(crate) fn tree_blobs(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out:
             // children of a level-1 node are chunks: not fetched
             Ok(Some((chunks, kids))) => stack.extend(kids.into_iter().map(|k| (k, chunks))),
             Ok(None) => {}
-            Err(Error::Label(osis_label::Error::Missing)) => {
+            Err(Error::Data(osis_commit::Error::Missing)) => {
                 out.missing.insert(l.blob);
             }
             Err(e) => return Err(e),
@@ -651,7 +651,7 @@ impl Engine {
         })
     }
 
-    /// `read_large` failing with `osis_label::Error::TooLarge` past `max_len` canonical bytes
+    /// `read_large` failing with `osis_commit::Error::TooLarge` past `max_len` canonical bytes
     /// (the API's materialization bound).
     pub fn read_large_max(&mut self, tid: &Tid, link: &Link, max_len: usize) -> Result<Value> {
         let (tid, link) = (*tid, *link);
