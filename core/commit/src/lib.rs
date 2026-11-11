@@ -31,4 +31,4 @@ pub use osis_base::format::MAX_LIST_BYTES;
 pub use error::Error;
 pub use header::{AspectEntry, ChunkEntry, DeleteKey, EphClass, FIRST_EPOCH, FOREVER, Form, Header, Kind, Links, ListField, PurgeItem, RotationHeader, frontier_value, verify_merge, verify_signature};
 pub use keys::{Prefix, Secrets, delete_keys};
-pub use verify::{Decoded, check_entry_keys, delta_ctx, stream_part, verify_blob, verify_part, writer_ctx};
+pub use verify::{Decoded, check_entry_keys, delta_ctx, read_part, read_part_whole, stream_part, verify_blob, verify_part, writer_ctx};

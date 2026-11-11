@@ -221,22 +221,23 @@ impl osis_crdt::PageSource for SharedPages<'_, '_, '_> {
 const STOPPED: osis_crdt::Error = osis_crdt::Error::Malformed("stopped");
 
 /// Hands `f` a part's delta: a whole one at once, a streamed one a piece at a time as it decodes
-/// again (`stream_stored`). A streamed part failing now, after `examine` accepted it, means its
-/// bytes or pages changed since: a local error.
+/// again (`stream_stored`: `examine` checked it in full, `PartRef::Streamed`). A streamed part
+/// failing now means its bytes or pages changed since: a local error.
 pub(super) fn each_piece(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, part: PartRef<'_>, f: &mut dyn FnMut(&mut Tx<'_>, Fragment) -> Result<()>) -> Result<()> {
     let s = match part {
         PartRef::Whole(d) => return f(tx, d.fragment().clone()),
         PartRef::Streamed(s) => s,
     };
     let p = blob.parts.iter().find(|p| p.ai == s.ai).ok_or(Error::Corrupt("streamed part"))?;
-    stream_stored(tx, h, id, p, &s.dedup, f).map(|_| ())
+    stream_stored(tx, h, id, s.ai, osis_crdt::Checked::verified(&p.delta), &s.dedup, f).map(|_| ())
 }
 
-/// Decodes a verified part `p` of commit `id` (header `h`, its thing's `dedup` secret) again and
-/// hands `f` its pieces, the skeleton first, then its pages in wire order
-/// (`osis_commit::stream_part`; joining the pieces is joining the whole, spec/crdt.md §8): the
-/// transaction is shared between the page source and `f`. A snapshot's frontiers and `Absorbed`.
-pub(super) fn stream_stored(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part, dedup: &osis_crypto::Secret32, f: &mut dyn FnMut(&mut Tx<'_>, Fragment) -> Result<()>) -> Result<Option<Gives>> {
+/// Decodes the checked delta of commit `id`'s part on aspect `ai` (header `h`, its thing's
+/// `dedup` secret) again, decode-only, and hands `f` its pieces, the skeleton first, then its
+/// pages in wire order (`osis_commit::read_part`; joining the pieces is joining the whole,
+/// spec/crdt.md §8): the transaction is shared between the page source and `f`. A snapshot's
+/// frontiers and `Absorbed`.
+pub(super) fn stream_stored(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize, delta: osis_crdt::Checked<'_>, dedup: &osis_crypto::Secret32, f: &mut dyn FnMut(&mut Tx<'_>, Fragment) -> Result<()>) -> Result<Option<Gives>> {
     let cell = RefCell::new(tx);
     let mut failed = None;
     let mut pages = SharedPages { tx: &cell, dedup };
@@ -244,7 +245,7 @@ pub(super) fn stream_stored(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis
     let mut unpaged = osis_crdt::Unpaged;
     let source: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut pages };
     let mut interner = osis_crdt::Interner::new();
-    let r = osis_commit::stream_part(h, id, p, dedup, &mut interner, Some(source), &mut |piece| {
+    let r = osis_commit::read_part(h, id, ai, delta, &mut interner, Some(source), &mut |piece| {
         // counted: tests read how many pieces streamed
         let _s = crate::costs::span("apply: piece");
         let mut tx = cell.try_borrow_mut().map_err(|_| STOPPED)?;

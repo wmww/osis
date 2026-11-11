@@ -10,6 +10,10 @@
 //! pass would have built (first appearances in table order, each commit's base its smallest
 //! counter). Memory: the skeleton, one decoded page, its encoding, and trackers sized by the
 //! input (the tables, the leaf links, a writer's claimed counters).
+//!
+//! Bytes this node checked once are read again decode-only (`Checked`, `stream_checked`):
+//! the same walk without any re-encode or prune check, positions in the order the root decode
+//! met them, which for canonical bytes is the order the check's root re-encode meets them.
 
 use crate::codec::{Pager, absorbed_value, canonical, check_root, decode_entries, decode_elem_items, decode_fields, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, fetch_page, links, nonce, prune_stable, root_tables, snapshot_tail, LIMITS};
 use crate::error::Error;
@@ -19,7 +23,7 @@ use crate::paging::Step;
 use crate::seq::Seq;
 use crate::seq_wire::Runs;
 use crate::stamp::{Dot, Interner, Stamp, max_opt};
-use crate::wire::{Dec, DeltaCtx, Enc, Ev, Frontiers, NONCE_LEN, Track, as_array};
+use crate::wire::{Dec, DeltaCtx, DeltaKind, Enc, Ev, Frontiers, NONCE_LEN, Track, as_array};
 use osis_base::{CommitId, Tid, Value};
 use std::collections::BTreeMap;
 
@@ -29,12 +33,29 @@ pub(crate) struct Deferred {
     pub(crate) top: Value,
     pub(crate) enc: Encoding,
     pub(crate) depth: usize,
+    /// Where the root decode met it among the root's paged positions: wire order.
+    pub(crate) order: usize,
+}
+
+/// Delta bytes that passed the full check on this node (`stream_delta`, `stream_snapshot`,
+/// `decode_delta`, `decode_snapshot`) against the same context and pages: the only input of the
+/// decode-only readers (`stream_checked`, `decode_checked`). Never bytes from a peer not yet
+/// checked.
+#[derive(Clone, Copy)]
+pub struct Checked<'a>(&'a [u8]);
+
+impl<'a> Checked<'a> {
+    /// `bytes`, which passed the full check: just now, or before the node stored them (its store
+    /// keeps only checked deltas and returns what it was given).
+    pub fn verified(bytes: &'a [u8]) -> Checked<'a> {
+        Checked(bytes)
+    }
 }
 
 /// What `stream_delta` and `stream_snapshot` hand over, in wire order. Joining every piece into
 /// a state equals joining the whole fragment (§8: elements are independent per dot, fields per
 /// field).
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Piece {
     /// The root fragment with every streamed collection empty (its own reset and `W` kept);
     /// first.
@@ -74,18 +95,36 @@ impl Raw<'_> {
 /// canonical. Pieces already handed over stay valid only if the whole call succeeds: check
 /// first with a callback that keeps nothing, then stream again to use them.
 pub fn stream_delta<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>, each: &mut dyn FnMut(Piece) -> Result<(), Error>) -> Result<[u8; NONCE_LEN], Error> {
-    stream(bytes, cx, interner, pages, false, &mut |r| each(r.wrapped())).map(|h| h.nonce)
+    stream(bytes, cx, interner, pages, false, true, &mut |r| each(r.wrapped())).map(|h| h.nonce)
 }
 
 /// `stream_delta` for a snapshot delta (§8).
 pub fn stream_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>, each: &mut dyn FnMut(Piece) -> Result<(), Error>) -> Result<Head, Error> {
-    stream(bytes, cx, interner, pages, true, &mut |r| each(r.wrapped()))
+    stream(bytes, cx, interner, pages, true, true, &mut |r| each(r.wrapped()))
+}
+
+/// `stream_delta` or `stream_snapshot` (by `cx.kind`) of checked bytes, decode-only: the same
+/// pieces in the same order (`tests_stream`). A snapshot's tables; a delta's nonce alone.
+pub fn stream_checked<'a>(bytes: Checked<'_>, cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>, each: &mut dyn FnMut(Piece) -> Result<(), Error>) -> Result<Head, Error> {
+    stream(bytes.0, cx, interner, pages, cx.kind == DeltaKind::Snapshot, false, &mut |r| each(r.wrapped()))
+}
+
+/// `decode_delta` or `decode_snapshot` (by `cx.kind`) of checked bytes, decode-only: the whole
+/// fragment and the root's tables.
+pub fn decode_checked<'a>(bytes: Checked<'_>, cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<(Head, Fragment), Error> {
+    let mut whole = Whole::default();
+    let head = stream(bytes.0, cx, interner, pages, cx.kind == DeltaKind::Snapshot, false, &mut |p| whole.add(p))?;
+    Ok((head, whole.done()))
 }
 
 const NOT_CANONICAL: Error = Error::Malformed("not canonical");
 
-pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>, snapshot: bool, each: &mut dyn FnMut(Raw) -> Result<(), Error>) -> Result<Head, Error> {
-    check_root(bytes, pages.as_deref())?;
+/// Decodes the delta at `bytes` and hands `each` its pieces in wire order; `check`: bad input
+/// unless canonical (rules 1-5 by re-encoding), else decode-only (`Checked` bytes).
+pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>, snapshot: bool, check: bool, each: &mut dyn FnMut(Raw) -> Result<(), Error>) -> Result<Head, Error> {
+    if check {
+        check_root(bytes, pages.as_deref())?;
+    }
     let top = osis_base::decode(bytes, &LIMITS)?;
     let (n, sources, commits, frag, tail) = match (snapshot, as_array(&top)?) {
         (false, [n, s, c, f]) => (n, s, c, f, None),
@@ -104,6 +143,19 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
         None => Default::default(),
     };
     let nonce = nonce(n)?;
+    let wraps: BTreeMap<Vec<Step>, (WrapPath, Option<Stamp>)> = found.keys().map(|p| (p.clone(), (wrap_path(&skeleton, p), reset_at(&skeleton, p)))).collect();
+
+    if !check {
+        dec.fetched.clear();
+        let mut order: Vec<(Vec<Step>, Deferred)> = found.into_iter().collect();
+        order.sort_by_key(|(_, d)| d.order);
+        each(Raw::Skeleton(skeleton))?;
+        for (path, d) in order {
+            let (w, e) = wraps.get(&path).ok_or(NOT_CANONICAL)?;
+            position(&mut dec, None, &d, w, e.as_ref(), each)?;
+        }
+        return Ok(Head { nonce, frontiers, absorbed });
+    }
 
     // the root with the input's tables, streamed positions as written
     let mut enc = dec.checker(cx, found.iter().map(|(p, d)| (p.clone(), d.top.clone())).collect());
@@ -116,8 +168,9 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
     });
     canonical(bytes, again)?;
     let log = enc.check.as_mut().and_then(|c| c.log.take()).unwrap_or_default();
+    // canonical bytes meet their positions in one order, decoding or encoding (`Checked`)
+    debug_assert!(log.iter().filter_map(|ev| if let Ev::Stream(p) = ev { found.get(p).map(|d| d.order) } else { None }).is_sorted());
 
-    let wraps: BTreeMap<Vec<Step>, (WrapPath, Option<Stamp>)> = found.keys().map(|p| (p.clone(), (wrap_path(&skeleton, p), reset_at(&skeleton, p)))).collect();
     prune_stable(&skeleton, None)?;
     each(Raw::Skeleton(skeleton))?;
     // the streamed positions where the root encoding met them, between its appearances
@@ -130,7 +183,7 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
             }
             Ev::Stream(path) => {
                 let (Some(d), Some((w, e))) = (found.remove(&path), wraps.get(&path)) else { return Err(NOT_CANONICAL) };
-                position(&mut dec, &mut enc, &d, w, e.as_ref(), each)?;
+                position(&mut dec, Some(&mut enc), &d, w, e.as_ref(), each)?;
             }
         }
     }
@@ -202,11 +255,11 @@ fn prune_page(f: &Fragment, e: Option<&Stamp>, carry: &mut Vec<(Eid, Entry)>) ->
     }
 }
 
-/// Streams one paged position: every leaf page decoded, handed over and re-encoded; the
-/// re-encoding, its pages put to the check's `Replay` (which holds the input's pages: a page the
-/// encoder cuts differently is not there), must give the position's link list as written
-/// (spec/wire.md §6: paged, leaf order, link pages).
-fn position(dec: &mut Dec, enc: &mut Enc, d: &Deferred, wrap: &WrapPath, e: Option<&Stamp>, each: &mut dyn FnMut(Raw) -> Result<(), Error>) -> Result<(), Error> {
+/// Streams one paged position: every leaf page decoded and handed over. Checking (`enc`), each
+/// is re-encoded too; the re-encoding, its pages put to the check's `Replay` (which holds the
+/// input's pages: a page the encoder cuts differently is not there), must give the position's
+/// link list as written (spec/wire.md §6: paged, leaf order, link pages).
+fn position(dec: &mut Dec, mut enc: Option<&mut Enc>, d: &Deferred, wrap: &WrapPath, e: Option<&Stamp>, each: &mut dyn FnMut(Raw) -> Result<(), Error>) -> Result<(), Error> {
     let params = dec.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
     if osis_base::encode(&d.top).len() > params.target {
         return Err(Error::Malformed("link list above the page target"));
@@ -214,21 +267,22 @@ fn position(dec: &mut Dec, enc: &mut Enc, d: &Deferred, wrap: &WrapPath, e: Opti
     let top = links(as_array(&d.top)?)?.unwrap_or_default();
     let mut out = Out::new(d.enc, params);
     let mut carry = Vec::new();
-    let mut leaf = |dec: &mut Dec, enc: &mut Enc, page: Value, bytes: Vec<u8>, l: osis_base::Link| -> Result<(), Error> {
-        let fetched = std::mem::take(&mut dec.fetched);
-        if let Some(c) = enc.check.as_mut() {
-            c.replay.extend(vec![(bytes, l)]);
-            c.replay.extend(fetched);
-        }
+    let mut leaf = |dec: &mut Dec, enc: Option<&mut Enc>, page: Value, bytes: Vec<u8>, l: osis_base::Link| -> Result<(), Error> {
+        let before = std::mem::take(&mut dec.fetched);
         dec.depth = d.depth;
         let inner = decode_page(dec, &page, d.enc);
         dec.depth = 0;
         let inner = inner?;
-        if let Some(c) = enc.check.as_mut() {
-            c.replay.extend(std::mem::take(&mut dec.fetched));
+        let nested = std::mem::take(&mut dec.fetched);
+        if let Some(enc) = enc {
+            if let Some(c) = enc.check.as_mut() {
+                c.replay.extend(vec![(bytes, l)]);
+                c.replay.extend(before);
+                c.replay.extend(nested);
+            }
+            out.push(enc, &inner)?;
+            prune_page(&inner, e, &mut carry)?;
         }
-        out.push(enc, &inner)?;
-        prune_page(&inner, e, &mut carry)?;
         each(Raw::Page(wrap, inner))
     };
     for l in &top {
@@ -238,13 +292,13 @@ fn position(dec: &mut Dec, enc: &mut Enc, d: &Deferred, wrap: &WrapPath, e: Opti
             _ => None,
         };
         let Some(inner) = inner else {
-            leaf(dec, enc, page, bytes, *l)?;
+            leaf(dec, enc.as_deref_mut(), page, bytes, *l)?;
             continue;
         };
         if inner.len() > params.fanout {
             return Err(Error::Malformed("link page above the fan-out"));
         }
-        if let Some(c) = enc.check.as_mut() {
+        if let Some(c) = enc.as_mut().and_then(|enc| enc.check.as_mut()) {
             c.replay.extend(vec![(bytes, *l)]);
         }
         for l in &inner {
@@ -254,10 +308,12 @@ fn position(dec: &mut Dec, enc: &mut Enc, d: &Deferred, wrap: &WrapPath, e: Opti
             {
                 return Err(Error::Malformed("a third page level"));
             }
-            leaf(dec, enc, page, bytes, *l)?;
+            leaf(dec, enc.as_deref_mut(), page, bytes, *l)?;
         }
     }
-    if out.finish(enc)? != d.top {
+    if let Some(enc) = enc
+        && out.finish(enc)? != d.top
+    {
         return Err(NOT_CANONICAL);
     }
     Ok(())

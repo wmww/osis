@@ -752,7 +752,8 @@ fn defer(cx: &mut Dec, v: &Value, enc: Encoding) -> Result<bool, Error> {
     if links(items)?.is_none() {
         return Ok(false);
     }
-    found.insert(t.path.clone(), crate::stream::Deferred { top: v.clone(), enc, depth });
+    let order = found.len();
+    found.insert(t.path.clone(), crate::stream::Deferred { top: v.clone(), enc, depth, order });
     Ok(true)
 }
 
@@ -961,7 +962,7 @@ pub(crate) fn check_root(bytes: &[u8], pages: Option<&dyn PageSource>) -> Result
 /// fragment, pages joined in (`stream_delta` checks and yields it page by page).
 pub fn decode_delta<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Delta, Error> {
     let mut whole = crate::stream::Whole::default();
-    let head = crate::stream::stream(bytes, cx, interner, pages, false, &mut |p| whole.add(p))?;
+    let head = crate::stream::stream(bytes, cx, interner, pages, false, true, &mut |p| whole.add(p))?;
     Ok(Delta { nonce: head.nonce, fragment: whole.done() })
 }
 
@@ -969,7 +970,7 @@ pub fn decode_delta<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner,
 /// `decode_delta`.
 pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Snapshot, Error> {
     let mut whole = crate::stream::Whole::default();
-    let head = crate::stream::stream(bytes, cx, interner, pages, true, &mut |p| whole.add(p))?;
+    let head = crate::stream::stream(bytes, cx, interner, pages, true, true, &mut |p| whole.add(p))?;
     Ok(Snapshot { nonce: head.nonce, fragment: whole.done(), frontiers: head.frontiers, absorbed: head.absorbed })
 }
 

@@ -10,7 +10,7 @@ use crate::tests_decoder::{mutate, mutate_tree};
 use crate::testutil::{MCommit, frag, history_bulk, history_with, mapply, sess};
 use crate::tests_wire::{snap_cx, writer_cx};
 use crate::wire::{Delta, DeltaCtx, Frontiers, Snapshot};
-use crate::{Fragment, decode_delta, decode_snapshot, stream_delta, stream_snapshot};
+use crate::{Checked, Fragment, decode_checked, decode_delta, decode_snapshot, stream_checked, stream_delta, stream_snapshot};
 use crdt_model::ops::Ty;
 use crdt_model::r#gen::{Rng, kitchen_sink};
 use crdt_model::stamp::Source as MSource;
@@ -96,6 +96,33 @@ impl Input {
         }
         Ok(out)
     }
+    /// Accepted bytes read decode-only (`Checked`) give the pieces the check gives, in its
+    /// order, and the whole fragment and tables `decode_*` gives.
+    fn checked_agrees(&self) -> Result<(), String> {
+        let mut p = self.pages.clone();
+        let src = p.as_mut().map(|p| p as &mut dyn PageSource);
+        let mut got = Vec::new();
+        let head = stream_checked(Checked::verified(&self.root), &self.cx, &mut Interner::new(), src, &mut |x| {
+            got.push(x);
+            Ok(())
+        });
+        let mut p = self.pages.clone();
+        let src = p.as_mut().map(|p| p as &mut dyn PageSource);
+        let whole = decode_checked(Checked::verified(&self.root), &self.cx, &mut Interner::new(), src).map_err(|e| e.to_string())?;
+        let want = self.pieces().map_err(|e| e.to_string())?;
+        let mut p = self.pages.clone();
+        let src = p.as_mut().map(|p| p as &mut dyn PageSource);
+        let (frag, tables) = if self.snapshot {
+            let s = decode_snapshot(&self.root, &self.cx, &mut Interner::new(), src).map_err(|e| e.to_string())?;
+            (s.fragment, (s.nonce, s.frontiers, s.absorbed))
+        } else {
+            let d = decode_delta(&self.root, &self.cx, &mut Interner::new(), src).map_err(|e| e.to_string())?;
+            (d.fragment, (d.nonce, Default::default(), Default::default()))
+        };
+        let head = head.map_err(|e| e.to_string())?;
+        let ok = got == want && whole.1 == frag && [&head, &whole.0].iter().all(|h| (h.nonce, &h.frontiers, &h.absorbed) == (tables.0, &tables.1, &tables.2));
+        if ok { Ok(()) } else { Err(format!("decode-only read differs from the check for root {}", hex(&self.root))) }
+    }
     /// Old and new decoders agree: both reject, or both accept the same fragment.
     fn agree(&self) -> Result<bool, String> {
         match (self.whole(), self.streamed()) {
@@ -170,9 +197,16 @@ fn differential(seed: u64, ins: &[Input], paging: bool, per: usize) -> Result<(u
         if !i.agree()? {
             return Err(format!("unmutated input rejected: {:?}", i.streamed()));
         }
+        i.checked_agrees()?;
         n.2 += usize::from(paged);
         for _ in 0..per {
-            if mutant(&mut r, i).agree()? { n.0 += 1 } else { n.1 += 1 }
+            let m = mutant(&mut r, i);
+            if m.agree()? {
+                m.checked_agrees()?;
+                n.0 += 1
+            } else {
+                n.1 += 1
+            }
         }
     }
     Ok(n)

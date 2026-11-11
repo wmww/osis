@@ -4,7 +4,7 @@ use crate::blob::{CommitBlob, Part};
 use crate::header::{Form, Header};
 use crate::Error;
 use osis_base::{CommitId, Tid};
-use osis_crdt::{CounterRange, Delta, DeltaCtx, DeltaKind, Interner, PageSource, Piece, Snapshot, decode_delta, decode_snapshot, stream_delta, stream_snapshot};
+use osis_crdt::{Checked, CounterRange, Delta, DeltaCtx, DeltaKind, Interner, PageSource, Piece, Snapshot, decode_checked, decode_delta, decode_snapshot, stream_checked, stream_delta, stream_snapshot};
 use osis_crypto::{Secret32, VerifyingKey, delta_hash};
 
 /// A verified, decoded delta.
@@ -91,6 +91,26 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
     };
     keyed?;
     Ok(out)
+}
+
+/// `stream_part` of a part this node checked in full (`Checked`: the part of
+/// aspect `ai`, its `delta`), decode-only: no hash, canonical or `check_fragment` check again.
+pub fn read_part<'a>(h: &Header, id: &CommitId, ai: usize, delta: Checked<'_>, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>, each: &mut dyn FnMut(osis_crdt::Fragment) -> Result<(), osis_crdt::Error>) -> Result<Option<osis_crdt::Head>, Error> {
+    let cx = delta_ctx(h, id, ai, interner)?;
+    let head = stream_checked(delta, &cx, interner, pages, &mut |p| match p {
+        Piece::Skeleton(f) | Piece::Page { fragment: f, .. } => each(f),
+    })?;
+    Ok((cx.kind == DeltaKind::Snapshot).then_some(head))
+}
+
+/// `verify_part` of a part this node checked in full, decode-only (`read_part`).
+pub fn read_part_whole<'a>(h: &Header, id: &CommitId, ai: usize, delta: Checked<'_>, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Decoded, Error> {
+    let cx = delta_ctx(h, id, ai, interner)?;
+    let (head, fragment) = decode_checked(delta, &cx, interner, pages)?;
+    Ok(match cx.kind {
+        DeltaKind::Snapshot => Decoded::Snapshot(Snapshot { nonce: head.nonce, fragment, frontiers: head.frontiers, absorbed: head.absorbed }),
+        DeltaKind::Writer => Decoded::Delta(Delta { nonce: head.nonce, fragment }),
+    })
 }
 
 /// The rules a delta's fragment answers to by itself (spec/commits.md §4), per record and position.

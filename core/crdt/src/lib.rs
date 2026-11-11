@@ -79,7 +79,7 @@ pub use batch::Batch;
 pub use access::value_at;
 pub use ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values, remove, replace, reset_entries};
 pub use undo::{Undone, restores, undo};
-pub use stream::{Head, Piece, stream_delta, stream_snapshot};
+pub use stream::{Checked, Head, Piece, decode_checked, stream_checked, stream_delta, stream_snapshot};
 pub use page::{MemoryPages, PageError, PageParams, PageSink, PageSource, Unpaged};
 pub use paging::{PagedTouch, Paths, Step};
 pub use access::Held;
