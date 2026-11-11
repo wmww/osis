@@ -452,7 +452,7 @@ fn watch_hears_a_chunk_arrive_spec_dm_6() {
         let bytes = b.engine(|e| e.blob(&blob)).unwrap().unwrap();
         b.engine(|e| {
             e.run(|tx| {
-                tx.txn.delete_blob(&blob);
+                tx.blobs.release(&blob, false)?;
                 Ok(())
             })
         })
