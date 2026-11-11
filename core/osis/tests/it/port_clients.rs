@@ -720,7 +720,7 @@ fn watches_and_rows() {
     assert_eq!(x.n.serving().unwrap(), None);
 }
 
-// notes/client-port.md §2 (Backlinks), notes/api.md Backlinks: a client's backlinks are what its
+// spec/wire.md §11.2 (a thin client's rights), notes/client-port.md (Backlinks): a client's backlinks are what its
 // actor may read, whoever may read the target; paged through the port; its listener hears the
 // page at once, then a change of it, and nothing of what it may not read.
 #[test]
@@ -755,7 +755,7 @@ fn backlinks_are_the_actors() {
     assert_eq!((p.backlinks, p.more), (vec![want[1].clone()], false));
 }
 
-// notes/client-port.md §2 (Backlinks): on the wire, a backlinks subscription sends a page only
+// spec/wire.md §11.2 (a thin client's rights), notes/client-port.md (Backlinks): on the wire, a backlinks subscription sends a page only
 // when it reads otherwise: a reference from a source the actor may not read and a roster change
 // it may not see send nothing (the client's own check would hide either).
 #[test]
