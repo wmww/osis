@@ -1800,7 +1800,7 @@ fn a_client_leaves_alone() {
     assert!(!c.has_content(x.g).unwrap());
 }
 
-// issues/thing-lifetimes.md (API), notes/client-port.md §3: `retaining` and `release` go through
+// issues/thing-lifetimes.md (API), notes/client-port.md §3, spec/commits.md §5 and spec/permissions.md §6: `retaining` and `release` go through
 // the port's write as the actor's: a thing created retained by a thing under the group, released
 // by an admin; a writer may not release (the right to end it), nor list it (admin-only).
 #[test]
