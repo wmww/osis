@@ -36,7 +36,7 @@ pub enum Expiry {
 }
 
 /// What `AspectWrite::purge` drops, for everyone. Each write goes only where the writer may purge
-/// it: under retention `author` or `nobody` an admin's request drops nothing.
+/// it (its purgeable-by; admins always may).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Purge {
     /// The aspect's whole history, and the aspect itself with it.
@@ -93,7 +93,6 @@ impl WriteOp {
 /// to the app:
 /// - A commit has one expiry: `expires`, else what its keys say, which must then agree. A thing
 ///   created in an expiring commit ends at that expiry, whole.
-/// - A write under retention `nobody` shares a commit only with others like it.
 /// - A commit is durable or ephemeral (keys marked `+`), and an ephemeral signal (keys marked `+~`)
 ///   is a commit of its own. A new thing is durable, so ephemeral writes on it go in a later commit.
 ///
@@ -751,8 +750,8 @@ impl<K: SignalKey> AspectWrite<'_, '_, K> {
     /// and ends with `original` unless it says otherwise; the commit `commit` returns has no part
     /// here, as it lists under `original`. `Invalid` at `commit` unless `original`
     /// is this actor's fire of this durable signal, listed here and valid, and replaces none
-    /// itself (`replace` the fire, never a replacement), or when the thing's required rule
-    /// refuses replacements (`Required::refuse_replace`).
+    /// itself (`replace` the fire, never a replacement), or when the thing's setting refuses
+    /// replacements (`RetentionEntry::refuse_replace`).
     pub fn replace(&mut self, original: CommitId, v: &K::T) -> Result<()> {
         let v = self.encoded(v)?;
         let key = self.ok()?;

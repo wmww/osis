@@ -69,7 +69,7 @@ pub struct WriteFlags {
     /// The commit expires at TS (RFC 3339 or ms)
     #[arg(long, value_name = "TS", conflicts_with = "expires_in")]
     pub expires_at: Option<String>,
-    /// Retention: by=NAME,keep_history=forever|DUR,keep_until=TS,purge_on_replace
+    /// Who may purge it besides admins: by=admin|author_or_admin|writer (what history keeps is the thing's retention^.0)
     #[arg(long, value_name = "SPEC")]
     pub retention: Option<String>,
 }
@@ -139,7 +139,7 @@ pub struct GroupsArgs {
 /// How a role is taken away.
 #[derive(Args, Debug, Clone, Default)]
 pub struct SetRoleFlags {
-    /// On a removal: the removed holder's nodes retain a read-only copy (true) or erase it (false); default: the thing's (`required^.0`, field retain)
+    /// On a removal: the removed holder's nodes retain a read-only copy (true) or erase it (false); default: the thing's (`retention^.0`, field retain)
     #[arg(long = "retain-copy", value_name = "BOOL")]
     pub retain_copy: Option<bool>,
 }
@@ -633,7 +633,7 @@ pub enum ChatCmd {
     Create {
         #[arg(long, default_value = "")]
         name: String,
-        /// Who deletes: author-or-admin, author, admin, nobody
+        /// Who deletes besides admins: author-or-admin, admin (admins only), writer (anyone in it)
         #[arg(long, default_value = "author-or-admin")]
         purge: String,
         /// What an edit does to the old text: purge, keep, off

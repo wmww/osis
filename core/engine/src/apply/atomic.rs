@@ -337,7 +337,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     let owned = if snap && v { invalid_of(tx.core, &tid, &ak) } else { Vec::new() };
     let mut vouch = false;
     // superseded writes matter only for bodies with a relative bound
-    let bounded = v && (crate::retention::any_bounded(tx.core, &tid, &ak) || crate::engine::listing::listened(tx.core, &tid, &ak));
+    let bounded = v && (crate::retention::bounded(tx.core, &tid, &ak) || crate::engine::listing::listened(tx.core, &tid, &ak));
     let mut ch = Changes::new();
     let mut dead = Killed::default();
     // an invalid delta (the one path, issues/drop-rejoin-robust.md item 1): nothing of it
@@ -700,12 +700,12 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     crate::retention::memory::forget_if_spent(tx, &id)
 }
 
-/// Notes the `required^.0` deltas among `parts`, once stored (`validity::note_required_rules`).
+/// Notes the `retention^.0` deltas among `parts`, once stored (`validity::note_settings`).
 fn note_held_rules(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) -> Result<()> {
     for ai in parts.ais() {
-        if h.aspects.get(ai).is_some_and(|a| a.ak.as_str() == osis_commit::retention::REQUIRED) {
+        if h.aspects.get(ai).is_some_and(|a| a.ak.as_str() == osis_commit::retention::RETENTION) {
             let held: Vec<(usize, osis_commit::Decoded)> = super::held_part(tx, id, ai)?.into_iter().map(|d| (ai, d)).collect();
-            validity::note_required_rules(tx.core, h, id, &held);
+            validity::note_settings(tx.core, h, id, &held);
         }
     }
     Ok(())
@@ -1193,7 +1193,7 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     tx.core.rebuilds += 1;
     let k = (*tid, ak.clone());
     // the state changes: held purge-on-replace bodies are judged again (`retention::settle_none`)
-    if tx.core.ix.none_held.get(&k).is_some_and(|s| !s.is_empty()) {
+    if crate::retention::history::of(tx.core, tid, ak).purges() {
         tx.core.none_due.insert(k.clone());
     }
     let memory = tx.core.memory_tx;

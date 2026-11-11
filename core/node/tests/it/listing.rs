@@ -8,7 +8,7 @@ use osis_commit::PurgeItem;
 use osis_node::engine::listing::{CommitFrom, CommitPos, HeldPart, PartBody};
 use osis_node::local_peer::{LocalPeer, Package, Peer};
 use osis_node::{Event, Mutation};
-use osis_schema::core_types::{self as ct, Required};
+use osis_schema::core_types::{self as ct};
 use osis_schema::{Codec, Retention};
 use std::collections::BTreeSet;
 
@@ -408,13 +408,13 @@ fn perms(n: usize) -> Vec<Vec<usize>> {
 }
 
 // spec/permissions.md §6, spec/commits.md §5: a purge by author drops exactly the author's deltas
-// stamped before it, each only if the request holds the right over that delta at its own key: no
-// override under `author` or `nobody`. The same in every arrival order of the delta, the setting
+// stamped before it, each only if the request holds the right over that delta at its own key. The
+// same in every arrival order of the delta, the setting
 // requiring its retention, the author's demotion and the request, a delta arriving after the
 // request falling under it; what another wrote and what the author writes later stay.
 #[test]
 fn purge_by_author_any_order_spec_perm_6() {
-    for by in PurgeBy::ALL {
+    for by in PurgeBy::ALL.into_iter().filter(|b| *b != PurgeBy::Nobody) {
         // requester: 0 the first admin, 2 an admin, 1 the author itself, 3 another writer
         for who in [0, 1, 3] {
             let want = match who {
@@ -426,7 +426,7 @@ fn purge_by_author_any_order_spec_perm_6() {
             let r = crate::common::purgeable_by(by);
             let base = all(&mut lp, 0);
             let mut m = Mutation::new();
-            m.set(d, &ct::REQUIRED, &ct::RequiredRules { default: Some(Required::new(r, None)), ..ct::RequiredRules::default() }).unwrap();
+            m.set(d, &ct::RETENTION, &ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(osis_schema::History::FOREVER), ..Default::default() }), ..Default::default() }).unwrap();
             let setting = lp.peers[0].commit(m).unwrap().unwrap();
             let setting = pack(&mut lp, 0, &setting);
             lp.sync_all().unwrap();
@@ -522,9 +522,10 @@ fn purge_by_author_of_a_snapshot_keeps_anothers_value_spec_commits_5() {
 #[test]
 fn purge_request_floor_holds_purge_on_replace_spec_commits_5() {
     let (mut lp, d, _) = setup(435);
-    let w = write(&mut lp, 0, d, Retention { by: PurgeBy::Writer, ..Default::default() }, "v");
+    let w = write(&mut lp, 0, d, Retention { by: PurgeBy::Writer }, "v");
     let mut m = Mutation::new();
-    m.retention(d, &reg(), Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) }).unwrap();
+    keep_in(&mut m, d, &setting(&[("t:reg.0", osis_schema::History::PurgeOnReplace)]));
+    m.retention(d, &reg(), Retention { by: PurgeBy::Writer }).unwrap();
     m.purge(PurgeItem::Commit { commit: w, tid: d, ak: reg() });
     m.set(d, &reg(), &s("p")).unwrap();
     let p = lp.peers[0].commit(m).unwrap().unwrap();
@@ -545,7 +546,7 @@ fn purge_request_floor_holds_purge_on_replace_spec_commits_5() {
 fn undo_over_not_fetched_kept_part_waits_spec_commits_7() {
     let (mut lp, d, _) = setup(410);
     let mut m = Mutation::new();
-    m.retention(d, &reg(), kept_day()).unwrap();
+    keep_in(&mut m, d, &setting(&[("t:reg.0", DAY)]));
     m.set(d, &reg(), &s("alice")).unwrap();
     m.set(d, &ak("t:other.0"), &s("x")).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
@@ -555,7 +556,7 @@ fn undo_over_not_fetched_kept_part_waits_spec_commits_7() {
     let keep = only.header.aspects.iter().position(|a| a.ak != reg()).unwrap();
     only.parts.retain(|x| x.ai == keep);
     lp.peers[1].receive(&only.encode(), pk.blobs.clone()).unwrap();
-    let mine = write(&mut lp, 1, d, kept_day(), "bob");
+    let mine = write(&mut lp, 1, d, Retention::default(), "bob");
     let mut m = Mutation::new();
     m.undo(mine);
     assert!(matches!(lp.peers[1].engine.write(m), Err(osis_node::Error::ContentGone(x)) if x == mine));
@@ -573,7 +574,7 @@ fn undo_over_not_fetched_kept_part_waits_spec_commits_7() {
 // both nodes read absent alike (the SHOULD's concurrent writes arriving later are wiped).
 #[test]
 fn first_set_undo_with_concurrent_set_spec_commits_7() {
-    let none = || Retention { by: PurgeBy::Writer, ..Default::default() };
+    let none = || Retention { by: PurgeBy::Writer };
     let (mut lp, d, _) = setup(411);
     write(&mut lp, 1, d, none(), "bob");
     lp.sync_all().unwrap();

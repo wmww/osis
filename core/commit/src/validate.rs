@@ -2,7 +2,7 @@
 
 use crate::cbor::strictly_ascending;
 use crate::header::{FOREVER, Header, Kind, aspect_key, key_value, purge_value};
-use crate::retention::{CREATED, EPHEMERAL_RETENTION, REQUIRED, check_retention, delete_levels, fixed_retention};
+use crate::retention::{CREATED, EPHEMERAL_RETENTION, RETENTION, delete_levels, fixed_retention};
 use crate::Error;
 use osis_base::format::{DELETE_AUTHOR, FORMAT_VERSION};
 use osis_schema::PurgeBy;
@@ -43,12 +43,7 @@ impl Header {
         for a in &self.aspects {
             let ak = a.ak.as_str();
             // indices and ranges
-            let (until, after) = match a.retention.history {
-                Some(osis_schema::History::Keep { until, after }) => (until, after),
-                _ => (None, None),
-            };
-            let nums = [Some(a.lo), Some(a.hi), until, after];
-            ord(nums.iter().flatten().all(|n| *n <= FOREVER), "integer above 2^63 - 1")?;
+            ord(a.lo <= FOREVER && a.hi <= FOREVER, "integer above 2^63 - 1")?;
             ord(strictly_ascending(&a.keys, |i| *i), "aspect delete keys not ascending")?;
             let mut levels = Vec::with_capacity(a.keys.len());
             for i in &a.keys {
@@ -73,16 +68,17 @@ impl Header {
                 return Err(Error::Invalid("created.0 in a commit without own writes or an ephemeral one"));
             }
             // kept forever and judged by its own deltas (spec/commits.md §5): never snapshotted
-            if ak == REQUIRED && !kind.has_own_writes() {
-                return Err(Error::Invalid("required^.0 in a commit without own writes"));
+            if ak == RETENTION && !kind.has_own_writes() {
+                return Err(Error::Invalid("retention^.0 in a commit without own writes"));
             }
             // the role timeline walks every edge write (spec/commits.md §2)
             if kind == Kind::RoleSnapshot && ak == "roles.0" {
                 return Err(Error::Invalid("compaction snapshot of roles.0"));
             }
-            check_retention(&a.retention)?;
             if let Some(f) = fixed_retention(ak) {
                 ord(a.retention == f, "retention of a fixed-retention aspect")?;
+            } else if let Err(m) = crate::retention::allowed(ak, &a.retention) {
+                return Err(Error::Invalid(m));
             } else if kind == Kind::ContentSnapshot && a.retention.by != PurgeBy::Writer {
                 return Err(Error::Invalid("compaction-snapshot delta not purgeable by writer"));
             }
@@ -104,15 +100,6 @@ impl Header {
             if t <= wall {
                 return Err(Error::Invalid("expires not after the commit's ts"));
             }
-        }
-        // a `nobody` delta shares a commit only with `nobody` deltas, `required^.0` aside
-        // (spec/commits.md §5)
-        let free = |a: &&crate::header::AspectEntry| a.ak.as_str() != REQUIRED;
-        let mut classes = self.aspects.iter().filter(free).map(|a| a.retention.by == PurgeBy::Nobody);
-        if let Some(first) = classes.next()
-            && classes.any(|n| n != first)
-        {
-            return Err(Error::Invalid("a nobody delta beside a delta of another purgeable-by"));
         }
         // one author chain: at most one level-2 key (header-list blobs commit to it alone)
         if self.keys.iter().filter(|k| k.level == DELETE_AUTHOR).count() > 1 {
@@ -164,11 +151,11 @@ impl Header {
             if !self.chunks.is_empty() || !self.purge.is_empty() || self.links != crate::header::Links::default() {
                 return Err(Error::Invalid("ephemeral commit with chunks, a purge or linked lists"));
             }
-            if self.aspects.iter().any(|a| a.retention.by != EPHEMERAL_RETENTION.by || matches!(a.retention.history, Some(osis_schema::History::PurgeOnReplace))) {
-                return Err(Error::Invalid("ephemeral commit with a retention other than writer, keeping history or not"));
+            if self.aspects.iter().any(|a| a.retention != EPHEMERAL_RETENTION) {
+                return Err(Error::Invalid("ephemeral commit with a retention other than writer"));
             }
-            if c != crate::header::EphClass::Plain && (self.expires.is_some() || self.undoes.is_some() || self.aspects.iter().any(|a| a.retention != EPHEMERAL_RETENTION)) {
-                return Err(Error::Invalid("relay-only commit with an expiry, an undo or history"));
+            if c != crate::header::EphClass::Plain && (self.expires.is_some() || self.undoes.is_some()) {
+                return Err(Error::Invalid("relay-only commit with an expiry or an undo"));
             }
         }
         Ok(())

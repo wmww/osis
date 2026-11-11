@@ -27,6 +27,7 @@ fn synced(f: &Faults) -> (Net, usize, osis_base::Tid, osis_base::CommitId) {
     let b = net.forensic_node(2, &[host], f);
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let mut m = Mutation::new();
     m.set(t, &GONE, &s(&format!("{MARK}{}", "x".repeat(400)))).unwrap();
     let c = net.engine(a).commit(m).unwrap().unwrap();

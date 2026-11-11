@@ -48,13 +48,13 @@ fn created_may_expire_spec_commits_6() {
     h.validate().unwrap();
 }
 
-// spec/commits.md §2, §5: a snapshot never carries `required^.0`, kept forever and read
+// spec/commits.md §2, §5: a snapshot never carries `retention^.0`, kept forever and read
 // a delta at a time; its retention is fixed.
 #[test]
-fn required_setting_kinds_spec_commits_5() {
+fn retention_setting_kinds_spec_commits_5() {
     let mut h = sample_header();
     let a = &mut h.aspects[0];
-    a.ak = Ak::new("required^.0").unwrap();
+    a.ak = Ak::new("retention^.0").unwrap();
     a.retention = retention::KEPT_RETENTION;
     a.keys.clear();
     a.lo = 0;
@@ -64,7 +64,7 @@ fn required_setting_kinds_spec_commits_5() {
     h.kind = Kind::ContentSnapshot;
     h.form = crate::header::Form::Commit;
     assert!(h.validate().unwrap_err().to_string().contains("without own writes"));
-    assert_eq!(retention::fixed_retention("required^.0"), Some(retention::KEPT_RETENTION));
+    assert_eq!(retention::fixed_retention("retention^.0"), Some(retention::KEPT_RETENTION));
 }
 
 // spec/commits.md §2 (created one minting): a durable snapshot never carries `created.0`.
@@ -93,7 +93,7 @@ fn prefix_groups_by_key_set() {
     b.aspects[0].tid = t(3);
     b.aspects[1].tid = t(3);
     b.aspects[1].ak = Ak::new("app:body.0").unwrap();
-    b.aspects[0].retention = Retention { by: PurgeBy::Admin, ..Default::default() };
+    b.aspects[0].retention = Retention { by: PurgeBy::Admin };
     let c = b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).unwrap().commit;
     let g = prefix_groups(&c.header, [0, 1]).unwrap();
     assert_eq!(g.len(), 2);
@@ -250,7 +250,7 @@ fn list_items_cost_at_most_their_bytes_times_six() {
         b
     };
     let lists = [
-        (ListField::Aspects, array(n / 59, |i| [&[0x88][..], &tid(i), &[0x63, b'a', b'.', b'0', 1, 2, 0x82, 0, 0, 0x80], &id(0), &[0x80]].concat())),
+        (ListField::Aspects, array(n / 57, |i| [&[0x88][..], &tid(i), &[0x63, b'a', b'.', b'0', 1, 2, 0, 0x80], &id(0), &[0x80]].concat())),
         (ListField::Chunks, array(n / 36, |i| [&[0x82][..], &id(i), &[0x80]].concat())),
         (ListField::Purge, array(n / 21, |i| [&[0x82][..], &tid(i), &[0x63, b'a', b'.', b'0']].concat())),
     ];
@@ -328,14 +328,13 @@ fn node_by_shape() {
 // map keys out of order or repeated, heads not the shortest, indefinite or impossible lengths.
 #[test]
 fn list_forms_refused() {
-    let aspect = |lo: &[u8], history: &[u8], ak: &[u8]| {
+    let aspect = |lo: &[u8], by: &[u8], ak: &[u8]| {
         let mut b = vec![0x81, 0x88, 0x4f];
         b.extend([1; 15]);
         b.extend(ak);
         b.extend(lo);
         b.push(2);
-        b.extend([0x82, 0]);
-        b.extend(history);
+        b.extend(by);
         b.extend([0x80, 0x58, 32]);
         b.extend([3; 32]);
         b.push(0x80);
@@ -346,20 +345,18 @@ fn list_forms_refused() {
         h.read_list(f, b, false)
     };
     let name: &[u8] = &[0x63, b'a', b'.', b'0'];
-    for history in [&[0][..], &[1], &[0x82, 2, 0xa1, 0, 5], &[0x82, 2, 0xa1, 1, 5], &[0x82, 2, 0xa2, 0, 5, 1, 6]] {
-        read(ListField::Aspects, &aspect(&[1], history, name)).unwrap();
+    for by in [&[0][..], &[1], &[2], &[3]] {
+        read(ListField::Aspects, &aspect(&[1], by, name)).unwrap();
     }
-    for history in [
-        &[0x82, 2, 0xa2, 1, 6, 0, 5][..], &[0x82, 2, 0xa2, 0, 5, 0, 6], &[0x82, 2, 0xa2, 1, 5, 1, 6], &[0x82, 2, 0xa1, 2, 5], &[0x82, 2, 0xa1, 0, 0x20], &[0x82, 2, 0xbf, 0, 5, 0xff],
-        &[0x82, 2, 0xa0], &[0x82, 2, 0xa1, 1, 0], &[2], &[0x18, 0], &[0x82, 1, 0xa1, 0, 5], &[0x9f, 2, 0xa1, 0, 5, 0xff],
-    ] {
-        assert!(read(ListField::Aspects, &aspect(&[1], history, name)).is_err(), "{history:02x?}");
+    for by in [&[4][..], &[0x18, 1], &[0x20], &[0x82, 2, 0], &[0x81, 2]] {
+        assert!(read(ListField::Aspects, &aspect(&[1], by, name)).is_err(), "{by:02x?}");
     }
     for lo in [&[0x18, 1][..], &[0x19, 0, 1], &[0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], &[0x20]] {
-        assert!(read(ListField::Aspects, &aspect(lo, &[0xa0], name)).is_err(), "{lo:02x?}");
+        assert!(read(ListField::Aspects, &aspect(lo, &[2], name)).is_err(), "{lo:02x?}");
     }
-    assert!(read(ListField::Aspects, &aspect(&[1], &[0xa0], &[0x63, 0xff, 0xff, 0xff])).is_err());
-    let good = aspect(&[1], &[0xa0], name);
+    assert!(read(ListField::Aspects, &aspect(&[1], &[2], &[0x63, 0xff, 0xff, 0xff])).is_err());
+    let good = aspect(&[1], &[2], name);
+    read(ListField::Aspects, &good).unwrap();
     let mut trailing = good.clone();
     trailing.push(0);
     assert!(read(ListField::Aspects, &trailing).is_err());

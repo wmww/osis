@@ -566,6 +566,10 @@ pub fn work_sets(seed: u64) -> Res<Report> {
     let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pb, Role::Write), (pc, Role::Write)])?;
     let t = sim.item(a, g)?;
     sim.item(b, g)?;
+    let mut m = Mutation::new();
+    let latest = ak(&sim, &workload::LATEST)?;
+    m.set(t, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(latest, osis_schema::History::PurgeOnReplace)).map_err(|e| sim.fail(e.to_string()))?;
+    sim.commit(a, m)?;
     sim.quiet(40)?;
     sim.run(60)?;
     for k in 0..4u64 {
@@ -765,31 +769,26 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
 }
 
 /// Snapshot rights end to end (spec/commits.md §5, spec/sync.md §6, §7, spec/permissions.md §6):
-/// the seed picks a purge set, a keep bound and a mix of compacters among an admin and two plain
-/// writers, under faults. A body stays at the host and reaches a node coming fresh unless a
-/// compacter holding the right over it wrote a snapshot after it; such a body leaves the host
-/// (another right holder that never held that snapshot, superseded early, may keep its copy).
+/// the seed picks a purge set, the thing's setting and a mix of compacters among an admin and two
+/// plain writers, under faults. A body stays at the host and reaches a node coming fresh unless a
+/// compacter wrote a snapshot after it (once out of history any writer's cover drops it); such a
+/// body leaves the host (a node that never held that snapshot, superseded early, may keep its copy).
 /// Everyone reads alike, the fresh node too, whichever bodies it got; the labels go quiet
 /// (`finish`: no upload and delete loop).
 pub fn snapshot_rights(seed: u64) -> Res<Report> {
     use osis_proto::LabelStore;
     use osis_schema::{History, PurgeBy, Retention};
     let mut d = Dice::new(seed ^ 0x5a9);
-    let by = PurgeBy::from_id(d.below(5)).unwrap_or_default();
-    // 0: no history promised; 1: kept a while after replaced (`nobody`: for good); 2: purge on
-    // replace under `writer` (dead bodies go whoever compacts)
-    let bound = match d.below(3) {
-        _ if by == PurgeBy::Nobody => 1,
-        2 if by != PurgeBy::Writer => 0,
-        x => x,
-    };
+    let by = PurgeBy::from_id(1 + d.below(3)).unwrap_or_default();
+    // the thing's setting for the aspect (spec/commits.md §5 The setting): 0 no history promised;
+    // 1 kept a while after replaced; 2 purge on replace
+    let bound = d.below(3);
     let history = match bound {
-        _ if by == PurgeBy::Nobody => Some(History::FOREVER),
         1 => Some(History::Keep { until: None, after: Some(1_800_000) }),
         2 => Some(History::PurgeOnReplace),
         _ => None,
     };
-    let keep = Retention { by, history };
+    let keep = Retention { by };
     let mut sim = sim("snapshot_rights", seed, NetWeights::default());
     let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
@@ -800,8 +799,14 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
     let t = sim.item(a, g)?;
     sim.quiet(40)?;
     let k = ak(&sim, &workload::REG)?;
-    // who holds the right over a body of `author` (node), for this set
-    let right = |n: usize, author: usize| (n == a && by.admin()) || by.writer() || (n == author && by.author());
+    if let Some(h) = history {
+        let mut m = Mutation::new();
+        m.set(t, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(k.clone(), h)).map_err(|e| sim.fail(e.to_string()))?;
+        sim.commit(a, m)?;
+        sim.quiet(40)?;
+    }
+    // every node here writes: any writer's cover drops a body out of history, the purge right or
+    // not (spec/commits.md §5 Out of history), and at the end every body is out
     // two rounds of overwrites, each followed by the seed's compacters
     let mut written: Vec<(osis_base::CommitId, usize, bool)> = Vec::new();
     for round in 0..2 {
@@ -822,7 +827,7 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
                 sim.actions(n, acts)?;
                 sim.quiet(40)?;
                 for x in written.iter_mut() {
-                    x.2 |= right(n, x.1);
+                    x.2 = true;
                 }
             }
         }
@@ -859,8 +864,8 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
         // the author's own whole replaces cover it too (spec/commits.md §5 Own replaces): it wrote
         // two later commits, scenario or random (fresh writes as b's device)
         let later = sim.written.iter().skip_while(|x| x.1 != *c).skip(1).filter(|x| (if x.0 == fresh { b } else { x.0 }) == *author).count();
-        let own = right(*author, *author) && later >= 2;
-        let may_go = *gone || bound == 2 || (fresh_compacted && right(b, *author)) || own;
+        let own = later >= 2;
+        let may_go = *gone || bound == 2 || fresh_compacted || own;
         if (*gone && bound != 1 && at_host(c)) || (!may_go && !at_host(c)) {
             return Err(sim.fail(format!("{by:?} bound {bound}: body of node {author} at the host {}, should be gone {gone}", !*gone)));
         }

@@ -207,15 +207,22 @@
 //! `writes` lists the commits in a scope, anyone's, each with its parts: those still in the read or
 //! kept by history (`fired` lists a signal's). `undo` and `redo` revert this actor's own newest
 //! commit or undo in a scope; `revert` reverts any commit. Writing back what a write replaced needs
-//! that kept (`keep_history` in the schema); without it such an undo is `NotUndoable`, and only an
-//! undo that takes away what the write added (an insert, an add, a new entry) goes through.
+//! that kept (the thing's setting, `core::RETENTION`, set by its admins); without it such an undo
+//! is `NotUndoable`, and only an undo that takes away what the write added (an insert, an add, a
+//! new entry) goes through.
 //! ```
-//! # use osis::{Config, MemStore, Osis, Store, Value, Scope, CommitQuery, CommitKind};
+//! # use osis::{Config, MemStore, Osis, Store, Value, Scope, CommitQuery, CommitKind, History, Time};
+//! # use osis::core::{RETENTION, RetentionEntry, RetentionSetting};
+//! # use std::time::Duration;
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
-//! db.register_schema("app.osis", "revision 1; keep_history(1d) aspect app:x.0: int;")?;
+//! db.register_schema("app.osis", "revision 1; aspect app:x.0: int;")?;
 //! let k = db.aspect_key("app:x.0")?;
 //! let mut w = db.write();
 //! let t = w.create()?;
+//! // what is replaced stays a day, so an undo can write it back
+//! let day = History::Keep { until: Time(0), after_replaced: Duration::from_secs(86_400) };
+//! let entry = RetentionEntry { history: Some(day), ..Default::default() };
+//! w.at(t, RETENTION).set(&RetentionSetting { default: Some(entry), ..Default::default() })?;
 //! w.at(t, k.clone()).set(&Value::Int(1))?;
 //! w.commit()?;
 //! let mut w = db.write();
@@ -349,9 +356,9 @@
 //! Each fire is a commit `on_fire` hears once where it applies. An ephemeral one (`+~`)
 //! reaches only the nodes connected now that read the thing, and nobody holds it: its listener
 //! hears it as it was fired, and no page shows it. Otherwise each fire is listed by `fired` as
-//! long as the key's `keep_history` says (a schema declares one for it, an untyped write gives it
-//! by `retention`), and a purge removes one; an undo leaves it (the key reads absent before and
-//! after).
+//! long as its thing's setting (`core::RETENTION`) keeps the key's history, and a purge removes
+//! one; a fire the setting keeps no history for is `Invalid`; an undo leaves it (the key reads
+//! absent before and after).
 //! ```
 //! # use osis::{Body, CommitEvent, Config, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
@@ -379,16 +386,18 @@
 //! ```
 //! # use osis::{Body, CommitQuery, Config, MemStore, Osis, Store, Value};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
-//! # let mut w = db.write();
-//! # let t = w.create()?;
-//! # w.commit()?;
-//! let say = db.aspect_key("app:say~0")?;
-//! let keep = osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() };
+//! // the thing keeps its fires for good
+//! let keep = osis::core::RetentionEntry { history: Some(osis::History::FOREVER), ..Default::default() };
 //! let mut w = db.write();
-//! w.at(t, say.clone()).retention(keep).fire(&Value::Str("helo".into()))?;
+//! let t = w.create()?;
+//! w.at(t, osis::core::RETENTION).set(&osis::core::RetentionSetting { default: Some(keep), ..Default::default() })?;
+//! w.commit()?;
+//! let say = db.aspect_key("app:say~0")?;
+//! let mut w = db.write();
+//! w.at(t, say.clone()).fire(&Value::Str("helo".into()))?;
 //! let msg = w.commit()?.unwrap().stamp.id;
 //! let mut w = db.write();
-//! w.at(t, say.clone()).retention(keep).replace(msg, &Value::Str("hello".into()))?;
+//! w.at(t, say.clone()).replace(msg, &Value::Str("hello".into()))?;
 //! w.commit()?;
 //! let shown = db.at(t, say.clone()).commit(msg)?.unwrap();
 //! let part = shown.at(t, say.clone()).unwrap();

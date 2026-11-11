@@ -36,7 +36,7 @@ Written from `spec/` alone, depending on no osis crate but crdt-model (the other
 ## Input changes
 For adapters written against the previous input (one change per line):
 - Values are crdt-model fragments: `Delta::Writes(Frag)`, reads `Option<Value>`, states `Frag`, `Held::dots` for session-form commits; `Aspect` has no kind; `forbidden` names writes by `death::key`.
-- Retention is `{ by }`: history is the thing's `retention^.0` (`Delta::Retention`), never per write; `required^.0` (`Delta::Required`, `Rule`), `History`, `snapshot_retention` and `PurgeBy::Author` are gone. Every drop is as covered (`Body::Dropped(by)`), purge or expiry, and the state is the join of the held bodies.
+- Retention is `{ by }`: history is the thing's `retention^.0` (`Delta::Retention`), never per write. Every drop is as covered (`Body::Dropped(by)`), purge or expiry, and the state is the join of the held bodies.
 - Apply follows spec/commits.md §4 as of whole-commits step 3: no atomic apply, no "counts as held" clauses; feed a part the node does not hold as `Body::Missing`, and `Body::Dropped(by)` only for a body the node itself dropped as covered (its commit applied).
 - A waiting part of an applied commit that a request names is `Leftover(PendingPurged)`, not in `purged`.
 

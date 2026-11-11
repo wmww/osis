@@ -27,13 +27,13 @@ aspect t:shape.0: shape;
 aspect t:tags.0: set<string>;
 aspect t:map.0: map<string, item>;
 aspect t:big.0: map<string, string>;
-purgeable_by(writer) purge_on_replace aspect t:gone.0: string;
-purgeable_by(writer) purge_on_replace aspect t:gone2.0: string;
-purgeable_by(writer) purge_on_replace aspect t:gonemap.0: map<string, string>;
+purgeable_by(writer) aspect t:gone.0: string;
+purgeable_by(writer) aspect t:gone2.0: string;
+purgeable_by(writer) aspect t:gonemap.0: map<string, string>;
 expires(1h) aspect t:brief.0: string;
-purgeable_by(writer) keep_history(1d) aspect t:kept.0: string;
-purgeable_by(writer) keep_history(1d) aspect t:keptset.0: set<string>;
-purgeable_by(writer) keep_history(1d) aspect t:keptmap.0: map<string, string>;
+purgeable_by(writer) aspect t:kept.0: string;
+purgeable_by(writer) aspect t:keptset.0: set<string>;
+purgeable_by(writer) aspect t:keptmap.0: map<string, string>;
 aspect t:list.0: list<string>;
 ephemeral aspect t:log+.0: list<string>;
 aspect t:listtext.0: list<text>;
@@ -69,16 +69,42 @@ pub const DOCS: Aspect<Value> = Aspect::new("t:docs.0", &TEST);
 pub const BIGMAP: Aspect<Value> = Aspect::new("t:big.0", &TEST);
 pub const LISTTEXT: Aspect<Value> = Aspect::new("t:listtext.0", &TEST);
 
-/// Purgeable by `by`, no history promised, but kept forever under `nobody` (the one history it
-/// takes, spec/commits.md §5).
+/// Purgeable by `by`.
 pub fn purgeable_by(by: osis_base::PurgeBy) -> osis_schema::Retention {
-    osis_schema::Retention { by, history: (by == osis_base::PurgeBy::Nobody).then_some(osis_schema::History::FOREVER) }
+    osis_schema::Retention { by }
 }
 
-/// Kept a day after replaced, purgeable by its writer (`keep_history(1d)`, durable or ephemeral):
-/// what an undo writing back replaced content needs (spec/crdt.md §4.6).
-pub fn kept_day() -> osis_schema::Retention {
-    osis_schema::Retention { by: osis_base::PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(86_400_000) }) }
+/// Kept a day after replaced: what an undo writing back replaced content needs (spec/crdt.md §4.6).
+pub const DAY: osis_schema::History = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
+
+/// What `TEST`'s things keep (spec/commits.md §5 The setting): `t:gone*` purged on replace, `t:kept*`
+/// a day after replaced, nothing elsewhere. Written where the helpers create a thing.
+pub fn test_setting() -> ct::RetentionSetting {
+    let gone = osis_schema::History::PurgeOnReplace;
+    setting(&[("t:gone.0", gone), ("t:gone2.0", gone), ("t:gonemap.0", gone), ("t:kept.0", DAY), ("t:keptset.0", DAY), ("t:keptmap.0", DAY)])
+}
+
+/// A `retention^.0` setting keeping `history` for each AK named.
+pub fn setting(entries: &[(&str, osis_schema::History)]) -> ct::RetentionSetting {
+    entries.iter().map(|(a, h)| (ak(a), ct::RetentionEntry { history: Some(*h), ..Default::default() })).collect()
+}
+
+/// A setting keeping a day of history after replaced on every aspect (its default): what an undo
+/// writing back replaced content needs (spec/crdt.md §4.6).
+pub fn day_setting() -> ct::RetentionSetting {
+    ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(DAY), ..Default::default() }), ..Default::default() }
+}
+
+/// `m` also writes setting `x` on `t` (its writer must be an admin of `t`).
+pub fn keep_in(m: &mut osis_node::Mutation, t: Tid, x: &ct::RetentionSetting) {
+    m.set(t, &ct::RETENTION, x).unwrap();
+}
+
+/// Peer `i`, an admin of `t`, writes setting `x` on it: its commit.
+pub fn set_setting(lp: &mut LocalPeer, i: usize, t: Tid, x: &ct::RetentionSetting) -> CommitId {
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &ct::RETENTION, x).unwrap();
+    lp.peers[i].commit(m).unwrap().unwrap()
 }
 
 pub fn ak(s: &str) -> Ak {
@@ -126,11 +152,19 @@ pub fn net_off(n: usize, seed: u64) -> LocalPeer {
 
 /// A new thing whose first admin is peer `i`'s node.
 pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
+    new_thing_keeping(lp, i, &[])
+}
+
+/// `new_thing` whose setting also keeps `extra` (each AK's history beside `test_setting`'s).
+pub fn new_thing_keeping(lp: &mut LocalPeer, i: usize, extra: &[(&str, osis_schema::History)]) -> Tid {
     let p = lp.peer(i).unwrap();
     let me = p.engine.me();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
     m.set(t, &REG, &s("new")).unwrap();
+    let mut x = test_setting();
+    x.rules.extend(setting(extra).rules);
+    m.set(t, &ct::RETENTION, &x).unwrap();
     p.commit(m).unwrap();
     t
 }
@@ -242,7 +276,7 @@ pub fn forge_snapshot_bytes(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs};
     let author = lp.peers[by].engine.me();
     let mut aw = AspectWrite::new(t, a.clone(), 0, 0, bytes);
-    aw.retention = osis_commit::retention::snapshot_retention(a.as_str(), []);
+    aw.retention = osis_commit::retention::snapshot_retention(a.as_str());
     let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();

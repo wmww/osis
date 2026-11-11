@@ -20,6 +20,16 @@ fn new_note(db: &Osis, notebook: Tid, title: &str) -> Result<Tid> {
     })
 }
 
+/// A note whose edits undo: its creator, an admin of `notebook`, writes its setting keeping them.
+fn new_kept_note(db: &Osis, notebook: Tid, title: &str) -> Result<Tid> {
+    db.commit_with(|w| {
+        let note = w.create_in(notebook, &[notebook])?;
+        w.at(note, osis::core::RETENTION).set(&crate::common::day_default())?;
+        w.at(note, NAME).set(&title.to_string())?;
+        Ok(note)
+    })
+}
+
 fn notes(db: &Osis, notebook: Tid) -> Result<Vec<Tid>> {
     Ok(db.at(notebook, GROUP).get()?.map(|g| g.items.into_iter().filter(|t| *t != notebook).collect()).unwrap_or_default())
 }
@@ -72,7 +82,7 @@ fn two_nodes_offline_edits_and_undo() {
     let laptop = account(&mut w, 1, host);
     let phone = add_node(&laptop, w.cfg(2, &[])).unwrap();
     let nb = new_tag(&laptop, "Home").unwrap();
-    let note = new_note(&laptop, nb, "Groceries").unwrap();
+    let note = new_kept_note(&laptop, nb, "Groceries").unwrap();
     type_text(&laptop, note, 0, "milk").unwrap();
     w.run();
     assert_eq!(notes(&phone, nb).unwrap(), vec![note]);

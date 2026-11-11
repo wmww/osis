@@ -625,7 +625,7 @@ fn disappearing_message_spec_commits_6() {
 }
 
 /// A note body as core's `body.0` is: its history kept a day, so a delete undoes.
-const TEXT_SCHEMA: &str = "revision 1;\nkeep_history(1d) aspect n:body.0: text;\n";
+const TEXT_SCHEMA: &str = "revision 1;\naspect n:body.0: text;\n";
 
 // notes/api.md Text editing sessions, spec/requirements.md (Generality: one commit per editing
 // pause): two nodes edit one text concurrently in sessions; each commit is one edit, the
@@ -683,7 +683,7 @@ fn text_pair() -> (World, Osis, Osis, Tid, osis::TextSession) {
     for d in [&da, &db] {
         d.register_schema("t.osis", TEXT_SCHEMA).unwrap();
     }
-    let t = da.commit_with(|w| w.create_in(da.me(), &[da.home()])).unwrap();
+    let t = da.commit_with(|w| { let t = w.create_in(da.me(), &[da.home()])?; crate::common::keep_all(w, t); crate::common::keep_all(w, da.home()); Ok(t) }).unwrap();
     let sa = da.at(t, da.aspect_key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
     sa.edit("", "hello world").unwrap();
     sa.commit().unwrap();

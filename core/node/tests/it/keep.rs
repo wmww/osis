@@ -44,7 +44,7 @@ fn remove_saying(lp: &mut LocalPeer, target: Tid, holder: Tid, keep: bool) -> os
 /// Peer `i` sets `t`'s default for removals.
 fn set_default(lp: &mut LocalPeer, i: usize, t: Tid, keep: bool) -> osis_base::CommitId {
     let mut m = Mutation::new();
-    m.set(t, &ct::REQUIRED, &ct::RequiredRules { retain: keep, ..Default::default() }).unwrap();
+    m.set(t, &ct::RETENTION, &ct::RetentionSetting { retain: keep, ..Default::default() }).unwrap();
     lp.peers[i].engine.commit(m).unwrap().unwrap()
 }
 
@@ -306,12 +306,12 @@ fn a_later_default_touches_no_past_removal_spec_perm_3() {
 fn only_a_standing_default_fills_spec_perm_3() {
     let mut x = setup(9225, erasing(Role::Write));
     let (d, pb) = (x.d, x.pb);
-    let setting = ct::RequiredRules { retain: true, ..Default::default() };
+    let setting = ct::RetentionSetting { retain: true, ..Default::default() };
     let mut m = Mutation::new();
-    m.set(d, &ct::REQUIRED, &setting).unwrap();
+    m.set(d, &ct::RETENTION, &setting).unwrap();
     assert!(x.lp.peers[1].engine.commit(m).is_err(), "not an admin");
     let mut m = Mutation::new();
-    m.set(d, &ct::REQUIRED, &setting).unwrap();
+    m.set(d, &ct::RETENTION, &setting).unwrap();
     let forged = x.lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
     send(&mut x.lp, 1, 0, &[forged]);
     x.lp.peers[0].engine.demote(&d, &remove(pb)).unwrap();
@@ -322,7 +322,7 @@ fn only_a_standing_default_fills_spec_perm_3() {
     let mut x = setup(9227, erasing(Role::Admin));
     let (d, pb) = (x.d, x.pb);
     let mut m = Mutation::new();
-    m.set(d, &ct::REQUIRED, &setting).unwrap();
+    m.set(d, &ct::RETENTION, &setting).unwrap();
     let fell = x.lp.peers[1].engine.commit(m).unwrap().unwrap();
     let down = Demotion { new: Some(edge_of(Role::Read)), ..remove(pb) };
     x.lp.peers[0].engine.demote(&d, &down).unwrap();
@@ -849,7 +849,7 @@ fn a_links_key_takes_the_targets_default_spec_perm_7() {
         lp.peers[1].engine.redeem(&link, &pb, false).unwrap();
         spread(&mut lp);
         assert_eq!(read(&mut lp, d), Some(s(&big(D_MARK))));
-        assert_eq!(lp.peers[1].engine.get_typed(&k, &ct::REQUIRED).unwrap().is_some_and(|r| r.retain), keep);
+        assert_eq!(lp.peers[1].engine.get_typed(&k, &ct::RETENTION).unwrap().is_some_and(|r| r.retain), keep);
         lp.peers[0].engine.revoke_joiner(&k, &l, &pb, None).unwrap();
         drop_due(&mut lp);
         assert_eq!(read(&mut lp, d).is_some(), keep);

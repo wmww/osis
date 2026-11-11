@@ -38,7 +38,7 @@ const BOXES_TO: &[u8] = b"node/boxes to";
 const EPOCH_INTRO: &[u8] = b"node/epoch intro";
 const KEYSETS: &[u8] = b"node/keysets";
 const DELETE_HINTS: &[u8] = b"node/delete hints";
-const REQUIRED: &[u8] = b"node/required";
+const RETENTION: &[u8] = b"node/retention";
 const ORIGINALS: &[u8] = b"node/originals";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 /// Per account with a rotation judged, what the epoch rule says of its commits
@@ -284,7 +284,7 @@ impl Rec for osis_crdt::Source {
         Some(osis_crdt::Source::commit(CommitId(b.as_slice().try_into().ok()?)))
     }
 }
-impl Rec for std::sync::Arc<osis_schema::core_types::RequiredRules> {
+impl Rec for std::sync::Arc<osis_schema::core_types::RetentionSetting> {
     fn to(&self) -> Value {
         self.to_value()
     }
@@ -628,7 +628,7 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
                 w = w.raw(m.as_bytes()).u64(x.n()).raw(x.nonce());
             }
         }
-        w = w.u8(u8::from(d.stands_in));
+        w = w.u8(u8::from(d.stands_in)).u64(d.hosts_from);
         w = match &d.shown {
             None => w.u8(0),
             Some(x) => put_showing(w.u8(1), x),
@@ -667,7 +667,7 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     }
     for a in &v.aspects {
         let ak = a.ak.as_str().as_bytes();
-        w = w.raw(a.tid.as_bytes()).raw(&(ak.len() as u16).to_be_bytes()).raw(ak).u64(a.lo).u64(a.hi).u8(u8::from(a.bounded) | (u8::from(a.permanent) << 1) | (u8::from(a.none) << 2) | (u8::from(a.replaces.is_some()) << 3));
+        w = w.raw(a.tid.as_bytes()).raw(&(ak.len() as u16).to_be_bytes()).raw(ak).u64(a.lo).u64(a.hi).u8(u8::from(a.replaces.is_some()));
         if let Some(c) = &a.replaces {
             w = w.raw(&c.0);
         }
@@ -763,8 +763,8 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View, PartsShown)> {
     for _ in 0..n {
         let (tid, ak) = (r.tid()?, r.ak()?);
         let (lo, hi, bits) = (r.u64()?, r.u64()?, r.u8()?);
-        let replaces = if bits & 8 != 0 { Some(CommitId(r.arr()?)) } else { None };
-        aspects.push(super::AspectView { tid, ak, lo, hi, bounded: bits & 1 != 0, none: bits & 4 != 0, permanent: bits & 2 != 0, replaces });
+        let replaces = if bits & 1 != 0 { Some(CommitId(r.arr()?)) } else { None };
+        aspects.push(super::AspectView { tid, ak, lo, hi, replaces });
     }
     let mut chunks = Vec::new();
     for _ in 0..r.u32()? {
@@ -825,9 +825,10 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
             keysets.push(super::KeysetRec { role, epoch: e, lists, kem, possession, names, left_out });
         }
         let stands_in = r.u8()? != 0;
+        let hosts_from = r.u64()?;
         let shown = if r.u8()? != 0 { Some(std::sync::Arc::new(read_showing(&mut r)?)) } else { None };
         let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((flags >> 2) & 3).wrapping_sub(1)).copied();
-        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 32 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, stands_in, role, overreach: flags & 16 != 0, keysets, shown, superseded_by: BTreeSet::new() });
+        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 32 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, hosts_from, stands_in, role, overreach: flags & 16 != 0, keysets, shown, superseded_by: BTreeSet::new() });
     }
     let (mut stripped, mut valued) = (BTreeSet::new(), BTreeSet::new());
     for _ in 0..r.u32()? {
@@ -875,7 +876,7 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, EPOCH_INTRO, &c.ix.epoch_intro, all)?;
     put_map(txn, KEYSETS, &c.ix.keysets, all)?;
     put_map(txn, DELETE_HINTS, &c.ix.delete_hints, all)?;
-    put_map(txn, REQUIRED, &c.ix.required, all)?;
+    put_map(txn, RETENTION, &c.ix.retention, all)?;
     put_setmap(txn, ORIGINALS, &c.ix.originals, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
     put_map(txn, EPOCHS, &c.ix.epochs, all)?;
@@ -1061,8 +1062,8 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     for ((k, x), _) in scan::<((Tid, osis_base::Ak), (Ts, CommitId))>(tx, ORIGINALS)? {
         tx.core.ix.originals.insert(k, x);
     }
-    for (k, v) in scan::<Tid>(tx, REQUIRED)? {
-        tx.core.ix.required.insert(k, dec(&v)?);
+    for (k, v) in scan::<Tid>(tx, RETENTION)? {
+        tx.core.ix.retention.insert(k, dec(&v)?);
     }
     for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, SNAPSHOTS)? {
         tx.core.ix.snapshots.insert(k, dec(&v)?);

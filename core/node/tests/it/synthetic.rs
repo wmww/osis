@@ -24,7 +24,7 @@ fn synthetic_aspects_spec_dm_8() {
     let g2 = new_thing(&mut lp, 0);
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.get(&x, &ak("tid.0")).unwrap(), Some(Value::Tid(x)));
-    assert_eq!(e.get(&x, &ak("aspects.0")).unwrap(), Some(Value::Set([s("created.0"), s("t:reg.0")].into_iter().collect())));
+    assert_eq!(e.get(&x, &ak("aspects.0")).unwrap(), Some(Value::Set([s("created.0"), s("retention^.0"), s("t:reg.0")].into_iter().collect())), "the setting `new_thing` writes too");
     group(e, g1, &[x], &[]);
     group(e, g2, &[], &[g1]);
     group(e, g1, &[x], &[g2]); // a cycle

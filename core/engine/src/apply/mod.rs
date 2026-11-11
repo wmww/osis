@@ -197,16 +197,11 @@ pub(crate) fn fits_class(ak: &osis_base::Ak, memory: bool) -> bool {
     ak.ephemeral() == memory && !(memory && ak.signal())
 }
 
-/// `fits_class` for a received part's header entry `a`; a signal's part keeps history and is in
-/// no compaction snapshot; `replaces` only on a durable signal's part of a durable commit
-/// (spec/commits.md §2, §5 Signals).
+/// `fits_class` for a received part's header entry `a`; a signal's part is in no compaction
+/// snapshot; `replaces` only on a durable signal's part of a durable commit (spec/commits.md §2,
+/// §5 Signals).
 fn fits_part(a: &osis_commit::AspectEntry, memory: bool, snapshot: bool) -> bool {
-    fits_class(&a.ak, memory) && !(a.ak.signal() && (snapshot || !keeps_history(&a.retention))) && (a.replaces.is_none() || (!memory && !snapshot && crate::engine::edits::durable_signal(&a.ak)))
-}
-
-/// Whether retention `r` is keep history, what a signal's writes carry (spec/commits.md §5 Signals).
-pub(crate) fn keeps_history(r: &osis_schema::Retention) -> bool {
-    matches!(r.history, Some(osis_schema::History::Keep { .. }))
+    fits_class(&a.ak, memory) && !(a.ak.signal() && snapshot) && (a.replaces.is_none() || (!memory && !snapshot && crate::engine::edits::durable_signal(&a.ak)))
 }
 
 /// Whether a part of aspect `ak` is decoded whole (`Parts`).
@@ -1624,7 +1619,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             if blob.header.kind.is_compaction() {
                 snaps.push(blob.clone());
             }
-            if blob.header.kind.is_role() || blob.header.aspects.iter().any(|a| a.ak.as_str() == osis_commit::retention::REQUIRED || osis_schema::core_types::is_addenda(a.ak.as_str())) {
+            if blob.header.kind.is_role() || blob.header.aspects.iter().any(|a| a.ak.as_str() == osis_commit::retention::RETENTION || osis_schema::core_types::is_addenda(a.ak.as_str())) {
                 bodies.push(blob);
             }
         }
@@ -1670,7 +1665,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let parts = examine_stored(tx, &b, &id)?;
             atomic::note_rotation_sigs(tx.core, &b.header, &id, &b.sigs);
             validity::note_required(tx.core, &b.header, &id, &parts);
-            validity::note_required_rules(tx.core, &b.header, &id, &parts);
+            validity::note_settings(tx.core, &b.header, &id, &parts);
             validity::note_addenda(tx.core, &b.header, &id, &parts);
             if !b.header.kind.is_role() {
                 continue;
@@ -2003,7 +1998,7 @@ mod tests {
         let e = p0.engine.new_thing(&mut m, d);
         let f = p0.engine.new_thing(&mut m, e);
         m.set(f, &reg, &Value::Int(4)).unwrap();
-        m.retention(f, &reg, osis_schema::Retention { by: osis_schema::PurgeBy::Writer, ..Default::default() }).unwrap();
+        m.retention(f, &reg, osis_schema::Retention { by: osis_schema::PurgeBy::Writer }).unwrap();
         let id = p0.commit(m).unwrap().unwrap();
         let h = p0.engine.header(&id).unwrap();
         let wf = h.aspects.iter().find(|w| w.tid == f && w.ak == reg).unwrap();

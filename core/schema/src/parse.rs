@@ -6,9 +6,8 @@
 //! file    := innerdoc* "revision" INT ";" item*
 //! item    := doc* ( "type" IDENT ("<" IDENT,+ ">")? "=" type ";"
 //!                 | mod* "ephemeral"? "admin"? ("aspect" | "signal") AK ":" type succeeds? ";" )
-//! mod     := "synthetic" | "guaranteed" | "purge_on_replace"
-//!          | "purgeable_by" "(" IDENT ("," IDENT)? ")"
-//!          | "keep_history" "(" ("forever" | DUR) ")" | "expires" "(" DUR ")"
+//! mod     := "synthetic" | "guaranteed"
+//!          | "purgeable_by" "(" IDENT ("," IDENT)? ")" | "expires" "(" DUR ")"
 //! type    := IDENT ("<" type,+ ">")? | "struct" "{" field,* "}" | "enum" "{" case,* "}"
 //! field   := doc* (IDENT INT ":" type ("=" lit)? succeeds? | "reserved" ids)
 //! case    := doc* (IDENT INT ("(" type ")")? succeeds? | "reserved" ids)
@@ -21,7 +20,7 @@
 
 use crate::error::ParseError;
 use crate::lex::{Tok, Token, lex};
-use crate::schema::{AspectDef, DefaultHistory, DefaultRetention, Flag, PurgeBy, Schema, TypeDef};
+use crate::schema::{AspectDef, Flag, PurgeBy, Retention, Schema, TypeDef};
 use crate::types::{Case, EnumType, Field, StructType, Type};
 use osis_base::{Ak, Tid, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -190,7 +189,7 @@ impl<'a> Parser<'a> {
                 }
                 Tok::Ident(k) if k == "revision" => return self.err_at(at, "duplicate revision"),
                 Tok::Ident(_) => {
-                    let mut def = AspectDef { ty: Type::Any, retention: DefaultRetention::default(), expires: None, flags: BTreeSet::new(), succeeds: BTreeSet::new(), doc: item_doc };
+                    let mut def = AspectDef { ty: Type::Any, retention: Retention::default(), expires: None, flags: BTreeSet::new(), succeeds: BTreeSet::new(), doc: item_doc };
                     self.modifiers(&mut def)?;
                     let (ephemeral, admin) = (self.eat_kw("ephemeral"), self.eat_kw("admin"));
                     let kat = self.here();
@@ -250,16 +249,12 @@ impl<'a> Parser<'a> {
         loop {
             let at = self.here();
             let Tok::Ident(name) = self.tok().clone() else { return Ok(()) };
-            if !matches!(name.as_str(), "synthetic" | "guaranteed" | "purge_on_replace" | "purgeable_by" | "keep_history" | "expires") {
+            if !matches!(name.as_str(), "synthetic" | "guaranteed" | "purgeable_by" | "expires") {
                 return Ok(());
             }
             self.pos += 1;
             if !seen.insert(name.clone()) {
                 return self.err_at(at, format!("duplicate {name}"));
-            }
-            let history = matches!(name.as_str(), "purge_on_replace" | "keep_history");
-            if history && def.retention.history.is_some() {
-                return self.err_at(at, "keep_history and purge_on_replace exclude each other");
             }
             match name.as_str() {
                 "synthetic" => {
@@ -268,10 +263,9 @@ impl<'a> Parser<'a> {
                 "guaranteed" => {
                     def.flags.insert(Flag::Guaranteed);
                 }
-                "purge_on_replace" => def.retention.history = Some(DefaultHistory::PurgeOnReplace),
                 "purgeable_by" => {
                     self.expect('(')?;
-                    let mut who = vec![self.ident("nobody, admin, author or writer")?];
+                    let mut who = vec![self.ident("admin, writer, or author, admin")?];
                     if self.eat(',') && !self.is(')') {
                         who.push(self.ident("admin or author")?);
                         self.eat(',');
@@ -279,23 +273,11 @@ impl<'a> Parser<'a> {
                     self.expect(')')?;
                     let who: Vec<&str> = who.iter().map(String::as_str).collect();
                     def.retention.by = match who.as_slice() {
-                        ["nobody"] => PurgeBy::Nobody,
                         ["admin"] => PurgeBy::Admin,
-                        ["author"] => PurgeBy::Author,
                         ["writer"] => PurgeBy::Writer,
                         ["author", "admin"] | ["admin", "author"] => PurgeBy::AuthorOrAdmin,
-                        _ => return self.err_at(at, "purgeable_by takes nobody, admin, author, writer, or author, admin"),
+                        _ => return self.err_at(at, "purgeable_by takes admin, writer, or author, admin"),
                     };
-                }
-                "keep_history" => {
-                    self.expect('(')?;
-                    let kat = self.here();
-                    def.retention.history = Some(match self.next() {
-                        Tok::Ident(f) if f == "forever" => DefaultHistory::KeepForever,
-                        Tok::Dur(ms) => DefaultHistory::KeepFor(ms),
-                        _ => return self.err_at(kat, "keep_history takes forever or a duration (30d, 12h, 5m, 10s, 250ms) after replaced"),
-                    });
-                    self.expect(')')?;
                 }
                 _ => {
                     self.expect('(')?;

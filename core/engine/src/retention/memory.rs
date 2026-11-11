@@ -268,7 +268,7 @@ fn plain_memory(m: &crate::engine::Meta) -> bool {
 fn superseder(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<CommitId>> {
     let Some(m) = tx.core.ix.commits.get(c).filter(|m| plain_memory(m)).cloned() else { return Ok(None) };
     let (Some(p_exp), Some(a)) = (m.header.expires, m.header.aspects.get(ai)) else { return Ok(None) };
-    if super::history::of(a).keeps() {
+    if super::history::of(tx.core, &a.tid, &a.ak).keeps() {
         return Ok(None);
     }
     let p = joined(tx, c, ai)?;

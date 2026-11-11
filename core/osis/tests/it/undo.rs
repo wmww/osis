@@ -10,18 +10,37 @@ use crate::common::*;
 use crate::common::CreateIn;
 use osis::{CommitKind, CommitQuery, DynamicAspectKey, NotUndoableReason, Error, MemStore, Osis, Scope, Value};
 
-/// Aspects keeping history a day, and ones keeping none, durable and ephemeral.
+/// The aspects: `kept_thing` keeps `KEPT` a day, the others none, durable and ephemeral.
 const SCHEMA: &str = "revision 1;
-keep_history(1d) aspect app:k.0: int;
+aspect app:k.0: int;
 aspect app:n.0: int;
 aspect app:l.0: list<int>;
 aspect app:m.0: map<string, int>;
-keep_history(1d) aspect app:km.0: map<string, int>;
-keep_history(1d) ephemeral aspect app:ke+.0: int;
+aspect app:km.0: map<string, int>;
+ephemeral aspect app:ke+.0: int;
 ephemeral aspect app:ne+.0: int;
 ";
 
 const DAY: u64 = 86_400_000;
+
+/// The aspects a `kept_thing`'s setting keeps a day.
+const KEPT: [&str; 3] = ["app:k.0", "app:km.0", "app:ke+.0"];
+
+/// In `w`, `t`'s setting keeping `KEPT` a day.
+fn keeps(w: &mut osis::Write<'_>, t: osis::Tid) {
+    let x = setting(&KEPT.map(|a| (a, crate::common::DAY)));
+    w.at(t, osis::core::RETENTION).set(&x).unwrap();
+}
+
+/// A thing whose setting keeps `KEPT` a day.
+fn kept_thing(db: &Osis) -> osis::Tid {
+    db.commit_with(|w| {
+        let t = w.create()?;
+        keeps(w, t);
+        Ok(t)
+    })
+    .unwrap()
+}
 
 fn setup(seed: u64) -> Osis {
     let db = osis::internals::create(cfg(seed, MemStore::new(), &clock())).unwrap();
@@ -61,7 +80,7 @@ fn register_without_history_not_undoable_spec_crdt_4_6() {
     let store = MemStore::new();
     let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap();
     db.register_schema("undo.osis", SCHEMA).unwrap();
-    let t = db.commit_with(|w| w.create()).unwrap();
+    let t = kept_thing(&db);
     sets(&db, t, "app:n.0", &[1]);
     let scope = Scope::Aspects(vec![(t, ak("app:n.0"))]);
     let u = db.undo(&scope).unwrap().unwrap();
@@ -87,7 +106,7 @@ fn register_with_history_undoes_anywhere_spec_crdt_4_6() {
     let store = MemStore::new();
     let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap();
     db.register_schema("undo.osis", SCHEMA).unwrap();
-    let t = db.commit_with(|w| w.create()).unwrap();
+    let t = kept_thing(&db);
     sets(&db, t, "app:k.0", &[1, 2, 3]);
     drop(db);
     let db = osis::internals::open(cfg(2, store, &c)).unwrap();
@@ -100,7 +119,7 @@ fn register_with_history_undoes_anywhere_spec_crdt_4_6() {
     for n in [&a, &b] {
         n.register_schema("undo.osis", SCHEMA).unwrap();
     }
-    let t = a.commit_with(|w| w.create()).unwrap();
+    let t = kept_thing(&a);
     sets(&a, t, "app:k.0", &[1, 2]);
     deliver(&a, &b);
     b.undo(&scope_of(t)).unwrap().unwrap();
@@ -113,60 +132,18 @@ fn register_with_history_undoes_anywhere_spec_crdt_4_6() {
     assert_eq!(a.undo(&scope_of(t)), Err(gone(last)), "older than its keep bound");
 }
 
-// spec/commits.md §7: an undo needs every part it may have replaced kept, each by its own
-// retention, never the undone write's. A kept write over an unkept one (written untyped, so with
-// no history): `NotUndoable`, nothing written, never the field emptied.
-#[test]
-fn undo_over_unkept_part_not_undoable_spec_commits_7() {
-    let db = setup(9);
-    let k = key(&db, "app:k.0");
-    let t = db.commit_with(|w| w.create()).unwrap();
-    commit_with(&db, |w| w.at(t, DynamicAspectKey::untyped(ak("app:k.0"))).set(&Value::Int(1)));
-    let kept = sets(&db, t, "app:k.0", &[2]);
-    let marks = db.engine(|e| e.commit_ids().len());
-    assert_eq!(db.undo_target(&scope_of(t)), Err(gone(kept)));
-    assert_eq!(db.undo(&scope_of(t)), Err(gone(kept)), "it replaced an unkept write");
-    assert_eq!((db.engine(|e| e.commit_ids().len()), db.at(t, k).get().unwrap()), (marks, int(2)), "nothing written");
-}
-
-// spec/commits.md §7: an unkept write (untyped: no history) over a kept one undoes, writing the
-// kept value back.
-#[test]
-fn unkept_write_over_kept_part_undoes_spec_commits_7() {
-    let db = setup(10);
-    let t = db.commit_with(|w| w.create()).unwrap();
-    sets(&db, t, "app:k.0", &[1]);
-    let unkept = commit_with(&db, |w| w.at(t, DynamicAspectKey::untyped(ak("app:k.0"))).set(&Value::Int(2))).stamp.id;
-    assert_eq!(db.undo_target(&scope_of(t)).unwrap().map(|e| e.stamp.id), Some(unkept));
-    db.undo(&scope_of(t)).unwrap().unwrap();
-    assert_eq!(db.at(t, key(&db, "app:k.0")).get().unwrap(), int(1));
-}
-
-// spec/commits.md §7: a redo writes the undone write back, so it follows that write's retention,
-// not the undo commit's: on an aspect keeping history, an entry created untyped (no history)
-// undoes but does not redo; one created typed redoes; a replace written untyped does not redo.
+// spec/commits.md §7: a redo writes the undone write back, so it needs that write kept: on an
+// aspect the thing's setting keeps, a map entry's creation undoes and redoes.
 #[test]
 fn redo_follows_undone_write_spec_commits_7() {
     let db = setup(11);
-    let (m, raw) = (key(&db, "app:km.0"), DynamicAspectKey::untyped(ak("app:km.0")));
-    let t = db.commit_with(|w| w.create()).unwrap();
-    let scope = Scope::Aspects(vec![(t, ak("app:km.0"))]);
-    commit_with(&db, |w| w.at(t, raw.clone()).path(osis::p!["a"]).set(&Value::Int(1)));
-    let u = db.undo(&scope).unwrap().unwrap();
-    assert_eq!(db.at(t, m.clone()).get().unwrap(), None);
-    assert_eq!(db.redo_target(&scope), Err(gone(u.stamp.id)));
-    assert_eq!(db.redo(&scope), Err(gone(u.stamp.id)), "an unkept creation");
-    let t = db.commit_with(|w| w.create()).unwrap();
+    let m = key(&db, "app:km.0");
+    let t = kept_thing(&db);
     let scope = Scope::Aspects(vec![(t, ak("app:km.0"))]);
     commit_with(&db, |w| w.at(t, m.clone()).path(osis::p!["b"]).set(&Value::Int(2)));
     db.undo(&scope).unwrap().unwrap();
     db.redo(&scope).unwrap().unwrap();
     assert_eq!(db.at(t, m.clone()).path(osis::p!["b"]).get().unwrap(), int(2), "a kept creation");
-    let t = db.commit_with(|w| w.create()).unwrap();
-    sets(&db, t, "app:k.0", &[1]);
-    commit_with(&db, |w| w.at(t, DynamicAspectKey::untyped(ak("app:k.0"))).set(&Value::Int(2)));
-    let u = db.undo(&scope_of(t)).unwrap().unwrap();
-    assert_eq!(db.redo(&scope_of(t)), Err(gone(u.stamp.id)), "an unkept replace");
 }
 
 fn scope_of(t: osis::Tid) -> Scope {
@@ -181,7 +158,7 @@ fn undo_alike_held_or_compacted_spec_crdt_4_6() {
     for name in ["app:k.0", "app:n.0"] {
         let outcome = |compact: bool| {
             let db = setup(3);
-            let t = db.commit_with(|w| w.create()).unwrap();
+            let t = kept_thing(&db);
             let first = sets(&db, t, name, &[1]);
             if compact {
                 let k = ak(name);
@@ -211,7 +188,7 @@ fn undo_alike_held_or_compacted_spec_crdt_4_6() {
 #[test]
 fn takings_undo_without_history_redo_needs_it_spec_crdt_4_6() {
     let db = setup(4);
-    let t = db.commit_with(|w| w.create()).unwrap();
+    let t = kept_thing(&db);
     let (l, m) = (key(&db, "app:l.0"), key(&db, "app:m.0"));
     commit_with(&db, |w| w.at(t, l.clone()).set(&Value::List(vec![Value::Int(1)])));
     commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(1..1, &[Value::Int(2)]));
@@ -236,13 +213,13 @@ fn takings_undo_without_history_redo_needs_it_spec_crdt_4_6() {
 }
 
 // spec/crdt.md §4.6, notes/ephemeral.md Undo: ephemeral writes undo as durable ones do, from the
-// history their aspect keeps in memory: a replace undoes and redoes with `keep_history`, is
+// history the thing's setting keeps for their aspect in memory: a replace undoes and redoes where it keeps it, is
 // `NotUndoable` without; each write and revert is an ephemeral commit, listed like any, and
 // nothing reaches the store.
 #[test]
 fn ephemeral_undo_from_kept_history_spec_crdt_4_6() {
     let db = setup(5);
-    let t = db.commit_with(|w| w.create()).unwrap();
+    let t = kept_thing(&db);
     let marks = || db.engine(|e| (e.commit_ids().len(), e.core.generation));
     let before = marks();
     sets(&db, t, "app:ke+.0", &[1, 2]);
@@ -270,7 +247,7 @@ fn ephemeral_undo_from_kept_history_spec_crdt_4_6() {
     assert_eq!(marks(), before, "no durable commit, no store write");
     // another node's commit is not known here
     let other = setup(6);
-    let x = other.commit_with(|w| w.create()).unwrap();
+    let x = kept_thing(&other);
     let oid = sets(&other, x, "app:ke+.0", &[1]);
     assert!(matches!(db.revert(oid), Err(Error::Invalid(_))));
 }
@@ -284,6 +261,7 @@ fn thing_scope_skips_cursor_spec_crdt_4_6() {
     let (text, cursor) = (key(&db, "app:k.0"), key(&db, "app:ke+.0"));
     let mut w = db.write();
     let d = w.create_with_content(db.home()).unwrap();
+    keeps(&mut w, d);
     w.commit().unwrap();
     db.commit_set(d, text.clone(), &Value::Int(1)).unwrap();
     db.commit_set(d, cursor.clone(), &Value::Int(1)).unwrap();
@@ -310,11 +288,12 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
         .commit_with(|w| {
             let f = w.create_with_content(db.home())?;
             let item = w.create_with_content(db.home())?;
+            keeps(w, item);
             w.group(f).add(osis::Member::Item(item))?;
             Ok((f, item))
         })
         .unwrap();
-    let e = db.commit_with(|w| w.create_in(db.me(), &[f])).unwrap();
+    let e = db.commit_with(|w| { let e = w.create_in(db.me(), &[f])?; keeps(w, e); Ok(e) }).unwrap();
     db.commit_set(item, body.clone(), &Value::Int(1)).unwrap();
     db.commit_set(e, draft.clone(), &Value::Int(1)).unwrap();
     db.commit_set(item, body.clone(), &Value::Int(2)).unwrap();
@@ -341,8 +320,8 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
 #[test]
 fn undo_takes_no_key_default_spec_crdt_4_6() {
     let db = setup(30);
-    db.register_schema("rv.osis", "revision 1;\nexpires(30d) keep_history(1d) aspect app:d.0: int;\nkeep_history(1d) aspect app:p.0: int;\nexpires(30s) keep_history(1d) ephemeral aspect app:de+.0: int;\nkeep_history(1d) ephemeral aspect app:pe+.0: int;").unwrap();
-    let t = db.commit_with(|w| w.create_with_content(db.home())).unwrap();
+    db.register_schema("rv.osis", "revision 1;\nexpires(30d) aspect app:d.0: int;\naspect app:p.0: int;\nexpires(30s) ephemeral aspect app:de+.0: int;\nephemeral aspect app:pe+.0: int;").unwrap();
+    let t = db.commit_with(|w| { let t = w.create_with_content(db.home())?; keep_all(w, t); Ok(t) }).unwrap();
     for (x, y) in [("app:d.0", "app:p.0"), ("app:de+.0", "app:pe+.0")] {
         let (a, b) = (db.aspect_key(x).unwrap(), db.aspect_key(y).unwrap());
         let mut w = db.write();
@@ -365,8 +344,8 @@ fn undo_takes_no_key_default_spec_crdt_4_6() {
 fn undo_needing_two_expiries_waits_spec_crdt_4_6() {
     let c = clock();
     let db = osis::internals::create(cfg(31, MemStore::new(), &c)).unwrap();
-    db.register_schema("two.osis", "revision 1;\nkeep_history(1d) aspect app:a.0: int;\nkeep_history(1d) aspect app:b.0: int;\nkeep_history(1d) ephemeral aspect app:c+.0: int;\nkeep_history(1d) ephemeral aspect app:d+.0: int;").unwrap();
-    let t = db.commit_with(|w| w.create_with_content(db.home())).unwrap();
+    db.register_schema("two.osis", "revision 1;\naspect app:a.0: int;\naspect app:b.0: int;\nephemeral aspect app:c+.0: int;\nephemeral aspect app:d+.0: int;").unwrap();
+    let t = db.commit_with(|w| { let t = w.create_with_content(db.home())?; keep_all(w, t); Ok(t) }).unwrap();
     for (x, y) in [("app:a.0", "app:b.0"), ("app:c+.0", "app:d+.0")] {
         let (a, b) = (db.aspect_key(x).unwrap(), db.aspect_key(y).unwrap());
         db.commit_set(t, b.clone(), &Value::Int(0)).unwrap();
@@ -398,7 +377,7 @@ fn undo_needing_two_expiries_waits_spec_crdt_4_6() {
 fn undo_over_forgotten_ephemeral_part_not_undoable_spec_commits_7() {
     let db = osis::internals::create(cfg(12, MemStore::new(), &clock())).unwrap();
     db.register_schema("x.osis", "revision 1;\nexpires(1h) ephemeral aspect app:xe+.0: int;").unwrap();
-    let t = db.commit_with(|w| w.create()).unwrap();
+    let t = kept_thing(&db);
     let first = sets(&db, t, "app:xe+.0", &[1]);
     let last = sets(&db, t, "app:xe+.0", &[2]);
     assert!(!db.engine(|e| e.holds_memory(&first.raw())), "the first set forgotten");

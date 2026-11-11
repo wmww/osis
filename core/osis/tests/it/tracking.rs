@@ -220,7 +220,7 @@ fn reads_without_a_listener_are_heard() {
     let u = thing(&db);
     assert!(h.undo_target(&Scope::Thing(u)).is_ok());
     assert_eq!(fired(&db, &n), 0);
-    keep_day(&db, &["t:k.0"]);
+    typed_any(&db, &["t:k.0"]);
     db.commit_set(u, kept(&db, &ak("t:k.0")), &Value::Int(1)).unwrap();
     assert_eq!(fired(&db, &n), 1, "undo_target");
     db.commit_with(|w| w.at(u, kept(&db, &ak("t:k.0"))).set(&Value::Int(2))).unwrap();
@@ -280,7 +280,8 @@ fn tracked_listing_hears_the_address() {
 fn tracked_commit_hears_its_commit_alone() {
     let db = pumped(13);
     let t = thing(&db);
-    keep_day(&db, &["t:k.0"]);
+    typed_any(&db, &["t:k.0"]);
+    keep_day(&db, t, &["t:k.0"]);
     let k = kept(&db, &ak("t:k.0"));
     let c = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1))).stamp.id;
     db.settle();
@@ -299,7 +300,7 @@ fn listing_moved_counts_touched_commits_at_n_and_10n() {
     let judged = |n: i64| {
         let db = pumped(10);
         let t = thing(&db);
-        keep_day(&db, &["t:k.0"]);
+        typed_any(&db, &["t:k.0"]);
         let k = kept(&db, &ak("t:k.0"));
         for i in 0..n {
             db.commit_set(t, k.clone(), &Value::Int(i)).unwrap();
@@ -390,8 +391,8 @@ fn every_changed_answer_fires() {
         let j = osis::internals::pair(cfg(seed + 1000, MemStore::new(), &c), &a.pair_offer().unwrap()).unwrap();
         let (_, reply) = a.pair_accept(j.request()).unwrap();
         let b = j.finish(&reply).unwrap();
-        keep_day(&a, &["t:k.0"]);
-        keep_day(&b, &["t:k.0"]);
+        typed_any(&a, &["t:k.0"]);
+        typed_any(&b, &["t:k.0"]);
         let things: Vec<Tid> = (0..2).map(|_| thing(&a)).collect();
         let groups: Vec<Tid> = (0..2).map(|_| thing(&a)).collect();
         deliver(&a, &b);

@@ -29,7 +29,7 @@ pub fn is_addenda(ak: &str) -> bool {
 /// of the thing counts: no creation record, no rights, no retention rule (spec/commits.md §5)
 /// and no addenda.
 pub fn is_content(ak: &str) -> bool {
-    !is_role_class(ak) && !is_addenda(ak) && ak != "created.0" && ak != "required^.0"
+    !is_role_class(ak) && !is_addenda(ak) && ak != "created.0" && ak != "retention^.0"
 }
 
 /// Whether `ak` is a core schema key by its form: one name segment, no tid (spec/data-model.md
@@ -247,7 +247,7 @@ impl Codec for osis_base::PurgeBy {
     }
     fn from_value(v: &Value) -> Result<osis_base::PurgeBy, PathError> {
         match v {
-            Value::Enum(c, None) => usize::try_from(*c).ok().and_then(|c| [Self::Nobody, Self::Admin, Self::AuthorOrAdmin, Self::Writer, Self::Author].get(c).copied()).ok_or_else(|| rt::unknown_case(v)),
+            Value::Enum(c, None) => Self::from_id(*c).ok_or_else(|| rt::unknown_case(v)),
             _ => Err(rt::unknown_case(v)),
         }
     }
@@ -274,77 +274,64 @@ impl Codec for crate::History {
     }
 }
 codec_struct! {
-    /// The retention and expiry a write of an aspect must carry; `expires` as a
-    /// duration from the write, none: no expiry. `final`: a delta claiming `replaces` breaks it.
+    /// What a thing promises for replaced content of an aspect (`history`, absent: none
+    /// promised), the expiry a writer gives its writes there as a duration from the write (none:
+    /// no expiry), and `final`: a writer refuses to replace a fire there (spec/commits.md §5).
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct Required { 0 by: osis_base::PurgeBy, 1 history: Option<crate::History>, 2 expires: Option<u64>, 3 r#final: bool }
+    pub struct RetentionEntry { 0 history: Option<crate::History>, 1 expires: Option<u64>, 2 r#final: bool }
 }
-impl Required {
-    pub fn new(r: crate::Retention, expires: Option<u64>) -> Required {
-        Required { by: r.by, history: r.history, expires, r#final: false }
-    }
-    pub fn retention(&self) -> crate::Retention {
-        crate::Retention { by: self.by, history: self.history }
-    }
-    /// The expiry a write stamped at `wall` ms must carry (`None` when out of range: no write
-    /// meets it).
+
+impl RetentionEntry {
+    /// The expiry a write stamped at `wall` ms gets (`None` when out of range).
     pub fn expires_at(&self, wall: u64) -> Option<Option<u64>> {
         match self.expires {
             None => Some(None),
             Some(d) => wall.checked_add(d).map(Some),
         }
     }
-
-    /// Whether `expires`, on a delta stamped at `wall` ms, meets this entry (spec/commits.md §5
-    /// Required retention): a `replaces` delta's within `(wall, wall + duration]`, any other's
-    /// exactly `expires_at`.
-    pub fn expiry_met(&self, wall: u64, expires: Option<u64>, replaces: bool) -> bool {
-        match (self.expires_at(wall), replaces) {
-            (Some(Some(t)), true) => expires.is_some_and(|e| wall < e && e <= t),
-            (want, _) => want == Some(expires),
-        }
-    }
 }
 
 codec_struct! {
-    /// The retention required by AK, `default` for every AK with no entry; `retain`: a removal from
-    /// the thing retains a read-only copy unless its remover says otherwise.
+    /// A thing's `retention^.0` setting: an entry by AK, `default` for every AK with no entry;
+    /// `retain`: a removal from the thing retains a read-only copy unless its remover says
+    /// otherwise.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct RequiredRules { 0 rules: BTreeMap<Ak, Required>, 1 retain: bool, 2 default: Option<Required> }
+    pub struct RetentionSetting { 0 rules: BTreeMap<Ak, RetentionEntry>, 1 retain: bool, 2 default: Option<RetentionEntry> }
 }
 
-impl RequiredRules {
-    pub fn new() -> RequiredRules {
-        RequiredRules::default()
+impl RetentionSetting {
+    /// A setting of one entry: `history` for `ak`.
+    pub fn of(ak: Ak, history: crate::History) -> RetentionSetting {
+        BTreeMap::from([(ak, RetentionEntry { history: Some(history), ..RetentionEntry::default() })]).into()
+    }
+
+    /// The entry governing `ak`: its own, else the default.
+    pub fn entry(&self, ak: &Ak) -> Option<&RetentionEntry> {
+        self.rules.get(ak).or(self.default.as_ref())
     }
 }
 
-impl From<BTreeMap<Ak, Required>> for RequiredRules {
-    fn from(rules: BTreeMap<Ak, Required>) -> RequiredRules {
-        RequiredRules { rules, ..RequiredRules::default() }
+impl From<BTreeMap<Ak, RetentionEntry>> for RetentionSetting {
+    fn from(rules: BTreeMap<Ak, RetentionEntry>) -> RetentionSetting {
+        RetentionSetting { rules, ..RetentionSetting::default() }
     }
 }
 
-impl FromIterator<(Ak, Required)> for RequiredRules {
-    fn from_iter<I: IntoIterator<Item = (Ak, Required)>>(i: I) -> RequiredRules {
+impl FromIterator<(Ak, RetentionEntry)> for RetentionSetting {
+    fn from_iter<I: IntoIterator<Item = (Ak, RetentionEntry)>>(i: I) -> RetentionSetting {
         BTreeMap::from_iter(i).into()
     }
 }
 
-/// What `required^.0` value `v` requires (spec/commits.md §5): nothing, if it does not read as the
-/// type (a key that is no AK among them) or is over the bounds.
-pub fn required_rules(v: &Value) -> RequiredRules {
-    RequiredRules::from_value(v).ok().filter(required_fits).unwrap_or_default()
+/// What `retention^.0` value `v` sets (spec/commits.md §5): `None` (no setting) if it does not
+/// read as the type (a key that is no AK among them) or is over the bounds.
+pub fn retention_setting(v: &Value) -> Option<RetentionSetting> {
+    RetentionSetting::from_value(v).ok().filter(setting_fits)
 }
 
-/// Whether `rules` is within the bounds of one `required^.0` delta.
-pub fn required_fits(rules: &RequiredRules) -> bool {
-    rules.rules.len() <= osis_base::format::MAX_REQUIRED_ENTRIES
-}
-
-/// The entry of `rules` governing `ak`: its own, else the default.
-pub fn required_for<'a>(rules: &'a RequiredRules, ak: &Ak) -> Option<&'a Required> {
-    rules.rules.get(ak).or(rules.default.as_ref())
+/// Whether `s` is within the bounds of one `retention^.0` delta.
+pub fn setting_fits(s: &RetentionSetting) -> bool {
+    s.rules.len() <= osis_base::format::MAX_RETENTION_ENTRIES
 }
 
 /// `group.0`: a field never written reads empty, its default in the
@@ -414,7 +401,8 @@ pub const REACH: Aspect<Reach> = Aspect::new("reach.0", &CORE);
 pub const HOST: Aspect<Host> = Aspect::new("host^.0", &CORE);
 /// `clients^.0`: by client actor.
 pub const CLIENTS: Aspect<BTreeMap<Tid, Client>> = Aspect::new("clients^.0", &CORE);
-pub const REQUIRED: Aspect<RequiredRules> = Aspect::new("required^.0", &CORE);
+/// `retention^.0`: what the thing keeps of replaced content (spec/commits.md §5); fixed retention.
+pub const RETENTION: Aspect<RetentionSetting> = Aspect::new("retention^.0", &CORE);
 /// `purge.0`: the delta of a purge request naming no aspect to reset; fixed retention (spec/commits.md §5).
 pub const PURGE: Aspect<WallMs> = Aspect::new("purge.0", &CORE);
 pub const GROUP: Aspect<Group> = Aspect::new("group.0", &CORE);

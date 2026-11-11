@@ -19,10 +19,11 @@ use osis_sim::world::World;
 #[test]
 fn undo_redo_cycle_spec_commits_7() {
     let db = db(1);
-    keep_day(&db, &["t:a.0", "t:b.0", "t:other.0", "t:x.0"]);
+    typed_any(&db, &["t:a.0", "t:b.0", "t:other.0", "t:x.0"]);
     let k = ak("t:x.0");
     let mut w = db.write();
     let t = w.create().unwrap();
+    keep_all(&mut w, t);
     w.commit().unwrap();
     db.commit_set(t, kept(&db, &k.clone()), &Value::Int(1)).unwrap();
     db.commit_set(t, kept(&db, &k.clone()), &Value::Int(2)).unwrap();
@@ -66,10 +67,11 @@ fn undo_redo_cycle_spec_commits_7() {
 #[test]
 fn new_commit_clears_redo_spec_commits_7() {
     let db = db(1);
-    keep_day(&db, &["t:a.0", "t:b.0"]);
+    typed_any(&db, &["t:a.0", "t:b.0"]);
     let (a, b) = (ak("t:a.0"), ak("t:b.0"));
     let mut w = db.write();
     let t = w.create().unwrap();
+    keep_all(&mut w, t);
     w.commit().unwrap();
     db.commit_set(t, kept(&db, &a.clone()), &Value::Int(1)).unwrap();
     let scope = Scope::Thing(t);
@@ -123,11 +125,12 @@ fn undo_mutation_alone_spec_commits_7() {
 #[test]
 fn query_relations_spec_crdt_4_6() {
     let db = db(1);
-    keep_day(&db, &["t:x.0", "t:y.0"]);
+    typed_any(&db, &["t:x.0", "t:y.0"]);
     let (k, j) = (ak("t:x.0"), ak("t:y.0"));
     let mut w = db.write();
     let g = w.create().unwrap();
     let t = w.create_in(db.me(), &[g]).unwrap();
+    keep_all(&mut w, t);
     w.commit().unwrap();
     let c1 = commit_with(&db, |w| w.at(t, kept(&db, &k.clone())).set(&Value::Int(1)));
     let mut w = db.write();
@@ -163,10 +166,10 @@ fn query_relations_spec_crdt_4_6() {
 fn query_filters_api_commits() {
     let c = clock();
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
-    keep_day(&db, &["t:x.0", "t:y.0"]);
+    typed_any(&db, &["t:x.0", "t:y.0"]);
     let (k, j) = (ak("t:x.0"), ak("t:y.0"));
     // made acting for the account (a record alone would act for the node)
-    let t = db.commit_with(|w| w.create_with_content(db.home())).unwrap();
+    let t = db.commit_with(|w| { let t = w.create_with_content(db.home())?; keep_all(w, t); Ok(t) }).unwrap();
     let c1 = commit_with(&db, |w| w.at(t, kept(&db, &k.clone())).set(&Value::Int(1)));
     c.advance(1);
     let mut w = db.write();
@@ -218,10 +221,10 @@ fn sync2(a: &Osis, b: &Osis) {
 #[test]
 fn undo_redo_across_nodes_spec_commits_7() {
     let (da, db) = two_nodes();
-    keep_day(&da, &["t:x.0", "t:y.0"]);
-    keep_day(&db, &["t:x.0", "t:y.0"]);
+    typed_any(&da, &["t:x.0", "t:y.0"]);
+    typed_any(&db, &["t:x.0", "t:y.0"]);
     let k = ak("t:x.0");
-    let t = da.commit_with(|w| w.create()).unwrap();
+    let t = da.commit_with(|w| { let t = w.create()?; keep_all(w, t); Ok(t) }).unwrap();
     let c1 = commit_with(&da, |w| w.at(t, kept(&da, &k.clone())).set(&Value::Int(1)));
     sync2(&da, &db);
     let get = |d: &Osis| d.at(t, kept(&da, &k.clone())).get().unwrap();
@@ -259,12 +262,13 @@ fn find_another_actors_revert_api_commits() {
     let alice = crate::scenario::account(&mut w, 1, host);
     let bob = crate::scenario::account(&mut w, 2, host);
     let b = crate::scenario::introduce(&mut w, &alice, &bob);
-    keep_day(&alice, &["t:x.0"]);
-    keep_day(&bob, &["t:x.0"]);
+    typed_any(&alice, &["t:x.0"]);
+    typed_any(&bob, &["t:x.0"]);
     let k = ak("t:x.0");
     let t = alice
         .commit_with(|wr| {
             let t = wr.create()?;
+            keep_all(wr, t);
             Ok(t)
         })
         .unwrap();
@@ -423,11 +427,11 @@ fn step(db: &Osis, scope: &Scope, redo: bool) -> Option<CommitId> {
 #[test]
 fn undo_of_creation_deletes_spec_crdt_4_6() {
     let db = db(1);
-    keep_day(&db, &["t:x.0", "t:y.0"]);
+    typed_any(&db, &["t:x.0", "t:y.0"]);
     let (x, y) = (ak("t:x.0"), ak("t:y.0"));
-    let mk = |db: &Osis| db.commit_with(|w| w.create_with_content(db.home())).unwrap();
+    let mk = |db: &Osis| db.commit_with(|w| { let g = w.create_with_content(db.home())?; keep_all(w, g); Ok(g) }).unwrap();
     let (f, f2, f3) = (mk(&db), mk(&db), mk(&db));
-    let t = db.commit_with(|w| { let t = w.create_in(db.me(), &[f])?; w.at(t, kept(&db, &x.clone())).set(&Value::Int(1))?; Ok(t) }).unwrap();
+    let t = db.commit_with(|w| { let t = w.create_in(db.me(), &[f])?; keep_all(w, t); w.at(t, kept(&db, &x.clone())).set(&Value::Int(1))?; Ok(t) }).unwrap();
     let created = db.created(t).unwrap().unwrap().id;
     db.commit_with(|w| { w.group(f2).add(osis::Member::Item(t))?; w.group(f3).add(osis::Member::Subgroup(t)) }).unwrap();
     let edit = commit_with(&db, |w| w.at(t, kept(&db, &y.clone())).set(&Value::Int(2))).stamp.id;
@@ -466,14 +470,15 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
 #[test]
 fn undo_of_creation_resets_ephemeral_aspects_spec_crdt_4_6() {
     let db = db(2);
-    keep_day(&db, &["t:made.0"]);
+    typed_any(&db, &["t:made.0"]);
     let k = ak("app:draft+.0");
-    let mk = |db: &Osis| db.commit_with(|w| w.create_with_content(db.home())).unwrap();
+    let mk = |db: &Osis| db.commit_with(|w| { let g = w.create_with_content(db.home())?; keep_all(w, g); Ok(g) }).unwrap();
     let (f, f2) = (mk(&db), mk(&db));
     let e = db
         .commit_with(|w| {
             // its content kept, so the redo writes it back
             let e = w.create_with_admin(db.me())?;
+            keep_all(w, e);
             w.at(e, kept(&db, &ak("t:made.0"))).set(&Value::Bool(true))?;
             w.group(f).add(osis::Member::Item(e))?;
             Ok(e)
@@ -506,11 +511,12 @@ fn undo_of_creation_resets_ephemeral_aspects_spec_crdt_4_6() {
 #[test]
 fn next_reports_what_undo_and_redo_revert_api_commits() {
     let db = db(3);
-    keep_day(&db, &["t:x.0"]);
+    typed_any(&db, &["t:x.0"]);
     let k = ak("t:x.0");
-    let f = db.commit_with(|w| { let g = w.create_with_content(db.home())?; Ok(g) }).unwrap();
+    let f = db.commit_with(|w| { let g = w.create_with_content(db.home())?; keep_all(w, g); Ok(g) }).unwrap();
     let in_f = |w: &mut osis::Write<'_>| -> osis::Result<osis::Tid> {
         let t = w.create_with_content(db.home())?;
+        keep_all(w, t);
         w.group(f).add(osis::Member::Item(t))?;
         Ok(t)
     };
@@ -543,14 +549,14 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
     let alice = crate::scenario::account(&mut w, 1, host);
     let bob = crate::scenario::account(&mut w, 2, host);
     let b = crate::scenario::introduce(&mut w, &alice, &bob);
-    keep_day(&alice, &["t:x.0"]);
-    keep_day(&bob, &["t:x.0"]);
+    typed_any(&alice, &["t:x.0"]);
+    typed_any(&bob, &["t:x.0"]);
     let x = ak("t:x.0");
-    let g = alice.commit_with(|wr| { let g = wr.create()?; Ok(g) }).unwrap();
+    let g = alice.commit_with(|wr| { let g = wr.create()?; keep_all(wr, g); Ok(g) }).unwrap();
     alice.sync(g, &[]).unwrap();
     alice.grant(g, b, osis::Role::Write, osis::GrantOpts::default()).unwrap();
     w.run();
-    let mk = |admin: osis::Tid| alice.commit_with(|wr| { let t = wr.create_in(admin, &[g])?; wr.at(t, kept(&alice, &x.clone())).set(&Value::Int(1))?; Ok(t) }).unwrap();
+    let mk = |admin: osis::Tid| alice.commit_with(|wr| { let t = wr.create_in(admin, &[g])?; keep_all(wr, t); wr.at(t, kept(&alice, &x.clone())).set(&Value::Int(1))?; Ok(t) }).unwrap();
     let t = mk(g);
     w.run();
     assert_eq!(bob.at(t, kept(&alice, &x.clone())).get().unwrap(), Some(Value::Int(1)));
@@ -598,9 +604,9 @@ fn creation_revert_found_by_created_scope_api_commits() {
 fn one_moment_many_commits_lose_none_api_commits() {
     let c = clock();
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
-    keep_day(&db, &["t:x.0"]);
+    typed_any(&db, &["t:x.0"]);
     let k = kept(&db, &ak("t:x.0"));
-    let t = db.commit_with(|w| w.create()).unwrap();
+    let t = db.commit_with(|w| { let t = w.create()?; keep_all(w, t); Ok(t) }).unwrap();
     let made: Vec<_> = (0..5).map(|i| commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(i)))).collect();
     let at = made[0].stamp.written;
     assert!(made.iter().all(|m| m.stamp.written == at), "the clock did not move");

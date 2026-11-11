@@ -4,7 +4,8 @@
 //! commits changed (`Core::commit_changes`).
 //!
 //! The listing rule, one at every address: a part is listed while it is in its aspect's read (a
-//! write of it live, `body_live`) or kept by history until its keep bound (`body_keep`), a purge
+//! write of its own live, `delta_live`) or kept by its own aspect's history until its keep bound
+//! (`body_history_keep`), a purge
 //! tombstone (its value-less writes are judged alike), or this node's own invalid write. Replaced
 //! with no history kept, expired, dropped (compacted), another node's invalid write: not listed,
 //! whatever this node still holds. So every node holding the same commits lists the same ones.
@@ -115,7 +116,7 @@ fn part_here(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Here> {
     let dropped = m.body_gone(ai);
     let header = m.header.clone();
     Ok(if holds {
-        if past_due(&header, ai, tx.now().0) { Here::Dropped } else { Here::Holds }
+        if past_due(tx.core, &header, ai, tx.now().0) { Here::Dropped } else { Here::Holds }
     } else if let Some(by) = crate::retention::purged_by(tx, &header, c, ai)? {
         Here::Purged(by)
     } else if dropped {
@@ -136,14 +137,15 @@ fn part_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Result<
 }
 
 /// Whether part `ai` of `c` on `(tid, ak)` is in kept history at wall ms `now`: a write of it in
-/// the aspect's read (`body_live`: value-less writes count, so a purge tombstone of a live write
-/// does) or its body kept by a keep bound (`body_keep`). By headers and the state alone.
+/// the aspect's read (`delta_live`: its own writes, never another part's of its body, which keeps
+/// the bytes, not this part's listing; value-less writes count, so a purge tombstone of a live
+/// write does) or kept by its own aspect's history (`body_history_keep`). By headers and the state alone.
 pub(crate) fn in_kept_history(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, now: u64) -> Result<bool> {
-    let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(tid, ak).and_then(|ai| m.header.aspects.get(ai).cloned())) else { return Ok(false) };
-    if crate::retention::history::of(&a).leaves_at(None) > now {
+    let Some(written) = tx.core.ix.commits.get(c).filter(|m| m.aspect(tid, ak).is_some()).map(|m| m.view.ts.wall_ms().0) else { return Ok(false) };
+    if crate::retention::history::of(tx.core, tid, ak).kept_whenever_replaced(written, now) {
         return Ok(true);
     }
-    Ok(crate::retention::bounds::body_live(tx, c, tid, ak)? || crate::retention::bounds::body_keep(tx, c, tid, ak)? > now)
+    Ok(crate::retention::bounds::delta_live(tx, c, tid, ak)? || crate::retention::bounds::body_history_keep(tx, c, tid, ak)? > now)
 }
 
 /// Part `ai` of `c` as listed, `None` when it is not (the listing rule, above). `itself`: an
@@ -186,7 +188,7 @@ pub(super) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
     let kept = match &here {
         Here::Dropped => false,
         _ if !valid => true,
-        Here::Purged(by) => now < purged_keep(tx, c, ai, by) || crate::retention::bounds::body_live(tx, c, &tid, &ak)?,
+        Here::Purged(by) => now < purged_keep(tx, c, ai, by) || crate::retention::bounds::delta_live(tx, c, &tid, &ak)?,
         _ => in_kept_history(tx, c, &tid, &ak, now)?,
     };
     Ok(kept.then_some((valid, here)))
@@ -194,8 +196,8 @@ pub(super) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
 
 /// The keep bound of part `ai` of `c` purged by `by`: its keep rule counted from the request's `ts`.
 pub(super) fn purged_keep(tx: &Tx<'_>, c: &CommitId, ai: usize, by: &CommitId) -> u64 {
-    let Some(k) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.get(ai).map(crate::retention::history::of)) else { return 0 };
-    k.leaves_at(tx.core.ix.commits.get(by).map(|m| m.view.ts.wall_ms().0))
+    let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)) else { return 0 };
+    crate::retention::history::of(tx.core, &a.tid, &a.ak).leaves_at(tx.core.ix.commits.get(by).map(|m| m.view.ts.wall_ms().0))
 }
 
 /// The wall ms before which part `ai` of `c` is listed by its keep bound alone; `None` when no
@@ -204,13 +206,13 @@ fn keep_bound(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<u64>> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(a) = m.view.aspects.get(ai) else { return Ok(None) };
     let (tid, ak, valid) = (a.tid, a.ak.clone(), m.valid_at(ai));
-    if !valid || crate::retention::bounds::body_live(tx, c, &tid, &ak)? {
+    if !valid || crate::retention::bounds::delta_live(tx, c, &tid, &ak)? {
         return Ok(None);
     }
     Ok(match part_here(tx, c, ai)? {
         Here::Dropped => None,
         Here::Purged(by) => Some(purged_keep(tx, c, ai, &by)),
-        _ => Some(crate::retention::bounds::body_keep(tx, c, &tid, &ak)?),
+        _ => Some(crate::retention::bounds::body_history_keep(tx, c, &tid, &ak)?),
     })
 }
 
@@ -220,8 +222,9 @@ fn keep_bound(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<u64>> {
 /// keeping no history). A bound past `FOREVER` keeps for good: no timer.
 fn arm_keep_bound(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId) -> Result<()> {
     let now = tx.now().0;
-    // the latest bound its header allows (replaced last): `keep_bound` is never later
-    let may_keep = |m: &crate::engine::Meta, ai: usize| m.header.aspects.get(ai).is_some_and(|a| now < crate::retention::bounds::kept_until(&m.header, a, Some(u64::MAX)));
+    // a bound past now needs a keeping setting or a purge floor
+    let dated = crate::retention::history::of(tx.core, tid, ak).dated();
+    let may_keep = |m: &crate::engine::Meta, ai: usize| m.header.aspects.get(ai).is_some() && (dated || osis_commit::retention::purge_keep_until(&m.header).is_some_and(|t| now < t));
     let Some((ai, expires)) = tx.core.ix.commits.get(c).and_then(|m| Some((m.aspect(tid, ak)?, m.header.expires)).filter(|(ai, _)| may_keep(m, *ai))) else { return Ok(()) };
     // an expiry by then takes it out first, by its own timer (one timer per part and time)
     if let Some(t) = keep_bound(tx, c, ai)?.filter(|t| now < *t && *t < osis_commit::FOREVER && expires.is_none_or(|e| *t < e)) {
@@ -262,23 +265,36 @@ pub(crate) fn kept_passed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
 }
 
 /// The commits listed on `(tid, ak)` whose listing a change of its state may turn: every one
-/// but those kept by an absolute bound (`keep_history` until a time, or for good), whose
+/// but those kept by an absolute bound (a setting keeping history until a time, or for good), whose
 /// listing no state decides. Costs the commits held there, and a liveness read of each of the
 /// rest.
 fn listed_by_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeSet<CommitId>> {
     let now = tx.now().0;
     let on: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     let mut out = BTreeSet::new();
+    let kept = crate::retention::history::of(tx.core, tid, ak);
     for c in on {
         drop(crate::costs::span("listing: commit judged"));
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
         let Some(ai) = m.aspect(tid, ak) else { continue };
-        let fixed = m.header.aspects.get(ai).is_some_and(|a| crate::retention::history::of(a).leaves_at(None) > now);
+        let fixed = kept.kept_whenever_replaced(m.view.ts.wall_ms().0, now);
         if !fixed && listed(tx, &c, ai)?.is_some() {
             out.insert(c);
         }
     }
     Ok(out)
+}
+
+/// The settings of `tid` changed (`retention::settings_changed`): every commit held on value
+/// aspect `(tid, ak)`, `on`, may be listed otherwise, so each is told (a stale one told again is
+/// harmless) and its keep-bound timer armed again.
+pub(crate) fn setting_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, on: &[CommitId]) -> Result<()> {
+    if listened(tx.core, tid, ak) {
+        for c in on {
+            tx.core.commits_named(*tid, ak.clone(), *c);
+        }
+    }
+    arm_keep_bounds(tx, tid, ak)
 }
 
 /// Whether a commit listener may be on `(tid, ak)`: on the thing or a group it is in
@@ -342,8 +358,8 @@ pub(crate) fn listing_moved(tx: &mut Tx<'_>) -> Result<()> {
 
 /// Whether part `ai` of `h` is past its expiry or, a signal's, its keep bound: no read shows it,
 /// held or not (this engine's next tick drops it).
-fn past_due(h: &Header, ai: usize, now: u64) -> bool {
-    h.expires.is_some_and(|t| t <= now) || crate::retention::past_signal_bound(h, ai, now)
+fn past_due(core: &crate::engine::Core, h: &Header, ai: usize, now: u64) -> bool {
+    h.expires.is_some_and(|t| t <= now) || crate::retention::past_signal_bound(core, h, ai, now)
 }
 
 /// The read of a held part, its pieces joined up to `budget` bytes.

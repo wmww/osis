@@ -2,7 +2,7 @@
 
 use osis_chat::*;
 use super::{leave, link_actors, participants};
-use osis::core::REQUIRED;
+use osis::core::RETENTION;
 use osis::{Body, Commit, CommitEvent, CommitFrom, CommitId, CommitKind, CommitQuery, LinkOpts, Osis, Part, PurgeBy, Role, SetRoleOpts, ShareLink, Subscription, Tid, Value};
 use osis_sim::world::World;
 use schema::{EditMode, MSG};
@@ -16,9 +16,7 @@ fn msg(text: &str) -> schema::Message {
 
 /// Fires `m` on chat `c`: its id.
 fn send(db: &Osis, c: Tid, m: &schema::Message) -> osis::Result<CommitId> {
-    let mut w = db.write();
-    w.at(c, MSG).fire(m)?;
-    Ok(w.commit()?.unwrap().stamp.id)
+    osis_chat::send(db, c, m)
 }
 
 fn post(db: &Osis, c: Tid, text: &str) -> osis::Result<CommitId> {
@@ -47,12 +45,12 @@ fn link(db: &Osis, c: Tid, role: Role, single_use: bool) -> ShareLink {
     db.make_link(c, role, LinkOpts { until: None, single_use, direct: false }).unwrap()
 }
 
-/// Sets the disappearing timer: the rules, written whole, with the message rule's expiry.
+/// Sets the disappearing timer: the setting, written whole, with the message entry's expiry.
 fn disappear(db: &Osis, c: Tid, d: Option<Duration>) {
-    let mut rules = db.at(c, REQUIRED).get().unwrap().unwrap();
+    let mut rules = db.at(c, RETENTION).get().unwrap().unwrap();
     rules.rules.get_mut(&MSG.name()).unwrap().expires = d;
     let mut w = db.write();
-    w.at(c, REQUIRED).set(&rules).unwrap();
+    w.at(c, RETENTION).set(&rules).unwrap();
     w.commit().unwrap();
 }
 
@@ -274,10 +272,11 @@ fn delete_for_everyone_spec_commits_5() {
     assert_eq!(by(&b2, his), Some(bob), "on a new node too");
 }
 
-// spec/permissions.md §6: purge sets: author only keeps a moderator out; nobody is a permanent chat; admin only keeps an author out
+// spec/permissions.md §6: purge sets: admin only keeps an author out; author or admin lets both;
+// any writer lets another participant delete too; admins may always purge
 #[test]
 fn purge_sets_spec_perm_6() {
-    for (by, author, admin) in [(PurgeBy::Author, true, false), (PurgeBy::Admin, false, true), (PurgeBy::Nobody, false, false)] {
+    for (by, author, admin) in [(PurgeBy::Admin, false, true), (PurgeBy::AuthorOrAdmin, true, true)] {
         let Room { mut w, a, b, c, .. } = room(Options { purge: by, ..Options::default() });
         post(&b, c, "x").unwrap();
         w.run();
@@ -324,47 +323,33 @@ fn kick_keep_erase_purge_spec_perm_3() {
     assert!(!b.has_content(c).unwrap());
 }
 
-// spec/commits.md §5: required retention refuses a participant's other retention: refused at its writer, and if forged past it, invalid and unshown; every other aspect too; a stale writer is told
+// spec/commits.md §5 Expiry default, §6: a message expires as its sender saw the setting: a stale
+// sender's message, written before the timer reached it, is shown everywhere and keeps the expiry
+// it carries (none); once the timer reaches it, its messages disappear on time
 #[test]
-fn required_and_stale_writer_spec_commits_5() {
-    let Room { mut w, a, b, c, bob } = room(Options::default());
+fn stale_writer_keeps_its_expiry_spec_commits_6() {
+    let Room { mut w, a, b, c, .. } = room(Options::default());
     post(&a, c, "x").unwrap();
     w.run();
-    let k = MSG.name();
-    let mut x = b.write();
-    let bad = osis::Retention { by: PurgeBy::Nobody, history: Some(osis::History::FOREVER) };
-    assert!(x.at(c, osis::DynamicAspectKey::untyped(k.clone())).retention(bad).set(&Value::Str("x".into())).is_err() || x.commit().is_err(), "refused at its writer");
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _s = on_rejected(&b, c, tx);
-    // Bob offline: the timer changes, he posts under the old rule
+    // Bob offline: the timer changes, he posts under the old setting
     w.set_online(&b, false);
     w.advance(1000);
     disappear(&a, c, Some(Duration::from_secs(60)));
     w.run();
     w.advance(1000);
     let stale = post(&b, c, "stale").unwrap();
-    let stale2 = post(&b, c, "stale too").unwrap();
     w.set_online(&b, true);
-    w.advance(60_000);
     w.run();
-    b.settle();
-    let told: Vec<CommitId> = rx.try_iter().collect();
-    assert!(told.contains(&stale) && told.contains(&stale2), "told of both: {told:?}");
-    assert!(!texts(&a, c).iter().any(|t| t.starts_with("stale")), "others do not show it");
-    let mine = part(&b, c, stale);
-    assert!(!mine.valid, "its sender sees it did not go");
-    assert_eq!(text(&mine.body), Some("stale"), "and can send it again");
-    assert_eq!(participants(&a, c).unwrap().get(&bob), Some(&Role::Write));
-    let Body::Held(Some(again)) = &mine.body else { panic!() };
-    let again = send(&b, c, again).unwrap();
+    w.advance(61_000);
     w.run();
-    assert_eq!(texts(&a, c).last().unwrap(), "stale", "it went this time");
-    assert!(part(&b, c, again).valid);
-    w.advance(1000);
-    // he can post again under the new rule
+    assert_eq!(texts(&a, c).last().unwrap(), "stale", "valid, and it carries no expiry");
+    assert!(part(&a, c, stale).valid);
     post(&b, c, "fresh").unwrap();
     w.run();
     assert_eq!(texts(&a, c).last().unwrap(), "fresh");
+    w.advance(61_000);
+    w.run();
+    assert_eq!(texts(&a, c).last().unwrap(), "stale", "the fresh one disappeared on time");
 }
 
 // spec/commits.md §6: disappearing: gone everywhere at its time, offline nodes too, a later timer leaves earlier messages' alone; a watch hears it; no tombstone stays in the timeline

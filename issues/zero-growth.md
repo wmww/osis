@@ -16,13 +16,11 @@ One small aspect, whole replaces, no membership change: stored bytes do not grow
 - Forgetting compaction snapshots, and the keep-previous rule for snapshot chains (an own snapshot still drops under the next at once).
 - Clients compact their own writes automatically: nothing runs compaction for non-replace writes.
 - A commit with a part no own replace covers (a second aspect, a path write) stays whole for good, and is judged again on each later write of its covered aspects (`left.wait`): work per write grows with such commits held.
-- A reader keeps bodies a snapshot covers: it lacks the purge right (spec/commits.md §5 Principle says it drops them; only own replaces do today).
 
 ## Accepted (Tess)
 Permission changes over inconsistent connections cannot all work out; this is one more minor concession, like dropping a removed node's commits it synced to nobody.
 - A snapshot that reaches a node before the removal naming none of it, and counts for nothing after: the writes only it carried are gone (`roles-model` `forget.rs`, late snapshot).
 - A snapshot standing only on an addendum that later falls.
-- A `required^.0` rule that invalidates both covers after a commit was forgotten: the honest write is lost, the writer still authorised. Existing snapshots already have this weakness; not built around (needs Tess only if the requirement should be stronger).
 - At account level, a hostile device's snapshot can claim a sibling's edit without its value.
 
 ## To check when building

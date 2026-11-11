@@ -41,7 +41,7 @@ pub struct Body {
 /// purge request (what it names does not show first), else the commit's `ts`. Read only to order
 /// this node's fetches.
 pub fn fetch_order(h: &osis_commit::Header) -> u64 {
-    let foundation = h.kind.is_role() || !h.purge.is_empty() || h.aspects.iter().any(|a| matches!(a.ak.as_str(), "created.0" | "required^.0" | "group.0") || osis_schema::core_types::is_role_class(a.ak.as_str()));
+    let foundation = h.kind.is_role() || !h.purge.is_empty() || h.aspects.iter().any(|a| matches!(a.ak.as_str(), "created.0" | "retention^.0" | "group.0") || osis_schema::core_types::is_role_class(a.ak.as_str()));
     if foundation { 0 } else { h.ts.to_u64().max(1) }
 }
 
@@ -478,7 +478,9 @@ impl Engine {
         }
         // nothing of it here and a lasting header on the label's things: its header alone
         // (spec/commits.md §5, spec/sync.md §6)
-        if out.is_empty() && touches && (h.purges || h.aspects.iter().any(|a| a.permanent)) {
+        let now = self.now().0;
+        let forever = |a: &crate::engine::AspectView| !h.memory && osis_commit::retention::fixed_retention(a.ak.as_str()).is_none() && crate::retention::history::of(&self.core, &a.tid, &a.ak).forever(now);
+        if out.is_empty() && touches && (h.purges || h.aspects.iter().any(forever)) {
             let on = |core: &crate::engine::Core, t: &Tid| ctx.closure.contains(t) && core.may_read(&ctx.actor, &core.reader_of(t));
             if self.run(|tx| crate::retention::lasting(tx, &id, &on))?
                 && let Some(blind) = self.core.ix.commits.get(&id).map(|m| m.header.blind)

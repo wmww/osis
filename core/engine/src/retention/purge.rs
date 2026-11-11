@@ -181,7 +181,8 @@ pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid,
 /// would walk the aspect on every pass.
 pub(crate) fn lasting(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Core, &Tid) -> bool) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(false) };
-    if m.view.aspects.iter().enumerate().any(|(ai, a)| a.permanent && (m.stripped.contains(&ai) || m.dropped.contains_key(&ai)) && on(tx.core, &a.tid)) {
+    let now = tx.now().0;
+    if m.header.aspects.iter().enumerate().any(|(ai, a)| (m.stripped.contains(&ai) || m.dropped.contains_key(&ai)) && on(tx.core, &a.tid) && super::history::permanent(tx.core, &m.header, a, now)) {
         return Ok(true);
     }
     if !m.view.purges {
@@ -414,7 +415,7 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
         let Some(ai) = m.aspect(tid, ak) else { continue };
         let Some(a) = m.header.aspects.get(ai) else { continue };
         // past its expiry, or a signal's past its keep bound, it goes whatever the requests say
-        if m.header.expires.is_some_and(|t| t <= now) || super::past_signal_bound(&m.header, ai, now) {
+        if m.header.expires.is_some_and(|t| t <= now) || super::past_signal_bound(core, &m.header, ai, now) {
             continue;
         }
         // no request names a snapshot (`names`)
@@ -489,7 +490,7 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
     // the part may have gone already, for another reason: its entry now reads purged
     tx.core.commits_named(a.tid, a.ak.clone(), *c);
     // a lasting header from now on (`lasting`), whichever came first
-    if m.view.aspects.get(ai).is_some_and(|x| x.permanent) {
+    if super::history::permanent(tx.core, &m.header, &a, tx.now().0) {
         tx.txn.put_local(&records::named_permanent_key(pc, &a.tid), &[], Shred::No)?;
         tx.core.mark_changed(*pc);
     }

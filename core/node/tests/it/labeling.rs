@@ -44,6 +44,7 @@ fn one_blob_prefix_groups_per_key_set_spec_wire_5() {
     let (mut net, [a, b]) = local_nodes::<2>();
     let g = net.group(a, &[(b, Role::Write)], &[]);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let mut m = Mutation::new();
     let at = WallMs(net.engine(a).now().0 + 3_600_000);
     for (k, v) in [(&REG, "plain"), (&crate::common::KEPT, "kept"), (&GONE, "gone")] {
@@ -106,6 +107,7 @@ fn head_keys_and_delete_keys_spec_sync_5() {
     let kr = net.engine(r).head_keys(&g, l.index, &head).unwrap();
     assert!(kr.sync.is_some() && kr.write.is_none() && kr.delete.is_none() && kr.deposit.is_some());
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("gone")).unwrap();
     let c = net.engine(a).commit(m).unwrap().unwrap();

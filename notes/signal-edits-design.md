@@ -12,26 +12,25 @@
   - sorts before the version by `(ts, ID)`.
 - **Otherwise** it is a fire of its own, at its own place. A forged edit is just the forger's own message.
 - **Read:** an original's part reads as its newest listed honored version by `CommitPos`, valid versions only (a node's own invalid part is marked and reads as itself). Stamp, place and order stay the original's, and honored versions are not listed separately.
-- **One rule covers the required cases:**
+- **One rule covers the cases:**
   - edit turned invalid or expired: unlisted, so the previous version shows;
   - purged newest version: a listed tombstone, so nothing older comes back;
   - O invalid: not honored, so a valid edit is a fire of its own at its own place, and an edit invalid with it is unlisted;
   - O re-validated: its versions fold under it again.
-- **Expiry:** a writer gives an edit O's `expires`. A required rule's check for a `replaces` delta becomes `ts < expires <= ts + duration`, so one is still required. O and its edits end together. An over-long edit stands alone once O goes, which is no more than a new message could do.
-- **Retention:** each version carries its own, under the same required rule. Keep bounds and `keep_history` apply per version, from its own `ts`. Durable signals keep their history unchanged.
+- **Expiry:** a writer gives an edit O's `expires`; no rule checks it. O and its edits end together. An over-long edit stands alone once O goes, which is no more than a new message could do.
+- **Retention:** each version carries its own purgeable-by; what history keeps is the thing's setting for the AK, one window for every version, each from its own `ts`.
 - **Old text gone:** the edit commit carries an ordinary purge request naming the earlier versions, and stays honored. A request reaches only deltas expiring no later than its commit, and the purge floor ends at that expiry. A request goes under `purge.0`, which carries no expiry; in a commit that expires the engine leaves `purge.0` out and the request rides the commit's own deltas on the thing, refused (`Invalid`) when it names anything but commits expiring no later or the commit writes nothing there. A disappearing message's edit purging its old text is so one commit.
-- **Edits off:** new `final` flag on a `required^.0` entry. A `replaces` delta breaks it and is invalid, judged per key like every required rule.
+- **Edits off:** `final` on the AK's entry of the thing's `retention^.0` setting: a writer refuses `replace` there (`Invalid`). No validity rule: an edit written anyway is honored (Tess, issues/thing-history.md Decisions 5).
 - **Limits:**
   - A purge takes only the commits it names. A version racing a purge of O, or written after it, still shows (no more than a new message could do); a deletion meant to hold names the versions too, or purges by author on the aspect.
   - An original past its keep is not listed, so its versions stand alone at their own places. This happens at every node, also under one shared `after D`: O's `ts` is earlier, so it ends first. A node that never held O's header reads the same. Permanent deltas keep lasting headers, so chat is unaffected.
-  - A purged edit with a shorter keep or earlier expiry than older versions lets them show again when its tombstone ends. Purging old text means naming the earlier versions in the same commit, which is what the API does; a schema wanting a guarantee uses a required rule.
+  - A purged edit with an earlier expiry than older versions lets them show again when its tombstone ends. Purging old text means naming the earlier versions in the same commit, which is what the API does.
 - **Ephemeral signals:** no edits, refused with `Invalid`. Nobody holds the original, so there is nothing to replace.
 
 ## Reused and new
 **Reused:**
 - register order (newest wins);
 - purge requests and tombstones;
-- required rules;
 - validity (`actor`, key order), so removal needs no new work: an edit after a kick is invalid and not honored;
 - retention and expiry per delta;
 - the listing rule and `on_fire`.
@@ -63,7 +62,7 @@ db.at(c, MSG).versions(id, &q)?;                            // history: the fire
 - **`versions(id, q)`**, not a `versions_of` filter on `CommitQuery`: it changes what is walked and how bodies read (unfolded), and applies to `fired` only (a field only some calls honor). No `on_versions`: `on_fire` hears every change under `id`.
 - **`Purge::Commit` of a fire takes its held versions** (the API names them in the request): the original's id names the message, so deleting it deletes all its text; the alternative, an app listing versions to purge, is a footgun (purge only the original and the newest edit still shows).
 - **`on_fire`** hears an edit once, as `Commit { id: original, commit }`. A version arriving before its original is heard under its own id, then `None` when the original arrives. The engine tells a version itself only when it is listed of its own before or after the transaction (`edits::unheard`: in `originals` when it began, from the journal, or in it and listed now), so a version ending with its original (expiry, purge) is not told.
-- **`Required::refuse_replace`** is the wire's `final` (`final` is reserved in Rust).
+- **`RetentionEntry::refuse_replace`** is the setting entry's `final` (`final` is reserved in Rust): a writer default, no validity rule.
 - **Reaction:** `chat:react~0: { target, emoji: option<string> }`. `replace(r, {target, emoji: Some(new)})` changes it, and `emoji: None` or a purge withdraws it. Finding reactions by message is a separate listing question.
 
 **Chat and app** (step 5): reply and edit targets are the original's `CommitId`; a quote is `commit(id)` (tracked to that commit alone, so it moves with its message only); "(edited)" is `Part::edited`; `osis_chat::edit` is `replace`, plus `Purge::Commit` in the same write under the purge setting; editing off is `refuse_replace`; delete is one `Purge::Commit`; history is `versions`; listening is `on_fire`. The CLI's `read`/`watch` lines are one shape (a watch line is the message as it reads); its `read --after` cursor is an arrival place of its own (`osis_chat::Cursor`), as an edit arrives under its message's id.

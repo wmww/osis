@@ -740,11 +740,11 @@ fn tombstone_alike_in_every_order_exhaustive_spec_commits_5() {
 /// Every `stride`th case (3 is coprime with the 4 and 5 restart points of an order).
 fn tombstone_alike(stride: u64) {
     use osis_commit::CommitBlob;
-    let forever = osis_schema::Retention { by: osis_schema::PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::FOREVER) };
+    let forever = osis_schema::Retention { by: osis_schema::PurgeBy::AuthorOrAdmin };
     let marker = "TOMBSTONE-SECRET-8e1a";
     let mut lp = net2(611);
     let setup = lp.packages(0).unwrap();
-    let t = new_thing(&mut lp, 0);
+    let t = new_thing_keeping(&mut lp, 0, &[("t:reg.0", osis_schema::History::FOREVER)]);
     let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !setup.iter().any(|k| k.id == p.id)).collect();
     assert_eq!(rec.len(), 1);
     lp.advance(5);
@@ -828,9 +828,9 @@ fn tombstone_alike(stride: u64) {
 // purge commit is judged again then, not only at its own changes.
 #[test]
 fn request_is_judged_again_when_the_named_delta_arrives_spec_sync_6() {
-    let forever = osis_schema::Retention { by: osis_schema::PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::FOREVER) };
+    let forever = osis_schema::Retention { by: osis_schema::PurgeBy::AuthorOrAdmin };
     let mut lp = net2(631);
-    let t = new_thing(&mut lp, 0);
+    let t = new_thing_keeping(&mut lp, 0, &[("t:reg.0", osis_schema::History::FOREVER)]);
     sync(&mut lp, 0, 1);
     lp.advance(5);
     let mut m = Mutation::new();
@@ -935,7 +935,7 @@ fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
 #[test]
 fn snapshot_leftover_stripped_again_unrecoverable_spec_commits_5() {
     let mut lp = net2(81);
-    let t = new_thing(&mut lp, 0);
+    let t = new_thing_keeping(&mut lp, 0, &[("t:text.0", DAY)]);
     lp.sync(0, 1).unwrap();
     let k = ak("t:big.0");
     let (mx, my) = ("SNAPX-MARK-1a2b", "SNAPY-MARK-3c4d");
@@ -1149,13 +1149,12 @@ fn edit_into_expiring_entry_keeps_its_expiry_spec_crdt_4_7() {
 #[test]
 fn undelete_chars_are_their_own_values_spec_crdt_4_7() {
     let mut lp = net2(81);
-    let t = new_thing(&mut lp, 0);
+    let t = new_thing_keeping(&mut lp, 0, &[("t:text.0", DAY)]);
     let marker = "UNDELETE-MARK-6d2a";
     let k = ak("t:text.0");
     let text = |lp: &mut LocalPeer, v: &str| {
         let mut m = Mutation::new();
         m.set(t, &TEXT, &s(v)).unwrap();
-        m.retention(t, &TEXT, crate::common::kept_day()).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap()
     };
     let made = text(&mut lp, marker);
@@ -1199,17 +1198,16 @@ fn undo_revives_no_purged_value_spec_crdt_4_6() {
     let mut m = Mutation::new();
     let me = lp.peers[0].engine.me();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
+    keep_in(&mut m, t, &setting(&[("t:reg.0", DAY)]));
     lp.peers[0].commit(m).unwrap();
     let marker = "PURGED-UNDO-5c1e";
     let k = ak("t:reg.0");
     let mut m = Mutation::new();
     m.set(t, &REG, &s(marker)).unwrap();
-    m.retention(t, &REG, crate::common::kept_day()).unwrap();
     let made = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(5);
     let mut m = Mutation::new();
     m.remove_aspect(t, &REG).unwrap();
-    m.retention(t, &REG, crate::common::kept_day()).unwrap();
     let removed = lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync(0, 1).unwrap();
     lp.advance(5);
@@ -1305,7 +1303,7 @@ fn reaction_outlives_expiring_message_spec_crdt_4_7() {
 fn undo_copying_two_expiries_waits_spec_crdt_4_6() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let mut lp = net(1, 84);
-    let t = new_thing(&mut lp, 0);
+    let t = new_thing_keeping(&mut lp, 0, &[("t:map.0", DAY)]);
     let k = ak("t:map.0");
     let t_end = lp.peers[0].engine.now().0 + 60_000;
     for (key, end) in [("e", Some(t_end)), ("kept", None)] {
@@ -1314,14 +1312,12 @@ fn undo_copying_two_expiries_waits_spec_crdt_4_6() {
         if let Some(e) = end {
             m.expires(t, &MAP, osis_base::WallMs(e)).unwrap();
         }
-        m.retention(t, &MAP, crate::common::kept_day()).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
     }
     lp.advance(5);
     let mut m = Mutation::new();
     m.op(t, &MAP, PathOp { path: Vec::new(), op: Op::Remove(s("e")) }).unwrap();
     m.op(t, &MAP, PathOp { path: Vec::new(), op: Op::Remove(s("kept")) }).unwrap();
-    m.retention(t, &MAP, crate::common::kept_day()).unwrap();
     let del = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(5);
     let held = lp.peers[0].engine.commit_ids().len();

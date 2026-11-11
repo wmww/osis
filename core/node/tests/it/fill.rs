@@ -10,7 +10,7 @@ use osis_node::sync::EntryKind;
 use osis_schema::{Aspect, StaticSchema};
 use std::collections::{BTreeMap, BTreeSet};
 
-static KEPT: StaticSchema = StaticSchema::new("fill.osis", "revision 1; purgeable_by(author) keep_history(forever) aspect f:msg.0: string;\n");
+static KEPT: StaticSchema = StaticSchema::new("fill.osis", "revision 1; aspect f:msg.0: string;\n");
 const MSG: Aspect<Value> = Aspect::new("f:msg.0", &KEPT);
 
 /// What the filling node asks at a time (`SyncConfig::fill_batch`), small so a few batches are
@@ -24,6 +24,13 @@ const N: usize = 8 * FILL_BATCH;
 fn filler(net: &mut Net, hosts: &[usize]) -> usize {
     let cfg = osis_node::sync::SyncConfig { hosts: hosts.iter().map(|h| net.address(*h)).collect(), fill_batch: FILL_BATCH, ..Default::default() };
     net.add_node(3, cfg)
+}
+
+/// A chat in group `g` made by admin `a`, every message kept for good (its setting).
+fn kept_chat(net: &mut Net, a: usize, g: Tid) -> Tid {
+    let t = net.item(a, g, g, "chat");
+    net.keep(a, t, &[("f:msg.0", osis_schema::History::FOREVER)]);
+    t
 }
 
 fn msg(i: usize) -> Value {
@@ -57,7 +64,7 @@ fn chat_with(role: Role, setup: impl FnOnce(&mut Net, usize, Tid, Tid)) -> Chat 
     let (mut net, host, [a]) = hosted_nodes::<1>();
     let c = filler(&mut net, &[host]);
     let g = net.group(a, &[(c, role)], &[host]);
-    let t = net.item(a, g, g, "chat");
+    let t = kept_chat(&mut net, a, g);
     setup(&mut net, a, g, t);
     net.set_online(c, false);
     net.run();
@@ -125,7 +132,7 @@ fn newest_first_after_what_judging_needs_spec_sync_6() {
     let c = filler(&mut net, &[host]);
     let d = net.node(4, &[]);
     let g = net.group(a, &[(c, Role::Read), (d, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "chat");
+    let t = kept_chat(&mut net, a, g);
     net.set_online(c, false);
     net.run();
     let mut role = None;
@@ -278,7 +285,7 @@ fn secrets_arriving_order_the_rest_spec_sync_6() {
     let c = filler(&mut net, &[host]);
     let d = net.node(4, &[]);
     let g = net.group(a, &[(c, Role::Read), (d, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "chat");
+    let t = kept_chat(&mut net, a, g);
     net.set_online(c, false);
     net.run();
     for i in 0..N / 2 {
@@ -359,7 +366,7 @@ fn no_repair_from_a_state_part_way_spec_sync_6() {
     let g = net.group(a, &[(r, Role::Read), (c, Role::Write)], &[host]);
     net.set_online(c, false);
     net.run();
-    let t = net.item(a, g, g, "chat");
+    let t = kept_chat(&mut net, a, g);
     for i in 0..N {
         say(&mut net, a, t, i);
     }
@@ -419,7 +426,7 @@ fn no_pass_before_order_0(hosts: usize, write: bool) {
     let c = filler(&mut net, &hs);
     let d = net.node(4, &[]);
     let g = net.group(a, &[(c, Role::Write), (d, Role::Read)], &hs);
-    let t = net.item(a, g, g, "chat");
+    let t = kept_chat(&mut net, a, g);
     // c holds the chat's creation directly: what judges the messages is never in the fetch held
     // back below (which order-0 blobs share a batch is the blob IDs' order)
     net.pair(a, c);
@@ -501,7 +508,7 @@ fn a_rotation_part_way_loses_nothing_spec_sync_6() {
         let c = filler(&mut net, &[host]);
         let d = net.node(4, &[]);
         let g = net.group(a, &[(c, Role::Read), (d, Role::Read)], &[host]);
-        let t = net.item(a, g, g, "chat");
+        let t = kept_chat(&mut net, a, g);
         net.set_online(c, false);
         net.run();
         for i in 0..N {
@@ -667,7 +674,7 @@ fn fill_with_a_trickling_host(hosts: usize, batch: Option<usize>, trickle: bool,
     cfg.fill_batch = batch.unwrap_or(cfg.fill_batch);
     let c = net.add_node(3, cfg);
     let g = net.group(a, &[(c, Role::Read)], &hs);
-    let t = net.item(a, g, g, "chat");
+    let t = kept_chat(&mut net, a, g);
     net.set_online(c, false);
     net.run();
     for i in 0..N {

@@ -13,6 +13,7 @@ use osis_node::sync::EntryKind;
 #[test]
 fn replaced_register_goes_under_its_cover_spec_sync_7() {
     let (mut net, host, [a], _g, [t]) = hosted::<1, 1>(&[], ["x"], false);
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("v1")).unwrap();
     net.engine(a).commit(m).unwrap();
@@ -90,7 +91,7 @@ fn late_holder_judges_revoke_alike_spec_permissions_5() {
 }
 
 /// Commits `c1` = {`GONE` (`r`): "v1", `REG`: "k"} and `c2` = {`GONE` (`r2`): "v2"} on a new item
-/// by a node at a host; the time passes (`after`); c1's `GONE` body leaves the host, then a reader
+/// purging `GONE` on replace, by a node at a host; the time passes (`after`); c1's `GONE` body leaves the host, then a reader
 /// syncing the item comes online: c1 applies there, with its `REG` part.
 fn reader_applies_after_carrierless_delete(seed: u64, r: Option<osis_schema::Retention>, r2: Option<osis_schema::Retention>, after: u64) {
     use osis_base::Role;
@@ -101,6 +102,7 @@ fn reader_applies_after_carrierless_delete(seed: u64, r: Option<osis_schema::Ret
     let b = net.node(seed + 1, &[host]);
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     net.run();
     assert!(net.engine(b).core.syncs(&t), "a commit waits only where its thing is synced");
     // back only after the delete, so it never sees the body
@@ -141,17 +143,16 @@ fn reader_applies_after_carrierless_delete(seed: u64, r: Option<osis_schema::Ret
     assert_eq!(net.engine(b).state(&t, &gone).unwrap(), net.engine(a).state(&t, &gone).unwrap());
 }
 
-/// `writer`, purged on replace.
-pub(crate) fn purge_on_replace() -> Option<osis_schema::Retention> {
-    use osis_schema::{History, PurgeBy, Retention};
-    Some(Retention { by: PurgeBy::Writer, history: Some(History::PurgeOnReplace) })
+/// Purgeable by any writer.
+pub(crate) fn writer() -> Option<osis_schema::Retention> {
+    Some(osis_schema::Retention { by: osis_schema::PurgeBy::Writer })
 }
 
 // spec/commits.md §4 (a node never waits for a part), §5 (purge on replace), driving the real
 // deletion: the replaced body goes with the kill's sync, under the writer's cover.
 #[test]
 fn reader_after_delete_purge_on_replace_spec_commits_4() {
-    let r = purge_on_replace();
+    let r = writer();
     reader_applies_after_carrierless_delete(0x7d10, r, r, 0);
 }
 
@@ -172,6 +173,7 @@ fn snapshot_dead_by_earlier_removal_leaves_no_wait_spec_commits_4() {
     let g = net.group(a, &[(b, Role::Write), (late, Role::Read)], &[host]);
     net.set_online(late, false);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[("t:gonemap.0", PURGE)]);
     let mut m = Mutation::new();
     m.op(t, &GONEMAP, PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Set(s("v")) }).unwrap();
     net.engine(a).commit(m).unwrap();
@@ -226,10 +228,11 @@ fn first_sync_waits_for_hidden_body_spec_commits_4() {
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     net.set_online(b, false);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     net.run();
     let l = net.label(a);
     let mut m = Mutation::new();
-    m.retention(t, &GONE, purge_on_replace().unwrap()).unwrap();
+    m.retention(t, &GONE, writer().unwrap()).unwrap();
     m.set(t, &GONE, &s("v1")).unwrap();
     m.set(t, &REG, &s("k")).unwrap();
     let c1 = net.engine(a).commit(m).unwrap().unwrap();
@@ -314,10 +317,11 @@ fn first_sync_waits_across_things_spec_commits_4() {
     net.set_online(b, false);
     let t = net.item(a, g, g, "t");
     let u = net.item(a, g, g, "u");
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     net.run();
     let l = net.label(a);
     let mut m = Mutation::new();
-    m.retention(t, &GONE, purge_on_replace().unwrap()).unwrap();
+    m.retention(t, &GONE, writer().unwrap()).unwrap();
     m.set(t, &GONE, &s("v1")).unwrap();
     m.set(u, &REG, &s("k")).unwrap();
     let c = net.engine(a).commit(m).unwrap().unwrap();

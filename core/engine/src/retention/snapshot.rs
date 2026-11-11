@@ -41,72 +41,6 @@ pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Opti
     Ok(Some(st))
 }
 
-/// The retentions standing for the writes snapshot state `st` of `(tid, ak)` carries live
-/// (spec/commits.md §5): each write's own delta (spec/permissions.md §5.2: the session-form delta
-/// whose counter range holds it, the commit-form commit it names); for writes whose own delta's header is not held, the held snapshot bodies of
-/// the aspect carrying them, and for any of those none carries, every snapshot of the aspect
-/// applied here. Cost: a lookup and a header per live write; the aspect's headers (and its held
-/// snapshot bodies) only when some write's own commit is not found directly.
-fn own_retentions(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<Vec<osis_schema::Retention>> {
-    if osis_commit::retention::fixed_retention(ak.as_str()).is_some() {
-        return Ok(Vec::new());
-    }
-    let entry = |h: &Header| h.aspects.iter().find(|a| a.tid == *tid && a.ak == *ak).map(|a| a.retention);
-    let mut own: BTreeSet<CommitId> = BTreeSet::new();
-    let mut out = Vec::new();
-    // live writes whose own commit is not a held commit with its own writes on the aspect
-    let mut unknown: BTreeSet<osis_crdt::Dot> = BTreeSet::new();
-    for (d, _) in st.live_writes() {
-        let c = tx.core.commit_of(tid, ak, &d);
-        let found = c.and_then(|c| {
-            let h = &tx.core.ix.commits.get(&c)?.header;
-            (!h.kind.is_compaction()).then_some(())?;
-            entry(h)
-        });
-        match (found, c) {
-            (Some(r), Some(c)) => {
-                if own.insert(c) {
-                    out.push(r);
-                }
-            }
-            _ => _ = unknown.insert(d),
-        }
-    }
-    if unknown.is_empty() {
-        return Ok(out);
-    }
-    let commits: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|(_, c)| *c).collect();
-    let mut snapshots = Vec::new();
-    for c in &commits {
-        let Some(h) = tx.core.ix.commits.get(c).map(|m| &m.header) else { continue };
-        let Some(r) = entry(h) else { continue };
-        if h.kind.is_compaction() {
-            snapshots.push((*c, r));
-        }
-    }
-    let mut carried = BTreeSet::new();
-    for (c, r) in &snapshots {
-        let Some(ai) = aspect_index(tx.core, c, tid, ak) else { continue };
-        let mut carries = false;
-        crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
-            for (d, _) in f.live_writes() {
-                if unknown.contains(&d) {
-                    carries = true;
-                    carried.insert(d);
-                }
-            }
-            Ok(())
-        })?;
-        if carries {
-            out.push(*r);
-        }
-    }
-    if carried.len() < unknown.len() {
-        out.extend(snapshots.iter().map(|x| x.1));
-    }
-    Ok(out)
-}
-
 /// Whether frontiers `fr` list the session of commit `c` (header `h`, a session-form commit
 /// with own writes) and miss some of its counters below `hi`; `false` for others, and for a
 /// session `fr` does not list: the snapshot holds no write of it (spec/crdt.md §8), so it
@@ -180,19 +114,6 @@ pub(crate) fn frontiers_now(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid
 /// writes it holds as absorbed) rather than by counters under a frontier.
 pub(super) fn by_id(kind: Kind, form: Form) -> bool {
     form == Form::Commit && kind.has_own_writes()
-}
-
-/// Whether snapshot `s` (part `sai`) purges on replace while body `c` (part `cai`) keeps history
-/// and has a live write: dropped, that write would live on only in a snapshot that cannot keep its
-/// history, so `s` covers it not (spec/commits.md §5 Covered). Liveness changes only by a kill,
-/// which drops `s` too (its first death), or a validity change, after which `s` covers it at most
-/// later than it could.
-pub(super) fn cannot_keep(tx: &mut Tx<'_>, s: &CommitId, sai: usize, c: &CommitId, cai: usize, tid: &Tid, ak: &Ak) -> Result<bool> {
-    let history = |x: &CommitId, ai: usize| tx.core.ix.commits.get(x).and_then(|m| m.header.aspects.get(ai)).map(super::history::of).unwrap_or_default();
-    if !history(s, sai).purge_on_replace() || !history(c, cai).keeps() {
-        return Ok(false);
-    }
-    super::bounds::body_live(tx, c, tid, ak)
 }
 
 /// Whether `c` is a compaction snapshot stamped later than `s`.
@@ -291,7 +212,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     let _s = crate::costs::span("covered: join");
     let (Some(sai), Some(cai)) = (aspect_index(tx.core, s, tid, ak), aspect_index(tx.core, c, tid, ak)) else { return Ok(None) };
     // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2)
-    if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || cannot_keep(tx, s, sai, c, cai, tid, ak)? {
+    if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) {
         return Ok(Some(false));
     }
     // a snapshot stamped later settles the suspect flags of more commits than this one
@@ -458,9 +379,7 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
     let traced = osis_crdt::sources_of(&st, &osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0))?;
     frontiers.retain(&traced);
     absorbed.retain(|c, _| traced.contains(&osis_crdt::Source::commit(*c)));
-    // history from the retention of the writes it carries, schema known here or not
-    // (spec/commits.md §5), memory or durable alike
-    let retention = osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?);
+    let retention = osis_commit::retention::snapshot_retention(ak.as_str());
     let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, rotation: None };
     let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, replaces: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new() };
     build_and_apply(tx, plan, vec![d]).map(Some)
@@ -515,7 +434,6 @@ impl Engine {
             let own = osis_crdt::Source::session(tx.core.session);
             let mut st: Option<Fragment> = None;
             let mut hi = 0u64;
-            let mut kept = Vec::new();
             for c in &ids {
                 let Some(m) = tx.core.ix.commits.get(c).cloned() else { continue };
                 let Some(ai) = m.aspect(&tid, &ak).filter(|ai| m.holds(*ai)) else { continue };
@@ -523,7 +441,6 @@ impl Engine {
                     return Err(Error::Misuse("coalescing takes this session's plain commits"));
                 }
                 hi = hi.max(m.header.aspects.get(ai).map_or(0, |a| a.hi));
-                kept.extend(m.header.aspects.get(ai).map(|a| a.retention));
                 if let Some(f) = crate::apply::held_fragment(tx, c, ai)? {
                     st.get_or_insert_with(Fragment::default).join(f);
                 }
@@ -536,7 +453,7 @@ impl Engine {
                 frontiers.insert(&own, hi - 1);
             }
             frontiers.retain(&traced);
-            let retention = osis_commit::retention::snapshot_retention(ak.as_str(), kept);
+            let retention = osis_commit::retention::snapshot_retention(ak.as_str());
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, rotation: None };
             let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, replaces: None, frontiers: Some((frontiers, std::collections::BTreeMap::new())), chunks: Vec::new() };
             build_and_apply(tx, plan, vec![d]).map(Some)

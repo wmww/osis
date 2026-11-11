@@ -107,7 +107,7 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 
 **`delete`** stays the undoable removal: resets content and memberships, the creation stays live, a later write recreates. Ending is purging or expiring the creation. Name the ending API by notes/api-design.md.
 
-**`required^.0`** keeps fixed retention: later deltas' validity is judged from it, so purging it would change past verdicts. Only its commit-sharing exemption is open, as a spec question.
+**`retention^.0`** keeps fixed retention: every node must date history by the same settings, so purging one would change what history shows. Only its commit-sharing exemption is open, as a spec question.
 
 ## 4. Touched issues
 - **expiry-rebuild-cost**: the copy-expiry probe went with step 3; the per-expiry rebuild stays (could strip in place).

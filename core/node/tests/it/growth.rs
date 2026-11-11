@@ -215,18 +215,19 @@ fn own_cover_work_per_write_is_flat() {
     assert!(j2 <= j1 + j1 / 2 && f2 <= f1 + f1 / 2 + 3, "work per write grew with history: joins {j1} -> {j2}, forget checks {f1} -> {f2}");
 }
 
-// spec/commits.md §5 (Own replaces, Between the bounds): a commit goes only whole, so a part its
-// author's replaces cover but its author may not purge (the aspect's purge right is the admin's)
-// keeps every other part of the commit too, at the writer and a reader.
+
+// spec/commits.md §5 (Own replaces, Out of history): a single writer's whole replaces cover its
+// older commits even where only admins may purge them (`admin`): nothing promises to keep them, so
+// the writer and a reader stay flat (issues/thing-history.md Decisions 4)
 #[test]
-fn a_part_without_the_right_keeps_its_commit_whole() {
+fn a_writer_without_the_right_stays_flat() {
     let (mut net, _h, [_a, b, r], _g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Read)], ["first"], true);
     let reg = osis_base::Ak::new("t:reg.0").unwrap();
     let kept = osis_base::Ak::new("t:kept.0").unwrap();
-    for i in 0..3 {
+    for i in 0..6 {
         let mut m = osis_node::Mutation::new();
         m.set(t, &reg, &s(&format!("v{i}"))).unwrap();
-        m.retention(t, &kept, osis_schema::Retention { by: osis_schema::PurgeBy::Admin, history: None }).unwrap();
+        m.retention(t, &kept, osis_schema::Retention { by: osis_schema::PurgeBy::Admin }).unwrap();
         m.set(t, &kept, &s(&format!("k{i}"))).unwrap();
         net.engine(b).commit(m).unwrap().unwrap();
         net.advance(1_000);
@@ -235,7 +236,7 @@ fn a_part_without_the_right_keeps_its_commit_whole() {
     net.advance(2 * 3_600_000);
     net.settle(5);
     for n in [b, r] {
-        assert_eq!(net.engine(n).held_bodies(&t, &kept), 3, "node {n}: the admin's right");
-        assert_eq!(net.engine(n).held_bodies(&t, &reg), 4, "node {n}: the creating commit and b's three, whole");
+        assert_eq!(net.engine(n).held_bodies(&t, &kept), 2, "node {n}: the last two own replaces");
+        assert_eq!(net.engine(n).held_bodies(&t, &reg), 3, "node {n}: the creating commit and b's last two");
     }
 }

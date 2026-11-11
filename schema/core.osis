@@ -39,17 +39,17 @@ guaranteed purgeable_by(admin) aspect created.0: creation;
 // General-purpose aspects any app can use, so that apps agree on what to call and show a thing.
 
 /// What humans call the thing.
-keep_history(1d) aspect name.0: string;
+aspect name.0: string;
 
 /// Freeform content: a note's text, or notes on anything else.
-keep_history(1d) aspect body.0: markdown;
+aspect body.0: markdown;
 
 // ---- Groups ----
 // Things are organized, shared and synced as groups: a group lists its items and subgroups, and
 // syncing a group syncs everything it reaches. Tags are the groups users see.
 
 /// Makes the thing a group.
-keep_history(1d) aspect group.0: struct {
+aspect group.0: struct {
     items 0: set<tid> = [],
     subgroups 1: set<tid> = [],
 };
@@ -59,7 +59,7 @@ synthetic guaranteed aspect groups.0: set<tid>;
 
 /// Marks a group as a tag users see: its items are what is tagged, its subgroups are sub-tags.
 /// Groups without it are internal and never shown.
-keep_history(1d) aspect tag.0: struct {
+aspect tag.0: struct {
     /// `#rrggbb`.
     color 0: option<string>,
 };
@@ -316,8 +316,7 @@ type client = struct {
 admin aspect clients^.0: map<tid, client>;
 
 // ---- Retention ----
-// How long old values stay readable, and who may delete them. Each write says this for itself;
-// a thing can require what its writes must say (spec/commits.md §5).
+// What a thing keeps of replaced content, set by its admins per aspect (spec/commits.md §5).
 
 /// How long replaced values stay readable as history: until a time (2^63 - 1: forever) and/or
 /// for a duration after being replaced.
@@ -331,32 +330,25 @@ type history = enum {
     purge_on_replace 1,
 };
 
-/// A retention every write of an aspect must carry: who may purge it, its history (absent: none
-/// promised), when it expires, and whether a delta claiming `replaces` breaks it (`final`).
-type required = struct {
-    by 0: enum {
-        nobody 0,
-        admin 1,
-        author_or_admin 2,
-        writer 3,
-        author 4,
-    },
-    history 1: option<history>,
-    expires 2: option<duration>,
-    final 3: bool,
+/// What a thing promises for replaced content of an aspect (absent: none promised), the expiry
+/// a writer gives its writes there, and whether a writer refuses to replace a fire (`final`).
+type retention_entry = struct {
+    history 0: option<history>,
+    expires 1: option<duration>,
+    final 2: bool,
 };
 
-type required_rules = struct {
+type retention_setting = struct {
     /// By AK.
-    rules 0: map<string, required>,
+    rules 0: map<string, retention_entry>,
     /// Whether someone whose access is removed may keep a copy, by default (spec/permissions.md §3).
     retain 1: bool,
     /// For every AK not in `rules`.
-    default 2: option<required>,
+    default 2: option<retention_entry>,
 };
 
-/// The retention writes to this thing must carry.
-admin aspect required^.0: required_rules;
+/// What this thing keeps of replaced content.
+admin aspect retention^.0: retention_setting;
 
 /// Written by a request to purge by name or by author; the time is all it says.
 aspect purge.0: timestamp;

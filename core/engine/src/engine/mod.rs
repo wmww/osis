@@ -117,6 +117,11 @@ pub struct Dropped {
     /// covered is missing again (`retention::uncover`).
     pub covered_by: BTreeSet<CommitId>,
     pub why: DropFor,
+    /// A part dropped as covered: the wall ms from which a right holder may delete its body at
+    /// hosts, `MAX_DRIFT` past its keep-at-least bound when it had one (0: at once). A local drop
+    /// follows this node's clock alone; a host delete waits for every node's clock to agree
+    /// (spec/commits.md §5 Keep bounds).
+    pub hosts_from: u64,
     /// A compaction snapshot's part dropped other than as covered, held then or not: it still
     /// settles suspect flags (`receipt::settled`; indexed by `ix.dropped_snapshots`). One dropped
     /// as covered does not need to: a coverer is valid and stamped no earlier, so it settles all
@@ -281,12 +286,6 @@ pub struct AspectView {
     pub ak: Ak,
     pub lo: u64,
     pub hi: u64,
-    /// A relative keep bound (`retention::bounded`).
-    pub bounded: bool,
-    /// Purge on replace (`retention::replace`).
-    pub none: bool,
-    /// A permanent delta (`retention::history::permanent`) of a durable commit.
-    pub permanent: bool,
     /// The fire it claims to replace (spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
 }
@@ -301,7 +300,7 @@ impl View {
             actor: h.actor,
             linked: h.links != osis_commit::Links::default(),
             memory: h.ephemeral.is_some(),
-            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a), none: crate::retention::history::of(a).purge_on_replace(), permanent: crate::retention::history::permanent(h, a), replaces: a.replaces }).collect(),
+            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, replaces: a.replaces }).collect(),
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
             chunks: h.chunks.iter().map(|c| c.blob).collect(),
             purges: !h.purge.is_empty(),
@@ -581,18 +580,12 @@ indexes! {
     /// Held commits of accounts a thing list or listing may name otherwise since they were last
     /// judged (`flows::lists::due`; `refresh_epochs`).
     pub names_due: JSet<CommitId>,
-    /// Held parts with a relative keep bound per aspect (`Core::put_meta`), absent at 0:
-    /// `retention::any_bounded` without walking the aspect.
-    pub bounded_held: JMap<(Tid, Ak), u64>,
     /// The places listing walks on a durable signal: every fire but the honored versions, valid
     /// or not (`edits`, persisted).
     pub originals: JSetMap<(Tid, Ak), (Ts, CommitId)>,
     /// A durable signal's valid parts claiming `replaces`, per (thing, aspect, named commit, actor):
     /// (`ts`, version). Forged claims are other actors' and are never read (`edits`).
     pub versions: JSetMap<(Tid, Ak, CommitId, Tid), (Ts, CommitId)>,
-    /// Commits holding a purge-on-replace part with values per aspect (`Core::put_meta`): the
-    /// bodies `retention::settle_none` judges.
-    pub none_held: JSetMap<(Tid, Ak), CommitId>,
     /// Compaction snapshots held per aspect, with their frontiers and `Absorbed`: the bodies
     /// carrying a write besides its own (spec/commits.md §5); what settles suspect flags
     /// (`receipt::settled`).
@@ -653,8 +646,9 @@ indexes! {
     pub unresolved: JSet<CommitId>,
     /// Roles `secrets.0` and `keys.0` deltas need (by commit and aspect index).
     pub rotation_role: JMap<(CommitId, usize), osis_base::Role>,
-    /// What each held `required^.0` delta of a thing says, in key order (spec/commits.md §5).
-    pub required: JMap<Tid, Vec<(Point, Arc<osis_schema::core_types::RequiredRules>)>>,
+    /// What each held `retention^.0` delta of a thing reading as a setting says, in key order,
+    /// valid or not (spec/commits.md §5 The setting; `validity::Judge::settings` takes the valid).
+    pub retention: JMap<Tid, Vec<(Point, Arc<osis_schema::core_types::RetentionSetting>)>>,
     /// `secrets.0` parts of role commits that write beyond their grantees' boxes (an invite
     /// grant may carry only those, spec/permissions.md §2).
     pub grant_overreach: JSet<(CommitId, usize)>,
@@ -980,6 +974,9 @@ pub struct Core {
     /// Aspects whose purge-on-replace bodies `retention::settle_none` judges at the end of the
     /// transaction (`Core::index_none`).
     pub none_due: BTreeSet<(Tid, Ak)>,
+    /// Things whose `retention^.0` deltas arrived, flipped or dropped this transaction: what their
+    /// timeline judges is judged again at its end (`retention::settings_changed`).
+    pub settings_due: BTreeSet<Tid>,
     /// Commits with a part judged invalid this transaction (`Core::index_validity`): dropped at
     /// its end where held (`retention::drop_invalid`).
     pub drop_due: BTreeSet<CommitId>,
@@ -1011,7 +1008,7 @@ pub struct Core {
     /// `Engine::delta_live` per delta, forgotten per aspect when its state changes (`forget_live`)
     /// and wholly on rollback.
     pub live_bodies: BTreeMap<CommitId, BTreeMap<(Tid, Ak), bool>>,
-    /// Bodies judged for when they were replaced (`retention::bounds::replaced_at`), for cost
+    /// Bodies judged for when they were replaced (`retention::bounds::part_replaced_at`, `class_keep`), for cost
     /// tests (`Engine::replaced_reads`).
     pub replaced_reads: u64,
     /// Held parts walked for their winners judging deaths (`retention::bounds::winners_of`), for
@@ -1295,7 +1292,12 @@ impl Core {
         // a role moved there, this node's maybe: a held purge-on-replace body may now be owed a
         // cover (`retention::settle_none`)
         for t in &under {
-            self.none_due.extend(self.ix.none_held.range((*t, Ak::MIN)..).take_while(|((x, _), _)| x == t).map(|(k, _)| k.clone()));
+            let on: Vec<(Tid, Ak)> = self.ix.by_aspect.range((*t, Ak::MIN)..).take_while(|((x, _), _)| x == t).map(|(k, _)| k.clone()).collect();
+            for (x, ak) in on {
+                if crate::retention::history::of(self, &x, &ak).purges() {
+                    self.none_due.insert((x, ak));
+                }
+            }
         }
         self.stale_under.extend(under);
         if let Some(s) = &mut self.changed {
@@ -1626,6 +1628,7 @@ impl Core {
             cut_subs: _,
             refold: _,
             none_due: _,
+            settings_due: _,
             valueless_dirty: _,
             changed: _,
             redeliver: _,
@@ -1831,6 +1834,7 @@ impl Core {
             held_writes: Default::default(),
             timer_floor: 0,
             none_due: BTreeSet::new(),
+            settings_due: BTreeSet::new(),
             drop_due: BTreeSet::new(),
             cut_subs: BTreeSet::new(),
             refold: BTreeSet::new(),
@@ -1965,60 +1969,36 @@ impl Core {
     }
 
     /// Sets `id`'s meta: every change to what a part holds goes through here or `take_meta`, so
-    /// `ix.bounded_held` stays exact.
+    /// the indexes derived from it stay exact.
     pub(crate) fn put_meta(&mut self, id: CommitId, m: Meta) {
-        self.count_bounded(&m, true);
         self.index_own(&id, &m, true);
         // a part held invalid (a late part joining, a leftover kept) goes at the transaction's end
         if (0..m.valid.len()).any(|ai| !m.valid_at(ai) && m.holds(ai)) {
             self.drop_due.insert(id);
         }
-        let none = self.none_parts(&m, false);
+        self.note_none(&m);
         self.note_rotation(&m);
-        if let Some(old) = self.ix.commits.insert(id, m) {
-            self.count_bounded(&old, false);
-        }
-        if !none.is_empty() {
-            self.index_none(&id, none);
-        }
+        self.ix.commits.insert(id, m);
     }
 
     pub(crate) fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
         let m = self.ix.commits.remove(id)?;
         self.note_rotation(&m);
-        self.count_bounded(&m, false);
         self.index_own(id, &m, false);
-        let none = self.none_parts(&m, true);
-        if !none.is_empty() {
-            self.index_none(id, none);
-        }
+        self.note_none(&m);
         Some(m)
     }
 
-    /// `ix.none_held` for commit `id` from its aspects `(tid, ak, none, held with values)` as its
-    /// meta now stands, and the aspects `retention::settle_none` judges at the transaction's end:
-    /// every aspect of a commit whose meta is put (it applied, joined, flipped or dropped) that
-    /// holds a purge-on-replace body.
-    fn index_none(&mut self, id: &CommitId, parts: Vec<(Tid, Ak, bool, bool)>) {
-        for (tid, ak, none, held) in parts {
-            let k = (tid, ak);
-            if none {
-                if held {
-                    self.ix.none_held.insert(k.clone(), *id);
-                } else {
-                    self.ix.none_held.remove(&k, id);
-                }
-            }
-            if self.ix.none_held.get(&k).is_some_and(|s| !s.is_empty()) {
+    /// The aspects of meta `m` (put: it applied, joined, flipped or dropped; or forgotten) whose
+    /// purge-on-replace bodies `retention::settle_none` judges at the transaction's end: those
+    /// some setting of their thing purges on replace.
+    fn note_none(&mut self, m: &Meta) {
+        for a in &m.view.aspects {
+            let k = (a.tid, a.ak.clone());
+            if !self.none_due.contains(&k) && crate::retention::history::of(self, &a.tid, &a.ak).purges() {
                 self.none_due.insert(k);
             }
         }
-    }
-
-    /// `index_none`'s input for meta `m` (`None` held: forgotten).
-    fn none_parts(&self, m: &Meta, forgotten: bool) -> Vec<(Tid, Ak, bool, bool)> {
-        let any = |a: &AspectView| a.none || self.ix.none_held.get(&(a.tid, a.ak.clone())).is_some_and(|s| !s.is_empty());
-        m.view.aspects.iter().enumerate().filter(|(_, a)| any(a)).map(|(ai, a)| (a.tid, a.ak.clone(), a.none, !forgotten && m.holds(ai) && !m.bare(ai))).collect()
     }
 
     /// `ix.own_held` and `ix.own_replaces` for commit `id` as `m` now stands: a part is in them
@@ -2048,24 +2028,6 @@ impl Core {
         }
     }
 
-    fn count_bounded(&mut self, m: &Meta, add: bool) {
-        for (ai, a) in m.view.aspects.iter().enumerate() {
-            // a bare leftover has no values to keep: no bound to judge (`bounds::bounded_part`)
-            if !a.bounded || !m.holds(ai) || m.bare(ai) {
-                continue;
-            }
-            let k = (a.tid, a.ak.clone());
-            match self.ix.bounded_held.get(&k).copied().unwrap_or(0).saturating_add_signed(if add { 1 } else { -1 }) {
-                0 => {
-                    self.ix.bounded_held.remove(&k);
-                }
-                n => {
-                    self.ix.bounded_held.insert(k, n);
-                }
-            }
-        }
-    }
-
     /// Re-indexes which parts of commit `id` are invalid here (call after setting `Meta::valid`).
     pub fn index_validity(&mut self, id: &CommitId) {
         let Some(m) = self.ix.commits.get(id) else { return };
@@ -2079,8 +2041,12 @@ impl Core {
                     self.drop_due.insert(*id);
                 }
             }
+            // a flip of a setting moves its thing's timeline (`retention::settings_changed`)
+            if a.ak.as_str() == osis_commit::retention::RETENTION {
+                self.settings_due.insert(a.tid);
+            }
             // a flip may make a held purge-on-replace body replaced or covered
-            if self.ix.none_held.get(&k).is_some_and(|s| !s.is_empty()) {
+            if !self.none_due.contains(&k) && crate::retention::history::of(self, &a.tid, &a.ak).purges() {
                 self.none_due.insert(k);
             }
         }
@@ -2936,6 +2902,10 @@ impl Engine {
                     }
                     tx.core.drop_due.clear();
                 }
+                if r.is_ok() && !tx.core.settings_due.is_empty() {
+                    r = r.and_then(|v| crate::retention::settings_changed(&mut tx).map(|_| v));
+                }
+                tx.core.settings_due.clear();
                 if r.is_ok() && !tx.core.none_due.is_empty() {
                     r = r.and_then(|v| crate::retention::settle_none(&mut tx).map(|_| v));
                 }
@@ -3284,6 +3254,8 @@ mod tests {
             let mut m = Mutation::new();
             let t = e.new_thing(&mut m, a);
             write(&mut m, t, "new");
+            // `kept` purged on replace
+            m.set(t, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(kept.clone(), osis_schema::History::PurgeOnReplace)).unwrap();
             e.commit(m).map(|_| t)
         });
         failing(&mut lp.peers[0], &mut failed, |e| e.commit(holder(g, b, Some(Role::Write))));
@@ -3294,7 +3266,7 @@ mod tests {
         m.set(g, &kept, &Value::Str("v".into())).unwrap();
         let v = lp.peers[1].commit(m).unwrap().unwrap();
         lp.advance(10);
-        let keep0 = Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) };
+        let keep0 = Retention { by: PurgeBy::Writer };
         let now = lp.peers[0].engine.now();
         let two = failing(&mut lp.peers[0], &mut failed, |e| {
             // two aspects: received a part at a time below; both expire (one expiry per commit)

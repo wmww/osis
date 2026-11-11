@@ -45,15 +45,12 @@ pub(crate) fn register_delta(author: Tid, at: Ts, lo: u64, v: &str) -> Vec<u8> {
 #[test]
 fn delete_levels_by_retention() {
     let s = TestSecrets { admin: true };
-    let lv = |by| delete_keys(&s, &t(3), &Retention { by, ..Default::default() }).unwrap().iter().map(|x| x.level).collect::<Vec<_>>();
+    let lv = |by| delete_keys(&s, &t(3), &Retention { by }).unwrap().iter().map(|x| x.level).collect::<Vec<_>>();
     assert_eq!(lv(PurgeBy::Nobody), Vec::<u8>::new());
     assert_eq!(lv(PurgeBy::Admin), vec![1]);
-    assert_eq!(lv(PurgeBy::Author), vec![2]);
     assert_eq!(lv(PurgeBy::AuthorOrAdmin), vec![1, 2]);
     assert_eq!(lv(PurgeBy::Writer), vec![1, 2, 3]);
     assert!(delete_keys(&TestSecrets { admin: false }, &t(3), &Retention::default()).is_err());
-    // an author-only delta needs no admin key: a writer without one writes it
-    assert!(delete_keys(&TestSecrets { admin: false }, &t(3), &Retention { by: PurgeBy::Author, ..Default::default() }).is_ok());
 }
 
 /// A valid one-aspect content commit over a register delta, its blob and author key.

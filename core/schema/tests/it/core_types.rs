@@ -131,14 +131,14 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
 #[test]
 fn key_defaults_and_identity_spec_commits_5() {
     let m = ROLES.defaults();
-    assert_eq!((m.retention.by, m.retention.history, m.expires), (PurgeBy::Admin, None, None));
+    assert_eq!((m.retention.by, m.expires), (PurgeBy::Admin, None));
     for ak in ROLE_CLASS {
         let a = &core_schema().aspects[ak];
-        assert_eq!((a.retention.by, a.retention.history), (PurgeBy::Admin, None), "{ak}");
+        assert_eq!(a.retention.by, PurgeBy::Admin, "{ak}");
         assert!(is_role_class(ak));
     }
     assert!(!is_role_class("group.0"));
-    assert_eq!(CREATED.defaults().retention, osis_schema::Retention { by: PurgeBy::Admin, history: None });
+    assert_eq!(CREATED.defaults().retention, osis_schema::Retention { by: PurgeBy::Admin });
     assert_eq!(NODE.defaults(), AspectDefaults::default());
     assert!(GROUP.schema().is_some_and(Schema::declares_core));
     let untyped = Ak::new("x:y.0").unwrap();

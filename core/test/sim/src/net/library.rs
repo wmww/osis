@@ -696,6 +696,15 @@ fn expired_absent(sim: &mut NetSim, commits: &[CommitId], ak: &osis_base::Ak) ->
     Ok(())
 }
 
+/// Admin `n` writes `t`'s setting keeping `k`'s replaced content for good (spec/commits.md §5).
+fn keep_forever(sim: &mut NetSim, n: usize, t: osis_base::Tid, k: &osis_base::Ak) -> Res<()> {
+    let mut m = Mutation::new();
+    m.set(t, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(k.clone(), History::FOREVER)).map_err(|e| sim.fail(e.to_string()))?;
+    sim.commit(n, m)?;
+    sim.quiet(40)?;
+    Ok(())
+}
+
 /// Purge-on-replace races (spec/commits.md §5): two writers overwrite an aspect purged on replace, under a lossy network; an hour later every replaced body is gone from the host and
 /// from honest nodes, the current value stays.
 pub fn purge_on_replace(seed: u64) -> Res<Report> {
@@ -708,6 +717,11 @@ pub fn purge_on_replace(seed: u64) -> Res<Report> {
     let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
     let t = sim.item(a, g)?;
     sim.reconnect_all();
+    sim.quiet(40)?;
+    let k = super::scenarios::ak(&sim, &workload::LATEST)?;
+    let mut m = Mutation::new();
+    m.set(t, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(k, History::PurgeOnReplace)).map_err(|e| sim.fail(e.to_string()))?;
+    sim.commit(a, m)?;
     sim.quiet(40)?;
     let mut written = Vec::new();
     for k in 0..8u32 {
@@ -770,7 +784,8 @@ pub fn purge_tombstones(seed: u64) -> Res<Report> {
     sim.quiet(40)?;
     sim.node_down(e)?;
     let k = super::scenarios::ak(&sim, &workload::NOTE)?;
-    let forever = Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::FOREVER) };
+    keep_forever(&mut sim, a, t, &k)?;
+    let forever = Retention { by: PurgeBy::AuthorOrAdmin };
     let mut messages = Vec::new();
     let mut purged = BTreeSet::new();
     let mut said = 0u32;
@@ -871,7 +886,8 @@ fn purge_falls_how(name: &str, seed: u64, churn: bool) -> Res<Report> {
     let t = sim.item(a, g)?;
     sim.quiet(40)?;
     let k = super::scenarios::ak(&sim, &workload::NOTE)?;
-    let forever = Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::FOREVER) };
+    keep_forever(&mut sim, a, t, &k)?;
+    let forever = Retention { by: PurgeBy::AuthorOrAdmin };
     let mut m = Mutation::new();
     m.retention(t, &workload::NOTE, forever).map_err(|e| sim.fail(e.to_string()))?;
     m.set(t, &workload::NOTE, &Value::Str("kept".into())).map_err(|e| sim.fail(e.to_string()))?;

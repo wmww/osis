@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Aspects of a forgotten thing that stay: what perm judges others' writes by, no content and
 /// no secret.
-const KEPT: [&str; 5] = ["created.0", "required^.0", "roles.0", "keys.0", "label.0"];
+const KEPT: [&str; 5] = ["created.0", "retention^.0", "roles.0", "keys.0", "label.0"];
 
 /// What goes of a thing `forget` reaches.
 #[derive(Clone, Copy, PartialEq, Eq)]

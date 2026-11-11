@@ -4,7 +4,7 @@ use crate::tests::{dkey, sample_header, t, ts};
 use crate::retention::purge_keep_until;
 use crate::*;
 use osis_base::{Ak, CommitId, Value};
-use osis_schema::{History, PurgeBy, Retention};
+use osis_schema::{PurgeBy, Retention};
 
 fn invalid(h: &Header) -> Error {
     h.validate().unwrap_err()
@@ -111,9 +111,9 @@ fn validate_role_commit() {
     assert!(invalid(&x).to_string().contains("roles.0"));
 }
 
-// spec/commits.md §5 (nobody shares a commit only with nobody), §6 (one expiry per commit): a
-// `nobody` delta beside another class is bad input, a record or `required^.0` beside either is
-// not; an expiring commit carries no fixed-retention aspect.
+// spec/commits.md §5 (`nobody` is for `created.0` and fixed retention alone), §6 (one expiry per commit): a
+// `nobody` content delta is bad input, `retention^.0` beside any delta is not; an expiring commit
+// carries no fixed-retention aspect.
 #[test]
 fn validate_nobody_and_commit_expiry() {
     let sort = |x: &mut Header| x.aspects.sort_by_key(|a| crate::header::aspect_key(&a.tid, &a.ak));
@@ -124,30 +124,23 @@ fn validate_nobody_and_commit_expiry() {
     b.retention = retention::KEPT_RETENTION;
     b.keys.clear();
     let mut x = h.clone();
-    x.aspects.push(b.clone());
-    sort(&mut x);
+    x.aspects[0] = b.clone();
+    x.keys.clear();
     assert!(invalid(&x).to_string().contains("nobody"), "{}", invalid(&x));
     let mut rec = b.clone();
-    rec.ak = Ak::new("required^.0").unwrap();
+    rec.ak = Ak::new("retention^.0").unwrap();
     rec.retention = retention::KEPT_RETENTION;
     rec.tid = t(2);
     let mut x = h.clone();
     x.aspects.insert(0, rec.clone());
     sort(&mut x);
     x.validate().unwrap();
-    let mut x = h.clone();
-    x.aspects[0] = b.clone();
-    x.aspects.insert(0, rec.clone());
-    sort(&mut x);
-    x.keys.clear();
-    x.validate().unwrap();
     x.expires = Some(h.ts.wall_ms().0 + 1);
     assert!(invalid(&x).to_string().contains("fixed-retention"));
 }
 
 // spec/commits.md §5, §6: expires after ts; purge never names role-class deltas; a purge request
-// beside an expiry is valid, its floor ending there; purge on replace only under writer, nobody
-// only kept forever.
+// beside an expiry is valid, its floor ending there.
 // spec/commits.md §5 (purge not role-class)
 #[test]
 fn validate_expiry_purge_retention() {
@@ -165,100 +158,60 @@ fn validate_expiry_purge_retention() {
     x.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("roles.0").unwrap() });
     x.purge.sort_by_key(|p| osis_base::encode(&crate::header::purge_value(p)));
     assert!(invalid(&x).to_string().contains("role-class"));
-    let mut x = h.clone();
-    x.aspects[0].retention.history = Some(History::PurgeOnReplace);
-    assert!(invalid(&x).to_string().contains("writer"));
-    // checked before the delete levels the class calls for
-    x.aspects[0].retention.by = PurgeBy::Writer;
-    assert!(invalid(&x).to_string().contains("delete levels"));
-    // `nobody` only kept forever
-    let mut x = h.clone();
-    x.aspects[0].retention = Retention { by: PurgeBy::Nobody, history: Some(History::Keep { until: Some(7), after: None }) };
-    assert!(invalid(&x).to_string().contains("forever"));
-    x.aspects[0].retention.history = None;
-    assert!(invalid(&x).to_string().contains("forever"));
-    x.aspects[0].retention.history = Some(History::FOREVER);
-    assert!(invalid(&x).to_string().contains("delete levels"));
 }
 
-// spec/wire.md §4: history `0 | 1 | [2, {? 0: until, ? 1: after}]` round-trips; a keep with
-// neither bound, `after` 0, an unknown history or keep key is malformed.
+// spec/wire.md §4: a part's retention is `by` alone: every class round-trips; an unknown class, or
+// one as a list, is malformed.
 #[test]
-fn history_encoding_spec_wire_4() {
+fn retention_encoding_spec_wire_4() {
     let h = sample_header();
-    for history in [None, Some(History::PurgeOnReplace), Some(History::FOREVER), Some(History::Keep { until: None, after: Some(9) }), Some(History::Keep { until: Some(5), after: Some(9) })] {
+    for by in PurgeBy::ALL {
         let mut x = h.clone();
-        x.aspects[0].retention.history = history;
+        x.aspects[0].retention = Retention { by };
         assert_eq!(Header::decode(&x.encode()).unwrap(), x);
     }
-    let keep = |m: Vec<(i64, i64)>| Value::List(vec![Value::Int(2), Value::Map(m.into_iter().map(|(k, v)| (Value::Int(k), Value::Int(v))).collect())]);
-    for bad in [keep(vec![]), keep(vec![(1, 0)]), keep(vec![(2, 5)]), Value::Int(3), Value::List(vec![Value::Int(1), Value::Map(Default::default())])] {
+    for bad in [Value::Int(4), Value::List(vec![Value::Int(2), Value::Int(0)])] {
         let mut v = h.to_value();
         if let Value::List(items) = &mut v
             && let Some(Value::List(aspects)) = items.get_mut(7)
             && let Some(Value::List(a)) = aspects.first_mut()
-            && let Some(Value::List(r)) = a.get_mut(4)
         {
-            r[1] = bad.clone();
+            a[4] = bad.clone();
         }
         assert!(Header::decode(&osis_base::encode(&v)).is_err(), "{bad:?}");
     }
 }
 
-// spec/commits.md §5: fixed tables, write defaults (untyped: author_or_admin, no history, no expiry),
-// snapshot retention from schema defaults.
+// spec/commits.md §5: fixed tables, write defaults (untyped: author_or_admin, no expiry), `nobody`
+// refused, snapshot retention.
 #[test]
 fn retention_rules() {
     use osis_schema::AspectDefaults;
     use retention::*;
     assert_eq!(fixed_retention("secrets.0"), Some(ROLE_RETENTION));
     assert_eq!(fixed_retention("created.0"), None);
-    assert_eq!(fixed_retention("required^.0").unwrap().by, PurgeBy::Nobody);
+    assert_eq!(fixed_retention("retention^.0").unwrap().by, PurgeBy::Nobody);
     assert_eq!(fixed_retention("app:x.0"), None);
     assert_eq!(write_retention("app:x.0", None, None).unwrap(), Retention::default());
     assert_eq!(Retention::default().by, PurgeBy::AuthorOrAdmin);
     assert_eq!(write_expires("app:x.0", ts(10), None, None).unwrap(), None);
-    let d = AspectDefaults {
-        retention: Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::Keep { until: Some(7), after: None }) },
-        expires: Some(100),
-    };
+    let d = AspectDefaults { retention: Retention { by: PurgeBy::Admin }, expires: Some(100) };
     assert_eq!(write_retention("app:x.0", Some(&d), None).unwrap(), d.retention);
     assert_eq!(write_expires("app:x.0", ts(10), Some(&d), None).unwrap(), Some(110));
     assert_eq!(write_expires("app:x.0", ts(10), Some(&d), Some(50)).unwrap(), Some(50));
     assert_eq!(write_expires("roles.0", ts(10), Some(&d), Some(50)).unwrap(), None);
     assert!(write_retention("roles.0", None, Some(Retention::default())).is_err());
-    let bad = Retention { by: PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::PurgeOnReplace) };
-    assert!(write_retention("app:x.0", None, Some(bad)).is_err());
-    // canonical: `after` 0 and a keep with neither bound are no promise
-    let zero = Retention { by: PurgeBy::Writer, history: Some(History::Keep { until: None, after: Some(0) }) };
-    assert_eq!(write_retention("app:x.0", None, Some(zero)).unwrap(), Retention { by: PurgeBy::Writer, history: None });
-    let empty = Retention { by: PurgeBy::Writer, history: Some(History::Keep { until: None, after: None }) };
-    assert_eq!(write_retention("app:x.0", None, Some(empty)).unwrap(), Retention { by: PurgeBy::Writer, history: None });
-    let nobody = Retention { by: PurgeBy::Nobody, history: None };
-    assert!(write_retention("app:x.0", None, Some(nobody)).is_err());
-    // out of range: `until` past forever, a saturated `after`
-    for (until, after) in [(Some(crate::FOREVER + 1), None), (None, Some(crate::FOREVER))] {
-        assert!(write_retention("app:x.0", None, Some(Retention { by: PurgeBy::Writer, history: Some(History::Keep { until, after }) })).is_err());
-    }
-    let r = Retention { by: PurgeBy::Writer, history: Some(History::Keep { until: Some(crate::FOREVER), after: Some(crate::FOREVER - 1) }) };
-    assert_eq!(write_retention("app:x.0", None, Some(r)).unwrap(), r);
-    // purge on replace if any own delta is, else the longest `after` (no `until`), else none
-    let own = |history| Retention { by: PurgeBy::AuthorOrAdmin, history };
-    let keep = |until, after| Some(History::Keep { until, after });
-    let s = snapshot_retention("app:x.0", [own(keep(Some(900), Some(5))), own(keep(Some(300), None)), own(keep(None, Some(7)))]);
-    assert_eq!(s, Retention { by: PurgeBy::Writer, history: keep(None, Some(7)) });
-    let s = snapshot_retention("app:x.0", [own(keep(None, Some(7))), own(Some(History::PurgeOnReplace))]);
-    assert_eq!(s, Retention { by: PurgeBy::Writer, history: Some(History::PurgeOnReplace) });
-    assert_eq!(snapshot_retention("app:x.0", []), Retention { by: PurgeBy::Writer, ..Default::default() });
-    assert_eq!(snapshot_retention("app:x.0", [own(keep(Some(500), None))]), Retention { by: PurgeBy::Writer, ..Default::default() });
-    assert_eq!(snapshot_retention("keys.0", [own(Some(History::PurgeOnReplace))]), ROLE_RETENTION);
+    assert!(write_retention("app:x.0", None, Some(Retention { by: PurgeBy::Nobody })).is_err());
+    assert_eq!(write_retention("retention^.0", None, None).unwrap(), KEPT_RETENTION);
+    // a snapshot is `writer`, its history the thing's setting; fixed retention keeps its own
+    assert_eq!(snapshot_retention("app:x.0"), Retention { by: PurgeBy::Writer });
+    assert_eq!(snapshot_retention("keys.0"), ROLE_RETENTION);
 }
 
-// spec/commits.md §2, spec/wire.md §4: an ephemeral commit's retention is `writer`, keeping history
-// or not, never purge on replace, in session form and as a commit-form snapshot alike; it may undo
-// a commit. A relay-only commit keeps no history and undoes nothing.
+// spec/commits.md §2, spec/wire.md §4: an ephemeral commit's retention is `writer`, in session
+// form and as a commit-form snapshot alike; it may undo a commit. A relay-only commit undoes nothing.
 #[test]
-fn ephemeral_retention_writer_keeps_history_or_not_spec_commits_2() {
+fn ephemeral_retention_writer_spec_commits_2() {
     let mut session = sample_header();
     session.undoes = None;
     session.ephemeral = Some(EphClass::Plain);
@@ -276,21 +229,16 @@ fn ephemeral_retention_writer_keeps_history_or_not_spec_commits_2() {
     relay.expires = None;
     for h in [session, snapshot, undo] {
         h.validate().unwrap();
-        for history in [History::Keep { until: None, after: Some(5) }, History::Keep { until: Some(5), after: None }] {
-            let mut x = h.clone();
-            x.aspects[0].retention.history = Some(history);
-            x.validate().unwrap();
-        }
         let mut x = h.clone();
-        x.aspects[0].retention.history = Some(History::PurgeOnReplace);
-        assert!(invalid(&x).to_string().contains("retention"), "{:?}", x.aspects[0].retention);
+        x.aspects[0].retention.by = PurgeBy::AuthorOrAdmin;
+        x.aspects[0].keys = vec![0, 1];
+        x.keys.truncate(2);
+        assert!(invalid(&x).to_string().contains("writer"), "{}", invalid(&x));
     }
     relay.validate().unwrap();
-    for f in [|h: &mut Header| h.undoes = Some(CommitId([4; 32])), |h: &mut Header| h.aspects[0].retention.history = Some(History::Keep { until: None, after: Some(5) })] {
-        let mut x = relay.clone();
-        f(&mut x);
-        assert!(invalid(&x).to_string().contains("relay-only"), "{}", invalid(&x));
-    }
+    let mut x = relay.clone();
+    x.undoes = Some(CommitId([4; 32]));
+    assert!(invalid(&x).to_string().contains("relay-only"), "{}", invalid(&x));
 }
 
 // spec/commits.md §3 (session form), spec/wire.md §4: session form `[1, nonce]` round-trips; the

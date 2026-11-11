@@ -541,6 +541,7 @@ fn useless_superset_does_not_cost_a_rewrite_spec_sync_6() {
     let h = net.node(63, &hosts);
     let g = net.group(a, &[(b, Role::Write), (h, Role::Write)], &hosts);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let t2 = net.item(a, g, g, "y");
     net.run();
     let l = net.label(a);

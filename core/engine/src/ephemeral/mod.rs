@@ -105,8 +105,8 @@ impl Engine {
                 return Err(Error::UnknownThing(*tid));
             }
             check_authority(&self.core, node, &Default::default(), tid, ak.as_str(), ts)?;
-            if am.retention.is_some_and(|r| r.by != osis_base::PurgeBy::Writer || matches!(r.history, Some(osis_schema::History::PurgeOnReplace))) {
-                return Err(Error::Misuse("an ephemeral write's retention is `writer`, keeping history or not"));
+            if am.retention.is_some_and(|r| r.by != osis_base::PurgeBy::Writer) {
+                return Err(Error::Misuse("an ephemeral write's retention is `writer`"));
             }
             if ak.signal() {
                 if am.expires.is_some() {

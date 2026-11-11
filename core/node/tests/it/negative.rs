@@ -12,18 +12,22 @@ static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "keep.osis",
     r#"
 revision 1;
-purgeable_by(writer) keep_history(1d) aspect k:kept.0: string;
-purgeable_by(admin) keep_history(1d) aspect k:admin.0: string;
+purgeable_by(writer) aspect k:kept.0: string;
+purgeable_by(admin) aspect k:admin.0: string;
 "#,
 );
 const KEPT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:kept.0", &KEEP);
 const ADMIN_KEPT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:admin.0", &KEEP);
+/// What the tests' things keep of both (their setting): a day after replaced.
+const DAY: osis_schema::History = crate::common::DAY;
 
 // spec/commits.md §5 (keep at least): a compaction before the bound neither drops the covered
-// bodies nor deletes them at the host; once the bound has passed (by MAX_DRIFT) it does both.
+// bodies nor deletes them at the host; once the bound has passed it drops them, and deletes them
+// at the host once it is MAX_DRIFT past (host delete margin).
 #[test]
 fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
     let (mut net, host, [a], _g, [t]) = hosted::<1, 1>(&[], ["x"], false);
+    net.keep(a, t, &[("k:kept.0", DAY)]);
     let mut bodies = Vec::new();
     for v in ["v1", "v2", "v3"] {
         let mut m = Mutation::new();
@@ -48,7 +52,7 @@ fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
     }
     let at = net.host_ids(host, &l);
     assert!(dead.iter().all(|id| at.contains(id)), "deleted at the host before the bound");
-    // compaction waits MAX_DRIFT past the bound (spec/sync.md §7)
+    // the host delete waits MAX_DRIFT past the bound (spec/sync.md §7)
     net.advance(86_400_000 + osis_base::format::MAX_DRIFT_MS);
     let acts = net.sync(a).compact(&t, &ak).unwrap();
     net.actions(a, acts);
@@ -76,6 +80,7 @@ fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
     net.set_skew(if a_ahead { a } else { b }, osis_base::format::MAX_DRIFT_MS as i64);
     let g = net.group(a, &[(b, osis_base::Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[("k:kept.0", DAY)]);
     let mut bodies = Vec::new();
     for v in ["v1", "v2", "v3"] {
         let mut m = Mutation::new();
@@ -114,7 +119,7 @@ fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
     (deletions_of(&net, host, &l, &seen), seen.len())
 }
 
-// spec/sync.md §7 (compaction waits MAX_DRIFT past keep-at-least): two right holders whose
+// spec/sync.md §7, spec/commits.md §5 (host delete margin): two right holders whose
 // clocks differ by MAX_DRIFT, either way, cross a keep-at-least bound: the two dead
 // bodies are deleted at the host once each and nobody places them again (the node past the
 // bound used to delete what the other, still before it, placed again as must-hold).
@@ -149,6 +154,7 @@ fn local_dating_churn() -> (usize, usize) {
     let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
     let g = net.group(a, &[(b, osis_base::Role::Write), (c, osis_base::Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[("k:kept.0", DAY)]);
     let k = &KEPT;
     let set = |net: &mut Net, n: usize, v: &str| {
         let mut m = Mutation::new();
@@ -210,8 +216,8 @@ fn local_dating_churn() -> (usize, usize) {
 
 // spec/sync.md §6 (a covered delta is no blob's alone), spec/commits.md §5 (replaced, from the
 // held set): admin A compacts a register while X, B's write, is live (not replaced: past its
-// relative keep-at-least), drops X and deletes it at the host. Then C overwrites X: B, still
-// holding X, judges it replaced now and kept. X is covered by A's snapshot under the label, so B
+// relative keep-at-least), drops X and deletes it at the host. Then C overwrites X: B, away
+// meanwhile and still holding X, judges it replaced now and kept. X is covered by A's snapshot under the label, so B
 // does not place it again; else A deletes each fresh encryption and B uploads another, for a
 // day (sim `snapshot_rights` seed 9317).
 #[test]
@@ -219,6 +225,7 @@ fn covered_drop_stays_out_across_local_dating_spec_sync_6() {
     let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
     let g = net.group(a, &[(b, osis_base::Role::Write), (c, osis_base::Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[("k:admin.0", DAY)]);
     net.run();
     let k = &ADMIN_KEPT;
     let set = |net: &mut Net, n: usize, v: &str| {
@@ -230,6 +237,8 @@ fn covered_drop_stays_out_across_local_dating_spec_sync_6() {
     net.run();
     let l = net.label(a);
     let ak = Ak::new(k.ak()).unwrap();
+    // B away: it holds X, never hearing of A's snapshot until X is replaced and kept
+    net.set_online(b, false);
     // past MAX_DRIFT since X: a node's compaction may drop a body with no death then
     net.advance(osis_base::format::MAX_DRIFT_MS + 60_000);
     let acts = net.sync(a).compact(&t, &ak).unwrap();
@@ -251,17 +260,19 @@ fn covered_drop_stays_out_across_local_dating_spec_sync_6() {
     assert!(net.host_ids(host, &l).iter().all(|id| !before.contains(id)), "X deleted at the host");
     set(&mut net, c, "y");
     net.run();
+    net.set_online(b, true);
+    net.run();
     assert!(net.engine(b).replaced_at(&x, &t, &ak).unwrap().is_some(), "B judges X replaced");
     assert!(net.engine(b).body_not_dropped(&x, &t, &ak), "B still holds X, kept");
     let after = x_ids(&mut net);
-    assert_eq!(after, before, "no fresh encryption of X");
-    assert_eq!(deletions_of(&net, host, &l, &after), before.len(), "one deletion per blob of X");
-    assert!(net.host_ids(host, &l).iter().all(|id| !after.contains(id)), "X stays out of the host");
+    assert!(after.is_subset(&before), "no fresh encryption of X");
+    assert_eq!(deletions_of(&net, host, &l, &before), before.len(), "one deletion per blob of X");
+    assert!(net.host_ids(host, &l).iter().all(|id| !before.contains(id)), "X stays out of the host");
 }
 
 // spec/sync.md §6, spec/permissions.md §5.2 (a snapshot turned invalid covers nothing): as
 // `covered_drop_stays_out_across_local_dating_*`, but admin D compacts and deletes X, and the
-// first admin, away meanwhile, then demotes D to read with a frontier not listing D's snapshot. X is
+// first admin, away meanwhile (B too, until X is replaced), then demotes D to read with a frontier not listing D's snapshot. X is
 // covered by no valid snapshot any more: B, dating X kept, places it again once, and it stays;
 // all read alike.
 #[test]
@@ -275,6 +286,7 @@ fn covered_drop_coverer_falls_reuploaded_spec_sync_6() {
     let d = net.node(4, &[host]);
     let g = net.group(a, &[(b, osis_base::Role::Write), (c, osis_base::Role::Write), (d, osis_base::Role::Admin)], &[host]);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[("k:admin.0", DAY)]);
     net.run();
     let k = &ADMIN_KEPT;
     let set = |net: &mut Net, n: usize, v: &str| {
@@ -287,6 +299,7 @@ fn covered_drop_coverer_falls_reuploaded_spec_sync_6() {
     let l = net.label(a);
     let ak = Ak::new(k.ak()).unwrap();
     net.set_online(a, false);
+    net.set_online(b, false);
     net.advance(osis_base::format::MAX_DRIFT_MS + 60_000);
     let acts = net.sync(d).compact(&t, &ak).unwrap();
     net.actions(d, acts);
@@ -306,6 +319,8 @@ fn covered_drop_coverer_falls_reuploaded_spec_sync_6() {
     let first = x_ids(&mut net);
     assert!(net.host_ids(host, &l).iter().all(|id| !first.contains(id)), "X deleted at the host");
     set(&mut net, c, "y");
+    net.run();
+    net.set_online(b, true);
     net.run();
     assert!(net.engine(b).body_not_dropped(&x, &t, &ak), "B still holds X, kept");
     assert!(net.host_ids(host, &l).iter().all(|id| !first.contains(id)), "X stays out while covered");

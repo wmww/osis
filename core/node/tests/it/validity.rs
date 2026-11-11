@@ -178,7 +178,7 @@ fn overlapping_counters_spec_commits_4() {
     let f = create(&mut w, &AnyView, &s("second")).unwrap();
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(h.form, Kind::Content, ts, b, lo, hi), None).unwrap();
     let mut aw = AspectWrite::new(d, other.clone(), lo, hi, bytes);
-    aw.retention = crate::common::purgeable_by(osis_base::PurgeBy::Nobody);
+    aw.retention = crate::common::purgeable_by(osis_base::PurgeBy::Writer);
     let mut cb = CommitBuilder::new(Kind::Content, ts, b, b, h.form);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
@@ -202,7 +202,7 @@ fn forge_reg(lp: &mut LocalPeer, d: Tid, ak: &osis_base::Ak, lo: u64, ts: osis_b
     let hi = lo + 1;
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, b, lo, hi), None).unwrap();
     let mut aw = AspectWrite::new(d, ak.clone(), lo, hi, bytes);
-    aw.retention = crate::common::purgeable_by(osis_base::PurgeBy::Nobody);
+    aw.retention = crate::common::purgeable_by(osis_base::PurgeBy::Writer);
     let mut cb = CommitBuilder::new(Kind::Content, ts, b, b, form);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
@@ -501,7 +501,7 @@ fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
     let cx = writer_ctx(Form::Commit, Kind::Content, ts, b, r.lo, r.hi);
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut aw = AspectWrite::new(d, ak("t:reg.0"), r.lo, r.hi, bytes);
-    aw.retention = crate::common::purgeable_by(osis_base::PurgeBy::Nobody);
+    aw.retention = crate::common::purgeable_by(osis_base::PurgeBy::Writer);
     let mut cb = CommitBuilder::new(Kind::Content, ts, b, actor, Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
@@ -545,7 +545,7 @@ fn acting_valid_once_grant_arrives_spec_perm_5_2() {
     let mut m = Mutation::new();
     m.set(d, &REG, &s("for dave")).unwrap();
     // Dave's node has no write secret to derive an author-class delete key from
-    m.retention(d, &REG, crate::common::purgeable_by(osis_base::PurgeBy::Nobody)).unwrap();
+    m.retention(d, &REG, crate::common::purgeable_by(osis_base::PurgeBy::Admin)).unwrap();
     m.act_as(dave);
     let id = lp.peers[1].commit(m).unwrap().unwrap();
     let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
@@ -1894,9 +1894,8 @@ fn greater_forged_copy_keeps_original_body_spec_commits_5() {
     };
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.get(&d, &kept).unwrap(), Some(s("zzz forged")), "the greater copy wins");
-    // a right holder's compaction drop (sync `drop_covered`): the right, the bound, covered
-    assert!(e.snapshot_right(&f, &c, &d, &kept));
-    assert!(e.drop_from(&c, &d, &kept).unwrap().is_some_and(|due| due <= e.now().0), "past its relative bound");
+    // a compaction drop (sync `drop_covered`): the bound, covered
+    assert!(e.drop_from(&c, &d, &kept).unwrap() <= e.now().0, "past its relative bound");
     if e.covered(&f, &c, &d, &kept).unwrap() == Some(true) {
         e.drop_body(&c, &d, &kept).unwrap();
     }
@@ -3459,12 +3458,11 @@ fn stranger_undo_listing_moves_no_step_back_spec_crdt_4_6() {
     for variant in ["none", "undo header only", "change header only", "undo valid elsewhere"] {
         let mut lp = net(2, 0x5f21);
         lp.sync_all().unwrap();
-        let t = new_thing(&mut lp, 0);
+        let t = new_thing_keeping(&mut lp, 0, &[("t:reg.0", crate::common::DAY)]);
         let set = |lp: &mut LocalPeer, v: &str| {
             lp.advance(1_000);
             let mut m = Mutation::new();
             m.set(t, &REG, &s(v)).unwrap();
-            m.retention(t, &REG, crate::common::kept_day()).unwrap();
             lp.peers[0].commit(m).unwrap().unwrap()
         };
         set(&mut lp, "z");
@@ -3499,20 +3497,18 @@ fn stranger_undo_listing_moves_no_step_back_spec_crdt_4_6() {
 fn undo_needs_write_spec_crdt_4_6() {
     let mut lp = net(2, 0x5f22);
     lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
+    let t = new_thing_keeping(&mut lp, 0, &[("t:reg.0", crate::common::DAY)]);
     let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("prior")).unwrap();
-    m.retention(t, &REG, crate::common::kept_day()).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     lp.advance(1_000);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("b's")).unwrap();
-    m.retention(t, &REG, crate::common::kept_day()).unwrap();
     let c = lp.peers[1].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     lp.advance(1_000);
@@ -3593,10 +3589,10 @@ fn frontier_iff_the_write_audits_spec_wire_13() {
 static KICK: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "kick.osis",
     "revision 1;\n\
-     purgeable_by(author, admin) keep_history(forever) aspect k:s.0: string;\n\
-     purgeable_by(author, admin) keep_history(forever) aspect k:m.0: struct { text 0: string, name 1: option<string>, tags 2: set<int> };\n",
+     purgeable_by(author, admin) aspect k:s.0: string;\n\
+     purgeable_by(author, admin) aspect k:m.0: struct { text 0: string, name 1: option<string>, tags 2: set<int> };\n",
 );
-static KICK_SEQ: osis_schema::StaticSchema = osis_schema::StaticSchema::new("kick-seq.osis", "revision 1; purgeable_by(author, admin) keep_history(forever) aspect k:m.0: struct { text 0: string, marks 3: list<int> };\n");
+static KICK_SEQ: osis_schema::StaticSchema = osis_schema::StaticSchema::new("kick-seq.osis", "revision 1; purgeable_by(author, admin) aspect k:m.0: struct { text 0: string, marks 3: list<int> };\n");
 
 // spec: none (costs, spec/requirements.md Scale; notes/chat.md): a kick that drops a kept aspect's
 // newest writes reads its bodies only down to the newest valid one, a whole value of any
@@ -3711,8 +3707,8 @@ fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
     }
 }
 
-static ANCHOR_TEXT: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-text.osis", "revision 1; purgeable_by(author, admin) keep_history(forever) aspect k:t.0: text;\n");
-static ANCHOR_STR: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-str.osis", "revision 1; purgeable_by(author, admin) keep_history(forever) aspect k:t.0: string;\n");
+static ANCHOR_TEXT: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-text.osis", "revision 1; purgeable_by(author, admin) aspect k:t.0: text;\n");
+static ANCHOR_STR: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-str.osis", "revision 1; purgeable_by(author, admin) aspect k:t.0: string;\n");
 
 // spec/crdt.md §4.2, §4.6, §6.1, §7: a rebuild is the join of every held body. A register write
 // resets older text, whose records go; a later insert anchored at an old char sits at its virtual
@@ -3746,4 +3742,39 @@ fn rebuild_past_a_register_places_older_anchors_spec_crdt_4_2() {
     // the text slot is chosen (Carol's stamp is the greatest): the register's chars, then Z at
     // its virtual anchor
     assert_eq!(lp.peers[0].engine.get(&d, &k).unwrap(), Some(s("QZ")));
+}
+
+// spec/crdt.md §5.7: a reopen forgets a deleted text element's char; the delete falling (its
+// author demoted with nothing listed) brings it back from its creation's body
+#[test]
+fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
+    for reopen in [false, true] {
+        let mut lp = net(3, 433);
+        let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+        let mut m = Mutation::new();
+        let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
+        lp.peers[0].commit(m).unwrap().unwrap();
+        set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
+        set_edge(&mut lp.peers[0].engine, d, ids[2], Some(edge(Role::Admin)), None);
+        lp.sync_all().unwrap();
+        lp.advance(1_000);
+        let mut m = Mutation::new();
+        m.set(d, &TEXT, &s("abc")).unwrap();
+        lp.peers[1].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(1_000);
+        let mut m = Mutation::new();
+        m.op(d, &TEXT, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Delete { at: 1, len: 1 } }).unwrap();
+        lp.peers[2].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(1_000);
+        let read = |lp: &mut LocalPeer| lp.peers[0].engine.get(&d, &ak("t:text.0")).unwrap();
+        assert_eq!(read(&mut lp), Some(s("ac")));
+        if reopen {
+            lp.peers[0].engine.reload().unwrap();
+            assert_eq!(read(&mut lp), Some(s("ac")));
+        }
+        set_edge(&mut lp.peers[0].engine, d, ids[2], Some(edge(Role::Read)), Some(osis_schema::core_types::Frontier::default().to_value()));
+        assert_eq!(read(&mut lp), Some(s("abc")), "reopen {reopen}");
+    }
 }

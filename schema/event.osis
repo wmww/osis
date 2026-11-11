@@ -27,7 +27,7 @@ type occurrence = enum {
 };
 
 /// When the event starts: a time, or a whole day. Absent: not scheduled yet.
-keep_history(1d) aspect event:start.0: enum {
+aspect event:start.0: enum {
     at 0 (wall),
     day 1 (date),
 };
@@ -35,16 +35,16 @@ keep_history(1d) aspect event:start.0: enum {
 /// When it ends: a time (in its own zone, which may differ from the start's), the last day
 /// (inclusive), or a duration after the start. Absent: a moment, or one day. Must be the same
 /// kind as the start (time or day) and not before it.
-keep_history(1d) aspect event:end.0: enum {
+aspect event:end.0: enum {
     at 0 (wall),
     day 1 (date),
     after 2 (duration),
 };
 
-keep_history(1d) aspect event:location.0: string;
+aspect event:location.0: string;
 
 /// How the event repeats.
-keep_history(1d) aspect event:repeat.0: struct {
+aspect event:repeat.0: struct {
     freq 0: enum {
         daily 0,
         weekly 1,
@@ -69,10 +69,10 @@ keep_history(1d) aspect event:repeat.0: struct {
 };
 
 /// This event replaces one occurrence of a repeating event (that occurrence, changed).
-keep_history(1d) aspect event:overrides.0: struct {
+aspect event:overrides.0: struct {
     series 0: tid,
     at 1: occurrence,
 };
 
 /// Reminders, this long before the start.
-keep_history(1d) aspect event:alerts.0: set<duration>;
+aspect event:alerts.0: set<duration>;

@@ -573,7 +573,7 @@ fn expiry_retention_purge_spec_commits_5_6() {
     let (k, r) = (ak("t:msg.0"), ak("t:keep.0"));
     let mut w = db.write();
     let t = w.create().unwrap();
-    let ret = osis::Retention { by: osis::internals::schema::PurgeBy::Writer, ..Default::default() };
+    let ret = osis::Retention { by: osis::internals::schema::PurgeBy::Writer };
     w.at(t, osis::DynamicAspectKey::untyped(r.clone())).retention(ret).set(&s("kept")).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
@@ -1881,8 +1881,8 @@ aspect t:when.0: stamp;
 #[test]
 fn what_public_signatures_show_can_be_named_api_design() {
     let h = osis::History::Keep { until: osis::Time(0), after_replaced: std::time::Duration::ZERO };
-    let r = osis::core::Required { retention: osis::Retention { by: osis::PurgeBy::default(), history: Some(h) }, expires: None, refuse_replace: false };
-    assert_eq!(r.retention.history, Some(h));
+    let r = osis::core::RetentionEntry { history: Some(h), expires: None, refuse_replace: false };
+    assert_eq!(r.history, Some(h));
     let e = osis::PathError::new(osis::Path::root(), osis::PathErrorKind::Mismatch { expected: "x" });
     assert!(matches!(e.kind, osis::PathErrorKind::Mismatch { .. }));
     let _: Result<osis::Ak, osis::AkError> = osis::Ak::new("t:x.0");

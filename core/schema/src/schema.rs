@@ -32,7 +32,7 @@ pub struct TypeDef {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AspectDef {
     pub ty: Type,
-    pub retention: DefaultRetention,
+    pub retention: Retention,
     /// Default expiry, ms after the write (spec/commits.md §6).
     pub expires: Option<u64>,
     pub flags: BTreeSet<Flag>,
@@ -64,14 +64,13 @@ impl Flag {
 /// Wall ms meaning forever in `History::Keep::until` (spec/wire.md §4).
 pub const FOREVER: u64 = i64::MAX as u64;
 
-/// What happens to a write's history once something replaces it (spec/commits.md §5). The
-/// default (`Retention::history` `None`) promises nothing.
+/// What a thing's setting keeps of an aspect's replaced writes (spec/commits.md §5 The setting).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum History {
     /// Kept until wall ms `until` (`FOREVER`: for good) and for `after` ms after the write is
-    /// replaced, the later counting. Neither, `after` 0 or an `until` already past is the default.
+    /// replaced, the later counting (a missing bound counts as 0).
     Keep { until: Option<u64>, after: Option<u64> },
-    /// Gone once replaced; `writer` only.
+    /// Gone once replaced.
     PurgeOnReplace,
 }
 
@@ -80,76 +79,17 @@ impl History {
     pub const FOREVER: History = History::Keep { until: Some(FOREVER), after: None };
 }
 
-/// How a write is kept and who may purge it. `Default` is the untyped default: `author_or_admin`,
-/// no history promised.
+/// Who may purge a write (spec/commits.md §5). `Default` is the untyped default: `author_or_admin`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub struct Retention {
     pub by: PurgeBy,
-    /// Who wrote a change and when is reported only while the change itself is held: keeping it
-    /// for good keeps that provable.
-    pub history: Option<History>,
 }
 
 impl Retention {
-    /// The canonical form a writer puts on the wire: `after` 0 is no `after`, and a `Keep` with
-    /// neither bound is the default.
-    pub fn canonical(self) -> Retention {
-        let history = match self.history {
-            Some(History::Keep { until, after }) => {
-                let after = after.filter(|d| *d > 0);
-                (until.is_some() || after.is_some()).then_some(History::Keep { until, after })
-            }
-            h => h,
-        };
-        Retention { history, ..self }
-    }
-
-    /// Why `self` is not a retention a write may carry (spec/commits.md §5): purge on replace
-    /// needs `writer`, `nobody` keeping for good.
+    /// Why `self` is not a retention a write of a content aspect may carry (spec/commits.md §5):
+    /// `nobody` is for `created.0` and fixed retention alone.
     pub fn refusal(&self) -> Option<&'static str> {
-        match (self.by, self.history) {
-            (PurgeBy::Writer, _) => None,
-            (_, Some(History::PurgeOnReplace)) => Some("purge on replace needs purgeable by writer"),
-            (PurgeBy::Nobody, Some(History::Keep { until: Some(FOREVER), .. })) => None,
-            (PurgeBy::Nobody, _) => Some("purgeable by nobody needs history kept forever"),
-            _ => None,
-        }
-    }
-}
-
-/// A schema's default history for an aspect's writes (meta.osis `history`): no fixed date, which
-/// only a write can name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum DefaultHistory {
-    KeepForever,
-    /// For this many ms after replaced (positive, `Schema::validate`).
-    KeepFor(u64),
-    PurgeOnReplace,
-}
-
-impl DefaultHistory {
-    /// The history a write under this default carries.
-    pub fn history(self) -> History {
-        match self {
-            DefaultHistory::KeepForever => History::FOREVER,
-            DefaultHistory::KeepFor(d) => History::Keep { until: None, after: Some(d) },
-            DefaultHistory::PurgeOnReplace => History::PurgeOnReplace,
-        }
-    }
-}
-
-/// A schema's default retention for an aspect's writes (meta.osis `retention`); `Default`: the
-/// untyped default.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
-pub struct DefaultRetention {
-    pub by: PurgeBy,
-    pub history: Option<DefaultHistory>,
-}
-
-impl DefaultRetention {
-    /// The retention a write under this default carries.
-    pub fn retention(self) -> Retention {
-        Retention { by: self.by, history: self.history.map(DefaultHistory::history) }
+        (self.by == PurgeBy::Nobody).then_some("purgeable by nobody is for created.0 and fixed retention alone")
     }
 }
 
@@ -180,7 +120,7 @@ impl Schema {
 
     /// Write defaults for an AK this schema declares.
     pub fn defaults(&self, ak: &str) -> Option<AspectDefaults> {
-        self.aspects.get(ak).map(|a| AspectDefaults { retention: a.retention.retention(), expires: a.expires })
+        self.aspects.get(ak).map(|a| AspectDefaults { retention: a.retention, expires: a.expires })
     }
 
     /// One expansion step of a named type (standard or declared): a declared one without
@@ -304,17 +244,10 @@ impl Schema {
                 }
             };
             self.check_syntax(&def.ty, &[], &mut |m| bad(&item, m));
-            if let Some(m) = def.retention.retention().refusal() {
+            if let Some(m) = def.retention.refusal() {
                 bad(&item, format!("{m} (spec/commits.md §5)"));
             }
-            let after = match def.retention.history {
-                Some(DefaultHistory::KeepFor(d)) => Some(d),
-                _ => None,
-            };
-            if after == Some(0) {
-                bad(&item, "keep_history takes a positive duration".into());
-            }
-            if [def.expires, after].into_iter().any(big) {
+            if big(def.expires) {
                 bad(&item, "time out of range".into());
             }
             if def.expires == Some(0) {
@@ -323,22 +256,13 @@ impl Schema {
             if core && (markers.ephemeral || markers.signal) {
                 bad(&item, "core aspects are durable and hold a value".into());
             }
-            // an ephemeral write is purgeable by its writer and keeps history or none
-            // (spec/commits.md §2)
-            if markers.ephemeral && (def.retention.by != DefaultRetention::default().by || def.retention.history == Some(DefaultHistory::PurgeOnReplace)) {
-                bad(&item, "an ephemeral aspect takes keep_history alone of the retention modifiers".into());
-            }
-            // a signal's writes are history from the start: kept as long as keep_history says, so
-            // one without it (or purged on replace) would hold nothing (spec/commits.md §5 Signals)
-            if markers.signal && !markers.ephemeral && !matches!(def.retention.history, Some(DefaultHistory::KeepForever | DefaultHistory::KeepFor(_))) {
-                bad(&item, "a signal declares keep_history (without `ephemeral`, its writes are kept as history)".into());
+            // an ephemeral write is purgeable by its writer (spec/commits.md §2)
+            if markers.ephemeral && def.retention != Retention::default() {
+                bad(&item, "an ephemeral aspect takes no purgeable_by".into());
             }
             // an ephemeral signal is held by nobody
             if markers.signal && markers.ephemeral && def.expires.is_some() {
                 bad(&item, "an ephemeral signal is held by nobody: nothing to expire".into());
-            }
-            if markers.signal && markers.ephemeral && def.retention.history.is_some() {
-                bad(&item, "an ephemeral signal is held by nobody: no history to keep".into());
             }
             for s in &def.succeeds {
                 if s == ak || Ak::new(s.as_str()).is_err() {

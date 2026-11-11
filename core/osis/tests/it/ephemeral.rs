@@ -263,16 +263,14 @@ fn ephemeral_signal_fires_reach_history_listener_once_spec_data_model_2() {
 }
 
 // spec/data-model.md §2, spec/commits.md §5 Signals: a signal without `+` reads absent and each
-// write is a commit kept in history, heard through `on_fire` alone (`on_change` sees nothing);
-// a schema gives it keep_history, and a revert writes nothing back for it
+// write is a commit kept in history (the thing's setting keeps it), heard through `on_fire` alone
+// (`on_change` sees nothing); a revert writes nothing back for it
 #[test]
 fn signal_without_ephemeral_is_history_spec_commits_5() {
     let (db, _c) = setup(9);
-    db.register_schema("log.osis", "revision 1;\nkeep_history(30d) signal app:log~0: string;\n").unwrap();
-    let e = db.register_schema("bad.osis", "revision 1;\nsignal app:bad~0: int;\n").unwrap_err();
-    assert!(e.to_string().contains("a signal declares keep_history"), "{e}");
+    db.register_schema("log.osis", "revision 1;\nsignal app:log~0: string;\n").unwrap();
     let log = db.aspect_key("app:log~0").unwrap();
-    let t = db.commit_with(|w| w.create()).unwrap();
+    let t = db.commit_with(|w| { let t = w.create()?; keep_all(w, t); Ok(t) }).unwrap();
     let (tx, rx) = channel();
     let _sub = db.at(t, log.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     assert_eq!(recv(&rx).value, Ok(None));
@@ -307,9 +305,9 @@ fn signal_without_ephemeral_is_history_spec_commits_5() {
 #[test]
 fn dynamic_key_crossing_kinds_spec_data_model_2() {
     let (db, _c) = setup(10);
-    db.register_schema("k.osis", "revision 1;\nkeep_history(30d) signal app:log~0: string;\naspect app:n.0: string;\n").unwrap();
+    db.register_schema("k.osis", "revision 1;\nsignal app:log~0: string;\naspect app:n.0: string;\n").unwrap();
     let (log, n) = (db.aspect_key("app:log~0").unwrap(), db.aspect_key("app:n.0").unwrap());
-    let t = db.commit_with(|w| w.create()).unwrap();
+    let t = db.commit_with(|w| { let t = w.create()?; keep_all(w, t); Ok(t) }).unwrap();
     let refused = |f: &dyn Fn(&mut osis::Write<'_>) -> osis::Result<()>, word: &str| {
         let mut w = db.write();
         f(&mut w).unwrap();
@@ -552,10 +550,11 @@ fn ephemeral_write_counts_as_acting_spec_permissions_4() {
 #[test]
 fn a_thing_with_only_expiring_content_spec_commits_6() {
     let (db, c) = setup(40);
-    keep_day(&db, &["app:body.0"]);
+    typed_any(&db, &["app:body.0"]);
     let (body, hour) = (kept(&db, &ak("app:body.0")), Duration::from_secs(3600));
     let g = db.commit_with(|w| {
         let g = w.create()?;
+        keep_all(w, g);
         w.at(g, osis::DynamicAspectKey::untyped(ak("app:kept.0"))).set(&Value::Int(1))?;
         Ok(g)
     })
@@ -573,6 +572,7 @@ fn a_thing_with_only_expiring_content_spec_commits_6() {
     let h = db.engine(|e| e.header(&kept.stamp.id.raw())).unwrap();
     assert_eq!(h.aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>(), ["created.0"], "the record alone");
     assert_eq!(h.expires, None);
+    db.commit_with(|w| { keep_all(w, t); Ok(()) }).unwrap();
     let mut w = db.write();
     w.expires(osis::Expiry::In(hour));
     w.at(t, body.clone()).set(&s("x")).unwrap();

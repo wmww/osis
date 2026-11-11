@@ -73,9 +73,7 @@ pub fn send(db: &Osis, c: Tid, subject: &str, text: &str, reply_to: Option<Commi
         (false, true) => s.to_string(),
         (false, false) => format!("{s}\n\n{t}"),
     };
-    let mut w = db.write();
-    w.at(c, MSG).fire(&osis_chat::schema::Message { text, name: my_name(db)?, reply_to: reply_to.map(|r| r.to_string()) })?;
-    Ok(w.commit()?.ok_or_else(|| osis::Error::Invalid("nothing written".into()))?.stamp.id)
+    osis_chat::send(db, c, &osis_chat::schema::Message { text, name: my_name(db)?, reply_to: reply_to.map(|r| r.to_string()) })
 }
 
 fn text_of(b: &Body<osis_chat::schema::Message>) -> String {

@@ -57,6 +57,11 @@ fn world(seed: u64, whole: bool) -> World {
     let a = lp.peers[0].engine.me();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, a);
+    // a relative bound on `big` and `mix` (when replaced is judged), purge on replace on `reg`
+    let keep = ct::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(3_600_000) }), ..Default::default() };
+    let purge = ct::RetentionEntry { history: Some(osis_schema::History::PurgeOnReplace), ..Default::default() };
+    let [big, mix, _, reg] = aks();
+    m.set(t, &ct::RETENTION, &ct::RetentionSetting::from(BTreeMap::from([(big, keep), (mix, keep), (reg, purge)]))).unwrap();
     lp.peers[0].commit(m).unwrap();
     for w in [1, 2, 3] {
         let w = lp.peers[w].engine.me();
@@ -154,15 +159,9 @@ impl World {
                 if what == 2 {
                     m.set(t, &aks[3], &Value::Int(g as i64)).unwrap();
                 }
-                // a relative bound: when replaced is judged
-                match r.below(3) {
-                    0 => {
-                        m.retention(t, &aks[asp], bounded()).unwrap();
-                    }
-                    1 => {
-                        m.retention(t, &aks[asp], Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) }).unwrap();
-                    }
-                    _ => {}
+                // purgeable by every writer, or the untyped default
+                if r.below(3) < 2 {
+                    m.retention(t, &aks[asp], Retention { by: PurgeBy::Writer }).unwrap();
                 }
             }
             3 | 4 => {
@@ -393,11 +392,6 @@ fn packages(w: &mut World, from: usize, ids: &[CommitId]) -> Vec<Package> {
     ids.iter().map(|id| w.lp.peers[from].engine.package(id).unwrap().unwrap()).collect()
 }
 
-/// A relative keep at least: when replaced is judged, no body drops for it.
-fn bounded() -> Retention {
-    Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(3_600_000) }) }
-}
-
 /// Node 3 holds a paged map (its own fill, so its deltas carry bounded retention); node 0
 /// replaces the map (a root reset) and snapshots it; node 3 gets the snapshot alone: its
 /// skeleton's reset prunes the paged state a page at a time, the old writes dying there.
@@ -407,12 +401,12 @@ fn snapshot_root_reset_prunes_pages_spec_crdt_8() {
         let (t, a) = (w.t, aks()[0].clone());
         let mut r = Rng(21);
         let mut m = Mutation::new();
-        m.set(t, &a, &big_map(&mut r, 0)).unwrap().retention(t, &a, bounded()).unwrap();
+        m.set(t, &a, &big_map(&mut r, 0)).unwrap();
         let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
         let pk = packages(w, 0, &[fill]);
         w.lp.deliver(3, &pk[0]).unwrap();
         let mut m = Mutation::new();
-        m.replace(t, &a, &big_map(&mut r, 1)).unwrap().retention(t, &a, bounded()).unwrap();
+        m.replace(t, &a, &big_map(&mut r, 1)).unwrap();
         w.lp.peers[0].commit(m).unwrap().unwrap();
         let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
         packages(w, 0, &[snap])
@@ -517,7 +511,7 @@ fn forge_snapshot(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_
     let rec = w.lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
     let sec = Forged(rec);
     let author = w.lp.peers[by].engine.me();
-    let retention = osis_commit::retention::snapshot_retention(ak.as_str(), []);
+    let retention = osis_commit::retention::snapshot_retention(ak.as_str());
     let keys = osis_commit::delete_keys(&sec, &t, &retention).unwrap();
     let blind = [9u8; 16];
     let framing = osis_label::Framing { dedup: osis_commit::Secrets::dedup(&sec, &t).unwrap(), expiry: None, keys: keys.iter().map(|k| (k.level, k.verifying_key().unwrap())).collect(), blind };
@@ -652,7 +646,7 @@ fn paged_snapshot_differing_copies_match_whole_spec_perm_5_2() {
             let n = 2000u64;
             let v = |g: u64| Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, g))).collect());
             let mut m = Mutation::new();
-            m.set(t, &a, &v(0)).unwrap().retention(t, &a, bounded()).unwrap();
+            m.set(t, &a, &v(0)).unwrap();
             let fill = w.lp.peers[1].commit(m).unwrap().unwrap();
             let pk = packages(w, 1, &[fill]);
             w.lp.deliver(3, &pk[0]).unwrap();
@@ -806,17 +800,17 @@ fn death_on_many_pages_dated_once_spec_commits_5() {
     let (t, a) = (w.t, aks()[1].clone());
     let big = Value::Map((0..4000).map(|i| (Value::Int(i), s(i as u64, 0))).collect());
     let mut m = Mutation::new();
-    m.set(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Str("big".into()), big), (Value::Str("x".into()), Value::Int(0))]))).unwrap().retention(t, &a, bounded()).unwrap();
+    m.set(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Str("big".into()), big), (Value::Str("x".into()), Value::Int(0))]))).unwrap();
     let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
     w.lp.advance(10);
     let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
     w.lp.advance(10);
     let mut m = Mutation::new();
-    m.replace(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Str("x".into()), Value::Int(1))]))).unwrap().retention(t, &a, bounded()).unwrap();
+    m.replace(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Str("x".into()), Value::Int(1))]))).unwrap();
     let reset = w.lp.peers[0].commit(m).unwrap().unwrap();
     w.lp.advance(10);
     let mut m = Mutation::new();
-    m.replace(t, &a, &Value::Int(2)).unwrap().retention(t, &a, bounded()).unwrap();
+    m.replace(t, &a, &Value::Int(2)).unwrap();
     w.lp.peers[0].commit(m).unwrap().unwrap();
     let e = &mut w.lp.peers[0].engine;
     let ai = e.header(&snap).unwrap().aspects.iter().position(|x| x.ak == a).unwrap();

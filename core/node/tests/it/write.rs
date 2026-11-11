@@ -176,7 +176,7 @@ fn paged_state_edits_and_restart() {
     m.set(t, &am, &Value::Map(model.clone())).unwrap();
     m.set(t, &aset, &Value::Set(smodel.clone())).unwrap();
     // kept: the undo below writes back an entry's value (spec/crdt.md §4.6)
-    m.retention(t, &am, crate::common::kept_day()).unwrap();
+    common::keep_in(&mut m, t, &common::setting(&[("app:big.0", common::DAY)]));
     p.commit(m).unwrap().unwrap();
     let mut r = 0x9e37_79b9_7f4a_7c15u64;
     let mut next = || {
@@ -188,7 +188,6 @@ fn paged_state_edits_and_restart() {
     let mut last_edit = None;
     for round in 0..40 {
         let mut m = Mutation::new();
-        m.retention(t, &am, crate::common::kept_day()).unwrap();
         let k = Value::Int((next() % 4000) as i64);
         match next() % 4 {
             0 if model.contains_key(&k) => {
@@ -230,7 +229,6 @@ fn paged_state_edits_and_restart() {
     // a path edit, then its undo
     let before = p.engine.get(&t, &am).unwrap();
     let mut m = Mutation::new();
-    m.retention(t, &am, crate::common::kept_day()).unwrap();
     m.op(t, &am, PathOp { path: vec![PathSeg::Key(Value::Int(5))], op: Op::Set(Value::Int(-5)) }).unwrap();
     let id = p.commit(m).unwrap().unwrap();
     assert_ne!(p.engine.get(&t, &am).unwrap(), before);
@@ -579,7 +577,7 @@ fn large_values_by_value_spec_crdt_5_5() {
     }
 }
 
-static TEXTS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("write-text.osis", "revision 1; keep_history(1d) aspect w:text.0: text;\n");
+static TEXTS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("write-text.osis", "revision 1; aspect w:text.0: text;\n");
 const TEXT_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("w:text.0", &TEXTS);
 
 // spec/crdt.md §5.7 (ops by index), §6.1 (a new insert lands right after its anchor), §4.6

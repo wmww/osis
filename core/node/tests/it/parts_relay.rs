@@ -238,7 +238,7 @@ fn relay_seed(seed: u64) {
     x.net.advance(10);
     // one thing in two bodies: a junk copy of one holds its true copy out, the other waits for it
     let mut m = osis_node::Mutation::new();
-    m.retention(h2, &GONE, crate::timed_dead::purge_on_replace().unwrap()).unwrap();
+    m.retention(h2, &GONE, crate::timed_dead::writer().unwrap()).unwrap();
     m.set(h2, &GONE, &Value::Str("gone".into())).unwrap();
     m.set(h2, &REG, &Value::Str("two bodies".into())).unwrap();
     sources.push((a, x.net.engine(a).commit(m).unwrap().unwrap()));

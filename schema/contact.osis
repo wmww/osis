@@ -26,9 +26,9 @@ type annual = struct {
 
 /// The profile of the osis user this contact is. The contact's own values override the profile's,
 /// field by field.
-keep_history(1d) aspect contact:profile.0: tid;
+aspect contact:profile.0: tid;
 
-keep_history(1d) aspect contact:names.0: struct {
+aspect contact:names.0: struct {
     given 0: option<string>,
     family 1: option<string>,
     middle 2: option<string>,
@@ -36,33 +36,33 @@ keep_history(1d) aspect contact:names.0: struct {
     suffix 4: option<string>,
 };
 
-keep_history(1d) aspect contact:nickname.0: string;
+aspect contact:nickname.0: string;
 
 /// Keyed by the address.
-keep_history(1d) aspect contact:emails.0: map<string, labeled>;
+aspect contact:emails.0: map<string, labeled>;
 
 /// Keyed by the number as entered.
-keep_history(1d) aspect contact:phones.0: map<string, labeled>;
+aspect contact:phones.0: map<string, labeled>;
 
-keep_history(1d) aspect contact:urls.0: map<string, labeled>;
+aspect contact:urls.0: map<string, labeled>;
 
 /// Keyed by label: home, work, ...
-keep_history(1d) aspect contact:addresses.0: map<string, address>;
+aspect contact:addresses.0: map<string, address>;
 
 /// Keyed by label: birthday, anniversary, ...
-keep_history(1d) aspect contact:dates.0: map<string, annual>;
+aspect contact:dates.0: map<string, annual>;
 
-keep_history(1d) aspect contact:org.0: struct {
+aspect contact:org.0: struct {
     name 0: string = "",
     department 1: string = "",
     title 2: string = "",
 };
 
 /// Messaging and social accounts.
-keep_history(1d) aspect contact:accounts.0: set<struct {
+aspect contact:accounts.0: set<struct {
     service 0: string,
     handle 1: string,
 }>;
 
 /// Another contact -> how they are related (spouse, child, ...).
-keep_history(1d) aspect contact:relations.0: map<tid, string>;
+aspect contact:relations.0: map<tid, string>;

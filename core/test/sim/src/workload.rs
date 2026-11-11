@@ -19,7 +19,7 @@ aspect s:map.0: map<string, int>;
 purgeable_by(writer) aspect s:gone.0: string;
 aspect s:note.0: string;
 aspect s:story.0: set<string>;
-purgeable_by(writer) purge_on_replace aspect s:latest.0: string;
+purgeable_by(writer) aspect s:latest.0: string;
 "#,
 );
 
@@ -34,7 +34,7 @@ pub const GONE: Aspect<Value> = Aspect::new("s:gone.0", &SIM);
 pub const STORY: Aspect<Value> = Aspect::new("s:story.0", &SIM);
 /// Written with an expiry (scenarios only).
 pub const NOTE: Aspect<Value> = Aspect::new("s:note.0", &SIM);
-/// Purged on replace: only the latest value (scenarios only).
+/// Purged on replace by the setting scenarios write: only the latest value (scenarios only).
 pub const LATEST: Aspect<Value> = Aspect::new("s:latest.0", &SIM);
 
 const WORDS: [&str; 5] = ["ash", "birch", "cedar", "dogwood", "elm"];

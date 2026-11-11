@@ -117,7 +117,7 @@ fn snapshot() -> CommitBlob {
     let bytes = encode_snapshot(&s, &writer_ctx(Form::Commit, Kind::ContentSnapshot, at, AUTHOR, 0, 0), None).unwrap();
     let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, AUTHOR, ACTOR, Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 0, 0, bytes);
-    a.retention = retention::snapshot_retention("app:title.0", []);
+    a.retention = retention::snapshot_retention("app:title.0");
     b.aspects.push(a);
     built(b)
 }
@@ -134,7 +134,7 @@ fn ephemeral(class: osis_commit::EphClass) -> CommitBlob {
     let bytes = encode_snapshot(&s, &writer_ctx(Form::Commit, Kind::ContentSnapshot, at, AUTHOR, 0, 0), None).unwrap();
     let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, AUTHOR, ACTOR, Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("app:state.0").unwrap(), 0, 0, bytes);
-    a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
+    a.retention = Retention { by: PurgeBy::Writer };
     b.aspects.push(a);
     b.ephemeral = Some(class);
     built(b)
@@ -147,7 +147,7 @@ fn session_commit() -> CommitBlob {
     let bytes = delta(SESSION, Kind::Content, at, 1, Value::Str("typing".into()), 11);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
     let mut a = AspectWrite::new(THING, Ak::new("app:state.0").unwrap(), 1, 2, bytes);
-    a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
+    a.retention = Retention { by: PurgeBy::Writer };
     b.aspects.push(a);
     b.ephemeral = Some(osis_commit::EphClass::Plain);
     built(b)
@@ -224,19 +224,18 @@ impl osis_crypto::CryptoRng for Recording {}
 
 fn more_accepted() -> Vec<Record> {
     use osis_base::BlobId;
-    use osis_schema::History;
     let mut out = Vec::new();
-    // commit form, expiring, history kept until and after, chunks, undoes
+    // commit form, expiring, chunks, undoes
     let at = ts(1_700_000_004_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 1, 2, delta(Form::Commit, Kind::Content, at, 1, Value::Str("typed".into()), 6));
     b.expires = Some(at.wall_ms().0 + 86_400_000);
-    a.retention = Retention { by: PurgeBy::Writer, history: Some(History::Keep { until: Some(1_800_000_000_000), after: Some(3_600_000) }) };
+    a.retention = Retention { by: PurgeBy::Writer };
     a.chunks = vec![BlobId([0x28; 32]), BlobId([0x2a; 32])];
     b.aspects.push(a);
     b.undoes = Some(CommitId([0x2c; 32]));
     let c = built(b);
-    out.push(record("commit form, expiry, history kept until and after, chunks, undoes", "spec/wire.md §4; spec/commits.md §3, §5, §6, §7", &c));
+    out.push(record("commit form, expiry, chunks, undoes", "spec/wire.md §4; spec/commits.md §3, §5, §6, §7", &c));
     // purge request, with a creation
     let at = ts(1_700_000_005_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
@@ -252,7 +251,7 @@ fn more_accepted() -> Vec<Record> {
     let at = ts(1_700_000_005_500);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
     let mut a = AspectWrite::new(THING, Ak::new("app:msg~0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("edited".into()), 9));
-    a.retention = Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::FOREVER) };
+    a.retention = Retention { by: PurgeBy::AuthorOrAdmin };
     a.replaces = Some(CommitId([0x2f; 32]));
     b.aspects.push(a);
     b.expires = Some(at.wall_ms().0 + 86_400_000);
@@ -323,35 +322,10 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.chunks.push(ChunkEntry { blob: osis_base::BlobId([1; 32]), keys: vec![9] });
     out.push(reject("chunk delete key index out of range", "spec/wire.md §4", &x, "chunk-keys"));
     let mut x = content.clone();
-    let mut n = x.aspects[0].clone();
-    n.ak = Ak::new("app:n.0").unwrap();
-    n.retention = retention::KEPT_RETENTION;
-    n.keys.clear();
-    // canonical order: the shorter AK of one thing first
-    x.aspects.insert(0, n);
-    out.push(reject("a nobody delta beside another class", "spec/commits.md §5", &x, "nobody-mix"));
-    let mut x = content.clone();
-    x.aspects[0].retention.history = Some(osis_schema::History::PurgeOnReplace);
-    out.push(reject("purge on replace under a class other than writer", "spec/wire.md §4; spec/commits.md §5", &x, "history-class"));
-    let mut x = content.clone();
-    x.aspects[0].retention = Retention { by: PurgeBy::Nobody, history: Some(osis_schema::History::Keep { until: Some(1_800_000_000_000), after: None }) };
+    x.aspects[0].retention = retention::KEPT_RETENTION;
     x.aspects[0].keys.clear();
     x.keys.clear();
-    out.push(reject("nobody with history not kept forever", "spec/wire.md §4; spec/commits.md §5", &x, "history-class"));
-    // a keep map with neither bound, and `after` 0: not canonical
-    for (name, keep) in [("history kept with neither bound", Value::Map(Default::default())), ("history kept 0 after replaced", Value::Map([(Value::Int(1), Value::Int(0))].into_iter().collect()))] {
-        let mut v = content.to_value();
-        if let Value::List(items) = &mut v
-            && let Some(Value::List(aspects)) = items.get_mut(7)
-            && let Some(Value::List(a)) = aspects.first_mut()
-            && let Some(Value::List(r)) = a.get_mut(4)
-        {
-            r[1] = Value::List(vec![Value::Int(2), keep]);
-        }
-        let bytes = osis_base::encode(&v);
-        assert!(Header::decode(&bytes).is_err(), "{name}");
-        out.push(case(name, "spec/wire.md §4").with("header", hex(&bytes)).with("reject", "history"));
-    }
+    out.push(reject("nobody on a content aspect", "spec/wire.md §4; spec/commits.md §5", &x, "nobody"));
     let mut x = content.clone();
     x.keys.push(DeleteKey::new(3, &osis_crypto::DeleteSecret::derive(&s32(0x37)).verifying_key()));
     out.push(reject("delete key no aspect lists", "spec/wire.md §4", &x, "unused-key"));
@@ -373,13 +347,12 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     let mut x = e.clone();
     x.purge.push(PurgeItem::Aspect { tid: THING, ak: Ak::new("app:title.0").unwrap() });
     out.push(reject("ephemeral commit with a purge request", "spec/commits.md §2", &x, "ephemeral"));
-    let mut x = ephemeral(osis_commit::EphClass::Relay).header;
-    x.aspects[0].retention.history = Some(osis_schema::History::Keep { until: None, after: Some(5) });
-    out.push(reject("relay-only commit with history kept", "spec/commits.md §2", &x, "ephemeral"));
     let s = session_commit().header;
     let mut x = s.clone();
-    x.aspects[0].retention.history = Some(osis_schema::History::PurgeOnReplace);
-    out.push(reject("session-form ephemeral commit purging on replace", "spec/commits.md §2", &x, "ephemeral"));
+    x.aspects[0].retention.by = PurgeBy::Admin;
+    x.aspects[0].keys.truncate(1);
+    x.keys.truncate(1);
+    out.push(reject("session-form ephemeral commit not purgeable by writer", "spec/commits.md §2", &x, "ephemeral"));
     let mut v = s.to_value();
     if let Value::List(items) = &mut v {
         items[5] = Value::List(vec![Value::Int(2), Value::Bytes(vec![0x28; 16])]);

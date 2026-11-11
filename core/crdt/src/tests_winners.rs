@@ -214,24 +214,32 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
         let dead = a.winners().minus(&ab.winners());
         assert_eq!(dead, want, "dead in a join: the winners the other side's writes supersede");
         let mut other: ByWrite<()> = ByWrite::default();
-        other.note(&b.held_writes(), |_| ());
+        other.note(&b.held_writes(), |_, _| ());
         for w in &dead {
             assert!(a.holds_stamp(&w.stamp), "a dead write is the side's by exact stamp: {w:?}");
-            assert!(other.first_superseding(w, |_| Some(w.stamp.ts)).is_some(), "a dead write dies by a write the other side holds: {w:?} in {ab:?}");
+            assert!(other.first_superseding(w, |_, _| Some(w.stamp.ts)).is_some(), "a dead write dies by a write the other side holds: {w:?} in {ab:?}");
         }
     }
 }
 
+/// `first_superseding` against the from-scratch earliest: each write's stamp, read from a body
+/// holding it, and the bodies' own latest stamps as notes; a text element's creation only by
+/// deletes after the latest undelete held (§4.8 When).
 fn first_superseding_check(bodies: &[Fragment]) {
     let date = |b: &Fragment| raw(b).iter().map(|x| x.w.stamp.ts).max().unwrap_or_default();
     let mut ix: ByWrite<Option<Ts>> = ByWrite::default();
     for b in bodies {
         let d = date(b);
-        ix.note(&b.held_writes(), |x| *x = Some(x.map_or(d, |y| y.min(d))));
+        ix.note(&b.held_writes(), |_, x| *x = Some(x.map_or(d, |y| y.min(d))));
     }
-    for w in bodies.iter().flat_map(raw).filter(|w| !w.shadow) {
-        let want = bodies.iter().filter(|b| raw(b).iter().any(|s| kills(s, &w))).map(date).min();
-        assert_eq!(ix.first_superseding(&w.w, |x| *x), want, "the earliest body superseding {w:?}");
+    let all: Vec<Raw> = bodies.iter().flat_map(raw).collect();
+    for w in all.iter().filter(|w| !w.shadow) {
+        let undeleted = all.iter().filter(|s| s.w.kind == Kind::Undelete && s.w.path == w.w.path).map(|s| &s.w.stamp).max();
+        let counts = |s: &Raw| kills(s, w) && !(w.text_creation && s.w.kind == Kind::Delete && undeleted.is_some_and(|u| s.w.stamp <= *u));
+        let want = bodies.iter().filter(|b| raw(b).iter().any(counts)).map(date).min();
+        assert_eq!(ix.first_superseding(&w.w, |_, x| *x), want, "the earliest body superseding {w:?}");
+        let by_stamp = all.iter().filter(|s| counts(s)).map(|s| s.w.stamp.ts).min();
+        assert_eq!(ix.first_superseding(&w.w, |s, _| Some(s.ts)), by_stamp, "the earliest write superseding {w:?}");
     }
 }
 

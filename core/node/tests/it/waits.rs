@@ -8,7 +8,7 @@ use osis_commit::CommitBlob;
 use osis_base::{Tid, Value, WallMs};
 use osis_node::local_peer::LocalPeer;
 use osis_node::{Ingested, Mutation, Reason};
-use osis_schema::{History, PurgeBy, Retention};
+use osis_schema::{PurgeBy, Retention};
 
 fn only(bytes: &[u8], h: &osis_commit::Header, keep: impl Fn(Tid, &str) -> bool) -> Vec<u8> {
     let mut b = CommitBlob::decode(bytes).unwrap();
@@ -49,13 +49,9 @@ fn mixed(gone: &'static str, reg: Option<&'static str>, r: Option<Retention>) ->
     })
 }
 
-/// `writer`, purged on replace (`None`), or history kept until `until`.
-fn by_writer(until: Option<u64>) -> Option<Retention> {
-    let history = match until {
-        None => History::PurgeOnReplace,
-        Some(t) => History::Keep { until: Some(t), after: None },
-    };
-    Some(Retention { by: PurgeBy::Writer, history: Some(history) })
+/// Purgeable by any writer (`GONE` is purged on replace by `test_setting`).
+fn by_writer() -> Option<Retention> {
+    Some(Retention { by: PurgeBy::Writer })
 }
 
 fn reg_only(p: &osis_node::local_peer::Package) -> Vec<u8> {
@@ -65,8 +61,8 @@ fn reg_only(p: &osis_node::local_peer::Package) -> Vec<u8> {
 }
 
 // spec/commits.md §4, §5: a commit whose author may not write, one part withheld under purge on replace,
-// gains nothing by it: the part held applies invalid, as does a later write. Fixed retention has no
-// purge on replace, on the wire or off: a role-class part cannot use it.
+// gains nothing by it: the part held applies invalid, as does a later write. No setting governs
+// fixed retention: a role-class part is never under purge on replace.
 #[test]
 fn forged_purge_on_replace_class_gives_no_rights_spec_commits_4() {
     let mut lp = net(3, 0x7c05);
@@ -84,7 +80,7 @@ fn forged_purge_on_replace_class_gives_no_rights_spec_commits_4() {
     sync(&mut lp, 0, 1);
     lp.advance(10);
     let mut m = Mutation::new();
-    mixed("forged", Some("forged"), by_writer(None))(&mut m, t);
+    mixed("forged", Some("forged"), by_writer())(&mut m, t);
     let forged = lp.peers[2].commit(m).unwrap().unwrap();
     let pk = packages(&mut lp, 2).into_iter().find(|p| p.id == forged).unwrap();
     lp.advance(10);
@@ -99,7 +95,7 @@ fn forged_purge_on_replace_class_gives_no_rights_spec_commits_4() {
     assert!(e.pending().is_empty(), "{:?}", e.pending());
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")), "the part stays invalid");
     assert_eq!(e.get(&t, &ak("t:gone.0")).unwrap(), None, "so does the later write");
-    assert!(osis_commit::retention::fixed_retention("roles.0").is_some_and(|r| r.history != Some(History::PurgeOnReplace)));
+    assert!(osis_commit::retention::fixed_retention("roles.0").is_some());
 }
 
 /// As node-sync's `drop_covered` for a right holder past keep at least (the bodies here are
@@ -132,7 +128,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
     let put = move |k: &'static str, reg: bool, exp: bool| -> Mutate {
         Box::new(move |m, t| {
             let map = ak("t:gonemap.0");
-            m.retention(t, &map, by_writer(None).unwrap()).unwrap();
+            m.retention(t, &map, by_writer().unwrap()).unwrap();
             if exp {
                 m.expires(t, &map, WallMs(far)).unwrap();
             }
@@ -182,7 +178,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
 #[test]
 fn expired_entry_keeps_nested_write_alike_spec_crdt_4_7() {
     let map = ak("t:gonemap.0");
-    let r = by_writer(None).unwrap();
+    let r = by_writer().unwrap();
     let mut lp = net(4, 0x7e09);
     let t = new_thing(&mut lp, 0);
     for i in 1..4 {

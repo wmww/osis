@@ -8,7 +8,7 @@ use osis::{DynamicAspectKey, MemStore, Osis, Scope, TextSession, Tid, Value};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 
-const SCHEMA: &str = "revision 1;\nkeep_history(1d) aspect n:body.0: text;\naspect n:title.0: string;\n";
+const SCHEMA: &str = "revision 1;\naspect n:body.0: text;\naspect n:title.0: string;\n";
 
 fn setup(db: Osis) -> (Osis, Tid, DynamicAspectKey) {
     db.register_schema("t.osis", SCHEMA).unwrap();

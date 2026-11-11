@@ -21,23 +21,27 @@ fn s(x: &str) -> Value {
     Value::Str(x.into())
 }
 
-fn forever() -> osis::Retention {
-    osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() }
-}
 
+/// A thing keeping its signal's fires for good.
 fn thing(db: &Osis) -> Tid {
-    db.commit_with(|w| w.create()).unwrap()
+    let x = crate::common::setting(&[(log().as_str(), osis::History::FOREVER)]);
+    db.commit_with(|w| {
+        let t = w.create()?;
+        w.at(t, osis::core::RETENTION).set(&x)?;
+        Ok(t)
+    })
+    .unwrap()
 }
 
 fn fire(db: &Osis, t: Tid, x: &str) -> CommitId {
     let mut w = db.write();
-    w.at(t, key()).retention(forever()).fire(&s(x)).unwrap();
+    w.at(t, key()).fire(&s(x)).unwrap();
     w.commit().unwrap().unwrap().stamp.id
 }
 
 fn replace(db: &Osis, t: Tid, o: CommitId, x: &str) -> osis::Result<CommitId> {
     let mut w = db.write();
-    w.at(t, key()).retention(forever()).replace(o, &s(x))?;
+    w.at(t, key()).replace(o, &s(x))?;
     Ok(w.commit()?.unwrap().stamp.id)
 }
 
@@ -130,7 +134,7 @@ fn a_purge_of_a_fire_takes_its_versions_spec_commits_5() {
     let o = fire(&db, t, "one");
     let v1 = replace(&db, t, o, "two").unwrap();
     let mut w = db.write();
-    w.at(t, key()).retention(forever()).replace(o, &s("three")).unwrap();
+    w.at(t, key()).replace(o, &s("three")).unwrap();
     w.at(t, key()).purge(osis::Purge::Commit(o)).unwrap();
     let v2 = w.commit().unwrap().unwrap().stamp.id;
     assert_eq!(listed(&db, t), vec![(o, held("three"), Some(v2))], "the new text stays");
@@ -159,8 +163,8 @@ fn a_replacement_nobody_would_honor_is_refused_spec_commits_5() {
     assert!(refused(&alice, "07".repeat(32).parse::<CommitId>().unwrap()), "not held");
     let mut x = alice.write();
     assert!(matches!(x.at(g, osis::DynamicAspectKey::untyped(ak("t:ping+~0"))).replace(hers, &s("x")).and_then(|_| x.commit().map(|_| ())), Err(Error::Invalid(_))), "an ephemeral signal");
-    let rules = osis::core::RequiredRules { rules: [(log(), osis::core::Required { retention: forever(), expires: None, refuse_replace: true })].into(), ..Default::default() };
-    alice.commit_with(|x| x.at(g, osis::core::REQUIRED).set(&rules)).unwrap();
+    let rules = osis::core::RetentionSetting { rules: [(log(), osis::core::RetentionEntry { history: Some(osis::History::FOREVER), expires: None, refuse_replace: true })].into(), ..Default::default() };
+    alice.commit_with(|x| x.at(g, osis::core::RETENTION).set(&rules)).unwrap();
     assert!(refused(&alice, hers), "the thing refuses replacements");
     w.run();
     for db in [&alice, &bob] {

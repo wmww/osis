@@ -5,7 +5,7 @@ use crate::thing_history;
 use crate::types::*;
 use crdt_model::death::{self, covers, holds, keys, supersedes, valued, winning};
 use crdt_model::origins::Origins;
-use crdt_model::writes::{writes, Name};
+use crdt_model::writes::{writes, Name, Step};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A part: its commit and its index in the header's aspect list.
@@ -95,8 +95,9 @@ pub struct Outcome {
     /// Held valid bodies holding a write the canonical state does not (replaced content).
     pub replaced: BTreeSet<PartRef>,
     /// Per replaced body: wall ms when it was replaced (spec/commits.md §5): per dead write, the
-    /// `ts` of the earliest other held valid body holding a write that supersedes it; a delta at
-    /// its earliest, a snapshot at its latest; a signal's at its own `ts`. History counts from it.
+    /// earliest `ts` among the held valid writes superseding it (read from any other held valid
+    /// body holding one, a vouched copy of an invalid delta's write by its own `ts` too); a body
+    /// at its latest; a signal's at its own `ts`. History counts from it.
     /// None: nothing held supersedes a
     /// write of it (its content left the canonical state otherwise: a reset pruned it to an
     /// anchor, a copy without it).
@@ -147,9 +148,27 @@ impl Outcome {
         }
         thing_history::out(&self.timeline_of(t, a), true, r)
     }
-    /// Whether a body of `(t, a)` replaced at `r` is in history at `now`.
+    /// Whether a body of `(t, a)` replaced at `r` is in history at `now`: it leaves later than
+    /// replaced (one under no history or purge on replace never is, AMBIGUITIES 68), and not yet.
     pub fn in_history(&self, t: ThingId, a: Aspect, r: u64, now: u64) -> bool {
-        now < self.out(t, a, r)
+        let o = self.out(t, a, r);
+        o > r && now < o
+    }
+    /// Whether a body of `(t, a)` replaced at `r` is kept from a covered drop at `now`: where
+    /// some held setting keeps history for `a` (its own entry or the default, at any moment),
+    /// until it is out of history on the node's clock (spec/commits.md §5 Keep bounds: never
+    /// before the clock reaches `r`); elsewhere nothing is dated and a covered body drops at
+    /// once, whatever the thing's other aspects keep. Per part: `r` is the part's own
+    /// replacement, so another part of its commit, kept or not, neither dates nor keeps it (the
+    /// engine keeps a body class until the latest of its parts' bounds, a keep at least on top).
+    /// Listing follows history.
+    pub fn kept(&self, t: ThingId, a: Aspect, r: u64, now: u64) -> bool {
+        self.in_history(t, a, r, now) || now < r && self.aspect_keeps(t, a)
+    }
+    /// Whether some held valid setting of `t` keeps history for `a` (the entry governing it
+    /// reads `keep`).
+    pub fn aspect_keeps(&self, t: ThingId, a: Aspect) -> bool {
+        self.timeline_of(t, a).iter().any(|s| matches!(s.opt, Opt::Keep { .. }))
     }
     /// The entry option in force for `(t, a)` at wall ms `at` (one way).
     pub fn in_force(&self, t: ThingId, a: Aspect, at: u64) -> Opt {
@@ -642,14 +661,25 @@ fn judge(h: &Held) -> Outcome {
                 continue;
             }
             o.replaced.insert((c.id, i));
-            // per gone write, the `ts` of the earliest other held valid body holding a write that
-            // supersedes it (spec/crdt.md §4.8; its own commit, or a snapshot carrying it); none
-            // held: the superseder's own `ts`. A delta counts from the first of its writes' deaths
-            // (its replacement), a snapshot from the latest among those no held valid snapshot
-            // stamped later carries as a winning write (that one keeps it)
+            // per gone write, the earliest `ts` among the held valid writes superseding it, read
+            // from any other held valid body holding one (spec/crdt.md §4.8; its own commit, or a
+            // snapshot carrying it, a valid snapshot's copy of a write whose own delta is held
+            // invalid included: each by its own `ts`); none held: the superseder's own `ts`. A text
+            // element's creation dies only by a delete stamped after the latest undelete of the
+            // element held. A body counts from the latest of its writes' deaths (its
+            // replacement), a snapshot's leaving out those a held valid snapshot stamped later
+            // carries as a winning write (that one keeps it)
             let died = |w: &Frag| -> Option<u64> {
                 let ws = winning(w);
-                let at = ws.iter().next().map(|n| death::stamp(n).clone());
+                let name = ws.iter().next();
+                let at = name.map(|n| death::stamp(n).clone());
+                // the element of a text creation, and the latest undelete held there: a flag
+                // write at the element that does not supersede the creation
+                let creation = name.is_some_and(|n| matches!(n.last(), Some(Step::Created(_))));
+                let elem = name.filter(|_| creation).map(|n| n[..n.len() - 1].to_vec());
+                let undeleted = elem.as_ref().and_then(|e| {
+                    bodies.iter().flat_map(|(_, bf)| writes(bf)).filter(|(n, x)| matches!(n.last(), Some(Step::Flag(_))) && death::key(n)[..n.len() - 1] == e[..] && !supersedes(x, w)).map(|(n, _)| death::stamp(&n).clone()).max()
+                });
                 let mut first: Option<u64> = None;
                 let mut own_ts: Option<u64> = None;
                 for (b_id, bf) in bodies {
@@ -657,11 +687,13 @@ fn judge(h: &Held) -> Outcome {
                         if at.as_ref().is_some_and(|s| death::stamp(&n) < s) || !supersedes(&x, w) {
                             continue;
                         }
+                        if matches!(n.last(), Some(Step::Flag(_))) && undeleted.as_ref().is_some_and(|u| death::stamp(&n) <= u) {
+                            continue;
+                        }
                         let wt = wall(death::stamp(&n).ts);
                         own_ts = Some(own_ts.map_or(wt, |x| x.min(wt)));
                         if *b_id != c.id {
-                            let bt = wall(by_id[b_id].ts);
-                            first = Some(first.map_or(bt, |x| x.min(bt)));
+                            first = Some(first.map_or(wt, |x| x.min(wt)));
                         }
                     }
                 }
@@ -675,7 +707,7 @@ fn judge(h: &Held) -> Outcome {
                 })
             };
             let each = gone.iter().filter(|(n, _)| c.kind != CommitKind::Snapshot || !carried_later(n)).filter_map(|(_, w)| died(w));
-            let at = if c.kind == CommitKind::Snapshot { each.max() } else { each.min() };
+            let at = each.max();
             o.replaced_at.insert((c.id, i), at);
             // under purge on replace by the setting in force when it was replaced; history() while
             // the settings keep it (nothing dates a body nothing held supersedes: not history)
@@ -858,14 +890,15 @@ fn fate(
     let by_any = by_right.or(covering.first().map(|x| x.0));
     let right = tl.right(me, me, (u64::MAX, me, u32::MAX), u32::MAX, p.retention.by, c.actor, t);
     // issues/thing-history.md: in history, kept (compaction may not drop it); under purge on
-    // replace, gone at every node once a right holder covers it, owed by a right holder until
-    // then; out of history, any valid writer's cover drops it (Decisions 4)
-    let in_history = o.replaced_at.get(&pr).copied().flatten().is_some_and(|r| o.in_history(t, a, r, now));
+    // replace, gone at every node once a right holder covers it and the clock reaches its
+    // replacement, owed by a right holder until then; out of history, any valid writer's cover
+    // drops it (Decisions 4)
+    let kept = o.replaced_at.get(&pr).copied().flatten().is_some_and(|r| o.kept(t, a, r, now));
     let under = o.under_purge.contains(&pr);
     let owes = under && by_right.is_none() && right;
     match (by_right, by_any) {
-        (Some(by), _) if under => (Fate::MustDrop(DropWhy::Covered { by }), false),
-        (_, Some(_)) if in_history => (keep(KeepWhy::Until), false),
+        (Some(by), _) if under && !kept => (Fate::MustDrop(DropWhy::Covered { by }), false),
+        (_, Some(_)) if kept => (keep(KeepWhy::Until), false),
         (_, Some(by)) => (Fate::MayDrop(DropWhy::Covered { by }), owes),
         (_, None) => (keep(KeepWhy::Plain), owes),
     }

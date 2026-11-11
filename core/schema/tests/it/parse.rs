@@ -31,9 +31,8 @@ fn core_schema_parses_spec_data_model_9() {
     assert_eq!(aks.len(), 21);
     let holders = &s.aspects["roles.0"];
     assert_eq!(holders.retention.by, PurgeBy::Admin);
-    assert_eq!(holders.retention.history, None);
     assert_eq!(s.aspects["created.0"].retention.by, PurgeBy::Admin);
-    assert_eq!(s.aspects["node.0"].retention, DefaultRetention::default());
+    assert_eq!(s.aspects["node.0"].retention, Retention::default());
     assert!(s.aspects["groups.0"].flags.contains(&Flag::Synthetic));
 }
 
@@ -50,12 +49,11 @@ fn example_schema_parses_items_spec_data_model_2() {
     assert_eq!(s.default_of(&task.fields[&4]), Some(Value::Enum(0, None)), "option defaults to none");
     assert_eq!(s.default_of(&task.fields[&1]), None);
     assert_eq!(s.aspects["note:last_opened.0"].expires, Some(30 * 86_400_000));
-    let pinned = &s.aspects["note:pinned.0"].retention;
-    assert_eq!((pinned.by, pinned.history), (PurgeBy::Writer, Some(DefaultHistory::PurgeOnReplace)));
+    assert_eq!(s.aspects["note:pinned.0"].retention.by, PurgeBy::Writer);
     assert!(s.aspects["note:body.0"].flags.is_empty());
     assert_eq!(s.aspects["note:body.0"].doc.as_deref(), Some("Markdown; not guaranteed valid."));
     assert!(s.aspects["note:typing+~0"].flags.is_empty());
-    assert_eq!(s.aspects["note:aliases.0"].retention, DefaultRetention { by: PurgeBy::AuthorOrAdmin, history: Some(DefaultHistory::KeepFor(7 * 86_400_000)) });
+    assert_eq!(s.aspects["note:aliases.0"].retention, Retention { by: PurgeBy::AuthorOrAdmin });
     assert_eq!(s.aspects["note:cursor+^.0"].expires, Some(30_000));
     assert!(s.aspects["note:title.1"].succeeds.is_empty(), "a higher version succeeds the lower implicitly");
     assert_eq!(s.types["tagged"].params, vec!["T".to_string()]);
@@ -165,18 +163,14 @@ fn validation_rules_spec_data_model_3() {
         ("type x = struct { a 0: int = \"s\" };", "does not fit"),
         ("type x = enum { a 0 } ; type y = struct { f 0: x = b };", "unknown case b"),
         ("type option = int;", "invalid type name"),
-        ("purge_on_replace aspect x:a.0: int;", "needs purgeable by writer"),
-        ("purgeable_by(nobody) aspect x:a.0: int;", "needs history kept forever"),
-        ("purgeable_by(nobody) keep_history(1d) aspect x:a.0: int;", "needs history kept forever"),
+        ("purge_on_replace aspect x:a.0: int;", "expected `aspect` or `signal`"),
+        ("keep_history(1d) aspect x:a.0: int;", "expected `aspect` or `signal`"),
+        ("purgeable_by(nobody) aspect x:a.0: int;", "purgeable_by takes"),
         ("aspect x.0: int; aspect x:a.0: int;", "core AKs"),
         ("aspect x:a.0: int; aspect x:a.0: int;", "duplicate aspect"),
         ("type x<T> = struct { a 0: T = 1 };", "cannot type a default"),
-        ("purgeable_by(admin) ephemeral aspect x:a+.0: int;", "keep_history alone"),
-        ("purgeable_by(writer) purge_on_replace ephemeral aspect x:a+.0: int;", "keep_history alone"),
-        ("keep_history(forever) ephemeral signal x:a+~0: int;", "no history to keep"),
+        ("purgeable_by(admin) ephemeral aspect x:a+.0: int;", "takes no purgeable_by"),
         ("expires(5s) ephemeral signal x:a+~0: int;", "nothing to expire"),
-        ("signal x:a~0: int;", "a signal declares keep_history"),
-        ("purgeable_by(writer) purge_on_replace signal x:a~0: int;", "a signal declares keep_history"),
         ("ephemeral aspect x+.0: int;", "core aspects are durable"),
         ("aspect x:a.01: int;", "invalid AK"),
         ("admin aspect x:a^.0^: int;", "invalid AK"),
@@ -191,24 +185,9 @@ fn validation_rules_spec_data_model_3() {
     let s = app("aspect :AAAAAAAAAAAAAAAAAAAA:a.0: int; ephemeral admin aspect :AAAAAAAAAAAAAAAAAAAA:a+^.1: text succeeds (x:b.0, y:c.0);").unwrap();
     assert_eq!(s.aspects[":AAAAAAAAAAAAAAAAAAAA:a+^.1"].succeeds.len(), 2);
     // ephemeral and signal are the key's markers (spec/data-model.md §2), no flag; the form round-trips
-    let s = app("expires(5s) ephemeral aspect x:e+.0: int; ephemeral signal x:s+~0: string; aspect x:d.0: int; keep_history(30d) signal x:l~0: string; keep_history(forever) expires(1d) signal x:f~0: int;").unwrap();
+    let s = app("expires(5s) ephemeral aspect x:e+.0: int; ephemeral signal x:s+~0: string; aspect x:d.0: int; signal x:l~0: string; expires(1d) signal x:f~0: int;").unwrap();
     assert_eq!(s.defaults("x:e+.0").unwrap().expires, Some(5_000));
     assert_eq!(Schema::from_value(&s.to_value()).unwrap(), s);
-    // history: unnamed by default, kept for good, for a while after replaced, or purged on replace
-    let s = app("aspect x:n.0: int; purgeable_by(nobody) keep_history(forever) aspect x:f.0: int; keep_history(1d) aspect x:k.0: int; purgeable_by(writer) purge_on_replace aspect x:p.0: int; keep_history(1d) ephemeral aspect x:e+.0: int;").unwrap();
-    let h = |ak: &str| s.aspects[ak].retention.history;
-    assert_eq!(h("x:n.0"), None);
-    assert_eq!(h("x:f.0"), Some(DefaultHistory::KeepForever));
-    assert_eq!(h("x:k.0"), Some(DefaultHistory::KeepFor(86_400_000)));
-    assert_eq!(h("x:p.0"), Some(DefaultHistory::PurgeOnReplace));
-    assert_eq!(h("x:e+.0"), Some(DefaultHistory::KeepFor(86_400_000)), "an ephemeral aspect keeps history too");
-    assert_eq!(Schema::from_value(&s.to_value()).unwrap(), s);
-    // a write under a default carries its history; keeping for no time is no default
-    assert_eq!(s.defaults("x:k.0").unwrap().retention.history, Some(History::Keep { until: None, after: Some(86_400_000) }));
-    assert_eq!(s.defaults("x:f.0").unwrap().retention.history, Some(History::FOREVER));
-    let mut bad = s.clone();
-    bad.aspects.get_mut("x:k.0").unwrap().retention.history = Some(DefaultHistory::KeepFor(0));
-    assert!(bad.validate().iter().any(|i| i.msg.contains("positive duration")));
     // Wrappers are fine in mergeable positions, and under a parameter instantiated well.
     app("type c<T> = counter<T>; type x = struct { a 0: c<int>, b 1: map<string, max<float>>, l 2: list<text> };").unwrap();
     let e = err("type c<T> = counter<T>; aspect x:a.0: c<string>;");
@@ -270,30 +249,20 @@ fn prefix_modifiers() {
     };
     assert_eq!(a("synthetic aspect x:a.0: int;").flags, [Flag::Synthetic].into());
     assert_eq!(a("guaranteed synthetic aspect x:a.0: int;").flags, [Flag::Synthetic, Flag::Guaranteed].into());
-    assert_eq!(a("purgeable_by(writer) purge_on_replace aspect x:a.0: int;").retention, DefaultRetention { by: PurgeBy::Writer, history: Some(DefaultHistory::PurgeOnReplace) });
-    assert_eq!(a("purge_on_replace purgeable_by(writer) aspect x:a.0: int;").retention.history, Some(DefaultHistory::PurgeOnReplace));
-    for (by, want) in [("nobody", PurgeBy::Nobody), ("admin", PurgeBy::Admin), ("author", PurgeBy::Author), ("writer", PurgeBy::Writer), ("author, admin", PurgeBy::AuthorOrAdmin), ("admin, author", PurgeBy::AuthorOrAdmin)] {
-        assert_eq!(a(&format!("purgeable_by({by}) keep_history(forever) aspect x:a.0: int;")).retention.by, want, "{by}");
+    for (by, want) in [("admin", PurgeBy::Admin), ("writer", PurgeBy::Writer), ("author, admin", PurgeBy::AuthorOrAdmin), ("admin, author", PurgeBy::AuthorOrAdmin)] {
+        assert_eq!(a(&format!("purgeable_by({by}) aspect x:a.0: int;")).retention.by, want, "{by}");
     }
-    assert_eq!(a("keep_history(forever) aspect x:a.0: int;").retention.history, Some(DefaultHistory::KeepForever));
-    assert_eq!(a("keep_history(12h) aspect x:a.0: int;").retention.history, Some(DefaultHistory::KeepFor(12 * 3_600_000)));
     assert_eq!(a("expires(250ms) aspect x:a.0: int;").expires, Some(250));
     // whitespace-insensitive: a long list on its own line
-    assert_eq!(a("/// doc\npurgeable_by(author)\n  keep_history(30d) expires(1d)\naspect x:a.0: int;").doc.as_deref(), Some("doc"));
+    assert_eq!(a("/// doc\npurgeable_by(admin)\n  expires(1d)\naspect x:a.0: int;").doc.as_deref(), Some("doc"));
     for (src, needle) in [
         ("aspect x:a.0: int [synthetic];", "expected `;`"),
-        ("aspect x:a.0: int [by: writer, purge_on_replace];", "expected `;`"),
-        ("keep_history(until 5) aspect x:a.0: int;", "keep_history takes forever or a duration"),
-        ("keep_history(1d until 5) aspect x:a.0: int;", "expected `)`"),
-        ("keep_history(soon) aspect x:a.0: int;", "keep_history takes forever or a duration"),
-        ("keep_history(1d) keep_history(2d) aspect x:a.0: int;", "duplicate keep_history"),
-        ("purgeable_by(writer) purge_on_replace keep_history(1d) aspect x:a.0: int;", "exclude each other"),
+        ("aspect x:a.0: int [by: writer];", "expected `;`"),
         ("synthetic synthetic aspect x:a.0: int;", "duplicate synthetic"),
         ("purgeable_by(everyone) aspect x:a.0: int;", "purgeable_by takes"),
         ("purgeable_by(author_or_admin) aspect x:a.0: int;", "purgeable_by takes"),
         ("purgeable_by(author, writer) aspect x:a.0: int;", "purgeable_by takes"),
-        ("purgeable_by(author) purge_on_replace aspect x:a.0: int;", "needs purgeable by writer"),
-        ("purgeable_by(author, admin) purge_on_replace aspect x:a.0: int;", "needs purgeable by writer"),
+        ("purgeable_by(author) aspect x:a.0: int;", "purgeable_by takes"),
         ("expires(5) aspect x:a.0: int;", "expected a duration"),
         ("expires(5s aspect x:a.0: int;", "expected `)`"),
         ("frob aspect x:a.0: int;", "expected `aspect` or `signal`"),
@@ -378,14 +347,14 @@ proptest::proptest! {
     }
 }
 
-// spec/commits.md §5, spec/wire.md §1: every purge class has its syntax and code; the meta form
-// round trips them; the default is `author_or_admin`.
+// spec/commits.md §5, spec/wire.md §1: every purge class a write may carry has its syntax and code
+// (`nobody` is for `created.0` and fixed retention alone); the meta form round trips them; the default is
+// `author_or_admin`.
 #[test]
 fn purge_classes_spec_commits_5() {
-    for by in PurgeBy::ALL {
-        let keep = if by == PurgeBy::Nobody { " keep_history(forever)" } else { "" };
+    for by in [PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer] {
         let who = if by == PurgeBy::AuthorOrAdmin { "author, admin" } else { by.name() };
-        let src = format!("revision 1; purgeable_by({who}){keep} aspect x:a.0: int;");
+        let src = format!("revision 1; purgeable_by({who}) aspect x:a.0: int;");
         let s = parse("t.osis", &src).unwrap();
         assert_eq!(s.aspects["x:a.0"].retention.by, by);
         assert_eq!(PurgeBy::from_id(by as u64), Some(by));

@@ -31,10 +31,10 @@ pub enum Reverted {
 }
 
 /// Whether part `a`'s history would be kept at wall ms `now` had a write stamped by `h`
-/// replaced it: until its keep bound (spec/commits.md §5), a relative one counted from `h`'s
-/// `ts`. By the part's retention alone, never by what is held.
-fn keeps_now(h: &Header, a: &osis_commit::AspectEntry, now: u64) -> bool {
-    crate::retention::history::of(a).leaves_at(Some(h.ts.wall_ms().0)) > now
+/// replaced it: its thing's settings counted from `h`'s `ts` (spec/commits.md §5). By the
+/// settings alone, never by what is held.
+fn keeps_now(core: &Core, h: &Header, a: &osis_commit::AspectEntry, now: u64) -> bool {
+    crate::retention::history::of(core, &a.tid, &a.ak).leaves_at(Some(h.ts.wall_ms().0)) > now
 }
 
 /// The valid parts of `(tid, ak)` ordered before `at` whose headers are held, oldest first, each
@@ -45,8 +45,8 @@ fn parts_before(core: &Core, tid: &Tid, ak: &Ak, at: (Ts, CommitId)) -> Vec<(Ts,
 }
 
 /// Whether part `ci` of `c` on `(tid, ak)` is in kept history at wall ms `now`: held, and in
-/// the aspect's read (a write of it live, `body_live`) or kept by its history until its bound
-/// (`body_keep`), so listed (notes/listener-design.md).
+/// the aspect's read (a write of its own live, `delta_live`) or kept by its history until its
+/// bound (`body_history_keep`), so listed (notes/listener-design.md).
 fn kept(tx: &mut Tx<'_>, c: &CommitId, ci: usize, tid: &Tid, ak: &Ak, now: u64) -> Result<bool> {
     if !tx.core.ix.commits.get(c).is_some_and(|m| m.holds(ci)) {
         return Ok(false);
@@ -135,7 +135,7 @@ fn replaced_kept(tx: &mut Tx<'_>, h: &Header, id: &CommitId, a: &osis_commit::As
         if held.filter(|x| snaps.contains(&x.1)).any(|x| crate::retention::reaches((&x.2, &x.3), &m.header, &c, p.hi)) {
             continue;
         }
-        if m.missing.contains(&ci) || !keeps_now(h, p, now) {
+        if m.missing.contains(&ci) || !keeps_now(tx.core, h, p, now) {
             return Ok(false);
         }
     }
@@ -272,7 +272,7 @@ fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, now: u64) -> Result<Vec<(osi
     let made = made_by(&h, &m.valid);
     let mut parts = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if !m.valid_at(ai) || a.ak.signal() || a.ak.as_str() == CREATED.ak() || a.ak.as_str() == osis_commit::retention::REQUIRED || made.contains(&a.tid) {
+        if !m.valid_at(ai) || a.ak.signal() || a.ak.as_str() == CREATED.ak() || a.ak.as_str() == osis_commit::retention::RETENTION || made.contains(&a.tid) {
             continue;
         }
         if m.body_gone(ai) || m.missing.contains(&ai) {
@@ -556,55 +556,6 @@ mod tests {
     use osis_crdt::{Op, PathOp};
     use osis_schema::core_types as ct;
 
-    // spec/commits.md §7: a kept snapshot excuses only the parts its tables reach. B writes
-    // entry `k` keeping no history, unsynced; C then snapshots the map. A gets both and removes
-    // `k` keeping history. B's part is neither kept nor reached by C's snapshot, so undoing the
-    // removal (which would write back the map without `k`) is refused; with C having applied
-    // B's write before its snapshot, the snapshot holds `k` and the undo brings it back.
-    #[test]
-    fn snapshot_excuses_only_what_it_reaches_spec_commits_7() {
-        for seen in [false, true] {
-            let mut lp = LocalPeer::new(3, 961, WallMs(1_700_000_000_000)).unwrap();
-            lp.sync_all().unwrap();
-            let [a, b, c] = [0, 1, 2].map(|i| lp.peers[i].engine.me());
-            let x = Ak::new("x:m.0").unwrap();
-            let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(86_400_000) }) };
-            let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
-            for h in [b, c] {
-                lp.peers[0].engine.grant(&t, &h, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
-            }
-            let mut m = Mutation::new();
-            m.set(t, &x, &Value::Map([(Value::Str("j".into()), Value::Int(1))].into_iter().collect())).unwrap().retention(t, &x, keep).unwrap();
-            lp.peers[0].commit(m).unwrap().unwrap();
-            lp.sync_all().unwrap();
-            lp.advance(10);
-            let mut m = Mutation::new();
-            m.op(t, &x, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str("k".into()))], op: Op::Put(Value::Int(2)) }).unwrap();
-            lp.peers[1].commit(m).unwrap().unwrap();
-            if seen {
-                lp.sync(1, 2).unwrap();
-            }
-            lp.advance(10);
-            lp.peers[2].engine.snapshot(&t, &x).unwrap().unwrap();
-            lp.sync(2, 0).unwrap();
-            lp.sync(1, 0).unwrap();
-            lp.advance(10);
-            let before = lp.peers[0].engine.get(&t, &x).unwrap();
-            let mut m = Mutation::new();
-            m.op(t, &x, PathOp { path: Vec::new(), op: Op::Remove(Value::Str("k".into())) }).unwrap().retention(t, &x, keep).unwrap();
-            let rm = lp.peers[0].commit(m).unwrap().unwrap();
-            let e = &mut lp.peers[0].engine;
-            match e.revert(&rm) {
-                Err(Error::ContentGone(_)) => assert!(!seen, "the snapshot holds `k`"),
-                Ok(Some(_)) => {
-                    assert!(seen, "undone without `k`, which no kept part holds");
-                    assert_eq!(e.get(&t, &x).unwrap(), before);
-                }
-                r => panic!("{r:?}"),
-            }
-        }
-    }
-
     // `check_revertible` runs the revert's own writes in a transaction rolled back after: it
     // changes nothing, whatever it answers. A creates a thing (its creation's undo would delete
     // it) and sets register `x` twice keeping history, C overwriting the first. Probing the creation, the
@@ -654,10 +605,14 @@ mod tests {
         static TS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("t.osis", "revision 1; purgeable_by(author, admin) aspect k:t.0: text;\n");
         let key: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:t.0", &TS);
         let x = Ak::new("k:t.0").unwrap();
-        let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(if shape == "whole" { osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None } } else { osis_schema::History::Keep { until: None, after: Some(86_400_000) } }) };
+        let history = if shape == "whole" { osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None } } else { osis_schema::History::Keep { until: None, after: Some(86_400_000) } };
+        let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
         let mut lp = LocalPeer::new(1, 977, WallMs(1_700_000_000_000)).unwrap();
         let a = lp.peers[0].engine.me();
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        let mut m = Mutation::new();
+        m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), history)).unwrap();
+        lp.peers[0].commit(m).unwrap();
         let (mut last, mut text) = (None, String::new());
         for i in 0..n {
             lp.advance(10);
@@ -792,9 +747,16 @@ mod tests {
         let mut lp = LocalPeer::new(2, seed, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let [a, c] = [0, 1].map(|i| lp.peers[i].engine.me());
-        let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(86_400_000) }) };
+        let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+        // history kept a day after replaced on `x:m.0` and `x:r.0`
+        let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
+        let mut setting = ct::RetentionSetting::of(Ak::new("x:m.0").unwrap(), day);
+        setting.rules.insert(Ak::new("x:r.0").unwrap(), ct::RetentionEntry { history: Some(day), ..Default::default() });
+        let mut m = Mutation::new();
+        m.set(t, &ct::RETENTION, &setting).unwrap();
+        lp.peers[0].commit(m).unwrap();
         lp.sync_all().unwrap();
         lp.advance(10);
         (lp, t, Ak::new("x:m.0").unwrap(), keep)
@@ -810,12 +772,14 @@ mod tests {
     }
 
     // spec/commits.md §7: a snapshot part not kept is excused by no snapshot, whether or not
-    // the node holds the parts that wrote it. C writes `k` keeping no history and snapshots;
-    // A, holding C's delta or only the snapshot, removes `k`: no kept part holds `k`.
+    // the node holds the parts that wrote it. On an aspect no setting keeps history, C writes
+    // `k` and snapshots; A, holding C's delta or only the snapshot, removes `k`: no kept part
+    // holds `k`.
     #[test]
     fn unkept_snapshot_without_its_writers_spec_commits_7() {
         for headers in [true, false] {
-            let (mut lp, t, x, keep) = two(961);
+            let (mut lp, t, _, keep) = two(961);
+            let x = Ak::new("x:n.0").unwrap();
             let mut m = Mutation::new();
             m.set(t, &x, &Value::Map([(Value::Str("k".into()), Value::Int(2))].into_iter().collect())).unwrap();
             let d = lp.peers[1].commit(m).unwrap().unwrap();
@@ -929,11 +893,12 @@ mod tests {
     }
 
     // spec/commits.md §7, spec/crdt.md §8: a snapshot holds an expiring delta's writes
-    // value-less, so reaching it excuses nothing. C writes `k` expiring, keeping no history,
-    // and snapshots the map (kept: A's `j` lives in it); A removes `k`.
+    // value-less, so reaching it excuses nothing. On an aspect no setting keeps history, C
+    // writes `k` expiring and snapshots the map (kept: A's `j` lives in it); A removes `k`.
     #[test]
     fn snapshot_excuses_no_expiring_part_spec_commits_7() {
-        let (mut lp, t, x, keep) = two(962);
+        let (mut lp, t, _, keep) = two(962);
+        let x = Ak::new("x:n.0").unwrap();
         let mut m = Mutation::new();
         m.set(t, &x, &Value::Map([(Value::Str("j".into()), Value::Int(1))].into_iter().collect())).unwrap().retention(t, &x, keep).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();

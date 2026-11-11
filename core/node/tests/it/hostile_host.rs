@@ -341,6 +341,7 @@ fn purged_chunks_leave_the_host_spec_sync_5() {
     let b = net.node(2, &[host]);
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
     let mut m = osis_node::Mutation::new();
     m.set(t, &GONE, &s(&big)).unwrap();
@@ -372,6 +373,7 @@ fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
     let b = net.node(2, &[host]);
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
     let mut m = osis_node::Mutation::new();
     m.set(t, &GONE, &s(&big)).unwrap();
@@ -1020,15 +1022,15 @@ fn one_group(dead: bool) -> OneGroup {
     net.run();
     net.pair(c, w);
     assert_eq!(net.read(d, u), Some(s("u0")), "d reads u");
+    if dead {
+        net.keep(a, u, &[(osis_schema::RawKey::ak(&REG), History::Keep { until: None, after: Some(1_800_000) })]);
+        net.run();
+    }
     net.set_online(d, false);
     let mut m = osis_node::Mutation::new();
     m.set(t, &REG, &s("on t")).unwrap();
-    m.retention(t, &REG, Retention { by: PurgeBy::Writer, ..Retention::default() }).unwrap();
+    m.retention(t, &REG, Retention { by: PurgeBy::Writer }).unwrap();
     m.set(u, &REG, &s("keep")).unwrap();
-    if dead {
-        let least = Retention { history: Some(History::Keep { until: None, after: Some(1_800_000) }), ..Retention::default() };
-        m.retention(u, &REG, least).unwrap();
-    }
     let cx = net.engine(c).commit(m).unwrap().unwrap();
     net.feed(c, Event::Local);
     net.run();

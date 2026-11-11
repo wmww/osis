@@ -21,10 +21,10 @@
 - Records as writes and ending are modeled from notes/expiry-creation-design.md §3 (spec/ follows with steps 6 and 7): a thing is unknown or ended where spec/commits.md §4 still says a part waits.
 - A `created.0` part is one `Delta::Created` write; a second minting of a thing is never generated. `Held::records` are raw records from wherever they came.
 - Edge as restored: the join over the written edge only; a demoter's kept standing is not modeled beyond "R never demotes its own author" (its author is never audited by it).
-- `required^.0`: one entry per AK name and the default; no `retain` or `MAX_REQUIRED_ENTRIES`.
+- `retention^.0`: one entry per AK name and the default; no `retain`, `expires`, `final` or `MAX_RETENTION_ENTRIES`.
 
 **CRDT** (values are crdt-model's: what it leaves out is left out here too)
-- Snapshots are honest: their copies equal the deltas' (a differing copy joins by the copy order, spec/permissions.md §5.2, spec/crdt.md §4.1; never generated here). Snapshot retention is taken as given, not recomputed from its writes' own deltas (`snapshot_retention` is what the generator and `cover` use).
+- Snapshots are honest: their copies equal the deltas' (a differing copy joins by the copy order, spec/permissions.md §5.2, spec/crdt.md §4.1; never generated here).
 - A snapshot body is taken whole into the state: un-merge removes invalid deltas' writes from content bodies only, keeping the records the valid snapshots hold (spec/crdt.md §4.6).
 - Undo (`undo::undo`): each aspect written to read as without the undone commit (its writes gone from every body), on the generator's aspects; no check that the inverse restores only kept content (spec/crdt.md §4.6, spec/commits.md §7), no creation undo (`undo::undo` refuses a creation), ephemeral undo or redo beyond an undo of the undo; an undo commit is one commit (the generator undoes one-part commits, so one expiry).
 - No ephemeral data, no bad-input rules. Signals: a signal part keeping no history or in a snapshot is bad input (spec/commits.md §2), never generated; nor is one holding anything but one root register write (its writer refuses it); the generator never undoes a signal write (it undoes one-part commits, and a signal's has nothing to write back, spec/crdt.md §4.6).

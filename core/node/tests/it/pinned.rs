@@ -18,8 +18,8 @@ static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "pinned.osis",
     r#"
 revision 1;
-purgeable_by(writer) keep_history(1d) aspect p:one.0: string;
-purgeable_by(writer) keep_history(1d) aspect p:two.0: string;
+purgeable_by(writer) aspect p:one.0: string;
+purgeable_by(writer) aspect p:two.0: string;
 "#,
 );
 const ONE: osis_schema::Aspect<Value> = osis_schema::Aspect::new("p:one.0", &KEEP);
@@ -194,6 +194,7 @@ fn step_uploads_no_second_encryption_of_a_present_role_commit_spec_sync_5() {
 /// blobs of the shared commit either writer knew.
 fn crossed_snapshots() -> (usize, usize) {
     let (mut net, host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], false);
+    net.keep(a, t, &[("p:one.0", crate::common::DAY), ("p:two.0", crate::common::DAY)]);
     let both = |net: &mut Net, n: usize, v: &str| {
         let mut m = Mutation::new();
         m.set(t, &ONE, &s(v)).unwrap();

@@ -177,8 +177,9 @@ mod tests {
         let mut m = Mutation::new();
         let g = e.new_thing(&mut m, me);
         m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
+        m.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(ak("t:r+.0"), osis_schema::History::PurgeOnReplace)).unwrap();
         e.commit(m).unwrap();
-        let ret = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) };
+        let ret = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
         let t = WallMs(e.now().0 + 2 * 3_600_000);
         let mut m = Mutation::new();
         for (k, v) in [("t:r+.0", "v"), ("t:s+.0", "live")] {

@@ -25,25 +25,16 @@
 //!
 //! Compared on in-scope aspects, what a user observes (and the purge promises): which commits applied (role commits
 //! too, not the node's own from outside the history), each content part's validity, which edge
-//! writes apply, every known thing's roster (`roles.0` as read), reads, no forbidden value held (expired or purged), no held purge-on-replace body
-//! a right holder's held snapshot covers (the option's promise: the content is gone), and promised
-//! history: every body the node dropped whose keep-at-least bound is an absolute time still ahead (kept until T,
-//! or for good), given back as the order harness's keep-everything node holds it, one the model
-//! forces out. Which other bodies a node holds, and when it dates a death, are its own. Every
-//! difference is tallied by kind (`Coverage::differs`); the first is reported. The order harness also
-//! compares after every ingest of its clocked deliveries, between ticks.
+//! writes apply, every known thing's roster (`roles.0` as read), reads, no forbidden value held
+//! (expired or purged), and no held body under purge on replace a right holder's held snapshot
+//! covers (the option's promise: the content is gone). History is the thing's `retention^.0`
+//! settings, fed as `Delta::Retention` (issues/thing-history.md). Which other bodies a node holds,
+//! and when it dates a death, are its own. Every difference is tallied by kind
+//! (`Coverage::differs`); the first is reported. The order harness also compares after every
+//! ingest of its clocked deliveries, between ticks.
 //!
-//! Until thing-history step 3 (issues/thing-history.md): held-model judges history by the thing's
-//! `retention^.0` settings and has no per-write history mode nor `required^.0`, while the engine
-//! has those and writes no setting. So the model's input carries the wire's purgeable-by only
-//! (`author` as `author_or_admin`), `required^.0` parts as placeholders, and two kinds of aspect
-//! are out (`Coverage::skipped`, `STEP3_*`): one a held `required^.0` delta governs and a held
-//! write on it does not meet (the model has no such validity rule), and one with an `author` part
-//! a held purge request names (the model has no `author` option). The engine's per-write promises
-//! (purge on replace, kept until T, keep for D) are judged from each part's wire mode against the
-//! model's covers, forced fates and replaced-at, not the model's history. A body the node dropped
-//! other than as covered (a part missing when purged) is fed as missing; one dropped as covered as
-//! `Body::Dropped(cover)`.
+//! A body the node dropped other than as covered (a part missing when purged) is fed as missing;
+//! one dropped as covered as `Body::Dropped(cover)`.
 //!
 //! Normalizations: a waiting commit's held parts carry no writes or edges (the model only needs
 //! that they are held); a part an applied commit misses, or holds waiting alone (spec/commits.md
@@ -64,11 +55,6 @@ use std::sync::Arc;
 
 /// No actor: the holder of a waiting role part's placeholder edge write.
 const NOBODY: hm::NodeId = u32::MAX;
-/// Out until thing-history step 3: an aspect a held `required^.0` delta governs and a held write
-/// does not meet, or every aspect of a thing whose applied `required^.0` body is not held or sets `retain`.
-const STEP3_REQUIRED: &str = "required^.0 governs it (thing-history step 3)";
-/// Out until thing-history step 3: an aspect with an `author` part a held purge request names.
-const STEP3_AUTHOR: &str = "purgeable by author, named by a purge (thing-history step 3)";
 
 /// How many nodes and aspects were compared, and the aspects left out by reason.
 #[derive(Clone, Debug, Default)]
@@ -270,6 +256,7 @@ impl Conv<'_> {
             "created.0" => return hm::Aspect::CREATED,
             ct::ADDENDA_AK => return hm::Aspect::ADDENDA,
             osis_commit::retention::PURGE => return hm::Aspect::plain(9),
+            osis_commit::retention::RETENTION => return hm::Aspect::RETENTION,
             _ => {}
         }
         let n = self.aspects.len() as u32;
@@ -310,35 +297,29 @@ impl Conv<'_> {
     }
 }
 
-/// The model's retention of a wire retention: who may purge it (`author`, which the model does
-/// not have, as `author_or_admin`: an aspect where they differ is out, `STEP3_AUTHOR`).
+/// The model's retention of a wire retention: who may purge it.
 fn retention(r: &osis_schema::Retention) -> hm::Retention {
     use osis_base::PurgeBy as P;
     let by = match r.by {
         P::Nobody => hm::PurgeBy::Nobody,
         P::Admin => hm::PurgeBy::Admin,
-        P::AuthorOrAdmin | P::Author => hm::PurgeBy::AuthorOrAdmin,
+        P::AuthorOrAdmin => hm::PurgeBy::AuthorOrAdmin,
         P::Writer => hm::PurgeBy::Writer,
     };
     hm::Retention { by }
 }
 
-/// The wire's absolute keep-at-least of a part (wall ms; `u64::MAX` for good, 0 none): the
-/// engine's per-write promise, judged until thing-history step 3.
-fn wire_until(r: &osis_schema::Retention) -> u64 {
-    match r.history {
-        Some(osis_schema::History::Keep { until: Some(u), .. }) if u == osis_commit::FOREVER => u64::MAX,
-        Some(osis_schema::History::Keep { until: Some(u), .. }) => u,
-        _ => 0,
-    }
-}
-
-/// The wire's keep for D after replaced of a part, ms (0 none).
-fn wire_after(r: &osis_schema::Retention) -> u64 {
-    match r.history {
-        Some(osis_schema::History::Keep { after: Some(d), .. }) => d,
-        _ => 0,
-    }
+/// A `retention^.0` body as the model's setting: per AK (by its model name) its history, and the
+/// default (an expiry default is the writer's alone, not judged).
+fn setting(cv: &mut Conv, f: Option<&Fragment>) -> Option<hm::Setting> {
+    let x = ct::retention_setting(&f?.read()?)?;
+    let opt = |e: &ct::RetentionEntry| match e.history {
+        None => hm::Opt::None,
+        Some(osis_schema::History::PurgeOnReplace) => hm::Opt::Purge,
+        Some(osis_schema::History::Keep { until, after }) => hm::Opt::Keep { after: after.unwrap_or(0), until: until.map_or(0, |u| if u >= osis_commit::FOREVER { u64::MAX } else { u }) },
+    };
+    let entry = |e: &ct::RetentionEntry| hm::SettingEntry { history: opt(e), expires: None };
+    Some(hm::Setting { rules: x.rules.iter().map(|(k, e)| (cv.aspect(k.as_str()).name, entry(e))).collect(), default: x.default.as_ref().map(entry) })
 }
 
 /// One node, converted.
@@ -349,13 +330,8 @@ struct Input {
     skipped: BTreeMap<(Tid, Ak), &'static str>,
     /// Held commits by label: ID, applied here.
     commits: BTreeMap<hm::CommitId, (CommitId, bool)>,
-    /// Bodies the node dropped (not missing) on in-scope aspects: label, part, ID, thing, AK,
-    /// and why (`DropFor`, with its coverers).
-    dropped: Vec<(hm::CommitId, usize, CommitId, Tid, Ak, String)>,
     /// Actors and things by model id.
     ids: BTreeMap<hm::NodeId, Tid>,
-    /// Content and snapshot commits' wire retention by label and part (one part per aspect).
-    wire: BTreeMap<(hm::CommitId, usize), osis_schema::Retention>,
 }
 
 /// What of a node's held set is outside the model.
@@ -434,43 +410,6 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         }
     }
     let is_in = |sc: &Scope, t: &Tid, a: &Ak| sc.out(t, a).is_none();
-    // until thing-history step 3, `required^.0`: an aspect a held setting governs and a held
-    // content write on it, stamped at or after the setting, does not meet is out (the engine
-    // judges it invalid, the model has no such rule); a `replaces` part under an entry with an
-    // expiry or `final` counts as not meeting it. An applied setting whose body is not held takes
-    // its thing out; a waiting one is in force nowhere.
-    for (id, h, applied) in &held {
-        for (ai, a) in h.aspects.iter().enumerate().filter(|(_, a)| a.ak.as_str() == "required^.0") {
-            if !applied {
-                continue;
-            }
-            let f = if held_body(e, id, ai) { e.body_fragment(id, &a.tid, &a.ak).unwrap() } else { None };
-            let Some(v) = f.as_ref().and_then(Fragment::read) else {
-                sc.things.entry(a.tid).or_insert(STEP3_REQUIRED);
-                continue;
-            };
-            let rules = ct::required_rules(&v);
-            if rules.retain {
-                sc.things.entry(a.tid).or_insert(STEP3_REQUIRED);
-            }
-            for (_, w, _) in held.iter().filter(|(_, w, _)| w.kind == Kind::Content && w.ts >= h.ts) {
-                for p in w.aspects.iter().filter(|p| p.tid == a.tid && ct::is_content(p.ak.as_str())) {
-                    let Some(q) = rules.rules.get(&p.ak).or(rules.default.as_ref()) else { continue };
-                    let meets = p.retention.canonical() == q.retention().canonical() && q.expires_at(w.ts.wall_ms().0) == Some(w.expires) && !(p.replaces.is_some() && (q.r#final || q.expires.is_some()));
-                    if !meets {
-                        sc.aspects.entry((p.tid, p.ak.clone())).or_insert(STEP3_REQUIRED);
-                    }
-                }
-            }
-        }
-    }
-    // until thing-history step 3, `author`: an aspect with an `author` part a held purge names
-    let named: BTreeSet<(Tid, Ak)> = held.iter().flat_map(|(_, h, _)| h.purge.iter().map(|p| (*p.tid(), p.ak().clone()))).collect();
-    for (_, h, _) in &held {
-        for a in h.aspects.iter().filter(|a| a.retention.by == osis_base::PurgeBy::Author && named.contains(&(a.tid, a.ak.clone()))) {
-            sc.aspects.entry((a.tid, a.ak.clone())).or_insert(STEP3_AUTHOR);
-        }
-    }
     // content and snapshot bodies as crdt-model fragments, by their wire bytes
     let mut bodies: BTreeMap<(CommitId, usize), hm::Frag> = BTreeMap::new();
     for (id, h, applied) in &held {
@@ -487,8 +426,6 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         }
     }
     let mut commits = Vec::new();
-    let mut wire = BTreeMap::new();
-    let mut dropped = Vec::new();
     let mut labels = BTreeMap::new();
     let mut inside = BTreeMap::new();
     // held leftovers: their value-less carriers are taken as stripped once the input is whole
@@ -496,9 +433,6 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
     for (id, h, applied) in &held {
         let label = cv.commit(id);
         labels.insert(label, (*id, *applied));
-        if !h.kind.is_role() {
-            wire.extend(h.aspects.iter().enumerate().map(|(ai, a)| ((label, ai), a.retention)));
-        }
         let meta = e.core.ix.commits.get(id).cloned();
         let waiting = if *applied { None } else { e.pending_parts(id).unwrap() };
         let edges = if *applied && h.kind == Kind::Role { e.core.ix.held.edge_commit(id).cloned() } else { None };
@@ -517,11 +451,6 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                 Some(m) if m.missing.contains(&ai) => Some(hm::Body::Missing),
                 Some(m) if m.dropped.contains_key(&ai) => {
                     let d = &m.dropped[&ai];
-                    // one dropped other than as covered or invalid was missing when it expired
-                    // or was purged: never received, nothing to give back
-                    if ok && d.why != osis_node::engine::DropFor::Other {
-                        dropped.push((label, parts.len(), *id, a.tid, a.ak.clone(), format!("{:?} covered by {:?}", d.why, d.covered_by)));
-                    }
                     // dropped as covered: by its first coverer in the history; for its bounds:
                     // the model has no such drop, the body is fed as never received
                     let cover = (d.why == osis_node::engine::DropFor::Cover).then(|| d.covered_by.iter().find(|c| hist.headers.contains_key(c)).map(|c| cv.commit(c))).flatten();
@@ -557,8 +486,11 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                         parts.push(part(hm::Body::Held(hm::Delta::Edge(cv.edge(&o.holder, o.edge.as_ref())))));
                     }
                 }
-                // `required^.0`, outside the model until thing-history step 3: a placeholder
-                _ if a.ak.as_str() == "required^.0" => parts.push(part(hm::Body::Held(hm::Delta::Writes(hm::Frag::empty(0))))),
+                // a setting, as the model reads it; one that is none reads as an empty write
+                _ if a.ak.as_str() == osis_commit::retention::RETENTION => {
+                    let f = e.body_fragment(id, &a.tid, &a.ak).unwrap();
+                    parts.push(part(hm::Body::Held(setting(&mut cv, f.as_ref()).map_or_else(|| hm::Delta::Writes(hm::Frag::empty(0)), hm::Delta::Retention))));
+                }
                 // a stripped addendum lists nothing (spec/permissions.md §5.2 Addenda)
                 _ if aspect == hm::Aspect::ADDENDA => {
                     let es = if meta.as_ref().is_some_and(|m| m.stripped.contains(&ai)) { Vec::new() } else { cv.addenda(e.body_fragment(id, &a.tid, &a.ak).unwrap().as_ref()) };
@@ -635,7 +567,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
     }
     held.commits.sort_by_key(|c| c.id);
     let ids = cv.ids.iter().map(|(t, i)| (*i, *t)).collect();
-    Input { held, inside, skipped, commits: labels, dropped, ids, wire }
+    Input { held, inside, skipped, commits: labels, ids }
 }
 
 /// A creation part of commit `c` as the record it mints, when the node holds it.
@@ -656,32 +588,28 @@ fn role_of(r: osis_base::Role) -> hm::Role {
     }
 }
 
-/// Every body a node holds, as held.
-pub(crate) type Bodies = BTreeMap<(CommitId, Tid, Ak), Fragment>;
-
-/// `Bodies` of a node keeping every body (`Engine::keep_bodies`): what a node dropped, to judge.
-pub(crate) fn bodies(e: &mut Engine) -> Bodies {
-    let mut out = Bodies::new();
-    for id in e.commit_ids() {
-        let Some(h) = e.header(&id) else { continue };
-        for a in &h.aspects {
-            if let Some(f) = e.body_fragment(&id, &a.tid, &a.ak).unwrap() {
-                out.insert((id, a.tid, a.ak.clone()), f);
-            }
-        }
-    }
-    out
-}
-
 /// Whether the node holds part `ai` of applied commit `c`: whole or as its leftover (spec/crdt.md
 /// §4.7: a leftover is a held body), neither dropped nor missing.
 fn held_body(e: &Engine, c: &CommitId, ai: usize) -> bool {
     e.core.ix.commits.get(c).is_some_and(|m| !m.dropped.contains_key(&ai) && !m.missing.contains(&ai))
 }
 
+/// What `compare` remembers of one node between its judgments, for judging its drops: each held
+/// body as last seen (the model dates a body only while it is held), and the drops judged.
+#[derive(Default)]
+pub(crate) struct Drops {
+    bodies: BTreeMap<(CommitId, usize), hm::Body>,
+    judged: BTreeSet<(CommitId, usize)>,
+}
+
 /// Converts what `e` holds, runs the model and compares (see the module doc); the first
-/// difference, with the model's answer and the node's.
-pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut Coverage) -> Option<String> {
+/// difference, with the model's answer and the node's. With `drops` (the caller judging after
+/// every ingest and tick): every body the node dropped as covered since is judged against the
+/// settings it holds now, those it dropped by (spec/commits.md §5 Keep bounds: a node never
+/// drops a body the settings it holds keep in history on its clock), dated as
+/// held-model dates it with the body as last seen held. A drop is judged once: a setting arriving
+/// later that puts the body back in history does not make it wrong (Dropped stays dropped).
+pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops: Option<&mut Drops>) -> Option<String> {
     let input = convert(e, hist);
     let j = hist.judged(&input.held);
     let (o, tl) = (&j.o, &j.tl);
@@ -715,10 +643,9 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
     reach("leftover", parts().filter(|(_, p)| !p.stripped.is_empty()).count());
     reach("value-less", o.valueless.iter().filter(|d| inside.contains(&(d.1, d.2))).count());
     reach("signal parts", parts().filter(|(_, p)| p.aspect.signal).count());
-    // replaced bodies (held or dropped) whose absolute keep-at-least is still ahead: a node must
-    // keep them however a snapshot covers them
-    let until = |k: &(hm::CommitId, usize)| input.wire.get(k).map_or(0, wire_until);
-    reach("covered kept until T", parts().filter(|(k, _)| o.replaced.contains(k) && until(k) > input.held.now).count());
+    // replaced bodies in history, and under purge on replace
+    reach("in history", parts().filter(|(k, _)| o.replaced_at.get(k).copied().flatten().is_some_and(|r| o.in_history(input.held.commits.iter().find(|c| c.id == k.0).map_or(0, |c| c.parts[k.1].thing), input.held.commits.iter().find(|c| c.id == k.0).map_or(hm::Aspect::ROLES, |c| c.parts[k.1].aspect), r, input.held.now))).count());
+    reach("under purge on replace", parts().filter(|(k, _)| o.under_purge.contains(k)).count());
     if !inside.is_empty() {
         let cs = &input.held.commits;
         let edges = || cs.iter().filter(|c| c.kind == hm::CommitKind::Role).flat_map(|c| c.parts.iter().map(move |p| (c, p))).filter_map(|(c, p)| match &p.body {
@@ -774,12 +701,9 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
                 continue;
             }
             // purge on replace promises the content gone once a right holder's snapshot covers
-            // it (spec/commits.md §5), a held body nothing reads, like P3's: until thing-history
-            // step 3 the part's wire mode says so, and the cover is the model's (it names a right
-            // holder's when one covers)
-            let por = input.wire.get(&(c.id, i)).is_some_and(|r| r.history == Some(osis_schema::History::PurgeOnReplace));
-            let by_right = |by: hm::CommitId| input.held.commits.iter().find(|s| s.id == by).is_some_and(|s| tl.right(s.author, s.actor, s.key(), s.id, p.retention.by, c.actor, p.thing));
-            if por && matches!(p.body, hm::Body::Held(_)) && matches!(o.fates.get(&(c.id, i)), Some(hm::Fate::MayDrop(hm::DropWhy::Covered { by }) | hm::Fate::MustDrop(hm::DropWhy::Covered { by })) if by_right(*by)) {
+            // it (spec/commits.md §5), a held body nothing reads, like P3's: the model's forced
+            // fate (it names a right holder's cover when one covers)
+            if matches!(p.body, hm::Body::Held(_)) && o.under_purge.contains(&(c.id, i)) && matches!(o.fates.get(&(c.id, i)), Some(hm::Fate::MustDrop(hm::DropWhy::Covered { .. }))) {
                 diffs.push(("holds a covered purge-on-replace body".into(), differ(format!("commit {id:?} (#{}) on {t:?} {}: the node holds its body, a held right holder's snapshot covers it", c.id, a.as_str()), &[p.thing])));
             }
         }
@@ -817,6 +741,40 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
             }
         }
     }
+    // covered drops since the last judgment, each against the settings held now, the body as
+    // last seen held, with every fresh drop held: in history, or dated ahead of the clock where
+    // a setting keeps the aspect, it was kept (spec/commits.md §5 Keep bounds). A covered drop
+    // redates nothing in history (D1, D2 in issues/thing-history.md Dating), so the step's
+    // drops are judged together
+    if let Some(d) = drops {
+        let mut back = input.held.clone();
+        let mut fresh = Vec::new();
+        for c in back.commits.iter_mut().filter(|c| !c.is_role()) {
+            let id = input.commits[&c.id].0;
+            for (i, p) in c.parts.iter_mut().enumerate() {
+                if matches!(p.body, hm::Body::Held(_)) {
+                    d.bodies.insert((id, i), p.body.clone());
+                } else if matches!(p.body, hm::Body::Dropped(_)) && by_part.contains_key(&(p.thing, p.aspect)) && d.judged.insert((id, i))
+                    && let Some(b) = d.bodies.get(&(id, i))
+                {
+                    p.body = b.clone();
+                    fresh.push((c.id, i, id, p.thing, p.aspect));
+                }
+            }
+        }
+        if !fresh.is_empty() {
+            let ob = hm::evaluate(&back);
+            let now = input.held.now;
+            for &(cid, i, id, thing, aspect) in &fresh {
+                let Some(Some(r)) = ob.replaced_at.get(&(cid, i)).copied() else { continue };
+                reach_n(cov, "covered drops judged", 1);
+                if ob.kept(thing, aspect, r, now) {
+                    let (t, a) = &by_part[&(thing, aspect)];
+                    diffs.push(("dropped a body in history".into(), differ(format!("commit {id:?} (#{cid}) on {t:?} {}: dropped as covered at {now}, replaced at {r}, the settings held keep it to {}", a.as_str(), ob.out(thing, aspect, r)), &[thing])));
+                }
+            }
+        }
+    }
     if let Some(f) = o.forbidden.iter().find(|f| by_part.contains_key(&(f.1.1, f.1.2))) {
         diffs.push(("forbidden value held".into(), differ(format!("forbidden value held: {f:?}"), &[f.1.1])));
     }
@@ -829,34 +787,6 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
             diffs.push(("read differs".into(), differ(format!("{t:?} {} reads {v:?} at the node, {model:?} in the model (state {:?})", a.as_str(), o.states.get(&(*thing, *aspect))), &[*thing])));
         }
     }
-    // kept until T (or for good, spec/commits.md §5 Keep at least): every body the node dropped
-    // whose absolute bound is still ahead (until thing-history step 3, its wire mode's), given
-    // back as a node keeping every body holds it, is one the model forces out
-    let mut back = input.held.clone();
-    let back_dots = hm::Dots::new(&back);
-    let mut given = Vec::new();
-    for (label, i, id, t, a, why) in &input.dropped {
-        let Some(f) = kept.get(&(*id, *t, a.clone())) else { continue };
-        let Some(c) = back.commits.iter_mut().find(|c| c.id == *label) else { continue };
-        if input.wire.get(&(*label, *i)).map_or(0, wire_until) <= input.held.now {
-            continue;
-        }
-        let p = &mut c.parts[*i];
-        let f = frag(f).unwrap_or_else(|why| panic!("kept body of {id:?}: {why}"));
-        p.stripped = back_dots.valueless(p.thing, p.aspect, &f);
-        p.body = hm::Body::Held(hm::Delta::Writes(f));
-        given.push((*label, *i, *id, *t, a.clone(), why.clone()));
-    }
-    reach_n(cov, "kept until T judged", given.len());
-    if !given.is_empty() {
-        let ob = hm::evaluate(&back);
-        for (label, i, id, t, a, why) in &given {
-            let f = ob.fates.get(&(*label, *i));
-            if !matches!(f, Some(hm::Fate::MustDrop(_))) {
-                diffs.push(("dropped a body kept until T".to_string(), differ(format!("commit {id:?} (#{label}) on {t:?} {}: the node dropped its body ({why}), the model's fate for it is {f:?}", a.as_str()), &[input.inside[&(*t, a.clone())].0])));
-            }
-        }
-    }
     for (k, _) in &diffs {
         *cov.differs.entry(k.clone()).or_default() += 1;
     }
@@ -865,9 +795,10 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
 
 /// Keep for D (spec/commits.md §5), for the scripted examples of its dating rule only (the order
 /// oracle compares no death dates): on in-scope aspects, every applied content part of `e`
-/// replaced as held-model dates it has a keep bound (`Engine::body_keeps`, what compaction drops
-/// by) no earlier than that date plus D. How many were judged, how many the node dates later
-/// than the model (it keeps them longer), and the first dated early.
+/// replaced as held-model dates it, in history then, has a keep bound (`Engine::body_keeps`, what
+/// compaction drops by) no earlier than when the model's settings end it (`Outcome::out`). How
+/// many were judged, how many the node dates later than the model (it keeps them longer), and the
+/// first dated early.
 pub(crate) fn keep_for_d(e: &mut Engine, hist: &History) -> (usize, usize, Option<String>) {
     let input = convert(e, hist);
     let o = hm::evaluate(&input.held);
@@ -879,18 +810,17 @@ pub(crate) fn keep_for_d(e: &mut Engine, hist: &History) -> (usize, usize, Optio
             let Some((t, a)) = by_part.get(&(p.thing, p.aspect)) else { continue };
             let Some(Some(r)) = o.replaced_at.get(&(c.id, i)) else { continue };
             let Some(ai) = e.header(&id).and_then(|h| h.aspects.iter().position(|x| x.tid == *t && x.ak == *a)) else { continue };
-            let d = input.wire.get(&(c.id, i)).map_or(0, wire_after);
-            if d == 0 {
+            let want = o.out(p.thing, p.aspect, *r);
+            if want <= *r || want == hm::NEVER {
                 continue;
             }
             judged += 1;
-            let want = r.saturating_add(d);
             let keep = e.body_keeps(&id).unwrap().get(ai).copied().unwrap_or(0);
             if e.replaced_at(&id, t, a).unwrap().is_none_or(|x| x.wall_ms().0 > *r) {
                 later += 1;
             }
             if keep < want && early.is_none() {
-                early = Some(format!("commit {id:?} (#{}) on {t:?} {}: the node keeps it to {keep}, the model's replacement {r} + D = {want}; node's replaced_at {:?}", c.id, a.as_str(), e.replaced_at(&id, t, a)));
+                early = Some(format!("commit {id:?} (#{}) on {t:?} {}: the node keeps it to {keep}, the model's replacement {r}, out at {want}; node's replaced_at {:?}", c.id, a.as_str(), e.replaced_at(&id, t, a)));
             }
         }
     }

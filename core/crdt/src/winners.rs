@@ -108,12 +108,12 @@ impl<T> Default for ByWrite<T> {
 }
 
 impl<T: Default> ByWrite<T> {
-    /// Notes each write of `w` (a `winners` or `held_writes` set) with `f`.
-    pub fn note(&mut self, w: &Winners, mut f: impl FnMut(&mut T)) {
+    /// Notes each write of `w` (a `winners` or `held_writes` set) with `f`, given its stamp.
+    pub fn note(&mut self, w: &Winners, mut f: impl FnMut(&Stamp, &mut T)) {
         for (p, s) in &w.0 {
             let at = self.0.entry(p.clone()).or_default();
             for k in s {
-                f(at.entry(k.clone()).or_default());
+                f(&k.1, at.entry(k.clone()).or_default());
             }
         }
     }
@@ -130,11 +130,14 @@ impl<T> ByWrite<T> {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-    /// The least `date` among the writes here that supersede `w` (`supersedes`; `None`: that
-    /// write is not counted), given that no write dates before its stamp's `ts`: per kind at
-    /// each position on `w`'s path, the writes are read in stamp order from `w`'s until one
-    /// stamped at or after the least date found, so about as many as supersede `w` earliest.
-    pub fn first_superseding(&self, w: &Won, date: impl Fn(&T) -> Option<Ts>) -> Option<Ts> {
+    /// The least `date` among the writes here that supersede `w` (`supersedes`; `date` is given
+    /// each one's stamp and note, `None`: not counted), given that no write dates before its
+    /// stamp's `ts`: per kind at each position on `w`'s path, the writes are read in stamp order
+    /// from `w`'s until one stamped at or after the least date found, so about as many as
+    /// supersede `w` earliest. A text element's creation dies only by a delete stamped after
+    /// the latest undelete of the element noted here (spec/crdt.md §4.8 When).
+    pub fn first_superseding(&self, w: &Won, date: impl Fn(&Stamp, &T) -> Option<Ts>) -> Option<Ts> {
+        let undeleted = if w.kind == Kind::Created { self.0.get(&w.path).and_then(|s| s.keys().filter(|x| x.0 == Kind::Undelete).map(|x| &x.1).max()) } else { None };
         let mut best: Option<Ts> = None;
         for (n, s) in on_path(&self.0, w) {
             for k in Kind::ALL {
@@ -142,8 +145,11 @@ impl<T> ByWrite<T> {
                     if best.is_some_and(|b| st.ts >= b) {
                         break;
                     }
+                    if k == Kind::Delete && n == w.path.len() && undeleted.is_some_and(|u| st <= u) {
+                        continue;
+                    }
                     if supersedes(n, k, st, w)
-                        && let Some(d) = date(t)
+                        && let Some(d) = date(st, t)
                     {
                         best = Some(best.map_or(d, |b| b.min(d)));
                     }

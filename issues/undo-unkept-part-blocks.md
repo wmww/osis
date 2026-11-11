@@ -5,7 +5,7 @@
 
 A part in that span that died before the undone write still counts, since telling that needs its body, and an unkept body may be dropped (judging held bodies would make the answer depend on housekeeping). A register aspect is bounded by its last kept set; a collection only by a kept snapshot or a whole `set`.
 
-Seen: on a `keep_history(1d)` map, one entry written untyped and its undo work, but then no removal on that map undoes or redoes until a kept snapshot (`redo_follows_undone_write_spec_commits_7` uses separate things for this reason). On a thing edited from both the app and the CLI this is user-visible.
+Seen: on a map its thing's setting keeps a day, one entry written untyped and its undo work, but then no removal on that map undoes or redoes until a kept snapshot (`redo_follows_undone_write_spec_commits_7` uses separate things for this reason). On a thing edited from both the app and the CLI this is user-visible.
 
 Ways out, if it ever matters:
 - A write records what it overwrote (the parts or stamps its resets reach): exact, a wire change to every restoring write.

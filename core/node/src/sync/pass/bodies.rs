@@ -97,7 +97,7 @@ impl SyncEngine {
         let mut needed = Vec::new();
         let keeps = self.keeps(&b.commit)?;
         for (ai, (t, a)) in b.parts.iter().zip(&aspects) {
-            let kept = self.part_kept(&h, &keeps, *ai, note);
+            let kept = self.part_kept(&keeps, *ai, note);
             before |= kept;
             // a signal's delta is never joined, so never established uncovered: must-hold only
             // while kept (spec/sync.md §6, spec/commits.md §5 Signals)
@@ -147,14 +147,13 @@ impl SyncEngine {
     }
 
     /// Whether part `p` of commit `c` is kept whatever covers it (spec/sync.md §6): before its
-    /// keep-at-least bound or under `nobody` (noted when that ends). `keeps`: the commit's
-    /// `Engine::body_keeps`, read once per commit judged.
-    fn part_kept(&self, h: &osis_commit::Header, keeps: &[u64], ai: usize, note: &mut Note) -> bool {
-        let (Some(a), Some(k)) = (h.aspects.get(ai), keeps.get(ai)) else { return false };
-        let until = if a.retention.by == osis_base::PurgeBy::Nobody { u64::MAX } else { *k };
-        let kept = until > self.now();
-        if kept && until != u64::MAX {
-            note.at(until);
+    /// keep-at-least bound (noted when that ends; never for one kept for good). `keeps`: the
+    /// commit's `Engine::body_keeps`, read once per commit judged.
+    fn part_kept(&self, keeps: &[u64], ai: usize, note: &mut Note) -> bool {
+        let Some(k) = keeps.get(ai).copied() else { return false };
+        let kept = k > self.now();
+        if kept && k < osis_commit::FOREVER {
+            note.at(k);
         }
         kept
     }
@@ -170,7 +169,7 @@ impl SyncEngine {
     /// label alike, so a covered part is never one only a blob carries.
     /// `keeps`: the commit's `Engine::body_keeps`.
     pub(super) fn must_carry(&mut self, h: &osis_commit::Header, c: &CommitId, keeps: &[u64], ai: usize, snaps: &Snaps, note: &mut Note) -> Result<bool> {
-        if !self.part_kept(h, keeps, ai, note) && !self.part_live(h, c, ai) {
+        if !self.part_kept(keeps, ai, note) && !self.part_live(h, c, ai) {
             return Ok(false);
         }
         Ok(!self.parts_covered(snaps, c, h, &[ai], note)?)

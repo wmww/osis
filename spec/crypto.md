@@ -197,7 +197,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
 - **Blob encryption**: a fresh random 32-byte key per encryption; nothing encrypts a blob under a caller-chosen key. Framing, padding, AD and blob ID: spec/wire.md §5; spec/sync.md §1.
 - **Wrap** (per label, per blob): carries the blob's suite byte, blob key and order under the label read key `kdf("wrap", label read secret)`. Deterministic. Bytes: spec/wire.md §5.
 - **Section** (per thing, inside a commit blob): its parts under a fresh random section key used once; the key under `kdf("section", read secret of the thing)` (own or derived, §3; the record chain it derives through is in the clear beside it) with a fresh random nonce, AD = the commit ID. Bytes: spec/wire.md §4. The epoch is chosen as for a wrap (below, the rotation exception included); a per-label copy's one section goes under the label group's read secret as its wrap does.
-- **Order**: 0 for a commit with a purge request or a part on a role-class aspect, `created.0`, `required^.0` or `group.0`, else the commit's `ts` (a header-only blob too). It is read only to order a node's first sync (spec/sync.md §6), and a wrong one changes nothing else.
+- **Order**: 0 for a commit with a purge request or a part on a role-class aspect, `created.0`, `retention^.0` or `group.0`, else the commit's `ts` (a header-only blob too). It is read only to order a node's first sync (spec/sync.md §6), and a wrong one changes nothing else.
 - A wrap names no epoch: a reader tries the read secrets it holds, newest first.
 - **Who wraps under what**:
   - An uploader wraps under the newest current read epoch whose secret it holds (§4).
@@ -221,7 +221,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
   | level | retention set members | secret |
   |---|---|---|
   | 1, admin | `admin`, `author_or_admin`, `writer` | the admin secret of its thing |
-  | 2, author | `author`, `author_or_admin`, `writer` | the write secret of the commit's header actor (the author chain; spec/permissions.md §5.2) |
+  | 2, author | `author_or_admin`, `writer` | the write secret of the commit's header actor (the author chain; spec/permissions.md §5.2) |
   | 3, writer | `writer` | the write secret of its thing |
   | none | `nobody` | none |
 

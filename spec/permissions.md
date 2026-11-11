@@ -53,7 +53,7 @@
 - A removal says **retain or erase** (§3, Retain).
   - Its plain entry reset says erase.
   - Its entry reset with the grant written anew with `until` 0 (role read, no invite, no `tied`), gone at every clock, says retain, and is a removal all the same (§5.1), in one commit with its rotation. A client writes `until` 0 for nothing else.
-  - It says what its remover wants, or else what the thing's default says: `retain` of the `required^.0` setting in force (spec/commits.md §5), none erasing.
+  - It says what its remover wants, or else what the thing's default says: `retain` of the `retention^.0` setting in force (spec/commits.md §5), none erasing.
   - A self-removal says what its author wants, whatever the default.
   - A client removing a node from its account's D writes erase unless its user says otherwise, whatever the default.
   - A receiver reads what the removal says, never the default.
@@ -248,7 +248,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
   - **Writing**: a writer node that applies an explicit demotion R, for every (X, N) R takes below write where it holds write, writes one addendum on N listing X's plain-content commits with a delta on N or acting for N that it had received by R's `ts` (§5.1, Received; as of its wall clock) and R's frontier does not list; one addendum per thing, so none goes under a label of another thing. R's author does the same for what its frontier left out (§5.1). A node that cannot write on N yet (its delete keys not here) writes it once it can.
 - A `secrets.0` or `keys.0` delta of a role commit other than a compaction snapshot (which copies others' boxes and keysets) is also judged by possession (spec/crypto.md §4, Holder actors, Authority): a rotation or removal whose author's role on the actor comes only through holder actors it shows no possession of is invalid (a rotation's `keys.0` and `secrets.0` deltas alike).
 - A delta of an **admin-only** aspect (AK marker `^`, spec/data-model.md §2) is judged by the two rules above with admin in place of write: X held admin on N, demotions below admin. A writer that does not hold admin on N MUST NOT write one; every node judges it alike from the AK alone, also on an ephemeral commit's part and a compaction snapshot's delta.
-- A delta breaking the required retention in force at its key (spec/commits.md §5) is invalid, whatever the rules above say. A `required^.0` delta is judged by those rules as an admin-only delta; where it turns invalid or valid, every later delta on its thing is judged again.
+- A `retention^.0` delta (spec/commits.md §5 The setting) is judged by those rules as an admin-only delta; no other delta's validity depends on it.
 - **Compaction snapshot**: a snapshot S's delta of an aspect is judged as its author's delta of that aspect by the rules above, at S's key, needing the strictest role a write it could carry needs (admin for `label.0`, `keys.0`, `secrets.0` and admin-only aspects, else write). `created.0` is always valid.
   - An invalid S gives nothing: its body joins nothing, covers nothing (spec/commits.md §5).
   - A valid S vouches for every write it carries: no carried write is judged as its claimed author's.
@@ -310,12 +310,12 @@ A commit of account P names the epoch it is signed at (spec/wire.md §4); §5.4 
 
 ## 6. Purge rights
 - **The right**: a delta's retention names who may purge it (spec/commits.md §5), judged at the request's time. Each member of the named set holds the right on its own:
-  - **admin**: the thing's current admins;
-  - **author**: the delta's header actor while it holds write on the thing: the actor itself and any author with write on that actor;
+  - **admin**: the thing's current admins (in every set but `nobody`);
+  - **author** (in `author_or_admin` and `writer`): the delta's header actor while it holds write on the thing: the actor itself and any author with write on that actor;
   - **writer**: any current writer of the thing.
-  - An admin with no write on that actor holds no right under `author`, and an actor that lost write on the thing gives none until it regains it.
+  - An actor that lost write on the thing gives no author's right until it regains it.
 - A role counts toward the right exactly when a delta of its holder needing that role at the request's key would be valid (§5.2): a demotion whose frontier does not list the request takes the right however early its `ts`; one that lists it leaves the purge standing; a re-grant gives the right back to a request made in the gap, as to its writes.
-- **A purge request** drops a named delta iff its author held that right at the request's time and, when it acts for another actor (its header actor), so did that actor. Each delta of a request by whole aspect or by author is judged alone, so the class of one never widens the others (an admin's request by author leaves that author's `author` and `nobody` deltas).
+- **A purge request** drops a named delta iff its author held that right at the request's time and, when it acts for another actor (its header actor), so did that actor. Each delta of a request by whole aspect or by author is judged alone, so the class of one never widens the others (a writer's request by author leaves that author's `admin` deltas).
 - **Judgment** follows the role timeline the node holds, in any arrival order:
   - A named delta a request comes to drop is dropped then.
   - A delta held as its leftover for a request when no held request drops it any more counts as never received (spec/commits.md §5): its leftover is set aside and it is no longer held value-less, the node fetches it again where present and takes it from a holder's upload (spec/sync.md §6).

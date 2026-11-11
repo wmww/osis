@@ -27,18 +27,22 @@ fn db_at(n: u64) -> Osis {
     crate::common::db(n)
 }
 
+/// A thing keeping `msg` and the signal `t:log~0` for good, `t:kept.0` and `t:big.0` a day.
 fn thing(db: &Osis) -> Tid {
-    db.commit_with(|w| w.create()).unwrap()
+    let x = crate::common::setting(&[("t:msg.0", osis::History::FOREVER), ("t:log~0", osis::History::FOREVER), ("t:kept.0", crate::common::DAY), ("t:big.0", crate::common::DAY)]);
+    db.commit_with(|w| {
+        let t = w.create()?;
+        w.at(t, osis::core::RETENTION).set(&x)?;
+        Ok(t)
+    })
+    .unwrap()
 }
 
-fn forever() -> osis::Retention {
-    osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() }
-}
 
 /// A write of `x` on `t`'s `msg`, its history kept for good: every one stays listed.
 fn say(db: &Osis, t: Tid, x: &str) -> CommitId {
     let mut w = db.write();
-    w.at(t, untyped(msg())).retention(forever()).set(&s(x)).unwrap();
+    w.at(t, untyped(msg())).set(&s(x)).unwrap();
     w.commit().unwrap().unwrap().stamp.id
 }
 
@@ -105,7 +109,7 @@ fn page_and_listener() {
 fn listed_while_in_read_or_kept_api_commits() {
     let c = clock();
     let db = osis::internals::create(cfg(1, osis::MemStore::new(), &c)).unwrap();
-    keep_day(&db, &["t:kept.0"]);
+    typed_any(&db, &["t:kept.0"]);
     let t = thing(&db);
     let (plain, decl) = (ak("t:plain.0"), ak("t:kept.0"));
     for v in ["a", "b", "c"] {
@@ -115,8 +119,8 @@ fn listed_while_in_read_or_kept_api_commits() {
     }
     let held = |v: &str| Body::Held(Some(s(v)));
     assert_eq!(bodies(&db, t, &plain), vec![held("c")], "no history: the live write alone");
-    assert_eq!(bodies(&db, t, &decl), vec![held("a"), held("b"), held("c")], "the schema's keep_history");
-    assert_eq!(bodies(&db, t, &msg()), vec![held("a"), held("b"), held("c")], "a per-write retention");
+    assert_eq!(bodies(&db, t, &decl), vec![held("a"), held("b"), held("c")], "kept a day");
+    assert_eq!(bodies(&db, t, &msg()), vec![held("a"), held("b"), held("c")], "kept for good");
     c.advance(2 * 86_400_000);
     assert_eq!(bodies(&db, t, &decl), vec![held("c")], "past the bound: the live write alone");
     assert_eq!(bodies(&db, t, &msg()).len(), 3, "forever");
@@ -133,7 +137,7 @@ fn listed_while_in_read_or_kept_api_commits() {
 fn kept_part_is_told_leaving_at_its_bound_api_commits() {
     let c = clock();
     let db = osis::internals::create(cfg(1, osis::MemStore::new(), &c)).unwrap();
-    keep_day(&db, &["t:kept.0"]);
+    typed_any(&db, &["t:kept.0"]);
     let t = thing(&db);
     let (k, plain) = (ak("t:kept.0"), ak("t:plain.0"));
     let timer = || db.engine(|e| e.next_timer().unwrap());
@@ -203,7 +207,7 @@ fn replaced_unkept_part_is_told_leaving_api_commits() {
 #[test]
 fn a_commit_shows_every_part_api_commits() {
     let db = db(2);
-    db.register_schema("n.osis", "revision 1;\nkeep_history(1d) aspect t:n.0: int;\n").unwrap();
+    db.register_schema("n.osis", "revision 1;\naspect t:n.0: int;\n").unwrap();
     let n = db.aspect_key("t:n.0").unwrap();
     let (a, b) = (thing(&db), thing(&db));
     let mut w = db.write();
@@ -250,7 +254,7 @@ fn scope_listeners_api_commits() {
     let mine = say(&db, t, "on t");
     say(&db, other, "beside");
     let log = untyped(ak("t:log~0"));
-    commit_with(&db, |w| w.at(t, log.clone()).retention(forever()).fire(&s("ping")));
+    commit_with(&db, |w| w.at(t, log.clone()).fire(&s("ping")));
     assert_eq!(ids(&heard(&db, &rx)), vec![(mine, true)], "its commit, nothing beside, no signal");
     assert_eq!(ids(&heard(&db, &grx)), vec![(mine, true)], "a member's commit");
     assert_eq!(db.at(t, log).fired(&CommitQuery::default()).unwrap().commits.len(), 1, "the signal lists at its key");
@@ -369,6 +373,7 @@ pub(crate) fn alice_admits_bob() -> (World, Osis, Osis, Tid, Tid) {
     let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
     let mut x = alice.write();
     let g = x.create().unwrap();
+    crate::common::keep_all(&mut x, g);
     x.group(alice.home()).add(osis::Member::Item(g)).unwrap();
     x.commit().unwrap();
     alice.sync(g, &[]).unwrap();
@@ -548,7 +553,7 @@ fn page_bound_counts_large_values() {
     let t = thing(&db);
     let k = ak("t:big.0");
     let put = |n: usize, b: u8| {
-        commit_with(&db, |w| w.at(t, untyped(k.clone())).retention(forever()).set(&Value::Bytes(vec![b; n])));
+        commit_with(&db, |w| w.at(t, untyped(k.clone())).set(&Value::Bytes(vec![b; n])));
     };
     put(2 << 20, 1);
     put(2 << 20, 2);
@@ -567,18 +572,18 @@ fn page_bound_counts_large_values() {
     assert_eq!(part(&huge.commits[0], t, &k).body, Body::TooLarge { limit: 3 << 20 });
 }
 
-// spec/commits.md §5 (fixed retention, a request alone carries no `expires`): a required retention with
-// an expiry on every aspect reaches no `purge.0`, so delete for everyone still works in a
-// disappearing chat, and a kept-for-good one adds no permanent delta per delete; a request beside
-// a write of the thing goes under that write, with its expiry (an edit purging old text).
+// spec/commits.md §5 (fixed retention, a request alone carries no `expires`): a setting with an
+// expiry on every aspect reaches no `purge.0`, so delete for everyone still works in a
+// disappearing chat; a request beside a write of the thing goes under that write, with its expiry
+// (an edit purging old text).
 #[test]
-fn purge_answers_to_no_required_retention_spec_commits_5() {
+fn purge_takes_no_setting_expiry_spec_commits_5() {
     use osis::internals::schema::core_types as ct;
     let db = db(11);
     let t = thing(&db);
     let a = say(&db, t, "x");
-    let rules = ct::RequiredRules { default: Some(ct::Required::new(osis::internals::schema::Retention::default(), Some(60_000))), ..Default::default() };
-    db.commit_set(t, ct::REQUIRED, &rules).unwrap();
+    let rules = ct::RetentionSetting { default: Some(ct::RetentionEntry { expires: Some(60_000), ..Default::default() }), ..Default::default() };
+    db.commit_set(t, ct::RETENTION, &rules).unwrap();
     let mut w = db.write();
     w.at(t, osis::DynamicAspectKey::untyped(msg())).purge(osis::Purge::Commit(a)).unwrap();
     let rq = w.commit().unwrap().unwrap().stamp.id;
@@ -597,52 +602,48 @@ fn purge_answers_to_no_required_retention_spec_commits_5() {
     assert!(got.commits.iter().any(|k| k.stamp.id == b && part(k, t, &msg()).body == Body::Purged { by: done.stamp.id, actor: Some(db.me()) }), "{got:?}");
 }
 
-// spec/commits.md §5 (a writer does not undo `required^.0`), notes/api.md `has_content`: a required retention is no content: a delete leaves it in force and the thing reads deleted; undoing the creation likewise
+// spec/commits.md §5 (a writer does not undo `retention^.0`), notes/api.md `has_content`: a setting is no content: a delete leaves it in force and the thing reads deleted; undoing the creation likewise
 #[test]
-fn required_is_no_content_spec_commits_5() {
+fn setting_is_no_content_spec_commits_5() {
     use osis::internals::schema::core_types as ct;
     let db = db(12);
-    let rules = ct::RequiredRules { retain: true, ..Default::default() };
+    let rules = ct::RetentionSetting { retain: true, ..Default::default() };
     let t = thing(&db);
     say(&db, t, "x");
-    db.commit_set(t, ct::REQUIRED, &rules).unwrap();
+    db.commit_set(t, ct::RETENTION, &rules).unwrap();
     let mut w = db.write();
     w.delete(t).unwrap();
     w.commit().unwrap();
     assert!(!db.has_content(t).unwrap(), "deleted");
-    assert_eq!(db.at(t, ct::REQUIRED).get().unwrap(), Some(rules.clone()), "still in force");
+    assert_eq!(db.at(t, ct::RETENTION).get().unwrap(), Some(rules.clone()), "still in force");
     let mut w = db.write();
     let u = w.create().unwrap();
     w.at(u, osis::DynamicAspectKey::untyped(msg())).set(&s("x")).unwrap();
-    w.at(u, ct::REQUIRED).set(&rules).unwrap();
+    w.at(u, ct::RETENTION).set(&rules).unwrap();
     w.commit().unwrap();
     db.undo(&osis::Scope::Thing(u)).unwrap();
     assert!(!db.has_content(u).unwrap(), "undone");
-    assert_eq!(db.at(u, ct::REQUIRED).get().unwrap(), Some(rules));
+    assert_eq!(db.at(u, ct::RETENTION).get().unwrap(), Some(rules));
 }
 
-// spec/commits.md §5, §6: a delta answers to its thing's required retention, its reset too, so a delete
-// of a thing whose aspects (or groups) fall under different rules is several commits' work: refused,
-// telling the app to do the rest first, and then the delete goes through. Each rule alike: expiry, `nobody`.
+// spec/commits.md §5, §6: a writer fills each delta's expiry from its thing's setting, a delete's
+// resets too, so a delete of a thing whose aspects (or groups) get different expiries is several
+// commits' work: refused, telling the app to do the rest first, and then the delete goes through.
 #[test]
-fn delete_under_required_rules_says_what_to_do_spec_commits_6() {
+fn delete_under_setting_expiries_says_what_to_do_spec_commits_6() {
     use osis::internals::schema::core_types as ct;
-    let nobody = osis::internals::schema::Retention { by: osis::PurgeBy::Nobody, history: Some(osis::internals::schema::History::FOREVER) };
-    let rule = [ct::Required::new(osis::internals::schema::Retention::default(), Some(60_000)), ct::Required::new(nobody, None)];
-    for (i, r) in rule.into_iter().enumerate() {
-        let db = db_at(50 + i as u64);
-        let t = db.commit_with(|w| w.create()).unwrap();
-        let rules = ct::RequiredRules { rules: [(osis::Ak::new("app:m.0").unwrap(), r)].into(), default: Some(ct::Required::new(osis::internals::schema::Retention::default(), None)), retain: false };
-        db.commit_set(t, ct::REQUIRED, &rules).unwrap();
-        let (m, plain) = (osis::DynamicAspectKey::untyped(osis::Ak::new("app:m.0").unwrap()), osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap()));
-        db.commit_set(t, m.clone(), &s("x")).unwrap();
-        db.commit_set(t, plain.clone(), &s("y")).unwrap();
-        assert!(matches!(db.commit_with(|w| w.delete(t)), Err(Error::Invalid(e)) if e.contains("delete") && e.contains("first") && !e.contains("separate")));
-        assert!(db.has_content(t).unwrap(), "nothing applied");
-        db.commit_with(|w| w.at(t, m).remove()).unwrap();
-        db.commit_with(|w| w.delete(t)).unwrap();
-        assert!(!db.has_content(t).unwrap());
-    }
+    let db = db_at(50);
+    let t = db.commit_with(|w| w.create()).unwrap();
+    let rules = ct::RetentionSetting { rules: [(osis::Ak::new("app:m.0").unwrap(), ct::RetentionEntry { expires: Some(60_000), ..Default::default() })].into(), ..Default::default() };
+    db.commit_set(t, ct::RETENTION, &rules).unwrap();
+    let (m, plain) = (osis::DynamicAspectKey::untyped(osis::Ak::new("app:m.0").unwrap()), osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap()));
+    db.commit_set(t, m.clone(), &s("x")).unwrap();
+    db.commit_set(t, plain.clone(), &s("y")).unwrap();
+    assert!(matches!(db.commit_with(|w| w.delete(t)), Err(Error::Invalid(e)) if e.contains("delete") && e.contains("first") && !e.contains("separate")));
+    assert!(db.has_content(t).unwrap(), "nothing applied");
+    db.commit_with(|w| w.at(t, m).remove()).unwrap();
+    db.commit_with(|w| w.delete(t)).unwrap();
+    assert!(!db.has_content(t).unwrap());
     // the group's removal goes first likewise, when the thing's own writes expire
     let db = db_at(52);
     let g = thing(&db);
@@ -650,8 +651,8 @@ fn delete_under_required_rules_says_what_to_do_spec_commits_6() {
     db.commit_set(g, osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap()), &s("y")).unwrap();
     db.commit_set(t, osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap()), &s("y")).unwrap();
     db.commit_with(|w| w.group(g).add(osis::Member::Item(t))).unwrap();
-    let rules = ct::RequiredRules { default: Some(ct::Required::new(osis::internals::schema::Retention::default(), Some(60_000))), ..Default::default() };
-    db.commit_set(t, ct::REQUIRED, &rules).unwrap();
+    let rules = ct::RetentionSetting { default: Some(ct::RetentionEntry { expires: Some(60_000), ..Default::default() }), ..Default::default() };
+    db.commit_set(t, ct::RETENTION, &rules).unwrap();
     db.commit_set(t, osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap()), &s("z")).unwrap();
     assert!(matches!(db.commit_with(|w| w.delete(t)), Err(Error::Invalid(e)) if e.contains("delete") && e.contains("group.0")));
     db.commit_with(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
@@ -659,48 +660,43 @@ fn delete_under_required_rules_says_what_to_do_spec_commits_6() {
     assert!(!db.has_content(t).unwrap());
 }
 
-// spec: none (API surface); notes/api.md Attribution (required retention): `core::REQUIRED` and the engine's `ct::REQUIRED` are
+// spec: none (API surface); notes/api.md (the setting): `core::RETENTION` and the engine's `ct::RETENTION` are
 // one aspect in one form, each reading what the other wrote; a `Duration` past what the store counts
 // is refused, not stored as something else; `History::FOREVER` stands; a `Keep` keeping nothing
 // is written as no history.
 #[test]
-fn required_rules_are_one_aspect_under_both_keys() {
+fn settings_are_one_aspect_under_both_keys() {
     use osis::internals::schema::core_types as ct;
     let db = db_at(1);
     let t = thing(&db);
     let ak = |s: &str| osis::Ak::new(s).unwrap();
-    let rule = |retention, expires| osis::core::Required { retention, expires, refuse_replace: false };
-    let forever = osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() };
-    let rules = osis::core::RequiredRules {
-        rules: [(ak("app:a.0"), rule(forever, None)), (ak("app:b.0"), rule(osis::Retention::default(), Some(Duration::from_secs(60))))].into(),
-        default: Some(rule(osis::Retention::default(), Some(Duration::from_secs(1)))),
+    let rule = |history, expires| osis::core::RetentionEntry { history, expires, refuse_replace: false };
+    let rules = osis::core::RetentionSetting {
+        rules: [(ak("app:a.0"), rule(Some(osis::History::FOREVER), None)), (ak("app:b.0"), rule(None, Some(Duration::from_secs(60))))].into(),
+        default: Some(rule(None, Some(Duration::from_secs(1)))),
         retain_copies: true,
     };
-    db.commit_with(|w| w.at(t, osis::core::REQUIRED).set(&rules)).unwrap();
-    assert_eq!(db.at(t, osis::core::REQUIRED).get().unwrap(), Some(rules.clone()));
-    let engine = db.at(t, ct::REQUIRED).get().unwrap().unwrap();
+    db.commit_with(|w| w.at(t, osis::core::RETENTION).set(&rules)).unwrap();
+    assert_eq!(db.at(t, osis::core::RETENTION).get().unwrap(), Some(rules.clone()));
+    let engine = db.at(t, ct::RETENTION).get().unwrap().unwrap();
     assert!(engine.retain);
     assert_eq!(engine.rules[&ak("app:b.0")].expires, Some(60_000));
     assert_eq!(engine.rules[&ak("app:a.0")].history, Some(osis::internals::schema::History::FOREVER));
     assert_eq!(engine.default.and_then(|d| d.expires), Some(1_000));
-    db.commit_set(t, ct::REQUIRED, &ct::RequiredRules { retain: false, ..engine }).unwrap();
-    assert!(!db.at(t, osis::core::REQUIRED).get().unwrap().unwrap().retain_copies);
-    let too_long = |d| osis::core::RequiredRules { rules: [(ak("app:c.0"), d)].into(), default: None, retain_copies: false };
-    let held = db.at(t, osis::core::REQUIRED).get().unwrap();
-    for bad in [
-        rule(osis::Retention::default(), Some(Duration::MAX)),
-        rule(osis::Retention { history: Some(osis::History::Keep { until: osis::Time(0), after_replaced: Duration::MAX }), ..Default::default() }, None),
-        rule(osis::Retention { history: Some(osis::History::PurgeOnReplace), ..Default::default() }, None),
-    ] {
+    db.commit_set(t, ct::RETENTION, &ct::RetentionSetting { retain: false, ..engine }).unwrap();
+    assert!(!db.at(t, osis::core::RETENTION).get().unwrap().unwrap().retain_copies);
+    let too_long = |d| osis::core::RetentionSetting { rules: [(ak("app:c.0"), d)].into(), default: None, retain_copies: false };
+    let held = db.at(t, osis::core::RETENTION).get().unwrap();
+    for bad in [rule(None, Some(Duration::MAX)), rule(Some(osis::History::Keep { until: osis::Time(0), after_replaced: Duration::MAX }), None)] {
         let mut w = db.write();
-        w.at(t, osis::core::REQUIRED).set(&too_long(bad)).unwrap();
+        w.at(t, osis::core::RETENTION).set(&too_long(bad)).unwrap();
         let r = w.commit();
         assert!(matches!(r, Err(Error::Invalid(_))), "{bad:?}: {r:?}");
     }
-    assert_eq!(db.at(t, osis::core::REQUIRED).get().unwrap(), held, "nothing written");
-    let nothing = osis::Retention { history: Some(osis::History::Keep { until: osis::Time(0), after_replaced: Duration::ZERO }), ..Default::default() };
-    db.commit_with(|w| w.at(t, osis::core::REQUIRED).set(&too_long(rule(nothing, None)))).unwrap();
-    assert_eq!(db.at(t, osis::core::REQUIRED).get().unwrap().unwrap().rules[&ak("app:c.0")].retention.history, None);
+    assert_eq!(db.at(t, osis::core::RETENTION).get().unwrap(), held, "nothing written");
+    let nothing = Some(osis::History::Keep { until: osis::Time(0), after_replaced: Duration::ZERO });
+    db.commit_with(|w| w.at(t, osis::core::RETENTION).set(&too_long(rule(nothing, None)))).unwrap();
+    assert_eq!(db.at(t, osis::core::RETENTION).get().unwrap().unwrap().rules[&ak("app:c.0")].history, None);
 }
 
 // spec/commits.md §5 Purge: a request rides a delta on its thing. In a commit that expires it

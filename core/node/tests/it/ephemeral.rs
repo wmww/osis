@@ -1070,17 +1070,16 @@ fn expiry_round_work_linear() {
 fn undo_of_removal_keeps_expiry_spec_crdt_4_6() {
     let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
+    net.keep(a, w, &[(NOTES, crate::common::DAY)]);
     net.run();
     let t = net.now() + 5_000;
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Put(s("v")) }).unwrap();
-    m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
     m.expires(w, &eph(NOTES), osis_base::WallMs(t)).unwrap();
     net.engine(a).write(m).unwrap();
     local(&mut net, a);
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![], op: Op::Remove(s("k")) }).unwrap();
-    m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
     let rm = net.engine(a).write(m).unwrap().unwrap().id;
     local(&mut net, a);
     net.run();
@@ -1103,18 +1102,17 @@ fn undo_of_removal_keeps_expiry_spec_crdt_4_6() {
 fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
     let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
+    net.keep(a, w, &[(NOTES, crate::common::DAY)]);
     net.run();
     // B's note, removed by A: a remote write, its part dropped at its time
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Put(s("v")) }).unwrap();
-    m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
     m.expires(w, &eph(NOTES), osis_base::WallMs(net.now() + 5_000)).unwrap();
     net.engine(b).write(m).unwrap();
     local(&mut net, b);
     // and A's own
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("j"))], op: Op::Put(s("u")) }).unwrap();
-    m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
     m.expires(w, &eph(NOTES), osis_base::WallMs(net.now() + 5_000)).unwrap();
     net.engine(a).write(m).unwrap();
     local(&mut net, a);
@@ -1122,9 +1120,7 @@ fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
     assert_eq!(notes(&mut net, a, w).len(), 2);
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![], op: Op::Remove(s("k")) }).unwrap();
-    m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
     m.op(w, &eph(NOTES), PathOp { path: vec![], op: Op::Remove(s("j")) }).unwrap();
-    m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
     let rm = net.engine(a).write(m).unwrap().unwrap().id;
     local(&mut net, a);
     net.run();
@@ -1148,12 +1144,12 @@ fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
 fn undo_of_set_past_expiry_restores_no_shadowed_entry_spec_crdt_4_6() {
     let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     let w = window(&mut net, a, g, "w");
+    net.keep(a, w, &[(NOTES, crate::common::DAY)]);
     net.run();
     let t = net.now() + 5_000;
     for (n, v) in [(a, "v1"), (b, "v2")] {
         let mut m = Mutation::new();
         m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Put(s(v)) }).unwrap();
-        m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
         m.expires(w, &eph(NOTES), osis_base::WallMs(t)).unwrap();
         net.engine(n).write(m).unwrap();
         local(&mut net, n);
@@ -1162,7 +1158,6 @@ fn undo_of_set_past_expiry_restores_no_shadowed_entry_spec_crdt_4_6() {
     assert_eq!(notes(&mut net, a, w), map(&[("k", "v2")]));
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Set(s("v3")) }).unwrap();
-    m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
     let set = net.engine(a).write(m).unwrap().unwrap().id;
     local(&mut net, a);
     net.run();
@@ -4541,9 +4536,12 @@ fn ephemeral_reverts_within_rights_alike_large_spec_crdt_4_6() {
     eph_seeds().run(name, |seed| eph_replay(name, seed), revert_run);
 }
 
-/// A net with writer `b` in group `g` of admin `a`, and `b`'s commit making a window a member of `g`.
+/// A net with writer `b` in group `g` of admin `a` (keeping a day of `group.0`, so its writes
+/// undo), and `b`'s commit making a window a member of `g`.
 fn undo_world() -> (Net, usize, usize, Tid, Tid, Tid, CommitId) {
     let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], false);
+    net.keep(a, g, &[("group.0", crate::common::DAY)]);
+    net.run();
     let tb = net.tid(b);
     let (w, id) = made_window(&mut net, b, g, "v");
     local(&mut net, b);

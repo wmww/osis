@@ -424,16 +424,10 @@ impl Engine {
         [ms().filter(|m| !m.dropped.is_empty()).count(), ms().filter(|m| m.valid.contains(&false)).count(), self.core.ix.dropped_snapshots.values().map(|v| v.len()).sum()]
     }
 
-    /// How many held commits' parts break their thing's required retention.
+    /// How many held `retention^.0` parts are invalid.
     #[doc(hidden)]
-    pub fn broken_parts(&self) -> usize {
-        self.core.ix.commits.iter().map(|(id, m)| (0..m.header.aspects.len()).filter(|ai| crate::apply::validity::broken_by(&self.core, &m.header, id, *ai).is_some()).count()).sum()
-    }
-
-    /// How many held `required^.0` parts are invalid.
-    #[doc(hidden)]
-    pub fn fallen_required(&self) -> usize {
-        self.core.ix.commits.values().map(|m| m.header.aspects.iter().enumerate().filter(|(ai, a)| a.ak.as_str() == osis_commit::retention::REQUIRED && !m.valid_at(*ai)).count()).sum()
+    pub fn fallen_settings(&self) -> usize {
+        self.core.ix.commits.values().map(|m| m.header.aspects.iter().enumerate().filter(|(ai, a)| a.ak.as_str() == osis_commit::retention::RETENTION && !m.valid_at(*ai)).count()).sum()
     }
 
     /// Every applied durable commit with its parts not received here (`commit_ids` with
@@ -672,19 +666,18 @@ impl<T: std::fmt::Debug + PartialEq + 'static> Table for T {
 }
 
 /// The indexes `IndexDigest::tables` holds as text, by name.
-fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 26] {
+fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 25] {
     [
         ("by_thing", &*ix.by_thing),
         ("by_actor", &*ix.by_actor),
         ("by_aspect", &*ix.by_aspect),
         ("originals", &*ix.originals),
         ("versions", &*ix.versions),
-        ("bounded_held", &*ix.bounded_held),
         ("invalid", &*ix.invalid),
         ("ranges", &*ix.ranges),
         ("rotation_role", &*ix.rotation_role),
         ("grant_overreach", &*ix.grant_overreach),
-        ("required", &*ix.required),
+        ("retention", &*ix.retention),
         ("addenda", &*ix.addenda),
         ("boxes_to", &*ix.boxes_to),
         ("epoch_intro", &*ix.epoch_intro),

@@ -212,7 +212,8 @@ fn regrant_restores_what_no_writer_saw_spec_perm_5_2() {
 fn write_as(lp: &mut LocalPeer, by: usize, actor: Tid, t: Tid, a: &str, v: i64) -> CommitId {
     let mut m = Mutation::new();
     m.set(t, &ak(a), &Value::Int(v)).unwrap();
-    m.retention(t, &ak(a), osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, history: Some(osis_schema::History::FOREVER) }).unwrap();
+    // the actor's author-chain key is not this node's: purgeable by admins
+    m.retention(t, &ak(a), osis_schema::Retention { by: osis_schema::PurgeBy::Admin }).unwrap();
     m.act_as(actor);
     let id = lp.peers[by].commit(m).unwrap().unwrap();
     lp.advance(1000);

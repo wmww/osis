@@ -47,11 +47,10 @@ aspect note:views.0: counter<int>;
 
 expires(30d) aspect note:last_opened.0: timestamp;
 
-purgeable_by(writer) purge_on_replace aspect note:pinned.0: map<tid, tagged<int>>;
+purgeable_by(writer) aspect note:pinned.0: map<tid, tagged<int>>;
 
-/// Old titles, kept a week after being replaced.
-purgeable_by(author, admin) keep_history(7d)
-aspect note:aliases.0: set<string>;
+/// Old titles.
+purgeable_by(author, admin) aspect note:aliases.0: set<string>;
 
 /// Where each device's cursor is; only admins set it.
 expires(30s) ephemeral admin aspect note:cursor+^.0: map<tid, int>;

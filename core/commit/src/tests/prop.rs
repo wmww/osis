@@ -5,21 +5,12 @@ use crate::tests::build::{key, rng};
 use crate::tests::verify::{TestSecrets, register_delta};
 use crate::*;
 use osis_base::{Ak, BlobId, CommitId, Link, Tid, Value};
-use osis_schema::{History, PurgeBy, Retention};
+use osis_schema::{PurgeBy, Retention};
 use osis_crypto::Secret32;
 use proptest::prelude::*;
 
-/// Every canonical history: none, purge on replace, or a keep with at least one bound, `after` above 0.
-fn history() -> impl Strategy<Value = Option<History>> {
-    (0u8..3, proptest::option::of(0u64..1 << 62), proptest::option::of(1u64..1 << 40)).prop_map(|(k, until, after)| match k {
-        0 => None,
-        1 => Some(History::PurgeOnReplace),
-        _ => Some(History::Keep { until: until.or(after.is_none().then_some(5)), after }),
-    })
-}
-
 fn retention() -> impl Strategy<Value = Retention> {
-    (0u64..5, history()).prop_map(|(b, history)| Retention { by: PurgeBy::from_id(b).unwrap(), history })
+    (0u64..4).prop_map(|b| Retention { by: PurgeBy::from_id(b).unwrap() })
 }
 
 fn tid() -> impl Strategy<Value = Tid> {
@@ -104,18 +95,15 @@ prop_compose! {
     }
 }
 
-/// A content commit over `n` aspects of three things with mixed retention (`nobody` or not
-/// throughout: a commit mixes no other class with it), expiring or not.
+/// A content commit over `n` aspects of three things with mixed retention, expiring or not.
 fn commit(classes: &[(u8, u8)], exp: bool) -> CommitBlob {
     let at = ts(1_000_000);
     let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
     b.expires = exp.then_some(5_000_000);
-    let nobody = classes.first().is_some_and(|c| c.1 == 0);
     for (i, (thing, by)) in classes.iter().enumerate() {
-        let by = if nobody { 0 } else { (*by).max(1) };
+        let by = (*by).clamp(1, 3);
         let mut a = AspectWrite::new(t(10 + thing), Ak::new(format!("app:f{i}.0")).unwrap(), 1, 2, register_delta(t(1), at, 1, &format!("{i}")));
-        let history = (by == 0).then_some(History::FOREVER);
-        a.retention = Retention { by: PurgeBy::from_id(u64::from(by)).unwrap(), history };
+        a.retention = Retention { by: PurgeBy::from_id(u64::from(by)).unwrap() };
         b.aspects.push(a);
     }
     b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).unwrap().commit

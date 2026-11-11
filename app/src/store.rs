@@ -6,7 +6,7 @@ use crate::schema::{APP, COLOR};
 use osis::core::NAME;
 use osis::{Member, Osis, Result, Tid};
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source, FAVORITES};
-use osis_kit::store::{Account, Data, Registry};
+use osis_kit::store::{Account, Data, Registry, keep_a_day};
 use std::sync::Arc;
 
 /// Finds or makes the app's group.
@@ -48,6 +48,7 @@ impl Account for AppAccount {
         // an item of home (its own aspects sync) and a subgroup (its items sync: a group's
         // members are its items and its subgroups' members, not its items' items)
         let g = w.create()?;
+        keep_a_day(&mut w, g)?;
         w.at(g, APP).set(&true)?;
         w.at(g, COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange: Arrange::Cards, element: None })?;
         w.group(db.home()).add(Member::Item(g))?;
@@ -55,6 +56,7 @@ impl Account for AppAccount {
         let mut favs = Vec::new();
         for (v, name, color) in seeds() {
             let t = w.create()?;
+            keep_a_day(&mut w, t)?;
             w.at(t, COLLECTION).set(&v)?;
             w.at(t, NAME).set(&name.to_string())?;
             w.at(t, COLOR).set(&color.to_string())?;

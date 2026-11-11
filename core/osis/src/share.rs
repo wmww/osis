@@ -91,7 +91,7 @@ pub struct Holder {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SetRoleOpts {
     /// On removal: whether the holder's nodes retain a read-only copy of what it could read (`true`)
-    /// or erase it (`false`). `None`: the thing's default (`core::RequiredRules::retain_copies`), and
+    /// or erase it (`false`). `None`: the thing's default (`core::RetentionSetting::retain_copies`), and
     /// erase for a node leaving its account. `Invalid` when a role remains.
     pub retain_copy: Option<bool>,
 }

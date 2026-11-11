@@ -56,6 +56,14 @@ impl S {
     fn thing(&self) -> String {
         self.ok(&["create", "--in", "me", "t:made.0", "true"]).line().to_string()
     }
+
+    /// A thing whose setting (`retention^.0`, written in its creating commit) keeps every
+    /// aspect's history for good.
+    fn kept_thing(&self) -> String {
+        let keep = "{history: #some(#keep({until: #some(9223372036854775807), after: #none})), expires: #none, final: false}";
+        let setting = format!("{{rules: {{}}, retain: false, default: #some({keep})}}");
+        self.ok(&["create", "--in", "me", "t:made.0", "true", "retention^.0", &setting]).line().to_string()
+    }
 }
 
 fn tmp(name: &str) -> PathBuf {
@@ -245,14 +253,15 @@ fn id_of(line: &str) -> &str {
 // CLI Commits and undo: a listing's filters, undo, redo, revert.
 #[test]
 fn commits_undo_redo_plan_cli_4() {
-    // an undo writes back a replaced value only from kept history (spec/commits.md §7)
+    // an undo writes back a replaced value only from kept history (spec/commits.md §7): the
+    // thing's setting keeps it
     let d = tmp("undo");
     std::fs::create_dir_all(&d).unwrap();
     let f = d.join("kept.osis");
-    std::fs::write(&f, "revision 1;\nkeep_history(1d) aspect a:x.0: int;\n").unwrap();
+    std::fs::write(&f, "revision 1;\naspect a:x.0: int;\n").unwrap();
     let mut s = S::mem();
     s.pre = vec!["--schema".into(), f.to_str().unwrap().into()];
-    let t = s.thing();
+    let t = s.kept_thing();
     s.ok(&["set", &t, "a:x.0", "1"]);
     s.ok(&["set", &t, "a:x.0", "2"]);
     let h = s.ok(&["writes", "--thing", &t]).out;
@@ -283,14 +292,12 @@ fn commits_undo_redo_plan_cli_4() {
     assert_eq!(s.code(&["writes", "--thing", &t, "--kind", "nope"]), 2);
     s.ok(&["set", &t, "a:x.0", "3"]);
     assert_eq!(s.code(&["redo", "--thing", &t]), 3, "nothing to redo after a new change");
-    // a set without the schema keeps no history, but what it replaced does: its undo works
+    // without a setting nothing replaced is kept: an undo writing it back is refused
     let t = s.thing();
     s.ok(&["set", &t, "a:x.0", "1"]);
-    let pre = std::mem::take(&mut s.pre);
     s.ok(&["set", &t, "a:x.0", "2"]);
-    s.ok(&["undo", "--aspect", &t, "a:x.0"]);
-    s.pre = pre;
-    assert_eq!(s.ok(&["get", &t, "a:x.0"]).line(), "1");
+    assert_eq!(s.code(&["undo", "--aspect", &t, "a:x.0"]), 1, "NotUndoable");
+    assert_eq!(s.ok(&["get", &t, "a:x.0"]).line(), "2");
 }
 
 // CLI Groups and sharing: group add/rm, groups, members, grants, role.
@@ -455,10 +462,10 @@ fn named_keys_with_schema_plan_cli_1() {
     assert_eq!(call(&["set", t, "todo:task.0", "{title: 1}"], "").0, 5);
     assert_eq!(call(&["set", t, "todo:task.0", ".done", "true"], "").0, 0);
     assert_eq!(call(&["set", t, "todo:task.0", ".due", "#none"], "").0, 0);
-    // the thing's retain default is one field of a required rule
-    let (c, _, e) = call(&["set", t, "required^.0", "{rules: {}, retain: true, default: #none}"], "");
+    // the thing's retain default is one field of its setting
+    let (c, _, e) = call(&["set", t, "retention^.0", "{rules: {}, retain: true, default: #none}"], "");
     assert_eq!(c, 0, "{e}");
-    assert_eq!(call(&["get", t, "required^.0", ".retain"], "").1, "true\n");
+    assert_eq!(call(&["get", t, "retention^.0", ".retain"], "").1, "true\n");
     assert_eq!(call(&["get", t, "todo:task.0"], "").1, "{title: \"buy\", done: true, due: #none}\n");
     // edit: only what changed since --base
     let base = "{title: \"buy\", done: true, due: #none}";
@@ -721,9 +728,9 @@ fn serve_survives_a_bad_socket_dir() {
 #[test]
 fn writes_and_purge_commands_plan_cli() {
     let s = S::mem();
-    let t = s.thing();
-    s.ok(&["set", "--retention", "keep_history=forever", &t, "note:m.0", "\"one\""]);
-    s.ok(&["set", "--retention", "keep_history=forever", &t, "note:m.0", "\"two\""]);
+    let t = s.kept_thing();
+    s.ok(&["set", &t, "note:m.0", "\"one\""]);
+    s.ok(&["set", &t, "note:m.0", "\"two\""]);
     let lines = s.ok(&["writes", &t, "note:m.0"]).out;
     let rows: Vec<&str> = lines.lines().collect();
     assert_eq!(rows.len(), 2, "{lines}");
@@ -746,19 +753,19 @@ fn writes_and_purge_commands_plan_cli() {
     assert!(lines.lines().count() == 2 && lines.lines().all(|l| l.contains("purged=")), "{lines}");
     assert_eq!(s.code(&["writes", &t, "note:m.0", "--before", "nonsense"]), 2);
     // a signal: listed by `fired`, not by `writes`; `watch` points there
-    s.ok(&["fire", "--retention", "keep_history=forever", &t, "note:ping~0", "1"]);
+    s.ok(&["fire", &t, "note:ping~0", "1"]);
     let fired = s.ok(&["fired", &t, "note:ping~0"]).out;
     assert_eq!(fired.lines().count(), 1);
     assert_eq!(s.ok(&["writes", &t, "note:ping~0"]).out, "");
     // a fire replaced: listed in its place with its newest value, its versions on request
     let f = id_of(&fired).to_string();
-    s.ok(&["fire", "--retention", "keep_history=forever", "--replaces", &f, &t, "note:ping~0", "2"]);
+    s.ok(&["fire", "--replaces", &f, &t, "note:ping~0", "2"]);
     let fired = s.ok(&["fired", &t, "note:ping~0"]).out;
     assert!(fired.lines().count() == 1 && id_of(&fired) == f && fired.contains("Int(2)") && fired.contains("edited="), "{fired}");
     let v = s.ok(&["fired", &t, "note:ping~0", "--versions-of", &f, "--oldest"]).out;
     let rows: Vec<&str> = v.lines().collect();
     assert!(rows.len() == 2 && id_of(rows[0]) == f && rows[0].contains("Int(1)") && rows[1].contains("Int(2)") && !v.contains("edited="), "{v}");
-    assert_eq!(s.code(&["fire", "--retention", "keep_history=forever", "--replaces", id_of(rows[1]), &t, "note:ping~0", "3"]), 7, "a replacement is not replaced");
+    assert_eq!(s.code(&["fire", "--replaces", id_of(rows[1]), &t, "note:ping~0", "3"]), 7, "a replacement is not replaced");
     let w = s.call(&["watch", &t, "note:ping~0"], "");
     assert!(w.code == 2 && w.err.contains("fired"), "{}", w.err);
     // --follow: what comes after it, until --count

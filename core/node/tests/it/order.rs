@@ -4,8 +4,8 @@
 //! random histories over three writers: content writes on every encoding (typed and untyped,
 //! inside map entries, struct fields and nested texts), grants, demotions with frontiers before,
 //! inside and after the demoted writes (some linked), self-removals, compactions, things made
-//! under things or by their record alone, flow grants and removals, undo, expiry, every history
-//! mode, required retention set and broken, messages, signals, purges by name, wide and by author,
+//! under things or by their record alone, flow grants and removals, undo, expiry, history settings
+//! of every option set, late and fallen, messages, signals, purges by name, wide and by author,
 //! commits on several things, hostile commits and bad parts, partial syncs. Each feature draws
 //! from its own stream; the seed picks an emphasis (`Emphasis`). Each held set goes to fresh
 //! nodes in the orders of one config (`ORDERS`: as made, reversed, as fetched, shuffles, late
@@ -129,8 +129,8 @@ pub(crate) enum Step {
     BadPart { by: usize, a: usize, b: usize, how: u8 },
     /// `Demote` to no role with a frontier padded past `CHUNK_THRESHOLD`, linked.
     BigDemote { by: usize, t: usize, holder: usize },
-    // for the judgment vectors and scripted examples (`generate` draws `NewTop`, `Require`,
-    // `Breaking`, `Two` and `TwoEdges` too):
+    // for the judgment vectors and scripted examples (`generate` draws `NewTop`, `Setting`,
+    // `PurgeSet`, `Two` and `TwoEdges` too):
     /// A new thing whose first admin is peer `by` itself: no edge of G reaches it.
     NewTop { by: usize },
     /// A bare edge write past the writer's rules (`Engine::commit_hostile`):
@@ -140,13 +140,12 @@ pub(crate) enum Step {
     HostileKeys { by: usize, t: usize, field: u64 },
     /// A register write on `t`, unchecked.
     HostileWrite { by: usize, t: usize, v: u8 },
-    /// A `required^.0` on `t` (spec/commits.md §5): by `rule % 4`, nothing, `op`'s aspect as
-    /// `keep_of(op)`, every `t:` aspect as the default, or every aspect as `keep_of(op)`; `rule & 4`:
-    /// past the writer's check, so a non-admin's when not aimed.
-    Require { by: usize, t: usize, op: u8, rule: u8 },
-    /// `op`'s write with `nobody` retention (or the default, `fits`) past the writer's check: it
-    /// breaks most rules `Require` sets.
-    Breaking { by: usize, t: usize, op: u8, v: u8, fits: bool },
+    /// A `retention^.0` setting on `t` (spec/commits.md §5 The setting): by `rule % 4`, nothing
+    /// kept, `op`'s aspect keeping `keep_of(op)`'s history, no history by default, or every aspect
+    /// keeping `keep_of(op)`'s; `rule & 4`: past the writer's check, so a non-admin's when not aimed.
+    Setting { by: usize, t: usize, op: u8, rule: u8 },
+    /// `op`'s write past the writer's check, purgeable by any writer (or the default, `fits`).
+    PurgeSet { by: usize, t: usize, op: u8, v: u8, fits: bool },
     /// One content commit of a register write on each of things `a` and `b`, unchecked.
     Two { by: usize, a: usize, b: usize, v: u8 },
     /// `Two` on three things.
@@ -215,7 +214,7 @@ fn aspect_of(op: u8) -> Ak {
         27 => "t:reg.0",
         28 => "t:map.0",
         29 => "t:text.0",
-        // a list insert with history kept until an absolute time (`retention_of`), a register
+        // a list insert with history kept until an absolute time (`base_setting`), a register
         // purged on replace
         30 => "t:list.0",
         31 => "t:gone.0",
@@ -227,30 +226,35 @@ fn aspect_of(op: u8) -> Ak {
     })
 }
 
-/// The retention of `op`'s writes when not the default: keep at least 30 min, or purge on replace.
-fn keep_of(op: u8) -> Option<Retention> {
-    let d = Some(HOUR / 2);
-    let at_least = Some(Retention { by: PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::Keep { until: None, after: d }) });
-    // an author-only class among them: an admin's compaction drops none of another's bodies
-    let author = Some(Retention { by: PurgeBy::Author, history: Some(osis_schema::History::Keep { until: None, after: d }) });
-    let on_replace = Some(Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) });
+/// What a thing's setting keeps of `op`'s aspect when the op is about history: kept 30 min
+/// after replaced, or purge on replace (`Step::Setting`, `base_setting`).
+fn keep_of(op: u8) -> Option<History> {
     match op % OPS {
-        16 | 21..=23 | 35 | 36 => at_least,
-        24..=26 => author,
-        17..=20 | 31 => on_replace,
+        16 | 21..=26 | 30 | 35 | 36 => Some(History::Keep { until: None, after: Some(HOUR / 2) }),
+        17..=20 | 31 => Some(History::PurgeOnReplace),
         _ => None,
     }
 }
 
-/// `keep_of(op)`, with history kept until an absolute time for op 30 and a third of op 16's
-/// writes (a list, a register held-model judges; spec/commits.md §5): a second (a peer's own clock
-/// steps pass it) or half an hour after `now`, by `v`.
-fn retention_of(op: u8, v: u8, now: WallMs) -> Option<Retention> {
-    if op % OPS != 30 && !(op % OPS == 16 && v.is_multiple_of(3)) {
-        return keep_of(op);
-    }
-    let until = now.0 + if v.is_multiple_of(2) { 1_000 } else { HOUR / 2 };
-    Some(Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::Keep { until: Some(until), after: None }) })
+/// Who may purge `op`'s writes when not the default: any writer on the purge-on-replace aspects.
+fn by_of(op: u8) -> Option<Retention> {
+    matches!(op % OPS, 17..=20 | 31).then_some(Retention { by: PurgeBy::Writer })
+}
+
+/// The setting a thing the harness makes as its admin starts with (spec/commits.md §5 The
+/// setting): the kept aspects, the map and the text 30 min after replaced, the gone ones purged on
+/// replace, the list until half an hour after `now` (a bound passing while held), messages for
+/// good, the signal for good or 30 min after each fire (`odd`).
+fn base_setting(now: WallMs, odd: bool) -> osis_schema::core_types::RetentionSetting {
+    let d = History::Keep { until: None, after: Some(HOUR / 2) };
+    let until = History::Keep { until: Some(now.0 + HOUR / 2), after: None };
+    let on = |a: &str, h: History| (ak(a), osis_schema::core_types::RetentionEntry { history: Some(h), ..Default::default() });
+    [on("t:kept.0", d), on("t:keptset.0", d), on("t:keptmap.0", d), on("t:map.0", d), on("t:text.0", d), on("t:gone.0", History::PurgeOnReplace), on("t:gonemap.0", History::PurgeOnReplace), on("t:list.0", until), on(msg().as_str(), History::FOREVER), on(sig().as_str(), if odd { d } else { History::FOREVER })].into_iter().collect()
+}
+
+/// The aspect `Step::Message` writes: kept for good by `base_setting` (a permanent delta).
+fn msg() -> Ak {
+    ak("t:msg.0")
 }
 
 /// The signal `Step::Signal` writes.
@@ -258,11 +262,17 @@ fn sig() -> Ak {
     ak("t:sig~0")
 }
 
-/// The aspect a purge of `commit` on `t` names: its signal write if it has one on `t`, else
-/// `t:reg.0` (a message, a register write).
+/// The aspect a purge of `commit` on `t` names: its signal or message write if it has one on
+/// `t`, else `t:reg.0` (a register write).
 fn purged_ak(e: &osis_node::Engine, commit: &CommitId, t: Tid) -> Ak {
-    let signal = e.header(commit).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t && a.ak == sig()));
-    if signal { sig() } else { ak("t:reg.0") }
+    let on = |x: &Ak| e.header(commit).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t && a.ak == *x));
+    if on(&sig()) {
+        sig()
+    } else if on(&msg()) {
+        msg()
+    } else {
+        ak("t:reg.0")
+    }
 }
 
 /// The expiry of `op`'s writes after their commit's wall time, if any (spec/crdt.md §4.7): a
@@ -410,8 +420,8 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
             pick(lp, by, t, &above).map(|(by, t)| Demote { by, t, holder, at, to_read })
         }
         Leave { by, t } => pick(lp, by, t, &|lp, b, x| lp.peers[b].engine.roster(x).contains_key(&ids[b])).map(|(by, t)| Leave { by, t }),
-        Require { by, t, op, rule } => pick(lp, by, t, &admin).map(|(by, t)| Require { by, t, op, rule }),
-        Breaking { by, t, op, v, fits } => pick(lp, by, t, &write).map(|(by, t)| Breaking { by, t, op, v, fits }),
+        Setting { by, t, op, rule } => pick(lp, by, t, &admin).map(|(by, t)| Setting { by, t, op, rule }),
+        PurgeSet { by, t, op, v, fits } => pick(lp, by, t, &write).map(|(by, t)| PurgeSet { by, t, op, v, fits }),
         Compact { by, t, op } => {
             // an op of an aspect the author holds
             let holds = |lp: &LocalPeer, b: usize, x: &Tid| write(lp, b, x) && holding[b].contains(&(*x, aspect_of(op)));
@@ -493,7 +503,7 @@ fn op_on(m: &mut Mutation, e: &mut osis_node::Engine, t: Tid, op: u8, po: PathOp
 /// `op`'s write on `t` (`Write`), with its retention, expiry and second aspect.
 fn write_op(m: &mut Mutation, e: &mut osis_node::Engine, t: Tid, op: u8, k: u8, v: u8, typed: bool) {
     let a = aspect_of(op);
-    if let Some(r) = retention_of(op, v, e.now()) {
+    if let Some(r) = by_of(op) {
         m.retention(t, &a, r).unwrap();
     }
     if let Some(ms) = expiry_of(op, v) {
@@ -707,6 +717,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     let mut m = Mutation::new();
     let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     m.set(g, &REG, &s("g")).unwrap();
+    m.set(g, &osis_schema::core_types::RETENTION, &base_setting(lp.peers[0].engine.now(), false)).unwrap();
     lp.peers[0].commit(m).unwrap();
     set_edge(&mut lp.peers[0].engine, g, ids[1], Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, g, ids[2], Some(edge(Role::Admin)), None);
@@ -793,7 +804,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let (a, po) = content_op(op, k, v);
                 let (a2, po2) = content_op(15, k, v);
                 let mut m = Mutation::new();
-                if let Some(r) = retention_of(op, v, lp.peers[by].engine.now()) {
+                if let Some(r) = by_of(op) {
                     let _ = m.retention(th(t), &a, r);
                 }
                 let _ = m.op(th(t), &a2, po2);
@@ -904,15 +915,12 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             }
             Step::Message { by, t, v } => {
                 let mut m = Mutation::new();
-                m.retention(th(t), &REG, Retention { by: PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::FOREVER) }).unwrap();
-                m.set(th(t), &REG, &s(&format!("m{v}"))).unwrap();
+                m.set(th(t), &msg(), &s(&format!("m{v}"))).unwrap();
                 no = why(&lp.peers[by].commit(m));
                 Some(by)
             }
             Step::Signal { by, t, v } => {
                 let mut m = Mutation::new();
-                let history = if v.is_multiple_of(2) { History::FOREVER } else { History::Keep { until: None, after: Some(HOUR / 2) } };
-                m.retention(th(t), &sig(), Retention { by: PurgeBy::AuthorOrAdmin, history: Some(history) }).unwrap();
                 m.set(th(t), &sig(), &s(&format!("s{v}"))).unwrap();
                 no = why(&lp.peers[by].commit(m));
                 Some(by)
@@ -958,12 +966,12 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let mut m = Mutation::new();
                 let now = lp.peers[by].engine.now();
                 m.set(t, &osis_schema::core_types::PURGE, &now).unwrap();
-                let item = osis_commit::PurgeItem::Author { tid: t, ak: ak("t:reg.0"), actor };
-                let held = named_held(&lp.peers[by].engine, &item, t, &ak("t:reg.0"));
+                let item = osis_commit::PurgeItem::Author { tid: t, ak: msg(), actor };
+                let held = named_held(&lp.peers[by].engine, &item, t, &msg());
                 m.purge(item);
                 let r = lp.peers[by].commit(m);
                 no = why(&r);
-                resnapshot(&mut lp, &r, by, t, &ak("t:reg.0"), &held);
+                resnapshot(&mut lp, &r, by, t, &msg(), &held);
                 Some(by)
             }
             Step::Sync { from, to } => {
@@ -1131,6 +1139,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let mut m = Mutation::new();
                 let t = lp.peers[by].engine.new_thing(&mut m, ids[by]);
                 m.set(t, &REG, &s("top")).unwrap();
+                m.set(t, &osis_schema::core_types::RETENTION, &base_setting(lp.peers[by].engine.now(), things.len() % 2 == 1)).unwrap();
                 let id = lp.peers[by].commit(m).unwrap().expect("a creation writes");
                 things.push(t);
                 made_by.insert(t, (by, id));
@@ -1151,19 +1160,21 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked).unwrap().expect("a keys.0 write writes");
                 Some(by)
             }
-            Step::Require { by, t, op, rule } => {
-                let keep = keep_of(op).unwrap_or_default();
-                use osis_schema::core_types::{Required, RequiredRules};
-                let every = |r: Retention| RequiredRules { default: Some(Required::new(r, None)), ..RequiredRules::default() };
-                let rules = match rule % 4 {
-                    0 => RequiredRules::default(),
-                    1 => RequiredRules::from_iter([(aspect_of(op), Required::new(keep, None))]),
-                    2 => every(Retention::default()),
+            Step::Setting { by, t, op, rule } => {
+                use osis_schema::core_types::{RetentionEntry, RetentionSetting};
+                let keep = RetentionEntry { history: keep_of(op), ..RetentionEntry::default() };
+                let every = |e: RetentionEntry| RetentionSetting { default: Some(e), ..RetentionSetting::default() };
+                let mut rules = match rule % 4 {
+                    0 => RetentionSetting::default(),
+                    1 => RetentionSetting::from_iter([(aspect_of(op), keep)]),
+                    2 => every(RetentionEntry::default()),
                     _ => every(keep),
                 };
+                // messages stay kept for good: the permanent deltas `Emphasis::Purges` reaches
+                rules.rules.entry(msg()).or_insert(RetentionEntry { history: Some(History::FOREVER), ..RetentionEntry::default() });
                 let m = {
                     let mut m = Mutation::new();
-                    m.set(th(t), &osis_schema::core_types::REQUIRED, &rules).unwrap();
+                    m.set(th(t), &osis_schema::core_types::RETENTION, &rules).unwrap();
                     // a second part in another body class, so the setting may arrive late
                     if rule % 2 == 1 {
                         m.set(th(t), &REG, &s("beside")).unwrap();
@@ -1173,19 +1184,18 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 no = why(&if rule & 4 != 0 { noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked) } else { lp.peers[by].commit(m) });
                 Some(by)
             }
-            Step::Breaking { by, t, op, v, fits } => {
+            Step::PurgeSet { by, t, op, v, fits } => {
                 let a = aspect_of(op);
                 let mut m = Mutation::new();
                 write_op(&mut m, &mut lp.peers[by].engine, th(t), op, 0, v, true);
-                m.retention(th(t), &a, if fits { Retention::default() } else { Retention { by: PurgeBy::Nobody, history: Some(History::FOREVER) } }).unwrap();
+                let writer = Retention { by: PurgeBy::Writer };
+                m.retention(th(t), &a, if fits { Retention::default() } else { writer }).unwrap();
                 // a commit with a second part, its retention its own, in the same class when `v` says;
-                // `nobody` beside `nobody` only, one expiry (spec/commits.md §5, §6)
+                // one expiry (spec/commits.md §6)
                 if v % 2 == 1 && a != aspect_of(0) {
                     let o = aspect_of(0);
                     write_op(&mut m, &mut lp.peers[by].engine, th(t), 0, 1, v, true);
-                    let nobody = Retention { by: PurgeBy::Nobody, history: Some(History::FOREVER) };
-                    let other = if fits { Retention { by: PurgeBy::Writer, ..Retention::default() } } else { Retention { history: Some(History::Keep { until: Some(osis_commit::FOREVER), after: Some(1) }), ..nobody } };
-                    m.retention(th(t), &o, if v % 4 == 1 { if fits { Retention::default() } else { nobody } } else { other }).unwrap();
+                    m.retention(th(t), &o, if v % 4 == 1 { if fits { Retention::default() } else { writer } } else { Retention { by: PurgeBy::Admin } }).unwrap();
                     if let Some(ms) = expiry_of(op, v) {
                         m.expires(th(t), &o, WallMs(lp.peers[by].engine.now().0 + ms)).unwrap();
                     }
@@ -1441,9 +1451,6 @@ struct Oracle {
     /// At `played.now`, and at `later_than` (every bound and expiry past).
     now: Shown,
     later: Shown,
-    /// `Cfg::model`: every body it holds at `played.now`, for the model's judgment of the bodies
-    /// a node dropped (`held::compare`).
-    bodies: crate::held::Bodies,
 }
 
 fn oracle(played: &Played, held: &[usize]) -> Oracle {
@@ -1464,12 +1471,11 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
     // a purge drops at this node too: what one that fell left missing comes back as anywhere
     fetch_missing(&mut p, played, held);
     let now = shown(&mut p, &played.things);
-    let bodies = if played.model.is_some() { crate::held::bodies(&mut p.engine) } else { Default::default() };
     p.clock.set(later_than(played));
     p.tick().unwrap();
     fetch_missing(&mut p, played, held);
     let later = shown(&mut p, &played.things);
-    Oracle { held: held.to_vec(), now, later, bodies }
+    Oracle { held: held.to_vec(), now, later }
 }
 
 /// Past every keep bound and expiry the ops draw (30 min) from any death by `played.now`; close
@@ -1529,11 +1535,12 @@ fn value_past_end(p: &mut Peer, played: &Played, now: WallMs) -> Option<String> 
     None
 }
 
-/// `Cfg::model`: where the node and held-model judge what it holds differently (`held::compare`).
-fn model_differs(p: &mut Peer, played: &Played, o: &Oracle) -> Option<String> {
+/// `Cfg::model`: where the node and held-model judge what it holds differently (`held::compare`);
+/// with `drops`, the node's covered drops since the last call are judged too.
+fn model_differs(p: &mut Peer, played: &Played, drops: Option<&mut crate::held::Drops>) -> Option<String> {
     let m = played.model.as_ref()?;
     let mut cov = crate::held::Coverage::default();
-    let d = crate::held::compare(&mut p.engine, &m.0, &o.bodies, &mut cov);
+    let d = crate::held::compare(&mut p.engine, &m.0, &mut cov, drops);
     m.1.lock().unwrap().add(&cov);
     d
 }
@@ -1554,7 +1561,7 @@ fn model_differs(p: &mut Peer, played: &Played, o: &Oracle) -> Option<String> {
 fn node_checks(p: &mut Peer, played: &Played, o: &Oracle) -> Result<(), String> {
     let at = |p: &mut Peer, want: &Shown, when: &str| -> Result<(), String> {
         let at = p.engine.now();
-        value_past_end(p, played, at).or_else(|| model_differs(p, played, o)).map_or(Ok(()), |d| Err(format!("{when}: {d}")))?;
+        value_past_end(p, played, at).or_else(|| model_differs(p, played, None)).map_or(Ok(()), |d| Err(format!("{when}: {d}")))?;
         if p.engine.perm_digest(false) != p.engine.perm_digest(true) {
             return Err(format!("{when}: the permission index differs from its walk from scratch"));
         }
@@ -1617,7 +1624,8 @@ fn reopens_alike(played: &Played, order: &[usize]) -> Result<(), String> {
 /// A node holding what hosts keep once covered bodies go (spec/permissions.md §5.1: a frontier
 /// lists commit IDs; §5.2: a valid snapshot vouches for what it carries): every role commit and
 /// snapshot whole, each other commit without the parts a held snapshot covers at the node keeping
-/// every body (none of it when that leaves no part), as made. `node_checks` it against `o`, the
+/// every body, on the walk's side of each dispute as every node checked (none of it when that leaves
+/// no part), as made. `node_checks` it against `o`, the
 /// whole set's keep-everything node; how many parts it left out.
 fn covered_away(played: &Played, o: &Oracle) -> Result<usize, String> {
     let mut full = fresh(played.now);
@@ -1629,6 +1637,7 @@ fn covered_away(played: &Played, o: &Oracle) -> Result<usize, String> {
         let _ = full.receive(&pk.bytes, pk.blobs.clone());
     }
     full.reexamine().unwrap();
+    crate::disputes::walk_sides(&mut full);
     let snaps: Vec<(CommitId, Tid, Ak)> = full.engine.commit_ids().iter().filter_map(|c| full.engine.header(c).filter(|h| h.kind.is_compaction()).map(|h| h.aspects.iter().map(|a| (*c, a.tid, a.ak.clone())).collect::<Vec<_>>())).flatten().collect();
     let mut packs = played.packs.clone();
     let (mut order, mut ais, mut left) = (Vec::new(), BTreeMap::new(), 0);
@@ -2135,9 +2144,7 @@ struct Seen {
     invalid: u64,
     /// Commits with a part on each aspect, the whole set held.
     aspects: BTreeMap<String, u64>,
-    /// The reference node's parts breaking a required retention, and its `required^.0` parts
-    /// fallen invalid, over the held sets.
-    broken: u64,
+    /// The reference node's `retention^.0` parts fallen invalid, over the held sets.
     fallen: u64,
     /// Permanent deltas the reference node shows purged, over the held sets.
     tombstones: u64,
@@ -2170,7 +2177,6 @@ impl Seen {
         self.tally.add(&o.tally);
         self.steps = (self.steps.0 + o.steps.0, self.steps.1 + o.steps.1);
         self.invalid += o.invalid;
-        self.broken += o.broken;
         self.fallen += o.fallen;
         self.tombstones += o.tombstones;
         self.by_author += o.by_author;
@@ -2211,8 +2217,8 @@ impl Seen {
         type Reached = fn(&Seen) -> bool;
         let checks: [(Emphasis, &str, Reached); 8] = [
             (Emphasis::Purges, "a permanent delta purged by name and one by author", |s| s.tombstones > 0 && s.by_author > 0),
-            (Emphasis::Keeps, "kept writes on a register, a set and a map, and held-model judging a covered body kept until T", |s| ["t:kept.0", "t:keptset.0", "t:keptmap.0"].iter().all(|a| s.aspects.contains_key(*a)) && s.model.reached.get("covered kept until T").is_some_and(|n| *n > 0)),
-            (Emphasis::Required, "a delta broke a required retention and a setting fell", |s| s.broken > 0 && s.fallen > 0),
+            (Emphasis::Keeps, "kept writes on a register, a set and a map, and held-model judging a covered drop of a replaced body", |s| ["t:kept.0", "t:keptset.0", "t:keptmap.0"].iter().all(|a| s.aspects.contains_key(*a)) && s.model.reached.get("covered drops judged").is_some_and(|n| *n > 0)),
+            (Emphasis::Settings, "a setting fell", |s| s.fallen > 0),
             (Emphasis::RecordOnly, "a first admin's record edge removed", |s| s.tally.kinds.get("RemoveFlow(record)").is_some_and(|x| x.1 > 0)),
             (Emphasis::Lists, "list elements written, some by a writer predating the undo expiry rule", |s| s.aspects.contains_key("t:listtext.0") && s.tally.kinds.iter().any(|(k, x)| k.ends_with("(old)") && x.1 > 0)),
             (Emphasis::PartsAway, "parts held away and parts left out as covered", |s| s.withheld > 0 && s.covered_away > 0),
@@ -2301,10 +2307,10 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         // the reference, as made: tallies
         let mut p = deliver(played, &orders[0]);
         for t in &played.things {
-            for c in p.engine.purged_on(t, &ak("t:reg.0")).unwrap().into_keys() {
-                seen.tombstones += u64::from(p.engine.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t && a.ak.as_str() == "t:reg.0" && p.engine.permanent(&h, a))));
+            for c in p.engine.purged_on(t, &msg()).unwrap().into_keys() {
+                seen.tombstones += u64::from(p.engine.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t && a.ak == msg() && p.engine.permanent(&h, a))));
             }
-            let (rows, _) = p.engine.held_parts(t, &ak("t:reg.0"), osis_node::engine::listing::CommitFrom::Oldest, usize::MAX - 1, usize::MAX).unwrap();
+            let (rows, _) = p.engine.held_parts(t, &msg(), osis_node::engine::listing::CommitFrom::Oldest, usize::MAX - 1, usize::MAX).unwrap();
             for r in &rows {
                 if let osis_node::engine::listing::PartBody::Purged(by) = &r.body {
                     seen.by_author += u64::from(p.engine.header(by).is_some_and(|h| h.purge.iter().any(|i| matches!(i, osis_commit::PurgeItem::Author { .. }))));
@@ -2328,8 +2334,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         let idx = p.engine.index_digest();
         let invalid = idx.commits.values().filter(|c| c.valid.contains(&false)).count();
         seen.invalid += invalid as u64;
-        seen.broken += p.engine.broken_parts() as u64;
-        seen.fallen += p.engine.fallen_required() as u64;
+        seen.fallen += p.engine.fallen_settings() as u64;
         if std::env::var("OSIS_ORDER_STATS").is_ok() {
             eprintln!("seed {seed}: {} of {} commits held ({} base), {} with an invalid part, {} pending, {} things", held.len(), n, played.base, invalid, p.engine.pending().len(), played.things.len());
         }
@@ -2373,10 +2378,11 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             // only between ticks)
             let mut early: Option<String> = None;
             let mut done = 0;
+            let mut drops = crate::held::Drops::default();
             let mut p = deliver_with(played, order, None, Some(c), &mut |p| {
                 done += 1;
                 if early.is_none() {
-                    early = model_differs(p, played, &o).map(|d| format!("after {done} ingests at {:?}: {d}", p.engine.now()));
+                    early = model_differs(p, played, Some(&mut drops)).map(|d| format!("after {done} ingests at {:?}: {d}", p.engine.now()));
                     if let Some(d) = &early {
                         explain(played, &held, p, d);
                     }
@@ -2478,8 +2484,8 @@ enum Emphasis {
     Purges,
     /// Writes under keep-at-least (after replaced, or until T) and their compactions.
     Keeps,
-    /// Required retention set, broken and fallen.
-    Required,
+    /// History settings set and fallen.
+    Settings,
     /// Things made by their record alone, grants and removals through the flows.
     RecordOnly,
     /// Sequences: expiring list elements, texts, writers predating the undo expiry rule.
@@ -2493,19 +2499,19 @@ enum Emphasis {
     Addenda,
 }
 
-const EMPHASES: [Emphasis; 8] = [Emphasis::Purges, Emphasis::Keeps, Emphasis::Required, Emphasis::RecordOnly, Emphasis::Lists, Emphasis::PartsAway, Emphasis::Settled, Emphasis::Addenda];
+const EMPHASES: [Emphasis; 8] = [Emphasis::Purges, Emphasis::Keeps, Emphasis::Settings, Emphasis::RecordOnly, Emphasis::Lists, Emphasis::PartsAway, Emphasis::Settled, Emphasis::Addenda];
 
 fn emphasis(seed: u64) -> Emphasis {
     EMPHASES[(seed % EMPHASES.len() as u64) as usize]
 }
 
-/// A step of a thing's required retention: an admin's change or a write that may break it.
+/// A step of a thing's history setting: an admin's change, or a write past the writer's check.
 fn required_step(r: &mut Rng) -> Step {
     let (by, t, op) = (r.below(3) as usize, r.below(3) as usize, r.below(DRAWN as u64) as u8);
     Step::Aim(Box::new(if r.below(3) == 0 {
-        Step::Require { by: r.pick(&[0, 0, 2]), t, op, rule: r.below(4) as u8 }
+        Step::Setting { by: r.pick(&[0, 0, 2]), t, op, rule: r.below(4) as u8 }
     } else {
-        Step::Breaking { by, t, op, v: r.below(10) as u8, fits: r.below(4) == 0 }
+        Step::PurgeSet { by, t, op, v: r.below(10) as u8, fits: r.below(4) == 0 }
     }))
 }
 
@@ -2520,8 +2526,8 @@ const SEQ_OPS: [u8; 12] = [8, 9, 10, 11, 14, 23, 24, 26, 32, 32, 33, 34];
 /// (`General` mostly; the emphasis's own group five times its share), then draws its step from
 /// that group's own stream, so a change to one group's draws leaves every other group's steps
 /// as they were. Groups other than `General` act on the first three things, so their steps meet.
-/// The emphasis also shapes the whole history: a start that reaches its outcome (a fallen and a
-/// broken required setting, a record-only thing, an addendum, a signal), the settling tail.
+/// The emphasis also shapes the whole history: a start that reaches its outcome (a fallen
+/// setting, a record-only thing, an addendum, a signal), the settling tail.
 fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
     use Step::*;
     let e = emphasis(seed);
@@ -2538,18 +2544,20 @@ fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
             let tick = Advance { who: None, ms: 1_000 };
             h.extend([aim(Signal { by: 1, t: 0, v }), Message { by: 1, t: 0, v }, Sync { from: 1, to: 0 }, tick.clone(), PurgeAuthor { by: 0, t: 0, of: 1 }, Message { by: 2, t: 0, v }, Sync { from: 2, to: 0 }, tick, Purge { by: 0, t: 0, of: 2, back: 0, v }]);
         }
-        // a register write kept until T (`retention_of`: `v` 3 or 9) replaced and compacted, then
-        // writes on a kept set and map (an even `v` adds to the set)
+        // a kept register write replaced and compacted, a list element kept until T, a register
+        // purged on replace replaced (its writer covers it, every node drops it: a covered drop
+        // held-model judges), then writes on a kept set and map (an even `v` adds to the set)
         Emphasis::Keeps => {
             let tick = Advance { who: None, ms: 10 };
-            h.extend([Typed { by: 0, t: 0, op: 16, k: 0, v: 3 + 6 * keeps.below(2) as u8 }, tick.clone(), Typed { by: 0, t: 0, op: 16, k: 0, v: 2 * keeps.below(5) as u8 }, tick, Compact { by: 0, t: 0, op: 16 }]);
+            h.extend([Typed { by: 0, t: 0, op: 16, k: 0, v: keeps.below(10) as u8 }, tick.clone(), Typed { by: 0, t: 0, op: 16, k: 0, v: 2 * keeps.below(5) as u8 }, tick.clone(), Compact { by: 0, t: 0, op: 16 }, Typed { by: 0, t: 0, op: 30, k: 0, v: keeps.below(10) as u8 }, tick.clone()]);
+            h.extend([Typed { by: 0, t: 0, op: 31, k: 0, v: 1 }, tick.clone(), Typed { by: 0, t: 0, op: 31, k: 0, v: 2 }, tick]);
             h.extend([21, 35].map(|op| Typed { by: keeps.below(3) as usize, t: 0, op, k: keeps.below(3) as u8, v: 2 * keeps.below(5) as u8 }));
         }
-        Emphasis::Required => {
+        Emphasis::Settings => {
             let op = required.pick(&KEPT_OPS);
-            // the first admin's setting stands and 1's write breaks it; Carol's, a second on, falls
-            // when Alice demotes her as of the setup (Carol has no writes before it)
-            h.extend([Require { by: 0, t: 0, op, rule: 3 }, Advance { who: None, ms: 1_000 }, Require { by: 2, t: 0, op, rule: 2 }, Breaking { by: 1, t: 0, op, v: 1, fits: false }, Sync { from: 2, to: 0 }, Demote { by: 0, t: 0, holder: 2, at: 0, to_read: false }]);
+            // the first admin's setting stands and 1 writes; Carol's, a second on, falls when Alice
+            // demotes her as of the setup (Carol has no writes before it)
+            h.extend([Setting { by: 0, t: 0, op, rule: 3 }, Advance { who: None, ms: 1_000 }, Setting { by: 2, t: 0, op, rule: 2 }, PurgeSet { by: 1, t: 0, op, v: 1, fits: false }, Sync { from: 2, to: 0 }, Demote { by: 0, t: 0, holder: 2, at: 0, to_read: false }]);
         }
         // an expiring list element by a writer predating the undo expiry rule, another's edit in it
         Emphasis::Lists => {
@@ -2579,7 +2587,7 @@ fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
     let own = match e {
         Emphasis::Purges => Some(1),
         Emphasis::Keeps => Some(2),
-        Emphasis::Required => Some(3),
+        Emphasis::Settings => Some(3),
         Emphasis::RecordOnly => Some(4),
         Emphasis::Lists => Some(5),
         Emphasis::PartsAway => Some(6),
@@ -3012,14 +3020,14 @@ fn setup_grant(played: &Played, to: usize) -> usize {
 /// `played`, the history `steps`: when they end with `settled`'s tail (not cut short, as the
 /// exhaustive size's cap cuts it), marked settled from the tail's first commit.
 ///
-/// A thing with a `required^.0` delta settles nothing (spec/commits.md §5 Required retention,
-/// Limit): one dropped while invalid and missing again changes the validity of its thing's later
-/// deltas until its copy comes back, and no compaction carries it.
+/// A thing with a `retention^.0` delta in the history settles nothing: one dropped while invalid
+/// and missing again changes what its thing keeps until its copy comes back, and no compaction
+/// carries it (the setup's, by the first admin, never falls).
 fn settling(mut played: Played, steps: &[Step]) -> Played {
     let tail = settled(Vec::new());
     let Some(at) = steps.len().checked_sub(tail.len()).filter(|&at| steps[at..] == tail[..]) else { return played };
     let from = played.steps_at.get(at).copied().unwrap_or(played.packs.len());
-    let required: BTreeSet<String> = played.packs.iter().filter_map(|pk| osis_commit::CommitBlob::decode_stored(&pk.bytes).ok()).flat_map(|b| b.header.aspects.iter().filter(|a| a.ak.as_str() == "required^.0").map(|a| format!("{:?}", a.tid)).collect::<Vec<_>>()).collect();
+    let required: BTreeSet<String> = played.packs[played.base..].iter().filter_map(|pk| osis_commit::CommitBlob::decode_stored(&pk.bytes).ok()).flat_map(|b| b.header.aspects.iter().filter(|a| a.ak.as_str() == "retention^.0").map(|a| format!("{:?}", a.tid)).collect::<Vec<_>>()).collect();
     played.settled_last.retain(|k| !required.contains(&k.0));
     Played { settle_from: Some(from), ..played }
 }
@@ -3063,7 +3071,7 @@ fn undelete_with_snapshot_of_deleted_spec_crdt_5_7() {
 }
 
 // spec/commits.md §5, spec/crdt.md §4.8 (replaced, a function of the held set): three writes of
-// a kept register (no `v` a multiple of 3: kept after replaced, `retention_of`), X < Y < Z; X is
+// a kept register (kept after replaced, `base_setting`), X < Y < Z; X is
 // replaced at Y and Y at Z, delivered in order or Z first.
 #[test]
 fn replaced_alike_in_any_order_spec_commits_5() {
@@ -3100,6 +3108,7 @@ fn register_deaths_purged_killer_spec_crdt_4_8() {
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &REG, &s("g")).unwrap();
+    m.set(t, &osis_schema::core_types::RETENTION, &base_setting(lp.peers[0].engine.now(), false)).unwrap();
     lp.peers[0].commit(m).unwrap();
     // each commit packaged as made, before a later purge drops its body
     let mut packs: Vec<Package> = lp.peers[0].engine.commit_ids().iter().map(|id| lp.peers[0].engine.package(id).unwrap().unwrap()).collect();
@@ -3109,7 +3118,6 @@ fn register_deaths_purged_killer_spec_crdt_4_8() {
         if let Some(commit) = purge {
             m.purge(osis_commit::PurgeItem::Commit { commit, tid: t, ak: ak("t:kept.0") });
         }
-        m.retention(t, &KEPT, keep_of(16).unwrap()).unwrap();
         m.set(t, &KEPT, &s(v)).unwrap();
         let id = lp.peers[0].commit(m).unwrap().unwrap();
         packs.push(lp.peers[0].engine.package(&id).unwrap().unwrap());
@@ -3128,11 +3136,11 @@ fn register_deaths_purged_killer_spec_crdt_4_8() {
     assert_eq!(p.engine.replaced_at(&w1, &t, &ak("t:kept.0")).unwrap(), Some(w2_ts));
 }
 
-// spec/commits.md §5, spec/crdt.md §4.8 (a write dies once, at its earliest superseder): a kept
-// text inserted, deleted, the delete undone and the text deleted again. The insert's body is
-// replaced at the first delete.
+// spec/commits.md §5, spec/crdt.md §4.8 When (a text element's creation dies at the earliest
+// delete after its latest undelete): a kept text inserted, deleted, the delete undone and the
+// text deleted again. The insert's body is replaced at the second delete.
 #[test]
-fn text_redelete_replaced_at_first_delete_spec_commits_5() {
+fn text_redelete_replaced_at_delete_after_undelete_spec_commits_5() {
     use Step::*;
     let tick = Advance { who: None, ms: 1 };
     let h = vec![Typed { by: 0, t: 0, op: 23, k: 0, v: 0 }, tick.clone(), Typed { by: 0, t: 0, op: 24, k: 0, v: 0 }, tick.clone(), Undo { by: 0, back: 0 }, tick, Typed { by: 0, t: 0, op: 24, k: 0, v: 0 }];
@@ -3143,7 +3151,7 @@ fn text_redelete_replaced_at_first_delete_spec_commits_5() {
     ids.sort();
     let [(_, ins, t), (del, ..), _, (redel, ..)] = ids[..] else { panic!("{ids:?}") };
     assert!(del < redel);
-    assert_eq!(p.engine.replaced_at(&ins, &t, &text).unwrap(), Some(del));
+    assert_eq!(p.engine.replaced_at(&ins, &t, &text).unwrap(), Some(redel));
 }
 
 // spec/commits.md §5 (a snapshot carries a dying write only when its body holds a write of its
@@ -3156,10 +3164,10 @@ fn text_redelete_replaced_at_first_delete_spec_commits_5() {
 fn snapshot_after_late_dated_death_not_credited_spec_commits_5() {
     use Step::*;
     let tick = Advance { who: None, ms: 1 };
-    // k1 stays, so the snapshot carries a kept write and keeps it for D after replaced
-    let h = vec![Typed { by: 0, t: 0, op: 22, k: 0, v: 8 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, tick.clone(), Typed { by: 0, t: 0, op: 22, k: 1, v: 5 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, tick.clone(), Undo { by: 0, back: 1 }, Send { from: 0, to: 1, back: 0 }, tick.clone(), Compact { by: 1, t: 0, op: 22 }, tick, TypedField { by: 2, t: 0, k: 0, v: 7 }];
+    // the map kept for D after replaced (the thing's setting); k1 stays
+    let h = vec![Setting { by: 0, t: 0, op: 22, rule: 1 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, Typed { by: 0, t: 0, op: 22, k: 0, v: 8 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, tick.clone(), Typed { by: 0, t: 0, op: 22, k: 1, v: 5 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, tick.clone(), Undo { by: 0, back: 1 }, Send { from: 0, to: 1, back: 0 }, tick.clone(), Compact { by: 1, t: 0, op: 22 }, tick, TypedField { by: 2, t: 0, k: 0, v: 7 }];
     let played = play(83028, &h);
-    let b = played.base;
+    let b = played.base + 1;
     assert_eq!(played.packs.len(), b + 5);
     let (put, other, undo, snap, field) = (b, b + 1, b + 2, b + 3, b + 4);
     let order: Vec<usize> = (0..b).chain([other, field, snap, undo, put]).collect();
@@ -3168,7 +3176,6 @@ fn snapshot_after_late_dated_death_not_credited_spec_commits_5() {
     let ids: Vec<CommitId> = [put, undo, snap, field].iter().map(|i| played.packs[*i].id).collect();
     let t = p.engine.header(&ids[2]).unwrap().aspects[0].tid;
     assert_eq!(p.engine.header(&ids[2]).unwrap().kind, osis_commit::Kind::ContentSnapshot);
-    assert!(p.engine.header(&ids[2]).unwrap().aspects[0].retention.history.is_some_and(|h| h != History::PurgeOnReplace), "a kept snapshot");
     assert!(p.engine.replaced_at(&ids[0], &t, &a).unwrap().is_some(), "the put died");
     assert_eq!(p.engine.replaced_at(&ids[2], &t, &a).unwrap(), None, "not replaced");
 }
@@ -3496,19 +3503,20 @@ fn held_model_agrees_on_purge_rights_spec_commits_5() {
 #[test]
 fn kill_and_purge_in_one_commit_keeps_leftover_spec_commits_5() {
     use Step::*;
-    let h = vec![Require { by: 0, t: 0, op: 17, rule: 3 }, Sync { from: 0, to: 1 }, Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Purge { by: 0, t: 0, of: 1, back: 0, v: 2 }];
+    // 1 writes before the setting reaches it: it owes no cover of its own
+    let h = vec![Setting { by: 0, t: 0, op: 17, rule: 3 }, Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Purge { by: 0, t: 0, of: 1, back: 0, v: 2 }];
     let played = play(913006, &h);
     let n = played.packs.len();
     let (t, a) = (played.things[0], ak("t:reg.0"));
-    // the requirement, the write, the request, the purger's re-snapshot
-    assert_eq!(n, played.base + 4, "{:?}", played.tally.show());
-    let (write, purge) = (played.packs[n - 3].id, played.packs[n - 2].id);
+    // the steps' commits, besides the covers writers owe under the setting and the purger's re-snapshot
+    let plain: Vec<usize> = (played.base..n).filter(|i| !osis_commit::CommitBlob::decode(&played.packs[*i].bytes).unwrap().header.kind.is_compaction()).collect();
+    assert_eq!(plain.len(), 3, "{:?}", played.tally.show());
+    let (w, r) = (plain[1], plain[2]);
+    let (write, purge) = (played.packs[w].id, played.packs[r].id);
     let made: Vec<usize> = (0..n).collect();
-    let request_first: Vec<usize> = (0..played.base).chain([n - 2, n - 3, n - 1]).collect();
+    let request_first: Vec<usize> = (0..r).filter(|i| *i != w).chain([r, w]).chain(r + 1..n).collect();
     for order in [made, request_first] {
         let mut p = deliver(&played, &order);
-        let h = p.engine.header(&write).unwrap();
-        assert_eq!(h.aspects[0].retention.history, Some(History::PurgeOnReplace), "the write is under the required purge on replace: {:?}", h.aspects[0].retention);
         assert_eq!(p.engine.get(&t, &a).unwrap(), Some(s("p2")), "the request's write killed it");
         assert!(p.engine.purge_stands(&purge, &write, &t, &a), "the request names the write and stands");
         let m = p.engine.core.ix.commits.get(&write).unwrap();
@@ -3603,14 +3611,40 @@ fn judged_under_the_walks_side_after_every_ingest_spec_permissions_5_1() {
     let played = play(5021, &h);
     let played = Played { model: Some(std::sync::Arc::new((crate::held::History::new(&played.packs), Default::default()))), ..played };
     let n = played.packs.len();
-    let o = oracle(&played, &(0..n).collect::<Vec<_>>());
     let (mut disputes, mut differs) = (0, None);
     deliver_with(&played, &(0..n).rev().collect::<Vec<_>>(), None, None, &mut |p| {
         disputes += crate::disputes::walk_sides(p);
-        differs = differs.take().or_else(|| model_differs(p, &played, &o));
+        differs = differs.take().or_else(|| model_differs(p, &played, None));
     });
     assert!(disputes > 0, "a dispute");
     assert_eq!(differs, None);
+}
+
+// The harness's covered-drop check (`held::compare`, spec/commits.md §5 Keep at least) catches a
+// node dropping bodies in history: three kept register writes, then a snapshot covering them; the
+// first two, in history (kept 30 min after replaced), dropped by hand in one step are flagged,
+// each judged with the other already gone too.
+#[test]
+fn harness_flags_a_covered_drop_in_history_spec_commits_5() {
+    use Step::*;
+    let tick = Advance { who: None, ms: 10 };
+    let w = |v| Typed { by: 0, t: 0, op: 16, k: 0, v };
+    let h = vec![w(1), tick.clone(), w(2), tick.clone(), w(3), tick, Compact { by: 0, t: 0, op: 16 }];
+    let played = play(77, &h);
+    let hist = crate::held::History::new(&played.packs);
+    let n = played.packs.len();
+    let mut p = deliver(&played, &(0..n).collect::<Vec<_>>());
+    let (t, a) = (played.things[0], aspect_of(16));
+    let writes: Vec<CommitId> = played.packs[played.base..].iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap()).filter(|b| !b.header.kind.is_compaction() && b.header.aspects.iter().any(|x| x.tid == t && x.ak == a)).map(|b| b.id()).collect();
+    assert_eq!(writes.len(), 3, "{:?}", played.tally.show());
+    let (mut cov, mut drops) = (crate::held::Coverage::default(), crate::held::Drops::default());
+    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)), None);
+    for c in &writes[..2] {
+        p.engine.drop_body(c, &t, &a).unwrap();
+    }
+    let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)).expect("the drops are flagged");
+    assert!(d.contains("dropped as covered"), "{d}");
+    assert_eq!(cov.differs.get("dropped a body in history"), Some(&2), "{:?}", cov.differs);
 }
 
 // spec/commits.md §5 Invalid: 0 lowers 1 to read, 2 grants 1 write again, 1 writes G's register,
@@ -3666,4 +3700,15 @@ fn record_from_drift_parked_creation_wakes_thrown_out_write_spec_commits_4() {
     p.tick().unwrap();
     let all: Vec<usize> = (0..played.packs.len()).collect();
     assert_eq!(shown(&mut p, &played.things), shown(&mut deliver(&played, &all), &played.things));
+}
+
+// The order harness's parts-away node (`covered_away`) leaves out what the keep-everything node's
+// snapshots cover, judged on the walk's side of the admin dispute the history makes, as every node
+// checked is (`disputes::walk_sides`): on its default side a snapshot valid there covered a write
+// that the walk's side reads, so the fresh node read the older value. Seed 252331946309, shrunk.
+#[test]
+fn covered_away_judged_on_the_walks_side_252331946309() {
+    use Step::*;
+    let h = vec![Mixed { by: 0, t: 0, op: 17, k: 0, v: 8 }, Mixed { by: 2, t: 0, op: 18, k: 2, v: 1 }, Aim(Box::new(Compact { by: 2, t: 0, op: 24 })), Aim(Box::new(RemoveFlow { by: 1, t: 1, holder: 0, lower: false })), Aim(Box::new(Setting { by: 2, t: 0, op: 18, rule: 3 })), Aim(Box::new(Edge { by: 0, t: 7, holder: 2, role: Some(Role::Read) })), Aim(Box::new(Nested { by: 0, other: 1, t: 1, k: 2, text: true, compact: true, also: true })), RecordOnly { by: 2, under: None }];
+    check(252331946309, &h, Cfg { away: true, ..NAMED }).unwrap();
 }

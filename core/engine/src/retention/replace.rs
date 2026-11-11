@@ -1,14 +1,16 @@
 //! Purge on replace (spec/commits.md §5): no bound of its own, only the principle's one drop. A
-//! held purge-on-replace body a held valid snapshot covers, whose commit holds the right over it,
-//! goes as covered at every node; a writer holding a replaced one that no such snapshot covers
-//! writes one in the transaction it comes to hold one (the replacing write or the body applied, a
-//! validity flip, a role change making it a writer), so the body goes there at once and
-//! everywhere else when that snapshot arrives. A node without write writes none and drops only
-//! under a writer's snapshot. Judged at the end of each transaction over the aspects whose
-//! purge-on-replace bodies, snapshots or roles changed (`Core::none_due`), from what is held then.
-//! "May write" is the snapshot's own check (`snapshot::snapshot_writer`: role and the thing's
-//! delete keys), and a cover it refuses leaves the body, never fails the transaction. Limit: delete
-//! keys arriving last are no trigger (issues/purge-cover-on-delete-keys.md).
+//! held body out of history (a purge-on-replace body once replaced) that a held valid snapshot
+//! covers goes as covered at every node, the snapshot's writer holding the purge right over it or
+//! not; a writer holding a replaced purge-on-replace body that no snapshot holding the right
+//! covers writes one in the transaction it comes to hold one (the replacing write or the body
+//! applied, a validity flip, a role change making it a writer, a setting arriving), so the body
+//! goes there at once and everywhere else when that snapshot arrives: the right holders' covers
+//! keep the promise. A node without write writes none and drops only under a writer's snapshot. Judged at the end of each transaction over the aspects whose
+//! purge-on-replace bodies, snapshots or roles changed (`Core::none_due`), from what is held then: a
+//! function of the held set, whatever the order things arrived in. "May write" is the snapshot's
+//! own check (`snapshot::snapshot_writer`: role and the thing's delete keys), and a cover it
+//! refuses leaves the body, never fails the transaction. Limit: delete keys arriving last are no
+//! trigger (issues/purge-cover-on-delete-keys.md).
 
 use super::covered;
 use crate::engine::{DropFor, Step, Tx};
@@ -16,15 +18,15 @@ use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid, Ts};
 use std::collections::BTreeSet;
 
-/// The held valid snapshot of `(tid, ak)` holding the right over held body `c` that covers it,
-/// latest first (spec/commits.md §5 Covered; of two covered-equal snapshots only the lower ID
-/// covers, spec/sync.md §7).
-fn coverer(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
+/// The held valid snapshot of `(tid, ak)` that covers held body `c`, holding the right over it
+/// when `right`, latest first (spec/commits.md §5 Covered; of two covered-equal snapshots only the
+/// lower ID covers, spec/sync.md §7).
+fn coverer(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, right: bool) -> Result<Option<CommitId>> {
     let mut snaps: Vec<(Ts, CommitId)> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| (x.0, x.1)).filter(|x| x.1 != *c).collect();
     snaps.sort();
     let snapshot = tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction());
     for (_, s) in snaps.into_iter().rev() {
-        if !super::purge::snapshot_right(tx.core, &s, c, tid, ak) || covered(tx, &s, c, tid, ak)? != Some(true) {
+        if (right && !super::purge::snapshot_right(tx.core, &s, c, tid, ak)) || covered(tx, &s, c, tid, ak)? != Some(true) {
             continue;
         }
         if snapshot && *c < s && covered(tx, c, &s, tid, ak)? == Some(true) {
@@ -89,10 +91,14 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
         if tx.txn.is_memory() {
             continue;
         }
-        let bodies: Vec<CommitId> = tx.core.ix.none_held.get(&k).into_iter().flatten().copied().collect();
+        let kept = super::history::of(tx.core, &tid, &ak);
+        if !kept.purges() {
+            continue;
+        }
+        let bodies: Vec<CommitId> = tx.core.ix.by_aspect.get(&k).into_iter().flatten().map(|x| x.1).collect();
         let mut held = Vec::new();
         for c in bodies {
-            if let Some(ai) = super::held_part(tx.core, &c, &tid, &ak) {
+            if let Some(ai) = super::held_part(tx.core, &c, &tid, &ak).filter(|ai| tx.core.ix.commits.get(&c).is_some_and(|m| !m.bare(*ai))) {
                 held.push((c, ai));
             }
         }
@@ -101,7 +107,7 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
         }
         let mut uncovered = Vec::new();
         for (c, ai) in &held {
-            if coverer(tx, c, &tid, &ak)?.is_none() {
+            if coverer(tx, c, &tid, &ak, true)?.is_none() {
                 uncovered.push((*c, *ai));
             }
         }
@@ -111,7 +117,7 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
         let ts = tx.core.hlc.peek();
         if !written.contains(&k) && !uncovered.is_empty() && super::snapshot::snapshot_writer(tx, &tid, &ak, false, ts)?.is_some() {
             for (c, ai) in &uncovered {
-                if replaced(tx, c, *ai, &tid, &ak)? {
+                if under_purge(tx, c, *ai, &tid, &ak, &kept)? {
                     owed = true;
                     break;
                 }
@@ -127,19 +133,41 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
             }
         }
         for (c, ai) in held {
-            if super::held_part(tx.core, &c, &tid, &ak) != Some(ai) || coverer(tx, &c, &tid, &ak)?.is_none() {
+            if super::held_part(tx.core, &c, &tid, &ak) != Some(ai) || coverer(tx, &c, &tid, &ak, false)?.is_none() {
                 continue;
             }
-            // a commit carrying a purge request keeps its blobs to the floor (spec/commits.md §5)
+            // kept while in history (a dated replacement ahead of the clock too), and a commit
+            // carrying a purge request keeps its blobs to the floor (spec/commits.md §5): judged
+            // again then; out of history any writer's cover drops it (as `bounds::drop_from`)
+            let now = tx.now().0;
             let floor = super::bounds::body_keep(tx, &c, &tid, &ak)?;
-            if floor > tx.now().0 {
-                tx.put_timer(floor, &c, ai, super::T_FLOOR)?;
+            if floor > now {
+                if floor < osis_commit::FOREVER {
+                    tx.put_timer(floor, &c, ai, super::T_FLOOR)?;
+                }
                 continue;
             }
             super::drop_part_for(tx, &c, ai, DropFor::Cover)?;
         }
     }
     Ok(())
+}
+
+/// Whether held body `c` (part `ai`) of `(tid, ak)` is under purge on replace (spec/commits.md
+/// §5): replaced, and the setting in force when it was replaced purges on replace. Dated only
+/// when the timeline moved after the body was written (else in force then is in force at its
+/// replacement).
+fn under_purge(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, kept: &super::history::Kept) -> Result<bool> {
+    if !replaced(tx, c, ai, tid, ak)? {
+        return Ok(false);
+    }
+    let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(false) };
+    let written = h.ts.wall_ms().0;
+    if kept.settled_from(written) {
+        return Ok(kept.purge_on_replace(written));
+    }
+    tx.core.replaced_reads += 1;
+    Ok(super::bounds::dated_replaced_at(tx, &h, c, ai)?.is_some_and(|r| kept.purge_on_replace(r.wall_ms().0)))
 }
 
 /// Part `ai` of `c` reached its purge floor (`T_FLOOR`): its aspect is judged again at the end of

@@ -201,6 +201,7 @@ fn reconciliation_fallback_spec_sync_6() {
     let b = net.node(2, &[host]);
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "v0");
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     net.run();
     net.set_online(b, false);
     for i in 1..40 {
@@ -1438,9 +1439,8 @@ fn flip_after_drop(a_saw_kill: bool, kill_before_flip: bool) -> (Net, osis_base:
     let x = net.node(5, &[host]);
     let g = net.group(a, &[(b, Role::Write), (c, Role::Read), (x, Role::Admin)], &[host]);
     let t = net.item(a, g, g, "v");
-    let zero = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) };
+    net.keep(a, t, &[(GONE.ak(), PURGE)]);
     let mut m = Mutation::new();
-    m.retention(t, &GONE, zero).unwrap();
     m.set(t, &GONE, &s("v1")).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
@@ -1458,7 +1458,6 @@ fn flip_after_drop(a_saw_kill: bool, kill_before_flip: bool) -> (Net, osis_base:
         net.set_online(b, false);
     }
     let mut m = Mutation::new();
-    m.retention(t, &GONE, zero).unwrap();
     m.set(t, &GONE, &s("v0")).unwrap();
     let kill = net.engine(b).commit(m).unwrap().unwrap();
     net.run();

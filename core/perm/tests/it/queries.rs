@@ -351,11 +351,7 @@ fn purge_rights() {
         (PurgeBy::Admin, a, true),
         (PurgeBy::Admin, wr, false),
         (PurgeBy::Admin, dev, false),
-        (PurgeBy::Author, dev, true),
-        (PurgeBy::Author, person, true),
-        (PurgeBy::Author, a, false),
-        (PurgeBy::Author, o, true), // first admin of the person, so acts for it
-        (PurgeBy::Author, wr, false),
+        (PurgeBy::AuthorOrAdmin, person, true),
         (PurgeBy::AuthorOrAdmin, a, true),
         (PurgeBy::AuthorOrAdmin, dev, true),
         (PurgeBy::AuthorOrAdmin, wr, false),
@@ -368,14 +364,11 @@ fn purge_rights() {
     w.set(o, doc, person, edge(Read), 5, &[]);
     let tl = Timeline::evaluate(&w.held());
     assert!(!tl.may_purge(&dev, &doc, PurgeBy::AuthorOrAdmin, &person, now));
-    // ... and under `author` nobody holds a right to its deltas
-    for who in [dev, person, a, o, wr] {
-        assert!(!tl.may_purge(&who, &doc, PurgeBy::Author, &person, now), "{who:?}");
-    }
-    // an admin who is the author holds the right as the author
-    assert!(tl.may_purge(&a, &doc, PurgeBy::Author, &a, now));
+    assert!(!tl.may_purge(&person, &doc, PurgeBy::AuthorOrAdmin, &person, now));
+    // admins always may
+    assert!(tl.may_purge(&a, &doc, PurgeBy::AuthorOrAdmin, &person, now));
     assert_eq!(PurgeBy::from_id(2), Some(PurgeBy::AuthorOrAdmin));
-    assert_eq!(PurgeBy::from_id(5), None);
+    assert_eq!(PurgeBy::from_id(4), None);
 }
 
 /// §3: write or above rotates its roles and below; readers rotate nothing.

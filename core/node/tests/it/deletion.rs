@@ -374,6 +374,7 @@ const RECORD_KEYS: usize = 66;
 
 fn kept_record(net: &mut Net, a: usize, g: osis_base::Tid, asp: &osis_schema::Aspect<osis_base::Value>, marker: &str, compact: bool) -> (osis_base::Tid, Ak, osis_base::LabelId, osis_base::CommitId) {
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[(asp.ak(), PURGE)]);
     let mut v: std::collections::BTreeMap<osis_base::Value, osis_base::Value> = (0..RECORD_KEYS).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
     v.insert(s("secret"), s(marker));
     let mut m = Mutation::new();
@@ -462,6 +463,7 @@ fn text_partly_erased_covered_at_once_spec_commits_5() {
     net.blocked.insert((c, host));
     let g = net.group(a, &[(c, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[(GONETEXT.ak(), PURGE)]);
     let ak = Ak::new(GONETEXT.ak()).unwrap();
     let marker = "ERASED-TEXT-3f8a";
     let chunk = 200;
@@ -512,6 +514,7 @@ fn text_fully_erased_covered_at_once_spec_commits_5() {
     net.blocked.insert((c, host));
     let g = net.group(a, &[(c, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[(GONETEXT.ak(), PURGE)]);
     let ak = Ak::new(GONETEXT.ak()).unwrap();
     let mut m = Mutation::new();
     m.op(t, &GONETEXT, PathOp { path: Vec::new(), op: Op::Insert { at: 0, items: vec![s("SECRET")] } }).unwrap();
@@ -550,6 +553,7 @@ fn dropped_snapshot_waits_for_lost_carrier_spec_sync_7() {
     let a = net.node(1, &[host]);
     let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[(GONETEXT.ak(), PURGE)]);
     let ak = Ak::new(GONETEXT.ak()).unwrap();
     let edit = |net: &mut Net, op: Op| {
         let mut m = Mutation::new();
@@ -587,12 +591,10 @@ fn dropped_snapshot_waits_for_lost_carrier_spec_sync_7() {
     assert!(carried, "a carrier is at the host");
 }
 
-// spec/commits.md §5 (a snapshot's bounds come from the writes it carries; a node that may write
-// the aspect writes the carrier before dropping a body with live writes), spec/sync.md §7: the
-// typed writer of a purge-on-replace record goes away; another writer, which never knew the schema,
-// erases an entry with an untyped edit, writes the carrier at once, with the record's bound,
-// and deletes the replaced body at the host (was: no snapshot without the schema, so the body
-// stayed).
+// spec/commits.md §5 (purge on replace is the thing's setting; a node that may write the aspect
+// writes the carrier before dropping a body with live writes), spec/sync.md §7: the typed writer
+// of a purge-on-replace record goes away; another writer, which never knew the schema, erases an
+// entry with an untyped edit, writes the carrier at once and deletes the replaced body at the host.
 #[test]
 fn carrier_by_writer_without_schema_spec_commits_5() {
     use osis_crdt::{Op, PathOp};
@@ -615,18 +617,15 @@ fn carrier_by_writer_without_schema_spec_commits_5() {
     assert!(!net.engine(b).body_not_dropped(&c0, &t, &ak), "dropped at its first death");
     let snaps = snapshots(&mut net, b, &t, &ak);
     assert_eq!(snaps.len(), n + 1, "one cover");
-    let r = net.engine(b).header(&snaps[n]).unwrap().aspects[0].retention;
-    assert_eq!(r.history, Some(osis_schema::History::PurgeOnReplace), "the record's history");
     let ids = net.host_ids(host, &l);
     assert!(at_host.iter().all(|x| !ids.contains(x)), "deleted at the host");
 }
 
 // spec/commits.md §5 (purge: a writer holding no covering snapshot after applying the request
-// re-snapshots; a snapshot's bounds come from the writes it carries): the typed writer of a
-// purge-on-replace record, compacted, goes away; another writer, which never knew the schema,
-// erases the secret entry with an untyped edit purging the entry's commit: the snapshot carrying
-// the secret drops, a new one carries the live entries with the record's bound, and neither the
-// secret's commit nor the old snapshot stays at the host.
+// re-snapshots): the typed writer of a purge-on-replace record, compacted, goes away; another
+// writer, which never knew the schema, erases the secret entry with an untyped edit purging the
+// entry's commit: the snapshot carrying the secret drops, a new one carries the live entries, and
+// neither the secret's commit nor the old snapshot stays at the host.
 #[test]
 fn purge_resnapshot_by_writer_without_schema_spec_commits_5() {
     use osis_crdt::{Op, PathOp};
@@ -638,6 +637,7 @@ fn purge_resnapshot_by_writer_without_schema_spec_commits_5() {
     net.blocked.insert((c, host));
     let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[(GONEMAP.ak(), PURGE)]);
     let ak = Ak::new(GONEMAP.ak()).unwrap();
     let v: std::collections::BTreeMap<osis_base::Value, osis_base::Value> = (0..4).map(|i| (s(&format!("k{i}")), s("f"))).collect();
     let mut m = Mutation::new();
@@ -664,7 +664,6 @@ fn purge_resnapshot_by_writer_without_schema_spec_commits_5() {
     assert!(!net.engine(b).body_not_dropped(&s1, &t, &ak), "the snapshot carrying the secret dropped");
     let snaps: Vec<_> = snapshots(&mut net, b, &t, &ak).into_iter().filter(|x| *x != s1).collect();
     assert_eq!(snaps.len(), 1, "re-snapshotted");
-    assert_eq!(net.engine(b).header(&snaps[0]).unwrap().aspects[0].retention.history, Some(osis_schema::History::PurgeOnReplace), "the record's history");
     let ids = net.host_ids(host, &l);
     assert!(at_host.iter().all(|x| !ids.contains(x)), "the purged bodies left the host");
     net.blocked.clear();
@@ -699,8 +698,10 @@ fn purged_delta_never_held_reads_as_purger_spec_commits_5() {
     assert_eq!(net.engine(c).get(&t, &Ak::new(REG.ak()).unwrap()).unwrap(), Some(s("old")));
     net.set_online(c, false);
     // kept a while, not forever: no lasting header stays to carry the write
+    net.keep(a, t, &[(REG.ak(), osis_schema::History::Keep { until: None, after: Some(60_000) })]);
+    net.run();
     let mut m = Mutation::new();
-    m.retention(t, &REG, osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(60_000) }) }).unwrap();
+    m.retention(t, &REG, osis_schema::Retention { by: osis_schema::PurgeBy::Writer }).unwrap();
     m.set(t, &REG, &s("new")).unwrap();
     let w = net.engine(b).commit(m).unwrap().unwrap();
     net.run();
@@ -727,12 +728,13 @@ fn purged_delta_never_held_reads_as_purger_spec_commits_5() {
 #[test]
 fn purge_covered_by_held_snapshot_no_resnapshot_spec_commits_5() {
     use osis_schema::{History, PurgeBy, Retention};
-    let kept = Retention { by: PurgeBy::Writer, history: Some(History::Keep { until: None, after: Some(86_400_000) }) };
+    let kept = Retention { by: PurgeBy::Writer };
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "old");
+    net.keep(a, t, &[(REG.ak(), History::Keep { until: None, after: Some(86_400_000) })]);
     let ak = Ak::new(REG.ak()).unwrap();
     let mut put = |v: &str| {
         let mut m = Mutation::new();
@@ -769,7 +771,7 @@ fn purge_reader_writes_no_snapshot_spec_commits_5() {
     net.run();
     net.set_online(b, false);
     let mut m = Mutation::new();
-    m.retention(t, &REG, osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: None }).unwrap();
+    m.retention(t, &REG, osis_schema::Retention { by: osis_schema::PurgeBy::Writer }).unwrap();
     m.set(t, &REG, &s("new")).unwrap();
     let w = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
@@ -787,59 +789,6 @@ fn purge_reader_writes_no_snapshot_spec_commits_5() {
     assert!(!net.diagnostics(c).iter().any(|d| d.contains("re-snapshot")), "nor tried to");
 }
 
-// spec/commits.md §5 (Fixed retention, Covered): a compaction snapshot carrying live a write
-// purged on replace purges on replace, beside one kept for a while (w kept 30 min, x purged on
-// replace), so it does not cover w's body while w is live: w's history outlives the snapshot,
-// kept 30 min after w is removed; x's body goes as covered. (A body with a live write left, such
-// as a map entry's creation under a later value, stays while it has one.)
-#[test]
-fn compaction_of_mixed_history_keeps_both_spec_commits_5() {
-    use osis_crdt::{Op, PathOp, PathSeg};
-    use osis_schema::{History, PurgeBy, Retention};
-    let least = Retention { by: PurgeBy::Writer, history: Some(History::Keep { until: None, after: Some(1_800_000) }) };
-    let most = Retention { by: PurgeBy::Writer, history: Some(History::PurgeOnReplace) };
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    let t = net.item(a, g, g, "x");
-    let k = Ak::new(BIG.ak()).unwrap();
-    let mut put = |key: &str, r: Retention| {
-        let mut m = Mutation::new();
-        m.retention(t, &BIG, r).unwrap();
-        m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(s("one")) }).unwrap();
-        net.engine(a).commit(m).unwrap().unwrap()
-    };
-    let w = put("w", least);
-    let x = put("x", most);
-    net.run();
-    net.advance(10);
-    let acts = net.sync(a).compact(&t, &k).unwrap();
-    net.actions(a, acts);
-    net.run();
-    let snaps = snapshots(&mut net, a, &t, &k);
-    assert_eq!(snaps.len(), 1, "compacted");
-    assert_eq!(net.engine(a).header(&snaps[0]).unwrap().aspects[0].retention, most);
-    assert_eq!(net.engine(a).covered(&snaps[0], &w, &t, &k).unwrap(), Some(false), "w kept live: not covered");
-    assert!(net.engine(a).body_not_dropped(&w, &t, &k), "w's body kept");
-    assert!(!net.engine(a).body_not_dropped(&x, &t, &k), "x's body covered and dropped");
-    let mut m = Mutation::new();
-    m.op(t, &BIG, PathOp { path: Vec::new(), op: Op::Remove(s("w")) }).unwrap();
-    net.engine(a).commit(m).unwrap().unwrap();
-    net.run();
-    net.advance(60_000);
-    let acts = net.sync(a).compact(&t, &k).unwrap();
-    net.actions(a, acts);
-    net.run();
-    assert!(!net.engine(a).body_not_dropped(&snaps[0], &t, &k), "the snapshot went at its first death");
-    assert!(net.engine(a).body_not_dropped(&w, &t, &k), "w's body kept after replaced");
-    net.advance(1_800_000 + osis_base::format::MAX_DRIFT_MS);
-    let acts = net.sync(a).compact(&t, &k).unwrap();
-    net.actions(a, acts);
-    net.run();
-    assert!(!net.engine(a).body_not_dropped(&w, &t, &k), "w's body goes past its bound");
-}
-
 fn with_retention(net: &mut Net, n: usize, t: osis_base::Tid, v: &str, r: osis_schema::Retention) -> osis_base::CommitId {
     let mut m = Mutation::new();
     m.retention(t, &REG, r).unwrap();
@@ -847,77 +796,20 @@ fn with_retention(net: &mut Net, n: usize, t: osis_base::Tid, v: &str, r: osis_s
     net.engine(n).commit(m).unwrap().unwrap()
 }
 
-fn purge_commit(net: &mut Net, n: usize, t: osis_base::Tid, c: osis_base::CommitId) {
-    let mut m = Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(REG.ak()).unwrap() });
-    m.set(t, &REG, &s(&format!("after {n} {c:?}"))).unwrap();
-    // past the writer's own refusal of a request without the right: the receivers judge it
-    net.engine(n).commit_hostile(m).unwrap();
-    net.run();
-}
-
 fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: osis_base::CommitId) -> Vec<osis_base::BlobId> {
     net.sync(n).entries(l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect()
 }
 
-// spec/commits.md §5, spec/permissions.md §6, spec/crypto.md §7: an `author` delta lists level 2
-// alone; an admin's compaction and purge request drop none of it, at the admin or anywhere, and
-// its author's purge request drops it and deletes it at the host by the level-2 key, with no
-// admin online. The admin's own `admin` delta is the mirror: its author, a writer, cannot.
+// spec/commits.md §5 Out of history, spec/sync.md §7: a body no setting keeps drops under any
+// writer's covering snapshot, whoever holds the purge right over it: of b's delta, compacted by
+// admin a, by b or by plain writer w, under every purge set, gone at every node and at the host
+// (a holds the admin's delete key over every write).
 #[test]
-fn author_only_not_the_admins_spec_perm_6() {
-    use osis_schema::{History, PurgeBy, Retention};
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
-    let l = net.label(a);
-    let k = Ak::new(REG.ak()).unwrap();
-    let kept = Some(History::FOREVER);
-    let c = with_retention(&mut net, b, t, "b's", Retention { by: PurgeBy::Author, history: kept });
-    let h = net.engine(b).header(&c).unwrap();
-    let levels: Vec<u8> = h.aspects.iter().find(|x| x.ak == k).unwrap().keys.iter().map(|i| h.keys[*i].level).collect();
-    assert_eq!(levels, vec![2]);
-    net.run();
-    let blobs = blobs_of(&mut net, b, &l, c);
-    assert!(!blobs.is_empty() && blobs.iter().all(|id| net.host_ids(host, &l).contains(id)));
-
-    // the admin's purge request names it: nothing goes anywhere
-    purge_commit(&mut net, a, t, c);
-    net.run();
-    assert!(net.engine(a).body_not_dropped(&c, &t, &k), "admin's purge dropped it at the admin");
-    assert!(net.engine(b).body_not_dropped(&c, &t, &k), "admin's purge dropped it at the author");
-    assert!(blobs.iter().all(|id| net.host_ids(host, &l).contains(id)), "admin's purge deleted it at the host");
-
-    // the mirror: `admin` by the admin, a writer's purge request drops nothing
-    let d = with_retention(&mut net, a, t, "a's", Retention { by: PurgeBy::Admin, history: kept });
-    net.run();
-    purge_commit(&mut net, b, t, d);
-    assert!(net.engine(b).body_not_dropped(&d, &t, &k) && net.engine(a).body_not_dropped(&d, &t, &k));
-
-    // its author, the admin away
-    net.set_online(a, false);
-    assert!(net.engine(b).delete_secrets_of(&c, &[h.aspects.iter().position(|x| x.ak == k).unwrap()]).iter().flatten().any(|(l, _)| *l == 2));
-    purge_commit(&mut net, b, t, c);
-    net.run();
-    assert!(!net.engine(b).body_not_dropped(&c, &t, &k), "the author's purge drops it");
-    let left = net.host_ids(host, &l);
-    assert!(blobs.iter().all(|id| !left.contains(id)), "the author's level-2 key deletes it at the host");
-}
-
-// spec/commits.md §5, spec/sync.md §7: a snapshot drops a covered body only if its actor holds the
-// right over it. Of b's delta, admin a compacting: gone everywhere under `author_or_admin`, kept
-// everywhere under `author` and `nobody`. Writer w compacting: only `writer` goes; b's own snapshot
-// drops its own under every set holding the author.
-#[test]
-fn snapshot_needs_the_right_spec_sync_7() {
+fn out_of_history_goes_under_any_writers_cover_spec_sync_7() {
     use osis_schema::PurgeBy;
     let (a, b, w) = (0, 1, 2);
-    for (by, by_a, by_b, by_w) in [(PurgeBy::Nobody, false, false, false), (PurgeBy::Admin, true, false, false), (PurgeBy::Author, false, true, false), (PurgeBy::AuthorOrAdmin, true, true, false), (PurgeBy::Writer, true, true, true)] {
-        for (who, dropped) in [(a, by_a), (b, by_b), (w, by_w)] {
+    for by in [PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer] {
+        for who in [a, b, w] {
             let mut net = Net::new();
             let host = net.add_host();
             let ns = [net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host])];
@@ -936,28 +828,56 @@ fn snapshot_needs_the_right_spec_sync_7() {
             net.run();
             net.advance(2 * 3_600_000);
             net.run();
-            // right holders drop, no others ever do
-            let holder = |n: usize| match n {
-                0 => by.admin(),
-                1 => by.author(),
-                _ => by.writer(),
-            };
             for n in [a, b, w] {
-                assert_eq!(net.engine(ns[n]).body_not_dropped(&c, &t, &k), !(dropped && holder(n)), "{by:?} compacted by {who}, at {n}");
+                assert!(!net.engine(ns[n]).body_not_dropped(&c, &t, &k), "{by:?} compacted by {who}, at {n}");
             }
             let left = net.host_ids(host, &l);
-            assert_eq!(blobs.iter().all(|id| !left.contains(id)), dropped, "{by:?} compacted by {who}, at the host");
+            assert!(blobs.iter().all(|id| !left.contains(id)), "{by:?} compacted by {who}, at the host");
         }
     }
 }
 
-// spec/commits.md §5, spec/sync.md §6: `nobody` bodies are must-hold while kept, covered or not, so
-// a label a thing joins gets them; a covered body of another set is may-hold and stays with its
-// holders. Taking the thing off the first label deletes there; holders keep their copies.
+// spec/commits.md §5 (host delete margin), spec/sync.md §7: a body that was in history drops at a node
+// as covered once out of history on its clock, and leaves the host only `MAX_DRIFT` later, when
+// every node's clock agrees (a local drop changes only this node's reads)
+#[test]
+fn host_delete_waits_drift_past_history_spec_sync_7() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let k = Ak::new(REG.ak()).unwrap();
+    net.keep(a, t, &[(REG.ak(), osis_schema::History::Keep { until: None, after: Some(600_000) })]);
+    net.run();
+    let l = net.label(a);
+    let c = net.write(b, t, "old");
+    net.run();
+    let blobs = blobs_of(&mut net, a, &l, c);
+    net.write(a, t, "new");
+    net.run();
+    net.advance(660_000);
+    net.run();
+    let acts = net.sync(a).compact(&t, &k).unwrap();
+    net.actions(a, acts);
+    net.run();
+    assert!(!net.engine(a).body_not_dropped(&c, &t, &k), "out of history: dropped here");
+    let left = net.host_ids(host, &l);
+    assert!(!blobs.is_empty() && blobs.iter().all(|id| left.contains(id)), "kept at the host within MAX_DRIFT");
+    net.advance(osis_base::format::MAX_DRIFT_MS);
+    net.run();
+    let left = net.host_ids(host, &l);
+    assert!(blobs.iter().all(|id| !left.contains(id)), "gone from the host past it");
+}
+
+// spec/commits.md §5, spec/sync.md §6: bodies in history are must-hold, covered or not, so a label
+// a thing joins gets them, and holders keep their copies when the thing leaves the first label; a
+// covered body out of history is neither, and goes at its holders under the cover.
 #[test]
 fn second_label_gets_kept_bodies_spec_sync_6() {
-    use osis_schema::PurgeBy;
-    for (by, carried) in [(PurgeBy::Nobody, true), (PurgeBy::Author, false)] {
+    for (kept, carried) in [(true, true), (false, false)] {
         let mut net = Net::new();
         let host = net.add_host();
         let a = net.node(1, &[host]);
@@ -966,7 +886,10 @@ fn second_label_gets_kept_bodies_spec_sync_6() {
         let t = net.item(a, g, g, "x");
         net.run();
         let k = Ak::new(REG.ak()).unwrap();
-        let c = with_retention(&mut net, b, t, "old", crate::common::purgeable_by(by));
+        if kept {
+            net.keep(a, t, &[(REG.ak(), osis_schema::History::FOREVER)]);
+        }
+        let c = net.write(b, t, "old");
         net.run();
         net.write(a, t, "new");
         net.run();
@@ -990,7 +913,7 @@ fn second_label_gets_kept_bodies_spec_sync_6() {
         net.advance(1_000);
         net.run();
         let there = blobs_of(&mut net, a, &l2, c).into_iter().filter(|id| net.host_ids(host, &l2).contains(id)).count();
-        assert_eq!(there > 0, carried, "{by:?} under the label it joined");
+        assert_eq!(there > 0, carried, "kept {kept}: under the label it joined");
         let e = net.engine(a);
         let mut grp = e.get_typed(&g, &ct::GROUP).unwrap().unwrap();
         grp.items.remove(&t);
@@ -999,8 +922,10 @@ fn second_label_gets_kept_bodies_spec_sync_6() {
         e.commit(m).unwrap();
         net.run();
         let left = net.host_ids(host, &l);
-        assert!(blobs_of(&mut net, b, &l, c).iter().all(|id| !left.contains(id)), "{by:?} off the first label");
-        assert!(net.engine(a).body_not_dropped(&c, &t, &k) && net.engine(b).body_not_dropped(&c, &t, &k), "{by:?}: holders keep it");
+        assert!(blobs_of(&mut net, b, &l, c).iter().all(|id| !left.contains(id)), "kept {kept}: off the first label");
+        for n in [a, b] {
+            assert_eq!(net.engine(n).body_not_dropped(&c, &t, &k), kept, "kept {kept}: at {n}");
+        }
     }
 }
 
@@ -1026,10 +951,11 @@ fn latest_snapshot(net: &mut Net, n: usize, t: osis_base::Tid, k: &Ak, acts: Vec
     e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.author == me && h.kind == osis_commit::Kind::ContentSnapshot && h.aspects.iter().any(|a| a.tid == t && a.ak == *k))).max_by_key(|c| e.header(c).map(|h| h.ts)).unwrap()
 }
 
-// spec/commits.md §5: a right holder that dropped a body under a snapshot and learns later that its
-// actor had lost the right has only history less: the snapshot stands (demoted to write) and all
-// read alike, a node coming later too, with nothing uploaded again; or the snapshot falls
-// (demoted to read), the kept copies come back and all read alike.
+// spec/commits.md §5: nodes that dropped a body under a snapshot (out of history, any writer's
+// cover) and learn later that its actor had lost the purge right have only history less: the
+// snapshot stands (demoted to write) and all read alike, a node coming later too, with nothing
+// uploaded again, the admin away throughout dropping it too; or the snapshot falls (demoted to
+// read), the admin's kept copy comes back and all read alike.
 #[test]
 fn stale_drop_reads_alike_spec_commits_5() {
     for to in [Role::Write, Role::Read] {
@@ -1057,7 +983,7 @@ fn stale_drop_reads_alike_spec_commits_5() {
         net.advance(2 * 3_600_000);
         net.run();
         assert!(!net.engine(b).body_not_dropped(&c, &t, &k), "the author dropped it, {to:?}");
-        assert!(net.engine(w).body_not_dropped(&c, &t, &k), "a plain writer did not, {to:?}");
+        assert!(!net.engine(w).body_not_dropped(&c, &t, &k), "a plain writer too, {to:?}");
         assert!(blobs.iter().all(|id| !net.host_ids(host, &l).contains(id)), "gone at the host, {to:?}");
         net.set_online(a, true);
         net.run();
@@ -1066,7 +992,7 @@ fn stale_drop_reads_alike_spec_commits_5() {
         for n in [a, b, w] {
             assert!(!net.engine(n).snapshot_right(&snap, &c, &t, &k), "node {n}: no right now, {to:?}");
         }
-        assert!(net.engine(a).body_not_dropped(&c, &t, &k), "the admin keeps it, {to:?}");
+        assert_eq!(net.engine(a).body_not_dropped(&c, &t, &k), to == Role::Read, "the admin keeps it while uncovered, {to:?}");
         let there = net.engine(b).body_not_dropped(&c, &t, &k) && !net.engine(b).core.ix.commits.get(&c).unwrap().missing.iter().next().is_some();
         let read = |net: &mut Net, n: usize| net.engine(n).get_typed(&t, &SEQ).unwrap();
         let want = read(&mut net, a);
@@ -1135,7 +1061,12 @@ fn snapshot_falls_rightless_one_covers_spec_perm_5_2() {
     assert_eq!(want, Some(s("w'sb's")));
     assert_eq!(read(&mut net, b), want);
     assert_eq!(read(&mut net, w), want);
-    assert!(net.engine(b).core.ix.commits.get(&c).unwrap().missing.len() == 1, "no one uploads it: may-hold");
+    assert!(!net.engine(b).body_not_dropped(&c, &t, &k), "not held at the dropper");
+    let l = net.label(a);
+    let live = net.host_ids(host, &l);
+    for n in [a, b, w] {
+        assert!(blobs_of(&mut net, n, &l, c).iter().all(|id| !live.contains(id)), "no one uploads it: may-hold (node {n})");
+    }
     assert!(net.engine(b).suspects().unwrap().is_empty(), "the flag is dormant: the held snapshot lists it");
 }
 
@@ -1206,14 +1137,11 @@ fn fresh_snapshot_covers_past_a_gap_spec_commits_5() {
 }
 
 // spec/commits.md §5, spec/sync.md §7: past a frontier gap the join decides what is covered, not who
-// may drop it: under `author` and `nobody` an admin's fresh snapshot drops nothing, nor under a
-// keep-at-least forever (history).
+// may drop it: an admin's fresh snapshot drops nothing the thing's setting keeps in history.
 #[test]
 fn gap_covers_nothing_kept_spec_commits_5() {
-    use osis_schema::{PurgeBy, Retention};
-    let forever = Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::FOREVER) };
-    let cases = [(Retention { by: PurgeBy::Nobody, history: Some(osis_schema::History::FOREVER) }, false), (Retention { by: PurgeBy::Author, ..Default::default() }, false), (forever, false), (Retention { by: PurgeBy::Writer, ..Default::default() }, true)];
-    for (r, goes) in cases {
+    for kept in [true, false] {
+        let goes = !kept;
         let mut net = Net::new();
         let host = net.add_host();
         let (a, b, f) = (net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host]));
@@ -1222,6 +1150,9 @@ fn gap_covers_nothing_kept_spec_commits_5() {
         net.run();
         net.set_online(f, false);
         let k = Ak::new(REG.ak()).unwrap();
+        if kept {
+            net.keep(a, t, &[(REG.ak(), osis_schema::History::FOREVER)]);
+        }
         net.write(b, t, "first");
         net.run();
         let acts = net.sync(b).compact(&t, &k).unwrap();
@@ -1229,7 +1160,7 @@ fn gap_covers_nothing_kept_spec_commits_5() {
         net.run();
         net.advance(2 * 3_600_000);
         net.run();
-        let c = with_retention(&mut net, b, t, "old", r);
+        let c = net.write(b, t, "old");
         net.run();
         // b's session stays in the state, so a snapshot lists it, short of what b dropped
         net.write(b, t, "new");
@@ -1245,7 +1176,7 @@ fn gap_covers_nothing_kept_spec_commits_5() {
         assert!(!goes || short, "a snapshot short of the body");
         net.advance(2 * 3_600_000);
         net.run();
-        assert_eq!(net.engine(f).body_not_dropped(&c, &t, &k), !goes, "{r:?}");
+        assert_eq!(net.engine(f).body_not_dropped(&c, &t, &k), !goes, "kept {kept}");
         assert_eq!(net.engine(f).get_typed(&t, &REG).unwrap(), net.engine(a).get_typed(&t, &REG).unwrap());
     }
 }
@@ -1261,6 +1192,7 @@ fn purge_naming_a_cover_keeps_its_writes_spec_commits_5() {
     net.blocked.insert((f, host));
     let g = net.group(a, &[(r, Role::Read), (f, Role::Read)], &[host]);
     let t = net.item(a, g, g, "v1");
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let c = net.write(a, t, "v2");
     net.run();
     let ak = Ak::new(REG.ak()).unwrap();
@@ -1297,6 +1229,7 @@ fn purge_fall_after_cover_reads_alike_spec_perm_6() {
     net.set_online(f, false);
     let g = net.group(a, &[(x, Role::Admin), (r, Role::Read), (f, Role::Read)], &[host]);
     let t = net.item(a, g, g, "v1");
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let c = net.write(a, t, "v2");
     net.run();
     let ak = Ak::new(REG.ak()).unwrap();
@@ -1416,8 +1349,8 @@ fn log_len(net: &Net, host: usize, l: &osis_base::LabelId) -> usize {
     net.hosts[host].hub.store().log_after(l, 0, 1 << 20).unwrap().unwrap_or_default().len()
 }
 
-// spec/sync.md §6, §7 (what a node deletes it would not upload): B writes C on t:reg and t:seq
-// (`author` only), compacts t:seq, and, the admin A away, t:reg; it drops C under both snapshots
+// spec/sync.md §6, §7 (what a node deletes it would not upload): B writes C on t:reg and t:seq,
+// compacts t:seq, and, the admin A away, t:reg; it drops C under both snapshots
 // and deletes it at the host. A demotes B to read with a frontier not listing the t:reg snapshot:
 // it falls, C's t:reg write is live and covered by nothing, so A, which kept C (no right over its
 // t:seq delta), uploads it. B takes C's t:reg delta back; its blob is must-not-hold for B (the
@@ -1425,7 +1358,6 @@ fn log_len(net: &Net, host: usize, l: &osis_base::LabelId) -> usize {
 // nothing: B leaves the blob (a reader writes no snapshot) and the label goes quiet.
 #[test]
 fn fallen_carrier_carries_nothing_spec_sync_7() {
-    use osis_schema::{PurgeBy, Retention};
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -1437,7 +1369,6 @@ fn fallen_carrier_carries_nothing_spec_sync_7() {
     let (reg, seq) = (Ak::new(REG.ak()).unwrap(), Ak::new(SEQ.ak()).unwrap());
     let mut m = Mutation::new();
     m.set(t, &REG, &s("r")).unwrap();
-    m.retention(t, &SEQ, Retention { by: PurgeBy::Author, history: None }).unwrap();
     m.op(t, &SEQ, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Insert { at: 0, items: vec![s("h")] } }).unwrap();
     let c = net.engine(b).commit(m).unwrap().unwrap();
     net.run();
@@ -1469,4 +1400,102 @@ fn fallen_carrier_carries_nothing_spec_sync_7() {
     assert!(!net.engine(b).body_not_dropped(&c, &t, &seq));
     assert!(blobs_of(&mut net, a, &l, c).iter().any(|id| net.host_ids(host, &l).contains(id)), "A placed C again");
     assert_eq!(net.engine(b).get_typed(&t, &REG).unwrap(), net.engine(a).get_typed(&t, &REG).unwrap());
+}
+
+// spec/commits.md §5 Convergence, spec/sync.md §7: one side lacking the thing's setting (writer b
+// never hears of its blob) judges X, its own register write, out of history: it compacts, drops X
+// and deletes it at the host. Admin a holds the setting keeping the register for good, so X is in
+// history there and a keeps it; b's snapshot under the label covers it, so a never places it
+// again: X's blobs leave the host once and the label goes quiet (no upload and delete repeat).
+#[test]
+fn one_side_lacking_the_setting_no_upload_delete_repeat_spec_sync_7() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    let k = Ak::new(REG.ak()).unwrap();
+    net.set_online(b, false);
+    let setting = net.keep(a, t, &[(REG.ak(), osis_schema::History::FOREVER)]);
+    net.run();
+    let hidden: std::collections::BTreeSet<_> = blobs_of(&mut net, a, &l, setting).into_iter().collect();
+    assert!(!hidden.is_empty());
+    net.hide_blobs.insert(b, hidden);
+    net.set_online(b, true);
+    net.advance(1_000);
+    let x = net.write(b, t, "one");
+    net.run();
+    net.advance(61_000);
+    net.run();
+    let xs = blobs_of(&mut net, b, &l, x);
+    assert!(!xs.is_empty() && xs.iter().all(|id| net.host_ids(host, &l).contains(id)));
+    net.advance(1_000);
+    net.write(b, t, "two");
+    net.run();
+    let acts = net.sync(b).compact(&t, &k).unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.advance(2 * 3_600_000);
+    net.run();
+    assert!(net.engine(b).core.ix.retention.get(&t).is_none(), "b lacks the setting");
+    assert!(!net.engine(b).body_not_dropped(&x, &t, &k), "b dropped X: out of history there");
+    assert!(net.engine(a).body_not_dropped(&x, &t, &k), "a keeps X: in history there");
+    assert!(xs.iter().all(|id| !net.host_ids(host, &l).contains(id)), "X left the host");
+    let before = log_len(&net, host, &l);
+    for _ in 0..6 {
+        net.advance(5 * 60_000);
+        net.run();
+        assert!(xs.iter().all(|id| !net.host_ids(host, &l).contains(id)), "X stays out of the host");
+    }
+    assert_eq!(log_len(&net, host, &l), before, "no upload and delete repeat");
+    assert!(net.engine(a).body_not_dropped(&x, &t, &k) && !net.engine(b).body_not_dropped(&x, &t, &k));
+}
+
+// spec/permissions.md §6, spec/sync.md §6: a purge of a valid delta takes its blob off the host
+// though the blob also holds a delta the purger dropped as invalid (a writer's admin-only write)
+#[test]
+fn purge_beside_invalid_delta_leaves_host_spec_perm_6() {
+    for with_bad in [false, true] {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let a = net.node(1, &[host]);
+        let b = net.node(2, &[host]);
+        let g = net.group(a, &[(b, Role::Write)], &[host]);
+        let t = net.item(a, g, g, "v1");
+        net.run();
+        let settle = |net: &mut Net| {
+            net.run();
+            net.advance(10_000);
+            net.run();
+        };
+        let l = net.label(a);
+        let (bad, good) = (Ak::new("t:bad^.0").unwrap(), Ak::new("t:good.0").unwrap());
+        let before: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+        let mut m = Mutation::new();
+        m.set(t, &good, &s("good")).unwrap();
+        if with_bad {
+            m.set(t, &bad, &s("bad")).unwrap();
+        }
+        let cm = net.engine(b).commit_hostile(m).unwrap().unwrap();
+        settle(&mut net);
+        let new: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().filter(|x| !before.contains(x)).collect();
+        assert!(!new.is_empty());
+        assert_eq!(net.engine(a).get(&t, &good).unwrap(), Some(s("good")));
+        if with_bad {
+            assert!(!net.engine(a).body_not_dropped(&cm, &t, &bad), "dropped as invalid");
+        }
+        net.set_online(b, false);
+        let mut m = Mutation::new();
+        m.purge(osis_commit::PurgeItem::Commit { commit: cm, tid: t, ak: good.clone() });
+        m.remove_aspect(t, &good).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap();
+        settle(&mut net);
+        settle(&mut net);
+        assert!(!net.engine(a).body_not_dropped(&cm, &t, &good));
+        let left: Vec<_> = net.host_ids(host, &l).into_iter().filter(|x| new.contains(x)).collect();
+        assert!(left.is_empty(), "with_bad {with_bad}: the purged blob stays at the host: {left:?}");
+    }
 }

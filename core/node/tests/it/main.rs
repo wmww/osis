@@ -12,7 +12,7 @@ mod stream;
 mod reconnect;
 mod until;
 mod nodelog;
-mod required;
+mod setting;
 mod cert_judge;
 mod caches;
 mod corrupt;

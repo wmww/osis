@@ -4,7 +4,7 @@
 ## 1. Conventions
 - Every structure below is canonical CBOR in the profile of spec/data-model.md §5 unless it is given as a fixed byte layout. `[a, b]` is an array with exactly those positions; `Opt(X) := [] | [X]`; `X*` repeats X zero or more times, `X+` one or more. A decoder rejects any other length, a wrong major type, or an item outside its stated size.
 - Inside structures (not values): a tid is a 15-byte byte string, a commit ID, blob ID, step ID or hash a 32-byte byte string, a label ID a 16-byte byte string, a time (wall ms) or `ts` an unsigned integer. A **value** (spec/data-model.md §4) embedded in a structure keeps its value encoding (tags included).
-- A role in a structure is a uint: 0 read, 1 write, 2 admin. A purgeable-by class: 0 `nobody`, 1 `admin`, 2 `author_or_admin`, 3 `writer`, 4 `author`. A delete level: 1, 2, 3 (spec/crypto.md §7).
+- A role in a structure is a uint: 0 read, 1 write, 2 admin. A purgeable-by class: 0 `nobody`, 1 `admin`, 2 `author_or_admin`, 3 `writer`. A delete level: 1, 2, 3 (spec/crypto.md §7).
 - An epoch in a structure is `[n, nonce]` (uint, 32-byte byte string; spec/crypto.md §4).
 - **AD tuples**: an AEAD associated-data tuple `(a, b, ...)` written in spec/crypto.md is the canonical CBOR array of its items in the encodings of this section; layouts below give each one.
 - Signed digests: a signature's digest (spec/crypto.md §2) is BLAKE3 of the canonical bytes of the array the layout names.
@@ -36,7 +36,7 @@ Format version 1, spec/versioning.md §1:
 | `INBOX_WAITING`, `INBOX_WAITING_BYTES` | 32 entries, 1 MiB (1 048 576 bytes): deposits a node leaves at an inbox it clears (spec/sync.md §5) |
 | `LIST_TREE_DEPTH` | 32: levels of a rotation's list tree, at most 2^32 thing lists per rotation (§4, List tree; spec/permissions.md §5.5) |
 | `MAX_CHAIN_DEPTH` | 64 links from a thing up its record chain to its key actor (spec/permissions.md §1) |
-| `MAX_REQUIRED_ENTRIES` | 64 entries in the `rules` of one `required^.0` delta (spec/commits.md §5) |
+| `MAX_RETENTION_ENTRIES` | 64 entries in the `rules` of one `retention^.0` delta (spec/commits.md §5) |
 | `MAX_AUTHOR_ITEMS` | 32 items by author in one commit's `purge` (§4) |
 
 ### Protocol version 1 limits
@@ -73,9 +73,7 @@ Not format constants. A value marked recommended is advice.
 Header    := [version, author, actor, kind, ts, form, expires, aspects, chunks,
               purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation]
 Aspect    := [tid, ak, lo, hi, Retention, keys, hash, replaces]
-Retention := [by, history]
-History   := 0 | 1 | [2, Keep]
-Keep      := {? 0: until, ? 1: after}
+Retention := by
 DeleteKey := [level, pk]
 Chunk     := [blob_id, [ki*]]
 PurgeItem := [commit_id, tid, ak] | [tid, ak] | [tid, ak, actor]
@@ -97,11 +95,11 @@ Header fields by position:
 11. `blind`: 16 random bytes (spec/crypto.md §7).
 12. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1), at most one at level 2 (the author chain); a key no aspect lists is bad input.
 13. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a role commit carrying an explicit removal or an explicit edge write that audits (spec/permissions.md §5.1 step 4; a writer rule: a receiver checks only that it sits on a role commit). A value that does not decode as a `frontier` is bad input.
-14. `ephemeral`: `Opt(uint)`, the ephemeral marker (spec/commits.md §2): 0 an ephemeral commit, 1 a relay-only one. Present only with `kind` 2 and `form` 0, or `kind` 0, no `chunks`, no `purge`, no list by link and no `created.0` aspect; every aspect's retention is `writer`, with no history given or keep history, with the levels it calls for; a relay-only commit has no `expires`, no `undoes` and no history given. Anything else is bad input.
+14. `ephemeral`: `Opt(uint)`, the ephemeral marker (spec/commits.md §2): 0 an ephemeral commit, 1 a relay-only one. Present only with `kind` 2 and `form` 0, or `kind` 0, no `chunks`, no `purge`, no list by link and no `created.0` aspect; every aspect's retention is `writer`, with the levels it calls for; a relay-only commit has no `expires` and no `undoes`. Anything else is bad input.
 15. `epoch`: `Opt(epoch_id)`, the epoch an account author signs at (spec/crypto.md §9; 32 bytes: the minting rotation's commit ID, 32 zero bytes for the first epoch); present iff the author's creation record marks an account, else bad input.
 16. `rotation`: `Opt(Rotation)`, present only on a role commit of an account (else bad input): the new epoch's signing key and KEM key (spec/crypto.md §3); the epochs it supersedes, ascending, distinct, the header's `epoch` among them (else bad input); actor equal to author and a `keys.0` delta on the author (else bad input); the fork rotations it names (a merge), ascending, distinct; `list_root`, 32 bytes, the root of its list tree (below). Its commit ID names the epoch it mints.
 
-Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3; else `1 <= lo < hi`); `Retention`: `by` (purgeable-by class) and `history` (spec/commits.md §5): `0` none given, `1` purge on replace, `[2, Keep]` keep history, `until` wall ms (`2^63 - 1` means forever) and `after` ms after the body is replaced, at least one of the two, `after` above 0 (else bad input); `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hash`: the 32-byte delta hash of its one delta. `replaces`: `Opt(commit_id)`, the fire the delta claims to replace (spec/commits.md §5 Signals), allowed only on a durable signal's delta of a durable commit; anywhere else the part is bad (spec/commits.md §2).
+Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3; else `1 <= lo < hi`); `Retention`: `by`, the purgeable-by class (spec/commits.md §5); `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hash`: the 32-byte delta hash of its one delta. `replaces`: `Opt(commit_id)`, the fire the delta claims to replace (spec/commits.md §5 Signals), allowed only on a durable signal's delta of a durable commit; anywhere else the part is bad (spec/commits.md §2).
 
 - **Inline or link**: `aspects`, `chunks`, `purge`, `keys` and the frontier are each inline iff their canonical encoding is at most `CHUNK_THRESHOLD` bytes; otherwise the position holds a LINK value (`Opt(LINK)` for the frontier) to a chunk tree (§6) of that canonical encoding, its content hashes keyed by the dedup secret of the header's `actor`. A decoder rejects an inline list above the threshold or a link to one at or below it or above `MAX_LIST_BYTES`; a writer refuses such a commit. A linked frontier's encoding is exactly `{0: set<32-byte commit ID>}`; anything else is bad input. Header-list chunks carry the commitments of §5.
 - **Commit ID** = BLAKE3(canonical bytes of `Header`). The signature is the `signature` value of the author's key (an account's: the signing key of the epoch the header names) under `"osis v1 commit"` over the digest below.
@@ -127,11 +125,10 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`
   - an aspect of the wrong class for its kind (`created.0` fits either kind);
   - `created.0` in a kind without own writes or with the ephemeral marker;
   - a role compaction snapshot of `roles.0`;
-  - a role-class, `required^.0` or `purge.0` aspect whose retention is not its fixed one (spec/commits.md §5);
+  - a role-class, `retention^.0` or `purge.0` aspect whose retention is not its fixed one (spec/commits.md §5);
   - `expires` on a commit with such an aspect;
-  - a `nobody` aspect beside an aspect of another purgeable-by, `required^.0` aside (spec/commits.md §5);
+  - `nobody` on an aspect other than `created.0` without fixed retention (spec/commits.md §5);
   - a content compaction snapshot's retention `by` other than writer;
-  - purge on replace under a class other than writer, or `nobody` with a history other than kept forever (`until` `2^63 - 1`);
   - `expires` or a purge item on a role commit;
   - a purge item naming a role-class aspect;
   - more than `MAX_AUTHOR_ITEMS` purge items by author;

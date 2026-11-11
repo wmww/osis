@@ -83,6 +83,7 @@ fn map_op(net: &mut Net, n: usize, t: Tid, asp: &osis_schema::Aspect<Value>, op:
 #[test]
 fn purge_on_replace_removed_entry_no_live_write_spec_commits_5() {
     let (mut net, host, [a], _g, [t]) = hosted::<1, 1>(&[], ["t"], false);
+    net.keep(a, t, &[(osis_schema::RawKey::ak(&GONEMAP), PURGE)]);
     let b = put_key(&mut net, a, t, &GONEMAP, "k1", "v");
     net.run();
     net.advance(61_000);
@@ -95,15 +96,16 @@ fn purge_on_replace_removed_entry_no_live_write_spec_commits_5() {
     assert_eq!(at_host(&mut net, a, host, &l, &b), 0, "the body without a live write was deleted in the same sync");
 }
 
-// spec/sync.md §6: a `nobody` body with no keep bound is must-hold for good, but nothing is due for
-// it: passes do not judge it again.
+// spec/sync.md §6: a body its thing's setting keeps for good is must-hold for good, but nothing is
+// due for it: passes do not judge it again.
 #[test]
-fn nobody_bodies_not_judged_again_spec_sync_6() {
+fn kept_for_good_bodies_not_judged_again_spec_sync_6() {
     let (mut net, _host, [a, _b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
+    net.keep(a, t, &[(osis_schema::RawKey::ak(&REG), osis_schema::History::FOREVER)]);
+    net.run();
     let tags = |i: u32| format!("v{i}");
     for i in 0..20 {
         let mut m = Mutation::new();
-        m.retention(t, &REG, crate::common::purgeable_by(osis_base::PurgeBy::Nobody)).unwrap();
         m.set(t, &REG, &s(&tags(i))).unwrap();
         net.engine(a).commit(m).unwrap();
         net.run();
@@ -126,7 +128,8 @@ fn nobody_bodies_not_judged_again_spec_sync_6() {
 // parts²).
 #[test]
 fn body_judged_once_per_body_spec_requirements_scale() {
-    use osis_schema::{History, PurgeBy, Retention};
+    use osis_schema::core_types as ct;
+    use osis_schema::{PurgeBy, Retention};
     let n = 120u64;
     let mut net = Net::new();
     let host = net.add_host();
@@ -134,8 +137,11 @@ fn body_judged_once_per_body_spec_requirements_scale() {
     let b = net.node(2, &[host]);
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
+    let mut m = Mutation::new();
+    m.set(t, &ct::RETENTION, &ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(crate::common::DAY), ..Default::default() }), ..Default::default() }).unwrap();
+    net.engine(a).commit(m).unwrap();
     net.run();
-    let r = Retention { by: PurgeBy::Writer, history: Some(History::Keep { until: None, after: Some(86_400_000) }) };
+    let r = Retention { by: PurgeBy::Writer };
     for v in ["v", "w"] {
         let mut m = Mutation::new();
         for i in 0..n {

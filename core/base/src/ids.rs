@@ -438,7 +438,8 @@ impl fmt::Debug for Link {
     }
 }
 
-/// Who may purge a write. Named sets, not a scale: `Author` excludes admins, `Admin` the author.
+/// Who may purge a write: admins always may (spec/commits.md §5). `Nobody` is for `created.0`
+/// and fixed retention (`retention^.0`) alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum PurgeBy {
     Nobody = 0,
@@ -446,19 +447,17 @@ pub enum PurgeBy {
     #[default]
     AuthorOrAdmin = 2,
     Writer = 3,
-    Author = 4,
 }
 
 impl PurgeBy {
     #[doc(hidden)]
-    pub const ALL: [PurgeBy; 5] = [PurgeBy::Nobody, PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer, PurgeBy::Author];
+    pub const ALL: [PurgeBy; 4] = [PurgeBy::Nobody, PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer];
     pub fn name(self) -> &'static str {
         match self {
             PurgeBy::Nobody => "nobody",
             PurgeBy::Admin => "admin",
             PurgeBy::AuthorOrAdmin => "author_or_admin",
             PurgeBy::Writer => "writer",
-            PurgeBy::Author => "author",
         }
     }
     #[doc(hidden)]
@@ -471,7 +470,7 @@ impl PurgeBy {
     }
     /// The set holds the author.
     pub fn author(self) -> bool {
-        matches!(self, PurgeBy::Author | PurgeBy::AuthorOrAdmin | PurgeBy::Writer)
+        matches!(self, PurgeBy::AuthorOrAdmin | PurgeBy::Writer)
     }
     /// The set holds every writer.
     pub fn writer(self) -> bool {

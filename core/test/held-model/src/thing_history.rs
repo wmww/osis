@@ -65,6 +65,14 @@ pub fn out(settings: &[Setting], one_way: bool, r: Ms) -> Ms {
     best
 }
 
+/// Whether a body replaced at `r` is in history at `now`: it leaves later than it was replaced
+/// (a body replaced under no history or purge on replace is out when replaced, whenever that is:
+/// AMBIGUITIES 68), and not yet.
+pub fn kept(settings: &[Setting], one_way: bool, r: Ms, now: Ms) -> bool {
+    let o = out(settings, one_way, r);
+    o > r && now < o
+}
+
 /// The setting in force at wall time `t` (the newest by key with `ts <= t`), as it reads.
 pub fn in_force(settings: &[Setting], one_way: bool, t: Ms) -> Opt {
     timeline(settings, one_way).iter().rev().find(|s| s.ts <= t).map_or(Opt::None, |s| s.opt)
@@ -95,21 +103,19 @@ pub fn replaced_at(held: &[Body], b: &Body) -> Option<Ms> {
 
 /// The history a node shows at `now`: its held replaced bodies still in their window.
 pub fn history(settings: &[Setting], one_way: bool, held: &[Body], now: Ms) -> Vec<u32> {
-    let mut v: Vec<u32> = held.iter().filter(|b| replaced_at(held, b).is_some_and(|r| now < out(settings, one_way, r))).map(|b| b.id).collect();
+    let mut v: Vec<u32> = held.iter().filter(|b| replaced_at(held, b).is_some_and(|r| kept(settings, one_way, r, now))).map(|b| b.id).collect();
     v.sort();
     v
 }
 
 /// A node that drops every body the moment it is out (the earliest any rule allows), keeps
-/// what it dropped dropped, and takes no copy of a body that is out.
+/// what it dropped dropped, and takes no copy of a body that is out. It dates by what it holds:
+/// a dropped body dates nothing (spec/commits.md §5 Bodies and deaths).
 #[derive(Clone, Debug, Default)]
 pub struct Eager {
     pub settings: Vec<Setting>,
     pub held: Vec<Body>,
     pub dropped: Vec<u32>,
-    /// Bodies seen as headers: a dropped body still dates the replacement of others (its
-    /// header and the state keep its stamp).
-    pub seen: Vec<Body>,
 }
 
 impl Eager {
@@ -118,18 +124,17 @@ impl Eager {
         self.act(one_way, now);
     }
     pub fn body(&mut self, b: Body, one_way: bool, now: Ms) {
-        if self.dropped.contains(&b.id) || self.seen.contains(&b) {
+        if self.dropped.contains(&b.id) || self.held.contains(&b) {
             return;
         }
-        self.seen.push(b);
         self.held.push(b);
         self.act(one_way, now);
     }
     pub fn act(&mut self, one_way: bool, now: Ms) {
-        let seen = self.seen.clone();
+        let held = self.held.clone();
         let (settings, dropped) = (&self.settings, &mut self.dropped);
         self.held.retain(|b| {
-            let gone = replaced_at(&seen, b).is_some_and(|r| out(settings, one_way, r) <= now);
+            let gone = replaced_at(&held, b).is_some_and(|r| out(settings, one_way, r) <= now);
             if gone {
                 dropped.push(b.id);
             }
@@ -137,7 +142,7 @@ impl Eager {
         });
     }
     pub fn history(&self, one_way: bool, now: Ms) -> Vec<u32> {
-        let mut v: Vec<u32> = self.held.iter().filter(|b| replaced_at(&self.seen, b).is_some_and(|r| now < out(&self.settings, one_way, r))).map(|b| b.id).collect();
+        let mut v: Vec<u32> = self.held.iter().filter(|b| replaced_at(&self.held, b).is_some_and(|r| kept(&self.settings, one_way, r, now))).map(|b| b.id).collect();
         v.sort();
         v
     }

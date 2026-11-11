@@ -18,7 +18,7 @@ static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "keep.osis",
     r#"
 revision 1;
-purgeable_by(writer) purge_on_replace aspect k:pairs.0: map<string, string>;
+purgeable_by(writer) aspect k:pairs.0: map<string, string>;
 "#,
 );
 const KMAP: osis_schema::Aspect<osis_base::Value> = osis_schema::Aspect::new("k:pairs.0", &KEEP);
@@ -121,6 +121,7 @@ fn purge_on_replace_body_carried_on_local_label_spec_sync_7() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let (mut net, a, _, g, l) = setup();
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[(osis_schema::RawKey::ak(&KMAP), PURGE)]);
     let k = |x: &str| osis_base::Value::Str(x.into());
     let mut m = osis_node::Mutation::new();
     m.set(t, &KMAP, &osis_base::Value::Map([(k("k1"), k("v1")), (k("k2"), k("v2"))].into_iter().collect())).unwrap();
@@ -282,7 +283,10 @@ fn local_run(full: bool) -> (Vec<Vec<String>>, Vec<(u64, u64)>) {
     };
     step(&mut net);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[(osis_schema::RawKey::ak(&KMAP), PURGE)]);
     let u = net.item(b, g, g, "y");
+    net.run();
+    net.keep(a, u, &[("t:gone.0", PURGE)]);
     step(&mut net);
     // purge on replace: a map body partly replaced
     let k = |x: &str| osis_base::Value::Str(x.into());
@@ -920,6 +924,7 @@ fn advance_unheld(net: &mut Net, n: usize, chunks: &[BlobId], ms: u64) {
 /// logs none, so a co-reader pulling it gets none, and it fetches none.
 fn chunks_answered_late(lost: bool, writer: bool) {
     let (mut net, h, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], false);
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let (w, other) = if writer { (b, a) } else { (a, b) };
     // a node serving co-readers runs local passes: its store drops what it must not hold
     let acts = net.sync(w).publish_reach([w as u8 + 1; 32], Vec::new()).unwrap();
@@ -997,6 +1002,8 @@ fn purged_chunks_mid_upload_leave_the_host_by_delete_key_spec_sync_6() {
 // bytes (a wrong salt), then honestly: no wrong salt sticks, so the deletes go through.
 fn never_held_chunks_deleted(hostile: bool) {
     let (mut net, h, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
+    net.run();
     let l = net.label(a);
     let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
     let mut m = osis_node::Mutation::new();

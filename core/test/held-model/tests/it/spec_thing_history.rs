@@ -182,8 +182,10 @@ fn nothing_late_dropping_loses_no_history() {
 }
 
 /// In any arrival order, at any pace, a node that drops at the first allowed moment never
-/// shows what a node holding everything does not, and what it lacks it dropped itself; nodes
-/// that drop nothing show alike whatever the order (the judgment reads only what is held).
+/// shows what a node holding everything does not, but a body that arrived after a superseder
+/// of its was dropped (dated by what is held, so later: an arrival, as a late setting is,
+/// Decisions 1); what it lacks it dropped itself; nodes that drop nothing show alike whatever
+/// the order (the judgment reads only what is held).
 #[test]
 fn any_order_dropping_shows_a_subset() {
     for fire in [false, true] {
@@ -194,17 +196,24 @@ fn any_order_dropping_shows_a_subset() {
                 // each item arrives no earlier than its stamp; `lag` delays the whole run
                 for lag in [0, 2] {
                     let (mut n, mut now) = (Eager::default(), 0);
+                    let mut late: Vec<u32> = Vec::new();
                     for i in &order {
                         now = now.max(stamp(i)) + lag;
                         match i {
                             Item::S(s) => n.setting(*s, true, now),
-                            Item::B(b) => n.body(*b, true, now),
+                            Item::B(b) => {
+                                // a superseder of `b` (a value stamped after it) already dropped
+                                if !b.fire && all.iter().any(|o| !o.fire && (o.ts, o.id) > (b.ts, b.id) && n.dropped.contains(&o.id)) {
+                                    late.push(b.id);
+                                }
+                                n.body(*b, true, now)
+                            }
                         }
                     }
                     for now in now..now + 5 {
                         n.act(true, now);
                         let (h, full) = (n.history(true, now), history(&t, true, &all, now));
-                        assert!(h.iter().all(|x| full.contains(x)), "{order:?} now {now}: shows more");
+                        assert!(h.iter().all(|x| full.contains(x) || late.contains(x)), "{order:?} now {now}: shows more");
                         assert!(full.iter().all(|x| h.contains(x) || n.dropped.contains(x)), "{order:?} now {now}: lost without a drop");
                     }
                 }
@@ -307,17 +316,21 @@ fn ev_a_later_setting_never_brings_back() {
 }
 
 // issues/thing-history.md (In force): a setting acts from its own stamp: before it, held or not,
-// it changes nothing
+// it changes nothing of a body replaced before it (one replaced after it, ahead of the clock, is
+// governed by it: AMBIGUITIES 68)
 #[test]
 fn ev_a_later_setting_acts_from_its_stamp() {
     for fire in [false, true] {
+        // when each of `bodies3` is replaced (12 is live as a value)
+        let replaced: &[(CommitId, u64)] = if fire { &[(10, 1), (11, 3), (12, 5)] } else { &[(10, 3), (11, 5)] };
         for tl in ev_timelines(1, &[0, 2, 4], &all_opts()) {
             for ts in [3, 5, 6] {
+                let before = |l: BTreeSet<CommitId>| -> BTreeSet<CommitId> { l.into_iter().filter(|c| replaced.iter().any(|x| x.0 == *c && x.1 < ts)).collect() };
                 for opt in all_opts() {
                     let t2 = [tl.clone(), vec![(ts, opt)]].concat();
                     for now in ts.saturating_sub(1).max(1)..ts {
-                        let a = listed(&world(now, &tl, fire, bodies3(fire)), aspect(fire));
-                        assert_eq!(listed(&world(now, &t2, fire, bodies3(fire)), aspect(fire)), a, "{tl:?} + {opt:?}@{ts} now {now}");
+                        let a = before(listed(&world(now, &tl, fire, bodies3(fire)), aspect(fire)));
+                        assert_eq!(before(listed(&world(now, &t2, fire, bodies3(fire)), aspect(fire))), a, "{tl:?} + {opt:?}@{ts} now {now}");
                     }
                 }
             }
@@ -558,5 +571,16 @@ fn ev_any_order_dropping_shows_a_subset() {
             }
         }
     }
+}
+
+// issues/thing-history.md (Purge on replace), AMBIGUITIES 68: content replaced under purge on
+// replace is never history, even while its replacement is stamped ahead of the node's clock; a
+// keep entry lists it from the moment it is held
+#[test]
+fn ev_purge_on_replace_never_history_ahead_of_the_clock() {
+    let now = 2;
+    assert!(listed(&world(now, &[(0, Opt::Purge)], false, bodies3(false)), REG).is_empty());
+    assert!(listed(&world(now, &[(0, Opt::None)], false, bodies3(false)), REG).is_empty());
+    assert!(listed(&world(now, &[(0, Opt::Keep { after: 1, until: 0 })], false, bodies3(false)), REG).contains(&10));
 }
 }

@@ -175,7 +175,7 @@ fn mixed() -> CommitBlob {
         a.tid = t(3);
         a.ak = Ak::new(format!("app:f{i}.0")).unwrap();
         if i % 2 == 1 {
-            a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
+            a.retention = Retention { by: PurgeBy::Writer };
         }
     }
     b.expires = Some(9_000_000_000);
@@ -382,7 +382,7 @@ fn purge_rewrite() {
 #[test]
 fn chunk_list() {
     let mut b = content(1);
-    b.aspects[0].retention = Retention { by: PurgeBy::Writer, ..Default::default() };
+    b.aspects[0].retention = Retention { by: PurgeBy::Writer };
     b.aspects[0].chunks = vec![osis_base::BlobId([9; 32]), osis_base::BlobId([3; 32])];
     let built = build(b, &mut MemoryBlobs::default()).unwrap();
     let h = &built.commit.header;

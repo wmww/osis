@@ -12,12 +12,34 @@ use osis_node::Mutation;
 use osis_node::sync::EntryKind;
 use osis_schema::{RawKey, History, PurgeBy, Retention};
 
+/// A message's retention: by its author or admins (`kept_item` keeps it for good: permanent).
 fn permanent() -> Retention {
-    Retention { by: PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::FOREVER) }
+    Retention { by: PurgeBy::AuthorOrAdmin }
 }
 
+/// `net.item`, its register kept for good (its writes permanent), `GONE` (where purge requests
+/// write their own value) purged on replace.
+fn kept_item(net: &mut Net, n: usize, g: Tid, admin: Tid, v: &str) -> Tid {
+    let t = net.item(n, g, admin, v);
+    net.keep(n, t, &[(REG.ak(), History::FOREVER), (GONE.ak(), History::PurgeOnReplace)]);
+    t
+}
+
+/// The messages' aspect.
 fn k() -> Ak {
     Ak::new(REG.ak()).unwrap()
+}
+
+/// Where a purge request writes its own value (`purge`): purged on replace.
+fn own() -> Ak {
+    Ak::new(GONE.ak()).unwrap()
+}
+
+/// Node `n` writes `v` on `own()`: it replaces a purge request's own delta there.
+fn write_own(net: &mut Net, n: usize, t: Tid, v: &str) {
+    let mut m = Mutation::new();
+    m.set(t, &GONE, &s(v)).unwrap();
+    net.engine(n).commit(m).unwrap();
 }
 
 fn msg(net: &mut Net, n: usize, t: Tid, v: &str, r: Retention) -> CommitId {
@@ -27,14 +49,19 @@ fn msg(net: &mut Net, n: usize, t: Tid, v: &str, r: Retention) -> CommitId {
     net.engine(n).commit(m).unwrap().unwrap()
 }
 
-/// A purge of `c`, its own delta under `r`.
+/// A purge of `c`'s message, its own delta on `own()` under `r`.
 fn purge(net: &mut Net, n: usize, t: Tid, c: CommitId, r: Retention) -> CommitId {
+    purge_on(net, n, t, c, k(), r)
+}
+
+/// A purge of `c`'s part on `ak`, its own delta on `own()` under `r`.
+fn purge_on(net: &mut Net, n: usize, t: Tid, c: CommitId, ak: Ak, r: Retention) -> CommitId {
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k() });
-    m.retention(t, &REG, r).unwrap();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak });
+    m.retention(t, &GONE, r).unwrap();
     // a value of its own: writing the same value again is no write
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    m.set(t, &REG, &s(&format!("after {}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))).unwrap();
+    m.set(t, &GONE, &s(&format!("after {}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))).unwrap();
     // past the writer's own refusal of a request without the right: the receivers judge it
     net.engine(n).commit_hostile(m).unwrap().unwrap()
 }
@@ -70,7 +97,7 @@ fn chat() -> Chat {
     let (a, b, n) = (net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host]));
     let g = net.group(a, &[(b, Role::Write), (n, Role::Read)], &[host]);
     net.set_online(n, false);
-    let t = net.item(a, g, g, "x");
+    let t = kept_item(&mut net, a, g, g, "x");
     net.run();
     let l = net.label(a);
     Chat { net, host, a, b, n, t, l }
@@ -98,7 +125,7 @@ fn sees_tombstone(net: &mut Net, n: usize, t: Tid, c: CommitId, p: CommitId, aut
 // it and when; the body is gone from the host.
 #[test]
 fn new_node_sees_a_purged_permanent_delta_spec_commits_5() {
-    for r in [Retention::default(), permanent()] {
+    for r in [Retention::default(), Retention { by: PurgeBy::Writer }] {
         let Chat { mut net, host, a, b, n, t, l } = chat();
         let c = msg(&mut net, b, t, "SECRET", permanent());
         net.run();
@@ -166,20 +193,17 @@ fn a_lost_tombstone_is_uploaded_again_spec_sync_6() {
     sees_tombstone(&mut net, n, t, c, p, author);
 }
 
-// spec/commits.md §5: every other retention leaves no lasting tombstone: nothing of the commit stays
-// at the host, and a new node never learns of it. `nobody`-free sets alike.
+// spec/commits.md §5: under every other setting a purge leaves no lasting tombstone: nothing of
+// the commit stays at the host, and a new node never learns of it.
 #[test]
 fn other_retention_leaves_none_spec_commits_5() {
     let keep = |until, after| Some(History::Keep { until, after });
-    let cases = [
-        ("default", Retention::default()),
-        ("kept a while after replaced", Retention { history: keep(None, Some(1000)), ..Default::default() }),
-        ("kept until a finite time", Retention { history: keep(Some(FOREVER - 1), None), ..Default::default() }),
-        ("purged on replace", Retention { by: PurgeBy::Writer, history: Some(History::PurgeOnReplace) }),
-    ];
-    for (what, r) in cases {
+    let cases = [("no history", None), ("kept a while after replaced", keep(None, Some(1000))), ("kept until a finite time", keep(Some(FOREVER - 1), None)), ("purged on replace", Some(History::PurgeOnReplace))];
+    for (what, h) in cases {
         let Chat { mut net, host, a, b, n, t, l } = chat();
-        let c = msg(&mut net, b, t, "SECRET", r);
+        net.keep(a, t, &h.map(|h| vec![(REG.ak(), h)]).unwrap_or_default());
+        net.run();
+        let c = msg(&mut net, b, t, "SECRET", Retention::default());
         net.run();
         purge(&mut net, b, t, c, Retention::default());
         net.run();
@@ -223,17 +247,11 @@ fn the_purge_request_stays_as_its_header_spec_commits_5() {
     let p = purge(&mut net, a, t, c, Retention::default());
     net.run();
     assert!(at_host(&mut net, a, host, &l, p).iter().all(|x| !x.is_empty()));
-    // a later write, then a snapshot covering the purge commit's own delta, past its floor
-    net.advance(ROLE_KEEP_MS + 3_600_000);
-    net.run();
+    // past its floor, a later write covering the purge commit's own delta
+    cover(&mut net, a, t);
     net.write(a, t, "later");
     net.run();
-    let acts = net.sync(a).compact(&t, &k()).unwrap();
-    net.actions(a, acts);
-    net.run();
-    net.advance(3_600_000);
-    net.run();
-    assert!(!net.engine(a).body_not_dropped(&p, &t, &k()), "the purge commit's body is covered and gone");
+    assert!(!net.engine(a).body_not_dropped(&p, &t, &own()), "the purge commit's body is covered and gone");
     assert_eq!(at_host(&mut net, a, host, &l, p), vec![Vec::<usize>::new()], "its header stays");
     assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
     net.set_online(n, true);
@@ -248,19 +266,14 @@ fn the_purge_request_stays_as_its_header_spec_commits_5() {
 #[test]
 fn a_purge_of_other_retention_goes_spec_commits_5() {
     let Chat { mut net, host, a, b, t, l, .. } = chat();
+    // messages kept no more
+    net.keep(a, t, &[(GONE.ak(), History::PurgeOnReplace)]);
+    net.run();
     let c = msg(&mut net, b, t, "SECRET", Retention::default());
     net.run();
     let p = purge(&mut net, a, t, c, Retention::default());
     net.run();
-    net.advance(ROLE_KEEP_MS + 3_600_000);
-    net.run();
-    net.write(a, t, "later");
-    net.run();
-    let acts = net.sync(a).compact(&t, &k()).unwrap();
-    net.actions(a, acts);
-    net.run();
-    net.advance(3_600_000);
-    net.run();
+    cover(&mut net, a, t);
     assert!(at_host(&mut net, a, host, &l, p).is_empty());
 }
 
@@ -304,7 +317,7 @@ fn the_other_part_on_another_label_is_not_waited_for_spec_commits_4() {
     let Chat { mut net, host, a, b, n, t, l } = chat();
     let addrs = vec![net.hosts[host].address.clone()];
     let g2 = net.group_seeded(a, &[(b, Role::Write)], addrs, 2);
-    let u = net.item(a, g2, g2, "y");
+    let u = kept_item(&mut net, a, g2, g2, "y");
     net.run();
     let mut m = Mutation::new();
     m.retention(t, &REG, permanent()).unwrap();
@@ -344,20 +357,12 @@ fn a_flood_costs_a_header_per_write_spec_commits_5() {
 #[test]
 fn a_purge_without_the_right_is_no_witness_spec_commits_5() {
     let Chat { mut net, host, a, b, t, l, .. } = chat();
-    let c = msg(&mut net, a, t, "SECRET", Retention { by: PurgeBy::Admin, ..permanent() });
+    let c = msg(&mut net, a, t, "SECRET", Retention { by: PurgeBy::Admin });
     net.run();
     let p = purge(&mut net, b, t, c, Retention::default());
     net.run();
     assert!(net.engine(a).body_not_dropped(&c, &t, &k()));
-    net.advance(ROLE_KEEP_MS + 3_600_000);
-    net.run();
-    net.write(a, t, "later");
-    net.run();
-    let acts = net.sync(a).compact(&t, &k()).unwrap();
-    net.actions(a, acts);
-    net.run();
-    net.advance(3_600_000);
-    net.run();
+    cover(&mut net, a, t);
     assert!(at_host(&mut net, a, host, &l, p).is_empty(), "no lasting blob of the purge without the right");
     assert_eq!(at_host(&mut net, a, host, &l, c).len(), 1);
     assert!(!at_host(&mut net, a, host, &l, c)[0].is_empty());
@@ -389,7 +394,7 @@ fn a_purged_value_leaves_its_chunks_spec_commits_5() {
 #[test]
 fn the_purge_shown_is_one_with_the_right_spec_commits_5() {
     let Chat { mut net, a, b, t, .. } = chat();
-    let c = msg(&mut net, a, t, "SECRET", Retention { by: PurgeBy::Admin, ..permanent() });
+    let c = msg(&mut net, a, t, "SECRET", Retention { by: PurgeBy::Admin });
     net.run();
     purge(&mut net, b, t, c, Retention::default());
     net.run();
@@ -470,7 +475,7 @@ fn a_forged_header_only_blob_is_no_tombstone_spec_commits_5() {
     let host = net.add_host();
     let (a, b, n) = (net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host]));
     let g = net.group(a, &[(b, Role::Write), (n, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "x");
+    let t = kept_item(&mut net, a, g, g, "x");
     net.run();
     net.set_online(n, false);
     let c = msg(&mut net, a, t, "SECRET", permanent());
@@ -500,7 +505,7 @@ fn a_fallen_purge_shows_no_tombstone_spec_perm_6() {
     let (a, b, c2, n) = (net.node(1, &[host]), net.node(2, &[host]), net.node(4, &[host]), net.node(3, &[host]));
     let g = net.group(a, &[(b, Role::Write), (c2, Role::Admin), (n, Role::Read)], &[host]);
     net.set_online(n, false);
-    let t = net.item(a, g, g, "x");
+    let t = kept_item(&mut net, a, g, g, "x");
     net.run();
     let m = msg(&mut net, b, t, "SECRET", permanent());
     net.run();
@@ -570,19 +575,11 @@ fn a_purge_commit_does_not_wait_for_another_label_spec_commits_4() {
     net.run();
     let mut m = Mutation::new();
     m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k() });
-    m.set(t, &REG, &s("after")).unwrap();
+    m.set(t, &GONE, &s("after")).unwrap();
     m.set(u, &LIST, &osis_base::Value::List(vec![s("elsewhere")])).unwrap();
     let p = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    net.advance(ROLE_KEEP_MS + 3_600_000);
-    net.run();
-    net.write(a, t, "later");
-    net.run();
-    let acts = net.sync(a).compact(&t, &k()).unwrap();
-    net.actions(a, acts);
-    net.run();
-    net.advance(3_600_000);
-    net.run();
+    cover(&mut net, a, t);
     assert_eq!(at_host(&mut net, a, host, &l, p), vec![Vec::<usize>::new()]);
     net.set_online(n, true);
     net.run();
@@ -626,8 +623,8 @@ fn a_lasting_header_applies_and_the_rest_joins_spec_commits_4() {
     assert_eq!(net.engine(n).get(&u, &Ak::new(LIST.ak()).unwrap()).unwrap(), Some(osis_base::Value::List(vec![s("card")])));
 }
 
-// spec/commits.md §4, §5: a purge commit's own delta purged in turn, covered by a snapshot or gone by a
-// purge on replace with no snapshot: the request applies as its lasting header at a new node, so the
+// spec/commits.md §4, §5: a purge commit's own delta purged in turn, gone by a purge on replace, with
+// a snapshot or none: the request applies as its lasting header at a new node, so the
 // tombstone shows there and nothing is shown wrongly.
 #[test]
 fn a_purge_purged_in_turn_spec_commits_5() {
@@ -637,15 +634,14 @@ fn a_purge_purged_in_turn_spec_commits_5() {
         net.run();
         let p1 = purge(&mut net, a, t, c, Retention::default());
         net.run();
-        let r2 = if snap { Retention::default() } else { Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) } };
-        let p2 = purge(&mut net, a, t, p1, r2);
+        let p2 = purge_on(&mut net, a, t, p1, own(), Retention::default());
         net.run();
         net.advance(ROLE_KEEP_MS + 3_600_000);
         net.run();
-        msg(&mut net, a, t, "later", Retention::default());
+        write_own(&mut net, a, t, "later");
         net.run();
         if snap {
-            let acts = net.sync(a).compact(&t, &k()).unwrap();
+            let acts = net.sync(a).compact(&t, &own()).unwrap();
             net.actions(a, acts);
             net.run();
         }
@@ -682,13 +678,14 @@ fn a_purge_of_a_snapshotted_message_spec_commits_5() {
     sees_tombstone(&mut net, n, t, c, p, author);
 }
 
-/// Past its floor and covered by a snapshot: `p`'s own delta is gone.
+/// Past its floor and replaced on `own()` (purged on replace), then a snapshot: a purge commit's own
+/// delta is gone.
 fn cover(net: &mut Net, a: usize, t: Tid) {
     net.advance(ROLE_KEEP_MS + 3_600_000);
     net.run();
-    net.write(a, t, "later");
+    write_own(net, a, t, "later");
     net.run();
-    let acts = net.sync(a).compact(&t, &k()).unwrap();
+    let acts = net.sync(a).compact(&t, &own()).unwrap();
     net.actions(a, acts);
     net.run();
     net.advance(3_600_000);
@@ -701,17 +698,17 @@ fn cover(net: &mut Net, a: usize, t: Tid) {
 fn an_aspect_wide_request_lasts_by_what_it_dropped_spec_commits_5() {
     for admin in [true, false] {
         let Chat { mut net, host, a, b, n, t, l } = chat();
-        let c = msg(&mut net, a, t, "SECRET", Retention { by: PurgeBy::Admin, ..permanent() });
+        let c = msg(&mut net, a, t, "SECRET", Retention { by: PurgeBy::Admin });
         net.run();
         net.advance(1_000);
         let by = if admin { a } else { b };
         let mut m = Mutation::new();
         m.purge(PurgeItem::Aspect { tid: t, ak: k() });
-        m.set(t, &REG, &s("after")).unwrap();
+        m.set(t, &GONE, &s("after")).unwrap();
         let p = net.engine(by).commit_hostile(m).unwrap().unwrap();
         net.run();
         cover(&mut net, a, t);
-        assert!(!net.engine(a).body_not_dropped(&p, &t, &k()));
+        assert!(!net.engine(a).body_not_dropped(&p, &t, &own()));
         assert_eq!(at_host(&mut net, a, host, &l, p), if admin { vec![Vec::<usize>::new()] } else { Vec::new() });
         net.set_online(n, true);
         net.run();
@@ -741,7 +738,7 @@ fn a_holder_that_saw_a_fallen_purges_delete_uploads_again_spec_sync_6() {
     let host = net.add_host();
     let (a, b, x, h) = (net.node(1, &[host]), net.node(2, &[host]), net.node(4, &[host]), net.node(5, &[host]));
     let g = net.group(a, &[(b, Role::Write), (x, Role::Admin), (h, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
+    let t = kept_item(&mut net, a, g, g, "x");
     net.run();
     let m = msg(&mut net, b, t, "SECRET", permanent());
     net.run();
@@ -781,7 +778,7 @@ fn a_header_only_some_judge_lasting_is_left_alone_spec_sync_6() {
     let host = net.add_host();
     let (a, b, x, d2) = (net.node(1, &[host]), net.node(2, &[host]), net.node(4, &[host]), net.node(5, &[host]));
     let g = net.group(a, &[(b, Role::Write), (x, Role::Admin), (d2, Role::Admin)], &[host]);
-    let t = net.item(a, g, g, "x");
+    let t = kept_item(&mut net, a, g, g, "x");
     net.run();
     net.set_online(d2, false);
     let m = msg(&mut net, b, t, "SECRET", permanent());
@@ -840,23 +837,20 @@ fn a_fresh_node_demotes_and_nothing_comes_back_spec_perm_6() {
         let (a, x, b, f) = (net.node(1, &[host]), net.node(2, &[host]), net.node(4, &[host]), net.node(3, &[host]));
         let g = net.group(a, &[(x, Role::Admin), (b, Role::Write), (f, Role::Admin)], &[host]);
         net.set_online(f, false);
-        let t = net.item(a, g, g, "x");
+        let t = if lasting { kept_item(&mut net, a, g, g, "x") } else { net.item(a, g, g, "x") };
         net.run();
         let l = net.label(a);
-        let r = if lasting { permanent() } else { Retention::default() };
-        let m = msg(&mut net, b, t, "SECRET", r);
+        let m = msg(&mut net, b, t, "SECRET", permanent());
         net.run();
         let p = purge(&mut net, x, t, m, Retention::default());
         net.run();
         // the request's own write replaced and compacted: its body goes from the host
         net.advance(10_000);
-        let mut w = Mutation::new();
-        w.set(t, &REG, &s("later")).unwrap();
-        net.engine(a).commit(w).unwrap().unwrap();
+        write_own(&mut net, a, t, "later");
         net.run();
         net.advance(100 * 86_400_000);
         net.run();
-        net.engine(a).snapshot(&t, &k()).unwrap().unwrap();
+        net.engine(a).snapshot(&t, &own()).unwrap().unwrap();
         net.run();
         net.advance(120_000);
         net.run();

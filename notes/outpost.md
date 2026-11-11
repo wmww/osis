@@ -21,8 +21,8 @@ Part of moving agent orchestration onto osis; useful for any remote control of m
 ## Data model
 Per box, one group (the box's security context) whose readers are everyone who may see the box; outpost is its admin. In it:
 - **The box thing**: `specs` (durable, rewritten when they change) and `vitals` (ephemeral, an expiring write outpost renews, `osis::KeepAlive`). Vitals present = the box is up; when outpost dies they lapse.
-- **The console**: a thing on which the box's commanders hold write and nothing else. Its one aspect is the request signal: durable (`~`, not `+`), so a request fired while the box is offline waits, and the record of what was asked is kept as long as its retention says.
-- **Runs**: one thing per taken request, written by outpost only. State as a value; output as a durable signal on the run, one fire per chunk (each write small however long the run; chunks kept or expired per retention, read as the signal's history). The box thing lists no runs (a growing list is the scaling problem); runs are found through the group.
+- **The console**: a thing on which the box's commanders hold write and nothing else. Its one aspect is the request signal: durable (`~`, not `+`), so a request fired while the box is offline waits, and the record of what was asked is kept as long as the console's `retention^.0` says.
+- **Runs**: one thing per taken request, written by outpost only. State as a value; output as a durable signal on the run, one fire per chunk (each write small however long the run; chunks kept or expired per the run's `retention^.0`, read as the signal's history). The box thing lists no runs (a growing list is the scaling problem); runs are found through the group.
 
 Sketch (DSL shapes, not final):
 ```
@@ -31,7 +31,7 @@ type request = enum {
     input 1 (struct { run 0: request_id, bytes 1: bytes }),
     cancel 2 (struct { run 0: request_id }),
 };
-keep_history(...) signal outpost:request~0: request;            // on the console
+signal outpost:request~0: request;            // on the console; kept per its retention^.0 entry
 
 aspect outpost:specs.0: struct { hostname 0: string, os 1: string, cpus 2: u32, ram 3: u64, disk 4: u64 };
 ephemeral aspect outpost:vitals+.0: struct { load 0: ..., ram_free 1: u64, disk_free 2: u64 };
@@ -44,7 +44,7 @@ type run_state = enum {
     lost 4,                    // outpost restarted while it ran
 };
 aspect outpost:run.0: struct { request 0: request_id, sender 1: tid, kind 2: request, state 3: run_state };
-keep_history(...) signal outpost:output~0: struct { stream 0: enum { stdout 0, stderr 1 }, bytes 1: bytes };
+signal outpost:output~0: struct { stream 0: enum { stdout 0, stderr 1 }, bytes 1: bytes };
 ```
 `input` and `cancel` name the `exec` request, not the run, so they can be fired before it is taken.
 

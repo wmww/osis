@@ -402,39 +402,37 @@ pub(crate) fn draw_blind(rng: &mut dyn osis_crypto::CryptoRngCore) -> [u8; 16] {
     b
 }
 
-/// Retention and expiry of one aspect's delta in a commit of `kind` at `ts` by `signer`
-/// (spec/commits.md §5, §6): the thing's required retention fills what the writer did not, and
-/// refuses what breaks it; then the given ones, the schema's defaults, the untyped default.
+/// Retention and expiry of one aspect's delta in a commit of `kind` at `ts` (spec/commits.md §5,
+/// §6): the given ones, else the expiry the thing's newest valid setting held gives the AK, the
+/// schema's defaults, the untyped default. A replace of a fire the setting makes `final` is
+/// refused.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, signer: Tid, tid: &Tid, ak: &Ak, schema: Option<&Schema>, replaces: bool, mut r: Option<Retention>, mut e: Option<u64>) -> Result<(Retention, Option<u64>)> {
-    let mut defaults = schema.and_then(|s| s.defaults(ak.as_str()));
+pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, tid: &Tid, ak: &Ak, schema: Option<&Schema>, replaces: bool, r: Option<Retention>, mut e: Option<u64>) -> Result<(Retention, Option<u64>)> {
+    let defaults = schema.and_then(|s| s.defaults(ak.as_str()));
     // a hostile test writer writes what it is told
-    if kind == Kind::Content && !core.skip_writer_rules && !ak.ephemeral() && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && let Some(q) = crate::apply::validity::required_now(core, tid, ak, signer, ts) {
-        let want = q.expires_at(ts.wall_ms().0).ok_or(Error::Misuse("expiry out of range"))?;
-        if r.is_some_and(|x| x.canonical() != q.retention().canonical()) || e.is_some_and(|x| !q.expiry_met(ts.wall_ms().0, Some(x), replaces)) {
-            return Err(Error::Misuse("a retention or expiry other than the thing requires"));
-        }
+    if kind == Kind::Content && !core.skip_writer_rules && !ak.ephemeral() && osis_commit::retention::fixed_retention(ak.as_str()).is_none()
+        && let Some(s) = crate::apply::validity::setting_now(core, tid)
+        && let Some(q) = s.entry(ak)
+    {
         if replaces && q.r#final {
-            return Err(Error::Misuse("an edit of a fire the thing requires to be final"));
+            return Err(Error::Misuse("editing is off here: the thing's setting makes its fires final"));
         }
-        r = Some(q.retention());
-        e = if replaces { e.or(want) } else { want };
-        defaults = None;
+        if e.is_none() && q.expires.is_some() {
+            e = q.expires_at(ts.wall_ms().0).ok_or(Error::Misuse("expiry out of range"))?;
+        }
     }
     let retention = if memory || ak.ephemeral() {
-        // `writer`, keeping history when the write or the schema says so (spec/commits.md §2)
-        match kind {
-            Kind::ContentSnapshot | Kind::RoleSnapshot => r.unwrap_or(osis_commit::retention::EPHEMERAL_RETENTION),
-            _ => {
-                let history = r.or_else(|| defaults.as_ref().map(|d| d.retention)).map(osis_schema::Retention::canonical).and_then(|x| x.history);
-                osis_schema::Retention { by: osis_base::PurgeBy::Writer, history: history.filter(|h| matches!(h, osis_schema::History::Keep { .. })) }
-            }
-        }
+        // `writer` (spec/commits.md §2)
+        osis_commit::retention::EPHEMERAL_RETENTION
     } else {
         match kind {
             // a compaction snapshot's own (`Engine::snapshot`), never from schema defaults
-            Kind::ContentSnapshot | Kind::RoleSnapshot => r.unwrap_or_else(|| osis_commit::retention::snapshot_retention(ak.as_str(), [])),
-            _ => osis_commit::retention::write_retention(ak.as_str(), defaults.as_ref(), r)?,
+            Kind::ContentSnapshot | Kind::RoleSnapshot => r.unwrap_or_else(|| osis_commit::retention::snapshot_retention(ak.as_str())),
+            // a hostile test writer writes the retention it is told
+            _ => match r.filter(|_| core.skip_writer_rules) {
+                Some(r) => r,
+                None => osis_commit::retention::write_retention(ak.as_str(), defaults.as_ref(), r)?,
+            },
         }
     };
     let expires = match kind {
@@ -459,18 +457,12 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
     Ok(Framing { dedup, expiry: plan.expires.map(WallMs), blind: plan.blind, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
 }
 
-/// A creation takes what its commit's other deltas call for: their expiry (a one-commit disappearing
-/// message), and `nobody`, kept forever, beside `nobody` deltas (a `nobody` delta shares a commit
-/// only with others like it, spec/commits.md §5).
+/// A creation takes its commit's other deltas' expiry (a one-commit disappearing message).
 fn fit_creations(aspects: &mut [((Tid, Ak), AspectMut)]) {
-    let other = |ak: &Ak| ak.as_str() != CREATED.ak() && ak.as_str() != osis_commit::retention::REQUIRED;
+    let other = |ak: &Ak| ak.as_str() != CREATED.ak() && ak.as_str() != osis_commit::retention::RETENTION;
     let expires = aspects.iter().filter(|((_, ak), _)| other(ak)).find_map(|(_, am)| am.expires);
-    let nobody = aspects.iter().any(|((_, ak), am)| other(ak) && am.retention.is_some_and(|r| r.by == osis_schema::PurgeBy::Nobody));
     for (_, am) in aspects.iter_mut().filter(|((_, ak), _)| ak.as_str() == CREATED.ak()) {
         am.expires = am.expires.or(expires);
-        if nobody {
-            am.retention = Some(osis_commit::retention::KEPT_RETENTION);
-        }
     }
 }
 
@@ -484,12 +476,12 @@ fn place_requests(aspects: &mut Vec<((Tid, Ak), AspectMut)>, expires: Option<u64
 }
 
 /// The one expiry of a commit of these deltas (`entries`: thing, AK, retention, expiry; spec/commits.md
-/// §5, §6), or `Clash` naming what cannot share a commit: different expiries, a `nobody` delta beside
-/// others (`required^.0` goes with any), or an expiry beside `required^.0`, which carries none.
+/// §6), or `Clash` naming what cannot share a commit: different expiries, or an expiry beside
+/// `retention^.0`, which carries none.
 /// `purge.0` takes no part in the expiry: in a commit that expires it is left out (`place_requests`).
 /// `way`: what the caller can do about it.
 fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], way: &str) -> Result<Option<u64>> {
-    let free = |ak: &Ak| ak.as_str() == osis_commit::retention::REQUIRED;
+    let free = |ak: &Ak| ak.as_str() == osis_commit::retention::RETENTION;
     let placing = |ak: &Ak| ak.as_str() == osis_commit::retention::PURGE;
     let name = |t: &Tid, ak: &Ak, e: Option<u64>| match e {
         Some(e) => format!("{t} {ak} (expires at {e})"),
@@ -502,10 +494,6 @@ fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], way: &str) -> Res
     {
         return Err(Error::Clash(format!("a commit has one expiry, and this write has two: {} and {}. {way}", name(&a.0, a.1, a.3), name(&b.0, b.1, b.3))));
     }
-    let nobody = |e: &&(Tid, &Ak, &Retention, Option<u64>)| e.2.by == osis_schema::PurgeBy::Nobody;
-    if let (Some(n), Some(o)) = (entries.iter().filter(|e| !free(e.1)).find(nobody), entries.iter().filter(|e| !free(e.1)).find(|e| !nobody(e))) {
-        return Err(Error::Clash(format!("a write nobody may purge shares a commit only with others like it: {} {} is one, {} {} is not. {way}", n.0, n.1, o.0, o.1)));
-    }
     let expires = first.and_then(|e| e.3);
     if let Some(at) = expires
         && let Some(r) = entries.iter().find(|e| free(e.1))
@@ -516,14 +504,14 @@ fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], way: &str) -> Res
 }
 
 /// `build_and_apply` of an undo's deltas: with `plan`'s inputs and the one expiry they share
-/// (`one_commit`). A delta's expiry is what it copies back or what its thing requires, never its
+/// (`one_commit`). A delta's expiry is what it copies back or what its thing's setting gives, never its
 /// key's default (spec/crdt.md §4.6: none if none expires): the undone commit may have overridden
 /// that, and undoing it must not need what it did not.
 pub(crate) fn build_one(tx: &mut Tx<'_>, mut plan: CommitPlan, mut deltas: Vec<Resolved>) -> Result<CommitId> {
     let mut settled = Vec::with_capacity(deltas.len());
     for d in &deltas {
-        let (r, _) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, plan.signer, &d.tid, &d.ak, d.schema.as_deref(), d.replaces.is_some(), d.retention, d.expires)?;
-        let (_, e) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, plan.signer, &d.tid, &d.ak, None, d.replaces.is_some(), Some(r), d.expires)?;
+        let (r, _) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, &d.tid, &d.ak, d.schema.as_deref(), d.replaces.is_some(), d.retention, d.expires)?;
+        let (_, e) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, &d.tid, &d.ak, None, d.replaces.is_some(), Some(r), d.expires)?;
         settled.push((r, e));
     }
     let entries: Vec<(Tid, &Ak, &Retention, Option<u64>)> = deltas.iter().zip(&settled).map(|(d, (r, e))| (d.tid, &d.ak, r, *e)).collect();
@@ -560,7 +548,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     let published = super::secrets::published_keys(tx, &plan.creates, deltas.iter().map(|d| d.tid))?;
     let mut writes = Vec::with_capacity(deltas.len());
     for d in deltas {
-        let (retention, expires) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, plan.signer, &d.tid, &d.ak, d.schema.as_deref(), d.replaces.is_some(), d.retention, d.expires)?;
+        let (retention, expires) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, &d.tid, &d.ak, d.schema.as_deref(), d.replaces.is_some(), d.retention, d.expires)?;
         // one expiry per commit (spec/commits.md §6): `one_commit` saw to it
         if expires != plan.expires && !plan.restores {
             return Err(Error::Misuse("a commit's deltas share one expiry"));
@@ -762,15 +750,18 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
                 // an edit ends with its original (spec/commits.md §5 Signals)
                 am.expires = am.expires.or_else(|| tx.core.ix.commits.get(&o).and_then(|m| m.header.expires));
             }
-            settle(tx.core, memory, kind, ts, node, &tid, &ak, am.schema.as_deref(), am.replaces.is_some(), am.retention, am.expires)?
+            settle(tx.core, memory, kind, ts, &tid, &ak, am.schema.as_deref(), am.replaces.is_some(), am.retention, am.expires)?
         };
         // a signal write is a whole value, history from the start (spec/commits.md §5 Signals)
         if ak.signal() && !tx.core.skip_writer_rules {
             if !matches!(am.ops.as_slice(), [op] if op.path.is_empty() && matches!(op.op, Op::Set(_))) || m.dead_resets.contains_key(&(tid, ak.clone())) {
                 return Err(Error::Misuse("a signal is fired once per commit: one set at the root"));
             }
-            if !crate::apply::keeps_history(&r) {
-                return Err(Error::Misuse("a signal's writes are history: its retention keeps history"));
+            // a fire is history from its own `ts`: one the settings held would not keep would be
+            // in no history at all
+            let wall = ts.wall_ms().0;
+            if !memory && crate::retention::history::of(tx.core, &tid, &ak).leaves_at(Some(wall)) <= wall {
+                return Err(Error::Misuse("a fire is history: the thing's setting keeps no history for this signal"));
             }
         }
         (am.retention, am.expires) = (Some(r), e);
@@ -793,25 +784,25 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     let mut deltas: Vec<Resolved> = Vec::new();
     let published = super::secrets::published_keys(tx, &plan.creates, aspects.iter().map(|k| k.0.0))?;
     for ((tid, ak), mut am) in aspects {
-        // what a `required^.0` delta says is judged from that delta alone: it writes the whole value
-        if ak.as_str() == osis_commit::retention::REQUIRED && !tx.core.skip_writer_rules {
+        // a `retention^.0` delta is read alone: it writes the whole value
+        if ak.as_str() == osis_commit::retention::RETENTION && !tx.core.skip_writer_rules {
             for o in &mut am.ops {
                 match (o.path.is_empty(), &o.op) {
                     (true, osis_crdt::Op::Set(v)) => o.op = osis_crdt::Op::Replace(v.clone()),
-                    (true, osis_crdt::Op::Replace(_) | osis_crdt::Op::RemoveAspect) => {}
-                    _ => return Err(Error::Misuse("required^.0 is written whole")),
+                    (true, osis_crdt::Op::Replace(_)) => {}
+                    _ => return Err(Error::Misuse("retention^.0 is written whole")),
                 }
             }
             if am.ops.len() > 1 {
-                return Err(Error::Misuse("required^.0 is written whole"));
+                return Err(Error::Misuse("retention^.0 is written whole"));
             }
-            if am.ops.iter().any(|o| matches!(&o.op, osis_crdt::Op::Replace(v) if <osis_schema::core_types::RequiredRules as osis_schema::Codec>::from_value(v).ok().is_none_or(|r| !osis_schema::core_types::required_fits(&r)))) {
-                return Err(Error::Misuse("required^.0 requiring nothing: a key that is no AK, or over MAX_REQUIRED_ENTRIES entries"));
+            if am.ops.iter().any(|o| matches!(&o.op, osis_crdt::Op::Replace(v) if osis_schema::core_types::retention_setting(v).is_none())) {
+                return Err(Error::Misuse("retention^.0 that is no setting: a key that is no AK, or over MAX_RETENTION_ENTRIES entries"));
             }
-            // an entry no write could meet: every governed write would be refused
-            let unmeetable = |q: &osis_schema::core_types::Required| osis_commit::retention::write_retention("", None, Some(q.retention())).is_err() || q.expires.is_some_and(|d| d == 0 || d >= osis_commit::FOREVER);
-            if am.ops.iter().any(|o| matches!(&o.op, osis_crdt::Op::Replace(v) if <osis_schema::core_types::RequiredRules as osis_schema::Codec>::from_value(v).is_ok_and(|r| r.rules.values().chain(&r.default).any(unmeetable)))) {
-                return Err(Error::Misuse("required^.0 with an entry no write could meet"));
+            // an entry no write could take: a zero or endless expiry, a history bound out of range
+            let bad = |q: &osis_schema::core_types::RetentionEntry| !osis_commit::retention::entry_fits(q);
+            if am.ops.iter().any(|o| matches!(&o.op, osis_crdt::Op::Replace(v) if osis_schema::core_types::retention_setting(v).is_some_and(|r| r.rules.values().chain(&r.default).any(bad)))) {
+                return Err(Error::Misuse("retention^.0 with an entry out of range"));
             }
         }
         let retention = am.retention.unwrap_or_default();

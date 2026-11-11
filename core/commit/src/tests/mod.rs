@@ -42,7 +42,7 @@ pub(crate) fn sample_header() -> Header {
             ak: Ak::new("app:title.0").unwrap(),
             lo: 1,
             hi: 2,
-            retention: Retention { by: PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::Keep { until: None, after: Some(5) }) },
+            retention: Retention { by: PurgeBy::AuthorOrAdmin },
             keys: vec![0, 1],
             hash: [9; 32],
             replaces: Some(CommitId([8; 32])),

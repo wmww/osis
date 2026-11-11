@@ -3,7 +3,7 @@
 
 use crate::common::watched;
 use crate::common::TestWrites as _;
-use crate::common::{ak, keep_day};
+use crate::common::{ak, typed_any};
 use osis::internals::Internals as _;
 use osis::{SetRoleOpts, Ak, Change, CommitQuery, MemStore, Osis, Runtime, Scope, Origin, Store, Value};
 use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, Outcome};
@@ -53,8 +53,8 @@ fn client_handle_works_at_the_node() {
     let net = osis_transport::Net::new(1);
     let n = node(&MemStore::new(), &net, &sock, true);
     let c = connect(&sock);
-    keep_day(&n, &["note:title.0", "t:x.0"]);
-    keep_day(&c, &["note:title.0", "t:x.0"]);
+    typed_any(&n, &["note:title.0", "t:x.0"]);
+    typed_any(&c, &["note:title.0", "t:x.0"]);
     assert!(!c.has_store());
     assert_eq!((c.me(), c.node()), (n.me(), n.node()));
     let title = ak("note:title.0");
@@ -75,6 +75,7 @@ fn client_handle_works_at_the_node() {
         .commit_with(|w| {
             let g = w.create()?;
             let t = w.create()?;
+            crate::common::keep_all(w, t);
             w.at(t, crate::common::kept(&n, &title.clone())).set(&Value::Str("a".into()))?;
             w.group(g).add(osis::Member::Item(t))?;
             Ok((t, g))

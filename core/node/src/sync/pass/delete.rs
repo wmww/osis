@@ -158,6 +158,13 @@ impl SyncEngine {
         }
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         if opened.iter().any(|p| m.body_gone(*p) && !self.engine.left_at_hosts(commit, *p)) {
+            // a body dropped as covered leaves hosts `MAX_DRIFT` past its keep-at-least bound, once
+            // every node's clock agrees it may go (spec/commits.md §5 Keep bounds)
+            let from = opened.iter().filter_map(|p| m.dropped.get(p)).map(|d| d.hosts_from).max().unwrap_or(0);
+            if from > now {
+                note.at(from);
+                return Ok(None);
+            }
             // every delta's live writes count, the kept ones' too (spec/sync.md §7, `carried`)
             let live = opened.iter().any(|ai| self.part_live(&h, commit, *ai));
             return Ok(Some((Hold::MustNot(Why::Dropped), live, aspects)));

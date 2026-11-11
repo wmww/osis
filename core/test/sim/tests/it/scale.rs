@@ -3,7 +3,7 @@
 //! individually shared things. Work is counted (engine spans, pass counters), never timed.
 
 use osis::internals::schema::core_types as ct;
-use osis::internals::schema::{History, PurgeBy};
+use osis::internals::schema::History;
 use osis::{Ak, GrantOpts, MemStore, Osis, Role, Store, Tid, Value};
 use osis_sim::world::World;
 use std::collections::BTreeMap;
@@ -11,9 +11,8 @@ use std::collections::BTreeMap;
 const MSG: &str = "chat:msg~0";
 
 fn create(a: &Osis) -> Tid {
-    let msg_rule = ct::Required::new(osis::internals::schema::Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::FOREVER) }, None);
-    let rest = ct::Required::new(Default::default(), None);
-    let rules = ct::RequiredRules { rules: BTreeMap::from([(Ak::new(MSG).unwrap(), msg_rule)]), default: Some(rest), retain: true };
+    let msg_rule = ct::RetentionEntry { history: Some(History::FOREVER), ..Default::default() };
+    let rules = ct::RetentionSetting { rules: BTreeMap::from([(Ak::new(MSG).unwrap(), msg_rule)]), default: None, retain: true };
     // the record alone first (`create()` alone is a role commit), as chat's `create` does, so a
     // joiner's pending reads count members' records only
     let mut w = a.write();
@@ -21,7 +20,7 @@ fn create(a: &Osis) -> Tid {
     w.commit().unwrap();
     a.sync(c, &[]).unwrap();
     let mut w = a.write();
-    w.at(c, ct::REQUIRED).set(&rules).unwrap();
+    w.at(c, ct::RETENTION).set(&rules).unwrap();
     w.commit().unwrap();
     c
 }

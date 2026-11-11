@@ -50,7 +50,7 @@ pub(crate) use pending::{emptied, fetch_fallen, forget_joined_leftovers, forget_
 use pending::{purge_pending, strip_pending};
 pub(crate) use purge::{check_request, counts_as_purged, known_purged, lasting, note_requests, purged_aspects, purged_by, rejudge_purges, requests_resting_on};
 pub(crate) use snapshot::covered;
-pub(crate) use bounds::{Killed, any_bounded, mark_killed, mark_bounded};
+pub(crate) use bounds::{Killed, mark_killed, mark_bounded};
 
 const T_EXPIRY: u8 = 1;
 /// A purge-on-replace body kept to its commit's purge floor: judged again then (`replace`).
@@ -61,16 +61,16 @@ pub(crate) const T_KEPT: u8 = 3;
 
 /// A signal delta's keep bound, wall ms (spec/commits.md §5 Signals): any body's keep at least
 /// (`body_keep`), replaced when written; `None`: kept for good.
-pub(crate) fn signal_bound(h: &Header, a: &osis_commit::AspectEntry) -> Option<u64> {
-    let t = bounds::kept_until(h, a, Some(h.ts.wall_ms().0));
+pub(crate) fn signal_bound(core: &Core, h: &Header, a: &osis_commit::AspectEntry) -> Option<u64> {
+    let t = bounds::kept_until(core, h, a, Some(h.ts.wall_ms().0));
     (t < osis_commit::FOREVER).then_some(t)
 }
 
 /// Whether part `ai` of `h` is a signal's past its keep bound at wall ms `now` (spec/commits.md §5
 /// Signals): past every bound, so no read shows it, no copy of it is taken and nothing makes it
 /// missing again (fetched, or a suspect flag for it).
-pub(crate) fn past_signal_bound(h: &Header, ai: usize, now: u64) -> bool {
-    h.aspects.get(ai).filter(|a| a.ak.signal()).and_then(|a| signal_bound(h, a)).is_some_and(|t| t <= now)
+pub(crate) fn past_signal_bound(core: &Core, h: &Header, ai: usize, now: u64) -> bool {
+    h.aspects.get(ai).filter(|a| a.ak.signal()).and_then(|a| signal_bound(core, h, a)).is_some_and(|t| t <= now)
 }
 
 /// A non-`Derived` source's bytes (its length tells the kind).
@@ -179,10 +179,10 @@ pub(crate) fn body_classes(core: &Core, h: &Header) -> Vec<Vec<usize>> {
     out
 }
 
-/// Whether a delta's body has a relative keep bound (spec/commits.md §5): only it asks when the body
-/// was replaced (`bounds::replaced_at`).
-pub(crate) fn bounded(a: &osis_commit::AspectEntry) -> bool {
-    history::of(a).dated()
+/// Whether the bodies of `(tid, ak)` have a relative keep bound (spec/commits.md §5): only then is
+/// when a body was replaced asked (`bounds::part_replaced_at`).
+pub(crate) fn bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
+    history::of(core, tid, ak).dated()
 }
 
 /// The aspect index of `(tid, ak)` in held commit `c`, if that part is held (`Meta::holds`: a
@@ -221,16 +221,19 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     if m.dropped.contains_key(&ai) || (m.bare(ai) && !leftover) {
         return Ok(());
     }
-    // a setting not held binds nothing (spec/commits.md §5 Required retention); an invalid one
-    // bound nothing already
-    if a.ak.as_str() == osis_commit::retention::REQUIRED {
-        let mut settings = tx.core.ix.required.get(&a.tid).cloned().unwrap_or_default();
+    // its keep-at-least bound, judged while it is held: hosts delete it `MAX_DRIFT` past
+    let keep = if why == DropFor::Cover { bounds::body_keep(tx, c, &a.tid, &a.ak)? } else { 0 };
+    let hosts_from = if keep == 0 { 0 } else { keep.saturating_add(osis_base::format::MAX_DRIFT_MS) };
+    // a setting not held is in no timeline (spec/commits.md §5 In force)
+    if a.ak.as_str() == osis_commit::retention::RETENTION {
+        let mut settings = tx.core.ix.retention.get(&a.tid).cloned().unwrap_or_default();
         settings.retain(|x| x.0.commit != *c);
         if settings.is_empty() {
-            tx.core.ix.required.remove(&a.tid);
+            tx.core.ix.retention.remove(&a.tid);
         } else {
-            tx.core.ix.required.insert(a.tid, settings);
+            tx.core.ix.retention.insert(a.tid, settings);
         }
+        tx.core.settings_due.insert(a.tid);
     }
     let k = (a.tid, a.ak.clone());
     // a stripped part's body is its leftover: read below as the held body, forgotten after
@@ -265,7 +268,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     if stripped {
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
     }
-    m.dropped.insert(ai, Dropped { covered_by, why, stands_in, role, overreach, keysets, shown, superseded_by: BTreeSet::new() });
+    m.dropped.insert(ai, Dropped { covered_by, why, hosts_from, stands_in, role, overreach, keysets, shown, superseded_by: BTreeSet::new() });
     if osis_schema::core_types::is_addenda(a.ak.as_str()) {
         crate::apply::validity::forget_addendum_body(tx.core, c, &a.tid);
     }
@@ -396,6 +399,46 @@ pub(crate) fn drop_invalid(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
+/// The things whose `retention^.0` settings arrived, flipped or dropped this transaction
+/// (`Core::settings_due`): what their timelines judge is judged again (spec/commits.md §5
+/// Convergence), from what is held. Every held body on the thing: node-sync's keep bounds
+/// (`Core::mark_changed`), purge on replace (`settle_none`: a setting arriving can make a writer
+/// owe a cover), listings (every commit told, keep-bound timers armed again) and a fire's keep
+/// bound (dropped when past, else its timer armed again; an earlier timer finds the bound moved).
+/// Cost: O(the thing's held commits) per change of its settings, a rare path.
+pub(crate) fn settings_changed(tx: &mut Tx<'_>) -> Result<()> {
+    let now = tx.now().0;
+    while let Some(t) = tx.core.settings_due.pop_first() {
+        let aspects: Vec<Ak> = tx.core.ix.by_aspect.range((t, Ak::MIN)..).take_while(|((x, _), _)| *x == t).map(|((_, a), _)| a.clone()).collect();
+        for ak in aspects {
+            if osis_commit::retention::fixed_retention(ak.as_str()).is_some() {
+                continue;
+            }
+            let on: Vec<CommitId> = tx.core.ix.by_aspect.get(&(t, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+            for c in &on {
+                tx.core.mark_changed(*c);
+            }
+            tx.core.none_due.insert((t, ak.clone()));
+            if ak.signal() {
+                for c in &on {
+                    let Some(m) = tx.core.ix.commits.get(c) else { continue };
+                    let Some(ai) = m.aspect(&t, &ak).filter(|ai| m.holds(*ai)) else { continue };
+                    let h = m.header.clone();
+                    crate::engine::edits::time_passed(tx, c, ai);
+                    match h.aspects.get(ai).and_then(|a| signal_bound(tx.core, &h, a)) {
+                        Some(b) if b <= now => drop_part(tx, c, ai)?,
+                        Some(b) => tx.put_timer(b, c, ai, T_KEPT)?,
+                        None => {}
+                    }
+                }
+            } else {
+                crate::engine::listing::setting_changed(tx, &t, &ak, &on)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The parts `parts` dropped while invalid that are valid now are missing again (spec/permissions.md
 /// §6): they give nothing until the body arrives again, as at a node that never received it
 /// (node-sync fetches it, `Changed::undropped`, from any holder; with none it stays gone at every
@@ -405,7 +448,7 @@ pub(crate) fn valid_again(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Resul
     let now = tx.now().0;
     let mut by_aspect: std::collections::BTreeMap<(Tid, Ak), Vec<(CommitId, usize)>> = std::collections::BTreeMap::new();
     for (c, ai) in parts {
-        if let Some(a) = tx.core.ix.commits.get(c).filter(|m| m.dropped_invalid(*ai) && m.valid_at(*ai) && !past_signal_bound(&m.header, *ai, now)).and_then(|m| m.view.aspects.get(*ai)) {
+        if let Some(a) = tx.core.ix.commits.get(c).filter(|m| m.dropped_invalid(*ai) && m.valid_at(*ai) && !past_signal_bound(tx.core, &m.header, *ai, now)).and_then(|m| m.view.aspects.get(*ai)) {
             by_aspect.entry((a.tid, a.ak.clone())).or_default().push((*c, *ai));
         }
     }
@@ -473,7 +516,7 @@ fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<cr
 /// (spec/commits.md §5 Signals), so a peer still holding it resends nothing that sticks.
 pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
-    if past_signal_bound(&m.header, ai, tx.now().0) {
+    if past_signal_bound(tx.core, &m.header, ai, tx.now().0) {
         return Ok(false);
     }
     if m.stripped.contains(&ai) {
@@ -870,7 +913,7 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, p
         drop_gone(tx, id, ai, purged)?;
         // a signal body goes at its keep bound, whole or as its leftover
         if let Some(a) = h.aspects.get(ai).filter(|a| a.ak.signal())
-            && let Some(t) = signal_bound(h, a)
+            && let Some(t) = signal_bound(tx.core, h, a)
         {
             if t <= tx.now().0 {
                 drop_part(tx, id, ai)?;
@@ -931,8 +974,17 @@ fn run_timer(tx: &mut Tx<'_>, key: &[u8], c: &CommitId, ai: usize, kind: u8, cha
     if kind == T_FLOOR {
         replace::floor_passed(tx, c, ai);
     } else if kind == T_KEPT {
-        drop_part(tx, c, ai)?;
-        crate::engine::edits::time_passed(tx, c, ai);
+        // a setting since may have moved the bound: judged by the timeline now
+        let now = tx.now().0;
+        let bound = tx.core.ix.commits.get(c).map(|m| m.header.clone()).and_then(|h| Some(signal_bound(tx.core, &h, h.aspects.get(ai)?)));
+        match bound {
+            Some(Some(t)) if t > now => tx.put_timer(t, c, ai, T_KEPT)?,
+            Some(None) => {}
+            _ => {
+                drop_part(tx, c, ai)?;
+                crate::engine::edits::time_passed(tx, c, ai);
+            }
+        }
     } else {
         hold_valueless(tx, c, ai, false, &mut ch)?;
     }
@@ -1114,18 +1166,18 @@ mod tests {
             let mut lp = LocalPeer::new(1, 953, WallMs(1_700_000_000_000)).unwrap();
             let a = lp.peers[0].engine.me();
             let x = Ak::new("x:m.0").unwrap();
-            let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(3_600_000) }) };
             let mut m = Mutation::new();
             let t = lp.peers[0].engine.new_thing(&mut m, a);
+            m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })).unwrap();
             lp.peers[0].commit(m).unwrap();
             let mut m = Mutation::new();
-            m.set(t, &x, &Value::Map((0..n).map(|i| (Value::Str(format!("k{i}")), Value::Int(i as i64))).collect())).unwrap().retention(t, &x, keep).unwrap();
+            m.set(t, &x, &Value::Map((0..n).map(|i| (Value::Str(format!("k{i}")), Value::Int(i as i64))).collect())).unwrap();
             let fill = lp.peers[0].commit(m).unwrap().unwrap();
             lp.advance(10);
             let snap = lp.peers[0].engine.snapshot(&t, &x).unwrap().unwrap();
             lp.advance(10);
             let mut m = Mutation::new();
-            m.set(t, &x, &Value::Int(0)).unwrap().retention(t, &x, keep).unwrap();
+            m.set(t, &x, &Value::Int(0)).unwrap();
             let reset = lp.peers[0].commit(m).unwrap().unwrap();
             let e = &mut lp.peers[0].engine;
             let at = Some(e.header(&reset).unwrap().ts);

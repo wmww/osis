@@ -6,7 +6,7 @@ use crate::Ctx;
 use crate::cmd::{deliver, parse_role};
 use crate::json::J;
 use crate::{exit, parse_dur, usage};
-use osis::core::REQUIRED;
+use osis::core::RETENTION;
 use osis::{Body, Commit, CommitEvent, CommitFrom, CommitId, CommitKind, CommitQuery, GrantOpts, HolderKind, LinkOpts, Osis, PurgeBy, ReadOnly, Role, SetRoleOpts, Tid};
 use osis_chat::schema::{self, EditMode, MSG, SETTINGS};
 use osis_chat::{Cursor, Options};
@@ -130,9 +130,7 @@ fn print_since(ctx: &mut Ctx<'_>, t: Tid, s: &osis_chat::Since, from: Option<&Cu
 
 /// Fires `m` on chat `c`: its id.
 fn fire(db: &Osis, c: Tid, m: &schema::Message) -> anyhow::Result<CommitId> {
-    let mut w = db.write();
-    w.at(c, MSG).fire(m)?;
-    Ok(w.commit()?.ok_or_else(|| anyhow::anyhow!("nothing written"))?.stamp.id)
+    Ok(osis_chat::send(db, c, m)?)
 }
 
 pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
@@ -141,10 +139,9 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
         ChatCmd::Create { name, purge, edit, disappear, no_retain_copy, peer } => {
             let purge = match purge.as_str() {
                 "author-or-admin" => PurgeBy::AuthorOrAdmin,
-                "author" => PurgeBy::Author,
                 "admin" => PurgeBy::Admin,
-                "nobody" => PurgeBy::Nobody,
-                x => return Err(usage(format!("--purge: author-or-admin, author, admin or nobody, not {x:?}"))),
+                "writer" => PurgeBy::Writer,
+                x => return Err(usage(format!("--purge: author-or-admin, admin or writer, not {x:?}"))),
             };
             let edit = match edit.as_str() {
                 "purge" => Some(EditMode::Purge),
@@ -341,10 +338,10 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             // later messages take it, earlier ones keep what they have
             let t = ctx.tid(&chat)?;
             let d = if after == "off" { None } else { Some(parse_dur(&after)?) };
-            let mut rules = db.at(t, REQUIRED).get()?.unwrap_or_default();
+            let mut rules = db.at(t, RETENTION).get()?.unwrap_or_default();
             rules.rules.get_mut(&MSG.name()).ok_or_else(|| exit(3, format!("{chat} has no message rule: not a chat")))?.expires = d;
             let mut w = db.write();
-            w.at(t, REQUIRED).set(&rules)?;
+            w.at(t, RETENTION).set(&rules)?;
             w.commit()?;
             send_out(ctx, None)
         }

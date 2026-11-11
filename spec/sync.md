@@ -282,7 +282,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - unexpired inbox blobs.
 
   Per node, a body it holds is **must-hold**, **must-not-hold** or **may-hold** at a label. A body meeting a must-not-hold condition is must-not-hold whatever else holds of it.
-  - A delta is **kept** while it is before its keep-at-least bound or under `nobody`.
+  - A delta is **kept** while it is before its keep-at-least bound (in history by the settings the node holds, spec/commits.md §5 The setting). One out of history is neither must-hold nor fetched; a node that dropped it fetches it none when a later setting puts it back in history.
   - **must-hold**: in the required set and, for a closure body, one of:
     - a delta of it kept;
     - established uncovered: the node can join it and no held snapshot of the aspect under the label covers it (spec/commits.md §5); a signal's delta is never joined, so it is must-hold only while kept.
@@ -294,7 +294,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold and whose extra deltas include one only a blob carries: kept or holding a live write, and covered by no snapshot under the label;
     - under D's home label (target, issues/account-signing.md step 7), another node's card commit (spec/permissions.md §4) once a later valid card commit of that node writing the same aspect is under the label (an entry of it this node opened and checked against its header);
     - under D's home label, another node's card commit, for `node.0` and `reach.0`, once that node is a node of the account no more after an applied edge write on D ended its grant (removed it, or its `until` passed).
-  - **may-hold**: the rest: covered, between bounds, parked, unfetched pages, a certificate blob whose author has no other blob under the label.
+  - **may-hold**: the rest: covered, out of history, parked, unfetched pages, a certificate blob whose author has no other blob under the label.
 
   After syncing:
   - **Writer**: uploads every must-hold body the label lacks, as a fresh encryption if the old blob ID is tombstoned or its entry counts as lacking there (§5). A blob of the commit that is not must-not-hold and holds every delta of the body that no snapshot under the label covers holds it.
@@ -312,19 +312,16 @@ Each operation names a label. Writes are signed with the role keys of the host's
 - Chunk and tree-node blobs of large atomic values may be fetched lazily, by local policy; pages of a delta are fetched before its commit is applied (spec/commits.md §4).
 
 ## 7. Compaction and deletion
-- **Compact**: a node that may write an aspect uploads snapshot commits (spec/commits.md §2) for the aspects it compacts, then drops, and deletes at hosts, the bodies they cover.
-  - It drops and deletes a body only when all of these hold:
-    - the snapshot's commit holds the right over the body (spec/commits.md §5);
-    - it may purge the body;
-    - the body's keep-at-least bound (spec/commits.md §5) is `MAX_DRIFT` past on its clock.
-  - **Other right holders**: every right holder that holds a snapshot under the label, its author included whatever it wrote it for, does the same for its bodies, judging a body again while it is before that time or not established covered or uncovered.
+- **Compact**: a node that may write an aspect uploads snapshot commits (spec/commits.md §2) for the aspects it compacts, then drops the bodies they cover and deletes at hosts those it may purge.
+  - It drops a body once it is out of history: its keep-at-least bound (spec/commits.md §5) is past on its clock. Any held valid writer's snapshot covering it drops it, the purge right or not (spec/commits.md §5 The setting); deleting it at hosts needs the right and waits `MAX_DRIFT` more (spec/commits.md §5 Keep at least).
+  - **Other nodes**: every node that holds a snapshot does the same for its bodies, deleting at hosts where it holds the right, judging a body again while it is before that time or not established covered or uncovered.
   - **Live writes**: a body with live writes (in any of its deltas) is deleted at a label only while other entries under it carry each of them, per delta holding one of its own: a snapshot under the label covering it (a held delta by the join of spec/commits.md §5 Covered, whatever carrier was recorded for it before), or another blob of the commit holding it that is not must-not-hold and not an identical body with a higher blob ID (of two duplicates the higher goes without waiting).
   - **No carrier**: a right holder that must delete a body with live writes and finds no carrier uploads a covering snapshot first when it may write the aspect, unless it holds a blob of the commit that will carry them (a purge's rewrite).
     - A host refusing that blob, a strict subset of the body, for the label's cap (code 12): it is uploaded again naming the body as replaced (§5).
   - Chunk blobs still linked from a retained version are kept.
   - Two snapshots covering each other (equal `ts`, spec/commits.md §5) are covered-equal; a compactor drops the one with the higher commit ID.
-- No node snapshots a signal (spec/commits.md §5 Signals): its bodies leave by expiry, purge, as invalid, or past their keep bound.
-- **Sweep**: before a snapshot of a durable content aspect (not role-class, not `required^.0`), a node resets, in one ordinary content commit, each map entry and list element (at any depth below live ones) that is not live (spec/crdt.md §5.6, §5.7) and holds a write beside its removal or an expiry or purge it holds of its creation.
+- No node snapshots a signal (spec/commits.md §5 Signals): its bodies leave by expiry, purge, as invalid, or out of history.
+- **Sweep**: before a snapshot of a durable content aspect (not role-class, not `retention^.0`), a node resets, in one ordinary content commit, each map entry and list element (at any depth below live ones) that is not live (spec/crdt.md §5.6, §5.7) and holds a write beside its removal or an expiry or purge it holds of its creation.
   - A write here: in a map any write under a key, else a value-carrying one or `W`.
   - A record merely lacking its creation is left: the creation may arrive.
   - A reset so repeated stays if the first remover turns out invalid.
@@ -363,7 +360,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
     - A copy of a forgotten commit arriving again applies and goes again by the same rules.
 - **Compaction**: any writer of the aspect compacts (spec/commits.md §2, §5).
   - **Trigger**: a node writes an ephemeral snapshot of an aspect once the session-form bodies it holds of it that a snapshot may cover (without `expires`, or held value-less past it), two at least, cost more than twice a snapshot of it, each counted as its deltas' bytes plus a per-part and a per-entry charge (local policy, what a holder's cap and a host charge). A host's refusal triggers nothing.
-  - **Dropping covered bodies**: every node drops a held body a held valid ephemeral snapshot covers (spec/commits.md §5) at once, keep bounds aside (ephemeral bodies have none).
+  - **Dropping covered bodies**: every node drops a held body a held valid ephemeral snapshot covers (spec/commits.md §5) once its keep-at-least bound passes (spec/commits.md §5 Keep bounds): at once where no setting keeps history for the aspect of any of its deltas.
     - Exception: a node drops a body it authored only under one of its own snapshots (local policy).
     - A snapshot stamped no later and covered by another goes the same way.
     - Of covered-equal snapshots the higher commit ID goes (§7).

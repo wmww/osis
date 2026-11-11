@@ -11,7 +11,7 @@ use osis_base::{Ak, CommitId as RawCommitId, Role, Tid, Ts, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::{Diagnostic, DiagnosticKind};
 use osis_proto::{ApiCode, Outcome};
-use osis_schema::{History, Path, PurgeBy, Retention, Step};
+use osis_schema::{Path, PurgeBy, Retention, Step};
 
 pub(crate) fn bad(what: &str) -> Error {
     Error::Invalid(format!("port: malformed {what}"))
@@ -651,38 +651,14 @@ pub(crate) fn op(v: Value) -> Result<PathOp> {
     Ok(PathOp { path, op })
 }
 
-/// `[by, history]`, history `0` none, `1` purge on replace, `[2, Opt(until), Opt(after)]` keep.
+/// `by`.
 pub(crate) fn retention_v(r: &Retention) -> Value {
-    let h = match r.history {
-        None => u(0),
-        Some(History::PurgeOnReplace) => u(1),
-        Some(History::Keep { until, after }) => Value::List(vec![u(2), opt(until, u), opt(after, u)]),
-    };
-    Value::List(vec![u(r.by as u64), h])
+    u(r.by as u64)
 }
 
 pub(crate) fn retention(v: Value) -> Result<Retention> {
-    let mut a = Args::new(v)?;
-    let by = PurgeBy::from_id(a.uint()?).ok_or_else(|| bad("purge class"))?;
-    let history = match a.next()? {
-        Value::List(l) => {
-            let mut k = Args::new(Value::List(l))?;
-            if k.uint()? != 2 {
-                return Err(bad("history"));
-            }
-            let mut n = || -> Result<Option<u64>> { k.opt()?.map(|x| x.as_uint().ok_or_else(|| bad("history"))).transpose() };
-            let (until, after) = (n()?, n()?);
-            k.end()?;
-            Some(History::Keep { until, after })
-        }
-        x => match x.as_uint() {
-            Some(0) => None,
-            Some(1) => Some(History::PurgeOnReplace),
-            _ => return Err(bad("history")),
-        },
-    };
-    a.end()?;
-    Ok(Retention { by, history })
+    let by = v.as_uint().and_then(PurgeBy::from_id).ok_or_else(|| bad("purge class"))?;
+    Ok(Retention { by })
 }
 
 /// Grant options: `[Opt(until), Opt(invite)]`.

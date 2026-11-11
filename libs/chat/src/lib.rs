@@ -6,7 +6,7 @@
 
 #![forbid(unsafe_code)]
 
-use osis::core::{REQUIRED, Required, RequiredRules};
+use osis::core::{RETENTION, RetentionEntry, RetentionSetting};
 use osis::{Body, Commit, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, Error, History, Osis, Purge, PurgeBy, ReadOnly, Result, Retention, Tid, Time};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -33,7 +33,8 @@ impl schema::Message {
 #[derive(Clone, Debug)]
 pub struct Options {
     pub name: String,
-    /// Who may delete a message (`Nobody`: a permanent chat).
+    /// Who may delete a message besides admins: `AuthorOrAdmin`, `Admin` or `Writer` (admins
+    /// may always purge; `create` refuses another).
     pub purge: PurgeBy,
     /// What an edit does to the old text; `None`: messages cannot be edited (the message rule
     /// refuses replacements).
@@ -53,33 +54,56 @@ impl Default for Options {
     }
 }
 
-/// A new chat, this account its first admin, its retention rules set before anyone is granted:
-/// every message kept for good under `o.purge` (expiry ends a disappearing one), replacements
-/// refused when editing is off, and the plain default for every other aspect, so junk nobody
-/// could erase is invalid. A participant could otherwise write under an earlier rule. `sync`,
-/// then one commit: a crash between leaves a synced chat of one with no rules; make another.
-/// Changing a rule later writes `required^.0` whole; a participant who has not seen it writes
-/// under the old one and its node hears `OwnWriteInvalid`.
+/// A new chat, this account its first admin, its settings written before anyone is granted:
+/// every message kept for good (expiry ends a disappearing one), replacements refused when
+/// editing is off, who may delete a message. `sync`, then one commit: a crash between leaves a
+/// synced chat of one with no settings; make another. Changing a setting later writes
+/// `retention^.0` whole; a participant who has not seen it writes as before (its messages keep
+/// the expiry they were written with).
 pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
-    // the record alone first (`create()` alone is a role commit), then the rules and settings: a
-    // joiner reads C's record among the role commits, not from a content commit it waits on
+    let purge = match o.purge {
+        PurgeBy::AuthorOrAdmin => None,
+        PurgeBy::Admin => Some(schema::Deletes::Admins),
+        PurgeBy::Writer => Some(schema::Deletes::Anyone),
+        _ => return Err(Error::Invalid("a chat's messages are purgeable by the author or admins, admins, or any writer".into())),
+    };
+    // the record alone first (`create()` alone is a role commit), then the settings: a joiner
+    // reads C's record among the role commits, not from a content commit it waits on
     // (notes/chat.md As built)
     let mut w = db.write();
     let c = w.create()?;
     w.commit()?;
     db.sync(c, &o.peers)?;
-    let msg = Required { retention: Retention { by: o.purge, history: Some(History::FOREVER) }, expires: o.disappear, refuse_replace: o.edit.is_none() };
-    let rules = RequiredRules { rules: BTreeMap::from([(MSG.name(), msg)]), default: Some(Required::default()), retain_copies: o.retain_copies };
+    let msg = RetentionEntry { history: Some(History::FOREVER), expires: o.disappear, refuse_replace: o.edit.is_none() };
+    let setting = RetentionSetting { rules: BTreeMap::from([(MSG.name(), msg)]), default: None, retain_copies: o.retain_copies };
     let mut w = db.write();
-    w.at(c, REQUIRED).set(&rules)?;
-    w.at(c, SETTINGS).set(&schema::Settings { name: o.name.clone(), edit: o.edit.clone().unwrap_or(EditMode::Purge) })?;
+    w.at(c, RETENTION).set(&setting)?;
+    w.at(c, SETTINGS).set(&schema::Settings { name: o.name.clone(), edit: o.edit.clone().unwrap_or(EditMode::Purge), purge })?;
     w.commit()?;
     Ok(c)
 }
 
+/// The retention a message on chat `c` carries: who may delete it, as the chat's settings say.
+pub fn message_retention(db: &Osis, c: Tid) -> Result<Retention> {
+    let by = match db.at(c, SETTINGS).get()?.and_then(|s| s.purge) {
+        None | Some(schema::Deletes::SenderOrAdmins) => PurgeBy::AuthorOrAdmin,
+        Some(schema::Deletes::Admins) => PurgeBy::Admin,
+        Some(schema::Deletes::Anyone) => PurgeBy::Writer,
+    };
+    Ok(Retention { by })
+}
+
+/// Sends `m` on chat `c`, purgeable as the chat's settings say: its id.
+pub fn send(db: &Osis, c: Tid, m: &schema::Message) -> Result<CommitId> {
+    let r = message_retention(db, c)?;
+    let mut w = db.write();
+    w.at(c, MSG).retention(r).fire(m)?;
+    Ok(w.commit()?.ok_or_else(|| Error::Invalid("nothing written".into()))?.stamp.id)
+}
+
 /// Replaces one's own message `id` (the original's id) with `text`, keeping its name and reply.
 /// Under `EditMode::Purge` the same commit purges the old text, where the chat's purge set lets
-/// this account (under `admin` or `nobody` it stays). `Invalid` from osis for another's message,
+/// this account (under `admin` it stays). `Invalid` from osis for another's message,
 /// a version's id, or a chat with editing off.
 pub fn edit(db: &Osis, c: Tid, id: CommitId, text: &str) -> Result<()> {
     let k = db.at(c, MSG).commit(id)?.ok_or_else(|| Error::Invalid(format!("no message {id}")))?;
@@ -89,9 +113,10 @@ pub fn edit(db: &Osis, c: Tid, id: CommitId, text: &str) -> Result<()> {
     };
     let new = schema::Message { text: text.into(), name, reply_to };
     let purge = db.at(c, SETTINGS).get()?.is_none_or(|s| s.edit == EditMode::Purge);
+    let r = message_retention(db, c)?;
     let write = |purge: bool| -> Result<()> {
         let mut w = db.write();
-        w.at(c, MSG).replace(id, &new)?;
+        w.at(c, MSG).retention(r).replace(id, &new)?;
         if purge {
             w.at(c, MSG).purge(Purge::Commit(id))?;
         }

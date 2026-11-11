@@ -42,7 +42,7 @@ pub fn open(dir: &Path, peers: Vec<Address>, wake: Arc<dyn Fn() + Send + Sync>) 
 }
 
 /// The aspects that are the system's, not the user's: no view accounts for them, raw hides them.
-pub const SYSTEM: [&str; 9] = ["created.0", "group.0", "groups.0", "roles.0", "keys.0", "secrets.0", "label.0", "reach.0", "node.0"];
+pub const SYSTEM: [&str; 10] = ["created.0", "group.0", "groups.0", "roles.0", "keys.0", "secrets.0", "label.0", "reach.0", "node.0", "retention^.0"];
 
 /// The registry of what a Data knows: its facets and view types.
 pub use crate::view::registry::Registry;
@@ -739,6 +739,7 @@ impl Data {
         let g = self.main_group()?;
         let mut w = self.db.write();
         let t = w.create()?;
+        keep_a_day(&mut w, t)?;
         w.at(t, NAME).set(&String::new())?;
         start(self, &mut w, t, g)?;
         w.group(g).add(Member::Item(t))?;
@@ -759,6 +760,14 @@ impl Data {
         w.commit()?;
         if was { self.set_open(None) } else { Ok(()) }
     }
+}
+
+/// In `w`, by the admin creating `t`: `t`'s setting keeping what any aspect replaces a day after,
+/// so Undo can write it back (without a setting nothing replaced is kept).
+pub fn keep_a_day(w: &mut osis::Write<'_>, t: Tid) -> Result<()> {
+    let day = osis::History::Keep { until: osis::Time(0), after_replaced: std::time::Duration::from_secs(86_400) };
+    let entry = osis::core::RetentionEntry { history: Some(day), ..Default::default() };
+    w.at(t, osis::core::RETENTION).set(&osis::core::RetentionSetting { default: Some(entry), ..Default::default() })
 }
 
 /// "just now", "5 min ago", "3 h ago", "2 d ago" for an age in ms.

@@ -79,24 +79,13 @@ type case_def = struct {
 
 // ---- Aspects ----
 
-/// How long replaced values stay readable as history.
-type history = enum {
-    keep_forever 0,
-    /// For this long after being replaced.
-    keep_for 1 (duration),
-    purge_on_replace 2,
-};
-
-/// Who may purge the aspect's values, and how long replaced values stay (absent: no promise).
+/// Who may purge the aspect's values (what history keeps is the thing's setting, `retention^.0`).
 type retention = struct {
     by 0: enum {
-        nobody 0,
         admin 1,
         author_or_admin 2,
         writer 3,
-        author 4,
     },
-    history 1: option<history>,
 };
 
 type flag = enum {

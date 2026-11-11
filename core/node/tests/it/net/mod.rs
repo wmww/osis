@@ -1470,6 +1470,15 @@ impl Net {
         t
     }
 
+    /// Node `n`, an admin of `t`, writes `t`'s setting keeping `history` for each aspect named
+    /// (spec/commits.md §5 The setting): its commit.
+    pub fn keep(&mut self, n: usize, t: Tid, entries: &[(&str, osis_schema::History)]) -> CommitId {
+        let x: ct::RetentionSetting = entries.iter().map(|(a, h)| (osis_base::Ak::new(*a).unwrap(), ct::RetentionEntry { history: Some(*h), ..Default::default() })).collect();
+        let mut m = Mutation::new();
+        m.set(t, &ct::RETENTION, &x).unwrap();
+        self.engine(n).commit(m).unwrap().unwrap()
+    }
+
     pub fn write(&mut self, n: usize, t: Tid, v: &str) -> CommitId {
         let mut m = Mutation::new();
         m.set(t, &REG, &s(v)).unwrap();
@@ -1558,12 +1567,12 @@ pub static TEST: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     r#"
 revision 1;
 aspect t:reg.0: string;
-purgeable_by(writer) purge_on_replace aspect t:gone.0: string;
+purgeable_by(writer) aspect t:gone.0: string;
 expires(1h) aspect t:brief.0: string;
 aspect t:blob.0: blob;
 aspect t:big.0: map<string, string>;
-purgeable_by(writer) purge_on_replace aspect t:gonemap.0: map<string, string>;
-purgeable_by(writer) purge_on_replace aspect t:gonetext.0: text;
+purgeable_by(writer) aspect t:gonemap.0: map<string, string>;
+purgeable_by(writer) aspect t:gonetext.0: text;
 expires(1h) aspect t:briefmap.0: map<string, string>;
 aspect t:seq.0: text;
 aspect t:items.0: list<string>;
@@ -1575,6 +1584,8 @@ pub const GONE: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:gone.0"
 pub const BRIEF: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:brief.0", &TEST);
 pub const BLOB: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:blob.0", &TEST);
 pub const BIG: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:big.0", &TEST);
+/// Purge on replace (`PURGE`) where a test's setting says so.
+pub const PURGE: osis_schema::History = osis_schema::History::PurgeOnReplace;
 pub const GONEMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:gonemap.0", &TEST);
 pub const GONETEXT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:gonetext.0", &TEST);
 pub const BRIEFMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:briefmap.0", &TEST);

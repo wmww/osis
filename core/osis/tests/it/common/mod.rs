@@ -33,11 +33,37 @@ pub fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
 }
 
-/// Registers on `db` a schema typing each of `aks` `any`, its history kept a day after replaced:
-/// an undo writing back a replaced value needs it (spec/crdt.md §4.6). `kept` then names their keys.
-pub fn keep_day(db: &Osis, aks: &[&str]) {
-    let src: String = aks.iter().map(|a| format!("keep_history(1d) aspect {a}: any;\n")).collect();
+/// Registers on `db` a schema typing each of `aks` `any` (`kept` then names their keys).
+pub fn typed_any(db: &Osis, aks: &[&str]) {
+    let src: String = aks.iter().map(|a| format!("aspect {a}: any;\n")).collect();
     db.register_schema("kept.osis", &format!("revision 1;\n{src}")).unwrap();
+}
+
+/// Kept a day after replaced: what an undo writing back a replaced value needs (spec/crdt.md
+/// §4.6).
+pub const DAY: osis::History = osis::History::Keep { until: osis::Time(0), after_replaced: std::time::Duration::from_secs(86_400) };
+
+/// A thing's setting keeping each of `entries`' history (spec/commits.md §5 The setting).
+pub fn setting(entries: &[(&str, osis::History)]) -> osis::core::RetentionSetting {
+    let rules = entries.iter().map(|(a, h)| (ak(a), osis::core::RetentionEntry { history: Some(*h), ..Default::default() })).collect();
+    osis::core::RetentionSetting { rules, ..Default::default() }
+}
+
+/// `db`, an admin of `t`, writes `t`'s setting keeping `aks` a day after replaced.
+pub fn keep_day(db: &Osis, t: Tid, aks: &[&str]) {
+    let x = setting(&aks.iter().map(|a| (*a, DAY)).collect::<Vec<_>>());
+    db.commit_with(|w| w.at(t, osis::core::RETENTION).set(&x)).unwrap();
+}
+
+/// A setting keeping every aspect a day after replaced (its `default`).
+pub fn day_default() -> osis::core::RetentionSetting {
+    osis::core::RetentionSetting { default: Some(osis::core::RetentionEntry { history: Some(DAY), ..Default::default() }), ..Default::default() }
+}
+
+/// In `w`, by an admin of `t`, `t`'s setting keeping every aspect a day: an app creating a thing
+/// whose edits it undoes.
+pub fn keep_all(w: &mut Write, t: Tid) {
+    w.at(t, osis::core::RETENTION).set(&day_default()).unwrap();
 }
 
 /// A page of at most `n` commits from `from`, unfiltered.
@@ -55,7 +81,7 @@ pub fn part(c: &osis::Commit, t: Tid, k: &Ak) -> osis::Part<osis::Value> {
     c.at(t, osis::DynamicAspectKey::untyped(k.clone())).unwrap_or_else(|| panic!("no part on {} in {c:?}", k.as_str()))
 }
 
-/// The key of `k` as `db` types it (`keep_day`).
+/// The key of `k` as `db` types it (`typed_any`).
 pub fn kept(db: &osis::ReadOnly, k: &Ak) -> osis::DynamicAspectKey {
     db.aspect_key(k.as_str()).unwrap()
 }
@@ -73,7 +99,7 @@ pub trait TestWrites {
     fn commit_set<K: ValueKey>(&self, t: Tid, key: K, v: &K::T) -> Result<()>;
     /// A commit of one `at(t, key).fire(v)`.
     fn commit_fire<K: SignalKey>(&self, t: Tid, key: K, v: &K::T) -> Result<()>;
-    /// `required^.0`'s `retain`, its other rules as they are.
+    /// `retention^.0`'s `retain`, its other rules as they are.
     fn set_retain_copies_default(&self, t: Tid, retain: bool) -> Result<()>;
     /// The links to `t`.
     fn links_of(&self, t: Tid) -> Result<Vec<LinkInfo>>;
@@ -93,8 +119,8 @@ impl TestWrites for Osis {
         self.commit_with(|w| w.at(t, key).fire(v))
     }
     fn set_retain_copies_default(&self, t: Tid, retain: bool) -> Result<()> {
-        let rules = self.at(t, ct::REQUIRED).get()?.unwrap_or_default();
-        self.commit_set(t, ct::REQUIRED, &ct::RequiredRules { retain, ..rules })
+        let rules = self.at(t, ct::RETENTION).get()?.unwrap_or_default();
+        self.commit_set(t, ct::RETENTION, &ct::RetentionSetting { retain, ..rules })
     }
     fn links_of(&self, t: Tid) -> Result<Vec<LinkInfo>> {
         Ok(self.links()?.into_iter().filter(|l| l.target == t).collect())

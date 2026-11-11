@@ -263,7 +263,7 @@ fn parked_spec_versioning_2() {
     let ts = Ts::make(WallMs(T0.0 + 10), 0).unwrap();
     let delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])]));
     let mut w = AspectWrite::new(t, ak("t:future.0"), 100, 101, delta);
-    w.retention = crate::common::purgeable_by(osis_base::PurgeBy::Nobody);
+    w.retention = crate::common::purgeable_by(osis_base::PurgeBy::Writer);
     let mut b = CommitBuilder::new(Kind::Content, ts, e.me(), e.me(), crate::common::forged_session(e.me()));
     b.aspects.push(w);
     let forge_key = e.sign_forged(&mut b);

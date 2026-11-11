@@ -3,7 +3,7 @@
 //! field (`none` included).
 
 use crate::error::Error;
-use crate::schema::{AspectDef, DefaultHistory, DefaultRetention, Flag, PurgeBy, Schema, TypeDef};
+use crate::schema::{AspectDef, Flag, PurgeBy, Retention, Schema, TypeDef};
 use crate::statics::StaticSchema;
 use crate::typed::typed_read;
 use crate::types::{Case, EnumType, Field, StructType, Type};
@@ -41,15 +41,6 @@ fn ids(s: &BTreeSet<u64>) -> Value {
 fn case(id: u64, payload: Value) -> Value {
     Value::Enum(id, Some(Box::new(payload)))
 }
-/// An `option<history>` value (meta.osis).
-fn history_value(h: Option<DefaultHistory>) -> Value {
-    opt(h.map(|h| match h {
-        DefaultHistory::KeepForever => Value::Enum(0, None),
-        DefaultHistory::KeepFor(d) => case(1, Value::uint(d)),
-        DefaultHistory::PurgeOnReplace => Value::Enum(2, None),
-    }))
-}
-
 /// `type_expr` value of a type.
 pub fn type_value(t: &Type) -> Value {
     let b = |t: &Type| type_value(t);
@@ -116,7 +107,7 @@ impl Schema {
             .iter()
             .map(|(ak, a)| {
                 let r = &a.retention;
-                let retention = st(vec![Value::Enum(r.by as u64, None), history_value(r.history)]);
+                let retention = st(vec![Value::Enum(r.by as u64, None)]);
                 let flags = Value::Set(a.flags.iter().map(|f| Value::Enum(*f as u64, None)).collect());
                 let succ = Value::Set(a.succeeds.iter().cloned().map(Value::Str).collect());
                 (Value::Str(ak.clone()), st(vec![type_value(&a.ty), retention, opt(a.expires.map(Value::uint)), flags, succ, doc(&a.doc)]))
@@ -144,7 +135,7 @@ impl Schema {
             let a = Fields::of(a)?;
             let r = Fields::of(a.get(1)?)?;
             let by = PurgeBy::from_id(r.case(0)?).ok_or_else(|| Error::Form("purgeable-by case".into()))?;
-            let retention = DefaultRetention { by, history: r.opt(1)?.map(read_history).transpose()? };
+            let retention = Retention { by };
             let flags = a
                 .set(3)?
                 .iter()
@@ -230,16 +221,6 @@ impl<'a> Fields<'a> {
     }
     fn ids(&self, id: i64) -> Result<BTreeSet<u64>, Error> {
         self.set(id)?.iter().map(as_uint).collect()
-    }
-}
-
-/// A `history` value (meta.osis), already typed.
-fn read_history(v: &Value) -> Result<DefaultHistory, Error> {
-    match v {
-        Value::Enum(0, None) => Ok(DefaultHistory::KeepForever),
-        Value::Enum(1, Some(d)) => Ok(DefaultHistory::KeepFor(as_uint(d)?)),
-        Value::Enum(2, None) => Ok(DefaultHistory::PurgeOnReplace),
-        _ => form("history case"),
     }
 }
 

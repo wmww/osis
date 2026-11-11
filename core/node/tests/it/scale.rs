@@ -493,6 +493,7 @@ fn aspect_passes(n: usize) -> Vec<([u64; 5], [u64; 5])> {
     let b = net.node(2, &[host]);
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "t");
+    net.keep(a, t, &[("t:gonemap.0", crate::net::PURGE)]);
     let u = net.item(a, g, g, "u");
     // expires 30 min before the rest
     put_keys(&mut net, a, u, &BRIEFMAP, &["first".to_string()], "v");
@@ -927,7 +928,7 @@ fn kept_snapshots(edits: usize) -> (usize, Work) {
         let e = &mut lp.peers[0].engine;
         let newest = *snaps.last().unwrap();
         snaps.retain(|s| {
-            let gone = *s != newest && e.drop_from(s, &t, &k).unwrap().is_some_and(|at| at <= now) && e.covered(&newest, s, &t, &k).unwrap() == Some(true);
+            let gone = *s != newest && e.drop_from(s, &t, &k).unwrap() <= now && e.covered(&newest, s, &t, &k).unwrap() == Some(true);
             if gone {
                 e.drop_body(s, &t, &k).unwrap();
             }
@@ -993,7 +994,7 @@ fn judging_every_body_reads_each_once_spec_commits_5() {
 fn purge_rejudge(n: usize) -> [Work; 3] {
     use osis_commit::PurgeItem;
     use osis_schema::{Aspect, StaticSchema};
-    static S: StaticSchema = StaticSchema::new("purgecost.osis", "revision 1; purgeable_by(author, admin) keep_history(forever) aspect l:msg.0: string;\n");
+    static S: StaticSchema = StaticSchema::new("purgecost.osis", "revision 1; purgeable_by(author, admin) aspect l:msg.0: string;\n");
     const MSG: Aspect<Value> = Aspect::new("l:msg.0", &S);
     let r = n / 10;
     let mut lp = net(4, 0x9a);
@@ -1116,7 +1117,7 @@ fn grant_is_flat_in_content_commits() {
     assert_eq!(b[1].n("rebuild"), 0, "open rebuilds nothing");
 }
 
-static LONG: osis_schema::StaticSchema = osis_schema::StaticSchema::new("long.osis", "revision 1; purgeable_by(author, admin) keep_history(forever) aspect l:msg.0: string;\n");
+static LONG: osis_schema::StaticSchema = osis_schema::StaticSchema::new("long.osis", "revision 1; purgeable_by(author, admin) aspect l:msg.0: string;\n");
 const MSGS: osis_schema::Aspect<Value> = osis_schema::Aspect::new("l:msg.0", &LONG);
 
 /// One aspect kept forever, n 200-byte writes by 4 writers (the first admin and 3 granted write),

@@ -17,12 +17,9 @@ fn log() -> Ak {
     ak("t:log~0")
 }
 
-fn forever() -> Retention {
-    Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::Keep { until: Some(osis_commit::FOREVER), after: None }) }
-}
-
-fn after(d: u64) -> Retention {
-    Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::Keep { until: None, after: Some(d) }) }
+/// Purgeable by its author or admins (what history keeps is the thing's setting).
+fn purgeable() -> Retention {
+    Retention { by: PurgeBy::AuthorOrAdmin }
 }
 
 fn net_with(n: usize, seed: u64) -> (LocalPeer, Tid, Vec<Tid>) {
@@ -30,6 +27,8 @@ fn net_with(n: usize, seed: u64) -> (LocalPeer, Tid, Vec<Tid>) {
     let ids: Vec<Tid> = (0..n).map(|i| lp.peers[i].engine.me()).collect();
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
+    // the thing keeps its signal's fires for good
+    m.set(d, &ct::RETENTION, &setting(&[(log().as_str(), History::FOREVER)])).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     for x in &ids[1..] {
         set_edge(&mut lp.peers[0].engine, d, *x, Some(edge(Role::Write)), None);
@@ -89,8 +88,10 @@ fn body(v: &str) -> PartBody {
 #[test]
 fn an_edit_reads_in_the_originals_place_spec_commits_5() {
     let (mut lp, d, _) = setup(1);
-    let r = forever();
+    let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
+    // stamped after it (the same `ts` would order them by commit ID)
+    lp.advance(10);
     let bob = fire(&mut lp, 1, d, r, "bob");
     let v1 = edit(&mut lp, 0, d, r, "two", o);
     let v2 = edit(&mut lp, 0, d, r, "three", o);
@@ -109,7 +110,7 @@ fn an_edit_reads_in_the_originals_place_spec_commits_5() {
 fn every_arrival_order_reads_alike_spec_commits_5() {
     for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
         let (mut lp, d, _) = net_with(3, 2);
-        let r = forever();
+        let r = purgeable();
         let o = fire(&mut lp, 0, d, r, "one");
         let v1 = edit(&mut lp, 0, d, r, "two", o);
         let v2 = edit(&mut lp, 0, d, r, "three", o);
@@ -128,7 +129,7 @@ fn every_arrival_order_reads_alike_spec_commits_5() {
 #[test]
 fn forged_claims_stand_alone_spec_commits_5() {
     let (mut lp, d, _) = setup(4);
-    let r = forever();
+    let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
     let forged = edit(&mut lp, 1, d, r, "bobs", o);
     let v = edit(&mut lp, 0, d, r, "two", o);
@@ -147,7 +148,7 @@ fn forged_claims_stand_alone_spec_commits_5() {
 #[test]
 fn an_edit_after_a_kick_is_not_honored_spec_commits_5() {
     let (mut lp, d, ids) = setup(6);
-    let r = forever();
+    let r = purgeable();
     let bob = 1;
     let o = fire(&mut lp, bob, d, r, "mine");
     lp.sync_all().unwrap();
@@ -169,11 +170,12 @@ fn a_valid_edit_of_an_invalid_original_stands_alone_spec_commits_5() {
     let ids = [0, 1].map(|i| lp.peers[i].engine.me());
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
+    keep_in(&mut m, d, &setting(&[(log().as_str(), History::FOREVER)]));
     lp.peers[0].commit(m).unwrap().unwrap();
     set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Read)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    let r = forever();
+    let r = purgeable();
     // bob, a reader, writes before he may, then is granted and edits it
     let mut m = Mutation::new();
     m.retention(d, &log(), r).unwrap();
@@ -193,7 +195,7 @@ fn a_valid_edit_of_an_invalid_original_stands_alone_spec_commits_5() {
 #[test]
 fn versions_return_folded_with_their_original_spec_commits_5() {
     let (mut lp, d, ids) = net_with(3, 8);
-    let r = forever();
+    let r = purgeable();
     let (bob, carol) = (1, 2);
     set_edge(&mut lp.peers[0].engine, d, ids[carol], Some(edge(Role::Admin)), None);
     lp.sync_all().unwrap();
@@ -231,7 +233,7 @@ fn named(d: Tid, c: CommitId) -> PurgeItem {
 #[test]
 fn a_purge_takes_only_what_it_names_spec_commits_5() {
     let (mut lp, d, _) = setup(8);
-    let r = forever();
+    let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
     let v = edit(&mut lp, 0, d, r, "two", o);
     lp.sync_all().unwrap();
@@ -267,7 +269,7 @@ fn a_purge_takes_only_what_it_names_spec_commits_5() {
 #[test]
 fn expiry_shows_the_previous_or_stands_alone_spec_commits_5() {
     let (mut lp, d, _) = setup(11);
-    let r = forever();
+    let r = purgeable();
     let t = lp.peers[0].engine.now().0;
     let timed = |lp: &mut LocalPeer, v: &str, at: u64, of: Option<CommitId>| {
         let mut m = Mutation::new();
@@ -294,7 +296,7 @@ fn expiry_shows_the_previous_or_stands_alone_spec_commits_5() {
 #[test]
 fn an_edit_takes_its_originals_expiry_spec_commits_5() {
     let (mut lp, d, _) = setup(12);
-    let r = forever();
+    let r = purgeable();
     let t = lp.peers[0].engine.now().0;
     let mut m = Mutation::new();
     m.retention(d, &log(), r).unwrap();
@@ -308,33 +310,33 @@ fn an_edit_takes_its_originals_expiry_spec_commits_5() {
     assert_eq!(list(&mut lp, 0, d), vec![], "both end together");
 }
 
-// spec/commits.md §5 Keep bounds: an original past its keep leaves the listing, its versions then
-// stand alone at their own places
+// spec/commits.md §5 Signals: an original past its window leaves the listing, its versions (each
+// in the same window from its own `ts`) then stand alone at their own places
 #[test]
 fn an_original_past_its_keep_frees_its_versions_spec_commits_5() {
     let (mut lp, d, _) = setup(13);
-    let o = fire(&mut lp, 0, d, after(HOUR), "one");
+    set_setting(&mut lp, 0, d, &setting(&[(log().as_str(), History::Keep { until: None, after: Some(2 * HOUR) })]));
     lp.advance(1_000);
-    let v = edit(&mut lp, 0, d, after(5 * HOUR), "two", o);
+    let o = fire(&mut lp, 0, d, purgeable(), "one");
+    lp.advance(HOUR);
+    let v = edit(&mut lp, 0, d, purgeable(), "two", o);
     lp.sync_all().unwrap();
     assert_eq!(list(&mut lp, 1, d), vec![(o, Some(v), body("two"))]);
-    lp.advance(2 * HOUR);
+    lp.advance(HOUR + HOUR / 2);
     lp.peers[1].tick().unwrap();
     assert_eq!(list(&mut lp, 1, d), vec![(v, None, body("two"))]);
 }
 
-// spec/commits.md §5 Required retention: `final` makes a replacing delta break the entry, invalid
-// per key; the writer refuses it
+// spec/commits.md §5 Signals: `final` on the setting's entry is a writer default: the writer
+// refuses an edit, and one written anyway is honored (no validity rule)
 #[test]
-fn final_breaks_a_replacing_delta_spec_commits_5() {
+fn final_is_a_writer_default_spec_commits_5() {
     let (mut lp, d, _) = setup(14);
-    let r = forever();
+    let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
-    let mut q = ct::Required::new(r, None);
-    q.r#final = true;
-    let rules: ct::RequiredRules = BTreeMap::from([(log(), q)]).into();
+    let rules: ct::RetentionSetting = BTreeMap::from([(log(), ct::RetentionEntry { history: Some(History::FOREVER), r#final: true, ..Default::default() })]).into();
     let mut m = Mutation::new();
-    m.set(d, &ct::REQUIRED, &rules).unwrap();
+    m.set(d, &ct::RETENTION, &rules).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     let mut m = Mutation::new();
@@ -348,48 +350,14 @@ fn final_breaks_a_replacing_delta_spec_commits_5() {
     m.replaces(d, &log(), o).unwrap();
     let v = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
     lp.sync_all().unwrap();
-    assert_eq!(list(&mut lp, 1, d).len(), 1, "no second entry");
-    assert_eq!(list(&mut lp, 1, d)[0].0, o, "invalid: the original reads as itself");
-    assert_eq!(lp.peers[1].engine.commit_row(&v, &|_, _| true, usize::MAX).unwrap().unwrap().parts.len(), 0);
-}
-
-// spec/commits.md §5 Required retention: a replacing delta's expiry need only lie within the
-// duration; an expiry past it, or none, breaks the rule
-#[test]
-fn a_required_duration_bounds_a_replacing_delta_spec_commits_5() {
-    let (mut lp, d, _) = setup(15);
-    let r = forever();
-    let dur = 10 * HOUR;
-    let rules: ct::RequiredRules = BTreeMap::from([(log(), ct::Required::new(r, Some(dur)))]).into();
-    let mut m = Mutation::new();
-    m.set(d, &ct::REQUIRED, &rules).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    lp.sync_all().unwrap();
-    let o = fire(&mut lp, 0, d, r, "one");
-    lp.advance(HOUR);
-    let v = edit(&mut lp, 0, d, r, "two", o);
-    let at = |lp: &mut LocalPeer, c: &CommitId| lp.peers[0].engine.header(c).unwrap().expires;
-    assert_eq!(at(&mut lp, &v), at(&mut lp, &o), "the original's expiry, shorter than a full duration");
-    lp.sync_all().unwrap();
-    assert_eq!(list(&mut lp, 1, d), vec![(o, Some(v), body("two"))], "valid");
-    // past the required duration: invalid at a receiver
-    let now = lp.peers[0].engine.now().0;
-    let mut m = Mutation::new();
-    m.retention(d, &log(), r).unwrap();
-    m.set(d, &log(), &s("three")).unwrap();
-    m.replaces(d, &log(), o).unwrap();
-    m.expires_all(WallMs(now + dur + HOUR));
-    let far = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
-    lp.sync_all().unwrap();
-    assert_eq!(list(&mut lp, 1, d)[0], (o, Some(v), body("two")), "the far edit breaks the rule and counts for nothing");
-    assert!(!list(&mut lp, 1, d).iter().any(|x| x.0 == far));
+    assert_eq!(list(&mut lp, 1, d), vec![(o, Some(v), body("two"))], "honored");
 }
 
 // spec/commits.md §5 Purge: a request that expires reaches only deltas expiring no later
 #[test]
 fn an_expiring_request_reaches_only_earlier_expiries_spec_commits_5() {
     let (mut lp, d, _) = setup(16);
-    let r = forever();
+    let r = purgeable();
     let t = lp.peers[0].engine.now().0;
     let write = |lp: &mut LocalPeer, v: &str, at: Option<u64>| {
         let mut m = Mutation::new();
@@ -426,7 +394,7 @@ fn an_expiring_request_reaches_only_earlier_expiries_spec_commits_5() {
 #[test]
 fn listeners_hear_the_original_spec_commits_5() {
     let (mut lp, d, _) = setup(17);
-    let r = forever();
+    let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
     let v = edit(&mut lp, 0, d, r, "two", o);
     let bytes = lp.peers[0].engine.commit_bytes(&o).unwrap().unwrap();
@@ -450,7 +418,7 @@ fn listeners_hear_the_original_spec_commits_5() {
 fn a_folded_version_ending_with_its_fire_is_not_told_spec_commits_5() {
     let told = |rx: &std::sync::mpsc::Receiver<Event>, d: Tid| -> Vec<CommitId> { rx.try_iter().filter_map(|e| if let Event::Commits(ch) = e { Some(ch.iter().filter(|x| x.tid == d && x.ak == log()).map(|x| x.id).collect::<Vec<_>>()) } else { None }).flatten().collect() };
     let (mut lp, d, _) = setup(21);
-    let r = forever();
+    let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
     let v = edit(&mut lp, 0, d, r, "two", o);
     let rx = lp.peers[0].engine.subscribe();
@@ -493,7 +461,7 @@ fn a_folded_version_ending_with_its_fire_is_not_told_spec_commits_5() {
 #[test]
 fn the_fold_survives_a_restart_spec_commits_5() {
     let (mut lp, d, _) = setup(18);
-    let r = forever();
+    let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
     let v = edit(&mut lp, 0, d, r, "two", o);
     let want = list(&mut lp, 0, d);
@@ -508,7 +476,7 @@ fn the_fold_survives_a_restart_spec_commits_5() {
 fn bodies_read_are_flat_in_n_spec_commits_5() {
     fn count(n: usize) -> (u64, u64, u64) {
         let (mut lp, d, _) = setup(n as u64);
-        let r = forever();
+        let r = purgeable();
         // the quote is of the oldest message: a walk from the newest pays the whole signal
         let mut first = None;
         for i in 0..n {
@@ -542,7 +510,7 @@ fn bodies_read_are_flat_in_n_spec_commits_5() {
 #[test]
 fn replaces_off_a_durable_signal_is_a_bad_part_spec_commits_2() {
     let (mut lp, d, _) = setup(19);
-    let o = fire(&mut lp, 0, d, forever(), "one");
+    let o = fire(&mut lp, 0, d, purgeable(), "one");
     let claim = || {
         let mut m = Mutation::new();
         m.set(d, &REG, &s("x")).unwrap();
@@ -585,7 +553,12 @@ fn incremental_equals_rebuilt_and_every_order_reads_alike_spec_commits_5() {
         for step in 0..14 {
             let now = lp.peers[alice].engine.now().0;
             let who = if g.below(2) == 1 { bob } else { alice };
-            let r = [forever(), after(2 * HOUR)][g.below(2)];
+            // now and then alice moves the window: kept for good, or two hours from each fire
+            let h = [History::FOREVER, History::Keep { until: None, after: Some(2 * HOUR) }][g.below(2)];
+            let r = purgeable();
+            if step % 4 == 3 {
+                set_setting(&mut lp, alice, d, &setting(&[(log().as_str(), h)]));
+            }
             let mut m = Mutation::new();
             m.retention(d, &log(), r).unwrap();
             match g.below(6) {
@@ -699,7 +672,7 @@ fn incremental_equals_rebuilt_and_every_order_reads_alike_spec_commits_5() {
 #[test]
 fn an_undo_of_an_edit_changes_no_reading_spec_commits_7() {
     let (mut lp, d, _) = setup(20);
-    let r = forever();
+    let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
     let v = edit(&mut lp, 0, d, r, "two", o);
     let mut m = Mutation::new();

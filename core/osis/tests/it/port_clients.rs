@@ -6,7 +6,7 @@ use osis::internals::CommitRaw as _;
 use crate::common::watched;
 use crate::common::MembersOf as _;
 use crate::common::TestWrites as _;
-use crate::common::{T0, ak, block_on, keep_day, kept, page};
+use crate::common::{T0, ak, block_on, kept, page, typed_any};
 use crate::port::{Raw, set_write};
 use osis::internals::Internals as _;
 use osis::{SetRoleOpts, ClientSecret, CommitQuery, Error, Address, LinkOpts, MemStore, Osis, Role, Runtime, Scope, Store, Tid, Value, Time};
@@ -56,6 +56,17 @@ fn open(store: &MemStore, net: &osis_transport::Net, clock: &Arc<ManualClock>, c
     n
 }
 
+/// `db`, an admin of `t`, writes `t`'s setting keeping `k`'s replaced writes for good.
+fn keep_forever(db: &Osis, t: Tid, k: &osis_base::Ak) {
+    keep_all_forever(db, t, &[k]);
+}
+
+/// `t`'s setting keeping each of `ks` for good.
+fn keep_all_forever(db: &Osis, t: Tid, ks: &[&osis_base::Ak]) {
+    let keep = osis::core::RetentionEntry { history: Some(osis::History::FOREVER), ..Default::default() };
+    db.commit_with(|w| w.at(t, osis::core::RETENTION).set(&osis::core::RetentionSetting { rules: ks.iter().map(|k| ((*k).clone(), keep)).collect(), ..Default::default() })).unwrap();
+}
+
 fn node() -> Node {
     let (net, clock, store) = (osis_transport::Net::new(1), Arc::new(ManualClock::new(Time(T0))), MemStore::new());
     let n = open(&store, &net, &clock, true);
@@ -69,6 +80,9 @@ fn node() -> Node {
             let out = w.create()?;
             let h = w.create()?;
             let u = w.create_with_admin(h)?;
+            for x in [g, t, member, out, h, u] {
+                crate::common::keep_all(w, x);
+            }
             Ok((g, t, member, out, h, u))
         })
         .unwrap();
@@ -294,41 +308,43 @@ fn a_clashing_write_is_refused_through_the_port_spec_commits_6() {
 }
 
 // spec/permissions.md §6, notes/client-port.md §3 (Acting as the actor): a purge acting for a
-// client drops what its node and the client both have the right to: a client admin drops no
-// `author` delta of its account, though the node alone may; a write client drops its own
+// client drops what its node and the client both have the right to: a write client drops no
+// `admin` delta of its account, though the node alone may, and drops its own; an admin client
+// drops any
 #[test]
 fn client_purge_is_judged_by_the_actor_spec_perm_6() {
     let x = node();
     let name = ak("t:name.0");
     let (a, _, c) = x.client(Role::Admin);
-    let only = osis::Retention { by: osis::internals::schema::PurgeBy::Author, ..Default::default() };
-    let held = |k: &osis_base::Ak| x.n.engine(|e| e.commit_ids().into_iter().filter(|i| e.header(i).is_some_and(|h| h.aspects.iter().any(|y| y.tid == x.t && y.ak == *k && y.retention.by == only.by))).collect::<Vec<_>>().into_iter().map(|i| e.body_not_dropped(&i, &x.t, k)).collect::<Vec<_>>());
-    let mut w = x.n.write();
-    w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).retention(only).set(&Value::Int(1)).unwrap();
-    w.commit().unwrap();
-    let mut w = c.write();
-    w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).purge(osis::Purge::All).unwrap();
-    w.commit().unwrap();
-    assert_eq!(held(&name), [true], "the account's author-only delta");
-    // a writer's own
     let (_, _, w2) = x.client(Role::Write);
+    let admins = osis::Retention { by: osis::internals::schema::PurgeBy::Admin };
+    let held = |k: &osis_base::Ak| x.n.engine(|e| e.commit_ids().into_iter().filter(|i| e.header(i).is_some_and(|h| h.aspects.iter().any(|y| y.tid == x.t && y.ak == *k && y.retention.by == admins.by))).collect::<Vec<_>>().into_iter().map(|i| e.body_not_dropped(&i, &x.t, k)).collect::<Vec<_>>());
+    let mut w = x.n.write();
+    w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).retention(admins).set(&Value::Int(1)).unwrap();
+    w.commit().unwrap();
+    // the writer holds no right over any held delta of the aspect (the node's, kept by the
+    // thing's setting): refused, nothing dropped
+    let mut w = w2.write();
+    w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).purge(osis::Purge::All).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Permission { .. })));
+    assert_eq!(held(&name), [true], "the account's admin-only delta");
+    // a writer's own
     let own = ak("t:own.0");
     let mut w = w2.write();
-    w.at(x.t, osis::DynamicAspectKey::untyped(own.clone())).retention(only).set(&Value::Int(2)).unwrap();
+    w.at(x.t, osis::DynamicAspectKey::untyped(own.clone())).set(&Value::Int(2)).unwrap();
     w.commit().unwrap();
     let mut w = w2.write();
     w.at(x.t, osis::DynamicAspectKey::untyped(own.clone())).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
-    assert_eq!(held(&own), [false]);
-    // an admin, any admin class
+    assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(own.clone())).get().unwrap(), None);
+    // an admin, any class
     let other = ak("t:other.0");
     x.n.commit_set(x.t, osis::DynamicAspectKey::untyped(other.clone()), &Value::Int(3)).unwrap();
     let mut w = c.write();
     w.at(x.t, osis::DynamicAspectKey::untyped(other.clone())).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
     assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(other.clone())).get().unwrap(), None);
-    // the account itself may
-    let mut w = x.n.write();
+    let mut w = c.write();
     w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
     assert_eq!(held(&name), [false]);
@@ -352,14 +368,16 @@ fn a_client_session_is_no_sync_connection() {
 #[test]
 fn tombstone_reads_through_the_client_port_spec_commits_5() {
     let x = node();
-    let k = ak("t:msg.0");
-    let forever = osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() };
+    let (k, both) = (ak("t:msg.0"), ak("t:both.0"));
+    for t in [x.t, x.u] {
+        keep_all_forever(&x.n, t, &[&k, &both]);
+    }
     let (ca, _, c) = x.client(Role::Read);
     let q = |db: &Osis, t: Tid| db.writes(&Scope::Thing(t), &CommitQuery::default()).unwrap().commits;
     let mut by = None;
     for t in [x.t, x.u] {
         let mut w = x.n.write();
-        w.at(t, osis::DynamicAspectKey::untyped(k.clone())).retention(forever).set(&Value::Str("secret".into())).unwrap();
+        w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Str("secret".into())).unwrap();
         w.commit().unwrap();
         let mut w = x.n.write();
         w.at(t, osis::DynamicAspectKey::untyped(k.clone())).purge(osis::Purge::All).unwrap();
@@ -380,10 +398,9 @@ fn tombstone_reads_through_the_client_port_spec_commits_5() {
     assert!(q(&x.n, x.u).iter().any(|e| !purged(e).is_empty()));
     assert!(q(&c, x.u).is_empty());
     // one commit on both things, both purged: the client reads the half it may read
-    let both = ak("t:both.0");
     let id = x.n.commit_with(|w| {
-        w.at(x.t, osis::DynamicAspectKey::untyped(both.clone())).retention(forever).set(&Value::Int(1))?;
-        w.at(x.u, osis::DynamicAspectKey::untyped(both.clone())).retention(forever).set(&Value::Int(2))
+        w.at(x.t, osis::DynamicAspectKey::untyped(both.clone())).set(&Value::Int(1))?;
+        w.at(x.u, osis::DynamicAspectKey::untyped(both.clone())).set(&Value::Int(2))
     });
     id.unwrap();
     let mut w = x.n.write();
@@ -407,7 +424,7 @@ fn undo_and_revert_are_the_actors() {
     let x = node();
     let (a, b) = (ak("t:a.0"), ak("t:b.0"));
     let (ca, _, c) = x.client(Role::Write);
-    keep_day(&x.n, &["t:a.0", "t:b.0"]);
+    typed_any(&x.n, &["t:a.0", "t:b.0"]);
     x.n.commit_set(x.t, kept(&x.n, &a.clone()), &Value::Int(1)).unwrap();
     c.commit_set(x.t, kept(&x.n, &b.clone()), &Value::Int(2)).unwrap();
     x.n.commit_set(x.t, kept(&x.n, &a.clone()), &Value::Int(3)).unwrap();
@@ -810,7 +827,7 @@ fn hidden_group_scopes_nothing() {
     let x = node();
     let name = ak("t:name.0");
     let (_, _, c) = x.client(Role::Write);
-    keep_day(&x.n, &["t:name.0"]);
+    typed_any(&x.n, &["t:name.0"]);
     let mut w = x.n.write();
     w.group(x.h).add(osis::Member::Item(x.t)).unwrap();
     w.commit().unwrap();
@@ -1025,7 +1042,7 @@ fn refused_undo_blocks_only_its_scope() {
     let x = node();
     let name = ak("t:name.0");
     let (a, _, c) = x.client(Role::Write);
-    keep_day(&x.n, &["t:name.0"]);
+    typed_any(&x.n, &["t:name.0"]);
     let set = |v: i64| {
         let mut w = c.write();
         w.at(x.t, kept(&x.n, &name.clone())).set(&Value::Int(v)).unwrap();
@@ -1112,7 +1129,7 @@ fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
 fn revert_lists_nothing_hidden() {
     let x = node();
     let (_, _, c) = x.client(Role::Write);
-    keep_day(&x.n, &["t:name.0"]);
+    typed_any(&x.n, &["t:name.0"]);
     let refused = |r: osis::Result<osis::Commit>, g: Tid| assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == g), "{r:?}");
     let unplaced = |m: Tid| {
         let mut w = x.n.write();
@@ -1173,6 +1190,8 @@ fn revert_lists_nothing_hidden() {
             Ok(m)
         })
         .unwrap();
+    // a writer may not write its setting: the node, an admin of it, keeps its history
+    x.n.commit_with(|w| { crate::common::keep_all(w, d); Ok(()) }).unwrap();
     c.commit_set(d, kept(&x.n, &name.clone()), &Value::Int(2)).unwrap();
     assert!(x.n.at(x.g, ct::GROUP).get().unwrap().unwrap().items.contains(&d));
     c.undo(&Scope::Thing(d)).unwrap().unwrap();
@@ -1390,7 +1409,9 @@ fn listings_as_the_actor() {
     let x = node();
     let k = ak("t:msg.0");
     let key = || osis::DynamicAspectKey::untyped(k.clone());
-    let forever = osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() };
+    for t in [x.t, x.u] {
+        keep_forever(&x.n, t, &k);
+    }
     let (a, _, c) = x.client(Role::Write);
     let (tx, rx) = channel();
     let _s = c.at(x.t, key()).on_write(move |_, e| tx.send(e).unwrap()).unwrap();
@@ -1398,7 +1419,7 @@ fn listings_as_the_actor() {
     let _h = c.at(x.u, key()).on_write(move |_, e| htx.send(e).unwrap()).unwrap();
     let say = |t: Tid, v: &str| {
         let mut w = x.n.write();
-        w.at(t, key()).retention(forever).set(&Value::Str(v.into())).unwrap();
+        w.at(t, key()).set(&Value::Str(v.into())).unwrap();
         w.commit().unwrap().unwrap().stamp.id
     };
     let one = say(x.t, "one");
@@ -1411,7 +1432,7 @@ fn listings_as_the_actor() {
     assert_eq!(c.at(x.t, key()).writes(&five).unwrap(), x.n.at(x.t, key()).writes(&five).unwrap());
     assert!(c.at(x.u, key()).writes(&five).unwrap().commits.is_empty());
     // a client's own write, by its actor; its purge by the port
-    c.commit_with(|w| w.at(x.t, key()).retention(forever).set(&Value::Str("mine".into())).map(|_| ())).unwrap();
+    c.commit_with(|w| w.at(x.t, key()).set(&Value::Str("mine".into())).map(|_| ())).unwrap();
     let e = &c.at(x.t, key()).writes(&page(osis::CommitFrom::Newest, 1)).unwrap().commits[0];
     assert_eq!(e.stamp.actor, a);
     let id = e.stamp.id;
@@ -1602,10 +1623,10 @@ fn pages_past_large_bodies() {
     let (_, _, c) = x.client(Role::Read);
     let half = osis_proto::api::REPLY_BUDGET / 2;
     let fits = half - osis::internals::COMMIT_PAGE * 512 / 2 - 60;
-    let forever = osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() };
+    keep_forever(&x.n, x.t, &k);
     let key = || osis::DynamicAspectKey::untyped(k.clone());
     for (b, n) in [(0u8, half - 60), (1, half - 60), (2, fits), (3, fits), (4, fits)] {
-        x.n.commit_with(|w| w.at(x.t, key()).retention(forever).set(&Value::Bytes(vec![b; n]))).unwrap();
+        x.n.commit_with(|w| w.at(x.t, key()).set(&Value::Bytes(vec![b; n]))).unwrap();
     }
     let p = c.at(x.t, key()).writes(&page(CommitFrom::Newest, 10)).unwrap();
     assert_eq!((p.commits.len(), p.more), (2, true));
@@ -1657,7 +1678,7 @@ fn holders_and_targets_show_only_what_the_actor_reads() {
     assert_eq!(c.undo_target(&hidden).unwrap(), None);
     assert_eq!(c.redo_target(&hidden).unwrap(), None);
     let (_, _, w) = x.client(Role::Write);
-    keep_day(&x.n, &["t:name.0"]);
+    typed_any(&x.n, &["t:name.0"]);
     // replacing the setup's untyped name would leave nothing kept to write back
     x.n.commit_set(x.t, kept(&x.n, &ak("t:name.0")), &Value::Str("kept".into())).unwrap();
     w.commit_set(x.t, kept(&x.n, &ak("t:name.0")), &Value::Str("mine".into())).unwrap();
@@ -1674,7 +1695,7 @@ fn holders_and_targets_show_only_what_the_actor_reads() {
 fn undo_target_superseded_as_undo() {
     let x = node();
     let (_, _, w) = x.client(Role::Write);
-    keep_day(&x.n, &["t:name.0"]);
+    typed_any(&x.n, &["t:name.0"]);
     let k = kept(&x.n, &ak("t:name.0"));
     let scope = Scope::Thing(x.t);
     let superseded = |c| Err(Error::NotUndoable { commit: c, reason: osis::NotUndoableReason::Superseded });

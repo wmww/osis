@@ -78,7 +78,7 @@ impl RawKey for DynamicAspectKey {
     }
 }
 
-/// Aspects every app shares the meaning of, and the rule of what may be written to a thing.
+/// Aspects every app shares the meaning of, and what a thing keeps of replaced content.
 pub mod core {
     /// What a thing is called.
     pub use osis_schema::core_types::NAME;
@@ -87,10 +87,10 @@ pub mod core {
     /// Marks a thing as a tag.
     pub use osis_schema::core_types::TAG;
     pub use osis_schema::core_types::Tag;
-    pub use crate::retention::{Required, RequiredRules};
-    /// What every write to a thing must keep to, by aspect: how long it is held, when it
-    /// expires. An admin sets it; a write that breaks it is refused.
-    pub const REQUIRED: osis_schema::Aspect<RequiredRules> = osis_schema::Aspect::new("required^.0", &osis_schema::CORE);
+    pub use crate::retention::{RetentionEntry, RetentionSetting};
+    /// What a thing keeps of replaced content, by aspect, and the expiry its writes get. An admin
+    /// sets it, at any time.
+    pub const RETENTION: osis_schema::Aspect<RetentionSetting> = osis_schema::Aspect::new("retention^.0", &osis_schema::CORE);
 }
 
 /// Which calls each key kind takes, checked at compile time: value operations do not compile on
@@ -99,12 +99,14 @@ pub mod core {
 /// one fails for its one forbidden call.
 /// ```
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
+/// # let keep = osis::core::RetentionEntry { history: Some(osis::History::FOREVER), ..Default::default() };
+/// # w.at(t, osis::core::RETENTION).set(&osis::core::RetentionSetting { rules: [(osis::Ak::new("t:ping~0").unwrap(), keep)].into(), ..Default::default() }).unwrap();
 /// // what each kind takes
 /// w.at(t, N).set(&1).unwrap();
 /// w.at(t, N).edit(&1, &2).unwrap();
@@ -133,7 +135,7 @@ pub mod core {
 /// `get` on a signal:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
@@ -145,7 +147,7 @@ pub mod core {
 /// `path` reads on a signal:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
@@ -157,7 +159,7 @@ pub mod core {
 /// `on_change` on a signal:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
@@ -169,7 +171,7 @@ pub mod core {
 /// `writes` on a signal:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
@@ -181,7 +183,7 @@ pub mod core {
 /// `on_write` on a signal:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
@@ -193,7 +195,7 @@ pub mod core {
 /// `keep_alive` on a signal:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
@@ -205,7 +207,7 @@ pub mod core {
 /// `set` on a signal:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
@@ -217,7 +219,7 @@ pub mod core {
 /// `edit` on a signal:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
@@ -229,7 +231,7 @@ pub mod core {
 /// `overwrite` on a signal:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
@@ -241,7 +243,7 @@ pub mod core {
 /// `remove` on a signal:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
@@ -253,7 +255,7 @@ pub mod core {
 /// path writes on a signal:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
@@ -265,7 +267,7 @@ pub mod core {
 /// `fire` on a value key:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
@@ -277,7 +279,7 @@ pub mod core {
 /// `fired` on a value key:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
@@ -289,7 +291,7 @@ pub mod core {
 /// `on_fire` on a value key:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
@@ -301,7 +303,7 @@ pub mod core {
 /// `replace` on a value key:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
@@ -314,7 +316,7 @@ pub mod core {
 /// `versions` on a value key:
 /// ```compile_fail,E0599
 /// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();

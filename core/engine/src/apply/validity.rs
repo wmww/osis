@@ -540,36 +540,26 @@ pub(super) fn grantee_boxes_only(actor: &Tid, f: &Fragment, granted: &BTreeMap<(
     true
 }
 
-/// Notes what the held `required^.0` deltas among `parts` say (spec/commits.md §5), each judged
-/// from the delta alone. Deltas on the thing are judged again if it stands: a fallen one changes
-/// nothing, so a writer's costs nobody the walk; if it rises its thing is judged again anyway.
-pub(crate) fn note_required_rules(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) {
+/// Notes the held `retention^.0` deltas among `parts` (spec/commits.md §5 The setting), each read
+/// alone: one not reading as a setting is none. No validity depends on a setting; what the
+/// thing's timeline judges is judged again (`retention::setting_changed`).
+pub(crate) fn note_settings(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) {
     for (ai, d) in parts {
-        let Some(a) = h.aspects.get(*ai).filter(|a| a.ak.as_str() == osis_commit::retention::REQUIRED) else { continue };
-        let rules = d.fragment().read().map(|v| ct::required_rules(&v)).unwrap_or_default();
+        let Some(a) = h.aspects.get(*ai).filter(|a| a.ak.as_str() == osis_commit::retention::RETENTION) else { continue };
+        core.settings_due.insert(a.tid);
+        let Some(setting) = d.fragment().read().and_then(|v| ct::retention_setting(&v)) else { continue };
         let p = Point { ts: h.ts, node: h.author, commit: *id };
-        let put = |l: &mut Vec<(Point, Arc<ct::RequiredRules>)>| {
+        let put = |l: &mut Vec<(Point, Arc<ct::RetentionSetting>)>| {
             if let Err(i) = l.binary_search_by(|x| x.0.cmp(&p)) {
-                l.insert(i, (p, Arc::new(rules.clone())));
+                l.insert(i, (p, Arc::new(setting.clone())));
             }
         };
-        core.ix.required.upsert(a.tid, || {
+        core.ix.retention.upsert(a.tid, || {
             let mut l = Vec::new();
             put(&mut l);
             l
         }, put);
-        if core.ix.commits.get(id).is_none_or(|m| m.valid_at(*ai)) {
-            core.stale_things.insert(a.tid);
-        }
     }
-}
-
-/// Whether a delta of this kind and AK answers to its thing's required retention: not a
-/// compaction snapshot's or an aspect of fixed retention's. An ephemeral commit's is judged
-/// elsewhere (`eph_part_valid`) and carries none.
-pub(super) fn under_required(h: &Header, ak: &Ak) -> bool {
-    // an ephemeral aspect answers to no rule (spec/commits.md §5)
-    !h.kind.is_compaction() && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && !ak.ephemeral()
 }
 
 /// Re-derives the edge writes of commits whose removed keys were unknown.
@@ -618,14 +608,6 @@ fn acts_on(tl: Option<&osis_perm::Timeline>, h: &Header, id: &CommitId) -> bool 
     tl.delta_valid(point, &h.actor, Role::Write) == Validity::Valid
 }
 
-/// The newest `required^.0` delta on `tid` valid and ordered before `at`: (its key, the entry
-/// governing `ak`) (spec/commits.md §5). A function of the held deltas and the timeline.
-fn in_force(judge: &mut Judge<'_>, tid: &Tid, ak: &Ak, at: &Point) -> Option<(Point, Option<ct::Required>)> {
-    let valid = judge.settings(tid);
-    let (p, rules) = valid.get(valid.partition_point(|x| x.0 < *at).checked_sub(1)?)?;
-    Some((*p, ct::required_for(rules, ak).copied()))
-}
-
 /// Whether a removal from `tid` at key `at` retains by default: the `retain` of the setting in force
 /// (spec/permissions.md §3; none: it erases).
 pub(crate) fn retain_in_force(core: &Core, tid: &Tid, at: &Point) -> bool {
@@ -638,21 +620,20 @@ pub(crate) fn retain_now(core: &Core, tid: &Tid) -> bool {
     retain_in_force(core, tid, &Point { ts: core.hlc.peek(), node: core.account.get().unwrap_or(Tid::from_bytes([0; 15])), commit: CommitId([0xff; 32]) })
 }
 
-/// The requirement in force for a write of `ak` on `tid` by `node` at `ts` (the writer's side).
-pub(crate) fn required_now(core: &Core, tid: &Tid, ak: &Ak, node: Tid, ts: osis_base::Ts) -> Option<ct::Required> {
-    in_force(&mut Judge::new(core), tid, ak, &Point { ts, node, commit: CommitId([0; 32]) })?.1
+/// The valid `retention^.0` settings held on `tid`, in key order: its timeline (spec/commits.md
+/// §5 In force; `retention::history`).
+/// Judged by the parts' validity flags (`Meta::valid`, set by every re-judge), from the views
+/// alone: no header is decoded.
+pub(crate) fn settings(core: &Core, tid: &Tid) -> Arc<Settings> {
+    let Some(all) = core.ix.retention.get(tid) else { return Arc::default() };
+    let valid = |p: &Point| core.ix.commits.get(&p.commit).is_some_and(|m| m.view.aspects.iter().position(|a| a.tid == *tid && a.ak.as_str() == osis_commit::retention::RETENTION).is_some_and(|ai| m.valid_at(ai)));
+    Arc::new(all.iter().filter(|x| valid(&x.0)).cloned().collect())
 }
 
-/// The key of the `required^.0` delta that aspect `ai` of held commit `id` breaks, if any
-/// (`Judge::broken`).
-pub(crate) fn broken_by(core: &Core, h: &Header, id: &CommitId, ai: usize) -> Option<Point> {
-    Judge::new(core).broken(h, id, h.aspects.get(ai)?)
-}
-
-/// Whether a delta carries exactly the retention and expiry `q` requires, and no `replaces` when
-/// it is `final`.
-pub(super) fn meets(q: &ct::Required, h: &Header, a: &osis_commit::AspectEntry) -> bool {
-    a.retention == q.retention().canonical() && q.expiry_met(h.ts.wall_ms().0, h.expires, a.replaces.is_some()) && !(q.r#final && a.replaces.is_some())
+/// The setting this node writes under now: the newest valid one it holds on `tid` (the writer
+/// fills expiry and refuses a replace by it, spec/commits.md §5).
+pub(crate) fn setting_now(core: &Core, tid: &Tid) -> Option<Arc<ct::RetentionSetting>> {
+    settings(core, tid).last().map(|x| x.1.clone())
 }
 
 /// `part_valid` over many parts: what is per thing (chain depth, timeline) looked up once per
@@ -665,7 +646,7 @@ pub(crate) struct Judge<'a> {
     from: BTreeMap<(Tid, Role), Option<Option<Point>>>,
     /// Per (author, actor), from where the author acts for the actor whatever the commit.
     acts: BTreeMap<(Tid, Tid), Option<Option<Point>>>,
-    /// On the last thing: its valid `required^.0` deltas, in key order, found once.
+    /// On the last thing: its valid `retention^.0` deltas, in key order, found once.
     settings: Option<Arc<Settings>>,
     /// Per thing, the addenda on it that count (`Timeline::vouching`), found once; `None` for a
     /// thing with no timeline.
@@ -674,8 +655,8 @@ pub(crate) struct Judge<'a> {
     standings: BTreeMap<CommitId, EpochStanding<CommitId>>,
 }
 
-/// A thing's `required^.0` deltas: each one's key and what it says.
-type Settings = Vec<(Point, Arc<ct::RequiredRules>)>;
+/// A thing's `retention^.0` deltas: each one's key and what it says.
+pub(crate) type Settings = Vec<(Point, Arc<ct::RetentionSetting>)>;
 
 impl<'a> Judge<'a> {
     pub(crate) fn new(core: &'a Core) -> Judge<'a> {
@@ -756,18 +737,7 @@ impl<'a> Judge<'a> {
         }
     }
 
-    /// The key of the `required^.0` delta in force that delta `a` of commit `id` breaks
-    /// (spec/commits.md §5). Its commit's other deltas stand, its own thing's and others': a member
-    /// of another thing alone never holds this setting and must read as the rest do.
-    fn broken(&mut self, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry) -> Option<Point> {
-        if !under_required(h, &a.ak) || !self.core.ix.required.contains_key(&a.tid) {
-            return None;
-        }
-        let (p, q) = in_force(self, &a.tid, &a.ak, &Point { ts: h.ts, node: h.author, commit: *id })?;
-        q.filter(|q| !meets(q, h, a)).map(|_| p)
-    }
-
-    /// The valid `required^.0` deltas on `t` (`Settings`), each judged once per thing.
+    /// The valid `retention^.0` deltas on `t` (`Settings`), each judged once per thing.
     fn settings(&mut self, t: &Tid) -> Arc<Settings> {
         self.thing(t);
         if let Some(s) = &self.settings {
@@ -775,9 +745,9 @@ impl<'a> Judge<'a> {
         }
         let core = self.core;
         let mut valid = Settings::new();
-        for x in core.ix.required.get(t).into_iter().flatten() {
+        for x in core.ix.retention.get(t).into_iter().flatten() {
             let Some(m) = core.ix.commits.get(&x.0.commit) else { continue };
-            let ai = m.header.aspects.iter().position(|a| a.tid == *t && a.ak.as_str() == osis_commit::retention::REQUIRED);
+            let ai = m.view.aspects.iter().position(|a| a.tid == *t && a.ak.as_str() == osis_commit::retention::RETENTION);
             if ai.is_some_and(|ai| self.part(&m.header, &x.0.commit, ai)) {
                 debug_assert!(core.ix.held.ever_admins(t).contains(&x.0.node), "a valid setting's author is a possible admin");
                 valid.push(x.clone());
@@ -821,11 +791,6 @@ impl<'a> Judge<'a> {
             return false;
         }
         if !self.acts(h, id) {
-            return false;
-        }
-        // a delta breaking a required retention at its key (spec/commits.md §5); a `required^.0`
-        // delta answers to none, so this ends
-        if self.broken(h, id, a).is_some() {
             return false;
         }
         // a thing more than `MAX_CHAIN_DEPTH` record links below its key actor: nothing written on
@@ -1041,15 +1006,10 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let authored: BTreeSet<CommitId> = on.collect();
     let acting: BTreeSet<CommitId> = acting.collect();
     // re-judged whole: those named, and those acting for a thing whose timeline changed
-    // (`acts_for`); deltas on a thing answer to its `required^.0` deltas (`in_force`), so where
-    // one of those is judged again they are too
+    // (`acts_for`)
     let mut whole = explicit;
     whole.extend(things.iter().flat_map(|t| tx.core.acting_for(t)));
     whole.extend(acting);
-    for id in whole.iter().chain(&authored) {
-        let Some(m) = tx.core.ix.commits.get(id) else { continue };
-        things.extend(m.view.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::REQUIRED).map(|a| a.tid));
-    }
     let judge = crate::costs::span("rejudge: judge");
     // verdicts first (the core read only), each held commit once: by thing, a commit under the
     // first re-judged thing among its aspects; then the commits re-judged whole

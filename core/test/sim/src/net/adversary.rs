@@ -382,8 +382,8 @@ pub fn deposit_flood(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// The dedup secret of one thing (the only secret a hand-built commit with `nobody` retention
-/// needs).
+/// The dedup secret of one thing and stand-in delete keys: what a hand-built commit needs (the
+/// keys need not be the thing's: a forged commit is judged by its signature and counters).
 struct Dedup(osis_base::CreationRecord);
 
 impl osis_commit::Secrets for Dedup {
@@ -444,7 +444,7 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
     let f = create(&mut w, &AnyView, &osis_base::Value::Str("c2".into())).map_err(|e| sim.fail(e.to_string()))?;
     let delta = encode_delta(&Delta { nonce: [9; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, bt, lo, hi), None).map_err(|e| sim.fail(e.to_string()))?;
     let mut aw = AspectWrite::new(t, eq.clone(), lo, hi, delta);
-    aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, history: Some(osis_schema::History::FOREVER) };
+    aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
     let mut cb = CommitBuilder::new(Kind::Content, ts, bt, bt, form);
     cb.aspects.push(aw);
     let rec = sim.engine(a)?.get_typed(&t, &osis_schema::core_types::CREATED).map_err(|e| sim.fail(e.to_string()))?.ok_or_else(|| sim.fail("no created.0"))?;

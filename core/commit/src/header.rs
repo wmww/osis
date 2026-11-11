@@ -3,13 +3,13 @@
 
 use crate::Error;
 use crate::cbor::{ak, as_bytes, as_list, as_opt, as_tid, as_uint, tid, uidx, uint};
-use osis_base::cbor::{MAJOR_ARRAY, MAJOR_BYTES};
+use osis_base::cbor::MAJOR_BYTES;
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH, TAG_SET, TID_LEN};
 use osis_base::{Ak, BlobId, CommitId, Limits, Link, Reader, Tid, Ts, Value};
 use osis_crdt::DeltaKind;
 use osis_base::SIGNING_KEY_ED25519;
 use osis_crypto::{Domain, KemPublicKey, Signature, VerifyingKey};
-use osis_schema::{History, PurgeBy, Retention};
+use osis_schema::{PurgeBy, Retention};
 
 /// Decoder limits of commit structures (spec/wire.md §13).
 pub(crate) const LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_BLOB };
@@ -297,25 +297,8 @@ impl RotationHeader {
 
 // ---- encode
 
-fn history_value(h: Option<History>) -> Value {
-    match h {
-        None => uint(0),
-        Some(History::PurgeOnReplace) => uint(1),
-        Some(History::Keep { until, after }) => {
-            let mut m = osis_base::ValueMap::new();
-            if let Some(t) = until {
-                m.insert(uint(0), uint(t));
-            }
-            if let Some(d) = after {
-                m.insert(uint(1), uint(d));
-            }
-            Value::List(vec![uint(2), Value::Map(m)])
-        }
-    }
-}
-
 pub(crate) fn retention_value(r: &Retention) -> Value {
-    Value::List(vec![uint(r.by as u64), history_value(r.history)])
+    uint(r.by as u64)
 }
 
 fn aspect_value(a: &AspectEntry) -> Value {
@@ -475,43 +458,9 @@ fn read_idxs(r: &mut Reader<'_>) -> Result<Vec<usize>, Error> {
     read_items(r, 1, |r| usize::try_from(r.uint()?).map_err(|_| Error::Malformed("index too large")))
 }
 
-/// `0 | 1 | [2, {? 0: until, ? 1: after}]`: a keep map holds at least one key, `after` above 0
-/// (spec/wire.md §4).
-fn read_history(r: &mut Reader<'_>) -> Result<Option<History>, Error> {
-    if r.peek_major() != Some(MAJOR_ARRAY) {
-        return match r.uint()? {
-            0 => Ok(None),
-            1 => Ok(Some(History::PurgeOnReplace)),
-            _ => Err(Error::Malformed("history")),
-        };
-    }
-    if r.array()? != 2 || r.uint()? != 2 {
-        return Err(Error::Malformed("history"));
-    }
-    let (mut until, mut after) = (None, None);
-    let mut next = 0;
-    for _ in 0..r.map()? {
-        let k = r.uint()?;
-        let n = r.uint()?;
-        match k {
-            0 if next == 0 => until = Some(n),
-            1 if next <= 1 && n > 0 => after = Some(n),
-            _ => return Err(Error::Malformed("keep key")),
-        }
-        next = k + 1;
-    }
-    if until.is_none() && after.is_none() {
-        return Err(Error::Malformed("keep with neither bound"));
-    }
-    Ok(Some(History::Keep { until, after }))
-}
-
 fn read_retention(r: &mut Reader<'_>) -> Result<Retention, Error> {
-    if r.array()? != 2 {
-        return Err(Error::Malformed("retention arity"));
-    }
     let by = PurgeBy::from_id(r.uint()?).ok_or(Error::Malformed("purgeable-by class"))?;
-    Ok(Retention { by, history: read_history(r)? })
+    Ok(Retention { by })
 }
 
 fn read_aspect(r: &mut Reader<'_>) -> Result<AspectEntry, Error> {

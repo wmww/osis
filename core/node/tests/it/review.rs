@@ -195,56 +195,6 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     check(&mut lp.peers[j].engine, "snapshot part last, restarted");
 }
 
-// spec/commits.md §5: a compaction snapshot's history comes from the retention of the writes it
-// carries live, whether the writer knows the schema or not: `writer`, purge on replace if any
-// carried write's is (an override included), else kept for the longest `after`; a write that died stops counting (no carry-over
-// through the held earlier snapshot); a write whose own delta's header is not held counts as the
-// held snapshot carrying it; an untyped aspect snapshots with no history promised.
-#[test]
-fn snapshot_bounds_from_carried_writes_spec_commits_5() {
-    use osis_schema::{History, PurgeBy, Retention};
-    let mut lp = net(2, 0x5b10);
-    let t = new_thing(&mut lp, 0);
-    let b = lp.peers[1].engine.me();
-    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
-    let (gone, reg, doc) = (ak("t:gone.0"), ak("t:reg.0"), ak("u:doc.0"));
-    set(&mut lp, 0, t, &GONE, "a");
-    set(&mut lp, 0, t, &KEPT, "k");
-    let mut m = Mutation::new();
-    m.set(t, &doc, &s("untyped")).unwrap();
-    lp.peers[0].commit(m).unwrap();
-    let most = |purge: bool| Retention { by: PurgeBy::Writer, history: purge.then_some(History::PurgeOnReplace) };
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("brief")).unwrap();
-    m.retention(t, &REG, most(true)).unwrap();
-    let brief = lp.peers[0].commit(m).unwrap().unwrap();
-    // node 1 holds every write but the override, and node 0's snapshot carrying it
-    let s0 = lp.peers[0].engine.snapshot(&t, &reg).unwrap().unwrap();
-    for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != brief) {
-        lp.deliver(1, &p).unwrap();
-    }
-    let e1 = &mut lp.peers[1].engine;
-    e1.set_syncing(t, true).unwrap();
-    e1.reexamine().unwrap();
-    let ret = |e: &osis_node::Engine, c: &osis_base::CommitId| e.header(c).unwrap().aspects[0].retention;
-    let snap = e1.snapshot(&t, &gone).unwrap().unwrap();
-    assert_eq!(ret(e1, &snap), most(true), "schema default, schema unknown here");
-    let snap = e1.snapshot(&t, &ak("t:kept.0")).unwrap().unwrap();
-    assert_eq!(ret(e1, &snap), Retention { history: Some(History::Keep { until: None, after: Some(86_400_000) }), ..most(false) }, "kept a while");
-    let u = e1.snapshot(&t, &doc).unwrap().unwrap();
-    assert_eq!(ret(e1, &u), most(false), "untyped");
-    let snap = e1.snapshot(&t, &reg).unwrap().unwrap();
-    assert_eq!(ret(e1, &snap), most(true), "own header not held: the carrying snapshot");
-    assert_eq!(ret(&lp.peers[0].engine, &s0), most(true), "the override");
-    // a default write kills the override: neither held snapshot carries it on
-    set(&mut lp, 0, t, &REG, "plain");
-    sync(&mut lp, 0, 1);
-    for i in 0..2 {
-        let snap = lp.peers[i].engine.snapshot(&t, &reg).unwrap().unwrap();
-        assert_eq!(ret(&lp.peers[i].engine, &snap), most(false), "peer {i}: the override died");
-    }
-}
-
 // spec/crdt.md §8: snapshot frontiers cover only writes the state reflects (valid ones).
 #[test]
 fn snapshot_frontier_valid_only_spec_crdt_8() {
@@ -279,11 +229,6 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     // a snapshot's frontier is no receipt (spec/crdt.md §8)
     let now = lp2.peers[0].engine.now();
     assert!(!lp2.peers[0].engine.frontier(&scope, now).unwrap().commits.contains(&bs));
-    // snapshot retention takes the carried write's relative keep at least (1d)
-    set(&mut lp, 0, t, &KEPT, "k");
-    let ks = lp.peers[0].engine.snapshot(&t, &ak("t:kept.0")).unwrap().unwrap();
-    let sh = lp.peers[0].engine.header(&ks).unwrap();
-    assert_eq!(sh.aspects[0].retention.history, Some(osis_schema::History::Keep { until: None, after: Some(86_400_000) }));
 }
 
 // spec/commits.md §5 (a body's live writes span every aspect of its class): a body on two

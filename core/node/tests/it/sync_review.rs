@@ -56,6 +56,7 @@ fn rotates_before_wrapping_after_until_spec_crypto_4() {
 #[test]
 fn purge_leaves_no_copy_spec_commits_5() {
     let (mut net, host, [a, b, r], _g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Read)], ["x"], false);
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("secret")).unwrap();
     let c = net.engine(a).commit(m).unwrap().unwrap();
@@ -86,6 +87,7 @@ fn purge_leaves_no_copy_spec_commits_5() {
 #[test]
 fn purged_superset_holds_nothing_spec_sync_6() {
     let (mut net, host, [a, b], _g, [t, t2]) = hosted::<2, 2>(&[(1, Role::Write)], ["x", "y"], false);
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let gone = Ak::new(GONE.ak()).unwrap();
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("secret")).unwrap();
@@ -127,6 +129,7 @@ fn purged_superset_holds_nothing_spec_sync_6() {
 #[test]
 fn purged_body_waits_for_its_rewrite_spec_sync_7() {
     let (mut net, host, [a, b], _g, [t, t2]) = hosted::<2, 2>(&[(1, Role::Write)], ["x", "y"], false);
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let gone = Ak::new(GONE.ak()).unwrap();
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("secret")).unwrap();
@@ -168,6 +171,7 @@ fn purged_body_waits_for_its_rewrite_spec_sync_7() {
 #[test]
 fn purged_body_leaves_full_label_spec_sync_7() {
     let (mut net, host, [a, b], _g, [t, t2]) = hosted::<2, 2>(&[(1, Role::Write)], ["x", "y"], false);
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let gone = Ak::new(GONE.ak()).unwrap();
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("secret")).unwrap();
@@ -377,6 +381,7 @@ fn purge_crash_before_sync_forget_leaves_no_copy_spec_commits_5() {
         let b = net.node(2, &[host]);
         let g = net.group(a, &[(b, Role::Write)], &[host]);
         let t = net.item(a, g, g, "x");
+        net.keep(a, t, &[("t:gone.0", PURGE)]);
         let mut m = Mutation::new();
         m.set(t, &GONE, &s("secret")).unwrap();
         let c = net.engine(a).commit(m).unwrap().unwrap();
@@ -648,6 +653,7 @@ fn strict_subset_needs_superset_at_that_host_spec_sync_6() {
     let b = net.node(2, &[h1, h2]);
     let g = net.group(a, &[(b, Role::Write)], &[h1, h2]);
     let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let t2 = net.item(a, g, g, "y");
     let gone = Ak::new(GONE.ak()).unwrap();
     let mut m = Mutation::new();
@@ -726,6 +732,7 @@ fn wiped_host_gets_bodies_back_from_restarted_node_spec_sync_6() {
 #[test]
 fn deleted_body_withholds_only_itself_spec_sync_6() {
     let (mut net, host, [a], _g, [t]) = hosted::<1, 1>(&[], ["v1"], false);
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let both = |net: &mut Net, v: &str| {
         let mut m = Mutation::new();
         m.set(t, &REG, &s(v)).unwrap();

@@ -2454,7 +2454,7 @@ fn rekey_reaches_thing_below_spec_perm_3() {
 fn frontier_lists_covered_deltas_of_every_retention_spec_perm_5_1() {
     use osis_schema::PurgeBy;
     let reg = ak("t:reg.0");
-    for (by, snapper, listed) in [(PurgeBy::Author, 0, true), (PurgeBy::Nobody, 0, true), (PurgeBy::AuthorOrAdmin, 0, true), (PurgeBy::AuthorOrAdmin, 2, true)] {
+    for (by, snapper, listed) in [(PurgeBy::Admin, 0, true), (PurgeBy::Writer, 0, true), (PurgeBy::AuthorOrAdmin, 0, true), (PurgeBy::AuthorOrAdmin, 2, true)] {
         let (mut lp, ps) = people(3, 0x7191);
         let (pa, px, pw) = (ps[0], ps[1], ps[2]);
         let t = thing_of(&mut lp, 0, pa);

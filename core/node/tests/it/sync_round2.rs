@@ -127,6 +127,7 @@ fn wake_for_expiry_and_after_every_tick_spec_commits_5() {
 #[test]
 fn purge_on_replace_drop_forgets_blob_spec_commits_5() {
     let (mut net, _host, [a], _g, [t]) = hosted::<1, 1>(&[], ["v1"], false);
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("one")).unwrap();
     let c1 = net.engine(a).commit(m).unwrap().unwrap();
@@ -148,6 +149,7 @@ fn purge_on_replace_drop_forgets_blob_spec_commits_5() {
 #[test]
 fn delete_resent_after_cut_spec_sync_7() {
     let (mut net, host, [a], _g, [t]) = hosted::<1, 1>(&[], ["v1"], false);
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("one")).unwrap();
     let c1 = net.engine(a).commit(m).unwrap().unwrap();

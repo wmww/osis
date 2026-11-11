@@ -55,9 +55,9 @@ impl SyncEngine {
     }
 
     /// Compacts `(t, ak)` (spec/sync.md §7): writes a snapshot from this node's state, then
-    /// drops the bodies it covers that this node may purge and whose keep-at-least bound is
-    /// `MAX_DRIFT` past; the next pass uploads the snapshot and deletes the dropped bodies at hosts once
-    /// the snapshot is there.
+    /// drops the bodies it covers whose keep-at-least bound has passed (out of history: no purge
+    /// right asked); a later pass uploads the snapshot and deletes the dropped bodies at hosts once
+    /// the snapshot is there and `MAX_DRIFT` more has passed (`Dropped::hosts_from`).
     pub fn compact(&mut self, t: &Tid, ak: &Ak) -> Result<Vec<Action>> {
         let Some(s) = self.engine.snapshot(t, ak)? else { return Ok(Vec::new()) };
         let dropped: BTreeSet<CommitId> = self.drop_covered(t, ak, &s, None, &mut super::work::Left::default())?.into_iter().collect();
@@ -66,9 +66,9 @@ impl SyncEngine {
         Ok(self.handle(super::Event::Local))
     }
 
-    /// Drops the bodies of `(t, ak)` that snapshot `s` covers, that this node may purge and
-    /// whose keep-at-least bound is `MAX_DRIFT` past (spec/sync.md §7: the compactor, and every other
-    /// right holder as it holds the snapshot); `s` carries them. A body is judged against `s`
+    /// Drops the bodies of `(t, ak)` that snapshot `s` covers whose keep-at-least bound has
+    /// passed (spec/commits.md §5 Out of history: every node as it holds the snapshot,
+    /// the purge right or not); `s` carries them. A body is judged against `s`
     /// again until it is dropped or settled kept (established uncovered, or the lower of two
     /// covered-equal snapshots: `covered_judged`), so what a node drops follows what it holds,
     /// not when the snapshot or the body arrived. Only the bodies `only` names when given (a
@@ -109,11 +109,6 @@ impl SyncEngine {
                 continue;
             }
             let Some(h) = self.engine.header(&c) else { continue };
-            // the snapshot's right, this node's and the keep-at-least bound, as a demotion's
-            // frontier judges them
-            if !self.engine.snapshot_right(&s, &c, t, ak) {
-                continue;
-            }
             // an own whole replace is judged before its body's keep bound: most plain commits
             // cover nothing, and the bound reads every part of the body
             let own = self.engine.own_replace(&s, t, ak);
@@ -125,19 +120,16 @@ impl SyncEngine {
                         left.commits.insert(c);
                         continue;
                     }
-                    // judged again once the aspect changes (a write's liveness, `cannot_keep`)
+                    // judged again once the aspect changes
                     Some(false) => {
                         left.wait(*t, ak.clone(), c);
                         continue;
                     }
                 }
             }
-            let due = if own {
-                self.engine.own_drop_from(&c, t, ak)?
-            } else {
-                let Some(due) = self.engine.drop_from(&c, t, ak)? else { continue };
-                due
-            };
+            // out of history any held valid writer's cover drops it, the purge right or not
+            // (spec/commits.md §5 Out of history)
+            let due = self.engine.drop_from(&c, t, ak)?;
             if due > now.0 {
                 left.at(due, super::state::Touch::Commit(c));
                 continue;
@@ -192,7 +184,7 @@ impl SyncEngine {
     }
 
     /// Whether every part of `c` still held may drop under own replaces (spec/commits.md §5):
-    /// covered by one whose author holds the right over it. `Some`: from when all of them may
+    /// covered by its author's own replaces. `Some`: from when all of them may
     /// (the latest keep bound), so none drops alone for good.
     fn own_covers_every_part(&mut self, c: &CommitId, h: &osis_commit::Header) -> Result<Option<u64>> {
         let mut due = 0;
@@ -203,12 +195,12 @@ impl SyncEngine {
             let covers = self.engine.own_covers(c, &a.tid, &a.ak);
             let mut covered = false;
             for q in &covers {
-                covered |= self.engine.snapshot_right(q, c, &a.tid, &a.ak) && self.engine.covered(q, c, &a.tid, &a.ak)? == Some(true);
+                covered |= self.engine.covered(q, c, &a.tid, &a.ak)? == Some(true);
             }
             if !covered {
                 return Ok(None);
             }
-            due = due.max(self.engine.own_drop_from(c, &a.tid, &a.ak)?);
+            due = due.max(self.engine.drop_from(c, &a.tid, &a.ak)?);
         }
         Ok(Some(due))
     }
