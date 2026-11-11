@@ -276,6 +276,44 @@ fn granted_room_stays_within_the_bound() {
     }
 }
 
+// spec/sync.md §10 (Served connections): requests queued behind holders that never read all
+// run within a report period: the stuck holders are closed until the whole queue fits, not one
+// request's room a period
+#[test]
+fn a_queue_behind_stuck_holders_runs_at_once() {
+    let mut w = World::new();
+    let mib = 1 << 20;
+    let (h, _) = unread_hub(&mut w, 8 * mib, 11);
+    let mut now = w.now();
+    let hub = &mut w.hubs[h];
+    // eight never read 1 MiB each: the bound is full
+    for id in 1..=8u64 {
+        hub.down(now, vec![(id, push(id as u8, mib - 4096))]);
+    }
+    // three ask node sync for up to 1.5 MiB each (handed up, the allowance reserved until node
+    // sync answers): each past its share, all queued
+    let ask = |k: u32| encode_frame(&Message::Fetch { id: osis_proto::msg::NODE_IDS | k, label: osis_base::LabelId([0xee; 16]), max_reply: (3 * mib / 2) as u64, ids: vec![BlobId([1; 32])] }.encode());
+    let up = |out: &[HubOutput], id: u64| out.iter().any(|o| matches!(o, HubOutput::Up(i, osis_host::Up::Message(_)) if *i == id));
+    for id in 9..=11u64 {
+        let out = hub.input(now, id, ask(id as u32));
+        assert!(!up(&out, id) && hub.waits(id));
+    }
+    let mut ran = std::collections::BTreeMap::new();
+    for p in 1..=3u32 {
+        now += osis_proto::serving::PUSH_POLL_MS;
+        let out = hub.tick(now);
+        eprintln!("p{p} held {} conns {} closes {:?} waits {:?}", hub.held(), hub.connections(), closed(&out), (9..=11).map(|i| hub.waits(i)).collect::<Vec<_>>());
+        for id in 9..=11u64 {
+            if up(&out, id) {
+                ran.insert(id, p);
+            }
+        }
+        assert!(hub.held() <= 8 * mib);
+    }
+    assert_eq!(ran, (9..=11u64).map(|id| (id, 1)).collect(), "all in the first period");
+    assert!(hub.connections() >= 11 - 5, "closed only what the queue needs");
+}
+
 // spec/sync.md §6 (Stall), §10 (Served connections): a request waiting for the bound's room
 // while every holder drains slowly runs before its peer's stall time: once it has waited half of
 // it, the biggest holders are closed, moving or not, until it fits; not before

@@ -420,10 +420,8 @@ impl Hub {
                 return;
             }
             kicks -= 1;
-            self.queue.pop_front();
-            if let Some(Conn::Served { queued, .. }) = self.conns.get_mut(&id) {
-                *queued = None;
-            }
+            // run while still first, so the room kept for it is its own; it leaves the queue
+            // once it needs nothing more of the bound (the loop above), else stays first
             self.serve(self.now, id, ServingInput::Resume, out);
         }
         self.check_at = None;
@@ -450,34 +448,47 @@ impl Hub {
 
     /// While the queue's first waits for the bound's room, once per `PUSH_POLL_MS` (the period
     /// the driver reports takes in, so a reader's progress shows in each): closes, most held
-    /// first until it fits, the connections holding output that the transport took none of
-    /// since the last check (each peer that stops reading could otherwise hold its share for
-    /// good, and anyone who shares one group can open `max_connections` of them); once it has
-    /// waited half the stall time (`first_due`: readers draining too slowly to make its room
-    /// in time), the connections holding the most, whatever they read.
+    /// first until the whole queue's needs fit, the connections holding output that the
+    /// transport took none of since the last check (each peer that stops reading could
+    /// otherwise hold its share for good, and anyone who shares one group can open
+    /// `max_connections` of them; making room for the first alone would let the queue move one
+    /// request a period). Once the first has waited half the stall time (`first_due`: readers
+    /// draining too slowly to make its room in time), the connections holding the most,
+    /// whatever they read, until it fits.
     fn close_stuck(&mut self, now: u64, out: &mut Vec<HubOutput>) {
         let Some(&first) = self.queue.front() else { return };
-        let overdue = self.first_due().is_some_and(|t| t <= now);
-        if !overdue && self.check_at.is_none_or(|t| t > now) {
-            return;
-        }
-        let need = self.need_of(first);
         let max = self.store.policy().max_buffered_bytes;
-        let mut stuck: Vec<(usize, ConnId)> = self.conns.iter().filter_map(|(id, c)| match c {
+        if self.check_at.is_some_and(|t| t <= now) {
+            let needs = self.queue.iter().fold(0usize, |n, q| n.saturating_add(self.need_of(*q))).min(max);
             // output of its own that did not move: a reservation alone (a reply to come) has no
             // bytes to move
-            Conn::Served { hold, moved, alone, .. } if *hold > 0 && *id != first && (overdue || !*moved && !*alone) => Some((*hold, *id)),
+            self.close_biggest(needs, |id, c| matches!(c, Conn::Served { moved: false, alone: false, queued: None, .. }) && id != first, "not moving", out);
+            self.check_at = Some(now.saturating_add(osis_proto::serving::PUSH_POLL_MS));
+            self.unmove();
+        }
+        if self.first_due().is_some_and(|t| t <= now) {
+            let need = self.need_of(first);
+            self.close_biggest(need, |id, _| id != first, "draining too slowly", out);
+        }
+    }
+
+    /// Closes the connections `which` picks, most held first, until `need` fits the bound.
+    fn close_biggest(&mut self, need: usize, which: impl Fn(ConnId, &Conn) -> bool, why: &str, out: &mut Vec<HubOutput>) {
+        let max = self.store.policy().max_buffered_bytes;
+        if need <= max.saturating_sub(self.hold) {
+            return;
+        }
+        let mut picked: Vec<(usize, ConnId)> = self.conns.iter().filter_map(|(id, c)| match c {
+            Conn::Served { hold, .. } if *hold > 0 && which(*id, c) => Some((*hold, *id)),
             _ => None,
         }).collect();
-        stuck.sort_unstable();
+        picked.sort_unstable();
         while need > max.saturating_sub(self.hold) {
-            let Some((_, id)) = stuck.pop() else { break };
+            let Some((_, id)) = picked.pop() else { break };
             self.remove(id);
             out.push(HubOutput::Close(id));
-            out.push(HubOutput::Diagnostic(format!("connection {id}: closed, output {} while others wait for room", if overdue { "draining too slowly" } else { "not moving" })));
+            out.push(HubOutput::Diagnostic(format!("connection {id}: closed, output {why} while others wait for room")));
         }
-        self.check_at = Some(now.saturating_add(osis_proto::serving::PUSH_POLL_MS));
-        self.unmove();
     }
 
     /// Received bytes held for all served connections: partial frames, frames waiting to run,
