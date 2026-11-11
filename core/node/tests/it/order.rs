@@ -2733,12 +2733,13 @@ struct Size {
     env: bool,
 }
 
-/// Default tests: a seed of every emphasis, and one of every emphasis capped to 4 commits after the
-/// setup, checked in every order of every held set; no environment read.
+/// Default tests: a seed of every emphasis, and one of every emphasis capped to 3 commits after the
+/// setup (the smallest cap with orders past as made and reversed), checked in every order of every
+/// held set; no environment read. `exhaustive` runs the same kinds at 6.
 fn quick() -> Vec<Size> {
     vec![
         Size { name: "quick", seeds: (0..8).collect(), len: 32, cfg: ORDERS, exhaustive: None, env: false },
-        Size { name: "quick, exhaustive", seeds: (100..108).collect(), len: 30, cfg: Cfg { all_up_to: 4, every_held: true, random: 0, subsets: 1, split: usize::MAX, clock: 4, ..ORDERS }, exhaustive: Some(4), env: false },
+        Size { name: "quick, exhaustive", seeds: (100..108).collect(), len: 30, cfg: Cfg { all_up_to: 3, every_held: true, random: 0, subsets: 1, split: usize::MAX, clock: 4, ..ORDERS }, exhaustive: Some(3), env: false },
     ]
 }
 
