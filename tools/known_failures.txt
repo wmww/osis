@@ -4,3 +4,4 @@
 # line of its panic, or its whole panic) must match (tools/gate_failures.py).
 order::held_set_decides_plain OSIS_ORDER_SEED=438123470748 issues/order-lists-seed-diverges.md ^seed \d+, Lists \(replay:
 order::held_set_decides_plain OSIS_ORDER_START=539131766525 issues/order-required-floor-plain.md held_set_decides: \w+ seeds ran, but not
+keep::any_order_until_keeps_no_more_large OSIS_KEEP_START=636109736897 issues/keep-until-order-seed.md kept only by order
