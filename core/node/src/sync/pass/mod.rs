@@ -314,7 +314,7 @@ impl SyncEngine {
         // a replaced label with everything to hold already there (`retire_at`)
         let quiet = replaced && sends.iter().all(|o| self.state.is_present(&host, &l, &o.id) || self.state.is_gone_at(&host, &l, &o.id));
         self.send(conn, host, p, sends, &mut left, out)?;
-        self.clear_inbox(conn, host, p, out)?;
+        self.clear_deposits(conn, host, p, out)?;
         // a commit deposited there this writer has not promoted yet: its chain may come
         if keys.write.is_some() {
             left.again |= self.state.deposited_at(&host, &l).into_iter().any(|b| self.promotable(&l, &b));

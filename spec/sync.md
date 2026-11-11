@@ -208,14 +208,16 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - **Moot**: an inbox blob once its delivery is forgotten or sealed again (§3), any deposit under a label the client sees replaced.
   - **Promotion**: a writer that verifies a deposited commit the label must hold re-uploads it stamped (promotes it), only once its author's chain for the deposited deltas (spec/permissions.md §4) is under the label.
     - A promoter completes the chain it holds, placing the missing deltas as its own certificate copies with the promotion.
+    - With it, the promoter re-uploads stamped each record blob deposited there that carries a record of that chain.
     - A writer that holds neither the commit applied nor the chain leaves the deposit unpromoted.
     - The author's chain under a label leaves out every `keys.0` but the author's own.
     - A certificate copy is never deleted for an incomplete chain.
-- **Clearing an inbox**: a node holding the delete key of an inbox label (§2) keeps at most `INBOX_WAITING` entries and `INBOX_WAITING_BYTES` bytes per host of the deposits there it can do nothing with.
-  - Those are every deposited entry except:
-    - one it opened as a commit or a record blob under a read secret (parked included);
+- **Clearing deposits**: a node holding the delete key of a label keeps at most `DEPOSITS_WAITING` entries and `DEPOSITS_WAITING_BYTES` bytes per host of the deposits there it can do nothing with.
+  - Those are every deposited entry whose bytes it has received except:
+    - one it opened as a commit it judges valid (as a reader judges what it deposits, §6);
     - an inbox blob it would stamp (§3);
     - an inbox blob whose commit is not applied and whose prefix expiry is within `INBOX_LIFETIME + 2 × MAX_DRIFT`.
+  - Each counts at its blob's size, whether or not the node still holds its bytes.
   - Past either bound it deletes them at each pass, in this order:
     1. all but opened invite requests (§3) with a prefix expiry within that bound, those with no expiry or a later one before the rest, then earliest to expire first;
     2. then those requests, earliest to expire first.

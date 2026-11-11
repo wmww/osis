@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Inbox deposits refused for now (spec/sync.md §3; notes/inbox.md, The outbox): the grantee's inbox
-//! label is not registered yet, so the host answers code 13; the sender keeps the blob and
-//! deposits it again (backing off from `retry_ms`) until the label exists.
+//! Deposits refused for now (spec/sync.md §3, §5; notes/inbox.md, The outbox): the grantee's inbox
+//! label is not registered yet (code 13) or the deposit budget is full; the sender keeps the blob
+//! and deposits it again (backing off from `retry_ms`) until the host takes it, and an admin's
+//! clearing frees a filled budget.
 
 use crate::net;
 use net::*;
@@ -345,7 +346,7 @@ fn stranger_fill_ends_with_a_pass_spec_sync_5() {
         net.advance(60_000);
     }
     assert!(things.iter().all(|t| net.engine(b).role_on(t) == Some(Role::Read)), "the grants got through");
-    assert!(budget_left(&mut net, host, &home).0 >= osis_base::format::INBOX_WAITING as u64, "half stays free");
+    assert!(budget_left(&mut net, host, &home).0 >= osis_base::format::DEPOSITS_WAITING as u64, "half stays free");
 }
 
 // spec/sync.md §5: the same fill by bytes, in few large blobs
@@ -370,12 +371,13 @@ fn stranger_fill_in_bytes_ends_with_a_pass_spec_sync_5() {
     for _ in 0..8 {
         net.advance(60_000);
     }
-    assert!(budget_left(&mut net, host, &home).1 >= osis_base::format::INBOX_WAITING_BYTES as u64, "half stays free");
+    assert!(budget_left(&mut net, host, &home).1 >= osis_base::format::DEPOSITS_WAITING_BYTES as u64, "half stays free");
 }
 
-// spec/sync.md §5: only an inbox is cleared: deposits under another label stay, here blobs its admin holds the bytes of from another group
+// spec/sync.md §5 (Clearing deposits): under any label, deposits its admin can do nothing with
+// (here chunks of another group) go down to the cap in bytes
 #[test]
-fn junk_under_another_label_stays_spec_sync_5() {
+fn junk_under_any_label_goes_down_to_the_cap_spec_sync_5() {
     let (mut net, host, a, _, alice, _) = two_accounts();
     let group = |net: &mut Net| {
         let e = net.engine(a);
@@ -397,7 +399,7 @@ fn junk_under_another_label_stays_spec_sync_5() {
     net.run();
     let junk: Vec<_> = net.sync(a).entries(&gl).into_iter().filter(|(_, k)| !matches!(k, osis_node::sync::EntryKind::Commit { .. })).map(|x| x.0).collect();
     let size: usize = junk.iter().map(|id| net.engine(a).blob(id).unwrap().unwrap().len()).sum();
-    assert!(size > osis_base::format::INBOX_WAITING_BYTES, "{size}");
+    assert!(size > osis_base::format::DEPOSITS_WAITING_BYTES, "{size}");
     net.set_online(a, false);
     for id in &junk {
         let blob = net.engine(a).blob(id).unwrap().unwrap();
@@ -409,7 +411,9 @@ fn junk_under_another_label_stays_spec_sync_5() {
         net.advance(60_000);
     }
     let held = net.host_ids(host, &l);
-    assert!(junk.iter().all(|x| held.contains(x)), "kept");
+    let kept: usize = junk.iter().filter(|x| held.contains(x)).map(|id| net.engine(a).blob(id).unwrap().unwrap().len()).sum();
+    assert!(kept <= osis_base::format::DEPOSITS_WAITING_BYTES, "{kept}");
+    assert!(budget_left(&mut net, host, &l).1 >= osis_base::format::DEPOSITS_WAITING_BYTES as u64, "half stays free");
 }
 
 // spec/sync.md §3, §5: a share whose inbox blob was cleared before its holder read it is sent
@@ -462,4 +466,63 @@ fn cleared_share_sent_again_after_the_holder_acted_elsewhere_spec_sync_3() {
         net.advance(86_400_000);
     }
     assert_eq!(net.engine(b).role_on(&t), Some(Role::Read), "the cleared share came again");
+}
+
+// spec/sync.md §5 (Clearing deposits): a reader fills a label's deposit budget with commits it
+// sealed and signed itself that open but are invalid (here a demoted writer's writes made after
+// its demotion, deposited by hand past its own judgment); another reader's self-removal, refused
+// meanwhile, reaches the admin once it is online, and the budget never runs over
+#[test]
+fn a_readers_invalid_fill_ends_with_an_admin_pass_spec_sync_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "t");
+    net.run();
+    net.advance(15_000);
+    let l = net.label(a);
+    let tb = net.tid(b);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
+    // b writes before it hears of its demotion: the host refuses them (code 9)
+    let room = osis_proto::LabelStore::budget(&*net.hosts[host].hub.store(), &l).unwrap().entries_left;
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let writes: Vec<_> = (0..2 * room).map(|i| net.write(b, t, &format!("x{i}"))).collect();
+    net.run();
+    net.advance(60_000);
+    net.set_online(a, false);
+    // b's writes, judged invalid at b too, deposited by hand
+    let mut filled = 0;
+    for w in &writes {
+        let ids: Vec<_> = net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == w)).map(|x| x.0).collect();
+        for id in ids {
+            let (wrap, _) = net.sync(b).entry_meta(&l, &id).unwrap();
+            let blob = net.engine(b).blob(&id).unwrap().unwrap();
+            let put = osis_proto::Put { blob_id: id, blob: &blob, wrap, stamp: None, expiry: None, ephemeral: false, replaces: &[], now: net.now() };
+            if osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &l, put).unwrap() == osis_proto::Code::OK {
+                filled += 1;
+            }
+        }
+    }
+    assert_eq!(budget_left(&mut net, host, &l).0, 0, "filled with {filled}");
+    let tc = net.tid(c);
+    let done = net.engine(c).demote(&g, &osis_node::flows::Demotion { holder: tc, new: None, retain: None }).unwrap();
+    let acts = net.sync(c).carry_out(done).unwrap();
+    net.actions(c, acts);
+    for _ in 0..4 {
+        net.advance(60_000);
+    }
+    assert!(net.sync(c).leaving().next().is_some(), "refused while the budget is full");
+    net.set_online(a, true);
+    for _ in 0..8 {
+        net.advance(60_000);
+    }
+    assert_eq!(net.read(a, t), Some(s("t")), "the invalid writes count for nothing");
+    assert_eq!(net.engine(a).core.role_now(&tc, &g), None, "the self-removal got through");
+    assert!(budget_left(&mut net, host, &l).0 >= osis_base::format::DEPOSITS_WAITING as u64, "half stays free");
 }

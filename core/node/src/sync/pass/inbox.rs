@@ -1,5 +1,5 @@
-//! Inbox labels (spec/sync.md §3, §5): stamping handled blobs, clearing what waits for nothing, and
-//! copying grants under the home label.
+//! Inbox labels (spec/sync.md §3, §5): stamping handled blobs and copying grants under the home
+//! label.
 
 use super::*;
 
@@ -39,7 +39,7 @@ impl SyncEngine {
     /// declined; only the first blob of a commit under the label, and none expiring later than
     /// an honest sender's could (an expiry is the sender's word, and a stamp keeps the blob until
     /// then). A stranger can seal any commit he holds in any number of blobs: those stay
-    /// deposited, for `clear_inbox`.
+    /// deposited, for `clear_deposits`.
     pub(super) fn inbox_stampable(&mut self, l: &LabelId, id: &BlobId, c: &CommitId) -> Result<bool> {
         let latest = self.inbox_latest();
         if self.state.stamped_inbox_other(l, c, id) || self.inbox_opened(l, id)?.is_none_or(|o| o.until > latest) {
@@ -52,67 +52,6 @@ impl SyncEngine {
         let actors = self.inbox_actors_at(l);
         let on = self.inbox_about(&actors, c, &m);
         Ok(o.ais.iter().any(|ai| m.header.aspects.get(*ai).is_some_and(|a| on.contains(&a.tid))))
-    }
-
-    /// An admin keeps at most `INBOX_WAITING` entries and bytes of them under an inbox label at a
-    /// host waiting for nothing it can do (spec/sync.md §5): a deposit that is no commit of the
-    /// label, past those it stamps or still judges. Over that, it deletes all but invite requests
-    /// first, those expiring too far ahead before the rest, then the requests earliest to expire,
-    /// so a stranger's fill ends with this pass, what does not open never costs a user an invite,
-    /// and the rest of the budget stays free. A request goes only past `INBOX_WAITING` of them.
-    pub(super) fn clear_inbox(&mut self, conn: ConnId, host: HostKey, p: &Head, out: &mut Vec<crate::sync::Action>) -> Result<()> {
-        let (l, keys) = (p.l, &p.keys);
-        if keys.delete.is_none() {
-            return Ok(());
-        }
-        let deposited = self.state.deposited_at(&host, &l);
-        if deposited.is_empty() || self.inbox_actors_at(&l).is_empty() {
-            return Ok(());
-        }
-        let latest = self.inbox_latest();
-        let mut waiting = Vec::new();
-        for id in deposited {
-            let Some(kind) = self.state.entries.get(&(l, id)).map(|e| e.kind.clone()) else { continue };
-            let idle = match &kind {
-                Kind::Commit { .. } | Kind::Parked(_) | Kind::Records(_) => false,
-                Kind::Inbox(Some(c)) => {
-                    // unapplied: it waits, as its inbox bytes do, until its turn past `latest`
-                    let pending = !self.engine.core.ix.commits.contains_key(c) && self.inbox_opened(&l, &id)?.is_some_and(|o| o.until <= latest);
-                    !pending && !self.inbox_stampable(&l, &id, c)?
-                }
-                _ => true,
-            };
-            if !idle {
-                continue;
-            }
-            let Some(blob) = self.engine.blob(&id)? else { continue };
-            let until = osis_label::Prefix::parse(&blob).ok().and_then(|x| x.expiry()).map_or(u64::MAX, |w| w.0);
-            let near = until <= latest;
-            waiting.push((near && matches!(kind, Kind::Request(_)), near, until, id, blob.len()));
-        }
-        let over = |w: &[(bool, bool, u64, BlobId, usize)]| w.len() > osis_base::format::INBOX_WAITING || w.iter().map(|x| x.4).sum::<usize>() > osis_base::format::INBOX_WAITING_BYTES;
-        if !over(&waiting) {
-            return Ok(());
-        }
-        waiting.sort();
-        waiting.reverse();
-        let now = self.now();
-        let mut items = Vec::new();
-        while over(&waiting) {
-            let Some((_, _, _, id, _)) = waiting.pop() else { break };
-            let Some(c) = self.conns.get_mut(&conn) else { break };
-            if crate::sync::in_flight(c, &c.req.deleting, (l, id), now) {
-                continue;
-            }
-            if let Some(item) = delete_item(keys, &l, id, None, &[], true) {
-                c.req.deleting.insert((l, id), (now, crate::sync::UNTAGGED));
-                items.push(item);
-            }
-        }
-        if !items.is_empty() {
-            self.command(conn, Command::Delete { label: l, items }, out)?;
-        }
-        Ok(())
     }
 
     /// The things commit `c` (header in `m`) of an opened inbox blob is about for `actors`

@@ -153,6 +153,9 @@ pub struct Entry {
     /// The blob's prefix salt, once its bytes were here (spec/sync.md §6 Tombstones): a
     /// delete-key signature is made for it (spec/crypto.md §7), so it outlives the bytes.
     pub salt: Option<[u8; 16]>,
+    /// The blob's length, once its bytes were here: what a clearer counts of a deposit whose
+    /// bytes it no longer holds (spec/sync.md §5, Clearing deposits).
+    pub size: Option<u32>,
     pub kind: Kind,
     /// An ephemeral blob (its prefix class, spec/sync.md §9): the entry and everything recorded
     /// about it (presence, blob record, tombstone) live in memory only, never in the sync
@@ -559,7 +562,12 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
         Some(s) => w.u8(1).raw(&s.0),
         None => w.u8(0),
     };
-    encode_kind(encode_salt(w, &e.salt), &e.kind).take()
+    let w = encode_kind(encode_salt(w, &e.salt), &e.kind);
+    match e.size {
+        Some(n) => w.u8(1).u32(n),
+        None => w.u8(0),
+    }
+    .take()
 }
 
 fn encode_kind(w: Wr, kind: &Kind) -> Wr {
@@ -592,7 +600,12 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
         _ => None,
     };
     let salt = decode_salt(&mut r)?;
-    Ok(Entry { wrap, stamp, cert, salt, kind: decode_kind(&mut r)?, memory: false })
+    let kind = decode_kind(&mut r)?;
+    let size = match r.u8()? {
+        1 => Some(r.u32()?),
+        _ => None,
+    };
+    Ok(Entry { wrap, stamp, cert, salt, size, kind, memory: false })
 }
 
 fn encode_salt(w: Wr, salt: &Option<[u8; 16]>) -> Wr {
@@ -2115,7 +2128,7 @@ mod tests {
     fn memory_entry_dropped_leaves_no_mark() {
         let mut s = State::default();
         let (l, b) = (LabelId([1; 16]), BlobId([2; 32]));
-        s.set_entry(l, b, Entry { wrap: [0; WRAP_LEN], stamp: None, cert: false, salt: None, kind: Kind::Unknown, memory: true });
+        s.set_entry(l, b, Entry { wrap: [0; WRAP_LEN], stamp: None, cert: false, salt: None, size: None, kind: Kind::Unknown, memory: true });
         assert!(s.is_memory(&l, &b));
         s.drop_entry(l, b);
         assert!(!s.is_memory(&l, &b));
@@ -2124,7 +2137,7 @@ mod tests {
     // spec: none (local store format): an entry keeps its blob's salt and round trips.
     #[test]
     fn entry_salt_round_trips() {
-        let e = Entry { wrap: [3; WRAP_LEN], stamp: None, cert: false, salt: Some([9; 16]), kind: Kind::Commit { commit: CommitId([1; 32]), parts: vec![0], ais: vec![0, 2] }, memory: false };
+        let e = Entry { wrap: [3; WRAP_LEN], stamp: None, cert: false, salt: Some([9; 16]), size: None, kind: Kind::Commit { commit: CommitId([1; 32]), parts: vec![0], ais: vec![0, 2] }, memory: false };
         let back = decode_entry(&encode_entry(&e)).unwrap();
         assert!(back.salt == Some([9; 16]) && matches!(&back.kind, Kind::Commit { ais, .. } if *ais == vec![0, 2]));
     }
@@ -2249,7 +2262,7 @@ mod tests {
         s.set_present(h, l, b, true);
         s.set_doubtful(h, l, b, [3; WRAP_LEN]);
         // body carried by mid, itself dropped and carried by snap; other's carrier stands alone
-        s.set_entry(l, BlobId([9; 32]), Entry { wrap: [1; WRAP_LEN], stamp: None, cert: false, salt: None, kind: Kind::Commit { commit: body, parts: vec![0], ais: vec![0] }, memory: false });
+        s.set_entry(l, BlobId([9; 32]), Entry { wrap: [1; WRAP_LEN], stamp: None, cert: false, salt: None, size: None, kind: Kind::Commit { commit: body, parts: vec![0], ais: vec![0] }, memory: false });
         s.set_carrier(body, mid);
         s.set_carrier(mid, snap);
         s.set_carrier(other, snap);
@@ -2294,7 +2307,7 @@ mod tests {
     }
 
     fn entry(wrap: u8) -> Entry {
-        Entry { wrap: [wrap; WRAP_LEN], stamp: None, cert: false, salt: None, kind: Kind::Unknown, memory: false }
+        Entry { wrap: [wrap; WRAP_LEN], stamp: None, cert: false, salt: None, size: None, kind: Kind::Unknown, memory: false }
     }
 
     // spec: none (issues/net-reconnect.md, One node log): what a peer would be sent is one event;

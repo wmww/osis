@@ -33,7 +33,7 @@ Format version 1, spec/versioning.md §1:
 | `MAX_RELAY_BLOB` | 64 KiB (65 536 bytes), whole relay-only blob (spec/sync.md §5, §9) |
 | `ROLE_KEEP` | 90 days |
 | `INBOX_LIFETIME` | 90 days |
-| `INBOX_WAITING`, `INBOX_WAITING_BYTES` | 32 entries, 1 MiB (1 048 576 bytes): deposits a node leaves at an inbox it clears (spec/sync.md §5) |
+| `DEPOSITS_WAITING`, `DEPOSITS_WAITING_BYTES` | 32 entries, 1 MiB (1 048 576 bytes): deposits a node leaves waiting under a label it clears (spec/sync.md §5) |
 | `LIST_TREE_DEPTH` | 32: levels of a rotation's list tree, at most 2^32 thing lists per rotation (§4, List tree; spec/permissions.md §5.5) |
 | `MAX_CHAIN_DEPTH` | 64 links from a thing up its record chain to its key actor (spec/permissions.md §1) |
 | `MAX_RETENTION_ENTRIES` | 64 entries in the `rules` of one `retention^.0` delta (spec/commits.md §5) |

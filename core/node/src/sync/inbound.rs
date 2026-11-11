@@ -282,7 +282,7 @@ impl SyncEngine {
                 }
                 if !self.state.entries.contains_key(&(l, *blob_id)) {
                     // recorded before its presence (`State::put_of` goes by the record's class)
-                    self.state.set_entry(l, *blob_id, Entry { wrap: *wrap, stamp: None, cert: false, salt: None, kind: Kind::Unknown, memory: true });
+                    self.state.set_entry(l, *blob_id, Entry { wrap: *wrap, stamp: None, cert: false, salt: None, size: None, kind: Kind::Unknown, memory: true });
                 }
             }
             match ev {
@@ -332,7 +332,7 @@ impl SyncEngine {
                                 let fresh = blob.is_some() && !self.engine.has_blob(&blob_id);
                                 unvouched.push((blob_id, fresh));
                             }
-                            self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, salt: None, kind: Kind::Unknown, memory: false })
+                            self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, salt: None, size: None, kind: Kind::Unknown, memory: false })
                         }
                         Some(mut e) if e.wrap != wrap || (stamp.is_some() && e.stamp != stamp) => {
                             if self.take_wrap(conn, host, l, blob_id, &mut e, &wrap, stamp.is_some(), held_stamped) {
@@ -884,7 +884,7 @@ impl SyncEngine {
     }
 
     /// Ingests again the opened inbox blobs a wake named, chain first: their bytes stayed local
-    /// (`INBOX_WAITING`).
+    /// (`DEPOSITS_WAITING`).
     fn retry_inbox_commits(&mut self) -> Result<()> {
         let due = std::mem::take(&mut self.retry_inbox);
         if due.is_empty() {
@@ -1929,10 +1929,11 @@ impl SyncEngine {
         Ok(listed && self.dropped_chunks(&BTreeSet::from([*b]))?.0.contains_key(b))
     }
 
-    /// Records blob `b`'s prefix salt with every entry naming it that lacks one (spec/sync.md §6
-    /// Tombstones), from `bytes` (checked to be `b`'s, `log_events_from`) or the bytes held here.
+    /// Records blob `b`'s prefix salt (spec/sync.md §6 Tombstones) and size (§5 Clearing
+    /// deposits) with every entry naming it that lacks them, from `bytes` (checked to be `b`'s,
+    /// `log_events_from`) or the bytes held here: both outlive the bytes.
     pub(crate) fn keep_salts(&mut self, b: &BlobId, bytes: Option<&[u8]>) -> Result<()> {
-        let ls: Vec<LabelId> = self.state.labels_of(b).into_iter().filter(|l| self.state.entries.get(&(*l, *b)).is_some_and(|e| e.salt.is_none())).collect();
+        let ls: Vec<LabelId> = self.state.labels_of(b).into_iter().filter(|l| self.state.entries.get(&(*l, *b)).is_some_and(|e| e.salt.is_none() || e.size.is_none())).collect();
         if ls.is_empty() {
             return Ok(());
         }
@@ -1940,10 +1941,13 @@ impl SyncEngine {
             Some(_) => None,
             None => self.engine.blob(b)?,
         };
-        let Some(salt) = bytes.or(held.as_deref()).and_then(|x| osis_label::Prefix::parse(x).ok()).map(|p| *p.salt()) else { return Ok(()) };
+        let Some(x) = bytes.or(held.as_deref()) else { return Ok(()) };
+        let salt = osis_label::Prefix::parse(x).ok().map(|p| *p.salt());
+        let size = u32::try_from(x.len()).ok();
         for l in ls {
             if let Some(mut e) = self.state.entries.get(&(l, *b)).cloned() {
-                e.salt = Some(salt);
+                e.salt = e.salt.or(salt);
+                e.size = size;
                 self.state.set_entry(l, *b, e);
             }
         }
@@ -2095,7 +2099,7 @@ impl SyncEngine {
         if !self.state.entries.contains_key(&(l, b)) {
             let Some(t) = self.state.tombs.get(&(l, b)).cloned() else { return false };
             let memory = self.state.is_memory(&l, &b);
-            self.state.set_entry_quiet(l, b, Entry { wrap: t.wrap, stamp: None, cert: t.cert, salt: t.salt, kind: t.kind, memory });
+            self.state.set_entry_quiet(l, b, Entry { wrap: t.wrap, stamp: None, cert: t.cert, salt: t.salt, size: None, kind: t.kind, memory });
         }
         let new = !self.state.is_present(&s, &l, &b);
         self.state.set_present(s, l, b, true);

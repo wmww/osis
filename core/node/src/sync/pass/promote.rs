@@ -1,5 +1,5 @@
 //! Other nodes' writes (spec/sync.md §5, §6): a writer relays them and promotes deposits after a
-//! wait, once the author's chain is under the label.
+//! wait, once the author's chain is under the label; an admin clears deposits waiting for nothing.
 
 use super::*;
 
@@ -128,10 +128,77 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// An admin keeps at most `DEPOSITS_WAITING` entries and bytes of the deposits at a host it can
+    /// do nothing with, under any label (spec/sync.md §5, Clearing deposits): every one but a
+    /// commit it judges valid (the judgment a reader deposits by: a writer promotes it), an inbox
+    /// blob it stamps, and an inbox blob still waiting to apply. A deposit whose bytes never
+    /// reached it is not judged yet. Over that, it deletes all but invite requests first, those
+    /// expiring too far ahead or never before the rest, then the requests earliest to expire, so
+    /// a reader's or stranger's fill ends with this pass, what does not open never costs a user an
+    /// invite, and the rest of the budget stays free. A request goes only past `DEPOSITS_WAITING`
+    /// of them. Counted by size, not bytes held: this node drops the bytes of what it judged
+    /// invalid or cannot open.
+    pub(super) fn clear_deposits(&mut self, conn: ConnId, host: HostKey, p: &Head, out: &mut Vec<crate::sync::Action>) -> Result<()> {
+        let (l, keys) = (p.l, &p.keys);
+        if keys.delete.is_none() {
+            return Ok(());
+        }
+        let deposited = self.state.deposited_at(&host, &l);
+        if deposited.is_empty() {
+            return Ok(());
+        }
+        let latest = self.inbox_latest();
+        let mut waiting = Vec::new();
+        for id in deposited {
+            let Some((kind, Some(size))) = self.state.entries.get(&(l, id)).map(|e| (e.kind.clone(), e.size)) else { continue };
+            let idle = match &kind {
+                Kind::Commit { commit, parts, .. } => !self.engine.judged_valid(commit, parts),
+                Kind::Inbox(Some(c)) => {
+                    // unapplied: it waits, as its inbox bytes do, until its turn past `latest`
+                    let pending = !self.engine.core.ix.commits.contains_key(c) && self.inbox_opened(&l, &id)?.is_some_and(|o| o.until <= latest);
+                    !pending && !self.inbox_stampable(&l, &id, c)?
+                }
+                _ => true,
+            };
+            if !idle {
+                continue;
+            }
+            let until = self.engine.blob(&id)?.and_then(|b| osis_label::Prefix::parse(&b).ok().and_then(|x| x.expiry())).map_or(u64::MAX, |w| w.0);
+            let near = until <= latest;
+            waiting.push((near && matches!(kind, Kind::Request(_)), near, until, id, size as usize));
+        }
+        let over = |w: &[(bool, bool, u64, BlobId, usize)]| w.len() > osis_base::format::DEPOSITS_WAITING || w.iter().map(|x| x.4).sum::<usize>() > osis_base::format::DEPOSITS_WAITING_BYTES;
+        if !over(&waiting) {
+            return Ok(());
+        }
+        waiting.sort();
+        waiting.reverse();
+        let now = self.now();
+        let mut items = Vec::new();
+        while over(&waiting) {
+            let Some((_, _, _, id, _)) = waiting.pop() else { break };
+            let Some(c) = self.conns.get_mut(&conn) else { break };
+            if crate::sync::in_flight(c, &c.req.deleting, (l, id), now) {
+                continue;
+            }
+            if let Some(item) = delete_item(keys, &l, id, None, &[], true) {
+                c.req.deleting.insert((l, id), (now, crate::sync::UNTAGGED));
+                items.push(item);
+            }
+        }
+        if !items.is_empty() {
+            self.command(conn, Command::Delete { label: l, items }, out)?;
+        }
+        Ok(())
+    }
+
     /// A writer re-uploads stamped the deposited entries it verified (spec/sync.md §5): applied
     /// commits whose author's chain is under the label (`complete_chains` placed what it held
-    /// of it); per host (a blob may be deposited at several).
+    /// of it), with the deposited record blobs carrying records of that chain (a record blob
+    /// is no commit: promoted only so, else it would wait for clearing); per host (a blob may
+    /// be deposited at several).
     pub(super) fn promote(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
+        let mut records = BTreeSet::new();
         for (id, e, c, parts) in self.due_deposits(conn, host, l) {
             if uploads.iter().any(|u| osis_label::blob_id(&u.blob) == id) || !self.chain_missing(Some(host), g, l, &c, &parts)?.is_some_and(|m| m.is_empty()) {
                 continue;
@@ -140,6 +207,19 @@ impl SyncEngine {
             uploads.push(self.stamped_upload(l, id, e, blob, write));
             // still deposited there until the host takes the stamped upload (a refusal, say a
             // step registered meanwhile, leaves it for the next pass)
+            records.extend(self.chain_under(&c, &parts.iter().copied().collect()).map(|x| x.records).unwrap_or_default());
+        }
+        if records.is_empty() {
+            return Ok(());
+        }
+        for id in self.state.deposited_at(&host, &l) {
+            let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
+            let Kind::Records(ts) = &e.kind else { continue };
+            if !ts.iter().any(|t| records.contains(t)) || uploads.iter().any(|u| osis_label::blob_id(&u.blob) == id) || self.conns.get(&conn).is_some_and(|c| crate::sync::in_flight(c, &c.req.sent, (l, id), self.now())) {
+                continue;
+            }
+            let Some(blob) = self.engine.blob(&id)? else { continue };
+            uploads.push(self.stamped_upload(l, id, e, blob, write));
         }
         Ok(())
     }

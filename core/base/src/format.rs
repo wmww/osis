@@ -92,14 +92,15 @@ pub const MAX_DRIFT_MS: u64 = HOUR_MS;
 pub const ROLE_KEEP_MS: u64 = 90 * DAY_MS;
 /// Inbox blob lifetime (spec/wire.md §2, §9). fixed.
 pub const INBOX_LIFETIME_MS: u64 = 90 * DAY_MS;
-/// Deposits an admin leaves waiting under an inbox label per host (spec/wire.md §2, spec/sync.md
-/// §5): half the recommended minimum budget, so the rest stays free. Resource bound against a
-/// stranger's fill; past it what is no invite request goes first, then the requests earliest to
-/// expire (a sender re-sends after `INBOX_LIFETIME`). 0: nobody unconnected can invite; infinity:
-/// a stranger holds the budget for `INBOX_LIFETIME`.
-pub const INBOX_WAITING: usize = 32;
-/// See `INBOX_WAITING`, in bytes: that many recommended budget entries of 32 KiB.
-pub const INBOX_WAITING_BYTES: usize = INBOX_WAITING * 32 * 1024;
+/// Deposits an admin leaves waiting under a label per host (spec/wire.md §2, spec/sync.md §5
+/// Clearing deposits): half the recommended minimum budget, so the rest stays free. Resource bound
+/// against a fill by a stranger (an inbox) or a reader; past it what is no invite request goes
+/// first, then the requests earliest to expire (a sender re-sends after `INBOX_LIFETIME`). 0:
+/// nobody unconnected can invite, and a reader's deposit not judged yet may go; infinity: a filler
+/// holds the budget for good.
+pub const DEPOSITS_WAITING: usize = 32;
+/// See `DEPOSITS_WAITING`, in bytes: that many recommended budget entries of 32 KiB.
+pub const DEPOSITS_WAITING_BYTES: usize = DEPOSITS_WAITING * 32 * 1024;
 /// Most first-admin links from a thing up its record chain to its key actor
 /// (spec/wire.md §2, spec/permissions.md §1). fixed.
 pub const MAX_CHAIN_DEPTH: usize = 64;

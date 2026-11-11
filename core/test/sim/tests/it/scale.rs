@@ -340,7 +340,7 @@ fn a_burst_of_shares_costs_each_about_once() {
 fn a_burst_past_the_budget_sends_each_body_about_once() {
     const BURST: usize = 150;
     let (mut w, a, b, p, _) = labels_world(0);
-    // each knows the other: a stranger's shares are requests, at most `INBOX_WAITING` of them
+    // each knows the other: a stranger's shares are requests, at most `DEPOSITS_WAITING` of them
     let card = a.contact_card().unwrap();
     w.run();
     w.until(b.import_contact(&card), 1000, 10).unwrap();

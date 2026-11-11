@@ -1280,7 +1280,7 @@ fn requests_past_the_cap_go_earliest_first_spec_sync_5() {
     net.set_online(b, false);
     let now = net.now();
     let t = |i: u64| vec![osis_label::InboxThing { tid: osis_base::Tid::from_bytes([i as u8; 15]), label: None, delete_keys: None }];
-    let n = osis_base::format::INBOX_WAITING as u64;
+    let n = osis_base::format::DEPOSITS_WAITING as u64;
     let far = plant_inbox(&mut net, a, (host, &home), bob, &c, t(0), now + 2 * INBOX_LIFETIME_MS);
     let plant = |net: &mut Net, i: u64| plant_inbox(net, a, (host, &home), bob, &c, t(i), now + INBOX_LIFETIME_MS - 1000 * (n + 8 - i));
     let ids: Vec<_> = (1..n + 8).map(|i| plant(&mut net, i)).collect();
@@ -1290,7 +1290,7 @@ fn requests_past_the_cap_go_earliest_first_spec_sync_5() {
     }
     let held = net.host_ids(host, &home);
     assert!(!held.contains(&far), "too far ahead goes first");
-    let (early, late) = ids.split_at(ids.len() - osis_base::format::INBOX_WAITING);
+    let (early, late) = ids.split_at(ids.len() - osis_base::format::DEPOSITS_WAITING);
     assert!(early.iter().all(|x| !held.contains(x)), "then the earliest to expire");
     assert!(late.iter().all(|x| held.contains(x)), "the latest stay");
     assert!(net.sync(b).entries(&home).iter().all(|(x, _)| !early.contains(x)), "and are forgotten here");
@@ -1308,7 +1308,7 @@ fn burst_of_grants_is_not_cleared_spec_sync_5() {
     assert_eq!(net.engine(b).role_on(&g), Some(Role::Read), "Alice is connected");
     net.nodes[b].accepts = false;
     net.set_online(b, false);
-    let n = osis_base::format::INBOX_WAITING + 8;
+    let n = osis_base::format::DEPOSITS_WAITING + 8;
     let mut commits = Vec::new();
     for _ in 0..n {
         let e = net.engine(a);
@@ -1384,7 +1384,7 @@ fn junk_goes_before_real_requests_spec_sync_5() {
     want.sort();
     assert_eq!(seen, want, "every request stays");
     let held = net.host_ids(host, &home);
-    assert_eq!(junk.iter().filter(|x| held.contains(x)).count(), osis_base::format::INBOX_WAITING - real.len(), "the junk goes down to the cap");
+    assert_eq!(junk.iter().filter(|x| held.contains(x)).count(), osis_base::format::DEPOSITS_WAITING - real.len(), "the junk goes down to the cap");
 }
 
 // spec/sync.md §5: more real invites than the cap while their user is away: the latest stay, and the rest are lost to her until re-sent
@@ -1393,7 +1393,7 @@ fn real_requests_past_the_cap_keep_the_latest_spec_sync_5() {
     let (mut net, _, a, b, alice, bob, _, _) = alice_and_bob();
     net.nodes[b].accepts = false;
     net.set_online(b, false);
-    let n = osis_base::format::INBOX_WAITING;
+    let n = osis_base::format::DEPOSITS_WAITING;
     let real = invites(&mut net, a, alice, bob, n + 8);
     net.set_online(b, true);
     for _ in 0..4 {
@@ -1448,10 +1448,10 @@ fn fresh_node_keeps_requests_over_junk_spec_sync_5() {
     want.sort();
     assert_eq!(seen, want, "the new node sees every request");
     let held = net.host_ids(host, &home);
-    assert!(junk.iter().filter(|x| held.contains(x)).count() <= osis_base::format::INBOX_WAITING - real.len());
+    assert!(junk.iter().filter(|x| held.contains(x)).count() <= osis_base::format::DEPOSITS_WAITING - real.len());
 }
 
-// spec/sync.md §5, §2: a shared group's label is its own inbox, and its readers' card changes are deposits past the cap: its admin keeps them all
+// spec/sync.md §5, §2: a shared group's label is its own inbox, and its readers' card changes are deposits past the cap: its admin keeps them all; the record blobs of their chains go up stamped with them
 #[test]
 fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     let mut net = Net::bare();
@@ -1487,6 +1487,9 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     }
     assert!(readers.iter().all(|r| net.engine(*r).role_on(&o) == Some(Role::Read)));
     let before: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+    // the readers' cards and the record blobs of their chains went up stamped
+    let waiting = before.iter().filter(|b| osis_proto::LabelStore::entry(&*net.hosts[host].hub.store(), &l, b).unwrap().is_some_and(|m| m.stamp.is_none())).count();
+    assert_eq!(waiting, 0, "nothing waits in the budget");
     net.set_online(a, false);
     let until = net.now() + INBOX_LIFETIME_MS;
     let junk = deposit_junk(&mut net, readers[0], (host, &l), o, 40, until);
@@ -1503,7 +1506,7 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
         placed.extend(now.iter().copied());
         last = now;
     }
-    assert!(placed.len() >= osis_base::format::INBOX_WAITING / 3, "readers placed: {}", placed.len());
+    assert!(placed.len() >= osis_base::format::DEPOSITS_WAITING / 3, "readers placed: {}", placed.len());
     // all but the junk, less the cards a later one replaced (they go as replaced, not by the
     // clearing rule)
     let held: Vec<_> = net.host_ids(host, &l).into_iter().filter(|x| !junk.contains(x) && (last.contains(x) || !placed.contains(x))).collect();
@@ -1514,7 +1517,7 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     }
     let after = net.host_ids(host, &l);
     assert_eq!(held.iter().filter(|x| !after.contains(x)).count(), 0, "the readers' deposits stay");
-    assert_eq!(junk.iter().filter(|x| after.contains(x)).count(), osis_base::format::INBOX_WAITING, "the rule ran");
+    assert_eq!(junk.iter().filter(|x| after.contains(x)).count(), osis_base::format::DEPOSITS_WAITING, "the rule ran");
 }
 
 // Requirements: peer input never costs unbounded memory; spec/sync.md §3. A stranger needs only

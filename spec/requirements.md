@@ -58,7 +58,7 @@ Terms:
 - One protocol for all nodes. Peers differ only in which keys they hold.
 - A node that cannot read data may hold its only copy. Reading never allows deleting data or forcing a re-upload.
 - For data it cannot read, a node knows no role holders and never waits on their liveness.
-- Read access never allows storing arbitrary content at a node that cannot read it. Such a node stores content only with a writer's signature, beyond a small budget per group open to anyone who must reach the group's readers (grants, readers' own role changes, such as leaving). Limit: anyone holding an actor's public keys can fill the space a node serving it keeps for reaching it (its inbox), up to that node's rates, while none of the actor's admin nodes is online or by flooding without pause; meanwhile grants wait and unanswered invites may be pushed out.
+- Read access never allows storing arbitrary content at a node that cannot read it. Such a node stores content only with a writer's signature, beyond a small budget per group open to anyone who must reach the group's readers (grants, readers' own role changes, such as leaving). Limit: whoever may use that budget (anyone holding an actor's public keys, for its inbox; a group's readers, for the group) can fill it at a node serving it, up to that node's rates, while none of the group's admin nodes is online or by flooding without pause; meanwhile grants and readers' changes wait and unanswered invites may be pushed out.
 - Goal: a node can limit abuse (storage, rate) of data it cannot read without learning identities.
 
 ## Confidentiality between readers
