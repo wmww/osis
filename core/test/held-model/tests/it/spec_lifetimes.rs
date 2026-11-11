@@ -158,6 +158,27 @@ impl Rng {
     }
 }
 
+fn event(r: &mut Rng, n: usize) -> Event {
+    let x = r.next(n);
+    match r.next(13) {
+        0 | 1 => Event::List(x, r.list(n)),
+        2 | 3 => Event::Refs(x, r.set(n)),
+        4 => Event::End(x),
+        5 => Event::Expire(x),
+        6 => Event::Released(x),
+        7 => Event::Release(x),
+        8 => Event::Forget(x),
+        9 => Event::Lose(x),
+        10 => Event::Learn(x, r.list(n), r.set(n)),
+        11 => Event::Mint(x),
+        _ => Event::Right(x, r.next(2) == 0),
+    }
+}
+
+/// Over random runs of every change (lists, references, purges, expiries, release requests
+/// received and written, forgetting, lost and learned things, stale copies, mintings, rights):
+/// judging only what each change touches ends exactly what a from-scratch judgment says the
+/// node may end, and `pending` is exactly the rest.
 #[test]
 fn judging_what_a_change_touches_matches_judging_everything() {
     const N: usize = 5;
@@ -165,28 +186,164 @@ fn judging_what_a_change_touches_matches_judging_everything() {
         let mut r = Rng(seed.wrapping_mul(0x9E3779B97F4A7C15) | 1);
         let mut node = Node::new(N);
         let mut log = Vec::new();
-        for _ in 0..14 {
-            let x = r.next(N);
-            let e = match r.next(8) {
-                0 | 1 => Event::List(x, r.list(N)),
-                2 | 3 => Event::Refs(x, r.set(N)),
-                4 => Event::End(x),
-                5 => Event::Lose(x),
-                6 => Event::Learn(x, r.list(N), r.set(N)),
-                _ => Event::Right(x, r.next(2) == 0),
-            };
-            log.push(e.clone());
-            node.apply(e);
+        for _ in 0..10 {
+            // several changes judged together, as a node heard out judges its work list
+            let mut own = Set::new();
+            for _ in 0..1 + r.next(3) {
+                let e = event(&mut r, N);
+                log.push(e.clone());
+                if let Event::Release(x) = e {
+                    if matches!(node.view[x], Held::Known { .. }) && node.rights.contains(&x) {
+                        own.insert(x);
+                    }
+                }
+                node.apply(e);
+            }
+            log.push(Event::Right(usize::MAX, false)); // marks a settle in the log
             let before = unreachable(&node.view);
             let ended = node.settle();
-            // it ends exactly what it may end of what the whole view judges unreachable, and
-            // remembers the rest
-            let want: Set = before.intersection(&node.rights).copied().collect();
+            let want: Set = before.intersection(&node.rights).copied().chain(own).collect();
             assert_eq!(ended.iter().copied().collect::<Set>(), want, "seed {seed}: {log:?}");
             assert_eq!(node.pending, unreachable(&node.view), "seed {seed}: {log:?}");
             assert!(node.pending.is_disjoint(&node.rights), "seed {seed}: {log:?}");
         }
     }
+}
+
+/// Forgetting an ending never changes a judgment: it is forgotten only where no held thing lists
+/// or references the thing, and nothing else reads it. So a node forgetting a request never
+/// releases more, and never keeps what a node holding the request would release.
+#[test]
+fn forgetting_an_ending_changes_no_judgment() {
+    const N: usize = 5;
+    for seed in 1..=4000u64 {
+        let mut r = Rng(seed.wrapping_mul(0x2545F4914F6CDD1D) | 1);
+        let mut node = Node::new(N);
+        let mut log = Vec::new();
+        for _ in 0..14 {
+            let e = event(&mut r, N);
+            log.push(e.clone());
+            let before = (unreachable(&node.view), kept(&node.view));
+            let was = node.view.clone();
+            node.apply(e.clone());
+            if let Event::Forget(x) = e {
+                assert_eq!((unreachable(&node.view), kept(&node.view)), before, "seed {seed}: {log:?}");
+                if was[x] == Held::Ended && node.needs_evidence(x) {
+                    assert_eq!(node.view[x], Held::Ended, "seed {seed}: {log:?}");
+                }
+            }
+            node.settle();
+        }
+    }
+}
+
+/// A node losing a thing (access lost, forgotten) releases only what it released holding it.
+#[test]
+fn losing_a_thing_never_adds_a_release() {
+    const N: usize = 5;
+    for seed in 1..=4000u64 {
+        let mut r = Rng(seed.wrapping_mul(0xD1B54A32D192ED03) | 1);
+        let mut node = Node::new(N);
+        for _ in 0..14 {
+            let e = event(&mut r, N);
+            let before = unreachable(&node.view);
+            let lose = matches!(e, Event::Lose(_));
+            node.apply(e);
+            if lose {
+                assert!(unreachable(&node.view).is_subset(&before), "seed {seed}");
+            }
+            node.settle();
+        }
+    }
+}
+
+/// An ending held is final against any later list, reference, stale copy or minting until it is
+/// forgotten; a purge is never forgotten.
+#[test]
+fn an_ending_held_is_final_until_forgotten() {
+    const N: usize = 4;
+    for seed in 1..=4000u64 {
+        let mut r = Rng(seed.wrapping_mul(0x9E3779B97F4A7C15) ^ 7 | 1);
+        let mut node = Node::new(N);
+        let mut ended: Vec<Option<bool>> = vec![None; N]; // Some(purged)
+        let mut log = Vec::new();
+        for _ in 0..16 {
+            let e = event(&mut r, N);
+            log.push(e.clone());
+            node.apply(e.clone());
+            for x in node.settle() {
+                ended[x].get_or_insert(false);
+            }
+            match e {
+                Event::End(x) => ended[x] = Some(true),
+                Event::Expire(x) | Event::Released(x) => {
+                    ended[x].get_or_insert(false);
+                }
+                Event::Lose(x) => ended[x] = None,
+                Event::Forget(x) if ended[x] == Some(false) && node.view[x] != Held::Ended => ended[x] = None,
+                _ => {}
+            }
+            for x in 0..N {
+                if ended[x].is_some() {
+                    assert_eq!(node.view[x], Held::Ended, "seed {seed} thing {x}: {log:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn an_expired_retainers_child_is_released_where_the_child_is_held() {
+    // 0 expires; 1 lists and is referenced by 0; 2 lists and is referenced by 1
+    let mut node = Node::new(3);
+    node.apply(Event::Learn(0, None, set(&[1])));
+    node.apply(Event::Learn(1, Some(set(&[0])), set(&[2])));
+    node.apply(Event::Learn(2, Some(set(&[1])), set(&[])));
+    node.apply(Event::Right(1, true));
+    node.apply(Event::Right(2, true));
+    assert!(node.settle().is_empty());
+    node.apply(Event::Expire(0));
+    // the expiry's evidence is kept while 1 lists 0, so 1 reads 0 ended, not unknown
+    node.apply(Event::Forget(0));
+    assert_eq!(node.view[0], Held::Ended);
+    assert_eq!(node.settle().into_iter().collect::<Set>(), set(&[1, 2]));
+    // nothing holds 1 and 2 now (their own requests aside), so 0's evidence goes
+    node.apply(Event::Forget(0));
+    assert_eq!(node.view[0], Held::Unknown);
+}
+
+#[test]
+fn an_explicit_release_takes_the_thing_and_what_only_it_kept_and_stays_while_referenced() {
+    // 0 standalone references 1 (listing 0) and 3 (listing 0); 1 references 2 (listing 1) and 3
+    let mut node = Node::new(4);
+    node.apply(Event::Learn(0, None, set(&[1, 3])));
+    node.apply(Event::Learn(1, Some(set(&[0])), set(&[2, 3])));
+    node.apply(Event::Learn(2, Some(set(&[1])), set(&[])));
+    node.apply(Event::Learn(3, Some(set(&[0])), set(&[])));
+    for x in 1..4 {
+        node.apply(Event::Right(x, true));
+    }
+    assert!(node.settle().is_empty());
+    node.apply(Event::Release(1));
+    assert_eq!(node.settle().into_iter().collect::<Set>(), set(&[1, 2]));
+    // 0 still references 1: the request is kept, and a stale copy of 1 stays gone
+    node.apply(Event::Forget(1));
+    node.apply(Event::Learn(1, Some(set(&[0])), set(&[2])));
+    node.apply(Event::Mint(1));
+    assert_eq!(node.view[1], Held::Ended);
+    // 0 drops the reference: the request is forgotten, and a stale copy comes back and is
+    // released again
+    node.apply(Event::Refs(0, set(&[3])));
+    assert!(node.settle().is_empty());
+    node.apply(Event::Forget(1));
+    assert_eq!(node.view[1], Held::Unknown);
+    node.apply(Event::Learn(1, Some(set(&[0])), set(&[])));
+    assert_eq!(node.settle(), vec![1]);
+    // a bare minting after the request is forgotten reads as standalone and lives
+    node.apply(Event::Forget(1));
+    node.apply(Event::Mint(1));
+    assert!(node.settle().is_empty());
+    assert_eq!(node.view[1], Held::Known { list: None, refs: set(&[]) });
 }
 
 #[test]
@@ -213,4 +370,20 @@ fn a_change_judges_what_it_touches() {
     };
     assert_eq!(count(10), 2);
     assert_eq!(count(100), 2);
+}
+
+/// Changes judged together: 1 is pending (its retainer 0 does not reference it) when 0 starts
+/// referencing it and 2, under 1, arrives; a walk from 2 reading pending 1 as failed would release
+/// 2 before 1 is judged kept.
+#[test]
+fn a_stale_pending_thing_is_walked_through() {
+    let mut node = Node::new(3);
+    node.apply(Event::Learn(0, None, set(&[])));
+    node.apply(Event::Learn(1, Some(set(&[0])), set(&[2])));
+    node.apply(Event::Right(2, true));
+    node.settle();
+    assert_eq!(node.pending, set(&[1]));
+    node.apply(Event::Refs(0, set(&[1])));
+    node.apply(Event::Learn(2, Some(set(&[1])), set(&[])));
+    assert_eq!(node.settle(), vec![]);
 }
