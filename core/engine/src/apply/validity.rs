@@ -879,7 +879,7 @@ struct Possession<'a> {
     /// The author's roles on paths not through the actor.
     roles: BTreeMap<Tid, Role>,
     /// The part's signatures checked so far.
-    checked: &'a crate::engine::Checked,
+    checked: &'a crate::engine::Verdicts,
 }
 
 impl osis_keys::possession::View for Possession<'_> {

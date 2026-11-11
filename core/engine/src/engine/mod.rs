@@ -165,19 +165,19 @@ pub struct Showing {
     pub removed: Vec<(Tid, osis_base::Role)>,
     pub shown: Vec<osis_keys::possession::Shown>,
     /// The verdicts of `shown`'s signatures under the keys judging asked them of.
-    pub checked: Checked,
+    pub checked: Verdicts,
 }
 
 /// A part's possession signatures checked (`Shown::verifies`), by (digest, signature, key): a
 /// function of those bytes alone, kept while the part's `Showing` is, so judging the part again
 /// checks no signature again. Equal to any other: it says nothing of the part.
 #[derive(Default)]
-pub struct Checked(std::sync::Mutex<HashMap<Signed, bool>>);
+pub struct Verdicts(std::sync::Mutex<HashMap<Signed, bool>>);
 
 /// A signature's digest and bytes, and the key it was checked under.
 type Signed = ([u8; 32], [u8; 64], [u8; 32]);
 
-impl Checked {
+impl Verdicts {
     fn verdicts(&self) -> std::sync::MutexGuard<'_, HashMap<Signed, bool>> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -198,23 +198,23 @@ impl Checked {
     }
 }
 
-impl Clone for Checked {
-    fn clone(&self) -> Checked {
-        Checked(std::sync::Mutex::new(self.verdicts().clone()))
+impl Clone for Verdicts {
+    fn clone(&self) -> Verdicts {
+        Verdicts(std::sync::Mutex::new(self.verdicts().clone()))
     }
 }
 
-impl PartialEq for Checked {
-    fn eq(&self, _: &Checked) -> bool {
+impl PartialEq for Verdicts {
+    fn eq(&self, _: &Verdicts) -> bool {
         true
     }
 }
 
-impl Eq for Checked {}
+impl Eq for Verdicts {}
 
-impl std::fmt::Debug for Checked {
+impl std::fmt::Debug for Verdicts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Checked")
+        f.write_str("Verdicts")
     }
 }
 
