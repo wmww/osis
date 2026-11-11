@@ -5,13 +5,15 @@
 //! validity flip, a role change making it a writer), so the body goes there at once and
 //! everywhere else when that snapshot arrives. A node without write writes none and drops only
 //! under a writer's snapshot. Judged at the end of each transaction over the aspects whose
-//! purge-on-replace bodies, snapshots or roles changed (`Core::none_due`), from what is held then: a
-//! function of the held set, whatever the order things arrived in.
+//! purge-on-replace bodies, snapshots or roles changed (`Core::none_due`), from what is held then.
+//! "May write" is the snapshot's own check (`snapshot::snapshot_writer`: role and the thing's
+//! delete keys), and a cover it refuses leaves the body, never fails the transaction. Limit: delete
+//! keys arriving last are no trigger (issues/purge-cover-on-delete-keys.md).
 
 use super::covered;
-use crate::engine::{DropFor, Tx};
-use crate::error::Result;
-use osis_base::{Ak, CommitId, Role, Tid, Ts};
+use crate::engine::{DropFor, Step, Tx};
+use crate::error::{Error, Result};
+use osis_base::{Ak, CommitId, Tid, Ts};
 use std::collections::BTreeSet;
 
 /// The held valid snapshot of `(tid, ak)` holding the right over held body `c` that covers it,
@@ -72,17 +74,6 @@ fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Res
     Ok(out)
 }
 
-/// Whether this node may write a snapshot of `(tid, ak)` now and holds the right over a `writer`
-/// body (every writer does, spec/permissions.md §6): what the snapshot's write checks, so a node
-/// the write would refuse leaves the cover to the writers that may (the replacer among them).
-fn writer(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
-    let need = crate::engine::write::snapshot_role(ak.as_str()).max(Role::Write);
-    let core = &*tx.core;
-    let ts = Ts::make(tx.now(), 0).unwrap_or_default();
-    let role = core.writable(tid) && core.writer_for(tid).is_ok_and(|node| crate::engine::write::check_role_with(core, node, &|_| None, tid, ak.as_str(), need, ts).is_ok());
-    Ok(role && crate::engine::secrets::holds_delete_keys_in(tx, tid)?)
-}
-
 /// Judges the purge-on-replace bodies of the aspects marked this transaction (`Core::none_due`):
 /// a writer covers what is replaced and uncovered (one snapshot per aspect), then every covered
 /// one drops (spec/commits.md §5). Durable aspects only: an ephemeral delta's retention is fixed
@@ -114,8 +105,11 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
                 uncovered.push((*c, *ai));
             }
         }
+        // a node that may write a snapshot (every writer holds the right over a `writer` body,
+        // spec/permissions.md §6), judged at the stamp it would carry
         let mut owed = false;
-        if !written.contains(&k) && !uncovered.is_empty() && writer(tx, &tid, &ak)? {
+        let ts = tx.core.hlc.peek();
+        if !written.contains(&k) && !uncovered.is_empty() && super::snapshot::snapshot_writer(tx, &tid, &ak, false, ts)?.is_some() {
             for (c, ai) in &uncovered {
                 if replaced(tx, c, *ai, &tid, &ak)? {
                     owed = true;
@@ -125,7 +119,12 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
         }
         if owed {
             written.insert(k.clone());
-            super::snapshot::write_snapshot(tx, &tid, &ak, false)?;
+            // the write's own check has the last word (a removal sweep before it moves its stamp
+            // on): a refusal leaves the body to the writers that may, never fails the transaction
+            match tx.step(Step::Cover, |tx| super::snapshot::write_snapshot(tx, &tid, &ak, false)) {
+                Ok(_) | Err(Error::Permission { .. }) => {}
+                Err(e) => return Err(e),
+            }
         }
         for (c, ai) in held {
             if super::held_part(tx.core, &c, &tid, &ak) != Some(ai) || coverer(tx, &c, &tid, &ak)?.is_none() {

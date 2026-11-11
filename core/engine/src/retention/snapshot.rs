@@ -394,6 +394,25 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     Ok(Some(crate::engine::state::encode(&part)? == before))
 }
 
+/// The node a snapshot of `(tid, ak)` stamped `ts` is written as, or `None` where this node may not
+/// write it: the thing takes writes here (`Core::writable`), the node writes on it (`writer_for`:
+/// not one removed from its account), it holds the strictest role a write the snapshot carries
+/// could need (`snapshot_role`; tests may write one a receiver judges invalid) and the delete keys
+/// every write on the thing lists (spec/crypto.md §7, `framing_for`). `write_snapshot`'s check, so
+/// what a purge-on-replace cover asks (`replace::settle_none`).
+pub(crate) fn snapshot_writer(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts: Ts) -> Result<Option<Tid>> {
+    let core = &*tx.core;
+    let Ok(node) = core.writer_for(tid) else { return Ok(None) };
+    if !core.writable(tid) {
+        return Ok(None);
+    }
+    let need = if core.skip_writer_rules { crate::engine::write::required_role(ak.as_str()) } else { crate::engine::write::snapshot_role(ak.as_str()) };
+    if !(memory && core.skip_writer_rules) && crate::engine::write::check_role_with(core, node, &|_| None, tid, ak.as_str(), need, ts).is_err() {
+        return Ok(None);
+    }
+    Ok(crate::engine::secrets::holds_delete_keys_in(tx, tid)?.then_some(node))
+}
+
 /// `Engine::snapshot` in `tx` (`memory`: the aspect is ephemeral, `tx` in the memory class):
 /// a snapshot of `(tid, ak)` from this node's whole state, applied here.
 pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) -> Result<Option<CommitId>> {
@@ -406,15 +425,8 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
         m.sweep(tid, ak.clone(), tx.core.schemas.get(ak.as_str()).cloned());
         crate::engine::write::commit_in(tx, m)?;
     }
-    let node = tx.core.writer_for(&tid)?;
     let ts = tx.core.hlc.next();
-    // a snapshot needs the strictest role a write it carries could need (tests may write
-    // one a receiver judges invalid)
-    let need = if tx.core.skip_writer_rules { crate::engine::write::required_role(ak.as_str()) } else { crate::engine::write::snapshot_role(ak.as_str()) };
-    if !(memory && tx.core.skip_writer_rules) {
-        let core = &*tx.core;
-        crate::engine::write::check_role_with(core, node, &|_| None, &tid, ak.as_str(), need, ts)?;
-    }
+    let Some(node) = snapshot_writer(tx, &tid, &ak, memory, ts)? else { return Err(Error::Permission { tid }) };
     if tx.state(&tid, &ak)?.is_none() {
         return Ok(None);
     }

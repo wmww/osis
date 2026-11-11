@@ -14,7 +14,7 @@ use osis_perm::Point;
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use osis_store::Shred;
-use crate::engine::secrets::{holds_listed_keys, published_keys};
+use crate::engine::secrets::holds_delete_keys_in;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Whether a part on `ak` is plain content an addendum may list (spec/permissions.md §5.2,
@@ -102,9 +102,7 @@ fn answer(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<Option<BTreeMap<Tid,
         }
     }
     for n in out.keys() {
-        let created = Default::default();
-        let published = published_keys(tx, &created, [*n])?;
-        if !holds_listed_keys(tx.core, &created, &published, n) {
+        if !holds_delete_keys_in(tx, n)? {
             return Ok(None);
         }
     }

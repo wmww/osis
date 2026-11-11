@@ -303,9 +303,7 @@ fn witness(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitI
         }
     }
     for n in out.keys() {
-        let created = Default::default();
-        let published = crate::engine::secrets::published_keys(tx, &created, [*n])?;
-        if !crate::engine::secrets::holds_listed_keys(tx.core, &created, &published, n) {
+        if !crate::engine::secrets::holds_delete_keys_in(tx, n)? {
             return Ok(false);
         }
     }

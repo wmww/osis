@@ -701,6 +701,8 @@ pub(crate) enum Step {
     Part,
     /// One removal answered with this node's addenda (`flows::addenda::answer_removals`).
     Answer,
+    /// One purge-on-replace cover written (`retention::settle_none`).
+    Cover,
 }
 
 /// Tests: after `skip` more steps of kind `site` run, every later one fails (`BadInput`), before

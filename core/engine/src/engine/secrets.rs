@@ -532,7 +532,8 @@ pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Cre
     osis_commit::Secrets::admin_key(&s, tid).is_some() && osis_commit::Secrets::write_key(&s, tid).is_some()
 }
 
-/// [`crate::Engine::holds_delete_keys`] in `tx`.
+/// Whether this node holds the delete keys every write on `t` lists (`framing_for`'s check), in
+/// `tx`: what answers and covers wait for (`Engine::holds_delete_keys`).
 pub(crate) fn holds_delete_keys_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<bool> {
     let created = Default::default();
     let published = published_keys(tx, &created, [*t])?;
