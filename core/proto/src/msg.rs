@@ -285,8 +285,10 @@ pub struct Stream {
 /// One Offer item (spec/wire.md §11.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OfferItem {
-    /// A Hit: the role-bound digest of a credential whose filter entry hit (`beacon_hit`).
-    Hit([u8; 32]),
+    /// A Hit: the role-bound digest of a credential whose filter entry hit (`beacon_hit`), with
+    /// the credential's proof where its match value is public: for a sync key, an open signature
+    /// by it (spec/sync.md §10).
+    Hit([u8; 32], Option<Signature>),
     /// A sync ID the sender judged the peer holds, with the sender's Hit at each epoch it holds.
     ByRole(LabelId, Vec<[u8; 32]>),
     /// An inbox blob for inbox sync ID `label`, its wrap and the deposit key's signature, as a
@@ -377,7 +379,7 @@ pub fn is_request_kind(kind: u64) -> bool {
 impl OfferItem {
     fn to_value(&self) -> Value {
         match self {
-            OfferItem::Hit(h) => Value::List(vec![Value::uint(0), Value::bytes(h)]),
+            OfferItem::Hit(h, proof) => Value::List(vec![Value::uint(0), Value::bytes(h), Value::opt(proof.as_ref().map(|s| Value::bytes(&s.0)))]),
             OfferItem::ByRole(l, hits) => Value::List(vec![Value::uint(1), Value::bytes(&l.0), Value::List(hits.iter().map(|h| Value::bytes(h)).collect())]),
             OfferItem::Deposit { label, blob, wrap, sig } => Value::List(vec![Value::uint(2), Value::bytes(&label.0), Value::bytes(blob), Value::bytes(wrap), Value::bytes(&sig.0)]),
         }
@@ -387,7 +389,7 @@ impl OfferItem {
 fn offer_item(v: Value) -> Result<OfferItem, Error> {
     let mut f = Fields::range(v, 2, 5, "offer item")?;
     let item = match f.uint()? {
-        0 => OfferItem::Hit(f.fixed()?),
+        0 => OfferItem::Hit(f.fixed()?, f.opt()?.map(|v| dec::fixed(v, "open signature").map(Signature)).transpose()?),
         1 => OfferItem::ByRole(LabelId(f.fixed()?), f.list(1, MAX_BYROLE_HITS, "hits")?.into_iter().map(|v| dec::fixed(v, "hit")).collect::<Result<_, _>>()?),
         2 => OfferItem::Deposit { label: LabelId(f.fixed()?), blob: f.bytes(MAX_BLOB)?, wrap: f.fixed()?, sig: Signature(f.fixed()?) },
         _ => return Err(Error::Malformed("offer item")),

@@ -101,7 +101,7 @@ fn a_valid_hit_opens_and_is_tagged_spec_wire_11_2() {
     let (mut p, _) = resumed(&mut net, a, b, &r, CHALLENGE);
     let v = read_value(&mut net, a, l);
     let hit = dialer_hit(&v, l, &r, &p, CHALLENGE);
-    let ans = offer(&mut net, b, &mut p, vec![OfferItem::Hit(hit)]);
+    let ans = offer(&mut net, b, &mut p, vec![OfferItem::Hit(hit, None)]);
     let expect = beacon_reply(&v, &l.0, &beacon(&v, &l.0, &r), (true, &LISTENER, &CHALLENGE, &p.hello));
     assert_eq!(ans, vec![(Code::OK, Some(expect))]);
     assert!(net.sync(b).shared_members(p.conn).contains(&l));
@@ -126,7 +126,7 @@ fn a_reflected_or_carried_hit_opens_nothing_spec_wire_11_2() {
         ("another listener challenge", (false, &LISTENER, &CHALLENGE, &other)),
     ] {
         let hit = beacon_hit(&v, &l.0, &bcn, side);
-        let ans = offer(&mut net, b, &mut p, vec![OfferItem::Hit(hit)]);
+        let ans = offer(&mut net, b, &mut p, vec![OfferItem::Hit(hit, None)]);
         assert_eq!(ans, vec![(Code::NOT_ADMITTED, None)], "{what}");
     }
     assert!(net.sync(b).shared_members(p.conn).is_empty(), "nothing opened");
@@ -147,7 +147,7 @@ fn a_hit_answered_without_a_tag_opens_nothing_spec_wire_11_2() {
     let mut msgs = shared_of(&first);
     msgs.extend(shared_of(&send(&mut net, b, &mut p, Message::Beacons { id: 40, generation: 1, base: None, f, lo: 0, hi: 1 << f, gcs, more: false })));
     let Some(Message::Offer { id, items }) = msgs.iter().find(|m| matches!(m, Message::Offer { .. })) else { panic!("no Offer: {msgs:?}") };
-    assert!(matches!(items[0], OfferItem::Hit(_)), "{items:?}");
+    assert!(matches!(items[0], OfferItem::Hit(..)), "{items:?}");
     send(&mut net, b, &mut p, Message::Shared { id: *id, codes: vec![(Code::OK, None, None)] });
     assert!(net.sync(b).shared_members(p.conn).is_empty(), "no tag, no open");
 }
@@ -179,7 +179,7 @@ fn a_lost_touches_only_members_spec_wire_11_2() {
     let (mut p, _) = resumed(&mut net, a, b, &r, CHALLENGE);
     let v = read_value(&mut net, a, l);
     let hit = dialer_hit(&v, l, &r, &p, CHALLENGE);
-    offer(&mut net, b, &mut p, vec![OfferItem::Hit(hit)]);
+    offer(&mut net, b, &mut p, vec![OfferItem::Hit(hit, None)]);
     let other = LabelId([0x77; 16]);
     send(&mut net, b, &mut p, Message::Lost { id: 8, items: vec![(other, None)] });
     assert!(net.sync(b).shared_members(p.conn).contains(&l), "not a member's Lost");
@@ -208,10 +208,11 @@ fn a_lost_for_what_is_not_shared_costs_no_test() {
     assert_eq!(net.sync(b).pass_stats().hits_sent, hits, "not offered again");
 }
 
-// issues/net-shared-set.md, Words: a filter goes only to a peer that proved a known actor: a
-// dialer knowing nothing of the listener sends none and tests the listener's
+// issues/net-shared-set.md, Words: what a node reads goes in a filter only to a peer that proved
+// a known actor: a dialer knowing nothing of the listener shows no credential and tests the
+// listener's
 #[test]
-fn a_redeemer_knowing_nothing_sends_no_filter_spec_sync_10() {
+fn a_redeemer_knowing_nothing_shows_no_credential_spec_sync_10() {
     let mut net = Net::new();
     let host = net.add_host();
     let (a, account) = crate::net_judgment::account_node(&mut net, 1, host);
@@ -225,7 +226,7 @@ fn a_redeemer_knowing_nothing_sends_no_filter_spec_sync_10() {
     let acts = net.sync(c).follow(held, k, LabelId([0x99; 16]), vec![]);
     net.actions(c, acts);
     net.run();
-    assert_eq!(net.sync(c).pass_stats().filters_sent, 0, "knows no actor of the listener");
+    assert_eq!(net.sync(c).pass_stats().beacons_sent, 0, "knows no actor of the listener");
     assert!(net.sync(c).pass_stats().filters_received >= 1, "and tests the listener's");
     assert!(net.sync(a).pass_stats().filters_sent >= 1);
 }
@@ -262,10 +263,11 @@ fn a_link_redeemed_through_a_joiner_gets_the_box_from_the_hit_reply_spec_sync_10
     assert_eq!(net.peer_sent(j, OPEN) + net.peer_sent(r, OPEN), 0, "no Open between readers");
 }
 
-// issues/net-shared-set.md, Peers: a node with no record for this connection (a stranger) gets no filter and
-// no answer but a refusal: interop with a node that keeps none is no shared set at all
+// issues/net-shared-set.md, Words and Peers that cannot read: a stranger's NoRecord starts the
+// connection's set, whose filter holds none of what the node reads (here nothing else: it keeps
+// nothing unread); before it, a shared-set request is refused
 #[test]
-fn a_connection_with_no_record_has_no_shared_set_spec_sync_10() {
+fn a_strangers_filter_shows_nothing_the_node_reads_spec_sync_10() {
     let mut net = Net::new();
     let (_a, b, _, _) = pair(&mut net);
     let stranger = net.node(9, &[]);
@@ -275,8 +277,9 @@ fn a_connection_with_no_record_has_no_shared_set_spec_sync_10() {
     assert_eq!(msgs[0], Message::Error { id: ids | 5, code: Code::NOT_ADMITTED });
     assert!(net.sync(b).shared_members(p.conn).is_empty());
     let msgs = shared_of(&send(&mut net, b, &mut p, Message::NoRecord { id: ids | 6 }));
-    assert_eq!(msgs[0], Message::Error { id: ids | 6, code: Code::NOT_ADMITTED }, "a NoRecord from an unknown dialer starts nothing");
-    assert!(!msgs.iter().any(|m| matches!(m, Message::Beacons { .. })), "and no filter");
+    let filter: Vec<u64> = msgs.iter().filter_map(|m| if let Message::Beacons { gcs, lo, hi, .. } = m { Some(osis_proto::filter::decode_gcs(gcs, *lo, *hi).unwrap()) } else { None }).flatten().collect();
+    assert!(msgs.iter().any(|m| matches!(m, Message::Beacons { .. })), "a filter");
+    assert!(filter.is_empty(), "with no entry: b reads its group and keeps nothing unread");
 }
 
 fn the_conn(net: &mut Net, n: usize) -> ConnId {
@@ -337,13 +340,13 @@ fn a_static_entry_hit_opens_only_for_its_proved_key_actor_spec_wire_11_2() {
     let mut wrong = proving_key_actor(&mut net, a, carrier, &seed2, ch);
     let r = *osis_crypto::kdf::pair_key(&ch, &wrong.hello).expose();
     let hit = beacon_hit(&entry, &label.0, &beacon(&entry, &label.0, &r), (false, &LISTENER, &ch, &wrong.hello));
-    assert_eq!(offer(&mut net, a, &mut wrong, vec![OfferItem::Hit(hit)]), vec![(Code::NOT_ADMITTED, None)], "another key actor proved");
+    assert_eq!(offer(&mut net, a, &mut wrong, vec![OfferItem::Hit(hit, None)]), vec![(Code::NOT_ADMITTED, None)], "another key actor proved");
     assert!(net.sync(a).shared_members(wrong.conn).is_empty());
     let ch = [8; 32];
     let mut right = proving_key_actor(&mut net, a, carrier, &seed1, ch);
     let r = *osis_crypto::kdf::pair_key(&ch, &right.hello).expose();
     let hit = beacon_hit(&entry, &label.0, &beacon(&entry, &label.0, &r), (false, &LISTENER, &ch, &right.hello));
-    let ans = offer(&mut net, a, &mut right, vec![OfferItem::Hit(hit)]);
+    let ans = offer(&mut net, a, &mut right, vec![OfferItem::Hit(hit, None)]);
     assert_eq!(ans[0].0, Code::OK, "its own key actor proved");
     assert!(net.sync(a).shared_members(right.conn).contains(&label));
 }
@@ -425,7 +428,7 @@ fn an_accepted_by_role_opens_at_its_sender_spec_wire_11_2() {
     let mut msgs = shared_of(&first);
     msgs.extend(shared_of(&send(&mut net, b, &mut p, Message::Beacons { id: 40, generation: 1, base: None, f: filter_width(0), lo: 0, hi: 1 << filter_width(0), gcs: vec![], more: false })));
     // a Hit on the filter b's record stored is refused: b finds nothing by testing
-    while let Some(Message::Offer { id, items }) = msgs.iter().find(|m| matches!(m, Message::Offer { items, .. } if matches!(items[0], OfferItem::Hit(_)))).cloned() {
+    while let Some(Message::Offer { id, items }) = msgs.iter().find(|m| matches!(m, Message::Offer { items, .. } if matches!(items[0], OfferItem::Hit(..)))).cloned() {
         msgs.retain(|m| m.id() != id);
         msgs.extend(shared_of(&send(&mut net, b, &mut p, Message::Shared { id, codes: vec![(Code::NOT_ADMITTED, None, None); items.len()] })));
     }
@@ -452,7 +455,7 @@ fn a_credential_open_outlasts_the_peers_being_known_spec_sync_10() {
     let (mut p, _) = resumed(&mut net, a, b, &r, CHALLENGE);
     let v = read_value(&mut net, b, l2);
     let hit = dialer_hit(&v, l2, &r, &p, CHALLENGE);
-    assert_eq!(offer(&mut net, b, &mut p, vec![OfferItem::Hit(hit)])[0].0, Code::OK);
+    assert_eq!(offer(&mut net, b, &mut p, vec![OfferItem::Hit(hit, None)])[0].0, Code::OK);
     let tb = net.tid(b);
     let rec = recipients_of(net.engine(b), &[(tb, Role::Admin)]);
     remove_holder(net.engine(b), g1, ta, &rec, 7);

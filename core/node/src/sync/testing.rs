@@ -113,6 +113,7 @@ impl SyncEngine {
                 lan_rotate: self.lan_rotate.clone(),
                 reach_account: self.reach_account.clone(),
                 served_cache: self.served_cache.clone(),
+                unread: self.unread.clone(),
                 charges: self.charges.clone(),
                 own_keys: self.own_keys.clone(),
                 blob_sizes: self.blob_sizes.clone(),

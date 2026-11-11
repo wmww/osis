@@ -95,6 +95,14 @@ impl MemLog {
         self.put(l, b, false, now);
     }
 
+    /// An entry went with no event of its own (an unread sync ID's expired memory entry): its
+    /// event goes, none logged.
+    pub(crate) fn gone(&mut self, l: LabelId, b: BlobId) {
+        if let Some(s) = self.slot.remove(&(l, b)) {
+            self.by_seq.remove(&s);
+        }
+    }
+
     /// A label left this node: its events go, none logged.
     pub(crate) fn forget(&mut self, l: &LabelId) {
         let gone: Vec<((LabelId, BlobId), u64)> = self.slot.range((*l, BlobId([0; 32]))..=(*l, BlobId([0xff; 32]))).map(|(k, v)| (*k, *v)).collect();
@@ -554,6 +562,7 @@ impl SyncEngine {
     /// the budget cut it (else `None`).
     fn stream_events(&mut self, conn: ConnId, scanned: &[LoggedEvent], budget: &mut usize, alone: bool) -> Result<(Events, Option<u64>)> {
         let labels = self.served_labels();
+        let unread = self.unread_heads()?;
         let (inline, crossed) = self.streams.get(&conn).map_or((0, BTreeSet::new()), |s| (s.serving.inline_limit, s.serving.crossed.clone()));
         let mut out = Vec::new();
         for e in scanned {
@@ -563,7 +572,7 @@ impl SyncEngine {
                     None => continue,
                 },
                 NodeEvent::Deleted { label, blob, .. } => (label, Event::Deleted(blob)),
-                NodeEvent::Head(l) => match labels.get(&l).and_then(|s| s.head()) {
+                NodeEvent::Head(l) => match labels.get(&l).and_then(|s| s.head()).or_else(|| unread.get(&l).map(|h| &h.step)) {
                     Some(h) => (l, Event::Head(h.clone())),
                     None => continue,
                 },
@@ -579,9 +588,15 @@ impl SyncEngine {
     }
 
     /// An entry as the stream shows it: only one whose bytes are held here (an entry kept with
-    /// its bytes dropped has nothing to serve), inline when it fits.
+    /// its bytes dropped has nothing to serve), inline when it fits. Of a sync ID kept unread,
+    /// as the hub's store holds it.
     fn stream_added(&mut self, l: LabelId, b: BlobId, inline: u64, crossed: &BTreeSet<BlobId>, budget: usize) -> Result<Option<Event>> {
-        let Some(e) = self.state.entries.get(&(l, b)) else { return Ok(None) };
+        let Some(e) = self.state.entries.get(&(l, b)) else {
+            let Some((wrap, stamp)) = self.unread_entry(&l, &b)? else { return Ok(None) };
+            let Some(bytes) = self.unread_blob(&b)? else { return Ok(None) };
+            let fits = bytes.len() as u64 <= inline && !crossed.contains(&b) && bytes.len().saturating_add(200) <= budget;
+            return Ok(Some(Event::Added { blob_id: b, blob: fits.then_some(bytes), wrap, stamp }));
+        };
         let (wrap, stamp) = (e.wrap, e.stamp);
         if !self.engine.has_blob(&b) {
             return Ok(None);
@@ -799,9 +814,11 @@ impl SyncEngine {
     /// `conn` took record `id`: its stream goes on from the record's cursor with the record's
     /// members where the record holds them, pulled once the two records agree; the peer is
     /// served them as members it tracks.
-    pub(super) fn stream_bind(&mut self, conn: ConnId, id: RecordId, cursor: Option<Vec<u8>>, members: &[(LabelId, osis_store::Member)]) {
+    /// `pulled`: the members this side pulls (`members` but those it keeps unread).
+    pub(super) fn stream_bind(&mut self, conn: ConnId, id: RecordId, cursor: Option<Vec<u8>>, pulled: &[(LabelId, osis_store::Member)], members: &[(LabelId, osis_store::Member)]) {
         let st = self.streams.entry(conn).or_default();
         st.serving.pulled = members.iter().map(|(l, _)| *l).collect();
+        let members = pulled;
         let p = &mut st.pulling;
         p.record = Some(id);
         p.settled = cursor.clone();
@@ -1303,6 +1320,11 @@ impl SyncEngine {
             let held = if member && shown { self.state.entries.get(&(l, b)).map(|e| (e.wrap, e.stamp)) } else { None };
             let entry = match held {
                 Some((wrap, stamp)) => self.engine.blob(&b)?.map(|x| (x, wrap, stamp)),
+                // kept unread: as the hub's store holds it
+                None if member && shown => match self.unread_entry(&l, &b)? {
+                    Some((wrap, stamp)) => self.unread_blob(&b)?.map(|x| (x, wrap, stamp)),
+                    None => None,
+                },
                 None => None,
             };
             let n = entry.as_ref().map_or(40, |(x, ..)| x.len().saturating_add(200));

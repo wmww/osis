@@ -305,7 +305,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ),
         ("suspect", Message::Suspect { id: 36, label: l, entries: vec![crate::msg::SuspectEntry { thing: osis_base::Tid::from_bytes([0x0c; 15]), ak: osis_base::Ak::new("t:reg.0").expect("an AK"), digest: [0x0d; 16] }] }),
         ("beacons", Message::Beacons { id: 30, generation: 1, base: None, f: 9, lo: 0, hi: 512, gcs: vec![0, 1, 2], more: false }),
-        ("offer", Message::Offer { id: 31, items: vec![crate::msg::OfferItem::Hit([9; 32]), crate::msg::OfferItem::ByRole(l, vec![[8; 32]])] }),
+        ("offer", Message::Offer { id: 31, items: vec![crate::msg::OfferItem::Hit([9; 32], None), crate::msg::OfferItem::Hit([10; 32], Some(osis_crypto::Signature([11; 64]))), crate::msg::OfferItem::ByRole(l, vec![[8; 32]])] }),
         ("offer with a deposit", Message::Offer { id: 34, items: vec![crate::msg::OfferItem::Deposit { label: l, blob: deposited, wrap: dep_wrap, sig: dep_sig }] }),
         ("lost", Message::Lost { id: 32, items: vec![(l, None)] }),
         ("shared", Message::Shared { id: 31, codes: vec![(Code::OK, Some([7; 32]), None), (Code::NOT_ADMITTED, None, None)] }),

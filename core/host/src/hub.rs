@@ -55,6 +55,9 @@ pub enum Up {
     Opened(bool),
     /// Pushes of up to `budget` bytes may go now (after `Down::WantRoom`).
     Room { budget: usize },
+    /// A relay-only entry this connection uploaded to a sync ID node sync does not read, past
+    /// the store's relay gate: node sync hands it to the readers its shared sets serve it to.
+    Relay(osis_proto::Relayed),
     /// The connection is gone (after a `Start`).
     End,
 }
@@ -105,6 +108,9 @@ pub enum Down {
     Keep(bool),
     /// Close the connection.
     Close,
+    /// Node sync changed this label in the store outside a batch (a Deposit item it took): its
+    /// subscribers and replicators hear of it, as of any connection's change.
+    Changed(LabelId),
 }
 
 #[derive(Clone)]
@@ -341,6 +347,11 @@ impl Hub {
         self.now = now;
         self.batch(|h, st, out| {
             for (id, d) in downs {
+                // the store changed whatever became of the connection
+                if let Down::Changed(l) = d {
+                    h.changed(st, now, l, out);
+                    continue;
+                }
                 if !matches!(h.conns.get(&id), Some(Conn::Served { .. })) {
                     continue;
                 }
@@ -350,6 +361,7 @@ impl Hub {
                     Down::Notify(n) => h.serve(st, now, id, ServingInput::Notify(n), out),
                     Down::WantRoom => h.serve(st, now, id, ServingInput::WantRoom, out),
                     Down::Keep(_) => {}
+                    Down::Changed(_) => {}
                     Down::Close => {
                         h.remove(id);
                         out.push(HubOutput::Close(id));
@@ -646,6 +658,9 @@ impl Hub {
                 ServingOutput::Changed(l) => self.changed(st, now, l, out),
                 // only to the label's subscribers on other connections, the bytes shared
                 ServingOutput::Relay(r) => {
+                    if !st.reads(&r.label) {
+                        out.push(HubOutput::Up(id, Up::Relay(r.clone())));
+                    }
                     let others: Vec<ConnId> = self.conns.iter().filter(|(k, c)| **k != id && matches!(c, Conn::Served { c, .. } if c.subscribed(&r.label))).map(|(k, _)| *k).collect();
                     for j in others {
                         self.relays_delivered += 1;

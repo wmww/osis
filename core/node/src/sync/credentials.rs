@@ -91,7 +91,9 @@ impl SyncEngine {
         }
         self.shared_dirty = true;
         let things = self.things();
-        let labels: Vec<LabelId> = things.keys().copied().collect();
+        // and the sync IDs kept unread: their head's credentials (step 9)
+        let unread = self.unread_heads()?;
+        let labels: Vec<LabelId> = things.keys().chain(unread.keys().filter(|l| !things.contains_key(l))).copied().collect();
         self.stats.changed_passes += 1;
         self.stats.changed_labels += labels.len() as u64;
         let creds = self.credentials(&labels)?;
@@ -150,12 +152,18 @@ impl SyncEngine {
     /// This node's credentials of each of `labels`, as a reader or as the key actor its link or
     /// card names (issues/net-shared-set.md, Words): the read secret at each current epoch held
     /// (of a synced group, or of a hint's thing a held box gave one of), a static entry per key actor on the label's roster held, and the static entry of the key
-    /// actor a hint names. A peer that cannot read a label has `head_credentials` instead (step 9).
-    /// O(N) for the label table, then per label O(its roster).
+    /// actor a hint names; of a sync ID this node keeps and cannot read, its head's
+    /// (`head_credentials`). O(N) for the label table, then per label O(its roster).
     pub fn credentials(&mut self, labels: &[LabelId]) -> Result<BTreeMap<LabelId, Vec<Credential>>> {
         let readers: BTreeMap<LabelId, Tid> = self.labels().into_iter().map(|(g, l)| (l.id, g)).collect();
+        let unread = self.unread_heads()?;
         let mut all = BTreeMap::new();
         for l in labels {
+            if let Some(h) = unread.get(l).filter(|_| !readers.contains_key(l) && !self.state.hints.contains_key(l)) {
+                let none = ClaimSet { claims: Vec::new(), entries: BTreeMap::new() };
+                all.insert(*l, head_credentials(&h.step, h.claims.as_deref().unwrap_or(&none)));
+                continue;
+            }
             let mut out = Vec::new();
             // a hint's thing too: a read secret a held box gave (an inbox grant), before the
             // label's own `label.0` comes by that label

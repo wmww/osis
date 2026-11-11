@@ -66,7 +66,7 @@ fn opened_with(hosted: bool, other: bool) -> (Setup, Option<usize>) {
     let (mut p, _) = resume(&mut net, a, b, &r, CHALLENGE, &[]);
     let v = read_value(&mut net, b, l);
     let hit = dialer_hit(&v, l, &r, &p, CHALLENGE);
-    assert_eq!(offer(&mut net, b, &mut p, vec![OfferItem::Hit(hit)])[0].0, Code::OK);
+    assert_eq!(offer(&mut net, b, &mut p, vec![OfferItem::Hit(hit, None)])[0].0, Code::OK);
     let reply = pull(&mut net, b, &mut p, None, vec![(l, None)]);
     assert!(reply.report && events_of(&reply.events, l) > 0, "the listing carries g and asks its report");
     let cursor = reply.cursor.clone().unwrap();
@@ -244,7 +244,7 @@ fn a_rotation_while_apart_rejoins_from_its_lag_spec_sync_10() {
     let found = sent.iter().any(|m| matches!(m, Message::Beacons { f, gcs, lo, hi, .. } if decode_gcs(gcs, *lo, *hi).unwrap().contains(&beacon_value(&want, *f))));
     assert!(found, "b sent the new epoch's beacon");
     let hit = dialer_hit(&v, l, &r, &p, [8; 32]);
-    assert_eq!(offer(&mut net, b, &mut p, vec![OfferItem::Hit(hit)])[0].0, Code::OK, "the holder reopens L");
+    assert_eq!(offer(&mut net, b, &mut p, vec![OfferItem::Hit(hit, None)])[0].0, Code::OK, "the holder reopens L");
     let stop = position(&mut net, b, &lag);
     let rejoin = pull(&mut net, b, &mut p, reply.cursor.clone(), vec![(l, Some(lag))]);
     let again = added_of(&rejoin.events, l);

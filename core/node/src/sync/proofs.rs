@@ -31,6 +31,9 @@ pub(super) fn provers(engine: &mut Engine, own: bool) -> Result<Vec<Prover>> {
 pub struct Proven {
     /// Key actors proved by their own signing key over this connection.
     pub key_actors: BTreeSet<Tid>,
+    /// Each of those key actors' signing key (from its proof: a static entry is checked against
+    /// it, known here or not).
+    pub signing: std::collections::BTreeMap<Tid, [u8; 32]>,
     /// The first proof's actor when it is a node of this node's own account (`Core::own_node`):
     /// a node proves its node key to its own account's nodes only (spec/sync.md §10).
     pub node: Option<Tid>,
@@ -64,7 +67,7 @@ pub(super) fn proven_actors(engine: &mut Engine, proofs: &[ActorProof]) -> Resul
     let is_account = |p: &ActorProof| matches!(p.record, osis_base::CreationRecord::KeyActor { account: true, .. });
     let (accounts, key_actors): (Vec<&ActorProof>, Vec<&ActorProof>) = proofs.iter().partition(|p| is_account(p));
     let node = proofs.first().filter(|p| !is_account(p)).map(ActorProof::actor).filter(|t| engine.core.own_node(t));
-    Ok(Proven { key_actors: key_actors.iter().map(|p| p.actor()).collect(), node, accounts: accounts.iter().filter(|p| engine.account_key_open(&p.record, &p.key)).map(|p| p.actor()).collect() })
+    Ok(Proven { key_actors: key_actors.iter().map(|p| p.actor()).collect(), signing: key_actors.iter().map(|p| (p.actor(), p.key)).collect(), node, accounts: accounts.iter().filter(|p| engine.account_key_open(&p.record, &p.key)).map(|p| p.actor()).collect() })
 }
 
 /// Whether a peer that proved `proven` gets this node's node key: it proved this node's account

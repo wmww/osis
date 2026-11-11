@@ -58,6 +58,22 @@ const READ: u8 = 0;
 const STATIC: u8 = 1;
 /// An open by J with no credential.
 const JUDGED: u8 = 2;
+/// A served head's sync key, and its deposit key (never opens: a depositor sends its Deposit
+/// item), at a node that cannot read the sync ID.
+const SYNC: u8 = 3;
+const DEPOSIT: u8 = 4;
+
+/// Which credentials `shared_creds` lists: this node's as a reader (`read`), and those of the
+/// sync IDs it keeps unread (`unread`).
+#[derive(Clone, Copy)]
+struct Which {
+    read: bool,
+    unread: bool,
+}
+
+const ALL: Which = Which { read: true, unread: true };
+/// What a node tests and offers: never an unread sync ID's (it cannot prove one).
+const TESTED: Which = Which { read: true, unread: false };
 
 /// One credential of one L as this connection sees it.
 #[derive(Clone)]
@@ -171,13 +187,12 @@ pub(crate) struct Shared {
     /// This connection's Hit table (the peer's Hit → credential), built at the first Hit, dropped
     /// when what this node holds changes.
     table: Option<HashMap<[u8; 32], Cred>>,
-    /// The peer refused this connection a filter (it knows no actor proved here).
-    refused: bool,
     /// Sync IDs this side tested a key actor's static entry of against the peer's filter and
     /// found absent: a link's sharer refused it (`static_entry_refused`).
     static_missing: BTreeSet<LabelId>,
-    /// The peer proved an actor known here now: this side sends a filter (issues/net-shared-set.md, Words).
-    filter_out: bool,
+    /// The last whole filter held this node's read credentials (the peer proved an actor known
+    /// here then): when that differs from now, the next generation is whole.
+    read_out: bool,
     /// Tests of the pending set run and generations sent on this connection (tests count them).
     work: (u64, u64),
     /// A Deposit item of this side is unanswered (one at a time per connection).
@@ -227,9 +242,8 @@ impl Shared {
             by_role: BTreeSet::new(),
             asked: BTreeMap::new(),
             table: None,
-            refused: false,
             static_missing: BTreeSet::new(),
-            filter_out: false,
+            read_out: false,
             work: (0, 0),
             deposit_out: false,
             deposits_refused: BTreeSet::new(),
@@ -302,26 +316,15 @@ impl SyncEngine {
         self.shared_open(conn, l, JUDGED, None, out)
     }
 
-    /// Whether what `conn` can open is known: its shared set saw the peer's filter or a refusal
-    /// and nothing it asked is unanswered, or it never starts (a host, a peer with no proofs yet
-    /// counts as still finding).
+    /// Whether what `conn` can open is known: its shared set saw the peer's filter and nothing it
+    /// asked is unanswered (a host, a peer with no proofs yet counts as still finding).
     pub(crate) fn shared_settled(&self, conn: ConnId) -> bool {
-        self.records.shared.get(&conn).is_some_and(|s| s.agreed && (s.arrived || s.refused) && !s.test_due && !s.in_flight && s.pending.offers_unanswered == 0)
+        self.records.shared.get(&conn).is_some_and(|s| s.agreed && s.arrived && !s.test_due && !s.in_flight && s.pending.offers_unanswered == 0)
     }
 
     /// Whether `conn`'s stream may pull: the two records agree (no record: at once).
     pub(crate) fn shared_agreed(&self, conn: ConnId) -> bool {
         self.records.shared.get(&conn).is_some_and(|s| s.agreed)
-    }
-
-    /// The listener answered this dialer's `NoRecord` with a refusal: it knows no actor this
-    /// connection proved, so a link key it will not list stays refused (`static_entry_refused`).
-    fn shared_peer_refused(&mut self, conn: ConnId) {
-        let hinted: Vec<LabelId> = self.state.hints.iter().filter(|(_, h)| h.via.is_some()).map(|(l, _)| *l).collect();
-        if let Some(s) = self.records.shared.get_mut(&conn) {
-            s.static_missing.extend(hinted);
-            s.refused = true;
-        }
     }
 
     /// Whether a connection's peer showed a filter without this node's static entry of `l`: the
@@ -331,8 +334,9 @@ impl SyncEngine {
     }
 
     /// The shared set of `conn` starts, whichever side dialed, under the record's `r` or, with no
-    /// record, the connection's own pair key (spec/sync.md §10): a filter goes out only if the
-    /// peer proved a known actor (issues/net-shared-set.md, Words). With a record (`bound`: its
+    /// record, the connection's own pair key (spec/sync.md §10): a filter goes out, holding this
+    /// node's read credentials only if the peer proved a known actor (issues/net-shared-set.md,
+    /// Words), and the head credentials of the sync IDs it keeps unread always. With a record (`bound`: its
     /// ID, and whether the session proved other actors than the record names) S, `acked_pos` and
     /// both filters are restored, the digest of S goes first, and S is re-judged: what changed
     /// goes, not what the record proves was sent.
@@ -345,10 +349,9 @@ impl SyncEngine {
             None => (self.served_binding(conn), true),
         };
         let Some((dialer, listener, key)) = binding else { return Ok(()) };
-        let filter_out = self.shared_known(conn);
         let Some((id, actors_changed)) = bound else {
             let r = *osis_crypto::kdf::pair_key(&dialer, &listener).expose();
-            let s = Shared { r, key, dialer, listener, filter_out, ..Shared::bare(by_listener) };
+            let s = Shared { r, key, dialer, listener, ..Shared::bare(by_listener) };
             self.records.shared.insert(conn, s);
             return self.shared_send_generation(conn, out);
         };
@@ -372,7 +375,8 @@ impl SyncEngine {
             key,
             dialer,
             listener,
-            filter_out,
+            // the record's last whole filter as sent: re-sent whole if the peer's known-ness moved
+            read_out: true,
             record: Some(id),
             digest: Some(digest),
             digest_read: false,
@@ -395,7 +399,11 @@ impl SyncEngine {
         s.members = members.iter().map(|(l, m)| (*l, Member { class: m.class, beacon: m.beacon, until: m.until })).collect();
         let restored = !s.members.is_empty();
         self.records.shared.insert(conn, s);
-        self.stream_bind(conn, id, rec.cursor, &members);
+        // this side pulls no sync ID it keeps unread (it cannot read it)
+        let unread = self.unread_heads()?;
+        let pulled: Vec<(LabelId, osis_store::Member)> = members.iter().filter(|(l, _)| !unread.contains_key(l)).cloned().collect();
+        self.stream_bind(conn, id, rec.cursor, &pulled, &members);
+        self.unread_restream()?;
         if restored {
             self.local_dirty = true;
             self.suspects_due = true;
@@ -432,28 +440,34 @@ impl SyncEngine {
     }
 
     /// `conn`'s credentials admissible now (issues/net-shared-set.md, Admissible), of the `only`
-    /// labels when given. A label J judges departed has none: a departure the peer's actors are
-    /// covered past is not recognised yet (a rotation covering it reopens by a later credential).
-    fn shared_creds(&mut self, conn: ConnId, only: Option<&BTreeSet<LabelId>>) -> Result<Vec<Cred>> {
+    /// labels when given, of the kinds `which` asks. A label J judges departed has none: a
+    /// departure the peer's actors are covered past is not recognised yet (a rotation covering it
+    /// reopens by a later credential). A sync ID this node keeps unread has its head's (J is
+    /// unknown there: no roster is held).
+    fn shared_creds(&mut self, conn: ConnId, only: Option<&BTreeSet<LabelId>>, which: Which) -> Result<Vec<Cred>> {
         let Some(r) = self.records.shared.get(&conn).map(|s| s.r) else { return Ok(Vec::new()) };
         let Some(actors) = self.connection_proven(conn).map(Proven::all) else { return Ok(Vec::new()) };
-        let things = self.things();
-        let labels: Vec<LabelId> = things.keys().filter(|l| only.is_none_or(|o| o.contains(l))).copied().collect();
+        let wanted = |l: &LabelId| only.is_none_or(|o| o.contains(l));
+        let things = if which.read { self.things() } else { BTreeMap::new() };
+        let unread = if which.unread { self.unread_heads()? } else { std::sync::Arc::default() };
+        let labels: Vec<LabelId> = things.keys().chain(unread.keys().filter(|l| !things.contains_key(l))).filter(|l| wanted(l)).copied().collect();
         let creds = self.credentials(&labels)?;
         let mut judge = self.engine.core.judge(actors);
         let mut out = Vec::new();
         for (l, cs) in creds {
-            let Some(t) = things.get(&l) else { continue };
-            let j = judge.of(t);
-                if j == super::credentials::Judgment::Departed {
+            if let Some(t) = things.get(&l) {
+                if judge.of(t) == super::credentials::Judgment::Departed {
+                    continue;
+                }
+            } else if !unread.contains_key(&l) {
                 continue;
             }
             for c in cs {
                 let class = match c {
                     Credential::ReadSecret(_) => READ,
                     Credential::StaticEntry(_) => STATIC,
-                    // a peer that cannot read's own entries, not tested by a reader (step 9)
-                    Credential::SyncKey(_) | Credential::DepositKey(_) => continue,
+                    Credential::SyncKey(_) => SYNC,
+                    Credential::DepositKey(_) => DEPOSIT,
                 };
                 let value = c.match_value();
                 out.push(Cred { label: l, class, value, beacon: beacon(&value, &l.0, &r) });
@@ -470,13 +484,18 @@ impl SyncEngine {
     }
 
     fn shared_send_generation(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
+        let known = self.shared_known(conn);
         let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
-        if !s.filter_out || s.in_flight || s.retry_at.is_some() {
+        if s.in_flight || s.retry_at.is_some() {
             return Ok(());
         }
-        // a whole filter, also after a refused generation (`shared_retry`); a connection's first
-        // generation goes even with no additions, so the peer's test of its pending set runs
-        let first = s.sent_gen == 0 || s.again;
+        // a whole filter, also after a refused generation (`shared_retry`) or when the peer's
+        // actors became known here or stopped being (the read credentials join or leave it); a
+        // connection's first generation goes even with no additions, so the peer's test of its
+        // pending set runs
+        let first = s.sent_gen == 0 || s.again || s.read_out != known;
+        // what reads here goes only to a known actor; what is kept unread to every connection
+        let which = Which { read: known, unread: true };
         let opening = !s.started;
         let after = if first { 0 } else { s.sent_pos };
         let (labels, top) = self.shared_changes_after(after)?;
@@ -485,11 +504,11 @@ impl SyncEngine {
         }
         let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
         let (f, whole_n, added) = (s.f, s.whole_n, s.added);
-        let mut creds = if first { self.shared_creds(conn, None)? } else { self.shared_creds(conn, Some(&labels))? };
+        let mut creds = if first { self.shared_creds(conn, None, which)? } else { self.shared_creds(conn, Some(&labels), which)? };
         // a whole filter when its additions pass the entries in the last one (issues/net-shared-set.md, Staleness)
         let whole = first || added + creds.len() > whole_n;
         if whole && !first {
-            creds = self.shared_creds(conn, None)?;
+            creds = self.shared_creds(conn, None, which)?;
         }
         let n = creds.len();
         let width = if whole { filter_width(n) } else { f };
@@ -503,6 +522,7 @@ impl SyncEngine {
         s.started = true;
         s.work.1 += 1;
         if whole {
+            s.read_out = known;
             s.whole_n = n;
             s.added = 0;
             s.f = width;
@@ -565,18 +585,17 @@ impl SyncEngine {
         self.shared_send(conn, make(id), out)
     }
 
-    /// A shared-set message from `conn`'s peer. A connection with no shared set answers refused
-    /// (a request) or ignores it (an answer).
+    /// A shared-set message from `conn`'s peer. A dialer's NoRecord starts the connection's set
+    /// whoever it proved (what its filter holds is `shared_send_generation`'s); a connection with
+    /// no shared set answers refused (a request) or ignores it (an answer).
     pub(super) fn shared_message(&mut self, conn: ConnId, m: Message, out: &mut Vec<Action>) -> Result<()> {
         if !self.records.shared.contains_key(&conn) {
-            if matches!(m, Message::NoRecord { .. }) && self.served_has(conn) && self.shared_known(conn) {
+            if matches!(m, Message::NoRecord { .. }) && self.served_has(conn) {
                 self.shared_begin(conn, None, out)?;
                 return self.shared_message(conn, m, out);
             }
             if m.is_request() {
                 self.shared_send(conn, Message::Error { id: m.id(), code: Code::NOT_ADMITTED }, out)?;
-            } else if matches!(m, Message::Error { id: NO_RECORD_ID, code: Code::NOT_ADMITTED }) {
-                self.shared_peer_refused(conn);
             }
             return Ok(());
         }
@@ -587,11 +606,7 @@ impl SyncEngine {
             Message::Beacons { id, generation, base, f, lo, hi, gcs, more } => self.shared_beacons(conn, id, (generation, base, f, lo, hi), &gcs, more, out),
             Message::Offer { id, items } => self.shared_offer(conn, id, items, out),
             Message::Lost { id, items } => self.shared_lost(conn, id, items, out),
-            Message::Shared { id, .. } if id == NO_RECORD_ID => Ok(()),
-            Message::Error { id: NO_RECORD_ID, code: Code::NOT_ADMITTED } => {
-                self.shared_peer_refused(conn);
-                Ok(())
-            }
+            Message::Shared { id, .. } | Message::Error { id, .. } if id == NO_RECORD_ID => Ok(()),
             Message::Shared { id, codes } => self.shared_reply(conn, id, codes, out),
             // an Error answers what it names as a refusal would (a request refused whole)
             Message::Error { id, code } => {
@@ -691,7 +706,7 @@ impl SyncEngine {
         }
         let acked = s.acked_pos;
         let (labels, top) = self.shared_changes_after(acked)?;
-        let creds = self.shared_creds(conn, Some(&labels))?;
+        let creds = self.shared_creds(conn, Some(&labels), TESTED)?;
         self.stats.tests += 1;
         self.stats.tested += creds.len() as u64;
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
@@ -723,7 +738,7 @@ impl SyncEngine {
                 break;
             }
             s.offered.insert(hit);
-            items.push(OfferItem::Hit(hit));
+            items.push(OfferItem::Hit(hit, None));
             asked.push(AskedItem::Hit(c));
         }
         s.test_due = more;
@@ -752,7 +767,7 @@ impl SyncEngine {
         let wanted: Vec<LabelId> = things.iter().filter(|(l, t)| !s.members.contains_key(l) && !s.by_role.contains(l) && judge.of(t) == super::credentials::Judgment::Holder).map(|(l, _)| *l).take(MAX_SHARED_ITEMS).collect();
         if !wanted.is_empty() {
             let set: BTreeSet<LabelId> = wanted.iter().copied().collect();
-            let creds = self.shared_creds(conn, Some(&set))?;
+            let creds = self.shared_creds(conn, Some(&set), TESTED)?;
             let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
             let side = (s.by_listener, &s.key, &s.dialer, &s.listener);
             let mut items = Vec::new();
@@ -792,7 +807,7 @@ impl SyncEngine {
         if self.records.shared.get(&conn).is_none_or(|s| s.table.is_some()) {
             return Ok(());
         }
-        let creds = self.shared_creds(conn, None)?;
+        let creds = self.shared_creds(conn, None, ALL)?;
         self.stats.tables_built += 1;
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         let peer_side = (!s.by_listener, &s.key, &s.dialer, &s.listener);
@@ -801,13 +816,27 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Whether a proven key actor of `conn` is the key actor of static entry `value` on `l`.
+    /// Whether a proven key actor of `conn` is the key actor of static entry `value` on `l` (by
+    /// the signing key it proved with, known here or not).
     fn shared_static_proved(&self, conn: ConnId, l: &LabelId, value: &[u8; 32]) -> bool {
         let Some(p) = self.connection_proven(conn) else { return false };
-        p.key_actors.iter().any(|t| match self.engine.core.created(t) {
-            Some(osis_base::CreationRecord::KeyActor { public_key, .. }) => osis_crypto::VerifyingKey::from_slice(public_key).is_ok_and(|pk| osis_crypto::static_entry(l, &pk) == *value),
+        p.signing.values().any(|k| osis_crypto::VerifyingKey::from_slice(k).is_ok_and(|pk| osis_crypto::static_entry(l, &pk) == *value))
+    }
+
+    /// Whether a Hit on credential `c` shows its class's proof (issues/net-shared-set.md, Offer):
+    /// a read secret's beacon is its own; a static entry's key actor is a proven actor of this
+    /// connection; a sync key's open signature (`proof`) verifies under it over this side's Hello
+    /// challenge and the listener's static key; a deposit key is never Hit.
+    fn shared_hit_proved(&self, conn: ConnId, s: &Shared, c: &Cred, proof: Option<&osis_crypto::Signature>) -> bool {
+        match c.class {
+            READ => true,
+            STATIC => self.shared_static_proved(conn, &c.label, &c.value),
+            SYNC => {
+                let challenge = if s.by_listener { &s.listener } else { &s.dialer };
+                proof.is_some_and(|sig| osis_crypto::VerifyingKey::from_slice(&c.value).is_ok_and(|pk| osis_crypto::verify_open(&pk, &c.label, challenge, &s.key, sig).is_ok()))
+            }
             _ => false,
-        })
+        }
     }
 
     fn shared_offer(&mut self, conn: ConnId, id: u32, items: Vec<OfferItem>, out: &mut Vec<Action>) -> Result<()> {
@@ -820,21 +849,29 @@ impl SyncEngine {
         let mut opens: Vec<(LabelId, u8, Option<[u8; 32]>)> = Vec::new();
         // Deposit items, judged once the loop's borrows end: (index of the answer, the item)
         let mut deposits = Vec::new();
+        // static-entry Hits on sync IDs kept unread: (index of the answer, label, entry), their
+        // grant from the hub's store
+        let mut unread_grants = Vec::new();
         let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
         for item in items {
             let answer = match item {
-                OfferItem::Hit(hit) => match s.table.as_ref().and_then(|t| t.get(&hit)) {
-                    Some(c) if c.class != STATIC || self.shared_static_proved(conn, &c.label, &c.value) => {
+                OfferItem::Hit(hit, proof) => match s.table.as_ref().and_then(|t| t.get(&hit)) {
+                    Some(c) if self.shared_hit_proved(conn, s, c, proof.as_ref()) => {
                         let tag = beacon_reply(&c.value, &c.label.0, &c.beacon, s.side(s.by_listener));
                         opens.push((c.label, c.class, Some(c.beacon)));
                         // a key actor's node learns the read secret from the head's box for it
                         let grant = (c.class == STATIC).then(|| served.get(&c.label).and_then(|x| x.grant(&c.value))).flatten().map(Box::new);
+                        if c.class == STATIC && !served.contains_key(&c.label) {
+                            unread_grants.push((codes.len(), c.label, c.value));
+                        }
                         (Code::OK, Some(tag), grant)
                     }
                     _ => (Code::NOT_ADMITTED, None, None),
                 },
+                // a ByRole names a judged holder: a credential it lists opens only as a reader's
+                // or a proved key actor's (a public sync key's beacon proves nothing)
                 OfferItem::ByRole(l, hits) => {
-                    let listed = hits.iter().filter_map(|h| s.table.as_ref().and_then(|t| t.get(h))).find(|c| c.label == l && (c.class != STATIC || self.shared_static_proved(conn, &c.label, &c.value)));
+                    let listed = hits.iter().filter_map(|h| s.table.as_ref().and_then(|t| t.get(h))).find(|c| c.label == l && (c.class == READ || (c.class == STATIC && self.shared_static_proved(conn, &c.label, &c.value))));
                     let holder = things.get(&l).is_some_and(|t| judge.of(t) == super::credentials::Judgment::Holder);
                     if holder || listed.is_some() {
                         opens.push((l, listed.map_or(JUDGED, |c| c.class), listed.map(|c| c.beacon)));
@@ -851,14 +888,26 @@ impl SyncEngine {
             codes.push(answer);
         }
         drop(judge);
+        for (i, l, entry) in unread_grants {
+            let grant = self.unread_grant(&l, &entry)?.map(Box::new);
+            if let Some(c) = codes.get_mut(i) {
+                c.2 = grant;
+            }
+        }
         let mut takes = Vec::new();
         for (i, l, blob, wrap, sig) in deposits {
-            let code = self.shared_deposit_verdict(conn, &served, &things, l, &blob, &wrap, &sig)?;
+            // at a sync ID kept unread, a Deposit by the hub's store's rules
+            let code = if !things.contains_key(&l) && self.is_unread(&l)? {
+                self.unread_deposit(conn, l, &blob, wrap, &sig, out)?
+            } else {
+                let code = self.shared_deposit_verdict(conn, &served, &things, l, &blob, &wrap, &sig)?;
+                if code == Code::OK {
+                    takes.push((l, blob, wrap));
+                }
+                code
+            };
             if let Some(c) = codes.get_mut(i) {
                 c.0 = code;
-            }
-            if code == Code::OK {
-                takes.push((l, blob, wrap));
             }
         }
         // the answer first: the tester opens on reading it, so a Pull joining L after it finds L
@@ -1003,6 +1052,15 @@ impl SyncEngine {
         self.local_dirty |= self.records.shared.values().all(Shared::is_empty);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         s.members.insert(l, Member { class, beacon, until: None });
+        let record = s.record;
+        // kept unread: served to the peer from the hub's store, never pulled (this side cannot
+        // read it)
+        if self.is_unread(&l)? {
+            if let Some(id) = record {
+                self.engine.run(|tx| Ok(tx.txn.record_open(&id, l, &osis_store::Member { class, beacon, until: None, at: At::Stream })?))?;
+            }
+            return self.unread_restream();
+        }
         self.suspects_due = true;
         self.stream_join(conn, l, osis_store::Member { class, beacon, until: None, at: At::Join(None) }, out)?;
         self.stream_source_gained(conn, &l, out)
@@ -1021,16 +1079,18 @@ impl SyncEngine {
         s.pending.remark(at);
         s.acked_pos = s.acked_pos.min(at.saturating_sub(1));
         s.test_due = true;
-        self.stream_leave(conn, l, at, stop)
+        self.stream_leave(conn, l, at, stop)?;
+        self.unread_restream()
     }
 
     /// Re-judges every member (issues/net-shared-set.md, Opens): a holder stays, and so does a
     /// member whose credential is still admissible. One opened by a credential no longer
     /// admissible, its peer's actors not departed, ends at a rotation: it is served through the
     /// rotation (`until`, `shared_until_at`) and closes once the requester reported a position
-    /// past it (`shared_until_due`). Anything else closes now with a `Lost`. A connection whose
-    /// actors are unknown here now keeps what the rule keeps, but sends no more beacons and loses
-    /// its record.
+    /// past it (`shared_until_due`). Anything else closes now with a `Lost`. A member of a sync
+    /// ID kept unread stays while its credential is its head's, else ends through the head's
+    /// event (`unread_until`). A connection whose actors are unknown here now keeps what the rule
+    /// keeps, but loses its record (and its next filter holds no read credential).
     fn shared_rejudge(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         if !self.records.shared.contains_key(&conn) {
             return Ok(());
@@ -1045,14 +1105,26 @@ impl SyncEngine {
             }
         }
         let Some(actors) = self.connection_proven(conn).map(Proven::all) else { return Ok(()) };
-        let creds = self.shared_creds(conn, None)?;
+        let creds = self.shared_creds(conn, None, ALL)?;
         let things = self.things();
+        let unread = self.unread_heads()?;
         let mut judge = self.engine.core.judge(actors);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
-        s.filter_out = known;
-        let (mut gone, mut ending, mut stays) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut gone, mut ending, mut stays, mut unread_ending) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (l, m) in &s.members {
             let Some(t) = things.get(l) else {
+                // kept unread: an open stands while its credential is the head's
+                if unread.contains_key(l) {
+                    let cred = m.beacon.is_some_and(|b| creds.iter().any(|c| c.label == *l && c.beacon == b));
+                    if cred {
+                        if m.until.is_some() {
+                            stays.push(*l);
+                        }
+                    } else if m.until.is_none() {
+                        unread_ending.push(*l);
+                    }
+                    continue;
+                }
                 gone.push(*l);
                 continue;
             };
@@ -1076,6 +1148,9 @@ impl SyncEngine {
         let mut moved: Vec<(LabelId, Option<u64>)> = stays.into_iter().map(|l| (l, None)).collect();
         for (l, t, b) in ending {
             moved.push((l, Some(self.shared_until_at(l, t, b, &r)?)));
+        }
+        for l in unread_ending {
+            moved.push((l, Some(self.unread_until(&l)?)));
         }
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         for (l, u) in &moved {
@@ -1204,9 +1279,21 @@ impl SyncEngine {
         self.log_flush()?;
         let bound: BTreeSet<RecordId> = self.records.shared.values().filter_map(|s| s.record).collect();
         let things = self.things();
+        let unread = self.unread_heads()?;
         let creds = self.credentials(&moved)?;
         let mut ends: Vec<(RecordId, LabelId, u64)> = Vec::new();
         for l in &moved {
+            // kept unread: a member whose credential is no longer the head's ends at its event
+            if !things.contains_key(l) && unread.contains_key(l) {
+                let held = self.engine.run(|tx| Ok(tx.txn.records_holding(l)?))?;
+                for (rec, m) in held {
+                    let Some(b) = m.beacon.filter(|_| m.until.is_none() && !bound.contains(&rec.id)) else { continue };
+                    if !creds.get(l).is_some_and(|cs| cs.iter().any(|c| beacon(&c.match_value(), &l.0, &rec.r) == b)) {
+                        ends.push((rec.id, *l, self.unread_until(l)?));
+                    }
+                }
+                continue;
+            }
             let Some(t) = things.get(l) else { continue };
             let held = self.engine.run(|tx| Ok(tx.txn.records_holding(l)?))?;
             for (rec, m) in held {
@@ -1311,7 +1398,7 @@ impl SyncEngine {
                             };
                             // still admissible when the answer came?
                             let set: BTreeSet<LabelId> = [c.label].into();
-                            let now = self.shared_creds(conn, Some(&set))?;
+                            let now = self.shared_creds(conn, Some(&set), TESTED)?;
                             if granted && now.iter().any(|x| x.value == c.value) {
                                 self.shared_open(conn, c.label, c.class, Some(c.beacon), out)?;
                             } else if !self.shared_member(conn, &c.label) {

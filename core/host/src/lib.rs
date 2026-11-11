@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub use hub::{Binding, ConnId, Down, Hub, HubOutput, Remote, Up};
 pub use replicate::Replicator;
-pub use store::{HostStore, DEPOSIT_ENTRY_BYTES, HostPolicy, Swept, Totals};
+pub use store::{HostStore, DEPOSIT_ENTRY_BYTES, HostPolicy, MemEvent, Swept, Totals};
 
 /// Which labels a host takes new registrations of (spec/sync.md §5: an unadmitted genesis
 /// step gets code 14). Labels it already holds stay served either way.

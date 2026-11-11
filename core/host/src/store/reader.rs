@@ -25,11 +25,16 @@ const FORGET: u8 = 1;
 impl HostStore {
     /// The sync IDs node sync reads.
     pub fn set_read(&mut self, labels: BTreeSet<LabelId>) {
+        if labels != self.read {
+            self.heads_gen += 1;
+        }
         self.read = labels;
     }
 
-    /// Whether something other than node sync changed a sync ID it reads since the last ask
-    /// (an upload, a delete, the sweep): node sync reads the node log past what it applied.
+    /// Whether something other than node sync changed a sync ID it reads or streams, or a head,
+    /// since the last ask (an upload, a delete, the sweep, a registration): node sync reads the
+    /// node log past what it applied, stamps the heads' credentials and serves what its streams
+    /// gained.
     pub fn take_moved(&mut self) -> bool {
         std::mem::take(&mut self.moved)
     }

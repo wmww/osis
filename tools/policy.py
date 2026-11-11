@@ -169,7 +169,7 @@ HOST_DEPS = {"osis-base", "osis-crypto", "osis-label", "osis-proto", "osis-store
 HOST_CRYPTO = {"VerifyingKey", "Signature", "WRAP_LEN", "OsRng", "RngCore", "CryptoRngCore", "NodeRng"}
 HOST_LABEL = {"blob_id", "Prefix", "prefix_bytes", "verify_stamp", "step::parse_entry_box", "step::entry_box_bytes", "Address", "address_to_text", "address_from_text", "ClaimSet", "Step", "StepId"}
 HOST_PROTO_DENY = {"examples"}
-NODE_HOST = {"Hub", "HubOutput", "ConnId", "Up", "Down", "Remote", "HostStore", "HostConfig", "HostPolicy", "Admission", "LabelCaps"}
+NODE_HOST = {"Hub", "HubOutput", "ConnId", "Up", "Down", "Remote", "HostStore", "HostConfig", "HostPolicy", "Admission", "LabelCaps", "MemEvent"}
 
 def allowed(path, allow):
     return any(path == a or path.startswith(a + "::") for a in allow)

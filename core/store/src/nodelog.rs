@@ -281,6 +281,13 @@ impl Transaction<'_> {
         Ok(true)
     }
 
+    /// The position of `l`'s last logged head event: none with none in the log. Where an open by
+    /// the sync key of the head before it ends (issues/net-shared-set.md, Opens).
+    pub fn log_head_at(&mut self, l: &LabelId) -> Result<Option<u64>, Error> {
+        let Some(v) = self.cat_get(&head_slot(l))? else { return Ok(None) };
+        Ok(Some(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?))
+    }
+
     /// Every sync ID's last logged head.
     pub fn log_heads(&mut self) -> Result<Vec<(LabelId, [u8; 32])>, Error> {
         let mut out = Vec::new();

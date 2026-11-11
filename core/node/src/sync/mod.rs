@@ -38,6 +38,7 @@ pub(crate) mod state;
 mod status;
 mod testing;
 mod timers;
+mod unread;
 mod work;
 
 use crate::engine::Engine;
@@ -298,6 +299,8 @@ pub struct SyncEngine {
     pub(crate) reach_account: Option<osis_base::Tid>,
     /// Served labels, until `label.0` or role change.
     pub(crate) served_cache: Option<Arc<BTreeMap<LabelId, serve::ServedLabel>>>,
+    /// The sync IDs this node keeps and does not read (`unread`).
+    pub(crate) unread: unread::Unread,
     pub(crate) charges: serve::Charges,
     /// The engine's actors with secrets of their own when its events were last taken.
     pub(crate) own_keys: BTreeSet<Tid>,
@@ -470,6 +473,7 @@ impl SyncEngine {
             lan_rotate: false,
             reach_account: None,
             served_cache: None,
+            unread: unread::Unread::default(),
             charges: serve::Charges::default(),
             blob_sizes: BTreeMap::new(),
             swept: 0,
@@ -627,6 +631,8 @@ impl SyncEngine {
         {
             self.diag(format!("the hub's changes: {e}"));
         }
+        // what it changed of the sync IDs it keeps unread (heads, streamed ephemeral entries)
+        self.unread_moved();
         let mut ok = self.settled_step(ev, &mut out);
         // what the passes marked (a refetch applied commits, an admin recorded a step) passes now,
         // not at whatever event comes next; a step that failed (a store gone) tries no more
@@ -780,6 +786,8 @@ impl SyncEngine {
         // after the re-judging and settling: a peer no longer wanted gets this node's reports
         // of what it applied from it (spec/sync.md §5 Placed: its removal's Applied) first
         self.drop_unwanted_peers(out);
+        // the unread sync IDs shared now, their memory entries before the pushes
+        self.unread_restream()?;
         // pushes after the re-judging: nothing of this step goes to a member it ended
         self.stream_push(out)?;
         self.keep_served(out);

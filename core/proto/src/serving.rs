@@ -879,14 +879,12 @@ impl ServingSession {
                 let Some(k) = head_keys(&mut self.keys, store, &label)? else {
                     return Ok(Some(M::Budget { id, code: Code::UNKNOWN_LABEL, budget: None }));
                 };
-                let blob_id = osis_label::blob_id(&blob);
-                let code = check(k, StepKey::Deposit, Domain::Deposit, &entry_digest(&label, &blob_id, &wrap), &sig, &mut self.struck);
+                let (code, signed) = deposit(store, now, &label, k, &blob, wrap, &sig, &mut self.struck)?;
                 // a deposit not signed by the head's deposit key learns its code only: neither
                 // the head nor the budget (spec/sync.md §5)
-                if code != Code::OK {
+                if !signed {
                     return Ok(Some(M::Budget { id, code, budget: None }));
                 }
-                let code = self.accept(store, now, &label, blob_id, &blob, wrap, None, &[], out)?;
                 changed(&[code], &label, out);
                 let b = store.budget(&label)?;
                 M::Budget { id, code, budget: Some((b.entries_left, b.bytes_left)) }
@@ -1333,25 +1331,23 @@ impl ServingSession {
     fn accept_all(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, entries: &[Entry], ids: &[BlobId], out: &mut Vec<ServingOutput>) -> Result<Vec<Code>, StoreError> {
         let mut codes = Vec::with_capacity(entries.len());
         for (e, b) in entries.iter().zip(ids) {
-            codes.push(self.accept(store, now, label, *b, &e.blob, e.wrap, Some(e.stamp), &e.replaces, out)?);
+            codes.push(self.accept(store, now, label, *b, &e.blob, e.wrap, e.stamp, &e.replaces, out)?);
         }
         changed(&codes, label, out);
         Ok(codes)
     }
 
-    /// Upload (stamp) or deposit (no stamp, already authorized) of one entry (spec/sync.md §5),
-    /// with the entries it replaces: each authorized as a Delete of it would be, all removed iff the entry is admitted. A relay-only blob (stamped
-    /// only) is not stored: it goes to the other connections' subscribers (`ServingOutput::Relay`).
+    /// Upload of one stamped entry (spec/sync.md §5), with the entries it replaces: each
+    /// authorized as a Delete of it would be, all removed iff the entry is admitted. A relay-only
+    /// blob is not stored: it goes to the other connections' subscribers (`ServingOutput::Relay`).
     #[allow(clippy::too_many_arguments)]
-    fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Option<Signature>, replaces: &[DeleteItem], out: &mut Vec<ServingOutput>) -> Result<Code, StoreError> {
+    fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Signature, replaces: &[DeleteItem], out: &mut Vec<ServingOutput>) -> Result<Code, StoreError> {
         // An oversized blob never gets here: the message decoder refuses it (msg tests `field_sizes`).
         debug_assert!(blob.len() <= osis_base::format::MAX_BLOB);
         let Some(k) = head_keys(&mut self.keys, store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
-        if let Some(stamp) = stamp {
-            let code = check(k, StepKey::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp, &mut self.struck);
-            if code != Code::OK {
-                return Ok(code);
-            }
+        let code = check(k, StepKey::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp, &mut self.struck);
+        if code != Code::OK {
+            return Ok(code);
         }
         let mut replaced = Vec::with_capacity(replaces.len());
         for item in replaces {
@@ -1369,8 +1365,10 @@ impl ServingSession {
         let class = prefix.as_ref().map(|p| p.class()).unwrap_or_default();
         let expiry = prefix.and_then(|p| p.expiry()).map(|t| t.0);
         if class == Class::Relay {
-            // held by nobody, so it is neither deposited nor replaces anything (spec/sync.md §5)
-            let Some(stamp) = stamp.filter(|_| replaces.is_empty()) else { return Ok(Code::REFUSED) };
+            // held by nobody, so it replaces nothing (spec/sync.md §5)
+            if !replaces.is_empty() {
+                return Ok(Code::REFUSED);
+            }
             return Ok(match store.relay(label, &blob_id, blob.len(), expiry, now)? {
                 RelayVerdict::Push => {
                     out.push(ServingOutput::Relay(Relayed { label: *label, blob_id, blob: blob.into(), wrap, stamp }));
@@ -1386,7 +1384,7 @@ impl ServingSession {
         if store.tombstoned(label, &blob_id)? {
             return Ok(Code::TOMBSTONED);
         }
-        store.put(label, Put { blob_id, blob, wrap, stamp, expiry, ephemeral: class.in_memory(), replaces: &replaced, now })
+        store.put(label, Put { blob_id, blob, wrap, stamp: Some(stamp), expiry, ephemeral: class.in_memory(), replaces: &replaced, now })
     }
 
     /// The signatures of a delete of held entry `item.blob` (spec/sync.md §5): by the head's
@@ -1459,6 +1457,33 @@ impl ServingSession {
         }
         store.delete(label, &item.blob, now)
     }
+}
+
+/// A Deposit of `blob` under `label` (spec/sync.md §5), whose head keys are `k`: its code, and
+/// whether `sig` verified under the head's deposit key (only then may the depositor learn more
+/// than the code). Taken as an unstamped entry within the store's deposit rules; a relay-only
+/// blob is refused. `struck` as for `check`. Shared by a session's Deposit and node sync's
+/// Deposit items at a node that cannot read the inbox.
+#[allow(clippy::too_many_arguments)]
+pub fn deposit(store: &mut dyn LabelStore, now: u64, label: &LabelId, k: &HeadKeys, blob: &[u8], wrap: Wrap, sig: &Signature, struck: &mut bool) -> Result<(Code, bool), StoreError> {
+    let blob_id = osis_label::blob_id(blob);
+    let code = check(k, StepKey::Deposit, Domain::Deposit, &entry_digest(label, &blob_id, &wrap), sig, struck);
+    if code != Code::OK {
+        return Ok((code, false));
+    }
+    let Ok(prefix) = host_prefix(blob) else { return Ok((Code::MALFORMED, true)) };
+    let class = prefix.as_ref().map(|p| p.class()).unwrap_or_default();
+    let expiry = prefix.and_then(|p| p.expiry()).map(|t| t.0);
+    if class == Class::Relay {
+        return Ok((Code::REFUSED, true));
+    }
+    if expiry.is_some_and(|t| t <= now) {
+        return Ok((Code::EXPIRED, true));
+    }
+    if store.tombstoned(label, &blob_id)? {
+        return Ok((Code::TOMBSTONED, true));
+    }
+    Ok((store.put(label, Put { blob_id, blob, wrap, stamp: None, expiry, ephemeral: class.in_memory(), replaces: &[], now })?, true))
 }
 
 impl From<Vec<u8>> for ServingOutput {

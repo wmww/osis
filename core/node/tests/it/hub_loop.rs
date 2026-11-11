@@ -393,7 +393,7 @@ async fn one_connection_serves_hosted_and_read_labels() {
     let (dialer, listener, key) = c.s.binding().unwrap();
     let r = *pair_key(&dialer, &listener).expose();
     let hit = beacon_hit(&value, &m.0, &beacon(&value, &m.0, &r), (false, &key, &dialer, &listener));
-    let got = c.peer(Message::Offer { id: NODE_IDS | 77, items: vec![OfferItem::Hit(hit)] }).await;
+    let got = c.peer(Message::Offer { id: NODE_IDS | 77, items: vec![OfferItem::Hit(hit, None)] }).await;
     assert!(matches!(got.last(), Some(Message::Shared { codes, .. }) if codes[0].0 == Code::OK), "{got:?}");
     let pull = Pull { id: NODE_IDS | 1 << 30 | 7, cursor: None, joins: vec![(m, None)], inline_limit: 1 << 20, max_reply: 1 << 20, follow: true, ephemeral: true };
     let got = c.peer(Message::Pull(Box::new(pull))).await;
@@ -445,8 +445,9 @@ async fn a_stranger_gets_no_proof_spec_sync_10() {
     assert!(matches!(&ev[..], [ClientEvent::Proved { proofs }] if proofs.is_empty()), "{ev:?}");
     let ev = c.run(Command::Resume { nonce: [5; 32], tags: vec![[6; 32]] }).await;
     assert!(matches!(&ev[..], [ClientEvent::Refused { kind: Request::Resume, code: Code::REFUSED, .. }]), "{ev:?}");
+    // its NoRecord starts the set: a filter of nothing the node reads (it keeps nothing unread)
     let got = c.peer(Message::NoRecord { id: 1 << 31 }).await;
-    assert_eq!(got, vec![Message::Error { id: 1 << 31, code: Code::NOT_ADMITTED }]);
+    assert!(got.iter().any(|m| matches!(m, Message::Beacons { gcs, .. } if gcs.is_empty())), "{got:?}");
     // node sync keeps the session while the connection lasts and forgets it at its end
     assert_eq!(host.call(|s| s.served_opened().len()).await, 1);
     drop(c);

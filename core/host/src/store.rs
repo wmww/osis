@@ -815,8 +815,14 @@ pub struct HostStore {
     caps: BTreeMap<LabelId, LabelCaps>,
     /// The sync IDs node sync reads (`reader.rs`).
     read: BTreeSet<LabelId>,
-    /// Something other than node sync changed a sync ID it reads (`take_moved`).
+    /// Something other than node sync changed what it reads or streams, or a head (`take_moved`).
     moved: bool,
+    /// Moves with any head, a label dropped, or the read set (`heads_generation`).
+    heads_gen: u64,
+    /// The unread sync IDs node sync's shared sets serve, and their ephemeral events since it
+    /// last took them (`unread.rs`).
+    streamed: BTreeSet<LabelId>,
+    mem: Vec<unread::MemEvent>,
     /// Memory blobs the engine holds (`osis_store::CipherTx::hold` in memory): gone at a restart.
     engine_mem: HashMap<BlobId, Vec<u8>>,
 }
@@ -847,6 +853,9 @@ impl HostStore {
             engine_mem: self.engine_mem.clone(),
             read: self.read.clone(),
             moved: self.moved,
+            heads_gen: self.heads_gen,
+            streamed: self.streamed.clone(),
+            mem: self.mem.clone(),
         })
     }
 
@@ -867,7 +876,7 @@ impl HostStore {
         t.commit().map_err(err)?;
         let relays = osis_proto::RelayGate::default();
         let db = RefCell::new(Db { store, table, rng, open: None });
-        let mut s = HostStore { db, failed: None, seed, clock, policy: HostPolicy::default(), rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, admission: Admission::Open, caps: BTreeMap::new(), engine_mem: HashMap::new(), read: BTreeSet::new(), moved: false };
+        let mut s = HostStore { db, failed: None, seed, clock, policy: HostPolicy::default(), rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, admission: Admission::Open, caps: BTreeMap::new(), engine_mem: HashMap::new(), read: BTreeSet::new(), moved: false, heads_gen: 0, streamed: BTreeSet::new(), mem: Vec::new() };
         s.set_policy(policy);
         Ok(s)
     }
@@ -928,6 +937,9 @@ impl HostStore {
         }
         tx.append(&LogRecord::Head(step));
         tx.batch.log(Write::LogHead(*label, id));
+        // any head: the unread ones' credentials are in node sync's filters
+        self.heads_gen += 1;
+        self.moved = true;
         self.finish(tx)
     }
 
@@ -1079,6 +1091,10 @@ impl HostStore {
             self.write(b)?;
         }
         self.eph.seq.insert(*label, seq);
+        self.note_memory(label, match r {
+            EphRec::Added(b) => unread::MemEvent::Added(*label, b),
+            EphRec::Deleted(b) => unread::MemEvent::Deleted(*label, b),
+        });
         self.eph.labels.entry(*label).or_default().log.push_back((seq, r));
         self.eph.charge(label, REC_OVERHEAD, Charge::Label);
         if self.eph.labels.get(label).is_some_and(|e| e.log.len() > EPH_LOG_KEEP) {
@@ -1111,7 +1127,7 @@ impl HostStore {
             }
         }
         match how {
-            EphRemove::Expire => {}
+            EphRemove::Expire => self.note_memory(label, HostStore::memory_removed(*label, *blob, how)),
             EphRemove::Delete(now) => {
                 let drop = now.saturating_add(EPH_TOMBSTONE_MS);
                 if let Some(old) = self.eph.labels.entry(*label).or_default().tombstones.insert(*blob, drop) {
@@ -1405,7 +1421,8 @@ impl HostStore {
             tx.meta.records = tx.meta.records.saturating_sub(rows.len() as u64);
         }
         tx.batch.put(key(b'L', &[&tx.label.0]), tx.meta.encode());
-        self.moved |= self.read.contains(&tx.label);
+        // node sync wakes for what it serves: a sync ID it reads, one its shared sets stream
+        self.moved |= self.read.contains(&tx.label) || self.streamed.contains(&tx.label);
         if let Some(s) = self.eph.seq.get_mut(&tx.label) {
             *s = (*s).max(tx.meta.next_seq);
         }
@@ -1537,6 +1554,7 @@ impl HostStore {
 
     fn drop_label(&mut self, l: &LabelId) -> Result<(), StoreError> {
         let Some(meta) = self.raw_meta(l)? else { return Ok(()) };
+        self.heads_gen += 1;
         let mut w = Writes::default();
         // blob references, one per entry (`R` counts labels holding the blob)
         let mut refs: BTreeMap<BlobId, u64> = BTreeMap::new();
@@ -2069,5 +2087,7 @@ impl LabelStore for HostStore {
 
 mod engine;
 mod reader;
+mod unread;
+pub use unread::MemEvent;
 #[cfg(test)]
 mod tests;
