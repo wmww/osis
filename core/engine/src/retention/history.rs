@@ -2,7 +2,7 @@
 //! of a replaced body of an aspect of a thing, and until when. Every reader of a body's history
 //! asks here: keep bounds and when a body was replaced (`bounds`), listing, undo, purge on
 //! replace (`replace`), memory compaction, permanence, and node-sync's kept bodies (through
-//! `Engine::body_keeps`, `keeps_unreplaced`, `permanent`). Its source is the thing's timeline
+//! `Engine::body_keeps`, `permanent`). Its source is the thing's timeline
 //! (`osis_commit::retention::Timeline`): its held valid `retention^.0` settings in key order
 //! (`validity::Judge::settings`), each read for the AK. A fixed-retention aspect has no timeline:
 //! `ROLE_KEEP` after replaced for a role-class aspect or `addenda.0` (compactor policy), never

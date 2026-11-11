@@ -415,8 +415,6 @@ pub(crate) fn drop_invalid(tx: &mut Tx<'_>) -> Result<()> {
 /// setting arriving can make a writer owe a cover).
 pub(crate) fn settings_changed(tx: &mut Tx<'_>) -> Result<()> {
     while let Some(t) = tx.core.settings_due.pop_first() {
-        tx.core.settings_generation += 1;
-        tx.core.settings_moved.insert(t, tx.core.settings_generation);
         let aspects: Vec<Ak> = tx.core.ix.by_aspect.range((t, Ak::MIN)..).take_while(|((x, _), _)| *x == t).map(|((_, a), _)| a.clone()).collect();
         for ak in aspects {
             if osis_commit::retention::fixed_retention(ak.as_str()).is_some() {
@@ -1213,7 +1211,7 @@ mod tests {
 
     // spec/commits.md §5 (replaced), issues/derived-state-recomputed.md: a replaced body's keep
     // bound is judged once per change of what it reads (its aspect's held bodies and state): asked
-    // again, or after writes on another aspect, it reads no body and judges no death.
+    // again, or after writes on another aspect, it judges nothing.
     #[test]
     fn replaced_bound_judged_once_per_change_of_its_aspect_spec_commits_5() {
         let mut lp = LocalPeer::new(1, 954, WallMs(1_700_000_000_000)).unwrap();
@@ -1236,7 +1234,7 @@ mod tests {
             let k = lp.peers[0].engine.body_keeps(&first).unwrap();
             let n = |name: &str, c: &[(&str, std::time::Duration, u64)]| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
             let c = crate::costs::take();
-            (k, n("replaced at", &c) + n("held writes", &c) + n("deaths: a body", &c))
+            (k, n("body bounds", &c) + n("replaced at", &c) + n("held writes", &c) + n("deaths: a body", &c))
         };
         let (k, n) = judged(&mut lp);
         assert!(n > 0 && k.iter().any(|k| *k > 0), "judged: {k:?}");

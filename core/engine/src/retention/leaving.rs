@@ -430,9 +430,8 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Things `things` forgotten (`forget`): their cursors, rows and settings moves go.
+/// Things `things` forgotten (`forget`): their cursors and rows go.
 pub(crate) fn forget_things(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
-    tx.core.settings_moved.retain(|t, _| !things.contains(t));
     let keys: Vec<(Tid, Ak)> = tx.core.ix.leave_from.keys().filter(|(t, _)| things.contains(t)).cloned().collect();
     for (tid, ak) in keys {
         let rows: Vec<Place> = tx.core.ix.leaving.get(&(tid, ak.clone())).into_iter().flatten().copied().collect();

@@ -1070,6 +1070,9 @@ pub struct Core {
     /// When each held part was replaced, per (commit, aspect index)
     /// (`retention::bounds::dated_replaced_at`, `memo`).
     pub(crate) replaced_dates: memo::Memo<(CommitId, usize), Option<osis_base::Ts>>,
+    /// `Engine::body_keeps` per commit but for the clock (`retention::bounds::body_bounds`,
+    /// `memo`).
+    pub(crate) body_bounds: memo::Memo<CommitId, Arc<Vec<(u64, u64)>>>,
     /// At or before the earliest retention timer held (wall ms; `u64::MAX`: none): set by
     /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
     pub timer_floor: u64,
@@ -1085,13 +1088,6 @@ pub struct Core {
     /// Things whose `retention^.0` deltas arrived, flipped or dropped this transaction: what their
     /// timeline judges is judged again at its end (`retention::settings_changed`).
     pub settings_due: BTreeSet<Tid>,
-    /// Bumped whenever a thing's settings change (`retention::settings_changed`), and the thing's
-    /// entry in `settings_moved` set to it: node-sync's cached keep bounds of the thing's bodies
-    /// are judged again (`Engine::settings_moved_after`). Only moves forward: a bump a rollback
-    /// undid costs a re-judgment.
-    pub settings_generation: u64,
-    /// Per thing, the `settings_generation` of its last settings change in this run.
-    pub settings_moved: BTreeMap<Tid, u64>,
     /// Commits with a part judged invalid this transaction (`Core::index_validity`): dropped at
     /// its end where held (`retention::drop_invalid`).
     pub drop_due: BTreeSet<CommitId>,
@@ -1258,11 +1254,10 @@ impl Core {
             cover_cache: self.cover_cache.clone(),
             held_writes: self.held_writes.clone(),
             replaced_dates: self.replaced_dates.clone(),
+            body_bounds: self.body_bounds.clone(),
             timer_floor: self.timer_floor.clone(),
             none_due: self.none_due.clone(),
             settings_due: self.settings_due.clone(),
-            settings_generation: self.settings_generation,
-            settings_moved: self.settings_moved.clone(),
             cover_candidates: self.cover_candidates.clone(),
             drop_due: self.drop_due.clone(),
             cut_subs: self.cut_subs.clone(),
@@ -1772,6 +1767,7 @@ impl Core {
             links: _,
             held_writes: _,
             replaced_dates: _,
+            body_bounds: _,
             // caches, dropped when anything changed (`states` and `pages` per written aspect)
             states: _,
             pages: _,
@@ -1796,8 +1792,6 @@ impl Core {
             none_due: _,
             cover_candidates: _,
             settings_due: _,
-            settings_generation: _,
-            settings_moved: _,
             valueless_dirty: _,
             ended_due: _,
             ended_kept: _,
@@ -2011,12 +2005,11 @@ impl Core {
             cover_cache: None,
             held_writes: memo::Memo::new("held writes"),
             replaced_dates: memo::Memo::new("replaced at"),
+            body_bounds: memo::Memo::new("body bounds"),
             timer_floor: 0,
             none_due: BTreeSet::new(),
             cover_candidates: BTreeMap::new(),
             settings_due: BTreeSet::new(),
-            settings_generation: 0,
-            settings_moved: BTreeMap::new(),
             drop_due: BTreeSet::new(),
             cut_subs: BTreeSet::new(),
             refold: BTreeSet::new(),
@@ -3078,18 +3071,6 @@ impl Engine {
         self.core.sync_records = Some(r);
     }
 
-    /// `Core::settings_generation`: what node-sync's cached keep bounds hold for.
-    pub fn settings_generation(&self) -> u64 {
-        self.core.settings_generation
-    }
-
-    /// Whether the settings of a thing `c` writes changed after generation `at`
-    /// (`Core::settings_moved`): its keep bounds judged at `at` may have moved.
-    pub fn settings_moved_after(&self, c: &CommitId, at: u64) -> bool {
-        let moved = &self.core.settings_moved;
-        !moved.is_empty() && self.core.ix.commits.get(c).is_none_or(|m| m.view.aspects.iter().any(|a| moved.get(&a.tid).is_some_and(|g| *g > at)))
-    }
-
     /// What changed since the last call (`Core::changed`), keeping it from now on.
     pub fn take_changed(&mut self) -> Changed {
         self.core.changed.replace(Changed::default()).unwrap_or_default()
@@ -3124,9 +3105,12 @@ impl Engine {
     /// Runs `f` in one store transaction; events go out once it is durable.
     pub fn run<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
         let _s = crate::costs::span("tx");
+        // a memo running `f` reads what `f` reads: the transaction's own work around it (settling,
+        // its end's follow-ups, persisting, checks) is no part of `f`'s answer
         if self.blobs_unsettled {
-            self.settle_blobs()?;
+            memo::unrecorded(|| self.settle_blobs())?;
         }
+        let _after;
         // changes made outside a transaction are not this one's to undo
         self.core.commit_journal();
         self.core.memory_tx = false;
@@ -3144,6 +3128,7 @@ impl Engine {
                 let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
                 // the persisted index follows the in-memory indexes in the same transaction
                 let mut r = f(&mut tx);
+                _after = memo::Unrecorded::start();
                 // explicit demotions applied get this node's addenda (spec/permissions.md §5.2)
                 if r.is_ok()
                     && !tx.txn.is_memory()

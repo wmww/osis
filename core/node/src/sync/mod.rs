@@ -346,12 +346,6 @@ pub struct SyncEngine {
     /// the roles, secrets and record chains (`Core::role_generation`) and of the clock up to the
     /// actor's roster horizon, so judged once per change of those, not per pass.
     pub(crate) rotated: BTreeMap<Tid, Rotated>,
-    /// `Engine::body_keeps` per commit judged (`keeps`): a function of the held set that the
-    /// engine marks changed for every commit whose bodies' replacement it may move (notes/node-sync-work-sets.md),
-    /// so an entry goes with its commit's mark (`engine_events`), and with a settings change of a
-    /// thing it writes (each with the `Engine::settings_generation` it holds for,
-    /// `Engine::settings_moved_after`).
-    pub(crate) keeps: BTreeMap<osis_base::CommitId, (u64, std::sync::Arc<Vec<u64>>)>,
     /// This node's `clients^.0` changed since the last step (`clients_changed`).
     pub(crate) clients_moved: bool,
     /// Commit blobs with linked header lists whose prefix was checked against the resolved
@@ -492,7 +486,6 @@ impl SyncEngine {
             placed_cache: (u64::MAX, BTreeMap::new()),
             placed_waiting: BTreeSet::new(),
             rotated: BTreeMap::new(),
-            keeps: BTreeMap::new(),
             last_synced: BTreeMap::new(),
             clients_moved: false,
             prefix_checked: BTreeSet::new(),

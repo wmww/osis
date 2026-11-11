@@ -78,7 +78,8 @@ pub(crate) fn kept_until(core: &Core, h: &Header, a: &osis_commit::AspectEntry, 
 pub(crate) fn body_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<u64> {
     let (ai, h) = known_part(tx.core, c, tid, ak)?;
     let holders = body_class(tx.core, &h, ai);
-    class_keep(tx, &h, c, &holders)
+    let b = class_bounds(tx, &h, c, &holders)?;
+    Ok(at_clock(tx.core, b))
 }
 
 /// What history and the purge floor keep of part `(tid, ak)` of `c` (its own aspect's setting at
@@ -99,35 +100,45 @@ fn clock_keep(core: &Core, replaced: Option<u64>) -> u64 {
     replaced.filter(|r| *r > core.now().0).unwrap_or(0)
 }
 
-/// The keep bound of the body class `holders` of `c` (its parts go together, `body_class`): the
-/// latest of its parts' own, each its own aspect's timeline at its own replacement
-/// (`part_replaced_at`) and `clock_keep` (spec/commits.md §5 Dated only where history is kept).
-/// A part's date and keep read only its aspect's writes and setting, so a covered drop on one
-/// aspect moves no other part's bound, and a part on an aspect no setting keeps adds none.
-fn class_keep(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -> Result<u64> {
+/// The keep bound of the body class `holders` of `c` (its parts go together, `body_class`) but
+/// for the clock: the latest of its parts' own, each its own aspect's timeline at its own
+/// replacement (`part_replaced_at`, spec/commits.md §5 Dated only where history is kept), and
+/// the latest replacement (wall ms, 0: none) for `clock_keep`. A part's date and keep read only
+/// its aspect's writes and setting, so a covered drop on one aspect moves no other part's bound,
+/// and a part on an aspect no setting keeps adds none.
+fn class_bounds(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -> Result<(u64, u64)> {
     tx.core.replaced_reads += 1;
-    let mut k = 0;
+    let (mut k, mut last) = (0, 0);
     for x in holders {
         let Some(a) = h.aspects.get(*x) else { continue };
         let r = part_replaced_at(tx, h, c, *x)?.map(|t| t.wall_ms().0);
-        k = k.max(kept_until(tx.core, h, a, r)).max(clock_keep(tx.core, r));
+        k = k.max(kept_until(tx.core, h, a, r));
+        last = last.max(r.unwrap_or(0));
     }
-    Ok(k)
+    Ok((k, last))
 }
 
-/// `Engine::body_keeps` in `tx`: each body's parts judged once.
-fn body_keeps(tx: &mut Tx<'_>, c: &CommitId) -> Result<Vec<u64>> {
+/// A keep bound and latest replacement (`class_bounds`) at the node's clock: their later when
+/// the replacement is ahead of it (`clock_keep`).
+fn at_clock(core: &Core, (k, last): (u64, u64)) -> u64 {
+    k.max(clock_keep(core, (last > 0).then_some(last)))
+}
+
+/// `class_bounds` of each body of `c`, by aspect index (`Engine::body_keeps`): each body's parts
+/// judged once. A memo (`Core::body_bounds`): the clock is read after it, so a bound holds while
+/// what it read does.
+fn body_bounds(tx: &mut Tx<'_>, c: &CommitId) -> Result<Arc<Vec<(u64, u64)>>> {
     let h = tx.core.ix.commits.get(c).ok_or(Error::UnknownCommit(*c))?.header.clone();
-    let mut out = vec![0; h.aspects.len()];
+    let mut out = vec![(0, 0); h.aspects.len()];
     for holders in body_classes(tx.core, &h) {
-        let k = class_keep(tx, &h, c, &holders)?;
+        let b = class_bounds(tx, &h, c, &holders)?;
         for x in holders {
             if let Some(o) = out.get_mut(x) {
-                *o = k;
+                *o = b;
             }
         }
     }
-    Ok(out)
+    Ok(Arc::new(out))
 }
 
 /// The writes that win in part `f` (`Fragment::winners`): one walk, counted
@@ -445,23 +456,8 @@ impl Engine {
     /// Keep-at-least bound (wall ms, 0: none) of the body holding each part of known commit `c`,
     /// by aspect index: judged once per body, so a commit's judgment costs O(parts) death reads.
     pub fn body_keeps(&mut self, c: &CommitId) -> Result<Vec<u64>> {
-        let c = *c;
-        self.run(|tx| body_keeps(tx, &c))
-    }
-
-    /// What `body_keeps` gives for each part of `h` were no body of it replaced: equal to it
-    /// when no bound is dated by a replacement.
-    pub fn keeps_unreplaced(&self, h: &Header) -> Vec<u64> {
-        let mut out = vec![0; h.aspects.len()];
-        for holders in body_classes(&self.core, h) {
-            let k = holders.iter().filter_map(|x| h.aspects.get(*x)).map(|a| kept_until(&self.core, h, a, None)).max().unwrap_or(0);
-            for x in holders {
-                if let Some(o) = out.get_mut(x) {
-                    *o = k;
-                }
-            }
-        }
-        out
+        let b = crate::engine::memo::Memo::get_in(self, |e| &e.core.body_bounds, c, |e| e.run(|tx| body_bounds(tx, c)))?;
+        Ok(b.iter().map(|x| at_clock(&self.core, *x)).collect())
     }
 
     /// Whether aspect `a` of `h` is a permanent delta (`history::permanent`).

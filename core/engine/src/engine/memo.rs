@@ -165,32 +165,45 @@ thread_local! {
     static FRAMES: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
 }
 
+/// A frame of reads opened on this thread (`recorded`, `unrecorded`): reads while it is open
+/// land in it. Dropped, it cuts the stack back to the frames below it, so an unwind through it
+/// leaves no frame for a later read to land in.
+pub struct Unrecorded(usize);
+
+impl Unrecorded {
+    /// Opens a frame whose reads nothing keeps: the memo computing below it, if any, depends
+    /// on none of them (`unrecorded`).
+    pub fn start() -> Unrecorded {
+        RECORDING.fetch_add(1, Ordering::Relaxed);
+        Unrecorded(FRAMES.with(|fr| {
+            let mut fr = fr.borrow_mut();
+            fr.push(Frame::default());
+            fr.len() - 1
+        }))
+    }
+}
+
+impl Drop for Unrecorded {
+    fn drop(&mut self) {
+        RECORDING.fetch_sub(1, Ordering::Relaxed);
+        FRAMES.with(|fr| fr.borrow_mut().truncate(self.0));
+    }
+}
+
 /// Runs `f` and returns what it read.
 fn recorded<T>(f: impl FnOnce() -> T) -> (T, Arc<[Dep]>) {
-    /// The frames below this one: an unwind through `f` cuts the stack back to them, so a
-    /// caught panic leaves no frame for a later read to land in.
-    struct Open(usize);
-    impl Drop for Open {
-        fn drop(&mut self) {
-            RECORDING.fetch_sub(1, Ordering::Relaxed);
-            FRAMES.with(|fr| fr.borrow_mut().truncate(self.0));
-        }
-    }
-    RECORDING.fetch_add(1, Ordering::Relaxed);
-    let _open = Open(FRAMES.with(|fr| {
-        let mut fr = fr.borrow_mut();
-        fr.push(Frame::default());
-        fr.len() - 1
-    }));
+    let _open = Unrecorded::start();
     let out = f();
     let frame = FRAMES.with(|fr| fr.borrow_mut().pop()).unwrap_or_default();
     (out, frame.deps.into())
 }
 
 /// Runs `f` without the memo computing, if any, depending on what it reads: for a debug check
-/// beside a read, so the check's own reads do not cover a read the code missed.
+/// beside a read, so the check's own reads do not cover a read the code missed, and for the
+/// work a transaction does around its function (`Engine::run`), which a memo's answer is not.
 pub fn unrecorded<T>(f: impl FnOnce() -> T) -> T {
-    recorded(f).0
+    let _open = Unrecorded::start();
+    f()
 }
 
 /// The memo computing on this thread, if any, depends on `deps` too (it read a memo's answer).

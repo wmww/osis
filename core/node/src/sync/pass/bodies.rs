@@ -96,7 +96,7 @@ impl SyncEngine {
         let mut before = false;
         let mut covered = !aspects.is_empty();
         let mut needed = Vec::new();
-        let keeps = self.keeps(&b.commit)?;
+        let keeps = self.engine.body_keeps(&b.commit)?;
         for (ai, (t, a)) in b.parts.iter().zip(&aspects) {
             let kept = self.part_kept(&keeps, *ai, note);
             before |= kept;
@@ -122,32 +122,6 @@ impl SyncEngine {
         let covered = if covered || known { Some(covered) } else { None };
         let must = classify(&Facts { required: true, closure: true, before_at_least: before, covered, ..Facts::default() }) == Hold::Must;
         Ok(must.then_some(needed))
-    }
-
-    /// `Engine::body_keeps` of `c`, judged once per change: kept until the engine marks `c`
-    /// changed (`SyncEngine::keeps`); one marked but not drained yet is judged anew, and so is
-    /// one whose bound a replacement dates (it moves earlier with no mark when an earlier
-    /// superseder of an already dead write arrives).
-    pub(super) fn keeps(&mut self, c: &CommitId) -> Result<std::sync::Arc<Vec<u64>>> {
-        let pending = self.engine.core.changed.as_ref().is_some_and(|x| x.commits.contains(c));
-        if !pending && let Some((at, k)) = self.keeps.get(c)
-            && !self.engine.settings_moved_after(c, *at)
-        {
-            let k = k.clone();
-            #[cfg(debug_assertions)]
-            if self.engine.recheck(format!("keeps {c:?}")) {
-                assert_eq!(*k, crate::costs::paused(|| self.engine.body_keeps(c))?, "body_keeps of {c:?} went stale");
-            }
-            return Ok(k);
-        }
-        let _s = crate::costs::span("pass: body keeps");
-        let at = self.engine.settings_generation();
-        let k = std::sync::Arc::new(self.engine.body_keeps(c)?);
-        let undated = self.engine.header(c).is_some_and(|h| self.engine.keeps_unreplaced(&h) == *k);
-        if !pending && undated {
-            self.keeps.insert(*c, (at, k.clone()));
-        }
-        Ok(k)
     }
 
     /// Whether part `p` of commit `c` is kept whatever covers it (spec/sync.md §6): before its
@@ -187,7 +161,7 @@ impl SyncEngine {
             return Ok(false);
         }
         let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
-        let keeps = self.keeps(&b.commit)?;
+        let keeps = self.engine.body_keeps(&b.commit)?;
         for ai in parts {
             if self.must_carry(&h, &b.commit, &keeps, *ai, snaps, note)? && !self.carried_by(host, &l, &b.commit, &[*ai]) {
                 return Ok(false);
