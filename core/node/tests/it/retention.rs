@@ -2893,6 +2893,70 @@ fn none_writer_without_the_right_adds_no_cover_spec_commits_5() {
     assert_eq!(own.len(), 1, "the admin covers it with the right");
 }
 
+// spec/commits.md §5 (purge on replace cover), spec/permissions.md §5.2: a writer that wrote no
+// cover, relying on another's, writes one once that cover stops counting. Purge set `admin`:
+// peer 2 replaces peer 1's body and covers it; peer 1 drops the body under that cover with none of
+// its own. The admin demotes peer 2 having received the replacement but not its cover: the cover
+// falls, the replacement stays, peer 1's body counts as never received; fetched again, peer 1
+// covers it itself and drops it.
+#[test]
+fn none_writer_covers_once_the_cover_it_relied_on_falls_spec_commits_5() {
+    use osis_schema::{PurgeBy, Retention};
+    let mut lp = net(3, 0x6e06);
+    let t = new_thing(&mut lp, 0);
+    for i in [1, 2] {
+        let p = lp.peers[i].engine.me();
+        set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
+    }
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    sync(&mut lp, 2, 1);
+    lp.advance(10);
+    let k = ak("t:gone.0");
+    let admin_only = |v: &str| {
+        let mut m = Mutation::new();
+        m.retention(t, &GONE, Retention { by: PurgeBy::Admin }).unwrap();
+        m.set(t, &GONE, &s(v)).unwrap();
+        m
+    };
+    let c1 = lp.peers[1].commit(admin_only("one")).unwrap().unwrap();
+    let p1 = packages(&mut lp, 1).into_iter().find(|p| p.id == c1).unwrap();
+    sync(&mut lp, 1, 2);
+    lp.advance(10);
+    let c2 = lp.peers[2].commit(admin_only("two")).unwrap().unwrap();
+    let cover = snapshots_held(&mut lp, 2, t, &k);
+    assert_eq!(cover.len(), 1);
+    let pk = packages(&mut lp, 2);
+    for id in [cover[0], c2] {
+        let p = pk.iter().find(|p| p.id == id).unwrap();
+        lp.deliver(1, p).unwrap();
+        lp.peers[1].reexamine().unwrap();
+    }
+    assert!(!lp.peers[1].engine.body_not_dropped(&c1, &t, &k));
+    assert_eq!(snapshots_held(&mut lp, 1, t, &k), cover, "relies on peer 2's cover");
+    // the admin holds the replacement, not peer 2's cover, when it demotes peer 2
+    let p2 = pk.iter().find(|p| p.id == c2).unwrap();
+    lp.deliver(0, p2).unwrap();
+    lp.peers[0].reexamine().unwrap();
+    lp.advance(10);
+    let w = lp.peers[2].engine.me();
+    let demote = set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Read)), None);
+    let pd = packages(&mut lp, 0).into_iter().find(|p| p.id == demote).unwrap();
+    lp.deliver(1, &pd).unwrap();
+    lp.peers[1].reexamine().unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert_eq!((e.body_valid(&c2, &t, &k), e.body_valid(&cover[0], &t, &k)), (Some(true), Some(false)), "the replacement stays, the cover falls");
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("two")));
+    lp.deliver(1, &p1).unwrap();
+    lp.peers[1].reexamine().unwrap();
+    let me = lp.peers[1].engine.me();
+    let own: Vec<_> = snapshots_held(&mut lp, 1, t, &k).into_iter().filter(|c| lp.peers[1].engine.header(c).is_some_and(|h| h.author == me)).collect();
+    assert_eq!(own.len(), 1, "no other cover counts: it writes its own");
+    let e = &mut lp.peers[1].engine;
+    assert!(!e.body_not_dropped(&c1, &t, &k), "dropped under its own cover");
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("two")));
+}
+
 // spec/commits.md §5 (purge on replace cover): an editor that never held the body it replaced
 // (a concurrent write) covers it once the body arrives; a reader holding both drops it when that
 // cover arrives.
