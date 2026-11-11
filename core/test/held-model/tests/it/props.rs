@@ -103,75 +103,87 @@ fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held 
     panic!("seed {seed}: fates did not settle: {show:#?}\nstates {:?}", o.states);
 }
 
-// spec/commits.md §5 (Never received, Dropping a body), spec/crdt.md §4.7: dropping and stripping
-// what the fates say changes no read, and leaves no value of a purged or expired write
-#[test]
-fn forced_fates_keep_reads_and_leave_no_forbidden_value_spec_commits_5() {
-    for seed in 0..SEEDS {
-        let h = settle(history(seed, LEN), None, seed, &mut Seen::default());
-        let o = evaluate(&h);
-        assert!(o.forbidden.is_empty(), "seed {seed}: {:?}", o.forbidden);
-    }
-}
-
-// spec/commits.md §5 (Covered, Signals): each drop a node may make changes no read and no
-// history(): a covered body, and a signal's out of history, read alike held or not
-#[test]
-fn optional_drops_keep_reads_spec_commits_5() {
-    let mut past_bound = 0;
-    for seed in 0..SEEDS {
-        let mut h = settle(history(seed, LEN), None, seed, &mut Seen::default());
-        for _ in 0..12 {
-            let o = evaluate(&h);
-            let Some((&pr, _)) = o.fates.iter().find(|(_, f)| matches!(f, Fate::MayDrop(_))) else { break };
-            past_bound += usize::from(o.fates[&pr] == Fate::MayDrop(DropWhy::PastBound));
-            let n = act(&h, &o, Some(pr));
-            let on = evaluate(&n);
-            let some = |o: &Outcome| o.reads.iter().filter(|(_, r)| r.is_some()).map(|(k, r)| (*k, r.clone())).collect::<BTreeMap<_, _>>();
-            assert_eq!(some(&on), some(&o), "seed {seed}: dropping {pr:?} ({:?}) changed a read", o.fates[&pr]);
-            assert_eq!(on.history, o.history, "seed {seed}: dropping {pr:?} ({:?}) changed history()", o.fates[&pr]);
-            h = settle(n, None, seed, &mut Seen::default());
-        }
-    }
-    assert!(past_bound > 0, "no signal dropped past its bound");
-}
-
 /// Whether `me` holds the purge right over the body now.
 fn right_now(h: &Held, c: &Commit, p: &Part) -> bool {
     timeline(h).right(h.me, h.me, (u64::MAX, h.me, u32::MAX), u32::MAX, p.retention.by, c.actor, p.thing)
 }
 
+// One settled history per seed, four properties of it:
+// spec/commits.md §5 (Never received, Dropping a body), spec/crdt.md §4.7: dropping and stripping
+// what the fates say changes no read, and leaves no value of a purged or expired write.
 // spec/commits.md §5 (purge on replace, keep at least), issues/thing-history.md: once a node
 // holding the right has acted, it holds no body under purge on replace (its covering snapshot
 // dropped it), no body is dropped before a purge request's floor but by purge, and history()
-// shows no body the node may drop
+// shows no body the node may drop.
+// spec/commits.md §5, §6, spec/crdt.md §2.2: the clock changes the output only at the deadlines it
+// lists (unparking, expiry, a body leaving history), so an adapter checking at each sees every change.
+// spec/commits.md §5 (Covered, Signals): each drop a node may make changes no read and no
+// history(): a covered body, and a signal's out of history, read alike held or not.
 #[test]
-fn purge_on_replace_gone_once_replaced_and_history_kept_spec_commits_5() {
+fn settled_histories_keep_their_laws_spec_commits_5() {
+    let mut past_bound = 0;
     for seed in 0..SEEDS {
         let h = settle(history(seed, LEN), None, seed, &mut Seen::default());
         let o = evaluate(&h);
-        assert!(o.owed.is_empty(), "seed {seed}: owed {:?}", o.owed);
-        for c in &h.commits {
-            for (i, p) in c.parts.iter().enumerate() {
-                // a body under purge on replace a right holder still holds: a leftover (its own
-                // expiry or purge), or before a purge request's floor
-                if matches!(p.body, Body::Held(_)) && o.under_purge.contains(&(c.id, i)) && right_now(&h, c, p) {
-                    let f = o.fates[&(c.id, i)];
-                    assert!(matches!(f, Fate::Leftover(LeftoverWhy::Expired | LeftoverWhy::Purged) | Fate::Keep(KeepWhy::Until)), "seed {seed}: {} part {i} is replaced and held at a right holder as {f:?}", c.id);
-                }
-                if let Body::Dropped(by) = p.body {
-                    let purged = h.commits.iter().any(|q| q.id == by && !q.purge.is_empty());
-                    assert!(purged || h.now >= kept_until(c), "seed {seed}: {} part {i} dropped before its purge floor", c.id);
-                }
-                // history() shows a replaced write only while the settings keep it, at every node
-                // alike: no body the node may drop has an entry
-                if matches!(o.fates.get(&(c.id, i)), Some(Fate::MayDrop(_) | Fate::MustDrop(_))) {
-                    let entries = o.history.get(&(p.thing, p.aspect));
-                    assert!(entries.is_none_or(|e| !e.iter().any(|x| x.1 == c.id)), "seed {seed}: {} part {i} may drop and is in history()", c.id);
-                }
+        assert!(o.forbidden.is_empty(), "seed {seed}: {:?}", o.forbidden);
+        purge_on_replace_gone(&h, &o, seed);
+        changes_only_at_deadlines(&h, o, seed);
+        past_bound += optional_drops_keep_reads(h, seed);
+    }
+    assert!(past_bound > 0, "no signal dropped past its bound");
+}
+
+/// Once a node holding the right has acted, no body under purge on replace is held, none dropped
+/// before its floor but by purge, none it may drop in history().
+fn purge_on_replace_gone(h: &Held, o: &Outcome, seed: u64) {
+    assert!(o.owed.is_empty(), "seed {seed}: owed {:?}", o.owed);
+    for c in &h.commits {
+        for (i, p) in c.parts.iter().enumerate() {
+            // a body under purge on replace a right holder still holds: a leftover (its own
+            // expiry or purge), or before a purge request's floor
+            if matches!(p.body, Body::Held(_)) && o.under_purge.contains(&(c.id, i)) && right_now(h, c, p) {
+                let f = o.fates[&(c.id, i)];
+                assert!(matches!(f, Fate::Leftover(LeftoverWhy::Expired | LeftoverWhy::Purged) | Fate::Keep(KeepWhy::Until)), "seed {seed}: {} part {i} is replaced and held at a right holder as {f:?}", c.id);
+            }
+            if let Body::Dropped(by) = p.body {
+                let purged = h.commits.iter().any(|q| q.id == by && !q.purge.is_empty());
+                assert!(purged || h.now >= kept_until(c), "seed {seed}: {} part {i} dropped before its purge floor", c.id);
+            }
+            // history() shows a replaced write only while the settings keep it, at every node
+            // alike: no body the node may drop has an entry
+            if matches!(o.fates.get(&(c.id, i)), Some(Fate::MayDrop(_) | Fate::MustDrop(_))) {
+                let entries = o.history.get(&(p.thing, p.aspect));
+                assert!(entries.is_none_or(|e| !e.iter().any(|x| x.1 == c.id)), "seed {seed}: {} part {i} may drop and is in history()", c.id);
             }
         }
     }
+}
+
+/// The output is unchanged just before its first deadline.
+fn changes_only_at_deadlines(h: &Held, mut o: Outcome, seed: u64) {
+    let next = o.deadlines.first().copied();
+    let mut later = h.clone();
+    later.now = next.map_or(h.now + 1000 * HOUR, |d| h.now + (d - h.now - 1) / 2);
+    let ol = evaluate(&later);
+    o.deadlines.retain(|&d| d > later.now);
+    assert_eq!(ol, o, "seed {seed}: output changed before its first deadline {next:?}");
+}
+
+/// Each optional drop in turn changes no read and no history(); the drops past their bound.
+fn optional_drops_keep_reads(mut h: Held, seed: u64) -> usize {
+    let mut past_bound = 0;
+    for _ in 0..12 {
+        let o = evaluate(&h);
+        let Some((&pr, _)) = o.fates.iter().find(|(_, f)| matches!(f, Fate::MayDrop(_))) else { break };
+        past_bound += usize::from(o.fates[&pr] == Fate::MayDrop(DropWhy::PastBound));
+        let n = act(&h, &o, Some(pr));
+        let on = evaluate(&n);
+        let some = |o: &Outcome| o.reads.iter().filter(|(_, r)| r.is_some()).map(|(k, r)| (*k, r.clone())).collect::<BTreeMap<_, _>>();
+        assert_eq!(some(&on), some(&o), "seed {seed}: dropping {pr:?} ({:?}) changed a read", o.fates[&pr]);
+        assert_eq!(on.history, o.history, "seed {seed}: dropping {pr:?} ({:?}) changed history()", o.fates[&pr]);
+        h = settle(n, None, seed, &mut Seen::default());
+    }
+    past_bound
 }
 
 /// What a node has seen across settles: the aspects of parts that went at their expiry while
@@ -253,25 +265,6 @@ fn arrival_orders_read_alike_after_repair_spec_commits_5() {
         }
     }
 }
-
-// spec/commits.md §5, §6, spec/crdt.md §2.2: the clock changes the output only at the deadlines it
-// lists (unparking, expiry, a body leaving history), so an adapter checking at each sees every change
-#[test]
-fn output_changes_only_at_its_deadlines_spec_commits_5() {
-    for seed in 0..SEEDS {
-        let h = settle(history(seed, LEN), None, seed, &mut Seen::default());
-        let mut o = evaluate(&h);
-        let next = o.deadlines.first().copied();
-        let mut later = h.clone();
-        later.now = next.map_or(h.now + 1000 * HOUR, |d| h.now + (d - h.now - 1) / 2);
-        let ol = evaluate(&later);
-        o.deadlines.retain(|&d| d > later.now);
-        assert_eq!(ol, o, "seed {seed}: output changed before its first deadline {next:?}");
-    }
-}
-
-
-
 
 // notes/expiry-creation-design.md §3 (Throw out and revisit), spec/commits.md §4: a node given
 // every write before the creations of their things reads, once the creations come and it fetches
