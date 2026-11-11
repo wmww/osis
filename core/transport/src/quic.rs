@@ -27,11 +27,15 @@ pub(crate) const KEEP_ALIVE: Duration = Duration::from_secs(15);
 /// its own (any link speed passes, spec/sync.md §10).
 pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Flow-control windows per stream and per connection: the reader drains frames incrementally,
-/// so a window need not hold a whole frame; these bound what a peer makes us buffer.
-pub(crate) const STREAM_WINDOW: u32 = 1 << 20;
-pub(crate) const CONN_WINDOW: u32 = 4 << 20;
+/// so a window need not hold a whole frame; these bound what a peer makes us buffer, and the
+/// send window (the connection window's size) what a peer that does not acknowledge makes us
+/// keep. A session is one stream, so the connection window is one stream's: streams of one
+/// connection share it. Resource bound against throughput (`link::CONN_MEMORY`): a session moves
+/// at most this per round trip; 0: nothing flows; unbounded: a peer makes us buffer without bound.
+pub const STREAM_WINDOW: u32 = 1 << 20;
+pub const CONN_WINDOW: u32 = STREAM_WINDOW;
 /// Concurrent bidirectional streams a peer may open.
-pub(crate) const MAX_STREAMS: u32 = 16;
+pub const MAX_STREAMS: u32 = 16;
 /// Handshakes in progress per listener: past it the oldest is dropped (`Handshakes`).
 pub(crate) const MAX_INCOMING: usize = 1024;
 
@@ -274,6 +278,8 @@ fn transport_config((streams, stream_window, conn_window): (u32, u32, u64)) -> R
     t.datagram_receive_buffer_size(None);
     t.stream_receive_window(stream_window.into());
     t.receive_window(quinn::VarInt::from_u64(conn_window).map_err(|_| Error::Io("window".into()))?);
+    // unacknowledged bytes kept for the peer: as much as it may make us buffer
+    t.send_window(conn_window);
     Ok(Arc::new(t))
 }
 

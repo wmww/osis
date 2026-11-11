@@ -61,44 +61,110 @@ fn partial_frames_bounded() {
     assert_eq!(closed, 2, "two of four over the budget");
 }
 
-// spec/requirements.md (peer input never causes unbounded allocation), spec/sync.md §10 (Served
-// connections): bytes written and not taken by the transport stay under `max_buffered_bytes` over
-// all connections, however many share something and never read: past it the connection holding
-// the most unread is closed; an honest reader, whose bytes are taken, keeps its connection.
-#[test]
-fn unread_output_bounded() {
-    let mut w = World::new();
-    let mib = 1 << 20;
-    let h = w.add_hub(HostPolicy { max_buffered_bytes: 4 * mib, ..HostPolicy::default() });
+/// A hub whose output bound is `budget`, with connections 1..=n started and reporting takes.
+fn unread_hub(w: &mut World, budget: usize, n: u64) -> usize {
+    let h = w.add_hub(HostPolicy { max_buffered_bytes: budget, ..HostPolicy::default() });
     let now = w.now();
     let hub = &mut w.hubs[h];
-    for id in 1..=3u64 {
+    for id in 1..=n {
         hub.accept(now, id, [9; 32], osis_host::Remote::key([id as u8; 32]));
         hub.input(now, id, encode_frame(&Hello::new(now, [2; 32]).encode()));
         // the driver reports what the transport took
         hub.sent(now, &[(id, 0)]);
     }
-    let push = |n: u8| osis_host::Down::Message(Box::new(Message::Stream(Box::new(osis_proto::msg::Stream {
-        events: vec![(osis_base::LabelId([1; 16]), Event::Added { blob_id: BlobId([n; 32]), blob: Some(vec![n; mib - 4096]), wrap: [0; osis_crypto::WRAP_LEN], stamp: None })],
+    h
+}
+
+fn push(n: u8, size: usize) -> osis_host::Down {
+    osis_host::Down::Message(Box::new(Message::Stream(Box::new(osis_proto::msg::Stream {
+        events: vec![(osis_base::LabelId([1; 16]), Event::Added { blob_id: BlobId([n; 32]), blob: Some(vec![n; size]), wrap: [0; osis_crypto::WRAP_LEN], stamp: None })],
         cursor: Some(vec![n]),
         report: false,
-    }))));
-    let closed = |out: &[HubOutput]| out.iter().filter_map(|o| if let HubOutput::Close(id) = o { Some(*id) } else { None }).collect::<Vec<_>>();
-    // 3 reads: whatever goes to it is taken
-    for n in 10..20 {
-        assert!(closed(&hub.down(now, vec![(3, push(n))])).is_empty(), "an honest reader keeps its connection");
-        assert!(closed(&hub.sent(now, &[(3, u64::MAX)])).is_empty());
+    }))))
+}
+
+fn closed(out: &[HubOutput]) -> Vec<u64> {
+    out.iter().filter_map(|o| if let HubOutput::Close(id) = o { Some(*id) } else { None }).collect()
+}
+
+fn written(out: &[HubOutput], id: u64) -> u64 {
+    out.iter().map(|o| if let HubOutput::Send(i, b) = o && *i == id { b.len() as u64 } else { 0 }).sum()
+}
+
+// spec/sync.md §10 (Served connections): past `max_buffered_bytes` unread the hub is full: it
+// grants no push room and its driver hands it no input, and readers that read, however slowly,
+// all keep their connections while they drain it; below it again, room is granted
+#[test]
+fn slow_readers_drain_a_full_hub() {
+    let mut w = World::new();
+    let mib = 1 << 20;
+    let h = unread_hub(&mut w, 4 * mib, 6);
+    let mut now = w.now();
+    let hub = &mut w.hubs[h];
+    // six readers, 2 MiB each: three times the bound
+    for id in 1..=6u64 {
+        let out = hub.down(now, vec![(id, push(id as u8, 2 * mib - 4096))]);
+        assert!(closed(&out).is_empty());
     }
-    // 1 and 2 never read: 1 takes three pushes, 2 one
-    for (id, n) in [(1, 1), (1, 2), (1, 6), (2, 3)] {
-        assert!(closed(&hub.down(now, vec![(id, push(n))])).is_empty());
+    assert!(hub.full(), "unread {}", hub.unread());
+    // no room while full
+    let out = hub.down(now, vec![(1, osis_host::Down::WantRoom)]);
+    assert!(!out.iter().any(|o| matches!(o, HubOutput::Up(_, osis_host::Up::Room { .. }))));
+    // each reads 512 KiB per report period, and 6 only 64 KiB (Hello included)
+    let mut taken = [0u64; 7];
+    let (mut rounds, mut room) = (0, None);
+    while hub.unread() > 0 {
+        rounds += 1;
+        assert!(rounds < 100, "never drained: {}", hub.unread());
+        let reports: Vec<(u64, u64)> = (1..=6u64).map(|id| {
+            taken[id as usize] += (64 << 10) * if id == 6 { 1 } else { 8 };
+            (id, taken[id as usize])
+        }).collect();
+        now += osis_proto::serving::PUSH_POLL_MS;
+        let mut out = hub.sent(now, &reports);
+        out.extend(hub.tick(now));
+        assert!(closed(&out).is_empty(), "a reader closed: {out:?}");
+        if out.iter().any(|o| matches!(o, HubOutput::Up(1, osis_host::Up::Room { .. }))) {
+            assert!(!hub.full() && room.is_none());
+            room = Some(rounds);
+        }
     }
-    assert!(hub.unread() <= 4 * mib, "{}", hub.unread());
-    // past the bound: the one holding the most goes, not the newest writer's
-    let out = hub.down(now, vec![(2, push(4))]);
-    assert_eq!(closed(&out), vec![1], "unread {}", hub.unread());
-    assert!(hub.unread() <= 4 * mib);
+    assert!(!hub.full());
+    assert!(room.is_some(), "room once no longer full");
+    assert_eq!(hub.connections(), 6);
+}
+
+// spec/requirements.md (peer input never causes unbounded allocation), spec/sync.md §10 (Served
+// connections): connections that never read and fill the bound are closed once a report period
+// passes with none of their bytes taken, the one holding the most first and only until the hub
+// is no longer full; a reader taking its bytes keeps its connection however much it holds
+#[test]
+fn stuck_output_closed_biggest_first() {
+    let mut w = World::new();
+    let mib = 1 << 20;
+    let h = unread_hub(&mut w, 4 * mib, 3);
+    let now = w.now();
+    let hub = &mut w.hubs[h];
+    // 1 never reads 3 MiB, 2 never reads 2 MiB, 3 reads its 2 MiB slowly
+    let mut sent3 = 0;
+    for (id, n) in [(1, 1), (1, 2), (1, 3), (2, 4), (2, 5), (3, 6), (3, 7)] {
+        let out = hub.down(now, vec![(id, push(n, mib - 4096))]);
+        assert!(closed(&out).is_empty());
+        if id == 3 {
+            sent3 += written(&out, 3);
+        }
+    }
+    assert!(hub.full() && hub.unread() > 4 * mib);
+    // within the report period nothing closes
+    let half = now + osis_proto::serving::PUSH_POLL_MS / 2;
+    let out = [hub.sent(half, &[(3, 64 << 10)]), hub.tick(half)].concat();
+    assert!(closed(&out).is_empty());
+    let at = now + osis_proto::serving::PUSH_POLL_MS;
+    let out = [hub.sent(at, &[(3, 128 << 10)]), hub.tick(at)].concat();
+    assert_eq!(closed(&out), vec![1], "the biggest of those not moving, and only it");
+    assert!(!hub.full(), "unread {}", hub.unread());
     assert_eq!(hub.connections(), 2);
+    assert!(sent3 > 128 << 10);
 }
 
 // spec/requirements.md (peer input never causes unbounded work): a message's entries reach disk

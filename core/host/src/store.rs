@@ -82,7 +82,10 @@ pub struct HostPolicy {
     pub max_labels: u64,
     pub max_entries: u64,
     pub max_bytes: u64,
-    /// Connections served at once (node sync closes any beyond, by its rule).
+    /// Connections served at once (node sync closes any beyond, by its rule; the listeners'
+    /// transport connections share as many slots). The transport holds up to
+    /// `osis_transport::link::CONN_MEMORY` per connection in each direction beyond
+    /// `max_buffered_bytes`; the default makes that share at most `max_buffered_bytes` again.
     pub max_connections: usize,
     /// A connection without the peer's Hello this long after accept is closed.
     pub hello_ms: u64,
@@ -90,12 +93,17 @@ pub struct HostPolicy {
     /// at least `osis_proto::serving::SEND_QUEUE` plus `osis_proto::client::WINDOW_QUEUE`
     /// (windowed replies and held pushes, and node sync's own requests, spec/sync.md §6).
     pub max_queued_bytes: usize,
-    /// Bytes held for connections in each direction, over all of them: partially received
-    /// frames, and bytes written and not yet taken by the transport. Past it the connection
-    /// holding the most of that direction is closed. The node's memory bound for its connections,
-    /// whatever their count (`max_connections` bounds slots, not bytes).
+    /// Bytes the hub holds for connections in each direction, over all of them: partially
+    /// received frames (past it the connection holding the most is closed), and bytes written
+    /// and not yet taken by the transport (past it the hub is full: no input or push until
+    /// readers drain it; `Hub::full`). With `max_connections` times
+    /// `osis_transport::link::CONN_MEMORY`, the node's memory bound for its connections.
     pub max_buffered_bytes: usize,
 }
+
+/// Default `max_buffered_bytes` (resource bound: 0 closes every connection at its first partial
+/// frame and stops all output; infinity leaves memory unbounded).
+const BUFFERED: usize = 512 << 20;
 
 impl Default for HostPolicy {
     fn default() -> HostPolicy {
@@ -118,10 +126,10 @@ impl Default for HostPolicy {
             max_labels: 1 << 20,
             max_entries: 1 << 26,
             max_bytes: 256 << 30,
-            max_connections: 10_000,
+            max_connections: BUFFERED / osis_transport::link::CONN_MEMORY,
             hello_ms: 10_000,
             max_queued_bytes: 64 << 20,
-            max_buffered_bytes: 512 << 20,
+            max_buffered_bytes: BUFFERED,
         }
     }
 }

@@ -6,7 +6,8 @@
 //! (`accept_own`); replication dials (`dial_as` with the dialable secret, so the peer sees this
 //! node's key: echo suppression) run while it hosts. Per link a reader task hands the loop one
 //! read at a time (the next once the hub took the last), served in turns round-robin by source
-//! (`Turns`); writes go to the link's queue (more than `max_queued_bytes` the transport has not
+//! (`Turns`), none while the hub is full (`Hub::full`: what it wrote waits to be read, and the
+//! reads wait in the transport's window); writes go to the link's queue (more than `max_queued_bytes` the transport has not
 //! taken drops the session). No task waits on the loop and the loop waits on no connection.
 //! What the hub hands node sync (`HubOutput::Up`) waits in `ups` until the driver feeds it to
 //! the engine (`Event::Hub`); the engine's `Action::Hub` come back by `down`, in the same pass of
@@ -142,6 +143,8 @@ pub(super) struct HubRun {
     next: ConnId,
     conns: HashMap<ConnId, ConnState>,
     turns: Turns,
+    /// Transport connections of every listener (`max_connections` of them).
+    slots: Arc<link::Slots>,
     /// The node's dialable key: its own dials of it reach the hub whether or not a listener
     /// of it runs yet.
     pub own: Option<[u8; 32]>,
@@ -163,19 +166,19 @@ pub(super) struct HubRun {
 
 impl HubRun {
     pub fn new(hub: Hub, clock: Arc<dyn Clock>, log: Log, ev: mpsc::UnboundedSender<HubEv>) -> HubRun {
-        HubRun { cfg: None, hub, own: None, next: 1, conns: HashMap::new(), turns: Turns::default(), groups: HashMap::new(), next_group: 1, repl: Vec::new(), repl_run: 0, at: None, clock, log, ev, ups: Vec::new() }
+        let slots = link::Slots::new(hub.store().policy().max_connections);
+        HubRun { cfg: None, hub, own: None, next: 1, conns: HashMap::new(), turns: Turns::default(), slots, groups: HashMap::new(), next_group: 1, repl: Vec::new(), repl_run: 0, at: None, clock, log, ev, ups: Vec::new() }
     }
 
     /// Serves the sessions `listeners` accept, under their key `key`; returns their group.
-    /// Transport connections are capped as sessions are (`max_connections`; each may carry
-    /// several), shared by source.
+    /// Transport connections of all listeners are capped as sessions are (`max_connections`;
+    /// each may carry several), shared by source.
     pub fn listen<L: osis_transport::Listener + 'static>(&mut self, key: [u8; 32], listeners: Vec<L>) -> u64 {
         let group = self.next_group;
         self.next_group += 1;
         let idle = Duration::from_millis(self.hub.store().policy().hello_ms);
-        let max = self.hub.store().policy().max_connections;
         let (in_tx, mut incoming) = mpsc::channel(64);
-        let mut tasks: Vec<JoinHandle<()>> = listeners.into_iter().map(|l| tokio::spawn(link::serve(l, idle, FINISH_WAIT, in_tx.clone(), max))).collect();
+        let mut tasks: Vec<JoinHandle<()>> = listeners.into_iter().map(|l| tokio::spawn(link::serve(l, idle, FINISH_WAIT, in_tx.clone(), self.slots.clone()))).collect();
         drop(in_tx);
         let fwd = self.ev.clone();
         tasks.push(tokio::spawn(async move {
@@ -256,6 +259,11 @@ impl HubRun {
         self.apply(out);
     }
 
+    /// The hub's policy changed: listeners take its `max_connections` from the next newcomer.
+    pub fn policy_changed(&self) {
+        self.slots.set_max(self.hub.store().policy().max_connections);
+    }
+
     pub fn hub_mut(&mut self) -> &mut Hub {
         &mut self.hub
     }
@@ -318,9 +326,10 @@ impl HubRun {
         }
     }
 
-    /// A read waits for its turn.
+    /// A read waits for its turn, and the hub takes input (none while it is full: readers drain
+    /// what it holds first, `Hub::full`).
     pub fn waiting(&self) -> bool {
-        !self.turns.is_empty()
+        !self.turns.is_empty() && !self.hub.full()
     }
 
     /// Feeds the hub the read of the connection whose turn it is, then lets its reader go on.

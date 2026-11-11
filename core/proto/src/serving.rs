@@ -87,6 +87,9 @@ pub enum ServingInput {
     Peer(Box<Message>),
     /// The upper layer has Notifies to send: `ServingOutput::Room` when the push rule allows.
     WantRoom,
+    /// The node is no longer full (`ServingSession::set_full`): held pushes and room go on as
+    /// at a `Taken`.
+    Unfull,
 }
 
 /// Bytes of the `Send` outputs in `out`.
@@ -224,6 +227,8 @@ pub struct ServingSession {
     authed: bool,
     /// The upper layer waits for push room (`WantRoom`).
     room_wanted: bool,
+    /// The node holds all the output it may (`set_full`): no push goes, none is granted room.
+    full: bool,
     /// The node's own requests to the dialer (`ServingInput::Peer`), within the request window.
     requests: crate::client::Window,
 }
@@ -295,8 +300,17 @@ impl ServingSession {
             api_subs: BTreeMap::new(),
             authed: false,
             room_wanted: false,
+            full: false,
             requests: crate::client::Window::default(),
         }
+    }
+
+    /// Whether the node holds all the unread output it may over its connections (its upper
+    /// layer's bound, spec/sync.md §10 Served connections): while it does, pushes wait as for a
+    /// full send queue (`owed`, relay-only ones dropped) and no room is granted. Pushes resume
+    /// at the next `Taken` after it is lifted.
+    pub fn set_full(&mut self, full: bool) {
+        self.full = full;
     }
 
     /// Whether an Auth was answered by a Reply (notes/client-port.md §3): the session counts as
@@ -376,8 +390,11 @@ impl ServingSession {
     }
 
     /// Push room for Notifies: what fits `REPLY_BUDGET` behind the unwritten bytes, or all of it
-    /// when none are unwritten; none below `SMALL_REPLY`.
+    /// when none are unwritten; none below `SMALL_REPLY` or while the node is full.
     fn room(&self, out: &[ServingOutput]) -> Option<usize> {
+        if self.full {
+            return None;
+        }
         match self.backlog(out) {
             0 => Some(REPLY_BUDGET),
             b => Some(REPLY_BUDGET.saturating_sub(b)).filter(|r| *r >= crate::client::SMALL_REPLY),
@@ -405,11 +422,11 @@ impl ServingSession {
         w.saturating_add(o)
     }
 
-    /// Whether a push of about `size` bytes waits: something is unwritten and it would not fit
-    /// `REPLY_BUDGET` behind it.
+    /// Whether a push of about `size` bytes waits: the node is full, or something is unwritten
+    /// and it would not fit `REPLY_BUDGET` behind it.
     fn no_room(&self, out: &[ServingOutput], size: usize) -> bool {
         let b = self.backlog(out);
-        b > 0 && b.saturating_add(size) > REPLY_BUDGET
+        self.full || b > 0 && b.saturating_add(size) > REPLY_BUDGET
     }
 
     /// When this side's oldest request to the dialer stalls (`client::STALL_TIMEOUT_MS`, the
@@ -522,43 +539,55 @@ impl ServingSession {
             ServingInput::Taken(n) => {
                 self.taken = Some(self.taken.map_or(n, |t| t.max(n)));
                 self.requests.taken(n, now);
-                // in turn: one held again goes to the back, and the rest keep their place
-                while let Some(l) = self.owed.pop_front() {
-                    if let Err(e) = self.push(store, &l, out) {
-                        out.push(ServingOutput::StoreError(e));
-                        self.owe(l);
-                    }
-                    if self.owed.back() == Some(&l) {
-                        break;
-                    }
-                }
-                if self.room_wanted
-                    && let Some(budget) = self.room(out)
-                {
-                    self.room_wanted = false;
-                    out.push(ServingOutput::Room { budget });
-                }
+                self.resume(store, out);
+            }
+            ServingInput::Unfull => {
+                self.full = false;
+                self.resume(store, out);
             }
             ServingInput::WantRoom => match self.room(out) {
                 Some(budget) if self.owed.is_empty() => out.push(ServingOutput::Room { budget }),
                 _ => self.room_wanted = true,
             },
             ServingInput::Reply { id, reply } => self.api_reply(id, reply, out),
-            ServingInput::Notify(notes) => {
-                for (sub, payload) in notes {
-                    let Some(max) = self.api_subs.get(&sub).copied() else { continue };
-                    let mut m = Message::Notify { sub, payload };
-                    let mut body = m.encode();
-                    if body.len() > max {
-                        m = Message::Notify { sub, payload: crate::api::Payload::Lapsed };
-                        body = m.encode();
-                    }
-                    if matches!(m, Message::Notify { payload: crate::api::Payload::Lapsed, .. }) {
-                        self.api_subs.remove(&sub);
-                    }
-                    out.push(ServingOutput::Send(encode_frame(&body)));
-                }
+            ServingInput::Notify(notes) => self.notify(notes, out),
+        }
+    }
+
+    /// Held pushes go on, labels in turn, then the room the upper layer waits for.
+    fn resume(&mut self, store: &mut dyn LabelStore, out: &mut Vec<ServingOutput>) {
+        // in turn: one held again goes to the back, and the rest keep their place
+        while let Some(l) = self.owed.pop_front() {
+            if let Err(e) = self.push(store, &l, out) {
+                out.push(ServingOutput::StoreError(e));
+                self.owe(l);
             }
+            if self.owed.back() == Some(&l) {
+                break;
+            }
+        }
+        if self.room_wanted
+            && let Some(budget) = self.room(out)
+        {
+            self.room_wanted = false;
+            out.push(ServingOutput::Room { budget });
+        }
+    }
+
+    /// Notify pushes, in order, within the room last granted.
+    fn notify(&mut self, notes: Vec<(Id, crate::api::Payload)>, out: &mut Vec<ServingOutput>) {
+        for (sub, payload) in notes {
+            let Some(max) = self.api_subs.get(&sub).copied() else { continue };
+            let mut m = Message::Notify { sub, payload };
+            let mut body = m.encode();
+            if body.len() > max {
+                m = Message::Notify { sub, payload: crate::api::Payload::Lapsed };
+                body = m.encode();
+            }
+            if matches!(m, Message::Notify { payload: crate::api::Payload::Lapsed, .. }) {
+                self.api_subs.remove(&sub);
+            }
+            out.push(ServingOutput::Send(encode_frame(&body)));
         }
     }
 
@@ -1066,7 +1095,7 @@ impl ServingSession {
     /// to and with that head's, and nothing after: its subscription ends.
     fn push(&mut self, store: &dyn LabelStore, label: &LabelId, out: &mut Vec<ServingOutput>) -> Result<(), StoreError> {
         let Some(mut seq) = self.subs.get(label).copied() else { return Ok(()) };
-        if self.backlog(out) >= REPLY_BUDGET {
+        if self.full || self.backlog(out) >= REPLY_BUDGET {
             self.owe(*label);
             return Ok(());
         }

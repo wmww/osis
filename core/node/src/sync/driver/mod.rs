@@ -749,6 +749,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
     fn hub_store(&mut self, store: osis_host::HostStore) {
         let (old, out) = self.hub.hub_mut().replace_store(store);
         drop(old);
+        self.hub.policy_changed();
         self.hub.applied(out);
     }
 
@@ -801,6 +802,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         let store = self.hub.hub_mut().store_mut();
         store.set_policy(cfg.policy.clone());
         store.set_admission(cfg.admission.clone(), cfg.caps.clone());
+        self.hub.policy_changed();
         if self.hub.cfg.as_ref().is_none_or(|c| c.replicate != cfg.replicate) {
             let secret = self.dialable_secret();
             self.hub.replicate(&self.transport, &cfg.replicate, secret);

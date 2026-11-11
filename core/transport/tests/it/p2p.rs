@@ -780,7 +780,7 @@ fn quic_relay_loopback_spec_sync_10() {
 
 // spec/sync.md §10 (registration streams, by hand: loopback QUIC): relayed sessions whose bytes
 // the target never reads hold only their own stream's window of its registration connection:
-// with more unread in them than a `quic://` connection window (4 MiB), forwarding to the target
+// with more unread in them than a `quic://` connection window, forwarding to the target
 // goes on and a new dial still connects.
 #[test]
 #[ignore]

@@ -124,3 +124,62 @@ fn quic_framed_session() {
         serving.await.unwrap();
     });
 }
+
+// spec/sync.md §10 (Served connections; by hand: loopback QUIC): what a dialer sends on sessions
+// the listener's consumer does not read stays in one connection window there
+// (`quic::CONN_WINDOW`, shared by the streams; links read only as asked), so a served connection
+// holds at most `link::CONN_MEMORY`; read again, the rest goes through
+#[test]
+#[ignore]
+fn quic_unread_sessions_hold_one_window_spec_sync_10() {
+    const STREAMS: usize = 4;
+    const PIECE: usize = 4096;
+    rt().block_on(async {
+        let cfg = ListenConfig { url: "quic://127.0.0.1:0".into(), secret: StaticSecret::from_bytes([5; 32]) };
+        let l = Quic::new().listen(cfg).await.unwrap();
+        let addr = l.address();
+        let (out, mut incoming) = tokio::sync::mpsc::channel(STREAMS);
+        let w = std::time::Duration::from_secs(30);
+        tokio::spawn(link::serve(l, w, w, out, link::Slots::new(8)));
+        let c = Quic::new().dial(&addr).await.unwrap();
+        let written = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut writers = Vec::new();
+        for _ in 0..STREAMS {
+            let (mut tx, rx) = c.open_stream().await.unwrap();
+            let wr = written.clone();
+            writers.push(tokio::spawn(async move {
+                let _rx = rx;
+                while tx.write_all(&[7; PIECE]).await.is_ok() {
+                    wr.fetch_add(PIECE, std::sync::atomic::Ordering::Relaxed);
+                }
+            }));
+        }
+        // until nothing moves for half a second
+        let settle = || async {
+            let (mut last, mut still) = (usize::MAX, 0);
+            while still < 5 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let n = written.load(std::sync::atomic::Ordering::Relaxed);
+                still = if n == last { still + 1 } else { 0 };
+                last = n;
+            }
+            last
+        };
+        let held = settle().await;
+        let window = quic::CONN_WINDOW as usize;
+        assert!(held >= window / 2, "flow stopped early: {held}");
+        assert!(held <= window + STREAMS * PIECE, "{held} sent into a window of {window}");
+        assert!(window + quic::MAX_STREAMS as usize * link::READ_CHUNK <= link::CONN_MEMORY);
+        // read again: the rest moves
+        for _ in 0..STREAMS {
+            let mut s = incoming.recv().await.unwrap();
+            tokio::spawn(async move { while s.rx.recv().await.is_some() {} });
+        }
+        while written.load(std::sync::atomic::Ordering::Relaxed) < held + 4 * window {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        for t in writers {
+            t.abort();
+        }
+    });
+}

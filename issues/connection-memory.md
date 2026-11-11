@@ -1,10 +1,12 @@
-# Connection memory beyond the hub's byte bound
-> Summary: `max_buffered_bytes` bounds what the hub holds for its connections, not the transport's buffers per connection (about 6 MiB each, times `max_connections` 10 000); and the output half closes honest slow readers once about 15 full windows are unread at once.
+# Slow readers can hold a full hub
+> Summary: while the hub is full (`max_buffered_bytes` unread), served input waits for readers to drain it and only output that does not move is closed for; readers that take a little each report period (16 KiB/s) and together hold the bound keep every served connection's input waiting until they drained it.
 > Priority: normal
-> Tags: security, node, transport
+> Tags: security, node, tess-call
 
-## Transport buffers scale with the count
-Per served connection, outside `Hub::buffered`/`Hub::unread`: the QUIC receive window (`CONN_WINDOW` 4 MiB, filled by any peer that sends while the hub waits for its turn), the link's read-ahead (`READ_AHEAD` 16 × `READ_CHUNK` 64 KiB = 1 MiB) and bytes `write_all` handed to quinn under the stream credit (`STREAM_WINDOW` 1 MiB). At the default `max_connections` that is up to about 60 GiB, reachable by anyone sharing one group (a public link) from enough sources. Ways out: count the read-ahead in the hub's in-direction (the driver knows it), size the transport windows from the memory bound over the connection count, or derive the default `max_connections` from the memory bound.
+## The case
+The design (notes/serving.md, Connection memory): past the bound the node reads no input and pushes nothing until readers drain, and closes only connections the transport took nothing of in a report period (`PUSH_POLL_MS`, one `WRITE_CHUNK`). About 15 connections sharing one group (a public link) that each pull a full request window (about 34 MiB) and then read at 16 KiB/s keep the hub full for about half an hour, and do it again once drained: served input waits that long, and peers whose requests wait past `STALL_TIMEOUT_MS` close their connections. A slow honest reader and such a trickler look the same.
 
-## Honest slow readers closed under load
-An honest reader keeps up to its request window unread (`WINDOW_QUEUE` + a push, about 34 MiB) while its link drains, so about 15 slow readers pulling at once pass 512 MiB, and the one holding the most is closed and redials (bytes in flight wasted, partial frames lost), though it reads. A host serving many slow devices churns. Direction: back-pressure keeps the property without closing readers. While over the bound, give no input turns and no push room, so readers drain and resume; close the biggest holder only when its bytes are not moving (the bound is full of bytes nobody takes).
+## Options
+- Accept it as a stated limit (now).
+- Judge "moving" against what a connection holds: closed while full when at its pace it would not drain its holding within `STALL_TIMEOUT_MS` (a 34 MiB holder needs about 290 KB/s). Bounds the wait at the stall time, closes slow honest readers under load again.
+- Close the biggest holder once the hub stayed full for `STALL_TIMEOUT_MS` (the wait could not be longer without peers' own stall timers closing anyway). Bounds the wait; the trickle attack still stalls the node up to 2 min per round.
