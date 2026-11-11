@@ -925,9 +925,10 @@ pub(crate) fn write_all(tx: &mut Tx<'_>) -> Result<()> {
     tx.txn.drop_indexes()?;
     // the tables memory rows go to exist whatever they hold: a memory transaction registering
     // one would write it durably (a table's registration is always durable)
-    for name in [METAS, SNAPSHOTS, ADDENDA] {
+    for name in [METAS, SNAPSHOTS, ADDENDA, super::refs::TO, super::refs::FROM] {
         tx.txn.index(name)?;
     }
+    super::refs::write_all(tx)?;
     write_edges_all(tx)?;
     write_addenda_all(tx)?;
     write(tx, true)?;

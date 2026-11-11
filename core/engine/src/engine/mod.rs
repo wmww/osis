@@ -18,6 +18,7 @@ pub mod memo;
 pub(crate) mod pages;
 pub(crate) mod large;
 pub(crate) mod read;
+pub mod refs;
 pub mod records;
 pub(crate) mod secrets;
 pub(crate) mod state;
@@ -2429,7 +2430,8 @@ impl Tx<'_> {
         self.core.touch();
         self.core.wrote(k.clone());
         let (Some(idx), Some(Some(f))) = (self.core.pages.get_mut(&k), self.core.states.get(&k)) else { return Ok(None) };
-        match pages::join_reset(&mut self.txn, tid, ak, idx, f, delta)? {
+        let mut moved = refs::Delta::default();
+        match pages::join_reset(&mut self.txn, tid, ak, idx, f, delta, &mut moved)? {
             pages::Reset::Whole => {
                 let _s = crate::costs::span("reset: whole");
                 Ok(None)
@@ -2441,6 +2443,7 @@ impl Tx<'_> {
                 u.state = unit;
                 self.txn.put_aspect(tid, ak, &u, Shred::No)?;
                 self.core.states.insert(k, Some(skeleton));
+                refs::note(self, tid, ak, moved)?;
                 Ok(Some(changes))
             }
             pages::Reset::Laid { state, changes } => {
@@ -2496,9 +2499,15 @@ impl Tx<'_> {
         Ok(self.cached(tid, ak))
     }
 
-    /// Writes a whole state; `f` is the
-    /// whole state.
+    /// Writes a whole state; `f` is the whole state. The reference index follows it whole
+    /// (`refs::resync`).
     pub fn set_state(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, shred: Shred) -> Result<()> {
+        refs::resync(self, tid, ak, f.as_ref())?;
+        self.write_state(tid, ak, f, shred)
+    }
+
+    /// `set_state` for a join, whose caller keeps the reference index (`refs::Delta::reach`).
+    fn write_state(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, shred: Shred) -> Result<()> {
         self.core.touch();
         self.core.state_changed(tid, ak);
         self.core.wrote((*tid, ak.clone()));
@@ -2555,7 +2564,7 @@ impl Tx<'_> {
         if let (Some(st), Some(idx)) = (&mut f, self.core.pages.get_mut(&k)) {
             pages::load_all(&mut self.txn, tid, ak, idx, st)?;
         }
-        self.set_state(tid, ak, f, shred)
+        self.write_state(tid, ak, f, shred)
     }
 
 

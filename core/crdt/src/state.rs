@@ -579,6 +579,45 @@ impl Fragment {
         }
     }
 
+    /// Calls `f` on every value this fragment holds as written: register and slot values, set
+    /// elements, list items' content, and the keys of map records holding their creation
+    /// (a value-less write holds none; text chars and bag numbers are not values).
+    pub fn each_value(&self, f: &mut dyn FnMut(&Value)) {
+        match self {
+            Fragment::Register(r) => {
+                if let Some(v) = r.write.as_ref().and_then(|w| w.value.as_ref()) {
+                    f(v);
+                }
+            }
+            Fragment::Bag(_) => {}
+            Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.values().for_each(|x| x.each_value(f)),
+            Fragment::Set(s) => s.elems.values().filter_map(|e| e.frag.as_deref()).for_each(|x| x.each_value(f)),
+            Fragment::Map(m) => {
+                for (id, e) in &m.entries {
+                    if let Some(k) = id.key().filter(|_| e.created.is_some()) {
+                        f(k);
+                    }
+                    if let Some(x) = e.frag.as_deref() {
+                        x.each_value(f);
+                    }
+                }
+            }
+            Fragment::Seq(s) => {
+                for e in s.elems().values() {
+                    if let SeqContent::Frag(x) = &e.content {
+                        x.each_value(f);
+                    }
+                }
+            }
+            Fragment::Slots(s) => {
+                if let Some(v) = s.reg.as_ref().and_then(|r| r.write.as_ref()).and_then(|w| w.value.as_ref()) {
+                    f(v);
+                }
+                s.slots.values().for_each(|x| x.each_value(f));
+            }
+        }
+    }
+
     /// Drops the chars of deleted text elements at any depth: what the wire carries (§3.3 rule 5).
     pub(crate) fn drop_deleted_chars(&mut self) {
         self.seqs_mut(&mut |s| {

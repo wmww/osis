@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: data-model, api, permissions, sync, engine, tess-call
 
-**Go-ahead given by Tess**: implement in the order below. Halyard runs the lane; Fathom reviews steps 1 and 3. Tess: additive, so it comes after the simplifications, fixes and changes in flight (thing-history, the network rework, open fixes); then steps 1-2, and 3-4 after Fathom's ending-cluster worker and thing-history step 1 (held-model). Her decisions are below (Decisions). Nothing is built but the model.
+**Go-ahead given by Tess**: implement in the order below. Halyard runs the lane; Fathom reviews steps 1 and 3. Tess: additive, so it comes after the simplifications, fixes and changes in flight (thing-history, the network rework, open fixes); then steps 1-2, and 3-4 after Fathom's ending-cluster worker and thing-history step 1 (held-model). Her decisions are below (Decisions). Built: the model and step 1 (the reference index, notes/engine-refs.md).
 
 ## Principle
 A thing's lifetime is decided by whoever may end it. Listing retainers is their standing instruction to release the thing once none of them keeps it; a node carries the instruction out only with the right to end the thing and only on what it holds, so a node that cannot see enough leaks and never deletes. Releasing is storage reclaim, not erasure (notes/deletion.md): it leaves nothing that outlives the need to tell late nodes, and a released thing may come back from a copy still held. Nothing here is a validity rule: no write is valid or invalid because of a list or a reference.

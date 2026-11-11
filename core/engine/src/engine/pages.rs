@@ -1534,12 +1534,15 @@ fn set_rows(txn: &mut Transaction<'_>, t: Table, set: &PageSet) -> Result<Vec<Ve
 /// pruned by the resets on its path alone (spec/crdt.md §4.2, §8). Not for a paged
 /// sequence (its placement follows a join whole), a collection paged inside another's elements
 /// (its path runs through pages) or `d` changing an encoding above a paged collection: `Whole`.
-pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &Fragment, d: &Fragment) -> Result<Reset> {
+/// `moved`: the tids it adds and removes, for the reference index (meaningful for `Paged`; the
+/// others write a whole state, which the index follows whole).
+pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &Fragment, d: &Fragment, moved: &mut super::refs::Delta) -> Result<Reset> {
     let nested = idx.sets.keys().any(|p| idx.sets.keys().any(|q| q.len() < p.len() && p.starts_with(q)));
     if nested || idx.sets.values().any(is_seq) || !idx.sets.keys().all(|p| d.steps_through(p)) {
         return Ok(Reset::Whole);
     }
     let s0 = f.reduced(&idx.paths);
+    moved.add(&s0, -1);
     let mut j = s0.clone();
     let mut changes = j.join(d.clone());
     let t = table(txn, tid, ak)?;
@@ -1562,7 +1565,14 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
             let mut g = spine.clone();
             // the state's own page under its own skeleton: nothing dies
             g.join(Fragment::wrap(&set.path, pg.clone()));
+            // the page's elements as a load reads them (pruned by the skeleton), and after the join
+            if let Some(x) = g.at_steps(p) {
+                moved.add(x, -1);
+            }
             let ch = g.join(d.spine(p, Some((r.0.as_ref(), r.1.as_ref()))));
+            if let Some(x) = g.at_steps(p) {
+                moved.add(x, 1);
+            }
             if g.at_steps(p).is_some() {
                 let k = keyed(&g, p);
                 path = Some(match path {
@@ -1605,6 +1615,7 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
     // embedding) is no longer paged there
     relay |= !idx.sets.iter().all(|(p, set)| j.at_steps(p).is_none_or(|x| x.encoding() == set.enc));
     let skeleton = j.reduced(&idx.paths);
+    moved.add(&skeleton, 1);
     let unit = unit_state(&skeleton, idx)?;
     if relay || unit.len() > PAGE_TARGET || all && !kept && skeleton.is_empty() {
         let mut m = j;

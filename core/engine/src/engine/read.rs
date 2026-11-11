@@ -29,6 +29,17 @@ impl Core {
 }
 
 impl Engine {
+    /// The reference index's rows naming `target` (`refs`): who holds its tid in a held value,
+    /// on which aspect, how many times.
+    pub fn references_to(&mut self, target: &Tid) -> Result<Vec<super::refs::Reference>> {
+        self.run(|tx| super::refs::to(tx, target))
+    }
+
+    /// The reference index's rows of `source`'s values, every aspect.
+    pub fn references_from(&mut self, source: &Tid) -> Result<Vec<super::refs::Reference>> {
+        self.run(|tx| super::refs::from(tx, source))
+    }
+
     /// The value of `(tid, ak)` as this node reads it; `None` if absent.
     pub fn get(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Value>> {
         let (tid, ak) = (*tid, ak.clone());

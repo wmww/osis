@@ -158,8 +158,14 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     }
     tx.core.wrote(k.clone());
     let mut st = tx.core.states.get_mut(&k).and_then(Option::take).unwrap_or_default();
+    // the reference index: the tids at the join's reach, before and after
+    let refs = crate::engine::refs::indexed(ak).then(|| (crate::engine::refs::Delta::reach(&st, &delta, -1), delta.clone()));
     let before = dead.as_ref().map(|_| (Killed::before(&st, &delta), delta.clone()));
     let ch = st.join(delta);
+    let refs = refs.filter(|_| ch.is_changed()).map(|(mut d, x)| {
+        d.add(&st.reach(&x), 1);
+        d
+    });
     if let (Some(dead), Some((w, d))) = (dead, before) {
         dead.note(&w, &st, &d);
     }
@@ -167,6 +173,7 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     let st = tx.kept(tid, ak, st)?;
     if ch.is_changed() {
         tx.set_state_touched(tid, ak, st, &touch, Shred::No)?;
+        crate::engine::refs::note(tx, tid, ak, refs.unwrap_or_default())?;
     } else {
         tx.core.states.insert(k, st);
     }
@@ -1125,6 +1132,8 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
         }
         let cached = (tx.core.states.get(&k).cloned(), tx.core.pages.get(&k).cloned());
         let (want, got) = crate::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, None)?, tx.state(&tid, &ak)?.cloned())) })?;
+        // and the reference index, derived from it
+        crate::costs::paused(|| crate::engine::refs::check(tx, &tid, &ak, got.as_ref()))?;
         match cached.0 {
             Some(s) => tx.core.states.insert(k.clone(), s),
             None => tx.core.states.remove(&k),

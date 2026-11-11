@@ -211,6 +211,7 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
     for (ak, _) in &aspects {
         let k = (*t, ak.clone());
         crate::apply::rebuild(tx, t, ak)?;
+        crate::engine::refs::clear(tx, t, ak)?;
         tx.txn.drop_aspect(t, ak)?;
         tx.core.forget_live(t, ak);
         for p in [records::ASPECTS, records::SUSPECT, records::FORGOTTEN] {
