@@ -203,7 +203,7 @@ fn other_retention_leaves_none_spec_commits_5() {
         let Chat { mut net, host, a, b, n, t, l } = chat();
         net.keep(a, t, &h.map(|h| vec![(REG.ak(), h)]).unwrap_or_default());
         net.run();
-        let c = msg(&mut net, b, t, "SECRET", Retention::default());
+        let c = msg(&mut net, b, t, "SECRET", permanent());
         net.run();
         purge(&mut net, b, t, c, Retention::default());
         net.run();

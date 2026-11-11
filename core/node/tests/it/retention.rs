@@ -2025,6 +2025,12 @@ fn a_writers_request_explains_no_delete_spec_sync_6() {
     let c2 = set(&mut lp, 0, t, &REG, "admin's");
     lp.sync_all().unwrap();
     lp.advance(5);
+    // a write of its own it may purge, so the request is written
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("w's own")).unwrap();
+    m.retention(t, &REG, crate::common::purgeable_by(osis_base::PurgeBy::AuthorOrAdmin)).unwrap();
+    lp.peers[2].commit(m).unwrap().unwrap();
+    lp.advance(5);
     let mut m = Mutation::new();
     m.purge(PurgeItem::Aspect { tid: t, ak: k.clone() });
     m.set(t, &REG, &s("w's")).unwrap();
@@ -2210,6 +2216,8 @@ fn honest_demotion_keeps_a_request_resting_on_the_account_spec_perm_6() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("kept")).unwrap();
+    // its author (the account) may purge it
+    m.retention(t, &REG, crate::common::purgeable_by(osis_base::PurgeBy::AuthorOrAdmin)).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     crate::flows::spread(&mut lp);
     lp.advance(5);

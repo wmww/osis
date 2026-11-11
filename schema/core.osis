@@ -33,7 +33,7 @@ type creation = struct {
     account 4: bool,
 };
 
-guaranteed purgeable_by(admin) aspect created.0: creation;
+guaranteed aspect created.0: creation;
 
 // ---- Content ----
 // General-purpose aspects any app can use, so that apps agree on what to call and show a thing.
@@ -101,7 +101,7 @@ type edge = struct {
 };
 
 /// Who holds which rights on the thing, by holder.
-purgeable_by(admin) aspect roles.0: map<tid, edge>;
+aspect roles.0: map<tid, edge>;
 
 /// A set of 32-byte commit IDs.
 type frontier = struct {
@@ -110,7 +110,7 @@ type frontier = struct {
 
 /// Answers to removals of someone's rights: by the removal's commit ID, the commits the writer
 /// of the answer vouches for (spec/permissions.md §5.2).
-purgeable_by(admin) aspect addenda.0: map<blob, frontier>;
+aspect addenda.0: map<blob, frontier>;
 
 // ---- Keys ----
 // Everything shared is encrypted. Each actor has a secret per role; whoever holds the read
@@ -179,7 +179,7 @@ type inbox = struct {
 };
 
 /// An actor's public keys (spec/crypto.md §3).
-purgeable_by(admin) aspect keys.0: struct {
+aspect keys.0: struct {
     /// One per role. Absent for a key actor.
     read 0: option<keyset>,
     write 1: option<keyset>,
@@ -222,20 +222,20 @@ type history_key = struct {
 
 /// An actor's secrets, encrypted for each holder (spec/crypto.md §4). `history`: each epoch's
 /// box of the earlier secrets, so a new holder can read what was shared before.
-purgeable_by(admin) aspect secrets.0: struct {
+aspect secrets.0: struct {
     boxes 0: map<box_key, box>,
     history 1: map<history_key, blob>,
 };
 
 /// An account's epoch seeds, on its devices actor (spec/data-model.md §9): per epoch, its
 /// 32-byte signing public key to its 32-byte seed. One entry put per rotation.
-purgeable_by(admin) aspect account.0: struct {
+aspect account.0: struct {
     seeds 0: map<blob, blob> = {},
 };
 
 /// An account's listings (spec/permissions.md §5.5): by a rotation's 32-byte commit ID, the
 /// account's own commits at the epochs it closed that this listing names. Entries only put.
-purgeable_by(admin) aspect listing.0: map<blob, set<blob>>;
+aspect listing.0: map<blob, set<blob>>;
 
 // ---- Syncing ----
 // A synced group is stored at hosts under a label: hosts hold encrypted data they cannot read,
@@ -259,7 +259,7 @@ type label = struct {
 };
 
 /// A synced group's labels, by 16-byte label ID.
-purgeable_by(admin) aspect label.0: map<blob, label>;
+aspect label.0: map<blob, label>;
 
 // ---- Devices ----
 // Each device running osis (a node) is itself a thing, with these aspects about it.

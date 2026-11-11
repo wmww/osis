@@ -1,0 +1,3 @@
+# history-4 complaints
+- `fill::a_purge_comes_with_order_0_spec_crypto_5` passed by blob-id luck: within order 0 the fill asks by blob id, so a purge request that sorted ahead of its thing's creation awaited it and was only fetched again after the messages. The default switch changed the blob's bytes and exposed it; fixed in `open_entries`. Order-0 tests that depend on fetch order within a rank are worth a second seed.
+- Step 3 had already built most of step 4's API (typed setting, `Retention { by }`, kit's `keep_a_day`) while the issue still listed them as left: reading the issue alone overstated the work; check the code first.

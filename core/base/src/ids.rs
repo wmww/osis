@@ -438,13 +438,13 @@ impl fmt::Debug for Link {
     }
 }
 
-/// Who may purge a write: admins always may (spec/commits.md §5). `Nobody` is for `created.0`
-/// and fixed retention (`retention^.0`) alone.
+/// Who may purge a write: admins always may (spec/commits.md §5); by default only they may.
+/// `Nobody` is for `created.0` and fixed retention (`retention^.0`) alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum PurgeBy {
     Nobody = 0,
-    Admin = 1,
     #[default]
+    Admin = 1,
     AuthorOrAdmin = 2,
     Writer = 3,
 }

@@ -93,7 +93,10 @@ fn record(name: &str, spec: &str, c: &CommitBlob) -> Record {
 fn content() -> CommitBlob {
     let at = ts(1_700_000_000_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
-    b.aspects.push(AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("hello".into()), 1)));
+    let mut a = AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("hello".into()), 1));
+    // two delete keys (admin, author), so their order is a case
+    a.retention = Retention { by: PurgeBy::AuthorOrAdmin };
+    b.aspects.push(a);
     built(b)
 }
 
@@ -270,7 +273,10 @@ fn more_accepted() -> Vec<Record> {
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
     let long = "x".repeat(990);
     for i in 0..140u32 {
-        b.aspects.push(AspectWrite::new(THING, Ak::new(format!("app:{long}{i:03}.0")).unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Int(i64::from(i)), 10)));
+        let mut a = AspectWrite::new(THING, Ak::new(format!("app:{long}{i:03}.0")).unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Int(i64::from(i)), 10));
+        // the commit lists a level-2 key, which its list blobs commit to alone
+        a.retention = Retention { by: PurgeBy::AuthorOrAdmin };
+        b.aspects.push(a);
     }
     let key = SigningSecret::from_seed(&s32(0x35));
     let mut rec = Recording(osis_crypto::SeededRng::from_seed([0x36; 32]), Vec::new());

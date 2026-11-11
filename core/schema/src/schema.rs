@@ -79,7 +79,7 @@ impl History {
     pub const FOREVER: History = History::Keep { until: Some(FOREVER), after: None };
 }
 
-/// Who may purge a write (spec/commits.md §5). `Default` is the untyped default: `author_or_admin`.
+/// Who may purge a write (spec/commits.md §5). `Default` is the untyped default: `admin`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub struct Retention {
     pub by: PurgeBy,

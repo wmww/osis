@@ -123,7 +123,7 @@ Encoding: spec/wire.md §4. Fields:
 - A commit blob whose clear prefix disagrees with its header (expiry, the commitments to the delete keys its deltas list; spec/sync.md §1) is bad input.
 
 ## 5. Retention and purge
-Every delta carries **retention** on the wire: who may purge it (its purgeable-by); its commit carries its expiry (§6). What history keeps of a replaced body is its thing's setting (The setting). The writer fills purgeable-by from the schema's default per AK (spec/data-model.md §2), and a commit may set it per aspect; an untyped write (no schema for the AK) defaults to `author_or_admin`. Retention is immutable: to change it, purge and write again.
+Every delta carries **retention** on the wire: who may purge it (its purgeable-by); its commit carries its expiry (§6). What history keeps of a replaced body is its thing's setting (The setting). The writer fills purgeable-by from the schema's default per AK (spec/data-model.md §2), and a commit may set it per aspect; an untyped write (no schema for the AK) defaults to `admin`. Retention is immutable: to change it, purge and write again.
 
 ### Who and how long
 - **Purgeable by**: a set: `admin` (the thing's admins), `author_or_admin` (the delta's author and admins), `writer` (every writer, so both too). Admins may always purge. `nobody` (none) is the fixed retention of `retention^.0` (Fixed retention) and may be given to `created.0` (Ending); on any other delta it is bad (§2).

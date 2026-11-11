@@ -58,7 +58,7 @@ pub(crate) fn allowed(ak: &str, r: &Retention) -> Result<(), &'static str> {
 }
 
 /// Retention of a write: the fixed one, else the commit's override, else the schema's default
-/// for the AK, else the untyped default (`author_or_admin`). An override that disagrees with a
+/// for the AK, else the untyped default (`admin`). An override that disagrees with a
 /// fixed retention is refused, and so is `nobody` but on `created.0`.
 pub fn write_retention(ak: &str, defaults: Option<&AspectDefaults>, set: Option<Retention>) -> Result<Retention, Error> {
     let r = match (fixed_retention(ak), set) {

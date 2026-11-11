@@ -59,7 +59,7 @@ A shared tag is already an actor (notes/tags.md, Sharing a tag) and may also car
 - **Chat core asks become realm asks**: default-off sync (a member chooses which of a realm's labels to sync; today a node syncs every label whose secret it holds) and pure readers placing nothing under big labels. Both matter more, since realms gather any number of things.
 
 ## Core changes
-- `realm.0: struct { color 0: option<string> }` in spec/data-model.md §9, default retention `author_or_admin`, typed key `osis::core::REALM`.
+- `realm.0: struct { color 0: option<string> }` in spec/data-model.md §9, default retention (`admin`), typed key `osis::core::REALM`.
 - `osis` query: grants held by an actor. Possibly a `create_realm` helper (actor, group, sync, in no group); otherwise apps compose it.
 - For big realms: default-off sync and pure readers (notes/chat-cases.md core s, r).
 

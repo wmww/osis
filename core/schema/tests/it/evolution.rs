@@ -78,7 +78,7 @@ fn additive_changes_pass_spec_versioning_4() {
         ("aspect n:s.0: string;", "aspect n:s.0: text;"),
         ("aspect n:s.0: string;", "aspect n:s.0: markdown;"),
         ("c 2: option<int>, reserved 5", "reserved (2, 5)"),
-        ("aspect n:n.0: int;", "/// Docs change freely.\npurgeable_by(admin) expires(1d) aspect n:n.0: int;"),
+        ("aspect n:n.0: int;", "/// Docs change freely.\npurgeable_by(writer) expires(1d) aspect n:n.0: int;"),
         ("ephemeral signal n:sig+~0: int;", "ephemeral signal n:sig+~0: int;\naspect n:more.0: set<tid>;"),
         ("type t = struct", "type t2 = struct { q 0: int };\ntype t = struct"),
     ] {

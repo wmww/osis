@@ -37,8 +37,8 @@ fn build(b: CommitBuilder, sink: &mut MemoryBlobs) -> Result<Built, Error> {
     b.build(&key(), &TestSecrets { admin: true }, sink, &mut rng())
 }
 
-// spec/commits.md §1, spec/wire.md §4: a built content commit verifies; its delete keys follow the
-// untyped `author` retention (levels 1 and 2).
+// spec/commits.md §1, §5, spec/wire.md §4: a built content commit verifies; its delete keys follow the
+// untyped `admin` retention (level 1, one per thing).
 #[test]
 fn build_content() {
     let mut sink = MemoryBlobs::default();
@@ -46,8 +46,8 @@ fn build_content() {
     let c = &built.commit;
     assert!(sink.blobs.is_empty());
     assert_eq!(c.header.aspects.len(), 3);
-    assert_eq!(c.header.keys.iter().filter(|t| t.level == 2).count(), 1);
-    assert_eq!(c.header.keys.len(), 4);
+    assert!(c.header.keys.iter().all(|t| t.level == 1));
+    assert_eq!(c.header.keys.len(), 3);
     let back = CommitBlob::decode(&c.encode()).unwrap();
     assert_eq!(&back, c);
     assert_eq!(verify_blob(&back, &key().verifying_key(), &dedup, None).unwrap().len(), 3);
@@ -89,7 +89,12 @@ fn build_role_commit_and_refusals() {
 #[test]
 fn list_overflow_links() {
     let mut sink = MemoryBlobs::default();
-    let built = build(content(2000), &mut sink).unwrap();
+    let mut b = content(2000);
+    // a level-2 key listed, which the list blobs commit to alone
+    for a in &mut b.aspects {
+        a.retention = Retention { by: PurgeBy::AuthorOrAdmin };
+    }
+    let built = build(b, &mut sink).unwrap();
     let h = &built.commit.header;
     assert!(h.links.aspects.is_some());
     assert!(h.links.keys.is_none());

@@ -1014,7 +1014,7 @@ fn odd_ids_from_another_writer_fail_no_read() {
     let key = osis::DynamicAspectKey::untyped(MSG.name());
     for v in [Value::Bytes(vec![1]), Value::Map([(Value::Int(0), Value::Int(3))].into())] {
         let mut x = b.write();
-        x.at(c, key.clone()).fire(&v).unwrap();
+        x.at(c, key.clone()).retention(osis_chat::message_retention(&b, c).unwrap()).fire(&v).unwrap();
         x.commit().unwrap();
     }
     w.run();

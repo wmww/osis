@@ -93,7 +93,7 @@ fn prefix_groups_by_key_set() {
     b.aspects[0].tid = t(3);
     b.aspects[1].tid = t(3);
     b.aspects[1].ak = Ak::new("app:body.0").unwrap();
-    b.aspects[0].retention = Retention { by: PurgeBy::Admin };
+    b.aspects[0].retention = Retention { by: PurgeBy::Writer };
     let c = b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).unwrap().commit;
     let g = prefix_groups(&c.header, [0, 1]).unwrap();
     assert_eq!(g.len(), 2);

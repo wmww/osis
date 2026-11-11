@@ -16,7 +16,7 @@ use osis_schema::core_types as ct;
 #[test]
 fn thing_leaving_deleted_by_delete_key_spec_sync_5() {
     let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
-    let c = net.write(b, t, "by b");
+    let c = net.write_own(b, t, "by b");
     net.run();
     let l = net.label(a);
     let blobs: Vec<_> = net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect();
@@ -1449,7 +1449,8 @@ fn one_side_lacking_the_setting_no_upload_delete_repeat_spec_sync_7() {
     net.hide_blobs.insert(b, hidden);
     net.set_online(b, true);
     net.advance(1_000);
-    let x = net.write(b, t, "one");
+    // b's own to delete at the host (author_or_admin)
+    let x = net.write_own(b, t, "one");
     net.run();
     net.advance(61_000);
     net.run();

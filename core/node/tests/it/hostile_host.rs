@@ -404,6 +404,9 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
     let (mut net, host, [a], g, [t]) = hosted::<1, 1>(&[], ["x"], false);
     let mut m = osis_node::Mutation::new();
     crate::common::link_aspects(&mut m, t);
+    // one aspect its author may purge: the commit lists a level-2 key
+    m.set(t, &crate::common::REG, &crate::common::s("own")).unwrap();
+    m.retention(t, &crate::common::REG, crate::common::purgeable_by(osis_base::PurgeBy::AuthorOrAdmin)).unwrap();
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let l = net.label(a);
@@ -941,7 +944,7 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     let g = net.group(a, &[(w, Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
     net.run();
-    let cw = net.write(w, t, "by w");
+    let cw = net.write_own(w, t, "by w");
     net.feed(w, Event::Local);
     net.run();
     let l = net.label(a);

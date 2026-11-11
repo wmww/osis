@@ -645,6 +645,7 @@ impl SyncEngine {
         let mut todo: Vec<(LabelId, BlobId)> = ids.iter().map(|b| (l, *b)).collect();
         let start = self.secrets_count();
         let mut on = conn;
+        let mut created: BTreeSet<Tid> = BTreeSet::new();
         for _ in 0..MAX_ROUNDS {
             let before = self.secrets_count();
             let mut commits: Vec<ToIngest> = Vec::new();
@@ -652,6 +653,7 @@ impl SyncEngine {
             for (l, b) in std::mem::take(&mut todo) {
                 self.open_one(on, l, b, &mut commits, &mut lists)?;
             }
+            created.extend(commits.iter().flat_map(|o| o.commit.header.aspects.iter().filter(|a| a.ak.as_str() == "created.0").map(|a| a.tid)));
             // the retries are of every label's entries: each under its own group
             on = None;
             // creations first, then role commits by `ts` (spec/commits.md §4)
@@ -677,6 +679,12 @@ impl SyncEngine {
                 break;
             }
             todo = self.state.of_tag(Kind::TAG_UNKNOWN).into_iter().collect();
+        }
+        // what an earlier batch left awaiting a record this one brought is fetched again before a
+        // fill asks its next batch: what judging needs before the rest (spec/sync.md §6)
+        let woke: BTreeSet<(LabelId, BlobId)> = created.iter().filter(|t| self.engine.core.exists(t)).flat_map(|t| self.state.by_awaited.get(t).into_iter().flatten().copied()).collect();
+        if !woke.is_empty() {
+            self.reopen_awaiting(woke);
         }
         self.engine.reexamine()?;
         self.reread_boxes |= self.secrets_count() != start;

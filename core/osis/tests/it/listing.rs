@@ -389,7 +389,8 @@ pub(crate) fn alice_admits_bob() -> (World, Osis, Osis, Tid, Tid) {
 // spec/permissions.md §6, notes/api-design.md (rights are checked locally before signing): a
 // request whose purge rights would drop none of the held deltas it names is refused with
 // `Permission` and nothing is sent; one dropping any of them is written. The default purge set is
-// author or admin: a writer purges its own writes, the admin anyone's.
+// admins alone: a writer purges its own writes only where they say `author_or_admin`; the admin
+// purges anyone's.
 #[test]
 fn purge_without_the_right_is_refused_spec_perm_6() {
     let (mut w, alice, bob, b, g) = alice_admits_bob();
@@ -405,19 +406,27 @@ fn purge_without_the_right_is_refused_spec_perm_6() {
     assert!(refused(osis::Purge::Commit(hers)), "another's write by commit");
     assert!(refused(osis::Purge::Author(alice.me())), "another's writes by author");
     assert!(refused(osis::Purge::All), "the aspect holding only another's writes");
-    let his = say(&bob, g, "his");
+    let kept = say(&bob, g, "his, by default");
+    w.run();
+    assert!(refused(osis::Purge::Commit(kept)), "his own, under the default");
+    let mut x = bob.write();
+    x.at(g, untyped(msg())).retention(osis::Retention { by: osis::PurgeBy::AuthorOrAdmin }).set(&s("his")).unwrap();
+    let his = x.commit().unwrap().unwrap().stamp.id;
     w.run();
     assert!(refused(osis::Purge::Author(alice.me())), "still none of his");
     let mut x = bob.write();
     x.at(g, untyped(msg())).purge(osis::Purge::Commit(his)).unwrap();
     let own = x.commit().unwrap().unwrap().stamp.id;
     let mut x = alice.write();
+    x.at(g, untyped(msg())).purge(osis::Purge::Commit(kept)).unwrap();
+    x.commit().unwrap();
+    let mut x = alice.write();
     x.at(g, untyped(msg())).purge(osis::Purge::Commit(hers)).unwrap();
     x.commit().unwrap();
     w.run();
     for db in [&alice, &bob] {
         let bodies = bodies(db, g, &msg());
-        assert!(matches!(bodies.as_slice(), [Body::Purged { .. }, Body::Purged { by, .. }] if *by == own), "{bodies:?}");
+        assert!(matches!(bodies.as_slice(), [Body::Purged { .. }, Body::Purged { .. }, Body::Purged { by, .. }] if *by == own), "{bodies:?}");
     }
 }
 

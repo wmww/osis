@@ -169,7 +169,7 @@ fn validation_rules_spec_data_model_3() {
         ("aspect x.0: int; aspect x:a.0: int;", "core AKs"),
         ("aspect x:a.0: int; aspect x:a.0: int;", "duplicate aspect"),
         ("type x<T> = struct { a 0: T = 1 };", "cannot type a default"),
-        ("purgeable_by(admin) ephemeral aspect x:a+.0: int;", "takes no purgeable_by"),
+        ("purgeable_by(writer) ephemeral aspect x:a+.0: int;", "takes no purgeable_by"),
         ("expires(5s) ephemeral signal x:a+~0: int;", "nothing to expire"),
         ("ephemeral aspect x+.0: int;", "core aspects are durable"),
         ("aspect x:a.01: int;", "invalid AK"),
@@ -249,12 +249,13 @@ fn prefix_modifiers() {
     };
     assert_eq!(a("synthetic aspect x:a.0: int;").flags, [Flag::Synthetic].into());
     assert_eq!(a("guaranteed synthetic aspect x:a.0: int;").flags, [Flag::Synthetic, Flag::Guaranteed].into());
-    for (by, want) in [("admin", PurgeBy::Admin), ("writer", PurgeBy::Writer), ("author, admin", PurgeBy::AuthorOrAdmin), ("admin, author", PurgeBy::AuthorOrAdmin)] {
+    assert_eq!(a("aspect x:a.0: int;").retention.by, PurgeBy::Admin, "the default");
+    for (by, want) in [("writer", PurgeBy::Writer), ("author, admin", PurgeBy::AuthorOrAdmin), ("admin, author", PurgeBy::AuthorOrAdmin)] {
         assert_eq!(a(&format!("purgeable_by({by}) aspect x:a.0: int;")).retention.by, want, "{by}");
     }
     assert_eq!(a("expires(250ms) aspect x:a.0: int;").expires, Some(250));
     // whitespace-insensitive: a long list on its own line
-    assert_eq!(a("/// doc\npurgeable_by(admin)\n  expires(1d)\naspect x:a.0: int;").doc.as_deref(), Some("doc"));
+    assert_eq!(a("/// doc\npurgeable_by(writer)\n  expires(1d)\naspect x:a.0: int;").doc.as_deref(), Some("doc"));
     for (src, needle) in [
         ("aspect x:a.0: int [synthetic];", "expected `;`"),
         ("aspect x:a.0: int [by: writer];", "expected `;`"),
@@ -263,6 +264,7 @@ fn prefix_modifiers() {
         ("purgeable_by(author_or_admin) aspect x:a.0: int;", "purgeable_by takes"),
         ("purgeable_by(author, writer) aspect x:a.0: int;", "purgeable_by takes"),
         ("purgeable_by(author) aspect x:a.0: int;", "purgeable_by takes"),
+        ("purgeable_by(admin) aspect x:a.0: int;", "leave purgeable_by out"),
         ("expires(5) aspect x:a.0: int;", "expected a duration"),
         ("expires(5s aspect x:a.0: int;", "expected `)`"),
         ("frob aspect x:a.0: int;", "expected `aspect` or `signal`"),
@@ -349,16 +351,18 @@ proptest::proptest! {
 
 // spec/commits.md §5, spec/wire.md §1: every purge class a write may carry has its syntax and code
 // (`nobody` is for `created.0` and fixed retention alone); the meta form round trips them; the default is
-// `author_or_admin`.
+// `admin`, which is unnamed.
 #[test]
 fn purge_classes_spec_commits_5() {
     for by in [PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer] {
-        let who = if by == PurgeBy::AuthorOrAdmin { "author, admin" } else { by.name() };
-        let src = format!("revision 1; purgeable_by({who}) aspect x:a.0: int;");
+        let src = match by {
+            PurgeBy::Admin => "revision 1; aspect x:a.0: int;".to_string(),
+            PurgeBy::AuthorOrAdmin => "revision 1; purgeable_by(author, admin) aspect x:a.0: int;".to_string(),
+            _ => format!("revision 1; purgeable_by({}) aspect x:a.0: int;", by.name()),
+        };
         let s = parse("t.osis", &src).unwrap();
         assert_eq!(s.aspects["x:a.0"].retention.by, by);
         assert_eq!(PurgeBy::from_id(by as u64), Some(by));
         assert_eq!(Schema::from_value(&s.to_value()).unwrap(), s);
     }
-    assert_eq!(parse("t.osis", "revision 1; aspect x:a.0: int;").unwrap().aspects["x:a.0"].retention.by, PurgeBy::AuthorOrAdmin);
 }

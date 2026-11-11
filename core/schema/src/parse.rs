@@ -265,7 +265,7 @@ impl<'a> Parser<'a> {
                 }
                 "purgeable_by" => {
                     self.expect('(')?;
-                    let mut who = vec![self.ident("admin, writer, or author, admin")?];
+                    let mut who = vec![self.ident("writer, or author, admin")?];
                     if self.eat(',') && !self.is(')') {
                         who.push(self.ident("admin or author")?);
                         self.eat(',');
@@ -273,10 +273,11 @@ impl<'a> Parser<'a> {
                     self.expect(')')?;
                     let who: Vec<&str> = who.iter().map(String::as_str).collect();
                     def.retention.by = match who.as_slice() {
-                        ["admin"] => PurgeBy::Admin,
+                        // the default is unnamed: admins alone
+                        ["admin"] => return self.err_at(at, "admins alone may purge by default: leave purgeable_by out"),
                         ["writer"] => PurgeBy::Writer,
                         ["author", "admin"] | ["admin", "author"] => PurgeBy::AuthorOrAdmin,
-                        _ => return self.err_at(at, "purgeable_by takes admin, writer, or author, admin"),
+                        _ => return self.err_at(at, "purgeable_by takes writer, or author, admin"),
                     };
                 }
                 _ => {

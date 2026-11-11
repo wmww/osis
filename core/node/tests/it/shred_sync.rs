@@ -169,6 +169,8 @@ fn purge_leaves_reaction_through_hosts_spec_crdt_4_7() {
     let (key, value) = ("e", "PURGED-VALUE-MARK-5e17");
     let mut m = Mutation::new();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(item(value, 1)) }).unwrap();
+    // its author purges it below
+    m.retention(t, &MAP, crate::common::purgeable_by(osis_base::PurgeBy::AuthorOrAdmin)).unwrap();
     let e = net.engine(b).commit(m).unwrap().unwrap();
     net.run();
     net.advance(5);

@@ -1485,6 +1485,15 @@ impl Net {
         self.engine(n).commit(m).unwrap().unwrap()
     }
 
+    /// As `write`, purgeable by its author too (`author_or_admin`): its author holds a level-2
+    /// delete key for it.
+    pub fn write_own(&mut self, n: usize, t: Tid, v: &str) -> CommitId {
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s(v)).unwrap();
+        m.retention(t, &REG, osis_schema::Retention { by: osis_base::PurgeBy::AuthorOrAdmin }).unwrap();
+        self.engine(n).commit(m).unwrap().unwrap()
+    }
+
     /// Node `n` writes `v` to the ephemeral (or signal) key `key` of `t`, then lets its sync
     /// engine see it.
     pub fn eph_write(&mut self, n: usize, t: Tid, key: &osis_base::Ak, v: Value) {

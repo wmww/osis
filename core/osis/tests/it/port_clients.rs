@@ -229,7 +229,8 @@ fn writes_are_the_actors() {
     assert!(matches!(c.commit_set(x.t, osis::DynamicAspectKey::untyped(name.clone()), &Value::Int(1)), Err(Error::Permission { tid, .. }) if tid == x.t));
     assert!(matches!(c.commit_with(|w| w.create_with_admin(x.g)), Err(Error::Permission { .. })), "read on the first admin is no write");
     x.n.grant(x.g, a, Role::Write, Default::default()).unwrap();
-    c.commit_set(x.t, osis::DynamicAspectKey::untyped(name.clone()), &Value::Int(2)).unwrap();
+    // one it may purge (below)
+    c.commit_with(|w| w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).retention(osis::Retention { by: osis::PurgeBy::AuthorOrAdmin }).set(&Value::Int(2))).unwrap();
     assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Int(2)));
     let last = &crate::common::listed(&x.n, Scope::Thing(x.t))[0];
     assert_eq!(last.stamp.actor, a);
@@ -309,29 +310,28 @@ fn a_clashing_write_is_refused_through_the_port_spec_commits_6() {
 
 // spec/permissions.md §6, notes/client-port.md §3 (Acting as the actor): a purge acting for a
 // client drops what its node and the client both have the right to: a write client drops no
-// `admin` delta of its account, though the node alone may, and drops its own; an admin client
-// drops any
+// `admin` delta (the default) of its account, though the node alone may, and drops its own
+// `author_or_admin` one; an admin client drops any
 #[test]
 fn client_purge_is_judged_by_the_actor_spec_perm_6() {
     let x = node();
     let name = ak("t:name.0");
     let (a, _, c) = x.client(Role::Admin);
     let (_, _, w2) = x.client(Role::Write);
-    let admins = osis::Retention { by: osis::internals::schema::PurgeBy::Admin };
-    let held = |k: &osis_base::Ak| x.n.engine(|e| e.commit_ids().into_iter().filter(|i| e.header(i).is_some_and(|h| h.aspects.iter().any(|y| y.tid == x.t && y.ak == *k && y.retention.by == admins.by))).collect::<Vec<_>>().into_iter().map(|i| e.body_not_dropped(&i, &x.t, k)).collect::<Vec<_>>());
     let mut w = x.n.write();
-    w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).retention(admins).set(&Value::Int(1)).unwrap();
-    w.commit().unwrap();
+    w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).set(&Value::Int(1)).unwrap();
+    let first = w.commit().unwrap().unwrap().stamp.id.raw();
+    let held = |k: &osis_base::Ak| x.n.engine(|e| e.body_not_dropped(&first, &x.t, k));
     // the writer holds no right over any held delta of the aspect (the node's, kept by the
     // thing's setting): refused, nothing dropped
     let mut w = w2.write();
     w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).purge(osis::Purge::All).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
-    assert_eq!(held(&name), [true], "the account's admin-only delta");
+    assert!(held(&name), "the account's admin-only delta");
     // a writer's own
     let own = ak("t:own.0");
     let mut w = w2.write();
-    w.at(x.t, osis::DynamicAspectKey::untyped(own.clone())).set(&Value::Int(2)).unwrap();
+    w.at(x.t, osis::DynamicAspectKey::untyped(own.clone())).retention(osis::Retention { by: osis::PurgeBy::AuthorOrAdmin }).set(&Value::Int(2)).unwrap();
     w.commit().unwrap();
     let mut w = w2.write();
     w.at(x.t, osis::DynamicAspectKey::untyped(own.clone())).purge(osis::Purge::All).unwrap();
@@ -347,7 +347,7 @@ fn client_purge_is_judged_by_the_actor_spec_perm_6() {
     let mut w = c.write();
     w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
-    assert_eq!(held(&name), [false]);
+    assert!(!held(&name));
     assert_eq!(c.me(), a);
 }
 
@@ -1432,7 +1432,7 @@ fn listings_as_the_actor() {
     assert_eq!(c.at(x.t, key()).writes(&five).unwrap(), x.n.at(x.t, key()).writes(&five).unwrap());
     assert!(c.at(x.u, key()).writes(&five).unwrap().commits.is_empty());
     // a client's own write, by its actor; its purge by the port
-    c.commit_with(|w| w.at(x.t, key()).set(&Value::Str("mine".into())).map(|_| ())).unwrap();
+    c.commit_with(|w| w.at(x.t, key()).retention(osis::Retention { by: osis::PurgeBy::AuthorOrAdmin }).set(&Value::Str("mine".into())).map(|_| ())).unwrap();
     let e = &c.at(x.t, key()).writes(&page(osis::CommitFrom::Newest, 1)).unwrap().commits[0];
     assert_eq!(e.stamp.actor, a);
     let id = e.stamp.id;

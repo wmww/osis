@@ -182,7 +182,7 @@ fn retention_encoding_spec_wire_4() {
     }
 }
 
-// spec/commits.md §5: fixed tables, write defaults (untyped: author_or_admin, no expiry), `nobody`
+// spec/commits.md §5: fixed tables, write defaults (untyped: admin, no expiry), `nobody`
 // refused, snapshot retention.
 #[test]
 fn retention_rules() {
@@ -193,14 +193,14 @@ fn retention_rules() {
     assert_eq!(fixed_retention("retention^.0").unwrap().by, PurgeBy::Nobody);
     assert_eq!(fixed_retention("app:x.0"), None);
     assert_eq!(write_retention("app:x.0", None, None).unwrap(), Retention::default());
-    assert_eq!(Retention::default().by, PurgeBy::AuthorOrAdmin);
+    assert_eq!(Retention::default().by, PurgeBy::Admin);
     assert_eq!(write_expires("app:x.0", ts(10), None, None).unwrap(), None);
-    let d = AspectDefaults { retention: Retention { by: PurgeBy::Admin }, expires: Some(100) };
+    let d = AspectDefaults { retention: Retention { by: PurgeBy::Writer }, expires: Some(100) };
     assert_eq!(write_retention("app:x.0", Some(&d), None).unwrap(), d.retention);
     assert_eq!(write_expires("app:x.0", ts(10), Some(&d), None).unwrap(), Some(110));
     assert_eq!(write_expires("app:x.0", ts(10), Some(&d), Some(50)).unwrap(), Some(50));
     assert_eq!(write_expires("roles.0", ts(10), Some(&d), Some(50)).unwrap(), None);
-    assert!(write_retention("roles.0", None, Some(Retention::default())).is_err());
+    assert!(write_retention("roles.0", None, Some(Retention { by: PurgeBy::Writer })).is_err());
     assert!(write_retention("app:x.0", None, Some(Retention { by: PurgeBy::Nobody })).is_err());
     assert_eq!(write_retention("retention^.0", None, None).unwrap(), KEPT_RETENTION);
     // a snapshot is `writer`, its history the thing's setting; fixed retention keeps its own

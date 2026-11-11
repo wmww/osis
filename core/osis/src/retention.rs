@@ -58,6 +58,26 @@ pub struct Retention {
     pub by: PurgeBy,
 }
 
+/// What a write says of its retention, checked at compile time: who may purge it, nothing more.
+/// ```
+/// let _ = osis::Retention { by: osis::PurgeBy::Writer };
+/// let _ = osis::core::RETENTION;
+/// ```
+/// A write carries no history: its thing's setting says what is kept.
+/// ```compile_fail,E0560
+/// let _ = osis::Retention { by: osis::PurgeBy::Writer, history: Some(osis::History::FOREVER) };
+/// ```
+/// Nothing beside the setting rules a thing's writes.
+/// ```compile_fail,E0425
+/// let _ = osis::core::REQUIRED;
+/// ```
+/// The author alone is no purge set: admins always may.
+/// ```compile_fail,E0599
+/// let _ = osis::PurgeBy::Author;
+/// ```
+#[cfg(doctest)]
+pub struct RemovedChecks;
+
 impl From<osis_schema::Retention> for Retention {
     fn from(r: osis_schema::Retention) -> Retention {
         Retention { by: r.by }

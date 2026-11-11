@@ -1241,6 +1241,8 @@ fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
     let k = ak("t:map.0");
     let mut m = Mutation::new();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("e"))], op: Op::Set(item("E-MARK", 1)) }).unwrap();
+    // its author purges it below
+    m.retention(t, &MAP, crate::common::purgeable_by(osis_base::PurgeBy::AuthorOrAdmin)).unwrap();
     let e = lp.peers[1].commit(m).unwrap().unwrap();
     lp.sync(1, 0).unwrap();
     lp.advance(5);
