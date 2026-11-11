@@ -549,7 +549,8 @@ fn standing(p: &mut Peer, c: &CommitId, d: Tid, a: &str) -> Option<Standing> {
 /// syncs, Alice's snapshots of either, and maybe Bob removed with none of his writes counting
 /// (so snapshots vouch for them), at random gaps; then at a node holding all of it every part
 /// some held snapshot covers and whose body's keep bound passed is dropped, in random order.
-fn covered_drops_history(seed: u64) {
+/// The covered drops `seed`'s history made, each checked.
+fn covered_drops_history(seed: u64) -> usize {
     let mut r = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut below = |n: u64| {
         r ^= r << 13;
@@ -611,6 +612,7 @@ fn covered_drops_history(seed: u64) {
     for i in (1..order.len()).rev() {
         order.swap(i, below(i as u64 + 1) as usize);
     }
+    let mut dropped = 0;
     for (c, a) in &order {
         let k = ak(a);
         let now = p.engine.now().0;
@@ -621,11 +623,13 @@ fn covered_drops_history(seed: u64) {
         if !covering || p.engine.drop_body(c, &d, &k).is_err() {
             continue;
         }
+        dropped += 1;
         for ((x, xa), b) in on.iter().zip(&before) {
             let now = standing(p, x, d, xa);
             assert!(now.is_none() || now == *b, "seed {seed}: dropping {c:?} on {a} moved {x:?} on {xa}: {b:?} to {now:?}");
         }
     }
+    dropped
 }
 
 // notes/engine-retention.md Replaced (the covered-drop invariant), spec/crdt.md §4.8 When,
@@ -635,8 +639,22 @@ fn covered_drops_history(seed: u64) {
 // or replaced-at of a held body in history.
 #[test]
 fn covered_drops_move_nothing_spec_commits_5() {
-    let seeds: Vec<u64> = (0..100).collect();
-    osis_base::testenv::run_seeds("setting::covered_drops_move_nothing_spec_commits_5", &seeds, false, |s| format!("seed {s}"), covered_drops_history);
+    let seeds: Vec<u64> = (0..10).collect();
+    let dropped = osis_base::testenv::run_seeds("setting::covered_drops_move_nothing_spec_commits_5", &seeds, false, covered_drops_replay, covered_drops_history);
+    assert!(dropped.iter().filter(|n| **n > 0).count() * 2 >= seeds.len(), "half the seeds drop a covered body: {dropped:?}");
+}
+
+/// Seeds: OSIS_COVERED_START, OSIS_COVERED_SEEDS (default 0..1000, a tenth at small size).
+#[test]
+#[ignore = "property"]
+fn covered_drops_move_nothing_large_spec_commits_5() {
+    let range = osis_base::testenv::Seeds::from_env("OSIS_COVERED_START", "OSIS_COVERED_SEEDS", osis_base::testenv::large(0..1000));
+    let dropped = range.run("setting::covered_drops_move_nothing_large_spec_commits_5", covered_drops_replay, covered_drops_history);
+    assert!(dropped.iter().filter(|n| **n > 0).count() * 2 >= dropped.len(), "half the seeds drop a covered body: {dropped:?}");
+}
+
+fn covered_drops_replay(s: u64) -> String {
+    format!("OSIS_COVERED_START={s} OSIS_COVERED_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact setting::covered_drops_move_nothing_large_spec_commits_5")
 }
 
 // spec/commits.md §5 Dated only where history is kept, notes/engine-retention.md Replaced (the
