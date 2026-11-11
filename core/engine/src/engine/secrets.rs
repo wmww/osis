@@ -532,6 +532,13 @@ pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Cre
     osis_commit::Secrets::admin_key(&s, tid).is_some() && osis_commit::Secrets::write_key(&s, tid).is_some()
 }
 
+/// [`crate::Engine::holds_delete_keys`] in `tx`.
+pub(crate) fn holds_delete_keys_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<bool> {
+    let created = Default::default();
+    let published = published_keys(tx, &created, [*t])?;
+    Ok(holds_listed_keys(tx.core, &created, &published, t))
+}
+
 /// The admin and write delete keys of `t` from its delete base `b` (`e` its held epochs): from
 /// held secrets, else published or hinted.
 fn base_keys(tx: &mut crate::engine::Tx<'_>, t: &Tid, b: Tid, e: Option<ActorEpochs>) -> Result<Option<(VerifyingKey, VerifyingKey)>> {
@@ -560,11 +567,7 @@ impl crate::Engine {
     /// writer without them cannot write `t` yet (`holds_listed_keys`).
     pub fn holds_delete_keys(&mut self, t: &Tid) -> Result<bool> {
         let t = *t;
-        self.run(|tx| {
-            let created = Default::default();
-            let published = published_keys(tx, &created, [t])?;
-            Ok(holds_listed_keys(tx.core, &created, &published, &t))
-        })
+        self.run(|tx| holds_delete_keys_in(tx, &t))
     }
 
     /// Notes the delete keys the inbox payload of commit `c` names (spec/wire.md §9) as

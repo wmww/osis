@@ -1100,7 +1100,9 @@ mod tests {
     use crate::Mutation;
     use crate::flows::Demotion;
     use crate::local_peer::LocalPeer;
-    use osis_base::{Ak, Role, Value, WallMs};
+    use osis_base::{Ak, CommitId, Role, Value, WallMs};
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::Codec;
     use osis_schema::core_types as ct;
 
     // spec/commits.md §5 (replaced), scale: a reset killing every write of a filled map judges
@@ -1134,6 +1136,56 @@ mod tests {
         let w = walks(20);
         assert!(w > 0);
         assert_eq!(walks(200), w, "walks per judgment grow with the deaths");
+    }
+
+    // spec/commits.md §5, spec/crypto.md §7: a writer whose delete keys of the thing are not here
+    // writes nothing on it, so the cover of a replaced purge-on-replace body it holds is left to
+    // the writers that may: the replacement applies there (no refused own snapshot fails the
+    // receive), the replaced body stays, and a writer's cover drops it once it comes.
+    #[test]
+    fn writer_without_delete_keys_leaves_the_cover_spec_commits_5() {
+        let mut lp = LocalPeer::new(3, 961, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (alice, bob, carol) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (x, keys) = (Ak::new("x:v.0").unwrap(), Ak::new("keys.0").unwrap());
+        let none = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) };
+        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
+        // bob writes `t` by a raw edge write: `t` keeps its first admin's secrets
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, alice);
+        m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(bob))], op: Op::Set(edge(Role::Write).to_value()) }).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.sync(0, 1).unwrap();
+        assert!(lp.peers[1].engine.holds_delete_keys(&t).unwrap());
+        // alice keeps both bodies uncovered (as when her cover is still on its way)
+        lp.peers[0].engine.keep_bodies(true);
+        let mut puts = Vec::new();
+        for v in [1, 2] {
+            lp.advance(1000);
+            let mut m = Mutation::new();
+            m.set(t, &x, &Value::Int(v)).unwrap().retention(t, &x, none).unwrap();
+            puts.push(lp.peers[0].commit(m).unwrap().unwrap());
+        }
+        // a first holder by the flow gives `t` secrets of its own, its `keys.0` in that commit:
+        // bob gets the rest, then the two puts
+        lp.peers[0].engine.grant(&t, &carol, &edge(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
+        let pks = lp.packages(0).unwrap();
+        let carries = |id: &CommitId| lp.peers[0].engine.header(id).unwrap().aspects.iter().any(|a| a.tid == t && a.ak == keys);
+        let (rest, put_pks): (Vec<_>, Vec<_>) = pks.into_iter().filter(|pk| !carries(&pk.id)).partition(|pk| !puts.contains(&pk.id));
+        for pk in rest.iter().chain(&put_pks) {
+            lp.deliver(1, pk).unwrap();
+        }
+        let e = &mut lp.peers[1].engine;
+        assert!(!e.holds_delete_keys(&t).unwrap(), "bob's write is here, t's delete keys are not");
+        assert_eq!(e.get(&t, &x).unwrap(), Some(Value::Int(2)));
+        assert!(super::held_part(&e.core, &puts[0], &t, &x).is_some(), "no cover here: the replaced body stays");
+        lp.peers[0].engine.keep_bodies(false);
+        lp.peers[0].engine.snapshot(&t, &x).unwrap().unwrap();
+        lp.sync(0, 1).unwrap();
+        let e = &mut lp.peers[1].engine;
+        assert_eq!(e.get(&t, &x).unwrap(), Some(Value::Int(2)));
+        assert!(super::held_part(&e.core, &puts[0], &t, &x).is_none(), "alice's cover drops it");
     }
 
     // spec/sync.md §3 Entitlement: a thing's reader actor is the nearest actor up its record

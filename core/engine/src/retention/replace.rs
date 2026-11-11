@@ -73,12 +73,14 @@ fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Res
 }
 
 /// Whether this node may write a snapshot of `(tid, ak)` now and holds the right over a `writer`
-/// body (every writer does, spec/permissions.md §6).
-fn writer(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> bool {
+/// body (every writer does, spec/permissions.md §6): what the snapshot's write checks, so a node
+/// the write would refuse leaves the cover to the writers that may (the replacer among them).
+fn writer(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
     let need = crate::engine::write::snapshot_role(ak.as_str()).max(Role::Write);
     let core = &*tx.core;
     let ts = Ts::make(tx.now(), 0).unwrap_or_default();
-    core.me().is_some_and(|me| crate::engine::write::check_role_with(core, me, &|_| None, tid, ak.as_str(), need, ts).is_ok())
+    let role = core.writable(tid) && core.writer_for(tid).is_ok_and(|node| crate::engine::write::check_role_with(core, node, &|_| None, tid, ak.as_str(), need, ts).is_ok());
+    Ok(role && crate::engine::secrets::holds_delete_keys_in(tx, tid)?)
 }
 
 /// Judges the purge-on-replace bodies of the aspects marked this transaction (`Core::none_due`):
@@ -113,7 +115,7 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
             }
         }
         let mut owed = false;
-        if !written.contains(&k) && !uncovered.is_empty() && writer(tx, &tid, &ak) {
+        if !written.contains(&k) && !uncovered.is_empty() && writer(tx, &tid, &ak)? {
             for (c, ai) in &uncovered {
                 if replaced(tx, c, *ai, &tid, &ak)? {
                     owed = true;
