@@ -121,7 +121,8 @@ impl SyncEngine {
                             Hear::CoReaders(c) => {
                                 if refused.is_none() {
                                     let hostless: BTreeSet<LabelId> = timed_labels.values().flatten().filter(|(_, h)| matches!(h, Hear::CoReaders(_))).map(|(x, _)| *x).collect();
-                                    refused = Some(self.co_readers_refusing(&hostless));
+                                    let things: BTreeMap<LabelId, Tid> = labels.iter().filter(|(_, gl)| hostless.contains(&gl.id)).map(|(g, gl)| (gl.id, *g)).collect();
+                                    refused = Some(self.co_readers_refusing(&things));
                                 }
                                 refused.as_ref().is_some_and(|r| r.contains(id)) || self.heard_by_co_readers(id, *c, *since)?
                             }
@@ -174,18 +175,19 @@ impl SyncEngine {
     /// on a live connection whose shared set settled without the label, the peer proved an
     /// actor holding it as this node judges (J holder). Only a proof counts: a dial list is
     /// built from self-declared `reach.0`, so any peer could claim a co-reader's account and
-    /// send a filter without the label. One judgment per settled connection.
-    fn co_readers_refusing(&mut self, labels: &BTreeSet<LabelId>) -> BTreeSet<LabelId> {
+    /// send a filter without the label. `labels` maps each to the thing it is held under; one
+    /// J per settled connection, a lookup per label it lacks.
+    fn co_readers_refusing(&self, labels: &BTreeMap<LabelId, Tid>) -> BTreeSet<LabelId> {
         let mut out = BTreeSet::new();
-        let conns: Vec<ConnId> = self.records.shared.keys().copied().filter(|c| self.shared_settled(*c)).collect();
-        for c in conns {
-            let missing: Vec<LabelId> = labels.iter().filter(|l| !out.contains(*l) && !self.shared_member(c, l)).copied().collect();
-            if missing.is_empty() {
+        for (c, s) in &self.records.shared {
+            if !self.shared_settled(*c) {
                 continue;
             }
-            if let Some(j) = self.judgments(c, &missing) {
-                out.extend(j.into_iter().filter(|(_, x)| *x == super::credentials::Judgment::Holder).map(|(l, _)| l));
-            }
+            let mut missing = labels.iter().filter(|(l, _)| !out.contains(*l) && !s.has(l)).peekable();
+            let Some(p) = missing.peek().and_then(|_| self.connection_proven(*c)) else { continue };
+            let mut judge = self.engine.core.judge(p.all());
+            let held: Vec<LabelId> = missing.filter(|(_, t)| judge.of(t) == super::credentials::Judgment::Holder).map(|(l, _)| *l).collect();
+            out.extend(held);
         }
         out
     }

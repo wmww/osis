@@ -236,3 +236,43 @@ fn an_until_under_no_host_with_no_co_reader_drops_at_the_wait_spec_perm_2() {
     net.advance(3_600_000);
     assert!(!holds(&mut net, b, g), "the wait ended: dropped");
 }
+
+// spec/permissions.md §2: a co-reader whose own `until` ended and that dropped the label (it
+// keeps the sync ID unread, so the label stays in the shared set) refuses nothing: the node keeps
+// its unsent write. `c` read `g` until an hour before `b`'s grant ended, and dropped at its own
+// wait while apart.
+#[test]
+fn an_until_under_no_host_a_co_reader_past_its_own_until_refuses_nothing_spec_perm_2() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    let c = net.node(3, &[]);
+    reach_ed(&mut net, a);
+    reach_ed(&mut net, c);
+    let g = net.group_seeded(a, &[(b, Role::Write), (c, Role::Read)], vec![], 13);
+    net.group_seeded(c, &[(b, Role::Read)], vec![], 14);
+    for (n, ms) in [(b, 2 * 3_600_000), (c, 3_600_000)] {
+        let until = osis_base::WallMs(net.now() + ms);
+        let t = net.tid(n);
+        let edge = osis_schema::core_types::Edge { role: if n == b { Role::Write } else { Role::Read }, until: Some(until), invite: None, tied: None };
+        let done = net.engine(a).grant(&g, &t, &edge).unwrap();
+        let acts = net.sync(a).carry_out(done).unwrap();
+        net.actions(a, acts);
+    }
+    net.run();
+    net.set_online(a, false);
+    net.set_online(c, false);
+    let t = net.item(b, g, g, "unsent");
+    net.set_online(b, false);
+    net.set_online(c, true);
+    // each finds its loss just past its `until`
+    net.advance(3_600_000 + 60_000);
+    net.advance(3_600_000);
+    net.advance(osis_node::rotation::LOST_HEARD_WAIT_MS - 3_600_000 + 60_000);
+    assert!(!holds(&mut net, c, g), "c's wait ended: dropped");
+    assert!(holds(&mut net, b, g), "b's has not: kept");
+    net.set_online(b, true);
+    net.advance(60_000);
+    assert!(holds(&mut net, b, g), "c is no holder now: its settled set refuses nothing");
+    assert_eq!(net.read(b, t), Some(s("unsent")));
+}

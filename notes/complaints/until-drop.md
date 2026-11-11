@@ -1,3 +1,4 @@
 # until-drop
 - The issue's premise (a co-reader takes the departed node's writes, then reports and closes) did not hold: a co-reader that may write the label's actor finalizes the ended grant on its first pass and then refuses the node outright (Proved with no proofs). Finding that took a sync trace (`OSIS_SYNC_TRACE`) and a temporary eprintln in `served_prove`; a diagnostic naming why a listener answered no proofs would have saved the detour.
 - `Net::group_seeded` pairs every holder's commits to the admin directly, so making a group after a node wrote silently delivers that write (a refusal test passed its write along this way until the group moved into setup).
+- `Net::advance(ms)` is one tick: a loss a node finds inside the jump is dated at its end, so a test staging two `until`s a wait apart needs one advance per `until` (cost a confusing false failure).
