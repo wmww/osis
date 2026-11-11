@@ -1,0 +1,3 @@
+# one-peer-3f
+- The brief's sub-step order (stream reads the hub's log, then ciphertext moves, then `own` goes) does not split: logging into the hub while entries stay in the engine's store diverges on a crash between the two commits whichever goes first, so the log move needs the merge's reconcile; and `own` can go only once a reader box's hub serves its read groups (after the merge), else a saved peer naming it refuses 14 and `wait_synced` waits for good.
+- The engine's blob reads (large values on app threads) were not in the step's text; they decide where the hub's store lives.
