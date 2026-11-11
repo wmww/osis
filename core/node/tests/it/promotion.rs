@@ -228,3 +228,36 @@ fn a_readers_minted_key_actors_cards_are_not_promoted_spec_sync_5() {
     let n = ids.values().flatten().filter(|id| stamped(&net, host, &l, id)).count();
     assert_eq!(n, 0, "{n} of {} stamped", ids.len());
 }
+
+// spec/requirements.md (read access never stores arbitrary content at a node that cannot read
+// it): reader `r` mints forty things and grants the group read on each, deposited under the
+// group's label: what it gets stamped should stay within the deposit budget. Fails: each grant
+// names the label's actor, so each is promoted (issues/promotion-readers-grants-to-the-group.md).
+#[test]
+#[ignore = "issues/promotion-readers-grants-to-the-group.md"]
+fn a_readers_grants_to_the_group_stay_within_the_budget_spec_sync_5() {
+    let (mut net, host, _, r, g, l) = reader_of_a_group();
+    let me = net.tid(r);
+    let mut n = 0;
+    for _ in 0..4 {
+        let (mut commits, mut grants) = (BTreeMap::new(), BTreeSet::new());
+        for _ in 0..10 {
+            let e = net.engine(r);
+            let mut m = osis_node::Mutation::new();
+            let t = e.new_thing(&mut m, me);
+            let c0 = e.commit(m).unwrap().unwrap();
+            let c = set_edge(net.engine(r), t, g, Role::Read);
+            grants.insert(c);
+            for x in [c0, c] {
+                let (x, p) = whole(&mut net, r, x);
+                commits.insert(x, p);
+            }
+        }
+        let ids = flood(&mut net, r, (host, g, l), &commits, 1);
+        for _ in 0..5 {
+            net.advance(60_000);
+        }
+        n += ids.iter().filter(|(c, _)| grants.contains(c)).flat_map(|(_, x)| x).filter(|id| stamped(&net, host, &l, id)).count();
+    }
+    assert!(n <= osis_base::format::DEPOSITS_WAITING, "{n} of 40 grants stamped");
+}
