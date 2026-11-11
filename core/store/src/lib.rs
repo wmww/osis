@@ -5,6 +5,7 @@
 
 mod backend;
 mod btree;
+mod changed;
 mod codec;
 mod error;
 mod file;

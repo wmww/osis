@@ -151,7 +151,7 @@ fn a_stop_keeps_the_older_lag_until_a_rejoin_spends_it() {
 }
 
 // issues/net-reconnect.md, Changes: a node that stops holding L drops it from every record's S and
-// every lag of it, in that same transaction; `log_forget` is that transaction
+// every lag of it, in that same transaction; `changed_forget` is that transaction
 #[test]
 fn forgetting_a_sync_id_drops_it_from_every_record_in_one_step() {
     let (_d, mut s, mut rng) = Dev::new();
@@ -165,7 +165,7 @@ fn forgetting_a_sync_id_drops_it_from_every_record_in_one_step() {
     t.record_open(&a, l(1), &member()).unwrap();
     t.commit().unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
-    t.log_forget(l(1)).unwrap();
+    t.changed_forget(&l(1)).unwrap();
     t.commit().unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
     assert!(t.record_members(&a).unwrap().is_empty());

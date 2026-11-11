@@ -1766,6 +1766,7 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
     // no deletion events: this node stopped holding them, nobody deleted them
     for l in labels {
         tx.txn.log_forget(*l)?;
+        tx.txn.changed_forget(l)?;
     }
     for t in things {
         tx.txn.put_local(&key(FORGET, &[t.as_bytes()]), &[], Shred::No)?;

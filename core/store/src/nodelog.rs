@@ -19,8 +19,7 @@
 //! `m` meta (cursor key, log ID, current incarnation, end position); `n` the ended incarnations;
 //! `e pos` an event; `i label blob` an entry's slot (its latest event's position and the
 //! position it was first logged at); `h label` a head's slot; `d at pos` the deletion events by
-//! when they were logged, for the sweep; `c label` a sync ID's `changed_at` and what it was
-//! computed from; `C pos label` the sync IDs by `changed_at`. Whether this open of the store has
+//! when they were logged, for the sweep. Whether this open of the store has
 //! drawn is the pager's `Meta::log_drawn`, memory only and carried in the transaction, so a
 //! suspended transaction may append.
 //!
@@ -55,8 +54,6 @@ const EVENT: &[u8] = &[kind::LOG, b'e'];
 const ENTRY_SLOT: &[u8] = &[kind::LOG, b'i'];
 const HEAD_SLOT: &[u8] = &[kind::LOG, b'h'];
 const DELETED: &[u8] = &[kind::LOG, b'd'];
-const CHANGED_SLOT: &[u8] = &[kind::LOG, b'c'];
-const CHANGED_ORDER: &[u8] = &[kind::LOG, b'C'];
 
 /// What a node log event says of its sync ID. The entry's wrap and stamp, or the head's step,
 /// are read from what the node holds when the event is served.
@@ -210,84 +207,17 @@ impl Transaction<'_> {
         Ok(m)
     }
 
-    /// The next position, with no event at it: a position for a value that must sort among
-    /// this log's positions (a sync ID's `changed_at`, issues/net-reconnect.md Changes). It
-    /// counts as an append for the incarnation rule.
-    pub fn log_advance(&mut self) -> Result<u64, Error> {
+    /// The next position, the incarnation drawn at a start's first.
+    fn log_advance(&mut self) -> Result<u64, Error> {
         let mut m = self.log_started()?;
         m.end += 1;
         self.log_put_meta(&m)?;
         Ok(m.end)
     }
 
-    /// The log's end: the position `log_advance` or an append last gave, 0 before any.
+    /// The log's end: the position an append last gave, 0 before any.
     pub fn log_end(&mut self) -> Result<u64, Error> {
         Ok(self.log_meta()?.map_or(0, |m| m.end))
-    }
-
-    /// A sync ID's current fingerprint (its credentials and who reaches it): `changed_at`
-    /// advances if it is new or differs (issues/net-reconnect.md, Changes). The new position, or
-    /// `None` when nothing changed, which appends nothing. One row per sync ID.
-    pub fn changed_note(&mut self, l: LabelId, fingerprint: &[u8; 32]) -> Result<Option<u64>, Error> {
-        let slot = [CHANGED_SLOT, &l.0].concat();
-        let old = self.cat_get(&slot)?;
-        if old.as_ref().is_some_and(|v| v.get(8..) == Some(fingerprint.as_slice())) {
-            return Ok(None);
-        }
-        if let Some(v) = &old {
-            let pos = pos_value(v.get(..8).ok_or(Error::Corrupt("changed_at slot"))?)?;
-            self.cat_remove(&[pos_key(CHANGED_ORDER, pos), l.0.to_vec()].concat(), Shred::No)?;
-        }
-        let pos = self.log_advance()?;
-        self.cat_put_to(&slot, W::new().u64(pos).raw(fingerprint).take(), Shred::No, false)?;
-        self.cat_put_to(&[pos_key(CHANGED_ORDER, pos), l.0.to_vec()].concat(), Vec::new(), Shred::No, false)?;
-        Ok(Some(pos))
-    }
-
-    /// `changed_at` of `l`, `None` for a sync ID not held.
-    pub fn changed_at(&mut self, l: &LabelId) -> Result<Option<u64>, Error> {
-        let Some(v) = self.cat_get(&[CHANGED_SLOT, &l.0].concat())? else { return Ok(None) };
-        Ok(Some(pos_value(v.get(..8).ok_or(Error::Corrupt("changed_at slot"))?)?))
-    }
-
-    /// Up to `limit` sync IDs with `changed_at` above `after`, in order. Costs what it returns.
-    pub fn changed_after(&mut self, after: u64, limit: usize) -> Result<Vec<(u64, LabelId)>, Error> {
-        let rows = self.cat_scan(CHANGED_ORDER, &after.saturating_add(1).to_be_bytes(), limit)?;
-        let mut out = Vec::with_capacity(rows.len());
-        for (k, _) in rows {
-            let mut r = R::new(k.get(2..).ok_or(Error::Corrupt("changed_at index"))?);
-            out.push((r.u64()?, LabelId(r.array()?)));
-        }
-        Ok(out)
-    }
-
-    /// Every sync ID with a `changed_at`.
-    pub fn changed_labels(&mut self) -> Result<Vec<LabelId>, Error> {
-        let mut out = Vec::new();
-        let mut from = Vec::new();
-        loop {
-            let rows = self.cat_scan(CHANGED_SLOT, &from, PAGE)?;
-            let n = rows.len();
-            for (k, _) in rows {
-                let l: [u8; 16] = k.get(2..18).and_then(|x| x.try_into().ok()).ok_or(Error::Corrupt("changed_at slot"))?;
-                from = [l.as_slice(), &[0]].concat();
-                out.push(LabelId(l));
-            }
-            if n < PAGE {
-                return Ok(out);
-            }
-        }
-    }
-
-    /// `l` left this node's sync IDs: its `changed_at` goes, and it leaves every record's S.
-    pub fn changed_forget(&mut self, l: &LabelId) -> Result<(), Error> {
-        let slot = [CHANGED_SLOT, &l.0].concat();
-        if let Some(v) = self.cat_get(&slot)? {
-            let pos = pos_value(v.get(..8).ok_or(Error::Corrupt("changed_at slot"))?)?;
-            self.cat_remove(&[pos_key(CHANGED_ORDER, pos), l.0.to_vec()].concat(), Shred::No)?;
-            self.cat_remove(&slot, Shred::No)?;
-        }
-        self.records_forget_label(l)
     }
 
     /// Removes the event at `pos` with what ages it. The caller handles the slot.
@@ -390,7 +320,7 @@ impl Transaction<'_> {
             self.log_drop_event(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?, Shred::Yes)?;
             self.cat_remove(&slot, Shred::Yes)?;
         }
-        self.changed_forget(&l)
+        Ok(())
     }
 
     /// Drops deletion events past `TOMBSTONE_LIFETIME` at `now` (at most `PAGE` a call).

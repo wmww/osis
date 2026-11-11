@@ -59,6 +59,7 @@ pub(crate) mod kind {
     pub const PENDING: u8 = 10;
     pub const INDEX: u8 = 11;
     pub const LOCAL: u8 = 12;
+    pub const CHANGED: u8 = 13;
 }
 
 fn aspect_key(k: u8, tid: &Tid, ak: &Ak) -> Vec<u8> {

@@ -392,23 +392,24 @@ fn a_head_is_logged_only_when_it_moves_and_keeps_one_event() {
     assert!(!t.log_head(l(1), &[2; 32]).unwrap(), "an unchanged head after a restart logs nothing");
 }
 
-// `changed_at` of issues/net-reconnect.md: a position between events, ordered with them, unique
+// `changed_at` of issues/net-reconnect.md, Changes: a sequence of its own, never given twice,
+// moving only when a fingerprint differs, sharing nothing with the log's positions
 #[test]
-fn advance_gives_positions_ordered_with_events() {
+fn changed_at_has_its_own_sequence() {
     let (d, mut s, mut rng) = Dev::new();
     add(&mut s, &mut rng, 1);
     let mut t = s.transaction(&mut rng).unwrap();
-    assert_eq!(t.log_advance().unwrap(), 2);
-    assert_eq!(t.log_advance().unwrap(), 3);
-    assert_eq!(t.log_added(l(1), b(2)).unwrap(), 4);
+    assert_eq!(t.changed_note(l(1), &[1; 32]).unwrap(), Some(1));
+    assert_eq!(t.changed_note(l(1), &[1; 32]).unwrap(), None, "an unchanged fingerprint moves nothing");
+    assert_eq!(t.changed_note(l(1), &[2; 32]).unwrap(), Some(2));
+    assert_eq!(t.log_end().unwrap(), 1, "the log does not move");
     t.commit().unwrap();
-    let c = at_end(&mut s, &mut rng);
     drop(s);
     let mut s = d.open();
     let mut t = s.transaction(&mut rng).unwrap();
-    assert_eq!(t.log_advance().unwrap(), 5, "a position is never given twice");
-    t.commit().unwrap();
-    assert_eq!(position(&mut s, &mut rng, &c), Some(4), "an advance is an append for the incarnation rule");
+    assert_eq!(t.changed_note(l(2), &[1; 32]).unwrap(), Some(3), "a position is never given twice");
+    assert_eq!(t.changed_after(1, 10).unwrap(), [(2, l(1)), (3, l(2))]);
+    assert_eq!(t.changed_at(&l(1)).unwrap(), Some(2));
 }
 
 fn filled(n: u32) -> (Dev, Vec<u8>) {
