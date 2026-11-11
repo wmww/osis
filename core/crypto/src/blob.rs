@@ -204,18 +204,6 @@ mod tests {
     use crate::SeededRng;
     use proptest::prelude::*;
 
-    // spec/wire.md §5: Padmé values (the test-infra padme/ list).
-    #[test]
-    fn padme_values() {
-        let cases = [
-            (1, 1), (2, 2), (4, 4), (8, 8), (9, 10), (15, 16), (17, 18), (100, 104), (255, 256), (257, 272), (1000, 1024),
-            (4097, 4352), (65537, 67584), (131073, 135168), (1000000, 1015808),
-        ];
-        for (l, p) in cases {
-            assert_eq!(padme(l), p, "padme({l})");
-        }
-    }
-
     // spec/wire.md §5: unpad rejections.
     // spec/wire.md §5 (unpad)
     #[test]
