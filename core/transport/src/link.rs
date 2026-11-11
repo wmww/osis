@@ -148,20 +148,20 @@ fn session<C: Connection>((peer, peer_key, source, kept): (Peer, PublicKey, Opti
     let want = Arc::new(tokio::sync::Notify::new());
     let asked = want.clone();
     tokio::spawn(async move {
-        let mut buf = vec![0u8; READ_CHUNK];
         loop {
             tokio::select! {
                 () = asked.notified() => {}
                 () = rtx.closed() => break,
             }
+            // a buffer per read, handed over whole: an idle session holds none
+            let mut buf = vec![0u8; READ_CHUNK];
             let Ok(n) = recv.read(&mut buf).await else { break };
-            match buf.get(..n) {
-                Some([]) | None => break,
-                Some(b) => {
-                    if rtx.send(b.to_vec()).await.is_err() {
-                        break;
-                    }
-                }
+            if n == 0 || n > READ_CHUNK {
+                break;
+            }
+            buf.truncate(n);
+            if rtx.send(buf).await.is_err() {
+                break;
             }
         }
     });

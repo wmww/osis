@@ -93,11 +93,33 @@ pub enum ServingInput {
     Resume,
 }
 
+/// A request's charge against `MAX_UNANSWERED`: its bytes framed and its reply allowance.
+#[derive(Clone, Copy, Debug, Default)]
+struct Charge {
+    frame: usize,
+    allowance: usize,
+}
+
+impl Charge {
+    fn total(self) -> usize {
+        self.frame.saturating_add(self.allowance)
+    }
+
+    fn add(&mut self, c: Charge) {
+        self.frame = self.frame.saturating_add(c.frame);
+        self.allowance = self.allowance.saturating_add(c.allowance);
+    }
+
+    fn sub(&mut self, c: Charge) {
+        self.frame = self.frame.saturating_sub(c.frame);
+        self.allowance = self.allowance.saturating_sub(c.allowance);
+    }
+}
+
 /// A frame received and not yet run (`ServingSession::admit`).
 #[derive(Clone, Debug)]
 struct Pending {
     msg: Result<Message, crate::msg::Rejected>,
-    /// Its bytes framed, and the reply allowance it is charged.
     frame: usize,
     allowance: usize,
 }
@@ -231,13 +253,14 @@ pub struct ServingSession {
     /// `subs`), in the order they were held: resumed in turn, so a busy label starves no other.
     owed: VecDeque<LabelId>,
     /// Client-port requests handed out and not answered: their kind (24 Auth, 25 Call, 27 Sub),
-    /// reply bound and charge (frame bytes plus reply allowance).
-    asked: BTreeMap<Id, (u64, usize, usize)>,
+    /// reply bound and charge.
+    asked: BTreeMap<Id, (u64, usize, Charge)>,
     /// Node-kind requests handed up (`ServingOutput::Peer`) and not answered: their charge.
-    node_asked: BTreeMap<Id, usize>,
+    node_asked: BTreeMap<Id, Charge>,
     /// The charges in `asked` and `node_asked`: counted against `MAX_UNANSWERED` by every input
-    /// until answered.
-    asked_bytes: usize,
+    /// until answered; their frames are input held (`buffered`), their allowances output
+    /// reserved (`holding`).
+    asked_bytes: Charge,
     /// Live subscriptions by id (reserved from their Sub until Unsub or a lapse) with their
     /// `max_reply`.
     api_subs: BTreeMap<Id, usize>,
@@ -326,7 +349,7 @@ impl ServingSession {
             owed: VecDeque::new(),
             asked: BTreeMap::new(),
             node_asked: BTreeMap::new(),
-            asked_bytes: 0,
+            asked_bytes: Charge::default(),
             api_subs: BTreeMap::new(),
             authed: false,
             room_wanted: false,
@@ -356,7 +379,7 @@ impl ServingSession {
     /// What the connection holds against the node's bound: its own output (`own`), and the
     /// reply allowances of requests handed up and not answered.
     pub fn holding(&self, out: &[ServingOutput]) -> usize {
-        self.own(out).saturating_add(self.asked_bytes)
+        self.own(out).saturating_add(self.asked_bytes.allowance)
     }
 
     /// Its output: bytes written and not taken, and push room granted and not used.
@@ -520,9 +543,10 @@ impl ServingSession {
         self.requests.stall_at()
     }
 
-    /// Bytes received and not yet parsed (a partial frame).
+    /// Bytes received and held: a partial frame, frames waiting to run (`pending`) and those
+    /// of requests handed up and not answered.
     pub fn buffered(&self) -> usize {
-        self.decoder.pending()
+        self.pending.iter().fold(self.decoder.pending().saturating_add(self.asked_bytes.frame), |b, p| b.saturating_add(p.frame))
     }
 
     /// Bytes written and not taken by the transport, as far as reported (`ServingInput::Taken`;
@@ -541,14 +565,14 @@ impl ServingSession {
         if !self.closed {
             // the node's own requests go within the room too
             let before = self.written.saturating_add(sent_bytes(&out));
-            let (h, left, share) = (self.holding(&out), self.left(&out), self.share);
+            let (h, o, left, share) = (self.holding(&out), self.own(&out), self.left(&out), self.share);
             let mut extra = 0usize;
             let mut sends = Vec::new();
             self.flush_need = self.requests.flush_while(
                 before,
                 now,
                 |len| {
-                    let ok = (h + extra == 0 || h + extra + len <= share) && extra + len <= left;
+                    let ok = (o + extra == 0 || h + extra + len <= share) && extra + len <= left;
                     if ok {
                         extra += len;
                     }
@@ -575,7 +599,7 @@ impl ServingSession {
                 if crate::msg::is_reply_kind(m.kind())
                     && let Some(c) = self.node_asked.remove(&m.id())
                 {
-                    self.asked_bytes = self.asked_bytes.saturating_sub(c);
+                    self.asked_bytes.sub(c);
                 }
                 send(out, *m)
             }
@@ -585,7 +609,7 @@ impl ServingSession {
                 // frame bytes plus reply allowances of the requests received and not run, all
                 // unanswered when the last was sent, and of those handed out earlier and still
                 // unanswered (`MAX_UNANSWERED`)
-                let mut charged = self.pending.iter().fold(self.asked_bytes, |c, p| c.saturating_add(p.frame).saturating_add(p.allowance));
+                let mut charged = self.pending.iter().fold(self.asked_bytes.total(), |c, p| c.saturating_add(p.frame).saturating_add(p.allowance));
                 while !self.closed {
                     // before the peer's Hello only a Hello-sized frame is taken (spec/wire.md §11.1)
                     self.decoder.set_max(if self.version.is_some() { osis_base::format::MAX_MESSAGE } else { crate::frame::MAX_HELLO_BYTES });
@@ -701,7 +725,7 @@ impl ServingSession {
     /// Sub frees its id; a Reply to Auth authenticates the session.
     fn api_reply(&mut self, id: Id, reply: Result<crate::api::Outcome, Code>, out: &mut Vec<ServingOutput>) {
         let Some((kind, max, charge)) = self.asked.remove(&id) else { return };
-        self.asked_bytes = self.asked_bytes.saturating_sub(charge);
+        self.asked_bytes.sub(charge);
         let ok = matches!(reply, Ok(crate::api::Outcome::Ok { .. }));
         if kind == 27 && !ok {
             self.api_subs.remove(&id);
@@ -799,7 +823,7 @@ impl ServingSession {
             }
         };
         let id = msg.id();
-        let charge = p.frame.saturating_add(p.allowance);
+        let charge = Charge { frame: p.frame, allowance: p.allowance };
         if matches!(msg, Message::Auth { .. } | Message::Call { .. } | Message::Sub { .. } | Message::Unsub { .. }) {
             if let Some(reply) = self.api_request(msg, charge, out) {
                 send(out, reply);
@@ -827,14 +851,14 @@ impl ServingSession {
 
     /// `charge`: the request's frame bytes plus reply allowance (a node request handed up keeps it
     /// against `MAX_UNANSWERED` until the upper layer answers).
-    fn dispatch(&mut self, now: u64, store: &mut dyn LabelStore, msg: Message, charge: usize, out: &mut Vec<ServingOutput>) -> Result<Option<Message>, StoreError> {
+    fn dispatch(&mut self, now: u64, store: &mut dyn LabelStore, msg: Message, charge: Charge, out: &mut Vec<ServingOutput>) -> Result<Option<Message>, StoreError> {
         use Message as M;
         if msg.for_node() {
             if !msg.is_request() {
                 self.requests.answered(msg.id(), now);
             } else if let std::collections::btree_map::Entry::Vacant(e) = self.node_asked.entry(msg.id()) {
                 e.insert(charge);
-                self.asked_bytes = self.asked_bytes.saturating_add(charge);
+                self.asked_bytes.add(charge);
             } else {
                 return Ok(Some(M::Error { id: msg.id(), code: Code::MALFORMED }));
             }
@@ -927,7 +951,7 @@ impl ServingSession {
     /// except what the protocol answers itself: a Call, Sub or Unsub before Auth (Error 1), a
     /// Sub reusing a live subscription's id (2) or past `MAX_SUBS` (4), an Unsub (Ok). One handed
     /// out keeps its `charge` against `MAX_UNANSWERED` until answered.
-    fn api_request(&mut self, msg: Message, charge: usize, out: &mut Vec<ServingOutput>) -> Option<Message> {
+    fn api_request(&mut self, msg: Message, charge: Charge, out: &mut Vec<ServingOutput>) -> Option<Message> {
         use Message as M;
         let id = msg.id();
         if self.asked.contains_key(&id) {
@@ -962,7 +986,7 @@ impl ServingSession {
             }
             _ => return None,
         }
-        self.asked_bytes = self.asked_bytes.saturating_add(charge);
+        self.asked_bytes.add(charge);
         out.push(ServingOutput::Request(Box::new(msg)));
         None
     }
@@ -1640,12 +1664,12 @@ mod tests {
         let small = crate::client::SMALL_REPLY;
         let share = small + small / 2;
         c.set_room(share, 1 << 20);
-        // a request handed up: its reply allowance is held for it
+        // a request handed up: its reply allowance is held for it (its frame is input held)
         let fetch = Message::Fetch { id: crate::msg::NODE_IDS | 1, label: LabelId([9; 16]), max_reply: small as u64, ids: vec![BlobId([1; 32])] };
         let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&fetch.encode())));
         assert_eq!(out, vec![ServingOutput::Peer(Box::new(fetch))]);
         let asked = c.holding(&[]);
-        assert!(asked > small && asked + small > share);
+        assert!(asked == small && asked + small > share);
         // room for the pushes it waits on all the same, reserved once granted
         c.set_room(share, 1 << 20);
         let out = c.handle(0, &mut store, ServingInput::WantRoom);

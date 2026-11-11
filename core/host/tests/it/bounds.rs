@@ -315,6 +315,28 @@ fn a_waiting_request_runs_within_half_the_stall_time() {
     assert_eq!(ran, Some(periods), "runs at half the stall time");
 }
 
+// spec/sync.md §10 (Served connections): while a request waits for the bound's room, only
+// output that does not move is closed for it: a connection holding only a reservation for a reply
+// to come (a request node sync answers later) has no bytes to move and stays
+#[test]
+fn a_reservation_is_not_output_that_stalls() {
+    let mut w = World::new();
+    let kib = 1 << 10;
+    let (h, _) = unread_hub(&mut w, 1 << 20, 3);
+    let mut now = w.now();
+    let hub = &mut w.hubs[h];
+    let ask = Message::Fetch { id: osis_proto::msg::NODE_IDS | 1, label: osis_base::LabelId([0xee; 16]), max_reply: 600 << 10, ids: vec![BlobId([1; 32])] };
+    let out = hub.input(now, 1, encode_frame(&ask.encode()));
+    assert!(out.iter().any(|o| matches!(o, HubOutput::Up(1, _))), "handed up");
+    hub.down(now, vec![(2, push(2, 300 * kib))]);
+    let out = hub.input(now, 3, asking(30, 400 * kib));
+    assert!(answers(&out, 3).is_empty() && hub.waits(3));
+    now += osis_proto::serving::PUSH_POLL_MS;
+    let out = [hub.sent(now, &[]), hub.tick(now)].concat();
+    assert_eq!(closed(&out), vec![2]);
+    assert_eq!(answers(&out, 3), vec![30]);
+}
+
 // spec/sync.md §10 (Served connections): shares follow the active connections: one over a
 // smaller share, after another becomes active, just waits (nobody is closed) and is answered
 // as it drains
@@ -507,4 +529,39 @@ fn mutual_replication_settles() {
     let after = heads(&w);
     assert_eq!(after, [settled[0] + 1, settled[1] + 1], "one add each, no echo");
     assert!(w.diagnostics.is_empty(), "{:?}", w.diagnostics);
+}
+
+/// An Upload of one `size`-byte entry, its id in the node's range when `node`.
+fn upload(node: bool, size: usize) -> Vec<u8> {
+    let id = if node { osis_proto::msg::NODE_IDS | 7 } else { 7 };
+    encode_frame(&Message::Upload { id, label: osis_base::LabelId([1; 16]), entries: vec![osis_proto::msg::Entry { blob: vec![1; size], wrap: [0; osis_crypto::WRAP_LEN], stamp: osis_crypto::Signature([0; 64]), replaces: vec![] }] }.encode())
+}
+
+// spec/sync.md §10 (Served connections): received frames count against the input bound until
+// they run or are answered: frames waiting for output room, and requests handed up to node sync
+// (whose reply allowance alone counts against the output bound); past it the connection holding
+// the most is closed
+#[test]
+fn received_frames_stay_within_the_bound() {
+    let mut w = World::new();
+    let mib = 1 << 20;
+    let (h, _) = unread_hub(&mut w, mib, 9);
+    let now = w.now();
+    let hub = &mut w.hubs[h];
+    // the output bound full: each frame waits for room
+    hub.down(now, vec![(1, push(1, mib - 4096))]);
+    let mut gone = 0;
+    for id in 2..=9u64 {
+        gone += closed(&hub.input(now, id, upload(false, 600 << 10))).len();
+        assert!(hub.buffered() <= mib, "{} buffered", hub.buffered());
+    }
+    assert_eq!(gone, 7, "one waiting frame fits");
+    // handed up: the frame is input held until node sync answers
+    let (h, _) = unread_hub(&mut w, mib, 2);
+    let hub = &mut w.hubs[h];
+    let out = hub.input(now, 1, upload(true, 600 << 10));
+    assert!(closed(&out).is_empty() && out.iter().any(|o| matches!(o, HubOutput::Up(1, _))));
+    assert!(hub.buffered() > 600 << 10 && hub.held() <= mib);
+    assert_eq!(closed(&hub.input(now, 2, upload(true, 600 << 10))).len(), 1);
+    assert!(hub.buffered() <= mib && hub.held() <= mib);
 }

@@ -105,8 +105,8 @@ pub enum Down {
 
 #[derive(Clone)]
 enum Conn {
-    /// `buffered`: partial frame bytes after the last input; `hold`: what it holds against the
-    /// output bound (`ServingSession::holding`); `alone`: no output of its own
+    /// `buffered`: received bytes it holds (`ServingSession::buffered`); `hold`: what it holds
+    /// against the output bound (`ServingSession::holding`); `alone`: no output of its own
     /// (`ServingSession::alone`); `need`: the room its first waiting reply, push or request needs
     /// (`ServingSession::need`); `queued`: in `queue` since then; `paused`: received
     /// frames wait for room, so it takes no input (`Hub::waits`); `taken`: the last report
@@ -124,7 +124,7 @@ pub struct Hub {
     sweep_hold: u64,
     /// The last sweep ran out of budget.
     sweep_more: bool,
-    /// Partial frame bytes over all served connections.
+    /// Received bytes held for all served connections (`ServingSession::buffered`).
     buffered: usize,
     /// What all served connections hold against `max_buffered_bytes`: bytes written and not
     /// taken by the transport (as reported), and reply allowances handed up and not answered.
@@ -338,7 +338,7 @@ impl Hub {
         })
     }
 
-    /// Forgets a connection and its partial frame bytes (`Up::End` once the batch ends).
+    /// Forgets a connection and what it holds (`Up::End` once the batch ends).
     fn remove(&mut self, id: ConnId) {
         let Some(Conn::Served { buffered, hold, need, started, .. }) = self.conns.remove(&id) else { return };
         self.buffered = self.buffered.saturating_sub(buffered);
@@ -464,7 +464,9 @@ impl Hub {
         let need = self.need_of(first);
         let max = self.store.policy().max_buffered_bytes;
         let mut stuck: Vec<(usize, ConnId)> = self.conns.iter().filter_map(|(id, c)| match c {
-            Conn::Served { hold, moved, .. } if *hold > 0 && *id != first && (overdue || !*moved) => Some((*hold, *id)),
+            // output of its own that did not move: a reservation alone (a reply to come) has no
+            // bytes to move
+            Conn::Served { hold, moved, alone, .. } if *hold > 0 && *id != first && (overdue || !*moved && !*alone) => Some((*hold, *id)),
             _ => None,
         }).collect();
         stuck.sort_unstable();
@@ -478,19 +480,20 @@ impl Hub {
         self.unmove();
     }
 
-    /// Partial frame bytes held for all served connections.
+    /// Received bytes held for all served connections: partial frames, frames waiting to run,
+    /// requests handed up and not answered.
     pub fn buffered(&self) -> usize {
         self.buffered
     }
 
-    /// Over `max_buffered_bytes` of partial frames: closes the connections holding the largest
+    /// Over `max_buffered_bytes` received and held: closes the connections holding the largest
     /// until under it (anyone who can connect could otherwise hold `MAX_MESSAGE` per connection).
     fn limit_buffered(&mut self, out: &mut Vec<HubOutput>) {
         while self.buffered > self.store.policy().max_buffered_bytes {
             let Some(id) = self.conns.iter().filter_map(|(id, c)| if let Conn::Served { buffered, .. } = c { Some((*buffered, *id)) } else { None }).max().map(|(_, id)| id) else { break };
             self.remove(id);
             out.push(HubOutput::Close(id));
-            out.push(HubOutput::Diagnostic(format!("connection {id}: closed, partial frames over the budget")));
+            out.push(HubOutput::Diagnostic(format!("connection {id}: closed, received frames over the budget")));
         }
     }
 
