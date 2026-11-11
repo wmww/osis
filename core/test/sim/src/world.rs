@@ -44,6 +44,7 @@ pub struct Host {
     pub sync: Option<SyncEngine>,
 }
 
+#[derive(Clone)]
 enum Msg {
     Up(usize, ConnId),
     ToHub(usize, u64, Vec<u8>),
@@ -149,6 +150,103 @@ impl World {
             tally: None,
             decoders: BTreeMap::new(),
             diags: Arc::default(),
+        }
+    }
+
+    /// An exact copy of this world as it stands (notes/testing.md, Copied worlds): every node
+    /// (`ManualNet::test_copy`, in start order, closed ones closed) and host (`Hub::test_copy`,
+    /// `SyncEngine::test_copy`), on one new clock at the same time and new own clocks
+    /// (`cfg_clocked`) at theirs, the queues, links, model and counters, the diagnostics not yet
+    /// taken: run the same steps on both and they do the same. With the copies of the nodes, by
+    /// start order (`None`: closed): a copy is open while a handle to it is held. Fresh in the
+    /// copy: each node's dispatcher, with no subscription but the world's own diagnostics one.
+    #[allow(clippy::panic, clippy::clone_on_copy)] // test harness: fail the test loudly
+    pub fn copy(&mut self) -> (World, Vec<Option<Osis>>) {
+        osis_base::copying::copying(|| {
+            let clock = Arc::new(ManualClock::new(Time(self.now())));
+            let own_clocks: Vec<(Arc<ManualClock>, ClockSpec)> = self.own_clocks.iter().map(|(c, spec)| (Arc::new(ManualClock::new(osis::internals::Clock::now_wall_ms(&**c))), *spec)).collect();
+            let ptr = |c: &Arc<dyn osis::internals::Clock>| Arc::as_ptr(c) as *const () as usize;
+            let (net, dbs) = self.net.test_copy(|c| {
+                if ptr(c) == Arc::as_ptr(&self.clock) as *const () as usize {
+                    return clock.clone();
+                }
+                match self.own_clocks.iter().position(|(o, _)| ptr(c) == Arc::as_ptr(o) as *const () as usize).and_then(|i| own_clocks.get(i)) {
+                    Some((n, _)) => n.clone(),
+                    None => panic!("copy: a node on a clock this world did not make"),
+                }
+            }).unwrap_or_else(|e| panic!("copy: {e:?}"));
+            let c: Arc<dyn osis::internals::Clock> = clock.clone();
+            let hosts = self.hosts.iter_mut().map(|h| {
+                let sync = h.sync.as_mut().map(|s| s.test_copy(c.clone()).unwrap_or_else(|e| panic!("copy: host engine: {e:?}")));
+                // a node's hub shares the copied node's store (`Hub::test_copy` inside the copy)
+                let hub = h.hub.test_copy(c.clone()).unwrap_or_else(|e| panic!("copy: hub: {e:?}"));
+                Host { hub, addr: h.addr.clone(), node: h.node, up: h.up, sync }
+            }).collect();
+            let diags: BTreeMap<usize, Vec<String>> = self.diags.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let w = World {
+                clock,
+                hosts,
+                net,
+                links: self.links.clone(),
+                peer_links: self.peer_links.clone(),
+                node_keys: self.node_keys.clone(),
+                peer_cut: self.peer_cut.clone(),
+                reach: self.reach.clone(),
+                peer_dials: self.peer_dials.clone(),
+                own_clocks,
+                queue: self.queue.clone(),
+                no_storm: self.no_storm,
+                hop: self.hop,
+                next_hub: self.next_hub,
+                offline: self.offline.clone(),
+                asleep: self.asleep.clone(),
+                cut: self.cut.clone(),
+                holds_invites: self.holds_invites.clone(),
+                traffic: self.traffic.clone(),
+                busy: self.busy.clone(),
+                db_spans: self.db_spans.clone(),
+                hub_busy: self.hub_busy,
+                tally: self.tally.clone(),
+                decoders: self.decoders.clone(),
+                diags: Arc::new(Mutex::new(diags)),
+            };
+            // the world's diagnostics subscription, on the nodes it had seen
+            for (i, db) in dbs.iter().enumerate().take(w.offline.len()) {
+                if let Some(db) = db {
+                    w.watch_diagnostics(i, db);
+                }
+            }
+            (w, dbs)
+        })
+    }
+
+    /// A copy (`copy`) of the world `build` makes with the nodes it returns (every node it leaves
+    /// open) and `extra`: built once per test process per `key`, which names the build and every
+    /// parameter it takes (`osis_base::copying::cached`).
+    #[allow(clippy::panic)] // test harness: fail the test loudly
+    pub fn cached<const N: usize, T: Clone + Send + 'static>(key: &str, build: impl FnOnce() -> (World, [Osis; N], T)) -> (World, [Osis; N], T) {
+        osis_base::copying::cached(key, || {
+            let (mut w, dbs, t) = build();
+            // its diagnostics subscriptions are in place before the first copy
+            w.dbs();
+            (w, dbs, t)
+        }, |(w, dbs, t)| {
+            let at: Vec<usize> = dbs.iter().map(|d| w.index(d).unwrap_or_else(|| panic!("cached: a node of another world"))).collect();
+            let open = w.net.dbs().iter().filter(|d| d.is_some()).count();
+            assert_eq!(open, at.len(), "cached: {key} leaves open a node it does not return");
+            let (copy, mut copies) = w.copy();
+            let out = at.iter().map(|i| copies.get_mut(*i).and_then(Option::take).unwrap_or_else(|| panic!("cached: node {i}"))).collect::<Vec<_>>();
+            let out: [Osis; N] = out.try_into().unwrap_or_else(|_| panic!("cached: {N} nodes"));
+            (copy, out, t.clone())
+        })
+    }
+
+    /// The world's own subscription to node `i`'s diagnostics (`diagnostics`).
+    fn watch_diagnostics(&self, i: usize, db: &Osis) {
+        let diags = self.diags.clone();
+        // a node of this harness is local: registering cannot fail
+        if let Ok(sub) = db.on_diagnostic(move |_, d| diags.lock().unwrap_or_else(|e| e.into_inner()).entry(i).or_default().push(d.to_string())) {
+            sub.detach();
         }
     }
 
@@ -279,11 +377,7 @@ impl World {
         if v.len() > self.offline.len() {
             for (i, db) in v.iter().enumerate().skip(self.offline.len()) {
                 if let Some(db) = db {
-                    let diags = self.diags.clone();
-                    // a node of this harness is local: registering cannot fail
-                    if let Ok(sub) = db.on_diagnostic(move |_, d| diags.lock().unwrap_or_else(|e| e.into_inner()).entry(i).or_default().push(d.to_string())) {
-                        sub.detach();
-                    }
+                    self.watch_diagnostics(i, db);
                 }
             }
             self.offline.resize(v.len(), false);

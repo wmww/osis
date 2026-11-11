@@ -162,8 +162,8 @@ impl Hub {
     /// on with the same stream. Never in a product: two hubs with one key and rng stream.
     #[doc(hidden)]
     pub fn test_copy(&self, clock: std::sync::Arc<dyn osis_base::Clock>) -> Result<Hub, osis_store::Error> {
-        let store = Arc::new(Mutex::new(self.store().test_copy(clock)?));
-        Ok(self.test_copy_over(store))
+        // inside a world copy, the copy of the store a node's engine shares with this hub
+        Ok(self.test_copy_over(osis_store::test_copy_shared(&self.store, clock)?))
     }
 
     /// Tests only: `test_copy` over `store`, a copy of this hub's store already made (a node's

@@ -86,9 +86,8 @@ fn invite_to_a_group_not_yet_at_its_peer_looks_again_spec_sync_3() {
 // spec/sync.md §3 (a grantee node places a certificate copy): a grant to a group whose first admin is its granter: the group's inbox is the granter's, so its own deposit comes back naming a commit it holds, and that alone must start the group's label's pass: the group's member reads the chat with no clock passing
 #[test]
 fn grant_to_ones_own_group_reaches_its_members_at_once_spec_sync_3() {
-    let mut w = World::new();
-    let h0 = w.add_host();
-    let (a, b, bob) = pair(&mut w, &[h0]);
+    let (mut w, a, mut others, ids) = crate::common::people(1);
+    let (b, bob) = (others.remove(0), ids[0]);
     let realm = chat(&a, &[]);
     a.grant(realm, bob, Role::Write, Default::default()).unwrap();
     w.run();
@@ -103,9 +102,8 @@ fn grant_to_ones_own_group_reaches_its_members_at_once_spec_sync_3() {
 // spec/sync.md §6 (a content write passes only the labels holding it): with no clock passing, so no resync: one commit across two chats, a message in two labels, one in a group nested in a chat, a member's write and a profile rename each reach every reader
 #[test]
 fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
-    let mut w = World::new();
-    let h0 = w.add_host();
-    let (a, b, bob) = pair(&mut w, &[h0]);
+    let (mut w, a, mut others, ids) = crate::common::people(1);
+    let (b, bob, h0) = (others.remove(0), ids[0], 0);
     let c = w.account(3, &[h0]);
     w.run();
     let card = c.contact_card().unwrap();
@@ -177,9 +175,8 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
 // spec: none (API surface, notes/api.md Sync configuration and status): a live node polled by `sync_now` stays Synced, so an app's polling cannot hold `wait_synced` back; a write made meanwhile still goes. It sends nothing but a ping, once a connection is quiet for `retry_ms`
 #[test]
 fn polling_sync_now_costs_nothing_and_holds_nothing_back() {
-    let mut w = World::new();
-    let h0 = w.add_host();
-    let (a, b, bob) = pair(&mut w, &[h0]);
+    let (mut w, a, mut others, ids) = crate::common::people(1);
+    let (b, bob) = (others.remove(0), ids[0]);
     let g = chat(&a, &[]);
     let m = message(&a, g, "hello");
     a.grant(g, bob, Role::Write, Default::default()).unwrap();
@@ -240,9 +237,8 @@ fn write_across(b: &Osis, u: Tid, m: Tid) {
 // spec/sync.md §6, notes/arbitrary-values-table.md `retry_ms`: a write made offline reaches a peer at the first redial once back, on a thing under the group and added only to it
 #[test]
 fn offline_write_reaches_the_peer_at_the_redial_spec_sync_6() {
-    let mut w = World::new();
-    let h0 = w.add_host();
-    let (a, b, bob) = pair(&mut w, &[h0]);
+    let (mut w, a, mut others, ids) = crate::common::people(1);
+    let (b, bob) = (others.remove(0), ids[0]);
     let g = chat(&a, &[]);
     a.grant(g, bob, Role::Write, Default::default()).unwrap();
     w.run();
@@ -260,9 +256,8 @@ fn offline_write_reaches_the_peer_at_the_redial_spec_sync_6() {
 // spec/commits.md §4 (a node never waits for a part): an unsent commit across a live thing and one of a group its author was removed from: the author cannot place the second delta any more, and the reader shows the first
 #[test]
 fn write_beside_a_removed_thing_reaches_the_peer_spec_commits_4() {
-    let mut w = World::new();
-    let h0 = w.add_host();
-    let (a, b, bob) = pair(&mut w, &[h0]);
+    let (mut w, a, mut others, ids) = crate::common::people(1);
+    let (b, bob) = (others.remove(0), ids[0]);
     let g = chat(&a, &[]);
     let m = message(&a, g, "hello");
     a.grant(g, bob, Role::Write, Default::default()).unwrap();
@@ -372,9 +367,8 @@ fn contact_outlives_the_accounts_role_changes_spec_permissions_7() {
 // spec/sync.md §3 (entitlement), notes/api.md Writes: a thing added to a shared group whose holders may not read it does not reach them: the writer is told, a wait on it fails; `add_with_grant` is not told, a grant follows
 #[test]
 fn placing_where_holders_may_not_read_is_reported_spec_sync_3() {
-    let mut w = World::new();
-    let h0 = w.add_host();
-    let (a, b, bob) = pair(&mut w, &[h0]);
+    let (mut w, a, mut others, ids) = crate::common::people(1);
+    let (b, bob) = (others.remove(0), ids[0]);
     let g = chat(&a, &[]);
     a.grant(g, bob, Role::Write, Default::default()).unwrap();
     w.run();

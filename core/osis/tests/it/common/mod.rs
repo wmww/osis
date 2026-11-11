@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+use osis_sim::world::World;
 
 pub const T0: u64 = 1_700_000_000_000;
 
@@ -303,3 +304,37 @@ impl CreateIn for osis::Write<'_> {
     }
 }
 
+
+/// Alice and `n` other accounts on one peer; each other account's card imported by Alice: built
+/// once per `n` (`World::cached`).
+pub fn people(n: usize) -> (World, Osis, Vec<Osis>, Vec<Tid>) {
+    fn build<const N: usize, const M: usize>() -> (World, Osis, Vec<Osis>, Vec<Tid>) {
+        let (w, dbs, ids) = World::cached(&format!("sync::people/{N}"), || {
+            let mut w = World::new();
+            let host = w.add_host();
+            let alice = w.account(1, &[host]);
+            let others: [Osis; N] = std::array::from_fn(|i| w.account(2 + i as u64, &[host]));
+            w.run();
+            let mut ids = Vec::new();
+            for o in &others {
+                let card = o.contact_card().unwrap();
+                w.run();
+                ids.push(w.until(alice.import_contact(&card), 1000, 10).unwrap());
+            }
+            let mut all = vec![alice];
+            all.extend(others);
+            (w, <[Osis; M]>::try_from(all).unwrap(), ids)
+        });
+        let mut dbs = Vec::from(dbs);
+        let alice = dbs.remove(0);
+        (w, alice, dbs, ids)
+    }
+    match n {
+        0 => build::<0, 1>(),
+        1 => build::<1, 2>(),
+        2 => build::<2, 3>(),
+        3 => build::<3, 4>(),
+        4 => build::<4, 5>(),
+        _ => panic!("people: {n}"),
+    }
+}

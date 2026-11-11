@@ -292,7 +292,18 @@ fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
 use osis::internals::Internals as _;
 use osis_sim::world::World;
 
-fn sim(w: &mut World, keep: Option<bool>) -> (Osis, Osis, Tid, Tid, Tid) {
+/// Alice's synced group with an item, Bob a writer who may grant read (`keep`: the group's
+/// default for endings); a peer for both: built once per `keep` (`World::cached`).
+fn sim(keep: Option<bool>) -> (World, Osis, Osis, Tid, Tid, Tid) {
+    let (w, [a, b], (bob, g, m)) = World::cached(&format!("keep_clients::sim/{keep:?}"), || {
+        let mut w = World::new();
+        let (a, b, bob, g, m) = sim_in(&mut w, keep);
+        (w, [a, b], (bob, g, m))
+    });
+    (w, a, b, bob, g, m)
+}
+
+fn sim_in(w: &mut World, keep: Option<bool>) -> (Osis, Osis, Tid, Tid, Tid) {
     let host = w.add_host();
     let a = w.account(1, &[host]);
     let b = w.account(2, &[host]);
@@ -331,16 +342,18 @@ fn sim_kick(w: &mut World, a: &Osis, g: Tid, who: Tid, keep: Option<bool>) {
 }
 
 /// Alice's group with an item, Bob granted write on it until an hour from now (`keep`: the
-/// group's default for endings); a peer for both.
+/// group's default for endings); a peer for both: built once per `keep` (`World::cached`).
 fn timed(keep: Option<bool>) -> (World, Osis, Osis, Tid, Tid, Tid, u64, u64) {
-    let mut w = World::new();
-    let host = w.add_host();
-    let a = w.account(1, &[host]);
-    let b = w.account(2, &[host]);
-    w.run();
-    let card = b.contact_card().unwrap();
-    w.run();
-    let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
+    let (w, [a, b], (bob, g, m, t0, hour)) = World::cached(&format!("keep_clients::timed/{keep:?}"), || {
+        let (w, a, b, bob, g, m, t0, hour) = built_timed(keep);
+        (w, [a, b], (bob, g, m, t0, hour))
+    });
+    (w, a, b, bob, g, m, t0, hour)
+}
+
+fn built_timed(keep: Option<bool>) -> (World, Osis, Osis, Tid, Tid, Tid, u64, u64) {
+    let (mut w, a, mut others, ids) = crate::common::people(1);
+    let (b, bob) = (others.remove(0), ids[0]);
     let g = sim_group(&a);
     let mut x = a.write();
     let m = x.create_with_admin(g).unwrap();
@@ -477,8 +490,7 @@ fn a_late_renewal_comes_back_by_a_re_seal_spec_permissions_2() {
 // spec/permissions.md §3 (Retain), notes/client-port.md §3: a client reads the copy while it holds a role on what the copy hangs on: its role ended before the kick or after it, it reads nothing; granted one after the kick (the account's new app), it reads; a client with a role on another thing of the account reads nothing
 #[test]
 fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
-    let mut w = World::new();
-    let (a, b, bob, g, m) = sim(&mut w, Some(true));
+    let (mut w, a, b, bob, g, m) = sim(Some(true));
     let mk = |role: Option<Role>| {
         let (actor, _) = b.add_client(None).unwrap();
         if let Some(r) = role {
@@ -525,9 +537,8 @@ fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
 #[test]
 fn a_client_with_its_own_grant_spec_permissions_3() {
     for (own, account, reads) in [(Some(true), Some(false), true), (Some(false), Some(true), false), (Some(true), Some(true), true)] {
-        let mut w = World::new();
         // each one's word is said at its kick
-        let (a, b, bob, g, m) = sim(&mut w, Some(true));
+        let (mut w, a, b, bob, g, m) = sim(Some(true));
         let (c, _) = b.add_client(None).unwrap();
         let (other, _) = b.add_client(None).unwrap();
         b.grant(g, c, Role::Read, GrantOpts::default()).unwrap();
@@ -546,8 +557,7 @@ fn a_client_with_its_own_grant_spec_permissions_3() {
 // spec/permissions.md §3 (Retain), notes/client-port.md §3: a chat read through a realm Bob stays in, the realm kicked from it: the copy is the account's, so his app reads it; a client that is only a member of the realm, from before the kick or after it, reads the realm and nothing of the chat
 #[test]
 fn a_member_of_the_holder_reads_no_copy_spec_permissions_3() {
-    let mut w = World::new();
-    let (a, b, bob, f, in_f) = sim(&mut w, Some(true));
+    let (mut w, a, b, bob, f, in_f) = sim(Some(true));
     let chat = sim_group(&a);
     let mut x = a.write();
     let m = x.create_with_admin(chat).unwrap();
@@ -601,8 +611,7 @@ fn a_watch_on_a_copy_ends_with_the_role_spec_permissions_3() {
 // spec/permissions.md §3 (Retain), notes/client-port.md §3: through a holder that is itself kept: a chat read through a realm group, Bob kicked from the group: the app reads both, the chain ending at the account; a client on neither reads neither
 #[test]
 fn a_client_reads_through_a_retained_holder_spec_permissions_3() {
-    let mut w = World::new();
-    let (a, b, bob, f, _) = sim(&mut w, Some(true));
+    let (mut w, a, b, bob, f, _) = sim(Some(true));
     let chat = sim_group(&a);
     let mut x = a.write();
     let m = x.create_with_admin(chat).unwrap();
@@ -627,14 +636,8 @@ fn a_client_reads_through_a_retained_holder_spec_permissions_3() {
 // spec/permissions.md §1 (first admins), §3 (Retain): a chat made by its record keeps alike: Bob kicked, the copy stands, his app reads it, another client does not
 #[test]
 fn a_chat_by_record_keeps_spec_permissions_3() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let a = w.account(1, &[host]);
-    let b = w.account(2, &[host]);
-    w.run();
-    let card = b.contact_card().unwrap();
-    w.run();
-    let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
+    let (mut w, a, mut others, ids) = crate::common::people(1);
+    let (b, bob) = (others.remove(0), ids[0]);
     let g = a.commit_with(|w| w.create()).unwrap();
     let mut x = a.write();
     x.group(a.home()).add(osis::Member::Item(g)).unwrap();
@@ -664,8 +667,7 @@ fn a_chat_by_record_keeps_spec_permissions_3() {
 // spec/permissions.md §3 (Retain): a commit the node takes for what else it carries: content on a copy stays out, its purge of a copy's aspect applies (nothing promises it does not), and the thing beside it moves on
 #[test]
 fn a_commit_beside_a_copy_spec_permissions_3() {
-    let mut w = World::new();
-    let (a, b, bob, g, m) = sim(&mut w, Some(true));
+    let (mut w, a, b, bob, g, m) = sim(Some(true));
     let live = sim_group(&a);
     let mut x = a.write();
     let u = x.create_with_admin(live).unwrap();
@@ -694,8 +696,7 @@ fn a_commit_beside_a_copy_spec_permissions_3() {
 // spec/permissions.md §3 (Keep; uploads and serves nothing of it): what Bob's node holds of a copy goes nowhere: added to a group of his, shared, it does not reach that group's reader; his own write on it, unsent at the kick, stays out at Alice's
 #[test]
 fn a_copy_goes_nowhere_spec_permissions_3() {
-    let mut w = World::new();
-    let (a, b, bob, g, m) = sim(&mut w, Some(true));
+    let (mut w, a, b, bob, g, m) = sim(Some(true));
     let c = w.account(3, &[0]);
     w.run();
     let card = c.contact_card().unwrap();
@@ -757,8 +758,7 @@ fn a_client_adds_no_copy_spec_permissions_3() {
 // spec/permissions.md §3 (Keep; ephemeral aspects are not part of a copy, and hold until restart as on any lost thing: issue ephemeral-data (closed)): an ephemeral write reaches no copy, and neither the node nor its client writes one
 #[test]
 fn ephemeral_data_and_a_copy_spec_permissions_3() {
-    let mut w = World::new();
-    let (a, b, bob, g, m) = sim(&mut w, Some(true));
+    let (mut w, a, b, bob, g, m) = sim(Some(true));
     let (app, _) = b.add_client(None).unwrap();
     b.grant(bob, app, Role::Read, Default::default()).unwrap();
     let e = ak("t:e+.0");

@@ -6,7 +6,6 @@ use crate::common::*;
 use osis::internals::Internals as _;
 use osis::internals::node::costs;
 use osis::{Backlink, BacklinkPage, BacklinkQuery, DynamicAspectKey, MemStore, Osis, Role, SetRoleOpts, Tid, Value, p};
-use osis_sim::world::World;
 use std::sync::{Arc, Mutex};
 
 fn key(k: &str) -> DynamicAspectKey {
@@ -229,14 +228,8 @@ fn live_through_add_remove_expiry_purge() {
 // frontier that omits it) leaves the page, and the listener hears it.
 #[test]
 fn a_validity_flip_is_heard() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = w.account(1, &[host]);
-    let bob = w.account(2, &[host]);
-    w.run();
-    let card = bob.contact_card().unwrap();
-    w.run();
-    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let (mut w, alice, mut others, ids) = crate::common::people(1);
+    let (bob, b) = (others.remove(0), ids[0]);
     let g = alice
         .commit_with(|x| {
             let g = x.create()?;

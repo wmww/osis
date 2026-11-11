@@ -101,6 +101,11 @@ impl Port {
         Port { panic_next: false.into(), panic_after_call: false.into(), pad_pair_reply: AtomicUsize::new(0), after_source: Mutex::new(None), queued: Mutex::new(Vec::new()), tx: Mutex::new(None) }
     }
 
+    /// Whether it never started a worker, holds no job and no test hook closure.
+    pub fn idle(&self) -> bool {
+        lock(&self.queued).is_empty() && lock(&self.tx).is_none() && lock(&self.after_source).is_none()
+    }
+
     /// Queues actions (under the handle lock).
     pub fn queue(&self, acts: Vec<Action>) {
         lock(&self.queued).extend(acts.into_iter().map(Job::Act));

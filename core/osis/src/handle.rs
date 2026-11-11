@@ -141,7 +141,7 @@ impl Default for AppConfig {
 /// bookkeeping, all under one lock.
 pub(crate) struct Locked {
     pub sync: SyncEngine,
-    events: Receiver<Event>,
+    pub events: Receiver<Event>,
     pub seq: u64,
     pub waiters: Vec<Waiter>,
     pub status: Status,
@@ -642,7 +642,7 @@ impl Osis {
         Ok(db)
     }
 
-    fn user(inner: Arc<Inner>) -> Osis {
+    pub(crate) fn user(inner: Arc<Inner>) -> Osis {
         Osis(ReadOnly::user(inner))
     }
 

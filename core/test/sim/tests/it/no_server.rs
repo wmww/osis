@@ -50,8 +50,17 @@ fn direct() -> LinkOpts {
     LinkOpts { direct: true, ..Default::default() }
 }
 
-/// Two accounts, public addresses and a relay; Bob joined Alice's group `g` by a direct link.
+/// Two accounts, public addresses and a relay; Bob joined Alice's group `g` by a direct link:
+/// built once per parameter (`World::cached`).
 fn co_readers(seed: u64, role: Role) -> (World, Osis, Osis, Tid) {
+    let (w, [a, b], g) = World::cached(&format!("no_server::co_readers/{seed}/{role:?}"), || {
+        let (w, a, b, g) = built_co_readers(seed, role);
+        (w, [a, b], g)
+    });
+    (w, a, b, g)
+}
+
+fn built_co_readers(seed: u64, role: Role) -> (World, Osis, Osis, Tid) {
     let mut w = World::new();
     let r = w.reach.add_relay(None);
     let a = w.account(seed, &[]);
@@ -644,7 +653,7 @@ fn never_synced_while_lacking(w: &mut World, db: &Osis, holder: &Osis, g: Tid, t
 fn synced_is_never_true_while_a_connected_co_reader_holds_more() {
     let mut judged = 0;
     for seed in 0..6 {
-        let (mut w, a, b, g) = co_readers(100 + 10 * seed, Role::Write);
+        let (mut w, a, b, g) = built_co_readers(100 + 10 * seed, Role::Write);
         w.advance(pause_ms());
         w.set_peer_reachable(&a, &b, false);
         w.advance(pause_ms());

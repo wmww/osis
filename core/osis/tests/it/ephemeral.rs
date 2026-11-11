@@ -499,14 +499,8 @@ fn delete_of_ephemeral_only_thing_drops_its_values_spec_data_model_1() {
 
 /// Alice's synced group `g` with Bob granted `role` on it, through one host.
 fn shared(role: Role) -> (World, Osis, Osis, osis::Tid) {
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = w.account(1, &[host]);
-    let bob = w.account(2, &[host]);
-    w.run();
-    let card = bob.contact_card().unwrap();
-    w.run();
-    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let (mut w, alice, mut others, ids) = crate::common::people(1);
+    let (bob, b) = (others.remove(0), ids[0]);
     let mut wr = alice.write();
     let g = wr.create().unwrap();
     wr.group(alice.home()).add(osis::Member::Item(g)).unwrap();

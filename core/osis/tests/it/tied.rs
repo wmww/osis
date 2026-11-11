@@ -620,8 +620,14 @@ fn first_admin_home_copy_of_removal_without_new_keys() {
     assert_ne!(seed_of(&zoe, t), seed_of(&dave, t), "O's later reader learns the fresh seed");
 }
 
-/// Dave's card `t`, with H (Alice's tag, Eve co-admin, Carol reader) whose keys Dave knows.
+/// Dave's card `t`, with H (Alice's tag, Eve co-admin, Carol reader) whose keys Dave knows: built
+/// once (`World::cached`).
 fn outsider() -> (World, Osis, Osis, Osis, Osis, Osis, Tid, Tid, Tid) {
+    let (w, [alice, eve, dave, carol, bob], (h, b, t)) = World::cached("tied::outsider", built_outsider);
+    (w, alice, eve, dave, carol, bob, h, b, t)
+}
+
+fn built_outsider() -> (World, [Osis; 5], (Tid, Tid, Tid)) {
     let mut w = World::new();
     let host = w.add_host();
     let [alice, eve, dave, carol, bob] = [1, 2, 4, 5, 6].map(|s| account(&mut w, s, host));
@@ -642,7 +648,7 @@ fn outsider() -> (World, Osis, Osis, Osis, Osis, Osis, Tid, Tid, Tid) {
     w.run();
     let t = card(&dave, "dave's");
     w.run();
-    (w, alice, eve, dave, carol, bob, h, b, t)
+    (w, [alice, eve, dave, carol, bob], (h, b, t))
 }
 
 // spec/sync.md §3: a `label.0` write after a rotation is a delta on the record an earlier one set: a grant to a group of a thing rotated before it copies them all, or the group's readers never find the thing's label

@@ -128,6 +128,9 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// of one store (a node's engine, sync engine and hub) shares one copy.
 #[doc(hidden)]
 pub fn test_copy_shared<T: CipherHost>(store: &Arc<Mutex<T>>, clock: Arc<dyn osis_base::Clock>) -> Result<Arc<Mutex<T>>, Error> {
+    if let Some(c) = osis_base::copying::found(store) {
+        return Ok(c);
+    }
     let copy = lock(store).test_copy(clock)?;
     Ok(osis_base::copying::remap(store, move |_| Mutex::new(copy)))
 }

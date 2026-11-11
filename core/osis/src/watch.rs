@@ -414,6 +414,11 @@ impl Dispatch {
         Dispatch { tx, shared: Arc::default(), pump: Mutex::new(Some(Pump::new(rx))), wake, due: AtomicBool::new(false), owed: AtomicBool::new(false) }
     }
 
+    /// Whether callbacks run on the thread that calls `settle` (`Dispatcher::Pump`).
+    pub fn pumps(&self) -> bool {
+        self.wake.is_some()
+    }
+
     /// With `Dispatcher::Thread`, starts the dispatcher thread; it runs until the node
     /// closes.
     pub fn start(&self, db: Weak<Inner>) -> Result<()> {

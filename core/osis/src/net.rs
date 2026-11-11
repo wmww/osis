@@ -58,7 +58,7 @@ impl Default for Lan {
 
 /// The nodes a test harness drives (`Runtime::Manual`), in the order they started.
 #[derive(Clone, Debug, Default)]
-pub struct ManualNet(Arc<Mutex<Vec<WeakOsis>>>);
+pub struct ManualNet(pub(crate) Arc<Mutex<Vec<WeakOsis>>>);
 
 impl ManualNet {
     /// A new one, with no nodes.

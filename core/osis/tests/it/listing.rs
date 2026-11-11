@@ -265,14 +265,8 @@ fn scope_listeners_api_commits() {
 // ended turns invalid: another node lists it nowhere, its own node lists it, marked.
 #[test]
 fn invalid_listed_only_at_its_writer_spec_perm_5() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = w.account(1, &[host]);
-    let bob = w.account(2, &[host]);
-    w.run();
-    let card = bob.contact_card().unwrap();
-    w.run();
-    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let (mut w, alice, mut others, ids) = crate::common::people(1);
+    let (bob, b) = (others.remove(0), ids[0]);
     let g = alice
         .commit_with(|x| {
             let g = x.create()?;
@@ -362,16 +356,18 @@ fn purge_author_through_the_api_spec_perm_6() {
     }
 }
 
-/// Alice's synced thing `g`, Bob (actor `b`) a reader of it.
+/// Alice's synced thing `g`, Bob (actor `b`) a reader of it: built once (`World::cached`).
 pub(crate) fn alice_admits_bob() -> (World, Osis, Osis, Tid, Tid) {
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = w.account(1, &[host]);
-    let bob = w.account(2, &[host]);
-    w.run();
-    let card = bob.contact_card().unwrap();
-    w.run();
-    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let (w, [alice, bob], (b, g)) = World::cached("listing::alice_admits_bob", || {
+        let (w, alice, bob, b, g) = built_alice_admits_bob();
+        (w, [alice, bob], (b, g))
+    });
+    (w, alice, bob, b, g)
+}
+
+fn built_alice_admits_bob() -> (World, Osis, Osis, Tid, Tid) {
+    let (mut w, alice, mut others, ids) = crate::common::people(1);
+    let (bob, b) = (others.remove(0), ids[0]);
     let mut x = alice.write();
     let g = x.create().unwrap();
     crate::common::keep_all(&mut x, g);
@@ -511,14 +507,8 @@ fn a_new_node_reads_newest_first_spec_sync_6() {
 // says so (spec/crdt.md §4.7: held value-less).
 #[test]
 fn memory_commits_list_and_tell_spec_sync_9() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = w.account(1, &[host]);
-    let bob = w.account(2, &[host]);
-    w.run();
-    let card = bob.contact_card().unwrap();
-    w.run();
-    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let (mut w, alice, mut others, known) = crate::common::people(1);
+    let (bob, b) = (others.remove(0), known[0]);
     let mut x = alice.write();
     let g = x.create().unwrap();
     x.group(alice.home()).add(osis::Member::Item(g)).unwrap();

@@ -40,13 +40,10 @@ pub fn in_copy() -> bool {
 /// The copy's handle for `old`: made by `make` from the original's value the first time this copy
 /// meets it, the same one after. Outside `copying`, a new handle each call.
 pub fn remap<T: Any + Send + Sync>(old: &Arc<T>, make: impl FnOnce(&T) -> T) -> Arc<T> {
-    let key = Arc::as_ptr(old) as *const () as usize;
-    let found = WORLD.with(|w| w.borrow().as_ref().and_then(|m| m.get(&key).map(|(_, new)| new.clone())));
-    if let Some(new) = found
-        && let Ok(t) = new.downcast::<T>()
-    {
+    if let Some(t) = found(old) {
         return t;
     }
+    let key = Arc::as_ptr(old) as *const () as usize;
     let new = Arc::new(make(old));
     WORLD.with(|w| {
         if let Some(m) = w.borrow_mut().as_mut() {
@@ -55,6 +52,12 @@ pub fn remap<T: Any + Send + Sync>(old: &Arc<T>, make: impl FnOnce(&T) -> T) -> 
         }
     });
     new
+}
+
+/// The copy's handle for `old` if this copy already made one (`remap`).
+pub fn found<T: Any + Send + Sync>(old: &Arc<T>) -> Option<Arc<T>> {
+    let key = Arc::as_ptr(old) as *const () as usize;
+    WORLD.with(|w| w.borrow().as_ref().and_then(|m| m.get(&key).map(|(_, new)| new.clone()))).and_then(|new| new.downcast::<T>().ok())
 }
 
 type Kept = std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<Option<Box<dyn Any + Send>>>>>>;

@@ -6,7 +6,6 @@ use crate::common::*;
 use osis::internals::Internals as _;
 use osis::internals::node::costs;
 use osis::{DynamicAspectKey, MemStore, Osis, Role, SetRoleOpts, Tid, Value, p};
-use osis_sim::world::World;
 use std::collections::BTreeSet;
 
 fn key(k: &str) -> DynamicAspectKey {
@@ -123,14 +122,8 @@ fn an_expiry_and_a_purge_remove_rows() {
 // writer removed with a frontier that omits it) leaves the index.
 #[test]
 fn a_validity_flip_removes_rows() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = w.account(1, &[host]);
-    let bob = w.account(2, &[host]);
-    w.run();
-    let card = bob.contact_card().unwrap();
-    w.run();
-    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let (mut w, alice, mut others, ids) = crate::common::people(1);
+    let (bob, b) = (others.remove(0), ids[0]);
     let g = alice
         .commit_with(|x| {
             let g = x.create()?;
@@ -162,14 +155,8 @@ fn a_validity_flip_removes_rows() {
 // a thing keeps no row of it.
 #[test]
 fn lost_access_leaves_no_rows() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = w.account(1, &[host]);
-    let bob = w.account(2, &[host]);
-    w.run();
-    let card = bob.contact_card().unwrap();
-    w.run();
-    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let (mut w, alice, mut others, ids) = crate::common::people(1);
+    let (bob, b) = (others.remove(0), ids[0]);
     let mut wr = alice.write();
     let g = wr.create_in(alice.me(), &[alice.home()]).unwrap();
     wr.commit().unwrap();

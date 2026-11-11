@@ -197,20 +197,6 @@ fn grant_by_inbox_spec_sync_3() {
     assert_eq!(x(&alice, u), Some(s("from bob")));
 }
 
-/// Alice and `n` other accounts on one peer; each other account's card imported by Alice.
-fn people(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Vec<Tid>) {
-    let host = w.add_host();
-    let alice = w.account(1, &[host]);
-    let others: Vec<Osis> = (0..n).map(|i| w.account(2 + i as u64, &[host])).collect();
-    w.run();
-    let mut ids = Vec::new();
-    for o in &others {
-        let card = o.contact_card().unwrap();
-        w.run();
-        ids.push(w.until(alice.import_contact(&card), 1000, 10).unwrap());
-    }
-    (alice, others, ids)
-}
 
 // spec/permissions.md §7 (links): Bob redeems a single-use write link to Alice's group and
 // reads what was there before; his redemption removes the link key (the link's `flags`,
@@ -218,8 +204,7 @@ fn people(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Vec<Tid>) {
 // (redeeming again returns the group) and a second redeemer is told the link ended.
 #[test]
 fn link_redeem_spec_permissions_7() {
-    let mut w = World::new();
-    let (alice, others, _) = people(&mut w, 1);
+    let (mut w, alice, others, _) = people(1);
     let bob = &others[0];
     let g = group(&alice);
     let before = item(&alice, g, g, "before the link");
@@ -256,8 +241,7 @@ fn link_redeem_spec_permissions_7() {
 // one whose grant ends (a joiner's has no end).
 #[test]
 fn redeem_held_joins_nothing_spec_none() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 3);
+    let (mut w, alice, others, ids) = people(3);
     let (bob, carol) = (&others[0], &others[1]);
     let g = group(&alice);
     alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
@@ -297,8 +281,7 @@ fn redeem_held_joins_nothing_spec_none() {
 // step without L as soon as L's departure is covered, whoever rotated K.
 #[test]
 fn used_link_refused_at_once_spec_permissions_7() {
-    let mut w = World::new();
-    let (alice, others, _) = people(&mut w, 1);
+    let (mut w, alice, others, _) = people(1);
     let bob = &others[0];
     let g = group(&alice);
     item(&alice, g, g, "before the link");
@@ -324,8 +307,7 @@ fn used_link_refused_at_once_spec_permissions_7() {
 // once the first redemption is applied in its view (then its grant is void).
 #[test]
 fn used_link_with_sharer_offline_spec_permissions_7() {
-    let mut w = World::new();
-    let (alice, others, _) = people(&mut w, 1);
+    let (mut w, alice, others, _) = people(1);
     let bob = &others[0];
     let g = group(&alice);
     item(&alice, g, g, "before the link");
@@ -490,8 +472,7 @@ fn remove_link_joiner_content_spec_permissions_7() {
 // spec/crypto.md §4 (removed holder)
 #[test]
 fn removal_rotates_spec_permissions_3() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 2);
+    let (mut w, alice, others, ids) = people(2);
     let (bob, carol) = (&others[0], &others[1]);
     let g = group(&alice);
     for id in &ids {
@@ -517,8 +498,7 @@ fn removal_rotates_spec_permissions_3() {
 // phone.
 #[test]
 fn removal_from_partial_node_keeps_unheld_edits_spec_permissions_5_2() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 2);
+    let (mut w, alice, others, ids) = people(2);
     let (bob, carol) = (&others[0], &others[1]);
     let g = group(&alice);
     let h = {
@@ -569,8 +549,7 @@ fn removal_from_partial_node_keeps_unheld_edits_spec_permissions_5_2() {
 // hears it once, by the firing actor and node; nothing is held.
 #[test]
 fn remote_ephemeral_signal_spec_sync_5() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (mut w, alice, others, ids) = people(1);
     let bob = &others[0];
     let g = group(&alice);
     alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
@@ -603,8 +582,7 @@ fn remote_ephemeral_signal_spec_sync_5() {
 // expiry reaches the other holder and is gone everywhere once it expires.
 #[test]
 fn disappearing_message_spec_commits_6() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (mut w, alice, others, ids) = people(1);
     let bob = &others[0];
     let g = group(&alice);
     alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
@@ -761,14 +739,8 @@ fn text_session_after_remote_delete_drops() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn text_session_refused_commit_keeps_edits() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = w.account(1, &[host]);
-    let bob = w.account(2, &[host]);
-    w.run();
-    let card = bob.contact_card().unwrap();
-    w.run();
-    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let (mut w, alice, mut others, ids) = crate::common::people(1);
+    let (bob, b) = (others.remove(0), ids[0]);
     for d in [&alice, &bob] {
         d.register_schema("t.osis", "revision 1;\naspect n:t.0: text;").unwrap();
     }
@@ -864,8 +836,7 @@ fn add_peer_moves_groups_spec_sync_2() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn wait_synced_waits_on_a_group_with_nobody_connected() {
-    let mut w = World::new();
-    let (alice, _, _) = people(&mut w, 0);
+    let (mut w, alice, _, _) = people(0);
     let g = group(&alice);
     let link = alice.make_link(g, Role::Write, osis::LinkOpts::default()).unwrap();
     w.run();
@@ -946,8 +917,7 @@ fn wait_synced_waits_for_deliveries_without_peered_groups() {
 // host.
 #[test]
 fn add_peer_scope_spec_sync_2() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (mut w, alice, others, ids) = people(1);
     let (s0, s1) = (0, w.add_host());
     let bob = &others[0];
     let card = alice.contact_card().unwrap();
@@ -1048,8 +1018,7 @@ fn plain(db: &Osis, v: &str) -> Tid {
 // spec/sync.md §2: a grant on a thing in no group gives it its one sync ID, so the holder reads and writes it, and a later `sync` is a no-op
 #[test]
 fn a_grant_gives_a_thing_its_sync_id() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 2);
+    let (mut w, alice, others, ids) = people(2);
     let (bob, carol) = (&others[0], &others[1]);
     let t = plain(&alice, "for bob");
     alice.grant(t, ids[0], Role::Write, Default::default()).unwrap();
@@ -1074,8 +1043,7 @@ fn a_grant_gives_a_thing_its_sync_id() {
 // granter offline and the group membership that also carried it gone
 #[test]
 fn a_direct_holder_reads_after_the_granter_and_the_group_are_gone() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (mut w, alice, others, ids) = people(1);
     let bob = &others[0];
     let g = group(&alice);
     alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
@@ -1101,8 +1069,7 @@ fn a_direct_holder_reads_after_the_granter_and_the_group_are_gone() {
 // no longer the removed holder's
 #[test]
 fn stopping_a_share_is_removing_its_holders() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (mut w, alice, others, ids) = people(1);
     let bob = &others[0];
     let t = plain(&alice, "one");
     alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
@@ -1120,8 +1087,7 @@ fn stopping_a_share_is_removing_its_holders() {
 // spec/sync.md §2: a thing in a synced group given a holder of its own syncs under both; a grant to a client gives it a sync ID as any grant
 #[test]
 fn a_thing_in_a_group_shared_directly_syncs_under_both() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 2);
+    let (mut w, alice, others, ids) = people(2);
     let g = group(&alice);
     alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
     let t = item(&alice, g, g, "in g");
@@ -1141,8 +1107,7 @@ fn a_thing_in_a_group_shared_directly_syncs_under_both() {
 // spec/sync.md §2 (Tess's example): T in synced G shared with Bob alone, who reads no part of G: the grant gives T its own sync ID: he reads T, and G's label stays closed to him
 #[test]
 fn a_thing_in_a_synced_group_shared_with_an_outsider() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (mut w, alice, others, ids) = people(1);
     let bob = &others[0];
     let g = group(&alice);
     let t = item(&alice, g, g, "in g");
@@ -1155,8 +1120,7 @@ fn a_thing_in_a_synced_group_shared_with_an_outsider() {
 // spec/sync.md §2, spec/permissions.md §7: a link to a thing in no group resolves: K's grant gives the thing its sync ID, redeem returns and the thing reads
 #[test]
 fn a_link_to_a_plain_item_resolves() {
-    let mut w = World::new();
-    let (alice, others, _) = people(&mut w, 1);
+    let (mut w, alice, others, _) = people(1);
     let t = plain(&alice, "linked");
     let link = alice.make_link(t, Role::Read, Default::default()).unwrap();
     assert!(alice.status().unwrap().groups.contains_key(&t));
@@ -1169,8 +1133,7 @@ fn a_link_to_a_plain_item_resolves() {
 // spec/sync.md §2: a thing under someone else's account: an admin by a grant and a `may_grant` holder each reach an outside reader through the thing's one sync ID
 #[test]
 fn a_grant_on_someone_elses_item() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 3);
+    let (mut w, alice, others, ids) = people(3);
     let (bob, carol, dan) = (&others[0], &others[1], &others[2]);
     let g = group(&alice);
     alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
@@ -1202,8 +1165,7 @@ fn a_grant_on_someone_elses_item() {
 // spec/sync.md §3: a grant to a group, the item in no group: the item's sync ID carries it to the group's readers, a later reader as well
 #[test]
 fn a_grant_to_a_group_reaches_its_readers() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 2);
+    let (mut w, alice, others, ids) = people(2);
     let (bob, carol) = (&others[0], &others[1]);
     let h = group(&alice);
     alice.grant(h, ids[0], Role::Read, Default::default()).unwrap();
@@ -1234,8 +1196,7 @@ fn a_grant_to_a_group_reaches_its_readers() {
 // spec/sync.md §2 (Home label): a grant to one's own group gives it a sync ID: its readers read the copy and its items
 #[test]
 fn a_grant_to_a_group_with_no_label() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (mut w, alice, others, ids) = people(1);
     let bob = &others[0];
     let h = alice.commit_with(|w| {
         let g = w.create()?;
@@ -1259,8 +1220,7 @@ fn a_grant_to_a_group_with_no_label() {
 // spec/sync.md §2: a thing added to a synced group its actor may not read is excluded there, and a holder of its own reads it through its sync ID
 #[test]
 fn an_excluded_thing_reaches_its_holder_by_its_own_sync_id() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (mut w, alice, others, ids) = people(1);
     let bob = &others[0];
     let g = alice.commit_with(|w| {
         let g = w.create()?;
@@ -1282,8 +1242,7 @@ fn an_excluded_thing_reaches_its_holder_by_its_own_sync_id() {
 // spec/sync.md §2: a subgroup holding an item, the subgroup synced only through its parent: the parent's readers read the item through it
 #[test]
 fn a_holder_read_through_a_synced_group_has_a_route() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (mut w, alice, others, ids) = people(1);
     let bob = &others[0];
     let group = |text: &str| {
         alice
@@ -1310,8 +1269,7 @@ fn a_holder_read_through_a_synced_group_has_a_route() {
 // nothing to judge: only `Stranded` is known never to finish
 #[test]
 fn waiting_on_a_thing_nothing_syncs_waits() {
-    let mut w = World::new();
-    let (alice, _, _) = people(&mut w, 1);
+    let (mut w, alice, _, _) = people(1);
     let t = plain(&alice, "t");
     assert!(w.try_until(alice.wait_synced(SyncScope::Thing(t)), 1000, 10).is_none());
 }
@@ -1319,8 +1277,7 @@ fn waiting_on_a_thing_nothing_syncs_waits() {
 // spec/permissions.md §1, spec/sync.md §2: a group made by its record has its own label as inbox: its readers read the grant from there, and the admin's copy serves later ones
 #[test]
 fn a_grant_to_a_group_by_record() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 2);
+    let (mut w, alice, others, ids) = people(2);
     let (bob, carol) = (&others[0], &others[1]);
     let f = alice.commit_with(|w| w.create()).unwrap();
     alice.sync(f, &[]).unwrap();
@@ -1340,8 +1297,7 @@ fn a_grant_to_a_group_by_record() {
 #[test]
 fn a_grant_to_a_group_is_copied_only_by_its_admin() {
     let took = |readers: usize| {
-        let mut w = World::new();
-        let (alice, others, ids) = people(&mut w, readers);
+        let (mut w, alice, others, ids) = people(readers);
         let f = alice.commit_with(|w| w.create()).unwrap();
         alice.sync(f, &[]).unwrap();
         for id in &ids {
@@ -1367,8 +1323,7 @@ fn a_grant_to_a_group_is_copied_only_by_its_admin() {
 // spec/sync.md §3, notes/chat.md Realms: realms nest by grants to groups: a reader of the top reads the child and what the child holds, whichever grant came first
 #[test]
 fn grants_to_groups_nest() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (mut w, alice, others, ids) = people(1);
     let bob = &others[0];
     let (p, k) = (group(&alice), group(&alice));
     let t = plain(&alice, "in k");
@@ -1389,8 +1344,7 @@ fn grants_to_groups_nest() {
 // spec/sync.md §2: a group made by its record has its label as inbox, with every chunk of its content: a reader tries none of them as an inbox blob
 #[test]
 fn chunks_under_an_inbox_label_cost_no_kem() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (mut w, alice, others, ids) = people(1);
     let bob = &others[0];
     let f = alice.commit_with(|w| w.create()).unwrap();
     alice.sync(f, &[]).unwrap();
@@ -1413,8 +1367,7 @@ fn chunks_under_an_inbox_label_cost_no_kem() {
 // spec/sync.md §3, spec/wire.md §9: a grant to a group by someone who reads no part of it: the inbox blob carries his chain, so the group's admin applies it with the thing still unsynced and copies it, and a reader who never met him verifies it; synced later, they read it
 #[test]
 fn a_grant_to_a_group_by_an_outsider() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 2);
+    let (mut w, alice, others, ids) = people(2);
     let (bob, dave) = (&others[0], &others[1]);
     let h = group(&alice);
     // dave learns the group's keys and meets alice through a thing the group held, and is gone before bob comes
@@ -1446,8 +1399,7 @@ fn a_grant_to_a_group_by_an_outsider() {
 // whatever arrived first, so the running index equals a rebuild (the engine's debug check).
 #[test]
 fn derived_adoption_order_item_granted_to_its_groups_reader() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 2);
+    let (mut w, alice, others, ids) = people(2);
     let g = group(&alice);
     alice.grant(g, ids[1], Role::Read, Default::default()).unwrap();
     let t = item(&alice, g, g, "in g");
@@ -1459,8 +1411,7 @@ fn derived_adoption_order_item_granted_to_its_groups_reader() {
 // spec/sync.md §6, spec/permissions.md §4: an admin by a grant on a group's item reaches a holder outside the group: he keeps the creation records of its record chain under the item's label, though their commit wrote more
 #[test]
 fn a_grant_on_a_group_owned_item_by_an_admin_grant() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 3);
+    let (mut w, alice, others, ids) = people(3);
     let (bob, carol, dan) = (&others[0], &others[1], &others[2]);
     let g = group(&alice);
     alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
@@ -1489,8 +1440,7 @@ fn a_grant_on_a_group_owned_item_by_an_admin_grant() {
 // spec/sync.md §2: a refused grant makes no sync ID: the thing stays as local as it was
 #[test]
 fn a_refused_grant_makes_no_sync_id() {
-    let mut w = World::new();
-    let (alice, _, ids) = people(&mut w, 1);
+    let (_w, alice, _, ids) = people(1);
     let t = plain(&alice, "local");
     assert!(matches!(alice.grant(t, Tid::from_bytes([9; 15]), Role::Read, Default::default()), Err(osis::Error::UnknownActor { .. })));
     let r = alice.grant(t, ids[0], Role::Read, osis::GrantOpts { may_grant: Some(Role::Write), ..Default::default() });
@@ -1504,8 +1454,7 @@ fn a_refused_grant_makes_no_sync_id() {
 #[test]
 fn removal_keeps_a_copy_spec_permissions_3() {
     for (keep, say, kept) in [(Some(true), None, true), (Some(true), Some(false), false), (None, Some(true), true), (None, None, false)] {
-        let mut w = World::new();
-        let (alice, others, _) = people(&mut w, 1);
+        let (mut w, alice, others, _) = people(1);
         let bob = &others[0];
         let g = group(&alice);
         let t = item(&alice, g, g, "before");
@@ -1534,8 +1483,7 @@ fn removal_keeps_a_copy_spec_permissions_3() {
 #[test]
 fn a_regrant_ends_a_copy_spec_permissions_3() {
     for keep in [Some(true), None] {
-        let mut w = World::new();
-        let (alice, others, _) = people(&mut w, 1);
+        let (mut w, alice, others, _) = people(1);
         let bob = &others[0];
         let g = group(&alice);
         let t = item(&alice, g, g, "before");
@@ -1566,8 +1514,7 @@ fn a_regrant_ends_a_copy_spec_permissions_3() {
 #[test]
 fn a_joiners_removal_overrides_the_default_spec_permissions_3() {
     for (link, say, kept) in [(true, Some(false), false), (false, Some(true), true), (true, None, true), (false, None, false)] {
-        let mut w = World::new();
-        let (alice, others, _) = people(&mut w, 1);
+        let (mut w, alice, others, _) = people(1);
         let bob = &others[0];
         let g = group(&alice);
         let t = item(&alice, g, g, "before");
@@ -1615,8 +1562,7 @@ fn skip() -> SetRoleOpts {
 // spec/permissions.md §2, §3: a reader removed from a group a thing was granted to reads nothing written after; another reader and a later one do
 #[test]
 fn kicked_from_a_group_ends_what_it_holds() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 4);
+    let (mut w, alice, others, ids) = people(4);
     let (bob, carol, dan, erin) = (&others[0], &others[1], &others[2], &others[3]);
     let h = group(&alice);
     alice.grant(h, ids[0], Role::Write, Default::default()).unwrap();
@@ -1658,8 +1604,7 @@ fn kicked_from_a_group_ends_what_it_holds() {
 // spec/permissions.md §2, §3: the same two levels down, and a link joiner of the group
 #[test]
 fn kicked_from_a_nested_group_or_by_link_ends_what_it_holds() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 3);
+    let (mut w, alice, others, ids) = people(3);
     let (bob, carol, dan) = (&others[0], &others[1], &others[2]);
     let (p, k) = (group(&alice), group(&alice));
     let t = plain(&alice, "one");
@@ -1693,8 +1638,7 @@ fn kicked_from_a_nested_group_or_by_link_ends_what_it_holds() {
 // spec/sync.md §3: with both admins away a reader's grant to the group waits under its label: back, they apply it and copy it, and a later reader reads it
 #[test]
 fn a_grant_to_a_group_with_the_admin_away_and_two_admins() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 3);
+    let (mut w, alice, others, ids) = people(3);
     let (bob, eve, dave) = (&others[0], &others[1], &others[2]);
     let f = alice.commit_with(|w| w.create()).unwrap();
     alice.sync(f, &[]).unwrap();
@@ -1723,8 +1667,7 @@ fn a_grant_to_a_group_with_the_admin_away_and_two_admins() {
 // spec/sync.md §3: two admins copy an outsider's grant from the inbox with his chain just received: a later reader finds it whatever order they went in
 #[test]
 fn a_grant_to_a_group_by_an_outsider_with_two_admins() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 3);
+    let (mut w, alice, others, ids) = people(3);
     let (bob, dave, eve) = (&others[0], &others[1], &others[2]);
     let h = group(&alice);
     alice.grant(h, ids[2], Role::Admin, Default::default()).unwrap();
@@ -1764,8 +1707,7 @@ fn poll_now<F: std::future::Future + Unpin>(f: &mut F) -> Option<F::Output> {
 // spec/sync.md §3, notes/api.md (`wait_synced`): a holder whose grant names a label it has not read yet (its peer out of reach for now) waits for it; its grant is pending there, so no missing route shows
 #[test]
 fn a_holder_waits_for_the_label_its_grant_names() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (mut w, alice, others, ids) = people(1);
     let bob = &others[0];
     let h1 = w.add_host();
     w.set_reachable(bob, h1, false);
@@ -1787,8 +1729,7 @@ fn a_holder_waits_for_the_label_its_grant_names() {
 // spec/sync.md §3, notes/api.md (`wait_synced`): right after accepting a grant the holder waits for the label it names; before accepting nothing is on its way
 #[test]
 fn a_wait_right_after_accepting_a_grant() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (mut w, alice, others, ids) = people(1);
     let bob = &others[0];
     w.holds_invites.insert(1);
     let t = plain(&alice, "there");
@@ -1809,8 +1750,7 @@ fn a_wait_right_after_accepting_a_grant() {
 // spec/sync.md §2: synced first, then granted: the one sync ID serves. spec/sync.md §3, notes/api.md (`wait_synced`): a brand new node of a holder, on a thing granted to its account before it existed and on one under its account: its first sync brings both, and it waits
 #[test]
 fn a_new_nodes_first_wait_on_a_shared_thing() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (mut w, alice, others, ids) = people(1);
     let bob = &others[0];
     let t = plain(&alice, "alice's");
     alice.sync(t, &[]).unwrap();
@@ -1839,8 +1779,7 @@ fn a_new_nodes_first_wait_on_a_shared_thing() {
 // spec/sync.md §2: `sync` and `grant` of a whole group: it gets the label, its items go along; the holder reads both
 #[test]
 fn grant_on_a_group_carries_its_items() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (mut w, alice, others, ids) = people(1);
     let bob = &others[0];
     let g = alice.commit_with(|w| {
         let g = w.create()?;

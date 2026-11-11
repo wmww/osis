@@ -621,15 +621,8 @@ fn path_listeners_one_write_one_call_n_reads() {
 // commit calls the listener at its path, `Derived(ValidityChanged)`, and not the one beside it.
 #[test]
 fn path_listener_hears_a_validity_flip() {
-    use osis_sim::world::World;
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = w.account(1, &[host]);
-    let bob = w.account(2, &[host]);
-    w.run();
-    let card = bob.contact_card().unwrap();
-    w.run();
-    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let (mut w, alice, mut others, ids) = crate::common::people(1);
+    let (bob, b) = (others.remove(0), ids[0]);
     let g = alice
         .commit_with(|x| {
             let g = x.create()?;

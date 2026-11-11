@@ -34,19 +34,18 @@ fn group(db: &Osis) -> Tid {
     g
 }
 
-/// Alice and Bob on one peer, Bob granted `role` on Alice's synced group.
-fn alice_bob(w: &mut World, role: Role) -> (Osis, Osis, Tid) {
-    let host = w.add_host();
-    let alice = w.account(1, &[host]);
-    let bob = w.account(2, &[host]);
-    w.run();
-    let card = bob.contact_card().unwrap();
-    w.run();
-    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
-    let g = group(&alice);
-    alice.grant(g, b, role, Default::default()).unwrap();
-    w.run();
-    (alice, bob, g)
+/// Alice and Bob on one peer, Bob granted `role` on Alice's synced group: built once per role
+/// (`World::cached`).
+fn alice_bob(role: Role) -> (World, Osis, Osis, Tid) {
+    let (w, [alice, bob], g) = World::cached(&format!("sharing::alice_bob/{role:?}"), || {
+        let (mut w, alice, mut others, ids) = crate::common::people(1);
+        let (bob, b) = (others.remove(0), ids[0]);
+        let g = group(&alice);
+        alice.grant(g, b, role, Default::default()).unwrap();
+        w.run();
+        (w, [alice, bob], g)
+    });
+    (w, alice, bob, g)
 }
 
 /// Diagnostics of `kind` a node reports from now on.
@@ -65,8 +64,7 @@ fn diags(db: &Osis, kind: fn(osis::Diagnostic) -> Option<Vec<Tid>>) -> std::sync
 // is refused there (`set_role`); a holder's self-removal reaches the admin.
 #[test]
 fn grant_and_leave_spec_permissions_2() {
-    let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Read);
+    let (mut w, alice, bob, g) = alice_bob(Role::Read);
     assert_eq!(bob.role_on(g).unwrap(), Some(Role::Read));
     alice.grant(g, bob.me(), Role::Write, Default::default()).unwrap();
     assert!(matches!(alice.grant(g, bob.me(), Role::Read, Default::default()), Err(Error::Invalid(_))));
@@ -87,8 +85,7 @@ fn grant_and_leave_spec_permissions_2() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn grant_refuses_a_lower_role() {
-    let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Write);
+    let (mut w, alice, bob, g) = alice_bob(Role::Write);
     let b = bob.me();
     let plain = {
         let mut x = alice.write();
@@ -466,8 +463,7 @@ fn redeem_after_k_left_the_target_spec_permissions_7() {
 // spec/permissions.md §7 (Bearer use), spec/sync.md §3 (invite requests): a contact card naming a thing its K holds no grant on makes nobody a contact: its first admin would count as connected on the word of the card's text
 #[test]
 fn contact_card_with_a_mismatched_target_spec_permissions_7() {
-    let mut w = World::new();
-    let (alice, carol, g) = alice_bob(&mut w, Role::Read);
+    let (mut w, alice, carol, g) = alice_bob(Role::Read);
     let eve = w.account(5, &[0]);
     let card = eve.contact_card().unwrap();
     w.run();
@@ -541,8 +537,7 @@ fn retry_after_a_stalled_upload_spec_permissions_7() {
 // spec/permissions.md §7 (Redeem): a maker who is not the target's first admin, its authors off: K's grant still reaches a new redeemer
 #[test]
 fn redeem_of_a_target_someone_else_owns_spec_permissions_7() {
-    let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Admin);
+    let (mut w, alice, bob, g) = alice_bob(Role::Admin);
     let carol = w.account(3, &[0]);
     let t = item(&alice, g, g, "x");
     w.run();
@@ -564,8 +559,7 @@ fn redeem_of_a_target_someone_else_owns_spec_permissions_7() {
 // spec/permissions.md §3, §7: a failed redemption drops only what only the key read: not what a sibling node's redemption gave, a joiner's role, a kept copy or a contact's profile
 #[test]
 fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
-    let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Read);
+    let (mut w, alice, bob, g) = alice_bob(Role::Read);
     let carol = w.account(3, &[0]);
     let t = item(&alice, g, g, "x");
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
@@ -1225,8 +1219,7 @@ fn links_listed_on_every_node_and_one_paired_later_spec_permissions_7() {
 // no current role: `Some` grants, `None` writes nothing; `retain_copy` beside a role is `Invalid`, at once.
 #[test]
 fn set_role_raises_lowers_and_writes_nothing_when_nothing_changes() {
-    let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Write);
+    let (mut w, alice, bob, g) = alice_bob(Role::Write);
     let b = bob.me();
     let commits = |db: &Osis| db.engine(|e| e.commit_ids().len());
     let until = osis::Time(alice.now().unwrap().0 + 1_000_000);
@@ -1267,8 +1260,7 @@ fn set_role_raises_lowers_and_writes_nothing_when_nothing_changes() {
 #[test]
 fn a_role_below_an_ended_grant_takes_set_role() {
     for role in [Role::Write, Role::Admin] {
-        let mut w = World::new();
-        let (alice, bob, g) = alice_bob(&mut w, role);
+        let (mut w, alice, bob, g) = alice_bob(role);
         let b = bob.me();
         let until = osis::Time(alice.now().unwrap().0 + 1000);
         alice.grant(g, b, role, osis::GrantOpts { until: Some(until), may_grant: None }).unwrap();
@@ -1297,8 +1289,7 @@ fn a_role_below_an_ended_grant_takes_set_role() {
 // actor needs this node its admin (`Permission`), and an admin of the target is sent to `set_role`.
 #[test]
 fn leave_of_no_grant_and_of_others() {
-    let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Read);
+    let (mut w, alice, bob, g) = alice_bob(Role::Read);
     let before = bob.engine(|e| e.commit_ids().len());
     bob.leave(alice.me(), bob.me()).unwrap();
     assert_eq!(bob.engine(|e| e.commit_ids().len()), before, "no such grant");
@@ -1341,8 +1332,7 @@ fn leave_ends_a_link_join() {
 // way again adds nothing.
 #[test]
 fn holders_finds_the_best_way_through_a_nested_actor() {
-    let mut w = World::new();
-    let (alice, bob, t) = alice_bob(&mut w, Role::Read);
+    let (_w, alice, bob, t) = alice_bob(Role::Read);
     let b = bob.me();
     // walked in tid order: the worse ways come first
     let mut gs = [group(&alice), group(&alice), group(&alice), group(&alice)];
@@ -1369,9 +1359,8 @@ fn holders_finds_the_best_way_through_a_nested_actor() {
 // still holds the role it had gets the link's on top.
 #[test]
 fn holders_lists_every_grant_and_who_holds_through_a_link() {
-    let mut w = World::new();
     // a reader raised by a write link: a way of its own (a link to what he reaches at its role joins nothing)
-    let (alice, bob, g) = alice_bob(&mut w, Role::Read);
+    let (mut w, alice, bob, g) = alice_bob(Role::Read);
     let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
     w.run();
     assert_eq!(bob.role_on(g).unwrap(), Some(Role::Read));
@@ -1398,8 +1387,7 @@ fn holders_lists_every_grant_and_who_holds_through_a_link() {
 #[test]
 fn a_role_below_one_lost_keeps_what_the_holder_wrote_spec_permissions_5_1() {
     for ended in [false, true] {
-        let mut w = World::new();
-        let (alice, bob, g) = alice_bob(&mut w, Role::Write);
+        let (mut w, alice, bob, g) = alice_bob(Role::Write);
         let b = bob.me();
         if ended {
             alice.grant(g, b, Role::Write, osis::GrantOpts { until: Some(osis::Time(alice.now().unwrap().0 + 5000)), may_grant: None }).unwrap();
@@ -1429,8 +1417,7 @@ fn a_role_below_one_lost_keeps_what_the_holder_wrote_spec_permissions_5_1() {
         assert_eq!(x(&bob, mine), Some(s("by bob")), "kept and readable at the holder");
     }
     // at the old role: no question, `grant` does it
-    let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Write);
+    let (mut w, alice, bob, g) = alice_bob(Role::Write);
     let mine = item(&bob, g, g, "by bob");
     w.run();
     bob.leave(bob.me(), g).unwrap();
@@ -1444,8 +1431,7 @@ fn a_role_below_one_lost_keeps_what_the_holder_wrote_spec_permissions_5_1() {
 // an admin's write took it away the grant counts as none, audits nothing, and goes through.
 #[test]
 fn invite_grant_over_an_ended_grant_spec_permissions_2() {
-    let mut w = World::new();
-    let (alice, carol, g) = alice_bob(&mut w, Role::Read);
+    let (mut w, alice, carol, g) = alice_bob(Role::Read);
     alice.grant(g, carol.me(), Role::Read, osis::GrantOpts { may_grant: Some(Role::Read), ..Default::default() }).unwrap();
     w.run();
     let dan = w.account(3, &[0]);
@@ -1475,8 +1461,7 @@ fn invite_grant_over_an_ended_grant_spec_permissions_2() {
 // notes/arbitrary-values.md: a wait has no deadline however far the clock runs; `set_role` waits for nothing (spec/permissions.md §5.3)
 #[test]
 fn waits_have_no_deadline_and_set_role_does_not_wait() {
-    let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Write);
+    let (mut w, alice, bob, g) = alice_bob(Role::Write);
     item(&bob, g, g, "bob wrote");
     w.run();
     w.set_online(&alice, false);
@@ -1497,8 +1482,7 @@ fn waits_have_no_deadline_and_set_role_does_not_wait() {
 // spec/permissions.md §5.3, notes/api.md set_role: `set_role` removes every way in at once: a holder granted and joined by a link, offline
 #[test]
 fn set_role_removes_every_way_in() {
-    let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Write);
+    let (mut w, alice, bob, g) = alice_bob(Role::Write);
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
     w.run();
     w.until(bob.redeem(&link), 1000, 30).unwrap();
@@ -1568,10 +1552,9 @@ fn team_reads_again_after_a_member_left_spec_permissions_3() {
 #[test]
 fn set_role_keeps_what_was_synced_first_spec_permissions_5_3() {
     for (now, joined) in [(false, false), (true, false), (false, true), (true, true)] {
-        let mut w = World::new();
         // joined: Bob, a reader, joins by a write link, then is granted write as well (a link
         // to what he already reaches at its role joins nothing)
-        let (alice, bob, g) = alice_bob(&mut w, if joined { Role::Read } else { Role::Write });
+        let (mut w, alice, bob, g) = alice_bob(if joined { Role::Read } else { Role::Write });
         if joined {
             let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
             w.run();
@@ -1653,8 +1636,7 @@ fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
 // the granter had received stay, at every node; one it had not received goes.
 #[test]
 fn lower_may_grant_keeps_received_grants_spec_permissions_5_1() {
-    let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Read);
+    let (mut w, alice, bob, g) = alice_bob(Role::Read);
     let b = bob.me();
     alice.grant(g, b, Role::Read, osis::GrantOpts { may_grant: Some(Role::Read), ..Default::default() }).unwrap();
     w.run();
@@ -1698,8 +1680,7 @@ fn ways(db: &Osis, g: Tid, through: &[Tid]) -> Vec<(Tid, HolderKind, Role)> {
 // spec/permissions.md §7, spec/wire.md §3: a link's actor reads as a link on another holder's node, before and after its single use; its joiner reads as an actor at the lesser role; an account reads as an actor, its nodes as keys
 #[test]
 fn holders_say_what_each_actor_is_spec_permissions_7() {
-    let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Write);
+    let (mut w, alice, bob, g) = alice_bob(Role::Write);
     let carol = w.account(3, &[0]);
     let once = alice.make_link(g, Role::Write, osis::LinkOpts { single_use: true, ..Default::default() }).unwrap();
     let k = alice.links_of(g).unwrap()[0].id.actor();
@@ -1735,8 +1716,7 @@ fn holders_say_what_each_actor_is_spec_permissions_7() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn leave_ends_grant_and_link_join_not_a_team() {
-    let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Read);
+    let (mut w, alice, bob, g) = alice_bob(Role::Read);
     let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
     let k = alice.links_of(g).unwrap()[0].id.actor();
     w.run();
@@ -1762,8 +1742,7 @@ fn leave_ends_grant_and_link_join_not_a_team() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn leave_of_a_links_maker_gives_up_the_link() {
-    let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Admin);
+    let (mut w, alice, bob, g) = alice_bob(Role::Admin);
     let carol = w.account(3, &[0]);
     let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
     let id = alice.links_of(g).unwrap()[0].id;
@@ -1785,8 +1764,7 @@ fn leave_of_a_links_maker_gives_up_the_link() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn leave_refused_on_one_way_writes_nothing() {
-    let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Admin);
+    let (mut w, alice, bob, g) = alice_bob(Role::Admin);
     let team = group(&alice);
     alice.grant(team, bob.me(), Role::Admin, Default::default()).unwrap();
     alice.grant(g, team, Role::Write, Default::default()).unwrap();

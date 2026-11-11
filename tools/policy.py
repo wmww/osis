@@ -298,7 +298,8 @@ COPY_DEFS = {"core/base/src/copying.rs", "core/base/src/lib.rs", "core/crypto/sr
              "core/store/src/backend.rs", "core/store/src/pager.rs", "core/store/src/store.rs", "core/engine/src/engine/testing.rs",
              "core/engine/src/engine/mod.rs", "core/engine/src/engine/memo.rs", "core/engine/src/events/mod.rs",
              "core/engine/src/local_peer.rs", "core/engine/src/tests_copy.rs", "core/node/src/sync/testing.rs", "core/host/src/store.rs", "core/host/src/hub.rs",
-             "core/store/src/cipher.rs", "core/host/src/store/engine.rs"}
+             "core/store/src/cipher.rs", "core/host/src/store/engine.rs",
+             "core/osis/src/testing.rs"}
 
 def test_copies():
     for m in members:
