@@ -60,16 +60,6 @@ pub(crate) fn sample_header() -> Header {
     }
 }
 
-// spec/wire.md §4: the header round-trips through its canonical bytes; the commit ID is
-// BLAKE3 of them.
-#[test]
-fn header_round_trip() {
-    let h = sample_header();
-    let b = h.encode();
-    assert_eq!(Header::decode(&b).unwrap(), h);
-    assert_eq!(h.id().0, osis_base::hash::hash(&b));
-}
-
 // spec/wire.md §4 fields 15, 16: an account's epoch and a rotation round-trip; a rotation sits
 // only on a role commit, supersedes the epoch it is signed at, and keeps its lists ascending.
 #[test]

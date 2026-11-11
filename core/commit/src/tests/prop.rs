@@ -190,10 +190,13 @@ proptest! {
         }
     }
 
-    // spec/wire.md §4: any header, inline or linked lists, round-trips through its bytes.
+    // spec/wire.md §4: any header, inline or linked lists, round-trips through its canonical
+    // bytes; the commit ID is BLAKE3 of them.
     #[test]
     fn header_round_trip_prop(h in header()) {
-        let back = Header::decode(&h.encode()).unwrap();
+        let b = h.encode();
+        prop_assert_eq!(h.id().0, osis_base::hash::hash(&b));
+        let back = Header::decode(&b).unwrap();
         prop_assert_eq!(back, h);
     }
 
