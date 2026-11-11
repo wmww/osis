@@ -1,0 +1,5 @@
+# Failures on main the gate marks KNOWN (notes/testing.md, The gate's summary): one per line,
+# NAME REPRO ISSUE. NAME: a libtest path or sim-sweep:SCENARIO, matched alone; REPRO: the setting
+# that fails on main; ISSUE: its issues/ file (tools/policy.py refuses a line whose issue is gone).
+order::held_set_decides_plain OSIS_ORDER_SEED=438123470748 issues/order-lists-seed-diverges.md
+order::held_set_decides_plain OSIS_ORDER_START=539131766525 issues/order-required-floor-plain.md

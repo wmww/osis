@@ -5,7 +5,8 @@ target marked `test = false` / `doctest = false` has unit tests / doctests that 
 and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name, and
 osis-host cannot reach decryption (`host_blind`), and no test can bind the real LAN port or
 announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`), and only the engine's `apply::checked`
-vouches for checked delta bytes (`checked_bytes`).
+vouches for checked delta bytes (`checked_bytes`), and every tools/known_failures.txt line names
+an existing issue file and an existing test or sim scenario (`known_failures`).
 Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
 libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
 import glob, os, re, sys, tomllib
@@ -330,6 +331,24 @@ def checked_bytes():
     if n != 1:
         yield f"core/engine/src/apply/mod.rs: {n} Checked::verified uses, want 1 (apply::checked)"
 
+def known_failures():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import gate_failures
+    names, bad = gate_failures.known(ROOT)
+    yield from bad
+    sim = open(os.path.join(ROOT, "core/test/sim/src/scenarios.rs")).read()
+    rs = None
+    for name in names:
+        if name.startswith("sim-sweep:"):
+            if f'"{name.split(":", 1)[1]}"' not in sim:
+                yield f"{gate_failures.KNOWN}: {name}: no such sim scenario"
+            continue
+        if rs is None:
+            rs = "\n".join(open(f, errors="replace").read() for m in members for f in glob.glob(os.path.join(m, "**/*.rs"), recursive=True))
+        if not re.search(rf"\bfn {re.escape(name.split('::')[-1])}\b", rs):
+            yield f"{gate_failures.KNOWN}: {name}: no such test"
+
+errs.extend(known_failures())
 errs.extend(test_copies())
 errs.extend(checked_bytes())
 errs.extend(real_lan_tests())

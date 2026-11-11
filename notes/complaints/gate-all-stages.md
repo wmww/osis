@@ -1,0 +1,3 @@
+# gate-all-stages
+- Seeds in issues go stale silently: of the tests-tagged issues' named seeds, only three still fail on main (held_set_decides_plain 438123470748 and START 539131766525; rotation_holds 777063 too, fixed on main while this ran); the eph churn seeds (934924146790, 103, 144, 5018149455xx, 9130190), crdt 2854516606, sim member_churn 1527650006 and the ephemeral sim seeds 6916372900xx all pass. Fixed or just moved (harness rng change) is not visible from the issue.
+- The order harness prints `seed N, EMPHASIS (replay: ...)`, testenv `seed N (replay: ...)`: two formats for one thing (tools/gate_failures.py parses both).

@@ -1,7 +1,10 @@
 #!/bin/sh
 # The merge gate (notes/build.md, Merge gate; notes/testing.md, The gate): every check in order,
-# failing fast, each with its wall time and CPU-s. Run it in the task's worktree after
-# `git rebase main`; main is only ever fast-forwarded, never built.
+# each with its wall time and CPU-s. The checks before the tests (instant checks, lints, builds,
+# deny) fail fast; every test stage runs to its end whatever an earlier one did, and the gate then
+# prints every failure, KNOWN (tools/known_failures.txt) or NEW (tools/gate_failures.py). Exit 0
+# on a pass, 3 when only KNOWN failures failed, 1 on a NEW one, 2 on bad use. Run it in the task's
+# worktree after `git rebase main`; main is only ever fast-forwarded, never built.
 # Usage: tools/gate.sh [--all] [--base REV] [--plan]   (from the worktree root)
 # Its tests: the default tests (`cargo test`) plus the branch's selection from tools/test_select.py
 # (properties and sim scenarios at small size, from the crates the branch touched and their
@@ -41,8 +44,9 @@ while [ $# -gt 0 ]; do
 done
 # Children's CPU seconds so far (user + system); a step prints the difference: under load wall time says little.
 # `times` in the shell itself: a subshell's children start at 0.
-tf=$(mktemp)
-trap 'rm -f "$tf"' EXIT
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+tf=$tmp/times
 cpu() { times > "$tf"; cpu=$(awk 'function s(t) { split(t, a, /[ms]/); return a[1] * 60 + a[2] } NR == 2 { printf "%d", s($1) + s($2) }' "$tf"); }
 step() {
   printf '== %s\n' "$*"; local s c; s=$(date +%s); cpu; c=$cpu; "$@"; cpu
@@ -51,16 +55,32 @@ step() {
 # A step with time limits (notes/build.md, Time limits): over one prints a `LIMIT` line and logs
 # the hit; it never fails the gate.
 limited() { local n; n=$1; shift; step "$@"; python3 "$tools/limits.py" check "$n" $step_cpu $step_wall || true; }
+# A test stage, `tested LIMIT LOG CMD...` (one external command): timed and checked against its
+# limit like `limited`, its output also saved to LOG, and `LIMIT EXIT LOG` appended to $results;
+# it returns 0 whatever CMD did, so no failure ends a later stage. Its stdin is /dev/null: one
+# reading stdin would eat the held runner's later lines.
+tested() {
+  local n log s c; n=$1; log=$2; shift 2
+  printf '== %s\n' "$*"; s=$(date +%s); cpu; c=$cpu
+  { rc=0; "$@" < /dev/null || rc=$?; echo "$rc" > "$log.rc"; } 2>&1 | tee "$log"
+  cpu; step_wall=$(( $(date +%s) - s )); step_cpu=$(( cpu - c )); printf '   (%ss, %s CPU-s)\n' $step_wall $step_cpu
+  python3 "$tools/limits.py" check "$n" $step_cpu $step_wall || true
+  echo "$n $(cat "$log.rc") $log" >> "$results"
+}
 # Inside the one heavy-lock hold (the tests step at the end): each `run LIMIT CMD` line of the
-# selection file as a step against that limit, failing fast. Internal: the gate calls itself this
-# way under tools/heavy, which sets HEAVY_HELD; without it this would run the tests unlocked. A step's stdin is /dev/null: one
-# reading stdin would eat the later lines.
+# selection file SEL as a test stage, every one run; results in SEL.res, logs SEL.N.log; exits 1
+# if any failed. Internal: the gate calls itself this way under tools/heavy, which sets
+# HEAVY_HELD; without it this would run the tests unlocked.
 if [ -n "$held" ]; then
   [ -n "$HEAVY_HELD" ] || { echo "gate: --held is internal: only the gate's tools/heavy hold runs it" >&2; exit 2; }
+  results=$held.res
+  : > "$results"
+  i=0
   while IFS= read -r l; do
-    case "$l" in "run "*) l=${l#run }; limited "${l%% *}" sh -c "${l#* }" < /dev/null ;; esac
+    case "$l" in "run "*) l=${l#run }; i=$((i + 1)); tested "${l%% *}" "$held.$i.log" sh -c "${l#* }" ;; esac
   done < "$held"
-  exit 0
+  awk '$2 != 0 { f = 1 } END { exit f }' "$results"
+  exit
 fi
 [ -n "$base" ] || base=$(git merge-base HEAD main 2>/dev/null || true)
 core=1
@@ -119,10 +139,18 @@ if systemctl is-active --quiet com.system76.Scheduler.service 2>/dev/null; then
   echo "gate: WARNING: system76-scheduler is running; builds here run at idle priority and take many times their cost (notes/build.md)" >&2
 fi
 t0=$(date +%s)
-# The whole gate against its limit (`gate`), its lock wait (seconds, $1) left out; then the pass line.
+# the selection (`run` lines: the test stages expected) and every test stage's result
+sel=$tmp/sel
+results=$sel.res
+# The whole gate against its limit (`gate`), its lock wait (seconds, $1) left out; then every test
+# stage's failure, KNOWN or NEW, and the pass line or the summary's exit.
 passed() {
   cpu
   python3 "$tools/limits.py" check gate "$cpu" $(( $(date +%s) - t0 - $1 )) || true
+  if [ -e "$results" ]; then
+    rc=0; python3 "$tools/gate_failures.py" "$sel" "$results" || rc=$?
+    [ "$rc" = 0 ] || exit "$rc"
+  fi
   echo "== gate passed$2 ($(( $(date +%s) - t0 ))s)"
 }
 # The GUI packages: built, linted and tested only when named (not default members). Every lint
@@ -131,7 +159,7 @@ gui_pkgs="-p osis-kit -p osis-app -p osis-android"
 # shellcheck disable=SC2086
 gui_lint() { limited gate.gui-lint cargo clippy $gui_pkgs --all-targets --locked -- -D warnings; }
 # shellcheck disable=SC2086
-gui_test() { limited gate.gui-tests cargo test $gui_pkgs --locked; }
+gui_test() { tested gate.gui-tests "$tmp/gui.log" cargo test $gui_pkgs --locked; }
 # A change of the GUI and docs alone: no core build or test. Called from `if` bodies only: in an
 # `a || f` list `set -e` is off inside f.
 gui_only() {
@@ -155,6 +183,7 @@ if [ -z "$core" ]; then gui_only "GUI-only change"; fi
 instant() {
   step sh tools/gate_select_test.sh
   step python3 tools/test_select_test.py
+  step python3 tools/gate_failures_test.py
   step python3 tools/spec_map.py --uncited
   step python3 tools/spec_map.py --gaps
 }
@@ -166,8 +195,6 @@ if [ "$core" = docs ]; then
 fi
 # the tests the gate runs, as `build CMD` and `run CMD` lines: the default tests, then the branch's
 # selection (properties and sim scenarios at small size, on one random offset)
-sel=$(mktemp)
-trap 'rm -f "$tf" "$sel"' EXIT
 printf '%s\n' "build cargo test --locked --no-fail-fast --no-run" "run default-tests cargo test --locked --no-fail-fast" > "$sel"
 offset=$(python3 -c 'import random; print(random.randrange(10**12))')
 if [ "$select" = all ]; then from=--all; else from="--base $base"; fi
@@ -203,10 +230,10 @@ limited gate.deny deny
 # all-core runs at once each take about twice as long. Doctests compile inside it, at run time.
 # tools/heavy checks the hold against `gate.hold` and writes its lock wait to $wf, which the
 # gate's own limit leaves out.
-wf=$(mktemp)
-trap 'rm -f "$tf" "$sel" "$wf"' EXIT
+# A failing stage ends neither the hold nor the gate: the GUI tests still run, then the summary.
+wf=$tmp/wait
 export HEAVY_WAIT_FILE="$wf"
-step tools/heavy --limit gate.hold sh tools/gate.sh --held "$sel"
+step tools/heavy --limit gate.hold sh tools/gate.sh --held "$sel" || :
 wait_s=$(cat "$wf" 2>/dev/null || true); wait_s=${wait_s:-0}
 if [ -n "$gui" ]; then gui_test; fi
 passed "${wait_s%.*}" ", ${wait_s%.*}s of it waiting for the heavy lock"

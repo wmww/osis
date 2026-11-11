@@ -89,18 +89,19 @@ check "no merge base" "core=1 gui=1 unify=1 select=all"
 git checkout -q t; git branch -qm main old
 check "no main branch" "core=1 gui=1 unify=1 select=all"
 # the hold's runner (--held): only under tools/heavy (HEAVY_HELD), each `run LIMIT CMD` line in order with
-# stdin closed, the first failure ending it with that code; `build` lines are not its
+# stdin closed, every one run, `LIMIT EXIT LOG` per run in runs.res; exit 1 if any failed; `build` lines are not its
 held() {
   name=$1 want=$2; shift 2
   rm -f ran; rc=0; got=$(env "$@" sh "$gate" --held runs 2>&1) || rc=$?
-  got="exit $rc: $(printf '%s\n' "$got" | grep -v -e '^   (' -e '^   limit ' | tr '\n' '|')ran: $(cat ran 2>/dev/null | tr '\n' ' ')"
+  got="exit $rc: $(printf '%s\n' "$got" | grep -v -e '^   (' -e '^   limit ' | tr '\n' '|')ran: $(cat ran 2>/dev/null | tr '\n' ' ')res: $(cut -d' ' -f1,2 runs.res 2>/dev/null | tr '\n' ' ')"
   n=$((n + 1)); if [ "$got" = "$want" ]; then :; else echo "FAIL held $name: got '$got', want '$want'"; fail=1; fi
 }
 printf '%s\n' "build echo b >> ran" "run t echo 1 >> ran" "run t cat; echo 2 >> ran" "run t echo 3 >> ran" > runs
-held "unlocked" "exit 2: gate: --held is internal: only the gate's tools/heavy hold runs it|ran: " -u HEAVY_HELD
-held "every run, stdin closed" "exit 0: == sh -c echo 1 >> ran|== sh -c cat; echo 2 >> ran|== sh -c echo 3 >> ran|ran: 1 2 3 " HEAVY_HELD=1
-printf '%s\n' "run t echo 1 >> ran" "run t exit 7" "run t echo 3 >> ran" > runs
-held "first failure ends it" "exit 7: == sh -c echo 1 >> ran|== sh -c exit 7|ran: 1 " HEAVY_HELD=1
-rm -f runs ran
+held "unlocked" "exit 2: gate: --held is internal: only the gate's tools/heavy hold runs it|ran: res: " -u HEAVY_HELD
+held "every run, stdin closed" "exit 0: == sh -c echo 1 >> ran|== sh -c cat; echo 2 >> ran|== sh -c echo 3 >> ran|ran: 1 2 3 res: t 0 t 0 t 0 " HEAVY_HELD=1
+printf '%s\n' "run a echo 1 >> ran" "run b echo out; exit 7" "run c echo 3 >> ran" > runs
+held "a failure ends nothing" "exit 1: == sh -c echo 1 >> ran|== sh -c echo out; exit 7|out|== sh -c echo 3 >> ran|ran: 1 3 res: a 0 b 7 c 0 " HEAVY_HELD=1
+[ "$(cat runs.2.log)" = out ] || { echo "FAIL held: runs.2.log is '$(cat runs.2.log)', want 'out'"; fail=1; }
+rm -f runs runs.* ran
 echo "gate selection: $n cases, $([ $fail = 0 ] && echo ok || echo FAILED)"
 exit $fail
