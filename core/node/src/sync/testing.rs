@@ -95,6 +95,7 @@ impl SyncEngine {
                 tied: self.tied.clone(),
                 first: self.first.clone(),
                 left: self.left.clone(),
+                lifetimes_heard: self.lifetimes_heard.clone(),
                 unsubscribe: self.unsubscribe.clone(),
                 synced: self.synced.clone(),
                 synced_of: self.synced_of.clone(),

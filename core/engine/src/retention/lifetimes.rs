@@ -10,7 +10,8 @@
 //! **ended** (an ending held), else **unknown**. The judgment of one thing is a walk up its list
 //! through retainers that reference what is below them, stopping at the first standalone or
 //! unknown thing (`walk`). No liveness is cached: the kept state is the work list (`WORK`: things
-//! a change touched, judged once every thing their walk read is heard out) and `PENDING`. A walk
+//! a change touched), `HELD` (things whose walk read a thing not heard out, judged again once a
+//! label is newly heard out) and `PENDING`. A walk
 //! passes through a pending thing like any known thing: `PENDING` may be stale for a thing the
 //! same run made reachable (held-model `a_stale_pending_thing_is_walked_through`).
 //!
@@ -33,6 +34,9 @@ use std::collections::BTreeSet;
 
 /// `lw/<tid>`: things to judge.
 pub(crate) const WORK: &[u8] = b"lw/";
+/// `lh/<tid>`: things whose walk read a thing not heard out: judged again once one is
+/// (`judge_lifetimes` with `held`), not at every judgment of new work.
+pub(crate) const HELD: &[u8] = b"lh/";
 /// `lp/<tid>`: things judged unreachable and not ended here: this node may not end them, or the
 /// release request for them is not applied yet.
 pub(crate) const PENDING: &[u8] = b"lp/";
@@ -76,6 +80,7 @@ pub(crate) fn queue_with_listers(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
         set(tx, WORK, t, true)?;
     } else {
         set(tx, WORK, t, false)?;
+        set(tx, HELD, t, false)?;
         set(tx, PENDING, t, false)?;
     }
     for l in refs::listers(tx, t)? {
@@ -176,7 +181,7 @@ fn rows(tx: &mut Tx<'_>, prefix: &[u8]) -> Result<Vec<Tid>> {
 pub struct Judged {
     /// Unreachable things this node may end, with what only they kept.
     pub release: Vec<Tid>,
-    /// Things left queued: a thing their walk read is not heard out.
+    /// Things held: a thing their walk read is not heard out.
     pub waiting: usize,
     /// Things judged.
     pub judged: usize,
@@ -184,11 +189,20 @@ pub struct Judged {
     pub request: Option<CommitId>,
 }
 
-/// Judges the work list (and every pending thing when `rights` may have changed): each thing whose
-/// walk read only things `heard` says are heard out. Unreachable ones this node may end go in
-/// `release` with their cascade; the rest of the unreachable ones are pending.
-pub(crate) fn judge(tx: &mut Tx<'_>, heard: &dyn Fn(&Tid) -> bool, rights: bool) -> Result<Judged> {
+/// Whether every group holding `t` (itself included) is heard out: a thing under no label is.
+fn heard_thing(core: &Core, t: &Tid, heard: &dyn Fn(&Tid) -> bool) -> bool {
+    heard(t) && core.ix.groups.of.get(t).is_none_or(|gs| gs.iter().all(heard))
+}
+
+/// Judges the work list (with `held`, the held things; every pending thing when `rights` may have
+/// changed): each thing whose walk read only things `heard` says are heard out. Unreachable ones
+/// this node may end go in `release` with their cascade; the rest of the unreachable ones are
+/// pending.
+pub(crate) fn judge(tx: &mut Tx<'_>, heard: &dyn Fn(&Tid) -> bool, held: bool, rights: bool) -> Result<Judged> {
     let mut queue = rows(tx, WORK)?;
+    if held {
+        queue.extend(rows(tx, HELD)?);
+    }
     if rights {
         queue.extend(rows(tx, PENDING)?);
     }
@@ -198,19 +212,21 @@ pub(crate) fn judge(tx: &mut Tx<'_>, heard: &dyn Fn(&Tid) -> bool, rights: bool)
     while let Some(x) = queue.pop() {
         if status(tx.core, &x, &gone) != Status::Known {
             set(tx, WORK, &x, false)?;
+            set(tx, HELD, &x, false)?;
             set(tx, PENDING, &x, false)?;
             continue;
         }
         out.judged += 1;
         let mut read = BTreeSet::new();
         let unreachable = walk(tx, &x, &gone, &mut read)?;
-        if !read.iter().all(heard) {
-            set(tx, WORK, &x, true)?;
+        set(tx, WORK, &x, false)?;
+        if !read.iter().all(|t| heard_thing(tx.core, t, heard)) {
+            set(tx, HELD, &x, true)?;
             waiting.insert(x);
             continue;
         }
         waiting.remove(&x);
-        set(tx, WORK, &x, false)?;
+        set(tx, HELD, &x, false)?;
         let pending = has(tx, PENDING, &x)?;
         if unreachable {
             if may_end(tx, &x) {
@@ -239,23 +255,29 @@ pub(crate) fn pending(tx: &mut Tx<'_>) -> Result<Vec<Tid>> {
 
 impl crate::engine::Engine {
     /// Whether the lifetime judgment has work (`judge_lifetimes`): a thing queued, or the role
-    /// timelines changed while a thing is pending.
-    pub fn lifetimes_due(&mut self) -> Result<bool> {
+    /// timelines changed while a thing is pending; and whether a thing is held (waits for a
+    /// label to be heard out). Two store seeks.
+    pub fn lifetimes_due(&mut self) -> Result<(bool, bool)> {
         let rights = self.core.lifetimes_rights;
-        self.run(|tx| Ok(!tx.txn.scan_local(WORK, &[], 1)?.is_empty() || (rights && !tx.txn.scan_local(PENDING, &[], 1)?.is_empty())))
+        self.run(|tx| {
+            let due = !tx.txn.scan_local(WORK, &[], 1)?.is_empty() || (rights && !tx.txn.scan_local(PENDING, &[], 1)?.is_empty());
+            Ok((due, !tx.txn.scan_local(HELD, &[], 1)?.is_empty()))
+        })
     }
 
-    /// Judges the things changes touched (issues/thing-lifetimes.md, The judgment): each whose
-    /// walk read only things `heard` says are heard out (node-sync: every label holding it is;
-    /// a thing under no label is), the rest left queued. The unreachable things this node may
+    /// Judges the things changes touched (issues/thing-lifetimes.md, The judgment), and with
+    /// `held` the things held at an earlier judgment: each whose walk read only things heard out
+    /// (each group holding it, itself included, `heard` says is: node-sync, every label of the
+    /// group is; a thing under no group is), the rest held. Node-sync passes `held` once a label
+    /// is newly heard out, so new work alone does not walk the held things again. The unreachable things this node may
     /// end, with what only they kept, it releases in one request (`release`); the others it may
     /// not end are pending. A released thing is pending too until the request, applied, ends it:
     /// one whose request is refused or fails to be written (an `Err` here) is judged again at the
     /// next change of the role timelines or the next open, or once its list or a reference to
     /// it changes.
-    pub fn judge_lifetimes(&mut self, heard: &dyn Fn(&Tid) -> bool) -> Result<Judged> {
+    pub fn judge_lifetimes(&mut self, heard: &dyn Fn(&Tid) -> bool, held: bool) -> Result<Judged> {
         let rights = self.core.lifetimes_rights;
-        let mut out = self.run(|tx| judge(tx, heard, rights))?;
+        let mut out = self.run(|tx| judge(tx, heard, held, rights))?;
         self.core.lifetimes_rights = false;
         out.request = self.release(&out.release)?;
         Ok(out)

@@ -127,7 +127,7 @@ impl SyncEngine {
     /// pass ended with nothing outstanding (what the hosts have for this node has come, its own
     /// writes went); or some host refuses it (stranded: every key this node holds refused; or
     /// not admitted for now), so nothing of this node's can go there.
-    fn heard(&self, l: &LabelId) -> bool {
+    pub(super) fn heard(&self, l: &LabelId) -> bool {
         let (mut open, mut idle, mut refused) = (0, 0, false);
         for c in self.conns.values() {
             let Some(x) = c.labels.get(l) else { continue };

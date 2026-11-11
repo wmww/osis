@@ -132,7 +132,7 @@ fn the_judgment_releases_what_the_model_judges_unreachable() {
             }
             let v = view(net.engine(a), &t);
             let want = hm::unreachable(&v);
-            let got = net.engine(a).judge_lifetimes(&|_| true).unwrap();
+            let got = net.engine(a).judge_lifetimes(&|_| true, true).unwrap();
             assert_eq!(idx(&got.release, &t), want, "seed {seed}: {v:?} {log:?}");
             assert!(net.engine(a).lifetimes_pending().unwrap().is_empty());
             released += got.release.len();
@@ -140,7 +140,7 @@ fn the_judgment_releases_what_the_model_judges_unreachable() {
             for x in &got.release {
                 assert_eq!(net.engine(a).lifetime_status(x), Status::Ended, "seed {seed}: released");
             }
-            assert!(net.engine(a).judge_lifetimes(&|_| true).unwrap().release.is_empty(), "seed {seed}: judged twice");
+            assert!(net.engine(a).judge_lifetimes(&|_| true, true).unwrap().release.is_empty(), "seed {seed}: judged twice");
         }
     }
     assert!(released > 40, "{released}");
@@ -162,11 +162,11 @@ fn a_change_judges_what_it_touches_at_n_and_10n() {
             list(&mut m, *g, Some([*k].into()));
         }
         net.engine(a).commit(m).unwrap();
-        assert!(net.engine(a).judge_lifetimes(&|_| true).unwrap().release.is_empty());
+        assert!(net.engine(a).judge_lifetimes(&|_| true, true).unwrap().release.is_empty());
         let mut m = Mutation::new();
         refs(&mut m, root, Value::Set(kids[1..].iter().map(|k| Value::Tid(*k)).collect()));
         net.engine(a).commit(m).unwrap();
-        let got = net.engine(a).judge_lifetimes(&|_| true).unwrap();
+        let got = net.engine(a).judge_lifetimes(&|_| true, true).unwrap();
         assert_eq!(got.release, vec![kids[0], grand[0]]);
         got.judged
     };
@@ -195,17 +195,20 @@ fn a_node_missing_a_retainer_releases_nothing() {
     assert_eq!(net.engine(b).lifetime_status(&x), Status::Known);
     assert_eq!(net.engine(b).lifetime_status(&r), Status::Unknown);
     for n in [a, b] {
-        assert!(net.engine(n).judge_lifetimes(&|_| true).unwrap().release.is_empty(), "node {n}");
+        assert!(net.engine(n).judge_lifetimes(&|_| true, true).unwrap().release.is_empty(), "node {n}");
         assert!(net.engine(n).lifetimes_pending().unwrap().is_empty(), "node {n}");
     }
-    // the retainer stops referencing it: the node holding both judges it unreachable, the other
-    // still cannot judge
+    // the retainer stops referencing it: the node holding both judges it unreachable once heard
+    // out and releases it (node sync's trigger); the other still cannot judge, and ends it by
+    // that request
     let mut m = Mutation::new();
     refs(&mut m, r, Value::Set(Default::default()));
     net.engine(a).commit(m).unwrap();
     net.run();
-    assert_eq!(net.engine(a).judge_lifetimes(&|_| true).unwrap().release, vec![x]);
-    assert!(net.engine(b).judge_lifetimes(&|_| true).unwrap().release.is_empty());
+    for n in [a, b] {
+        assert_eq!(net.engine(n).lifetime_status(&x), Status::Ended, "node {n}");
+        assert!(net.engine(n).lifetimes_pending().unwrap().is_empty(), "node {n}");
+    }
 }
 
 // issues/thing-lifetimes.md (The judgment; Cascade): a thing created with its list in one commit
@@ -224,13 +227,15 @@ fn a_new_listed_thing_is_judged_once_heard_out() {
     refs(&mut m, x, Value::Set([Value::Tid(y)].into()));
     list(&mut m, y, Some([x].into()));
     e.commit(m).unwrap();
-    let got = e.judge_lifetimes(&|t| *t != r).unwrap();
+    let got = e.judge_lifetimes(&|t| *t != r, true).unwrap();
     assert!(got.release.is_empty());
     assert!(got.waiting > 0);
     assert!(e.lifetimes_pending().unwrap().is_empty());
-    assert!(e.lifetimes_due().unwrap());
-    assert_eq!(e.judge_lifetimes(&|_| true).unwrap().release.into_iter().collect::<BTreeSet<_>>(), [x, y].into());
-    assert!(!e.lifetimes_due().unwrap());
+    assert_eq!(e.lifetimes_due().unwrap(), (false, true), "held, not new work");
+    // new work alone does not walk the held things again
+    assert_eq!(e.judge_lifetimes(&|_| true, false).unwrap().judged, 0);
+    assert_eq!(e.judge_lifetimes(&|_| true, true).unwrap().release.into_iter().collect::<BTreeSet<_>>(), [x, y].into());
+    assert_eq!(e.lifetimes_due().unwrap(), (false, false));
 }
 
 // issues/thing-lifetimes.md (The release; Cascade), spec/commits.md §5 (Ending): r, an actor first
@@ -256,11 +261,11 @@ fn a_cascade_releases_an_actor_and_what_it_kept_in_one_commit() {
     m.set(g, &ct::GROUP, &items).unwrap();
     e.commit(m).unwrap();
     net.run();
-    assert!(net.engine(a).judge_lifetimes(&|_| true).unwrap().release.is_empty());
+    assert!(net.engine(a).judge_lifetimes(&|_| true, true).unwrap().release.is_empty());
     let mut m = Mutation::new();
     refs(&mut m, root, Value::Set(Default::default()));
     net.engine(a).commit(m).unwrap();
-    let got = net.engine(a).judge_lifetimes(&|_| true).unwrap();
+    let got = net.engine(a).judge_lifetimes(&|_| true, true).unwrap();
     assert_eq!(got.release.iter().copied().collect::<BTreeSet<_>>(), [r, x].into());
     let h = net.engine(a).header(&got.request.unwrap()).unwrap();
     assert_eq!(h.aspects.iter().map(|p| (p.tid, p.ak.as_str())).collect::<BTreeSet<_>>(), [(r, ct::RELEASED.ak()), (x, ct::RELEASED.ak())].into(), "one released.0 part per thing");
@@ -298,25 +303,25 @@ fn a_release_that_fails_to_be_written_is_judged_again_at_the_next_open() {
     list(&mut m, x, Some([r].into()));
     refs(&mut m, r, Value::Set([Value::Tid(x)].into()));
     e.commit(m).unwrap();
-    assert!(e.judge_lifetimes(&|_| true).unwrap().release.is_empty());
+    assert!(e.judge_lifetimes(&|_| true, true).unwrap().release.is_empty());
     let mut m = Mutation::new();
     refs(&mut m, r, Value::Set(Default::default()));
     e.commit(m).unwrap();
     // the judgment's transaction is write 0, the request's first write fails
     f.at(1, osis_store::Fault::Fail);
-    assert!(e.judge_lifetimes(&|_| true).is_err(), "the request is not written");
+    assert!(e.judge_lifetimes(&|_| true, true).is_err(), "the request is not written");
     // a failed write breaks the store until the node opens again
     net.restart(a, 2);
     let e = net.engine(a);
     assert_eq!(e.lifetime_status(&x), Status::Known);
     assert_eq!(e.lifetimes_pending().unwrap(), vec![x], "judged, pending until ended");
-    assert!(e.lifetimes_due().unwrap(), "the open judges what is pending");
-    let got = e.judge_lifetimes(&|_| true).unwrap();
+    assert!(e.lifetimes_due().unwrap().0, "the open judges what is pending");
+    let got = e.judge_lifetimes(&|_| true, true).unwrap();
     assert_eq!(got.release, vec![x]);
     assert!(got.request.is_some());
     assert_eq!(e.lifetime_status(&x), Status::Ended);
     assert!(e.lifetimes_pending().unwrap().is_empty());
-    assert!(!e.lifetimes_due().unwrap());
+    assert!(!e.lifetimes_due().unwrap().0);
 }
 
 // issues/thing-lifetimes.md (The release: Forgotten, Comes back after), spec/commits.md §5
@@ -342,12 +347,12 @@ fn a_released_thing_is_forgotten_at_its_requests_expiry_and_a_stale_copy_is_judg
     let mut m = Mutation::new();
     m.set(x, &Ak::new("t:v.0").unwrap(), &Value::Int(1)).unwrap();
     let wrote = e.commit(m).unwrap().unwrap();
-    assert!(e.judge_lifetimes(&|_| true).unwrap().release.is_empty());
+    assert!(e.judge_lifetimes(&|_| true, true).unwrap().release.is_empty());
     let stale = e.package(&made).unwrap().unwrap();
     let mut m = Mutation::new();
     refs(&mut m, r, Value::Set(Default::default()));
     e.commit(m).unwrap();
-    let first = e.judge_lifetimes(&|_| true).unwrap();
+    let first = e.judge_lifetimes(&|_| true, true).unwrap();
     assert_eq!(first.release, vec![x]);
     let req = first.request.unwrap();
     assert_eq!(e.lifetime_status(&x), Status::Ended);
@@ -366,7 +371,7 @@ fn a_released_thing_is_forgotten_at_its_requests_expiry_and_a_stale_copy_is_judg
     assert_eq!(e.lifetime_status(&x), Status::Unknown, "forgotten over a restart");
     let _ = e.ingest(&stale.bytes, stale.blobs);
     assert_eq!(e.lifetime_status(&x), Status::Known, "a stale copy comes back");
-    let again = e.judge_lifetimes(&|_| true).unwrap();
+    let again = e.judge_lifetimes(&|_| true, true).unwrap();
     assert_eq!(again.release, vec![x], "judged again: unreachable");
     assert_ne!(again.request, Some(req), "by a new request");
     assert_eq!(e.lifetime_status(&x), Status::Ended);
@@ -393,14 +398,14 @@ fn a_commit_on_a_forgotten_thing_and_a_live_one_keeps_its_header() {
     let mut m = Mutation::new();
     refs(&mut m, r, Value::Set(Default::default()));
     e.commit(m).unwrap();
-    assert_eq!(e.judge_lifetimes(&|_| true).unwrap().release, vec![x]);
+    assert_eq!(e.judge_lifetimes(&|_| true, true).unwrap().release, vec![x]);
     net.advance(osis_base::format::ROLE_KEEP_MS + 1_000);
     let e = net.engine(a);
     assert_eq!(e.lifetime_status(&x), Status::Unknown);
     assert!(e.header(&made).is_some(), "kept for r's part");
     let _ = e.ingest(&stale.bytes, stale.blobs);
     assert_eq!(e.lifetime_status(&x), Status::Known, "x's parts join again");
-    assert_eq!(e.judge_lifetimes(&|_| true).unwrap().release, vec![x]);
+    assert_eq!(e.judge_lifetimes(&|_| true, true).unwrap().release, vec![x]);
 }
 
 // spec/commits.md §5 (Forgetting: role commits included): a released thing with an edge write of
@@ -431,7 +436,7 @@ fn a_forgotten_released_thing_takes_its_role_commits() {
     let mut m = Mutation::new();
     refs(&mut m, r, Value::Set(Default::default()));
     e.commit(m).unwrap();
-    assert_eq!(e.judge_lifetimes(&|_| true).unwrap().release, vec![x]);
+    assert_eq!(e.judge_lifetimes(&|_| true, true).unwrap().release, vec![x]);
     assert!(e.header(&grant).is_some());
     net.advance(osis_base::format::ROLE_KEEP_MS + 1_000);
     let e = net.engine(a);
@@ -507,5 +512,232 @@ fn a_request_going_whole_after_one_of_its_things_leaves_no_row_of_it() {
     net.restart(a, 2);
     for t in [x, y] {
         assert!(headers(net.engine(a), t), "over a restart");
+    }
+}
+
+// Node sync's trigger (issues/thing-lifetimes.md, The release: When): a node judges once it has
+// heard out every label holding a thing the walk read, and writes the release request itself.
+
+/// `r`, an item of `g`, referencing `x`, an item of `g` listing `r` (both first admin `g`), and a
+/// write on `x` alone (returned), synced.
+fn retained_in(net: &mut Net, n: usize, g: Tid) -> (Tid, Tid, CommitId) {
+    let e = net.engine(n);
+    let mut m = Mutation::new();
+    let r = e.new_thing(&mut m, g);
+    let x = e.new_thing(&mut m, g);
+    list(&mut m, x, Some([r].into()));
+    refs(&mut m, r, Value::Set([Value::Tid(x)].into()));
+    let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.extend([r, x]);
+    m.set(g, &ct::GROUP, &items).unwrap();
+    e.commit(m).unwrap().unwrap();
+    net.run();
+    let w = net.write(n, x, "y");
+    net.run();
+    (r, x, w)
+}
+
+/// Whether host 0 holds under `l` a commit node `n` knows as matching `f`.
+fn at_host(net: &mut Net, n: usize, l: &osis_base::LabelId, f: impl Fn(CommitId, &osis_commit::Header) -> bool) -> bool {
+    let host = net.host_ids(0, l);
+    let held: Vec<CommitId> = net.sync(n).entries(l).into_iter().filter(|(id, _)| host.contains(id)).filter_map(|(_, k)| if let osis_node::sync::EntryKind::Commit { commit, .. } = k { Some(commit) } else { None }).collect();
+    held.into_iter().any(|c| net.engine(n).header(&c).is_some_and(|h| f(c, &h)))
+}
+
+// issues/thing-lifetimes.md (The release: When, Applying): b drops r's reference to x; node sync
+// judges x unreachable once g's label is heard out and releases it, so x ends at every node. The
+// request is at the host before x's write leaves it, checked after every message
+#[test]
+fn unreferencing_releases_at_every_node_once_heard_out() {
+    let (mut net, _host, [a, b], g, []) = crate::net::hosted::<2, 0>(&[(1, osis_base::Role::Admin)], [], true);
+    let l = net.label(a);
+    let (r, x, w) = retained_in(&mut net, a, g);
+    for n in [a, b] {
+        assert_eq!(net.engine(n).lifetime_status(&x), Status::Known, "node {n}");
+    }
+    let mut m = Mutation::new();
+    refs(&mut m, r, Value::Set(Default::default()));
+    net.engine(b).commit(m).unwrap().unwrap();
+    net.feed(b, osis_node::sync::Event::Local);
+    let released = |_: CommitId, h: &osis_commit::Header| h.aspects.iter().any(|p| p.tid == x && p.ak.as_str() == ct::RELEASED.ak());
+    // either node may release it: each knows the entries it placed
+    loop {
+        let w_at = at_host(&mut net, a, &l, |c, _| c == w) || at_host(&mut net, b, &l, |c, _| c == w);
+        assert!(w_at || at_host(&mut net, a, &l, released) || at_host(&mut net, b, &l, released), "neither x's write nor the release request at the host");
+        if !net.step() {
+            break;
+        }
+    }
+    net.run();
+    for n in [a, b] {
+        let e = net.engine(n);
+        assert_eq!(e.lifetime_status(&x), Status::Ended, "node {n}: released");
+        assert!(!e.knows(&x), "node {n}");
+        assert!(e.lifetimes_pending().unwrap().is_empty(), "node {n}");
+        assert_eq!(e.lifetimes_due().unwrap(), (false, false), "node {n}: nothing queued or held");
+    }
+    for n in [a, b] {
+        assert!(!at_host(&mut net, n, &l, |c, _| c == w), "x's write deleted at the host");
+    }
+    assert!(at_host(&mut net, a, &l, released) || at_host(&mut net, b, &l, released), "the request at the host");
+}
+
+// issues/thing-lifetimes.md (The release: When): a thing under no label is judged at once
+#[test]
+fn a_thing_under_no_label_is_released_at_once() {
+    let (mut net, [a]) = local_nodes::<1>();
+    let me = net.tid(a);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let r = e.new_thing(&mut m, me);
+    let x = e.new_thing(&mut m, me);
+    list(&mut m, x, Some([r].into()));
+    refs(&mut m, r, Value::Set([Value::Tid(x)].into()));
+    e.commit(m).unwrap().unwrap();
+    net.feed(a, osis_node::sync::Event::Local);
+    assert_eq!(net.engine(a).lifetime_status(&x), Status::Known);
+    let mut m = Mutation::new();
+    refs(&mut m, r, Value::Set(Default::default()));
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.feed(a, osis_node::sync::Event::Local);
+    assert_eq!(net.engine(a).lifetime_status(&x), Status::Ended);
+}
+
+// issues/thing-lifetimes.md (The release: When): offline (its link to the host down), a node
+// releases nothing: g's label is not heard out, so x is held, not judged, and steps that follow
+// do not walk it again. Back online and heard out, it releases x
+#[test]
+fn an_offline_node_releases_nothing_until_heard_out() {
+    let (mut net, host, [a], g, []) = crate::net::hosted::<1, 0>(&[], [], true);
+    let (r, x, _) = retained_in(&mut net, a, g);
+    net.drop_link(a, host);
+    let mut m = Mutation::new();
+    refs(&mut m, r, Value::Set(Default::default()));
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.feed(a, osis_node::sync::Event::Local);
+    let e = net.engine(a);
+    assert_eq!(e.lifetime_status(&x), Status::Known, "not heard out: nothing released");
+    assert!(e.lifetimes_pending().unwrap().is_empty());
+    assert_eq!(e.lifetimes_due().unwrap(), (false, true), "held");
+    // steps while not heard out walk nothing (judging is queued work only, the held things again
+    // once a label is newly heard out)
+    osis_node::costs::take();
+    for _ in 0..10 {
+        net.feed(a, osis_node::sync::Event::Local);
+    }
+    let walked = osis_node::costs::take().iter().find(|c| c.0 == "lifetimes: walked").map_or(0, |c| c.2);
+    assert_eq!(walked, 0, "no walk per step");
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(a).lifetime_status(&x), Status::Ended, "heard out: released");
+}
+
+// issues/thing-lifetimes.md (The judgment: a one-commit move keeps): x moves from r1 to r2 in one
+// commit; no node releases it
+#[test]
+fn a_one_commit_move_releases_nothing() {
+    let (mut net, _host, [a, b], g, []) = crate::net::hosted::<2, 0>(&[(1, osis_base::Role::Admin)], [], true);
+    let (r1, x, _) = retained_in(&mut net, a, g);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let r2 = e.new_thing(&mut m, g);
+    let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(r2);
+    m.set(g, &ct::GROUP, &items).unwrap();
+    list(&mut m, x, Some([r1, r2].into()));
+    e.commit(m).unwrap().unwrap();
+    net.run();
+    let mut m = Mutation::new();
+    refs(&mut m, r1, Value::Set(Default::default()));
+    refs(&mut m, r2, Value::Set([Value::Tid(x)].into()));
+    net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    for n in [a, b] {
+        let e = net.engine(n);
+        assert_eq!(e.lifetime_status(&x), Status::Known, "node {n}: kept");
+        assert!(e.lifetimes_pending().unwrap().is_empty(), "node {n}");
+    }
+}
+
+// issues/thing-lifetimes.md (The release: When): x moves from r1 to r2 in two commits (r2
+// references x, then r1 lets go). b, a right holder, receives them in the bad order while its link
+// is down: after the second alone x reads unreachable, but g's label is not heard out, so b
+// releases nothing; back online it judges x kept
+#[test]
+fn a_two_commit_move_received_in_the_bad_order_releases_nothing() {
+    let (mut net, host, [a, b], g, []) = crate::net::hosted::<2, 0>(&[(1, osis_base::Role::Admin)], [], true);
+    let (r1, x, _) = retained_in(&mut net, a, g);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let r2 = e.new_thing(&mut m, g);
+    let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(r2);
+    m.set(g, &ct::GROUP, &items).unwrap();
+    list(&mut m, x, Some([r1, r2].into()));
+    e.commit(m).unwrap().unwrap();
+    net.run();
+    net.drop_link(b, host);
+    net.set_online(a, false);
+    let mut m = Mutation::new();
+    refs(&mut m, r2, Value::Set([Value::Tid(x)].into()));
+    let first = net.engine(a).commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    refs(&mut m, r1, Value::Set(Default::default()));
+    let second = net.engine(a).commit(m).unwrap().unwrap();
+    for c in [second, first] {
+        let p = net.engine(a).package(&c).unwrap().unwrap();
+        net.engine(b).ingest(&p.bytes, p.blobs).unwrap();
+        net.feed(b, osis_node::sync::Event::Local);
+        let e = net.engine(b);
+        assert_eq!(e.lifetime_status(&x), Status::Known, "b: not heard out, nothing released");
+        assert!(e.lifetimes_pending().unwrap().is_empty());
+    }
+    net.set_online(a, true);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    for n in [a, b] {
+        let e = net.engine(n);
+        assert_eq!(e.lifetime_status(&x), Status::Known, "node {n}: kept");
+        assert_eq!(e.lifetimes_due().unwrap(), (false, false), "node {n}: judged");
+        assert!(e.lifetimes_pending().unwrap().is_empty(), "node {n}");
+    }
+}
+
+// issues/thing-lifetimes.md (The judgment; Cascade): x keeps y, y and z keep each other (a cycle).
+// r lets go of x: node sync releases the subtree, the cycle included, at every node
+#[test]
+fn a_subtree_and_a_cycle_release_at_every_node() {
+    let (mut net, _host, [a, b], g, []) = crate::net::hosted::<2, 0>(&[(1, osis_base::Role::Admin)], [], true);
+    let (r, x, _) = retained_in(&mut net, a, g);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let y = e.new_thing(&mut m, g);
+    let z = e.new_thing(&mut m, g);
+    let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.extend([y, z]);
+    m.set(g, &ct::GROUP, &items).unwrap();
+    refs(&mut m, x, Value::Set([Value::Tid(y)].into()));
+    list(&mut m, y, Some([x, z].into()));
+    refs(&mut m, y, Value::Set([Value::Tid(z)].into()));
+    list(&mut m, z, Some([y].into()));
+    refs(&mut m, z, Value::Set([Value::Tid(y)].into()));
+    e.commit(m).unwrap().unwrap();
+    net.run();
+    for n in [a, b] {
+        for t in [x, y, z] {
+            assert_eq!(net.engine(n).lifetime_status(&t), Status::Known, "node {n}");
+        }
+    }
+    let mut m = Mutation::new();
+    refs(&mut m, r, Value::Set(Default::default()));
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    for n in [a, b] {
+        for t in [x, y, z] {
+            assert_eq!(net.engine(n).lifetime_status(&t), Status::Ended, "node {n}: {t:?} released");
+        }
+        assert!(net.engine(n).lifetimes_pending().unwrap().is_empty(), "node {n}");
     }
 }

@@ -1427,13 +1427,14 @@ fn a_referenced_released_thing_stays_ended_past_its_expiry_and_for_a_newcomer_sp
 }
 
 // issues/thing-lifetimes.md (What is kept; Interactions: Expiry): rr, an expiring retainer,
-// references cx, which lists it. rr expires; nobody judges cx yet. A node granted g afterwards
-// receives cx with rr's ending under g's label (cx lists rr), so it reads rr ended, judges cx
-// unreachable and releases it, rather than reading rr unknown and keeping cx for good
+// references cx, which lists it. rr expires while its admins are offline (not heard out: cx
+// stays). A node granted g afterwards receives cx with rr's ending under g's label (cx lists rr),
+// so it reads rr ended, judges cx unreachable and releases it, rather than reading rr unknown and
+// keeping cx for good
 #[test]
 fn an_expired_retainers_child_is_judged_and_released_at_a_later_node_spec_commits_5() {
     use osis_node::retention::lifetimes::Status;
-    let Setup { mut net, a, g, .. } = setup();
+    let Setup { mut net, a, b, c, g } = setup();
     let e = net.engine(a);
     let mut m = Mutation::new();
     let rr = e.new_thing(&mut m, g);
@@ -1452,15 +1453,40 @@ fn an_expired_retainers_child_is_judged_and_released_at_a_later_node_spec_commit
     m.set(g, &ct::GROUP, &items).unwrap();
     e.commit(m).unwrap().unwrap();
     net.run();
+    // d is granted admin of g now, and takes it up (receives g) only after rr expired
+    let d = net.joining_node(4, &[0]);
+    let addr = net.address(0);
+    let (made, done) = net.engine(d).create_account(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(d).carry_out(done).unwrap();
+    net.actions(d, acts);
+    net.run();
+    net.pair(d, a);
+    net.nodes[d].accepts = false;
+    let edge = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
+    let done = net.engine(a).grant(&g, &made.account, &edge).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    // g's other admins are offline: nobody who may end cx judges it at rr's expiry
+    net.set_online(a, false);
+    net.set_online(c, false);
     for _ in 0..3 {
         net.advance(70_000);
     }
-    assert_eq!(net.engine(a).lifetime_status(&rr), Status::Ended, "rr expired");
-    assert_eq!(net.engine(a).lifetime_status(&cx), Status::Known, "nobody judged cx yet");
-    let d = granted_later_as(&mut net, a, g, Role::Admin);
+    assert_eq!(net.engine(b).lifetime_status(&rr), Status::Ended, "rr expired");
+    assert_eq!(net.engine(b).lifetime_status(&cx), Status::Known, "b may not end cx");
+    assert_eq!(net.engine(b).lifetimes_pending().unwrap(), vec![cx], "b: unreachable, pending");
+    assert_eq!(net.engine(a).lifetime_status(&cx), Status::Known, "a offline: nothing judged");
+    net.nodes[d].accepts = true;
+    let acts = net.accept_invites(d);
+    net.actions(d, acts);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
     assert_eq!(net.engine(d).lifetime_status(&rr), Status::Ended, "d: told rr ended under g's label");
-    assert_eq!(net.engine(d).lifetime_status(&cx), Status::Known);
-    assert_eq!(net.engine(d).judge_lifetimes(&|_| true).unwrap().release, vec![cx], "d: cx judged unreachable");
+    assert_eq!(net.engine(d).lifetime_status(&cx), Status::Ended, "d: cx judged unreachable and released once heard out");
+    assert_eq!(net.engine(b).lifetime_status(&cx), Status::Ended, "b: by d's request");
+    net.set_online(a, true);
     net.run();
     assert_eq!(net.engine(a).lifetime_status(&cx), Status::Ended, "a: released");
 }

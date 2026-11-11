@@ -40,7 +40,9 @@ fn rows_follow_the_values() {
         w.at(r, key("t:a.0")).set(&m)?;
         w.at(r, key("t:s.0")).set(&Value::Set([Value::Tid(y)].into_iter().collect()))?;
         w.at(r, key("t:txt.0")).set(&Value::Str(x.to_uri()))?;
-        w.at(r, key("retainers^.0")).set(&Value::Set([Value::Tid(y)].into_iter().collect()))
+        w.at(r, key("retainers^.0")).set(&Value::Set([Value::Tid(y)].into_iter().collect()))?;
+        // y keeps r alive (else node sync releases it)
+        w.at(y, key("t:k.0")).set(&Value::Tid(r))
     })
     .unwrap();
     db.commit_with(|w| w.at(r, key("t:e+.0")).set(&Value::Tid(x))).unwrap();

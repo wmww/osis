@@ -20,6 +20,7 @@ mod host;
 pub mod driver;
 mod inbound;
 mod io;
+mod lifetimes;
 mod local;
 mod marks;
 mod memory;
@@ -255,6 +256,9 @@ pub struct SyncEngine {
     /// at start, by a self-removal and when the trigger leaves a loss to it; cleared once nothing
     /// lost waits or may come to.
     pub(crate) left: Option<deliver::LeftCheck>,
+    /// The labels heard out at the last lifetime judgment (`judge_lifetimes`); `None` before the
+    /// first: a label heard out since judges the held things again.
+    pub(crate) lifetimes_heard: Option<BTreeSet<osis_base::LabelId>>,
     /// Sessions of forgotten labels whose pushes the host is still to stop.
     pub(crate) unsubscribe: BTreeSet<(ConnId, LabelId)>,
     /// The synced labels as last computed (`labels()`).
@@ -409,6 +413,7 @@ impl SyncEngine {
             deposit_room: BTreeMap::new(),
             local_inbox: Vec::new(),
             left: Some(deliver::LeftCheck::default()),
+            lifetimes_heard: None,
             first: BTreeSet::new(),
             tree_wants: BTreeSet::new(),
             body_links: BTreeMap::new(),
@@ -645,6 +650,10 @@ impl SyncEngine {
                 break;
             }
             ok = self.settled_step(Event::Local, &mut out);
+        }
+        // after the passes heard labels out: a release request written goes up now
+        if ok && self.judge_lifetimes() {
+            self.settled_step(Event::Local, &mut out);
         }
         // to the open labels' work sets now: with none (offline, LAN or local labels only) the
         // changes go (a label opened later judges everything)
