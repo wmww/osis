@@ -145,12 +145,13 @@ fn cycle_breaking_is_linear_spec_6_2() {
         elems.insert(x.clone(), SeqElem { created: Some((cx.clone(), tail.clone())), content: SeqContent::Char('a'), pos: vec![(mx, Anchor::Dot(y.clone()), None), (cx, tail.clone(), None)], deleted: None, undel: None, valueless: false, span: 1 });
         elems.insert(y.clone(), SeqElem { created: Some((cy.clone(), tail.clone())), content: SeqContent::Char('b'), pos: vec![(my, Anchor::Dot(x.clone()), None), (cy, tail.clone(), None)], deleted: None, undel: None, valueless: false, span: 1 });
     }
-    let t = std::time::Instant::now();
+    let _ = crate::linearize::walk_probe();
     let p = crate::linearize::place_idx(&elems);
-    let took = t.elapsed();
-    assert_eq!(p.order.len(), (len + 2 * k) as usize);
-    // linear: well under a second in release; a generous bound for a loaded debug build
-    assert!(took.as_secs() < 10, "cycle breaking took {took:?}");
+    let walked = crate::linearize::walk_probe();
+    let n = (len + 2 * k) as usize;
+    assert_eq!(p.order.len(), n);
+    // linear: a few steps per node (re-walking the chain per victim would be len * k)
+    assert!(walked <= 2 * n, "cycle breaking walked {walked} steps for {n} nodes");
 }
 
 /// Joins of `snapshot_then_edit`: all, followed by the cached placement (no whole pass), and
@@ -306,55 +307,44 @@ proptest! {
 }
 
 /// §6 (`seq_lin`): writes splitting a range record of a snapshot-bootstrapped text, or anchoring
-/// inside one, are followed by the cached placement, not rebuilt (fixed seeds; each kind of split
-/// alone: `ranges_split_where_writes_land_spec_6`).
-#[test]
-fn range_splits_follow_cache_spec_6() {
-    let mut t = Follows::default();
-    for seed in (1..48).step_by(2) {
-        let x = snapshot_then_edit(crate::testutil::fixed(seed), false, 30);
-        t.joins += x.joins;
-        t.kept += x.kept;
-        t.split += x.split;
-        t.missed += x.missed;
-    }
-    assert!(t.split > 0 && t.missed * 30 <= t.split, "{t:?}");
-    assert!(t.kept * 10 >= t.joins * 9, "{t:?}");
-}
-
+/// inside one, are followed by the cached placement, not rebuilt (each kind of split alone:
+/// `ranges_split_where_writes_land_spec_6`). §6.1, §7 (`seq_lin`): writes on embedded characters
+/// (`Derived` dots) of an upgraded text, and inserts anchored at them, are followed too.
 /// §6, §8 (`seq_place`): a placement held in part (a node's stored one: blocks and dot-map
 /// chunks loaded on a miss) over records held in part (pages loaded on a miss) follows the
-/// joins a whole one follows, and what it writes back reads as a whole pass (fixed seeds).
+/// joins a whole one follows, and what it writes back reads as a whole pass. Fixed seeds.
 #[test]
-fn partial_placement_follows_like_whole_spec_6() {
-    let mut t = Follows::default();
-    for seed in (1..24).step_by(2) {
+fn snapshot_edits_follow_cache_spec_6() {
+    let (mut split, mut partial, mut derived) = (Follows::default(), Follows::default(), Follows::default());
+    for seed in (1..48).step_by(2) {
         for upgraded in [false, true] {
+            if upgraded && seed >= 24 {
+                continue;
+            }
             let x = snapshot_then_edit(crate::testutil::fixed(seed), upgraded, 30);
-            t.whole += x.whole;
-            t.partial += x.partial;
-            t.loaded += x.loaded;
-            t.blocks += x.blocks;
+            if !upgraded {
+                split.joins += x.joins;
+                split.kept += x.kept;
+                split.split += x.split;
+                split.missed += x.missed;
+            } else {
+                derived.derived += x.derived;
+                derived.missed_derived += x.missed_derived;
+            }
+            if seed < 24 {
+                partial.whole += x.whole;
+                partial.partial += x.partial;
+                partial.loaded += x.loaded;
+                partial.blocks += x.blocks;
+            }
         }
     }
-    assert!(t.whole >= 500 && t.partial * 100 >= t.whole * 98, "{t:?}");
+    assert!(split.split > 0 && split.missed * 30 <= split.split, "{split:?}");
+    assert!(split.kept * 10 >= split.joins * 9, "{split:?}");
+    assert!(partial.whole >= 500 && partial.partial * 100 >= partial.whole * 98, "{partial:?}");
     // the blocks the joins look at, not every block
-    assert!(t.loaded * 2 < t.blocks, "{t:?}");
-}
-
-/// §6.1, §7 (`seq_lin`): writes on embedded characters (`Derived` dots) of an upgraded text, and
-/// inserts anchored at them, are followed by the cached placement (fixed seeds).
-#[test]
-fn derived_dots_follow_cache_spec_7() {
-    let mut t = Follows::default();
-    for seed in (1..24).step_by(2) {
-        let x = snapshot_then_edit(crate::testutil::fixed(seed), true, 30);
-        t.joins += x.joins;
-        t.kept += x.kept;
-        t.derived += x.derived;
-        t.missed_derived += x.missed_derived;
-    }
-    assert!(t.derived >= 10 && t.missed_derived * 20 <= t.derived, "{t:?}");
+    assert!(partial.loaded * 2 < partial.blocks, "{partial:?}");
+    assert!(derived.derived >= 10 && derived.missed_derived * 20 <= derived.derived, "{derived:?}");
 }
 
 /// What decoding a snapshot of `f` gives: the chars of deleted elements dropped (§3.3 rule 5),
@@ -377,9 +367,13 @@ fn text_slot(f: &MFrag) -> MFrag {
 }
 
 /// §3.3 rules 5 and 7, §7: a snapshot of a text upgraded from a string whose deleted embedded
-/// char is not carried round-trips through both decoders and reads alike (reviewer's probe).
+/// char is not carried round-trips through both decoders and reads alike. §5.7 Live: a node
+/// bootstrapped from it holds the deleted embedded char again (the decoder returns the
+/// re-embedded position); an undelete carrying no char (as a writer bootstrapped without the char
+/// may send) shows nothing there, as on a node with the full history, and the state re-encodes
+/// and decodes (reviewer's probes).
 #[test]
-fn snapshot_deleted_embedded_char_spec_3_3() {
+fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
     use crdt_model::value::Value as MValue;
     let mut m = None;
     let mut w = MWriter::new(MSource::session(1, 0), 50 << 16, 1);
@@ -404,23 +398,6 @@ fn snapshot_deleted_embedded_char_spec_3_3() {
     let mut j = Fragment::default();
     j.join(back);
     assert_eq!(j, s.fragment);
-}
-
-/// §3.3 rules 5 and 7, §5.7 Live, §7: a node bootstrapped from a snapshot of an upgraded text
-/// holds a deleted embedded char again (the decoder returns the re-embedded position); an undelete
-/// carrying no char (as a writer bootstrapped without the char may send) shows nothing there, as
-/// on a node with the full history, and the state re-encodes and decodes (reviewer's probe).
-#[test]
-fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
-    use crdt_model::value::Value as MValue;
-    let mut m = None;
-    let mut w = MWriter::new(MSource::session(1, 0), 50 << 16, 1);
-    mapply(&mut m, mops::create(&mut w, &Ty::Text, &MValue::Str("xy".into())));
-    let mut w = MWriter::new(MSource::session(2, 0), 100 << 16, 1);
-    mapply(&mut m, mops::create(&mut w, &Ty::Register, &MValue::Str("ab".into())));
-    let mut w = MWriter::new(MSource::session(3, 0), 102 << 16, 1);
-    let d = mops::seq_delete(&mut w, &text_slot(m.as_ref().unwrap()), 0, 1).unwrap();
-    mapply(&mut m, d);
     let full = frag(m.as_ref().unwrap());
     let snap = |f: &Fragment| {
         let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Frontiers::default() };

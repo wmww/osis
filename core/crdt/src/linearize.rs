@@ -230,6 +230,18 @@ pub(crate) fn demoted(elems: &Elems) -> Vec<Dot> {
     p.demoted.iter().filter_map(|i| p.nodes.get(*i)).map(|n| n.dot.clone().into_owned()).collect()
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Walk steps `break_cycles` took on this thread (tests).
+    static WALKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Walk steps `break_cycles` took on this thread since the last call; resets (tests).
+#[cfg(test)]
+pub(crate) fn walk_probe() -> usize {
+    WALKED.with(|w| w.replace(0))
+}
+
 /// Demotes edges until the parent graph is acyclic (§6.2). Cycles are vertex-disjoint and each
 /// demotion is forced, so any walk may demote the cycle it finds. A node whose parent path ends at
 /// HEAD or END is on no cycle and only nodes on a cycle change edges, so that mark
@@ -273,6 +285,8 @@ fn break_cycles(g: &mut Graph) -> Vec<usize> {
                     *a = path.len();
                 }
                 path.push(cur);
+                #[cfg(test)]
+                WALKED.with(|w| w.set(w.get() + 1));
                 match g.parent(cur) {
                     Some(p) => cur = p,
                     None => break true,
