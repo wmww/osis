@@ -2,7 +2,7 @@
 //! per account (marked `osis_app:demo.0` on the app group).
 
 use crate::contact::{EMAILS, Labeled, ORG, Org, PHONES};
-use osis_kit::store::Data;
+use osis_kit::store::{Data, keep_a_day};
 use crate::event::{END, End, LOCATION, START, Start, Wall};
 use crate::schema::{COLOR, DEMO};
 use osis_kit::schema::FAVORITES;
@@ -22,6 +22,8 @@ struct Ctx<'a, 'w> {
 impl Ctx<'_, '_> {
     fn thing(&mut self, key: &'static str, name: &str, tags: &[&str]) -> Result<Tid> {
         let t = self.w.create()?;
+        // as a thing made in the app: its changes can be undone
+        keep_a_day(self.w, t)?;
         self.w.at(t, NAME).set(&name.to_string())?;
         self.w.group(self.group).add(Member::Item(t))?;
         for g in tags {

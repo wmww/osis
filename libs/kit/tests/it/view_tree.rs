@@ -2,7 +2,7 @@
 use osis::core::NAME;
 use osis::{Member, Osis, Result, Tid};
 use osis_kit::facets::create;
-use osis_kit::store::{Account, Data, Registry};
+use osis_kit::store::{Account, Data, Registry, keep_a_day};
 use osis_kit::view::{Block, Cx, WindowState};
 use osis_kit::views::page;
 use std::sync::{Arc, Mutex};
@@ -22,6 +22,8 @@ impl Account for Small {
         }
         let mut w = db.write();
         let t = w.create()?;
+        // its memberships are what undoing a delete writes back
+        keep_a_day(&mut w, t)?;
         w.group(db.home()).add(Member::Item(t))?;
         w.group(db.home()).add(Member::Subgroup(t))?;
         w.commit()?;
@@ -70,4 +72,25 @@ fn chrome_is_not_content() {
     assert!(n.children.iter().any(|c| c.spec.view_type == "chrome"));
     let content = n.children.iter().find(|c| c.spec.view_type == "collection").unwrap();
     assert!(content.out.blocks.iter().all(|b| !matches!(b, Block::Bar { .. } | Block::Tabs(_))));
+}
+
+/// Undo works on a thing kit created: an edit, and a delete, which brings the thing back into its
+/// group (both keep what they replace: `keep_a_day`).
+#[test]
+fn undo_works_on_a_kit_created_thing() {
+    let d = data();
+    let t = d.create_note().unwrap();
+    let mut w = d.db.write();
+    w.at(t, NAME).set(&"one".to_string()).unwrap();
+    w.commit().unwrap();
+    let mut w = d.db.write();
+    w.at(t, NAME).set(&"two".to_string()).unwrap();
+    w.commit().unwrap();
+    assert!(d.undo(t).unwrap());
+    assert_eq!(d.name(t).unwrap(), "one");
+    d.delete(t).unwrap();
+    assert!(!d.things().unwrap().contains(&t));
+    assert!(d.undo(t).unwrap());
+    assert!(d.things().unwrap().contains(&t), "back in its group");
+    assert_eq!(d.name(t).unwrap(), "one");
 }
