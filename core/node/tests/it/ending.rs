@@ -684,6 +684,35 @@ fn an_ended_first_admins_edges_reach_a_node_that_held_no_dependent_spec_commits_
     }
 }
 
+// spec/commits.md §5 (Ending): as
+// `an_ended_first_admins_edges_reach_a_node_that_held_no_dependent_spec_commits_5`, with a durable
+// write on t before its ending. c keeps nothing of t, then takes its record again with x; a late
+// copy of that write is a part on an ended thing there, never content
+#[test]
+fn a_late_content_copy_after_the_record_comes_back_stays_ended_spec_commits_5() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let t = ending_actor(&mut net, a, b, g, false);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("y")).unwrap();
+    let late = net.engine(a).commit(m).unwrap().unwrap();
+    let late = net.engine(a).package(&late).unwrap().unwrap().bytes;
+    net.run();
+    net.set_online(c, false);
+    let x = net.item(a, g, t, "x");
+    net.run();
+    end_with_c_away(&mut net, c);
+    assert!(net.engine(c).core.created(&t).is_some(), "c: t's record back with x");
+    let _ = net.engine(c).ingest(&late, Vec::new());
+    net.engine(c).reexamine().unwrap();
+    for _ in 0..2 {
+        net.advance(70_000);
+    }
+    assert!(!net.engine(c).knows(&t), "c: t ended");
+    assert_eq!(net.read(c, t), None, "c: nothing of t");
+    assert!(!net.engine(c).has_content(&t).unwrap(), "c: no content on t");
+    assert_eq!(net.read(c, x), Some(s("x")), "c: x lives on");
+}
+
 // spec/commits.md §5 (Ending: dependents), spec/permissions.md §1 (the first admin is history): t,
 // granted admin on x by an edge (x's first admin is g), ends by expiry; b, admin of x only through
 // t, granted on x before the ending and grants again after it through t's frozen edges. Every node
@@ -719,6 +748,8 @@ fn authority_through_an_ended_granted_admin_stands_spec_commits_5() {
     let d = granted_later(&mut net, a, g);
     assert_eq!(net.read(d, x), Some(s("x")), "d: x reads");
     assert_eq!(net.engine(d).roster(&x), ra, "d: x's roster");
+    assert!(!net.engine(d).knows(&t), "d: t ended, learned with its frozen history");
+    assert!(net.engine(d).roster(&t).is_empty(), "d: t's roster reads empty as at a");
 }
 
 // spec/crypto.md §4 (Holder actors, Ended): as
@@ -743,15 +774,13 @@ fn newcomer_reads_a_dependent_keyed_by_an_ended_actor_spec_crypto_4() {
     assert_eq!(net.engine(d).roster(&x), ra, "d: x's roster");
 }
 
-// spec/crypto.md §4 (Holder actors, Ended, the known-by-record limit),
-// issues/ended-actor-known-by-record.md: as
-// `newcomer_reads_a_dependent_keyed_by_an_ended_actor_spec_crypto_4` with d an admin of g. d
-// never learns t's ending, so t stays x's holder there and x's boxes to t's frozen holders are
-// boxes to holders without a role: d rotates x boxing t, a rotation a (which knows the ending)
-// judges invalid (it shows no frozen holder actor), and x's current epochs differ. Fails
+// spec/crypto.md §4 (Holder actors, Ended), spec/commits.md §5 (Ending): as
+// `newcomer_reads_a_dependent_keyed_by_an_ended_actor_spec_crypto_4` with d an admin of g. t's
+// ending travels with its frozen history (its minting's header), so d reads t as ended as the
+// others do: t's frozen holders hold x's keys in its place, x's current epochs agree, and what d
+// writes to x the others read
 #[test]
-#[ignore]
-fn repro_newcomer_admin_unaware_of_an_ending_rotates_a_dependent_apart() {
+fn a_newcomer_admin_keys_a_dependent_by_an_ended_actors_frozen_holders_spec_crypto_4() {
     let Setup { mut net, a, b, c, g } = setup();
     let t = ending_actor(&mut net, a, b, g, false);
     net.set_online(c, false);
@@ -766,7 +795,23 @@ fn repro_newcomer_admin_unaware_of_an_ending_rotates_a_dependent_apart() {
         net.advance(70_000);
     }
     let cur = |net: &mut Net, n: usize| net.engine(n).epochs(&x).map(|e| e.read.current());
-    assert_eq!(cur(&mut net, d), cur(&mut net, a), "x's current epochs agree");
+    let holders = |net: &mut Net, n: usize| net.engine(n).core.key_holders(&x).into_iter().collect::<std::collections::BTreeSet<_>>();
+    let ha = holders(&mut net, a);
+    assert!(!ha.iter().any(|h| h.0 == t) && ha.iter().any(|h| h.0 == g), "a: t's frozen holders hold x's keys: {ha:?}");
+    for n in [b, c, d] {
+        assert!(!net.engine(n).knows(&t), "node {n}: t ended");
+        assert_eq!(holders(&mut net, n), ha, "node {n}: x's holders for keys");
+        assert_eq!(cur(&mut net, n), cur(&mut net, a), "node {n}: x's current epochs");
+    }
+    let mut m = Mutation::new();
+    m.set(x, &REG, &s("x2")).unwrap();
+    net.engine(d).commit(m).unwrap().unwrap();
+    for _ in 0..2 {
+        net.advance(70_000);
+    }
+    for n in [a, b, c] {
+        assert_eq!(net.read(n, x), Some(s("x2")), "node {n}: d's write");
+    }
 }
 
 /// A commit of node `n` minting `t`'s record again, durable, past the writer's rules: what anyone
@@ -909,6 +954,39 @@ fn an_edge_write_after_an_ending_counts_nowhere_spec_commits_5() {
             assert_eq!(net.engine(n).roster(&x), rb, "grant first {grant_first}: node {n}: x's roster");
         }
     }
+}
+
+// spec/commits.md §5 (Ending: nobody writes a thing after its ending), spec/permissions.md §4: t,
+// first admin of x, is purged; a node granted g afterwards learns t's record, frozen edges and the
+// request with them, so it reads t as ended, and a grant on t that c, not having heard, wrote
+// after the ending gives r nothing there, as at b
+#[test]
+fn a_newcomer_refuses_an_edge_write_after_an_ending_spec_commits_5() {
+    let (Setup { mut net, a, b, c, g }, r) = setup_reader();
+    let (t, _) = made(&mut net, a, g);
+    let x = net.item(a, g, t, "x");
+    net.run();
+    let tr = net.tid(r);
+    net.set_online(c, false);
+    net.advance(10);
+    end(&mut net, a, t);
+    net.run();
+    net.advance(10);
+    let grant = set_edge(net.engine(c), t, tr, Role::Admin);
+    let grant = net.engine(c).package(&grant).unwrap().unwrap().bytes;
+    let d = granted_later(&mut net, a, g);
+    assert!(!net.engine(d).knows(&t), "d: t ended");
+    assert!(net.engine(d).core.created(&t).is_some(), "d: t's record, x names it");
+    let _ = net.engine(d).ingest(&grant, Vec::new());
+    net.engine(d).reexamine().unwrap();
+    let _ = net.engine(b).ingest(&grant, Vec::new());
+    net.engine(b).reexamine().unwrap();
+    let ts = osis_base::Ts::make(osis_base::WallMs(net.now()), 0).unwrap();
+    for n in [b, d] {
+        assert!(net.engine(n).roster(&t).is_empty(), "node {n}: t's roster reads empty");
+        assert_eq!(osis_engine::engine::write::role_of(&net.engine(n).core, &tr, &x, ts), Some(Role::Read), "node {n}: r reads x through g, nothing through t's late edge");
+    }
+    assert_eq!(net.engine(d).roster(&x), net.engine(b).roster(&x), "d: x's roster as at b");
 }
 
 // spec/commits.md §5 (Ending is judged by the history before it), spec/permissions.md §6: c, admin

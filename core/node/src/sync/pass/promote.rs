@@ -86,6 +86,10 @@ impl SyncEngine {
         for (x, p, b) in bodies {
             complete &= self.place_copy(g, l, &x, &p, b)?;
         }
+        for x in &missing.headers {
+            let Some(b) = self.engine.header_body(x) else { return Ok(Some(false)) };
+            complete &= self.place_copy(g, l, x, &Parts::new(), b)?;
+        }
         if !missing.records.is_empty() {
             complete &= self.place_records(g, l, &missing.records)? && host.is_none();
         }
@@ -177,6 +181,11 @@ impl SyncEngine {
             let missing: Parts = want.difference(&held).filter(|ai| !inside.contains(ai)).copied().collect();
             if !missing.is_empty() {
                 out.commits.insert(x, missing);
+            }
+        }
+        for x in chain.headers {
+            if !self.header_held_at(l, &x, host.as_ref().map(std::slice::from_ref)) {
+                out.headers.insert(x);
             }
         }
         Ok(Some(out))

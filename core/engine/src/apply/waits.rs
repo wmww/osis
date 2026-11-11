@@ -113,6 +113,11 @@ impl Waits {
         }
     }
 
+    /// The records something here awaits: an applied commit's slot, a commit thrown out whole.
+    pub fn records_awaited(&self) -> impl Iterator<Item = &Tid> {
+        self.awaiting.by_record.keys().chain(self.on_record.keys())
+    }
+
     /// Whether a commit touching `t` cannot be judged here (`Engine::awaits_on`).
     pub fn awaits_on(&self, t: &Tid) -> bool {
         self.on_thing.contains_key(t)

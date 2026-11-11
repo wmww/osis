@@ -708,6 +708,11 @@ impl SyncEngine {
     /// so a first sync's commits ahead of their records cost no second fetch. Bounded by `MAX_ROUNDS`
     /// a safety bound (past it the wake fetches them again).
     fn settle_batch(&mut self, mut unjudged: Vec<(ToIngest, crate::Reason)>) -> Result<()> {
+        // a record an ending here kept nothing of (spec/commits.md §5 Ending) is taken again from
+        // a held record blob carrying it once something awaits it
+        let mut missing = self.engine.ended_records_awaited();
+        missing.extend(unjudged.iter().map(|(_, r)| awaited(r)).filter(|t| self.engine.core.created(t).is_none() && self.engine.core.ended(t)));
+        self.relearn_records(&missing)?;
         for _ in 0..MAX_ROUNDS {
             if unjudged.is_empty() {
                 return Ok(());
@@ -716,7 +721,7 @@ impl SyncEngine {
             let mut progressed = false;
             for (o, r) in std::mem::take(&mut unjudged) {
                 // what it awaits has not come: nothing to look at again
-                if !self.engine.core.exists(&awaited(&r)) {
+                if self.engine.core.created(&awaited(&r)).is_none() {
                     later.push((o, r));
                     continue;
                 }
@@ -747,6 +752,32 @@ impl SyncEngine {
             if matches!(e.kind, Kind::Commit { .. }) && !self.engine.core.ix.commits.contains_key(&o.commit.id()) {
                 self.mark_awaits(o.label, o.blob, o.commit.id(), r)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Learns the records of `things` again from the held record blobs listing them (an ending
+    /// here kept nothing of them, spec/commits.md §5 Ending).
+    fn relearn_records(&mut self, things: &BTreeSet<Tid>) -> Result<()> {
+        if things.is_empty() {
+            return Ok(());
+        }
+        let mut found = Vec::new();
+        for (l, b) in self.state.of_tag(Kind::TAG_RECORDS) {
+            let Some(e) = self.state.entries.get(&(l, b)) else { continue };
+            let Kind::Records(ts) = &e.kind else { continue };
+            if !ts.iter().any(|t| things.contains(t)) {
+                continue;
+            }
+            let wrap = e.wrap;
+            let (Some(bytes), Some(g)) = (self.engine.blob(&b)?, self.group_of(&l, None)) else { continue };
+            let secrets = self.read_secrets(&g);
+            let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, &wrap) else { continue };
+            let Some(rs) = osis_label::open(&bytes, &key).ok().and_then(|(_, pt)| osis_commit::record_blob::decode_record_blob(&pt).ok()) else { continue };
+            found.extend(rs.into_iter().filter(|r| things.contains(&r.tid())));
+        }
+        if !found.is_empty() {
+            self.engine.learn_records(found)?;
         }
         Ok(())
     }

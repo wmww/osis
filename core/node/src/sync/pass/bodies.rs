@@ -505,8 +505,8 @@ impl SyncEngine {
             let Some(bytes) = self.engine.blob(&b)? else { continue };
             let Some(h) = self.engine.header(&c) else { continue };
             self.prefix_checked.insert(b);
-            let agrees = match (osis_label::Prefix::parse(&bytes), osis_commit::prefix_groups(&h, ais)) {
-                (Ok(p), Ok(groups)) => p.agrees(osis_commit::blob_expiry(&h).map(WallMs), &h.blind, &groups, osis_label::Class::Durable),
+            let agrees = match (osis_label::Prefix::parse(&bytes), osis_commit::prefix_groups(&h, ais.iter().copied())) {
+                (Ok(p), Ok(groups)) => p.agrees(osis_commit::prefix_expiry(&h, &ais).map(WallMs), &h.blind, &groups, osis_label::Class::Durable),
                 _ => false,
             };
             if !agrees {

@@ -524,10 +524,13 @@ impl SyncEngine {
     /// its raw records (the ones held).
     fn chain_values(&mut self, chain: crate::labeling::Certs) -> Result<(Vec<osis_base::Value>, Vec<osis_base::CreationRecord>)> {
         let mut out = Vec::new();
-        for (x, q) in chain.commits {
+        // headers alone (an ended actor's mintings) beside the parts
+        let headers = chain.headers.iter().filter(|x| !chain.commits.contains_key(*x)).map(|x| (*x, Default::default()));
+        let all: Vec<(CommitId, BTreeSet<usize>)> = chain.commits.clone().into_iter().chain(headers).collect();
+        for (x, q) in all {
             let Some(mut blob) = self.engine.run(|tx| tx.get_commit(&x))?.map(std::sync::Arc::unwrap_or_clone) else { continue };
             blob.parts.retain(|p| q.contains(&p.ai));
-            if blob.parts.is_empty() {
+            if blob.parts.is_empty() && !chain.headers.contains(&x) {
                 continue;
             }
             let limits = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB };

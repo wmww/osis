@@ -50,15 +50,8 @@ impl Ending {
         if !core.ended(t) {
             return None;
         }
-        let on_t = |p: &Header| p.purge.iter().any(|i| i.tid() == t && i.ak().as_str() == CREATED);
-        let requests: Vec<(CommitId, &Header)> = core.on_thing(t).filter_map(|pc| core.ix.commits.get(&pc).filter(|m| m.view.purges && on_t(&m.header)).map(|m| (pc, &*m.header))).collect();
-        let ends = core.mintings(t).map(|(c, ai)| {
-            let m = core.ix.commits.get(&c)?;
-            let a = m.header.aspects.get(ai)?;
-            let by = requests.iter().filter(|(pc, p)| super::purge::stands(core, p, pc, a, &m.header, &c)).map(|(pc, p)| Point { ts: p.ts, node: p.author, commit: *pc }).min();
-            Some((m.header.expires, by))
-        });
-        Some(Ending(ends.map(|x| x.unwrap_or((None, None))).collect()))
+        let ends = per_minting(core, t).into_iter().map(|(expires, by)| (expires, by.into_iter().min()));
+        Some(Ending(ends.collect()))
     }
 
     /// Whether a part of commit `id` (header `h`) is written after the ending: nobody writes a
@@ -68,6 +61,27 @@ impl Ending {
         let wall = h.ts.wall_ms().0;
         self.0.iter().all(|(x, by)| x.is_some_and(|x| x <= wall) || by.is_some_and(|p| p < at))
     }
+}
+
+/// Per held minting of `t`: its expiry and the held requests standing over it (each a request
+/// with an item on `t`'s `created.0`, found among the commits on `t`: a request has a delta on
+/// each thing it names).
+fn per_minting(core: &Core, t: &Tid) -> Vec<(Option<u64>, Vec<Point>)> {
+    let on_t = |p: &Header| p.purge.iter().any(|i| i.tid() == t && i.ak().as_str() == CREATED);
+    let requests: Vec<(CommitId, &Header)> = core.on_thing(t).filter_map(|pc| core.ix.commits.get(&pc).filter(|m| m.view.purges && on_t(&m.header)).map(|m| (pc, &*m.header))).collect();
+    let ends = core.mintings(t).map(|(c, ai)| {
+        let m = core.ix.commits.get(&c)?;
+        let a = m.header.aspects.get(ai)?;
+        let by = requests.iter().filter(|(pc, p)| super::purge::stands(core, p, pc, a, &m.header, &c)).map(|(pc, p)| Point { ts: p.ts, node: p.author, commit: *pc }).collect();
+        Some((m.header.expires, by))
+    });
+    ends.map(|x| x.unwrap_or((None, Vec::new()))).collect()
+}
+
+/// The held requests standing over a minting of `t` (spec/commits.md §5 Ending): with `t`'s
+/// mintings, what tells another node `t` ended (`Engine::certificates`).
+pub(crate) fn ending_requests(core: &Core, t: &Tid) -> BTreeSet<CommitId> {
+    per_minting(core, t).into_iter().flat_map(|(_, by)| by).map(|p| p.commit).collect()
 }
 
 /// Ends the things a value-less list changed on in this transaction (`Core::valueless_dirty`,
@@ -130,6 +144,21 @@ fn reopen_fallen(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     // reads of the thing and its roles move, and whatever waited on the thing is judged again
     tx.core.role_changed();
     tx.core.ix.held.record_back(*t);
+    Ok(())
+}
+
+/// `t`'s record is held again after its ending here kept nothing of it (a dependent reached this
+/// node later): what that drop took of its frozen history (`judges_ending` but its mintings,
+/// which stay ended) counts as never received and is fetched again (spec/commits.md §5 Ending).
+pub(crate) fn record_back(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    let commits: Vec<CommitId> = tx.core.on_thing(t).collect();
+    for c in commits {
+        let Some(m) = tx.core.ix.commits.get(&c) else { continue };
+        let ended: Vec<usize> = m.dropped.iter().filter(|(_, d)| d.why == DropFor::Ended).filter_map(|(ai, _)| m.header.aspects.get(*ai).filter(|a| a.tid == *t && judges_ending(a.ak.as_str()) && a.ak.as_str() != CREATED).map(|_| *ai)).collect();
+        for ai in ended {
+            super::reopen_to_fetch(tx, &c, ai)?;
+        }
+    }
     Ok(())
 }
 

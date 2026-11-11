@@ -25,7 +25,7 @@ mod tests;
 
 pub use blob::{CommitBlob, Envelope, Opened, Part, Section, Sigs, seal_commit};
 pub use builder::{AccountSigner, AspectWrite, Built, CommitBuilder};
-pub use groups::{COMMIT_PAST_BLOB, blob_bound, blob_expiry, prefix_groups, rewrite, strict_subset};
+pub use groups::{COMMIT_PAST_BLOB, blob_bound, blob_expiry, prefix_expiry, prefix_groups, rewrite, strict_subset};
 pub use lists::{BlobSink, BlobSource, MemoryBlobs, read_list, write_list};
 pub use osis_base::format::MAX_LIST_BYTES;
 pub use error::Error;

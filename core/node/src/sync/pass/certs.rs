@@ -91,6 +91,16 @@ impl SyncEngine {
             let Some(body) = self.engine.part_body(&c, &missing)? else { continue };
             self.place_copy(g, l, &c, &missing, body)?;
         }
+        // headers alone (an ended actor's mintings)
+        let hosts = self.counted_at(g, l);
+        for c in wanted.headers {
+            // this node's own copy placed before and gone since is not placed again
+            if self.state.certs.contains(&(l, c)) || self.header_held_at(l, &c, hosts.as_deref()) {
+                continue;
+            }
+            let Some(body) = self.engine.header_body(&c) else { continue };
+            self.place_copy(g, l, &c, &BTreeSet::new(), body)?;
+        }
         self.place_lists(g, l, listed_things)
     }
 
@@ -175,6 +185,13 @@ impl SyncEngine {
         let wrap = osis_crypto::wrap(&secret, &id, &key, 0)?;
         self.state.set_entry(l, id, Entry { wrap, stamp: None, cert: true, salt: Some(salt), kind: Kind::Records(tids), memory: false });
         Ok(all)
+    }
+
+    /// Whether an entry under `l` carries commit `c`'s header (a body, a copy of any part of it,
+    /// a header alone), counted as `held_parts_at` counts copies.
+    pub(super) fn header_held_at(&mut self, l: LabelId, c: &CommitId, hosts: Option<&[HostKey]>) -> bool {
+        let present: Vec<(BlobId, bool)> = self.state.entries_of(&l, c).filter(|(id, e)| matches!(e.kind, Kind::Commit { .. }) && (e.cert || hosts.is_none_or(|ss| !ss.is_empty() && ss.iter().all(|s| self.state.holds_at(s, &l, id))))).map(|(id, e)| (id, e.cert)).collect();
+        present.into_iter().any(|(id, mine)| mine || self.genuine(&id))
     }
 
     /// Places `body` (of `parts` of `c`) as this node's certificate copy under `l` and records

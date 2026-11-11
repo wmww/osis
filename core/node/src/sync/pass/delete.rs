@@ -144,20 +144,28 @@ impl SyncEngine {
     fn judge(&mut self, at: &At, id: &BlobId, e: &Entry, desired: &Desired, note: &mut Note) -> Result<Option<Judged>> {
         let (g, l, host, snaps, settled) = (&at.g, &at.l, at.host.as_ref(), at.snaps, at.settled);
         let now = self.now();
-        let Kind::Commit { commit, parts: opened, .. } = &e.kind else { return Ok(None) };
+        let Kind::Commit { commit, parts: opened, ais } = &e.kind else { return Ok(None) };
         // judged on the parts the label's actor reads (`readable`), as every node of it does
         let parts = &self.readable(g, commit, opened);
         let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok(self.judge_forgotten(commit, opened, note)) };
         let h = m.header.clone();
         // a blob expires whole at its prefix's expiry, as the host drops it (spec/sync.md §3, §5),
         // whatever of it the label's actor still reads
-        if let Some(t) = osis_commit::blob_expiry(&h) {
+        if let Some(t) = osis_commit::prefix_expiry(&h, ais) {
             if t <= now {
                 return Ok(Some((Hold::MustNot(Why::Expired), false, Vec::new())));
             }
             note.at(t);
         }
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
+        // a copy of an ended thing's frozen history under a label whose closure lacks the thing,
+        // placed for a dependent there (spec/permissions.md §4): a node whose ending of the thing
+        // kept nothing judges it no more than any certificate (its drop is its own, spec/commits.md
+        // §5 Ending), so a dependent reaching it later finds it
+        let frozen: Vec<Tid> = opened.iter().filter(|ai| m.dropped.get(*ai).is_some_and(|d| d.why == crate::engine::DropFor::Ended)).filter_map(|ai| h.aspects.get(*ai)).filter(|a| matches!(a.ak.as_str(), "roles.0" | "purge.0")).map(|a| a.tid).collect();
+        if !frozen.is_empty() && frozen.iter().any(|t| !self.engine.closure(g).contains(t)) {
+            return Ok(None);
+        }
         if opened.iter().any(|p| m.body_gone(*p) && !self.engine.left_at_hosts(commit, *p)) {
             // a body dropped as covered leaves hosts `MAX_DRIFT` past its keep-at-least bound, once
             // every node's clock agrees it may go (spec/commits.md §5 Keep bounds)

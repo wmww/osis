@@ -567,6 +567,9 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
     let key = [records::CREATED, t.as_bytes()].concat();
     tx.txn.put_local(&key, &osis_base::encode(&rec.to_value()), Shred::No)?;
     tx.core.ix.held.create(rec);
+    if tx.core.ended(&t) {
+        crate::retention::end::record_back(tx, &t)?;
+    }
     // the reader actor of the thing's deltas is known now
     let touching: Vec<CommitId> = tx.core.aspects_of(&t).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
     for c in touching {

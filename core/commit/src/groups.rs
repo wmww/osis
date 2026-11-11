@@ -36,6 +36,13 @@ pub fn blob_expiry(h: &Header) -> Option<u64> {
     }
 }
 
+/// The prefix expiry of a blob of `h` whose sections list `ais`: `blob_expiry`, but none for a
+/// header-only blob (no section: spec/sync.md §1), which outlives the commit's expiry (a lasting
+/// header, an ended actor's minting).
+pub fn prefix_expiry(h: &Header, ais: &[usize]) -> Option<u64> {
+    if ais.is_empty() { None } else { blob_expiry(h) }
+}
+
 /// The build error of a commit that does not fit one blob.
 pub const COMMIT_PAST_BLOB: &str = "the commit does not fit a blob";
 

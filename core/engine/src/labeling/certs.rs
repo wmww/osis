@@ -18,11 +18,13 @@ const CARD: [&str; 3] = ["keys.0", "node.0", "reach.0"];
 /// Parts of a commit, by aspect index.
 pub type Parts = BTreeSet<usize>;
 
-/// Chain material a verifier needs (spec/permissions.md §4): parts of commits to copy, and raw
-/// creation records (a record blob's), which outlive the commits that minted them.
+/// Chain material a verifier needs (spec/permissions.md §4): parts of commits to copy, commits
+/// to copy as headers alone (an ended actor's mintings), and raw creation records (a record
+/// blob's), which outlive the commits that minted them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Certs {
     pub commits: BTreeMap<CommitId, Parts>,
+    pub headers: BTreeSet<CommitId>,
     pub records: BTreeSet<Tid>,
 }
 
@@ -34,14 +36,15 @@ impl Certs {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.commits.is_empty() && self.records.is_empty()
+        self.commits.is_empty() && self.headers.is_empty() && self.records.is_empty()
     }
 
-    /// Adds `other`'s commits and records.
+    /// Adds `other`'s commits, headers and records.
     pub fn extend(&mut self, other: Certs) {
         for (c, p) in other.commits {
             self.add(c, p);
         }
+        self.headers.extend(other.headers);
         self.records.extend(other.records);
     }
 }
@@ -194,6 +197,11 @@ impl Engine {
             let certs = self.chain_to(&me, a);
             self.cert_parts(&certs, &mut out);
         }
+        // every ended thing whose record goes, with what tells it ended
+        let ended: Vec<Tid> = out.records.iter().filter(|t| self.core.ended(t)).copied().collect();
+        for t in ended {
+            self.ending_evidence(&t, &mut out);
+        }
         out.records.retain(|t| self.core.created(t).is_some());
         out
     }
@@ -214,6 +222,33 @@ impl Engine {
                 return out;
             }
             out.extend(more);
+        }
+    }
+
+    /// What tells ended actor `t` ended, added to `out` (spec/commits.md §5 Ending): whatever
+    /// lets a node judge `t`'s frozen history also tells it the ending (`cert_parts` adds it
+    /// for every ended thing whose record goes). Each held minting as a header alone (its
+    /// `expires` dates an expiry; a value-less part is never uploaded), and each held request
+    /// dropping one by its `purge.0` part on `t` (its header names the mintings, `t`'s frozen
+    /// history judges its right), each with its author's chains to `t` and to its actor. Once per
+    /// `out`: its mintings among `out`'s headers.
+    fn ending_evidence(&mut self, t: &Tid, out: &mut Certs) {
+        let mintings: Vec<CommitId> = self.core.mintings(t).map(|(c, _)| c).collect();
+        if mintings.iter().all(|c| out.headers.contains(c)) {
+            return;
+        }
+        out.headers.extend(mintings.iter().copied());
+        let requests = crate::retention::end::ending_requests(&self.core, t);
+        let on_t = BTreeSet::from([*t]);
+        for pc in &requests {
+            out.add(*pc, self.parts_of(pc, &on_t, &[osis_commit::retention::PURGE]));
+        }
+        for c in mintings.iter().chain(&requests) {
+            let Some(h) = self.header(c) else { continue };
+            for x in [*t, h.actor, h.author] {
+                let cs = self.chain_to(&h.author, &x);
+                self.cert_parts(&cs, out);
+            }
         }
     }
 
@@ -313,6 +348,10 @@ impl Engine {
             for c in self.current_keys(t) {
                 out.add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["keys.0"]));
             }
+        }
+        let ended: Vec<Tid> = certs.created.iter().filter(|t| self.core.ended(t)).copied().collect();
+        for t in ended {
+            self.ending_evidence(&t, out);
         }
     }
 
@@ -434,6 +473,14 @@ impl Engine {
             order: super::fetch_order(&resolved),
             to_label: false,
         }))
+    }
+
+    /// A header-only copy of held commit `c` (an ended actor's minting, `ending_evidence`): no
+    /// part, so no expiry or commitments in its prefix (spec/sync.md §1), ordered by its `ts`
+    /// (spec/crypto.md §5).
+    pub fn header_body(&self, c: &CommitId) -> Option<Body> {
+        let h = self.core.ix.commits.get(c).map(|m| m.header.clone())?;
+        Some(Body { commit: *c, parts: Vec::new(), expires: None, blind: h.blind, plaintext: Vec::new(), role_commit: h.kind.is_role(), order: h.ts.to_u64().max(1), to_label: false })
     }
 
     /// Blobs a certificate copy of `parts` of commit `c` needs beside its body (spec/sync.md

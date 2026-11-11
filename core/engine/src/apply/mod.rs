@@ -1234,6 +1234,13 @@ impl Engine {
         self.run(|tx| keys::forget_unchecked(tx, &id))
     }
 
+    /// The ended things whose record something here awaits: an ending here kept nothing of
+    /// them (spec/commits.md §5 Ending) and a dependent reached this node after it, so a held
+    /// record blob gives the record again (node-sync).
+    pub fn ended_records_awaited(&self) -> BTreeSet<Tid> {
+        self.core.waits.records_awaited().filter(|t| self.core.created(t).is_none() && self.core.ended(t)).copied().collect()
+    }
+
     /// Whether a commit on `t` cannot be judged here yet.
     pub fn awaits_on(&self, t: &Tid) -> bool {
         self.core.waits.awaits_on(t)

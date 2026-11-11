@@ -90,7 +90,7 @@ pub fn frame_envelope(env: &Envelope, resolved: &osis_commit::Header, class: osi
     let ais = env.ais();
     let groups = osis_commit::prefix_groups(resolved, ais.iter().copied())?;
     let salt = osis_label::Prefix::random_salt(rng);
-    let prefix = osis_label::Prefix::for_delete_keys(salt, &env.header.blind, osis_commit::blob_expiry(resolved).map(WallMs), &groups)?.with_class(class);
+    let prefix = osis_label::Prefix::for_delete_keys(salt, &env.header.blind, osis_commit::prefix_expiry(resolved, &ais).map(WallMs), &groups)?.with_class(class);
     let (key, blob) = osis_label::frame(&prefix, &env.encode(), rng)?;
     let parts = from.parts.iter().filter(|p| ais.contains(&p.ai)).map(|p| p.ai).collect();
     Ok(Sealed { id: osis_label::blob_id(&blob), blob, key, salt, ais, parts })
@@ -336,7 +336,7 @@ impl Engine {
         let ais = env.ais();
         if let Some(h) = &header {
             let groups = osis_commit::prefix_groups(h, ais.iter().copied())?;
-            if !prefix.agrees(osis_commit::blob_expiry(h).map(WallMs), &h.blind, &groups, osis_label::Class::of_marker(h.ephemeral)) {
+            if !prefix.agrees(osis_commit::prefix_expiry(h, &ais).map(WallMs), &h.blind, &groups, osis_label::Class::of_marker(h.ephemeral)) {
                 return Err(Error::BadInput("blob prefix disagrees with its header"));
             }
         }
