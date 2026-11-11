@@ -83,12 +83,13 @@ pub(crate) enum WriteOp {
 }
 
 impl WriteOp {
-    /// The thing it names; `None` for a create (it goes where its write goes).
-    fn tid(&self) -> Option<Tid> {
+    /// The things it writes; none for a create (it goes where its write goes).
+    fn tids(&self) -> Vec<Tid> {
         match self {
-            WriteOp::Create(_) => None,
-            WriteOp::Delete(t) | WriteOp::End(t) | WriteOp::Release(t) | WriteOp::Group { g: t, .. } | WriteOp::Retain { by: t, .. } => Some(*t),
-            WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => Some(*tid),
+            WriteOp::Create(_) => Vec::new(),
+            WriteOp::Retain { by, thing, .. } => vec![*by, *thing],
+            WriteOp::Delete(t) | WriteOp::End(t) | WriteOp::Release(t) | WriteOp::Group { g: t, .. } => vec![*t],
+            WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => vec![*tid],
         }
     }
 }
@@ -128,12 +129,15 @@ pub struct Write<'d> {
     /// `Osis::add_with_grant`: a grant follows; no report that holders may not read what this
     /// places.
     pub(crate) sharing: bool,
+    /// Why a chained modifier (`retention`, `retaining`) could not be recorded: `commit` fails
+    /// with it.
+    refused: Option<Error>,
 }
 
 impl Osis {
     /// A new write acting as `me()`.
     pub fn write(&self) -> Write<'_> {
-        Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.me(), created: Vec::new(), expires: None, alive: None, sharing: false }
+        Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.me(), created: Vec::new(), expires: None, alive: None, sharing: false, refused: None }
     }
 }
 
@@ -321,7 +325,7 @@ impl<'d> Write<'d> {
     /// The things that decide the write's source: those it names but does not create; creates
     /// only: their first admins.
     fn deciders(&self) -> Vec<Tid> {
-        let named: Vec<Tid> = self.ops.iter().filter_map(WriteOp::tid).filter(|t| !self.created.contains(t)).collect();
+        let named: Vec<Tid> = self.ops.iter().flat_map(WriteOp::tids).filter(|t| !self.created.contains(t)).collect();
         if !named.is_empty() {
             return named;
         }
@@ -333,6 +337,9 @@ impl<'d> Write<'d> {
     /// `Write`, or past 1024 ops through another node); `OutcomeUnknown`, only through another node,
     /// may have applied: read before repeating it.
     pub fn commit(self) -> Result<Option<Commit>> {
+        if let Some(e) = self.refused {
+            return Err(e);
+        }
         let deciders = self.deciders();
         if let Source::Node(r) = self.db.source_write_all(&deciders)? {
             let db = self.db;
@@ -624,7 +631,7 @@ impl Osis {
             o.end()?;
             w.ops.push(op);
         }
-        for t in w.ops.iter().flat_map(|o| o.tid().into_iter().chain(if let WriteOp::Retain { thing, .. } = o { Some(*thing) } else { None })).collect::<Vec<_>>() {
+        for t in w.ops.iter().flat_map(WriteOp::tids).collect::<Vec<_>>() {
             w.known(t)?;
         }
         w.commit()
@@ -746,6 +753,11 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         self.w.ops.push(op);
     }
 
+    /// A chained modifier that could not be recorded: `commit` fails with `e`.
+    fn refuse(&mut self, e: Error) {
+        self.w.refused.get_or_insert(e);
+    }
+
     /// `v` encoded, validated against the writer's schema.
     fn encoded(&self, v: &K::T) -> Result<Value> {
         self.ok()?;
@@ -772,8 +784,9 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
 
     /// How this write's history is held, instead of as the key says; checked at commit (`Invalid`).
     pub fn retention(mut self, r: crate::Retention) -> Self {
-        if let Ok(key) = self.ix {
-            self.push(WriteOp::Retention { tid: self.tid, key, r: r.into() });
+        match self.ix.clone() {
+            Ok(key) => self.push(WriteOp::Retention { tid: self.tid, key, r: r.into() }),
+            Err(e) => self.refuse(e),
         }
         self
     }
@@ -816,7 +829,8 @@ impl<'w, 'd, K: ValueKey> AspectWrite<'w, 'd, K> {
     /// this call write, in the same commit. One call for the list entry and the reference it
     /// stands on, so neither goes without the other: `commit` fails `Invalid` unless, after it,
     /// this aspect references `thing` in its value (a tid at any depth), and `Permission` without
-    /// admin on `thing` (writing its list is as strong as releasing it), applying nothing.
+    /// admin on `thing` (writing its list is as strong as releasing it), applying nothing; on a
+    /// key no write may name here (`group.0`), `Invalid` too.
     /// ```
     /// # use osis::{Config, MemStore, Osis, Store, p};
     /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:files.0: set<tid>;\n");
@@ -837,8 +851,9 @@ impl<'w, 'd, K: ValueKey> AspectWrite<'w, 'd, K> {
     /// `core::RETAINERS`, which also adds a retainer, because this one checks the reference the
     /// entry needs.
     pub fn retaining(mut self, thing: Tid) -> Self {
-        if let Ok(key) = self.ix {
-            self.push(WriteOp::Retain { by: self.tid, key, thing });
+        match self.ix.clone() {
+            Ok(key) => self.push(WriteOp::Retain { by: self.tid, key, thing }),
+            Err(e) => self.refuse(e),
         }
         self
     }

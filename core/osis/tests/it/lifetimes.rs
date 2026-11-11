@@ -69,6 +69,12 @@ fn retaining_needs_the_reference() {
     })
     .unwrap();
     assert_eq!(retainers(&db, f), Some([chat].into()));
+    // on a key no op may write, the commit fails rather than drop the call
+    let r = db.commit_with(|w| {
+        w.at(chat, osis::internals::core_types::GROUP).retaining(f);
+        Ok(())
+    });
+    assert!(matches!(r, Err(Error::Invalid(m)) if m.contains("Write::group")));
 }
 
 // issues/thing-lifetimes.md (API, Move): a move is one `Write`: retained by the new place, out of
@@ -138,6 +144,7 @@ fn release_of_a_retained_thing() {
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("commit of its own")));
     a.commit_with(|w| w.release(file)).unwrap();
     assert!(!alive(&a, file), "released at once");
+    assert_eq!(a.changed(file).unwrap(), None);
     assert!(!a.has_content(file).unwrap());
     assert!(matches!(a.commit_set(file, files(), &Value::Int(1)), Err(Error::UnknownThing { .. })), "written as an unknown thing");
     deliver(&a, &b);
