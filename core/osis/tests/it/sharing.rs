@@ -2058,3 +2058,27 @@ fn a_joiner_leaves_k_once_ks_grant_expired_spec_permissions_7() {
     w.advance(60_000);
     left_k(&mut w, &alice, &[&laptop, &phone], g, k);
 }
+
+// spec/permissions.md §7 (Joiner's leave): only K's edge on the link's target ends a link. Carol,
+// a fellow joiner, puts K on a group of hers and takes it off: Bob keeps the link.
+#[test]
+fn a_fellow_joiner_cannot_end_anothers_link_spec_permissions_7() {
+    let mut w = World::new();
+    let (alice, laptop, _phone, g, k) = joined_twice(&mut w);
+    let h2 = w.add_host();
+    let carol = w.account(4, &[h2]);
+    let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
+    w.run();
+    let _ = w.until(carol.redeem(&link), 1000, 30);
+    w.run();
+    assert_eq!(carol.role_on(g).unwrap(), Some(Role::Read));
+    let x = group(&carol);
+    carol.grant(x, k, Role::Read, Default::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    assert_eq!(laptop.role_on(x).unwrap(), Some(Role::Read), "Bob reads x through K");
+    carol.set_role(x, k, None, SetRoleOpts::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    assert_eq!(laptop.role_on(g).unwrap(), Some(Role::Read), "Bob was pushed off the link by Carol");
+}
