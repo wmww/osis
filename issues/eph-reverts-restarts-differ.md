@@ -1,5 +1,5 @@
 # Ephemeral reverts with restarts: two nodes read a thing differently
-> Summary: `ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6` seed 142475985467 (1 of 200 from 142475985360): after reverts while losing write, with node and host restarts, one node reads `Some(Str("21"))` and the other `None` for a listed thing. Fails on e3cdd005f and 8f3cd8d05. Cause not traced.
+> Summary: `ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6` seed 142475985467 (1 of 200 from 142475985360): after reverts while losing write, with node and host restarts, one node reads `Some(Str("21"))` and the other `None` for a listed thing. Fails on e3cdd005f and 8f3cd8d05; also seed 539131766542 (`Some(Str("7"))` against `None`, branch one-peer-3b, which changes no code this test runs). Cause not traced.
 > Priority: normal
 > Tags: ephemeral, node, tests
 
