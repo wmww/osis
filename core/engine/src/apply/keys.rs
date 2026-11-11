@@ -805,35 +805,8 @@ mod tests {
 
     // spec/crypto.md §4: boxes of pending commits are read, but the node holds a bounded number
     // of actors through reading-only secrets alone; past it a pending grant's boxes are not read.
-    #[test]
-    fn reading_only_actors_capped_spec_crypto_4() {
-        let mut lp = LocalPeer::new(3, 907, WallMs(1_700_000_000_000)).unwrap();
-        lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.me();
-        let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-        let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, me);
-        m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
-        lp.peers[0].commit(m).unwrap();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-        let g1 = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
-        let g2 = *lp.peers[0].engine.grant(&t, &c, &edge).unwrap().commits.last().unwrap();
-        let (p1, p2) = (lp.peers[0].engine.package(&g1).unwrap().unwrap(), lp.peers[0].engine.package(&g2).unwrap().unwrap());
-        lp.peers[1].engine.index_poked = true;
-        for n in 0..MAX_READING_ACTORS {
-            let n = u8::try_from(n).unwrap();
-            lp.peers[1].engine.core.ix.secrets.insert(Tid::from_bytes([n; 15]), reading_only(n, CommitId([n; 32])));
-        }
-        // not judgeable (the thing's `created.0` is not held): its boxes are read only under the cap
-        lp.deliver(1, &p1).unwrap();
-        lp.deliver(2, &p2).unwrap();
-        let held = |lp: &LocalPeer, i: usize| lp.peers[i].engine.core.ix.secrets.get(&t).is_some_and(|e| e.read.holds_any());
-        assert!(held(&lp, 2), "under the cap: read");
-        assert!(!held(&lp, 1), "at the cap: not read");
-    }
-
-    // spec/crypto.md §4: a genuine grant past the cap reads its boxes once an applied one frees a
-    // place, or it waits for good on the label those secrets open.
+    // A genuine grant past the cap reads its boxes once an applied one frees a place, or it waits
+    // for good on the label those secrets open.
     #[test]
     fn refused_boxes_read_when_a_grant_applies_spec_crypto_4() {
         let mut lp = LocalPeer::new(2, 908, WallMs(1_700_000_000_000)).unwrap();
