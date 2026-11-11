@@ -197,11 +197,14 @@ fn woken_part_joins_spec_commits_4() {
     assert_eq!(evaluate(&done.held).reads.get(&(T, REG)).cloned().flatten(), int(1));
 }
 
+/// Writer 1's body 10, replaced by the first admin's 15 and covered by 1's snapshot 20 (a cover
+/// drops only a body nothing reads on its own: a replaced one), and `c`.
 fn covered(c: Commit) -> (Held, Commit) {
     let b = Commit { parts: vec![Part { ..part(REG, Retention::WRITER, vec![set(1, 10, 1)]) }], ..reg(10, 1, 1, REG, Retention::WRITER, 1) };
-    let s = snap(20, 1, 3, REG, Retention::WRITER, vec![set(1, 10, 1)]);
+    let x = reg(15, FIRST_ADMIN, 2, REG, Retention::WRITER, 2);
+    let s = snap(20, 1, 3, REG, Retention::WRITER, vec![set(2, 15, 2)]);
     let g = edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None);
-    (held(5, vec![g, b, s]), c)
+    (held(5, vec![g, b, x, s]), c)
 }
 
 // notes/expiry-creation-design.md §3: a delete decided while a content commit awaits judgement
@@ -232,7 +235,7 @@ fn delete_during_a_demotion_wait_counts_as_never_received_spec_sync_6() {
     let mut control = h.clone();
     control.commits.push(c);
     let o = evaluate(&dropped);
-    assert_eq!(evaluate(&control).reads.get(&(T, REG)).cloned().flatten(), int(1));
-    assert_eq!(o.reads.get(&(T, REG)).cloned().flatten(), None, "the body counts as never received");
+    assert_eq!(evaluate(&control).reads.get(&(T, REG)).cloned().flatten(), int(2));
+    assert_eq!(o.reads, evaluate(&control).reads, "the replaced body counts as never received");
     assert!(o.uncovered.contains(&(10, 0)), "fetched again");
 }

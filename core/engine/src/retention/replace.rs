@@ -49,7 +49,7 @@ fn coverer(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, right: bool) -> Re
 /// expiry held with its values is judged against the state with its values value-less, as a
 /// snapshot carries them (spec/crdt.md §8): replaced only once no value of it lives, when a
 /// snapshot of the state covers it (spec/commits.md §5).
-fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<bool> {
+pub(super) fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
     if !m.valid_at(ai) {
         return Ok(false);
@@ -147,7 +147,14 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
                 }
                 continue;
             }
+            // read on its own (a live delta): no cover drops it
+            if super::bounds::read_alone(tx, &c, &tid, &ak)? {
+                continue;
+            }
             super::drop_part_for(tx, &c, ai, DropFor::Cover)?;
+            // node-sync judges its delete at hosts (a snapshot's arrival judges only the
+            // aspect's cover candidates, `Core::cover_judged_on`)
+            tx.core.mark_changed(c);
         }
     }
     Ok(())

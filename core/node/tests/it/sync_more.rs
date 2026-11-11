@@ -1482,21 +1482,22 @@ fn flip_after_drop(a_saw_kill: bool, kill_before_flip: bool) -> (Net, osis_base:
     (net, t, gone, [a, b, c])
 }
 
-// spec/requirements.md Deterministic, spec/sync.md §7: every writer took the killer first and dropped
-// `v1`; the reader took the lowering first and kept it. No writer can mend what it lacks and a reader
-// cannot place it again (the blob's ID is tombstoned): they read apart until the next write on the
-// aspect, the limit the requirement states.
+// spec/permissions.md §5.2 (a valid snapshot's copies count), spec/commits.md §5 Purge on replace:
+// writer `a` took the killer `v0` while `b` could still write and owed a cover for the `v1` it
+// replaced, so its snapshot carries `v0`. The lowering that leaves `v0` out does not take that
+// cover's copy: the reader, which took the lowering first, reads `v0` like the writers, and the
+// next write reaches all of them.
 #[test]
-fn flip_after_drop_only_a_reader_holds_it_lasts_to_the_next_write_spec_sync_7() {
+fn flip_after_drop_a_writers_cover_keeps_the_killer_spec_sync_7() {
     let (mut net, t, gone, [a, b, c]) = flip_after_drop(true, false);
     net.set_online(c, true);
     net.run();
     for _ in 0..3 {
         net.advance(24 * 3_600_000);
     }
-    assert_eq!(net.engine(c).get(&t, &gone).unwrap(), Some(s("v1")), "kept at the reader");
-    assert_eq!(net.engine(a).get(&t, &gone).unwrap(), None, "dropped at the writer");
-    assert_eq!(net.engine(b).get(&t, &gone).unwrap(), None, "dropped at the lowered writer");
+    for n in [a, b, c] {
+        assert_eq!(net.engine(n).get(&t, &gone).unwrap(), Some(s("v0")), "node {n}");
+    }
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("next")).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();

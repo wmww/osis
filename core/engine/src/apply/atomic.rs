@@ -336,8 +336,9 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     // (spec/crdt.md §4.6)
     let owned = if snap && v { invalid_of(tx.core, &tid, &ak) } else { Vec::new() };
     let mut vouch = false;
-    // superseded writes matter only for bodies with a relative bound
-    let bounded = v && (crate::retention::bounded(tx.core, &tid, &ak) || crate::engine::listing::listened(tx.core, &tid, &ak));
+    // superseded writes date bodies with a relative bound, and make a durable body read on its
+    // own one a cover may drop (`retention::bounds::read_alone`)
+    let bounded = v && (!tx.is_memory_commit(id) || crate::retention::bounded(tx.core, &tid, &ak) || crate::engine::listing::listened(tx.core, &tid, &ak));
     let mut ch = Changes::new();
     let mut dead = Killed::default();
     // an invalid delta (the one path, issues/drop-rejoin-robust.md item 1): nothing of it

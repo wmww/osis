@@ -9,24 +9,27 @@ use osis_node::Mutation;
 use osis_node::sync::EntryKind;
 
 // spec/commits.md §5 (purge on replace), spec/sync.md §7: a register purged on replace and
-// replaced whole goes under the writer's one cover, here and at the host in the same sync.
+// replaced whole goes under the writer's one cover, here and at the host in the same sync; the
+// replacing body, live, is read on its own and stays.
 #[test]
 fn replaced_register_goes_under_its_cover_spec_sync_7() {
     let (mut net, host, [a], _g, [t]) = hosted::<1, 1>(&[], ["x"], false);
     net.keep(a, t, &[("t:gone.0", PURGE)]);
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("v1")).unwrap();
-    net.engine(a).commit(m).unwrap();
+    let c1 = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let l = net.label(a);
     let before = net.host_ids(host, &l).len();
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("v2")).unwrap();
-    net.engine(a).commit(m).unwrap();
+    let c2 = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let snapshots = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(a).header(commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot))).count();
     assert_eq!(snapshots, 1, "the cover");
-    assert_eq!(net.host_ids(host, &l).len(), before, "the cover went up, the replaced bodies left");
+    assert_eq!(net.host_ids(host, &l).len(), before + 1, "the cover and the live body went up, the replaced body left");
+    assert!(at_host(&mut net, a, host, &l, &c1).is_empty(), "the replaced body left");
+    assert!(!at_host(&mut net, a, host, &l, &c2).is_empty(), "the live body stays");
 }
 
 /// Host entries of commit `c` under `l`, as node `n` knows them.

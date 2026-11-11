@@ -892,7 +892,11 @@ fn fate(
     // issues/thing-history.md: in history, kept (compaction may not drop it); under purge on
     // replace, gone at every node once a right holder covers it and the clock reaches its
     // replacement, owed by a right holder until then; out of history, any valid writer's cover
-    // drops it (Decisions 4)
+    // drops it (Decisions 4); a live delta (not replaced) is the state, so no cover drops it
+    // (spec/commits.md §5 Covered: only a purge, expiry or invalidity removes it)
+    if c.kind != CommitKind::Snapshot && !o.replaced.contains(&pr) {
+        return (keep(KeepWhy::Plain), false);
+    }
     let kept = o.replaced_at.get(&pr).copied().flatten().is_some_and(|r| o.kept(t, a, r, now));
     let under = o.under_purge.contains(&pr);
     let owes = under && by_right.is_none() && right;

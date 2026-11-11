@@ -1200,12 +1200,15 @@ mod tests {
         lp.sync_all().unwrap();
         let (alice, bob, carol) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let (x, keys) = (Ak::new("x:v.0").unwrap(), Ak::new("keys.0").unwrap());
-        let none = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) };
+        let none = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
         let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
         // bob writes `t` by a raw edge write: `t` keeps its first admin's secrets
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, alice);
         m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(bob))], op: Op::Set(edge(Role::Write).to_value()) }).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let mut m = Mutation::new();
+        m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::PurgeOnReplace)).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.sync(0, 1).unwrap();
         assert!(lp.peers[1].engine.holds_delete_keys(&t).unwrap());

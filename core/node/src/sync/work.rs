@@ -441,8 +441,18 @@ impl SyncEngine {
                     }
                 }
             }
+            // a snapshot changes nothing for a body read on its own: only the aspect's cover
+            // candidates are judged (`Core::cover_judged_on`), so its arrival costs O(change)
+            // what waits on the aspect (a delete waiting for a carrier) is judged again
             for k in aspects {
-                w.touched.commits.extend(self.engine.core.held_on(&k));
+                if is_card(k.1.as_str()) {
+                    w.touched.commits.extend(self.engine.core.held_on(&k));
+                } else {
+                    w.touched.commits.extend(self.engine.core.cover_judged_on(&k));
+                    if let Some(cs) = w.waits.aspects.remove(&k) {
+                        w.touched.commits.extend(cs);
+                    }
+                }
             }
             // what own replaces let go, judged together: several may arrive or turn valid at once
             for ((t, a, _), qs) in own {

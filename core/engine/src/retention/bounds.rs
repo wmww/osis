@@ -25,6 +25,29 @@ pub(crate) fn body_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Re
     Ok(false)
 }
 
+/// Whether something reads part `(tid, ak)` of `c` on its own, so no cover drops it (spec/commits.md
+/// §5 Covered): a cover drops a part when it carries every live write of it and nothing reads the
+/// part alone. A held durable delta none of whose writes is dead is read alone (a purge by name,
+/// a fallen purge bringing it back, listings); one with a dead write (`replace::replaced`), a
+/// compaction snapshot (its writes are copies) and an in-memory part (no purge, host copy or
+/// listing of its own) are not. Judged per part, as a cover drops one part (`drop_part_for`); the
+/// other parts of its body class are judged by their own aspects. A delta found read alone leaves
+/// `Core::cover_candidates`. Cost: the part read once against the state's part it meets.
+pub(crate) fn read_alone(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+    let Some(ai) = held_part(tx.core, c, tid, ak) else { return Ok(false) };
+    let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
+    if m.header.kind.is_compaction() || m.view.memory || ak.signal() || m.bare(ai) {
+        return Ok(false);
+    }
+    if super::replace::replaced(tx, c, ai, tid, ak)? {
+        return Ok(false);
+    }
+    if let Some(s) = tx.core.cover_candidates.get_mut(&(*tid, ak.clone())) {
+        s.remove(c);
+    }
+    Ok(true)
+}
+
 /// `Engine::delta_live` in `tx`, through `Core::live_bodies` (per delta: what forgets it is a
 /// change of that aspect's state alone).
 pub(crate) fn delta_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
@@ -320,6 +343,9 @@ impl Killed {
 /// A join on `(tid, ak)` superseded `dead`: the held bodies with a relative bound it may have
 /// replaced (the dying writes' own commits, and the aspect's snapshots, which may carry them) are
 /// judged again by node-sync (`Core::changed`); with `Killed::all`, every one (`mark_bounded`).
+/// On any aspect the dying writes' own commits are marked and become cover candidates: a body
+/// read on its own may not be now (`read_alone`); with `Killed::all`, every held body of the
+/// aspect (a reset joined by pages: rare).
 pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
     if dead.all {
         return mark_bounded(tx, tid, ak);
@@ -328,9 +354,14 @@ pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
         return;
     }
     let core = &*tx.core;
-    let mut on: BTreeSet<CommitId> = dead.dots.iter().filter_map(|d| core.commit_of(tid, ak, d)).collect();
+    let owners: BTreeSet<CommitId> = dead.dots.iter().filter_map(|d| core.commit_of(tid, ak, d)).collect();
+    let mut on = owners.clone();
     on.extend(core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1));
     crate::engine::listing::note_killed(tx, tid, ak, &on);
+    for c in &owners {
+        tx.core.mark_changed(*c);
+    }
+    tx.core.cover_candidates.entry((*tid, ak.clone())).or_default().extend(owners);
     if !bounded(tx.core, tid, ak) {
         return;
     }
@@ -342,12 +373,20 @@ pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
 }
 
 /// The state of `(tid, ak)` was rebuilt (a validity flip, an un-merge, a drop): every held body
-/// with a relative bound is judged again by node-sync, as when it was replaced may have moved.
+/// with a relative bound is judged again by node-sync, as when it was replaced may have moved, and
+/// every held body is a cover candidate again (a write of it may have died; the rebuild read
+/// them all already).
 pub(crate) fn mark_bounded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) {
+    let on: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    let k = (*tid, ak.clone());
+    let delta = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| !m.header.kind.is_compaction() && !m.view.memory);
+    let fresh: Vec<CommitId> = on.iter().copied().filter(|c| delta(c)).collect();
+    if !fresh.is_empty() {
+        tx.core.cover_candidates.entry(k).or_default().extend(fresh);
+    }
     if !bounded(tx.core, tid, ak) {
         return;
     }
-    let on: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     for c in on {
         if bounded_part(tx.core, &c, tid, ak).is_some() {
             tx.core.mark_changed(c);
@@ -453,6 +492,13 @@ impl Engine {
     pub fn drop_from(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<u64> {
         let (c, tid, ak) = (*c, *tid, ak.clone());
         self.run(|tx| drop_from(tx, &c, &tid, &ak))
+    }
+
+    /// Whether something reads the body holding `(tid, ak)` of `c` on its own, so no cover drops
+    /// it (`read_alone`).
+    pub fn read_alone(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+        let (c, tid, ak) = (*c, *tid, ak.clone());
+        self.run(|tx| read_alone(tx, &c, &tid, &ak))
     }
 
     /// When part `ak` of `c` was replaced, for a relative keep at least (`part_replaced_at`;

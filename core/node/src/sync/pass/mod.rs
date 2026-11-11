@@ -771,8 +771,10 @@ impl SyncEngine {
                     }
                     continue;
                 }
+                // the work set holds what the snapshot may drop (with a new one, the aspect's
+                // cover candidates, `work::prepare`); a full pass judges every body
                 let only: Option<Vec<CommitId>> = match &*scope {
-                    Scope::Some { commits, .. } if !commits.contains(s) => Some(commits.iter().filter(|c| self.engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == *t && x.ak == *a))).copied().collect()),
+                    Scope::Some { commits, .. } => Some(commits.iter().filter(|c| self.engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == *t && x.ak == *a))).copied().collect()),
                     _ => None,
                 };
                 if only.as_ref().is_some_and(|o| o.is_empty()) {

@@ -13,12 +13,10 @@ static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     r#"
 revision 1;
 purgeable_by(writer) aspect k:kept.0: string;
-purgeable_by(admin) aspect k:admin.0: string;
 "#,
 );
 const KEPT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:kept.0", &KEEP);
-const ADMIN_KEPT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:admin.0", &KEEP);
-/// What the tests' things keep of both (their setting): a day after replaced.
+/// What the tests' things keep (their setting): a day after replaced.
 const DAY: osis_schema::History = crate::common::DAY;
 
 // spec/commits.md §5 (keep at least): a compaction before the bound neither drops the covered
@@ -141,8 +139,7 @@ fn deletions_of(net: &Net, host: usize, l: &osis_base::LabelId, of: &std::collec
 // register; right holder A held Y before Z, B held Z before Y: both date X at Y (arrival order
 // does not matter). Once the bound has passed A deletes X at the host (covered by its
 // compaction); B does not place it again (A's snapshot covers it): one deletion, no fresh
-// encryption, and B drops it by its bound. Dates apart at the delete (different held sets):
-// `covered_drop_stays_out_across_local_dating_*`.
+// encryption, and B drops it by its bound.
 #[test]
 fn deletion_across_local_dating_no_churn_spec_sync_6() {
     assert_eq!(local_dating_churn(), (1, 1), "deletions, blobs of X");
@@ -214,143 +211,3 @@ fn local_dating_churn() -> (usize, usize) {
     (of_x, seen.len())
 }
 
-// spec/sync.md §6 (a covered delta is no blob's alone), spec/commits.md §5 (replaced, from the
-// held set): admin A compacts a register while X, B's write, is live (not replaced: past its
-// relative keep-at-least), drops X and deletes it at the host. Then C overwrites X: B, away
-// meanwhile and still holding X, judges it replaced now and kept. X is covered by A's snapshot under the label, so B
-// does not place it again; else A deletes each fresh encryption and B uploads another, for a
-// day (sim `snapshot_rights` seed 9317).
-#[test]
-fn covered_drop_stays_out_across_local_dating_spec_sync_6() {
-    let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
-    let g = net.group(a, &[(b, osis_base::Role::Write), (c, osis_base::Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.keep(a, t, &[("k:admin.0", DAY)]);
-    net.run();
-    let k = &ADMIN_KEPT;
-    let set = |net: &mut Net, n: usize, v: &str| {
-        let mut m = Mutation::new();
-        m.set(t, k, &s(v)).unwrap();
-        net.engine(n).commit(m).unwrap().unwrap()
-    };
-    let x = set(&mut net, b, "x");
-    net.run();
-    let l = net.label(a);
-    let ak = Ak::new(k.ak()).unwrap();
-    // B away: it holds X, never hearing of A's snapshot until X is replaced and kept
-    net.set_online(b, false);
-    // past MAX_DRIFT since X: a node's compaction may drop a body with no death then
-    net.advance(osis_base::format::MAX_DRIFT_MS + 60_000);
-    let acts = net.sync(a).compact(&t, &ak).unwrap();
-    net.actions(a, acts);
-    net.run();
-    assert!(!net.engine(a).body_not_dropped(&x, &t, &ak), "A dropped X as covered");
-    let x_ids = |net: &mut Net| -> std::collections::BTreeSet<osis_base::BlobId> {
-        let mut out = std::collections::BTreeSet::new();
-        for n in [a, b, c] {
-            for (id, e) in net.sync(n).entries(&l) {
-                if matches!(e, osis_node::sync::EntryKind::Commit { commit, .. } if commit == x) {
-                    out.insert(id);
-                }
-            }
-        }
-        out
-    };
-    let before = x_ids(&mut net);
-    assert!(net.host_ids(host, &l).iter().all(|id| !before.contains(id)), "X deleted at the host");
-    set(&mut net, c, "y");
-    net.run();
-    net.set_online(b, true);
-    net.run();
-    assert!(net.engine(b).replaced_at(&x, &t, &ak).unwrap().is_some(), "B judges X replaced");
-    assert!(net.engine(b).body_not_dropped(&x, &t, &ak), "B still holds X, kept");
-    let after = x_ids(&mut net);
-    assert!(after.is_subset(&before), "no fresh encryption of X");
-    assert_eq!(deletions_of(&net, host, &l, &before), before.len(), "one deletion per blob of X");
-    assert!(net.host_ids(host, &l).iter().all(|id| !before.contains(id)), "X stays out of the host");
-}
-
-// spec/sync.md §6, spec/permissions.md §5.2 (a snapshot turned invalid covers nothing): as
-// `covered_drop_stays_out_across_local_dating_*`, but admin D compacts and deletes X, and the
-// first admin, away meanwhile (B too, until X is replaced), then demotes D to read with a frontier not listing D's snapshot. X is
-// covered by no valid snapshot any more: B, dating X kept, places it again once, and it stays;
-// all read alike.
-#[test]
-fn covered_drop_coverer_falls_reuploaded_spec_sync_6() {
-    use osis_node::flows::Demotion;
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let d = net.node(4, &[host]);
-    let g = net.group(a, &[(b, osis_base::Role::Write), (c, osis_base::Role::Write), (d, osis_base::Role::Admin)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.keep(a, t, &[("k:admin.0", DAY)]);
-    net.run();
-    let k = &ADMIN_KEPT;
-    let set = |net: &mut Net, n: usize, v: &str| {
-        let mut m = Mutation::new();
-        m.set(t, k, &s(v)).unwrap();
-        net.engine(n).commit(m).unwrap().unwrap()
-    };
-    let x = set(&mut net, b, "x");
-    net.run();
-    let l = net.label(a);
-    let ak = Ak::new(k.ak()).unwrap();
-    net.set_online(a, false);
-    net.set_online(b, false);
-    net.advance(osis_base::format::MAX_DRIFT_MS + 60_000);
-    let acts = net.sync(d).compact(&t, &ak).unwrap();
-    net.actions(d, acts);
-    net.run();
-    assert!(!net.engine(d).body_not_dropped(&x, &t, &ak), "D dropped X as covered");
-    let x_ids = |net: &mut Net| -> std::collections::BTreeSet<osis_base::BlobId> {
-        let mut out = std::collections::BTreeSet::new();
-        for n in [a, b, c, d] {
-            for (id, e) in net.sync(n).entries(&l) {
-                if matches!(e, osis_node::sync::EntryKind::Commit { commit, .. } if commit == x) {
-                    out.insert(id);
-                }
-            }
-        }
-        out
-    };
-    let first = x_ids(&mut net);
-    assert!(net.host_ids(host, &l).iter().all(|id| !first.contains(id)), "X deleted at the host");
-    set(&mut net, c, "y");
-    net.run();
-    net.set_online(b, true);
-    net.run();
-    assert!(net.engine(b).body_not_dropped(&x, &t, &ak), "B still holds X, kept");
-    assert!(net.host_ids(host, &l).iter().all(|id| !first.contains(id)), "X stays out while covered");
-    let dt = net.tid(d);
-    let new = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, invite: None, tied: None };
-    let done = net.engine(a).demote(&g, &Demotion { holder: dt, new: Some(new), retain: None }).unwrap();
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
-    net.set_online(a, true);
-    net.run();
-    net.advance(61_000);
-    let snap = {
-        let e = net.engine(d);
-        e.commit_ids().into_iter().find(|s| e.header(s).is_some_and(|h| h.author == dt && osis_commit::Kind::ContentSnapshot == h.kind)).unwrap()
-    };
-    for n in [a, b, c] {
-        assert_eq!(net.engine(n).covered(&snap, &x, &t, &ak).unwrap(), Some(false), "node {n}: D's snapshot fell");
-    }
-    let placed = x_ids(&mut net);
-    let at = net.host_ids(host, &l);
-    assert!(placed.iter().any(|id| at.contains(id)), "X placed again once its coverer fell");
-    let dels = deletions_of(&net, host, &l, &placed);
-    for _ in 0..12 {
-        net.advance(5 * 60_000);
-    }
-    assert_eq!(x_ids(&mut net), placed, "no further encryption of X");
-    assert_eq!(deletions_of(&net, host, &l, &placed), dels, "no further deletion of X");
-    let want = net.engine(a).get(&t, &ak).unwrap();
-    assert_eq!(want, Some(s("y")));
-    for n in [b, c, d] {
-        assert_eq!(net.engine(n).get(&t, &ak).unwrap(), want, "node {n}");
-    }
-}

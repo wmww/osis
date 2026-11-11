@@ -398,7 +398,9 @@ fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
     lp.sync_all().unwrap();
     lp.advance(1_000);
     set(&mut lp, 2, t, &GONE, "v2");
-    lp.sync_all().unwrap();
+    // only peer 1 takes W's write and cover: a writer holding the live `v1` it replaces would owe
+    // a cover of its own, which would settle the flag below
+    sync(&mut lp, 2, 1);
     // peer 1 lets the dead body go (its keep bounds; no snapshot held, so not as covered)
     lp.peers[1].engine.drop_body(&c1, &t, &asp).unwrap();
     lp.advance(1_000);
@@ -544,6 +546,17 @@ fn flip_flag_on(lp: &mut LocalPeer, t: Tid, asp: &Ak, body: &CommitId) {
     for p in packages(lp, 0).into_iter().filter(|p| p.id == fall) {
         lp.deliver(1, &p).unwrap();
     }
+    {
+        let e = &mut lp.peers[1].engine;
+        for id in e.commit_ids() {
+            let h = e.header(&id).unwrap();
+            if h.aspects.iter().any(|x| x.ak == *asp) {
+                let m = e.core.ix.commits.get(&id).unwrap();
+                eprintln!("DBG {id:?} body {} author {:?} kind {:?} dropped {:?} missing {:?}", id == *body, h.author, h.kind, m.dropped.values().map(|d| (d.why, d.covered_by.clone())).collect::<Vec<_>>(), m.missing);
+            }
+        }
+        eprintln!("DBG suspects {:?}", e.suspects().unwrap());
+    }
     assert!(lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == *asp), "flagged");
 }
 
@@ -579,7 +592,8 @@ fn flip_flag_on_a_snapshot_body_settles_spec_permissions_4() {
     lp.sync_all().unwrap();
     lp.advance(1_000);
     set(&mut lp, 2, t, &GONE, "v2");
-    lp.sync_all().unwrap();
+    // only peer 1 takes W's write and cover (as `flip_flag_on_a_pruned_session_settles_*`)
+    sync(&mut lp, 2, 1);
     flip_flag_on(&mut lp, t, &asp, &z);
     later_snapshot_settles(&mut lp, t, &asp);
 }

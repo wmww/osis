@@ -368,6 +368,48 @@ fn a_purge_without_the_right_is_no_witness_spec_commits_5() {
     assert!(!at_host(&mut net, a, host, &l, c)[0].is_empty());
 }
 
+/// The compaction snapshots of `(t, k())` node `x` holds.
+fn snapshots(net: &mut Net, x: usize, t: Tid) -> Vec<CommitId> {
+    let e = net.engine(x);
+    e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.kind.is_compaction() && h.aspects.iter().any(|a| a.tid == t && a.ak == k())) && e.body_not_dropped(c, &t, &k())).collect()
+}
+
+// spec/commits.md §5 Purge: a refused request drops nothing, so no writer re-snapshots for it.
+#[test]
+fn a_refused_purge_writes_no_snapshot_spec_commits_5() {
+    let Chat { mut net, a, b, t, .. } = chat();
+    let c = msg(&mut net, a, t, "SECRET", Retention { by: PurgeBy::Admin });
+    net.run();
+    let before = [snapshots(&mut net, a, t), snapshots(&mut net, b, t)];
+    purge(&mut net, b, t, c, Retention::default());
+    net.run();
+    assert_eq!([snapshots(&mut net, a, t), snapshots(&mut net, b, t)], before, "a snapshot for a refused purge");
+    assert!(net.engine(a).body_not_dropped(&c, &t, &k()) && net.engine(b).body_not_dropped(&c, &t, &k()));
+}
+
+// spec/commits.md §5 Covered: a live body is the state, so a snapshot covering it drops nothing
+// at any node, and it lists as held with its value.
+#[test]
+fn a_live_body_survives_a_covering_snapshot_spec_commits_5() {
+    use osis_node::engine::listing::{CommitFrom, PartBody};
+    let Chat { mut net, a, b, t, .. } = chat();
+    let c = msg(&mut net, b, t, "live", permanent());
+    net.run();
+    net.advance(ROLE_KEEP_MS + 3_600_000);
+    let acts = net.sync(a).compact(&t, &k()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(3_600_000);
+    net.run();
+    for x in [a, b] {
+        let snaps = snapshots(&mut net, x, t);
+        assert!(snaps.iter().any(|s| net.engine(x).covered(s, &c, &t, &k()).unwrap() == Some(true)), "node {x}: a snapshot covers it");
+        assert!(net.engine(x).body_not_dropped(&c, &t, &k()), "node {x}: a live body dropped");
+        let (rows, _) = net.engine(x).held_parts(&t, &k(), CommitFrom::Oldest, 9, usize::MAX).unwrap();
+        assert_eq!(rows.iter().find(|r| r.id == c).unwrap().body, PartBody::Held(Some(s("live"))));
+    }
+}
+
 // spec/commits.md §5: a purged large value's chunks leave the host as any purge's; its header stays.
 #[test]
 fn a_purged_value_leaves_its_chunks_spec_commits_5() {

@@ -605,7 +605,7 @@ fn covered_drops_history(seed: u64) {
     for (c, a) in &order {
         let k = ak(a);
         let now = p.engine.now().0;
-        if !p.engine.body_not_dropped(c, &d, &k) || p.engine.drop_from(c, &d, &k).unwrap() > now {
+        if !p.engine.body_not_dropped(c, &d, &k) || p.engine.drop_from(c, &d, &k).unwrap() > now || p.engine.read_alone(c, &d, &k).unwrap() {
             continue;
         }
         let covering = snaps.iter().any(|(s, sa)| sa == a && s != c && p.engine.body_not_dropped(s, &d, &k) && p.engine.covered(s, c, &d, &k).unwrap() == Some(true));

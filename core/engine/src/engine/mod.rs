@@ -974,6 +974,12 @@ pub struct Core {
     /// Aspects whose purge-on-replace bodies `retention::settle_none` judges at the end of the
     /// transaction (`Core::index_none`).
     pub none_due: BTreeSet<(Tid, Ak)>,
+    /// Per aspect, held durable delta bodies a cover may come to drop: a write of each died (or
+    /// the aspect was rebuilt) since it was last found read on its own
+    /// (`retention::bounds::read_alone`). node-sync judges these, not every held body, when a
+    /// snapshot arrives: a snapshot changes nothing for a body read on its own, which leaves the
+    /// set when judged and comes back only when one of its writes dies (`mark_killed`).
+    pub cover_candidates: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
     /// Things whose `retention^.0` deltas arrived, flipped or dropped this transaction: what their
     /// timeline judges is judged again at its end (`retention::settings_changed`).
     pub settings_due: BTreeSet<Tid>,
@@ -1139,6 +1145,8 @@ impl Core {
             held_writes: self.held_writes.clone(),
             timer_floor: self.timer_floor.clone(),
             none_due: self.none_due.clone(),
+            settings_due: self.settings_due.clone(),
+            cover_candidates: self.cover_candidates.clone(),
             drop_due: self.drop_due.clone(),
             cut_subs: self.cut_subs.clone(),
             refold: self.refold.clone(),
@@ -1250,6 +1258,15 @@ impl Core {
     /// The held durable commits with a delta on `k` (`by_aspect` without memory commits).
     pub fn durable_on<'a>(&'a self, k: &(Tid, Ak)) -> impl Iterator<Item = CommitId> + 'a {
         self.ix.by_aspect.get(k).into_iter().flatten().map(|x| x.1).filter(|c| !self.ix.commits.get(c).is_some_and(|m| m.view.memory))
+    }
+
+    /// The held durable bodies on `k` a snapshot's arrival may let a cover drop: its held
+    /// snapshots and `cover_candidates` (the rest are read on their own until a write of theirs
+    /// dies).
+    pub fn cover_judged_on(&self, k: &(Tid, Ak)) -> Vec<CommitId> {
+        let mut out: BTreeSet<CommitId> = self.ix.snapshots.get(k).into_iter().flatten().map(|x| x.1).collect();
+        out.extend(self.cover_candidates.get(k).into_iter().flatten().filter(|c| self.ix.commits.contains_key(c)).copied());
+        out.into_iter().collect()
     }
 
     /// The held commits of either class with a delta on `k`.
@@ -1628,6 +1645,7 @@ impl Core {
             cut_subs: _,
             refold: _,
             none_due: _,
+            cover_candidates: _,
             settings_due: _,
             valueless_dirty: _,
             changed: _,
@@ -1834,6 +1852,7 @@ impl Core {
             held_writes: Default::default(),
             timer_floor: 0,
             none_due: BTreeSet::new(),
+            cover_candidates: BTreeMap::new(),
             settings_due: BTreeSet::new(),
             drop_due: BTreeSet::new(),
             cut_subs: BTreeSet::new(),

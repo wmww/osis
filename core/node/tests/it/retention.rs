@@ -2722,8 +2722,8 @@ fn snapshots_held(lp: &mut LocalPeer, i: usize, t: Tid, k: &osis_base::Ak) -> Ve
 }
 
 // spec/commits.md §5 (purge on replace cover): a writer holding a replaced purge-on-replace body covers
-// it in the transaction that replaced it, and the body goes there at once; the cover drops the
-// replacing body too (covered), so the writer holds one snapshot and reads the new value.
+// it in the transaction that replaced it, and the body goes there at once; the replacing body,
+// live, is read on its own and stays beside the one snapshot, and the writer reads the new value.
 #[test]
 fn none_writer_covers_in_the_replacing_transaction_spec_commits_5() {
     let mut lp = net(1, 0x6e01);
@@ -2735,7 +2735,7 @@ fn none_writer_covers_in_the_replacing_transaction_spec_commits_5() {
     let c2 = set(&mut lp, 0, t, &GONE, "two");
     let e = &mut lp.peers[0].engine;
     assert!(!e.body_not_dropped(&c1, &t, &k), "the replaced body goes in the replacing transaction");
-    assert!(!e.body_not_dropped(&c2, &t, &k), "covered by the same snapshot");
+    assert!(e.body_not_dropped(&c2, &t, &k), "the live body stays");
     assert_eq!(snapshots_held(&mut lp, 0, t, &k).len(), 1, "one cover");
     assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), Some(s("two")));
 }

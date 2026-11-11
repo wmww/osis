@@ -174,6 +174,11 @@ impl SyncEngine {
                 self.covered_judged.insert(k);
                 continue;
             }
+            // read on its own (a live delta): no cover drops it; judged again when a write of
+            // it dies (the engine marks it, `bounds::mark_killed`)
+            if self.engine.read_alone(&c, t, ak)? {
+                continue;
+            }
             self.engine.drop_body(&c, t, ak)?;
             self.state.forget_due.insert(c);
             self.state.set_carrier(c, s);
@@ -197,7 +202,7 @@ impl SyncEngine {
             for q in &covers {
                 covered |= self.engine.covered(q, c, &a.tid, &a.ak)? == Some(true);
             }
-            if !covered {
+            if !covered || self.engine.read_alone(c, &a.tid, &a.ak)? {
                 return Ok(None);
             }
             due = due.max(self.engine.drop_from(c, &a.tid, &a.ak)?);

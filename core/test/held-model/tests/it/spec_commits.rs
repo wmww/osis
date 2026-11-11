@@ -229,7 +229,7 @@ fn keep_until_blocks_compaction_spec_commits_5() {
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
     assert!(o.deadlines.contains(&at(5)));
     assert_eq!(o.history[&(T, REG)], [(st(1, 10, 1), 10)].into_iter().collect());
-    assert_eq!(o.fates[&(11, 0)], Fate::MayDrop(DropWhy::Covered { by: 12 }), "live: no history to keep");
+    assert_eq!(o.fates[&(11, 0)], Fate::Keep(KeepWhy::Plain), "live: read on its own, no cover drops it");
     let o = evaluate(&held(5, cs));
     assert_eq!(o.fates[&(10, 0)], Fate::MayDrop(DropWhy::Covered { by: 12 }));
     assert!(o.history.is_empty());

@@ -225,6 +225,10 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
                     if is_snapshot && c < *s && super::covered(tx, &c, s, tid, ak)? == Some(true) {
                         continue;
                     }
+                    // nothing reads an in-memory body on its own (the one cover rule)
+                    if super::bounds::read_alone(tx, &c, tid, ak)? {
+                        break;
+                    }
                     // a bare leftover not past its expiry (purged) stays (`drop_part_for`)
                     super::drop_part_for(tx, &c, ai, super::DropFor::Cover)?;
                     if !holds(tx, &c) {
