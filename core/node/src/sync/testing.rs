@@ -105,7 +105,6 @@ impl SyncEngine {
                 touched: self.touched.clone(),
                 served: self.served.clone(),
                 hub_conns: self.hub_conns.clone(),
-                peer_steps: self.peer_steps.clone(),
                 lan: self.lan.clone(),
                 lan_rotate: self.lan_rotate.clone(),
                 reach_account: self.reach_account.clone(),
@@ -129,7 +128,7 @@ impl SyncEngine {
                 clients_moved: self.clients_moved.clone(),
                 prefix_checked: self.prefix_checked.clone(),
                 memory: self.memory.clone(),
-                relay_gate: self.relay_gate.clone(),
+                refusals: self.refusals.clone(),
                 hosting: self.hosting.clone(),
             })
         })

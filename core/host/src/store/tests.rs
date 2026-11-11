@@ -963,10 +963,10 @@ fn policy_knobs_by_name() {
     assert_eq!((p.cap_bytes, p.deposits), (1000, 3));
     assert!(p.set("bogus", 1).is_err());
     assert!(p.set("deposits", u64::from(u32::MAX) + 1).is_err());
-    let q = osis_proto::serving::SEND_QUEUE as u64;
+    let q = (osis_proto::serving::SEND_QUEUE + osis_proto::client::WINDOW_QUEUE) as u64;
     assert!(p.set("max_queued_bytes", q - 1).is_err());
     p.set("max_queued_bytes", q).unwrap();
-    assert!(HostPolicy::default().max_queued_bytes >= osis_proto::serving::SEND_QUEUE);
+    assert!(HostPolicy::default().max_queued_bytes as u64 >= q);
 }
 
 // spec: none (sweep robustness): an unparsable index row is dropped; a failing sweep (its commit
@@ -980,7 +980,7 @@ fn sweep_junk_and_failures() {
     let mut junk = Writes::default();
     junk.put([&b"X"[..], &0u64.to_be_bytes(), &[1, 2, 3]].concat(), vec![]);
     store.write(junk).unwrap();
-    let mut hub = crate::Hub::new(store, [1; 32], Box::new(SeededRng::from_seed([2; 32])));
+    let mut hub = crate::Hub::new(store, Box::new(SeededRng::from_seed([2; 32])));
     assert_eq!(hub.next_due(T0), Some(0));
     faults.at(0, osis_store::Fault::Fail);
     let out = hub.tick(T0);

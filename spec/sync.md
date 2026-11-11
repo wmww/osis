@@ -230,8 +230,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - An ephemeral entry's tombstone lasts `MAX_DRIFT` (in memory).
   - Hosts may rate-limit deletes, deposits, registrations (code 4) and relay-only uploads per label.
   - A cursor below a trimmed ephemeral log gets the live ephemeral entries added since in place of their add events.
-- **Co-reader peer**: A co-reader peer serving a label applies the same rule (relay-only uploads included: it passes a new one on to the label's hosts it syncs with, §9).
-  - Between readers it serves its connection's shared set by the Stream (§10) alone; a peer opens nothing there and uploads nothing.
+- **Co-reader peer**: between readers a node serves its connection's shared set by the Stream (§10) alone; a peer opens nothing there and uploads nothing.
   - While a reader can pull it (§5 Placed), a node places in its own store what each label it syncs must hold of its own (the must-hold bodies it would upload, its certificates), whatever hosts are connected; a pass at a host uploads what that host lacks of it. Of the entries in its store no host holds or is being sent, it drops what its sync would delete at a host (a body with live writes only once a carrier is under the label) or what expired.
   - A co-reader peer that syncs a label with no host serves it as its own host, while a reader can pull it (§5 Placed):
     - it issues a child step when it would re-register at a host (recorded in `label.0`);
@@ -396,7 +395,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
     - the node received that blob ID under that label before its expiry (remembered for at most a bounded number of blobs: past it the earliest-expiring is forgotten and its expiry becomes the label's floor, at or below which blobs are dropped).
   - **Delivery**: it verifies the rest like an ephemeral commit and tells its valid ephemeral signal parts to listeners once (spec/data-model.md §2). It holds and re-uploads nothing.
   - **Replay**: it remembers delivered relay-only commit IDs until their `ts` is `MAX_DRIFT` old, at most `MAX_DELIVERED` (past that the earliest delivered is forgotten and its `ts` becomes its author's floor unless lower, at or below which that author's relay-only commits are dropped), and drops relay-only commits whose `ts` is more than `MAX_DRIFT` from its wall clock.
-  - **Co-reader peer**: a co-reader peer serving the label passes a verified new one on, stamped as received: from a host to the sessions it serves and the readers sharing the label (§10, Stream), from a session or reader to its other sessions and readers and to the label's hosts it syncs with.
+  - **Co-reader peer**: a co-reader peer serving the label passes a verified new one on, stamped as received: from a host to the readers sharing the label (§10, Stream), from a reader to its other readers and to the label's hosts it syncs with.
 
 ## 10. Transport and addresses
 - Sync runs over any ordered, bidirectional byte stream with confidentiality and an authenticated peer key.
@@ -471,7 +470,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
   - **IP consent**: any positive action toward a node (sharing a group with it, making, sending or following a link, accepting an invite, choosing a relay) is consent to show it this node's IP address. So a node exchanges addresses with every peer of a relayed connection.
   - **Switching**: when a direct connection completes after a dialer began using a relayed one, it closes the relayed one and its next dial of that key uses the direct one.
   - **Relaying** is a node's choice. A relay accepts registrations only of the keys it allows, and bounds per source (an IPv4 address, an IPv6 /64) the bytes per second it forwards and its share of relay connections. It sees addresses, volume and the keys dialed, never the data.
-  - A `peer://` entry in a label's `hosts` is never dialed as a host: a label with no other entry has no host, and its nodes serve it.
+  - A `peer://` entry in a label's `hosts`, or a saved peer, is a host like any other address: dialed by its key with the URL's items as hints.
 - **LAN discovery** announces nothing stable across networks or meaningful to strangers: a tag and a transport key fresh per network join, never the dialable key.
   - **Tag**: `kdf("lan tag", lan secret, le64(window))` (first 16 bytes), with window = `floor(unix ms / 600000)`. The 32-byte random lan secret is in `reach.0`. A node matches tags of the nodes whose `reach.0` it holds (its own account's) for the current and adjacent windows; finding other accounts' nodes on a LAN is issues/net-connect.md's (target, issues/account-signing.md step 8).
   - **Joining**: a node joins anew (a fresh transport key and listener, announced at once and a few more times in its first seconds) whenever its network may have changed.
@@ -493,11 +492,8 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
     - an announcement from any source address other than the first it verified that announcement from;
     - one of an earlier window than the newest it verified from that node (replays).
   - **Dialing**: it dials the announced key at the datagram's source address (an IPv6 link-local one on the interface it arrived on) and the announced port. The address is a route to the node only once a connection through it is up (the transport authenticated the announced key).
-- **Client port** (spec/wire.md §11.2 kinds 24-29) is served only on a node's own listeners (its dialable key, LAN keys, its unix socket, its client listeners), never on a host address.
-- **Client listener**: a listener at a URL the node's operator chose, with a transport key of its own.
-  - That key is an Ed25519 key from a 32-byte random seed, derived from nothing else and independent of the node's signing, dialable and LAN keys, published nowhere but in the addresses handed to its clients, changed only by hand.
-  - Its `Hello` static key is that key, and it serves only kinds 24-29 and Ping (any other: Error 11).
-  - A node SHOULD keep connections and sessions that have not authenticated apart from every other listener's, within a bound of its own, the oldest giving way to a newcomer from another source.
+- **One key**: a node listens under one transport key, its dialable key, at every listener but its LAN ones (a fresh key per join) and its unix socket (a key by uid): the URLs its operator chose, its `peer://` listener. Every listener serves everything the node serves: data it stores for others (§4, §5), node-to-node sync and the client port (spec/wire.md §11.2 kinds 24-29). A connection's `Hello` static key is the key of the listener that took it. The key changes only by hand, and every listener moves to the new one.
+- **Served connections**: a node bounds the connections it serves at once (local policy). At the bound a newcomer takes the place of a connection that shares nothing (no open, no member of its shared set, no authenticated client), the oldest of the source holding the most such, else of the newest of a source holding at least two more connections than the newcomer's; else it is closed. A connection that still shares nothing a while after it started is closed (local policy).
 - **`unix:///path`**: a path socket (never an abstract one), no TLS.
   - Each side reads the other's uid from the kernel (`SO_PEERCRED`) and accepts only its own uid.
   - A side's key for the address is BLAKE3(`"osis v1 unix peer"` ‖ be32(uid)).

@@ -224,10 +224,6 @@ pub struct ServingSession {
     authed: bool,
     /// The upper layer waits for push room (`WantRoom`).
     room_wanted: bool,
-    /// Client-port kinds are served (`with_port`); else they get Error 11 (a host).
-    port: bool,
-    /// Only the client port: every other kind is answered Error 11 (a client listener).
-    port_only: bool,
     /// The node's own requests to the dialer (`ServingInput::Peer`), within the request window.
     requests: crate::client::Window,
 }
@@ -299,25 +295,8 @@ impl ServingSession {
             api_subs: BTreeMap::new(),
             authed: false,
             room_wanted: false,
-            port: false,
-            port_only: false,
             requests: crate::client::Window::default(),
         }
-    }
-
-    /// Serves the client-port kinds (a node's listeners; notes/client-port.md §5): they are
-    /// handed out as `ServingOutput::Request`.
-    /// `with_port`, and nothing else served: a client listener is dialable by anyone it was given
-    /// to, and holds no peer's labels or deposits.
-    pub fn port_only(mut self) -> ServingSession {
-        self.port = true;
-        self.port_only = true;
-        self
-    }
-
-    pub fn with_port(mut self) -> ServingSession {
-        self.port = true;
-        self
     }
 
     /// Whether an Auth was answered by a Reply (notes/client-port.md §3): the session counts as
@@ -674,9 +653,6 @@ impl ServingSession {
     /// `charge`: the request's frame bytes plus reply allowance (a node request handed up keeps it
     /// against `MAX_UNANSWERED` until the upper layer answers).
     fn dispatch(&mut self, now: u64, store: &mut dyn LabelStore, msg: Message, charge: usize, out: &mut Vec<ServingOutput>) -> Result<Option<Message>, StoreError> {
-        if self.port_only && !matches!(msg, Message::Ping { .. } | Message::Auth { .. } | Message::Call { .. } | Message::Sub { .. } | Message::Unsub { .. }) {
-            return Ok(Some(Message::Error { id: msg.id(), code: Code::UNSUPPORTED }));
-        }
         use Message as M;
         if msg.for_node() {
             if !msg.is_request() {
@@ -689,9 +665,6 @@ impl ServingSession {
             }
             out.push(ServingOutput::Peer(Box::new(msg)));
             return Ok(None);
-        }
-        if !store.serves_log() && matches!(msg, M::Sync { .. } | M::Reconcile { .. } | M::Subscribe { .. }) {
-            return Ok(Some(M::Error { id: msg.id(), code: Code::UNSUPPORTED }));
         }
         Ok(Some(match msg {
             M::Ping { id, .. } => M::Pong { id, wall_ms: now },
@@ -782,9 +755,6 @@ impl ServingSession {
     fn api_request(&mut self, msg: Message, charge: usize, out: &mut Vec<ServingOutput>) -> Option<Message> {
         use Message as M;
         let id = msg.id();
-        if !self.port {
-            return Some(M::Error { id, code: Code::UNSUPPORTED });
-        }
         if self.asked.contains_key(&id) {
             return Some(M::Error { id, code: Code::MALFORMED });
         }

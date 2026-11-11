@@ -8,7 +8,7 @@ use net::*;
 use crate::peers::reach_ed;
 use osis_base::{Role, Tid};
 use osis_crypto::{Secret32, SigningSecret};
-use osis_node::sync::{Action, ConnId, Event};
+use osis_node::sync::ConnId;
 use osis_proto::{ActorProof, ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, Message, Prover, encode_frame};
 use std::collections::BTreeSet;
 
@@ -18,41 +18,17 @@ pub(crate) const LISTENER: [u8; 32] = [0x42; 32];
 pub(crate) const CHALLENGE: [u8; 32] = [7; 32];
 
 pub(crate) struct Dialer {
+    /// The served session at the node (its engine's ID) and its hub connection.
     pub(crate) conn: ConnId,
+    pub(crate) hc: ConnId,
     pub(crate) cs: ClientSession,
     /// The listener's Hello challenge.
     pub(crate) hello: [u8; 32],
 }
 
-/// One round of the session: frames to node `n`, its answers back; the events gathered.
-pub(crate) fn pump(net: &mut Net, n: usize, p: &mut Dialer, mut acts: Vec<Action>, mut outs: Vec<ClientOutput>) -> Vec<ClientEvent> {
-    let mut evs = Vec::new();
-    loop {
-        let mut moved = false;
-        for o in std::mem::take(&mut outs) {
-            match o {
-                ClientOutput::Send(b) => {
-                    acts.extend(net.sync(n).handle(Event::Bytes { conn: p.conn, bytes: b }));
-                    moved = true;
-                }
-                ClientOutput::Event(e) => evs.push(e),
-                _ => {}
-            }
-        }
-        for a in std::mem::take(&mut acts) {
-            match a {
-                Action::Send { conn, bytes } if conn == p.conn => {
-                    let now = net.now();
-                    outs.extend(p.cs.handle(now, ClientInput::Bytes(bytes)));
-                    moved = true;
-                }
-                a => net.actions(n, vec![a]),
-            }
-        }
-        if !moved {
-            return evs;
-        }
-    }
+/// One round of the session: frames to node `n`'s hub, its answers back; the events gathered.
+pub(crate) fn pump(net: &mut Net, n: usize, p: &mut Dialer, outs: Vec<ClientOutput>) -> Vec<ClientEvent> {
+    net.hand_exchange(n, p.hc, &mut p.cs, Vec::new(), outs, false)
 }
 
 fn dial(net: &mut Net, n: usize) -> Dialer {
@@ -61,25 +37,28 @@ fn dial(net: &mut Net, n: usize) -> Dialer {
 
 /// A dialer's own Hello challenge, chosen by the dialer: a hostile one picks it.
 pub(crate) fn dial_with(net: &mut Net, n: usize, challenge: [u8; 32]) -> Dialer {
-    let (conn, acts) = net.sync(n).accept(LISTENER, [0x43; 32]);
-    let hello = acts.iter().find_map(|a| if let Action::Send { bytes, .. } = a { osis_proto::Hello::decode(&bytes[4..]).ok() } else { None }).unwrap().challenge;
-    let mut p = Dialer { conn, cs: ClientSession::new(ClientConfig { peer_static_key: LISTENER, challenge }), hello };
+    let (hc, sent) = net.hand_accept(n, LISTENER, osis_transport::Peer::Key([0x43; 32]));
+    let hello = sent.iter().find_map(|b| osis_proto::Hello::decode(&b[4..]).ok()).unwrap().challenge;
+    let mut p = Dialer { conn: 0, hc, cs: ClientSession::new(ClientConfig { peer_static_key: LISTENER, challenge }), hello };
     let now = net.now();
-    let outs = p.cs.handle(now, ClientInput::Start);
-    pump(net, n, &mut p, acts, outs);
+    let mut outs = p.cs.handle(now, ClientInput::Start);
+    for f in sent {
+        outs.extend(p.cs.handle(now, ClientInput::Bytes(f)));
+    }
+    pump(net, n, &mut p, outs);
+    p.conn = net.served(n, hc);
     p
 }
 
 pub(crate) fn prove(net: &mut Net, n: usize, p: &mut Dialer, provers: Vec<Prover>) -> Vec<ClientEvent> {
     let now = net.now();
     let outs = p.cs.handle(now, ClientInput::Command(Command::Prove(provers)));
-    pump(net, n, p, Vec::new(), outs)
+    pump(net, n, p, outs)
 }
 
 /// Sends `proofs` raw, as a dialer that made them itself would.
 fn prove_raw(net: &mut Net, n: usize, p: &Dialer, id: u32, proofs: Vec<ActorProof>) -> Vec<Message> {
-    let acts = net.sync(n).handle(Event::Bytes { conn: p.conn, bytes: encode_frame(&Message::Prove { id, proofs }.encode()) });
-    acts.iter().filter_map(|a| if let Action::Send { bytes, .. } = a { Message::decode(&bytes[4..]).ok() } else { None }).collect()
+    net.hand_input(n, p.hc, encode_frame(&Message::Prove { id, proofs }.encode())).iter().filter_map(|b| Message::decode(&b[4..]).ok()).collect()
 }
 
 pub(crate) fn proved_by(evs: &[ClientEvent]) -> Vec<ActorProof> {

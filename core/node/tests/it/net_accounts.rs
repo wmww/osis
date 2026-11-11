@@ -81,7 +81,7 @@ fn a_node_key_alone_reaches_nothing_at_another_account_spec_sync_10() {
     assert_eq!(net.sync(a).judgments(p.conn, &[label]).unwrap()[&label], Judgment::Unknown, "J reads no account from a node key");
     let now = net.now();
     let outs = p.cs.handle(now, ClientInput::Command(Command::Resume { nonce: [5; 32], tags: vec![] }));
-    let evs = crate::connection_proofs::pump(&mut net, a, &mut p, Vec::new(), outs);
+    let evs = crate::connection_proofs::pump(&mut net, a, &mut p, outs);
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { kind: Request::Resume, .. })), "{evs:?}");
     assert_eq!(net.sync(a).connection_record(p.conn), None);
     assert!(net.sync(a).shared_members(p.conn).is_empty());
@@ -127,7 +127,7 @@ fn a_removed_node_after_the_rotation_matches_no_record_spec_sync_10() {
     let tag = resume_tag(&r, &LISTENER, &ch, &p.hello);
     let now = net.now();
     let outs = p.cs.handle(now, ClientInput::Command(Command::Resume { nonce: [5; 32], tags: vec![tag] }));
-    let evs = crate::connection_proofs::pump(&mut net, b, &mut p, Vec::new(), outs);
+    let evs = crate::connection_proofs::pump(&mut net, b, &mut p, outs);
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { kind: Request::Resume, .. })), "no record found: {evs:?}");
     assert_eq!(net.sync(b).connection_record(p.conn), None);
     assert!(net.sync(b).shared_members(p.conn).is_empty(), "opens nothing");

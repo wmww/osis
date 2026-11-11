@@ -600,34 +600,26 @@ fn clients_commands_plan_cli() {
     assert_eq!(s.code(&["--node", &addr, "--client-secret", bad.to_str().unwrap(), "inspect", "actor", "me"]), 2);
 }
 
-// CLI `serving`: `host^.0` written field by field, shown (with the peer
-// address each listen URL will have, known without serving), stopped (a new start, a new key); a
-// group names its sync IDs (as `status` lists them), a sync ID works too, `''` clears a field.
+// CLI `serving`: `host^.0` written field by field, shown, stopped; a group names its sync IDs
+// (as `status` lists them), a sync ID works too, `''` clears a field.
 #[test]
 fn serving_commands_plan_cli_4() {
     let s = S::mem();
     assert_eq!(s.code(&["serving", "show"]), 3, "not serving");
-    s.ok(&["serving", "set", "--listen", "quic://0.0.0.0:7400", "--admitted", "me", "--policy", "group_entries=10", "--cap", "me=5,500"]);
+    s.ok(&["serving", "set", "--admitted", "me", "--policy", "group_entries=10", "--cap", "me=5,500"]);
     let ids = s.ok(&["serving", "ids", "me"]).out;
     let home_label = ids.trim().to_string();
     assert_eq!(home_label.len(), 32, "{ids}");
     assert!(!s.ok(&["--json", "status"]).out.contains(&home_label), "the id stays with serving");
     let show = s.ok(&["serving", "show"]).out;
-    let addr = show.lines().find_map(|l| l.strip_prefix("address ")).unwrap_or_else(|| panic!("{show}")).to_string();
-    let key = addr.strip_prefix("quic://0.0.0.0:7400#").unwrap_or_else(|| panic!("{addr}"));
-    assert_eq!(key.len(), 43, "a base64url 32-byte key: {addr}");
-    assert_eq!(show, format!("listen quic://0.0.0.0:7400\naddress {addr}\nadmit own\nadmitted {home_label}\npolicy group_entries 10\ncap {home_label} 5 500\n"));
-    // the address is in the form `peers add` takes
-    s.ok(&["peers", "add", &addr]);
-    assert_eq!(s.ok(&["peers", "ls"]).out, format!("{addr}\n"));
-    s.ok(&["peers", "rm", &addr]);
+    assert_eq!(show, format!("admit own\nadmitted {home_label}\npolicy group_entries 10\ncap {home_label} 5 500\n"));
     // one flag replaces its field, the rest kept; '' clears
     let other = "00112233445566778899aabbccddeeff";
     s.ok(&["serving", "set", "--admit", "open", "--admitted", other, "--policy", ""]);
     let show = s.ok(&["serving", "show"]).out;
-    assert_eq!(show, format!("listen quic://0.0.0.0:7400\naddress {addr}\nadmit open\nadmitted {other}\ncap {home_label} 5 500\n"), "the key kept");
+    assert_eq!(show, format!("admit open\nadmitted {other}\ncap {home_label} 5 500\n"));
     let j = s.ok(&["--json", "serving", "show"]).out;
-    assert!(j.contains(&format!("\"admitted\":[\"{other}\"]")) && j.contains("\"admit\":\"open\"") && j.contains(&format!("\"addresses\":[\"{addr}\"]")), "{j}");
+    assert!(j.contains(&format!("\"admitted\":[\"{other}\"]")) && j.contains("\"admit\":\"open\""), "{j}");
     // bad input: an unknown knob (Invalid), a group not synced here, not a sync ID
     assert_eq!(s.code(&["serving", "set", "--policy", "no_such_knob=1"]), 7);
     let t = s.thing();
@@ -636,17 +628,8 @@ fn serving_commands_plan_cli_4() {
     assert_eq!(s.code(&["serving", "set", "--cap", "me=5"]), 2);
     s.ok(&["serving", "off"]);
     assert_eq!(s.code(&["serving", "show"]), 3);
-    // stopping shreds the serving secret: a new start has a new address; no listen URL, no address
     s.ok(&["serving", "set"]);
     assert_eq!(s.ok(&["serving", "show"]).out, "admit own\n");
-    s.ok(&["serving", "set", "--listen", "quic://0.0.0.0:7400"]);
-    let again = s.ok(&["serving", "show"]).out;
-    assert!(again.contains("address quic://0.0.0.0:7400#") && !again.contains(&addr), "{again}");
-    // a port 0 is picked when it listens: no address printed for it
-    s.ok(&["serving", "set", "--listen", "quic://127.0.0.1:0", "--listen", "quic://0.0.0.0:7400"]);
-    let two = s.ok(&["serving", "show"]).out;
-    assert_eq!(two.lines().filter(|l| l.starts_with("address ")).collect::<Vec<_>>().len(), 1, "{two}");
-    assert!(two.contains("address quic://0.0.0.0:7400#"), "{two}");
 }
 
 // notes/cli.md Design `-v`: a command that syncs prints the node's diagnostics on stderr

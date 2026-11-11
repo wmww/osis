@@ -1,9 +1,11 @@
 //! osis-host: hosting, a node storing and serving labels it need not read (spec/sync.md §4-§9):
 //! `HostStore` (osis-proto's `LabelStore` over its own osis-store `Store`, removals shredded,
 //! with the `HostPolicy` and the admission) and `Hub` (sans-I/O: a serving session per
-//! connection, cross-connection notices, sweeps, push replication to peer hosts). The node's
-//! driver drives the hub in its own loop from its `host^.0` (`HostConfig`, public data only),
-//! node sync above every session (`Up`, `Down`: node-kind messages pass through unjudged);
+//! connection on every listener of the node, cross-connection notices, sweeps, push replication
+//! to peer hosts). The node's driver drives the hub in its own loop, with the store its
+//! `host^.0` says (`HostConfig`, public data only; an empty one in memory while it hosts
+//! nothing), node sync above every session (`Up`, `Down`: node-kind messages and client-port
+//! requests pass through unjudged);
 //! osis-node depends on it, never the reverse: hosting reaches no engine, key or sync state.
 //! Layer 6 (notes/architecture.md). Notes: notes/serving.md.
 #![forbid(unsafe_code)]
@@ -16,7 +18,7 @@ use osis_base::LabelId;
 use osis_label::Address;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub use hub::{Binding, ConnId, Down, Hub, HubOutput, Up};
+pub use hub::{Binding, ConnId, Down, Hub, HubOutput, Remote, Up};
 pub use replicate::Replicator;
 pub use store::{HostStore, DEPOSIT_ENTRY_BYTES, HostPolicy, Swept, Totals};
 
@@ -49,10 +51,10 @@ pub struct LabelCaps {
 /// What the node hands its host (from its `host^.0`, spec/data-model.md §9): public data only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostConfig {
-    /// The host's transport key (the public key of the node's host secret).
-    pub key: [u8; 32],
-    /// Transport URLs it listens on, each with the host secret.
-    pub listen: Vec<String>,
+    /// Which run of hosting this is: drawn when hosting starts, gone when it stops. The host
+    /// store records it, and one recording another (hosting stopped and started again since) is
+    /// erased before use.
+    pub store_id: [u8; 32],
     pub admission: Admission,
     /// Peer hosts it pushes its labels to.
     pub replicate: Vec<Address>,

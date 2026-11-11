@@ -30,19 +30,10 @@ pub struct SyncConfig {
     /// are not opened, not at a host and still held (co-reader-peer serving).
     pub peer_bytes: u64,
     pub peer_total_bytes: u64,
-    /// Peer sessions served at once (more are closed at once).
-    pub max_served: usize,
-    /// Client sessions (the unix socket) served at once, apart from `max_served`: past it the
-    /// oldest one that has not authenticated is closed, else the newcomer. Resource bound: 0
-    /// serves no client, infinity lets local dials exhaust memory.
+    /// Connections authenticated as client actors at once (a further Auth is Error 4). Resource
+    /// bound: 0 serves no client, infinity lets clients take every connection.
     pub max_clients: usize,
-    /// Connections and sessions on the client listener not yet authenticated (notes/client-port.md
-    /// §5), apart from `max_served` and `max_clients`: past it the oldest gives way. Resource
-    /// bound: 0 lets no client in, infinity lets a flood hold unbounded memory.
-    pub client_pending: usize,
-    /// A served session without bytes this long is closed.
-    pub serve_idle_ms: u64,
-    /// A served session that opened no label this long after it started is closed.
+    /// A served connection sharing nothing this long after it started is closed.
     pub serve_open_ms: u64,
     /// How long a complete pass waits for co-readers after a role change (then it counts
     /// hosts only).
@@ -80,10 +71,7 @@ impl Default for SyncConfig {
             max_peers: 64,
             peer_bytes: 64 << 20,
             peer_total_bytes: 1 << 30,
-            max_served: 64,
             max_clients: 64,
-            client_pending: 64,
-            serve_idle_ms: 120_000,
             serve_open_ms: 30_000,
             peer_pass_wait_ms: 300_000,
             unvouched_cap: 1 << 16,
@@ -161,8 +149,8 @@ pub enum Action {
     /// with `dialable_secret()` where the old listener was, and join the LAN again with a fresh
     /// transport key.
     Reach,
-    /// Run the host with this config (`host^.0`; listening with `host_secret_for`, reporting with
-    /// `set_host_status`), or stop it (none). Dials of its address reach it in-process.
+    /// Host with this config (`host^.0`; the hub's store is the host store of its run, erased
+    /// once `hosts` is false), or stop (none: the hub serves an empty store).
     Host(Option<Box<osis_host::HostConfig>>),
     /// A client-port request on a served session (Auth, Call, Sub: answer by `Event::Reply`;
     /// Unsub: already answered). Not for the driver: the holder of the engine runs it.
@@ -171,9 +159,6 @@ pub enum Action {
     Room { conn: ConnId, budget: usize },
     /// A served session that made client-port requests ended: drop its subscriptions.
     Ended { conn: ConnId },
-    /// This served session authenticated as a thin client: its connection leaves the listener's
-    /// pending slots (`link::Slots::Pending`). For the driver.
-    Authed { conn: ConnId },
     /// For the node's hub (`osis_host::Hub::down`, consecutive ones in one call): a message, a
     /// push room request or a close for one of its connections.
     Hub { conn: osis_host::ConnId, down: osis_host::Down },
@@ -239,8 +224,8 @@ pub struct LabelStatus {
     pub opening: usize,
     /// Every host refused every key this node holds: none can serve it here (waits for a re-seal).
     pub stranded: bool,
-    /// Hosts connected now whose last refusal in a row was "not admitted" (code 14): nodes this
-    /// node holds to serve it, that will not.
+    /// Hosts whose last refusal in a row was "not admitted" (code 14), connected now or not:
+    /// nodes this node holds to serve it, that will not.
     pub refused_by: Vec<Address>,
     /// This node left the group and keeps its secrets until its self-removal is placed
     /// (`SyncEngine::leaving`).

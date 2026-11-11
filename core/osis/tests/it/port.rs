@@ -143,7 +143,7 @@ fn client_handle_works_at_the_node() {
     drop(sub);
     drop(ts);
     // what needs this process to be the node fails Unsupported, never acts on the stand-in
-    assert!(matches!(c.client_listen(&[]), Err(osis::Error::Unsupported(_))));
+    assert!(matches!(c.listen(&[]), Err(osis::Error::Unsupported(_))));
     assert!(matches!(c.listen_socket_at(&d.0.join("other.sock")), Err(osis::Error::Unsupported(_))));
     assert!(matches!(crate::common::block_on(c.group_source(t, osis::GroupSource::Local)), Err(osis::Error::Unsupported(_))));
     // the stand-in node is never read: Internals fail
@@ -495,15 +495,8 @@ fn mem_host(net: &osis_transport::Net) -> (Osis, osis::Address) {
     hc.app.internals.transport = Some(net.endpoint("s"));
     hc.direct_sync = false;
     let host = osis::internals::create(hc).unwrap();
-    host.set_serving(Some(osis::Serving { listen: vec!["mem://s".parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
-    let end = std::time::Instant::now() + W;
-    let addr = loop {
-        if let Some(a) = host.serving_address().unwrap() {
-            break a;
-        }
-        assert!(std::time::Instant::now() < end, "the host did not listen");
-        std::thread::sleep(Duration::from_millis(10));
-    };
+    host.set_serving(Some(osis::Serving { admit: osis::Admit::Open, ..Default::default() })).unwrap();
+    let addr = host.listen(&["mem://s".parse().unwrap()]).unwrap().remove(0);
     (host, addr)
 }
 
@@ -697,17 +690,14 @@ fn process_wide_rows_through_the_socket() {
     c.add_peer(&addr).unwrap();
     // serving: shown, set, and up without a restart; off
     assert_eq!(c.serving().unwrap(), None);
-    assert_eq!(c.serving_key().unwrap(), None);
-    let h = osis::Serving { listen: vec!["mem://n2".parse().unwrap()], admit: osis::Admit::Own, ..Default::default() };
+    let h = osis::Serving { admit: osis::Admit::Own, ..Default::default() };
     c.set_serving(Some(h.clone())).unwrap();
     assert_eq!(n.serving().unwrap(), Some(h.clone()));
     assert_eq!(c.serving().unwrap(), Some(h));
-    assert_eq!(c.serving_key().unwrap(), n.serving_key().unwrap());
-    assert!(c.serving_key().unwrap().is_some());
-    until(|| matches!(n.serving_address(), Ok(Some(_))), "hosting did not start under the running node");
+    until(|| n.sync_engine(|s| s.hosts()), "hosting did not start under the running node");
     c.set_serving(None).unwrap();
     assert_eq!(c.serving().unwrap(), None);
-    until(|| matches!(n.serving_address(), Ok(None)), "hosting did not stop");
+    until(|| !n.sync_engine(|s| s.hosts()), "hosting did not stop");
     // reach
     c.rotate_peer_address().unwrap();
     // invites: none

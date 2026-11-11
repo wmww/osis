@@ -42,7 +42,7 @@ use osis_base::{BlobId, CommitId, LabelId, Tid};
 use osis_crypto::kdf::{Side, beacon, beacon_hit, beacon_reply};
 use osis_proto::filter::{BEACON_P, Page, beacon_value, decode_gcs, encode_gcs, filter_width, pages};
 use osis_proto::msg::{MAX_MEMBERS, MAX_SHARED_ITEMS, OfferItem};
-use osis_proto::{Code, Command, Message, ServingInput};
+use osis_proto::{Code, Command, Message};
 use osis_store::{At, Filter, RecordId};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -551,7 +551,8 @@ impl SyncEngine {
         if self.conns.contains_key(&conn) {
             self.command(conn, Command::Peer(Box::new(m)), out)
         } else {
-            self.serve(conn, ServingInput::Peer(Box::new(m)), out)
+            self.hub_down(conn, osis_host::Down::Message(Box::new(m)), out);
+            Ok(())
         }
     }
 

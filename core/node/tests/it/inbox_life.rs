@@ -229,21 +229,6 @@ fn removed_holder_gets_no_resent_grant_spec_sync_3() {
     assert_eq!(fresh, 1, "only the removal notice is sent again");
 }
 
-// spec/sync.md §3 (an inbox blob's label hints are the sender's word), spec/permissions.md §7
-// (only a followed link names a node to dial): a `peer://` address in a granted label's host
-// list is never dialed by the grantee, neither from the inbox hint nor from the `label.0`.
-#[test]
-fn inbox_hint_never_dials_peer_spec_sync_3() {
-    let node = osis_label::Address { url: "peer://".into(), key: [0x99; 32] };
-    let (mut net, _, a, b, _, bob, g, _) = alice_and_bob_at(vec![node.clone()]);
-    let t = net.item(a, g, g, "for bob");
-    grant(&mut net, a, g, bob);
-    net.run();
-    net.advance(61_000);
-    assert_eq!(net.read(b, t), Some(s("for bob")), "the grant went through");
-    assert!(!net.dialed.iter().any(|(n, x)| *n == b && x.key == node.key), "{:?}", net.dialed);
-}
-
 /// Seals commit `c` (held by node `from`) with `things` to `to` and puts it under `l` at host
 /// `host` with prefix expiry `expiry`, as a stranger holding the deposit seed could. Returns the
 /// blob's ID.

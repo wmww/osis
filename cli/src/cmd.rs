@@ -206,7 +206,6 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::Wait { .. }
             | Cmd::Serve { .. }
             | Cmd::Group(GroupCmd::Source { to: Some(_), .. })
-            | Cmd::Clients(ClientsCmd::RotateAddress)
             | Cmd::Watch { .. }
             | Cmd::Writes { list: ListArgs { follow: true, .. }, .. }
             | Cmd::Fired { list: ListArgs { follow: true, .. }, .. }
@@ -444,7 +443,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             ctx.emit(&ids, j)
         }
         Cmd::Clients(c) => clients(ctx, &c),
-        Cmd::Serve { serving, client_listen, .. } => serve(ctx, serving, &client_listen),
+        Cmd::Serve { serving, listen, .. } => serve(ctx, serving, &listen),
         Cmd::Schema(_) => unreachable!("handled before opening"),
         Cmd::Create(a) => one_write(ctx, ScriptCmd::Create(a)),
         Cmd::Set(a) => one_write(ctx, ScriptCmd::Set(a)),
@@ -1383,62 +1382,40 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
     ctx.emit(&lines, j)
 }
 
-/// How long `serve` waits to start listening. Listening is local (milliseconds); at 0 it
-/// never prints its address, at infinity a stuck listen hangs the command silently.
-const SERVING_START_WAIT: Duration = Duration::from_secs(30);
-
 /// What `serve` listens on when serving with no listen URL (osis's default port, spec/sync.md §10).
 const DEFAULT_LISTEN: &str = "quic://0.0.0.0:4040";
 
-fn serve(ctx: &mut Ctx<'_>, serving: ServingFlags, client_listen: &[String]) -> anyhow::Result<()> {
-    let client_listen = client_listen.iter().map(|u| u.parse()).collect::<osis::Result<Vec<osis::Url>>>()?;
+fn serve(ctx: &mut Ctx<'_>, serving: ServingFlags, listen: &[String]) -> anyhow::Result<()> {
+    let mut urls = listen.iter().map(|u| u.parse()).collect::<osis::Result<Vec<osis::Url>>>()?;
     let db = ctx.db.clone();
     // other invocations on this store become its clients (notes/cli.md Design)
     crate::listen(&ctx.sel, &db)?;
     if serving.any() {
         set_serving(ctx, serving)?;
     }
-    if let Some(mut h) = db.serving()? {
-        if h.listen.is_empty() {
-            h.listen = vec![DEFAULT_LISTEN.parse()?];
-            db.set_serving(Some(h))?;
-        }
-        let until = std::time::Instant::now() + SERVING_START_WAIT;
-        let a = loop {
-            if let Some(a) = db.serving_address().map_err(|e| exit(6, format!("serving: {e}")))? {
-                break a;
-            }
-            if std::time::Instant::now() >= until {
-                return Err(exit(6, "serving: did not start listening"));
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        ctx.emit(&[a.to_string()], J::obj([("address", J::str(a.to_string()))]))?;
-        ctx.out.flush()?;
+    if urls.is_empty() && db.serving()?.is_some() {
+        urls = vec![DEFAULT_LISTEN.parse()?];
     }
-    if !client_listen.is_empty() {
-        for a in db.client_listen(&client_listen)? {
+    if !urls.is_empty() {
+        for a in db.listen(&urls).map_err(|e| exit(6, format!("listen: {e}")))? {
             let a = a.to_string();
-            ctx.emit(&[format!("client {a}")], J::obj([("client", J::str(a.clone()))]))?;
+            ctx.emit(std::slice::from_ref(&a), J::obj([("address", J::str(a.clone()))]))?;
         }
         ctx.out.flush()?;
     }
-    // the address line above is a hard failure; the diagnostics after it are best effort (a
-    // caller that read only the address and closed the pipe does not end it)
+    // the address lines above are a hard failure; the diagnostics after them are best effort (a
+    // caller that read only the addresses and closed the pipe does not end it)
     let t = ctx.timeout_or(None)?;
     diag(ctx, t, true)
 }
 
 /// Sets the terms of serving: each flag given replaces its field (one `''` clears it), the rest kept;
-/// starts serving (`own`, no listener) when it was off.
+/// starts serving (`own`) when it was off.
 fn set_serving(ctx: &mut Ctx<'_>, f: ServingFlags) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     let mut h = db.serving()?.unwrap_or_default();
     // a flag given once as '' clears its field; otherwise its values replace it
     let given = |v: &[String]| (!v.is_empty()).then(|| v.iter().filter(|x| !(v.len() == 1 && x.is_empty())).cloned().collect::<Vec<_>>());
-    if let Some(v) = given(&f.listen) {
-        h.listen = v.iter().map(|u| u.parse()).collect::<osis::Result<_>>()?;
-    }
     if let Some(a) = f.admit {
         h.admit = match a {
             AdmitArg::Own => osis::Admit::Own,
@@ -1495,11 +1472,6 @@ fn clients(ctx: &mut Ctx<'_>, c: &ClientsCmd) -> anyhow::Result<()> {
             let a = ctx.tid(actor)?;
             if ctx.db.remove_client(a)? { Ok(()) } else { Err(exit(3, "no such client")) }
         }
-        ClientsCmd::RotateAddress => {
-            let a: Vec<String> = ctx.db.rotate_client_address()?.iter().map(ToString::to_string).collect();
-            let j = J::Arr(a.iter().map(|x| J::str(x.clone())).collect());
-            ctx.emit(&a, j)
-        }
         ClientsCmd::Rotate { actor } => {
             let a = ctx.tid(actor)?;
             let s = hex::encode(ctx.db.rotate_client_secret(a)?.expose());
@@ -1508,30 +1480,21 @@ fn clients(ctx: &mut Ctx<'_>, c: &ClientsCmd) -> anyhow::Result<()> {
     }
 }
 
-/// The terms of serving as lines (`listen URL`, `address URL#KEY` per listen URL but a port 0, `admit own|open`, `admitted ID`, `replicate ADDR`,
-/// `policy NAME N`, `cap ID ENTRIES BYTES`) or one JSON object; exit 3 when not serving.
+/// The terms of serving as lines (`admit own|open`, `admitted ID`, `replicate ADDR`, `policy NAME N`,
+/// `cap ID ENTRIES BYTES`) or one JSON object; exit 3 when not serving.
 fn serving_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     let h = ctx.db.serving()?.ok_or_else(|| exit(3, "not serving"))?;
     let admit = match h.admit {
         osis::Admit::Own => "own",
         osis::Admit::Open => "open",
     };
-    // the address each listen URL will have; none for a port 0 (picked only when it listens)
-    let addrs: Vec<String> = match ctx.db.serving_key()? {
-        Some(k) => h.listen.iter().map(|u| osis::Address::new(u, k).to_string()).filter(|a| !a.split('#').next().is_some_and(|u| u.ends_with(":0"))).collect(),
-        None => vec![],
-    };
-    let mut lines: Vec<String> = h.listen.iter().map(|u| format!("listen {u}")).collect();
-    lines.extend(addrs.iter().map(|a| format!("address {a}")));
-    lines.push(format!("admit {admit}"));
+    let mut lines = vec![format!("admit {admit}")];
     lines.extend(h.admitted.iter().map(|l| format!("admitted {l}")));
     lines.extend(h.replicate.iter().map(|a| format!("replicate {a}")));
     let knobs = policy_lines(&h.policy);
     lines.extend(knobs.iter().map(|(k, n)| format!("policy {k} {n}")));
     lines.extend(h.caps.iter().map(|(l, c)| format!("cap {l} {} {}", c.entries, c.bytes)));
     let j = J::obj([
-        ("listen", J::Arr(h.listen.iter().map(|u| J::str(u.to_string())).collect())),
-        ("addresses", J::Arr(addrs.iter().map(|a| J::str(a.clone())).collect())),
         ("admit", J::str(admit)),
         ("admitted", J::Arr(h.admitted.iter().map(|l| J::str(l.to_string())).collect())),
         ("replicate", J::Arr(h.replicate.iter().map(|a| J::str(a.to_string())).collect())),

@@ -86,8 +86,6 @@ pub(crate) mod method {
     pub const REMOVE_CLIENT: u64 = 36;
     /// `[actor]` -> secret
     pub const ROTATE_CLIENT_SECRET: u64 = 37;
-    /// `[]` -> `[node addr text*]`
-    pub const ROTATE_CLIENT_ADDRESS: u64 = 38;
     /// `[]` -> `[actor*]`
     pub const RETAINED_COPIES: u64 = 39;
     /// `[actor]` -> `[]`
@@ -102,8 +100,6 @@ pub(crate) mod method {
     /// `[address text]` -> `[]`
     pub const ADD_PEER: u64 = 45;
     pub const REMOVE_PEER: u64 = 46;
-    /// `[]` -> Opt(key bytes)
-    pub const SERVING_KEY: u64 = 47;
     /// `[]` -> offer text
     pub const PAIR_OFFER: u64 = 48;
     /// `[request text]` -> `[node, reply text]`

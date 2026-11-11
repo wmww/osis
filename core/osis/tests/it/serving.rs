@@ -49,13 +49,9 @@ fn serving_own_then_open_spec_sync_5() {
     let bob = w.account(2, &[base]);
     let carol = w.account(3, &[base]);
     w.run();
-    assert_eq!(alice.serving_address().unwrap(), None);
-    assert_eq!(alice.serving_key().unwrap(), None);
-    alice.set_serving(Some(Serving { listen: vec!["quic://alice:1".parse().unwrap()], admit: Admit::Own, ..Default::default() })).unwrap();
-    let key = alice.serving_key().unwrap().expect("known before it listens");
+    alice.set_serving(Some(Serving { admit: Admit::Own, ..Default::default() })).unwrap();
+    let ha = alice.listen(&["quic://alice:1".parse().unwrap()]).unwrap().remove(0);
     w.run();
-    let ha = alice.serving_address().unwrap().expect("listening");
-    assert_eq!(Address::new(&"quic://alice:1".parse().unwrap(), key), ha, "the key it listens with");
     assert_eq!(alice.serving().unwrap().unwrap().admit, Admit::Own);
     let ai = w.index(&alice).unwrap();
     let s = w.host_of(ai).unwrap();
@@ -86,7 +82,6 @@ fn serving_own_then_open_spec_sync_5() {
         w.advance(120_000);
     }
     assert!(hosted(&w, s).contains(&lb), "open: admitted");
-    assert_eq!(alice.serving_address().unwrap(), Some(ha.clone()), "the host kept its key and address");
 
     // Bob's new node, paired, given Alice's peer: his label is served from her store, unread by her
     let mut cfg = w.cfg(3, &[]);
@@ -109,12 +104,11 @@ fn serving_own_then_open_spec_sync_5() {
         }
     }
 
-    // stopping shreds the serving secret: the next start has a new key
+    // stopping ends the run: what was stored for others goes
     alice.set_serving(None).unwrap();
     w.run();
-    assert_eq!(alice.serving_address().unwrap(), None);
-    assert!(alice.sync_engine(|e| e.host_key()).is_none());
-    assert_eq!(alice.serving_key().unwrap(), None);
+    assert!(!alice.sync_engine(|e| e.hosts()));
+    assert!(hosted(&w, s).is_empty());
 }
 
 // notes/api.md Serving, spec/data-model.md §9 (`own`): a serving node needs no setup to serve its own
@@ -126,9 +120,9 @@ fn serving_node_needs_no_setup_spec_data_model_9() {
     let mut w = World::new();
     let alice = w.account(1, &[]);
     alice.sync_engine(|s| s.config_mut().retry_ms = 100);
-    alice.set_serving(Some(Serving { listen: vec!["quic://alice:1".parse().unwrap()], admit: Admit::Own, ..Default::default() })).unwrap();
+    alice.set_serving(Some(Serving { admit: Admit::Own, ..Default::default() })).unwrap();
+    let ha = alice.listen(&["quic://alice:1".parse().unwrap()]).unwrap().remove(0);
     w.run();
-    let ha = alice.serving_address().unwrap().expect("listening");
     assert_eq!(alice.saved_peers().unwrap(), vec![ha.clone()]);
     let g = group_of(&alice, alice.me(), alice.home(), &[]);
     item(&alice, g, "x");
@@ -173,9 +167,9 @@ fn own_pair(seed: u64) -> (World, Osis, Osis, usize, Address, Tid, Tid) {
     let alice = w.account(seed * 2 + 1, &[base]);
     let bob = w.account(seed * 2 + 2, &[base]);
     w.run();
-    alice.set_serving(Some(Serving { listen: vec!["quic://alice:1".parse().unwrap()], admit: Admit::Own, ..Default::default() })).unwrap();
+    alice.set_serving(Some(Serving { admit: Admit::Own, ..Default::default() })).unwrap();
+    let ha = alice.listen(&["quic://alice:1".parse().unwrap()]).unwrap().remove(0);
     w.run();
-    let ha = alice.serving_address().unwrap().expect("listening");
     let (ca, cb) = (alice.contact_card().unwrap(), bob.contact_card().unwrap());
     w.run();
     let a = w.until(bob.import_contact(&ca), 1000, 10).unwrap();
@@ -409,9 +403,9 @@ fn host_store_labels(dir: &std::path::Path) -> Vec<LabelId> {
 // spec/data-model.md §9 (`host^.0` absent: it does not serve; stopping erases the serving store),
 // spec/requirements.md Deletion: stopping serving erases the serving store (`host.redb`,
 // `host.root`) once the peer closes it, on a running driver or at the next driver start when
-// it stopped while none ran; a start under a new peer key after a stop no driver carried out
-// serves nothing of the old store (another node's label goes; the node's own home is registered
-// again at its new peer address, its own saved peer).
+// it stopped while none ran; a start after a stop no driver carried out (a new run) serves
+// nothing of the old store (another node's label goes; the node's own home is registered again
+// at its address, its own saved peer).
 #[test]
 fn stop_serving_erases_its_store_spec_data_model_9() {
     let dir = std::env::temp_dir().join(format!("osis-host-erase-{}", std::process::id()));
@@ -428,14 +422,14 @@ fn stop_serving_erases_its_store_spec_data_model_9() {
         c
     };
     let files = || dir.join("host.redb").exists() || dir.join("host.root").exists();
-    let hosting = || Some(Serving { listen: vec!["mem://e".parse().unwrap()], admit: Admit::Open, ..Default::default() });
-    let listening = |db: &Osis| wait_for("listening", || db.serving_address().unwrap().is_some());
+    let hosting = || Some(Serving { admit: Admit::Open, ..Default::default() });
+    let listen = |db: &Osis| db.listen(&["mem://e".parse().unwrap()]).unwrap().remove(0);
 
     // serving, with the home label and another node's registered there
     let db = osis::internals::create(at(1, true)).unwrap();
     db.set_serving(hosting()).unwrap();
-    listening(&db);
-    db.add_peer(&db.serving_address().unwrap().unwrap()).unwrap();
+    let addr = listen(&db);
+    db.add_peer(&addr).unwrap();
     common::block_on(db.wait_synced(osis::SyncScope::All)).unwrap();
     let home = home_label(&db);
     let mut c = osis::internals::Opening::at(osis::Store::Memory(osis::MemStore::new()));
@@ -444,31 +438,29 @@ fn stop_serving_erases_its_store_spec_data_model_9() {
     c.runtime = osis::Runtime::Own;
     c.app.internals.transport = Some(net.endpoint("other"));
     let other = osis::internals::create(c).unwrap();
-    other.add_peer(&db.serving_address().unwrap().unwrap()).unwrap();
+    other.add_peer(&addr).unwrap();
     common::block_on(other.wait_synced(osis::SyncScope::All)).unwrap();
     let theirs = home_label(&other);
     assert_eq!(other.close().unwrap(), osis::Close::Closed);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     assert_eq!(host_store_labels(&dir).into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([home, theirs]));
 
-    // stopped and started again with no driver running: the new key's peer keeps nothing of the old
+    // stopped and started again with no driver running: the new run keeps nothing of the old
     // store, and holds the home label once the node syncs with it
     let db = osis::internals::open(at(2, false)).unwrap();
-    let old = db.serving_key().unwrap();
     db.set_serving(None).unwrap();
     db.set_serving(hosting()).unwrap();
-    assert_ne!(db.serving_key().unwrap(), old);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     let db = osis::internals::open(at(3, true)).unwrap();
-    listening(&db);
+    listen(&db);
     common::block_on(db.wait_synced(osis::SyncScope::All)).unwrap();
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     assert_eq!(host_store_labels(&dir), vec![home]);
 
     // stopped on a running driver: the files go
     let db = osis::internals::open(at(4, true)).unwrap();
-    listening(&db);
-    assert!(files());
+    listen(&db);
+    wait_for("the host store", files);
     db.set_serving(None).unwrap();
     wait_for("the host store erased", || !files());
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
@@ -476,7 +468,7 @@ fn stop_serving_erases_its_store_spec_data_model_9() {
     // stopped with no driver running: the next driver start erases
     let db = osis::internals::open(at(5, true)).unwrap();
     db.set_serving(hosting()).unwrap();
-    listening(&db);
+    wait_for("the host store", files);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     assert!(files());
     let db = osis::internals::open(at(6, false)).unwrap();
@@ -505,15 +497,19 @@ fn own_runtime_close_frees_serving_store() {
         c.app.internals.transport = Some(net.endpoint(&format!("o{i}")));
         c
     };
-    // `serving_address` fails once the peer could not open its store
-    let listening = |db: &Osis| wait_for("listening", || db.serving_address().unwrap().is_some());
+    // its own home served from its own store: a store that could not open admits nothing
+    let served = |db: &Osis| {
+        db.listen(&["mem://o".parse().unwrap()]).unwrap();
+        let home = db.home();
+        wait_for("served", || db.status().unwrap().groups.get(&home).is_some_and(|g| g.state == osis::SyncState::Synced));
+    };
     let db = osis::internals::create(at(0)).unwrap();
-    db.set_serving(Some(Serving { listen: vec!["mem://o".parse().unwrap()], admit: Admit::Open, ..Default::default() })).unwrap();
-    listening(&db);
+    db.set_serving(Some(Serving { admit: Admit::Open, ..Default::default() })).unwrap();
+    served(&db);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     for i in 1..6 {
         let db = osis::internals::open(at(i)).unwrap();
-        listening(&db);
+        served(&db);
         assert_eq!(db.close().unwrap(), osis::Close::Closed);
     }
     let _ = std::fs::remove_dir_all(&dir);

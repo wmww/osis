@@ -33,7 +33,7 @@ fn dialing_pair(net: &mut Net) -> (usize, usize) {
 fn resume(net: &mut Net, n: usize, p: &mut Dialer, nonce: [u8; 32], tags: Vec<[u8; 32]>) -> Vec<ClientEvent> {
     let now = net.now();
     let outs = p.cs.handle(now, ClientInput::Command(Command::Resume { nonce, tags }));
-    pump(net, n, p, Vec::new(), outs)
+    pump(net, n, p, outs)
 }
 
 fn refused(evs: &[ClientEvent]) -> bool {

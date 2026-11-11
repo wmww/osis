@@ -21,11 +21,8 @@ fn requests(out: &[ServingOutput]) -> Vec<Message> {
 }
 
 /// A serving session past the Hellos.
-fn serving(port: bool) -> (ServingSession, MemoryLabelStore) {
+fn serving() -> (ServingSession, MemoryLabelStore) {
     let mut s = ServingSession::new(ServingConfig { static_key: [1; 32], challenge: [2; 32] });
-    if port {
-        s = s.with_port();
-    }
     let mut store = MemoryLabelStore::new([5; 32]);
     s.handle(T0, &mut store, ServingInput::Start);
     s.handle(T0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(T0, [3; 32]).encode())));
@@ -70,14 +67,10 @@ fn kinds_round_trip_and_id_rules() {
     }
 }
 
-// spec/wire.md §11.2: a Call before Auth is Error 1; after an answered Auth calls go up; a reply above max_reply is TooLarge; a node without the port (a host) answers Error 11
+// spec/wire.md §11.2: a Call before Auth is Error 1; after an answered Auth calls go up; a reply above max_reply is TooLarge
 #[test]
 fn serving_auth_call_and_reply_bound() {
-    let (mut h, mut st) = serving(false);
-    let out = h.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id: 1, secret: None, session: [0; 16] })));
-    assert_eq!(sent(&out), vec![Message::Error { id: 1, code: Code::UNSUPPORTED }]);
-
-    let (mut s, mut st) = serving(true);
+    let (mut s, mut st) = serving();
     let call = Message::Call { id: 2, max_reply: SMALL_REPLY as u64, method: 0, args: vec![] };
     let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&call)));
     assert_eq!(sent(&out), vec![Message::Error { id: 2, code: Code::REFUSED }]);
@@ -101,7 +94,7 @@ fn serving_auth_call_and_reply_bound() {
 // spec/wire.md §11.1: a Sub's id stays reserved while live (a Sub reusing it is Error 2); Unsub is answered Ok and later Notifies for it are dropped; a lapsed Notify frees the id; at most MAX_SUBS live (code 4)
 #[test]
 fn serving_sub_ids_and_caps() {
-    let (mut s, mut st) = serving(true);
+    let (mut s, mut st) = serving();
     s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id: 1, secret: None, session: [0; 16] })));
     s.handle(T0, &mut st, ServingInput::Reply { id: 1, reply: Ok(ok(Value::Bytes(vec![0; 16]))) });
     let sub = |id| Message::Sub { id, max_reply: SMALL_REPLY as u64, filter: Value::Int(0) };
@@ -141,7 +134,7 @@ fn serving_sub_ids_and_caps() {
 // spec/sync.md §6: Notifies wait for push room: Room comes at once with nothing unwritten, else when the transport took enough
 #[test]
 fn serving_room_follows_the_push_rule() {
-    let (mut s, mut st) = serving(true);
+    let (mut s, mut st) = serving();
     // flow control on, nothing unwritten
     s.handle(T0, &mut st, ServingInput::Taken(10_000));
     let out = s.handle(T0, &mut st, ServingInput::WantRoom);
@@ -203,7 +196,7 @@ fn serving_sends(out: Vec<ServingOutput>) -> Vec<u8> {
 #[test]
 fn client_role_over_loopback() {
     let mut c = ClientSession::new(ClientConfig { peer_static_key: [1; 32], challenge: [4; 32] });
-    let (mut s, mut st) = serving(true);
+    let (mut s, mut st) = serving();
     let mut hello = Vec::new();
     for o in c.handle(T0, ClientInput::Start) {
         if let ClientOutput::Send(f) = o {
@@ -259,7 +252,7 @@ fn client_role_over_loopback() {
 // spec/sync.md §6, spec/wire.md §11.2: client-port requests handed out keep their allowance counted across inputs until answered: Auths pipelined one per input and never answered close the session past MAX_UNANSWERED, after at most that many bytes' worth were handed out
 #[test]
 fn unanswered_auths_close_the_session() {
-    let (mut s, mut st) = serving(true);
+    let (mut s, mut st) = serving();
     let mut handed = 0usize;
     let mut closed = false;
     for id in 1..=20_000u32 {
@@ -277,7 +270,7 @@ fn unanswered_auths_close_the_session() {
 // spec/sync.md §6: Calls pipelined one per input: a client within WINDOW never reaches the bound, one past it is closed; answering frees the allowance
 #[test]
 fn unanswered_calls_past_the_window_close() {
-    let (mut s, mut st) = serving(true);
+    let (mut s, mut st) = serving();
     s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id: 1, secret: None, session: [0; 16] })));
     s.handle(T0, &mut st, ServingInput::Reply { id: 1, reply: Ok(ok(Value::Bytes(vec![0; 16]))) });
     let call = |id| Message::Call { id, max_reply: SMALL_REPLY as u64, method: 0, args: vec![] };
@@ -310,7 +303,7 @@ fn unanswered_calls_past_the_window_close() {
 // spec/wire.md §11.2: an Unsub before an answered Auth is Error 1 and never handed out
 #[test]
 fn unsub_before_auth_is_refused() {
-    let (mut s, mut st) = serving(true);
+    let (mut s, mut st) = serving();
     let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Unsub { id: 3, sub: 7 })));
     assert_eq!(sent(&out), vec![Message::Error { id: 3, code: Code::REFUSED }]);
     assert!(requests(&out).is_empty());

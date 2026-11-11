@@ -1,6 +1,6 @@
 //! Sources per group (notes/client-port.md §1, §5, §6): routing, moving a group, reconnects, the
-//! client listener. Two nodes P and N of one account sync through a peer; P connects to N's client
-//! listener as a thin client whose actor N minted.
+//! node's one key. Two nodes P and N of one account sync through a peer; P connects to N where it
+//! listens (`Osis::listen`) as a thin client whose actor N minted.
 
 use osis::internals::CommitRaw as _;
 use osis::internals::schema::RawKey as _;
@@ -79,9 +79,8 @@ fn world_waiting(p_wait: Duration) -> World {
     let mut hc = cfg_on(&net, "s", &MemStore::new(), vec![]);
     hc.direct_sync = false;
     let host = osis::internals::create(hc).unwrap();
-    host.set_serving(Some(osis::Serving { listen: vec!["mem://s".parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
-    until("host address", || host.serving_address().unwrap().is_some());
-    let addr = host.serving_address().unwrap().unwrap();
+    host.set_serving(Some(osis::Serving { admit: osis::Admit::Open, ..Default::default() })).unwrap();
+    let addr = host.listen(&["mem://s".parse().unwrap()]).unwrap().remove(0);
     let (n_store, p_store) = (MemStore::new(), MemStore::new());
     let n = osis::internals::create(cfg_on(&net, "n", &n_store, vec![addr.clone()])).unwrap();
     let pc = cfg_on(&net, "p", &p_store, vec![addr.clone()]);
@@ -102,7 +101,7 @@ fn world_waiting(p_wait: Duration) -> World {
     n.grant(g, actor, Role::Write, Default::default()).unwrap();
     block_on(n.wait_synced(SyncScope::Thing(g))).unwrap();
     let urls: Vec<osis::Url> = vec!["mem://n-clients".parse().unwrap()];
-    let nc = n.client_listen(&urls).unwrap().remove(0);
+    let nc = n.listen(&urls).unwrap().remove(0);
     until("P has the group", || {
         let _ = p.nudge_sync();
         p.at(t, osis::DynamicAspectKey::untyped(title())).get().ok().flatten() == Some(Value::Str("first".into()))
@@ -243,7 +242,7 @@ fn status_shows_a_group_as_its_source_does() {
     let x = world();
     // a second connection to N, which also reports the group: never its word for a group sourced at the first
     let urls: Vec<osis::Url> = vec![x.urls[0].clone(), "mem://n-clients-2".parse().unwrap()];
-    let other = x.n.client_listen(&urls).unwrap().remove(1);
+    let other = x.n.listen(&urls).unwrap().remove(1);
     x.connect_p();
     crate::common::block_on(x.p.connect_node(&NodeLogin { addr: other.clone(), secret: x.secret.clone() })).unwrap();
     block_on(x.p.wait_synced(SyncScope::Thing(x.g))).unwrap();
@@ -444,7 +443,7 @@ fn a_nodes_client_does_not_read_what_it_moved_away() {
     // N3 is a third way in: a client of P
     let (a, sec) = x.p.add_client(None).unwrap();
     x.p.grant(x.g, a, Role::Read, Default::default()).unwrap();
-    let pc = x.p.client_listen(&["mem://p-clients".parse().unwrap()]).unwrap().remove(0);
+    let pc = x.p.listen(&["mem://p-clients".parse().unwrap()]).unwrap().remove(0);
     let mut c = osis::internals::Opening::memory();
     c.app.internals.transport = Some(x.net.endpoint("pc"));
     let client = crate::common::block_on(osis::internals::connect(&pc, &sec, c)).unwrap();
@@ -557,7 +556,7 @@ fn restart_keeps_the_node_connection_working() {
     let (net, store, addr, urls) = (x.net.clone(), x.n_store.clone(), x.addr.clone(), x.urls.clone());
     assert_eq!(std::mem::replace(&mut x.n, osis::internals::create(osis::internals::Opening::memory()).unwrap()).close().unwrap(), osis::Close::Closed);
     let n2 = osis::internals::open(cfg_on(&net, "n", &store, vec![addr])).unwrap();
-    assert_eq!(n2.client_listen(&urls).unwrap().remove(0), x.nc, "the client listener's key survives a restart");
+    assert_eq!(n2.listen(&urls).unwrap().remove(0), x.nc, "the node's key survives a restart");
     net.heal("c1", "n");
     until("client back up", || c.status().unwrap().node_connections[0].connected);
     n2.commit_set(t, osis::DynamicAspectKey::untyped(title()), &s("after restart")).unwrap();
@@ -592,7 +591,7 @@ fn write_in_flight_across_a_restart_is_unknown() {
     let (net, store, addr, urls) = (x.net.clone(), x.n_store.clone(), x.addr.clone(), x.urls.clone());
     assert_eq!(std::mem::replace(&mut x.n, osis::internals::create(osis::internals::Opening::memory()).unwrap()).close().unwrap(), osis::Close::Closed);
     let n2 = osis::internals::open(cfg_on(&net, "n", &store, vec![addr])).unwrap();
-    n2.client_listen(&urls).unwrap();
+    n2.listen(&urls).unwrap();
     net.heal("c1", "n");
     let r = th.join().unwrap();
     // unknown, or the redial beat the cut and the node's memory answered first
@@ -683,50 +682,37 @@ fn write_in_flight_gives_up_after_connection_wait() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §5, N-B4: the client listener's key is its own: not the dialable key, the signing key, a host's or a LAN key; a rotate_reach leaves its clients connected; rotate_client_key ends them: an old-key client sees Network and connected: false, never reaches the new listener; a new address works; no URL shreds the key and a later listen has another
+// spec/sync.md §10, notes/client-port.md §5: a client reaches its node at the node's one key (its
+// dialable key, its listen addresses'): `rotate_peer_address` moves every listener to a new key,
+// so a client on the old address sees Network and connected: false and never reaches the node
+// again; the same URL under the new key works; no URL stops listening and ends the sessions
 #[test]
-fn client_listener_key_is_its_own() {
+fn clients_follow_the_one_key() {
     let x = world();
     let c = x.thin("c1");
     let key = x.nc.key();
-    // nor the node's signing key
+    assert_eq!(key, x.n.sync_engine(|s| s.dialable_key()), "the node's one key");
     let node = x.n.node();
     let Some(osis::internals::CreationRecord::KeyActor { public_key, .. }) = x.n.engine(|e| e.core.created(&node).cloned()) else { panic!("a node is a key actor") };
-    assert_ne!(public_key, key);
-    let dialable = x.n.sync_engine(|s| s.dialable_secret());
-    let own = |sec: &[u8; 32]| osis_transport::InProcess::public_key(&osis_transport::StaticSecret::from_bytes(*sec));
-    assert_ne!(key, own(dialable.expose()));
-    let lan = x.n.sync_engine(|s| s.lan_secret());
-    assert_ne!(key, own(lan.expose()));
-    assert_ne!(Some(key), x.n.serving_key().unwrap());
-    assert_eq!(x.n.sync_engine(|s| s.client_listen_key()), Some(key));
-    // rotate_reach: nothing changes for clients
+    assert_ne!(public_key, key, "not its signing key");
     x.n.rotate_peer_address().unwrap();
-    until("dialable key rotated", || own(x.n.sync_engine(|s| s.dialable_secret()).expose()) != own(dialable.expose()));
-    assert_eq!(c.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("first")));
-    assert_eq!(x.n.sync_engine(|s| s.client_listen_key()), Some(key));
-    // rotate_client_key: the old client is out for good
-    let new = x.n.rotate_client_address().unwrap().remove(0);
-    assert_ne!(new.key(), key);
-    assert_ne!(new.key(), own(x.n.sync_engine(|s| s.dialable_secret()).expose()));
+    let rotated = x.n.sync_engine(|s| s.dialable_key());
+    assert_ne!(rotated, key);
     until("old-key client down", || !c.status().unwrap().node_connections[0].connected);
     assert!(matches!(c.at(x.t, osis::DynamicAspectKey::untyped(title())).get(), Err(Error::Network(_))));
     std::thread::sleep(SHORT);
     assert!(matches!(c.at(x.t, osis::DynamicAspectKey::untyped(title())).get(), Err(Error::Network(_))));
-    // same URL, new key: the old address cannot reach it, a new one can
     let mut cfg = osis::internals::Opening::memory();
     cfg.app.internals.transport = Some(x.net.endpoint("c2"));
     cfg.app.internals.connection_wait = Some(SHORT);
     assert!(matches!(crate::common::block_on(osis::internals::connect(&x.nc, &x.secret, cfg.clone())), Err(Error::Network(_))));
     cfg.app.internals.connection_wait = Some(W);
+    let new = Address::new(&x.nc.url(), rotated);
     let c2 = crate::common::block_on(osis::internals::connect(&new, &x.secret, cfg.clone())).unwrap();
     assert_eq!(c2.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("first")));
-    // no URL: stops, ends sessions, shreds
-    assert!(x.n.client_listen(&[]).unwrap().is_empty());
-    assert_eq!(x.n.sync_engine(|s| s.client_listen_key()), None);
+    // no URL: stops, ends sessions
+    assert!(x.n.listen(&[]).unwrap().is_empty());
     until("session ended", || !c2.status().unwrap().node_connections[0].connected);
-    let again = x.n.client_listen(&x.urls).unwrap().remove(0);
-    assert_ne!(again.key(), new.key());
     drop(x.host);
 }
 
@@ -838,7 +824,7 @@ fn a_write_overtaken_by_a_move_fails() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §3, §5 (networking tier: `cargo test -p osis --test it -- --ignored quic`): a thin client over real QUIC with bearer Auth: reads, writes, watches at the client listener; a wrong pinned key dials nothing; a wrong secret is refused; a node restart on the same port reconnects under the same key; a rotation strands the old address
+// spec/sync.md §10, notes/client-port.md §3, §5 (networking tier: `cargo test -p osis --test it -- --ignored quic`): a thin client over real QUIC with bearer Auth: reads, writes, watches where the node listens; a wrong pinned key dials nothing; a wrong secret is refused; a node restart on the same port reconnects under the same key; a rotation strands the old address
 #[test]
 #[ignore]
 fn thin_client_over_quic() {
@@ -859,7 +845,7 @@ fn thin_client_over_quic() {
     }).unwrap();
     let (actor, secret) = n.add_client(None).unwrap();
     n.grant(g, actor, Role::Write, Default::default()).unwrap();
-    let addr = n.client_listen(&["quic://127.0.0.1:0".parse().unwrap()]).unwrap().remove(0);
+    let addr = n.listen(&["quic://127.0.0.1:0".parse().unwrap()]).unwrap().remove(0);
     assert!(addr.url().as_str().starts_with("quic://127.0.0.1:"), "{addr}");
     let mut cfg = osis::internals::Opening::memory();
         cfg.app.internals.connection_wait = Some(W);
@@ -881,32 +867,35 @@ fn thin_client_over_quic() {
     assert!(matches!(c.at(t, osis::DynamicAspectKey::untyped(title())).get(), Err(Error::Network(_))));
     assert!(matches!(watch.current(), Err(Error::Network(_))));
     let n = open(false);
-    assert_eq!(n.client_listen(&[addr.url()]).unwrap().remove(0), addr);
+    assert_eq!(n.listen(&[addr.url()]).unwrap().remove(0), addr);
     until("reconnected", || c.status().unwrap().node_connections[0].connected);
     until("the watch came back", || watch.current().ok().flatten() == Some(s("from client")));
     c.commit_set(t, osis::DynamicAspectKey::untyped(title()), &s("again")).unwrap();
     assert_eq!(n.at(t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("again")));
     // a rotation: the old address never answers again
-    let new = n.rotate_client_address().unwrap().remove(0);
+    n.rotate_peer_address().unwrap();
+    let new = Address::new(&addr.url(), n.sync_engine(|s| s.dialable_key()));
     assert_ne!(new.key(), addr.key());
-    assert_eq!(new.url(), addr.url());
     until("old-key client down", || !c.status().unwrap().node_connections[0].connected);
     assert!(matches!(crate::common::block_on(osis::internals::connect(&addr, &secret, short.clone())), Err(Error::Network(_))));
     assert_eq!(crate::common::block_on(osis::internals::connect(&new, &secret, cfg)).unwrap().at(t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("again")));
 }
 
-// spec/sync.md §10, issues/cli-proxy.md Transport slots: a flood of connections past the client listener's pending slots, each from a source of its own and never authenticating, neither drops an authenticated client (no error ever reached its watch) nor keeps a new one out
+// spec/sync.md §10, issues/cli-proxy.md Transport slots: a flood of connections past the node's connection cap, each from a source of its own and never authenticating, neither drops an authenticated client (no error ever reached its watch) nor keeps a new one out
 #[test]
 fn a_flood_keeps_clients_in() {
     let x = world();
+    // a small connection cap (the serving policy's)
+    x.n.set_serving(Some(osis::Serving { policy: osis::ServingPolicy { connections: 4, ..Default::default() }, ..Default::default() })).unwrap();
+    until("the cap holds", || x.n.sync_engine(|s| s.hosts()));
+    x.n.listen(&x.urls).unwrap();
     let c = x.thin("c1");
     let (tx, rx) = channel();
     let _sub = c.at(x.t, osis::DynamicAspectKey::untyped(title())).on_change(move |_, ch| tx.send(ch.value.is_err()).unwrap()).unwrap();
     assert!(!rx.recv_timeout(W).unwrap());
-    let slots = x.n.sync_engine(|s| s.config().client_pending);
     let addr = osis_transport::Address { url: x.nc.url().to_string(), key: x.nc.key() };
     let mut flood = Vec::new();
-    for i in 0..slots + 8 {
+    for i in 0..4 + 8 {
         flood.push(crate::port::Raw::over(&x.net.endpoint(&format!("f{i}")), addr.clone()));
     }
     // none of it touched the client
@@ -925,7 +914,7 @@ fn several_node_connections_never_skip_a_down_one() {
     let x = world();
     // a second node, of another account, with a client for us, and a thing only it has
     let m = osis::internals::create(cfg_on(&x.net, "m", &MemStore::new(), vec![])).unwrap();
-    let mc = m.client_listen(&["mem://m-clients".parse().unwrap()]).unwrap().remove(0);
+    let mc = m.listen(&["mem://m-clients".parse().unwrap()]).unwrap().remove(0);
     let (ma, msec) = m.add_client(None).unwrap();
     let mut w = m.write();
     let g = w.create().unwrap();
@@ -1160,7 +1149,7 @@ fn every_resent_nonce_of_a_lost_session_is_unknown() {
 fn a_move_tells_a_client_nothing_of_what_it_never_read() {
     let x = world();
     let (_, sec) = x.p.add_client(None).unwrap();
-    let pc = x.p.client_listen(&["mem://p-clients".parse().unwrap()]).unwrap().remove(0);
+    let pc = x.p.listen(&["mem://p-clients".parse().unwrap()]).unwrap().remove(0);
     let mut c = osis::internals::Opening::memory();
     c.app.internals.transport = Some(x.net.endpoint("pc"));
     let client = crate::common::block_on(osis::internals::connect(&pc, &sec, c)).unwrap();
@@ -1180,7 +1169,7 @@ fn a_nodes_client_reads_nothing_during_the_catch_up() {
     let (a, sec) = x.p.add_client(None).unwrap();
     x.p.grant(x.g, a, Role::Read, Default::default()).unwrap();
     block_on(x.p.wait_synced(SyncScope::Thing(x.g))).unwrap();
-    let pc = x.p.client_listen(&["mem://p-clients".parse().unwrap()]).unwrap().remove(0);
+    let pc = x.p.listen(&["mem://p-clients".parse().unwrap()]).unwrap().remove(0);
     let mut c = osis::internals::Opening::memory();
     c.app.internals.transport = Some(x.net.endpoint("pc"));
     let client = crate::common::block_on(osis::internals::connect(&pc, &sec, c)).unwrap();
@@ -1614,15 +1603,15 @@ fn routing_to_what_the_actor_may_not_read_is_as_to_nothing() {
     drop(x.host);
 }
 
-// spec/wire.md §11.2, notes/client-port.md §2: a serving address's sessions answer the client port's kinds with protocol Error 11: `Refused`, and the connect does not retry.
+// spec/wire.md §11.2, notes/client-port.md §3: every listener serves the client port, and a bearer secret binds only at its own node: another node (here the serving one) refuses it, and the connect does not retry.
 #[test]
-fn a_serving_address_refuses_a_client() {
+fn a_secret_of_another_node_is_refused() {
     let x = world();
     let mut c = osis::internals::Opening::memory();
     c.app.internals.transport = Some(x.net.endpoint("at-host"));
     c.app.internals.connection_wait = Some(W);
     let r = crate::common::block_on(osis::internals::connect(&x.addr, &x.secret, c));
-    assert!(matches!(&r, Err(Error::Refused(m)) if m.contains("client port")), "{:?}", r.map(|_| ()));
+    assert!(matches!(&r, Err(Error::Refused(_))), "{:?}", r.map(|_| ()));
     drop(x.host);
 }
 

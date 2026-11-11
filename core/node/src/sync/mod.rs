@@ -53,7 +53,7 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 pub(crate) use conn::{Conn, LConn, Phase, UNTAGGED, in_flight};
-pub use host::{HostStatus, host_policy, host_policy_known};
+pub use host::{host_policy, host_policy_known};
 pub use osis_host::HostPolicy;
 pub use io::{Action, ConnId, Event, LabelStatus, MAX_CONNS_PER_CLIENT, PassStats, SyncConfig, Tier};
 pub use pass::Verdicts;
@@ -80,8 +80,8 @@ pub(crate) struct Synced {
     labels: Vec<(Tid, Arc<GroupLabel>)>,
     /// The IDs of `labels`.
     pub(crate) ids: BTreeSet<LabelId>,
-    /// Per label, the actor its keys derive from and its hosts, `peer://` nodes left out
-    /// (`complete_pass`, `peers::host_keys`).
+    /// Per label, the actor its keys derive from and its hosts' keys (`complete_pass`,
+    /// `peers::host_keys`).
     pub actors: BTreeMap<LabelId, (Tid, Vec<HostKey>)>,
     /// `actors` by actor: the labels of each.
     pub by_actor: BTreeMap<Tid, BTreeSet<LabelId>>,
@@ -279,19 +279,21 @@ pub struct SyncEngine {
     pub(crate) changed_moved: BTreeSet<LabelId>,
     /// Engine changes not yet spread to the labels' work sets (`spread_touches`).
     pub(crate) touched: work::Touched,
-    /// Peer sessions this node serves (co-reader peer, spec/sync.md §5), its hub's sessions too.
+    /// The connections this node's hub serves (spec/sync.md §5, §10).
     pub(crate) served: BTreeMap<ConnId, serve::Served>,
-    /// The served sessions the hub runs, by the hub's connection ID.
+    /// Those by the hub's connection ID.
     pub(crate) hub_conns: BTreeMap<osis_host::ConnId, ConnId>,
-    /// Steps peers registered here since start, by label.
-    pub(crate) peer_steps: BTreeMap<LabelId, Vec<(Step, Option<osis_label::ClaimSet>)>>,
+    /// Registrations a host refused for now in a row, per (host, label), whatever connection
+    /// (the back-off doubles per refusal), with the last refusal's code (status shows a label not
+    /// admitted, code 14). Bounded by labels times hosts.
+    pub(crate) refusals: BTreeMap<(HostKey, LabelId), (u32, Code)>,
     /// Co-readers found on the LAN: their address there and when (wall ms).
     pub(crate) lan: BTreeMap<HostKey, peers::LanRoute>,
     /// The next `publish_reach` writes a fresh lan secret.
     pub(crate) lan_rotate: bool,
     /// The account `reach.0` was last checked against (`republish_reach`).
     pub(crate) reach_account: Option<osis_base::Tid>,
-    /// Served labels, until `label.0`, role or peer steps change.
+    /// Served labels, until `label.0` or role change.
     pub(crate) served_cache: Option<Arc<BTreeMap<LabelId, serve::ServedLabel>>>,
     pub(crate) charges: serve::Charges,
     /// The engine's actors with secrets of their own when its events were last taken.
@@ -343,8 +345,6 @@ pub struct SyncEngine {
     pub(crate) prefix_checked: BTreeSet<osis_base::BlobId>,
     /// The memory class's state beside the sync records (`memory`).
     pub(crate) memory: memory::Memory,
-    /// Relay-only uploads served sessions made (spec/sync.md §5, as a host admits them).
-    pub(crate) relay_gate: osis_proto::RelayGate,
     /// The host config handed to the driver (`host_step`).
     pub(crate) hosting: host::Hosting,
 }
@@ -439,6 +439,7 @@ impl SyncEngine {
             unsubscribe: BTreeSet::new(),
             served: BTreeMap::new(),
             hub_conns: BTreeMap::new(),
+            refusals: BTreeMap::new(),
             covered_judged: BTreeSet::new(),
             stats: PassStats::default(),
             records: records::Records::default(),
@@ -447,7 +448,6 @@ impl SyncEngine {
             changed_gen: 0,
             touched: work::Touched::default(),
             own_keys: BTreeSet::new(),
-            peer_steps: BTreeMap::new(),
             lan: BTreeMap::new(),
             lan_rotate: false,
             reach_account: None,
@@ -472,7 +472,6 @@ impl SyncEngine {
             clients_moved: false,
             prefix_checked: BTreeSet::new(),
             memory: memory::Memory::default(),
-            relay_gate: osis_proto::RelayGate::default(),
             hosting: host::Hosting::default(),
         })
         .and_then(|mut s| {
@@ -671,11 +670,9 @@ impl SyncEngine {
                     }
                 }
             }
-            Event::Bytes { conn, bytes } if self.served.contains_key(&conn) => self.serve(conn, osis_proto::ServingInput::Bytes(bytes), out)?,
-            Event::Down { conn } if self.served.contains_key(&conn) => self.end_served(conn, out),
-            Event::Reply { conn, id, reply } => self.serve(conn, osis_proto::ServingInput::Reply { id, reply }, out)?,
-            Event::Notify { conn, notes } => self.serve(conn, osis_proto::ServingInput::Notify(notes), out)?,
-            Event::WantRoom { conn } => self.serve(conn, osis_proto::ServingInput::WantRoom, out)?,
+            Event::Reply { conn, id, reply } => self.hub_down(conn, osis_host::Down::Reply { id, reply }, out),
+            Event::Notify { conn, notes } => self.port_notify(conn, notes, out),
+            Event::WantRoom { conn } => self.port_wants_room(conn, out),
             Event::Hub { ups } => {
                 for (id, up) in ups {
                     self.hub_up(id, up, out)?;
@@ -697,9 +694,7 @@ impl SyncEngine {
             Event::Sent { conns } => {
                 let now = self.now();
                 for (conn, n) in conns {
-                    if self.served.contains_key(&conn) {
-                        self.serve(conn, osis_proto::ServingInput::Taken(n), out)?;
-                    } else if let Some(c) = self.conns.get_mut(&conn) {
+                    if let Some(c) = self.conns.get_mut(&conn) {
                         let o = c.session.handle(now, ClientInput::Taken(n));
                         self.outputs(conn, o, out)?;
                     }
@@ -734,6 +729,7 @@ impl SyncEngine {
         self.stream_settle_all(out)?;
         // pushes after the re-judging: nothing of this step goes to a member it ended
         self.stream_push(out)?;
+        self.keep_served(out);
         Ok(())
     }
 

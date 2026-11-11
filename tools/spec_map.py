@@ -162,7 +162,7 @@ RULES = [
     ("spec/sync.md", "5", "delete keys", "one delete signature per commitment group of the blob's prefix"),
     ("spec/sync.md", "5", "download needs open", "only for labels opened on the connection"),
     ("spec/sync.md", "6", "flow control", "MUST NOT close a connection over unwritten bytes below"),
-    ("spec/sync.md", "5", "co-reader peer", "A co-reader peer serving a label applies the same rule"),
+    ("spec/sync.md", "5", "co-reader peer", "between readers a node serves its connection's shared set by the Stream"),
     ("spec/sync.md", "5", "deposit budget", "reports the remaining budget only to a deposit"),
     ("spec/sync.md", "10", "lan replay", "other than the first it verified that announcement from"),
     ("spec/sync.md", "10", "host key check", "a client MUST check the host's key"),

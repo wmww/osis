@@ -154,6 +154,8 @@ pub(crate) struct Locked {
     pub status_failed: bool,
     /// The own serving address in the saved peers (`SERVING_PEER`).
     pub serving_peer: Option<Address>,
+    /// Where this node listens (`Osis::listen`), as last asked.
+    pub listening: Vec<Address>,
 }
 
 impl Locked {
@@ -622,7 +624,7 @@ impl Osis {
             Some(b) if !b.is_empty() => Some(String::from_utf8(b).map_err(|_| Error::Storage("serving peer record".into()))?.parse()?),
             _ => None,
         };
-        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), connections: Vec::new(), group_sources, status_failed: false, serving_peer };
+        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), connections: Vec::new(), group_sources, status_failed: false, serving_peer, listening: Vec::new() };
         let port = crate::port::serve::Port::new();
         let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, home, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, text_save: cfg.app.internals.text_save.clone(), transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.direct_sync, connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;

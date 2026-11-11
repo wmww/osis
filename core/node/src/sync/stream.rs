@@ -658,7 +658,9 @@ impl SyncEngine {
     /// hub session a push waits for the room the session grants (`push_room`), within it.
     pub(super) fn stream_push(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let following: Vec<(ConnId, u64, u64)> = self.streams.iter().filter_map(|(c, s)| s.serving.follow.map(|f| (*c, f, s.serving.mem_seq))).collect();
+        let mut pushed = BTreeSet::new();
         if following.is_empty() {
+            self.stream_room_unused(&pushed, out);
             return Ok(());
         }
         let _ = self.served_labels();
@@ -671,7 +673,13 @@ impl SyncEngine {
             if at >= log_end && seen >= mem_seq && !due(self, at) {
                 continue;
             }
-            let Some(room) = self.push_room(conn, out) else { continue };
+            let Some(room) = self.push_room(conn, out) else {
+                // something waits to go: not at the log's end for this connection
+                if let Some(s) = self.streams.get_mut(&conn) {
+                    s.serving.at_end = false;
+                }
+                continue;
+            };
             let members = self.stream_members(conn);
             let starts: BTreeMap<LabelId, (u64, u64)> = members.iter().map(|l| (*l, (at, untils.get(l).copied().unwrap_or(u64::MAX)))).collect();
             let scan = self.engine.run(|tx| Ok(scan(&mut tx.txn, at, &starts)?))?;
@@ -692,9 +700,11 @@ impl SyncEngine {
             let labels: BTreeSet<LabelId> = events.iter().map(|(l, _)| *l).collect();
             let Some(s) = self.streams.get_mut(&conn).map(|s| &mut s.serving) else { continue };
             let report = s.sent(&cursor, labels, end, &[], Vec::new(), &untils);
-            self.room_used(conn);
+            pushed.insert(conn);
+            self.room_used(conn, out);
             self.shared_send(conn, Message::Stream(Box::new(Stream { events, cursor, report })), out)?;
         }
+        self.stream_room_unused(&pushed, out);
         Ok(())
     }
 

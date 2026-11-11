@@ -344,8 +344,10 @@ impl Worker {
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.asked = false;
                 }
-                if let Some(h) = self.session(&db, conn) {
-                    self.flush(&h, conn, budget);
+                match self.session(&db, conn) {
+                    Some(h) => self.flush(&h, conn, budget),
+                    // the room goes back unused (node sync shares it with the stream)
+                    None => self.feed(&db, Event::Notify { conn, notes: Vec::new() }),
                 }
             }
             Job::Act(Action::Ended { conn }) => {
@@ -628,7 +630,6 @@ impl Worker {
             method::CLIENTS => Value::List(db.clients()?.iter().map(|x| Value::List(vec![Value::Tid(x.actor), c::opt(x.until, |w| Value::uint(w.0))])).collect()),
             method::REMOVE_CLIENT => b(db.remove_client(a.tid()?)?),
             method::ROTATE_CLIENT_SECRET => Value::bytes(db.rotate_client_secret(a.tid()?)?.expose()),
-            method::ROTATE_CLIENT_ADDRESS => Value::List(db.rotate_client_address()?.iter().map(|h| Value::Str(h.to_string())).collect()),
             method::RETAINED_COPIES => Value::List(db.retained_copies()?.into_iter().map(Value::Tid).collect()),
             method::DROP_RETAINED_COPY => {
                 db.drop_retained_copy(a.tid()?)?;
@@ -670,7 +671,6 @@ impl Worker {
                 if m == method::ADD_PEER { db.add_peer(&h)? } else { db.remove_peer(&h)? }
                 nothing()
             }
-            method::SERVING_KEY => c::opt(db.serving_key()?, |k| Value::bytes(&k)),
             method::PAIR_OFFER => Value::Str(db.pair_offer()?.to_string()),
             method::PAIR_ACCEPT => {
                 let (node, reply) = db.pair_accept(&a.text()?.parse()?)?;
@@ -897,7 +897,10 @@ impl Worker {
     /// Sends what dirty subscriptions of `conn` have, within `budget` bytes; asks for room again
     /// while something is left; answers waiting `settle` calls once nothing is.
     fn flush(&mut self, db: &Osis, conn: ConnId, budget: usize) {
-        let Some(cn) = self.conns.get_mut(&conn) else { return };
+        let Some(cn) = self.conns.get_mut(&conn) else {
+            self.feed(db, Event::Notify { conn, notes: Vec::new() });
+            return;
+        };
         let mut notes: Vec<(Id, Payload)> = Vec::new();
         let mut used = 0usize;
         let mut left = false;
@@ -976,9 +979,8 @@ impl Worker {
         }
         left |= more_commits;
         let settles = if left { Vec::new() } else { std::mem::take(&mut cn.settles) };
-        if !notes.is_empty() {
-            self.feed(db, Event::Notify { conn, notes });
-        }
+        // even none: it gives the room back
+        self.feed(db, Event::Notify { conn, notes });
         if left {
             self.want_room(db, conn);
         }

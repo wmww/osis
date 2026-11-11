@@ -227,6 +227,7 @@ impl SyncEngine {
             c.labels.retain(|l, _| !gone(l));
             c.req.forget(gone);
         }
+        self.refusals.retain(|(_, l), _| !gone(l));
         // until `labels` is asked again, the forgotten labels are no actor's
         let mut s = (*self.synced).clone();
         s.actors.retain(|l, _| !gone(l));
@@ -476,7 +477,7 @@ impl SyncEngine {
     /// Finalizes the links due here (`Engine::links_due`, spec/permissions.md §7) after a
     /// complete pass of K's labels (`complete_pass`) that, for an expired link, ended at every
     /// host after `until` (a pass from before going offline does not count); at once when K's
-    /// labels have no host (`peer://` nodes only count as none) and this node made the link (the redeemers reached it directly;
+    /// labels have no host and this node made the link (the redeemers reached it directly;
     /// another node of the sharer may not have their grants yet). A link whose finalization
     /// failed is not tried again in this run.
     pub(crate) fn finalize_links(&mut self) -> Result<()> {

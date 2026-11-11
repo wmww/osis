@@ -743,16 +743,6 @@ impl SyncEngine {
             self.command(conn, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob: blob.clone(), wrap, stamp: st, replaces: Vec::new() }] }, out)?;
         }
         self.stream_relay(None, l, blob_id, &blob, wrap, stamp, out)?;
-        if let Some(stamp) = stamp
-            && !self.served.is_empty()
-        {
-            let labels = self.served_labels();
-            let conns: Vec<ConnId> = self.served.keys().copied().collect();
-            let r = osis_proto::Relayed { label: l, blob_id, blob: blob.into(), wrap, stamp };
-            for c in conns {
-                self.serve_with(c, osis_proto::ServingInput::Relay(r.clone()), &labels, out)?;
-            }
-        }
         Ok(())
     }
 
@@ -800,17 +790,9 @@ impl SyncEngine {
         };
         self.stream_relay(reader, l, b, &blob, wrap, stamp, out)?;
         let Some(stamp) = stamp else { return Ok(()) };
-        let r = osis_proto::Relayed { label: l, blob_id: b, blob: blob.into(), wrap, stamp };
-        if !self.served.is_empty() {
-            let labels = self.served_labels();
-            let conns: Vec<ConnId> = self.served.keys().copied().filter(|c| from != RelayFrom::Served(*c)).collect();
-            for c in conns {
-                self.serve_with(c, osis_proto::ServingInput::Relay(r.clone()), &labels, out)?;
-            }
-        }
         if let RelayFrom::Served(_) | RelayFrom::Reader(_) = from {
             for (conn, _, _) in self.open_conns(&l) {
-                self.command(conn, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob: r.blob.to_vec(), wrap: r.wrap, stamp: r.stamp, replaces: Vec::new() }] }, out)?;
+                self.command(conn, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob: blob.clone(), wrap, stamp, replaces: Vec::new() }] }, out)?;
             }
         }
         Ok(())

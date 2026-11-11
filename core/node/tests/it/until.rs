@@ -81,7 +81,7 @@ fn resume(net: &mut Net, a: usize, b: usize, r: &[u8; 32], challenge: [u8; 32], 
     let tag = resume_tag(r, &LISTENER, &challenge, &p.hello);
     let now = net.now();
     let outs = p.cs.handle(now, ClientInput::Command(Command::Resume { nonce: [5; 32], tags: vec![tag] }));
-    let mut msgs = shared_of(&pump(net, b, &mut p, Vec::new(), outs));
+    let mut msgs = shared_of(&pump(net, b, &mut p, outs));
     let theirs = msgs.iter().find_map(|m| if let Message::Digest { digest } = m { Some(*digest) } else { None }).expect("b's digest first");
     let mine = members_digest(r, members.iter().map(|l| &l.0));
     msgs.extend(shared_of(&send(net, b, &mut p, Message::Digest { digest: mine })));
@@ -108,7 +108,10 @@ fn step(net: &mut Net, b: usize, p: &mut Dialer) -> Vec<Message> {
     let mut msgs = Vec::new();
     for _ in 0..3 {
         let acts = net.sync(b).handle(osis_node::sync::Event::Local);
-        msgs.extend(shared_of(&pump(net, b, p, acts, Vec::new())));
+        net.actions(b, acts);
+        let now = net.now();
+        let outs: Vec<_> = net.hand_sent(b, p.hc).into_iter().flat_map(|f| p.cs.handle(now, osis_proto::ClientInput::Bytes(f))).collect();
+        msgs.extend(shared_of(&pump(net, b, p, outs)));
     }
     msgs
 }
@@ -214,8 +217,7 @@ fn nothing_is_served_past_until_to_a_peer_that_lost_the_right_spec_sync_10() {
 #[test]
 fn a_rotation_while_apart_rejoins_from_its_lag_spec_sync_10() {
     let Setup { mut net, b, a, g, l, r, p, cursor } = opened();
-    let acts = net.sync(b).handle(osis_node::sync::Event::Down { conn: p.conn });
-    net.actions(b, acts);
+    net.hand_close(b, p.hc);
     rotate(&mut net, b, g);
     net.run();
     let held: BTreeSet<BlobId> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).collect();
@@ -260,8 +262,7 @@ fn a_report_lost_with_its_connection_is_repaired_by_the_next_pull_spec_sync_10()
     rotate(&mut net, b, g);
     let msgs = step(&mut net, b, &mut p);
     let at = pushes(&msgs).into_iter().find(|s| s.report && events_of(&s.events, l) > 0).and_then(|s| s.cursor).expect("the rotation pushed");
-    let acts = net.sync(b).handle(osis_node::sync::Event::Down { conn: p.conn });
-    net.actions(b, acts);
+    net.hand_close(b, p.hc);
     let (mut p, _) = resume(&mut net, a, b, &r, [8; 32], &[l]);
     let (msgs, reply) = pull_all(&mut net, b, &mut p, Some(at), vec![]);
     assert_eq!(losts(&msgs).iter().map(|(x, _)| *x).collect::<Vec<_>>(), vec![l], "the Pull's cursor reported the rotation");
@@ -274,8 +275,7 @@ fn a_report_lost_with_its_connection_is_repaired_by_the_next_pull_spec_sync_10()
 #[test]
 fn a_rotation_logged_again_while_apart_is_still_served_spec_sync_10() {
     let Setup { mut net, b, a, g, l, r, p, cursor } = opened_at(true);
-    let acts = net.sync(b).handle(osis_node::sync::Event::Down { conn: p.conn });
-    net.actions(b, acts);
+    net.hand_close(b, p.hc);
     let c = rotate(&mut net, b, g);
     net.run();
     let rotated = entries_of(&mut net, b, l, c);
@@ -351,8 +351,7 @@ fn a_write_logged_after_the_rotation_in_its_step_is_not_served_spec_sync_10() {
 fn a_write_after_the_rotation_in_its_batch_is_not_served_spec_sync_10() {
     let (Setup { mut net, b, a, g, l, r, p, cursor }, c) = opened_with(false, true);
     let c = c.unwrap();
-    let acts = net.sync(b).handle(osis_node::sync::Event::Down { conn: p.conn });
-    net.actions(b, acts);
+    net.hand_close(b, p.hc);
     let held: BTreeSet<BlobId> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).collect();
     net.set_online(c, false);
     net.run();

@@ -264,12 +264,12 @@ impl Net {
         });
     }
 
-    /// Serves the client port on a listener at `url`:
-    /// its sessions are clients of this node. `Network` without a runtime.
-    pub fn listen(&self, url: String) -> Result<()> {
+    /// Serves a unix socket at `url`: its peers of this uid are the node's own user.
+    /// `Network` without a runtime.
+    pub fn socket(&self, url: String) -> Result<()> {
         let Net::Driver { ctl, .. } = self else { return Err(Error::Network("no runtime: the client port needs one (Config.runtime)".into())) };
         let (tx, rx) = tokio::sync::oneshot::channel();
-        ctl.send(Control::Listen { url, reply: Some(tx) }).map_err(|_| self.stopped())?;
+        ctl.send(Control::Socket { url, reply: Some(tx) }).map_err(|_| self.stopped())?;
         match blocking(|| rx.blocking_recv()) {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(e)) => Err(Error::Network(e)),
@@ -277,11 +277,11 @@ impl Net {
         }
     }
 
-    /// Replaces the client listeners.
-    pub fn client_listen(&self, urls: driver::ClientUrls) -> Result<Vec<osis_transport::Address>> {
-        let Net::Driver { ctl, .. } = self else { return Err(Error::Network("no runtime: the client listener needs one (Config.runtime)".into())) };
+    /// Listens at `urls` under the node's key, in place of the URLs of the last call.
+    pub fn listen(&self, urls: Vec<String>) -> Result<Vec<osis_transport::Address>> {
+        let Net::Driver { ctl, .. } = self else { return Err(Error::Network("no runtime: listening needs one (Config.runtime)".into())) };
         let (tx, rx) = tokio::sync::oneshot::channel();
-        ctl.send(Control::ClientListen { urls, reply: tx }).map_err(|_| self.stopped())?;
+        ctl.send(Control::Listen { urls, reply: tx }).map_err(|_| self.stopped())?;
         match blocking(|| rx.blocking_recv()) {
             Ok(r) => r.map_err(Error::Network),
             Err(_) => Err(self.stopped()),
@@ -584,41 +584,38 @@ impl crate::Osis {
         self.local_only("listen_socket")?;
         let url = osis_transport::unix::url_of(path);
         osis_transport::unix::url_path(&url).map_err(|e| crate::Error::Invalid(e.to_string()))?;
-        self.inner.net.listen(url)
+        self.inner.net.socket(url)
     }
 
-    /// Serves clients at `urls` (`quic://example.org:4040`), by default only as actors they authenticate for
-    /// (`add_client`), with a key of
-    /// the client listener's own, made on first use and kept in the store: `rotate_peer_address` leaves it
-    /// be, and nothing ties it to this node's other keys. Returns each
-    /// address to hand clients (with its real port). Replaces the listeners of an earlier call
-    /// (their sessions end; clients reconnect by themselves). No URL: stops listening, ends those sessions, shreds the key (a later
-    /// call makes a new one, so clients need a new address). All or none: on an error nothing
-    /// listens. Needs a runtime. Listening does not last past this process: call it at each start.
-    /// `Unsupported` on a thin client.
-    pub fn client_listen(&self, urls: &[crate::Url]) -> crate::Result<Vec<crate::Address>> {
-        self.local_only("client_listen")?;
-        let a = self.inner.net.client_listen(driver::ClientUrls::Listen(urls.iter().map(ToString::to_string).collect()))?;
-        Ok(a.into_iter().map(|a| crate::Address(osis_label::Address { url: a.url, key: a.key })).collect())
+    /// Listens at `urls` (`quic://example.org:4040`) under this node's one key: other nodes sync
+    /// with it there, data it serves for others (`set_serving`) is reached there, and clients use
+    /// it, by default only as actors they authenticate for (`add_client`). Returns each address
+    /// (with its real port) to hand out or save as a peer (`add_peer`). Replaces the listeners of
+    /// an earlier call (their sessions end; peers and clients reconnect by themselves); no URL
+    /// stops them. All or none: on an error none of `urls` listens. `rotate_peer_address` moves
+    /// them to the new key. Needs a runtime. Listening does not last past this process: call it
+    /// at each start. `Unsupported` on a thin client.
+    pub fn listen(&self, urls: &[crate::Url]) -> crate::Result<Vec<crate::Address>> {
+        self.local_only("listen")?;
+        let a: Vec<crate::Address> = match &self.inner.net {
+            // the manual runtime's driver (a test world) listens for it, by its key
+            Net::Manual(_) => {
+                let key = self.locked(|l| l.sync.dialable_key());
+                urls.iter().map(|u| crate::Address::new(u, key)).collect()
+            }
+            net => net.listen(urls.iter().map(ToString::to_string).collect())?.into_iter().map(|a| crate::Address(osis_label::Address { url: a.url, key: a.key })).collect(),
+        };
+        self.locked(|l| {
+            l.listening = a.clone();
+            // its own address joins the saved peers while it serves
+            self.upkeep_serving_peer(l);
+        });
+        Ok(a)
     }
 
-    /// New client addresses (by hand only): the old key is shredded,
-    /// its listeners and sessions end, and the same addresses listen under the new one, returned
-    /// here. A client holding the old address sees `Network` on every call and `connected: false`
-    /// until it connects to a new address, handed to it out of band. No listener up (a process
-    /// that has not called `client_listen`): only the key changes. Needs a runtime.
-    /// `Unsupported` on a client with its own actor.
-    pub fn rotate_client_address(&self) -> crate::Result<Vec<crate::Address>> {
-        if !self.has_store() {
-            let v = self.rcall(crate::port::method::ROTATE_CLIENT_ADDRESS, vec![])?;
-            return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect();
-        }
-        let a = self.inner.net.client_listen(driver::ClientUrls::Rotate)?;
-        Ok(a.into_iter().map(|a| crate::Address(osis_label::Address { url: a.url, key: a.key })).collect())
-    }
-
-    /// Gives this node a new address other nodes dial it directly at (`Config::direct_sync`): it listens
-    /// there at once and tells the groups it syncs. A node removed from those since can no longer
+    /// Gives this node a new key, so a new address other nodes dial it directly at
+    /// (`Config::direct_sync`) and new `listen` addresses: it listens under it at once and tells the
+    /// groups it syncs. A node removed from those since can no longer
     /// dial it or recognise it on a LAN, nor can a holder of a direct link. Direct links still open
     /// no longer reach this node directly (they still work through saved peers). Never done by
     /// itself: the address stays put until this is called.
@@ -627,7 +624,16 @@ impl crate::Osis {
         if !self.has_store() {
             return self.rcall(crate::port::method::ROTATE_PEER_ADDRESS, vec![]).map(drop);
         }
-        self.act(|l| l.sync.rotate_reach());
+        self.act(|l| {
+            let acts = l.sync.rotate_reach();
+            // the driver listens again at the same URLs under the new key
+            let key = l.sync.dialable_key();
+            for a in &mut l.listening {
+                a.0.key = key;
+            }
+            self.upkeep_serving_peer(l);
+            acts
+        });
         Ok(())
     }
 }

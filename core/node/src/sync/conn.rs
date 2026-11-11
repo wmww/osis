@@ -149,9 +149,6 @@ pub(crate) struct Requests {
     pub missing: BTreeSet<osis_base::BlobId>,
     /// Reopens in a row per label.
     pub reopens: BTreeMap<LabelId, u32>,
-    /// Registrations refused for now in a row per label (the back-off doubles per refusal),
-    /// with the last refusal's code (status shows a label not admitted, code 14).
-    pub refusals: BTreeMap<LabelId, (u32, Code)>,
     /// Labels whose cursor the host's log was trimmed past (code 15), until their
     /// reconciliation answers (`reconciled`: what it lacks of the present entries was deleted).
     pub trimmed: BTreeSet<LabelId>,
@@ -164,7 +161,6 @@ impl Requests {
         self.deleting.retain(|(l, _), _| !gone(l));
         self.replacing.retain(|(l, _), _| !gone(l));
         self.reopens.retain(|l, _| !gone(l));
-        self.refusals.retain(|l, _| !gone(l));
     }
 
     /// The commands carrying the `UNTAGGED` requests were given, the last tagged `tag`.
@@ -269,9 +265,9 @@ impl SyncEngine {
     /// The hosts and co-reader nodes to keep connections to (true: a node).
     pub(super) fn wanted_hosts(&mut self) -> BTreeMap<HostKey, (Address, bool)> {
         let mut m: BTreeMap<HostKey, (Address, bool)> = self.cfg.hosts.iter().map(|a| (a.key, (a.clone(), false))).collect();
-        // an admin's word: hosts only (`peer://` nodes come from `reach.0` or a link)
+        // an address names a node by its key, whatever its scheme
         fn add<'a>(m: &mut BTreeMap<HostKey, (Address, bool)>, hosts: impl IntoIterator<Item = &'a Address>) {
-            for a in hosts.into_iter().filter(|a| !peers::is_peer(a)) {
+            for a in hosts {
                 m.entry(a.key).or_insert_with(|| (a.clone(), false));
             }
         }
@@ -560,6 +556,7 @@ impl SyncEngine {
             }
             c.req.forget(|l| stale.contains(l));
         }
+        self.refusals.retain(|(_, l), _| recorded.contains_key(l));
         let labels = self.wanted_labels();
         for (conn, host) in conns {
             for (g, l, hosts) in &labels {

@@ -1,51 +1,36 @@
-//! Co-reader-peer serving (spec/sync.md §5 last bullet, §10): a node serves the labels it syncs to
-//! the peers that dial it, through osis-proto's host engine over its own label state
-//! (`PeerStore`, a `LabelStore` over the sync state's entries and the engine's blobs). Opens,
-//! stamps and deposits are checked as a host checks them, against the registration path
-//! recorded in `label.0` (the deepest recorded step is the head). Accepted entries go through the
-//! same path as downloaded ones; what peers read of this node goes by its node log stream
-//! (`stream`), so Sync, Subscribe and Reconcile are answered Error 11. A peer's deletion or
-//! replacement removes nothing, a registration extends the served path in memory: this node's
-//! own state follows its own rules. Entries this
-//! node dropped stay refused for `TOMBSTONE_LIFETIME` (`State::tombs`). What peers upload or
-//! deposit is charged to the label it went under (dialer keys are fresh per connection) and to a node-wide total (`SyncConfig`
-//! `peer_bytes`, `peer_total_bytes`) until it opens, reaches a host or is dropped; past either,
-//! uploads get code 12 and deposits code 5. A connection's shared set opens a label for a peer
-//! (issues/net-shared-set.md); budgets are then charged to its source (`Proven::source`).
+//! Served connections (spec/sync.md §5, §10): every connection a peer opens on one of this
+//! node's listeners is a session of the node's hub (`osis_host::Hub`), which answers the store's
+//! kinds; node sync is its upper layer and keeps it here as a `Served` by the hub's connection
+//! ID (`hub_up`): proofs, records, the shared set, the stream and the client port run on it as
+//! on a dialed connection, its messages going down as `Action::Hub`. Node sync also decides how
+//! many connections it serves, one rule over all (`make_room`, `serve_timers`): by source, those
+//! sharing nothing giving way first. What a peer's stream or Deposit items bring is charged to
+//! its source (`Proven::source`) when known here, else the label (dialer keys are fresh per
+//! connection), and to a node-wide total (`SyncConfig` `peer_bytes`, `peer_total_bytes`) until
+//! it opens, reaches a host or is dropped.
 
-use super::state::{Entry, Tomb};
+use super::state::Entry;
 use super::{Action, ConnId, SyncEngine};
-use crate::engine::Engine;
 use crate::error::Result;
 use osis_base::Tid;
 use osis_crypto::Secret32;
+use osis_host::Down;
 use osis_schema::core_types as ct;
-use osis_base::format::TOMBSTONE_LIFETIME_MS;
 
 /// How often carriers and certificate placements nothing needs are forgotten (they wait
 /// `TOMBSTONE_LIFETIME` anyway): at 0 every tick scans every entry, at infinity they stay.
 pub(crate) const RECORD_SWEEP_MS: u64 = 3_600_000;
 use osis_base::{BlobId, LabelId};
 use osis_label::{ClaimSet, Step, StepId};
-use osis_proto::{Budget, Code, EntryMeta, LabelStore, LogRecord, Put, ServingConfig, ServingSession, ServingInput, ServingOutput, StoreError};
-use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use osis_transport::Source;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
-/// Budget entries reported per this many bytes left (the recommended deposit unit).
-const ENTRY_UNIT: u64 = 32 * 1024;
-/// Steps peers registered kept per label.
-const MAX_PEER_STEPS: usize = 64;
-
-/// A served label: its group, its path to the head and the claim sets held, with the path
-/// indexes an Open or a Path page reads (step ID → position, sync key → newest position) and the
-/// head keys, so a peer's request costs no scan of the path.
+/// A served label: its group, its path to the head and the claim sets held (the head's entry
+/// boxes answer a static entry's Hit, `grant`).
 pub struct ServedLabel {
     path: Vec<Step>,
     claims: BTreeMap<StepId, Arc<ClaimSet>>,
-    pos: BTreeMap<StepId, usize>,
-    by_sync: BTreeMap<[u8; 32], usize>,
-    keys: Option<osis_proto::HeadKeys>,
 }
 
 impl ServedLabel {
@@ -66,23 +51,26 @@ impl ServedLabel {
     pub(crate) fn new(steps: &super::open::Steps) -> Option<ServedLabel> {
         let path: Vec<Step> = super::open::deepest_path(steps)?.into_iter().map(|(s, _)| s.clone()).collect();
         let claims = steps.iter().filter_map(|(id, (_, c))| c.clone().map(|c| (*id, Arc::new(c)))).collect();
-        let pos = path.iter().enumerate().map(|(i, s)| (s.id(), i)).collect();
-        // later positions overwrite: the newest step per sync key
-        let by_sync = path.iter().enumerate().map(|(i, s)| (s.keys.sync.to_bytes(), i)).collect();
-        let keys = osis_proto::HeadKeys::of_path(&path);
-        Some(ServedLabel { path, claims, pos, by_sync, keys })
+        Some(ServedLabel { path, claims })
     }
 }
 
-/// An incoming peer session.
+/// A connection the hub serves.
 #[derive(Clone)]
 pub(crate) struct Served {
-    conn: Session,
+    /// The hub's connection ID.
+    hub: osis_host::ConnId,
+    /// `(dialer challenge, listener challenge, listener key)`.
+    binding: ([u8; 32], [u8; 32], [u8; 32]),
+    source: Option<Source>,
     tier: super::Tier,
     /// It made a client-port request (`Action::Ended` when it goes).
     ported: bool,
-    /// On the client listener (its unauthenticated sessions are a pool of their own).
-    public: bool,
+    /// The hub's session holds something of its own (an open, an answered Auth).
+    opened: bool,
+    /// The last `Down::Keep` sent: whether it shares something.
+    kept: bool,
+    room: Room,
     /// What this connection's dialer proved (spec/sync.md §10), read by `SyncEngine::proven`.
     proven: super::proofs::Proven,
     /// The actors this node proved to it in answer (`SyncEngine::proved`).
@@ -90,48 +78,29 @@ pub(crate) struct Served {
     /// How far its proof exchange went: Prove, then Resume, each at most once (spec/wire.md
     /// §11.2).
     asked: Asked,
-    /// Wall ms of the last bytes received (idle sessions are closed).
-    pub last: u64,
-    /// Wall ms the session started (one that opens nothing is closed).
+    /// Wall ms the session started (one sharing nothing is closed `serve_open_ms` after).
     since: u64,
     /// A thin client's: the hash of the secret it authenticated with and its entry's end
     /// (wall ms). The session ends with the entry, with that hash, at that end.
     client: Option<ClientBinding>,
 }
 
-/// Who runs a served connection's session.
-#[derive(Clone)]
-enum Session {
-    /// This node, for its dialable, LAN and client listeners.
-    Own(Box<ServingSession>),
-    /// The node's hub, for its connection `id` (issues/net-one-peer.md step 3): node sync is the
-    /// session's upper layer, taking what the hub hands up and handing its messages down; the
-    /// hub keeps its own limits (idle, connections, stalls).
-    Hub { id: osis_host::ConnId, binding: ([u8; 32], [u8; 32], [u8; 32]), room: Room },
+/// Who pushes on a served connection: the client port's Notifies or the stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pusher {
+    Port,
+    Stream,
 }
 
-/// A hub session's push room for the stream (`Down::WantRoom`, `Up::Room`).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Room {
-    Idle,
-    Asked,
-    Granted(usize),
-}
-
-impl Session {
-    fn binding(&self) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
-        match self {
-            Session::Own(c) => c.binding(),
-            Session::Hub { binding, .. } => Some(*binding),
-        }
-    }
-
-    fn own(&self) -> Option<&ServingSession> {
-        match self {
-            Session::Own(c) => Some(&**c),
-            Session::Hub { .. } => None,
-        }
-    }
+/// A served connection's push room (`Down::WantRoom`, `Up::Room`), shared by its pushers one
+/// grant at a time, in the order they asked: the holder of a grant gives it back when its push
+/// went (the stream's page, the port's Notifies) or it had none, and the next asks again.
+#[derive(Clone, Default)]
+struct Room {
+    waiting: VecDeque<Pusher>,
+    /// A `WantRoom` went down and no `Room` came back yet.
+    asked: bool,
+    held: Option<(Pusher, usize)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -188,38 +157,6 @@ impl Charges {
     }
 }
 
-/// What a served request accepted, carried out after the host engine returns.
-#[derive(Default)]
-struct Accepted {
-    entries: Vec<(LabelId, osis_proto::Event)>,
-    steps: Vec<(LabelId, Step, Option<ClaimSet>)>,
-    /// Bytes charged per accepted entry.
-    charges: Vec<(LabelId, BlobId, u64)>,
-    /// A put was refused for the budget.
-    full: bool,
-}
-
-/// The `LabelStore` a co-reader peer serves from.
-struct PeerStore<'a> {
-    engine: RefCell<&'a mut Engine>,
-    entries: &'a BTreeMap<(LabelId, BlobId), Entry>,
-    tombs: &'a BTreeMap<(LabelId, BlobId), Tomb>,
-    labels: &'a BTreeMap<LabelId, ServedLabel>,
-    /// Blob sizes seen (`live` reads a blob only once).
-    sizes: RefCell<&'a mut BTreeMap<BlobId, u64>>,
-    /// Wall ms (tombstones of this node's drops).
-    wall: u64,
-    /// What is charged so far per charge key (`charge_key`), its limit, this session's proven
-    /// source, and this request's charges per key; all peers together may still have `total_left`.
-    charged: &'a BTreeMap<[u8; 32], u64>,
-    limit: u64,
-    source: Option<Tid>,
-    used_here: BTreeMap<[u8; 32], u64>,
-    total_left: u64,
-    acc: Accepted,
-    relays: &'a mut osis_proto::RelayGate,
-}
-
 /// Whom bytes a peer session put here are charged to: its source (`Proven::source`: its node, for
 /// a node of this node's account, else its first account known here), else the label they went under (a dialer
 /// key is fresh per connection, so charging it would bound nothing: a link holder's sessions
@@ -239,279 +176,208 @@ fn charge_key(source: Option<Tid>, label: &LabelId) -> [u8; 32] {
     })
 }
 
-fn local(e: crate::Error) -> StoreError {
-    StoreError(e.to_string())
-}
-
-impl PeerStore<'_> {
-    /// Bytes charged to `key` so far, this request's included.
-    fn used(&self, key: &[u8; 32]) -> u64 {
-        self.charged.get(key).copied().unwrap_or(0).saturating_add(self.used_here.get(key).copied().unwrap_or(0))
-    }
-
-    fn blob_len(&self, b: &BlobId) -> std::result::Result<Option<u64>, StoreError> {
-        if let Some(n) = self.sizes.borrow().get(b) {
-            return Ok(Some(*n));
-        }
-        let n = self.engine.borrow_mut().blob(b).map_err(local)?.map(|x| x.len() as u64);
-        if let Some(n) = n {
-            self.sizes.borrow_mut().insert(*b, n);
-        }
-        Ok(n)
-    }
-
-    fn live(&self, l: &LabelId, b: &BlobId) -> std::result::Result<Option<EntryMeta>, StoreError> {
-        let Some(e) = self.entries.get(&(*l, *b)) else { return Ok(None) };
-        let Some(size) = self.blob_len(b)? else { return Ok(None) };
-        Ok(Some(EntryMeta {
-            wrap: e.wrap,
-            stamp: e.stamp,
-            size,
-            add_seq: 0,
-        }))
-    }
-}
-
-impl LabelStore for PeerStore<'_> {
-    fn head(&self, label: &LabelId) -> std::result::Result<Option<StepId>, StoreError> {
-        Ok(self.labels.get(label).and_then(|s| s.path.last()).map(|s| s.id()))
-    }
-
-    fn step(&self, label: &LabelId, id: &StepId) -> std::result::Result<Option<Step>, StoreError> {
-        Ok(self.labels.get(label).and_then(|s| s.pos.get(id).and_then(|i| s.path.get(*i))).cloned())
-    }
-
-    fn claim_set(&self, label: &LabelId, id: &StepId) -> std::result::Result<Option<Arc<ClaimSet>>, StoreError> {
-        Ok(self.labels.get(label).and_then(|s| s.claims.get(id)).cloned())
-    }
-
-    fn step_with_sync(&self, label: &LabelId, pk: &osis_crypto::VerifyingKey) -> std::result::Result<Option<StepId>, StoreError> {
-        Ok(self.labels.get(label).and_then(|s| s.by_sync.get(&pk.to_bytes()).and_then(|i| s.path.get(*i))).map(|x| x.id()))
-    }
-
-    fn child(&self, label: &LabelId, step: Option<&StepId>) -> std::result::Result<Option<StepId>, StoreError> {
-        let Some(s) = self.labels.get(label) else { return Ok(None) };
-        let next = match step {
-            None => s.path.first(),
-            Some(id) => s.pos.get(id).and_then(|i| s.path.get(i + 1)),
-        };
-        Ok(next.map(|x| x.id()))
-    }
-
-    fn path(&self, label: &LabelId) -> std::result::Result<Vec<Step>, StoreError> {
-        Ok(self.labels.get(label).map(|s| s.path.clone()).unwrap_or_default())
-    }
-
-    fn head_keys(&self, label: &LabelId) -> std::result::Result<Option<osis_proto::HeadKeys>, StoreError> {
-        Ok(self.labels.get(label).and_then(|s| s.keys.clone()))
-    }
-
-    /// Only labels this node syncs are served.
-    fn admit_label(&self, _label: &LabelId) -> std::result::Result<Code, StoreError> {
-        Ok(Code::REFUSED)
-    }
-
-    fn push_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>) -> std::result::Result<Code, StoreError> {
-        self.acc.steps.push((*label, step, claim_set));
-        Ok(Code::OK)
-    }
-
-    fn entry(&self, label: &LabelId, blob_id: &BlobId) -> std::result::Result<Option<EntryMeta>, StoreError> {
-        self.live(label, blob_id)
-    }
-
-    fn tombstoned(&self, label: &LabelId, blob_id: &BlobId) -> std::result::Result<bool, StoreError> {
-        // dropped here (a host's deletion, our own delete or drop): never back from a peer
-        Ok(self.tombs.get(&(*label, *blob_id)).is_some_and(|t| t.at.saturating_add(TOMBSTONE_LIFETIME_MS) > self.wall))
-    }
-
-    fn blob(&self, blob_id: &BlobId) -> std::result::Result<Option<Vec<u8>>, StoreError> {
-        self.engine.borrow_mut().blob(blob_id).map_err(local)
-    }
-
-    fn put(&mut self, label: &LabelId, put: Put<'_>) -> std::result::Result<Code, StoreError> {
-        // what an upload replaces stays: this node's own rules judge what it holds
-        // a held entry costs nothing more (a stamp; which wrap stays: `take_wrap`)
-        if !self.entries.contains_key(&(*label, put.blob_id)) {
-            let size = put.blob.len() as u64;
-            let key = charge_key(self.source, label);
-            if size > self.limit.saturating_sub(self.used(&key)) || size > self.total_left {
-                self.acc.full = true;
-                return Ok(if put.stamp.is_some() { Code::STORAGE_CAP } else { Code::BUDGET_FULL });
-            }
-            *self.used_here.entry(key).or_default() += size;
-            self.total_left -= size;
-            self.acc.charges.push((*label, put.blob_id, size));
-        }
-        self.acc.entries.push((*label, osis_proto::Event::Added { blob_id: put.blob_id, blob: Some(put.blob.to_vec()), wrap: put.wrap, stamp: put.stamp }));
-        Ok(Code::OK)
-    }
-
-    fn budget(&self, label: &LabelId) -> std::result::Result<Budget, StoreError> {
-        let bytes_left = self.limit.saturating_sub(self.used(&charge_key(self.source, label))).min(self.total_left);
-        Ok(Budget { entries_left: bytes_left / ENTRY_UNIT, bytes_left })
-    }
-
-    /// A reader's Delete changes nothing here: what this node holds follows its own rules, and
-    /// a deletion reaches other readers by the deleter's own stream.
-    fn delete(&mut self, _label: &LabelId, _blob_id: &BlobId, _now: u64) -> std::result::Result<Code, StoreError> {
-        Ok(Code::OK)
-    }
-
-    /// Readers serve the node log stream (`stream`), never a per-label log.
-    fn serves_log(&self) -> bool {
-        false
-    }
-
-    fn log_head(&self, _label: &LabelId) -> std::result::Result<([u8; 16], u64), StoreError> {
-        Ok(([0; 16], 0))
-    }
-
-    fn log_after(&self, _label: &LabelId, _after: u64, _max: usize) -> std::result::Result<Option<Vec<(u64, LogRecord)>>, StoreError> {
-        Ok(None)
-    }
-
-    fn live_by_id(&self, _label: &LabelId, _after: Option<&BlobId>, _max: usize) -> std::result::Result<Vec<(BlobId, EntryMeta)>, StoreError> {
-        Ok(Vec::new())
-    }
-
-    fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, _now: u64) -> std::result::Result<osis_proto::RelayVerdict, StoreError> {
-        Ok(self.relays.admit(label, blob_id, size, expiry, self.wall))
-    }
-
-    fn live_ids_in(&self, _label: &LabelId, _lower: &BlobId, _upper: Option<&BlobId>) -> std::result::Result<Vec<BlobId>, StoreError> {
-        Ok(Vec::new())
-    }
-}
-
 impl SyncEngine {
-    /// A peer dialed this node: a session on its listener. `local` is the key this node's
-    /// listener presented (its dialable key, or a LAN transport key; open signatures bind it),
-    /// `peer` the key the transport authenticated for the dialer (ephemeral; budgets go to the
-    /// source the session proved, else the label: `charge_key`). Returns the session's handle (its bytes come
-    /// as `Event::Bytes`, its end as `Event::Down`) and the actions (the Hello). With
-    /// `SyncConfig.max_served` sessions running, the oldest one that serves nothing is closed
-    /// to make room (a dialer chooses its key, so a per-key cap would bind nothing); when every
-    /// one serves something, this one is closed. Opens are checked as a host checks them
-    /// (spec/sync.md §5); a reader's sync IDs are its shared set's (spec/sync.md §10).
-    pub fn accept(&mut self, local: [u8; 32], peer: [u8; 32]) -> (ConnId, Vec<Action>) {
-        self.accept_peer(local, osis_transport::Peer::Key(peer))
-    }
-
-    /// `accept` with the peer as the transport type reported it: a `Peer::Unix` session of this
-    /// process's uid is a client in the main tier (notes/client-port.md §0, §5), in its own
-    /// pool of `SyncConfig.max_clients` (an authenticated one counts as opened); every other
-    /// session is keyed, in `max_served` (another uid's too, whatever its listener let in), but
-    /// one on the client listener, in `client_pending`, so a flood there costs co-readers nothing.
-    pub fn accept_peer(&mut self, local: [u8; 32], peer: osis_transport::Peer) -> (ConnId, Vec<Action>) {
-        let (tier, cap) = match peer {
-            osis_transport::Peer::Unix { uid } if osis_transport::unix::own_uid().is_ok_and(|o| o == uid) => (super::Tier::Main, self.cfg.max_clients),
-            osis_transport::Peer::Unix { .. } | osis_transport::Peer::Key(_) => (super::Tier::Keyed, self.cfg.max_served),
-        };
-        let public = tier == super::Tier::Keyed && self.client_listen_key() == Some(local);
-        let cap = if public { self.cfg.client_pending } else { cap };
-        let conn = self.next_conn;
-        self.next_conn += 1;
-        let mut out = Vec::new();
-        let pool = |s: &Served| s.tier == tier && s.public == public && s.conn.own().is_some();
-        if self.served.values().filter(|s| pool(s)).count() >= cap {
-            let idle = self.served.iter().filter(|(c, s)| pool(s) && self.serves_nothing(**c, s)).min_by_key(|(c, s)| (s.since, **c)).map(|(c, _)| *c);
-            match idle {
-                Some(old) => self.close_served(old, &mut out),
-                None => {
-                    out.push(Action::Close { conn });
-                    return (conn, out);
-                }
-            }
-        }
-        self.state.now = self.now();
-        let mut challenge = [0u8; 32];
-        self.rng.fill_bytes(&mut challenge);
-        let last = self.now();
-        let session = ServingSession::new(ServingConfig { static_key: local, challenge });
-        self.served.insert(conn, Served { conn: Session::Own(Box::new(if public { session.port_only() } else { session.with_port() })), tier, public, ported: false, proven: super::proofs::Proven::default(), proved: BTreeSet::new(), asked: Asked::Nothing, last, since: last, client: None });
-        if let Err(e) = self.serve(conn, ServingInput::Start, &mut out) {
-            self.diag(format!("serve: {e}"));
-        }
-        let _ = self.state.flush(&mut self.engine);
-        (conn, out)
+    /// Connections this node serves at once: its `host^.0` policy's `max_connections` (the
+    /// default while it hosts nothing).
+    fn connection_cap(&self) -> usize {
+        self.hosting.emitted.as_ref().map_or_else(|| osis_host::HostPolicy::default().max_connections, |c| c.policy.max_connections)
     }
 
     /// What the node's hub handed up for its connection `id` (`osis_host::Up`): its start makes
-    /// a served session whose session the hub runs, its node-kind messages are judged here as a
-    /// served session's are, its push room goes to the stream, its end ends the session.
+    /// a served session (after `make_room`), its node-kind messages are judged here, its
+    /// client-port requests go to the holder of the engine (`admit`), its push room to the
+    /// pusher whose turn it is, its end ends the session.
     pub(super) fn hub_up(&mut self, id: osis_host::ConnId, up: osis_host::Up, out: &mut Vec<Action>) -> Result<()> {
-        match up {
-            osis_host::Up::Start(b) => {
-                let conn = self.next_conn;
-                self.next_conn += 1;
-                let last = self.now();
-                let session = Session::Hub { id, binding: (b.dialer, b.listener, b.key), room: Room::Idle };
-                self.served.insert(conn, Served { conn: session, tier: super::Tier::Keyed, public: false, ported: false, proven: super::proofs::Proven::default(), proved: BTreeSet::new(), asked: Asked::Nothing, last, since: last, client: None });
-                self.hub_conns.insert(id, conn);
+        use osis_host::Up;
+        if let Up::Start(b) = up {
+            if !self.make_room(b.remote.source, out) {
+                out.push(Action::Hub { conn: id, down: Down::Close });
+                return Ok(());
             }
-            osis_host::Up::Message(m) => {
-                let Some(conn) = self.hub_conns.get(&id).copied() else { return Ok(()) };
+            let conn = self.next_conn;
+            self.next_conn += 1;
+            // the main actor's tier comes from the transport type alone, never a key value
+            let tier = match b.remote.peer {
+                osis_transport::Peer::Unix { uid } if osis_transport::unix::own_uid().is_ok_and(|o| o == uid) => super::Tier::Main,
+                _ => super::Tier::Keyed,
+            };
+            let since = self.now();
+            self.served.insert(conn, Served { hub: id, binding: (b.dialer, b.listener, b.key), source: b.remote.source, tier, ported: false, opened: false, kept: false, room: Room::default(), proven: super::proofs::Proven::default(), proved: BTreeSet::new(), asked: Asked::Nothing, since, client: None });
+            self.hub_conns.insert(id, conn);
+            // both ends tell a relayed connection alike, before its first message
+            if b.remote.relayed {
+                self.set_relayed(conn);
+            }
+            return Ok(());
+        }
+        let Some(conn) = self.hub_conns.get(&id).copied() else { return Ok(()) };
+        match up {
+            Up::Start(_) => {}
+            Up::Message(m) => {
                 self.state.now = self.now();
                 if let Some(bound) = self.served_peer(conn, *m, out)? {
                     self.bind_record(conn, bound, out)?;
                 }
             }
-            osis_host::Up::Room { budget } => {
-                if let Some(Session::Hub { room, .. }) = self.hub_conns.get(&id).and_then(|c| self.served.get_mut(c)).map(|s| &mut s.conn) {
-                    *room = Room::Granted(budget);
+            // nothing of an unauthenticated keyed session goes on, and no secret ever does
+            Up::Request(msg) => {
+                if let Some(s) = self.served.get_mut(&conn) {
+                    s.ported = true;
+                }
+                match self.admit(conn, *msg) {
+                    Ok((tier, msg)) => out.push(Action::Request { conn, tier, msg: Box::new(msg) }),
+                    Err((id, code)) => self.hub_down(conn, Down::Reply { id, reply: Err(code) }, out),
                 }
             }
-            osis_host::Up::End => {
-                if let Some(conn) = self.hub_conns.get(&id).copied() {
-                    self.end_served(conn, out);
+            Up::Opened(o) => {
+                if let Some(s) = self.served.get_mut(&conn) {
+                    s.opened = o;
                 }
             }
+            Up::Room { budget } => {
+                let Some(r) = self.served.get_mut(&conn).map(|s| &mut s.room) else { return Ok(()) };
+                r.asked = false;
+                if let Some(p) = r.waiting.pop_front() {
+                    r.held = Some((p, budget));
+                    if p == Pusher::Port {
+                        out.push(Action::Room { conn, budget });
+                    }
+                }
+            }
+            Up::End => self.end_served(conn, out),
         }
         Ok(())
     }
 
-    /// Bytes a stream push on `conn` may take now: a whole reply's on any connection but a hub
-    /// session, which pushes only within the room its session granted; none: it waits (room
-    /// asked of the session, once).
-    pub(super) fn push_room(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Option<usize> {
-        let Some(Session::Hub { id, room, .. }) = self.served.get_mut(&conn).map(|s| &mut s.conn) else { return Some(osis_proto::serving::REPLY_BUDGET) };
-        match *room {
-            Room::Granted(b) => Some(b),
-            Room::Asked => None,
-            Room::Idle => {
-                *room = Room::Asked;
-                out.push(Action::Hub { conn: *id, down: osis_host::Down::WantRoom });
-                None
+    /// Makes room for a new connection from `source` (one rule over every served connection):
+    /// under the cap there is room; at it, one sharing nothing (no open, no member of its shared
+    /// set, not authenticated) gives way, the oldest of the source holding the most such, else
+    /// the newest of the source holding the most if it holds at least two more than `source`
+    /// (`osis_transport::evict_for`). False: no room, the newcomer is closed.
+    fn make_room(&mut self, source: Option<Source>, out: &mut Vec<Action>) -> bool {
+        if self.served.len() < self.connection_cap() {
+            return true;
+        }
+        let mut idle: BTreeMap<Option<Source>, Vec<(u64, ConnId)>> = BTreeMap::new();
+        let mut held: BTreeMap<Option<Source>, Vec<(u64, ConnId)>> = BTreeMap::new();
+        for (c, s) in &self.served {
+            held.entry(s.source).or_default().push((s.since, *c));
+            if self.serves_nothing(*c, s) {
+                idle.entry(s.source).or_default().push((s.since, *c));
             }
         }
+        let victim = match idle.values().max_by_key(|v| v.len()) {
+            Some(v) => v.iter().min().map(|(_, c)| *c),
+            None => {
+                let counts: BTreeMap<Option<Source>, usize> = held.iter().map(|(k, v)| (*k, v.len())).collect();
+                osis_transport::evict_for(&counts, &source).and_then(|k| held.get(&k)).and_then(|v| v.iter().max()).map(|(_, c)| *c)
+            }
+        };
+        let Some(v) = victim else { return false };
+        self.close_served(v, out);
+        true
     }
 
-    /// A push went on `conn` under its granted room: the next waits for room again.
-    pub(super) fn room_used(&mut self, conn: ConnId) {
-        if let Some(Session::Hub { room, .. }) = self.served.get_mut(&conn).map(|s| &mut s.conn) {
-            *room = Room::Idle;
+    /// A message, answer or close for served session `conn`, to its hub session.
+    pub(crate) fn hub_down(&mut self, conn: ConnId, down: Down, out: &mut Vec<Action>) {
+        if let Some(s) = self.served.get(&conn) {
+            out.push(Action::Hub { conn: s.hub, down });
         }
     }
 
-    /// Label IDs each served session serves: those it opened (here; a hub session's opens are
-    /// the hub's) and its shared set's members (tests, diagnostics).
+    /// Pusher `p` of served session `conn` waits for room (behind those that asked first).
+    fn want_room(&mut self, conn: ConnId, p: Pusher, out: &mut Vec<Action>) {
+        let Some(r) = self.served.get_mut(&conn).map(|s| &mut s.room) else { return };
+        if r.held.is_some_and(|(h, _)| h == p) || r.waiting.contains(&p) {
+            return;
+        }
+        r.waiting.push_back(p);
+        self.ask_room(conn, out);
+    }
+
+    /// Asks the session for room when someone waits and no grant is out or asked.
+    fn ask_room(&mut self, conn: ConnId, out: &mut Vec<Action>) {
+        let Some(r) = self.served.get_mut(&conn).map(|s| &mut s.room) else { return };
+        if r.held.is_none() && !r.asked && !r.waiting.is_empty() {
+            r.asked = true;
+            self.hub_down(conn, Down::WantRoom, out);
+        }
+    }
+
+    /// Pusher `p` is done with the room it held: the next in line asks.
+    fn release_room(&mut self, conn: ConnId, p: Pusher, out: &mut Vec<Action>) {
+        let Some(r) = self.served.get_mut(&conn).map(|s| &mut s.room) else { return };
+        if r.held.is_some_and(|(h, _)| h == p) {
+            r.held = None;
+            self.ask_room(conn, out);
+        }
+    }
+
+    /// The client port's Notifies after an `Action::Room` (none: it had nothing to send): sent
+    /// down, the room given back.
+    pub(super) fn port_notify(&mut self, conn: ConnId, notes: Vec<(osis_proto::msg::Id, osis_proto::Payload)>, out: &mut Vec<Action>) {
+        if !notes.is_empty() {
+            self.hub_down(conn, Down::Notify(notes), out);
+        }
+        self.release_room(conn, Pusher::Port, out);
+    }
+
+    /// The client port has Notifies for `conn`: `Action::Room` in its turn.
+    pub(super) fn port_wants_room(&mut self, conn: ConnId, out: &mut Vec<Action>) {
+        self.want_room(conn, Pusher::Port, out);
+    }
+
+    /// Bytes a stream push on `conn` may take now: a whole reply's on a dialed connection, a
+    /// served one's only within the room its session granted the stream; none: it waits (room
+    /// asked in its turn).
+    pub(super) fn push_room(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Option<usize> {
+        let Some(s) = self.served.get(&conn) else { return Some(osis_proto::serving::REPLY_BUDGET) };
+        if let Some((Pusher::Stream, b)) = s.room.held {
+            return Some(b);
+        }
+        self.want_room(conn, Pusher::Stream, out);
+        None
+    }
+
+    /// The stream's push went on `conn`, or it had none to make: the room goes to the next.
+    pub(super) fn room_used(&mut self, conn: ConnId, out: &mut Vec<Action>) {
+        self.release_room(conn, Pusher::Stream, out);
+    }
+
+    /// Served connections whose stream holds room it did not use in this step (its push went
+    /// elsewhere or nothing was due): given back.
+    pub(super) fn stream_room_unused(&mut self, pushed: &BTreeSet<ConnId>, out: &mut Vec<Action>) {
+        let holding: Vec<ConnId> = self.served.iter().filter(|(c, s)| matches!(s.room.held, Some((Pusher::Stream, _))) && !pushed.contains(c)).map(|(c, _)| *c).collect();
+        for c in holding {
+            self.release_room(c, Pusher::Stream, out);
+        }
+    }
+
+    /// Tells the hub's driver which served connections share something now (`Down::Keep`), so
+    /// that their transport slots are not given away (`osis_transport::link::serve`); at the end
+    /// of each step.
+    pub(super) fn keep_served(&mut self, out: &mut Vec<Action>) {
+        let moved: Vec<(ConnId, bool)> = self.served.iter().filter_map(|(c, s)| {
+            let keep = !self.serves_nothing(*c, s);
+            (keep != s.kept).then_some((*c, keep))
+        }).collect();
+        for (c, keep) in moved {
+            if let Some(s) = self.served.get_mut(&c) {
+                s.kept = keep;
+            }
+            self.hub_down(c, Down::Keep(keep), out);
+        }
+    }
+
+    /// Each served session's shared set's members (tests, diagnostics).
     pub fn served_opened(&self) -> BTreeMap<ConnId, BTreeSet<LabelId>> {
-        self.served.iter().map(|(c, s)| (*c, s.conn.own().into_iter().flat_map(|x| x.opened()).copied().chain(self.shared_members(*c)).collect())).collect()
+        self.served.keys().map(|c| (*c, self.shared_members(*c).into_iter().collect())).collect()
     }
 
-    /// Whether served session `c` is exempt from the idle bound while its connection is up: an
-    /// authenticated client (notes/client-port.md §3), a reader sharing a sync ID here, whose
-    /// stream is silent while nothing changes (the transport ends a dead connection), or a hub
-    /// session (the hub's limits hold it).
-    fn kept_while_up(&self, c: ConnId, s: &Served) -> bool {
-        s.conn.own().is_none_or(ServingSession::authed) || self.records.shared.get(&c).is_some_and(|x| !x.is_empty())
-    }
-
-    /// Whether served session `c` serves nothing: no open and no member of its shared set (never
-    /// a hub session: the hub's limits hold it).
+    /// Whether served session `c` shares nothing: no open or answered Auth at the hub and no
+    /// member of its shared set.
     fn serves_nothing(&self, c: ConnId, s: &Served) -> bool {
-        s.conn.own().is_some_and(ServingSession::none_opened) && self.records.shared.get(&c).is_none_or(|x| x.is_empty())
+        !s.opened && self.records.shared.get(&c).is_none_or(|x| x.is_empty())
     }
 
     pub(super) fn served_proven_all(&self) -> Vec<(ConnId, BTreeSet<Tid>)> {
@@ -528,21 +394,15 @@ impl SyncEngine {
         self.served.get(&conn).map(|s| &s.proved)
     }
 
-    /// The labels this node serves: those it syncs, at the deepest recorded step (and the steps
-    /// peers registered here since start). Cached until `label.0`, role or the peer steps
-    /// change.
+    /// The labels this node serves to readers: those it syncs, at the deepest recorded step.
+    /// Cached until `label.0` or role change.
     pub(crate) fn served_labels(&mut self) -> Arc<BTreeMap<LabelId, ServedLabel>> {
         if let Some(c) = &self.served_cache {
             return c.clone();
         }
         let mut m = BTreeMap::new();
         for (_, gl) in self.labels() {
-            // borrowed unless a peer's step adds to it
-            let mut steps = std::borrow::Cow::Borrowed(&gl.steps);
-            for (s, c) in self.peer_steps.get(&gl.id).into_iter().flatten() {
-                steps.to_mut().entry(s.id()).or_insert_with(|| (s.clone(), c.clone()));
-            }
-            if let Some(s) = ServedLabel::new(&steps) {
+            if let Some(s) = ServedLabel::new(&gl.steps) {
                 if let Some(h) = s.path.last() {
                     self.state.note_head(gl.id, h.id().0);
                 }
@@ -643,148 +503,6 @@ impl SyncEngine {
         self.charges.full = false;
     }
 
-    /// Feeds one input to a served session.
-    pub(crate) fn serve(&mut self, conn: ConnId, input: ServingInput, out: &mut Vec<Action>) -> Result<()> {
-        let labels = self.served_labels();
-        self.serve_with(conn, input, &labels, out)
-    }
-
-    pub(crate) fn serve_with(&mut self, conn: ConnId, input: ServingInput, labels: &BTreeMap<LabelId, ServedLabel>, out: &mut Vec<Action>) -> Result<()> {
-        if !self.served.contains_key(&conn) {
-            return Ok(());
-        }
-        let now = self.now();
-        // a budget was reached: charges that no longer count go first (at most once a second)
-        if self.charges.full && now >= self.charges.pruned.saturating_add(1000) {
-            self.prune_charges();
-        }
-        if let Some(Session::Hub { id, .. }) = self.served.get(&conn).map(|s| &s.conn) {
-            // the hub's session takes its own bytes, relays and pushes; node sync's messages go down
-            let id = *id;
-            match input {
-                ServingInput::Peer(m) => out.push(Action::Hub { conn: id, down: osis_host::Down::Message(m) }),
-                ServingInput::WantRoom => out.push(Action::Hub { conn: id, down: osis_host::Down::WantRoom }),
-                _ => {}
-            }
-            return Ok(());
-        }
-        let Some(mut s) = self.served.remove(&conn) else { return Ok(()) };
-        let Session::Own(session) = &mut s.conn else { return Ok(()) };
-        let total = self.charges.total;
-        // charged to a source known here only: a fresh key per connection would bound nothing
-        let source = s.proven.source(&self.engine.core);
-        if matches!(input, ServingInput::Bytes(_)) {
-            s.last = now;
-        }
-        let wall = self.state.now;
-        let (outputs, acc) = {
-            let mut store = PeerStore {
-                engine: RefCell::new(&mut self.engine),
-                entries: &self.state.entries,
-                tombs: &self.state.tombs,
-                labels,
-                sizes: RefCell::new(&mut self.blob_sizes),
-                wall,
-                charged: &self.charges.per,
-                limit: self.cfg.peer_bytes,
-                source,
-                used_here: BTreeMap::new(),
-                total_left: self.cfg.peer_total_bytes.saturating_sub(total),
-                acc: Accepted::default(),
-                relays: &mut self.relay_gate,
-            };
-            let o = session.handle(now, &mut store, input);
-            (o, store.acc)
-        };
-        let closed = session.is_closed();
-        if outputs.iter().any(|o| matches!(o, ServingOutput::Request(_))) {
-            s.ported = true;
-        }
-        if closed {
-            self.records.conn_gone(conn);
-            self.streams.remove(&conn);
-            if s.ported {
-                out.push(Action::Ended { conn });
-            }
-        } else {
-            self.served.insert(conn, s);
-        }
-        if acc.full {
-            self.budget_reached(None);
-        }
-        for (l, b, n) in acc.charges {
-            self.charges.charge(l, b, charge_key(source, &l), n);
-        }
-        // entries from a reader: its source counts for the pass wait
-        if !acc.entries.is_empty()
-            && let Some(t) = self.pass_source(conn)
-        {
-            for (l, _) in &acc.entries {
-                self.peer_received.entry(*l).or_default().insert(t);
-            }
-        }
-        for (l, step, cs) in acc.steps {
-            let v = self.peer_steps.entry(l).or_default();
-            if !v.iter().any(|(x, _)| x.id() == step.id()) {
-                v.push((step, cs));
-                if v.len() > MAX_PEER_STEPS {
-                    v.remove(0);
-                }
-            }
-            self.served_cache = None;
-        }
-        let uploaded: Vec<BlobId> = acc.entries.iter().filter_map(|(_, e)| if let osis_proto::Event::Added { blob_id, .. } = e { Some(*blob_id) } else { None }).collect();
-        let mut by_label: BTreeMap<LabelId, Vec<osis_proto::Event>> = BTreeMap::new();
-        for (l, ev) in acc.entries {
-            by_label.entry(l).or_default().push(ev);
-        }
-        for (l, evs) in by_label {
-            // stamps were checked against the served head by the host engine
-            self.log_events_from(super::inbound::Src::Served(conn), l, evs, None, out)?;
-        }
-        // bytes uploaded here are announced back without them (spec/wire.md §11.2, Inline bytes)
-        if !uploaded.is_empty() {
-            self.stream_crossed(conn, uploaded);
-        }
-        let mut relays = Vec::new();
-        let mut refused = Vec::new();
-        let mut bound = None;
-        for o in outputs {
-            match o {
-                ServingOutput::Send(bytes) => out.push(Action::Send { conn, bytes }),
-                ServingOutput::Close => out.push(Action::Close { conn }),
-                ServingOutput::Changed(_) => {}
-                ServingOutput::Relay(r) => relays.push(r),
-                ServingOutput::PeerError(e) => self.diag(format!("peer: {e}")),
-                ServingOutput::StoreError(e) => self.diag(format!("serve: {e}")),
-                // nothing of an unauthenticated keyed session goes up, and no secret ever does
-                ServingOutput::Request(msg) => match self.admit(conn, *msg) {
-                    Ok((tier, msg)) => {
-                        if matches!(tier, super::Tier::Client(_)) && matches!(msg, osis_proto::Message::Auth { .. }) {
-                            out.push(Action::Authed { conn });
-                        }
-                        out.push(Action::Request { conn, tier, msg: Box::new(msg) });
-                    }
-                    Err(r) => refused.push(r),
-                },
-                ServingOutput::Room { budget } => out.push(Action::Room { conn, budget }),
-                ServingOutput::Peer(m) => bound = self.served_peer(conn, *m, out)?.or(bound),
-            }
-        }
-        if let Some(id) = bound {
-            self.bind_record(conn, id, out)?;
-        }
-        // a relay-only entry: delivered here and passed on (the other served sessions, the
-        // hosts of the label), held by nobody (spec/sync.md §5)
-        for r in relays {
-            self.relay_in(super::memory::RelayFrom::Served(conn), r.label, r.blob_id, r.blob.to_vec(), r.wrap, Some(r.stamp), out)?;
-        }
-        for (id, code) in refused {
-            self.serve_with(conn, ServingInput::Reply { id, reply: Err(code) }, labels, out)?;
-        }
-        Ok(())
-    }
-
     /// A node-kind message from served session `conn`'s dialer. Returns the record a Resume
     /// bound, for `bind_record` once the answer is out: the shared set's first messages follow
     /// it on the wire, so the dialer has begun its own set when they arrive.
@@ -804,8 +522,9 @@ impl SyncEngine {
     fn served_prove(&mut self, conn: ConnId, id: osis_proto::msg::Id, proofs: Vec<osis_proto::ActorProof>, out: &mut Vec<Action>) -> Result<()> {
         use osis_proto::{Code, Message};
         let Some(s) = self.served.get_mut(&conn) else { return Ok(()) };
-        let Some((dialer, ch, key)) = s.conn.binding().filter(|_| s.asked == Asked::Nothing) else {
-            return self.serve(conn, ServingInput::Peer(Box::new(Message::Error { id, code: Code::MALFORMED })), out);
+        let Some((dialer, ch, key)) = (s.asked == Asked::Nothing).then_some(s.binding) else {
+            self.hub_down(conn, Down::Message(Box::new(Message::Error { id, code: Code::MALFORMED })), out);
+            return Ok(());
         };
         s.asked = Asked::Prove;
         let good = osis_proto::prove::verified(proofs, false, &ch, &key);
@@ -821,14 +540,16 @@ impl SyncEngine {
             Ok(a) => a,
             Err(e) => {
                 self.diag(format!("serve prove: {e}"));
-                return self.serve(conn, ServingInput::Peer(Box::new(Message::Error { id, code: Code::REFUSED })), out);
+                self.hub_down(conn, Down::Message(Box::new(Message::Error { id, code: Code::REFUSED })), out);
+                return Ok(());
             }
         };
         if let Some(s) = self.served.get_mut(&conn) {
             s.proven = proven;
             s.proved = mine.iter().map(|p| p.actor()).collect();
         }
-        self.serve(conn, ServingInput::Peer(Box::new(Message::Proved { id, proofs: mine })), out)
+        self.hub_down(conn, Down::Message(Box::new(Message::Proved { id, proofs: mine })), out);
+        Ok(())
     }
 
     /// A served dialer's Resume (spec/sync.md §10, Pair key): answered with a record of the
@@ -838,26 +559,26 @@ impl SyncEngine {
     fn served_resume(&mut self, conn: ConnId, id: osis_proto::msg::Id, nonce: [u8; 32], tags: Vec<[u8; 32]>, out: &mut Vec<Action>) -> Result<Option<(osis_store::RecordId, bool)>> {
         use osis_proto::{Code, Message};
         let Some(s) = self.served.get_mut(&conn) else { return Ok(None) };
-        let Some((dialer, ch, key)) = s.conn.binding().filter(|_| s.asked == Asked::Prove) else {
-            self.serve(conn, ServingInput::Peer(Box::new(Message::Error { id, code: Code::MALFORMED })), out)?;
+        let Some((dialer, ch, key)) = (s.asked == Asked::Prove).then_some(s.binding) else {
+            self.hub_down(conn, Down::Message(Box::new(Message::Error { id, code: Code::MALFORMED })), out);
             return Ok(None);
         };
         s.asked = Asked::Resume;
         let actors = super::records::counted_actors(&self.engine, &s.proven);
         if actors.is_empty() {
-            self.serve(conn, ServingInput::Peer(Box::new(Message::Error { id, code: Code::REFUSED })), out)?;
+            self.hub_down(conn, Down::Message(Box::new(Message::Error { id, code: Code::REFUSED })), out);
             return Ok(None);
         }
         let ((mine, tag), bound, looked) = match super::records::answer_resume(&mut self.engine, &actors, &self.records.live(), &nonce, &tags, (&dialer, &ch, &key)) {
             Ok(a) => a,
             Err(e) => {
                 self.diag(format!("serve resume: {e}"));
-                self.serve(conn, ServingInput::Peer(Box::new(Message::Error { id, code: Code::REFUSED })), out)?;
+                self.hub_down(conn, Down::Message(Box::new(Message::Error { id, code: Code::REFUSED })), out);
                 return Ok(None);
             }
         };
         self.records.lookups += looked;
-        self.serve(conn, ServingInput::Peer(Box::new(Message::Resumed { id, nonce: mine, tag })), out)?;
+        self.hub_down(conn, Down::Message(Box::new(Message::Resumed { id, nonce: mine, tag })), out);
         Ok(Some(bound))
     }
 
@@ -890,37 +611,6 @@ impl SyncEngine {
                 Ok((s.tier, Message::Auth { id, secret: None, session }))
             }
             _ => Err((id, Code::REFUSED)),
-        }
-    }
-
-    /// The client listener's key (every transport's key is the Ed25519 key of its secret), while
-    /// it has one. Independent of the dialable key, LAN keys and the signing key: nothing links
-    /// them (notes/client-port.md §5).
-    pub fn client_listen_key(&self) -> Option<[u8; 32]> {
-        self.state.client_listen.as_ref().map(|s| osis_crypto::SigningSecret::from_seed(s).verifying_key().to_bytes())
-    }
-
-    /// The secret the client listener listens with, made on first use, drawn afresh: it derives
-    /// from nothing else. `rotate`: a new one replaces it (the old shredded).
-    pub fn client_listen_secret(&mut self, rotate: bool) -> Secret32 {
-        if !rotate && let Some(s) = &self.state.client_listen {
-            return s.clone();
-        }
-        let mut b = [0u8; 32];
-        self.rng.fill_bytes(&mut b);
-        let s = Secret32::from_bytes(b);
-        self.state.set_client_listen(Some(s.clone()));
-        if let Err(e) = self.state.flush(&mut self.engine) {
-            self.diag(format!("sync state: {e}"));
-        }
-        s
-    }
-
-    /// Shreds the client listener's secret: its address is gone for good.
-    pub fn drop_client_listen_secret(&mut self) {
-        self.state.set_client_listen(None);
-        if let Err(e) = self.state.flush(&mut self.engine) {
-            self.diag(format!("sync state: {e}"));
         }
     }
 
@@ -975,10 +665,21 @@ impl SyncEngine {
         }
     }
 
-    /// A served session's `(dialer challenge, listener challenge, listener key)`, once its
-    /// Hello arrived.
+    /// A served session's `(dialer challenge, listener challenge, listener key)`.
     pub(crate) fn served_binding(&self, conn: ConnId) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
-        self.served.get(&conn).and_then(|s| s.conn.binding())
+        self.served.get(&conn).map(|s| s.binding)
+    }
+
+    /// The served session the hub runs as its connection `id` (test harnesses).
+    #[doc(hidden)]
+    pub fn served_conn(&self, id: osis_host::ConnId) -> Option<ConnId> {
+        self.hub_conns.get(&id).copied()
+    }
+
+    /// The hub's connection served session `conn` runs on (test harnesses).
+    #[doc(hidden)]
+    pub fn hub_conn(&self, conn: ConnId) -> Option<osis_host::ConnId> {
+        self.served.get(&conn).map(|s| s.hub)
     }
 
     pub(crate) fn served_has(&self, conn: ConnId) -> bool {
@@ -989,9 +690,7 @@ impl SyncEngine {
         self.records.conn_gone(conn);
         self.streams.remove(&conn);
         let Some(s) = self.served.remove(&conn) else { return };
-        if let Session::Hub { id, .. } = s.conn {
-            self.hub_conns.remove(&id);
-        }
+        self.hub_conns.remove(&s.hub);
         if s.ported {
             out.push(Action::Ended { conn });
         }
@@ -999,35 +698,25 @@ impl SyncEngine {
 
     /// Ends served session `conn` from this side.
     pub(crate) fn close_served(&mut self, conn: ConnId, out: &mut Vec<Action>) {
-        let hub = match self.served.get(&conn).map(|s| &s.conn) {
-            Some(Session::Hub { id, .. }) => Some(*id),
-            _ => None,
-        };
+        self.hub_down(conn, Down::Close, out);
         self.end_served(conn, out);
-        out.push(match hub {
-            Some(id) => Action::Hub { conn: id, down: osis_host::Down::Close },
-            None => Action::Close { conn },
-        });
     }
 
-    /// Closes served sessions without bytes for `SyncConfig.serve_idle_ms` (but those kept while
-    /// up), those that serve nothing within `serve_open_ms`, and those whose oldest request of
-    /// this node's stalled (`ServingSession::stall_at`); expires the memory log's deletions and this node's
+    /// Closes served sessions that share nothing `serve_open_ms` after they started and those
+    /// of a client past its `until`; expires the memory log's deletions and this node's
     /// tombstones; forgets carriers and certificate placements nothing needs; prunes charges
     /// and blob sizes.
     pub(crate) fn serve_timers(&mut self, out: &mut Vec<Action>) {
         let now = self.now();
-        let (idle, open) = (self.cfg.serve_idle_ms, self.cfg.serve_open_ms);
+        let open = self.cfg.serve_open_ms;
         let stale: Vec<ConnId> = self
             .served
             .iter()
             .filter(|(c, s)| {
-                let idled = !self.kept_while_up(**c, s) && s.last.saturating_add(idle) <= now;
-                let opened_nothing = self.serves_nothing(**c, s) && s.since.saturating_add(open) <= now;
+                let shares_nothing = self.serves_nothing(**c, s) && s.since.saturating_add(open) <= now;
                 // a thin client's `until` passed: no other change is needed to end it
                 let ended = s.client.is_some_and(|b| b.until.is_some_and(|u| u <= now));
-                let stalled = s.conn.own().and_then(ServingSession::stall_at).is_some_and(|t| t <= now);
-                idled || opened_nothing || ended || stalled
+                shares_nothing || ended
             })
             .map(|(c, _)| *c)
             .collect();
@@ -1056,13 +745,10 @@ impl SyncEngine {
         }
     }
 
-    /// When the next served session goes idle.
+    /// When the next served session's `serve_open_ms` or client `until` comes.
     pub(crate) fn serve_wake(&self) -> Option<u64> {
-        // a session holding pushes back: `Event::Sent` at the next tick may give them room
-        let poll = self.served.values().any(|s| s.conn.own().is_some_and(ServingSession::held)).then(|| self.now().saturating_add(osis_proto::serving::PUSH_POLL_MS));
-        let stall = self.served.values().filter_map(|s| s.conn.own().and_then(ServingSession::stall_at)).min();
         // a thin client's `until`
         let until = self.served.values().filter_map(|s| s.client.and_then(|b| b.until)).min();
-        self.served.iter().filter(|(c, s)| !self.kept_while_up(**c, s)).map(|(c, s)| if self.serves_nothing(*c, s) { s.since.saturating_add(self.cfg.serve_open_ms).min(s.last.saturating_add(self.cfg.serve_idle_ms)) } else { s.last.saturating_add(self.cfg.serve_idle_ms) }).chain(poll).chain(until).chain(stall).min()
+        self.served.iter().filter(|(c, s)| self.serves_nothing(**c, s)).map(|(_, s)| s.since.saturating_add(self.cfg.serve_open_ms)).chain(until).min()
     }
 }

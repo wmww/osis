@@ -1,10 +1,11 @@
-//! `Hub`: the host's connections over one store, sans-I/O (spec/sync.md §5-§10). One
-//! osis-proto `ServingSession` per accepted connection, one `Replicator` per connection this
-//! node dialed to a peer host; cross-connection notices (`Changed` to every connection and
-//! replicator, `Relay` to every other connection), bounded sweeps, Hello deadlines, stalls of the
-//! upper layer's requests, the connection cap and timers. Node sync is every session's upper
-//! layer (issues/net-one-peer.md step 3): the hub hands it each connection's start, node-kind
-//! messages, push room and end (`HubOutput::Up`) and takes its messages down (`Hub::down`),
+//! `Hub`: a node's connections over one store, sans-I/O (spec/sync.md §5-§10). One osis-proto
+//! `ServingSession` per accepted connection, under the key of the listener that took it, one
+//! `Replicator` per connection this node dialed to a peer host; cross-connection notices
+//! (`Changed` to every connection and replicator, `Relay` to every other connection), bounded
+//! sweeps, Hello deadlines, stalls of the upper layer's requests and timers. Node sync is every
+//! session's upper layer (issues/net-one-peer.md step 3): the hub hands it each connection's
+//! start, node-kind messages, client-port requests, whether the session opened something, push
+//! room and end (`HubOutput::Up`) and takes its messages, answers and closes down (`Hub::down`),
 //! judging none of them. The node's driver and the simulator only move bytes, pass `Up` and
 //! `Down` between the hub and node sync, and call `tick` when `next_due` says.
 
@@ -12,7 +13,7 @@ use crate::replicate::Replicator;
 use crate::store::HostStore;
 use osis_base::LabelId;
 use osis_proto::{ClientInput, ClientOutput, Message, ServingConfig, ServingSession, ServingInput, ServingOutput};
-use osis_transport::Source;
+use osis_transport::{Peer, Source};
 use std::collections::BTreeMap;
 
 /// A connection's handle, chosen by the driver.
@@ -38,11 +39,16 @@ pub enum HubOutput {
 /// What a served connection hands node sync.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Up {
-    /// What the connection binds, just before its first `Message` (a connection that sends
-    /// node sync nothing never starts).
+    /// The dialer's Hello arrived: what the connection binds. Every other `Up` of it comes after.
     Start(Binding),
     /// A node-kind message (`Message::for_node`): node sync answers each request by `Down`.
     Message(Box<Message>),
+    /// A client-port request (Auth, Call, Sub: answered by `Down::Reply`; an Unsub, already
+    /// answered).
+    Request(Box<Message>),
+    /// Whether the session holds something of the hub's own (an open, an answered Auth): sent
+    /// when it changes.
+    Opened(bool),
     /// Pushes of up to `budget` bytes may go now (after `Down::WantRoom`).
     Room { budget: usize },
     /// The connection is gone (after a `Start`).
@@ -52,13 +58,30 @@ pub enum Up {
 /// A served connection's binding (spec/sync.md §10, Connection proofs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Binding {
-    /// The dialer's and this side's Hello challenges, and the listener's static key.
+    /// The dialer's and this side's Hello challenges, and the static key of the listener that
+    /// took the connection.
     pub dialer: [u8; 32],
     pub listener: [u8; 32],
     pub key: [u8; 32],
-    /// The key the transport authenticated for the dialer, and where it comes from.
-    pub peer: [u8; 32],
+    pub remote: Remote,
+}
+
+/// The dialer of a served connection as the transport tells it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Remote {
+    /// Who it is (a key it authenticated, or a unix peer's uid).
+    pub peer: Peer,
+    /// Where it comes from (`osis_transport::Source`; none: unknown).
     pub source: Option<Source>,
+    /// A relay carries the connection (`osis_transport::Connection::relayed`).
+    pub relayed: bool,
+}
+
+impl Remote {
+    /// A peer with transport key `key`, from no known source, not relayed.
+    pub fn key(key: [u8; 32]) -> Remote {
+        Remote { peer: Peer::Key(key), source: None, relayed: false }
+    }
 }
 
 /// What node sync hands a served connection.
@@ -67,24 +90,29 @@ pub enum Down {
     /// A message to send: a request within the session's request window, anything else at once
     /// (a relay-only push without room is dropped).
     Message(Box<Message>),
+    /// The answer to an `Up::Request`.
+    Reply { id: osis_proto::msg::Id, reply: Result<osis_proto::Outcome, osis_proto::Code> },
+    /// Notify pushes, within the room last granted.
+    Notify(Vec<(osis_proto::msg::Id, osis_proto::Payload)>),
     /// Pushes wait: `Up::Room` when the session's push rule allows.
     WantRoom,
+    /// Whether the connection shares something (node sync's rule over its connections): for the
+    /// driver, which keeps its transport slot from being given away; the hub keeps nothing of it.
+    Keep(bool),
     /// Close the connection.
     Close,
 }
 
 #[derive(Clone)]
 enum Conn {
-    /// `buffered`: partial frame bytes after the last input; `source`: where it comes from
-    /// (slots are shared by it).
-    /// `started`: its `Up::Start` went.
-    Served { c: Box<ServingSession>, peer: [u8; 32], hello_by: Option<u64>, buffered: usize, source: Option<Source>, started: bool },
+    /// `buffered`: partial frame bytes after the last input; `started`: its `Up::Start` went;
+    /// `opened`: the last `Up::Opened`.
+    Served { c: Box<ServingSession>, remote: Remote, hello_by: Option<u64>, buffered: usize, started: bool, opened: bool },
     Peer { r: Box<Replicator>, timer: Option<u64> },
 }
 
 pub struct Hub {
     store: HostStore,
-    static_key: [u8; 32],
     rng: Box<dyn osis_crypto::NodeRng>,
     conns: BTreeMap<ConnId, Conn>,
     /// Sweeps wait until then (after a failure).
@@ -100,9 +128,8 @@ pub struct Hub {
 }
 
 impl Hub {
-    /// `static_key`: this node's transport key (bound by open signatures).
-    pub fn new(store: HostStore, static_key: [u8; 32], rng: Box<dyn osis_crypto::NodeRng>) -> Hub {
-        Hub { store, static_key, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0, relays_delivered: 0, ended: Vec::new() }
+    pub fn new(store: HostStore, rng: Box<dyn osis_crypto::NodeRng>) -> Hub {
+        Hub { store, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0, relays_delivered: 0, ended: Vec::new() }
     }
 
     /// Tests only: an exact copy of this hub as it stands, on `clock`, sharing no mutable state
@@ -113,7 +140,6 @@ impl Hub {
         osis_base::copying::copying(|| {
             Ok(Hub {
                 store: self.store.test_copy(clock)?,
-                static_key: self.static_key,
                 rng: self.rng.test_copy(),
                 conns: self.conns.clone(),
                 sweep_hold: self.sweep_hold,
@@ -133,8 +159,23 @@ impl Hub {
         &mut self.store
     }
 
-    pub fn static_key(&self) -> [u8; 32] {
-        self.static_key
+    /// Serves `store` from now on and returns the one it served (hosting started or stopped):
+    /// served connections that opened something there, and replication sessions, close.
+    pub fn replace_store(&mut self, store: HostStore) -> (HostStore, Vec<HubOutput>) {
+        let old = std::mem::replace(&mut self.store, store);
+        self.sweep_more = false;
+        self.sweep_hold = 0;
+        let out = self.batch(|h, out| {
+            let gone: Vec<ConnId> = h.conns.iter().filter(|(_, c)| match c {
+                Conn::Served { c, .. } => c.opened().next().is_some(),
+                Conn::Peer { .. } => true,
+            }).map(|(id, _)| *id).collect();
+            for id in gone {
+                h.remove(id);
+                out.push(HubOutput::Close(id));
+            }
+        });
+        (old, out)
     }
 
     pub fn connections(&self) -> usize {
@@ -153,36 +194,15 @@ impl Hub {
         c
     }
 
-    /// A client connected (`peer`: the key the transport authenticated), from no known source.
-    pub fn accept(&mut self, now: u64, id: ConnId, peer: [u8; 32]) -> Vec<HubOutput> {
-        self.accept_from(now, id, peer, None)
-    }
-
-    /// A client connected from `source` (`osis_transport::Source`; none: unknown, all such
-    /// connections one source): start its host engine (sends Hello). At `max_connections`
-    /// the slots are shared by source (`osis_transport::evict_for`): the newest connection of
-    /// the source holding the most is closed for it, or it is closed if that source holds fewer
-    /// than two more than its own.
-    pub fn accept_from(&mut self, now: u64, id: ConnId, peer: [u8; 32], source: Option<Source>) -> Vec<HubOutput> {
-        let mut out = Vec::new();
-        let mut held = BTreeMap::new();
-        for c in self.conns.values() {
-            if let Conn::Served { source, .. } = c {
-                *held.entry(*source).or_insert(0usize) += 1;
-            }
-        }
-        if held.values().sum::<usize>() >= self.store.policy().max_connections {
-            let victim = osis_transport::evict_for(&held, &source).and_then(|v| self.conns.iter().rev().find(|(_, c)| matches!(c, Conn::Served { source, .. } if *source == v)).map(|(k, _)| *k));
-            let Some(v) = victim else { return vec![HubOutput::Close(id)] };
-            self.remove(v);
-            out.push(HubOutput::Close(v));
-            out.push(HubOutput::Diagnostic(format!("connection {v}: closed for a connection from a source holding fewer slots")));
-        }
-        let cfg = ServingConfig { static_key: self.static_key, challenge: self.challenge() };
+    /// A connection from `remote` on the listener of static key `key` (bound by open signatures
+    /// and connection proofs; spec/sync.md §10): start its session (sends Hello). How many
+    /// connections a node serves is node sync's rule (it closes by `Down::Close`); the hub caps
+    /// none.
+    pub fn accept(&mut self, now: u64, id: ConnId, key: [u8; 32], remote: Remote) -> Vec<HubOutput> {
+        let cfg = ServingConfig { static_key: key, challenge: self.challenge() };
         let hello_by = Some(now.saturating_add(self.store.policy().hello_ms));
-        self.conns.insert(id, Conn::Served { c: Box::new(ServingSession::new(cfg)), peer, hello_by, buffered: 0, source, started: false });
-        out.extend(self.batch(|h, out| h.serve(now, id, ServingInput::Start, out)));
-        out
+        self.conns.insert(id, Conn::Served { c: Box::new(ServingSession::new(cfg)), remote, hello_by, buffered: 0, started: false, opened: false });
+        self.batch(|h, out| h.serve(now, id, ServingInput::Start, out))
     }
 
     /// A connection this node dialed to peer host `peer_key` is up: replicate to it.
@@ -255,8 +275,8 @@ impl Hub {
         self.batch(|h, _| h.remove(id))
     }
 
-    /// Node sync's messages, push room requests and closes for served connections, in order
-    /// (one batch). Those of a connection gone are dropped.
+    /// Node sync's messages, answers, Notifies, push room requests and closes for served
+    /// connections, in order (one batch). Those of a connection gone are dropped.
     pub fn down(&mut self, now: u64, downs: Vec<(ConnId, Down)>) -> Vec<HubOutput> {
         self.batch(|h, out| {
             for (id, d) in downs {
@@ -265,7 +285,10 @@ impl Hub {
                 }
                 match d {
                     Down::Message(m) => h.serve(now, id, ServingInput::Peer(m), out),
+                    Down::Reply { id: r, reply } => h.serve(now, id, ServingInput::Reply { id: r, reply }, out),
+                    Down::Notify(n) => h.serve(now, id, ServingInput::Notify(n), out),
                     Down::WantRoom => h.serve(now, id, ServingInput::WantRoom, out),
+                    Down::Keep(_) => {}
                     Down::Close => {
                         h.remove(id);
                         out.push(HubOutput::Close(id));
@@ -359,25 +382,31 @@ impl Hub {
     }
 
     fn serve(&mut self, now: u64, id: ConnId, input: ServingInput, out: &mut Vec<HubOutput>) {
-        let Some(Conn::Served { c, peer, hello_by, buffered, source, started }) = self.conns.get_mut(&id) else { return };
-        self.store.set_origin(Some(*peer));
+        let Some(Conn::Served { c, remote, hello_by, buffered, started, opened }) = self.conns.get_mut(&id) else { return };
+        // whose entries these are (echo suppression): a keyed peer's
+        self.store.set_origin(match &remote.peer {
+            Peer::Key(k) => Some(*k),
+            Peer::Unix { .. } => None,
+        });
         let outputs = c.handle(now, &mut self.store, input);
         self.store.set_origin(None);
         if c.version().is_some() {
             *hello_by = None;
         }
-        // node sync learns the connection with its first message for node sync, not before: a
-        // host client's connection costs it nothing
-        if !*started
-            && outputs.iter().any(|o| matches!(o, ServingOutput::Peer(_)))
-            && let Some((dialer, listener, key)) = c.binding()
-        {
+        // node sync learns the connection once its Hello binds it, before anything of it
+        if !*started && let Some((dialer, listener, key)) = c.binding() {
             *started = true;
-            out.push(HubOutput::Up(id, Up::Start(Binding { dialer, listener, key, peer: *peer, source: *source })));
+            out.push(HubOutput::Up(id, Up::Start(Binding { dialer, listener, key, remote: *remote })));
         }
+        let now_opened = !c.none_opened();
+        let opened_moved = *started && now_opened != *opened;
+        *opened = now_opened;
         let now_buffered = c.buffered();
         self.buffered = self.buffered.saturating_sub(*buffered).saturating_add(now_buffered);
         *buffered = now_buffered;
+        if opened_moved {
+            out.push(HubOutput::Up(id, Up::Opened(now_opened)));
+        }
         for o in outputs {
             match o {
                 ServingOutput::Send(b) => out.push(HubOutput::Send(id, b)),
@@ -396,11 +425,10 @@ impl Hub {
                 }
                 ServingOutput::PeerError(e) => out.push(HubOutput::Diagnostic(format!("connection {id}: {e}"))),
                 ServingOutput::StoreError(e) => out.push(HubOutput::Diagnostic(e.to_string())),
-                // node sync's, judged there (proofs, records, the shared set, the stream)
+                // node sync's, judged there (proofs, records, the shared set, the stream, the port)
                 ServingOutput::Peer(m) => out.push(HubOutput::Up(id, Up::Message(m))),
+                ServingOutput::Request(m) => out.push(HubOutput::Up(id, Up::Request(m))),
                 ServingOutput::Room { budget } => out.push(HubOutput::Up(id, Up::Room { budget })),
-                // no client port here (its sessions answer those kinds Error 11)
-                ServingOutput::Request(_) => {}
             }
         }
     }

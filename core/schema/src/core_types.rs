@@ -231,8 +231,8 @@ codec_struct! {
     /// `host^.0`: this node hosts (spec/data-model.md §9).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Host {
-        0 listen: Vec<String>, 1 admit: Admit, 2 labels: BTreeSet<LabelId>, 3 replicate: Vec<Address>,
-        4 policy: BTreeMap<String, u64>, 5 caps: BTreeMap<LabelId, HostCaps>,
+        0 admit: Admit, 1 labels: BTreeSet<LabelId>, 2 replicate: Vec<Address>,
+        3 policy: BTreeMap<String, u64>, 4 caps: BTreeMap<LabelId, HostCaps>,
     }
 }
 codec_struct! {

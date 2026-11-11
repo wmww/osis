@@ -169,15 +169,16 @@ pub enum Cmd {
     /// Thin clients of this node, each with an actor of its own
     #[command(subcommand)]
     Clients(ClientsCmd),
-    /// Keep the store open: sync, serve data for others if set to (the flags set it, as `serving set`;
-    /// the serving address prints first), print diagnostics
+    /// Keep the store open: sync, serve data for others if set to (the flags set it, as `serving set`),
+    /// print diagnostics
     Serve {
         #[command(flatten)]
         serving: ServingFlags,
-        /// Serve clients at this URL, with the client listener's own key (repeatable): a
-        /// line `client URL#KEY` per listener prints after the serving address
-        #[arg(long = "client-listen", value_name = "URL")]
-        client_listen: Vec<String>,
+        /// Listen at this transport URL under the node's key (repeatable; serving with none: the
+        /// default port): other nodes sync, and clients connect, there. A line `URL#KEY` per
+        /// address prints first
+        #[arg(long, value_name = "URL")]
+        listen: Vec<String>,
     },
     /// Create a thing, optionally setting aspects: create --in home note:title.0 '"x"'
     Create(CreateArgs),
@@ -541,9 +542,6 @@ pub enum ClientsCmd {
     Rm { actor: String },
     /// A new secret for one (printed only here); the old one and its connections end
     Rotate { actor: String },
-    /// A new client listener key: clients need the new addresses, printed here; through a daemon
-    /// its listeners and clients move at once
-    RotateAddress,
 }
 
 #[derive(Subcommand, Debug)]
@@ -554,7 +552,7 @@ pub enum ServingCmd {
     Set(ServingFlags),
     /// The sync IDs of a synced group, for a serving node's `--admitted` and `--cap`, one per line
     Ids { g: String },
-    /// Stop serving (what was stored and the serving address are dropped; a later start has a new one)
+    /// Stop serving (what was stored is dropped; a later start begins empty)
     Off,
 }
 
@@ -562,10 +560,7 @@ pub enum ServingCmd {
 /// once as `''` clears it.
 #[derive(clap::Args, Debug, Default)]
 pub struct ServingFlags {
-    /// Listen at this transport URL (repeatable)
-    #[arg(long, value_name = "URL")]
-    pub listen: Vec<String>,
-    /// Which groups this node takes: its own (made under it or its account) naming its serving address, or any
+    /// Which groups this node takes: its own (made under it or its account) naming its address, or any
     #[arg(long, value_enum)]
     pub admit: Option<AdmitArg>,
     /// Also admit a group (one synced here) or a sync ID, 32 hex digits (repeatable)
@@ -584,7 +579,7 @@ pub struct ServingFlags {
 
 impl ServingFlags {
     pub fn any(&self) -> bool {
-        !self.listen.is_empty() || self.admit.is_some() || !self.admitted.is_empty() || !self.replicate.is_empty() || !self.policy.is_empty() || !self.cap.is_empty()
+        self.admit.is_some() || !self.admitted.is_empty() || !self.replicate.is_empty() || !self.policy.is_empty() || !self.cap.is_empty()
     }
 }
 

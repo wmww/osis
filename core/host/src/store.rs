@@ -82,12 +82,13 @@ pub struct HostPolicy {
     pub max_labels: u64,
     pub max_entries: u64,
     pub max_bytes: u64,
-    /// Connections served at once (the driver closes any beyond).
+    /// Connections served at once (node sync closes any beyond, by its rule).
     pub max_connections: usize,
     /// A connection without the peer's Hello this long after accept is closed.
     pub hello_ms: u64,
     /// Bytes queued for one connection beyond which it is dropped (a peer that does not read);
-    /// at least `osis_proto::serving::SEND_QUEUE` (windowed replies and held pushes, spec/sync.md §6).
+    /// at least `osis_proto::serving::SEND_QUEUE` plus `osis_proto::client::WINDOW_QUEUE`
+    /// (windowed replies and held pushes, and node sync's own requests, spec/sync.md §6).
     pub max_queued_bytes: usize,
     /// Partially received frame bytes over all connections beyond which the connection holding
     /// the largest partial frame is closed.
@@ -117,11 +118,13 @@ impl Default for HostPolicy {
             max_bytes: 256 << 30,
             max_connections: 10_000,
             hello_ms: 10_000,
-            max_queued_bytes: 48 << 20,
+            max_queued_bytes: 64 << 20,
             max_buffered_bytes: 512 << 20,
         }
     }
 }
+
+const _: () = assert!(64 << 20 >= osis_proto::serving::SEND_QUEUE + osis_proto::client::WINDOW_QUEUE);
 
 impl HostPolicy {
     /// Sets the knob named like its field (the `policy` map of `host^.0`); an unknown name or a
@@ -152,8 +155,9 @@ impl HostPolicy {
             "hello_ms" => self.hello_ms = v,
             "max_queued_bytes" => {
                 let q = nz()?;
-                if q < osis_proto::serving::SEND_QUEUE {
-                    return Err(format!("{name}: below {} (a client's window plus a reply and a push, spec/sync.md §6)", osis_proto::serving::SEND_QUEUE));
+                let least = osis_proto::serving::SEND_QUEUE + osis_proto::client::WINDOW_QUEUE;
+                if q < least {
+                    return Err(format!("{name}: below {least} (a peer's window plus a reply and a push, and this node's own window, spec/sync.md §6)"));
                 }
                 self.max_queued_bytes = q;
             }

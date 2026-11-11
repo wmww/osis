@@ -1,38 +1,37 @@
 //! The tokio driver (feature `driver`; notes/architecture.md §2): moves the `SyncEngine`'s bytes
 //! over osis-transport `link` sessions (one dialed stream per connection, an ephemeral transport
-//! key per connection, the peer's key checked by the transport, spec/sync.md §10) and fires its timers. Every session a peer opens on one of its
-//! listeners is served by the engine (`SyncEngine::accept`, co-reader peer, spec/sync.md §5);
-//! more listeners come while it runs (`Control::Reach`, the LAN loop's per-network listener).
-//! `Control::Lan` runs the LAN loop (spec/sync.md §10): per network a fresh
-//! transport key and listener, announced on join and every `LAN_ANNOUNCE`; announcements heard go
-//! to `SyncEngine::lan_seen`. No sync logic lives here: every input is an `Event`, every output an
-//! `Action`. Engine calls run under `block_in_place` on a multi-thread runtime. The engine lives
-//! in a `Shared`: owned by the driver (`run`), or shared with the app (`run_shared`: the `osis` handle
-//! keeps it behind its own lock and hands the driver the actions of its calls).
-//! While the node hosts (`Action::Host`, from its `host^.0`) the driver also drives osis-host's
-//! sans-I/O `Hub` in this loop (`hub`): its listeners use the host secret, its store is its own
-//! osis-store `Store`, opened by the holder (`Shared::host_store`), and the node's own dials of
-//! the host address reach it over an in-process link pair, no socket (notes/serving.md, Hosting
-//! in the node).
+//! key per connection, the peer's key checked by the transport, spec/sync.md §10) and fires its
+//! timers. Every session a peer opens on one of the node's listeners is a session of its hub
+//! (`hub`, osis-host's sans-I/O `Hub`, driven in this loop with node sync above it): the
+//! dialable key's listeners (`Control::Reach`, `Control::Listen`), the unix socket's
+//! (`Control::Socket`) and the LAN loop's per-network one. `Control::Lan` runs the LAN loop
+//! (spec/sync.md §10): per network a fresh transport key and listener, announced on join and
+//! every `LAN_ANNOUNCE`; announcements heard go to `SyncEngine::lan_seen`. No sync logic lives
+//! here: every input is an `Event`, every output an `Action`. Engine calls run under
+//! `block_in_place` on a multi-thread runtime. The engine lives in a `Shared`: owned by the
+//! driver (`run`), or shared with the app (`run_shared`: the `osis` handle keeps it behind its own
+//! lock and hands the driver the actions of its calls). While the node hosts (`Action::Host`,
+//! from its `host^.0`) the hub's store is the host store, opened by the holder
+//! (`Shared::host_store`); else an empty one in memory. The node's own dials of a key it listens
+//! under reach the hub over an in-process link pair, no socket (notes/serving.md, The hub in the
+//! node).
 
 mod hub;
 
-use super::{Action, ConnId, Event, HostStatus, SyncEngine};
+use super::{Action, ConnId, Event, SyncEngine};
 use osis_base::Clock;
 use osis_crypto::RngCore;
-use hub::{HubEv, HubRun};
+use hub::HubRun;
 use osis_host::HostConfig;
 use osis_transport::link::{self, Link, LinkTx, blocking};
 use osis_transport::lan::Announce;
 use osis_transport::{Address, ListenConfig, Listener, StaticSecret, Transport};
+use osis_host::HostPolicy;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-
-/// A served connection with no session for this long is closed.
-pub const SERVE_IDLE: Duration = Duration::from_secs(120);
 
 /// Longest wait between ticks.
 pub const MAX_IDLE: Duration = Duration::from_secs(60);
@@ -50,7 +49,7 @@ pub const LAN_ANNOUNCE: Duration = Duration::from_secs(30);
 /// Network changes rejoin the LAN at most this often (each join drops the LAN listener and its
 /// connections; provisional).
 pub const LAN_REJOIN_MIN: Duration = Duration::from_secs(30);
-/// How long a client listener tries its URL again when replacing a listener, and how often: the
+/// How long `Control::Listen` tries a URL again when replacing its listeners, and how often: the
 /// old one's UDP socket lives until its connections finished closing. Minor: 0 fails the replace
 /// when they have not (calling it again works), infinity waits on a port someone else holds; each
 /// try blocks this driver as any listen does.
@@ -114,14 +113,13 @@ pub enum Control {
     /// `P2p`, a URL lists the socket address to bind and the relays the listener registers at;
     /// `reach.0` lists its global addresses (`p2p::reach_items`) and those relays.
     Reach { urls: Vec<String>, reply: Option<oneshot::Sender<Result<Address, String>>> },
-    /// Serve the sessions a listener at `url` accepts (a client socket, `unix://`; its
-    /// sessions are clients, notes/client-port.md §5), with a fresh secret of its own.
-    Listen { url: String, reply: Option<oneshot::Sender<Result<Address, String>>> },
-    /// Serve the client listeners at `urls` with the client listener's secret (none given: stop,
-    /// and shred the secret). `Rotate`: a new secret at the same addresses; those of the old key
-    /// stop, their sessions end. Answers the addresses (notes/client-port.md §5). All or none: on
-    /// an error nothing listens.
-    ClientListen { urls: ClientUrls, reply: oneshot::Sender<Result<Vec<Address>, String>> },
+    /// Serve the sessions a unix socket at `url` accepts (its peers of this uid act as the main
+    /// actor, notes/client-port.md §5), beside the other listeners.
+    Socket { url: String, reply: Option<oneshot::Sender<Result<Address, String>>> },
+    /// Listen at `urls` with the dialable secret, in place of the URLs of an earlier `Listen`
+    /// (their sessions end; none: stop). Answers the addresses. All or none: on an error nothing
+    /// of them listens.
+    Listen { urls: Vec<String>, reply: oneshot::Sender<Result<Vec<Address>, String>> },
     /// Run the LAN loop (no announcement socket: logged, nothing runs, the node works on).
     Lan(LanConfig),
     /// The network may have changed (an app's OS callback): join the LAN again with a fresh key
@@ -136,13 +134,6 @@ pub enum Control {
 
 /// Takes the co-readers' dialable keys (`Control::PeerKeys`).
 pub type PeerKeys = Arc<dyn Fn(&BTreeSet<[u8; 32]>) + Send + Sync>;
-
-/// What `Control::ClientListen` does.
-#[derive(Clone, Debug)]
-pub enum ClientUrls {
-    Listen(Vec<String>),
-    Rotate,
-}
 
 /// Where diagnostics go.
 pub type Log = Arc<dyn Fn(&str) + Send + Sync>;
@@ -160,16 +151,7 @@ async fn forward(conn: ConnId, rx: link::LinkRx, ev: mpsc::Sender<Ev>) {
     link::forward(rx, ev, move |b| Ev::Bytes(conn, b), Ev::Closed(conn)).await
 }
 
-/// The client listeners, all of one key: their bound URLs and tasks.
-struct ClientListeners {
-    key: [u8; 32],
-    urls: Vec<String>,
-    tasks: Vec<[JoinHandle<()>; 2]>,
-}
-
 struct Conn {
-    /// Leaves the listener's pending slots when set (`Action::Authed`).
-    authed: Option<Arc<std::sync::atomic::AtomicBool>>,
     tx: Option<LinkTx>,
     task: JoinHandle<()>,
     /// `LinkTx::taken` when last reported (`Event::Sent`; `u64::MAX` before the first report).
@@ -193,18 +175,18 @@ pub trait Shared: Send + Sync + 'static {
     }
 }
 
-/// The local record of the host store naming the host key it belongs to.
-const HOST_KEY_RECORD: &[u8] = b"host key";
+/// The local record of the host store naming the run of hosting it belongs to.
+const HOST_RUN_RECORD: &[u8] = b"host run";
 
-/// Opens the host store for host key `key`. One not recording `key` (kept for another key:
-/// hosting stopped and started again while no driver ran, or before it carried out the stop;
-/// recording none: new, or half erased by a crash) is erased first, then records `key` before
-/// any entry goes in.
+/// Opens the host store of run of hosting `key` (`HostConfig::store_id`). One not recording
+/// `key` (another run's: hosting stopped and started again while no driver ran, or before it
+/// carried out the stop; recording none: new, or half erased by a crash) is erased first, then
+/// records `key` before any entry goes in.
 fn open_host_store(shared: &dyn Shared, key: &[u8; 32]) -> Result<osis_store::Store, String> {
     let e = |e: osis_store::Error| e.to_string();
     let mut s = shared.host_store()?;
     let mut rng = osis_crypto::OsRng;
-    let kept = s.transaction(&mut rng).and_then(|mut t| t.get_local(HOST_KEY_RECORD)).map_err(e)?;
+    let kept = s.transaction(&mut rng).and_then(|mut t| t.get_local(HOST_RUN_RECORD)).map_err(e)?;
     if kept.as_deref() == Some(key.as_slice()) {
         return Ok(s);
     }
@@ -212,7 +194,7 @@ fn open_host_store(shared: &dyn Shared, key: &[u8; 32]) -> Result<osis_store::St
     shared.erase_host_store()?;
     let mut s = shared.host_store()?;
     let mut t = s.transaction(&mut rng).map_err(e)?;
-    t.put_local(HOST_KEY_RECORD, key, osis_store::Shred::No).map_err(e)?;
+    t.put_local(HOST_RUN_RECORD, key, osis_store::Shred::No).map_err(e)?;
     t.commit().map_err(e)?;
     Ok(s)
 }
@@ -242,8 +224,8 @@ struct LanLoop {
     rejoin: bool,
     /// When it last joined (network changes rejoin at most every `LAN_REJOIN_MIN`).
     joined: Option<tokio::time::Instant>,
-    /// This network's listener: its key and its IPv4 and IPv6 ports.
-    listener: Option<([u8; 32], Ports)>,
+    /// This network's listener: its key, its IPv4 and IPv6 ports and its hub listener group.
+    listener: Option<([u8; 32], Ports, u64)>,
     /// When the next announcement is due (`None`: past what the clock can hold, never).
     next: Option<tokio::time::Instant>,
     /// The announcement receiver and the network watch.
@@ -291,41 +273,43 @@ struct Driver<T: Transport, H: Shared> {
     conns: HashMap<ConnId, Conn>,
     wake: Option<u64>,
     ev_tx: mpsc::Sender<Ev>,
-    /// Accepted sessions with the key of the listener that took them.
-    link_tx: mpsc::Sender<([u8; 32], Link)>,
-    /// Running listeners by key: their serve and forward tasks.
-    listeners: HashMap<[u8; 32], [JoinHandle<()>; 2]>,
-    client: Option<ClientListeners>,
-    max_served: usize,
-    client_pending: usize,
     lan: Option<LanLoop>,
     lan_tx: mpsc::Sender<(Announce, std::net::SocketAddr)>,
     /// Network changes from the LAN loop's watch.
     net_tx: mpsc::Sender<()>,
-    /// The dialable listener's URLs (`Control::Reach`), and its key.
+    /// The dialable listener's URLs (`Control::Reach`), its key and hub listener group.
     reach: Option<Vec<String>>,
-    dialable: Option<[u8; 32]>,
+    dialable: Option<([u8; 32], u64)>,
+    /// `Control::Listen`'s URLs (as bound) and their hub listener group.
+    listen: Option<(Vec<String>, u64)>,
+    /// `Control::Socket`'s hub listener groups.
+    sockets: Vec<u64>,
     /// Where the co-readers' dialable keys go, and the last keys given (`Control::PeerKeys`).
     peer_keys: Option<(PeerKeys, BTreeSet<[u8; 32]>)>,
     /// The engine rotated the dialable secret (`Action::Reach`): listen again (not before
     /// `relisten_at` after a failure).
     relisten: bool,
     relisten_at: Option<tokio::time::Instant>,
-    /// Sessions each listener accepted, by its key: they close with it.
-    served_by: HashMap<[u8; 32], Vec<ConnId>>,
-    /// The running hub, and a config change for it not yet carried out (`host_update`).
-    host: Option<HubRun>,
+    /// The hub, and a host config for it not yet carried out (`host_update`).
+    hub: HubRun,
     host_want: Option<Option<Box<HostConfig>>>,
-    /// The node's own sessions to a host about to start (dials of its address made before it
-    /// runs): served once it does, dropped (closed) if it does not.
-    host_pending: Vec<Link>,
-    /// The next hub connection ID and run tag (`HubRun::start`).
-    hub_next: u64,
-    hub_tx: mpsc::UnboundedSender<HubEv>,
     /// Between the hub and node sync (`hub_pump`): the engine's `Action::Hub` not yet handed to
-    /// the hub, and what a stopped run handed up not yet fed to the engine.
+    /// the hub, and what the hub handed up not yet fed to the engine.
     hub_downs: Vec<(osis_host::ConnId, osis_host::Down)>,
     hub_ups: Vec<(osis_host::ConnId, osis_host::Up)>,
+}
+
+/// A host store in memory, empty and admitting nothing, under the default policy: the hub's
+/// while the node hosts nothing.
+fn empty_store(clock: Arc<dyn Clock>) -> osis_host::HostStore {
+    let (b, r) = (Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()));
+    #[allow(clippy::expect_used)]
+    let s = osis_store::Store::create(b, r, osis_store::StoreConfig::default(), &mut osis_crypto::OsRng).expect("a store in memory");
+    #[allow(clippy::expect_used)]
+    let mut store = osis_host::HostStore::open(s, clock, HostPolicy::default(), Box::new(osis_crypto::OsRng)).expect("a host store in memory");
+    // it takes no label
+    store.set_admission(osis_host::Admission::Only(Default::default()), Default::default());
+    store
 }
 
 impl<T: Transport, H: Shared> Driver<T, H> {
@@ -361,27 +345,18 @@ impl<T: Transport, H: Shared> Driver<T, H> {
     }
 
     fn apply(&mut self, acts: Vec<Action>) {
-        // a host config first: dials of its address in the same batch go to it
-        for a in &acts {
-            if let Action::Host(cfg) = a {
-                self.host_want = Some(cfg.clone());
-            }
-        }
         for a in acts {
             match a {
                 Action::Dial { conn, address } => {
                     let t = self.transport.clone();
                     let ev = self.ev_tx.clone();
                     let addr = Address { url: address.url, key: address.key };
-                    // the host this node runs: an in-process session with an ephemeral key
-                    let own = self.own_host(&addr.key).then(|| {
+                    // a key this node listens under: an in-process session with an ephemeral key
+                    let own = self.hub.listens_as(&addr.key).then(|| {
                         let mut k = [0u8; 32];
                         osis_crypto::OsRng.fill_bytes(&mut k);
                         let (mine, theirs) = link::pair(k, addr.key);
-                        match self.host.as_mut().filter(|h| h.cfg.key == addr.key) {
-                            Some(h) => h.accept(theirs),
-                            None => self.host_pending.push(theirs),
-                        }
+                        self.hub.accept_own(addr.key, theirs);
                         mine
                     });
                     let task = tokio::spawn(async move {
@@ -401,7 +376,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                             forward(conn, rx, ev).await;
                         }
                     });
-                    self.conns.insert(conn, Conn { authed: None, tx: None, task, taken: u64::MAX });
+                    self.conns.insert(conn, Conn { tx: None, task, taken: u64::MAX });
                 }
                 Action::Send { conn, bytes } => {
                     let ok = self.conns.get(&conn).and_then(|c| c.tx.as_ref()).is_some_and(|tx| tx.send(bytes, MAX_QUEUED));
@@ -414,12 +389,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 Action::Close { conn } => self.close(conn),
                 Action::Wake { at } => self.wake = Some(at),
                 Action::Reach => self.relisten = true,
-                Action::Authed { conn } => {
-                    if let Some(a) = self.conns.get(&conn).and_then(|c| c.authed.as_ref()) {
-                        a.store(true, std::sync::atomic::Ordering::Release);
-                    }
-                }
-                Action::Host(_) => {}
+                Action::Host(cfg) => self.host_want = Some(cfg),
                 Action::Hub { conn, down } => self.hub_downs.push((conn, down)),
                 // the client port is the engine holder's (`osis`); a bare driver answers none
                 Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } => {}
@@ -468,63 +438,37 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         self.wake.map_or(MAX_IDLE, |t| Duration::from_millis(t.saturating_sub(now)).min(MAX_IDLE))
     }
 
-    /// Serves the sessions `l` accepts (replacing a listener of the same key).
-    fn serve(&mut self, l: T::Listener) -> Address {
-        let addr = l.address();
-        let key = addr.key;
-        self.unlisten(key);
-        let tasks = self.serve_tasks(l, key, link::Slots::Shared(self.max_served));
-        self.listeners.insert(key, tasks);
-        addr
-    }
-
-    fn serve_tasks(&mut self, l: T::Listener, key: [u8; 32], slots: link::Slots) -> [JoinHandle<()>; 2] {
-        let (tx, mut rx) = mpsc::channel::<Link>(64);
-        let serve = tokio::spawn(link::serve(l, SERVE_IDLE, FINISH_WAIT, tx, slots));
-        let out = self.link_tx.clone();
-        let fwd = tokio::spawn(async move {
-            while let Some(link) = rx.recv().await {
-                if out.send((key, link)).await.is_err() {
-                    return;
-                }
+    /// Listens at one URL into the hub; returns the address and its listener group.
+    async fn listen_one(&mut self, cfg: ListenConfig) -> Result<(Address, u64), String> {
+        match self.transport.listen(cfg).await {
+            Ok(l) => {
+                let a = l.address();
+                let g = self.hub.listen(a.key, vec![l]);
+                Ok((a, g))
             }
-        });
-        [serve, fwd]
-    }
-
-    /// Replaces the client listeners: the old ones stop first with their sessions (a new one may
-    /// want the same URL, a socket a session's connection still holds); every URL listens or none
-    /// does. A UDP port the old connections still drain is tried again for `REBIND_WAIT`.
-    async fn client_listen(&mut self, what: ClientUrls) -> Result<Vec<Address>, String> {
-        let rotate = matches!(what, ClientUrls::Rotate);
-        let old = self.client.take();
-        let urls = match what {
-            ClientUrls::Listen(u) => u,
-            ClientUrls::Rotate => old.as_ref().map(|c| c.urls.clone()).unwrap_or_default(),
-        };
-        let stop = urls.is_empty() && !rotate;
-        let secret = self.read(|s| {
-            if stop {
-                s.drop_client_listen_secret();
-                None
-            } else {
-                Some(transport_secret(&s.client_listen_secret(rotate)))
-            }
-        });
-        let Some(secret) = secret else { return Err("engine gone".into()) };
-        if let Some(ClientListeners { key, tasks, .. }) = old {
-            for t in tasks.into_iter().flatten() {
-                t.abort();
-                let _ = t.await;
-            }
-            for conn in self.served_by.remove(&key).unwrap_or_default() {
-                if self.conns.contains_key(&conn) {
-                    self.close(conn);
-                    self.feed(Event::Down { conn });
-                }
+            Err(e) => {
+                (self.log)(&format!("listen: {e}"));
+                Err(e.to_string())
             }
         }
-        let Some(secret) = secret else { return Ok(Vec::new()) };
+    }
+
+    fn dialable_secret(&mut self) -> Option<StaticSecret> {
+        self.read(|s| transport_secret(&s.dialable_secret()))
+    }
+
+    /// Listens at `urls` with the dialable secret in place of `Control::Listen`'s earlier URLs:
+    /// the old ones stop first with their sessions (a new one may want the same URL, a socket a
+    /// session's connection still holds); every URL listens or none does. A UDP port the old
+    /// connections still drain is tried again for `REBIND_WAIT`.
+    async fn listen(&mut self, urls: Vec<String>) -> Result<Vec<Address>, String> {
+        if let Some((_, g)) = self.listen.take() {
+            self.hub.unlisten(g).await;
+        }
+        if urls.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(secret) = self.dialable_secret() else { return Err("engine gone".into()) };
         let mut ls = Vec::new();
         for url in urls {
             let end = tokio::time::Instant::now() + REBIND_WAIT;
@@ -536,52 +480,20 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 }
             });
         }
-        let mut addrs = Vec::new();
-        let mut tasks = Vec::new();
-        for l in ls {
-            let a = l.address();
-            tasks.push(self.serve_tasks(l, a.key, link::Slots::Pending(self.client_pending)));
-            addrs.push(a);
-        }
+        let addrs: Vec<Address> = ls.iter().map(Listener::address).collect();
         if let Some(a) = addrs.first() {
-            self.client = Some(ClientListeners { key: a.key, urls: addrs.iter().map(|x| x.url.clone()).collect(), tasks });
+            let g = self.hub.listen(a.key, ls);
+            self.listen = Some((addrs.iter().map(|x| x.url.clone()).collect(), g));
         }
         Ok(addrs)
     }
 
-    fn unlisten(&mut self, key: [u8; 32]) {
-        if let Some(ts) = self.listeners.remove(&key) {
-            for t in ts {
-                t.abort();
-            }
-        }
-    }
-
-    /// `unlisten`, returning once the listener is dropped (its address is free again), and
-    /// closing the sessions it accepted (as a P2P listener's socket ends its connections).
-    async fn unlisten_now(&mut self, key: [u8; 32]) {
-        if let Some(ts) = self.listeners.remove(&key) {
-            for t in ts {
-                t.abort();
-                let _ = t.await;
-            }
-        }
-        for conn in self.served_by.remove(&key).unwrap_or_default() {
-            if self.conns.contains_key(&conn) {
-                self.close(conn);
-                self.feed(Event::Down { conn });
-            }
-        }
-    }
-
-    async fn listen(&mut self, cfg: ListenConfig) -> Result<Address, String> {
-        match self.transport.listen(cfg).await {
-            Ok(l) => Ok(self.serve(l)),
-            Err(e) => {
-                (self.log)(&format!("listen: {e}"));
-                Err(e.to_string())
-            }
-        }
+    /// Listens on a unix socket at `url`, beside the other listeners.
+    async fn socket(&mut self, url: String) -> Result<Address, String> {
+        let Some(secret) = self.dialable_secret() else { return Err("engine gone".into()) };
+        let (a, g) = self.listen_one(ListenConfig { url, secret }).await?;
+        self.sockets.push(g);
+        Ok(a)
     }
 
     /// Listens with the dialable secret and publishes `reach.0` with that listener's key and
@@ -589,18 +501,18 @@ impl<T: Transport, H: Shared> Driver<T, H> {
     /// stops.
     async fn reach(&mut self, urls: Vec<String>) -> Result<Address, String> {
         self.reach = Some(urls.clone());
-        let Some(secret) = self.read(|s| transport_secret(&s.dialable_secret())) else { return Err("engine gone".into()) };
+        let Some(secret) = self.dialable_secret() else { return Err("engine gone".into()) };
         let mut res = Err("no URL to listen at".to_string());
         for url in urls {
-            res = self.listen(ListenConfig { url, secret: secret.clone() }).await;
+            res = self.listen_one(ListenConfig { url, secret: secret.clone() }).await;
             if res.is_ok() {
                 break;
             }
         }
-        let addr = res?;
+        let (addr, g) = res?;
         let key = addr.key;
-        if let Some(old) = self.dialable.replace(key).filter(|k| *k != key) {
-            self.unlisten(old);
+        if let Some((_, old)) = self.dialable.replace((key, g)) {
+            self.hub.unlisten(old).await;
         }
         // an unspecified bound IP stands for the routes' local addresses
         let unspecified = osis_transport::p2p::items(&addr.url).is_ok_and(|it| it.direct.iter().any(|a| a.ip().is_unspecified()));
@@ -619,36 +531,6 @@ impl<T: Transport, H: Shared> Driver<T, H> {
             }
         });
         Ok(addr)
-    }
-
-    /// A peer's session on the listener of key `key`.
-    fn accepted(&mut self, key: [u8; 32], l: Link) {
-        let Link { peer, tx, rx, authed, relayed, .. } = l;
-        // the connection exists before its first actions are carried out
-        let mut conn = None;
-        let shared = &self.shared;
-        let acts = blocking(|| {
-            shared.with(&mut |s| {
-                let (c, acts) = s.accept_peer(key, peer);
-                if relayed {
-                    s.set_relayed(c);
-                }
-                conn = Some(c);
-                acts
-            })
-        });
-        if let Some(conn) = conn {
-            let task = tokio::spawn(forward(conn, rx, self.ev_tx.clone()));
-            self.conns.insert(conn, Conn { authed: Some(authed), tx: Some(tx), task, taken: u64::MAX });
-            let conns = &self.conns;
-            let v = self.served_by.entry(key).or_default();
-            v.retain(|c| conns.contains_key(c));
-            v.push(conn);
-        }
-        match acts {
-            Some(a) => self.apply(a),
-            None => self.gone = true,
-        }
     }
 
     fn event(&mut self, ev: Ev) {
@@ -755,18 +637,18 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         }) else {
             return self.lan_announce().await;
         };
-        if let Some((k, _)) = old {
-            self.unlisten_now(k).await;
+        if let Some((_, _, g)) = old {
+            self.hub.unlisten(g).await;
         }
         let Some(secret) = self.read(|s| transport_secret(&s.lan_secret())) else { return };
-        let mut r = self.listen(ListenConfig { url: url.clone(), secret: secret.clone() }).await;
+        let mut r = self.listen_one(ListenConfig { url: url.clone(), secret: secret.clone() }).await;
         if r.is_err()
             && let Some(v4) = v4_only(&url)
         {
-            r = self.listen(ListenConfig { url: v4, secret }).await;
+            r = self.listen_one(ListenConfig { url: v4, secret }).await;
         }
         if let Some(x) = self.lan.as_mut() {
-            x.listener = r.ok().map(|a| (a.key, listen_ports(&a.url)));
+            x.listener = r.ok().map(|(a, g)| (a.key, listen_ports(&a.url), g));
             x.next = Some(tokio::time::Instant::now());
             x.repeats = x.cfg.join_repeats;
         }
@@ -776,7 +658,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
     /// Announces this network's listener when due.
     async fn lan_announce(&mut self) {
         let now = tokio::time::Instant::now();
-        let Some((key, ports, to, sock)) = self.lan.as_ref().filter(|x| x.next.is_some_and(|n| n <= now)).and_then(|x| x.listener.map(|(k, p)| (k, p, x.cfg.to.clone(), x.sock.clone()))) else { return };
+        let Some((key, ports, to, sock)) = self.lan.as_ref().filter(|x| x.next.is_some_and(|n| n <= now)).and_then(|x| x.listener.map(|(k, p, _)| (k, p, x.cfg.to.clone(), x.sock.clone()))) else { return };
         if let Some(x) = self.lan.as_mut() {
             let wait = if x.repeats > 0 { x.cfg.join_gap } else { x.cfg.announce };
             x.repeats = x.repeats.saturating_sub(1);
@@ -829,16 +711,14 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                     let _ = reply.send(r);
                 }
             }
-            Some(Control::Listen { url, reply }) => {
-                let mut k = [0u8; 32];
-                osis_crypto::OsRng.fill_bytes(&mut k);
-                let r = self.listen(ListenConfig { url, secret: StaticSecret::from_bytes(k) }).await;
+            Some(Control::Socket { url, reply }) => {
+                let r = self.socket(url).await;
                 if let Some(reply) = reply {
                     let _ = reply.send(r);
                 }
             }
-            Some(Control::ClientListen { urls, reply }) => {
-                let r = self.client_listen(urls).await;
+            Some(Control::Listen { urls, reply }) => {
+                let r = self.listen(urls).await;
                 let _ = reply.send(r);
             }
             Some(Control::Lan(cfg)) => self.lan_start(cfg).await,
@@ -848,31 +728,15 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         true
     }
 
-    /// Whether `key` is the host this node runs or is about to start.
-    fn own_host(&self, key: &[u8; 32]) -> bool {
-        self.host.as_ref().is_some_and(|h| h.cfg.key == *key) || matches!(&self.host_want, Some(Some(c)) if c.key == *key)
-    }
-
-    /// Stops the hub (closing its connections); returns it.
-    fn host_stop(&mut self) -> Option<osis_host::Hub> {
-        let (hub, next, ups) = self.host.take()?.stop();
-        self.hub_next = next;
-        self.hub_ups.extend(ups);
-        Some(hub)
-    }
-
     /// Passes what the hub handed up to node sync and node sync's answers down, until neither
-    /// has more (one function call each way, no channel). Downs for a hub that stopped are
-    /// dropped (their connections ended with it).
+    /// has more (one function call each way, no channel).
     fn hub_pump(&mut self) {
         while !self.gone {
             let downs = std::mem::take(&mut self.hub_downs);
-            if let Some(h) = self.host.as_mut() {
-                if !downs.is_empty() {
-                    h.down(downs);
-                }
-                self.hub_ups.extend(h.take_ups());
+            if !downs.is_empty() {
+                self.hub.down(downs);
             }
+            self.hub_ups.extend(self.hub.take_ups());
             if self.hub_ups.is_empty() {
                 return;
             }
@@ -881,17 +745,26 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         }
     }
 
-    /// Carries out the last `Action::Host`: stops the host, starts it, or changes it in place
-    /// (only the admission or caps changed) or by a restart (its hub kept).
+    /// Serves `store` from now on; the one served before is dropped (closed).
+    fn hub_store(&mut self, store: osis_host::HostStore) {
+        let (old, out) = self.hub.hub_mut().replace_store(store);
+        drop(old);
+        self.hub.applied(out);
+    }
+
+    /// Carries out the last `Action::Host`: hosting stops (the hub's store goes back to an empty
+    /// one, the host store is erased once the engine no longer hosts), starts (the host store of
+    /// its run opened), or changes in place (admission, caps, policy, replication peers).
     async fn host_update(&mut self) {
         let Some(want) = self.host_want.take() else { return };
-        // dials waiting for a host that does not start fail
-        let pending = std::mem::take(&mut self.host_pending);
         let Some(cfg) = want else {
-            // the hub, and with it the host store, closes here
-            drop(self.host_stop());
-            // hosting stopped (not the driver): the host store goes with the host secret
-            if self.read(|s| s.host_key().is_none()) == Some(true) {
+            let hosted = self.hub.cfg.take().is_some();
+            self.hub.replicate(&self.transport, &[], None);
+            if hosted {
+                self.hub_store(empty_store(self.clock.clone()));
+            }
+            // hosting stopped (not the driver): the host store goes with the run
+            if self.read(|s| !s.hosts()) == Some(true) {
                 let shared = &self.shared;
                 if let Err(e) = blocking(|| shared.erase_host_store()) {
                     (self.log)(&format!("erasing the host store: {e}"));
@@ -900,76 +773,56 @@ impl<T: Transport, H: Shared> Driver<T, H> {
             return;
         };
         let cfg = *cfg;
-        if let Some(h) = self.host.as_mut()
-            && (HostConfig { admission: cfg.admission.clone(), caps: cfg.caps.clone(), ..h.cfg.clone() }) == cfg
-        {
-            h.hub_mut().store_mut().set_admission(cfg.admission.clone(), cfg.caps.clone());
-            h.cfg = cfg;
+        // a config of a run that is over (hosting stopped and maybe started again since it was
+        // emitted): the newer `Action::Host` is on its way
+        if self.read(|s| s.host_current(&cfg)) != Some(true) {
             return;
         }
-        // a config whose key is no longer the node's (hosting stopped and maybe started again
-        // since it was emitted): the newer `Action::Host` is on its way
-        let Some(Some(secret)) = self.read(|s| s.host_secret_for(&cfg.key).map(|x| transport_secret(&x))) else { return };
-        let hub = match self.host_stop() {
-            Some(mut hub) if hub.static_key() == cfg.key => {
-                hub.store_mut().set_policy(cfg.policy.clone());
-                hub
+        if self.hub.cfg.as_ref().is_none_or(|c| c.store_id != cfg.store_id) {
+            // the store of an older run closes before the new one opens
+            if self.hub.cfg.take().is_some() {
+                self.hub_store(empty_store(self.clock.clone()));
             }
-            old => {
-                // an old key's hub closes its store before it is opened again
-                drop(old);
-                let shared = &self.shared;
-                let opened = blocking(|| open_host_store(shared, &cfg.key).and_then(|s| osis_host::HostStore::open(s, self.clock.clone(), cfg.policy.clone(), Box::new(osis_crypto::OsRng)).map_err(|e| e.to_string())));
-                match opened {
-                    Ok(store) => osis_host::Hub::new(store, cfg.key, Box::new(osis_crypto::OsRng)),
-                    Err(e) => return self.host_status(HostStatus::Failed(format!("host store: {e}"))),
+            let shared = &self.shared;
+            let opened = blocking(|| open_host_store(shared, &cfg.store_id).and_then(|s| osis_host::HostStore::open(s, self.clock.clone(), cfg.policy.clone(), Box::new(osis_crypto::OsRng)).map_err(|e| e.to_string())));
+            match opened {
+                Ok(store) => self.hub_store(store),
+                Err(e) => {
+                    let e = format!("hosting: host store: {e}");
+                    (self.log)(&e);
+                    self.call(&mut |s| {
+                        s.diag(e.clone());
+                        Vec::new()
+                    });
+                    return;
                 }
             }
-        };
-        let mut hub = hub;
-        hub.store_mut().set_admission(cfg.admission.clone(), cfg.caps.clone());
-        let mut listeners = Vec::new();
-        let mut addrs = Vec::new();
-        for url in &cfg.listen {
-            match self.transport.listen(ListenConfig { url: url.clone(), secret: secret.clone() }).await {
-                Ok(l) => {
-                    let a = l.address();
-                    addrs.push(osis_label::Address { url: a.url, key: a.key });
-                    listeners.push(l);
-                }
-                Err(e) => return self.host_status(HostStatus::Failed(format!("listen {url}: {e}"))),
-            }
         }
-        let mut run = HubRun::start(cfg, hub, self.hub_next, &self.transport, listeners, secret, self.clock.clone(), self.log.clone(), self.hub_tx.clone());
-        for l in pending {
-            run.accept(l);
+        let store = self.hub.hub_mut().store_mut();
+        store.set_policy(cfg.policy.clone());
+        store.set_admission(cfg.admission.clone(), cfg.caps.clone());
+        if self.hub.cfg.as_ref().is_none_or(|c| c.replicate != cfg.replicate) {
+            let secret = self.dialable_secret();
+            self.hub.replicate(&self.transport, &cfg.replicate, secret);
         }
-        self.host = Some(run);
-        self.host_status(HostStatus::Listening(addrs));
+        self.hub.cfg = Some(cfg);
     }
 
-    fn host_status(&mut self, st: HostStatus) {
-        if let HostStatus::Failed(e) = &st {
-            (self.log)(&format!("hosting: {e}"));
-        }
-        self.call(&mut |s| {
-            s.set_host_status(st.clone());
-            Vec::new()
-        });
-    }
-
-    /// After `Action::Reach`: listens with the new dialable secret (the old listener stops) and
-    /// joins the LAN again, so nothing announced or listening carries the old key.
+    /// After `Action::Reach`: every listener of the dialable key listens again with the new
+    /// secret (the old ones stop) and the LAN is joined again, so nothing announced or listening
+    /// carries the old key. A unix socket has no key of the node's (the kernel names its peers):
+    /// it stays.
     async fn after_rotation(&mut self) {
         if !self.relisten || self.relisten_at.is_some_and(|t| t > tokio::time::Instant::now()) {
             return;
         }
         self.relisten = false;
         self.relisten_at = None;
+        self.hub.own = self.read(SyncEngine::dialable_key);
         if let Some(urls) = self.reach.clone() {
             // the old listener goes first: the new one takes its place (its URL, its relays)
-            if let Some(old) = self.dialable.take() {
-                self.unlisten_now(old).await;
+            if let Some((_, old)) = self.dialable.take() {
+                self.hub.unlisten(old).await;
             }
             if let Err(e) = self.reach(urls).await {
                 // `reach.0` already names the new key: keep trying
@@ -977,6 +830,16 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 self.relisten = true;
                 self.relisten_at = Some(tokio::time::Instant::now() + RELISTEN_RETRY);
             }
+        }
+        if let Some((urls, _)) = self.listen.clone()
+            && let Err(e) = self.listen(urls).await
+        {
+            (self.log)(&format!("listening with the new dialable key: {e}"));
+        }
+        // replication dials as the node's key
+        if let Some(cfg) = self.hub.cfg.clone() {
+            let secret = self.dialable_secret();
+            self.hub.replicate(&self.transport, &cfg.replicate, secret);
         }
         if !self.relisten {
             self.lan_rejoin(true).await;
@@ -990,34 +853,29 @@ pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Cl
     run_serving(sync, transport, Vec::new(), clock, control, log).await
 }
 
-/// `run`, also serving the peer sessions the `listeners` accept (more come with
-/// `Control::Reach` and the LAN loop): one listening with the engine's `dialable_secret`
-/// (publish its `address().key` with `publish_reach`), and one per LAN join with a fresh secret
-/// whose key is announced with the LAN tag (spec/sync.md §10). Never put a listener's
-/// `address().url` into `reach.0` as it is: it lists bound IP addresses; `p2p::reach_items`
-/// says what goes there.
+/// `run`, its hub also serving the sessions `listeners` accept, each under its own key.
 pub async fn run_serving<T: Transport>(sync: SyncEngine, transport: T, listeners: Vec<T::Listener>, clock: Arc<dyn Clock>, control: mpsc::UnboundedReceiver<Control>, log: Log) -> SyncEngine {
     let Owned(m) = run_shared(Owned(std::sync::Mutex::new(sync)), transport, listeners, clock, control, log).await;
     m.into_inner().unwrap_or_else(|p| p.into_inner())
 }
 
 /// `run_serving` over a holder; returns it at `Control::Shutdown`, when the control sender is
-/// dropped or when the holder's engine is gone.
+/// dropped or when the holder's engine is gone. More listeners come with `Control::Reach`,
+/// `Control::Listen`, `Control::Socket` and the LAN loop. Never put a listener's
+/// `address().url` into `reach.0` as it is: it lists bound IP addresses; `p2p::reach_items` says
+/// what goes there.
 pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listeners: Vec<T::Listener>, clock: Arc<dyn Clock>, mut control: mpsc::UnboundedReceiver<Control>, log: Log) -> H {
     let (ev_tx, mut ev_rx) = mpsc::channel(1024);
-    let (link_tx, mut link_rx) = mpsc::channel::<([u8; 32], Link)>(64);
     let (lan_tx, mut lan_rx) = mpsc::channel(64);
     let (net_tx, mut net_rx) = mpsc::channel::<()>(1);
     // unbounded, yet at most a read and an end per hub connection, a link per dial task and the
     // listeners' accepts (`link::serve`'s slots)
     let (hub_tx, mut hub_rx) = mpsc::unbounded_channel();
-    let mut max = 0;
-    let mut client_pending = 0;
-    let _ = shared.with(&mut |s| {
-        max = s.config().max_served;
-        client_pending = s.config().client_pending;
-        Vec::new()
-    });
+    let mut hub = HubRun::new(osis_host::Hub::new(empty_store(clock.clone()), Box::new(osis_crypto::OsRng)), clock.clone(), log.clone(), hub_tx);
+    for l in listeners {
+        let key = l.address().key;
+        hub.listen(key, vec![l]);
+    }
     let mut d = Driver {
         shared,
         gone: false,
@@ -1027,35 +885,26 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
         conns: HashMap::new(),
         wake: None,
         ev_tx,
-        link_tx,
-        listeners: HashMap::new(),
-        client: None,
-        max_served: max,
-        client_pending,
         lan: None,
         lan_tx,
         net_tx,
         reach: None,
         dialable: None,
+        listen: None,
+        sockets: Vec::new(),
         peer_keys: None,
         relisten: false,
         relisten_at: None,
-        served_by: HashMap::new(),
-        host: None,
+        hub,
         host_want: None,
-        host_pending: Vec::new(),
-        hub_next: 1,
-        hub_tx,
         hub_downs: Vec::new(),
         hub_ups: Vec::new(),
     };
-    for l in listeners {
-        d.serve(l);
-    }
     d.call(&mut |s| {
         s.host_restart();
         Vec::new()
     });
+    d.hub.own = d.read(SyncEngine::dialable_key);
     // a host store left by a stop no driver carried out (not hosting: erased)
     d.host_want = Some(None);
     d.host_update().await;
@@ -1063,14 +912,13 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
     while !d.gone {
         let idle = d.idle();
         let lan_due = d.lan_due();
-        let hub_due = d.host.as_mut().map(HubRun::due);
-        let hub_waiting = d.host.as_ref().is_some_and(HubRun::waiting);
+        let hub_due = d.hub.due();
+        let hub_waiting = d.hub.waiting();
         // timers wait while control has a message: a `Shutdown` queued just before the holder's
         // runtime shuts down (the task resuming after an engine call's `block_in_place`) is
         // seen before a timer of the shut-down runtime is polled (tokio panics)
         let quiet = control.is_empty();
         tokio::select! {
-            Some((key, l)) = link_rx.recv() => d.accepted(key, l),
             Some(ev) = ev_rx.recv() => d.event(ev),
             c = control.recv() => {
                 if !d.control(c).await {
@@ -1080,25 +928,15 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
             _ = sleep_until(lan_due), if quiet => d.lan_check().await,
             Some((a, from)) = lan_rx.recv() => d.call(&mut |s| s.lan_seen(&a, from).1),
             Some(()) = net_rx.recv() => d.lan_rejoin(false).await,
-            Some(ev) = hub_rx.recv() => {
-                if let Some(h) = d.host.as_mut() {
-                    h.event(ev);
-                }
-            }
+            Some(ev) = hub_rx.recv() => d.hub.event(ev),
             () = std::future::ready(()), if hub_waiting => {
                 // every read that arrived takes its place in the turns first
-                if let Some(h) = d.host.as_mut() {
-                    while let Ok(ev) = hub_rx.try_recv() {
-                        h.event(ev);
-                    }
-                    h.serve();
+                while let Ok(ev) = hub_rx.try_recv() {
+                    d.hub.event(ev);
                 }
+                d.hub.serve();
             }
-            _ = sleep_until(hub_due), if quiet => {
-                if let Some(h) = d.host.as_mut() {
-                    h.tick();
-                }
-            }
+            _ = tokio::time::sleep_until(hub_due), if quiet => d.hub.tick(),
             _ = sleep_until(d.relisten_at), if quiet => {}
             _ = tokio::time::sleep(idle), if quiet => {
                 d.wake = None;
@@ -1110,16 +948,12 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
         d.host_update().await;
         d.hub_pump();
     }
-    d.host_want = Some(None);
-    d.host_update().await;
-    d.hub_pump();
     if let Some(x) = d.lan.take() {
         x.tasks.iter().for_each(JoinHandle::abort);
     }
-    let keys: Vec<[u8; 32]> = d.listeners.keys().copied().collect();
-    for k in keys {
-        d.unlisten(k);
-    }
+    let ups = d.hub.stop();
+    d.hub_ups.extend(ups);
+    d.hub_pump();
     let ids: Vec<ConnId> = d.conns.keys().copied().collect();
     for id in ids {
         d.close(id);

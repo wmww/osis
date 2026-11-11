@@ -74,7 +74,7 @@ impl NetSim {
         peer[..8].copy_from_slice(&self.dice.u64().to_le_bytes());
         let mut r = Rogue { s, hc, session: ClientSession::new(ClientConfig { peer_static_key: key, challenge }), events: Vec::new(), closed: false };
         let now = self.now();
-        let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.accept(now, hc, peer)).unwrap_or_default();
+        let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.accept(now, hc, key, osis_host::Remote::key(peer))).unwrap_or_default();
         self.pump(&mut r, out, vec![ClientInput::Start])?;
         if !r.session.is_ready() {
             return Err(self.fail(format!("rogue session at host {s} not ready: {:?}", r.events)));

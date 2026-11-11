@@ -34,10 +34,8 @@ const DOUBT: &[u8] = b"y/3";
 const HINT: &[u8] = b"y/i";
 const CARRIER: &[u8] = b"y/s";
 const REACH: &[u8] = b"y/r";
-/// The host secret (`SyncEngine::host_secret`).
-const HOST_SECRET: &[u8] = b"y/z";
-/// The client listener's secret (`SyncEngine::client_listen_secret`).
-const CLIENT_LISTEN: &[u8] = b"y/2";
+/// Which run of hosting this is (`HostConfig::store_id`), while the node hosts.
+const HOST_STORE: &[u8] = b"y/z";
 const TOMB: &[u8] = b"y/x";
 const OUTBOX: &[u8] = b"y/o";
 /// Things forgotten whose inbox blobs this node has not checked yet (`SyncEngine::forget_inbox`).
@@ -376,9 +374,8 @@ pub struct State {
     pub carriers: BTreeMap<CommitId, Carriers>,
     /// This node's dialable transport secret (spec/sync.md §10).
     pub reach_secret: Option<Secret32>,
-    /// The transport secret its host listens with, while it hosts.
-    pub host_secret: Option<Secret32>,
-    pub client_listen: Option<Secret32>,
+    /// Which run of hosting this is, while it hosts (`HostConfig::store_id`).
+    pub host_store: Option<[u8; 32]>,
     /// The node log's memory part: memory entries' events, which the durable log never holds.
     pub mem_log: super::stream::MemLog,
     /// Entries this node dropped (`remove_entry`): refused from peers for `TOMBSTONE_LIFETIME`
@@ -681,8 +678,7 @@ impl State {
                     s.tombs.insert(k, Tomb { at, wrap, cert, salt, kind: decode_kind(&mut x)? });
                 }
                 b"r" => s.reach_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
-                b"z" => s.host_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
-                b"2" => s.client_listen = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
+                b"z" => s.host_store = Some(Rd::new(&v).arr()?),
                 b"o" => {
                     // not rebuildable: a record that does not decode fails the load, named
                     let (k, o) = decode_out(rest, &v).map_err(|_| Error::Corrupt("sync outbox record"))?;
@@ -946,7 +942,7 @@ impl State {
             for (k, v) in writes.clone() {
                 match v {
                     // a replaced wrap or key leaves no copy behind
-                    Some(v) => tx.txn.put_local(&k, &v, if k.starts_with(ENTRY) || k.starts_with(DOUBT) || k.starts_with(BLOB) || k.starts_with(REACH) || k.starts_with(HOST_SECRET) || k.starts_with(CLIENT_LISTEN) { Shred::Yes } else { Shred::No })?,
+                    Some(v) => tx.txn.put_local(&k, &v, if k.starts_with(ENTRY) || k.starts_with(DOUBT) || k.starts_with(BLOB) || k.starts_with(REACH) { Shred::Yes } else { Shred::No })?,
                     None => {
                         tx.txn.remove_local(&k, Shred::Yes)?;
                     }
@@ -1202,21 +1198,12 @@ impl State {
         self.reach_secret = Some(s);
     }
 
-    /// Sets or shreds the host secret.
-    pub fn set_client_listen(&mut self, s: Option<Secret32>) {
+    pub fn set_host_store(&mut self, s: Option<[u8; 32]>) {
         match &s {
-            Some(s) => self.put(CLIENT_LISTEN.to_vec(), s.expose().to_vec()),
-            None => self.del(CLIENT_LISTEN.to_vec()),
+            Some(s) => self.put(HOST_STORE.to_vec(), s.to_vec()),
+            None => self.del(HOST_STORE.to_vec()),
         }
-        self.client_listen = s;
-    }
-
-    pub fn set_host_secret(&mut self, s: Option<Secret32>) {
-        match &s {
-            Some(s) => self.put(HOST_SECRET.to_vec(), s.expose().to_vec()),
-            None => self.del(HOST_SECRET.to_vec()),
-        }
-        self.host_secret = s;
+        self.host_store = s;
     }
 
     pub fn set_present(&mut self, s: HostKey, l: LabelId, b: BlobId, on: bool) {

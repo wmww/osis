@@ -1584,7 +1584,7 @@ impl SyncEngine {
                 if !self.engine.labels_of(&t.tid).is_empty() || !self.engine.boxed_by(&c, &t.tid) || self.recorded(&at.id) {
                     continue;
                 }
-                let hosts = at.hosts.iter().filter(|a| !super::peers::is_peer(a)).cloned();
+                let hosts = at.hosts.iter().cloned();
                 let src = super::state::InboxSource { label: l, blob: b, until: o.until };
                 match want.get_mut(&at.id) {
                     // two blobs naming one label: both hosts; of one thing the later expiry, of

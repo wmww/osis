@@ -1,6 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, dead_code)]
 //! Sync engines and hosts in process, no tokio: `SyncEngine`s exchanging bytes with
-//! osis-host `Hub`s over in-memory queues, one manual clock (nodes may run off it: `set_skew`). Group setup stands in for pairing
+//! osis-host `Hub`s over in-memory queues, one manual clock (nodes may run off it: `set_skew`).
+//! Every node serves peers through a hub of its own (`Node::hub`, node sync above it as in the
+//! driver, on the node's clock); its hub's connection IDs are at least `HUB_BASE`, so one `ConnId`
+//! space names both ends of a peer link. Group setup stands in for pairing
 //! (direct delivery of the setup commits).
 
 use osis_base::{Clock, CommitId, ManualClock, Role, Tid, Value, WallMs};
@@ -46,6 +49,8 @@ impl Clock for NodeClock {
 pub struct Node {
     pub sync: Option<SyncEngine>,
     pub clock: Arc<NodeClock>,
+    /// The hub every peer dialing this node reaches (an empty store: it hosts nothing).
+    pub hub: Hub,
     pub backend: MemoryBackend,
     pub root: MemoryRoot,
     pub online: bool,
@@ -69,6 +74,10 @@ enum Msg {
     Close(usize, u64, ConnId),
 }
 
+/// A hand peer's connection to a node hub: the frames it was sent since last asked, and whether
+/// it was closed.
+type Hand = (Vec<Vec<u8>>, bool);
+
 /// See `Net::tamper`.
 pub type Tamper = Box<dyn FnMut(&osis_proto::Message) -> Option<osis_proto::Message>>;
 
@@ -80,10 +89,12 @@ pub struct Net {
     links: BTreeMap<(usize, ConnId), (usize, u64)>,
     queue: VecDeque<Msg>,
     next_hub_conn: u64,
+    next_node_hub: u64,
     pub steps: usize,
     /// (node, host) pairs that cannot connect.
     pub blocked: BTreeSet<(usize, usize)>,
-    /// Node-to-node sessions, both directions: (node, conn) -> (node, conn).
+    /// Node-to-node sessions, both directions: (node, conn) -> (node, conn), the dialed side's
+    /// conn the dialer's engine's, the served side's its hub's (`HUB_BASE` and up).
     plinks: BTreeMap<(usize, ConnId), (usize, ConnId)>,
     /// (node, node) pairs that cannot connect.
     pub blocked_peers: BTreeSet<(usize, usize)>,
@@ -167,6 +178,11 @@ pub struct Net {
     pub batch_reads: bool,
     /// Peer connections a node closed over the peer's messages (`Action::Close`).
     pub peer_closes: usize,
+    /// Hand peers' connections to node hubs (`hand_accept`): what each was sent since last
+    /// asked, and whether it was closed.
+    hands: BTreeMap<(usize, ConnId), Hand>,
+    /// The client-port actions nodes emitted (`Action::Request`, `Room`, `Ended`), by node.
+    pub port: Vec<(usize, Action)>,
 }
 
 /// A `Net` without its tampers (closures, not `Send`): what `Net::cached` keeps between tests.
@@ -213,17 +229,20 @@ struct Parts {
     trickle_hosts: BTreeMap<(usize, usize), (ConnId, Vec<u8>)>,
     batch_reads: bool,
     peer_closes: usize,
+    next_node_hub: u64,
+    hands: BTreeMap<(usize, ConnId), Hand>,
+    port: Vec<(usize, Action)>,
 }
 
 impl Net {
     fn into_parts(self) -> Parts {
         assert!(self.tamper.is_none() && self.host_tamper.is_none(), "a tamper cannot be kept");
-        Parts { clock: self.clock, nodes: self.nodes, hosts: self.hosts, links: self.links, queue: self.queue, next_hub_conn: self.next_hub_conn, steps: self.steps, blocked: self.blocked, plinks: self.plinks, blocked_peers: self.blocked_peers, lan_keys: self.lan_keys, held: self.held, held_messages: self.held_messages, sent_kinds: self.sent_kinds, uploaded: self.uploaded, peer_kinds: self.peer_kinds, sent_bytes: self.sent_bytes, dialed: self.dialed, full_passes: self.full_passes, bare: self.bare, home_at_hosts: self.home_at_hosts, lose_uploads: self.lose_uploads, lose_deposits: self.lose_deposits, held_hosts: self.held_hosts, busy: self.busy, hub_busy: self.hub_busy, told: self.told, fetched: self.fetched, deaf: self.deaf, hold_opened: self.hold_opened, held_to: self.held_to, gained: self.gained, hold_blobs: self.hold_blobs, hide_blobs: self.hide_blobs, bare_blobs: self.bare_blobs, walk_to: self.walk_to, tamper_link: self.tamper_link, silent: self.silent, trickle: self.trickle, trickle_hosts: self.trickle_hosts, batch_reads: self.batch_reads, peer_closes: self.peer_closes }
+        Parts { clock: self.clock, nodes: self.nodes, hosts: self.hosts, links: self.links, queue: self.queue, next_hub_conn: self.next_hub_conn, steps: self.steps, blocked: self.blocked, plinks: self.plinks, blocked_peers: self.blocked_peers, lan_keys: self.lan_keys, held: self.held, held_messages: self.held_messages, sent_kinds: self.sent_kinds, uploaded: self.uploaded, peer_kinds: self.peer_kinds, sent_bytes: self.sent_bytes, dialed: self.dialed, full_passes: self.full_passes, bare: self.bare, home_at_hosts: self.home_at_hosts, lose_uploads: self.lose_uploads, lose_deposits: self.lose_deposits, held_hosts: self.held_hosts, busy: self.busy, hub_busy: self.hub_busy, told: self.told, fetched: self.fetched, deaf: self.deaf, hold_opened: self.hold_opened, held_to: self.held_to, gained: self.gained, hold_blobs: self.hold_blobs, hide_blobs: self.hide_blobs, bare_blobs: self.bare_blobs, walk_to: self.walk_to, tamper_link: self.tamper_link, silent: self.silent, trickle: self.trickle, trickle_hosts: self.trickle_hosts, batch_reads: self.batch_reads, peer_closes: self.peer_closes, next_node_hub: self.next_node_hub, hands: self.hands, port: self.port }
     }
 
     fn from_parts(p: Parts) -> Net {
-        let Parts { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, uploaded, peer_kinds, sent_bytes, dialed, full_passes, bare, home_at_hosts, lose_uploads, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes } = p;
-        Net { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, uploaded, peer_kinds, sent_bytes, dialed, full_passes, bare, home_at_hosts, lose_uploads, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, tamper: None, host_tamper: None }
+        let Parts { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, uploaded, peer_kinds, sent_bytes, dialed, full_passes, bare, home_at_hosts, lose_uploads, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port } = p;
+        Net { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, uploaded, peer_kinds, sent_bytes, dialed, full_passes, bare, home_at_hosts, lose_uploads, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port, tamper: None, host_tamper: None }
     }
 }
 
@@ -363,6 +382,9 @@ pub fn fetched_ids(b: &[u8]) -> Vec<osis_base::BlobId> {
     v
 }
 
+/// Node hubs' connection IDs start here (engine connection IDs stay below).
+pub const HUB_BASE: ConnId = 1 << 40;
+
 pub fn host_key(i: usize) -> [u8; 32] {
     [0x50 + i as u8; 32]
 }
@@ -370,7 +392,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 impl Net {
     /// A network whose new nodes are each their own account's only node.
     pub fn new() -> Net {
-        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), uploaded: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), trickle_hosts: BTreeMap::new(), batch_reads: false, peer_closes: 0 }
+        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, next_node_hub: HUB_BASE, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), uploaded: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), trickle_hosts: BTreeMap::new(), batch_reads: false, peer_closes: 0, hands: BTreeMap::new(), port: Vec::new() }
     }
 
     /// An exact copy of this network as it stands (notes/testing.md, Copied worlds): every node
@@ -397,7 +419,7 @@ impl Net {
                     }
                     _ => std::sync::mpsc::channel().1,
                 };
-                Node { sync, clock: nc, backend: n.backend.test_copy(), root: n.root.test_copy(), online: n.online, wake: n.wake, life: n.life, accepts: n.accepts, events }
+                Node { sync, clock: nc, hub: n.hub.test_copy(clock.clone()).unwrap(), backend: n.backend.test_copy(), root: n.root.test_copy(), online: n.online, wake: n.wake, life: n.life, accepts: n.accepts, events }
             }).collect();
             let hosts = self.hosts.iter().map(|h| {
                 let c: Arc<dyn Clock> = clock.clone();
@@ -448,6 +470,9 @@ impl Net {
                 trickle_hosts: self.trickle_hosts.clone(),
                 batch_reads: self.batch_reads.clone(),
                 peer_closes: self.peer_closes.clone(),
+                next_node_hub: self.next_node_hub.clone(),
+                hands: self.hands.clone(),
+                port: self.port.clone(),
             }
         })
     }
@@ -469,9 +494,16 @@ impl Net {
         let i = self.hosts.len();
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let store = self.host_store(&backend, &root, policy, 900 + i as u64);
-        let hub = Hub::new(store, host_key(i), Box::new(SeededRng::from_u64(950 + i as u64)));
+        let hub = Hub::new(store, Box::new(SeededRng::from_u64(950 + i as u64)));
         self.hosts.push(Host { hub, backend, root, address: Address { url: format!("quic://host{i}:1"), key: host_key(i) }, skew: 0 });
         i
+    }
+
+    /// A node's hub: an empty store in memory, admitting nothing.
+    fn node_hub(&self, seed: u64) -> Hub {
+        let mut store = self.host_store(&MemoryBackend::new(), &MemoryRoot::new(), HostPolicy::default(), seed ^ 0x40b);
+        store.set_admission(osis_host::Admission::Only(Default::default()), Default::default());
+        Hub::new(store, Box::new(SeededRng::from_u64(seed ^ 0x4ab)))
     }
 
     /// A host store over `backend` and `root` (created on first use).
@@ -484,7 +516,7 @@ impl Net {
     pub fn wipe_host(&mut self, s: usize) {
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let store = self.host_store(&backend, &root, HostPolicy::default(), 990 + s as u64);
-        let hub = Hub::new(store, host_key(s), Box::new(SeededRng::from_u64(995 + s as u64)));
+        let hub = Hub::new(store, Box::new(SeededRng::from_u64(995 + s as u64)));
         let (address, skew) = (self.hosts[s].address.clone(), self.hosts[s].skew);
         self.hosts[s] = Host { hub, backend, root, address, skew };
     }
@@ -504,7 +536,7 @@ impl Net {
         }
         let (backend, root) = (self.hosts[s].backend.clone(), self.hosts[s].root.clone());
         let store = self.host_store(&backend, &root, policy, 980 + s as u64);
-        let hub = Hub::new(store, host_key(s), Box::new(SeededRng::from_u64(985 + s as u64)));
+        let hub = Hub::new(store, Box::new(SeededRng::from_u64(985 + s as u64)));
         let (address, skew) = (self.hosts[s].address.clone(), self.hosts[s].skew);
         self.hosts[s] = Host { hub, backend, root, address, skew };
     }
@@ -556,7 +588,8 @@ impl Net {
         let mut sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         let events = sync.engine_mut().subscribe_durable();
         let acts = done.map(|d| sync.carry_out(d).unwrap());
-        self.nodes.push(Node { sync: Some(sync), clock, backend, root, online: true, wake: None, life: 0, accepts: true, events });
+        let hub = self.node_hub(seed);
+        self.nodes.push(Node { sync: Some(sync), clock, hub, backend, root, online: true, wake: None, life: 0, accepts: true, events });
         let n = self.nodes.len() - 1;
         if let Some(acts) = acts {
             self.actions(n, acts);
@@ -574,7 +607,8 @@ impl Net {
         let engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed))).unwrap();
         let mut sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         let events = sync.engine_mut().subscribe_durable();
-        self.nodes.push(Node { sync: Some(sync), clock, backend, root, online: true, wake: None, life: 0, accepts: true, events });
+        let hub = self.node_hub(seed);
+        self.nodes.push(Node { sync: Some(sync), clock, hub, backend, root, online: true, wake: None, life: 0, accepts: true, events });
         self.nodes.len() - 1
     }
 
@@ -598,9 +632,23 @@ impl Net {
         self.nodes[n].sync.take().unwrap()
     }
 
-    /// Node `n`'s peer connections: its end, the other node, the other end.
+    /// Node `n`'s end `c` of a peer link as its engine names it (a served one by the session).
+    fn engine_conn(&self, n: usize, c: ConnId) -> ConnId {
+        if c < HUB_BASE {
+            return c;
+        }
+        self.nodes[n].sync.as_ref().and_then(|s| s.served_conn(c)).unwrap_or(c)
+    }
+
+    /// Node `n`'s engine connection `c` as the link names it (a served one by its hub's ID).
+    fn link_conn(&self, n: usize, c: ConnId) -> ConnId {
+        self.nodes[n].sync.as_ref().and_then(|s| s.hub_conn(c)).unwrap_or(c)
+    }
+
+    /// Node `n`'s peer connections, as the engines name them: its end, the other node, the
+    /// other end.
     pub fn peer_conns(&self, n: usize) -> Vec<(ConnId, usize, ConnId)> {
-        self.plinks.iter().filter(|((x, _), _)| *x == n).map(|((_, c), (m, pc))| (*c, *m, *pc)).collect()
+        self.plinks.iter().filter(|((x, _), _)| *x == n).map(|((_, c), (m, pc))| (self.engine_conn(n, *c), *m, self.engine_conn(*m, *pc))).collect()
     }
 
     /// Messages of `kind` node `n` sent on peer links so far.
@@ -628,14 +676,15 @@ impl Net {
         }
     }
 
-    /// The other end of peer connection `(n, c)`.
+    /// The other end of peer connection `(n, c)` (engine connection IDs).
     pub fn peer_of(&self, n: usize, c: ConnId) -> Option<(usize, ConnId)> {
-        self.plinks.get(&(n, c)).copied()
+        self.plinks.get(&(n, self.link_conn(n, c))).map(|(m, pc)| (*m, self.engine_conn(*m, *pc)))
     }
 
-    /// Queues `m` on peer connection `(n, c)` as if node `n` sent it (a hand peer's message).
+    /// Queues `m` on peer connection `(n, c)` (`c` its engine's) as if node `n` sent it (a hand
+    /// peer's message).
     pub fn inject(&mut self, n: usize, c: ConnId, m: &osis_proto::Message) {
-        let (to, pc) = self.plinks[&(n, c)];
+        let (to, pc) = self.plinks[&(n, self.link_conn(n, c))];
         self.queue.push_back(Msg::ToNode(to, self.nodes[to].life, pc, osis_proto::encode_frame(&m.encode())));
     }
 
@@ -685,6 +734,7 @@ impl Net {
         let mut sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         node.events = sync.engine_mut().subscribe_durable();
         node.sync = Some(sync);
+        self.nodes[n].hub = self.node_hub(seed);
     }
 
     /// Node `n`'s diagnostics since the last call: the sync engine's and the engine's (refusals
@@ -718,6 +768,11 @@ impl Net {
             self.plinks.remove(&(m, pc));
             self.queue.push_back(Msg::Close(m, self.nodes[m].life, pc));
             self.forget_conn(n, c);
+            if c >= HUB_BASE {
+                let out = self.nodes[n].hub.closed(c);
+                self.node_hub_out(n, out);
+                continue;
+            }
             if let Some(sy) = self.nodes[n].sync.as_mut() {
                 // dials made while going offline fail at once
                 let mut down = vec![c];
@@ -825,11 +880,14 @@ impl Net {
                         self.queue.push_back(Msg::Close(n, self.nodes[n].life, conn));
                         continue;
                     };
-                    let (pc, acts) = self.sync(m).accept(address.key, [0xd0 + n as u8; 32]);
+                    let pc = self.next_node_hub;
+                    self.next_node_hub += 1;
                     self.plinks.insert((n, conn), (m, pc));
                     self.plinks.insert((m, pc), (n, conn));
                     self.queue.push_back(Msg::Up(n, self.nodes[n].life, conn));
-                    self.actions(m, acts);
+                    let now = self.node_now(m);
+                    let out = self.nodes[m].hub.accept(now, pc, address.key, osis_host::Remote::key([0xd0 + n as u8; 32]));
+                    self.node_hub_out(m, out);
                 }
                 Action::Dial { conn, address, .. } => {
                     let Some(s) = self.hosts.iter().position(|x| x.address.key == address.key).filter(|s| !self.blocked.contains(&(n, *s))) else {
@@ -841,106 +899,11 @@ impl Net {
                     self.links.insert((n, conn), (s, hc));
                     self.queue.push_back(Msg::Up(n, self.nodes[n].life, conn));
                     let now = self.now_at(s);
-                    let out = self.hosts[s].hub.accept(now, hc, [0xe0; 32]);
+                    let key = self.hosts[s].address.key;
+                    let out = self.hosts[s].hub.accept(now, hc, key, osis_host::Remote::key([0xe0; 32]));
                     self.hub_out(s, out);
                 }
-                Action::Send { conn, mut bytes } if self.plinks.contains_key(&(n, conn)) => {
-                    let (m, pc) = self.plinks[&(n, conn)];
-                    {
-                        let mut d = osis_proto::FrameDecoder::new();
-                        d.push(&bytes);
-                        while let Ok(Some(body)) = d.next_frame() {
-                            if let Ok(x) = osis_proto::Message::decode(&body) {
-                                *self.peer_kinds.entry((n, x.kind())).or_default() += 1;
-                            }
-                        }
-                    }
-                    if let Some(t) = &mut self.tamper
-                        && self.tamper_link.is_none_or(|x| x == (n, m))
-                    {
-                        let mut d = osis_proto::FrameDecoder::new();
-                        d.push(&bytes);
-                        let mut kept = Vec::new();
-                        while let Ok(Some(body)) = d.next_frame() {
-                            match osis_proto::Message::decode(&body).ok().and_then(|x| t(&x)) {
-                                Some(r) => kept.extend(osis_proto::encode_frame(&r.encode())),
-                                None => kept.extend(osis_proto::encode_frame(&body)),
-                            }
-                        }
-                        bytes = kept;
-                    }
-                    if self.silent.contains(&(n, m)) {
-                        let mut d = osis_proto::FrameDecoder::new();
-                        d.push(&bytes);
-                        let mut kept = Vec::new();
-                        while let Ok(Some(body)) = d.next_frame() {
-                            if osis_proto::Message::decode(&body).is_ok_and(|x| x.is_request() || x.id() == 0) {
-                                kept.extend(osis_proto::encode_frame(&body));
-                            }
-                        }
-                        bytes = kept;
-                    }
-                    if let Some((c, held)) = self.trickle.get_mut(&(n, m)) {
-                        *c = pc;
-                        let mut d = osis_proto::FrameDecoder::new();
-                        d.push(&bytes);
-                        let mut kept = Vec::new();
-                        while let Ok(Some(body)) = d.next_frame() {
-                            let reply = osis_proto::Message::decode(&body).is_ok_and(|x| !x.is_request() && x.id() != 0);
-                            if held.is_empty() && !reply {
-                                kept.extend(osis_proto::encode_frame(&body));
-                            } else {
-                                held.extend(osis_proto::encode_frame(&body));
-                            }
-                        }
-                        bytes = kept;
-                    }
-                    if !self.lose_deposits.is_empty() {
-                        let mut d = osis_proto::FrameDecoder::new();
-                        d.push(&bytes);
-                        let mut kept = Vec::new();
-                        while let Ok(Some(body)) = d.next_frame() {
-                            let lost = |l: &osis_base::LabelId, b: &osis_base::BlobId| self.carries(l, b, &self.lose_deposits);
-                            let added = |(l, e): &(osis_base::LabelId, osis_proto::Event)| matches!(e, osis_proto::Event::Added { blob_id, .. } if lost(l, blob_id));
-                            match osis_proto::Message::decode(&body) {
-                                Ok(osis_proto::Message::Deposit { id, label, blob, .. }) if lost(&label, &osis_label::blob_id(&blob)) => {
-                                    let e = osis_proto::Message::Error { id, code: osis_proto::Code::RATE_LIMITED };
-                                    self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, conn, osis_proto::encode_frame(&e.encode())));
-                                }
-                                // a reader's own entries reach a co-reader by its stream: lost there
-                                Ok(osis_proto::Message::PullReply(mut r)) => {
-                                    r.events.retain(|x| !added(x));
-                                    kept.extend(osis_proto::encode_frame(&osis_proto::Message::PullReply(r).encode()));
-                                }
-                                Ok(osis_proto::Message::Stream(mut x)) => {
-                                    x.events.retain(|x| !added(x));
-                                    if !x.events.is_empty() {
-                                        kept.extend(osis_proto::encode_frame(&osis_proto::Message::Stream(x).encode()));
-                                    }
-                                }
-                                Ok(osis_proto::Message::FetchReply { id, mut items }) => {
-                                    let labels = self.nodes[m].sync.as_ref().map(|s| s.shared_members(pc)).unwrap_or_default();
-                                    for f in &mut items {
-                                        if labels.iter().any(|l| lost(l, &f.blob_id)) {
-                                            f.entry = None;
-                                        }
-                                    }
-                                    kept.extend(osis_proto::encode_frame(&osis_proto::Message::FetchReply { id, items }.encode()));
-                                }
-                                _ => kept.extend(osis_proto::encode_frame(&body)),
-                            }
-                        }
-                        bytes = kept;
-                    }
-                    let life = self.nodes[m].life;
-                    if self.held.contains(&(n, m)) {
-                        self.held_messages.push(Msg::ToNode(m, life, pc, bytes));
-                    } else if let Some(Msg::ToNode(_, _, _, b)) = self.queue.iter_mut().rev().find(|x| matches!(x, Msg::Up(y, _, c) | Msg::ToNode(y, _, c, _) | Msg::Close(y, _, c) if *y == m && *c == pc)).filter(|x| self.batch_reads && matches!(x, Msg::ToNode(_, l, ..) if *l == life)) {
-                        b.extend(bytes);
-                    } else {
-                        self.queue.push_back(Msg::ToNode(m, life, pc, bytes));
-                    }
-                }
+                Action::Send { conn, bytes } if self.plinks.contains_key(&(n, conn)) => self.peer_send(n, conn, bytes),
                 Action::Close { conn } if self.plinks.contains_key(&(n, conn)) => {
                     self.peer_closes += 1;
                     let (m, pc) = self.plinks.remove(&(n, conn)).unwrap();
@@ -1006,8 +969,241 @@ impl Net {
                 }
                 Action::Wake { at } => self.nodes[n].wake = Some(at),
                 // peers are found by their current `reach.0`
-                Action::Reach | Action::Host(_) | Action::Hub { .. } | Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } | Action::Authed { .. } => {}
+                Action::Hub { conn, down } => {
+                    let now = self.node_now(n);
+                    let out = self.nodes[n].hub.down(now, vec![(conn, down)]);
+                    self.node_hub_out(n, out);
+                }
+                a @ (Action::Request { .. } | Action::Room { .. } | Action::Ended { .. }) => self.port.push((n, a)),
+                Action::Reach | Action::Host(_) => {}
             }
+        }
+    }
+
+    /// Bytes node `n` sends on its end `conn` of a peer link (its engine's, or its hub's for a
+    /// served one), through the link's faults.
+    fn peer_send(&mut self, n: usize, conn: ConnId, mut bytes: Vec<u8>) {
+        let (m, pc) = self.plinks[&(n, conn)];
+        {
+            let mut d = osis_proto::FrameDecoder::new();
+            d.push(&bytes);
+            while let Ok(Some(body)) = d.next_frame() {
+                if let Ok(x) = osis_proto::Message::decode(&body) {
+                    *self.peer_kinds.entry((n, x.kind())).or_default() += 1;
+                }
+            }
+        }
+        if let Some(t) = &mut self.tamper
+            && self.tamper_link.is_none_or(|x| x == (n, m))
+        {
+            let mut d = osis_proto::FrameDecoder::new();
+            d.push(&bytes);
+            let mut kept = Vec::new();
+            while let Ok(Some(body)) = d.next_frame() {
+                match osis_proto::Message::decode(&body).ok().and_then(|x| t(&x)) {
+                    Some(r) => kept.extend(osis_proto::encode_frame(&r.encode())),
+                    None => kept.extend(osis_proto::encode_frame(&body)),
+                }
+            }
+            bytes = kept;
+        }
+        if self.silent.contains(&(n, m)) {
+            let mut d = osis_proto::FrameDecoder::new();
+            d.push(&bytes);
+            let mut kept = Vec::new();
+            while let Ok(Some(body)) = d.next_frame() {
+                if osis_proto::Message::decode(&body).is_ok_and(|x| x.is_request() || x.id() == 0) {
+                    kept.extend(osis_proto::encode_frame(&body));
+                }
+            }
+            bytes = kept;
+        }
+        if let Some((c, held)) = self.trickle.get_mut(&(n, m)) {
+            *c = pc;
+            let mut d = osis_proto::FrameDecoder::new();
+            d.push(&bytes);
+            let mut kept = Vec::new();
+            while let Ok(Some(body)) = d.next_frame() {
+                let reply = osis_proto::Message::decode(&body).is_ok_and(|x| !x.is_request() && x.id() != 0);
+                if held.is_empty() && !reply {
+                    kept.extend(osis_proto::encode_frame(&body));
+                } else {
+                    held.extend(osis_proto::encode_frame(&body));
+                }
+            }
+            bytes = kept;
+        }
+        if !self.lose_deposits.is_empty() {
+            let mut d = osis_proto::FrameDecoder::new();
+            d.push(&bytes);
+            let mut kept = Vec::new();
+            while let Ok(Some(body)) = d.next_frame() {
+                let lost = |l: &osis_base::LabelId, b: &osis_base::BlobId| self.carries(l, b, &self.lose_deposits);
+                let added = |(l, e): &(osis_base::LabelId, osis_proto::Event)| matches!(e, osis_proto::Event::Added { blob_id, .. } if lost(l, blob_id));
+                match osis_proto::Message::decode(&body) {
+                    Ok(osis_proto::Message::Deposit { id, label, blob, .. }) if lost(&label, &osis_label::blob_id(&blob)) => {
+                        let e = osis_proto::Message::Error { id, code: osis_proto::Code::RATE_LIMITED };
+                        self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, conn, osis_proto::encode_frame(&e.encode())));
+                    }
+                    // a reader's own entries reach a co-reader by its stream: lost there
+                    Ok(osis_proto::Message::PullReply(mut r)) => {
+                        r.events.retain(|x| !added(x));
+                        kept.extend(osis_proto::encode_frame(&osis_proto::Message::PullReply(r).encode()));
+                    }
+                    Ok(osis_proto::Message::Stream(mut x)) => {
+                        x.events.retain(|x| !added(x));
+                        if !x.events.is_empty() {
+                            kept.extend(osis_proto::encode_frame(&osis_proto::Message::Stream(x).encode()));
+                        }
+                    }
+                    Ok(osis_proto::Message::FetchReply { id, mut items }) => {
+                        let labels = self.nodes[m].sync.as_ref().map(|s| s.shared_members(self.engine_conn(m, pc))).unwrap_or_default();
+                        for f in &mut items {
+                            if labels.iter().any(|l| lost(l, &f.blob_id)) {
+                                f.entry = None;
+                            }
+                        }
+                        kept.extend(osis_proto::encode_frame(&osis_proto::Message::FetchReply { id, items }.encode()));
+                    }
+                    _ => kept.extend(osis_proto::encode_frame(&body)),
+                }
+            }
+            bytes = kept;
+        }
+        let life = self.nodes[m].life;
+        if self.held.contains(&(n, m)) {
+            self.held_messages.push(Msg::ToNode(m, life, pc, bytes));
+        } else if let Some(Msg::ToNode(_, _, _, b)) = self.queue.iter_mut().rev().find(|x| matches!(x, Msg::Up(y, _, c) | Msg::ToNode(y, _, c, _) | Msg::Close(y, _, c) if *y == m && *c == pc)).filter(|x| self.batch_reads && matches!(x, Msg::ToNode(_, l, ..) if *l == life)) {
+            b.extend(bytes);
+        } else {
+            self.queue.push_back(Msg::ToNode(m, life, pc, bytes));
+        }
+    }
+
+    /// A hand peer connects to node `n`'s hub on the listener of key `local` as `peer`: its
+    /// connection (the hub's ID) and the frames it was sent (the Hello).
+    pub fn hand_accept(&mut self, n: usize, local: [u8; 32], peer: osis_transport::Peer) -> (ConnId, Vec<Vec<u8>>) {
+        let hc = self.next_node_hub;
+        self.next_node_hub += 1;
+        self.hands.insert((n, hc), (Vec::new(), false));
+        let now = self.node_now(n);
+        let out = self.nodes[n].hub.accept(now, hc, local, osis_host::Remote { peer, source: None, relayed: false });
+        self.node_hub_out(n, out);
+        (hc, self.hand_sent(n, hc))
+    }
+
+    /// Bytes from hand peer connection `hc` of node `n` (`hand_accept`); returns the frames
+    /// sent to it meanwhile.
+    pub fn hand_input(&mut self, n: usize, hc: ConnId, bytes: Vec<u8>) -> Vec<Vec<u8>> {
+        let now = self.node_now(n);
+        let out = self.nodes[n].hub.input(now, hc, bytes);
+        self.node_hub_out(n, out);
+        self.hand_sent(n, hc)
+    }
+
+    /// The frames hand peer connection `hc` of node `n` was sent since last asked.
+    pub fn hand_sent(&mut self, n: usize, hc: ConnId) -> Vec<Vec<u8>> {
+        self.hands.get_mut(&(n, hc)).map(|(v, _)| std::mem::take(v)).unwrap_or_default()
+    }
+
+    /// The client-port actions node `n` emitted since last asked.
+    pub fn take_port(&mut self, n: usize) -> Vec<Action> {
+        let (mine, rest) = std::mem::take(&mut self.port).into_iter().partition(|(x, _)| *x == n);
+        self.port = rest;
+        mine.into_iter().map(|(_, a)| a).collect()
+    }
+
+    /// Whether node `n` closed hand peer connection `hc`.
+    pub fn hand_closed(&self, n: usize, hc: ConnId) -> bool {
+        self.hands.get(&(n, hc)).is_some_and(|(_, c)| *c)
+    }
+
+    /// The hand peer connection `hc` of node `n` ends from the peer's side.
+    pub fn hand_close(&mut self, n: usize, hc: ConnId) {
+        if let Some((_, c)) = self.hands.get_mut(&(n, hc)) {
+            *c = true;
+        }
+        let out = self.nodes[n].hub.closed(hc);
+        self.node_hub_out(n, out);
+    }
+
+    /// A hand peer's session `cs` on node `n`'s hub connection `hc`: node `n` carries out `acts`,
+    /// then frames go both ways until neither side has more (with `settle`, the network settles
+    /// between rounds); the session's events.
+    pub fn hand_exchange(&mut self, n: usize, hc: ConnId, cs: &mut osis_proto::ClientSession, acts: Vec<Action>, mut outs: Vec<osis_proto::ClientOutput>, settle: bool) -> Vec<osis_proto::ClientEvent> {
+        use osis_proto::{ClientInput, ClientOutput};
+        self.actions(n, acts);
+        let mut evs = Vec::new();
+        loop {
+            let now = self.now();
+            let mut frames = self.hand_sent(n, hc);
+            for o in std::mem::take(&mut outs) {
+                match o {
+                    ClientOutput::Send(b) => frames.extend(self.hand_input(n, hc, b)),
+                    ClientOutput::Event(e) => evs.push(e),
+                    _ => {}
+                }
+            }
+            if settle {
+                self.settle(100_000);
+                frames.extend(self.hand_sent(n, hc));
+            }
+            if frames.is_empty() {
+                return evs;
+            }
+            for f in frames {
+                outs.extend(cs.handle(now, ClientInput::Bytes(f)));
+            }
+        }
+    }
+
+    /// Node `n`'s wall clock (its hub runs on it).
+    pub fn node_now(&self, n: usize) -> u64 {
+        self.nodes[n].clock.now_wall_ms().0
+    }
+
+    /// Node `n`'s served session on its hub's connection `hc` (its engine's ID).
+    pub fn served(&self, n: usize, hc: ConnId) -> ConnId {
+        self.engine_conn(n, hc)
+    }
+
+    /// What node `n`'s hub handed out: bytes and closes on its peer links, ups to its node sync.
+    fn node_hub_out(&mut self, n: usize, out: Vec<HubOutput>) {
+        let mut ups = Vec::new();
+        for o in out {
+            match o {
+                HubOutput::Send(hc, bytes) if self.hands.contains_key(&(n, hc)) => {
+                    let mut d = osis_proto::FrameDecoder::new();
+                    d.push(&bytes);
+                    while let Ok(Some(body)) = d.next_frame() {
+                        if let Some((v, _)) = self.hands.get_mut(&(n, hc)) {
+                            v.push(osis_proto::encode_frame(&body));
+                        }
+                    }
+                }
+                HubOutput::Close(hc) if self.hands.contains_key(&(n, hc)) => {
+                    if let Some((_, c)) = self.hands.get_mut(&(n, hc)) {
+                        *c = true;
+                    }
+                }
+                HubOutput::Send(hc, bytes) => {
+                    if self.plinks.contains_key(&(n, hc)) {
+                        self.peer_send(n, hc, bytes);
+                    }
+                }
+                HubOutput::Close(hc) => {
+                    if let Some((m, c)) = self.plinks.remove(&(n, hc)) {
+                        self.peer_closes += 1;
+                        self.plinks.remove(&(m, c));
+                        self.queue.push_back(Msg::Close(m, self.nodes[m].life, c));
+                    }
+                }
+                HubOutput::Diagnostic(_) => {}
+                HubOutput::Up(hc, up) => ups.push((hc, up)),
+            }
+        }
+        if !ups.is_empty() {
+            self.feed(n, Event::Hub { ups });
         }
     }
 
@@ -1122,6 +1318,15 @@ impl Net {
         match m {
             Msg::Up(n, l, _) | Msg::ToNode(n, l, _, _) | Msg::Close(n, l, _) if l != self.nodes[n].life => {}
             Msg::Up(n, _, c) => self.feed(n, Event::Up { conn: c }),
+            Msg::ToNode(n, _, c, b) if c >= HUB_BASE => {
+                let now = self.node_now(n);
+                let out = self.nodes[n].hub.input(now, c, b);
+                self.node_hub_out(n, out);
+            }
+            Msg::Close(n, _, c) if c >= HUB_BASE => {
+                let out = self.nodes[n].hub.closed(c);
+                self.node_hub_out(n, out);
+            }
             Msg::ToHub(s, hc, b) => {
                 let now = self.now_at(s);
                 let t = std::time::Instant::now();
@@ -1147,6 +1352,13 @@ impl Net {
             if self.hosts[s].hub.next_due(now).is_some_and(|t| t <= now) {
                 let out = self.hosts[s].hub.tick(now);
                 self.hub_out(s, out);
+            }
+        }
+        for n in 0..self.nodes.len() {
+            let now = self.node_now(n);
+            if self.nodes[n].hub.next_due(now).is_some_and(|t| t <= now) {
+                let out = self.nodes[n].hub.tick(now);
+                self.node_hub_out(n, out);
             }
         }
     }
@@ -1177,6 +1389,11 @@ impl Net {
             let now = self.now_at(s);
             let out = self.hosts[s].hub.tick(now);
             self.hub_out(s, out);
+        }
+        for n in 0..self.nodes.len() {
+            let now = self.node_now(n);
+            let out = self.nodes[n].hub.tick(now);
+            self.node_hub_out(n, out);
         }
         for n in 0..self.nodes.len() {
             self.feed(n, Event::Tick);

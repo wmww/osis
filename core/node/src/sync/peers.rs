@@ -41,16 +41,15 @@ pub fn is_peer(a: &Address) -> bool {
     osis_transport::peer_items(&a.url).is_some()
 }
 
-/// Whether a label at `hosts` syncs with no host (none listed, or `peer://` nodes only):
-/// this node serves it.
+/// Whether a label at `hosts` syncs with no host (none listed): this node serves it.
 pub(crate) fn hostless(hosts: &[Address]) -> bool {
-    hosts.iter().all(is_peer)
+    hosts.is_empty()
 }
 
-/// The keys of the hosts a label at `hosts` syncs with: `peer://` nodes are never dialed
-/// from a label's list, so a complete pass never waits for them there (`hostless`).
+/// The keys of the hosts a label at `hosts` syncs with, whatever their scheme: an address
+/// names a node by its key (a `peer://` one is dialed by key with hints, spec/sync.md §10).
 pub(crate) fn host_keys(hosts: &[Address]) -> impl Iterator<Item = super::state::HostKey> + '_ {
-    hosts.iter().filter(|a| !is_peer(a)).map(|a| a.key)
+    hosts.iter().map(|a| a.key)
 }
 
 /// A co-reader node this node may dial.
@@ -146,6 +145,12 @@ impl SyncEngine {
     /// longer dial this node or recognise it on a LAN. Direct links still open lose first
     /// contact (they work through hosts).
     #[must_use]
+    /// This node's key: the Ed25519 key of its dialable secret, under which every listener of
+    /// it but the LAN's listens (spec/sync.md §10).
+    pub fn dialable_key(&mut self) -> [u8; 32] {
+        SigningSecret::from_seed(&self.dialable_secret()).verifying_key().to_bytes()
+    }
+
     pub fn rotate_reach(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
         if let Err(e) = self.rotate_now(&mut out) {

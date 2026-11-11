@@ -697,7 +697,7 @@ fn watches_and_rows() {
     assert!(matches!(c.import_bundle(&b"x"[..]), Err(Error::Unsupported(_))));
     // never "it does not serve" from one who may not read the node's thing
     assert!(matches!(c.serving(), Err(Error::Unsupported(_))));
-    assert!(matches!(c.serving_key(), Err(Error::Unsupported(_))), "the node's own: not for a client");
+    assert!(matches!(c.listen(&[]), Err(Error::Unsupported(_))), "the node's own: not for a client");
     assert!(matches!(c.saved_peers(), Err(Error::Unsupported(_))));
     assert!(c.set_serving(Some(Default::default())).is_err());
     assert_eq!(x.n.serving().unwrap(), None);

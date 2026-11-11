@@ -71,7 +71,7 @@ impl Run {
             store: MemoryLabelStore::new([9; 32]),
             // the node's `MAX_QUEUED` and the host's default `max_queued_bytes`
             up: Pipe::new(64 << 20),
-            down: Pipe::new(48 << 20),
+            down: Pipe::new(64 << 20),
             timer: None,
             events: Vec::new(),
         };

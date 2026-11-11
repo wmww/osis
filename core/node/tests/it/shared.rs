@@ -47,7 +47,7 @@ fn resumed(net: &mut Net, a: usize, b: usize, r: &[u8; 32], challenge: [u8; 32])
     let tag = resume_tag(r, &LISTENER, &challenge, &p.hello);
     let now = net.now();
     let outs = p.cs.handle(now, ClientInput::Command(Command::Resume { nonce: [5; 32], tags: vec![tag] }));
-    let mut evs = pump(net, b, &mut p, Vec::new(), outs);
+    let mut evs = pump(net, b, &mut p, outs);
     assert!(net.sync(b).connection_record(p.conn).is_some(), "the record is bound");
     let theirs = shared_of(&evs).into_iter().find_map(|m| if let Message::Digest { digest } = m { Some(digest) } else { None }).expect("b's digest first");
     let empty = osis_crypto::kdf::members_digest(r, []);
@@ -62,7 +62,7 @@ fn resumed(net: &mut Net, a: usize, b: usize, r: &[u8; 32], challenge: [u8; 32])
 pub(crate) fn send(net: &mut Net, b: usize, p: &mut Dialer, m: Message) -> Vec<ClientEvent> {
     let now = net.now();
     let outs = p.cs.handle(now, ClientInput::Command(Command::Peer(Box::new(m))));
-    pump(net, b, p, Vec::new(), outs)
+    pump(net, b, p, outs)
 }
 
 pub(crate) fn shared_of(evs: &[ClientEvent]) -> Vec<Message> {
@@ -387,7 +387,7 @@ fn the_same_connection_survives_whatever_the_order_spec_sync_10() {
             let tag = resume_tag(&r, &LISTENER, &ch, &p.hello);
             let now = net.now();
             let outs = p.cs.handle(now, ClientInput::Command(Command::Resume { nonce, tags: vec![tag] }));
-            pump(&mut net, b, p, Vec::new(), outs);
+            pump(&mut net, b, p, outs);
         }
         let (win, lose) = if o1 < o2 { (&p1, &p2) } else { (&p2, &p1) };
         assert!(net.sync(b).connection_record(win.conn).is_some(), "the smaller keeps the record");

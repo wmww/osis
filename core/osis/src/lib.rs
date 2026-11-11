@@ -236,7 +236,7 @@
 //! - Other nodes that read it find each other and sync directly (`Config::direct_sync`), also by
 //!   finding each other on a local network (`Config::lan`).
 //! - **Saved peers**, named by address: nodes that serve data for others at a fixed address
-//!   (`set_serving`, `serving_address`), whether or not they can read it: another of your machines,
+//!   (`set_serving`, `listen`), whether or not they can read it: another of your machines,
 //!   a friend's, a rented box. What a peer cannot read reaches it encrypted.
 //!
 //! `status` says how far each group got with the nodes connected now, and `wait_synced` waits until

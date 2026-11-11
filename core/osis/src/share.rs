@@ -8,7 +8,7 @@ use crate::handle::{Locked, Osis, ReadOnly, SERVING_PEER, save_peers};
 use crate::watch::{Delivery, Filter, Subscription};
 use osis_base::{Ak, Role, Tid, Value, Time};
 use osis_node::flows;
-use osis_node::sync::{HostStatus, SyncEngine};
+use osis_node::sync::SyncEngine;
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
@@ -633,7 +633,7 @@ impl ReadOnly {
         t.parse().map(Some).map_err(|_| Error::Storage("profile record".into()))
     }
 
-    /// The peers this node saved with `add_peer`, and its own `serving_address` while it serves: it
+    /// The peers this node saved with `add_peer`, and its own address while it serves: it
     /// stays connected to them, and groups sync with them unless `sync` names others. `Unsupported` on a client with its own actor: they are its
     /// node's.
     pub fn saved_peers(&self) -> Result<Vec<Address>> {
@@ -1427,7 +1427,7 @@ impl Osis {
     }
 
 
-    /// Saves a peer: a node serving at this address (`set_serving`, its `serving_address`), whether or
+    /// Saves a peer: a node serving at this address (`set_serving`, its `listen` address), whether or
     /// not it can read what it gets. This node stays connected to it, and what syncs from now on syncs
     /// with it (links, `sync`). What already syncs with all the saved peers moves to the new list: the home group and
     /// groups made under this account (their record chain reaches it) that this node administers; not links or the contact card (their text
@@ -1447,7 +1447,7 @@ impl Osis {
     }
 
     /// Removes a saved peer, from the list and the groups that follow it (`add_peer`); a group with
-    /// holders besides this account's nodes keeps its last one. Its own `serving_address` stays
+    /// holders besides this account's nodes keeps its last one. Its own address stays
     /// while it serves. `Unsupported` on a client with its own actor.
     pub fn remove_peer(&self, peer: &Address) -> Result<()> {
         if !self.has_store() {
@@ -1816,17 +1816,16 @@ impl crate::handle::ReadOnly {
 }
 
 impl crate::handle::ReadOnly {
-    /// A serving node syncs with its own serving address as with any saved peer (notes/api.md
-    /// Serving): once it listens, that address is in the saved list (`remove_peer` keeps it); a new
-    /// address replaces the one it added, and stopping removes it. Starting up or failing to listen changes nothing: the address it had stays. Under the lock, after every call.
+    /// A serving node syncs with its own address as with any saved peer (notes/api.md Serving):
+    /// while it serves and listens (`listen`), its first address is in the saved list
+    /// (`remove_peer` keeps it); a new address replaces the one it added, and stopping serving
+    /// removes it. Starting up, or not listening yet, changes nothing: the address it had stays.
+    /// Under the lock, after every call.
     pub(crate) fn upkeep_serving_peer(&self, l: &mut Locked) {
-        let want = match (l.sync.host_key(), l.sync.host_status()) {
-            (None, _) => None,
-            (Some(k), HostStatus::Listening(a)) => match a.first() {
-                Some(a) if a.key == k => Some(Address(a.clone())),
-                _ => return,
-            },
-            _ => return,
+        let want = match (l.sync.hosts(), l.listening.first()) {
+            (false, _) => None,
+            (true, Some(a)) => Some(a.clone()),
+            (true, None) => return,
         };
         if l.serving_peer == want && want.as_ref().is_none_or(|w| l.sync.config().hosts.contains(&w.0)) {
             return;

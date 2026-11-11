@@ -2,61 +2,38 @@
 //! Co-reader-peer serving limits and LAN routes (spec/sync.md §5, §10): tombstones, budgets,
 //! session caps, refused strangers and removed holders, LAN candidates, co-reader caps.
 
-use crate::net::{hosted, hosted_nodes, local_nodes};
+use crate::net::{hosted_nodes, local_nodes};
 use crate::net;
 use net::*;
 use osis_base::{LabelId, Role};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_label::Address;
 use osis_node::sync::{Action, ConnId, EntryKind, Event, SyncConfig};
-use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, LabelStore, OpenKey};
+use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command, OpenKey};
 
 const LOCAL: [u8; 32] = [0x42; 32];
 
-/// A hand-driven peer session into node `n`.
+/// A hand-driven peer session into node `n`: its served session there and its hub connection.
 struct Dialer {
     conn: ConnId,
+    hc: ConnId,
     cs: ClientSession,
 }
 
-fn exchange(net: &mut Net, n: usize, p: &mut Dialer, mut acts: Vec<Action>, mut outs: Vec<ClientOutput>) -> Vec<ClientEvent> {
-    let mut evs = Vec::new();
-    loop {
-        let mut moved = false;
-        for o in std::mem::take(&mut outs) {
-            match o {
-                ClientOutput::Send(b) => {
-                    acts.extend(net.sync(n).handle(Event::Bytes { conn: p.conn, bytes: b }));
-                    moved = true;
-                }
-                ClientOutput::Event(e) => evs.push(e),
-                _ => {}
-            }
-        }
-        for a in std::mem::take(&mut acts) {
-            match a {
-                Action::Send { conn, bytes } if conn == p.conn => {
-                    let now = net.now();
-                    outs.extend(p.cs.handle(now, ClientInput::Bytes(bytes)));
-                    moved = true;
-                }
-                Action::Close { conn } if conn == p.conn => {}
-                a => net.actions(n, vec![a]),
-            }
-        }
-        net.settle(100_000);
-        if !moved {
-            return evs;
-        }
-    }
+fn exchange(net: &mut Net, n: usize, p: &mut Dialer, acts: Vec<Action>, outs: Vec<ClientOutput>) -> Vec<ClientEvent> {
+    net.hand_exchange(n, p.hc, &mut p.cs, acts, outs, true)
 }
 
 fn dial_in(net: &mut Net, n: usize) -> (Dialer, Vec<ClientEvent>) {
-    let (conn, acts) = net.sync(n).accept(LOCAL, [0x43; 32]);
-    let mut p = Dialer { conn, cs: ClientSession::new(ClientConfig { peer_static_key: LOCAL, challenge: [7; 32] }) };
+    let (hc, sent) = net.hand_accept(n, LOCAL, osis_transport::Peer::Key([0x43; 32]));
+    let mut p = Dialer { conn: 0, hc, cs: ClientSession::new(ClientConfig { peer_static_key: LOCAL, challenge: [7; 32] }) };
     let now = net.now();
-    let outs = p.cs.handle(now, ClientInput::Start);
-    let evs = exchange(net, n, &mut p, acts, outs);
+    let mut outs = p.cs.handle(now, ClientInput::Start);
+    for f in sent {
+        outs.extend(p.cs.handle(now, ClientInput::Bytes(f)));
+    }
+    let evs = exchange(net, n, &mut p, Vec::new(), outs);
+    p.conn = net.served(n, hc);
     (p, evs)
 }
 
@@ -86,35 +63,6 @@ fn member_pulled(net: &mut Net, n: usize, proven_as: usize, l: LabelId) -> (Dial
 fn reach(net: &mut Net, n: usize, key: u8) {
     let acts = net.sync(n).publish_reach([key; 32], vec![]).unwrap();
     net.actions(n, acts);
-}
-
-fn upload_codes(evs: &[ClientEvent]) -> Vec<Code> {
-    evs.iter().filter_map(|e| if let ClientEvent::EntryStatus { codes, .. } = e { Some(codes.clone()) } else { None }).flatten().collect()
-}
-
-// spec/sync.md §5 (tombstones, co-reader peer): a body a host deleted is refused when a peer
-// uploads it again (code 6), and never goes back to the host.
-#[test]
-fn dropped_entry_refused_from_peer_spec_sync_5() {
-    let (mut net, host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["one"], true);
-    let c = net.write(a, t, "two");
-    net.run();
-    let l = net.label(b);
-    let x = net.sync(b).entries(&l).into_iter().find(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).unwrap().0;
-    let meta = net.hosts[host].hub.store().entry(&l, &x).unwrap().unwrap();
-    let blob = net.hosts[host].hub.store().blob(&x).unwrap().unwrap();
-    let now = net.now();
-    assert_eq!(net.hosts[host].hub.store_mut().delete(&l, &x, now).unwrap(), Code::OK);
-    let acts = net.sync(b).sync_now();
-    net.actions(b, acts);
-    net.settle(100_000);
-    assert!(!net.sync(b).entries(&l).iter().any(|(id, _)| *id == x), "the host's deletion reached b");
-    let (mut p, _) = dial_in(&mut net, b);
-    let evs = command(&mut net, b, &mut p, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob, wrap: meta.wrap, stamp: meta.stamp.unwrap(), replaces: Vec::new() }] });
-    assert_eq!(upload_codes(&evs), vec![Code::TOMBSTONED]);
-    net.run();
-    assert!(!net.sync(b).entries(&l).iter().any(|(id, _)| *id == x));
-    assert!(!net.host_ids(host, &l).contains(&x), "never re-uploaded");
 }
 
 /// Whether node `b`, with `peer_bytes`, keeps an unstamped entry no key here opens, 1000 bytes,
@@ -246,36 +194,41 @@ fn a_fresh_account_splits_no_budget_spec_sync_5() {
     assert!(!second_kept(true), "a fresh account beside it adds none");
 }
 
-// spec/sync.md §5: served sessions are capped: a new one evicts the oldest that serves nothing
-// (so silent sessions cannot starve holders), and is refused when every running one serves a
-// label; idle ones are closed, but one sharing a sync ID, whose stream is quiet while nothing
-// changes.
+// spec/sync.md §5: served connections are capped by one rule over all (the node's
+// `max_connections`): at the cap a new one takes the slot of one sharing nothing (a stranger's
+// idle connection) before a co-reader's, and once every other shares something, of the source
+// holding the most; one sharing nothing is closed `serve_open_ms` after it started, one sharing
+// a sync ID stays while up, however quiet its stream.
 #[test]
-fn served_sessions_capped_and_idle_closed_spec_sync_5() {
+fn at_the_cap_a_stranger_goes_before_a_co_reader_spec_sync_5() {
     let (mut net, [a]) = local_nodes::<1>();
-    let cfg = SyncConfig { max_served: 2, serve_idle_ms: 1_000, ..SyncConfig::default() };
+    let cfg = SyncConfig { serve_open_ms: 1_000, ..SyncConfig::default() };
     let b = net.add_node(2, cfg);
     reach_ed(&mut net, a);
     reach_ed(&mut net, b);
     net.blocked_peers.insert((a, b));
     net.group_at(a, &[(b, Role::Read)], vec![]);
+    let me = net.node_tid(b);
+    let mut m = osis_engine::Mutation::new();
+    let policy = std::collections::BTreeMap::from([("max_connections".to_string(), 2)]);
+    m.replace(me, &osis_schema::core_types::HOST, &osis_schema::core_types::Host { policy, ..Default::default() }).unwrap();
+    net.engine(b).commit(m).unwrap();
     net.run();
     let l = net.label(b);
-    let (c1, a1) = net.sync(b).accept(LOCAL, [1; 32]);
-    assert!(!a1.iter().any(|x| matches!(x, Action::Close { .. })));
-    let m = member_session(&mut net, b, a, l);
-    assert!(net.sync(b).served_opened()[&m.conn].contains(&l), "a member of its shared set");
-    let (c3, a3) = net.sync(b).accept(LOCAL, [3; 32]);
-    assert!(a3.contains(&Action::Close { conn: c1 }), "the silent session makes room: {a3:?}");
-    assert!(!a3.contains(&Action::Close { conn: c3 }));
-    net.actions(b, a3);
-    let (c4, a4) = net.sync(b).accept(LOCAL, [4; 32]);
-    assert!(a4.contains(&Action::Close { conn: c3 }), "the next silent one goes: {a4:?}");
-    assert!(!a4.contains(&Action::Close { conn: m.conn }), "the holder stays");
+    let (s1, _) = dial_in(&mut net, b);
+    let co = member_session(&mut net, b, a, l);
+    assert!(net.sync(b).served_opened()[&co.conn].contains(&l), "a member of its shared set");
+    let (s2, _) = dial_in(&mut net, b);
+    assert!(net.hand_closed(b, s1.hc), "the stranger's idle connection made room");
+    assert!(!net.hand_closed(b, co.hc) && !net.hand_closed(b, s2.hc));
+    let (s3, _) = dial_in(&mut net, b);
+    assert!(net.hand_closed(b, s2.hc), "the next idle one goes");
+    assert!(!net.hand_closed(b, co.hc), "the co-reader stays");
     net.clock.advance(1_001);
     let acts = net.sync(b).handle(Event::Tick);
-    assert!(acts.contains(&Action::Close { conn: c4 }), "idle: {acts:?}");
-    assert!(!acts.contains(&Action::Close { conn: m.conn }), "a session sharing a sync ID stays while up, however quiet its stream");
+    net.actions(b, acts);
+    assert!(net.hand_closed(b, s3.hc), "sharing nothing past serve_open_ms");
+    assert!(!net.hand_closed(b, co.hc), "a session sharing a sync ID stays while up, however quiet its stream");
 }
 
 // spec/sync.md §5: a stranger without the label's sync key opens nothing.
@@ -524,7 +477,8 @@ fn silent_session_closed_spec_sync_5() {
     let outs = p.cs.handle(now, ClientInput::Command(Command::Open { label: LabelId([1; 16]), key: OpenKey::Sync { step: None, key: SigningSecret::from_seed(&Secret32::from_bytes([3; 32])) } }));
     exchange(&mut net, b, &mut p, Vec::new(), outs);
     let acts = net.sync(b).handle(Event::Tick);
-    assert!(acts.contains(&Action::Close { conn: p.conn }), "{acts:?}");
+    net.actions(b, acts);
+    assert!(net.hand_closed(b, p.hc));
 }
 
 // spec/permissions.md §3: a complete pass also waits for every co-reader the node received the

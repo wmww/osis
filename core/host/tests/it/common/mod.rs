@@ -70,7 +70,7 @@ impl World {
         self.roots.push(MemoryRoot::with_faults(faults.clone()));
         self.faults.push(faults);
         let store = self.host_store(i, policy, i as u8);
-        self.hubs.push(Hub::new(store, hub_key(i), Box::new(SeededRng::from_seed([0x70 + i as u8; 32]))));
+        self.hubs.push(Hub::new(store, Box::new(SeededRng::from_seed([0x70 + i as u8; 32]))));
         i
     }
 
@@ -89,7 +89,7 @@ impl World {
             }
         }
         let store = self.host_store(i, policy, 0xff);
-        self.hubs[i] = Hub::new(store, hub_key(i), Box::new(SeededRng::from_seed([0x90 + i as u8; 32])));
+        self.hubs[i] = Hub::new(store, Box::new(SeededRng::from_seed([0x90 + i as u8; 32])));
     }
 
     /// A client connected to hub `h`; returns the client index.
@@ -101,7 +101,7 @@ impl World {
         self.next_conn += 1;
         self.links.push(Link { a: End::Client(c), b: End::Hub(h, conn), to_b: VecDeque::new(), to_a: VecDeque::new(), open: true });
         let now = self.now();
-        let out = self.hubs[h].accept(now, conn, [0xe0 + c as u8; 32]);
+        let out = self.hubs[h].accept(now, conn, hub_key(h), osis_host::Remote::key([0xe0 + c as u8; 32]));
         self.hub_out(h, out);
         let out = self.clients[c].handle(now, ClientInput::Start);
         self.client_out(c, out);
@@ -117,7 +117,7 @@ impl World {
         self.next_conn += 2;
         self.links.push(Link { a: End::Hub(from, ca), b: End::Hub(to, cb), to_b: VecDeque::new(), to_a: VecDeque::new(), open: true });
         let now = self.now();
-        let out = self.hubs[to].accept(now, cb, hub_key(from));
+        let out = self.hubs[to].accept(now, cb, hub_key(to), osis_host::Remote::key(hub_key(from)));
         self.hub_out(to, out);
         let out = self.hubs[from].peer_up(now, ca, hub_key(to));
         self.hub_out(from, out);
@@ -272,7 +272,7 @@ impl World {
         self.next_conn += 1;
         self.links.push(Link { a: End::Sink(self.links.len()), b: End::Hub(h, conn), to_b: VecDeque::new(), to_a: VecDeque::new(), open: true });
         let now = self.now();
-        let out = self.hubs[h].accept(now, conn, [0xd0; 32]);
+        let out = self.hubs[h].accept(now, conn, hub_key(h), osis_host::Remote::key([0xd0; 32]));
         self.hub_out(h, out);
         self.pump();
         (self.links.len() - 1, conn)

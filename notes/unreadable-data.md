@@ -23,7 +23,7 @@ AKs, tids, thing or aspect counts, authors, role grants, node identities, which 
 - Reads gated by the sync key, claims one step at a time, refused Register and Deposit learning the code alone, opens ending at a new sync key, Status without the head (notes/label-access.md).
 - Claim-set padding keys are valid points; static entries are hashes until claimed (notes/label-access.md).
 - The log ID is random per storage instance, so a wiped host invalidates old cursors and two hosts' logs are unrelated (notes/serving.md).
-- Clients dial hosts with an ephemeral transport key per connection, each QUIC dial on its own UDP socket; a hosting node listens with a host secret unrelated to its `reach.0` key (notes/networking.md, decision 5).
+- Clients dial hosts with an ephemeral transport key per connection, each QUIC dial on its own UDP socket; a hosting node listens under its one key, its `reach.0` key (notes/networking.md, decision 5).
 - Wake-up push tokens, if built, must not link labels (notes/networking.md, Proposal).
 - Clients may batch uploads to blur timing (policy).
 - osis-host cannot decrypt: it gets public data only and tools/policy.py keeps it from naming decrypting calls (notes/serving.md).

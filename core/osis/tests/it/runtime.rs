@@ -30,17 +30,8 @@ async fn host_node(t: Option<osis::internals::InProcess>, url: &str) -> (Option<
     let mut c = cfg(90, vec![], t);
     c.direct_sync = false;
     let db = osis::internals::create(c).unwrap();
-    db.set_serving(Some(osis::Serving { listen: vec![url.parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
-    let a = tokio::time::timeout(GUARD, async {
-        loop {
-            if let Some(a) = db.serving_address().unwrap() {
-                return a;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    db.set_serving(Some(osis::Serving { admit: osis::Admit::Open, ..Default::default() })).unwrap();
+    let a = db.listen(&[url.parse().unwrap()]).unwrap().remove(0);
     (Some(db), a)
 }
 
@@ -692,17 +683,8 @@ async fn own_serving_node_in_process_spec_data_model_9() {
     assert_eq!(dev.me(), alice.me());
     // the refused-for-now back-off (5 s) shortened: the test waits it once per new label
     alice.sync_engine(|s| s.config_mut().retry_ms = 100);
-    dev.set_serving(Some(osis::Serving { listen: vec!["mem://h".parse().unwrap()], admit: osis::Admit::Own, ..Default::default() })).unwrap();
-    let ha = tokio::time::timeout(GUARD, async {
-        loop {
-            if let Some(a) = dev.serving_address().unwrap() {
-                return a;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    dev.set_serving(Some(osis::Serving { admit: osis::Admit::Own, ..Default::default() })).unwrap();
+    let ha = dev.listen(&["mem://h".parse().unwrap()]).unwrap().remove(0);
     alice.add_peer(&ha).unwrap();
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All)).await.unwrap().unwrap();
 

@@ -51,9 +51,10 @@ fn read(s: &mut SyncEngine, t: Tid) -> Option<Value> {
 }
 
 /// Two nodes of one group under the tokio driver converge through a's host (notes/serving.md,
-/// Hosting in the node): a's `host^.0` has it listen at `url` with `own` admission, and the group's label
-/// names a's host address. b is served from a's host store; a's own copy reaches its host over
-/// the in-process loopback (`cut` then cuts a's transport from itself, so nothing else could).
+/// The hub in the node): a's `host^.0` has `own` admission, a listens at `url` under its one key,
+/// and the group's label names that address. b is served from a's host store; a's own copy
+/// reaches its hub over the in-process loopback (`cut` then cuts a's transport from itself, so
+/// nothing else could).
 async fn converge<T: Transport>(url: &str, a_ep: T, b_ep: T, cut: impl FnOnce()) {
     let mut net = Net::new();
     let clock: Arc<dyn Clock> = net.clock.clone();
@@ -61,9 +62,9 @@ async fn converge<T: Transport>(url: &str, a_ep: T, b_ep: T, cut: impl FnOnce())
     let b = net.add_node(2, Default::default());
     let me = net.node_tid(a);
     let mut m = osis_node::Mutation::new();
-    m.replace(me, &ct::HOST, &ct::Host { listen: vec![url.into()], admit: ct::Admit::Own, ..Default::default() }).unwrap();
+    m.replace(me, &ct::HOST, &ct::Host { admit: ct::Admit::Own, ..Default::default() }).unwrap();
     net.engine(a).commit(m).unwrap();
-    let key = net.sync(a).host_key().or_else(|| net.sync(a).host_config().map(|c| c.key)).unwrap();
+    let key = net.sync(a).dialable_key();
     let addr = Address { url: url.into(), key };
     let g = net.group_at(a, &[(b, Role::Write)], vec![addr.clone()]);
     let t = net.item(a, g, g, "first");
@@ -76,13 +77,10 @@ async fn converge<T: Transport>(url: &str, a_ep: T, b_ep: T, cut: impl FnOnce())
     let (bctl, brx2) = mpsc::unbounded_channel();
     let da = tokio::spawn(driver::run(sa, a_ep, clock.clone(), arx, log()));
     // b dials once a listens (the manual clock never brings a redial)
-    tokio::time::timeout(GUARD, async {
-        while !matches!(call(&actl, |s| s.host_status().clone()).await, osis_node::sync::HostStatus::Listening(_)) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    let (tx, reply) = oneshot::channel();
+    assert!(actl.send(Control::Listen { urls: vec![url.into()], reply: tx }).is_ok());
+    let at = tokio::time::timeout(GUARD, reply).await.unwrap().unwrap().unwrap();
+    assert_eq!(at[0].key, key, "under the node's one key");
     let db = tokio::spawn(driver::run(sb, b_ep, clock.clone(), brx2, log()));
 
     let c = call(&actl, move |s| {
@@ -121,17 +119,16 @@ async fn driver_quic_localhost_spec_sync_10() {
     converge(&format!("quic://127.0.0.1:{port}"), Quic::new(), Quic::new(), || {}).await;
 }
 
-// spec/requirements.md Deletion, notes/serving.md Hosting in the node: the host secret lives only
-// while `host^.0` is set. Removing it shreds the secret, and the driver taking the earlier
-// config late gets no secret for it: a stale `Action::Host` cannot bring a shredded secret back
-// (nor listen with a key other than the config's), and a new start has a new key.
+// spec/requirements.md Deletion, notes/serving.md The hub in the node: a run of hosting lives
+// only while `host^.0` is set. Removing it ends the run, and a config the driver takes late is
+// no longer current (its store is not the one to open); a new start is a new run.
 #[test]
-fn host_secret_not_revived_by_stale_config_spec_sync_10() {
+fn a_stale_host_config_is_not_current_spec_sync_10() {
     use osis_node::sync::Action;
     let mut net = Net::new();
     let a = net.add_node(1, Default::default());
     let me = net.node_tid(a);
-    let host = ct::Host { listen: vec!["mem://s".into()], ..Default::default() };
+    let host = ct::Host::default();
     let set = |net: &mut Net, on: bool| {
         let mut m = osis_node::Mutation::new();
         if on {
@@ -145,16 +142,14 @@ fn host_secret_not_revived_by_stale_config_spec_sync_10() {
             _ => None,
         })
     };
-    let k1 = set(&mut net, true).flatten().expect("a host config").key;
-    assert_eq!(net.sync(a).host_key(), Some(k1));
-    assert!(net.sync(a).host_secret_for(&k1).is_some());
+    let c1 = set(&mut net, true).flatten().expect("a host config");
+    assert!(net.sync(a).hosts() && net.sync(a).host_current(&c1));
     assert_eq!(set(&mut net, false), Some(None), "stop");
-    assert_eq!(net.sync(a).host_key(), None, "shredded");
-    assert!(net.sync(a).host_secret_for(&k1).is_none());
-    assert_eq!(net.sync(a).host_key(), None, "a stale config made no secret");
-    let k2 = set(&mut net, true).flatten().expect("a host config").key;
-    assert_ne!(k1, k2, "a new start has a new key");
-    assert!(net.sync(a).host_secret_for(&k1).is_none(), "the stale config's key is not the secret's");
+    assert!(!net.sync(a).hosts(), "the run is over");
+    assert!(!net.sync(a).host_current(&c1));
+    let c2 = set(&mut net, true).flatten().expect("a host config");
+    assert_ne!(c1.store_id, c2.store_id, "a new start is a new run");
+    assert!(!net.sync(a).host_current(&c1) && net.sync(a).host_current(&c2));
 }
 
 fn s_(x: &str) -> Value {

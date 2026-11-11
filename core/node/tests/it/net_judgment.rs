@@ -10,50 +10,28 @@ use osis_crypto::{Secret32, SigningSecret};
 use osis_engine::flows::LinkSpec;
 use osis_node::labeling::Judgment;
 use osis_node::sync::credentials::{Credential, head_credentials};
-use osis_node::sync::{Action, ConnId, Event};
+use osis_node::sync::ConnId;
 use osis_node::identity::Identity;
 use osis_engine::Mutation;
-use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command, Prover};
+use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientSession, Command, Prover};
 
 const LISTENER: [u8; 32] = [0x42; 32];
 
-/// Dials node `n` and proves `provers` on the connection; the Proved answer's actors.
+/// Dials node `n` and proves `provers` on the connection: its served session there and the
+/// number of actors the Proved answer names.
 fn prove(net: &mut Net, n: usize, provers: Vec<Prover>) -> (ConnId, usize) {
-    let (conn, acts) = net.sync(n).accept(LISTENER, [0x43; 32]);
+    let (hc, sent) = net.hand_accept(n, LISTENER, osis_transport::Peer::Key([0x43; 32]));
     let mut cs = ClientSession::new(ClientConfig { peer_static_key: LISTENER, challenge: [7; 32] });
     let now = net.now();
     let mut outs = cs.handle(now, ClientInput::Start);
-    let mut acts = acts;
-    let mut answered = 0;
-    let mut proved_sent = false;
-    loop {
-        let mut moved = false;
-        for o in std::mem::take(&mut outs) {
-            match o {
-                ClientOutput::Send(b) => {
-                    acts.extend(net.sync(n).handle(Event::Bytes { conn, bytes: b }));
-                    moved = true;
-                }
-                ClientOutput::Event(ClientEvent::Proved { proofs }) => answered = proofs.len(),
-                _ => {}
-            }
-        }
-        for a in std::mem::take(&mut acts) {
-            if let Action::Send { conn: c, bytes } = a
-                && c == conn
-            {
-                outs.extend(cs.handle(now, ClientInput::Bytes(bytes)));
-                moved = true;
-            }
-        }
-        if !moved {
-            if proved_sent {
-                return (conn, answered);
-            }
-            proved_sent = true;
-            outs.extend(cs.handle(now, ClientInput::Command(Command::Prove(provers.clone()))));
-        }
+    for f in sent {
+        outs.extend(cs.handle(now, ClientInput::Bytes(f)));
     }
+    net.hand_exchange(n, hc, &mut cs, Vec::new(), outs, false);
+    let outs = cs.handle(now, ClientInput::Command(Command::Prove(provers)));
+    let evs = net.hand_exchange(n, hc, &mut cs, Vec::new(), outs, false);
+    let answered = evs.iter().find_map(|e| if let ClientEvent::Proved { proofs } = e { Some(proofs.len()) } else { None }).unwrap_or(0);
+    (net.served(n, hc), answered)
 }
 
 pub(crate) fn account_node(net: &mut Net, seed: u64, host: usize) -> (usize, Tid) {

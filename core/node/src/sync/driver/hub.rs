@@ -1,15 +1,16 @@
-//! The hub in the node driver's loop (notes/serving.md, Hosting in the node): while the node
-//! hosts, the driver owns osis-host's sans-I/O `Hub` (and so the host store) and moves its bytes
-//! beside the sync engine's, one call at a time on the same task. Sessions arrive as
-//! osis-transport `Link`s from the host listeners (`link::serve`, one per stream a dialer opens),
-//! from the node's own dials of the host key (an in-process `link::pair`) and from replication
-//! dials (`dial_as` with the host secret, so the peer sees this host's key: echo suppression).
-//! Per link a reader task hands the loop one read at a time (the next once the hub took the
-//! last), served in turns round-robin by source (`Turns`); writes go to the link's queue (more
-//! than `max_queued_bytes` the transport has not taken drops the session). No task waits on the
-//! loop and the loop waits on no connection. What the hub hands node sync (`HubOutput::Up`) waits
-//! in `ups` until the driver feeds it to the engine (`Event::Hub`); the engine's `Action::Hub`
-//! come back by `down`, in the same pass of the loop.
+//! The hub in the node driver's loop (notes/serving.md, The hub in the node): the driver owns
+//! osis-host's sans-I/O `Hub` and moves its bytes beside the sync engine's, one call at a time on
+//! the same task. Every listener of the node feeds it (`listen`: the dialable key's, the LAN's,
+//! the unix socket's), each connection served under the key of the listener that took it; the
+//! node's own dials of a key it listens under reach it over an in-process `link::pair`
+//! (`accept_own`); replication dials (`dial_as` with the dialable secret, so the peer sees this
+//! node's key: echo suppression) run while it hosts. Per link a reader task hands the loop one
+//! read at a time (the next once the hub took the last), served in turns round-robin by source
+//! (`Turns`); writes go to the link's queue (more than `max_queued_bytes` the transport has not
+//! taken drops the session). No task waits on the loop and the loop waits on no connection.
+//! What the hub hands node sync (`HubOutput::Up`) waits in `ups` until the driver feeds it to
+//! the engine (`Event::Hub`); the engine's `Action::Hub` come back by `down`, in the same pass of
+//! the loop.
 
 use super::{FINISH_WAIT, Log, MAX_IDLE};
 use osis_base::Clock;
@@ -27,9 +28,11 @@ use tokio::task::JoinHandle;
 const BACKOFF_MIN: u64 = 1000;
 const BACKOFF_MAX: u64 = 60_000;
 
-/// What the hub's tasks hand the loop. `run`: the hub run it belongs to (a stale one is dropped).
+/// What the hub's tasks hand the loop.
 pub(super) enum HubEv {
-    Accepted(u64, Link),
+    /// A session on listener group `group`, whose key is `key`.
+    Accepted(u64, [u8; 32], Link),
+    /// A replication session of replication run `run` is up.
     PeerUp(u64, Link, oneshot::Sender<()>),
     Bytes(ConnId, Vec<u8>),
     Closed(ConnId),
@@ -37,8 +40,12 @@ pub(super) enum HubEv {
 
 struct ConnState {
     tx: LinkTx,
+    /// Its transport slot is kept (`Down::Keep`, `Link::kept`).
+    kept: Arc<std::sync::atomic::AtomicBool>,
     reader: JoinHandle<()>,
     source: Option<Source>,
+    /// The listener group that took it (none: the node's own dial, a replication session).
+    group: Option<u64>,
     /// The read waiting for its turn (the reader sends the next only after `turn`).
     input: Option<Vec<u8>>,
     /// Told when the hub took `input`.
@@ -99,7 +106,7 @@ async fn read(id: ConnId, mut rx: LinkRx, ev: mpsc::UnboundedSender<HubEv>, turn
     let _ = ev.send(HubEv::Closed(id));
 }
 
-/// Keeps a session to `addr` up: dials as this host, hands the link to the loop, waits for it
+/// Keeps a session to `addr` up: dials as this node, hands the link to the loop, waits for it
 /// to end, redials with seeded backoff. Stops on errors redialing cannot fix (bad URL, unknown
 /// scheme).
 async fn keep_dialing<T: Transport>(t: Arc<T>, secret: StaticSecret, addr: Address, run: u64, ev: mpsc::UnboundedSender<HubEv>, log: Log) {
@@ -126,20 +133,27 @@ async fn keep_dialing<T: Transport>(t: Arc<T>, secret: StaticSecret, addr: Addre
     }
 }
 
-/// The running hub: its config, connections and tasks (listeners, replication dials).
+/// The running hub: its hosting config, listeners, connections and replication dials.
 pub(super) struct HubRun {
-    pub cfg: HostConfig,
+    /// What it hosts by (none: an empty store in memory).
+    pub cfg: Option<HostConfig>,
     hub: Hub,
-    /// This run's tag on its tasks' events.
-    run: u64,
-    /// The next connection's ID (kept across runs: a closed run's late events match nothing).
+    /// The next connection ID.
     next: ConnId,
     conns: HashMap<ConnId, ConnState>,
     turns: Turns,
+    /// The node's dialable key: its own dials of it reach the hub whether or not a listener
+    /// of it runs yet.
+    pub own: Option<[u8; 32]>,
+    /// Listener groups by ID: their key and tasks.
+    groups: HashMap<u64, ([u8; 32], Vec<JoinHandle<()>>)>,
+    next_group: u64,
+    /// Replication dials and the run tag their sessions carry (a stopped run's are dropped).
+    repl: Vec<JoinHandle<()>>,
+    repl_run: u64,
     /// When `tick` is due: moved only earlier until it runs, so a due counted from now (a held
     /// connection's push poll, the idle beat) is not put off by every pass of the loop.
     at: Option<tokio::time::Instant>,
-    tasks: Vec<JoinHandle<()>>,
     clock: Arc<dyn Clock>,
     log: Log,
     ev: mpsc::UnboundedSender<HubEv>,
@@ -148,41 +162,76 @@ pub(super) struct HubRun {
 }
 
 impl HubRun {
-    /// Serves `hub` on `listeners` (listening with the host secret `secret`), keeps a replication
-    /// session to each of `cfg.replicate`. `next`: the first connection ID and run tag, above
-    /// every earlier run's.
-    #[allow(clippy::too_many_arguments)]
-    pub fn start<T: Transport>(cfg: HostConfig, hub: Hub, next: u64, transport: &Arc<T>, listeners: Vec<T::Listener>, secret: StaticSecret, clock: Arc<dyn Clock>, log: Log, ev: mpsc::UnboundedSender<HubEv>) -> HubRun {
-        let run = next;
-        let mut tasks: Vec<JoinHandle<()>> = cfg.replicate.iter().map(|a| tokio::spawn(keep_dialing(transport.clone(), secret.clone(), a.clone(), run, ev.clone(), log.clone()))).collect();
-        let idle = Duration::from_millis(hub.store().policy().hello_ms);
-        // transport connections capped like sessions (each connection may carry several)
-        let max = hub.store().policy().max_connections;
+    pub fn new(hub: Hub, clock: Arc<dyn Clock>, log: Log, ev: mpsc::UnboundedSender<HubEv>) -> HubRun {
+        HubRun { cfg: None, hub, own: None, next: 1, conns: HashMap::new(), turns: Turns::default(), groups: HashMap::new(), next_group: 1, repl: Vec::new(), repl_run: 0, at: None, clock, log, ev, ups: Vec::new() }
+    }
+
+    /// Serves the sessions `listeners` accept, under their key `key`; returns their group.
+    /// Transport connections are capped as sessions are (`max_connections`; each may carry
+    /// several), shared by source.
+    pub fn listen<L: osis_transport::Listener + 'static>(&mut self, key: [u8; 32], listeners: Vec<L>) -> u64 {
+        let group = self.next_group;
+        self.next_group += 1;
+        let idle = Duration::from_millis(self.hub.store().policy().hello_ms);
+        let max = self.hub.store().policy().max_connections;
         let (in_tx, mut incoming) = mpsc::channel(64);
-        tasks.extend(listeners.into_iter().map(|l| tokio::spawn(link::serve(l, idle, FINISH_WAIT, in_tx.clone(), link::Slots::Shared(max)))));
+        let mut tasks: Vec<JoinHandle<()>> = listeners.into_iter().map(|l| tokio::spawn(link::serve(l, idle, FINISH_WAIT, in_tx.clone(), max))).collect();
         drop(in_tx);
-        let fwd = ev.clone();
+        let fwd = self.ev.clone();
         tasks.push(tokio::spawn(async move {
             while let Some(l) = incoming.recv().await {
-                if fwd.send(HubEv::Accepted(run, l)).is_err() {
+                if fwd.send(HubEv::Accepted(group, key, l)).is_err() {
                     return;
                 }
             }
         }));
-        HubRun { cfg, hub, run, next: next + 1, conns: HashMap::new(), turns: Turns::default(), at: None, tasks, clock, log, ev, ups: Vec::new() }
+        self.groups.insert(group, (key, tasks));
+        group
     }
 
-    /// Closes every connection and stops the tasks; returns the hub, the next free ID and what
-    /// is left for node sync (the connections' ends).
-    pub fn stop(mut self) -> (Hub, u64, Vec<(ConnId, Up)>) {
-        for t in std::mem::take(&mut self.tasks) {
+    /// Stops listener group `group` (returning once its listeners are dropped, so their address
+    /// is free again) and closes the sessions it accepted (as a P2P listener's socket ends its
+    /// connections).
+    pub async fn unlisten(&mut self, group: u64) {
+        let Some((_, tasks)) = self.groups.remove(&group) else { return };
+        for t in tasks {
+            t.abort();
+            let _ = t.await;
+        }
+        let ids: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.group == Some(group)).map(|(id, _)| *id).collect();
+        for id in ids {
+            self.drop_conn(id);
+        }
+    }
+
+    /// Whether `key` is this node's (its dialable key, or one it listens under): a dial of it is
+    /// the node's own.
+    pub fn listens_as(&self, key: &[u8; 32]) -> bool {
+        self.own.as_ref() == Some(key) || self.groups.values().any(|(k, _)| k == key)
+    }
+
+    /// Dials replication peers `peers` as this node (`secret`), in place of those dialed so far.
+    pub fn replicate<T: Transport>(&mut self, transport: &Arc<T>, peers: &[Address], secret: Option<StaticSecret>) {
+        for t in self.repl.drain(..) {
+            t.abort();
+        }
+        self.repl_run += 1;
+        let Some(secret) = secret else { return };
+        let run = self.repl_run;
+        self.repl = peers.iter().map(|a| tokio::spawn(keep_dialing(transport.clone(), secret.clone(), a.clone(), run, self.ev.clone(), self.log.clone()))).collect();
+    }
+
+    /// Closes every connection and stops the tasks; returns what is left for node sync (the
+    /// connections' ends).
+    pub fn stop(&mut self) -> Vec<(ConnId, Up)> {
+        for t in self.repl.drain(..).chain(self.groups.drain().flat_map(|(_, (_, t))| t)) {
             t.abort();
         }
         let ids: Vec<ConnId> = self.conns.keys().copied().collect();
         for id in ids {
             self.drop_conn(id);
         }
-        (self.hub, self.next, self.ups)
+        std::mem::take(&mut self.ups)
     }
 
     /// What the hub handed up since the last call, for node sync (`Event::Hub`).
@@ -190,8 +239,18 @@ impl HubRun {
         std::mem::take(&mut self.ups)
     }
 
-    /// Node sync's messages, room requests and closes for the hub's connections.
-    pub fn down(&mut self, downs: Vec<(ConnId, Down)>) {
+    /// Node sync's messages, answers, room requests and closes for the hub's connections; its
+    /// `Keep`s set their links' transport slots.
+    pub fn down(&mut self, mut downs: Vec<(ConnId, Down)>) {
+        downs.retain(|(id, d)| match d {
+            Down::Keep(k) => {
+                if let Some(c) = self.conns.get(id) {
+                    c.kept.store(*k, std::sync::atomic::Ordering::Release);
+                }
+                false
+            }
+            _ => true,
+        });
         let now = self.now();
         let out = blocking(|| self.hub.down(now, downs));
         self.apply(out);
@@ -201,40 +260,53 @@ impl HubRun {
         &mut self.hub
     }
 
+    /// Carries out what a change of the hub (its store replaced) handed out.
+    pub fn applied(&mut self, out: Vec<HubOutput>) {
+        self.apply(out);
+    }
+
     fn now(&self) -> u64 {
         self.clock.now_wall_ms().0
     }
 
-    fn add(&mut self, link: Link, done: Option<oneshot::Sender<()>>) -> ConnId {
+    fn add(&mut self, link: Link, group: Option<u64>, done: Option<oneshot::Sender<()>>) -> ConnId {
         let id = self.next;
         self.next += 1;
-        let Link { tx, rx, source, .. } = link;
+        let Link { tx, rx, source, kept, .. } = link;
         let turn = Arc::new(Notify::new());
         let reader = tokio::spawn(read(id, rx, self.ev.clone(), turn.clone()));
-        self.conns.insert(id, ConnState { tx, reader, source, input: None, turn, done, taken: u64::MAX });
+        self.conns.insert(id, ConnState { tx, kept, reader, source, group, input: None, turn, done, taken: u64::MAX });
         id
     }
 
-    /// A session to serve: from a host listener, or the node's own dial of the host key.
-    pub fn accept(&mut self, link: Link) {
-        let (key, source) = (link.peer_key, link.source);
-        let id = self.add(link, None);
+    fn accept(&mut self, key: [u8; 32], link: Link, group: Option<u64>) {
+        let remote = osis_host::Remote { peer: link.peer, source: link.source, relayed: link.relayed };
+        let id = self.add(link, group, None);
         let now = self.now();
-        let out = blocking(|| self.hub.accept_from(now, id, key, source));
+        let out = blocking(|| self.hub.accept(now, id, key, remote));
         self.apply(out);
+    }
+
+    /// The node's own session to its key `key` (an in-process pair's far end).
+    pub fn accept_own(&mut self, key: [u8; 32], link: Link) {
+        self.accept(key, link, None);
     }
 
     pub fn event(&mut self, ev: HubEv) {
         match ev {
-            HubEv::Accepted(run, link) if run == self.run => self.accept(link),
-            HubEv::PeerUp(run, link, done) if run == self.run => {
+            HubEv::Accepted(group, key, link) => {
+                if self.groups.contains_key(&group) {
+                    self.accept(key, link, Some(group));
+                }
+            }
+            HubEv::PeerUp(run, link, done) if run == self.repl_run => {
                 let key = link.peer_key;
-                let id = self.add(link, Some(done));
+                let id = self.add(link, None, Some(done));
                 let now = self.now();
                 let out = blocking(|| self.hub.peer_up(now, id, key));
                 self.apply(out);
             }
-            HubEv::Accepted(..) | HubEv::PeerUp(..) => {}
+            HubEv::PeerUp(..) => {}
             HubEv::Bytes(id, b) => {
                 if let Some(c) = self.conns.get_mut(&id) {
                     debug_assert!(c.input.is_none(), "a second read waiting");
@@ -282,7 +354,7 @@ impl HubRun {
                     let cap = self.hub.store().policy().max_queued_bytes;
                     let full = self.conns.get(&id).is_some_and(|c| !c.tx.send(b, cap));
                     if full {
-                        (self.log)(&format!("host connection {id}: closed (slow or gone)"));
+                        (self.log)(&format!("hub connection {id}: closed (slow or gone)"));
                         self.drop_conn(id);
                     }
                 }

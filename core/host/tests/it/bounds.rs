@@ -1,5 +1,5 @@
 //! Resource bounds and replication robustness (spec/sync.md §5: hosts cap storage; spec/wire.md
-//! §11.2 Register Error 12): connection cap, Hello deadline, host-wide caps, bounded sweeps,
+//! §11.2 Register Error 12): Hello deadline, host-wide caps, bounded sweeps,
 //! retry after refusals, mutual replication.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -16,48 +16,19 @@ fn live(w: &World, h: usize, l: &Label) -> Vec<BlobId> {
     LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap()
 }
 
-// spec: none (host policy): connections beyond `max_connections` are closed; one without a Hello within `hello_ms` is closed
+// spec: none (host policy): a connection without a Hello within `hello_ms` is closed
 #[test]
-fn connection_cap_and_hello_deadline() {
+fn hello_deadline() {
     let mut w = World::new();
-    let h = w.add_hub(HostPolicy { max_connections: 2, hello_ms: 5_000, ..HostPolicy::default() });
+    let h = w.add_hub(HostPolicy { hello_ms: 5_000, ..HostPolicy::default() });
     w.connect(h);
     let (silent, _) = w.connect_silent(h);
-    let (refused, _) = w.connect_silent(h);
-    assert!(!w.link_open(refused));
-    assert!(w.link_open(silent));
     assert_eq!(w.hubs[h].connections(), 2);
     w.advance(4_999);
     assert!(w.link_open(silent));
     w.advance(1);
     assert!(!w.link_open(silent));
     assert_eq!(w.hubs[h].connections(), 1);
-}
-
-// spec: none (host policy): at `max_connections` the slots are shared by source: one source
-// holding them all gives up its newest to each newcomer from elsewhere until shares are equal;
-// then (and to its own) a newcomer is closed
-#[test]
-fn full_slots_shared_by_source() {
-    let mut w = World::new();
-    let h = w.add_hub(HostPolicy { max_connections: 6, ..HostPolicy::default() });
-    let now = w.now();
-    let hub = &mut w.hubs[h];
-    let (a, b, c) = (Some([1u8; 16]), Some([2u8; 16]), Some([3u8; 16]));
-    let closed = |out: &[HubOutput]| out.iter().filter_map(|o| if let HubOutput::Close(id) = o { Some(*id) } else { None }).collect::<Vec<_>>();
-    for id in 1..=6 {
-        assert!(closed(&hub.accept_from(now, id, [id as u8; 32], a)).is_empty());
-    }
-    assert_eq!(closed(&hub.accept_from(now, 7, [7; 32], a)), vec![7], "its own source: refused");
-    assert_eq!(closed(&hub.accept_from(now, 8, [8; 32], b)), vec![6], "a's newest");
-    assert_eq!(closed(&hub.accept_from(now, 9, [9; 32], b)), vec![5]);
-    assert_eq!(closed(&hub.accept_from(now, 10, [10; 32], b)), vec![4]);
-    // a 3, b 3
-    assert_eq!(closed(&hub.accept_from(now, 11, [11; 32], b)), vec![11]);
-    assert_eq!(closed(&hub.accept_from(now, 12, [12; 32], c)), vec![10], "the greatest of the largest");
-    assert_eq!(closed(&hub.accept_from(now, 13, [13; 32], c)), vec![3]);
-    assert_eq!(closed(&hub.accept_from(now, 14, [14; 32], c)), vec![14], "2 each");
-    assert_eq!(hub.connections(), 6);
 }
 
 // spec/wire.md §11.1 (a Hello lists at most 16 versions), spec/requirements.md (peer input never
@@ -72,14 +43,14 @@ fn partial_frames_bounded() {
     let now = w.now();
     let hub = &mut w.hubs[h];
     // before Hello: a frame header of MAX_MESSAGE closes at once
-    hub.accept(now, 1, [1; 32]);
+    hub.accept(now, 1, [9; 32], osis_host::Remote::key([1; 32]));
     let out = hub.input(now, 1, (osis_base::format::MAX_MESSAGE as u32).to_be_bytes().to_vec());
     assert!(out.contains(&HubOutput::Close(1)), "{out:?}");
     assert_eq!(hub.buffered(), 0);
     // after Hello: each connection starts a MAX_MESSAGE frame and sends 8 MiB of it
     let mut closed = 0;
     for id in 10..14u64 {
-        hub.accept(now, id, [id as u8; 32]);
+        hub.accept(now, id, [9; 32], osis_host::Remote::key([id as u8; 32]));
         hub.input(now, id, encode_frame(&Hello::new(now, [2; 32]).encode()));
         let mut bytes = (osis_base::format::MAX_MESSAGE as u32).to_be_bytes().to_vec();
         bytes.extend(vec![0u8; 8 << 20]);

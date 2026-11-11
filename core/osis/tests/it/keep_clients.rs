@@ -61,9 +61,8 @@ struct Chat {
 fn chat(opts: GrantOpts, role: Role) -> Chat {
     let net = osis_transport::Net::new(5);
     let host = osis::internals::create(on(&net, "s", &MemStore::new(), vec![])).unwrap();
-    host.set_serving(Some(osis::Serving { listen: vec!["mem://s".parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
-    until("host address", || host.serving_address().unwrap().is_some());
-    let addr = host.serving_address().unwrap().unwrap();
+    host.set_serving(Some(osis::Serving { admit: osis::Admit::Open, ..Default::default() })).unwrap();
+    let addr = host.listen(&["mem://s".parse().unwrap()]).unwrap().remove(0);
     let a = osis::internals::create(on(&net, "a", &MemStore::new(), vec![addr.clone()])).unwrap();
     let b_store = MemStore::new();
     let b = osis::internals::create(on(&net, "b", &b_store, vec![addr.clone()])).unwrap();
@@ -93,7 +92,7 @@ fn chat(opts: GrantOpts, role: Role) -> Chat {
         b.at(m, osis::DynamicAspectKey::untyped(text())).get().ok().flatten() == Some(s("hello"))
     });
     let urls: Vec<osis::Url> = vec!["mem://b-clients".parse().unwrap()];
-    let nc = b.client_listen(&urls).unwrap().remove(0);
+    let nc = b.listen(&urls).unwrap().remove(0);
     Chat { net, _host: host, addr, a, b, b_store, nc, urls, bob, g, m }
 }
 
@@ -265,7 +264,7 @@ fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
         assert_eq!(b.close().unwrap(), osis::Close::Closed);
         until("down", || !app.status().unwrap().node_connections[0].connected);
         let b2 = osis::internals::open(on(&net, "b", &b_store, vec![addr.clone()])).unwrap();
-        assert_eq!(b2.client_listen(&urls).unwrap().remove(0), nc);
+        assert_eq!(b2.listen(&urls).unwrap().remove(0), nc);
         until("reconnected", || app.status().unwrap().node_connections[0].connected);
         if keep {
             assert_eq!(app.at(m, osis::DynamicAspectKey::untyped(text())).get().unwrap(), Some(s("hello")), "after a restart");

@@ -3,10 +3,10 @@
 //! node thing may set it; the node's own sync driver does the serving.
 
 use crate::error::{Error, Result};
-use crate::share::{Address, Url};
+use crate::share::Address;
 use crate::Osis;
 use osis_base::{LabelId, Tid, hex};
-use osis_node::sync::{HostPolicy as HostLimits, HostStatus, host_policy, host_policy_known};
+use osis_node::sync::{HostPolicy as HostLimits, host_policy, host_policy_known};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -132,13 +132,11 @@ impl ServingPolicy {
     }
 }
 
-/// This node's terms for storing and serving data for others, readable by it or not. It may come and
-/// go, but others save it as a peer by a fixed address (`Osis::serving_address`, `Osis::add_peer`):
-/// a node with no stable address cannot be reached this way yet.
+/// This node's terms for storing and serving data for others, readable by it or not. Others reach
+/// it where it listens (`Osis::listen`), and save it as a peer by such an address
+/// (`Osis::add_peer`): a node with no stable address cannot be reached this way yet.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Serving {
-    /// URLs to listen on (`quic://0.0.0.0:4040`).
-    pub listen: Vec<Url>,
     /// Which groups it takes, beside `admitted`.
     pub admit: Admit,
     /// Groups it takes whatever `admit` says.
@@ -160,8 +158,6 @@ impl Osis {
         }
         let Some(h) = self.at(self.node(), ct::HOST).get()? else { return Ok(None) };
         Ok(Some(Serving {
-            // what another writer stored and this node could not listen on: the serving status says so
-            listen: h.listen.iter().filter_map(|u| u.parse().ok()).collect(),
             admit: h.admit,
             admitted: h.labels.into_iter().map(SyncId).collect(),
             replicate: h.replicate.into_iter().map(|a| Address(osis_label::Address { url: a.url, key: a.key })).collect(),
@@ -171,18 +167,16 @@ impl Osis {
         }))
     }
 
-    /// Starts, changes or (none) stops serving. Once it listens, its address is one of its saved
-    /// peers (`saved_peers`), so it syncs its own groups there with no setup. Stopping erases what
-    /// it stored for others, and its address, from the saved peers too: a later start has a new
-    /// address and starts empty. Fails `Invalid` on a policy it
-    /// cannot run by.
+    /// Starts, changes or (none) stops serving. While it serves and listens (`listen`), its first
+    /// address is one of its saved peers (`saved_peers`), so it syncs its own groups there with no
+    /// setup. Stopping erases what it stored for others, and its address from the saved peers: a
+    /// later start begins empty. Fails `Invalid` on a policy it cannot run by.
     pub fn set_serving(&self, serving: Option<Serving>) -> Result<()> {
         let node = self.node();
         let mut w = self.write();
         match serving {
             Some(h) => {
                 let v = ct::Host {
-                    listen: h.listen.iter().map(ToString::to_string).collect(),
                     admit: h.admit,
                     labels: h.admitted.into_iter().map(|a| a.0).collect(),
                     replicate: h.replicate.into_iter().map(|a| ct::Address { url: a.0.url, key: a.0.key }).collect(),
@@ -210,30 +204,5 @@ impl Osis {
             return ids(r.call(crate::port::method::SYNC_IDS, vec![osis_base::Value::Tid(group)])?);
         }
         Ok(self.locked(|l| l.sync.label_status().iter().filter(|s| s.group == group).map(|s| SyncId(s.label)).collect()))
-    }
-
-    /// The address others reach this node's serving at (the first listener's), once it listens; `None`
-    /// while it does not serve or has not started. Fails `Network` when it could not listen.
-    /// `Unsupported` on a thin client.
-    pub fn serving_address(&self) -> Result<Option<Address>> {
-        self.local_only("serving_address")?;
-        let st = self.locked(|l| l.sync.host_status().clone());
-        match st {
-            HostStatus::Off => Ok(None),
-            HostStatus::Listening(a) => Ok(a.first().cloned().map(Address)),
-            HostStatus::Failed(e) => Err(Error::Network(e)),
-        }
-    }
-
-    /// The key of `serving_address`, known without listening: made when serving first starts, kept
-    /// until it stops. With a fixed listen URL, `Address::new(url, key)` is the address it will report. `Unsupported` on a client with its own actor.
-    pub fn serving_key(&self) -> Result<Option<[u8; 32]>> {
-        if !self.has_store() {
-            let v = self.rcall(crate::port::method::SERVING_KEY, vec![])?;
-            let Some(k) = crate::port::codec::Args::of(vec![v]).opt()? else { return Ok(None) };
-            let k = crate::port::codec::Args::of(vec![k]).bytes()?.try_into().map_err(|_| crate::port::codec::bad("serving key"))?;
-            return Ok(Some(k));
-        }
-        Ok(self.locked(|l| l.sync.host_key()))
     }
 }

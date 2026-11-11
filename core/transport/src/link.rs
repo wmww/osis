@@ -89,9 +89,10 @@ pub struct Link {
     pub source: Option<Source>,
     /// A relay carries the connection (`Connection::relayed`).
     pub relayed: bool,
-    /// Set by the driver when the session authenticates as a thin client: `Slots::Pending` then
-    /// no longer counts the connection or evicts it. Per connection.
-    pub authed: Arc<AtomicBool>,
+    /// Set by the driver while the session shares something (node sync's word: an open, a
+    /// member of its shared set, an authenticated client): `serve` then no longer counts the
+    /// connection or evicts it. Per connection.
+    pub kept: Arc<AtomicBool>,
     pub tx: LinkTx,
     pub rx: LinkRx,
 }
@@ -107,7 +108,7 @@ impl Drop for Live {
 
 /// Spawns the pumps of one stream. `closer`: the connection to close once our side is finished
 /// (the dialer's role). `wait` bounds the finish.
-fn session<C: Connection>((peer, peer_key, source, authed): (Peer, PublicKey, Option<Source>, Arc<AtomicBool>), mut send: C::Send, mut recv: C::Recv, closer: Option<C>, live: Option<Live>, wait: Duration) -> Link {
+fn session<C: Connection>((peer, peer_key, source, kept): (Peer, PublicKey, Option<Source>, Arc<AtomicBool>), mut send: C::Send, mut recv: C::Recv, closer: Option<C>, live: Option<Live>, wait: Duration) -> Link {
     let (tx, mut wrx) = mpsc::unbounded_channel::<Vec<u8>>();
     let queued = Arc::new(AtomicUsize::new(0));
     let taken = Arc::new(AtomicU64::new(0));
@@ -144,7 +145,7 @@ fn session<C: Connection>((peer, peer_key, source, authed): (Peer, PublicKey, Op
             }
         }
     });
-    Link { peer_key, peer, source, relayed: false, authed, tx: LinkTx { tx, queued, taken }, rx: LinkRx(rrx) }
+    Link { peer_key, peer, source, relayed: false, kept, tx: LinkTx { tx, queued, taken }, rx: LinkRx(rrx) }
 }
 
 /// Dials `addr` (as `secret`'s static key if given, else with an ephemeral key) and opens one
@@ -164,7 +165,7 @@ pub async fn dial<T: Transport>(t: &T, addr: &Address, secret: Option<&StaticSec
 pub fn pair(a_key: PublicKey, b_key: PublicKey) -> (Link, Link) {
     let (a_tx, b_rx) = pipe();
     let (b_tx, a_rx) = pipe();
-    (Link { peer_key: b_key, peer: Peer::Key(b_key), source: None, relayed: false, authed: Arc::default(), tx: a_tx, rx: a_rx }, Link { peer_key: a_key, peer: Peer::Key(a_key), source: None, relayed: false, authed: Arc::default(), tx: b_tx, rx: b_rx })
+    (Link { peer_key: b_key, peer: Peer::Key(b_key), source: None, relayed: false, kept: Arc::default(), tx: a_tx, rx: a_rx }, Link { peer_key: a_key, peer: Peer::Key(a_key), source: None, relayed: false, kept: Arc::default(), tx: b_tx, rx: b_rx })
 }
 
 /// One direction of a `pair`: a pump moves what is sent into the receiver's bounded queue,
@@ -192,29 +193,16 @@ fn pipe() -> (LinkTx, LinkRx) {
 /// authenticated.
 type Open<C> = BTreeMap<u64, (Option<Source>, Arc<AtomicBool>, C)>;
 
-/// How a listener's connections share its slots.
-#[derive(Clone, Copy, Debug)]
-pub enum Slots {
-    /// At most this many connections, shared fairly by source: when all are taken, a newcomer
-    /// takes the newest connection of the source holding the most if that source holds at least
-    /// two more than the newcomer's (`evict_for`), else it is closed on arrival.
-    Shared(usize),
-    /// A public client listener (notes/client-port.md §5): at most this many connections not yet
-    /// authenticated; one that authenticated counts no more (the engine caps those) and is never
-    /// evicted. When all are taken a newcomer takes a slot as in `Shared`; while every source
-    /// holds the same, the oldest connection's: a flood from many sources delays a client by its
-    /// turn, never shuts it out or touches an authenticated one. Only a source already holding
-    /// the most is refused (it waits for its own connections).
-    Pending(usize),
-}
-
-/// Which connection goes for a newcomer from `new` (`None`: the newcomer is refused), or
-/// `Ok(None)` when there is room.
-fn make_room<C>(open: &Open<C>, new: &Option<Source>, slots: Slots) -> Result<Option<u64>, ()> {
-    let (max, counted): (usize, &dyn Fn(&AtomicBool) -> bool) = match slots {
-        Slots::Shared(n) => (n, &|_| true),
-        Slots::Pending(n) => (n, &|a| !a.load(Ordering::Acquire)),
-    };
+/// Which connection goes for a newcomer from `new` (`Err`: the newcomer is refused), or
+/// `Ok(None)` when there is room. At most `max` connections not kept count; a kept one
+/// (`Link::kept`, the engine caps those) is neither counted nor evicted. When all are taken a
+/// newcomer takes the newest connection of the source holding the most if it holds at least two
+/// more than the newcomer's (`evict_for`); while every source holds the same, the oldest
+/// connection's: a flood from many sources delays a peer or client by its turn, never shuts it
+/// out or touches a kept one. Only a source already holding the most is refused (it waits for
+/// its own connections).
+fn make_room<C>(open: &Open<C>, new: &Option<Source>, max: usize) -> Result<Option<u64>, ()> {
+    let counted = |a: &AtomicBool| !a.load(Ordering::Acquire);
     let mut held = BTreeMap::new();
     let mut all = 0;
     for (s, a, _) in open.values() {
@@ -230,7 +218,7 @@ fn make_room<C>(open: &Open<C>, new: &Option<Source>, slots: Slots) -> Result<Op
     if let Some(v) = crate::evict_for(&held, new).and_then(newest_of) {
         return Ok(Some(v));
     }
-    if matches!(slots, Slots::Pending(_)) && held.get(new).copied().unwrap_or(0) == 0 {
+    if held.get(new).copied().unwrap_or(0) == 0 {
         return match open.iter().find(|(_, (_, a, _))| counted(a)) {
             Some((k, _)) => Ok(Some(*k)),
             None => Err(()),
@@ -240,9 +228,9 @@ fn make_room<C>(open: &Open<C>, new: &Option<Source>, slots: Slots) -> Result<Op
 }
 
 /// Accepts connections on `l` and hands each stream they open to `out` as a session, until
-/// `out` or the listener closes. Connections share `slots`. One with no live session for `idle`
-/// is closed.
-pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: mpsc::Sender<Link>, slots: Slots) {
+/// `out` or the listener closes. Connections share `max` slots (`make_room`). One with no live
+/// session for `idle` is closed.
+pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: mpsc::Sender<Link>, max: usize) {
     let open: Arc<Mutex<Open<L::Conn>>> = Arc::default();
     let mut next = 0u64;
     while let Ok(c) = l.accept().await {
@@ -251,10 +239,10 @@ pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: m
         }
         let id = next;
         next += 1;
-        let authed = Arc::new(AtomicBool::new(false));
+        let kept = Arc::new(AtomicBool::new(false));
         {
             let mut m = open.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            match make_room(&m, &c.source(), slots) {
+            match make_room(&m, &c.source(), max) {
                 Ok(None) => {}
                 Ok(Some(k)) => {
                     if let Some((_, _, old)) = m.remove(&k) {
@@ -266,7 +254,7 @@ pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: m
                     continue;
                 }
             }
-            m.insert(id, (c.source(), authed.clone(), c.clone()));
+            m.insert(id, (c.source(), kept.clone(), c.clone()));
         }
         let open = open.clone();
         let out = out.clone();
@@ -276,7 +264,7 @@ pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: m
                 match timeout(idle, c.accept_stream()).await {
                     Ok(Ok((send, recv))) => {
                         live.fetch_add(1, Ordering::AcqRel);
-                        let link = Link { relayed: c.relayed(), ..session::<L::Conn>((c.peer(), c.peer_key(), c.source(), authed.clone()), send, recv, None, Some(Live(live.clone())), wait) };
+                        let link = Link { relayed: c.relayed(), ..session::<L::Conn>((c.peer(), c.peer_key(), c.source(), kept.clone()), send, recv, None, Some(Live(live.clone())), wait) };
                         if out.send(link).await.is_err() {
                             break;
                         }
@@ -307,7 +295,7 @@ mod tests {
         let l = net.endpoint("s").listen(ListenConfig { url: "mem://s".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap();
         let addr = l.address();
         let (out, mut incoming) = mpsc::channel(4);
-        tokio::spawn(serve(l, W, W, out, Slots::Shared(usize::MAX)));
+        tokio::spawn(serve(l, W, W, out, usize::MAX));
         let own = StaticSecret::from_bytes([2; 32]);
         let mut a = dial(&net.endpoint("c"), &addr, Some(&own), W).await.unwrap();
         assert_eq!(a.peer_key, addr.key);
@@ -339,7 +327,7 @@ mod tests {
         assert_eq!(b.rx.recv().await, None);
     }
 
-    // spec: none (host policy): full connection slots are shared by source: a newcomer from
+    // spec: none (node policy): full connection slots are shared by source: a newcomer from
     // another source takes the newest connection of the source holding the most; one from that
     // source is refused
     #[tokio::test]
@@ -348,7 +336,7 @@ mod tests {
         let l = net.endpoint("s").listen(ListenConfig { url: "mem://s".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap();
         let addr = l.address();
         let (out, mut incoming) = mpsc::channel(8);
-        tokio::spawn(serve(l, W, W, out, Slots::Shared(3)));
+        tokio::spawn(serve(l, W, W, out, 3));
         let up = |name: &'static str| {
             let (net, addr) = (net.clone(), addr.clone());
             async move {
@@ -377,16 +365,16 @@ mod tests {
         assert!(b.tx.send(b"still".to_vec(), usize::MAX));
     }
 
-    // spec/sync.md §10, notes/client-port.md §5: a public client listener's slots hold unauthenticated connections
-    // only: a flood from many sources takes the oldest's slot, never refuses a newcomer, and an
-    // authenticated connection is neither counted nor evicted
+    // spec/sync.md §10, notes/client-port.md §5: a listener's slots hold connections not kept
+    // only: a flood from many sources takes the oldest's slot, never refuses a newcomer, and a
+    // kept connection (an authenticated client) is neither counted nor evicted
     #[tokio::test]
-    async fn pending_slots_keep_a_client_in() {
+    async fn a_flood_keeps_a_client_in() {
         let net = Net::new(1);
         let l = net.endpoint("s").listen(ListenConfig { url: "mem://s".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap();
         let addr = l.address();
         let (out, mut incoming) = mpsc::channel(64);
-        tokio::spawn(serve(l, W, W, out, Slots::Pending(2)));
+        tokio::spawn(serve(l, W, W, out, 2));
         let up = |name: String| {
             let (net, addr) = (net.clone(), addr.clone());
             async move {
@@ -398,7 +386,7 @@ mod tests {
         // a client comes in and authenticates
         let mut client = up("client".into()).await;
         let s = timeout(W, incoming.recv()).await.unwrap().unwrap();
-        s.authed.store(true, Ordering::Release);
+        s.kept.store(true, Ordering::Release);
         // a flood from many sources, one connection each, past the two pending slots
         let mut flood = Vec::new();
         for i in 0..6 {
@@ -426,7 +414,7 @@ mod tests {
         let l = net.endpoint("s").listen(ListenConfig { url: "mem://s".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap();
         let addr = l.address();
         let (out, mut incoming) = mpsc::channel(4);
-        tokio::spawn(serve(l, W, W, out, Slots::Shared(usize::MAX)));
+        tokio::spawn(serve(l, W, W, out, usize::MAX));
         let a = dial(&net.endpoint("c"), &addr, None, W).await.unwrap();
         let n = 3 * WRITE_CHUNK + 5;
         assert!(a.tx.send(vec![7; n], usize::MAX));

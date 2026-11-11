@@ -476,24 +476,25 @@ fn started(w: &World, h: usize) -> osis_host::ConnId {
 }
 
 // issues/net-one-peer.md step 3 (The hub calls up for nothing; spec/wire.md §11.2): a session's
-// start with its binding goes up with its first node-kind message, then the messages unjudged in
+// start with its binding (the listener's key, the dialer as the transport tells it) goes up at
+// its Hello, whether it holds an open as that changes, then node-kind messages unjudged in
 // arrival order; node sync's answers come down and go out; the end goes up once the connection
-// is gone. A host client's connection never starts
+// is gone
 #[test]
 fn node_kinds_go_up_answers_come_down() {
     let mut w = World::new();
     let h = w.add_hub(HostPolicy::default());
     let a = w.connect(h);
+    let conn = started(&w, h);
+    let Some((_, _, osis_host::Up::Start(b))) = w.ups.first() else { panic!("{:?}", w.ups) };
+    assert_eq!((b.dialer, b.key, b.remote), ([0xc0 + a as u8; 32], hub_key(h), osis_host::Remote::key([0xe0 + a as u8; 32])));
+    w.ups.clear();
     let l = Label::new(3);
     w.setup(a, &l);
     w.open(a, &l);
-    assert!(w.ups.is_empty(), "{:?}", w.ups);
+    assert_eq!(w.ups.drain(..).map(|(_, _, u)| u).collect::<Vec<_>>(), vec![osis_host::Up::Opened(true)]);
     w.send(a, Command::Prove(vec![]));
     w.pump();
-    let conn = started(&w, h);
-    let Some((_, _, osis_host::Up::Start(b))) = w.ups.first() else { panic!("{:?}", w.ups) };
-    assert_eq!((b.dialer, b.key, b.peer), ([0xc0 + a as u8; 32], hub_key(h), [0xe0 + a as u8; 32]));
-    w.ups.remove(0);
     let pull = osis_proto::msg::Pull { id: osis_proto::msg::NODE_IDS | 7, cursor: None, joins: vec![], inline_limit: 0, max_reply: osis_proto::serving::REPLY_BUDGET as u64, follow: true, ephemeral: false };
     w.send(a, Command::Peer(Box::new(Message::Pull(Box::new(pull.clone())))));
     w.pump();
@@ -519,8 +520,8 @@ fn a_stalled_node_request_closes_spec_sync_6() {
     let mut w = World::new();
     let h = w.add_hub(HostPolicy::default());
     let a = w.connect(h);
-    w.run(a, Command::Prove(vec![]));
     let conn = started(&w, h);
+    w.run(a, Command::Prove(vec![]));
     let Some((_, _, osis_host::Up::Message(prove))) = w.ups.last() else { panic!("{:?}", w.ups) };
     let id = prove.id();
     w.down(h, vec![(conn, osis_host::Down::Message(Box::new(Message::Proved { id, proofs: vec![] })))]);

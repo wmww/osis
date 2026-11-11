@@ -290,17 +290,15 @@ type host_caps = struct {
 
 /// The device acts as a host, storing others' synced groups (spec/sync.md §4); absent: it does not.
 admin aspect host^.0: struct {
-    /// Addresses to listen on.
-    listen 0: list<string>,
-    admit 1: admit,
+    admit 0: admit,
     /// Label IDs (16 bytes) taken beyond what `admit` allows.
-    labels 2: set<blob>,
+    labels 1: set<blob>,
     /// Other hosts to copy to.
-    replicate 3: list<address>,
+    replicate 2: list<address>,
     /// Tuning settings by name.
-    policy 4: map<string, int>,
+    policy 3: map<string, int>,
     /// Per-label limits, by label ID.
-    caps 5: map<blob, host_caps>,
+    caps 4: map<blob, host_caps>,
 };
 
 /// A thin client: an app that uses this device's data from elsewhere instead of keeping its own.

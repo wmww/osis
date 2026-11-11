@@ -159,14 +159,12 @@ fn serve(store: &Path, args: &[&str]) -> (Running, String) {
     (Running(c), addr.trim().to_string())
 }
 
-/// A `serve` of `store` that prints a `client URL#KEY` line first: that address.
+/// A `serve` of `store` listening on a port of its own: its `URL#KEY` address.
 fn serve_clients(store: &Path) -> (Running, String) {
-    let (h, line) = serve(store, &["--client-listen", "quic://127.0.0.1:0"]);
-    let a = line.strip_prefix("client ").unwrap_or_else(|| panic!("{line}")).to_string();
-    (h, a)
+    serve(store, &["--listen", "quic://127.0.0.1:0"])
 }
 
-// spec/sync.md §10 (client port), notes/client-port.md §3, §5, notes/cli.md: a thin CLI (`--node ADDR --client-secret FILE`, no store) over real QUIC with bearer Auth: the client listener's address from `serve --client-listen`; reads and writes within its grant, as its actor; not beyond it; a rotated client key strands the old address, exit 6-class `Network`, while the new one works; a wrong secret is refused; `--remote` and `group source` route a group of another store there, and fail, not fall back, once it is gone
+// spec/sync.md §10 (client port), notes/client-port.md §3, §5, notes/cli.md: a thin CLI (`--node ADDR --client-secret FILE`, no store) over real QUIC with bearer Auth: the node's address from `serve --listen`; reads and writes within its grant, as its actor; not beyond it; a wrong secret is refused; `--remote` and `group source` route a group of another store there, and fail, not fall back, once it is gone
 #[test]
 #[ignore]
 fn thin_cli_quic_localhost() {
@@ -206,13 +204,7 @@ fn thin_cli_quic_localhost() {
     let r = run(&none, &["--timeout", "30s", "--node", &addr, "--client-secret", bad.to_str().unwrap(), "get", &t, "note:title.0"]);
     assert_ne!(r.0, 0);
     assert!(r.2.contains("refused"), "{}", r.2);
-    // a new client listener key: the old address is out, the new one in
-    let new = osis(&n, &["clients", "rotate-address"]);
-    assert_ne!(new, addr);
-    let old = run(&none, &["--timeout", "3s", "--node", &addr, "--client-secret", file, "get", &t, "note:title.0"]);
-    assert_ne!(old.0, 0);
-    let r = run(&none, &["--timeout", "30s", "--node", &new, "--client-secret", file, "get", &t, "note:title.0"]);
-    assert_eq!(r.0, 0, "{}", r.2);
+    let new = addr.clone();
     // another node's store routes a group it does not hold there; with the node gone it fails
     let m = dir("thin-other");
     osis(&m, &["init"]);
@@ -330,8 +322,8 @@ fn chat_channel_localhost() {
 }
 
 // spec/data-model.md §9 (`host^.0` `own`), notes/cli.md Serving: a dedicated peer node of
-// Alice's, paired and then serving under `own` with no other setup (its address from `serving show`, before it
-// serves, so one port picked up front), the only peer she has: her home, a group made afterwards and a
+// Alice's, paired and then serving under `own` with no other setup (its address the one `serve --listen`
+// prints), the only peer she has: her home, a group made afterwards and a
 // link to it reach it; Bob, on that peer only, redeems the link (his home group it refuses:
 // his `sync` exits 6 naming the peer that does not admit it).
 #[test]
@@ -342,13 +334,10 @@ fn own_serving_node_localhost() {
     pair(&a, &h, None);
     let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let url = format!("quic://127.0.0.1:{port}");
-    osis(&h, &["serving", "set", "--listen", &url, "--admit", "own"]);
-    let show = osis(&h, &["serving", "show"]);
-    let addr = show.lines().find_map(|l| l.strip_prefix("address ")).unwrap_or_else(|| panic!("{show}")).to_string();
+    osis(&h, &["serving", "set", "--admit", "own"]);
+    let (_peer, addr) = serve(&h, &["--listen", &url]);
     assert!(addr.starts_with(&format!("{url}#")), "{addr}");
     osis(&a, &["peers", "add", &addr]);
-    let (_peer, served) = serve(&h, &[]);
-    assert_eq!(served, addr, "the address `serving show` said");
 
     let g = osis(&a, &["create", "--in", "me", "t:made.0", "true"]);
     osis(&a, &["group", "sync", &g]);
@@ -471,10 +460,10 @@ fn daemon_clients_localhost() {
         if xdg {
             assert_eq!(osis(&s, &["node", "ls"]).lines().count(), 1);
             assert_eq!(osis(&s, &["card", "show"]), scard);
-            let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-            osis(&s, &["serving", "set", "--listen", &format!("quic://127.0.0.1:{port}"), "--admit", "open"]);
-            let show = osis(&s, &["serving", "show"]);
-            let own = show.lines().find_map(|l| l.strip_prefix("address ")).unwrap_or_else(|| panic!("{show}")).to_string();
+            osis(&s, &["serving", "set", "--admit", "open"]);
+            assert_eq!(osis(&s, &["serving", "show"]), "admit open");
+            // another address of the same node (a port it does not listen on): saved and removed
+            let own = format!("quic://127.0.0.1:9#{}", addr.split_once('#').unwrap().1);
             osis(&s, &["peers", "add", &own]);
             assert!(osis(&s, &["peers", "ls"]).contains(&own));
             osis(&s, &["peers", "rm", &own]);

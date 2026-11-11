@@ -49,7 +49,7 @@ node data thing
 `remove_node` deletes the node's data thing and its home membership. The node's windows were only ever on that device. A removed node that loses home reads built-in defaults, so with `host^.0` gone it stops hosting.
 
 ## What moves
-- `host^.0` and `clients^.0`: from the node thing to the node data thing. Drop "never placed under a label" from spec/data-model.md §9. Keep the `^`, so a later write grant on the thing does not carry hosting. The host secret stays a local record.
+- `host^.0` and `clients^.0`: from the node thing to the node data thing. Drop "never placed under a label" from spec/data-model.md §9. Keep the `^`, so a later write grant on the thing does not carry hosting. The run of hosting stays a local record.
 - Windows: `ui:windows.0` moves from the account group to the node data thing as a set. Remove the window map entry logic and `ui:internal.0` with its subgroup (`libs/kit/src/store.rs`, `window` and `window_opt`).
 - `ui:theme.0`, `ui:mode.0`: from the account group to the account settings thing, removing their first-set-wins handling.
 - Stay: favorites, arrangements and `viewed_as` (the user's data, not settings); `Config` and `AppConfig` fields that describe one running process.

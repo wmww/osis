@@ -1058,3 +1058,47 @@ fn repro_row37_another_node_of_the_sharer_finalizes_a_link() {
     w.advance(2 * LONG_MS);
     assert!(!a2.grants(g).unwrap().contains_key(&k), "still not finalized");
 }
+
+// issues/net-one-peer.md step 1, spec/sync.md §10 (One key): a node that serves is a saved peer by
+// its `peer://` address, dialed by its key through its relay, and the serving reaches its hub
+// there: Alice's home syncs at the box, and her new node, offline until she is gone, reads there
+// what she wrote meanwhile
+#[test]
+fn a_peer_address_saved_peer_dialed_by_key_syncs_spec_sync_10() {
+    let mut w = World::new();
+    let r = w.reach.add_relay(None);
+    let cone = w.reach.add_nat(Nat::CONE);
+    let bx = w.account(1, &[]);
+    let alice = w.account(2, &[]);
+    w.place(&bx, &[], Uplink::Public, &[r]);
+    w.place(&alice, &[], Uplink::Nat(cone), &[]);
+    bx.set_serving(Some(osis::Serving { admit: osis::Admit::Open, ..Default::default() })).unwrap();
+    w.run();
+    let reach = bx.sync_engine(|s| s.own_reach()).unwrap();
+    let addr: osis::Address = format!("{}#{}", osis_transport::peer_url(&reach.items), osis_schema::osis_base::base64url::encode(&reach.dialable)).parse().unwrap();
+    alice.add_peer(&addr).unwrap();
+    // her new node, kept off the network until Alice is gone
+    let dev = pair(&w, &alice, 7);
+    w.place(&dev, &[], Uplink::Nat(cone), &[]);
+    w.set_online(&dev, false);
+    say(&alice, alice.home(), "at the box");
+    w.until(alice.wait_synced(SyncScope::Thing(alice.home())), 1000, 30).unwrap();
+    let st = alice.status().unwrap().groups[&alice.home()].clone();
+    assert!(st.refused_by.is_empty(), "{st:?}");
+    let bi = w.index(&bx).unwrap();
+    let s = w.host_of(bi).unwrap();
+    let home = alice.sync_engine(|s| s.labels().into_iter().find(|(g, _)| *g == alice.home()).map(|(_, l)| l.id)).unwrap();
+    assert!(w.hosts[s].hub.store().labels_after(None, 100).unwrap().contains(&home), "stored at the box");
+    w.set_online(&alice, false);
+    w.set_online(&dev, true);
+    w.run();
+    let t = alice.home();
+    for _ in 0..60 {
+        if heard(&dev, t).as_deref() == Some("at the box") {
+            break;
+        }
+        w.advance(1_000);
+    }
+    assert_eq!(heard(&dev, t).as_deref(), Some("at the box"));
+    assert!(w.peer_dials(&dev, &bx) > 0, "dev dialed the box by its key");
+}

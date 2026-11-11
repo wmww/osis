@@ -14,7 +14,7 @@ use osis_crypto::kdf::{beacon, beacon_hit, pair_key};
 use osis_proto::msg::{NODE_IDS, OfferItem, Pull};
 use osis_label::Address;
 use osis_node::sync::driver::{self, Control, Shared};
-use osis_node::sync::{Action, Event as SyncEvent, HostStatus, SyncEngine};
+use osis_node::sync::{Action, Event as SyncEvent, SyncEngine};
 use osis_proto::examples::{Label, bid, blob};
 use osis_proto::*;
 use osis_schema::core_types as ct;
@@ -29,6 +29,8 @@ const GUARD: Duration = Duration::from_secs(30);
 /// An engine holder whose host store lives in one memory backend across driver runs.
 struct Keep {
     engine: Mutex<SyncEngine>,
+    /// Where the driver listens (`Control::Listen`).
+    url: String,
     backend: MemoryBackend,
     root: MemoryRoot,
 }
@@ -42,8 +44,8 @@ impl Shared for Keep {
     }
 }
 
-/// A node hosting (`host^.0`: listening at its URL, any label admitted, replicating to `peers`)
-/// under the tokio driver.
+/// A node hosting (`host^.0`: any label admitted, replicating to `peers`) under the tokio
+/// driver, listening at its URL.
 struct Host {
     addr: Address,
     ctl: mpsc::UnboundedSender<Control>,
@@ -61,31 +63,20 @@ impl Host {
         let me = net.node_tid(n);
         let mut m = osis_node::Mutation::new();
         let replicate = peers.into_iter().map(|a| ct::Address { url: a.url, key: a.key }).collect();
-        m.replace(me, &ct::HOST, &ct::Host { listen: vec![url.into()], admit: ct::Admit::Open, replicate, ..Default::default() }).unwrap();
+        m.replace(me, &ct::HOST, &ct::Host { admit: ct::Admit::Open, replicate, ..Default::default() }).unwrap();
         net.engine(n).commit(m).unwrap();
-        Keep { engine: Mutex::new(net.take(n)), backend: MemoryBackend::new(), root: MemoryRoot::new() }
+        Keep { engine: Mutex::new(net.take(n)), url: url.into(), backend: MemoryBackend::new(), root: MemoryRoot::new() }
     }
 
-    /// Runs the driver for `keep` on `transport` until it hosts.
+    /// Runs the driver for `keep` on `transport`, listening at its URL.
     async fn start<T: Transport>(keep: Keep, transport: T, clock: Arc<dyn Clock>) -> Host {
         let (ctl, rx) = mpsc::unbounded_channel();
+        let url = keep.url.clone();
         let task = tokio::spawn(driver::run_shared(keep, transport, Vec::new(), clock, rx, Arc::new(|m: &str| eprintln!("{m}"))));
-        let addr = tokio::time::timeout(GUARD, async {
-            loop {
-                let (tx, rx) = oneshot::channel();
-                let c: driver::Call = Box::new(move |s: &mut SyncEngine| {
-                    let _ = tx.send(s.host_status().clone());
-                    s.handle(SyncEvent::Local)
-                });
-                assert!(ctl.send(Control::Call(c)).is_ok());
-                if let HostStatus::Listening(a) = rx.await.unwrap() {
-                    return a[0].clone();
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+        let (tx, reply) = oneshot::channel();
+        assert!(ctl.send(Control::Listen { urls: vec![url], reply: tx }).is_ok());
+        let a = tokio::time::timeout(GUARD, reply).await.unwrap().unwrap().unwrap();
+        let addr = Address { url: a[0].url.clone(), key: a[0].key };
         Host { addr, ctl, task }
     }
 
@@ -101,22 +92,6 @@ impl Host {
         });
         assert!(self.ctl.send(Control::Call(c)).is_ok());
         rx.await.unwrap()
-    }
-
-    /// Waits until the node listens at `url`; returns that address.
-    async fn listening(&self, url: &str) -> Address {
-        tokio::time::timeout(GUARD, async {
-            loop {
-                if let HostStatus::Listening(a) = self.call(|s| s.host_status().clone()).await
-                    && let Some(a) = a.into_iter().find(|a| a.url == url)
-                {
-                    return a;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap()
     }
 
     /// A host client dialed on `transport` with an ephemeral key.
@@ -293,39 +268,36 @@ async fn hosts_replicate_through_dialed_links() {
     s2.stop().await;
 }
 
-// spec/data-model.md §9, spec/sync.md §5: a `host^.0` change other than admission or caps (here its listen URL) closes the hub's connections and listeners and serves again over the same store at the new address
+// spec/data-model.md §9, spec/sync.md §5: hosting stopping closes the connections that opened
+// something of the host store; the others stay, served an empty store on the same listener and
+// key
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_change_serves_the_same_store_again() {
+async fn stopping_closes_what_opened_the_host_store() {
     let tnet = osis_transport::Net::new(1);
     let mut net = Net::new();
     let keep = Host::node(&mut net, 1, "mem://s", vec![]);
     let host = Host::start(keep, tnet.endpoint("s"), net.clock.clone()).await;
     let clients = tnet.endpoint("clients");
     let mut a = host.client(&clients).await;
+    let mut idle = host.client(&clients).await;
     let l = Label::new(3);
     a.run(l.register_cmd(0)).await;
     a.run(open(&l)).await;
     let ev = a.run(sync(l.id, (0..3).map(|n| l.entry(blob(n))).collect())).await;
     assert_eq!(statuses(&ev), vec![Code::OK; 3]);
-    host.call(move |s| {
+    host.call(|s: &mut SyncEngine| {
         let me = s.engine_mut().tid();
         let mut m = osis_node::Mutation::new();
-        m.replace(me, &ct::HOST, &ct::Host { listen: vec!["mem://s2".into()], admit: ct::Admit::Open, ..Default::default() }).unwrap();
+        m.remove_aspect(me, &ct::HOST).unwrap();
         s.engine_mut().commit(m).unwrap();
     })
     .await;
-    let addr = host.listening("mem://s2").await;
-    assert_eq!(addr.key, host.addr.key);
-    // the old session is closed
+    // the session with an open is closed
     assert!(tokio::time::timeout(GUARD, async { while a.link.rx.recv().await.is_some() {} }).await.is_ok());
-    // the old listener is gone
-    let old = osis_transport::Address { url: host.addr.url.clone(), key: host.addr.key };
-    assert!(osis_transport::link::dial(&clients, &old, None, GUARD).await.is_err());
-    let s2 = Host { addr, ..host };
-    let mut b = s2.client(&clients).await;
-    b.run(open(&l)).await;
-    assert_eq!(added(&b.run(sync(l.id, vec![])).await), sorted((0..3).map(bid).collect()));
-    s2.stop().await;
+    // the other stays, and finds nothing: not hosting, no label
+    let ev = idle.run(open(&l)).await;
+    assert!(matches!(&ev[..], [ClientEvent::Refused { .. }]), "{ev:?}");
+    host.stop().await;
 }
 
 // spec: none (driver policy, notes/flow-control.md Hub stall bounds): connections take turns per input,
@@ -393,7 +365,7 @@ async fn quic_clients_and_replication() {
 }
 
 // issues/net-one-peer.md 3c, spec/sync.md §5, §10: node sync above the hub. One connection to the
-// host key of a node carries a label the node hosts and cannot read (Register, Open, Sync: the
+// key of a node carries a label the node hosts and cannot read (Register, Open, Sync: the
 // hub's store) and a group the node reads (proofs, NoRecord, a Hit, the stream: node sync), each
 // answered by its layer
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -461,7 +433,7 @@ async fn one_connection_serves_hosted_and_read_labels() {
     host.stop().await;
 }
 
-// spec/sync.md §10 (Connection proofs, Pair key): a dialer at the host key proving an actor the
+// spec/sync.md §10 (Connection proofs, Pair key): a dialer at the node's key proving an actor the
 // node does not know gets no proof back, no record and no shared set
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stranger_gets_no_proof_spec_sync_10() {

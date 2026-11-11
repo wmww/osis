@@ -193,6 +193,8 @@ pub struct NetNode {
     pub tid: Tid,
     /// Bytes the node sent (to hosts and peers) so far.
     pub sent_bytes: u64,
+    /// The hub its peers' dials reach (an empty store in memory; none while it is down).
+    hub: Option<Hub>,
 }
 
 impl NetNode {
@@ -246,12 +248,14 @@ pub enum Party {
 enum End {
     Node(usize, ConnId),
     Hub(usize, u64),
+    /// A connection of a node's own hub (a peer dialed it).
+    NodeHub(usize, u64),
 }
 
 impl End {
     fn party(self) -> Party {
         match self {
-            End::Node(n, _) => Party::N(n),
+            End::Node(n, _) | End::NodeHub(n, _) => Party::N(n),
             End::Hub(s, _) => Party::S(s),
         }
     }
@@ -540,7 +544,7 @@ impl NetSim {
         let store = store.and_then(|st| HostStore::open(st, clock, policy, Box::new(SeededRng::from_u64(seed ^ 0x570e))).map_err(|e| e.to_string()));
         let store = store.map_err(|e| self.fail(format!("host {s} open: {e}")))?;
         let host = self.host(s)?;
-        host.hub = Some(Hub::new(store, host.key, Box::new(SeededRng::from_u64(seed ^ 0x5eed))));
+        host.hub = Some(Hub::new(store, Box::new(SeededRng::from_u64(seed ^ 0x5eed))));
         host.up = true;
         Ok(())
     }
@@ -587,7 +591,7 @@ impl NetSim {
         let seed = self.boot_seed("engine", Party::N(i));
         let engine = open_engine(&backend, &root, &clock, seed, true).map_err(|e| self.fail(format!("node {i} create: {e}")))?;
         let tid = engine.tid();
-        self.nodes.push(NetNode { sync: None, events: None, backend, root, faults, clock, spec, cfg, wake: None, up: false, lost: false, tid, sent_bytes: 0 });
+        self.nodes.push(NetNode { sync: None, events: None, backend, root, faults, clock, spec, cfg, wake: None, up: false, lost: false, tid, sent_bytes: 0, hub: None });
         self.boot(i, engine)?;
         Ok(i)
     }
@@ -600,8 +604,14 @@ impl NetSim {
         let node = self.node(n)?;
         let sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed)), node.cfg.clone());
         let sync = sync.map_err(|e| self.fail(format!("node {n} sync start: {e}")))?;
+        let clock: Arc<dyn Clock> = self.node(n)?.clock.clone();
+        let st = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut SeededRng::from_u64(seed ^ 0x40b)).map_err(|e| e.to_string());
+        let st = st.and_then(|st| HostStore::open(st, clock, HostPolicy::default(), Box::new(SeededRng::from_u64(seed ^ 0x40c))).map_err(|e| e.to_string()));
+        let mut st = st.map_err(|e| self.fail(format!("node {n} hub: {e}")))?;
+        st.set_admission(osis_host::Admission::Only(Default::default()), Default::default());
         let node = self.node(n)?;
         node.sync = Some(sync);
+        node.hub = Some(Hub::new(st, Box::new(SeededRng::from_u64(seed ^ 0x4ab))));
         node.events = Some(events);
         node.up = true;
         node.wake = None;
@@ -727,7 +737,12 @@ impl NetSim {
                 }
                 Action::Wake { at } => self.node(n)?.wake = Some(at),
                 Action::Reach => self.relisten(n)?,
-                Action::Host(_) | Action::Hub { .. } | Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } | Action::Authed { .. } => {}
+                Action::Hub { conn, down } => {
+                    let at = self.nodes.get(n).map_or(0, |x| x.clock.now_wall_ms().0);
+                    let out = self.nodes.get_mut(n).and_then(|x| x.hub.as_mut()).map(|h| h.down(at, vec![(conn, down)])).unwrap_or_default();
+                    self.node_hub_out(n, out)?;
+                }
+                Action::Host(_) | Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } => {}
             }
         }
         Ok(())
@@ -800,15 +815,16 @@ impl NetSim {
         let mut peer = [0u8; 32];
         peer[..8].copy_from_slice(&Dice::keyed(self.seed, "peer", &[id]).u64().to_le_bytes());
         let now = self.now();
+        let key = address.key;
         let out = match self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()) {
-            Some(h) => h.accept(now, hc, peer),
+            Some(h) => h.accept(now, hc, key, osis_host::Remote::key(peer)),
             None => Vec::new(),
         };
         self.hub_out(s, out)
     }
 
-    /// A dial of a `peer://` address reaches the node listening with its key when the model
-    /// routes it (`Reach::route`): the target's session is `SyncEngine::accept`'s.
+    /// A dial of a `peer://` address reaches the hub of the node listening with its key when the
+    /// model routes it (`Reach::route`).
     fn dial_peer(&mut self, n: usize, conn: ConnId, address: &Address) -> Res<()> {
         let target = self.reach.node_of(&address.key).filter(|m| *m != n && self.is_up(*m));
         let route = target.and_then(|m| self.peer_route(n, m, &address.url));
@@ -820,11 +836,15 @@ impl NetSim {
         self.next_link += 1;
         let mut key = [0u8; 32];
         key[..8].copy_from_slice(&Dice::keyed(self.seed, "peer", &[id]).u64().to_le_bytes());
-        let (pc, acts) = self.sync(m)?.accept(address.key, key);
-        self.links.insert(id, Link { dialer: End::Node(n, conn), acceptor: End::Node(m, pc), last: [0; 2], route: Some(route) });
+        let hc = self.next_hub_conn;
+        self.next_hub_conn += 1;
+        self.links.insert(id, Link { dialer: End::Node(n, conn), acceptor: End::NodeHub(m, hc), last: [0; 2], route: Some(route) });
         self.note(format!("node {n} reaches node {m} ({route:?}): link {id}"));
         self.send(id, End::Node(n, conn), Payload::Up);
-        self.after_node(m, acts)
+        let at = self.nodes.get(m).map_or(0, |x| x.clock.now_wall_ms().0);
+        let remote = osis_host::Remote { peer: osis_transport::Peer::Key(key), source: None, relayed: matches!(route, Route::Relay(_)) };
+        let out = self.nodes.get_mut(m).and_then(|x| x.hub.as_mut()).map(|h| h.accept(at, hc, address.key, remote)).unwrap_or_default();
+        self.node_hub_out(m, out)
     }
 
     /// The model's route from node `n` to node `m` by `url`, with this moment's partitions.
@@ -999,7 +1019,39 @@ impl NetSim {
                 let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.closed(hc)).unwrap_or_default();
                 self.hub_outputs(s, out);
             }
+            End::NodeHub(n, hc) => {
+                let out = self.nodes.get_mut(n).and_then(|x| x.hub.as_mut()).map(|h| h.closed(hc)).unwrap_or_default();
+                if let Err(e) = self.node_hub_out(n, out) {
+                    self.note(format!("node {n} hub: {e:?}"));
+                }
+            }
         }
+    }
+
+    /// What node `n`'s hub handed out: bytes and closes on its peer links, ups to its node sync.
+    fn node_hub_out(&mut self, n: usize, out: Vec<HubOutput>) -> Res<()> {
+        let mut ups = Vec::new();
+        for o in out {
+            match o {
+                HubOutput::Send(hc, bytes) => {
+                    if let Some((id, to)) = self.peer_end(End::NodeHub(n, hc)) {
+                        self.send(id, to, Payload::Bytes(bytes));
+                    }
+                }
+                HubOutput::Close(hc) => {
+                    if let Some((id, to)) = self.peer_end(End::NodeHub(n, hc)) {
+                        self.links.remove(&id);
+                        self.notify_closed(to);
+                    }
+                }
+                HubOutput::Up(hc, up) => ups.push((hc, up)),
+                HubOutput::Diagnostic(d) => self.note(format!("node {n} hub diagnostic: {}", d.chars().take(160).collect::<String>())),
+            }
+        }
+        if ups.is_empty() {
+            return Ok(());
+        }
+        self.feed(n, Event::Hub { ups })
     }
 
     fn hub_out(&mut self, s: usize, out: Vec<HubOutput>) -> Res<()> {
@@ -1096,11 +1148,11 @@ impl NetSim {
     /// (a close's late `Down` among it) is lost with the process: connection IDs start again at
     /// a restart, so it would end a new connection.
     pub fn node_down(&mut self, n: usize) -> Res<()> {
-        self.queue.retain(|m| !matches!(m.to, End::Node(x, _) if x == n));
+        self.queue.retain(|m| !matches!(m.to, End::Node(x, _) | End::NodeHub(x, _) if x == n));
         for id in self.links_of(Party::N(n)) {
             if let Some(l) = self.links.remove(&id) {
                 for e in [l.dialer, l.acceptor] {
-                    if !matches!(e, End::Node(x, _) if x == n) {
+                    if !matches!(e, End::Node(x, _) | End::NodeHub(x, _) if x == n) {
                         self.notify_closed(e);
                     }
                 }
@@ -1109,6 +1161,7 @@ impl NetSim {
         let node = self.node(n)?;
         node.up = false;
         node.sync = None;
+        node.hub = None;
         node.events = None;
         node.wake = None;
         Ok(())
@@ -1217,6 +1270,12 @@ impl NetSim {
         }
         self.redial()?;
         for n in 0..self.nodes.len() {
+            let at = self.nodes.get(n).map_or(now, |x| x.clock.now_wall_ms().0);
+            let due = self.nodes.get(n).and_then(|x| x.hub.as_ref()).and_then(|h| h.next_due(at)).is_some_and(|t| t <= at);
+            if due {
+                let out = self.nodes.get_mut(n).and_then(|x| x.hub.as_mut()).map(|h| h.tick(at)).unwrap_or_default();
+                self.node_hub_out(n, out)?;
+            }
             let due = self.nodes.get(n).is_some_and(|x| x.up && x.wake.is_some_and(|w| w <= x.clock.now_wall_ms().0));
             if due {
                 self.node(n)?.wake = None;
@@ -1242,7 +1301,7 @@ impl NetSim {
                 self.links.insert(id, Link { dialer: End::Hub(s, hs), acceptor: End::Hub(p, hp), last: [0; 2], route: None });
                 let now = self.now();
                 let (ks, kp) = (host_key(s), host_key(p));
-                let out = self.hosts.get_mut(p).and_then(|x| x.hub.as_mut()).map(|h| h.accept(now, hp, ks)).unwrap_or_default();
+                let out = self.hosts.get_mut(p).and_then(|x| x.hub.as_mut()).map(|h| h.accept(now, hp, kp, osis_host::Remote::key(ks))).unwrap_or_default();
                 self.hub_out(p, out)?;
                 let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.peer_up(now, hs, kp)).unwrap_or_default();
                 self.hub_out(s, out)?;
@@ -1281,6 +1340,11 @@ impl NetSim {
                 let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.input(now, hc, b.clone())).unwrap_or_default();
                 self.note_gone(s, &b);
                 self.hub_out(s, out)?;
+            }
+            (End::NodeHub(n, hc), Payload::Bytes(b)) if alive => {
+                let at = self.nodes.get(n).map_or(now, |x| x.clock.now_wall_ms().0);
+                let out = self.nodes.get_mut(n).and_then(|x| x.hub.as_mut()).map(|h| h.input(at, hc, b)).unwrap_or_default();
+                self.node_hub_out(n, out)?;
             }
             _ => {}
         }

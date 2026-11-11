@@ -5,7 +5,7 @@ use super::*;
 impl SyncEngine {
     /// Where each synced label stands (the API's status): per label its group, its sources (nodes
     /// connected now with it open, whoever dialed) and how many of them this node's pass is done
-    /// with, whether every host failed it (stranded), which connected hosts refuse it, and when it
+    /// with, whether every host failed it (stranded), which hosts' last answer refused it, and when it
     /// last had every source caught up.
     pub fn label_status(&mut self) -> Vec<LabelStatus> {
         let now = self.now();
@@ -14,12 +14,11 @@ impl SyncEngine {
             let leaving = self.leaving().any(|a| *a == self.engine.group_actor(&g));
             let mut failed = BTreeSet::new();
             let passed = self.state.passed.contains(&l.id);
-            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), sources: 0, idle: 0, opening: 0, stranded: false, refused_by: Vec::new(), leaving, last_sync: None, passed, replaced: l.replaced };
+            // the hosts whose last answer refused it (code 14), connected now or not
+            let refused_by = l.hosts.iter().filter(|a| self.refusals.get(&(a.key, l.id)).is_some_and(|(_, code)| *code == Code::NOT_ADMITTED)).cloned().collect();
+            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), sources: 0, idle: 0, opening: 0, stranded: false, refused_by, leaving, last_sync: None, passed, replaced: l.replaced };
             for c in self.conns.values().filter(|c| !c.peer) {
                 let host = l.hosts.iter().find(|a| a.key == c.host);
-                if let Some(a) = host.filter(|_| c.up && c.req.refusals.get(&l.id).is_some_and(|(_, code)| *code == Code::NOT_ADMITTED)) {
-                    st.refused_by.push(a.clone());
-                }
                 let Some(x) = c.labels.get(&l.id) else {
                     // labels are started once the session is ready
                     st.opening += usize::from(c.up && !c.session.is_ready() && host.is_some());

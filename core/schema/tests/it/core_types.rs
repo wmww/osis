@@ -50,7 +50,6 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into() })),
         ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], items: vec!["https://relay.example".into()], lan_secret: [28; 32], account: None })),
         ("host", "host^.0", HOST.encode(&Host {
-            listen: vec!["quic://0.0.0.0:7400".into()],
             admit: Admit::Open,
             labels: BTreeSet::from([LabelId([31; 16])]),
             replicate: vec![Address { url: "quic://b:7400".into(), key: [32; 32] }],

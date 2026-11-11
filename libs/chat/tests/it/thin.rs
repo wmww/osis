@@ -51,18 +51,13 @@ fn post(db: &Osis, c: osis::Tid, text: &str) -> osis::Result<CommitId> {
 fn thin_client_reads_watches_posts_spec_client_port() {
     let net = osis_transport::Net::new(5);
     let peer = osis::internals::create(on(&net, "s", vec![])).unwrap();
-    peer.set_serving(Some(osis::Serving { listen: vec!["mem://s".parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
-    let end = Instant::now() + W;
-    while peer.serving_address().unwrap().is_none() {
-        assert!(Instant::now() < end);
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    let addr = peer.serving_address().unwrap().unwrap();
+    peer.set_serving(Some(osis::Serving { admit: osis::Admit::Open, ..Default::default() })).unwrap();
+    let addr = peer.listen(&["mem://s".parse().unwrap()]).unwrap().remove(0);
     let n = osis::internals::create(on(&net, "n", vec![addr])).unwrap();
     let c = create(&n, &Options::default()).unwrap();
     block_on(n.wait_synced(SyncScope::All)).unwrap();
     post(&n, c, "first").unwrap();
-    let nc = n.client_listen(&["mem://clients".parse().unwrap()]).unwrap().remove(0);
+    let nc = n.listen(&["mem://clients".parse().unwrap()]).unwrap().remove(0);
     let (actor, secret) = n.add_client(None).unwrap();
     n.grant(c, actor, Role::Read, Default::default()).unwrap();
     let mut cfg = osis::internals::Opening::memory();
@@ -146,9 +141,8 @@ fn own_serving_node_takes_a_chat_spec_data_model_9() {
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let dev = j.finish(&reply).unwrap();
     let url: osis::Url = "mem://h".parse().unwrap();
-    dev.set_serving(Some(osis::Serving { listen: vec![url.clone()], admit: osis::Admit::Own, ..Default::default() })).unwrap();
-    // a fixed listen URL: the address is known before it listens
-    let addr = Address::new(&url, dev.serving_key().unwrap().unwrap());
+    dev.set_serving(Some(osis::Serving { admit: osis::Admit::Own, ..Default::default() })).unwrap();
+    let addr = dev.listen(&[url]).unwrap().remove(0);
     a.add_peer(&addr).unwrap();
     let b = osis::internals::create(cfg("b", vec![addr.clone()])).unwrap();
     // the refused-for-now back-off (5 s) shortened: a new label is refused until the host has its record
