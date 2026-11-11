@@ -1,5 +1,5 @@
 # A purge can list a part that had left the listing
-> Summary: spec/commits.md §7 lists a purged part while its value-less writes are in the state or its keep rule would keep it had the request replaced it (counted from the request's `ts`). A part that had already left the listing (past its keep bound, or dropped by compaction while its writes stay live in a snapshot) shows again as `Purged` after a request names it, e.g. for a day under `keep_history(1d)`: a purge makes history visible that retention no longer kept.
+> Summary: spec/commits.md §7 lists a purged part while its value-less writes are in the state or its keep rule would keep it had the request replaced it (counted from the request's `ts`). A part that had already left the listing (past its keep bound, or dropped by compaction while its writes stay live in a snapshot) shows again as `Purged` after a request names it, e.g. for a day under a setting keeping a day: a purge makes history visible that retention no longer kept.
 > Priority: low
 > Tags: api, retention, spec
 

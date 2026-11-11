@@ -70,14 +70,14 @@ Terms:
 - Secrets that must stay secret for years resist a future quantum attacker. Signatures need not.
 
 ## Deletion
-- Retention per edit: who may purge it (nobody, admins, the author, the author or admins, any writer) and what happens to its history once it is replaced (by default nothing is promised; kept at least until a time and/or a while after it is replaced; or purged once replaced). Defaults per aspect, overridable per write, immutable once written.
+- Who may purge an edit is set per edit (admins, the author or admins, any writer): a default per aspect, overridable per write, immutable once written; admins may always purge. What happens to replaced content is set per thing and aspect by the thing's admins and may change at any time: by default nothing is promised; kept at least a while after it is replaced and/or until a time; or purged once replaced. A change reaches the history nodes still hold: what has left never returns, and a longer window brings back nothing a node already dropped. A default expiry is set the same way and is only what a writer fills in: an edit keeps the expiry it was written with.
 - A purge counts only if its author had the right to make it, judged as the validity of an edit is (removals and re-grants included). Limit: at nodes that cannot read the data, a demoted holder can still delete what its old role allowed, until a writer holding the data uploads it again.
 - Data may carry an expiry at which every node, whether or not it can read it, drops it with nobody online.
 - Purging or expiring a thing's creation ends the thing: every node drops it and ignores later writes to it. Things it created live on. Limit: an ending that later turns out invalid brings the thing back only if some node still holds a copy; otherwise it is gone, as with any purge.
 - Purge is prompt: no honest node keeps purged content once it holds the deletion and what it needs to check it. No batching. Undo never brings back what another party purged, once the undoing node has seen the purge; an earlier undo is its own commit, purged on its own. Purged content is recoverable only from nodes whose retention still holds it; no node keeps a bin.
 - Limit: deletion does not reach offline copies, copies a removed holder kept, dishonest nodes, memory or swap.
-- A node without write on data deletes it on its own only at expiry. Every other deletion is the act of a right holder (a purge, or a writer dropping replaced content no retention keeps), taking effect elsewhere when it arrives.
-- Purge on replace: replaced content is gone at every writer holding it as soon as it holds the replacement, and elsewhere once it hears from such a writer. Limit: until then other nodes keep it, for good if no writer holding both ever syncs. Limit: if the replacing write later turns invalid, the replaced content does not come back and the replacement stays. Expired and purged content never returns while the purge counts.
+- A node deletes data on its own only where nothing promises to keep it: at expiry, and history its thing's settings no longer keep. Purging is the act of a right holder, taking effect elsewhere when it arrives.
+- Purge on replace, set per thing and aspect, for content replaced while it is set: replaced content is gone at every writer holding it as soon as it holds the replacement, and elsewhere once it hears from such a writer. Limit: until then other nodes keep it, for good if no writer holding both ever syncs. Limit: if the replacing write later turns invalid, the replaced content does not come back and the replacement stays. Limit: an aspect that purged on replace keeps no history on that thing again. Expired and purged content never returns while the purge counts.
 - Granularity is one edit of one aspect. Part of a value's history can be purged.
 - No fingerprint: nothing retained lets anyone, even a reader, confirm a guess of purged content, however low-entropy.
 - Forward secure where the platform offers erasable key storage (a hardware keystore, a TPM): a node that deleted honestly and is compromised later yields nothing. Elsewhere, browsers included, deleted data is unrecoverable through the platform's own storage only. A node that lost access to data yields nothing it can no longer read, unless its removal said to keep a read-only copy; the default is to erase.
@@ -86,7 +86,7 @@ Terms:
 ## Ephemeral data
 - Ephemeral state lives in memory, converges among the nodes holding it like any state, outlives contact with its author, and may be lost when no node holds it. A node that restarts gets it back from those that still do.
 - A value that should live only while its author is there (a cursor, a selection) is ephemeral with an expiry its author renews by rewriting it while there; once the author is gone it is gone everywhere by its last write's expiry, with no departure seen by anyone.
-- A signal has no current value, only entries. If a signal is ephemeral it is held by nobody: it reaches the nodes connected at the time, once, with no delivery guarantee. Otherwise its entries are kept in history at least as long as its settings say.
+- A signal has no current value, only entries. If a signal is ephemeral it is held by nobody: it reaches the nodes connected at the time, once, with no delivery guarantee. Otherwise its entries are kept in history at least as long as its thing's settings say.
 - Ephemeral writes need the rights the durable write would need and are verified like it; readers cannot write ephemeral data. Memory spent on others' ephemeral data is bounded per group, with a defined outcome past the bound.
 - "Deterministic" and "Convergence" bind ephemeral data too.
 - Nothing is kept "until everyone has seen it". Whether others are alive is never a protocol condition.
@@ -143,6 +143,6 @@ Binds released formats only; until a stable release formats change in place.
 
 ## API
 - Plain values and listeners. No CRDT concepts, no conflict UI, no correctness that depends on "surfacing it to the user". Diagnostics are informational.
-- Atomic (Decentralization), not isolated: concurrent commits merge, so app invariants must hold under merge. A commit is never split: a write is one commit or is refused. Limit: one commit cannot mix expiries, or mix data nobody may purge with other data; the app writes those as separate commits.
+- Atomic (Decentralization), not isolated: concurrent commits merge, so app invariants must hold under merge. A commit is never split: a write is one commit or is refused. Limit: one commit cannot mix expiries; the app writes those as separate commits.
 - Untyped access always works on any stored data.
 - Large values are usable both materialized and streamed.

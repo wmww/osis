@@ -220,7 +220,7 @@ impl Engine {
 /// content: present here, or written by a valid part not received yet that no held root reset
 /// stamped after it covers (one so covered may never arrive: holders drop it). So once synced a
 /// delete leaves the same reads at every node, whichever bodies it held; an aspect that cannot
-/// hold content needs no reset (one a required rule would refuse beside the others).
+/// hold content needs no reset (it would change no read).
 pub(crate) fn deleted_aspects(tx: &mut super::Tx<'_>, t: &Tid) -> Result<Vec<Ak>> {
     // each named aspect with the newest `ts` of its valid parts not received yet
     let named: Vec<(Ak, Option<osis_base::Ts>)> = tx

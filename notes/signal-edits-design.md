@@ -20,7 +20,7 @@
 - **Expiry:** a writer gives an edit O's `expires`; no rule checks it. O and its edits end together. An over-long edit stands alone once O goes, which is no more than a new message could do.
 - **Retention:** each version carries its own purgeable-by; what history keeps is the thing's setting for the AK, one window for every version, each from its own `ts`.
 - **Old text gone:** the edit commit carries an ordinary purge request naming the earlier versions, and stays honored. A request reaches only deltas expiring no later than its commit, and the purge floor ends at that expiry. A request goes under `purge.0`, which carries no expiry; in a commit that expires the engine leaves `purge.0` out and the request rides the commit's own deltas on the thing, refused (`Invalid`) when it names anything but commits expiring no later or the commit writes nothing there. A disappearing message's edit purging its old text is so one commit.
-- **Edits off:** `final` on the AK's entry of the thing's `retention^.0` setting: a writer refuses `replace` there (`Invalid`). No validity rule: an edit written anyway is honored (Tess, issues/thing-history.md Decisions 5).
+- **Edits off:** `final` on the AK's entry of the thing's `retention^.0` setting: a writer refuses `replace` there (`Invalid`). No validity rule: an edit written anyway is honored (Tess, notes/engine-retention.md History, decision 5).
 - **Limits:**
   - A purge takes only the commits it names. A version racing a purge of O, or written after it, still shows (no more than a new message could do); a deletion meant to hold names the versions too, or purges by author on the aspect.
   - An original past its keep is not listed, so its versions stand alone at their own places. This happens at every node, also under one shared `after D`: O's `ts` is earlier, so it ends first. A node that never held O's header reads the same. Permanent deltas keep lasting headers, so chat is unaffected.
@@ -32,14 +32,14 @@
 - register order (newest wins);
 - purge requests and tombstones;
 - validity (`actor`, key order), so removal needs no new work: an edit after a kick is invalid and not honored;
-- retention and expiry per delta;
+- purgeable-by and expiry per delta;
 - the listing rule and `on_fire`.
 
 **New:** the header field, two index sets, the fold in listings, `replace`, `commit`, `versions`, and `final`.
 
 **Rejected:**
 - *A signal as a map or register state* (`winners`, `carried`). Joining would make validity flips rebuild state, and signals are unjoined so a kick rebuilds nothing. `winners` has nothing to judge.
-- *`purge on replace` retention.* It works through compaction covers, which signals have none of. It needs `writer`, and it isn't "permanent", so headers (and the original's place) would be lost at new nodes.
+- *Purge on replace for edits.* It works through compaction covers, which signals have none of: a signal's entry under purge on replace reads as no history.
 - *A purge of O ends the message* (no version shows, even after the tombstone ends). It needs an exception for an edit's own purge of old text, and a reading that depends on a purged commit no longer listed.
 - *`undoes`.* It is commit-level and open to any writer. Edits would pollute `reverts` and kit's undo. An edit is not an undo.
 
@@ -88,7 +88,7 @@ Each step gets one worker and one reviewer. Steps 1-5 are built: the model (`cor
 - A claim sorting before its original is model-tested only: an engine test needs two devices of one account with skewed clocks.
 
 1. **Model first.** A small TLA or held-model covering arrival order, validity flips, purge, expiry and forged claims. Properties: nodes holding the same commits read alike, and a forged claim changes no reading.
-2. **Wire and rules:** `replaces`, the honoring rule, `final`, the expiry bound, the purge and expiry change; spec/commits.md, spec/wire.md, spec/data-model.md.
+2. **Wire and rules:** `replaces`, the honoring rule, `final`, the purge and expiry change; spec/commits.md, spec/wire.md, spec/data-model.md.
 3. **Engine indexes and fold:** `originals`, `versions`, listing, listener events. Counted test at n and 10n: bodies read per page and per quote are flat.
 4. **`osis` API:** `replace`, `commit`, `versions`, `Part::edited`, `refuse_replace`, port, generic CLI, compile-fail doc tests (API, above).
 5. **Chat and app:** on the API above, quote by `commit`; fast-design step 9.
