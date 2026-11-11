@@ -15,7 +15,7 @@
 
 use std::borrow::Borrow;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -110,15 +110,9 @@ impl Stamps {
     fn record(&self, key: Option<u64>) {
         FRAMES.with(|f| {
             let mut f = f.borrow_mut();
-            let at = f.len().checked_sub(1);
+            let accounted = accounting(&f);
             let Some(top) = f.last_mut() else { return };
-            if ACCOUNTING.get().is_some() && ACCOUNTING.get() == at {
-                top.accounted.insert((Arc::as_ptr(&self.0) as usize, key));
-            }
-            if top.seen.insert((Arc::as_ptr(&self.0) as usize, key)) {
-                let seen = lock(&self.0).stamp(key);
-                top.deps.push(Dep { table: self.0.clone(), key, seen });
-            }
+            top.note((Arc::as_ptr(&self.0) as usize, key), accounted, || Dep { table: self.0.clone(), key, seen: lock(&self.0).stamp(key), accounted });
         });
     }
 }
@@ -152,6 +146,9 @@ struct Dep {
     table: Arc<Mutex<Table>>,
     key: Option<u64>,
     seen: u64,
+    /// Every read of it the memo's answer rests on was inside `accounted`: its move is one an
+    /// amend brings the answer up to date with (`Memo::get_amended_in`).
+    accounted: bool,
 }
 
 impl Dep {
@@ -168,10 +165,26 @@ impl Dep {
 #[derive(Default)]
 struct Frame {
     deps: Vec<Dep>,
-    seen: HashSet<(usize, Option<u64>)>,
-    /// What it read inside `accounted` (an amend's reads of the inputs it brings its answer up
-    /// to date with).
-    accounted: HashSet<(usize, Option<u64>)>,
+    /// Each dep's place in `deps`, by `Dep::id`.
+    seen: HashMap<(usize, Option<u64>), usize>,
+}
+
+impl Frame {
+    /// A read of `id`, inside `accounted` or not; `dep` makes its dep when it is the first.
+    fn note(&mut self, id: (usize, Option<u64>), accounted: bool, dep: impl FnOnce() -> Dep) {
+        match self.seen.get(&id).and_then(|&i| self.deps.get_mut(i)) {
+            Some(d) => d.accounted &= accounted,
+            None => {
+                self.seen.insert(id, self.deps.len());
+                self.deps.push(dep());
+            }
+        }
+    }
+}
+
+/// Whether reads now land inside `accounted` in the top frame of `frames`.
+fn accounting(frames: &[Frame]) -> bool {
+    ACCOUNTING.get().is_some_and(|at| at + 1 == frames.len())
 }
 
 /// Memos computing, on any thread: reads look at their thread's frames only while it is not 0.
@@ -179,7 +192,7 @@ static RECORDING: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     static FRAMES: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
-    /// The frame whose reads `accounted` marks, while one runs.
+    /// The frame whose reads `accounted` marks, while one runs (its place in `FRAMES`).
     static ACCOUNTING: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
@@ -232,9 +245,10 @@ fn recorded_frame<T>(f: impl FnOnce() -> T) -> (T, Frame) {
     (out, frame)
 }
 
-/// Runs `f`, an amend's read of an input it brings its answer up to date with
-/// (`Memo::get_amended_in`): a move of what it reads leaves the kept answer amendable. Outside
-/// an amend it is a plain read.
+/// Runs `f`, a read of an input an amend brings the answer up to date with
+/// (`Memo::get_amended_in`): the amend compares it with what the kept answer saw, by value, so
+/// its move leaves that answer amendable. The memo's function and its amend read these inputs
+/// alike, each inside `accounted`. Elsewhere it is a plain read.
 pub fn accounted<T>(f: impl FnOnce() -> T) -> T {
     struct Restore(Option<usize>);
     impl Drop for Restore {
@@ -262,16 +276,10 @@ fn depend(deps: &[Dep]) {
     }
     FRAMES.with(|f| {
         let mut f = f.borrow_mut();
-        let at = f.len().checked_sub(1);
+        let accounted = accounting(&f);
         let Some(top) = f.last_mut() else { return };
-        let accounting = ACCOUNTING.get().is_some() && ACCOUNTING.get() == at;
         for d in deps {
-            if accounting {
-                top.accounted.insert(d.id());
-            }
-            if top.seen.insert((Arc::as_ptr(&d.table) as usize, d.key)) {
-                top.deps.push(d.clone());
-            }
+            top.note(d.id(), accounted, || Dep { accounted, ..d.clone() });
         }
     });
 }
@@ -336,13 +344,14 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
 
     /// `get_in` for an answer `amend` can bring up to date from the one kept. When that one no
     /// longer holds, `amend` runs on it; its answer (`Some`) is kept if every read of the kept
-    /// answer that moved was read again inside `accounted` by the amend, else `f` runs. So
-    /// `amend` gives what `f` would wherever the inputs it reads inside `accounted` moved (an
-    /// aspect's held commits grew: their bodies' writes added, `retention::bounds::held_writes`);
-    /// its other reads (a new body's) are recorded as any memo's. Two keys sharing a hash share
-    /// a stamp (`Stamps`), so an accounted read of one covers a move of the other: a stale amend
-    /// at odds of 2^-64 a pair. An amend counts as a hit for the debug comparison: an answer
-    /// amended at every change is compared with a fresh run at its changes 1, 4, 16, ...
+    /// answer that moved was only ever read inside `accounted` (by `f` or an earlier amend) and
+    /// was read so again by this amend, else `f` runs. So `amend` gives what `f` would wherever
+    /// the inputs it reads inside `accounted` moved (an aspect's held commits grew: their bodies'
+    /// writes added, `retention::bounds::held_writes`); its other reads (a new body's) are
+    /// recorded as any memo's. A stamp shared by two keys (`Stamps`) is accounted only when every
+    /// read of it was, so a move it covers is one of the inputs the amend compares by value. An
+    /// amend counts as a hit for the debug comparison: an answer amended at every change is
+    /// compared with a fresh run at its changes 1, 4, 16, ...
     pub fn get_amended_in<C, E>(ctx: &mut C, memo: impl Fn(&C) -> &Self, k: &K, f: impl Fn(&mut C) -> Result<V, E>, amend: impl Fn(&mut C, &V) -> Result<Option<V>, E>) -> Result<V, E> {
         if let Some((value, deps, check)) = memo(ctx).kept(k) {
             Self::compare(ctx, &memo, check, &value, &f, "a read no stamp covers");
@@ -353,17 +362,21 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
         if let Some((old, old_deps)) = stale {
             let _s = crate::costs::span("memo amend");
             let (value, frame) = recorded_frame(|| amend(ctx, &old));
-            let new: Arc<[Dep]> = frame.deps.into();
             let value = match value {
                 Ok(v) => v,
                 Err(e) => {
-                    depend(&new);
+                    depend(&frame.deps);
                     return Err(e);
                 }
             };
-            if let Some(value) = value.filter(|_| old_deps.iter().all(|d| frame.accounted.contains(&d.id()) || d.holds())) {
-                let read: HashSet<(usize, Option<u64>)> = new.iter().map(Dep::id).collect();
-                let deps: Arc<[Dep]> = new.iter().cloned().chain(old_deps.iter().filter(|d| !read.contains(&d.id())).cloned()).collect();
+            let again = |d: &Dep| d.accounted && frame.seen.get(&d.id()).and_then(|&i| frame.deps.get(i)).is_some_and(|n| n.accounted);
+            if let Some(value) = value.filter(|_| old_deps.iter().all(|d| d.holds() || again(d))) {
+                // the kept answer's reads still rest under it: each moved one was read again
+                let mut frame = frame;
+                for d in old_deps.iter() {
+                    frame.note(d.id(), d.accounted, || d.clone());
+                }
+                let deps: Arc<[Dep]> = frame.deps.into();
                 depend(&deps);
                 let check = memo(ctx).keep_amended(k, &value, deps);
                 Self::compare(ctx, &memo, check, &value, &f, "an amend that is not what a fresh run gives");
@@ -405,7 +418,7 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
     pub fn amend(&self, k: &K, value: V) {
         if let Some(e) = self.entries.borrow_mut().get_mut(k) {
             e.value = value;
-            e.deps = e.deps.iter().map(|d| Dep { table: d.table.clone(), key: d.key, seen: lock(&d.table).stamp(d.key) }).collect();
+            e.deps = e.deps.iter().map(|d| Dep { seen: lock(&d.table).stamp(d.key), ..d.clone() }).collect();
         }
     }
 
@@ -467,7 +480,7 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
 impl<K: Hash + Eq + Clone, V: Clone> Clone for Memo<K, V> {
     fn clone(&self) -> Self {
         let entries = match osis_base::copying::in_copy() {
-            true => self.entries.borrow().iter().map(|(k, e)| (k.clone(), Entry { deps: e.deps.iter().map(|d| Dep { table: copied(&d.table), key: d.key, seen: d.seen }).collect(), ..e.clone() })).collect(),
+            true => self.entries.borrow().iter().map(|(k, e)| (k.clone(), Entry { deps: e.deps.iter().map(|d| Dep { table: copied(&d.table), ..d.clone() }).collect(), ..e.clone() })).collect(),
             false => HashMap::new(),
         };
         let kept = if osis_base::copying::in_copy() { self.kept.get() } else { 0 };
@@ -696,23 +709,27 @@ mod tests {
     }
 
     // spec: none (internal). An answer no longer holding is amended when each read of it that
-    // moved was read again inside `accounted` by the amend; a move of any other read runs the
-    // function anew, as does an amend giving no answer.
+    // moved was only ever read inside `accounted`, and is again by the amend; a move of any other
+    // read runs the function anew, as does an amend giving no answer, and so does a move of a
+    // stamp read inside and outside `accounted` (as two keys sharing a hash share one).
     #[test]
     fn an_amend_is_kept_only_over_what_it_accounts_for() {
         let mut list: JMap<u8, Vec<u8>> = JMap::default();
         let mut other: JMap<u8, u8> = JMap::default();
         list.insert(0, vec![1]);
         other.insert(0, 10);
-        // (elements summed, their sum plus `other`'s)
+        // (elements summed, their sum plus `other`'s); `bare` also reads the list unaccounted
         let memo: Memo<u8, (usize, u64)> = Memo::new("test amended");
-        let ask = |list: &JMap<u8, Vec<u8>>, other: &JMap<u8, u8>| {
+        let ask = |list: &JMap<u8, Vec<u8>>, other: &JMap<u8, u8>, bare: bool| {
             Memo::get_amended_in(
                 &mut &memo,
                 |m| *m,
                 &0,
                 |_| {
-                    let l = list.get(&0).cloned().unwrap_or_default();
+                    let l = accounted(|| list.get(&0).cloned().unwrap_or_default());
+                    if bare {
+                        list.get(&0);
+                    }
                     Ok::<_, std::convert::Infallible>((l.len(), l.iter().map(|x| u64::from(*x)).sum::<u64>() + other.get(&0).map_or(0, |x| u64::from(*x))))
                 },
                 |_, old| {
@@ -728,18 +745,33 @@ mod tests {
             (n("test amended"), n("memo amend"))
         };
         crate::costs::take();
-        assert_eq!(ask(&list, &other), (1, 11));
+        assert_eq!(ask(&list, &other, false), (1, 11));
         assert_eq!(ran(), (1, 0));
         list.get_mut(&0).unwrap().push(5);
-        assert_eq!(ask(&list, &other), (2, 16), "an accounted read moved");
+        assert_eq!(ask(&list, &other, false), (2, 16), "an accounted read moved");
+        assert_eq!(ran(), (0, 1));
+        list.get_mut(&0).unwrap().push(2);
+        assert_eq!(ask(&list, &other, false), (3, 18), "again, over an amended answer");
         assert_eq!(ran(), (0, 1));
         other.insert(0, 20);
         list.get_mut(&0).unwrap().push(1);
-        assert_eq!(ask(&list, &other), (3, 27), "a read not accounted for moved too");
+        assert_eq!(ask(&list, &other, false), (4, 29), "a read not accounted for moved too");
         assert_eq!(ran(), (1, 1));
         list.insert(0, vec![2]);
-        assert_eq!(ask(&list, &other), (1, 22), "the amend gave nothing");
+        assert_eq!(ask(&list, &other, false), (1, 22), "the amend gave nothing");
         assert_eq!(ran(), (1, 1));
+        other.insert(0, 30);
+        assert_eq!(ask(&list, &other, true), (1, 32));
+        assert_eq!(ran(), (1, 1));
+        list.get_mut(&0).unwrap().push(3);
+        assert_eq!(ask(&list, &other, true), (2, 35), "the moved read was also read unaccounted");
+        assert_eq!(ran(), (1, 1));
+        list.get_mut(&0).unwrap().push(4);
+        assert_eq!(ask(&list, &other, false), (3, 39), "the kept answer read it unaccounted");
+        assert_eq!(ran(), (1, 1));
+        list.get_mut(&0).unwrap().push(1);
+        assert_eq!(ask(&list, &other, false), (4, 40));
+        assert_eq!(ran(), (0, 1));
     }
 
     // spec: none (internal). A key present with no stamp of its own (there before the stamps

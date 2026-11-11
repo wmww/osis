@@ -262,16 +262,19 @@ pub(super) fn held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Arc<Hel
     )
 }
 
-/// Whether no part of `(tid, ak)` is invalid here (`HeldWrites::clean`).
-fn clean(core: &Core, tid: &Tid, ak: &Ak) -> bool {
-    core.ix.invalid.get(&(*tid, ak.clone())).is_none_or(|s| s.is_empty())
+/// Whether no part of `(tid, ak)` is invalid here (`HeldWrites::clean`), and its held commits:
+/// what `amend_held_writes` compares, read inside `memo::accounted`.
+fn aspect_bodies(core: &Core, tid: &Tid, ak: &Ak) -> (bool, Vec<(Ts, CommitId)>) {
+    let k = (*tid, ak.clone());
+    crate::engine::memo::accounted(|| (core.ix.invalid.get(&k).is_none_or(|s| s.is_empty()), core.ix.by_aspect.get(&k).into_iter().flatten().cloned().collect()))
 }
 
 /// `HeldWrites` of `(tid, ak)` read anew: every held body of the aspect, each part whole.
 pub(super) fn read_held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<HeldWrites> {
-    let un = crate::apply::Unmerge::of(tx, tid, ak)?;
-    let on: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().cloned().collect();
-    let mut out = HeldWrites { bodies: on.clone(), clean: clean(tx.core, tid, ak), ..HeldWrites::default() };
+    let (clean, on) = aspect_bodies(tx.core, tid, ak);
+    // clean, un-merge removes nothing (`Unmerge::of` reads the invalid parts it has not)
+    let un = if clean { crate::apply::Unmerge::none() } else { crate::apply::Unmerge::of(tx, tid, ak)? };
+    let mut out = HeldWrites { bodies: on.clone(), clean, ..HeldWrites::default() };
     for (ts, x) in on {
         note_body(tx, tid, ak, &un, ts, x, &mut out)?;
     }
@@ -281,12 +284,11 @@ pub(super) fn read_held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<He
 /// `old` brought up to date when the aspect's held commits only grew while it stayed clean
 /// (`HeldWrites::clean`, read at both): each new body's writes noted, what a fresh read gives.
 /// `None` (read it anew) when a commit left the aspect or a part of it is invalid. The aspect's
-/// commits and invalid parts are its accounted reads (`memo::accounted`): any other move of what
+/// commits and invalid parts are its accounted reads (`aspect_bodies`): any other move of what
 /// `old` read (a held body's part dropped, a late part come, a validity flip, a rollback of
 /// records) reads it anew.
 fn amend_held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, old: &HeldWrites) -> Result<Option<HeldWrites>> {
-    let k = (*tid, ak.clone());
-    let (clean, on) = crate::engine::memo::accounted(|| (clean(tx.core, tid, ak), tx.core.ix.by_aspect.get(&k).into_iter().flatten().cloned().collect::<Vec<(Ts, CommitId)>>()));
+    let (clean, on) = aspect_bodies(tx.core, tid, ak);
     if !(old.clean && clean) {
         return Ok(None);
     }

@@ -1331,6 +1331,66 @@ mod tests {
         assert!(lp.peers[0].engine.core.ix.commits.get(&snap).is_some());
     }
 
+    // spec: none (internal: notes/engine.md, Derived values). The aspect's held writes kept are
+    // what a fresh read gives when a part invalid here joins (un-merged: it gives nothing), and
+    // when a valid one joins inside its record.
+    #[test]
+    fn held_writes_over_an_invalid_part_are_a_fresh_reads() {
+        let mut lp = LocalPeer::new(4, 959, WallMs(1_700_000_000_000)).unwrap();
+        let a = lp.peers[0].engine.me();
+        let x = Ak::new("x:m.0").unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        for w in [1, 2] {
+            let w = lp.peers[w].engine.me();
+            let mut m = Mutation::new();
+            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, tied: None }.to_value()) }).unwrap();
+            lp.peers[0].commit(m).unwrap();
+        }
+        lp.sync_all().unwrap();
+        let check = |lp: &mut LocalPeer, what: &str| {
+            lp.peers[3]
+                .engine
+                .run(|tx| {
+                    let kept = super::bounds::held_writes(tx, &t, &x)?;
+                    assert_eq!(*kept, super::bounds::read_held_writes(tx, &t, &x)?, "{what}");
+                    Ok(())
+                })
+                .unwrap();
+        };
+        // node 2 puts a map at `a`, node 1 writes inside it; node 0 removes node 2 before seeing it
+        let mut m = Mutation::new();
+        m.set(t, &x, &Value::Map(osis_base::ValueMap::from([(Value::Str("a".into()), Value::Map(osis_base::ValueMap::from([(Value::Str("b".into()), Value::Int(1))])))]))).unwrap();
+        lp.advance(10);
+        let rogue = lp.peers[2].commit(m).unwrap().unwrap();
+        let rogue = lp.peers[2].engine.package(&rogue).unwrap().unwrap();
+        lp.deliver(1, &rogue).unwrap();
+        let mut m = Mutation::new();
+        m.op(t, &x, PathOp { path: vec![PathSeg::Key(Value::Str("a".into())), PathSeg::Key(Value::Str("c".into()))], op: Op::Set(Value::Int(2)) }).unwrap();
+        lp.advance(10);
+        let inside = lp.peers[1].commit(m).unwrap().unwrap();
+        let inside = lp.peers[1].engine.package(&inside).unwrap().unwrap();
+        let r = lp.peers[2].engine.me();
+        use std::collections::{BTreeMap, BTreeSet};
+        let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(r, BTreeSet::from([t]))]), content: BTreeMap::from([(r, BTreeSet::from([t]))]) };
+        let f = lp.peers[0].engine.frontier(&scope, WallMs(1_700_000_000_000)).unwrap();
+        let mut m = Mutation::new();
+        m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(r)) }).unwrap();
+        m.frontier(f.to_value());
+        lp.advance(10);
+        let demote = lp.peers[0].commit(m).unwrap().unwrap();
+        let demote = lp.peers[0].engine.package(&demote).unwrap().unwrap();
+        check(&mut lp, "every part valid");
+        lp.deliver(3, &demote).unwrap();
+        lp.deliver(3, &rogue).unwrap();
+        assert!(lp.peers[3].engine.core.ix.invalid.get(&(t, x.clone())).is_some_and(|s| !s.is_empty()));
+        check(&mut lp, "an invalid part joined");
+        lp.deliver(3, &inside).unwrap();
+        check(&mut lp, "a join inside the invalid part's record");
+    }
+
     // spec: none (internal: notes/engine.md, Derived values). A memo reading a commit's leftover,
     // or its copy index from the cache, runs again when the record is written, and again when a
     // failed transaction undoes that write.
