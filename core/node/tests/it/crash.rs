@@ -201,3 +201,39 @@ fn crash_every_write_of_a_chunked_commit() {
         }
     }
 }
+
+// notes/local-store.md (Ciphertext store, add before, remove after): a crash at any write of a
+// transaction that holds one blob and releases another leaves, reopened, either both as before
+// or both changed, never a held blob gone or bytes the engine no longer holds
+#[test]
+fn crash_every_write_of_a_hold_and_release() {
+    let blob = |n: u8| {
+        let b = vec![n; 512];
+        (osis_label::blob_id(&b), b)
+    };
+    let ((a, ab), (c, cb)) = (blob(1), blob(2));
+    for n in 0.. {
+        let dev = Dev::new();
+        let (mut e, _, _) = setup(&dev);
+        e.put_blobs(vec![(a, ab.clone())]).unwrap();
+        dev.faults.at(n, Fault::Crash);
+        let r = e.run(|tx| {
+            tx.blobs.release(&a, false)?;
+            tx.blobs.hold(&c, cb.clone(), false).map(drop)
+        });
+        let crashed = dev.faults.crashed();
+        assert!(r.is_ok() || crashed, "write {n}");
+        drop(e);
+        dev.faults.revive();
+        let mut e = dev.open().unwrap();
+        let (held_a, held_c) = (e.has_blob(&a), e.has_blob(&c));
+        let bytes = |e: &mut Engine, id| e.run(|tx| tx.blobs.get(&id)).unwrap();
+        assert_ne!(held_a, held_c, "write {n}: before or after");
+        assert!(held_c || r.is_err(), "write {n}: a transaction answered done is there");
+        assert_eq!(bytes(&mut e, a).is_some(), held_a, "write {n}: blob a");
+        assert_eq!(bytes(&mut e, c).is_some(), held_c, "write {n}: blob c");
+        if !crashed {
+            return;
+        }
+    }
+}

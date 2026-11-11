@@ -3104,7 +3104,12 @@ impl Engine {
                         // the engine's store records this transaction's sequence with its own
                         // commit, the releases follow it (`blobs::Cipher`)
                         let noted = blobs.noted();
-                        let r = (if noted { txn.put_local(records::BLOB_SEQ, &self.blob_seq.to_be_bytes(), Shred::No).map_err(Error::from) } else { Ok(()) })
+                        // durable whatever the transaction's mode: settling reads it after a crash
+                        let mode = txn.is_memory();
+                        txn.set_memory(false);
+                        let seq = if noted { txn.put_local(records::BLOB_SEQ, &self.blob_seq.to_be_bytes(), Shred::No).map_err(Error::from) } else { Ok(()) };
+                        txn.set_memory(mode);
+                        let r = seq
                             .and_then(|()| blobs.commit())
                             .and_then(|()| txn.commit().map_err(Error::from));
                         match r {

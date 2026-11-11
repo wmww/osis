@@ -2,3 +2,4 @@
 - `Mutex<HostStore>` cannot implement an osis-store trait in osis-host (orphan rule): the trait pair is `Ciphertext` (blanket over `Mutex<T: CipherHost>`) plus `CipherHost`, which the host implements.
 - The sim, node `Net` and osis `MemStore::backup` all opened a fresh hub store per boot or left it out of backups; harmless while it held only others' data, data loss once the engine's blobs live there. Any new harness that restarts a node must keep both disks.
 - A two-store commit needs "add before, remove after" plus a per-transaction note from the start; the first version undid holds only on in-process rollback and leaked on a crash between the commits.
+- review: a release taken back by a hold inside a step was lost on the step's rollback (releases kept by length); journal releases so a rollback restores exactly.
