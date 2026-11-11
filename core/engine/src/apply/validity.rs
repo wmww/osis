@@ -428,7 +428,7 @@ fn showing_of(actor: &Tid, f: &Fragment) -> crate::engine::Showing {
     let rotates = entry_maps(f).is_none();
     let removed = w.removed.iter().map(|k| (k.holder, k.role)).collect();
     let shown = w.boxes.iter().filter_map(|(k, b)| osis_keys::possession::Shown::of(actor, k, b)).collect();
-    crate::engine::Showing { rotates, top: None, removed, shown }
+    crate::engine::Showing { rotates, top: None, removed, shown, checked: Default::default() }
 }
 
 /// What a role commit's `keys.0` delta on `actor` shows for possession (spec/crypto.md §4):
@@ -437,7 +437,7 @@ fn showing_of(actor: &Tid, f: &Fragment) -> crate::engine::Showing {
 fn proofs_of(actor: &Tid, f: &Fragment) -> crate::engine::Showing {
     let w = super::keys::keys_write(f);
     let shown = w.keysets.iter().flat_map(|(r, ks)| osis_keys::possession::Shown::of_keyset(actor, *r, ks)).collect();
-    crate::engine::Showing { rotates: !w.keysets.is_empty(), top: w.keysets.keys().max().copied(), removed: Vec::new(), shown }
+    crate::engine::Showing { rotates: !w.keysets.is_empty(), top: w.keysets.keys().max().copied(), removed: Vec::new(), shown, checked: Default::default() }
 }
 
 /// Notes what part `ai` of `id` shows for possession (`Indexes::shown`).
@@ -878,6 +878,8 @@ struct Possession<'a> {
     author: Tid,
     /// The author's roles on paths not through the actor.
     roles: BTreeMap<Tid, Role>,
+    /// The part's signatures checked so far.
+    checked: &'a crate::engine::Checked,
 }
 
 impl osis_keys::possession::View for Possession<'_> {
@@ -925,6 +927,9 @@ impl osis_keys::possession::View for Possession<'_> {
         let x = self.core.ix.keysets.get(&(*m, r, *k)).filter(|x| x.held_before(&self.point))?;
         Some(x.possession.iter().filter(|(_, p)| **p < self.point).map(|(pk, _)| *pk).collect())
     }
+    fn verifies(&self, s: &osis_keys::possession::Shown, pk: &osis_crypto::VerifyingKey) -> bool {
+        self.checked.verifies(s, pk)
+    }
 }
 
 /// Whether part `ai` (`secrets.0` or `keys.0` on `a`) of role commit `id` passes possession
@@ -962,7 +967,7 @@ fn possessed(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, a
     // the author's roles on holder actors not through `a` (a role on M through `a` is a cycle,
     // read through a keyless grant: no secret of M to show)
     let roles = tl.roles_avoiding(&h.author, at, &BTreeSet::from([a.tid]));
-    let v = Possession { core, tl, at, point, actor: a.tid, author: h.author, roles };
+    let v = Possession { core, tl, at, point, actor: a.tid, author: h.author, roles, checked: &x.checked };
     osis_keys::possession::holds(&x.shown, &x.removed, rotation, needed, &v)
 }
 

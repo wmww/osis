@@ -321,6 +321,24 @@ fn possession_judged_again_when_keyset_arrives_spec_crypto_4() {
     refused_at(&mut s, A, c, Some(e));
 }
 
+// spec/crypto.md §4 (Possession); issues/derived-state-recomputed.md: a possession signature is
+// a function of its bytes, checked once per key while its part is held, so judging every part
+// again from scratch checks none.
+#[test]
+fn a_possession_signature_is_checked_once_spec_crypto_4() {
+    let mut s = shape();
+    let checked = || crate::costs::take().iter().filter(|x| x.0 == "possession: signature").map(|x| x.2).sum::<u64>();
+    checked();
+    let (c, _) = rotate_unchecked(&mut s.lp, W, s.g, &BTreeSet::from([Role::Read, Role::Write]));
+    deliver_w(&mut s);
+    assert!(checked() > 0, "the rotation's proofs checked");
+    for i in [A, B] {
+        assert!(s.lp.peers[i].engine.core.ix.commits.get(&c).is_some_and(|m| m.valid.iter().all(|v| *v)), "peer {i}: W's rotation valid");
+        assert_eq!(s.lp.peers[i].engine.misjudged(), None);
+    }
+    assert_eq!(checked(), 0, "every part judged again");
+}
+
 // spec/crypto.md §4 (Possession, Writers): a rotation of read alone needs write (the right to
 // rotate), and shows X1 at write only by a keyset of write. W, writing G only through X1, so
 // rotates G's write with its read: valid at every node, its write keyset proving X1 by X1's write

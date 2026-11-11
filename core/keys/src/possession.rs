@@ -128,6 +128,10 @@ pub trait View {
     /// The possession keys the held valid bodies of keyset `k` of role `r` of `m` publish;
     /// `None` when none is held (nothing to judge by).
     fn keys(&self, m: &Tid, r: Role, k: &Epoch) -> Option<Vec<VerifyingKey>>;
+    /// `s.verifies(pk)`: a function of their bytes alone, which a view may keep.
+    fn verifies(&self, s: &Shown, pk: &VerifyingKey) -> bool {
+        s.verifies(pk)
+    }
 }
 
 /// Whether a delta showing `shown` (a rotation's keyset proofs, else its boxes) and removing
@@ -138,7 +142,7 @@ pub trait View {
 pub fn holds(shown: &[Shown], removed: &[(Tid, Role)], rotates: bool, needed: Role, v: &dyn View) -> bool {
     // a keyset the node holds no valid body of (before the commit) is not judged by (a box naming
     // it is not stale either: within the stated limit until the body arrives, and judged again)
-    let valid = |s: &Shown| v.keys(&s.holder, s.role, &s.keyset).is_none_or(|pks| pks.iter().any(|pk| s.verifies(pk)));
+    let valid = |s: &Shown| v.keys(&s.holder, s.role, &s.keyset).is_none_or(|pks| pks.iter().any(|pk| v.verifies(s, pk)));
     let actors = || shown.iter().filter(|s| !v.key_actor(&s.holder));
     // a rotation through a holder actor counts only where the author shows it is in
     // that actor now (a removed party, its removal unknown here, holds no new keyset's secret);

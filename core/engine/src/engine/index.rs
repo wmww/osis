@@ -734,7 +734,7 @@ fn read_showing(r: &mut records::Rd<'_>) -> Result<super::Showing> {
         let signed = if r.u8()? != 0 { Some((r.arr()?, r.arr()?)) } else { None };
         shown.push(osis_keys::possession::Shown { holder, role, keyset, signed });
     }
-    Ok(super::Showing { rotates, top, removed, shown })
+    Ok(super::Showing { rotates, top, removed, shown, checked: Default::default() })
 }
 
 /// What a commit's parts show, by part (`Indexes::shown`), as a `METAS` row keeps it.
