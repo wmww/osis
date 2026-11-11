@@ -779,7 +779,7 @@ impl MemoryDrop {
     pub fn by(&self) -> Vec<CommitId> {
         match self {
             MemoryDrop::Covered { by } | MemoryDrop::Superseded { by } => by.iter().copied().collect(),
-            MemoryDrop::Gone => Vec::new(),
+            MemoryDrop::Gone | MemoryDrop::Awaits { .. } => Vec::new(),
         }
     }
 }
@@ -798,6 +798,10 @@ pub enum MemoryDrop {
     /// snapshot of its own node's unsent writes (never uploaded): its entries, if any, are
     /// deleted at once.
     Gone,
+    /// A durable commit forgotten here while a part of it is on `thing`, whose record is not
+    /// held (spec/commits.md §5 Forgetting): its entries stay at hosts, skipped here as awaiting
+    /// that record, as an unjudgeable entry's.
+    Awaits { thing: Tid },
 }
 
 /// What memory commits report to the ephemeral lane (node-sync) and to the local write path.

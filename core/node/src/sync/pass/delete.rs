@@ -348,6 +348,8 @@ impl SyncEngine {
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|ai| f.header.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         let live = match &f.why {
             MemoryDrop::Gone => false,
+            // never kept as forgotten: its entries are skipped as awaiting (`memory_step`)
+            MemoryDrop::Awaits { .. } => return None,
             MemoryDrop::Covered { .. } => true,
             MemoryDrop::Superseded { .. } => {
                 if Some(f.header.author) != self.engine.account_tid() {

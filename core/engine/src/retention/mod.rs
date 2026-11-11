@@ -457,8 +457,18 @@ pub(crate) fn valid_again(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Resul
 /// judged or gave goes too (`Dropped::role`; the header's one-delta rule for `secrets.0` stays,
 /// `validity::note_required`). Its meta after.
 fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engine::Meta>> {
-    tx.core.touch();
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
+    reopen_in(tx, c, &mut m, ai);
+    if let Some(blob) = tx.get_commit(c)? {
+        tx.put_commit(c, &blob, &m, Shred::No, None)?;
+    }
+    tx.core.put_meta(*c, m.clone());
+    Ok(Some(m))
+}
+
+/// `reopen` on `m`, the caller writing it.
+pub(super) fn reopen_in(tx: &mut Tx<'_>, c: &CommitId, m: &mut crate::engine::Meta, ai: usize) {
+    tx.core.touch();
     // missing again, a dropped snapshot stands in no more (`Dropped::stands_in`)
     if m.dropped.remove(&ai).is_some_and(|d| d.stands_in)
         && let Some(a) = m.view.aspects.get(ai)
@@ -471,11 +481,6 @@ fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engi
     tx.core.ix.grant_overreach.remove(&(*c, ai));
     // those are inputs of its judgment (`validity::rejudge_all` judges it again)
     tx.core.stale_commits.insert(*c);
-    if let Some(blob) = tx.get_commit(c)? {
-        tx.put_commit(c, &blob, &m, Shred::No, None)?;
-    }
-    tx.core.put_meta(*c, m.clone());
-    Ok(Some(m))
 }
 
 /// node-sync fetches commit `c` again (`Changed::undropped`): a part held as its leftover or

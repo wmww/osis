@@ -1620,15 +1620,17 @@ fn a_forgotten_commits_entries_are_deleted_after_a_restart_spec_sync_6() {
     assert!(net.engine(a).local_rows_naming(&req.0).unwrap().is_empty(), "nothing names it past its tombstones");
 }
 
-// spec/commits.md §5 (Forgetting: a commit goes whole only when every part is on the released
-// thing; Never received): w writes x, an item of g, and y, a thing of g's no closure holds yet, so
-// y's record is not held at b. b forgets x at its release's expiry; w keeps its header there (not
-// a commit forgotten with x, whose entries b would never fetch again). y then joins g: its record
-// reaches b after the forget, and y's part of w applies at b from the host
+// spec/commits.md §5 (Forgetting), spec/sync.md §6: w writes x, an item of g, and y, a thing of
+// g's no closure holds yet, so y's record is not held at b. b forgets x at its release's expiry
+// and w with it, here alone: its entries stay at the host, skipped at b as awaiting y's record,
+// not fetched again over later syncs. y then joins g: its record reaches b, w is fetched again
+// and y's part of it applies
 #[test]
-fn a_commit_on_a_forgotten_thing_and_an_unknown_one_keeps_its_header_spec_commits_5() {
+fn a_commit_on_a_forgotten_thing_and_an_unknown_one_awaits_its_record_spec_commits_5() {
     use osis_node::retention::lifetimes::Status;
-    let Setup { mut net, b, c, g, .. } = setup();
+    use osis_node::sync::EntryKind;
+    let Setup { mut net, a, b, c, g } = setup();
+    let l = net.label(b);
     let (x, _) = made(&mut net, c, g);
     let e = net.engine(c);
     let mut m = Mutation::new();
@@ -1641,22 +1643,69 @@ fn a_commit_on_a_forgotten_thing_and_an_unknown_one_keeps_its_header_spec_commit
     let w = net.engine(c).commit(m).unwrap().unwrap();
     net.run();
     assert!(!net.engine(b).knows(&y) && net.engine(b).header(&w).is_some(), "b holds w, not y's record");
-    net.engine(c).release(&[x]).unwrap().unwrap();
-    net.run();
+    let of_w = |net: &mut Net| -> Vec<(osis_base::BlobId, EntryKind)> { net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } | EntryKind::Awaits { commit, .. } if *commit == w)).collect() };
+    let ids: Vec<osis_base::BlobId> = of_w(&mut net).into_iter().map(|(id, _)| id).collect();
+    assert!(!ids.is_empty());
+    // the admins away (they would delete w's entries once x is released), c's release reaches b
+    net.set_online(a, false);
+    net.set_online(c, false);
+    let req = net.engine(c).release(&[x]).unwrap().unwrap();
+    let p = net.engine(c).package(&req).unwrap().unwrap();
+    let _ = net.engine(b).ingest(&p.bytes, p.blobs);
     net.advance(osis_base::format::ROLE_KEEP_MS);
     for _ in 0..3 {
         net.advance(70_000);
     }
     assert_eq!(net.engine(b).lifetime_status(&x), Status::Unknown, "x forgotten");
-    assert!(net.engine(b).header(&w).is_some(), "w keeps its header for y's part");
+    assert!(net.engine(b).header(&w).is_none(), "w forgotten here");
+    assert!(of_w(&mut net).iter().all(|(_, k)| matches!(k, EntryKind::Awaits { thing, .. } if *thing == y)), "its entries skipped, awaiting y's record");
+    assert!(ids.iter().all(|i| net.host_ids(0, &l).contains(i)), "and kept at the host");
+    net.fetched.insert(b, Vec::new());
+    for _ in 0..5 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.fetched[&b].iter().filter(|i| ids.contains(i)).count(), 0, "not fetched again over later syncs");
     let e = net.engine(c);
     let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
     items.items.insert(y);
     let mut m = Mutation::new();
     m.set(g, &ct::GROUP, &items).unwrap();
     e.commit(m).unwrap().unwrap();
+    net.set_online(c, true);
     for _ in 0..3 {
         net.advance(70_000);
     }
     assert_eq!(net.read(b, y), Some(s("y2")), "y's part of w applies at b");
 }
+
+// spec/commits.md §5 (Forgetting): x and y released together at c, b never having held y's
+// record. b forgets w (on both) here alone as x goes; c forgets it whole and deletes its entries,
+// so b keeps nothing of w: no header, no entry
+#[test]
+fn a_commit_on_a_forgotten_thing_and_a_never_held_one_leaves_nothing_spec_commits_5() {
+    use osis_node::retention::lifetimes::Status;
+    let Setup { mut net, b, c, g, .. } = setup();
+    let l = net.label(b);
+    let (x, _) = made(&mut net, c, g);
+    let e = net.engine(c);
+    let mut m = Mutation::new();
+    let y = e.new_thing(&mut m, g);
+    m.set(y, &REG, &s("y")).unwrap();
+    e.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(x, &REG, &s("x2")).unwrap();
+    m.set(y, &REG, &s("y2")).unwrap();
+    let w = net.engine(c).commit(m).unwrap().unwrap();
+    net.run();
+    net.engine(c).release(&[x, y]).unwrap().unwrap();
+    net.run();
+    net.advance(osis_base::format::ROLE_KEEP_MS);
+    for _ in 0..5 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(b).lifetime_status(&x), Status::Unknown);
+    assert!(net.engine(c).header(&w).is_none() && net.engine(b).header(&w).is_none(), "w forgotten at c and b");
+    let known = net.sync(b).entries(&l).into_iter().any(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } | osis_node::sync::EntryKind::Awaits { commit, .. } if commit == w));
+    assert!(!known, "no entry of w known at b");
+}
+

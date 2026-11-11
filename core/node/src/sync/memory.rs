@@ -231,8 +231,17 @@ impl SyncEngine {
             self.memory_reconcile_thing(&t);
         }
         self.engine.memory_compactions(false)?;
-        let dropped = self.engine.take_memory_drops();
+        let (awaits, dropped): (Vec<_>, Vec<_>) = self.engine.take_memory_drops().into_iter().partition(|(_, _, why)| matches!(why, MemoryDrop::Awaits { .. }));
         self.memory_dropped(&dropped);
+        // durable commits forgotten here, a part on a thing whose record is not held: their
+        // entries stay at hosts, skipped as awaiting that record (spec/commits.md §5 Forgetting)
+        for (c, _, why) in awaits {
+            if let MemoryDrop::Awaits { thing } = why {
+                for (l, b) in self.entries_of_commit(&c) {
+                    self.mark_awaits(l, b, c, crate::Reason::UnknownCreated(thing))?;
+                }
+            }
+        }
         self.retry_refused();
         let signals = self.engine.take_signals();
         for c in signals {
