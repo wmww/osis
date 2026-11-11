@@ -1,0 +1,3 @@
+# lifetimes-3
+- Step 3 as briefed (judgment, release request with a new wire form, forgetting, What is kept across `ending_evidence`/`ended_certificate`, node-sync trigger, ~20 multi-node tests) is several sittings; only the model and the judgment fit one. Splitting it (3a judgment, 3b request and ending, 3c forgetting and evidence, 3d node-sync) would let each get a review.
+- The issue fixes the release part's place (`created.0`) but not its bytes; every engine path reads any `created.0` delta as a minting (`Core::mintings`, `learn_record`'s BadInput), so the form has to be decided before any of 3b can start.
