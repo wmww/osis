@@ -410,6 +410,32 @@ fn a_live_body_survives_a_covering_snapshot_spec_commits_5() {
     }
 }
 
+// spec/commits.md §5 Covered: what a node drops under a cover follows what it holds, not when it
+// last opened: a body replaced before a restart drops when a covering snapshot arrives after it,
+// at its keep bound (before its writer deletes it at the host, `MAX_DRIFT` later).
+#[test]
+fn a_body_replaced_before_a_restart_drops_under_a_later_cover_spec_commits_5() {
+    let Chat { mut net, a, b, n, t: kept, .. } = chat();
+    net.set_online(n, true);
+    let g = *net.engine(a).groups_of(&kept).iter().next().unwrap();
+    let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[(REG.ak(), History::Keep { until: None, after: Some(60_000) })]);
+    net.run();
+    let c = msg(&mut net, b, t, "one", Retention::default());
+    net.run();
+    msg(&mut net, b, t, "two", Retention::default());
+    net.run();
+    net.restart(n, 51);
+    net.run();
+    let acts = net.sync(a).compact(&t, &k()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    assert!(net.engine(n).body_not_dropped(&c, &t, &k()), "dropped inside its history");
+    net.advance(120_000);
+    net.run();
+    assert!(!net.engine(n).body_not_dropped(&c, &t, &k()), "a body replaced before the restart is kept under a cover past its history");
+}
+
 // spec/commits.md §5: a purged large value's chunks leave the host as any purge's; its header stays.
 #[test]
 fn a_purged_value_leaves_its_chunks_spec_commits_5() {

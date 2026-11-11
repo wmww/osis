@@ -280,6 +280,10 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     }
     let header = m.header.clone();
     tx.core.put_meta(*c, m);
+    // a part not held is no cover candidate (`Core::cover_judged_on`)
+    if let Some(s) = tx.core.cover_candidates.get_mut(&k) {
+        s.remove(c);
+    }
     crate::apply::note_stands_in(tx.core, c);
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     crate::apply::keys::forget_dropped(tx, &header, ai, &role_bodies)?;

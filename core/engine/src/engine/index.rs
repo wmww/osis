@@ -1047,6 +1047,12 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         tx.core.index_validity(&id);
     }
     drop(_ms);
+    // every held durable delta may be one a cover drops: the set is not stored, so after an open
+    // the next snapshot of each aspect judges them all once (`Core::cover_judged_on`)
+    let cands: Vec<((Tid, osis_base::Ak), CommitId)> = tx.core.ix.commits.iter().filter(|(_, m)| !m.view.kind.is_compaction() && !m.view.memory).flat_map(|(c, m)| m.view.aspects.iter().enumerate().filter(|(ai, _)| m.holds(*ai)).map(|(_, a)| ((a.tid, a.ak.clone()), *c))).collect();
+    for (k, c) in cands {
+        tx.core.cover_candidates.entry(k).or_default().insert(c);
+    }
     for ((m, x), _) in scan::<(Tid, (Tid, Value))>(tx, BOXES_TO)? {
         tx.core.ix.boxes_to.insert(m, x);
     }

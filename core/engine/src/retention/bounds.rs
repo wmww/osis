@@ -361,7 +361,8 @@ pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
     for c in &owners {
         tx.core.mark_changed(*c);
     }
-    tx.core.cover_candidates.entry((*tid, ak.clone())).or_default().extend(owners);
+    let held: Vec<CommitId> = owners.into_iter().filter(|c| super::held_part(tx.core, c, tid, ak).is_some()).collect();
+    tx.core.cover_candidates.entry((*tid, ak.clone())).or_default().extend(held);
     if !bounded(tx.core, tid, ak) {
         return;
     }
@@ -379,7 +380,7 @@ pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
 pub(crate) fn mark_bounded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) {
     let on: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     let k = (*tid, ak.clone());
-    let delta = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| !m.header.kind.is_compaction() && !m.view.memory);
+    let delta = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| !m.header.kind.is_compaction() && !m.view.memory) && super::held_part(tx.core, c, tid, ak).is_some();
     let fresh: Vec<CommitId> = on.iter().copied().filter(|c| delta(c)).collect();
     if !fresh.is_empty() {
         tx.core.cover_candidates.entry(k).or_default().extend(fresh);
