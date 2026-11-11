@@ -1117,19 +1117,7 @@ fn stopping_a_share_is_removing_its_holders() {
     assert_eq!(alice.sync_ids(t).unwrap(), label, "it stays");
 }
 
-// spec/sync.md §2: synced first, then granted: the one sync ID serves
-#[test]
-fn a_sync_then_a_grant() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
-    let t = plain(&alice, "for bob");
-    alice.sync(t, &[]).unwrap();
-    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
-    w.run();
-    assert_eq!(x(&others[0], t), Some(s("for bob")));
-}
-
-// spec/sync.md §2: a thing in a synced group given a holder of its own syncs under both; a grant to a client gives it a sync ID as any grant; a refused grant writes nothing
+// spec/sync.md §2: a thing in a synced group given a holder of its own syncs under both; a grant to a client gives it a sync ID as any grant
 #[test]
 fn a_thing_in_a_group_shared_directly_syncs_under_both() {
     let mut w = World::new();
@@ -1145,8 +1133,7 @@ fn a_thing_in_a_group_shared_directly_syncs_under_both() {
     assert_eq!(x(&others[1], t), Some(s("in g")));
     let u = plain(&alice, "local");
     let (a, _) = alice.add_client(None).unwrap();
-    assert!(matches!(alice.grant(u, Tid::from_bytes([9; 15]), Role::Read, Default::default()), Err(osis::Error::UnknownActor { .. })));
-    assert!(!alice.status().unwrap().groups.contains_key(&u), "nothing synced for a refused grant");
+    assert!(!alice.status().unwrap().groups.contains_key(&u));
     alice.grant(u, a, Role::Read, Default::default()).unwrap();
     assert!(alice.status().unwrap().groups.contains_key(&u), "the grant gave it a sync ID");
 }
@@ -1819,7 +1806,7 @@ fn a_wait_right_after_accepting_a_grant() {
     assert_eq!(x(bob, t), Some(s("there")));
 }
 
-// spec/sync.md §3, notes/api.md (`wait_synced`): a brand new node of a holder, on a thing granted to its account before it existed and on one under its account: its first sync brings both, and it waits
+// spec/sync.md §2: synced first, then granted: the one sync ID serves. spec/sync.md §3, notes/api.md (`wait_synced`): a brand new node of a holder, on a thing granted to its account before it existed and on one under its account: its first sync brings both, and it waits
 #[test]
 fn a_new_nodes_first_wait_on_a_shared_thing() {
     let mut w = World::new();

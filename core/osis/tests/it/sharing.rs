@@ -115,23 +115,6 @@ fn grant_refuses_a_lower_role() {
     assert_eq!(alice.grants(g).unwrap()[&b].role, Role::Admin);
 }
 
-// notes/api.md Sharing (revoke_link), spec/permissions.md §7: revoking a multi-use link removes
-// its key; `links` no longer lists it.
-#[test]
-fn revoke_link_spec_permissions_7() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = w.account(1, &[host]);
-    let g = group(&alice);
-    alice.make_link(g, Role::Read, Default::default()).unwrap();
-    let ls = alice.links_of(g).unwrap();
-    assert_eq!(ls.len(), 1);
-    assert!(!ls[0].single_use);
-    w.run();
-    alice.revoke_link(ls[0].id).unwrap();
-    assert!(alice.links_of(g).unwrap().is_empty());
-}
-
 // spec/permissions.md §4 (first admins' keysets), spec/crypto.md §4 (held keyset): an account who got its peer after creation has an inbox write as its newest `keys.0`; a link's actor boxes the account at its keyset, so that keyset must come along or a redeemer holds no established epoch to box
 #[test]
 fn redeem_link_of_an_account_with_a_late_peer_spec_permissions_4() {
@@ -286,7 +269,7 @@ fn redeem_after_a_joiner_left_spec_permissions_7() {
     assert_eq!(x(&bob, v), Some(s("from dave")));
 }
 
-// spec/permissions.md §7: a revoked link tells its redeemer so, at once (`Invalid`, not a wait's `Network`), before and after K's new step reached the peer, and shows nowhere; so does a kicked joiner's and one past `until`
+// notes/api.md Sharing (revoke_link), spec/permissions.md §7: revoking a multi-use link removes its key; `links` no longer lists it. A revoked link tells its redeemer so, at once (`Invalid`, not a wait's `Network`), before and after K's new step reached the peer, and shows nowhere; so does a kicked joiner's and one past `until`
 #[test]
 fn ended_link_fails_clearly_spec_permissions_7() {
     let mut w = World::new();
@@ -297,7 +280,10 @@ fn ended_link_fails_clearly_spec_permissions_7() {
     let g = group(&alice);
     let revoked = alice.make_link(g, Role::Write, Default::default()).unwrap();
     w.run();
-    alice.revoke_link(alice.links_of(g).unwrap()[0].id).unwrap();
+    let ls = alice.links_of(g).unwrap();
+    assert_eq!(ls.len(), 1);
+    assert!(!ls[0].single_use);
+    alice.revoke_link(ls[0].id).unwrap();
     w.run();
     assert!(alice.links_of(g).unwrap().is_empty());
     assert!(matches!(w.until(carol.redeem(&revoked), 1000, 30), Err(Error::Invalid(_))));
@@ -439,19 +425,6 @@ fn redeem_of_a_mismatched_target_joins_nothing_spec_permissions_7() {
     assert_eq!(w.until(dave.redeem(&link), 1000, 30).unwrap(), other);
     w.run();
     assert_eq!(x(&dave, t), Some(s("in the other group")));
-}
-
-// spec/permissions.md §7 (Redeem): an honest link works for a target this node already knows, K's grant reaching it by K's label; a redeemer who still holds the role it had gets the link's on top
-#[test]
-fn redeem_of_a_target_already_known_spec_permissions_7() {
-    let mut w = World::new();
-    let (alice, carol, g) = alice_bob(&mut w, Role::Read);
-    let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
-    w.run();
-    assert_eq!(carol.role_on(g).unwrap(), Some(Role::Read));
-    assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
-    w.run();
-    assert_eq!(carol.role_on(g).unwrap(), Some(Role::Write));
 }
 
 // spec/permissions.md §7 (Redeem), spec/sync.md §3 (certificate copy): K's grant on the target outlives the delivery that first carried it, so a link redeemed after its inbox blob expired works, target unknown
@@ -1391,7 +1364,9 @@ fn holders_finds_the_best_way_through_a_nested_actor() {
 
 // notes/api.md Sharing (`holders`), spec/permissions.md §2, §7: one entry per grant that makes an
 // actor a holder: direct and through a link both, the role the least along the way; `holders` of
-// the link's actor answers who holds through it.
+// the link's actor answers who holds through it. spec/permissions.md §7 (Redeem): an honest link
+// works for a target this node already knows, K's grant reaching it by K's label; a redeemer who
+// still holds the role it had gets the link's on top.
 #[test]
 fn holders_lists_every_grant_and_who_holds_through_a_link() {
     let mut w = World::new();
@@ -1399,8 +1374,10 @@ fn holders_lists_every_grant_and_who_holds_through_a_link() {
     let (alice, bob, g) = alice_bob(&mut w, Role::Read);
     let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
     w.run();
+    assert_eq!(bob.role_on(g).unwrap(), Some(Role::Read));
     assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
     w.run();
+    assert_eq!(bob.role_on(g).unwrap(), Some(Role::Write));
     let k = alice.links_of(g).unwrap()[0].id.actor();
     let hs = alice.holders(g).unwrap();
     let ways: Vec<&osis::Holder> = hs.iter().filter(|h| h.actor == bob.me()).collect();

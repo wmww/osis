@@ -280,13 +280,15 @@ fn scope_handed_off_left_to_holders() {
     assert!(!bob.grants(sub).unwrap().contains_key(&g), "a holder removed it");
 }
 
-// spec/permissions.md §2 (tied edge removed only once the membership is gone): Bob's laptop
-// shares his card into Alice's tag while it reaches Bob's peer but not the tag's; Bob's phone
-// gets the tied grant from Bob's peer and, after an unrelated write by Alice, passes the tag's
-// label, which lacks the membership. The membership is on its way, not gone: the grant must stay
-// (the tie names a membership the phone does not hold yet).
+// spec/permissions.md §2 (the tie names the membership): Bob's phone gets the tied grant before the
+// membership and keeps it; the membership arrives, then the phone (a writer of the tag, admin of the
+// card) removes it: no self-removal, so its obligation removes the grant as an explicit role removal.
+// (Tied edge removed only once the membership is gone): Bob's laptop shares his card into Alice's
+// tag while it reaches Bob's peer but not the tag's; after an unrelated write by Alice the phone
+// passes the tag's label, which lacks the membership. The membership is on its way, not gone: the
+// grant must stay (the tie names a membership the phone does not hold yet).
 #[test]
-fn grant_before_membership_is_not_removed() {
+fn grant_first_then_add_then_remove_removes_it() {
     let mut w = World::new();
     let s1 = w.add_host();
     let s2 = w.add_host();
@@ -310,51 +312,20 @@ fn grant_before_membership_is_not_removed() {
     bob.add_with_grant(Member::Item(t), g, Role::Read).unwrap();
     assert_eq!(reach_of(&bob, t, g).map(|r| r.tie), Some(Tie::Tied(Role::Read)));
     w.advance(70_000);
-    assert!(phone.grants(t).unwrap().get(&g).is_some_and(|e| e.with_membership) && !listed(&phone, g, t), "the phone has the grant, not the membership");
+    assert!(phone.grants(t).unwrap().get(&g).is_some_and(|e| e.with_membership) && !listed(&phone, g, t), "the grant first");
     // other activity under the tag's label: the phone passes it again
     alice.commit_set(g, osis::core::NAME, &"Shared!".to_string()).unwrap();
     for _ in 0..3 {
         w.advance(70_000);
     }
-    w.set_reachable(&bob, s1, true);
-    w.advance(70_000);
-    assert!(listed(&alice, g, t));
-    assert_eq!(bob.grants(t).unwrap().get(&g).map(|e| e.with_membership), Some(true), "the share stays");
-}
-
-// spec/permissions.md §2 (the tie names the membership): Bob's phone gets the tied grant before the
-// membership and keeps it; the membership arrives, then the phone (a writer of the tag, admin of the
-// card) removes it: no self-removal, so its obligation removes the grant as an explicit role removal.
-#[test]
-fn grant_first_then_add_then_remove_removes_it() {
-    let mut w = World::new();
-    let s1 = w.add_host();
-    let s2 = w.add_host();
-    let alice = account(&mut w, 1, s1);
-    let bob = account(&mut w, 2, s2);
-    let join = osis::internals::pair(w.cfg(3, &[]), &bob.pair_offer().unwrap()).unwrap();
-    let (_, reply) = bob.pair_accept(join.request()).unwrap();
-    let phone = join.finish(&reply).unwrap();
-    w.run();
-    let b = introduce(&mut w, &alice, &bob);
-    let g = new_tag(&alice, "Shared").unwrap();
-    alice.grant(g, b, Role::Write, GrantOpts::default()).unwrap();
-    w.run();
-    let t = card(&bob, "plan");
-    bob.commit_with(|w| w.group(bob.home()).add(osis::Member::Item(t))).unwrap();
-    for _ in 0..3 {
-        w.advance(70_000);
-    }
-    w.set_reachable(&bob, s1, false);
-    bob.add_with_grant(Member::Item(t), g, Role::Read).unwrap();
-    w.advance(70_000);
-    assert!(phone.grants(t).unwrap().get(&g).is_some_and(|e| e.with_membership) && !listed(&phone, g, t), "the grant first");
+    assert!(phone.grants(t).unwrap().get(&g).is_some_and(|e| e.with_membership), "the grant stays");
     w.set_reachable(&bob, s1, true);
     for _ in 0..3 {
         w.advance(70_000);
     }
     assert!(listed(&phone, g, t) && listed(&alice, g, t), "then the membership");
     assert!(phone.grants(t).unwrap().get(&g).is_some_and(|e| e.with_membership));
+    assert_eq!(bob.grants(t).unwrap().get(&g).map(|e| e.with_membership), Some(true), "the share stays");
     assert_eq!(text(&alice, t).as_deref(), Some("plan"));
     // Alice, admin of the tag, would remove it too: offline, the phone's obligation alone
     w.set_online(&alice, false);

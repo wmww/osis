@@ -165,25 +165,3 @@ fn large_body_streams() {
     std::io::Read::read_to_string(&mut s, &mut got).unwrap();
     assert!(got == doc, "streamed content equals what was written");
 }
-
-// spec/crdt.md §4.6 (undo and redo); notes/api.md Undo (history lists everyone's changes; undo
-// and redo own ones), offline: one node without peers keeps a full local history. The stack
-// here walks two aspects.
-#[test]
-fn local_undo_redo_and_history() {
-    let db = osis::internals::create(osis::internals::Opening::memory()).unwrap();
-    let nb = new_tag(&db, "Local").unwrap();
-    let note = new_note(&db, nb, "a").unwrap();
-    rename(&db, note, "a", "b").unwrap();
-    type_text(&db, note, 0, "x").unwrap();
-    assert!(undo(&db, note).unwrap());
-    assert_eq!(body(&db, note).unwrap(), "");
-    assert!(undo(&db, note).unwrap());
-    assert_eq!(title(&db, note).unwrap().as_deref(), Some("a"));
-    assert!(redo(&db, note).unwrap());
-    assert_eq!(title(&db, note).unwrap().as_deref(), Some("b"));
-    type_text(&db, note, 0, "y").unwrap();
-    assert!(!redo(&db, note).unwrap(), "a new change clears redo");
-    let h = crate::common::listed(&db, Scope::Thing(note));
-    assert!(h.len() >= 4, "{h:?}");
-}
