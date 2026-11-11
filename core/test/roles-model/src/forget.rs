@@ -650,11 +650,11 @@ impl<'a> Run<'a> {
 }
 
 pub fn run(s: &Script, p: Policy) -> Out {
-    Run::new(s, p, None).finish(&mut Rng(0xf0))
+    Run::new(s, p, None).finish(&mut Rng(0))
 }
 
 fn run_suppressed(s: &Script, p: Policy, sup: (usize, u32)) -> Out {
-    Run::new(s, p, Some(sup)).finish(&mut Rng(0xf0))
+    Run::new(s, p, Some(sup)).finish(&mut Rng(0))
 }
 
 /// The honest writes `other` reads at node v that `reference` does not, and conversely.

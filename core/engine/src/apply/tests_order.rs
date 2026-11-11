@@ -91,19 +91,23 @@ struct Shape {
 /// (a grandchild of G) in that commit or the next; B writes on G or on one of them, the demoter receiving each at once or not
 /// before the demotion; the demoter removes B with a frontier as of `shape.at`; then the tail.
 /// Returns how many orders ran.
-fn sample(seed: u64, shape: Shape) -> usize {
-    let mut rng = Rng(seed | 1);
-    let mut lp = LocalPeer::new(3, seed, T0).unwrap();
-    lp.sync_all().unwrap();
-    let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let mut m = Mutation::new();
-    let g = lp.peers[0].engine.new_thing(&mut m, a);
-    m.set(g, &reg(), &Value::Str("g".into())).unwrap();
-    lp.peers[0].commit(m).unwrap();
-    edge(&mut lp, 0, g, b, Some(Role::Write), None);
-    edge(&mut lp, 0, g, c, Some(Role::Admin), None);
-    lp.sync_all().unwrap();
-    let base: Vec<CommitId> = lp.peers[0].engine.commit_ids();
+fn sample(shape: Shape) -> usize {
+    let mut rng = Rng(1); // xorshift needs a nonzero state
+    let (mut lp, (g, base)) = LocalPeer::cached("apply::tests_order::sample", || {
+        let mut lp = LocalPeer::fresh(3, T0);
+        lp.sync_all().unwrap();
+        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let mut m = Mutation::new();
+        let g = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(g, &reg(), &Value::Str("g".into())).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        edge(&mut lp, 0, g, b, Some(Role::Write), None);
+        edge(&mut lp, 0, g, c, Some(Role::Admin), None);
+        lp.sync_all().unwrap();
+        let base: Vec<CommitId> = lp.peers[0].engine.commit_ids();
+        (lp, (g, base))
+    });
+    let b = lp.peers[1].engine.me();
     lp.advance(1_000);
     let mut m = Mutation::new();
     let item = lp.peers[0].engine.new_thing(&mut m, g);
@@ -165,17 +169,18 @@ fn sample(seed: u64, shape: Shape) -> usize {
     let ids: Vec<CommitId> = packs.keys().copied().collect();
     let things = [g, item, item2, sub];
     let want = seen(&mut lp.peers[0], &ids, &things);
-    assert_eq!(want.1, 0, "seed {seed}: A holds everything");
-    assert_eq!(seen(&mut lp.peers[1], &ids, &things), want, "seed {seed}: B judges as A");
-    assert_eq!(seen(&mut lp.peers[2], &ids, &things), want, "seed {seed}: C judges as A");
-    let now = lp.peers[0].clock.now_wall_ms();
+    assert_eq!(want.1, 0, "A holds everything");
+    assert_eq!(seen(&mut lp.peers[1], &ids, &things), want, "B judges as A");
+    assert_eq!(seen(&mut lp.peers[2], &ids, &things), want, "C judges as A");
+    // a fresh node per order: copies of one, a node apart from A, B and C
+    let mut fresh = Peer::new(3, lp.peers[0].clock.now_wall_ms()).unwrap();
     let orders = perms(rest.len());
     for order in &orders {
-        let mut p = Peer::new(seed ^ 0xfeed, now).unwrap();
+        let mut p = fresh.copy().unwrap();
         for pk in base.iter().chain(order.iter().map(|&i| &rest[i])) {
             p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
         }
-        assert_eq!(seen(&mut p, &ids, &things), want, "seed {seed}: arrival order {order:?}");
+        assert_eq!(seen(&mut p, &ids, &things), want, "arrival order {order:?}");
     }
     orders.len()
 }
@@ -188,7 +193,7 @@ fn sample(seed: u64, shape: Shape) -> usize {
 #[test]
 fn validity_alike_in_every_arrival_order_spec_permissions_5_2() {
     let cases = [(1, 0, 0, 1, 0), (1, 1, 2, 1, 0), (2, 1, 2, 2, 0), (2, 1, 0, 0, 0), (1, 0, 2, 0, 3)];
-    for (i, (writes, at, by, sub, tail)) in cases.into_iter().enumerate() {
-        assert_eq!(sample(0x0de5_0000 + i as u64, Shape { writes, at, by, sub, tail }), 24);
+    for (writes, at, by, sub, tail) in cases {
+        assert_eq!(sample(Shape { writes, at, by, sub, tail }), 24);
     }
 }

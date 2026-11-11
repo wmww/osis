@@ -1938,7 +1938,7 @@ mod tests {
     // delivery order cannot change the held set.
     #[test]
     fn content_rules_writer_side_only_spec_perm_5_1() {
-        let mut lp = LocalPeer::new(2, 900, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let p0 = &mut lp.peers[0];
         let me = p0.engine.me();
@@ -1972,7 +1972,7 @@ mod tests {
     // tree fails the local check, as does a chain of new things past MAX_CHAIN_DEPTH.
     #[test]
     fn tree_created_in_one_commit_spec_perm_1() {
-        let mut lp = LocalPeer::new(2, 901, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a0, a1) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
         let reg = Ak::new("x:a.0").unwrap();
@@ -2068,7 +2068,7 @@ mod tests {
     // outside a transaction, and every later transaction fails as corrupt, never a default
     #[test]
     fn failed_lazy_header_is_corrupt() {
-        let mut lp = LocalPeer::new(1, 902, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let p0 = &mut lp.peers[0];
         let me = p0.engine.me();
         let mut m = Mutation::new();

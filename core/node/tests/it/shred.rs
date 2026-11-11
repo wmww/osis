@@ -44,8 +44,21 @@ fn reopened(p: Peer, seed: u64) -> Peer {
     p
 }
 
-fn net2(seed: u64) -> LocalPeer {
-    LocalPeer::of(vec![peer(seed), peer(seed + 1)], seed)
+/// A node apart from `net2`'s; `FRESH + 1` reopens it on an rng stream of its own.
+const FRESH: u64 = 2;
+
+/// A `FRESH` node holding `setup`, received in order.
+fn holding(setup: &[osis_node::local_peer::Package]) -> Peer {
+    let mut p = peer(FRESH);
+    for pk in setup {
+        p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    }
+    p
+}
+
+/// Two peers (seeds 0 and 1): built once (`LocalPeer::cached`).
+fn net2() -> LocalPeer {
+    LocalPeer::cached("shred::net2", || (LocalPeer::of(vec![peer(0), peer(1)], 0), ())).0
 }
 
 fn big(marker: &str) -> String {
@@ -70,7 +83,7 @@ fn filler(lp: &mut LocalPeer, i: usize, n: usize) {
 // so that later compromise recovers nothing
 #[test]
 fn purged_body_unrecoverable_spec_commits_5() {
-    let mut lp = net2(71);
+    let mut lp = net2();
     let t = new_thing(&mut lp, 0);
     let marker = "PURGED-MARK-41c9";
     let secret = set(&mut lp, 0, t, &REG, &big(marker));
@@ -88,7 +101,7 @@ fn purged_body_unrecoverable_spec_commits_5() {
 // spec/commits.md §6: at T the body is dropped; spec/commits.md §5: no local copy survives
 #[test]
 fn expired_body_unrecoverable_spec_commits_6() {
-    let mut lp = net2(73);
+    let mut lp = net2();
     let t = new_thing(&mut lp, 0);
     let marker = "EXPIRED-MARK-77aa";
     let c = set(&mut lp, 0, t, &BRIEF, &big(marker));
@@ -103,7 +116,7 @@ fn expired_body_unrecoverable_spec_commits_6() {
 // transaction; no local copy survives
 #[test]
 fn purged_on_replace_unrecoverable_spec_commits_5() {
-    let mut lp = net2(74);
+    let mut lp = net2();
     let t = new_thing(&mut lp, 0);
     let marker = "ATMOST-MARK-5b01";
     let c = set(&mut lp, 0, t, &GONE, &big(marker));
@@ -119,7 +132,7 @@ fn purged_on_replace_unrecoverable_spec_commits_5() {
 // superseded entry value survives
 #[test]
 fn purged_on_replace_paged_unrecoverable_spec_commits_5() {
-    let mut lp = net2(75);
+    let mut lp = net2();
     let t = new_thing(&mut lp, 0);
     let fill: osis_base::ValueMap = (0..66).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
     let mut m = Mutation::new();
@@ -147,7 +160,7 @@ fn purged_on_replace_paged_unrecoverable_spec_commits_5() {
 // index row), not by rewriting the whole state; no copy of its value survives
 #[test]
 fn expired_entry_paged_unrecoverable_spec_commits_6() {
-    let mut lp = net2(76);
+    let mut lp = net2();
     let t = new_thing(&mut lp, 0);
     let fill: osis_base::ValueMap = (0..66).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
     let mut m = Mutation::new();
@@ -178,7 +191,7 @@ fn expired_entry_paged_unrecoverable_spec_commits_6() {
 // value again and removing another by value work over the pages
 #[test]
 fn expired_element_paged_set_unrecoverable_spec_commits_6() {
-    let mut lp = net2(77);
+    let mut lp = net2();
     let t = new_thing(&mut lp, 0);
     let a = ak("t:bigset.0");
     let mut m = Mutation::new();
@@ -220,11 +233,11 @@ fn expired_element_paged_set_unrecoverable_spec_commits_6() {
 // device still yields, though their ciphertext may linger in freed storage
 #[test]
 fn purged_large_value_unrecoverable_spec_commits_5() {
-    let mut lp = net2(75);
+    let mut lp = net2();
     let t = new_thing(&mut lp, 0);
     let marker = b"LARGE-MARK-c4f2";
     let mut v = vec![0u8; 300 * 1024];
-    let mut r = SeededRng::from_u64(9);
+    let mut r = SeededRng::from_u64(0);
     osis_crypto::RngCore::fill_bytes(&mut r, &mut v);
     v[150_000..150_000 + marker.len()].copy_from_slice(marker);
     let mut m = Mutation::new();
@@ -252,7 +265,7 @@ fn purged_large_value_unrecoverable_spec_commits_5() {
 #[test]
 fn erasing_edit_drops_replaced_body_unrecoverable_spec_commits_5() {
     for compact in [true, false] {
-        let mut lp = net2(77);
+        let mut lp = net2();
         let t = new_thing(&mut lp, 0);
         let marker = "LIVE-ATMOST-MARK-c90d";
         let mut fill: osis_base::ValueMap = (0..300).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
@@ -285,7 +298,7 @@ fn erasing_edit_drops_replaced_body_unrecoverable_spec_commits_5() {
 // removal's body nor a later snapshot's tombstone keeps it, at the writer or a receiver
 #[test]
 fn removed_map_key_gone_after_purge_spec_crdt_5_6() {
-    let mut lp = net2(78);
+    let mut lp = net2();
     let t = new_thing(&mut lp, 0);
     let marker = "KEY-MARK-5e17";
     let k = ak("t:big.0");
@@ -320,7 +333,7 @@ fn removed_map_key_gone_after_purge_spec_crdt_5_6() {
 // commit, joins value-less and drops again; no local copy of its value survives
 #[test]
 fn expired_late_part_unrecoverable_spec_crdt_4_7() {
-    let mut lp = net2(78);
+    let mut lp = net2();
     let t = new_thing(&mut lp, 0);
     lp.sync(0, 1).unwrap();
     let marker = "LATEEXP-MARK-3e9f";
@@ -354,7 +367,7 @@ fn expired_late_part_unrecoverable_spec_crdt_4_7() {
 #[test]
 fn partless_commit_applies_as_its_header_spec_commits_4() {
     for syncing in [false, true] {
-        let mut lp = net2(81);
+        let mut lp = net2();
         lp.sync_all().unwrap();
         let t = new_thing(&mut lp, 0);
         let mut m = Mutation::new();
@@ -381,7 +394,7 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
     let aspects = [ak("t:reg.0"), ak("t:list.0"), ak("t:big.0")];
     let mut reads = Vec::new();
     for order in [[0usize, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
-        let mut lp = net2(131);
+        let mut lp = net2();
         let t = new_thing(&mut lp, 0);
         let mut m = Mutation::new();
         m.set(t, &REG, &s("old")).unwrap();
@@ -455,7 +468,7 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
 #[test]
 fn purge_of_a_part_waiting_aside_reads_alike_spec_commits_5() {
     for order in [[0usize, 1, 2], [1, 0, 2], [0, 2, 1], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
-        let mut lp = net2(141);
+        let mut lp = net2();
         let t = new_thing(&mut lp, 0);
         let t2 = new_thing(&mut lp, 0);
         let t3 = new_thing(&mut lp, 0);
@@ -519,7 +532,7 @@ fn part_on(pk: &osis_node::local_peer::Package, t: Tid, a: &osis_base::Ak, empty
 // comes, goes: nothing is left for a relay's empty slot to bring back.
 #[test]
 fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
-    let mut lp = net2(301);
+    let mut lp = net2();
     let (t, y, q) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     lp.sync(0, 1).unwrap();
     lp.advance(5);
@@ -559,7 +572,7 @@ fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
 // superseded, as at a node that held the commit before T.
 #[test]
 fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
-    let mut lp = net2(302);
+    let mut lp = net2();
     let (t, y) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     let mut m = Mutation::new();
     m.set(t, &REG, &s("old")).unwrap();
@@ -605,7 +618,7 @@ const ORDER_STRIDE: usize = 389;
 // alike whatever it syncs, its commit applied, no flag left, nothing of either value recoverable.
 #[test]
 fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
-    let mut lp = net2(304);
+    let mut lp = net2();
     let (t2, t3) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     let setup = lp.packages(0).unwrap();
     let t = new_thing(&mut lp, 0);
@@ -651,17 +664,16 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
     let outcomes = std::sync::Mutex::new(std::collections::BTreeMap::<String, String>::new());
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let (setup, items, orders, shapes, cases, ids) = (&setup, &items, &orders, &shapes, &cases, &ids);
+    // every case starts at one node holding the setup: built once, each case a copy of it
+    let base = std::sync::Mutex::new(holding(&setup));
+    let (base, items, orders, shapes, cases, ids) = (&base, &items, &orders, &shapes, &cases, &ids);
     std::thread::scope(|sc| {
         for _ in 0..threads {
             sc.spawn(|| loop {
                 let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(&(n, o)) = cases.get(at) else { return };
                 let ((sync, k, tick), order) = (shapes[n], &orders[o]);
-                let mut p = peer(9000 + at as u64);
-                for pk in setup {
-                    p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
-                }
+                let mut p = base.lock().unwrap().copy().unwrap();
                 match sync {
                     1 => p.engine.set_syncing(t, true).unwrap(),
                     2 => p.engine.set_syncing(t2, true).unwrap(),
@@ -681,7 +693,7 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
                         }
                     }
                     if i == 3 && at % 2 == 1 {
-                        p = reopened(p, at as u64);
+                        p = reopened(p, FRESH + 1);
                     }
                     let _ = p.receive(&items[*x].0, items[*x].1.clone());
                     p.reexamine().unwrap();
@@ -744,7 +756,7 @@ fn tombstone_alike(stride: u64) {
     use osis_commit::CommitBlob;
     let forever = osis_schema::Retention { by: osis_schema::PurgeBy::AuthorOrAdmin };
     let marker = "TOMBSTONE-SECRET-8e1a";
-    let mut lp = net2(611);
+    let mut lp = net2();
     let setup = lp.packages(0).unwrap();
     let t = new_thing_keeping(&mut lp, 0, &[("t:reg.0", osis_schema::History::FOREVER)]);
     let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !setup.iter().any(|k| k.id == p.id)).collect();
@@ -781,26 +793,24 @@ fn tombstone_alike(stride: u64) {
                 for restart in 0..=order.len() {
                     cases += 1;
                     if cases % stride == 0 {
-                        jobs.push((k, syncing, order.clone(), restart, cases));
+                        jobs.push((k, syncing, order.clone(), restart));
                     }
                 }
             }
         }
     }
+    let base = std::sync::Mutex::new(holding(&setup));
     let one = |j: u64| {
         osis_base::testenv::caught(|| {
-            let (k, syncing, order, restart, case) = &jobs[j as usize];
+            let (k, syncing, order, restart) = &jobs[j as usize];
             let (what, items) = &sets[*k];
-            let mut p = peer(7000 + case);
-            for pk in &setup {
-                p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
-            }
+            let mut p = base.lock().unwrap().copy().unwrap();
             if *syncing {
                 p.engine.set_syncing(t, true).unwrap();
             }
             for (at, i) in order.iter().enumerate() {
                 if at == *restart {
-                    p = reopened(p, 8000 + case);
+                    p = reopened(p, FRESH + 1);
                 }
                 p.receive(&items[*i].0, items[*i].1.clone()).unwrap();
             }
@@ -831,7 +841,7 @@ fn tombstone_alike(stride: u64) {
 #[test]
 fn request_is_judged_again_when_the_named_delta_arrives_spec_sync_6() {
     let forever = osis_schema::Retention { by: osis_schema::PurgeBy::AuthorOrAdmin };
-    let mut lp = net2(631);
+    let mut lp = net2();
     let t = new_thing_keeping(&mut lp, 0, &[("t:reg.0", osis_schema::History::FOREVER)]);
     sync(&mut lp, 0, 1);
     lp.advance(5);
@@ -896,7 +906,7 @@ fn purged_page_away(lp: &mut LocalPeer, marker: &str) -> (Tid, osis_base::Commit
 #[test]
 fn purged_with_a_page_away_goes_at_once_spec_commits_5() {
     let marker = "PAGE-AWAY-4c8e";
-    let mut lp = net2(341);
+    let mut lp = net2();
     let (t, c, _) = purged_page_away(&mut lp, marker);
     let e = &mut lp.peers[1].engine;
     assert!(e.pending().is_empty() && e.commit_ids().contains(&c), "{:?}", e.pending());
@@ -910,7 +920,7 @@ fn purged_with_a_page_away_goes_at_once_spec_commits_5() {
 fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
     for by_snapshot in [true, false] {
         let marker = "PAGE-REPAIR-5d1a";
-        let mut lp = net2(351);
+        let mut lp = net2();
         let a = ak("t:big.0");
         let (t, _, whole) = purged_page_away(&mut lp, marker);
         assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), Some(Value::Map(osis_base::ValueMap::from([(s("older"), s("kept"))]))), "by snapshot {by_snapshot}");
@@ -936,7 +946,7 @@ fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
 // it (was: the row was overwritten unshredded, so the old page kept the value).
 #[test]
 fn snapshot_leftover_stripped_again_unrecoverable_spec_commits_5() {
-    let mut lp = net2(81);
+    let mut lp = net2();
     let t = new_thing_keeping(&mut lp, 0, &[("t:text.0", DAY)]);
     lp.sync(0, 1).unwrap();
     let k = ak("t:big.0");
@@ -994,10 +1004,10 @@ struct Fallen {
     my: &'static str,
 }
 
-fn fallen_snapshot_rig(seed: u64) -> Fallen {
+fn fallen_snapshot_rig() -> Fallen {
     use osis_base::Role;
     use osis_node::flows::Demotion;
-    let mut lp = LocalPeer::of(vec![peer(seed), peer(seed + 1), peer(seed + 2)], seed);
+    let mut lp = LocalPeer::of(vec![peer(0), peer(1), peer(2)], 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let x = lp.peers[2].engine.me();
@@ -1047,7 +1057,7 @@ fn big_put(lp: &mut LocalPeer, i: usize, t: Tid, key: &str, val: &str, purge: Op
 // spec/commits.md §5: the leftover indexes as an open rebuilding the index reads it.
 #[test]
 fn fallen_snapshot_leftover_gone_for_a_later_purge_spec_commits_5() {
-    let Fallen { mut lp, t, cy, my } = fallen_snapshot_rig(371);
+    let Fallen { mut lp, t, cy, my } = fallen_snapshot_rig();
     let e = &mut lp.peers[1].engine;
     let opened = e.index_digest().without_held();
     e.rebuild_index().unwrap();
@@ -1085,7 +1095,7 @@ fn into_entry(lp: &mut LocalPeer, t: Tid, key: &str, n: i64) -> osis_base::Commi
 // on both nodes; purged too, nothing of the key is left
 #[test]
 fn purge_leaves_later_edits_own_key_spec_crdt_4_7() {
-    let mut lp = net2(79);
+    let mut lp = net2();
     let t = new_thing(&mut lp, 0);
     let marker = "ENTRY-KEY-MARK-3f0b";
     let k = ak("t:map.0");
@@ -1120,7 +1130,7 @@ fn purge_leaves_later_edits_own_key_spec_crdt_4_7() {
 // entry's T, the entry under its own copy of the key
 #[test]
 fn edit_into_expiring_entry_keeps_its_expiry_spec_crdt_4_7() {
-    let mut lp = net2(80);
+    let mut lp = net2();
     let t = new_thing(&mut lp, 0);
     let marker = "EXPIRING-KEY-MARK-91c4";
     let t_end = lp.peers[0].engine.now().0 + 60_000;
@@ -1150,7 +1160,7 @@ fn edit_into_expiring_entry_keeps_its_expiry_spec_crdt_4_7() {
 // own values (an undelete): a purge of the insert leaves them, one of the undo too takes them
 #[test]
 fn undelete_chars_are_their_own_values_spec_crdt_4_7() {
-    let mut lp = net2(81);
+    let mut lp = net2();
     let t = new_thing_keeping(&mut lp, 0, &[("t:text.0", DAY)]);
     let marker = "UNDELETE-MARK-6d2a";
     let k = ak("t:text.0");
@@ -1196,7 +1206,7 @@ fn undelete_chars_are_their_own_values_spec_crdt_4_7() {
 // content (spec/commits.md §7).
 #[test]
 fn undo_revives_no_purged_value_spec_crdt_4_6() {
-    let mut lp = net2(86);
+    let mut lp = net2();
     let mut m = Mutation::new();
     let me = lp.peers[0].engine.me();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
@@ -1235,7 +1245,7 @@ fn undo_revives_no_purged_value_spec_crdt_4_6() {
 #[test]
 fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
     use osis_crdt::{Op, PathOp, PathSeg};
-    let mut lp = net(2, 82);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(osis_base::Role::Write)), None);
@@ -1278,7 +1288,7 @@ fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
 #[test]
 fn reaction_outlives_expiring_message_spec_crdt_4_7() {
     use osis_crdt::{Op, PathOp, PathSeg};
-    let mut lp = net(1, 83);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let k = ak("t:map.0");
     let t_end = lp.peers[0].engine.now().0 + 60_000;
@@ -1306,7 +1316,7 @@ fn reaction_outlives_expiring_message_spec_crdt_4_7() {
 #[test]
 fn undo_copying_two_expiries_waits_spec_crdt_4_6() {
     use osis_crdt::{Op, PathOp, PathSeg};
-    let mut lp = net(1, 84);
+    let mut lp = net(1, 0);
     let t = new_thing_keeping(&mut lp, 0, &[("t:map.0", DAY)]);
     let k = ak("t:map.0");
     let t_end = lp.peers[0].engine.now().0 + 60_000;
@@ -1349,7 +1359,7 @@ fn purge_strips_carrying_snapshots_alike_in_every_order_spec_commits_5() {
     let mut seen: Option<(Vec<osis_node::engine::listing::PartBody>, std::collections::BTreeMap<osis_base::CommitId, osis_base::CommitId>)> = None;
     for bare in [false, true] {
         for order in [[0usize, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
-            let mut lp = net2(151);
+            let mut lp = net2();
             let t = new_thing(&mut lp, 0);
             lp.sync(0, 1).unwrap();
             lp.advance(5);

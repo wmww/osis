@@ -196,7 +196,7 @@ fn sections_per_reader_actor() {
     let c = mixed();
     let reader = |ai: usize| u8::from(ai.is_multiple_of(3));
     let secret = |r: &u8| Secret32::from_bytes([*r + 1; 32]);
-    let mut rng = SeededRng::from_u64(4);
+    let mut rng = SeededRng::from_u64(0);
     let env = seal_commit(&c, reader, |r, _| Some((secret(r), vec![])), &[], &mut rng).unwrap();
     assert_eq!(env.id(), c.id());
     assert_eq!(env.sections.len(), 2);
@@ -250,7 +250,7 @@ fn sections_per_reader_actor() {
 #[test]
 fn envelope_rejections() {
     let c = mixed();
-    let mut rng = SeededRng::from_u64(5);
+    let mut rng = SeededRng::from_u64(0);
     let env = seal_commit(&c, |ai| ai % 2, |_, _| Some((Secret32::from_bytes([1; 32]), vec![])), &[], &mut rng).unwrap();
     let mut swapped = env.clone();
     swapped.sections.swap(0, 1);
@@ -412,7 +412,7 @@ fn many_writes_per_thing_fit_one_blob() {
     let c = build(b, &mut MemoryBlobs::default()).unwrap().commit;
     assert!(blob_bound(&c) <= MAX_BLOB);
     let things: Vec<Tid> = c.header.aspects.iter().map(|a| a.tid).collect();
-    let mut rng = SeededRng::from_u64(6);
+    let mut rng = SeededRng::from_u64(0);
     let env = seal_commit(&c, |ai| things[ai], |_, _| Some((Secret32::from_bytes([1; 32]), vec![t(9); osis_base::format::MAX_CHAIN_DEPTH])), &[], &mut rng).unwrap();
     assert_eq!(env.sections.len(), 2500);
     let groups = prefix_groups(&c.header, env.ais()).unwrap();
@@ -425,7 +425,7 @@ fn many_writes_per_thing_fit_one_blob() {
 #[test]
 fn section_key_filter_keeps_the_key() {
     let (commit, secret) = (CommitId([4; 32]), Secret32::from_bytes([1; 32]));
-    let mut rng = SeededRng::from_u64(8);
+    let mut rng = SeededRng::from_u64(0);
     let mut wrong = 0;
     for n in [0usize, 1, 3, 23, 24, 30] {
         let parts: Vec<Part> = (0..n).map(|ai| Part::new(ai * 30, osis_base::encode(&Value::Int(ai as i64)))).collect();

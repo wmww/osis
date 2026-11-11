@@ -212,7 +212,7 @@ fn open(l: &Label) -> Command {
 // spec/sync.md §5, §8, §10: host clients of a hosting node (multi-thread runtime: hub calls in block_in_place): register, open, upload, download, subscription push
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clients_end_to_end() {
-    let tnet = osis_transport::Net::new(1);
+    let tnet = osis_transport::Net::new(0);
     let mut net = Net::new();
     let keep = Host::node(&mut net, 1, "mem://s", vec![]);
     let host = Host::start(keep, tnet.endpoint("s"), net.clock.clone()).await;
@@ -235,7 +235,7 @@ async fn clients_end_to_end() {
 // spec/sync.md §5, §10: a host configured with a peer dials it as its own static key and pushes stamped entries; after a restart over the same storage it resumes
 #[tokio::test]
 async fn hosts_replicate_through_dialed_links() {
-    let tnet = osis_transport::Net::new(1);
+    let tnet = osis_transport::Net::new(0);
     let mut net = Net::new();
     let clients = tnet.endpoint("clients");
     let k2 = Host::node(&mut net, 2, "mem://s2", vec![]);
@@ -267,7 +267,7 @@ async fn hosts_replicate_through_dialed_links() {
 // key
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stopping_closes_what_opened_the_host_store() {
-    let tnet = osis_transport::Net::new(1);
+    let tnet = osis_transport::Net::new(0);
     let mut net = Net::new();
     let keep = Host::node(&mut net, 1, "mem://s", vec![]);
     let host = Host::start(keep, tnet.endpoint("s"), net.clock.clone()).await;
@@ -302,7 +302,7 @@ async fn stopping_closes_what_opened_the_host_store() {
 async fn flood_does_not_delay_others() {
     const BLOB: usize = 16 << 10;
     const FLOOD: u64 = 1500;
-    let tnet = osis_transport::Net::new(1);
+    let tnet = osis_transport::Net::new(0);
     let mut net = Net::new();
     let keep = Host::node(&mut net, 1, "mem://s", vec![]);
     let host = Host::start(keep, tnet.endpoint("s"), net.clock.clone()).await;
@@ -364,7 +364,7 @@ async fn quic_clients_and_replication() {
 // answered by its layer
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_connection_serves_hosted_and_read_labels() {
-    let tnet = osis_transport::Net::new(1);
+    let tnet = osis_transport::Net::new(0);
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let n = net.node(2, &[]);
@@ -431,7 +431,7 @@ async fn one_connection_serves_hosted_and_read_labels() {
 // node does not know gets no proof back, no record and no shared set
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stranger_gets_no_proof_spec_sync_10() {
-    let tnet = osis_transport::Net::new(1);
+    let tnet = osis_transport::Net::new(0);
     let mut net = Net::new();
     let z = net.node(1, &[]);
     let n = net.node(2, &[]);

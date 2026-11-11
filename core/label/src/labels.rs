@@ -60,7 +60,7 @@ mod tests {
     // records round trip through the `label` value; paths and tips follow `prev`.
     #[test]
     fn records() {
-        let mut rng = SeededRng::from_u64(1);
+        let mut rng = SeededRng::from_u64(0);
         let g = Group::new(10);
         let e = Epoch::new(0, [0; 32]).unwrap();
         let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, e, &g.read), &mut rng).unwrap();

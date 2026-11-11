@@ -61,7 +61,7 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
 /// spec: none (notes/architecture.md §3): no panics on data.
 #[test]
 fn junk_never_panics() {
-    let mut rng = Rng(0x0b5e55ed);
+    let mut rng = Rng(0);
     for _ in 0..300 {
         let (h, tids) = junk(&mut rng);
         let tl = Timeline::evaluate(&h);

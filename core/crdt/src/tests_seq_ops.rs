@@ -443,11 +443,11 @@ fn hostile_moves(base: &Fragment, sibs: usize, moves: usize) -> (Fragment, Fragm
 /// §6 (`seq_lin`), spec/requirements.md Scale (a change costs O(change)): joins of small
 /// received deltas (an insert, a delete, a move) into a text of `runs` insert runs at random
 /// places follow the cached placement: no whole pass, and `follow`'s work units grow far below
-/// linearly from n to 10n runs (counted; measured 608 and 1728: about √n, the block walk).
+/// linearly from n to 10n runs (counted: about √n, the block walk).
 #[test]
 fn small_joins_follow_cached_placement_spec_6() {
     let work = |runs: u64| {
-        let mut r = crate::testutil::rng(5);
+        let mut r = crate::testutil::rng(0);
         let mut a = Replica::new(1);
         let mut len = 0usize;
         let run: String = "abcdefghij".repeat(10);
@@ -542,7 +542,7 @@ fn replaces_keep_state_flat_spec_4_2() {
 /// cached placement (no whole pass) and it equals a whole pass.
 #[test]
 fn cached_placement_follows_typing_spec_6() {
-    let mut r = crate::testutil::rng(11);
+    let mut r = crate::testutil::rng(0);
     let mut a = Replica::new(1);
     let mut b = Replica::new(2);
     let mut kept = 0;
@@ -575,7 +575,7 @@ fn cached_placement_follows_typing_spec_6() {
 // most ops, checked against state + net effect after every op (debug assertion in `Batch`).
 #[test]
 fn large_text_batch_is_net_effect_spec_4_5() {
-    for seed in [3u64, 8] {
+    for seed in 0..2u64 {
         let mut r = crate::testutil::rng(seed);
         let mut a = Replica::new(1);
         for k in 0..30u64 {
@@ -641,7 +641,7 @@ fn large_text_batch_is_net_effect_spec_4_5() {
 // into one copy clones only the chunks it writes (notes/crdt.md, placement cache).
 #[test]
 fn placement_dot_map_shared_by_copies_spec_6() {
-    let mut r = crate::testutil::rng(3);
+    let mut r = crate::testutil::rng(0);
     let mut a = Replica::new(1);
     let run = "abcdefghij".repeat(10);
     for k in 0..100u64 {
@@ -666,7 +666,7 @@ fn placement_dot_map_shared_by_copies_spec_6() {
 /// cached placement of a third replica receiving both, equal to a whole pass.
 #[test]
 fn cached_placement_follows_concurrent_typing_spec_6() {
-    let mut r = crate::testutil::rng(13);
+    let mut r = crate::testutil::rng(0);
     let mut a = Replica::new(1);
     a.commit(1, &[op(Op::Set(s(&"base text ".repeat(20))))], &text_view());
     let mut b = Replica { state: a.state.clone(), src: session_of(2), lo: 1 };
@@ -863,7 +863,7 @@ fn random_list_op(r: &mut Rng, st: &Fragment, ty: &Ty) -> PathOp {
 /// §5.7 Ops: create equals the model's write for write; move and insert likewise.
 #[test]
 fn ops_match_model_spec_5_7() {
-    let mut r = crate::testutil::rng(7);
+    let mut r = crate::testutil::rng(0);
     for _ in 0..20 {
         let mut mw = MWriter::new(crdt_model::stamp::Source::session(1, 0), 1 << 16, 1);
         let text = crdt_model::r#gen::random_text(&mut r, 8) + "xyz";
@@ -897,7 +897,7 @@ fn ops_match_model_spec_5_7() {
 /// several roots, earlier moves) a move writes what the model's does, write for write.
 #[test]
 fn move_matches_model_over_histories_spec_5_7() {
-    let mut r = crate::testutil::rng(29);
+    let mut r = crate::testutil::rng(0);
     let mut checked = 0;
     for _ in 0..60 {
         let commits = crate::testutil::history(&mut r, &[Ty::Text], 3, 6);
@@ -1066,7 +1066,7 @@ fn wired(d: &Fragment, src: &Source, range: CounterRange, t: u64) -> Fragment {
 /// to a whole pass after every join.
 #[test]
 fn cached_placement_follows_wire_deltas_spec_6() {
-    let mut r = crate::testutil::rng(17);
+    let mut r = crate::testutil::rng(0);
     let mut a = Replica::new(1);
     let mut b = Replica::new(2);
     let (mut kept, mut joins) = (0, 0);
@@ -1353,7 +1353,7 @@ fn full_order(f: &Fragment) -> Vec<(crate::Dot, bool)> {
 /// place, only its visibility. What a node keeping the placement apart relies on.
 #[test]
 fn resolved_insert_delete_match_index_ops_spec_6_1() {
-    let mut r = crate::testutil::rng(31);
+    let mut r = crate::testutil::rng(0);
     let (mut inserts, mut deletes) = (0, 0);
     for round in 0..80 {
         let text = round % 2 == 0;
@@ -1432,7 +1432,7 @@ fn resolved_insert_delete_match_index_ops_spec_6_1() {
 fn resolved_ops_on_embedded_text_and_skew_spec_6_1() {
     let tv = TyView(Ty::Text);
     let mut st = crate::ops::leaf(&mut Writer::new(ts(100 << 16), session_of(8), 1), None, &TyView(Ty::Register), &Op::Set(s("hello wide world of embedded chars")), true).unwrap().unwrap();
-    let mut r = crate::testutil::rng(77);
+    let mut r = crate::testutil::rng(0);
     let text_of = |f: &Fragment| -> Fragment {
         match f {
             Fragment::Slots(x) => x.slots.get(&crate::fragment::Encoding::Text).cloned().unwrap(),
@@ -1491,7 +1491,7 @@ fn resolved_ops_on_embedded_text_and_skew_spec_6_1() {
 /// reads the whole one once what it missed is loaded.
 #[test]
 fn index_ops_on_partial_placement_match_whole_spec_5_7() {
-    let mut r = crate::testutil::rng(43);
+    let mut r = crate::testutil::rng(0);
     let (mut runs, mut moves, mut multi, mut loaded, mut total, mut edits, mut sets, mut wholes) = (0, 0, 0, 0, 0, 0, 0, 0);
     for round in 0..80 {
         let mut stale = None;
@@ -1639,7 +1639,7 @@ fn set_on_partial_text_matches_whole_spec_5_7() {
 /// value one item away from the read after the first op (fuzz-style, exhaustive on short ones).
 #[test]
 fn set_after_op_on_partial_matches_whole_spec_5_7() {
-    let mut r = crate::testutil::rng(7);
+    let mut r = crate::testutil::rng(0);
     let mut runs = 0;
     for text in [false, true] {
         let ty = if text { Ty::Text } else { list_ty() };
@@ -1748,7 +1748,7 @@ fn edited(r: &mut Rng, base: &Value, ty: &Ty) -> Value {
 /// they write on the whole state, and a followed join is a whole pass (`partial_follow`).
 #[test]
 fn partial_placement_skew_piles_and_joins_spec_6_1() {
-    let mut r = crate::testutil::rng(977);
+    let mut r = crate::testutil::rng(0);
     let (mut runs, mut low, mut piles, mut joins, mut followed, mut wholes) = (0, 0, 0, 0, 0, 0);
     for round in 0..48 {
         let text = round % 2 == 0;
@@ -1877,7 +1877,7 @@ fn partial_placement_skew_piles_and_joins_spec_6_1() {
 /// concurrent change elsewhere) or of the whole text matches whole, also equal.
 #[test]
 fn edit_on_partial_placement_loads_its_window_spec_5_7() {
-    let mut r = crate::testutil::rng(71);
+    let mut r = crate::testutil::rng(0);
     let view = TyView(Ty::Text);
     let mut w = Writer::new(ts(1 << 16), session_of(1), 1);
     // not periodic: a window repeated elsewhere in base matches whole
@@ -1948,7 +1948,7 @@ fn edit_on_partial_placement_loads_its_window_spec_5_7() {
 /// follow as a whole pass would and load fewer pages than without the bound, never more.
 #[test]
 fn newest_stamp_skips_children_records_spec_6_1() {
-    let mut r = crate::testutil::rng(29);
+    let mut r = crate::testutil::rng(0);
     let view = text_view();
     let mut w = Writer::new(ts(1 << 16), session_of(1), 1);
     let text: String = (0..800).map(|_| (b'a' + r.below(26) as u8) as char).collect();
@@ -2010,7 +2010,7 @@ fn newest_move_onto_new_element_spec_6_1() {
 /// stretch repeats in base, matches whole, also equal.
 #[test]
 fn list_edit_on_partial_placement_loads_its_window_spec_5_7() {
-    let mut r = crate::testutil::rng(83);
+    let mut r = crate::testutil::rng(0);
     let ty = list_ty();
     let view = TyView(ty.clone());
     let Ty::List(e) = &ty else { unreachable!() };
@@ -2088,7 +2088,7 @@ fn list_edit_on_partial_placement_loads_its_window_spec_5_7() {
 /// lost or moved; the window's is the app's).
 #[test]
 fn edit_window_matches_whole_spec_5_7() {
-    let mut r = crate::testutil::rng(97);
+    let mut r = crate::testutil::rng(0);
     let view = text_view();
     crate::seq_diff::WINDOWED.set(0);
     let (mut same, mut windowed, mut read_diff, mut delta_diff, mut whole_worse) = (0, 0, 0, 0, 0);
@@ -2367,5 +2367,42 @@ fn removed_anchor_goes_charless_spec_4_5() {
     for f in [&a.state, &b] {
         assert_eq!(f.read(), Some(s("hebllo")));
         assert_eq!(rebooted(f).read(), Some(s("hebllo")));
+    }
+}
+
+/// §4.1 copy order, §6 (`seq_lin`): a forged copy of an element's chosen position write (one
+/// stamp, another anchor: two writers sharing a source and clock move one char apart), joined
+/// into a replica whose placement is cached, with or without another writer's concurrent move:
+/// the cached placement equals a whole pass and both orders join alike.
+#[test]
+fn forged_edge_copy_cached_placement_spec_6() {
+    let mut base = Replica::new(1);
+    base.commit(1, &[op(Op::Insert { at: 0, items: vec![s("abcde")] })], &text_view());
+    for at in 0..5 {
+        for (to1, to2) in (0..5).flat_map(|x| (0..5).map(move |y| (x, y))).filter(|(x, y)| x != y) {
+            for other in [None, Some((4 - at, at))] {
+                let fork = || Replica { state: base.state.clone(), src: base.src.clone(), lo: base.lo };
+                let (mut a1, mut a2) = (fork(), fork());
+                let (Some((d1, ..)), Some((d2, ..))) = (a1.commit(5, &[op(Op::Move { at, len: 1, to: to1 })], &text_view()), a2.commit(5, &[op(Op::Move { at, len: 1, to: to2 })], &text_view())) else { continue };
+                let mut c = Replica { state: base.state.clone(), src: session_of(2), lo: 1 };
+                let d3 = other.and_then(|(at, to)| c.commit(5, &[op(Op::Move { at, len: 1, to })], &text_view())).map(|d| d.0);
+                for (first, second) in [(&d1, &d2), (&d2, &d1)] {
+                    let mut x = base.state.clone();
+                    if let Some(d) = &d3 {
+                        x.join(d.clone());
+                    }
+                    x.join(first.clone());
+                    let _ = x.read();
+                    x.join(second.clone());
+                    crate::testutil::check_lin(&x);
+                    #[cfg(debug_assertions)]
+                    {
+                        let mut y = x.clone();
+                        y.drop_caches();
+                        assert_eq!(x.read(), y.read(), "cached read: move {at} to {to1}/{to2}, other {other:?}");
+                    }
+                }
+            }
+        }
     }
 }

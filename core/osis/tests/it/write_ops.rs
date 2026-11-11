@@ -304,7 +304,7 @@ fn a_generic_helper_names_value_key() {
     fn title_of<K: osis::ValueKey<T = String>>(db: &Osis, t: Tid, k: K) -> osis::Result<String> {
         Ok(db.at(t, k).get()?.unwrap_or_default())
     }
-    let db = db(1);
+    let db = db(0);
     let mut w = db.write();
     let t = w.create().unwrap();
     w.commit().unwrap();
@@ -317,7 +317,7 @@ fn a_generic_helper_names_value_key() {
 // spec: none (notes/api.md Writes): a backward range moves nothing and says so
 #[test]
 fn a_backward_move_range_is_invalid() {
-    let db = db(1);
+    let db = db(0);
     let k = ak("app:m.0");
     let mut w = db.write();
     let t = w.create().unwrap();
@@ -331,7 +331,7 @@ fn a_backward_move_range_is_invalid() {
 // counts, and a key's default names itself in the error.
 #[test]
 fn a_clash_is_judged_on_what_is_asked() {
-    let db = db(2);
+    let db = db(0);
     db.register_schema("rv.osis", "revision 1;\nexpires(30d) aspect app:d.0: int;\naspect app:p.0: int;").unwrap();
     let t = db.commit_with(|w| {
         let t = w.create()?;

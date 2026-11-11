@@ -1098,7 +1098,7 @@ mod tests {
 
     fn fresh(cfg: StoreConfig) -> (Pager, MemoryBackend, MemoryRoot, SeededRng) {
         let (b, r) = (MemoryBackend::new(), MemoryRoot::new());
-        let mut rng = SeededRng::from_u64(1);
+        let mut rng = SeededRng::from_u64(0);
         let mut p = Pager::create(Box::new(b.clone()), Box::new(r.clone()), cfg, Vec::new(), &mut rng).unwrap();
         // Free the catalog slot: these tests use units only (slots from 1).
         let mut d = p.begin().unwrap();
@@ -1285,7 +1285,7 @@ mod tests {
     #[test]
     fn row_lengths_show_only_the_class() {
         let key = Secret32::from_bytes([7; 32]);
-        let mut rng = SeededRng::from_u64(2);
+        let mut rng = SeededRng::from_u64(0);
         let (unit, node) = (unit_row(5, 9), node_row(1, 3, 9));
         let sealed = |row: &[u8], len: usize, rng: &mut SeededRng| seal(&key, row, &vec![0xa5; len], rng).unwrap();
         assert_eq!(sealed(&unit, 0, &mut rng).len(), sealed(&unit, UNIT_MIN - 1, &mut rng).len(), "below the floor: one length");

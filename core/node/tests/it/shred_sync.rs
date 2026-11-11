@@ -111,8 +111,16 @@ fn purged_synced_body_crash_safe_spec_commits_5() {
 }
 
 /// Admin `a` (forensic), writer `b`, new node `n` (forensic, offline from the start) of a group
-/// on one host, and an item `t` of it.
+/// on one host, and an item `t` of it: built once (`Net::cached`).
 fn carrier_chat() -> (Net, usize, usize, usize, osis_base::Tid) {
+    let (net, (a, b, n, t)) = Net::cached("shred_sync::carrier_chat", || {
+        let (net, a, b, n, t) = carrier_chat_built();
+        (net, (a, b, n, t))
+    });
+    (net, a, b, n, t)
+}
+
+fn carrier_chat_built() -> (Net, usize, usize, usize, osis_base::Tid) {
     let f = Faults::new();
     let mut net = Net::new();
     let host = net.add_host();

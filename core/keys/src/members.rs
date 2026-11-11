@@ -420,13 +420,8 @@ mod tests {
     // that closes none (the reference: a cycle check per grant in order over all grants).
     #[test]
     fn key_access_random_matches_reference() {
-        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
-        let mut next = |m: u64| {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            seed % m
-        };
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
+        let mut next = |m: u64| osis_crypto::RngCore::next_u64(&mut rng) % m;
         for _ in 0..300 {
             let n = 2 + next(6) as u8;
             let e = next(14) as u32;

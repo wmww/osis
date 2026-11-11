@@ -360,8 +360,8 @@ mod tests {
     fn blob_round_trip() {
         let f = framing();
         let mut store = MemoryBlobs::default();
-        let mut rng = SeededRng::from_u64(9);
-        let d = data(5_000, 2);
+        let mut rng = SeededRng::from_u64(0);
+        let d = data(5_000, 0);
         let mut w = BlobWriter::new(&f, &mut store, &mut rng);
         let root = write_tree(&mut w, SMALL, &d).unwrap();
         let written = w.written().to_vec();
@@ -389,8 +389,8 @@ mod tests {
     fn reader_rejects() {
         let f = framing();
         let mut store = MemoryBlobs::default();
-        let mut rng = SeededRng::from_u64(10);
-        let d = data(3_000, 3);
+        let mut rng = SeededRng::from_u64(0);
+        let d = data(3_000, 0);
         let root = write_tree(&mut BlobWriter::new(&f, &mut store, &mut rng), SMALL, &d).unwrap();
         let dedup = f.dedup.clone();
         let other = Secret32::from_bytes([8; 32]);
@@ -417,7 +417,7 @@ mod tests {
     fn pages() {
         let f = framing();
         let mut store = MemoryBlobs::default();
-        let mut rng = SeededRng::from_u64(11);
+        let mut rng = SeededRng::from_u64(0);
         let link = PageSink::put(&mut BlobWriter::new(&f, &mut store, &mut rng), b"page").unwrap();
         assert_eq!(link.hash, link_hash(&f.dedup, b"page"));
         let dedup = f.dedup.clone();
@@ -447,7 +447,7 @@ mod tests {
         let cx = DeltaCtx { ts, own: Source::session(osis_crdt::Session { node: Tid::from_bytes([250; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
         let f = framing();
         let mut store = MemoryBlobs::default();
-        let mut rng = SeededRng::from_u64(12);
+        let mut rng = SeededRng::from_u64(0);
         let mut w = BlobWriter::new(&f, &mut store, &mut rng).with_page_params(params);
         let bytes = encode_snapshot(&snap, &cx, Some(&mut w)).unwrap();
         let written = w.written().to_vec();

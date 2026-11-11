@@ -108,7 +108,7 @@ mod tests {
     // spec/sync.md §2: registrar and holder derive the same claim key; non-contributory omits.
     #[test]
     fn claim_keys() {
-        let mut rng = SeededRng::from_u64(5);
+        let mut rng = SeededRng::from_u64(0);
         let step = X25519Secret::random(&mut rng);
         let m = KeyActorKeys::from_seed(&Secret32::from_bytes([6; 32]));
         let label = LabelId([7; 16]);

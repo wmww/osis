@@ -9,14 +9,13 @@ use crate::order::{Played, Step, play};
 use osis_base::{CommitId, Role, Tid, WallMs};
 use osis_crypto::{Epoch, LabelRole, Secret32, SeededRng, label_role_key};
 use osis_label::{BundleReader, BundleWriter, Importer, Parent, Record, StepKeys, genesis_label, register, sign_stamp};
-use osis_node::local_peer::Peer;
+use osis_node::local_peer::{LocalPeer, Peer};
 use osis_vectors::file::{Record as Rec, VecFile};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The judging node's rng seed (its own identity is never observed).
-const FRESH: u64 = 0x5eed_f00d;
-/// Every history's peers: one seed, so a file's bundles share their setup (the header's `setup`).
-const SEED: u64 = 1038;
+/// The judging node's rng seed: one apart from the history's three peers (`order::play` at 0
+/// seeds them 0 to 2; its own identity is never observed).
+const FRESH: u64 = 3;
 /// Fields of a case that are inputs; every other field is expected output.
 const INPUTS: [&str; 7] = ["case", "spec", "source", "read-secret", "now", "bundle", "order"];
 /// Header fields that are not expected lines.
@@ -93,7 +92,7 @@ struct Laid {
 /// every thing but G is under a second label (read `1a`, write `1b`, admin `19`, deposit seed
 /// `1c`), its path before its first entry.
 fn bundle(played: &Played, second: bool) -> Laid {
-    let mut rng = SeededRng::from_u64(0x0b0d1e);
+    let mut rng = SeededRng::from_u64(0);
     let first = label(0x0a, &mut rng);
     let mut recs = vec![first.path.clone()];
     let mut of = Vec::new();
@@ -192,7 +191,8 @@ fn hash_hex(b: &[u8]) -> String {
 /// expected fields of a case (README.md, `judgment/`).
 fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(String, String)> {
     let ents = entries(bytes);
-    let mut p = Peer::new(FRESH, now).unwrap();
+    // a fresh node at `now`: built once per `now` (`LocalPeer::cached`)
+    let mut p = LocalPeer::cached(&format!("judgment::fresh/{}", now.0), || (LocalPeer::of(vec![Peer::new(FRESH, now).unwrap()], 0), ())).0.peers.remove(0);
     let mut ids = BTreeSet::new();
     // a filler wrap opens under no read secret (spec/crypto.md §5)
     // an entry delivers its label's section: the one sealed under the read secret its wrap
@@ -325,7 +325,7 @@ fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool) -> VecFile {
     let reads = read_secrets(second);
     let reads_hex = reads.iter().map(|x| osis_base::hex::encode(x.expose())).collect::<Vec<_>>().join(",");
     for sc in scenarios {
-        let played = play(SEED, &sc.steps);
+        let played = play(0, &sc.steps);
         let laid = bundle(&played, second);
         let n = laid.setup;
         assert_eq!(setup.get_or_insert_with(|| laid.bytes[..n].to_vec())[..], laid.bytes[..n], "{}: one setup per file", sc.name);
@@ -877,7 +877,7 @@ fn judgment_vectors_spec_permissions_5_2() {
 fn chainless_part_order_spec_commits_4() {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
-    let played = play(SEED, &[NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick, Two { by: 1, a: 0, b: 1, v: 1 }]);
+    let played = play(0, &[NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick, Two { by: 1, a: 0, b: 1, v: 1 }]);
     let laid = bundle(&played, true);
     let (edge, last) = (played.base + 1, played.packs.len() - 1);
     let rest: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] != edge && laid.of[*e] != last).collect();
@@ -892,7 +892,7 @@ fn chainless_part_order_spec_commits_4() {
 fn chainless_role_part_order_spec_commits_4() {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
-    let played = play(SEED, &[NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick, TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }]);
+    let played = play(0, &[NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick, TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }]);
     let laid = bundle(&played, true);
     let (edge, last) = (played.base + 1, played.packs.len() - 1);
     let rest: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] != edge && laid.of[*e] != last).collect();

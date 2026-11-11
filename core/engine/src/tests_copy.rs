@@ -22,8 +22,8 @@ fn put(lp: &mut LocalPeer, who: usize, t: Tid, x: &Ak, k: &str, v: i64) -> Optio
 
 /// Three nodes: 0 admin of `t`, 1 a writer later demoted (a rotation), 2 an admin; writes
 /// synced and one left unsynced.
-fn history(seed: u64) -> (LocalPeer, Tid, Ak) {
-    let mut lp = LocalPeer::new(3, seed, WallMs(1_700_000_000_000)).unwrap();
+fn history() -> (LocalPeer, Tid, Ak) {
+    let mut lp = LocalPeer::new(3, 0, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let x = Ak::new("x:m.0").unwrap();
     let me = lp.peers[0].engine.me();
@@ -87,7 +87,7 @@ fn runs() -> Vec<(&'static str, u64)> {
 // stored bytes and memo runs.
 #[test]
 fn a_copied_world_goes_on_as_the_original() {
-    let (mut lp, t, x) = history(5);
+    let (mut lp, t, x) = history();
     let mut copy = lp.copy().unwrap();
     assert_eq!(observe(&mut lp, t), observe(&mut copy, t), "as copied");
     runs();
@@ -104,7 +104,7 @@ fn a_copied_world_goes_on_as_the_original() {
 // original: writes and fault plans of either leave the other as it was.
 #[test]
 fn a_copy_shares_nothing() {
-    let (mut lp, t, x) = history(6);
+    let (mut lp, t, x) = history();
     let (mut c1, mut c2, mut c3) = (lp.copy().unwrap(), lp.copy().unwrap(), lp.copy().unwrap());
     c1.peers[0].backend.faults().at(0, osis_store::Fault::Crash);
     assert!(put(&mut c1, 2, t, &x, "y", 8).is_some());
@@ -119,3 +119,4 @@ fn a_copy_shares_nothing() {
     assert_eq!(observe(&mut c2, t), observe(&mut c3, t), "the original's steps stay in it");
     assert!(put(&mut c2, 0, t, &x, "z", 9).is_some(), "the original's plan is not the copy's");
 }
+

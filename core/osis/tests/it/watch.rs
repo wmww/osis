@@ -27,7 +27,7 @@ fn thing(db: &Osis) -> osis::Tid {
 // dispatcher, then on every committed change (local changes included, after durability).
 #[test]
 fn on_change_initial_then_local() {
-    let db = db(1);
+    let db = db(0);
     let k = ak("t:x.0");
     let t = thing(&db);
     db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
@@ -50,7 +50,7 @@ fn on_change_initial_then_local() {
 // next change; forwarded to an async channel it runs on a plain executor (no runtime).
 #[test]
 fn watch_current_and_changed() {
-    let db = db(1);
+    let db = db(0);
     let t = thing(&db);
     let w = watched(&db, t, example::TITLE).unwrap();
     assert_eq!(w.current().unwrap(), None);
@@ -106,7 +106,7 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
 // notes/api.md Watching: dropping a Subscription unsubscribes; detach keeps it.
 #[test]
 fn subscription_raii_and_detach() {
-    let db = db(1);
+    let db = db(0);
     let k = ak("t:x.0");
     let t = thing(&db);
     let (tx, rx) = channel();
@@ -127,7 +127,7 @@ fn subscription_raii_and_detach() {
 // under a lock); settle inside a callback returns at once.
 #[test]
 fn api_usable_from_callback() {
-    let db = db(1);
+    let db = db(0);
     let (a, b) = (ak("t:a.0"), ak("t:b.0"));
     let t = thing(&db);
     let (tx, rx) = channel();
@@ -149,7 +149,7 @@ fn api_usable_from_callback() {
 // notes/api.md Watching: watch_thing reports every aspect, first once per present aspect.
 #[test]
 fn watch_thing_all_aspects() {
-    let db = db(1);
+    let db = db(0);
     let t = thing(&db);
     db.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:a.0")), &Value::Int(1)).unwrap();
     let (tx, rx) = channel();
@@ -169,7 +169,7 @@ fn watch_thing_all_aspects() {
 #[test]
 fn derived_change_on_expiry() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     let k = ak("t:x.0");
     let t = thing(&db);
     db.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:kept.0")), &Value::Int(0)).unwrap();
@@ -190,7 +190,7 @@ fn derived_change_on_expiry() {
 // must handle beyond the ingest call.
 #[test]
 fn diagnostics_reach_subscribers() {
-    let db = db(1);
+    let db = db(0);
     let (tx, rx) = channel();
     let _s = db.on_diagnostic(move |_, d| tx.send(d).unwrap()).unwrap();
     let _ = db.engine(|e| e.ingest(&[0xff, 0x00, 0x01], Vec::new()));
@@ -201,7 +201,7 @@ fn diagnostics_reach_subscribers() {
 // spec/permissions.md §2, notes/api.md Watching: watch_roster calls once with the roster now.
 #[test]
 fn watch_roster_initial() {
-    let db = db(1);
+    let db = db(0);
     let (tx, rx) = channel();
     let _s = db.on_grants_change(db.home(), move |_, r| tx.send(r).unwrap()).unwrap();
     assert_eq!(recv(&rx).unwrap(), db.grants(db.home()).unwrap());
@@ -256,7 +256,7 @@ fn block_dispatcher(db: &Osis) -> (osis::Subscription, std::sync::mpsc::Sender<(
 // one's source, and the later events are not delivered again.
 #[test]
 fn coalesced_call_carries_newest_source() {
-    let db = db(1);
+    let db = db(0);
     let k = ak("t:x.0");
     let t = thing(&db);
     let (tx, rx) = channel();
@@ -279,7 +279,7 @@ fn coalesced_call_carries_newest_source() {
 #[test]
 fn errors_not_coalesced() {
     let c = clock();
-    let mut cf = cfg(1, MemStore::new(), &c);
+    let mut cf = cfg(0, MemStore::new(), &c);
     cf.app.read_limit = 1000;
     let db = osis::internals::create(cf).unwrap();
     let k = ak("t:big.0");
@@ -300,7 +300,7 @@ fn errors_not_coalesced() {
 // notes/api.md Watching: a panicking callback becomes a diagnostic; the dispatcher lives on.
 #[test]
 fn panicking_callback_is_a_diagnostic() {
-    let db = db(1);
+    let db = db(0);
     let k = ak("t:x.0");
     let t = thing(&db);
     let (dtx, drx) = channel();
@@ -318,7 +318,7 @@ fn panicking_callback_is_a_diagnostic() {
 // flight; no call runs after drop returns.
 #[test]
 fn drop_waits_for_call_in_flight() {
-    let db = db(1);
+    let db = db(0);
     let k = ak("t:x.0");
     let t = thing(&db);
     let done = Arc::new(Mutex::new(0));
@@ -351,7 +351,7 @@ fn drop_waits_for_call_in_flight() {
 // another type as absent (the untyped value stays readable).
 #[test]
 fn mistyped_value_watches_absent() {
-    let db = db(1);
+    let db = db(0);
     let t = thing(&db);
     db.commit_set(t, example::TITLE, &"a".to_string()).unwrap();
     let w = watched(&db, t, example::TITLE).unwrap();
@@ -375,7 +375,7 @@ fn mistyped_value_watches_absent() {
 fn pump_dispatcher_runs_callbacks_in_settle() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let wakes = Arc::new(AtomicUsize::new(0));
-    let mut c = cfg(1, MemStore::new(), &clock());
+    let mut c = cfg(0, MemStore::new(), &clock());
     let w2 = wakes.clone();
     // the wake runs after the node lock is released: calling the node there is safe
     let weak: Arc<std::sync::OnceLock<osis::WeakOsis>> = Arc::default();
@@ -482,7 +482,7 @@ fn heard(db: &Osis, rx: &Heard) -> Vec<osis::Result<Option<Value>>> {
 // changed; deleting the thing reads `None`; a write elsewhere in the thing calls nothing.
 #[test]
 fn path_listener_hears_only_its_entry() {
-    let db = db(1);
+    let db = db(0);
     let t = thing(&db);
     db.commit_set(t, untyped("t:m.0"), &map(&[("a", 1), ("b", 1), ("c", 1)])).unwrap();
     let (_a, a) = at_path(&db, t, "t:m.0", osis::p!["a"]);
@@ -514,7 +514,7 @@ fn path_listener_hears_only_its_entry() {
 // does not have fails `Type` at registration.
 #[test]
 fn path_listener_mismatch_reads_none() {
-    let db = db(1);
+    let db = db(0);
     let t = thing(&db);
     db.commit_set(t, untyped("t:m.0"), &map(&[("a", 1)])).unwrap();
     let (diag, dx) = channel();
@@ -537,7 +537,7 @@ fn path_listener_mismatch_reads_none() {
 #[test]
 fn path_listeners_one_write_one_call_n_reads() {
     use osis::internals::node::costs;
-    let mut c = cfg(1, MemStore::new(), &clock());
+    let mut c = cfg(0, MemStore::new(), &clock());
     c.app.dispatch = osis::Dispatcher::Pump(Arc::new(|| {}));
     let db = osis::internals::create(c).unwrap();
     let t = thing(&db);
@@ -643,7 +643,7 @@ fn path_listener_hears_a_validity_flip() {
 #[test]
 fn path_listener_hears_an_expiry_and_a_purge() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     let t = thing(&db);
     let m = || untyped("t:m.0");
     db.commit_with(|w| w.at(t, m()).path(osis::p!["b"]).set(&Value::Int(1))).unwrap();

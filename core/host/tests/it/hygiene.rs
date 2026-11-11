@@ -32,7 +32,7 @@ fn stored_bytes_hold_no_plaintext_identifiers() {
     let ak = b"profile:display_name.0".to_vec();
     let author = [0xa9u8; 32];
     let plaintext = [&tid[..], &ak, &author].concat();
-    let mut rng = SeededRng::from_seed([5; 32]);
+    let mut rng = SeededRng::from_seed([0; 32]);
     let blobs: Vec<Vec<u8>> = (0..4u8)
         .map(|n| {
             let p = Prefix::new([n; 16], (n == 3).then_some(WallMs(w.now() + 1_000)), vec![]).unwrap();
@@ -82,9 +82,9 @@ fn deleted_wraps_unrecoverable() {
     // a small key tree and pages: few units share a node, so a shred elsewhere does not rotate a
     // leaked copy away by accident
     let cfg = StoreConfig { arity: 4, depth: 8, page_max: 512, ..StoreConfig::default() };
-    let store = Store::create(Box::new(backend.clone()), Box::new(root), cfg, &mut SeededRng::from_seed([1; 32])).unwrap();
+    let store = Store::create(Box::new(backend.clone()), Box::new(root), cfg, &mut SeededRng::from_seed([0; 32])).unwrap();
     let clock = Arc::new(ManualClock::new(WallMs(T0)));
-    let mut s = osis_host::HostStore::open(store, clock.clone(), HostPolicy::unlimited(), Box::new(SeededRng::from_seed([2; 32]))).unwrap();
+    let mut s = osis_host::HostStore::open(store, clock.clone(), HostPolicy::unlimited(), Box::new(SeededRng::from_seed([1; 32]))).unwrap();
     let f = osis_proto::examples::Fixture::new(0x10);
     let l: LabelId = f.label;
     s.push_step(&l, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();

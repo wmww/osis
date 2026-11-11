@@ -149,11 +149,11 @@ fn silent_host_of_the_label_holds_no_invite_back_spec_sync_3() {
 /// Nodes a (Alice's) and b (Bob's), accounts at one peer, Bob's node cut from it
 /// (his inbox label unregistered); Alice's group `g` with a label replaced `replaced` times and
 /// an item in it. Returns (net, a, b, bob's account, g, the item).
-fn persons(replaced: usize, seed: u64) -> (Net, usize, usize, osis_base::Tid, osis_base::Tid, osis_base::Tid) {
+fn persons(replaced: usize) -> (Net, usize, usize, osis_base::Tid, osis_base::Tid, osis_base::Tid) {
     let mut net = Net::bare();
     let host = net.add_host();
-    let a = net.node(seed, &[host]);
-    let b = net.node(seed + 1, &[host]);
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
     let addr = net.address(host);
     net.blocked.insert((b, host));
     let (alice, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
@@ -195,7 +195,7 @@ fn persons(replaced: usize, seed: u64) -> (Net, usize, usize, osis_base::Tid, os
 // replaces the queued one.
 #[test]
 fn inbox_deposit_retried_for_hours_spec_sync_5() {
-    let (mut net, a, b, _, g, item) = persons(0, 11);
+    let (mut net, a, b, _, g, item) = persons(0);
     assert!(net.sync(a).take_diagnostics().iter().any(|d| d.contains("code 13")), "refused: no inbox label yet");
     for _ in 0..12 {
         net.advance(1_800_000);
@@ -219,7 +219,7 @@ fn inbox_deposit_retried_for_hours_spec_sync_5() {
 // whose label was replaced several times opens from the grant's hint alone.
 #[test]
 fn hint_opens_a_label_replaced_many_times_spec_wire_9() {
-    let (mut net, a, b, _, g, item) = persons(6, 21);
+    let (mut net, a, b, _, g, item) = persons(6);
     net.blocked.clear();
     for _ in 0..4 {
         net.advance(60_000);

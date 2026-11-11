@@ -19,7 +19,7 @@ fn crash_cfg() -> StoreConfig {
 }
 
 fn snapshot(s: &mut Store) -> State {
-    let mut rng = SeededRng::from_u64(99);
+    let mut rng = SeededRng::from_u64(0);
     let mut t = s.transaction(&mut rng).unwrap();
     let locals = t.scan_local(b"", b"", usize::MAX).unwrap();
     let table = match t.table(&tid(1), &ak("t.0"), 0).unwrap() {
@@ -69,7 +69,7 @@ fn no_leftovers(s: &Store) {
 fn crash_every_write(dev_name: &str, kind: u8) {
     // Reference run without faults.
     let reference = MemDevice::new();
-    let mut rng = SeededRng::from_u64(1);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = Store::create(reference.backend(), reference.root(), crash_cfg(), &mut rng).unwrap();
     setup(&mut s, &mut rng);
     let before = snapshot(&mut s);
@@ -82,7 +82,7 @@ fn crash_every_write(dev_name: &str, kind: u8) {
     let mut crashed_after_root = false;
     for n in 0.. {
         let dev = devices(&format!("crash-{kind}-{n}")).into_iter().find(|d| d.name() == dev_name).unwrap();
-        let mut rng = SeededRng::from_u64(1);
+        let mut rng = SeededRng::from_u64(0);
         let mut s = Store::create(dev.backend(), dev.root(), crash_cfg(), &mut rng).unwrap();
         setup(&mut s, &mut rng);
         let epoch = dev.root().load().unwrap().unwrap().epoch;
@@ -177,7 +177,7 @@ proptest! {
     #[test]
     fn random_ops_with_crashes(txns in proptest::collection::vec((proptest::collection::vec(op(), 1..30), proptest::option::of(0u64..4)), 1..12)) {
         let dev = MemDevice::new();
-        let mut rng = SeededRng::from_u64(5);
+        let mut rng = SeededRng::from_u64(0);
         let cfg = StoreConfig { spill_bytes: 600, ..cfg() };
         let mut s = Some(Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap());
         let mut model: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();

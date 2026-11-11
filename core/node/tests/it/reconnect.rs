@@ -6,21 +6,12 @@
 use crate::net::local_nodes;
 use crate::net;
 use crate::peers::reach_ed;
+use crate::stream::paired;
 use net::*;
 use osis_base::{LabelId, Role, Tid};
 use osis_proto::Message;
 use std::cell::RefCell;
 use std::rc::Rc;
-
-/// Nodes `a` and `b` holding `n` groups together, `b` dialable: `a` dials `b`.
-fn pair(net: &mut Net, n: usize) -> (usize, usize, Vec<Tid>) {
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    reach_ed(net, b);
-    let gs = (0..n).map(|i| net.group_seeded(b, &[(a, Role::Write)], vec![], 10 + i as u64)).collect();
-    net.run();
-    (a, b, gs)
-}
 
 /// Every message the nodes send on peer links from now on: its kind, encoded size and the message.
 fn record_messages(net: &mut Net) -> Rc<RefCell<Vec<(u64, usize, Message)>>> {
@@ -59,8 +50,7 @@ const MEMBERS: u64 = 46;
 /// What an idle reconnect of a pair sharing `n` groups sends: per kind, the count, and the bytes of
 /// every message but the stream's events.
 fn idle_reconnect(n: usize) -> (std::collections::BTreeMap<u64, usize>, usize, Vec<[u8; 32]>) {
-    let mut net = Net::new();
-    let (a, _b, _gs) = pair(&mut net, n);
+    let (mut net, a, _b, _gs) = paired(n);
     let seen = record_messages(&mut net);
     reconnect(&mut net, a);
     let seen = seen.borrow();
@@ -110,8 +100,7 @@ fn record_of(net: &mut Net, n: usize, peer: usize) -> osis_store::Record {
 // member's lag beside S is not in the digest
 #[test]
 fn a_record_restored_so_s_differs_is_repaired_by_the_shared_set_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 2);
+    let (mut net, a, b, gs) = paired(2);
     let l0 = label_of(&mut net, a, gs[0]);
     net.set_online(a, false);
     net.run();
@@ -179,8 +168,7 @@ fn a_lost_costs_other_peers_nothing_spec_sync_10() {
 // cursor are the record's, so nothing is offered or joined again
 #[test]
 fn a_restarted_node_resumes_its_shared_set_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 3);
+    let (mut net, a, b, gs) = paired(3);
     let seen = record_messages(&mut net);
     net.restart(a, 21);
     net.run();
@@ -202,8 +190,7 @@ fn a_restarted_node_resumes_its_shared_set_spec_sync_10() {
 // that missed the `Lost` no longer counts the peer a source of what the peer stopped sharing
 #[test]
 fn a_lost_lost_with_its_connection_is_found_by_the_digest_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 2);
+    let (mut net, a, b, gs) = paired(2);
     let l0 = label_of(&mut net, a, gs[0]);
     net.tamper = Some(Box::new(|m| matches!(m, Message::Lost { .. }).then(|| Message::Applied { cursor: vec![0; 72] })));
     let (ta, tb) = (net.tid(a), net.tid(b));
@@ -226,8 +213,7 @@ fn a_lost_lost_with_its_connection_is_found_by_the_digest_spec_sync_10() {
 // older generation would break `b`'s width rule and close every connection that follows
 #[test]
 fn a_generation_lost_with_its_connection_is_not_built_on_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, _) = pair(&mut net, 1);
+    let (mut net, a, b, _) = paired(1);
     net.advance(120_000);
     net.tamper_link = Some((a, b));
     net.tamper = Some(Box::new(|m| matches!(m, Message::Beacons { .. }).then(|| Message::Applied { cursor: vec![0; 72] })));
@@ -252,8 +238,7 @@ fn a_generation_lost_with_its_connection_is_not_built_on_spec_sync_10() {
 // that write
 #[test]
 fn a_lost_after_a_dropped_push_names_a_reported_position_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 1);
+    let (mut net, a, b, gs) = paired(1);
     net.item(b, gs[0], gs[0], "x");
     net.run();
     let l = label_of(&mut net, b, gs[0]);
@@ -306,8 +291,7 @@ fn a_lost_after_a_dropped_push_names_a_reported_position_spec_sync_10() {
 // filter of `a`'s to test it against, offers and pulls nothing on that connection
 #[test]
 fn nothing_is_offered_or_pulled_before_the_peers_digest_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, _) = pair(&mut net, 1);
+    let (mut net, a, b, _) = paired(1);
     net.set_online(a, false);
     net.run();
     net.group_seeded(b, &[(a, Role::Write)], vec![], 40);
@@ -327,8 +311,7 @@ fn nothing_is_offered_or_pulled_before_the_peers_digest_spec_sync_10() {
 // page after page makes it keep nothing
 #[test]
 fn a_members_list_keeps_only_what_this_node_holds_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, _) = pair(&mut net, 1);
+    let (mut net, a, b, _) = paired(1);
     net.set_online(a, false);
     net.run();
     // b reads a digest that differs and waits for a's list

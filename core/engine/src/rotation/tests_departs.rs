@@ -7,11 +7,11 @@
 //! (spec/crypto.md §4, Attributes) and the self-removal reading (spec/permissions.md §2).
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{edge, group, newest_read, send_skipping};
+use super::tests::{edge, group, newest_read, send_skipping, synced};
 use crate::flows::Demotion;
 use crate::Mutation;
 use crate::local_peer::LocalPeer;
-use osis_base::{Role, Tid, WallMs};
+use osis_base::{Role, Tid};
 use osis_crypto::Epoch;
 use osis_keys::{Names, Own};
 use osis_schema::core_types as ct;
@@ -21,15 +21,18 @@ const A: usize = 0;
 const W: usize = 1;
 const X: usize = 2;
 
-/// Peers A (first admin of `g`), W (a writer), X (an admin), all synced. Returns `g` and the tids.
-fn shape(seed: u64, w_role: Role) -> (LocalPeer, Tid, Vec<Tid>) {
-    let mut lp = LocalPeer::new(3, seed, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-    let g = group(&mut lp, A);
-    lp.peers[A].engine.grant(&g, &tids[W], &edge(w_role)).unwrap();
-    lp.peers[A].engine.grant(&g, &tids[X], &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
+/// Peers A (first admin of `g`), W (a `w_role` holder), X (an admin), all synced (built once per
+/// role, a copy each call). Returns `g` and the tids.
+fn shape(w_role: Role) -> (LocalPeer, Tid, Vec<Tid>) {
+    let (lp, (g, tids)) = LocalPeer::cached(&format!("rotation::tests_departs::shape/{w_role:?}"), || {
+        let mut lp = synced(3);
+        let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+        let g = group(&mut lp, A);
+        lp.peers[A].engine.grant(&g, &tids[W], &edge(w_role)).unwrap();
+        lp.peers[A].engine.grant(&g, &tids[X], &edge(Role::Admin)).unwrap();
+        lp.sync_all().unwrap();
+        (lp, (g, tids))
+    });
     (lp, g, tids)
 }
 
@@ -128,13 +131,13 @@ pub(super) fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::
 
 /// W leaves as `how`; A and X get everything. Each must see its read role due for rotation, and
 /// after `ensure_rotated` encrypt under a read epoch W never held.
-fn leaver_uncovered(seed: u64, how: Forge) {
-    leaver_uncovered_as(seed, Role::Write, how)
+fn leaver_uncovered(how: Forge) {
+    leaver_uncovered_as(Role::Write, how)
 }
 
 /// `leaver_uncovered` with the leaver holding `role`.
-fn leaver_uncovered_as(seed: u64, role: Role, how: Forge) {
-    let (mut lp, g, tids) = shape(seed, role);
+fn leaver_uncovered_as(role: Role, how: Forge) {
+    let (mut lp, g, tids) = shape(role);
     let w_held: BTreeSet<Epoch> = leave(&mut lp, W, g, how).unwrap().into_iter().filter(|(r, _)| *r == Role::Read).map(|(_, e)| e).collect();
     for pk in lp.packages(W).unwrap() {
         for i in [A, X] {
@@ -162,14 +165,14 @@ fn leaver_uncovered_as(seed: u64, role: Role, how: Forge) {
 // spec/crypto.md §4 (covers): a plain self-removal stays uncovered (the baseline).
 #[test]
 fn self_removal_uncovered_spec_crypto_4() {
-    leaver_uncovered(5_101, Forge::None);
+    leaver_uncovered(Forge::None);
 }
 
 // spec/crypto.md §4 (covers; Met, departs mark): W's self-removal puts an entry at the current
 // read epoch naming its own mark; the mark establishes, never covers.
 #[test]
 fn self_removal_own_mark_entry_spec_crypto_4() {
-    leaver_uncovered(5_102, Forge::Mark);
+    leaver_uncovered(Forge::Mark);
 }
 
 // spec/crypto.md §4 (covers: an entry counts only as the rotation commit whose keyset publishes
@@ -177,7 +180,7 @@ fn self_removal_own_mark_entry_spec_crypto_4() {
 // current read epoch that lists the self-removal by its key. No keyset commits to the entry.
 #[test]
 fn self_removal_listed_by_backdated_entry_spec_crypto_4() {
-    leaver_uncovered(5_108, Forge::Listed);
+    leaver_uncovered(Forge::Listed);
 }
 
 // spec/crypto.md §4 (covers: a rotation commit counts while its author holds the role),
@@ -185,7 +188,7 @@ fn self_removal_listed_by_backdated_entry_spec_crypto_4() {
 // epochs boxed to the others. W made those secrets and holds nothing now.
 #[test]
 fn self_removal_rotating_spec_crypto_4() {
-    leaver_uncovered(5_104, Forge::Rotating);
+    leaver_uncovered(Forge::Rotating);
 }
 
 // spec/crypto.md §4 (covers: a rotation commit counts while its author holds the role): after
@@ -193,14 +196,14 @@ fn self_removal_rotating_spec_crypto_4() {
 // self-removal. Its own commit, bound to its own entry; W holds nothing now.
 #[test]
 fn self_removal_backdated_rotation_spec_crypto_4() {
-    leaver_uncovered(5_110, Forge::Backdated);
+    leaver_uncovered(Forge::Backdated);
 }
 
 // spec/permissions.md §3 (a `secrets.0` delta needs write): a reader's backdated entry listing
 // its self-removal writes nothing there.
 #[test]
 fn reader_self_removal_listed_entry_spec_crypto_4() {
-    leaver_uncovered_as(5_106, Role::Read, Forge::Listed);
+    leaver_uncovered_as(Role::Read, Forge::Listed);
 }
 
 // spec/crypto.md §4 (attributes: a departure goes to the newest commit at whose point the holder
@@ -212,8 +215,7 @@ fn reader_self_removal_listed_entry_spec_crypto_4() {
 fn departure_attributed_to_its_lowering_not_a_later_drop_spec_crypto_4() {
     let (o, p1, p4, q) = (0, 1, 2, 3);
     let none = BTreeSet::new();
-    let mut lp = LocalPeer::new(4, 1_336, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(4);
     let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, o);
     for t in &tids[1..] {
@@ -255,8 +257,7 @@ fn departure_attributed_to_its_lowering_not_a_later_drop_spec_crypto_4() {
 // write after, so the first admin rotates admin again.
 #[test]
 fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
-    let mut lp = LocalPeer::new(3, 5_107, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(3);
     let p2 = lp.peers[2].engine.me();
     let a = group(&mut lp, 0);
     let m = group(&mut lp, 1);
@@ -296,8 +297,7 @@ fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
 // no rotation) is a self-removal at every node: it applies.
 #[test]
 fn own_group_removal_is_a_self_removal_spec_permissions_2() {
-    let mut lp = LocalPeer::new(2, 5_109, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(2);
     let a = group(&mut lp, 0);
     let m = group(&mut lp, 1);
     lp.sync_all().unwrap();
@@ -315,8 +315,7 @@ fn own_group_removal_is_a_self_removal_spec_permissions_2() {
 // other authority on G. A self-removal at every node: it applies without a frontier.
 #[test]
 fn account_leaving_a_group_it_administers_spec_permissions_2() {
-    let mut lp = LocalPeer::new(2, 5_111, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(2);
     let g = group(&mut lp, 0);
     let u = lp.peers[1].engine.me();
     lp.sync_all().unwrap();

@@ -334,7 +334,7 @@ mod tests {
     // signature binds challenge and static key.
     #[test]
     fn open_evaluation() {
-        let mut rng = SeededRng::from_u64(1);
+        let mut rng = SeededRng::from_u64(0);
         let (g, g2) = (Group::new(10), Group::new(20));
         let m = X25519Secret::random(&mut rng);
         let card = KeyActorKeys::from_seed(&Secret32::from_bytes([4; 32]));
@@ -376,7 +376,7 @@ mod tests {
     // naming no step, the newest step bearing the key answers
     #[test]
     fn sync_key_open_at_its_step_spec_sync_5() {
-        let mut rng = SeededRng::from_u64(3);
+        let mut rng = SeededRng::from_u64(0);
         let (g, g2) = (Group::new(40), Group::new(50));
         let rd = |n: u64, s: &Secret32| Epoch::derive(&TG, osis_base::Role::Read, n, s).unwrap();
         let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, rd(0, &g.read), &g.read), &mut rng).unwrap();
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn entry_signatures() {
         let g = Group::new(30);
-        let mut rng = SeededRng::from_u64(2);
+        let mut rng = SeededRng::from_u64(0);
         let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), &mut rng).unwrap();
         let (l, b, w) = (s0.label, BlobId([1; 32]), [2u8; 49]);
         let write = label_role_key(LabelRole::Write, &g.write, 0);
@@ -424,7 +424,7 @@ mod tests {
     #[test]
     fn deletes() {
         let g = Group::new(40);
-        let mut rng = SeededRng::from_u64(3);
+        let mut rng = SeededRng::from_u64(0);
         let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), &mut rng).unwrap();
         let l = s0.label;
         let (sync, write) = (label_role_key(LabelRole::Sync, &g.read, 0), label_role_key(LabelRole::Write, &g.write, 0));

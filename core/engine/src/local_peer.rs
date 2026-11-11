@@ -184,10 +184,15 @@ impl Peer {
 
     /// Drops the engine and opens it again over the same durable state.
     pub fn restart(&mut self, seed: u64) -> Result<()> {
+        self.restart_with(seed, Config::default())
+    }
+
+    /// `restart` under `cfg`.
+    pub fn restart_with(&mut self, seed: u64, cfg: Config) -> Result<()> {
         let c: Arc<dyn Clock> = self.clock.clone();
         self.restarts += 1;
         let seed = seed.wrapping_add(self.restarts.wrapping_mul(0x9e37_79b9_7f4a_7c15));
-        let mut engine = Engine::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), blob_area(&self.blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
+        let mut engine = Engine::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), blob_area(&self.blob_disk, seed)?, cfg, c, Box::new(SeededRng::from_u64(seed)))?;
         self.events = engine.subscribe();
         engine.take_wakes();
         self.engine = engine;
@@ -363,6 +368,13 @@ impl LocalPeer {
     pub fn new(n: usize, seed: u64, t: WallMs) -> Result<LocalPeer> {
         let peers = (0..n).map(|i| Peer::new(seed.wrapping_mul(1000).wrapping_add(i as u64), t)).collect::<Result<Vec<_>>>()?;
         Ok(LocalPeer::of(peers, seed))
+    }
+
+    /// `new(n, 0, t)`, a copy of the one built per test process (`cached`): a copy costs about
+    /// a hundredth of building the accounts.
+    #[allow(clippy::panic)] // test harness: a build that fails fails the test
+    pub fn fresh(n: usize, t: WallMs) -> LocalPeer {
+        LocalPeer::cached(&format!("LocalPeer::fresh/{n}/{}", t.0), || (LocalPeer::new(n, 0, t).unwrap_or_else(|e| panic!("{e}")), ())).0
     }
 
     /// `n` fresh nodes that have joined no account yet (`Peer::new_bare`).

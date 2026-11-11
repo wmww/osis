@@ -46,7 +46,7 @@ fn x(db: &Osis, t: Tid) -> Option<Value> {
 fn create_syncs_home_spec_sync_2() {
     let mut w = World::new();
     let host = w.add_host();
-    let db = w.account(1, &[host]);
+    let db = w.account(0, &[host]);
     w.run();
     let st = db.status().unwrap();
     assert_eq!(st.groups.get(&db.home()).map(|g| g.state), Some(SyncState::Synced), "{st:?}");
@@ -844,7 +844,7 @@ fn text_session_keeps_edits_across_delete_undo() {
 fn add_peer_moves_groups_spec_sync_2() {
     let mut w = World::new();
     let host = w.add_host();
-    let a = osis::internals::create(w.cfg(1, &[])).unwrap();
+    let a = osis::internals::create(w.cfg(0, &[])).unwrap();
     w.run();
     assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NotConnected);
     a.add_peer(&w.addr(host).unwrap()).unwrap();
@@ -1861,7 +1861,7 @@ fn grant_on_a_group_carries_its_items() {
 fn reopen_under_one_seed_draws_a_new_session_spec_crdt_2_1() {
     let mut w = World::new();
     let host = w.add_host();
-    let cfg = w.cfg(1, &[host]);
+    let cfg = w.cfg(0, &[host]);
     let a = osis::internals::create(cfg.clone()).unwrap();
     w.run();
     let t = item(&a, a.me(), a.home(), "first");

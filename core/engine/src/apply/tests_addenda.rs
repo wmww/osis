@@ -19,8 +19,12 @@ fn edge(role: Role) -> ct::Edge {
 }
 
 /// `n` peers; peer 0 makes thing `t` and grants peers 1.. `roles`; everyone synced.
-fn world(n: usize, seed: u64, roles: &[Role]) -> (LocalPeer, Tid) {
-    let mut lp = LocalPeer::new(n, seed, T0).unwrap();
+fn world(n: usize, roles: &[Role]) -> (LocalPeer, Tid) {
+    LocalPeer::cached(&format!("apply::tests_addenda::world/{n}/{roles:?}"), || build(n, roles))
+}
+
+fn build(n: usize, roles: &[Role]) -> (LocalPeer, Tid) {
+    let mut lp = LocalPeer::fresh(n, T0);
     lp.sync_all().unwrap();
     let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
@@ -76,7 +80,7 @@ fn addenda(lp: &LocalPeer, peer: usize, t: Tid) -> Vec<(Tid, CommitId)> {
 #[test]
 fn unsynced_removal_witnessed_by_a_writer_spec_perm_5_2() {
     for carol_saw in [true, false] {
-        let (mut lp, t) = world(4, 11, &[Role::Write, Role::Write, Role::Read]);
+        let (mut lp, t) = world(4, &[Role::Write, Role::Write, Role::Read]);
         let e = write(&mut lp, 1, t, "x:e.0", 7);
         lp.sync(1, if carol_saw { 2 } else { 3 }).unwrap();
         let r = remove(&mut lp, 0, t, 1);
@@ -97,7 +101,7 @@ fn unsynced_removal_witnessed_by_a_writer_spec_perm_5_2() {
 // `ts` is not vouched for.
 #[test]
 fn received_after_the_removal_is_not_vouched_for_spec_perm_5_2() {
-    let (mut lp, t) = world(3, 12, &[Role::Write, Role::Write]);
+    let (mut lp, t) = world(3, &[Role::Write, Role::Write]);
     let e = write(&mut lp, 1, t, "x:e.0", 7);
     let r = remove(&mut lp, 0, t, 1);
     // Carol gets the edit after the removal's stamp, then the removal
@@ -116,7 +120,7 @@ fn received_after_the_removal_is_not_vouched_for_spec_perm_5_2() {
 // before her removal, vouches for the addendum in turn, and the edit is back everywhere.
 #[test]
 fn a_fallen_addendum_is_vouched_for_in_turn_spec_perm_5_2() {
-    let (mut lp, t) = world(4, 13, &[Role::Write, Role::Write, Role::Write]);
+    let (mut lp, t) = world(4, &[Role::Write, Role::Write, Role::Write]);
     let e = write(&mut lp, 1, t, "x:e.0", 7);
     lp.sync(1, 2).unwrap();
     remove(&mut lp, 0, t, 1);
@@ -141,7 +145,7 @@ fn a_fallen_addendum_is_vouched_for_in_turn_spec_perm_5_2() {
 // got written.
 #[test]
 fn a_readers_addendum_counts_for_nothing_spec_perm_5_2() {
-    let (mut lp, t) = world(3, 14, &[Role::Write, Role::Read]);
+    let (mut lp, t) = world(3, &[Role::Write, Role::Read]);
     let e = write(&mut lp, 1, t, "x:e.0", 7);
     lp.sync(1, 2).unwrap();
     let r = remove(&mut lp, 0, t, 1);
@@ -166,7 +170,7 @@ fn a_readers_addendum_counts_for_nothing_spec_perm_5_2() {
 // edit it received whatever their number.
 #[test]
 fn a_long_frontier_overflows_into_the_removers_addenda_spec_perm_5_1() {
-    let (mut lp, t) = world(3, 16, &[Role::Write, Role::Write]);
+    let (mut lp, t) = world(3, &[Role::Write, Role::Write]);
     let es: Vec<(String, CommitId)> = (0..6).map(|i| { let a = format!("x:e{i}.0"); let id = write(&mut lp, 1, t, &a, i); (a, id) }).collect();
     lp.sync(1, 0).unwrap();
     // room for the chain certificates and a few of Bob's commits, not all
@@ -189,7 +193,7 @@ fn a_long_frontier_overflows_into_the_removers_addenda_spec_perm_5_1() {
 // applied the removal; a re-grant makes it valid again everywhere, from the bodies kept.
 #[test]
 fn regrant_restores_what_no_writer_saw_spec_perm_5_2() {
-    let (mut lp, t) = world(3, 17, &[Role::Write, Role::Write]);
+    let (mut lp, t) = world(3, &[Role::Write, Role::Write]);
     let e = write(&mut lp, 1, t, "x:e.0", 7);
     remove(&mut lp, 0, t, 1);
     // Carol receives the edit after the removal's stamp: she vouches for nothing
@@ -237,8 +241,16 @@ fn forge_addendum(lp: &mut LocalPeer, by: usize, t: Tid, r: CommitId, lists: &[C
 /// A team T (peer 3's actor) holds write on N; Bob (1) is a member of T; Mallory (2) writes N
 /// but not T. Alice (0) removes T from N; Bob's write on N acting for T reached nobody before
 /// the removal. Returns (lp, N, T, removal, Bob's write).
-fn team_world(seed: u64) -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
-    let (mut lp, n) = world(4, seed, &[Role::Read, Role::Write]);
+fn team_world() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
+    let (lp, (n, team, r, e)) = LocalPeer::cached("apply::tests_addenda::team_world", || {
+        let (lp, n, team, r, e) = build_team();
+        (lp, (n, team, r, e))
+    });
+    (lp, n, team, r, e)
+}
+
+fn build_team() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
+    let (mut lp, n) = build(4, &[Role::Read, Role::Write]);
     let (bob, team) = (lp.peers[1].engine.me(), lp.peers[3].engine.me());
     lp.peers[0].engine.grant(&n, &team, &edge(Role::Write)).unwrap();
     // T is peer 3's own actor: a plain edge write, as for an account's nodes
@@ -259,7 +271,7 @@ fn team_world(seed: u64) -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
 // a thing it writes (stated limit, notes/permissions.md Revocation).
 #[test]
 fn lying_writer_vouches_for_a_removed_teams_write_spec_perm_5_2() {
-    let (mut lp, n, _, r, e) = team_world(21);
+    let (mut lp, n, _, r, e) = team_world();
     lp.sync(1, 2).unwrap();
     lp.sync(0, 2).unwrap();
     assert!(!valid(&lp, 2, &e, n, "x:e.0"), "Mallory received it after the removal");
@@ -276,7 +288,7 @@ fn lying_writer_vouches_for_a_removed_teams_write_spec_perm_5_2() {
 // commit, until a writer of T vouches on T.
 #[test]
 fn acting_unvouched_invalidates_every_part_spec_perm_5_2() {
-    let (mut lp, n, team, r, e) = team_world(22);
+    let (mut lp, n, team, r, e) = team_world();
     let rt = remove(&mut lp, 3, team, 1);
     lp.sync(1, 2).unwrap();
     lp.sync(0, 2).unwrap();
@@ -300,7 +312,7 @@ fn acting_unvouched_invalidates_every_part_spec_perm_5_2() {
 // stays (what it covered is fetched again, spec/permissions.md §5.2 Compaction snapshot).
 #[test]
 fn a_removed_writers_snapshot_is_not_vouched_for_spec_perm_5_2() {
-    let (mut lp, t) = world(3, 18, &[Role::Write, Role::Write]);
+    let (mut lp, t) = world(3, &[Role::Write, Role::Write]);
     let e = write(&mut lp, 1, t, "x:e.0", 7);
     let snap = lp.peers[1].engine.snapshot(&t, &ak("x:e.0")).unwrap().unwrap();
     lp.advance(1000);
@@ -320,7 +332,7 @@ fn a_removed_writers_snapshot_is_not_vouched_for_spec_perm_5_2() {
 // entry beside hers, counts, and is written once, however many transactions follow.
 #[test]
 fn a_second_writer_answers_beside_the_first_once_spec_perm_5_2() {
-    let (mut lp, t) = world(4, 15, &[Role::Write, Role::Write, Role::Write]);
+    let (mut lp, t) = world(4, &[Role::Write, Role::Write, Role::Write]);
     let e = write(&mut lp, 1, t, "x:e.0", 7);
     lp.sync(1, 2).unwrap();
     lp.sync(1, 3).unwrap();
@@ -354,7 +366,7 @@ fn a_second_writer_answers_beside_the_first_once_spec_perm_5_2() {
 // lists Bob's edit, which turns valid.
 #[test]
 fn a_bodiless_addendum_is_judged_by_its_header_spec_perm_5_2() {
-    let (mut lp, t) = world(4, 18, &[Role::Write, Role::Admin, Role::Read]);
+    let (mut lp, t) = world(4, &[Role::Write, Role::Admin, Role::Read]);
     let e = write(&mut lp, 1, t, "x:e.0", 7);
     lp.sync(1, 2).unwrap();
     remove(&mut lp, 0, t, 1);

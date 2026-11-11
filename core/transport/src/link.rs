@@ -344,7 +344,7 @@ mod tests {
     // spec/sync.md §10, spec/wire.md §11.1: a session per dialer stream, peer keys as the transport authenticated them, bytes in order both ways, the end of one side ends the other's link
     #[tokio::test]
     async fn session_round_trip_and_end() {
-        let net = Net::new(1);
+        let net = Net::new(0);
         let l = net.endpoint("s").listen(ListenConfig { url: "mem://s".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap();
         let addr = l.address();
         let (out, mut incoming) = mpsc::channel(4);
@@ -385,7 +385,7 @@ mod tests {
     // source is refused
     #[tokio::test]
     async fn full_slots_shared_by_source() {
-        let net = Net::new(1);
+        let net = Net::new(0);
         let l = net.endpoint("s").listen(ListenConfig { url: "mem://s".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap();
         let addr = l.address();
         let (out, mut incoming) = mpsc::channel(8);
@@ -423,7 +423,7 @@ mod tests {
     // (an authenticated client)
     #[tokio::test]
     async fn a_flood_keeps_a_client_in() {
-        let net = Net::new(1);
+        let net = Net::new(0);
         let l = net.endpoint("s").listen(ListenConfig { url: "mem://s".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap();
         let addr = l.address();
         let (out, mut incoming) = mpsc::channel(64);
@@ -464,7 +464,7 @@ mod tests {
     // ones in it: with all slots kept a newcomer on any listener is refused; one freed takes it
     #[tokio::test]
     async fn listeners_share_slots() {
-        let net = Net::new(1);
+        let net = Net::new(0);
         let slots = Slots::new(2);
         let (out, mut incoming) = mpsc::channel(8);
         let mut addrs = Vec::new();
@@ -509,7 +509,7 @@ mod tests {
     // spec/sync.md §6: `taken` counts what the transport took, piece by piece, for the stall timeout
     #[tokio::test]
     async fn taken_counts_written_bytes() {
-        let net = Net::new(1);
+        let net = Net::new(0);
         let l = net.endpoint("s").listen(ListenConfig { url: "mem://s".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap();
         let addr = l.address();
         let (out, mut incoming) = mpsc::channel(4);

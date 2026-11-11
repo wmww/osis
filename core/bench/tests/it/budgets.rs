@@ -48,7 +48,7 @@ fn budget_minimal_commit() {
     let mut b = CommitBuilder::new(Kind::Content, at, author, Tid::from_bytes([2; 15]), form);
     b.aspects.push(AspectWrite::new(Tid::from_bytes([3; 15]), Ak::new("app:title.0").unwrap(), 1, 2, d));
     let key = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
-    let c = b.build(&key, &Secrets, &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
+    let c = b.build(&key, &Secrets, &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
     assert_budget("minimal content commit plaintext", c.encode().len(), 350);
 }
 
@@ -62,7 +62,7 @@ fn budget_text_snapshot_ratio() {
     use osis_bench::text::{final_text, from_env, replay, snapshot_len, synthetic};
     let edits = match from_env() {
         Some(e) => e,
-        None => synthetic(20_000, 7),
+        None => synthetic(20_000, 0),
     };
     let want = final_text(&edits);
     for (per_commit, ratio) in [(100usize, 3.5f64), (10, 7.0)] {

@@ -411,6 +411,21 @@ fn blobs(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::CommitI
 }
 
 /// Removes the secret entry (an erasing edit: it kills a write the snapshot carries).
+/// Admin `a` and reader `c` of group `g` at `host`, `c` cut off from the host: built once
+/// (`Net::cached`).
+fn blocked_reader() -> (Net, usize, usize, usize, osis_base::Tid) {
+    let (net, (host, a, c, g)) = Net::cached("deletion::blocked_reader", || {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let a = net.node(1, &[host]);
+        let c = net.node(3, &[host]);
+        net.blocked.insert((c, host));
+        let g = net.group(a, &[(c, Role::Read)], &[host]);
+        (net, (host, a, c, g))
+    });
+    (net, host, a, c, g)
+}
+
 fn erase_secret(net: &mut Net, a: usize, t: osis_base::Tid, asp: &osis_schema::Aspect<osis_base::Value>) {
     let mut m = Mutation::new();
     m.op(t, asp, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("secret")) }).unwrap();
@@ -426,12 +441,7 @@ fn erase_secret(net: &mut Net, a: usize, t: osis_base::Tid, asp: &osis_schema::A
 fn erasing_edit_covered_at_once_spec_commits_5() {
     for (i, compact) in [true, false].into_iter().enumerate() {
         let asp = &GONEMAP;
-        let mut net = Net::new();
-        let host = net.add_host();
-        let a = net.node(1, &[host]);
-        let c = net.node(3, &[host]);
-        net.blocked.insert((c, host));
-        let g = net.group(a, &[(c, Role::Read)], &[host]);
+        let (mut net, host, a, c, g) = blocked_reader();
         let (t, ak, l, s1) = kept_record(&mut net, a, g, asp, "ERASED-7d1e", compact);
         let n = snapshots(&mut net, a, &t, &ak).len();
         let at_host = blobs(&mut net, a, &l, &s1);
@@ -459,12 +469,7 @@ fn erasing_edit_covered_at_once_spec_commits_5() {
 #[test]
 fn text_partly_erased_covered_at_once_spec_commits_5() {
     use osis_crdt::{Op, PathOp};
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let c = net.node(3, &[host]);
-    net.blocked.insert((c, host));
-    let g = net.group(a, &[(c, Role::Read)], &[host]);
+    let (mut net, host, a, c, g) = blocked_reader();
     let t = net.item(a, g, g, "x");
     net.keep(a, t, &[(GONETEXT.ak(), PURGE)]);
     let ak = Ak::new(GONETEXT.ak()).unwrap();
@@ -510,12 +515,7 @@ fn text_partly_erased_covered_at_once_spec_commits_5() {
 #[test]
 fn text_fully_erased_covered_at_once_spec_commits_5() {
     use osis_crdt::{Op, PathOp};
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let c = net.node(3, &[host]);
-    net.blocked.insert((c, host));
-    let g = net.group(a, &[(c, Role::Read)], &[host]);
+    let (mut net, host, a, c, g) = blocked_reader();
     let t = net.item(a, g, g, "x");
     net.keep(a, t, &[(GONETEXT.ak(), PURGE)]);
     let ak = Ak::new(GONETEXT.ak()).unwrap();
@@ -813,12 +813,7 @@ fn out_of_history_goes_under_any_writers_cover_spec_sync_7() {
     let (a, b, w) = (0, 1, 2);
     for by in [PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer] {
         for who in [a, b, w] {
-            let mut net = Net::new();
-            let host = net.add_host();
-            let ns = [net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host])];
-            let g = net.group(ns[a], &[(ns[b], Role::Write), (ns[w], Role::Write)], &[host]);
-            let t = net.item(ns[a], g, g, "x");
-            net.run();
+            let (mut net, host, ns, _, [t]) = hosted::<3, 1>(&[(b, Role::Write), (w, Role::Write)], ["x"], true);
             let l = net.label(ns[a]);
             let k = Ak::new(REG.ak()).unwrap();
             let c = with_retention(&mut net, ns[b], t, "old", crate::common::purgeable_by(by));
@@ -883,14 +878,7 @@ fn host_delete_waits_drift_past_history_spec_sync_7() {
 #[test]
 fn second_label_gets_kept_bodies_spec_sync_6() {
     for (kept, carried) in [(true, true), (false, false)] {
-        let mut net = Net::new();
-        let host = net.add_host();
-        let a = net.node(1, &[host]);
-        let b = net.node(2, &[host]);
-        let w = net.node(3, &[host]);
-        let g = net.group(a, &[(b, Role::Write), (w, Role::Write)], &[host]);
-        let t = net.item(a, g, g, "x");
-        net.run();
+        let (mut net, host, [a, b, w], g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Write)], ["x"], true);
         let k = Ak::new(REG.ak()).unwrap();
         if kept {
             net.keep(a, t, &[(REG.ak(), osis_schema::History::FOREVER)]);
@@ -991,12 +979,7 @@ fn latest_snapshot(net: &mut Net, n: usize, t: osis_base::Tid, k: &Ak, acts: Vec
 #[test]
 fn stale_drop_reads_alike_spec_commits_5() {
     for to in [Role::Write, Role::Read] {
-        let mut net = Net::new();
-        let host = net.add_host();
-        let (a, x, b, w, f) = (net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host]), net.node(4, &[host]), net.node(5, &[host]));
-        let g = net.group(a, &[(x, Role::Admin), (b, Role::Write), (w, Role::Write), (f, Role::Read)], &[host]);
-        let t = net.item(a, g, g, "x");
-        net.run();
+        let (mut net, host, [a, x, b, w, f], g, [t]) = hosted::<5, 1>(&[(1, Role::Admin), (2, Role::Write), (3, Role::Write), (4, Role::Read)], ["x"], true);
         net.set_online(f, false);
         let l = net.label(a);
         let k = Ak::new(SEQ.ak()).unwrap();

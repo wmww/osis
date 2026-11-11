@@ -96,13 +96,13 @@ fn late_holder_judges_revoke_alike_spec_permissions_5() {
 /// Commits `c1` = {`GONE` (`r`): "v1", `REG`: "k"} and `c2` = {`GONE` (`r2`): "v2"} on a new item
 /// purging `GONE` on replace, by a node at a host; the time passes (`after`); c1's `GONE` body leaves the host, then a reader
 /// syncing the item comes online: c1 applies there, with its `REG` part.
-fn reader_applies_after_carrierless_delete(seed: u64, r: Option<osis_schema::Retention>, r2: Option<osis_schema::Retention>, after: u64) {
+fn reader_applies_after_carrierless_delete(r: Option<osis_schema::Retention>, r2: Option<osis_schema::Retention>, after: u64) {
     use osis_base::Role;
     let (gone, reg) = (osis_base::Ak::new("t:gone.0").unwrap(), osis_base::Ak::new("t:reg.0").unwrap());
     let mut net = Net::new();
     let host = net.add_host();
-    let a = net.node(seed, &[host]);
-    let b = net.node(seed + 1, &[host]);
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
     net.keep(a, t, &[("t:gone.0", PURGE)]);
@@ -156,7 +156,7 @@ pub(crate) fn writer() -> Option<osis_schema::Retention> {
 #[test]
 fn reader_after_delete_purge_on_replace_spec_commits_4() {
     let r = writer();
-    reader_applies_after_carrierless_delete(0x7d10, r, r, 0);
+    reader_applies_after_carrierless_delete(r, r, 0);
 }
 
 // spec/commits.md §4 (a node never waits for a part), §5 (a header-only blob goes under a label only

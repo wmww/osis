@@ -34,30 +34,33 @@ fn carry(lp: &mut LocalPeer, from: usize, done: &Done) {
 /// create an account of their own. Peer 0 makes thing `t` (`x:a.0` = "p") and grants the first
 /// outsider's account write there. All synced. Returns (lp, P, t).
 fn world(n: usize, nodes: usize) -> (LocalPeer, CreatedAccount, Tid) {
-    let mut lp = LocalPeer::new_bare(n, 1603, WallMs(1_700_000_000_000)).unwrap();
-    let (a, _) = lp.peers[0].engine.create_account(&[]).unwrap();
-    for i in 1..nodes {
-        let node = lp.peers[i].engine.tid();
-        let ids = lp.peers[i].engine.commit_ids();
-        send(&mut lp, i, 0, &ids);
-        let done = lp.peers[0].engine.pair(&node).unwrap();
-        carry(&mut lp, 0, &done);
-        lp.peers[i].engine.paired(&a.account, &done.commits[0]).unwrap();
-    }
-    for i in nodes..n {
-        lp.peers[i].engine.create_account(&[]).unwrap();
-    }
-    lp.sync_all().unwrap();
-    let mut m = crate::Mutation::new();
-    let t = lp.peers[0].engine.new_thing(&mut m, a.account);
-    m.set(t, &x(), &Value::Str("p".into())).unwrap();
-    lp.peers[0].commit(m).unwrap();
-    if nodes < n {
-        let o = lp.peers[nodes].engine.me();
-        lp.peers[0].engine.grant(&t, &o, &edge(Role::Write)).unwrap();
-    }
-    lp.sync_all().unwrap();
-    lp.advance(1000);
+    let (lp, (a, t)) = LocalPeer::cached(&format!("rotation::tests_signing::world/{n}/{nodes}"), || {
+        let mut lp = LocalPeer::new_bare(n, 0, WallMs(1_700_000_000_000)).unwrap();
+        let (a, _) = lp.peers[0].engine.create_account(&[]).unwrap();
+        for i in 1..nodes {
+            let node = lp.peers[i].engine.tid();
+            let ids = lp.peers[i].engine.commit_ids();
+            send(&mut lp, i, 0, &ids);
+            let done = lp.peers[0].engine.pair(&node).unwrap();
+            carry(&mut lp, 0, &done);
+            lp.peers[i].engine.paired(&a.account, &done.commits[0]).unwrap();
+        }
+        for i in nodes..n {
+            lp.peers[i].engine.create_account(&[]).unwrap();
+        }
+        lp.sync_all().unwrap();
+        let mut m = crate::Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a.account);
+        m.set(t, &x(), &Value::Str("p".into())).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        if nodes < n {
+            let o = lp.peers[nodes].engine.me();
+            lp.peers[0].engine.grant(&t, &o, &edge(Role::Write)).unwrap();
+        }
+        lp.sync_all().unwrap();
+        lp.advance(1000);
+        (lp, (a, t))
+    });
     (lp, a, t)
 }
 

@@ -50,7 +50,7 @@ pub(crate) fn connect(sock: &std::path::Path) -> Osis {
 fn client_handle_works_at_the_node() {
     let d = Dir::new();
     let sock = d.0.join("n.sock");
-    let net = osis_transport::Net::new(1);
+    let net = osis_transport::Net::new(0);
     let n = node(&MemStore::new(), &net, &sock, true);
     let c = connect(&sock);
     typed_any(&n, &["note:title.0", "t:x.0"]);
@@ -159,7 +159,7 @@ fn client_handle_works_at_the_node() {
 fn too_large_then_stream_read() {
     let d = Dir::new();
     let sock = d.0.join("n.sock");
-    let net = osis_transport::Net::new(1);
+    let net = osis_transport::Net::new(0);
     let n = node(&MemStore::new(), &net, &sock, true);
     let mut cfg = osis::internals::Opening::memory();
     cfg.app.read_limit = 1000;
@@ -283,7 +283,7 @@ const WRITE: u64 = 10;
 fn write_nonces_per_session() {
     let d = Dir::new();
     let sock = d.0.join("n.sock");
-    let net = osis_transport::Net::new(1);
+    let net = osis_transport::Net::new(0);
     let store = MemStore::new();
     let n = node(&store, &net, &sock, true);
     let k = ak("note:n.0");
@@ -340,7 +340,7 @@ fn write_nonces_per_session() {
 fn keyed_peer_is_never_main() {
     let d = Dir::new();
     let sock = d.0.join("n.sock");
-    let net = osis_transport::Net::new(1);
+    let net = osis_transport::Net::new(0);
     let n = node(&MemStore::new(), &net, &sock, true);
     let secret = n.sync_engine(|s| s.dialable_secret());
     let key = osis_transport::InProcess::public_key(&osis_transport::StaticSecret::from_bytes(*secret.expose()));
@@ -410,7 +410,7 @@ fn client_wait_synced_as_at_the_node() {
     use crate::common::block_on;
     use osis::{Role, SyncScope};
     let d = Dir::new();
-    let net = osis_transport::Net::new(2);
+    let net = osis_transport::Net::new(0);
     let (_host, addr) = mem_host(&net);
     let sock = d.0.join("n.sock");
     let n = node_on(&net, "n", vec![addr], &sock);
@@ -478,7 +478,7 @@ fn client_wait_synced_as_at_the_node() {
 fn too_large_sub_is_not_kept() {
     let d = Dir::new();
     let sock = d.0.join("n.sock");
-    let net = osis_transport::Net::new(1);
+    let net = osis_transport::Net::new(0);
     let n = node(&MemStore::new(), &net, &sock, true);
     let k = ak("f:blob.0");
     let small = osis_proto::client::SMALL_REPLY;
@@ -528,7 +528,7 @@ fn rows_that_wait_through_the_socket() {
     use crate::common::block_on;
     use osis::{Role, SyncScope};
     let d = Dir::new();
-    let net = osis_transport::Net::new(2);
+    let net = osis_transport::Net::new(0);
     let (host, addr) = mem_host(&net);
     let (sa, sb) = (d.0.join("a.sock"), d.0.join("b.sock"));
     let a = node_on(&net, "a", vec![addr.clone()], &sa);
@@ -607,7 +607,7 @@ fn a_waiting_row_holds_nothing() {
     use osis::{Role, ShareLink};
     use std::future::Future;
     let d = Dir::new();
-    let net = osis_transport::Net::new(2);
+    let net = osis_transport::Net::new(0);
     // a link on a peer nobody serves: its redeem waits for good
     let s2 = d.0.join("m.sock");
     let m = node_on(&net, "m", vec![osis::Address::new(&"mem://nobody".parse().unwrap(), [3; 32])], &s2);
@@ -648,7 +648,7 @@ fn a_waiting_row_holds_nothing() {
 fn no_waiting_row_once_the_handles_went() {
     use osis::Role;
     let d = Dir::new();
-    let net = osis_transport::Net::new(2);
+    let net = osis_transport::Net::new(0);
     let s2 = d.0.join("m.sock");
     let m = node_on(&net, "m", vec![osis::Address::new(&"mem://nobody".parse().unwrap(), [3; 32])], &s2);
     let mut w = m.write();
@@ -687,7 +687,7 @@ fn no_waiting_row_once_the_handles_went() {
 fn process_wide_rows_through_the_socket() {
     use osis::SyncScope;
     let d = Dir::new();
-    let net = osis_transport::Net::new(2);
+    let net = osis_transport::Net::new(0);
     let (host, addr) = mem_host(&net);
     let sock = d.0.join("n.sock");
     let n = node_on(&net, "n", vec![], &sock);
@@ -763,7 +763,7 @@ fn process_wide_rows_through_the_socket() {
 fn bundle_out_and_in_on_one_handle() {
     let d = Dir::new();
     let sock = d.0.join("n.sock");
-    let net = osis_transport::Net::new(1);
+    let net = osis_transport::Net::new(0);
     let n = node(&MemStore::new(), &net, &sock, true);
     let c = connect(&sock);
     let mut out = Vec::new();
@@ -785,7 +785,7 @@ fn bundle_out_and_in_on_one_handle() {
 #[test]
 fn pair_reply_above_the_small_allowance() {
     let d = Dir::new();
-    let net = osis_transport::Net::new(2);
+    let net = osis_transport::Net::new(0);
     let (host, addr) = mem_host(&net);
     let sock = d.0.join("n.sock");
     let n = node_on(&net, "n", vec![addr], &sock);
@@ -808,7 +808,7 @@ fn pair_reply_above_the_small_allowance() {
 fn threads_writing_on_one_handle() {
     let d = Dir::new();
     let sock = d.0.join("n.sock");
-    let net = osis_transport::Net::new(1);
+    let net = osis_transport::Net::new(0);
     let n = node(&MemStore::new(), &net, &sock, true);
     let c = connect(&sock);
     let k = ak("note:n.0");
@@ -832,7 +832,7 @@ fn threads_writing_on_one_handle() {
 fn schema_bytes_per_node() {
     let d = Dir::new();
     let sock = d.0.join("n.sock");
-    let net = osis_transport::Net::new(1);
+    let net = osis_transport::Net::new(0);
     let n = node(&MemStore::new(), &net, &sock, true);
     let src = |name: &str| format!("revision 1;\naspect test:{name}.0: string;\n//{}\n", "x".repeat(osis::internals::MAX_SCHEMA_BYTES * 3 / 5));
     let reg = |r: &mut Raw, tok, name: &str| r.call(tok, 16, vec![Value::Str("t.osis".into()), Value::Str(src(name))]);
@@ -855,7 +855,7 @@ fn schema_bytes_per_node() {
 #[test]
 fn client_thread_panic_fails_waits() {
     let d = Dir::new();
-    let net = osis_transport::Net::new(2);
+    let net = osis_transport::Net::new(0);
     let sock = d.0.join("m.sock");
     // a peer nobody answers at: `wait_synced(All)` waits
     let m = node_on(&net, "m", vec![osis::Address::new(&"mem://nobody".parse().unwrap(), [3; 32])], &sock);
@@ -884,7 +884,7 @@ fn client_thread_panic_fails_waits() {
 fn a_wait_needs_no_pump_and_connecting_to_nothing_fails() {
     let d = Dir::new();
     let sock = d.0.join("n.sock");
-    let net = osis_transport::Net::new(1);
+    let net = osis_transport::Net::new(0);
     let _n = node(&MemStore::new(), &net, &sock, true);
     let mut o = osis::internals::Opening::memory();
     o.app.dispatch = osis::Dispatcher::Pump(std::sync::Arc::new(|| {}));
@@ -907,7 +907,7 @@ fn a_dropped_client_wait_leaves_nothing_at_the_node() {
     use osis::internals::Internals as _;
     use std::future::Future as _;
     let d = Dir::new();
-    let net = osis_transport::Net::new(2);
+    let net = osis_transport::Net::new(0);
     // peers nobody answers at: both waits last
     let nobody = osis::Address::new(&"mem://nobody".parse().unwrap(), [3; 32]);
     let a = node_on(&net, "a", vec![nobody.clone()], &d.0.join("a.sock"));
@@ -962,7 +962,7 @@ fn listen_socket_names_the_store_notes_client_port() {
 fn admission_ids_through_the_socket_api_design() {
     use crate::common::block_on;
     let d = Dir::new();
-    let net = osis_transport::Net::new(2);
+    let net = osis_transport::Net::new(0);
     let sock = d.0.join("n.sock");
     let n = node_on(&net, "n", vec![], &sock);
     let mut w = n.write();
@@ -984,7 +984,7 @@ fn admission_ids_through_the_socket_api_design() {
 fn path_listener_through_a_thin_client() {
     let d = Dir::new();
     let sock = d.0.join("n.sock");
-    let net = osis_transport::Net::new(1);
+    let net = osis_transport::Net::new(0);
     let n = node(&MemStore::new(), &net, &sock, true);
     let c = connect(&sock);
     let k = || osis::DynamicAspectKey::untyped(ak("t:m.0"));

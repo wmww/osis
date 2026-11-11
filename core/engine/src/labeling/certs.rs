@@ -526,7 +526,7 @@ mod tests {
     // delete the real one as superseded.
     #[test]
     fn invalid_later_write_never_newest_spec_permissions_4() {
-        let mut lp = LocalPeer::new(3, 921, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.me();
         let b = lp.peers[1].engine.me();

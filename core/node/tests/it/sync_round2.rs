@@ -29,7 +29,7 @@ fn junk_entry_does_not_stall_uploads_spec_versioning_2() {
     let head = gl.steps.values().next().unwrap().0.clone();
     let keys = net.engine(a).head_keys(&g, gl.index, &head).unwrap();
     let read = net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
-    let mut rng = SeededRng::from_u64(5);
+    let mut rng = SeededRng::from_u64(0);
     let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(&mut rng), None, Vec::new()).unwrap();
     let (key, blob) = osis_label::frame(&prefix, &[0x42; 64], &mut rng).unwrap();
     let id = osis_label::blob_id(&blob);

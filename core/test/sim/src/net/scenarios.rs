@@ -89,8 +89,14 @@ pub fn write_gone(sim: &mut NetSim, n: usize, t: Tid, v: &str) -> Res<osis_base:
 /// home label, the second node paired; both write items of the account's group under a lossy
 /// network with crashes mid-write.
 pub fn two_nodes_host(seed: u64) -> Res<Report> {
+    two_nodes_host_under(seed, lossy())
+}
+
+/// `two_nodes_host` under link faults `faults`.
+pub fn two_nodes_host_under(seed: u64, faults: LinkFaults) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xb2);
     let mut sim = sim("two_nodes_host", seed, NetWeights { crash: 1, restart: 2, ..NetWeights::default() });
+    sim.cfg.faults = faults;
     let s = sim.add_host()?;
     let d0 = sim.add_node(&[s], clock(&mut d))?;
     let d1 = sim.add_node(&[s], clock(&mut d))?;

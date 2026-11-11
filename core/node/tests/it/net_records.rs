@@ -19,6 +19,16 @@ fn records(net: &mut Net, n: usize, actor: Tid) -> Vec<Record> {
     net.engine(n).run(|tx| Ok(tx.txn.records_of_actors(&[actor])?)).unwrap()
 }
 
+/// A new net and `dialing_pair` in it: built once (`Net::cached`).
+pub(crate) fn dialed() -> (Net, usize, usize) {
+    let (net, (a, b)) = Net::cached("net_records::dialed", || {
+        let mut net = Net::new();
+        let x = dialing_pair(&mut net);
+        (net, x)
+    });
+    (net, a, b)
+}
+
 /// Node `a` and `b`, co-holders of one group, only `b` dialable: `a` dials `b` alone.
 fn dialing_pair(net: &mut Net) -> (usize, usize) {
     let a = net.node(1, &[]);
@@ -48,8 +58,7 @@ fn resumed_tag_of(evs: &[ClientEvent]) -> (Option<[u8; 32]>, [u8; 32]) {
 // a reconnect finds again rather than making another
 #[test]
 fn a_reconnect_finds_the_same_record_and_r_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b) = dialing_pair(&mut net);
+    let (mut net, a, b) = dialed();
     let (ta, tb) = (net.tid(a), net.tid(b));
     let at_a = records(&mut net, a, tb);
     let at_b = records(&mut net, b, ta);
@@ -83,8 +92,7 @@ fn the_record(net: &mut Net, n: usize, actor: Tid) -> RecordId {
 // make, and that record's connection is this one
 #[test]
 fn a_matching_tag_is_answered_and_takes_the_record_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b) = dialing_pair(&mut net);
+    let (mut net, a, b) = dialed();
     let ta = net.tid(a);
     let r = records(&mut net, b, ta)[0].r;
     // a's own connection goes first: of two on one record, the hash of their nonces picks which lives
@@ -103,8 +111,7 @@ fn a_matching_tag_is_answered_and_takes_the_record_spec_sync_10() {
 // nonces on this side alone; the old one stays, for LRU
 #[test]
 fn a_pair_key_mismatch_makes_a_new_record_from_the_nonces_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b) = dialing_pair(&mut net);
+    let (mut net, a, b) = dialed();
     let ta = net.tid(a);
     let old = records(&mut net, b, ta)[0].r;
     let mut p = dial_as(&mut net, a, b, CHALLENGE);
@@ -119,8 +126,7 @@ fn a_pair_key_mismatch_makes_a_new_record_from_the_nonces_spec_sync_10() {
 // spec/sync.md §10 (Pair key): at most one Resume per connection, and only after Prove
 #[test]
 fn resume_is_once_a_connection_and_only_after_a_prove_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b) = dialing_pair(&mut net);
+    let (mut net, a, b) = dialed();
     let ta = net.tid(a);
     let mut unproved = dial_with(&mut net, b, [3; 32]);
     assert!(refused(&resume(&mut net, b, &mut unproved, [5; 32], vec![])), "no Prove yet");
@@ -138,8 +144,7 @@ fn resume_is_once_a_connection_and_only_after_a_prove_spec_sync_10() {
 // refused and leaves nothing
 #[test]
 fn a_stranger_gets_no_record_spec_sync_10() {
-    let mut net = Net::new();
-    let (_a, b) = dialing_pair(&mut net);
+    let (mut net, _a, b) = dialed();
     let stranger = net.node(9, &[]);
     let ts = net.tid(stranger);
     let mut p = dial_as(&mut net, stranger, b, [4; 32]);
@@ -194,8 +199,7 @@ fn a_removed_node_no_longer_resumes_spec_sync_10() {
 // `connection_order` keeps it and the other closes, on one end, whatever order they arrive
 #[test]
 fn two_connections_of_one_dialer_are_one_record_one_closing_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b) = dialing_pair(&mut net);
+    let (mut net, a, b) = dialed();
     let ta = net.tid(a);
     let r = records(&mut net, b, ta)[0].r;
     net.set_online(a, false);
@@ -219,8 +223,7 @@ fn two_connections_of_one_dialer_are_one_record_one_closing_spec_sync_10() {
 // relayed one, whatever `connection_order` says: here the relayed one has the smaller order
 #[test]
 fn a_direct_connection_stays_before_a_relayed_one_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b) = dialing_pair(&mut net);
+    let (mut net, a, b) = dialed();
     let ta = net.tid(a);
     let r = records(&mut net, b, ta)[0].r;
     net.set_online(a, false);
@@ -247,8 +250,7 @@ fn peer_routes_up(net: &mut Net, n: usize) -> Vec<ConnId> {
 // crossing dials leave one record on each side and one connection, which stays without a redial
 #[test]
 fn crossing_dials_leave_one_connection_per_pair_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b) = dialing_pair(&mut net);
+    let (mut net, a, b) = dialed();
     let (ta, tb) = (net.tid(a), net.tid(b));
     reach_ed(&mut net, a);
     net.run();
@@ -267,8 +269,7 @@ fn crossing_dials_leave_one_connection_per_pair_spec_sync_10() {
 
 /// (work reading records for Resumes at `n`, others).
 fn lookups_with_others(others: u32) -> u64 {
-    let mut net = Net::new();
-    let (a, b) = dialing_pair(&mut net);
+    let (mut net, a, b) = dialed();
     let ta = net.tid(a);
     net.engine(b).run(|tx| {
         for i in 0..others {
@@ -347,8 +348,7 @@ fn changed_at_moves_on_a_role_change_only() {
 // one made for a connection to another node (a node between relaying it) finds nothing
 #[test]
 fn a_tag_made_for_another_listener_finds_nothing_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b) = dialing_pair(&mut net);
+    let (mut net, a, b) = dialed();
     let ta = net.tid(a);
     let r = records(&mut net, b, ta)[0].r;
     let mut p = dial_as(&mut net, a, b, CHALLENGE);
@@ -362,8 +362,7 @@ fn a_tag_made_for_another_listener_finds_nothing_spec_sync_10() {
 // nothing, and it makes a new record rather than trusting the claim
 #[test]
 fn an_echoed_answer_finds_nothing_end_to_end_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b) = dialing_pair(&mut net);
+    let (mut net, a, b) = dialed();
     let tb = net.tid(b);
     let old = records(&mut net, a, tb)[0].r;
     let listed = std::rc::Rc::new(std::cell::Cell::new(None));
@@ -417,8 +416,7 @@ fn a_lan_switch_keeps_one_record_spec_sync_10() {
 // resumes the same record at the live peer, one record there, and each connection's record is r
 #[test]
 fn a_copied_store_resumes_the_same_record_at_a_live_peer_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b) = dialing_pair(&mut net);
+    let (mut net, a, b) = dialed();
     let ta = net.tid(a);
     let r = records(&mut net, b, ta)[0].r;
     let copy = net.copy_node(a, 21);

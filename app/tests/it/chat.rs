@@ -122,7 +122,7 @@ fn edited_deleted_and_nameless() {
 #[test]
 fn store_without_peers_sends_without_a_name() {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
-    let mut cfg = cfg(1, &clock);
+    let mut cfg = cfg(0, &clock);
     cfg.hosts.clear();
     let a = osis::internals::create(cfg).unwrap();
     let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
@@ -169,7 +169,7 @@ fn quotes_read_flat_in_history() {
     const QUOTES: usize = 20;
     let reads = |n: usize| -> (Vec<(&'static str, u64)>, Vec<chat::Line>) {
         let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
-        let a = osis::internals::create(cfg(1, &clock)).unwrap();
+        let a = osis::internals::create(cfg(0, &clock)).unwrap();
         let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
         let first = chat::send(&a, c, "", "typo", None).unwrap();
         for i in 0..n {

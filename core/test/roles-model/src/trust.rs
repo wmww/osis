@@ -221,7 +221,7 @@ const TRUSTED: &str = "trusting an applied demotion changes the result";
 /// Whether `h` still fails check `label` (for shrinking; random choices from a fixed seed).
 pub fn fails<H: Trusting>(label: &str, h: &H) -> bool {
     let mut st = Stats::default();
-    check(h, &mut st, &mut Rng(0x5eed));
+    check(h, &mut st, &mut Rng(0));
     st.ex.iter().any(|(l, _)| *l == label)
 }
 
@@ -448,7 +448,7 @@ mod tests {
     /// Every order of the writes reads alike under the same trust set.
     fn assert_order_independent<H: Trusting>(h: &H, trust: u64) {
         let want = keyed(h, &side(h, trust));
-        let mut rng = Rng(3);
+        let mut rng = Rng(0);
         for _ in 0..24 {
             let ph = h.permute(&rng.perm(h.n_writes()));
             assert_eq!(keyed(&ph, &side(&ph, map_trust(h, &ph, trust))), want);
@@ -627,7 +627,7 @@ mod tests {
     /// with one commit.
     #[test]
     fn sample_searches() {
-        let mut rng = Rng(11);
+        let mut rng = Rng(0);
         let mut st = Stats::default();
         for (i, who) in [Who::OneRemover, Who::Rank, Who::RankFreeGrants, Who::Anyone].into_iter().enumerate() {
             for net in [Net::Online, Net::Offline] {

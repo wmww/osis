@@ -186,7 +186,7 @@ fn until_gap_write_finalized_by_frontier() {
 #[test]
 fn regrant_replay_equals_search() {
     use osis_base::Role::Read;
-    let mut rng = roles_model::Rng(0x5eed_0501);
+    let mut rng = roles_model::Rng(0);
     for _ in 0..3000 {
         let mut w = World::new();
         let n = w.nodes(3);

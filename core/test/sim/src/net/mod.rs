@@ -2051,7 +2051,7 @@ mod tests {
     fn one_more_message_moves_nothing_else_spec_sync_6() {
         let run = |extra: bool| {
             with_arrivals(|| {
-                let mut sim = NetSim::new("t", 7, NetConfig { faults: scenarios::lossy(), ..NetConfig::default() });
+                let mut sim = NetSim::new("t", 0, NetConfig { faults: scenarios::lossy(), ..NetConfig::default() });
                 sim.calm = false;
                 let to = End::Node(0, 1);
                 sim.links.insert(1, Link { dialer: to, acceptor: End::Node(1, 1), last: [0; 2], route: None });
@@ -2078,7 +2078,7 @@ mod tests {
     #[test]
     fn a_burst_parts_unless_compared_spec_sync_6() {
         let left_at_first = || {
-            let mut sim = NetSim::new("t", 7, NetConfig { faults: scenarios::lossy(), ..NetConfig::default() });
+            let mut sim = NetSim::new("t", 0, NetConfig { faults: scenarios::lossy(), ..NetConfig::default() });
             sim.calm = false;
             let to = End::Node(0, 1);
             sim.links.insert(1, Link { dialer: to, acceptor: End::Node(1, 1), last: [0; 2], route: None });
@@ -2100,7 +2100,7 @@ mod tests {
     // half-open link the node no longer reads, redialed and closed as a duplicate each round).
     #[test]
     fn a_crash_loses_what_was_on_its_way_to_the_node_spec_sync_6() {
-        let mut sim = NetSim::new("t", 1, NetConfig { faults: scenarios::lossy(), ..NetConfig::default() });
+        let mut sim = NetSim::new("t", 0, NetConfig { faults: scenarios::lossy(), ..NetConfig::default() });
         let a = sim.add_node(&[], ClockSpec::default()).unwrap();
         let b = sim.add_node(&[], ClockSpec::default()).unwrap();
         sim.calm = false;
@@ -2119,7 +2119,7 @@ mod tests {
     // (evil_host sweep seed 134 reported this as a message storm).
     #[test]
     fn stream_head_due_after_successor_spec_sync_6() {
-        let mut sim = NetSim::new("t", 1, NetConfig::default());
+        let mut sim = NetSim::new("t", 0, NetConfig::default());
         sim.push(7, End::Node(0, 1), 500, Payload::Bytes(vec![1]));
         sim.push(7, End::Node(0, 1), 10, Payload::Bytes(vec![2]));
         sim.drain_queue().unwrap();

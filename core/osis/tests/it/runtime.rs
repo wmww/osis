@@ -143,7 +143,7 @@ async fn round_trip(host_ep: Option<osis::internals::InProcess>, url: &str, a: O
 // notes/api.md Handle (Config.runtime), spec/sync.md §10: the tokio driver under the handle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_in_process_spec_sync_10() {
-    let net = osis_transport::Net::new(3);
+    let net = osis_transport::Net::new(0);
     round_trip(Some(net.endpoint("s")), "mem://s", Some(net.endpoint("a")), Some(net.endpoint("b")), None).await;
 }
 
@@ -152,7 +152,7 @@ async fn runtime_in_process_spec_sync_10() {
 // published address once their peer is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_peers_in_process_spec_sync_5() {
-    let net = osis_transport::Net::new(5);
+    let net = osis_transport::Net::new(0);
     net.run_on_tokio();
     let host = |n: &str, ip: &str| net.udp(n, ip.parse().unwrap(), None);
     let p2p = [host("a", "203.0.113.1"), host("b", "203.0.113.2")];
@@ -186,7 +186,7 @@ async fn redeem_over(host_ep: Option<osis::internals::InProcess>, url: &str, a: 
 // spec/permissions.md §7 (links), spec/sync.md §10: a link redeemed over the tokio driver.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_in_process_spec_permissions_7() {
-    let net = osis_transport::Net::new(4);
+    let net = osis_transport::Net::new(0);
     redeem_over(Some(net.endpoint("s")), "mem://s", Some(net.endpoint("a")), Some(net.endpoint("b"))).await;
 }
 
@@ -203,8 +203,8 @@ async fn redeem_quic_localhost_spec_permissions_7() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "by hand"]
 async fn text_idle_commit_api_text_sessions() {
-    let net = osis_transport::Net::new(4);
-    let mut c = cfg(1, vec![], Some(net.endpoint("a")));
+    let net = osis_transport::Net::new(0);
+    let mut c = cfg(0, vec![], Some(net.endpoint("a")));
     c.app.idle_commit = Duration::from_millis(20);
     let db = osis::internals::create(c).unwrap();
     let k = ak("t:body.0");
@@ -228,9 +228,9 @@ async fn text_idle_commit_api_text_sessions() {
 // here (the rewrites run on real timers), so no scheduling gap lets a value lapse.
 #[tokio::test]
 async fn keep_alive_rewrites_until_dropped() {
-    let net = osis_transport::Net::new(4);
+    let net = osis_transport::Net::new(0);
     let clock = common::clock();
-    let mut c = cfg(1, vec![], Some(net.endpoint("a")));
+    let mut c = cfg(0, vec![], Some(net.endpoint("a")));
     c.app.internals.clock = Some(clock.clone());
     let db = osis::internals::create(c).unwrap();
     db.register_schema("c.osis", "revision 1;\nexpires(60ms) ephemeral aspect c:cursor+.0: map<tid, int>;\nephemeral aspect c:flag+.0: map<tid, int>;\nexpires(60ms) ephemeral aspect c:on+.0: int;\n").unwrap();
@@ -324,7 +324,7 @@ fn direct_link_carries_relays_only_spec_permissions_7() {
 // her node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_direct_in_process_spec_permissions_7() {
-    let h = hosts(6).await;
+    let h = hosts(0).await;
     let net = h.net.clone();
     let host_ep = Some(net.endpoint("s"));
     let (host_db, host) = host_node(host_ep, "mem://s").await;
@@ -426,7 +426,7 @@ async fn redeem_direct_in_process_spec_permissions_7() {
 // other node; Bob redeems her direct link at her node and the two sync the target there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_direct_no_peer_in_process_spec_permissions_7() {
-    let h = hosts(9).await;
+    let h = hosts(0).await;
     let alice = osis::internals::create(h.on_host(1, vec![], "a")).unwrap();
     let mut c = h.on_host(2, vec![], "b");
     c.app.internals.connection_wait = Some(GUARD);
@@ -490,7 +490,7 @@ async fn redeem_direct_no_peer_in_process_spec_permissions_7() {
 // shows `NotConnected` until Bob dialed her by her direct link; then each shows a source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_shows_a_source_once_a_direct_peer_dialed() {
-    let h = hosts(9).await;
+    let h = hosts(0).await;
     let alice = osis::internals::create(h.on_host(1, vec![], "a")).unwrap();
     let mut c = h.on_host(2, vec![], "b");
     c.app.internals.connection_wait = Some(GUARD);
@@ -524,7 +524,7 @@ async fn status_shows_a_source_once_a_direct_peer_dialed() {
 // is the node's own list, which a group's naming others does not touch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn peers_lists_what_a_group_saved() {
-    let db = osis::internals::create(cfg(1, vec![], None)).unwrap();
+    let db = osis::internals::create(cfg(0, vec![], None)).unwrap();
     let there = Address::new(&"quic://192.0.2.1:9".parse().unwrap(), [7; 32]);
     let mut w = db.write();
     let g = w.create_in(db.me(), &[db.home()]).unwrap();
@@ -539,8 +539,8 @@ async fn peers_lists_what_a_group_saved() {
 // without a restart, and the old one no longer answers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rotate_peer_address_relistens_in_process_spec_sync_10() {
-    let h = hosts(7).await;
-    let db = osis::internals::create(h.on_host(1, vec![], "a")).unwrap();
+    let h = hosts(0).await;
+    let db = osis::internals::create(h.on_host(0, vec![], "a")).unwrap();
     let old = reach_of(&db).await.reach;
     // spec/permissions.md §7: direct is opt-in; without peers a link must be direct
     assert!(matches!(db.make_link(db.me(), osis::Role::Read, Default::default()), Err(osis::Error::Invalid(_))));
@@ -597,7 +597,7 @@ fn shutdown_panics(prefix: &str) -> usize {
 #[test]
 fn own_runtime_reopen_right_after_close() {
     let dir = std::env::temp_dir().join(format!("osis-reopen-{}-{}", std::process::id(), rand_suffix()));
-    let net = osis_transport::Net::new(10);
+    let net = osis_transport::Net::new(0);
     let at = |i: u64| {
         let mut c = osis::internals::Opening::at(Store::Dir(dir.clone()));
         c.app.internals.seed = Some(i);
@@ -645,7 +645,7 @@ fn rand_suffix() -> u64 {
 #[ignore = "by hand"]
 fn tokio_runtime_close_then_shutdown_no_timer_panic() {
     count_shutdown_panics();
-    let net = osis_transport::Net::new(11);
+    let net = osis_transport::Net::new(0);
     std::thread::scope(|sc| {
         for t in 0..8u64 {
             let net = net.clone();
@@ -675,7 +675,7 @@ fn tokio_runtime_close_then_shutdown_no_timer_panic() {
 // the link returns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_paired_serving_node_in_process_spec_data_model_9() {
-    let net = osis_transport::Net::new(6);
+    let net = osis_transport::Net::new(0);
     let alice = osis::internals::create(cfg(1, vec![], Some(net.endpoint("a")))).unwrap();
     let j = osis::internals::pair(cfg(2, vec![], Some(net.endpoint("h"))), &alice.pair_offer().unwrap()).unwrap();
     let (_, reply) = alice.pair_accept(j.request()).unwrap();
@@ -711,9 +711,9 @@ async fn a_paired_serving_node_in_process_spec_data_model_9() {
 // spec: none (an API property)
 #[test]
 fn driver_panic_fails_waiters() {
-    let net = osis_transport::Net::new(12);
+    let net = osis_transport::Net::new(0);
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-    c.app.internals.seed = Some(3);
+    c.app.internals.seed = Some(0);
     c.runtime = Runtime::Own;
     c.app.internals.transport = Some(net.endpoint("dp"));
     // a peer nobody answers at: `wait_synced(All)` waits
@@ -757,7 +757,7 @@ fn driver_panic_fails_waiters() {
 // spec: none (API surface, notes/api.md Futures): a wait known never to finish fails: a link naming no peer, on a node that dials nobody directly
 #[tokio::test]
 async fn direct_link_with_peers_off_fails_at_once() {
-    let net = osis_transport::Net::new(2);
+    let net = osis_transport::Net::new(0);
     let alice = osis::internals::create(cfg(1, vec![], Some(net.endpoint("a")))).unwrap();
     let _ = reach_of(&alice).await;
     let mut w = alice.write();
@@ -774,10 +774,10 @@ async fn direct_link_with_peers_off_fails_at_once() {
 // spec: none (API surface, notes/api.md Futures): a wait holding no handle (the client port's) hears when the node goes
 #[tokio::test]
 async fn node_going_answers_a_wait_with_no_handle() {
-    let net = osis_transport::Net::new(2);
+    let net = osis_transport::Net::new(0);
     // a peer nobody answers at: `wait_synced(All)` waits
     let nobody = Address::new(&"mem://nobody".parse().unwrap(), [7; 32]);
-    let db = osis::internals::create(cfg(1, vec![nobody], Some(net.endpoint("a")))).unwrap();
+    let db = osis::internals::create(cfg(0, vec![nobody], Some(net.endpoint("a")))).unwrap();
     let f = db.wait_synced_no_handle(SyncScope::All);
     assert_eq!(db.waiting(), 1);
     drop(db);
@@ -791,9 +791,9 @@ async fn node_going_answers_a_wait_with_no_handle() {
 // his first write builds. Three redeemers: without the wait about two in three fail each.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_direct_writes_at_once_in_process_spec_crypto_7() {
-    let h = hosts(8).await;
+    let h = hosts(0).await;
     let net = h.net.clone();
-    let alice = osis::internals::create(h.on_host(1, vec![], "a")).unwrap();
+    let alice = osis::internals::create(h.on_host(0, vec![], "a")).unwrap();
     h.ready(&alice).await;
     for i in 0..3u64 {
         let ep = format!("b{i}");
@@ -822,7 +822,7 @@ async fn redeem_direct_writes_at_once_in_process_spec_crypto_7() {
 // (kept as a route) is paced like any co-reader: an offline one is not redialed every few seconds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_direct_redials_sharer_spec_permissions_7() {
-    let h = hosts(8).await;
+    let h = hosts(0).await;
     let net = h.net.clone();
     // a cut dial fails at once: one packet
     net.set_dial_ms(0);
@@ -892,7 +892,7 @@ async fn heard_at(ear: &osis_transport::MemLan) -> std::net::IpAddr {
 // every build; `Lan::Off` keeps one quiet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_default_node_announces_and_lan_off_stays_quiet() {
-    let net = osis_transport::Net::new(40);
+    let net = osis_transport::Net::new(0);
     net.run_on_tokio();
     let ear = net.udp("e", "10.0.0.9".parse().unwrap(), None);
     ear.on_lan("s", "10.0.0.9".parse().unwrap());
@@ -909,7 +909,7 @@ async fn a_default_node_announces_and_lan_off_stays_quiet() {
 // reach (another segment of a routed mesh).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lan_announces_to_configured_targets_across_segments() {
-    let net = osis_transport::Net::new(43);
+    let net = osis_transport::Net::new(0);
     net.run_on_tokio();
     let far: std::net::IpAddr = "10.1.0.9".parse().unwrap();
     let ear = net.udp("e", far, None);

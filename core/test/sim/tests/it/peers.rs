@@ -13,7 +13,7 @@ use osis_sim::world::World;
 use osis_transport::nat::Nat;
 
 fn net(place: impl FnOnce(&mut Reach, usize, usize)) -> (NetSim, usize, usize) {
-    let mut sim = NetSim::new("peers", 3, NetConfig::default());
+    let mut sim = NetSim::new("peers", 0, NetConfig::default());
     let a = sim.add_node(&[], ClockSpec::default()).unwrap();
     let b = sim.add_node(&[], ClockSpec::default()).unwrap();
     place(&mut sim.reach, a, b);
@@ -222,13 +222,13 @@ fn heard(db: &Osis) -> Option<Value> {
 
 /// Two nodes of one account over a hub (their `reach.0` travels through it), placed by `place`,
 /// then cut off the hub. The second node's store, for a restart.
-fn world(place: impl FnOnce(&mut World, &Osis, &Osis), seed: u64) -> (World, Osis, Osis, MemStore) {
+fn world(place: impl FnOnce(&mut World, &Osis, &Osis)) -> (World, Osis, Osis, MemStore) {
     let mut w = World::new();
     let h = w.add_host();
-    let a = w.account(seed, &[h]);
+    let a = w.account(0, &[h]);
     w.run();
     let store = MemStore::new();
-    let mut c = w.cfg(seed + 1, &[]);
+    let mut c = w.cfg(1, &[]);
     c.store = Store::Memory(store.clone());
     let join = osis::internals::pair(c, &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(join.request()).unwrap();
@@ -259,7 +259,7 @@ fn pause_ms() -> u64 {
 // model (here public addresses), `SyncEngine::accept` serves it, and writes go over it with the hub cut off.
 #[test]
 fn world_public_route_connects_spec_sync_10() {
-    let (mut w, a, b, _) = world(public, 11);
+    let (mut w, a, b, _) = world(public);
     say(&a, "over the peer link");
     w.advance(pause_ms());
     assert!(w.peer_routes(&a).contains(&Route::Public), "{:?}", w.peer_routes(&a));
@@ -274,7 +274,6 @@ fn world_blocked_case_does_not_connect_spec_sync_10() {
             w.place(a, &[1], Uplink::None, &[]);
             w.place(b, &[2], Uplink::None, &[]);
         },
-        12,
     );
     say(&a, "stays home");
     w.advance(pause_ms());
@@ -291,7 +290,6 @@ fn world_lan_route_and_partition_spec_sync_10() {
             w.place(a, &[1], Uplink::None, &[]);
             w.place(b, &[1], Uplink::None, &[]);
         },
-        13,
     );
     assert_eq!(w.peer_routes(&a), [], "not announced yet");
     w.lan_announce(&a, |_| false);
@@ -318,7 +316,7 @@ fn world_lan_route_and_partition_spec_sync_10() {
 // catches up.
 #[test]
 fn world_restart_reconnects_spec_sync_5() {
-    let (mut w, a, b, store) = world(public, 14);
+    let (mut w, a, b, store) = world(public);
     w.advance(pause_ms());
     assert!(!w.peer_routes(&a).is_empty());
     let mut c = w.cfg(99, &[]);

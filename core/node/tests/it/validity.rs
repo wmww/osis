@@ -35,9 +35,18 @@ fn revoke(lp: &mut LocalPeer, admin: usize, t: Tid, holder: Tid) {
     set_edge(&mut lp.peers[admin].engine, t, holder, None, Some(f.to_value()));
 }
 
-/// Alice (0) is first admin of D and grants Bob (1) and Carol (2) write.
-fn setup(seed: u64) -> (LocalPeer, Tid, Tid, Tid) {
-    let mut lp = net(3, seed);
+/// Alice (0) is first admin of D and grants Bob (1) and Carol (2) write: built once
+/// (`LocalPeer::cached`).
+fn setup() -> (LocalPeer, Tid, Tid, Tid) {
+    let (lp, (d, b, c)) = LocalPeer::cached("validity::setup", || {
+        let (lp, d, b, c) = setup_built();
+        (lp, (d, b, c))
+    });
+    (lp, d, b, c)
+}
+
+fn setup_built() -> (LocalPeer, Tid, Tid, Tid) {
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
     let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
@@ -52,7 +61,7 @@ fn setup(seed: u64) -> (LocalPeer, Tid, Tid, Tid) {
 // received stays (the frontier covers it); Bob's own node un-merges both.
 #[test]
 fn bob_revocation_spec_perm_5_2() {
-    let (mut lp, d, b, _) = setup(41);
+    let (mut lp, d, b, _) = setup();
     add_tag(&mut lp, 1, d, "mon");
     sync(&mut lp, 1, 0);
     lp.advance(DAY);
@@ -88,7 +97,7 @@ fn bob_revocation_spec_perm_5_2() {
 // Addenda), so X stays everywhere, her own edit too.
 #[test]
 fn carol_variant_spec_perm_5_2() {
-    let (mut lp, d, b, _) = setup(42);
+    let (mut lp, d, b, _) = setup();
     lp.advance(DAY);
     add_tag(&mut lp, 1, d, "x");
     add_tag(&mut lp, 2, d, "carol");
@@ -103,7 +112,7 @@ fn carol_variant_spec_perm_5_2() {
         assert_eq!(tags(&mut lp, i, d), BTreeSet::from(["carol".to_string(), "x".to_string()]), "node {i}");
     }
     // the result is a function of the held set, not of arrival order
-    let mut lp2 = net(1, 43);
+    let mut lp2 = net(1, 1); // a node apart from lp's (its own seeds)
     lp2.advance(2 * DAY);
     let mut pks: Vec<_> = [0, 1, 2].iter().flat_map(|i| lp.packages(*i).unwrap()).collect();
     pks.reverse();
@@ -120,7 +129,7 @@ fn carol_variant_spec_perm_5_2() {
 // un-merge (re-join of the held bodies, spec/crdt.md §4.6).
 #[test]
 fn unmerge_restores_register_spec_crdt_4_6() {
-    let (mut lp, d, b, _) = setup(44);
+    let (mut lp, d, b, _) = setup();
     // an un-merge study: nobody vouches (Carol would, spec/permissions.md §5.2)
     for p in &mut lp.peers {
         p.engine.write_addenda(false);
@@ -165,7 +174,7 @@ impl osis_commit::Secrets for Dedup {
 fn overlapping_counters_spec_commits_4() {
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
-    let (mut lp, d, b, _) = setup(45);
+    let (mut lp, d, b, _) = setup();
     let other = ak("x:other.0");
     let mut m = Mutation::new();
     m.set(d, &other, &s("first")).unwrap();
@@ -183,7 +192,7 @@ fn overlapping_counters_spec_commits_4() {
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[1].engine.sign_forged(&mut cb);
-    let built = cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
+    let built = cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
     sync(&mut lp, 1, 0);
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), Some(s("first")));
     lp.peers[0].receive(&built.commit.encode(), Vec::new()).unwrap();
@@ -207,7 +216,7 @@ fn forge_reg(lp: &mut LocalPeer, d: Tid, ak: &osis_base::Ak, lo: u64, ts: osis_b
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[1].engine.sign_forged(&mut cb);
-    cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+    cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
 /// Bob's demotion scope on `d`.
@@ -225,7 +234,7 @@ fn of(b: Tid, d: Tid) -> DemotionScope {
 // spec/permissions.md §5.2 (dot reuse)
 #[test]
 fn revoked_writer_forging_into_covered_counters_spec_perm_5_1() {
-    let (mut lp, d, b, _) = setup(0x7101);
+    let (mut lp, d, b, _) = setup();
     let reg = ak("t:reg.0");
     let mut m = Mutation::new();
     m.set(d, &REG, &s("bob")).unwrap();
@@ -247,7 +256,7 @@ fn revoked_writer_forging_into_covered_counters_spec_perm_5_1() {
     lp.advance(1_000);
     let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
     let forged = forge_reg(&mut lp, d, &reg, lo, ts, "forged");
-    let mut fresh = net(1, 0x7102);
+    let mut fresh = net(1, 1); // a node apart from lp's (its own seeds)
     fresh.advance(3 * DAY);
     for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != first) {
         fresh.deliver(0, &p).unwrap();
@@ -267,8 +276,8 @@ fn revoked_writer_forging_into_covered_counters_spec_perm_5_1() {
 // held a write under its dot, and the in-place un-merge differed from a rebuild.
 #[test]
 fn equivocation_under_snapshot_dot_reads_snapshot_copy_spec_perm_5_2() {
-    for (seed, remove) in [(0x7111, false), (0x7112, true)] {
-        let (mut lp, d, b, _) = setup(seed);
+    for remove in [false, true] {
+        let (mut lp, d, b, _) = setup();
         let reg = ak("t:reg.0");
         let mut m = Mutation::new();
         m.set(d, &REG, &s("bob")).unwrap();
@@ -298,7 +307,7 @@ fn equivocation_under_snapshot_dot_reads_snapshot_copy_spec_perm_5_2() {
 // and at a fresh node that never gets the compacted commit (the snapshot vouches for it).
 #[test]
 fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
-    let (mut lp, d, b, _) = setup(0x7103);
+    let (mut lp, d, b, _) = setup();
     let tags_ak = ak("t:tags.0");
     let mut m = Mutation::new();
     m.op(d, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("mon")) }).unwrap();
@@ -316,7 +325,7 @@ fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
     let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
     assert!(f.commits.contains(&reg) && f.commits.contains(&tag), "{f:?}");
     set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
-    let mut fresh = net(1, 0x7104);
+    let mut fresh = net(1, 1); // a node apart from lp's (its own seeds)
     fresh.advance(3 * DAY);
     for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != tag) {
         fresh.deliver(0, &p).unwrap();
@@ -333,7 +342,7 @@ fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
 // spec/permissions.md §5.1 (frontier received)
 #[test]
 fn backdated_frontier_lists_by_cutoff_spec_perm_5_1() {
-    let (mut lp, d, b, _) = setup(0x7105);
+    let (mut lp, d, b, _) = setup();
     let mut m = Mutation::new();
     m.set(d, &REG, &s("1")).unwrap();
     let one = lp.peers[1].commit(m).unwrap().unwrap();
@@ -359,7 +368,7 @@ fn backdated_frontier_lists_by_cutoff_spec_perm_5_1() {
 fn reused_counters_never_void_a_grant_spec_commits_4() {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{AnyView, Batch, Delta, Op, PathOp, PathSeg, Writer, encode_delta};
-    let mut lp = net(3, 46);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
     let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
@@ -385,7 +394,7 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     // a session-form role commit is refused when built and when received (spec/commits.md §4)
     let forge_key = lp.peers[0].engine.sign_forged(&mut cb);
-    let e = cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap_err();
+    let e = cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap_err();
     assert!(e.to_string().contains("session form outside a content commit"), "{e}");
     assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
 }
@@ -396,7 +405,7 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
 fn malformed_frontier_is_bad_input_spec_wire_4() {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{Batch, Delta, Op, PathOp, Writer, encode_delta};
-    let (mut lp, d, b, _) = setup(48);
+    let (mut lp, d, b, _) = setup();
     let a = lp.peers[0].engine.me();
     let ts = osis_base::Ts::make(WallMs(lp.peers[0].engine.now().0 + 5), 0).unwrap();
     let empty = osis_crdt::Fragment::default();
@@ -413,7 +422,7 @@ fn malformed_frontier_is_bad_input_spec_wire_4() {
     cb.frontier = Some(Value::Int(5));
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[0].engine.sign_forged(&mut cb);
-    let built = cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
+    let built = cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
     let e = lp.peers[1].receive(&built.commit.encode(), Vec::new()).unwrap_err();
     assert_eq!(e.class(), osis_base::ErrorClass::BadInput, "{e}");
     assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
@@ -423,7 +432,7 @@ fn malformed_frontier_is_bad_input_spec_wire_4() {
 // one edge; a frontier needs a demotion. A writer refuses such a commit before it leaves.
 #[test]
 fn role_content_rules_spec_commits_2() {
-    let (mut lp, d, b, c) = setup(47);
+    let (mut lp, d, b, c) = setup();
     let put = |x: Tid, r: Role| osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(x))], op: osis_crdt::Op::Set(edge(r).to_value()) };
     let mut m = Mutation::new();
     for x in [b, c] {
@@ -476,7 +485,7 @@ fn commit_form_order_spec_crdt_3_3() {
 // sign a write claiming an actor whose write secret it does not hold (the author chain).
 #[test]
 fn foreign_actor_claim_refused_spec_wire_4() {
-    let mut lp = net(3, 77);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
@@ -506,7 +515,7 @@ fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[1].engine.sign_forged(&mut cb);
-    cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+    cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
 // spec/permissions.md §5.2 (acting for an actor): Bob, a writer of D, signs a write naming
@@ -514,7 +523,7 @@ fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
 // never read as Carol's; the same write naming Bob himself is valid.
 #[test]
 fn forged_actor_invalid_spec_perm_5_2() {
-    let (mut lp, d, b, c) = setup(46);
+    let (mut lp, d, b, c) = setup();
     lp.advance(1_000);
     let forged = forge_acting(&mut lp, d, c, "as carol");
     lp.peers[0].receive(&forged, Vec::new()).unwrap();
@@ -532,7 +541,7 @@ fn forged_actor_invalid_spec_perm_5_2() {
 // and judges it valid once the grant arrives, though nothing about D changed.
 #[test]
 fn acting_valid_once_grant_arrives_spec_perm_5_2() {
-    let mut lp = net(4, 47);
+    let mut lp = net(4, 0);
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
     let (b, dave) = (lp.peers[1].engine.me(), lp.peers[3].engine.me());
@@ -591,7 +600,7 @@ pub(crate) fn forge_by(by: &osis_node::Engine, rec: osis_base::CreationRecord, t
     let mut cb = CommitBuilder::new(kind, ts, author, author, Form::Commit);
     cb.aspects.push(aw);
     let forge_key = by.sign_forged(&mut cb);
-    cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+    cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
 // spec/permissions.md §3 (lost access): only an unfinalized single-use link race defers a
@@ -600,7 +609,7 @@ pub(crate) fn forge_by(by: &osis_node::Engine, rec: osis_base::CreationRecord, t
 // Carol drops D's secrets.
 #[test]
 fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
-    let mut lp = net(3, 523);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
     let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
@@ -629,7 +638,7 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
 #[test]
 fn forged_role_class_unmerged_spec_perm_1() {
     use osis_schema::{RawKey, core_types as ct};
-    let (mut lp, d, _, _) = setup(49);
+    let (mut lp, d, _, _) = setup();
     let label = ct::Label { index: 0, steps: BTreeMap::new(), hosts: Vec::new(), replaced: false };
     let labels: ct::Labels = BTreeMap::from([(osis_base::LabelId([5; 16]), label)]);
     let a = ak(ct::LABEL.ak());
@@ -651,7 +660,7 @@ fn forged_role_class_unmerged_spec_perm_1() {
 // the same write once its author holds admin applies everywhere
 #[test]
 fn admin_only_aspect_needs_admin_spec_perm_5_2() {
-    let (mut lp, d, b, _) = setup(53);
+    let (mut lp, d, b, _) = setup();
     let key = ak("t:settings^.0");
     let write = |v: &str| {
         let mut m = Mutation::new();
@@ -691,7 +700,7 @@ fn admin_only_aspect_needs_admin_spec_perm_5_2() {
 // one it had not received goes
 #[test]
 fn admin_only_write_covered_by_demotion_frontier_spec_perm_5_1() {
-    let (mut lp, d, b, _) = setup(57);
+    let (mut lp, d, b, _) = setup();
     set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
     lp.sync_all().unwrap();
     let (seen, unseen) = (ak("t:seen^.0"), ak("t:unseen^.0"));
@@ -716,7 +725,7 @@ fn admin_only_write_covered_by_demotion_frontier_spec_perm_5_1() {
 // invalid, so it vouches for nothing it carries; the same snapshot of an unmarked aspect is valid
 #[test]
 fn admin_only_snapshot_by_writer_invalid_spec_perm_5_2() {
-    let (mut lp, d, _, _) = setup(58);
+    let (mut lp, d, _, _) = setup();
     for (k, valid) in [("t:conf^.0", false), ("t:conf.0", true)] {
         let key = ak(k);
         // Alice's write reaches Carol only
@@ -745,7 +754,7 @@ fn admin_only_snapshot_by_writer_invalid_spec_perm_5_2() {
 #[test]
 fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
     for revoke_first in [false, true] {
-        let (mut lp, d, b, _) = setup(47);
+        let (mut lp, d, b, _) = setup();
         lp.peers.push(osis_node::local_peer::Peer::new(4700, T0).unwrap());
         lp.sync_all().unwrap();
         add_tag(&mut lp, 1, d, "mon");
@@ -809,7 +818,7 @@ fn frontier_of(src: &osis_crdt::Source, ctr: u64) -> osis_crdt::Frontiers {
 // Bob's, so only Bob's entry shows.
 #[test]
 fn writer_snapshot_vouches_spec_perm_5_2() {
-    let (mut lp, d, _, _) = setup(53);
+    let (mut lp, d, _, _) = setup();
     let m_ak = ak("x:m.0");
     let mut m = Mutation::new();
     m.set(d, &m_ak, &Value::Map(osis_base::ValueMap::from([(s("k"), s("bob"))]))).unwrap();
@@ -848,7 +857,7 @@ fn writer_snapshot_vouches_spec_perm_5_2() {
 // input (so a node's next stamp exceeds every stamp it holds); one stamped at it applies.
 #[test]
 fn snapshot_future_stamp_refused_spec_crdt_8() {
-    let (mut lp, d, _, _) = setup(57);
+    let (mut lp, d, _, _) = setup();
     let m_ak = ak("x:m.0");
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
@@ -867,7 +876,7 @@ fn snapshot_future_stamp_refused_spec_crdt_8() {
 // stays once the grant arrives, across a restart.
 #[test]
 fn snapshot_before_grant_counts_spec_perm_5_2() {
-    let mut lp = net(2, 57);
+    let mut lp = net(2, 0);
     lp.peers.push(osis_node::local_peer::Peer::new(5700, T0).unwrap());
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
@@ -908,7 +917,7 @@ fn snapshot_before_grant_counts_spec_perm_5_2() {
 // writes come from their own commits).
 #[test]
 fn demoted_compactor_fresh_node_spec_perm_5_2() {
-    let (mut lp, d, _, c) = setup(59);
+    let (mut lp, d, _, c) = setup();
     lp.peers.push(osis_node::local_peer::Peer::new(5900, T0).unwrap());
     add_tag(&mut lp, 0, d, "alice");
     add_tag(&mut lp, 1, d, "bob");
@@ -954,7 +963,7 @@ fn entry_created_after_demotion_write_first_spec_perm_5_1() {
 }
 
 fn entry_created_after_demotion(snapshot_first: bool) {
-    let (mut lp, d, b, _) = setup(61);
+    let (mut lp, d, b, _) = setup();
     lp.peers.push(osis_node::local_peer::Peer::new(6100, T0).unwrap());
     lp.sync_all().unwrap();
     let one = |k: &str, v: &str| Value::Map(osis_base::ValueMap::from([(s(k), s(v))]));
@@ -1011,7 +1020,7 @@ fn entry_created_after_demotion(snapshot_first: bool) {
 // write, but no creation under "late" is left: only the snapshot's key shows, in every order.
 #[test]
 fn differing_key_copy_shows_only_its_key_spec_crdt_4_6() {
-    let (mut lp, d, b, _) = setup(65);
+    let (mut lp, d, b, _) = setup();
     lp.peers.push(osis_node::local_peer::Peer::new(6500, T0).unwrap());
     lp.sync_all().unwrap();
     let one = |k: &str, v: &str| Value::Map(osis_base::ValueMap::from([(s(k), s(v))]));
@@ -1053,7 +1062,7 @@ fn differing_key_copy_shows_only_its_key_spec_crdt_4_6() {
 // them per author.
 #[test]
 fn commit_form_carried_writes_vouched_spec_perm_5_2() {
-    let (mut lp, d, _, _) = setup(63);
+    let (mut lp, d, _, _) = setup();
     let m_ak = ak("x:m.0");
     lp.advance(1_000);
     let old = osis_base::Ts::make(WallMs(T0.0 - DAY), 0).unwrap();
@@ -1089,7 +1098,7 @@ fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[osis_base::CommitId])
 // admin on A2 through A1 (one class: a path lost while another keeps it is no fall).
 #[test]
 fn sticky_residue_spec_perm_5_1() {
-    let mut lp = net(3, 61);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let (n0, n1) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
     // first admins: A0 n1, A1 n0, A2 A0; A1 admin on A0, A2 write on A1
@@ -1145,7 +1154,7 @@ fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_node::Result
 // raw record (the record-link step) holds nothing of the write until that record arrives.
 #[test]
 fn record_then_edge_chain_applies_spec_perm_1() {
-    let mut lp = net(3, 62);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let a = new_thing(&mut lp, 0);
     let b = new_thing(&mut lp, 1);
@@ -1164,7 +1173,7 @@ fn record_then_edge_chain_applies_spec_perm_1() {
     let certs = lp.peers[0].engine.certificates(&c);
     assert!(certs.records.contains(&a));
     assert!(certs.commits.contains_key(&ab) && certs.commits.contains_key(&bc));
-    let mut fresh = net(1, 63);
+    let mut fresh = net(1, 1); // a node apart from lp's (its own seeds)
     for id in certs.commits.keys() {
         let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
         fresh.deliver(0, &pk).unwrap();
@@ -1189,7 +1198,7 @@ fn record_then_edge_chain_applies_spec_perm_1() {
 #[test]
 fn record_chain_depth_edge_chain_spec_perm_1() {
     use osis_base::format::MAX_CHAIN_DEPTH;
-    let mut lp = net(3, 64);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let mut up = lp.peers[0].engine.me();
     let mut chain = Vec::new();
@@ -1219,7 +1228,7 @@ fn record_chain_depth_edge_chain_spec_perm_1() {
 #[test]
 #[ignore = "by hand"]
 fn chain_found_past_owned_flood_spec_perm_4() {
-    let mut lp = net(2, 77);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let n0 = lp.peers[0].engine.me();
     let g1 = new_thing(&mut lp, 1);
@@ -1254,7 +1263,7 @@ fn index_of(e: &osis_node::Engine) -> osis_node::engine::IndexDigest {
 // whole edge.
 #[test]
 fn edge_change_is_remove_and_put_spec_perm_2() {
-    let mut lp = net(2, 67);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
     let c = lp.peers[1].engine.me();
@@ -1301,7 +1310,7 @@ fn carry(lp: &mut LocalPeer, from: usize, done: &osis_node::flows::Done) {
 fn regrant_over_dropped_entry_spec_perm_2() {
     for again in [Role::Write, Role::Admin] {
         use osis_node::flows::Demotion;
-        let mut lp = net(3, 71);
+        let mut lp = net(3, 0);
         let ps = persons(&mut lp);
         let (pb, pc) = (ps[1], ps[2]);
         let mut m = Mutation::new();
@@ -1346,7 +1355,7 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
         // each aspect's state past `PAGE_TARGET`, so it pages
         const N: usize = 140;
         const CHARS: usize = 17_000;
-        let (mut lp, d, b, _) = setup(81);
+        let (mut lp, d, b, _) = setup();
         let c = lp.peers[2].engine.me();
         set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Admin)), None);
         let pad = "x".repeat(500);
@@ -1453,7 +1462,7 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
 // whole before Carol's; a node never getting the rest agrees with itself in either order.
 #[test]
 fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
-    let (mut lp, d, b, _) = setup(91);
+    let (mut lp, d, b, _) = setup();
     lp.peers.push(osis_node::local_peer::Peer::new(9100, T0).unwrap());
     lp.peers.push(osis_node::local_peer::Peer::new(9101, T0).unwrap());
     let u = new_thing(&mut lp, 1);
@@ -1554,7 +1563,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
 #[test]
 fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
     use osis_crdt::{Writer, create};
-    let (mut lp, d, b, c) = setup(0x5fc0);
+    let (mut lp, d, b, c) = setup();
     let base = packages(&mut lp, 0);
     lp.advance(1_000);
     let mut m = Mutation::new();
@@ -1649,7 +1658,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
 #[test]
 fn valueless_copy_loses_to_held_value_spec_crdt_4_7() {
     use osis_crdt::{Writer, create};
-    let (mut lp, d, b, _) = setup(0x5fe0);
+    let (mut lp, d, b, _) = setup();
     let base = packages(&mut lp, 0);
     lp.advance(1_000);
     let mut m = Mutation::new();
@@ -1697,7 +1706,7 @@ fn valueless_copy_loses_to_held_value_spec_crdt_4_7() {
 #[test]
 fn snapshot_forging_held_node_dot_changes_nothing_spec_perm_5_2() {
     use osis_crdt::{Writer, create};
-    let mut lp = net(4, 0x5f01);
+    let mut lp = net(4, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let (a, r) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
@@ -1733,7 +1742,7 @@ fn snapshot_forging_held_node_dot_changes_nothing_spec_perm_5_2() {
 // and `ts`) under another key and value changes nothing in either order.
 #[test]
 fn snapshot_forging_entry_key_changes_nothing_spec_perm_5_2() {
-    let mut lp = net(4, 0x5f03);
+    let mut lp = net(4, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let (a, r) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
@@ -1768,7 +1777,7 @@ fn snapshot_forging_entry_key_changes_nothing_spec_perm_5_2() {
 // for nothing where C's delta is held, the delta arriving after the snapshot included.
 #[test]
 fn snapshot_copy_of_a_delta_never_held_counts_spec_perm_5_2() {
-    let mut lp = net(3, 0x5f04);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let (a, r) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
@@ -1835,7 +1844,7 @@ fn snapshot_copy_of_a_delta_never_held_counts_spec_perm_5_2() {
 #[test]
 fn snapshot_differing_copy_never_covers_body_spec_commits_5() {
     for (forged_value, wins) in [("zzz forged", true), ("aaa", false)] {
-        let mut lp = net(2, 0x5f05);
+        let mut lp = net(2, 0);
         lp.sync_all().unwrap();
         let t = new_thing(&mut lp, 0);
         let (a, w) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
@@ -1873,7 +1882,7 @@ fn snapshot_differing_copy_never_covers_body_spec_commits_5() {
 // snapshot, X's write reads again.
 #[test]
 fn greater_forged_copy_keeps_original_body_spec_commits_5() {
-    let (mut lp, d, x, w) = setup(0x5f06);
+    let (mut lp, d, x, w) = setup();
     let kept = ak("t:kept.0");
     let mut m = Mutation::new();
     m.set(d, &KEPT, &s("real")).unwrap();
@@ -1911,7 +1920,7 @@ fn greater_forged_copy_keeps_original_body_spec_commits_5() {
 #[test]
 fn snapshot_forging_unused_dot_changes_nothing_spec_perm_5_2() {
     use osis_crdt::{Writer, create};
-    let mut lp = net(3, 0x5f71);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let (a, r) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
@@ -1938,7 +1947,7 @@ fn snapshot_forging_unused_dot_changes_nothing_spec_perm_5_2() {
 #[test]
 fn snapshot_forging_dropped_commit_dot_changes_nothing_spec_perm_5_2() {
     use osis_crdt::{Batch, Op, PathOp, Source, Writer};
-    let mut lp = net(3, 0x5f72);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let r = lp.peers[1].engine.me();
     let t = new_thing(&mut lp, 0);
@@ -1977,7 +1986,7 @@ fn snapshot_forging_dropped_commit_dot_changes_nothing_spec_perm_5_2() {
 #[test]
 fn snapshot_covers_write_inside_earlier_entry_spec_commits_5() {
     use osis_crdt::{Op, PathOp, PathSeg};
-    let mut lp = net(1, 0x5f73);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let map = ak("t:map.0");
     let mut m = Mutation::new();
@@ -1997,7 +2006,7 @@ fn snapshot_covers_write_inside_earlier_entry_spec_commits_5() {
 // restart, and covers nothing although it copies the commit exactly.
 #[test]
 fn reader_snapshot_gives_nothing_either_order_spec_perm_5_2() {
-    let mut lp = net(4, 0x5f81);
+    let mut lp = net(4, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let (a, r) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
@@ -2039,7 +2048,7 @@ fn reader_snapshot_gives_nothing_either_order_spec_perm_5_2() {
 #[test]
 fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
     for (covered, demote_first) in [(true, false), (true, true), (false, false), (false, true)] {
-        let (mut lp, d, b, c) = setup(61);
+        let (mut lp, d, b, c) = setup();
         add_tag(&mut lp, 0, d, "alice");
         add_tag(&mut lp, 1, d, "bob");
         lp.sync_all().unwrap();
@@ -2083,7 +2092,7 @@ fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
 #[test]
 fn reader_copy_voids_no_valid_carrier_spec_perm_5_2() {
     for forged_first in [false, true] {
-        let mut lp = net(3, 0x5f83);
+        let mut lp = net(3, 0);
         lp.sync_all().unwrap();
         let d = new_thing(&mut lp, 0);
         let (b, r) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
@@ -2122,7 +2131,7 @@ fn reader_copy_voids_no_valid_carrier_spec_perm_5_2() {
 #[test]
 fn demoted_writer_dropped_dot_copy_alike_spec_perm_5_2() {
     use osis_crdt::{Batch, Op, PathOp, Source, Writer};
-    let mut lp = net(4, 0x5f87);
+    let mut lp = net(4, 0);
     lp.sync_all().unwrap();
     let w = lp.peers[1].engine.me();
     let t = new_thing(&mut lp, 0);
@@ -2174,7 +2183,7 @@ fn demoted_writer_dropped_dot_copy_alike_spec_perm_5_2() {
 // whether R arrived before or after the drop.
 #[test]
 fn valid_carrier_dropped_alike_either_order_spec_perm_5_2() {
-    let mut lp = net(3, 0x5f88);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
     let (b, r) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
@@ -2222,7 +2231,7 @@ fn valid_carrier_dropped_alike_either_order_spec_perm_5_2() {
 fn snapshot_extra_dot_of_dropped_delta_joins_alike_spec_perm_5_2() {
     use osis_crdt::{Batch, Op, PathOp, Source, Writer};
     for forged_first in [false, true] {
-        let mut lp = net(3, 0x5f88);
+        let mut lp = net(3, 0);
         lp.sync_all().unwrap();
         let w = lp.peers[1].engine.me();
         let t = new_thing(&mut lp, 0);
@@ -2300,7 +2309,7 @@ fn snapshot_extra_dot_of_dropped_delta_joins_alike_spec_perm_5_2() {
 // and "y" themselves, and after a rebuild of the state and a restart.
 #[test]
 fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
-    let (mut lp, d, b, _) = setup(0x5f8a);
+    let (mut lp, d, b, _) = setup();
     let id_of = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.commit_ids().into_iter().filter(|c| lp.peers[i].engine.header(c).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).max_by_key(|c| lp.peers[i].engine.header(c).unwrap().ts).unwrap();
     add_tag(&mut lp, 1, d, "mon");
     lp.sync_all().unwrap();
@@ -2366,7 +2375,7 @@ fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
 #[test]
 fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
     for bob_held in [false, true] {
-        let (mut lp, d, b, c) = setup(0x5fa0);
+        let (mut lp, d, b, c) = setup();
         add_tag(&mut lp, 1, d, "bob");
         lp.sync_all().unwrap();
         let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).collect();
@@ -2433,7 +2442,7 @@ fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
 #[test]
 fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
     use osis_crdt::{Batch, Op, PathOp, Writer};
-    let (mut lp, d, b, c) = setup(0x5fb0);
+    let (mut lp, d, b, c) = setup();
     add_tag(&mut lp, 1, d, "bob");
     lp.sync_all().unwrap();
     let tags_ak = ak("t:tags.0");
@@ -2488,7 +2497,7 @@ fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
 // issue sim-work-sets-tag-lost (closed), sim work_sets seeds 15061, 15110).
 #[test]
 fn covered_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
-    let mut lp = net(2, 0x5f8a);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.me();
@@ -2545,7 +2554,7 @@ fn covered_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
 // held the delta throughout) reads.
 #[test]
 fn covered_drop_coverer_and_remover_revoked_alike_spec_perm_5_2() {
-    let (mut lp, d, b, c) = setup(0x5fc0);
+    let (mut lp, d, b, c) = setup();
     add_tag(&mut lp, 0, d, "ash");
     lp.sync_all().unwrap();
     let tags_ak = ak("t:tags.0");
@@ -2618,7 +2627,7 @@ fn covered_drop_coverer_and_remover_revoked_alike_spec_perm_5_2() {
 // S2's copy is the delta's write in the rebuild after Bob's removal turns invalid.
 #[test]
 fn chained_cover_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
-    let (mut lp, d, b, _) = setup(0x5fd0);
+    let (mut lp, d, b, _) = setup();
     // a covering study, not a witness one: nobody vouches
     for p in &mut lp.peers {
         p.engine.write_addenda(false);
@@ -2705,7 +2714,7 @@ fn deliver_stripped(lp: &mut LocalPeer, from: usize, i: usize, ids: &BTreeSet<os
 // whichever removal they got first.
 #[test]
 fn cover_drop_coverer_flips_back_alike_spec_perm_5_2() {
-    let (mut lp, d, b, c) = setup(0x5fe0);
+    let (mut lp, d, b, c) = setup();
     set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
     lp.sync_all().unwrap();
     let tags_ak = ak("t:tags.0");
@@ -2787,7 +2796,7 @@ fn cover_drop_coverer_flips_back_alike_spec_perm_5_2() {
 // Bob's tag as at a node that never dropped it.
 #[test]
 fn missing_snapshot_not_covered_by_older_spec_perm_5_2() {
-    let (mut lp, d, b, c) = setup(0x6000);
+    let (mut lp, d, b, c) = setup();
     let tags_ak = ak("t:tags.0");
     add_tag(&mut lp, 0, d, "ash");
     let s0 = lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
@@ -2833,7 +2842,7 @@ fn missing_snapshot_not_covered_by_older_spec_perm_5_2() {
 // his received commits, also after a restart.
 #[test]
 fn flipped_snapshot_leaves_frontier_alike_spec_perm_5_2() {
-    let (mut lp, d, b, c) = setup(0x5fc0);
+    let (mut lp, d, b, c) = setup();
     add_tag(&mut lp, 1, d, "bob");
     sync(&mut lp, 1, 2);
     let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b)).collect();
@@ -2882,8 +2891,8 @@ fn flipped_snapshot_leaves_frontier_alike_spec_perm_5_2() {
 /// Bob's commit X (a tag and the register; commit form if `commit_form`), Carol's snapshot S of
 /// the tags listing X (frontier or `Absorbed`), Alice's removal R of Carol not listing S. Gives
 /// the packages Alice holds, X, S and R.
-fn listed_part_setup(seed: u64, commit_form: bool) -> (LocalPeer, Tid, Vec<osis_node::local_peer::Package>, [osis_base::CommitId; 3]) {
-    let (mut lp, d, _, c) = setup(seed);
+fn listed_part_setup(commit_form: bool) -> (LocalPeer, Tid, Vec<osis_node::local_peer::Package>, [osis_base::CommitId; 3]) {
+    let (mut lp, d, _, c) = setup();
     let mut m = Mutation::new();
     if commit_form {
         m.commit_form();
@@ -2937,7 +2946,7 @@ fn listed_part_peer(lp: &mut LocalPeer, d: Tid, pks: &[osis_node::local_peer::Pa
 #[test]
 fn part_listed_by_invalid_snapshot_applies_spec_commits_4() {
     for commit_form in [false, true] {
-        let (mut lp, d, pks, ids) = listed_part_setup(0x5fd8, commit_form);
+        let (mut lp, d, pks, ids) = listed_part_setup(commit_form);
         let [x, snap, rv] = ids;
         let i = listed_part_peer(&mut lp, d, &pks, ids, &[rv, snap, x], 0x5fd9);
         assert!(lp.peers[i].engine.pending().is_empty(), "commit form {commit_form}: {:?}", lp.peers[i].engine.pending());
@@ -2953,7 +2962,7 @@ fn part_listed_by_invalid_snapshot_applies_spec_commits_4() {
 // the tag does not, also after a restart.
 #[test]
 fn listed_part_alike_in_any_order_spec_commits_4() {
-    let (mut lp, d, pks, ids) = listed_part_setup(0x5fda, false);
+    let (mut lp, d, pks, ids) = listed_part_setup(false);
     let [x, snap, rv] = ids;
     let orders = [[snap, x, rv], [x, snap, rv], [snap, rv, x], [rv, snap, x], [x, rv, snap], [rv, x, snap]];
     for (n, order) in orders.iter().enumerate() {
@@ -2976,7 +2985,7 @@ fn listed_part_alike_in_any_order_spec_commits_4() {
 // it came.
 #[test]
 fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
-    let (mut lp, d, b, _) = setup(0x5fd0);
+    let (mut lp, d, b, _) = setup();
     add_tag(&mut lp, 1, d, "bob");
     sync(&mut lp, 1, 2);
     let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b)).collect();
@@ -3022,7 +3031,7 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
 fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
     let tags_ak = ak("t:tags.0");
     for (n, snap_first) in [true, false].into_iter().enumerate() {
-        let (mut lp, d, b, _) = setup(0x6100 + n as u64);
+        let (mut lp, d, b, _) = setup();
         add_tag(&mut lp, 1, d, "mon");
         lp.advance(1_000);
         let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
@@ -3095,7 +3104,7 @@ fn forge_created(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
     let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
     cb.aspects.push(aw);
     let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
-    Ok(cb.build(&forge_key, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode())
+    Ok(cb.build(&forge_key, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode())
 }
 
 // spec/commits.md §2 (created one minting): Bob's
@@ -3106,7 +3115,7 @@ fn forge_created(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
 #[test]
 fn padded_durable_created_refused_spec_commits_2() {
     use osis_crdt::{Op, PathOp};
-    let (mut lp, d, _, _) = setup(53);
+    let (mut lp, d, _, _) = setup();
     let mut m = Mutation::new();
     let x = lp.peers[1].engine.new_thing(&mut m, d);
     m.set(x, &REG, &s("x")).unwrap();
@@ -3141,7 +3150,7 @@ fn padded_durable_created_refused_spec_commits_2() {
 // every node, fresh ones in either order included.
 #[test]
 fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
-    let mut lp = net(4, 0x6200);
+    let mut lp = net(4, 0);
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
     let (b, c, j) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me());
@@ -3201,7 +3210,7 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
 // late), so it is invalid after the removal; the write must be listed and stay.
 #[test]
 fn backdated_frontier_lists_write_covered_after_cut_spec_perm_5_1() {
-    let (mut lp, d, b, _) = setup(0x7171);
+    let (mut lp, d, b, _) = setup();
     let reg = ak("t:reg.0");
     let mut m = Mutation::new();
     m.set(d, &REG, &s("bob")).unwrap();
@@ -3227,7 +3236,7 @@ fn backdated_frontier_lists_write_covered_after_cut_spec_perm_5_1() {
 // keep-at-least window both are still listed.
 #[test]
 fn frontier_lists_kept_writes_compacted_or_not_spec_perm_5_1() {
-    let (mut lp, d, b, _) = setup(0x7181);
+    let (mut lp, d, b, _) = setup();
     let kept = ak("t:kept.0");
     let write = |lp: &mut LocalPeer, v: &str| {
         let mut m = Mutation::new();
@@ -3250,7 +3259,7 @@ fn frontier_lists_kept_writes_compacted_or_not_spec_perm_5_1() {
     assert!(f.commits.contains(&two), "a covered live write is listed too");
     set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
     assert_eq!(lp.peers[0].engine.body_valid(&one, &d, &kept), Some(true), "kept history stays valid at the holder");
-    let mut fresh = net(1, 0x7183);
+    let mut fresh = net(1, 1); // a node apart from lp's (its own seeds)
     fresh.advance(DAY);
     for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != one) {
         fresh.deliver(0, &p).unwrap();
@@ -3274,7 +3283,7 @@ fn frontier_lists_kept_writes_compacted_or_not_spec_perm_5_1() {
 // snapshot covers.
 #[test]
 fn frontier_lists_commit_with_unheld_part_spec_perm_5_1() {
-    let (mut lp, d, b, _) = setup(0x7185);
+    let (mut lp, d, b, _) = setup();
     let reg = ak("t:reg.0");
     let e = new_thing(&mut lp, 1);
     let mut m = Mutation::new();
@@ -3326,7 +3335,7 @@ fn forge_on(lp: &mut LocalPeer, k: Tid, a: &str) -> osis_commit::CommitBlob {
     cb.aspects.push(w);
     let rec = lp.peers[0].engine.get_typed(&k, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[1].engine.sign_forged(&mut cb);
-    cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit
+    cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit
 }
 
 // spec/permissions.md §4 (a node card), §5.2: whether a key
@@ -3337,7 +3346,7 @@ fn forge_on(lp: &mut LocalPeer, k: Tid, a: &str) -> osis_commit::CommitBlob {
 #[test]
 fn stranger_card_makes_no_node_spec_perm_4() {
     for header_only in [true, false] {
-        let mut lp = net_bare(2, 951);
+        let mut lp = net_bare(2, 0);
         lp.sync_all().unwrap();
         let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
         let (p, _) = lp.peers[0].engine.create_account(&hosts).unwrap();
@@ -3368,7 +3377,7 @@ fn stranger_card_makes_no_node_spec_perm_4() {
 // it is not a labeled group, nor published under its first admin's home label.
 #[test]
 fn stranger_label_listing_labels_nothing_spec_sync_2() {
-    let mut lp = net_bare(2, 952);
+    let mut lp = net_bare(2, 0);
     lp.sync_all().unwrap();
     let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
     let (p, _) = lp.peers[0].engine.create_account(&hosts).unwrap();
@@ -3443,7 +3452,7 @@ fn forge_parts(lp: &mut LocalPeer, by: usize, holder: usize, parts: &[ForgedPart
         }
     }
     let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
-    let mut blob = cb.build(&forge_key, &Dedups(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit;
+    let mut blob = cb.build(&forge_key, &Dedups(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
     let bare: BTreeSet<usize> = parts.iter().enumerate().filter(|(_, p)| p.2.is_none()).map(|(i, _)| i).collect();
     blob.parts.retain(|p| !bare.contains(&p.ai));
     blob
@@ -3456,7 +3465,7 @@ fn forge_parts(lp: &mut LocalPeer, by: usize, holder: usize, parts: &[ForgedPart
 #[test]
 fn stranger_undo_listing_moves_no_step_back_spec_crdt_4_6() {
     for variant in ["none", "undo header only", "change header only", "undo valid elsewhere"] {
-        let mut lp = net(2, 0x5f21);
+        let mut lp = net(2, 0);
         lp.sync_all().unwrap();
         let t = new_thing_keeping(&mut lp, 0, &[("t:reg.0", crate::common::DAY)]);
         let set = |lp: &mut LocalPeer, v: &str| {
@@ -3495,7 +3504,7 @@ fn stranger_undo_listing_moves_no_step_back_spec_crdt_4_6() {
 // (restoring the read before it, from the kept history it holds: not its own commit).
 #[test]
 fn undo_needs_write_spec_crdt_4_6() {
-    let mut lp = net(2, 0x5f22);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_thing_keeping(&mut lp, 0, &[("t:reg.0", crate::common::DAY)]);
     let b = lp.peers[1].engine.me();
@@ -3530,13 +3539,13 @@ fn undo_needs_write_spec_crdt_4_6() {
 // the rewrite nothing.
 #[test]
 fn invalid_reuse_lends_relink_no_expiry_spec_sync_1() {
-    let mut lp = net(2, 0x5f25);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let r = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
     let mut big = vec![0u8; 1 << 20];
-    osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(5), &mut big);
+    osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(0), &mut big);
     let mut m = Mutation::new();
     m.set(t, &BLOB, &Value::Bytes(big)).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -3563,7 +3572,7 @@ fn invalid_reuse_lends_relink_no_expiry_spec_sync_1() {
 fn frontier_iff_the_write_audits_spec_wire_13() {
     use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::core_types as ct;
-    let (mut lp, d, b, _) = setup(0xf0f0);
+    let (mut lp, d, b, _) = setup();
     let write = |e: &mut osis_node::Engine, x: ct::Edge, frontier: bool| {
         let mut m = Mutation::new();
         m.op(d, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(b)) }).unwrap();
@@ -3609,7 +3618,7 @@ fn kick_reads_bodies_down_to_its_winner() {
     for (name, val, seq) in cases {
         let k = ak(name);
         let bodies_read = |n: usize| -> (u64, usize) {
-            let mut lp = net(2, 811);
+            let mut lp = net(2, 0);
             let (alice, bob) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
             let mut m = Mutation::new();
             let d = lp.peers[0].engine.new_thing(&mut m, alice);
@@ -3657,7 +3666,7 @@ fn kick_reads_bodies_down_to_its_winner() {
 #[test]
 fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
     use osis_crdt::{Op, PathOp, PathSeg};
-    let (mut lp, d, b, _) = setup(95);
+    let (mut lp, d, b, _) = setup();
     let op = |lp: &mut LocalPeer, i: usize, a: &osis_schema::Aspect<Value>, path: Vec<PathSeg>, at: usize, v: &str| {
         let mut m = Mutation::new();
         m.op(d, a, PathOp { path, op: Op::Insert { at, items: vec![s(v)] } }).unwrap();
@@ -3716,7 +3725,7 @@ static ANCHOR_STR: osis_schema::StaticSchema = osis_schema::StaticSchema::new("a
 // a kick rebuilt the aspect as before it.
 #[test]
 fn rebuild_past_a_register_places_older_anchors_spec_crdt_4_2() {
-    let (mut lp, d, b, _) = setup(813);
+    let (mut lp, d, b, _) = setup();
     let text = osis_schema::Aspect::<Value>::new("k:t.0", &ANCHOR_TEXT);
     let reg = osis_schema::Aspect::<Value>::new("k:t.0", &ANCHOR_STR);
     let k = ak("k:t.0");
@@ -3749,7 +3758,7 @@ fn rebuild_past_a_register_places_older_anchors_spec_crdt_4_2() {
 #[test]
 fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
     for reopen in [false, true] {
-        let mut lp = net(3, 433);
+        let mut lp = net(3, 0);
         let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
         let mut m = Mutation::new();
         let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);

@@ -269,7 +269,7 @@ fn certificates_carry_demotion_of_left_edge_spec_permissions_4() {
 
 #[test]
 fn certificates_project_joint() {
-    cert_run_joint(80, 0x5eed_0201);
+    cert_run_joint(80, 0);
 }
 
 #[test]
@@ -322,7 +322,7 @@ fn cert_run_edges(samples: u64, seed: u64) {
 
 #[test]
 fn certificates_project_edges() {
-    cert_run_edges(80, 0x5eed_0203);
+    cert_run_edges(80, 0);
 }
 
 #[test]
@@ -447,7 +447,7 @@ fn demotion_scope_as_restored_spec_permissions_5_1() {
 fn patched_view_equals_cloned_edges() {
     use osis_perm::graph::View;
     use osis_perm::{Edges, Records};
-    let mut rng = Rng(0x5eed_0301);
+    let mut rng = Rng(0);
     let pick = |rng: &mut Rng| -> Option<Edge> {
         let role = [Read, Write, Admin][rng.below(3)];
         let invite = [None, Some(Read), Some(Write), Some(Admin)][rng.below(4)].map(|i: Role| i.min(role));
@@ -599,7 +599,7 @@ fn scope_run(samples: u64, seed: u64) {
 
 #[test]
 fn demotion_scope_covers_audits_spec_permissions_5_1() {
-    scope_run(4000, 0x5eed_0301);
+    scope_run(4000, 0);
 }
 
 #[test]

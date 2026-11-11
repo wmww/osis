@@ -9,7 +9,6 @@ use osis_commit::CommitBlob;
 use osis_node::{Ingested, Mutation, Reason};
 use osis_node::local_peer::Peer;
 
-const SEED: u64 = 1038;
 const FRESH: u64 = 0x5eed_f00d;
 
 /// One delivery: pack `.0`, whole or only its parts on one thing.
@@ -24,10 +23,10 @@ fn reg() -> osis_base::Ak {
 fn histories() -> Vec<Played> {
     use Step::*;
     let tick = || Advance { who: None, ms: 1000 };
-    let content = play(SEED, &[NewTop { by: 0 }, tick(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick(), Two { by: 1, a: 0, b: 1, v: 1 }]);
-    let role = play(SEED, &[NewTop { by: 0 }, tick(), Edge { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick(), TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }]);
-    let three = play(SEED, &[NewTop { by: 0 }, NewTop { by: 0 }, tick(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }, Sync { from: 0, to: 1 }, tick(), Three { by: 1, a: 0, b: 1, c: 2, v: 1 }]);
-    let honest = play(SEED, &[New { by: 0, parent: 0, write: true }, tick(), Two { by: 0, a: 0, b: 1, v: 7 }]);
+    let content = play(0, &[NewTop { by: 0 }, tick(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick(), Two { by: 1, a: 0, b: 1, v: 1 }]);
+    let role = play(0, &[NewTop { by: 0 }, tick(), Edge { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick(), TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }]);
+    let three = play(0, &[NewTop { by: 0 }, NewTop { by: 0 }, tick(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }, Sync { from: 0, to: 1 }, tick(), Three { by: 1, a: 0, b: 1, c: 2, v: 1 }]);
+    let honest = play(0, &[New { by: 0, parent: 0, write: true }, tick(), Two { by: 0, a: 0, b: 1, v: 7 }]);
     vec![content, role, three, honest]
 }
 
@@ -121,9 +120,9 @@ fn role_part_applies_whatever_is_synced_spec_commits_4() {
 }
 
 /// Peer 0's commit `write` makes on two of its things peer 1 knows, split per thing.
-fn two_things(seed: u64, write: impl Fn(&mut Mutation, Tid, Tid)) -> (osis_node::local_peer::LocalPeer, Tid, Tid, osis_node::local_peer::Package) {
+fn two_things(write: impl Fn(&mut Mutation, Tid, Tid)) -> (osis_node::local_peer::LocalPeer, Tid, Tid, osis_node::local_peer::Package) {
     use crate::common::*;
-    let mut lp = net(2, seed);
+    let mut lp = net(2, 0);
     let (g, h) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     for pk in packages(&mut lp, 0) {
         lp.deliver(1, &pk).unwrap();
@@ -151,7 +150,7 @@ fn part_missing_pages_waits_alone_spec_commits_4() {
     let big = Value::Map(map);
     for (first_g, synced) in [(true, false), (false, false), (true, true), (false, true)] {
         let want = big.clone();
-        let (mut lp, g, h, pk) = two_things(61, |m, g, h| {
+        let (mut lp, g, h, pk) = two_things(|m, g, h| {
             m.set(g, &REG, &s("small")).unwrap();
             m.set(h, &BIG, &want).unwrap();
         });
@@ -182,7 +181,7 @@ fn parked_part_waits_alone_spec_versioning_2() {
     use crate::common::*;
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{Delta, Writer, create, encode_delta};
-    let mut lp = net(2, 62);
+    let mut lp = net(2, 0);
     let (g, h) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     for pk in packages(&mut lp, 0) {
         lp.deliver(1, &pk).unwrap();
@@ -203,7 +202,7 @@ fn parked_part_waits_alone_spec_versioning_2() {
     cb.aspects.push(AspectWrite::new(g, ak("t:reg.0"), r.lo, r.hi, good));
     cb.aspects.push(AspectWrite::new(h, ak("t:future.0"), 100, 101, parked));
     let forge_key = e.sign_forged(&mut cb);
-    let blob = cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
+    let blob = cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
     let part = |t: Tid| {
         let mut b = blob.clone();
         let hd = b.header.clone();
@@ -220,7 +219,7 @@ fn parked_part_waits_alone_spec_versioning_2() {
     assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("ok")), "synced: the rest applies");
     assert_eq!(e.pending(), vec![(id, Reason::Parked)], "the parked part stays");
     // the same from the other order, and together
-    let (mut other, mut together) = (net(2, 62), net(2, 62));
+    let (mut other, mut together) = (net(2, 0), net(2, 0));
     for lp2 in [&mut other, &mut together] {
         for pk in packages(&mut lp, 0) {
             lp2.deliver(1, &pk).unwrap();
@@ -251,7 +250,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{Delta, Source, Writer, create, encode_delta};
     use osis_schema::{Codec, core_types as ct};
-    let mut lp = net(2, 64);
+    let mut lp = net(2, 0);
     let g = new_thing(&mut lp, 0);
     let known = packages(&mut lp, 0);
     let h = new_thing(&mut lp, 0);
@@ -261,7 +260,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     let recs2 = recs.clone();
     let mut held = osis_keys::ActorEpochs::default();
     held.read.set_established(osis_keys::Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
-    let rot = osis_keys::rotate(&h, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
+    let rot = osis_keys::rotate(&h, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
     let boxed = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
     let secrets = osis_base::Ak::new("secrets.0").unwrap();
     let author = e.me();
@@ -279,7 +278,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
         cb.aspects.push(aw);
     }
     let forge_key = e.sign_forged(&mut cb);
-    let blob = cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit;
+    let blob = cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
     let part = |t: Tid| {
         let mut b = blob.clone();
         let hd = b.header.clone();
@@ -301,14 +300,14 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
             cb.aspects.push(aw);
         }
         let forge_key = lp.peers[0].engine.sign_forged(&mut cb);
-        cb.build(&forge_key, &crate::receive::Dedup(recs2), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit
+        cb.build(&forge_key, &crate::receive::Dedup(recs2), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit
     };
     let plain_id = plain.id();
     let plain = plain.encode();
     // a relay's junk in H's slot first: the true copy's boxes are read though the junk keeps the slot
     let junk_two = with_delta(&two, 3, 40);
     for (name, id, order) in [("G first", blob.id(), vec![&one, &two]), ("H first", blob.id(), vec![&two, &one]), ("together", blob.id(), vec![&whole]), ("plain G part", plain_id, vec![&plain]), ("junk first", blob.id(), vec![&junk_two, &two, &one])] {
-        let mut lp2 = net(2, 64);
+        let mut lp2 = net(2, 0);
         for pk in &known {
             lp2.deliver(1, pk).unwrap();
         }
@@ -354,7 +353,7 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     use crate::common::*;
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{Delta, Writer, create, encode_delta};
-    let mut lp = net(2, 66);
+    let mut lp = net(2, 0);
     let g = new_thing(&mut lp, 0);
     let setup = packages(&mut lp, 0);
     lp.peers[0].clock.advance(10);
@@ -378,7 +377,7 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     cb.aspects.push(AspectWrite::new(g, ak("t:two.0"), two.1, two.2, two.0));
     cb.aspects.push(AspectWrite::new(g, ak("t:bad.0"), 100, 101, bad));
     let forge_key = e.sign_forged(&mut cb);
-    let blob = cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
+    let blob = cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
     let id = blob.id();
     lp.peers[0].clock.advance(10);
     let mut m = Mutation::new();
@@ -393,7 +392,7 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     };
     let (p_one, p_two, p_bad) = (on("t:one.0"), on("t:two.0"), on("t:bad.0"));
     let read = |synced: bool, deliveries: &[&[u8]]| {
-        let mut lp2 = net(2, 66);
+        let mut lp2 = net(2, 0);
         for pk in &setup {
             lp2.deliver(1, pk).unwrap();
         }
@@ -422,7 +421,7 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
             assert!(held.3.is_empty(), "synced {synced}, held {:?}", &order[..2]);
         }
         // the bad part alone, and a junk copy of its slot: refused, nothing kept
-        let mut lp2 = net(2, 66);
+        let mut lp2 = net(2, 0);
         for pk in &setup {
             lp2.deliver(1, pk).unwrap();
         }
@@ -510,7 +509,7 @@ fn history_plays_past_a_no_op_write_spec_commits_4() {
     use Step::*;
     let a = |s: Step| Aim(Box::new(s));
     let steps = [NewTop { by: 0 }, NewTop { by: 0 }, Advance { who: None, ms: 1000 }, Three { by: 0, a: 0, b: 1, c: 2, v: 1 }, Three { by: 0, a: 0, b: 1, c: 2, v: 1 }, Advance { who: None, ms: 1000 }, Forged { by: 1, a: 4, b: 4, how: 1, op: 6, k: 0, v: 1 }, Sync { from: 0, to: 1 }, Sync { from: 0, to: 1 }, a(New { by: 0, parent: 4, write: true }), a(New { by: 0, parent: 1, write: true }), a(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Read) }), Sync { from: 1, to: 0 }, Sync { from: 0, to: 1 }];
-    play(SEED, &steps);
+    play(0, &steps);
 }
 
 // spec/commits.md §4: a commit on two synced things, the H part expired with its pages away. It holds
@@ -522,7 +521,7 @@ fn expired_part_with_pages_away_order_spec_commits_4() {
     let big = Value::Map(map);
     let mut read = Vec::new();
     for first_g in [true, false] {
-        let (mut lp, g, h, pk) = two_things(61, |m, g, h| {
+        let (mut lp, g, h, pk) = two_things(|m, g, h| {
             m.set(g, &REG, &s("small")).unwrap();
             m.set(h, &BIG, &big).unwrap();
             m.expires(h, &BIG, osis_base::WallMs(1_700_000_001_000)).unwrap();
@@ -567,7 +566,7 @@ fn bad_part_every_shape_reads_alike_spec_commits_4() {
     use Step::*;
     for how in 0..2u8 {
         let tick = || Advance { who: None, ms: 1000 };
-        let played = play(SEED, &[NewTop { by: 0 }, NewTop { by: 0 }, tick(), BadPart { by: 0, a: 1, b: 2, how }]);
+        let played = play(0, &[NewTop { by: 0 }, NewTop { by: 0 }, tick(), BadPart { by: 0, a: 1, b: 2, how }]);
         let last = played.packs.len() - 1;
         let (a, b) = (played.things[1], played.things[2]);
         let parts = CommitBlob::decode(&played.packs[last].bytes).unwrap().parts.len();
@@ -636,7 +635,7 @@ fn role_commit_of_junk_holds_nothing_spec_commits_4() {
 #[test]
 fn wrong_class_delta_is_not_waited_for_spec_commits_4() {
     use crate::common::*;
-    let (mut lp, g, _, _) = two_things(67, |m, g, _| { m.set(g, &REG, &s("first")).unwrap(); });
+    let (mut lp, g, _, _) = two_things(|m, g, _| { m.set(g, &REG, &s("first")).unwrap(); });
     let key = ak("t:tags+.0");
     let mut m = Mutation::new();
     m.set(g, &REG, &s("kept")).unwrap();
@@ -649,7 +648,7 @@ fn wrong_class_delta_is_not_waited_for_spec_commits_4() {
     assert!(matches!(e.ingest(&pk.bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
     assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("kept")));
     // a copy holding one, while the commit waits, names nothing: such a part has no true copy to look for
-    let mut lp = net(2, 69);
+    let mut lp = net(2, 0);
     let known = packages(&mut lp, 0);
     let h = new_thing(&mut lp, 0);
     let mut m = Mutation::new();
@@ -672,7 +671,7 @@ fn wrong_class_delta_is_not_waited_for_spec_commits_4() {
 #[test]
 fn false_signature_refused_before_linked_lists() {
     use crate::common::*;
-    let mut lp = net(2, 71);
+    let mut lp = net(2, 0);
     let h = new_thing(&mut lp, 0);
     for pk0 in &packages(&mut lp, 0) {
         lp.deliver(1, pk0).unwrap();
@@ -697,7 +696,7 @@ fn false_signature_refused_before_linked_lists() {
 #[test]
 fn bad_part_beside_a_waiting_part_alike_spec_commits_4() {
     use Step::*;
-    let played = play(SEED, &[New { by: 0, parent: 0, write: true }, New { by: 0, parent: 0, write: true }, Advance { who: None, ms: 1000 }, BadPart { by: 0, a: 1, b: 2, how: 0 }]);
+    let played = play(0, &[New { by: 0, parent: 0, write: true }, New { by: 0, parent: 0, write: true }, Advance { who: None, ms: 1000 }, BadPart { by: 0, a: 1, b: 2, how: 0 }]);
     let (hidden, last) = (played.base, played.packs.len() - 1);
     let (a, b) = (played.things[1], played.things[2]);
     let ids: std::collections::BTreeSet<_> = played.packs.iter().map(|x| x.id).collect();
@@ -725,7 +724,7 @@ fn bad_part_beside_a_waiting_part_alike_spec_commits_4() {
 #[test]
 fn true_record_replaces_junk_under_a_linked_header_spec_commits_4() {
     use crate::common::*;
-    let mut lp = net(2, 71);
+    let mut lp = net(2, 0);
     let known = packages(&mut lp, 0);
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
@@ -761,9 +760,9 @@ struct Forge {
     z: Tid,
 }
 
-fn forge_setup(seed: u64) -> Forge {
+fn forge_setup() -> Forge {
     use crate::common::*;
-    let mut lp = net(2, seed);
+    let mut lp = net(2, 0);
     let (x, y, z) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     let setup = packages(&mut lp, 0);
     Forge { lp, setup, x, y, z }
@@ -808,7 +807,7 @@ fn forge(f: &mut Forge, parts: &[(Tid, &str, Made, Option<u64>)]) -> CommitBlob 
         cb.aspects.push(AspectWrite::new(*t, ak(k), r.lo, r.hi, d));
     }
     let forge_key = e.sign_forged(&mut cb);
-    cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit
+    cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit
 }
 
 /// What a parked part of `forge` carries.
@@ -827,7 +826,7 @@ fn cut(b: &CommitBlob, things: &[Tid]) -> Vec<u8> {
 // its timer or at the next look. Its commit's other parts expire with it (one expiry per commit).
 #[test]
 fn parked_part_goes_at_its_expiry_spec_commits_5() {
-    let mut f = forge_setup(82);
+    let mut f = forge_setup();
     let (x, y, z) = (f.x, f.y, f.z);
     let b = forge(&mut f, &[(x, "t:future.0", Made::Parked, Some(1000)), (y, "t:reg.0", Made::Good, Some(1000)), (z, "t:reg.0", Made::Good, None)]);
     let live = f.lp.peers[0].engine.now();
@@ -872,7 +871,7 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
 fn parked_part_goes_at_its_purge_spec_commits_5() {
     use crate::common::*;
     for parked_first in [true, false] {
-        let mut f = forge_setup(86);
+        let mut f = forge_setup();
         let x = f.x;
         let b = forge(&mut f, &[(x, "t:future.0", Made::Parked, None)]);
         f.lp.peers[0].clock.advance(10);
@@ -922,8 +921,8 @@ fn forged_parts_beside_a_part_past_expiry_alike_in_every_order_exhaustive_spec_c
 /// Every `stride`th order of the five deliveries.
 fn forged_parts_beside_a_part_past_expiry(stride: usize) {
     use crate::common::*;
-    for (n, how) in [Made::Bad, Made::Parked].into_iter().enumerate() {
-        let mut f = forge_setup(83 + n as u64);
+    for how in [Made::Bad, Made::Parked] {
+        let mut f = forge_setup();
         let (x, y, z) = (f.x, f.y, f.z);
         let b = forge(&mut f, &[(x, "t:brief.0", Made::Good, Some(1000)), (y, "t:reg.0", how, None), (z, "t:reg.0", Made::Good, None)]);
         let now = osis_base::WallMs(f.lp.peers[0].engine.now().0 + 5000);
@@ -968,7 +967,7 @@ fn forged_parts_beside_a_part_past_expiry(stride: usize) {
             for (order, got) in picked.iter().zip(osis_base::testenv::par_map(&idx, osis_base::testenv::threads("OSIS_SEED_THREADS"), one)) {
                 seen.entry(got).or_insert_with(|| (*order).clone());
             }
-            assert_eq!(seen.len(), 1, "made {n}, sync {:?}: {seen:#?}", sync.map(|t| t == x));
+            assert_eq!(seen.len(), 1, "bad {}, sync {:?}: {seen:#?}", how == Made::Bad, sync.map(|t| t == x));
         }
     }
 }

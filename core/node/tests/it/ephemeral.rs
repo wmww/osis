@@ -87,6 +87,33 @@ fn made(net: &mut Net, n: usize, admin: Tid, group: Option<Tid>) -> Tid {
 }
 
 /// Node `n` makes a window under `g`, an item of `g`, then sets its `win:state+.0` to `v`.
+/// A writer b of a's group g at one host and a's window w (`window`), synced: built once
+/// (`Net::cached`). Returns (host, a, b, g, w).
+fn windowed() -> (Net, (usize, usize, usize, Tid, Tid)) {
+    Net::cached("ephemeral::windowed", || {
+        let (mut net, host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
+        let w = window(&mut net, a, g, "w");
+        net.run();
+        (net, (host, a, b, g, w))
+    })
+}
+
+/// Four nodes at two hosts, writers of node 0's group g, and node 0's window w (`window`),
+/// synced: built once (`Net::cached`). Returns (hosts, nodes, g, w).
+fn churn_world() -> (Net, (Vec<usize>, Vec<usize>, Tid, Tid)) {
+    Net::cached("ephemeral::churn_world", || {
+        let mut net = Net::new();
+        let hosts = vec![net.add_host(), net.add_host()];
+        let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &hosts)).collect();
+        let grants: Vec<(usize, Role)> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
+        let g = net.group(nodes[0], &grants, &hosts);
+        net.run();
+        let w = window(&mut net, nodes[0], g, "w");
+        net.run();
+        (net, (hosts, nodes, g, w))
+    })
+}
+
 fn window(net: &mut Net, n: usize, g: Tid, v: &str) -> Tid {
     let w = made(net, n, g, Some(g));
     let mut m = Mutation::new();
@@ -1183,14 +1210,7 @@ fn undo_of_set_past_expiry_restores_no_shadowed_entry_spec_crdt_4_6() {
 #[test]
 fn refreshed_value_lives_while_author_present_spec_crdt_4_7() {
     const E: u64 = 30_000;
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
-    let w = window(&mut net, a, g, "w");
-    net.run();
+    let (mut net, (host, a, b, _, w)) = windowed();
     let l = net.label(a);
     let me = s(&net.tid(a).to_string());
     // what `osis::KeepAlive` writes: a fresh entry at the key (an entry an expiring write created
@@ -1527,12 +1547,7 @@ fn sessions_of_one_node_never_collide_spec_crdt_2_1() {
         Some(Value::List(l)) => l.into_iter().collect::<std::collections::BTreeSet<Value>>(),
         x => panic!("node {n}: {x:?}"),
     };
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
     // an ephemeral aspect of the (durable) group: writable at once after a restart
     let w = g;
     list(&mut net, a, w, "x");
@@ -1674,19 +1689,31 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
         x ^= x << 17;
         x % n
     };
-    let mut net = Net::new();
     // odd seeds (and `single`): a random ephemeral cap at the first host, from nothing fitting
     // to the whole state fitting
     let cap = [0, 1_500, 4_000, 8_000, 16_000, 64_000][(seed / 2 % 6) as usize];
-    let s1 = if single || seed % 2 == 1 { net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() }) } else { net.add_host() };
-    let s2 = net.add_host();
-    let hosts: Vec<usize> = if single { vec![s1] } else { vec![s1, s2] };
-    let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &hosts)).collect();
-    let grants: Vec<(usize, Role)> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
-    let g = net.group(nodes[0], &grants, &hosts);
-    net.run();
-    let w = window(&mut net, nodes[0], g, "w");
-    net.run();
+    let capped = single || seed % 2 == 1;
+    // the world before the steps: built once per (single, cap) (`Net::cached`), uncapped at two
+    // hosts it is `churn_world`
+    let (mut net, (hosts, nodes, _, w)) = if !capped {
+        churn_world()
+    } else {
+        Net::cached(&format!("ephemeral::window_world/{single}/{cap}"), || {
+            let mut net = Net::new();
+            let s1 = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
+            let s2 = net.add_host();
+            let hosts: Vec<usize> = if single { vec![s1] } else { vec![s1, s2] };
+            let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &hosts)).collect();
+            let grants: Vec<(usize, Role)> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
+            let g = net.group(nodes[0], &grants, &hosts);
+            net.run();
+            let w = window(&mut net, nodes[0], g, "w");
+            net.run();
+            (net, (hosts, nodes, g, w))
+        })
+    };
+    // the hosts in the order made: s1 (capped, if any) then s2
+    let (s1, s2) = (0, 1);
     let mut restarts = 100;
     let mut log = Vec::new();
     // in-flight steps from a stream of their own as well
@@ -1951,14 +1978,7 @@ fn random_churn_run(seed: u64) {
         x ^= x << 17;
         x % n
     };
-    let mut net = Net::new();
-    let hosts = vec![net.add_host(), net.add_host()];
-    let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &hosts)).collect();
-    let grants: Vec<(usize, Role)> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
-    let g = net.group(nodes[0], &grants, &hosts);
-    net.run();
-    let w = window(&mut net, nodes[0], g, "w");
-    net.run();
+    let (mut net, (hosts, nodes, g, w)) = churn_world();
     let tids: Vec<Tid> = nodes.iter().map(|n| net.tid(*n)).collect();
     let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
     let mut demoted: BTreeSet<usize> = BTreeSet::new();
@@ -2175,14 +2195,8 @@ fn random_churn_converges_large() {
 // restarted gets it at the end
 #[test]
 fn promoted_after_hosts_restart_reaches_hosts_spec_sync_6() {
-    let mut net = Net::new();
-    let hosts = vec![net.add_host(), net.add_host()];
-    let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &hosts)).collect();
+    let (mut net, (hosts, nodes, g, w)) = churn_world();
     let (a, b, d) = (nodes[0], nodes[1], nodes[3]);
-    let g = net.group(a, &[(b, Role::Write), (nodes[2], Role::Write), (d, Role::Write)], &hosts);
-    net.run();
-    let w = window(&mut net, a, g, "w");
-    net.run();
     let mut m = Mutation::new();
     m.set(w, &eph(FLAG), &s("kept")).unwrap();
     net.engine(b).write(m).unwrap();
@@ -2445,14 +2459,17 @@ fn announced_ephemeral_leaves_no_sync_record_spec_sync_4() {
 /// Bytes nodes send to the host while `b` writes 20 notes one by one, after `a` wrote `stuck`
 /// bytes in one write (`a` holds an own entry the host refuses for good when it exceeds the cap).
 fn bytes_under_stuck_entry(stuck: usize) -> usize {
-    let mut net = Net::new();
-    let host = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: 12_000, ..osis_host::HostPolicy::default() });
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
-    let w = window(&mut net, a, g, "w");
-    net.run();
+    let (mut net, (_, a, b, _, w)) = Net::cached("ephemeral::stuck_entry", || {
+        let mut net = Net::new();
+        let host = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: 12_000, ..osis_host::HostPolicy::default() });
+        let a = net.node(1, &[host]);
+        let b = net.node(2, &[host]);
+        let g = net.group(a, &[(b, Role::Write)], &[host]);
+        net.run();
+        let w = window(&mut net, a, g, "w");
+        net.run();
+        (net, (host, a, b, g, w))
+    });
     let mut m = Mutation::new();
     m.op(w, &eph("win:big+.0"), PathOp { path: Vec::new(), op: Op::Set(s(&"x".repeat(stuck))) }).unwrap();
     net.engine(a).write(m).unwrap();
@@ -2913,14 +2930,17 @@ fn slow_host_holds_nothing_back_spec_sync_9() {
 /// and is made again; else `slow` answers. B only reads (it deletes nothing). Returns what each
 /// host then holds under the label.
 fn covered_while_slow(reconnect: bool) -> (BTreeSet<osis_base::BlobId>, BTreeSet<osis_base::BlobId>) {
-    let mut net = Net::new();
-    let (fast, slow) = (net.add_host(), net.add_host());
-    let a = net.node(1, &[fast, slow]);
-    let b = net.node(2, &[fast]);
-    let g = net.group(a, &[(b, Role::Read)], &[fast, slow]);
-    net.run();
-    let w = window(&mut net, a, g, "shared");
-    net.run();
+    let (mut net, (fast, slow, a, b, _, w)) = Net::cached("ephemeral::covered_while_slow", || {
+        let mut net = Net::new();
+        let (fast, slow) = (net.add_host(), net.add_host());
+        let a = net.node(1, &[fast, slow]);
+        let b = net.node(2, &[fast]);
+        let g = net.group(a, &[(b, Role::Read)], &[fast, slow]);
+        net.run();
+        let w = window(&mut net, a, g, "shared");
+        net.run();
+        (net, (fast, slow, a, b, g, w))
+    });
     net.held_hosts.insert(slow);
     for i in 0..4 {
         note(&mut net, a, w, &format!("k{i}"), &format!("v{i}"));
@@ -3230,7 +3250,7 @@ fn delete_across_unread_rotation_retried_spec_sync_9() {
 // frontier lists it.
 #[test]
 fn memory_commit_session_form_spec_commits_3() {
-    let mut lp = crate::common::net(1, 5);
+    let mut lp = crate::common::net(1, 0);
     let t = crate::common::new_thing(&mut lp, 0);
     let reg = crate::common::ak("t:tags+.0");
     let e = &mut lp.peers[0].engine;
@@ -3264,7 +3284,7 @@ fn memory_commit_session_form_spec_commits_3() {
 // subscription), no demotion frontier entry. spec: none (internal)
 #[test]
 fn memory_commit_not_durable_to_sync() {
-    let mut lp = crate::common::net(1, 5);
+    let mut lp = crate::common::net(1, 0);
     let t = crate::common::new_thing(&mut lp, 0);
     let e = &mut lp.peers[0].engine;
     e.take_changed();
@@ -3299,7 +3319,7 @@ fn memory_commit_not_durable_to_sync() {
 // value expires. spec: none (internal)
 #[test]
 fn memory_commit_expiry_stays_in_memory() {
-    let mut lp = crate::common::net(1, 5);
+    let mut lp = crate::common::net(1, 0);
     let t = crate::common::new_thing(&mut lp, 0);
     let tags = crate::common::ak("t:tags+.0");
     let e = &mut lp.peers[0].engine;
@@ -3324,7 +3344,7 @@ fn memory_commit_expiry_stays_in_memory() {
 // applied
 #[test]
 fn memory_commit_durable_aspect_refused_spec_commits_2() {
-    let mut lp = crate::common::net(1, 5);
+    let mut lp = crate::common::net(1, 0);
     let t = crate::common::new_thing(&mut lp, 0);
     let reg = crate::common::ak("t:reg.0");
     let e = &mut lp.peers[0].engine;
@@ -3340,14 +3360,17 @@ fn memory_commit_durable_aspect_refused_spec_commits_2() {
 }
 
 /// Peers 0 and 1, durable state synced; 0 is first admin of `d` and grants 1 write. Returns `d`.
-fn memory_pair(seed: u64) -> (osis_node::local_peer::LocalPeer, Tid) {
-    let mut lp = crate::common::net(2, seed);
-    lp.sync_all().unwrap();
-    let d = crate::common::new_thing(&mut lp, 0);
-    let b = lp.peers[1].engine.me();
-    crate::common::set_edge(&mut lp.peers[0].engine, d, b, Some(crate::common::edge(Role::Write)), None);
-    lp.sync_all().unwrap();
-    (lp, d)
+/// Built once (`LocalPeer::cached`).
+fn memory_pair() -> (osis_node::local_peer::LocalPeer, Tid) {
+    osis_node::local_peer::LocalPeer::cached("ephemeral::memory_pair", || {
+        let mut lp = crate::common::net(2, 0);
+        lp.sync_all().unwrap();
+        let d = crate::common::new_thing(&mut lp, 0);
+        let b = lp.peers[1].engine.me();
+        crate::common::set_edge(&mut lp.peers[0].engine, d, b, Some(crate::common::edge(Role::Write)), None);
+        lp.sync_all().unwrap();
+        (lp, d)
+    })
 }
 
 /// Peer `i` writes `v` into the ephemeral `t:tags.0` of `t` as a memory commit.
@@ -3383,7 +3406,7 @@ fn memory_tags(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid) -> O
 // (by `Absorbed`, spec/crdt.md §8) like a session-form one
 #[test]
 fn commit_form_ephemeral_commit_spec_commits_3() {
-    let (mut lp, d) = memory_trio(43);
+    let (mut lp, d) = memory_trio();
     let mut m = Mutation::new();
     m.op(d, &eph("t:tags+.0"), PathOp { path: Vec::new(), op: Op::Add(s("k")) }).unwrap();
     m.commit_form();
@@ -3412,7 +3435,7 @@ fn commit_form_ephemeral_commit_spec_commits_3() {
 // restart forgets it
 #[test]
 fn received_memory_commit_in_memory_spec_commits_4() {
-    let mut lp = crate::common::net(2, 31);
+    let mut lp = crate::common::net(2, 0);
     let w = crate::common::new_thing(&mut lp, 0);
     let mut m = Mutation::new();
     m.set(w, &eph("t:tags+.0"), &s("x")).unwrap();
@@ -3486,16 +3509,19 @@ fn assert_no_durable_trace(e: &mut osis_node::Engine, ids: &[osis_base::CommitId
 }
 
 /// Peers 0, 1 and 2, durable state synced; 0 is first admin of `d` and grants 1 and 2 write. Returns `d`.
-fn memory_trio(seed: u64) -> (osis_node::local_peer::LocalPeer, Tid) {
-    let mut lp = crate::common::net(3, seed);
-    lp.sync_all().unwrap();
-    let d = crate::common::new_thing(&mut lp, 0);
-    for i in [1, 2] {
-        let n = lp.peers[i].engine.me();
-        crate::common::set_edge(&mut lp.peers[0].engine, d, n, Some(crate::common::edge(Role::Write)), None);
-    }
-    lp.sync_all().unwrap();
-    (lp, d)
+/// Built once (`LocalPeer::cached`).
+fn memory_trio() -> (osis_node::local_peer::LocalPeer, Tid) {
+    osis_node::local_peer::LocalPeer::cached("ephemeral::memory_trio", || {
+        let mut lp = crate::common::net(3, 0);
+        lp.sync_all().unwrap();
+        let d = crate::common::new_thing(&mut lp, 0);
+        for i in [1, 2] {
+            let n = lp.peers[i].engine.me();
+            crate::common::set_edge(&mut lp.peers[0].engine, d, n, Some(crate::common::edge(Role::Write)), None);
+        }
+        lp.sync_all().unwrap();
+        (lp, d)
+    })
 }
 
 // spec/commits.md §2 (class from the key): an aspect's storage class is its AK's `+` marker,
@@ -3505,7 +3531,7 @@ fn memory_trio(seed: u64) -> (osis_node::local_peer::LocalPeer, Tid) {
 // the held-state rule kept the part there, and the later durable write went to memory)
 #[test]
 fn memory_part_on_unmarked_key_dropped_spec_commits_2() {
-    let (mut lp, d) = memory_trio(33);
+    let (mut lp, d) = memory_trio();
     let tags = crate::common::ak("t:tags.0");
     // 1 holds a durable delta of `t:tags.0`, 0 none
     let mut m = Mutation::new();
@@ -3534,7 +3560,7 @@ fn memory_part_on_unmarked_key_dropped_spec_commits_2() {
 // that has those parts dropped alone at every receiver, the rest of the commit applies
 #[test]
 fn durable_part_on_ephemeral_key_dropped_spec_commits_2() {
-    let (mut lp, d) = memory_trio(39);
+    let (mut lp, d) = memory_trio();
     let key = crate::common::ak("t:tags+.0");
     let signal = crate::common::ak("t:ping+~0");
     let mut m = Mutation::new();
@@ -3560,7 +3586,7 @@ fn durable_part_on_ephemeral_key_dropped_spec_commits_2() {
 // writes go when it is removed
 #[test]
 fn removed_writer_memory_commits_unmerged_spec_permissions_5_2() {
-    let (mut lp, d) = memory_pair(37);
+    let (mut lp, d) = memory_pair();
     memory_write(&mut lp, 0, d, "own");
     let id = memory_write(&mut lp, 1, d, "theirs");
     let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
@@ -3607,7 +3633,7 @@ fn holds_commit(lp: &osis_node::local_peer::LocalPeer, i: usize, id: &osis_base:
 // nothing), nothing durable written
 #[test]
 fn memory_expiry_goes_valueless_spec_crdt_4_7() {
-    let (mut lp, d) = memory_trio(41);
+    let (mut lp, d) = memory_trio();
     let faults: Vec<_> = lp.peers.iter().map(|p| p.backend.faults().clone()).collect();
     faults.iter().for_each(|f| f.forbid_writes(true));
     let add = memory_op(&mut lp, 0, d, "t:tags+.0", Vec::new(), Op::Add(s("a")), None);
@@ -3640,7 +3666,7 @@ fn memory_expiry_goes_valueless_spec_crdt_4_7() {
 // newer entries are removed the superseded move does not read again anywhere
 #[test]
 fn memory_superseded_expiring_write_vanishes_spec_sync_9() {
-    let (mut lp, d) = memory_trio(43);
+    let (mut lp, d) = memory_trio();
     let me = s(&lp.peers[0].engine.me().to_string());
     let key = vec![PathSeg::Key(me.clone())];
     let old = memory_op(&mut lp, 0, d, "t:big+.0", key.clone(), Op::Put(s("c0")), Some(30_000));
@@ -3678,7 +3704,7 @@ fn memory_superseded_expiring_write_vanishes_spec_sync_9() {
 // older move goes there too
 #[test]
 fn memory_superseded_once_superseder_valid_spec_sync_9() {
-    let mut lp = crate::common::net(4, 45);
+    let mut lp = crate::common::net(4, 0);
     lp.sync_all().unwrap();
     let d = crate::common::new_thing(&mut lp, 0);
     let [w, h, x] = [1, 2, 3].map(|i| lp.peers[i].engine.me());
@@ -3714,7 +3740,7 @@ fn memory_superseded_once_superseder_valid_spec_sync_9() {
 // kept and less than its bound; a copy of it again needs no room
 #[test]
 fn memory_ingest_within_room_spec_sync_9() {
-    let (mut lp, w) = memory_pair(47);
+    let (mut lp, w) = memory_pair();
     let mut m = Mutation::new();
     m.set(w, &eph("t:tags+.0"), &Value::Set((0..200).map(|n| s(&format!("e{n}"))).collect())).unwrap();
     let id = lp.peers[0].engine.commit_in_memory(m).unwrap().unwrap();
@@ -3739,14 +3765,7 @@ fn memory_ingest_within_room_spec_sync_9() {
 #[test]
 fn moving_cursor_one_entry_per_author_spec_sync_9() {
     const E: u64 = 30_000;
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
-    let w = window(&mut net, a, g, "w");
-    net.run();
+    let (mut net, (host, a, b, _, w)) = windowed();
     let l = net.label(a);
     let me = s(&net.tid(a).to_string());
     let entries = |net: &Net| osis_proto::LabelStore::live_ids(&*net.hosts[host].hub.store(), &l).unwrap().len();
@@ -3836,7 +3855,7 @@ fn memory_random_histories(seeds: std::ops::Range<u64>, snapshots: bool) {
     for seed in seeds {
         let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
         let mut rnd = move |n: u64| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x % n };
-        let mut lp = crate::common::net(4, 1000 + seed);
+        let mut lp = osis_node::local_peer::LocalPeer::new(4, 1000 + seed, crate::common::T0).unwrap();
         lp.sync_all().unwrap();
         let d = crate::common::new_thing(&mut lp, 0);
         for i in [1, 2, 3] {
@@ -3939,7 +3958,7 @@ fn memory_snapshot(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid) 
 // nothing durable written
 #[test]
 fn memory_snapshot_covers_held_bodies_spec_sync_9() {
-    let (mut lp, d) = memory_trio(49);
+    let (mut lp, d) = memory_trio();
     let faults: Vec<_> = lp.peers.iter().map(|p| p.backend.faults().clone()).collect();
     faults.iter().for_each(|f| f.forbid_writes(true));
     let a1 = memory_op(&mut lp, 0, d, "t:tags+.0", Vec::new(), Op::Add(s("a1")), None);
@@ -4002,7 +4021,7 @@ fn memory_snapshot_covers_held_bodies_spec_sync_9() {
 // when it is the lower
 #[test]
 fn memory_covered_equal_snapshots_keep_lower_spec_sync_7() {
-    let (mut lp, d) = memory_trio(51);
+    let (mut lp, d) = memory_trio();
     let a = memory_op(&mut lp, 0, d, "t:tags+.0", Vec::new(), Op::Add(s("a")), None);
     memory_deliver(&mut lp, 1, &a);
     let s0 = memory_snapshot(&mut lp, 0, d);
@@ -4030,7 +4049,7 @@ fn memory_covered_equal_snapshots_keep_lower_spec_sync_7() {
 // kept). Each reads what it holds; once X arrives again a reads as b.
 #[test]
 fn memory_cover_invalidated_rejoins_spec_permissions_5_2() {
-    let (mut lp, d) = memory_trio(53);
+    let (mut lp, d) = memory_trio();
     let wt = lp.peers[1].engine.me();
     let x = memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s("X")), None);
     lp.advance(10);
@@ -4074,7 +4093,7 @@ fn memory_random_snapshots_demotion_redelivered_alike_spec_permissions_5_2() {
 fn memory_random_demotion(seed: u64) {
     let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
     let mut rnd = move |n: u64| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x % n };
-    let mut lp = crate::common::net(4, 5000 + seed);
+    let mut lp = osis_node::local_peer::LocalPeer::new(4, 5000 + seed, crate::common::T0).unwrap();
     lp.sync_all().unwrap();
     let d = crate::common::new_thing(&mut lp, 0);
     for i in [1, 2, 3] {
@@ -4201,7 +4220,7 @@ fn memory_random_demotion(seed: u64) {
 // read; today it is gone everywhere with no copy left to bring it back
 #[test]
 fn memory_compactor_demoted_keeps_others_writes_spec_permissions_5_2() {
-    let (mut lp, d) = memory_trio(61);
+    let (mut lp, d) = memory_trio();
     let w1 = lp.peers[1].engine.me();
     let x = memory_op(&mut lp, 2, d, "t:tags+.0", Vec::new(), Op::Add(s("X")), None);
     memory_deliver(&mut lp, 0, &x);
@@ -4236,7 +4255,7 @@ fn memory_compactor_demoted_keeps_others_writes_spec_permissions_5_2() {
 // every write. A snapshot past the expiry must cover them
 #[test]
 fn memory_snapshot_covers_plain_after_expired_spec_sync_9() {
-    let (mut lp, d) = memory_trio(63);
+    let (mut lp, d) = memory_trio();
     memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s("E")), Some(1000));
     let ps: Vec<_> = (0..3).map(|i| memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s(&format!("p{i}"))), None)).collect();
     lp.advance(2000);
@@ -4253,7 +4272,7 @@ fn memory_snapshot_covers_plain_after_expired_spec_sync_9() {
 // edge first did (eph-unify-b review: no test reached `drop_covered` on a rise)
 #[test]
 fn memory_snapshot_turned_valid_covers_spec_sync_9() {
-    let (mut lp, d) = memory_trio(67);
+    let (mut lp, d) = memory_trio();
     let n1 = lp.peers[1].engine.me();
     let edge = |lp: &mut osis_node::local_peer::LocalPeer, e: Option<ct::Edge>| {
         lp.advance(10);
@@ -4289,7 +4308,7 @@ fn memory_snapshot_turned_valid_covers_spec_sync_9() {
 // covered. Under the old session it stayed held uncovered at every holder until 1 restarted
 #[test]
 fn memory_regranted_writer_covered_spec_sync_9() {
-    let (mut lp, d) = memory_trio(71);
+    let (mut lp, d) = memory_trio();
     let n1 = lp.peers[1].engine.me();
     let x = memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s("X")), None);
     for i in [0, 2] {
@@ -4407,14 +4426,17 @@ fn revert_run_with(seed: u64, restarts: bool) {
         x ^= x << 17;
         (x >> 8) % n
     };
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let addr = net.hosts[host].address.clone();
-    let groups = [net.group(a, &[(b, Role::Write)], &[host]), net.group_seeded(a, &[(b, Role::Write)], vec![addr], 2)];
-    let mut things: Vec<Tid> = groups.iter().map(|g| net.item(a, *g, *g, "t")).collect();
-    net.run();
+    let (mut net, (host, a, b, groups, mut things)) = Net::cached("ephemeral::revert_world", || {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let a = net.node(1, &[host]);
+        let b = net.node(2, &[host]);
+        let addr = net.hosts[host].address.clone();
+        let groups = [net.group(a, &[(b, Role::Write)], &[host]), net.group_seeded(a, &[(b, Role::Write)], vec![addr], 2)];
+        let things: Vec<Tid> = groups.iter().map(|g| net.item(a, *g, *g, "t")).collect();
+        net.run();
+        (net, (host, a, b, groups, things))
+    });
     let tb = net.tid(b);
     let mut ids = Vec::new();
     let mut lost = [false; 2];

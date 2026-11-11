@@ -298,6 +298,32 @@ pub fn hosted<const N: usize, const I: usize>(holders: &[(usize, Role)], items: 
     (net, host, nodes, g, ts.try_into().unwrap())
 }
 
+/// `Net::new`, one host, node 1 with an account of its own (`connection_proofs::account_node`) and
+/// node 2 paired as its second node (`paired_node`): built once (`Net::cached`). Returns (net,
+/// host, first node, second node, account).
+pub fn account_pair() -> (Net, usize, usize, usize, Tid) {
+    let (net, (host, a, b, account)) = Net::cached("account_pair", || {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let (a, account) = crate::connection_proofs::account_node(&mut net, 1, host);
+        let b = crate::connection_proofs::paired_node(&mut net, 2, host, a, account);
+        (net, (host, a, b, account))
+    });
+    (net, host, a, b, account)
+}
+
+/// `Net::new`, one host and nodes with accounts of their own (`connection_proofs::account_node`)
+/// seeded `seeds`: built once per `seeds` (`Net::cached`). Returns (net, host, [(node, account)]).
+pub fn account_nodes<const N: usize>(seeds: [u64; N]) -> (Net, usize, [(usize, Tid); N]) {
+    let (net, (host, ns)) = Net::cached(&format!("account_nodes/{seeds:?}"), || {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let ns: Vec<(usize, Tid)> = seeds.iter().map(|s| crate::connection_proofs::account_node(&mut net, *s, host)).collect();
+        (net, (host, ns))
+    });
+    (net, host, ns.try_into().unwrap())
+}
+
 /// `Net::new` and `N` nodes syncing with no host (seeds 1 to `N`): built once (`Net::cached`).
 pub fn local_nodes<const N: usize>() -> (Net, [usize; N]) {
     Net::cached(&format!("local_nodes/{N}"), || {

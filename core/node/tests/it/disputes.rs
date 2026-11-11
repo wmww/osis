@@ -37,8 +37,17 @@ struct Fight {
     r: Vec<CommitId>,
 }
 
-fn fight(n: usize, seed: u64) -> Fight {
-    let (mut lp, ps) = people(n, seed);
+/// Built once per `n` (`LocalPeer::cached`).
+fn fight(n: usize) -> Fight {
+    let (lp, (a, b, t, w, r)) = LocalPeer::cached(&format!("disputes::fight/{n}"), || {
+        let f = fight_built(n);
+        (f.lp, (f.a, f.b, f.t, f.w, f.r))
+    });
+    Fight { lp, a, b, t, w, r }
+}
+
+fn fight_built(n: usize) -> Fight {
+    let (mut lp, ps) = people(n);
     let (a, b, c) = (ps[0], ps[1], ps[2]);
     let t = thing_of(&mut lp, 2, c);
     lp.peers[2].engine.grant(&t, &a, &edge_of(Role::Admin)).unwrap();
@@ -89,7 +98,7 @@ fn detected(lp: &LocalPeer, i: usize) -> Vec<(Tid, Tid, bool)> {
 // told); one that got the backdated removal first stays with it, warned the same way.
 #[test]
 fn backdated_removal_loses_where_the_honest_one_was_first_spec_permissions_5_1() {
-    let mut f = fight(4, 601);
+    let mut f = fight(4);
     let (w, r) = (f.w.clone(), f.r.clone());
     // peer 2: b's removal first, then a's backdated one
     send(&mut f.lp, 1, 2, &w);
@@ -124,7 +133,7 @@ fn backdated_removal_loses_where_the_honest_one_was_first_spec_permissions_5_1()
 // things the fight cannot reach alike whichever side it takes, and switching does not touch them.
 #[test]
 fn choose_switches_sides_and_persists_spec_permissions_5_1() {
-    let mut f = fight(3, 602);
+    let mut f = fight(3);
     let (w, r) = (f.w.clone(), f.r.clone());
     let c = f.lp.peers[2].engine.me();
     let other = thing_of(&mut f.lp, 2, c);
@@ -132,7 +141,7 @@ fn choose_switches_sides_and_persists_spec_permissions_5_1() {
     send(&mut f.lp, 1, 2, &w);
     send(&mut f.lp, 0, 2, &r);
     assert_eq!(admins(&f, 2), (false, true));
-    reopen(&mut f.lp, 2, 8).unwrap();
+    reopen(&mut f.lp, 2).unwrap();
     assert_eq!(admins(&f, 2), (false, true));
     assert_eq!(the_dispute(&f, 2).side.map(|s| (s.trust, s.chosen)), Some((true, false)));
     assert!(detected(&f.lp, 2).is_empty(), "an open detects nothing anew");
@@ -150,7 +159,7 @@ fn choose_switches_sides_and_persists_spec_permissions_5_1() {
     let e = &mut f.lp.peers[2].engine;
     e.choose(d.commit, d.op, d.holder, false).unwrap();
     assert_eq!(admins(&f, 2), (true, false));
-    reopen(&mut f.lp, 2, 7).unwrap();
+    reopen(&mut f.lp, 2).unwrap();
     assert_eq!(admins(&f, 2), (true, false), "the choice is durable");
     assert_eq!(the_dispute(&f, 2).side.map(|s| (s.trust, s.chosen)), Some((false, true)));
     // an unknown removal cannot be chosen
@@ -163,7 +172,7 @@ fn choose_switches_sides_and_persists_spec_permissions_5_1() {
 // write, then takes a's side; peer 3 stood there from the start.
 #[test]
 fn late_choice_brings_back_what_the_default_dropped_spec_permissions_5_1() {
-    let mut f = fight(4, 606);
+    let mut f = fight(4);
     let (w, r) = (f.w.clone(), f.r.clone());
     f.lp.peers[0].clock.advance(10_000);
     let mut m = osis_node::Mutation::new();
@@ -191,7 +200,7 @@ fn late_choice_brings_back_what_the_default_dropped_spec_permissions_5_1() {
 // applies there; `a` then releases the entry: peer 2 keeps `b`.
 #[test]
 fn planted_removal_counts_from_when_it_applies_spec_permissions_5_1() {
-    let (mut lp, ps) = people(3, 608);
+    let (mut lp, ps) = people(3);
     let (a, b, c) = (ps[0], ps[1], ps[2]);
     let t = thing_of(&mut lp, 2, c);
     lp.peers[2].engine.grant(&t, &a, &edge_of(Role::Admin)).unwrap();

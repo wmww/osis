@@ -15,14 +15,14 @@ fn ok(name: &str, seed: u64) -> Report {
 // spec/permissions.md §1 (an account's nodes as admins of the account actor).
 #[test]
 fn two_nodes_converge() {
-    let r = ok("two_nodes", 1);
+    let r = ok("two_nodes", 0);
     assert!(r.writes > 20 && r.dropped > 0, "{r:?}");
 }
 
 // spec/requirements.md (convergence); spec/crdt.md §2.3 (counters never reused).
 #[test]
 fn three_nodes_random_delivery() {
-    let r = ok("three_random", 1);
+    let r = ok("three_random", 0);
     assert!(r.writes > 20 && r.dropped > 0 && r.parked > 0, "{r:?}");
 }
 
@@ -32,9 +32,9 @@ fn three_nodes_random_delivery() {
 #[test]
 #[ignore = "by hand"]
 fn crash_and_restart() {
-    let r = ok("crash_restart", 1);
+    let r = ok("crash_restart", 0);
     assert!(r.crashes > 0 && r.restarts > 0, "{r:?}");
-    assert_eq!(ok("crash_restart", 1), r);
+    assert_eq!(ok("crash_restart", 0), r);
 }
 
 // spec/commits.md §4: a commit on two things, one unknown at node 2, which syncs neither: its part
@@ -48,7 +48,7 @@ fn partial_relay_gets_its_rest_spec_commits_4() {
         }
     }
     let cfg = Config { nodes: 3, ..Config::default() };
-    let mut sim = Sim::new("partial_relay", 1, cfg).unwrap();
+    let mut sim = Sim::new("partial_relay", 0, cfg).unwrap();
     let a = sim.create_thing(0, None).unwrap();
     sim.grant(0, a, 1, Role::Write).unwrap();
     sim.grant(0, a, 2, Role::Write).unwrap();
@@ -83,14 +83,14 @@ fn partial_relay_gets_its_rest_spec_commits_4() {
 // spec/crdt.md §2.2: commits beyond MAX_DRIFT park until local time catches up.
 #[test]
 fn drift_parks_until_clock_catches_up() {
-    let r = ok("drift_parks", 1);
+    let r = ok("drift_parks", 0);
     assert!(r.parked > 0, "{r:?}");
 }
 
 // spec: none (replay by name)
 #[test]
 fn unknown_scenario_fails() {
-    assert!(replay("nope", 1).is_err());
+    assert!(replay("nope", 0).is_err());
 }
 
 // spec/requirements.md (convergence); spec/commits.md §4; spec/crdt.md §2.2, §2.3: a small

@@ -13,6 +13,7 @@ fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
 }
 
+/// A node; `seed`s that differ make different nodes.
 fn peer(seed: u64) -> Peer {
     Peer::new(seed, WallMs(1_700_000_000_000)).unwrap()
 }
@@ -21,7 +22,7 @@ fn peer(seed: u64) -> Peer {
 // `created.0`, `node.0` and `keys.0`.
 #[test]
 fn node_identity_spec_dm_1() {
-    let mut p = peer(1);
+    let mut p = peer(0);
     let me = p.engine.tid();
     let rec = p.engine.get_typed(&me, &ct::CREATED).unwrap().unwrap();
     assert_eq!(rec.tid(), me);
@@ -38,7 +39,7 @@ fn node_identity_spec_dm_1() {
 // event naming the changed aspects (notes/api.md: listeners fire for local writes too).
 #[test]
 fn write_and_read_spec_crdt_4_5() {
-    let mut p = peer(2);
+    let mut p = peer(0);
     let me = p.engine.me();
     p.drain_events();
     let mut m = Mutation::new();
@@ -74,7 +75,7 @@ fn write_and_read_spec_crdt_4_5() {
 // spec/crdt.md §2.1, §2.3: session-form counters per (aspect, session) are contiguous from 1.
 #[test]
 fn counters_contiguous_spec_crdt_2_3() {
-    let mut p = peer(3);
+    let mut p = peer(0);
     let me = p.engine.me();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
@@ -95,7 +96,7 @@ fn counters_contiguous_spec_crdt_2_3() {
 // spec/commits.md §3: commit-form dots carry the commit ID as their source.
 #[test]
 fn commit_form_spec_commits_3() {
-    let mut p = peer(4);
+    let mut p = peer(0);
     let me = p.engine.me();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
@@ -109,8 +110,8 @@ fn commit_form_spec_commits_3() {
 // spec/permissions.md §1: writing a thing needs write on it; an unknown thing is refused.
 #[test]
 fn authority_checked_before_signing_spec_perm_1() {
-    let mut a = peer(5);
-    let mut b = peer(6);
+    let mut a = peer(0);
+    let mut b = peer(1);
     let ta = {
         let me = a.engine.me();
         let mut m = Mutation::new();
@@ -137,7 +138,7 @@ fn authority_checked_before_signing_spec_perm_1() {
 // spec/commits.md §4 (one storage transaction per apply: state survives a reopen)
 #[test]
 fn restart_keeps_state() {
-    let mut p = peer(7);
+    let mut p = peer(0);
     let me = p.engine.me();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
@@ -165,7 +166,7 @@ fn restart_keeps_state() {
 // against a model across restarts, plus an undo of an edit inside the paged map.
 #[test]
 fn paged_state_edits_and_restart() {
-    let mut p = peer(11);
+    let mut p = peer(0);
     let me = p.engine.me();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
@@ -267,7 +268,7 @@ fn new_chunk_bytes(old: &[u8], new: &[u8]) -> usize {
 // upload, only the chunks the edit changed plus the tree's root node.
 #[test]
 fn large_edit_reuses_chunks_spec_sync_1() {
-    let mut p = peer(12);
+    let mut p = peer(0);
     let me = p.engine.me();
     let a = ak("app:file.0");
     let mut m = Mutation::new();
@@ -307,7 +308,7 @@ fn large_edit_reuses_chunks_spec_sync_1() {
 // spec/data-model.md §6: a list item above CHUNK_THRESHOLD is chunked when inserted, as when set.
 #[test]
 fn large_list_insert_chunked_spec_dm_6() {
-    let mut p = peer(13);
+    let mut p = peer(0);
     let me = p.engine.me();
     let (key, a) = (&common::LIST, ak("t:list.0"));
     let mut m = Mutation::new();
@@ -344,7 +345,7 @@ const WIDE_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("w:wide.0",
 #[test]
 fn wide_struct_paged_fits_spec_commits_1() {
     use osis_base::format::{CHUNK_THRESHOLD, MAX_BLOB};
-    let mut p = peer(14);
+    let mut p = peer(0);
     let me = p.engine.me();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
@@ -366,7 +367,7 @@ fn wide_struct_paged_fits_spec_commits_1() {
 // holds already keeps its tree (nothing of it is written again).
 #[test]
 fn large_list_edit_chunked_spec_dm_6() {
-    let mut p = peer(14);
+    let mut p = peer(0);
     let me = p.engine.me();
     let (key, a) = (&common::LIST, ak("t:list.0"));
     let mut m = Mutation::new();
@@ -410,16 +411,16 @@ fn large_list_edit_chunked_spec_dm_6() {
 // load whole; against a stale read they load whole and still agree.
 #[test]
 fn paged_list_edits_match_whole_spec_crdt_5_7() {
-    for (seed, with_large) in [(31, true), (32, false)] {
-        list_edits_match_whole(seed, with_large);
+    for with_large in [true, false] {
+        list_edits_match_whole(with_large);
     }
 }
 
-fn list_edits_match_whole(seed: u64, with_large: bool) {
+fn list_edits_match_whole(with_large: bool) {
     let small = |id: usize| Value::Str(format!("item {id} of the list"));
     let big = |id: usize| if with_large { Value::Str(format!("L{id}:{}", "x".repeat(osis_base::format::CHUNK_THRESHOLD + 10))) } else { Value::Str(format!("item {id} (not large)")) };
     let (key, a) = (&common::LIST, ak("t:list.0"));
-    let (mut cold, mut whole) = (peer(seed), peer(seed));
+    let (mut cold, mut whole) = (peer(0), peer(0));
     let me = cold.engine.me();
     let mut model: Vec<Value> = (0..3000).map(small).collect();
     for (k, i) in [40, 700, 1500, 2100, 2990].into_iter().enumerate() {
@@ -433,7 +434,7 @@ fn list_edits_match_whole(seed: u64, with_large: bool) {
         p.commit(m).unwrap().unwrap();
     }
     let t = t.unwrap();
-    let mut x = 0x5851_f42d_4c95_7f2du64 ^ seed;
+    let mut x = 0x5851_f42d_4c95_7f2du64;
     let mut r = |n: usize| {
         x ^= x << 13;
         x ^= x >> 7;
@@ -499,7 +500,7 @@ fn list_edits_match_whole(seed: u64, with_large: bool) {
 // written for the replacement is neither listed nor kept.
 #[test]
 fn edit_of_gone_item_lists_nothing_spec_commits_1() {
-    let mut p = peer(15);
+    let mut p = peer(0);
     let me = p.engine.me();
     let (key, a) = (&common::LIST, ak("t:list.0"));
     let mut m = Mutation::new();
@@ -539,8 +540,8 @@ fn large_values_by_value_spec_crdt_5_5() {
         Value::Map(m) => m.keys().filter(|x| matches!(x, Value::Link(_))).count(),
         _ => panic!("{v:?}"),
     };
-    for (seed, n) in [(40u64, 10i64), (41, 2000)] {
-        let mut p = peer(seed);
+    for n in [10i64, 2000] {
+        let mut p = peer(0);
         let me = p.engine.me();
         let a = ak("app:set.0");
         let mut m = Mutation::new();
@@ -550,13 +551,13 @@ fn large_values_by_value_spec_crdt_5_5() {
         m.set(t, &a, &Value::Set(v)).unwrap();
         p.commit(m).unwrap().unwrap();
         assert!(!op_at(&mut p, t, &a, vec![], Op::Add(large("L"))), "n {n}: present, same session");
-        p.restart(seed).unwrap();
+        p.restart(0).unwrap();
         assert!(!op_at(&mut p, t, &a, vec![], Op::Add(large("L"))), "n {n}: present, new session");
-        p.restart(seed).unwrap();
+        p.restart(0).unwrap();
         assert!(op_at(&mut p, t, &a, vec![], Op::Remove(large("L"))), "n {n}: removed");
         assert_eq!(links(&p.engine.get(&t, &a).unwrap().unwrap()), 0, "n {n}");
         assert!(op_at(&mut p, t, &a, vec![], Op::Add(large("L"))), "n {n}: added again");
-        p.restart(seed).unwrap();
+        p.restart(0).unwrap();
         assert!(op_at(&mut p, t, &a, vec![], Op::Remove(large("L"))), "n {n}: removed again");
         assert_eq!(links(&p.engine.get(&t, &a).unwrap().unwrap()), 0);
         // a map with a large key
@@ -566,9 +567,9 @@ fn large_values_by_value_spec_crdt_5_5() {
         kv.insert(large("K"), Value::Int(-1));
         m.set(t, &a, &Value::Map(kv)).unwrap();
         p.commit(m).unwrap().unwrap();
-        p.restart(seed).unwrap();
+        p.restart(0).unwrap();
         assert!(op_at(&mut p, t, &a, vec![PathSeg::Key(large("K"))], Op::Set(Value::Int(5))), "n {n}: put");
-        p.restart(seed).unwrap();
+        p.restart(0).unwrap();
         assert_eq!(p.engine.get_at(&t, &a, &[PathSeg::Key(large("K"))]).unwrap(), Some(Value::Int(5)), "n {n}");
         let got = p.engine.get(&t, &a).unwrap().unwrap();
         assert_eq!((links(&got), matches!(&got, Value::Map(m) if m.len() == n as usize + 1)), (1, true), "n {n}: one entry");
@@ -587,7 +588,7 @@ const TEXT_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("w:text.0",
 // and edits by index go on after the undos.
 #[test]
 fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
-    let mut p = peer(9);
+    let mut p = peer(0);
     let me = p.engine.me();
     let a = ak("w:text.0");
     let mut m = Mutation::new();
@@ -669,7 +670,7 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
 // new text over the twice-reset anchors edits and reads alike.
 #[test]
 fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
-    let mut p = peer(11);
+    let mut p = peer(0);
     let me = p.engine.me();
     let a = ak("w:text.0");
     let text = |n: u32, off: u32| -> Vec<char> { (0..n).map(|i| char::from_u32(0x1F600 + (i + off) % 64).unwrap()).collect() };
@@ -753,7 +754,7 @@ fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
 // removes its entries only: the field reads the others, though the delta touches only its pages.
 #[test]
 fn undo_into_paged_field_keeps_later_entries_spec_crdt_4_6() {
-    let mut p = peer(15);
+    let mut p = peer(0);
     let me = p.engine.me();
     let (key, a) = (&common::BOOK, ak("t:book.0"));
     let mut m = Mutation::new();

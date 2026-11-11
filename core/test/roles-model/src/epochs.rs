@@ -2740,7 +2740,7 @@ mod tests {
 
     #[test]
     fn random_worlds_hold() {
-        let mut rng = Rng(7);
+        let mut rng = Rng(0);
         let mut st = Stats::default();
         for _ in 0..3000 {
             let w = random_world(&mut rng);

@@ -125,9 +125,13 @@ pub(crate) fn thing_of(lp: &mut LocalPeer, i: usize, admin: Tid) -> Tid {
     t
 }
 
-/// Peer 0 creates an account; peer 1 is paired as its second node.
-fn account_two_nodes(seed: u64) -> (LocalPeer, Tid) {
-    let mut lp = net_bare(2, seed);
+/// Peer 0 creates an account; peer 1 is paired as its second node: built once (`LocalPeer::cached`).
+fn account_two_nodes() -> (LocalPeer, Tid) {
+    LocalPeer::cached("flows::account_two_nodes", account_two_nodes_built)
+}
+
+fn account_two_nodes_built() -> (LocalPeer, Tid) {
+    let mut lp = net_bare(2, 0);
     let (p, done) = lp.peers[0].engine.create_account(&hosts()).unwrap();
     assert_eq!(done.commits.len(), 1, "one commit: account, devices actor, profile");
     // the new node's card over the direct connection
@@ -145,7 +149,7 @@ fn account_two_nodes(seed: u64) -> (LocalPeer, Tid) {
 // the home label; pairing grants a node on D and the node opens D's secrets.
 #[test]
 fn account_and_pairing_spec_perm_1() {
-    let (mut lp, d) = account_two_nodes(501);
+    let (mut lp, d) = account_two_nodes();
     let e0 = &mut lp.peers[0].engine;
     assert_eq!(e0.role_on(&d), Some(Role::Admin));
     let labels = e0.get_typed(&d, &ct::LABEL).unwrap().unwrap();
@@ -158,15 +162,18 @@ fn account_and_pairing_spec_perm_1() {
     assert_eq!(e1.epochs(&d).unwrap().read.newest_held().unwrap().1, &read);
 }
 
-/// `n` peers, each with its own account actor (no pairing); everyone holds everyone's commits.
-pub(crate) fn people(n: usize, seed: u64) -> (LocalPeer, Vec<Tid>) {
-    let mut lp = net_bare(n, seed);
-    let mut ps = Vec::new();
-    for i in 0..n {
-        ps.push(lp.peers[i].engine.create_account(&hosts()).unwrap().0.account);
-    }
-    spread(&mut lp);
-    (lp, ps)
+/// `n` peers, each with its own account actor (no pairing); everyone holds everyone's commits:
+/// built once per `n` (`LocalPeer::cached`).
+pub(crate) fn people(n: usize) -> (LocalPeer, Vec<Tid>) {
+    LocalPeer::cached(&format!("flows::people/{n}"), || {
+        let mut lp = net_bare(n, 0);
+        let mut ps = Vec::new();
+        for i in 0..n {
+            ps.push(lp.peers[i].engine.create_account(&hosts()).unwrap().0.account);
+        }
+        spread(&mut lp);
+        (lp, ps)
+    })
 }
 
 pub(crate) fn edge_of(role: Role) -> ct::Edge {
@@ -183,7 +190,7 @@ pub(crate) fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypt
 // spec/permissions.md §2 (edge inbox delivery): grants
 #[test]
 fn grant_by_inbox_spec_perm_2() {
-    let (mut lp, ps) = people(2, 502);
+    let (mut lp, ps) = people(2);
     let (pa, pb) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
     let done = lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
@@ -213,7 +220,7 @@ fn grant_by_inbox_spec_perm_2() {
 // content is under) already from the grant not yet judged, and after applying it.
 #[test]
 fn grant_carries_history_spec_crypto_4() {
-    let (mut lp, ps) = people(2, 503);
+    let (mut lp, ps) = people(2);
     let (pa, pb) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
     let done = lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
@@ -237,7 +244,7 @@ fn grant_carries_history_spec_crypto_4() {
 // spec/crypto.md §4 (removed holder), spec/permissions.md §3 (drop lost secrets)
 #[test]
 fn removal_rotates_spec_perm_3() {
-    let (mut lp, ps) = people(3, 503);
+    let (mut lp, ps) = people(3);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
@@ -284,9 +291,12 @@ fn forensic_cfg() -> osis_node::Config {
     osis_node::Config { store: osis_store::StoreConfig { arity: 4, depth: 8, page_max: 512, ..osis_store::StoreConfig::default() }, ..osis_node::Config::default() }
 }
 
-/// Reopens peer `i` over its durable state.
-pub(crate) fn reopen(lp: &mut LocalPeer, i: usize, seed: u64) -> osis_node::Result<()> {
+/// Reopens peer `i` over its durable state, its rng seed one no open drew before (the peer's
+/// opens and index mixed in, as `Peer::restart` does).
+pub(crate) fn reopen(lp: &mut LocalPeer, i: usize) -> osis_node::Result<()> {
     let p = &mut lp.peers[i];
+    p.restarts += 1;
+    let seed = p.restarts.wrapping_mul(0x9e37_79b9_7f4a_7c15).wrapping_add(i as u64);
     let c: std::sync::Arc<dyn osis_base::Clock> = p.clock.clone();
     let mut engine = osis_node::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), osis_node::local_peer::blob_area(&p.blob_disk, seed)?, forensic_cfg(), c, Box::new(osis_crypto::SeededRng::from_u64(seed)))?;
     p.events = engine.subscribe();
@@ -316,14 +326,21 @@ const MINE_MARK: &str = "MINE-B-MARK-a40e";
 
 /// Alice shares d, e and f with bob as above and writes a marker on each, bob writes one on his
 /// own thing, then alice removes bob from d; bob has applied everything, dropped nothing.
-fn lost_setup(seed: u64) -> Lost {
-    lost_setup_from(seed, false)
+fn lost_setup() -> Lost {
+    lost_setup_from(false)
 }
 
-/// `lost_setup`, bob removed from e instead of d when `from_e` (he still reads e through d).
-fn lost_setup_from(seed: u64, from_e: bool) -> Lost {
+/// `lost_setup`, bob removed from e instead of d when `from_e` (he still reads e through d):
+/// built once per `from_e` (`LocalPeer::cached`); `faults` are bob's device's.
+fn lost_setup_from(from_e: bool) -> Lost {
+    let (lp, (d, e, f, mine)) = LocalPeer::cached(&format!("flows::lost_setup/{from_e}"), || lost_built(from_e));
+    let faults = lp.peers[1].backend.faults().clone();
+    Lost { lp, faults, d, e, f, mine }
+}
+
+fn lost_built(from_e: bool) -> (LocalPeer, (Tid, Tid, Tid, Tid)) {
     let faults = osis_store::Faults::new();
-    let mut lp = LocalPeer::of(vec![forensic_peer(seed, &osis_store::Faults::new()), forensic_peer(seed + 1, &faults)], seed);
+    let mut lp = LocalPeer::of(vec![forensic_peer(0, &osis_store::Faults::new()), forensic_peer(1, &faults)], 0);
     let pa = lp.peers[0].engine.create_account(&hosts()).unwrap().0.account;
     let pb = lp.peers[1].engine.create_account(&hosts()).unwrap().0.account;
     spread(&mut lp);
@@ -352,7 +369,7 @@ fn lost_setup_from(seed: u64, from_e: bool) -> Lost {
     lp.peers[0].engine.demote(&target, &Demotion { holder: pb, new: None, retain: None }).unwrap();
     spread(&mut lp);
     assert_eq!(lp.peers[1].engine.role_on(&d), if from_e { Some(Role::Read) } else { None });
-    Lost { lp, faults, d, e, f, mine }
+    (lp, (d, e, f, mine))
 }
 
 /// Bob reads only e and his own thing, and an attacker holding his device and every row it
@@ -382,10 +399,10 @@ fn assert_forgotten(x: &mut Lost) {
 // spec/permissions.md §3 (drop lost secrets)
 #[test]
 fn removal_erases_lost_content_spec_perm_3() {
-    let mut x = lost_setup(509);
+    let mut x = lost_setup();
     // the attack finds the lost content while it is held, and after a restart
     assert!(recoverable(&mut x.lp.peers[1], D_MARK.as_bytes()));
-    reopen(&mut x.lp, 1, 1).unwrap();
+    reopen(&mut x.lp, 1).unwrap();
     assert_eq!(x.lp.peers[1].engine.get(&x.d, &ak("t:reg.0")).unwrap(), Some(s(&big(D_MARK))));
     let lost: BTreeSet<Tid> = x.lp.peers[1].engine.drop_lost_secrets().unwrap().into_iter().collect();
     assert!(lost.contains(&x.d) && lost.contains(&x.f) && !lost.contains(&x.e), "{lost:?}");
@@ -393,7 +410,7 @@ fn removal_erases_lost_content_spec_perm_3() {
     assert!(ev.iter().any(|e| matches!(e, osis_node::Event::Changed { cause: osis_node::Cause::LostAccess, changed } if changed.contains(&(x.d, ak("t:reg.0"))))));
     assert_forgotten(&mut x);
     // forgotten for good: after a restart, and a second drop finds nothing
-    reopen(&mut x.lp, 1, 2).unwrap();
+    reopen(&mut x.lp, 1).unwrap();
     assert!(x.lp.peers[1].engine.drop_lost_secrets().unwrap().is_empty());
     assert_forgotten(&mut x);
     // bob keeps syncing what he reads, and only that
@@ -409,7 +426,7 @@ fn removal_erases_lost_content_spec_perm_3() {
 #[test]
 fn removal_erasure_crash_safe_spec_perm_3() {
     for n in 0.. {
-        let mut x = lost_setup(511);
+        let mut x = lost_setup();
         x.faults.at(n, osis_store::Fault::Crash);
         let r = x.lp.peers[1].engine.drop_lost_secrets();
         let crashed = x.faults.crashed();
@@ -417,9 +434,9 @@ fn removal_erasure_crash_safe_spec_perm_3() {
         x.faults.revive();
         // a crash during recovery as well
         x.faults.at(0, osis_store::Fault::Crash);
-        let _ = reopen(&mut x.lp, 1, 3);
+        let _ = reopen(&mut x.lp, 1);
         x.faults.revive();
-        reopen(&mut x.lp, 1, 4).unwrap();
+        reopen(&mut x.lp, 1).unwrap();
         let kept = x.lp.peers[1].engine.get(&x.d, &ak("t:reg.0")).unwrap();
         if kept.is_some() {
             assert!(crashed, "write {n}");
@@ -439,7 +456,7 @@ fn removal_erasure_crash_safe_spec_perm_3() {
 // (node-sync runs it every step), and the attack recovers neither lost marker.
 #[test]
 fn applied_removal_triggers_forgetting_spec_perm_3() {
-    let mut x = lost_setup(513);
+    let mut x = lost_setup();
     assert!(x.lp.peers[1].engine.lost_due());
     let lost: BTreeSet<Tid> = x.lp.peers[1].engine.drop_lost_due().unwrap().into_iter().collect();
     assert!(lost.contains(&x.d) && lost.contains(&x.f) && !lost.contains(&x.e), "{lost:?}");
@@ -454,12 +471,12 @@ fn applied_removal_triggers_forgetting_spec_perm_3() {
 // durable, so a restart between the removal's apply and the trigger still forgets.
 #[test]
 fn lost_access_trigger_survives_restart_spec_perm_3() {
-    let mut x = lost_setup(515);
-    reopen(&mut x.lp, 1, 5).unwrap();
+    let mut x = lost_setup();
+    reopen(&mut x.lp, 1).unwrap();
     assert!(x.lp.peers[1].engine.lost_due());
     assert!(x.lp.peers[1].engine.drop_lost_due().unwrap().contains(&x.d));
     assert_forgotten(&mut x);
-    reopen(&mut x.lp, 1, 6).unwrap();
+    reopen(&mut x.lp, 1).unwrap();
     assert!(!x.lp.peers[1].engine.lost_due());
     assert_forgotten(&mut x);
 }
@@ -468,7 +485,7 @@ fn lost_access_trigger_survives_restart_spec_perm_3() {
 // removed from e, still reads e through d and keeps everything.
 #[test]
 fn removal_with_another_path_keeps_all_spec_perm_3() {
-    let mut x = lost_setup_from(517, true);
+    let mut x = lost_setup_from(true);
     assert_eq!(x.lp.peers[1].engine.role_on(&x.e), Some(Role::Read));
     assert!(x.lp.peers[1].engine.drop_lost_due().unwrap().is_empty());
     assert!(x.lp.peers[1].engine.drop_lost_secrets().unwrap().is_empty());
@@ -483,7 +500,7 @@ fn removal_with_another_path_keeps_all_spec_perm_3() {
 // is no loss when an unrelated removal applies, by the trigger or by hand; it applies later.
 #[test]
 fn pending_grant_survives_unrelated_removal_spec_perm_3() {
-    let mut x = lost_setup(519);
+    let mut x = lost_setup();
     let (pa, pb) = (x.lp.peers[0].engine.first_admin(&x.d).unwrap(), x.lp.peers[1].engine.first_admin(&x.mine).unwrap());
     let g = thing_of(&mut x.lp, 0, pa);
     let done = x.lp.peers[0].engine.grant(&g, &pb, &edge_of(Role::Read)).unwrap();
@@ -507,7 +524,7 @@ fn pending_grant_survives_unrelated_removal_spec_perm_3() {
 // unknown) yields reading-only secrets; once it proves bad and is dropped, they go.
 #[test]
 fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
-    let mut lp = net_bare(2, 521);
+    let mut lp = net_bare(2, 0);
     let pa = lp.peers[0].engine.create_account(&hosts()).unwrap().0.account;
     let pb = lp.peers[1].engine.create_account(&hosts()).unwrap().0.account;
     let bobs: Vec<CommitId> = lp.peers[1].engine.commit_ids();
@@ -542,7 +559,7 @@ fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
 // spec/permissions.md §2 (invite scope)
 #[test]
 fn invite_power_spec_perm_2() {
-    let (mut lp, ps) = people(3, 504);
+    let (mut lp, ps) = people(3);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &ct::Edge { role: Role::Write, until: None, invite: Some(Role::Read), tied: None }).unwrap();
@@ -579,7 +596,7 @@ fn invite_power_spec_perm_2() {
 #[test]
 fn demotion_frontier_spec_perm_5_1() {
     const DAY: u64 = 86_400_000;
-    let (mut lp, ps) = people(2, 505);
+    let (mut lp, ps) = people(2);
     let (pa, pb) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
@@ -606,7 +623,7 @@ fn demotion_frontier_spec_perm_5_1() {
 // spec/permissions.md §5.1
 #[test]
 fn mutual_removal_spec_perm_5_1() {
-    let (mut lp, ps) = people(3, 506);
+    let (mut lp, ps) = people(3);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     let t = thing_of(&mut lp, 2, pc);
     lp.peers[2].engine.grant(&t, &pa, &edge_of(Role::Admin)).unwrap();
@@ -633,7 +650,7 @@ fn mutual_removal_spec_perm_5_1() {
 // removal stands, while C's grant of D drops.
 #[test]
 fn remover_lists_chain_writes_spec_perm_5_1() {
-    let (mut lp, ps) = people(4, 508);
+    let (mut lp, ps) = people(4);
     let (pa, pb, pc, pd) = (ps[0], ps[1], ps[2], ps[3]);
     let t = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Admin)).unwrap();
@@ -679,7 +696,7 @@ fn frontier_ids(lp: &mut LocalPeer, i: usize, c: &CommitId) -> BTreeSet<CommitId
 // forgery: it drops, Bob keeps admin and C stays removed.
 #[test]
 fn grantor_cannot_backdate_removers_edge_spec_perm_5_1() {
-    let (mut lp, ps) = people(3, 509);
+    let (mut lp, ps) = people(3);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     let t = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Admin)).unwrap();
@@ -714,7 +731,7 @@ fn grantor_cannot_backdate_removers_edge_spec_perm_5_1() {
 // frontier lists both writes on his chain, so the removal stands either way.
 #[test]
 fn future_stamped_setter_spec_perm_5_1() {
-    let (mut lp, ps) = people(4, 510);
+    let (mut lp, ps) = people(4);
     let (pa, pb, pc, pd) = (ps[0], ps[1], ps[2], ps[3]);
     let t = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Admin)).unwrap();
@@ -750,7 +767,7 @@ fn future_stamped_setter_spec_perm_5_1() {
 // covered, so Y keeps admin, Bob's grant and the removal stand; C's grant of E drops.
 #[test]
 fn intermediate_grantor_covered_spec_perm_5_1() {
-    let (mut lp, ps) = people(5, 511);
+    let (mut lp, ps) = people(5);
     let (pa, pb, pc, py, pe) = (ps[0], ps[1], ps[2], ps[3], ps[4]);
     let t = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Admin)).unwrap();
@@ -788,7 +805,7 @@ fn intermediate_grantor_covered_spec_perm_5_1() {
 // agree, M stays removed.
 #[test]
 fn late_joiner_after_compaction_agrees_spec_crdt_8() {
-    let (mut lp, ps) = people(4, 512);
+    let (mut lp, ps) = people(4);
     let (pa, pb, px, pm) = (ps[0], ps[1], ps[2], ps[3]);
     let t = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&t, &px, &edge_of(Role::Admin)).unwrap();
@@ -841,9 +858,18 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
     }
 }
 
-/// Peers 0 and 1 are nodes of account P (created on 1, 0 paired); peer 2 is Alice (PA).
-fn nodes_and_alice(seed: u64) -> (LocalPeer, Tid, Tid, LabelId) {
-    let mut lp = net_bare(3, seed);
+/// Peers 0 and 1 are nodes of account P (created on 1, 0 paired); peer 2 is Alice (PA): built
+/// once (`LocalPeer::cached`).
+fn nodes_and_alice() -> (LocalPeer, Tid, Tid, LabelId) {
+    let (lp, (d, pa, home)) = LocalPeer::cached("flows::nodes_and_alice", || {
+        let (lp, d, pa, home) = nodes_and_alice_built();
+        (lp, (d, pa, home))
+    });
+    (lp, d, pa, home)
+}
+
+fn nodes_and_alice_built() -> (LocalPeer, Tid, Tid, LabelId) {
+    let mut lp = net_bare(3, 0);
     let (p, _) = lp.peers[1].engine.create_account(&hosts()).unwrap();
     let d1 = lp.peers[0].engine.tid();
     let ids = lp.peers[0].engine.commit_ids();
@@ -865,7 +891,7 @@ fn nodes_and_alice(seed: u64) -> (LocalPeer, Tid, Tid, LabelId) {
 // stale); d1 holds neither new secret.
 #[test]
 fn cascade_two_hops_spec_perm_3() {
-    let (mut lp, p, pa, _) = nodes_and_alice(507);
+    let (mut lp, p, pa, _) = nodes_and_alice();
     let d1 = lp.peers[0].engine.tid();
     let t = thing_of(&mut lp, 2, pa);
     let u = thing_of(&mut lp, 2, pa);
@@ -905,15 +931,22 @@ fn link_spec(target: Tid, role: Role, until: Option<osis_base::WallMs>) -> osis_
 // writer once encoded own writes under the signer's own source, out of the reader's order).
 #[test]
 fn commit_form_redemption_canonical_spec_crdt_3_2() {
-    for seed in 600..606 {
-        let (mut lp, ps) = people(2, seed);
+    for l_first in [false, true] {
+        let (mut lp, ps) = people(2);
         let (pa, ps1) = (ps[0], ps[1]);
         let d = thing_of(&mut lp, 0, pa);
-        let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
+        let sharer = lp.peers[0].engine.me();
+        // links until one whose L sorts as wanted against the sharer node
+        let link = loop {
+            let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
+            if (osis_node::identity::Identity::from_seed(link.seed.clone()).tid() < sharer) == l_first {
+                break link;
+            }
+        };
         sync(&mut lp, 0, 1);
-        lp.peers[1].engine.redeem(&link, &ps1, true).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+        lp.peers[1].engine.redeem(&link, &ps1, true).unwrap_or_else(|e| panic!("L first {l_first}: {e}"));
         sync(&mut lp, 1, 0);
-        assert_eq!(lp.peers[0].engine.roster(&link.k).get(&ps1).map(|e| e.role), Some(Role::Write), "seed {seed}");
+        assert_eq!(lp.peers[0].engine.roster(&link.k).get(&ps1).map(|e| e.role), Some(Role::Write), "L first {l_first}");
     }
 }
 
@@ -922,7 +955,7 @@ fn commit_form_redemption_canonical_spec_crdt_3_2() {
 // the link key, is stamped by its HLC, two hours ahead of its wall clock.
 #[test]
 fn redeem_with_the_clock_set_back_spec_crdt_2() {
-    let (mut lp, ps) = people(2, 512);
+    let (mut lp, ps) = people(2);
     let (pa, ps1) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
@@ -939,7 +972,7 @@ fn redeem_with_the_clock_set_back_spec_crdt_2() {
 // second redeemer finds no link; the redeemer reads the target through K.
 #[test]
 fn link_redeem_single_use_spec_perm_7() {
-    let (mut lp, ps) = people(3, 510);
+    let (mut lp, ps) = people(3);
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, keep, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
@@ -975,7 +1008,7 @@ fn link_redeem_single_use_spec_perm_7() {
 // one the sharer saw, stands until the sharer finalizes; its frontier does not cover it.
 #[test]
 fn single_use_finalization_audits_spec_perm_7() {
-    let (mut lp, ps) = people(3, 518);
+    let (mut lp, ps) = people(3);
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
@@ -1002,7 +1035,7 @@ fn single_use_finalization_audits_spec_perm_7() {
 // once the finalization arrives, drops them.
 #[test]
 fn single_use_loser_keeps_secrets_until_finalized_spec_perm_7() {
-    let (mut lp, ps) = people(3, 522);
+    let (mut lp, ps) = people(3);
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
@@ -1044,7 +1077,7 @@ fn single_use_loser_keeps_secrets_until_finalized_spec_perm_7() {
 // two-edge commit.
 #[test]
 fn revoke_joiner_one_rotation_spec_commits_2() {
-    let (mut lp, ps) = people(4, 519);
+    let (mut lp, ps) = people(4);
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
@@ -1082,7 +1115,7 @@ fn revoke_joiner_one_rotation_spec_commits_2() {
 // (L already gone) is a plain removal of the joiner alone.
 #[test]
 fn revoke_joiner_after_single_use_spec_commits_2() {
-    let (mut lp, ps) = people(2, 521);
+    let (mut lp, ps) = people(2);
     let (pa, ps1) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
@@ -1105,7 +1138,7 @@ fn revoke_joiner_after_single_use_spec_commits_2() {
 // spec/permissions.md §7: bearer use reads without writing; `until` expires the link.
 #[test]
 fn link_bearer_and_until_spec_perm_7() {
-    let (mut lp, ps) = people(2, 511);
+    let (mut lp, ps) = people(2);
     let (pa, ps1) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
@@ -1143,8 +1176,8 @@ fn link_bearer_and_until_spec_perm_7() {
 // that redeemed while the link worked stays.
 #[test]
 fn until_link_backdated_grant_void_spec_perm_7() {
-    let (mut lp, p) = account_two_nodes(530);
-    let mut more = net_bare(3, 531);
+    let (mut lp, p) = account_two_nodes();
+    let mut more = net_bare(3, 1);
     lp.peers.append(&mut more.peers);
     let ps: Vec<Tid> = (2..5).map(|i| lp.peers[i].engine.create_account(&hosts()).unwrap().0.account).collect();
     let (joiner, forger) = (ps[0], ps[1]);
@@ -1207,7 +1240,7 @@ fn until_link_backdated_grant_void_spec_perm_7() {
 // inbox; the removed holder is not re-sealed.
 #[test]
 fn reseal_raced_grant_spec_perm_3() {
-    let (mut lp, ps) = people(4, 512);
+    let (mut lp, ps) = people(4);
     let (pa, pb, pc, pd) = (ps[0], ps[1], ps[2], ps[3]);
     let t = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
@@ -1247,7 +1280,7 @@ fn reseal_raced_grant_spec_perm_3() {
 // and nothing is re-sealed.
 #[test]
 fn key_actor_holders_not_resealed_spec_perm_3() {
-    let mut lp = net_bare(3, 533);
+    let mut lp = net_bare(3, 0);
     let (a, _) = lp.peers[0].engine.create_account(&hosts()).unwrap();
     let (p, d) = (a.account, a.devices);
     for i in [1, 2] {
@@ -1277,7 +1310,7 @@ fn key_actor_holders_not_resealed_spec_perm_3() {
 // frontier carrying the rotation, which is then the departure and covered.
 #[test]
 fn an_ended_edge_departs_by_its_finalize_spec_crypto_4() {
-    let (mut lp, ps) = people(2, 534);
+    let (mut lp, ps) = people(2);
     let (pa, pb) = (ps[0], ps[1]);
     let t = thing_of(&mut lp, 0, pa);
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 5_000);
@@ -1302,7 +1335,7 @@ fn an_ended_edge_departs_by_its_finalize_spec_crypto_4() {
 // grant raced a rotation of its account is re-sealed over the pairing channel.
 #[test]
 fn stranded_node_repaired_spec_perm_3() {
-    let mut lp = net_bare(4, 513);
+    let mut lp = net_bare(4, 0);
     let (a, _) = lp.peers[0].engine.create_account(&hosts()).unwrap();
     let (pa, p) = (a.account, a.devices);
     for i in [1, 2] {
@@ -1340,8 +1373,16 @@ fn stranded_node_repaired_spec_perm_3() {
 /// Alice (0) grants carol (2) at e0 while bob (1) removes dave (rotation e1, without carol);
 /// carol gets the grant and bob's rotation. Alice then removes eve: e2 boxes carol, who holds no
 /// box at e1, the epoch e2's commit is wrapped under. Returns (lp, t, carol, e2's Done).
-fn raced_then_rotated(seed: u64) -> (LocalPeer, Tid, Tid, Done) {
-    let (mut lp, ps) = people(5, seed);
+fn raced_then_rotated() -> (LocalPeer, Tid, Tid, Done) {
+    let (lp, (t, pc, r2)) = LocalPeer::cached("flows::raced_then_rotated", || {
+        let (lp, t, pc, r2) = raced_then_rotated_built();
+        (lp, (t, pc, r2))
+    });
+    (lp, t, pc, r2)
+}
+
+fn raced_then_rotated_built() -> (LocalPeer, Tid, Tid, Done) {
+    let (mut lp, ps) = people(5);
     let (pa, pb, pc, pd, pe) = (ps[0], ps[1], ps[2], ps[3], ps[4]);
     let t = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
@@ -1367,7 +1408,7 @@ fn raced_then_rotated(seed: u64) -> (LocalPeer, Tid, Tid, Done) {
 // the label, which is wrapped under that epoch.
 #[test]
 fn rotation_reaches_unboxed_holder_spec_perm_3() {
-    let (mut lp, t, pc, r2) = raced_then_rotated(515);
+    let (mut lp, t, pc, r2) = raced_then_rotated();
     let inbox: Vec<&Vec<u8>> = r2.deliveries.iter().filter_map(|x| if let Delivery::Inbox { to, blob, .. } = x { (*to == pc).then_some(blob) } else { None }).collect();
     assert_eq!(inbox.len(), 1, "the rotation goes to carol's inbox");
     lp.peers[2].engine.accept_inbox(inbox[0]).unwrap();
@@ -1382,7 +1423,7 @@ fn rotation_reaches_unboxed_holder_spec_perm_3() {
 // overlaid on an entry the holder never got).
 #[test]
 fn reseal_over_unheld_box_spec_perm_3() {
-    let (mut lp, t, pc, _) = raced_then_rotated(516);
+    let (mut lp, t, pc, _) = raced_then_rotated();
     let e2 = newest_read(&lp, 0, t).unwrap();
     assert!(lp.peers[2].engine.epochs(&t).unwrap().read.secret(&e2).is_none());
     let done = lp.peers[0].engine.reshare(&t, &pc).unwrap();
@@ -1404,8 +1445,8 @@ impl osis_node::flows::SyncState for Pass {
 /// writes K2 (and reads K1 when `late_reads_k1`). Unless late reads K1 it never gets K1's
 /// `secrets.0` parts (they travel under K1's label only), as with `spread_hiding`. Returns
 /// (lp, c, k1, o0).
-fn two_links(seed: u64, late_reads_k1: bool) -> (LocalPeer, Tid, Tid, Tid) {
-    let (mut lp, ps) = people(3, seed);
+fn two_links(late_reads_k1: bool) -> (LocalPeer, Tid, Tid, Tid) {
+    let (mut lp, ps) = people(3);
     let (pa, po, pl) = (ps[0], ps[1], ps[2]);
     let c = thing_of(&mut lp, 0, pa);
     let k1 = thing_of(&mut lp, 0, pa);
@@ -1452,7 +1493,7 @@ fn spread_hiding(lp: &mut LocalPeer, to: usize, hidden: Tid) {
 // departure from C and finds C's box to K1 at K1's newest keyset: it rotates nothing.
 #[test]
 fn unheld_holder_judged_by_keyset_spec_crypto_4() {
-    let (mut lp, c, k1, po) = two_links(517, false);
+    let (mut lp, c, k1, po) = two_links(false);
     lp.peers[0].engine.demote(&k1, &Demotion { holder: po, new: None, retain: None }).unwrap();
     let (rot, still) = lp.peers[0].engine.ensure_rotated(&c).unwrap();
     assert!(still.is_empty() && rot.commits.len() == 1, "alice rotates C (K1 rotated with the removal)");
@@ -1472,7 +1513,7 @@ fn unheld_holder_judged_by_keyset_spec_crypto_4() {
 // rotates K1 (C, boxing no K1, has no stale box), and re-seals K1 to C.
 #[test]
 fn inside_member_departure_leaves_holder_out_spec_perm_3() {
-    let (mut lp, c, k1, po) = two_links(518, true);
+    let (mut lp, c, k1, po) = two_links(true);
     lp.peers[1].engine.demote(&k1, &Demotion { holder: po, new: None, retain: None }).unwrap();
     spread(&mut lp);
     assert!(lp.peers[2].engine.departures(&c).unwrap().is_empty(), "nothing departed from C");
@@ -1500,7 +1541,7 @@ fn inside_member_departure_leaves_holder_out_spec_perm_3() {
 // opened its write epoch is established.
 #[test]
 fn grant_in_derived_base_spec_crypto_4() {
-    let (mut lp, ps) = people(2, 519);
+    let (mut lp, ps) = people(2);
     let (pa, pb) = (ps[0], ps[1]);
     let team = thing_of(&mut lp, 0, pa);
     let doc = thing_of(&mut lp, 0, team);
@@ -1529,7 +1570,7 @@ fn grant_in_derived_base_spec_crypto_4() {
 // newest epochs; the removed node has no claim key in it, the remaining one has.
 #[test]
 fn registration_step_after_rotation_spec_sync_5() {
-    let (mut lp, p, _pa, card) = nodes_and_alice(514);
+    let (mut lp, p, _pa, card) = nodes_and_alice();
     let d1 = lp.peers[0].engine.tid();
     let labels = lp.peers[1].engine.get_typed(&p, &ct::LABEL).unwrap().unwrap();
     let genesis = osis_label::StepId(*labels.get(&card).unwrap().steps.keys().next().unwrap());
@@ -1550,7 +1591,7 @@ fn registration_step_after_rotation_spec_sync_5() {
 // the removed account can no longer deposit under the thing's labels.
 #[test]
 fn removal_refreshes_deposit_seed_spec_crypto_3() {
-    let (mut lp, p, pa, _) = nodes_and_alice(516);
+    let (mut lp, p, pa, _) = nodes_and_alice();
     let pp = lp.peers[1].engine.me();
     let t = thing_of(&mut lp, 2, pa);
     lp.peers[2].engine.grant(&t, &pp, &edge_of(Role::Read)).unwrap();
@@ -1574,7 +1615,7 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
 // an admin issues: a child at the same role keys with the new deposit key; then nothing is due.
 #[test]
 fn refreshed_deposit_seed_issues_step_spec_sync_5() {
-    let (mut lp, p, _pa, card) = nodes_and_alice(518);
+    let (mut lp, p, _pa, card) = nodes_and_alice();
     let labels = lp.peers[1].engine.get_typed(&p, &ct::LABEL).unwrap().unwrap();
     let genesis = osis_label::StepId(*labels.get(&card).unwrap().steps.keys().next().unwrap());
     let parent = osis_label::parse_record(&labels.get(&card).unwrap().steps[&genesis.0]).unwrap().0;
@@ -1594,7 +1635,7 @@ fn refreshed_deposit_seed_issues_step_spec_sync_5() {
 // rotates again, and that epoch covers both departures; both admins converge on it.
 #[test]
 fn fork_from_concurrent_rotations_spec_crypto_4() {
-    let (mut lp, ps) = people(4, 517);
+    let (mut lp, ps) = people(4);
     let (pa, pb, pc, pd) = (ps[0], ps[1], ps[2], ps[3]);
     let t = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
@@ -1632,7 +1673,7 @@ fn aks_of(lp: &LocalPeer, i: usize, c: &CommitId) -> BTreeSet<String> {
 // open nothing new.
 #[test]
 fn writer_leaves_spec_perm_3() {
-    let (mut lp, ps) = people(2, 519);
+    let (mut lp, ps) = people(2);
     let (pa, pb) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
@@ -1657,7 +1698,7 @@ fn writer_leaves_spec_perm_3() {
 // there comes through the account) is a self-removal; the team's admin rotates later.
 #[test]
 fn node_removes_account_from_team_spec_perm_3() {
-    let (mut lp, p, pa, _) = nodes_and_alice(520);
+    let (mut lp, p, pa, _) = nodes_and_alice();
     let t = thing_of(&mut lp, 2, pa);
     lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Write)).unwrap();
     spread(&mut lp);
@@ -1682,7 +1723,7 @@ fn node_removes_account_from_team_spec_perm_3() {
 #[test]
 fn removed_node_backdated_leave_dropped_spec_perm_5_1() {
     for seen in [false, true] {
-        let (mut lp, p, pa, _) = nodes_and_alice(523);
+        let (mut lp, p, pa, _) = nodes_and_alice();
         let d1 = lp.peers[0].engine.tid();
         let t = thing_of(&mut lp, 2, pa);
         lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Write)).unwrap();
@@ -1705,7 +1746,7 @@ fn removed_node_backdated_leave_dropped_spec_perm_5_1() {
 // longer may hold): after a reader's self-removal, the next node that may rotate does.
 #[test]
 fn reader_leaves_then_rotation_spec_crypto_4() {
-    let (mut lp, ps) = people(3, 521);
+    let (mut lp, ps) = people(3);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     let t = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
@@ -1726,7 +1767,7 @@ fn reader_leaves_then_rotation_spec_crypto_4() {
 // with L's authority: L rotates away a joiner's departure, signing as L.
 #[test]
 fn write_link_rotates_as_signer_spec_perm_3() {
-    let (mut lp, ps) = people(3, 522);
+    let (mut lp, ps) = people(3);
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
@@ -1753,7 +1794,7 @@ fn write_link_rotates_as_signer_spec_perm_3() {
 // team, the team rotates before its label is created.
 #[test]
 fn create_label_after_inside_removal_spec_sync_2() {
-    let (mut lp, p, pa, _) = nodes_and_alice(523);
+    let (mut lp, p, pa, _) = nodes_and_alice();
     let d1 = lp.peers[0].engine.tid();
     let t = thing_of(&mut lp, 2, pa);
     lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Admin)).unwrap();
@@ -1776,7 +1817,7 @@ fn create_label_after_inside_removal_spec_sync_2() {
 // edge before encrypting, rotating read, and the key actor holds none of it.
 #[test]
 fn raced_grant_read_box_after_until_spec_crypto_4() {
-    let (mut lp, ps) = people(4, 521);
+    let (mut lp, ps) = people(4);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     let n3 = lp.peers[3].engine.me();
     let t = thing_of(&mut lp, 0, pa);
@@ -1803,7 +1844,7 @@ fn raced_grant_read_box_after_until_spec_crypto_4() {
 // its redemption in commit form.
 #[test]
 fn link_key_writes_commit_form_spec_commits_3() {
-    let (mut lp, ps) = people(2, 512);
+    let (mut lp, ps) = people(2);
     let (pa, ps1) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
@@ -1821,7 +1862,7 @@ fn link_key_writes_commit_form_spec_commits_3() {
 // that actor as inbox blobs, like a grant.
 #[test]
 fn edge_change_and_removal_by_inbox_spec_perm_2() {
-    let (mut lp, ps) = people(2, 521);
+    let (mut lp, ps) = people(2);
     let (pa, pb) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
@@ -1839,7 +1880,7 @@ fn edge_change_and_removal_by_inbox_spec_perm_2() {
 // demoted writer's covered writes by it (valid, not dropped as by an empty frontier).
 #[test]
 fn linked_frontier_spec_perm_5_1() {
-    let mut lp = net(3, 532);
+    let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
     let x = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
@@ -1911,7 +1952,7 @@ fn stranger_secrets(lp: &mut LocalPeer, t: Tid, secrets: &ct::Secrets) -> Vec<u8
 // established epoch), across a restart.
 #[test]
 fn planted_epoch_blocks_no_removal_spec_crypto_4() {
-    let (mut lp, ps) = people(2, 523);
+    let (mut lp, ps) = people(2);
     let (pa, pb) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
@@ -1953,7 +1994,7 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
 // edit by its commit ID, whatever group it is under.
 #[test]
 fn frontier_lists_commit_ids_spec_perm_5_1() {
-    let (mut lp, ps) = people(3, 511);
+    let (mut lp, ps) = people(3);
     let (pa, pc) = (ps[0], ps[2]);
     let t = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Write)).unwrap();
@@ -1976,7 +2017,7 @@ fn frontier_lists_commit_ids_spec_perm_5_1() {
 // commit it made as P; X keeps its last value.
 #[test]
 fn removed_node_frontier_lists_uncovered_acting_spec_perm_5_1() {
-    let (mut lp, p) = account_two_nodes(902);
+    let (mut lp, p) = account_two_nodes();
     let x = thing_of(&mut lp, 0, p);
     let d = lp.peers[1].engine.me();
     let y = thing_of(&mut lp, 1, d);
@@ -2014,7 +2055,7 @@ fn removed_node_frontier_lists_uncovered_acting_spec_perm_5_1() {
 // `ROLE_KEEP`), so it stays valid; the second, live and covered, is left out.
 #[test]
 fn rotation_within_role_keep_listed_spec_perm_5_1() {
-    let (mut lp, ps) = people(3, 0x7190);
+    let (mut lp, ps) = people(3);
     let (pa, px, pm) = (ps[0], ps[1], ps[2]);
     let t = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&t, &px, &edge_of(Role::Admin)).unwrap();
@@ -2089,7 +2130,7 @@ fn recovered(lp: &mut LocalPeer, d: Tid, holder: Tid) -> osis_crypto::Epoch {
 // member reads and writes again and the vandal reads nothing new.
 #[test]
 fn writer_rotating_to_itself_recovered_spec_perm_3() {
-    let (mut lp, ps) = people(3, 571);
+    let (mut lp, ps) = people(3);
     let (d, e0, rv) = locked_out(&mut lp, &ps, 1);
     // labels carry the rotation wrapped under e0: everyone opens it
     spread_sealed(&mut lp);
@@ -2122,7 +2163,7 @@ fn writer_rotating_to_itself_recovered_spec_perm_3() {
 #[test]
 fn two_writer_lockout_recovered_spec_perm_3() {
     for (first, second) in [(1, 2), (2, 1)] {
-        let (mut lp, ps) = people(4, 578);
+        let (mut lp, ps) = people(4);
         let (d, e0, _) = locked_out(&mut lp, &ps, 0);
         let rv: Vec<CommitId> = [1, 2].iter().map(|&i| lp.peers[i].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[i]]).unwrap().unwrap()).collect();
         // the vandals never see each other's fork (each would merge the other's at once)
@@ -2163,7 +2204,7 @@ fn two_writer_lockout_recovered_spec_perm_3() {
 // next write, superseding the vandal's epoch unread. Nobody else need act.
 #[test]
 fn vandal_that_left_recovered_by_due_rotation_spec_crypto_4() {
-    let (mut lp, ps) = people(4, 591);
+    let (mut lp, ps) = people(4);
     let (d, _, _) = locked_out(&mut lp, &ps, 1);
     spread_sealed(&mut lp);
     let ev = lp.peers[0].engine.epochs(&d).unwrap().read.current()[0];
@@ -2194,7 +2235,7 @@ fn vandal_that_left_recovered_by_due_rotation_spec_crypto_4() {
 // member read what went under it.
 #[test]
 fn lockout_beside_kept_writer_superseded_history_added_spec_crypto_4() {
-    let (mut lp, ps) = people(4, 583);
+    let (mut lp, ps) = people(4);
     let (d, _, _) = locked_out(&mut lp, &ps, 0);
     let rv = lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
     let rh = lp.peers[2].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1], ps[2], ps[3]]).unwrap().unwrap();
@@ -2231,7 +2272,7 @@ fn lockout_beside_kept_writer_superseded_history_added_spec_crypto_4() {
 // epoch): the re-key lists the second, which supersedes the first.
 #[test]
 fn vandal_rotating_twice_recovered_spec_perm_3() {
-    let (mut lp, ps) = people(3, 572);
+    let (mut lp, ps) = people(3);
     let (d, e0, rv) = locked_out(&mut lp, &ps, 2);
     spread(&mut lp);
     let e1 = recovered(&mut lp, d, ps[1]);
@@ -2249,7 +2290,7 @@ fn vandal_rotating_twice_recovered_spec_perm_3() {
 // current epochs and holds them all once a merge or re-seal settles.
 #[test]
 fn concurrent_rekeys_fork_spec_perm_3() {
-    let (mut lp, ps) = people(4, 573);
+    let (mut lp, ps) = people(4);
     let (d, _, _) = locked_out(&mut lp, &ps[..3], 0);
     lp.peers[0].engine.grant(&d, &ps[3], &edge_of(Role::Admin)).unwrap();
     spread(&mut lp);
@@ -2279,7 +2320,7 @@ fn concurrent_rekeys_fork_spec_perm_3() {
 // the vandal, a writer still; removing the vandal rotates again, and it reads nothing after.
 #[test]
 fn vandal_with_second_path_recovered_spec_perm_3() {
-    let (mut lp, ps) = people(3, 574);
+    let (mut lp, ps) = people(3);
     let d = thing_of(&mut lp, 0, ps[0]);
     let t = thing_of(&mut lp, 1, ps[1]);
     lp.peers[1].engine.give_own_secrets(&t).unwrap();
@@ -2306,7 +2347,7 @@ fn vandal_with_second_path_recovered_spec_perm_3() {
 // team's first admin reads the new epoch through it.
 #[test]
 fn rekey_reseals_holder_actor_spec_perm_3() {
-    let (mut lp, ps) = people(4, 575);
+    let (mut lp, ps) = people(4);
     let t = thing_of(&mut lp, 3, ps[3]);
     lp.peers[3].engine.give_own_secrets(&t).unwrap();
     spread(&mut lp);
@@ -2328,7 +2369,7 @@ fn rekey_reseals_holder_actor_spec_perm_3() {
 // rotation first and the admin end on the same current epochs.
 #[test]
 fn rekey_alike_in_either_order_spec_perm_3() {
-    let (mut lp, ps) = people(4, 576);
+    let (mut lp, ps) = people(4);
     let (d, _, _) = locked_out(&mut lp, &ps, 0);
     let rv = lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
     let pv = lp.peers[1].engine.package(&rv).unwrap().unwrap();
@@ -2357,7 +2398,7 @@ fn rekey_alike_in_either_order_spec_perm_3() {
 // removal leaves it in place and the re-key does not wait on it.
 #[test]
 fn lockout_bundled_with_own_rotation_recovered_spec_perm_3() {
-    let (mut lp, ps) = people(3, 577);
+    let (mut lp, ps) = people(3);
     let t = thing_of(&mut lp, 1, ps[1]);
     lp.peers[1].engine.give_own_secrets(&t).unwrap();
     let (d, _, _) = locked_out(&mut lp, &ps, 0);
@@ -2377,7 +2418,7 @@ fn lockout_bundled_with_own_rotation_recovered_spec_perm_3() {
 // epoch stays the only current one.
 #[test]
 fn racing_vandal_rotation_invalid_spec_perm_3() {
-    let (mut lp, ps) = people(3, 579);
+    let (mut lp, ps) = people(3);
     let (d, _, rv) = locked_out(&mut lp, &ps, 1);
     spread(&mut lp);
     let late = lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
@@ -2397,7 +2438,7 @@ fn racing_vandal_rotation_invalid_spec_perm_3() {
 // reads it once the member adds that epoch to the re-key epoch's history.
 #[test]
 fn rotation_missing_admin_recovered_spec_perm_3() {
-    let (mut lp, ps) = people(4, 580);
+    let (mut lp, ps) = people(4);
     let (d, _, _) = locked_out(&mut lp, &ps[..3], 0);
     let rv = lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1], ps[2]]).unwrap().unwrap();
     spread_sealed(&mut lp);
@@ -2426,7 +2467,7 @@ fn rotation_missing_admin_recovered_spec_perm_3() {
 // it, lacking its current secret: the member reads both.
 #[test]
 fn rekey_reaches_thing_below_spec_perm_3() {
-    let (mut lp, ps) = people(3, 582);
+    let (mut lp, ps) = people(3);
     let (d, _, _) = locked_out(&mut lp, &ps, 0);
     let t = thing_of(&mut lp, 0, ps[0]);
     lp.peers[0].engine.grant(&t, &d, &edge_of(Role::Write)).unwrap();
@@ -2457,7 +2498,7 @@ fn frontier_lists_covered_deltas_of_every_retention_spec_perm_5_1() {
     use osis_schema::PurgeBy;
     let reg = ak("t:reg.0");
     for (by, snapper, listed) in [(PurgeBy::Admin, 0, true), (PurgeBy::Writer, 0, true), (PurgeBy::AuthorOrAdmin, 0, true), (PurgeBy::AuthorOrAdmin, 2, true)] {
-        let (mut lp, ps) = people(3, 0x7191);
+        let (mut lp, ps) = people(3);
         let (pa, px, pw) = (ps[0], ps[1], ps[2]);
         let t = thing_of(&mut lp, 0, pa);
         lp.peers[0].engine.grant(&t, &px, &edge_of(Role::Write)).unwrap();
@@ -2500,7 +2541,7 @@ fn frontier_lists_covered_deltas_of_every_retention_spec_perm_5_1() {
 // chain.
 #[test]
 fn chat_by_record_spec_perm_1() {
-    let (mut lp, ps) = people(4, 581);
+    let (mut lp, ps) = people(4);
     let (o, done) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
     assert_eq!(done.commits.len(), 1);
     let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
@@ -2567,7 +2608,7 @@ fn chat_by_record_spec_perm_1() {
 // commits that made the thing and the second admin before it, or the removal first).
 #[test]
 fn record_edge_removal_any_order_spec_perm_2() {
-    let (mut lp, ps) = people(4, 583);
+    let (mut lp, ps) = people(4);
     let (o, _) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
     lp.peers[0].engine.grant(&o, &ps[1], &edge_of(Role::Admin)).unwrap();
     let ids: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
@@ -2593,7 +2634,7 @@ fn record_edge_removal_any_order_spec_perm_2() {
 // written since.
 #[test]
 fn first_grant_on_plain_thing_rotates_first_spec_perm_3() {
-    let (mut lp, ps) = people(3, 584);
+    let (mut lp, ps) = people(3);
     let (o, _) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
     let mut m = Mutation::new();
     m.set(o, &REG, &s("derived")).unwrap();
@@ -2618,7 +2659,7 @@ fn first_grant_on_plain_thing_rotates_first_spec_perm_3() {
 // thing stays plain, the first admin still reads it by derivation, and nobody writes it.
 #[test]
 fn last_admin_of_plain_thing_refused_spec_perm_1() {
-    let (mut lp, _) = people(2, 585);
+    let (mut lp, _) = people(2);
     let n = lp.peers[0].engine.me();
     let (o, _) = lp.peers[0].engine.create_with_admin(&n).unwrap();
     let mut m = Mutation::new();
@@ -2649,7 +2690,7 @@ fn last_admin_of_plain_thing_refused_spec_perm_1() {
 // it applies at every node.
 #[test]
 fn first_admin_record_edge_removed_by_its_node_spec_permissions_2() {
-    let (mut lp, ps) = people(2, 586);
+    let (mut lp, ps) = people(2);
     let (o, _) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
     lp.peers[0].engine.grant(&o, &ps[1], &edge_of(Role::Admin)).unwrap();
     spread(&mut lp);
@@ -2668,7 +2709,7 @@ fn first_admin_record_edge_removed_by_its_node_spec_permissions_2() {
 // write it, A's node opens nothing written since (the removal rotated T) and cannot write it.
 #[test]
 fn move_by_grant_then_remove_spec_perm_1() {
-    let (mut lp, ps) = people(3, 587);
+    let (mut lp, ps) = people(3);
     let (a, b) = (ps[0], ps[1]);
     let t = thing_of(&mut lp, 0, a);
     lp.peers[0].engine.grant(&t, &b, &edge_of(Role::Admin)).unwrap();
@@ -2699,7 +2740,7 @@ fn move_by_grant_then_remove_spec_perm_1() {
 // removed admin's backdated request would be, drops nothing and shows no purge.
 #[test]
 fn a_purge_stamped_before_the_named_commit_names_nothing_spec_commits_5() {
-    let (mut lp, ps) = people(3, 777);
+    let (mut lp, ps) = people(3);
     let (pa, px, pw) = (ps[0], ps[1], ps[2]);
     let t = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&t, &px, &edge_of(Role::Admin)).unwrap();
@@ -2729,8 +2770,8 @@ fn a_purge_stamped_before_the_named_commit_names_nothing_spec_commits_5() {
 // an author) would merge alike and fork again on every round, without end.
 #[test]
 fn a_fork_by_two_siblings_ends_quiet_spec_crypto_4() {
-    let (mut lp, _) = account_two_nodes(9400);
-    let mut more = net_bare(2, 9401);
+    let (mut lp, _) = account_two_nodes();
+    let mut more = net_bare(2, 1);
     lp.peers.append(&mut more.peers);
     let (x, y) = (lp.peers[2].engine.create_account(&hosts()).unwrap().0.account, lp.peers[3].engine.create_account(&hosts()).unwrap().0.account);
     spread(&mut lp);

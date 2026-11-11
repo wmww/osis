@@ -634,7 +634,7 @@ fn undo_absent_keeps_seen_other_write_spec_4_6() {
 /// stays within a small factor of the encoded size. spec: none (resource bound)
 #[test]
 fn approx_bytes_tracks_content() {
-    let mut r = crate::testutil::rng(7);
+    let mut r = crate::testutil::rng(0);
     let ty = sink_no_seq();
     for _ in 0..50 {
         let v = value(&random_value(&mut r, &ty, 0));

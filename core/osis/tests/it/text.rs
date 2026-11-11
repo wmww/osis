@@ -52,7 +52,7 @@ fn commits(db: &Osis, t: Tid, k: &DynamicAspectKey) -> (osis::Subscription, Rece
 // A `remove` of the field empties an open session and is reported as a merge.
 #[test]
 fn text_remove_empties_open_session() {
-    let (db, t, k) = setup(db(1));
+    let (db, t, k) = setup(db(0));
     let s = open(&db, t, &k);
     let (_m, merged) = merges(&s);
     s.edit("", "hello").unwrap();
@@ -69,7 +69,7 @@ fn text_remove_empties_open_session() {
 // Two sessions on one field of one node: each one's typing reaches the other, both texts kept.
 #[test]
 fn text_two_sessions_keep_both_texts() {
-    let (db, t, k) = setup(db(1));
+    let (db, t, k) = setup(db(0));
     let (a, b) = (open(&db, t, &k), open(&db, t, &k));
     a.edit("", "one").unwrap();
     b.edit("", "two").unwrap();
@@ -88,7 +88,7 @@ fn text_two_sessions_keep_both_texts() {
 // A session's own commit is its echo: no merge reported, pending typing not committed by it.
 #[test]
 fn text_own_commit_reports_and_commits_nothing() {
-    let (db, t, k) = setup(db(1));
+    let (db, t, k) = setup(db(0));
     let s = open(&db, t, &k);
     let (_m, merged) = merges(&s);
     let (_c, listed) = commits(&db, t, &k);
@@ -109,7 +109,7 @@ fn text_own_commit_reports_and_commits_nothing() {
 // An undo of the session's own commit shows in it while it stays open.
 #[test]
 fn text_undo_shows_in_open_session() {
-    let (db, t, k) = setup(db(1));
+    let (db, t, k) = setup(db(0));
     let s = open(&db, t, &k);
     let (_m, merged) = merges(&s);
     s.edit("", "hello").unwrap();
@@ -133,7 +133,7 @@ fn text_keystroke_does_not_wait_for_a_save() {
     let (saving_tx, saving) = channel();
     let (go, go_rx) = channel::<()>();
     let first = Mutex::new(Some((saving_tx, go_rx)));
-    let mut c = cfg(1, MemStore::new(), &clock());
+    let mut c = cfg(0, MemStore::new(), &clock());
     c.app.internals.text_save = Some(Arc::new(move || {
         if let Some((tx, rx)) = first.lock().unwrap().take() {
             tx.send(()).unwrap();
@@ -173,7 +173,7 @@ fn text_typing_during_a_merge_goes_round_again() {
     let (saving_tx, saving) = channel();
     let (go, go_rx) = channel::<()>();
     let first = Mutex::new(Some((saving_tx, go_rx)));
-    let mut c = cfg(1, MemStore::new(), &clock());
+    let mut c = cfg(0, MemStore::new(), &clock());
     c.app.internals.text_save = Some(Arc::new(move || {
         if let Some((tx, rx)) = first.lock().unwrap().take() {
             tx.send(()).unwrap();
@@ -207,7 +207,7 @@ fn text_typing_during_a_merge_goes_round_again() {
 // text would land inside the merge.
 #[test]
 fn text_edit_after_an_unshown_merge_lands_where_typed() {
-    let (db, t, k) = setup(db(1));
+    let (db, t, k) = setup(db(0));
     let s = open(&db, t, &k);
     s.edit("", "hello world").unwrap();
     s.commit().unwrap().unwrap();
@@ -228,7 +228,7 @@ fn text_edit_after_an_unshown_merge_lands_where_typed() {
 // (`shown` is the UI's text before the keystroke).
 #[test]
 fn text_edit_keeps_unshown_merge() {
-    let (db, t, k) = setup(db(1));
+    let (db, t, k) = setup(db(0));
     let s = open(&db, t, &k);
     let shown = "hello world";
     s.edit("", shown).unwrap();
@@ -255,7 +255,7 @@ fn text_edit_keeps_unshown_merge() {
 // the user did them, both merges kept.
 #[test]
 fn text_edit_between_unshown_merges_lands_where_typed() {
-    let (db, t, k) = setup(db(1));
+    let (db, t, k) = setup(db(0));
     let s = open(&db, t, &k);
     let shown = "one two three";
     s.edit("", shown).unwrap();
@@ -270,7 +270,7 @@ fn text_edit_between_unshown_merges_lands_where_typed() {
 // deleted) the keystroke is in the buffer all the same, the call failing as `commit` would.
 #[test]
 fn text_edit_after_a_failed_pause_commit_keeps_the_keystroke() {
-    let mut c = cfg(1, MemStore::new(), &clock());
+    let mut c = cfg(0, MemStore::new(), &clock());
     c.app.idle_commit = std::time::Duration::from_millis(1);
     let (db, t, k) = setup(osis::internals::create(c).unwrap());
     let s = open(&db, t, &k);
@@ -291,9 +291,9 @@ fn text_edit_after_a_failed_pause_commit_keeps_the_keystroke() {
 // lose only chars the user removed.
 #[test]
 fn text_edit_random_against_reference() {
-    let (db, t, k) = setup(db(1));
+    let (db, t, k) = setup(db(0));
     let s = open(&db, t, &k);
-    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let mut x = 1u64; // xorshift at seed 0 (its state is never 0)
     let mut rnd = move |m: usize| {
         x ^= x << 13;
         x ^= x >> 7;

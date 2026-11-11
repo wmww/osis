@@ -21,7 +21,7 @@ struct Dev {
 
 impl Dev {
     fn new() -> (Dev, Store, SeededRng) {
-        let mut rng = SeededRng::from_u64(9);
+        let mut rng = SeededRng::from_u64(0);
         let d = MemDevice::new();
         let s = Store::create(d.backend(), d.root(), cfg(), &mut rng).unwrap();
         (Dev { backend: d.backend, root: d.root }, s, rng)

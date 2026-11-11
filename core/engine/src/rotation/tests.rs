@@ -8,6 +8,36 @@ use osis_base::{Role, Tid, WallMs};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// The wall time every rotation test starts at.
+pub(super) const T0: WallMs = WallMs(1_700_000_000_000);
+
+/// `n` fresh peers (`LocalPeer::new`, seed 0, at `T0`), synced: built once per test process, each
+/// caller handed a copy (notes/testing.md, Copied worlds).
+pub(super) fn synced(n: usize) -> LocalPeer {
+    LocalPeer::cached(&format!("rotation::synced/{n}"), || {
+        let mut lp = LocalPeer::new(n, 0, T0).unwrap();
+        lp.sync_all().unwrap();
+        (lp, ())
+    })
+    .0
+}
+
+/// `synced(n)` and group `g` of peer 0's granting each of `grants` (peer, role), synced: built
+/// once per shape, a copy each call. Returns the peers, `g` and every peer's tid.
+pub(super) fn granted(n: usize, grants: &[(usize, Role)]) -> (LocalPeer, Tid, Vec<Tid>) {
+    let (lp, (g, tids)) = LocalPeer::cached(&format!("rotation::granted/{n}/{grants:?}"), || {
+        let mut lp = synced(n);
+        let tids: Vec<Tid> = (0..n).map(|i| lp.peers[i].engine.me()).collect();
+        let g = group(&mut lp, 0);
+        for (i, r) in grants {
+            lp.peers[0].engine.grant(&g, &tids[*i], &edge(*r)).unwrap();
+        }
+        lp.sync_all().unwrap();
+        (lp, (g, tids))
+    });
+    (lp, g, tids)
+}
+
 /// Delivers every commit of peer `from` to peer `to` without the `secrets.0` deltas of `x`
 /// (what a node that does not read `x` gets of them: certificates).
 pub(super) fn deliver_without_secrets(lp: &mut LocalPeer, from: usize, to: usize, x: Tid) {
@@ -21,18 +51,16 @@ pub(super) fn deliver_without_secrets(lp: &mut LocalPeer, from: usize, to: usize
 /// Peers: 0 = the first admin of group `t`, 1 = W (a writer, then removed: rotation R1 of read
 /// and write), 2 = P (an admin), 3 = N (an admin when `n_first`, else granted later by the
 /// caller). Returns R1's commits.
-fn removed_writer(seed: u64, n_first: bool) -> (LocalPeer, Tid, Vec<osis_base::CommitId>) {
-    let mut lp = LocalPeer::new(4, seed, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let t = group(&mut lp, 0);
-    let (w, p, n) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me());
-    lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&t, &p, &edge(Role::Admin)).unwrap();
-    if n_first {
-        lp.peers[0].engine.grant(&t, &n, &edge(Role::Admin)).unwrap();
-    }
-    lp.sync_all().unwrap();
-    let r1 = lp.peers[0].engine.demote(&t, &Demotion { holder: w, new: None, retain: None }).unwrap().commits;
+fn removed_writer(n_first: bool) -> (LocalPeer, Tid, Vec<osis_base::CommitId>) {
+    let (lp, (t, r1)) = LocalPeer::cached(&format!("rotation::tests::removed_writer/{n_first}"), || {
+        let mut grants = vec![(1, Role::Write), (2, Role::Admin)];
+        if n_first {
+            grants.push((3, Role::Admin));
+        }
+        let (mut lp, t, tids) = granted(4, &grants);
+        let r1 = lp.peers[0].engine.demote(&t, &Demotion { holder: tids[1], new: None, retain: None }).unwrap().commits;
+        (lp, (t, r1))
+    });
     (lp, t, r1)
 }
 
@@ -64,7 +92,7 @@ fn keys_secrets() -> [osis_base::Ak; 2] {
 #[test]
 fn compacted_rotation_covers_its_names_spec_crypto_4() {
     for compact in [true, false] {
-        let (mut lp, t, r1) = removed_writer(941, false);
+        let (mut lp, t, r1) = removed_writer(false);
         if compact {
             for k in keys_secrets() {
                 lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
@@ -94,7 +122,7 @@ fn compacted_rotation_covers_its_names_spec_crypto_4() {
 // covers nothing: N rotates read once (an extra rotation, no lockout) and is covered by its own.
 #[test]
 fn rotation_missing_again_binds_nothing_spec_crypto_4() {
-    let (mut lp, t, r1) = removed_writer(942, true);
+    let (mut lp, t, r1) = removed_writer(true);
     lp.sync_all().unwrap();
     let p = lp.peers[2].engine.me();
     let k = osis_base::Ak::new("keys.0").unwrap();
@@ -259,8 +287,7 @@ fn rotate_unboxed(lp: &mut LocalPeer, i: usize, a: Tid, roles: &[Role], keep: Op
 // it covers it and the re-grant goes through without another rotation.
 #[test]
 fn regrant_after_tag_removal_spec_crypto_4() {
-    let mut lp = LocalPeer::new(2, 944, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(2);
     let bob = lp.peers[1].engine.me();
     let tag = group(&mut lp, 0);
     let n = group(&mut lp, 0);
@@ -271,21 +298,15 @@ fn regrant_after_tag_removal_spec_crypto_4() {
     assert!(lp.peers[0].engine.ensure_rotated(&n).unwrap().1.is_empty(), "covered");
 }
 
-// spec/permissions.md §3 (re-seal fixpoint), spec/crypto.md §4 (forks, merge) (churn seeds
-// 140170 and 140188 shrunk: a node re-sealed itself on every pass): A and D rotate G's write
+// spec/permissions.md §3 (re-seal fixpoint), spec/crypto.md §4 (forks, merge): A and D rotate G's write
 // concurrently, D's rotation leaving writer B out, so B lacks a box and the secret at D's fork.
 // B, holding only A's fork, writes no re-seal of itself (before: one boxing A's fork alone on
 // every pass); A, holding both, re-seals B once, a box at each fork, or, as the fork's merger
 // (rule 3: a re-seal makes the rotations due first), merges it, boxing B.
 #[test]
 fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
-    let mut lp = LocalPeer::new(3, 1141, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let (b, d) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let g = group(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &b, &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
-    lp.sync_all().unwrap();
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Write)]);
+    let b = tids[1];
     rotate_unboxed(&mut lp, 0, g, &[Role::Write], Some(Role::Write));
     lp.peers[2]
         .engine
@@ -323,13 +344,8 @@ fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
 // re-sealer stranded them until A).
 #[test]
 fn forked_role_resealed_without_a_node_holding_every_fork_spec_permissions_3() {
-    let mut lp = LocalPeer::new(3, 1142, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let (b, d) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let g = group(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &b, &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
-    lp.sync_all().unwrap();
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Write)]);
+    let (b, d) = (tids[1], tids[2]);
     for (i, other) in [(1, d), (2, b)] {
         lp.peers[i]
             .engine
@@ -371,12 +387,11 @@ fn forked_role_resealed_without_a_node_holding_every_fork_spec_permissions_3() {
 // each other (re-writing every box G made at s), then 2 removes reader 3: its rotation C removes
 // the boxes at s and at 4's fork. C must be established wherever it is held, else 4's fork stays
 // current with its boxes gone, covering 3 by the box rule, and is encrypted under while 3 holds
-// it. (Seed 3918: at 3917 4's fork lost the order, so 4, the fork's merger, merged it in its
-// grant and the shape was gone.)
+// it. 4 rotates twice, so its fork is newer than s (an older one makes 4 the fork's merger,
+// merging it in its grant: the shape is gone).
 #[test]
 fn rotation_after_invalid_one_through_regrants_spec_crypto_4() {
-    let mut lp = LocalPeer::new(5, 3_918, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(5);
     let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     let was = [Some(Role::Admin), Some(Role::Admin), Some(Role::Admin), Some(Role::Read), Some(Role::Admin)];
@@ -396,6 +411,7 @@ fn rotation_after_invalid_one_through_regrants_spec_crypto_4() {
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(edge(Role::Read)), retain: None }).unwrap();
     let read = BTreeSet::from([Role::Read]);
     rotate_leaving_out(&mut lp, 4, g, &read, &[]);
+    rotate_leaving_out(&mut lp, 4, g, &read, &[]);
     rotate_leaving_out(&mut lp, 1, g, &read, &[0, 1, 3]);
     others(&mut lp);
     lp.peers[2].engine.grant(&g, &tids[4], &edge(Role::Admin)).unwrap();
@@ -404,7 +420,7 @@ fn rotation_after_invalid_one_through_regrants_spec_crypto_4() {
     let before = lp.peers[2].engine.epochs(&g).unwrap().read.current();
     assert_eq!(before.len(), 2, "G's epoch and 4's fork current at 2: {before:?}");
     lp.peers[2].engine.demote(&g, &Demotion { holder: tids[3], new: None, retain: None }).unwrap();
-    departures_settle(&mut lp, g, 0, &mut Rng(1), was);
+    departures_settle(&mut lp, g, was);
 }
 
 /// Peer `w`, holding read epoch `s` of `g`, signs F, a forged rotation commit of `s`: `s`'s
@@ -439,8 +455,7 @@ fn forge_rotation(lp: &mut LocalPeer, w: usize, g: Tid, s: osis_crypto::Epoch, h
 // reader, re-seals e to it). Once R_s arrives, e is.
 #[test]
 fn forged_rotation_withheld_removal_spec_crypto_4() {
-    let mut lp = LocalPeer::new(4, 3_931, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(4);
     let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     for (i, r) in [(1, Role::Admin), (2, Role::Read), (3, Role::Admin)] {
@@ -491,19 +506,7 @@ fn withheld_arrives(lp: &mut LocalPeer, x: usize, g: Tid, e: osis_crypto::Epoch,
 // before e). Once R_s arrives, e is.
 #[test]
 fn valid_forged_rotation_withheld_removal_spec_crypto_4() {
-    let mut lp = LocalPeer::new(4, 3_931, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
-    let g = group(&mut lp, 0);
-    for (i, r) in [(1, Role::Write), (2, Role::Read), (3, Role::Admin)] {
-        lp.peers[0].engine.grant(&g, &tids[i], &edge(r)).unwrap();
-    }
-    lp.sync_all().unwrap();
-    let ids = |lp: &mut LocalPeer, i: usize| -> BTreeSet<osis_base::CommitId> { lp.packages(i).unwrap().into_iter().map(|p| p.id).collect() };
-    let before = ids(&mut lp, 0);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
-    let r_s: BTreeSet<_> = ids(&mut lp, 0).difference(&before).copied().collect();
-    let s = newest_read(&lp, 0, g).unwrap();
+    let (mut lp, g, tids, r_s, s) = removed_reader();
     lp.sync(0, 1).unwrap();
     let f = forge_rotation(&mut lp, 1, g, s, tids[3]);
     for pk in lp.packages(1).unwrap() {
@@ -529,24 +532,18 @@ fn valid_forged_rotation_withheld_removal_spec_crypto_4() {
 }
 
 /// Peers 0 (first admin A of `g`), 1 (W, a writer), 2 (M, a reader), 3 (X, an admin), all synced; A
-/// then removes M (R_s, rotating read to s). Returns `g`, the tids, R_s's commits and s.
-fn removed_reader(lp: &mut LocalPeer, extra_admin: bool) -> (Tid, Vec<Tid>, BTreeSet<osis_base::CommitId>, osis_crypto::Epoch) {
-    let n = lp.peers.len();
-    let tids: Vec<Tid> = (0..n).map(|i| lp.peers[i].engine.me()).collect();
-    let g = group(lp, 0);
-    let mut grants = vec![(1, Role::Write), (2, Role::Read), (3, Role::Admin)];
-    if extra_admin {
-        grants.push((4, Role::Admin));
-    }
-    for (i, r) in grants {
-        lp.peers[0].engine.grant(&g, &tids[i], &edge(r)).unwrap();
-    }
-    lp.sync_all().unwrap();
-    let before = commit_ids(lp, 0);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
-    let r_s: BTreeSet<_> = commit_ids(lp, 0).difference(&before).copied().collect();
-    let s = newest_read(lp, 0, g).unwrap();
-    (g, tids, r_s, s)
+/// then removes M (R_s, rotating read to s). Returns the peers, `g`, the tids, R_s's commits and s
+/// (built once, a copy each call).
+fn removed_reader() -> (LocalPeer, Tid, Vec<Tid>, BTreeSet<osis_base::CommitId>, osis_crypto::Epoch) {
+    let (lp, (g, tids, r_s, s)) = LocalPeer::cached("rotation::tests::removed_reader", || {
+        let (mut lp, g, tids) = granted(4, &[(1, Role::Write), (2, Role::Read), (3, Role::Admin)]);
+        let before = commit_ids(&mut lp, 0);
+        lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+        let r_s: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
+        let s = newest_read(&lp, 0, g).unwrap();
+        (lp, (g, tids, r_s, s))
+    });
+    (lp, g, tids, r_s, s)
 }
 
 pub(super) fn commit_ids(lp: &mut LocalPeer, i: usize) -> BTreeSet<osis_base::CommitId> {
@@ -572,9 +569,7 @@ fn withheld_then_arrives(lp: &mut LocalPeer, x: usize, g: Tid, e: osis_crypto::E
 // s beside it). At first admin A e1 is current; A removes W, rotating to e (naming R_s). X (3), withheld
 // R_s, must not establish e (it would re-seal e to M, departed before e).
 fn writer_rotation_skips(list_s: bool) {
-    let mut lp = LocalPeer::new(4, 3_931, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let (g, tids, r_s, s) = removed_reader(&mut lp, false);
+    let (mut lp, g, tids, r_s, s) = removed_reader();
     lp.sync(0, 1).unwrap();
     if list_s {
         forge_rotation(&mut lp, 1, g, s, tids[3]);
@@ -625,9 +620,7 @@ fn writer_rotation_listing_forged_spec_crypto_4() {
 // gets everything but R_s: e must not be established (X sees M as a reader).
 #[test]
 fn snapshot_keyed_without_removal_spec_crypto_4() {
-    let mut lp = LocalPeer::new(4, 3_931, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let (g, tids, r_s, s) = removed_reader(&mut lp, false);
+    let (mut lp, g, tids, r_s, s) = removed_reader();
     let snap = lp.peers[0].engine.snapshot(&g, &osis_base::Ak::new("secrets.0").unwrap()).unwrap();
     assert!(snap.is_some());
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
@@ -643,13 +636,7 @@ fn snapshot_keyed_without_removal_spec_crypto_4() {
 // so it is not any more, as at a rebuild (one valid base gone takes its keying with it).
 #[test]
 fn invalid_snapshot_keys_nothing_spec_crypto_4() {
-    let mut lp = LocalPeer::new(3, 3_932, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-    let g = group(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Read)]);
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
     lp.advance(1_000);
     lp.peers[1].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
@@ -667,8 +654,7 @@ fn invalid_snapshot_keys_nothing_spec_crypto_4() {
 // from its own timeline, whatever F says. X (3) gets everything but R_s: e not established.
 #[test]
 fn rotator_beside_forged_rotation_spec_crypto_4() {
-    let mut lp = LocalPeer::new(5, 3_931, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(5);
     let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     for (i, r) in [(1, Role::Write), (2, Role::Read), (3, Role::Admin), (4, Role::Admin)] {
@@ -738,7 +724,7 @@ pub(super) fn rotate_unchecked(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTree
 /// nothing is written, and checks the re-seal invariant (`reseal_candidates`), history adds and
 /// that no departed peer holds an epoch a remaining holder encrypts under (`was`: the highest
 /// role each peer held; peer 0 is `g`'s first admin).
-fn departures_settle(lp: &mut LocalPeer, g: Tid, seed: u64, rng: &mut Rng, was: [Option<Role>; 5]) {
+fn departures_settle(lp: &mut LocalPeer, g: Tid, was: [Option<Role>; 5]) {
     const N: usize = 5;
     let roles = [Role::Read, Role::Write, Role::Admin];
     let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.me()).collect();
@@ -751,9 +737,9 @@ fn departures_settle(lp: &mut LocalPeer, g: Tid, seed: u64, rng: &mut Rng, was: 
     }
     let stay: Vec<usize> = (0..N).filter(|p| role[*p].is_some()).collect();
     let mut settled = false;
-    for _ in 0..16 {
+    for round in 0..16 {
         let mut n = 0;
-        let concurrent = rng.next(2) == 0;
+        let concurrent = round % 2 == 1;
         for &p in &stay {
             n += lp.peers[p].engine.reseal_due(&g, &Pass).unwrap().commits.len();
             n += lp.peers[p].engine.ensure_rotated(&g).unwrap().0.commits.len();
@@ -767,7 +753,7 @@ fn departures_settle(lp: &mut LocalPeer, g: Tid, seed: u64, rng: &mut Rng, was: 
             break;
         }
     }
-    assert!(settled, "seed {seed}: no fixpoint in 16 rounds");
+    assert!(settled, "no fixpoint in 16 rounds");
     for r in roles {
         let ep = |p: usize| lp.peers[p].engine.epochs(&g).unwrap().role(r).clone();
         // peer 0, G's first admin, holds every role and is never demoted
@@ -777,15 +763,15 @@ fn departures_settle(lp: &mut LocalPeer, g: Tid, seed: u64, rng: &mut Rng, was: 
             let c = e.current();
             // peer 0's rotations are all valid: an epoch current elsewhere and unestablished
             // there is an invalid rotation's (a demoted admin's own, made unaware)
-            assert!(c.iter().all(|x| ep(0).is_established(x)), "seed {seed}: {r:?}: peer {p} counts current {c:?}, peer 0 establishes not all");
-            assert_eq!(c, at0, "seed {seed}: {r:?}: peers 0 and {p} count different current epochs (roles {role:?})");
+            assert!(c.iter().all(|x| ep(0).is_established(x)), "{r:?}: peer {p} counts current {c:?}, peer 0 establishes not all");
+            assert_eq!(c, at0, "{r:?}: peers 0 and {p} count different current epochs (roles {role:?})");
         }
         for e in &at0 {
             // re-sealed by a node that may rotate `r`; an epoch only non-rotators hold is a fork
             // the merge supersedes, or the lockout a removal ends (notes/crypto.md, Lockouts)
             let any = stay.iter().any(|&p| role[p] >= Some(r.max(Role::Write)) && ep(p).secret(e).is_some());
             let lacking: Vec<usize> = stay.iter().copied().filter(|h| role[*h] >= Some(r) && ep(*h).secret(e).is_none()).collect();
-            assert!(!any || lacking.is_empty(), "seed {seed}: {r:?} holders {lacking:?} lack current epoch {e:?} another node holds");
+            assert!(!any || lacking.is_empty(), "{r:?} holders {lacking:?} lack current epoch {e:?} another node holds");
             // history adds: every holder of `e` holds every earlier superseded established
             // secret any holder of `e` holds (spec/crypto.md §4, History add)
             let at_e: Vec<usize> = stay.iter().copied().filter(|h| role[*h] >= Some(r) && ep(*h).secret(e).is_some()).collect();
@@ -793,7 +779,7 @@ fn departures_settle(lp: &mut LocalPeer, g: Tid, seed: u64, rng: &mut Rng, was: 
                 let ex = ep(p);
                 for (x, _) in ex.held_established().filter(|(x, _)| x.n() < e.n() && !ex.is_current(x)) {
                     let missing: Vec<usize> = at_e.iter().copied().filter(|h| ep(*h).secret(&x).is_none()).collect();
-                    assert!(missing.is_empty(), "seed {seed}: {r:?} holders {missing:?} of current {e:?} lack earlier {x:?} peer {p} holds");
+                    assert!(missing.is_empty(), "{r:?} holders {missing:?} of current {e:?} lack earlier {x:?} peer {p} holds");
                 }
             }
         }
@@ -802,7 +788,7 @@ fn departures_settle(lp: &mut LocalPeer, g: Tid, seed: u64, rng: &mut Rng, was: 
         for h in stay.iter().copied().filter(|h| role[*h] >= Some(r)) {
             let Some(e) = ep(h).newest_held().map(|x| x.0) else { continue };
             for d in (0..N).filter(|d| was[*d] >= Some(r) && role[*d] < Some(r)) {
-                assert!(ep(d).reading_secret(&e).is_none(), "seed {seed}: peer {d}, {:?} now, holds {r:?} epoch {e:?} peer {h} encrypts under", role[d]);
+                assert!(ep(d).reading_secret(&e).is_none(), "peer {d}, {:?} now, holds {r:?} epoch {e:?} peer {h} encrypts under", role[d]);
             }
         }
     }
@@ -816,13 +802,7 @@ fn departures_settle(lp: &mut LocalPeer, g: Tid, seed: u64, rng: &mut Rng, was: 
 // epoch's history, so X reads what went under it.
 #[test]
 fn finalize_without_secret_rotates_history_added_spec_permissions_2() {
-    let mut lp = LocalPeer::new(3, 3_996, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-    let g = group(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Admin)]);
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Write]), &[2]);
     let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
     let timed = ct::Edge { until: Some(until), ..edge(Role::Write) };
@@ -855,13 +835,7 @@ fn finalize_without_secret_rotates_history_added_spec_permissions_2() {
 // established, nor re-sealed to D. Once U arrives, e is.
 #[test]
 fn finalize_without_its_until_unmet_spec_crypto_4() {
-    let mut lp = LocalPeer::new(3, 3_995, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-    let g = group(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Admin)]);
     let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
     let timed = ct::Edge { until: Some(until), ..edge(Role::Write) };
     let u: BTreeSet<_> = lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(timed), retain: None }).unwrap().commits.into_iter().collect();
@@ -892,8 +866,7 @@ fn finalize_without_its_until_unmet_spec_crypto_4() {
 // A, holding everything, would take that epoch as covering D1's departure.
 #[test]
 fn finalize_applies_whole_or_not_spec_permissions_2() {
-    let mut lp = LocalPeer::new(5, 3_989, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(5);
     let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     for (p, r) in [(1, Role::Admin), (2, Role::Admin), (3, Role::Write), (4, Role::Write)] {
@@ -936,9 +909,7 @@ fn finalize_applies_whole_or_not_spec_permissions_2() {
 // Once R_s arrives whole, e is.
 #[test]
 fn named_commit_without_its_edge_write_unmet_spec_crypto_4() {
-    let mut lp = LocalPeer::new(4, 3_961, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let (g, tids, r_s, _) = removed_reader(&mut lp, false);
+    let (mut lp, g, tids, r_s, _) = removed_reader();
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
     let e = newest_read(&lp, 0, g).unwrap();
     let all = lp.packages(0).unwrap();
@@ -969,8 +940,7 @@ fn named_commit_without_its_edge_write_unmet_spec_crypto_4() {
 // be established there (X sees D a reader and would re-seal e to it). Once it arrives, e is.
 #[test]
 fn audit_dropped_grant_named_spec_crypto_4() {
-    let mut lp = LocalPeer::new(4, 3_981, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(4);
     let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
     let o = group(&mut lp, 0);
     lp.peers[0].engine.grant(&o, &tids[1], &edge(Role::Admin)).unwrap();
@@ -1009,7 +979,7 @@ fn audit_dropped_grant_named_spec_crypto_4() {
 // which e1 does not name: A must rotate before encrypting under e1, which D holds.
 #[test]
 fn newest_event_names_departure_spec_crypto_4() {
-    for seed in [3_990, 3_991, 3_992, 3_993] {
+    for seed in 0..4 {
         let mut lp = LocalPeer::new(3, seed, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
@@ -1055,62 +1025,46 @@ pub(super) fn opens_through(lp: &mut LocalPeer, i: usize, a: Tid, m: Tid, epochs
 }
 
 // spec/crypto.md §4 (covers by names; study C2, fork-sibling re-seal): a1 grants D read; a2
-// rotates A to e1 before reading the grant (no box for D); a1, not holding e1, removes D (its own
-// rotation e2 forks e1). Where a1 takes e1 as newest, e1 holds no box for D but its rotator never
-// knew of the removal, so it covers nothing: a1 rotates before encrypting. a2 then reads the grant
-// but not the removal and re-seals D at e1: D opens e1, never the epoch a1 encrypts under.
+// rotates A twice, to e1, before reading the grant (no box for D); a1, not holding e1, removes D
+// (its own rotation forks e1 one n lower, so a1 takes e1 as newest). e1 holds no box for D but its
+// rotator never knew of the removal, so it covers nothing: a1 rotates before encrypting. a2 then
+// reads the grant but not the removal and re-seals D at e1: D opens e1, never the epoch a1
+// encrypts under.
 #[test]
 fn fork_sibling_reseal_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
-    let mut hit = 0;
-    for seed in 4_100..4_116 {
-        let mut lp = LocalPeer::new(3, seed, WallMs(1_700_000_000_000)).unwrap();
-        lp.sync_all().unwrap();
-        let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-        let a = group(&mut lp, 0);
-        lp.peers[0].engine.grant(&a, &tids[1], &edge(Role::Admin)).unwrap();
-        lp.sync_all().unwrap();
-        lp.peers[0].engine.grant(&a, &tids[2], &edge(Role::Read)).unwrap();
-        rotate_leaving_out(&mut lp, 1, a, &read, &[]);
-        let e1 = newest_read(&lp, 1, a).unwrap();
-        send_skipping(&mut lp, 0, 2, &BTreeSet::new());
-        let start = held_by(&lp, 2, &[a]);
-        let before = commit_ids(&mut lp, 0);
-        lp.peers[0].engine.demote(&a, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
-        let removal: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
-        send_skipping(&mut lp, 1, 0, &BTreeSet::new());
-        if newest_read(&lp, 0, a) != Some(e1) {
-            continue;
-        }
-        hit += 1;
-        assert!(blocked_at(&mut lp, 0, a).contains(&Role::Read), "e1 does not name the removal");
-        let _ = lp.peers[0].engine.ensure_rotated(&a).unwrap();
-        let w = newest_read(&lp, 0, a).unwrap();
-        assert_ne!(w, e1, "a1 rotated");
-        send_skipping(&mut lp, 0, 1, &removal);
-        lp.peers[1].engine.reseal_due(&a, &Pass).unwrap();
-        assert!(openable(&mut lp, 1, &[a], tids[2], start.clone()).contains(&(a, Role::Read, e1)), "a2 re-sealed D at e1");
-        assert!(!openable(&mut lp, 1, &[a], tids[2], start).contains(&(a, Role::Read, w)), "D opens the epoch a1 writes under");
-    }
-    assert!(hit > 0, "no seed took e1 as newest");
+    let mut lp = synced(3);
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let a = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&a, &tids[1], &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&a, &tids[2], &edge(Role::Read)).unwrap();
+    rotate_leaving_out(&mut lp, 1, a, &read, &[]);
+    rotate_leaving_out(&mut lp, 1, a, &read, &[]);
+    let e1 = newest_read(&lp, 1, a).unwrap();
+    send_skipping(&mut lp, 0, 2, &BTreeSet::new());
+    let start = held_by(&lp, 2, &[a]);
+    let before = commit_ids(&mut lp, 0);
+    lp.peers[0].engine.demote(&a, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    let removal: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
+    send_skipping(&mut lp, 1, 0, &BTreeSet::new());
+    assert_eq!(lp.peers[0].engine.epochs(&a).unwrap().read.current().len(), 2, "e1 forks a1's removal");
+    assert_eq!(newest_read(&lp, 0, a), Some(e1), "a1 takes e1 as newest");
+    assert!(blocked_at(&mut lp, 0, a).contains(&Role::Read), "e1 does not name the removal");
+    let _ = lp.peers[0].engine.ensure_rotated(&a).unwrap();
+    let w = newest_read(&lp, 0, a).unwrap();
+    assert_ne!(w, e1, "a1 rotated");
+    send_skipping(&mut lp, 0, 1, &removal);
+    lp.peers[1].engine.reseal_due(&a, &Pass).unwrap();
+    assert!(openable(&mut lp, 1, &[a], tids[2], start.clone()).contains(&(a, Role::Read, e1)), "a2 re-sealed D at e1");
+    assert!(!openable(&mut lp, 1, &[a], tids[2], start).contains(&(a, Role::Read, w)), "D opens the epoch a1 writes under");
 }
 
 /// Peers: 0 a hostile admin of G, 1 an honest admin, 2 a writer who stays, 3 a reader removed by 0's
 /// rotation, whose parts on `bad` do not decode, or never come (`leave_out`). What each then holds, and
 /// what the honest admin's own rotation gives.
-fn removal_with(seed: u64, bad: &[&str], leave_out: bool) -> Vec<String> {
-    let mut lp = LocalPeer::new(4, seed, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let ids: Vec<Tid> = lp.peers.iter().map(|p| p.engine.me()).collect();
-    let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
-    let mut m = Mutation::new();
-    let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
-    lp.peers[0].commit(m).unwrap();
-    lp.peers[0].engine.give_own_secrets(&g).unwrap();
-    lp.peers[0].engine.grant(&g, &ids[1], &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&g, &ids[2], &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&g, &ids[3], &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
+fn removal_with(bad: &[&str], leave_out: bool) -> Vec<String> {
+    let (mut lp, g, ids) = granted(4, &[(1, Role::Admin), (2, Role::Write), (3, Role::Read)]);
     let before: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().collect();
     lp.advance(1000);
     lp.peers[0].engine.core.skip_writer_rules = true;
@@ -1159,15 +1113,14 @@ fn removal_with(seed: u64, bad: &[&str], leave_out: bool) -> Vec<String> {
 #[test]
 fn bad_rotation_parts_read_as_missing_spec_commits_4() {
     for bad in [&["secrets.0"][..], &["keys.0"], &["secrets.0", "keys.0"]] {
-        assert_eq!(removal_with(9931, bad, false), removal_with(9931, bad, true), "{bad:?}");
+        assert_eq!(removal_with(bad, false), removal_with(bad, true), "{bad:?}");
     }
 }
 
 // spec/permissions.md §4, spec/crypto.md §5: a first admin's holder with K's keyset and none of K's secrets has K's derived read epochs, to open its label and nothing more: it wraps nothing, rotates and boxes nothing; a node not holding the first admin has none; K's real box then replaces them
 #[test]
 fn keyset_before_box_reads_only_spec_permissions_4() {
-    let mut lp = LocalPeer::new(3, 3_391, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(3);
     let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
     let admin = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
     let mut m = Mutation::new();
@@ -1210,8 +1163,7 @@ fn keyset_before_box_reads_only_spec_permissions_4() {
 // so its name is met: e is established everywhere and nobody stays blocked under G.
 #[test]
 fn finalize_beside_renewal_settles_spec_crypto_4() {
-    let mut lp = LocalPeer::new(4, 3_993, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(4);
     let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
@@ -1245,8 +1197,7 @@ fn finalize_beside_renewal_settles_spec_crypto_4() {
 // leaves out D2, which A sees renewed and re-seals, so D2 holds a current secret of G.
 #[test]
 fn renewed_holder_resealed_spec_crypto_4() {
-    let mut lp = LocalPeer::new(3, 3_991, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(3);
     let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
@@ -1273,24 +1224,23 @@ fn renewed_holder_resealed_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (rotating needs no secret; merge; History box): B and D, writers granted
-// concurrently, each rotate read leaving the other out (each lacks the other's fork), and A
-// removes reader X, then is gone. Each knowing the removal merges at once, lacking the other's
-// fork; the merges fork and settle by their merger, and each ends holding every fork's secret
-// (the merges' history boxes, and history adds for what they lacked). X is boxed at none of it.
+// concurrently, each rotate read twice leaving the other out (each lacks the other's forks, one n
+// past A's), and A removes reader X, then is gone. Each knowing the removal is blocked (the newest
+// fork does not cover it) and merges at once, lacking the other's fork; the merges fork and
+// settle by their merger, and each ends holding every fork's secret (the merges' history boxes,
+// and history adds for what they lacked). X is boxed at none of it.
 #[test]
 fn forks_unboxed_with_departure_merge_lacking_secrets_spec_crypto_4() {
-    let mut found = false;
-    for seed in 0..12u64 {
-        let mut lp = LocalPeer::new(4, 7100 + seed, WallMs(1_700_000_000_000)).unwrap();
-        lp.sync_all().unwrap();
-        let (b, d, x) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me());
-        let g = group(&mut lp, 0);
-        lp.peers[0].engine.grant(&g, &b, &edge(Role::Write)).unwrap();
-        lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
-        lp.peers[0].engine.grant(&g, &x, &edge(Role::Read)).unwrap();
-        lp.sync_all().unwrap();
-        let mut forks = Vec::new();
-        for (i, other) in [(1, d), (2, b)] {
+    let mut lp = synced(4);
+    let (b, d, x) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me());
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &b, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&g, &x, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let mut forks = Vec::new();
+    for (i, other) in [(1, d), (2, b)] {
+        for _ in 0..2 {
             forks.push(lp.peers[i]
                 .engine
                 .run(|tx| {
@@ -1304,42 +1254,39 @@ fn forks_unboxed_with_departure_merge_lacking_secrets_spec_crypto_4() {
                 })
                 .unwrap());
         }
-        lp.peers[0].engine.demote(&g, &Demotion { holder: x, new: None, retain: None }).unwrap();
-        // A is gone: only B and D exchange
-        lp.sync(0, 1).unwrap();
-        lp.sync(0, 2).unwrap();
+    }
+    lp.peers[0].engine.demote(&g, &Demotion { holder: x, new: None, retain: None }).unwrap();
+    // A is gone: only B and D exchange
+    lp.sync(0, 1).unwrap();
+    lp.sync(0, 2).unwrap();
+    lp.sync(1, 2).unwrap();
+    lp.sync(2, 1).unwrap();
+    for p in [1, 2] {
+        assert!(!blocked_at(&mut lp, p, g).is_empty(), "peer {p} not blocked by the removal");
+    }
+    for p in [1, 2] {
+        let (done, still) = lp.peers[p].engine.ensure_rotated(&g).unwrap();
+        assert!(!done.commits.is_empty(), "peer {p} did not merge lacking a fork");
+        assert!(still.is_empty(), "peer {p} still blocked: {still:?}");
+    }
+    for _ in 0..4 {
+        for p in [1, 2] {
+            let _ = lp.peers[p].engine.ensure_rotated(&g);
+            let _ = lp.peers[p].engine.reseal_due(&g, &Pass);
+        }
         lp.sync(1, 2).unwrap();
         lp.sync(2, 1).unwrap();
-        if blocked_at(&mut lp, 1, g).is_empty() || blocked_at(&mut lp, 2, g).is_empty() {
-            continue;
-        }
-        found = true;
-        for p in [1, 2] {
-            let (done, still) = lp.peers[p].engine.ensure_rotated(&g).unwrap();
-            assert!(!done.commits.is_empty(), "peer {p} did not merge lacking a fork");
-            assert!(still.is_empty(), "peer {p} still blocked: {still:?}");
-        }
-        for _ in 0..4 {
-            for p in [1, 2] {
-                let _ = lp.peers[p].engine.ensure_rotated(&g);
-                let _ = lp.peers[p].engine.reseal_due(&g, &Pass);
-            }
-            lp.sync(1, 2).unwrap();
-            lp.sync(2, 1).unwrap();
-        }
-        for p in [1, 2] {
-            assert!(blocked_at(&mut lp, p, g).is_empty(), "peer {p} still blocked under G");
-            let e = lp.peers[p].engine.epochs(&g).unwrap();
-            assert_eq!(e.read.current().len(), 1, "peer {p}: forks merged");
-            assert!(e.read.holds_current(), "peer {p} holds the merge");
-            assert!(forks.iter().all(|f| e.read.secret(f).is_some()), "peer {p} lacks a fork's secret");
-        }
-        let (e, _) = lp.peers[1].engine.epochs(&g).unwrap().read.newest_held().unwrap();
-        let s = lp.peers[1].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap();
-        assert!(!s.boxes.contains_key(&osis_keys::aspects::box_key(x, Role::Read, &e)), "X boxed at the merge");
-        break;
     }
-    assert!(found, "no seed reached both blocked");
+    for p in [1, 2] {
+        assert!(blocked_at(&mut lp, p, g).is_empty(), "peer {p} still blocked under G");
+        let e = lp.peers[p].engine.epochs(&g).unwrap();
+        assert_eq!(e.read.current().len(), 1, "peer {p}: forks merged");
+        assert!(e.read.holds_current(), "peer {p} holds the merge");
+        assert!(forks.iter().all(|f| e.read.secret(f).is_some()), "peer {p} lacks a fork's secret");
+    }
+    let (e, _) = lp.peers[1].engine.epochs(&g).unwrap().read.newest_held().unwrap();
+    let s = lp.peers[1].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap();
+    assert!(!s.boxes.contains_key(&osis_keys::aspects::box_key(x, Role::Read, &e)), "X boxed at the merge");
 }
 
 // spec/permissions.md §3 (a `secrets.0` delta putting history boxes only needs the role its
@@ -1348,8 +1295,7 @@ fn forks_unboxed_with_departure_merge_lacking_secrets_spec_crypto_4() {
 // write).
 #[test]
 fn reader_history_add_valid_box_put_not_spec_permissions_3() {
-    let mut lp = LocalPeer::new(2, 7_400, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(2);
     let r = lp.peers[1].engine.me();
     let g = group(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &r, &edge(Role::Read)).unwrap();
@@ -1390,45 +1336,41 @@ fn boxes_of(lp: &mut LocalPeer, i: usize, t: Tid, x: Tid) -> BTreeSet<ct::BoxKey
 // spec/permissions.md §3 (a grant boxes the holder at the current epochs held, after the
 // rotations the node may make), spec/crypto.md §4: as
 // `forks_unboxed_with_departure_merge_lacking_secrets_*`, B and D admins, both blocked by A's
-// removal of X. B grants fresh Z read: B merges first (lacking D's fork), Z gets B's merge
-// epoch, and the removed X gets no box.
+// removal of X (their forks, each rotated twice, one n past A's). B grants fresh Z read: B merges
+// first (lacking D's fork), Z gets B's merge epoch, and the removed X gets no box.
 #[test]
 fn grant_merges_first_boxes_grantee_only_spec_crypto_4() {
-    let mut found = false;
-    for seed in 0..24u64 {
-        let mut lp = LocalPeer::new(5, 7300 + seed, WallMs(1_700_000_000_000)).unwrap();
-        lp.sync_all().unwrap();
-        let (b, d, x, z) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me(), lp.peers[4].engine.me());
-        let g = group(&mut lp, 0);
-        lp.peers[0].engine.grant(&g, &b, &edge(Role::Admin)).unwrap();
-        lp.peers[0].engine.grant(&g, &d, &edge(Role::Admin)).unwrap();
-        lp.peers[0].engine.grant(&g, &x, &edge(Role::Read)).unwrap();
-        lp.sync_all().unwrap();
-        rotate_leaving_out(&mut lp, 1, g, &BTreeSet::from([Role::Read]), &[2]);
-        rotate_leaving_out(&mut lp, 2, g, &BTreeSet::from([Role::Read]), &[1]);
-        lp.peers[0].engine.demote(&g, &Demotion { holder: x, new: None, retain: None }).unwrap();
-        lp.sync(0, 1).unwrap();
-        lp.sync(0, 2).unwrap();
-        lp.sync(1, 2).unwrap();
-        lp.sync(2, 1).unwrap();
-        if blocked_at(&mut lp, 1, g).is_empty() || blocked_at(&mut lp, 2, g).is_empty() {
-            continue;
+    let mut lp = synced(5);
+    let (b, d, x, z) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me(), lp.peers[4].engine.me());
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &b, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&g, &d, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&g, &x, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    for (i, other) in [(1, 2), (2, 1)] {
+        for _ in 0..2 {
+            rotate_leaving_out(&mut lp, i, g, &BTreeSet::from([Role::Read]), &[other]);
         }
-        found = true;
-        let before = boxes_of(&mut lp, 1, g, x);
-        let done = lp.peers[1].engine.grant(&g, &z, &edge(Role::Read)).unwrap();
-        assert_eq!(done.commits.len(), 2, "B merged, then granted: {:?}", done.commits);
-        assert!(blocked_at(&mut lp, 1, g).is_empty(), "B still blocked after its merge");
-        assert!(boxes_of(&mut lp, 1, g, x).is_subset(&before), "X boxed by the grant");
-        let e = lp.peers[1].engine.epochs(&g).unwrap();
-        assert_eq!(e.read.current().len(), 1, "B's merge alone is current at B");
-        let (m, _) = e.read.newest_held().unwrap();
-        assert!(boxes_of(&mut lp, 1, g, z).contains(&osis_keys::aspects::box_key(z, Role::Read, &m)), "Z not boxed at the merge");
-        lp.sync(1, 4).unwrap();
-        assert!(lp.peers[4].engine.epochs(&g).unwrap().read.secret(&m).is_some(), "Z holds no secret of the merge");
-        break;
     }
-    assert!(found, "no seed reached both blocked");
+    lp.peers[0].engine.demote(&g, &Demotion { holder: x, new: None, retain: None }).unwrap();
+    lp.sync(0, 1).unwrap();
+    lp.sync(0, 2).unwrap();
+    lp.sync(1, 2).unwrap();
+    lp.sync(2, 1).unwrap();
+    for p in [1, 2] {
+        assert!(!blocked_at(&mut lp, p, g).is_empty(), "peer {p} not blocked by the removal");
+    }
+    let before = boxes_of(&mut lp, 1, g, x);
+    let done = lp.peers[1].engine.grant(&g, &z, &edge(Role::Read)).unwrap();
+    assert_eq!(done.commits.len(), 2, "B merged, then granted: {:?}", done.commits);
+    assert!(blocked_at(&mut lp, 1, g).is_empty(), "B still blocked after its merge");
+    assert!(boxes_of(&mut lp, 1, g, x).is_subset(&before), "X boxed by the grant");
+    let e = lp.peers[1].engine.epochs(&g).unwrap();
+    assert_eq!(e.read.current().len(), 1, "B's merge alone is current at B");
+    let (m, _) = e.read.newest_held().unwrap();
+    assert!(boxes_of(&mut lp, 1, g, z).contains(&osis_keys::aspects::box_key(z, Role::Read, &m)), "Z not boxed at the merge");
+    lp.sync(1, 4).unwrap();
+    assert!(lp.peers[4].engine.epochs(&g).unwrap().read.secret(&m).is_some(), "Z holds no secret of the merge");
 }
 
 // spec/permissions.md §2 (finalize), §3 (re-seal a current holder): admin X (2) lacks write
@@ -1437,13 +1379,7 @@ fn grant_merges_first_boxes_grantee_only_spec_crypto_4() {
 // must finalize is no box to a current holder), so D never reads the new read epoch.
 #[test]
 fn ended_holder_not_resealed_spec_permissions_2() {
-    let mut lp = LocalPeer::new(3, 3_997, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-    let g = group(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Admin)]);
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Write]), &[2]);
     let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
     let timed = ct::Edge { until: Some(until), ..edge(Role::Write) };
@@ -1468,8 +1404,7 @@ fn ended_holder_not_resealed_spec_permissions_2() {
 // then finalizes, and the forks merge.
 #[test]
 fn forks_with_ended_edge_finalize_after_reseal_spec_permissions_2() {
-    let mut lp = LocalPeer::new(4, 7_400, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(4);
     let (b, d, x) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me());
     let g = group(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &b, &edge(Role::Write)).unwrap();
@@ -1511,13 +1446,7 @@ fn forks_with_ended_edge_finalize_after_reseal_spec_permissions_2() {
 #[test]
 fn blocked_epoch_history_carries_nothing_new_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
-    let mut lp = LocalPeer::new(3, 4_201, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-    let g = group(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Read)]);
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
     let f = newest_read(&lp, 0, g).unwrap();
     rotate_leaving_out(&mut lp, 0, g, &read, &[]);
@@ -1545,8 +1474,7 @@ fn blocked_epoch_history_carries_nothing_new_spec_crypto_4() {
 // something they are read from changed, not per ask and not per commit held.
 #[test]
 fn epochs_are_derived_once_per_change_of_what_they_read() {
-    let mut lp = LocalPeer::new(2, 31, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(2);
     let (t, other) = (group(&mut lp, 0), group(&mut lp, 0));
     let w = lp.peers[1].engine.me();
     let derived = |lp: &mut LocalPeer| {

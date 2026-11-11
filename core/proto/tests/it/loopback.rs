@@ -535,7 +535,7 @@ fn subscribe_push_and_relays() {
     let (evs, _) = events_of(&net.run(1, sync(l.id, cursor, vec![], vec![])));
     assert!(evs.is_empty());
     let p = Prefix::new(salt(9), Some(WallMs(T0 + osis_base::format::MAX_DRIFT_MS)), vec![]).unwrap().with_class(osis_label::Class::Relay);
-    let env = osis_label::frame(&p, &[0x5a; 100], &mut osis_crypto::SeededRng::from_seed([9; 32])).unwrap().1;
+    let env = osis_label::frame(&p, &[0x5a; 100], &mut osis_crypto::SeededRng::from_seed([0; 32])).unwrap().1;
     let e = l.entry(env.clone());
     let ev = net.run(0, Command::Upload { label: l.id, entries: vec![e.clone()] });
     assert_eq!(statuses(&ev), vec![Code::OK]);

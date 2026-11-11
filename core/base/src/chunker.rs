@@ -307,7 +307,7 @@ mod tests {
     // spec/wire.md §6: format parameters give chunks of about CHUNK_MIN + 64 KiB.
     #[test]
     fn format_average() {
-        let d = data(1, 8 << 20);
+        let d = data(0, 8 << 20);
         let l = chunk_lengths(&d, ChunkParams::FORMAT);
         let avg = d.len() / l.len();
         assert!((60 << 10..100 << 10).contains(&avg), "avg {avg}");

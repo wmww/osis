@@ -5,11 +5,11 @@
 //! Shape: G <- X1 <- X2 <- W, X2 removing W where G's admin never learns of it.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{blocked_at, commit_ids, edge, group, held_by, newest_read, openable, rotate_unchecked, send_skipping};
+use super::tests::{blocked_at, commit_ids, edge, group, held_by, newest_read, openable, rotate_unchecked, send_skipping, synced};
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
-use osis_base::{CommitId, Role, Tid, WallMs};
+use osis_base::{CommitId, Role, Tid};
 use osis_crypto::Epoch;
 use osis_keys::{HolderKeys, Recipient};
 use std::collections::BTreeSet;
@@ -26,21 +26,23 @@ struct Shape {
 }
 
 /// Peers A (G's admin), B (admin of X1 and X2), W (a writer of X2). X2 writes X1, X1 writes G:
-/// W writes G through X1. All synced.
-fn shape(seed: u64) -> Shape {
-    let mut lp = LocalPeer::new(3, seed, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let w = lp.peers[W].engine.me();
-    let x2 = group(&mut lp, B);
-    lp.peers[B].engine.grant(&x2, &w, &edge(Role::Write)).unwrap();
-    let x1 = group(&mut lp, B);
-    lp.peers[B].engine.grant(&x1, &x2, &edge(Role::Write)).unwrap();
-    lp.sync_all().unwrap();
-    let g = group(&mut lp, A);
-    lp.peers[A].engine.grant(&g, &x1, &edge(Role::Write)).unwrap();
-    lp.sync_all().unwrap();
-    assert_eq!(lp.peers[W].engine.core.role_now(&w, &g), Some(Role::Write));
-    assert!(held_by(&lp, W, &[g]).contains(&(g, Role::Read, newest_read(&lp, A, g).unwrap())), "W reads G through X1");
+/// W writes G through X1. All synced (built once, a copy each call).
+fn shape() -> Shape {
+    let (lp, (g, x1, x2)) = LocalPeer::cached("rotation::tests_possession::shape", || {
+        let mut lp = synced(3);
+        let w = lp.peers[W].engine.me();
+        let x2 = group(&mut lp, B);
+        lp.peers[B].engine.grant(&x2, &w, &edge(Role::Write)).unwrap();
+        let x1 = group(&mut lp, B);
+        lp.peers[B].engine.grant(&x1, &x2, &edge(Role::Write)).unwrap();
+        lp.sync_all().unwrap();
+        let g = group(&mut lp, A);
+        lp.peers[A].engine.grant(&g, &x1, &edge(Role::Write)).unwrap();
+        lp.sync_all().unwrap();
+        assert_eq!(lp.peers[W].engine.core.role_now(&w, &g), Some(Role::Write));
+        assert!(held_by(&lp, W, &[g]).contains(&(g, Role::Read, newest_read(&lp, A, g).unwrap())), "W reads G through X1");
+        (lp, (g, x1, x2))
+    });
     Shape { lp, g, x1, x2 }
 }
 
@@ -175,7 +177,7 @@ fn a_writes_unread(s: &mut Shape, mut known: BTreeSet<(Tid, Role, Epoch)>) {
 // nothing under G, until it learns or is re-sealed (spec/crypto.md §4, Possession, Writers).
 #[test]
 fn removed_member_waits_spec_crypto_4() {
-    let mut s = shape(7_001);
+    let mut s = shape();
     removed(&mut s);
     let (done, still) = s.lp.peers[W].engine.ensure_rotated(&s.g).unwrap();
     assert!(done.commits.is_empty(), "W rotates G");
@@ -194,7 +196,7 @@ fn removed_member_waits_spec_crypto_4() {
 // box and W opens nothing A uses.
 #[test]
 fn removed_member_forged_rotation_refused_spec_crypto_4() {
-    let mut s = shape(7_002);
+    let mut s = shape();
     let start = removed(&mut s);
     let (c, e) = forged_rotation(&mut s, Forged::Sealed);
     deliver_w(&mut s);
@@ -207,7 +209,7 @@ fn removed_member_forged_rotation_refused_spec_crypto_4() {
 // through X1) does not count for it (Authority). Refused everywhere.
 #[test]
 fn removed_member_rotation_leaving_holder_out_refused_spec_crypto_4() {
-    let mut s = shape(7_003);
+    let mut s = shape();
     let start = removed(&mut s);
     let (c, e) = forged_rotation(&mut s, Forged::Out);
     deliver_w(&mut s);
@@ -221,7 +223,7 @@ fn removed_member_rotation_leaving_holder_out_refused_spec_crypto_4() {
 // Refused: A still holds the stale box and rotates.
 #[test]
 fn removed_member_box_removal_refused_spec_crypto_4() {
-    let mut s = shape(7_004);
+    let mut s = shape();
     let start = removed(&mut s);
     let (g, x1) = (s.g, s.x1);
     let e = newest_read(&s.lp, W, g).unwrap();
@@ -255,7 +257,7 @@ fn removed_member_box_removal_refused_spec_crypto_4() {
 // stale box and W opens nothing A uses.
 #[test]
 fn removed_member_reseal_refused_spec_crypto_4() {
-    let mut s = shape(7_007);
+    let mut s = shape();
     let start = removed(&mut s);
     let (g, x1) = (s.g, s.x1);
     let before = commit_ids(&mut s.lp, W);
@@ -290,7 +292,7 @@ fn removed_member_reseal_refused_spec_crypto_4() {
 // stale box (spec/crypto.md §4, Stale), and rotates; W opens nothing A uses.
 #[test]
 fn removed_member_proving_an_old_keyset_is_stale_spec_crypto_4() {
-    let mut s = shape(7_008);
+    let mut s = shape();
     let start = removed(&mut s);
     let (c, _) = forged_rotation(&mut s, Forged::ProvedOld);
     deliver_w(&mut s);
@@ -305,7 +307,7 @@ fn removed_member_proving_an_old_keyset_is_stale_spec_crypto_4() {
 // is valid there; once X1's rotation arrives, it is invalid, as where it arrived first.
 #[test]
 fn possession_judged_again_when_keyset_arrives_spec_crypto_4() {
-    let mut s = shape(7_006);
+    let mut s = shape();
     let (_, x1_rot) = removed_holding(&mut s, true);
     let (c, e) = forged_rotation(&mut s, Forged::ProvedNew);
     for pk in s.lp.packages(W).unwrap().into_iter().filter(|p| p.id == c) {
@@ -325,7 +327,7 @@ fn possession_judged_again_when_keyset_arrives_spec_crypto_4() {
 // keyset. Read alone (its read keyset proving X1 at read only) is invalid at every node.
 #[test]
 fn writer_through_a_holder_rotates_write_with_read_spec_crypto_4() {
-    let mut s = shape(7_009);
+    let mut s = shape();
     let (w, g, x1) = (s.lp.peers[W].engine.me(), s.g, s.x1);
     let read = BTreeSet::from([Role::Read]);
     let roles = s
@@ -366,7 +368,7 @@ fn writer_through_a_holder_rotates_write_with_read_spec_crypto_4() {
 // W opens no write epoch of G that A uses.
 #[test]
 fn demoted_member_shows_no_write_spec_crypto_4() {
-    let mut s = shape(7_010);
+    let mut s = shape();
     let start = demoted_holding(&mut s, Some(Role::Read), false).0;
     let (w, g, x1) = (s.lp.peers[W].engine.me(), s.g, s.x1);
     let em = s.lp.peers[W].engine.epochs(&x1).unwrap();

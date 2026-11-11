@@ -447,7 +447,7 @@ pub(crate) mod tests {
     // delete key only; paths verify step by step.
     #[test]
     fn steps_and_paths() {
-        let mut rng = SeededRng::from_u64(1);
+        let mut rng = SeededRng::from_u64(0);
         let g = Group::new(10);
         let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), &mut rng).unwrap();
         assert_eq!(s0.label, genesis_label(&g.admin, 0));
@@ -486,7 +486,7 @@ pub(crate) mod tests {
     // spec/wire.md §8, §1: step decoder rejections: wrong length, bad prev, bad key.
     #[test]
     fn step_rejections() {
-        let mut rng = SeededRng::from_u64(2);
+        let mut rng = SeededRng::from_u64(0);
         let g = Group::new(30);
         let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), &mut rng).unwrap();
         let Value::List(items) = s0.to_value() else { panic!() };
@@ -510,7 +510,7 @@ pub(crate) mod tests {
     // omitted; the set hashes into the step.
     #[test]
     fn claims_and_entry_boxes() {
-        let mut rng = SeededRng::from_u64(3);
+        let mut rng = SeededRng::from_u64(0);
         let g = Group::new(40);
         let m1 = KeyActorKeys::from_seed(&Secret32::from_bytes([1; 32]));
         let m2 = KeyActorKeys::from_seed(&Secret32::from_bytes([2; 32]));

@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 pub struct Rng(pub u64);
 impl Rng {
     pub fn next(&mut self) -> u64 {
-        // xorshift64*
-        let mut x = self.0;
+        // xorshift64* (which never leaves a zero state, nor reaches one: 0 seeds as any other)
+        let mut x = if self.0 == 0 { 0x9E37_79B9_7F4A_7C15 } else { self.0 };
         x ^= x >> 12;
         x ^= x << 25;
         x ^= x >> 27;

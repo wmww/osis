@@ -12,7 +12,7 @@ use osis_store::{AspectUnit, Error, Fault, MemoryBackend, MemoryRoot, PendingKin
 #[test]
 fn transactions_commit_or_abort() {
     for dev in devices("txn") {
-        let mut rng = SeededRng::from_u64(1);
+        let mut rng = SeededRng::from_u64(0);
         let mut s = create(&*dev, &mut rng);
         let (t1, a) = (tid(1), ak("name.0"));
         let unit = AspectUnit { state: b"state".to_vec() };
@@ -42,7 +42,7 @@ fn transactions_commit_or_abort() {
 #[test]
 fn counters() {
     let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(3);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     let (t1, a) = (tid(1), ak("c.0"));
     let mut t = s.transaction(&mut rng).unwrap();
@@ -70,7 +70,7 @@ fn counters() {
 #[test]
 fn pending_commits() {
     let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(4);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     let mut t = s.transaction(&mut rng).unwrap();
     for i in 0..10u8 {
@@ -91,7 +91,7 @@ fn pending_commits() {
 #[test]
 fn wraps_and_secrets() {
     let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(5);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     let (l1, l2) = (LabelId([1; 16]), LabelId([2; 16]));
     let mut t = s.transaction(&mut rng).unwrap();
@@ -119,7 +119,7 @@ fn wraps_and_secrets() {
 #[test]
 fn cursors_logs_local() {
     let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(6);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     let mut t = s.transaction(&mut rng).unwrap();
     t.put_cursor(b"host", b"c1").unwrap();
@@ -137,7 +137,7 @@ fn cursors_logs_local() {
 #[test]
 fn blobs() {
     for dev in devices("blobs") {
-        let mut rng = SeededRng::from_u64(7);
+        let mut rng = SeededRng::from_u64(0);
         let mut s = create(&*dev, &mut rng);
         let id = BlobId([5; 32]);
         let mut t = s.transaction(&mut rng).unwrap();
@@ -161,7 +161,7 @@ fn blobs() {
 #[test]
 fn lifecycle_errors() {
     let (b, r) = (MemoryBackend::new(), MemoryRoot::new());
-    let mut rng = SeededRng::from_u64(8);
+    let mut rng = SeededRng::from_u64(0);
     assert_eq!(Store::open(Box::new(b.clone()), Box::new(r.clone()), cfg()).err(), Some(Error::NoStore));
     Store::create(Box::new(b.clone()), Box::new(r.clone()), cfg(), &mut rng).unwrap();
     assert_eq!(Store::create(Box::new(b.clone()), Box::new(r.clone()), cfg(), &mut rng).err(), Some(Error::Exists));
@@ -176,7 +176,7 @@ fn lifecycle_errors() {
 #[test]
 fn abort_after_spill() {
     let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(10);
+    let mut rng = SeededRng::from_u64(0);
     let cfg = StoreConfig { spill_bytes: 100, ..cfg() };
     let mut s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
@@ -204,7 +204,7 @@ fn abort_after_spill() {
 fn rollback_keeps_committed_blob() {
     for shredding in [false, true] {
         let dev = MemDevice::new();
-        let mut rng = SeededRng::from_u64(11);
+        let mut rng = SeededRng::from_u64(0);
         let cfg = StoreConfig { spill_bytes: 100, ..cfg() };
         let mut s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
         let id = BlobId([7; 32]);
@@ -238,7 +238,7 @@ fn rollback_keeps_committed_blob() {
 fn crash_during_create() {
     for n in 0..4 {
         let dev = MemDevice::new();
-        let mut rng = SeededRng::from_u64(12);
+        let mut rng = SeededRng::from_u64(0);
         dev.faults.at(n, Fault::Crash);
         let crashed = Store::create(dev.backend(), dev.root(), cfg(), &mut rng).is_err();
         dev.faults.revive();
@@ -263,7 +263,7 @@ fn crash_during_create() {
 #[test]
 fn memory_overlay_rows() {
     let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(3);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     let (t1, a, b) = (tid(1), ak("mem+.0"), ak("dur.0"));
     let unit = AspectUnit { state: b"m".to_vec() };
@@ -354,7 +354,7 @@ fn memory_overlay_rows() {
 #[test]
 fn memory_rows_never_spill() {
     let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(12);
+    let mut rng = SeededRng::from_u64(0);
     let cfg = StoreConfig { spill_bytes: 100, ..cfg() };
     let mut s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
     let ix = {
@@ -385,7 +385,7 @@ fn memory_rows_never_spill() {
 #[test]
 fn suspended_transaction_is_one() {
     let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(11);
+    let mut rng = SeededRng::from_u64(0);
     let cfg = StoreConfig { spill_bytes: 100, ..cfg() };
     let mut s = Store::open_or_create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
@@ -445,7 +445,7 @@ fn suspended_transaction_is_one() {
 #[test]
 fn reopen_after_failed_commit() {
     let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(12);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     // writes `k`, removing `gone` when `shred` is given
     let put = |s: &mut Store, rng: &mut SeededRng, k: &[u8], shred: Option<Shred>| {
@@ -528,7 +528,7 @@ fn savepoint_rollback_is_no_step() {
     for (kind, (with_step, without)) in devices("sp-step").into_iter().zip(devices("sp-none")).enumerate() {
         let mut out = Vec::new();
         for (dev, step) in [(&with_step, true), (&without, false)] {
-            let mut rng = SeededRng::from_u64(20);
+            let mut rng = SeededRng::from_u64(0);
             let cfg = StoreConfig { spill_bytes: 600, ..cfg() };
             let mut s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
             let mut t = s.transaction(&mut rng).unwrap();
@@ -577,7 +577,7 @@ fn savepoint_rollback_is_no_step() {
 #[test]
 fn savepoint_release_spills() {
     let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(21);
+    let mut rng = SeededRng::from_u64(0);
     let cfg = StoreConfig { spill_bytes: 600, ..cfg() };
     let mut s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
     let mut t = s.transaction(&mut rng).unwrap();

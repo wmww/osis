@@ -4,7 +4,7 @@
 
 use crate::common::*;
 use crate::net;
-use net::{Net, s as text};
+use net::s as text;
 use osis_base::{Role, Value};
 use osis_commit::CommitBlob;
 use osis_node::Ingested;
@@ -16,7 +16,7 @@ use osis_schema::core_types as ct;
 // record. Once the record comes the grant is fetched again and applies; the reading-only source goes.
 #[test]
 fn grant_before_its_record_opens_then_applies_spec_commits_4() {
-    let mut lp = net(2, 601);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let (me, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
     let mut m = osis_node::Mutation::new();
@@ -43,7 +43,7 @@ fn grant_before_its_record_opens_then_applies_spec_commits_4() {
 // of it stays, so the true copy is what applies when the record comes.
 #[test]
 fn junk_before_the_record_keeps_out_nothing_spec_commits_4() {
-    let mut lp = net(2, 602);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     lp.sync_all().unwrap();
     let u = new_thing(&mut lp, 0);
@@ -67,12 +67,7 @@ fn junk_before_the_record_keeps_out_nothing_spec_commits_4() {
 #[test]
 fn first_sync_batch_throws_nothing_out_spec_commits_4() {
     for n in [20usize, 200] {
-        let mut net = Net::new();
-        let host = net.add_host();
-        let a = net.node(1, &[host]);
-        let b = net.node(2, &[host]);
-        let g = net.group(a, &[(b, Role::Read)], &[host]);
-        let things: Vec<_> = (0..5).map(|i| net.item(a, g, g, &format!("t{i}"))).collect();
+        let (mut net, _, [a, b], _, things) = net::hosted::<2, 5>(&[(1, Role::Read)], ["t0", "t1", "t2", "t3", "t4"], false);
         net.set_online(b, false);
         for i in 0..n {
             net.write(a, things[i % things.len()], &format!("v{i}"));
@@ -112,7 +107,7 @@ fn a_record_wakes_each_waiter_once_spec_commits_4() {
 #[test]
 fn any_awaited_record_applies_its_part_spec_commits_4() {
     for first in [0, 1] {
-        let mut lp = net(2, 610 + first as u64);
+        let mut lp = net(2, 0);
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.me();
         let (mut ts, mut recs) = (Vec::new(), Vec::new());
@@ -141,7 +136,7 @@ fn any_awaited_record_applies_its_part_spec_commits_4() {
 // with the record it awaits.
 #[test]
 fn unjudgeable_ahead_is_thrown_out_not_pending_spec_commits_4() {
-    let mut lp = net(2, 615);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let me = lp.peers[0].engine.me();
     let mut m = osis_node::Mutation::new();
@@ -169,8 +164,10 @@ fn unjudgeable_ahead_is_thrown_out_not_pending_spec_commits_4() {
 #[test]
 fn reach_arriving_applies_its_part_spec_commits_4() {
     let mut named = std::collections::BTreeSet::new();
-    for seed in 620..628 {
-        let mut lp = net(3, seed);
+    // the entry names the wait of the part first in the commit's order: t's record before or
+    // after u's reach
+    for t_first in [false, true] {
+        let mut lp = net(3, 0);
         lp.sync_all().unwrap();
         let w = lp.peers[2].engine.me();
         let u = new_thing(&mut lp, 0);
@@ -178,20 +175,25 @@ fn reach_arriving_applies_its_part_spec_commits_4() {
         let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
         let g = *lp.peers[0].engine.grant(&u, &w, &edge).unwrap().commits.last().unwrap();
         lp.sync(0, 2).unwrap();
-        let mut m = osis_node::Mutation::new();
-        let t = lp.peers[2].engine.new_thing(&mut m, w);
+        let (m, t) = loop {
+            let mut m = osis_node::Mutation::new();
+            let t = lp.peers[2].engine.new_thing(&mut m, w);
+            if (t < u) == t_first {
+                break (m, t);
+            }
+        };
         lp.peers[2].commit(m).unwrap().unwrap();
         let mut m = osis_node::Mutation::new();
         m.set(t, &REG, &s("both")).unwrap();
         m.set(u, &REG, &s("both")).unwrap();
         let c = lp.peers[2].commit(m).unwrap().unwrap();
         let pc = lp.peers[2].engine.package(&c).unwrap().unwrap();
-        let Ingested::Awaits(_, r) = lp.deliver(1, &pc).unwrap() else { panic!("seed {seed}: thrown out") };
+        let Ingested::Awaits(_, r) = lp.deliver(1, &pc).unwrap() else { panic!("t first {t_first}: thrown out") };
         named.insert(r == osis_node::Reason::UnknownCreated(t));
         let pg = lp.peers[0].engine.package(&g).unwrap().unwrap();
         lp.deliver(1, &pg).unwrap();
         let e = &mut lp.peers[1].engine;
-        assert_eq!(e.get(&u, &ak("t:reg.0")).unwrap(), Some(s("both")), "seed {seed}, entry names {r:?}: the part its author now reaches");
+        assert_eq!(e.get(&u, &ak("t:reg.0")).unwrap(), Some(s("both")), "t first {t_first}, entry names {r:?}: the part its author now reaches");
         assert!(!e.knows(&t));
     }
     assert_eq!(named.len(), 2, "entries naming either wait");

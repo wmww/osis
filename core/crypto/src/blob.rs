@@ -256,7 +256,7 @@ mod tests {
     // BLAKE3 of the whole; the prefix and every ciphertext byte are authenticated.
     #[test]
     fn blob_round_trip() {
-        let mut rng = SeededRng::from_u64(3);
+        let mut rng = SeededRng::from_u64(0);
         let prefix = [1u8; 26];
         let (k1, b1) = encrypt_blob(&prefix, b"hello", &mut rng).unwrap();
         let (k2, b2) = encrypt_blob(&prefix, b"hello", &mut rng).unwrap();
@@ -286,14 +286,14 @@ mod tests {
         assert_eq!(unwrap(&s, &id, &w), Ok(k));
         assert_eq!(unwrap(&s, &BlobId([4; 32]), &w), Err(Error::Decrypt));
         assert_eq!(unwrap(&Secret32::from_bytes([5; 32]), &id, &w), Err(Error::Decrypt));
-        let f = filler_wrap(&mut SeededRng::from_u64(1));
+        let f = filler_wrap(&mut SeededRng::from_u64(0));
         assert!(unwrap(&s, &id, &f).is_err());
     }
 
     // spec/wire.md §9: inbox blob AD binds recipient and prefix.
     #[test]
     fn inbox() {
-        let mut rng = SeededRng::from_u64(4);
+        let mut rng = SeededRng::from_u64(0);
         let kem = KemSecret::derive(&Secret32::from_bytes([1; 32]));
         let r = Tid::from_bytes([1; 15]);
         let b = seal_inbox(&[9; 26], &r, kem.public(), b"commit", &mut rng).unwrap();

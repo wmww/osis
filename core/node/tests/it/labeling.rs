@@ -58,7 +58,7 @@ fn one_blob_prefix_groups_per_key_set_spec_wire_5() {
     let h = net.engine(a).header(&c).unwrap();
     let mut sets: Vec<&Vec<usize>> = h.aspects.iter().map(|x| &x.keys).collect();
     sets.dedup();
-    let mut rng = SeededRng::from_u64(5);
+    let mut rng = SeededRng::from_u64(0);
     let sealed = net.engine(a).seal(&body, osis_label::Class::Durable, &[], &mut rng).unwrap().unwrap();
     let p = Prefix::parse(&sealed.blob).unwrap();
     assert_eq!(p.expiry(), body.expires.map(WallMs));
@@ -113,7 +113,7 @@ fn head_keys_and_delete_keys_spec_sync_5() {
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.pair(a, b);
     let body = net.engine(a).body(&c).unwrap().unwrap();
-    let sealed = net.engine(a).seal(&body, osis_label::Class::Durable, &[], &mut SeededRng::from_u64(3)).unwrap().unwrap();
+    let sealed = net.engine(a).seal(&body, osis_label::Class::Durable, &[], &mut SeededRng::from_u64(0)).unwrap().unwrap();
     let p = Prefix::parse(&sealed.blob).unwrap();
     let ds = net.engine(b).delete_secrets_of(&c, &sealed.ais).remove(0);
     let d = [7u8; 32];
@@ -160,7 +160,7 @@ fn registration_of_thousands_of_readers() {
     use osis_schema::core_types as ct;
     use osis_schema::{Codec, RawKey};
     use std::collections::{BTreeMap, BTreeSet};
-    let mut lp = crate::common::net(1, 7);
+    let mut lp = crate::common::net(1, 0);
     let e = &mut lp.peers[0].engine;
     let me = e.me();
     let mut m = Mutation::new();

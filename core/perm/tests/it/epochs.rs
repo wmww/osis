@@ -417,7 +417,7 @@ fn node_of_p_without_a_roster_line_takes_the_preferred_party() {
 /// every observer and receipt prefix.
 #[test]
 fn epochs_model_agrees() {
-    epochs_run(300, 0x5eed_0e00);
+    epochs_run(300, 0);
 }
 
 /// spec/permissions.md §5.5: as above, more samples (a property).

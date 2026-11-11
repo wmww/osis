@@ -51,7 +51,7 @@ fn reopen_same(e: &mut Engine, at: &str) -> usize {
 // rows and walks saved again for the next open
 #[test]
 fn damaged_caches_are_rebuilt() {
-    let (mut lp, ps) = people(3, 509);
+    let (mut lp, ps) = people(3);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     lp.peers[0].engine.set_walk_cache_min(1);
     let d = thing_of(&mut lp, 0, pa);
@@ -104,7 +104,7 @@ fn damaged_caches_are_rebuilt() {
 // back, so a cache keyed on it (the sync engine's labels) is never taken for current afterwards
 #[test]
 fn reload_never_takes_generation_back() {
-    let mut lp = LocalPeer::new(1, 0x6e7e, T0).unwrap();
+    let mut lp = net(1, 0);
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
     let me = e.me();
@@ -129,7 +129,7 @@ fn reload_never_takes_generation_back() {
 // saved root, then edges on them) still resume its walk
 #[test]
 fn new_things_between_opens_still_restore() {
-    let mut lp = LocalPeer::new(1, 0x7e57, T0).unwrap();
+    let mut lp = net(1, 0);
     let e = &mut lp.peers[0].engine;
     let me = e.me();
     let mut m = Mutation::new();
@@ -174,7 +174,7 @@ fn crash_at_every_write_keeps_caches_exact() {
             e.set_walk_cache_min(1);
             Ok(e)
         };
-        let mut e = open(true, 9).unwrap();
+        let mut e = open(true, 0).unwrap();
         e.create_account(&[]).unwrap();
         let me = e.me();
         let mut m = Mutation::new();
@@ -197,7 +197,7 @@ fn crash_at_every_write_keeps_caches_exact() {
         let crashed = faults.crashed();
         drop(e);
         faults.revive();
-        let mut e = open(false, 10).unwrap();
+        let mut e = open(false, 1).unwrap();
         assert_eq!(e.perm_digest(false), e.perm_digest(true), "crash at write {n}");
         // the first grants saved the walk before the faults: every open resumes it
         assert!(e.walks_restored() > 0, "crash at write {n}: the saved walk was not used");

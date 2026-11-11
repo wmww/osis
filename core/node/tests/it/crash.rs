@@ -29,13 +29,13 @@ impl Dev {
     }
     fn create(&self) -> Engine {
         let c: Arc<dyn Clock> = self.clock.clone();
-        let mut e = Engine::create(Box::new(self.backend.clone()), Box::new(self.root.clone()), osis_node::local_peer::blob_area(&self.blob_disk, 9).unwrap(), Config::default(), c, Box::new(SeededRng::from_u64(9))).unwrap();
+        let mut e = Engine::create(Box::new(self.backend.clone()), Box::new(self.root.clone()), osis_node::local_peer::blob_area(&self.blob_disk, 0).unwrap(), Config::default(), c, Box::new(SeededRng::from_u64(0))).unwrap();
         e.create_account(&[]).unwrap();
         e
     }
     fn open(&self) -> osis_node::Result<Engine> {
         let c: Arc<dyn Clock> = self.clock.clone();
-        Engine::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), osis_node::local_peer::blob_area(&self.blob_disk, 10)?, Config::default(), c, Box::new(SeededRng::from_u64(10)))
+        Engine::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), osis_node::local_peer::blob_area(&self.blob_disk, 1)?, Config::default(), c, Box::new(SeededRng::from_u64(1)))
     }
 }
 
@@ -136,7 +136,7 @@ fn two_live_copies_of_one_store_converge_spec_crdt_2_1() {
     let copy = (dev.backend.copy(), dev.root.copy());
     let blob_copy = (dev.blob_disk.0.copy(), dev.blob_disk.1.copy());
     let c: Arc<dyn Clock> = dev.clock.clone();
-    let mut r = Engine::open(Box::new(copy.0), Box::new(copy.1), osis_node::local_peer::blob_area(&blob_copy, 11).unwrap(), Config::default(), c, Box::new(SeededRng::from_u64(11))).unwrap();
+    let mut r = Engine::open(Box::new(copy.0), Box::new(copy.1), osis_node::local_peer::blob_area(&blob_copy, 2).unwrap(), Config::default(), c, Box::new(SeededRng::from_u64(2))).unwrap();
     assert_eq!(r.tid(), e.tid(), "the same node identity");
     let ak = osis_base::Ak::new(osis_schema::RawKey::ak(&REG)).unwrap();
     let (mut a, mut b) = (Vec::new(), Vec::new());
@@ -169,7 +169,7 @@ fn two_live_copies_of_one_store_converge_spec_crdt_2_1() {
 #[test]
 fn crash_every_write_of_a_chunked_commit() {
     let mut big = vec![0u8; 300 * 1024];
-    osis_crypto::RngCore::fill_bytes(&mut SeededRng::from_u64(3), &mut big);
+    osis_crypto::RngCore::fill_bytes(&mut SeededRng::from_u64(0), &mut big);
     let blob = ak("t:blob.0");
     for n in 0.. {
         let dev = Dev::new();

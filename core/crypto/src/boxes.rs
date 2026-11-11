@@ -437,7 +437,7 @@ mod tests {
     // the item names its key's epoch.
     #[test]
     fn sealed_box() {
-        let mut rng = SeededRng::from_u64(2);
+        let mut rng = SeededRng::from_u64(0);
         let kem = KemSecret::derive(&sec(0x31));
         let ew = ep(Role::Write, 4, 9);
         let at = slot(1, 2, Role::Write, ew);
@@ -468,7 +468,7 @@ mod tests {
     // open (built by hand: the payload names n, the reader recomputes the epoch).
     #[test]
     fn lying_box_refused() {
-        let mut rng = SeededRng::from_u64(3);
+        let mut rng = SeededRng::from_u64(0);
         let kem = KemSecret::derive(&sec(0x31));
         let at = slot(1, 2, Role::Read, ep(Role::Read, 4, 9));
         let ad = at.ad(BoxForm::Sealed { keyset: None, suite: 1 }).unwrap();
@@ -480,7 +480,7 @@ mod tests {
     // spec/wire.md §7, spec/sync.md §2: an entry box names epochs of the group, with or without the earlier secret; a box of the wrong payload or slot, a write secret, or a secret its epoch does not name, stays shut
     #[test]
     fn entry_box_round_trip() {
-        let mut rng = SeededRng::from_u64(3);
+        let mut rng = SeededRng::from_u64(0);
         let kem = KemSecret::derive(&sec(0x31));
         let g = actor(5);
         let entry = BoxSlot::Entry { label: LabelId([3; 16]), step_key: [5; 32], group: g };

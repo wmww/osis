@@ -118,7 +118,7 @@ mod tests {
     // state too, but for the newest forgotten `ts` per aspect. spec: none (internal)
     #[test]
     fn forget_equals_never_indexed() {
-        let mut lp = LocalPeer::new(1, 953, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.me();
         let mut m = Mutation::new();
@@ -144,7 +144,7 @@ mod tests {
     // back) has passed a short expiry: the write goes through, expiring just after its `ts`.
     #[test]
     fn short_expiry_behind_hlc_is_raised_spec_commits_6() {
-        let mut lp = LocalPeer::new(1, 955, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.me();
         let mut m = Mutation::new();
@@ -171,7 +171,7 @@ mod tests {
     // its expiry it is held as its leftover, value-less (spec/crdt.md §4.7). spec: none (internal)
     #[test]
     fn memory_purge_on_replace_ignored() {
-        let mut lp = LocalPeer::new(1, 954, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.me();
         let mut m = Mutation::new();
@@ -212,7 +212,7 @@ mod tests {
     // durable names a memory aspect. spec: none (internal)
     #[test]
     fn memory_state_row_follows_key() {
-        let mut lp = LocalPeer::new(1, 955, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.me();
         let mut m = Mutation::new();

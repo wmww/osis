@@ -32,7 +32,7 @@ fn open(backend: MemoryBackend, root: MemoryRoot, seed: u8) -> Host {
 }
 
 fn host() -> Host {
-    open(MemoryBackend::new(), MemoryRoot::new(), 1)
+    open(MemoryBackend::new(), MemoryRoot::new(), 0)
 }
 
 fn put(s: &mut HostStore, l: &LabelId, n: u64, stamped: bool, expiry: Option<u64>, replaces: &[BlobId]) -> BlobId {
@@ -45,7 +45,7 @@ fn put(s: &mut HostStore, l: &LabelId, n: u64, stamped: bool, expiry: Option<u64
 }
 
 fn read(s: &mut HostStore, cursor: Option<&[u8]>) -> LogRead {
-    s.store_mut().unwrap().transaction(&mut SeededRng::from_seed([9; 32])).unwrap().log_read(cursor, usize::MAX - 1).unwrap()
+    s.store_mut().unwrap().transaction(&mut SeededRng::from_seed([0; 32])).unwrap().log_read(cursor, usize::MAX - 1).unwrap()
 }
 
 fn listing(s: &mut HostStore) -> Vec<NodeEvent> {
@@ -117,7 +117,7 @@ fn an_entrys_earlier_events_compact_away() {
         }
         let e = listing(&mut h.s);
         assert_eq!(e.len() as u64, n + 1, "one event per entry and the head");
-        let mut rng = SeededRng::from_seed([9; 32]);
+        let mut rng = SeededRng::from_seed([0; 32]);
         let mut t = h.s.store_mut().unwrap().transaction(&mut rng).unwrap();
         assert_eq!(t.log_end().unwrap(), 2 * n + 1, "each write appended once");
         // a cursor from before the promotions reads each promotion once
@@ -139,7 +139,7 @@ fn a_restored_store_issues_no_cursor() {
     put(&mut h.s, &f.label, 2, true, None, &[]);
     let late = read(&mut h.s, None).cursor.unwrap();
     // the restored store takes a write: what the lost store issued past the backup is no cursor
-    let mut r = open(backup, backup_root, 2);
+    let mut r = open(backup, backup_root, 1);
     put(&mut r.s, &f.label, 3, true, None, &[]);
     let from_late = read(&mut r.s, Some(&late));
     assert!(from_late.whole, "a cursor past the restore point reads from the start");

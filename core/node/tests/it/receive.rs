@@ -20,7 +20,7 @@ fn creation_of(lp: &mut osis_node::local_peer::LocalPeer, pks: &[osis_node::loca
 // spec/commits.md §4 (signature)
 #[test]
 fn bad_signature_rejected_spec_commits_4() {
-    let mut lp = net(2, 21);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let pks = packages(&mut lp, 0);
     let at = creation_of(&mut lp, &pks, t);
@@ -44,7 +44,7 @@ fn bad_signature_rejected_spec_commits_4() {
 // spec/commits.md §4: receivers dedup by commit ID; remote applies fire events with origin.
 #[test]
 fn dedup_and_events_spec_commits_4() {
-    let mut lp = net(2, 22);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let pks = packages(&mut lp, 0);
     for p in &pks {
@@ -68,7 +68,7 @@ fn dedup_and_events_spec_commits_4() {
 // of the commit is kept; it applies once fetched with the record.
 #[test]
 fn pending_until_created_spec_commits_4() {
-    let mut lp = net(2, 23);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("second")).unwrap();
@@ -96,7 +96,7 @@ fn pending_until_created_spec_commits_4() {
     m.set(t, &REG, &s("third")).unwrap();
     lp.peers[0].commit(m).unwrap();
     let pk = packages(&mut lp, 0).pop().unwrap();
-    let mut lp2 = net(1, 24);
+    let mut lp2 = net(1, 1); // a node apart from lp's (its own seeds)
     assert!(matches!(lp2.deliver(0, &pk).unwrap(), Ingested::Awaits(..)));
     assert!(lp2.peers[0].engine.pending().is_empty());
     lp2.peers[0].restart(99).unwrap();
@@ -108,7 +108,7 @@ fn pending_until_created_spec_commits_4() {
 // (spec/requirements.md, Scale: a first sync is O(commits), not O(commits × awaiting)).
 #[test]
 fn pending_not_reexamined_while_unchanged_spec_commits_4() {
-    let mut lp = net(2, 28);
+    let mut lp = net(2, 0);
     let u = new_thing(&mut lp, 0);
     let t = new_thing(&mut lp, 0);
     for i in 0..40 {
@@ -145,7 +145,7 @@ fn pending_not_reexamined_while_unchanged_spec_commits_4() {
 // up; then it applies and advances the clock.
 #[test]
 fn drift_parks_spec_crdt_2_2() {
-    let mut lp = net(2, 25);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
     lp.peers[0].clock.advance(2 * 3_600_000);
@@ -180,7 +180,7 @@ fn without_parts(bytes: &[u8], keep: impl Fn(&str) -> bool, h: &osis_commit::Hea
 // one thing or across things; a delta of an applied commit arriving later is joined on arrival.
 #[test]
 fn applies_what_is_held_and_late_delta_spec_commits_4() {
-    let mut lp = net(2, 26);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let u = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
@@ -200,7 +200,7 @@ fn applies_what_is_held_and_late_delta_spec_commits_4() {
     assert!(lp.peers[1].engine.get(&u, &ak("t:tags.0")).unwrap().is_some());
     assert!(lp.peers[1].drain_events().iter().any(|e| matches!(e, Event::Changed { cause: osis_node::Cause::LateDelta, .. })));
     // the same thing, synced: applies what is held too
-    let mut lp = net(2, 27);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
     lp.peers[1].engine.set_syncing(t, true).unwrap();
@@ -217,7 +217,7 @@ fn applies_what_is_held_and_late_delta_spec_commits_4() {
     assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(_)));
     assert!(lp.peers[1].engine.get(&t, &ak("t:tags.0")).unwrap().is_some());
     // across things, the other one synced: applies what is held
-    let mut lp = net(2, 28);
+    let mut lp = net(2, 0);
     let (t, u) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     sync(&mut lp, 0, 1);
     lp.peers[1].engine.set_syncing(u, true).unwrap();
@@ -255,7 +255,7 @@ impl osis_commit::Secrets for Dedup {
 // spec/versioning.md §2 (park unknown)
 #[test]
 fn parked_spec_versioning_2() {
-    let mut lp = net(2, 28);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
     let e = &mut lp.peers[0].engine;
@@ -267,7 +267,7 @@ fn parked_spec_versioning_2() {
     let mut b = CommitBuilder::new(Kind::Content, ts, e.me(), e.me(), crate::common::forged_session(e.me()));
     b.aspects.push(w);
     let forge_key = e.sign_forged(&mut b);
-    let built = b.build(&forge_key, &Dedup(vec![rec]), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(1)).unwrap();
+    let built = b.build(&forge_key, &Dedup(vec![rec]), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(0)).unwrap();
     let bytes = built.commit.encode();
     let r = lp.peers[1].receive(&bytes, Vec::new()).unwrap();
     assert!(matches!(r, Ingested::Parked(_)), "{r:?}");
@@ -296,7 +296,7 @@ fn parked_spec_versioning_2() {
 // grant waits for the chain and applies after.
 #[test]
 fn grantee_waits_for_grant_spec_commits_4() {
-    let mut lp = net(3, 29);
+    let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);

@@ -18,7 +18,7 @@ fn group(e: &mut osis_node::Engine, g: Tid, items: &[Tid], subs: &[Tid]) {
 // (nesting and cycles), kept current as groups change.
 #[test]
 fn synthetic_aspects_spec_dm_8() {
-    let mut lp = net(2, 61);
+    let mut lp = net(2, 0);
     let x = new_thing(&mut lp, 0);
     let g1 = new_thing(&mut lp, 0);
     let g2 = new_thing(&mut lp, 0);
@@ -43,7 +43,7 @@ fn synthetic_aspects_spec_dm_8() {
 // spec: none (diagnostics are local, notes/architecture.md)
 #[test]
 fn diagnostics_deduped() {
-    let mut lp = net(2, 63);
+    let mut lp = net(2, 0);
     new_thing(&mut lp, 0);
     let pk = lp.packages(0).unwrap().pop().unwrap();
     // malformed: the blob's outer array one short

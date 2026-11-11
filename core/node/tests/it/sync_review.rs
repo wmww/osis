@@ -375,12 +375,7 @@ fn complete_pass_survives_disconnect_spec_permissions_3() {
 #[test]
 fn purge_crash_before_sync_forget_leaves_no_copy_spec_commits_5() {
     for crash in [false, true] {
-        let mut net = Net::new();
-        let host = net.add_host();
-        let a = net.node(1, &[host]);
-        let b = net.node(2, &[host]);
-        let g = net.group(a, &[(b, Role::Write)], &[host]);
-        let t = net.item(a, g, g, "x");
+        let (mut net, _, [a, b], _, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], false);
         net.keep(a, t, &[("t:gone.0", PURGE)]);
         let mut m = Mutation::new();
         m.set(t, &GONE, &s("secret")).unwrap();
@@ -415,13 +410,7 @@ fn purge_crash_before_sync_forget_leaves_no_copy_spec_commits_5() {
 #[test]
 fn self_removal_crash_still_drops_spec_permissions_3() {
     for crash in ["none", "before carry_out", "after carry_out"] {
-        let mut net = Net::new();
-        let host = net.add_host();
-        let a = net.node(1, &[host]);
-        let b = net.node(2, &[host]);
-        let g = net.group(a, &[(b, Role::Write)], &[host]);
-        let t = net.item(a, g, g, "marker");
-        net.run();
+        let (mut net, _, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["marker"], true);
         assert_eq!(net.read(b, t), Some(s("marker")));
         net.set_online(b, false);
         let bt = net.tid(b);
@@ -1309,13 +1298,7 @@ fn stranded_goes_to_a_connected_admin_spec_permissions_4() {
 // label's deposit budget for good
 #[test]
 fn demoted_writers_refused_writes_take_no_deposit_budget_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "t");
-    net.run();
+    let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["t"], true);
     net.advance(15_000);
     let l = net.label(a);
     let before = osis_proto::LabelStore::budget(&*net.hosts[host].hub.store(), &l).unwrap();

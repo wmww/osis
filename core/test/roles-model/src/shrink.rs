@@ -68,7 +68,7 @@ mod tests {
     /// A drop needs a demotion and a write it misses: two writes at most remain.
     #[test]
     fn joint_drop_shrinks_to_two_writes() {
-        let mut rng = Rng(7);
+        let mut rng = Rng(0);
         let h = std::iter::repeat_with(|| joint::random_hist(&mut rng)).find(|h| joint::walk(h).dropped != 0 && h.writes.len() >= 5).unwrap();
         let m = minimal(h, |c: &joint::JHist| joint::walk(c).dropped != 0);
         assert_eq!(m.writes.len(), 2, "{m}");
@@ -77,7 +77,7 @@ mod tests {
 
     #[test]
     fn edges_drop_shrinks() {
-        let mut rng = Rng(8);
+        let mut rng = Rng(0);
         let h = std::iter::repeat_with(|| edges::random_hist(&mut rng)).find(|h| edges::walk(h).dropped != 0 && h.writes.len() >= 5).unwrap();
         let m = minimal(h, |c: &edges::EHist| edges::walk(c).dropped != 0);
         assert!(m.writes.len() <= 2, "{m}");
@@ -87,7 +87,7 @@ mod tests {
     /// function of the held commits).
     #[test]
     fn quiescence() {
-        let mut rng = Rng(10);
+        let mut rng = Rng(0);
         for _ in 0..2000 {
             let h = joint::random_hist(&mut rng);
             assert_eq!(joint::quiescent(&h), Ok(()), "{h}");

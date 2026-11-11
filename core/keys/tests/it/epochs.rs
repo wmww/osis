@@ -49,9 +49,10 @@ impl World {
 // boxes naming none; one box per (role, epoch) each.
 #[test]
 fn own_secrets_switch() {
+    let rg = &mut rng(0);
     let w = World::new();
     let derived = ActorEpochs::derived(&w.pe, &w.a);
-    let rot = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.holders(), &osis_keys::Names::default(), &mut rng(1)).unwrap();
+    let rot = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
     assert!(rot.unboxed.is_empty());
     let mut s = Secrets::default();
     rot.secrets.apply(&mut s);
@@ -124,15 +125,16 @@ fn own_secrets_switch() {
 // box carries both.
 #[test]
 fn fork_merge() {
+    let rg = &mut rng(0);
     let w = World::new();
     let derived = ActorEpochs::derived(&w.pe, &w.a);
-    let r1 = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.holders(), &osis_keys::Names::default(), &mut rng(1)).unwrap();
+    let r1 = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
     let mut base = Secrets::default();
     r1.secrets.apply(&mut base);
     let view = applied(&r1, &derived, 1);
 
-    let x = rotate(&w.a, &read(), &view, &base, &w.holders(), &osis_keys::Names::default(), &mut rng(2)).unwrap();
-    let y = rotate(&w.a, &read(), &view, &base, &w.holders(), &osis_keys::Names::default(), &mut rng(3)).unwrap();
+    let x = rotate(&w.a, &read(), &view, &base, &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
+    let y = rotate(&w.a, &read(), &view, &base, &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
     let (ex, ey) = (x.rotated[0].epoch, y.rotated[0].epoch);
     assert_eq!((ex.n(), ey.n()), (3, 3));
     assert_ne!(ex, ey);
@@ -176,7 +178,7 @@ fn fork_merge() {
     let mut zview = view.clone();
     zview = x.preview(&zview).unwrap();
     zview = y.preview(&zview).unwrap();
-    let z = rotate(&w.a, &read(), &zview, &s1, &w.holders(), &osis_keys::Names::default(), &mut rng(4)).unwrap();
+    let z = rotate(&w.a, &read(), &zview, &s1, &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
     let history: std::collections::BTreeSet<_> = zview.read.held_established().map(|x| x.0).collect();
     assert!(history.contains(&ex) && history.contains(&ey));
     assert_eq!(z.rotated[0].supersedes, history);

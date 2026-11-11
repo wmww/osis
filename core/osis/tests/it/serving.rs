@@ -154,11 +154,11 @@ fn label_of(db: &Osis, g: Tid) -> LabelId {
 
 /// Alice (listening on a test peer) and Bob, contacts both ways: (world, alice, bob, base peer,
 /// Alice's peer address, Alice's account as Bob knows it, Bob's as Alice knows it).
-fn pair(seed: u64) -> (World, Osis, Osis, usize, Address, Tid, Tid) {
+fn pair() -> (World, Osis, Osis, usize, Address, Tid, Tid) {
     let mut w = World::new();
     let base = w.add_host();
-    let alice = w.account(seed * 2 + 1, &[base]);
-    let bob = w.account(seed * 2 + 2, &[base]);
+    let alice = w.account(1, &[base]);
+    let bob = w.account(2, &[base]);
     w.run();
     let ha = alice.listen(&["quic://alice:1".parse().unwrap()]).unwrap().remove(0);
     w.run();
@@ -176,7 +176,7 @@ fn pair(seed: u64) -> (World, Osis, Osis, usize, Address, Tid, Tid) {
 // its role with no direct grant.
 #[test]
 fn home_label_copy_reaches_the_labeled_child_spec_sync_3() {
-    let (mut w, alice, bob, base, ha, _a, b) = pair(6);
+    let (mut w, alice, bob, base, ha, _a, b) = pair();
     let hosts = [w.addr(base).unwrap(), ha.clone()];
     let y = group_of(&alice, alice.me(), alice.me(), &[]);
     let g = group_of(&alice, y, y, &hosts);
@@ -212,7 +212,7 @@ fn host_store_labels(dir: &std::path::Path) -> Vec<LabelId> {
 fn stop_serving_drops_what_it_kept_spec_data_model_9() {
     let dir = std::env::temp_dir().join(format!("osis-host-drop-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let net = osis_transport::Net::new(41);
+    let net = osis_transport::Net::new(0);
     let at = |i: u64, run: bool| {
         let mut c = osis::internals::Opening::at(osis::Store::Dir(dir.clone()));
         c.app.internals.seed = Some(i);
@@ -289,7 +289,7 @@ fn stop_serving_drops_what_it_kept_spec_data_model_9() {
 fn own_runtime_close_frees_serving_store() {
     let dir = std::env::temp_dir().join(format!("osis-host-reopen-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let net = osis_transport::Net::new(42);
+    let net = osis_transport::Net::new(0);
     let at = |i: u64| {
         let mut c = osis::internals::Opening::at(osis::Store::Dir(dir.clone()));
         c.app.internals.seed = Some(i);
@@ -320,7 +320,7 @@ fn own_runtime_close_frees_serving_store() {
 // of the others from `hosting`, and a read-then-set keeps them all.
 #[test]
 fn an_unknown_stored_limit_loses_nothing() {
-    let db = osis::internals::create(cfg(1, osis::MemStore::new(), &clock())).unwrap();
+    let db = osis::internals::create(cfg(0, osis::MemStore::new(), &clock())).unwrap();
     db.set_serving(Some(osis::Serving { policy: osis::ServingPolicy { groups: 7, ..Default::default() }, ..Default::default() })).unwrap();
     let node = db.node();
     let mut stored = db.at(node, osis::internals::core_types::HOST).get().unwrap().unwrap();
@@ -341,7 +341,7 @@ fn an_unknown_stored_limit_loses_nothing() {
 // kept like an unknown name, and gives way when that limit is set: it must not win over it.
 #[test]
 fn a_stored_limit_out_of_range_gives_way() {
-    let db = osis::internals::create(cfg(1, osis::MemStore::new(), &clock())).unwrap();
+    let db = osis::internals::create(cfg(0, osis::MemStore::new(), &clock())).unwrap();
     db.set_serving(Some(osis::Serving::default())).unwrap();
     let node = db.node();
     let mut stored = db.at(node, osis::internals::core_types::HOST).get().unwrap().unwrap();

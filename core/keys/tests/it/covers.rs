@@ -31,11 +31,11 @@ fn naming(n: Name) -> Names {
 }
 
 /// Actor `a` (first admin P) after its own-secrets switch boxing `extra` holders too.
-fn switched(a: Tid, p: Tid, pe: &ActorEpochs, extra: &[Recipient]) -> (ActorEpochs, Secrets) {
+fn switched(a: Tid, p: Tid, pe: &ActorEpochs, extra: &[Recipient], rg: &mut osis_crypto::SeededRng) -> (ActorEpochs, Secrets) {
     let mut view = ActorEpochs::derived(pe, &a);
     let mut holders = vec![admin_rcpt(p, pe)];
     holders.extend_from_slice(extra);
-    let r = rotate(&a, &roles_up_to(Role::Admin), &view, &Secrets::default(), &holders, &osis_keys::Names::default(), &mut rng(1)).unwrap();
+    let r = rotate(&a, &roles_up_to(Role::Admin), &view, &Secrets::default(), &holders, &osis_keys::Names::default(), &mut *rg).unwrap();
     let mut s = Secrets::default();
     r.secrets.apply(&mut s);
     view = r.preview(&view).unwrap();
@@ -46,11 +46,12 @@ fn switched(a: Tid, p: Tid, pe: &ActorEpochs, extra: &[Recipient]) -> (ActorEpoc
 // current epoch; the re-seal trigger finds it, and the re-seal clears it.
 #[test]
 fn grant_raced_by_rotation() {
+    let rg = &mut rng(0);
     let (a, p, g) = (tid(1), tid(2), tid(5));
     let (pe, ge) = (person(0x20), person(0x50));
-    let (view, base) = switched(a, p, &pe, &[]);
-    let grant = box_holder(&a, &view, &hist(&a, &view, &base), &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(3)).unwrap().unwrap();
-    let rot = rotate(&a, &read(), &view, &base, &[admin_rcpt(p, &pe)], &osis_keys::Names::default(), &mut rng(4)).unwrap();
+    let (view, base) = switched(a, p, &pe, &[], rg);
+    let grant = box_holder(&a, &view, &hist(&a, &view, &base), &actor_rcpt(g, Role::Read, &ge), &read(), &mut *rg).unwrap().unwrap();
+    let rot = rotate(&a, &read(), &view, &base, &[admin_rcpt(p, &pe)], &osis_keys::Names::default(), &mut *rg).unwrap();
     let mut s = base.clone();
     rot.secrets.apply(&mut s);
     grant.apply(&mut s);
@@ -58,7 +59,7 @@ fn grant_raced_by_rotation() {
     v = rot.preview(&v).unwrap();
     let holders = [Holder { holder: p, role: Role::Admin }, Holder { holder: g, role: Role::Read }];
     assert_eq!(reseal_needed(&s, &v, &holders), vec![(g, read())]);
-    let reseal = osis_keys::box_holder(&a, &v, &hist(&a, &v, &s), &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(5)).unwrap().unwrap();
+    let reseal = osis_keys::box_holder(&a, &v, &hist(&a, &v, &s), &actor_rcpt(g, Role::Read, &ge), &read(), &mut *rg).unwrap().unwrap();
     reseal.apply(&mut s);
     assert!(reseal_needed(&s, &v, &holders).is_empty());
     let mut gv = ActorEpochs::default();
@@ -72,13 +73,14 @@ fn grant_raced_by_rotation() {
 // while it stays current, newest or not, past both forks, excluding M.
 #[test]
 fn rotation_held_before_the_removal() {
+    let rg = &mut rng(0);
     let (a, p, m) = (tid(1), tid(2), tid(3));
     let (pe, me) = (person(0x20), person(0x30));
-    let (view, base) = switched(a, p, &pe, &[actor_rcpt(m, Role::Read, &me)]);
+    let (view, base) = switched(a, p, &pe, &[actor_rcpt(m, Role::Read, &me)], rg);
     let with_m = [admin_rcpt(p, &pe), actor_rcpt(m, Role::Read, &me)];
     let removed = name(a, 7);
-    let eager = rotate(&a, &read(), &view, &base, &with_m, &Names::default(), &mut rng(6)).unwrap();
-    let removal = rotate(&a, &read(), &view, &base, &with_m[..1], &naming(removed), &mut rng(7)).unwrap();
+    let eager = rotate(&a, &read(), &view, &base, &with_m, &Names::default(), &mut *rg).unwrap();
+    let removal = rotate(&a, &read(), &view, &base, &with_m[..1], &naming(removed), &mut *rg).unwrap();
     // Before the removal: only the eager rotation held, no departure known.
     let (mut s, mut v) = (base.clone(), view.clone());
     eager.secrets.apply(&mut s);
@@ -94,7 +96,7 @@ fn rotation_held_before_the_removal() {
     assert!(may_encrypt_under(&a, &v, Role::Read, &e2r, &deps, &AllHeld));
     assert!(merge_due(&a, &v, Role::Read, &deps, &AllHeld), "the eager fork is current, whichever is newest");
     // Rotating past both forks excludes M.
-    let heal = rotate(&a, &read(), &v, &s, &with_m[..1], &naming(removed), &mut rng(8)).unwrap();
+    let heal = rotate(&a, &read(), &v, &s, &with_m[..1], &naming(removed), &mut *rg).unwrap();
     let history: BTreeSet<_> = v.read.held_established().map(|x| x.0).collect();
     assert!(history.contains(&e2) && history.contains(&e2r));
     assert_eq!(heal.rotated[0].supersedes, history);
@@ -108,7 +110,7 @@ fn rotation_held_before_the_removal() {
     assert!(mv.read.secret(&e3).is_none());
     // A key-actor holder boxed write is boxed read too.
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
-    let w = box_holder(&a, &v, &hist(&a, &v, &s), &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(9)).unwrap().unwrap();
+    let w = box_holder(&a, &v, &hist(&a, &v, &s), &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut *rg).unwrap().unwrap();
     w.apply(&mut s);
     let kdep = [Departure::holder(k, Role::Read).at(Some(name(a, 10)))];
     assert!(!may_encrypt_under(&a, &v, Role::Read, &e3, &kdep, &AllHeld));
@@ -120,12 +122,13 @@ fn rotation_held_before_the_removal() {
 // may not rotate (or is unknown); a third node likewise. One epoch: no merge.
 #[test]
 fn fork_merger_is_one_maker() {
+    let rg = &mut rng(0);
     let (a, p) = (tid(1), tid(2));
     let pe = person(0x20);
-    let (view, base) = switched(a, p, &pe, &[]);
+    let (view, base) = switched(a, p, &pe, &[], rg);
     assert!(!fork_merger(&view, Role::Read, |_| None), "one current epoch");
     let holders = [admin_rcpt(p, &pe)];
-    let (r1, r2) = (rotate(&a, &read(), &view, &base, &holders, &Names::default(), &mut rng(6)).unwrap(), rotate(&a, &read(), &view, &base, &holders, &Names::default(), &mut rng(7)).unwrap());
+    let (r1, r2) = (rotate(&a, &read(), &view, &base, &holders, &Names::default(), &mut *rg).unwrap(), rotate(&a, &read(), &view, &base, &holders, &Names::default(), &mut *rg).unwrap());
     let mut v = r1.preview(&view).unwrap();
     v = r2.preview(&v).unwrap();
     assert_eq!(v.read.current().len(), 2);
@@ -146,17 +149,18 @@ fn fork_merger_is_one_maker() {
 // is covered by none.
 #[test]
 fn missing_box_covers_nothing() {
+    let rg = &mut rng(0);
     let (a, p, m) = (tid(1), tid(2), tid(3));
     let pe = person(0x20);
-    let (view, base) = switched(a, p, &pe, &[]);
-    let rot = rotate(&a, &read(), &view, &base, &[admin_rcpt(p, &pe)], &Names::default(), &mut rng(7)).unwrap();
+    let (view, base) = switched(a, p, &pe, &[], rg);
+    let rot = rotate(&a, &read(), &view, &base, &[admin_rcpt(p, &pe)], &Names::default(), &mut *rg).unwrap();
     let v = rot.preview(&view).unwrap();
     let e1 = rot.rotated[0].epoch;
     let removed = name(a, 7);
     let dep = [Departure::holder(m, Role::Read).at(Some(removed))];
     assert!(!may_encrypt_under(&a, &v, Role::Read, &e1, &dep, &AllHeld));
     assert!(merge_due(&a, &v, Role::Read, &dep, &AllHeld));
-    let named = rotate(&a, &read(), &v, &base, &[admin_rcpt(p, &pe)], &naming(removed), &mut rng(8)).unwrap();
+    let named = rotate(&a, &read(), &v, &base, &[admin_rcpt(p, &pe)], &naming(removed), &mut *rg).unwrap();
     let v2 = named.preview(&v).unwrap();
     let e2 = named.rotated[0].epoch;
     assert!(may_encrypt_under(&a, &v2, Role::Read, &e2, &dep, &AllHeld));

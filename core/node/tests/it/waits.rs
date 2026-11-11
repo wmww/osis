@@ -18,8 +18,8 @@ fn only(bytes: &[u8], h: &osis_commit::Header, keep: impl Fn(Tid, &str) -> bool)
 
 /// A thing of peer 0 known to peer 1, which syncs it; the commits `writes` makes on it, one per
 /// entry, the wall clock moving 10 ms between them, with peer 1 given none of them.
-fn carrierless(seed: u64, writes: Vec<Mutate>) -> (LocalPeer, Tid, Vec<osis_node::local_peer::Package>) {
-    let mut lp = net(2, seed);
+fn carrierless(writes: Vec<Mutate>) -> (LocalPeer, Tid, Vec<osis_node::local_peer::Package>) {
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
     lp.peers[1].engine.set_syncing(t, true).unwrap();
@@ -65,7 +65,7 @@ fn reg_only(p: &osis_node::local_peer::Package) -> Vec<u8> {
 // fixed retention: a role-class part is never under purge on replace.
 #[test]
 fn forged_purge_on_replace_class_gives_no_rights_spec_commits_4() {
-    let mut lp = net(3, 0x7c05);
+    let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
     let w = lp.peers[2].engine.me();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
@@ -112,6 +112,18 @@ fn drop_covered_by(e: &mut osis_node::Engine, s: &osis_base::CommitId, t: &Tid, 
     n
 }
 
+/// `n` peers; peer 0's new thing `t`, peer 1 granted write on it (`writer`), all synced: built
+/// once per `n` (`LocalPeer::cached`).
+fn one_writer(n: usize) -> (LocalPeer, Tid) {
+    LocalPeer::cached(&format!("waits::one_writer/{n}"), || {
+        let mut lp = net(n, 0);
+        let t = new_thing(&mut lp, 0);
+        writer(&mut lp, t, 1);
+        lp.sync_all().unwrap();
+        (lp, t)
+    })
+}
+
 /// Gives peer `to` of `lp` write on `t` and every commit of peer 0.
 fn writer(lp: &mut LocalPeer, t: Tid, to: usize) {
     let w = lp.peers[to].engine.me();
@@ -144,7 +156,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
     };
     for holders in [true, false] {
         let map = ak("t:gonemap.0");
-        let (mut lp, t, c) = carrierless(0x7e01, vec![put("a", true, true), put("b", false, false)]);
+        let (mut lp, t, c) = carrierless(vec![put("a", true, true), put("b", false, false)]);
         let w = lp.peers[1].engine.me();
         let grant = set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
         let pg = packages(&mut lp, 0).into_iter().find(|p| p.id == grant).unwrap();
@@ -179,7 +191,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
 fn expired_entry_keeps_nested_write_alike_spec_crdt_4_7() {
     let map = ak("t:gonemap.0");
     let r = by_writer().unwrap();
-    let mut lp = net(4, 0x7e09);
+    let mut lp = net(4, 0);
     let t = new_thing(&mut lp, 0);
     for i in 1..4 {
         writer(&mut lp, t, i);
@@ -217,8 +229,8 @@ fn expired_entry_keeps_nested_write_alike_spec_crdt_4_7() {
 // first, the thing's next commit shows, and the part away holds only its own commit.
 #[test]
 fn creation_record_applies_alone_spec_commits_4() {
-    for (seed, sync_first) in [(89, true), (90, false)] {
-        let mut lp = net(2, seed);
+    for sync_first in [true, false] {
+        let mut lp = net(2, 0);
         let mut m = Mutation::new();
         let me = lp.peers[0].engine.me();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
@@ -256,7 +268,7 @@ fn creation_record_applies_alone_spec_commits_4() {
 // of the commit: each joins as it comes, the commit's other thing synced or not.
 #[test]
 fn creation_record_then_the_rest_join_spec_commits_4() {
-    let mut lp = net(2, 91);
+    let mut lp = net(2, 0);
     let u = new_thing(&mut lp, 0);
     let mut m = Mutation::new();
     let me = lp.peers[0].engine.me();
@@ -289,8 +301,8 @@ fn creation_record_then_the_rest_join_spec_commits_4() {
 #[test]
 fn pages_away_hold_back_only_their_part_spec_commits_4() {
     let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
-    for (seed, synced) in [(92, false), (93, true)] {
-        let mut lp = net(2, seed);
+    for synced in [false, true] {
+        let mut lp = net(2, 0);
         let t = new_thing(&mut lp, 0);
         sync(&mut lp, 0, 1);
         let mut m = Mutation::new();
@@ -324,7 +336,7 @@ fn pages_away_hold_back_only_their_part_spec_commits_4() {
 #[test]
 fn cross_thing_part_shows_whatever_is_synced_spec_commits_4() {
     let read = |sync_first: bool| {
-        let mut lp = net(2, 94);
+        let mut lp = net(2, 0);
         let (t, u) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
         sync(&mut lp, 0, 1);
         let mut m = Mutation::new();
@@ -351,7 +363,7 @@ fn cross_thing_part_shows_whatever_is_synced_spec_commits_4() {
 // node never reads. A commit across it and a held thing shows the held thing's part at once.
 #[test]
 fn listed_thing_never_read_holds_nothing_back_spec_commits_4() {
-    let mut lp = net(2, 97);
+    let mut lp = net(2, 0);
     let (g, t) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     sync(&mut lp, 0, 1);
     lp.peers[1].engine.set_syncing(g, true).unwrap();
@@ -384,7 +396,7 @@ fn listed_thing_never_read_holds_nothing_back_spec_commits_4() {
 // group's writes, of which one had the thing in.
 #[test]
 fn sync_set_of_final_group_reads_alike_in_any_order_spec_commits_4() {
-    let mut lp = net(2, 100);
+    let mut lp = net(2, 0);
     let (root, sub, t, u) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     sync(&mut lp, 0, 1);
     let def = |items: &[Tid], subs: &[Tid]| osis_schema::core_types::Group { items: items.iter().copied().collect(), subgroups: subs.iter().copied().collect() };
@@ -438,7 +450,7 @@ fn sync_set_of_final_group_reads_alike_in_any_order_spec_commits_4() {
 #[test]
 fn list_element_overwritten_stays_past_expiry_spec_crdt_5_7() {
     let k = ak("t:list.0");
-    let mut lp = net(2, 0x7a05);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     writer(&mut lp, t, 1);
     for (a, b) in [(0, 1), (1, 0)] {
@@ -475,10 +487,7 @@ fn list_element_overwritten_stays_past_expiry_spec_crdt_5_7() {
 #[test]
 fn list_element_stays_beside_snapshot_before_expiry_spec_crdt_4_7() {
     let k = ak("t:list.0");
-    let mut lp = net(3, 0x7a19);
-    let t = new_thing(&mut lp, 0);
-    writer(&mut lp, t, 1);
-    lp.sync_all().unwrap();
+    let (mut lp, t) = one_writer(3);
     let mut m = Mutation::new();
     m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
     m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("hello")] } }).unwrap();
@@ -504,7 +513,7 @@ fn list_element_stays_beside_snapshot_before_expiry_spec_crdt_4_7() {
 #[test]
 fn purged_list_element_keeps_edit_in_any_order_spec_crdt_4_7() {
     let k = ak("t:list.0");
-    let mut lp = net(3, 0x7a1b);
+    let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
     let w = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
@@ -548,7 +557,7 @@ fn purged_list_element_keeps_edit_in_any_order_spec_crdt_4_7() {
 #[test]
 fn expired_list_element_survives_unmerge_spec_crdt_4_6() {
     let k = ak("t:list.0");
-    let mut lp = net(3, 0x7a1a);
+    let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
     writer(&mut lp, t, 1);
     writer(&mut lp, t, 2);
@@ -588,10 +597,7 @@ fn expired_list_element_survives_unmerge_spec_crdt_4_6() {
 #[test]
 fn snapshot_past_expiry_beside_body_spec_crdt_4_7() {
     let k = ak("t:list.0");
-    let mut lp = net(3, 0x7a16);
-    let t = new_thing(&mut lp, 0);
-    writer(&mut lp, t, 1);
-    lp.sync_all().unwrap();
+    let (mut lp, t) = one_writer(3);
     let mut m = Mutation::new();
     m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
     m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("hello")] } }).unwrap();
@@ -616,10 +622,7 @@ fn snapshot_past_expiry_beside_body_spec_crdt_4_7() {
 #[test]
 fn list_element_expiry_in_any_order_spec_crdt_5_7() {
     let k = ak("t:list.0");
-    let mut lp = net(2, 0x7a07);
-    let t = new_thing(&mut lp, 0);
-    writer(&mut lp, t, 1);
-    lp.sync_all().unwrap();
+    let (mut lp, t) = one_writer(2);
     let mut m = Mutation::new();
     m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
     m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("hello")] } }).unwrap();
@@ -663,10 +666,7 @@ fn list_element_expiry_in_any_order_spec_crdt_5_7() {
 #[ignore = "issues/swept-hidden-write-uncoverable.md"]
 fn repro_hidden_write_goes_at_compaction_spec_sync_7() {
     let k = ak("t:gonemap.0");
-    let mut lp = net(2, 0x7a02);
-    let t = new_thing(&mut lp, 0);
-    writer(&mut lp, t, 1);
-    lp.sync_all().unwrap();
+    let (mut lp, t) = one_writer(2);
     let op = |lp: &mut LocalPeer, i: usize, path: Vec<osis_crdt::PathSeg>, op: osis_crdt::Op| {
         let mut m = Mutation::new();
         m.op(t, &GONEMAP, osis_crdt::PathOp { path, op }).unwrap();
@@ -699,10 +699,7 @@ fn repro_hidden_write_goes_at_compaction_spec_sync_7() {
 // spec/sync.md §7, spec/crdt.md §4.7: a purge of an edit hidden in a removed entry leaves no key.
 #[test]
 fn purged_hidden_edit_leaves_no_key_spec_sync_7() {
-    let mut lp = net(2, 0x7a03);
-    let t = new_thing(&mut lp, 0);
-    writer(&mut lp, t, 1);
-    lp.sync_all().unwrap();
+    let (mut lp, t) = one_writer(2);
     let carries = |lp: &mut LocalPeer, k: &osis_base::Ak, what: &[u8]| {
         let c = lp.peers[0].engine.snapshot(&t, k).unwrap().unwrap();
         let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
@@ -736,10 +733,7 @@ fn purged_hidden_edit_leaves_no_key_spec_sync_7() {
 #[test]
 fn sweep_of_removed_text_entry_ends_spec_sync_7() {
     let k = ak("t:docs.0");
-    let mut lp = net(2, 0x7a17);
-    let t = new_thing(&mut lp, 0);
-    writer(&mut lp, t, 1);
-    lp.sync_all().unwrap();
+    let (mut lp, t) = one_writer(2);
     let key = || vec![osis_crdt::PathSeg::Key(s("k"))];
     let op = |lp: &mut LocalPeer, i: usize, path: Vec<osis_crdt::PathSeg>, op: osis_crdt::Op| {
         let mut m = Mutation::new();
@@ -773,7 +767,7 @@ fn sweep_of_removed_text_entry_ends_spec_sync_7() {
 #[test]
 fn partial_receipt_survives_compaction_spec_sync_7() {
     let k = ak("t:big.0");
-    let mut lp = net(3, 0x7a04);
+    let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
     writer(&mut lp, t, 1);
     writer(&mut lp, t, 2);
@@ -804,7 +798,7 @@ fn partial_receipt_survives_compaction_spec_sync_7() {
 fn removed_text_entry_key_goes_spec_crdt_5_6() {
     for reset in [None, Some(osis_crdt::Op::Replace(Value::Map(Default::default()))), Some(osis_crdt::Op::RemoveAspect)] {
         let k = ak("t:docs.0");
-        let mut lp = net(1, 0x7a18);
+        let mut lp = net(1, 0);
         let t = new_thing(&mut lp, 0);
         let mut m = Mutation::new();
         m.op(t, &DOCS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("SECRETKEY"))], op: osis_crdt::Op::Set(s("hello")) }).unwrap();
@@ -826,10 +820,7 @@ fn removed_text_entry_key_goes_spec_crdt_5_6() {
 #[test]
 fn list_element_in_snapshot_before_expiry_reads_alike_spec_crdt_5_7() {
     let k = ak("t:listtext.0");
-    let mut lp = net(3, 0x7a15);
-    let t = new_thing(&mut lp, 0);
-    writer(&mut lp, t, 1);
-    lp.sync_all().unwrap();
+    let (mut lp, t) = one_writer(3);
     let mut m = Mutation::new();
     m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
     m.op(t, &LISTTEXT, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("abc")] } }).unwrap();

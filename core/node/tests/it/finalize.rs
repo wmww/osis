@@ -21,8 +21,17 @@ impl osis_node::flows::SyncState for Pass {
 
 /// A timed share: `t` (first admin: peer 0), write to peers 1 and 3, read to peer 2 until `until`
 /// (`role`: G's role). Returns (lp, t, persons, until).
-fn shared(seed: u64, role: Role) -> (LocalPeer, Tid, Vec<Tid>, WallMs) {
-    let (mut lp, ps) = people(4, seed);
+/// Built once per `role` (`LocalPeer::cached`).
+fn shared(role: Role) -> (LocalPeer, Tid, Vec<Tid>, WallMs) {
+    let (lp, (t, ps, until)) = LocalPeer::cached(&format!("finalize::shared/{role:?}"), || {
+        let (lp, t, ps, until) = shared_built(role);
+        (lp, (t, ps, until))
+    });
+    (lp, t, ps, until)
+}
+
+fn shared_built(role: Role) -> (LocalPeer, Tid, Vec<Tid>, WallMs) {
+    let (mut lp, ps) = people(4);
     let t = thing_of(&mut lp, 0, ps[0]);
     for w in [1, 3] {
         lp.peers[0].engine.grant(&t, &ps[w], &edge_of(Role::Write)).unwrap();
@@ -70,7 +79,7 @@ fn reseal(lp: &mut LocalPeer, t: Tid) {
 // no re-seal brings the guest back.
 #[test]
 fn a_writer_finalizes_an_ended_reader_edge_spec_permissions_2() {
-    let (mut lp, t, ps, until) = shared(5401, Role::Read);
+    let (mut lp, t, ps, until) = shared(Role::Read);
     past(&mut lp, until, 1_000);
     assert!(lp.peers[1].engine.departures(&t).unwrap().is_empty(), "keys read no clock");
     let e0 = newest_read(&lp, 1, t);
@@ -92,7 +101,7 @@ fn a_writer_finalizes_an_ended_reader_edge_spec_permissions_2() {
 // when it arrives: the guest stays, and keeps reading once re-sealed.
 #[test]
 fn a_finalize_of_an_unended_edge_does_nothing_spec_permissions_2() {
-    let (mut lp, t, ps, until) = shared(5402, Role::Read);
+    let (mut lp, t, ps, until) = shared(Role::Read);
     raw_finalize(&mut lp, 1, t, ps[2]);
     past(&mut lp, until, 1_000);
     lp.peers[2].clock.set(WallMs(until.0 + 1_000));
@@ -111,7 +120,7 @@ fn a_finalize_of_an_unended_edge_does_nothing_spec_permissions_2() {
 // stands on the timeline; an explicit removal after it still removes the edge.
 #[test]
 fn an_explicit_removal_after_a_void_finalize_removes_spec_permissions_2() {
-    let (mut lp, t, ps, _) = shared(5407, Role::Read);
+    let (mut lp, t, ps, _) = shared(Role::Read);
     raw_finalize(&mut lp, 1, t, ps[2]);
     spread(&mut lp);
     assert!(holds(&lp, 0, t, ps[2]));
@@ -127,7 +136,7 @@ fn an_explicit_removal_after_a_void_finalize_removes_spec_permissions_2() {
 // finalizes it nor has a finalize of it apply; the first admin's does.
 #[test]
 fn a_writer_cannot_finalize_an_ended_admin_edge_spec_permissions_2() {
-    let (mut lp, t, ps, until) = shared(5403, Role::Admin);
+    let (mut lp, t, ps, until) = shared(Role::Admin);
     past(&mut lp, until, 1_000);
     let (w, _) = lp.peers[1].engine.ensure_rotated(&t).unwrap();
     assert!(w.commits.is_empty(), "the writer writes no finalize of it");
@@ -149,7 +158,7 @@ fn a_writer_cannot_finalize_an_ended_admin_edge_spec_permissions_2() {
 // the re-seal brings it back.
 #[test]
 fn a_renewal_before_the_finalize_wins_spec_permissions_2() {
-    let (mut lp, t, ps, until) = shared(5404, Role::Read);
+    let (mut lp, t, ps, until) = shared(Role::Read);
     past(&mut lp, until, 1_000);
     let renewed = lp.peers[0].engine.grant(&t, &ps[2], &ct::Edge { until: Some(WallMs(until.0 + 3_600_000)), ..edge_of(Role::Read) }).unwrap();
     assert_eq!(renewed.commits.len(), 1, "a renewal finalizes nothing first");
@@ -168,7 +177,7 @@ fn a_renewal_before_the_finalize_wins_spec_permissions_2() {
 // the same roster and current epochs, and the guest reads nothing new.
 #[test]
 fn concurrent_finalizes_converge_spec_permissions_2() {
-    let (mut lp, t, ps, until) = shared(5405, Role::Read);
+    let (mut lp, t, ps, until) = shared(Role::Read);
     past(&mut lp, until, 1_000);
     lp.peers[3].clock.set(WallMs(until.0 + 1_500));
     for w in [1, 3] {
@@ -199,7 +208,7 @@ fn concurrent_finalizes_converge_spec_permissions_2() {
 #[test]
 fn a_finalize_lets_the_guest_hear_out_spec_permissions_2() {
     use osis_node::rotation::LostScope;
-    let (mut lp, t, _, until) = shared(5406, Role::Write);
+    let (mut lp, t, _, until) = shared(Role::Write);
     past(&mut lp, until, 1_000);
     lp.peers[2].clock.set(WallMs(until.0 + 1_000));
     let (done, _) = lp.peers[1].engine.ensure_rotated(&t).unwrap();
@@ -216,7 +225,7 @@ fn a_finalize_lets_the_guest_hear_out_spec_permissions_2() {
 // finalize, a revoke by an admin that cuts off nobody.
 #[test]
 fn a_frontierless_removal_of_an_unended_edge_is_refused_spec_commits_2() {
-    let (mut lp, t, ps, _) = shared(5408, Role::Read);
+    let (mut lp, t, ps, _) = shared(Role::Read);
     let mut m = Mutation::new();
     m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(ps[2])) }).unwrap();
     let r = lp.peers[0].engine.commit(m);

@@ -444,10 +444,10 @@ mod tests {
     fn threshold() {
         let f = framing();
         let mut store = MemoryBlobs::default();
-        let mut rng = SeededRng::from_u64(1);
+        let mut rng = SeededRng::from_u64(0);
         // Head of 2 bytes: 126 payload bytes is exactly the threshold.
         for (n, large) in [(0, false), (126, false), (127, true), (1000, true)] {
-            let d = data(n, 3);
+            let d = data(n, 0);
             let v = write_bytes(&mut store, &f, &mut rng, &d, 50);
             assert_eq!(matches!(v, Value::Link(_)), large, "{n}");
             assert_eq!(encode(&Value::Bytes(d.clone())).len() > SMALL.threshold, large);
@@ -473,7 +473,7 @@ mod tests {
     fn small_chunked_rejected() {
         let f = framing();
         let mut store = MemoryBlobs::default();
-        let mut rng = SeededRng::from_u64(2);
+        let mut rng = SeededRng::from_u64(0);
         let root = write_tree(&mut BlobWriter::new(&f, &mut store, &mut rng), SMALL.chunk, &encode(&Value::Bytes(vec![1; 20]))).unwrap();
         let mut r = BlobReader::new(&f.dedup, &mut store);
         assert_eq!(read_value(root, &f.dedup, &mut r, SMALL, usize::MAX), Err(Error::Malformed("chunked value at or below CHUNK_THRESHOLD")));
@@ -485,7 +485,7 @@ mod tests {
     fn text_and_lengths() {
         let f = framing();
         let mut store = MemoryBlobs::default();
-        let mut rng = SeededRng::from_u64(3);
+        let mut rng = SeededRng::from_u64(0);
         let s = "héllo wörld ✓ 𝄞 ".repeat(40);
         let mut bw = BlobWriter::new(&f, &mut store, &mut rng);
         let mut w = ValueWriter::text(SMALL, s.len() as u64);
@@ -520,8 +520,8 @@ mod tests {
     fn range_and_lazy() {
         let f = framing();
         let mut store = MemoryBlobs::default();
-        let mut rng = SeededRng::from_u64(4);
-        let d = data(5000, 5);
+        let mut rng = SeededRng::from_u64(0);
+        let d = data(5000, 0);
         let Value::Link(root) = write_bytes(&mut store, &f, &mut rng, &d, 333) else { panic!() };
         let root = *root;
         // Opening fetches only the path to the first chunk: blobs arrive one by one on Missing.
@@ -595,8 +595,8 @@ mod tests {
     fn resume_mid_stream() {
         let f = framing();
         let mut store = MemoryBlobs::default();
-        let mut rng = SeededRng::from_u64(6);
-        let d = data(3000, 6);
+        let mut rng = SeededRng::from_u64(0);
+        let d = data(3000, 0);
         let Value::Link(root) = write_bytes(&mut store, &f, &mut rng, &d, 3000) else { panic!() };
         let root = *root;
         let victim = *store.0.keys().next().unwrap();
@@ -628,8 +628,8 @@ mod tests {
     fn seek_resumes_spec_sync_6() {
         let f = framing();
         let mut store = MemoryBlobs::default();
-        let mut rng = SeededRng::from_u64(8);
-        let d = data(4000, 7);
+        let mut rng = SeededRng::from_u64(0);
+        let d = data(4000, 0);
         let Value::Link(root) = write_bytes(&mut store, &f, &mut rng, &d, 4000) else { panic!() };
         let root = *root;
         // A blob in the middle of the reading order goes missing once.
@@ -685,8 +685,8 @@ mod tests {
         const MIB: usize = 1 << 20;
         let f = framing();
         let mut store = MemoryBlobs::default();
-        let mut rng = SeededRng::from_u64(13);
-        let d = data(8 * MIB, 9);
+        let mut rng = SeededRng::from_u64(0);
+        let d = data(8 * MIB, 0);
         let mut bw = BlobWriter::new(&f, &mut store, &mut rng);
         let mut w = ValueWriter::bytes(LargeParams::FORMAT, d.len() as u64);
         w.write(&mut bw, &d).unwrap();
@@ -747,8 +747,8 @@ mod tests {
         }
         let f = framing();
         let mut store = MemoryBlobs::default();
-        let mut rng = SeededRng::from_u64(14);
-        let d = data(20_000, 10);
+        let mut rng = SeededRng::from_u64(0);
+        let d = data(20_000, 0);
         let canon = encode(&Value::Bytes(d.clone()));
         let mut bw = BlobWriter::new(&f, &mut store, &mut rng);
         let liar = write_tree(&mut Liar(&mut bw), SMALL.chunk, &canon).unwrap();
@@ -767,7 +767,7 @@ mod tests {
     fn memory_bound() {
         let f = framing();
         let mut store = MemoryBlobs::default();
-        let mut rng = SeededRng::from_u64(7);
+        let mut rng = SeededRng::from_u64(0);
         let n = 200_000;
         // Three levels of open nodes at most here; the bound is below the value's size.
         let path = 3 * osis_base::format::TREE_FANOUT * std::mem::size_of::<Link>();
@@ -823,7 +823,7 @@ mod tests {
     fn dedup_by_reuse() {
         let f = framing();
         let mut store = MemoryBlobs::default();
-        let d = data(20_000, 8);
+        let d = data(20_000, 0);
         let (root, n, _) = rewrite(&mut store, &f, 1, &d, None);
         let mut d2 = d.clone();
         d2.splice(10_000..10_000, *b"inserted");
@@ -849,7 +849,7 @@ mod tests {
     fn reencryption_rule() {
         let fr = |expiry: Option<u64>, keys: Vec<(u8, u8)>| Framing { dedup: Secret32::from_bytes([7; 32]), expiry: expiry.map(WallMs), keys: keys.into_iter().map(|(l, b)| (l, dk(b))).collect(), blind: [4; 16] };
         let base = fr(Some(100), vec![(1, 1), (2, 2), (3, 3)]);
-        let d = data(5_000, 9);
+        let d = data(5_000, 0);
         let cases = [
             (fr(Some(100), vec![(1, 1), (2, 2), (3, 3)]), true),
             (fr(Some(50), vec![(1, 1), (2, 2), (3, 3)]), true),

@@ -132,10 +132,14 @@ pub fn fmt_recv(recv: &[u32], author: usize) -> String {
     format!("recv {}", v.join(", "))
 }
 
-/// Seeded xorshift generator: every history is a seed.
+/// Seeded xorshift generator: every history is a seed (0 included).
 pub struct Rng(pub u64);
 impl Rng {
     pub fn next(&mut self) -> u64 {
+        // (xorshift never leaves a zero state, nor reaches one)
+        if self.0 == 0 {
+            self.0 = 0x9E37_79B9_7F4A_7C15;
+        }
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;

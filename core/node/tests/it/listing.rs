@@ -19,16 +19,17 @@ fn reg() -> Ak {
 }
 
 /// Alice (0) is first admin of D, Bob (1) and Dan (3) write, Carol (2) is an admin.
-fn setup(seed: u64) -> (LocalPeer, Tid, [Tid; 4]) {
-    let (lp, (d, ids)) = LocalPeer::cached(&format!("listing::setup/{seed}"), || {
-        let (lp, d, ids) = setup_built(seed);
+/// Built once (`LocalPeer::cached`).
+fn setup() -> (LocalPeer, Tid, [Tid; 4]) {
+    let (lp, (d, ids)) = LocalPeer::cached("listing::setup", || {
+        let (lp, d, ids) = setup_built();
         (lp, (d, ids))
     });
     (lp, d, ids)
 }
 
-fn setup_built(seed: u64) -> (LocalPeer, Tid, [Tid; 4]) {
-    let mut lp = net(4, seed);
+fn setup_built() -> (LocalPeer, Tid, [Tid; 4]) {
+    let mut lp = net(4, 0);
     let ids = [0, 1, 2, 3].map(|i| lp.peers[i].engine.me());
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
@@ -72,9 +73,10 @@ fn all(lp: &mut LocalPeer, i: usize) -> Vec<Package> {
     x.into_iter().map(|x| x.1).collect()
 }
 
-fn fresh(lp: &mut LocalPeer, base: &[Package], seed: u64) -> Peer {
+/// A new peer (one more than `lp` holds) holding `base`.
+fn fresh(lp: &mut LocalPeer, base: &[Package]) -> Peer {
     let now = lp.peers[0].engine.now();
-    let mut p = Peer::new(seed, now).unwrap();
+    let mut p = Peer::new(lp.peers.len() as u64, now).unwrap();
     for x in base {
         p.engine.ingest(&x.bytes, x.blobs.clone()).unwrap();
     }
@@ -106,7 +108,7 @@ fn pos(r: &HeldPart) -> CommitPos {
 // author, and a superseded body reads as written (the register reads only the last).
 #[test]
 fn pages_by_time_both_ways_superseded_reads() {
-    let (mut lp, d, ids) = setup(401);
+    let (mut lp, d, ids) = setup();
     let r = Retention::default();
     for (i, v) in [(1, "a"), (3, "b"), (1, "c"), (3, "d"), (1, "e")] {
         write(&mut lp, i, d, r, v);
@@ -142,7 +144,7 @@ fn pages_by_time_both_ways_superseded_reads() {
 // one body past it alone reads as too large where the bound is smaller than it.
 #[test]
 fn page_stops_at_its_byte_bound() {
-    let (mut lp, d, _) = setup(402);
+    let (mut lp, d, _) = setup();
     for v in ["0123456789", "abcdefghij", "klmnopqrst"] {
         write(&mut lp, 1, d, Retention::default(), v);
     }
@@ -161,7 +163,7 @@ fn page_stops_at_its_byte_bound() {
 // invalid stays); the node's own reads, marked, so its user may write it again.
 #[test]
 fn invalid_body_reads_marked() {
-    let (mut lp, d, ids) = setup(403);
+    let (mut lp, d, ids) = setup();
     let c = write(&mut lp, 1, d, Retention::default(), "v");
     assert!(held(&mut lp.peers[1], d, &c).valid);
     lp.sync_all().unwrap();
@@ -181,7 +183,7 @@ fn invalid_body_reads_marked() {
 // alone it holds no creation and a read of the same bytes as a state shows nothing.
 #[test]
 fn edit_of_held_key_reads_as_written_spec_crdt_5_6() {
-    let mut lp = net(1, 404);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let k = ak("t:big.0");
     let put = |lp: &mut LocalPeer, v: &str| {
@@ -201,7 +203,7 @@ fn edit_of_held_key_reads_as_written_spec_crdt_5_6() {
 // stays where it was, with its author and time.
 #[test]
 fn purged_and_dropped_parts_read_as_such_spec_commits_5() {
-    let (mut lp, d, ids) = setup(404);
+    let (mut lp, d, ids) = setup();
     let r = Retention::default();
     let a = write(&mut lp, 1, d, r, "a");
     let b = write(&mut lp, 3, d, r, "b");
@@ -234,7 +236,7 @@ fn purged_and_dropped_parts_read_as_such_spec_commits_5() {
 // spec/commits.md §5, notes/api.md Commits: a dropped body that a request then names reads purged.
 #[test]
 fn expired_then_purged_tells_the_watch_spec_commits_5() {
-    let (mut lp, d, _) = setup(407);
+    let (mut lp, d, _) = setup();
     let mut m = Mutation::new();
     m.set(d, &reg(), &s("gone soon")).unwrap();
     m.expires(d, &reg(), osis_base::WallMs(lp.peers[0].engine.now().0 + 10)).unwrap();
@@ -266,7 +268,7 @@ fn told_of(p: &mut Peer, d: Tid) -> Vec<CommitId> {
 // watch, in one event per commit.
 #[test]
 fn not_fetched_part_reads_so_and_late_body_tells_the_watch() {
-    let (mut lp, d, ids) = setup(408);
+    let (mut lp, d, ids) = setup();
     let mut m = Mutation::new();
     let e = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -278,7 +280,7 @@ fn not_fetched_part_reads_so_and_late_body_tells_the_watch() {
     m.set(e, &reg(), &s("away")).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     let pk = pack(&mut lp, 0, &c);
-    let mut p = fresh(&mut lp, &base, 409);
+    let mut p = fresh(&mut lp, &base);
     let mut only = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
     let keep = only.header.aspects.iter().position(|a| a.tid == d).unwrap();
     only.parts.retain(|x| x.ai == keep);
@@ -307,7 +309,7 @@ fn not_fetched_part_reads_so_and_late_body_tells_the_watch() {
 // change; and nothing at all until someone listens (a fall lists every commit it touches).
 #[test]
 fn events_per_commit_exact() {
-    let (mut lp, d, ids) = setup(411);
+    let (mut lp, d, ids) = setup();
     let r = Retention::default();
     lp.peers[1].drain_events();
     let c = write(&mut lp, 1, d, r, "one");
@@ -353,7 +355,7 @@ fn events_per_commit_exact() {
 // requests stand, and a receiver takes the snapshot.
 #[test]
 fn purge_aspect_compacts_spec_commits_5() {
-    let (mut lp, d, ids) = setup(32);
+    let (mut lp, d, ids) = setup();
     let a = write(&mut lp, 1, d, Retention::default(), "one");
     lp.sync_all().unwrap();
     let k = ak("purge.0");
@@ -373,7 +375,7 @@ fn purge_aspect_compacts_spec_commits_5() {
 // node stopping it and a receiver refusing it: each walks the aspect.
 #[test]
 fn author_items_are_bounded_spec_wire_4() {
-    let (mut lp, d, _) = setup(31);
+    let (mut lp, d, _) = setup();
     let items = |n: usize, m: &mut Mutation| {
         for i in 0..n {
             m.purge(PurgeItem::Author { tid: d, ak: reg(), actor: Tid::from_bytes([i as u8 + 1; 15]) });
@@ -422,7 +424,7 @@ fn purge_by_author_any_order_spec_perm_6() {
                 1 => by.author(),
                 _ => by.writer(),
             };
-            let (mut lp, d, ids) = setup(410 + by as u64);
+            let (mut lp, d, ids) = setup();
             let r = crate::common::purgeable_by(by);
             let base = all(&mut lp, 0);
             let mut m = Mutation::new();
@@ -444,13 +446,13 @@ fn purge_by_author_any_order_spec_perm_6() {
             let pd = pack(&mut lp, 0, &dm);
             let items = [&pc, &setting, &pd, &prq];
             // a fresh node holding `base`, copied for each order
-            let start = fresh(&mut lp, &base, 500);
+            let mut start = fresh(&mut lp, &base);
             for (k, order) in perms(4).iter().enumerate() {
                 // only the author's own request by the first class: the orders are the same work
                 if k > 0 && by != PurgeBy::AuthorOrAdmin && order[0] != 0 {
                     continue;
                 }
-                let mut p = start.fork(k as u64).unwrap();
+                let mut p = start.copy().unwrap();
                 // another's on the first order, held before the request; after it on the rest
                 if k == 0 {
                     p.engine.ingest(&po.bytes, po.blobs.clone()).unwrap();
@@ -480,7 +482,7 @@ fn purge_by_author_any_order_spec_perm_6() {
 // author writes later stays, whichever arrives first.
 #[test]
 fn purge_by_author_spares_later_writes_spec_perm_6() {
-    let (mut lp, d, ids) = setup(420);
+    let (mut lp, d, ids) = setup();
     let r = Retention::default();
     let before = write(&mut lp, 1, d, r, "before");
     lp.sync_all().unwrap();
@@ -500,7 +502,7 @@ fn purge_by_author_spares_later_writes_spec_perm_6() {
 // value it carried stays in every node's read.
 #[test]
 fn purge_by_author_of_a_snapshot_keeps_anothers_value_spec_commits_5() {
-    let (mut lp, d, ids) = setup(421);
+    let (mut lp, d, ids) = setup();
     let r = Retention::default();
     let dan = write(&mut lp, 3, d, r, "dan's");
     lp.sync_all().unwrap();
@@ -521,7 +523,7 @@ fn purge_by_author_of_a_snapshot_keeps_anothers_value_spec_commits_5() {
 // goes (`T_FLOOR`).
 #[test]
 fn purge_request_floor_holds_purge_on_replace_spec_commits_5() {
-    let (mut lp, d, _) = setup(435);
+    let (mut lp, d, _) = setup();
     let w = write(&mut lp, 0, d, Retention { by: PurgeBy::Writer }, "v");
     let mut m = Mutation::new();
     keep_in(&mut m, d, &setting(&[("t:reg.0", osis_schema::History::PurgeOnReplace)]));
@@ -544,7 +546,7 @@ fn purge_request_floor_holds_purge_on_replace_spec_commits_5() {
 // then it undoes back to Alice's value.
 #[test]
 fn undo_over_not_fetched_kept_part_waits_spec_commits_7() {
-    let (mut lp, d, _) = setup(410);
+    let (mut lp, d, _) = setup();
     let mut m = Mutation::new();
     keep_in(&mut m, d, &setting(&[("t:reg.0", DAY)]));
     m.set(d, &reg(), &s("alice")).unwrap();
@@ -575,14 +577,14 @@ fn undo_over_not_fetched_kept_part_waits_spec_commits_7() {
 #[test]
 fn first_set_undo_with_concurrent_set_spec_commits_7() {
     let none = || Retention { by: PurgeBy::Writer };
-    let (mut lp, d, _) = setup(411);
+    let (mut lp, d, _) = setup();
     write(&mut lp, 1, d, none(), "bob");
     lp.sync_all().unwrap();
     let a = write(&mut lp, 0, d, none(), "alice");
     let mut m = Mutation::new();
     m.undo(a);
     assert!(matches!(lp.peers[0].engine.write(m), Err(osis_node::Error::ContentGone(x)) if x == a), "bob's set held");
-    let (mut lp, d, _) = setup(412);
+    let (mut lp, d, _) = setup();
     write(&mut lp, 1, d, none(), "bob");
     let a = write(&mut lp, 0, d, none(), "alice");
     let mut m = Mutation::new();
@@ -600,7 +602,7 @@ fn first_set_undo_with_concurrent_set_spec_commits_7() {
 // the listing then, to a listener added after the replacement too.
 #[test]
 fn purge_floor_part_told_at_its_floor_spec_commits_5() {
-    let (mut lp, d, _) = setup(431);
+    let (mut lp, d, _) = setup();
     let other = write(&mut lp, 0, d, crate::common::purgeable_by(PurgeBy::AuthorOrAdmin), "other");
     let mut m = Mutation::new();
     m.set(d, &reg(), &s("x")).unwrap();

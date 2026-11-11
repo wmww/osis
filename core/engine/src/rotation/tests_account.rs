@@ -13,8 +13,10 @@ use osis_keys::{account_epoch, stale};
 use osis_schema::Codec;
 use std::collections::BTreeSet;
 
+/// `n` fresh peers (`LocalPeer::new`, seed 0), not synced: built once per test process, each
+/// caller handed a copy.
 fn peers(n: usize) -> LocalPeer {
-    LocalPeer::new(n, 1601, WallMs(1_700_000_000_000)).unwrap()
+    LocalPeer::cached(&format!("rotation::tests_account::peers/{n}"), || (LocalPeer::new(n, 0, super::tests::T0).unwrap(), ())).0
 }
 
 fn created(lp: &mut LocalPeer) -> (CreatedAccount, Vec<u8>) {
@@ -114,7 +116,7 @@ pub(super) fn rotation(rec: CreationRecord, first: &AccountEpochKeys, next: &Acc
     let node = osis_crypto::KeyActorKeys::from_seed(&Secret32::from_bytes([9; 32]));
     cb.account = Some(AccountSigner { epoch: FIRST_EPOCH, inner: first.inner.clone(), node: Tid::from_bytes([9; 15]), node_key: node.signing });
     cb.rotation = Some((RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), list_root: [0; 32] }, Vec::new()));
-    cb.build(&first.signing, &Dedup(rec, first.signing.verifying_key()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+    cb.build(&first.signing, &Dedup(rec, first.signing.verifying_key()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
 // spec/crypto.md §4 (Account keysets): at an outsider holding the rotation, a box naming the closed first epoch reads stale and the new epoch does not; the keyset rule reads the public name alone
@@ -308,7 +310,7 @@ fn account_session_nonce_is_new_after_a_restart_spec_crdt_2() {
         c.nonce_as(&a.account, c.session.nonce)
     };
     let before = nonce(&lp);
-    lp.peers[0].restart(5).unwrap();
+    lp.peers[0].restart(0).unwrap();
     assert_ne!(nonce(&lp), before);
 }
 
@@ -430,30 +432,33 @@ fn a_siblings_far_future_commit_waits_spec_crdt_2_2() {
 /// all synced. Returns (lp, account, t, c, g) and the rotation of the account closing its first
 /// epoch, as peer 1 would receive it.
 fn closed_world() -> (LocalPeer, Tid, Tid, CommitId, CommitId, Vec<u8>) {
-    let mut lp = peers(3);
-    // the addenda here are the tests' own
-    for p in &mut lp.peers {
-        p.engine.core.addenda_on = false;
-    }
-    lp.sync_all().unwrap();
-    let (a, z) = (lp.peers[0].engine.me(), lp.peers[2].engine.me());
-    let me = lp.peers[1].engine.me();
-    let mut m = crate::Mutation::new();
-    let t = lp.peers[1].engine.new_thing(&mut m, me);
-    m.set(t, &Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
-    lp.peers[1].commit(m).unwrap();
-    lp.peers[1].engine.grant(&t, &a, &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
-    lp.advance(1000);
-    let mut m = crate::Mutation::new();
-    m.set(t, &Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let g = *lp.peers[0].engine.grant(&t, &z, &edge(Role::Write)).unwrap().commits.last().unwrap();
-    lp.sync_all().unwrap();
-    lp.advance(1000);
-    let e = &lp.peers[0].engine;
-    let first = AccountEpochKeys::from_seed(e.core.accounts[&a].seeds.values().next().unwrap());
-    let rot = rotation(e.core.created(&a).unwrap().clone(), &first, &AccountEpochKeys::from_seed(&Secret32::from_bytes([90; 32])), Ts::make(e.now(), 0).unwrap());
+    let (lp, (a, t, c, g, rot)) = LocalPeer::cached("rotation::tests_account::closed_world", || {
+        let mut lp = peers(3);
+        // the addenda here are the tests' own
+        for p in &mut lp.peers {
+            p.engine.core.addenda_on = false;
+        }
+        lp.sync_all().unwrap();
+        let (a, z) = (lp.peers[0].engine.me(), lp.peers[2].engine.me());
+        let me = lp.peers[1].engine.me();
+        let mut m = crate::Mutation::new();
+        let t = lp.peers[1].engine.new_thing(&mut m, me);
+        m.set(t, &Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
+        lp.peers[1].commit(m).unwrap();
+        lp.peers[1].engine.grant(&t, &a, &edge(Role::Admin)).unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(1000);
+        let mut m = crate::Mutation::new();
+        m.set(t, &Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let g = *lp.peers[0].engine.grant(&t, &z, &edge(Role::Write)).unwrap().commits.last().unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(1000);
+        let e = &lp.peers[0].engine;
+        let first = AccountEpochKeys::from_seed(e.core.accounts[&a].seeds.values().next().unwrap());
+        let rot = rotation(e.core.created(&a).unwrap().clone(), &first, &AccountEpochKeys::from_seed(&Secret32::from_bytes([90; 32])), Ts::make(e.now(), 0).unwrap());
+        (lp, (a, t, c, g, rot))
+    });
     (lp, a, t, c, g, rot)
 }
 
@@ -491,7 +496,7 @@ fn closed_epoch_write_falls_and_a_witness_saves_it_spec_permissions_5_5() {
     let e = &mut lp.peers[1].engine;
     assert_eq!(e.get(&t, &x).unwrap(), Some(osis_base::Value::Int(1)), "the witness's addendum saves the write");
     assert_eq!(e.core.role_now(&z, &t), None, "an addendum saves plain content only");
-    lp.peers[1].restart(7).unwrap();
+    lp.peers[1].restart(0).unwrap();
     let e = &mut lp.peers[1].engine;
     assert_eq!((e.get(&t, &x).unwrap(), e.core.role_now(&z, &t)), (Some(osis_base::Value::Int(1)), None));
 }

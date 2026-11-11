@@ -948,7 +948,7 @@ mod tests {
     #[test]
     fn forensic_opens_a_section_by_its_planted_key() {
         use osis_base::{Value, WallMs};
-        let mut lp = crate::local_peer::LocalPeer::new(1, 944, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.me();
         let mut m = crate::Mutation::new();
@@ -960,7 +960,7 @@ mod tests {
         let id = e.commit(m).unwrap().unwrap();
         // the commit blob as labels carry it: its key planted, no wrap or read secret on the device
         let body = e.body(&id).unwrap().unwrap();
-        let sealed = e.seal(&body, osis_label::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(1)).unwrap().unwrap();
+        let sealed = e.seal(&body, osis_label::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(0)).unwrap().unwrap();
         let env = osis_commit::Envelope::decode(&osis_label::open(&sealed.blob, &sealed.key).unwrap().1).unwrap();
         let bk = sealed.key;
         let framed = sealed.blob;

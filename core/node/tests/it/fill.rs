@@ -54,9 +54,14 @@ struct Chat {
 }
 
 /// `a` writes `N` kept messages; `c`, a new node holding its grant, has never met the host.
+/// Built once per role (`Net::cached`).
 fn chat(role: Role) -> Chat {
-    // not an inbox: unvouched junk under it keeps no bytes (`junk_listed_goes_when_it_comes`)
-    chat_with(role, |net, a, g, _| net.name_inbox_elsewhere(a, g))
+    let (net, (host, a, c, g, t, l)) = Net::cached(&format!("fill::chat/{role:?}"), || {
+        // not an inbox: unvouched junk under it keeps no bytes (`junk_listed_goes_when_it_comes`)
+        let Chat { net, host, a, c, g, t, l } = chat_with(role, |net, a, g, _| net.name_inbox_elsewhere(a, g));
+        (net, (host, a, c, g, t, l))
+    });
+    Chat { net, host, a, c, g, t, l }
 }
 
 /// `chat` with `setup(net, a, g, t)` run before the messages.
@@ -259,7 +264,7 @@ fn a_deposit_comes_after_order_0_spec_sync_6() {
     let (_, gl) = f.net.group_labels(a).into_iter().find(|(_, x)| x.id == l).unwrap();
     let head = f.net.host_path(host, &l).last().unwrap().clone();
     let keys = f.net.engine(a).head_keys(&g, gl.index, &head).unwrap();
-    let mut rng = osis_crypto::SeededRng::from_u64(7);
+    let mut rng = osis_crypto::SeededRng::from_u64(0);
     let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(&mut rng), None, Vec::new()).unwrap();
     let (_, blob) = osis_label::frame(&prefix, b"deposit", &mut rng).unwrap();
     let id = osis_label::blob_id(&blob);
@@ -401,7 +406,7 @@ fn junk_listed_goes_when_it_comes_spec_sync_6() {
     let (_, gl) = f.net.group_labels(a).into_iter().find(|(_, x)| x.id == l).unwrap();
     let head = f.net.host_path(host, &l).last().unwrap().clone();
     let keys = f.net.engine(a).head_keys(&g, gl.index, &head).unwrap();
-    let mut rng = osis_crypto::SeededRng::from_u64(7);
+    let mut rng = osis_crypto::SeededRng::from_u64(0);
     let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(&mut rng), None, Vec::new()).unwrap();
     let (_, blob) = osis_label::frame(&prefix, b"junk", &mut rng).unwrap();
     let id = osis_label::blob_id(&blob);
@@ -502,22 +507,26 @@ fn no_pass_before_order_0_at_two_hosts_spec_sync_6() {
 fn a_rotation_part_way_loses_nothing_spec_sync_6() {
     let mut refused = 0;
     for wait in 0..4 {
-        let mut net = Net::new();
-        let host = net.add_host();
-        let a = net.node(1, &[host]);
-        let c = filler(&mut net, &[host]);
-        let d = net.node(4, &[]);
-        let g = net.group(a, &[(c, Role::Read), (d, Role::Read)], &[host]);
-        let t = kept_chat(&mut net, a, g);
-        net.set_online(c, false);
-        net.run();
-        for i in 0..N {
-            say(&mut net, a, t, i);
-        }
-        net.run();
-        let l = net.label(a);
+        let (net, (host, a, c, d, g, t, l)) = Net::cached("fill::rotation_part_way", || {
+            let mut net = Net::new();
+            let host = net.add_host();
+            let a = net.node(1, &[host]);
+            let c = filler(&mut net, &[host]);
+            let d = net.node(4, &[]);
+            let g = net.group(a, &[(c, Role::Read), (d, Role::Read)], &[host]);
+            let t = kept_chat(&mut net, a, g);
+            net.set_online(c, false);
+            net.run();
+            for i in 0..N {
+                say(&mut net, a, t, i);
+            }
+            net.run();
+            let l = net.label(a);
+            let mut f = Chat { net, host, a, c, g, t, l };
+            f.part_way();
+            (f.net, (host, a, c, d, g, t, l))
+        });
         let mut f = Chat { net, host, a, c, g, t, l };
-        f.part_way();
         for _ in 0..wait {
             f.net.round();
         }
@@ -666,21 +675,25 @@ struct Times {
 /// connection); with `slow`, the others answer one round per step after. Time moves to `c`'s
 /// own wakes (25 s at most), for 10 min at most (`None`: not within them).
 fn fill_with_a_trickling_host(hosts: usize, batch: Option<usize>, trickle: bool, slow: bool) -> Times {
-    let mut net = Net::new();
-    let hs: Vec<usize> = (0..hosts).map(|_| net.add_host()).collect();
+    // the chat written, `c` not yet online: built once per (hosts, batch) (`Net::cached`)
+    let (mut net, (hs, a, c, g, t)) = Net::cached(&format!("fill::trickling/{hosts}/{batch:?}"), || {
+        let mut net = Net::new();
+        let hs: Vec<usize> = (0..hosts).map(|_| net.add_host()).collect();
+        let a = net.node(1, &hs);
+        let mut cfg = osis_node::sync::SyncConfig { hosts: hs.iter().map(|h| net.address(*h)).collect(), ..Default::default() };
+        cfg.fill_batch = batch.unwrap_or(cfg.fill_batch);
+        let c = net.add_node(3, cfg);
+        let g = net.group(a, &[(c, Role::Read)], &hs);
+        let t = kept_chat(&mut net, a, g);
+        net.set_online(c, false);
+        net.run();
+        for i in 0..N {
+            say(&mut net, a, t, i);
+        }
+        net.run();
+        (net, (hs, a, c, g, t))
+    });
     let h1 = hs[0];
-    let a = net.node(1, &hs);
-    let mut cfg = osis_node::sync::SyncConfig { hosts: hs.iter().map(|h| net.address(*h)).collect(), ..Default::default() };
-    cfg.fill_batch = batch.unwrap_or(cfg.fill_batch);
-    let c = net.add_node(3, cfg);
-    let g = net.group(a, &[(c, Role::Read)], &hs);
-    let t = kept_chat(&mut net, a, g);
-    net.set_online(c, false);
-    net.run();
-    for i in 0..N {
-        say(&mut net, a, t, i);
-    }
-    net.run();
     let l = net.label(a);
     let posts: BTreeSet<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(a).header(commit).is_some_and(|h| h.aspects.iter().any(|x| x.ak.as_str() == "f:msg.0")))).map(|x| x.0).collect();
     let first: Vec<BlobId> = net.host_ids(h1, &l).into_iter().filter(|b| !posts.contains(b)).collect();

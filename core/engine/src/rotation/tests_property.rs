@@ -663,11 +663,12 @@ fn replay(s: u64) -> String {
 }
 
 // spec/crypto.md §4, spec/permissions.md §2-§3: no departed holder reads later content, every
-// holder ends reading everything (module doc). Quick size: fixed seeds, no environment; seed 10
-// also checks live = rebuild after every transaction (on a holder-actor seed that triples the time).
+// holder ends reading everything (module doc). Quick size: seeds 0..8 (every emphasis twice), no
+// environment; the first cycle-emphasis run (holder actors) also checks live = rebuild after every
+// transaction.
 #[test]
 fn rotation_holds_spec_crypto_4() {
-    tally(&osis_base::testenv::run_seeds("rotation::tests_property::rotation_holds_spec_crypto_4", &(8..16).collect::<Vec<u64>>(), false, replay, |s| rotation_history(s, s == 10)));
+    tally(&osis_base::testenv::run_seeds("rotation::tests_property::rotation_holds_spec_crypto_4", &(0..8).collect::<Vec<u64>>(), false, replay, |s| rotation_history(s, s == 3)));
 }
 
 /// Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds: OSIS_ROTATION_START,

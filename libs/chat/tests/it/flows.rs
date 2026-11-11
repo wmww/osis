@@ -492,7 +492,7 @@ fn restart_and_thin_client_spec_client_port() {
     let mut w = World::new();
     let host = w.add_host();
     let store = osis::MemStore::new();
-    let mut cfg = w.cfg(3, &[host]);
+    let mut cfg = w.cfg(0, &[host]);
     cfg.store = osis::Store::Memory(store.clone());
     let a = osis::internals::create(cfg.clone()).unwrap();
     let c = create(&a, &Options::default()).unwrap();
@@ -836,7 +836,7 @@ fn link_after_leave_and_kick_spec_perm_7() {
 fn expired_link_not_shown_spec_perm_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let a = w.account(1, &[host]);
+    let a = w.account(0, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
     a.make_link(c, Role::Write, osis::LinkOpts { until: Some(osis::Time(a.now().unwrap().0 + 1000)), single_use: false, direct: false }).unwrap();

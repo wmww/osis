@@ -245,7 +245,7 @@ fn org_drops(n: usize) -> (World, Tid, Tid, Vec<Tid>) {
     let (mut w, nodes, root) = org(n);
     let admins = nodes[1..11].to_vec();
     let doc = *w.created.keys().last().unwrap();
-    let mut rng = Rng(0x5eed_0402);
+    let mut rng = Rng(0);
     for i in (0..n).step_by(40) {
         let t = n as u64 + 10 + 4 * i as u64;
         let a = 1 + rng.below(10);

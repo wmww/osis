@@ -365,7 +365,7 @@ mod tests {
     // is an interior node, levels link the level below, the root hash depends on content only.
     #[test]
     fn shape_and_hashes() {
-        let d = data(200_000, 1);
+        let d = data(200_000, 0);
         let mut hs = HashSink::new(Secret32::from_bytes([7; 32]));
         let root = write_tree(&mut hs, SMALL, &d).unwrap();
         assert_eq!(hs.chunks as usize, osis_base::chunker::chunk_lengths(&d, SMALL).len());
@@ -500,7 +500,7 @@ mod tests {
     fn seek_fetches_the_path_spec_wire_6() {
         let d = Secret32::from_bytes([7; 32]);
         let p = ChunkParams { min: 16, max: 32, mask_bits: 63 };
-        let bytes = data(32 * 3000, 2);
+        let bytes = data(32 * 3000, 0);
         let mut src = ByHash::default();
         let root = write_tree(&mut src, p, &bytes).unwrap();
         let mut r = TreeReader::new(root, p.min, usize::MAX);

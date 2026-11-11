@@ -27,7 +27,7 @@ fn strip_parts(pk: &Package, keep: impl Fn(&str) -> bool, h: &osis_commit::Heade
 // invalid delta created goes with it, whether it arrived before or after the revoke.
 #[test]
 fn nested_write_under_invalid_entry_spec_crdt_4_6() {
-    let mut lp = net_off(3, 71);
+    let mut lp = net_off(3, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
@@ -66,7 +66,7 @@ fn nested_write_under_invalid_entry_spec_crdt_4_6() {
 // the commit's expiry its held part goes.
 #[test]
 fn expiring_commit_applies_without_missing_delta_spec_commits_4() {
-    let mut lp = net(2, 72);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
     lp.peers[1].engine.set_syncing(t, true).unwrap();
@@ -94,7 +94,7 @@ fn expiring_commit_applies_without_missing_delta_spec_commits_4() {
 // commit applies without that delta and takes the good copy later.
 #[test]
 fn bad_part_dropped_alone_spec_commits_4() {
-    let mut lp = net(2, 73);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
     let mut m = Mutation::new();
@@ -116,7 +116,7 @@ fn bad_part_dropped_alone_spec_commits_4() {
 // spec/commits.md §5: a purge drops every body carrying the purged values, snapshots included.
 #[test]
 fn purge_drops_snapshots_spec_commits_5() {
-    let mut lp = net(1, 74);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let secret = set(&mut lp, 0, t, &REG, "secret");
     let snap = lp.peers[0].engine.snapshot(&t, &ak("t:reg.0")).unwrap().unwrap();
@@ -141,7 +141,7 @@ fn purge_drops_snapshots_spec_commits_5() {
 // arriving after the request and the snapshot.
 #[test]
 fn purge_drops_late_snapshot_spec_commits_5() {
-    let mut lp = net(2, 0x5b00);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let reg = ak("t:reg.0");
     let secret = set(&mut lp, 0, t, &REG, "secret");
@@ -198,7 +198,7 @@ fn purge_drops_late_snapshot_spec_commits_5() {
 // spec/crdt.md §8: snapshot frontiers cover only writes the state reflects (valid ones).
 #[test]
 fn snapshot_frontier_valid_only_spec_crdt_8() {
-    let mut lp = net(2, 76);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.me();
@@ -216,7 +216,7 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     let now = lp.peers[0].engine.now();
     assert!(lp.peers[0].engine.frontier(&scope, now).unwrap().commits.contains(&bs), "received, though invalid");
     let snap = lp.peers[0].engine.snapshot(&t, &ak("t:reg.0")).unwrap().unwrap();
-    let mut lp2 = net(1, 77);
+    let mut lp2 = net(1, 1); // a node apart from lp's (its own seeds)
     lp2.advance(100);
     for p in lp.packages(0).unwrap() {
         let h = lp.peers[0].engine.header(&p.id).unwrap();
@@ -238,7 +238,7 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
 // covers the body away.
 #[test]
 fn body_live_spans_its_class_spec_commits_5() {
-    let mut lp = net(1, 84);
+    let mut lp = net(1, 0);
     lp.peers[0].engine.keep_bodies(true);
     let t = new_thing(&mut lp, 0);
     let mut m = Mutation::new();

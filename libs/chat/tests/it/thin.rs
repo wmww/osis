@@ -49,7 +49,7 @@ fn post(db: &Osis, c: osis::Tid, text: &str) -> osis::Result<CommitId> {
 // notes/client-port.md §3: an app on a participant's node as a thin client: reads pages and a watch through the port; with write of its own it posts under its own actor; a reader may not; its own edit works
 #[test]
 fn thin_client_reads_watches_posts_spec_client_port() {
-    let net = osis_transport::Net::new(5);
+    let net = osis_transport::Net::new(0);
     let peer = osis::internals::create(on(&net, "s", vec![])).unwrap();
     peer.set_serving(Some(osis::Serving { admit: osis::Admit::Open, ..Default::default() })).unwrap();
     let addr = peer.listen(&["mem://s".parse().unwrap()]).unwrap().remove(0);
@@ -130,7 +130,7 @@ fn wait_state(db: &Osis, c: osis::Tid, done: impl Fn(&osis::GroupSync) -> bool) 
 #[test]
 fn a_serving_node_takes_its_accounts_chat_spec_data_model_9() {
     use osis::internals::Internals;
-    let net = osis_transport::Net::new(7);
+    let net = osis_transport::Net::new(0);
     let cfg = |ep: &str, hosts: Vec<Address>| {
         let mut c = on(&net, ep, hosts);
         c.direct_sync = true;

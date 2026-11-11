@@ -25,7 +25,7 @@ const PAGE_BYTES: usize = 8 * 1024;
 /// quarter of its 8 KiB page), so a page write leaves its neighbours' leaf alone.
 const SEQ_PAGE_BYTES: usize = 3 * 1024;
 /// A collection with fewer elements is not paged.
-const MIN_PAGED: usize = 64;
+pub(crate) const MIN_PAGED: usize = 64;
 /// The aspect table holding its state pages.
 const STATE_TABLE: u8 = 0;
 /// The aspect table holding the index of its paged maps (by key) and sets (by value).
@@ -1715,7 +1715,7 @@ mod tests {
     // the other keys' rows stay; rows are keyed hashes (another salt finds nothing).
     #[test]
     fn dropped_body_unindexed_spec_commits_5() {
-        let mut rng = osis_crypto::SeededRng::from_u64(80);
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([5; 15]), osis_base::Ak::new("app:keys.0").unwrap());
         let node = sess(1);
@@ -1750,7 +1750,7 @@ mod tests {
     // a removed value go with the bodies holding it.
     #[test]
     fn set_value_index_spec_crdt_5_5() {
-        let mut rng = osis_crypto::SeededRng::from_u64(81);
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([6; 15]), osis_base::Ak::new("app:set.0").unwrap());
         let node = sess(1);
@@ -1800,7 +1800,7 @@ mod tests {
     #[test]
     fn set_index_differential_spec_crdt_5_5() {
         use osis_base::Float;
-        let mut rng = osis_crypto::SeededRng::from_u64(177);
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([3; 15]), osis_base::Ak::new("app:s.0").unwrap());
         let nodes = [sess(1), sess(2)];
@@ -1831,7 +1831,7 @@ mod tests {
         let mut txn = store.transaction(&mut rng).unwrap();
         let (mut unit, i0) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
         assert!(i0.is_some());
-        let mut orng = osis_crypto::SeededRng::from_u64(179);
+        let mut orng = osis_crypto::SeededRng::from_u64(0);
         let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut orng) % n;
         let mut old = st.clone();
         let (mut mism, mut writes) = (0, 0);
@@ -1891,7 +1891,7 @@ mod tests {
     // fresh session load the pages of that key only and read what the whole state reads.
     #[test]
     fn lazy_nested_paging_spec_requirements_scale() {
-        let mut rng = osis_crypto::SeededRng::from_u64(77);
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([3; 15]), osis_base::Ak::new("app:nested.0").unwrap());
         let node = sess(1);
@@ -1919,7 +1919,7 @@ mod tests {
             f
         };
         assert_eq!(whole(&mut txn, &unit), st);
-        let mut orng = osis_crypto::SeededRng::from_u64(78);
+        let mut orng = osis_crypto::SeededRng::from_u64(0);
         let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut orng) % n;
         let (mut in_place, mut partial) = (0, 0);
         for step in 0..30 {
@@ -2093,7 +2093,7 @@ mod tests {
     }
 
     fn seq_placement_run_with(text: bool, n: u64, reset: bool) {
-        let mut rng = osis_crypto::SeededRng::from_u64(181);
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("app:seq.0").unwrap());
         let nodes = [sess(1), sess(2)];
@@ -2123,7 +2123,7 @@ mod tests {
             load_all(txn, &tid, &ak, &mut idx, &mut f).unwrap();
             f
         };
-        let mut orng = osis_crypto::SeededRng::from_u64(183);
+        let mut orng = osis_crypto::SeededRng::from_u64(0);
         let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut orng) % n.max(1);
         let mut old = st.clone();
         // writer 1's deltas, for strips of their bodies
@@ -2141,7 +2141,9 @@ mod tests {
                 }
                 _ => open(&unit, &SALT).unwrap(),
             };
-            let kind = r(12);
+            // every twelfth step a special kind in turn, the rest random: an invalidation (9),
+            // a validity rebuild (11), a strip of a received body (8)
+            let kind = if step % 12 == 11 { [9, 11, 8][(step / 12) as usize % 3] } else { r(12) };
             if kind >= 8 && !received.is_empty() || kind >= 10 {
                 let k = match kind {
                     8 => 0,
@@ -2179,7 +2181,8 @@ mod tests {
                     }
                 }
             } else {
-                let wi = r(3) as usize % 2;
+                // writer 1 first, so a body to strip is received
+                let wi = if received.is_empty() { 1 } else { r(3) as usize % 2 };
                 let base = if wi == 1 { &old } else { &st };
                 let len = base.at(&field()).and_then(|s| s.visible_range(0..usize::MAX)).map_or(0, |v| v.len()) as u64;
                 let op = match r(8) {
@@ -2492,7 +2495,7 @@ mod tests {
     // placement is kept.
     #[test]
     fn seq_index_segment_on_pages_spec_crdt_5_7() {
-        let mut rng = osis_crypto::SeededRng::from_u64(193);
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
         let node = sess(1);
@@ -2503,7 +2506,7 @@ mod tests {
         let mut ctr = w.range().hi;
         let mut txn = store.transaction(&mut rng).unwrap();
         let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
-        let mut orng = osis_crypto::SeededRng::from_u64(195);
+        let mut orng = osis_crypto::SeededRng::from_u64(0);
         let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut orng) % n.max(1);
         let (mut most, mut reads, mut writes) = (0, 0, 0);
         for step in 0..40u64 {
@@ -2567,7 +2570,7 @@ mod tests {
     // read) or followed, and either way is never wrong.
     #[test]
     fn seq_whole_session_and_hostile_delta_spec_crdt_6_2() {
-        let mut rng = osis_crypto::SeededRng::from_u64(191);
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
         let me = sess(1);
@@ -2584,7 +2587,7 @@ mod tests {
         let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
         let Place::Held(p) = &set.place else { panic!("placement read") };
         assert!(!p.is_partial() && f.at(&field()).unwrap().seq_place_cached().unwrap().diff(p) == Some(Default::default()), "attached as stored");
-        let mut orng = osis_crypto::SeededRng::from_u64(193);
+        let mut orng = osis_crypto::SeededRng::from_u64(0);
         let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut orng) % n.max(1);
         for step in 0..30u64 {
             let ts = (2 + step) << 16;
@@ -2655,7 +2658,7 @@ mod tests {
     // from the whole sequence it reads by index again.
     #[test]
     fn seq_placement_rebuilt_spec_crdt_6() {
-        let mut rng = osis_crypto::SeededRng::from_u64(185);
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([8; 15]), osis_base::Ak::new("app:seq.0").unwrap());
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), sess(1), 1);
@@ -2708,7 +2711,7 @@ mod tests {
     // anew if needed).
     #[test]
     fn seq_placement_damaged_rows_spec_crdt_6() {
-        let mut rng = osis_crypto::SeededRng::from_u64(197);
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("app:seq.0").unwrap());
         let me = sess(1);

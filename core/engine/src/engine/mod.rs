@@ -3340,7 +3340,7 @@ mod tests {
             Err(_) => {
                 *failed += 1;
                 assert_eq!(digest(p), before, "a failed transaction changed the indexes");
-                p.restart(*failed as u64).unwrap();
+                p.restart(0).unwrap();
                 f(&mut p.engine).unwrap()
             }
         }
@@ -3350,7 +3350,7 @@ mod tests {
     // roster) forgets their cached liveness without walking the others' (a chat's messages).
     #[test]
     fn forget_live_walks_no_other_bodies() {
-        let mut lp = LocalPeer::new(1, 953, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let core = &mut lp.peers[0].engine.core;
         let (t, roster, msg) = (core.id.tid(), Ak::new("roles.0").unwrap(), Ak::new("chat:msg~0").unwrap());
         let id = |i: u8| osis_base::CommitId([i; 32]);
@@ -3388,7 +3388,7 @@ mod tests {
     // commits and for received ones, applied or pending.
     #[test]
     fn failed_transaction_restores_indexes_spec_commits_4() {
-        let mut lp = LocalPeer::new(3, 951, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let mut failed = 0;
@@ -3436,7 +3436,7 @@ mod tests {
     #[test]
     fn failed_transaction_restores_indexes_retention_spec_commits_4() {
         use osis_schema::{PurgeBy, Retention};
-        let mut lp = LocalPeer::new(3, 952, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
         let (reg, kept) = (Ak::new("t:reg.0").unwrap(), Ak::new("t:kept.0").unwrap());
@@ -3506,7 +3506,7 @@ mod tests {
     // error, which leaves the store usable: no reopen drops the candidates) keeps them.
     #[test]
     fn failed_promotion_keeps_hint_candidates_spec_wire_9() {
-        let mut lp = LocalPeer::new(2, 953, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let a = lp.peers[0].engine.me();
         let mut m = Mutation::new();
@@ -3544,15 +3544,15 @@ mod tests {
     fn local_schema_keeps_highest_version() {
         let parse = |rev: u64, ty: &str| std::sync::Arc::new(osis_schema::parse("t.osis", &format!("revision {rev};\naspect t:a.0: {ty};\n")).unwrap());
         let rev = |p: &Peer| p.engine.core.schemas.get("t:a.0").map(|s| (s.revision, s.aspects["t:a.0"].ty.clone()));
-        let mut p = Peer::new(954, WallMs(1_700_000_000_000)).unwrap();
+        let mut p = Peer::new(0, WallMs(1_700_000_000_000)).unwrap();
         let (v2, v1, v2b) = (parse(2, "int"), parse(1, "string"), parse(2, "bool"));
         p.engine.register_schema(v2.clone()).unwrap();
         p.engine.register_schema(v1).unwrap();
         assert_eq!(rev(&p), Some((2, v2.aspects["t:a.0"].ty.clone())), "a lower version never replaces");
-        p.restart(1).unwrap();
+        p.restart(0).unwrap();
         assert_eq!(rev(&p), Some((2, v2.aspects["t:a.0"].ty.clone())), "kept in the store");
         p.engine.register_schema(v2b.clone()).unwrap();
-        p.restart(2).unwrap();
+        p.restart(0).unwrap();
         assert_eq!(rev(&p), Some((2, v2b.aspects["t:a.0"].ty.clone())), "an equal version registered again replaces");
         // a failed transaction's registration goes with its record, and a later one keeps it
         let v3 = parse(3, "int");
@@ -3563,7 +3563,7 @@ mod tests {
         assert!(r.is_err());
         assert_eq!(rev(&p).map(|r| r.0), Some(2), "rolled back");
         p.engine.register_schema(v3).unwrap();
-        p.restart(3).unwrap();
+        p.restart(0).unwrap();
         assert_eq!(rev(&p).map(|r| r.0), Some(3), "registered again after a failed transaction");
     }
 }

@@ -59,7 +59,7 @@ struct Chat {
 }
 
 fn chat(opts: GrantOpts, role: Role) -> Chat {
-    let net = osis_transport::Net::new(5);
+    let net = osis_transport::Net::new(0);
     let host = osis::internals::create(on(&net, "s", &MemStore::new(), vec![])).unwrap();
     host.set_serving(Some(osis::Serving { admit: osis::Admit::Open, ..Default::default() })).unwrap();
     let addr = host.listen(&["mem://s".parse().unwrap()]).unwrap().remove(0);

@@ -387,7 +387,7 @@ mod tests {
     // authenticated; blob ID is BLAKE3 of the whole; MAX_BLOB.
     #[test]
     fn frame_and_open() {
-        let mut rng = SeededRng::from_u64(1);
+        let mut rng = SeededRng::from_u64(0);
         let p = Prefix::new(Prefix::random_salt(&mut rng), Some(WallMs(5)), vec![vec![c(3, 3)]]).unwrap();
         let (k, blob) = frame(&p, b"chunk", &mut rng).unwrap();
         assert_eq!(open(&blob, &k).unwrap(), (p.clone(), b"chunk".to_vec()));
@@ -468,7 +468,7 @@ mod tests {
         };
         let pool: Vec<VerifyingKey> = (1..=3u8).map(|i| osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([i; 32])).verifying_key()).collect();
         let off_curve = (0..=255u8).map(|b| [b; 32]).find(|b| VerifyingKey::from_bytes(b).is_err()).unwrap();
-        let mut rng = osis_crypto::SeededRng::from_u64(77);
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
         for _ in 0..2000 {
             let r = |rng: &mut osis_crypto::SeededRng, n: u32| (rng.next_u32() % n) as u8;
             let n = r(&mut rng, 6);
@@ -523,7 +523,7 @@ mod tests {
         let (id, k) = (BlobId([3; 32]), Secret32::from_bytes([4; 32]));
         let w = osis_crypto::wrap(&old, &id, &k, 1).unwrap();
         assert_eq!(unwrap_any([&new, &old], &id, &w), Some((1, k)));
-        assert_eq!(unwrap_any([&new, &old], &id, &osis_crypto::filler_wrap(&mut SeededRng::from_u64(2))), None);
+        assert_eq!(unwrap_any([&new, &old], &id, &osis_crypto::filler_wrap(&mut SeededRng::from_u64(0))), None);
     }
 
     proptest! {

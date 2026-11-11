@@ -31,7 +31,7 @@ struct Dev {
 
 impl Dev {
     fn new() -> (Dev, Store, SeededRng) {
-        let mut rng = SeededRng::from_u64(7);
+        let mut rng = SeededRng::from_u64(0);
         let d = MemDevice::new();
         let s = Store::create(d.backend(), d.root(), cfg(), &mut rng).unwrap();
         (Dev { backend: d.backend, root: d.root }, s, rng)
@@ -247,8 +247,9 @@ fn garbage_and_foreign_cursors_are_no_cursor() {
     let (_d, mut s, mut rng) = Dev::new();
     add(&mut s, &mut rng, 1);
     let mut c = at_end(&mut s, &mut rng);
-    let (_d2, mut other, _) = Dev::new();
-    let mut rng2 = SeededRng::from_u64(8);
+    // another store: its own generator, so its own key
+    let (d2, mut rng2) = (MemDevice::new(), SeededRng::from_u64(1));
+    let mut other = Store::create(d2.backend(), d2.root(), cfg(), &mut rng2).unwrap();
     add(&mut other, &mut rng2, 1);
     let foreign = at_end(&mut other, &mut rng2);
     assert_eq!(position(&mut s, &mut rng, &foreign), None, "another store's key");
@@ -413,7 +414,7 @@ fn changed_at_has_its_own_sequence() {
 }
 
 fn filled(n: u32) -> (Dev, Vec<u8>) {
-    let mut rng = SeededRng::from_u64(3);
+    let mut rng = SeededRng::from_u64(0);
     let d = MemDevice::new();
     let mut s = Store::create(d.backend(), d.root(), big(), &mut rng).unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
@@ -436,7 +437,7 @@ fn reading_from_a_cursor_costs_what_is_after_it() {
         let (d, c) = filled(n);
         let mut s = Store::open(Box::new(d.backend.clone()), Box::new(d.root.clone()), big()).unwrap();
         let before = d.backend.io();
-        let mut rng = SeededRng::from_u64(5);
+        let mut rng = SeededRng::from_u64(0);
         let r = s.transaction(&mut rng).unwrap().log_read(Some(&c), 100).unwrap();
         assert_eq!(r.events.len(), 5);
         (d.backend.io() - before).reads

@@ -47,7 +47,7 @@ mod tests {
         let node = KeyActorKeys::from_seed(&Secret32::from_bytes([seed ^ 2; 32]));
         // without: an account author signing as a key actor would
         cb.account = inner.then(|| AccountSigner { epoch, inner: key.inner.clone(), node: Tid::from_bytes([seed; 15]), node_key: node.signing.clone() });
-        let built = cb.build(&key.signing, &Dedup(vec![p, t]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
+        let built = cb.build(&key.signing, &Dedup(vec![p, t]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
         (pt, built.commit.encode())
     }
 
@@ -57,7 +57,7 @@ mod tests {
     // without its epoch and inner signature, or signed by another epoch's key, is refused.
     #[test]
     fn account_commit_signed_at_its_epoch_spec_wire_4() {
-        let mut lp = LocalPeer::new(1, 1501, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let ts = Ts::make(lp.peers[0].engine.now(), 0).unwrap();
         let first = AccountEpochKeys::from_seed(&Secret32::from_bytes([40; 32]));
         let (p, bytes) = account_commit(40, &first, FIRST_EPOCH, true, ts);

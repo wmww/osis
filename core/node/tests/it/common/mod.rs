@@ -131,13 +131,15 @@ pub fn item(name: &str, n: i64) -> Value {
     Value::Map([(Value::Int(0), s(name)), (Value::Int(1), Value::Int(n))].into_iter().collect())
 }
 
+/// `n` peers, each its own account (`LocalPeer::new` at `T0`): built once per `(n, seed)`
+/// (`LocalPeer::cached`; a copy costs less than a build).
 pub fn net(n: usize, seed: u64) -> LocalPeer {
-    LocalPeer::new(n, seed, T0).unwrap()
+    LocalPeer::cached(&format!("common::net/{n}/{seed}"), || (LocalPeer::new(n, seed, T0).unwrap(), ())).0
 }
 
 /// `net` whose peers join no account: the test makes or pairs them.
 pub fn net_bare(n: usize, seed: u64) -> LocalPeer {
-    LocalPeer::new_bare(n, seed, T0).unwrap()
+    LocalPeer::cached(&format!("common::net_bare/{n}/{seed}"), || (LocalPeer::new_bare(n, seed, T0).unwrap(), ())).0
 }
 
 /// `net` with every peer answering removals with no addenda (`Engine::write_addenda`): for an
@@ -281,7 +283,7 @@ pub fn forge_snapshot_bytes(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
-    cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+    cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
 /// Secrets for hand-built commits with `writer` retention: dedup, and made-up delete keys

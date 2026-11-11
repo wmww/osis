@@ -563,7 +563,7 @@ mod tests {
     // generations, the session counters and the events as they were; the revert then writes.
     #[test]
     fn check_revertible_changes_nothing() {
-        let (mut lp, t, _, keep) = two(966);
+        let (mut lp, t, _, keep) = two();
         let x = Ak::new("x:r.0").unwrap();
         let set = |lp: &mut LocalPeer, i: usize, v: i64| {
             let mut m = Mutation::new();
@@ -607,7 +607,7 @@ mod tests {
         let x = Ak::new("k:t.0").unwrap();
         let history = if shape == "whole" { osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None } } else { osis_schema::History::Keep { until: None, after: Some(86_400_000) } };
         let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
-        let mut lp = LocalPeer::new(1, 977, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let a = lp.peers[0].engine.me();
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         let mut m = Mutation::new();
@@ -676,7 +676,7 @@ mod tests {
     #[test]
     fn pre_state_stops_at_a_reset_by_stamp() {
         for reset_first in [false, true] {
-            let (mut lp, t, x, keep) = two(963);
+            let (mut lp, t, x, keep) = two();
             replace(&mut lp, 0, t, &x, map_of(&[("o", 0)]), keep, None);
             lp.sync_all().unwrap();
             let concurrent = |lp: &mut LocalPeer| { put(lp, 1, t, &x, "k", 1, keep); };
@@ -703,7 +703,7 @@ mod tests {
     #[test]
     fn pre_state_at_a_reset_gone_or_invalid() {
         for case in ["expired", "purged", "invalid"] {
-            let (mut lp, t, x, keep) = two(964);
+            let (mut lp, t, x, keep) = two();
             let expires = (case == "expired").then(|| WallMs(lp.peers[0].engine.now().0 + 100));
             replace(&mut lp, 0, t, &x, map_of(&[("j", 1)]), keep, None);
             lp.sync_all().unwrap();
@@ -743,8 +743,16 @@ mod tests {
     }
 
     // A and C, a thing of A's that C may write, map aspect `x`, and a keep-history retention.
-    fn two(seed: u64) -> (LocalPeer, osis_base::Tid, Ak, osis_schema::Retention) {
-        let mut lp = LocalPeer::new(2, seed, WallMs(1_700_000_000_000)).unwrap();
+    fn two() -> (LocalPeer, osis_base::Tid, Ak, osis_schema::Retention) {
+        let (lp, (t, x, keep)) = LocalPeer::cached("undo::tests::two", || {
+            let (lp, t, x, keep) = two_build();
+            (lp, (t, x, keep))
+        });
+        (lp, t, x, keep)
+    }
+
+    fn two_build() -> (LocalPeer, osis_base::Tid, Ak, osis_schema::Retention) {
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let [a, c] = [0, 1].map(|i| lp.peers[i].engine.me());
         let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
@@ -778,7 +786,7 @@ mod tests {
     #[test]
     fn unkept_snapshot_without_its_writers_spec_commits_7() {
         for headers in [true, false] {
-            let (mut lp, t, _, keep) = two(961);
+            let (mut lp, t, _, keep) = two();
             let x = Ak::new("x:n.0").unwrap();
             let mut m = Mutation::new();
             m.set(t, &x, &Value::Map([(Value::Str("k".into()), Value::Int(2))].into_iter().collect())).unwrap();
@@ -809,8 +817,16 @@ mod tests {
     }
 
     // A and B, things of A's that B may write, register aspects `x` and `y`.
-    fn writable(seed: u64, n: usize) -> (LocalPeer, Vec<osis_base::Tid>, Ak, Ak) {
-        let mut lp = LocalPeer::new(2, seed, WallMs(1_700_000_000_000)).unwrap();
+    fn writable(n: usize) -> (LocalPeer, Vec<osis_base::Tid>, Ak, Ak) {
+        let (lp, (ts, x, y)) = LocalPeer::cached(&format!("undo::tests::writable/{n}"), || {
+            let (lp, ts, x, y) = writable_build(n);
+            (lp, (ts, x, y))
+        });
+        (lp, ts, x, y)
+    }
+
+    fn writable_build(n: usize) -> (LocalPeer, Vec<osis_base::Tid>, Ak, Ak) {
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let [a, b] = [0, 1].map(|i| lp.peers[i].engine.me());
         let ts: Vec<_> = (0..n).map(|_| lp.peers[0].engine.create_with_admin(&a).unwrap().0).collect();
@@ -827,7 +843,7 @@ mod tests {
     // reverts both; B's is `ContentGone`, never an undo of `x` alone, until the part arrives.
     #[test]
     fn undo_needs_every_part_held_spec_commits_7() {
-        let (mut lp, ts, x, y) = writable(963, 2);
+        let (mut lp, ts, x, y) = writable(2);
         let (p, q) = (ts[0], ts[1]);
         let mut m = Mutation::new();
         m.set(p, &x, &Value::Int(1)).unwrap().set(q, &y, &Value::Int(1)).unwrap();
@@ -850,7 +866,7 @@ mod tests {
     // too (it may hold content), so once synced N has no content.
     #[test]
     fn undo_creation_resets_unfetched_writes_spec_crdt_4_6() {
-        let (mut lp, ts, x, y) = writable(964, 1);
+        let (mut lp, ts, x, y) = writable(1);
         let [a, b] = [0, 1].map(|i| lp.peers[i].engine.me());
         let mut m = Mutation::new();
         let n = lp.peers[0].engine.new_thing(&mut m, a);
@@ -875,7 +891,7 @@ mod tests {
     // covered). B holds W's part on `y` as missing, then A's removal of `y`.
     #[test]
     fn delete_skips_covered_unfetched_writes_spec_crdt_4_6() {
-        let (mut lp, ts, _, y) = writable(965, 1);
+        let (mut lp, ts, _, y) = writable(1);
         let p = ts[0];
         let mut m = Mutation::new();
         m.set(p, &y, &Value::Int(1)).unwrap();
@@ -897,7 +913,7 @@ mod tests {
     // writes `k` expiring and snapshots the map (kept: A's `j` lives in it); A removes `k`.
     #[test]
     fn snapshot_excuses_no_expiring_part_spec_commits_7() {
-        let (mut lp, t, _, keep) = two(962);
+        let (mut lp, t, _, keep) = two();
         let x = Ak::new("x:n.0").unwrap();
         let mut m = Mutation::new();
         m.set(t, &x, &Value::Map([(Value::Str("j".into()), Value::Int(1))].into_iter().collect())).unwrap().retention(t, &x, keep).unwrap();

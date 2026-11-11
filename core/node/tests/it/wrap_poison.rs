@@ -109,7 +109,7 @@ fn connect(fx: &mut Fx, hosts: &[usize], seed: u64) {
 #[test]
 fn stamped_wrap_never_replaced_spec_sync_5() {
     for wrong in [false, true] {
-        let mut fx = fixture(1, 1);
+        let mut fx = fixture(1, 0);
         let (host, g, l, h, a) = (fx.hosts[0], fx.g, fx.l, fx.h, fx.a);
         let t = fx.net.item(a, g, g, "message");
         fx.net.run();
@@ -159,7 +159,7 @@ fn reconnect(fx: &mut Fx, n: usize, host: usize, seed: u64) {
 // out: the writer's stamped upload takes the entry, and no second encryption is needed.
 #[test]
 fn stamped_upload_replaces_hostile_deposit_spec_sync_5() {
-    let mut fx = fixture(2, 1);
+    let mut fx = fixture(2, 0);
     let r = fx.hosts[1];
     let (t, ids) = race(&mut fx, r, false, READER);
     let good: Vec<_> = ids.iter().map(|id| stored_wrap(&fx.net, fx.hosts[0], &fx.l, id).unwrap()).collect();
@@ -212,7 +212,7 @@ fn raced_wrap_repaired_by_fresh_encryption_spec_sync_5() {
 #[test]
 fn reader_takes_the_wrap_that_opens_spec_sync_5() {
     for (i, wrong) in [(0, false), (1, false), (0, true), (1, true)] {
-        let mut fx = fixture(2, 7);
+        let mut fx = fixture(2, 0);
         let r = fx.hosts[1];
         let (t, _) = race(&mut fx, r, wrong, WRITER);
         fx.net.set_online(fx.a, false);
@@ -280,7 +280,7 @@ fn useless_entry_found_late_still_goes_spec_sync_7() {
 // stamped wrap over a deposited one when neither opens.
 #[test]
 fn keyless_node_keeps_the_wrap_that_opens_spec_sync_5() {
-    let mut fx = fixture(1, 3);
+    let mut fx = fixture(1, 0);
     let (host, g, l, a, h, f) = (fx.hosts[0], fx.g, fx.l, fx.a, fx.h, fx.f);
     let t = fx.net.item(a, g, g, "message");
     fx.net.run();
@@ -607,7 +607,7 @@ fn useless_superset_does_not_cost_a_rewrite_spec_sync_6() {
 // its copy of the snapshot not arriving, keeps the live write's body at that host.
 #[test]
 fn useless_snapshot_carries_nothing_spec_sync_7() {
-    let mut fx = fixture(2, 8);
+    let mut fx = fixture(2, 0);
     let (h1, r, g, a, h) = (fx.hosts[0], fx.hosts[1], fx.g, fx.a, fx.h);
     let t = fx.net.item(a, g, g, "v1");
     fx.net.write(a, t, "v2");

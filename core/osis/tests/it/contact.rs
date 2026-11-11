@@ -103,7 +103,7 @@ fn profile_and_contact_overlay() {
 /// `profile` fail before writing anything, so each try leaves no commit or thing behind.
 #[test]
 fn contact_card_without_peers_writes_nothing() {
-    let db = crate::common::db(7);
+    let db = crate::common::db(0);
     use osis::internals::Internals as _;
     let all = || db.engine(|e| e.commit_ids().len());
     let before = all();

@@ -21,7 +21,7 @@ fn set(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid, k
 // a dropped body cannot be undone (§7).
 #[test]
 fn purge_on_replace_spec_commits_5() {
-    let mut lp = net(2, 52);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let c1 = set(&mut lp, 0, t, &GONE, "first");
     sync(&mut lp, 0, 1);
@@ -41,7 +41,7 @@ fn purge_on_replace_spec_commits_5() {
 // its body is dropped; a copy arriving after T is stripped on arrival.
 #[test]
 fn expiry_spec_commits_6() {
-    let mut lp = net(3, 53);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let c = set(&mut lp, 0, t, &BRIEF, "soon gone");
@@ -79,7 +79,7 @@ fn expiry_spec_commits_6() {
 // at a reader once the cover arrives; the live one is kept to its T.
 #[test]
 fn purge_on_replace_covers_dead_expiring_write_spec_commits_5() {
-    let mut lp = net(2, 61);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let p1 = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Read)), None);
@@ -111,7 +111,7 @@ fn purge_sets_any_order_spec_perm_6() {
     use osis_schema::PurgeBy;
     for (by, by_admin, by_author) in [(PurgeBy::Admin, true, false), (PurgeBy::AuthorOrAdmin, true, true), (PurgeBy::Writer, true, true)] {
         for (who, dropped) in [(0, by_admin), (1, by_author)] {
-            let mut lp = net(3, 55);
+            let mut lp = net(3, 0);
             lp.sync_all().unwrap();
             let t = new_thing(&mut lp, 0);
             let b = lp.peers[1].engine.me();
@@ -168,7 +168,7 @@ fn purge_rights(orders: &[[usize; 3]]) {
                 (2, false) => by.writer(),
                 _ => false,
             };
-            let mut lp = net(3 + orders.len(), 0x51 + by as u64);
+            let mut lp = net(3 + orders.len(), 0);
             lp.sync_all().unwrap();
             let t = new_thing(&mut lp, 0);
             for i in [1, 2] {
@@ -228,14 +228,24 @@ struct Unlisted {
     d: osis_base::CommitId,
 }
 
-fn unlisted(seed: u64) -> Unlisted {
-    let mut lp = net(4, seed);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    let (x, w) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
+/// `n` peers, synced; 0 first admin of a new thing `t`, `x` (1) an admin and `w` (2) a writer:
+/// built once per `n` (`LocalPeer::cached`).
+fn admin_writer(n: usize) -> (LocalPeer, Tid, Tid, Tid) {
+    let (lp, (t, x, w)) = LocalPeer::cached(&format!("retention::admin_writer/{n}"), || {
+        let mut lp = net(n, 0);
+        lp.sync_all().unwrap();
+        let t = new_thing(&mut lp, 0);
+        let (x, w) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
+        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+        lp.sync_all().unwrap();
+        (lp, (t, x, w))
+    });
+    (lp, t, x, w)
+}
+
+fn unlisted() -> Unlisted {
+    let (mut lp, t, x, _w) = admin_writer(4);
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("kept")).unwrap();
@@ -272,7 +282,7 @@ impl Unlisted {
 // no right: a node holding the demotion drops nothing and shows no purge.
 #[test]
 fn request_outside_the_frontier_drops_nothing_spec_perm_6() {
-    let mut b = unlisted(0x61);
+    let mut b = unlisted();
     b.give(&[2, 0, 1]);
     let (t, c) = (b.t, b.c);
     let e = &mut b.lp.peers[3].engine;
@@ -285,7 +295,7 @@ fn request_outside_the_frontier_drops_nothing_spec_perm_6() {
 // the purge judgments (`retention::purge`) rely on never seeing one.
 #[test]
 fn forged_role_class_purge_refused_spec_commits_5() {
-    let mut lp = net(2, 0x63);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     lp.sync_all().unwrap();
     let c = set(&mut lp, 0, t, &KEPT, "one");
@@ -311,7 +321,7 @@ fn forged_role_class_purge_refused_spec_commits_5() {
 // the demotion first reads.
 #[test]
 fn fallen_purge_comes_back_spec_perm_6() {
-    let mut b = unlisted(0x62);
+    let mut b = unlisted();
     b.give(&[0, 1]);
     let (t, c, d) = (b.t, b.c, b.d);
     let k = ak("t:reg.0");
@@ -338,13 +348,7 @@ fn fallen_purge_comes_back_spec_perm_6() {
 // gives the creation its value again: a copy shows it.
 #[test]
 fn fallen_purge_of_list_element_comes_back_spec_perm_6() {
-    let mut lp = net(4, 0x6a2);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    let (x, w) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
+    let (mut lp, t, x, _w) = admin_writer(4);
     lp.advance(5);
     let k = ak("t:list.0");
     let mut m = Mutation::new();
@@ -379,13 +383,7 @@ fn fallen_purge_of_list_element_comes_back_spec_perm_6() {
 #[test]
 fn regrant_gives_purge_right_back_spec_perm_6() {
     for regrant_last in [true, false] {
-        let mut lp = net(4, 0x64 + u64::from(regrant_last));
-        lp.sync_all().unwrap();
-        let t = new_thing(&mut lp, 0);
-        let (x, w) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-        set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
-        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-        lp.sync_all().unwrap();
+        let (mut lp, t, x, _w) = admin_writer(4);
         lp.advance(5);
         let mut m = Mutation::new();
         m.set(t, &REG, &s("v")).unwrap();
@@ -423,7 +421,7 @@ fn regrant_gives_purge_right_back_spec_perm_6() {
 #[test]
 fn purge_stands_again_when_its_demotion_falls_spec_perm_6() {
     for fall_last in [true, false] {
-        let mut lp = net(5, 0x63 + u64::from(fall_last));
+        let mut lp = net(5, 0);
         lp.sync_all().unwrap();
         let t = new_thing(&mut lp, 0);
         let (m1, x, w) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me());
@@ -469,14 +467,8 @@ fn purge_stands_again_when_its_demotion_falls_spec_perm_6() {
 // not return.
 #[test]
 fn snapshot_stripped_for_a_fallen_purge_gives_the_value_again_spec_perm_6() {
-    let mut lp = net(4, 0x66);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
+    let (mut lp, t, x, _w) = admin_writer(4);
     let k = ak("t:reg.0");
-    let (x, w) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("kept")).unwrap();
@@ -518,14 +510,8 @@ fn snapshot_stripped_for_a_fallen_purge_gives_the_value_again_spec_perm_6() {
 // right then falls comes back as any fallen drop, the commit's other part joining when it comes.
 #[test]
 fn part_of_a_fallen_purge_comes_back_spec_perm_6() {
-    let mut lp = net(4, 0x67);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
+    let (mut lp, t, x, _w) = admin_writer(4);
     let (k, list) = (ak("t:reg.0"), ak("t:list.0"));
-    let (x, w) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("kept")).unwrap();
@@ -582,13 +568,7 @@ fn snapshot_right_any_arrival_order_spec_commits_5() {
     use osis_schema::PurgeBy;
     for (by, demoted, want) in [(PurgeBy::AuthorOrAdmin, false, true), (PurgeBy::AuthorOrAdmin, true, false), (PurgeBy::Admin, true, false), (PurgeBy::Writer, true, true)] {
         const ORDERS: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
-        let mut lp = net(3 + ORDERS.len(), 0x71 + by as u64);
-        lp.sync_all().unwrap();
-        let t = new_thing(&mut lp, 0);
-        let (x, w) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-        set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
-        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-        lp.sync_all().unwrap();
+        let (mut lp, t, x, _w) = admin_writer(3 + ORDERS.len());
         lp.advance(5);
         let base: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
         let mut m = Mutation::new();
@@ -629,7 +609,7 @@ fn snapshot_right_any_arrival_order_spec_commits_5() {
 fn purge_for_an_actor_reaches_no_unsynced_delta_spec_perm_6() {
     use osis_schema::{PurgeBy, Retention};
     for (confined, dropped) in [(true, false), (false, true)] {
-        let mut lp = net(2, 0x8a);
+        let mut lp = net(2, 0);
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.me();
         let d1 = lp.peers[1].engine.me();
@@ -667,7 +647,7 @@ fn purge_for_an_actor_reaches_no_unsynced_delta_spec_perm_6() {
 // right purges nothing.
 #[test]
 fn purge_spec_commits_5() {
-    let mut lp = net(3, 54);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.me();
@@ -713,7 +693,7 @@ fn purge_spec_commits_5() {
 // relative bound asks when a body was replaced).
 #[test]
 fn compaction_snapshot_spec_commits_5() {
-    let mut lp = net(2, 55);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let mut bodies = Vec::new();
     for i in 0..4 {
@@ -765,7 +745,7 @@ fn compaction_snapshot_spec_commits_5() {
 // commits list them; an admin reverts another's change.
 #[test]
 fn undo_redo_spec_commits_7() {
-    let mut lp = net(2, 56);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     set(&mut lp, 0, t, &KEPT, "a");
@@ -822,7 +802,7 @@ fn put_removed(lp: &mut osis_node::local_peer::LocalPeer, t: osis_base::Tid, k: 
 // entry goes.
 #[test]
 fn expiry_survives_a_death_purged_on_replace_spec_crdt_4_7() {
-    let mut lp = net(1, 59);
+    let mut lp = net(1, 0);
     let t = new_thing_keeping(&mut lp, 0, &[("t:big.0", osis_schema::History::PurgeOnReplace)]);
     let at = lp.peers[0].engine.now().0 + 5_000;
     let mut m = Mutation::new();
@@ -843,7 +823,7 @@ fn expiry_survives_a_death_purged_on_replace_spec_crdt_4_7() {
 // nodes
 #[test]
 fn undo_of_removal_keeps_expiry_spec_crdt_4_6() {
-    let mut lp = net(2, 57);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_thing_keeping(&mut lp, 0, &[("t:big.0", DAY)]);
     let at = lp.peers[0].engine.now().0 + 5_000;
@@ -863,7 +843,7 @@ fn undo_of_removal_keeps_expiry_spec_crdt_4_6() {
 // re-adds nothing
 #[test]
 fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
-    let mut lp = net(2, 58);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_thing_keeping(&mut lp, 0, &[("t:big.0", DAY)]);
     let at = lp.peers[0].engine.now().0 + 5_000;
@@ -880,7 +860,7 @@ fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
 // session loading everything reads the same.
 #[test]
 fn undo_in_lazily_loaded_pages_spec_commits_7() {
-    let mut lp = net(1, 58);
+    let mut lp = net(1, 0);
     let t = new_thing_keeping(&mut lp, 0, &[("t:big.0", DAY)]);
     let fill: osis_base::ValueMap = (0..300).map(|i| (s(&format!("k{i:03}")), s(&"v".repeat(300)))).collect();
     let mut m = Mutation::new();
@@ -920,7 +900,7 @@ fn undo_in_lazily_loaded_pages_spec_commits_7() {
 #[test]
 fn undo_nested_edit_reads_every_entry_of_its_key_spec_commits_7() {
     let run = |whole: bool| {
-        let mut lp = net(2, 61);
+        let mut lp = net(2, 0);
         let t = new_thing_keeping(&mut lp, 0, &[("x:big.0", DAY)]);
         let b = lp.peers[1].engine.me();
         set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
@@ -971,7 +951,7 @@ fn undo_nested_edit_reads_every_entry_of_its_key_spec_commits_7() {
 // carries, is past its bound.
 #[test]
 fn deaths_alike_after_carried_write_dropped_spec_crdt_4_8() {
-    let mut lp = net(4, 79);
+    let mut lp = net(4, 0);
     let t = new_thing(&mut lp, 0);
     for i in [1, 2] {
         let p = lp.peers[i].engine.me();
@@ -1028,7 +1008,7 @@ fn map_op(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid
 #[test]
 fn deaths_alike_nested_in_others_entry_spec_crdt_4_8() {
     use osis_crdt::PathSeg;
-    let mut lp = net(2, 80);
+    let mut lp = net(2, 0);
     let t = kept_map(&mut lp);
     let p1 = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
@@ -1053,7 +1033,7 @@ fn deaths_alike_nested_in_others_entry_spec_crdt_4_8() {
 // creator's copies).
 #[test]
 fn late_entry_creator_dies_at_carried_nested_write_spec_crdt_4_8() {
-    let mut lp = net(2, 84);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let k = ak("t:keptmap.0");
     let put = |lp: &mut osis_node::local_peer::LocalPeer, v: &str| {
@@ -1086,7 +1066,7 @@ fn late_entry_creator_dies_at_carried_nested_write_spec_crdt_4_8() {
 #[test]
 fn replay_dates_at_carried_write_in_held_entry_spec_crdt_4_8() {
     use osis_crdt::PathSeg;
-    let mut lp = net(4, 87);
+    let mut lp = net(4, 0);
     let t = kept_map(&mut lp);
     for i in [1, 2] {
         let p = lp.peers[i].engine.me();
@@ -1121,7 +1101,7 @@ fn replay_dates_at_carried_write_in_held_entry_spec_crdt_4_8() {
 // there. A node learning of them later keeps the dead bodies to their bound.
 #[test]
 fn deaths_dated_from_first_superseder_held_spec_commits_5() {
-    let mut lp = net(4, 54);
+    let mut lp = net(4, 0);
     let t = new_thing(&mut lp, 0);
     let a = ak("t:kept.0");
     let mut ids = Vec::new();
@@ -1167,7 +1147,7 @@ fn deaths_dated_from_first_superseder_held_spec_commits_5() {
 // arrival, and its body drops in the transaction applying it.
 #[test]
 fn purge_on_replace_late_body_dropped_on_arrival_spec_commits_5() {
-    let mut lp = net(2, 56);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let c1 = set(&mut lp, 0, t, &GONE, "first");
     let p1 = packages(&mut lp, 0).into_iter().find(|p| p.id == c1).unwrap();
@@ -1189,7 +1169,7 @@ fn purge_on_replace_late_body_dropped_on_arrival_spec_commits_5() {
 #[test]
 fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
     use osis_crdt::PathSeg;
-    let mut lp = net(1, 57);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let a = ak("t:gonemap.0");
     let mut m = Mutation::new();
@@ -1404,7 +1384,7 @@ fn dating_history(seed: u64) {
 // neither got a death, so both were past keep at least).
 #[test]
 fn commit_form_deaths_dated_spec_commits_5() {
-    let mut lp = net(1, 91);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let k = ak("t:kept.0");
     let mut m = Mutation::new();
@@ -1426,7 +1406,7 @@ fn commit_form_deaths_dated_spec_commits_5() {
 // holds K), not at K2 (the state names K2 as W's killer).
 #[test]
 fn snapshot_dated_through_superseders_snapshot_spec_commits_5() {
-    let mut lp = net(3, 92);
+    let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
     let p1 = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
@@ -1462,7 +1442,7 @@ fn snapshot_dated_through_superseders_snapshot_spec_commits_5() {
 // K2, and S got no death).
 #[test]
 fn snapshot_dated_through_commit_form_superseder_spec_commits_5() {
-    let mut lp = net(3, 93);
+    let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
     let p1 = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
@@ -1501,7 +1481,7 @@ fn snapshot_dated_through_commit_form_superseder_spec_commits_5() {
 // the frontier counted, so S got no death).
 #[test]
 fn snapshot_carrying_write_past_frontier_dated_spec_commits_5() {
-    let mut lp = net(4, 95);
+    let mut lp = net(4, 0);
     let t = new_thing(&mut lp, 0);
     for i in 1..3 {
         let p = lp.peers[i].engine.me();
@@ -1690,7 +1670,7 @@ fn undo_expiry_history(seed: u64) {
 fn text_delete_replaces_at_earliest_delete_held_spec_commits_5() {
     use osis_schema::{PurgeBy, Retention};
     let r = Retention { by: PurgeBy::AuthorOrAdmin };
-    let mut lp = net(2, 0x5e9);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_thing_keeping(&mut lp, 0, &[("t:text.0", osis_schema::History::Keep { until: None, after: Some(1_800_000) })]);
     let b = lp.peers[1].engine.me();
@@ -1722,7 +1702,7 @@ fn text_delete_replaces_at_earliest_delete_held_spec_commits_5() {
 // missing again, needs only write and turns valid, as a rebuild judges it (`Engine::check_index`).
 #[test]
 fn uncovered_part_judged_anew() {
-    let mut lp = LocalPeer::new(4, 0x0c0e, T0).unwrap();
+    let mut lp = LocalPeer::new(4, 0, T0).unwrap();
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
     let (b, c, d) = (ids[1], ids[2], ids[3]);
@@ -1773,7 +1753,7 @@ fn uncovered_part_judged_anew() {
 // and once more as their bodies go.
 #[test]
 fn fall_of_many_one_pass_spec_crdt_4_6() {
-    let mut lp = net(2, 95);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let p1 = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
@@ -1816,7 +1796,7 @@ fn remove_all(lp: &mut LocalPeer, t: osis_base::Tid, w: osis_base::Tid) -> osis_
 // holder (its author), the flag gone.
 #[test]
 fn invalid_write_drops_regrant_fetches_it_spec_permissions_6() {
-    let mut lp = net(2, 984);
+    let mut lp = net(2, 0);
     let (t, w) = with_writer(&mut lp);
     for (x, n) in [(&REG, "t:reg.0"), (&KEPT, "t:kept.0")] {
         let a = ak(n);
@@ -1844,7 +1824,7 @@ fn invalid_write_drops_regrant_fetches_it_spec_permissions_6() {
 // there too.
 #[test]
 fn revoked_writers_late_edit_goes_spec_permissions_6() {
-    let mut lp = net(3, 986);
+    let mut lp = net(3, 0);
     let (t, w) = with_writer(&mut lp);
     let r = lp.peers[2].engine.me();
     set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
@@ -1874,7 +1854,7 @@ fn revoked_writers_late_edit_goes_spec_permissions_6() {
 // each other brings nothing back.
 #[test]
 fn regrant_with_no_holder_reads_alike_spec_permissions_6() {
-    let mut lp = net(3, 987);
+    let mut lp = net(3, 0);
     let (t, w) = with_writer(&mut lp);
     let x = lp.peers[2].engine.me();
     set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
@@ -1908,7 +1888,7 @@ fn regrant_with_no_holder_reads_alike_spec_permissions_6() {
 // spec/commits.md §5: a role commit gone invalid is never replaced by its fall.
 #[test]
 fn invalid_role_commit_keeps_its_body_spec_commits_5() {
-    let mut lp = net(3, 985);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let x = lp.peers[1].engine.me();
@@ -1932,7 +1912,7 @@ fn invalid_role_commit_keeps_its_body_spec_commits_5() {
 // author) is fetched again and joins once it can: only a decided invalid falls.
 #[test]
 fn undecided_write_keeps_its_body_spec_commits_5() {
-    let mut lp = net(3, 987);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 2);
@@ -1953,22 +1933,16 @@ fn undecided_write_keeps_its_body_spec_commits_5() {
 
 /// Peers 0 (first admin), `x` (1, admin) and `w` (2, writer) of a new thing; `w`'s message `c` and `x`'s
 /// request naming it, its own delta on another aspect if `beside`, all synced.
-fn rightful(seed: u64, beside: bool) -> (LocalPeer, osis_base::Tid, osis_base::CommitId, osis_base::CommitId) {
-    let (lp, (t, c, p)) = LocalPeer::cached(&format!("retention::rightful/{seed}/{beside}"), || {
-        let (lp, t, c, p) = rightful_built(seed, beside);
+fn rightful(beside: bool) -> (LocalPeer, osis_base::Tid, osis_base::CommitId, osis_base::CommitId) {
+    let (lp, (t, c, p)) = LocalPeer::cached(&format!("retention::rightful/{beside}"), || {
+        let (lp, t, c, p) = rightful_built(beside);
         (lp, (t, c, p))
     });
     (lp, t, c, p)
 }
 
-fn rightful_built(seed: u64, beside: bool) -> (LocalPeer, osis_base::Tid, osis_base::CommitId, osis_base::CommitId) {
-    let mut lp = net(3, seed);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    let (x, w) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
+fn rightful_built(beside: bool) -> (LocalPeer, osis_base::Tid, osis_base::CommitId, osis_base::CommitId) {
+    let (mut lp, t, _, _) = admin_writer(3);
     lp.advance(5);
     let c = set(&mut lp, 2, t, &REG, "kept");
     lp.sync_all().unwrap();
@@ -1999,8 +1973,8 @@ fn stays_purged(lp: &mut LocalPeer, t: osis_base::Tid, c: osis_base::CommitId) {
 // content commit otherwise), and out altogether, whatever aspect the request's own delta is on.
 #[test]
 fn honest_demotion_keeps_rightful_purges_spec_perm_6() {
-    for (seed, new, beside) in [(0x71, Some(Role::Write), false), (0x72, None, false), (0x73, Some(Role::Write), true), (0x74, None, true)] {
-        let (mut lp, t, c, p) = rightful(seed, beside);
+    for (new, beside) in [(Some(Role::Write), false), (None, false), (Some(Role::Write), true), (None, true)] {
+        let (mut lp, t, c, p) = rightful(beside);
         let x = lp.peers[1].engine.me();
         let d = osis_node::flows::Demotion { holder: x, new: new.map(edge), retain: None };
         let done = lp.peers[0].engine.demote(&t, &d).unwrap();
@@ -2014,7 +1988,7 @@ fn honest_demotion_keeps_rightful_purges_spec_perm_6() {
 // for a write.
 #[test]
 fn request_dropped_as_covered_stays_listed_spec_perm_5_1() {
-    let (mut lp, t, c, p) = rightful(0x75, false);
+    let (mut lp, t, c, p) = rightful(false);
     let k = ak("t:reg.0");
     lp.advance(100 * 86_400_000);
     lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
@@ -2034,7 +2008,7 @@ fn frontier_lists(e: &osis_node::Engine, done: &osis_node::flows::Done, p: &osis
 // writer's aspect-wide request leaves the keep-out rule alone.
 #[test]
 fn a_writers_request_explains_no_delete_spec_sync_6() {
-    let (mut lp, t, _, _) = rightful(0x78, false);
+    let (mut lp, t, _, _) = rightful(false);
     let k = ak("t:reg.0");
     let c2 = set(&mut lp, 0, t, &REG, "admin's");
     lp.sync_all().unwrap();
@@ -2061,7 +2035,7 @@ fn a_writers_request_explains_no_delete_spec_sync_6() {
 // bodies again it all reads alike with a node that never saw the fallen purge stand.
 #[test]
 fn snapshot_of_two_purges_one_falls_spec_perm_6() {
-    let mut lp = net(5, 0x79);
+    let mut lp = net(5, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let k = ak("t:map.0");
@@ -2130,7 +2104,7 @@ fn snapshot_of_two_purges_one_falls_spec_perm_6() {
 #[test]
 fn honest_demotion_of_a_path_keeps_rightful_purges_spec_perm_6() {
     for on_via in [false, true] {
-        let mut lp = net(3, 0x7a);
+        let mut lp = net(3, 0);
         lp.sync_all().unwrap();
         let t = new_thing(&mut lp, 0);
         let via = new_thing(&mut lp, 0);
@@ -2165,7 +2139,7 @@ fn honest_demotion_of_a_path_keeps_rightful_purges_spec_perm_6() {
 #[test]
 fn demotion_lists_the_message_omits_the_delete_spec_perm_6() {
     for listed in [true, false] {
-        let mut lp = net(4, 0x7b);
+        let mut lp = net(4, 0);
         lp.sync_all().unwrap();
         let (t, k) = (new_thing(&mut lp, 0), ak("t:reg.0"));
         let x = lp.peers[1].engine.me();
@@ -2215,7 +2189,7 @@ fn demotion_lists_the_message_omits_the_delete_spec_perm_6() {
 // node of it: an honest demotion of the account lists the request.
 #[test]
 fn honest_demotion_keeps_a_request_resting_on_the_account_spec_perm_6() {
-    let mut lp = net_bare(3, 0x7c);
+    let mut lp = net_bare(3, 0);
     let (who, _) = lp.peers[0].engine.create_account(&crate::flows::hosts()).unwrap();
     let person = who.account;
     let o = lp.peers[2].engine.create_account(&crate::flows::hosts()).unwrap().0.account;
@@ -2256,7 +2230,7 @@ fn honest_demotion_keeps_a_request_resting_on_the_account_spec_perm_6() {
 // no copy left: it leaves what it left, as at a node that never saw the fall.
 #[test]
 fn covered_part_purged_fallen_and_purged_again_reads_alike_spec_perm_6() {
-    let mut lp = net(6, 0x7e);
+    let mut lp = net(6, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let k = ak("t:reg.0");
@@ -2315,13 +2289,7 @@ fn covered_part_purged_fallen_and_purged_again_reads_alike_spec_perm_6() {
 fn frontier_at_the_bound_leaves_out_the_last_requests_spec_perm_5_1() {
     let k = ak("t:reg.0");
     let run = |bound: usize| {
-        let mut lp = net(3, 0x80);
-        lp.sync_all().unwrap();
-        let t = new_thing(&mut lp, 0);
-        let (x, w) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-        set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
-        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-        lp.sync_all().unwrap();
+        let (mut lp, t, x, _w) = admin_writer(3);
         lp.advance(5);
         let posts: Vec<_> = (0..3).map(|i| set(&mut lp, 2, t, &REG, &format!("m{i}"))).collect();
         lp.sync_all().unwrap();
@@ -2360,7 +2328,7 @@ fn frontier_at_the_bound_leaves_out_the_last_requests_spec_perm_5_1() {
 #[ignore = "probe"]
 fn frontier_bytes_per_launch_probe() {
     let launches = 1000u64;
-    let mut lp = net(1, 0x5ea0);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let reg = ak("t:reg.0");
     for i in 0..launches {
@@ -2406,7 +2374,7 @@ fn frontier_bytes_per_launch_probe() {
 fn second_request_keeps_covered_leftover_spec_crdt_4_7() {
     use std::collections::{BTreeMap, BTreeSet};
     // a leftover study with a hand-built removal: nobody vouches
-    let mut lp = net_off(3, 0x77);
+    let mut lp = net_off(3, 0);
     lp.sync_all().unwrap();
     let ids: Vec<_> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     let t = new_thing(&mut lp, 0);
@@ -2472,7 +2440,7 @@ fn second_request_keeps_covered_leftover_spec_crdt_4_7() {
 // undo copying back writes of different expiries is refused, and changes nothing.
 #[test]
 fn one_write_is_one_commit_or_refused_spec_commits_6() {
-    let mut lp = net(1, 57);
+    let mut lp = net(1, 0);
     let me = lp.peers[0].engine.me();
     let nobody = crate::common::purgeable_by(osis_base::PurgeBy::Nobody);
     let e = &mut lp.peers[0].engine;
@@ -2556,16 +2524,16 @@ fn one_write_is_one_commit_or_refused_spec_commits_6() {
 /// Peers 4 and 5 over a register: writer 3 wrote `older` then `c` (expiring at `expires`, when
 /// given), admin 2 purged `c`, admin 1 demoted 2 unseen by 0, whose demotion of 1 leaves it out
 /// (the purge falls where 1's demotion is held). Packages of each, the base delivered to 4 and 5.
-fn fall_rig(seed: u64, expires: Option<u64>) -> (LocalPeer, Tid, [osis_node::local_peer::Package; 5]) {
-    let (lp, (t, pks)) = LocalPeer::cached(&format!("retention::fall_rig/{seed}/{expires:?}"), || {
-        let (lp, t, pks) = fall_rig_built(seed, expires);
+fn fall_rig(expires: Option<u64>) -> (LocalPeer, Tid, [osis_node::local_peer::Package; 5]) {
+    let (lp, (t, pks)) = LocalPeer::cached(&format!("retention::fall_rig/{expires:?}"), || {
+        let (lp, t, pks) = fall_rig_built(expires);
         (lp, (t, pks))
     });
     (lp, t, pks)
 }
 
-fn fall_rig_built(seed: u64, expires: Option<u64>) -> (LocalPeer, Tid, [osis_node::local_peer::Package; 5]) {
-    let mut lp = net(6, seed);
+fn fall_rig_built(expires: Option<u64>) -> (LocalPeer, Tid, [osis_node::local_peer::Package; 5]) {
+    let mut lp = net(6, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let k = ak("t:reg.0");
@@ -2620,7 +2588,7 @@ fn alike_4_5(lp: &mut LocalPeer, t: Tid, want: Option<Value>, what: &str) {
 // the leftover: the same state bytes, and the value-less winner hides "older" at both.
 #[test]
 fn stripped_part_fallen_and_risen_holds_its_leftover_spec_perm_6() {
-    let (mut lp, t, [po, pc, pp, pdx, pdm]) = fall_rig(0x7e1, None);
+    let (mut lp, t, [po, pc, pp, pdx, pdm]) = fall_rig(None);
     for pk in [&po, &pc, &pp] {
         lp.deliver(4, pk).unwrap();
     }
@@ -2642,7 +2610,7 @@ fn stripped_part_fallen_and_risen_holds_its_leftover_spec_perm_6() {
 // its from the body. The same state bytes; "older" hidden at both.
 #[test]
 fn stripped_part_fallen_then_expired_holds_its_leftover_spec_commits_6() {
-    let (mut lp, t, [po, pc, pp, pdx, pdm]) = fall_rig(0x7e3, Some(600_000));
+    let (mut lp, t, [po, pc, pp, pdx, pdm]) = fall_rig(Some(600_000));
     for pk in [&po, &pc, &pp, &pdx] {
         lp.deliver(4, pk).unwrap();
     }
@@ -2687,7 +2655,7 @@ fn group_index_follows_a_member_gone_by_retention_spec_commits_5() {
             assert!(e.closure(&g).contains(&stays) && e.groups_of(&stays).contains(&g), "reopened {reopened}: who stays");
         }
     }
-    let mut lp = net(2, 71);
+    let mut lp = net(2, 0);
     let (g, stays) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     lp.peers[0].commit(add(g, stays)).unwrap().unwrap();
 
@@ -2748,7 +2716,7 @@ fn snapshots_held(lp: &mut LocalPeer, i: usize, t: Tid, k: &osis_base::Ak) -> Ve
 // live, is read on its own and stays beside the one snapshot, and the writer reads the new value.
 #[test]
 fn none_writer_covers_in_the_replacing_transaction_spec_commits_5() {
-    let mut lp = net(1, 0x6e01);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let k = ak("t:gone.0");
     let c1 = set(&mut lp, 0, t, &GONE, "one");
@@ -2768,7 +2736,7 @@ fn none_writer_covers_in_the_replacing_transaction_spec_commits_5() {
 // alone.
 #[test]
 fn none_reader_drops_when_the_writers_cover_arrives_spec_commits_5() {
-    let mut lp = net(3, 0x6e02);
+    let mut lp = net(3, 0);
     let (t, _) = with_writer(&mut lp);
     sync(&mut lp, 0, 2);
     lp.peers[0].engine.keep_bodies(true);
@@ -2801,7 +2769,7 @@ fn none_reader_drops_when_the_writers_cover_arrives_spec_commits_5() {
 // uncovered that becomes a writer covers it in the transaction its grant applied.
 #[test]
 fn none_granted_writer_covers_what_it_holds_replaced_spec_commits_5() {
-    let mut lp = net(3, 0x6e03);
+    let mut lp = net(3, 0);
     let (t, _) = with_writer(&mut lp);
     sync(&mut lp, 0, 2);
     lp.peers[0].engine.keep_bodies(true);
@@ -2829,7 +2797,7 @@ fn none_granted_writer_covers_what_it_holds_replaced_spec_commits_5() {
 // reach its replacement; the purge-on-replace one goes at once (judged per thing, it waited too).
 #[test]
 fn replaced_ahead_of_the_clock_waits_only_where_kept_spec_commits_5() {
-    let mut lp = net(2, 0x7c01);
+    let mut lp = net(2, 0);
     let past = lp.peers[0].engine.now().0 + 5;
     let t = new_thing_keeping(&mut lp, 0, &[("t:reg.0", osis_schema::History::Keep { until: Some(past), after: None })]);
     let w = lp.peers[1].engine.me();
@@ -2866,7 +2834,7 @@ fn replaced_ahead_of_the_clock_waits_only_where_kept_spec_commits_5() {
 #[test]
 fn none_writer_without_the_right_adds_no_cover_spec_commits_5() {
     use osis_schema::{PurgeBy, Retention};
-    let mut lp = net(3, 0x6e05);
+    let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
     for i in [1, 2] {
         let p = lp.peers[i].engine.me();
@@ -2916,7 +2884,7 @@ fn none_writer_without_the_right_adds_no_cover_spec_commits_5() {
 #[test]
 fn none_writer_covers_once_the_cover_it_relied_on_falls_spec_commits_5() {
     use osis_schema::{PurgeBy, Retention};
-    let mut lp = net(3, 0x6e06);
+    let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
     for i in [1, 2] {
         let p = lp.peers[i].engine.me();
@@ -2976,7 +2944,7 @@ fn none_writer_covers_once_the_cover_it_relied_on_falls_spec_commits_5() {
 // cover arrives.
 #[test]
 fn none_editor_covers_a_body_it_receives_later_spec_commits_5() {
-    let mut lp = net(3, 0x6e04);
+    let mut lp = net(3, 0);
     let (t, _) = with_writer(&mut lp);
     sync(&mut lp, 0, 2);
     let k = ak("t:gone.0");
@@ -3006,7 +2974,7 @@ fn none_editor_covers_a_body_it_receives_later_spec_commits_5() {
 #[test]
 fn snapshot_replaced_at_latest_death_not_at_copies_spec_commits_5() {
     use osis_crdt::PathSeg;
-    let mut lp = net(4, 95);
+    let mut lp = net(4, 0);
     let t = kept_map(&mut lp);
     for i in [1, 2] {
         let p = lp.peers[i].engine.me();
@@ -3056,7 +3024,7 @@ fn snapshot_replaced_at_latest_death_not_at_copies_spec_commits_5() {
 // cover fall, X is missing again, and fetched it reads again.
 #[test]
 fn dead_expiring_delta_cover_falls_refetched_spec_commits_5() {
-    let mut lp = net_off(3, 63);
+    let mut lp = net_off(3, 0);
     let t = new_thing(&mut lp, 0);
     let (p1, p2) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
     set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
@@ -3098,7 +3066,7 @@ fn dead_expiring_delta_cover_falls_refetched_spec_commits_5() {
 // `drop_body` refuses a body no held valid snapshot covers, and the body stays held.
 #[test]
 fn drop_body_refuses_uncovered_spec_commits_5() {
-    let mut lp = net(1, 58);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let c = set(&mut lp, 0, t, &REG, "v");
     let e = &mut lp.peers[0].engine;
@@ -3114,7 +3082,7 @@ fn drop_body_refuses_uncovered_spec_commits_5() {
 // takes nothing of S (no values of its own), so S stays held and carries the body's write.
 #[test]
 fn coverer_named_by_a_purge_keeps_carrying_spec_commits_5() {
-    let mut lp = net(1, 59);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let reg = ak("t:reg.0");
     let c = set(&mut lp, 0, t, &REG, "v");
@@ -3141,7 +3109,7 @@ fn coverer_named_by_a_purge_keeps_carrying_spec_commits_5() {
 // old).
 #[test]
 fn snapshot_carried_per_write_not_per_stamp_spec_commits_5() {
-    let mut lp = net(4, 91);
+    let mut lp = net(4, 0);
     let t = new_thing(&mut lp, 0);
     for i in [1, 2] {
         let p = lp.peers[i].engine.me();
@@ -3208,7 +3176,7 @@ fn kept_seqs(lp: &mut LocalPeer) -> Tid {
 // as a winner, so carries it; b's it holds only deleted. S1 is replaced at b's death, not a's.
 #[test]
 fn snapshot_dated_by_deleted_creations_not_carried_spec_commits_5() {
-    let mut lp = net(1, 92);
+    let mut lp = net(1, 0);
     let t = kept_seqs(&mut lp);
     let k = ak("t:text.0");
     kept_seq(&mut lp, t, &TEXT, Op::Insert { at: 0, items: vec![s("abc")] });
@@ -3233,7 +3201,7 @@ fn snapshot_dated_by_deleted_creations_not_carried_spec_commits_5() {
 // write alone: S1 is replaced at x's death, not y's.
 #[test]
 fn snapshot_not_carried_by_a_beaten_position_spec_commits_5() {
-    let mut lp = net(1, 93);
+    let mut lp = net(1, 0);
     let t = kept_seqs(&mut lp);
     let k = ak("t:list.0");
     kept_seq(&mut lp, t, &LIST, Op::Insert { at: 0, items: vec![s("x"), s("y"), s("z")] });
@@ -3262,7 +3230,7 @@ fn snapshot_not_carried_by_a_beaten_position_spec_commits_5() {
 // at Q, neither at X's later date nor earlier.
 #[test]
 fn skewed_clocks_dated_at_earliest_superseder_spec_commits_5() {
-    let mut lp = net(3, 94);
+    let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
     for i in [1, 2] {
         let p = lp.peers[i].engine.me();
@@ -3303,7 +3271,7 @@ fn skewed_clocks_dated_at_earliest_superseder_spec_commits_5() {
 // `remove_aspect` body stays live until a later reset supersedes it.
 #[test]
 fn remover_reset_is_live_until_superseded_spec_commits_5() {
-    let mut lp = net(1, 0x7e01);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let k = ak("t:reg.0");
     let remove = |lp: &mut LocalPeer| {
@@ -3329,7 +3297,7 @@ fn remover_reset_is_live_until_superseded_spec_commits_5() {
 // snapshot stripped of a purged copy) is a body like a whole one: replaced and covered, it goes.
 #[test]
 fn bare_leftover_stays_copy_leftover_goes_spec_commits_5() {
-    let mut lp = net(1, 0x7e02);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let k = ak("t:gone.0");
     let set_purging = |lp: &mut LocalPeer, v: &str, purged: osis_base::CommitId| {
@@ -3364,7 +3332,7 @@ fn bare_leftover_stays_copy_leftover_goes_spec_commits_5() {
 #[test]
 fn parked_grant_gives_no_purge_right_spec_commits_4() {
     use osis_base::format::MAX_DRIFT_MS;
-    let mut lp = net(3, 0x7e04);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let x = lp.peers[1].engine.me();
@@ -3401,7 +3369,7 @@ fn parked_grant_gives_no_purge_right_spec_commits_4() {
 #[test]
 fn edge_admin_removing_own_edge_is_self_removal_spec_perm_2() {
     use osis_schema::core_types as ct;
-    let mut lp = net(2, 0x7e07);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let g = new_thing(&mut lp, 0);
@@ -3468,7 +3436,7 @@ fn ending_in_any_arrival_order_spec_commits_5() {
 #[test]
 fn snapshot_excuses_only_what_it_reaches_spec_commits_7() {
     for snap in [false, true] {
-        let mut lp = net(3, 961);
+        let mut lp = net(3, 0);
         let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
         let x = ak("x:m.0");
         let mut m = Mutation::new();

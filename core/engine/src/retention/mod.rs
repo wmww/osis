@@ -1179,7 +1179,7 @@ mod tests {
     #[test]
     fn reset_judged_walks_parts_once_spec_commits_5() {
         let walks = |n: usize| {
-            let mut lp = LocalPeer::new(1, 953, WallMs(1_700_000_000_000)).unwrap();
+            let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
             let a = lp.peers[0].engine.me();
             let x = Ak::new("x:m.0").unwrap();
             let mut m = Mutation::new();
@@ -1214,7 +1214,7 @@ mod tests {
     #[test]
     fn writer_covers_once_its_delete_keys_come_in_any_order_spec_commits_5() {
         let end = |keys_first: bool| {
-            let mut lp = LocalPeer::new(3, 961, WallMs(1_700_000_000_000)).unwrap();
+            let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
             lp.sync_all().unwrap();
             let (alice, bob, carol) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
             let (x, keys) = (Ak::new("x:v.0").unwrap(), Ak::new("keys.0").unwrap());
@@ -1280,7 +1280,7 @@ mod tests {
     // gives it secrets of its own, its own.
     #[test]
     fn reader_actor_up_the_record_chain_spec_sync_3() {
-        let mut lp = LocalPeer::new(2, 952, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
         let x = Ak::new("x:a.0").unwrap();
@@ -1318,7 +1318,7 @@ mod tests {
     // dead; a re-grant that makes it valid again counts it live again.
     #[test]
     fn body_live_follows_validity_spec_sync_7() {
-        let mut lp = LocalPeer::new(3, 951, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, w, x) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let ak = Ak::new("x:a.0").unwrap();
@@ -1360,7 +1360,7 @@ mod tests {
         static TS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("t.osis", "revision 1; aspect k:s.0: struct { 0 a: int, 1 m: map<string, int> };\n");
         let key: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:s.0", &TS);
         let ak = Ak::new("k:s.0").unwrap();
-        let mut lp = LocalPeer::new(2, 955, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let [a, c] = [0, 1].map(|i| lp.peers[i].engine.me());
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
@@ -1397,7 +1397,7 @@ mod tests {
     // "old".
     #[test]
     fn leftover_is_a_held_body_spec_crdt_4_7() {
-        let mut lp = LocalPeer::new(1, 953, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let a = lp.peers[0].engine.me();
         let (reg, other) = (Ak::new("x:a.0").unwrap(), Ak::new("x:b.0").unwrap());
         let mut m = Mutation::new();
@@ -1433,7 +1433,7 @@ mod tests {
     // dropped; nothing is kept until node-sync asks.
     #[test]
     fn changed_marks_flips_and_drops_spec_sync_6() {
-        let mut lp = LocalPeer::new(3, 952, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, w, x) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let ak = Ak::new("x:a.0").unwrap();

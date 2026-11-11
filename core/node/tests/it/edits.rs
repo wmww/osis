@@ -22,8 +22,18 @@ fn purgeable() -> Retention {
     Retention { by: PurgeBy::AuthorOrAdmin }
 }
 
-fn net_with(n: usize, seed: u64) -> (LocalPeer, Tid, Vec<Tid>) {
-    let mut lp = net(n, seed);
+/// `n` peers, a thing `d` of peer 0's every other peer writes: built once per `n`
+/// (`LocalPeer::cached`).
+fn net_with(n: usize) -> (LocalPeer, Tid, Vec<Tid>) {
+    let (lp, (d, ids)) = LocalPeer::cached(&format!("edits::net_with/{n}"), || {
+        let (lp, d, ids) = net_with_built(n);
+        (lp, (d, ids))
+    });
+    (lp, d, ids)
+}
+
+fn net_with_built(n: usize) -> (LocalPeer, Tid, Vec<Tid>) {
+    let mut lp = net(n, 0);
     let ids: Vec<Tid> = (0..n).map(|i| lp.peers[i].engine.me()).collect();
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
@@ -38,8 +48,8 @@ fn net_with(n: usize, seed: u64) -> (LocalPeer, Tid, Vec<Tid>) {
     (lp, d, ids)
 }
 
-fn setup(seed: u64) -> (LocalPeer, Tid, Vec<Tid>) {
-    net_with(2, seed)
+fn setup() -> (LocalPeer, Tid, Vec<Tid>) {
+    net_with(2)
 }
 
 fn fire(lp: &mut LocalPeer, i: usize, d: Tid, r: Retention, v: &str) -> CommitId {
@@ -87,7 +97,7 @@ fn body(v: &str) -> PartBody {
 // versions are not listed of their own; another's fire keeps its place
 #[test]
 fn an_edit_reads_in_the_originals_place_spec_commits_5() {
-    let (mut lp, d, _) = setup(1);
+    let (mut lp, d, _) = setup();
     let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
     // stamped after it (the same `ts` would order them by commit ID)
@@ -109,7 +119,7 @@ fn an_edit_reads_in_the_originals_place_spec_commits_5() {
 #[test]
 fn every_arrival_order_reads_alike_spec_commits_5() {
     for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
-        let (mut lp, d, _) = net_with(3, 2);
+        let (mut lp, d, _) = net_with(3);
         let r = purgeable();
         let o = fire(&mut lp, 0, d, r, "one");
         let v1 = edit(&mut lp, 0, d, r, "two", o);
@@ -128,7 +138,7 @@ fn every_arrival_order_reads_alike_spec_commits_5() {
 // nothing is a fire of its own at its own place
 #[test]
 fn forged_claims_stand_alone_spec_commits_5() {
-    let (mut lp, d, _) = setup(4);
+    let (mut lp, d, _) = setup();
     let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
     let forged = edit(&mut lp, 1, d, r, "bobs", o);
@@ -147,7 +157,7 @@ fn forged_claims_stand_alone_spec_commits_5() {
 // removal rebuilds nothing else
 #[test]
 fn an_edit_after_a_kick_is_not_honored_spec_commits_5() {
-    let (mut lp, d, ids) = setup(6);
+    let (mut lp, d, ids) = setup();
     let r = purgeable();
     let bob = 1;
     let o = fire(&mut lp, bob, d, r, "mine");
@@ -166,7 +176,7 @@ fn an_edit_after_a_kick_is_not_honored_spec_commits_5() {
 // spec/commits.md §5 Signals: a valid edit of an invalid original stands alone at its own place
 #[test]
 fn a_valid_edit_of_an_invalid_original_stands_alone_spec_commits_5() {
-    let mut lp = net(2, 7);
+    let mut lp = net(2, 0);
     let ids = [0, 1].map(|i| lp.peers[i].engine.me());
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
@@ -194,7 +204,7 @@ fn a_valid_edit_of_an_invalid_original_stands_alone_spec_commits_5() {
 // return (the kicker's kick falls)
 #[test]
 fn versions_return_folded_with_their_original_spec_commits_5() {
-    let (mut lp, d, ids) = net_with(3, 8);
+    let (mut lp, d, ids) = net_with(3);
     let r = purgeable();
     let (bob, carol) = (1, 2);
     set_edge(&mut lp.peers[0].engine, d, ids[carol], Some(edge(Role::Admin)), None);
@@ -232,7 +242,7 @@ fn named(d: Tid, c: CommitId) -> PurgeItem {
 // keeps older ones from showing, an edit purging its predecessors in its own commit stays honored
 #[test]
 fn a_purge_takes_only_what_it_names_spec_commits_5() {
-    let (mut lp, d, _) = setup(8);
+    let (mut lp, d, _) = setup();
     let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
     let v = edit(&mut lp, 0, d, r, "two", o);
@@ -242,7 +252,7 @@ fn a_purge_takes_only_what_it_names_spec_commits_5() {
     lp.sync_all().unwrap();
     assert_eq!(list(&mut lp, 1, d), vec![(o, Some(v), PartBody::Purged(rq))]);
     // an edit's own purge of the original leaves the edit honored
-    let (mut lp, d, _) = setup(9);
+    let (mut lp, d, _) = setup();
     let o = fire(&mut lp, 0, d, r, "one");
     let mut m = Mutation::new();
     m.retention(d, &log(), r).unwrap();
@@ -255,7 +265,7 @@ fn a_purge_takes_only_what_it_names_spec_commits_5() {
         assert_eq!(list(&mut lp, i, d), vec![(o, Some(v), body("two"))], "node {i}");
     }
     // a purge of the original alone leaves a version written after it
-    let (mut lp, d, _) = setup(10);
+    let (mut lp, d, _) = setup();
     let o = fire(&mut lp, 0, d, r, "one");
     let rq = purge_commit(&mut lp, 0, d, vec![named(d, o)]);
     let v = edit(&mut lp, 0, d, r, "two", o);
@@ -268,7 +278,7 @@ fn a_purge_takes_only_what_it_names_spec_commits_5() {
 // once its original is gone
 #[test]
 fn expiry_shows_the_previous_or_stands_alone_spec_commits_5() {
-    let (mut lp, d, _) = setup(11);
+    let (mut lp, d, _) = setup();
     let r = purgeable();
     let t = lp.peers[0].engine.now().0;
     let timed = |lp: &mut LocalPeer, v: &str, at: u64, of: Option<CommitId>| {
@@ -295,7 +305,7 @@ fn expiry_shows_the_previous_or_stands_alone_spec_commits_5() {
 // spec/commits.md §5 Signals: a writer gives an edit its original's expiry; it ends with it
 #[test]
 fn an_edit_takes_its_originals_expiry_spec_commits_5() {
-    let (mut lp, d, _) = setup(12);
+    let (mut lp, d, _) = setup();
     let r = purgeable();
     let t = lp.peers[0].engine.now().0;
     let mut m = Mutation::new();
@@ -314,7 +324,7 @@ fn an_edit_takes_its_originals_expiry_spec_commits_5() {
 // in the same window from its own `ts`) then stand alone at their own places
 #[test]
 fn an_original_past_its_keep_frees_its_versions_spec_commits_5() {
-    let (mut lp, d, _) = setup(13);
+    let (mut lp, d, _) = setup();
     set_setting(&mut lp, 0, d, &setting(&[(log().as_str(), History::Keep { until: None, after: Some(2 * HOUR) })]));
     lp.advance(1_000);
     let o = fire(&mut lp, 0, d, purgeable(), "one");
@@ -331,7 +341,7 @@ fn an_original_past_its_keep_frees_its_versions_spec_commits_5() {
 // refuses an edit, and one written anyway is honored (no validity rule)
 #[test]
 fn final_is_a_writer_default_spec_commits_5() {
-    let (mut lp, d, _) = setup(14);
+    let (mut lp, d, _) = setup();
     let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
     let rules: ct::RetentionSetting = BTreeMap::from([(log(), ct::RetentionEntry { history: Some(History::FOREVER), r#final: true, ..Default::default() })]).into();
@@ -356,7 +366,7 @@ fn final_is_a_writer_default_spec_commits_5() {
 // spec/commits.md §5 Purge: a request that expires reaches only deltas expiring no later
 #[test]
 fn an_expiring_request_reaches_only_earlier_expiries_spec_commits_5() {
-    let (mut lp, d, _) = setup(16);
+    let (mut lp, d, _) = setup();
     let r = purgeable();
     let t = lp.peers[0].engine.now().0;
     let write = |lp: &mut LocalPeer, v: &str, at: Option<u64>| {
@@ -393,7 +403,7 @@ fn an_expiring_request_reaches_only_earlier_expiries_spec_commits_5() {
 // for its original under its own, then gone when it comes
 #[test]
 fn listeners_hear_the_original_spec_commits_5() {
-    let (mut lp, d, _) = setup(17);
+    let (mut lp, d, _) = setup();
     let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
     let v = edit(&mut lp, 0, d, r, "two", o);
@@ -417,7 +427,7 @@ fn listeners_hear_the_original_spec_commits_5() {
 #[test]
 fn a_folded_version_ending_with_its_fire_is_not_told_spec_commits_5() {
     let told = |rx: &std::sync::mpsc::Receiver<Event>, d: Tid| -> Vec<CommitId> { rx.try_iter().filter_map(|e| if let Event::Commits(ch) = e { Some(ch.iter().filter(|x| x.tid == d && x.ak == log()).map(|x| x.id).collect::<Vec<_>>()) } else { None }).flatten().collect() };
-    let (mut lp, d, _) = setup(21);
+    let (mut lp, d, _) = setup();
     let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
     let v = edit(&mut lp, 0, d, r, "two", o);
@@ -425,7 +435,7 @@ fn a_folded_version_ending_with_its_fire_is_not_told_spec_commits_5() {
     lp.peers[0].engine.watch_commits();
     purge_commit(&mut lp, 0, d, vec![named(d, v), named(d, o)]);
     assert_eq!(told(&rx, d), vec![o], "a delete: one change of the fire");
-    let (mut lp, d, _) = setup(22);
+    let (mut lp, d, _) = setup();
     let t = lp.peers[0].engine.now().0;
     let mut m = Mutation::new();
     m.retention(d, &log(), r).unwrap();
@@ -440,7 +450,7 @@ fn a_folded_version_ending_with_its_fire_is_not_told_spec_commits_5() {
     assert_eq!(list(&mut lp, 0, d), vec![]);
     assert_eq!(told(&rx, d), vec![o], "an expiry: one change of the fire");
     // the newest version ending first: the fire reads the previous, told as its change
-    let (mut lp, d, _) = setup(23);
+    let (mut lp, d, _) = setup();
     let o = fire(&mut lp, 0, d, r, "one");
     let t = lp.peers[0].engine.now().0;
     let mut m = Mutation::new();
@@ -460,13 +470,13 @@ fn a_folded_version_ending_with_its_fire_is_not_told_spec_commits_5() {
 // spec/commits.md §5 Signals: the fold survives a restart
 #[test]
 fn the_fold_survives_a_restart_spec_commits_5() {
-    let (mut lp, d, _) = setup(18);
+    let (mut lp, d, _) = setup();
     let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
     let v = edit(&mut lp, 0, d, r, "two", o);
     let want = list(&mut lp, 0, d);
     assert_eq!(want, vec![(o, Some(v), body("two"))]);
-    lp.peers[0].restart(99).unwrap();
+    lp.peers[0].restart(0).unwrap();
     assert_eq!(list(&mut lp, 0, d), want);
 }
 
@@ -475,7 +485,7 @@ fn the_fold_survives_a_restart_spec_commits_5() {
 #[test]
 fn bodies_read_are_flat_in_n_spec_commits_5() {
     fn count(n: usize) -> (u64, u64, u64) {
-        let (mut lp, d, _) = setup(n as u64);
+        let (mut lp, d, _) = setup();
         let r = purgeable();
         // the quote is of the oldest message: a walk from the newest pays the whole signal
         let mut first = None;
@@ -509,7 +519,7 @@ fn bodies_read_are_flat_in_n_spec_commits_5() {
 // refuses it
 #[test]
 fn replaces_off_a_durable_signal_is_a_bad_part_spec_commits_2() {
-    let (mut lp, d, _) = setup(19);
+    let (mut lp, d, _) = setup();
     let o = fire(&mut lp, 0, d, purgeable(), "one");
     let claim = || {
         let mut m = Mutation::new();
@@ -546,7 +556,7 @@ fn incremental_equals_rebuilt_and_every_order_reads_alike_spec_commits_5() {
     let (mut folded, mut out_writes) = (0, 0);
     for seed in 0..10u64 {
         let mut g = Mix(seed);
-        let (mut lp, d, ids) = net_with(3, 30 + seed);
+        let (mut lp, d, ids) = net_with(3);
         let (alice, bob, obs) = (0, 1, 2);
         let mut fires: Vec<CommitId> = Vec::new();
         let mut bob_in = true;
@@ -671,7 +681,7 @@ fn incremental_equals_rebuilt_and_every_order_reads_alike_spec_commits_5() {
 // the original reading as the edit; to restore text, replace again
 #[test]
 fn an_undo_of_an_edit_changes_no_reading_spec_commits_7() {
-    let (mut lp, d, _) = setup(20);
+    let (mut lp, d, _) = setup();
     let r = purgeable();
     let o = fire(&mut lp, 0, d, r, "one");
     let v = edit(&mut lp, 0, d, r, "two", o);

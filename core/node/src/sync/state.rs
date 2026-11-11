@@ -2122,6 +2122,11 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
+    /// One fresh peer at `T0`: built once (`LocalPeer::cached`).
+    fn one_peer() -> crate::local_peer::LocalPeer {
+        crate::local_peer::LocalPeer::cached("node::one_peer", || (crate::local_peer::LocalPeer::new(1, 0, osis_base::WallMs(1_700_000_000_000)).unwrap(), ())).0
+    }
+
     // spec/sync.md §9: a memory entry dropped without a tombstone leaves no class mark (its
     // records would otherwise be kept for good, one per entry)
     #[test]
@@ -2146,7 +2151,7 @@ mod tests {
     // decode is skipped, never a failed load of the sync state.
     #[test]
     fn corrupt_delivery_record_skipped_spec_sync_3() {
-        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 961, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let mut node = crate::sync::host::on_hub(one_peer().peers.remove(0));
         let e = &mut node;
         e.run(|tx| {
             tx.txn.put_local(b"y/vjunk", b"not a record", Shred::No)?;
@@ -2161,7 +2166,7 @@ mod tests {
     // load with a named error, never a panic or a silent drop.
     #[test]
     fn corrupt_outbox_record_fails_load() {
-        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 962, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let mut node = crate::sync::host::on_hub(one_peer().peers.remove(0));
         let e = &mut node;
         let k = key(OUTBOX, &[&[7u8; 32], &[8u8; 32]]);
         e.run(|tx| {
@@ -2176,7 +2181,7 @@ mod tests {
     // forget reloads; a flow or forget after it still writes and drops sync records).
     #[test]
     fn sync_records_survive_reload() {
-        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 963, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let mut node = crate::sync::host::on_hub(one_peer().peers.remove(0));
         let e = &mut node;
         e.set_sync_records(&Records);
         e.reload().unwrap();
@@ -2188,7 +2193,7 @@ mod tests {
     // spec: none (local store format): a hint with its key actor and inbox source round trips.
     #[test]
     fn hint_round_trips() {
-        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 964, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let mut node = crate::sync::host::on_hub(one_peer().peers.remove(0));
         let e = &mut node;
         let mut s = State::default();
         let src = InboxSource { label: LabelId([4; 16]), blob: BlobId([5; 32]), until: 77 };
@@ -2253,7 +2258,7 @@ mod tests {
     // until then.
     #[test]
     fn records_dropped_after_their_lifecycle_spec_sync_7() {
-        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 965, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let mut node = crate::sync::host::on_hub(one_peer().peers.remove(0));
         let e = &mut node;
         let life = osis_base::format::TOMBSTONE_LIFETIME_MS;
         let (h, l, b) = ([7u8; 32], LabelId([1; 16]), BlobId([2; 32]));
@@ -2314,7 +2319,7 @@ mod tests {
     // a change only of what this node knows of the blob, or an ephemeral entry, is none.
     #[test]
     fn entries_write_log_events_with_their_flush() {
-        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 962, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let mut node = crate::sync::host::on_hub(one_peer().peers.remove(0));
         let e = &mut node;
         let mut s = State { now: 5, ..State::default() };
         let (l, b) = (LabelId([1; 16]), bytes(e, 2));
@@ -2347,7 +2352,7 @@ mod tests {
     // of row and bytes, and an entry that keeps changing is one event of the log.
     #[test]
     fn an_entry_is_logged_when_its_bytes_are_held() {
-        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 964, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let mut node = crate::sync::host::on_hub(one_peer().peers.remove(0));
         let e = &mut node;
         let mut s = State::default();
         let l = LabelId([1; 16]);
@@ -2385,7 +2390,7 @@ mod tests {
     // (this node stopped holding it, nobody deleted its entries) and leaves the log with nothing of it.
     #[test]
     fn forgetting_drops_a_labels_events_without_a_deletion() {
-        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 963, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let mut node = crate::sync::host::on_hub(one_peer().peers.remove(0));
         let e = &mut node;
         let mut s = State::default();
         let (l, m) = (LabelId([1; 16]), LabelId([2; 16]));
@@ -2410,7 +2415,7 @@ mod tests {
             let root = osis_store::MemoryRoot::with_faults(faults.clone());
             let clock: std::sync::Arc<dyn osis_base::Clock> = std::sync::Arc::new(osis_base::ManualClock::new(osis_base::WallMs(1_700_000_000_000)));
             let disk = (osis_store::MemoryBackend::with_faults(faults.clone()), osis_store::MemoryRoot::with_faults(faults.clone()));
-            let mut e = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), crate::sync::hub_store_on(Box::new(disk.0.clone()), Box::new(disk.1.clone()), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(8))).unwrap(), crate::Config::default(), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(9))).unwrap();
+            let mut e = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), crate::sync::hub_store_on(Box::new(disk.0.clone()), Box::new(disk.1.clone()), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(2))).unwrap(), crate::Config::default(), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(0))).unwrap();
             let mut s = State::default();
             e.put_blobs(vec![(b, vec![2; 40])]).unwrap();
             s.set_entry(l, b, entry(1));
@@ -2419,7 +2424,7 @@ mod tests {
             let wrote = faults.writes();
             drop(e);
             faults.revive();
-            let mut e = Engine::open(Box::new(backend), Box::new(root), crate::sync::hub_store_on(Box::new(disk.0.clone()), Box::new(disk.1.clone()), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(8))).unwrap(), crate::Config::default(), clock, Box::new(osis_crypto::SeededRng::from_u64(10))).unwrap();
+            let mut e = Engine::open(Box::new(backend), Box::new(root), crate::sync::hub_store_on(Box::new(disk.0.clone()), Box::new(disk.1.clone()), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(2))).unwrap(), crate::Config::default(), clock, Box::new(osis_crypto::SeededRng::from_u64(1))).unwrap();
             // the reconcile at load: the hub's row is the truth
             let present = State::load(&mut e).unwrap().entries.contains_key(&(l, b));
             assert_eq!(present, !logged(&mut e).is_empty(), "crash at write {k}: the entry and its event split");
@@ -2436,7 +2441,7 @@ mod tests {
     fn faulty(faults: &osis_store::Faults, disks: &[(osis_store::MemoryBackend, osis_store::MemoryRoot); 2], create: bool, seed: u64) -> Engine {
         let clock: std::sync::Arc<dyn osis_base::Clock> = std::sync::Arc::new(osis_base::ManualClock::new(osis_base::WallMs(1_700_000_000_000)));
         let _ = faults;
-        let hub = crate::sync::hub_store_on(Box::new(disks[1].0.clone()), Box::new(disks[1].1.clone()), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(8))).unwrap();
+        let hub = crate::sync::hub_store_on(Box::new(disks[1].0.clone()), Box::new(disks[1].1.clone()), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(2))).unwrap();
         let (b, r): (Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>) = (Box::new(disks[0].0.clone()), Box::new(disks[0].1.clone()));
         let rng = Box::new(osis_crypto::SeededRng::from_u64(seed));
         if create { Engine::create(b, r, hub, crate::Config::default(), clock, rng).unwrap() } else { Engine::open(b, r, hub, crate::Config::default(), clock, rng).unwrap() }
@@ -2453,7 +2458,7 @@ mod tests {
             let faults = osis_store::Faults::new();
             let disk = || (osis_store::MemoryBackend::with_faults(faults.clone()), osis_store::MemoryRoot::with_faults(faults.clone()));
             let disks = [disk(), disk()];
-            let mut e = faulty(&faults, &disks, true, 9);
+            let mut e = faulty(&faults, &disks, true, 0);
             let mut s = State::default();
             e.put_blobs(vec![(b, vec![2; 40])]).unwrap();
             s.set_entry(l, b, entry(1));
@@ -2464,7 +2469,7 @@ mod tests {
             let wrote = faults.writes();
             drop(e);
             faults.revive();
-            let mut e = faulty(&faults, &disks, false, 10);
+            let mut e = faulty(&faults, &disks, false, 1);
             let here = State::load(&mut e).unwrap().entries.contains_key(&(l, b));
             let row = e.run(|tx| hub(tx)?.reader_entry(&l, &b).map_err(hub_err)).unwrap().is_some();
             assert_eq!(here, row, "crash at write {k}: the entry and its row split");
@@ -2486,7 +2491,7 @@ mod tests {
             let faults = osis_store::Faults::new();
             let disk = || (osis_store::MemoryBackend::with_faults(faults.clone()), osis_store::MemoryRoot::with_faults(faults.clone()));
             let disks = [disk(), disk()];
-            let mut e = faulty(&faults, &disks, true, 9);
+            let mut e = faulty(&faults, &disks, true, 0);
             let mut s = State::default();
             let l = LabelId([1; 16]);
             let blobs: Vec<(BlobId, Vec<u8>)> = (0..n).map(|i| (i as u32).to_be_bytes().repeat(10)).map(|x| (osis_label::blob_id(&x), x)).collect();

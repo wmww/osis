@@ -1235,7 +1235,7 @@ pub fn exhaustive_worlds(share: (usize, usize), mut f: impl FnMut(World)) {
                         let mut w = World { roles: roles.clone(), items, frontier: HashMap::new() };
                         let mut ids: HashSet<u32> = (0..2000).collect();
                         let add_recv = |a: usize, t: u32| -> Vec<u32> { (0..nn).map(|v| if v == a { t } else if v == 0 && !alice_sees { LATE } else { t + 1 }).collect() };
-                        w.derive(&mut Rng(1), PLAN, &[], &mut ids, Some(&add_recv));
+                        w.derive(&mut Rng(0), PLAN, &[], &mut ids, Some(&add_recv));
                         f(w);
                     }
                 }
@@ -1301,7 +1301,7 @@ pub fn cover_worlds(share: (usize, usize), mut f: impl FnMut([World; 3])) {
                                 let add_recv = |a: usize, t: u32| -> Vec<u32> { (0..nn).map(|v| if v == a { t } else { t + 1 }).collect() };
                                 let make = |rules: Rules| {
                                     let mut w = World { roles: roles.clone(), items: vec![c.clone(), snap.clone()], frontier: HashMap::new() };
-                                    w.derive(&mut Rng(1), rules, &[], &mut (0..2000).collect(), Some(&add_recv));
+                                    w.derive(&mut Rng(0), rules, &[], &mut (0..2000).collect(), Some(&add_recv));
                                     w
                                 };
                                 f([make(PLAN), make(Rules { cover: COVERS[0].1, ..PLAN }), make(Rules { cover: COVERS[1].1, ..PLAN })]);
@@ -1402,7 +1402,7 @@ mod tests {
         fn derive_by(mut self, rules: Rules, unseen: &[usize]) -> World {
             let mut ids: HashSet<u32> = (0..1000).collect();
             let add_recv = |a: usize, t: u32| -> Vec<u32> { (0..NN).map(|v| if v == a { t } else if unseen.contains(&v) { LATE } else { t + 1 }).collect() };
-            self.w.derive(&mut Rng(7), rules, &[], &mut ids, Some(&add_recv));
+            self.w.derive(&mut Rng(0), rules, &[], &mut ids, Some(&add_recv));
             self.w
         }
     }
@@ -1587,7 +1587,7 @@ mod tests {
     #[test]
     fn own_covers_lose_nothing() {
         let mut st = Stats::default();
-        let mut rng = Rng(3);
+        let mut rng = Rng(0);
         cover_worlds((0, 64), |[w, o, p]| check(&w, Some(&[o, p]), &mut st, &mut rng));
         assert!(st.covers[0].loses > 0, "the family reaches another writer's falling cover");
         assert_eq!(st.cover_failures(1), 0);
@@ -1597,7 +1597,7 @@ mod tests {
     /// The joint walk's replay (`steps`) ends in the walk's own roles.
     #[test]
     fn steps_follow_the_walk() {
-        let mut rng = Rng(11);
+        let mut rng = Rng(0);
         for _ in 0..2000 {
             let h = joint::random_hist(&mut rng);
             let s = h.steps();

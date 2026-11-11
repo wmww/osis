@@ -72,7 +72,7 @@ fn shred_all(s: &mut Store, rng: &mut SeededRng) {
 fn shredded_content_is_unrecoverable() {
     let dev = MemDevice::new();
     dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(1);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     let marker = b"MARKER-7f3a9c";
     plant(&mut s, &mut rng, marker);
@@ -93,7 +93,7 @@ fn shredded_content_is_unrecoverable() {
 fn dropped_aspect_is_unrecoverable() {
     let dev = MemDevice::new();
     dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(2);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     plant(&mut s, &mut rng, b"MARKER-big");
     let mut t = s.transaction(&mut rng).unwrap();
@@ -110,7 +110,7 @@ fn dropped_aspect_is_unrecoverable() {
 fn shred_after_splits_and_merges() {
     let dev = MemDevice::new();
     dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(6);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     let mut t = s.transaction(&mut rng).unwrap();
     for i in 0..200u32 {
@@ -150,7 +150,7 @@ fn shred_after_splits_and_merges() {
 fn unshredded_overwrite_is_recoverable_until_a_later_shred() {
     let dev = MemDevice::new();
     dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(3);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     let mut t = s.transaction(&mut rng).unwrap();
     t.put_local(b"k", b"old-MARK", Shred::No).unwrap();
@@ -172,7 +172,7 @@ fn unshredded_overwrite_is_recoverable_until_a_later_shred() {
 fn unshredded_large_overwrite_is_unrecoverable_after_a_later_shred() {
     let dev = MemDevice::new();
     dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(5);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     let big = |m: &[u8]| [m, &[7u8; 300][..]].concat();
     // Other units around the old value, so its leaf of the key tree holds only units the later
@@ -203,7 +203,7 @@ fn unshredded_large_overwrite_is_unrecoverable_after_a_later_shred() {
 #[test]
 fn file_backend_holds_no_plaintext() {
     let dev = FileDevice::new("shred");
-    let mut rng = SeededRng::from_u64(4);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     plant(&mut s, &mut rng, b"MARKER-file");
     shred_all(&mut s, &mut rng);
@@ -236,7 +236,7 @@ const CIPHERS: osis_store::Ciphers = osis_store::Ciphers {
 fn blob_keys_and_wraps_dropped_leave_the_blob_unopenable() {
     let dev = MemDevice::new();
     dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(7);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     let secret = osis_crypto::Secret32::from_bytes([9; 32]);
     let blob = |m: &[u8], rng: &mut SeededRng| {
@@ -281,7 +281,7 @@ fn blob_keys_and_wraps_dropped_leave_the_blob_unopenable() {
 fn attack_reads_clear_rows_and_raw_blobs() {
     let dev = MemDevice::new();
     dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(8);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     let mut t = s.transaction(&mut rng).unwrap();
     t.put_blob(&BlobId([5; 32]), b"CLEAR-BLOB-MARK".to_vec()).unwrap();
@@ -298,7 +298,7 @@ fn attack_reads_clear_rows_and_raw_blobs() {
 fn shredded_small_drop_keeps_unit_lengths_within_a_class_step() {
     let dev = MemDevice::new();
     dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(9);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     let mut t = s.transaction(&mut rng).unwrap();
     for i in 0..100u32 {

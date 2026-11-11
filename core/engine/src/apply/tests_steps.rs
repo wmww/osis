@@ -46,19 +46,8 @@ fn ran_equals_never_ran(site: Step, skip: u32, scenario: impl Fn(Option<StepFaul
 
 /// Peer 0 makes thing `t` (`c1`) and writes on it (`c2`); peer 1 receives `c2` first (it waits
 /// for `t`'s record), then `c1`: `c2` applies when re-examined.
-fn pending_then_applied(seed: u64, f: Option<StepFault>) -> (LocalPeer, CommitId) {
-    let mut lp = LocalPeer::new(2, seed, T0).unwrap();
-    lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.me();
-    let mut m = Mutation::new();
-    let t = lp.peers[0].engine.new_thing(&mut m, me);
-    m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
-    let c1 = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
-    let mut m = Mutation::new();
-    m.set(t, &ak("x:a.0"), &Value::Int(2)).unwrap();
-    m.set(t, &ak("x:b.0"), &Value::Str("b".into())).unwrap();
-    let c2 = lp.peers[0].commit(m).unwrap().unwrap();
+fn pending_then_applied(f: Option<StepFault>) -> (LocalPeer, CommitId) {
+    let (mut lp, (c1, c2)) = LocalPeer::cached("apply::tests_steps::pending_then_applied", pending_setup);
     let pks = lp.packages(0).unwrap();
     let pk = |c: CommitId| pks.iter().find(|p| p.id == c).unwrap();
     let e = &mut lp.peers[1].engine;
@@ -71,14 +60,31 @@ fn pending_then_applied(seed: u64, f: Option<StepFault>) -> (LocalPeer, CommitId
     (lp, c2)
 }
 
+/// `pending_then_applied` up to peer 1's receiving: the nodes, `c1`, `c2`.
+fn pending_setup() -> (LocalPeer, (CommitId, CommitId)) {
+    let mut lp = LocalPeer::fresh(2, T0);
+    lp.sync_all().unwrap();
+    let me = lp.peers[0].engine.me();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
+    let c1 = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+    let mut m = Mutation::new();
+    m.set(t, &ak("x:a.0"), &Value::Int(2)).unwrap();
+    m.set(t, &ak("x:b.0"), &Value::Str("b".into())).unwrap();
+    let c2 = lp.peers[0].commit(m).unwrap().unwrap();
+    (lp, (c1, c2))
+}
+
 // A pending commit whose re-examination fails (`Engine::reexamine`) is dropped as bad input with
 // nothing of its examination or apply kept.
 #[test]
 fn reexamined_commit_failing_keeps_nothing() {
-    let (lp, c2) = pending_then_applied(961, None);
+    let (lp, c2) = pending_then_applied(None);
     assert!(lp.peers[1].engine.core.ix.commits.contains_key(&c2), "without a fault it applies");
     ran_equals_never_ran(Step::Commit, 0, |f| {
-        let (lp, c2) = pending_then_applied(961, f);
+        let (lp, c2) = pending_then_applied(f);
         let core = &lp.peers[1].engine.core;
         assert!(!core.ix.commits.contains_key(&c2) && !core.ix.pending.contains_key(&c2), "dropped as bad");
         (lp, 1)
@@ -86,8 +92,16 @@ fn reexamined_commit_failing_keeps_nothing() {
 }
 
 /// Peer 1 holds thing `t` from peer 0, then receives peer 0's commit with parts on two aspects.
-fn two_parts(seed: u64, f: Option<StepFault>) -> (LocalPeer, CommitId) {
-    let mut lp = LocalPeer::new(2, seed, T0).unwrap();
+fn two_parts(f: Option<StepFault>) -> (LocalPeer, CommitId) {
+    let (mut lp, c) = LocalPeer::cached("apply::tests_steps::two_parts", two_parts_setup);
+    lp.peers[1].engine.core.step_fault = f;
+    lp.sync(0, 1).unwrap();
+    (lp, c)
+}
+
+/// `two_parts` up to peer 1's receiving: the nodes and the commit.
+fn two_parts_setup() -> (LocalPeer, CommitId) {
+    let mut lp = LocalPeer::fresh(2, T0);
     lp.sync_all().unwrap();
     let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
@@ -100,8 +114,6 @@ fn two_parts(seed: u64, f: Option<StepFault>) -> (LocalPeer, CommitId) {
     m.set(t, &ak("x:a.0"), &Value::Int(2)).unwrap();
     m.set(t, &ak("x:b.0"), &Value::Str("b".into())).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.peers[1].engine.core.step_fault = f;
-    lp.sync(0, 1).unwrap();
     (lp, c)
 }
 
@@ -110,7 +122,7 @@ fn two_parts(seed: u64, f: Option<StepFault>) -> (LocalPeer, CommitId) {
 #[test]
 fn judged_part_failing_keeps_nothing() {
     ran_equals_never_ran(Step::Part, 1, |f| {
-        let (lp, c) = two_parts(962, f);
+        let (lp, c) = two_parts(f);
         let m = lp.peers[1].engine.core.ix.commits.get(&c).unwrap();
         assert_eq!((0..m.view.aspects.len()).filter(|ai| m.holds(*ai)).count(), 1, "one part held");
         (lp, 1)
@@ -119,8 +131,16 @@ fn judged_part_failing_keeps_nothing() {
 
 /// Peer 1 (a writer) edits `t` and peer 2 (a writer) receives the edit; peer 0 removes peer 1
 /// without having received it. Peer 2 owes an addendum once it receives the removal.
-fn removal_to_answer(seed: u64) -> (LocalPeer, Tid, CommitId) {
-    let mut lp = LocalPeer::new(3, seed, T0).unwrap();
+fn removal_to_answer() -> (LocalPeer, Tid, CommitId) {
+    let (lp, (t, r)) = LocalPeer::cached("apply::tests_steps::removal_to_answer", || {
+        let (lp, t, r) = removal_setup();
+        (lp, (t, r))
+    });
+    (lp, t, r)
+}
+
+fn removal_setup() -> (LocalPeer, Tid, CommitId) {
+    let mut lp = LocalPeer::fresh(3, T0);
     lp.sync_all().unwrap();
     let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
@@ -145,8 +165,8 @@ fn removal_to_answer(seed: u64) -> (LocalPeer, Tid, CommitId) {
 }
 
 /// `removal_to_answer`, peer 2 receiving the removal with `f`.
-fn removal_answered(seed: u64, f: Option<StepFault>) -> (LocalPeer, Tid, CommitId) {
-    let (mut lp, t, r) = removal_to_answer(seed);
+fn removal_answered(f: Option<StepFault>) -> (LocalPeer, Tid, CommitId) {
+    let (mut lp, t, r) = removal_to_answer();
     lp.peers[2].engine.core.step_fault = f;
     lp.sync(0, 2).unwrap();
     (lp, t, r)
@@ -163,11 +183,11 @@ fn addenda_by(lp: &LocalPeer, peer: usize, t: Tid) -> usize {
 // attempt, and the removal stays due.
 #[test]
 fn answer_failing_keeps_nothing() {
-    let (lp, t, r) = removal_answered(963, None);
+    let (lp, t, r) = removal_answered(None);
     assert_eq!(addenda_by(&lp, 2, t), 1, "without a fault it answers");
     assert!(!lp.peers[2].engine.core.ix.addenda_due.contains(&r));
     ran_equals_never_ran(Step::Answer, 0, |f| {
-        let (lp, t, r) = removal_answered(963, f);
+        let (lp, t, r) = removal_answered(f);
         assert_eq!(addenda_by(&lp, 2, t), 0);
         assert!(lp.peers[2].engine.core.ix.addenda_due.contains(&r), "still due");
         (lp, 2)
@@ -178,7 +198,7 @@ fn answer_failing_keeps_nothing() {
 // receives; once it can be written, the next transaction writes it.
 #[test]
 fn failing_answer_never_blocks_ingest() {
-    let (mut lp, t, r) = removal_to_answer(964);
+    let (mut lp, t, r) = removal_to_answer();
     let rx = lp.peers[2].engine.subscribe();
     lp.peers[2].engine.core.step_fault = fault(Step::Answer, true, 0);
     lp.sync(0, 2).unwrap();

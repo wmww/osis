@@ -115,7 +115,7 @@ fn exhaustive_small() {
 /// already holds its new value.
 #[test]
 fn random_lists_strict() {
-    let mut seed = 0x9e3779b97f4a7c15u64;
+    let mut seed = 1u64; // xorshift at seed 0 (its state is never 0)
     let mut rnd = |n: u64| {
         seed ^= seed << 13;
         seed ^= seed >> 7;

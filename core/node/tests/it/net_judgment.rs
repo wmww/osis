@@ -44,6 +44,19 @@ pub(crate) fn account_node(net: &mut Net, seed: u64, host: usize) -> (usize, Tid
     (n, p.account)
 }
 
+/// A host, an account node `a` at it (`account_node`, seed 1) and a `link` of its account: built
+/// once (`Net::cached`).
+pub(crate) fn linked() -> (Net, usize, usize, Tid, (Tid, LabelId, Tid, Secret32)) {
+    let (net, (host, a, account, l)) = Net::cached("net_judgment::linked", || {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let (a, account) = account_node(&mut net, 1, host);
+        let l = link(&mut net, a, account);
+        (net, (host, a, account, l))
+    });
+    (net, host, a, account, l)
+}
+
 /// A link on a fresh target of node `n`'s account: (k, k's label, the link's key actor).
 pub(crate) fn link(net: &mut Net, n: usize, account: Tid) -> (Tid, LabelId, Tid, Secret32) {
     let e = net.engine(n);
@@ -76,10 +89,7 @@ fn entry_of(l: &LabelId, seed: &Secret32) -> [u8; 32] {
 // peer that never held K is unknown; the gate follows: a holder is known, a departed actor is not
 #[test]
 fn key_actor_holder_then_departed_unknown_never_held_spec_sync_10() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let (a, account) = account_node(&mut net, 1, host);
-    let (k, label, l, seed) = link(&mut net, a, account);
+    let (mut net, host, a, _, (k, label, l, seed)) = linked();
     let b = net.node(2, &[host]);
     net.engine(b).hold_key_actor(seed.clone()).unwrap();
     let provers: Vec<Prover> = net.sync(b).provers(false).unwrap().into_iter().filter(|p| p.record.tid() == l).collect();
@@ -202,10 +212,7 @@ fn proven_account_is_judged_by_its_roles_spec_sync_10() {
 // rotation, change the credentials
 #[test]
 fn credentials_follow_the_roster_spec_sync_2() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let (a, account) = account_node(&mut net, 1, host);
-    let (k, label, l, seed) = link(&mut net, a, account);
+    let (mut net, host, a, _, (k, label, l, seed)) = linked();
     let entry = entry_of(&label, &seed);
     let before = net.sync(a).credentials(&[label]).unwrap().remove(&label).unwrap();
     let values: Vec<[u8; 32]> = before.iter().map(Credential::match_value).collect();

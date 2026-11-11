@@ -14,8 +14,12 @@ fn ak(s: &str) -> Ak {
 }
 
 /// Two peers sharing a thing of peer 0.
-fn thing(seed: u64) -> (LocalPeer, Tid) {
-    let mut lp = LocalPeer::new(2, seed, T0).unwrap();
+fn thing() -> (LocalPeer, Tid) {
+    LocalPeer::cached("retention::tests_own::thing", thing_build)
+}
+
+fn thing_build() -> (LocalPeer, Tid) {
+    let mut lp = LocalPeer::fresh(2, T0);
     lp.sync_all().unwrap();
     let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
@@ -41,7 +45,7 @@ fn replaces(lp: &mut LocalPeer, t: Tid, a: &Ak, vs: std::ops::Range<i64>) -> Vec
 // decides, and once dropped it is covered.
 #[test]
 fn missing_part_is_not_established_spec_commits_5() {
-    let (mut lp, t) = thing(11);
+    let (mut lp, t) = thing();
     let (a, b) = (ak("x:a.0"), ak("x:b.0"));
     lp.advance(1000);
     let mut m = Mutation::new();
@@ -75,7 +79,7 @@ fn missing_part_is_not_established_spec_commits_5() {
 // never on how many newer commits of the author came after (any later whole replace counts).
 #[test]
 fn every_later_own_replace_covers_spec_commits_5() {
-    let (mut lp, t) = thing(12);
+    let (mut lp, t) = thing();
     let a = ak("x:a.0");
     let c = replaces(&mut lp, t, &a, 0..1)[0];
     let qs = replaces(&mut lp, t, &a, 1..6);
@@ -92,7 +96,7 @@ fn every_later_own_replace_covers_spec_commits_5() {
 // read by `undo::replaced_kept`) is the same after a restart and after an index rebuild.
 #[test]
 fn forgotten_survives_restart_spec_commits_5() {
-    let (mut lp, t) = thing(13);
+    let (mut lp, t) = thing();
     let a = ak("x:a.0");
     let c = replaces(&mut lp, t, &a, 0..1)[0];
     replaces(&mut lp, t, &a, 1..3);
@@ -102,7 +106,7 @@ fn forgotten_survives_restart_spec_commits_5() {
     e.forget_commit(&c).unwrap();
     let before = e.core.ix.forgotten.get(&(t, a.clone())).copied();
     assert!(before.is_some());
-    lp.peers[0].restart(5).unwrap();
+    lp.peers[0].restart(0).unwrap();
     assert_eq!(lp.peers[0].engine.core.ix.forgotten.get(&(t, a.clone())).copied(), before, "after a restart");
     lp.peers[0].engine.rebuild_index().unwrap();
     assert_eq!(lp.peers[0].engine.core.ix.forgotten.get(&(t, a.clone())).copied(), before, "after a rebuild");
@@ -112,7 +116,7 @@ fn forgotten_survives_restart_spec_commits_5() {
 // at a node that never held it (no row per ended thing).
 #[test]
 fn forgotten_goes_with_its_thing_spec_commits_5() {
-    let mut lp = LocalPeer::new(1, 14, T0).unwrap();
+    let mut lp = LocalPeer::fresh(1, T0);
     let e = &mut lp.peers[0].engine;
     let me = e.me();
     let mut m = Mutation::new();
@@ -142,7 +146,7 @@ fn forgotten_goes_with_its_thing_spec_commits_5() {
 // Alice removes Bob without having received them.
 #[test]
 fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
-    let mut lp = LocalPeer::new(3, 15, T0).unwrap();
+    let mut lp = LocalPeer::fresh(3, T0);
     lp.sync_all().unwrap();
     let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
@@ -189,7 +193,7 @@ fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
 // keeping C dropped would delete at hosts what Alice, holding C uncovered, uploads.
 #[test]
 fn one_own_replace_left_covers_nothing_spec_commits_5() {
-    let mut lp = LocalPeer::new(3, 16, T0).unwrap();
+    let mut lp = LocalPeer::fresh(3, T0);
     lp.sync_all().unwrap();
     let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
@@ -232,7 +236,7 @@ fn one_own_replace_left_covers_nothing_spec_commits_5() {
 // replaced, C's x:a delta has no live write while the body (x:b) still has one.
 #[test]
 fn delta_live_is_the_deltas_own_spec_sync_7() {
-    let (mut lp, t) = thing(17);
+    let (mut lp, t) = thing();
     let (a, b) = (ak("x:a.0"), ak("x:b.0"));
     lp.advance(1000);
     let mut m = Mutation::new();
@@ -255,7 +259,7 @@ fn delta_live_is_the_deltas_own_spec_sync_7() {
 // so C stays dropped there, as Alice, holding C, judges it covered.
 #[test]
 fn any_two_held_own_replaces_keep_a_drop_spec_commits_5() {
-    let mut lp = LocalPeer::new(3, 18, T0).unwrap();
+    let mut lp = LocalPeer::fresh(3, T0);
     lp.sync_all().unwrap();
     let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();

@@ -75,7 +75,7 @@ fn ids(evs: &[CommitEvent]) -> Vec<(CommitId, bool)> {
 // with no read of a page; a page past the cap ends early and says more.
 #[test]
 fn page_and_listener() {
-    let db = db(1);
+    let db = db(0);
     let t = thing(&db);
     let (_sub, rx) = watch(&db, t, msg());
     let a = say(&db, t, "one");
@@ -108,7 +108,7 @@ fn page_and_listener() {
 #[test]
 fn listed_while_in_read_or_kept_api_commits() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, osis::MemStore::new(), &c)).unwrap();
+    let db = osis::internals::create(cfg(0, osis::MemStore::new(), &c)).unwrap();
     typed_any(&db, &["t:kept.0"]);
     let t = thing(&db);
     let (plain, decl) = (ak("t:plain.0"), ak("t:kept.0"));
@@ -136,7 +136,7 @@ fn listed_while_in_read_or_kept_api_commits() {
 #[test]
 fn kept_part_is_told_leaving_at_its_bound_api_commits() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, osis::MemStore::new(), &c)).unwrap();
+    let db = osis::internals::create(cfg(0, osis::MemStore::new(), &c)).unwrap();
     typed_any(&db, &["t:kept.0"]);
     let t = thing(&db);
     let (k, plain) = (ak("t:kept.0"), ak("t:plain.0"));
@@ -173,7 +173,7 @@ fn kept_part_is_told_leaving_at_its_bound_api_commits() {
 // thing's group; a write beside it tells nothing more.
 #[test]
 fn replaced_unkept_part_is_told_leaving_api_commits() {
-    let db = db(4);
+    let db = db(0);
     let t = thing(&db);
     let g = db.commit_with(|w| {
         let g = w.create()?;
@@ -207,7 +207,7 @@ fn replaced_unkept_part_is_told_leaving_api_commits() {
 // diagnostic; and `w.commit()` returns the commit as a listing then shows it.
 #[test]
 fn a_commit_shows_every_part_api_commits() {
-    let db = db(2);
+    let db = db(0);
     db.register_schema("n.osis", "revision 1;\naspect t:n.0: int;\n").unwrap();
     let n = db.aspect_key("t:n.0").unwrap();
     let (a, b) = (thing(&db), thing(&db));
@@ -240,7 +240,7 @@ fn a_commit_shows_every_part_api_commits() {
 // and not one beside it, nor a signal fired on it; a group listener hears a member's commit.
 #[test]
 fn scope_listeners_api_commits() {
-    let db = db(3);
+    let db = db(0);
     let (t, other) = (thing(&db), thing(&db));
     let g = db.commit_with(|w| {
         let g = w.create()?;
@@ -310,7 +310,7 @@ fn invalid_listed_only_at_its_writer_spec_perm_5() {
 // tells it.
 #[test]
 fn purge_commit_is_delete_for_everyone_spec_commits_5() {
-    let db = db(3);
+    let db = db(0);
     let t = thing(&db);
     let a = say(&db, t, "secret");
     let b = say(&db, t, "next");
@@ -589,7 +589,7 @@ fn page_bound_counts_large_values() {
 #[test]
 fn purge_takes_no_setting_expiry_spec_commits_5() {
     use osis::internals::schema::core_types as ct;
-    let db = db(11);
+    let db = db(0);
     let t = thing(&db);
     let a = say(&db, t, "x");
     let rules = ct::RetentionSetting { default: Some(ct::RetentionEntry { expires: Some(60_000), ..Default::default() }), ..Default::default() };
@@ -616,7 +616,7 @@ fn purge_takes_no_setting_expiry_spec_commits_5() {
 #[test]
 fn setting_is_no_content_spec_commits_5() {
     use osis::internals::schema::core_types as ct;
-    let db = db(12);
+    let db = db(0);
     let rules = ct::RetentionSetting { retain: true, ..Default::default() };
     let t = thing(&db);
     say(&db, t, "x");
@@ -715,7 +715,7 @@ fn settings_are_one_aspect_under_both_keys() {
 // places the request there (`purge.0`), never only under another thing's labels.
 #[test]
 fn purge_goes_under_its_thing_and_reaches_what_it_names_spec_commits_5() {
-    let db = db(41);
+    let db = db(0);
     let t = thing(&db);
     let a = say(&db, t, "secret");
     for what in [osis::Purge::Commit(a), osis::Purge::Author(db.me())] {

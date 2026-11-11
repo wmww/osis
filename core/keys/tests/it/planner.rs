@@ -109,6 +109,7 @@ fn perm_graph() {
 // a rotation commit under the newest read epoch it supersedes.
 #[test]
 fn wrap_epochs() {
+    let rg = &mut rng(0);
     let mut a = person(0x20);
     assert_eq!(wrap_epoch(&a.read), Some(ep(1, 0x20)));
     a.read.rotation(ep(2, 5), [ep(1, 0x20)]);
@@ -117,11 +118,11 @@ fn wrap_epochs() {
     assert_eq!(wrap_epoch(&ActorEpochs::default().read), None);
     let pe = person(0x20);
     let mut view = ActorEpochs::derived(&pe, &tid(1));
-    let r = osis_keys::rotate(&tid(1), &roles_up_to(Role::Admin), &view, &Default::default(), &[], &osis_keys::Names::default(), &mut rng(1)).unwrap();
+    let r = osis_keys::rotate(&tid(1), &roles_up_to(Role::Admin), &view, &Default::default(), &[], &osis_keys::Names::default(), &mut *rg).unwrap();
     assert_eq!(r.wrap_epoch(), ActorEpochs::derived(&pe, &tid(1)).read.newest());
     view = r.preview(&view).unwrap();
     assert_eq!(wrap_epoch(&view.read), Some(r.rotated[0].epoch));
-    let w = osis_keys::rotate(&tid(1), &set(&[Role::Write]), &view, &Default::default(), &[], &osis_keys::Names::default(), &mut rng(2)).unwrap();
+    let w = osis_keys::rotate(&tid(1), &set(&[Role::Write]), &view, &Default::default(), &[], &osis_keys::Names::default(), &mut *rg).unwrap();
     assert_eq!(w.wrap_epoch(), None);
 }
 

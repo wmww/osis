@@ -85,8 +85,8 @@ mod tests {
     // spec: none (notes/architecture.md §3: a failure is a seed; same seed, same stream)
     #[test]
     fn deterministic() {
-        let (mut a, mut b) = (SeededRng::from_u64(7), SeededRng::from_u64(7));
+        let (mut a, mut b) = (SeededRng::from_u64(0), SeededRng::from_u64(0));
         assert_eq!(a.next_u64(), b.next_u64());
-        assert_ne!(SeededRng::from_u64(8).next_u64(), SeededRng::from_u64(7).next_u64());
+        assert_ne!(SeededRng::from_u64(1).next_u64(), SeededRng::from_u64(0).next_u64());
     }
 }

@@ -24,6 +24,15 @@ fn known_pair(net: &mut Net, cfg: SyncConfig) -> (usize, usize) {
     (a, b)
 }
 
+/// `known_pair` on a new net, `b` with the default config: built once (`Net::cached`).
+fn known_pair_default() -> (Net, (usize, usize)) {
+    Net::cached("deposits::known_pair", || {
+        let mut net = Net::new();
+        let x = known_pair(&mut net, SyncConfig::default());
+        (net, x)
+    })
+}
+
 /// A group of `a`'s with one item, granted to `to` (a delivery to `to`'s inbox): the group and
 /// the item.
 fn granted(net: &mut Net, a: usize, to: Tid, rng: u64) -> (Tid, Tid) {
@@ -40,8 +49,7 @@ fn granted(net: &mut Net, a: usize, to: Tid, rng: u64) -> (Tid, Tid) {
 // the delivery leaves the granter's pending set
 #[test]
 fn a_grant_between_known_accounts_lands_over_a_direct_link_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b) = known_pair(&mut net, SyncConfig::default());
+    let (mut net, (a, b)) = known_pair_default();
     let tb = net.tid(b);
     let (_, item) = granted(&mut net, a, tb, 2);
     net.run();
@@ -55,8 +63,7 @@ fn a_grant_between_known_accounts_lands_over_a_direct_link_spec_sync_10() {
 // shown (one-way knowledge: the recipient's nodes do not know the granter), whatever time passes
 #[test]
 fn a_deposit_goes_to_no_peer_not_proved_a_holder_and_stays_pending_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, _b) = known_pair(&mut net, SyncConfig::default());
+    let (mut net, (a, _b)) = known_pair_default();
     // c's records reach a (a holds c's card and inbox), c knows nothing of a
     let c = net.node(3, &[]);
     reach_ed(&mut net, c);
@@ -81,8 +88,7 @@ fn a_deposit_goes_to_no_peer_not_proved_a_holder_and_stays_pending_spec_sync_10(
 // signature get the same 14
 #[test]
 fn a_deposit_item_is_taken_only_signed_for_a_held_inbox_spec_wire_11_2() {
-    let mut net = Net::new();
-    let (a, b) = known_pair(&mut net, SyncConfig::default());
+    let (mut net, (a, b)) = known_pair_default();
     let tb = net.tid(b);
     let (inbox_actor, inbox) = net.engine(a).inbox_of_actor(&tb).unwrap().unwrap();
     let seed = net.engine(a).get_typed(&inbox_actor, &osis_schema::core_types::KEYS).unwrap().unwrap().deposit_seed.unwrap();
@@ -110,8 +116,7 @@ fn a_deposit_item_is_taken_only_signed_for_a_held_inbox_spec_wire_11_2() {
 // 14, as for one it does not hold
 #[test]
 fn a_deposit_item_is_judged_by_what_the_receiver_proved_here_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b) = known_pair(&mut net, SyncConfig::default());
+    let (mut net, (a, b)) = known_pair_default();
     let tb = net.tid(b);
     let (inbox_actor, inbox) = net.engine(a).inbox_of_actor(&tb).unwrap().unwrap();
     let seed = net.engine(a).get_typed(&inbox_actor, &osis_schema::core_types::KEYS).unwrap().unwrap().deposit_seed.unwrap();

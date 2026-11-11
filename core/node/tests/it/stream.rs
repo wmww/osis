@@ -14,6 +14,33 @@ const SYNC: u64 = 15;
 const SUBSCRIBE: u64 = 21;
 const FETCH: u64 = 19;
 
+/// Co-readers `a`, `b` (dialable, admin of `g`) and `c` (dialable), each pair connected, settled
+/// and two minutes on: built once (`Net::cached`).
+fn mesh() -> (Net, [usize; 3], Tid) {
+    let (net, (nodes, g)) = Net::cached("stream::mesh", || {
+        let (mut net, [a, b, c]) = local_nodes::<3>();
+        reach_ed(&mut net, b);
+        reach_ed(&mut net, c);
+        let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
+        net.pair(c, a);
+        net.pair(b, c);
+        net.run();
+        net.advance(120_000);
+        (net, ([a, b, c], g))
+    });
+    (net, nodes, g)
+}
+
+/// A new net and `pair` in it: built once per `n` (`Net::cached`).
+pub(crate) fn paired(n: usize) -> (Net, usize, usize, Vec<Tid>) {
+    let (net, (a, b, gs)) = Net::cached(&format!("stream::paired/{n}"), || {
+        let mut net = Net::new();
+        let x = pair(&mut net, n);
+        (net, x)
+    });
+    (net, a, b, gs)
+}
+
 /// Nodes `a` and `b` holding `n` groups together, `b` dialable: `a` dials `b` and pulls it.
 fn pair(net: &mut Net, n: usize) -> (usize, usize, Vec<Tid>) {
     let a = net.node(1, &[]);
@@ -32,8 +59,7 @@ fn a_readers_write_reaches_a_co_reader_with_no_upload_spec_sync_10() {
     const OPEN: u64 = 4;
     const UPLOAD: u64 = 10;
     const DEPOSIT: u64 = 12;
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 1);
+    let (mut net, a, b, gs) = paired(1);
     let t = net.item(b, gs[0], gs[0], "x");
     net.run();
     assert_eq!(net.read(a, t), Some(s("x")), "b's write reached a");
@@ -52,8 +78,7 @@ fn a_readers_write_reaches_a_co_reader_with_no_upload_spec_sync_10() {
 // source no longer holds the entry: a co-reader with no other source keeps it
 #[test]
 fn a_readers_deletion_leaves_the_entry_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 1);
+    let (mut net, a, b, gs) = paired(1);
     let t = net.item(b, gs[0], gs[0], "kept");
     net.run();
     let l = label_of(&mut net, b, gs[0]);
@@ -202,8 +227,7 @@ fn first_contact_joins_in_constant_pulls_spec_sync_10() {
 // from it: nothing it already applied comes again
 #[test]
 fn a_restarted_node_resumes_its_stream_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 2);
+    let (mut net, a, b, gs) = paired(2);
     for (i, g) in gs.iter().enumerate() {
         net.item(b, *g, *g, &format!("x{i}"));
     }
@@ -226,8 +250,7 @@ fn a_restarted_node_resumes_its_stream_spec_sync_10() {
 // was written while apart arrives
 #[test]
 fn a_lost_record_is_a_first_contact_and_converges_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 1);
+    let (mut net, a, b, gs) = paired(1);
     net.set_online(a, false);
     net.run();
     let t = net.item(b, gs[0], gs[0], "apart");
@@ -246,14 +269,7 @@ fn a_lost_record_is_a_first_contact_and_converges_spec_sync_10() {
 // sent announcements and fetches the body from one source
 #[test]
 fn a_mesh_body_crosses_once_spec_sync_10() {
-    let (mut net, [a, b, c]) = local_nodes::<3>();
-    reach_ed(&mut net, b);
-    reach_ed(&mut net, c);
-    let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
-    net.pair(c, a);
-    net.pair(b, c);
-    net.run();
-    net.advance(120_000);
+    let (mut net, [a, b, c], g) = mesh();
     let seen = watch(&mut net);
     let t = net.item(b, g, g, "body");
     net.run();
@@ -306,14 +322,7 @@ fn mesh_bodies_of_many_labels_fetched_at_once_spec_sync_6() {
 // than being asked of it without end
 #[test]
 fn a_source_answering_fetches_with_nothing_is_failed_spec_sync_10() {
-    let (mut net, [a, b, c]) = local_nodes::<3>();
-    reach_ed(&mut net, b);
-    reach_ed(&mut net, c);
-    let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
-    net.pair(c, a);
-    net.pair(b, c);
-    net.run();
-    net.advance(120_000);
+    let (mut net, [a, b, _c], g) = mesh();
     net.tamper = Some(Box::new(|m| match m {
         osis_proto::Message::FetchReply { id, .. } => Some(osis_proto::Message::FetchReply { id: *id, items: vec![] }),
         _ => None,
@@ -379,14 +388,7 @@ fn a_silent_co_reader_holds_a_body_for_the_stall_time_only_spec_sync_6() {
 /// write until it read it and from then on (the rest of `b`'s bytes delivered meanwhile, with
 /// `release`), and whether every stream of `a` then settled with no fetch out.
 fn trickling_co_reader(release: bool) -> (Option<u64>, bool, usize, usize, bool) {
-    let (mut net, [a, b, c]) = local_nodes::<3>();
-    reach_ed(&mut net, b);
-    reach_ed(&mut net, c);
-    let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
-    net.pair(c, a);
-    net.pair(b, c);
-    net.run();
-    net.advance(120_000);
+    let (mut net, [a, b, c], g) = mesh();
     let probe = net.item(b, g, g, "probe");
     net.run();
     assert_eq!(net.read(a, probe), Some(s("probe")), "a reads b's writes");
@@ -456,17 +458,7 @@ fn both_sources_answering_store_once_and_settle_spec_sync_10() {
 #[test]
 fn a_partial_answer_does_not_restart_the_stall_time_spec_sync_10() {
     let stall = osis_proto::client::STALL_TIMEOUT_MS;
-    let mut net = Net::new();
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    let c = net.node(3, &[]);
-    reach_ed(&mut net, b);
-    reach_ed(&mut net, c);
-    let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
-    net.pair(c, a);
-    net.pair(b, c);
-    net.run();
-    net.advance(120_000);
+    let (mut net, [a, b, c], g) = mesh();
     let probe = net.item(b, g, g, "probe");
     net.run();
     assert_eq!(net.read(a, probe), Some(s("probe")), "a reads b's writes");
@@ -601,8 +593,7 @@ fn a_host_and_a_co_reader_both_answering_store_once_and_settle_spec_sync_10() {
 /// `n` sync IDs, and whether `a` then holds what `b` holds; and the shared set's messages both
 /// sent meanwhile (Offers, Lost, Members) and the joins their Pulls named.
 fn back_after_aging(n: usize) -> (usize, bool, bool, usize) {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, n);
+    let (mut net, a, b, gs) = paired(n);
     let day = 86_400_000;
     for (i, g) in gs.iter().enumerate() {
         let t = net.item(b, *g, *g, &format!("keep{i}"));
@@ -830,8 +821,7 @@ fn fetch_in_flight(net: &mut Net) -> (usize, usize, Tid, Tid) {
 // stream settles and stops asking, rather than fetching it again every step
 #[test]
 fn a_body_served_and_not_kept_is_owed_no_more_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 1);
+    let (mut net, a, b, gs) = paired(1);
     let l = label_of(&mut net, b, gs[0]);
     let mut salt = [0u8; 16];
     salt[0] = 0x5a;
@@ -955,8 +945,7 @@ fn smallest_pulls(m: &osis_proto::Message) -> Option<osis_proto::Message> {
 // dropped
 #[test]
 fn a_join_pages_behind_the_stream_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 1);
+    let (mut net, a, b, gs) = paired(1);
     let paged = std::rc::Rc::new(std::cell::Cell::new(0));
     let p = paged.clone();
     net.tamper = Some(Box::new(move |m| {
@@ -1020,8 +1009,7 @@ fn a_step(net: &mut Net, n: usize, g: Tid) -> osis_label::Step {
 // that arrives while it is not open: it leaves the stream and rejoins from where it stopped
 #[test]
 fn a_member_opening_again_misses_nothing_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 2);
+    let (mut net, a, b, gs) = paired(2);
     let l = label_of(&mut net, b, gs[0]);
     let step = a_step(&mut net, b, gs[1]);
     reopen_on_next_push(&mut net, l, step);
@@ -1039,8 +1027,7 @@ fn a_member_opening_again_misses_nothing_spec_sync_10() {
 // live memory entries listed
 #[test]
 fn a_member_rejoining_gets_its_live_memory_entries_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 2);
+    let (mut net, a, b, gs) = paired(2);
     let t = net.item(b, gs[0], gs[0], "v");
     net.run();
     let l = label_of(&mut net, b, gs[0]);
@@ -1058,8 +1045,7 @@ fn a_member_rejoining_gets_its_live_memory_entries_spec_sync_10() {
 // after the step's re-judging, so a peer whose right a step ends is pushed nothing of that step
 #[test]
 fn nothing_is_pushed_past_a_lost_right_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 1);
+    let (mut net, a, b, gs) = paired(1);
     net.item(b, gs[0], gs[0], "before");
     net.run();
     let l = label_of(&mut net, b, gs[0]);
@@ -1088,8 +1074,7 @@ fn nothing_is_pushed_past_a_lost_right_spec_sync_10() {
 // reply a stream from the start, so the requester knows the join was read as a listing
 #[test]
 fn a_join_cursor_naming_no_position_is_a_stream_from_the_start_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 2);
+    let (mut net, a, b, gs) = paired(2);
     for g in &gs {
         net.item(a, *g, *g, "x");
     }
@@ -1136,8 +1121,7 @@ fn a_join_cursor_naming_no_position_is_a_stream_from_the_start_spec_sync_10() {
 // and each arrives
 #[test]
 fn memory_entries_page_within_max_reply_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 1);
+    let (mut net, a, b, gs) = paired(1);
     let ts: Vec<Tid> = (0..120).map(|i| net.item(b, gs[0], gs[0], &format!("t{i}"))).collect();
     net.run();
     net.set_online(a, false);
@@ -1191,8 +1175,7 @@ fn flood(net: &mut Net, a: usize, b: usize, l: osis_base::LabelId, pushes: usize
 /// `b` announces `pushes` × 100 entries it never serves (its fetch answers lost): the entry rows
 /// `a` gained under the label, and what its stream of `b` waits on (positions, bodies).
 fn unserved(pushes: usize) -> (usize, (usize, usize)) {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 1);
+    let (mut net, a, b, gs) = paired(1);
     net.item(b, gs[0], gs[0], "x");
     net.run();
     let l = label_of(&mut net, b, gs[0]);
@@ -1224,14 +1207,7 @@ fn announcements_never_served_keep_nothing_spec_sync_10() {
 // when a later request's answer arrives was skipped, so its bodies come from another source
 #[test]
 fn a_skipped_fetch_is_asked_elsewhere_spec_wire_11_2() {
-    let (mut net, [a, b, c]) = local_nodes::<3>();
-    reach_ed(&mut net, b);
-    reach_ed(&mut net, c);
-    let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
-    net.pair(c, a);
-    net.pair(b, c);
-    net.run();
-    net.advance(120_000);
+    let (mut net, [a, b, _c], g) = mesh();
     let skipped = std::rc::Rc::new(std::cell::Cell::new(false));
     let sk = skipped.clone();
     net.tamper_link = Some((b, a));
@@ -1257,8 +1233,7 @@ fn a_skipped_fetch_is_asked_elsewhere_spec_wire_11_2() {
 // positions grows nothing and a write it pushed meanwhile arrives
 #[test]
 fn pushes_past_the_bound_grow_nothing_and_lose_nothing_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 1);
+    let (mut net, a, b, gs) = paired(1);
     net.item(b, gs[0], gs[0], "x");
     net.run();
     let l = label_of(&mut net, b, gs[0]);
@@ -1281,8 +1256,7 @@ fn pushes_past_the_bound_grow_nothing_and_lose_nothing_spec_sync_10() {
 // carried is lost if that reply never comes (here: lost, then a restart)
 #[test]
 fn a_position_never_passes_a_dropped_push_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 1);
+    let (mut net, a, b, gs) = paired(1);
     net.item(b, gs[0], gs[0], "x");
     net.run();
     let l = label_of(&mut net, b, gs[0]);
@@ -1316,8 +1290,7 @@ fn a_position_never_passes_a_dropped_push_spec_sync_10() {
 // ask (and keep asked) a fetch per announcement, unbounded
 #[test]
 fn cursorless_announcements_are_not_fetched_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 1);
+    let (mut net, a, b, gs) = paired(1);
     net.item(b, gs[0], gs[0], "x");
     net.run();
     let l = label_of(&mut net, b, gs[0]);
@@ -1335,8 +1308,7 @@ fn cursorless_announcements_are_not_fetched_spec_sync_10() {
 /// message, and those `b` holds at the end.
 fn purged_chunks_served(local: bool) -> (usize, usize) {
     use osis_base::Ak;
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 1);
+    let (mut net, a, b, gs) = paired(1);
     let t = net.item(b, gs[0], gs[0], "x");
     let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
     let mut m = osis_node::Mutation::new();

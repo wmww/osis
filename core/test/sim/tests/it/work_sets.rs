@@ -60,14 +60,14 @@ fn same(name: &str, seed: u64) {
 // give the full passes' run.
 #[test]
 fn work_sets_purge_on_replace() {
-    same("purge_on_replace", 1);
+    same("purge_on_replace", 0);
 }
 
 // spec: none (the oracle): what it compares does not see the random stream a pass seals with:
 // the same run on another stream is no difference.
 #[test]
 fn compared_runs_ignore_the_random_stream() {
-    let run = |other: bool| with_arrivals(|| if other { osis_sim::net::with_other_stream(|| replay("purge_on_replace", 1)) } else { replay("purge_on_replace", 1) });
+    let run = |other: bool| with_arrivals(|| if other { osis_sim::net::with_other_stream(|| replay("purge_on_replace", 0)) } else { replay("purge_on_replace", 0) });
     let ((a, at), (b, bt)) = (run(false), run(true));
     let (a, b) = (a.unwrap_or_else(|f| panic!("{f}")), b.unwrap_or_else(|f| panic!("{f}")));
     assert_ne!(a.digest, b.digest, "the streams differ");

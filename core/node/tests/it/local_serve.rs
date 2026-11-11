@@ -576,20 +576,24 @@ fn hostless_label_reseals_spec_permissions_3() {
 }
 
 fn hostless_reseal(restart: bool, c_online: bool) {
-    let (mut net, [a, b, c]) = local_nodes::<3>();
-    let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[]);
-    let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
-    net.actions(a, acts);
-    net.run();
-    // c learns a's `reach.0` and dials it
-    net.pair(a, c);
-    net.run();
-    assert!(net.group_labels(a)[0].1.hosts.is_empty());
-    let (ta, tb) = (net.tid(a), net.tid(b));
-    net.set_online(b, false);
-    let e = net.engine(b);
-    let rec = recipients_of(e, &[(ta, Role::Admin), (tb, Role::Admin)]);
-    rotation(e, g, &rec, 91, false);
+    // b's rotation leaving c out, b away: built once (`Net::cached`)
+    let (mut net, (a, b, c, g, ta)) = Net::cached("local_serve::hostless_reseal", || {
+        let (mut net, [a, b, c]) = local_nodes::<3>();
+        let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[]);
+        let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
+        net.actions(a, acts);
+        net.run();
+        // c learns a's `reach.0` and dials it
+        net.pair(a, c);
+        net.run();
+        assert!(net.group_labels(a)[0].1.hosts.is_empty());
+        let (ta, tb) = (net.tid(a), net.tid(b));
+        net.set_online(b, false);
+        let e = net.engine(b);
+        let rec = recipients_of(e, &[(ta, Role::Admin), (tb, Role::Admin)]);
+        rotation(e, g, &rec, 91, false);
+        (net, (a, b, c, g, ta))
+    });
     // a's role commits naming c's boxes (`secrets.0` of g): the re-seals
     let reseals = |net: &mut Net| {
         let ids = net.engine(a).commit_ids();
@@ -781,22 +785,26 @@ fn own_duplicate_dropped_while_the_lower_host_is_away_still_reaches_another_host
 
 /// The case above with value `v`; false when a's own copy is the lower.
 fn own_duplicate_case(v: &str) -> bool {
-    let mut net = Net::new();
-    let h1 = net.add_host();
-    let h2 = net.add_host();
-    let a = net.node(1, &[h1, h2]);
-    let b = net.node(2, &[h1, h2]);
-    let g = net.group(a, &[(b, Role::Write)], &[h1, h2]);
-    let t = net.item(a, g, g, "x");
-    let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
-    net.actions(a, acts);
-    net.run();
-    let l = net.label(a);
-    for (n, s) in [(a, h1), (a, h2), (b, h2)] {
-        net.blocked.insert((n, s));
-        net.drop_link(n, s);
-    }
-    net.run();
+    // a and b away from h2, a from h1 too: built once (`Net::cached`)
+    let (mut net, (h1, h2, a, b, t, l)) = Net::cached("local_serve::own_duplicate", || {
+        let mut net = Net::new();
+        let h1 = net.add_host();
+        let h2 = net.add_host();
+        let a = net.node(1, &[h1, h2]);
+        let b = net.node(2, &[h1, h2]);
+        let g = net.group(a, &[(b, Role::Write)], &[h1, h2]);
+        let t = net.item(a, g, g, "x");
+        let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
+        net.actions(a, acts);
+        net.run();
+        let l = net.label(a);
+        for (n, s) in [(a, h1), (a, h2), (b, h2)] {
+            net.blocked.insert((n, s));
+            net.drop_link(n, s);
+        }
+        net.run();
+        (net, (h1, h2, a, b, t, l))
+    });
     let c = net.write(a, t, v);
     let pk = net.engine(a).package(&c).unwrap().unwrap();
     net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();

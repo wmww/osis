@@ -328,7 +328,7 @@ mod tests {
     // releases and none of its holds; a committed release takes effect
     #[test]
     fn a_rolled_back_step_releases_nothing_and_holds_nothing() {
-        let mut p = crate::local_peer::Peer::new(1, osis_base::WallMs(1_700_000_000_000)).unwrap();
+        let mut p = crate::local_peer::Peer::new(0, osis_base::WallMs(1_700_000_000_000)).unwrap();
         let e = &mut p.engine;
         let ((x, xb), (y, yb)) = (blob(1), blob(2));
         e.put_blobs(vec![(x, xb)]).unwrap();

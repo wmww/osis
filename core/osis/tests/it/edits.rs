@@ -88,7 +88,7 @@ fn heard(db: &Osis, t: Tid, rx: &Receiver<CommitEvent>) -> Vec<(CommitId, Option
 // the same way; `versions` lists the fire and its replacements, each as written
 #[test]
 fn a_replaced_fire_reads_in_its_place_spec_commits_5() {
-    let db = db(1);
+    let db = db(0);
     let t = thing(&db);
     let o = fire(&db, t, "one");
     let other = fire(&db, t, "other");
@@ -112,7 +112,7 @@ fn a_replaced_fire_reads_in_its_place_spec_commits_5() {
 // once too
 #[test]
 fn a_listener_hears_an_edit_once_under_the_fire_spec_commits_5() {
-    let db = db(2);
+    let db = db(0);
     let t = thing(&db);
     let (_sub, rx) = watch(&db, t);
     let o = fire(&db, t, "one");
@@ -129,7 +129,7 @@ fn a_listener_hears_an_edit_once_under_the_fire_spec_commits_5() {
 // drops the earlier text and keeps the new
 #[test]
 fn a_purge_of_a_fire_takes_its_versions_spec_commits_5() {
-    let db = db(3);
+    let db = db(0);
     let t = thing(&db);
     let o = fire(&db, t, "one");
     let v1 = replace(&db, t, o, "two").unwrap();
@@ -178,7 +178,7 @@ fn a_replacement_nobody_would_honor_is_refused_spec_commits_5() {
 #[test]
 fn a_page_and_a_quote_are_flat_in_edits_spec_commits_5() {
     fn count(n: usize, edits: usize) -> Vec<(&'static str, u64)> {
-        let db = db(4);
+        let db = db(0);
         let t = thing(&db);
         // the quote is of the oldest message: a walk from the newest would pay the whole signal
         let mut first = None;
@@ -214,7 +214,7 @@ fn a_page_and_a_quote_are_flat_in_edits_spec_commits_5() {
 fn a_connected_handle_replaces_and_reads_as_the_node_spec_commits_5() {
     let d = crate::port::Dir::new();
     let sock = d.0.join("n.sock");
-    let net = osis_transport::Net::new(1);
+    let net = osis_transport::Net::new(0);
     let n = crate::port::node(&osis::MemStore::new(), &net, &sock, true);
     let c = crate::port::connect(&sock);
     let t = thing(&c);

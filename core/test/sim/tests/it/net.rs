@@ -15,7 +15,11 @@ fn ok(name: &str, seed: u64) -> Report {
 // under cut, delayed, reordered and duplicated messages and crashes mid-write.
 #[test]
 fn two_nodes_host() {
-    let r = ok("two_nodes_host", 1);
+    let r = ok("two_nodes_host", 0);
+    assert!(r.writes > 5 && r.crashes > 0 && r.held_checked > 0, "{r:?}");
+    // every link cut in every window: the run surely loses messages on the way
+    let faults = osis_sim::net::LinkFaults { cut_pct: 100, ..osis_sim::net::scenarios::lossy() };
+    let r = osis_sim::net::scenarios::two_nodes_host_under(0, faults).unwrap_or_else(|f| panic!("{f}"));
     assert!(r.writes > 5 && r.crashes > 0 && r.dropped > 0 && r.held_checked > 0, "{r:?}");
 }
 
@@ -24,14 +28,14 @@ fn two_nodes_host() {
 #[test]
 #[ignore = "by hand"]
 fn three_accounts_two_hosts() {
-    let r = ok("three_accounts_two_hosts", 1);
+    let r = ok("three_accounts_two_hosts", 0);
     assert!(r.writes > 10 && r.held_checked > 0 && r.partitions > 0, "{r:?}");
 }
 
 // spec: none (replay): the same (scenario, seed) gives the same run, digest included.
 #[test]
 fn replay_is_exact() {
-    assert_eq!(ok("two_nodes_host", 2), ok("two_nodes_host", 2));
+    assert_eq!(ok("two_nodes_host", 0), ok("two_nodes_host", 0));
 }
 
 // notes/ephemeral.md, spec/sync.md §9: ephemeral (expiring ones included) and signal writes on a
@@ -39,7 +43,7 @@ fn replay_is_exact() {
 // author is there and goes by its expiry after, signals once.
 #[test]
 fn ephemeral() {
-    let r = ok("ephemeral", 1);
+    let r = ok("ephemeral", 0);
     assert!(r.writes > 20 && r.crashes > 0, "{r:?}");
 }
 
@@ -55,8 +59,8 @@ fn commit_across_labels_applies_from_one_label_across_restart_spec_commits_4() {
     use osis_sim::net::scenarios::{clock, persons, shared_group, sim};
     use osis_sim::workload::REG;
 
-    let mut d = Dice::new(1);
-    let mut s = sim("across_labels", 1, Default::default());
+    let mut d = Dice::new(0);
+    let mut s = sim("across_labels", 0, Default::default());
     let (s0, s1) = (s.add_host().unwrap(), s.add_host().unwrap());
     let a = s.add_node(&[s0, s1], clock(&mut d)).unwrap();
     let r = s.add_node(&[s0, s1], clock(&mut d)).unwrap();

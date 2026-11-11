@@ -23,7 +23,7 @@ struct Env {
 fn env(policy: HostPolicy) -> Env {
     let clock = Arc::new(ManualClock::new(WallMs(T0)));
     let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
-    let mut store = open(backend.clone(), &root, clock.clone(), policy, 1);
+    let mut store = open(backend.clone(), &root, clock.clone(), policy, 0);
     let f = Fixture::new(0x10);
     store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
     Env { clock, store, backend, root, f }
@@ -58,7 +58,7 @@ fn state_survives_reopen() {
     assert_eq!(e.store.put(&l, put(&blob(2), false, Some(T0 + 10))).unwrap(), Code::OK);
     e.store.push_step(&l, e.f.child.clone(), None).unwrap();
     let before = (e.store.log_head(&l).unwrap(), e.store.live_by_id(&l, None, 100).unwrap(), e.store.log_after(&l, 0, 100).unwrap());
-    let again = open(e.backend.clone(), &e.root, e.clock.clone(), HostPolicy::default(), 2);
+    let again = open(e.backend.clone(), &e.root, e.clock.clone(), HostPolicy::default(), 1);
     let after = (again.log_head(&l).unwrap(), again.live_by_id(&l, None, 100).unwrap(), again.log_after(&l, 0, 100).unwrap());
     assert_eq!(before, after);
     assert_eq!(again.head(&l).unwrap(), Some(e.f.child.id()));
@@ -67,7 +67,7 @@ fn state_survives_reopen() {
     assert_eq!(again.claim_set(&l, &e.f.child.id()).unwrap(), None);
     assert_eq!(again.blob(&id(1)).unwrap(), Some(blob(1)));
     // a fresh instance names its logs differently: old cursors are invalid there
-    let mut fresh = open(MemoryBackend::new(), &MemoryRoot::new(), e.clock.clone(), HostPolicy::default(), 3);
+    let mut fresh = open(MemoryBackend::new(), &MemoryRoot::new(), e.clock.clone(), HostPolicy::default(), 2);
     fresh.push_step(&l, e.f.genesis.clone(), None).unwrap();
     assert_ne!(fresh.log_head(&l).unwrap().0, before.0.0);
 }
@@ -180,7 +180,7 @@ fn ephemeral_deposits_share_the_budget() {
     assert!(e.store.entry(&l, &eph_id).unwrap().unwrap().stamp.is_some());
     e.store.delete(&l, &osis_label::blob_id(&eph[1]), T0).unwrap();
     assert_eq!(e.store.budget(&l).unwrap().entries_left, 2);
-    let again = open(e.backend.clone(), &e.root, e.clock.clone(), HostPolicy::default(), 2);
+    let again = open(e.backend.clone(), &e.root, e.clock.clone(), HostPolicy::default(), 1);
     assert_eq!(again.budget(&l).unwrap().entries_left, max - durable.len() as u64);
     assert_eq!(again.entry(&l, &osis_label::blob_id(&eph[2])).unwrap(), None);
 }
@@ -800,7 +800,7 @@ fn steps_count_toward_byte_caps() {
         assert_eq!(e.store.push_step(&l, t.clone(), Some(set.clone())).unwrap(), Code::OK);
         assert_eq!(e.store.totals().unwrap().bytes, before + 2 * step);
         let v = child_of(&e.f, &t);
-        let mut again = open(e.backend.clone(), &e.root, e.clock.clone(), cap.clone(), 2);
+        let mut again = open(e.backend.clone(), &e.root, e.clock.clone(), cap.clone(), 1);
         for st in [&mut e.store, &mut again] {
             let (log, totals) = (st.log_head(&l).unwrap(), st.totals().unwrap());
             assert_eq!(st.push_step(&l, v.clone(), None).unwrap(), Code::STORAGE_CAP);
@@ -830,7 +830,7 @@ fn steps_count_toward_byte_caps() {
         let u = child_of(&e.f, &t);
         assert_eq!(e.store.push_step(&l, u.clone(), Some(set.clone())).unwrap(), Code::OK);
         assert!(e.store.claim_set(&l, &u.id()).unwrap().is_some());
-        let again = open(e.backend.clone(), &e.root, e.clock.clone(), HostPolicy::default(), 2);
+        let again = open(e.backend.clone(), &e.root, e.clock.clone(), HostPolicy::default(), 1);
         assert_eq!(again.totals().unwrap(), e.store.totals().unwrap());
     }
     // a new label's genesis step past a cap: refused, nothing changed
@@ -900,7 +900,7 @@ impl Backend for Reads {
 fn claim_lookup_reads_no_set() {
     let clock = Arc::new(ManualClock::new(WallMs(T0)));
     let (reads, root) = (Reads { inner: MemoryBackend::new(), read: Arc::default() }, MemoryRoot::new());
-    let mut store = open(reads.clone(), &root, clock.clone(), HostPolicy::default(), 1);
+    let mut store = open(reads.clone(), &root, clock.clone(), HostPolicy::default(), 0);
     let f = Fixture::new(0x10);
     let l = f.label;
     let g = f.genesis.id();
@@ -917,7 +917,7 @@ fn claim_lookup_reads_no_set() {
         // cold caches: a lookup reads one path of table pages and key-tree nodes (about 9 KB
         // here), never the set's 2 MiB unit
         drop(store);
-        store = open(reads.clone(), &root, clock.clone(), HostPolicy::default(), 1);
+        store = open(reads.clone(), &root, clock.clone(), HostPolicy::default(), 0);
         reads.read.store(0, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(store.claim(&l, &g, k).unwrap(), *want);
         assert!(reads.read.load(std::sync::atomic::Ordering::Relaxed) < 32 << 10, "{} bytes read", reads.read.load(std::sync::atomic::Ordering::Relaxed));
@@ -1014,7 +1014,7 @@ fn sweep_junk_and_failures() {
     let faults = osis_store::Faults::new();
     let (backend, root) = (MemoryBackend::with_faults(faults.clone()), MemoryRoot::with_faults(faults.clone()));
     let clock = Arc::new(ManualClock::new(WallMs(T0)));
-    let mut store = open(backend, &root, clock, HostPolicy::default(), 1);
+    let mut store = open(backend, &root, clock, HostPolicy::default(), 0);
     let mut junk = Writes::default();
     junk.put([&b"X"[..], &0u64.to_be_bytes(), &[1, 2, 3]].concat(), vec![]);
     store.write(junk).unwrap();

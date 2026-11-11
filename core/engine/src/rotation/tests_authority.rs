@@ -5,10 +5,10 @@
 //! are read as of just before the commit's key, so validity has one result in any arrival order.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{commit_ids, deliver_without_secrets, edge, group, held_by, newest_read, openable, send_skipping};
+use super::tests::{commit_ids, deliver_without_secrets, edge, group, held_by, newest_read, openable, send_skipping, synced};
 use crate::Mutation;
 use crate::local_peer::LocalPeer;
-use osis_base::{CommitId, Role, Tid, WallMs};
+use osis_base::{CommitId, Role, Tid};
 use osis_crypto::{Epoch, Secret32};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,19 +17,21 @@ const M1: usize = 1;
 const F: usize = 2;
 
 /// A {a1, M}, M {m1, S}, S {f}: f reaches M only through S, and reads A through M. Returns
-/// (A, M, S).
-fn half_shape(seed: u64) -> (LocalPeer, Tid, Tid, Tid) {
-    let mut lp = LocalPeer::new(3, seed, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let s = group(&mut lp, F);
-    let m = group(&mut lp, M1);
-    lp.sync_all().unwrap();
-    lp.peers[M1].engine.grant(&m, &s, &edge(Role::Write)).unwrap();
-    let a = group(&mut lp, A1);
-    lp.sync_all().unwrap();
-    lp.peers[A1].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
-    assert!(held_by(&lp, F, &[a]).contains(&(a, Role::Read, newest_read(&lp, A1, a).unwrap())), "f reads A through M");
+/// (A, M, S). Built once, a copy each call.
+fn half_shape() -> (LocalPeer, Tid, Tid, Tid) {
+    let (lp, (a, m, s)) = LocalPeer::cached("rotation::tests_authority::half_shape", || {
+        let mut lp = synced(3);
+        let s = group(&mut lp, F);
+        let m = group(&mut lp, M1);
+        lp.sync_all().unwrap();
+        lp.peers[M1].engine.grant(&m, &s, &edge(Role::Write)).unwrap();
+        let a = group(&mut lp, A1);
+        lp.sync_all().unwrap();
+        lp.peers[A1].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        assert!(held_by(&lp, F, &[a]).contains(&(a, Role::Read, newest_read(&lp, A1, a).unwrap())), "f reads A through M");
+        (lp, (a, m, s))
+    });
     (lp, a, m, s)
 }
 
@@ -90,7 +92,7 @@ fn verdicts(lp: &LocalPeer, i: usize, c: &CommitId, t: Tid) -> Vec<(String, bool
 // what a1 writes under A from then on.
 #[test]
 fn half_valid_rotation_leaks_nothing_spec_crypto_4() {
-    let (mut lp, a, m, s) = half_shape(7_101);
+    let (mut lp, a, m, s) = half_shape();
     let (c, known) = half_valid(&mut lp, m, s, false);
     deliver_without_secrets(&mut lp, F, A1, m);
     send_skipping(&mut lp, F, M1, &BTreeSet::new());
@@ -114,7 +116,7 @@ fn half_valid_rotation_leaks_nothing_spec_crypto_4() {
 // invalid, and m1 its boxes too, so f's epoch is established nowhere and its keyset is no anchor.
 #[test]
 fn half_valid_rotation_refused_alike_with_certificates_only_spec_crypto_4() {
-    let (mut lp, _, m, s) = half_shape(7_102);
+    let (mut lp, _, m, s) = half_shape();
     let before = held_by(&lp, F, &[m]);
     let (c, known) = half_valid(&mut lp, m, s, false);
     let made: Vec<(Role, Epoch)> = known.difference(&before).map(|(_, r, e)| (*r, *e)).collect();
@@ -141,7 +143,7 @@ fn half_valid_rotation_refused_alike_with_certificates_only_spec_crypto_4() {
 // and a rebuild agrees.
 #[test]
 fn rotation_without_its_keyset_shows_nothing_until_it_comes_spec_crypto_4() {
-    let (mut lp, _, m, s) = half_shape(7_103);
+    let (mut lp, _, m, s) = half_shape();
     let (c, _) = half_valid(&mut lp, m, s, true);
     for pk in lp.packages(F).unwrap() {
         let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
@@ -167,8 +169,7 @@ fn rotation_without_its_keyset_shows_nothing_until_it_comes_spec_crypto_4() {
 #[test]
 fn authority_cycle_has_one_result_spec_crypto_4() {
     let n = 3;
-    let mut lp = LocalPeer::new(n + 6, 7_103, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(n + 6);
     let acts: Vec<Tid> = (0..n).map(|i| group(&mut lp, i)).collect();
     lp.sync_all().unwrap();
     // actor i+1 holds write on actor i: peer i+1 (its first admin) reaches actor i only through it
@@ -235,8 +236,7 @@ fn authority_cycle_has_one_result_spec_crypto_4() {
 // (which also refreshes A's deposit seed, an admin field judged by role) is valid.
 #[test]
 fn authority_needs_only_the_rotated_roles_spec_crypto_4() {
-    let mut lp = LocalPeer::new(2, 7_104, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(2);
     let p = lp.peers[1].engine.me();
     let a = group(&mut lp, 0);
     let m = group(&mut lp, 1);
@@ -259,7 +259,7 @@ fn authority_needs_only_the_rotated_roles_spec_crypto_4() {
 // covers no departure of f's (m1 rotates M again), and a1 seals A at m1's keyset.
 #[test]
 fn route_removal_proved_leaks_nothing_spec_crypto_4() {
-    let (mut lp, a, m, s) = half_shape(7_105);
+    let (mut lp, a, m, s) = half_shape();
     let (c, known) = half_valid(&mut lp, m, s, true);
     deliver_without_secrets(&mut lp, F, A1, m);
     send_skipping(&mut lp, F, M1, &BTreeSet::new());

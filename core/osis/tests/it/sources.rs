@@ -75,7 +75,7 @@ fn world() -> World {
 
 /// `p_wait`: how long this test waits for P's moves of a group (`World::move_group`).
 fn world_waiting(p_wait: Duration) -> World {
-    let net = osis_transport::Net::new(3);
+    let net = osis_transport::Net::new(0);
     let mut hc = cfg_on(&net, "s", &MemStore::new(), vec![]);
     hc.direct_sync = false;
     let host = osis::internals::create(hc).unwrap();
@@ -632,7 +632,7 @@ fn main_reconnect_registers_schemas_again() {
     let d = std::env::temp_dir().join(format!("osis-sources-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     let sock = d.join("n.sock");
-    let (net, store) = (osis_transport::Net::new(5), MemStore::new());
+    let (net, store) = (osis_transport::Net::new(0), MemStore::new());
     let open = |create: bool| {
         let mut c = cfg_on(&net, "n", &store, vec![]);
         c.direct_sync = false;
@@ -733,7 +733,7 @@ fn bearer_secret_only_to_the_pinned_key() {
 // spec/sync.md §10, issues/cli-proxy.md: connect's wait for Hello has a deadline: a listener that takes the connection and never answers fails Network within `CONNECTION_WAIT`, not forever
 #[test]
 fn connect_to_a_silent_listener_ends() {
-    let net = osis_transport::Net::new(4);
+    let net = osis_transport::Net::new(0);
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
     let sec = osis_transport::StaticSecret::from_bytes([3; 32]);
     let key = osis_transport::InProcess::public_key(&sec);
@@ -955,7 +955,7 @@ impl Rng {
 // spec/sync.md §10, notes/client-port.md §6, the invariant of core/osis/src/sources.rs: random groups, routes, syncs and node connections against a model of the rule: each call reaches exactly the source the model names, a value only from it, a write only to it, Network when that one is down, never another's answer
 #[test]
 fn routing_differential_against_a_model() {
-    let refused: usize = [1, 2].into_iter().map(differential).sum();
+    let refused: usize = (0..2).map(differential).sum();
     assert!(refused > 0, "the seeds wrote on no split thing");
 }
 
@@ -1251,7 +1251,7 @@ fn a_silent_node_holds_no_client_of_this_node() {
 #[test]
 fn group_source_differential_against_a_model() {
     let (mut refused, mut added) = (0, 0);
-    for seed in [11, 12, 13] {
+    for seed in 0..3 {
         let (r, p) = moves_differential(seed);
         refused += r;
         added += p;

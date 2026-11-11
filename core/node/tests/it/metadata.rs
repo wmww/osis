@@ -48,8 +48,17 @@ const MARK_A: &str = "plaintext-marker-alpha-7f3a91";
 const MARK_B: &str = "plaintext-marker-beta-c4e82d";
 const MAP_KEY: &str = "map-key-marker-5b0e66";
 
-/// Admin a, writer b, reader c in one group at one host: values, a map key.
+/// Admin a, writer b, reader c in one group at one host: values, a map key. Built once
+/// (`Net::cached`).
 fn scenario() -> (Net, usize, [usize; 3], Tid, Tid) {
+    let (net, (host, nodes, g, t)) = Net::cached("metadata::scenario", || {
+        let (net, host, nodes, g, t) = scenario_built();
+        (net, (host, nodes, g, t))
+    });
+    (net, host, nodes, g, t)
+}
+
+fn scenario_built() -> (Net, usize, [usize; 3], Tid, Tid) {
     let mut net = Net::new();
     let host = net.add_host();
     net.hosts[host].backend.record_history();

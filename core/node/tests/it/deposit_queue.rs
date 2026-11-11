@@ -27,6 +27,22 @@ fn invite(net: &mut Net, host: usize) -> (osis_base::Tid, osis_base::LabelId, os
     (g, l, commit, done)
 }
 
+/// Three nodes at one host (inboxes there when `home`), then `invite`: built once per `home`
+/// (`Net::cached`). Returns the host and what `invite` returns.
+fn invited(home: bool) -> (Net, usize, (osis_base::Tid, osis_base::LabelId, osis_base::CommitId, osis_node::flows::Done)) {
+    let (net, (host, x)) = Net::cached(&format!("deposit_queue::invited/{home}"), || {
+        let mut net = Net::new();
+        net.home_at_hosts = home;
+        let host = net.add_host();
+        for i in 0..3 {
+            net.node(i + 1, &[host]);
+        }
+        let x = invite(&mut net, host);
+        (net, (host, x))
+    });
+    (net, host, x)
+}
+
 /// Records of the host's log of `l`: (added, deleted).
 fn log(net: &Net, host: usize, l: &osis_base::LabelId) -> (usize, usize) {
     use osis_proto::LabelStore;
@@ -44,12 +60,7 @@ fn copies(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::Commit
 // encryption while the host has not answered.
 #[test]
 fn invite_grant_deposited_once_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    for i in 0..3 {
-        net.node(10 + i, &[host]);
-    }
-    let (_, l, c, done) = invite(&mut net, host);
+    let (mut net, host, (_, l, c, done)) = invited(false);
     let before = log(&net, host, &l);
     let acts = net.sync(1).carry_out(done).unwrap();
     net.actions(1, acts);
@@ -66,12 +77,7 @@ fn invite_grant_deposited_once_spec_sync_5() {
 // label before the host answered.
 #[test]
 fn queued_deposit_survives_forgetting_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    for i in 0..3 {
-        net.node(20 + i, &[host]);
-    }
-    let (g, l, c, done) = invite(&mut net, host);
+    let (mut net, host, (g, l, c, done)) = invited(false);
     // the grantee stays offline: its inbox copy is no other route to the label
     net.set_online(2, false);
     net.set_online(1, false);
@@ -108,13 +114,7 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
 #[test]
 fn queued_deposit_survives_a_restart_spec_sync_5() {
     for sent in [false, true] {
-        let mut net = Net::new();
-        net.home_at_hosts = true;
-        let host = net.add_host();
-        for i in 0..3 {
-            net.node(40 + i, &[host]);
-        }
-        let (_, l, c, done) = invite(&mut net, host);
+        let (mut net, host, (_, l, c, done)) = invited(true);
         let before = log(&net, host, &l);
         let acts = net.sync(1).carry_out(done).unwrap();
         assert!(net.sync(1).deliveries_pending() > 0);
@@ -156,10 +156,15 @@ fn all_ids(net: &Net, host: usize) -> Vec<osis_base::BlobId> {
 /// Node `a`'s account shares group T (label at host 0) by a single-use link whose K has its
 /// label at host 1; node `x` (an account too) follows K's label. Returns (a, x, T, link, x's
 /// account, the held link key).
-fn link_setup(net: &mut Net) -> (usize, usize, osis_base::Tid, osis_label::ShareLink, osis_base::Tid, osis_base::Tid) {
-    net.add_host();
-    net.add_host();
-    link_setup_at(net, &[1])
+/// Built once (`Net::cached`).
+fn link_setup() -> (Net, (usize, usize, osis_base::Tid, osis_label::ShareLink, osis_base::Tid, osis_base::Tid)) {
+    Net::cached("deposit_queue::link_setup", || {
+        let mut net = Net::new();
+        net.add_host();
+        net.add_host();
+        let x = link_setup_at(&mut net, &[1]);
+        (net, x)
+    })
 }
 
 /// `link_setup` over the hosts `net` has (host 0 the home and T's), K's label at `k`.
@@ -167,8 +172,8 @@ fn link_setup_at(net: &mut Net, k: &[usize]) -> (usize, usize, osis_base::Tid, o
     use osis_node::Mutation;
     let s0 = 0;
     let all: Vec<usize> = (0..net.hosts.len()).collect();
-    let a = net.node(30, &all);
-    let x = net.node(31, &all);
+    let a = net.node(1, &all);
+    let x = net.node(2, &all);
     let home = vec![net.address(s0)];
     let (pa, done) = net.engine(a).create_account(&home).unwrap();
     carry(net, a, done);
@@ -206,8 +211,7 @@ fn missing(net: &mut Net, n: usize, c: &osis_base::CommitId) -> usize {
 // lands and the sharer holds the whole commit.
 #[test]
 fn copy_applies_when_k_never_gets_it_spec_commits_4() {
-    let mut net = Net::new();
-    let (a, x, _, link, px, held) = link_setup(&mut net);
+    let (mut net, (a, x, _, link, px, held)) = link_setup();
     let (s0, s1) = (0, 1);
     net.set_online(x, false);
     net.blocked.insert((x, s1));
@@ -251,8 +255,7 @@ fn copy_applies_when_k_never_gets_it_spec_commits_4() {
 #[test]
 fn deliveries_survive_a_crash_before_carry_out_spec_sync_5() {
     for single in [false, true] {
-        let mut net = Net::new();
-        let (a, x, _, link, px, _) = link_setup(&mut net);
+        let (mut net, (a, x, _, link, px, _)) = link_setup();
         let done = net.engine(x).redeem(&link, &px, single).unwrap();
         assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::Inbox { .. })));
         let c = *done.commits.last().unwrap();
@@ -312,8 +315,8 @@ fn removal_copies_not_held_spec_permissions_3() {
     let mut net = Net::new();
     let s0 = net.add_host();
     let s1 = net.add_host();
-    let a = net.node(40, &[s0, s1]);
-    let b = net.node(41, &[s0, s1]);
+    let a = net.node(1, &[s0, s1]);
+    let b = net.node(2, &[s0, s1]);
     // K (label at s1) with holder b, a holder of T (label at s0)
     let k = net.group(a, &[(b, Role::Write)], &[s1]);
     let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
@@ -349,7 +352,7 @@ fn queued_deposit_after_seed_refresh_spec_sync_5() {
     let host = net.add_host();
     net.home_at_hosts = true;
     for i in 0..4 {
-        net.node(60 + i, &[host]);
+        net.node(i + 1, &[host]);
     }
     let (g, l, c, done) = invite(&mut net, host);
     // a shared group brings 0 the keys of 3's account
@@ -391,9 +394,9 @@ fn queued_deposit_after_seed_refresh_spec_sync_5() {
 fn lagging_admin_keeps_refreshed_deposit_key_spec_sync_5() {
     let mut net = Net::new();
     let host = net.add_host();
-    net.node(80, &[host]);
+    net.node(1, &[host]);
     // blobs never inline: the new head arrives before the `keys.0` write it fetches
-    net.add_node(81, osis_node::sync::SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..Default::default() });
+    net.add_node(2, osis_node::sync::SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..Default::default() });
     let g = net.group(0, &[(1, Role::Admin)], &[host]);
     for _ in 0..3 {
         net.run();
@@ -424,8 +427,8 @@ fn lagging_admin_keeps_refreshed_deposit_key_spec_sync_5() {
 fn holder_group(net: &mut Net) -> (usize, usize, osis_base::Tid, osis_base::Tid) {
     let s0 = net.add_host();
     let s1 = net.add_host();
-    let a = net.node(40, &[s0, s1]);
-    let b = net.node(41, &[s0, s1]);
+    let a = net.node(1, &[s0, s1]);
+    let b = net.node(2, &[s0, s1]);
     let k = net.group(a, &[(b, Role::Write)], &[s1]);
     let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
@@ -450,20 +453,23 @@ fn copy_at(net: &mut Net, n: usize, s: usize, l: &osis_base::LabelId, c: &osis_b
 // node restarts. T's rotation names only b's removal: nothing else places b2's lowering there.
 #[test]
 fn first_copy_survives_a_crash_spec_permissions_3() {
+    let read = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     for crash in ["none", "before carry_out", "while it waits"] {
-        let mut net = Net::new();
-        let s0 = net.add_host();
-        let s1 = net.add_host();
-        let a = net.node(40, &[s0, s1]);
-        let b = net.node(41, &[s0, s1]);
-        let b2 = net.node(42, &[s0, s1]);
-        let k = net.group(a, &[(b, Role::Write), (b2, Role::Write)], &[s1]);
-        let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
-        let read = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-        let done = net.engine(a).grant(&t, &k, &read).unwrap();
-        carry(&mut net, a, done);
-        net.run();
-        let tl = net.engine(a).group_labels(&t).unwrap()[0].id;
+        let (mut net, (s0, s1, a, b, b2, k, t, tl)) = Net::cached("deposit_queue::first_copy", || {
+            let mut net = Net::new();
+            let s0 = net.add_host();
+            let s1 = net.add_host();
+            let a = net.node(1, &[s0, s1]);
+            let b = net.node(2, &[s0, s1]);
+            let b2 = net.node(3, &[s0, s1]);
+            let k = net.group(a, &[(b, Role::Write), (b2, Role::Write)], &[s1]);
+            let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
+            let done = net.engine(a).grant(&t, &k, &read).unwrap();
+            carry(&mut net, a, done);
+            net.run();
+            let tl = net.engine(a).group_labels(&t).unwrap()[0].id;
+            (net, (s0, s1, a, b, b2, k, t, tl))
+        });
         // under T alone
         net.set_online(a, false);
         net.blocked.insert((a, s1));
@@ -503,8 +509,11 @@ fn first_copy_survives_a_crash_spec_permissions_3() {
 #[test]
 fn removal_copy_survives_a_crash_spec_permissions_3() {
     for crash in [false, true] {
-        let mut net = Net::new();
-        let (a, _, k, t) = holder_group(&mut net);
+        let (mut net, (a, _, k, t)) = Net::cached("deposit_queue::holder_group", || {
+            let mut net = Net::new();
+            let x = holder_group(&mut net);
+            (net, x)
+        });
         let s1 = 1;
         let kl = net.engine(a).group_labels(&k).unwrap()[0].id;
         let d = osis_node::flows::Demotion { holder: k, new: None, retain: None };
@@ -531,21 +540,24 @@ fn removal_copy_survives_a_crash_spec_permissions_3() {
 fn link_card_survives_a_crash_spec_permissions_7() {
     use osis_node::Mutation;
     for crash in [false, true] {
-        let mut net = Net::bare();
-        let (s0, s1) = (net.add_host(), net.add_host());
-        let a = net.node(30, &[s0, s1]);
-        let home = vec![net.address(s0)];
-        let (pa, done) = net.engine(a).create_account(&home).unwrap();
-        carry(&mut net, a, done);
-        net.run();
-        let e = net.engine(a);
-        let mut m = Mutation::new();
-        let t = e.new_thing(&mut m, pa.account);
-        m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
-        e.commit(m).unwrap();
-        let (_, acts) = net.sync(a).create_label(&t, home.clone()).unwrap();
-        net.actions(a, acts);
-        net.run();
+        let (mut net, (s1, a, pa, t)) = Net::cached("deposit_queue::link_card", || {
+            let mut net = Net::bare();
+            let (s0, s1) = (net.add_host(), net.add_host());
+            let a = net.node(1, &[s0, s1]);
+            let home = vec![net.address(s0)];
+            let (pa, done) = net.engine(a).create_account(&home).unwrap();
+            carry(&mut net, a, done);
+            net.run();
+            let e = net.engine(a);
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, pa.account);
+            m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
+            e.commit(m).unwrap();
+            let (_, acts) = net.sync(a).create_label(&t, home).unwrap();
+            net.actions(a, acts);
+            net.run();
+            (net, (s1, a, pa, t))
+        });
         let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: vec![net.address(s1)], peers: Vec::new(), single_use: true };
         let (link, _, done) = net.engine(a).create_link(&pa.account, &spec).unwrap();
         let card = done.deliveries.iter().find_map(|d| if let osis_node::flows::Delivery::Certificate { commits, under } = d { (*under == link.k).then(|| commits[0]) } else { None }).unwrap();

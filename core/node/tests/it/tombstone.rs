@@ -91,7 +91,16 @@ struct Chat {
     l: LabelId,
 }
 
+/// A `Chat`: built once (`Net::cached`).
 fn chat() -> Chat {
+    let (net, (host, a, b, n, t, l)) = Net::cached("tombstone::chat", || {
+        let Chat { net, host, a, b, n, t, l } = chat_built();
+        (net, (host, a, b, n, t, l))
+    });
+    Chat { net, host, a, b, n, t, l }
+}
+
+fn chat_built() -> Chat {
     let mut net = Net::new();
     let host = net.add_host();
     let (a, b, n) = (net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host]));
@@ -512,7 +521,7 @@ fn header_only_prefix_is_checked_spec_sync_1() {
     let pk = net.engine(b).package(&c).unwrap().unwrap();
     let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
     let bare = osis_commit::rewrite(&blob, |_| true);
-    let mut rng = osis_crypto::SeededRng::from_u64(5);
+    let mut rng = osis_crypto::SeededRng::from_u64(0);
     let read = net.engine(b).wrap_secret(&t, None).unwrap().unwrap();
     let env = osis_commit::seal_commit(&bare, |_| (), |_, _| Some((read.clone(), vec![])), &[], &mut rng).unwrap();
     let frame = |expires: Option<u64>, rng: &mut osis_crypto::SeededRng| {

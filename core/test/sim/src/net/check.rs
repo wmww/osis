@@ -677,7 +677,7 @@ mod tests {
     // the reads of the part it reaches, and joins two parts of holders to neither other.
     #[test]
     fn a_reader_off_the_roster_is_compared_and_bridges_nothing() {
-        let mut sim = NetSim::new("connected", 1, NetConfig::default());
+        let mut sim = NetSim::new("connected", 0, NetConfig::default());
         let [a, b, c] = [0, 1, 2].map(|_| sim.add_node(&[], ClockSpec::default()).unwrap());
         sim.reach.place(a, &[1], Uplink::None, &[]);
         sim.reach.place(b, &[2], Uplink::None, &[]);
@@ -694,7 +694,7 @@ mod tests {
     // host is still weighed against what was written: junk it stores goes over the bound.
     #[test]
     fn junk_at_a_holder_with_no_host_goes_over_the_bound() {
-        let mut sim = NetSim::new("hostless_bound", 1, NetConfig::default());
+        let mut sim = NetSim::new("hostless_bound", 0, NetConfig::default());
         let [a, b] = [0, 1].map(|_| sim.add_node(&[], ClockSpec::default()).unwrap());
         sim.reach.place(a, &[1], Uplink::None, &[]);
         sim.reach.place(b, &[1], Uplink::None, &[]);

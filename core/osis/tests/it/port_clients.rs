@@ -68,7 +68,7 @@ fn keep_all_forever(db: &Osis, t: Tid, ks: &[&osis_base::Ak]) {
 }
 
 fn node() -> Node {
-    let (net, clock, store) = (osis_transport::Net::new(1), Arc::new(ManualClock::new(Time(T0))), MemStore::new());
+    let (net, clock, store) = (osis_transport::Net::new(0), Arc::new(ManualClock::new(Time(T0))), MemStore::new());
     let n = open(&store, &net, &clock, true);
     let (g, t, member, out, h, u) = n
         .commit_with(|w| {
@@ -482,7 +482,7 @@ fn until_ends_the_client() {
 // spec/data-model.md §9, notes/client-port.md §3 (until), restart with a timer pending: sessions do not survive a restart and no timer is stored: a reopened node takes a client's Auth before its until and ends it at its until from the entry alone
 #[test]
 fn restart_with_a_client_until_pending() {
-    let (net, clock, store) = (osis_transport::Net::new(1), Arc::new(ManualClock::new(Time(T0))), MemStore::new());
+    let (net, clock, store) = (osis_transport::Net::new(0), Arc::new(ManualClock::new(Time(T0))), MemStore::new());
     let n = open(&store, &net, &clock, true);
     let (a, s) = n.add_client(Some(Time(T0 + 60_000))).unwrap();
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
@@ -797,7 +797,7 @@ fn connections_past_the_cap() {
 // spec/sync.md §10 (never on another transport), notes/client-port.md §3 (main-actor rows): the registry calls run through a daemon's main actor session; a client secret never goes to a unix socket
 #[test]
 fn registry_through_the_main_session() {
-    let (net, clock, store) = (osis_transport::Net::new(1), Arc::new(ManualClock::new(Time(T0))), MemStore::new());
+    let (net, clock, store) = (osis_transport::Net::new(0), Arc::new(ManualClock::new(Time(T0))), MemStore::new());
     let n = open(&store, &net, &clock, true);
     let dir = std::env::temp_dir().join(format!("osis-port-clients-{}-{}", std::process::id(), NAMES.fetch_add(1, Ordering::Relaxed)));
     std::fs::create_dir_all(&dir).unwrap();
@@ -1292,13 +1292,13 @@ impl Rng {
 // spec/sync.md §10, spec/wire.md §11.2, notes/client-port.md §3 (Invariant: every client-session row runs as the client's actor; authority ends at revocation), spec/permissions.md §1: a random walk of grants, lowered roles, secret rotations, expiries and removals against a model of plain grants: at every step every read answers what the model says the actor may read, as an unknown tid otherwise, and every write succeeds exactly when the model says it may write
 #[test]
 fn client_session_differential_against_grants() {
-    for seed in [0x51u64, 0x7a3, 0x10f07] {
+    for seed in 0..3 {
         walk(seed);
     }
 }
 
 fn walk(seed: u64) {
-    let mut rng = Rng(seed);
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let x = node();
     let name = ak("t:name.0");
     // the model: per group the role granted; a direct grant on a thing; the thing's first admin

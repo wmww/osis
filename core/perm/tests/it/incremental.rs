@@ -630,7 +630,7 @@ fn restarts(rng: &mut Rng, at: &str, seen: &mut Seen) {
 // rules (salt) or over other inputs is never used; the component is evaluated from scratch.
 #[test]
 fn damaged_or_foreign_saved_walk_is_ignored() {
-    let mut rng = Rng(seeded(0x5eed_0305));
+    let mut rng = Rng(seeded(0));
     let mut tried = 0;
     while tried < 20 {
         let (w, nodes, _) = edges_world(&edges::random_hist(&mut rng), 10);
@@ -675,7 +675,7 @@ fn damaged_or_foreign_saved_walk_is_ignored() {
 /// new commits) equals an evaluation from scratch, or declines.
 #[test]
 fn extend_over_commits_and_leaves_together() {
-    let mut rng = Rng(seeded(0x5eed_0306));
+    let mut rng = Rng(seeded(0));
     let mut extended = 0;
     for s in 0..60 {
         let (mut w, nodes, _) = edges_world(&edges::random_hist(&mut rng), 10);
@@ -1531,7 +1531,7 @@ fn shadow_cost_guard_changes_no_outcome_spec_permissions_5_1() {
     let mut placed = Vec::new();
     for on in [Some(true), Some(false)] {
         osis_perm::force_shadow_guard(on);
-        let (mut rng, mut seen) = (Rng(seeded(0x5eed_0317)), Seen::default());
+        let (mut rng, mut seen) = (Rng(seeded(0)), Seen::default());
         for s in 0..4 {
             adversarial_corners(&mut rng, &format!("sample {s} (corners)"), &mut seen);
             adversarial_falls(&mut rng, &format!("sample {s} (falls)"), &mut seen);
@@ -2195,7 +2195,7 @@ fn invite_turns(rng: &mut Rng, at: &str, _: &mut Seen) {
 // move only as `Changed` reports.
 #[test]
 fn incremental_equals_from_scratch() {
-    reached(&incremental(2 * SHAPES.len() as u64, 0x5eed_0301));
+    reached(&incremental(2 * SHAPES.len() as u64, 0));
 }
 
 #[test]

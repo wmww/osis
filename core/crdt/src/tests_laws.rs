@@ -122,19 +122,6 @@ proptest! {
     }
 }
 
-/// A cached placement follows a join whose forged copy of an element's chosen position write
-/// names another anchor (the old write is gone, so the element's row, until re-placed, sits by a
-/// key its record no longer holds; a gate-found seed).
-#[test]
-fn forged_edge_copy_cached_placement() {
-    let s = forged_states(17419099531132830180, &[Ty::Text]);
-    let mut x = s[0].clone();
-    let _ = x.read();
-    x.join(s[1].clone());
-    crate::testutil::check_lin(&x);
-    forged_laws(17419099531132830180, &[Ty::Text]);
-}
-
 /// Copies of one map entry (§5.6) under several keys, as forged snapshots carry them: random
 /// records of one dot (`a`, `b`, `c` or key-erased), each holding a write of one stamp with
 /// differing payloads (`leaf`) and maybe a reset, `depth` maps deep (inner records of one dot

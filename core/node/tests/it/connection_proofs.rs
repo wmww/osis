@@ -109,10 +109,7 @@ fn set(tids: &[Tid]) -> BTreeSet<Tid> {
 // listener answers with its own proofs to a dialer that proved an actor it knows
 #[test]
 fn dialer_proves_then_known_listener_answers_spec_sync_10() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let (a, account) = account_node(&mut net, 1, host);
-    let b = paired_node(&mut net, 2, host, a, account);
+    let (mut net, _host, a, b, account) = net::account_pair();
     let (ta, tb) = (net.node_tid(a), net.node_tid(b));
     let mut p = dial(&mut net, a);
     let provers = net.sync(b).provers(true).unwrap();
@@ -127,10 +124,7 @@ fn dialer_proves_then_known_listener_answers_spec_sync_10() {
 // holds no record of gets no proof back, though what it proved stands
 #[test]
 fn listener_proves_nothing_to_a_stranger_spec_sync_10() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let (a, _) = account_node(&mut net, 1, host);
-    let (s, account) = account_node(&mut net, 3, host);
+    let (mut net, _host, [(a, _), (s, account)]) = net::account_nodes([1, 3]);
     let ts = net.node_tid(s);
     assert!(net.engine(a).core.created(&ts).is_none() && net.engine(a).core.created(&account).is_none(), "strangers to a");
     let mut p = dial(&mut net, a);
@@ -170,10 +164,7 @@ fn forged_key_proves_nothing_spec_sync_10() {
 // another listener, proves nothing here: replay across connections fails
 #[test]
 fn proof_for_another_session_or_listener_proves_nothing_spec_sync_10() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let (a, account) = account_node(&mut net, 1, host);
-    let b = paired_node(&mut net, 2, host, a, account);
+    let (mut net, _host, a, b, _) = net::account_pair();
     let tb = net.node_tid(b);
     let provers = net.sync(b).provers(true).unwrap();
     // proved honestly on one connection
@@ -212,10 +203,7 @@ fn second_prove_refused_spec_wire_11_2() {
 // the node's own key still stands
 #[test]
 fn an_account_is_proved_only_by_its_own_epoch_key_spec_sync_10() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let (a, account) = account_node(&mut net, 1, host);
-    let (s, other) = account_node(&mut net, 3, host);
+    let (mut net, _host, [(a, account), (s, other)]) = net::account_nodes([1, 3]);
     let ts = net.node_tid(s);
     // as made for s's own nodes: its node key first, so the forged account proof can borrow it
     let provers = net.sync(s).provers(true).unwrap();
@@ -236,10 +224,7 @@ fn an_account_is_proved_only_by_its_own_epoch_key_spec_sync_10() {
 // without the account's proof proves the node alone
 #[test]
 fn held_group_data_proves_nothing_spec_sync_10() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let (a, account) = account_node(&mut net, 1, host);
-    let b = paired_node(&mut net, 2, host, a, account);
+    let (mut net, _host, a, b, _) = net::account_pair();
     let tb = net.node_tid(b);
     let provers: Vec<Prover> = net.sync(b).provers(true).unwrap().into_iter().filter(|x| x.record.tid() == tb).collect();
     let mut p = dial(&mut net, a);
@@ -262,10 +247,7 @@ fn a_session_with_no_prove_proves_nothing_spec_sync_10() {
 // which side dialed
 #[test]
 fn proofs_run_on_a_real_connection_either_way_spec_sync_10() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let (a, account) = account_node(&mut net, 1, host);
-    let b = paired_node(&mut net, 2, host, a, account);
+    let (mut net, _host, a, b, account) = net::account_pair();
     let (ta, tb) = (net.node_tid(a), net.node_tid(b));
     reach_ed(&mut net, a);
     reach_ed(&mut net, b);

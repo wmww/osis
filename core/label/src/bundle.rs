@@ -307,7 +307,7 @@ pub(crate) mod tests {
     // paths and stamps verified; unknown records are skipped.
     #[test]
     fn round_trip_and_import() {
-        let mut rng = SeededRng::from_u64(1);
+        let mut rng = SeededRng::from_u64(0);
         let (recs, bytes) = sample(&mut rng);
         assert_eq!(&bytes[..8], MAGIC);
         let mut r = BundleReader::new(&bytes[..]).unwrap();
@@ -334,7 +334,7 @@ pub(crate) mod tests {
     // extends it (no other branch, no rollback to an ancestor).
     #[test]
     fn path_extends_head() {
-        let mut rng = SeededRng::from_u64(3);
+        let mut rng = SeededRng::from_u64(0);
         let g = Group::new(10);
         let e = Epoch::new(0, [0; 32]).unwrap();
         let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, e, &g.read), &mut rng).unwrap();
@@ -355,7 +355,7 @@ pub(crate) mod tests {
     // bad magic, a truncated frame or another format are rejected.
     #[test]
     fn rejections() {
-        let mut rng = SeededRng::from_u64(2);
+        let mut rng = SeededRng::from_u64(0);
         let (recs, bytes) = sample(&mut rng);
         let mut imp = Importer::new();
         assert!(imp.import(recs[3].clone()).is_err());

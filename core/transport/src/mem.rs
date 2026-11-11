@@ -869,8 +869,8 @@ mod tests {
     // spec: none (no leaked entries: a dial never accepted is removed when the dialer drops)
     #[test]
     fn unaccepted_conn_removed_on_drop() {
-        let net = Net::new(1);
-        let mut s = Sched::new(1, Some(net.clone()));
+        let net = Net::new(0);
+        let mut s = Sched::new(0, Some(net.clone()));
         let serving = net.endpoint("listener");
         let l = s
             .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap() })
@@ -886,8 +886,8 @@ mod tests {
     // alone reaches nobody here (`P2p<MemUdp>` is what dials `peer://` in process).
     #[test]
     fn peer_url_finds_no_listener_by_key_spec_sync_10() {
-        let net = Net::new(2);
-        let mut s = Sched::new(2, Some(net.clone()));
+        let net = Net::new(0);
+        let mut s = Sched::new(0, Some(net.clone()));
         let serving = net.endpoint("listener");
         let l = s
             .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([3; 32]) }).await.unwrap() })
@@ -906,8 +906,8 @@ mod tests {
     // sides are done with, accepted or not yet when the opener finished
     #[test]
     fn finished_streams_dropped() {
-        let net = Net::new(3);
-        let mut s = Sched::new(3, Some(net.clone()));
+        let net = Net::new(0);
+        let mut s = Sched::new(0, Some(net.clone()));
         let serving = net.endpoint("listener");
         let mut l = s
             .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap() })

@@ -159,7 +159,7 @@ fn repro_row8_a_contact_card_needs_no_saved_peer() {
 #[test]
 #[ignore = "issues/net-first-contact.md"]
 fn repro_row9_a_grant_reaches_a_known_account() {
-    let (mut w, a, b, _) = co_readers(1, Role::Read);
+    let (mut w, a, b, _) = co_readers(0, Role::Read);
     let mut wr = a.write();
     let t = wr.create().unwrap();
     wr.commit().unwrap();
@@ -174,7 +174,7 @@ fn repro_row9_a_grant_reaches_a_known_account() {
 // does not end `Ok`.
 #[test]
 fn an_undelivered_grant_keeps_the_wait_open_row_9_spec_sync_3() {
-    let (mut w, a, b, _) = co_readers(1, Role::Read);
+    let (mut w, a, b, _) = co_readers(0, Role::Read);
     w.set_peer_reachable(&a, &b, false);
     w.run();
     let mut wr = a.write();
@@ -191,7 +191,7 @@ fn an_undelivered_grant_keeps_the_wait_open_row_9_spec_sync_3() {
 // while a grant has no way to arrive.
 #[test]
 fn deliveries_wait_only_for_deliveries() {
-    let (mut w, a, b, _) = co_readers(1, Role::Read);
+    let (mut w, a, b, _) = co_readers(0, Role::Read);
     let _lonely = group(&a);
     w.run();
     assert_eq!(w.until(a.wait_synced(SyncScope::Deliveries), STEP_MS, STEPS), Ok(()), "a group with nobody connected is not a delivery");
@@ -208,7 +208,7 @@ fn deliveries_wait_only_for_deliveries() {
 // second direct link, ending it, rotating her key by hand. Her writes still reach Bob.
 #[test]
 fn key_changes_keep_a_connected_joiner_row_10_spec_permissions_7() {
-    let (mut w, a, b, g) = co_readers(1, Role::Read);
+    let (mut w, a, b, g) = co_readers(0, Role::Read);
     let check = |w: &mut World, what: &str| {
         w.advance(LONG_MS);
         say(&a, g, what);
@@ -282,20 +282,20 @@ fn access_ended_stops_dialing((mut w, a, b, g): (World, Osis, Osis, Tid), end: i
 // nothing else): a joiner who left stops dialing the link's sharer.
 #[test]
 fn a_joiner_who_left_stops_dialing_the_sharer_spec_permissions_7() {
-    access_ended_stops_dialing(co_readers(3, Role::Read), |_, b, g| b.leave(b.me(), g).unwrap());
+    access_ended_stops_dialing(co_readers(0, Role::Read), |_, b, g| b.leave(b.me(), g).unwrap());
 }
 
 // spec/permissions.md §7: a kicked joiner stops dialing the link's sharer.
 #[test]
 fn a_kicked_joiner_stops_dialing_the_sharer_spec_permissions_7() {
-    access_ended_stops_dialing(co_readers(1, Role::Read), |a, b, g| a.set_role(g, b.me(), None, SetRoleOpts::default()).unwrap());
+    access_ended_stops_dialing(co_readers(0, Role::Read), |a, b, g| a.set_role(g, b.me(), None, SetRoleOpts::default()).unwrap());
 }
 
 // spec/permissions.md §7 (joiner's leave): a joiner whose
 // link (K) was removed from the target stops dialing the link's sharer.
 #[test]
 fn a_joiner_whose_link_was_removed_stops_dialing_the_sharer_spec_permissions_7() {
-    access_ended_stops_dialing(co_readers(5, Role::Read), |a, _, g| {
+    access_ended_stops_dialing(co_readers(0, Role::Read), |a, _, g| {
         let k = a.links().unwrap()[0].id.actor();
         a.set_role(g, k, None, SetRoleOpts::default()).unwrap();
     });
@@ -305,7 +305,7 @@ fn a_joiner_whose_link_was_removed_stops_dialing_the_sharer_spec_permissions_7()
 // Alice's writes reach him.
 #[test]
 fn a_joiner_still_in_redials_the_sharer_spec_permissions_7() {
-    let (mut w, a, b, g) = co_readers(1, Role::Read);
+    let (mut w, a, b, g) = co_readers(0, Role::Read);
     w.advance(LONG_MS);
     assert!(dials_after_a_drop(&mut w, &a, &b) > 0);
     say(&a, g, "still in");
@@ -327,7 +327,7 @@ fn a_wait_with_nobody_connected_waits_row_15_spec_none() {
 // Row 16 (spec: none, notes/api.md Sync configuration and status): waiting on a thing caught up with a connected peer ends `Ok`.
 #[test]
 fn a_thing_wait_ends_when_caught_up_with_a_peer_row_16_spec_none() {
-    let (mut w, a, b, g) = co_readers(1, Role::Write);
+    let (mut w, a, b, g) = co_readers(0, Role::Write);
     say(&a, g, "x");
     w.advance(pause_ms());
     assert_eq!(heard(&b, g).as_deref(), Some("x"));
@@ -338,7 +338,7 @@ fn a_thing_wait_ends_when_caught_up_with_a_peer_row_16_spec_none() {
 // Row 17 (spec: none, notes/api.md Sync configuration and status): caught up with every connected peer reads `Synced`, not "connected, nothing said".
 #[test]
 fn status_says_synced_when_caught_up_with_a_peer_row_17_spec_none() {
-    let (mut w, a, b, g) = co_readers(1, Role::Write);
+    let (mut w, a, b, g) = co_readers(0, Role::Write);
     say(&a, g, "x");
     w.advance(pause_ms());
     assert_eq!(heard(&b, g).as_deref(), Some("x"));
@@ -349,7 +349,7 @@ fn status_says_synced_when_caught_up_with_a_peer_row_17_spec_none() {
 // Row 18 (spec: none, notes/api.md Sync configuration and status): while connected with a peer that still holds more, history is not `complete`.
 #[test]
 fn history_is_not_complete_while_a_peer_holds_more_row_18_spec_none() {
-    let (mut w, a, b, g) = co_readers(1, Role::Write);
+    let (mut w, a, b, g) = co_readers(0, Role::Write);
     w.set_peer_reachable(&a, &b, false);
     w.run();
     say(&a, g, "while apart");
@@ -384,12 +384,12 @@ fn state(db: &Osis, g: Tid) -> SyncState {
 }
 
 /// Bob behind a NAT, no relay: Alice cannot dial him, he dials her.
-fn served_only(seed: u64, role: Role) -> (World, Osis, Osis, Tid) {
+fn served_only(role: Role) -> (World, Osis, Osis, Tid) {
     let mut w = World::new();
     let r = w.reach.add_relay(None);
     let cone = w.reach.add_nat(Nat::CONE);
-    let a = w.account(seed, &[]);
-    let b = w.account(seed + 1, &[]);
+    let a = w.account(0, &[]);
+    let b = w.account(1, &[]);
     w.place(&a, &[], Uplink::Public, &[r]);
     w.place(&b, &[], Uplink::Nat(cone), &[]);
     w.run();
@@ -403,7 +403,7 @@ fn served_only(seed: u64, role: Role) -> (World, Osis, Osis, Tid) {
 // end until Bob reported applying it, and both ends are `Synced` once each has the other's log.
 #[test]
 fn a_served_only_connection_is_judged_alike_at_both_ends() {
-    let (mut w, a, b, g) = served_only(10, Role::Write);
+    let (mut w, a, b, g) = served_only(Role::Write);
     say(&a, g, "x");
     assert_eq!(state(&a, g), SyncState::Syncing, "not reported by Bob yet");
     w.advance(pause_ms());
@@ -418,7 +418,7 @@ fn a_served_only_connection_is_judged_alike_at_both_ends() {
 fn a_peer_that_cannot_read_is_a_source() {
     let mut w = World::new();
     let h = w.add_host();
-    let a = w.account(20, &[h]);
+    let a = w.account(0, &[h]);
     w.run();
     let g = a.home();
     say(&a, g, "x");
@@ -430,7 +430,7 @@ fn a_peer_that_cannot_read_is_a_source() {
 // spec: none (API surface), notes/api.md Sync configuration and status: the wait follows the sources as they change.
 #[test]
 fn a_wait_follows_sources_that_come_and_go() {
-    let (mut w, a, b, g) = co_readers(30, Role::Write);
+    let (mut w, a, b, g) = co_readers(0, Role::Write);
     w.set_peer_reachable(&a, &b, false);
     w.advance(pause_ms());
     assert_eq!(state(&a, g), SyncState::NotConnected);
@@ -444,7 +444,7 @@ fn a_wait_follows_sources_that_come_and_go() {
 // caught up: nothing is reported until the write reached one.
 #[test]
 fn a_source_disconnecting_mid_pass_is_not_caught_up() {
-    let (mut w, a, b, g) = co_readers(40, Role::Write);
+    let (mut w, a, b, g) = co_readers(0, Role::Write);
     w.advance(pause_ms());
     say(&a, g, "x");
     w.set_peer_reachable(&a, &b, false);
@@ -458,7 +458,7 @@ fn a_source_disconnecting_mid_pass_is_not_caught_up() {
 // on, and `Synced` comes back; `last_sync` says when it last was, and stands without a source.
 #[test]
 fn a_local_write_leaves_synced_and_last_sync_says_when() {
-    let (mut w, a, b, g) = co_readers(50, Role::Write);
+    let (mut w, a, b, g) = co_readers(0, Role::Write);
     say(&a, g, "first of mine");
     w.advance(pause_ms());
     assert_eq!(state(&a, g), SyncState::Synced);
@@ -481,7 +481,7 @@ fn a_local_write_leaves_synced_and_last_sync_says_when() {
 // code 1.
 #[test]
 fn a_removal_a_co_reader_applied_is_placed_spec_sync_5() {
-    let (mut w, a, b, g) = co_readers(60, Role::Write);
+    let (mut w, a, b, g) = co_readers(0, Role::Write);
     w.set_peer_reachable(&a, &b, false);
     w.advance(pause_ms());
     b.leave(b.me(), g).unwrap();
@@ -502,7 +502,7 @@ fn leaving(n: &Osis, g: Tid) -> bool {
 // phone's removal reaches Alice and it stops leaving.
 #[test]
 fn own_nodes_never_both_forget_before_an_outside_source_spec_permissions_3() {
-    let (mut w, a, b, g) = co_readers(900, Role::Write);
+    let (mut w, a, b, g) = co_readers(0, Role::Write);
     let r = w.reach.add_relay(None);
     let b2 = pair(&w, &b, 905);
     w.place(&b2, &[], Uplink::Public, &[r]);
@@ -534,10 +534,10 @@ fn under_a_hosted_label_only_an_admins_report_places_spec_sync_5() {
     let mut w = World::new();
     let h = w.add_host();
     let r = w.reach.add_relay(None);
-    let a = w.account(70, &[h]);
-    let b = w.account(71, &[h]);
-    let c = w.account(72, &[h]);
-    let d = w.account(73, &[h]);
+    let a = w.account(0, &[h]);
+    let b = w.account(1, &[h]);
+    let c = w.account(2, &[h]);
+    let d = w.account(3, &[h]);
     for n in [&a, &b, &c, &d] {
         w.place(n, &[], Uplink::Public, &[r]);
     }
@@ -580,7 +580,7 @@ fn under_a_hosted_label_only_an_admins_report_places_spec_sync_5() {
 // spec: none (API surface), notes/api.md Sync configuration and status: a dropped wait leaves nothing behind.
 #[test]
 fn a_dropped_wait_leaves_nothing() {
-    let (mut w, a, _b, g) = co_readers(70, Role::Write);
+    let (mut w, a, _b, g) = co_readers(0, Role::Write);
     say(&a, g, "x");
     {
         let mut wait = Box::pin(a.wait_synced(SyncScope::All));
@@ -596,7 +596,7 @@ fn a_dropped_wait_leaves_nothing() {
 // did not make, true for one it made, and true offline afterwards.
 #[test]
 fn history_complete_needs_a_first_pass_and_stands_offline() {
-    let (mut w, a, _b, g) = co_readers(80, Role::Write);
+    let (mut w, a, _b, g) = co_readers(0, Role::Write);
     let own = a.writes(&Scope::Group(g), &CommitQuery::default()).unwrap();
     assert!(own.complete, "a sync ID it made");
     let a2 = pair(&w, &a, 90);
@@ -663,7 +663,7 @@ fn synced_is_never_true_while_a_connected_co_reader_holds_more() {
 // is not paired with Bob, so Alice never reads `Synced` while Carol holds more.
 #[test]
 fn synced_is_never_true_while_a_served_only_source_holds_more() {
-    let (mut w, a, b, g) = co_readers(200, Role::Write);
+    let (mut w, a, b, g) = co_readers(0, Role::Write);
     let cone = w.reach.add_nat(Nat::CONE);
     let c = w.account(202, &[]);
     w.place(&c, &[], Uplink::Nat(cone), &[]);
@@ -687,7 +687,7 @@ fn synced_is_never_true_while_a_served_only_source_holds_more() {
 // taken for another node.
 #[test]
 fn a_co_reader_dialed_both_ways_is_one_source_and_ends_synced() {
-    let (mut w, a, b, g) = co_readers(210, Role::Write);
+    let (mut w, a, b, g) = co_readers(0, Role::Write);
     w.advance(pause_ms());
     assert_eq!(a.status().unwrap().connected, 2, "one connection each way");
     assert_eq!(state(&a, g), SyncState::Synced);
@@ -699,7 +699,7 @@ fn a_co_reader_dialed_both_ways_is_one_source_and_ends_synced() {
 // group no other node is connected on; a thing inside g resolves on g.
 #[test]
 fn a_thing_wait_leaves_out_a_lonely_home() {
-    let (mut w, a, _b, g) = co_readers(220, Role::Write);
+    let (mut w, a, _b, g) = co_readers(0, Role::Write);
     let mut wr = a.write();
     let t = wr.create().unwrap();
     wr.commit().unwrap();
@@ -718,7 +718,7 @@ fn a_thing_wait_leaves_out_a_lonely_home() {
 // `Thing(t)` does not hang on a lonely group listing `t` when a group further up has a source.
 #[test]
 fn a_thing_wait_leaves_out_a_lonely_group_when_another_has_a_source() {
-    let (mut w, a, _b, parent) = co_readers(240, Role::Write);
+    let (mut w, a, _b, parent) = co_readers(0, Role::Write);
     let near = group(&a);
     let mut wr = a.write();
     let t = wr.create().unwrap();
@@ -737,7 +737,7 @@ fn a_thing_wait_leaves_out_a_lonely_group_when_another_has_a_source() {
 // though the nearest group is caught up with Carol.
 #[test]
 fn a_thing_wait_covers_a_source_further_up() {
-    let (mut w, a, _b, parent) = co_readers(250, Role::Write);
+    let (mut w, a, _b, parent) = co_readers(0, Role::Write);
     let c = w.account(252, &[]);
     w.place(&c, &[], Uplink::Public, &[]);
     w.run();
@@ -772,7 +772,7 @@ fn a_thing_wait_covers_a_source_further_up() {
 // earlier one holds up no later `Deliveries` wait.
 #[test]
 fn a_grant_to_a_node_holds_up_no_later_delivery_wait() {
-    let (mut w, a, _b, g) = co_readers(270, Role::Write);
+    let (mut w, a, _b, g) = co_readers(0, Role::Write);
     let c = pair(&w, &a, 272);
     w.run();
     w.until(a.wait_synced(SyncScope::Deliveries), STEP_MS, STEPS).unwrap();
@@ -784,7 +784,7 @@ fn a_grant_to_a_node_holds_up_no_later_delivery_wait() {
 // holds a role on it is not forgotten, so the wait does not end as if it were.
 #[test]
 fn a_thing_wait_does_not_end_when_only_its_carrier_went() {
-    let (mut w, a, b, g) = co_readers(280, Role::Write);
+    let (mut w, a, b, g) = co_readers(0, Role::Write);
     let mut wr = a.write();
     let t = wr.create().unwrap();
     wr.commit().unwrap();
@@ -808,7 +808,7 @@ fn a_thing_wait_does_not_end_when_only_its_carrier_went() {
 fn a_leave_wait_ends_when_the_removal_landed_whatever_else_is_lonely() {
     let mut w = World::new();
     let h = w.add_host();
-    let (a, b) = (w.account(260, &[h]), w.account(261, &[]));
+    let (a, b) = (w.account(0, &[h]), w.account(1, &[]));
     w.run();
     let g = group(&a);
     say(&a, g, "first");
@@ -830,7 +830,7 @@ fn a_leave_wait_ends_when_the_removal_landed_whatever_else_is_lonely() {
 // spec: none (API surface), notes/api.md Sync configuration and status: `last_sync` needs no one to have looked while `Synced`.
 #[test]
 fn last_sync_stands_though_nobody_asked_while_synced() {
-    let (mut w, a, b, g) = co_readers(70, Role::Write);
+    let (mut w, a, b, g) = co_readers(0, Role::Write);
     w.advance(pause_ms());
     let before = a.status().unwrap().groups[&g].last_sync;
     w.advance(pause_ms());
@@ -869,7 +869,7 @@ fn repro_row21_a_link_redeems_from_a_bundle_alone() {
 // the relay gone, Bob's write reaches Carol.
 #[test]
 fn joiners_of_a_link_reach_each_other_row_22_spec_sync_10() {
-    let (mut w, a, b, g) = co_readers(1, Role::Write);
+    let (mut w, a, b, g) = co_readers(0, Role::Write);
     let c = w.account(3, &[]);
     w.place(&c, &[], Uplink::Public, &[0]);
     w.run();
@@ -1005,7 +1005,7 @@ fn repro_row28_lan_nodes_connect_with_nothing_shared() {
 #[test]
 #[ignore = "issues/net-connect.md"]
 fn repro_row30_a_lan_announcement_counts_from_any_source() {
-    let (_w, a, b, _) = co_readers(1, Role::Read);
+    let (_w, a, b, _) = co_readers(0, Role::Read);
     let key = a.sync_engine(|s| s.own_reach()).unwrap().dialable;
     let an = a.sync_engine(|s| s.lan_announcement([7; 32], PORT)).unwrap();
     let matches = |ip: &str| b.sync_engine(|s| s.lan_seen(&an, SocketAddr::new(ip.parse::<IpAddr>().unwrap(), PORT)).0) == Some(key);

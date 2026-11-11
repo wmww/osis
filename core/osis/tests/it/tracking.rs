@@ -61,7 +61,7 @@ fn fired(db: &Osis, n: &AtomicUsize) -> usize {
 #[test]
 fn dispatch_counts_matched_listeners_at_n_and_10n() {
     let dispatched = |others: usize| {
-        let db = pumped(1);
+        let db = pumped(0);
         let t = thing(&db);
         set(&db, t, "t:a.0", 0);
         let mut subs = Vec::new();
@@ -91,7 +91,7 @@ fn dispatch_counts_matched_listeners_at_n_and_10n() {
 
 #[test]
 fn a_commit_causes_the_matched_listeners_only() {
-    let db = pumped(2);
+    let db = pumped(0);
     let t = thing(&db);
     let mk = |k: &str, n: Arc<AtomicUsize>| db.at(t, untyped(k)).on_change(move |_, _| { n.fetch_add(1, Ordering::SeqCst); }).unwrap();
     let (a, b) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
@@ -108,7 +108,7 @@ fn a_commit_causes_the_matched_listeners_only() {
 // write nothing.
 #[test]
 fn tracked_read_fires_once_on_a_write_there() {
-    let db = pumped(3);
+    let db = pumped(0);
     let t = thing(&db);
     let (_set, n, h) = tracked(&db);
     assert_eq!(h.at(t, untyped("t:a.0")).get().unwrap(), None);
@@ -131,7 +131,7 @@ fn tracked_read_fires_once_on_a_write_there() {
 // after is, once. The same on a read of an address the set already listens to.
 #[test]
 fn no_gap_between_read_and_listener() {
-    let db = pumped(4);
+    let db = pumped(0);
     let t = thing(&db);
     let (_set, n, h) = tracked(&db);
     set(&db, t, "t:a.0", 1);
@@ -146,7 +146,7 @@ fn no_gap_between_read_and_listener() {
 
 #[test]
 fn sweep_drops_what_was_not_read() {
-    let db = pumped(5);
+    let db = pumped(0);
     let t = thing(&db);
     let (set_, n, h) = tracked(&db);
     let base = db.watches();
@@ -168,7 +168,7 @@ fn sweep_drops_what_was_not_read() {
 
 #[test]
 fn tracked_path_reads_their_own_position() {
-    let db = pumped(6);
+    let db = pumped(0);
     let t = thing(&db);
     let m = |a, b| Value::Map([(Value::Str("a".into()), Value::Int(a)), (Value::Str("b".into()), Value::Int(b))].into_iter().collect());
     db.commit_set(t, untyped("t:m.0"), &m(1, 1)).unwrap();
@@ -184,7 +184,7 @@ fn tracked_path_reads_their_own_position() {
 #[test]
 fn reads_without_a_listener_are_heard() {
     let c = clock();
-    let db = pumped_at(7, &c);
+    let db = pumped_at(0, &c);
     let t = thing(&db);
     let (_set, n, h) = tracked(&db);
     // the names of the aspects: a value change tells nothing, a new aspect does
@@ -253,7 +253,7 @@ fn role_on_hears_roles_and_compares() {
 // `members` is a tracked aspect read: the group's own `group.0`.
 #[test]
 fn members_is_heard() {
-    let db = pumped(8);
+    let db = pumped(0);
     let (g, x) = (thing(&db), thing(&db));
     let (_set, n, h) = tracked(&db);
     assert!(h.members(g).unwrap().is_empty());
@@ -278,7 +278,7 @@ fn tracked_backlinks_hear_their_thing() {
 // spec/commits.md §7 listing: a tracked page hears a commit at its address (and none elsewhere).
 #[test]
 fn tracked_listing_hears_the_address() {
-    let db = pumped(9);
+    let db = pumped(0);
     let (a, b) = (thing(&db), thing(&db));
     let (_set, n, h) = tracked(&db);
     h.writes(&Scope::Thing(a), &page(CommitFrom::Newest, 8)).unwrap();
@@ -292,7 +292,7 @@ fn tracked_listing_hears_the_address() {
 // address leaves it be, a purge of it is heard (a quote moves with its message only).
 #[test]
 fn tracked_commit_hears_its_commit_alone() {
-    let db = pumped(13);
+    let db = pumped(0);
     let t = thing(&db);
     typed_any(&db, &["t:k.0"]);
     keep_day(&db, t, &["t:k.0"]);
@@ -312,7 +312,7 @@ fn tracked_commit_hears_its_commit_alone() {
 #[test]
 fn listing_moved_counts_touched_commits_at_n_and_10n() {
     let judged = |n: i64| {
-        let db = pumped(10);
+        let db = pumped(0);
         let t = thing(&db);
         typed_any(&db, &["t:k.0"]);
         let k = kept(&db, &ak("t:k.0"));
@@ -334,7 +334,7 @@ fn listing_moved_counts_touched_commits_at_n_and_10n() {
 // judging only what a join touched).
 #[test]
 fn replaced_commit_without_history_is_told_leaving() {
-    let db = pumped(11);
+    let db = pumped(0);
     let t = thing(&db);
     let c0 = commit_with(&db, |w| w.at(t, untyped("t:a.0")).set(&Value::Int(1))).stamp.id;
     let told: Arc<std::sync::Mutex<Vec<(osis::CommitId, bool)>>> = Arc::default();
@@ -459,7 +459,7 @@ fn every_changed_answer_fires() {
 // address per pass, starting over at `sweep`; each read is one engine read.
 #[test]
 fn read_counts_say_what_a_pass_read_twice() {
-    let db = pumped(9);
+    let db = pumped(0);
     let t = thing(&db);
     set(&db, t, "t:a.0", 0);
     set(&db, t, "t:b.0", 0);

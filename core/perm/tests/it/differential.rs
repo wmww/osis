@@ -113,7 +113,7 @@ fn joint_run(samples: u64, seed: u64) {
 /// spec/permissions.md §5.1: the joint walk agrees with core/test/roles-model `joint`.
 #[test]
 fn joint_model_agrees() {
-    joint_run(300, 0x5eed_0001);
+    joint_run(300, 0);
 }
 
 /// spec/permissions.md §5.1: as above, more samples (a property).
@@ -282,7 +282,7 @@ fn edges_run(samples: u64, seed: u64) {
 /// core/test/roles-model `edges`, projections included.
 #[test]
 fn edges_model_agrees() {
-    edges_run(300, 0x5eed_0003);
+    edges_run(300, 0);
 }
 
 /// spec/permissions.md §2, §5.1, §7: as above, more samples (a property).
@@ -479,7 +479,7 @@ fn trust_run(samples: u64, seed: u64) {
 /// trust sets through `Timelines` reads as a fresh evaluation.
 #[test]
 fn trust_model_agrees() {
-    trust_run(300, 0x5eed_0005);
+    trust_run(300, 0);
 }
 
 /// spec/permissions.md §5.1 Trust: as above, more samples (a property).
@@ -578,7 +578,7 @@ fn addenda_run(samples: u64, seed: u64) {
 /// `addenda` (the least fixpoint, rules 1-5, re-removals, forged addenda).
 #[test]
 fn addenda_model_agrees() {
-    addenda_run(400, 0x5eed_0004);
+    addenda_run(400, 0);
 }
 
 /// spec/permissions.md §5.2: as above, more samples (a property).

@@ -36,9 +36,18 @@ fn keeps(t0: u64) -> ct::RetentionSetting {
     setting(&[("t:reg.0", DAY), ("t:log~0", History::FOREVER), ("t:brief~0", History::Keep { until: None, after: Some(HOUR) }), ("t:until~0", History::Keep { until: Some(t0 + 2 * HOUR), after: None }), ("t:gone~0", History::PurgeOnReplace)])
 }
 
-/// Alice (0) is first admin of D (keeping `keeps`); Bob (1) writes.
-fn setup(seed: u64) -> (LocalPeer, Tid, [Tid; 2]) {
-    let mut lp = net(2, seed);
+/// Alice (0) is first admin of D (keeping `keeps`); Bob (1) writes: built once
+/// (`LocalPeer::cached`).
+fn setup() -> (LocalPeer, Tid, [Tid; 2]) {
+    let (lp, (d, ids)) = LocalPeer::cached("signals::setup", || {
+        let (lp, d, ids) = setup_built();
+        (lp, (d, ids))
+    });
+    (lp, d, ids)
+}
+
+fn setup_built() -> (LocalPeer, Tid, [Tid; 2]) {
+    let mut lp = net(2, 0);
     let ids = [0, 1].map(|i| lp.peers[i].engine.me());
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
@@ -76,7 +85,7 @@ fn body_at(p: &mut osis_node::local_peer::Peer, d: Tid, c: &CommitId) -> PartBod
 // writes each stay their own commit, the aspect reads absent, each is told as its commit
 #[test]
 fn signal_never_in_state_never_merged_spec_commits_5() {
-    let (mut lp, d, _) = setup(1);
+    let (mut lp, d, _) = setup();
     let rx = listen(&mut lp.peers[0]);
     let a = send(&mut lp, 0, d, "hi");
     let b = send(&mut lp, 1, d, "yo");
@@ -104,7 +113,7 @@ fn signal_never_in_state_never_merged_spec_commits_5() {
 // bound, so nothing nobody promised to keep is kept for good; kept for good under forever
 #[test]
 fn signal_kept_until_its_bound_spec_commits_5() {
-    let (mut lp, d, _) = setup(2);
+    let (mut lp, d, _) = setup();
     let d_after = fire(&mut lp, 0, d, &brief(), "d");
     let until = fire(&mut lp, 0, d, &until(), "t");
     let ever = send(&mut lp, 0, d, "f");
@@ -134,7 +143,7 @@ fn signal_kept_until_its_bound_spec_commits_5() {
 // the write alike, as dropped
 #[test]
 fn signal_dropped_past_its_bound_not_taken_again_spec_commits_5() {
-    let (mut lp, d, _) = setup(8);
+    let (mut lp, d, _) = setup();
     let c = fire(&mut lp, 0, d, &brief(), "brief");
     lp.sync_all().unwrap();
     let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
@@ -166,7 +175,7 @@ fn signal_dropped_past_its_bound_not_taken_again_spec_commits_5() {
 // spec/commits.md §5 Signals, §6: expiry and purge act per write, before the keep bound
 #[test]
 fn signal_purge_and_expiry_per_write_spec_commits_5() {
-    let (mut lp, d, ids) = setup(3);
+    let (mut lp, d, ids) = setup();
     let gone = send(&mut lp, 1, d, "oops");
     let kept = send(&mut lp, 1, d, "ok");
     let now = lp.peers[1].engine.now().0;
@@ -198,7 +207,7 @@ fn signal_purge_and_expiry_per_write_spec_commits_5() {
 // reads absent before and after)
 #[test]
 fn signal_without_kept_history_refused_spec_commits_5() {
-    let (mut lp, d, _) = setup(4);
+    let (mut lp, d, _) = setup();
     for a in ["t:none~0", "t:gone~0"] {
         let mut m = Mutation::new();
         m.set(d, &ak(a), &s("x")).unwrap();
@@ -227,8 +236,8 @@ fn signal_without_kept_history_refused_spec_commits_5() {
 }
 
 /// Rebuilds a demotion of Bob runs at Alice once Bob wrote `n` signals and a value (`value`).
-fn kick_rebuilds(seed: u64, n: usize, value: bool) -> (u64, LocalPeer, Tid, Vec<CommitId>) {
-    let (mut lp, d, ids) = setup(seed);
+fn kick_rebuilds(n: usize, value: bool) -> (u64, LocalPeer, Tid, Vec<CommitId>) {
+    let (mut lp, d, ids) = setup();
     let sent: Vec<CommitId> = (0..n).map(|k| send(&mut lp, 1, d, &format!("m{k}"))).collect();
     if value {
         let mut m = Mutation::new();
@@ -246,7 +255,7 @@ fn kick_rebuilds(seed: u64, n: usize, value: bool) -> (u64, LocalPeer, Tid, Vec<
 #[test]
 fn signal_kick_rejudges_without_a_rebuild_spec_perm_5_2() {
     for n in [2, 20] {
-        let (rebuilds, mut lp, d, sent) = kick_rebuilds(5, n, false);
+        let (rebuilds, mut lp, d, sent) = kick_rebuilds(n, false);
         assert_eq!(rebuilds, 0, "{n} signals");
         for c in &sent {
             let e = lp.peers[0].engine.held_part(&d, &log(), c, usize::MAX).unwrap().unwrap();
@@ -255,7 +264,7 @@ fn signal_kick_rejudges_without_a_rebuild_spec_perm_5_2() {
         }
         assert_eq!(lp.peers[0].engine.get(&d, &log()).unwrap(), None);
     }
-    assert!(kick_rebuilds(6, 2, true).0 > 0);
+    assert!(kick_rebuilds(2, true).0 > 0);
 }
 
 /// A commit listener on `p` (`Engine::watch_commits`).
@@ -291,7 +300,7 @@ fn held(xs: &[(CommitId, &str)]) -> BTreeMap<CommitId, PartBody> {
 // late part when it joins; one arriving past its expiry or its keep bound as dropped
 #[test]
 fn signal_told_where_it_is_history_spec_commits_5() {
-    let (mut lp, d, _) = setup(7);
+    let (mut lp, d, _) = setup();
     let base: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().collect::<Vec<_>>();
     let mut base: Vec<_> = base.iter().map(|c| (lp.peers[0].engine.header(c).unwrap().ts, lp.peers[0].engine.package(c).unwrap().unwrap())).collect();
     base.sort_by_key(|x| x.0);
@@ -334,7 +343,7 @@ fn signal_told_where_it_is_history_spec_commits_5() {
 // it valid, and the refetched part is told once more
 #[test]
 fn signal_told_again_when_shown_again_spec_commits_5() {
-    let (mut lp, d, ids) = setup(9);
+    let (mut lp, d, ids) = setup();
     let rx = listen(&mut lp.peers[0]);
     let c = send(&mut lp, 1, d, "hi");
     lp.sync_all().unwrap();
@@ -352,7 +361,7 @@ fn signal_told_again_when_shown_again_spec_commits_5() {
 // (spec/permissions.md §5.2)
 #[test]
 fn signal_kept_invalid_told_when_valid_spec_commits_5() {
-    let (mut lp, d, ids) = setup(10);
+    let (mut lp, d, ids) = setup();
     set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(ct::Frontier::default().to_value()));
     lp.sync_all().unwrap();
     let rx = listen(&mut lp.peers[1]);
@@ -377,7 +386,7 @@ fn signal_kept_invalid_told_when_valid_spec_commits_5() {
 fn signal_past_its_bound_never_missing_again_spec_commits_5() {
     let suspects = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.suspects().unwrap();
     // valid again: Alice kicks Bob, re-grants past the bound
-    let (mut lp, d, ids) = setup(41);
+    let (mut lp, d, ids) = setup();
     let c = fire(&mut lp, 1, d, &brief(), "hi");
     lp.sync_all().unwrap();
     set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(ct::Frontier::default().to_value()));
@@ -392,7 +401,7 @@ fn signal_past_its_bound_never_missing_again_spec_commits_5() {
         assert!(suspects(&mut lp, i).is_empty(), "nothing to fetch back");
     }
     // a purge falling: Carol (admin) purges Bob's write, Alice kicks her past the bound
-    let mut lp = net(3, 42);
+    let mut lp = net(3, 0);
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);

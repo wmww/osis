@@ -15,20 +15,20 @@ use osis_proto::filter::{beacon_value, encode_gcs, filter_width};
 use osis_proto::msg::OfferItem;
 use osis_proto::{ClientEvent, ClientInput, Code, Command, Message};
 
-/// Two holders of one group with a record, only `b` dialable; `a` offline, so the only connection
-/// using their record is the hand dialer's.
-fn pair(net: &mut Net) -> (usize, usize, LabelId, [u8; 32]) {
-    let a = net.node(1, &[]);
-    let b = net.node(2, &[]);
-    reach_ed(net, b);
-    net.group_at(a, &[(b, Role::Write)], vec![]);
-    net.run();
-    let ta = net.tid(a);
-    let r = net.engine(b).run(|tx| Ok(tx.txn.records_of_actors(&[ta])?)).unwrap()[0].r;
-    let l = net.label(a);
-    net.set_online(a, false);
-    net.run();
-    (a, b, l, r)
+/// Two holders of one group with a record, only `b` dialable (`net_records::dialed`); `a`
+/// offline, so the only connection using their record is the hand dialer's: built once
+/// (`Net::cached`).
+fn paired() -> (Net, usize, usize, LabelId, [u8; 32]) {
+    let (net, (a, b, l, r)) = Net::cached("shared::paired", || {
+        let (mut net, a, b) = crate::net_records::dialed();
+        let ta = net.tid(a);
+        let r = net.engine(b).run(|tx| Ok(tx.txn.records_of_actors(&[ta])?)).unwrap()[0].r;
+        let l = net.label(a);
+        net.set_online(a, false);
+        net.run();
+        (net, (a, b, l, r))
+    });
+    (net, a, b, l, r)
 }
 
 pub(crate) fn dial_as(net: &mut Net, a: usize, b: usize, challenge: [u8; 32]) -> Dialer {
@@ -96,8 +96,7 @@ pub(crate) fn offer(net: &mut Net, b: usize, p: &mut Dialer, items: Vec<OfferIte
 // answered with the tag only the credential's holder computes (the tester's own check)
 #[test]
 fn a_valid_hit_opens_and_is_tagged_spec_wire_11_2() {
-    let mut net = Net::new();
-    let (a, b, l, r) = pair(&mut net);
+    let (mut net, a, b, l, r) = paired();
     let (mut p, _) = resumed(&mut net, a, b, &r, CHALLENGE);
     let v = read_value(&mut net, a, l);
     let hit = dialer_hit(&v, l, &r, &p, CHALLENGE);
@@ -112,8 +111,7 @@ fn a_valid_hit_opens_and_is_tagged_spec_wire_11_2() {
 // nothing, for every way the binding differs
 #[test]
 fn a_reflected_or_carried_hit_opens_nothing_spec_wire_11_2() {
-    let mut net = Net::new();
-    let (a, b, l, r) = pair(&mut net);
+    let (mut net, a, b, l, r) = paired();
     let (mut p, _) = resumed(&mut net, a, b, &r, CHALLENGE);
     let v = read_value(&mut net, a, l);
     let bcn = beacon(&v, &l.0, &r);
@@ -136,8 +134,7 @@ fn a_reflected_or_carried_hit_opens_nothing_spec_wire_11_2() {
 // answering 0 to its Hit, without one, serves it nothing and is served nothing
 #[test]
 fn a_hit_answered_without_a_tag_opens_nothing_spec_wire_11_2() {
-    let mut net = Net::new();
-    let (a, b, l, r) = pair(&mut net);
+    let (mut net, a, b, l, r) = paired();
     let (mut p, first) = resumed(&mut net, a, b, &r, CHALLENGE);
     let v = read_value(&mut net, a, l);
     let bcn = beacon(&v, &l.0, &r);
@@ -156,8 +153,7 @@ fn a_hit_answered_without_a_tag_opens_nothing_spec_wire_11_2() {
 // the connection before it costs anything but a pass
 #[test]
 fn bad_filters_close_the_connection_spec_wire_11_2() {
-    let mut net = Net::new();
-    let (a, b, _, r) = pair(&mut net);
+    let (mut net, a, b, _, r) = paired();
     for bad in [
         Message::Beacons { id: 1, generation: 1, base: None, f: 8, lo: 256, hi: 256, gcs: vec![], more: false },
         Message::Beacons { id: 2, generation: 1, base: None, f: 8, lo: 100, hi: 256, gcs: vec![], more: false },
@@ -174,8 +170,7 @@ fn bad_filters_close_the_connection_spec_wire_11_2() {
 // something it does not share here changes nothing, and is idempotent
 #[test]
 fn a_lost_touches_only_members_spec_wire_11_2() {
-    let mut net = Net::new();
-    let (a, b, l, r) = pair(&mut net);
+    let (mut net, a, b, l, r) = paired();
     let (mut p, _) = resumed(&mut net, a, b, &r, CHALLENGE);
     let v = read_value(&mut net, a, l);
     let hit = dialer_hit(&v, l, &r, &p, CHALLENGE);
@@ -193,8 +188,7 @@ fn a_lost_touches_only_members_spec_wire_11_2() {
 // here re-tests nothing: a refused Hit stays refused
 #[test]
 fn a_lost_for_what_is_not_shared_costs_no_test() {
-    let mut net = Net::new();
-    let (a, b, l, r) = pair(&mut net);
+    let (mut net, a, b, l, r) = paired();
     let (mut p, _) = resumed(&mut net, a, b, &r, CHALLENGE);
     let v = read_value(&mut net, a, l);
     let f = filter_width(1);
@@ -213,10 +207,7 @@ fn a_lost_for_what_is_not_shared_costs_no_test() {
 // listener's
 #[test]
 fn a_redeemer_knowing_nothing_shows_no_credential_spec_sync_10() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let (a, account) = crate::net_judgment::account_node(&mut net, 1, host);
-    let (k, _, _, seed) = crate::net_judgment::link(&mut net, a, account);
+    let (mut net, _, a, _, (k, _, _, seed)) = crate::net_judgment::linked();
     let key = reach_ed(&mut net, a);
     let c = net.node(2, &[]);
     let held = net.engine(c).hold_key_actor(seed).unwrap();
@@ -237,10 +228,7 @@ fn a_redeemer_knowing_nothing_shows_no_credential_spec_sync_10() {
 #[test]
 fn a_link_redeemed_through_a_joiner_gets_the_box_from_the_hit_reply_spec_sync_10() {
     const OPEN: u64 = 4;
-    let mut net = Net::new();
-    let host = net.add_host();
-    let (a, account) = crate::net_judgment::account_node(&mut net, 1, host);
-    let (k, kl, _, seed) = crate::net_judgment::link(&mut net, a, account);
+    let (mut net, _, a, _, (k, kl, _, seed)) = crate::net_judgment::linked();
     let at = |key| vec![osis_label::Address { url: osis_transport::peer_url(&[]), key }];
     let ka = reach_ed(&mut net, a);
     let j = net.node(2, &[]);
@@ -268,8 +256,7 @@ fn a_link_redeemed_through_a_joiner_gets_the_box_from_the_hit_reply_spec_sync_10
 // nothing unread); before it, a shared-set request is refused
 #[test]
 fn a_strangers_filter_shows_nothing_the_node_reads_spec_sync_10() {
-    let mut net = Net::new();
-    let (_a, b, _, _) = pair(&mut net);
+    let (mut net, _a, b, _, _) = paired();
     let stranger = net.node(9, &[]);
     let mut p = dial_as(&mut net, stranger, b, [4; 32]);
     let ids = osis_proto::msg::NODE_IDS;
@@ -329,10 +316,7 @@ fn proving_key_actor(net: &mut Net, a: usize, carrier: usize, seed: &osis_crypto
 // actor opens nothing
 #[test]
 fn a_static_entry_hit_opens_only_for_its_proved_key_actor_spec_wire_11_2() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let (a, account) = crate::net_judgment::account_node(&mut net, 1, host);
-    let (_k, label, _l1, seed1) = crate::net_judgment::link(&mut net, a, account);
+    let (mut net, host, a, account, (_k, label, _l1, seed1)) = crate::net_judgment::linked();
     let (_k2, _label2, _l2, seed2) = crate::net_judgment::link(&mut net, a, account);
     let carrier = net.node(2, &[host]);
     let entry = osis_crypto::static_entry(&label, &osis_engine::Identity::from_seed(seed1.clone()).keys().signing.verifying_key());
@@ -379,8 +363,7 @@ fn a_first_contact_costs_one_filter_of_n_beacons() {
 #[test]
 fn the_same_connection_survives_whatever_the_order_spec_sync_10() {
     for flip in [false, true] {
-        let mut net = Net::new();
-        let (a, b, _, r) = pair(&mut net);
+        let (mut net, a, b, _, r) = paired();
         let (c1, c2) = ([0x11u8; 32], [0x22u8; 32]);
         let (mut p1, mut p2) = (dial_as(&mut net, a, b, c1), dial_as(&mut net, a, b, c2));
         let cost = |c: [u8; 32], h: [u8; 32]| connection_order(&r, &c, &h);
@@ -402,10 +385,7 @@ fn the_same_connection_survives_whatever_the_order_spec_sync_10() {
 // value does not open L: only a Hit on a connection that proved the key actor does
 #[test]
 fn a_by_role_listing_a_static_entry_opens_nothing_spec_wire_11_2() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let (a, account) = crate::net_judgment::account_node(&mut net, 1, host);
-    let (_k, label, _l1, seed1) = crate::net_judgment::link(&mut net, a, account);
+    let (mut net, host, a, account, (_k, label, _l1, seed1)) = crate::net_judgment::linked();
     let (_k2, _label2, _l2, seed2) = crate::net_judgment::link(&mut net, a, account);
     let carrier = net.node(2, &[host]);
     let entry = osis_crypto::static_entry(&label, &osis_engine::Identity::from_seed(seed1).keys().signing.verifying_key());
@@ -421,8 +401,7 @@ fn a_by_role_listing_a_static_entry_opens_nothing_spec_wire_11_2() {
 // rotation apart): the listener serves it and the dialer pulls it
 #[test]
 fn an_accepted_by_role_opens_at_its_sender_spec_wire_11_2() {
-    let mut net = Net::new();
-    let (a, b, l, r) = pair(&mut net);
+    let (mut net, a, b, l, r) = paired();
     let (mut p, first) = resumed(&mut net, a, b, &r, CHALLENGE);
     // an empty filter: b finds nothing by testing and offers by role
     let mut msgs = shared_of(&first);
@@ -467,8 +446,7 @@ fn a_credential_open_outlasts_the_peers_being_known_spec_sync_10() {
 // the connection
 #[test]
 fn a_filter_past_the_entry_cap_closes_the_connection_spec_wire_11_2() {
-    let mut net = Net::new();
-    let (a, b, _, r) = pair(&mut net);
+    let (mut net, a, b, _, r) = paired();
     let (mut p, _) = resumed(&mut net, a, b, &r, CHALLENGE);
     // every gap 0: 9 bits an entry
     let n = (1usize << 22) + 1;

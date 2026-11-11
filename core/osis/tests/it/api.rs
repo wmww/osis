@@ -56,7 +56,7 @@ fn create_and_reopen_spec_api_handle() {
 // spec/versioning.md §5 (mistyped reads absent)
 #[test]
 fn typed_keys_and_paths_spec_versioning_5() {
-    let db = db(1);
+    let db = db(0);
     let mut w = db.write();
     let n = w.create_in(db.me(), &[db.home()]).unwrap();
     w.at(n, example::TITLE).set(&"Groceries".to_string()).unwrap();
@@ -108,7 +108,7 @@ fn typed_keys_and_paths_spec_versioning_5() {
 // fetches nothing (it failed `blob missing`, so one such key broke every typed read of the aspect).
 #[test]
 fn link_where_the_type_takes_none_reads_absent_spec_dm_6() {
-    let db = db(1);
+    let db = db(0);
     let mut w = db.write();
     let n = w.create_in(db.me(), &[db.home()]).unwrap();
     w.commit().unwrap();
@@ -131,7 +131,7 @@ fn link_where_the_type_takes_none_reads_absent_spec_dm_6() {
 #[test]
 fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
     use osis::internals::schema::osis_base::{BlobId, Link};
-    let db = db(1);
+    let db = db(0);
     let mut w = db.write();
     let n = w.create_in(db.me(), &[db.home()]).unwrap();
     w.commit().unwrap();
@@ -185,7 +185,7 @@ fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
 // to the aspect.
 #[test]
 fn missed_blob_arriving_redelivers_watches_spec_dm_6() {
-    let db = db(1);
+    let db = db(0);
     let mut w = db.write();
     let n = w.create_in(db.me(), &[db.home()]).unwrap();
     w.commit().unwrap();
@@ -216,7 +216,7 @@ fn missed_blob_arriving_redelivers_watches_spec_dm_6() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn registered_schema_key_spec_api_keys() {
-    let db = db(1);
+    let db = db(0);
     db.register_schema("example.osis", example::SCHEMA.source()).unwrap();
     assert!(db.register_schema("bad.osis", "schema nonsense").is_err());
     // a schema declaring a core AK is the core schema's business, not an app's
@@ -270,7 +270,7 @@ fn titles(db: &Osis, t: osis::Tid) -> Vec<String> {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn write_ops_spec_api_writes() {
-    let db = db(1);
+    let db = db(0);
     let mut w = db.write();
     let t = w.create().unwrap();
     let (m, st, c) = (ak("t:map.0"), ak("t:set.0"), ak("t:reg.0"));
@@ -344,7 +344,7 @@ fn write_ops_spec_api_writes() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn edit_keeps_concurrent_change_set_clobbers_spec_api_footguns() {
-    let db = db(1);
+    let db = db(0);
     let k = ak("t:form.0");
     let form = |a: &str, b: &str| Value::Map(osis_base::ValueMap::from([(Value::Int(0), s(a)), (Value::Int(1), s(b))]));
     let mut w = db.write();
@@ -377,7 +377,7 @@ fn edit_keeps_concurrent_change_set_clobbers_spec_api_footguns() {
 #[test]
 fn materialization_bound_spec_data_model_6() {
     let c = clock();
-    let mut cf = cfg(1, MemStore::new(), &c);
+    let mut cf = cfg(0, MemStore::new(), &c);
     cf.app.read_limit = 64 * 1024;
     let db = osis::internals::create(cf).unwrap();
     let k = ak("t:doc.0");
@@ -396,7 +396,7 @@ fn materialization_bound_spec_data_model_6() {
 // spec/data-model.md §6: a chunked large value reads back whole within the bound.
 #[test]
 fn large_value_round_trip_spec_data_model_6() {
-    let db = db(1);
+    let db = db(0);
     let k = ak("t:blob.0");
     let big = Value::Bytes((0..osis::internals::schema::osis_base::format::CHUNK_THRESHOLD * 2).map(|i| (i % 251) as u8).collect());
     let mut w = db.write();
@@ -525,7 +525,7 @@ fn tree_in_one_commit_spec_permissions_1() {
 // spec/permissions.md §1 (role-class by admins): writer side
 #[test]
 fn role_class_refused_spec_permissions_1() {
-    let db = db(1);
+    let db = db(0);
     let t = db.me();
     let mut w = db.write();
     assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(ak("label.0"))).remove(), Err(Error::Invalid(_))));
@@ -546,7 +546,7 @@ fn role_class_refused_spec_permissions_1() {
 #[test]
 fn expired_unseen_before_tick_spec_crdt_4_7() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     let (k, e) = (ak("t:msg.0"), ak("t:typing+.0"));
     let mut w = db.write();
     let t = w.create().unwrap();
@@ -569,7 +569,7 @@ fn expired_unseen_before_tick_spec_crdt_4_7() {
 #[test]
 fn expiry_retention_purge_spec_commits_5_6() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     let (k, r) = (ak("t:msg.0"), ak("t:keep.0"));
     let mut w = db.write();
     let t = w.create().unwrap();
@@ -600,7 +600,7 @@ fn expiry_retention_purge_spec_commits_5_6() {
 // spec/commits.md §1
 #[test]
 fn act_as_spec_commits_1() {
-    let db = db(1);
+    let db = db(0);
     let mut w = db.write();
     let t = w.create().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:y.0"))).set(&Value::Int(0)).unwrap();
@@ -622,7 +622,7 @@ fn act_as_spec_commits_1() {
 fn local_sync_surface_spec_api_sync() {
     let c = clock();
     let store = MemStore::new();
-    let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap();
+    let db = osis::internals::create(cfg(0, store.clone(), &c)).unwrap();
     assert!(db.saved_peers().unwrap().is_empty());
     let st = db.status().unwrap();
     assert_eq!(st.groups.get(&db.home()).map(|g| g.state), Some(osis::SyncState::NotConnected));
@@ -636,7 +636,7 @@ fn local_sync_surface_spec_api_sync() {
     db.add_peer(&a).unwrap();
     assert!(matches!(common::block_on(db.wait_synced(osis::SyncScope::All)), Err(Error::Network(_))));
     drop(db);
-    let db = osis::internals::open(cfg(1, store, &c)).unwrap();
+    let db = osis::internals::open(cfg(0, store, &c)).unwrap();
     assert_eq!(db.saved_peers().unwrap(), vec![a]);
 }
 
@@ -658,7 +658,7 @@ fn created_reads_through_run_time_key_spec_data_model_9() {
 fn stream_len_set_stream_spec_data_model_6() {
     use std::io::{Read, Seek, SeekFrom};
     let c = clock();
-    let mut cf = cfg(1, MemStore::new(), &c);
+    let mut cf = cfg(0, MemStore::new(), &c);
     cf.app.read_limit = 64 * 1024;
     let db = osis::internals::create(cf).unwrap();
     let k = ak("t:blob.0");
@@ -708,7 +708,7 @@ fn stream_len_set_stream_spec_data_model_6() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn not_synced_diagnostic_spec_api_diagnostics() {
-    let db = db(1);
+    let db = db(0);
     let (tx, rx) = std::sync::mpsc::channel();
     let _sub = db.on_diagnostic(move |_, d| {
         if let osis::Diagnostic::NotSynced { thing, group, .. } = d {
@@ -767,7 +767,7 @@ fn deleted_reads_unknown_spec_api_reads() {
 // group removes its memberships and the subgroup edges pointing at it.
 #[test]
 fn groups_of_relations_spec_data_model_8() {
-    let db = db(1);
+    let db = db(0);
     let home = db.home();
     let (g1, g2, tag, x) = db.commit_with(|w| {
         let group = |w: &mut osis::Write<'_>| -> osis::Result<osis::Tid> {
@@ -812,7 +812,7 @@ fn groups_of_relations_spec_data_model_8() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn membership_reaching_no_synced_group_fails_spec_api_writes() {
-    let db = db(1);
+    let db = db(0);
     let home = db.home();
     let mut w = db.write();
     let g = w.create_in(db.me(), &[home]).unwrap();
@@ -844,7 +844,7 @@ fn membership_reaching_no_synced_group_fails_spec_api_writes() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn close_spec_api_handle() {
-    let db = db(1);
+    let db = db(0);
     let (tx, rx) = std::sync::mpsc::channel();
     let k = ak("t:x.0");
     let mut w = db.write();
@@ -867,12 +867,12 @@ fn close_spec_api_handle() {
 #[test]
 fn close_waits_or_names_holders_spec_api_handle() {
     use std::sync::{Arc, Mutex};
-    let db = db(1);
+    let db = db(0);
     let other = db.clone();
     assert_eq!(db.close(), Ok(osis::Close::StillOpen { handles: 1 }));
     assert_eq!(other.close().unwrap(), osis::Close::Closed);
     for keep in [false, true] {
-        let db = common::db(1);
+        let db = common::db(0);
         let k = ak("t:x.0");
         let mut w = db.write();
         let t = w.create().unwrap();
@@ -954,7 +954,7 @@ fn values_past_limits_huge_spec_data_model() {
 #[test]
 fn expiring_membership_api_writes() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     let x = ak("t:x.0");
     let minute = osis::Expiry::In(std::time::Duration::from_secs(60));
     // a thing's record does not expire: the thing first, then what expires
@@ -1168,7 +1168,7 @@ fn relays_need_a_socket_address() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn sync_refuses_other_peers() {
-    let db = db(1);
+    let db = db(0);
     let (a, b) = (osis::Address::new(&"mem://a".parse().unwrap(), [1; 32]), osis::Address::new(&"mem://b".parse().unwrap(), [2; 32]));
     let mut w = db.write();
     let g = w.create().unwrap();
@@ -1185,7 +1185,7 @@ fn sync_refuses_other_peers() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn knows_is_about_content() {
-    let db = db(1);
+    let db = db(0);
     let k = ak("t:x.0");
     let mut w = db.write();
     let t = w.create().unwrap();
@@ -1208,7 +1208,7 @@ fn knows_is_about_content() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn aspects_agrees_with_reads_after_a_purge() {
-    let db = db(1);
+    let db = db(0);
     let k = ak("t:x.0");
     let mut w = db.write();
     let t = w.create().unwrap();
@@ -1230,7 +1230,7 @@ fn aspects_agrees_with_reads_after_a_purge() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn a_cut_tells_exactly_what_it_took_out_of_sync() {
-    let db = db(1);
+    let db = db(0);
     let k = ak("t:x.0");
     let (tx, rx) = std::sync::mpsc::channel();
     db.on_diagnostic(move |_, d| {
@@ -1292,7 +1292,7 @@ fn a_cut_tells_exactly_what_it_took_out_of_sync() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn cutting_a_subgroup_reports_what_it_strands() {
-    let db = db(1);
+    let db = db(0);
     let k = ak("t:x.0");
     let (tx, rx) = std::sync::mpsc::channel();
     db.on_diagnostic(move |_, d| {
@@ -1331,7 +1331,7 @@ fn cutting_a_subgroup_reports_what_it_strands() {
 #[test]
 fn an_expiring_subgroup_reports_what_it_strands() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     let k = ak("t:x.0");
     let (tx, rx) = std::sync::mpsc::channel();
     db.on_diagnostic(move |_, d| {
@@ -1378,7 +1378,7 @@ fn an_expiring_subgroup_reports_what_it_strands() {
 // own, the collection ops take it too
 #[test]
 fn the_empty_path_is_the_whole_value() {
-    let db = db(1);
+    let db = db(0);
     let (k, l) = (ak("t:x.0"), ak("t:s.0"));
     let t = db.commit_with(|w| {
         let t = w.create()?;
@@ -1412,7 +1412,7 @@ fn the_empty_path_is_the_whole_value() {
 // and ephemeral memberships alike; a thing that is no group has none
 #[test]
 fn members_list_a_groups_members() {
-    let db = db(1);
+    let db = db(0);
     let mut w = db.write();
     let g = w.create().unwrap();
     let kept = w.create().unwrap();
@@ -1437,7 +1437,7 @@ fn members_list_a_groups_members() {
 // in a later commit than its creation or in the same; an ephemeral one stays so
 #[test]
 fn a_first_member_makes_a_group() {
-    let db = db(1);
+    let db = db(0);
     let (plain, other, a, b) = db
         .commit_with(|w| {
             let v = [w.create_with_content(db.home())?, w.create_with_content(db.home())?, w.create_with_content(db.home())?, w.create_with_content(db.home())?];
@@ -1555,7 +1555,7 @@ fn a_member_added_after_a_delete_stays() {
 #[test]
 fn a_lasting_member_outlives_an_expiring_first() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     let (g, x, s, y) = (made(&db), made(&db), made(&db), made(&db));
     let minute = osis::Expiry::In(std::time::Duration::from_secs(60));
     db.commit_with(|w| {
@@ -1596,7 +1596,7 @@ fn a_revert_of_a_first_member_takes_only_it() {
 #[test]
 fn membership_expires_item_or_subgroup_spec_commits_6() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     let minute = osis::Expiry::In(std::time::Duration::from_secs(60));
     let mut w = db.write();
     let (g, t, s, kept) = (w.create_with_content(db.home()).unwrap(), w.create_with_content(db.home()).unwrap(), w.create_with_content(db.home()).unwrap(), w.create_with_content(db.home()).unwrap());
@@ -1634,7 +1634,7 @@ fn membership_expires_item_or_subgroup_spec_commits_6() {
 // spec: none (client surface: notes/api.md Writes). One splice for a list and for text: replaces a range, an empty range inserts, no items delete
 #[test]
 fn splice_lists_and_text() {
-    let db = db(1);
+    let db = db(0);
     let mut w = db.write();
     let t = w.create().unwrap();
     w.at(t, example::TASKS).set(&vec![task("a"), task("b"), task("c")]).unwrap();
@@ -1665,7 +1665,7 @@ fn splice_lists_and_text() {
 // spec: none (client surface: notes/api.md Text editing sessions). Positions are addressed one way: a session at a path as at the aspect
 #[test]
 fn edit_text_by_position() {
-    let db = db(1);
+    let db = db(0);
     let k = ak("t:m.0");
     let mut w = db.write();
     let t = w.create().unwrap();
@@ -1690,7 +1690,7 @@ fn urls_and_serving_policy_are_typed() {
     }
     let long = format!("quic://{}", "h".repeat(osis::internals::schema::osis_base::format::MAX_URL_BYTES));
     assert!(matches!(long.parse::<osis::Url>(), Err(Error::Invalid(_))));
-    let db = db(1);
+    let db = db(0);
     let mut policy = osis::ServingPolicy { group_bytes: 77, ..Default::default() };
     osis::internals::host_limit(&mut policy, "deletes", 9).unwrap();
     db.set_serving(Some(osis::Serving { policy: policy.clone(), ..Default::default() })).unwrap();
@@ -1722,7 +1722,7 @@ fn waiting_calls_are_send() {
 #[test]
 fn value_type_describes_a_key_api_design() {
     use osis::ValueType as V;
-    let db = db(1);
+    let db = db(0);
     db.register_schema(
         "t.osis",
         "revision 1;
@@ -1767,7 +1767,7 @@ aspect t:rec.0: rec;
 // spec: none (API surface); notes/api.md Commits: a commit's and a place's text form names what it was made from, an entry's or a commit's, and anything else is `Invalid`
 #[test]
 fn commit_and_place_text_forms_api_design() {
-    let db = db(1);
+    let db = db(0);
     let k = db.aspect_key("t:x.0").unwrap();
     let mut w = db.write();
     let t = w.create().unwrap();
@@ -1809,7 +1809,7 @@ fn w_ephemeral(db: &Osis, t: osis::Tid) -> osis::CommitId {
 // spec: none (API surface); notes/api.md Serving: an admission id is opaque text, asked of a group; a group that does not sync has none; a peer policy says what it takes on in plain limits, and the rest stays by name
 #[test]
 fn sync_ids_and_serving_policy_api_design() {
-    let db = db(1);
+    let db = db(0);
     let mut w = db.write();
     let g = w.create().unwrap();
     w.at(g, osis::core::NAME).set(&"g".to_string()).unwrap();
@@ -1840,7 +1840,7 @@ fn sync_ids_and_serving_policy_api_design() {
 #[test]
 fn value_type_through_aliases_and_generics_api_design() {
     use osis::ValueType as V;
-    let db = db(1);
+    let db = db(0);
     db.register_schema(
         "t.osis",
         "revision 1;
@@ -1893,7 +1893,7 @@ fn what_public_signatures_show_can_be_named_api_design() {
 #[test]
 fn commit_place_of_any_time_api_design() {
     use osis::{CommitFrom as F, CommitPos as P, Time};
-    let db = db(1);
+    let db = db(0);
     let k = osis::DynamicAspectKey::untyped(ak("t:x.0"));
     let t = db.commit_with(|w| w.create()).unwrap();
     let c = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1)));

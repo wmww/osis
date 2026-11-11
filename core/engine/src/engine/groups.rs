@@ -346,7 +346,7 @@ mod tests {
     // subgroups (cycles allowed); incremental updates equal a recomputation from scratch.
     #[test]
     fn incremental_groups_spec_data_model_8() {
-        let mut rng = osis_crypto::SeededRng::from_u64(8);
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
         let mut g = Groups::default();
         let mut defs = BTreeMap::new();
         for _ in 0..400 {

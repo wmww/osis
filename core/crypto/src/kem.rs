@@ -357,7 +357,7 @@ mod tests {
     // spec/crypto.md §1: hybrid sealed box round trip, layout, and AD/tamper rejection.
     #[test]
     fn hybrid_box() {
-        let mut rng = crate::SeededRng::from_u64(1);
+        let mut rng = crate::SeededRng::from_u64(0);
         let k = KemSecret::derive(&Secret32::from_bytes([1; 32]));
         let b = seal(k.public(), b"ad", b"payload", &mut rng).unwrap();
         assert_eq!(b.len(), SEALED_OVERHEAD + 7);

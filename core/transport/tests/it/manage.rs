@@ -10,13 +10,13 @@ use std::rc::Rc;
 // spec: none (reconnect policy): delays grow to the cap, jitter stays in [d/2, d], same seed same delays.
 #[test]
 fn backoff_grows_and_is_seeded() {
-    let mut b = Backoff::with(100, 3000, 1);
+    let mut b = Backoff::with(100, 3000, 0);
     let d: Vec<u64> = (0..8).map(|_| b.next_delay_ms()).collect();
     for (i, &x) in d.iter().enumerate() {
         let cap = (100u64 << i).min(3000);
         assert!(x <= cap && x >= cap / 2, "{i}: {x}");
     }
-    let mut b2 = Backoff::with(100, 3000, 1);
+    let mut b2 = Backoff::with(100, 3000, 0);
     assert_eq!(d, (0..8).map(|_| b2.next_delay_ms()).collect::<Vec<_>>());
     b.reset();
     assert!(b.next_delay_ms() <= 100);
@@ -25,8 +25,8 @@ fn backoff_grows_and_is_seeded() {
 // spec/sync.md §10: reconnect retries network failures until the host is back.
 #[test]
 fn connect_retries_until_listening() {
-    let net = Net::new(11);
-    let mut s = Sched::new(11, Some(net.clone()));
+    let net = Net::new(0);
+    let mut s = Sched::new(0, Some(net.clone()));
     let secret = StaticSecret::from_bytes([3; 32]);
     let addr = Address { url: "mem://listener".into(), key: InProcess::public_key(&secret) };
     // the host comes up after 50 virtual steps
@@ -42,7 +42,7 @@ fn connect_retries_until_listening() {
     let sl = sleeps.clone();
     let c = s
         .block_on(async move {
-            let mut b = Backoff::with(4, 40, 5);
+            let mut b = Backoff::with(4, 40, 0);
             // one virtual step per millisecond
             connect(&cli, &addr, &mut b, 100, |ms| {
                 *sl.borrow_mut() += 1;
@@ -59,8 +59,8 @@ fn connect_retries_until_listening() {
 // spec/sync.md §10: a pinned-key mismatch is not retried.
 #[test]
 fn connect_does_not_retry_key_mismatch() {
-    let net = Net::new(12);
-    let mut s = Sched::new(12, Some(net.clone()));
+    let net = Net::new(0);
+    let mut s = Sched::new(0, Some(net.clone()));
     let serving = net.endpoint("listener");
     let l = s
         .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([3; 32]) }).await.unwrap() })
@@ -70,7 +70,7 @@ fn connect_does_not_retry_key_mismatch() {
     let cli = net.endpoint("cli");
     let r = s
         .block_on(async move {
-            let mut b = Backoff::new(1);
+            let mut b = Backoff::new(0);
             connect(&cli, &addr, &mut b, 100, |_| async { panic!("retried") }).await.map(|_| ())
         })
         .unwrap();

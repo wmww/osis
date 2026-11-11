@@ -36,7 +36,7 @@ fn redb_store_survives_reopen() {
     let l: LabelId = f.label;
     let blobs: Vec<Vec<u8>> = (1..=3).map(Fixture::blob).collect();
     let (log_id, head) = {
-        let mut s = open(&dir, clock.clone(), HostPolicy::default(), 1);
+        let mut s = open(&dir, clock.clone(), HostPolicy::default(), 0);
         s.push_step(&l, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
         for b in &blobs {
             assert_eq!(s.put(&l, put(b)).unwrap(), Code::OK);
@@ -44,7 +44,7 @@ fn redb_store_survives_reopen() {
         s.delete(&l, &osis_label::blob_id(&blobs[0]), T0).unwrap();
         s.log_head(&l).unwrap()
     };
-    let mut s = open(&dir, clock, HostPolicy::default(), 9);
+    let mut s = open(&dir, clock, HostPolicy::default(), 1);
     assert_eq!(s.log_head(&l).unwrap(), (log_id, head));
     assert_eq!(s.path(&l).unwrap(), vec![f.genesis.clone()]);
     assert!(s.claim_set(&l, &f.genesis.id()).unwrap().is_some());

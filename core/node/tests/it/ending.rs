@@ -171,7 +171,7 @@ fn a_late_write_awaits_an_ended_thing_spec_commits_5() {
 // write comes back to nothing, and its parts are not held
 #[test]
 fn an_ending_while_a_write_awaits_the_thing_spec_commits_5() {
-    let mut lp = crate::common::net(2, 0x7e2);
+    let mut lp = crate::common::net(2, 0);
     lp.sync_all().unwrap();
     let before: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
     let t = crate::common::new_thing(&mut lp, 0);
@@ -198,7 +198,7 @@ fn an_ending_while_a_write_awaits_the_thing_spec_commits_5() {
 
 /// The work of ending one thing holding `parts` writes on a node holding `others` other things.
 fn ending_work(parts: usize, others: usize) -> (crate::scale::Work, crate::scale::Work) {
-    let mut lp = crate::common::net(1, 0x7e3);
+    let mut lp = crate::common::net(1, 0);
     let b = lp.peers[0].backend.clone();
     let mut other = crate::common::new_thing(&mut lp, 0);
     for _ in 0..others {
@@ -270,12 +270,15 @@ fn repro_first_admin_removal_after_ending() {
 #[test]
 fn removal_racing_an_ending_converges_in_both_orders_spec_commits_5() {
     for ending_first in [true, false] {
-        let Setup { mut net, a, b, c, g } = setup();
-        let (t, _) = made(&mut net, a, g);
-        let (tc, tb) = (net.tid(c), net.tid(b));
-        net.grant(a, t, tc, Role::Admin);
-        net.grant(a, t, tb, Role::Read);
-        net.run();
+        let (mut net, (a, b, c, g, t)) = Net::cached("ending::removal_racing", || {
+            let Setup { mut net, a, b, c, g } = setup();
+            let (t, _) = made(&mut net, a, g);
+            let (tc, tb) = (net.tid(c), net.tid(b));
+            net.grant(a, t, tc, Role::Admin);
+            net.grant(a, t, tb, Role::Read);
+            net.run();
+            (net, (a, b, c, g, t))
+        });
         // who is cut off until both are written: the side that took the other first
         let off = if ending_first { c } else { a };
         net.set_online(off, false);
@@ -350,7 +353,7 @@ fn a_fall_judges_again_what_waited_on_the_ended_thing_spec_commits_5() {
 // request of something else
 #[test]
 fn an_expiry_ending_keeps_nothing_beside_a_purge_spec_commits_5() {
-    let mut lp = crate::common::net(1, 0x7e4);
+    let mut lp = crate::common::net(1, 0);
     let at = osis_base::WallMs(lp.peers[0].engine.now().0 + 1_000);
     let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
@@ -376,11 +379,14 @@ fn an_expiry_ending_keeps_nothing_beside_a_purge_spec_commits_5() {
 fn removal_and_regrant_around_an_ending_converge_in_any_order_spec_commits_5() {
     // the ending first (it stands, falls, stands again), between the two, and last
     for order in [[0, 1, 2], [1, 0, 2], [1, 2, 0]] {
-        let Setup { mut net, a, b, c, g } = setup();
-        let (t, _) = made(&mut net, a, g);
-        let tb = net.tid(b);
-        net.grant(a, t, tb, Role::Admin);
-        net.run();
+        let (mut net, (a, b, c, _, t, tb)) = Net::cached("ending::removal_and_regrant", || {
+            let Setup { mut net, a, b, c, g } = setup();
+            let (t, _) = made(&mut net, a, g);
+            let tb = net.tid(b);
+            net.grant(a, t, tb, Role::Admin);
+            net.run();
+            (net, (a, b, c, g, t, tb))
+        });
         // a takes all three in turn: c's removal of b, c's re-grant of b, and b's request after them
         net.set_online(a, false);
         net.advance(10);
@@ -409,7 +415,7 @@ fn removal_and_regrant_around_an_ending_converge_in_any_order_spec_commits_5() {
 // thing's standing edges; once its last dependent ends too, neither leaves anything
 #[test]
 fn an_ended_first_admin_stays_a_chain_proof_until_its_last_dependent_goes_spec_commits_5() {
-    let mut lp = crate::common::net(2, 0x7e5);
+    let mut lp = crate::common::net(2, 0);
     lp.sync_all().unwrap();
     let now = lp.peers[0].engine.now().0;
     let me = lp.peers[0].engine.me();
@@ -451,7 +457,7 @@ fn an_ended_first_admin_stays_a_chain_proof_until_its_last_dependent_goes_spec_c
 // once that thing ends too, nothing of either is left
 #[test]
 fn an_ended_holder_stays_until_what_names_it_goes_spec_commits_5() {
-    let mut lp = crate::common::net(2, 0x7e6);
+    let mut lp = crate::common::net(2, 0);
     lp.sync_all().unwrap();
     let now = lp.peers[0].engine.now().0;
     let me = lp.peers[0].engine.me();
@@ -837,9 +843,12 @@ fn setup_reader() -> (Setup, usize) {
 #[test]
 fn a_minting_again_the_request_can_drop_never_brings_back_a_purged_thing_spec_commits_5() {
     for order in [[0, 1, 2, 3], [1, 0, 2, 3], [2, 3, 1, 0], [3, 2, 0, 1]] {
-        let (Setup { mut net, a, b, c, g }, r) = setup_reader();
-        let (t, _) = made(&mut net, a, g);
-        net.run();
+        let (mut net, (a, b, c, _, r, t)) = Net::cached("ending::minting_again_can_drop", || {
+            let (Setup { mut net, a, b, c, g }, r) = setup_reader();
+            let (t, _) = made(&mut net, a, g);
+            net.run();
+            (net, (a, b, c, g, r, t))
+        });
         assert!(net.engine(r).core.created(&t).is_some(), "order {order:?}: r holds t's record");
         net.set_online(c, false);
         for n in [a, b, r] {
@@ -917,10 +926,13 @@ fn a_durable_minting_again_keeps_an_expiring_thing_but_not_its_content_spec_comm
 #[test]
 fn an_edge_write_after_an_ending_counts_nowhere_spec_commits_5() {
     for grant_first in [true, false] {
-        let (Setup { mut net, a, b, c, g }, r) = setup_reader();
-        let (t, _) = made(&mut net, a, g);
-        let x = net.item(a, g, t, "x");
-        net.run();
+        let (mut net, (a, b, c, _, r, t, x)) = Net::cached("ending::edge_write_after", || {
+            let (Setup { mut net, a, b, c, g }, r) = setup_reader();
+            let (t, _) = made(&mut net, a, g);
+            let x = net.item(a, g, t, "x");
+            net.run();
+            (net, (a, b, c, g, r, t, x))
+        });
         let tr = net.tid(r);
         assert_eq!(net.engine(r).role_on(&x), Some(Role::Read), "grant first {grant_first}: r reads x through g");
         // c, offline, has not heard of the ending: its grant is a writer's, stamped after it
@@ -996,12 +1008,15 @@ fn a_newcomer_refuses_an_edge_write_after_an_ending_spec_commits_5() {
 #[test]
 fn a_demotion_after_an_ending_does_not_undo_it_spec_commits_5() {
     for demotion_first in [true, false] {
-        let Setup { mut net, a, b, c, g } = setup();
-        let (t, _) = made(&mut net, a, g);
-        let tc = net.tid(c);
-        set_edge(net.engine(a), t, tc, Role::Admin);
-        demote(&mut net, a, g, tc, Role::Read);
-        net.run();
+        let (mut net, (a, b, c, _, t, tc)) = Net::cached("ending::demotion_after", || {
+            let Setup { mut net, a, b, c, g } = setup();
+            let (t, _) = made(&mut net, a, g);
+            let tc = net.tid(c);
+            set_edge(net.engine(a), t, tc, Role::Admin);
+            demote(&mut net, a, g, tc, Role::Read);
+            net.run();
+            (net, (a, b, c, g, t, tc))
+        });
         net.set_online(a, false);
         net.set_online(b, false);
         net.advance(10);
@@ -1121,11 +1136,14 @@ fn a_minting_again_the_request_cannot_drop_brings_back_a_live_thing_alike_spec_c
 #[test]
 fn a_second_ending_after_one_that_falls_ends_the_thing_spec_commits_5() {
     for order in [[1, 2, 0], [0, 1, 2]] {
-        let (Setup { mut net, a, b, c, g }, r) = setup_reader();
-        let (t, _) = made(&mut net, a, g);
-        let tb = net.tid(b);
-        set_edge(net.engine(a), g, tb, Role::Admin);
-        net.run();
+        let (mut net, (a, b, c, g, r, t, tb)) = Net::cached("ending::second_ending", || {
+            let (Setup { mut net, a, b, c, g }, r) = setup_reader();
+            let (t, _) = made(&mut net, a, g);
+            let tb = net.tid(b);
+            set_edge(net.engine(a), g, tb, Role::Admin);
+            net.run();
+            (net, (a, b, c, g, r, t, tb))
+        });
         for n in [a, b, c, r] {
             net.set_online(n, false);
         }

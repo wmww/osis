@@ -24,7 +24,7 @@ fn write_all(m: &mut Mutation, t: osis_base::Tid, n: i64, tag: &str) {
 // whatever the delivery order; reads agree.
 #[test]
 fn every_encoding_converges_spec_crdt_5() {
-    let mut lp = net(2, 11);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
@@ -65,7 +65,7 @@ fn every_encoding_converges_spec_crdt_5() {
 // spec/crdt.md §5.7: lists and texts through the write path; concurrent inserts converge.
 #[test]
 fn sequences_converge_spec_crdt_5_7() {
-    let mut lp = net(2, 13);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
@@ -97,7 +97,7 @@ fn sequences_converge_spec_crdt_5_7() {
 // travels and reads back.
 #[test]
 fn big_list_insert_fits_blobs_spec_crdt_3_3() {
-    let mut lp = net(2, 15);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let n = osis_base::format::CHUNK_THRESHOLD - 8;
     let items: Vec<Value> = (0..65).map(|i| s(&format!("{i:03}{}", "z".repeat(n - 3)))).collect();
@@ -113,7 +113,7 @@ fn big_list_insert_fits_blobs_spec_crdt_3_3() {
 // blobs and read back whole; an equal rewrite changes nothing.
 #[test]
 fn large_value_spec_dm_6() {
-    let mut lp = net(2, 14);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let data: Vec<u8> = (0..300_000u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
     let mut m = Mutation::new();
@@ -138,7 +138,7 @@ fn large_value_spec_dm_6() {
 fn ill_typed_core_element_refused_spec_crdt_3_3() {
     let bogus = Value::link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
     for bad in [bogus, Value::Int(5)] {
-        let mut lp = net(2, 15);
+        let mut lp = net(2, 0);
         let t = new_thing(&mut lp, 0);
         let (x, y) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
         let mut m = Mutation::new();
@@ -167,7 +167,7 @@ fn ill_typed_core_element_refused_spec_crdt_3_3() {
 // chunked, a register's string, a set element and a map key are.
 #[test]
 fn large_values_of_a_writer_pass_the_reader_spec_dm_6() {
-    let mut lp = net(2, 22);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let big = "z".repeat(osis_base::format::CHUNK_THRESHOLD + 1);
     // as many bytes in a quarter of the chars: a text costs per char
@@ -194,7 +194,7 @@ fn large_values_of_a_writer_pass_the_reader_spec_dm_6() {
 // canonical states agree with a model and across peers.
 #[test]
 fn paged_struct_field_converges() {
-    let mut lp = net(2, 21);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
@@ -222,7 +222,7 @@ fn paged_struct_field_converges() {
         lp.peers[w].commit(m).unwrap().unwrap();
         sync(&mut lp, w, 1 - w);
         if round == 5 {
-            lp.peers[1].restart(77).unwrap();
+            lp.peers[1].restart(1).unwrap();
         }
         for p in 0..2 {
             assert_eq!(lp.peers[p].engine.get(&t, &ak("t:book.0")).unwrap(), Some(book(&model, &note)), "round {round} peer {p}");
@@ -240,7 +240,7 @@ fn paged_struct_field_converges() {
 #[test]
 #[ignore = "by hand: ~20 s"]
 fn range_delta_rewrites_its_pages_spec_crdt_8() {
-    let mut lp = net(2, 14);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
@@ -262,7 +262,7 @@ fn range_delta_rewrites_its_pages_spec_crdt_8() {
         osis_crdt::encode_snapshot(&snap, &cx, None).unwrap()
     };
     let before = carried(lp.peers[0].engine.state(&t, &ak("t:text.0")).unwrap());
-    lp.peers[0].restart(140).unwrap();
+    lp.peers[0].restart(0).unwrap();
     assert!(carried(lp.peers[0].engine.state(&t, &ak("t:text.0")).unwrap()) == before, "state after restart");
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:text.0")).unwrap(), Some(s(&want)));
 }
@@ -274,7 +274,7 @@ fn range_delta_rewrites_its_pages_spec_crdt_8() {
 // `None`.
 #[test]
 fn range_reads_by_index_spec_crdt_5_7() {
-    let mut lp = net(2, 23);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
@@ -297,21 +297,21 @@ fn range_reads_by_index_spec_crdt_5_7() {
         assert_eq!(all.len(), 2501);
         assert!(all.contains(&s("from b")));
         // the edits kept the stored placement: no read lays it out anew
-        lp.peers[p].restart(59).unwrap();
+        lp.peers[p].restart(p as u64).unwrap();
         osis_node::costs::take();
         assert_eq!(lp.peers[p].engine.get_range(&t, &ak("t:list.0"), &[], 0..2).unwrap(), Some(Value::List(all[0..2].to_vec())));
         let loads = osis_node::costs::take().iter().find(|x| x.0 == "state page load").map_or(0, |x| x.2);
         assert!((1..=3).contains(&loads), "kept through the edits: {loads} pages");
         for r in [1195..1210, 1490..1510, 0..3, 2495..2600] {
             // a new session: nothing loaded
-            lp.peers[p].restart(60 + r.start as u64).unwrap();
+            lp.peers[p].restart(p as u64).unwrap();
             let want = all.get(r.start.min(all.len())..r.end.min(all.len())).unwrap().to_vec();
             osis_node::costs::take();
             assert_eq!(lp.peers[p].engine.get_range(&t, &ak("t:list.0"), &[], r.clone()).unwrap(), Some(Value::List(want)), "peer {p} {r:?}");
             let loads = osis_node::costs::take().iter().find(|x| x.0 == "state page load").map_or(0, |x| x.2);
             assert!((1..=3).contains(&loads), "peer {p} {r:?}: {loads} pages loaded");
         }
-        lp.peers[p].restart(70).unwrap();
+        lp.peers[p].restart(p as u64).unwrap();
         osis_node::costs::take();
         lp.peers[p].engine.get(&t, &ak("t:list.0")).unwrap();
         let loads = osis_node::costs::take().iter().find(|x| x.0 == "state page load").map_or(0, |x| x.2);
@@ -327,7 +327,7 @@ fn range_reads_by_index_spec_crdt_5_7() {
 // through a paged one's stored placement in a new session.
 #[test]
 fn reversed_range_reads_empty_spec_crdt_5_7() {
-    let mut lp = net(1, 31);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let items: Vec<Value> = (0..2500).map(|i| s(&format!("item-{i:06}-padding-padding"))).collect();
     let mut m = Mutation::new();
@@ -335,7 +335,7 @@ fn reversed_range_reads_empty_spec_crdt_5_7() {
     lp.peers[0].commit(m).unwrap().unwrap();
     let reversed = std::ops::Range { start: 10, end: 5 };
     assert_eq!(lp.peers[0].engine.get_range(&t, &ak("t:list.0"), &[], reversed.clone()).unwrap(), Some(Value::List(Vec::new())));
-    lp.peers[0].restart(7).unwrap();
+    lp.peers[0].restart(0).unwrap();
     assert_eq!(lp.peers[0].engine.get_range(&t, &ak("t:list.0"), &[], reversed.clone()).unwrap(), Some(Value::List(Vec::new())));
 }
 
@@ -343,21 +343,21 @@ fn reversed_range_reads_empty_spec_crdt_5_7() {
 // holding a paged text reads absent, as a read at that key does, in the session and a new one.
 #[test]
 fn range_under_removed_key_absent_spec_crdt_5_6() {
-    let mut lp = net(1, 29);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let big = |c: char| s(&std::iter::repeat_n(c, 30_000).collect::<String>());
     let mut m = Mutation::new();
     m.op(t, &DOCS, PathOp { path: vec![PathSeg::Key(s("a"))], op: Op::Set(big('a')) }).unwrap();
     m.op(t, &DOCS, PathOp { path: vec![PathSeg::Key(s("b"))], op: Op::Set(big('b')) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
-    lp.peers[0].restart(5).unwrap();
+    lp.peers[0].restart(0).unwrap();
     assert_eq!(lp.peers[0].engine.get_range(&t, &ak("t:docs.0"), &[PathSeg::Key(s("a"))], 0..5).unwrap(), Some(s("aaaaa")));
     let mut m = Mutation::new();
     m.op(t, &DOCS, PathOp { path: vec![], op: Op::Remove(s("a")) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     for session in 0..2 {
         if session == 1 {
-            lp.peers[0].restart(6).unwrap();
+            lp.peers[0].restart(0).unwrap();
         }
         let e = &mut lp.peers[0].engine;
         assert_eq!(e.get_at(&t, &ak("t:docs.0"), &[PathSeg::Key(s("a"))]).unwrap(), None);
@@ -370,7 +370,7 @@ fn range_under_removed_key_absent_spec_crdt_5_6() {
 // 2049-4096 readers passes `CHUNK_THRESHOLD`; its `label.0` write applies at its writer and reader.
 #[test]
 fn label_claim_set_above_the_threshold_stays_inline_spec_dm_6() {
-    let mut lp = net(2, 25);
+    let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let claims = osis_label::ClaimSet { claims: vec![[1; 32]; 4096], entries: Default::default() }.to_bytes();
     assert!(claims.len() > osis_base::format::CHUNK_THRESHOLD);

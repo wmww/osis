@@ -259,7 +259,7 @@ mod tests {
     // (recipient, "inbox", prefix); expiry INBOX_LIFETIME after now; no commitments.
     #[test]
     fn round_trip() {
-        let mut rng = SeededRng::from_u64(1);
+        let mut rng = SeededRng::from_u64(0);
         let kem = KemSecret::derive(&Secret32::from_bytes([9; 32]));
         let r = Tid::from_bytes([5; 15]);
         let b = seal_inbox_blob(&r, kem.public(), &payload(), WallMs(1000), &mut rng).unwrap();
@@ -276,7 +276,7 @@ mod tests {
     // never as a role commit's payload.
     #[test]
     fn stranded_notice_round_trip() {
-        let mut rng = SeededRng::from_u64(2);
+        let mut rng = SeededRng::from_u64(0);
         let kem = KemSecret::derive(&Secret32::from_bytes([9; 32]));
         let r = Tid::from_bytes([5; 15]);
         let p = payload();

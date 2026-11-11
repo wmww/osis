@@ -23,15 +23,7 @@ fn rss_kib() -> u64 {
 
 /// A net where `x` writes ephemeral data on durable thing `t` that `b` holds: (net, b, x, t).
 fn eph_net() -> (crate::net::Net, usize, usize, Tid) {
-    use crate::net::*;
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let x = net.node(3, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (x, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "durable");
-    net.run();
+    let (net, _, [_, b, x], _, [t]) = crate::net::hosted::<3, 1>(&[(1, Role::Write), (2, Role::Write)], ["durable"], true);
     (net, b, x, t)
 }
 
@@ -261,7 +253,7 @@ fn big_map_apply_memory() {
         });
         return;
     }
-    let mut lp = osis_node::local_peer::LocalPeer::new(1, 49, WallMs(1_700_000_000_000)).unwrap();
+    let mut lp = crate::common::net(1, 0);
     let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);

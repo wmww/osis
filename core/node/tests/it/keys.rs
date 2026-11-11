@@ -59,7 +59,7 @@ fn rotation_commit_to(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Rol
 // that commit is applied; establishment is recomputed after a restart.
 #[test]
 fn rotation_out_of_order_spec_crypto_4() {
-    let mut lp = net(2, 81);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let a = new_thing(&mut lp, 0);
     let (c1, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from([Role::Read, Role::Write, Role::Admin]), &Names::default());
@@ -98,7 +98,7 @@ fn rotation_out_of_order_spec_crypto_4() {
 // the delta's box, then the chain of held history entries, without reading every box.
 #[test]
 fn history_chain_from_state_spec_crypto_4() {
-    let mut lp = net(2, 84);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let a = new_thing(&mut lp, 0);
     let roles = BTreeSet::from([Role::Read]);
@@ -115,7 +115,7 @@ fn history_chain_from_state_spec_crypto_4() {
     let view = e.epochs(&a).unwrap();
     let state = e.get(&a, &ak("secrets.0")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap();
     let hist = osis_keys::history_boxes(&a, &view, &state, &osis_keys::HistoryAlts::new(), &osis_keys::AllHeld);
-    let w = osis_keys::box_holder(&a, &view, &hist, &rcpt(&mut lp, 1, Role::Read), &roles, &mut SeededRng::from_u64(3)).unwrap().unwrap();
+    let w = osis_keys::box_holder(&a, &view, &hist, &rcpt(&mut lp, 1, Role::Read), &roles, &mut SeededRng::from_u64(0)).unwrap().unwrap();
     let mut m = Mutation::new();
     for (k, b) in &w.boxes {
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
@@ -133,7 +133,7 @@ fn history_chain_from_state_spec_crypto_4() {
 // it). Tids descend along the chain, so a bare sweep over actors in tid order opens one level per sweep.
 #[test]
 fn key_actor_opens_deep_holder_chain_spec_crypto_4() {
-    let mut lp = net(2, 85);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let mut chain: Vec<Tid> = (0..12).map(|_| new_thing(&mut lp, 0)).collect();
     chain.sort_by(|a, b| b.cmp(a));
@@ -158,7 +158,7 @@ fn key_actor_opens_deep_holder_chain_spec_crypto_4() {
 // whole arrival does (a certificate copy of some parts may come first).
 #[test]
 fn late_keys_part_establishes_rotation_spec_crypto_4() {
-    let mut lp = net(2, 86);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let a = new_thing(&mut lp, 0);
     let (_, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from([Role::Read, Role::Write, Role::Admin]), &Names::default());
@@ -190,7 +190,7 @@ fn late_keys_part_establishes_rotation_spec_crypto_4() {
 // established, as a rebuild from the commit records does
 #[test]
 fn own_secrets_keep_derived_epochs_spec_crypto_4() {
-    let mut lp = LocalPeer::new(1, 0x77, T0).unwrap();
+    let mut lp = net(1, 0);
     let e = &mut lp.peers[0].engine;
     let me = e.me();
     let mut m = Mutation::new();

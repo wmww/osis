@@ -232,7 +232,7 @@ fn forged_entry_box_teaches_nothing_spec_sync_5() {
     let skeys = StepKeys::derive(&read, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
     let delete = label_role_key(LabelRole::Delete, &admin, 0);
     let reader = osis_label::Reader::Static { signing: keys.signing.verifying_key(), kem: keys.kem.public() };
-    let (fake, set) = register(Parent::Genesis(&delete), skeys, &[reader], (&ka, Epoch::derive(&ka, Role::Read, 0, &read).unwrap(), &read), &mut SeededRng::from_u64(9)).unwrap();
+    let (fake, set) = register(Parent::Genesis(&delete), skeys, &[reader], (&ka, Epoch::derive(&ka, Role::Read, 0, &read).unwrap(), &read), &mut SeededRng::from_u64(0)).unwrap();
     let entry_box = set.entry_box(&fake.label, &keys.signing.verifying_key()).cloned().expect("entry box");
     let target = LabelId([0x42; 16]);
     let addr = net.address(host);
@@ -287,11 +287,11 @@ fn substituted_entry_box_teaches_nothing_spec_sync_2() {
     let reader = || osis_label::Reader::Static { signing: keys.signing.verifying_key(), kem: keys.kem.public() };
     let e1 = Epoch::derive(&ka, Role::Read, 1, &read).unwrap();
     // the genuine genesis (its path verifies), and a box for its slot carrying another secret
-    let (head, _) = register(Parent::Genesis(&delete), skeys, &[reader()], (&ka, e1, &read), &mut SeededRng::from_u64(10)).unwrap();
+    let (head, _) = register(Parent::Genesis(&delete), skeys, &[reader()], (&ka, e1, &read), &mut SeededRng::from_u64(0)).unwrap();
     let slot = osis_crypto::BoxSlot::Entry { label: head.label, step_key: head.step_key, group: ka };
     let other = Secret32::from_bytes([0x99; 32]);
     let item = osis_crypto::EntryItem { epoch: Epoch::derive(&ka, Role::Read, 1, &other).unwrap(), secret: other, earlier: None };
-    let sealed = osis_crypto::seal_entry(keys.kem.public(), &slot, &item, &mut SeededRng::from_u64(11)).unwrap();
+    let sealed = osis_crypto::seal_entry(keys.kem.public(), &slot, &item, &mut SeededRng::from_u64(1)).unwrap();
     use osis_schema::core_types as ct;
     let forged = ct::SecretBox::Sealed(ct::SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: ct::Sealed::X25519MlKem768(sealed) });
     let target = head.label;
@@ -462,9 +462,9 @@ fn linked_header_prefix_checked_spec_commits_4() {
     // the same body under a prefix with another expiry and no commitments
     let read = net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
     let cb = osis_commit::CommitBlob::decode(&body.plaintext).unwrap();
-    let env = osis_commit::seal_commit(&cb, |_| (), |_, _| Some((read.clone(), vec![])), &[], &mut SeededRng::from_u64(4)).unwrap();
+    let env = osis_commit::seal_commit(&cb, |_| (), |_, _| Some((read.clone(), vec![])), &[], &mut SeededRng::from_u64(0)).unwrap();
     let prefix = osis_label::Prefix::new([5; 16], Some(osis_base::WallMs(T0 + 1_000_000_000)), vec![]).unwrap();
-    let (key, blob) = osis_label::frame(&prefix, &env.encode(), &mut SeededRng::from_u64(3)).unwrap();
+    let (key, blob) = osis_label::frame(&prefix, &env.encode(), &mut SeededRng::from_u64(1)).unwrap();
     let id = osis_label::blob_id(&blob);
     let secret = net.engine(a).wrap_secret(&g, Some((&c, &parts))).unwrap().unwrap();
     let wrap = osis_crypto::wrap(&secret, &id, &key, 1).unwrap();
@@ -1002,7 +1002,16 @@ struct OneGroup {
     id: osis_base::BlobId,
 }
 
+/// Built once per `dead` (`Net::cached`).
 fn one_group(dead: bool) -> OneGroup {
+    let (net, (host, a, c, w, d, g, t, u, cx, l, id)) = Net::cached(&format!("hostile_host::one_group/{dead}"), || {
+        let OneGroup { net, host, a, c, w, d, g, t, u, cx, l, id } = one_group_built(dead);
+        (net, (host, a, c, w, d, g, t, u, cx, l, id))
+    });
+    OneGroup { net, host, a, c, w, d, g, t, u, cx, l, id }
+}
+
+fn one_group_built(dead: bool) -> OneGroup {
     use osis_node::sync::EntryKind;
     use osis_schema::{History, PurgeBy, Retention};
     let mut net = Net::new();
@@ -1123,7 +1132,7 @@ fn replace_by_corrupted_section_healed_by_its_readers_spec_sync_6() {
         let mut x = one_group(false);
         let (a, c, d, g, u, cx) = (x.a, x.c, x.d, x.g, x.u, x.cx);
         let body = x.net.engine(c).label_bodies_meta(&g).unwrap().into_iter().find(|b| b.commit == cx).unwrap();
-        let mut rng = SeededRng::from_u64(0xc0);
+        let mut rng = SeededRng::from_u64(0);
         let e = x.net.engine(c);
         let good = e.seal(&body, osis_label::Class::Durable, &[], &mut rng).unwrap().unwrap();
         let (_, pt) = osis_label::open(&good.blob, &good.key).unwrap();

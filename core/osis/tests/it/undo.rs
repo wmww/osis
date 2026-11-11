@@ -136,7 +136,7 @@ fn register_with_history_undoes_anywhere_spec_crdt_4_6() {
 // aspect the thing's setting keeps, a map entry's creation undoes and redoes.
 #[test]
 fn redo_follows_undone_write_spec_commits_7() {
-    let db = setup(11);
+    let db = setup(0);
     let m = key(&db, "app:km.0");
     let t = kept_thing(&db);
     let scope = Scope::Aspects(vec![(t, ak("app:km.0"))]);
@@ -157,7 +157,7 @@ fn scope_of(t: osis::Tid) -> Scope {
 fn undo_alike_held_or_compacted_spec_crdt_4_6() {
     for name in ["app:k.0", "app:n.0"] {
         let outcome = |compact: bool| {
-            let db = setup(3);
+            let db = setup(0);
             let t = kept_thing(&db);
             let first = sets(&db, t, name, &[1]);
             if compact {
@@ -187,7 +187,7 @@ fn undo_alike_held_or_compacted_spec_crdt_4_6() {
 // history a first register set undoes to absent and redoes.
 #[test]
 fn takings_undo_without_history_redo_needs_it_spec_crdt_4_6() {
-    let db = setup(4);
+    let db = setup(0);
     let t = kept_thing(&db);
     let (l, m) = (key(&db, "app:l.0"), key(&db, "app:m.0"));
     commit_with(&db, |w| w.at(t, l.clone()).set(&Value::List(vec![Value::Int(1)])));
@@ -257,7 +257,7 @@ fn ephemeral_undo_from_kept_history_spec_crdt_4_6() {
 // steps through cursor moves.
 #[test]
 fn thing_scope_skips_cursor_spec_crdt_4_6() {
-    let db = setup(7);
+    let db = setup(0);
     let (text, cursor) = (key(&db, "app:k.0"), key(&db, "app:ke+.0"));
     let mut w = db.write();
     let d = w.create_with_content(db.home()).unwrap();
@@ -282,7 +282,7 @@ fn thing_scope_skips_cursor_spec_crdt_4_6() {
 // steps newest first across durable and ephemeral changes, redo back.
 #[test]
 fn mixed_scope_undo_order_spec_crdt_4_6() {
-    let db = setup(8);
+    let db = setup(0);
     let (body, draft) = (key(&db, "app:k.0"), key(&db, "app:ke+.0"));
     let (f, item) = db
         .commit_with(|w| {
@@ -319,7 +319,7 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
 // undone and redone. Durable and ephemeral alike.
 #[test]
 fn undo_takes_no_key_default_spec_crdt_4_6() {
-    let db = setup(30);
+    let db = setup(0);
     db.register_schema("rv.osis", "revision 1;\nexpires(30d) aspect app:d.0: int;\naspect app:p.0: int;\nexpires(30s) ephemeral aspect app:de+.0: int;\nephemeral aspect app:pe+.0: int;").unwrap();
     let t = db.commit_with(|w| { let t = w.create_with_content(db.home())?; keep_all(w, t); Ok(t) }).unwrap();
     for (x, y) in [("app:d.0", "app:p.0"), ("app:de+.0", "app:pe+.0")] {
@@ -343,7 +343,7 @@ fn undo_takes_no_key_default_spec_crdt_4_6() {
 #[test]
 fn undo_needing_two_expiries_waits_spec_crdt_4_6() {
     let c = clock();
-    let db = osis::internals::create(cfg(31, MemStore::new(), &c)).unwrap();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     db.register_schema("two.osis", "revision 1;\naspect app:a.0: int;\naspect app:b.0: int;\nephemeral aspect app:c+.0: int;\nephemeral aspect app:d+.0: int;").unwrap();
     let t = db.commit_with(|w| { let t = w.create_with_content(db.home())?; keep_all(w, t); Ok(t) }).unwrap();
     for (x, y) in [("app:a.0", "app:b.0"), ("app:c+.0", "app:d+.0")] {
@@ -375,7 +375,7 @@ fn undo_needing_two_expiries_waits_spec_crdt_4_6() {
 // the field emptied.
 #[test]
 fn undo_over_forgotten_ephemeral_part_not_undoable_spec_commits_7() {
-    let db = osis::internals::create(cfg(12, MemStore::new(), &clock())).unwrap();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &clock())).unwrap();
     db.register_schema("x.osis", "revision 1;\nexpires(1h) ephemeral aspect app:xe+.0: int;").unwrap();
     let t = kept_thing(&db);
     let first = sets(&db, t, "app:xe+.0", &[1]);

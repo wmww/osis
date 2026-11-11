@@ -221,8 +221,8 @@ mod tests {
     // without its transport, which is unknown (parked); unix:// is never dialed.
     #[test]
     fn dispatch_by_scheme_spec_sync_10() {
-        let net = Net::new(3);
-        let mut sched = Sched::new(3, Some(net.clone()));
+        let net = Net::new(0);
+        let mut sched = Sched::new(0, Some(net.clone()));
         let (a, b): (Multi, Multi) = (Multi { mem: Some(net.endpoint("a")), ..Multi::default() }, Multi { mem: Some(net.endpoint("b")), ..Multi::default() });
         let secret = StaticSecret::from_bytes([5; 32]);
         let done = sched.block_on(async move {

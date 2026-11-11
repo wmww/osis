@@ -35,7 +35,7 @@ fn fill(s: &mut Store, rng: &mut SeededRng, n: u32, batch: u32) {
 #[test]
 fn stream_and_positions() {
     let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(2);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     fill(&mut s, &mut rng, 1500, 1500);
     let mut t = s.transaction(&mut rng).unwrap();
@@ -72,7 +72,7 @@ fn stream_and_positions() {
 /// not): (unit rows rewritten, rows written, bytes written).
 fn table_edit(n: u32) -> (usize, u64, u64) {
     let b = MemoryBackend::new();
-    let mut rng = SeededRng::from_u64(3);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = Store::create(Box::new(b.clone()), Box::new(osis_store::MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
     fill(&mut s, &mut rng, n, 50_000);
     let before = b.dump();
@@ -109,7 +109,7 @@ fn table_edit_is_flat() {
 #[test]
 fn a_table_page_is_decoded_once_per_write() {
     let b = MemoryBackend::new();
-    let mut rng = SeededRng::from_u64(5);
+    let mut rng = SeededRng::from_u64(0);
     let mut s = Store::create(Box::new(b.clone()), Box::new(osis_store::MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
     fill(&mut s, &mut rng, 3_000, 50_000);
     let key = |i: u32| format!("key{i:08}").into_bytes();

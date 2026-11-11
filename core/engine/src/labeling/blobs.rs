@@ -759,7 +759,7 @@ mod tests {
     #[test]
     fn derives_through_a_first_admin_spec_crypto_3() {
         use crate::Mutation;
-        let mut lp = crate::local_peer::LocalPeer::new(1, 942, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.me();
         let (o, _) = e.create_with_admin(&me).unwrap();
@@ -781,7 +781,7 @@ mod tests {
     #[test]
     fn label_bodies_cached_per_commit_spec_sync_6() {
         use crate::Mutation;
-        let mut lp = crate::local_peer::LocalPeer::new(1, 941, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.me();
         let mut m = Mutation::new();

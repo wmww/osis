@@ -81,7 +81,7 @@ mod tests {
     // again, and other commits arriving, decode nothing of it; a write of its record does.
     #[test]
     fn a_stored_commit_is_decoded_once_per_record_write() {
-        let mut lp = crate::local_peer::LocalPeer::new(1, 977, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.me();
         let ak = Ak::new("x:a.0").unwrap();

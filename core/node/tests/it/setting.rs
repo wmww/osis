@@ -18,8 +18,14 @@ fn keep(after: u64) -> History {
     History::Keep { until: None, after: Some(after) }
 }
 
-/// Alice (0) is first admin of D, Bob (1) writes, Carol (2) is an admin.
-fn setup(seed: u64) -> (LocalPeer, Tid) {
+/// Alice (0) is first admin of D, Bob (1) writes, Carol (2) is an admin: built once
+/// (`LocalPeer::cached`).
+fn setup() -> (LocalPeer, Tid) {
+    LocalPeer::cached("setting::setup", || setup_seeded(0))
+}
+
+/// `setup` over `net(3, seed)`.
+fn setup_seeded(seed: u64) -> (LocalPeer, Tid) {
     let mut lp = net(3, seed);
     let mut m = Mutation::new();
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
@@ -64,6 +70,9 @@ fn base(lp: &mut LocalPeer) -> Vec<Package> {
     x.into_iter().map(|x| x.1).collect()
 }
 
+/// A node apart from `setup`'s (seeds 0 to 2).
+const FRESH: u64 = 3;
+
 /// A node at wall time `at` holding `base` then `order`.
 fn fresh(base: &[Package], order: &[&Package], seed: u64, at: WallMs) -> Peer {
     let mut p = Peer::new(seed, at).unwrap();
@@ -78,7 +87,7 @@ fn fresh(base: &[Package], order: &[&Package], seed: u64, at: WallMs) -> Peer {
 #[test]
 fn setting_itself_fixed_spec_commits_5() {
     assert_eq!(fixed_retention("retention^.0"), Some(osis_commit::retention::KEPT_RETENTION));
-    let (mut lp, d) = setup(305);
+    let (mut lp, d) = setup();
     let c = set(&mut lp, 0, d, &setting(&[(A, History::FOREVER)]));
     let h = lp.peers[0].engine.header(&c).unwrap();
     assert_eq!(h.aspects.iter().find(|a| a.ak.as_str() == "retention^.0").unwrap().retention, osis_commit::retention::KEPT_RETENTION);
@@ -99,7 +108,7 @@ fn setting_itself_fixed_spec_commits_5() {
 // author's and keeps nothing in history; no other delta's validity depends on a setting
 #[test]
 fn writers_setting_keeps_nothing_spec_perm_6() {
-    let (mut lp, d) = setup(307);
+    let (mut lp, d) = setup();
     let x = setting(&[(A, History::FOREVER)]);
     let mut m = Mutation::new();
     m.set(d, &ct::RETENTION, &x).unwrap();
@@ -134,7 +143,7 @@ fn setting_over_its_bounds_is_none_spec_commits_5() {
     let raw = osis_schema::Aspect::<Value>::new("retention^.0", &osis_schema::CORE);
     for over in [many.to_value(), Value::Map(no_ak)] {
         assert!(ct::retention_setting(&over).is_none());
-        let (mut lp, d) = setup(407);
+        let (mut lp, d) = setup();
         let mut m = Mutation::new();
         m.set(d, &raw, &over).unwrap();
         assert!(lp.peers[0].commit(m).is_err(), "refused");
@@ -152,7 +161,7 @@ fn setting_over_its_bounds_is_none_spec_commits_5() {
 // spec/commits.md §5 In force: the timeline (`ix.retention`) survives an open and a rebuild
 #[test]
 fn setting_after_reopen_spec_commits_5() {
-    let (mut lp, d) = setup(319);
+    let (mut lp, d) = setup();
     set(&mut lp, 0, d, &setting(&[(A, keep(HOUR))]));
     let v1 = put(&mut lp, 1, d, "one");
     put(&mut lp, 1, d, "two");
@@ -171,7 +180,7 @@ fn setting_after_reopen_spec_commits_5() {
 // and the bodies arrive in: kept an hour after replaced, then not
 #[test]
 fn history_follows_the_setting_in_any_order_spec_commits_5() {
-    let (mut lp, d) = setup(331);
+    let (mut lp, d) = setup();
     let base = base(&mut lp);
     let x = set(&mut lp, 0, d, &setting(&[(A, keep(HOUR))]));
     let v1 = put(&mut lp, 1, d, "one");
@@ -179,7 +188,7 @@ fn history_follows_the_setting_in_any_order_spec_commits_5() {
     let pks = [pack(&mut lp, 0, &x), pack(&mut lp, 1, &v1), pack(&mut lp, 1, &v2)];
     let now = lp.peers[0].engine.now();
     for order in [[0, 1, 2], [1, 0, 2], [1, 2, 0], [2, 1, 0], [0, 2, 1], [2, 0, 1]] {
-        let mut p = fresh(&base, &order.map(|i| &pks[i]), 333, now);
+        let mut p = fresh(&base, &order.map(|i| &pks[i]), FRESH, now);
         assert!(listed(&mut p, &v1, d), "{order:?}: in history");
         assert!(listed(&mut p, &v2, d), "{order:?}: live");
         p.clock.advance(HOUR + 2_000);
@@ -192,7 +201,7 @@ fn history_follows_the_setting_in_any_order_spec_commits_5() {
 // bring it back (a setting acts from its own stamp)
 #[test]
 fn shortening_hides_and_extension_does_not_bring_back_spec_commits_5() {
-    let (mut lp, d) = setup(341);
+    let (mut lp, d) = setup();
     set(&mut lp, 0, d, &setting(&[(A, keep(10 * HOUR))]));
     let v1 = put(&mut lp, 1, d, "one");
     put(&mut lp, 1, d, "two");
@@ -218,7 +227,7 @@ fn shortening_hides_and_extension_does_not_bring_back_spec_commits_5() {
 // copy a node still holding it (and listing it) offers
 #[test]
 fn dropped_before_a_late_extension_is_not_fetched_spec_commits_5() {
-    let (mut lp, d) = setup(351);
+    let (mut lp, d) = setup();
     // Carol's setting, stamped before the writes, reaches the others late
     let x = set(&mut lp, 2, d, &setting(&[(A, History::FOREVER)]));
     let px = pack(&mut lp, 2, &x);
@@ -251,7 +260,7 @@ fn dropped_before_a_late_extension_is_not_fetched_spec_commits_5() {
 // puts under purge on replace makes the writer cover it (one snapshot), and the body goes
 #[test]
 fn late_purge_on_replace_setting_makes_holders_cover_spec_commits_5() {
-    let (mut lp, d) = setup(361);
+    let (mut lp, d) = setup();
     let x = set(&mut lp, 2, d, &setting(&[(A, History::PurgeOnReplace)]));
     let px = pack(&mut lp, 2, &x);
     let v1 = put(&mut lp, 1, d, "one");
@@ -269,7 +278,7 @@ fn late_purge_on_replace_setting_makes_holders_cover_spec_commits_5() {
 // nothing there
 #[test]
 fn purge_then_keep_shows_nothing_spec_commits_5() {
-    let (mut lp, d) = setup(371);
+    let (mut lp, d) = setup();
     set(&mut lp, 0, d, &setting(&[(A, History::PurgeOnReplace)]));
     set(&mut lp, 0, d, &setting(&[(A, History::FOREVER)]));
     let v1 = put(&mut lp, 0, d, "one");
@@ -284,7 +293,7 @@ fn purge_then_keep_shows_nothing_spec_commits_5() {
 // even when its replacing write is stamped ahead of the node's clock (within drift)
 #[test]
 fn purge_on_replace_never_listed_ahead_of_the_clock_spec_commits_5() {
-    let (mut lp, d) = setup(381);
+    let (mut lp, d) = setup();
     let base = base(&mut lp);
     // a keep before it: the timeline dates its bodies
     let k = set(&mut lp, 0, d, &setting(&[(A, keep(10 * HOUR))]));
@@ -294,7 +303,7 @@ fn purge_on_replace_never_listed_ahead_of_the_clock_spec_commits_5() {
     let pks = [pack(&mut lp, 0, &k), pack(&mut lp, 0, &x), pack(&mut lp, 1, &v1), pack(&mut lp, 1, &v2)];
     // half an hour behind the writer
     let at = WallMs(lp.peers[0].engine.now().0 - HOUR / 2);
-    let mut p = fresh(&base, &[&pks[0], &pks[1], &pks[2], &pks[3]], 383, at);
+    let mut p = fresh(&base, &[&pks[0], &pks[1], &pks[2], &pks[3]], FRESH, at);
     assert!(p.engine.body_not_dropped(&v1, &d, &ak(A)), "a reader holds it until a writer covers it");
     assert!(!listed(&mut p, &v1, d), "never history");
 }
@@ -309,7 +318,7 @@ fn purge_on_replace_never_listed_ahead_of_the_clock_spec_commits_5() {
 #[test]
 fn a_body_class_keeps_by_its_kept_aspect_spec_commits_5() {
     for (kept, other) in [("t:b.0", "t:a.0"), ("t:a.0", "t:b.0")] {
-        let (mut lp, d) = setup(397);
+        let (mut lp, d) = setup();
         set(&mut lp, 0, d, &setting(&[(kept, keep(HOUR))]));
         lp.sync_all().unwrap();
         let mut m = Mutation::new();
@@ -344,7 +353,7 @@ fn a_body_class_keeps_by_its_kept_aspect_spec_commits_5() {
 fn two_admins_at_one_stamp_ordered_by_key_spec_commits_5() {
     let mut seen = Vec::new();
     for keeper in [0, 2] {
-        let (mut lp, d) = setup(391);
+        let (mut lp, d) = setup();
         let base = base(&mut lp);
         let other = 2 - keeper;
         let k = set_setting(&mut lp, keeper, d, &setting(&[(A, keep(HOUR))]));
@@ -359,7 +368,7 @@ fn two_admins_at_one_stamp_ordered_by_key_spec_commits_5() {
         let pks = [pack(&mut lp, keeper, &k), pack(&mut lp, other, &n), pack(&mut lp, 1, &v1), pack(&mut lp, 1, &v2)];
         let now = lp.peers[1].engine.now();
         for order in [[0, 1, 2, 3], [1, 0, 2, 3], [2, 3, 1, 0], [3, 0, 2, 1]] {
-            let mut p = fresh(&base, &order.map(|i| &pks[i]), 393, now);
+            let mut p = fresh(&base, &order.map(|i| &pks[i]), FRESH, now);
             assert_eq!(listed(&mut p, &v1, d), keeps, "keeper {keeper}, {order:?}: the later by key is in force");
         }
     }
@@ -372,7 +381,7 @@ fn two_admins_at_one_stamp_ordered_by_key_spec_commits_5() {
 // listing and keep stay (dated at the snapshot, x1 was listed again)
 #[test]
 fn a_covered_drop_redates_nothing_spec_commits_5() {
-    let (mut lp, d) = setup(399);
+    let (mut lp, d) = setup();
     set(&mut lp, 0, d, &setting(&[(A, keep(10 * 60_000))]));
     let x1 = put(&mut lp, 0, d, "one");
     let x2 = put(&mut lp, 0, d, "two");
@@ -427,7 +436,7 @@ fn drop_allowed(p: &mut Peer, d: Tid, a: &str, s: CommitId, order: &[CommitId], 
 fn a_body_dies_at_its_latest_death_spec_commits_5() {
     const REC: &str = "t:rec.0";
     for first in [true, false] {
-        let (mut lp, d) = setup(401);
+        let (mut lp, d) = setup();
         let field = |lp: &mut LocalPeer, fs: &[(u64, Value)]| {
             let mut m = Mutation::new();
             for (f, v) in fs {
@@ -461,7 +470,7 @@ fn a_body_dies_at_its_latest_death_spec_commits_5() {
 #[test]
 fn text_creation_dies_at_delete_after_undelete_spec_crdt_4_8() {
     const TX: &str = "t:text.0";
-    let (mut lp, d) = setup(403);
+    let (mut lp, d) = setup();
     set(&mut lp, 0, d, &setting(&[(TX, keep(10 * 60_000))]));
     let op = |lp: &mut LocalPeer, op: osis_crdt::Op| {
         let mut m = Mutation::new();
@@ -491,7 +500,7 @@ fn text_creation_dies_at_delete_after_undelete_spec_crdt_4_8() {
 // once) and carries X again, so with B dropped W still dies at X: no covered drop moves a listing.
 #[test]
 fn vouched_copy_dates_at_its_write_spec_crdt_4_8() {
-    let (mut lp, d) = setup(405);
+    let (mut lp, d) = setup();
     set(&mut lp, 0, d, &setting(&[(A, keep(10 * 60_000))]));
     let w = put(&mut lp, 0, d, "one");
     let x = put(&mut lp, 1, d, "two");
@@ -548,7 +557,7 @@ fn covered_drops_history(seed: u64) {
         r ^= r << 17;
         r % n
     };
-    let (mut lp, d) = setup(9000 + seed);
+    let (mut lp, d) = setup_seeded(9000 + seed);
     lp.peers[0].engine.keep_bodies(true);
     // no writer answers the removal: what Bob's writes count for is what snapshots vouch for
     for i in 0..3 {
@@ -639,7 +648,7 @@ fn covered_drops_move_nothing_spec_commits_5() {
 #[test]
 fn an_unkept_part_dates_no_class_spec_commits_5() {
     let (kept, other) = ("t:b.0", "t:a.0");
-    let (mut lp, d) = setup(397);
+    let (mut lp, d) = setup();
     set(&mut lp, 0, d, &setting(&[(kept, keep(10 * 60_000))]));
     let write = |lp: &mut LocalPeer, fs: &[(&str, &str)]| {
         let mut m = Mutation::new();
@@ -686,7 +695,7 @@ fn told(p: &mut Peer, d: Tid) -> Vec<CommitId> {
 // a restart, and nothing that stays is told
 #[test]
 fn leaving_history_is_told_in_any_order_spec_commits_5() {
-    let (mut lp, d) = setup(351);
+    let (mut lp, d) = setup();
     let base = base(&mut lp);
     let x = set(&mut lp, 0, d, &setting(&[(A, keep(HOUR))]));
     let v1 = put(&mut lp, 1, d, "one");
@@ -694,7 +703,7 @@ fn leaving_history_is_told_in_any_order_spec_commits_5() {
     let pks = [pack(&mut lp, 0, &x), pack(&mut lp, 1, &v1), pack(&mut lp, 1, &v2)];
     let now = lp.peers[0].engine.now();
     for (n, order) in [[0, 1, 2], [1, 2, 0], [2, 1, 0]].into_iter().enumerate() {
-        let mut p = fresh(&base, &order.map(|i| &pks[i]), 353, now);
+        let mut p = fresh(&base, &order.map(|i| &pks[i]), FRESH, now);
         if n == 1 {
             p.restart(355).unwrap();
         }
@@ -717,7 +726,7 @@ fn leaving_history_is_told_in_any_order_spec_commits_5() {
 // again; a later shortening by its stamp takes it out again, told
 #[test]
 fn late_setting_brings_back_and_is_told_spec_commits_5() {
-    let (mut lp, d) = setup(361);
+    let (mut lp, d) = setup();
     set(&mut lp, 0, d, &setting(&[(A, keep(HOUR))]));
     let v1 = put(&mut lp, 1, d, "one");
     put(&mut lp, 1, d, "two");
@@ -743,7 +752,7 @@ fn late_setting_brings_back_and_is_told_spec_commits_5() {
 // replaced since its stamp, shows the held ones and tells them
 #[test]
 fn first_keeping_setting_arriving_late_shows_and_tells_spec_commits_5() {
-    let (mut lp, d) = setup(371);
+    let (mut lp, d) = setup();
     let late = set(&mut lp, 2, d, &setting(&[(A, keep(10 * HOUR))]));
     let pk = pack(&mut lp, 2, &late);
     let v1 = put(&mut lp, 1, d, "one");
@@ -766,7 +775,7 @@ fn first_keeping_setting_arriving_late_shows_and_tells_spec_commits_5() {
 // carried write a later write kills leaves the listing at its keep bound, and is told then.
 #[test]
 fn a_snapshot_is_told_leaving_history_spec_commits_5() {
-    let (mut lp, d) = setup(901);
+    let (mut lp, d) = setup();
     set(&mut lp, 0, d, &setting(&[(A, keep(10 * 60_000))]));
     let x1 = put(&mut lp, 0, d, "one");
     let s = lp.peers[0].engine.snapshot(&d, &ak(A)).unwrap().unwrap();

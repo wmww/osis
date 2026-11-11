@@ -196,7 +196,7 @@ fn inbox_copy_names_only_touched_things_spec_sync_3() {
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
     let payload = osis_label::InboxPayload { chain: Vec::new(), records: Vec::new(), commit, things: vec![osis_label::InboxThing { tid: p, label: Some(osis_label::InboxLabel { id: home, index: 0, hosts: vec![net.address(host)] }), delete_keys: None }] };
     let now = osis_base::WallMs(net.now());
-    let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, now, &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
+    let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, now, &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
     let id = osis_label::blob_id(&blob);
     net.set_online(b, false);
     let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(now.0 + osis_base::format::INBOX_LIFETIME_MS), ephemeral: false, replaces: &[], now: 0 };
@@ -245,7 +245,7 @@ fn plant_bytes(net: &mut Net, from: usize, (host, l): (usize, &LabelId), to: Tid
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
     let payload = osis_label::InboxPayload { commit, things, chain: Vec::new(), records: Vec::new() };
     // the prefix carries `now + INBOX_LIFETIME`: seal "earlier" for a shorter expiry
-    let blob = osis_label::seal_inbox_blob(&to, &kem, &payload, osis_base::WallMs(expiry - INBOX_LIFETIME_MS), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
+    let blob = osis_label::seal_inbox_blob(&to, &kem, &payload, osis_base::WallMs(expiry - INBOX_LIFETIME_MS), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
     let id = osis_label::blob_id(&blob);
     let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(expiry), ephemeral: false, replaces: &[], now: 0 };
     osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), l, put).unwrap();
@@ -478,7 +478,7 @@ fn an_inbox_chain_applies_only_chain_deltas_spec_wire_9() {
     let ct::KemKey::X25519MlKem768(kb) = &keys.key.or(keys.read.map(|k| k.kem_key)).unwrap();
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
     let now = net.now();
-    let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, osis_base::WallMs(now), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
+    let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, osis_base::WallMs(now), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
     let put = osis_proto::Put { blob_id: osis_label::blob_id(&blob), blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(now + INBOX_LIFETIME_MS), ephemeral: false, replaces: &[], now: 0 };
     osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &home, put).unwrap();
     net.set_online(b, true);
@@ -554,8 +554,16 @@ fn connected_sender_invite_goes_through_spec_sync_3() {
 }
 
 /// Alice and Bob, Bob with a second node `b2` paired: (net, a, b, b2, bob, g), neither of
-/// Bob's nodes accepting invites by itself.
+/// Bob's nodes accepting invites by itself: built once (`Net::cached`).
 fn bob_with_two_nodes() -> (Net, usize, usize, usize, Tid, Tid) {
+    let (net, (a, b, b2, bob, g)) = Net::cached("inbox_life::bob_with_two_nodes", || {
+        let (net, a, b, b2, bob, g) = bob_with_two_nodes_built();
+        (net, (a, b, b2, bob, g))
+    });
+    (net, a, b, b2, bob, g)
+}
+
+fn bob_with_two_nodes_built() -> (Net, usize, usize, usize, Tid, Tid) {
     let (mut net, host, a, b, _, bob, g, _) = alice_and_bob();
     let b2 = net.joining_node(3, &[host]);
     net.pair(b2, b);
@@ -1566,7 +1574,7 @@ fn hostile_inbox_blob_peak_is_bounded_spec_sync_3() {
     }
     plain.extend([0x80, 0x80, 0x80]);
     let now = osis_base::WallMs(net.now());
-    let mut rng = osis_crypto::SeededRng::from_u64(5);
+    let mut rng = osis_crypto::SeededRng::from_u64(0);
     let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(&mut rng), Some(now.saturating_add(INBOX_LIFETIME_MS)), vec![]).unwrap();
     let blob = osis_crypto::seal_inbox(&prefix.to_bytes(), &bob, &kem, &plain, &mut rng).unwrap();
     drop(plain);
@@ -1790,7 +1798,7 @@ fn a_padded_record_blob_is_never_stamped_spec_sync_5() {
     }
     assert_eq!(net.engine(r).role_on(&o), Some(Role::Read));
     // the real records r placed for its chains, padded with 200 made-up ones
-    let mut rng = osis_crypto::SeededRng::from_u64(7);
+    let mut rng = osis_crypto::SeededRng::from_u64(0);
     let real: std::collections::BTreeSet<Tid> = net.sync(r).entries(&l).into_iter().filter_map(|x| if let EntryKind::Records(ts) = x.1 { Some(ts) } else { None }).flatten().collect();
     let mut records: Vec<_> = real.iter().map(|t| net.engine(r).core.created(t).unwrap().clone()).collect();
     for i in 0..200u32 {

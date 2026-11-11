@@ -863,7 +863,7 @@ fn forged_certificate_copy_ignored_spec_commits_4() {
         }
         // a certificate copy: one section under the label's secret (`seal_to`)
         let fake = osis_node::labeling::Body { plaintext: blob.encode(), ..b };
-        let s = net.engine(w).seal_to(&fake, osis_label::Class::Durable, &secret, &mut osis_crypto::SeededRng::from_u64(7)).unwrap().unwrap();
+        let s = net.engine(w).seal_to(&fake, osis_label::Class::Durable, &secret, &mut osis_crypto::SeededRng::from_u64(0)).unwrap().unwrap();
         let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, 1).unwrap();
         let put = osis_proto::Put { blob_id: s.id, blob: &s.blob, wrap, stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
         osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &l, put).unwrap();
@@ -1241,7 +1241,7 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     let ks = net.engine(a).get_typed(&bob.account, &ct::KEYS).unwrap().unwrap();
     let ct::KemKey::X25519MlKem768(kb) = ks.key.unwrap();
     let kem = osis_crypto::KemPublicKey::from_slice(&kb).unwrap();
-    let mut rng = osis_crypto::SeededRng::from_u64(7);
+    let mut rng = osis_crypto::SeededRng::from_u64(0);
     for id in [cc, unrelated] {
         let commit = osis_base::decode(&net.engine(c).package(&id).unwrap().unwrap().bytes, &osis_base::Limits { max_depth: 512, max_bytes: 1 << 24 }).unwrap();
         let payload = osis_label::InboxPayload { chain: Vec::new(), records: Vec::new(), commit, things: vec![osis_label::InboxThing { tid: g, label: None, delete_keys: Some((ck, ck)) }] };

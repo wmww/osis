@@ -18,7 +18,7 @@ use osis_sim::world::World;
 // commit), then redoes twice.
 #[test]
 fn undo_redo_cycle_spec_commits_7() {
-    let db = db(1);
+    let db = db(0);
     typed_any(&db, &["t:a.0", "t:b.0", "t:other.0", "t:x.0"]);
     let k = ak("t:x.0");
     let mut w = db.write();
@@ -66,7 +66,7 @@ fn undo_redo_cycle_spec_commits_7() {
 // notes/api.md Commits (decided): a new change clears the redo stack.
 #[test]
 fn new_commit_clears_redo_spec_commits_7() {
-    let db = db(1);
+    let db = db(0);
     typed_any(&db, &["t:a.0", "t:b.0"]);
     let (a, b) = (ak("t:a.0"), ak("t:b.0"));
     let mut w = db.write();
@@ -90,7 +90,7 @@ fn new_commit_clears_redo_spec_commits_7() {
 // reports it and never undoes an older change instead.
 #[test]
 fn undo_blocked_by_dropped_body_spec_commits_7() {
-    let db = db(1);
+    let db = db(0);
     let (a, b) = (ak("t:a.0"), ak("t:b.0"));
     let mut w = db.write();
     let t = w.create().unwrap();
@@ -110,7 +110,7 @@ fn undo_blocked_by_dropped_body_spec_commits_7() {
 // notes/engine.md: an undo mutation carries nothing else.
 #[test]
 fn undo_mutation_alone_spec_commits_7() {
-    let db = db(1);
+    let db = db(0);
     let mut w = db.write();
     let t = w.create_with_content(db.home()).unwrap();
     let c = w.commit().unwrap().unwrap().stamp.id.raw();
@@ -124,7 +124,7 @@ fn undo_mutation_alone_spec_commits_7() {
 // write.
 #[test]
 fn query_relations_spec_crdt_4_6() {
-    let db = db(1);
+    let db = db(0);
     typed_any(&db, &["t:x.0", "t:y.0"]);
     let (k, j) = (ak("t:x.0"), ak("t:y.0"));
     let mut w = db.write();
@@ -165,7 +165,7 @@ fn query_relations_spec_crdt_4_6() {
 #[test]
 fn query_filters_api_commits() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     typed_any(&db, &["t:x.0", "t:y.0"]);
     let (k, j) = (ak("t:x.0"), ak("t:y.0"));
     // made acting for the account (a record alone would act for the node)
@@ -426,7 +426,7 @@ fn step(db: &Osis, scope: &Scope, redo: bool) -> Option<CommitId> {
 // history). `next` reports the change each step then reverts.
 #[test]
 fn undo_of_creation_deletes_spec_crdt_4_6() {
-    let db = db(1);
+    let db = db(0);
     typed_any(&db, &["t:x.0", "t:y.0"]);
     let (x, y) = (ak("t:x.0"), ak("t:y.0"));
     let mk = |db: &Osis| db.commit_with(|w| { let g = w.create_with_content(db.home())?; keep_all(w, g); Ok(g) }).unwrap();
@@ -469,7 +469,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
 // in its groups, its ephemeral values dropped (notes/ephemeral.md Deletion).
 #[test]
 fn undo_of_creation_resets_ephemeral_aspects_spec_crdt_4_6() {
-    let db = db(2);
+    let db = db(0);
     typed_any(&db, &["t:made.0"]);
     let k = ak("app:draft+.0");
     let mk = |db: &Osis| db.commit_with(|w| { let g = w.create_with_content(db.home())?; keep_all(w, g); Ok(g) }).unwrap();
@@ -510,7 +510,7 @@ fn undo_of_creation_resets_ephemeral_aspects_spec_crdt_4_6() {
 // broader scope; a new change clears what redo would revert; `next` needs a scope.
 #[test]
 fn next_reports_what_undo_and_redo_revert_api_commits() {
-    let db = db(3);
+    let db = db(0);
     typed_any(&db, &["t:x.0"]);
     let k = ak("t:x.0");
     let f = db.commit_with(|w| { let g = w.create_with_content(db.home())?; keep_all(w, g); Ok(g) }).unwrap();
@@ -603,7 +603,7 @@ fn creation_revert_found_by_created_scope_api_commits() {
 #[test]
 fn one_moment_many_commits_lose_none_api_commits() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     typed_any(&db, &["t:x.0"]);
     let k = kept(&db, &ak("t:x.0"));
     let t = db.commit_with(|w| { let t = w.create()?; keep_all(w, t); Ok(t) }).unwrap();

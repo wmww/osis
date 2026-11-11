@@ -51,7 +51,7 @@ fn drop_covered_by(e: &mut Engine, s: &CommitId, t: &Tid, a: &Ak) {
 // since pruned; the older snapshot covers nothing newer.
 #[test]
 fn snapshot_lists_only_traced_sessions_spec_crdt_8() {
-    let mut lp = net(1, 0x5e55);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let reg = ak("t:reg.0");
     let mut commits = Vec::new();
@@ -92,7 +92,7 @@ fn snapshot_lists_only_traced_sessions_spec_crdt_8() {
 // to delete, `snapshot_rights`), and the live tag is not.
 #[test]
 fn frontier_gap_covers_what_joins_unchanged_spec_commits_5() {
-    let mut lp = net(2, 0x5e90);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let w = lp.peers[1].engine.me();
@@ -136,7 +136,7 @@ fn frontier_gap_covers_what_joins_unchanged_spec_commits_5() {
 // latest snapshot would otherwise stay beside the others' for good.
 #[test]
 fn snapshot_covers_one_reaching_further_spec_commits_5() {
-    let mut lp = net(2, 0x5e91);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let w = lp.peers[1].engine.me();
@@ -173,7 +173,7 @@ fn snapshot_covers_one_reaching_further_spec_commits_5() {
 // comes, the snapshot holding nothing of its session.
 #[test]
 fn untraced_session_part_joins_late_spec_commits_4() {
-    let mut lp = net(3, 0x5e70);
+    let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let w = lp.peers[2].engine.me();
@@ -234,7 +234,7 @@ fn overwrite_and_compact(lp: &mut LocalPeer, t: Tid, i: u64) -> Vec<(usize, usiz
 // nothing in the store.
 #[test]
 fn session_writing_nothing_leaves_nothing() {
-    let mut lp = net(1, 0x5e78);
+    let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     overwrite_and_compact(&mut lp, t, 0);
     let before = store_bytes(&lp, 0);
@@ -252,7 +252,7 @@ fn session_writing_nothing_leaves_nothing() {
 #[test]
 fn steady_aspect_holds_steady_across_sessions() {
     let run = |launches: bool| {
-        let mut lp = net(1, 0x5e90);
+        let mut lp = net(1, 0);
         let t = new_thing(&mut lp, 0);
         let mut last = Vec::new();
         for i in 0..24u64 {
@@ -280,7 +280,7 @@ fn steady_aspect_holds_steady_across_sessions() {
 // ingest.
 #[test]
 fn untraced_frontier_entry_is_bad_input_spec_crdt_8() {
-    let mut lp = net(2, 0x5e80);
+    let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let reg = ak("t:reg.0");
@@ -323,7 +323,7 @@ fn untraced_frontier_entry_is_bad_input_spec_crdt_8() {
 // Z2 apply c alike.
 #[test]
 fn snapshot_not_covered_by_an_earlier_equal_spec_commits_4() {
-    let mut lp = net(5, 0x5e81);
+    let mut lp = net(5, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     for p in [2, 3] {
@@ -378,7 +378,7 @@ fn snapshot_not_covered_by_an_earlier_equal_spec_commits_4() {
 // snapshot though it lists no session of the body.
 #[test]
 fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
-    let mut lp = net(4, 0x5e82);
+    let mut lp = net(4, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let (w, y) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
@@ -436,7 +436,7 @@ fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
 // before both, its missing part held under either).
 #[test]
 fn equal_stamped_snapshots_cover_each_other_spec_sync_7() {
-    let mut lp = net(5, 0x5e83);
+    let mut lp = net(5, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     for p in [2, 3] {
@@ -489,7 +489,7 @@ fn equal_stamped_snapshots_cover_each_other_spec_sync_7() {
 // writer's) stays the same way.
 #[test]
 fn invalid_or_lagging_later_snapshot_stays_and_stands_in_spec_commits_5() {
-    let mut lp = net(4, 0x5e84);
+    let mut lp = net(4, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let (w, y) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
@@ -576,7 +576,7 @@ fn later_snapshot_settles(lp: &mut LocalPeer, t: Tid, asp: &Ak) {
 // read `Absorbed`, which never lists a snapshot, so it never did, and it filled the suspect list.
 #[test]
 fn flip_flag_on_a_snapshot_body_settles_spec_permissions_4() {
-    let mut lp = net(4, 0x5e85);
+    let mut lp = net(4, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     for p in [2, 3] {

@@ -23,13 +23,13 @@ fn reopen(rows: &[(Vec<u8>, Vec<u8>)], root: &osis_store::RootRecord) -> osis_no
     let mut r = MemoryRoot::new();
     r.store(root).unwrap();
     let c: Arc<dyn Clock> = Arc::new(ManualClock::new(T0));
-    Engine::open(Box::new(b), Box::new(r), osis_store::BlobArea::memory()?, Config::default(), c, Box::new(SeededRng::from_u64(3)))
+    Engine::open(Box::new(b), Box::new(r), osis_store::BlobArea::memory()?, Config::default(), c, Box::new(SeededRng::from_u64(1)))
 }
 
 // spec: none (no panics on data, notes/architecture.md §3): seeded bit flips across every row and the root
 #[test]
 fn bit_flips_error_never_panic() {
-    let mut lp: LocalPeer = net(1, 81);
+    let mut lp: LocalPeer = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let mut m = osis_node::Mutation::new();
     m.set(t, &REG, &s("value")).unwrap();
@@ -37,7 +37,7 @@ fn bit_flips_error_never_panic() {
     let rows = lp.peers[0].backend.dump();
     let root = lp.peers[0].root.load().unwrap().unwrap();
     assert!(reopen(&rows, &root).is_ok());
-    let mut rng = SeededRng::from_u64(5);
+    let mut rng = SeededRng::from_u64(0);
     let mut errors = 0;
     for _ in 0..300 {
         let mut rows = rows.clone();

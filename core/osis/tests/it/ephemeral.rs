@@ -45,7 +45,7 @@ fn s(x: &str) -> Value {
 // read and watched with no durable commit and no store write. spec/data-model.md §2
 #[test]
 fn write_and_watch_without_commit_spec_data_model_2() {
-    let (db, _c) = setup(1);
+    let (db, _c) = setup(0);
     let state = db.aspect_key("win:state+.0").unwrap();
     let made = commit_with(&db, |w| w.create().map(drop));
     let win = db.engine(|e| e.header(&made.stamp.id.raw())).unwrap().aspects[0].tid;
@@ -167,7 +167,7 @@ fn rights_through_first_admin_spec_permissions_1() {
 // at T in memory, without a commit; watches see `Derived(Expiry)`. spec/crdt.md §4.7
 #[test]
 fn ephemeral_expiry_spec_crdt_4_7() {
-    let (db, c) = setup(5);
+    let (db, c) = setup(0);
     let typing = db.aspect_key("win:typing+.0").unwrap();
     let note = ak("app:note+.0");
     let t = db.commit_with(|w| w.create()).unwrap();
@@ -212,7 +212,7 @@ fn ephemeral_expiry_spec_crdt_4_7() {
 // it), reads and value watches stay absent; any other op is Invalid
 #[test]
 fn ephemeral_signal_fires_reach_history_listener_once_spec_data_model_2() {
-    let (db, _c) = setup(6);
+    let (db, _c) = setup(0);
     let ring = db.aspect_key("win:ring+~0").unwrap();
     let mut w = db.write();
     let t = w.create().unwrap();
@@ -267,7 +267,7 @@ fn ephemeral_signal_fires_reach_history_listener_once_spec_data_model_2() {
 // (`on_change` sees nothing); a revert writes nothing back for it
 #[test]
 fn signal_without_ephemeral_is_history_spec_commits_5() {
-    let (db, _c) = setup(9);
+    let (db, _c) = setup(0);
     db.register_schema("log.osis", "revision 1;\nsignal app:log~0: string;\n").unwrap();
     let log = db.aspect_key("app:log~0").unwrap();
     let t = db.commit_with(|w| { let t = w.create()?; keep_all(w, t); Ok(t) }).unwrap();
@@ -304,7 +304,7 @@ fn signal_without_ephemeral_is_history_spec_commits_5() {
 // fails `commit` with `Invalid` and writes nothing, a read of the other kind finds nothing
 #[test]
 fn dynamic_key_crossing_kinds_spec_data_model_2() {
-    let (db, _c) = setup(10);
+    let (db, _c) = setup(0);
     db.register_schema("k.osis", "revision 1;\nsignal app:log~0: string;\naspect app:n.0: string;\n").unwrap();
     let (log, n) = (db.aspect_key("app:log~0").unwrap(), db.aspect_key("app:n.0").unwrap());
     let t = db.commit_with(|w| { let t = w.create()?; keep_all(w, t); Ok(t) }).unwrap();
@@ -426,7 +426,7 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
 // spec/commits.md §2
 #[test]
 fn delete_resets_ephemeral_aspects_spec_data_model_1() {
-    let (db, _c) = setup(9);
+    let (db, _c) = setup(0);
     let draft = ak("app:draft+.0");
     let x = db
         .commit_with(|w| {
@@ -503,7 +503,7 @@ fn reader_cannot_write_ephemeral_spec_permissions_1() {
 // past the end) fails the whole commit: nothing of it applies. spec/data-model.md §2
 #[test]
 fn failed_ephemeral_op_fails_the_commit_spec_data_model_2() {
-    let (db, _c) = setup(21);
+    let (db, _c) = setup(0);
     let state = db.aspect_key("win:state+.0").unwrap();
     let e = db.commit_with(|w| w.create()).unwrap();
     let mut w = db.write();
@@ -529,7 +529,7 @@ fn durable_items(db: &Osis, g: osis::Tid) -> Vec<osis::Tid> {
 // keyed on the durable generation alone missed it, and the sync driver's check of it died
 #[test]
 fn ephemeral_write_counts_as_acting_spec_permissions_4() {
-    let (db, _c) = setup(1);
+    let (db, _c) = setup(0);
     let state = db.aspect_key("win:state+.0").unwrap();
     let before = db.engine(|e| e.core.acting());
     // a record alone acts for its signer (spec/commits.md §2)
@@ -549,7 +549,7 @@ fn ephemeral_write_counts_as_acting_spec_permissions_4() {
 // only the record is left.
 #[test]
 fn a_thing_with_only_expiring_content_spec_commits_6() {
-    let (db, c) = setup(40);
+    let (db, c) = setup(0);
     typed_any(&db, &["app:body.0"]);
     let (body, hour) = (kept(&db, &ak("app:body.0")), Duration::from_secs(3600));
     let g = db.commit_with(|w| {

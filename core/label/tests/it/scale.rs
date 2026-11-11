@@ -81,7 +81,7 @@ impl BlobFetch for Counted {
 fn stream<S: BlobSink + BlobFetch>(mib: u64, store: &mut S) -> usize {
     let len = mib * MIB as u64;
     let framing = Framing { dedup: Secret32::from_bytes([7; 32]), expiry: None, keys: Vec::new(), blind: [0; 16] };
-    let mut rng = SeededRng::from_u64(1);
+    let mut rng = SeededRng::from_u64(0);
     let mut buf = vec![0u8; MIB];
     let mut want = Hasher::new();
     let (root, buffered) = {

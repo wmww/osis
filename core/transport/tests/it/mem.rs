@@ -56,8 +56,8 @@ async fn echo(c: &MemConn, data: &[u8]) -> Vec<u8> {
 // spec/sync.md §10: ordered bidirectional byte stream; the client checks the host key; ephemeral client keys.
 #[test]
 fn round_trip_and_keys() {
-    let net = Net::new(1);
-    let mut s = Sched::new(1, Some(net.clone()));
+    let net = Net::new(0);
+    let mut s = Sched::new(0, Some(net.clone()));
     let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     assert_eq!(addr.key, InProcess::public_key(&secret(7)));
@@ -79,8 +79,8 @@ fn round_trip_and_keys() {
 // spec/sync.md §10: each connection gets a fresh ephemeral client key, seen as the host's peer key.
 #[test]
 fn ephemeral_client_keys_differ() {
-    let net = Net::new(2);
-    let mut s = Sched::new(2, Some(net.clone()));
+    let net = Net::new(0);
+    let mut s = Sched::new(0, Some(net.clone()));
     let mut l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     let cli = net.endpoint("cli");
@@ -101,8 +101,8 @@ fn ephemeral_client_keys_differ() {
 // spec/sync.md §10 (host key check)
 #[test]
 fn pinned_key_mismatch_refused() {
-    let net = Net::new(3);
-    let mut s = Sched::new(3, Some(net.clone()));
+    let net = Net::new(0);
+    let mut s = Sched::new(0, Some(net.clone()));
     let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let mut addr = l.address();
     addr.key[0] ^= 1;
@@ -116,8 +116,8 @@ fn pinned_key_mismatch_refused() {
 // spec: none (URL scheme dispatch; an unknown scheme parks, notes/architecture.md §3)
 #[test]
 fn unknown_scheme_and_unreachable() {
-    let net = Net::new(4);
-    let mut s = Sched::new(4, Some(net.clone()));
+    let net = Net::new(0);
+    let mut s = Sched::new(0, Some(net.clone()));
     let cli = net.endpoint("cli");
     let r = s
         .block_on(async move {
@@ -134,8 +134,8 @@ fn unknown_scheme_and_unreachable() {
 // spec/sync.md §10: a partition holds data and refuses dials; after healing the stream completes intact.
 #[test]
 fn partition_heals() {
-    let net = Net::new(5);
-    let mut s = Sched::new(5, Some(net.clone()));
+    let net = Net::new(0);
+    let mut s = Sched::new(0, Some(net.clone()));
     let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     echo_listener(&s.spawner(), l);
@@ -161,8 +161,8 @@ fn partition_heals() {
 // spec/sync.md §10: a reset connection fails pending and later operations on both sides.
 #[test]
 fn disconnect_resets() {
-    let net = Net::new(6);
-    let mut s = Sched::new(6, Some(net.clone()));
+    let net = Net::new(0);
+    let mut s = Sched::new(0, Some(net.clone()));
     let mut l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     let cli = net.endpoint("cli");
@@ -202,8 +202,8 @@ fn disconnect_resets() {
 // spec: none (dropping the last handle of a side closes the connection)
 #[test]
 fn drop_closes() {
-    let net = Net::new(7);
-    let mut s = Sched::new(7, Some(net.clone()));
+    let net = Net::new(0);
+    let mut s = Sched::new(0, Some(net.clone()));
     let mut l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     let cli = net.endpoint("cli");
@@ -254,19 +254,19 @@ fn scenario(seed: u64) -> Vec<(u64, usize, usize)> {
 // spec/sync.md §10: ordered streams under latency, jitter and a bandwidth cap; same seed, same run.
 #[test]
 fn deterministic_under_seed() {
-    let a = scenario(42);
+    let a = scenario(0);
     assert_eq!(a.iter().filter(|e| e.2 == 5000).count(), 3);
     assert!(a.last().unwrap().0 >= 10, "bandwidth cap spreads delivery over steps");
-    assert_eq!(a, scenario(42));
-    assert_ne!(a, scenario(43));
+    assert_eq!(a, scenario(0));
+    assert_ne!(a, scenario(1));
 }
 
 // spec/sync.md §10: a large transfer arrives intact and in order through a capped link.
 #[test]
 fn large_transfer_capped() {
-    let net = Net::new(8);
+    let net = Net::new(0);
     net.set_faults(Faults { latency: 1, jitter: 0, bandwidth: Some(64 * 1024) });
-    let mut s = Sched::new(8, Some(net.clone()));
+    let mut s = Sched::new(0, Some(net.clone()));
     let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     echo_listener(&s.spawner(), l);
@@ -281,8 +281,8 @@ fn large_transfer_capped() {
 // spec: none (virtual timers fire by step, never by wall time)
 #[test]
 fn virtual_sleep() {
-    let net = Net::new(9);
-    let mut s = Sched::new(9, Some(net.clone()));
+    let net = Net::new(0);
+    let mut s = Sched::new(0, Some(net.clone()));
     let n = net.clone();
     let at = s.block_on(async move {
         n.sleep(5).await;
@@ -294,8 +294,8 @@ fn virtual_sleep() {
 // spec/sync.md §10: closing a listener resets connections it never accepted; the dialer sees Closed, no hang.
 #[test]
 fn listener_close_resets_queued() {
-    let net = Net::new(13);
-    let mut s = Sched::new(13, Some(net.clone()));
+    let net = Net::new(0);
+    let mut s = Sched::new(0, Some(net.clone()));
     let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     let cli = net.endpoint("cli");
@@ -309,8 +309,8 @@ fn listener_close_resets_queued() {
 // spec/sync.md §10: a pending read on a queued connection ends when the listener closes.
 #[test]
 fn listener_close_ends_pending_read() {
-    let net = Net::new(15);
-    let mut s = Sched::new(15, Some(net.clone()));
+    let net = Net::new(0);
+    let mut s = Sched::new(0, Some(net.clone()));
     let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     let cli = net.endpoint("cli");
@@ -333,8 +333,8 @@ fn listener_close_ends_pending_read() {
 // spec/sync.md §10: a host dialing a peer host authenticates with its own static key.
 #[test]
 fn dial_as_presents_static_key() {
-    let net = Net::new(14);
-    let mut s = Sched::new(14, Some(net.clone()));
+    let net = Net::new(0);
+    let mut s = Sched::new(0, Some(net.clone()));
     let mut l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     let me = net.endpoint("peer");
@@ -400,9 +400,9 @@ fn faulty(seed: u64) -> (Log, Vec<(usize, bool)>) {
 // spec/sync.md §10: partitions, heals and kills replay identically under one seed; streams never corrupt.
 #[test]
 fn deterministic_with_partition_heal_kill() {
-    let a = faulty(7);
+    let a = faulty(0);
     let mut ends = a.1.clone();
     ends.sort();
     assert_eq!(ends, vec![(0, true), (1, true), (2, false)]);
-    assert_eq!(a, faulty(7));
+    assert_eq!(a, faulty(0));
 }

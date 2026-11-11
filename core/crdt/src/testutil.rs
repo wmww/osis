@@ -15,8 +15,7 @@ use std::collections::BTreeMap;
 /// other runs (`OSIS_CRDT_SEED=7 cargo test -p osis-crdt`); unset, the committed seed. Hashed: a
 /// small value xored into a loop's consecutive seeds would only reorder them.
 pub fn seeded(seed: u64) -> u64 {
-    // (a zero xorshift state never leaves zero)
-    osis_base::testenv::u64_var("OSIS_CRDT_SEED").map_or(seed, |v| (seed ^ splitmix(v)).max(1))
+    osis_base::testenv::u64_var("OSIS_CRDT_SEED").map_or(seed, |v| seed ^ splitmix(v))
 }
 
 fn splitmix(x: u64) -> u64 {
@@ -36,7 +35,7 @@ pub fn rng(seed: u64) -> SeedRng {
 /// The generator of a fixed-seed test: `seed` whatever `OSIS_CRDT_SEED` says (thresholds over a
 /// committed seed set must not shift with it).
 pub fn fixed(seed: u64) -> SeedRng {
-    SeedRng { rng: Rng(seed.max(1)), seed, eff: seed.max(1) }
+    SeedRng { rng: Rng(seed), seed, eff: seed }
 }
 
 pub struct SeedRng {
