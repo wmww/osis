@@ -1231,8 +1231,9 @@ fn dating_replay(s: u64) -> String {
 }
 
 /// A node's replaced date `x` for a body is never earlier than `y`, a fully informed node's.
-/// None is no keep bound at all (not replaced), so (Some, None) keeps longer: a node lacking a
-/// carrying body (dropped, never received, withheld) may date what the informed node does not.
+/// None keeps nothing of history (`leaves_at(None)` is 0: a cover may drop it at once), the
+/// earliest bound any date gives, so (Some, None) keeps longer: a node lacking a carrying body
+/// (dropped, never received, withheld) may date what the informed node does not.
 fn never_early(x: Option<osis_base::Ts>, y: Option<osis_base::Ts>) -> bool {
     match (x, y) {
         (Some(x), Some(y)) => x >= y,
