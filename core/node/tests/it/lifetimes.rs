@@ -207,3 +207,28 @@ fn a_node_missing_a_retainer_releases_nothing() {
     assert_eq!(net.engine(a).judge_lifetimes(&|_| true).unwrap().release, vec![x]);
     assert!(net.engine(b).judge_lifetimes(&|_| true).unwrap().release.is_empty());
 }
+
+// issues/thing-lifetimes.md (The judgment; Cascade): a thing created with its list in one commit
+// is judged; a walk not heard out waits and leaves nothing pending; judged, an unreachable thing
+// takes what only it kept, and the work list is empty after.
+#[test]
+fn a_new_listed_thing_is_judged_once_heard_out() {
+    let (mut net, [a]) = local_nodes::<1>();
+    let me = net.tid(a);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let r = e.new_thing(&mut m, me);
+    let x = e.new_thing(&mut m, me);
+    let y = e.new_thing(&mut m, me);
+    list(&mut m, x, Some([r].into()));
+    refs(&mut m, x, Value::Set([Value::Tid(y)].into()));
+    list(&mut m, y, Some([x].into()));
+    e.commit(m).unwrap();
+    let got = e.judge_lifetimes(&|t| *t != r).unwrap();
+    assert!(got.release.is_empty());
+    assert!(got.waiting > 0);
+    assert!(e.lifetimes_pending().unwrap().is_empty());
+    assert!(e.lifetimes_due().unwrap());
+    assert_eq!(e.judge_lifetimes(&|_| true).unwrap().release.into_iter().collect::<BTreeSet<_>>(), [x, y].into());
+    assert!(!e.lifetimes_due().unwrap());
+}

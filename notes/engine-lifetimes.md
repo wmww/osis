@@ -11,16 +11,18 @@ A walk reads only the current held state, so a release never rests on a queue or
 - The walk (`walk`) as held-model `walk`: up the list through known retainers referencing what is below them; unknown or standalone: kept. A pending thing is walked through, never read as failed: `pending` is stale for a thing the same run made reachable (held-model `a_stale_pending_thing_is_walked_through`).
 
 ## Queueing
+Only a known thing is queued; a thing turning ended or unknown loses its `lw/` and `lp/` rows, so a forgotten thing leaves none.
 - `refs::note`: a durable reference row appearing or going queues its target; any join or rebuild of `retainers^.0` queues its thing (an empty list moves no row).
 - `atomic::learn_record`, `end::end_ended` (ended or fallen), `forget::forget` (lost): the thing and its listers.
-- `update_timelines` sets `Core::lifetimes_rights`: the next judgment re-judges every pending thing (a right may have come).
+- `update_timelines` sets `Core::lifetimes_rights` (also set at open): the next judgment re-judges every pending thing (a right may have come). Brute force: O(pending) per role timeline change.
+- Listers are read from `node/refs to` filtered by AK: O(rows naming the thing), not O(listers). Paid when a thing becomes known, ended or forgotten, and when its judgment flips (`below`).
 - An index rebuild (`refs::write_all`) queues every referenced target and every list: rare, brute force.
 
 ## API (engine, through `internals` in osis tests)
-`Engine::judge_lifetimes(heard)` judges the work list (and pending when rights moved); a thing whose walk read a thing `heard` refuses stays queued. Returns `Judged { release, waiting, judged }`: `release` the unreachable things the node's writer may end (`purge::would_hold_right` over every held minting), each followed by its cascade. `lifetimes_due`, `lifetimes_pending`, `lifetime_status`.
+`Engine::judge_lifetimes(heard)` judges the work list (and pending when rights moved); a thing whose walk read a thing `heard` refuses stays queued. Returns `Judged { release, waiting, judged }`: `release` the unreachable things the node's writer may end (`purge::would_hold_right` over every held minting), with their cascade. `lifetimes_due`, `lifetimes_pending`, `lifetime_status`.
 
 ## Not built yet (issues/thing-lifetimes.md step 3)
-The release request (its wire form, validity, applying as an ending), forgetting it at `ROLE_KEEP`, What is kept through `ending_evidence`/`ended_certificate`, the node-sync trigger when heard out. Until then `judge_lifetimes` only reports.
+The release request (its part on `released.0`, validity, applying as an ending), forgetting it at `ROLE_KEEP`, What is kept through `ending_evidence`/`ended_certificate`, the node-sync trigger when heard out. Until then `judge_lifetimes` only reports.
 
 ## Tests
 node `lifetimes::` (the judgment against held-model over random batches, judged counts at n and 10n, a node missing a retainer); held-model `spec_lifetimes`.

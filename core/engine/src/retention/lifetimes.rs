@@ -48,21 +48,28 @@ pub(crate) fn status(core: &Core, t: &Tid, gone: &BTreeSet<Tid>) -> Status {
     }
 }
 
-/// Queues `t` for judgment (durable transactions only: no reference or list is ephemeral).
+/// Queues `t` for judgment if it is known (durable transactions only: no reference or list is
+/// ephemeral). A thing not known has nothing to judge; becoming known queues it.
 pub(crate) fn queue(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
-    if tx.txn.is_memory() {
+    if tx.txn.is_memory() || status(tx.core, t, &BTreeSet::new()) != Status::Known {
         return Ok(());
     }
     tx.txn.put_local(&[WORK, t.as_bytes()].concat(), &[], Shred::No)?;
     Ok(())
 }
 
-/// Queues `t` and the things listing it: its status changed (known, ended, unknown).
+/// Queues the things listing `t`, and `t` while known: its status changed (known, ended,
+/// unknown). An ended or unknown thing's own rows go, so a forgotten thing leaves none.
 pub(crate) fn queue_with_listers(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     if tx.txn.is_memory() {
         return Ok(());
     }
-    queue(tx, t)?;
+    if status(tx.core, t, &BTreeSet::new()) == Status::Known {
+        set(tx, WORK, t, true)?;
+    } else {
+        set(tx, WORK, t, false)?;
+        set(tx, PENDING, t, false)?;
+    }
     for l in refs::listers(tx, t)? {
         queue(tx, &l)?;
     }
@@ -159,7 +166,7 @@ fn rows(tx: &mut Tx<'_>, prefix: &[u8]) -> Result<Vec<Tid>> {
 /// What one judgment did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Judged {
-    /// Unreachable things this node may end, in the order judged (each thing's cascade after it).
+    /// Unreachable things this node may end, with what only they kept.
     pub release: Vec<Tid>,
     /// Things left queued: a thing their walk read is not heard out.
     pub waiting: usize,
@@ -230,7 +237,7 @@ impl crate::engine::Engine {
     /// Judges the things changes touched (issues/thing-lifetimes.md, The judgment): each whose
     /// walk read only things `heard` says are heard out (node-sync: every label holding it is;
     /// a thing under no label is), the rest left queued. Returns the unreachable things this
-    /// node may end, each followed by what only it kept; the others it may not end are pending.
+    /// node may end, with what only they kept; the others it may not end are pending.
     pub fn judge_lifetimes(&mut self, heard: &dyn Fn(&Tid) -> bool) -> Result<Judged> {
         let rights = self.core.lifetimes_rights;
         let out = self.run(|tx| judge(tx, heard, rights))?;

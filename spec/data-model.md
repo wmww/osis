@@ -114,6 +114,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. `schem
 - **`listing.0`**: `map<blob, set<blob>>`, a rotation's 32-byte commit ID to the 32-byte commit IDs a listing names (spec/permissions.md §5.5); entries only put, never reset. Read per delta, never as state.
 - `retention^.0`: what the thing keeps of replaced content per AK, the expiry a writer gives its writes there, `final` (a writer replaces no fire there) (spec/commits.md §5 The setting), and its removal default (`retain`, spec/permissions.md §2, §3); admin-only, fixed retention.
 - `purge.0`: the delta a purge request naming no aspect to reset carries (spec/commits.md §5).
+- `retainers^.0`: the thing's retainer set (spec/requirements.md Data model); absent, the thing is a garbage-collection root. Admin-only, ordinary retention. How nodes release: issues/thing-lifetimes.md (not yet specified).
 - `group.0`, `groups.0`: §8. `tag.0` marks a group as a user-facing tag (§8).
 - **`host^.0`** present: the node hosts (spec/sync.md §4). Absent: it does not, and keeps nothing for others (stopping drops what it kept, at the latest when the node next runs sync; a later start begins empty). Never placed under a label.
   - `admit` `listed`: it takes registrations of the labels in `labels`. `admit` `open`: of any label.

@@ -116,7 +116,7 @@ pub enum Part {
     Refs(T, Set),
     /// Erasure: a purge of the creation.
     End(T),
-    /// A release request's part on the thing's `created.0`: an ending, never lasting.
+    /// A release request's part on the thing's `released.0`: an ending, never lasting.
     Release(T),
 }
 
