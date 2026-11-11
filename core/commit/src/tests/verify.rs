@@ -64,16 +64,19 @@ pub(crate) fn one_commit() -> (CommitBlob, SigningSecret) {
     (CommitBlob { header: h, sigs, parts: vec![Part::new(0, delta)] }, key)
 }
 
-// spec/wire.md §4: the commit blob plaintext round-trips; a header-only rewrite is allowed.
+// spec/wire.md §4: the commit blob plaintext round-trips (a stored record's decode-only read
+// too); a header-only rewrite is allowed.
 #[test]
 fn commit_blob_round_trip() {
     let (b, _) = one_commit();
     let bytes = b.encode();
     assert_eq!(CommitBlob::decode(&bytes).unwrap(), b);
+    assert_eq!(CommitBlob::decode_stored(&bytes).unwrap(), b);
     assert!(b.missing().is_empty());
     let mut empty = b.clone();
     empty.parts.clear();
     assert_eq!(CommitBlob::decode(&empty.encode()).unwrap(), empty);
+    assert_eq!(CommitBlob::decode_stored(&empty.encode()).unwrap(), empty);
     assert_eq!(empty.missing(), vec![0]);
     assert_eq!(empty.id(), b.id());
 }

@@ -56,7 +56,7 @@ pub(crate) fn keysets_of(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<Keys
 /// A `keys.0` body read: the keysets it writes, typed (whole keysets: a rotation replaces the
 /// field), and each as noted (`KeysetRec`: its role, epoch, listed epochs, KEM key (suite 1),
 /// possession key, names digest and left-out keysets).
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct KeysBody {
     pub write: KeysWrite,
     pub recs: Vec<KeysetRec>,

@@ -35,8 +35,6 @@ pub(crate) use atomic::{check_rebuilt, TxChange};
 pub(crate) use atomic::{Unmerge, apply_verified, carries_any, forget_snapshot, index_commit, note_stands_in, ingest_secrets_keys, observe_state, rebuild, rejudged, run_batched, strip_valueless};
 
 use crate::engine::blobs::TxBlobs;
-use std::borrow::Cow;
-use std::cell::OnceCell;
 use crate::engine::{Engine, Meta, Step, Tx, decode_commit_record, records};
 use crate::error::{Error, Result};
 use crate::events::{Diagnostic, DiagnosticKind, Origin};
@@ -47,6 +45,8 @@ use osis_crdt::Interner;
 use osis_crypto::{VerifyingKey, dedup_secret};
 use osis_label::BlobReader;
 use osis_store::{PendingKind, Shred};
+use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -363,15 +363,17 @@ fn check_signature(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId, vk: &Verif
 }
 
 /// The stored bytes of pending commit `id`, decoded: `None` when they are gone (it pends no
-/// more) or still unreadable by this build.
+/// more) or still unreadable by this build. A parked row may hold the bytes as received
+/// (`park`): decoded as a peer's, checked canonical, before anything applies from them.
 fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
     let _s = crate::costs::span("reexamine: read pending");
     expire_stored(tx, id)?;
-    let Some((_, bytes)) = tx.txn.get_pending(id)? else {
+    let Some((kind, bytes)) = tx.txn.get_pending(id)? else {
         tx.core.ix.pending.remove(id);
         return Ok(None);
     };
-    Ok(CommitBlob::decode_stored(&bytes).ok())
+    let decode = if kind == PendingKind::Parked { CommitBlob::decode } else { CommitBlob::decode_stored };
+    Ok(decode(&bytes).ok())
 }
 
 /// Checks a commit and decodes its parts, or says why it waits.
