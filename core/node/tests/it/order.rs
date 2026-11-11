@@ -658,13 +658,26 @@ fn noting<E>(r: Result<Option<CommitId>, E>, unchecked: &mut BTreeSet<CommitId>)
 
 /// A fresh node under test: it answers removals with no addenda, so what it reads is a function
 /// of the commits it received alone (`Engine::write_addenda`; the witness rule has its own tests).
+/// Its account is forked from one made per thread (making one costs a tenth of
+/// `held_set_decides`), so it starts opened over that account; each held set's oracle (`made`)
+/// made its own, so every order is also compared against a node that never opened.
 fn fresh(now: WallMs) -> Peer {
-    // its account's commits date from before any clock under test, so none parks for drift; one
-    // account per thread, forked (making one is a tenth of `held_set_decides`)
     thread_local! {
-        static BASE: Peer = Peer::new(FRESH, WallMs(T0.0 - 2 * 86_400_000)).unwrap();
+        static BASE: Peer = Peer::new(FRESH, ACCOUNT_AT).unwrap();
     }
-    let mut p = BASE.with(|b| b.fork(FRESH)).unwrap();
+    under_test(BASE.with(|b| b.fork(FRESH)).unwrap(), now)
+}
+
+/// `fresh`, its account made here rather than forked.
+fn made(now: WallMs) -> Peer {
+    under_test(Peer::new(FRESH, ACCOUNT_AT).unwrap(), now)
+}
+
+/// When a node under test makes its account: its commits date from before any clock under test,
+/// so none parks for drift.
+const ACCOUNT_AT: WallMs = WallMs(T0.0 - 2 * 86_400_000);
+
+fn under_test(mut p: Peer, now: WallMs) -> Peer {
     p.clock.set(now);
     p.engine.write_addenda(false);
     p
@@ -1434,7 +1447,7 @@ struct Oracle {
 }
 
 fn oracle(played: &Played, held: &[usize]) -> Oracle {
-    let mut p = fresh(played.now);
+    let mut p = made(played.now);
     p.engine.keep_bodies(true);
     for t in played.sync.things() {
         p.engine.set_syncing(*t, true).unwrap();

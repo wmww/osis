@@ -153,8 +153,16 @@ def run(name, cmd):
     except OSError as e:
         sys.exit(f"limits: {cmd[0]}: {e}")
     r1 = resource.getrusage(resource.RUSAGE_CHILDREN)
-    check(name, r1.ru_utime + r1.ru_stime - r0.ru_utime - r0.ru_stime, time.time() - t0)
+    safe_check(name, r1.ru_utime + r1.ru_stime - r0.ru_utime - r0.ru_stime, time.time() - t0)
     return 128 - rc if rc < 0 else rc
+
+
+def safe_check(name, cpu, wall):
+    """`check` for a wrapper whose exit code is its command's: a broken table or log prints, never raises."""
+    try:
+        check(name, cpu, wall)
+    except Exception as e:  # noqa: BLE001: report-only
+        print(f"   limit {name}: unchecked ({type(e).__name__}: {e})")
 
 
 def read_log(since):

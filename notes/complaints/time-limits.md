@@ -6,3 +6,4 @@
 - Editing the worktree while a background gate ran: the gate built the half-edited tree and failed to compile (my mistake; the footgun is in notes/build.md).
 - `cargo clean` for the clean-build measurement made the next gate's clippy, GUI lint and unification check cold (318, 445, 1770 CPU-s): over their limits for a reason no branch has.
 - The task changed twice mid-run (gate sizes, then perf fixes, not sizes): the measurement batches were sized for the first brief.
+- Review: the brief said rebase on `main`, but local main lagged origin/main by four commits (the duplicate issue to merge lived only there); rebased on origin/main.

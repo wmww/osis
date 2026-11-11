@@ -118,7 +118,7 @@ def run(cmd, name):
     cpu = ru.ru_utime + ru.ru_stime - ru0.ru_utime - ru0.ru_stime
     held = time.time() - t1
     log("rel", held=round(held, 1), cpu=round(cpu, 1), rc=rc)
-    limits.check(name, cpu, held)
+    limits.safe_check(name, cpu, held)
     return 128 - rc if rc < 0 else rc
 
 

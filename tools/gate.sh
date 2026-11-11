@@ -119,6 +119,12 @@ if systemctl is-active --quiet com.system76.Scheduler.service 2>/dev/null; then
   echo "gate: WARNING: system76-scheduler is running; builds here run at idle priority and take many times their cost (notes/build.md)" >&2
 fi
 t0=$(date +%s)
+# The whole gate against its limit (`gate`), its lock wait (seconds, $1) left out; then the pass line.
+passed() {
+  cpu
+  python3 "$tools/limits.py" check gate "$cpu" $(( $(date +%s) - t0 - $1 )) || true
+  echo "== gate passed$2 ($(( $(date +%s) - t0 ))s)"
+}
 # The GUI packages: built, linted and tested only when named (not default members). Every lint
 # and build here reuses core's artifacts for the core crates (Feature unification).
 gui_pkgs="-p osis-kit -p osis-app -p osis-android"
@@ -133,7 +139,7 @@ gui_only() {
   gui_test
   if [ -n "$unify" ]; then limited gate.unify unification_check; fi
   limited gate.deny cargo deny check
-  echo "== gate passed, $1: core build and tests skipped ($(( $(date +%s) - t0 ))s)"
+  passed 0 ", $1: core build and tests skipped"
   exit 0
 }
 # The lockfile, in about a second, so a stale one fails here rather than at the first `--locked`
@@ -155,7 +161,7 @@ instant() {
 limited gate.checks instant
 if [ "$core" = docs ]; then
   if [ -n "$gui" ]; then gui_only "docs and GUI change"; fi
-  echo "== gate passed, docs-only change: builds, tests, lints and deny skipped ($(( $(date +%s) - t0 ))s)"
+  passed 0 ", docs-only change: builds, tests, lints and deny skipped"
   exit 0
 fi
 # the tests the gate runs, as `build CMD` and `run CMD` lines: the default tests, then the branch's
@@ -201,8 +207,6 @@ wf=$(mktemp)
 trap 'rm -f "$tf" "$sel" "$wf"' EXIT
 export HEAVY_WAIT_FILE="$wf"
 step tools/heavy --limit gate.hold sh tools/gate.sh --held "$sel"
-wait_s=$(cat "$wf" 2>/dev/null || echo 0)
+wait_s=$(cat "$wf" 2>/dev/null || true); wait_s=${wait_s:-0}
 if [ -n "$gui" ]; then gui_test; fi
-cpu
-python3 "$tools/limits.py" check gate "$cpu" $(( $(date +%s) - t0 - ${wait_s%.*} )) || true
-echo "== gate passed ($(( $(date +%s) - t0 ))s, ${wait_s%.*}s of it waiting for the heavy lock)"
+passed "${wait_s%.*}" ", ${wait_s%.*}s of it waiting for the heavy lock"
