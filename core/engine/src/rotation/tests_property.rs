@@ -11,7 +11,7 @@
 //! on its own draws.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Pass, Rng, edge, group, openable};
+use super::tests::{Key, Pass, Rng, edge, group, openable, opens_in};
 use super::tests_departs::{Forge, leave};
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -35,8 +35,6 @@ struct Reached {
     invalid: bool,
 }
 
-/// (actor, role, epoch): a secret.
-type Key = (Tid, Role, Epoch);
 
 /// A rotator's view when it made an epoch.
 struct Made {
@@ -71,6 +69,10 @@ struct Run {
     hostile: BTreeSet<usize>,
     /// The history's steps, for a failure's message.
     log: Vec<String>,
+    /// Every `secrets.0` state of an actor any node held after a step, and every secret any
+    /// node held: what a departed party that kept every state it met opens (`opens_in`).
+    states: Vec<(Tid, ct::Secrets)>,
+    secrets: BTreeMap<Key, osis_crypto::Secret32>,
     /// When each peer first held each secret (an index into `log`).
     first: BTreeMap<(usize, Key), usize>,
     /// Whether an actor holding a role on another rotated: the epochs boxing or proving its
@@ -104,12 +106,21 @@ impl Run {
     }
 
     fn note(&mut self) {
+        let all = self.all();
         for p in 0..N {
             let h = self.held(p);
             for k in &h {
                 self.first.entry((p, *k)).or_insert(self.log.len());
             }
             self.ever[p].extend(h);
+            self.secrets.extend(super::tests::held_secrets(&self.lp.peers[p], &all));
+            for a in &all {
+                if let Some(s) = self.lp.peers[p].engine.get_typed(a, &ct::SECRETS).unwrap()
+                    && !self.states.iter().any(|x| x.0 == *a && x.1 == s)
+                {
+                    self.states.push((*a, s));
+                }
+            }
         }
     }
 
@@ -311,7 +322,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
         }
     }
     lp.sync_all().unwrap();
-    let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
+    let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), states: Vec::new(), secrets: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
     run.log.push(format!("actors {:?} (owners), peers {:?}", run.actors, run.tids));
     run.note();
     reached.cycle = k > 1;
@@ -347,6 +358,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
                     if let Forge::None = how {
                         lowered = run.lp.peers[i].engine.demote(&t, &Demotion { holder: run.tids[i], new: None, retain: None }).is_ok();
                     } else if let Ok(made) = leave(&mut run.lp, i, t, how) {
+                        run.log.push(format!("  peer {i} forges {how:?}: {:?}", made.iter().map(|(r, e)| (r, e.n(), e.nonce()[0])).collect::<Vec<_>>()));
                         // a forger is hostile from here on: its node acts no more
                         run.hostile.insert(i);
                         lowered = true;
@@ -435,6 +447,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
                 let rot: BTreeSet<Role> = ROLES.into_iter().filter(|_| run.rng.next(2) == 0).collect();
                 let _ = run.rotate(x, t, &rot, false);
             }
+            run.note();
         }
         run.record(x, &before);
         run.note();
@@ -609,7 +622,6 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                 let opens = openable(&mut run.lp, o, &all, run.tids[d], run.ever[d].clone());
                 // a secret of `t` first held since a grant handed it, not before
                 let own: BTreeSet<Key> = run.ever[d].iter().filter(|k| k.0 != t || run.handed[d].get(k).is_none_or(|g| run.first.get(&(d, **k)).is_some_and(|f| f <= g))).copied().collect();
-                let opens_own = openable(&mut run.lp, o, &all, run.tids[d], own.clone());
                 for &(h, hr) in direct.iter().filter(|x| x.1 >= r.max(Role::Write)) {
                     if super::tests::blocked_at(&mut run.lp, h, t).contains(&r) {
                         continue;
@@ -623,15 +635,20 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                 // the boxes within the limit for `d` (`excused`), in any epoch of the history: a
                 // cascade seals a holder actor blind in an epoch of an actor `t`'s epoch boxes
                 let limit: BTreeSet<(Tid, Role, Epoch, Tid)> = run.made.iter().flat_map(|((t2, r2, e2), m)| m.blind.iter().filter(|(bm, k)| run.excused(o, &m.held, *bm, *r2, k, d)).map(move |(bm, _)| (*t2, *r2, *e2, *bm))).collect();
+                // from the secrets the peer held rightly (none of an epoch made with it below): what
+                // the settled boxes open to it without those within the limit, and what every
+                // state met opens with and without them
+                let base: BTreeSet<Key> = own.iter().filter(|k| !run.made.get(k).is_some_and(|m| m.below.contains(&d))).copied().collect();
+                let settled = super::tests::openable_but(&mut run.lp, o, &all, run.tids[d], base.clone(), &limit);
+                let met = opens_in(&run.lp, &run.states, &run.secrets, run.tids[d], base.clone(), &BTreeSet::new());
+                let met_unlimited = opens_in(&run.lp, &run.states, &run.secrets, run.tids[d], base, &limit);
                 for ((mt, mr, e), Made { held, below, .. }) in &run.made {
                     if *mt == t && *mr == r && below.contains(&d) && last.is_some_and(|c| held.contains(&c)) && !regained(e) {
-                        // excused only by those boxes: without them (and every secret the peer
-                        // held of an epoch made with it below, had its node opened it so), the
-                        // peer opens the epoch no other way
-                        let opened = opens_own.contains(&(t, r, *e)) && (limit.is_empty() || {
-                            let kept: BTreeSet<Key> = own.iter().filter(|k| !run.made.get(k).is_some_and(|m| m.below.contains(&d))).copied().collect();
-                            super::tests::openable_but(&mut run.lp, o, &all, run.tids[d], kept, &limit).contains(&(t, r, *e))
-                        });
+                        // excused only when boxes within the limit were its one way to it: a leak
+                        // if the settled boxes open it without them, or it holds it and no state
+                        // met opens it, or one opens it without them
+                        let k = (t, r, *e);
+                        let opened = settled.contains(&k) || own.contains(&k) && (met_unlimited.contains(&k) || !met.contains(&k));
                         assert!(!opened, "seed {seed}: peer {d} (now {:?}) opens {t:?} {r:?} epoch {e:?}, made by a rotator that saw it depart (first held at step {:?})", role(d), run.first.get(&(d, (t, r, *e))));
                     }
                 }

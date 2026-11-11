@@ -173,22 +173,48 @@ impl Rng {
     }
 }
 
+/// (actor, role, epoch): a secret.
+pub(super) type Key = (Tid, Role, osis_crypto::Epoch);
+
 /// Every (actor, role, epoch) of `actors` a party holding `known` opens from the `secrets.0`
 /// peer `i` holds of them: a box to `party` itself, or to a holder at a keyset (sealed) or
-/// secret (symmetric) epoch known, transitively. What a departed party that kept its secrets
-/// can read, whatever its own node does.
-pub(super) fn openable(lp: &mut LocalPeer, i: usize, actors: &[Tid], party: Tid, known: BTreeSet<(Tid, Role, osis_crypto::Epoch)>) -> BTreeSet<(Tid, Role, osis_crypto::Epoch)> {
+/// secret (symmetric) epoch known, and what the history box of an epoch known lists,
+/// transitively. What a departed party that kept its secrets can read, whatever its own node
+/// does.
+pub(super) fn openable(lp: &mut LocalPeer, i: usize, actors: &[Tid], party: Tid, known: BTreeSet<Key>) -> BTreeSet<Key> {
     openable_but(lp, i, actors, party, known, &BTreeSet::new())
 }
 
 /// `openable` with the boxes in `skip` (actor, role, epoch, holder) left aside.
-pub(super) fn openable_but(lp: &mut LocalPeer, i: usize, actors: &[Tid], party: Tid, mut known: BTreeSet<(Tid, Role, osis_crypto::Epoch)>, skip: &BTreeSet<(Tid, Role, osis_crypto::Epoch, Tid)>) -> BTreeSet<(Tid, Role, osis_crypto::Epoch)> {
+pub(super) fn openable_but(lp: &mut LocalPeer, i: usize, actors: &[Tid], party: Tid, known: BTreeSet<Key>, skip: &BTreeSet<(Tid, Role, osis_crypto::Epoch, Tid)>) -> BTreeSet<Key> {
+    let states: Vec<(Tid, ct::Secrets)> = actors.iter().filter_map(|a| lp.peers[i].engine.get_typed(a, &ct::SECRETS).unwrap().map(|s| (*a, s))).collect();
+    let mut secrets = BTreeMap::new();
+    for p in &lp.peers {
+        secrets.extend(held_secrets(p, actors));
+    }
+    opens_in(lp, &states, &secrets, party, known, skip)
+}
+
+/// The secrets of `actors` node `p` holds.
+pub(super) fn held_secrets(p: &crate::local_peer::Peer, actors: &[Tid]) -> BTreeMap<Key, osis_crypto::Secret32> {
+    let mut out = BTreeMap::new();
+    for a in actors {
+        let e = p.engine.epochs(a).unwrap_or_default();
+        for r in osis_keys::ROLES {
+            out.extend(e.role(r).held().map(|(x, s)| ((*a, r, x), s.clone())));
+        }
+    }
+    out
+}
+
+/// `openable_but` over `states` (actor, `secrets.0` state; an actor may have several), with
+/// `secrets` opening history boxes (the test sees every secret; the party has the key it opens).
+pub(super) fn opens_in(lp: &LocalPeer, states: &[(Tid, ct::Secrets)], secrets: &BTreeMap<Key, osis_crypto::Secret32>, party: Tid, mut known: BTreeSet<Key>, skip: &BTreeSet<(Tid, Role, osis_crypto::Epoch, Tid)>) -> BTreeSet<Key> {
     use osis_keys::aspects::from_schema;
-    let all: Vec<(Tid, ct::Secrets)> = actors.iter().filter_map(|a| lp.peers[i].engine.get_typed(a, &ct::SECRETS).unwrap().map(|s| (*a, s))).collect();
     // boxes to the party itself (a key actor)
     if let Some(p) = lp.peers.iter().find(|p| p.engine.me() == party) {
         let keys = p.engine.core.id.keys().clone();
-        for (a, s) in &all {
+        for (a, s) in states {
             for o in osis_keys::open_boxes(a, s, &osis_keys::Opener::KeyActor { holder: party, keys: &keys }).0 {
                 known.insert((*a, o.role, o.epoch));
             }
@@ -196,7 +222,7 @@ pub(super) fn openable_but(lp: &mut LocalPeer, i: usize, actors: &[Tid], party: 
     }
     loop {
         let n = known.len();
-        for (a, s) in &all {
+        for (a, s) in states {
             for (k, b) in &s.boxes {
                 let Ok(e) = from_schema(&k.epoch) else { continue };
                 if skip.contains(&(*a, k.role, e, k.holder)) {
@@ -208,6 +234,14 @@ pub(super) fn openable_but(lp: &mut LocalPeer, i: usize, actors: &[Tid], party: 
                 };
                 if k.holder == party || via.is_some_and(|x| known.contains(&(k.holder, k.role, x))) {
                     known.insert((*a, k.role, e));
+                }
+            }
+            // a history box opened under a secret known carries the earlier secrets it lists
+            for (k, c) in &s.history {
+                let Ok(e) = from_schema(&k.epoch) else { continue };
+                let Some(x) = known.contains(&(*a, k.role, e)).then(|| secrets.get(&(*a, k.role, e))).flatten() else { continue };
+                if let Ok((earlier, _)) = osis_crypto::open_history(x, a, k.role, &e, c) {
+                    known.extend(earlier.into_iter().map(|(y, _)| (*a, k.role, y)));
                 }
             }
         }
