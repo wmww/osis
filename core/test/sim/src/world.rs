@@ -573,7 +573,7 @@ impl World {
         self.peer_links.insert((d, conn), (m, s, route));
         self.send_msg(Msg::Up(d, conn));
         let now = self.now();
-        let remote = osis_host::Remote { peer: osis_transport::Peer::Key(peer), source: None, relayed };
+        let remote = osis_host::Remote { peer: osis_transport::Peer::Key(peer), relayed };
         let out = match self.hosts.get_mut(s) {
             Some(h) => h.hub.accept(now, hc, address.key, remote),
             None => Vec::new(),

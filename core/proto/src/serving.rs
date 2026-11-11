@@ -446,11 +446,6 @@ impl ServingSession {
         self.subs.contains_key(label)
     }
 
-    /// Whether no label is opened on this connection (as `opened`).
-    pub fn none_opened(&self) -> bool {
-        self.opened.is_empty() && !self.authed
-    }
-
     /// Whether `label` is opened and its open holds at the head: under the head's sync key
     /// (spec/sync.md §5).
     fn holds(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<bool, StoreError> {

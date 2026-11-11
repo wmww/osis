@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: security, host
 
-Built: claim keys indexed as rows (an Open is a lookup); after one bogus signature a message's later ones try the head key only; Sync entries capped at 1024; one store commit per input; relays only to subscribers; full connection slots shared fairly by source (hub sessions and listener connections); a connection pipelining replies past `SEND_QUEUE` is closed mid-input; per-label maps pruned when an open ends.
+Built: claim keys indexed as rows (an Open is a lookup); after one bogus signature a message's later ones try the head key only; Sync entries capped at 1024; one store commit per input; relays only to subscribers; a connection pipelining replies past `SEND_QUEUE` is closed mid-input; per-label maps pruned when an open ends.
 
 Left:
 - **Sources**: fairness keys on `Connection::source` (IP, IPv6 /64). A relayed P2P connection's source is its relay's tag of the dialer's source (spec/sync.md §10), so per relay it counts as the dialer's address would; the same dialer through two relays is two sources. An attacker holding many addresses (a botnet, many /64s: one IPv6 /48 is 65 536 sources) still gets a share per address. With slots full such an attacker squeezes every honest source down to one connection (never to none: a source is evicted from only while it holds two more than the newcomer's), e.g. a NAT'd office keeps one. The hub's input turns go by the same sources (notes/flow-control.md, Hub stall bounds), so each address also gets a turn: at S sources a read waits up to (S − 1) per-input bounds, past `STALL_TIMEOUT_MS` at about 900 hostile sources at 10^5 entries or 80 at the 2^20 cap.

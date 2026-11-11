@@ -277,7 +277,7 @@ impl HubRun {
     }
 
     fn accept(&mut self, key: [u8; 32], link: Link, group: Option<u64>) {
-        let remote = osis_host::Remote { peer: link.peer, source: link.source, relayed: link.relayed };
+        let remote = osis_host::Remote { peer: link.peer, relayed: link.relayed };
         let id = self.add(link, group, None);
         let now = self.now();
         let out = blocking(|| self.hub.accept(now, id, key, remote));

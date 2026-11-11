@@ -25,11 +25,7 @@ fn exchange(net: &mut Net, n: usize, p: &mut Dialer, acts: Vec<Action>, outs: Ve
 }
 
 fn dial_in(net: &mut Net, n: usize) -> (Dialer, Vec<ClientEvent>) {
-    dial_in_from(net, n, None)
-}
-
-fn dial_in_from(net: &mut Net, n: usize, source: Option<osis_transport::Source>) -> (Dialer, Vec<ClientEvent>) {
-    let (hc, sent) = net.hand_accept_from(n, LOCAL, osis_transport::Peer::Key([0x43; 32]), source);
+    let (hc, sent) = net.hand_accept(n, LOCAL, osis_transport::Peer::Key([0x43; 32]));
     let mut p = Dialer { conn: 0, hc, cs: ClientSession::new(ClientConfig { peer_static_key: LOCAL, challenge: [7; 32] }) };
     let now = net.now();
     let mut outs = p.cs.handle(now, ClientInput::Start);

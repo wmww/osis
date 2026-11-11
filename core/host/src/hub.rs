@@ -13,7 +13,7 @@ use crate::store::HostStore;
 use std::sync::{Arc, Mutex, MutexGuard};
 use osis_base::LabelId;
 use osis_proto::{ClientInput, ClientOutput, Message, ServingConfig, ServingSession, ServingInput, ServingOutput};
-use osis_transport::{Peer, Source};
+use osis_transport::Peer;
 use std::collections::{BTreeMap, VecDeque};
 
 /// A connection's handle, chosen by the driver.
@@ -74,16 +74,14 @@ pub struct Binding {
 pub struct Remote {
     /// Who it is (a key it authenticated, or a unix peer's uid).
     pub peer: Peer,
-    /// Where it comes from (`osis_transport::Source`; none: unknown).
-    pub source: Option<Source>,
     /// A relay carries the connection (`osis_transport::Connection::relayed`).
     pub relayed: bool,
 }
 
 impl Remote {
-    /// A peer with transport key `key`, from no known source, not relayed.
+    /// A peer with transport key `key`, not relayed.
     pub fn key(key: [u8; 32]) -> Remote {
-        Remote { peer: Peer::Key(key), source: None, relayed: false }
+        Remote { peer: Peer::Key(key), relayed: false }
     }
 }
 

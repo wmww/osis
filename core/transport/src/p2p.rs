@@ -66,7 +66,7 @@ pub const MAX_FORWARDED: usize = 1024;
 /// Streams a registration lets its relay open at once (resource bound: past it the relay
 /// answers busy; 0: no relayed connection; unbounded: a relay's streams cost the target memory
 /// without bound). Twice `MAX_FORWARDED`: as many again for the relayed connections `accept` handed
-/// out (past it the relay answers busy, whatever a node's connection cap) and ended streams the relay has not yet
+/// out (past it the relay answers busy) and ended streams the relay has not yet
 /// seen end.
 pub const REG_STREAMS: u32 = 2 * MAX_FORWARDED as u32;
 /// Receive window per stream of a registration's relay connection (resource bound against

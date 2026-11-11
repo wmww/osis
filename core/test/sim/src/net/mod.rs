@@ -888,7 +888,7 @@ impl NetSim {
         self.note(format!("node {n} reaches node {m} ({route:?}): link {id}"));
         self.send(id, End::Node(n, conn), Payload::Up);
         let at = self.nodes.get(m).map_or(0, |x| x.clock.now_wall_ms().0);
-        let remote = osis_host::Remote { peer: osis_transport::Peer::Key(key), source: None, relayed: matches!(route, Route::Relay(_)) };
+        let remote = osis_host::Remote { peer: osis_transport::Peer::Key(key), relayed: matches!(route, Route::Relay(_)) };
         let out = self.nodes.get_mut(m).and_then(|x| x.hub.as_mut()).map(|h| h.accept(at, hc, address.key, remote)).unwrap_or_default();
         self.node_hub_out(m, out)
     }

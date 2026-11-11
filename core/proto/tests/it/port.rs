@@ -77,10 +77,10 @@ fn serving_auth_call_and_reply_bound() {
     let auth = Message::Auth { id: 1, secret: None, session: [0; 16] };
     let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&auth)));
     assert_eq!(requests(&out), vec![auth]);
-    assert!(s.none_opened());
+    assert!(!s.authed());
     let out = s.handle(T0, &mut st, ServingInput::Reply { id: 1, reply: Ok(ok(Value::Bytes(vec![0; 16]))) });
     assert_eq!(sent(&out).len(), 1);
-    assert!(s.authed() && !s.none_opened());
+    assert!(s.authed());
     let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&call)));
     assert_eq!(requests(&out), vec![call]);
     // a reply above max_reply goes as TooLarge with the bound

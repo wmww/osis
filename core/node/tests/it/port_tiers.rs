@@ -1,7 +1,6 @@
 //! Client-port plumbing in the sync engine (notes/client-port.md §0, §2, §5): every listener
 //! serves it, through the node's hub; the tier is the transport type's (`Peer::Unix` is main, a
-//! key never is), requests go up as actions only after Auth, an authenticated client is exempt
-//! from the bound on sessions sharing nothing, a ported session's end is reported.
+//! key never is), requests go up as actions only after Auth, a ported session's end is reported.
 
 use crate::net::local_nodes;
 use crate::net::*;
