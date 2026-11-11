@@ -234,3 +234,11 @@ pub struct LabelStatus {
     /// Replaced (an admin syncs it until it retires, `retire_replaced`).
     pub replaced: bool,
 }
+
+impl LabelStatus {
+    /// Synced (the API's `SyncState::Synced`, notes/api.md Sync configuration and status): not
+    /// stranded, at least one source, every source caught up, and no connection still opening it.
+    pub fn synced(&self) -> bool {
+        !self.stranded && self.sources > 0 && self.idle == self.sources && self.opening == 0
+    }
+}

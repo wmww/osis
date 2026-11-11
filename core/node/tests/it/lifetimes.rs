@@ -741,3 +741,71 @@ fn a_subtree_and_a_cycle_release_at_every_node() {
         assert!(net.engine(n).lifetimes_pending().unwrap().is_empty(), "node {n}");
     }
 }
+
+// issues/thing-lifetimes.md (The release: When): under a label with no host, heard out is its
+// status reading Synced (a co-reader connected, its stream caught up both ways). x moves from r1
+// to r2 in two commits; b, a right holder, holds only the second. With no co-reader connected b
+// releases nothing; once a reconnects, nothing either while a's stream is not caught up (checked
+// after every message), and the first commit arrives by it: x is kept
+#[test]
+fn a_two_commit_move_under_a_peer_only_label_releases_nothing_until_synced() {
+    let (mut net, [a, b]) = local_nodes::<2>();
+    for (n, k) in [(a, 0xa9), (b, 0xb9)] {
+        let acts = net.sync(n).publish_reach([k; 32], vec![]).unwrap();
+        net.actions(n, acts);
+    }
+    let g = net.group_at(a, &[(b, osis_base::Role::Admin)], vec![]);
+    net.run();
+    let (r1, x, _) = retained_in(&mut net, a, g);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let r2 = e.new_thing(&mut m, g);
+    let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(r2);
+    m.set(g, &ct::GROUP, &items).unwrap();
+    list(&mut m, x, Some([r1, r2].into()));
+    e.commit(m).unwrap().unwrap();
+    net.run();
+    assert_eq!(net.engine(b).lifetime_status(&r2), Status::Known, "b synced with a");
+    net.set_online(a, false);
+    net.run();
+    let mut m = Mutation::new();
+    refs(&mut m, r2, Value::Set([Value::Tid(x)].into()));
+    net.engine(a).commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    refs(&mut m, r1, Value::Set(Default::default()));
+    let second = net.engine(a).commit(m).unwrap().unwrap();
+    let p = net.engine(a).package(&second).unwrap().unwrap();
+    net.engine(b).ingest(&p.bytes, p.blobs).unwrap();
+    for _ in 0..3 {
+        net.feed(b, osis_node::sync::Event::Local);
+        net.advance(70_000);
+    }
+    let e = net.engine(b);
+    assert_eq!(e.lifetime_status(&x), Status::Known, "no co-reader connected: nothing released");
+    assert!(e.lifetimes_pending().unwrap().is_empty());
+    assert_eq!(e.lifetimes_due().unwrap(), (false, true), "held");
+    net.set_online(a, true);
+    let (mut connected, mut syncing) = (false, false);
+    for _ in 0..20 {
+        net.tick(10_000);
+        net.feed(a, osis_node::sync::Event::Local);
+        net.feed(b, osis_node::sync::Event::Local);
+        loop {
+            assert_eq!(net.engine(b).lifetime_status(&x), Status::Known, "b released x before a's stream caught up");
+            let st = net.sync(b).label_status().into_iter().find(|s| s.group == g).unwrap();
+            connected |= st.sources > 0;
+            syncing |= st.sources > 0 && !st.synced();
+            if !net.step() {
+                break;
+            }
+        }
+    }
+    assert!(connected && syncing, "a connected, and its stream was caught up only after");
+    for n in [a, b] {
+        let e = net.engine(n);
+        assert_eq!(e.lifetime_status(&x), Status::Known, "node {n}: kept");
+        assert_eq!(e.lifetimes_due().unwrap(), (false, false), "node {n}: judged");
+        assert!(e.lifetimes_pending().unwrap().is_empty(), "node {n}");
+    }
+}

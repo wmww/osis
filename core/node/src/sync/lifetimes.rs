@@ -1,7 +1,8 @@
 //! The lifetime judgment's trigger (issues/thing-lifetimes.md, The release, When;
 //! notes/engine-lifetimes.md): a thing is judged once every label this node syncs whose closure
-//! holds a thing its walk read is heard out (`heard`); a thing under no label at once. Offline,
-//! a hosted label is not heard out, so nothing under it is released.
+//! holds a thing its walk read is heard out, its status Synced (`LabelStatus::synced`); a thing
+//! under no label at once. With no source connected (offline, or no co-reader up under a label
+//! with no host) a label is not heard out, so nothing under it is released.
 
 use super::SyncEngine;
 use osis_base::Tid;
@@ -27,18 +28,19 @@ impl SyncEngine {
         if !due && !held {
             return Ok(false);
         }
-        // per group, whether every label of it is heard out; a hostless label has nothing to hear
+        // per group, whether every label of it reads Synced (`LabelStatus::synced`): at least one
+        // source, each caught up; a label with no source connected is not heard out
         let mut groups: BTreeMap<Tid, bool> = BTreeMap::new();
         let mut heard = BTreeSet::new();
-        for (g, gl) in self.labels() {
-            if gl.replaced {
+        for s in self.label_status() {
+            if s.replaced {
                 continue;
             }
-            let out = super::peers::hostless(&gl.hosts) || self.heard(&gl.id);
+            let out = s.synced();
             if out {
-                heard.insert(gl.id);
+                heard.insert(s.label);
             }
-            *groups.entry(g).or_insert(true) &= out;
+            *groups.entry(s.group).or_insert(true) &= out;
         }
         let again = held && self.lifetimes_heard.as_ref().is_none_or(|last| !heard.is_subset(last));
         if !due && !again {

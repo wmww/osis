@@ -1,0 +1,8 @@
+# An `until` drop does not hear out labels with no host
+> Summary: A node whose read access only an `until` ended drops at once when every affected label has no host (`drop_left` counts a hostless label as heard out; spec/permissions.md §2 "or it has no host"), so its unsent writes from before the `until` may never reach a co-reader and a renewal on its way from one is not waited for. The lifetime trigger uses Synced instead; this rule needs its own answer, since co-readers may close on a departed member.
+> Priority: normal
+> Tags: sync, permissions, node
+
+`SyncEngine::drop_left` (`core/node/src/sync/deliver.rs`, timed actors) treats a label with no host as heard out, so a peer-only group drops as soon as the `until` passes, whether or not a co-reader is connected. Under such a label the node's own writes from before the `until` go up only to co-readers; dropping before one pulled them loses them, and a renewal written at a co-reader not yet received is missed (the node then drops data it could still read).
+
+The lifetime judgment hit the same shortcut (commits from a co-reader in the bad order released a live thing) and now waits for the label to read Synced (`LabelStatus::synced`). Reusing that here is not enough by itself: once the `until` passes a co-reader may judge this node departed and close (`drop_unwanted_peers`), so Synced may never come, leaving only `LOST_HEARD_WAIT_MS` (90 days). A host's refusal counts as heard out today; a co-reader's close or refusal of a departed member is the analog to define (spec/permissions.md §2), together with whether a co-reader serves a member past its `until` long enough to take its writes and pass a renewal.
