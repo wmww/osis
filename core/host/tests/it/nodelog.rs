@@ -75,6 +75,10 @@ fn a_listing_from_the_start_is_the_live_set_plus_retained_deletions() {
     let (deleted, replaced, expired) = (live.remove(0), live.remove(6), live.remove(6));
     h.s.delete(&l1, &deleted.1, T0).unwrap();
     live.push((l2, put(&mut h.s, &l2, 20, true, None, &[replaced.1])));
+    // an ephemeral entry is never logged
+    let eb = blob(30);
+    let p = Put { blob_id: osis_label::blob_id(&eb), blob: &eb, wrap: [30; WRAP_LEN], stamp: Some(Signature([30; 64])), expiry: None, ephemeral: true, replaces: &[], now: T0 };
+    assert_eq!(h.s.put(&l1, p).unwrap(), Code::OK);
     sweep(&mut h, T0 + 1_000);
     assert_eq!(h.s.entry(&l2, &expired.1).unwrap(), None);
     let heads = |e: &[NodeEvent]| e.iter().filter_map(|e| if let NodeEvent::Head(l) = e { Some(*l) } else { None }).collect::<Vec<_>>();

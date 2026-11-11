@@ -24,9 +24,10 @@
 //! drawn is the pager's `Meta::log_drawn`, memory only and carried in the transaction, so a
 //! suspended transaction may append.
 //!
-//! Rows hold positions and IDs only (a blob ID is no fingerprint, notes/local-store.md): an
-//! overwrite, and a subject's event replaced by its later one, shred nothing; a removal (the
-//! sweep, `log_forget`) shreds, as every removal does.
+//! Rows hold positions and IDs only (a blob ID is no fingerprint and names a deleted blob's
+//! ciphertext in the blob area anyway, notes/local-store.md): an overwrite, and a subject's
+//! event replaced by its later one, shred nothing; a subject's removal (the sweep, `log_forget`)
+//! shreds.
 
 use crate::codec::{R, W};
 use crate::store::{Shred, Transaction, kind};
