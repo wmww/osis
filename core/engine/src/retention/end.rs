@@ -30,12 +30,12 @@ use osis_store::Shred;
 use std::collections::BTreeSet;
 
 const CREATED: &str = osis_commit::retention::CREATED;
-const PURGE: &str = osis_commit::retention::PURGE;
 const ROLES: &str = "roles.0";
 
-/// Aspects whose parts an ended thing still takes (`thing_wait`), so its ending is judged alike.
+/// Aspects whose parts an ended thing still takes (`thing_wait`), so its ending is judged alike:
+/// its mintings, its frozen edges and the ending requests' parts on it.
 pub(crate) fn judges_ending(ak: &str) -> bool {
-    matches!(ak, CREATED | PURGE | ROLES)
+    matches!(ak, CREATED | ROLES) || osis_commit::retention::ending_request(ak)
 }
 
 /// When each minting of an ended thing ended (spec/commits.md §5 Ending): at its expiry
@@ -67,7 +67,7 @@ impl Ending {
 /// with an item on `t`'s `created.0`, found among the commits on `t`: a request has a delta on
 /// each thing it names).
 fn per_minting(core: &Core, t: &Tid) -> Vec<(Option<u64>, Vec<Point>)> {
-    let on_t = |p: &Header| p.purge.iter().any(|i| i.tid() == t && i.ak().as_str() == CREATED);
+    let on_t = |p: &Header| p.requests().iter().any(|i| i.tid() == t && i.ak().as_str() == CREATED);
     let requests: Vec<(CommitId, &Header)> = core.on_thing(t).filter_map(|pc| core.ix.commits.get(&pc).filter(|m| m.view.purges && on_t(&m.header)).map(|m| (pc, &*m.header))).collect();
     let ends = core.mintings(t).map(|(c, ai)| {
         let m = core.ix.commits.get(&c)?;

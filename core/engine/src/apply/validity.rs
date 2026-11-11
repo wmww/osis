@@ -62,7 +62,7 @@ fn plain_part(h: &Header, a: &osis_commit::AspectEntry) -> bool {
 
 /// Whether commit `h` may be vouched for at all (`plain_part`).
 fn plain_commit(h: &Header) -> bool {
-    h.kind == Kind::Content && h.purge.is_empty()
+    h.kind == Kind::Content && !h.has_request()
 }
 
 /// What a commit's `addenda.0` deltas say (`Indexes::addenda`), per thing: the removals the

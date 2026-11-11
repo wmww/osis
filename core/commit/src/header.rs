@@ -165,6 +165,30 @@ pub enum PurgeItem {
     Author { tid: Tid, ak: Ak, actor: Tid },
 }
 
+impl Header {
+    /// Whether this commit is a release request: it carries `released.0` deltas (`validate`: those
+    /// alone; spec/commits.md §5 Ending).
+    pub fn is_release(&self) -> bool {
+        self.aspects.iter().any(|a| a.ak.as_str() == crate::retention::RELEASED)
+    }
+
+    /// The items of the commit's request (spec/commits.md §5): its purge field, or for a release
+    /// an item on `created.0` of each thing it has a `released.0` delta on, which ends the thing
+    /// as a purge of its creation does.
+    pub fn requests(&self) -> std::borrow::Cow<'_, [PurgeItem]> {
+        if !self.is_release() {
+            return std::borrow::Cow::Borrowed(&self.purge);
+        }
+        let Ok(created) = Ak::new(crate::retention::CREATED) else { return std::borrow::Cow::Borrowed(&[]) };
+        std::borrow::Cow::Owned(self.aspects.iter().map(|a| PurgeItem::Aspect { tid: a.tid, ak: created.clone() }).collect())
+    }
+
+    /// Whether the commit carries a request (`requests`).
+    pub fn has_request(&self) -> bool {
+        !self.purge.is_empty() || self.is_release()
+    }
+}
+
 impl PurgeItem {
     pub fn tid(&self) -> &Tid {
         match self {

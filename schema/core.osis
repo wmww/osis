@@ -357,3 +357,7 @@ admin aspect retention^.0: retention_setting;
 
 /// Written by a request to purge by name or by author; the time is all it says.
 aspect purge.0: timestamp;
+
+/// Written by a release request on each thing it releases (a reclaim, not an erasure); the time is
+/// all it says. Its commit expires `ROLE_KEEP` after it.
+aspect released.0: timestamp;

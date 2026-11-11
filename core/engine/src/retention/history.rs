@@ -6,7 +6,7 @@
 //! (`osis_commit::retention::Timeline`): its held valid `retention^.0` settings in key order
 //! (`validity::Judge::settings`), each read for the AK. A fixed-retention aspect has no timeline:
 //! `ROLE_KEEP` after replaced for a role-class aspect or `addenda.0` (compactor policy), never
-//! out of history for `created.0` and `retention^.0`, no history for `purge.0`.
+//! out of history for `created.0` and `retention^.0`, no history for `purge.0` and `released.0`.
 
 use crate::engine::Core;
 use osis_base::format::ROLE_KEEP_MS;
@@ -33,7 +33,7 @@ pub(crate) fn of(core: &Core, tid: &Tid, ak: &Ak) -> Kept {
         return Kept { role: true, ..Kept::default() };
     }
     if osis_commit::retention::fixed_retention(a).is_some() {
-        return Kept { always: a != osis_commit::retention::PURGE, ..Kept::default() };
+        return Kept { always: !osis_commit::retention::ending_request(a), ..Kept::default() };
     }
     let settings = crate::apply::validity::settings(core, tid);
     // a fire is history from its own `ts`: purge on replace reads as no history there

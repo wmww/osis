@@ -125,8 +125,9 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`
   - an aspect of the wrong class for its kind (`created.0` fits either kind);
   - `created.0` in a kind without own writes or with the ephemeral marker;
   - a role compaction snapshot of `roles.0`;
-  - a role-class, `retention^.0` or `purge.0` aspect whose retention is not its fixed one (spec/commits.md §5);
-  - `expires` on a commit with such an aspect;
+  - a role-class, `retention^.0`, `purge.0` or `released.0` aspect whose retention is not its fixed one (spec/commits.md §5);
+  - `expires` on a commit with such an aspect but `released.0`;
+  - `released.0` in a commit that is not a release request: one of kind 0 (content), durable, with `released.0` aspects alone, no purge item, and `expires` = `wall_ms(ts) + ROLE_KEEP` (spec/commits.md §5 Ending);
   - `nobody` on an aspect other than `created.0` without fixed retention (spec/commits.md §5);
   - a content compaction snapshot's retention `by` other than writer;
   - `expires` or a purge item on a role commit;

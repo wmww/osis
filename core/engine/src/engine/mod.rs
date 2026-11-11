@@ -273,7 +273,7 @@ pub struct View {
     pub frontier: Option<Arc<osis_perm::Frontier>>,
     /// The blobs of the chunk list (`Core::by_chunk`).
     pub chunks: Vec<osis_base::BlobId>,
-    /// It carries a purge request (`retention::lasting`).
+    /// It carries a request, a purge or a release (`Header::requests`; `retention::lasting`).
     pub purges: bool,
     /// The epoch an account's commit is signed at (spec/wire.md §4): what the epoch rule reads
     /// (`Core::standing`); `None` for any other author.
@@ -304,7 +304,7 @@ impl View {
             aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, replaces: a.replaces }).collect(),
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
             chunks: h.chunks.iter().map(|c| c.blob).collect(),
-            purges: !h.purge.is_empty(),
+            purges: h.has_request(),
             epoch: h.epoch,
         }
     }

@@ -16,11 +16,16 @@
 //! (`refs::note`); a thing becoming known, ended or forgotten, with its listers; every pending
 //! thing once the role timelines change (a right gained). A missed queue only leaks; a walk reads
 //! the current held state, so a release never rests on a queue.
+//!
+//! What a judgment releases goes in one **release request** (`release`): a commit with a
+//! `released.0` delta on each thing, expiring `ROLE_KEEP` after it, which every node applies as
+//! a purge of the thing's creation (`Header::requests`, `purge`), so it ends there by the one
+//! ending path (`end`), never as erasure (no lasting header).
 
 use crate::engine::refs;
-use crate::engine::{Core, Tx};
+use crate::engine::{Core, Mutation, Tx};
 use crate::error::Result;
-use osis_base::{Ak, Tid, Value};
+use osis_base::{Ak, CommitId, Tid, Value};
 use osis_store::Shred;
 use std::collections::BTreeSet;
 
@@ -127,10 +132,10 @@ fn walk(tx: &mut Tx<'_>, x: &Tid, gone: &BTreeSet<Tid>, read: &mut BTreeSet<Tid>
     Ok(true)
 }
 
-/// Whether this node may end `x`: its writer holds the purge right over every held minting of
-/// it (spec/permissions.md §6), as `end` would be judged.
+/// Whether this node may end `x`: its account, which writes the request (`release`), holds the
+/// purge right over every held minting of it (spec/permissions.md §6), as `end` would be judged.
 fn may_end(tx: &Tx<'_>, x: &Tid) -> bool {
-    let Ok(who) = tx.core.writer_for(x) else { return false };
+    let Ok(who) = tx.core.writer() else { return false };
     let Some(ts) = osis_base::Ts::make(tx.now(), 0) else { return false };
     let Ok(ak) = Ak::new(osis_commit::retention::CREATED) else { return false };
     let mut any = false;
@@ -172,6 +177,8 @@ pub struct Judged {
     pub waiting: usize,
     /// Things judged.
     pub judged: usize,
+    /// The release request written for `release`.
+    pub request: Option<CommitId>,
 }
 
 /// Judges the work list (and every pending thing when `rights` may have changed): each thing whose
@@ -236,13 +243,32 @@ impl crate::engine::Engine {
 
     /// Judges the things changes touched (issues/thing-lifetimes.md, The judgment): each whose
     /// walk read only things `heard` says are heard out (node-sync: every label holding it is;
-    /// a thing under no label is), the rest left queued. Returns the unreachable things this
-    /// node may end, with what only they kept; the others it may not end are pending.
+    /// a thing under no label is), the rest left queued. The unreachable things this node may
+    /// end, with what only they kept, it releases in one request (`release`); the others it may
+    /// not end are pending. A request refused leaves its things judged and not pending: they
+    /// leak until judged again.
     pub fn judge_lifetimes(&mut self, heard: &dyn Fn(&Tid) -> bool) -> Result<Judged> {
         let rights = self.core.lifetimes_rights;
-        let out = self.run(|tx| judge(tx, heard, rights))?;
+        let mut out = self.run(|tx| judge(tx, heard, rights))?;
         self.core.lifetimes_rights = false;
+        out.request = self.release(&out.release)?;
         Ok(out)
+    }
+
+    /// Writes a release request for `xs` as this node's account (spec/commits.md §5 Ending): one
+    /// commit with a `released.0` delta on each, so each copy of a delta names only its own
+    /// thing; it expires `ROLE_KEEP` after its `ts`. Applied, it ends each thing as a purge of its
+    /// creation does. `Permission` when the account may not end one of them; `None` for none.
+    pub fn release(&mut self, xs: &[Tid]) -> Result<Option<CommitId>> {
+        if xs.is_empty() {
+            return Ok(None);
+        }
+        let now = self.now();
+        let mut m = Mutation::new();
+        for x in xs {
+            m.set(*x, &osis_schema::core_types::RELEASED, &now)?;
+        }
+        self.commit(m)
     }
 
     /// The things judged unreachable here that this node may not end.

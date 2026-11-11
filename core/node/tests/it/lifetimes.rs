@@ -136,9 +136,9 @@ fn the_judgment_releases_what_the_model_judges_unreachable() {
             assert_eq!(idx(&got.release, &t), want, "seed {seed}: {v:?} {log:?}");
             assert!(net.engine(a).lifetimes_pending().unwrap().is_empty());
             released += got.release.len();
-            // released, as a purge here until release requests are written
-            for x in got.release {
-                end(&mut net, a, x);
+            assert_eq!(got.request.is_some(), !got.release.is_empty(), "seed {seed}: one request for what it releases");
+            for x in &got.release {
+                assert_eq!(net.engine(a).lifetime_status(x), Status::Ended, "seed {seed}: released");
             }
             assert!(net.engine(a).judge_lifetimes(&|_| true).unwrap().release.is_empty(), "seed {seed}: judged twice");
         }
@@ -231,4 +231,52 @@ fn a_new_listed_thing_is_judged_once_heard_out() {
     assert!(e.lifetimes_due().unwrap());
     assert_eq!(e.judge_lifetimes(&|_| true).unwrap().release.into_iter().collect::<BTreeSet<_>>(), [x, y].into());
     assert!(!e.lifetimes_due().unwrap());
+}
+
+// issues/thing-lifetimes.md (The release; Cascade), spec/commits.md §5 (Ending): r, an actor first
+// admin of x and y, lives by root's reference; x lives by r's. Unreferenced, r is released with x
+// in one request (x's right comes through r, judged with it), at both nodes; y, which r is first
+// admin of but does not keep, lives on as r's dependent and is written through r's frozen edges
+#[test]
+fn a_cascade_releases_an_actor_and_what_it_kept_in_one_commit() {
+    let (mut net, _host, [a, b], g, []) = crate::net::hosted::<2, 0>(&[(1, osis_base::Role::Admin)], [], true);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let root = e.new_thing(&mut m, g);
+    let r = e.new_thing(&mut m, g);
+    let x = e.new_thing(&mut m, r);
+    let y = e.new_thing(&mut m, r);
+    refs(&mut m, root, Value::Set([Value::Tid(r)].into()));
+    list(&mut m, r, Some([root].into()));
+    refs(&mut m, r, Value::Set([Value::Tid(x)].into()));
+    list(&mut m, x, Some([r].into()));
+    refs(&mut m, y, Value::Set(Default::default()));
+    let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.extend([root, r, x, y]);
+    m.set(g, &ct::GROUP, &items).unwrap();
+    e.commit(m).unwrap();
+    net.run();
+    assert!(net.engine(a).judge_lifetimes(&|_| true).unwrap().release.is_empty());
+    let mut m = Mutation::new();
+    refs(&mut m, root, Value::Set(Default::default()));
+    net.engine(a).commit(m).unwrap();
+    let got = net.engine(a).judge_lifetimes(&|_| true).unwrap();
+    assert_eq!(got.release.iter().copied().collect::<BTreeSet<_>>(), [r, x].into());
+    let h = net.engine(a).header(&got.request.unwrap()).unwrap();
+    assert_eq!(h.aspects.iter().map(|p| (p.tid, p.ak.as_str())).collect::<BTreeSet<_>>(), [(r, ct::RELEASED.ak()), (x, ct::RELEASED.ak())].into(), "one released.0 part per thing");
+    net.run();
+    for n in [a, b] {
+        let e = net.engine(n);
+        for t in [r, x] {
+            assert_eq!(e.lifetime_status(&t), Status::Ended, "node {n}: {t:?} released");
+            assert!(!e.knows(&t), "node {n}: {t:?} reads absent");
+        }
+        assert!(e.knows(&y), "node {n}: y lives on");
+        assert!(e.core.created(&r).is_some(), "node {n}: r's record kept for y");
+    }
+    let mut m = Mutation::new();
+    refs(&mut m, y, Value::Set([Value::Tid(root)].into()));
+    net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    assert_eq!(net.engine(a).get(&y, &refs_ak()).unwrap(), Some(Value::Set([Value::Tid(root)].into())), "y written through r's frozen edges");
 }

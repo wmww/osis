@@ -311,8 +311,9 @@ impl SyncEngine {
     /// (`unsure`: what it waits for is the carrier's presence at the host, no state change here).
     /// A superseded body is its author's to delete, nobody else's.
     /// The ended things outside `g`'s closure an entry of commit `c` (header `h`, parts `opened`)
-    /// is a certificate of, when that is all it is: every part a `roles.0` or `purge.0` part on
-    /// one, or a header alone (no lasting header the label wants) minting one.
+    /// is a certificate of, when that is all it is: every part a `roles.0` or ending request
+    /// (`purge.0`, `released.0`) part on one, or a header alone (no lasting header the label
+    /// wants) minting one.
     fn ended_certificate(&self, g: &Tid, c: &CommitId, h: &osis_commit::Header, opened: &[usize], desired: &Desired) -> Option<BTreeSet<Tid>> {
         let core = &self.engine.core;
         let closure = self.engine.closure(g);
@@ -324,7 +325,7 @@ impl SyncEngine {
             h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED && outside(&a.tid)).map(|a| a.tid).collect()
         } else {
             let on: Vec<&osis_commit::AspectEntry> = opened.iter().filter_map(|ai| h.aspects.get(*ai)).collect();
-            if on.len() < opened.len() || !on.iter().all(|a| matches!(a.ak.as_str(), "roles.0" | "purge.0") && outside(&a.tid)) {
+            if on.len() < opened.len() || !on.iter().all(|a| (a.ak.as_str() == "roles.0" || osis_commit::retention::ending_request(a.ak.as_str())) && outside(&a.tid)) {
                 return None;
             }
             on.iter().map(|a| a.tid).collect()

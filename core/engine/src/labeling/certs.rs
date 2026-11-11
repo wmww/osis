@@ -229,9 +229,9 @@ impl Engine {
     /// lets a node judge `t`'s frozen history also tells it the ending (`cert_parts` adds it
     /// for every ended thing whose record goes). Each held minting as a header alone (its
     /// `expires` dates an expiry; a value-less part is never uploaded), and each held request
-    /// dropping one by its `purge.0` part on `t` (its header names the mintings, `t`'s frozen
-    /// history judges its right), each with its author's chains to `t` and to its actor. Once per
-    /// `out`: its mintings among `out`'s headers.
+    /// dropping one by its ending request part on `t`, `purge.0` or `released.0` (its header
+    /// names the mintings, `t`'s frozen history judges its right), each with its author's chains
+    /// to `t` and to its actor. Once per `out`: its mintings among `out`'s headers.
     fn ending_evidence(&mut self, t: &Tid, out: &mut Certs) {
         let mintings: Vec<CommitId> = self.core.mintings(t).map(|(c, _)| c).collect();
         if mintings.iter().all(|c| out.headers.contains(c)) {
@@ -241,7 +241,7 @@ impl Engine {
         let requests = crate::retention::end::ending_requests(&self.core, t);
         let on_t = BTreeSet::from([*t]);
         for pc in &requests {
-            out.add(*pc, self.parts_of(pc, &on_t, &[osis_commit::retention::PURGE]));
+            out.add(*pc, self.parts_of(pc, &on_t, &osis_commit::retention::ENDING_REQUESTS));
         }
         for c in mintings.iter().chain(&requests) {
             let Some(h) = self.header(c) else { continue };

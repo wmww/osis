@@ -2,7 +2,7 @@
 
 use crate::cbor::strictly_ascending;
 use crate::header::{FOREVER, Header, Kind, aspect_key, key_value, purge_value};
-use crate::retention::{CREATED, EPHEMERAL_RETENTION, RETENTION, delete_levels, fixed_retention};
+use crate::retention::{CREATED, EPHEMERAL_RETENTION, RELEASED, RETENTION, delete_levels, fixed_retention, release_expires};
 use crate::Error;
 use osis_base::format::{DELETE_AUTHOR, FORMAT_VERSION};
 use osis_schema::PurgeBy;
@@ -88,13 +88,21 @@ impl Header {
                 return Err(Error::Invalid("delete levels do not match the retention"));
             }
         }
+        // a release request: durable content, `released.0` deltas alone, no purge field, expiring
+        // `ROLE_KEEP` after its `ts` (spec/commits.md §5 Ending)
+        if self.is_release() {
+            let only = self.aspects.iter().all(|a| a.ak.as_str() == RELEASED);
+            if kind != Kind::Content || self.ephemeral.is_some() || !only || !self.purge.is_empty() || self.expires != Some(release_expires(self.ts)) {
+                return Err(Error::Invalid("released.0 outside a release request"));
+            }
+        }
         // expiry: one per commit, on deltas that may expire (spec/commits.md §6)
         if let Some(t) = self.expires {
             ord(t <= FOREVER, "integer above 2^63 - 1")?;
             if kind.is_role() {
                 return Err(Error::Invalid("expires on a role commit"));
             }
-            if self.aspects.iter().any(|a| fixed_retention(a.ak.as_str()).is_some()) {
+            if self.aspects.iter().any(|a| a.ak.as_str() != RELEASED && fixed_retention(a.ak.as_str()).is_some()) {
                 return Err(Error::Invalid("expires on a commit with a fixed-retention aspect"));
             }
             if t <= wall {

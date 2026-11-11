@@ -37,11 +37,13 @@ fn reaches(item: &PurgeItem, ch: &Header, c: &CommitId) -> bool {
 /// Whether a request with header `p` names delta `a` of commit `c` (header `ch`): a delta with
 /// writes of its own (a snapshot has none, so no request names it: it is never purged, its copies
 /// of purged values go as any carrying body's), an item on its aspect reaches it, it is stamped
-/// before the request, and a request that expires reaches only deltas expiring no later than it
-/// (spec/commits.md §5).
+/// before the request, and a purge request that expires reaches only deltas expiring no later
+/// than it (spec/commits.md §5); a release, which expires, ends every minting (§5 Ending).
 fn names(p: &Header, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
     ch.kind.has_own_writes()
-        && stamped_before(p.ts, &a.ak, ch.ts) && p.expires.is_none_or(|e| ch.expires.is_some_and(|x| x <= e)) && p.purge.iter().any(|i| i.tid() == &a.tid && i.ak() == &a.ak && reaches(i, ch, c))
+        && stamped_before(p.ts, &a.ak, ch.ts)
+        && (p.is_release() || p.expires.is_none_or(|e| ch.expires.is_some_and(|x| x <= e)))
+        && p.requests().iter().any(|i| i.tid() == &a.tid && i.ak() == &a.ak && reaches(i, ch, c))
 }
 
 /// Whether a snapshot this node would write as `who` stamped `ts` (author and actor `who`) holds
@@ -119,11 +121,11 @@ impl HeldSet for Cut<'_> {
 /// request is refused (`Permission` on the item's thing). An item naming none held is written: a
 /// request naming a delta that arrives later is honored then.
 pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()> {
-    for item in &p.purge {
-        // a request that expires reaches only deltas expiring no later: one naming a held delta
+    for item in p.requests().iter() {
+        // a purge that expires reaches only deltas expiring no later: one naming a held delta
         // beyond it is refused, never written to drop less than it says (no request names a
         // snapshot, `names`)
-        if let Some(e) = p.expires {
+        if let Some(e) = p.expires.filter(|_| !p.is_release()) {
             for c in named_by(core, item, p.ts) {
                 let Some(m) = core.ix.commits.get(&c).filter(|m| m.header.kind.has_own_writes() && m.aspect(item.tid(), item.ak()).is_some()) else { continue };
                 if stamped_before(p.ts, item.ak(), m.header.ts) && reaches(item, &m.header, &c) && m.header.expires.is_none_or(|x| x > e) {
@@ -295,7 +297,7 @@ pub(crate) fn requests_resting_on(core: &Core, node: &Tid, things: &BTreeSet<Tid
             continue;
         }
         let on = |t: &Tid| *reach.entry(*t).or_insert_with(|| things.contains(t) || !core.ix.held.ever_writers(t).is_disjoint(things));
-        if m.header.purge.iter().map(|i| *i.tid()).collect::<BTreeSet<_>>().iter().any(on) {
+        if m.header.requests().iter().map(|i| *i.tid()).collect::<BTreeSet<_>>().iter().any(on) {
             out.push(*pc);
         }
     }
@@ -336,7 +338,7 @@ pub(crate) fn purged_aspects(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, whole: &BT
     }
     for c in whole {
         let Some(h) = tx.core.ix.commits.get(c).filter(|m| m.view.purges).map(|m| m.header.clone()) else { continue };
-        out.extend(h.purge.iter().map(|i| (*i.tid(), i.ak().clone())));
+        out.extend(h.requests().iter().map(|i| (*i.tid(), i.ak().clone())));
     }
     Ok(out)
 }
@@ -358,7 +360,7 @@ impl AspectRequests {
         let mut out = AspectRequests { named: BTreeMap::new(), wide: Vec::new(), newest: BTreeMap::new() };
         for pc in aspect_requests(tx, tid, ak)? {
             let Some(p) = tx.core.ix.commits.get(&pc).map(|m| m.header.clone()) else { continue };
-            for item in p.purge.iter().filter(|i| i.tid() == tid && i.ak() == ak) {
+            for item in p.requests().iter().filter(|i| i.tid() == tid && i.ak() == ak) {
                 match item {
                     PurgeItem::Commit { commit, .. } => out.named.entry(*commit).or_default().push((pc, p.clone())),
                     _ => out.wide.push((pc, item.clone(), p.clone())),
@@ -496,12 +498,14 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
     if !stands(tx.core, &p.header, pc, a, &m.header, c) {
         return Ok(false);
     }
+    let release = p.header.is_release();
     let m = m.clone();
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(false) };
     // the part may have gone already, for another reason: its entry now reads purged
     tx.core.commits_named(a.tid, a.ak.clone(), *c);
-    // a lasting header from now on (`lasting`), whichever came first
-    if super::history::permanent(tx.core, &m.header, &a, tx.now().0) {
+    // a lasting header from now on (`lasting`), whichever came first: erasure's alone, never a
+    // release's (spec/commits.md §5)
+    if !release && super::history::permanent(tx.core, &m.header, &a, tx.now().0) {
         tx.txn.put_local(&records::named_permanent_key(pc, &a.tid), &[], Shred::No)?;
         tx.core.mark_changed(*pc);
     }
@@ -518,7 +522,7 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
 /// purge left whole covers them all (spec/commits.md §5 Purge). A refused or no-op request
 /// changes nothing, so it asks for no snapshot.
 pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
-    for item in &h.purge {
+    for item in h.requests().iter() {
         // one that is not by name asks of every delta: the right once per class and actor, so a
         // request with none costs a look per delta
         let mut rights: BTreeMap<(u64, Tid), bool> = BTreeMap::new();
@@ -551,7 +555,7 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
 /// its commit's joins: a kill and the request naming the killed body in one commit purges it,
 /// its leftover bare, so no cover drops it.
 pub(crate) fn note_requests(tx: &mut Tx<'_>, id: &CommitId, h: &Header) -> Result<()> {
-    for item in &h.purge {
+    for item in h.requests().iter() {
         let key = match item {
             PurgeItem::Commit { commit, tid, ak } => records::purges_named_key(tid, ak, commit),
             _ => records::aspect_key(records::PURGES, item.tid(), item.ak()),

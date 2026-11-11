@@ -1265,3 +1265,104 @@ fn an_ended_things_certificates_leave_the_label_with_its_last_dependent_spec_com
     assert!(!at_host(&mut net, mint), "t's minting header gone with its last dependent");
     assert!(!at_host(&mut net, req), "the request ending t gone with its last dependent");
 }
+
+// spec/commits.md §5 (Ending: a release request): an admin's release of t is one commit of
+// `released.0` deltas expiring `ROLE_KEEP` after it; every node receiving it ends t as a purge of
+// its creation does (t reads absent, a write on t is refused), a stale copy of the creation ends
+// again, and nothing of it is erasure's (its header lasts nowhere)
+#[test]
+fn a_released_thing_reads_absent_at_every_node_spec_commits_5() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let (t, creation) = made(&mut net, a, g);
+    net.write(b, t, "y");
+    net.run();
+    let stale = net.engine(a).package(&creation).unwrap().unwrap();
+    let r = net.engine(c).release(&[t]).unwrap().unwrap();
+    let h = net.engine(c).header(&r).unwrap();
+    assert!(h.is_release() && h.purge.is_empty(), "a release, no purge field");
+    assert_eq!(h.expires, Some(osis_commit::retention::release_expires(h.ts)), "it expires ROLE_KEEP after it");
+    net.run();
+    for n in [a, b, c] {
+        gone(&mut net, n, t);
+        assert!(net.engine(n).header(&r).is_some(), "node {n}: holds the request");
+    }
+    let _ = net.engine(b).ingest(&stale.bytes, Vec::new());
+    gone(&mut net, b, t);
+    net.restart(b, 79);
+    net.run();
+    gone(&mut net, b, t);
+}
+
+// spec/permissions.md §6 (Ending), spec/commits.md §5: a release needs the right to end the thing
+// (by default its admins): a writer's is refused at the writer, and one written past the writer's
+// rules ends nothing where it arrives
+#[test]
+fn a_release_without_the_right_ends_nothing_spec_permissions_6() {
+    let Setup { mut net, a, b, g, .. } = setup();
+    let (t, _) = made(&mut net, a, g);
+    net.run();
+    assert!(matches!(net.engine(b).release(&[t]), Err(osis_node::Error::Permission { .. })), "refused at the writer");
+    let mut m = Mutation::new();
+    m.set(t, &ct::RELEASED, &osis_base::WallMs(net.now())).unwrap();
+    let id = net.engine(b).commit_hostile(m).unwrap().unwrap();
+    let forged = net.engine(b).take_forged().unwrap();
+    let _ = net.engine(a).ingest(&forged, Vec::new());
+    net.run();
+    assert!(net.engine(a).header(&id).is_some(), "a holds the forged request");
+    for n in [a, b] {
+        assert!(net.engine(n).knows(&t), "node {n}: t lives");
+        assert_eq!(net.read(n, t), Some(s("x")), "node {n}: its value");
+    }
+}
+
+// spec/commits.md §5 (Ending: dependents), spec/crypto.md §4 (Holder actors, Ended): as
+// `a_newcomer_admin_keys_a_dependent_by_an_ended_actors_frozen_holders_spec_crypto_4`, with t
+// released instead of expired: x's admins box t's frozen holders in its place, every node judges
+// x's roster and keys alike, and a node granted afterwards learns t ended with its frozen history
+// (the request's `released.0` part travels with t's record)
+#[test]
+fn a_released_actors_dependents_see_it_ended_spec_crypto_4() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let mut m = Mutation::new();
+    let t = net.engine(a).new_thing(&mut m, g);
+    m.set(t, &REG, &s("t")).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    let tb = net.tid(b);
+    net.grant(a, t, tb, Role::Admin);
+    net.run();
+    let x = net.item(a, g, t, "x");
+    net.run();
+    let ta = net.tid(a);
+    net.grant(b, x, ta, Role::Read);
+    net.run();
+    let ra = net.engine(a).roster(&x);
+    net.engine(a).release(&[t]).unwrap().unwrap();
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    let d = granted_later_as(&mut net, a, g, Role::Admin);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    let cur = |net: &mut Net, n: usize| net.engine(n).epochs(&x).map(|e| e.read.current());
+    let holders = |net: &mut Net, n: usize| net.engine(n).core.key_holders(&x).into_iter().collect::<std::collections::BTreeSet<_>>();
+    let ha = holders(&mut net, a);
+    assert!(!ha.iter().any(|h| h.0 == t) && ha.iter().any(|h| h.0 == g), "a: t's frozen holders hold x's keys: {ha:?}");
+    for n in [a, b, c, d] {
+        assert!(!net.engine(n).knows(&t), "node {n}: t ended");
+        assert!(net.engine(n).core.created(&t).is_some(), "node {n}: t's record kept for x");
+        assert_eq!(net.read(n, x), Some(s("x")), "node {n}: x lives on");
+        assert_eq!(net.engine(n).roster(&x), ra, "node {n}: x's roster");
+        assert_eq!(holders(&mut net, n), ha, "node {n}: x's holders for keys");
+        assert_eq!(cur(&mut net, n), cur(&mut net, a), "node {n}: x's current epochs");
+    }
+    let mut m = Mutation::new();
+    m.set(x, &REG, &s("x2")).unwrap();
+    net.engine(d).commit(m).unwrap().unwrap();
+    for _ in 0..2 {
+        net.advance(70_000);
+    }
+    for n in [a, b, c] {
+        assert_eq!(net.read(n, x), Some(s("x2")), "node {n}: d's write");
+    }
+}
