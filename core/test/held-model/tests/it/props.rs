@@ -44,7 +44,7 @@ const COVER_ID: CommitId = 5_000_000;
 // spec/commits.md §4 (Order independence), spec/permissions.md §5: a function of the held set
 #[test]
 fn output_is_a_function_of_the_held_set_spec_commits_4() {
-    output_is_a_function_of_the_held_set(covering(SEEDS));
+    output_is_a_function_of_the_held_set(covering(SEEDS, false));
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn right_now(h: &Held, c: &Commit, p: &Part) -> bool {
 // history(): a covered body, and a signal's out of history, read alike held or not.
 #[test]
 fn settled_histories_keep_their_laws_spec_commits_5() {
-    settled_histories_keep_their_laws(covering(SEEDS));
+    settled_histories_keep_their_laws(covering(SEEDS, false));
 }
 
 #[test]
@@ -258,7 +258,7 @@ fn signal_history(h: &Held, gone: &BTreeSet<(ThingId, Aspect)>) -> BTreeMap<(Thi
 // whose cover or purge fell is fetched again; a part gone at its expiry while waiting excepted
 #[test]
 fn late_commit_converges_after_repair_spec_commits_5() {
-    late_commit_converges_after_repair(covering(SEEDS));
+    late_commit_converges_after_repair(covering(SEEDS, true));
 }
 
 #[test]
@@ -270,7 +270,7 @@ fn late_commit_converges_after_repair_large_spec_commits_5() {
 fn late_commit_converges_after_repair(seeds: Vec<u64>) {
     each(seeds, |seed| {
         let full = history(seed, LEN);
-        let late = (seed % full.commits.len() as u64 * 7) as usize % full.commits.len();
+        let late = late_of(seed, &full);
         let mut early = full.clone();
         let c = early.commits.remove(late);
         let mut seen = Seen::default();
@@ -292,7 +292,7 @@ fn late_commit_converges_after_repair(seeds: Vec<u64>) {
 // are fetched again; aspects where a part went at its expiry while waiting excepted
 #[test]
 fn arrival_orders_read_alike_after_repair_spec_commits_5() {
-    arrival_orders_read_alike_after_repair(covering(SEEDS / 3));
+    arrival_orders_read_alike_after_repair(covering(SEEDS / 3, false));
 }
 
 #[test]
@@ -339,7 +339,7 @@ fn arrival_orders_read_alike_after_repair(seeds: Vec<u64>) {
 // again what it threw out, as one given the creations first
 #[test]
 fn creations_last_read_like_creations_first_spec_commits_4() {
-    creations_last_read_like_creations_first(covering(SEEDS / 3));
+    creations_last_read_like_creations_first(covering(SEEDS / 3, false));
 }
 
 #[test]
@@ -371,59 +371,82 @@ fn creations_last_read_like_creations_first(seeds: Vec<u64>) {
 /// The shapes `histories_reach_endings_unknown_things_and_settings` asks the generator for.
 const SHAPES: [&str; 8] = ["expiry", "purge", "unknown", "late setting", "invalid setting", "history", "signal history", "purge on replace"];
 
-/// How often seed's history reaches each of `SHAPES`: things ended by expiry and by purge, then
-/// one each for parts thrown out as unknown, a late and an invalid setting, a body in history, a
-/// signal's, a body under purge on replace.
-fn shapes(seed: u64) -> [u64; 8] {
+/// The commit `late_commit_converges_after_repair` withholds from `h`, seed's history.
+fn late_of(seed: u64, h: &Held) -> usize {
+    (seed % h.commits.len() as u64 * 7) as usize % h.commits.len()
+}
+
+/// What seed's history reaches, by name: each of `SHAPES` (things ended by expiry and by purge,
+/// parts thrown out as unknown, a late and an invalid setting, a body in history, a signal's, a
+/// body under purge on replace), a body a node may drop as covered, and the fate of each part of
+/// the commit `late_of` withholds.
+fn kinds(seed: u64) -> BTreeSet<String> {
     let h = history(seed, LEN);
     let o = evaluate(&h);
     let settings = || h.commits.iter().enumerate().filter(|(_, c)| c.parts.iter().any(|p| p.aspect == Aspect::RETENTION));
-    let (mut expired, mut purged) = (0, 0);
-    for &t in &o.ended {
-        let c = h.commits.iter().find(|c| c.id == held_model::gen::CREATION_ID + t).unwrap();
-        if c.expires.is_some_and(|x| h.now >= x) {
-            expired += 1;
-        } else {
-            purged += 1;
-        }
-    }
-    [
-        expired,
-        purged,
-        o.fates.values().any(|f| *f == Fate::MustDrop(DropWhy::Unknown)) as u64,
+    let ended = |by_expiry: bool| {
+        o.ended.iter().any(|&t| {
+            let c = h.commits.iter().find(|c| c.id == held_model::gen::CREATION_ID + t).unwrap();
+            c.expires.is_some_and(|x| h.now >= x) == by_expiry
+        })
+    };
+    let reached = [
+        ended(true),
+        ended(false),
+        o.fates.values().any(|f| *f == Fate::MustDrop(DropWhy::Unknown)),
         // late: stamped before a commit written before it
-        settings().any(|(i, c)| h.commits[..i].iter().any(|x| x.ts > c.ts)) as u64,
-        settings().any(|(_, c)| o.valid.get(&(c.id, 0)) == Some(&false)) as u64,
-        o.history.keys().any(|k| !k.1.signal) as u64,
-        o.history.keys().any(|k| k.1.signal) as u64,
-        !o.under_purge.is_empty() as u64,
-    ]
+        settings().any(|(i, c)| h.commits[..i].iter().any(|x| x.ts > c.ts)),
+        settings().any(|(_, c)| o.valid.get(&(c.id, 0)) == Some(&false)),
+        o.history.keys().any(|k| !k.1.signal),
+        o.history.keys().any(|k| k.1.signal),
+        !o.under_purge.is_empty(),
+    ];
+    let mut k: BTreeSet<String> = SHAPES.iter().zip(reached).filter(|x| x.1).map(|x| x.0.to_string()).collect();
+    let kind = |f: &Fate| match f {
+        Fate::MayDrop(DropWhy::Covered { .. }) => "MayDrop(Covered)".to_string(),
+        Fate::MustDrop(DropWhy::Covered { .. }) => "MustDrop(Covered)".to_string(),
+        f => format!("{f:?}"),
+    };
+    if o.fates.values().any(|f| matches!(f, Fate::MayDrop(DropWhy::Covered { .. }))) {
+        k.insert("covered drop".into());
+    }
+    let late = h.commits[late_of(seed, &h)].id;
+    k.extend(o.fates.iter().filter(|(r, _)| r.0 == late).map(|(_, f)| format!("withheld {}", kind(f))));
+    k
 }
 
-/// A default test's seeds: 0..n, then the first seeds past it that bring each of `SHAPES` to two
-/// seeds (the generator reaches some in one seed in fifteen).
-fn covering(n: u64) -> Vec<u64> {
-    static SETS: std::sync::Mutex<BTreeMap<u64, Vec<u64>>> = std::sync::Mutex::new(BTreeMap::new());
-    let mut sets = SETS.lock().unwrap_or_else(|e| e.into_inner());
-    sets.entry(n)
-        .or_insert_with(|| {
-            let mut hit = [0u64; 8];
-            let mut set = Vec::new();
-            for seed in 0..1000 {
-                let here = shapes(seed);
-                if seed < n || here.iter().zip(&hit).any(|(k, h)| *k > 0 && *h < 2) {
-                    set.push(seed);
-                    for (h, k) in hit.iter_mut().zip(here) {
-                        *h += (k > 0) as u64;
-                    }
-                }
-                if seed + 1 >= n && hit.iter().all(|h| *h >= 2) {
-                    return set;
-                }
-            }
-            panic!("the generator reaches {:?} in under two of 1000 seeds", SHAPES.iter().zip(hit).filter(|x| x.1 < 2).collect::<Vec<_>>())
-        })
-        .clone()
+/// `kinds` of seeds 0..300, the `_large` twins' small size.
+fn reach() -> &'static [BTreeSet<String>] {
+    static REACH: std::sync::OnceLock<Vec<BTreeSet<String>>> = std::sync::OnceLock::new();
+    REACH.get_or_init(|| {
+        let out = std::sync::Mutex::new(vec![BTreeSet::new(); 300]);
+        each((0..300).collect(), |seed| {
+            let k = kinds(seed);
+            out.lock().unwrap_or_else(|e| e.into_inner())[seed as usize] = k;
+        });
+        out.into_inner().unwrap_or_else(|e| e.into_inner())
+    })
+}
+
+/// A default test's seeds: 0..n, then the first seeds below `10 * n` (the width its `_large` twin
+/// runs at small size) that bring every kind those seeds reach (`kinds`; the withheld commit's
+/// fates only with `late`) to two seeds, or to as many as reach it: the default test meets every
+/// shape the twin's first seeds meet.
+fn covering(n: u64, late: bool) -> Vec<u64> {
+    let seen: Vec<BTreeSet<&String>> = reach()[..10 * n as usize].iter().map(|k| k.iter().filter(|k| late || !k.starts_with("withheld ")).collect()).collect();
+    let mut left: BTreeMap<&String, usize> = BTreeMap::new();
+    for &k in seen.iter().flatten() {
+        *left.entry(k).or_default() += 1;
+    }
+    left.values_mut().for_each(|v| *v = (*v).min(2));
+    let mut set = Vec::new();
+    for (seed, here) in seen.iter().enumerate() {
+        if (seed as u64) < n || here.iter().any(|k| left[k] > 0) {
+            set.push(seed as u64);
+            here.iter().for_each(|k| *left.get_mut(k).unwrap() = left[k].saturating_sub(1));
+        }
+    }
+    set
 }
 
 // spec: none (the generator's reach): the histories end things by expiry and by purge, throw
@@ -432,15 +455,10 @@ fn covering(n: u64) -> Vec<u64> {
 // a hundred
 #[test]
 fn histories_reach_endings_unknown_things_and_settings() {
-    const N: u64 = 100;
-    let mut seen = [0u64; 8];
-    for seed in 0..N {
-        for (s, n) in seen.iter_mut().zip(shapes(seed)) {
-            *s += n;
-        }
-    }
-    eprintln!("of {N}: {:?}", SHAPES.iter().zip(seen).collect::<Vec<_>>());
-    for (what, n) in SHAPES.iter().zip(seen) {
-        assert!(n > 0, "{what}: none of {N}");
+    let seen = &reach()[..100];
+    let count = |what: &str| seen.iter().filter(|k| k.contains(what)).count();
+    eprintln!("of 100: {:?}", SHAPES.iter().map(|w| (w, count(w))).collect::<Vec<_>>());
+    for what in SHAPES {
+        assert!(count(what) > 0, "{what}: none of 100");
     }
 }
