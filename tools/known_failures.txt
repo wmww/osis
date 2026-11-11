@@ -8,3 +8,5 @@ keep::any_order_until_keeps_no_more_large OSIS_KEEP_START=636109736897 issues/ke
 order::held_set_decides_plain OSIS_ORDER_SEED=28067082 issues/order-settings-seed-diverges.md ^seed \d+, Settings \(replay:
 rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=914120280755 issues/rotation-departed-opens-seed.md now (at )?Read\)? opens a Write epoch
 ephemeral::random_churn_converges_large OSIS_EPH_START=235597868743 issues/churn-cursor-rebuild-differs.md differs from a rebuild from held bodies
+order::held_set_decides_plain OSIS_ORDER_SEED=458968566693 issues/order-partsaway-seed-diverges.md ^seed \d+, PartsAway \(replay:
+order::held_set_decides_plain OSIS_ORDER_SEED=458968566698 issues/order-left-while-in-history.md ^seed \d+, Settings \(replay:
