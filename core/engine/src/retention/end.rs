@@ -372,12 +372,12 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
 /// Forgets released `t` once its release requests are past their expiry and nothing keeps it
 /// (spec/commits.md §5 Forgetting; `end_thing` dropped every part of it and its record). Of each
 /// commit on `t`, a part elsewhere is marked forgotten (`Meta::forgot`: on a released thing
-/// forgotten here before, this transaction's included), missing on a thing whose record is not
+/// forgotten here before, this transaction's included, whose record is not held again), missing on a thing whose record is not
 /// held (unknown here, maybe alive elsewhere), or other (on a thing held here):
 /// - all marked: it goes whole, header and ID included; node-sync deletes its entries where it
 ///   may, then forgets them (`MemoryDrop::Gone`);
-/// - none other, some unknown: it goes here alone, as a commit thrown out awaiting a record; its
-///   entries stay at hosts, node-sync skipping them until that record arrives
+/// - none other, some unknown: it goes here alone, as a commit thrown out awaiting records; its
+///   entries stay at hosts, node-sync skipping them until one of those records arrives
 ///   (`MemoryDrop::Awaits`);
 /// - else it keeps its header, its parts on `t` counting as never received, marked forgotten:
 ///   not fetched, joined (the mark going) if a copy comes (spec/commits.md §5 Never received).
@@ -392,12 +392,14 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
         let aspects = &m.header.aspects;
         let on_t: Vec<usize> = aspects.iter().enumerate().filter(|(_, a)| a.tid == *t).map(|(ai, _)| ai).collect();
-        let elsewhere = (0..aspects.len()).filter(|ai| !on_t.contains(ai) && !m.forgot.contains(ai));
-        let unknown = |ai: &usize| m.missing.contains(ai) && aspects.get(*ai).is_some_and(|a| tx.core.created(&a.tid).is_none());
-        let (mut awaited, mut held) = (None, false);
+        // not held (missing, or dropped) on a thing whose record is not held
+        let unknown = |ai: &usize| !m.holds(*ai) && aspects.get(*ai).is_some_and(|a| tx.core.created(&a.tid).is_none());
+        // a marked part whose thing's record came back is live again until its copy joins
+        let elsewhere = (0..aspects.len()).filter(|ai| !on_t.contains(ai) && !(m.forgot.contains(ai) && unknown(ai)));
+        let (mut awaited, mut held) = (Vec::new(), false);
         for ai in elsewhere {
             if unknown(&ai) {
-                awaited = awaited.or(aspects.get(ai).map(|a| a.tid));
+                awaited.extend(aspects.get(ai).map(|a| a.tid));
             } else {
                 held = true;
             }
@@ -406,12 +408,11 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
             others.extend(aspects.iter().filter(|a| a.tid != *t).map(|a| (a.tid, a.ak.clone())));
             let header = m.header.arc();
             crate::apply::unindex_commit(tx, &c)?;
+            // as a node that never held it: no purge list names it (one on a thing never held)
+            super::purge::unnote_requests(tx, &c, &header)?;
             // node-sync deletes its entries at hosts where it may and forgets them once gone, as
             // a memory commit's gone whole (`take_memory_drops`), or skips them awaiting a record
-            let why = match awaited {
-                Some(thing) => crate::engine::MemoryDrop::Awaits { thing },
-                None => crate::engine::MemoryDrop::Gone,
-            };
+            let why = if awaited.is_empty() { crate::engine::MemoryDrop::Gone } else { crate::engine::MemoryDrop::Awaits { things: awaited } };
             tx.core.memory.dropped.push((c, header, why));
             continue;
         }
@@ -428,25 +429,18 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     }
     // as a node that never held it: no per-aspect row of it stays
     for ak in &aks {
-        tx.core.ix.forgotten.remove(&(*t, ak.clone()));
-        for p in [records::ASPECTS, records::VALUELESS, records::PURGES, records::SUSPECT, records::FORGOTTEN] {
-            tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
-        }
-        let mut rows = Vec::new();
-        for p in [records::LEFTOVER, records::PURGES_NAMED] {
-            let prefix = records::aspect_key(p, t, ak);
-            tx.scan(&prefix, |k, _| {
-                rows.push([prefix.as_slice(), k].concat());
-                Ok(())
-            })?;
-        }
-        for k in rows {
-            tx.txn.remove_local(&k, Shred::Yes)?;
-        }
+        forget_aspect_rows(tx, t, ak)?;
     }
-    // with no held part left on one, as a node that never held it
+    // with no held part left on one, as a node that never held it: of a thing whose record is
+    // not held, every per-aspect row (a request's purge items and value-less list on a thing never
+    // held here); of a held one, the FORGOTTEN row unindexing wrote
     for (u, ak) in others {
-        if tx.core.ix.by_aspect.get(&(u, ak.clone())).is_none_or(|s| s.is_empty()) {
+        if tx.core.ix.by_aspect.get(&(u, ak.clone())).is_some_and(|s| !s.is_empty()) {
+            continue;
+        }
+        if tx.core.created(&u).is_none() {
+            forget_aspect_rows(tx, &u, &ak)?;
+        } else {
             tx.core.ix.forgotten.remove(&(u, ak.clone()));
             tx.txn.remove_local(&records::aspect_key(records::FORGOTTEN, &u, &ak), Shred::Yes)?;
         }
@@ -454,3 +448,28 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     super::leaving::forget_things(tx, &BTreeSet::from([*t]))?;
     Ok(())
 }
+
+/// Every per-aspect row of `(t, ak)` goes, as on a node that never held a part of it.
+fn forget_aspect_rows(tx: &mut Tx<'_>, t: &Tid, ak: &Ak) -> Result<()> {
+    let k = (*t, ak.clone());
+    tx.core.ix.forgotten.remove(&k);
+    if tx.core.ix.valueless.remove(&k).is_some() {
+        tx.core.touch();
+    }
+    for p in [records::ASPECTS, records::VALUELESS, records::PURGES, records::SUSPECT, records::FORGOTTEN] {
+        tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
+    }
+    let mut rows = Vec::new();
+    for p in [records::LEFTOVER, records::PURGES_NAMED] {
+        let prefix = records::aspect_key(p, t, ak);
+        tx.scan(&prefix, |k, _| {
+            rows.push([prefix.as_slice(), k].concat());
+            Ok(())
+        })?;
+    }
+    for k in rows {
+        tx.txn.remove_local(&k, Shred::Yes)?;
+    }
+    Ok(())
+}
+

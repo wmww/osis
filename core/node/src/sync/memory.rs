@@ -236,9 +236,9 @@ impl SyncEngine {
         // durable commits forgotten here, a part on a thing whose record is not held: their
         // entries stay at hosts, skipped as awaiting that record (spec/commits.md §5 Forgetting)
         for (c, _, why) in awaits {
-            if let MemoryDrop::Awaits { thing } = why {
+            if let MemoryDrop::Awaits { things } = why {
                 for (l, b) in self.entries_of_commit(&c) {
-                    self.mark_awaits(l, b, c, crate::Reason::UnknownCreated(thing))?;
+                    self.await_records(l, b, c, things.clone())?;
                 }
             }
         }

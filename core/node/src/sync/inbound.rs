@@ -794,16 +794,26 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Entry `b` under `l` of commit `commit` cannot be judged: nothing of it is kept but what it
-    /// awaits (notes/expiry-creation-design.md §3); the blob's bytes and key go, every label naming it alike.
+    /// Entry `b` under `l` of commit `commit`, ingested, cannot be judged for `r`: `await_records`
+    /// with every record it awaits (the engine names each part's, not only `r`'s).
     pub(crate) fn mark_awaits(&mut self, l: LabelId, b: BlobId, commit: CommitId, r: crate::Reason) -> Result<()> {
-        let thing = awaited(&r);
+        let mut things = self.engine.records_awaited_by(&commit);
+        things.push(awaited(&r));
+        self.await_records(l, b, commit, things)
+    }
+
+    /// Entry `b` under `l` of commit `commit` cannot be judged: nothing of it is kept but the
+    /// records it awaits, any of which arriving fetches it again (notes/expiry-creation-design.md
+    /// §3); the blob's bytes and key go, every label naming it alike.
+    pub(crate) fn await_records(&mut self, l: LabelId, b: BlobId, commit: CommitId, mut things: Vec<Tid>) -> Result<()> {
+        things.sort();
+        things.dedup();
         self.stats.awaits += 1;
         for x in self.state.labels_of(&b).into_iter().chain([l]) {
             if let Some(mut e) = self.state.entries.get(&(x, b)).cloned()
                 && matches!(e.kind, Kind::Commit { .. })
             {
-                e.kind = Kind::Awaits { commit, thing };
+                e.kind = Kind::Awaits { commit, things: things.clone() };
                 self.state.set_entry(x, b, e);
             }
         }
@@ -1095,13 +1105,15 @@ impl SyncEngine {
     /// A crash may have lost what the engine named (`redeliver`). Looked at once per start: what pends,
     /// a commit with an entry that is neither applied nor pending (gone with a junk signature or all its
     /// junk), and an applied commit with an entry on an aspect it misses (a waiting part's junk slot
-    /// gone). `redeliver` reads what it holds.
+    /// gone), but a commit or part forgotten with a released thing while its entries are known
+    /// (spec/commits.md §5 Forgetting: its own copy is no arrival, and ingested again it would
+    /// bring the thing back). `redeliver` reads what it holds.
     fn name_after_crash(&mut self) {
         let ix = &self.engine.core.ix;
         let mut named: Vec<CommitId> = ix.pending.keys().copied().collect();
         named.extend(self.state.by_commit.iter().filter(|(c, blobs)| match ix.commits.get(c) {
-            None => true,
-            Some(m) => blobs.iter().filter_map(|b| self.state.blobs.get(b)).any(|r| r.parts.iter().any(|p| m.missing.contains(p))),
+            None => !self.memory.forgotten.contains_key(c),
+            Some(m) => blobs.iter().filter_map(|b| self.state.blobs.get(b)).any(|r| r.parts.iter().any(|p| m.missing.contains(p) && !m.forgot.contains(p))),
         }).map(|(c, _)| *c));
         for c in named {
             self.engine.name_redeliver(c);

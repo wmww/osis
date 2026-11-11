@@ -566,6 +566,25 @@ pub(crate) fn note_requests(tx: &mut Tx<'_>, id: &CommitId, h: &Header) -> Resul
     Ok(())
 }
 
+/// Request `id` (header `h`) leaves the lists `note_requests` put it on, a list it alone was on
+/// with it.
+pub(crate) fn unnote_requests(tx: &mut Tx<'_>, id: &CommitId, h: &Header) -> Result<()> {
+    for item in h.requests().iter() {
+        let key = match item {
+            PurgeItem::Commit { commit, tid, ak } => records::purges_named_key(tid, ak, commit),
+            _ => records::aspect_key(records::PURGES, item.tid(), item.ak()),
+        };
+        let Some(b) = tx.txn.get_local(&key)? else { continue };
+        let rest: Vec<u8> = b.chunks(32).filter(|x| *x != id.0).flatten().copied().collect();
+        if rest.is_empty() {
+            tx.txn.remove_local(&key, Shred::Yes)?;
+        } else if rest.len() != b.len() {
+            tx.txn.put_local(&key, &rest, Shred::No)?;
+        }
+    }
+    Ok(())
+}
+
 /// Held requests already naming delta `ai` of `id` (header `h`), just applied.
 pub(super) fn purge_arrived(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ai: usize, purged: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };

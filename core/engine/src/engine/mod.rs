@@ -798,10 +798,10 @@ pub enum MemoryDrop {
     /// snapshot of its own node's unsent writes (never uploaded): its entries, if any, are
     /// deleted at once.
     Gone,
-    /// A durable commit forgotten here while a part of it is on `thing`, whose record is not
+    /// A durable commit forgotten here while parts of it are on `things`, whose records are not
     /// held (spec/commits.md §5 Forgetting): its entries stay at hosts, skipped here as awaiting
-    /// that record, as an unjudgeable entry's.
-    Awaits { thing: Tid },
+    /// those records, as an unjudgeable entry's.
+    Awaits { things: Vec<Tid> },
 }
 
 /// What memory commits report to the ephemeral lane (node-sync) and to the local write path.

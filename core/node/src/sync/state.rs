@@ -82,10 +82,10 @@ pub enum Kind {
     /// (sealed ones included: its prefix groups and delete signatures follow them, spec/wire.md
     /// §5).
     Commit { commit: CommitId, parts: Vec<usize>, ais: Vec<usize> },
-    /// A commit this node opened and could not judge: nothing of it is kept but the record of what
-    /// it awaits (the actor or thing named by the wait), to fetch it again when that arrives
+    /// A commit this node opened and could not judge: nothing of it is kept but the records it
+    /// awaits (every part's: sorted, distinct), to fetch it again when any of them arrives
     /// (notes/expiry-creation-design.md §3).
-    Awaits { commit: CommitId, thing: Tid },
+    Awaits { commit: CommitId, things: Vec<Tid> },
     /// An inbox blob this node opened, with the commit it carried (`None`: opened by an older
     /// build).
     Inbox(Option<CommitId>),
@@ -586,7 +586,13 @@ fn encode_kind(w: Wr, kind: &Kind) -> Wr {
         Kind::Bad => w.u8(3),
         Kind::Parked(c) => w.u8(4).raw(&c.0),
         Kind::Request(c) => w.u8(7).raw(&c.0),
-        Kind::Awaits { commit, thing } => w.u8(8).raw(&commit.0).raw(thing.as_bytes()),
+        Kind::Awaits { commit, things } => {
+            let mut w = w.u8(8).raw(&commit.0).u32(things.len() as u32);
+            for t in things {
+                w = w.raw(t.as_bytes());
+            }
+            w
+        }
         Kind::List { rotation, held } => w.u8(9).raw(&rotation.0).u8(u8::from(*held)),
         Kind::Records(ts) => {
             let mut w = w.u8(10).u32(ts.len() as u32);
@@ -642,7 +648,15 @@ fn decode_kind(r: &mut Rd) -> Result<Kind> {
         3 => Kind::Bad,
         4 => Kind::Parked(CommitId(r.arr()?)),
         7 => Kind::Request(CommitId(r.arr()?)),
-        8 => Kind::Awaits { commit: CommitId(r.arr()?), thing: Tid::from_bytes(r.arr()?) },
+        8 => {
+            let commit = CommitId(r.arr()?);
+            let n = r.u32()?;
+            let mut things = Vec::new();
+            for _ in 0..n {
+                things.push(Tid::from_bytes(r.arr()?));
+            }
+            Kind::Awaits { commit, things }
+        }
         9 => Kind::List { rotation: CommitId(r.arr()?), held: r.u8()? == 1 },
         10 => {
             let n = r.u32()?;
@@ -978,7 +992,7 @@ impl State {
             }
             _ => {}
         }
-        if let Kind::Awaits { commit, thing } = &e.kind {
+        if let Kind::Awaits { commit, things } = &e.kind {
             fn by<K: Ord>(m: &mut BTreeMap<K, BTreeSet<(LabelId, BlobId)>>, k: K, v: (LabelId, BlobId), add: bool) {
                 if add {
                     m.entry(k).or_default().insert(v);
@@ -989,7 +1003,9 @@ impl State {
                     }
                 }
             }
-            by(&mut self.by_awaited, *thing, (l, b), add);
+            for t in things {
+                by(&mut self.by_awaited, *t, (l, b), add);
+            }
             by(&mut self.awaits_by_commit, *commit, (l, b), add);
             if !add && !self.awaits_by_commit.contains_key(commit) {
                 self.awaits_left.push(*commit);

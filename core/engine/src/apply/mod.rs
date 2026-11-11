@@ -1241,6 +1241,11 @@ impl Engine {
         self.core.waits.records_awaited().filter(|t| self.core.created(t).is_none() && self.core.ended(t)).copied().collect()
     }
 
+    /// The records commit `id`, thrown out whole, awaits: every part's (empty when not remembered).
+    pub fn records_awaited_by(&self, id: &CommitId) -> Vec<Tid> {
+        self.core.waits.records_of(id).to_vec()
+    }
+
     /// Whether a commit on `t` cannot be judged here yet.
     pub fn awaits_on(&self, t: &Tid) -> bool {
         self.core.waits.awaits_on(t)

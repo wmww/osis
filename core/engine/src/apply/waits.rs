@@ -118,6 +118,11 @@ impl Waits {
         self.awaiting.by_record.keys().chain(self.on_record.keys())
     }
 
+    /// The records `id`, thrown out whole, awaits (`awaits_records`).
+    pub fn records_of(&self, id: &CommitId) -> &[Tid] {
+        self.records_of.get(id).map_or(&[], |v| v.as_slice())
+    }
+
     /// Whether a commit touching `t` cannot be judged here (`Engine::awaits_on`).
     pub fn awaits_on(&self, t: &Tid) -> bool {
         self.on_thing.contains_key(t)

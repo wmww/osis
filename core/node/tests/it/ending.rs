@@ -1627,11 +1627,34 @@ fn a_forgotten_commits_entries_are_deleted_after_a_restart_spec_sync_6() {
 // and y's part of it applies
 #[test]
 fn a_commit_on_a_forgotten_thing_and_an_unknown_one_awaits_its_record_spec_commits_5() {
+    forgotten_and_unknown(false);
+}
+
+// as above, b restarting while w's entries await: a start fetches them again, and an entry
+// judged then awaits every record its commit lacks (x's, which never comes, and y's), so y's
+// record arriving still wakes it
+#[test]
+fn a_commit_on_a_forgotten_thing_and_an_unknown_one_awaits_its_record_over_a_restart_spec_commits_5() {
+    forgotten_and_unknown(true);
+}
+
+fn forgotten_and_unknown(restart: bool) {
     use osis_node::retention::lifetimes::Status;
     use osis_node::sync::EntryKind;
     let Setup { mut net, a, b, c, g } = setup();
     let l = net.label(b);
-    let (x, _) = made(&mut net, c, g);
+    // x made apart from its listing in g: no commit carrying x's record has a part elsewhere
+    let e = net.engine(c);
+    let mut m = Mutation::new();
+    let x = e.new_thing(&mut m, g);
+    m.set(x, &REG, &s("x")).unwrap();
+    e.commit(m).unwrap().unwrap();
+    let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(x);
+    let mut m = Mutation::new();
+    m.set(g, &ct::GROUP, &items).unwrap();
+    e.commit(m).unwrap().unwrap();
+    net.run();
     let e = net.engine(c);
     let mut m = Mutation::new();
     let y = e.new_thing(&mut m, g);
@@ -1658,8 +1681,16 @@ fn a_commit_on_a_forgotten_thing_and_an_unknown_one_awaits_its_record_spec_commi
     }
     assert_eq!(net.engine(b).lifetime_status(&x), Status::Unknown, "x forgotten");
     assert!(net.engine(b).header(&w).is_none(), "w forgotten here");
-    assert!(of_w(&mut net).iter().all(|(_, k)| matches!(k, EntryKind::Awaits { thing, .. } if *thing == y)), "its entries skipped, awaiting y's record");
+    assert!(of_w(&mut net).iter().all(|(_, k)| matches!(k, EntryKind::Awaits { things, .. } if things.contains(&y))), "its entries skipped, awaiting y's record");
     assert!(ids.iter().all(|i| net.host_ids(0, &l).contains(i)), "and kept at the host");
+    if restart {
+        net.restart(b, 61);
+        for _ in 0..3 {
+            net.advance(70_000);
+        }
+        assert!(net.engine(b).header(&w).is_none());
+        assert!(of_w(&mut net).iter().all(|(_, k)| matches!(k, EntryKind::Awaits { things, .. } if things.contains(&y))), "judged again at the start: awaiting y's record too");
+    }
     net.fetched.insert(b, Vec::new());
     for _ in 0..5 {
         net.advance(70_000);
@@ -1680,7 +1711,8 @@ fn a_commit_on_a_forgotten_thing_and_an_unknown_one_awaits_its_record_spec_commi
 
 // spec/commits.md §5 (Forgetting): x and y released together at c, b never having held y's
 // record. b forgets w (on both) here alone as x goes; c forgets it whole and deletes its entries,
-// so b keeps nothing of w: no header, no entry
+// so b keeps nothing of w: no header, no entry. The request goes at b too (its part on y dropped,
+// not held), and with it every row naming y
 #[test]
 fn a_commit_on_a_forgotten_thing_and_a_never_held_one_leaves_nothing_spec_commits_5() {
     use osis_node::retention::lifetimes::Status;
@@ -1697,7 +1729,7 @@ fn a_commit_on_a_forgotten_thing_and_a_never_held_one_leaves_nothing_spec_commit
     m.set(y, &REG, &s("y2")).unwrap();
     let w = net.engine(c).commit(m).unwrap().unwrap();
     net.run();
-    net.engine(c).release(&[x, y]).unwrap().unwrap();
+    let req = net.engine(c).release(&[x, y]).unwrap().unwrap();
     net.run();
     net.advance(osis_base::format::ROLE_KEEP_MS);
     for _ in 0..5 {
@@ -1707,5 +1739,51 @@ fn a_commit_on_a_forgotten_thing_and_a_never_held_one_leaves_nothing_spec_commit
     assert!(net.engine(c).header(&w).is_none() && net.engine(b).header(&w).is_none(), "w forgotten at c and b");
     let known = net.sync(b).entries(&l).into_iter().any(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } | osis_node::sync::EntryKind::Awaits { commit, .. } if commit == w));
     assert!(!known, "no entry of w known at b");
+    // the request on x and y went too, its purge items with it: nothing names y but the node-sync
+    // entry of the request's blob, awaiting y's record
+    let rows: Vec<Vec<u8>> = net.engine(b).local_rows_naming(y.as_bytes()).unwrap().into_iter().map(|(k, _)| k).filter(|k| !k.starts_with(b"y/")).collect();
+    assert!(rows.is_empty(), "no row names y at b");
+    assert!(net.engine(b).header(&req).is_none(), "the request gone at b");
 }
 
+// spec/commits.md §5 (Forgetting): b forgets x (made with g's listing: its commit keeps its
+// header, x's parts marked) and z (made alone: its commit goes whole) while their entries stay at
+// the host, the admins away; a restart of b ingests neither again from what it holds, so both
+// stay unknown
+#[test]
+fn released_things_stay_forgotten_over_a_restart_spec_commits_5() {
+    use osis_node::retention::lifetimes::Status;
+    let Setup { mut net, a, b, c, g } = setup();
+    let (x, _) = made(&mut net, c, g);
+    let e = net.engine(c);
+    let mut m = Mutation::new();
+    let z = e.new_thing(&mut m, g);
+    m.set(z, &REG, &s("z")).unwrap();
+    e.commit(m).unwrap().unwrap();
+    let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(z);
+    let mut m = Mutation::new();
+    m.set(g, &ct::GROUP, &items).unwrap();
+    e.commit(m).unwrap().unwrap();
+    net.run();
+    assert!(net.engine(b).knows(&x) && net.engine(b).knows(&z));
+    net.set_online(a, false);
+    net.set_online(c, false);
+    let req = net.engine(c).release(&[x, z]).unwrap().unwrap();
+    let p = net.engine(c).package(&req).unwrap().unwrap();
+    let _ = net.engine(b).ingest(&p.bytes, p.blobs);
+    net.advance(osis_base::format::ROLE_KEEP_MS);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    for t in [x, z] {
+        assert_eq!(net.engine(b).lifetime_status(&t), Status::Unknown, "forgotten");
+    }
+    net.restart(b, 63);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    for t in [x, z] {
+        assert_eq!(net.engine(b).lifetime_status(&t), Status::Unknown, "still forgotten after a restart");
+    }
+}
