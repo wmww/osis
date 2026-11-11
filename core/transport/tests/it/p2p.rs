@@ -990,6 +990,31 @@ fn allow_rechecked_spec_sync_10() {
     assert!(r.relayed_keys().is_empty());
 }
 
+// spec/sync.md §10 (by hand, loopback QUIC; hole punching): a punch is the one byte 0x00 from the
+// listening socket's own port (a dual-stack one reaching an IPv4 address too), and the QUIC
+// endpoint answers a punch with nothing and still accepts connections after it.
+#[test]
+#[ignore]
+fn quic_punch_is_one_unanswered_datagram_spec_sync_10() {
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    rt.block_on(async {
+        let raw = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        raw.set_read_timeout(Some(std::time::Duration::from_millis(500))).unwrap();
+        for at in ["127.0.0.1:0", "[::]:0"] {
+            let s = QuicUdp::new().bind(sa(at), Some(&secret(1))).unwrap();
+            s.punch(raw.local_addr().unwrap());
+            let mut buf = [0u8; 2048];
+            let (n, from) = raw.recv_from(&mut buf).unwrap();
+            assert_eq!((&buf[..n], from.port()), (&p2p::PUNCH[..], s.local().port()), "{at}");
+            let to = SocketAddr::new(sa("127.0.0.1:0").ip(), s.local().port());
+            raw.send_to(&p2p::PUNCH, to).unwrap();
+            assert!(raw.recv_from(&mut buf).is_err(), "{at}: a punch is answered");
+            let c = QuicUdp::new().bind(sa("127.0.0.1:0"), None).unwrap();
+            c.dial(to, Quic::public_key(&secret(1)).unwrap(), None, Alpn::Osis).await.unwrap();
+        }
+    });
+}
+
 // spec/sync.md §10 (by hand, loopback QUIC): a listener bound at `[::]` (as nodes bind) registers
 // at an IPv6 relay and at an IPv4 one from its one dual-stack socket, and a dial through either
 // relay reaches it.
