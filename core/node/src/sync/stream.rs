@@ -495,9 +495,13 @@ impl SyncEngine {
     /// Records the entries of own commits `cs` that `conn`'s requester reported holding
     /// (spec/sync.md §5 Placed): under a label L served to it as a member (it proved reading
     /// L), its reported position at or past where the node log first held the entry, and an
-    /// ended member's `until` too (what it was served). Kept by its source (`pass_source`): a peer known by
-    /// nothing here reports nothing. Whether it recorded any.
+    /// ended member's `until` too (what it was served). Kept by its source (`pass_source`): a
+    /// peer known by nothing here reports nothing, and neither does an own node (it leaves by
+    /// the same commit, so it passes nothing on). Whether it recorded any.
     pub(super) fn note_applied(&mut self, conn: ConnId, cs: &[CommitId]) -> Result<bool> {
+        if self.connection_proven(conn).is_some_and(|p| p.node.is_some()) {
+            return Ok(false);
+        }
         let Some(source) = self.pass_source(conn) else { return Ok(false) };
         let Some(serving) = self.streams.get(&conn).map(|s| &s.serving) else { return Ok(false) };
         let members = self.stream_members(conn);

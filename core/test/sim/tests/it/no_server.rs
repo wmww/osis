@@ -498,7 +498,8 @@ fn leaving(n: &Osis, g: Tid) -> bool {
 
 // spec/permissions.md §3 (a node drops once a self-removal by its account is placed), spec/sync.md §5 (Placed): Bob's
 // laptop pulls his phone's removal while Alice is away from both; the laptop waits for it to be placed as the phone
-// does, so at no point have both forgotten while Alice lacks it; the phone's removal reaches Alice and it stops leaving.
+// does, and neither counts the other as a source (spec/sync.md §5), so neither forgets while Alice lacks it; the
+// phone's removal reaches Alice and it stops leaving.
 #[test]
 fn own_nodes_never_both_forget_before_an_outside_source_spec_permissions_3() {
     let (mut w, a, b, g) = co_readers(900, Role::Write);
@@ -518,7 +519,7 @@ fn own_nodes_never_both_forget_before_an_outside_source_spec_permissions_3() {
     for _ in 0..6 * STEPS {
         w.advance(STEP_MS);
         let reached = !a.holders(g).unwrap().iter().any(|h| h.actor == bob);
-        assert!(reached || leaving(&b, g) || leaving(&b2, g), "both own nodes forgot before Alice had the removal");
+        assert!(reached || (leaving(&b, g) && leaving(&b2, g)), "an own node forgot before Alice had the removal");
     }
     assert!(!a.holders(g).unwrap().iter().any(|h| h.actor == bob), "the leave reached Alice");
     assert!(!leaving(&b, g), "the phone stopped leaving");
