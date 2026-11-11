@@ -813,6 +813,8 @@ pub struct HostStore {
     lazy: bool,
     admission: Admission,
     caps: BTreeMap<LabelId, LabelCaps>,
+    /// The sync IDs node sync reads (`reader.rs`).
+    read: BTreeSet<LabelId>,
     /// Memory blobs the engine holds (`osis_store::CipherTx::hold` in memory): gone at a restart.
     engine_mem: HashMap<BlobId, Vec<u8>>,
 }
@@ -841,6 +843,7 @@ impl HostStore {
             admission: self.admission.clone(),
             caps: self.caps.clone(),
             engine_mem: self.engine_mem.clone(),
+            read: self.read.clone(),
         })
     }
 
@@ -861,7 +864,7 @@ impl HostStore {
         t.commit().map_err(err)?;
         let relays = osis_proto::RelayGate::default();
         let db = RefCell::new(Db { store, table, rng, open: None });
-        let mut s = HostStore { db, failed: None, seed, clock, policy: HostPolicy::default(), rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, admission: Admission::Open, caps: BTreeMap::new(), engine_mem: HashMap::new() };
+        let mut s = HostStore { db, failed: None, seed, clock, policy: HostPolicy::default(), rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, admission: Admission::Open, caps: BTreeMap::new(), engine_mem: HashMap::new(), read: BTreeSet::new() };
         s.set_policy(policy);
         Ok(s)
     }
@@ -1440,7 +1443,8 @@ impl HostStore {
         loop {
             let page = self.labels_after(after.as_ref(), 256)?;
             let Some(last) = page.last().copied() else { break };
-            gone.extend(page.into_iter().filter(|l| drop(l)));
+            // node sync's sync IDs are its own, kept whatever is kept for others
+            gone.extend(page.into_iter().filter(|l| drop(l) && !self.read.contains(l)));
             after = Some(last);
         }
         for l in &gone {
@@ -2032,5 +2036,6 @@ impl LabelStore for HostStore {
 }
 
 mod engine;
+mod reader;
 #[cfg(test)]
 mod tests;

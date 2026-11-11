@@ -732,7 +732,6 @@ impl SyncEngine {
         // these scan every entry and placement: at most once per `RECORD_SWEEP_MS`
         if wall >= self.swept.saturating_add(RECORD_SWEEP_MS) {
             self.swept = wall;
-            self.state.log_sweep_due = true;
             self.state.sweep_carriers(wall);
             let ix = &self.engine.core.ix.commits;
             self.state.sweep_certs(|c| ix.get(c).is_some_and(|m| (0..m.header.aspects.len()).any(|ai| !m.body_gone(ai))));

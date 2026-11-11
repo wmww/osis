@@ -1004,7 +1004,7 @@ fn a_paired_node_logs_every_entry_it_holds() {
     w.run();
     db.sync_engine(|e| {
         let labels: Vec<_> = e.label_status().into_iter().map(|x| x.label).collect();
-        let logged: Vec<_> = e.engine_mut().run(|tx| Ok(tx.txn.log_read(None, 1 << 20)?)).unwrap().events.into_iter().map(|x| x.event).collect();
+        let logged: Vec<_> = e.hub_store().lock().unwrap().node_log(|t| t.log_read(None, 1 << 20)).unwrap().events.into_iter().map(|x| x.event).collect();
         let mut held = 0;
         for l in labels {
             let entries: Vec<_> = e.entries(&l).into_iter().map(|(b, _)| b).collect();

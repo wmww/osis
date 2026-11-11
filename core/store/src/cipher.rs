@@ -58,6 +58,9 @@ pub trait CipherTx {
 /// `CipherTx` operations on the store locked, `abort` dropping what was written since the last
 /// commit.
 pub trait CipherHost: Send + Any {
+    /// The store is locked for one engine transaction: its writes until `commit` or `abort` are
+    /// that transaction's.
+    fn begin(&mut self) {}
     fn held(&mut self, id: &BlobId) -> Result<bool, Error>;
     fn read(&mut self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, Error>;
     fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> Result<bool, Error>;
@@ -90,7 +93,9 @@ pub fn test_copy_shared<T: CipherHost>(store: &Arc<Mutex<T>>, clock: Arc<dyn osi
 
 impl<T: CipherHost> Ciphertext for Mutex<T> {
     fn begin(&self) -> Box<dyn CipherTx + '_> {
-        Box::new(HostTx { g: lock(self), done: false })
+        let mut g = lock(self);
+        g.begin();
+        Box::new(HostTx { g, done: false })
     }
 
     fn test_copy(self: Arc<Self>, clock: Arc<dyn osis_base::Clock>) -> Result<Arc<dyn Ciphertext>, Error> {

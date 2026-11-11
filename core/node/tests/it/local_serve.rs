@@ -897,7 +897,7 @@ fn covered_own_entry_whose_answer_was_lost_leaves_the_host_past_the_tombstone_sp
 /// co-reader pulling `n` is sent).
 fn chunk_copies(net: &mut Net, n: usize, chunks: &[BlobId]) -> (usize, usize) {
     let held = chunks.iter().filter(|b| net.sync(n).holds_blob(b)).count();
-    let events = net.engine(n).run(|tx| Ok(tx.txn.log_read(None, 1 << 20)?)).unwrap().events;
+    let events = net.sync(n).hub_store().lock().unwrap().node_log(|t| t.log_read(None, 1 << 20)).unwrap().events;
     let logged = events.iter().filter(|e| matches!(e.event, osis_store::NodeEvent::Added(_, b) if chunks.contains(&b))).count();
     (held, logged)
 }

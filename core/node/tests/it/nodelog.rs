@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Checks the log against the entries held, for every label it names; the live entries it lists.
 fn compare(net: &mut Net, n: usize) -> usize {
-    let events = net.engine(n).run(|tx| Ok(tx.txn.log_read(None, 1 << 20)?)).unwrap().events;
+    let events = net.sync(n).hub_store().lock().unwrap().node_log(|t| t.log_read(None, 1 << 20)).unwrap().events;
     let mut added: BTreeMap<LabelId, BTreeSet<BlobId>> = BTreeMap::new();
     for e in &events {
         match e.event {
@@ -36,7 +36,7 @@ fn compare(net: &mut Net, n: usize) -> usize {
 }
 
 fn deletions(net: &mut Net, n: usize) -> usize {
-    let events = net.engine(n).run(|tx| Ok(tx.txn.log_read(None, 1 << 20)?)).unwrap().events;
+    let events = net.sync(n).hub_store().lock().unwrap().node_log(|t| t.log_read(None, 1 << 20)).unwrap().events;
     events.iter().filter(|e| matches!(e.event, NodeEvent::Deleted { .. })).count()
 }
 
@@ -83,14 +83,17 @@ fn an_expired_entry_is_a_deletion_in_the_log() {
 
 /// The events a peer gets reading `n`'s log from the position where the log ends now.
 fn after(net: &mut Net, n: usize, cursor: &[u8]) -> Vec<NodeEvent> {
-    net.engine(n).run(|tx| Ok(tx.txn.log_read(Some(cursor), 1 << 20)?)).unwrap().events.into_iter().map(|e| e.event).collect()
+    net.sync(n).hub_store().lock().unwrap().node_log(|t| t.log_read(Some(cursor), 1 << 20)).unwrap().events.into_iter().map(|e| e.event).collect()
 }
 
 fn cursor_at_end(net: &mut Net, n: usize) -> Vec<u8> {
-    net.engine(n)
-        .run(|tx| {
-            let end = tx.txn.log_end()?;
-            Ok(tx.txn.log_cursor(end)?)
+    net.sync(n)
+        .hub_store()
+        .lock()
+        .unwrap()
+        .node_log(|t| {
+            let end = t.log_end()?;
+            t.log_cursor(end)
         })
         .unwrap()
         .expect("something logged")

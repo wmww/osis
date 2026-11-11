@@ -620,7 +620,13 @@ impl SyncEngine {
         if ids.is_empty() {
             return Ok(());
         }
+        let named: Vec<(LabelId, BlobId)> = ids.iter().flat_map(|b| self.state.labels_of(b).into_iter().map(move |l| (l, *b))).collect();
         self.engine.run(|tx| {
+            // the entry rows of bytes no longer held go first (the hub's store holds rows with
+            // bytes only)
+            for (l, b) in &named {
+                super::state::hub(tx)?.reader_remove(l, b, false).map_err(super::state::hub_err)?;
+            }
             let memory = tx.txn.is_memory();
             for b in ids {
                 tx.blobs.release(b, memory)?;

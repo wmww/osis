@@ -523,7 +523,7 @@ impl SyncEngine {
         let held = self.engine.run(|tx| {
             let mut held = Vec::new();
             for (l, b, at) in due {
-                if tx.txn.log_entry_first(&l, &b)?.is_some_and(|f| f <= at) {
+                if super::state::hub(tx)?.node_log(|t| t.log_entry_first(&l, &b))?.is_some_and(|f| f <= at) {
                     held.push((l, b));
                 }
             }
@@ -647,13 +647,13 @@ impl SyncEngine {
         }
         let (base, join_at) = self.engine.run(|tx| {
             let base = match &p.cursor {
-                Some(c) => tx.txn.log_position(c)?,
+                Some(c) => super::state::hub(tx)?.node_log(|t| t.log_position(c))?,
                 None => None,
             };
             let mut join_at = Vec::with_capacity(p.joins.len());
             for (l, c) in &p.joins {
                 join_at.push((*l, match c {
-                    Some(c) => tx.txn.log_position(c)?,
+                    Some(c) => super::state::hub(tx)?.node_log(|t| t.log_position(c))?,
                     None => Some(0),
                 }));
             }
@@ -696,7 +696,7 @@ impl SyncEngine {
         let mut starts: BTreeMap<LabelId, (u64, u64)> = members.iter().map(|l| (*l, (base, bound(l)))).collect();
         starts.extend(joined.iter().map(|(l, at)| (*l, (*at, bound(l)))));
         let from = starts.values().map(|(s, _)| *s).min().unwrap_or(base);
-        let scan = self.engine.run(|tx| Ok(scan(&mut tx.txn, from, &starts)?))?;
+        let scan = self.engine.run(|tx| Ok(super::state::hub(tx)?.node_log(|t| scan(t, from, &starts))?))?;
         let mut budget = usize::try_from(p.max_reply).unwrap_or(usize::MAX).saturating_sub(256);
         // the memory part first: a cursor names no memory event, so each member entering the
         // stream gets its live entries listed; then what followed for the rest. A member being
@@ -713,10 +713,10 @@ impl SyncEngine {
         let stream_at = if whole { end } else { base.max(end) };
         let still: Vec<(LabelId, u64)> = if whole { Vec::new() } else { joined.iter().map(|(l, at)| (*l, (*at).max(end))).filter(|(_, at)| *at < base).collect() };
         let (cursor, joins) = self.engine.run(|tx| {
-            let cursor = tx.txn.log_cursor(stream_at)?;
+            let cursor = super::state::hub(tx)?.node_log(|t| t.log_cursor(stream_at))?;
             let mut joins: Vec<Join> = refused.iter().map(|l| (*l, None)).collect();
             for (l, at) in &still {
-                joins.push((*l, tx.txn.log_cursor(*at)?));
+                joins.push((*l, super::state::hub(tx)?.node_log(|t| t.log_cursor(*at))?));
             }
             Ok((cursor, joins))
         })?;
@@ -746,7 +746,7 @@ impl SyncEngine {
         }
         let _ = self.served_labels();
         self.state.flush(&mut self.engine)?;
-        let log_end = self.engine.run(|tx| Ok(tx.txn.log_end()?))?;
+        let log_end = self.engine.run(|tx| Ok(super::state::hub(tx)?.node_log(|t| t.log_end())?))?;
         let mem_seq = self.state.mem_log.seq();
         for (conn, at, seen) in following {
             let untils = self.shared_untils(conn);
@@ -763,7 +763,7 @@ impl SyncEngine {
             };
             let members = self.stream_members(conn);
             let starts: BTreeMap<LabelId, (u64, u64)> = members.iter().map(|l| (*l, (at, untils.get(l).copied().unwrap_or(u64::MAX)))).collect();
-            let scan = self.engine.run(|tx| Ok(scan(&mut tx.txn, at, &starts)?))?;
+            let scan = self.engine.run(|tx| Ok(super::state::hub(tx)?.node_log(|t| scan(t, at, &starts))?))?;
             let mut budget = room.min(osis_proto::serving::REPLY_BUDGET).saturating_sub(256);
             let live: BTreeSet<LabelId> = members.iter().filter(|l| !untils.contains_key(l)).copied().collect();
             let (mut events, memory_cut) = self.stream_memory(conn, &BTreeSet::new(), &live, &mut budget)?;
@@ -777,7 +777,7 @@ impl SyncEngine {
             if events.is_empty() && !due(self, end) {
                 continue;
             }
-            let cursor = self.engine.run(|tx| Ok(tx.txn.log_cursor(end)?))?;
+            let cursor = self.engine.run(|tx| Ok(super::state::hub(tx)?.node_log(|t| t.log_cursor(end))?))?;
             let labels: BTreeSet<LabelId> = events.iter().map(|(l, _)| *l).collect();
             let Some(s) = self.streams.get_mut(&conn).map(|s| &mut s.serving) else { continue };
             let report = s.sent(&cursor, labels, end, &[], Vec::new(), &untils);
@@ -1297,7 +1297,7 @@ impl SyncEngine {
         let mut items = Vec::new();
         for b in ids {
             let shown = match until {
-                Some(u) => self.engine.run(|tx| Ok(tx.txn.log_entry_first(&l, &b)?))?.is_some_and(|p| p <= u),
+                Some(u) => self.engine.run(|tx| Ok(super::state::hub(tx)?.node_log(|t| t.log_entry_first(&l, &b))?))?.is_some_and(|p| p <= u),
                 None => true,
             };
             let held = if member && shown { self.state.entries.get(&(l, b)).map(|e| (e.wrap, e.stamp)) } else { None };

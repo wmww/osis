@@ -19,6 +19,12 @@ fn store_err(_: osis_proto::StoreError) -> Error {
 }
 
 impl CipherHost for HostStore {
+    fn begin(&mut self) {
+        // the engine transaction's writes, node sync's through this store's methods too, commit
+        // together at its end
+        self.defer_durability();
+    }
+
     fn held(&mut self, id: &BlobId) -> Result<bool, Error> {
         if self.engine_mem.contains_key(id) {
             return Ok(true);
@@ -68,10 +74,12 @@ impl CipherHost for HostStore {
 
     fn commit(&mut self) -> Result<(), Error> {
         // a failed commit recovered the store in place: the outcome is unknown
-        HostStore::commit(self).map_err(|_| Error::Broken)
+        self.durable().map_err(|_| Error::Broken)
     }
 
     fn abort(&mut self) {
+        self.lazy = false;
+        self.failed = None;
         self.db.get_mut().open = None;
     }
 

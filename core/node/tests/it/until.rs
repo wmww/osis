@@ -146,12 +146,12 @@ fn entries_of(net: &mut Net, b: usize, l: LabelId, c: CommitId) -> BTreeSet<Blob
 
 /// The entries of `l` with an event `b` logged past position `after`.
 fn logged_past(net: &mut Net, b: usize, l: LabelId, after: u64) -> BTreeSet<BlobId> {
-    let (later, ..) = net.engine(b).run(|tx| Ok(tx.txn.log_after(after, 1 << 16)?)).unwrap();
+    let (later, ..) = net.sync(b).hub_store().lock().unwrap().node_log(|t| t.log_after(after, 1 << 16)).unwrap();
     later.iter().filter_map(|e| if let osis_store::NodeEvent::Added(x, id) = e.event { (x == l).then_some(id) } else { None }).collect()
 }
 
 fn position(net: &mut Net, b: usize, c: &[u8]) -> u64 {
-    net.engine(b).run(|tx| Ok(tx.txn.log_position(c)?)).unwrap().expect("a cursor of b's")
+    net.sync(b).hub_store().lock().unwrap().node_log(|t| t.log_position(c)).unwrap().expect("a cursor of b's")
 }
 
 // issues/net-reconnect.md (Reported position): a followed member whose credential a rotation made
@@ -281,7 +281,7 @@ fn a_rotation_logged_again_while_apart_is_still_served_spec_sync_10() {
     let rotated = entries_of(&mut net, b, l, c);
     assert!(!rotated.is_empty());
     let until = net.engine(b).run(|tx| Ok(tx.txn.records_holding(&l)?)).unwrap().into_iter().find_map(|(rec, m)| (rec.r == r).then_some(m.until)).flatten().expect("ended while apart");
-    let (later, ..) = net.engine(b).run(|tx| Ok(tx.txn.log_after(until, 1 << 16)?)).unwrap();
+    let (later, ..) = net.sync(b).hub_store().lock().unwrap().node_log(|t| t.log_after(until, 1 << 16)).unwrap();
     let past = later.iter().any(|e| matches!(e.event, osis_store::NodeEvent::Added(x, id) if x == l && rotated.contains(&id)));
     assert!(past, "the host's stamp logged the rotation again past until");
     let (mut p, _) = resume(&mut net, a, b, &r, [8; 32], &[l]);
@@ -340,7 +340,7 @@ fn a_write_logged_after_the_rotation_in_its_step_is_not_served_spec_sync_10() {
     let mut served = added_of(&pull(&mut net, b, &mut p, Some(cursor.clone()), vec![]).events, l);
     served.extend(pushes(&step(&mut net, b, &mut p)).iter().flat_map(|s| added_of(&s.events, l)));
     let rotated = entries_of(&mut net, b, l, c);
-    let first = |net: &mut Net, id: &BlobId| net.engine(b).run(|tx| Ok(tx.txn.log_entry_first(&l, id)?)).unwrap().unwrap();
+    let first = |net: &mut Net, id: &BlobId| net.sync(b).hub_store().lock().unwrap().node_log(|t| t.log_entry_first(&l, id)).unwrap().unwrap();
     let at = rotated.iter().map(|id| first(&mut net, id)).max().unwrap();
     let new: Vec<BlobId> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).filter(|id| !held.contains(id)).collect();
     let after: BTreeSet<BlobId> = new.into_iter().filter(|id| first(&mut net, id) > at).collect();
@@ -369,7 +369,7 @@ fn a_write_after_the_rotation_in_its_batch_is_not_served_spec_sync_10() {
     net.advance(120_000);
     let rotated = entries_of(&mut net, b, l, rot);
     assert!(!rotated.is_empty());
-    let first = |net: &mut Net, id: &BlobId| net.engine(b).run(|tx| Ok(tx.txn.log_entry_first(&l, id)?)).unwrap().unwrap();
+    let first = |net: &mut Net, id: &BlobId| net.sync(b).hub_store().lock().unwrap().node_log(|t| t.log_entry_first(&l, id)).unwrap().unwrap();
     let at = rotated.iter().map(|id| first(&mut net, id)).max().unwrap();
     let new: Vec<BlobId> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).filter(|id| !held.contains(id)).collect();
     let after: BTreeSet<BlobId> = new.into_iter().filter(|id| first(&mut net, id) > at).collect();

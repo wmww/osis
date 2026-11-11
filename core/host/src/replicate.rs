@@ -185,7 +185,9 @@ impl Replicator {
                     None => break,
                 },
             };
-            if self.retry.get(&label).is_some_and(|r| r.0 > now) {
+            // replication between nodes that cannot read (issues/net-one-peer.md): a sync ID
+            // this node reads goes to its peers by node sync
+            if self.retry.get(&label).is_some_and(|r| r.0 > now) || store.reads(&label) {
                 continue;
             }
             match self.batch(store, &label) {

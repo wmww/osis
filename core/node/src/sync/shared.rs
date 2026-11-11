@@ -1115,7 +1115,7 @@ impl SyncEngine {
             (None, Some(p)) => p,
             (_, None) => return Ok(None),
         };
-        self.engine.run(|tx| Ok(tx.txn.log_cursor(at)?))
+        self.engine.run(|tx| Ok(super::state::hub(tx)?.node_log(|t| t.log_cursor(at))?))
     }
 
     fn shared_send_lost(&mut self, conn: ConnId, items: Vec<(LabelId, Option<Vec<u8>>)>, out: &mut Vec<Action>) -> Result<()> {
@@ -1176,11 +1176,11 @@ impl SyncEngine {
         self.engine.run(|tx| {
             let mut last = None;
             for x in &blobs {
-                last = last.max(tx.txn.log_entry_first(&l, x)?);
+                last = last.max(super::state::hub(tx)?.node_log(|t| t.log_entry_first(&l, x))?);
             }
             Ok(match last {
                 Some(p) => p,
-                None => tx.txn.log_end()?,
+                None => super::state::hub(tx)?.node_log(|t| t.log_end())?,
             })
         })
     }

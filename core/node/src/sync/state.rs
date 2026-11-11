@@ -102,12 +102,24 @@ pub enum Kind {
     Records(Vec<Tid>),
 }
 
-/// A node log event waiting for the flush that writes its effect.
+/// A change of the hub's store (the node's ciphertext and its node log) waiting for the flush
+/// that writes its effect: an entry row put where its bytes are held, an entry row gone
+/// (tombstoned there when deleted), a head logged.
 #[derive(Clone, Copy, Debug)]
 enum LogWrite {
     Added(LabelId, BlobId),
-    Deleted(LabelId, BlobId, u64),
+    Deleted(LabelId, BlobId, bool),
     Head(LabelId, [u8; 32]),
+}
+
+/// The node's one store (the hub's) inside engine transaction `tx` (its ciphertext store).
+pub(crate) fn hub<'a>(tx: &'a mut osis_engine::engine::Tx<'_>) -> Result<&'a mut osis_host::HostStore> {
+    tx.blobs.store().downcast_mut().ok_or(Error::Misuse("the engine's ciphertext store is not a hub store"))
+}
+
+pub(crate) fn hub_err(e: osis_proto::StoreError) -> Error {
+    let _ = e;
+    Error::Corrupt("hub store")
 }
 
 /// A tombstone (`State::tombs`): when (wall ms) and what the entry was.
@@ -455,8 +467,6 @@ pub struct State {
     log: Vec<LogWrite>,
     /// The head last logged per label, so an unchanged head costs no transaction.
     logged_heads: BTreeMap<LabelId, [u8; 32]>,
-    /// Whether the next flush sweeps old deletion events from the node log.
-    pub log_sweep_due: bool,
     /// A hint came or went (`SyncEngine::stamp_changes`).
     pub hints_moved: bool,
 }
@@ -617,7 +627,7 @@ impl State {
             })?;
             Ok(v)
         })?;
-        let logged_heads = engine.run(|tx| Ok(tx.txn.log_heads()?))?.into_iter().collect();
+        let logged_heads = engine.run(|tx| Ok(hub(tx)?.node_log(|t| t.log_heads())?))?.into_iter().collect();
         let mut s = State { logged_heads, ..State::default() };
         for (k, v) in recs {
             let (p, rest) = k.split_at_checked(1).ok_or(Error::Corrupt("sync record"))?;
@@ -940,12 +950,11 @@ impl State {
     /// completes the pair. So a queued `Added` of an entry whose bytes are not here is dropped
     /// (the arrival logs it), and a blob newly stored logs every entry that names it.
     pub fn flush_storing(&mut self, engine: &mut Engine, blobs: Vec<(BlobId, Vec<u8>)>) -> Result<()> {
-        if self.writes.is_empty() && self.log.is_empty() && !self.log_sweep_due && blobs.is_empty() {
+        if self.writes.is_empty() && self.log.is_empty() && blobs.is_empty() {
             return Ok(());
         }
         let writes = std::mem::take(&mut self.writes);
         let log = std::mem::take(&mut self.log);
-        let (sweep, now) = (self.log_sweep_due, self.now);
         let r = engine.run(|tx| {
             for (k, v) in writes.clone() {
                 match v {
@@ -957,33 +966,39 @@ impl State {
                 }
             }
             let stored = tx.store_blobs(blobs)?;
-            let mut logged = BTreeSet::new();
+            // the hub's store, committed first: an entry whose bytes are held is its row there
+            let mut put = BTreeSet::new();
             for e in &log {
-                match *e {
-                    LogWrite::Added(l, b) => {
-                        if tx.blobs.held(&b)? {
-                            tx.txn.log_added(l, b)?;
-                            logged.insert((l, b));
-                        }
-                    }
-                    LogWrite::Deleted(l, b, at) => drop(tx.txn.log_deleted(l, b, at)?),
-                    LogWrite::Head(l, head) => drop(tx.txn.log_head(l, &head)?),
+                if let LogWrite::Added(l, b) = *e {
+                    put.insert((l, b));
                 }
             }
             for b in &stored {
                 for l in self.labels_of(b) {
-                    if !self.is_memory(&l, b) && !logged.contains(&(l, *b)) {
-                        tx.txn.log_added(l, *b)?;
+                    if !self.is_memory(&l, b) {
+                        put.insert((l, *b));
                     }
                 }
             }
-            Ok((sweep && tx.txn.log_sweep(now)?, !stored.is_empty()))
+            for e in &log {
+                match *e {
+                    LogWrite::Added(..) => {}
+                    LogWrite::Deleted(l, b, tomb) => drop(hub(tx)?.reader_remove(&l, &b, tomb).map_err(hub_err)?),
+                    LogWrite::Head(l, head) => drop(hub(tx)?.node_log(|t| t.log_head(l, &head))?),
+                }
+            }
+            for (l, b) in put {
+                let Some(e) = self.entries.get(&(l, b)).filter(|e| !e.memory) else { continue };
+                if tx.blobs.held(&b)? {
+                    hub(tx)?.reader_put(&l, &b, e.wrap, e.stamp, None).map_err(hub_err)?;
+                }
+            }
+            Ok(!stored.is_empty())
         });
         // the in-memory state already holds them: kept for the next flush, so what is durable
         // never lags behind what this node acted on
         match r {
-            Ok((more, stored)) => {
-                self.log_sweep_due = more;
+            Ok(stored) => {
                 if stored {
                     engine.blobs_stored();
                 }
@@ -1118,6 +1133,12 @@ impl State {
         }
         let e = self.entries.get(&(l, b)).cloned();
         let (true, Some(e)) = (self.drop_entry(l, b), e) else { return };
+        // deleted: the hub's store keeps its tombstone too
+        if let Some(LogWrite::Deleted(x, y, tomb)) = self.log.last_mut()
+            && (*x, *y) == (l, b)
+        {
+            *tomb = true;
+        }
         // the class mark stays with the tombstone (`expire_tombs`)
         if e.memory {
             self.memory_entries.insert((l, b));
@@ -1158,7 +1179,7 @@ impl State {
             }
         } else {
             self.del(key(ENTRY, &[&l.0, &b.0]));
-            self.log.push(LogWrite::Deleted(l, b, self.now));
+            self.log.push(LogWrite::Deleted(l, b, false));
         }
         if e.memory {
             self.mem_log.deleted(l, b, self.now);
@@ -1760,7 +1781,7 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
     }
     // no deletion events: this node stopped holding them, nobody deleted them
     for l in labels {
-        tx.txn.log_forget(*l)?;
+        hub(tx)?.reader_forget(l).map_err(hub_err)?;
         tx.txn.changed_forget(l)?;
     }
     for t in things {
@@ -1946,8 +1967,8 @@ mod tests {
     // decode is skipped, never a failed load of the sync state.
     #[test]
     fn corrupt_delivery_record_skipped_spec_sync_3() {
-        let mut lp = crate::local_peer::LocalPeer::new(1, 961, osis_base::WallMs(1_700_000_000_000)).unwrap();
-        let e = &mut lp.peers[0].engine;
+        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 961, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let e = &mut node;
         e.run(|tx| {
             tx.txn.put_local(b"y/vjunk", b"not a record", Shred::No)?;
             Ok(())
@@ -1961,8 +1982,8 @@ mod tests {
     // load with a named error, never a panic or a silent drop.
     #[test]
     fn corrupt_outbox_record_fails_load() {
-        let mut lp = crate::local_peer::LocalPeer::new(1, 962, osis_base::WallMs(1_700_000_000_000)).unwrap();
-        let e = &mut lp.peers[0].engine;
+        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 962, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let e = &mut node;
         let k = key(OUTBOX, &[&[7u8; 32], &[8u8; 32]]);
         e.run(|tx| {
             tx.txn.put_local(&k, b"short", Shred::No)?;
@@ -1976,8 +1997,8 @@ mod tests {
     // forget reloads; a flow or forget after it still writes and drops sync records).
     #[test]
     fn sync_records_survive_reload() {
-        let mut lp = crate::local_peer::LocalPeer::new(1, 963, osis_base::WallMs(1_700_000_000_000)).unwrap();
-        let e = &mut lp.peers[0].engine;
+        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 963, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let e = &mut node;
         e.set_sync_records(&Records);
         e.reload().unwrap();
         assert!(e.core.sync_records.is_some());
@@ -1988,8 +2009,8 @@ mod tests {
     // spec: none (local store format): a hint with its key actor and inbox source round trips.
     #[test]
     fn hint_round_trips() {
-        let mut lp = crate::local_peer::LocalPeer::new(1, 964, osis_base::WallMs(1_700_000_000_000)).unwrap();
-        let e = &mut lp.peers[0].engine;
+        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 964, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let e = &mut node;
         let mut s = State::default();
         let src = InboxSource { label: LabelId([4; 16]), blob: BlobId([5; 32]), until: 77 };
         let addr = Address { url: "quic://s".into(), key: [6; 32] };
@@ -2053,8 +2074,8 @@ mod tests {
     // until then.
     #[test]
     fn records_dropped_after_their_lifecycle_spec_sync_7() {
-        let mut lp = crate::local_peer::LocalPeer::new(1, 965, osis_base::WallMs(1_700_000_000_000)).unwrap();
-        let e = &mut lp.peers[0].engine;
+        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 965, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let e = &mut node;
         let life = osis_base::format::TOMBSTONE_LIFETIME_MS;
         let (h, l, b) = ([7u8; 32], LabelId([1; 16]), BlobId([2; 32]));
         let (body, mid, snap, other) = (CommitId([3; 32]), CommitId([4; 32]), CommitId([5; 32]), CommitId([6; 32]));
@@ -2095,7 +2116,7 @@ mod tests {
     }
 
     fn logged(e: &mut Engine) -> Vec<osis_store::NodeEvent> {
-        e.run(|tx| Ok(tx.txn.log_read(None, 100)?)).unwrap().events.into_iter().map(|x| x.event).collect()
+        e.run(|tx| Ok(hub(tx)?.node_log(|t| t.log_read(None, 100))?)).unwrap().events.into_iter().map(|x| x.event).collect()
     }
 
     /// Bytes held for an entry: their blob ID.
@@ -2114,8 +2135,8 @@ mod tests {
     // a change only of what this node knows of the blob, or an ephemeral entry, is none.
     #[test]
     fn entries_write_log_events_with_their_flush() {
-        let mut lp = crate::local_peer::LocalPeer::new(1, 962, osis_base::WallMs(1_700_000_000_000)).unwrap();
-        let e = &mut lp.peers[0].engine;
+        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 962, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let e = &mut node;
         let mut s = State { now: 5, ..State::default() };
         let (l, b) = (LabelId([1; 16]), bytes(e, 2));
         use osis_store::NodeEvent::{Added, Deleted};
@@ -2126,7 +2147,7 @@ mod tests {
         assert!(s.log.is_empty(), "what the blob turned out to be says nothing new to a peer");
         s.set_entry(l, b, entry(3));
         s.flush(e).unwrap();
-        let end = e.run(|tx| Ok(tx.txn.log_end()?)).unwrap();
+        let end = e.run(|tx| Ok(hub(tx)?.node_log(|t| t.log_end())?)).unwrap();
         assert_eq!(end, 2, "a new wrap is an event");
         s.set_entry(l, BlobId([3; 32]), Entry { memory: true, ..entry(1) });
         assert!(s.log.is_empty(), "an ephemeral entry draws nothing");
@@ -2146,8 +2167,8 @@ mod tests {
     // of row and bytes, and an entry that keeps changing is one event of the log.
     #[test]
     fn an_entry_is_logged_when_its_bytes_are_held() {
-        let mut lp = crate::local_peer::LocalPeer::new(1, 964, osis_base::WallMs(1_700_000_000_000)).unwrap();
-        let e = &mut lp.peers[0].engine;
+        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 964, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let e = &mut node;
         let mut s = State::default();
         let l = LabelId([1; 16]);
         let (blob, other) = (vec![7; 40], vec![8; 40]);
@@ -2159,15 +2180,15 @@ mod tests {
         s.set_entry(l, b, entry(2));
         s.flush(e).unwrap();
         assert!(logged(e).is_empty(), "a new wrap of an absent entry is still nothing");
-        let end = e.run(|tx| Ok(tx.txn.log_end()?)).unwrap();
+        let end = e.run(|tx| Ok(hub(tx)?.node_log(|t| t.log_end())?)).unwrap();
         // bytes stored while the row is queued too: one event, at the arrival
         s.set_entry(l, c, entry(1));
         s.flush_storing(e, vec![(b, blob.clone()), (c, other)]).unwrap();
         assert_eq!(logged(e), [Added(l, c), Added(l, b)], "the arrivals log, once each");
-        assert_eq!(e.run(|tx| Ok(tx.txn.log_end()?)).unwrap(), end + 2);
+        assert_eq!(e.run(|tx| Ok(hub(tx)?.node_log(|t| t.log_end())?)).unwrap(), end + 2);
         // the same bytes again make nothing new
         s.flush_storing(e, vec![(b, blob)]).unwrap();
-        assert_eq!(e.run(|tx| Ok(tx.txn.log_end()?)).unwrap(), end + 2);
+        assert_eq!(e.run(|tx| Ok(hub(tx)?.node_log(|t| t.log_end())?)).unwrap(), end + 2);
         // the row arriving second, bytes held: one event by the set_entry path
         let d = bytes(e, 9);
         let m = LabelId([2; 16]);
@@ -2184,8 +2205,8 @@ mod tests {
     // (this node stopped holding it, nobody deleted its entries) and leaves the log with nothing of it.
     #[test]
     fn forgetting_drops_a_labels_events_without_a_deletion() {
-        let mut lp = crate::local_peer::LocalPeer::new(1, 963, osis_base::WallMs(1_700_000_000_000)).unwrap();
-        let e = &mut lp.peers[0].engine;
+        let mut node = crate::sync::host::on_hub(crate::local_peer::LocalPeer::new(1, 963, osis_base::WallMs(1_700_000_000_000)).unwrap().peers.remove(0));
+        let e = &mut node;
         let mut s = State::default();
         let (l, m) = (LabelId([1; 16]), LabelId([2; 16]));
         let (x, y) = (bytes(e, 1), bytes(e, 2));
@@ -2210,7 +2231,7 @@ mod tests {
             let root = osis_store::MemoryRoot::with_faults(faults.clone());
             let clock: std::sync::Arc<dyn osis_base::Clock> = std::sync::Arc::new(osis_base::ManualClock::new(osis_base::WallMs(1_700_000_000_000)));
             let disk = (osis_store::MemoryBackend::with_faults(faults.clone()), osis_store::MemoryRoot::with_faults(faults.clone()));
-            let mut e = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), crate::local_peer::blob_area(&disk, 9).unwrap(), crate::Config::default(), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(9))).unwrap();
+            let mut e = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), crate::sync::hub_store_on(Box::new(disk.0.clone()), Box::new(disk.1.clone()), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(8))).unwrap(), crate::Config::default(), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(9))).unwrap();
             let mut s = State::default();
             e.put_blobs(vec![(b, vec![2; 40])]).unwrap();
             s.set_entry(l, b, entry(1));
@@ -2219,7 +2240,7 @@ mod tests {
             let wrote = faults.writes();
             drop(e);
             faults.revive();
-            let mut e = Engine::open(Box::new(backend), Box::new(root), crate::local_peer::blob_area(&disk, 10).unwrap(), crate::Config::default(), clock, Box::new(osis_crypto::SeededRng::from_u64(10))).unwrap();
+            let mut e = Engine::open(Box::new(backend), Box::new(root), crate::sync::hub_store_on(Box::new(disk.0.clone()), Box::new(disk.1.clone()), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(8))).unwrap(), crate::Config::default(), clock, Box::new(osis_crypto::SeededRng::from_u64(10))).unwrap();
             let present = e.run(|tx| Ok(tx.txn.get_local(&ek)?)).unwrap().is_some();
             assert_eq!(present, !logged(&mut e).is_empty(), "crash at write {k}: the entry and its event split");
             seen_absent |= !present;

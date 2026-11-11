@@ -775,7 +775,11 @@ impl SyncEngine {
         // built again since the last ask
         if !Arc::ptr_eq(&s, &self.synced) {
             self.stats.label_reads += 1;
-            self.changed_due |= s.ids != self.synced.ids;
+            if s.ids != self.synced.ids {
+                self.changed_due = true;
+                // the hub's store keeps these as node sync's (`HostStore::set_read`)
+                self.hub_store.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_read(s.ids.clone());
+            }
             self.synced = s;
         }
         self.synced.labels.clone()
@@ -925,15 +929,6 @@ mod tests {
 
     // spec/sync.md §6: a fetch or deposit in flight on a connection that ended (its session
     // closed it, say on a request timeout, or the transport went down) is asked again on the
-    /// Peer `p`'s engine reopened over a hub store in memory, as a node's: its blobs left behind
-    /// (a fresh peer holds none the tests read).
-    fn on_hub(p: crate::local_peer::Peer) -> Engine {
-        let c: std::sync::Arc<dyn osis_base::Clock> = p.clock.clone();
-        let hub = super::host::hub_store_on(Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()), c.clone(), Box::new(osis_crypto::SeededRng::from_u64(3))).unwrap();
-        drop(p.engine);
-        Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), hub, crate::Config::default(), c, Box::new(osis_crypto::SeededRng::from_u64(4))).unwrap()
-    }
-
     // next connection; the ended one is never answered.
     #[test]
     fn closed_session_forgets_its_fetches_spec_sync_6() {
@@ -942,7 +937,7 @@ mod tests {
             let p = lp.peers.into_iter().next().unwrap();
             let host = Address { url: "quic://host:1".into(), key: [7; 32] };
             let cfg = SyncConfig { hosts: vec![host.clone()], ..SyncConfig::default() };
-            let mut s = SyncEngine::new(on_hub(p), Box::new(osis_crypto::SeededRng::from_u64(965)), cfg).unwrap();
+            let mut s = SyncEngine::new(super::host::on_hub(p), Box::new(osis_crypto::SeededRng::from_u64(965)), cfg).unwrap();
             let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
             let b = osis_base::BlobId([1; 32]);
             let now = s.now();
@@ -971,7 +966,7 @@ mod tests {
         let p = lp.peers.into_iter().next().unwrap();
         let host = Address { url: "quic://host:1".into(), key: [7; 32] };
         let cfg = SyncConfig { hosts: vec![host], ..SyncConfig::default() };
-        let mut s = SyncEngine::new(on_hub(p), Box::new(osis_crypto::SeededRng::from_u64(969)), cfg).unwrap();
+        let mut s = SyncEngine::new(super::host::on_hub(p), Box::new(osis_crypto::SeededRng::from_u64(969)), cfg).unwrap();
         let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
         let (l, b) = (LabelId([1; 16]), osis_base::BlobId([1; 32]));
         s.conns.get_mut(&conn).unwrap().req.missing.insert(b);
@@ -1000,7 +995,7 @@ mod tests {
             let p = lp.peers.into_iter().next().unwrap();
             let host = Address { url: "quic://host:1".into(), key: [7; 32] };
             let cfg = SyncConfig { hosts: vec![host], ..SyncConfig::default() };
-            let mut s = SyncEngine::new(on_hub(p), Box::new(osis_crypto::SeededRng::from_u64(971)), cfg).unwrap();
+            let mut s = SyncEngine::new(super::host::on_hub(p), Box::new(osis_crypto::SeededRng::from_u64(971)), cfg).unwrap();
             let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
             let key = s.conns[&conn].host;
             let (l, b) = (LabelId([1; 16]), osis_base::BlobId([1; 32]));
@@ -1028,7 +1023,7 @@ mod tests {
         let lp = crate::local_peer::LocalPeer::new(1, 966, osis_base::WallMs(1_700_000_000_000)).unwrap();
         let p = lp.peers.into_iter().next().unwrap();
         let host = Address { url: "quic://host:1".into(), key: [7; 32] };
-        let mut s = SyncEngine::new(on_hub(p), Box::new(osis_crypto::SeededRng::from_u64(967)), SyncConfig::default()).unwrap();
+        let mut s = SyncEngine::new(super::host::on_hub(p), Box::new(osis_crypto::SeededRng::from_u64(967)), SyncConfig::default()).unwrap();
         let d = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
         let delivery = Some((osis_base::Tid::from_bytes([4; 15]), osis_base::CommitId([6; 32])));
         for (l, x) in [(LabelId([1; 16]), None), (LabelId([2; 16]), delivery)] {

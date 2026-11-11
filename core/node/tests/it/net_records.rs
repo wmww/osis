@@ -324,7 +324,7 @@ fn changed_at_moves_on_a_role_change_only() {
     let t = net.item(a, g, g, "x");
     net.run();
     assert_eq!(changed(&mut net, a, l), Some(first), "a write is no change");
-    let end = net.engine(a).run(|tx| Ok(tx.txn.log_end()?)).unwrap();
+    let end = net.sync(a).hub_store().lock().unwrap().node_log(|t| t.log_end()).unwrap();
     net.write(a, t, "y");
     net.run();
     assert_eq!(changed(&mut net, a, l), Some(first));

@@ -28,6 +28,16 @@ pub fn hub_store_on(backend: Box<dyn osis_store::Backend>, root: Box<dyn osis_st
     hub_store(store, clock, rng)
 }
 
+/// Tests: peer `p`'s engine reopened over a hub store in memory, as a node's: its blobs left
+/// behind (a fresh peer holds none the tests read).
+#[cfg(test)]
+pub(crate) fn on_hub(p: crate::local_peer::Peer) -> crate::Engine {
+    let c: Arc<dyn osis_base::Clock> = p.clock.clone();
+    let hub = hub_store_on(Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()), c.clone(), Box::new(osis_crypto::SeededRng::from_u64(3))).unwrap();
+    drop(p.engine);
+    crate::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), hub, crate::Config::default(), c, Box::new(osis_crypto::SeededRng::from_u64(4))).unwrap()
+}
+
 /// What `host_step` last handed the driver, and from which engine generation.
 #[derive(Clone, Default)]
 pub(crate) struct Hosting {
