@@ -424,6 +424,12 @@ impl ServingSession {
         self.decoder.pending()
     }
 
+    /// Bytes written and not taken by the transport, as far as reported (`ServingInput::Taken`;
+    /// none before the first report).
+    pub fn unread(&self) -> usize {
+        self.unsent(&[])
+    }
+
     pub fn handle(&mut self, now: u64, store: &mut dyn LabelStore, input: ServingInput) -> Vec<ServingOutput> {
         let mut out = Vec::new();
         if self.closed {

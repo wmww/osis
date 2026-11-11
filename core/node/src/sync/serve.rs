@@ -78,7 +78,7 @@ pub(crate) struct Served {
     /// How far its proof exchange went: Prove, then Resume, each at most once (spec/wire.md
     /// §11.2).
     asked: Asked,
-    /// Wall ms the session started (one sharing nothing is closed `serve_open_ms` after).
+    /// Wall ms the session started (at the cap the oldest sharing nothing gives way first).
     since: u64,
     /// A thin client's: the hash of the secret it authenticated with and its entry's end
     /// (wall ms). The session ends with the entry, with that hash, at that end.
@@ -711,24 +711,14 @@ impl SyncEngine {
         self.end_served(conn, out);
     }
 
-    /// Closes served sessions that share nothing `serve_open_ms` after they started and those
-    /// of a client past its `until`; expires the memory log's deletions and this node's
+    /// Closes the sessions of a client past its `until` (a connection sharing nothing is closed
+    /// only to make room at the cap, `make_room`); expires the memory log's deletions and this node's
     /// tombstones; forgets carriers and certificate placements nothing needs; prunes charges
     /// and blob sizes.
     pub(crate) fn serve_timers(&mut self, out: &mut Vec<Action>) {
         let now = self.now();
-        let open = self.cfg.serve_open_ms;
-        let stale: Vec<ConnId> = self
-            .served
-            .iter()
-            .filter(|(c, s)| {
-                let shares_nothing = self.serves_nothing(**c, s) && s.since.saturating_add(open) <= now;
-                // a thin client's `until` passed: no other change is needed to end it
-                let ended = s.client.is_some_and(|b| b.until.is_some_and(|u| u <= now));
-                shares_nothing || ended
-            })
-            .map(|(c, _)| *c)
-            .collect();
+        // a thin client's `until` passed: no other change is needed to end it
+        let stale: Vec<ConnId> = self.served.iter().filter(|(_, s)| s.client.is_some_and(|b| b.until.is_some_and(|u| u <= now))).map(|(c, _)| *c).collect();
         for c in stale {
             self.close_served(c, out);
         }
@@ -754,10 +744,8 @@ impl SyncEngine {
         }
     }
 
-    /// When the next served session's `serve_open_ms` or client `until` comes.
+    /// When the next client's `until` comes.
     pub(crate) fn serve_wake(&self) -> Option<u64> {
-        // a thin client's `until`
-        let until = self.served.values().filter_map(|s| s.client.and_then(|b| b.until)).min();
-        self.served.iter().filter(|(c, s)| self.serves_nothing(**c, s)).map(|(_, s)| s.since.saturating_add(self.cfg.serve_open_ms)).chain(until).min()
+        self.served.values().filter_map(|s| s.client.and_then(|b| b.until)).min()
     }
 }

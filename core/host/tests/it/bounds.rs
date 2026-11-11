@@ -61,6 +61,46 @@ fn partial_frames_bounded() {
     assert_eq!(closed, 2, "two of four over the budget");
 }
 
+// spec/requirements.md (peer input never causes unbounded allocation), spec/sync.md §10 (Served
+// connections): bytes written and not taken by the transport stay under `max_buffered_bytes` over
+// all connections, however many share something and never read: past it the connection holding
+// the most unread is closed; an honest reader, whose bytes are taken, keeps its connection.
+#[test]
+fn unread_output_bounded() {
+    let mut w = World::new();
+    let mib = 1 << 20;
+    let h = w.add_hub(HostPolicy { max_buffered_bytes: 4 * mib, ..HostPolicy::default() });
+    let now = w.now();
+    let hub = &mut w.hubs[h];
+    for id in 1..=3u64 {
+        hub.accept(now, id, [9; 32], osis_host::Remote::key([id as u8; 32]));
+        hub.input(now, id, encode_frame(&Hello::new(now, [2; 32]).encode()));
+        // the driver reports what the transport took
+        hub.sent(now, &[(id, 0)]);
+    }
+    let push = |n: u8| osis_host::Down::Message(Box::new(Message::Stream(Box::new(osis_proto::msg::Stream {
+        events: vec![(osis_base::LabelId([1; 16]), Event::Added { blob_id: BlobId([n; 32]), blob: Some(vec![n; mib - 4096]), wrap: [0; osis_crypto::WRAP_LEN], stamp: None })],
+        cursor: Some(vec![n]),
+        report: false,
+    }))));
+    let closed = |out: &[HubOutput]| out.iter().filter_map(|o| if let HubOutput::Close(id) = o { Some(*id) } else { None }).collect::<Vec<_>>();
+    // 3 reads: whatever goes to it is taken
+    for n in 10..20 {
+        assert!(closed(&hub.down(now, vec![(3, push(n))])).is_empty(), "an honest reader keeps its connection");
+        assert!(closed(&hub.sent(now, &[(3, u64::MAX)])).is_empty());
+    }
+    // 1 and 2 never read: 1 takes three pushes, 2 one
+    for (id, n) in [(1, 1), (1, 2), (1, 6), (2, 3)] {
+        assert!(closed(&hub.down(now, vec![(id, push(n))])).is_empty());
+    }
+    assert!(hub.unread() <= 4 * mib, "{}", hub.unread());
+    // past the bound: the one holding the most goes, not the newest writer's
+    let out = hub.down(now, vec![(2, push(4))]);
+    assert_eq!(closed(&out), vec![1], "unread {}", hub.unread());
+    assert!(hub.unread() <= 4 * mib);
+    assert_eq!(hub.connections(), 2);
+}
+
 // spec/requirements.md (peer input never causes unbounded work): a message's entries reach disk
 // in one store commit, not one per entry: at most three durable writes (rows, root, cleanup when
 // it shreds: a removal, or a table page split) for 1024 uploads or 1024 deletes

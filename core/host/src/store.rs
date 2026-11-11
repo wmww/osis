@@ -90,8 +90,10 @@ pub struct HostPolicy {
     /// at least `osis_proto::serving::SEND_QUEUE` plus `osis_proto::client::WINDOW_QUEUE`
     /// (windowed replies and held pushes, and node sync's own requests, spec/sync.md §6).
     pub max_queued_bytes: usize,
-    /// Partially received frame bytes over all connections beyond which the connection holding
-    /// the largest partial frame is closed.
+    /// Bytes held for connections in each direction, over all of them: partially received
+    /// frames, and bytes written and not yet taken by the transport. Past it the connection
+    /// holding the most of that direction is closed. The node's memory bound for its connections,
+    /// whatever their count (`max_connections` bounds slots, not bytes).
     pub max_buffered_bytes: usize,
 }
 

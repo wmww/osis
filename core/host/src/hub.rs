@@ -105,9 +105,10 @@ pub enum Down {
 
 #[derive(Clone)]
 enum Conn {
-    /// `buffered`: partial frame bytes after the last input; `started`: its `Up::Start` went;
+    /// `buffered`: partial frame bytes after the last input; `unread`: bytes written and not
+    /// taken by the transport (as reported); `started`: its `Up::Start` went;
     /// `opened`: the last `Up::Opened`.
-    Served { c: Box<ServingSession>, remote: Remote, hello_by: Option<u64>, buffered: usize, started: bool, opened: bool },
+    Served { c: Box<ServingSession>, remote: Remote, hello_by: Option<u64>, buffered: usize, unread: usize, started: bool, opened: bool },
     Peer { r: Box<Replicator>, timer: Option<u64> },
 }
 
@@ -121,6 +122,8 @@ pub struct Hub {
     sweep_more: bool,
     /// Partial frame bytes over all served connections.
     buffered: usize,
+    /// Bytes written to all served connections and not taken by the transport (as reported).
+    unread: usize,
     /// Relay-only entries handed to connections so far (`relays_delivered`).
     relays_delivered: u64,
     /// Started connections removed since the last batch ended (`Up::End`).
@@ -129,7 +132,7 @@ pub struct Hub {
 
 impl Hub {
     pub fn new(store: HostStore, rng: Box<dyn osis_crypto::NodeRng>) -> Hub {
-        Hub { store, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0, relays_delivered: 0, ended: Vec::new() }
+        Hub { store, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0, unread: 0, relays_delivered: 0, ended: Vec::new() }
     }
 
     /// Tests only: an exact copy of this hub as it stands, on `clock`, sharing no mutable state
@@ -145,6 +148,7 @@ impl Hub {
                 sweep_hold: self.sweep_hold,
                 sweep_more: self.sweep_more,
                 buffered: self.buffered,
+                unread: self.unread,
                 relays_delivered: self.relays_delivered,
                 ended: self.ended.clone(),
             })
@@ -201,7 +205,7 @@ impl Hub {
     pub fn accept(&mut self, now: u64, id: ConnId, key: [u8; 32], remote: Remote) -> Vec<HubOutput> {
         let cfg = ServingConfig { static_key: key, challenge: self.challenge() };
         let hello_by = Some(now.saturating_add(self.store.policy().hello_ms));
-        self.conns.insert(id, Conn::Served { c: Box::new(ServingSession::new(cfg)), remote, hello_by, buffered: 0, started: false, opened: false });
+        self.conns.insert(id, Conn::Served { c: Box::new(ServingSession::new(cfg)), remote, hello_by, buffered: 0, unread: 0, started: false, opened: false });
         self.batch(|h, out| h.serve(now, id, ServingInput::Start, out))
     }
 
@@ -220,6 +224,7 @@ impl Hub {
         self.store.defer_durability();
         let mut out = Vec::new();
         f(self, &mut out);
+        self.limit_unread(&mut out);
         if let Err(e) = self.store.durable() {
             let mut dead = std::collections::BTreeSet::new();
             out.retain(|o| match o {
@@ -300,10 +305,29 @@ impl Hub {
 
     /// Forgets a connection and its partial frame bytes (`Up::End` once the batch ends).
     fn remove(&mut self, id: ConnId) {
-        let Some(Conn::Served { buffered, started, .. }) = self.conns.remove(&id) else { return };
+        let Some(Conn::Served { buffered, unread, started, .. }) = self.conns.remove(&id) else { return };
         self.buffered = self.buffered.saturating_sub(buffered);
+        self.unread = self.unread.saturating_sub(unread);
         if started {
             self.ended.push(id);
+        }
+    }
+
+    /// Bytes written to all served connections and not taken by the transport (as reported).
+    pub fn unread(&self) -> usize {
+        self.unread
+    }
+
+    /// Over `max_buffered_bytes` written and not taken: closes the connections holding the most
+    /// until under it (each peer that stops reading could otherwise hold `max_queued_bytes`, and
+    /// anyone who shares one group can open `max_connections` of them). An honest reader takes
+    /// what it is sent, so its bytes leave the count as the transport reports them taken.
+    fn limit_unread(&mut self, out: &mut Vec<HubOutput>) {
+        while self.unread > self.store.policy().max_buffered_bytes {
+            let Some(id) = self.conns.iter().filter_map(|(id, c)| if let Conn::Served { unread, .. } = c { Some((*unread, *id)) } else { None }).max().map(|(_, id)| id) else { break };
+            self.remove(id);
+            out.push(HubOutput::Close(id));
+            out.push(HubOutput::Diagnostic(format!("connection {id}: closed, unread output over the budget")));
         }
     }
 
@@ -374,15 +398,17 @@ impl Hub {
     /// When `tick` next has work.
     pub fn next_due(&self, now: u64) -> Option<u64> {
         let sweep = if self.sweep_more { Some(now) } else { self.store.next_due().ok().flatten() }.map(|t| t.max(self.sweep_hold));
+        // bytes not yet reported taken: the driver reports at the next tick (`limit_unread` counts them)
+        let unread = (self.unread > 0).then(|| now.saturating_add(osis_proto::serving::PUSH_POLL_MS));
         let conns = self.conns.values().filter_map(|c| match c {
             Conn::Served { c, hello_by, .. } => [c.held().then(|| now.saturating_add(osis_proto::serving::PUSH_POLL_MS)), *hello_by, c.stall_at()].into_iter().flatten().min(),
             Conn::Peer { r, timer } => [*timer, r.next_due(now)].into_iter().flatten().min(),
         });
-        sweep.into_iter().chain(conns).min()
+        sweep.into_iter().chain(unread).chain(conns).min()
     }
 
     fn serve(&mut self, now: u64, id: ConnId, input: ServingInput, out: &mut Vec<HubOutput>) {
-        let Some(Conn::Served { c, remote, hello_by, buffered, started, opened }) = self.conns.get_mut(&id) else { return };
+        let Some(Conn::Served { c, remote, hello_by, buffered, unread, started, opened }) = self.conns.get_mut(&id) else { return };
         // whose entries these are (echo suppression): a keyed peer's
         self.store.set_origin(match &remote.peer {
             Peer::Key(k) => Some(*k),
@@ -404,6 +430,9 @@ impl Hub {
         let now_buffered = c.buffered();
         self.buffered = self.buffered.saturating_sub(*buffered).saturating_add(now_buffered);
         *buffered = now_buffered;
+        let now_unread = c.unread();
+        self.unread = self.unread.saturating_sub(*unread).saturating_add(now_unread);
+        *unread = now_unread;
         if opened_moved {
             out.push(HubOutput::Up(id, Up::Opened(now_opened)));
         }

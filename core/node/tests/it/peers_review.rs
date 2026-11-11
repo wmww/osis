@@ -197,13 +197,13 @@ fn a_fresh_account_splits_no_budget_spec_sync_5() {
 // spec/sync.md §5: served connections are capped by one rule over all (the node's
 // `max_connections`): at the cap a new one takes the slot of one sharing nothing (a stranger's
 // idle connection) before a co-reader's, and once every other shares something, of the source
-// holding the most; one sharing nothing is closed `serve_open_ms` after it started, one sharing
-// a sync ID stays while up, however quiet its stream.
+// holding the most. Below the cap nothing is closed for sharing nothing: a stranger's connection
+// stays until a newcomer needs its slot, and one sharing a sync ID stays while up, however quiet
+// its stream.
 #[test]
 fn at_the_cap_a_stranger_goes_before_a_co_reader_spec_sync_5() {
     let (mut net, [a]) = local_nodes::<1>();
-    let cfg = SyncConfig { serve_open_ms: 1_000, ..SyncConfig::default() };
-    let b = net.add_node(2, cfg);
+    let b = net.add_node(2, SyncConfig::default());
     reach_ed(&mut net, a);
     reach_ed(&mut net, b);
     net.blocked_peers.insert((a, b));
@@ -221,14 +221,14 @@ fn at_the_cap_a_stranger_goes_before_a_co_reader_spec_sync_5() {
     let (s2, _) = dial_in(&mut net, b);
     assert!(net.hand_closed(b, s1.hc), "the stranger's idle connection made room");
     assert!(!net.hand_closed(b, co.hc) && !net.hand_closed(b, s2.hc));
-    let (s3, _) = dial_in(&mut net, b);
-    assert!(net.hand_closed(b, s2.hc), "the next idle one goes");
-    assert!(!net.hand_closed(b, co.hc), "the co-reader stays");
-    net.clock.advance(1_001);
+    // a minute on (the hand member answers no Pull, so it stays under the stall time here)
+    net.clock.advance(60_000);
     let acts = net.sync(b).handle(Event::Tick);
     net.actions(b, acts);
-    assert!(net.hand_closed(b, s3.hc), "sharing nothing past serve_open_ms");
-    assert!(!net.hand_closed(b, co.hc), "a session sharing a sync ID stays while up, however quiet its stream");
+    assert!(!net.hand_closed(b, s2.hc), "no pressure: the idle one stays");
+    let (s3, _) = dial_in(&mut net, b);
+    assert!(net.hand_closed(b, s2.hc), "the next idle one goes for a newcomer");
+    assert!(!net.hand_closed(b, co.hc) && !net.hand_closed(b, s3.hc), "a session sharing a sync ID stays while up, however quiet its stream");
 }
 
 // spec/sync.md §5: a stranger without the label's sync key opens nothing.
@@ -462,23 +462,6 @@ fn a_session_of_a_node_not_dialed_is_a_source_not_caught_up() {
     let after = status(&mut net);
     assert_eq!(after.sources, before.sources + 1, "its own source: {after:?}");
     assert_eq!(after.idle, before.idle, "not caught up: {after:?}");
-}
-
-// spec/sync.md §5: a served session that opens nothing is closed after `serve_open_ms`, even
-// while it keeps sending.
-#[test]
-fn silent_session_closed_spec_sync_5() {
-    let mut net = Net::new();
-    let cfg = SyncConfig { serve_open_ms: 1_000, ..SyncConfig::default() };
-    let b = net.add_node(2, cfg);
-    let (mut p, _) = dial_in(&mut net, b);
-    net.clock.advance(1_001);
-    let now = net.now();
-    let outs = p.cs.handle(now, ClientInput::Command(Command::Open { label: LabelId([1; 16]), key: OpenKey::Sync { step: None, key: SigningSecret::from_seed(&Secret32::from_bytes([3; 32])) } }));
-    exchange(&mut net, b, &mut p, Vec::new(), outs);
-    let acts = net.sync(b).handle(Event::Tick);
-    net.actions(b, acts);
-    assert!(net.hand_closed(b, p.hc));
 }
 
 // spec/permissions.md §3: a complete pass also waits for every co-reader the node received the

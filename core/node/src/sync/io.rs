@@ -33,8 +33,6 @@ pub struct SyncConfig {
     /// Connections authenticated as client actors at once (a further Auth is Error 4). Resource
     /// bound: 0 serves no client, infinity lets clients take every connection.
     pub max_clients: usize,
-    /// A served connection sharing nothing this long after it started is closed.
-    pub serve_open_ms: u64,
     /// How long a complete pass waits for co-readers after a role change (then it counts
     /// hosts only).
     pub peer_pass_wait_ms: u64,
@@ -72,7 +70,6 @@ impl Default for SyncConfig {
             peer_bytes: 64 << 20,
             peer_total_bytes: 1 << 30,
             max_clients: 64,
-            serve_open_ms: 30_000,
             peer_pass_wait_ms: 300_000,
             unvouched_cap: 1 << 16,
             full_passes: false,
