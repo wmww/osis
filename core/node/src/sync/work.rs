@@ -186,7 +186,7 @@ pub(crate) struct Inputs {
     pub published: Arc<BTreeSet<Tid>>,
     pub may_rotate: bool,
     /// The group's held epochs (wraps, unopened entries, rotation exceptions).
-    pub held: Option<osis_keys::ActorEpochs>,
+    pub held: Option<std::sync::Arc<osis_keys::ActorEpochs>>,
 }
 
 impl Inputs {

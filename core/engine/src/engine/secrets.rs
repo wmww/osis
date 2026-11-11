@@ -13,6 +13,7 @@ use osis_perm::At;
 use osis_schema::RawKey;
 use osis_schema::core_types::{Keys, Secrets, SigningKey};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 impl Core {
     /// The steps up `tid`'s record chain through the held records (`osis_base::record_chain`).
@@ -43,8 +44,8 @@ impl Core {
     /// next actor up its record chain (first admin) for a plain thing. A plain thing's
     /// epochs learned from a rotation since found invalid (`stale_epochs`) are added for reading
     /// only.
-    pub(crate) fn epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
-        self.epochs_of.get(tid, || self.derive_epochs(tid))
+    pub(crate) fn epochs(&self, tid: &Tid) -> Option<Arc<ActorEpochs>> {
+        self.epochs_of.get(tid, || self.derive_epochs(tid).map(Arc::new))
     }
 
     fn derive_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
@@ -343,7 +344,8 @@ impl Core {
     /// established as that actor's are now (spec/crypto.md §3, §4).
     pub(crate) fn base_derived(&self, actor: &Tid) -> Option<ActorEpochs> {
         let up = self.created(actor).and_then(CreationRecord::first_admin)?;
-        Some(ActorEpochs::derived(&self.epochs(&up)?, actor))
+        let base = self.epochs(&up)?;
+        Some(ActorEpochs::derived(&base, actor))
     }
 
     /// A thing that got secrets of its own keeps its earlier derived epochs (by history box):

@@ -18,6 +18,8 @@ samples = [line.split() for line in open(path) if line.strip()]
 addrs = collections.defaultdict(set)
 for s in samples:
     for f in s:
+        if ":" not in f:
+            continue
         obj, a = f.rsplit(":", 1)
         addrs[obj].add(a)
 name = {}

@@ -11,6 +11,7 @@ use osis_schema::RawKey;
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// Aspects read from the in-memory indexes, not from a state.
 fn synthetic_ak(ak: &str) -> bool {
@@ -214,8 +215,8 @@ impl Engine {
 
     /// The epochs this node holds for actor `tid` (its own, opened ones with their
     /// establishment, or derived from its base actor's).
-    pub fn epochs(&self, tid: &Tid) -> Option<osis_keys::ActorEpochs> {
-        self.core.epochs(tid).or_else(|| self.core.ix.secrets.get(tid).cloned())
+    pub fn epochs(&self, tid: &Tid) -> Option<Arc<osis_keys::ActorEpochs>> {
+        self.core.epochs(tid).or_else(|| self.core.ix.secrets.get(tid).map(|x| Arc::new(x.clone())))
     }
 
     /// Whether the creation record of `tid` is held here, durable or memory class.

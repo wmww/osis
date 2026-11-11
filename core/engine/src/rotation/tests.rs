@@ -998,7 +998,7 @@ fn finalize_applies_whole_or_not_spec_permissions_2() {
     let _ = lp.peers[0].engine.ensure_rotated(&g);
     let state = lp.peers[0].engine.run(|tx| crate::flows::secrets_in(tx, &g)).unwrap();
     let keys_d = lp.peers[3].engine.core.id.keys().clone();
-    let mut got = lp.peers[3].engine.epochs(&g).unwrap_or_default();
+    let mut got = lp.peers[3].engine.epochs(&g).map(std::sync::Arc::unwrap_or_clone).unwrap_or_default();
     let _ = osis_keys::ingest(&g, &state, &osis_keys::Opener::KeyActor { holder: tids[3], keys: &keys_d }, &mut got, None);
     for e in lp.peers[0].engine.epochs(&g).unwrap().read.current() {
         assert!(got.read.reading_secret(&e).is_none(), "D1 opens read epoch {e:?}, current at A");

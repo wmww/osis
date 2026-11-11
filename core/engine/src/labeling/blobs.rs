@@ -11,6 +11,7 @@ use osis_keys::ActorEpochs;
 use osis_label::Step;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 /// A held commit as one blob (spec/sync.md §3): every held part, each sealed to its thing's
 /// reader actor (`Engine::seal`).
@@ -249,7 +250,7 @@ impl Engine {
     /// nearest member (a member given secrets of its own since the section was sealed holds the
     /// derived epoch in its history). `last`: the previous chain of this blob opening and its
     /// answer (a commit's sections in one group share a chain: derived once, memory bounded).
-    fn chain_epochs(&self, chain: &[Tid], last: &mut Option<(Vec<Tid>, Vec<ActorEpochs>)>) -> Vec<ActorEpochs> {
+    fn chain_epochs(&self, chain: &[Tid], last: &mut Option<(Vec<Tid>, Vec<Arc<ActorEpochs>>)>) -> Vec<Arc<ActorEpochs>> {
         if let Some((o, v)) = last.as_ref()
             && o == chain
         {
@@ -259,7 +260,7 @@ impl Engine {
         for (i, o) in chain.iter().enumerate() {
             let Some(mut e) = self.epochs(o) else { continue };
             for x in chain.get(..i).into_iter().flatten().rev() {
-                e = ActorEpochs::derived(&e, x);
+                e = Arc::new(ActorEpochs::derived(&e, x));
             }
             out.push(e);
         }
@@ -268,7 +269,7 @@ impl Engine {
     }
 
     /// The read secrets of thing `t` derived by tid from `chain_epochs` of its section's chain.
-    fn derived_through(&self, t: &Tid, chain: &[Tid], last: &mut Option<(Vec<Tid>, Vec<ActorEpochs>)>) -> Vec<Secret32> {
+    fn derived_through(&self, t: &Tid, chain: &[Tid], last: &mut Option<(Vec<Tid>, Vec<Arc<ActorEpochs>>)>) -> Vec<Secret32> {
         let mut out: Vec<Secret32> = Vec::new();
         for e in self.chain_epochs(chain, last) {
             for (_, s) in ActorEpochs::derived(&e, t).read.held_newest_first() {
@@ -524,10 +525,10 @@ impl Engine {
         let mut v: Vec<Secret32> = self.epochs(g).map(|e| e.read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect()).unwrap_or_default();
         // the first admin's epochs; a thing whose `created.0` is not here yet (a link's
         // person) may have any key actor held as first admin
-        let firsts: Vec<osis_keys::ActorEpochs> = match self.core.created(g).map(osis_base::CreationRecord::first_admin) {
-            Some(Some(up)) => self.epochs(&up).or_else(|| self.core.key_actors.get(&up).map(|id| osis_keys::ActorEpochs::key_actor(id.seed()))).into_iter().collect(),
+        let firsts: Vec<Arc<osis_keys::ActorEpochs>> = match self.core.created(g).map(osis_base::CreationRecord::first_admin) {
+            Some(Some(up)) => self.epochs(&up).or_else(|| self.core.key_actors.get(&up).map(|id| Arc::new(osis_keys::ActorEpochs::key_actor(id.seed())))).into_iter().collect(),
             Some(None) => Vec::new(),
-            None => self.core.key_actors.values().map(|id| osis_keys::ActorEpochs::key_actor(id.seed())).collect(),
+            None => self.core.key_actors.values().map(|id| Arc::new(osis_keys::ActorEpochs::key_actor(id.seed()))).collect(),
         };
         for oe in firsts {
             for (_, s) in osis_keys::ActorEpochs::derived(&oe, g).read.held_newest_first() {
@@ -769,8 +770,8 @@ mod tests {
         e.commit(m).unwrap().unwrap();
         let node = e.core.epochs(&me).unwrap();
         let of_o = ActorEpochs::derived(&node, &o);
-        assert_eq!(e.core.epochs(&o).unwrap(), of_o);
-        assert_eq!(e.core.epochs(&t).unwrap(), ActorEpochs::derived(&of_o, &t));
+        assert_eq!(*e.core.epochs(&o).unwrap(), of_o);
+        assert_eq!(*e.core.epochs(&t).unwrap(), ActorEpochs::derived(&of_o, &t));
         assert_eq!(e.section_chain(&t), vec![o, me]);
         assert_eq!(e.section_chain(&o), vec![me]);
     }

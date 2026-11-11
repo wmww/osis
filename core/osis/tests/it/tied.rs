@@ -77,7 +77,7 @@ fn reach_of(db: &Osis, t: Tid, g: Tid) -> Option<GroupView> {
     Some(GroupView { group: g, member, tie })
 }
 
-/// Alice's shared tag `g` (Bob writer, Carol writer); Bob's card shared into it, tied.
+/// Alice's shared tag `g` (Bob writer, Carol writer): built once (`World::cached`).
 struct Setup {
     w: World,
     alice: Osis,
@@ -87,6 +87,11 @@ struct Setup {
 }
 
 fn setup() -> Setup {
+    let (w, [alice, bob, carol], g) = World::cached("tied::setup", built_setup);
+    Setup { w, alice, bob, carol, g }
+}
+
+fn built_setup() -> (World, [Osis; 3], Tid) {
     let mut w = World::new();
     let host = w.add_host();
     let [alice, bob, carol] = [1, 2, 3].map(|s| account(&mut w, s, host));
@@ -96,7 +101,7 @@ fn setup() -> Setup {
     alice.grant(g, b, Role::Write, GrantOpts::default()).unwrap();
     alice.grant(g, c, Role::Write, GrantOpts::default()).unwrap();
     w.run();
-    Setup { w, alice, bob, carol, g }
+    (w, [alice, bob, carol], g)
 }
 
 // spec/permissions.md §2 (the tie; self-removal by G's admin; one direction only): add_with_grant

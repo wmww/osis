@@ -910,7 +910,7 @@ pub struct Core {
     /// `Tx::remove_commit` and (all of them) a transaction's undo change.
     pub(crate) records_read: memo::Stamps,
     /// `Core::epochs` per thing (`memo`).
-    pub(crate) epochs_of: memo::Memo<Tid, Option<osis_keys::ActorEpochs>>,
+    pub(crate) epochs_of: memo::Memo<Tid, Option<Arc<osis_keys::ActorEpochs>>>,
     /// Numbers `Indexes::rotations`; never rolled back.
     pub rotation_seq: u64,
     /// `Core::account_view` per account (`memo`).

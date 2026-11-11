@@ -25,6 +25,7 @@ use crate::Mutation;
 use osis_base::{Role, Tid};
 use osis_keys::{ActorEpochs, Departure, HistoryBoxes, ROLES, Recipient, Rotation};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 pub use departures::{departures_placing, may_rotate};
 pub use lost::{Dropped, Leaving, LostScope, LOST_HEARD_WAIT_MS};
@@ -358,7 +359,7 @@ pub(crate) fn deliver_rotation(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::Com
 pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
     tx.core.touch();
     // a plain thing's: derived from its base actor, with what an invalid rotation gave it for reading
-    let base = tx.core.epochs(&a).or_else(|| tx.core.ix.secrets.get(&a).cloned()).unwrap_or_default();
+    let base = tx.core.epochs(&a).map(Arc::unwrap_or_clone).or_else(|| tx.core.ix.secrets.get(&a).cloned()).unwrap_or_default();
     tx.core.ix.secrets.insert(a, base.into_record());
     let e = tx.core.ix.secrets.entry_or_default(a);
     rot.record(e);

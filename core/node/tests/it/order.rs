@@ -571,6 +571,18 @@ pub(crate) struct Played {
     withheld: u64,
     /// `Cfg::model`: the history for the held-model adapter, and what it compared.
     model: Option<std::sync::Arc<(crate::held::History, std::sync::Mutex<crate::held::Coverage>)>>,
+    /// Fresh nodes given the setup as made, by the length of the order (`deliver`).
+    setups: Setups,
+}
+
+/// `Played::setups`: a clone starts empty (a history changed after a delivery is a clone).
+#[derive(Default)]
+struct Setups(std::sync::Mutex<BTreeMap<usize, Peer>>);
+
+impl Clone for Setups {
+    fn clone(&self) -> Setups {
+        Setups::default()
+    }
 }
 
 /// Per step kind: how many ran and how many made a commit, and why the others made none.
@@ -1379,7 +1391,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             pk.bytes = b.clone();
         }
     }
-    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), steps_at, settle_from: None, settled_last, withheld: 0, model: None }
+    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), steps_at, settle_from: None, settled_last, withheld: 0, model: None, setups: Setups::default() }
 }
 
 /// Per body (commit, thing, aspect): when it was replaced, for keep-for-D (spec/commits.md §5).
@@ -1718,27 +1730,38 @@ impl Syncs {
         }
     }
 
-    /// The toggles of a delivery of `order`: their points depend on the order alone.
+    /// The toggles of a delivery of `order`: their points depend on its length and the order
+    /// before them alone, so deliveries sharing a prefix share the toggles in it (`deliver`).
+    /// Draw `j` of thing `t` is a point uniform in `0..=len`: at each point `i` it stops with
+    /// probability `1 / (len + 1 - i)`, decided by a hash of `order[..i]`, `t` and `j`.
     fn plan(&self, order: &[usize]) -> SyncPlan {
-        let mut h = order.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, x| (h ^ *x as u64).wrapping_mul(0x0100_0000_01b3));
-        let mut at = move |t: &Tid| {
-            h = t.as_bytes().iter().fold(h, |h, x| (h ^ *x as u64).wrapping_mul(0x0100_0000_01b3));
-            let mut r = Rng(h | 1);
-            r.below(order.len() as u64 + 1) as usize
+        let fnv = |h: u64, x: u64| (h ^ x).wrapping_mul(0x0100_0000_01b3);
+        let len = order.len();
+        let before: Vec<u64> = std::iter::once(0xcbf2_9ce4_8422_2325u64).chain(order.iter().scan(0xcbf2_9ce4_8422_2325u64, |h, x| {
+            *h = fnv(*h, *x as u64);
+            Some(*h)
+        })).collect();
+        let at = |t: &Tid, j: u64| {
+            (0..len)
+                .find(|&i| {
+                    let h = t.as_bytes().iter().fold(fnv(before[i], j), |h, x| fnv(h, *x as u64));
+                    Rng(h | 1).below((len + 1 - i) as u64) == 0
+                })
+                .unwrap_or(len)
         };
         let mut out = Vec::new();
         match self {
             Syncs::None => {}
             Syncs::Early { on, prefix } => {
                 out.extend(on.iter().chain(prefix).map(|t| (0, *t, true)));
-                out.extend(prefix.iter().map(|t| (at(t), *t, false)));
+                out.extend(prefix.iter().map(|t| (at(t, 0), *t, false)));
             }
             Syncs::Late { on } => {
                 for (i, t) in on.iter().enumerate() {
-                    let a = at(t);
+                    let a = at(t, 0);
                     out.push((a, *t, true));
                     if i % 3 == 0 {
-                        let (b, c) = (a.max(at(t)), at(t));
+                        let (b, c) = (a.max(at(t, 1)), at(t, 2));
                         out.push((b, *t, false));
                         out.push((b.max(c), *t, true));
                     }
@@ -1800,9 +1823,35 @@ fn with_syncs(mut played: Played, seed: u64, cfg: Cfg) -> Played {
     played
 }
 
-/// A fresh node given `packs` in `order`.
+/// A fresh node given `packs` in `order`. An order starting with the setup as made starts from
+/// a copy of a node given it once (`Played::setups`): the same node, as `Peer::copy` goes on as
+/// the original would and the sync toggles in a prefix depend on the prefix alone (`Syncs::plan`).
 fn deliver(played: &Played, order: &[usize]) -> Peer {
-    deliver_with(played, order, None, None, &mut |_| {})
+    let n = played.base;
+    let start = if order.len() > n && order[..n].iter().copied().eq(0..n) {
+        let mut setups = played.setups.0.lock().unwrap();
+        let p = setups.entry(order.len()).or_insert_with(|| first_of(played, order, n));
+        (p.copy().unwrap(), n)
+    } else {
+        (first_of(played, order, 0), 0)
+    };
+    deliver_from(played, order, start, None, None, &mut |_| {})
+}
+
+/// A fresh node given the first `n` of `order` as `deliver_with` gives them with no late parts
+/// or clock (the sync toggles due before each, its sides walked after each).
+fn first_of(played: &Played, order: &[usize], n: usize) -> Peer {
+    let mut p = fresh(played.now);
+    // every component's walk saved, so reopens restore them
+    p.engine.set_walk_cache_min(1);
+    let mut plan = played.sync.plan(order);
+    for (done, &i) in order[..n].iter().enumerate() {
+        plan.upto(&mut p, done);
+        let pk = &played.packs[i];
+        let _ = p.receive(&pk.bytes, pk.blobs.clone());
+        crate::disputes::walk_sides(&mut p);
+    }
+    p
 }
 
 /// A fresh node given `packs` in `order`, each commit with parts on several aspects first with
@@ -1858,20 +1907,24 @@ fn move_clock(played: &Played, p: &mut Peer) {
 /// and its clock set back, so its own things are the same as every fresh node's. Before every
 /// `each` the node takes the walk's side in each dispute it detected (`disputes::walk_sides`),
 /// so its trust set is empty wherever it is judged (spec/permissions.md §5.1).
-fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clock: Option<Clock>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
+fn deliver_with(played: &Played, order: &[usize], rng: Option<&mut Rng>, clock: Option<Clock>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
+    deliver_from(played, order, (first_of(played, order, 0), 0), rng, clock, each)
+}
+
+/// `deliver_with` from node `p` given the first `start` of `order` (`first_of`; with `rng` or
+/// `clock`, none).
+fn deliver_from(played: &Played, order: &[usize], (mut p, start): (Peer, usize), mut rng: Option<&mut Rng>, clock: Option<Clock>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
     let mut each = |p: &mut Peer| {
         crate::disputes::walk_sides(p);
         each(p)
     };
-    let mut p = fresh(played.now);
-    // every component's walk saved, so reopens restore them
-    p.engine.set_walk_cache_min(1);
     if let Some(c) = clock {
         p.clock.set(c.early);
     }
     let mut late = Vec::new();
     let mut plan = played.sync.plan(order);
-    let mut done = 0;
+    plan.0.retain(|x| x.0 >= start);
+    let mut done = start;
     // a settled history's late parts come before its settling tail: one after it is a write
     // after the writers' last compactions, which then settle nothing
     let deliver_late = |p: &mut Peer, late: &mut Vec<usize>, plan: &mut SyncPlan, done: &mut usize, each: &mut dyn FnMut(&mut Peer)| {
@@ -1883,7 +1936,7 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
             each(p);
         }
     };
-    for &i in order {
+    for &i in &order[start..] {
         if played.settle_from.is_some_and(|f| i >= f) && !late.is_empty() {
             deliver_late(&mut p, &mut late, &mut plan, &mut done, &mut each);
         }

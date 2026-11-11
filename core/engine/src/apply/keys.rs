@@ -13,6 +13,7 @@ use osis_keys::{KeysWrite, ROLES, SecretsWrite};
 use osis_schema::core_types::{self as ct, BoxKey, HistoryKey, SecretBox};
 use osis_schema::{Codec, Type, typed_read};
 use osis_store::Shred;
+use std::sync::Arc;
 
 fn typed(v: &Value, name: &str) -> Option<Value> {
     typed_read(osis_schema::core_schema(), v, &Type::Named(name.into(), Vec::new())).ok()
@@ -269,7 +270,7 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
                 tx.core.base_derived(t).is_some_and(|d| ROLES.iter().any(|r| d.role(*r).epochs().any(|(ep, i)| i.established.is_some() && i.secret.is_some() && e.role(*r).get(ep).is_some())))
             };
             let restart = regain && tx.core.ix.secrets.get(t).is_some_and(derived) && tx.core.own_record(t).is_none();
-            let base = restart.then(|| tx.core.epochs(t)).flatten();
+            let base = restart.then(|| tx.core.epochs(t)).flatten().map(Arc::unwrap_or_clone);
             tx.core.ix.own_keys.insert(*t);
             if let Some(b) = base {
                 tx.core.ix.secrets.insert(*t, b.into_record());

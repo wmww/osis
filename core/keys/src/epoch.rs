@@ -92,7 +92,17 @@ impl EpochInfo {
     /// list, and those its opened history box lists. A function of the held rotation commits, so
     /// one found invalid leaves nothing behind.
     pub fn superseded_epochs(&self) -> BTreeSet<Epoch> {
-        self.supersedes.iter().chain(self.rotations.values().flatten()).copied().collect()
+        self.superseded_iter().copied().collect()
+    }
+
+    /// `superseded_epochs`, unsorted and possibly repeated.
+    fn superseded_iter(&self) -> impl Iterator<Item = &Epoch> {
+        self.supersedes.iter().chain(self.rotations.values().flatten())
+    }
+
+    /// `superseded_epochs` names `e`.
+    fn supersedes(&self, e: &Epoch) -> bool {
+        self.supersedes.contains(e) || self.rotations.values().any(|r| r.contains(e))
     }
 
     /// Its secret is known only from pending commits.
@@ -356,12 +366,13 @@ impl RoleEpochs {
 
     /// Superseded by an established rotation.
     pub fn superseded(&self, e: &Epoch) -> bool {
-        self.map.values().any(|i| i.established.is_some() && i.superseded_epochs().contains(e))
+        self.map.values().any(|i| i.established.is_some() && i.supersedes(e))
     }
 
     /// Current epochs: established and not superseded, ascending.
     pub fn current(&self) -> Vec<Epoch> {
-        self.map.keys().filter(|e| self.is_current(e)).copied().collect()
+        let superseded: BTreeSet<&Epoch> = self.map.values().filter(|i| i.established.is_some()).flat_map(EpochInfo::superseded_iter).collect();
+        self.map.iter().filter(|(e, i)| i.established.is_some() && !superseded.contains(e)).map(|(e, _)| *e).collect()
     }
 
     pub fn is_current(&self, e: &Epoch) -> bool {
@@ -422,7 +433,8 @@ impl RoleEpochs {
 
     /// The newest current epoch whose secret is held.
     pub fn newest_held(&self) -> Option<(Epoch, &Secret32)> {
-        self.newest_with(self.held().filter(|(e, _)| self.is_current(e)))
+        let current = self.current();
+        self.newest_with(self.held().filter(|(e, _)| current.binary_search(e).is_ok()))
     }
 
     /// The newest established epoch whose secret is held, current or not.
