@@ -75,7 +75,7 @@ fn pending_commit_does_not_withhold_uploads_spec_sync_6() {
 fn a_skewed_host_is_reported_not_followed_spec_sync_6() {
     let mut net = Net::new();
     let host = net.add_host();
-    net.hosts[host].skew = 2 * 3_600_000;
+    net.set_host_skew(host, 2 * 3_600_000);
     let a = net.node(1, &[host]);
     let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "v1");

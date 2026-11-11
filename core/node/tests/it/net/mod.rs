@@ -16,22 +16,26 @@ use osis_node::{Config, Engine, Mutation};
 use osis_schema::core_types as ct;
 use osis_schema::{RawKey, Codec};
 use osis_proto::LabelStore;
-use osis_host::{HostStore, Hub, HubOutput, HostPolicy};
-use osis_store::{MemoryBackend, MemoryRoot, Store, StoreConfig};
+use osis_host::{Hub, HubOutput, HostPolicy};
+use osis_store::{MemoryBackend, MemoryRoot, StoreConfig};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 pub const T0: u64 = 1_700_000_000_000;
 
+/// A node that keeps what it cannot read for others: its hub, node sync above it (a bare engine:
+/// no account, no group), on a clock of its own (`set_host_skew`).
 pub struct Host {
     pub hub: Hub,
-    /// Its own store's device.
+    pub sync: Option<SyncEngine>,
+    /// Its one store's device (the hub's).
     pub backend: MemoryBackend,
     pub root: MemoryRoot,
+    /// Its engine's device.
+    pub engine_disk: (MemoryBackend, MemoryRoot),
     pub address: Address,
-    /// Added to the wall clock this host reports (handshakes, pongs) and acts on.
-    pub skew: i64,
+    pub clock: Arc<NodeClock>,
 }
 
 /// A node's wall clock: the net's plus a skew of its own (`Net::set_skew`).
@@ -454,9 +458,12 @@ impl Net {
                 };
                 Node { sync, clock: nc, hub, backend: n.backend.test_copy(), root: n.root.test_copy(), hub_disk: (n.hub_disk.0.test_copy(), n.hub_disk.1.test_copy()), online: n.online, wake: n.wake, life: n.life, accepts: n.accepts, events }
             }).collect();
-            let hosts = self.hosts.iter().map(|h| {
-                let c: Arc<dyn Clock> = clock.clone();
-                Host { hub: h.hub.test_copy(c).unwrap(), backend: h.backend.test_copy(), root: h.root.test_copy(), address: h.address.clone(), skew: h.skew }
+            let hosts = self.hosts.iter_mut().map(|h| {
+                let nc = Arc::new(NodeClock { base: clock.clone(), skew: h.clock.skew.load(std::sync::atomic::Ordering::SeqCst).into() });
+                let c: Arc<dyn Clock> = nc.clone();
+                let sync = h.sync.as_mut().map(|s| s.test_copy(c).unwrap());
+                let hub = h.hub.test_copy_over(sync.as_ref().expect("a host runs").hub_store());
+                Host { hub, sync, backend: h.backend.test_copy(), root: h.root.test_copy(), engine_disk: (h.engine_disk.0.test_copy(), h.engine_disk.1.test_copy()), address: h.address.clone(), clock: nc }
             }).collect();
             Net {
                 clock,
@@ -525,11 +532,28 @@ impl Net {
 
     pub fn add_host_with(&mut self, policy: HostPolicy) -> usize {
         let i = self.hosts.len();
-        let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
-        let store = self.host_store(&backend, &root, policy, 900 + i as u64);
-        let hub = Hub::new(Arc::new(std::sync::Mutex::new(store)), Box::new(SeededRng::from_u64(950 + i as u64)));
-        self.hosts.push(Host { hub, backend, root, address: Address { url: format!("quic://host{i}:1"), key: host_key(i) }, skew: 0 });
+        let clock = Arc::new(NodeClock { base: self.clock.clone(), skew: 0.into() });
+        let host = self.host_on(i, (MemoryBackend::new(), MemoryRoot::new()), (MemoryBackend::new(), MemoryRoot::new()), clock, policy, 900 + i as u64, true);
+        self.hosts.push(host);
         i
+    }
+
+    /// Host `i` over its devices (created when `new`, else opened), its engine on `clock`.
+    #[allow(clippy::too_many_arguments)]
+    fn host_on(&self, i: usize, hub_disk: (MemoryBackend, MemoryRoot), engine_disk: (MemoryBackend, MemoryRoot), clock: Arc<NodeClock>, policy: HostPolicy, seed: u64, new: bool) -> Host {
+        let c: Arc<dyn Clock> = clock.clone();
+        let blobs = Net::hub_store(&hub_disk, c.clone(), seed);
+        let (b, r) = (Box::new(engine_disk.0.clone()), Box::new(engine_disk.1.clone()));
+        let engine = if new { Engine::create(b, r, blobs, Config::default(), c, Box::new(SeededRng::from_u64(seed))) } else { Engine::open(b, r, blobs, Config::default(), c, Box::new(SeededRng::from_u64(seed))) }.unwrap();
+        let mut sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed + 7)), SyncConfig { peers: false, ..SyncConfig::default() }).unwrap();
+        {
+            let store = sync.hub_store();
+            let mut st = store.lock().unwrap();
+            st.set_policy(policy);
+            st.set_admission(osis_host::Admission::Open, BTreeMap::new());
+        }
+        let hub = self.node_hub(&mut sync, seed);
+        Host { hub, sync: Some(sync), backend: hub_disk.0, root: hub_disk.1, engine_disk, address: Address { url: format!("quic://host{i}:1"), key: host_key(i) }, clock }
     }
 
     /// A node's hub over its one store (`SyncEngine::hub_store`).
@@ -542,19 +566,11 @@ impl Net {
         osis_node::sync::hub_store_on(Box::new(disk.0.clone()), Box::new(disk.1.clone()), clock, Box::new(SeededRng::from_u64(seed ^ 0x40b ^ 0x570e))).unwrap()
     }
 
-    /// A host store over `backend` and `root` (created on first use).
-    fn host_store(&self, backend: &MemoryBackend, root: &MemoryRoot, policy: HostPolicy, seed: u64) -> HostStore {
-        let store = Store::open_or_create(Box::new(backend.clone()), Box::new(root.clone()), StoreConfig::default(), &mut SeededRng::from_u64(seed)).unwrap();
-        HostStore::open(store, self.clock.clone(), policy, Box::new(SeededRng::from_u64(seed ^ 0x570e))).unwrap()
-    }
-
     /// Host `s` loses everything it stored (same key and address).
     pub fn wipe_host(&mut self, s: usize) {
-        let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
-        let store = self.host_store(&backend, &root, HostPolicy::default(), 990 + s as u64);
-        let hub = Hub::new(Arc::new(std::sync::Mutex::new(store)), Box::new(SeededRng::from_u64(995 + s as u64)));
-        let (address, skew) = (self.hosts[s].address.clone(), self.hosts[s].skew);
-        self.hosts[s] = Host { hub, backend, root, address, skew };
+        self.close_host(s);
+        let clock = self.hosts[s].clock.clone();
+        self.hosts[s] = self.host_on(s, (MemoryBackend::new(), MemoryRoot::new()), (MemoryBackend::new(), MemoryRoot::new()), clock, HostPolicy::default(), 990 + s as u64, true);
     }
 
     /// Restarts host `s` over its durable state: its connections are gone, its in-memory
@@ -565,16 +581,24 @@ impl Net {
 
     /// `restart_host` with another policy.
     pub fn restart_host_with(&mut self, s: usize, policy: HostPolicy) {
+        self.close_host(s);
+        let h = &self.hosts[s];
+        let (hub_disk, engine_disk, clock) = ((h.backend.clone(), h.root.clone()), h.engine_disk.clone(), h.clock.clone());
+        self.hosts[s] = self.host_on(s, hub_disk, engine_disk, clock, policy, 980 + s as u64, false);
+    }
+
+    /// Every node's connection to host `s` ends (the host going away).
+    fn close_host(&mut self, s: usize) {
         let mine: Vec<((usize, ConnId), u64)> = self.links.iter().filter(|(_, (x, _))| *x == s).map(|(k, (_, hc))| (*k, *hc)).collect();
         for ((n, c), _) in mine {
             self.links.remove(&(n, c));
             self.queue.push_back(Msg::Close(n, self.nodes[n].life, c));
         }
-        let (backend, root) = (self.hosts[s].backend.clone(), self.hosts[s].root.clone());
-        let store = self.host_store(&backend, &root, policy, 980 + s as u64);
-        let hub = Hub::new(Arc::new(std::sync::Mutex::new(store)), Box::new(SeededRng::from_u64(985 + s as u64)));
-        let (address, skew) = (self.hosts[s].address.clone(), self.hosts[s].skew);
-        self.hosts[s] = Host { hub, backend, root, address, skew };
+    }
+
+    /// Sets host `s`'s clock `ms` off the net's.
+    pub fn set_host_skew(&mut self, s: usize, ms: i64) {
+        self.hosts[s].clock.skew.store(ms, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Sets node `n`'s clock `ms` off the net's.
@@ -584,7 +608,7 @@ impl Net {
 
     /// Host `s`'s wall clock.
     pub fn now_at(&self, s: usize) -> u64 {
-        self.now().saturating_add_signed(self.hosts[s].skew)
+        self.hosts[s].clock.now_wall_ms().0
     }
 
     pub fn address(&self, s: usize) -> Address {
@@ -1265,6 +1289,8 @@ impl Net {
     }
 
     fn hub_out(&mut self, s: usize, out: Vec<HubOutput>) {
+        let mut ups = Vec::new();
+        let mut moved = false;
         for o in out {
             match o {
                 HubOutput::Send(hc, bytes) => {
@@ -1311,8 +1337,30 @@ impl Net {
                         self.queue.push_back(Msg::Close(n, self.nodes[n].life, c));
                     }
                 }
-                // no node above these hosts (honest nodes send them no node kinds)
-                HubOutput::Diagnostic(_) | HubOutput::Up(..) | HubOutput::Moved => {}
+                HubOutput::Up(hc, up) => ups.push((hc, up)),
+                HubOutput::Moved => moved = true,
+                HubOutput::Diagnostic(_) => {}
+            }
+        }
+        if moved || !ups.is_empty() {
+            self.host_feed(s, Event::Hub { ups });
+        }
+    }
+
+    /// Feeds an event to host `s`'s node sync and carries out its actions: what it hands its
+    /// hub; it dials nothing (no group, no peer).
+    pub fn host_feed(&mut self, s: usize, ev: Event) {
+        let Some(sync) = self.hosts[s].sync.as_mut() else { return };
+        let acts = sync.handle(ev);
+        for a in acts {
+            match a {
+                Action::Hub { conn, down } => {
+                    let now = self.now_at(s);
+                    let out = self.hosts[s].hub.down(now, vec![(conn, down)]);
+                    self.hub_out(s, out);
+                }
+                Action::Dial { .. } | Action::Send { .. } | Action::Close { .. } => panic!("host {s} dialed: {a:?}"),
+                _ => {}
             }
         }
     }
@@ -1426,6 +1474,9 @@ impl Net {
         for n in 0..self.nodes.len() {
             self.feed(n, Event::Local);
         }
+        for s in 0..self.hosts.len() {
+            self.host_feed(s, Event::Local);
+        }
         self.settle(200_000);
         for n in 0..self.nodes.len() {
             self.feed(n, Event::Local);
@@ -1454,6 +1505,9 @@ impl Net {
         }
         for n in 0..self.nodes.len() {
             self.feed(n, Event::Tick);
+        }
+        for s in 0..self.hosts.len() {
+            self.host_feed(s, Event::Tick);
         }
     }
 

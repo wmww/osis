@@ -7,7 +7,7 @@
 //! sleeps: time moves only by `advance`, so a run is a function of its seeds. The osis crate's
 //! tests drive it. It panics rather than return failure: a storm, a future that never resolves.
 
-use osis::internals::node::sync::{Action, ConnId, Event};
+use osis::internals::node::sync::{Action, ConnId, Event, SyncConfig, SyncEngine};
 use osis::internals::{Internals, ManualNet};
 use osis::{MemStore, Osis, Runtime, Address, Store, Time};
 use osis::internals::{ManualClock};
@@ -40,6 +40,8 @@ pub struct Host {
     pub node: Option<usize>,
     /// It runs (a node's stops with the node).
     pub up: bool,
+    /// The world's own host's node sync above its hub (a bare engine: no account, no group).
+    pub sync: Option<SyncEngine>,
 }
 
 enum Msg {
@@ -161,11 +163,14 @@ impl World {
         let b = 0x50u8.wrapping_add(i as u8);
         let key = [b; 32];
         let store = match host_store(&MemoryBackend::new(), 900 + i as u64).and_then(|st| HostStore::open(st, self.clock.clone(), HostPolicy::default(), Box::new(SeededRng::from_u64(900 + i as u64)))) {
-            Ok(s) => s,
+            Ok(s) => Arc::new(Mutex::new(s)),
             Err(e) => panic!("host store: {e:?}"),
         };
-        let hub = Hub::new(std::sync::Arc::new(std::sync::Mutex::new(store)), Box::new(SeededRng::from_u64(950 + i as u64)));
-        self.hosts.push(Host { hub, addr: format!("quic://host{i}:1#{}", osis_schema::osis_base::base64url::encode(&key)).parse().unwrap_or_else(|e| panic!("{e:?}")), node: None, up: true });
+        let c: Arc<dyn osis::internals::Clock> = self.clock.clone();
+        let engine = osis_node::Engine::create(Box::new(MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()), store.clone(), osis_node::Config::default(), c, Box::new(SeededRng::from_u64(920 + i as u64)));
+        let sync = engine.and_then(|e| SyncEngine::new(e, Box::new(SeededRng::from_u64(940 + i as u64)), SyncConfig { peers: false, ..SyncConfig::default() })).unwrap_or_else(|e| panic!("host engine: {e:?}"));
+        let hub = Hub::new(store, Box::new(SeededRng::from_u64(950 + i as u64)));
+        self.hosts.push(Host { hub, addr: format!("quic://host{i}:1#{}", osis_schema::osis_base::base64url::encode(&key)).parse().unwrap_or_else(|e| panic!("{e:?}")), node: None, up: true, sync: Some(sync) });
         i
     }
 
@@ -186,7 +191,7 @@ impl World {
         // the node's one store, beside its engine
         let Some(store) = self.dbs().get(d).and_then(|x| x.as_ref()).map(|db| db.sync_engine(|s| s.hub_store())) else { panic!("node {d} is not open") };
         let hub = Hub::new(store, Box::new(SeededRng::from_u64(750 + d as u64)));
-        self.hosts.push(Host { hub, addr: format!("quic://node{d}:1#{}", osis_schema::osis_base::base64url::encode(&[0; 32])).parse().unwrap_or_else(|e| panic!("{e:?}")), node: Some(d), up: true });
+        self.hosts.push(Host { hub, addr: format!("quic://node{d}:1#{}", osis_schema::osis_base::base64url::encode(&[0; 32])).parse().unwrap_or_else(|e| panic!("{e:?}")), node: Some(d), up: true, sync: None });
         self.hosts.len() - 1
     }
 
@@ -705,8 +710,30 @@ impl World {
         }
         // node sync above the hub of a node, by function call as the node's driver does
         let node = self.hosts.get(s).and_then(|h| h.node);
-        if let Some(d) = node.filter(|_| moved || !ups.is_empty()) {
-            self.with(d, |db| db.feed(Event::Hub { ups }));
+        if !moved && ups.is_empty() {
+            return;
+        }
+        match node {
+            Some(d) => self.with(d, |db| db.feed(Event::Hub { ups })),
+            None => self.host_feed(s, Event::Hub { ups }),
+        }
+    }
+
+    /// Feeds an event to the world's own host `s`'s node sync and carries out what it hands its
+    /// hub (it dials nothing: no group, no peer).
+    #[allow(clippy::panic)] // test harness: fail the test loudly
+    fn host_feed(&mut self, s: usize, ev: Event) {
+        let now = self.now();
+        let Some(acts) = self.hosts.get_mut(s).filter(|h| h.up).and_then(|h| h.sync.as_mut()).map(|sy| sy.handle(ev)) else { return };
+        for a in acts {
+            match a {
+                Action::Hub { conn, down } => {
+                    let out = self.hosts.get_mut(s).map(|h| h.hub.down(now, vec![(conn, down)])).unwrap_or_default();
+                    self.hub_out(s, out);
+                }
+                Action::Dial { .. } | Action::Send { .. } | Action::Close { .. } => panic!("host {s} dialed: {a:?}"),
+                _ => {}
+            }
         }
     }
 
@@ -830,6 +857,7 @@ impl World {
                 None => Vec::new(),
             };
             self.hub_out(s, out);
+            self.host_feed(s, Event::Tick);
         }
         self.tick_all();
     }

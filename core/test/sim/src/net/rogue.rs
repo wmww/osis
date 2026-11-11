@@ -105,7 +105,9 @@ impl NetSim {
 
     pub fn rogue_close(&mut self, r: &mut Rogue) {
         let out = self.hosts.get_mut(r.s).and_then(|x| x.hub.as_mut()).map(|h| h.closed(r.hc)).unwrap_or_default();
-        self.hub_outputs(r.s, out);
+        if let Err(e) = self.hub_out(r.s, out) {
+            self.note(format!("host {} hub: {e:?}", r.s));
+        }
         r.closed = true;
     }
 

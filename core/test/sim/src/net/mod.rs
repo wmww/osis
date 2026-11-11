@@ -212,6 +212,13 @@ impl NetNode {
 /// One host.
 pub struct NetHost {
     hub: Option<Hub>,
+    /// Node sync above its hub (a bare engine: no account, no group), while it runs.
+    sync: Option<SyncEngine>,
+    /// Its engine's disk (no faults: the engine of a node that reads nothing keeps a cache of the
+    /// hub's store, made again at load), and whether one was made there.
+    engine_disk: (MemoryBackend, MemoryRoot, bool),
+    /// When its node sync asked to be woken.
+    wake: Option<u64>,
     /// Its own store's disk: rows and key root, one fault plan.
     backend: MemoryBackend,
     root: MemoryRoot,
@@ -523,7 +530,7 @@ impl NetSim {
         let key = host_key(i);
         let faults = Faults::new();
         let (backend, root) = (MemoryBackend::with_faults(faults.clone()), MemoryRoot::with_faults(faults.clone()));
-        self.hosts.push(NetHost { hub: None, backend, root, faults, key, address: Address { url: format!("quic://host{i}:1"), key }, peers: Vec::new(), up: false, evil: None, sent: BTreeMap::new(), policy, slow: false });
+        self.hosts.push(NetHost { hub: None, sync: None, engine_disk: (MemoryBackend::new(), MemoryRoot::new(), false), wake: None, backend, root, faults, key, address: Address { url: format!("quic://host{i}:1"), key }, peers: Vec::new(), up: false, evil: None, sent: BTreeMap::new(), policy, slow: false });
         self.start_host(i)?;
         Ok(i)
     }
@@ -549,9 +556,44 @@ impl NetSim {
         let store = Store::open_or_create(b, r, StoreConfig::default(), &mut SeededRng::from_u64(seed)).map_err(|e| e.to_string());
         let store = store.and_then(|st| HostStore::open(st, clock, policy, Box::new(SeededRng::from_u64(seed ^ 0x570e))).map_err(|e| e.to_string()));
         let store = store.map_err(|e| self.fail(format!("host {s} open: {e}")))?;
+        let store = Arc::new(std::sync::Mutex::new(store));
         let host = self.host(s)?;
-        host.hub = Some(Hub::new(Arc::new(std::sync::Mutex::new(store)), Box::new(SeededRng::from_u64(seed ^ 0x5eed))));
+        let (eb, er, made) = host.engine_disk.clone();
+        let (b, r) = (Box::new(eb), Box::new(er));
+        let c: Arc<dyn Clock> = self.host_clock.clone();
+        let rng = Box::new(SeededRng::from_u64(seed ^ 0xe9));
+        let engine = if made { Engine::open(b, r, store.clone(), osis_node::Config::default(), c, rng) } else { Engine::create(b, r, store.clone(), osis_node::Config::default(), c, rng) };
+        let sync = engine.and_then(|e| SyncEngine::new(e, Box::new(SeededRng::from_u64(seed ^ 0x5c)), SyncConfig { peers: false, ..SyncConfig::default() }));
+        let sync = sync.map_err(|e| self.fail(format!("host {s} engine: {e}")))?;
+        let host = self.host(s)?;
+        host.engine_disk.2 = true;
+        host.sync = Some(sync);
+        host.wake = None;
+        host.hub = Some(Hub::new(store, Box::new(SeededRng::from_u64(seed ^ 0x5eed))));
         host.up = true;
+        Ok(())
+    }
+
+    /// Feeds an event to host `s`'s node sync and carries out what it hands its hub (it dials
+    /// nothing: no group, no peer).
+    fn host_feed(&mut self, s: usize, ev: Event) -> Res<()> {
+        let now = self.now();
+        let Some(acts) = self.hosts.get_mut(s).filter(|h| h.up).and_then(|h| h.sync.as_mut()).map(|sy| sy.handle(ev)) else { return Ok(()) };
+        for a in acts {
+            match a {
+                Action::Hub { conn, down } => {
+                    let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.down(now, vec![(conn, down)])).unwrap_or_default();
+                    self.hub_out(s, out)?;
+                }
+                Action::Wake { at } => {
+                    if let Some(h) = self.hosts.get_mut(s) {
+                        h.wake = Some(at);
+                    }
+                }
+                Action::Dial { .. } | Action::Send { .. } | Action::Close { .. } => return Err(self.fail(format!("host {s} dialed: {a:?}"))),
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -1021,7 +1063,9 @@ impl NetSim {
             }
             End::Hub(s, hc) => {
                 let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.closed(hc)).unwrap_or_default();
-                self.hub_outputs(s, out);
+                if let Err(e) = self.hub_out(s, out) {
+                    self.note(format!("host {s} hub: {e:?}"));
+                }
             }
             End::NodeHub(n, hc) => {
                 let out = self.nodes.get_mut(n).and_then(|x| x.hub.as_mut()).map(|h| h.closed(hc)).unwrap_or_default();
@@ -1061,17 +1105,24 @@ impl NetSim {
     }
 
     fn hub_out(&mut self, s: usize, out: Vec<HubOutput>) -> Res<()> {
-        self.hub_outputs(s, out);
+        let ups = self.hub_outputs(s, out);
         if self.hosts.get(s).is_some_and(|x| x.up && x.faults.crashed()) {
             self.report.host_crashes = self.report.host_crashes.saturating_add(1);
             self.note(format!("host {s} crashed mid-write"));
-            self.host_down(s)?;
+            return self.host_down(s);
         }
-        Ok(())
+        // node sync above the hub, by function call as the node's driver does
+        match ups {
+            Some(ups) => self.host_feed(s, Event::Hub { ups }),
+            None => Ok(()),
+        }
     }
 
-    /// Carries out a hub's outputs (a crash mid-write is `hub_out`'s to act on).
-    fn hub_outputs(&mut self, s: usize, out: Vec<HubOutput>) {
+    /// Carries out a hub's outputs (a crash mid-write is `hub_out`'s to act on); what goes up to
+    /// node sync, if anything.
+    fn hub_outputs(&mut self, s: usize, out: Vec<HubOutput>) -> Option<Vec<(u64, osis_host::Up)>> {
+        let mut ups = Vec::new();
+        let mut moved = false;
         for o in out {
             match o {
                 HubOutput::Send(hc, bytes) => {
@@ -1092,14 +1143,15 @@ impl NetSim {
                         self.notify_closed(to);
                     }
                 }
-                // no node above these hosts: node kinds go unanswered (honest nodes send them none)
-                HubOutput::Up(..) | HubOutput::Moved => {}
+                HubOutput::Up(hc, up) => ups.push((hc, up)),
+                HubOutput::Moved => moved = true,
                 HubOutput::Diagnostic(d) => {
                     self.report.diagnostics = self.report.diagnostics.saturating_add(1);
                     self.note(format!("host {s} diagnostic: {}", d.chars().take(160).collect::<String>()));
                 }
             }
         }
+        (moved || !ups.is_empty()).then_some(ups)
     }
 
     /// What an evil host sends instead of `bytes` on connection `hc`.
@@ -1230,6 +1282,7 @@ impl NetSim {
         let host = self.host(s)?;
         host.up = false;
         host.hub = None;
+        host.sync = None;
         Ok(())
     }
 
@@ -1247,6 +1300,7 @@ impl NetSim {
         host.faults = Faults::new();
         host.backend = MemoryBackend::with_faults(host.faults.clone());
         host.root = MemoryRoot::with_faults(host.faults.clone());
+        host.engine_disk = (MemoryBackend::new(), MemoryRoot::new(), false);
         self.tombs.remove(&s);
         self.note(format!("host {s} lost its data"));
         *self.eph.boots.entry(Party::S(s)).or_default() += 1;
@@ -1273,6 +1327,10 @@ impl NetSim {
             if due {
                 let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.tick(now)).unwrap_or_default();
                 self.hub_out(s, out)?;
+            }
+            if self.hosts.get(s).is_some_and(|x| x.up && x.wake.is_some_and(|w| w <= now)) {
+                self.host(s)?.wake = None;
+                self.host_feed(s, Event::Tick)?;
             }
         }
         self.redial()?;
