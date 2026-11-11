@@ -75,6 +75,11 @@ impl Stamps {
         }
     }
 
+    /// The container changed, but no key's value: moves only what read it whole.
+    pub fn moved(&mut self) {
+        lock(&self.0).ver += 1;
+    }
+
     /// The container changed in a way no key names.
     pub fn wrote_all(&mut self) {
         let mut t = lock(&self.0);
@@ -168,14 +173,12 @@ thread_local! {
 /// A frame of reads opened on this thread (`recorded`, `unrecorded`): reads while it is open
 /// land in it. Dropped, it cuts the stack back to the frames below it, so an unwind through it
 /// leaves no frame for a later read to land in.
-pub struct Unrecorded(usize);
+struct Open(usize);
 
-impl Unrecorded {
-    /// Opens a frame whose reads nothing keeps: the memo computing below it, if any, depends
-    /// on none of them (`unrecorded`).
-    pub fn start() -> Unrecorded {
+impl Open {
+    fn start() -> Open {
         RECORDING.fetch_add(1, Ordering::Relaxed);
-        Unrecorded(FRAMES.with(|fr| {
+        Open(FRAMES.with(|fr| {
             let mut fr = fr.borrow_mut();
             fr.push(Frame::default());
             fr.len() - 1
@@ -183,16 +186,28 @@ impl Unrecorded {
     }
 }
 
-impl Drop for Unrecorded {
+impl Drop for Open {
     fn drop(&mut self) {
         RECORDING.fetch_sub(1, Ordering::Relaxed);
         FRAMES.with(|fr| fr.borrow_mut().truncate(self.0));
     }
 }
 
+/// While held, what this thread reads goes to no memo computing (`unrecorded`). With no memo
+/// computing on this thread it opens nothing, so its reads cost what any read outside a memo does.
+pub struct Unrecorded {
+    _open: Option<Open>,
+}
+
+impl Unrecorded {
+    pub fn start() -> Unrecorded {
+        Unrecorded { _open: FRAMES.with(|fr| !fr.borrow().is_empty()).then(Open::start) }
+    }
+}
+
 /// Runs `f` and returns what it read.
 fn recorded<T>(f: impl FnOnce() -> T) -> (T, Arc<[Dep]>) {
-    let _open = Unrecorded::start();
+    let _open = Open::start();
     let out = f();
     let frame = FRAMES.with(|fr| fr.borrow_mut().pop()).unwrap_or_default();
     (out, frame.deps.into())
@@ -461,7 +476,7 @@ impl Clock {
                 self.stamps.wrote(&t, true);
             }
             // the time itself moved (`get`), and every `until` at or before `now` passed
-            self.stamps.wrote(&now, true);
+            self.stamps.moved();
         }
         self.now = now;
     }
@@ -597,6 +612,37 @@ mod tests {
         there.set(false);
         stamps.wrote(&1u8, false);
         assert!(!ask(&stamps), "the removal of a key read without a stamp");
+    }
+
+    // spec: none (internal). A clock read whole moves its reader at every move; read until `t`,
+    // only when it reaches `t` (not a millisecond before); a move back moves every reader. A
+    // forward move keeps no stamp of its own (a long run keeps no entry per time set).
+    #[test]
+    fn the_clock_moves_readers_whole_or_at_their_horizon() {
+        let mut clock = Clock::default();
+        clock.set(100);
+        let (whole, until, ever): (Memo<(), u64>, Memo<(), u64>, Memo<(), u64>) = (Memo::new("test whole"), Memo::new("test until"), Memo::new("test ever"));
+        let ask = |c: &Clock| (whole.get(&(), || c.get()), until.get(&(), || u64::from(c.until(Some(200)) >= 200)), ever.get(&(), || c.until(None).min(1)));
+        let ran = || {
+            let c = crate::costs::take();
+            let n = |name: &str| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
+            (n("test whole"), n("test until"), n("test ever"))
+        };
+        crate::costs::take();
+        assert_eq!(ask(&clock), (100, 0, 1));
+        clock.set(199);
+        assert_eq!(ask(&clock), (199, 0, 1), "before its horizon an `until` reader holds");
+        assert_eq!(ran(), (2, 1, 1));
+        clock.set(200);
+        assert_eq!(ask(&clock), (200, 1, 1), "at its horizon it moves");
+        assert_eq!(ran(), (1, 1, 0));
+        clock.set(150);
+        assert_eq!(ask(&clock), (150, 0, 1), "a move back moves every reader");
+        assert_eq!(ran(), (1, 1, 1));
+        for t in 151..1000 {
+            clock.set(t);
+        }
+        assert!(lock(&clock.stamps.0).keys.len() <= 1, "keys kept: {}", lock(&clock.stamps.0).keys.len());
     }
 
     // spec: none (internal). A memo read inside another passes on what it read; a container

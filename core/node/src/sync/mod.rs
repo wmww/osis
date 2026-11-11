@@ -915,11 +915,14 @@ impl SyncEngine {
         let now = self.now();
         self.engine.core.time.set(now);
         let run = |s: &mut Self| {
+            // the horizon before the run judges at the wall clock: one read after it would miss
+            // an `until` the clock passed during the run (a run that changed the timelines is
+            // not kept)
+            s.engine.core.time.until(s.engine.core.horizon(std::iter::once(*a)));
             let (done, still) = s.engine.ensure_rotated(a).map_err(Rotating::Failed)?;
             if !done.commits.is_empty() || !done.deliveries.is_empty() || done.drop_lost {
                 return Err(Rotating::Did(done, still));
             }
-            s.engine.core.time.until(s.engine.core.horizon(std::iter::once(*a)));
             Ok(still)
         };
         // a debug comparison rotates nothing: what a run would leave, rolled back

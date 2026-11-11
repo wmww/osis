@@ -1638,8 +1638,9 @@ fn reseal_candidates_follow_the_finalize_before_them_spec_permissions_3() {
 }
 
 // spec/permissions.md §2 (finalize), §3 (re-seal): a holder lacking a box is a re-seal candidate
-// until its grant's `until` passes, then a departure due and no candidate: the clock alone moves
-// the candidates (`reseal_candidates` is a memo, its time read up to the component's horizon).
+// until the clock reaches its grant's `until` (the edge counts as removed from then), then a
+// departure due and no candidate: the clock alone moves the candidates (`reseal_candidates` is a
+// memo, its time read up to the component's horizon), at that very millisecond.
 #[test]
 fn reseal_candidates_follow_the_clock_spec_permissions_2() {
     let mut lp = synced(1);
@@ -1649,7 +1650,9 @@ fn reseal_candidates_follow_the_clock_spec_permissions_2() {
     rotate_skipping(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[m]);
     let cands = |lp: &mut LocalPeer| lp.peers[0].engine.run(|tx| super::reseal_candidates(tx, &g)).unwrap();
     assert!(cands(&mut lp).iter().any(|c| c.0 == m), "M lacks its box at G's newest epoch");
-    lp.peers[0].clock.advance(2_000);
+    lp.peers[0].clock.set(WallMs(until.0 - 1));
+    assert!(cands(&mut lp).iter().any(|c| c.0 == m), "a millisecond before its `until`");
+    lp.peers[0].clock.set(until);
     let after = cands(&mut lp);
     assert!(after.iter().all(|c| c.0 != m), "M's grant ended: a departure due, no re-seal: {after:?}");
 }

@@ -814,20 +814,23 @@ impl Engine {
     }
 
     /// What `ensure_rotated` would leave blocked of `actor`, changing nothing: the roles, or
-    /// `None` when it would write or deliver something (that run rolled back; one with nothing
-    /// to do commits nothing, so it moves no stamp).
+    /// `None` when it would write or deliver something. Its transaction always rolls back, so
+    /// neither its run nor the transaction's own follow-ups commit anything.
     pub fn rotated_already(&mut self, actor: &Tid) -> Result<Option<BTreeSet<Role>>> {
-        const DUE: &str = "a rotation is due";
+        const ASKED: &str = "rotated_already rolls back";
         let a = *actor;
+        let mut out = None;
         let r = self.run(|tx| {
             let mut done = Done::default();
             let me = tx.core.writer()?;
             let still = ensure_rotated(tx, me, a, &mut done)?;
-            if done.commits.is_empty() && done.deliveries.is_empty() && !done.drop_lost { Ok(still) } else { Err(Error::Misuse(DUE)) }
+            if done.commits.is_empty() && done.deliveries.is_empty() && !done.drop_lost {
+                out = Some(still);
+            }
+            Err::<(), _>(Error::Misuse(ASKED))
         });
         match r {
-            Ok(still) => Ok(Some(still)),
-            Err(Error::Misuse(DUE)) => Ok(None),
+            Ok(()) | Err(Error::Misuse(ASKED)) => Ok(out),
             Err(e) => Err(e),
         }
     }
