@@ -164,7 +164,7 @@ fn serve_clients(store: &Path) -> (Running, String) {
     serve(store, &["--listen", "quic://127.0.0.1:0"])
 }
 
-// spec/sync.md §10 (client port), notes/client-port.md §3, §5, notes/cli.md: a thin CLI (`--node ADDR --client-secret FILE`, no store) over real QUIC with bearer Auth: the node's address from `serve --listen`; reads and writes within its grant, as its actor; not beyond it; a wrong secret is refused; `--remote` and `group source` route a group of another store there, and fail, not fall back, once it is gone
+// spec/sync.md §10 (client port), notes/client-port.md §3, §5, notes/cli.md: a thin CLI (`--node ADDR --client-secret FILE`, no store) over real QUIC with bearer Auth: the node's address from `serve --listen`; reads and writes within its grant, as its actor; not beyond it; a wrong secret is refused; `--connect` and `group source` make it the source of a group of another store, and fail, not fall back, once it is gone
 #[test]
 #[ignore]
 fn thin_cli_quic_localhost() {
@@ -205,21 +205,21 @@ fn thin_cli_quic_localhost() {
     assert_ne!(r.0, 0);
     assert!(r.2.contains("refused"), "{}", r.2);
     let new = addr.clone();
-    // another node's store routes a group it does not hold there; with the node gone it fails
+    // another node's store sources a group it does not hold there; with the node gone it fails
     let m = dir("thin-other");
     osis(&m, &["init"]);
-    let route = |args: &[&str]| {
+    let sourced = |args: &[&str]| {
         let mut a = vec!["--timeout", "5s", "--connect", new.as_str(), "--connect-secret", file];
         a.extend_from_slice(args);
         run(&m, &a)
     };
-    let r = route(&["group", "source", &g, &new]);
+    let r = sourced(&["group", "source", &g, &new]);
     assert_eq!(r.0, 0, "{}", r.2);
     assert_eq!(osis(&m, &["group", "source", &g]), new, "the source reads back");
-    let r = route(&["get", &t, "note:title.0"]);
+    let r = sourced(&["get", &t, "note:title.0"]);
     assert_eq!((r.0, r.1.trim()), (0, "\"from thin\""), "{}", r.2);
     drop(daemon);
-    let r = route(&["get", &g, "note:title.0"]);
+    let r = sourced(&["get", &g, "note:title.0"]);
     assert_ne!(r.0, 0, "not a local answer: {}", r.1);
     let r = run(&m, &["get", &g, "note:title.0"]);
     assert_ne!(r.0, 0, "without --connect too: {}", r.1);

@@ -687,6 +687,9 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             if blob.parts.len() != n {
                 return ingest_class(tx, blob, origin);
             }
+            if r == Reason::Parked {
+                tell_parked(tx, &id, blob.header.aspects.iter().map(|a| a.tid).collect(), Some(blob.header.author));
+            }
             pend(tx, &id, PendingKind::Pending, &blob.encode(), r.clone())?;
             keys::read_pending_boxes(tx, &blob, &id)?;
             let _ = others;
@@ -743,16 +746,22 @@ fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, bytes: &[u8], reason:
 }
 
 /// Keeps commit `id` parked (`bytes` as stored, spec/versioning.md §2), telling the app the first
-/// time it parks: an update may read it. `things`: what its header names, `peer`: its author, or
-/// who sent it when the header does not decode.
+/// time it parks (`tell_parked`).
 fn park(tx: &mut Tx<'_>, id: &CommitId, bytes: &[u8], things: Vec<Tid>, peer: Option<Tid>) -> Result<()> {
-    let first = tx.core.ix.pending.get(id) != Some(&Reason::Parked);
-    pend(tx, id, PendingKind::Parked, bytes, Reason::Parked)?;
-    if first {
-        let now = tx.now();
-        tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::Parked, tids: things, commit: Some(*id), peer, detail: "from a newer format".into() }, now);
+    tell_parked(tx, id, things, peer);
+    pend(tx, id, PendingKind::Parked, bytes, Reason::Parked)
+}
+
+/// Tells the app commit `id` waits for a newer format, unless it already waited for one: an update
+/// may read it. Called before `id` pends for `Reason::Parked`, whether alone or with other reasons.
+/// `things`: what its header names, `peer`: its author, or who sent it when the header does not
+/// decode.
+fn tell_parked(tx: &mut Tx<'_>, id: &CommitId, things: Vec<Tid>, peer: Option<Tid>) {
+    if tx.core.ix.pending.get(id) == Some(&Reason::Parked) {
+        return;
     }
-    Ok(())
+    let now = tx.now();
+    tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::Parked, tids: things, commit: Some(*id), peer, detail: "from a newer format".into() }, now);
 }
 
 /// Keeps the parts of applied commit `id` that wait alone pending under its ID. `applied`: its
@@ -920,6 +929,9 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             crate::retention::pending_drops(tx, id, &mut blob, &merged.header)?;
             if blob.parts.len() != n {
                 return late_parts(tx, id, blob);
+            }
+            if r == Reason::Parked {
+                tell_parked(tx, id, blob.header.aspects.iter().map(|a| a.tid).collect(), Some(blob.header.author));
             }
             pend(tx, id, PendingKind::Pending, &blob.encode(), r.clone())?;
             keys::read_pending_boxes(tx, &blob, id)?;
