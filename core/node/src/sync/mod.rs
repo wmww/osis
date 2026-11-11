@@ -236,6 +236,11 @@ pub struct SyncEngine {
     pub(crate) repair_state: BTreeMap<(Tid, Tid, osis_base::Ak), [u8; 16]>,
     /// Links whose finalization failed in this run (`finalize_links`): not tried again.
     pub(crate) links_failed: BTreeSet<Tid>,
+    /// This account's joined links to check for an end (`leave_ended_links`): the things whose
+    /// roles or roster changed since the last check (`None`: all), and the links whose leave
+    /// failed in this run (not tried again).
+    pub(crate) joined_touched: Option<BTreeSet<Tid>>,
+    pub(crate) joined_failed: BTreeSet<Tid>,
     /// Tied edges to remove (`untie_unplaced`): what changed since they were last derived
     /// (groups whose `group.0` changed, things whose `roles.0` or roster changed, or all), the
     /// (target, group) pairs whose placement is gone, and those whose removal failed in this run.
@@ -425,6 +430,8 @@ impl SyncEngine {
             suspects_due: false,
             repair_state: BTreeMap::new(),
             links_failed: BTreeSet::new(),
+            joined_touched: None,
+            joined_failed: BTreeSet::new(),
             tied: deliver::TiedWork { all: true, ..Default::default() },
             synced: Default::default(),
             synced_of: crate::engine::memo::Memo::new("labels synced"),
@@ -706,6 +713,10 @@ impl SyncEngine {
         // memory snapshots written here are changes the passes place (`memory_step` first)
         self.memory_step(out)?;
         self.engine_events()?;
+        // joined links that ended: this account leaves K (spec/permissions.md §7)
+        if self.leave_ended_links()? {
+            self.engine_events()?;
+        }
         self.retire_replaced();
         self.stamp_changes()?;
         if std::mem::take(&mut self.clients_moved) {

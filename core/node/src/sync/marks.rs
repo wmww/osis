@@ -55,6 +55,7 @@ impl SyncEngine {
                         scoped.extend(h.aspects.iter().map(|a| a.tid));
                     }
                     if role_commit {
+                        self.joined_touched(h.aspects.iter().map(|a| a.tid));
                         self.served_cache = None;
                         self.touched.keys = true;
                     }
@@ -100,6 +101,7 @@ impl SyncEngine {
                     if let Some(h) = h {
                         narrow.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
                         if h.kind.is_role() {
+                            self.joined_touched(h.aspects.iter().map(|a| a.tid));
                             scoped.extend(h.aspects.iter().map(|a| a.tid));
                             self.touched.keys = true;
                         }
@@ -110,6 +112,7 @@ impl SyncEngine {
                 crate::Event::Roster { thing } => {
                     changed = true;
                     scoped.insert(thing);
+                    self.joined_touched([thing]);
                     self.tied.targets.insert(thing);
                     self.served_cache = None;
                 }

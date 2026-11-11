@@ -509,6 +509,44 @@ impl SyncEngine {
     }
 }
 
+impl SyncEngine {
+    /// Notes things whose roles or roster changed, for `leave_ended_links`.
+    pub(crate) fn joined_touched(&mut self, things: impl IntoIterator<Item = Tid>) {
+        if let Some(t) = &mut self.joined_touched {
+            t.extend(things);
+        }
+    }
+
+    /// Leaves the links this account joined that have ended (`Engine::joined_links_ended`,
+    /// spec/permissions.md §7): a self-removal from K, as `leave` writes it, checked where roles
+    /// changed (everywhere at start). Whether it wrote any. A leave that failed is not tried
+    /// again in this run.
+    pub(crate) fn leave_ended_links(&mut self) -> Result<bool> {
+        let touched = self.joined_touched.replace(BTreeSet::new());
+        if touched.as_ref().is_some_and(BTreeSet::is_empty) {
+            return Ok(false);
+        }
+        let Some(me) = self.engine.account_tid() else { return Ok(false) };
+        let mut wrote = false;
+        for k in self.engine.joined_links_ended(touched.as_ref()) {
+            if self.joined_failed.contains(&k) {
+                continue;
+            }
+            match self.engine.demote(&k, &crate::flows::Demotion { holder: me, new: None, retain: None }) {
+                Ok(done) => {
+                    self.take_done_lost(done)?;
+                    wrote = true;
+                }
+                Err(e) => {
+                    self.joined_failed.insert(k);
+                    self.diag(format!("leaving ended link {k}: {e}"));
+                }
+            }
+        }
+        Ok(wrote)
+    }
+}
+
 /// The obligation to remove tied edges whose placement is gone (`SyncEngine::untie_unplaced`).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TiedWork {

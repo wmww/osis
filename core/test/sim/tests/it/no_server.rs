@@ -278,11 +278,9 @@ fn access_ended_stops_dialing((mut w, a, b, g): (World, Osis, Osis, Tid), end: i
     assert_eq!(dials_after_a_drop(&mut w, &a, &b), 0, "the sharer is not dialed again");
 }
 
-// spec/permissions.md §7 (the redeemer keeps dialing the sharer for K's labels and the target's,
-// nothing else): a joiner who left stops dialing the link's sharer. A host takes the removal
-// (with none it never counts as arrived: issues/leaving-not-confirmed-after-rotation.md).
-#[test]
-fn a_joiner_who_left_stops_dialing_the_sharer_spec_permissions_7() {
+/// Bob joined Alice's group by a direct link, both with a host: a host takes a leave of K (with
+/// none it never counts as arrived: issues/leaving-not-confirmed-after-rotation.md).
+fn hosted_joiner() -> (World, Osis, Osis, Tid) {
     let mut w = World::new();
     let h = w.add_host();
     let r = w.reach.add_relay(None);
@@ -292,7 +290,14 @@ fn a_joiner_who_left_stops_dialing_the_sharer_spec_permissions_7() {
     w.place(&b, &[], Uplink::Public, &[r]);
     w.run();
     let g = join(&mut w, &a, &b, Role::Read);
-    access_ended_stops_dialing((w, a, b, g), |_, b, g| b.leave(b.me(), g).unwrap());
+    (w, a, b, g)
+}
+
+// spec/permissions.md §7 (the redeemer keeps dialing the sharer for K's labels and the target's,
+// nothing else): a joiner who left stops dialing the link's sharer.
+#[test]
+fn a_joiner_who_left_stops_dialing_the_sharer_spec_permissions_7() {
+    access_ended_stops_dialing(hosted_joiner(), |_, b, g| b.leave(b.me(), g).unwrap());
 }
 
 // spec/permissions.md §7: a kicked joiner stops dialing the link's sharer.
@@ -301,12 +306,11 @@ fn a_kicked_joiner_stops_dialing_the_sharer_spec_permissions_7() {
     access_ended_stops_dialing(co_readers(1, Role::Read), |a, b, g| a.set_role(g, b.me(), None, SetRoleOpts::default()).unwrap());
 }
 
-// spec/permissions.md §7: a joiner whose link (K) was removed from the target stops dialing the
-// link's sharer. He still holds K, so he syncs K's label and dials whoever reads it.
+// spec/permissions.md §7 (a joiner leaves K once K's grant on the target ended): a joiner whose
+// link (K) was removed from the target stops dialing the link's sharer.
 #[test]
-#[ignore = "issues/link-joiner-keeps-k.md"]
-fn repro_a_joiner_whose_link_was_removed_stops_dialing_the_sharer_spec_permissions_7() {
-    access_ended_stops_dialing(co_readers(1, Role::Read), |a, _, g| {
+fn a_joiner_whose_link_was_removed_stops_dialing_the_sharer_spec_permissions_7() {
+    access_ended_stops_dialing(hosted_joiner(), |a, _, g| {
         let k = a.links().unwrap()[0].id.actor();
         a.set_role(g, k, None, SetRoleOpts::default()).unwrap();
     });

@@ -1995,3 +1995,66 @@ fn team_left_out_by_a_sealer_reading_none_of_it_reads_again_spec_crypto_4() {
     assert_eq!(x(&carol, after), Some(s("after")));
     assert_eq!(x(&dave, after), None);
 }
+
+/// Bob's two nodes joined Alice's group `g` by her link: (laptop, phone, g, K).
+fn joined_twice(w: &mut World) -> (Osis, Osis, Osis, Tid, Tid) {
+    let host = w.add_host();
+    let alice = w.account(1, &[host]);
+    let laptop = w.account(2, &[host]);
+    let join = osis::internals::pair(w.cfg(3, &[]), &laptop.pair_offer().unwrap()).unwrap();
+    let (_, reply) = laptop.pair_accept(join.request()).unwrap();
+    let phone = join.finish(&reply).unwrap();
+    let g = group(&alice);
+    let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
+    let k = alice.links_of(g).unwrap()[0].id.actor();
+    w.run();
+    assert_eq!(w.until(laptop.redeem(&link), 1000, 30).unwrap(), g);
+    w.run();
+    assert_eq!(phone.role_on(g).unwrap(), Some(Role::Read));
+    (alice, laptop, phone, g, k)
+}
+
+/// Bob's account no longer holds K, wherever it is read, and his nodes reported no failed leave.
+fn left_k(w: &mut World, alice: &Osis, bob: &[&Osis], g: Tid, k: Tid) {
+    let me = bob[0].me();
+    assert!(!alice.grants(k).unwrap().contains_key(&me), "the joiner left K");
+    for b in bob {
+        assert_eq!(b.role_on(g).unwrap(), None);
+        assert!(!b.grants(k).map(|x| x.contains_key(&me)).unwrap_or(false), "left K on every node");
+        let d = w.diagnostics(b);
+        assert!(d.iter().all(|d| !d.contains("leaving ended link")), "{d:?}");
+    }
+}
+
+// spec/permissions.md §7 (the link has ended: a joiner leaves K): K taken off the target, a
+// joiner leaves K, with two nodes seeing it at once and one of them offline when it happened
+#[test]
+fn a_joiner_leaves_k_once_k_left_the_target_spec_permissions_7() {
+    let mut w = World::new();
+    let (alice, laptop, phone, g, k) = joined_twice(&mut w);
+    w.set_online(&phone, false);
+    alice.set_role(g, k, None, SetRoleOpts::default()).unwrap();
+    w.run();
+    w.set_online(&phone, true);
+    w.advance(60_000);
+    left_k(&mut w, &alice, &[&laptop, &phone], g, k);
+}
+
+// spec/permissions.md §7 (the link has ended: K's grant on the target past `until`): K's grant
+// ending while every node of the joiner is offline: back online, the joiner leaves K
+#[test]
+fn a_joiner_leaves_k_once_ks_grant_expired_spec_permissions_7() {
+    let mut w = World::new();
+    let (alice, laptop, phone, g, k) = joined_twice(&mut w);
+    let hour = 3_600_000;
+    alice.grant(g, k, Role::Read, osis::GrantOpts { until: Some(osis::Time(w.now() + hour)), ..Default::default() }).unwrap();
+    w.run();
+    assert_eq!(laptop.role_on(g).unwrap(), Some(Role::Read));
+    w.set_online(&laptop, false);
+    w.set_online(&phone, false);
+    w.advance(2 * hour);
+    w.set_online(&laptop, true);
+    w.set_online(&phone, true);
+    w.advance(60_000);
+    left_k(&mut w, &alice, &[&laptop, &phone], g, k);
+}

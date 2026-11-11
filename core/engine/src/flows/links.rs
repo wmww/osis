@@ -18,6 +18,7 @@ use osis_crypto::{KeyActorKeys, Secret32};
 use osis_keys::{HolderKeys, Recipient, box_holder, roles_up_to};
 use osis_label::{Address, ShareLink};
 use osis_schema::core_types::{self as ct, Edge};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// The untyped aspect of the sharer-only thing that keeps a link's seed.
@@ -102,6 +103,36 @@ impl Engine {
     pub fn edge_gone(&mut self, thing: &Tid, holder: &Tid) -> bool {
         let ts = super::now_ts(&self.core);
         self.core.timelines.get(thing).is_some_and(|tl| tl.ended(thing, ts).contains_key(holder))
+    }
+
+    /// The links this account joined that have ended (spec/permissions.md §7), among those
+    /// whose K or a thing K holds is in `touched` (`None`: all): it holds a live edge on a K (a
+    /// thing whose record has the link flag) not by K's record (the sharer's admin), and the held
+    /// role history shows K's edge on a thing K was put on removed or past `until`. The caller
+    /// leaves each K. Idempotent across this account's nodes: once one's leave is here, its edge
+    /// is gone. O(touched things' holders), and the history of each link K's things.
+    pub fn joined_links_ended(&mut self, touched: Option<&BTreeSet<Tid>>) -> Vec<Tid> {
+        let Some(me) = self.core.me() else { return Vec::new() };
+        let ts = super::now_ts(&self.core);
+        let held = &self.core.ix.held;
+        let cands: BTreeSet<Tid> = match touched {
+            None => held.named_on(&me).copied().collect(),
+            Some(set) => set.iter().flat_map(|t| std::iter::once(*t).chain(held.holders_of(t).copied())).collect(),
+        };
+        let mut out = Vec::new();
+        for k in cands {
+            if !self.core.created(&k).is_some_and(|r| r.is_link()) || self.first_admin(&k) == Some(me) {
+                continue;
+            }
+            if !self.core.timelines.get(&k).is_some_and(|tl| tl.edges_at(None).get(&me, &k).is_some_and(|e| e.alive_at(Some(ts)))) {
+                continue;
+            }
+            let things: Vec<Tid> = self.core.ix.held.named_on(&k).copied().filter(|t| *t != k).collect();
+            if things.iter().any(|t| self.edge_gone(t, &k)) {
+                out.push(k);
+            }
+        }
+        out
     }
 
     /// Finalizes a link (spec/permissions.md §7): a sharer node's plain removal of L from K,
