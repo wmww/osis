@@ -106,12 +106,13 @@ pub enum Down {
 #[derive(Clone)]
 enum Conn {
     /// `buffered`: partial frame bytes after the last input; `hold`: what it holds against the
-    /// output bound (`ServingSession::holding`); `need`: the room its first waiting reply, push
-    /// or request needs (`ServingSession::need`); `queued`: in `queue`; `paused`: received
+    /// output bound (`ServingSession::holding`); `alone`: no output of its own
+    /// (`ServingSession::alone`); `need`: the room its first waiting reply, push or request needs
+    /// (`ServingSession::need`); `queued`: in `queue` since then; `paused`: received
     /// frames wait for room, so it takes no input (`Hub::waits`); `taken`: the last report
     /// (`Hub::sent`); `moved`: a report took more since the last check; `started`: its
     /// `Up::Start` went; `opened`: the last `Up::Opened`.
-    Served { c: Box<ServingSession>, remote: Remote, hello_by: Option<u64>, buffered: usize, hold: usize, need: Option<usize>, queued: bool, paused: bool, taken: u64, moved: bool, started: bool, opened: bool },
+    Served { c: Box<ServingSession>, remote: Remote, hello_by: Option<u64>, buffered: usize, hold: usize, alone: bool, need: Option<usize>, queued: Option<u64>, paused: bool, taken: u64, moved: bool, started: bool, opened: bool },
     Peer { r: Box<Replicator>, timer: Option<u64> },
 }
 
@@ -131,8 +132,9 @@ pub struct Hub {
     /// Served connections holding something or needing room: each one's share of the bound is
     /// the bound over their number.
     active: usize,
-    /// Connections holding nothing whose need waits for the node's room, in arrival order: the
-    /// first one's need is kept free of the others (it reserves it), so each gets its turn.
+    /// Connections with no output of their own whose need waits for the node's room, in arrival
+    /// order: the first one's need is kept free of the others (it reserves it), so each gets its
+    /// turn.
     queue: VecDeque<ConnId>,
     /// Connections that take input again since `take_resumed`.
     resumed: Vec<ConnId>,
@@ -228,7 +230,7 @@ impl Hub {
         self.now = now;
         let cfg = ServingConfig { static_key: key, challenge: self.challenge() };
         let hello_by = Some(now.saturating_add(self.store.policy().hello_ms));
-        self.conns.insert(id, Conn::Served { c: Box::new(ServingSession::new(cfg)), remote, hello_by, buffered: 0, hold: 0, need: None, queued: false, paused: false, taken: 0, moved: false, started: false, opened: false });
+        self.conns.insert(id, Conn::Served { c: Box::new(ServingSession::new(cfg)), remote, hello_by, buffered: 0, hold: 0, alone: true, need: None, queued: None, paused: false, taken: 0, moved: false, started: false, opened: false });
         self.batch(|h, out| h.serve(now, id, ServingInput::Start, out))
     }
 
@@ -383,7 +385,7 @@ impl Hub {
 
     fn need_of(&self, id: ConnId) -> usize {
         match self.conns.get(&id) {
-            Some(Conn::Served { need: Some(n), hold: 0, .. }) => *n,
+            Some(Conn::Served { need: Some(n), alone: true, .. }) => *n,
             _ => 0,
         }
     }
@@ -401,11 +403,11 @@ impl Hub {
         let mut kicks = self.queue.len();
         while let Some(&id) = self.queue.front() {
             let need = match self.conns.get(&id) {
-                Some(Conn::Served { need: Some(n), hold: 0, .. }) => *n,
+                Some(Conn::Served { need: Some(n), alone: true, .. }) => *n,
                 _ => {
                     self.queue.pop_front();
                     if let Some(Conn::Served { queued, .. }) = self.conns.get_mut(&id) {
-                        *queued = false;
+                        *queued = None;
                     }
                     continue;
                 }
@@ -420,7 +422,7 @@ impl Hub {
             kicks -= 1;
             self.queue.pop_front();
             if let Some(Conn::Served { queued, .. }) = self.conns.get_mut(&id) {
-                *queued = false;
+                *queued = None;
             }
             self.serve(self.now, id, ServingInput::Resume, out);
         }
@@ -435,20 +437,34 @@ impl Hub {
         }
     }
 
+    /// When the queue's first has waited half the stall time (`STALL_TIMEOUT_MS`, the most its
+    /// peer waits on a request): then the bound's room is taken for it from the biggest
+    /// holders, moving or not, before its peer's own stall rule closes it.
+    fn first_due(&self) -> Option<u64> {
+        let f = self.queue.front()?;
+        match self.conns.get(f) {
+            Some(Conn::Served { queued: Some(t), .. }) => Some(t.saturating_add(osis_proto::client::STALL_TIMEOUT_MS / 2)),
+            _ => None,
+        }
+    }
+
     /// While the queue's first waits for the bound's room, once per `PUSH_POLL_MS` (the period
     /// the driver reports takes in, so a reader's progress shows in each): closes, most held
     /// first until it fits, the connections holding output that the transport took none of
-    /// since the last check. Each peer that stops reading could otherwise hold its share for
-    /// good, and anyone who shares one group can open `max_connections` of them.
+    /// since the last check (each peer that stops reading could otherwise hold its share for
+    /// good, and anyone who shares one group can open `max_connections` of them); once it has
+    /// waited half the stall time (`first_due`: readers draining too slowly to make its room
+    /// in time), the connections holding the most, whatever they read.
     fn close_stuck(&mut self, now: u64, out: &mut Vec<HubOutput>) {
-        if self.check_at.is_none_or(|t| t > now) {
+        let Some(&first) = self.queue.front() else { return };
+        let overdue = self.first_due().is_some_and(|t| t <= now);
+        if !overdue && self.check_at.is_none_or(|t| t > now) {
             return;
         }
-        let Some(&first) = self.queue.front() else { return };
         let need = self.need_of(first);
         let max = self.store.policy().max_buffered_bytes;
         let mut stuck: Vec<(usize, ConnId)> = self.conns.iter().filter_map(|(id, c)| match c {
-            Conn::Served { hold, moved: false, .. } if *hold > 0 => Some((*hold, *id)),
+            Conn::Served { hold, moved, .. } if *hold > 0 && *id != first && (overdue || !*moved) => Some((*hold, *id)),
             _ => None,
         }).collect();
         stuck.sort_unstable();
@@ -456,7 +472,7 @@ impl Hub {
             let Some((_, id)) = stuck.pop() else { break };
             self.remove(id);
             out.push(HubOutput::Close(id));
-            out.push(HubOutput::Diagnostic(format!("connection {id}: closed, output not moving while others wait for room")));
+            out.push(HubOutput::Diagnostic(format!("connection {id}: closed, output {} while others wait for room", if overdue { "draining too slowly" } else { "not moving" })));
         }
         self.check_at = Some(now.saturating_add(osis_proto::serving::PUSH_POLL_MS));
         self.unmove();
@@ -532,7 +548,7 @@ impl Hub {
     pub fn next_due(&self, now: u64) -> Option<u64> {
         let sweep = if self.sweep_more { Some(now) } else { self.store.next_due().ok().flatten() }.map(|t| t.max(self.sweep_hold));
         // bytes not yet reported taken: the driver reports at the next tick (shares count them)
-        let unread = (self.hold > 0).then(|| now.saturating_add(osis_proto::serving::PUSH_POLL_MS)).into_iter().chain(self.check_at);
+        let unread = (self.hold > 0).then(|| now.saturating_add(osis_proto::serving::PUSH_POLL_MS)).into_iter().chain(self.check_at).chain(self.first_due());
         let conns = self.conns.values().filter_map(|c| match c {
             Conn::Served { c, hello_by, .. } => [c.held().then(|| now.saturating_add(osis_proto::serving::PUSH_POLL_MS)), *hello_by, c.stall_at()].into_iter().flatten().min(),
             Conn::Peer { r, timer } => [*timer, r.next_due(now)].into_iter().flatten().min(),
@@ -542,7 +558,7 @@ impl Hub {
 
     fn serve(&mut self, now: u64, id: ConnId, input: ServingInput, out: &mut Vec<HubOutput>) {
         let (share, slack) = (self.share(), self.slack(id));
-        let Some(Conn::Served { c, remote, hello_by, buffered, hold, need, queued, paused, started, opened, .. }) = self.conns.get_mut(&id) else { return };
+        let Some(Conn::Served { c, remote, hello_by, buffered, hold, alone, need, queued, paused, started, opened, .. }) = self.conns.get_mut(&id) else { return };
         c.set_room(share, slack);
         // whose entries these are (echo suppression): a keyed peer's
         self.store.set_origin(match &remote.peer {
@@ -569,11 +585,12 @@ impl Hub {
         let now_hold = c.holding(&[]);
         self.hold = self.hold.saturating_sub(*hold).saturating_add(now_hold);
         *hold = now_hold;
+        *alone = c.alone();
         *need = c.need();
         let is_active = *hold > 0 || need.is_some();
         self.active = (self.active + usize::from(is_active)).saturating_sub(usize::from(was_active));
-        if need.is_some() && *hold == 0 && !*queued {
-            *queued = true;
+        if need.is_some() && *alone && queued.is_none() {
+            *queued = Some(now);
             self.queue.push_back(id);
         }
         let now_paused = !c.takes_input();

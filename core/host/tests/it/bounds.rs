@@ -257,6 +257,64 @@ fn a_big_reply_waits_its_turn() {
     assert_eq!(hub.connections(), 2);
 }
 
+// spec/sync.md §10 (Served connections): push room granted is reserved until the pushes come:
+// room granted to every connection at once, each spent whole, stays within the bound
+#[test]
+fn granted_room_stays_within_the_bound() {
+    let mut w = World::new();
+    let mib = 1 << 20;
+    let (h, _) = unread_hub(&mut w, 64 * mib, 10);
+    let now = w.now();
+    let hub = &mut w.hubs[h];
+    let out = hub.down(now, (1..=10u64).map(|id| (id, osis_host::Down::WantRoom)).collect());
+    let grants: Vec<(u64, usize)> = out.iter().filter_map(|o| if let HubOutput::Up(id, osis_host::Up::Room { budget }) = o { Some((*id, *budget)) } else { None }).collect();
+    assert!(!grants.is_empty());
+    assert!(hub.held() <= 64 * mib, "granted {}", hub.held());
+    for (id, budget) in grants {
+        hub.down(now, vec![(id, push(id as u8, budget.saturating_sub(1024)))]);
+        assert!(hub.held() <= 64 * mib, "held {}", hub.held());
+    }
+}
+
+// spec/sync.md §6 (Stall), §10 (Served connections): a request waiting for the bound's room
+// while every holder drains slowly runs before its peer's stall time: once it has waited half of
+// it, the biggest holders are closed, moving or not, until it fits; not before
+#[test]
+fn a_waiting_request_runs_within_half_the_stall_time() {
+    let mut w = World::new();
+    let mib = 1 << 20;
+    let (h, mut wr) = unread_hub(&mut w, 4 * mib, 5);
+    let mut now = w.now();
+    let hub = &mut w.hubs[h];
+    let mut taken: Vec<u64> = (0..=5).map(|id| wr.of(id)).collect();
+    for id in 1..=4u64 {
+        wr.add(&hub.down(now, vec![(id, push(id as u8, mib - 4096))]));
+    }
+    // 5 asks for more than the four drain in half the stall time at 16 KiB a period each
+    let out = hub.input(now, 5, asking(50, 3 * mib + 4 * mib / 5));
+    assert!(answers(&out, 5).is_empty() && hub.waits(5));
+    let periods = osis_proto::client::STALL_TIMEOUT_MS / 2 / osis_proto::serving::PUSH_POLL_MS;
+    let mut ran = None;
+    for p in 1..=periods + 1 {
+        let reports: Vec<(u64, u64)> = (1..=4u64).map(|id| {
+            taken[id as usize] += 16 << 10;
+            (id, taken[id as usize])
+        }).collect();
+        now += osis_proto::serving::PUSH_POLL_MS;
+        let mut out = hub.sent(now, &reports);
+        out.extend(hub.tick(now));
+        let gone = closed(&out);
+        if answers(&out, 5) == vec![50] {
+            ran = Some(p);
+            assert!(!gone.is_empty(), "made room by closing");
+            break;
+        }
+        assert!(gone.is_empty(), "period {p}: closed before half the stall time: {gone:?}");
+        assert!(hub.held() <= 4 * mib);
+    }
+    assert_eq!(ran, Some(periods), "runs at half the stall time");
+}
+
 // spec/sync.md §10 (Served connections): shares follow the active connections: one over a
 // smaller share, after another becomes active, just waits (nobody is closed) and is answered
 // as it drains

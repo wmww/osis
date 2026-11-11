@@ -80,6 +80,7 @@ pub enum ServingInput {
     Reply { id: Id, reply: Result<crate::api::Outcome, Code> },
     /// Notify pushes, sent in order (as many as the last `ServingOutput::Room` allowed); one for
     /// a subscription no longer live is dropped, one above its `max_reply` goes as `Lapsed`.
+    /// Each ends the grant: none gives it back.
     Notify(Vec<(Id, crate::api::Payload)>),
     /// A shared-set or stream message to send: a request within the request window (spec/sync.md
     /// §6), sent once it fits; an answer to a request handed up frees its charge; a relay-only
@@ -255,6 +256,9 @@ pub struct ServingSession {
     /// What the last push or own request held back for room needs (`need`).
     push_need: usize,
     flush_need: Option<usize>,
+    /// The push room last granted (`ServingOutput::Room`), reserved until the upper layer's
+    /// pushes (or an empty `Notify`, giving it back) arrive.
+    granted: usize,
     /// The node's own requests to the dialer (`ServingInput::Peer`), within the request window.
     requests: crate::client::Window,
 }
@@ -332,6 +336,7 @@ impl ServingSession {
             pending: VecDeque::new(),
             push_need: 0,
             flush_need: None,
+            granted: 0,
             requests: crate::client::Window::default(),
         }
     }
@@ -348,10 +353,21 @@ impl ServingSession {
         self.base = self.holding(&[]);
     }
 
-    /// What the connection holds against the node's bound: bytes written and not taken, and the
+    /// What the connection holds against the node's bound: its own output (`own`), and the
     /// reply allowances of requests handed up and not answered.
     pub fn holding(&self, out: &[ServingOutput]) -> usize {
-        self.unsent(out).saturating_add(self.asked_bytes)
+        self.own(out).saturating_add(self.asked_bytes)
+    }
+
+    /// Its output: bytes written and not taken, and push room granted and not used.
+    fn own(&self, out: &[ServingOutput]) -> usize {
+        self.unsent(out).saturating_add(self.granted)
+    }
+
+    /// Whether it has no output of its own (`holding` aside from reservations for replies to
+    /// come): then one reply or push may go past its share, within what the node has left.
+    pub fn alone(&self) -> bool {
+        self.own(&[]) == 0
     }
 
     /// Whether input may come: no received frame waits for room.
@@ -373,11 +389,10 @@ impl ServingSession {
         self.slack.saturating_sub(self.holding(out).saturating_sub(self.base))
     }
 
-    /// Whether `size` more bytes of output fit the room: the share (or none held) and what is
-    /// left.
+    /// Whether `size` more bytes of output fit the room: the share (or no output of its own:
+    /// a reservation for a reply to come is not held against what answers it) and what is left.
     fn fits(&self, out: &[ServingOutput], size: usize) -> bool {
-        let h = self.holding(out);
-        (h == 0 || h.saturating_add(size) <= self.share) && size <= self.left(out)
+        (self.own(out) == 0 || self.holding(out).saturating_add(size) <= self.share) && size <= self.left(out)
     }
 
     /// Whether an Auth was answered by a Reply (notes/client-port.md §3): the session counts as
@@ -463,8 +478,10 @@ impl ServingSession {
             0 => REPLY_BUDGET,
             b => REPLY_BUDGET.saturating_sub(b),
         };
-        let h = self.holding(out);
-        let share = if h == 0 { usize::MAX } else { self.share.saturating_sub(h) };
+        // the share against the connection's own output only: a request waiting for these
+        // pushes (a client-port settle) does not hold back the room that answers it
+        let o = self.own(out);
+        let share = if o == 0 { usize::MAX } else { self.share.saturating_sub(o) };
         Some(r.min(share).min(self.left(out))).filter(|r| *r >= crate::client::SMALL_REPLY)
     }
 
@@ -551,6 +568,10 @@ impl ServingSession {
             // a relay-only push (no cursor) without room is dropped, as the session's own relays
             ServingInput::Peer(m) if matches!(&*m, Message::Stream(s) if s.cursor.is_none() && self.no_room(out, s.events.iter().map(|(_, e)| event_size(e)).sum())) => {}
             ServingInput::Peer(m) => {
+                // the stream's push spends the room granted
+                if matches!(&*m, Message::Stream(s) if s.cursor.is_some()) {
+                    self.granted = 0;
+                }
                 if crate::msg::is_reply_kind(m.kind())
                     && let Some(c) = self.node_asked.remove(&m.id())
                 {
@@ -621,11 +642,15 @@ impl ServingSession {
                 self.resume(store, out);
             }
             ServingInput::WantRoom => match self.room(out) {
-                Some(budget) if self.owed.is_empty() => out.push(ServingOutput::Room { budget }),
+                Some(budget) if self.owed.is_empty() => self.grant(budget, out),
                 _ => self.room_wanted = true,
             },
             ServingInput::Reply { id, reply } => self.api_reply(id, reply, out),
-            ServingInput::Notify(notes) => self.notify(notes, out),
+            ServingInput::Notify(notes) => {
+                // spends the room granted, or gives it back (none)
+                self.granted = 0;
+                self.notify(notes, out)
+            }
         }
     }
 
@@ -645,8 +670,14 @@ impl ServingSession {
             && let Some(budget) = self.room(out)
         {
             self.room_wanted = false;
-            out.push(ServingOutput::Room { budget });
+            self.grant(budget, out);
         }
+    }
+
+    /// Grants the upper layer push room, reserved until its pushes or an empty `Notify` come.
+    fn grant(&mut self, budget: usize, out: &mut Vec<ServingOutput>) {
+        self.granted = budget;
+        out.push(ServingOutput::Room { budget });
     }
 
     /// Notify pushes, in order, within the room last granted.
@@ -1593,6 +1624,36 @@ mod tests {
         let out = c.handle(0, &mut store, ServingInput::Taken(taken));
         assert_eq!(ids(&out), vec![107]);
         assert!(c.takes_input() && c.need().is_none());
+    }
+
+    // spec/sync.md §10 (Served connections): push room granted is reserved against the room
+    // until the pushes it was for (or an empty Notify, giving it back) arrive; a reservation for
+    // a reply to come (a request handed up, as a settle waiting for its Notifies) does not hold
+    // back the room that lets those pushes go, even under a share smaller than both
+    #[test]
+    fn granted_room_is_reserved_spec_sync_10() {
+        let mut store = MemoryLabelStore::new([1; 32]);
+        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        let taken = c.written;
+        c.handle(0, &mut store, ServingInput::Taken(taken));
+        let small = crate::client::SMALL_REPLY;
+        let share = small + small / 2;
+        c.set_room(share, 1 << 20);
+        // a request handed up: its reply allowance is held for it
+        let fetch = Message::Fetch { id: crate::msg::NODE_IDS | 1, label: LabelId([9; 16]), max_reply: small as u64, ids: vec![BlobId([1; 32])] };
+        let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&fetch.encode())));
+        assert_eq!(out, vec![ServingOutput::Peer(Box::new(fetch))]);
+        let asked = c.holding(&[]);
+        assert!(asked > small && asked + small > share);
+        // room for the pushes it waits on all the same, reserved once granted
+        c.set_room(share, 1 << 20);
+        let out = c.handle(0, &mut store, ServingInput::WantRoom);
+        let budget = out.iter().find_map(|o| if let ServingOutput::Room { budget } = o { Some(*budget) } else { None }).expect("room granted");
+        assert_eq!(c.holding(&[]), asked + budget);
+        // given back unused
+        c.handle(0, &mut store, ServingInput::Notify(Vec::new()));
+        assert_eq!(c.holding(&[]), asked);
     }
 
     // spec/sync.md §6 (Requester, Closing): the node's own requests to the dialer, unwritten

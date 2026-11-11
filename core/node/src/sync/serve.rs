@@ -94,7 +94,8 @@ enum Pusher {
 
 /// A served connection's push room (`Down::WantRoom`, `Up::Room`), shared by its pushers one
 /// grant at a time, in the order they asked: the holder of a grant gives it back when its push
-/// went (the stream's page, the port's Notifies) or it had none, and the next asks again.
+/// went (the stream's page, the port's Notifies) or it had none (an empty `Down::Notify`: the
+/// session reserves a grant against its output bound until then), and the next asks again.
 #[derive(Clone, Default)]
 struct Room {
     waiting: VecDeque<Pusher>,
@@ -316,11 +317,9 @@ impl SyncEngine {
     }
 
     /// The client port's Notifies after an `Action::Room` (none: it had nothing to send): sent
-    /// down, the room given back.
+    /// down, the room given back (an empty `Notify` gives the session's reservation back too).
     pub(super) fn port_notify(&mut self, conn: ConnId, notes: Vec<(osis_proto::msg::Id, osis_proto::Payload)>, out: &mut Vec<Action>) {
-        if !notes.is_empty() {
-            self.hub_down(conn, Down::Notify(notes), out);
-        }
+        self.hub_down(conn, Down::Notify(notes), out);
         self.release_room(conn, Pusher::Port, out);
     }
 
@@ -351,6 +350,8 @@ impl SyncEngine {
     pub(super) fn stream_room_unused(&mut self, pushed: &BTreeSet<ConnId>, out: &mut Vec<Action>) {
         let holding: Vec<ConnId> = self.served.iter().filter(|(c, s)| matches!(s.room.held, Some((Pusher::Stream, _))) && !pushed.contains(c)).map(|(c, _)| *c).collect();
         for c in holding {
+            // the session's reservation of it too
+            self.hub_down(c, Down::Notify(Vec::new()), out);
             self.release_room(c, Pusher::Stream, out);
         }
     }
