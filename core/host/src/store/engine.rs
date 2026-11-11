@@ -68,6 +68,10 @@ impl CipherHost for HostStore {
         self.db.get_mut().apply(w)
     }
 
+    fn finish(&mut self, op: &[u8]) -> Result<(), Error> {
+        self.finish_removal(op).map_err(store_err)
+    }
+
     fn local(&mut self, f: &mut dyn FnMut(&mut osis_store::Transaction<'_>) -> Result<(), Error>) -> Result<(), Error> {
         self.db.get_mut().run(|t, _| f(t))
     }

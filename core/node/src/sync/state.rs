@@ -469,6 +469,9 @@ pub struct State {
     logged_heads: BTreeMap<LabelId, [u8; 32]>,
     /// A hint came or went (`SyncEngine::stamp_changes`).
     pub hints_moved: bool,
+    /// Entries derived again from the hub's rows at load with their bytes held (`reconcile`):
+    /// opened by node sync's start (`SyncEngine::new`).
+    pub rederived: Vec<(LabelId, BlobId)>,
 }
 
 fn key(prefix: &[u8], parts: &[&[u8]]) -> Vec<u8> {
@@ -788,7 +791,7 @@ impl State {
     /// and row once.
     fn reconcile(&mut self, engine: &mut Engine) -> Result<()> {
         let mine: Vec<(LabelId, BlobId, [u8; WRAP_LEN], Option<Signature>)> = self.entries.iter().filter(|(_, e)| !e.memory).map(|((l, b), e)| (*l, *b, e.wrap, e.stamp)).collect();
-        let (gone, differ, stray) = engine.run(|tx| {
+        let (gone, differ, stray, held) = engine.run(|tx| {
             let (mut gone, mut differ, mut stray) = (Vec::new(), Vec::new(), Vec::new());
             for (l, b, wrap, stamp) in &mine {
                 if !tx.blobs.held(b)? {
@@ -807,7 +810,7 @@ impl State {
                     let mut from = None;
                     loop {
                         let rows = hub(tx)?.reader_rows(l, from.as_ref(), 1024).map_err(hub_err)?;
-                        stray.extend(rows.iter().filter(|(b, ..)| !self.entries.contains_key(&(*l, *b))).map(|(b, w, st)| (*l, *b, *w, *st)));
+                        stray.extend(rows.iter().filter(|(b, _)| !self.entries.contains_key(&(*l, *b))).map(|(b, (w, st))| (*l, *b, *w, *st)));
                         match rows.last() {
                             Some((b, ..)) if rows.len() == 1024 => from = Some(*b),
                             _ => break,
@@ -819,8 +822,19 @@ impl State {
                     _ => break,
                 }
             }
-            Ok((gone, differ, stray))
+            // a stray row's bytes are here (its row keeps them): the engine holds them again,
+            // as if they arrived (an uncommitted hold was settled away at open)
+            let mut held = Vec::new();
+            for (l, b, ..) in &stray {
+                if let Some(bytes) = tx.blobs.get(b)? {
+                    tx.store_blobs(vec![(*b, bytes)])?;
+                    held.push((*l, *b));
+                }
+            }
+            Ok((gone, differ, stray, held))
         })?;
+        engine.blobs_stored();
+        self.rederived = held;
         for (l, b, wrap, stamp) in stray {
             self.set_entry_quiet(l, b, Entry { wrap, stamp, cert: false, salt: None, kind: Kind::Unknown, memory: false });
         }
@@ -1041,10 +1055,18 @@ impl State {
                     }
                 }
             }
+            // add before, remove after (`osis_engine`'s `Cipher`): a row of an entry gone here
+            // goes once the engine's store committed
+            let mut gone = BTreeSet::new();
             for e in &log {
                 match *e {
                     LogWrite::Added(..) => {}
-                    LogWrite::Deleted(l, b, tomb) => drop(hub(tx)?.reader_remove(&l, &b, tomb).map_err(hub_err)?),
+                    LogWrite::Deleted(l, b, tomb) => {
+                        let here = self.entries.get(&(l, b)).is_some_and(|e| !e.memory);
+                        if !here && gone.insert((l, b)) && hub(tx)?.reader_entry(&l, &b).map_err(hub_err)?.is_some() {
+                            tx.blobs.defer(osis_host::HostStore::removal(&l, &b, tomb));
+                        }
+                    }
                     LogWrite::Head(l, head) => drop(hub(tx)?.node_log(|t| t.log_head(l, &head))?),
                 }
             }
@@ -1842,7 +1864,7 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
     }
     // no deletion events: this node stopped holding them, nobody deleted them
     for l in labels {
-        hub(tx)?.reader_forget(l).map_err(hub_err)?;
+        tx.blobs.defer(osis_host::HostStore::forgetting(l));
         tx.txn.changed_forget(l)?;
     }
     for t in things {

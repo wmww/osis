@@ -12,6 +12,12 @@ use osis_proto::msg::WRAP_LEN;
 use osis_proto::{EntryMeta, LogRecord, StoreError};
 use std::collections::BTreeSet;
 
+/// An entry row as node sync wrote it: wrap and stamp.
+pub type ReaderRow = ([u8; WRAP_LEN], Option<Signature>);
+
+const REMOVE: u8 = 0;
+const FORGET: u8 = 1;
+
 impl HostStore {
     /// The sync IDs node sync reads.
     pub fn set_read(&mut self, labels: BTreeSet<LabelId>) {
@@ -100,9 +106,9 @@ impl HostStore {
     }
 
     /// Node sync's entry rows of `label` after `after`, at most `max`: blob, wrap, stamp.
-    pub fn reader_rows(&self, label: &LabelId, after: Option<&BlobId>, max: usize) -> Result<Vec<(BlobId, [u8; WRAP_LEN], Option<Signature>)>, StoreError> {
+    pub fn reader_rows(&self, label: &LabelId, after: Option<&BlobId>, max: usize) -> Result<Vec<(BlobId, ReaderRow)>, StoreError> {
         use osis_proto::LabelStore;
-        Ok(self.live_by_id(label, after, max)?.into_iter().map(|(b, m)| (b, m.wrap, m.stamp)).collect())
+        Ok(self.live_by_id(label, after, max)?.into_iter().map(|(b, m)| (b, (m.wrap, m.stamp))).collect())
     }
 
     /// Node sync forgot `label` (the group is gone here): every row of it, shredded, its node log
@@ -115,8 +121,32 @@ impl HostStore {
         self.drop_label(label)
     }
 
+    /// A removal of node sync's entry row, applied after the engine's store commits
+    /// (`osis_engine`'s `Cipher::defer`, `finish`): `reader_remove`.
+    pub fn removal(label: &LabelId, blob: &BlobId, tombstone: bool) -> Vec<u8> {
+        [&[REMOVE][..], &label.0, &blob.0, &[u8::from(tombstone)]].concat()
+    }
+
+    /// Node sync forgetting `label`, applied after the engine's store commits: `reader_forget`.
+    pub fn forgetting(label: &LabelId) -> Vec<u8> {
+        [&[FORGET][..], &label.0].concat()
+    }
+
+    /// Applies a removal made by `removal` or `forgetting`.
+    pub(super) fn finish_removal(&mut self, op: &[u8]) -> Result<(), StoreError> {
+        match op.split_first() {
+            Some((&REMOVE, rest)) if rest.len() == 16 + 32 + 1 => {
+                let l = LabelId(read_arr(rest, 0)?);
+                let b = BlobId(read_arr(rest, 16)?);
+                self.reader_remove(&l, &b, rest.get(48) == Some(&1)).map(drop)
+            }
+            Some((&FORGET, rest)) if rest.len() == 16 => self.reader_forget(&LabelId(read_arr(rest, 0)?)),
+            _ => Err(corrupt("deferred removal")),
+        }
+    }
+
     /// Node sync's entry `blob` of `label` as this store holds it: wrap and stamp.
-    pub fn reader_entry(&self, label: &LabelId, blob: &BlobId) -> Result<Option<([u8; WRAP_LEN], Option<Signature>)>, StoreError> {
+    pub fn reader_entry(&self, label: &LabelId, blob: &BlobId) -> Result<Option<ReaderRow>, StoreError> {
         Ok(self.row(label, blob)?.map(|r| (r.meta.wrap, r.meta.stamp)))
     }
 

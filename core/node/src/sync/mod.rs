@@ -496,6 +496,14 @@ impl SyncEngine {
         .and_then(|mut s| {
             // a forgetting a crash interrupted before its inbox check
             s.forget_inbox()?;
+            // entries the hub's store holds that the engine's store never committed
+            let mut rederived: BTreeMap<LabelId, Vec<osis_base::BlobId>> = BTreeMap::new();
+            for (l, b) in std::mem::take(&mut s.state.rederived) {
+                rederived.entry(l).or_default().push(b);
+            }
+            for (l, bs) in rederived {
+                s.open_entries(None, l, &bs)?;
+            }
             s.reopen_undropped(None)?;
             s.reopen_all_awaiting();
             // the keys and ciphertexts of bodies the engine dropped before a crash cut this layer

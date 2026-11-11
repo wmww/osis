@@ -622,10 +622,12 @@ impl SyncEngine {
         }
         let named: Vec<(LabelId, BlobId)> = ids.iter().flat_map(|b| self.state.labels_of(b).into_iter().map(move |l| (l, *b))).collect();
         self.engine.run(|tx| {
-            // the entry rows of bytes no longer held go first (the hub's store holds rows with
-            // bytes only)
+            // the entry rows of bytes no longer held go with them (the hub's store holds rows
+            // with bytes only), once the engine's store committed
             for (l, b) in &named {
-                super::state::hub(tx)?.reader_remove(l, b, false).map_err(super::state::hub_err)?;
+                if super::state::hub(tx)?.reader_entry(l, b).map_err(super::state::hub_err)?.is_some() {
+                    tx.blobs.defer(osis_host::HostStore::removal(l, b, false));
+                }
             }
             let memory = tx.txn.is_memory();
             for b in ids {

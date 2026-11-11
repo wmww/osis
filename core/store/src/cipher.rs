@@ -25,8 +25,18 @@ pub trait Ciphertext: Send + Sync + Any {
     fn test_copy(self: Arc<Self>, clock: Arc<dyn osis_base::Clock>) -> Result<Arc<dyn Ciphertext>, Error>;
 }
 
-/// An engine transaction's note (`CipherTx::note`): its sequence, durable holds and releases.
-pub type Note = (u64, Vec<BlobId>, Vec<BlobId>);
+/// An engine transaction's note (`CipherTx::note`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Note {
+    pub seq: u64,
+    /// Durable blobs it held.
+    pub holds: Vec<BlobId>,
+    /// Durable blobs it released.
+    pub releases: Vec<BlobId>,
+    /// Removals of the store's own rows its holder made in it (`CipherTx::finish` applies each):
+    /// applied after the engine's store commits, as releases are.
+    pub removals: Vec<Vec<u8>>,
+}
 
 /// One engine transaction's view of the ciphertext store. Blobs the engine holds stay until it
 /// releases them; others (what the store keeps for others) may be read too.
@@ -41,10 +51,12 @@ pub trait CipherTx {
     /// The engine holds `id` no more: its bytes go once nothing else keeps them. `memory`: the
     /// transaction works on memory data, so a durable blob stays.
     fn release(&mut self, id: &BlobId, memory: bool) -> Result<(), Error>;
-    /// Records, in this transaction, engine transaction `seq`'s durable holds and releases
-    /// (`settle` reads them back after a crash).
-    fn note(&mut self, seq: u64, holds: &[BlobId], releases: &[BlobId]) -> Result<(), Error>;
-    /// The engine transactions noted and not cleared (`unnote`): seq, holds, releases.
+    /// Applies removal `op` of the store's own rows (`Note::removals`).
+    fn finish(&mut self, op: &[u8]) -> Result<(), Error>;
+    /// Records, in this transaction, an engine transaction's note (`settle` reads it back after
+    /// a crash).
+    fn note(&mut self, note: &Note) -> Result<(), Error>;
+    /// The engine transactions noted and not cleared (`unnote`).
     fn notes(&mut self) -> Result<Vec<Note>, Error>;
     /// Clears engine transaction `seq`'s note.
     fn unnote(&mut self, seq: u64) -> Result<(), Error>;
@@ -65,6 +77,12 @@ pub trait CipherHost: Send + Any {
     fn read(&mut self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, Error>;
     fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> Result<bool, Error>;
     fn release(&mut self, id: &BlobId, memory: bool) -> Result<(), Error>;
+    /// Applies a removal of the store's own rows its holder deferred (`CipherTx::finish`): none
+    /// in a store of blobs only.
+    fn finish(&mut self, op: &[u8]) -> Result<(), Error> {
+        let _ = op;
+        Err(Error::Corrupt("a removal in a store of blobs only"))
+    }
     /// Runs `f` in the store's open transaction (the engine's notes live in its local records).
     fn local(&mut self, f: &mut dyn FnMut(&mut crate::Transaction<'_>) -> Result<(), Error>) -> Result<(), Error>;
     fn commit(&mut self) -> Result<(), Error>;
@@ -78,6 +96,23 @@ pub trait CipherHost: Send + Any {
 
 /// Local record prefix of the engine transactions' notes (`CipherTx::note`).
 const NOTE: &[u8] = b"cipher/note/";
+
+fn decode_note(k: &[u8], v: &[u8]) -> Option<Note> {
+    let u64_at = |b: &[u8], i: usize| b.get(i..i + 8).and_then(|x| <[u8; 8]>::try_from(x).ok()).map(u64::from_be_bytes);
+    let seq = u64_at(k, NOTE.len())?;
+    let (h, r) = (usize::try_from(u64_at(v, 0)?).ok()?, usize::try_from(u64_at(v, 8)?).ok()?);
+    let ids_end = h.checked_add(r)?.checked_mul(32)?.checked_add(16)?;
+    let ids: Vec<BlobId> = v.get(16..ids_end)?.as_chunks::<32>().0.iter().map(|c| BlobId(*c)).collect();
+    let (holds, releases) = (ids.get(..h)?.to_vec(), ids.get(h..)?.to_vec());
+    let mut removals = Vec::new();
+    let mut rest = v.get(ids_end..)?;
+    while !rest.is_empty() {
+        let n = usize::try_from(u32::from_be_bytes(rest.get(..4)?.try_into().ok()?)).ok()?;
+        removals.push(rest.get(4..4 + n)?.to_vec());
+        rest = rest.get(4 + n..)?;
+    }
+    Some(Note { seq, holds, releases, removals })
+}
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -122,13 +157,21 @@ impl<T: CipherHost> CipherTx for HostTx<'_, T> {
     fn release(&mut self, id: &BlobId, memory: bool) -> Result<(), Error> {
         self.g.release(id, memory)
     }
-    fn note(&mut self, seq: u64, holds: &[BlobId], releases: &[BlobId]) -> Result<(), Error> {
-        let mut v = Vec::with_capacity(8 + 32 * (holds.len() + releases.len()));
-        v.extend_from_slice(&(holds.len() as u64).to_be_bytes());
-        for id in holds.iter().chain(releases) {
+    fn finish(&mut self, op: &[u8]) -> Result<(), Error> {
+        self.g.finish(op)
+    }
+    fn note(&mut self, n: &Note) -> Result<(), Error> {
+        let mut v = Vec::with_capacity(16 + 32 * (n.holds.len() + n.releases.len()));
+        v.extend_from_slice(&(n.holds.len() as u64).to_be_bytes());
+        v.extend_from_slice(&(n.releases.len() as u64).to_be_bytes());
+        for id in n.holds.iter().chain(&n.releases) {
             v.extend_from_slice(&id.0);
         }
-        let k = [NOTE, &seq.to_be_bytes()].concat();
+        for op in &n.removals {
+            v.extend_from_slice(&(op.len() as u32).to_be_bytes());
+            v.extend_from_slice(op);
+        }
+        let k = [NOTE, &n.seq.to_be_bytes()].concat();
         self.g.local(&mut |t| t.put_local(&k, &v, crate::Shred::No))
     }
     fn notes(&mut self) -> Result<Vec<Note>, Error> {
@@ -137,15 +180,7 @@ impl<T: CipherHost> CipherTx for HostTx<'_, T> {
             rows = t.scan_local(NOTE, &[], usize::MAX)?;
             Ok(())
         })?;
-        let mut out = Vec::new();
-        for (k, v) in rows {
-            let seq = k.get(NOTE.len()..).and_then(|x| <[u8; 8]>::try_from(x).ok()).map(u64::from_be_bytes).ok_or(Error::Corrupt("blob note"))?;
-            let n = v.get(..8).and_then(|x| <[u8; 8]>::try_from(x).ok()).map(u64::from_be_bytes).ok_or(Error::Corrupt("blob note"))?;
-            let mut ids: Vec<BlobId> = v.get(8..).unwrap_or_default().as_chunks::<32>().0.iter().map(|c| BlobId(*c)).collect();
-            let releases = ids.split_off(usize::try_from(n).unwrap_or(usize::MAX).min(ids.len()));
-            out.push((seq, ids, releases));
-        }
-        Ok(out)
+        rows.into_iter().map(|(k, v)| decode_note(&k, &v).ok_or(Error::Corrupt("blob note"))).collect()
     }
     fn unnote(&mut self, seq: u64) -> Result<(), Error> {
         let k = [NOTE, &seq.to_be_bytes()].concat();
