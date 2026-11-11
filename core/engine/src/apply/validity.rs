@@ -884,8 +884,8 @@ impl osis_keys::possession::View for Possession<'_> {
     fn key_actor(&self, t: &Tid) -> bool {
         self.core.is_key_actor(t) && !self.core.is_account(t)
     }
-    fn account(&self, t: &Tid) -> bool {
-        self.core.is_account(t)
+    fn shown_up_to(&self, t: &Tid, role: Role) -> Role {
+        if self.core.is_account(t) { Role::Admin } else { role }
     }
     fn author_on(&self, t: &Tid) -> Option<Role> {
         self.roles.get(t).copied()

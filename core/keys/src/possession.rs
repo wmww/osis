@@ -114,9 +114,9 @@ impl Shown {
 pub trait View {
     /// Whether `t` is a key actor (boxed by its one KEM key or seed, never a holder actor).
     fn key_actor(&self, t: &Tid) -> bool;
-    /// Whether `t` is an account (one keyset for every role: a proof or box at any role shows it
-    /// at all).
-    fn account(&self, t: &Tid) -> bool;
+    /// The highest role of `t` whose keyset is the one a proof or box at `role` names: `role`,
+    /// or admin where `t`'s keyset of every role is one (an account, spec/crypto.md §3).
+    fn shown_up_to(&self, t: &Tid, role: Role) -> Role;
     /// The author's role on `t`, on paths not through A (through it, `t` holding a role on A, is
     /// a cycle: no key access).
     fn author_on(&self, t: &Tid) -> Option<Role>;
@@ -152,7 +152,7 @@ pub fn holds(shown: &[Shown], removed: &[(Tid, Role)], rotates: bool, needed: Ro
     // (where the author holds no such role at all, the rest of §5.2 judges it: re-grants, frontiers)
     // shown at the role the author's path through it needs: holding a lower role's secret of M
     // (a party demoted on M keeps it) is no right to rotate through M
-    let shown_in: BTreeSet<Tid> = actors().filter(|s| (s.role >= needed || v.account(&s.holder)) && valid(s)).map(|s| s.holder).collect();
+    let shown_in: BTreeSet<Tid> = actors().filter(|s| v.shown_up_to(&s.holder, s.role) >= needed && valid(s)).map(|s| s.holder).collect();
     let avoid: BTreeSet<Tid> = v.holder_actors().difference(&shown_in).copied().collect();
     avoid.is_empty() || v.role_on_actor(&avoid) >= Some(needed) || v.role_on_actor(&BTreeSet::new()) < Some(needed)
 }
@@ -193,8 +193,8 @@ mod tests {
         fn key_actor(&self, t: &Tid) -> bool {
             *t == tid(X)
         }
-        fn account(&self, _: &Tid) -> bool {
-            false
+        fn shown_up_to(&self, _: &Tid, role: Role) -> Role {
+            role
         }
         fn author_on(&self, t: &Tid) -> Option<Role> {
             (*t == tid(M)).then_some(self.author_on_m).flatten()
@@ -345,6 +345,41 @@ mod tests {
         let mut ks = crate::aspects::keyset(&e, &Secret32::from_bytes([9; 32]), &BTreeSet::new(), &crate::Names::default());
         ks.proofs.insert(tid(M), prove(&tid(A), Role::Read, &ks, &tid(M), k, &possession_secret(&s)));
         assert!(!holds(&Shown::of_keyset(&tid(A), Role::Read, &ks), &[], true, Role::Write, &v), "a read keyset's proof");
+    }
+
+    /// `V` where M's keyset of every role is one (an account's).
+    struct OneKeyset(V);
+
+    impl View for OneKeyset {
+        fn key_actor(&self, t: &Tid) -> bool {
+            self.0.key_actor(t)
+        }
+        fn shown_up_to(&self, _: &Tid, _: Role) -> Role {
+            Role::Admin
+        }
+        fn author_on(&self, t: &Tid) -> Option<Role> {
+            self.0.author_on(t)
+        }
+        fn holder_actors(&self) -> BTreeSet<Tid> {
+            self.0.holder_actors()
+        }
+        fn role_on_actor(&self, avoid: &BTreeSet<Tid>) -> Option<Role> {
+            self.0.role_on_actor(avoid)
+        }
+        fn keys(&self, m: &Tid, r: Role, k: &Epoch) -> Option<Vec<VerifyingKey>> {
+            self.0.keys(m, r, k)
+        }
+    }
+
+    // spec/crypto.md §4 (shows: at each role whose keyset of M is k): where M's keyset of every
+    // role is one, its proof at read names its keyset of write too
+    #[test]
+    fn one_keyset_for_every_role_shows_at_each() {
+        let s = Secret32::from_bytes([5; 32]);
+        let k = Epoch::derive(&tid(M), Role::Read, 3, &s).unwrap();
+        let v = V { author_on_m: Some(Role::Write), m_on_a: Some(Role::Write), direct: None, keys: BTreeMap::from([((tid(M), Role::Read, k), possession_key(&s))]) };
+        let b = boxed(&s, k, Role::Read, Some(&s));
+        assert!(holds(&shown(&b), &[], true, Role::Write, &OneKeyset(v)));
     }
 
     #[test]
