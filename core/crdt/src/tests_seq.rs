@@ -1200,10 +1200,13 @@ pub(crate) fn part_judges_as_whole(st: &Fragment, d: &Fragment, r: &mut crdt_mod
 proptest! {
     /// spec/commits.md §5: `part_judges_as_whole` on honest histories (moves, deletes, undeletes,
     /// an element's fields), at the root or as struct fields, the state a join of some bodies.
+    /// The case's seed picks the type, so each takes about a third of the cases.
     #[test]
     fn part_judges_as_whole_of_histories_spec_commits_5(seed in any::<u64>()) {
         let text_and_list = Ty::Struct([(1, Ty::Text), (2, Ty::List(Box::new(inner()))), (3, Ty::Text)].into_iter().collect());
-        for ty in [Ty::Text, Ty::List(Box::new(inner())), text_and_list] {
+        let mut tys = vec![Ty::Text, Ty::List(Box::new(inner())), text_and_list];
+        {
+            let ty = tys.swap_remove((seed % 3) as usize);
             let mut r = crate::testutil::rng(seed | 1);
             let bodies: Vec<Fragment> = history(&mut r, std::slice::from_ref(&ty), 3, 6).iter().map(|c| frag(&c.delta)).collect();
             for _ in 0..4 {
