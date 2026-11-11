@@ -240,7 +240,7 @@ impl Engine {
             if out.contains(&x) {
                 continue;
             }
-            let rows: Vec<_> = self.references_to(&x)?.into_iter().filter(|r| r.source != x && !r.ephemeral()).collect();
+            let rows: Vec<_> = self.references_to(&x)?.into_iter().filter(|r| r.source != x && crate::retention::end::needs_from(&r.ak)).collect();
             if rows.iter().any(|r| closure.contains(&r.source) && self.core.exists(&r.source)) {
                 out.insert(x);
             } else if rows.is_empty() && !crate::retention::end::dependents(&self.core, &x) {

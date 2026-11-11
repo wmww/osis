@@ -262,6 +262,11 @@ impl SyncEngine {
                 self.state.touch(*l, *b);
                 labels.insert(*l);
             }
+            // a durable commit forgotten whole (a released thing's): its header is kept over a
+            // restart while its entries are, so they are still deleted at hosts
+            if *why == MemoryDrop::Gone && entries.iter().any(|e| !self.state.memory_entries.contains(e)) {
+                self.state.put_forgotten(*c, header);
+            }
             // recorded with or without entries: one forgotten before it was placed may stand
             // for what carries another (`carriers_of_forgotten`); the sweep keeps what is needed
             self.memory.forgotten.insert(*c, Forgotten { header: header.clone(), why: why.clone() });
@@ -338,7 +343,11 @@ impl SyncEngine {
                 }
             }
         }
-        self.memory.forgotten.retain(|c, _| keep.contains(c));
+        let gone: Vec<CommitId> = self.memory.forgotten.keys().filter(|c| !keep.contains(c)).copied().collect();
+        for c in gone {
+            self.memory.forgotten.remove(&c);
+            self.state.del_forgotten(&c);
+        }
     }
 
     /// Entries refused for a label's cap or share are fetched again where room appeared: their

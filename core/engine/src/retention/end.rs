@@ -115,14 +115,23 @@ pub(crate) fn released(core: &Core, t: &Tid, now: u64) -> bool {
 
 /// Whether something held here needs the evidence that `t` ended (issues/thing-lifetimes.md,
 /// What is kept): a dependent (`dependents`), or another held thing listing it in
-/// `retainers^.0` or referencing it in a live durable value (the reference index). One rule
+/// `retainers^.0` or referencing it in a live durable value other than `group.0` (the
+/// reference index, `needs_from`). One rule
 /// for every ending: while it holds, `t`'s record, value-less creation, `roles.0` and ending
 /// request parts stay and travel under that thing's labels (`Engine::certificates`).
 pub(crate) fn needs_evidence(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
     if dependents(tx.core, t) {
         return Ok(true);
     }
-    Ok(crate::engine::refs::to(tx, t)?.iter().any(|r| r.source != *t && !r.ak.ephemeral()))
+    Ok(crate::engine::refs::to(tx, t)?.iter().any(|r| r.source != *t && needs_from(&r.ak)))
+}
+
+/// Whether a reference row in aspect `ak` makes its source need the evidence that its target
+/// ended: a live durable value, but not `group.0` (a group contains its members, it does not
+/// depend on them: readers show nothing for an unknown member; it still keeps a member alive
+/// for the lifetime judgment).
+pub(crate) fn needs_from(ak: &Ak) -> bool {
+    !ak.ephemeral() && ak.as_str() != osis_schema::RawKey::ak(&osis_schema::core_types::GROUP)
 }
 
 /// Whether a request ending `t` is still in force here: a purge for good, a release until its
@@ -370,10 +379,14 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
 fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     let aks: Vec<Ak> = tx.core.aspects_of(t).map(|((_, ak), _)| ak.clone()).collect();
     let commits: Vec<CommitId> = tx.core.on_thing(t).collect();
+    // aspects of things not held that a commit going whole had parts on (a thing forgotten
+    // earlier whose header this commit kept for `t`)
+    let mut others: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     for c in commits {
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
         let whole = m.header.aspects.iter().all(|a| a.tid == *t || tx.core.created(&a.tid).is_none());
         if whole {
+            others.extend(m.header.aspects.iter().filter(|a| a.tid != *t).map(|a| (a.tid, a.ak.clone())));
             let header = m.header.arc();
             crate::apply::unindex_commit(tx, &c)?;
             // node-sync deletes its entries at hosts where it may and forgets them once gone, as
@@ -403,6 +416,13 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
         }
         for k in rows {
             tx.txn.remove_local(&k, Shred::Yes)?;
+        }
+    }
+    // unindexing marked them forgotten: with no held part left on one, as a node that never held it
+    for (u, ak) in others {
+        if tx.core.ix.by_aspect.get(&(u, ak.clone())).is_none_or(|s| s.is_empty()) {
+            tx.core.ix.forgotten.remove(&(u, ak.clone()));
+            tx.txn.remove_local(&records::aspect_key(records::FORGOTTEN, &u, &ak), Shred::Yes)?;
         }
     }
     super::leaving::forget_things(tx, &BTreeSet::from([*t]))?;

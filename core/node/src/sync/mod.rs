@@ -498,6 +498,10 @@ impl SyncEngine {
             hosting: host::Hosting::default(),
         })
         .and_then(|mut s| {
+            // durable commits forgotten whole whose entries were not yet deleted at hosts
+            for (c, header) in s.state.forgotten.clone() {
+                s.memory.forgotten.insert(c, memory::Forgotten { header, why: crate::engine::MemoryDrop::Gone });
+            }
             // a forgetting a crash interrupted before its inbox check
             s.forget_inbox()?;
             // entries the hub's store holds that the engine's store never committed

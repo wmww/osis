@@ -38,6 +38,10 @@ const TOMB: &[u8] = b"y/x";
 const OUTBOX: &[u8] = b"y/o";
 /// Things forgotten whose inbox blobs this node has not checked yet (`SyncEngine::forget_inbox`).
 const FORGET: &[u8] = b"y/f";
+/// Headers of durable commits the engine forgot whole (a released thing's, `MemoryDrop::Gone`)
+/// while entries of them are known here: what deleting them at hosts reads after a restart
+/// (`SyncEngine::sweep_forgotten` removes them with the rest).
+const FORGOTTEN: &[u8] = b"y/G";
 /// Replaced labels this admin is done with (`SyncEngine::retire_at`).
 const RETIRED: &[u8] = b"y/q";
 /// Inbox deliveries re-sent after `INBOX_LIFETIME` while unanswered (`SyncEngine::resend_inbox`).
@@ -434,6 +438,9 @@ pub struct State {
     pub now: u64,
     /// Things forgotten whose opened inbox blobs are not yet checked (`y/f`).
     pub forget: BTreeSet<Tid>,
+    /// Durable commits forgotten whole with entries known here, their headers (`y/G`; read
+    /// into `Memory::forgotten`).
+    pub forgotten: BTreeMap<CommitId, std::sync::Arc<osis_commit::Header>>,
     /// Replaced labels this admin no longer syncs (`y/q`, spec/sync.md §2).
     pub retired: crate::engine::memo::StampedSet<LabelId>,
     /// When this admin first saw each replaced label it still syncs (wall ms, `y/q`
@@ -745,6 +752,10 @@ impl State {
                 }
                 b"f" => {
                     s.forget.insert(r.tid()?);
+                }
+                b"G" => {
+                    let h = osis_commit::Header::decode(&v).map_err(|_| Error::Corrupt("sync forgotten header"))?;
+                    s.forgotten.insert(CommitId(r.arr()?), std::sync::Arc::new(h));
                 }
                 // a record that does not decode is a delivery not re-sent: never a failed load
                 b"v" => {
@@ -1866,6 +1877,20 @@ impl State {
         self.put(key(HINT, &[&l.0]), w.take());
         self.hints.insert(l, h);
         self.hints_moved = true;
+    }
+
+    /// Durable commit `c` (header `h`) is forgotten whole with entries known here (`forgotten`).
+    pub fn put_forgotten(&mut self, c: CommitId, h: &std::sync::Arc<osis_commit::Header>) {
+        if self.forgotten.insert(c, h.clone()).is_none() {
+            self.put(key(FORGOTTEN, &[&c.0]), h.encode());
+        }
+    }
+
+    /// No entry of forgotten commit `c` is known any more.
+    pub fn del_forgotten(&mut self, c: &CommitId) {
+        if self.forgotten.remove(c).is_some() {
+            self.del(key(FORGOTTEN, &[&c.0]));
+        }
     }
 
     /// The inbox blobs of `t` are checked.

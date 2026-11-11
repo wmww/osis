@@ -468,3 +468,44 @@ fn finding_needed_endings_reads_what_live_things_need_at_n_and_10n() {
     let (small, big) = (count(10), count(100));
     assert!(small >= 1 && big == small, "{small} at n, {big} at 10n");
 }
+
+// spec/commits.md §5 (Forgetting: no per-aspect row): x and y released by one request; x is
+// forgotten at its expiry while z's reference keeps y, so the request keeps its header for y;
+// once z lets go, y is forgotten and the request goes whole. No row names x or y then but the
+// headers a live thing's commits keep (z's and w's), over a restart too
+#[test]
+fn a_request_going_whole_after_one_of_its_things_leaves_no_row_of_it() {
+    let (mut net, [a]) = local_nodes::<1>();
+    let me = net.tid(a);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let [z, x, y, w] = std::array::from_fn(|_| e.new_thing(&mut m, me));
+    let made = e.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    refs(&mut m, z, Value::Set([Value::Tid(y)].into()));
+    m.set(x, &Ak::new("t:v.0").unwrap(), &Value::Int(1)).unwrap();
+    m.set(w, &Ak::new("t:v.0").unwrap(), &Value::Int(1)).unwrap();
+    let wrote = e.commit(m).unwrap().unwrap();
+    let req = e.release(&[x, y]).unwrap().unwrap();
+    net.advance(osis_base::format::ROLE_KEEP_MS + 1_000);
+    let e = net.engine(a);
+    assert_eq!(e.lifetime_status(&x), Status::Unknown);
+    assert_eq!(e.lifetime_status(&y), Status::Ended, "z references y");
+    assert!(e.header(&req).is_some(), "kept for y");
+    let mut m = Mutation::new();
+    refs(&mut m, z, Value::Set(Default::default()));
+    e.commit(m).unwrap();
+    assert_eq!(e.lifetime_status(&y), Status::Unknown, "forgotten once z lets go");
+    assert!(e.header(&req).is_none(), "the request gone whole");
+    let headers = |e: &mut Engine, t: Tid| {
+        let keep = [made, wrote].map(|c| e.local_rows_naming(&c.0).unwrap());
+        e.local_rows_naming(t.as_bytes()).unwrap().into_iter().all(|r| keep.iter().any(|k| k.contains(&r)))
+    };
+    for t in [x, y] {
+        assert!(headers(net.engine(a), t), "only z's and w's commits name {t:?}");
+    }
+    net.restart(a, 2);
+    for t in [x, y] {
+        assert!(headers(net.engine(a), t), "over a restart");
+    }
+}

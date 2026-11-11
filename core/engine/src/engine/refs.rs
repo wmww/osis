@@ -158,7 +158,7 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
         }
     }
     // an ended thing whose evidence a list or reference kept: its keep is judged again
-    if !ak.ephemeral() {
+    if crate::retention::end::needs_from(ak) {
         for t in &moved {
             if tx.core.ended(t) {
                 tx.core.ended_due.insert(*t);

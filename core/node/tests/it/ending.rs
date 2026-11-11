@@ -1528,3 +1528,68 @@ fn nothing_of_a_released_thing_nothing_needs_outlasts_its_request_spec_commits_5
         assert!(!net.sync(n).entries(&l).iter().any(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == req || *commit == w)), "node {n}: no entry of t's commits known");
     }
 }
+
+// issues/thing-lifetimes.md (What is kept), spec/commits.md §5 (Ending, Forgetting): a group
+// contains its members, it does not need them told ended. t, released while still listed in g's
+// `group.0`, is forgotten at its request's expiry at every node: no record, no header of a commit
+// only on it, nothing of them at the host
+#[test]
+fn a_released_group_member_is_forgotten_while_still_listed_spec_commits_5() {
+    use osis_node::retention::lifetimes::Status;
+    let Setup { mut net, a, b, c, g } = setup();
+    let l = net.label(a);
+    let (t, _) = made(&mut net, a, g);
+    let w = net.write(b, t, "y");
+    net.run();
+    let req = net.engine(c).release(&[t]).unwrap().unwrap();
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default().items.contains(&t), "t still listed");
+    net.advance(osis_base::format::ROLE_KEEP_MS);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    for n in [a, b, c] {
+        let e = net.engine(n);
+        assert_eq!(e.lifetime_status(&t), Status::Unknown, "node {n}: t forgotten");
+        assert!(e.core.created(&t).is_none() && e.header(&req).is_none() && e.header(&w).is_none(), "node {n}: no record, no header of t's commits");
+        assert!(!at_host_of(&mut net, n, &l, req) && !at_host_of(&mut net, n, &l, w), "node {n}: nothing of t's commits at the host");
+    }
+}
+
+// spec/sync.md §6 (Dropped bodies: a commit forgotten with a released thing), spec/commits.md §5
+// (Forgetting): a node forgets a released thing (r lets go of t past its request's expiry) and
+// restarts before deleting its commits' entries at the host, alone on the network: it still
+// deletes them, and keeps nothing of them past their tombstones
+#[test]
+fn a_forgotten_commits_entries_are_deleted_after_a_restart_spec_sync_6() {
+    use osis_node::retention::lifetimes::Status;
+    let Setup { mut net, a, b, c, g } = setup();
+    let l = net.label(a);
+    let (r, t, _) = retained(&mut net, a, g);
+    let req = net.engine(c).release(&[t]).unwrap().unwrap();
+    net.run();
+    net.advance(osis_base::format::ROLE_KEEP_MS);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(at_host_of(&mut net, a, &l, req), "the request's copy at the host while r references t");
+    net.set_online(b, false);
+    net.set_online(c, false);
+    let mut m = Mutation::new();
+    m.set(r, &Ak::new("t:refs.0").unwrap(), &Value::Set(Default::default())).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    assert_eq!(net.engine(a).lifetime_status(&t), Status::Unknown, "forgotten");
+    let ids: Vec<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == req)).map(|(id, _)| id).collect();
+    assert!(!ids.is_empty());
+    net.restart(a, 50);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(!net.host_ids(0, &l).iter().any(|x| ids.contains(x)), "deleted at the host");
+    assert!(!net.sync(a).entries(&l).iter().any(|(id, _)| ids.contains(id)), "no entry of it known");
+    net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 1_000);
+    net.restart(a, 51);
+    assert!(net.engine(a).local_rows_naming(&req.0).unwrap().is_empty(), "nothing names it past its tombstones");
+}

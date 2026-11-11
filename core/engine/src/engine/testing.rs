@@ -135,6 +135,14 @@ impl Engine {
         Ok(out)
     }
 
+    /// The store's local rows naming `needle` (a thing's or commit's bytes, in the key or value):
+    /// tests that nothing of what a node forgot stays.
+    #[doc(hidden)]
+    pub fn local_rows_naming(&mut self, needle: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let rows = self.run(|tx| Ok(tx.txn.scan_local(b"", b"", usize::MAX)?))?;
+        Ok(rows.into_iter().filter(|(k, v)| k.windows(needle.len()).any(|w| w == needle) || v.windows(needle.len()).any(|w| w == needle)).collect())
+    }
+
     /// What the store holds, decrypted (`Store::dump`): tests compare two nodes' stores.
     #[doc(hidden)]
     pub fn store_dump(&mut self) -> Result<Vec<(String, Vec<u8>)>> {
