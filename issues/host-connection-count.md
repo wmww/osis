@@ -1,5 +1,5 @@
 # Default connection cap against large rosters
-> Summary: the default `max_connections` is 256 (`max_buffered_bytes` / `link::CONN_MEMORY`), while spec/requirements.md says direct rosters hold thousands of holders: a host with more than 256 devices online at once refuses newcomers, since connections that share something are never evicted.
+> Summary: Tess: no connection count limit (the 256 default refused devices past it on large rosters); `max_connections` and eviction at the cap go; the queued-output byte bound stays; low-memory shedding is later work, not built now.
 > Priority: normal
 > Tags: host
 
@@ -7,6 +7,8 @@
 Each served connection may make the transport hold `CONN_MEMORY` (2 MiB) per direction, so the default count follows from the default memory bound (notes/serving.md, Connection memory). An operator can raise both, but a default host serving one large group fills at 256 devices online. Not a memory problem: a product default.
 
 ## Decision (Tess)
-A node started to serve (`osis serve`) sizes its defaults from the machine's memory: `max_buffered_bytes` defaults to a quarter of the RAM it sees at start, and `max_connections` follows as that bound / `CONN_MEMORY` (a 16 GB box: 4 GiB, 2048 connections). Every other node keeps 512 MiB / 256. Both stay settable; an explicit setting wins.
+No connection count limit: `max_connections` and the eviction at the cap go, for every node. Memory per connection is not a fixed 2 MiB in practice, and a count picked from it would mislead. The byte bound on queued output (`max_buffered_bytes`, served connections' unread output) is not a count and stays. Low memory is a later concern: if ever needed, a node detects it and sheds load (refusing or closing connections, evicting caches); nothing of that is built now.
 
-To build: read total RAM at `serve` start (one platform call; if it can't be read, keep the plain default); the fraction passes notes/arbitrary-values.md (at 0 nothing is served, at 1 a flood can take the box's memory); spec/sync.md §10 and notes/serving.md state it; a test that the defaults follow a given memory size.
+Stated limit (spec/sync.md §10, notes/serving.md): transport buffers per connection are unbounded in total, so many connections can take a node's memory; handled by the later low-memory work if it is ever needed.
+
+To build: remove `max_connections`, `ServingPolicy.connections`, the shared slot count's cap and the eviction at the cap (`make_room`, `Link::kept`/`Down::Keep` if nothing else needs them); keep `CONN_MEMORY`'s window sizes as transport tuning; update the tests that exercise the cap; spec/sync.md §10, notes/serving.md, the arbitrary-values table.
