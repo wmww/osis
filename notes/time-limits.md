@@ -27,6 +27,7 @@ Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s 
 - 2026-11-11 ostrich `gate.hold` wall 628/241 s; `gate` wall 717/299 s: keyset-parse-once review (23 of 26 crates); persistent, issues/gate-five-minutes.md.
 - 2026-11-11 ostrich `gate` wall 725/299 s, CPU 1.7x; `gate.hold` wall 521/241 s, CPU 1.6x at load 13: test-profile-3 review (10 of 26 crates); persistent, issues/gate-five-minutes.md.
 - 2026-11-11 15:39 ostrich `gate.hold` CPU 6824/3795 s, wall 573/241 s and `gate` CPU 7007/4094 s, wall 617/299 s at load 16: 10 of 26 crates selected (history-entry-inputs review, osis-engine and osis-keys changed); persistent, issues/gate-five-minutes.md.
+- 2026-11-11 ostrich `heavy` CPU 14564 s (2.9x), wall 1274 s (2.1x) at load 16: order-held-record, a by-hand 300-seed `order::held_set_decides_plain` sweep, not a gate; the `heavy` limit fits a gate-size hold, not a sweep of hundreds of seeds.
 
 ## Investigations
 One section per investigation: date and box, the trigger (hits or the run over 2x), what was tried, the outcome (fixed, or a raised limit with why no good solution was found). Tess reviews every raise.

@@ -437,6 +437,12 @@ fn ev_keep_after_purge_on_replace_keeps_nothing() {
     assert!(listed(&world(5, &tl, false, fewer), REG).is_empty(), "dated at 4, after the keep");
     // a body replaced after the keep: still none (one way)
     assert!(listed(&world(5, &tl, false, vec![body(10, 3, false), body(11, 4, false)]), REG).is_empty());
+    // nor is a body replaced ahead of the clock kept from a covered drop (Keep bounds, Dated only
+    // where history is kept): the keep reads as no history, so nothing dates it
+    for (tl, kept) in [(&[(1, Opt::Purge), (3, KEPT)][..], false), (&[(3, KEPT)][..], true)] {
+        let h = world(5, tl, false, vec![body(10, 0, false)]);
+        assert_eq!(evaluate(&h).kept(T, REG, h.now + 1_000, h.now), kept, "{tl:?}");
+    }
 }
 
 // notes/engine-retention.md History (Tess's decision 2): who may purge a body changes nothing of its history

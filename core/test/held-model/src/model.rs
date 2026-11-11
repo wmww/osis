@@ -166,9 +166,9 @@ impl Outcome {
         self.in_history(t, a, r, now) || now < r && self.aspect_keeps(t, a)
     }
     /// Whether some held valid setting of `t` keeps history for `a` (the entry governing it
-    /// reads `keep`).
+    /// reads `keep`, one way: a keep after purge on replace reads as none).
     pub fn aspect_keeps(&self, t: ThingId, a: Aspect) -> bool {
-        self.timeline_of(t, a).iter().any(|s| matches!(s.opt, Opt::Keep { .. }))
+        thing_history::timeline(&self.timeline_of(t, a), true).iter().any(|s| matches!(s.opt, Opt::Keep { .. }))
     }
     /// The entry option in force for `(t, a)` at wall ms `at` (one way).
     pub fn in_force(&self, t: ThingId, a: Aspect, at: u64) -> Opt {
