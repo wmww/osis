@@ -102,20 +102,11 @@ fn lose_records(net: &mut Net, a: usize, src: usize) {
     assert!(net.engine(a).run(|tx| Ok(tx.txn.records_of_actors(&[ts])?)).unwrap().len() >= 2, "two records of one pair at a");
 }
 
-// spec/permissions.md §3: a source is what the proofs identify, not a record: with two records
-// for one pair (src lost its record), the orphan record holds no pass; src's passes over its new
-// record complete g with no peer wait.
-#[test]
-fn an_orphan_record_holds_no_pass_spec_permissions_3() {
-    let (mut net, a, src, g) = gone_source(other_account);
-    lose_records(&mut net, a, src);
-    net.advance(60_000);
-    net.run();
-    assert!(net.sync(a).complete_pass(&g), "src's passes on the new record count");
-}
-
 // spec/permissions.md §3, notes/peers.md Complete passes: what a node remembers of its sources
 // is per source and label, not per record or connection: new records for one pair add nothing.
+// A source is what the proofs identify, not a record: with several records for one pair (src lost
+// its record), the orphan records hold no pass; src's passes over its new record complete g with
+// no peer wait.
 #[test]
 fn pass_sources_do_not_grow_per_record_spec_permissions_3() {
     let (mut net, a, src, g) = gone_source(other_account);
@@ -131,6 +122,9 @@ fn pass_sources_do_not_grow_per_record_spec_permissions_3() {
     }
     let held_after = net.sync(a).pass_source_held(ts);
     assert_eq!(held_after, held, "5 more records, the same sources");
+    net.advance(60_000);
+    net.run();
+    assert!(net.sync(a).complete_pass(&g), "src's passes on the new record count");
 }
 
 // spec/permissions.md §3, notes/peers.md Complete passes: a source is remembered only while it is

@@ -117,20 +117,32 @@ fn backdated_removal_loses_where_the_honest_one_was_first_spec_permissions_5_1()
     assert_eq!(the_dispute(&f, 1).side.map(|s| s.trust), Some(true));
 }
 
-// notes/disputes-plan.md step 4 (choices): a chosen side replaces the default, switching
-// back and forth reads each side as a node that always stood there, and a choice survives a
-// restart as the default does.
+// notes/disputes-plan.md step 4 (choices): the default side is durable: after a restart the
+// node reads as before, and the dispute is listed with the side it took. A chosen side replaces
+// the default, switching back and forth reads each side as a node that always stood there, and a
+// choice survives a restart as the default does. A node on neither side of a fight reads the
+// things the fight cannot reach alike whichever side it takes, and switching does not touch them.
 #[test]
 fn choose_switches_sides_and_persists_spec_permissions_5_1() {
     let mut f = fight(3, 602);
     let (w, r) = (f.w.clone(), f.r.clone());
+    let c = f.lp.peers[2].engine.me();
+    let other = thing_of(&mut f.lp, 2, c);
+    f.lp.peers[2].engine.grant(&other, &f.a, &edge_of(Role::Write)).unwrap();
     send(&mut f.lp, 1, 2, &w);
     send(&mut f.lp, 0, 2, &r);
     assert_eq!(admins(&f, 2), (false, true));
+    reopen(&mut f.lp, 2, 8).unwrap();
+    assert_eq!(admins(&f, 2), (false, true));
+    assert_eq!(the_dispute(&f, 2).side.map(|s| (s.trust, s.chosen)), Some((true, false)));
+    assert!(detected(&f.lp, 2).is_empty(), "an open detects nothing anew");
     let d = the_dispute(&f, 2);
+    let on_other = |f: &Fight| f.lp.peers[2].engine.roster(&other).get(&f.a).map(|e| e.role);
+    assert_eq!(on_other(&f), Some(Role::Write));
     let e = &mut f.lp.peers[2].engine;
     e.choose(d.commit, d.op, d.holder, false).unwrap();
     assert_eq!(admins(&f, 2), (true, false), "a's side: its removal of b counts");
+    assert_eq!(on_other(&f), Some(Role::Write));
     assert_eq!(the_dispute(&f, 2).side.map(|s| (s.trust, s.chosen)), Some((false, true)));
     let e = &mut f.lp.peers[2].engine;
     e.choose(d.commit, d.op, d.holder, true).unwrap();
@@ -171,39 +183,6 @@ fn late_choice_brings_back_what_the_default_dropped_spec_permissions_5_1() {
     assert!(f.lp.peers[2].engine.commit_parts_missing().iter().any(|(c, m)| *c == x && !m.is_empty()), "valid again: missing");
     send(&mut f.lp, 0, 2, &[x]);
     assert_eq!(reg(&mut f, 2), reg(&mut f, 3));
-}
-
-// notes/disputes-plan.md step 4: the default side is durable: after a restart the node
-// reads as before, and the dispute is listed with the side it took.
-#[test]
-fn default_side_survives_a_restart_spec_permissions_5_1() {
-    let mut f = fight(3, 603);
-    let (w, r) = (f.w.clone(), f.r.clone());
-    send(&mut f.lp, 1, 2, &w);
-    send(&mut f.lp, 0, 2, &r);
-    assert_eq!(admins(&f, 2), (false, true));
-    reopen(&mut f.lp, 2, 8).unwrap();
-    assert_eq!(admins(&f, 2), (false, true));
-    assert_eq!(the_dispute(&f, 2).side.map(|s| (s.trust, s.chosen)), Some((true, false)));
-    assert!(detected(&f.lp, 2).is_empty(), "an open detects nothing anew");
-}
-
-// notes/disputes-plan.md step 4: a node on neither side of a fight reads the things the
-// fight cannot reach alike whichever side it takes, and switching does not touch them.
-#[test]
-fn sides_leave_other_things_alone_spec_permissions_5_1() {
-    let mut f = fight(3, 605);
-    let (w, r) = (f.w.clone(), f.r.clone());
-    let c = f.lp.peers[2].engine.me();
-    let other = thing_of(&mut f.lp, 2, c);
-    f.lp.peers[2].engine.grant(&other, &f.a, &edge_of(Role::Write)).unwrap();
-    send(&mut f.lp, 1, 2, &w);
-    send(&mut f.lp, 0, 2, &r);
-    let d = the_dispute(&f, 2);
-    let on_other = |f: &Fight| f.lp.peers[2].engine.roster(&other).get(&f.a).map(|e| e.role);
-    assert_eq!(on_other(&f), Some(Role::Write));
-    f.lp.peers[2].engine.choose(d.commit, d.op, d.holder, false).unwrap();
-    assert_eq!(on_other(&f), Some(Role::Write));
 }
 
 // notes/disputes-plan.md step 4 (first received): a removal waiting for an entry's creation

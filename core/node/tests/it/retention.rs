@@ -16,24 +16,6 @@ fn set(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid, k
     lp.peers[i].commit(m).unwrap().unwrap()
 }
 
-// spec/commits.md §5, spec/crdt.md §4.8: a write dies when superseded, at the superseding
-// `ts`; a body is replaced at its write's death and kept at least D from then.
-#[test]
-fn deaths_and_bounds_spec_commits_5() {
-    let mut lp = net(1, 51);
-    let t = new_thing(&mut lp, 0);
-    let c1 = set(&mut lp, 0, t, &KEPT, "one");
-    lp.advance(10);
-    let c2 = set(&mut lp, 0, t, &KEPT, "two");
-    let ts2 = lp.peers[0].engine.header(&c2).unwrap().ts;
-    let e = &mut lp.peers[0].engine;
-    assert_eq!(e.replaced_at(&c1, &t, &ak("t:kept.0")).unwrap(), Some(ts2));
-    assert_eq!(e.replaced_at(&c2, &t, &ak("t:kept.0")).unwrap(), None);
-    let k = body_keep(e, &c1, &t, &ak("t:kept.0"));
-    assert_eq!(k, ts2.wall_ms().0 + 86_400_000);
-    assert!(e.body_not_dropped(&c1, &t, &ak("t:kept.0")));
-}
-
 // spec/commits.md §5: purge on replace: the replacing node drops the body in the
 // transaction that applies the kill (live state unchanged);
 // a dropped body cannot be undone (§7).
@@ -90,33 +72,6 @@ fn expiry_spec_commits_6() {
     lp.advance(1000);
     lp.peers[0].tick().unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), None);
-}
-
-// spec/commits.md §5 (Covered), spec/crdt.md §8: a snapshot carries an expiring delta's values
-// value-less, so it covers one only once no value of it lives: X (expiring) overwritten by Y is
-// covered before its T, nothing of it visible; Y (expiring, live) is not.
-#[test]
-fn dead_expiring_delta_covered_before_its_expiry_spec_commits_5() {
-    let mut lp = net(1, 60);
-    let t = new_thing(&mut lp, 0);
-    let at = lp.peers[0].engine.now().0 + 3_600_000;
-    let put = |lp: &mut LocalPeer, v: &str| {
-        let mut m = Mutation::new();
-        m.set(t, &REG, &s(v)).unwrap();
-        m.expires(t, &REG, WallMs(at)).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap()
-    };
-    let x = put(&mut lp, "x");
-    lp.advance(10);
-    let y = put(&mut lp, "y");
-    lp.advance(10);
-    let k = ak("t:reg.0");
-    let e = &mut lp.peers[0].engine;
-    let snap = e.snapshot(&t, &k).unwrap().unwrap();
-    assert_eq!(e.covered(&snap, &x, &t, &k).unwrap(), Some(true), "dead: covered before T");
-    assert_eq!(e.covered(&snap, &y, &t, &k).unwrap(), Some(false), "live: its value is not in the snapshot");
-    e.drop_body(&x, &t, &k).unwrap();
-    assert_eq!(e.get(&t, &k).unwrap(), Some(s("y")));
 }
 
 // spec/commits.md §5 (Purge on replace): an expiring purge-on-replace register overwritten before
@@ -1174,7 +1129,11 @@ fn deaths_dated_from_first_superseder_held_spec_commits_5() {
         lp.advance(10);
     }
     let ts: Vec<_> = ids.iter().map(|c| lp.peers[0].engine.header(c).unwrap().ts).collect();
-    assert_eq!(lp.peers[0].engine.replaced_at(&ids[0], &t, &a).unwrap(), Some(ts[1]));
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.replaced_at(&ids[0], &t, &a).unwrap(), Some(ts[1]));
+    assert_eq!(e.replaced_at(&ids[2], &t, &a).unwrap(), None);
+    assert_eq!(body_keep(e, &ids[0], &t, &a), ts[1].wall_ms().0 + 86_400_000);
+    assert!(e.body_not_dropped(&ids[0], &t, &a));
     let pks = packages(&mut lp, 0);
     let pk = |c: &osis_base::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
     let rest: Vec<_> = pks.iter().filter(|p| !ids.contains(&p.id)).cloned().collect();
@@ -2971,9 +2930,10 @@ fn shorter_kept_later_snapshot_carries_no_history_spec_commits_5() {
     assert_eq!(e.replaced_at(&s1, &t, &k).unwrap(), Some(tz));
 }
 
-// spec/commits.md §5 (Covered), spec/permissions.md §5.2: an expiring delta covered before its T
-// is dropped on the cover's word. X (expiring) overwritten by B's Y, B's snapshot covers X and
-// node 0 drops it; admin 2, holding neither Y nor the snapshot, demotes B (no addenda). Y and the
+// spec/commits.md §5 (Covered), spec/crdt.md §8, spec/permissions.md §5.2: a snapshot carries an
+// expiring delta's values value-less, so it covers one only once no value of it lives; an
+// expiring delta covered before its T is dropped on the cover's word. X (expiring) overwritten by
+// B's Y, B's snapshot covers X (not the live Y) and node 0 drops it; admin 2, holding neither Y nor the snapshot, demotes B (no addenda). Y and the
 // cover fall, X is missing again, and fetched it reads again.
 #[test]
 fn dead_expiring_delta_cover_falls_refetched_spec_commits_5() {
@@ -2999,7 +2959,8 @@ fn dead_expiring_delta_cover_falls_refetched_spec_commits_5() {
     let snap = lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
     sync(&mut lp, 1, 0);
     let e = &mut lp.peers[0].engine;
-    assert_eq!(e.covered(&snap, &x, &t, &k).unwrap(), Some(true));
+    assert_eq!(e.covered(&snap, &x, &t, &k).unwrap(), Some(true), "dead: covered before T");
+    assert_eq!(e.covered(&snap, &y, &t, &k).unwrap(), Some(false), "live: its value is not in the snapshot");
     e.drop_body(&x, &t, &k).unwrap();
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("y")));
     lp.advance(10);
@@ -3271,33 +3232,6 @@ fn bare_leftover_stays_copy_leftover_goes_spec_commits_5() {
     let m1 = e.core.ix.commits.get(&c1).unwrap();
     assert!(m1.stripped.contains(&0) && m1.dropped.is_empty(), "the bare leftover stays: {}", e.aspect_dump(&t, &k));
     assert!(!e.coverers_of(&s0, &t, &k).is_empty(), "the copy leftover went as covered: {}", e.aspect_dump(&t, &k));
-}
-
-// spec/commits.md §5 (Covered): covering is the join test, so a valid snapshot carrying a valued
-// body's write value-less does not cover it (the valued write wins the join); one carrying it
-// valued does.
-#[test]
-fn valueless_copy_does_not_cover_valued_body_spec_commits_5() {
-    let mut lp = net(2, 0x7e03);
-    let t = new_thing(&mut lp, 0);
-    let k = ak("t:reg.0");
-    let c = set(&mut lp, 0, t, &REG, "v");
-    sync(&mut lp, 0, 1);
-    let st = lp.peers[0].engine.state(&t, &k).unwrap().unwrap();
-    let mut bare = st.clone();
-    bare.strip(&|_| true);
-    let mut snaps = Vec::new();
-    for f in [bare, st] {
-        lp.advance(5);
-        let now = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
-        let blob = forge_snapshot(&mut lp, 0, t, &k, now, f);
-        let osis_node::Ingested::Applied(id) = lp.peers[1].receive(&blob, Vec::new()).unwrap() else { panic!("applies") };
-        snaps.push(id);
-    }
-    let e = &mut lp.peers[1].engine;
-    assert_eq!(e.get(&t, &k).unwrap(), Some(s("v")));
-    assert_eq!(e.covered(&snaps[0], &c, &t, &k).unwrap(), Some(false), "a value-less copy leaves the valued body uncovered");
-    assert_eq!(e.covered(&snaps[1], &c, &t, &k).unwrap(), Some(true));
 }
 
 // spec/commits.md §4 (possible admins): a pending commit, drift-parked included, gives nothing:

@@ -5,7 +5,7 @@
 use crate::net;
 use net::*;
 use osis_commit::PurgeItem;
-use osis_base::{Ak, Role, Tid, Value, WallMs};
+use osis_base::{Ak, Role, Tid, WallMs};
 use osis_node::Mutation;
 use osis_node::sync::{EntryKind, Event, SyncConfig};
 use osis_schema::RawKey;
@@ -379,36 +379,6 @@ fn private_and_shared_split_spec_sync_3() {
     assert_eq!(net.read(b, t), Some(s("shared 2")));
     assert_eq!(net.read(b, p), None);
     assert!(!net.engine(b).knows(&p));
-}
-
-// spec/sync.md §7: compaction deletes exactly the covered bodies, after the snapshot is at the
-// host, and the snapshot stays.
-#[test]
-fn compaction_deletes_exactly_covered_spec_sync_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    let t = net.item(a, g, g, "v1");
-    let c2 = net.write(a, t, "v2");
-    let c3 = net.write(a, t, "v3");
-    net.run();
-    let l = net.label(a);
-    let old: Vec<_> = [c2, c3].iter().flat_map(|c| blobs_of(&mut net, a, &l, c)).collect();
-    assert!(old.iter().all(|id| net.host_ids(host, &l).contains(id)));
-    let ak = Ak::new(REG.ak()).unwrap();
-    let acts = net.sync(a).compact(&t, &ak).unwrap();
-    net.actions(a, acts);
-    net.run();
-    net.run();
-    let ids = net.host_ids(host, &l);
-    assert!(old.iter().all(|id| !ids.contains(id)), "covered bodies deleted");
-    let snaps: Vec<_> = net.sync(a).entries(&l).into_iter().filter_map(|(id, k)| match k {
-        EntryKind::Commit { commit, .. } if net.engine(a).header(&commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot) => Some(id),
-        _ => None,
-    }).collect();
-    assert!(!snaps.is_empty() && snaps.iter().all(|id| ids.contains(id)), "the carrier snapshot stays");
-    let _ = Value::Bool(true);
 }
 
 // spec/permissions.md §3 (complete pass): a pass from before going offline still counts (it

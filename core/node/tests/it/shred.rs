@@ -1042,9 +1042,14 @@ fn big_put(lp: &mut LocalPeer, i: usize, t: Tid, key: &str, val: &str, purge: Op
 // spec/commits.md §5 (a purge destroys every local copy of the values it names), spec/crdt.md §4.7:
 // a snapshot's leftover keeps the other values it copied and stays held through its purge's fall,
 // so a second request purging one of those strips it there too and leaves no copy behind.
+// spec/commits.md §5: the leftover indexes as an open rebuilding the index reads it.
 #[test]
 fn fallen_snapshot_leftover_gone_for_a_later_purge_spec_commits_5() {
     let Fallen { mut lp, t, cy, my } = fallen_snapshot_rig(371);
+    let e = &mut lp.peers[1].engine;
+    let opened = e.index_digest().without_held();
+    e.rebuild_index().unwrap();
+    assert_eq!(opened.first_diff(&e.index_digest().without_held()), None);
     filler(&mut lp, 1, 6);
     lp.advance(5);
     let p2 = big_put(&mut lp, 0, t, "oy", "w", Some(cy));
@@ -1054,17 +1059,6 @@ fn fallen_snapshot_leftover_gone_for_a_later_purge_spec_commits_5() {
     filler(&mut lp, 1, 6);
     assert_eq!(lp.peers[1].engine.get_at(&t, &ak("t:big.0"), &[osis_crdt::PathSeg::Key(s("ky"))]).unwrap(), None);
     assert!(!recoverable(&mut lp.peers[1], my.as_bytes()), "the second purged value recovered from the fallen snapshot's leftover");
-}
-
-// spec/commits.md §5: a snapshot held as its leftover through its purge's fall indexes as an open
-// rebuilding the index reads it.
-#[test]
-fn fallen_snapshot_indexed_alike_spec_commits_5() {
-    let Fallen { mut lp, .. } = fallen_snapshot_rig(381);
-    let e = &mut lp.peers[1].engine;
-    let opened = e.index_digest().without_held();
-    e.rebuild_index().unwrap();
-    assert_eq!(opened.first_diff(&e.index_digest().without_held()), None);
 }
 
 /// Puts entry `key` of `t`'s `t:map.0` (`map<string, item>`), `expires` at that wall time.

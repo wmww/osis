@@ -23,20 +23,9 @@ fn pair(net: &mut Net, n: usize) -> (usize, usize, Vec<Tid>) {
     (a, b, gs)
 }
 
-// spec/sync.md §10 (Stream): a co-reader's entries come by one Pull stream, never a per-label Sync
-#[test]
-fn a_dialer_pulls_its_peer_stream_spec_sync_10() {
-    let mut net = Net::new();
-    let (a, b, gs) = pair(&mut net, 1);
-    let t = net.item(b, gs[0], gs[0], "x");
-    net.run();
-    assert_eq!(net.read(a, t), Some(s("x")), "b's write reached a");
-    assert!(net.peer_sent(a, PULL) > 0, "a pulls b");
-    assert_eq!(net.peer_sent(a, SYNC) + net.peer_sent(a, SUBSCRIBE), 0, "no per-label Sync or Subscribe between readers");
-}
-
-// spec/sync.md §10 (Stream: both sides pull): a reader's own write reaches a co-reader by the
-// co-reader pulling it, whoever dialed, with no Upload, Deposit or Open between them
+// spec/sync.md §10 (Stream): a co-reader's entries come by one Pull stream, never a per-label
+// Sync. (Stream: both sides pull): a reader's own write reaches a co-reader by the co-reader
+// pulling it, whoever dialed, with no Upload, Deposit or Open between them
 #[test]
 fn a_readers_write_reaches_a_co_reader_with_no_upload_spec_sync_10() {
     const OPEN: u64 = 4;
@@ -46,6 +35,9 @@ fn a_readers_write_reaches_a_co_reader_with_no_upload_spec_sync_10() {
     let (a, b, gs) = pair(&mut net, 1);
     let t = net.item(b, gs[0], gs[0], "x");
     net.run();
+    assert_eq!(net.read(a, t), Some(s("x")), "b's write reached a");
+    assert!(net.peer_sent(a, PULL) > 0, "a pulls b");
+    assert_eq!(net.peer_sent(a, SYNC) + net.peer_sent(a, SUBSCRIBE), 0, "no per-label Sync or Subscribe between readers");
     net.write(a, t, "from the dialer");
     net.run();
     assert_eq!(net.read(b, t), Some(s("from the dialer")), "the listener pulled the dialer's write");

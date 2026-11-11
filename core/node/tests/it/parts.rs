@@ -346,51 +346,6 @@ fn late_part_of_applied_commit_joins_alone_spec_commits_4() {
     }
 }
 
-// spec/commits.md §4: a part that hashes to its entry but does not decode is dropped alone, however
-// the parts arrive.
-#[test]
-fn bad_part_together_or_split_spec_commits_4() {
-    use crate::common::*;
-    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{Delta, Writer, create, encode_delta};
-    let mut lp = net(2, 65);
-    let (g, h) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    let setup = packages(&mut lp, 0);
-    lp.peers[0].clock.advance(10);
-    let e = &mut lp.peers[0].engine;
-    let recs = vec![e.get_typed(&g, &osis_schema::core_types::CREATED).unwrap().unwrap(), e.get_typed(&h, &osis_schema::core_types::CREATED).unwrap().unwrap()];
-    let author = e.me();
-    let ts = osis_base::Ts::make(e.now(), 0).unwrap();
-    let form = crate::common::forged_session(author);
-    let mut w = Writer::new(ts, form.own_source(author, osis_base::CommitId([0; 32])), 1000);
-    let f = create(&mut w, &osis_crdt::AnyView, &s("ok")).unwrap();
-    let r = w.range();
-    let good = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, author, r.lo, r.hi), None).unwrap();
-    let bad = osis_base::encode(&Value::List(vec![Value::Int(1)]));
-    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
-    cb.aspects.push(AspectWrite::new(g, ak("t:reg.0"), r.lo, r.hi, good));
-    cb.aspects.push(AspectWrite::new(h, ak("t:reg.0"), 100, 101, bad));
-    let forge_key = e.sign_forged(&mut cb);
-    let blob = cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
-    let read = |deliveries: Vec<Vec<u8>>| {
-        let mut lp2 = net(2, 65);
-        for pk in &setup {
-            lp2.deliver(1, pk).unwrap();
-        }
-        for b in &deliveries {
-            let _ = lp2.peers[1].receive(b, Vec::new());
-        }
-        lp2.peers[1].engine.get(&g, &ak("t:reg.0")).unwrap()
-    };
-    let part = |t: Tid| {
-        let mut b = blob.clone();
-        let hd = b.header.clone();
-        b.parts.retain(|p| hd.aspects[p.ai].tid == t);
-        b.encode()
-    };
-    assert_eq!(read(vec![blob.encode()]), read(vec![part(g), part(h)]));
-}
-
 // spec/commits.md §4: a part bad by itself beside its thing's other parts. Each good part shows as it
 // comes, in every order, synced or not, ending as from the whole blob; the bad part alone, or a junk
 // copy of its slot, is refused and keeps nothing.

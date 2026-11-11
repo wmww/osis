@@ -349,27 +349,6 @@ fn changed_at_moves_on_a_role_change_only() {
     assert!(net.engine(a).run(|tx| Ok(tx.txn.changed_after(first, 10)?)).unwrap().iter().any(|(p, x)| *p == moved && *x == l));
 }
 
-// issues/net-reconnect.md, Changes: a role change that reaches a thing through a roster moves it
-#[test]
-fn changed_at_moves_when_a_holder_reaches_it_through_a_roster() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    net.run();
-    let l = net.label(a);
-    let h = net.group(a, &[], &[host]);
-    net.grant(a, g, h, Role::Read);
-    net.run();
-    let x = net.node(3, &[host]);
-    let tx_ = net.tid(x);
-    net.pair(x, a);
-    let before = changed(&mut net, a, l).unwrap();
-    net.grant(a, h, tx_, Role::Read);
-    net.run();
-    assert!(changed(&mut net, a, l).unwrap() > before, "x now reaches g through h");
-}
-
 // spec/sync.md §10 (Pair key): a tag names the listener it was made for, like a connection proof:
 // one made for a connection to another node (a node between relaying it) finds nothing
 #[test]
@@ -459,8 +438,9 @@ fn a_copied_store_resumes_the_same_record_at_a_live_peer_spec_sync_10() {
     assert_eq!(records(&mut net, copy, tb)[0].r, r, "the copy holds the same r");
 }
 
-// issues/net-reconnect.md, Changes: a holder reaching a sync ID through a cycle of rosters is seen
-// from every member of the cycle, whichever the pass reached first
+// issues/net-reconnect.md, Changes: a role change that reaches a thing through a roster moves it;
+// a holder reaching a sync ID through a cycle of rosters is seen from every member of the cycle,
+// whichever the pass reached first
 #[test]
 fn changed_at_moves_through_a_cycle_of_rosters() {
     for grant_on_second in [false, true] {

@@ -8,7 +8,6 @@ use osis_base::{Role, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
 use osis_schema::core_types as ct;
-use std::collections::BTreeMap;
 
 fn write_all(m: &mut Mutation, t: osis_base::Tid, n: i64, tag: &str) {
     m.set(t, &REG, &s(tag)).unwrap();
@@ -61,37 +60,6 @@ fn every_encoding_converges_spec_crdt_5() {
         let y = lp.peers[1].engine.state(tid, ak).unwrap();
         assert_eq!(x, y, "{ak:?}");
     }
-}
-
-// spec/crdt.md §8; spec/commits.md §1: a delta above PAGE_TARGET pages; its pages travel as
-// blobs listed in the chunk list and the receiver applies it identically.
-#[test]
-fn paged_delta_spec_crdt_8() {
-    let mut lp = net(2, 12);
-    let t = new_thing(&mut lp, 0);
-    let mut big = BTreeMap::new();
-    for i in 0..3000 {
-        big.insert(s(&format!("key-{i:05}")), s(&"x".repeat(40)));
-    }
-    let mut m = Mutation::new();
-    m.set(t, &BIG, &Value::Map(big.clone().into_iter().collect())).unwrap();
-    let id = lp.peers[0].commit(m).unwrap().unwrap();
-    let h = lp.peers[0].engine.header(&id).unwrap();
-    assert!(!h.chunks.is_empty(), "paged delta lists its pages");
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map(big.clone().into_iter().collect())));
-    // without its pages the commit waits; with them it applies
-    let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == id).unwrap();
-    for p in lp.packages(0).unwrap() {
-        if p.id != id {
-            lp.deliver(1, &p).unwrap();
-        }
-    }
-    let r = lp.peers[1].receive(&pk.bytes, Vec::new()).unwrap();
-    assert!(matches!(r, osis_node::Ingested::Pending(_, osis_node::Reason::WaitBlobs)), "{r:?}");
-    lp.deliver(1, &pk).unwrap();
-    lp.peers[1].reexamine().unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map(big.into_iter().collect())));
-    assert_eq!(lp.peers[0].engine.state(&t, &ak("t:big.0")).unwrap(), lp.peers[1].engine.state(&t, &ak("t:big.0")).unwrap());
 }
 
 // spec/crdt.md §5.7: lists and texts through the write path; concurrent inserts converge.

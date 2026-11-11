@@ -85,29 +85,12 @@ fn first_sync_batch_throws_nothing_out_spec_commits_4() {
     }
 }
 
-// spec/requirements.md (no unbounded storage from peer input), spec/commits.md §4: an entry
-// awaiting a record holds the entry alone: no bytes, no pending row, at n and 10n.
-#[test]
-fn awaiting_keeps_no_bytes_at_any_size_spec_commits_4() {
-    for n in [10u64, 100] {
-        let mut x = crate::parts_relay::case();
-        let c = x.c;
-        let good = crate::parts_relay::plain(&mut x.net, x.a, &c);
-        let ids: Vec<_> = (0..n).map(|i| x.give(crate::parts_relay::junk_parts(&good, (i % 251) as u8), c, 1000 + i)).collect();
-        let (b, l) = (x.b, x.l);
-        let entries = x.net.sync(b).entries(&l);
-        let awaiting = entries.iter().filter(|(id, k)| ids.contains(id) && matches!(k, EntryKind::Awaits { .. })).count();
-        assert_eq!(awaiting, n as usize, "at {n}");
-        assert!(ids.iter().all(|id| !x.net.sync(b).holds_blob(id)), "no bytes kept at {n}");
-        assert!(x.net.engine(b).pending().is_empty(), "no pending row at {n}");
-    }
-}
-
-// spec/requirements.md (no unbounded work from peer input), spec/commits.md §4: a record's arrival wakes
-// each entry awaiting it, once and no more, at n and 10n.
+// spec/requirements.md (no unbounded storage or work from peer input), spec/commits.md §4: an
+// entry awaiting a record holds the entry alone: no bytes, no pending row; a record's arrival
+// wakes each entry awaiting it, once and no more; at n and 10n.
 #[test]
 fn a_record_wakes_each_waiter_once_spec_commits_4() {
-    for n in [5u64, 50] {
+    for n in [10u64, 100] {
         let mut x = crate::parts_relay::case();
         let c = x.c;
         let good = crate::parts_relay::plain(&mut x.net, x.a, &c);
@@ -115,6 +98,8 @@ fn a_record_wakes_each_waiter_once_spec_commits_4() {
         let (b, l) = (x.b, x.l);
         let waiting = |x: &mut crate::parts_relay::Case| x.net.sync(b).entries(&l).iter().filter(|(id, k)| ids.contains(id) && matches!(k, EntryKind::Awaits { .. })).count();
         assert_eq!(waiting(&mut x), n as usize, "at {n}");
+        assert!(ids.iter().all(|id| !x.net.sync(b).holds_blob(id)), "no bytes kept at {n}");
+        assert!(x.net.engine(b).pending().is_empty(), "no pending row at {n}");
         let before = x.net.sync(b).pass_stats().awaits;
         x.give_record(9000);
         assert_eq!(waiting(&mut x), 0, "at {n}: woken");

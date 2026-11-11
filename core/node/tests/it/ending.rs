@@ -232,7 +232,9 @@ fn ending_work(parts: usize, others: usize) -> (crate::scale::Work, crate::scale
 }
 
 // spec/requirements.md Scale, spec/commits.md §5 (Ending): an ending costs the thing's own parts,
-// not their square and not the things beside it
+// not their square and not the things beside it: it rewrites only the store pages its own rows
+// sit on, however many other things the node holds (bytes follow the page size, so writes are
+// what is counted)
 #[test]
 fn ending_costs_the_things_parts_spec_commits_5() {
     let (a, b) = (ending_work(20, 5), ending_work(200, 5));
@@ -240,6 +242,7 @@ fn ending_costs_the_things_parts_spec_commits_5() {
     crate::scale::linear("bytes written by parts", a.0.io.written_bytes, b.0.io.written_bytes);
     let (a, b) = (ending_work(5, 20), ending_work(5, 200));
     crate::scale::flat("rebuilds by other things", a.0.n("rebuild"), b.0.n("rebuild"));
+    crate::scale::flat("store writes by other things", a.0.io.writes, b.0.io.writes);
 }
 
 // spec/commits.md §5 (Ending): the first admin's removal is authorised by a grant the ending keeps,
@@ -303,14 +306,6 @@ fn removal_racing_an_ending_converges_in_both_orders_spec_commits_5() {
         }
         assert_eq!(churn(&net), settled, "ending first {ending_first}: uploads and deletes go on");
     }
-}
-
-// spec/requirements.md Scale: an ending rewrites only the store pages its own rows sit on, however
-// many other things the node holds (bytes follow the page size, so writes are what is counted)
-#[test]
-fn ending_writes_flat_in_other_things_spec_commits_5() {
-    let (a, b) = (ending_work(5, 20), ending_work(5, 200));
-    crate::scale::flat("store writes by other things", a.0.io.writes, b.0.io.writes);
 }
 
 /// Whether a commit on `t` held at node `n` has a part on `t` waiting.

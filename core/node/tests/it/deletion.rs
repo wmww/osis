@@ -69,8 +69,8 @@ fn expired_leftover_dropped_once_covered_spec_commits_5() {
 }
 
 // spec/sync.md §7, spec/commits.md §5: compaction uploads the snapshot first, then drops and
-// deletes the covered bodies; a holder joining later reads the live value from the snapshot; the
-// carriers go `TOMBSTONE_LIFETIME` after the deletions.
+// deletes exactly the covered bodies, and the snapshot stays; a holder joining later reads the
+// live value from the snapshot; the carriers go `TOMBSTONE_LIFETIME` after the deletions.
 #[test]
 fn compaction_then_deletion_spec_sync_7() {
     let mut net = Net::new();
@@ -80,10 +80,12 @@ fn compaction_then_deletion_spec_sync_7() {
     net.blocked.insert((c, host));
     let g = net.group(a, &[(c, Role::Read)], &[host]);
     let t = net.item(a, g, g, "v1");
-    net.write(a, t, "v2");
-    net.write(a, t, "v3");
+    let c2 = net.write(a, t, "v2");
+    let c3 = net.write(a, t, "v3");
     net.run();
     let l = net.label(a);
+    let old: Vec<_> = [c2, c3].into_iter().flat_map(|c| blobs_of(&mut net, a, &l, c)).collect();
+    assert!(old.iter().all(|id| net.host_ids(host, &l).contains(id)));
     let before = net.host_ids(host, &l).len();
     let ak = Ak::new(REG.ak()).unwrap();
     let acts = net.sync(a).compact(&t, &ak).unwrap();
@@ -91,8 +93,15 @@ fn compaction_then_deletion_spec_sync_7() {
     net.run();
     net.run();
     net.trace(&[a]);
-    let after = net.host_ids(host, &l).len();
+    let ids = net.host_ids(host, &l);
+    let after = ids.len();
     assert!(after < before, "covered bodies deleted after the snapshot: {before} -> {after}");
+    assert!(old.iter().all(|id| !ids.contains(id)), "covered bodies deleted");
+    let snaps: Vec<_> = net.sync(a).entries(&l).into_iter().filter_map(|(id, k)| match k {
+        EntryKind::Commit { commit, .. } if net.engine(a).header(&commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot) => Some(id),
+        _ => None,
+    }).collect();
+    assert!(!snaps.is_empty() && snaps.iter().all(|id| ids.contains(id)), "the carrier snapshot stays");
     net.blocked.clear();
     net.advance(10_000);
     net.trace(&[c]);

@@ -288,7 +288,8 @@ fn creation_record_then_the_rest_join_spec_commits_4() {
 }
 
 // spec/commits.md §4 (a part waits alone): a page away holds back only its part, not the thing's
-// other part, synced or not.
+// other part, synced or not. spec/crdt.md §8, spec/commits.md §1: a delta above PAGE_TARGET pages;
+// its pages travel as blobs listed in the chunk list and the receiver applies it identically.
 #[test]
 fn pages_away_hold_back_only_their_part_spec_commits_4() {
     let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
@@ -300,6 +301,7 @@ fn pages_away_hold_back_only_their_part_spec_commits_4() {
         m.set(t, &REG, &s("r")).unwrap();
         m.set(t, &BIG, &Value::Map(map.clone())).unwrap();
         let id = lp.peers[0].commit(m).unwrap().unwrap();
+        assert!(!lp.peers[0].engine.header(&id).unwrap().chunks.is_empty(), "paged delta lists its pages");
         let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap();
         assert!(!pk.blobs.is_empty(), "paged");
         let e = &mut lp.peers[1].engine;
@@ -315,6 +317,8 @@ fn pages_away_hold_back_only_their_part_spec_commits_4() {
         e.reexamine().unwrap();
         assert_eq!(e.get_typed(&t, &BIG).unwrap(), Some(Value::Map(map.clone())));
         assert!(e.pending().is_empty(), "{:?}", e.pending());
+        let big = ak("t:big.0");
+        assert_eq!(lp.peers[0].engine.state(&t, &big).unwrap(), lp.peers[1].engine.state(&t, &big).unwrap(), "applied identically");
     }
 }
 

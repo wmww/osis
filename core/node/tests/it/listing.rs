@@ -383,20 +383,6 @@ fn author_items_are_bounded_spec_wire_4() {
 }
 
 
-// spec/wire.md §4: the wire form is told apart by its place, and round-trips.
-#[test]
-fn author_item_round_trips_spec_wire_4() {
-    let (mut lp, d, ids) = setup(405);
-    let c = purge(&mut lp, 0, PurgeItem::Author { tid: d, ak: reg(), actor: ids[1] });
-    let pk = pack(&mut lp, 0, &c);
-    let mut p = fresh(&mut lp, &[], 406);
-    let base = all(&mut lp, 0);
-    for x in base.iter().chain([&pk]) {
-        p.engine.ingest(&x.bytes, x.blobs.clone()).unwrap();
-    }
-    assert_eq!(p.engine.header(&c).unwrap().purge, vec![PurgeItem::Author { tid: d, ak: reg(), actor: ids[1] }]);
-}
-
 /// Every order of `n` items.
 fn perms(n: usize) -> Vec<Vec<usize>> {
     if n == 0 {

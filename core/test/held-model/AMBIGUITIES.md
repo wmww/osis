@@ -46,7 +46,7 @@ Entries 39 (required retention), 54-56 (snapshot history modes, D at a node with
 ## Others
 
 11. **Covered with value-less copies.** spec/commits.md §5 Covered: covering is the canonical-bytes join test, yet the MUST beside it says "(a value-less copy matches)". Under spec/crdt.md §4.1 the valued copy wins the join, so a snapshot holding a value-less copy of a body's valued write fails the test. Choice: the join test decides (not covered).
-   **Resolved** (a) The engine's join test decides (`retention::snapshot::covered`). Spec: a value-less copy is allowed under the MUST, and the join then leaves a valued body uncovered. Engine: retention.rs `valueless_copy_does_not_cover_valued_body_spec_commits_5`.
+   **Resolved** (a) The engine's join test decides (`retention::snapshot::covered`). Spec: a value-less copy is allowed under the MUST, and the join then leaves a valued body uncovered. Engine: validity.rs `valueless_copy_loses_to_held_value_spec_crdt_4_7`.
 
 12. **"Explicit demotion below write" is not defined in §5.1's terms.** spec/permissions.md §5.1 defines demotion as a class fall (edge admin, invite); §5.2 uses "explicit demotion of X below write on N". Choice: an applied edge write by another author taking X's role from at least the need to below it (`roles.rs`, `demotions`).
    **Resolved** (a) The engine's definition is notes/permissions.md's (perm `walk.rs` `audit_fall`): an explicit write by another author that demotes X (§5.1 step 4) from write or above, the edge as restored. spec/permissions.md §5.2 now defines it. The model's single-edge version is that rule within its scope (no actors, until or invites).

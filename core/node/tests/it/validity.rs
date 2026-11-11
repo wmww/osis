@@ -1642,6 +1642,10 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
 // spec/permissions.md §5.2: Carol's snapshot carries Bob's write value-less, as an honest one
 // taken after a purge not yet seen here would. Where Bob's commit is held its value stays;
 // a node holding only the snapshot reads the write as absent until it holds the commit.
+// spec/commits.md §5 (covering copies: payload compared only where the body's write has one):
+// the value-less copy is covered by a later snapshot holding the write valued, as joining it
+// changes nothing (else no honest snapshot would ever cover it while the write lives); covering
+// is the join test, so the value-less copy never covers the valued body.
 #[test]
 fn valueless_copy_loses_to_held_value_spec_crdt_4_7() {
     use osis_crdt::{Writer, create};
@@ -1661,9 +1665,18 @@ fn valueless_copy_loses_to_held_value_spec_crdt_4_7() {
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     let forged = forge_snapshot(&mut lp, 2, d, &reg, now, f);
-    lp.peers[0].receive(&forged, Vec::new()).unwrap();
+    let vl = match lp.peers[0].receive(&forged, Vec::new()).unwrap() {
+        Ingested::Applied(id) => id,
+        other => panic!("{other:?}"),
+    };
     lp.peers[0].reexamine().unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("real")), "the held value wins");
+    lp.advance(1_000);
+    let e = &mut lp.peers[0].engine;
+    let later = e.snapshot(&d, &reg).unwrap().unwrap();
+    assert_eq!(e.covered(&later, &vl, &d, &reg).unwrap(), Some(true), "the value-less copy is covered");
+    assert_eq!(e.covered(&later, &real, &d, &reg).unwrap(), Some(true), "the valued body is covered");
+    assert_eq!(e.covered(&vl, &real, &d, &reg).unwrap(), Some(false), "a value-less copy never covers a valued body");
     lp.peers.push(osis_node::local_peer::Peer::new(0x5fe1, lp.peers[0].engine.now()).unwrap());
     for p in &base {
         lp.deliver(3, p).unwrap();
@@ -1675,40 +1688,6 @@ fn valueless_copy_loses_to_held_value_spec_crdt_4_7() {
     lp.peers[3].reexamine().unwrap();
     assert_eq!(lp.peers[3].engine.get(&d, &reg).unwrap(), Some(s("real")), "with the commit");
     assert_eq!(lp.peers[3].engine.state(&d, &reg).unwrap(), lp.peers[0].engine.state(&d, &reg).unwrap(), "states alike");
-}
-
-// spec/commits.md §5 (covering copies: payload compared only where the body's write has one):
-// a writer's snapshot holding a write value-less (its writer held a purge this node does not,
-// or one that fell since) is covered by a later snapshot holding the write valued, as joining
-// it changes nothing; else no honest snapshot would ever cover it while the write lives.
-#[test]
-fn valueless_copy_covered_by_valued_snapshot_spec_commits_5() {
-    use osis_crdt::{Writer, create};
-    let (mut lp, d, b, _) = setup(0x5fe8);
-    let mut m = Mutation::new();
-    m.set(d, &REG, &s("real")).unwrap();
-    let real = lp.peers[1].commit(m).unwrap().unwrap();
-    sync(&mut lp, 1, 0);
-    let h = lp.peers[1].engine.header(&real).unwrap();
-    let reg = ak("t:reg.0");
-    let lo = h.aspects.iter().find(|x| x.tid == d && x.ak == reg).unwrap().lo;
-    let mut w = Writer::new(h.ts, h.form.own_source(b, osis_base::CommitId([0; 32])), lo);
-    let mut f = create(&mut w, &osis_crdt::AnyView, &s("real")).unwrap();
-    f.strip(&|_| true);
-    lp.advance(1_000);
-    let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
-    let vl = forge_snapshot(&mut lp, 2, d, &reg, now, f);
-    let vl = match lp.peers[0].receive(&vl, Vec::new()).unwrap() {
-        Ingested::Applied(id) => id,
-        other => panic!("{other:?}"),
-    };
-    lp.advance(1_000);
-    let e = &mut lp.peers[0].engine;
-    assert_eq!(e.get(&d, &reg).unwrap(), Some(s("real")), "the held value wins");
-    let later = e.snapshot(&d, &reg).unwrap().unwrap();
-    assert_eq!(e.covered(&later, &vl, &d, &reg).unwrap(), Some(true), "the value-less copy is covered");
-    assert_eq!(e.covered(&later, &real, &d, &reg).unwrap(), Some(true), "the valued body is covered");
-    assert_eq!(e.covered(&vl, &real, &d, &reg).unwrap(), Some(false), "a value-less copy never covers a valued body");
 }
 
 // spec/requirements.md, Threat model ("malicious readers can only waste storage"), Decentralization;

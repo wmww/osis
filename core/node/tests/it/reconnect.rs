@@ -76,31 +76,24 @@ fn idle_reconnect(n: usize) -> (std::collections::BTreeMap<u64, usize>, usize, V
 
 // issues/net-reconnect.md (What a reconnect sends): an idle reconnect, nothing changed on either
 // side, sends no message per sync ID: no Offer, Lost or Members, no join, and the same messages
-// and about the same bytes at n and 10n
+// and about the same bytes at n and 10n. spec/sync.md §10 (Agreement): the digests of two equal
+// records match at any size: one 32-byte Digest each way, no list
 #[test]
 fn an_idle_reconnect_sends_no_per_sync_id_message_spec_sync_10() {
-    let (k1, b1, _) = idle_reconnect(3);
-    let (k10, b10, _) = idle_reconnect(30);
+    let (k1, b1, d1) = idle_reconnect(3);
+    let (k10, b10, d10) = idle_reconnect(30);
+    for (n, kinds, digests) in [(3, &k1, d1), (30, &k10, d10)] {
+        assert_eq!(kinds.get(&DIGEST), Some(&2), "one each way at {n}");
+        assert_eq!(digests.len(), 2);
+        assert_eq!(digests[0], digests[1], "equal records, equal digests at {n}");
+        assert_ne!(digests[0], [0; 32], "a digest of a non-empty S");
+    }
     for k in [OFFER, LOST, MEMBERS] {
         assert_eq!((k1.get(&k), k10.get(&k)), (None, None), "kind {k}: {k1:?} {k10:?}");
     }
     assert_eq!(k1, k10, "the same messages at n and 10n");
     assert!(b10 <= b1 + 64, "bytes {b1} at n, {b10} at 10n");
     assert!(b10 < 4096, "an idle reconnect is small: {b10} bytes");
-}
-
-// spec/sync.md §10 (Agreement): the digests of two equal records match at any size: one 32-byte
-// Digest each way, no list
-#[test]
-fn the_digests_of_equal_records_match_at_any_size_spec_sync_10() {
-    for n in [3, 30] {
-        let (kinds, _, digests) = idle_reconnect(n);
-        assert_eq!(kinds.get(&DIGEST), Some(&2), "one each way at {n}");
-        assert_eq!(digests.len(), 2);
-        assert_eq!(digests[0], digests[1], "equal records, equal digests at {n}");
-        assert_ne!(digests[0], [0; 32], "a digest of a non-empty S");
-        assert_eq!(kinds.get(&MEMBERS), None);
-    }
 }
 
 /// The record node `n` keeps for `peer`'s account.

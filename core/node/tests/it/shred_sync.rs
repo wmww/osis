@@ -59,24 +59,18 @@ fn settle_offline(net: &mut Net, b: usize, f: &Faults) {
 
 // spec/commits.md §5 (a purge drops every local copy), spec/requirements.md Deletion: at a node
 // that synced the body (its sealed blob, blob key and wrap held by node-sync), a purge leaves
-// nothing of it in rows, blobs, wraps or keys, online (syncing on) or offline
+// nothing of it in rows, blobs, wraps or keys, online (syncing on; offline: the last, crash-free
+// run of `purged_synced_body_crash_safe_spec_commits_5`)
 #[test]
 fn purged_synced_body_unrecoverable_spec_commits_5() {
-    for online in [true, false] {
-        let f = Faults::new();
-        let (mut net, b, t, c) = synced(&f);
-        net.set_online(b, online);
-        purge(&mut net, b, t, c).unwrap();
-        if online {
-            net.feed(b, Event::Local);
-            net.run();
-        } else {
-            settle_offline(&mut net, b, &f);
-        }
-        assert!(!net.engine(b).body_not_dropped(&c, &t, &gone()));
-        let found = net.forensic(b, MARK.as_bytes());
-        assert!(found.is_empty(), "online {online}: purged content recovered from {found:?}");
-    }
+    let f = Faults::new();
+    let (mut net, b, t, c) = synced(&f);
+    purge(&mut net, b, t, c).unwrap();
+    net.feed(b, Event::Local);
+    net.run();
+    assert!(!net.engine(b).body_not_dropped(&c, &t, &gone()));
+    let found = net.forensic(b, MARK.as_bytes());
+    assert!(found.is_empty(), "purged content recovered from {found:?}");
 }
 
 // spec/commits.md §5, §4 (a transaction lands whole or not at all): a crash at any write of the

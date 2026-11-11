@@ -566,87 +566,59 @@ fn replaced_label_dropped_when_admin_edge_expires_spec_sync_2() {
 // spec/sync.md §3 (inbox), spec/crypto.md §4 (secrets of a pending commit kept for reading;
 // decided): a grant reaches another account's node only as an inbox
 // blob; it opens the pending grant's boxes, reaches the group's label from the blob's hints,
-// downloads the group's chain and content, and the grant applies.
+// downloads the group's chain and content, and the grant applies. spec/crypto.md §4,
+// spec/permissions.md §3: a grant by inbox carries the history boxes of the epochs it boxes: the
+// grantee reads content placed (and synced up) before the grant and the grant does not stay
+// pending. Granted before the label's first sync, and after content went up.
 #[test]
 fn grant_by_inbox_end_to_end_spec_sync_3() {
-    let mut net = Net::bare();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let addr = net.address(host);
-    let (alice, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
-    let (bob, done) = net.engine(b).create_account(std::slice::from_ref(&addr)).unwrap();
-    let acts = net.sync(b).carry_out(done).unwrap();
-    net.actions(b, acts);
-    net.run();
-    // Alice's node knows Bob's card (his `keys.0`), nothing more travels directly
-    net.pair(b, a);
-    let e = net.engine(a);
-    let mut m = Mutation::new();
-    let g = e.new_thing(&mut m, alice.account);
-    m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
-    e.commit(m).unwrap();
-    // label, grant, content, then the first sync
-    let (_, done) = net.engine(a).create_label(&g, &[addr]).unwrap();
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-    let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
-    assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::Inbox { .. })));
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
-    let t = net.item(a, g, g, "for bob");
-    for _ in 0..3 {
-        net.advance(70_000);
+    for synced_first in [false, true] {
+        let mut net = Net::bare();
+        let host = net.add_host();
+        let a = net.node(1, &[host]);
+        let b = net.node(2, &[host]);
+        let addr = net.address(host);
+        let (alice, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
+        let acts = net.sync(a).carry_out(done).unwrap();
+        net.actions(a, acts);
+        let (bob, done) = net.engine(b).create_account(std::slice::from_ref(&addr)).unwrap();
+        let acts = net.sync(b).carry_out(done).unwrap();
+        net.actions(b, acts);
+        net.run();
+        // Alice's node knows Bob's card (his `keys.0`), nothing more travels directly
+        net.pair(b, a);
+        let e = net.engine(a);
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, alice.account);
+        m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
+        e.commit(m).unwrap();
+        let (_, done) = net.engine(a).create_label(&g, &[addr]).unwrap();
+        let acts = net.sync(a).carry_out(done).unwrap();
+        net.actions(a, acts);
+        // content first, synced up, then the grant; or the grant, content, then the first sync
+        let before = synced_first.then(|| {
+            let t = net.item(a, g, g, "before bob");
+            for _ in 0..3 {
+                net.advance(70_000);
+            }
+            t
+        });
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+        let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
+        assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::Inbox { .. })));
+        let acts = net.sync(a).carry_out(done).unwrap();
+        net.actions(a, acts);
+        let t = net.item(a, g, g, "for bob");
+        for _ in 0..3 {
+            net.advance(70_000);
+        }
+        net.trace(&[a, b]);
+        assert!(net.engine(b).pending().is_empty(), "the grant applied: {:?}", net.engine(b).pending());
+        assert_eq!(net.read(b, t), Some(s("for bob")));
+        if let Some(t) = before {
+            assert_eq!(net.read(b, t), Some(s("before bob")));
+        }
     }
-    net.trace(&[a, b]);
-    assert!(net.engine(b).pending().is_empty(), "the grant applied: {:?}", net.engine(b).pending());
-    assert_eq!(net.read(b, t), Some(s("for bob")));
-}
-
-// spec/crypto.md §4, spec/permissions.md §3, spec/sync.md §3: a grant by inbox carries the
-// history boxes of the epochs it boxes: the grantee reads content placed before the grant and
-// the grant does not stay pending.
-#[test]
-fn grant_by_inbox_reads_earlier_content_spec_crypto_4() {
-    let mut net = Net::bare();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let addr = net.address(host);
-    let (alice, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
-    let (bob, done) = net.engine(b).create_account(std::slice::from_ref(&addr)).unwrap();
-    let acts = net.sync(b).carry_out(done).unwrap();
-    net.actions(b, acts);
-    net.run();
-    net.pair(b, a);
-    let e = net.engine(a);
-    let mut m = Mutation::new();
-    let g = e.new_thing(&mut m, alice.account);
-    m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
-    e.commit(m).unwrap();
-    let (_, done) = net.engine(a).create_label(&g, &[addr]).unwrap();
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
-    // content first, synced up, then the grant
-    let t = net.item(a, g, g, "before bob");
-    for _ in 0..3 {
-        net.advance(70_000);
-    }
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-    let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
-    for _ in 0..3 {
-        net.advance(70_000);
-    }
-    net.trace(&[a, b]);
-    assert!(net.engine(b).pending().is_empty(), "the grant applied: {:?}", net.engine(b).pending());
-    assert_eq!(net.read(b, t), Some(s("before bob")));
 }
 
 /// Seeded pseudo-random bytes.
