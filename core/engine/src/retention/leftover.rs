@@ -44,6 +44,8 @@ impl Leftover {
 /// The leftover of part `ai` of `c` on `(tid, ak)`, if kept (an applied part's, `Meta::stripped`,
 /// or a waiting part's).
 pub(crate) fn get(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Result<Option<Leftover>> {
+    // stamped with its record (`put`, `remove`)
+    tx.core.records_read.read(c);
     tx.txn.get_local(&records::leftover_key(tid, ak, c, ai))?.as_deref().map(Leftover::decode).transpose()
 }
 

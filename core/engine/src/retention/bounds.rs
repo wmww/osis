@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::Header;
 use osis_crdt::{ByWrite, Fragment, Winners, Won};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// `Engine::body_live` in `tx`: any delta of the body's class live (`delta_live`).
@@ -169,14 +169,21 @@ fn part_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Res
 /// history: no date is read from which body holds a write, the cover carries the body's live
 /// writes with their stamps, and any write it alone dated was replaced no later than it
 /// (notes/engine-retention.md Replaced, the covered-drop invariant). A node holding more bodies
-/// dates no later. Invalid parts and bare leftovers (no values to keep) are not judged. Cost: the
-/// part judged, and the aspect's held bodies read once for every judgment until something
-/// changes (`held_writes`).
+/// dates no later. Invalid parts and bare leftovers (no values to keep) are not judged. A memo
+/// (`Core::replaced_dates`): judged again only when what it read moved (the aspect's held
+/// bodies, their validity and the state), the aspect's held bodies read once for every
+/// judgment until then (`held_writes`).
 pub(super) fn dated_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<Ts>> {
     let Some(a) = h.aspects.get(ai) else { return Ok(None) };
     if a.ak.signal() {
         return Ok(Some(h.ts));
     }
+    crate::engine::memo::Memo::get_in(tx, |tx| &tx.core.replaced_dates, &(*c, ai), |tx| judge_replaced_at(tx, h, c, ai))
+}
+
+/// `dated_replaced_at` judged anew.
+fn judge_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<Ts>> {
+    let Some(a) = h.aspects.get(ai) else { return Ok(None) };
     let (tid, ak) = (a.tid, a.ak.clone());
     if held_part(tx.core, c, &tid, &ak) != Some(ai) || tx.core.ix.commits.get(c).is_none_or(|m| m.bare(ai) || !m.valid_at(ai)) {
         return Ok(None);
@@ -204,7 +211,7 @@ pub(super) fn dated_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: u
 }
 
 /// What `dated_replaced_at` reads of the held bodies of an aspect, by write (`osis_crdt::ByWrite`).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub(crate) struct HeldWrites {
     /// The writes each held body holds, winning there or not (`Fragment::held_writes`), as the
     /// state joins it (an invalid delta's writes left out, from a valid snapshot only what it
@@ -216,70 +223,9 @@ pub(crate) struct HeldWrites {
     carried: ByWrite<Vec<(Ts, CommitId)>>,
 }
 
-impl HeldWrites {
-    fn len(&self) -> usize {
-        self.holds.len() + self.carried.len()
-    }
-}
-
-/// `HeldWrites` of some aspects, kept while `at` is the engine's (`generation`,
-/// `memory_generation`): built and read only in a transaction that changed nothing yet
-/// (`Core::dirty`), so every change to a held body, its validity or a state forgets them.
-#[derive(Clone, Default)]
-pub(crate) struct HeldWritesCache {
-    at: (u64, u64),
-    aspects: BTreeMap<(Tid, Ak), Arc<HeldWrites>>,
-    writes: usize,
-    /// Debug builds: hits, the 1st, 4th, 16th, ... checked against a fresh read.
-    #[cfg(debug_assertions)]
-    hits: u64,
-}
-
-/// Writes `Core::held_writes` may hold in all, but for the aspect read last. Performance switch:
-/// past it the others are forgotten. 0: only the aspect read last is kept (a pass judging
-/// bodies of several aspects in turn reads each again per judgment); infinity: every aspect
-/// judged since the last change stays in memory.
-const HELD_WRITES_MAX: usize = 1 << 20;
-
-/// `HeldWrites` of `(tid, ak)`, through `Core::held_writes` (`HeldWritesCache`).
+/// `HeldWrites` of `(tid, ak)`, through `Core::held_writes` (a memo).
 fn held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Arc<HeldWrites>> {
-    let k = (*tid, ak.clone());
-    if let Some(memo) = &tx.core.held_writes_memo {
-        if let Some(x) = memo.get(&k) {
-            return Ok(x.clone());
-        }
-        let x = Arc::new(read_held_writes(tx, tid, ak)?);
-        if let Some(memo) = &mut tx.core.held_writes_memo {
-            memo.insert(k, x.clone());
-        }
-        return Ok(x);
-    }
-    let at = (tx.core.generation, tx.core.memory_generation);
-    let clean = !tx.core.dirty;
-    if clean && tx.core.held_writes.at == at
-        && let Some(x) = tx.core.held_writes.aspects.get(&k).cloned()
-    {
-        #[cfg(debug_assertions)]
-        {
-            let hits = &mut tx.core.held_writes.hits;
-            *hits += 1;
-            if hits.is_power_of_two() && hits.trailing_zeros().is_multiple_of(2) {
-                let fresh = crate::costs::paused(|| read_held_writes(tx, tid, ak))?;
-                assert_eq!(format!("{fresh:?}"), format!("{x:?}"), "stale held writes of {tid:?} {}", ak.as_str());
-            }
-        }
-        return Ok(x);
-    }
-    let x = Arc::new(read_held_writes(tx, tid, ak)?);
-    if clean && !tx.core.dirty && (tx.core.generation, tx.core.memory_generation) == at {
-        let cache = &mut tx.core.held_writes;
-        if cache.at != at || cache.writes + x.len() > HELD_WRITES_MAX {
-            *cache = HeldWritesCache { at, ..HeldWritesCache::default() };
-        }
-        cache.writes += x.len();
-        cache.aspects.insert(k, x.clone());
-    }
-    Ok(x)
+    crate::engine::memo::Memo::get_in(tx, |tx| &tx.core.held_writes, &(*tid, ak.clone()), |tx| read_held_writes(tx, tid, ak).map(Arc::new))
 }
 
 /// `HeldWrites` of `(tid, ak)` read anew: every held body of the aspect, each part whole.

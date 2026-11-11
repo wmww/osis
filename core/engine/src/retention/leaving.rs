@@ -294,7 +294,7 @@ pub(crate) enum Dating {
     /// (`Killed::at`): its row is set no earlier, never moved earlier, no body read.
     Killed(Ts),
     /// Dated from the held set (`bounds::dated_replaced_at`: the aspect's held bodies read once
-    /// per transaction): a rebuild, and every held part of an aspect turning dated (`true`: a row
+    /// while they do not change): a rebuild, and every held part of an aspect turning dated (`true`: a row
     /// landing in history is told).
     Full(bool),
 }
@@ -323,7 +323,7 @@ fn row_at(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, how: Dating, old: O
 /// At a transaction's end: the rows of the parts whose date may have moved (`Core::to_date`: a
 /// kill sets the rows of the dying writes' own commits and the aspect's snapshots no earlier than
 /// the killing writes, reading no body; a rebuild and an aspect turning dated date whole, the aspect's held bodies read once for
-/// all, `Core::held_writes_memo`), and of every part with a row or stripped whose meta changed. So
+/// all, `Core::held_writes`), and of every part with a row or stripped whose meta changed. So
 /// a row is a schedule that is never early: the date it holds is the part's replaced-at or later
 /// (an earlier superseder arriving, or the killing writes stamped after the first superseder,
 /// leave it late). A row that moves is marked for node-sync, and told where it crosses the clock;
@@ -353,41 +353,35 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
     }
     let now = tx.now().0;
     let mut kept: BTreeMap<(Tid, Ak), history::Kept> = BTreeMap::new();
-    tx.core.held_writes_memo = Some(BTreeMap::new());
-    let r = (|| -> Result<()> {
-        for ((tid, ak, c), how) in items {
-            if ak.signal() {
-                continue;
-            }
-            let k = kept.entry((tid, ak.clone())).or_insert_with(|| history::of(tx.core, &tid, &ak)).clone();
-            let old = tx.core.ix.dated.get(&(c, tid, ak.clone())).copied();
-            let new = if k.dated() { row_at(tx, &c, &tid, &ak, how, old)? } else { None };
-            if old == new {
-                continue;
-            }
-            drop(crate::costs::span("leaving: row dated"));
-            // a part replaced or dropped is told by its own change (`listing_moved`,
-            // `commit_changes`); a row dated anew, where it crosses the clock
-            let was = old.is_some_and(|o| leaves(&k, o) > now);
-            let crossed = (old.is_some() || how == Dating::Full(true)) && was != new.is_some_and(|n| leaves(&k, n) > now);
-            if let Some(t) = old {
-                remove_row(tx, &tid, &ak, (t, c))?;
-            }
-            if let Some(t) = new {
-                put_row(tx, &tid, &ak, (t, c))?;
-                let f = tx.core.ix.leave_from.get(&(tid, ak.clone())).copied().unwrap_or((u64::MAX, None));
-                let out = if leaves(&k, t) > now { before(tx.core, &tid, &ak, f.1, (t, c)) } else { f.1 };
-                set_from(tx, &tid, &ak, Some((f.0, out)))?;
-            }
-            tx.core.mark_changed(c);
-            if crossed && crate::engine::listing::listened(tx.core, &tid, &ak) {
-                tx.core.commits_named(tid, ak.clone(), c);
-            }
+    for ((tid, ak, c), how) in items {
+        if ak.signal() {
+            continue;
         }
-        Ok(())
-    })();
-    tx.core.held_writes_memo = None;
-    r?;
+        let k = kept.entry((tid, ak.clone())).or_insert_with(|| history::of(tx.core, &tid, &ak)).clone();
+        let old = tx.core.ix.dated.get(&(c, tid, ak.clone())).copied();
+        let new = if k.dated() { row_at(tx, &c, &tid, &ak, how, old)? } else { None };
+        if old == new {
+            continue;
+        }
+        drop(crate::costs::span("leaving: row dated"));
+        // a part replaced or dropped is told by its own change (`listing_moved`,
+        // `commit_changes`); a row dated anew, where it crosses the clock
+        let was = old.is_some_and(|o| leaves(&k, o) > now);
+        let crossed = (old.is_some() || how == Dating::Full(true)) && was != new.is_some_and(|n| leaves(&k, n) > now);
+        if let Some(t) = old {
+            remove_row(tx, &tid, &ak, (t, c))?;
+        }
+        if let Some(t) = new {
+            put_row(tx, &tid, &ak, (t, c))?;
+            let f = tx.core.ix.leave_from.get(&(tid, ak.clone())).copied().unwrap_or((u64::MAX, None));
+            let out = if leaves(&k, t) > now { before(tx.core, &tid, &ak, f.1, (t, c)) } else { f.1 };
+            set_from(tx, &tid, &ak, Some((f.0, out)))?;
+        }
+        tx.core.mark_changed(c);
+        if crossed && crate::engine::listing::listened(tx.core, &tid, &ak) {
+            tx.core.commits_named(tid, ak.clone(), c);
+        }
+    }
     for ((tid, ak), k) in kept {
         rearm(tx, &tid, &ak, &k)?;
     }

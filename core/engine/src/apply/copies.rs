@@ -48,6 +48,8 @@ const COPY_CACHE_MAX: usize = 1 << 20;
 pub(crate) fn copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Arc<osis_crdt::CopyIndex>>> {
     let k = (*tid, ak.clone());
     if let Some(ix) = tx.core.copy_index.get(s).and_then(|m| m.get(&k)).cloned() {
+        // built from its record or leftover, stamped by record (`Tx::get_commit`, `leftover::get`)
+        tx.core.records_read.read(s);
         // debug builds: a cached index is the one its stored body or leftover gives now (the
         // cache is forgotten with every change to them, `Core::copy_index`)
         #[cfg(debug_assertions)]

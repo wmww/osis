@@ -1206,6 +1206,43 @@ mod tests {
         assert_eq!(walks(200), w, "walks per judgment grow with the deaths");
     }
 
+    // spec/commits.md §5 (replaced), issues/derived-state-recomputed.md: a replaced body's keep
+    // bound is judged once per change of what it reads (its aspect's held bodies and state): asked
+    // again, or after writes on another aspect, it reads no body and judges no death.
+    #[test]
+    fn replaced_bound_judged_once_per_change_of_its_aspect_spec_commits_5() {
+        let mut lp = LocalPeer::new(1, 954, WallMs(1_700_000_000_000)).unwrap();
+        let a = lp.peers[0].engine.me();
+        let (x, y) = (Ak::new("x:m.0").unwrap(), Ak::new("x:n.0").unwrap());
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let write = |lp: &mut LocalPeer, ak: &Ak, v: i64| {
+            let mut m = Mutation::new();
+            m.set(t, ak, &Value::Int(v)).unwrap();
+            lp.advance(10);
+            lp.peers[0].commit(m).unwrap().unwrap()
+        };
+        let first = write(&mut lp, &x, 1);
+        write(&mut lp, &x, 2);
+        let judged = |lp: &mut LocalPeer| {
+            crate::costs::take();
+            let k = lp.peers[0].engine.body_keeps(&first).unwrap();
+            let n = |name: &str, c: &[(&str, std::time::Duration, u64)]| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
+            let c = crate::costs::take();
+            (k, n("replaced at", &c) + n("held writes", &c) + n("deaths: a body", &c))
+        };
+        let (k, n) = judged(&mut lp);
+        assert!(n > 0 && k.iter().any(|k| *k > 0), "judged: {k:?}");
+        assert_eq!(judged(&mut lp), (k.clone(), 0), "asked again");
+        write(&mut lp, &y, 1);
+        write(&mut lp, &y, 2);
+        assert_eq!(judged(&mut lp), (k.clone(), 0), "writes on another aspect");
+        write(&mut lp, &x, 3);
+        assert!(judged(&mut lp).1 > 0, "a write on its aspect");
+    }
+
     // spec/commits.md §5, spec/crypto.md §7, spec/requirements.md Purge on replace: a writer whose
     // delete keys of the thing are not here writes nothing on it, so the replacement applies there
     // (no refused own snapshot fails the receive) and the replaced body stays; once the keys come it

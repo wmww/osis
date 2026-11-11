@@ -995,12 +995,12 @@ pub struct Core {
     /// While a held snapshot is judged against many bodies (`retention::memory::drop_covered`
     /// for a new one): its held part, read once (`retention::covered`).
     pub(crate) cover_cache: Option<CoverCache>,
-    /// What judging when bodies were replaced reads of aspects' held bodies
-    /// (`retention::bounds::held_writes`), kept while nothing changes.
-    pub(crate) held_writes: crate::retention::bounds::HeldWritesCache,
-    /// `held_writes` per aspect while `retention::leaving::date_due` runs, at a transaction's end
-    /// when nothing it reads changes any more.
-    pub(crate) held_writes_memo: Option<BTreeMap<(Tid, Ak), Arc<crate::retention::bounds::HeldWrites>>>,
+    /// What judging when bodies were replaced reads of an aspect's held bodies, per aspect
+    /// (`retention::bounds::held_writes`, `memo`).
+    pub(crate) held_writes: memo::Memo<(Tid, Ak), Arc<crate::retention::bounds::HeldWrites>>,
+    /// When each held part was replaced, per (commit, aspect index)
+    /// (`retention::bounds::dated_replaced_at`, `memo`).
+    pub(crate) replaced_dates: memo::Memo<(CommitId, usize), Option<osis_base::Ts>>,
     /// At or before the earliest retention timer held (wall ms; `u64::MAX`: none): set by
     /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
     pub timer_floor: u64,
@@ -1186,7 +1186,7 @@ impl Core {
             batched: self.batched.clone(),
             cover_cache: self.cover_cache.clone(),
             held_writes: self.held_writes.clone(),
-            held_writes_memo: self.held_writes_memo.clone(),
+            replaced_dates: self.replaced_dates.clone(),
             timer_floor: self.timer_floor.clone(),
             none_due: self.none_due.clone(),
             settings_due: self.settings_due.clone(),
@@ -1592,8 +1592,6 @@ impl Core {
             self.copy_index.clear();
             self.decoded.clear();
             self.cover_cache = None;
-            self.held_writes = Default::default();
-            self.held_writes_memo = None;
             self.records_read.wrote_all();
             if self.memory_tx {
                 self.memory_generation += 1;
@@ -1673,6 +1671,8 @@ impl Core {
             acting_of: _,
             labels: _,
             links: _,
+            held_writes: _,
+            replaced_dates: _,
             // caches, dropped when anything changed (`states` and `pages` per written aspect)
             states: _,
             pages: _,
@@ -1686,8 +1686,6 @@ impl Core {
             copy_index: _,
             decoded: _,
             cover_cache: _,
-            held_writes: _,
-            held_writes_memo: _,
             generation: _,
             role_generation: _,
             memory_generation: _,
@@ -1908,8 +1906,8 @@ impl Core {
             valueless_dirty: BTreeSet::new(),
             batched: None,
             cover_cache: None,
-            held_writes: Default::default(),
-            held_writes_memo: None,
+            held_writes: memo::Memo::new("held writes"),
+            replaced_dates: memo::Memo::new("replaced at"),
             timer_floor: 0,
             none_due: BTreeSet::new(),
             cover_candidates: BTreeMap::new(),

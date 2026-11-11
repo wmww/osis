@@ -98,7 +98,7 @@ fn on_path<'a, V>(m: &'a BTreeMap<Vec<Place>, V>, w: &'a Won) -> impl Iterator<I
 /// Writes by position, each with a note: writes of several fragments (`note`: their winners, or
 /// every write they hold, `Fragment::held_writes`), read
 /// by write (`get`) or by the earliest of those superseding one (`first_superseding`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ByWrite<T>(BTreeMap<Vec<Place>, BTreeMap<(Kind, Stamp), T>>);
 
 impl<T> Default for ByWrite<T> {
