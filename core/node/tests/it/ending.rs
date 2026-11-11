@@ -1174,3 +1174,76 @@ fn removing_an_ended_only_admin_of_a_plain_thing_is_refused_spec_permissions_1()
     let err = net.engine(b).demote(&x, &d).err();
     assert!(matches!(err, Some(osis_node::Error::Misuse(m)) if m.contains("no admin")), "refused: {err:?}");
 }
+
+// spec/commits.md §5 (The ending travels with the record), spec/permissions.md §4: t, first admin
+// of x and outside g's closure, is purged; time passes, so every node judges what sits under g's
+// label, and then a node is granted g. The request ending t stays there for x's sake (every node
+// holding x needs it), so the newcomer reads t as ended as the others do
+#[test]
+fn a_purge_ending_stays_under_a_dependents_label_for_a_newcomer_spec_commits_5() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let mut m = Mutation::new();
+    let t = net.engine(a).new_thing(&mut m, g);
+    m.set(t, &REG, &s("t")).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let tb = net.tid(b);
+    net.grant(a, t, tb, Role::Admin);
+    net.run();
+    let x = net.item(a, g, t, "x");
+    net.run();
+    net.advance(10);
+    end(&mut net, a, t);
+    net.run();
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    for n in [a, b, c] {
+        assert!(!net.engine(n).knows(&t), "node {n}: t ended");
+    }
+    let d = granted_later(&mut net, a, g);
+    assert_eq!(net.read(d, x), Some(s("x")), "d: x reads");
+    assert!(net.engine(d).core.created(&t).is_some(), "d: t's record, x names it");
+    assert!(!net.engine(d).knows(&t), "d: t ended");
+    assert_eq!(net.engine(d).roster(&x), net.engine(a).roster(&x), "d: x's roster as at a");
+}
+
+// spec/commits.md §5 (The ending travels with the record), spec/permissions.md §4, notes/growth.md:
+// the certificates of an ended thing outside the closure (its minting's header, the request ending
+// it) stay under g's label while x, a dependent of it, is in the closure, and go once x ends: no
+// node finds a dependent there any more
+#[test]
+fn an_ended_things_certificates_leave_the_label_with_its_last_dependent_spec_commits_5() {
+    let Setup { mut net, a, b, g, .. } = setup();
+    let l = net.label(a);
+    let mut m = Mutation::new();
+    let t = net.engine(a).new_thing(&mut m, g);
+    m.set(t, &REG, &s("t")).unwrap();
+    let mint = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let tb = net.tid(b);
+    net.grant(a, t, tb, Role::Admin);
+    net.run();
+    let x = net.item(a, g, t, "x");
+    net.run();
+    net.advance(10);
+    let req = end(&mut net, a, t);
+    net.run();
+    let at_host = |net: &mut Net, c: CommitId| {
+        let host = net.host_ids(0, &l);
+        net.sync(a).entries(&l).into_iter().any(|(id, k)| host.contains(&id) && matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c))
+    };
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(at_host(&mut net, mint) && at_host(&mut net, req), "t's minting and ending under g's label for x");
+    net.advance(10);
+    end(&mut net, a, x);
+    net.run();
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(!net.engine(a).knows(&x), "x ended");
+    assert!(!at_host(&mut net, mint), "t's minting header gone with its last dependent");
+    assert!(!at_host(&mut net, req), "the request ending t gone with its last dependent");
+}

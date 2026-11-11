@@ -278,7 +278,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - After any other fallback it is only not present there.
 - One connection may sync many labels; a blob under several of them SHOULD cross it once (spec/wire.md §11).
 - **Convergence**: a label's **required set** is its closure blobs (§3) plus what is placed there from outside the closure:
-  - the certificate blobs of spec/permissions.md §4, judged by the deltas a blob holds, whatever else its commit writes, a list blob by its thing lists, a record blob by its records (never must-not-hold: no delete key covers it);
+  - the certificate blobs of spec/permissions.md §4, judged by the deltas a blob holds, whatever else its commit writes, a list blob by its thing lists, a record blob by its records (never must-not-hold: no delete key covers it); an ended thing's certificates outside the closure by its dependents (spec/commits.md §5 Ending);
   - the grantee's certificate copies and cross-published `label.0` commits (§3);
   - unexpired inbox blobs.
 

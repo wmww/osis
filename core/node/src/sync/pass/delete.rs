@@ -158,13 +158,24 @@ impl SyncEngine {
             note.at(t);
         }
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
-        // a copy of an ended thing's frozen history under a label whose closure lacks the thing,
-        // placed for a dependent there (spec/permissions.md §4): a node whose ending of the thing
-        // kept nothing judges it no more than any certificate (its drop is its own, spec/commits.md
-        // §5 Ending), so a dependent reaching it later finds it
-        let frozen: Vec<Tid> = opened.iter().filter(|ai| m.dropped.get(*ai).is_some_and(|d| d.why == crate::engine::DropFor::Ended)).filter_map(|ai| h.aspects.get(*ai)).filter(|a| matches!(a.ak.as_str(), "roles.0" | "purge.0")).map(|a| a.tid).collect();
-        if !frozen.is_empty() && frozen.iter().any(|t| !self.engine.closure(g).contains(t)) {
-            return Ok(None);
+        // a certificate of ended things outside the closure (their frozen edges, a request ending
+        // one, a minting's header alone: spec/permissions.md §4, spec/commits.md §5 Ending) is
+        // there for the label's dependents of them, whatever this node kept: it goes once a
+        // settled view finds none on an authority path into the closure (`ended_upstream`)
+        if let Some(about) = self.ended_certificate(g, commit, &h, opened, desired) {
+            if !settled {
+                return Ok(None);
+            }
+            let upstream = self.engine.ended_upstream(g);
+            if about.iter().any(|t| upstream.contains(t)) {
+                // judged again once what names them ends or leaves the closure
+                let held = &self.engine.core.ix.held;
+                let named: BTreeSet<Tid> = about.iter().flat_map(|t| held.named_on(t).copied().collect::<Vec<_>>()).collect();
+                note.waits.extend(named.into_iter().map(|n| (n, ct::CREATED.name())));
+                note.waits.push((*g, ct::GROUP.name()));
+                return Ok(None);
+            }
+            return Ok(Some((Hold::MustNot(Why::Outside), false, Vec::new())));
         }
         if opened.iter().any(|p| m.body_gone(*p) && !self.engine.left_at_hosts(commit, *p)) {
             // a body dropped as covered leaves hosts `MAX_DRIFT` past its keep-at-least bound, once
@@ -299,6 +310,28 @@ impl SyncEngine {
     /// superseder covers it (`carried`), none otherwise. Judged again every pass until it goes
     /// (`unsure`: what it waits for is the carrier's presence at the host, no state change here).
     /// A superseded body is its author's to delete, nobody else's.
+    /// The ended things outside `g`'s closure an entry of commit `c` (header `h`, parts `opened`)
+    /// is a certificate of, when that is all it is: every part a `roles.0` or `purge.0` part on
+    /// one, or a header alone (no lasting header the label wants) minting one.
+    fn ended_certificate(&self, g: &Tid, c: &CommitId, h: &osis_commit::Header, opened: &[usize], desired: &Desired) -> Option<BTreeSet<Tid>> {
+        let core = &self.engine.core;
+        let closure = self.engine.closure(g);
+        let outside = |t: &Tid| !closure.contains(t) && core.ended(t);
+        let about: BTreeSet<Tid> = if opened.is_empty() {
+            if desired.get(c).is_some_and(|d| d.iter().any(|p| p.is_empty())) {
+                return None;
+            }
+            h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED && outside(&a.tid)).map(|a| a.tid).collect()
+        } else {
+            let on: Vec<&osis_commit::AspectEntry> = opened.iter().filter_map(|ai| h.aspects.get(*ai)).collect();
+            if on.len() < opened.len() || !on.iter().all(|a| matches!(a.ak.as_str(), "roles.0" | "purge.0") && outside(&a.tid)) {
+                return None;
+            }
+            on.iter().map(|a| a.tid).collect()
+        };
+        (!about.is_empty()).then_some(about)
+    }
+
     fn judge_forgotten(&mut self, commit: &CommitId, parts: &[usize], note: &mut Note) -> Option<Judged> {
         let f = self.memory.forgotten.get(commit)?;
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|ai| f.header.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
