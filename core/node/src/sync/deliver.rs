@@ -10,7 +10,7 @@ use crate::error::Result;
 use crate::flows::{Delivery, Done, SyncState};
 use crate::rotation::{Dropped, Leaving, LostScope};
 use crate::local_peer::Package;
-use osis_base::{CommitId, LabelId, Tid};
+use osis_base::{BlobId, CommitId, LabelId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What `drop_left` last found, and when.
@@ -22,8 +22,18 @@ pub(crate) struct LeftCheck {
     version: Option<u64>,
     leaving: Leaving,
     /// Per actor of `leaving.timed`: the labels to hear out (those whose closure holds a thing
-    /// its drop would forget), with whether each has a host.
-    timed_labels: BTreeMap<Tid, Vec<(LabelId, bool)>>,
+    /// its drop would forget), with how each is heard out.
+    timed_labels: BTreeMap<Tid, Vec<(LabelId, Hear)>>,
+}
+
+/// How a label of a timed loss is heard out (`drop_left`).
+#[derive(Clone, Copy)]
+enum Hear {
+    /// It has a host: `heard`.
+    Hosts,
+    /// It has none: `heard_by_co_readers`, with this node's last own commit under it
+    /// (`last_own`).
+    CoReaders(Option<CommitId>),
 }
 
 impl LeftCheck {
@@ -63,8 +73,9 @@ impl SyncEngine {
     /// an actor lost through its own self-removals once the self-removals behind it are placed
     /// (spec/permissions.md §3: the removal goes up before the leaver forgets the labels it
     /// would go under); one an `until` ended with nothing else received once its labels are
-    /// heard out (`heard`, spec/permissions.md §2: its own writes from before the `until` went
-    /// up, a renewal on its way arrived), or `LOST_HEARD_WAIT_MS` after it was first judged.
+    /// heard out (spec/permissions.md §2: its own writes from before the `until` went up, a
+    /// renewal on its way arrived; `heard` at hosts, `heard_by_co_readers` with none), or
+    /// `LOST_HEARD_WAIT_MS` after it was first judged.
     /// Run while `left` is set: what was lost is recomputed after the engine changed (or a
     /// wake came due), placement rechecked after the sync state changed, hearing out every
     /// step. All derive from stored state: a crash in between leaves nothing behind (`left` is
@@ -90,12 +101,29 @@ impl SyncEngine {
         if !timed.is_empty() {
             let labels = self.labels();
             for (a, since) in &timed {
-                let affected = timed_labels.entry(*a).or_insert_with(|| {
+                if !timed_labels.contains_key(a) {
                     let lost = BTreeSet::from([*a]);
                     let forgets = |t: &Tid| self.engine.would_forget(&lost, t);
-                    labels.iter().filter(|(g, gl)| !gl.replaced && (forgets(g) || self.engine.closure(g).iter().any(forgets))).map(|(_, gl)| (gl.id, !super::peers::hostless(&gl.hosts))).collect()
-                });
-                if now >= since.saturating_add(crate::rotation::LOST_HEARD_WAIT_MS) || affected.iter().all(|(id, hosted)| !hosted || self.heard(id)) {
+                    let affected: Vec<(LabelId, bool)> = labels.iter().filter(|(g, gl)| !gl.replaced && (forgets(g) || self.engine.closure(g).iter().any(forgets))).map(|(_, gl)| (gl.id, super::peers::hostless(&gl.hosts))).collect();
+                    let mut hear = Vec::with_capacity(affected.len());
+                    for (id, hostless) in affected {
+                        hear.push((id, if hostless { Hear::CoReaders(self.last_own(&id)?) } else { Hear::Hosts }));
+                    }
+                    timed_labels.insert(*a, hear);
+                }
+                let mut heard = true;
+                if now < since.saturating_add(crate::rotation::LOST_HEARD_WAIT_MS) {
+                    for (id, h) in timed_labels.get(a).into_iter().flatten() {
+                        heard = match h {
+                            Hear::Hosts => self.heard(id),
+                            Hear::CoReaders(c) => self.heard_by_co_readers(id, *c, *since)?,
+                        };
+                        if !heard {
+                            break;
+                        }
+                    }
+                }
+                if heard {
                     ready.push(*a);
                 }
             }
@@ -121,6 +149,59 @@ impl SyncEngine {
         // a failure retries on the next change; success changes the engine, so what is left
         // is recomputed
         self.forget_lost(LostScope::Only(&ready)).map(|_| ())
+    }
+
+    /// Whether label `l` (one with no host) is heard out by its co-readers (spec/permissions.md
+    /// §2), the loss found at `since`: this node's writes there are held at a source (`last`,
+    /// its last own commit under `l`, is `placed`: a co-reader reported a position past every
+    /// own entry) and the stream of `l` from a co-reader source was read to its end since (a
+    /// renewal it held has come); or a co-reader refuses `l` here (`co_reader_refuses`), as a
+    /// host refusing it does.
+    fn heard_by_co_readers(&mut self, l: &LabelId, last: Option<CommitId>, since: u64) -> Result<bool> {
+        if self.co_reader_refuses(l) {
+            return Ok(true);
+        }
+        let passed = self.peer_passes.iter().any(|((_, x), (_, at))| x == l && *at >= since);
+        Ok(passed && last.map_or(Ok(true), |c| self.placed(&c))?)
+    }
+
+    /// Whether a co-reader of `l` (a peer this node dials for it, or one whose proven actors
+    /// hold it here) settled its shared set on a live connection without `l`: it judged this
+    /// node departed (a finalize it wrote or applied), so nothing of this node's goes there.
+    fn co_reader_refuses(&mut self, l: &LabelId) -> bool {
+        let peers = self.peers();
+        let conns: Vec<ConnId> = self.records.shared.keys().copied().filter(|c| self.shared_settled(*c) && !self.shared_member(*c, l)).collect();
+        for c in conns {
+            let dialed = self.conns.get(&c).is_some_and(|x| x.peer && peers.get(&x.host).is_some_and(|p| p.labels.contains(l)));
+            if dialed || self.judgments(c, &[*l]).is_some_and(|j| j.get(l) == Some(&super::credentials::Judgment::Holder)) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// This node's own commit whose entry under `l` its node log first held last, if any: once
+    /// it is `placed` under a label with no host, a co-reader reported a position past every
+    /// own entry there.
+    fn last_own(&mut self, l: &LabelId) -> Result<Option<CommitId>> {
+        let own: Vec<(CommitId, BlobId)> = self.state.label_commits(l).filter(|c| self.own(c)).flat_map(|c| self.state.entries_of(l, &c).map(move |(b, _)| (c, b)).collect::<Vec<_>>()).collect();
+        if own.is_empty() {
+            return Ok(None);
+        }
+        let l = *l;
+        self.engine.run(|tx| {
+            Ok(super::state::hub(tx)?.node_log(|t| {
+                let mut last = None;
+                for (c, b) in own {
+                    if let Some(at) = t.log_entry_first(&l, &b)?
+                        && last.is_none_or(|(x, _)| at > x)
+                    {
+                        last = Some((at, c));
+                    }
+                }
+                Ok(last.map(|(_, c)| c))
+            })?)
+        })
     }
 
     /// Whether label `l` (one with a host) is heard out: open somewhere, and everywhere open a

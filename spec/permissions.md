@@ -40,8 +40,10 @@
   - A reset names the write it ends: its entry's creation. A role commit with a removal (a write leaving the holder no grant for keys: none, or `until` 0) resetting an entry whose creation the reader does not hold applies none of its edge writes until that creation is held; a commit's edge writes apply together or not at all. A reset beside a put of a live grant for its key decides nothing (the put sets the grant) and is not waited for. Limit: one whose creation the reader never gets never applies there. A reset carrying another key than its entry's creation removes no grant (spec/crdt.md §5.6).
 - A grant may carry `until: timestamp`: the grant counts as removed from `wall_ms(t) >= until`.
 - **An `until` passing** is a loss (§3) the node judges by its own clock, with no role commit behind it. A node whose read access only an `until` ended (walked with every grant's time ahead, it has a role):
-  - First hears out the labels it tracks whose closure holds a thing it would forget. For each such label, one of these holds: it has a pass ended with nothing outstanding at every host it is open at, and is open at one; or some host refuses it (stranded, or not admitted); or it has no host.
-  - Meanwhile its writes from before the `until` go up (a host that already serves a later step refuses them), and a renewal held by then keeps its role.
+  - First hears out the labels it tracks whose closure holds a thing it would forget. For each such label, one of these holds:
+    - with a host: it has a pass ended with nothing outstanding at every host it is open at, and is open at one; or some host refuses it (stranded, or not admitted);
+    - with no host: each of its own commits with an entry under it is placed (spec/sync.md §5) and, since it found the role gone, it read some co-reader's stream of the label to its end (spec/sync.md §10); or a co-reader refuses it: a peer it dials for the label, or whose proven actors it judges holders of it, settled its shared set on a connection without the label.
+  - Meanwhile its writes from before the `until` go up (a host that already serves a later step refuses them, a co-reader that judges it departed shares nothing with it), and a renewal held by then keeps its role.
   - Then it drops.
   - It drops anyway `LOST_HEARD_WAIT_MS` after it first found the role gone.
   - A role commit received beside the ended grant that does not itself end the role changes nothing of this. A removal, demotion or a grant written with `until` 0 (below) ends it at once; a finalize (below) counts as the `until` it finalizes.

@@ -2,7 +2,8 @@
 //! A leaver's self-removal placed by a co-reader's report (spec/sync.md §5 Placed, §10 Reports):
 //! with no host, the removal counts as placed once a co-reader that reads the label reported
 //! (Applied) a position past where the leaver's log first held it; the report is kept across a
-//! restart; a peer that does not read the label reports nothing for it.
+//! restart; a peer that does not read the label reports nothing for it. A node whose access an
+//! `until` ended hears such a label out by its co-readers (spec/permissions.md §2).
 
 use crate::net;
 use crate::peers::reach_ed;
@@ -115,4 +116,83 @@ fn a_strangers_report_counts_for_nothing_spec_sync_5() {
     net.set_online(a, true);
     net.advance(60_000);
     assert!(!leaving(&mut net, b), "the co-reader's do");
+}
+
+/// Under `a`'s group `g` with no host: `b` writes `g` until an hour from now, `c` reads it (`a`
+/// and `c` dialable). `b` wrote item `t` while `a` and `c` were offline; the `until` has passed.
+fn timed_while_apart() -> (Net, [usize; 3], Tid, Tid) {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    let c = net.node(3, &[]);
+    reach_ed(&mut net, a);
+    reach_ed(&mut net, c);
+    let g = net.group_seeded(a, &[(b, Role::Write), (c, Role::Read)], vec![], 13);
+    let until = osis_base::WallMs(net.now() + 3_600_000);
+    let tb = net.tid(b);
+    let edge = osis_schema::core_types::Edge { role: Role::Write, until: Some(until), invite: None, tied: None };
+    let done = net.engine(a).grant(&g, &tb, &edge).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.set_online(a, false);
+    net.set_online(c, false);
+    let t = net.item(b, g, g, "unsent");
+    net.advance(3_600_000 + 60_000);
+    (net, [a, b, c], g, t)
+}
+
+fn holds(net: &mut Net, n: usize, g: Tid) -> bool {
+    net.engine(n).epochs(&g).is_some_and(|e| e.read.held().next().is_some())
+}
+
+// spec/permissions.md §2 (an `until` passing, a label with no host heard out): the node keeps
+// what it lost while its writes from before the `until` reached nobody; a co-reader takes them
+// and reports them (spec/sync.md §5 Placed), the node reads its log to the end; then it drops.
+#[test]
+fn an_until_under_no_host_waits_for_a_co_reader_to_hold_its_writes_spec_perm_2() {
+    let (mut net, [_, b, c], g, t) = timed_while_apart();
+    assert!(holds(&mut net, b, g), "its write reached nobody: kept");
+    net.set_online(c, true);
+    net.advance(60_000);
+    assert_eq!(net.read(c, t), Some(s("unsent")), "the co-reader took the write");
+    assert!(!holds(&mut net, b, g), "reported: dropped");
+}
+
+// spec/permissions.md §2: a renewal held before the label was heard out keeps the role.
+#[test]
+fn an_until_under_no_host_kept_by_a_renewal_spec_perm_2() {
+    let (mut net, [a, b, c], g, t) = timed_while_apart();
+    let tb = net.tid(b);
+    net.grant(a, g, tb, Role::Write);
+    net.pair(a, b);
+    net.advance(60_000);
+    net.set_online(c, true);
+    net.advance(60_000);
+    assert!(holds(&mut net, b, g), "renewed: kept");
+    assert_eq!(net.read(b, t), Some(s("unsent")));
+    assert_eq!(net.read(c, t), Some(s("unsent")));
+}
+
+// spec/permissions.md §2: a co-reader that judges the node departed (here the admin, which
+// finalizes the ended grant on its first pass) refuses the label, as a host refusing it does:
+// the node drops though that co-reader never took its write.
+#[test]
+fn an_until_under_no_host_refused_by_a_co_reader_drops_spec_perm_2() {
+    let (mut net, [a, b, _], g, t) = timed_while_apart();
+    net.set_online(a, true);
+    net.advance(60_000);
+    assert_eq!(net.read(a, t), None, "the finalizing co-reader took nothing");
+    assert!(!holds(&mut net, b, g), "refused: dropped");
+}
+
+// spec/permissions.md §2: with no co-reader reachable, it drops `LOST_HEARD_WAIT_MS` after it
+// found the role gone.
+#[test]
+fn an_until_under_no_host_with_no_co_reader_drops_at_the_wait_spec_perm_2() {
+    let (mut net, [_, b, _], g, _) = timed_while_apart();
+    net.advance(osis_node::rotation::LOST_HEARD_WAIT_MS - 3_600_000);
+    assert!(holds(&mut net, b, g), "before the wait: kept");
+    net.advance(3_600_000);
+    assert!(!holds(&mut net, b, g), "the wait ended: dropped");
 }
