@@ -138,24 +138,21 @@ impl Run {
         (known, super::tests::commit_ids(&mut self.lp, i))
     }
 
-    /// Records the epochs peer `i` made since `before`.
+    /// Records the epochs peer `i` made since `before`, each with the peers below its role as
+    /// the history stood just after its rotation commit (`access_at`): a step may remove a peer
+    /// from a holder actor after its cascade rotated an actor boxing that holder, when the peer
+    /// still read through it.
     fn record(&mut self, i: usize, (known, held): &(BTreeSet<Key>, BTreeSet<CommitId>)) {
         for t in self.all() {
             let Some(e) = self.lp.peers[i].engine.epochs(&t) else { continue };
-            // with a holder actor on `t`, a departure may run through it: recorded for the
-            // check of direct departures only where every holder is a peer
-            if self.lp.peers[i].engine.core.key_holders(&t).iter().any(|h| !self.tids.contains(&h.0)) {
-                continue;
-            }
             for r in ROLES {
-                let below: BTreeSet<usize> = (0..N).filter(|d| !access(self, i, *d, t, r)).collect();
                 for (x, info) in e.role(r).epochs() {
                     if info.checked().is_some() && !known.contains(&(t, r, *x)) {
                         let own = self.lp.peers[i].engine.core.ix.epoch_intro.get(&(t, r, *x)).map(|v| v.1);
-                        // a peer reading a holder actor the epoch boxes reads it rightly (the
-                        // step may remove that actor after its cascade rotated `t` boxing it)
+                        let after = own.and_then(|c| self.after(i, &c));
+                        // a peer reading a holder actor the epoch boxes reads it rightly
                         let via = own.map(|c| self.boxed_actors(i, &c, r)).unwrap_or_default();
-                        let below: BTreeSet<usize> = below.iter().copied().filter(|d| !via.iter().any(|(m, _)| access(self, i, *d, *m, r))).collect();
+                        let below: BTreeSet<usize> = (0..N).filter(|d| !access_at(self, i, *d, t, r, after) && !via.iter().any(|(m, _)| access_at(self, i, *d, *m, r, after))).collect();
                         // a rotator holding no secret of a boxed actor judges the keyset it seals
                         // it at by order alone (spec/crypto.md §4, the limit for an epoch whose
                         // secret the node lacks): a departed peer may open the epoch by that box
@@ -167,6 +164,13 @@ impl Run {
                 }
             }
         }
+    }
+
+    /// The point just after commit `c` in the key order, as peer `i` holds it: its own edge
+    /// writes applied.
+    fn after(&self, i: usize, c: &CommitId) -> Option<osis_perm::Point> {
+        let h = &self.lp.peers[i].engine.core.ix.commits.get(c)?.header;
+        Some(osis_perm::Point { ts: h.ts, node: h.author, commit: CommitId([0xff; 32]) })
     }
 
     /// The holder actors (no peers) commit `c` boxes or proves at role `r`, as peer `i` read it,
@@ -512,11 +516,23 @@ fn walk_sides(run: &mut Run) -> usize {
 /// Whether peer `d` may read role `r` of actor `t` in peer `at`'s rosters: a holder of it for
 /// keys, itself or through a holder actor it may read at `r`.
 fn access(run: &Run, at: usize, d: usize, t: Tid, r: Role) -> bool {
+    access_at(run, at, d, t, r, None)
+}
+
+/// `access` as the rosters stood just before `point` (`None`: now).
+fn access_at(run: &Run, at: usize, d: usize, t: Tid, r: Role, point: Option<osis_perm::Point>) -> bool {
+    let core = &run.lp.peers[at].engine.core;
+    let holders_of = |a: &Tid| -> Vec<(Tid, Role)> {
+        match (point, core.timelines.get(a)) {
+            (Some(p), Some(tl)) => tl.edges_at(Some(p)).holders(a).filter_map(|(m, e)| Some((*m, super::key_role(Some(e))?))).collect(),
+            _ => core.key_holders(a),
+        }
+    };
     let mut reach: BTreeSet<Tid> = BTreeSet::new();
     loop {
         let n = reach.len();
         for a in run.all() {
-            let holders = run.lp.peers[at].engine.core.key_holders(&a);
+            let holders = holders_of(&a);
             if holders.iter().any(|(m, mr)| *mr >= r && (*m == run.tids[d] || reach.contains(m))) {
                 reach.insert(a);
             }

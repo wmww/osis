@@ -19,6 +19,7 @@
 - `observe_state` calls `flows::reopen_dependents` when secrets of an actor are learned (boxes sealed to it in other actors' `secrets.0` open then; actors found through `boxes_to`).
 - `DiagnosticKind::Removed` when the node drops an actor's secrets.
 - Re-seal and registration are pull hooks for node-sync (`reseal_due`, `own_secrets_candidates` at the end of a complete pass; `issue_step` per host head); flows only return deliveries.
+- `reseal_due` makes the rotations and finalizes due on the actor (`ensure_rotated`) before reading its candidates when any are due: a rotation or a finalize going alone can box or leave out a candidate, and a list read before it named a holder its re-seal could no longer seal, failing the whole pass (`reseal_candidates_follow_the_finalize_before_them_spec_permissions_3`).
 
 ## Flows readings
 - Departures are recomputed from the timeline (applied lowering edge writes, a finalized timed edge counting as its role's departure) and from state (a box at a current epoch whose holder holds less than that role now), holders re-granted since dropping out, from the actor alone (a holder actor's departures reach it as stale boxes, notes/crypto.md). Keys read no clock: an edge past its `until` is no key departure until finalized.

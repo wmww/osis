@@ -1645,3 +1645,90 @@ fn removal_alone_left_out_stays_out_at_co_writer_spec_crypto_4() {
     assert_eq!(sealed_at(&mut lp, 1, g, a), newest_read(&lp, 0, a));
     assert_eq!(leaked(&mut lp, 0, &[a, g], e, start), Vec::<Tid>::new());
 }
+
+// spec/permissions.md §3 (re-seal), spec/crypto.md §4 (Possession, Encrypting under): a re-seal
+// pass reads its candidates after the rotations and finalizes due first. X admins G, which M
+// reads; X writes M only through H, whose newest keyset X lacks the secret of (H rotated leaving
+// X out, M boxing H there), so X's finalize of Y's ended edge on M goes without its rotation and
+// leaves M's keyset uncovered at X: M, lacking a box at G's newest epoch, is a candidate before
+// it and out after. The pass re-seals nothing (it does not fail); once M's admin rotates M, X
+// re-seals M at that keyset.
+#[test]
+fn reseal_candidates_follow_the_finalize_before_them_spec_permissions_3() {
+    let mut lp = LocalPeer::new(3, 4_421, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let [_, x, y] = std::array::from_fn(|i| lp.peers[i].engine.me());
+    let (g, m, h) = (group(&mut lp, 0), group(&mut lp, 0), group(&mut lp, 0));
+    lp.peers[0].engine.grant(&h, &x, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&m, &h, &edge(Role::Write)).unwrap();
+    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    lp.peers[0].engine.grant(&m, &y, &ct::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &x, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    rotate_skipping(&mut lp, 0, h, &BTreeSet::from([Role::Read, Role::Write]), &[x]);
+    assert!(!lp.peers[0].engine.ensure_rotated(&m).unwrap().0.commits.is_empty(), "M rotates onto H's new keyset");
+    rotate_skipping(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[m]);
+    lp.sync_all().unwrap();
+    lp.peers[1].clock.advance(1_000);
+    let cands = lp.peers[1].engine.run(|tx| super::reseal_candidates(tx, &g)).unwrap();
+    assert!(cands.iter().any(|c| c.0 == m), "M is a candidate before the finalize: {cands:?}");
+    lp.peers[1].engine.reseal_due(&g, &Pass).unwrap();
+    assert!(lp.peers[1].engine.departures(&m).unwrap().iter().any(|d| d.holder == y), "X finalized Y alone");
+    assert_eq!(sealed_at(&mut lp, 1, g, m), None, "M is left out at X");
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    assert!(!lp.peers[0].engine.ensure_rotated(&m).unwrap().0.commits.is_empty(), "M's admin covers Y's departure");
+    lp.sync_all().unwrap();
+    lp.peers[1].engine.reseal_due(&g, &Pass).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(sealed_at(&mut lp, 1, g, m), newest_read(&lp, 0, m));
+}
+
+// spec/crypto.md §4 (Merger; Key access; Possession): a fork's merger is a maker that may rotate
+// over grants with key access. Cycle G -> H -> M -> G (M admin on G, H admin on M, then G admin
+// on H: keyless). X writes G and reads H, so writes M through G's keyless grant on H. X (proving
+// H at read) and A rotate M's write concurrently; with A's epoch the newest, X would be the merger,
+// but its write-only merge proves nothing for H (it lacks H's write secret, which it reaches only
+// through the keyless grant) and every node judges it invalid: M stays forked, and G, holding M,
+// waits in Seal for good. X holds only read on M for keys, so A merges.
+#[test]
+fn merger_holds_its_role_over_keyed_grants_spec_crypto_4() {
+    let write = BTreeSet::from([Role::Write]);
+    for seed in 0..32 {
+        let mut lp = LocalPeer::new(2, 5_100 + seed, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let x = lp.peers[1].engine.me();
+        let (g, m, h) = (group(&mut lp, 0), group(&mut lp, 0), group(&mut lp, 0));
+        lp.peers[0].engine.grant(&g, &m, &edge(Role::Admin)).unwrap();
+        lp.peers[0].engine.grant(&m, &h, &edge(Role::Admin)).unwrap();
+        lp.peers[0].engine.grant(&h, &g, &edge(Role::Admin)).unwrap();
+        lp.peers[0].engine.grant(&g, &x, &edge(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&h, &x, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        assert!(lp.peers[0].engine.run(|tx| Ok(super::members::key_access(tx.core).contains(&(h, g)))).unwrap(), "G's grant on H is keyless");
+        rotate_leaving_out(&mut lp, 1, m, &BTreeSet::from([Role::Read, Role::Write]), &[]);
+        rotate_leaving_out(&mut lp, 0, m, &write, &[]);
+        let ex = lp.peers[1].engine.epochs(&m).unwrap().write.newest().unwrap();
+        let e0 = lp.peers[0].engine.epochs(&m).unwrap().write.newest().unwrap();
+        lp.sync_all().unwrap();
+        let w = lp.peers[0].engine.epochs(&m).unwrap().write;
+        assert_eq!(w.current().len(), 2, "M's write forks, X's epoch valid");
+        if w.newest() != Some(e0) {
+            continue;
+        }
+        assert_ne!(ex, e0);
+        let (maybe, keyed) = lp.peers[0].engine.run(|tx| Ok((super::may_rotate(tx.core, &x, &m), super::members::may_rotate_keyed(tx.core, &x, &m)))).unwrap();
+        assert!(maybe.contains(&Role::Write) && !keyed.contains(&Role::Write), "X writes M only through the keyless grant: {maybe:?} {keyed:?}");
+        for _ in 0..2 {
+            for i in 0..2 {
+                lp.peers[i].engine.ensure_rotated(&m).unwrap();
+            }
+            lp.sync_all().unwrap();
+        }
+        assert_eq!(lp.peers[0].engine.epochs(&m).unwrap().write.current().len(), 1, "M's write fork is merged");
+        assert!(blocked_at(&mut lp, 0, g).is_empty(), "G's admin may encrypt under G");
+        return;
+    }
+    panic!("no seed made A's fork the newest");
+}

@@ -937,4 +937,10 @@ impl Timeline {
         let edges = self.edges_at(at.point);
         View::at(&edges, at.ts).roles_from_avoiding(node, avoid)
     }
+
+    /// `roles_of` over the edges not in `skip`, each named (target, holder).
+    pub fn roles_without(&self, node: &Tid, at: At, skip: &BTreeSet<(Tid, Tid)>) -> BTreeMap<Tid, Role> {
+        let edges = self.edges_at(at.point);
+        View::at(&edges, at.ts).roles_from_without(node, skip)
+    }
 }
