@@ -884,10 +884,10 @@ impl SyncEngine {
         self.engine.reexamine()
     }
 
-    /// Pending rows no held entry carries go (notes/node-sync.md, Unjudged input): what pends
-    /// never outlives what holds it. Looked at: commits whose last carrying entry left, commits
-    /// stored pending since the last look (one from no entry, a stranded report's keys, goes at
-    /// once), and every pending one once per start.
+    /// Pending rows nothing held carries go (notes/node-sync.md, Unjudged input): what pends
+    /// never outlives what holds it (an entry, a stranded report). Looked at: commits whose last
+    /// carrier left, commits stored pending since the last look (one from no carrier, a pairing
+    /// package's, goes at once), and every pending one once per start.
     fn sweep_pending(&mut self) -> Result<()> {
         let mut look = std::mem::take(&mut self.state.uncarried);
         look.append(&mut self.engine.take_pended());
@@ -1268,9 +1268,10 @@ impl SyncEngine {
     /// The holder keys a stranded report carried for `holder` (spec/wire.md §9): their records,
     /// then their commits cut to `roles.0` and to `keys.0` on the holder and on the authors of
     /// those writes (their cards), role commits first by `ts`, each judged like a chain
-    /// certificate, again while one that awaited something applies. No other actor's keyset is
-    /// taken from a report.
-    pub(super) fn take_holder_keys(&mut self, holder: &Tid, keys: osis_label::HolderKeys) -> Result<()> {
+    /// certificate, again while one that awaited something applies; what pends of them is kept
+    /// while the report is the newest naming `holder` on `l` (`State::reported`). No other
+    /// actor's keyset is taken from a report.
+    pub(super) fn take_holder_keys(&mut self, l: LabelId, holder: &Tid, keys: osis_label::HolderKeys) -> Result<()> {
         self.engine.learn_records(keys.records)?;
         let on = |c: &osis_commit::CommitBlob, t: &dyn Fn(&Tid) -> bool| c.parts.iter().any(|p| c.header.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == "keys.0" && t(&a.tid)));
         let mut todo = chain_commits(keys.commits);
@@ -1284,6 +1285,8 @@ impl SyncEngine {
             })
             .collect();
         todo.sort_by_key(|(_, c)| (!c.header.kind.is_role(), c.header.ts));
+        // the report carries what pends of them (`sweep_pending`)
+        self.state.note_report(l, *holder, todo.iter().map(|(_, c)| c.id()).collect());
         for _ in 0..MAX_ROUNDS {
             let mut later = Vec::new();
             let mut progressed = false;

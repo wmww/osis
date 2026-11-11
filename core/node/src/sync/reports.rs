@@ -114,8 +114,14 @@ impl SyncEngine {
         let Some(g) = self.labels().into_iter().find(|(_, x)| x.id == l).map(|x| x.0) else { return Ok(()) };
         let Some(a) = self.engine.core.secret_actor(&g) else { return Ok(()) };
         let current = self.engine.core.key_holders(&a).iter().any(|x| x.0 == holder);
+        // reports kept for holders no longer current, or labels no longer synced, go
+        let actors: BTreeMap<LabelId, Tid> = self.labels().into_iter().filter_map(|(g, x)| Some((x.id, self.engine.core.secret_actor(&g)?))).collect();
+        let stale: Vec<(LabelId, Tid)> = self.state.reported.keys().filter(|(x, h)| !actors.get(x).is_some_and(|a| self.engine.core.key_holders(a).iter().any(|y| y.0 == *h))).copied().collect();
+        for (x, h) in stale {
+            self.state.note_report(x, h, Vec::new());
+        }
         if current && self.engine.role_on(&a) >= Some(Role::Write) {
-            self.take_holder_keys(&holder, keys)?;
+            self.take_holder_keys(l, &holder, keys)?;
         }
         self.stranded_asks.entry(a).or_default().insert(holder);
         let labels: Vec<LabelId> = self.labels().into_iter().filter(|(g, _)| self.engine.core.secret_actor(g) == Some(a)).map(|x| x.1.id).chain([l]).collect();

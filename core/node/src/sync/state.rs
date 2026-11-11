@@ -336,13 +336,19 @@ pub struct State {
     pub inbox_commits: BTreeMap<CommitId, usize>,
     /// How many held entries carry each commit (notes/node-sync.md, Unjudged input): label
     /// entries naming it (`Commit`, `Parked`, `Awaits`), inbox entries carrying it as their
-    /// commit (`Inbox`, `Request`) or in their author's chain (`inbox_chain`).
+    /// commit (`Inbox`, `Request`) or in their author's chain (`inbox_chain`), and stranded
+    /// reports (`reported`).
     pub carried: BTreeMap<CommitId, usize>,
     /// Commits whose last carrying entry left, not swept yet (`SyncEngine::sweep_pending`).
     pub uncarried: BTreeSet<CommitId>,
     /// The chain commits each opened inbox entry carries, in memory: noted when its payload is
     /// ingested (every inbox entry is retried at a start, which notes them again).
     pub inbox_chain: BTreeMap<(LabelId, BlobId), Vec<CommitId>>,
+    /// The keys commits the newest stranded report on a label carries for each holder it names
+    /// (spec/permissions.md §4), in memory: a report has no entry to carry them, and is the only
+    /// route of a node connected to a writer. One per (label, holder), dropped at the next report
+    /// once the holder is no current holder of a label synced (`SyncEngine::stranded_report`).
+    pub reported: BTreeMap<(LabelId, Tid), Vec<CommitId>>,
     /// Entries a wake reopened (`Kind::Unknown` again) and the commit each was awaiting for: its
     /// reading-only secrets stay until the entry is judged again or leaves (`SyncEngine::sweep_unchecked`).
     pub awaits_reopened: BTreeMap<(LabelId, BlobId), CommitId>,
@@ -850,6 +856,18 @@ impl State {
             self.carry(*c, true);
         }
         self.inbox_chain.insert((l, b), chain);
+    }
+
+    /// The newest stranded report on `l` naming `holder` carries `keys` (`reported`); none
+    /// drops the slot.
+    pub(crate) fn note_report(&mut self, l: LabelId, holder: Tid, keys: Vec<CommitId>) {
+        for c in &keys {
+            self.carry(*c, true);
+        }
+        let old = if keys.is_empty() { self.reported.remove(&(l, holder)) } else { self.reported.insert((l, holder), keys) };
+        for c in old.unwrap_or_default() {
+            self.carry(c, false);
+        }
     }
 
     /// Notes that what is known of entry `b` under `l` changed (its passes judge it again).

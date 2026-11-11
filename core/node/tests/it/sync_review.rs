@@ -1253,6 +1253,53 @@ fn stranded_message_takes_only_the_named_holders_keys_spec_permissions_4() {
     assert!(net.engine(a).core.key_holders(&g).iter().all(|x| x.0 != t), "T holds nothing on g");
 }
 
+// spec/permissions.md §4 (Stranded: the holder keys), spec/commits.md §4 (Pending storage): keys
+// a Stranded message brings that pend at the admin (their author's clock two hours ahead) are
+// carried by the report, not dropped for want of an entry: a node connected to a writer reports
+// by message only, once per step. They apply once their time comes, the reporter connected
+// throughout.
+#[test]
+fn stranded_message_keys_pending_kept_spec_permissions_4() {
+    let (mut net, a, c, g, l, conn) = stranded_pair();
+    // team T of d's at another host, a holder of g; d reaches neither a nor g's host, so a learns
+    // T's keysets only from reports
+    let other = net.add_host();
+    let d = net.node(3, &[other]);
+    for x in [a, c] {
+        net.blocked_peers.extend([(d, x), (x, d)]);
+    }
+    net.blocked.insert((d, 0));
+    let t = net.group(d, &[], &[other]);
+    net.run();
+    let keys = net.sync(d).holder_keys(&t).unwrap();
+    net.engine(a).learn_records(keys.records).unwrap();
+    for v in keys.commits {
+        net.engine(a).ingest(&osis_base::encode(&v), Vec::new()).unwrap();
+    }
+    net.grant(a, g, t, Role::Read);
+    net.run();
+    net.set_skew(d, 2 * 3_600_000);
+    let dt = net.tid(d);
+    let e = net.engine(d);
+    let rs = recipients_of(e, &[(dt, Role::Admin)]);
+    let k = rotation(e, t, &rs, 43, false);
+    net.set_skew(d, 0);
+    net.run();
+    assert!(net.engine(a).header(&k).is_none(), "a lacks T's new keyset");
+    let keys = net.sync(d).holder_keys(&t).unwrap();
+    net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | 0x7300, label: l, holder: t, keys });
+    net.run();
+    assert!(net.engine(a).pending().iter().any(|(x, _)| *x == k), "T's new keyset pends at a");
+    for _ in 0..3 {
+        net.advance(61_000);
+        net.run();
+    }
+    assert!(net.engine(a).pending().iter().any(|(x, _)| *x == k), "kept while the report carries it");
+    net.advance(2 * 3_600_000);
+    net.run();
+    assert!(net.engine(a).current_keys(&t).contains(&k), "applied once its time came");
+}
+
 // spec/permissions.md §4 (Stranded: to a connected peer that proved an account holding write or
 // above, else an inbox notice): a rotation leaves reader `c` out while it is away; back, stranded
 // at the host, it tells the admin it is connected to over the connection, once per step reached,
