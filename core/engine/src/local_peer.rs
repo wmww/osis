@@ -47,12 +47,19 @@ pub struct SealedEntry {
     pub wraps: Vec<(osis_base::Tid, [u8; osis_crypto::WRAP_LEN])>,
 }
 
+/// The blob area over `disk`, opened (or created) as a node opens its ciphertext store.
+pub fn blob_area(disk: &(MemoryBackend, MemoryRoot), seed: u64) -> Result<Arc<dyn osis_store::Ciphertext>> {
+    Ok(osis_store::BlobArea::open(Box::new(disk.0.clone()), Box::new(disk.1.clone()), Box::new(SeededRng::from_u64(seed ^ 0xb10b)))?)
+}
+
 /// One node: an engine with its clock, store and root.
 pub struct Peer {
     pub engine: Engine,
     pub clock: Arc<ManualClock>,
     pub backend: MemoryBackend,
     pub root: MemoryRoot,
+    /// The blob area's backend and root (`osis_store::BlobArea`).
+    pub blob_disk: (MemoryBackend, MemoryRoot),
     pub events: Receiver<Event>,
     /// Opens so far: mixed into each restart's rng seed, so no two opens of one store draw
     /// the same session nonce (spec/crdt.md §2.1) however a test seeds them.
@@ -167,11 +174,12 @@ impl Peer {
     pub fn new_bare(seed: u64, t: WallMs) -> Result<Peer> {
         let clock = Arc::new(ManualClock::new(t));
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
+        let blob_disk = (MemoryBackend::new(), MemoryRoot::new());
         let c: Arc<dyn Clock> = clock.clone();
-        let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
+        let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
         engine.take_wakes();
         let events = engine.subscribe();
-        Ok(Peer { engine, clock, backend, root, events, restarts: 0, discarded: Vec::new(), discards: 0 })
+        Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0 })
     }
 
     /// Drops the engine and opens it again over the same durable state.
@@ -179,7 +187,7 @@ impl Peer {
         let c: Arc<dyn Clock> = self.clock.clone();
         self.restarts += 1;
         let seed = seed.wrapping_add(self.restarts.wrapping_mul(0x9e37_79b9_7f4a_7c15));
-        let mut engine = Engine::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
+        let mut engine = Engine::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), blob_area(&self.blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
         self.events = engine.subscribe();
         engine.take_wakes();
         self.engine = engine;
@@ -191,12 +199,13 @@ impl Peer {
     pub fn fork(&self, seed: u64) -> Result<Peer> {
         let clock = Arc::new(ManualClock::new(self.clock.now_wall_ms()));
         let (backend, root) = (self.backend.copy(), self.root.copy());
+        let blob_disk = (self.blob_disk.0.copy(), self.blob_disk.1.copy());
         let c: Arc<dyn Clock> = clock.clone();
         let seed = seed.wrapping_add((self.restarts + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
-        let mut engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
+        let mut engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
         let events = engine.subscribe();
         engine.take_wakes();
-        let mut p = Peer { engine, clock, backend, root, events, restarts: self.restarts + 1, discarded: self.discarded.clone(), discards: self.discards };
+        let mut p = Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts + 1, discarded: self.discarded.clone(), discards: self.discards };
         p.fetch_discarded()?;
         Ok(p)
     }
@@ -214,7 +223,8 @@ impl Peer {
             self.events = self.engine.test_subscribe_with(pending.clone(), false);
             let events = engine.test_subscribe_with(pending, false);
             let (backend, root) = (self.backend.test_copy(), self.root.test_copy());
-            Ok(Peer { engine, clock, backend, root, events, restarts: self.restarts, discarded: self.discarded.clone(), discards: self.discards })
+            let blob_disk = (self.blob_disk.0.test_copy(), self.blob_disk.1.test_copy());
+            Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts, discarded: self.discarded.clone(), discards: self.discards })
         })
     }
 

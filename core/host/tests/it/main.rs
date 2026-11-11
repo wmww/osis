@@ -3,6 +3,7 @@
 
 mod common;
 mod bounds;
+mod engine;
 mod file;
 mod hub;
 mod hygiene;

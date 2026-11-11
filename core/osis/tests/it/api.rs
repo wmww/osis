@@ -196,8 +196,8 @@ fn missed_blob_arriving_redelivers_watches_spec_dm_6() {
     let bytes = db.engine(|e| e.blob(&l.blob)).unwrap().unwrap();
     db.engine(|e| {
         e.run(|tx| {
-            tx.txn.delete_blob(&l.blob);
-            Ok(())
+            let memory = tx.txn.is_memory();
+            tx.blobs.release(&l.blob, memory)
         })
     })
     .unwrap();

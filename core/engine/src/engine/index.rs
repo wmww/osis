@@ -1031,7 +1031,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             if !h.is_resolved()
                 && let Some(dedup) = tx.core.dedup(&h.actor)
             {
-                h.resolve(&mut super::blobs::TxBlobs::new(&mut tx.txn), &dedup).map_err(|_| Error::Corrupt("header lists"))?;
+                h.resolve(&mut super::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).map_err(|_| Error::Corrupt("header lists"))?;
             }
             debug_assert_eq!(super::View::of(&h), *view, "meta row of {id:?} is stale");
             if view.linked { super::LazyHeader::ready(Arc::new(h)) } else { super::LazyHeader::stored(id, bytes, view.clone(), fault.clone()) }

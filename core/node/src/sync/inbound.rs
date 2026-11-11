@@ -621,8 +621,9 @@ impl SyncEngine {
             return Ok(());
         }
         self.engine.run(|tx| {
+            let memory = tx.txn.is_memory();
             for b in ids {
-                tx.txn.delete_blob(b);
+                tx.blobs.release(b, memory)?;
             }
             Ok(())
         })

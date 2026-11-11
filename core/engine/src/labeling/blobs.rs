@@ -327,7 +327,7 @@ impl Engine {
                 let ok = self
                     .run(|tx| {
                         let Some(dedup) = tx.core.dedup(&h.actor) else { return Err(Error::Misuse("not resolved")) };
-                        Ok(h.resolve(&mut crate::engine::blobs::TxBlobs::new(&mut tx.txn), &dedup)?)
+                        Ok(h.resolve(&mut crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup)?)
                     })
                     .is_ok();
                 ok.then(|| std::sync::Arc::new(h))

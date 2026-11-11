@@ -169,11 +169,12 @@ fn boot(seed: u64, t: WallMs) -> osis_node::Result<(Peer, Faults)> {
     let backend = MemoryBackend::with_faults(faults.clone());
     let root = MemoryRoot::with_faults(faults.clone());
     let c: Arc<dyn Clock> = clock.clone();
-    let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_node::Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
+    let blob_disk = (MemoryBackend::with_faults(faults.clone()), MemoryRoot::with_faults(faults.clone()));
+    let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_node::local_peer::blob_area(&blob_disk, seed)?, osis_node::Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
     engine.create_account(&[])?;
     engine.take_wakes();
     let events = engine.subscribe();
-    Ok((Peer { engine, clock, backend, root, events, restarts: 0, discarded: Vec::new(), discards: 0 }, faults))
+    Ok((Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0 }, faults))
 }
 
 impl Sim {

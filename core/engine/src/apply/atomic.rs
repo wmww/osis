@@ -212,7 +212,8 @@ struct SharedPages<'c, 't, 'a> {
 impl osis_crdt::PageSource for SharedPages<'_, '_, '_> {
     fn get(&mut self, link: &osis_base::Link) -> std::result::Result<Vec<u8>, osis_crdt::PageError> {
         let mut tx = self.tx.try_borrow_mut().map_err(|_| osis_crdt::PageError::Storage)?;
-        let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.txn);
+        let tx = &mut **tx;
+        let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
         osis_label::BlobReader::new(self.dedup, &mut blobs).get(link)
     }
 }

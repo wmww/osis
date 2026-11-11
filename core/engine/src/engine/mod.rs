@@ -2146,6 +2146,8 @@ impl Core {
 /// One transaction with the engine's in-memory state.
 pub struct Tx<'a> {
     pub txn: Transaction<'a>,
+    /// Blob ciphertexts, in the node's one store (`blobs::Cipher`).
+    pub blobs: blobs::Cipher<'a>,
     pub core: &'a mut Core,
     pub rng: &'a mut dyn CryptoRngCore,
 }
@@ -2186,6 +2188,7 @@ impl Tx<'_> {
     pub(crate) fn step<T>(&mut self, site: Step, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
         let m = self.core.mark();
         let sp = self.txn.savepoint();
+        let held = self.blobs.mark();
         #[cfg(test)]
         let r = match self.core.step_fault.as_mut().filter(|x| x.site == site) {
             Some(x) if x.skip > 0 => {
@@ -2208,6 +2211,7 @@ impl Tx<'_> {
             }
             Err(e) => {
                 self.txn.rollback_to(sp);
+                self.blobs.rollback_to(held);
                 self.core.rollback_to(m);
                 Err(e)
             }
@@ -2691,6 +2695,9 @@ pub(crate) fn decode_commit_record(v: &[u8]) -> Result<CommitRecord> {
 pub struct Engine {
     store: Store,
     store_rng: SeededRng,
+    /// The node's one store of ciphertext (`osis_store::Ciphertext`): every blob the engine
+    /// holds, committed before the engine's own store.
+    blobs: Arc<dyn osis_store::Ciphertext>,
     pub(crate) rng: Box<dyn osis_crypto::NodeRng>,
     #[doc(hidden)]
     pub core: Core,
@@ -2760,14 +2767,14 @@ impl Engine {
 
     /// A new node over an empty backend: fresh identity, its node thing with `created.0`,
     /// `node.0` and `keys.0` (spec/permissions.md §4 node card).
-    pub fn create(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Engine> {
+    pub fn create(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, blobs: Arc<dyn osis_store::Ciphertext>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Engine> {
         let store = Store::create(backend, root, cfg.store, &mut *rng)?;
         let mut seed = [0u8; 32];
         rng.fill_bytes(&mut seed);
         let store_rng = SeededRng::from_seed(seed);
         let id = Identity::generate(&mut *rng);
         let (session, expiring) = sessions(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let mut e = Engine { store, store_rng, blobs, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -2780,7 +2787,7 @@ impl Engine {
     }
 
     /// Opens an existing node and re-examines its pending commits.
-    pub fn open(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Engine> {
+    pub fn open(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, blobs: Arc<dyn osis_store::Ciphertext>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Engine> {
         let mut store = Store::open(backend, root, cfg.store)?;
         let mut seed = [0u8; 32];
         rng.fill_bytes(&mut seed);
@@ -2792,7 +2799,7 @@ impl Engine {
         let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
         let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
         let (session, expiring) = sessions(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let mut e = Engine { store, store_rng, blobs, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         e.reload()?;
         e.take_account()?;
         e.reexamine()?;
@@ -2820,6 +2827,11 @@ impl Engine {
     /// knows every schema registered before.
     pub fn register_schema(&mut self, s: Arc<osis_schema::Schema>) -> Result<()> {
         self.run(|tx| crate::engine::write::keep_schema(tx, &s, true))
+    }
+
+    /// The node's one store of ciphertext, this engine's blobs.
+    pub fn blobs(&self) -> Arc<dyn osis_store::Ciphertext> {
+        self.blobs.clone()
     }
 
     /// A local record of the API layer (`osis`), never synced.
@@ -2965,7 +2977,7 @@ impl Engine {
         let mut sample = false;
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
-                let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
+                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs), core: &mut self.core, rng: &mut *self.rng };
                 // the persisted index follows the in-memory indexes in the same transaction
                 let mut r = f(&mut tx);
                 // explicit demotions applied get this node's addenda (spec/permissions.md §5.2)
@@ -3051,9 +3063,10 @@ impl Engine {
                 };
                 match persisted {
                     Ok(v) => {
-                        let Tx { txn, .. } = tx;
+                        let Tx { txn, mut blobs, .. } = tx;
                         let _s = crate::costs::span("tx: store commit");
-                        txn.commit().map(|_| v).map_err(Error::from)
+                        // ciphertext first: engine state is a cache of it
+                        blobs.commit().and_then(|()| txn.commit().map_err(Error::from)).map(|_| v)
                     }
                     Err(e) => Err(e),
                 }
@@ -3102,7 +3115,7 @@ impl Engine {
         self.core = fresh;
         let r = {
             let txn = self.store.transaction(&mut self.store_rng)?;
-            let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
+            let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs), core: &mut self.core, rng: &mut *self.rng };
             crate::apply::load(&mut tx, rebuild)
         };
         crate::apply::load_awaiting(&mut self.core);
@@ -3147,7 +3160,7 @@ impl Engine {
             let mut store_rng = SeededRng::from_u64(0);
             let load = || -> Result<bool> {
                 let txn = self.store.transaction(&mut store_rng)?;
-                let mut tx = Tx { txn, core: &mut fresh, rng: &mut rng };
+                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs), core: &mut fresh, rng: &mut rng };
                 // a transaction that left the index stale (`index::invalidate`: commit records
                 // changed outside the in-memory indexes) is followed by a reload
                 if !index::current(&mut tx)? {

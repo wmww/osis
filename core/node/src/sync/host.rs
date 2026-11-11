@@ -13,18 +13,19 @@ use osis_label::Address;
 use osis_schema::core_types::{self as ct, Admit};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A hub store in memory, empty and admitting nothing, under the default policy: a node's
-/// until its holder opens its own (`SyncEngine::set_hub_store`).
-pub fn memory_store(clock: Arc<dyn osis_base::Clock>) -> crate::error::Result<HostStore> {
-    let (b, r) = (Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()));
-    hub_store_over(osis_store::Store::create(b, r, osis_store::StoreConfig::default(), &mut osis_crypto::OsRng)?, clock)
+/// The node's one store (the hub's, `HostStore`) over `store`, admitting nothing under the
+/// default policy until `host^.0` says otherwise: the engine's ciphertext store
+/// (`Engine::open`), shared with the sync engine and the driver's hub.
+pub fn hub_store(store: osis_store::Store, clock: Arc<dyn osis_base::Clock>, rng: Box<dyn osis_crypto::NodeRng>) -> crate::error::Result<Arc<Mutex<HostStore>>> {
+    let mut h = HostStore::open(store, clock, HostPolicy::default(), rng).map_err(|_| crate::error::Error::Corrupt("hub store"))?;
+    h.set_admission(Admission::Only(Default::default()), Default::default());
+    Ok(Arc::new(Mutex::new(h)))
 }
 
-/// The hub's store over `store`, admitting nothing under the default policy.
-fn hub_store_over(store: osis_store::Store, clock: Arc<dyn osis_base::Clock>) -> crate::error::Result<HostStore> {
-    let mut h = HostStore::open(store, clock, HostPolicy::default(), Box::new(osis_crypto::OsRng)).map_err(|_| crate::error::Error::Corrupt("hub store"))?;
-    h.set_admission(Admission::Only(Default::default()), Default::default());
-    Ok(h)
+/// `hub_store` over `backend` and `root`, created there if none is (tests, the simulator).
+pub fn hub_store_on(backend: Box<dyn osis_store::Backend>, root: Box<dyn osis_store::RootStorage>, clock: Arc<dyn osis_base::Clock>, mut rng: Box<dyn osis_crypto::NodeRng>) -> crate::error::Result<Arc<Mutex<HostStore>>> {
+    let store = osis_store::Store::open_or_create(backend, root, osis_store::StoreConfig::default(), &mut *rng)?;
+    hub_store(store, clock, rng)
 }
 
 /// What `host_step` last handed the driver, and from which engine generation.
@@ -63,21 +64,9 @@ impl SyncEngine {
         self.hosting().is_some()
     }
 
-    /// The node's one store (the hub's), shared with the driver's hub.
+    /// The node's one store (the hub's), shared with the engine and the driver's hub.
     pub fn hub_store(&self) -> Arc<Mutex<HostStore>> {
         self.hub_store.clone()
-    }
-
-    /// `store` as the node's one store, in place of the one it had (a harness's, seeded).
-    pub fn set_hub_store(&mut self, store: HostStore) {
-        self.hub_store = Arc::new(Mutex::new(store));
-    }
-
-    /// The holder's store for the hub (`<store>/host.redb`), in place of the one in memory;
-    /// what it keeps for others is the driver's to set (`host^.0`).
-    pub fn open_hub_store(&mut self, store: osis_store::Store) -> crate::error::Result<()> {
-        self.hub_store = Arc::new(Mutex::new(hub_store_over(store, self.engine.clock())?));
-        Ok(())
     }
 
     /// This node's `host^.0`, if set.

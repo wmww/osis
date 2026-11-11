@@ -360,7 +360,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             check_signature(tx, blob, id, &vk)?;
         }
         let Some(dedup) = tx.core.dedup(&blob.header.actor) else { return Ok(Exam::Awaits(Reason::UnknownCreated(blob.header.actor))) };
-        match blob.header.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup) {
+        match blob.header.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup) {
             Ok(()) => {}
             Err(e) if is_missing_page(&e) => return Ok(Exam::Pending(Reason::WaitBlobs, Vec::new())),
             Err(e) => return Err(e.into()),
@@ -561,7 +561,7 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
     if rules && h.ephemeral.is_none() && a.ak.as_str() == osis_commit::retention::CREATED {
         minted_record(h, id, p, &a.tid, interner)?;
     }
-    let mut blobs = TxBlobs::new(&mut tx.txn);
+    let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
     let mut paged = BlobReader::new(dedup, &mut blobs);
     // a memory commit's parts hold everything inline (spec/crdt.md §8)
     let mut unpaged = osis_crdt::Unpaged;
@@ -789,7 +789,7 @@ fn expire_stored(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         && let Some(dedup) = tx.core.dedup(&h.actor)
     {
         let mut r = h.clone();
-        if r.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup).is_ok() {
+        if r.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).is_ok() {
             h = r;
         }
     }
@@ -811,7 +811,7 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
             && let Some(dedup) = tx.core.dedup(&old.header.actor)
         {
             let mut h = old.header.clone();
-            if h.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup).is_ok() {
+            if h.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).is_ok() {
                 old.header = h;
             }
         }
@@ -996,7 +996,7 @@ impl Engine {
                 if !h.is_resolved() {
                     self.run(|tx| {
                         let Some(dedup) = tx.core.dedup(&h.actor) else { return Err(Error::Misuse("not resolved")) };
-                        Ok(h.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup)?)
+                        Ok(h.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup)?)
                     })
                     .ok()?;
                 }
@@ -1375,7 +1375,7 @@ impl Engine {
     /// The blob ciphertext `id`, if held (pages, chunks, header-list trees).
     pub fn blob(&mut self, id: &BlobId) -> Result<Option<Vec<u8>>> {
         let id = *id;
-        self.run(|tx| Ok(tx.txn.get_blob(&id)?))
+        self.run(|tx| tx.blobs.get(&id))
     }
 
     /// IDs of applied durable commits (no memory commit), in (`ts`, ID) order.
@@ -1591,7 +1591,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             if !blob.header.is_resolved()
                 && let Some(dedup) = tx.core.dedup(&blob.header.actor)
             {
-                blob.header.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup).map_err(|_| Error::Corrupt("header lists"))?;
+                blob.header.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).map_err(|_| Error::Corrupt("header lists"))?;
             }
             let id = blob.id();
             let h = Arc::new(blob.header.clone());
@@ -1803,7 +1803,7 @@ fn examine_stored(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<V
     for p in &blob.parts {
         let a = h.aspects.get(p.ai).ok_or(Error::Corrupt("part index"))?;
         let dedup = tx.core.dedup(&a.tid).ok_or(Error::Corrupt("dedup"))?;
-        let mut blobs = TxBlobs::new(&mut tx.txn);
+        let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
         let mut paged = BlobReader::new(&dedup, &mut blobs);
         let mut unpaged = osis_crdt::Unpaged;
         let reader: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut paged };

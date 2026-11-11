@@ -245,7 +245,11 @@ struct Writes(Vec<Write>);
 enum Write {
     Put(Vec<u8>, Vec<u8>),
     Delete(Vec<u8>),
+    /// A removal that shreds nothing (a row holding no secret: the engine's hold, `B`).
+    Unmark(Vec<u8>),
+    /// Stored unless held already.
     PutBlob(BlobId, Vec<u8>),
+    /// Deleted unless the engine holds it (`B`).
     DeleteBlob(BlobId),
     /// Node log events (notes/local-store.md, Node log), beside the per-label log.
     LogAdded(LabelId, BlobId),
@@ -315,8 +319,17 @@ impl Db {
                 match op {
                     Write::Put(k, v) => t.table_put(*table, &k, v, Shred::No).map(drop)?,
                     Write::Delete(k) => t.table_remove(*table, &k, Shred::Yes).map(drop)?,
-                    Write::PutBlob(id, b) => t.put_blob(&id, b)?,
-                    Write::DeleteBlob(id) => t.delete_blob(&id),
+                    Write::Unmark(k) => t.table_remove(*table, &k, Shred::No).map(drop)?,
+                    Write::PutBlob(id, b) => {
+                        if t.read_blob(&id, 0, 0)?.is_none() {
+                            t.put_blob(&id, b)?;
+                        }
+                    }
+                    Write::DeleteBlob(id) => {
+                        if t.table_get(*table, &key(b'B', &[&id.0]))?.is_none() {
+                            t.delete_blob(&id);
+                        }
+                    }
                     Write::LogAdded(l, b) => drop(t.log_added(l, b)?),
                     Write::LogDeleted(l, b, at) => drop(t.log_deleted(l, b, at)?),
                     Write::LogHead(l, h) => drop(t.log_head(l, &h.0)?),
@@ -800,6 +813,8 @@ pub struct HostStore {
     lazy: bool,
     admission: Admission,
     caps: BTreeMap<LabelId, LabelCaps>,
+    /// Memory blobs the engine holds (`osis_store::CipherTx::hold` in memory): gone at a restart.
+    engine_mem: HashMap<BlobId, Vec<u8>>,
 }
 
 impl HostStore {
@@ -825,6 +840,7 @@ impl HostStore {
             lazy: self.lazy,
             admission: self.admission.clone(),
             caps: self.caps.clone(),
+            engine_mem: self.engine_mem.clone(),
         })
     }
 
@@ -845,7 +861,7 @@ impl HostStore {
         t.commit().map_err(err)?;
         let relays = osis_proto::RelayGate::default();
         let db = RefCell::new(Db { store, table, rng, open: None });
-        let mut s = HostStore { db, failed: None, seed, clock, policy: HostPolicy::default(), rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, admission: Admission::Open, caps: BTreeMap::new() };
+        let mut s = HostStore { db, failed: None, seed, clock, policy: HostPolicy::default(), rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, admission: Admission::Open, caps: BTreeMap::new(), engine_mem: HashMap::new() };
         s.set_policy(policy);
         Ok(s)
     }
@@ -2015,5 +2031,6 @@ impl LabelStore for HostStore {
     }
 }
 
+mod engine;
 #[cfg(test)]
 mod tests;

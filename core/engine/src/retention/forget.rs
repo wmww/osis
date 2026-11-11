@@ -271,7 +271,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     let still = |b: &BlobId| core.ix.by_chunk.get(b).is_some_and(|cs| cs.iter().any(|c| !out.commits.contains(c)));
     let gone: Vec<BlobId> = gone.into_iter().filter(|b| !still(b)).collect();
     for b in &gone {
-        tx.txn.delete_blob(b);
+        tx.blobs.release(b, tx.txn.is_memory())?;
     }
     // the API's watches see the loss
     if !aspects.is_empty() {

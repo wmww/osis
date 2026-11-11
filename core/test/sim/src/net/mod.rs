@@ -177,11 +177,16 @@ pub fn with_full_passes<T>(f: impl FnOnce() -> T) -> T {
 }
 
 /// One simulated node.
+/// A node's two stores as a backup holds them: the engine's and the hub's (backend, root).
+pub type Backup = ((MemoryBackend, MemoryRoot), (MemoryBackend, MemoryRoot));
+
 pub struct NetNode {
     pub sync: Option<SyncEngine>,
     events: Option<Receiver<osis_node::Event>>,
     backend: MemoryBackend,
     root: MemoryRoot,
+    /// The backend and root of its one store beside the engine (the hub's).
+    hub_disk: (MemoryBackend, MemoryRoot),
     pub faults: Faults,
     pub clock: Arc<ManualClock>,
     pub spec: ClockSpec,
@@ -411,13 +416,14 @@ pub fn host_key(i: usize) -> [u8; 32] {
     k
 }
 
-fn open_engine(backend: &MemoryBackend, root: &MemoryRoot, clock: &Arc<ManualClock>, seed: u64, create: bool) -> osis_node::Result<Engine> {
+fn open_engine(backend: &MemoryBackend, root: &MemoryRoot, hub: &(MemoryBackend, MemoryRoot), clock: &Arc<ManualClock>, seed: u64, create: bool) -> osis_node::Result<Engine> {
     let c: Arc<dyn Clock> = clock.clone();
     let rng = Box::new(SeededRng::from_u64(seed));
+    let blobs = osis_node::sync::hub_store_on(Box::new(hub.0.clone()), Box::new(hub.1.clone()), c.clone(), Box::new(SeededRng::from_u64(seed ^ 0x40c)))?;
     if create {
-        Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_node::Config::default(), c, rng)
+        Engine::create(Box::new(backend.clone()), Box::new(root.clone()), blobs, osis_node::Config::default(), c, rng)
     } else {
-        Engine::open(Box::new(backend.clone()), Box::new(root.clone()), osis_node::Config::default(), c, rng)
+        Engine::open(Box::new(backend.clone()), Box::new(root.clone()), blobs, osis_node::Config::default(), c, rng)
     }
 }
 
@@ -587,11 +593,12 @@ impl NetSim {
         let faults = Faults::new();
         let backend = MemoryBackend::with_faults(faults.clone());
         let root = MemoryRoot::with_faults(faults.clone());
+        let hub_disk = (MemoryBackend::with_faults(faults.clone()), MemoryRoot::with_faults(faults.clone()));
         let clock = Arc::new(ManualClock::new(WallMs(wall_of(spec, self.elapsed))));
         let seed = self.boot_seed("engine", Party::N(i));
-        let engine = open_engine(&backend, &root, &clock, seed, true).map_err(|e| self.fail(format!("node {i} create: {e}")))?;
+        let engine = open_engine(&backend, &root, &hub_disk, &clock, seed, true).map_err(|e| self.fail(format!("node {i} create: {e}")))?;
         let tid = engine.tid();
-        self.nodes.push(NetNode { sync: None, events: None, backend, root, faults, clock, spec, cfg, wake: None, up: false, lost: false, tid, sent_bytes: 0, hub: None });
+        self.nodes.push(NetNode { sync: None, events: None, backend, root, hub_disk, faults, clock, spec, cfg, wake: None, up: false, lost: false, tid, sent_bytes: 0, hub: None });
         self.boot(i, engine)?;
         Ok(i)
     }
@@ -603,13 +610,7 @@ impl NetSim {
         engine.watch_commits();
         let node = self.node(n)?;
         let sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed)), node.cfg.clone());
-        let mut sync = sync.map_err(|e| self.fail(format!("node {n} sync start: {e}")))?;
-        let clock: Arc<dyn Clock> = self.node(n)?.clock.clone();
-        let st = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut SeededRng::from_u64(seed ^ 0x40b)).map_err(|e| e.to_string());
-        let st = st.and_then(|st| HostStore::open(st, clock, HostPolicy::default(), Box::new(SeededRng::from_u64(seed ^ 0x40c))).map_err(|e| e.to_string()));
-        let mut st = st.map_err(|e| self.fail(format!("node {n} hub: {e}")))?;
-        st.set_admission(osis_host::Admission::Only(Default::default()), Default::default());
-        sync.set_hub_store(st);
+        let sync = sync.map_err(|e| self.fail(format!("node {n} sync start: {e}")))?;
         let store = sync.hub_store();
         let node = self.node(n)?;
         node.sync = Some(sync);
@@ -1177,28 +1178,29 @@ impl NetSim {
             return Ok(());
         }
         node.faults.revive();
-        let (b, r, c) = (node.backend.clone(), node.root.clone(), node.clock.clone());
+        let (b, r, h, c) = (node.backend.clone(), node.root.clone(), node.hub_disk.clone(), node.clock.clone());
         *self.eph.boots.entry(Party::N(n)).or_default() += 1;
         let seed = self.boot_seed("engine", Party::N(n));
-        let engine = open_engine(&b, &r, &c, seed, false).map_err(|e| self.fail(format!("node {n} reopen: {e}")))?;
+        let engine = open_engine(&b, &r, &h, &c, seed, false).map_err(|e| self.fail(format!("node {n} reopen: {e}")))?;
         self.report.restarts = self.report.restarts.saturating_add(1);
         self.note(format!("node {n} restarted"));
         self.boot(n, engine)
     }
 
     /// A copy of node `n`'s store as a backup takes it now.
-    pub fn backup_node(&mut self, n: usize) -> Res<(MemoryBackend, MemoryRoot)> {
+    pub fn backup_node(&mut self, n: usize) -> Res<Backup> {
         let node = self.node(n)?;
-        Ok((node.backend.copy(), node.root.copy()))
+        Ok(((node.backend.copy(), node.root.copy()), (node.hub_disk.0.copy(), node.hub_disk.1.copy())))
     }
 
     /// Node `n` is restored from `backup`: it stops, its store is replaced by the copy, and it
     /// starts again over it.
-    pub fn restore_node(&mut self, n: usize, (backend, root): (MemoryBackend, MemoryRoot)) -> Res<()> {
+    pub fn restore_node(&mut self, n: usize, ((backend, root), hub_disk): Backup) -> Res<()> {
         self.node_down(n)?;
         let node = self.node(n)?;
         node.backend = backend;
         node.root = root;
+        node.hub_disk = hub_disk;
         self.note(format!("node {n} restored from a backup"));
         self.restart_node(n)
     }

@@ -22,7 +22,8 @@ impl SyncEngine {
             let pending: Vec<Event> = self.events.try_iter().collect();
             self.events = self.engine.test_subscribe_with(pending.clone(), true);
             let events = engine.test_subscribe_with(pending, true);
-            let hub_store = std::sync::Arc::new(std::sync::Mutex::new(self.hub_store.lock().unwrap_or_else(|p| p.into_inner()).test_copy(engine.clock())?));
+            // the engine's copy shares this copy of the store (`osis_store::test_copy_shared`)
+            let hub_store = osis_store::test_copy_shared(&self.hub_store, engine.clock())?;
             Ok(SyncEngine {
                 hub_store,
                 engine,

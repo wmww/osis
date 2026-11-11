@@ -23,7 +23,7 @@ fn reopen(rows: &[(Vec<u8>, Vec<u8>)], root: &osis_store::RootRecord) -> osis_no
     let mut r = MemoryRoot::new();
     r.store(root).unwrap();
     let c: Arc<dyn Clock> = Arc::new(ManualClock::new(T0));
-    Engine::open(Box::new(b), Box::new(r), Config::default(), c, Box::new(SeededRng::from_u64(3)))
+    Engine::open(Box::new(b), Box::new(r), osis_store::BlobArea::memory()?, Config::default(), c, Box::new(SeededRng::from_u64(3)))
 }
 
 // spec: none (no panics on data, notes/architecture.md §3): seeded bit flips across every row and the root

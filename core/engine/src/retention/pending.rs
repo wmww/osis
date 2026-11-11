@@ -73,7 +73,7 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
     let Some(dedup) = tx.core.dedup(&a.tid) else { return Ok(()) };
     let Some(p) = blob.parts.iter_mut().find(|p| p.ai == ai && p.delta != emptied()) else { return Ok(()) };
     let mut interner = osis_crdt::Interner::new();
-    let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.txn);
+    let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
     let mut paged = osis_label::BlobReader::new(&dedup, &mut blobs);
     let mut unpaged = osis_crdt::Unpaged;
     let reader: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut paged };

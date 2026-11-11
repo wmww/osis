@@ -42,18 +42,20 @@ impl MemStore {
     pub fn new() -> MemStore {
         MemStore::default()
     }
-    /// The bytes the node's store holds (`internals::MemStoreMeasures`).
+    /// The bytes the node's stores hold, the engine's and the hub's (`internals::MemStoreMeasures`).
     pub(crate) fn held_bytes(&self) -> u64 {
-        self.backend.held_bytes()
+        self.backend.held_bytes() + self.host.held_bytes()
     }
     pub(crate) fn rows(&self) -> usize {
         self.backend.dump().len()
     }
+    /// Rows' bytes, blobs' bytes and blob count, over both stores.
     pub(crate) fn held_split(&self) -> (u64, u64, u64) {
-        self.backend.held_split()
+        let (a, b) = (self.backend.held_split(), self.host.held_split());
+        (a.0 + b.0, a.1 + b.1, a.2 + b.2)
     }
     pub(crate) fn backup(&self) -> MemStore {
-        MemStore { backend: self.backend.copy(), root: self.root.copy(), opens: self.opens.clone(), ..MemStore::default() }
+        MemStore { backend: self.backend.copy(), root: self.root.copy(), opens: self.opens.clone(), host: self.host.copy(), host_root: self.host_root.copy() }
     }
 }
 
@@ -533,12 +535,13 @@ fn open_salt(store: &Store, cfg: &Config) -> Result<u64> {
 
 /// The node's one store beside the engine (the hub's: what it serves, notes/serving.md):
 /// `<store>/host.redb` with its key root `<store>/host.root`, or the memory store's.
-fn hub_store(store: &Store) -> Result<osis_store::Store> {
+/// The engine's ciphertext store (`Engine::open`).
+fn hub_store(store: &Store, clock: &Arc<dyn Clock>) -> Result<Arc<dyn osis_store::Ciphertext>> {
     let (b, r): (Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>) = match store {
         Store::Memory(m) => (Box::new(m.host.clone()), Box::new(m.host_root.clone())),
         Store::Dir(p) => (Box::new(osis_store::RedbBackend::open(&p.join("host.redb")).map_err(|e| Error::Storage(e.to_string()))?), Box::new(osis_store::FileRoot::new(p.join("host.root")))),
     };
-    osis_store::Store::open_or_create(b, r, osis_store::StoreConfig::default(), &mut osis_crypto::OsRng).map_err(|e| Error::Storage(e.to_string()))
+    Ok(osis_node::sync::hub_store_on(b, r, clock.clone(), Box::new(osis_crypto::OsRng))?)
 }
 
 fn clock(cfg: &Config) -> Arc<dyn Clock> {
@@ -579,7 +582,7 @@ fn sync_over(engine: Engine, cfg: &Config, hosts: &[Address]) -> Result<SyncEngi
 pub(crate) fn fresh_engine(store: &Store, cfg: &Config, hosts: &[Address]) -> Result<Fresh> {
     let (b, r) = parts(store)?;
     let clock = clock(cfg);
-    let engine = Engine::create(b, r, engine_cfg(), clock.clone(), rng(cfg, 0))?;
+    let engine = Engine::create(b, r, hub_store(store, &clock)?, engine_cfg(), clock.clone(), rng(cfg, 0))?;
     Ok(Fresh { sync: sync_over(engine, cfg, hosts)?, clock })
 }
 
@@ -606,7 +609,7 @@ impl Osis {
         cfg.check(&[])?;
         let (b, r) = parts(&store)?;
         let clock = clock(&cfg);
-        let mut e = Engine::open(b, r, engine_cfg(), clock.clone(), rng(&cfg, open_salt(&store, &cfg)?))?;
+        let mut e = Engine::open(b, r, hub_store(&store, &clock)?, engine_cfg(), clock.clone(), rng(&cfg, open_salt(&store, &cfg)?))?;
         let (me, home) = e.account()?.ok_or_else(|| Error::Storage("no account record".into()))?;
         let peers = load_peers(&mut e)?.unwrap_or_default();
         let sync = sync_over(e, &cfg, &peers)?;
@@ -623,7 +626,6 @@ impl Osis {
                 }
             }
         }
-        sync.open_hub_store(hub_store(&store)?)?;
         let node = sync.engine().tid();
         let events = sync.engine_mut().subscribe();
         let dispatch = Dispatch::new(&cfg.app.dispatch);

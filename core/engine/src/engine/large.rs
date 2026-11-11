@@ -367,7 +367,7 @@ pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp],
     // (`by_chunk`: one header decoded)
     let core = &*tx.core;
     let mut blind_of = |b: &BlobId| -> Option<[u8; 16]> { core.ix.by_chunk.get(b)?.iter().next_back().and_then(|c| core.ix.commits.get(c)).map(|m| m.header.blind) };
-    let mut blobs = TxBlobs::new(&mut tx.txn);
+    let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
     let rng = &mut *tx.rng;
     let max = usize::try_from(MAX_REUSE).unwrap_or(usize::MAX);
     let mut put = |v: &Value, base: Option<&Link>| -> Result<Value> {
@@ -461,7 +461,7 @@ pub struct LiveTrees {
 pub(crate) fn tree_blobs(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out: &mut LiveTrees) -> Result<()> {
     // (link, whether it is known to be a chunk)
     let mut stack: Vec<(Link, bool)> = roots.iter().map(|l| (*l, false)).collect();
-    let mut blobs = TxBlobs::new(&mut tx.txn);
+    let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
     while let Some((l, leaf)) = stack.pop() {
         if !out.blobs.insert(l.blob) || leaf {
             continue;
@@ -529,7 +529,7 @@ impl Engine {
         let held: BTreeSet<BlobId> = self.run(|tx| {
             let mut out = BTreeSet::new();
             for b in lost {
-                if tx.txn.read_blob(b, 0, 0)?.is_some() {
+                if tx.blobs.held(b)? {
                     out.insert(*b);
                 }
             }
@@ -657,7 +657,7 @@ impl Engine {
         let (tid, link) = (*tid, *link);
         self.run(|tx| {
             let dedup = tx.core.dedup(&tid).ok_or(Error::UnknownThing(tid))?;
-            let mut blobs = TxBlobs::new(&mut tx.txn);
+            let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
             let mut r = BlobReader::new(&dedup, &mut blobs);
             Ok(osis_label::read_value(link, &dedup, &mut r, LargeParams::FORMAT, max_len)?)
         })
@@ -670,7 +670,7 @@ impl Engine {
         let tid = *tid;
         self.run(|tx| {
             let dedup = tx.core.dedup(&tid).ok_or(Error::UnknownThing(tid))?;
-            let mut blobs = TxBlobs::new(&mut tx.txn);
+            let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
             let mut src = BlobReader::new(&dedup, &mut blobs);
             Ok(r.next_chunk(&dedup, &mut src)?)
         })
@@ -689,7 +689,7 @@ impl Engine {
             tree_blobs(tx, &dedup, &[link], &mut out)?;
             let mut v: Vec<BlobId> = out.missing.into_iter().collect();
             for b in out.blobs {
-                if tx.txn.read_blob(&b, 0, 0)?.is_none() {
+                if !tx.blobs.held(&b)? {
                     v.push(b);
                 }
             }

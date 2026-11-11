@@ -272,10 +272,12 @@ pub(crate) fn forensic_peer(seed: u64, faults: &osis_store::Faults) -> osis_node
     let clock = std::sync::Arc::new(osis_base::ManualClock::new(T0));
     let (backend, root) = (osis_store::MemoryBackend::with_faults(faults.clone()), osis_store::MemoryRoot::with_faults(faults.clone()));
     backend.record_history();
+    let blob_disk = (osis_store::MemoryBackend::with_faults(faults.clone()), osis_store::MemoryRoot::with_faults(faults.clone()));
+    blob_disk.0.record_history();
     let c: std::sync::Arc<dyn osis_base::Clock> = clock.clone();
-    let mut engine = osis_node::Engine::create(Box::new(backend.clone()), Box::new(root.clone()), forensic_cfg(), c, Box::new(osis_crypto::SeededRng::from_u64(seed))).unwrap();
+    let mut engine = osis_node::Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_node::local_peer::blob_area(&blob_disk, seed).unwrap(), forensic_cfg(), c, Box::new(osis_crypto::SeededRng::from_u64(seed))).unwrap();
     let events = engine.subscribe();
-    osis_node::local_peer::Peer { engine, clock, backend, root, events, restarts: 0, discarded: Vec::new(), discards: 0 }
+    osis_node::local_peer::Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0 }
 }
 
 fn forensic_cfg() -> osis_node::Config {
@@ -286,7 +288,7 @@ fn forensic_cfg() -> osis_node::Config {
 pub(crate) fn reopen(lp: &mut LocalPeer, i: usize, seed: u64) -> osis_node::Result<()> {
     let p = &mut lp.peers[i];
     let c: std::sync::Arc<dyn osis_base::Clock> = p.clock.clone();
-    let mut engine = osis_node::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), forensic_cfg(), c, Box::new(osis_crypto::SeededRng::from_u64(seed)))?;
+    let mut engine = osis_node::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), osis_node::local_peer::blob_area(&p.blob_disk, seed)?, forensic_cfg(), c, Box::new(osis_crypto::SeededRng::from_u64(seed)))?;
     p.events = engine.subscribe();
     p.engine = engine;
     Ok(())

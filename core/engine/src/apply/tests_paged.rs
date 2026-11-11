@@ -734,7 +734,7 @@ fn failed_streamed_apply_leaves_nothing_spec_commits_4() {
     let mut cfg = crate::engine::Config::default();
     cfg.store.spill_bytes = 4096;
     let clock: std::sync::Arc<dyn osis_base::Clock> = p.clock.clone();
-    p.engine = crate::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), cfg.clone(), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(77))).unwrap();
+    p.engine = crate::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), crate::local_peer::blob_area(&p.blob_disk, 76).unwrap(), cfg.clone(), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(77))).unwrap();
     let read = |p: &mut crate::local_peer::Peer| [&big, &set].map(|a| p.engine.state(&t, a).unwrap());
     let before = read(p);
     let rows = p.backend.dump();
@@ -749,10 +749,10 @@ fn failed_streamed_apply_leaves_nothing_spec_commits_4() {
     }
     p.engine.core.piece_fault = None;
     // the failed engine gone, the spilled rows are rolled back
-    let spare = crate::Engine::create(Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()), crate::engine::Config::default(), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(79))).unwrap();
+    let spare = crate::Engine::create(Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()), osis_store::BlobArea::memory().unwrap(), crate::engine::Config::default(), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(79))).unwrap();
     drop(std::mem::replace(&mut p.engine, spare));
     assert_eq!(p.backend.dump(), rows, "the backend's rows as before");
-    p.engine = crate::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), cfg, clock, Box::new(osis_crypto::SeededRng::from_u64(78))).unwrap();
+    p.engine = crate::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), crate::local_peer::blob_area(&p.blob_disk, 76).unwrap(), cfg, clock, Box::new(osis_crypto::SeededRng::from_u64(78))).unwrap();
     assert_eq!(read(p), before);
     assert!(matches!(w.lp.deliver(3, &pk), Ok(crate::Ingested::Applied(_))));
     w.lp.deliver(2, &pk).unwrap();
@@ -925,7 +925,7 @@ fn unmerge_leaving_empty_first_page_leaves_none_spec_perm_5_2() {
         }
         let p = &mut w.lp.peers[3];
         let clock: std::sync::Arc<dyn osis_base::Clock> = p.clock.clone();
-        p.engine = crate::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), crate::engine::Config::default(), clock, Box::new(osis_crypto::SeededRng::from_u64(77))).unwrap();
+        p.engine = crate::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), crate::local_peer::blob_area(&p.blob_disk, 76).unwrap(), crate::engine::Config::default(), clock, Box::new(osis_crypto::SeededRng::from_u64(77))).unwrap();
         packages(w, 0, &[dy])
     });
     assert!(c.get("rejudge: rebuild").is_some_and(|n| *n > 0), "{c:?}");
@@ -991,7 +991,7 @@ fn unmerge_emptying_skeleton_keeps_paged_entry_spec_perm_5_2() {
         }
         let p = &mut w.lp.peers[3];
         let clock: std::sync::Arc<dyn osis_base::Clock> = p.clock.clone();
-        p.engine = crate::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), crate::engine::Config::default(), clock, Box::new(osis_crypto::SeededRng::from_u64(77))).unwrap();
+        p.engine = crate::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), crate::local_peer::blob_area(&p.blob_disk, 76).unwrap(), crate::engine::Config::default(), clock, Box::new(osis_crypto::SeededRng::from_u64(77))).unwrap();
         packages(w, 0, &[demote])
     });
     assert!(c.get("rejudge: rebuild").is_some_and(|n| *n > 0), "{c:?}");

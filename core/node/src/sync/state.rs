@@ -961,7 +961,7 @@ impl State {
             for e in &log {
                 match *e {
                     LogWrite::Added(l, b) => {
-                        if tx.txn.read_blob(&b, 0, 0)?.is_some() {
+                        if tx.blobs.held(&b)? {
                             tx.txn.log_added(l, b)?;
                             logged.insert((l, b));
                         }
@@ -2209,7 +2209,8 @@ mod tests {
             let backend = osis_store::MemoryBackend::with_faults(faults.clone());
             let root = osis_store::MemoryRoot::with_faults(faults.clone());
             let clock: std::sync::Arc<dyn osis_base::Clock> = std::sync::Arc::new(osis_base::ManualClock::new(osis_base::WallMs(1_700_000_000_000)));
-            let mut e = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), crate::Config::default(), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(9))).unwrap();
+            let disk = (osis_store::MemoryBackend::with_faults(faults.clone()), osis_store::MemoryRoot::with_faults(faults.clone()));
+            let mut e = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), crate::local_peer::blob_area(&disk, 9).unwrap(), crate::Config::default(), clock.clone(), Box::new(osis_crypto::SeededRng::from_u64(9))).unwrap();
             let mut s = State::default();
             e.put_blobs(vec![(b, vec![2; 40])]).unwrap();
             s.set_entry(l, b, entry(1));
@@ -2218,7 +2219,7 @@ mod tests {
             let wrote = faults.writes();
             drop(e);
             faults.revive();
-            let mut e = Engine::open(Box::new(backend), Box::new(root), crate::Config::default(), clock, Box::new(osis_crypto::SeededRng::from_u64(10))).unwrap();
+            let mut e = Engine::open(Box::new(backend), Box::new(root), crate::local_peer::blob_area(&disk, 10).unwrap(), crate::Config::default(), clock, Box::new(osis_crypto::SeededRng::from_u64(10))).unwrap();
             let present = e.run(|tx| Ok(tx.txn.get_local(&ek)?)).unwrap().is_some();
             assert_eq!(present, !logged(&mut e).is_empty(), "crash at write {k}: the entry and its event split");
             seen_absent |= !present;

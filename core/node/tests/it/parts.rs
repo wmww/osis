@@ -900,7 +900,7 @@ fn parked_part_goes_at_its_purge_spec_commits_5() {
         assert_eq!(p.engine.pending(), vec![], "parked first: {parked_first}");
         assert!(p.engine.suspects().unwrap().iter().any(|f| f.0 == x), "flagged");
         assert_eq!(p.engine.pending_value_past_end(&b.id(), now).unwrap(), None, "parked first: {parked_first}");
-        assert_eq!(found_in(&mut p.engine, &p.backend, PARKED_MARK), vec![], "parked first: {parked_first}");
+        assert_eq!(found_in(&mut p, PARKED_MARK), vec![], "parked first: {parked_first}");
     }
 }
 

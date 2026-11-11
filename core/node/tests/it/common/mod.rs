@@ -243,12 +243,12 @@ pub fn recovered<const N: usize>(p: &mut osis_node::local_peer::Peer, markers: [
 
 /// Every plaintext an attacker recovers.
 pub fn plaintexts(p: &mut osis_node::local_peer::Peer) -> Vec<Vec<u8>> {
-    p.engine.forensic(&p.backend).unwrap().into_iter().map(|r| r.plain).collect()
+    p.engine.forensic(&p.backend, &p.blob_disk.0).unwrap().into_iter().map(|r| r.plain).collect()
 }
 
-/// Where the attack on `engine` over `backend` recovers `marker` (empty: nowhere).
-pub fn found_in(engine: &mut osis_node::Engine, backend: &osis_store::MemoryBackend, marker: &[u8]) -> Vec<osis_store::Source> {
-    engine.forensic(backend).unwrap().into_iter().filter(|r| contains(&r.plain, marker)).map(|r| r.from).collect()
+/// Where the attack on peer `p`'s device recovers `marker` (empty: nowhere).
+pub fn found_in(p: &mut osis_node::local_peer::Peer, marker: &[u8]) -> Vec<osis_store::Source> {
+    p.engine.forensic(&p.backend, &p.blob_disk.0).unwrap().into_iter().filter(|r| contains(&r.plain, marker)).map(|r| r.from).collect()
 }
 
 /// A content snapshot of `(t, a)` by peer `by` at `ts` carrying `f` (hand-built, unchecked).

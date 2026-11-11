@@ -31,6 +31,7 @@ impl Engine {
         osis_base::copying::copying(|| {
             Ok(Engine {
                 store: self.store.test_copy()?,
+                blobs: self.blobs.clone().test_copy(clock.clone())?,
                 store_rng: self.store_rng.test_copy(),
                 rng: self.rng.test_copy(),
                 core: self.core.test_copy(clock.clone()),
@@ -145,12 +146,15 @@ impl Engine {
         Ok(self.store.forensic_keys()?)
     }
 
-    /// What an attacker holding this node's device recovers from everything `backend` recorded
-    /// (`osis_store::attack`): the current tree's keys, the label read secrets this node's code
-    /// computes now, blobs and wraps opened as osis-label does. Shredding tests.
+    /// What an attacker holding this node's device recovers from everything `backend` (the
+    /// engine's store) and `blobs` (its ciphertext store's) recorded (`osis_store::attack`): the
+    /// current tree's keys, the label read secrets this node's code computes now, blobs and wraps
+    /// opened as osis-label does. Shredding tests.
     #[doc(hidden)]
-    pub fn forensic(&mut self, backend: &osis_store::MemoryBackend) -> Result<Vec<osis_store::Recovered>> {
+    pub fn forensic(&mut self, backend: &osis_store::MemoryBackend, blobs: &osis_store::MemoryBackend) -> Result<Vec<osis_store::Recovered>> {
         let mut ev = osis_store::Evidence::of(self.store.forensic_keys()?, backend);
+        ev.rows.extend(blobs.history());
+        ev.blobs.extend(blobs.blob_history());
         let tids: std::collections::BTreeSet<Tid> = self.all_aspects()?.into_iter().map(|(t, _)| t).collect();
         for t in tids {
             ev.secrets.extend(self.read_secrets(&t).iter().map(|s| *s.expose()));

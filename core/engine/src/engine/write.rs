@@ -610,7 +610,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         let framing = framing_for(tx.core, &plan, &published, &d.tid, &retention)?;
         let cx = writer_ctx(plan.form, plan.kind, plan.ts, node, d.lo, d.hi);
         let memory = tx.txn.is_memory();
-        let mut blobs = TxBlobs::new(&mut tx.txn);
+        let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
         let mut nonce = [0u8; osis_crdt::NONCE_LEN];
         tx.rng.fill_bytes(&mut nonce);
         // a memory delta is never paged (spec/crdt.md §8): it must fit a blob alone
@@ -635,7 +635,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
             let linked = super::large::delta_links(tx, &framing.dedup, &bytes)?;
             let (keep, drop): (Vec<_>, Vec<_>) = own.into_iter().partition(|id| linked.contains(id));
             for id in &drop {
-                tx.txn.delete_blob(id);
+                tx.blobs.release(id, tx.txn.is_memory())?;
             }
             own = keep;
         }
@@ -672,7 +672,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         let mut seed = [0u8; 32];
         tx.rng.fill_bytes(&mut seed);
         let mut list_rng = osis_crypto::SeededRng::from_seed(seed);
-        let mut sink = ListBlobs { blobs: TxBlobs::new(&mut tx.txn), rng: &mut list_rng };
+        let mut sink = ListBlobs { blobs: TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), rng: &mut list_rng };
         let signing = if let Some((_, k)) = &account { &k.signing } else if node == core.id.tid() { &core.id.keys().signing } else { &core.key_actors.get(&node).ok_or(Error::Misuse("signer not held"))?.keys().signing };
         b.build(signing, &secrets, &mut sink, &mut *tx.rng)
     };

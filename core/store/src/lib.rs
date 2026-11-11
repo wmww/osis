@@ -6,6 +6,7 @@
 mod backend;
 mod btree;
 mod changed;
+mod cipher;
 mod codec;
 mod error;
 mod file;
@@ -21,6 +22,7 @@ mod store;
 pub use backend::{Backend, BackendError, KeyValue, Op, WriteBatch, prefix_end};
 pub use backend::restrict_to_owner;
 pub use file::RedbBackend;
+pub use cipher::{BlobArea, CipherHost, CipherTx, Ciphertext, test_copy_shared};
 pub use error::Error;
 pub use nodelog::{CURSOR_LEN, INCARNATIONS_KEPT, LogRead, LoggedEvent, NodeEvent};
 pub use memory::{Fault, FaultyBackend, Faults, Io, MemoryBackend};

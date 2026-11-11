@@ -1,30 +1,116 @@
-//! Blob ciphertexts in the store, behind the traits of osis-label (pages, chunks) and
-//! osis-commit (header-list chunk trees).
+//! Blob ciphertexts in the node's one store (`osis_store::Ciphertext`), behind the traits of
+//! osis-label (pages, chunks) and osis-commit (header-list chunk trees).
 
 use osis_base::{Ak, BlobId, CommitId, Link, Tid, WallMs};
 use osis_crypto::{CryptoRngCore, Secret32};
-use osis_store::Transaction;
+use osis_store::{CipherTx, Ciphertext};
+
+/// One engine transaction's blobs: the ciphertext store locked at the first use, committed
+/// before the engine's store (`Engine::run`). What it newly held is journaled, so a step rolled
+/// back (`Tx::step`) or a transaction dropped releases it again.
+pub struct Cipher<'a> {
+    src: &'a dyn Ciphertext,
+    tx: Option<Box<dyn CipherTx + 'a>>,
+    /// Blobs this transaction newly held, with whether in memory, in order.
+    held: Vec<(BlobId, bool)>,
+    done: bool,
+}
+
+impl<'a> Cipher<'a> {
+    pub fn new(src: &'a dyn Ciphertext) -> Cipher<'a> {
+        Cipher { src, tx: None, held: Vec::new(), done: false }
+    }
+
+    fn tx(&mut self) -> &mut (dyn CipherTx + 'a) {
+        let src = self.src;
+        &mut **self.tx.get_or_insert_with(|| src.begin())
+    }
+
+    /// The store itself (node sync: the hub's store), locked for this transaction.
+    pub fn store(&mut self) -> &mut dyn std::any::Any {
+        self.tx().any()
+    }
+
+    /// Whether the engine holds blob `id`.
+    pub fn held(&mut self, id: &BlobId) -> crate::error::Result<bool> {
+        Ok(self.tx().held(id)?)
+    }
+
+    /// Blob `id`'s bytes, held by the engine or kept by the store for others.
+    pub fn get(&mut self, id: &BlobId) -> crate::error::Result<Option<Vec<u8>>> {
+        self.read(id, 0, usize::MAX)
+    }
+
+    /// Bytes `offset..offset+len` of blob `id`.
+    pub fn read(&mut self, id: &BlobId, offset: u64, len: usize) -> crate::error::Result<Option<Vec<u8>>> {
+        Ok(self.tx().read(id, offset, len)?)
+    }
+
+    /// The engine holds `id` (`memory`: in memory only); whether it did not before.
+    pub fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> crate::error::Result<bool> {
+        let new = self.tx().hold(id, blob, memory)?;
+        if new {
+            self.held.push((*id, memory));
+        }
+        Ok(new)
+    }
+
+    /// The engine holds `id` no more (`memory`: memory data's work, a durable blob stays).
+    pub fn release(&mut self, id: &BlobId, memory: bool) -> crate::error::Result<()> {
+        Ok(self.tx().release(id, memory)?)
+    }
+
+    /// A point `rollback_to` releases back to.
+    pub fn mark(&self) -> usize {
+        self.held.len()
+    }
+
+    /// Releases what was newly held since `m`.
+    pub fn rollback_to(&mut self, m: usize) {
+        let undo: Vec<_> = self.held.drain(m.min(self.held.len())..).rev().collect();
+        if let Some(t) = self.tx.as_mut() {
+            for (id, memory) in undo {
+                // a failure leaves a blob nothing names: space only
+                let _ = t.release(&id, memory);
+            }
+        }
+    }
+
+    /// Commits the ciphertext store's writes (the engine's store commits after).
+    pub fn commit(&mut self) -> crate::error::Result<()> {
+        self.done = true;
+        match self.tx.as_mut() {
+            Some(t) => Ok(t.commit()?),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for Cipher<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            self.rollback_to(0);
+        }
+    }
+}
 
 /// Blobs of one transaction; records what it wrote.
 pub struct TxBlobs<'t, 'a> {
-    pub txn: &'t mut Transaction<'a>,
+    pub blobs: &'t mut Cipher<'a>,
+    memory: bool,
     pub written: Vec<BlobId>,
 }
 
 impl<'t, 'a> TxBlobs<'t, 'a> {
-    pub fn new(txn: &'t mut Transaction<'a>) -> TxBlobs<'t, 'a> {
-        TxBlobs { txn, written: Vec::new() }
+    /// `memory`: the transaction works on memory data (`Transaction::is_memory`).
+    pub fn new(blobs: &'t mut Cipher<'a>, memory: bool) -> TxBlobs<'t, 'a> {
+        TxBlobs { blobs, memory, written: Vec::new() }
     }
-}
-
-fn store_err(e: osis_store::Error) -> osis_label::Error {
-    let _ = e;
-    osis_label::Error::Missing
 }
 
 impl osis_label::BlobSink for TxBlobs<'_, '_> {
     fn put(&mut self, id: BlobId, blob: Vec<u8>) -> Result<(), osis_label::Error> {
-        self.txn.put_blob(&id, blob).map_err(store_err)?;
+        self.blobs.hold(&id, blob, self.memory).map_err(|_| osis_label::Error::Missing)?;
         self.written.push(id);
         Ok(())
     }
@@ -32,7 +118,7 @@ impl osis_label::BlobSink for TxBlobs<'_, '_> {
 
 impl osis_label::BlobFetch for TxBlobs<'_, '_> {
     fn fetch(&mut self, id: &BlobId) -> Result<Vec<u8>, osis_label::Error> {
-        self.txn.get_blob(id).ok().flatten().ok_or(osis_label::Error::Missing)
+        self.blobs.get(id).ok().flatten().ok_or(osis_label::Error::Missing)
     }
 }
 
@@ -54,7 +140,7 @@ impl osis_commit::BlobSink for ListBlobs<'_, '_, '_> {
 
 impl osis_commit::BlobSource for TxBlobs<'_, '_> {
     fn get(&mut self, link: &Link) -> Result<Vec<u8>, osis_commit::Error> {
-        let blob = self.txn.get_blob(&link.blob).map_err(|_| osis_commit::Error::Storage("blob"))?.ok_or(osis_commit::Error::Missing)?;
+        let blob = self.blobs.get(&link.blob).map_err(|_| osis_commit::Error::Storage("blob"))?.ok_or(osis_commit::Error::Missing)?;
         if osis_label::blob_id(&blob) != link.blob {
             return Err(osis_commit::Error::Corrupt);
         }
@@ -103,7 +189,7 @@ impl crate::engine::Engine {
 
     pub fn has_blob(&mut self, id: &BlobId) -> bool {
         let id = *id;
-        self.run(|tx| Ok(tx.txn.read_blob(&id, 0, 0)?.is_some())).unwrap_or(false)
+        self.run(|tx| tx.blobs.held(&id)).unwrap_or(false)
     }
 }
 
@@ -115,9 +201,9 @@ impl crate::engine::Tx<'_> {
     /// commit, so a rolled back transaction (its events discarded) loses none.
     pub fn store_blobs(&mut self, blobs: Vec<(BlobId, Vec<u8>)>) -> crate::error::Result<Vec<BlobId>> {
         let mut stored = Vec::new();
+        let memory = self.txn.is_memory();
         for (id, b) in blobs {
-            if osis_label::blob_id(&b) == id && self.txn.read_blob(&id, 0, 0)?.is_none() {
-                self.txn.put_blob(&id, b)?;
+            if osis_label::blob_id(&b) == id && self.blobs.hold(&id, b, memory)? {
                 stored.push(id);
             }
         }

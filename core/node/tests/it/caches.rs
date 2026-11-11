@@ -163,12 +163,13 @@ fn crash_at_every_write_keeps_caches_exact() {
     for n in 0.. {
         let faults = Faults::new();
         let (backend, root, clock) = (MemoryBackend::with_faults(faults.clone()), MemoryRoot::with_faults(faults.clone()), Arc::new(ManualClock::new(T0)));
+        let blob_disk = (MemoryBackend::with_faults(faults.clone()), MemoryRoot::with_faults(faults.clone()));
         let open = |create: bool, seed: u64| -> osis_node::Result<Engine> {
             let c: Arc<dyn Clock> = clock.clone();
             let mut e = if create {
-                Engine::create(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed)))?
+                Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_node::local_peer::blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?
             } else {
-                Engine::open(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed)))?
+                Engine::open(Box::new(backend.clone()), Box::new(root.clone()), osis_node::local_peer::blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?
             };
             e.set_walk_cache_min(1);
             Ok(e)

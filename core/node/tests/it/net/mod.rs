@@ -53,6 +53,8 @@ pub struct Node {
     pub hub: Hub,
     pub backend: MemoryBackend,
     pub root: MemoryRoot,
+    /// The backend and root of its one store beside the engine (the hub's).
+    pub hub_disk: (MemoryBackend, MemoryRoot),
     pub online: bool,
     pub wake: Option<u64>,
     /// Restarts so far (`Msg`).
@@ -424,7 +426,7 @@ impl Net {
                     Some(s) => n.hub.test_copy_over(s.hub_store()),
                     None => n.hub.test_copy(nc.clone()).unwrap(),
                 };
-                Node { sync, clock: nc, hub, backend: n.backend.test_copy(), root: n.root.test_copy(), online: n.online, wake: n.wake, life: n.life, accepts: n.accepts, events }
+                Node { sync, clock: nc, hub, backend: n.backend.test_copy(), root: n.root.test_copy(), hub_disk: (n.hub_disk.0.test_copy(), n.hub_disk.1.test_copy()), online: n.online, wake: n.wake, life: n.life, accepts: n.accepts, events }
             }).collect();
             let hosts = self.hosts.iter().map(|h| {
                 let c: Arc<dyn Clock> = clock.clone();
@@ -504,15 +506,14 @@ impl Net {
         i
     }
 
-    /// A node's hub over its one store (`SyncEngine::hub_store`): an empty one in memory,
-    /// admitting nothing.
+    /// A node's hub over its one store (`SyncEngine::hub_store`).
     fn node_hub(&self, sync: &mut SyncEngine, seed: u64) -> Hub {
-        let store = Store::open_or_create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut SeededRng::from_u64(seed ^ 0x40b)).unwrap();
-        // on the node's clock, as a node's (`SyncEngine::open_hub_store`)
-        let mut store = HostStore::open(store, sync.engine().clock(), HostPolicy::default(), Box::new(SeededRng::from_u64(seed ^ 0x40b ^ 0x570e))).unwrap();
-        store.set_admission(osis_host::Admission::Only(Default::default()), Default::default());
-        sync.set_hub_store(store);
         Hub::new(sync.hub_store(), Box::new(SeededRng::from_u64(seed ^ 0x4ab)))
+    }
+
+    /// The node's one store beside the engine over `disk` (opened or created), on its clock.
+    fn hub_store(disk: &(MemoryBackend, MemoryRoot), clock: Arc<dyn Clock>, seed: u64) -> Arc<dyn osis_store::Ciphertext> {
+        osis_node::sync::hub_store_on(Box::new(disk.0.clone()), Box::new(disk.1.clone()), clock, Box::new(SeededRng::from_u64(seed ^ 0x40b ^ 0x570e))).unwrap()
     }
 
     /// A host store over `backend` and `root` (created on first use).
@@ -565,7 +566,7 @@ impl Net {
     }
 
     pub fn add_node(&mut self, seed: u64, cfg: SyncConfig) -> usize {
-        self.add_node_on(seed, cfg, MemoryBackend::new(), MemoryRoot::new(), Config::default())
+        self.add_node_on(seed, cfg, (MemoryBackend::new(), MemoryRoot::new()), (MemoryBackend::new(), MemoryRoot::new()), Config::default())
     }
 
     /// A node for forensic checks: every row and blob it writes recorded, a small key tree and
@@ -576,29 +577,33 @@ impl Net {
         backend.record_history();
         let cfg = SyncConfig { hosts: hosts.iter().map(|s| self.address(*s)).collect(), ..SyncConfig::default() };
         let store = StoreConfig { arity: 4, depth: 8, page_max: 512, ..StoreConfig::default() };
-        self.add_node_on(seed, cfg, backend, MemoryRoot::with_faults(faults.clone()), Config { store, ..Config::default() })
+        let hub = MemoryBackend::with_faults(faults.clone());
+        hub.record_history();
+        let disks = ((backend, MemoryRoot::with_faults(faults.clone())), (hub, MemoryRoot::with_faults(faults.clone())));
+        self.add_node_on(seed, cfg, disks.0, disks.1, Config { store, ..Config::default() })
     }
 
     /// Where an attacker holding node `n`'s device recovers `marker` (`Engine::forensic`; the
     /// node must record, `forensic_node`).
     pub fn forensic(&mut self, n: usize, marker: &[u8]) -> Vec<osis_store::Source> {
-        let backend = self.nodes[n].backend.clone();
-        let found = self.engine(n).forensic(&backend).unwrap();
+        let (backend, hub) = (self.nodes[n].backend.clone(), self.nodes[n].hub_disk.0.clone());
+        let found = self.engine(n).forensic(&backend, &hub).unwrap();
         found.into_iter().filter(|r| r.plain.windows(marker.len()).any(|w| w == marker)).map(|r| r.from).collect()
     }
 
-    fn add_node_on(&mut self, seed: u64, cfg: SyncConfig, backend: MemoryBackend, root: MemoryRoot, engine_cfg: Config) -> usize {
+    fn add_node_on(&mut self, seed: u64, cfg: SyncConfig, (backend, root): (MemoryBackend, MemoryRoot), hub_disk: (MemoryBackend, MemoryRoot), engine_cfg: Config) -> usize {
         let cfg = SyncConfig { full_passes: cfg.full_passes || self.full_passes, ..cfg };
         let clock = Arc::new(NodeClock { base: self.clock.clone(), skew: 0.into() });
         let c: Arc<dyn Clock> = clock.clone();
-        let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), engine_cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
+        let blobs = Net::hub_store(&hub_disk, c.clone(), seed);
+        let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), blobs, engine_cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
         let home: Vec<Address> = if self.home_at_hosts { cfg.hosts.clone() } else { Vec::new() };
         let done = if self.bare { None } else { let d = engine.create_account(&home).unwrap().1; (!home.is_empty()).then_some(d) };
         let mut sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         let events = sync.engine_mut().subscribe_durable();
         let acts = done.map(|d| sync.carry_out(d).unwrap());
         let hub = self.node_hub(&mut sync, seed);
-        self.nodes.push(Node { sync: Some(sync), clock, hub, backend, root, online: true, wake: None, life: 0, accepts: true, events });
+        self.nodes.push(Node { sync: Some(sync), clock, hub, backend, root, hub_disk, online: true, wake: None, life: 0, accepts: true, events });
         let n = self.nodes.len() - 1;
         if let Some(acts) = acts {
             self.actions(n, acts);
@@ -613,11 +618,13 @@ impl Net {
         let clock = Arc::new(NodeClock { base: self.clock.clone(), skew: self.nodes[n].clock.skew.load(std::sync::atomic::Ordering::SeqCst).into() });
         let c: Arc<dyn Clock> = clock.clone();
         let (backend, root) = (self.nodes[n].backend.copy(), self.nodes[n].root.copy());
-        let engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed))).unwrap();
+        let hub_disk = (self.nodes[n].hub_disk.0.copy(), self.nodes[n].hub_disk.1.copy());
+        let blobs = Net::hub_store(&hub_disk, c.clone(), seed);
+        let engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), blobs, Config::default(), c, Box::new(SeededRng::from_u64(seed))).unwrap();
         let mut sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         let events = sync.engine_mut().subscribe_durable();
         let hub = self.node_hub(&mut sync, seed);
-        self.nodes.push(Node { sync: Some(sync), clock, hub, backend, root, online: true, wake: None, life: 0, accepts: true, events });
+        self.nodes.push(Node { sync: Some(sync), clock, hub, backend, root, hub_disk, online: true, wake: None, life: 0, accepts: true, events });
         self.nodes.len() - 1
     }
 
@@ -739,7 +746,8 @@ impl Net {
         let c: Arc<dyn Clock> = node.clock.clone();
         node.sync = None;
         node.life += 1;
-        let engine = Engine::open(Box::new(node.backend.clone()), Box::new(node.root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed))).unwrap();
+        let blobs = Net::hub_store(&node.hub_disk, c.clone(), seed);
+        let engine = Engine::open(Box::new(node.backend.clone()), Box::new(node.root.clone()), blobs, Config::default(), c, Box::new(SeededRng::from_u64(seed))).unwrap();
         let mut sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         node.events = sync.engine_mut().subscribe_durable();
         let hub = self.node_hub(&mut sync, seed);
