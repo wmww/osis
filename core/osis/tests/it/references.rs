@@ -1,5 +1,6 @@
 //! The reference index (issues/thing-lifetimes.md, Index and backlinks; notes/engine-refs.md),
 //! read through `internals`: rows follow the held values, whatever changes them.
+//! spec: none (a local, rebuildable index; notes/engine-refs.md).
 
 use crate::common::*;
 use osis::internals::Internals as _;

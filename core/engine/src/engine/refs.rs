@@ -4,7 +4,7 @@
 //! kept in the transaction that changes a state: a join counts the tids at its reach before and
 //! after (`Delta::reach`), a whole write (a rebuild: validity, expiry, purge, ending) the whole
 //! state against the stored rows (`resync`), a dropped aspect clears them. An ephemeral aspect's
-//! rows are memory rows, as its state is.
+//! rows are memory rows, as its state is. spec: none (local; notes/engine-refs.md).
 
 use super::{Tx, records, scan_table};
 use crate::error::{Error, Result};
