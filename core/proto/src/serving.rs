@@ -87,9 +87,26 @@ pub enum ServingInput {
     Peer(Box<Message>),
     /// The upper layer has Notifies to send: `ServingOutput::Room` when the push rule allows.
     WantRoom,
-    /// The node no longer holds back this connection's output (`ServingSession::set_full`):
-    /// held pushes and room go on as at a `Taken`.
-    Unfull,
+    /// The node's room for this connection grew (`ServingSession::set_room`): held requests,
+    /// pushes and room go on as at a `Taken`.
+    Resume,
+}
+
+/// A frame received and not yet run (`ServingSession::admit`).
+#[derive(Clone, Debug)]
+struct Pending {
+    msg: Result<Message, crate::msg::Rejected>,
+    /// Its bytes framed, and the reply allowance it is charged.
+    frame: usize,
+    allowance: usize,
+}
+
+impl Pending {
+    /// The room it needs to run: its reply allowance (an Error for a frame that does not
+    /// decode).
+    fn need(&self) -> usize {
+        if self.msg.is_err() { crate::client::SMALL_REPLY } else { self.allowance }
+    }
 }
 
 /// Bytes of the `Send` outputs in `out`.
@@ -227,9 +244,17 @@ pub struct ServingSession {
     authed: bool,
     /// The upper layer waits for push room (`WantRoom`).
     room_wanted: bool,
-    /// The node holds all the output it may for this connection (`set_full`): no push goes, none
-    /// is granted room.
-    full: bool,
+    /// This connection's share of the node's output bound, the node's bytes left for it beyond
+    /// what it held then, and that holding (`set_room`; unmetered: `usize::MAX`).
+    share: usize,
+    slack: usize,
+    base: usize,
+    /// Frames received and not yet run, in order: from the first request whose reply allowance
+    /// did not fit the room (`fits`) on. No input comes while any wait (`takes_input`).
+    pending: VecDeque<Pending>,
+    /// What the last push or own request held back for room needs (`need`).
+    push_need: usize,
+    flush_need: Option<usize>,
     /// The node's own requests to the dialer (`ServingInput::Peer`), within the request window.
     requests: crate::client::Window,
 }
@@ -301,17 +326,58 @@ impl ServingSession {
             api_subs: BTreeMap::new(),
             authed: false,
             room_wanted: false,
-            full: false,
+            share: usize::MAX,
+            slack: usize::MAX,
+            base: 0,
+            pending: VecDeque::new(),
+            push_need: 0,
+            flush_need: None,
             requests: crate::client::Window::default(),
         }
     }
 
-    /// Whether the node holds all the unread output it may for this connection (its upper
-    /// layer's share, spec/sync.md §10 Served connections): while it does, pushes wait as for a
-    /// full send queue (`owed`, relay-only ones dropped) and no room is granted. Pushes resume
-    /// at `Unfull` or the next `Taken` after it is lifted.
-    pub fn set_full(&mut self, full: bool) {
-        self.full = full;
+    /// The node's room for this connection's output (spec/sync.md §10 Served connections): its
+    /// `share` of the node's bound, and the bytes the node has left beyond what the connection
+    /// holds now (`holding`). A reply, push or own request goes only within both: within the
+    /// share (or alone, when the connection holds nothing) and within what is left. Otherwise it
+    /// waits, in order: requests are taken but run once their reply allowance fits, so the
+    /// output never passes the node's bound; `need` tells what the first waiting one needs.
+    pub fn set_room(&mut self, share: usize, slack: usize) {
+        self.share = share;
+        self.slack = slack;
+        self.base = self.holding(&[]);
+    }
+
+    /// What the connection holds against the node's bound: bytes written and not taken, and the
+    /// reply allowances of requests handed up and not answered.
+    pub fn holding(&self, out: &[ServingOutput]) -> usize {
+        self.unsent(out).saturating_add(self.asked_bytes)
+    }
+
+    /// Whether input may come: no received frame waits for room.
+    pub fn takes_input(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// The room the first thing waiting for it needs: a frame's reply allowance, an own
+    /// request's frame, a push; none while nothing waits for room.
+    pub fn need(&self) -> Option<usize> {
+        if let Some(p) = self.pending.front() {
+            return Some(p.allowance);
+        }
+        self.flush_need.or_else(|| self.held().then_some(self.push_need.max(1)))
+    }
+
+    /// The node's bytes left for this connection, with `out` written.
+    fn left(&self, out: &[ServingOutput]) -> usize {
+        self.slack.saturating_sub(self.holding(out).saturating_sub(self.base))
+    }
+
+    /// Whether `size` more bytes of output fit the room: the share (or none held) and what is
+    /// left.
+    fn fits(&self, out: &[ServingOutput], size: usize) -> bool {
+        let h = self.holding(out);
+        (h == 0 || h.saturating_add(size) <= self.share) && size <= self.left(out)
     }
 
     /// Whether an Auth was answered by a Reply (notes/client-port.md §3): the session counts as
@@ -390,16 +456,16 @@ impl ServingSession {
         !self.owed.is_empty() || self.room_wanted
     }
 
-    /// Push room for Notifies: what fits `REPLY_BUDGET` behind the unwritten bytes, or all of it
-    /// when none are unwritten; none below `SMALL_REPLY` or while the node is full.
+    /// Push room for Notifies: what fits `REPLY_BUDGET` behind the unwritten bytes (all of it
+    /// when none are unwritten) and the node's room (`fits`); none below `SMALL_REPLY`.
     fn room(&self, out: &[ServingOutput]) -> Option<usize> {
-        if self.full {
-            return None;
-        }
-        match self.backlog(out) {
-            0 => Some(REPLY_BUDGET),
-            b => Some(REPLY_BUDGET.saturating_sub(b)).filter(|r| *r >= crate::client::SMALL_REPLY),
-        }
+        let r = match self.backlog(out) {
+            0 => REPLY_BUDGET,
+            b => REPLY_BUDGET.saturating_sub(b),
+        };
+        let h = self.holding(out);
+        let share = if h == 0 { usize::MAX } else { self.share.saturating_sub(h) };
+        Some(r.min(share).min(self.left(out))).filter(|r| *r >= crate::client::SMALL_REPLY)
     }
 
     /// Queues `label`'s pushes behind those already held (`owed`).
@@ -423,11 +489,11 @@ impl ServingSession {
         w.saturating_add(o)
     }
 
-    /// Whether a push of about `size` bytes waits: the node is full, or something is unwritten
-    /// and it would not fit `REPLY_BUDGET` behind it.
+    /// Whether a push of about `size` bytes waits: something is unwritten and it would not fit
+    /// `REPLY_BUDGET` behind it, or it does not fit the node's room.
     fn no_room(&self, out: &[ServingOutput], size: usize) -> bool {
         let b = self.backlog(out);
-        self.full || b > 0 && b.saturating_add(size) > REPLY_BUDGET
+        b > 0 && b.saturating_add(size) > REPLY_BUDGET || !self.fits(out, size)
     }
 
     /// When this side's oldest request to the dialer stalls (`client::STALL_TIMEOUT_MS`, the
@@ -454,9 +520,26 @@ impl ServingSession {
             return out;
         }
         self.input(now, store, input, &mut out);
+        self.run_pending(now, store, &mut out);
         if !self.closed {
+            // the node's own requests go within the room too
             let before = self.written.saturating_add(sent_bytes(&out));
-            self.requests.flush(before, now, |f| out.push(ServingOutput::Send(f)));
+            let (h, left, share) = (self.holding(&out), self.left(&out), self.share);
+            let mut extra = 0usize;
+            let mut sends = Vec::new();
+            self.flush_need = self.requests.flush_while(
+                before,
+                now,
+                |len| {
+                    let ok = (h + extra == 0 || h + extra + len <= share) && extra + len <= left;
+                    if ok {
+                        extra += len;
+                    }
+                    ok
+                },
+                |f| sends.push(ServingOutput::Send(f)),
+            );
+            out.extend(sends);
         }
         self.written = self.written.saturating_add(sent_bytes(&out));
         out
@@ -478,26 +561,17 @@ impl ServingSession {
             ServingInput::Start => out.push(ServingOutput::Send(encode_frame(&Hello::new(now, self.cfg.challenge).encode()))),
             ServingInput::Bytes(b) => {
                 self.decoder.push(&b);
-                // frame bytes plus reply allowances of this input's requests, all unanswered
-                // when the last was sent, and of client-port requests handed out earlier and
-                // still unanswered (`MAX_UNANSWERED`)
-                let mut charged = self.asked_bytes;
+                // frame bytes plus reply allowances of the requests received and not run, all
+                // unanswered when the last was sent, and of those handed out earlier and still
+                // unanswered (`MAX_UNANSWERED`)
+                let mut charged = self.pending.iter().fold(self.asked_bytes, |c, p| c.saturating_add(p.frame).saturating_add(p.allowance));
                 while !self.closed {
                     // before the peer's Hello only a Hello-sized frame is taken (spec/wire.md §11.1)
                     self.decoder.set_max(if self.version.is_some() { osis_base::format::MAX_MESSAGE } else { crate::frame::MAX_HELLO_BYTES });
                     match self.decoder.next_frame() {
                         Ok(Some(body)) => {
                             self.requests.frame_in(&body, now);
-                            self.frame(now, store, &body, &mut charged, out);
-                            // a peer within its window (spec/sync.md §6) never has more replies
-                            // unwritten: one that pipelines past it is closed here, before its
-                            // further requests cost reads and memory, not after (the driver's
-                            // queue cap sees only what this input made). The node's own requests
-                            // unanswered may be unwritten too (an answered one was delivered).
-                            if self.unsent(out) > SEND_QUEUE.saturating_add(self.requests.in_flight()) {
-                                out.push(ServingOutput::PeerError(Error::Cap("replies past the request window")));
-                                self.close(out);
-                            }
+                            self.admit(&body, &mut charged, out);
                         }
                         Ok(None) => break,
                         Err(e) => {
@@ -542,8 +616,8 @@ impl ServingSession {
                 self.requests.taken(n, now);
                 self.resume(store, out);
             }
-            ServingInput::Unfull => {
-                self.full = false;
+            ServingInput::Resume => {
+                self.run_pending(now, store, out);
                 self.resume(store, out);
             }
             ServingInput::WantRoom => match self.room(out) {
@@ -624,7 +698,10 @@ impl ServingSession {
         out.push(ServingOutput::Close);
     }
 
-    fn frame(&mut self, now: u64, store: &mut dyn LabelStore, body: &[u8], charged: &mut usize, out: &mut Vec<ServingOutput>) {
+    /// Takes a received frame: the peer's Hello at once; any other decoded and charged
+    /// (`MAX_UNANSWERED`), to run in order once its reply allowance fits the room
+    /// (`run_pending`).
+    fn admit(&mut self, body: &[u8], charged: &mut usize, out: &mut Vec<ServingOutput>) {
         if self.version.is_none() {
             match Hello::decode(body).and_then(|h| negotiate(&[PROTOCOL_VERSION], &h.versions).map(|v| (v, h.challenge))) {
                 Ok((v, challenge)) => {
@@ -638,37 +715,68 @@ impl ServingSession {
             }
             return;
         }
-        let frame_bytes = body.len().saturating_add(4);
-        *charged = charged.saturating_add(frame_bytes);
-        let msg = match Message::decode(body) {
-            Ok(m) => m,
-            Err(r) => {
-                let code = r.code();
-                let id = r.id;
-                out.push(ServingOutput::PeerError(r.error));
-                send(out, Message::Error { id, code });
-                return;
-            }
-        };
+        let frame = body.len().saturating_add(4);
+        *charged = charged.saturating_add(frame);
+        let msg = Message::decode(body);
         // a peer within its window (spec/sync.md §6) never sends more before any is answered:
         // one that does is closed before the request runs, so one input costs at most a few
-        // requests' reads (a Reconcile reads its ranges' live IDs: up to the whole label)
-        let allowance = crate::client::allowance(&msg);
+        // requests' reads (a Reconcile reads its ranges' live IDs: up to the whole label), and
+        // the requests waiting for room stay within its window
+        let allowance = msg.as_ref().map_or(0, crate::client::allowance);
         *charged = charged.saturating_add(allowance);
         if *charged > crate::client::MAX_UNANSWERED {
             out.push(ServingOutput::PeerError(Error::Cap("requests past the request window")));
             self.close(out);
             return;
         }
+        self.pending.push_back(Pending { msg, frame, allowance });
+    }
+
+    /// Runs the frames waiting, in order, while each one's reply fits the room (`fits`).
+    fn run_pending(&mut self, now: u64, store: &mut dyn LabelStore, out: &mut Vec<ServingOutput>) {
+        while let Some(p) = self.pending.front() {
+            if self.closed {
+                self.pending.clear();
+                return;
+            }
+            let need = p.need();
+            if need > 0 && !self.fits(out, need) {
+                return;
+            }
+            let Some(p) = self.pending.pop_front() else { return };
+            self.run(now, store, p, out);
+            // a peer within its window (spec/sync.md §6) never has more replies unwritten: one
+            // that pipelines past it is closed here, before its further requests cost reads and
+            // memory, not after (the driver's queue cap sees only what this input made). The
+            // node's own requests unanswered may be unwritten too (an answered one was
+            // delivered).
+            if self.unsent(out) > SEND_QUEUE.saturating_add(self.requests.in_flight()) {
+                out.push(ServingOutput::PeerError(Error::Cap("replies past the request window")));
+                self.close(out);
+            }
+        }
+    }
+
+    fn run(&mut self, now: u64, store: &mut dyn LabelStore, p: Pending, out: &mut Vec<ServingOutput>) {
+        let msg = match p.msg {
+            Ok(m) => m,
+            Err(r) => {
+                let code = r.code();
+                out.push(ServingOutput::PeerError(r.error));
+                send(out, Message::Error { id: r.id, code });
+                return;
+            }
+        };
         let id = msg.id();
+        let charge = p.frame.saturating_add(p.allowance);
         if matches!(msg, Message::Auth { .. } | Message::Call { .. } | Message::Sub { .. } | Message::Unsub { .. }) {
-            if let Some(reply) = self.api_request(msg, frame_bytes.saturating_add(allowance), out) {
+            if let Some(reply) = self.api_request(msg, charge, out) {
                 send(out, reply);
             }
             return;
         }
         self.struck = false;
-        match self.dispatch(now, store, msg, frame_bytes.saturating_add(allowance), out) {
+        match self.dispatch(now, store, msg, charge, out) {
             Ok(Some(reply)) => send(out, reply),
             Ok(None) => {}
             Err(e) => {
@@ -1096,7 +1204,8 @@ impl ServingSession {
     /// to and with that head's, and nothing after: its subscription ends.
     fn push(&mut self, store: &dyn LabelStore, label: &LabelId, out: &mut Vec<ServingOutput>) -> Result<(), StoreError> {
         let Some(mut seq) = self.subs.get(label).copied() else { return Ok(()) };
-        if self.full || self.backlog(out) >= REPLY_BUDGET {
+        if self.no_room(out, 1) {
+            self.push_need = crate::client::SMALL_REPLY;
             self.owe(*label);
             return Ok(());
         }
@@ -1129,13 +1238,15 @@ impl ServingSession {
                 }
                 if let Some(e) = self.event(store, label, s, rec, inline_limit, &none)? {
                     let size = event_size(&e);
-                    if self.backlog(out) + used + size > REPLY_BUDGET {
+                    if self.backlog(out) + used + size > REPLY_BUDGET || !self.fits(out, used + size) {
                         if !events.is_empty() {
                             send(out, Message::Push { label: *label, events: std::mem::take(&mut events), cursor: Cursor { log_id, seq } });
                             used = 0;
                         }
                         if self.no_room(out, size) {
                             // the rest goes from `seq` once the transport takes bytes (`Taken`)
+                            // or the node's room grows (`Resume`)
+                            self.push_need = size;
                             self.owe(*label);
                             self.subs.insert(*label, seq);
                             return Ok(());
@@ -1438,6 +1549,52 @@ mod tests {
         assert!(sent > SEND_QUEUE - MAX_MESSAGE && sent <= SEND_QUEUE + MAX_MESSAGE, "{sent}");
     }
 
+    // spec/sync.md §10 (Served connections): with a room set, requests are taken but each runs,
+    // in order, only once its reply allowance fits: within the share, or alone when the
+    // connection holds nothing, and always within what the node has left; no input is taken
+    // while one waits; the rest run as the transport takes the replies
+    #[test]
+    fn replies_wait_for_room_spec_sync_10() {
+        let f = Fixture::new(0x10);
+        let mut store = MemoryLabelStore::new([1; 32]);
+        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
+        let blob = vec![7u8; 256 << 10];
+        let blob_id = osis_label::blob_id(&blob);
+        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
+        let mut c = opened(&f, &mut store);
+        let mut taken = c.written;
+        c.handle(0, &mut store, ServingInput::Taken(taken));
+        let allowance = 300usize << 10;
+        let fetch = |id: u32| encode_frame(&Message::Fetch { id, label: f.label, max_reply: allowance as u64, ids: vec![blob_id] }.encode());
+        let ids = |out: &[ServingOutput]| out.iter().filter_map(|o| if let ServingOutput::Send(b) = o { Message::decode(&b[4..]).ok().map(|m| m.id()) } else { None }).collect::<Vec<_>>();
+        let share = 1 << 20;
+        c.set_room(share, 64 << 20);
+        let out = c.handle(0, &mut store, ServingInput::Bytes((100..108).flat_map(fetch).collect()));
+        assert_eq!(ids(&out), vec![100, 101, 102], "three fit the share");
+        assert!(c.holding(&[]) <= share);
+        assert!(!c.takes_input() && c.need() == Some(allowance));
+        // the transport takes them: the next three
+        taken = c.written;
+        c.set_room(share, 64 << 20);
+        let out = c.handle(0, &mut store, ServingInput::Taken(taken));
+        assert_eq!(ids(&out), vec![103, 104, 105]);
+        // the node has nothing left: none runs, even holding nothing
+        taken = c.written;
+        c.set_room(share, 0);
+        let out = c.handle(0, &mut store, ServingInput::Taken(taken));
+        assert!(ids(&out).is_empty() && c.holding(&[]) == 0 && c.need() == Some(allowance));
+        // a share smaller than one reply: one at a time, each alone
+        c.set_room(64 << 10, 64 << 20);
+        let out = c.handle(0, &mut store, ServingInput::Resume);
+        assert_eq!(ids(&out), vec![106]);
+        taken = c.written;
+        c.set_room(64 << 10, 64 << 20);
+        let out = c.handle(0, &mut store, ServingInput::Taken(taken));
+        assert_eq!(ids(&out), vec![107]);
+        assert!(c.takes_input() && c.need().is_none());
+    }
+
     // spec/sync.md §6 (Requester, Closing): the node's own requests to the dialer, unwritten
     // within their window, come on top of the replies a compliant dialer's window allows, so
     // the two together close no connection
@@ -1469,7 +1626,7 @@ mod tests {
 
     // spec/sync.md §6 (request window), spec/requirements.md (peer input never causes unbounded
     // work): requests that would carry more than `MAX_UNANSWERED` unanswered in one input close
-    // the connection before they run, so repeating a whole-space Reconcile (which reads the whole
+    // the connection before any runs, so repeating a whole-space Reconcile (which reads the whole
     // label) costs at most three label reads per input; spread over inputs, each runs
     #[test]
     fn pipelined_requests_bounded() {
@@ -1493,14 +1650,14 @@ mod tests {
         }
         assert!(!c.is_closed());
         assert_eq!(store.ids_read.get(), 12 * u64::from(n));
-        // past it in one input: closed before the fourth runs
+        // past it in one input: closed before any of them runs (frames are taken, then run)
         let mut c = opened(&f, &mut store);
         store.ids_read.set(0);
         let out = c.handle(0, &mut store, ServingInput::Bytes((0..1000).flat_map(whole).collect()));
         assert!(c.is_closed());
         assert!(out.iter().any(|o| matches!(o, ServingOutput::PeerError(Error::Cap("requests past the request window")))), "{out:?}");
-        assert_eq!(replies(&out), 3);
-        assert_eq!(store.ids_read.get(), 3 * u64::from(n));
+        assert_eq!(replies(&out), 0);
+        assert_eq!(store.ids_read.get(), 0);
     }
 
     // spec/wire.md §11.3, spec/requirements.md (peer input never causes unbounded work): a

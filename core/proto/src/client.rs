@@ -212,14 +212,20 @@ impl Window {
         (!self.sent.is_empty()).then(|| self.moved.saturating_add(STALL_TIMEOUT_MS))
     }
 
-    /// Sends what fits (`Send` frames), this side's output having `written` bytes before them.
-    pub(crate) fn flush(&mut self, mut written: u64, now: u64, mut send: impl FnMut(Vec<u8>)) {
-        while let Some(m) = self.next() {
-            let frame = encode_frame(&m.encode());
+    /// Sends what the window lets go and each frame `fits` (`Send` frames), this side's output
+    /// having `written` bytes before them: the size of the first that does not fit, if any.
+    pub(crate) fn flush_while(&mut self, mut written: u64, now: u64, mut fits: impl FnMut(usize) -> bool, mut send: impl FnMut(Vec<u8>)) -> Option<usize> {
+        while self.in_flight < WINDOW.max(1) {
+            let frame = encode_frame(&self.waiting.front()?.encode());
+            if !fits(frame.len()) {
+                return Some(frame.len());
+            }
+            let m = self.waiting.pop_front()?;
             written = written.saturating_add(frame.len() as u64);
             self.sent(&m, frame.len(), written, now);
             send(frame);
         }
+        None
     }
 }
 

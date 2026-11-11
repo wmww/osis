@@ -14,7 +14,7 @@ use crate::store::HostStore;
 use osis_base::LabelId;
 use osis_proto::{ClientInput, ClientOutput, Message, ServingConfig, ServingSession, ServingInput, ServingOutput};
 use osis_transport::{Peer, Source};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, VecDeque};
 
 /// A connection's handle, chosen by the driver.
 pub type ConnId = u64;
@@ -105,12 +105,13 @@ pub enum Down {
 
 #[derive(Clone)]
 enum Conn {
-    /// `buffered`: partial frame bytes after the last input; `unread`: bytes written and not
-    /// taken by the transport (as reported); `taken`: the last report (`Hub::sent`); `moved`:
-    /// a report took more since the last check while the node was over its bound; `waits`: it
-    /// holds more than its share (`Hub::waits`); `started`: its `Up::Start` went; `opened`: the
-    /// last `Up::Opened`.
-    Served { c: Box<ServingSession>, remote: Remote, hello_by: Option<u64>, buffered: usize, unread: usize, taken: u64, moved: bool, waits: bool, started: bool, opened: bool },
+    /// `buffered`: partial frame bytes after the last input; `hold`: what it holds against the
+    /// output bound (`ServingSession::holding`); `need`: the room its first waiting reply, push
+    /// or request needs (`ServingSession::need`); `queued`: in `queue`; `paused`: received
+    /// frames wait for room, so it takes no input (`Hub::waits`); `taken`: the last report
+    /// (`Hub::sent`); `moved`: a report took more since the last check; `started`: its
+    /// `Up::Start` went; `opened`: the last `Up::Opened`.
+    Served { c: Box<ServingSession>, remote: Remote, hello_by: Option<u64>, buffered: usize, hold: usize, need: Option<usize>, queued: bool, paused: bool, taken: u64, moved: bool, started: bool, opened: bool },
     Peer { r: Box<Replicator>, timer: Option<u64> },
 }
 
@@ -124,21 +125,19 @@ pub struct Hub {
     sweep_more: bool,
     /// Partial frame bytes over all served connections.
     buffered: usize,
-    /// Bytes written to all served connections and not taken by the transport (as reported).
-    unread: usize,
-    /// Served connections holding unread output, by how much: each one's share of
-    /// `max_buffered_bytes` is that over their number.
-    holders: BTreeSet<(usize, ConnId)>,
-    /// Those holding more than their share (`waits`), by how much.
-    waiting: BTreeSet<(usize, ConnId)>,
-    /// The share as of the last batch's end.
-    share: usize,
-    /// Served connections whose unread changed in this batch.
-    touched: Vec<ConnId>,
-    /// Connections back under their share since `take_resumed`.
+    /// What all served connections hold against `max_buffered_bytes`: bytes written and not
+    /// taken by the transport (as reported), and reply allowances handed up and not answered.
+    hold: usize,
+    /// Served connections holding something or needing room: each one's share of the bound is
+    /// the bound over their number.
+    active: usize,
+    /// Connections holding nothing whose need waits for the node's room, in arrival order: the
+    /// first one's need is kept free of the others (it reserves it), so each gets its turn.
+    queue: VecDeque<ConnId>,
+    /// Connections that take input again since `take_resumed`.
     resumed: Vec<ConnId>,
-    /// While `unread` is over `max_buffered_bytes`: when connections whose output did not move
-    /// are next closed (`tick`).
+    /// While the queue's first waits: when connections whose output did not move are next
+    /// closed (`tick`).
     check_at: Option<u64>,
     /// The latest time any call carried.
     now: u64,
@@ -150,7 +149,7 @@ pub struct Hub {
 
 impl Hub {
     pub fn new(store: HostStore, rng: Box<dyn osis_crypto::NodeRng>) -> Hub {
-        Hub { store, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0, unread: 0, holders: BTreeSet::new(), waiting: BTreeSet::new(), share: usize::MAX, touched: Vec::new(), resumed: Vec::new(), check_at: None, now: 0, relays_delivered: 0, ended: Vec::new() }
+        Hub { store, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0, hold: 0, active: 0, queue: VecDeque::new(), resumed: Vec::new(), check_at: None, now: 0, relays_delivered: 0, ended: Vec::new() }
     }
 
     /// Tests only: an exact copy of this hub as it stands, on `clock`, sharing no mutable state
@@ -166,11 +165,9 @@ impl Hub {
                 sweep_hold: self.sweep_hold,
                 sweep_more: self.sweep_more,
                 buffered: self.buffered,
-                unread: self.unread,
-                holders: self.holders.clone(),
-                waiting: self.waiting.clone(),
-                share: self.share,
-                touched: self.touched.clone(),
+                hold: self.hold,
+                active: self.active,
+                queue: self.queue.clone(),
                 resumed: self.resumed.clone(),
                 check_at: self.check_at,
                 now: self.now,
@@ -231,7 +228,7 @@ impl Hub {
         self.now = now;
         let cfg = ServingConfig { static_key: key, challenge: self.challenge() };
         let hello_by = Some(now.saturating_add(self.store.policy().hello_ms));
-        self.conns.insert(id, Conn::Served { c: Box::new(ServingSession::new(cfg)), remote, hello_by, buffered: 0, unread: 0, taken: 0, moved: false, waits: false, started: false, opened: false });
+        self.conns.insert(id, Conn::Served { c: Box::new(ServingSession::new(cfg)), remote, hello_by, buffered: 0, hold: 0, need: None, queued: false, paused: false, taken: 0, moved: false, started: false, opened: false });
         self.batch(|h, out| h.serve(now, id, ServingInput::Start, out))
     }
 
@@ -341,101 +338,93 @@ impl Hub {
 
     /// Forgets a connection and its partial frame bytes (`Up::End` once the batch ends).
     fn remove(&mut self, id: ConnId) {
-        let Some(Conn::Served { buffered, unread, started, .. }) = self.conns.remove(&id) else { return };
+        let Some(Conn::Served { buffered, hold, need, started, .. }) = self.conns.remove(&id) else { return };
         self.buffered = self.buffered.saturating_sub(buffered);
-        self.unread = self.unread.saturating_sub(unread);
-        self.holders.remove(&(unread, id));
-        self.waiting.remove(&(unread, id));
+        self.hold = self.hold.saturating_sub(hold);
+        if hold > 0 || need.is_some() {
+            self.active = self.active.saturating_sub(1);
+        }
         if started {
             self.ended.push(id);
         }
     }
 
-    /// Bytes written to all served connections and not taken by the transport (as reported).
-    pub fn unread(&self) -> usize {
-        self.unread
+    /// What all served connections hold against `max_buffered_bytes` (bytes written and not
+    /// taken, reply allowances handed up and not answered): never more than it.
+    pub fn held(&self) -> usize {
+        self.hold
     }
 
-    /// Whether connection `id` holds more than its share of `max_buffered_bytes` unread (the
-    /// bound over the number of connections holding any): then its driver hands the hub none
-    /// of its input and its session pushes nothing and grants no room, until its reader drained
-    /// it under its share (`take_resumed`). Others are served meanwhile.
+    /// Whether connection `id`'s received frames wait for room: its driver hands the hub none of
+    /// its input until it takes input again (`take_resumed`). Others are served meanwhile.
     pub fn waits(&self, id: ConnId) -> bool {
-        matches!(self.conns.get(&id), Some(Conn::Served { waits: true, .. }))
+        matches!(self.conns.get(&id), Some(Conn::Served { paused: true, .. }))
     }
 
-    /// Connections back under their share since the last call: their input may go on.
+    /// Connections that take input again since the last call.
     pub fn take_resumed(&mut self) -> Vec<ConnId> {
         std::mem::take(&mut self.resumed)
     }
 
-    /// A served connection's unread went from `old` to `new`.
-    fn account(&mut self, id: ConnId, old: usize, new: usize, waits: bool) {
-        if old == new {
-            return;
-        }
-        if old > 0 {
-            self.holders.remove(&(old, id));
-        }
-        if new > 0 {
-            self.holders.insert((new, id));
-        }
-        if waits {
-            self.waiting.remove(&(old, id));
-            self.waiting.insert((new, id));
-        }
-        self.touched.push(id);
+    /// Each active connection's share of the output bound.
+    fn share(&self) -> usize {
+        self.store.policy().max_buffered_bytes / self.active.max(1)
     }
 
-    /// Back-pressure on the output, per connection (spec/sync.md §10 Served connections): a
-    /// connection holding more than its share of `max_buffered_bytes` unread waits (`waits`), so
-    /// only it stops making output while its reader drains it; one under its share, holding
-    /// nothing included, is served whatever the others hold. Shares follow the number of
-    /// holders: one over a smaller share just waits. Below its share again a held session's
-    /// pushes go on. Only bytes that do not move are closed for (`tick`).
+    /// The bound's bytes left for connection `id`: those the queue's first reserves are not
+    /// left for the others.
+    fn slack(&self, id: ConnId) -> usize {
+        let left = self.store.policy().max_buffered_bytes.saturating_sub(self.hold);
+        match self.queue.front() {
+            Some(f) if *f != id => left.saturating_sub(self.need_of(*f)),
+            _ => left,
+        }
+    }
+
+    fn need_of(&self, id: ConnId) -> usize {
+        match self.conns.get(&id) {
+            Some(Conn::Served { need: Some(n), hold: 0, .. }) => *n,
+            _ => 0,
+        }
+    }
+
+    /// Back-pressure on the output (spec/sync.md §10 Served connections): each served
+    /// connection's replies, pushes and own requests go only within its share of
+    /// `max_buffered_bytes` (the bound over the active connections) and the bytes the bound has
+    /// left; its received requests wait for room in order, and it takes no input meanwhile. One
+    /// holding nothing may take one reply past its share when the bound has room: those wait in
+    /// a queue, the first one's need reserved, run here once it fits. Nothing passes the bound;
+    /// a slow reader slows only itself; only output that does not move while the queue waits is
+    /// closed for (`tick`).
     fn pressure(&mut self, out: &mut Vec<HubOutput>) {
         let max = self.store.policy().max_buffered_bytes;
-        if self.unread <= max {
-            self.check_at = None;
-        } else if self.check_at.is_none() {
-            self.check_at = Some(self.now.saturating_add(osis_proto::serving::PUSH_POLL_MS));
-            self.unmove();
-        }
-        loop {
-            let share = max / self.holders.len().max(1);
-            // newly over: those whose unread changed, and those between a smaller share and the last
-            let mut over = std::mem::take(&mut self.touched);
-            if share < self.share {
-                over.extend(self.holders.range((share.saturating_add(1), 0)..=(self.share, ConnId::MAX)).map(|(_, id)| *id));
-            }
-            self.share = share;
-            for id in over {
-                if let Some(Conn::Served { unread, waits, .. }) = self.conns.get_mut(&id)
-                    && !*waits
-                    && *unread > share
-                {
-                    *waits = true;
-                    self.waiting.insert((*unread, id));
+        let mut kicks = self.queue.len();
+        while let Some(&id) = self.queue.front() {
+            let need = match self.conns.get(&id) {
+                Some(Conn::Served { need: Some(n), hold: 0, .. }) => *n,
+                _ => {
+                    self.queue.pop_front();
+                    if let Some(Conn::Served { queued, .. }) = self.conns.get_mut(&id) {
+                        *queued = false;
+                    }
+                    continue;
                 }
-            }
-            let mut kicked = false;
-            while let Some(&(u, id)) = self.waiting.first()
-                && u <= share
-            {
-                self.waiting.pop_first();
-                let Some(Conn::Served { c, waits, .. }) = self.conns.get_mut(&id) else { continue };
-                *waits = false;
-                self.resumed.push(id);
-                if c.held() {
-                    self.serve(self.now, id, ServingInput::Unfull, out);
-                    kicked = true;
+            };
+            if need > max.saturating_sub(self.hold) || kicks == 0 {
+                if self.check_at.is_none() {
+                    self.check_at = Some(self.now.saturating_add(osis_proto::serving::PUSH_POLL_MS));
+                    self.unmove();
                 }
+                return;
             }
-            // what they pushed may change the shares again
-            if !kicked {
-                break;
+            kicks -= 1;
+            self.queue.pop_front();
+            if let Some(Conn::Served { queued, .. }) = self.conns.get_mut(&id) {
+                *queued = false;
             }
+            self.serve(self.now, id, ServingInput::Resume, out);
         }
+        self.check_at = None;
     }
 
     fn unmove(&mut self) {
@@ -446,26 +435,28 @@ impl Hub {
         }
     }
 
-    /// While the node is over `max_buffered_bytes` unread, once per `PUSH_POLL_MS` (the period
-    /// the driver reports takes in, so a reader's progress shows in each): closes, most unread
-    /// first until it is no longer over, the connections holding unread output that the
-    /// transport took none of since the last check.
-    /// Each peer that stops reading could otherwise hold `max_queued_bytes`, and anyone who
-    /// shares one group can open `max_connections` of them.
+    /// While the queue's first waits for the bound's room, once per `PUSH_POLL_MS` (the period
+    /// the driver reports takes in, so a reader's progress shows in each): closes, most held
+    /// first until it fits, the connections holding output that the transport took none of
+    /// since the last check. Each peer that stops reading could otherwise hold its share for
+    /// good, and anyone who shares one group can open `max_connections` of them.
     fn close_stuck(&mut self, now: u64, out: &mut Vec<HubOutput>) {
         if self.check_at.is_none_or(|t| t > now) {
             return;
         }
+        let Some(&first) = self.queue.front() else { return };
+        let need = self.need_of(first);
+        let max = self.store.policy().max_buffered_bytes;
         let mut stuck: Vec<(usize, ConnId)> = self.conns.iter().filter_map(|(id, c)| match c {
-            Conn::Served { unread, moved: false, .. } if *unread > 0 => Some((*unread, *id)),
+            Conn::Served { hold, moved: false, .. } if *hold > 0 => Some((*hold, *id)),
             _ => None,
         }).collect();
         stuck.sort_unstable();
-        while self.unread > self.store.policy().max_buffered_bytes {
+        while need > max.saturating_sub(self.hold) {
             let Some((_, id)) = stuck.pop() else { break };
             self.remove(id);
             out.push(HubOutput::Close(id));
-            out.push(HubOutput::Diagnostic(format!("connection {id}: closed, output unread and not moving while the node is over its bound")));
+            out.push(HubOutput::Diagnostic(format!("connection {id}: closed, output not moving while others wait for room")));
         }
         self.check_at = Some(now.saturating_add(osis_proto::serving::PUSH_POLL_MS));
         self.unmove();
@@ -541,7 +532,7 @@ impl Hub {
     pub fn next_due(&self, now: u64) -> Option<u64> {
         let sweep = if self.sweep_more { Some(now) } else { self.store.next_due().ok().flatten() }.map(|t| t.max(self.sweep_hold));
         // bytes not yet reported taken: the driver reports at the next tick (shares count them)
-        let unread = (self.unread > 0).then(|| now.saturating_add(osis_proto::serving::PUSH_POLL_MS)).into_iter().chain(self.check_at);
+        let unread = (self.hold > 0).then(|| now.saturating_add(osis_proto::serving::PUSH_POLL_MS)).into_iter().chain(self.check_at);
         let conns = self.conns.values().filter_map(|c| match c {
             Conn::Served { c, hello_by, .. } => [c.held().then(|| now.saturating_add(osis_proto::serving::PUSH_POLL_MS)), *hello_by, c.stall_at()].into_iter().flatten().min(),
             Conn::Peer { r, timer } => [*timer, r.next_due(now)].into_iter().flatten().min(),
@@ -550,8 +541,9 @@ impl Hub {
     }
 
     fn serve(&mut self, now: u64, id: ConnId, input: ServingInput, out: &mut Vec<HubOutput>) {
-        let Some(Conn::Served { c, remote, hello_by, buffered, unread, waits, started, opened, .. }) = self.conns.get_mut(&id) else { return };
-        c.set_full(*waits);
+        let (share, slack) = (self.share(), self.slack(id));
+        let Some(Conn::Served { c, remote, hello_by, buffered, hold, need, queued, paused, started, opened, .. }) = self.conns.get_mut(&id) else { return };
+        c.set_room(share, slack);
         // whose entries these are (echo suppression): a keyed peer's
         self.store.set_origin(match &remote.peer {
             Peer::Key(k) => Some(*k),
@@ -573,10 +565,22 @@ impl Hub {
         let now_buffered = c.buffered();
         self.buffered = self.buffered.saturating_sub(*buffered).saturating_add(now_buffered);
         *buffered = now_buffered;
-        let now_unread = c.unread();
-        self.unread = self.unread.saturating_sub(*unread).saturating_add(now_unread);
-        let (old, w) = (std::mem::replace(unread, now_unread), *waits);
-        self.account(id, old, now_unread, w);
+        let was_active = *hold > 0 || need.is_some();
+        let now_hold = c.holding(&[]);
+        self.hold = self.hold.saturating_sub(*hold).saturating_add(now_hold);
+        *hold = now_hold;
+        *need = c.need();
+        let is_active = *hold > 0 || need.is_some();
+        self.active = (self.active + usize::from(is_active)).saturating_sub(usize::from(was_active));
+        if need.is_some() && *hold == 0 && !*queued {
+            *queued = true;
+            self.queue.push_back(id);
+        }
+        let now_paused = !c.takes_input();
+        if *paused && !now_paused {
+            self.resumed.push(id);
+        }
+        *paused = now_paused;
         if opened_moved {
             out.push(HubOutput::Up(id, Up::Opened(now_opened)));
         }

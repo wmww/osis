@@ -6,9 +6,9 @@
 //! (`accept_own`); replication dials (`dial_as` with the dialable secret, so the peer sees this
 //! node's key: echo suppression) run while it hosts. Per link a reader task hands the loop one
 //! read at a time (the next once the hub took the last), served in turns round-robin by source
-//! (`Turns`); a connection over its share of the hub's output bound (`Hub::waits`) is parked
-//! with its read until the hub resumes it (its reads wait in the transport's window, the
-//! others go on); writes go to the link's queue (more than `max_queued_bytes` the transport has not
+//! (`Turns`); a connection whose received requests wait for room in the hub's output bound
+//! (`Hub::waits`) is parked with its read until the hub resumes it (its reads wait in the
+//! transport's window, the others go on); writes go to the link's queue (more than `max_queued_bytes` the transport has not
 //! taken drops the session). No task waits on the loop and the loop waits on no connection.
 //! What the hub hands node sync (`HubOutput::Up`) waits in `ups` until the driver feeds it to
 //! the engine (`Event::Hub`); the engine's `Action::Hub` come back by `down`, in the same pass of
@@ -144,8 +144,8 @@ pub(super) struct HubRun {
     next: ConnId,
     conns: HashMap<ConnId, ConnState>,
     turns: Turns,
-    /// Connections with a read waiting that the hub holds back (`Hub::waits`), out of `turns`
-    /// until `Hub::take_resumed` names them.
+    /// Connections with a read waiting whose requests wait for output room (`Hub::waits`), out
+    /// of `turns` until `Hub::take_resumed` names them.
     parked: std::collections::HashSet<ConnId>,
     /// Transport connections of every listener (`max_connections` of them).
     slots: Arc<link::Slots>,
@@ -336,7 +336,7 @@ impl HubRun {
     }
 
     /// Feeds the hub the read of the connection whose turn it is, then lets its reader go on;
-    /// one over its share of the output bound is parked instead.
+    /// one whose received requests wait for output room is parked instead.
     pub fn serve(&mut self) {
         let Some(id) = self.turns.next() else { return };
         if self.hub.waits(id) {
