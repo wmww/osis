@@ -1083,11 +1083,16 @@ impl Net {
     /// A hand peer connects to node `n`'s hub on the listener of key `local` as `peer`: its
     /// connection (the hub's ID) and the frames it was sent (the Hello).
     pub fn hand_accept(&mut self, n: usize, local: [u8; 32], peer: osis_transport::Peer) -> (ConnId, Vec<Vec<u8>>) {
+        self.hand_accept_from(n, local, peer, None)
+    }
+
+    /// `hand_accept` of a connection from `source`.
+    pub fn hand_accept_from(&mut self, n: usize, local: [u8; 32], peer: osis_transport::Peer, source: Option<osis_transport::Source>) -> (ConnId, Vec<Vec<u8>>) {
         let hc = self.next_node_hub;
         self.next_node_hub += 1;
         self.hands.insert((n, hc), (Vec::new(), false));
         let now = self.node_now(n);
-        let out = self.nodes[n].hub.accept(now, hc, local, osis_host::Remote { peer, source: None, relayed: false });
+        let out = self.nodes[n].hub.accept(now, hc, local, osis_host::Remote { peer, source, relayed: false });
         self.node_hub_out(n, out);
         (hc, self.hand_sent(n, hc))
     }

@@ -266,8 +266,10 @@ impl SyncEngine {
                 idle.entry(s.source).or_default().push((s.since, *c));
             }
         }
-        let victim = match idle.values().max_by_key(|v| v.len()) {
-            Some(v) => v.iter().min().map(|(_, c)| *c),
+        // the oldest of the sources tied for most: never by source order, which a flood from
+        // sources ordered below a newcomer's would turn into its eviction at every arrival
+        let victim = match idle.values().map(Vec::len).max() {
+            Some(top) => idle.values().filter(|v| v.len() == top).flatten().min().map(|(_, c)| *c),
             None => {
                 let counts: BTreeMap<Option<Source>, usize> = held.iter().map(|(k, v)| (*k, v.len())).collect();
                 osis_transport::evict_for(&counts, &source).and_then(|k| held.get(&k)).and_then(|v| v.iter().max()).map(|(_, c)| *c)

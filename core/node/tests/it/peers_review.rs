@@ -25,7 +25,11 @@ fn exchange(net: &mut Net, n: usize, p: &mut Dialer, acts: Vec<Action>, outs: Ve
 }
 
 fn dial_in(net: &mut Net, n: usize) -> (Dialer, Vec<ClientEvent>) {
-    let (hc, sent) = net.hand_accept(n, LOCAL, osis_transport::Peer::Key([0x43; 32]));
+    dial_in_from(net, n, None)
+}
+
+fn dial_in_from(net: &mut Net, n: usize, source: Option<osis_transport::Source>) -> (Dialer, Vec<ClientEvent>) {
+    let (hc, sent) = net.hand_accept_from(n, LOCAL, osis_transport::Peer::Key([0x43; 32]), source);
     let mut p = Dialer { conn: 0, hc, cs: ClientSession::new(ClientConfig { peer_static_key: LOCAL, challenge: [7; 32] }) };
     let now = net.now();
     let mut outs = p.cs.handle(now, ClientInput::Start);
@@ -229,6 +233,29 @@ fn at_the_cap_a_stranger_goes_before_a_co_reader_spec_sync_5() {
     let (s3, _) = dial_in(&mut net, b);
     assert!(net.hand_closed(b, s2.hc), "the next idle one goes for a newcomer");
     assert!(!net.hand_closed(b, co.hc) && !net.hand_closed(b, s3.hc), "a session sharing a sync ID stays while up, however quiet its stream");
+}
+
+// spec/sync.md §10 (Served connections): at the cap, sources each holding one connection that
+// shares nothing, the oldest gives way to a newcomer, whatever the sources' order: a flood from
+// many sources cannot evict a newcomer at every arrival.
+#[test]
+fn at_the_cap_the_oldest_stranger_goes_whatever_its_source_spec_sync_10() {
+    let (mut net, [a]) = local_nodes::<1>();
+    let me = net.node_tid(a);
+    let mut m = osis_engine::Mutation::new();
+    let policy = std::collections::BTreeMap::from([("max_connections".to_string(), 3)]);
+    m.replace(me, &osis_schema::core_types::HOST, &osis_schema::core_types::Host { policy, ..Default::default() }).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.run();
+    let s = |b: u8| Some([b; 16]);
+    let old = [dial_in_from(&mut net, a, s(1)).0, dial_in_from(&mut net, a, s(2)).0, dial_in_from(&mut net, a, s(9)).0];
+    assert!(old.iter().all(|d| !net.hand_closed(a, d.hc)));
+    let n1 = dial_in_from(&mut net, a, s(5)).0;
+    assert!(net.hand_closed(a, old[0].hc), "the oldest made room");
+    assert!(!net.hand_closed(a, old[2].hc), "not the highest source");
+    dial_in_from(&mut net, a, s(6));
+    assert!(net.hand_closed(a, old[1].hc));
+    assert!(!net.hand_closed(a, old[2].hc) && !net.hand_closed(a, n1.hc));
 }
 
 // spec/sync.md §5: a stranger without the label's sync key opens nothing.

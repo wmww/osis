@@ -4,3 +4,4 @@
 - `ServingPolicy::connections` (host^.0) is now every connection's cap, which reads oddly under "serving" terms; a later API pass may want it as a node setting.
 - Review: the rebase onto pending-bound conflicted only where 3d deleted `serve_with`; main's budget changes merged silently into the rest, but the once-a-second prune after a refusal lived in the deleted code and had to be moved by hand (`prune_due`).
 - A hand-driven member session in node tests answers no Pull, so any test that advances past the stall time (2 min) loses it to the stall close, not to the rule under test.
+- Review: the cap's tie between sources holding equally many idle connections went to the highest source (`max_by_key` keeps the last), so a flood from sources ordered below a newcomer's evicted it at every arrival; no test had more than one source (hand peers had none: `hand_accept_from`).
