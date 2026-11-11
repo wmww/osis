@@ -43,7 +43,7 @@ use crate::engine::Engine;
 use crate::error::Result;
 use crate::events::{Diagnostic, DiagnosticKind, Origin};
 use crate::labeling::{GroupLabel, HeadKeys};
-use osis_base::{Ak, Clock, LabelId, Tid};
+use osis_base::{Ak, LabelId, Tid};
 use osis_crypto::CryptoRngCore;
 use osis_label::{Address, Step};
 use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command};
@@ -96,7 +96,6 @@ pub struct SyncEngine {
     /// Whether `forget_own_covered` has looked at every held commit since this open.
     pub(crate) forget_seeded: bool,
     events: Receiver<crate::Event>,
-    pub(crate) clock: Arc<dyn Clock>,
     pub(crate) rng: Box<dyn CryptoRngCore + Send>,
     pub(crate) cfg: SyncConfig,
     pub(crate) conns: BTreeMap<ConnId, Conn>,
@@ -344,8 +343,8 @@ pub struct SyncEngine {
 pub(crate) type Deferred = (Tid, osis_base::CommitId, BTreeSet<usize>, Option<[u8; 32]>);
 
 impl SyncEngine {
-    /// Wraps an engine. `clock` is the wall clock the engine was built on.
-    pub fn new(mut engine: Engine, clock: Arc<dyn Clock>, rng: Box<dyn CryptoRngCore + Send>, cfg: SyncConfig) -> Result<SyncEngine> {
+    /// Wraps an engine; its wall clock is the node's (spec/sync.md §6).
+    pub fn new(mut engine: Engine, rng: Box<dyn CryptoRngCore + Send>, cfg: SyncConfig) -> Result<SyncEngine> {
         // a memory commit marks itself changed like any (`Engine::take_changed`), not by event
         let events = engine.subscribe_durable();
         engine.set_sync_records(&state::Records);
@@ -354,12 +353,11 @@ impl SyncEngine {
         let state = State::load(&mut engine)?;
         // deposits not answered before a restart go again
         let outbox = state.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
-        let started = clock.now_wall_ms().0;
+        let started = engine.now().0;
         Ok(SyncEngine {
             forget_seeded: false,
             engine,
             events,
-            clock,
             rng,
             cfg,
             conns: BTreeMap::new(),
@@ -890,7 +888,7 @@ mod tests {
             let p = lp.peers.into_iter().next().unwrap();
             let host = Address { url: "quic://host:1".into(), key: [7; 32] };
             let cfg = SyncConfig { hosts: vec![host.clone()], ..SyncConfig::default() };
-            let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(965)), cfg).unwrap();
+            let mut s = SyncEngine::new(p.engine, Box::new(osis_crypto::SeededRng::from_u64(965)), cfg).unwrap();
             let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
             let b = osis_base::BlobId([1; 32]);
             let now = s.now();
@@ -919,7 +917,7 @@ mod tests {
         let p = lp.peers.into_iter().next().unwrap();
         let host = Address { url: "quic://host:1".into(), key: [7; 32] };
         let cfg = SyncConfig { hosts: vec![host], ..SyncConfig::default() };
-        let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(969)), cfg).unwrap();
+        let mut s = SyncEngine::new(p.engine, Box::new(osis_crypto::SeededRng::from_u64(969)), cfg).unwrap();
         let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
         let (l, b) = (LabelId([1; 16]), osis_base::BlobId([1; 32]));
         s.conns.get_mut(&conn).unwrap().req.missing.insert(b);
@@ -948,7 +946,7 @@ mod tests {
             let p = lp.peers.into_iter().next().unwrap();
             let host = Address { url: "quic://host:1".into(), key: [7; 32] };
             let cfg = SyncConfig { hosts: vec![host], ..SyncConfig::default() };
-            let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(971)), cfg).unwrap();
+            let mut s = SyncEngine::new(p.engine, Box::new(osis_crypto::SeededRng::from_u64(971)), cfg).unwrap();
             let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
             let key = s.conns[&conn].host;
             let (l, b) = (LabelId([1; 16]), osis_base::BlobId([1; 32]));
@@ -976,7 +974,7 @@ mod tests {
         let lp = crate::local_peer::LocalPeer::new(1, 966, osis_base::WallMs(1_700_000_000_000)).unwrap();
         let p = lp.peers.into_iter().next().unwrap();
         let host = Address { url: "quic://host:1".into(), key: [7; 32] };
-        let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(967)), SyncConfig::default()).unwrap();
+        let mut s = SyncEngine::new(p.engine, Box::new(osis_crypto::SeededRng::from_u64(967)), SyncConfig::default()).unwrap();
         let d = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
         let delivery = Some((osis_base::Tid::from_bytes([4; 15]), osis_base::CommitId([6; 32])));
         for (l, x) in [(LabelId([1; 16]), None), (LabelId([2; 16]), delivery)] {

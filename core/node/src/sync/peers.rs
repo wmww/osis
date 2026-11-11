@@ -496,7 +496,8 @@ impl SyncEngine {
     /// A connection to a co-reader ended before coming up: when it went to a LAN address, that
     /// address is backed off (true; the next route is dialed at once), not the peer.
     pub(crate) fn lan_failed(&mut self, peer: [u8; 32], addr: &Address) -> bool {
-        let until = self.now().saturating_add(self.cfg.peer_retry_ms);
+        let now = self.now();
+        let until = now.saturating_add(self.cfg.peer_retry_ms);
         let Some(r) = self.lan.get_mut(&peer) else { return false };
         let mut hit = r.candidate.take_if(|(a, _)| a == addr).is_some();
         hit |= r.good.take_if(|(a, _)| a == addr).is_some();
@@ -508,7 +509,7 @@ impl SyncEngine {
             if r.good.is_none()
                 && let Some(a) = next
             {
-                r.candidate = Some((a, self.clock.now_wall_ms().0));
+                r.candidate = Some((a, now));
             }
         }
         hit

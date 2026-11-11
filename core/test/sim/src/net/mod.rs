@@ -598,8 +598,7 @@ impl NetSim {
         // ephemeral signals are told through commit events (`eph_signals`)
         engine.watch_commits();
         let node = self.node(n)?;
-        let c: Arc<dyn Clock> = node.clock.clone();
-        let sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed)), node.cfg.clone());
+        let sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed)), node.cfg.clone());
         let sync = sync.map_err(|e| self.fail(format!("node {n} sync start: {e}")))?;
         let node = self.node(n)?;
         node.sync = Some(sync);

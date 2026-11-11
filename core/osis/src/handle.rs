@@ -556,11 +556,11 @@ pub(crate) struct Fresh {
     pub clock: Arc<dyn Clock>,
 }
 
-fn sync_over(engine: Engine, clock: &Arc<dyn Clock>, cfg: &Config, hosts: &[Address]) -> Result<SyncEngine> {
+fn sync_over(engine: Engine, cfg: &Config, hosts: &[Address]) -> Result<SyncEngine> {
     let d = SyncConfig::default();
     let fill_batch = cfg.app.internals.fill_batch.unwrap_or(d.fill_batch);
     let scfg = SyncConfig { hosts: hosts.iter().map(|s| s.0.clone()).collect(), peers: cfg.direct_sync, fill_batch, ..d };
-    Ok(SyncEngine::new(engine, clock.clone(), rng(cfg, 7), scfg)?)
+    Ok(SyncEngine::new(engine, rng(cfg, 7), scfg)?)
 }
 
 /// A new store's sync engine (its hosts set later by `set_hosts` where they change).
@@ -568,7 +568,7 @@ pub(crate) fn fresh_engine(store: &Store, cfg: &Config, hosts: &[Address]) -> Re
     let (b, r) = parts(store)?;
     let clock = clock(cfg);
     let engine = Engine::create(b, r, engine_cfg(), clock.clone(), rng(cfg, 0))?;
-    Ok(Fresh { sync: sync_over(engine, &clock, cfg, hosts)?, clock })
+    Ok(Fresh { sync: sync_over(engine, cfg, hosts)?, clock })
 }
 
 impl Osis {
@@ -597,7 +597,7 @@ impl Osis {
         let mut e = Engine::open(b, r, engine_cfg(), clock.clone(), rng(&cfg, open_salt(&store, &cfg)?))?;
         let (me, home) = e.account()?.ok_or_else(|| Error::Storage("no account record".into()))?;
         let peers = load_peers(&mut e)?.unwrap_or_default();
-        let sync = sync_over(e, &clock, &cfg, &peers)?;
+        let sync = sync_over(e, &cfg, &peers)?;
         Osis::start(sync, clock, store, &cfg, me, home)
     }
 

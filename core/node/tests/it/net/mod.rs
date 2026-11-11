@@ -353,10 +353,10 @@ impl Net {
         let cfg = SyncConfig { full_passes: cfg.full_passes || self.full_passes, ..cfg };
         let clock = Arc::new(NodeClock { base: self.clock.clone(), skew: 0.into() });
         let c: Arc<dyn Clock> = clock.clone();
-        let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), engine_cfg, c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
+        let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), engine_cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
         let home: Vec<Address> = if self.home_at_hosts { cfg.hosts.clone() } else { Vec::new() };
         let done = if self.bare { None } else { let d = engine.create_account(&home).unwrap().1; (!home.is_empty()).then_some(d) };
-        let mut sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
+        let mut sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         let events = sync.engine_mut().subscribe_durable();
         let acts = done.map(|d| sync.carry_out(d).unwrap());
         self.nodes.push(Node { sync: Some(sync), clock, backend, root, online: true, wake: None, life: 0, accepts: true, events });
@@ -374,8 +374,8 @@ impl Net {
         let clock = Arc::new(NodeClock { base: self.clock.clone(), skew: self.nodes[n].clock.skew.load(std::sync::atomic::Ordering::SeqCst).into() });
         let c: Arc<dyn Clock> = clock.clone();
         let (backend, root) = (self.nodes[n].backend.copy(), self.nodes[n].root.copy());
-        let engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
-        let mut sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
+        let engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed))).unwrap();
+        let mut sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         let events = sync.engine_mut().subscribe_durable();
         self.nodes.push(Node { sync: Some(sync), clock, backend, root, online: true, wake: None, life: 0, accepts: true, events });
         self.nodes.len() - 1
@@ -484,8 +484,8 @@ impl Net {
         let c: Arc<dyn Clock> = node.clock.clone();
         node.sync = None;
         node.life += 1;
-        let engine = Engine::open(Box::new(node.backend.clone()), Box::new(node.root.clone()), Config::default(), c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
-        let mut sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
+        let engine = Engine::open(Box::new(node.backend.clone()), Box::new(node.root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed))).unwrap();
+        let mut sync = SyncEngine::new(engine, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         node.events = sync.engine_mut().subscribe_durable();
         node.sync = Some(sync);
     }
