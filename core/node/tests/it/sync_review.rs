@@ -1302,3 +1302,36 @@ fn stranded_goes_to_a_connected_admin_spec_permissions_4() {
     assert_eq!(inbox(&mut net), before, "no notice under the admin's inbox");
     assert_eq!(net.engine(c).epochs(&g).unwrap().read.newest(), e1, "re-sealed");
 }
+
+// spec/sync.md §5 Deposit, §6 Reader: b's writes concurrent with its demotion, refused under the
+// rotated write key (code 9), are invalid at b too (kept only for its user): b deposits none of
+// them, since no writer would promote them and nobody deletes them, so they would hold the
+// label's deposit budget for good
+#[test]
+fn demoted_writers_refused_writes_take_no_deposit_budget_spec_sync_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "t");
+    net.run();
+    net.advance(15_000);
+    let l = net.label(a);
+    let before = osis_proto::LabelStore::budget(&*net.hosts[host].hub.store(), &l).unwrap();
+    let tb = net.tid(b);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    for i in 0..10 {
+        net.write(b, t, &format!("x{i}"));
+    }
+    net.run();
+    for _ in 0..8 {
+        net.advance(15_000);
+    }
+    assert_eq!(net.read(a, t), Some(s("t")));
+    assert_eq!(osis_proto::LabelStore::budget(&*net.hosts[host].hub.store(), &l).unwrap(), before);
+}

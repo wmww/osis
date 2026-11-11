@@ -376,6 +376,16 @@ impl SyncEngine {
                     // so neither a crash nor forgetting the label recalls it
                     queue.push((blob, e.wrap, d.clone()));
                 } else {
+                    // a body only while this node judges it valid: one it judges invalid (its
+                    // own writes past its demotion, kept for its user) no writer promotes and
+                    // nobody deletes (spec/permissions.md §6), so it would hold the label's
+                    // deposit budget for good
+                    if let Kind::Commit { commit, parts, .. } = &e.kind
+                        && !e.cert
+                        && !self.engine.judged_valid(commit, parts)
+                    {
+                        continue;
+                    }
                     let sig = osis_label::sign_deposit(d, &l, &o.id, &e.wrap);
                     deposits.push((blob, e.wrap, sig));
                 }

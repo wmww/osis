@@ -538,17 +538,12 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                     }
                 }
                 // spec/sync.md §5: a writer re-uploads stamped the deposited commits it verified
-                // that the label must hold (a reader also deposits what it holds and the writer
-                // judges otherwise: a demoted writer's own writes past its demotion)
                 if v.writer {
                     for (dl, db) in &deposited {
                         if *dl != l {
                             continue;
                         }
                         let Some((c, _)) = sim.known.get(&(l, *db)).cloned() else { continue };
-                        if !v.must_hold.iter().any(|(mc, _)| *mc == c) {
-                            continue;
-                        }
                         let Some(sync) = sim.nodes.get(n).and_then(|x| x.sync.as_ref()) else { continue };
                         let Some(h) = sync.engine().header(&c) else { continue };
                         if !sync.entries(&l).iter().any(|(x, _)| x == db) {

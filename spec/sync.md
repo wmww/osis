@@ -298,7 +298,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
 
   After syncing:
   - **Writer**: uploads every must-hold body the label lacks, as a fresh encryption if the old blob ID is tombstoned or its entry counts as lacking there (§5). A blob of the commit that is not must-not-hold and holds every delta of the body that no snapshot under the label covers holds it.
-  - **Reader**: sends each must-hold entry it holds that the label lacks: relayed under its stamp when the head's write key verifies it, else deposited (any author's, judged by its author's rights when promoted, §5).
+  - **Reader**: sends each must-hold entry it holds that the label lacks: relayed under its stamp when the head's write key verifies it, else deposited while it judges the body valid (any author's, judged by its author's rights when promoted, §5).
   - **Neither** uploads nor relays a body a delete removed from the label (an entry of it that is not a certificate copy, within `TOMBSTONE_LIFETIME`) while both of these hold:
     - each of its deltas only a blob carries (as for a strict subset above) is held there by another blob of the commit that is not must-not-hold;
     - no held purge request signed by ones that could hold the right (spec/commits.md §4) names a delta of it without dropping it (spec/permissions.md §6).
