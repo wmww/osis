@@ -447,8 +447,7 @@ pub(crate) struct Pager {
     /// Committed tree nodes below the top by (level, index); `None`: absent.
     nodes: HashMap<(u32, u64), Option<Node>>,
     /// Committed units read or written: their plain bytes and, for one read as a table page,
-    /// the page decoded (`page`). Bounded by `unit_cache_bytes` (the bytes; a decoded page
-    /// counts its unit's bytes again).
+    /// the page decoded (`page`). Bounded by `unit_cache_bytes` (`cached_bytes`).
     units: HashMap<u64, CachedUnit>,
     unit_bytes: usize,
     /// Table pages decoded since the open (`Store::pages_decoded`).
@@ -621,20 +620,30 @@ impl Pager {
             self.unit_bytes = 0;
         }
         self.unit_bytes = self.unit_bytes.saturating_add(data.len());
-        self.units.insert(slot, (data, None));
+        if let Some(old) = self.units.insert(slot, (data, None)) {
+            self.unit_bytes = self.unit_bytes.saturating_sub(Self::cached_bytes(&old));
+        }
+    }
+
+    /// What a cached unit counts for: its bytes, and a decoded page as twice its bytes again
+    /// (entries as owned keys and values take about that).
+    fn cached_bytes(u: &CachedUnit) -> usize {
+        u.0.len().saturating_mul(if u.1.is_some() { 3 } else { 1 })
     }
 
     /// The table page committed unit `slot` holds, decoded once while the unit stays cached.
     fn page(&mut self, slot: u64) -> Result<Arc<Page>, Error> {
+        self.check()?;
         if let Some((_, Some(p))) = self.units.get(&slot) {
             return Ok(p.clone());
         }
         let data = self.read(slot)?.ok_or(Error::Corrupt("table page missing"))?;
         let page = Arc::new(self.decode(&data)?);
-        if self.unit_bytes.saturating_add(data.len()) <= self.cfg.unit_cache_bytes
+        let more = data.len().saturating_mul(2);
+        if self.unit_bytes.saturating_add(more) <= self.cfg.unit_cache_bytes
             && let Some(u) = self.units.get_mut(&slot)
         {
-            self.unit_bytes = self.unit_bytes.saturating_add(data.len());
+            self.unit_bytes = self.unit_bytes.saturating_add(more);
             u.1 = Some(page.clone());
         }
         Ok(page)
@@ -974,7 +983,7 @@ impl Pager {
                     self.cache_unit(slot, data);
                     // the page the transaction wrote stays decoded beside its bytes
                     if let (Some(page), Some(u)) = (page, self.units.get_mut(&slot)) {
-                        self.unit_bytes = self.unit_bytes.saturating_add(n);
+                        self.unit_bytes = self.unit_bytes.saturating_add(n.saturating_mul(2));
                         u.1 = Some(page);
                     }
                 }

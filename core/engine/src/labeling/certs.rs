@@ -104,21 +104,19 @@ impl Engine {
     /// about (spec/sync.md §3): those whose edge a `roles.0` delta writes, those a `secrets.0`
     /// delta boxes. Empty for any other commit kind.
     pub fn holders_named(&mut self, c: &CommitId) -> Arc<BTreeMap<usize, BTreeSet<Tid>>> {
-        match Memo::get_in(self, |e| &e.core.holders_named, c, |e| Ok::<_, std::convert::Infallible>(Arc::new(e.holders_named_read(c)))) {
-            Ok(n) => n,
-            Err(e) => match e {},
-        }
+        // parts the store refused to read name nobody now, and are read again at the next ask
+        Memo::get_in(self, |e| &e.core.holders_named, c, |e| e.holders_named_read(c).map(Arc::new)).unwrap_or_default()
     }
 
-    fn holders_named_read(&mut self, c: &CommitId) -> BTreeMap<usize, BTreeSet<Tid>> {
+    fn holders_named_read(&mut self, c: &CommitId) -> Result<BTreeMap<usize, BTreeSet<Tid>>> {
         let mut out: BTreeMap<usize, BTreeSet<Tid>> = BTreeMap::new();
-        let Some(h) = self.header(c) else { return out };
+        let Some(h) = self.header(c) else { return Ok(out) };
         if !h.kind.is_role() {
-            return out;
+            return Ok(out);
         }
         let id = *c;
         let keep = |ai: usize| h.aspects.get(ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "secrets.0"));
-        let Ok(parts) = self.run(|tx| crate::apply::held_parts_at(tx, &id, &keep)) else { return out };
+        let parts = self.run(|tx| crate::apply::held_parts_at(tx, &id, &keep))?;
         for (ai, d) in parts {
             let (Some(a), Decoded::Delta(d)) = (h.aspects.get(ai), &d) else { continue };
             let named: Vec<Tid> = match a.ak.as_str() {
@@ -127,7 +125,7 @@ impl Engine {
             };
             out.entry(ai).or_default().extend(named);
         }
-        out
+        Ok(out)
     }
 
     /// Whether commit `c` gave this node a read secret of `t` (an inbox payload's label is

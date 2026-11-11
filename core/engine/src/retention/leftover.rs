@@ -52,6 +52,8 @@ pub(crate) fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, 
     let key = records::leftover_key(tid, ak, c, ai);
     let enc = l.encode()?;
     tx.core.copy_index.remove(c);
+    // a part's leftover is read with its record (`apply::held_parts_at`)
+    tx.core.records_read.wrote(c, true);
     let memory = tx.txn.is_memory_aspect(tid, ak);
     tx.in_class(memory, |tx| Ok(tx.txn.put_local(&key, &enc, Shred::Yes)?))
 }
@@ -59,6 +61,7 @@ pub(crate) fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, 
 /// Forgets the leftover of part `ai` of `c`, shredded.
 pub(crate) fn remove(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Result<()> {
     tx.core.copy_index.remove(c);
+    tx.core.records_read.wrote(c, true);
     tx.txn.remove_local(&records::leftover_key(tid, ak, c, ai), Shred::Yes)?;
     Ok(())
 }

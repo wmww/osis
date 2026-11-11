@@ -377,8 +377,8 @@ impl Core {
     }
 
     /// The signing chain of account `p` from the rotations held (`None`: `p` is not known as an
-    /// account here). Built only when the account's rotations held (`rotation_seq`), the side
-    /// chosen or the seeds held changed, so a write does not cost O(its rotations).
+    /// account here). A memo (`Core::account_views`): built again only when something it read
+    /// changed, so a write does not cost O(its rotations).
     pub(crate) fn account_view(&self, p: &Tid) -> Option<Arc<AccountView>> {
         self.account_views.get(p, || self.build_account_view(p).map(Arc::new))
     }

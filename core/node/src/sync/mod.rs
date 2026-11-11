@@ -726,10 +726,8 @@ impl SyncEngine {
     pub fn labels(&mut self) -> Vec<(Tid, Arc<GroupLabel>)> {
         let now = self.now();
         self.wall.set(now);
-        let s = match crate::engine::memo::Memo::get_in(self, |s| &s.synced_of, &(), |s| Ok::<_, std::convert::Infallible>(Arc::new(s.compute_synced()))) {
-            Ok(s) => s,
-            Err(e) => match e {},
-        };
+        // a `label.0` the store refused to read: the labels last answered stand
+        let Ok(s) = crate::engine::memo::Memo::get_in(self, |s| &s.synced_of, &(), |s| s.compute_synced().map(Arc::new)) else { return self.synced.labels.clone() };
         // built again since the last ask
         if !Arc::ptr_eq(&s, &self.synced) {
             self.stats.label_reads += 1;
@@ -741,7 +739,7 @@ impl SyncEngine {
 
     /// `labels`, with roles at the time last asked (`wall`), read only where a replaced label
     /// asks for a role.
-    fn compute_synced(&mut self) -> Synced {
+    fn compute_synced(&mut self) -> Result<Synced> {
         let me = self.engine.account_tid();
         let mut labels = Vec::new();
         for g in self.engine.labeled_groups() {
@@ -749,7 +747,7 @@ impl SyncEngine {
             if self.state.handed_off.contains(&g) || self.engine.epochs(&g).is_none_or(|e| !e.read.holds_any()) {
                 continue;
             }
-            let of = self.engine.labels_of(&g);
+            let of = self.engine.labels_read(&g)?;
             let admin = of.iter().any(|l| l.replaced) && {
                 let ts = osis_base::Ts::make(osis_base::WallMs(self.wall.get()), 0).unwrap_or_default();
                 me.is_some_and(|me| crate::engine::write::role_of(&self.engine.core, &me, &g, ts) == Some(osis_base::Role::Admin))
@@ -762,7 +760,7 @@ impl SyncEngine {
             by_actor.entry(*a).or_default().insert(*l);
         }
         let ids = labels.iter().map(|(_, l)| l.id).collect();
-        Synced { labels, ids, actors, by_actor }
+        Ok(Synced { labels, ids, actors, by_actor })
     }
 
     /// Retires the replaced labels an admin still syncs once `ROLE_KEEP_MS` passed since it

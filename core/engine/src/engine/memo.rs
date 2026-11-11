@@ -67,7 +67,10 @@ impl Stamps {
         let v = t.ver;
         if present {
             t.keys.insert(hash(k), v);
-        } else if t.keys.remove(&hash(k)).is_some() {
+        } else {
+            // every removal moves the absent stamp: a key present with no stamp of its own (one
+            // there before the stamps were, or since `wrote_all`) was read at it
+            t.keys.remove(&hash(k));
             t.absent = v;
         }
     }
@@ -145,16 +148,21 @@ thread_local! {
 
 /// Runs `f` and returns what it read.
 fn recorded<T>(f: impl FnOnce() -> T) -> (T, Arc<[Dep]>) {
-    struct Open;
+    /// The frames below this one: an unwind through `f` cuts the stack back to them, so a
+    /// caught panic leaves no frame for a later read to land in.
+    struct Open(usize);
     impl Drop for Open {
         fn drop(&mut self) {
             RECORDING.fetch_sub(1, Ordering::Relaxed);
+            FRAMES.with(|fr| fr.borrow_mut().truncate(self.0));
         }
     }
     RECORDING.fetch_add(1, Ordering::Relaxed);
-    let _open = Open;
-    FRAMES.with(|fr| fr.borrow_mut().push(Frame::default()));
-    // a panic leaves the frame: the thread's next memo records above it and pops its own
+    let _open = Open(FRAMES.with(|fr| {
+        let mut fr = fr.borrow_mut();
+        fr.push(Frame::default());
+        fr.len() - 1
+    }));
     let out = f();
     let frame = FRAMES.with(|fr| fr.borrow_mut().pop()).unwrap_or_default();
     (out, frame.deps.into())
@@ -461,6 +469,27 @@ mod tests {
         s.insert(2);
         assert_eq!(n(&s), 2);
         assert_eq!(runs("test count"), 1);
+    }
+
+    // spec: none (internal). A key present with no stamp of its own (there before the stamps
+    // were, or since the container was stamped whole) is read at the absent stamp: its removal
+    // moves what read it.
+    #[test]
+    fn removing_a_key_without_a_stamp_moves_its_readers() {
+        let mut stamps = Stamps::default();
+        let there = std::cell::Cell::new(true);
+        stamps.wrote_all();
+        let memo: Memo<u8, bool> = Memo::new("test unstamped");
+        let ask = |stamps: &Stamps| {
+            memo.get(&1, || {
+                stamps.read(&1u8);
+                there.get()
+            })
+        };
+        assert!(ask(&stamps));
+        there.set(false);
+        stamps.wrote(&1u8, false);
+        assert!(!ask(&stamps), "the removal of a key read without a stamp");
     }
 
     // spec: none (internal). A memo read inside another passes on what it read; a container

@@ -151,7 +151,8 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     // `secrets.0` read before: this join's keys read again, with every page holding an entry
     // of one loaded (a key's other live entries, concurrent puts, sit on pages the join's own
     // dots do not touch)
-    let secrets = (ak.as_str() == "secrets.0").then(|| tx.core.secrets_read.held(tid).map(|s| (s, delta.clone()))).flatten();
+    // (an empty kept decode may be a state that does not decode at all: never patched)
+    let secrets = (ak.as_str() == "secrets.0").then(|| tx.core.secrets_read.held(tid).filter(|s| **s != Default::default()).map(|s| (s, delta.clone()))).flatten();
     if secrets.is_some() {
         tx.ensure_paths(tid, ak, &super::keys::secrets_paths(&delta))?;
     }

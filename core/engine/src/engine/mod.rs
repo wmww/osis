@@ -1188,13 +1188,13 @@ impl Core {
         })
     }
 
-    /// Drops what is derived from rosters, `secrets.0` and held epochs (the departures cache):
-    /// called wherever those change.
     /// The held valid keysets of actor `m`: (role, epoch, what is held of it).
     pub(crate) fn keysets_of(&self, m: &Tid) -> impl Iterator<Item = (osis_base::Role, osis_crypto::Epoch, &HeldKeyset)> {
         self.ix.keysets.range((*m, osis_base::Role::Read, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *m).map(|(k, v)| (k.1, k.2, v))
     }
 
+    /// Drops what is derived from rosters, `secrets.0` and held epochs and is not a memo yet (the
+    /// departures cache, `reseal_quiet`): called wherever those change.
     pub fn role_changed(&mut self) {
         self.role_generation += 1;
         self.reseal_quiet.clear();
@@ -1800,9 +1800,9 @@ impl Core {
         }
     }
 
-    /// A held commit changed: if it is a rotation, its account's signing chain is built anew
-    /// (`account_view`). `rotation_seq` never rolls back, so a view cached before a rollback is
-    /// never taken for one after it.
+    /// A held commit changed: if it is a rotation, its account gets the next rotation number
+    /// (`Indexes::rotations`: what `refresh_epochs` judges the account again by,
+    /// `Core::judged_from`). `rotation_seq` never rolls back, so a number is never given twice.
     pub(crate) fn note_rotation(&mut self, m: &Meta) {
         // from the view: an open decodes no header. Every rotation writes its account's `keys.0`.
         if m.view.kind.is_role() && m.view.aspects.iter().any(|a| a.tid == m.view.author && a.ak.as_str() == "keys.0") {

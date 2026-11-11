@@ -108,16 +108,14 @@ impl Engine {
         let read = |e: &mut Engine| {
             let mut by: BTreeMap<LabelId, Vec<Tid>> = BTreeMap::new();
             for a in e.core.ix.secrets.keys().chain(e.core.accounts.keys()).copied().collect::<BTreeSet<_>>() {
-                if let Some(l) = e.inbox(&a) {
+                if let Some(l) = e.get_typed(&a, &ct::KEYS)?.and_then(|k| k.inbox).map(|i| i.label) {
                     by.entry(l).or_default().push(a);
                 }
             }
-            Ok::<_, std::convert::Infallible>(Arc::new(by))
+            Ok::<_, crate::error::Error>(Arc::new(by))
         };
-        match Memo::get_in(self, |e| &e.core.inbox_actors, &(), read) {
-            Ok(m) => m,
-            Err(e) => match e {},
-        }
+        // a `keys.0` the store refused to read: no inbox known now, read again at the next ask
+        Memo::get_in(self, |e| &e.core.inbox_actors, &(), read).unwrap_or_default()
     }
 
     /// Whether `g` has a live (unreplaced) label here.
@@ -134,8 +132,14 @@ impl Engine {
     /// `group_labels`, shared: decoded once per write of the `label.0` (`Core::labels`). A
     /// `label.0` the store refuses to read gives none, and is read again at the next ask.
     pub fn labels_of(&mut self, g: &Tid) -> Vec<Arc<GroupLabel>> {
+        self.labels_read(g).unwrap_or_default()
+    }
+
+    /// `labels_of`, with a read the store refused as the error: what a memo reading labels
+    /// asks, so it keeps no answer built on a failed read.
+    pub fn labels_read(&mut self, g: &Tid) -> Result<Vec<Arc<GroupLabel>>> {
         if self.core.created(g).is_none() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         Memo::get_in(self, |e| &e.core.labels, g, |e| {
             let mut out = Vec::new();
@@ -145,6 +149,5 @@ impl Engine {
             }
             Ok::<_, crate::error::Error>(out)
         })
-        .unwrap_or_default()
     }
 }
