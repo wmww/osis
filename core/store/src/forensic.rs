@@ -16,9 +16,10 @@
 //!   what unwraps.
 //!
 //! What it recovers is that set; how it finds it is cheaper than every try in full, and exact:
-//! a row the store sealed is tried with the one key that opens it (`Evidence::sealed`), if held;
-//! a candidate is prepared once (`osis_crypto::Trial`) and rules itself out of a blob or a wrap
-//! by one keystream byte before the AEAD pass decides.
+//! a row the store sealed is tried with the one key that opens it (`Evidence::sealed`, a note
+//! checked by opening the row under it), if held; a candidate is prepared once
+//! (`osis_crypto::Trial`) and rules itself out of a blob or a wrap by one keystream byte before
+//! the AEAD pass decides.
 
 use crate::KeyValue;
 use crate::btree::forensic_leaf;
@@ -40,8 +41,9 @@ pub struct Evidence {
     pub blobs: Vec<(BlobId, Option<Vec<u8>>)>,
     /// Not evidence: the key each row value was sealed under, by its AEAD tag
     /// (`MemoryBackend::sealed`). A ciphertext opens under the key that sealed it and no other
-    /// (but with the chance of a Poly1305 forgery), so a row found here is tried with that key
-    /// alone, if the attacker holds it; a row not found here, with every key.
+    /// (but with the chance of a Poly1305 forgery), so a row that opens under its noted key is
+    /// tried with that key alone, if the attacker holds it; any other row (no note, or one it
+    /// does not open under), with every key.
     pub sealed: HashMap<[u8; 16], [u8; 32]>,
 }
 
@@ -167,17 +169,25 @@ pub fn attack(ev: &Evidence, ciphers: Option<&Ciphers>) -> Vec<Recovered> {
     let mut keys = ev.store_keys.clone();
     let mut known: HashSet<[u8; 32]> = keys.iter().copied().collect();
     let mut opened: Vec<Option<Vec<u8>>> = vec![None; ev.rows.len()];
+    // the key each row opens under, if noted: a note is checked, never trusted
+    let sealer: Vec<Option<&[u8; 32]>> = ev
+        .rows
+        .iter()
+        .map(|(row, value)| {
+            let tag = value.len().checked_sub(16).and_then(|n| value.get(n..)).and_then(|t| <[u8; 16]>::try_from(t).ok());
+            tag.and_then(|t| ev.sealed.get(&t)).filter(|k| forensic_open(row, value, k).is_some())
+        })
+        .collect();
     let mut tried = 0;
     while tried < keys.len() {
         let batch = keys.get(tried..).unwrap_or_default().to_vec();
         let held: HashSet<[u8; 32]> = batch.iter().copied().collect();
         tried = keys.len();
-        for ((row, value), slot) in ev.rows.iter().zip(opened.iter_mut()) {
+        for (((row, value), slot), sealer) in ev.rows.iter().zip(opened.iter_mut()).zip(&sealer) {
             if slot.is_some() {
                 continue;
             }
-            let tag = value.len().checked_sub(16).and_then(|n| value.get(n..)).and_then(|t| <[u8; 16]>::try_from(t).ok());
-            let found = match tag.and_then(|t| ev.sealed.get(&t)) {
+            let found = match *sealer {
                 Some(k) => held.contains(k).then(|| forensic_open(row, value, k)).flatten(),
                 None => batch.iter().find_map(|k| forensic_open(row, value, k)),
             };

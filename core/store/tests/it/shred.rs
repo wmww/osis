@@ -89,8 +89,9 @@ fn shredded_content_is_unrecoverable() {
 }
 
 // spec: none (forensic test support): the record of which key sealed each row
-// (`Evidence::sealed`) changes only the keys the attack tries, never what it recovers: with it
-// and without it the attack recovers the same, while the content is live and once shredded
+// (`Evidence::sealed`) changes only the keys the attack tries, never what it recovers: with it,
+// without it and with every note wrong (a key the attacker holds, or one it does not) the
+// attack recovers the same, while the content is live and once shredded
 #[test]
 fn sealed_keys_change_no_recovery() {
     let dev = MemDevice::new();
@@ -102,6 +103,11 @@ fn sealed_keys_change_no_recovery() {
         assert!(!ev.sealed.is_empty());
         let got = |ev: &Evidence| osis_store::attack(ev, None).into_iter().map(|r| (r.from, r.plain)).collect::<Vec<_>>();
         let with = got(&ev);
+        let held = ev.store_keys.clone();
+        let wrong = |pick: &dyn Fn(&[u8; 32]) -> [u8; 32]| Evidence { sealed: ev.sealed.iter().map(|(t, k)| (*t, pick(k))).collect(), store_keys: held.clone(), rows: ev.rows.clone(), blobs: ev.blobs.clone(), secrets: ev.secrets.clone() };
+        let other_held = |k: &[u8; 32]| *held.iter().find(|h| *h != k).unwrap();
+        assert_eq!(with, got(&wrong(&other_held)));
+        assert_eq!(with, got(&wrong(&|_| [0xee; 32])));
         assert_eq!(with, got(&Evidence { sealed: Default::default(), ..ev }));
         with
     };
