@@ -305,27 +305,30 @@ struct Entry<V> {
     checks: Checks,
 }
 
-/// Debug builds: when a kept answer is compared with a fresh run (`Memo::compare`). A hit can
-/// differ from a fresh run only when something changed since the answer was last known right
-/// (kept, amended or compared): not a key it read (the answer would not hold), so another key of
-/// a container it read, or a container it read nothing of. A hit is compared at the 1st, 4th,
-/// 16th, ... time a container it read has changed since its last such hit (`moves`); an amend
-/// is such a time. A read the function made without its stamp shows when its container changes;
-/// one of a container the function reads nothing else of, only when a container it reads changes
-/// too. A hit inside a comparison (`comparing`) counts for nothing: the outer hit is compared.
+/// Debug builds: when a kept answer is compared with a fresh run (`Memo::compare`), to find a
+/// read the function made without its stamp. Such a read shows only once what it read changed
+/// since the answer was last known right (kept, amended or compared). Two schedules, each by
+/// powers: the 1st, 4th, 16th, ... hit at which a container it read has changed since its last
+/// such hit (`moves`; an amend is one), which finds a missed read whose container, or another
+/// container it reads, changes with it; and its hits 16, 256, 4096, ... whatever changed, which
+/// finds one that changes alone (a container it reads nothing of, a field in none) once the
+/// answer is asked often. A hit inside a comparison (`comparing`) counts for neither: the outer
+/// hit is compared.
 #[cfg(debug_assertions)]
 #[derive(Clone, Copy, Debug)]
 struct Checks {
-    /// `moves` of the reads at the last time counted.
+    /// `moves` of the reads at the last hit after a change.
     at: u128,
-    /// Times counted.
+    /// Hits after a change.
     moved: u64,
+    /// Hits.
+    hits: u64,
 }
 
 #[cfg(debug_assertions)]
 impl Checks {
     fn new(deps: &[Dep]) -> Checks {
-        Checks { at: moves(deps), moved: 0 }
+        Checks { at: moves(deps), moved: 0, hits: 0 }
     }
 
     /// A hit on an answer that read `deps` (`amended`: brought up to date at this hit): whether
@@ -334,13 +337,15 @@ impl Checks {
         if comparing() {
             return false;
         }
+        self.hits += 1;
+        let often = self.hits > 1 && self.hits.is_power_of_two() && self.hits.trailing_zeros().is_multiple_of(4);
         let at = moves(deps);
         if !amended && at == self.at {
-            return false;
+            return often;
         }
         self.at = at;
         self.moved += 1;
-        self.moved.is_power_of_two() && self.moved.trailing_zeros().is_multiple_of(2)
+        often || (self.moved.is_power_of_two() && self.moved.trailing_zeros().is_multiple_of(2))
     }
 }
 
@@ -893,8 +898,9 @@ mod tests {
     }
 
     // spec: none (internal). Debug builds compare a hit with a fresh run at the 1st, 4th, 16th,
-    // ... hit after a change of a container it read (`Checks`): a read made without its stamp
-    // (`hidden`) is found once a container it read changes, never while nothing it read changed.
+    // ... hit after a change of a container it read, and at hits 16, 256, ... (`Checks`): a read
+    // made without its stamp (`hidden`) is found once a container it read changes, and once the
+    // answer is asked often while nothing it read changes.
     #[cfg(debug_assertions)]
     #[test]
     fn a_hit_is_compared_after_what_it_read_changed() {
@@ -917,6 +923,8 @@ mod tests {
             ask(&m)
         }).collect();
         assert_eq!(failed, [false, false, true], "compared at the 4th hit after a change");
+        let failed: Vec<bool> = (7..=16).map(|_| ask(&m)).collect();
+        assert_eq!(failed, [false, false, false, false, false, false, false, false, false, true], "compared at its 16th hit, nothing it read changed");
     }
 
     // spec: none (internal). A memo read inside another passes on what it read; a container
