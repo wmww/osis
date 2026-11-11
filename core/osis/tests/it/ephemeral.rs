@@ -422,7 +422,8 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
 }
 
 // notes/ephemeral.md Deletion: deleting a thing ends its ephemeral aspects here too and takes it
-// out of its groups, in one durable commit: no memory commit is written. spec/data-model.md §1,
+// out of its groups, in one durable commit: no memory commit is written; listeners hear the drop
+// once, as derived. spec/data-model.md §1,
 // spec/commits.md §2
 #[test]
 fn delete_resets_ephemeral_aspects_spec_data_model_1() {
@@ -446,7 +447,10 @@ fn delete_resets_ephemeral_aspects_spec_data_model_1() {
     let c = w.commit().unwrap().unwrap().stamp.id.raw();
     assert!(!db.engine(|e| e.holds_memory(&c)));
     assert!(memory(&db).is_subset(&held), "no memory commit written");
-    assert_eq!(recv(&rx).value, Ok(None));
+    let ch = recv(&rx);
+    assert_eq!((ch.value, ch.origin), (Ok(None), Origin::Derived(osis::DerivedFrom::Deleted)), "no commit carries the drop");
+    db.settle();
+    assert!(rx.try_recv().is_err(), "told once");
     assert!(!db.has_content(x).unwrap());
     assert!(!group_of(&db, db.me()).items.contains(&x), "its membership goes with it");
 }
@@ -532,6 +536,18 @@ fn reader_cannot_write_ephemeral_spec_permissions_1() {
     w.at(g, osis::DynamicAspectKey::untyped(ak("app:sig+~0"))).fire(&Value::Int(1)).unwrap();
     assert_eq!(w.commit(), Err(Error::Permission { tid: g, needs: Role::Write }));
     assert_eq!(durable_marks(&bob), before);
+    // nor delete a thing whose only content is ephemeral (no commit to refuse: notes/ephemeral.md
+    // Deletion): its values stay
+    let (mut world, alice, bob, g) = shared(Role::Read);
+    let cursor = osis::DynamicAspectKey::untyped(ak("app:cursor+.0"));
+    let x = alice.commit_with(|w| { let x = w.create_with_admin(g)?; w.group(g).add(osis::Member::Item(x))?; Ok(x) }).unwrap();
+    alice.commit_set(x, cursor.clone(), &Value::Int(1)).unwrap();
+    world.run();
+    assert_eq!(bob.at(x, cursor.clone()).get().unwrap(), Some(Value::Int(1)));
+    let mut w = bob.write();
+    w.delete(x).unwrap();
+    assert_eq!(w.commit(), Err(Error::Permission { tid: x, needs: Role::Write }));
+    assert_eq!(bob.at(x, cursor).get().unwrap(), Some(Value::Int(1)));
     let (_w, _alice, bob, g) = shared(Role::Write);
     let e = bob.commit_with(|w| w.create_with_admin(g)).unwrap();
     let mut w = bob.write();
