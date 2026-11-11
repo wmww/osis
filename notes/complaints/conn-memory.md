@@ -2,3 +2,4 @@
 - The p2p NAT-model tests (`MemUdp`) carry `MemConn`, not quinn: QUIC flow-control windows cannot be observed in a default test, only by hand on loopback. A first try at a default window test looped without yielding and took 60 GB of RAM before the kill.
 - A one-off background `cargo test` that writes to a scratch dir made in a separate, parallel Bash call can start before the dir exists: create the dir in the same command.
 - Node sync's stream pushes (`Down::Message` Stream with cursor) skip the session's room checks (they rely on the Room grant), so hub tests can use them to make a connection hold bytes, but they are not a way to test the bound itself.
+- Review gate: every stage within its own limit, yet `gate.hold` (447 s vs 177 s) and `gate` wall limits flagged at load 6: the totals do not scale with a 12-crate, 19-property, full-sim selection.
