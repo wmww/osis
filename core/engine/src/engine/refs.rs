@@ -157,6 +157,14 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
             crate::retention::lifetimes::queue(tx, t)?;
         }
     }
+    // an ended thing whose evidence a list or reference kept: its keep is judged again
+    if !ak.ephemeral() {
+        for t in &moved {
+            if tx.core.ended(t) {
+                tx.core.ended_due.insert(*t);
+            }
+        }
+    }
     if tx.core.refs_watched && !moved.is_empty() {
         tx.core.events.queue(Event::References(std::sync::Arc::new(moved)));
     }

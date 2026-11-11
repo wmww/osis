@@ -195,7 +195,8 @@ pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid,
 pub(crate) fn lasting(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Core, &Tid) -> bool) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(false) };
     let now = tx.now().0;
-    if m.header.aspects.iter().enumerate().any(|(ai, a)| (m.stripped.contains(&ai) || m.dropped.contains_key(&ai)) && on(tx.core, &a.tid) && super::history::permanent(tx.core, &m.header, a, now)) {
+    // a released thing's drops are no erasure's (spec/commits.md §5 Ending): none lasts
+    if m.header.aspects.iter().enumerate().any(|(ai, a)| (m.stripped.contains(&ai) || m.dropped.contains_key(&ai)) && on(tx.core, &a.tid) && super::history::permanent(tx.core, &m.header, a, now) && !super::end::released(tx.core, &a.tid, now)) {
         return Ok(true);
     }
     if !m.view.purges {

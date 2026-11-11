@@ -318,3 +318,87 @@ fn a_release_that_fails_to_be_written_is_judged_again_at_the_next_open() {
     assert!(e.lifetimes_pending().unwrap().is_empty());
     assert!(!e.lifetimes_due().unwrap());
 }
+
+// issues/thing-lifetimes.md (The release: Forgotten, Comes back after), spec/commits.md §5
+// (Forgetting, Never received): x, kept by r's reference, is released once r lets go; at its
+// request's expiry, with nothing listing or referencing it, the node forgets it whole: x reads
+// unknown and no header of a commit on it stays, the request's included. A stale copy then comes
+// back as a live thing, is judged again and released by a new request
+#[test]
+fn a_released_thing_is_forgotten_at_its_requests_expiry_and_a_stale_copy_is_judged_again() {
+    let (mut net, [a]) = local_nodes::<1>();
+    let me = net.tid(a);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let r = e.new_thing(&mut m, me);
+    e.commit(m).unwrap();
+    let mut m = Mutation::new();
+    let x = e.new_thing(&mut m, me);
+    list(&mut m, x, Some([r].into()));
+    let made = e.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    refs(&mut m, r, Value::Set([Value::Tid(x)].into()));
+    e.commit(m).unwrap();
+    let mut m = Mutation::new();
+    m.set(x, &Ak::new("t:v.0").unwrap(), &Value::Int(1)).unwrap();
+    let wrote = e.commit(m).unwrap().unwrap();
+    assert!(e.judge_lifetimes(&|_| true).unwrap().release.is_empty());
+    let stale = e.package(&made).unwrap().unwrap();
+    let mut m = Mutation::new();
+    refs(&mut m, r, Value::Set(Default::default()));
+    e.commit(m).unwrap();
+    let first = e.judge_lifetimes(&|_| true).unwrap();
+    assert_eq!(first.release, vec![x]);
+    let req = first.request.unwrap();
+    assert_eq!(e.lifetime_status(&x), Status::Ended);
+    net.advance(osis_base::format::ROLE_KEEP_MS / 2);
+    assert_eq!(net.engine(a).lifetime_status(&x), Status::Ended, "held until the request expires");
+    net.advance(osis_base::format::ROLE_KEEP_MS / 2 + 1_000);
+    let e = net.engine(a);
+    assert_eq!(e.lifetime_status(&x), Status::Unknown, "forgotten at its request's expiry");
+    for c in [req, made, wrote] {
+        assert!(e.header(&c).is_none(), "{c:?} forgotten");
+    }
+    assert!(e.core.on_thing(&x).next().is_none(), "no commit on x stays");
+    assert!(e.core.created(&x).is_none(), "nor its record");
+    net.restart(a, 2);
+    let e = net.engine(a);
+    assert_eq!(e.lifetime_status(&x), Status::Unknown, "forgotten over a restart");
+    let _ = e.ingest(&stale.bytes, stale.blobs);
+    assert_eq!(e.lifetime_status(&x), Status::Known, "a stale copy comes back");
+    let again = e.judge_lifetimes(&|_| true).unwrap();
+    assert_eq!(again.release, vec![x], "judged again: unreachable");
+    assert_ne!(again.request, Some(req), "by a new request");
+    assert_eq!(e.lifetime_status(&x), Status::Ended);
+}
+
+// issues/thing-lifetimes.md (The release: Forgotten), spec/commits.md §5 (Never received): x made
+// in one commit with r's reference to it; once its release is forgotten that commit keeps its
+// header for r's part, and its parts on x count as never received: x is unknown, and a copy of the
+// commit arriving again brings x back to be judged
+#[test]
+fn a_commit_on_a_forgotten_thing_and_a_live_one_keeps_its_header() {
+    let (mut net, [a]) = local_nodes::<1>();
+    let me = net.tid(a);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let r = e.new_thing(&mut m, me);
+    e.commit(m).unwrap();
+    let mut m = Mutation::new();
+    let x = e.new_thing(&mut m, me);
+    list(&mut m, x, Some([r].into()));
+    refs(&mut m, r, Value::Set([Value::Tid(x)].into()));
+    let made = e.commit(m).unwrap().unwrap();
+    let stale = e.package(&made).unwrap().unwrap();
+    let mut m = Mutation::new();
+    refs(&mut m, r, Value::Set(Default::default()));
+    e.commit(m).unwrap();
+    assert_eq!(e.judge_lifetimes(&|_| true).unwrap().release, vec![x]);
+    net.advance(osis_base::format::ROLE_KEEP_MS + 1_000);
+    let e = net.engine(a);
+    assert_eq!(e.lifetime_status(&x), Status::Unknown);
+    assert!(e.header(&made).is_some(), "kept for r's part");
+    let _ = e.ingest(&stale.bytes, stale.blobs);
+    assert_eq!(e.lifetime_status(&x), Status::Known, "x's parts join again");
+    assert_eq!(e.judge_lifetimes(&|_| true).unwrap().release, vec![x]);
+}

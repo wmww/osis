@@ -30,6 +30,7 @@ use osis_store::Shred;
 use std::collections::BTreeSet;
 
 const CREATED: &str = osis_commit::retention::CREATED;
+const RELEASED: &str = osis_commit::retention::RELEASED;
 const ROLES: &str = "roles.0";
 
 /// Aspects whose parts an ended thing still takes (`thing_wait`), so its ending is judged alike:
@@ -84,12 +85,68 @@ pub(crate) fn ending_requests(core: &Core, t: &Tid) -> BTreeSet<CommitId> {
     per_minting(core, t).into_iter().flat_map(|(_, by)| by).map(|p| p.commit).collect()
 }
 
+/// How `t` ended, read at wall ms `now`: by release alone (storage reclaim, never erasure:
+/// every held minting dropped by a standing release request, none by a purge or its own
+/// expiry), and then whether every such request is past its expiry (spec/commits.md §5
+/// Ending, Forgetting). `None`: not ended by release alone.
+fn release_state(core: &Core, t: &Tid, now: u64) -> Option<bool> {
+    let per = per_minting(core, t);
+    let mut spent = true;
+    for (x, by) in &per {
+        if by.is_empty() || x.is_some_and(|x| x <= now) {
+            return None;
+        }
+        for p in by {
+            let m = core.ix.commits.get(&p.commit)?;
+            if !m.header.is_release() {
+                return None;
+            }
+            spent &= m.header.expires.is_some_and(|x| x <= now);
+        }
+    }
+    (!per.is_empty()).then_some(spent)
+}
+
+/// Whether `t` ended by release alone (`release_state`): nothing of it is erasure's, so no
+/// header of it lasts (`purge::lasting`).
+pub(crate) fn released(core: &Core, t: &Tid, now: u64) -> bool {
+    release_state(core, t, now).is_some()
+}
+
+/// Whether something held here needs the evidence that `t` ended (issues/thing-lifetimes.md,
+/// What is kept): a dependent (`dependents`), or another held thing listing it in
+/// `retainers^.0` or referencing it in a live durable value (the reference index). One rule
+/// for every ending: while it holds, `t`'s record, value-less creation, `roles.0` and ending
+/// request parts stay and travel under that thing's labels (`Engine::certificates`).
+pub(crate) fn needs_evidence(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
+    if dependents(tx.core, t) {
+        return Ok(true);
+    }
+    Ok(crate::engine::refs::to(tx, t)?.iter().any(|r| r.source != *t && !r.ak.ephemeral()))
+}
+
+/// Whether ended `t` keeps its record and what tells it ended: something needs the evidence,
+/// or a request ending it is still in force here (a purge for good, a release until its
+/// expiry); an ending by expiry alone keeps it only for what needs it.
+fn keeps(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
+    if needs_evidence(tx, t)? {
+        return Ok(true);
+    }
+    let now = tx.now().0;
+    Ok(!every_creation_expired(tx, t) && release_state(tx.core, t, now) != Some(true))
+}
+
 /// Ends the things a value-less list changed on in this transaction (`Core::valueless_dirty`,
 /// taken at the end of the transaction, so any arrival order lands here).
 pub(crate) fn end_ended(tx: &mut Tx<'_>) -> Result<()> {
     let dirty: BTreeSet<Tid> = tx.core.valueless_dirty.iter().filter(|(_, ak)| ak.as_str() == CREATED).map(|(t, _)| *t).collect();
     let (due, fell): (BTreeSet<Tid>, BTreeSet<Tid>) = dirty.into_iter().partition(|t| tx.core.ended(t));
-    if due.is_empty() && fell.is_empty() {
+    // ended things whose keep may have gone: a release request's part on it expired, or a
+    // thing needing its evidence let go of it (`Core::ended_due`)
+    let mut again: BTreeSet<Tid> = tx.core.valueless_dirty.iter().filter(|(_, ak)| ak.as_str() == RELEASED).map(|(t, _)| *t).collect();
+    again.extend(std::mem::take(&mut tx.core.ended_due));
+    again.retain(|t| !due.contains(t) && !fell.contains(t));
+    if due.is_empty() && fell.is_empty() && again.is_empty() {
         return Ok(());
     }
     // the things whose holders for keys these were (named on them, or on an ended actor so
@@ -118,6 +175,14 @@ pub(crate) fn end_ended(tx: &mut Tx<'_>) -> Result<()> {
     let mut held_changed = false;
     for t in &due {
         held_changed |= end_thing(tx, t, &mut changed)?;
+    }
+    // a kept ended thing goes once nothing keeps it (what that drops may let more go)
+    loop {
+        again.extend(std::mem::take(&mut tx.core.ended_due));
+        let Some(t) = again.pop_first() else { break };
+        if tx.core.ended(&t) && tx.core.created(&t).is_some() && !keeps(tx, &t)? {
+            held_changed |= end_thing(tx, &t, &mut changed)?;
+        }
     }
     if held_changed {
         tx.core.update_timelines();
@@ -200,7 +265,9 @@ pub(crate) fn dependents(core: &crate::engine::Core, t: &Tid) -> bool {
 /// Drops everything of `t` (`end_ended`) but what it keeps (the module doc). Whether the role
 /// timelines' inputs changed: they do when it keeps nothing.
 fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<bool> {
-    let keep = !every_creation_expired(tx, t) || dependents(tx.core, t);
+    let keep = keeps(tx, t)?;
+    // released, every request past its expiry: with what it drops the node forgets it
+    let forget = !keep && release_state(tx.core, t, tx.now().0) == Some(true);
     if keep {
         // what stays still reads as gone (`Core::exists`): observers hear it
         reads_again(t, changed);
@@ -276,6 +343,9 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
     if !keep {
         tx.txn.remove_local(&[records::CREATED, t.as_bytes()].concat(), Shred::Yes)?;
         tx.core.ix.held.forget_record(t);
+        if forget {
+            forget_released(tx, t)?;
+        }
         // the ended actors on its authority paths, kept for it alone, go too
         for up in ups {
             if up != *t && tx.core.created(&up).is_some() && tx.core.ended(&up) {
@@ -285,4 +355,53 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
     }
     tx.core.role_changed();
     Ok(held_changed || !keep)
+}
+
+/// Forgets released `t` once its release requests are past their expiry and nothing keeps it
+/// (spec/commits.md §5 Forgetting; `end_thing` dropped every part of it and its record): the
+/// commits whose every part is on it, or on a thing not held here, go whole, header and ID
+/// included (node-sync deletes their entries where it may, then forgets them); a commit with parts on a
+/// held thing keeps its header and forgets the drop marks of its parts on `t`, which count as
+/// never received: not fetched, joined and judged again if a copy comes (spec/commits.md §5
+/// Never received). `t` is then unknown here, as on a node that never held it.
+fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    let aks: Vec<Ak> = tx.core.aspects_of(t).map(|((_, ak), _)| ak.clone()).collect();
+    let commits: Vec<CommitId> = tx.core.on_thing(t).collect();
+    for c in commits {
+        let Some(m) = tx.core.ix.commits.get(&c) else { continue };
+        let whole = m.header.aspects.iter().all(|a| a.tid == *t || tx.core.created(&a.tid).is_none());
+        if whole {
+            let header = m.header.arc();
+            crate::apply::unindex_commit(tx, &c)?;
+            // node-sync deletes its entries at hosts where it may and forgets them once gone, as
+            // a memory commit's gone whole (`take_memory_drops`)
+            tx.core.memory.dropped.push((c, header, crate::engine::MemoryDrop::Gone));
+            continue;
+        }
+        let on: Vec<usize> = m.header.aspects.iter().enumerate().filter(|(ai, a)| a.tid == *t && m.dropped.contains_key(ai)).map(|(ai, _)| ai).collect();
+        for ai in on {
+            super::reopen(tx, &c, ai)?;
+        }
+        tx.core.mark_changed(c);
+    }
+    // as a node that never held it: no per-aspect row of it stays
+    for ak in &aks {
+        tx.core.ix.forgotten.remove(&(*t, ak.clone()));
+        for p in [records::ASPECTS, records::VALUELESS, records::PURGES, records::SUSPECT, records::FORGOTTEN] {
+            tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
+        }
+        let mut rows = Vec::new();
+        for p in [records::LEFTOVER, records::PURGES_NAMED] {
+            let prefix = records::aspect_key(p, t, ak);
+            tx.scan(&prefix, |k, _| {
+                rows.push([prefix.as_slice(), k].concat());
+                Ok(())
+            })?;
+        }
+        for k in rows {
+            tx.txn.remove_local(&k, Shred::Yes)?;
+        }
+    }
+    super::leaving::forget_things(tx, &BTreeSet::from([*t]))?;
+    Ok(())
 }

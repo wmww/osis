@@ -991,6 +991,9 @@ pub struct Core {
     pub list_bound: usize,
     /// Value-less lists changed in this transaction, written at its end (`retention::persist_valueless`).
     pub valueless_dirty: BTreeSet<(Tid, Ak)>,
+    /// Ended things whose keep is judged again at the end of the transaction (`retention::end`):
+    /// what needs their evidence may have gone.
+    pub ended_due: BTreeSet<Tid>,
     /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
     /// when it ends (`apply::run_batched`).
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
@@ -1185,6 +1188,7 @@ impl Core {
             keep_bodies: self.keep_bodies.clone(),
             list_bound: self.list_bound.clone(),
             valueless_dirty: self.valueless_dirty.clone(),
+            ended_due: self.ended_due.clone(),
             batched: self.batched.clone(),
             cover_cache: self.cover_cache.clone(),
             held_writes: self.held_writes.clone(),
@@ -1704,6 +1708,7 @@ impl Core {
             settings_generation: _,
             settings_moved: _,
             valueless_dirty: _,
+            ended_due: _,
             lifetimes_rights: _,
             changed: _,
             redeliver: _,
@@ -1908,6 +1913,7 @@ impl Core {
             keep_bodies: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
             valueless_dirty: BTreeSet::new(),
+            ended_due: BTreeSet::new(),
             batched: None,
             cover_cache: None,
             held_writes: memo::Memo::new("held writes"),
@@ -3076,6 +3082,7 @@ impl Engine {
                 if r.is_ok() && !tx.txn.is_memory() {
                     r = r.and_then(|v| crate::retention::end::end_ended(&mut tx).map(|_| v));
                 }
+                tx.core.ended_due.clear();
                 if r.is_ok() {
                     r = r.and_then(|v| crate::retention::persist_valueless(&mut tx).map(|_| v));
                 }
