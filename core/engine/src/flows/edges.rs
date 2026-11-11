@@ -212,7 +212,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
             done.deliveries.push(super::owe(tx, Delivery::Deposit { commit: c, under: target })?);
         }
         if let Some(w) = &boxes {
-            rotation::carry(tx, target, w, &mut done)?;
+            rotation::carry(tx, target, w, None, &mut done)?;
         }
     }
     Ok(done)
@@ -348,7 +348,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
             let skip: Vec<(Tid, Option<Role>)> = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
             // while Seal waits, or Authority would fail, the removal goes alone (spec/permissions.md §3)
             if let Some(holders) = rotation::recipients(tx, &who, &target, &skip)?
-                && rotation::possessed(tx.core, &who, &target, &roles, &holders)
+                && rotation::possessed(tx.core, &who, &target, &roles, &holders.holders)
             {
                 let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, !pending.is_empty())?;
                 if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
@@ -410,6 +410,9 @@ fn lowered_deliveries(tx: &mut Tx<'_>, who: Tid, target: Tid, c: CommitId, rot: 
         under.insert(i, target);
     }
     done.deliveries.push(super::owe(tx, Delivery::First { commits: rotation::placed_with(c, rot.map(|r| &r.names)), under })?);
+    if let Some(r) = rot {
+        rotation::carry(tx, target, &r.secrets, Some(&r.keys), done)?;
+    }
     for x in gone_from {
         if *x != who && !tx.core.is_key_actor(x) {
             done.deliveries.push(super::owe(tx, Delivery::Removal { commit: c, under: *x })?);
@@ -477,7 +480,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
         let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
         let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
         if let Some(holders) = rotation::recipients(tx, &who, &target, &skip)?
-            && rotation::possessed(tx.core, &who, &target, &roles, &holders)
+            && rotation::possessed(tx.core, &who, &target, &roles, &holders.holders)
         {
             let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, !pending.is_empty())?;
             if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {

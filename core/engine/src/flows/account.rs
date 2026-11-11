@@ -931,7 +931,7 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     m.sign_as(p);
     let held = ActorEpochs::derived(&tx.core.account_epochs(&p).ok_or(Error::Misuse("account not held"))?, &d);
     let node_kem = tx.core.id.keys().kem.public().clone();
-    let holders = [Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: node_kem.clone(), seed: None } }];
+    let holders = rotation::Boxing { holders: vec![Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: node_kem.clone(), seed: None } }], left_out: Default::default() };
     let rot = rotation::rotation_into(tx, &mut m, d, &ROLES.into_iter().collect(), &held, &holders, false)?;
     let after = rot.preview(&held)?;
     let mut dep = [0u8; 32];

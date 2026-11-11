@@ -161,6 +161,9 @@ type keyset = struct {
     /// Per holder actor the rotator holds the role through, that it holds a secret of it
     /// (spec/crypto.md §4).
     proofs 7: map<tid, possession_proof>,
+    /// Per holder actor this change of secrets left out of the role, the keysets of it it was
+    /// left out at: nobody seals it at a keyset not past each (spec/crypto.md §4).
+    left_out 8: map<tid, set<epoch>>,
 };
 
 /// A signature over a keyset by the possession key of a holder actor's keyset (spec/wire.md §7).

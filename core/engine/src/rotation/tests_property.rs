@@ -40,8 +40,9 @@ type Key = (Tid, Role, Epoch);
 
 /// A rotator's view when it made an epoch: the commits it held (the rotation commit included),
 /// the peers below the epoch's role in its view, for keys, and the holder actors the epoch
-/// boxes of which the rotator held no secret at that role (`Made::blind`).
-type Made = BTreeMap<Key, (BTreeSet<CommitId>, BTreeSet<usize>, BTreeSet<Tid>)>;
+/// boxes of which the rotator held no secret at that role, each with the keyset its box names
+/// (`Made::blind`).
+type Made = BTreeMap<Key, (BTreeSet<CommitId>, BTreeSet<usize>, BTreeSet<(Tid, Epoch)>)>;
 
 struct Run {
     lp: LocalPeer,
@@ -134,11 +135,12 @@ impl Run {
                         // a peer reading a holder actor the epoch boxes reads it rightly (the
                         // step may remove that actor after its cascade rotated `t` boxing it)
                         let via = own.map(|c| self.boxed_actors(i, &c, r)).unwrap_or_default();
-                        let below: BTreeSet<usize> = below.iter().copied().filter(|d| !via.iter().any(|m| access(self, i, *d, *m, r))).collect();
-                        // a rotator holding no secret of a boxed actor does not judge the keyset
-                        // it seals it at (spec/crypto.md §4, the limit for an epoch whose secret
-                        // the node lacks): a departed peer may open the epoch by that box alone
-                        let blind: BTreeSet<Tid> = via.iter().copied().filter(|m| !self.ever[i].iter().any(|k| k.0 == *m && k.1 == r)).collect();
+                        let below: BTreeSet<usize> = below.iter().copied().filter(|d| !via.iter().any(|(m, _)| access(self, i, *d, *m, r))).collect();
+                        // a rotator holding no secret of a boxed actor judges the keyset it seals
+                        // it at by order alone (spec/crypto.md §4, the limit for an epoch whose
+                        // secret the node lacks): a departed peer may open the epoch by that box
+                        // where order allows it (`excused`)
+                        let blind: BTreeSet<(Tid, Epoch)> = via.iter().copied().filter(|(m, _)| !self.ever[i].iter().any(|k| k.0 == *m && k.1 == r)).collect();
                         self.log.push(format!("  made actor {} {r:?} n{} {:?} at peer {i}, below {below:?}, blind {}", self.actors.iter().position(|a| a.0 == t).unwrap(), x.n(), &x.nonce()[..2], blind.len()));
                         self.made.insert((t, r, *x), (held.iter().copied().chain(own).collect(), below, blind));
                     }
@@ -147,11 +149,27 @@ impl Run {
         }
     }
 
-    /// The holder actors (no peers) commit `c` boxes or proves at role `r`, as peer `i` read it.
-    fn boxed_actors(&self, i: usize, c: &CommitId, r: Role) -> BTreeSet<Tid> {
+    /// The holder actors (no peers) commit `c` boxes or proves at role `r`, as peer `i` read it,
+    /// each with the keyset its box or proof names.
+    fn boxed_actors(&self, i: usize, c: &CommitId, r: Role) -> BTreeSet<(Tid, Epoch)> {
         let core = &self.lp.peers[i].engine.core;
         let Some(m) = core.ix.commits.get(c) else { return BTreeSet::new() };
-        (0..m.view.aspects.len()).filter_map(|ai| core.ix.shown.get(&(*c, ai))).flat_map(|x| x.shown.iter().filter(|s| s.role == r && !self.tids.contains(&s.holder)).map(|s| s.holder).collect::<Vec<_>>()).collect()
+        (0..m.view.aspects.len()).filter_map(|ai| core.ix.shown.get(&(*c, ai))).flat_map(|x| x.shown.iter().filter(|s| s.role == r && !self.tids.contains(&s.holder)).map(|s| (s.holder, s.keyset)).collect::<Vec<_>>()).collect()
+    }
+
+    /// Whether a box to holder actor `m` at keyset `k` of role `r`, sealed by a rotator holding
+    /// none of `m`'s secrets and the commits `held`, is within the stated limit for departed peer
+    /// `d` (spec/crypto.md §4, Encrypting under: judged by order alone): unless the rotator held
+    /// `d`'s departure from `m` (its last write in the settled timeline) and `k`'s rotation is
+    /// ordered before it, which the order rule leaves out. Read from the history at `o`.
+    fn excused(&self, o: usize, held: &BTreeSet<CommitId>, m: Tid, r: Role, k: &Epoch, d: usize) -> bool {
+        let Some(om) = self.actors.iter().find(|x| x.0 == m).map(|x| x.1) else { return true };
+        let Some(dep) = departure_point(self, om, m, d) else { return true };
+        let core = &self.lp.peers[o].engine.core;
+        let Some((_, c)) = core.ix.epoch_intro.get(&(m, r, *k)) else { return true };
+        let Some(h) = core.ix.commits.get(c).map(|x| &x.header) else { return true };
+        let made = osis_perm::Point { ts: h.ts, node: h.author, commit: *c };
+        !(held.contains(&dep.commit) && made < dep)
     }
 
     /// Peer `i` rotates `rot` of `t`, leaving out each other member (peer or actor) at random, or
@@ -550,6 +568,7 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                     if *mt == t && *mr == r && below.contains(&d) && last.is_some_and(|c| held.contains(&c)) {
                         // excused only by that box: without it (and the secret, had its node
                         // opened it so), the peer opens the epoch no other way
+                        let blind: BTreeSet<Tid> = blind.iter().filter(|(m, k)| run.excused(o, held, *m, r, k, d)).map(|x| x.0).collect();
                         let opened = opens.contains(&(t, r, *e)) && (blind.is_empty() || {
                             let mut kept = run.ever[d].clone();
                             kept.remove(&(t, r, *e));
@@ -566,11 +585,16 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
 /// Peer `d`'s departure from `t` in the settled timeline: the last applied write on its edge,
 /// or a later demotion whose audit dropped a write on it.
 fn departure(run: &Run, o: usize, t: Tid, d: usize) -> Option<CommitId> {
+    departure_point(run, o, t, d).map(|p| p.commit)
+}
+
+/// `departure`, at its point in the key order.
+fn departure_point(run: &Run, o: usize, t: Tid, d: usize) -> Option<osis_perm::Point> {
     let tl = run.lp.peers[o].engine.core.timelines.get(&t)?;
     let on_edge = |c: &CommitId| tl.role_commit(c).is_some_and(|mc| mc.ops.iter().any(|op| op.target == t && op.holder == run.tids[d]));
     let applied = tl.applied().values().filter(|a| a.target == t && on_edge(&a.point.commit)).map(|a| a.point);
     let dropped = tl.dropped().iter().filter(|(w, _)| matches!(w, osis_perm::WriteId(c, _) if on_edge(c))).map(|(_, p)| *p);
-    applied.chain(dropped).max().map(|p| p.commit)
+    applied.chain(dropped).max()
 }
 
 /// The runs' coverage: with at least eight seeds (every emphasis twice), each shape is reached.

@@ -85,6 +85,7 @@ pub(super) fn keysets_of(tx: &mut Tx<'_>, m: &Tid, r: Role, k: Option<&Epoch>) -
     let mut out = Keysets::default();
     for (_, e, x) in tx.core.keysets_of(m).filter(|x| x.0 == r) {
         out.valid.insert(e, x.lists.clone());
+        out.since.extend(x.since.map(|p| (e, p)));
     }
     if let Some(k) = k.filter(|k| !out.valid.contains_key(k))
         && held_invalid(tx, m, r, k)?
@@ -162,6 +163,13 @@ fn anchors(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<BTreeSet<Epoch>
         .collect())
 }
 
+/// The keysets of holder actor `m` of role `r` that `a`'s current keysets of `r` record `m` was
+/// left out at (spec/crypto.md §4, Left out): Seal seals `m` only past each.
+fn left_out_at(core: &Core, a: &Tid, m: &Tid, r: Role) -> BTreeSet<Epoch> {
+    let Some(epochs) = core.epochs(a) else { return BTreeSet::new() };
+    epochs.role(r).current().iter().filter_map(|e| core.ix.keysets.get(&(*a, r, *e))?.left_out.get(m)).flatten().copied().collect()
+}
+
 /// How a rotation, grant or re-seal of an actor boxes one holder (`sealed`).
 pub(crate) enum Sealed {
     /// These boxes.
@@ -183,30 +191,47 @@ pub(crate) enum Sealed {
 /// cover, say), left out of it and the roles above; `Wait` if Seal waits at any role up to
 /// `role`.
 pub(crate) fn sealed(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<Sealed> {
+    Ok(sealing(tx, who, a, m, role)?.0)
+}
+
+/// `sealed`, with the keyset Seal gives at each role up to `role` that `who` may not encrypt
+/// under (`super::blocked_epoch`), the roles above the cut included: what a rotation leaving `m`
+/// out records (`left_out`).
+pub(crate) fn sealing(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<(Sealed, BTreeMap<Role, Epoch>)> {
+    let mut blocked = BTreeMap::new();
     if !tx.core.seals_to(a, m) {
-        return Ok(Sealed::Out);
+        return Ok((Sealed::Out, blocked));
     }
     if tx.core.is_account(m) {
         return sealed_to_account(tx, who, a, m, role);
     }
     if tx.core.is_key_actor(m) {
-        return Ok(recipient(tx, *m, role).ok().map_or(Sealed::Out, Sealed::Boxed));
+        return Ok((recipient(tx, *m, role).ok().map_or(Sealed::Out, Sealed::Boxed), blocked));
     }
     if !keyed(tx.core, a, m) {
-        return Ok(Sealed::Out);
+        return Ok((Sealed::Out, blocked));
     }
     let own = tx.core.own_epochs(m);
     let deps = super::departures(tx, m)?;
-    let (mut keysets, mut secrets, mut top) = (BTreeMap::new(), BTreeMap::new(), None);
+    let (mut keysets, mut secrets, mut top, mut cut) = (BTreeMap::new(), BTreeMap::new(), None, false);
     for r in ROLES.into_iter().filter(|r| *r <= role) {
         let held = keysets_of(tx, m, r, None)?;
-        let k = match osis_keys::seal_keyset(&held, &anchors(tx, a, m, r)?, &tainted(tx, m, r)?) {
+        let k = match osis_keys::seal_keyset(&held, &anchors(tx, a, m, r)?, &tainted(tx, m, r)?, &left_out_at(tx.core, a, m, r)) {
             Seal::At(k) => k,
-            Seal::Out => break,
-            Seal::Wait => return Ok(Sealed::Wait),
+            Seal::Out => {
+                cut = true;
+                continue;
+            }
+            // above the cut nothing is boxed, so nothing waits
+            Seal::Wait if cut => continue,
+            Seal::Wait => return Ok((Sealed::Wait, blocked)),
         };
         if super::blocked_epoch(tx, who, m, r, &k, &deps, super::Walk::Seal)? {
-            break;
+            blocked.insert(r, k);
+            cut = true;
+        }
+        if cut {
+            continue;
         }
         let secret = own.as_ref().filter(|e| e.role(r).is_established(&k)).and_then(|e| e.role(r).secret(&k)).cloned();
         let written = tx.core.ix.keysets.get(&(*m, r, k)).and_then(|x| x.kem.clone());
@@ -215,40 +240,78 @@ pub(crate) fn sealed(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -
             (None, Some(s)) => Some(osis_crypto::role_kem(s).public().clone()),
             (None, None) => None,
         };
-        let Some(kem) = kem else { break };
+        let Some(kem) = kem else {
+            cut = true;
+            continue;
+        };
         keysets.insert(r, (k, kem));
         if let Some(s) = secret {
             secrets.insert(r, (k, s));
         }
         top = Some(r);
     }
-    Ok(top.map_or(Sealed::Out, |role| Sealed::Boxed(Recipient { holder: *m, role, keys: HolderKeys::Actor { keysets, own: secrets } })))
+    let sealed = top.map_or(Sealed::Out, |role| Sealed::Boxed(Recipient { holder: *m, role, keys: HolderKeys::Actor { keysets, own: secrets } }));
+    Ok((sealed, blocked))
 }
 
-/// `sealed` for account `m`: one keyset names every role (spec/crypto.md §3), so its boxes up to
-/// `role` go at one epoch, the newest Seal gives descending from every role's anchors; left out
-/// where a role of it is blocked at this node.
-fn sealed_to_account(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<Sealed> {
-    let mut anchored = BTreeSet::new();
+/// `sealing` for account `m`: one keyset names every role (spec/crypto.md §3), so its boxes up
+/// to `role` go at one epoch, the newest Seal gives descending from every role's anchors and
+/// left-out keysets; left out where a role of it is blocked at this node.
+fn sealed_to_account(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<(Sealed, BTreeMap<Role, Epoch>)> {
+    let mut blocked = BTreeMap::new();
+    let (mut anchored, mut out) = (BTreeSet::new(), BTreeSet::new());
     for r in ROLES.into_iter().filter(|r| *r <= role) {
         anchored.extend(anchors(tx, a, m, r)?);
+        out.extend(left_out_at(tx.core, a, m, r));
     }
     let held = keysets_of(tx, m, role, None)?;
-    let k = match osis_keys::seal_keyset(&held, &anchored, &BTreeSet::new()) {
+    let k = match osis_keys::seal_keyset(&held, &anchored, &BTreeSet::new(), &out) {
         Seal::At(k) => k,
-        Seal::Out => return Ok(Sealed::Out),
-        Seal::Wait => return Ok(Sealed::Wait),
+        Seal::Out => return Ok((Sealed::Out, blocked)),
+        Seal::Wait => return Ok((Sealed::Wait, blocked)),
     };
     let deps = super::keyset_departures(tx, m)?;
     let mut top = None;
     for r in ROLES.into_iter().filter(|r| *r <= role) {
         if super::blocked_epoch(tx, who, m, r, &k, &deps, super::Walk::Seal)? {
-            break;
+            blocked.insert(r, k);
+        } else if blocked.is_empty() {
+            top = Some(r);
         }
-        top = Some(r);
     }
-    let Some(role) = top else { return Ok(Sealed::Out) };
-    Ok(crate::flows::account::holder_keys_at(tx, m, &k)?.map_or(Sealed::Out, |keys| Sealed::Boxed(Recipient { holder: *m, role, keys })))
+    let Some(role) = top else { return Ok((Sealed::Out, blocked)) };
+    let sealed = crate::flows::account::holder_keys_at(tx, m, &k)?.map_or(Sealed::Out, |keys| Sealed::Boxed(Recipient { holder: *m, role, keys }));
+    Ok((sealed, blocked))
+}
+
+/// The holders of `a` as a rotation by `who` boxes them, and what it records of the holder
+/// actors it leaves out (`super::recipients`).
+pub(crate) struct Boxing {
+    pub(crate) holders: Vec<Recipient>,
+    pub(crate) left_out: osis_keys::LeftOut,
+}
+
+/// What a rotation of `a` records of holder actor `m`, holding `role`, that it boxes only
+/// up to `boxed` (`None`: not at all) (spec/crypto.md §4, Left out): at each role above, the
+/// keyset Seal gives that the rotator may not encrypt under (`blocked`, from `sealing`), and the keysets `a`'s current
+/// keysets of that role record already, less those another of them descends from (a holder
+/// actor left out across rotations records its frontier, not its history). A key actor's boxes
+/// name no keyset: nothing.
+pub(crate) fn left_out(tx: &mut Tx<'_>, a: &Tid, m: &Tid, role: Role, boxed: Option<Role>, blocked: &BTreeMap<Role, Epoch>, out: &mut osis_keys::LeftOut) -> Result<()> {
+    if tx.core.is_key_actor(m) && !tx.core.is_account(m) {
+        return Ok(());
+    }
+    for r in ROLES.into_iter().filter(|r| *r <= role && Some(*r) > boxed) {
+        let mut ks = left_out_at(tx.core, a, m, r);
+        ks.extend(blocked.get(&r));
+        if ks.is_empty() {
+            continue;
+        }
+        let held = keysets_of(tx, m, r, None)?;
+        let frontier: BTreeSet<Epoch> = ks.iter().copied().filter(|q| !ks.iter().any(|x| x != q && held.descends(x, q))).collect();
+        out.entry(r).or_default().insert(*m, frontier);
+    }
+    Ok(())
 }
 
 /// `who`'s roles now on paths through none of `avoid` (spec/crypto.md §4, Possession: as nodes
@@ -324,21 +387,22 @@ pub(crate) fn keyless_at(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result
     Ok(keyless_boxed(tx.core, a, &s, r).contains(e))
 }
 
-/// The held rotation commits of the keysets the boxes `w` writes to holder actors name
-/// (spec/crypto.md §4, Carried): placed under `a`'s labels with the commit carrying `w`.
-pub(crate) fn carried(core: &Core, w: &osis_keys::SecretsWrite) -> Vec<osis_base::CommitId> {
-    let mut out: Vec<osis_base::CommitId> = w
-        .boxes
-        .iter()
-        .filter_map(|(k, b)| {
-            let e = osis_keys::box_epoch(b)?;
-            if core.is_account(&k.holder) {
-                return core.account_view(&k.holder)?.rotation_named(&e);
+/// The held rotation commits of the keysets the boxes `w` writes to holder actors name, and those
+/// the keysets `keys` writes record holder actors were left out at (spec/crypto.md §4, Carried):
+/// placed under `a`'s labels with the commit carrying `w`.
+pub(crate) fn carried(core: &Core, w: &osis_keys::SecretsWrite, keys: Option<&osis_keys::KeysWrite>) -> Vec<osis_base::CommitId> {
+    let boxed = w.boxes.iter().filter_map(|(k, b)| Some((k.holder, k.role, osis_keys::box_epoch(b)?)));
+    let out = keys.into_iter().flat_map(|k| k.keysets.iter()).flat_map(|(r, ks)| ks.left_out.iter().flat_map(move |(m, xs)| xs.iter().filter_map(move |x| Some((*m, *r, osis_keys::aspects::from_schema(x).ok()?)))));
+    let mut out: Vec<osis_base::CommitId> = boxed
+        .chain(out)
+        .filter_map(|(m, r, e)| {
+            if core.is_account(&m) {
+                return core.account_view(&m)?.rotation_named(&e);
             }
-            if core.is_key_actor(&k.holder) {
+            if core.is_key_actor(&m) {
                 return None;
             }
-            core.ix.epoch_intro.get(&(k.holder, k.role, e)).map(|x| x.1)
+            core.ix.epoch_intro.get(&(m, r, e)).map(|x| x.1)
         })
         .collect();
     out.sort();

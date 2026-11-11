@@ -133,6 +133,11 @@ pub struct Rotated {
     pub supersedes: BTreeSet<Epoch>,
 }
 
+/// Per rotated role, the holder actors a rotation leaves out of it, each with the keysets of it
+/// of that role its keyset records (spec/crypto.md §4, Left out): Seal at every node then seals
+/// that holder only at a keyset descending from each.
+pub type LeftOut = BTreeMap<Role, BTreeMap<Tid, BTreeSet<Epoch>>>;
+
 /// A rotation's writes (spec/crypto.md §4): one role commit carries them.
 #[derive(Clone, Debug)]
 pub struct Rotation {
@@ -206,8 +211,16 @@ fn removals(roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets) 
 /// secret is held. No current secret is needed: an epoch the rotator cannot open is superseded
 /// unread, and a holder of its secret adds it to the new epoch's history (`history_adds`).
 /// `held` is the rotator's established view of the actor (a plain thing's derived epochs for the
-/// switch to secrets of its own); `held_secrets` the actor's `secrets.0`.
+/// switch to secrets of its own); `held_secrets` the actor's `secrets.0`. Records no holder actor
+/// left out (`rotate_leaving_out`).
 pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets, holders: &[Recipient], names: &Names, rng: &mut dyn CryptoRngCore) -> Result<Rotation, Error> {
+    rotate_leaving_out(actor, roles, held, held_secrets, holders, &LeftOut::new(), names, rng)
+}
+
+/// `rotate`, each rotated role's keyset recording `left_out`: the holder actors the rotation
+/// leaves out of it, with the keysets of each it was left out at (`LeftOut`).
+#[allow(clippy::too_many_arguments)]
+pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets, holders: &[Recipient], left_out: &LeftOut, names: &Names, rng: &mut dyn CryptoRngCore) -> Result<Rotation, Error> {
     let removed = removals(roles, held, held_secrets)?;
     let mut rotated = Vec::new();
     let mut secrets = SecretsWrite { removed, ..SecretsWrite::default() };
@@ -237,7 +250,11 @@ pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secr
         // the keyset lists its current epochs but derived ones (held only where the base actor's
         // secret is: superseded through the history box)
         let listed: BTreeSet<Epoch> = current.iter().filter(|e| re.provenance(e) != Some(Provenance::Derived)).copied().collect();
-        keys.keysets.insert(r, keyset(&epoch, &secret, &listed, names));
+        let mut ks = keyset(&epoch, &secret, &listed, names);
+        for (m, out) in left_out.get(&r).into_iter().flatten() {
+            ks.left_out.insert(*m, out.iter().map(to_schema).collect());
+        }
+        keys.keysets.insert(r, ks);
         let supersedes = listed.iter().copied().chain(earlier.iter().map(|(e, _)| *e)).collect();
         rotated.push(Rotated { role: r, epoch, secret, supersedes });
     }

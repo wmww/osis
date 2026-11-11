@@ -139,7 +139,7 @@ fn box_to_a_closed_epoch_reads_stale_spec_crypto_4() {
     let ks = e.run(|tx| keysets_of(tx, &a.account, Role::Read, None)).unwrap();
     assert!(stale(&first_name, &ks, &none));
     assert!(!stale(&next_name, &ks, &none));
-    assert_eq!(osis_keys::seal_keyset(&ks, &[first_name].into(), &none), osis_keys::Seal::At(next_name), "sealed at the open epoch");
+    assert_eq!(osis_keys::seal_keyset(&ks, &[first_name].into(), &none, &none), osis_keys::Seal::At(next_name), "sealed at the open epoch");
 }
 
 // spec/sync.md §10: an account's proof counts at an open epoch only: its first key alone while no
@@ -194,7 +194,7 @@ fn forked_account_follows_one_head_spec_permissions_5_4() {
     let keys = if followed == ids[0] { &x } else { &y };
     let name = |k: &AccountEpochKeys, h: u64| account_epoch(h, &k.signing.verifying_key()).unwrap();
     let (none, ks) = (BTreeSet::new(), e.run(|tx| keysets_of(tx, &a.account, Role::Read, None)).unwrap());
-    assert_eq!(osis_keys::seal_keyset(&ks, &none, &none), osis_keys::Seal::At(name(keys, 1)));
+    assert_eq!(osis_keys::seal_keyset(&ks, &none, &none, &none), osis_keys::Seal::At(name(keys, 1)));
     let other = if followed == ids[0] { &y } else { &x };
     assert!(stale(&name(&first, 0), &ks, &none) && stale(&name(other, 1), &ks, &none) && !stale(&name(keys, 1), &ks, &none));
     assert_eq!(e.core.account_delete_key(&a.account).unwrap(), keys.signing.verifying_key());
@@ -331,7 +331,7 @@ fn a_rotation_rejudges_possession_and_is_carried_spec_crypto_4() {
     let e = &mut lp.peers[1].engine;
     let s = e.run(|tx| crate::flows::secrets_in(tx, &t)).unwrap();
     let w = osis_keys::SecretsWrite { boxes: s.boxes.iter().filter(|(k, _)| k.holder == a.account).map(|(k, b)| (k.clone(), b.clone())).collect(), removed: Default::default(), history: Default::default() };
-    assert_eq!(crate::rotation::members::carried(&e.core, &w), vec![id], "the box's epoch travels with it");
+    assert_eq!(crate::rotation::members::carried(&e.core, &w, None), vec![id], "the box's epoch travels with it");
     let boxing: Vec<CommitId> = e.core.ix.by_aspect.get(&(t, Ak::new("secrets.0").unwrap())).unwrap().iter().map(|x| x.1).collect();
     let m = e.core.ix.commits.get(&id).unwrap().clone();
     e.core.stale_commits.clear();

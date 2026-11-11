@@ -17,6 +17,9 @@ pub struct Keysets {
     pub valid: BTreeMap<Epoch, BTreeSet<Epoch>>,
     /// The held invalid keysets: every body the node holds writing one is invalid.
     pub invalid: BTreeSet<Epoch>,
+    /// The key of each held valid keyset's earliest held valid body, where known (an account's
+    /// chain is whole: none).
+    pub since: BTreeMap<Epoch, osis_perm::Point>,
 }
 
 impl Keysets {
@@ -25,6 +28,18 @@ impl Keysets {
     /// admin's forgery lists every keyset, so descent through it would prove nothing.
     pub fn descends(&self, k: &Epoch, j: &Epoch) -> bool {
         ancestors(*k, |x| self.parents(x)).contains(j)
+    }
+
+    /// Whether held valid keyset `k` is past `j` (Left out): it descends from `j`, or, while no
+    /// held valid keyset descends from `j` (the chain runs through a keyset not held valid, which
+    /// no later body mends), it is ordered after `j` (judged by order, as an epoch whose secret
+    /// the node lacks is).
+    pub fn past(&self, k: &Epoch, j: &Epoch) -> bool {
+        if self.descends(k, j) {
+            return true;
+        }
+        let after = matches!((self.since.get(k), self.since.get(j)), (Some(a), Some(b)) if a > b);
+        after && !self.valid.keys().any(|x| self.descends(x, j))
     }
 
     /// The epochs held valid keyset `x` lists (none when it is not held valid).
@@ -46,11 +61,12 @@ pub enum Seal {
 }
 
 /// Seal (rule 1): the keyset a rotation, grant or re-seal of A seals holder actor M to, for one
-/// role: the newest held valid keyset of M that is not `tainted` and is or descends from each
-/// anchor (the epochs of M the boxes to M at A's current epochs name, those held valid counting):
-/// the rule an account's signing chain opens its epochs by (`osis_perm::chain`).
-/// With none: `Wait` when no held valid keyset, tainted or not, is or descends from each anchor
-/// (they fork), else `Out`.
+/// role: the newest held valid keyset of M that is not `tainted`, is or descends from each anchor
+/// (the epochs of M the boxes to M at A's current epochs name, those held valid counting), and
+/// descends from each keyset `left_out` names (the keysets of M A's current keysets record M was
+/// left out at, those held valid counting): the rule an account's signing chain opens its epochs
+/// by (`osis_perm::chain`). With none: `Wait` when no held valid keyset, tainted or not, is or
+/// descends from each anchor (they fork), else `Out`.
 ///
 /// Invariant: A's boxes to M move only to a keyset whose rotator had each anchor current, so a
 /// keyset of M made without the knowledge an anchor was made with (a fork from an older keyset,
@@ -61,10 +77,20 @@ pub enum Seal {
 /// A's current epochs, would seal M at its newest keyset, perhaps that fork (a Depth0.tla
 /// counterexample). A tainted keyset leaves M out instead: its re-key descends from it, and waiting
 /// would hold A's removals while a grant stays hidden from M's admins.
-pub fn seal_keyset(keysets: &Keysets, anchors: &BTreeSet<Epoch>, tainted: &BTreeSet<Epoch>) -> Seal {
+///
+/// Invariant (left out): a keyset a knowing rotator of A left M out at, because a departed party
+/// opens it as that rotator judged, is never sealed to by any node, nor any keyset that does not
+/// descend from it (a rotation of M made knowing it, which supersedes it): a co-writer of A that
+/// cannot judge that departure itself never re-seals M where the knowing node left it out
+/// (Depth0.tla `D0_readers_g2_mark`). A left-out keyset never makes Seal wait: M stays out until
+/// its rotation reaches the sealer. Where no held valid keyset descends from a left-out one (M's
+/// chain runs through a keyset this node holds invalid or never got), a keyset ordered after it
+/// is past it (`Keysets::past`): else no keyset could ever be, and M would be out for good.
+pub fn seal_keyset(keysets: &Keysets, anchors: &BTreeSet<Epoch>, tainted: &BTreeSet<Epoch>, left_out: &BTreeSet<Epoch>) -> Seal {
     let anchors: Vec<&Epoch> = anchors.iter().filter(|q| keysets.valid.contains_key(q)).collect();
     let joined = |k: &&Epoch| joins(**k, anchors.iter().copied(), |x| keysets.parents(x));
-    match newest_of(keysets.valid.keys().filter(|k| !tainted.contains(k)).filter(joined)) {
+    let past = |k: &&Epoch| left_out.iter().filter(|q| keysets.valid.contains_key(q)).all(|q| keysets.past(k, q));
+    match newest_of(keysets.valid.keys().filter(|k| !tainted.contains(k)).filter(joined).filter(past)) {
         Some(k) => Seal::At(k),
         None if keysets.valid.keys().any(|k| joined(&k)) || anchors.is_empty() => Seal::Out,
         None => Seal::Wait,
@@ -237,30 +263,63 @@ mod tests {
     #[test]
     fn seal_keyset_anchored() {
         let mut k = Keysets::default();
-        assert_eq!(seal_keyset(&k, &set(&[]), &set(&[])), Seal::Out, "no keyset held: left out");
+        assert_eq!(seal_keyset(&k, &set(&[]), &set(&[]), &set(&[])), Seal::Out, "no keyset held: left out");
         k.valid.insert(ep(1, 1), set(&[]));
         k.valid.insert(ep(2, 5), set(&[ep(1, 1)]));
         // the knowing keyset kk (3) lists 2; the ignorant fork f (3, lower nonce: newer) lists 1
         k.valid.insert(ep(3, 7), set(&[ep(2, 5)]));
         k.valid.insert(ep(3, 0), set(&[ep(1, 1)]));
-        assert_eq!(seal_keyset(&k, &set(&[]), &set(&[])), Seal::At(ep(3, 0)), "no anchor: the newest");
-        assert_eq!(seal_keyset(&k, &set(&[ep(3, 7)]), &set(&[])), Seal::At(ep(3, 7)), "anchored on kk, f does not descend from it");
-        assert_eq!(seal_keyset(&k, &set(&[ep(2, 5)]), &set(&[])), Seal::At(ep(3, 7)), "f does not descend from 2");
-        assert_eq!(seal_keyset(&k, &set(&[ep(1, 1)]), &set(&[])), Seal::At(ep(3, 0)), "both descend from 1");
+        assert_eq!(seal_keyset(&k, &set(&[]), &set(&[]), &set(&[])), Seal::At(ep(3, 0)), "no anchor: the newest");
+        assert_eq!(seal_keyset(&k, &set(&[ep(3, 7)]), &set(&[]), &set(&[])), Seal::At(ep(3, 7)), "anchored on kk, f does not descend from it");
+        assert_eq!(seal_keyset(&k, &set(&[ep(2, 5)]), &set(&[]), &set(&[])), Seal::At(ep(3, 7)), "f does not descend from 2");
+        assert_eq!(seal_keyset(&k, &set(&[ep(1, 1)]), &set(&[]), &set(&[])), Seal::At(ep(3, 0)), "both descend from 1");
         // the merge lists both: it descends from every anchor
         k.valid.insert(ep(4, 3), set(&[ep(3, 7), ep(3, 0)]));
-        assert_eq!(seal_keyset(&k, &set(&[ep(3, 7)]), &set(&[])), Seal::At(ep(4, 3)));
+        assert_eq!(seal_keyset(&k, &set(&[ep(3, 7)]), &set(&[]), &set(&[])), Seal::At(ep(4, 3)));
         // two anchors on two forks: only a keyset descending from both
-        assert_eq!(seal_keyset(&k, &set(&[ep(3, 7), ep(3, 0)]), &set(&[])), Seal::At(ep(4, 3)));
+        assert_eq!(seal_keyset(&k, &set(&[ep(3, 7), ep(3, 0)]), &set(&[]), &set(&[])), Seal::At(ep(4, 3)));
         k.valid.remove(&ep(4, 3));
-        assert_eq!(seal_keyset(&k, &set(&[ep(3, 7), ep(3, 0)]), &set(&[])), Seal::Wait, "no keyset descends from both forks: wait for the merge");
+        assert_eq!(seal_keyset(&k, &set(&[ep(3, 7), ep(3, 0)]), &set(&[]), &set(&[])), Seal::Wait, "no keyset descends from both forks: wait for the merge");
         // a tainted keyset is never sealed to
-        assert_eq!(seal_keyset(&k, &set(&[ep(2, 5)]), &set(&[ep(3, 7)])), Seal::At(ep(2, 5)), "the anchor itself");
-        assert_eq!(seal_keyset(&k, &set(&[ep(2, 5)]), &set(&[ep(3, 7), ep(2, 5)])), Seal::Out, "everything it anchors to tainted: left out until the re-key");
-        assert_eq!(seal_keyset(&k, &set(&[]), &set(&[ep(1, 1), ep(2, 5), ep(3, 7), ep(3, 0)])), Seal::Out, "no anchor, every keyset tainted");
-        assert_eq!(seal_keyset(&k, &set(&[]), &set(&[ep(3, 0)])), Seal::At(ep(3, 7)));
+        assert_eq!(seal_keyset(&k, &set(&[ep(2, 5)]), &set(&[ep(3, 7)]), &set(&[])), Seal::At(ep(2, 5)), "the anchor itself");
+        assert_eq!(seal_keyset(&k, &set(&[ep(2, 5)]), &set(&[ep(3, 7), ep(2, 5)]), &set(&[])), Seal::Out, "everything it anchors to tainted: left out until the re-key");
+        assert_eq!(seal_keyset(&k, &set(&[]), &set(&[ep(1, 1), ep(2, 5), ep(3, 7), ep(3, 0)]), &set(&[])), Seal::Out, "no anchor, every keyset tainted");
+        assert_eq!(seal_keyset(&k, &set(&[]), &set(&[ep(3, 0)]), &set(&[])), Seal::At(ep(3, 7)));
         // an anchor not held valid does not count
-        assert_eq!(seal_keyset(&k, &set(&[ep(9, 9)]), &set(&[])), Seal::At(ep(3, 0)));
+        assert_eq!(seal_keyset(&k, &set(&[ep(9, 9)]), &set(&[]), &set(&[])), Seal::At(ep(3, 0)));
+    }
+
+    // spec/crypto.md §4 (Seal, Left out): a keyset A's current keysets record M was left out at
+    // is not sealed to, nor any keyset not descending from it; none: left out, never a wait; a
+    // left-out keyset not held valid does not count.
+    #[test]
+    fn seal_keyset_past_left_out() {
+        let mut k = Keysets::default();
+        k.valid.insert(ep(1, 1), set(&[]));
+        k.valid.insert(ep(2, 5), set(&[ep(1, 1)]));
+        k.valid.insert(ep(2, 0), set(&[ep(1, 1)]));
+        assert_eq!(seal_keyset(&k, &set(&[ep(1, 1)]), &set(&[]), &set(&[ep(2, 5)])), Seal::Out, "only 2.5 is past 1.1, and 2.5 is left out");
+        assert_eq!(seal_keyset(&k, &set(&[]), &set(&[]), &set(&[ep(1, 1)])), Seal::At(ep(2, 0)), "past 1.1: the newest");
+        k.valid.insert(ep(3, 2), set(&[ep(2, 5)]));
+        assert_eq!(seal_keyset(&k, &set(&[ep(1, 1)]), &set(&[]), &set(&[ep(2, 5)])), Seal::At(ep(3, 2)), "M's rotation knowing it");
+        assert_eq!(seal_keyset(&k, &set(&[ep(1, 1)]), &set(&[]), &set(&[ep(2, 5), ep(2, 0)])), Seal::Out, "nothing past both");
+        assert_eq!(seal_keyset(&k, &set(&[ep(1, 1)]), &set(&[]), &set(&[ep(2, 5), ep(9, 9)])), Seal::At(ep(3, 2)), "an unheld one does not count");
+    }
+
+    // spec/crypto.md §4 (Left out): where no held valid keyset descends from the left-out one (M's
+    // chain runs through a keyset not held valid), a keyset ordered after it is past it; while
+    // one descends, only descent counts.
+    #[test]
+    fn left_out_past_by_order_where_the_chain_is_broken() {
+        let at = |ts: u64| osis_perm::Point { ts: osis_base::Ts::from_u64(ts).unwrap(), node: Tid::from_bytes([0; 15]), commit: osis_base::CommitId([0; 32]) };
+        let mut k = Keysets::default();
+        k.valid.insert(ep(1, 1), set(&[]));
+        k.valid.insert(ep(4, 2), set(&[ep(3, 3)]));
+        k.since.extend([(ep(1, 1), at(1 << 20)), (ep(4, 2), at(4 << 20))]);
+        assert_eq!(seal_keyset(&k, &set(&[]), &set(&[]), &set(&[ep(1, 1)])), Seal::At(ep(4, 2)), "4.2 lists 3.3, held by nothing here: ordered after 1.1");
+        k.valid.insert(ep(2, 0), set(&[ep(1, 1)]));
+        k.since.insert(ep(2, 0), at(2 << 20));
+        assert_eq!(seal_keyset(&k, &set(&[]), &set(&[]), &set(&[ep(1, 1)])), Seal::At(ep(2, 0)), "a descendant held: descent only");
     }
 
     // spec/crypto.md §4 (Descends): through held valid keysets only; a forged keyset (invalid)
@@ -272,7 +331,7 @@ mod tests {
         k.invalid.insert(ep(3, 4));
         k.valid.insert(ep(4, 0), set(&[ep(3, 4)]));
         assert!(!k.descends(&ep(4, 0), &ep(2, 9)), "through the forgery: no descent");
-        assert_eq!(seal_keyset(&k, &set(&[ep(2, 9)]), &set(&[])), Seal::At(ep(2, 9)));
+        assert_eq!(seal_keyset(&k, &set(&[ep(2, 9)]), &set(&[]), &set(&[])), Seal::At(ep(2, 9)));
         // the same forgery held valid (its forger's removal unknown here) passes descent on
         k.invalid.clear();
         k.valid.insert(ep(3, 4), set(&[ep(2, 9), ep(2, 0)]));

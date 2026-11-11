@@ -139,10 +139,10 @@ codec_struct! {
 }
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, delete key, the epochs its rotation
-    /// supersedes, possession key, names digest and possession proofs (spec/crypto.md §3, §4, §7,
-    /// §8).
+    /// supersedes, possession key, names digest, possession proofs and the keysets of each holder
+    /// actor its rotation left out at (spec/crypto.md §3, §4, §7, §8).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 delete_key: SigningKey, 4 supersedes: BTreeSet<Epoch>, 5 possession_key: SigningKey, 6 names: [u8; 32], 7 proofs: BTreeMap<Tid, PossessionProof> }
+    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 delete_key: SigningKey, 4 supersedes: BTreeSet<Epoch>, 5 possession_key: SigningKey, 6 names: [u8; 32], 7 proofs: BTreeMap<Tid, PossessionProof>, 8 left_out: BTreeMap<Tid, BTreeSet<Epoch>> }
 }
 codec_struct! {
     /// A keyset's proof that its rotator holds a secret of a holder actor (spec/wire.md §7).

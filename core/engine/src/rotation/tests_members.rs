@@ -1502,3 +1502,107 @@ fn co_writer_seals_no_keyset_with_a_stale_box_spec_crypto_4() {
     assert_eq!(sealed_at(&mut lp, 4, g, a), None, "A left out");
     assert_eq!(leaked(&mut lp, 0, &[m, a, g], e, start), vec![a], "E opens only A, which a1 never rotates");
 }
+
+/// Peer `i` removes `d` from `t` alone (no rotation, as while Seal waits or Authority fails).
+fn removal_alone(lp: &mut LocalPeer, i: usize, t: Tid, d: Tid) {
+    lp.peers[i]
+        .engine
+        .run(|tx| {
+            let mut m = Mutation::new();
+            m.ts = Some(tx.core.hlc.next());
+            crate::flows::edges::removal(tx, &mut m, t, d)?;
+            m.frontier(osis_schema::Codec::to_value(&ct::Frontier::default()));
+            crate::engine::Engine::commit_tx(tx, m).map(|_| ())
+        })
+        .unwrap();
+}
+
+// spec/crypto.md §4 (Seal, Left out; model `D0_readers_g2_mark`): G {R, W, A}, A {a1, M},
+// M {m1, R, E}. m1 removes E from M alone: M keeps the keyset E opens, so W, G's other admin
+// reading neither A nor M, can tell nothing of it. R knows the removal, so rotates G leaving A out
+// at A's keyset, and G's keyset records it; W then does not re-seal A there (each re-seal made
+// G's epoch blocked at R, which rotated again, for as long as M did not rotate). Once M and A
+// rotate, both re-seal A at A's knowing keyset, which descends from the one recorded.
+#[test]
+fn co_writer_reseals_no_holder_left_out_spec_crypto_4() {
+    let mut lp = LocalPeer::new(5, 976, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let [r, _, _, e, w] = std::array::from_fn(|i| lp.peers[i].engine.me());
+    let m = group(&mut lp, 2);
+    for h in [r, e] {
+        lp.peers[2].engine.grant(&m, &h, &edge(Role::Read)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    let a = group(&mut lp, 1);
+    lp.peers[1].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &w, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let start = held_by(&lp, 3, &[m, a, g]);
+    let k_a = sealed_at(&mut lp, 0, g, a).unwrap();
+    removal_alone(&mut lp, 2, m, e);
+    lp.sync_all().unwrap();
+    let mut counts = Vec::new();
+    for _ in 0..3 {
+        let rot = lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.len();
+        lp.sync_all().unwrap();
+        let reseal = lp.peers[4].engine.reseal_due(&g, &Pass).unwrap().commits.len();
+        lp.sync_all().unwrap();
+        counts.push((rot, reseal));
+    }
+    assert_eq!(counts, vec![(1, 0), (0, 0), (0, 0)], "R rotates G once; W re-seals nothing");
+    assert_eq!(sealed_at(&mut lp, 4, g, a), None, "A left out");
+    let ks = lp.peers[4].engine.core.ix.keysets.get(&(g, Role::Read, newest_read(&lp, 4, g).unwrap())).unwrap().left_out.clone();
+    assert_eq!(ks, [(a, BTreeSet::from([k_a]))].into(), "G's keyset records A's keyset it left A out at");
+    assert!(!leaked(&mut lp, 0, &[m, a, g], e, start.clone()).contains(&g), "E opens nothing R writes under G");
+    // M rotates knowing the removal, then A (its box to M is stale): A is re-sealed to G
+    settle(&mut lp, &[2, 1, 0, 4], &[m, a, g]);
+    assert_ne!(sealed_at(&mut lp, 4, g, a), None, "A re-sealed to G");
+    assert!(all_boxed(&mut lp, 0, &[m, a, g]));
+    assert_eq!(leaked(&mut lp, 0, &[m, a, g], e, start), Vec::<Tid>::new());
+    // the record is obsolete once A is boxed past it: G's next rotation boxes A and records nothing
+    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
+    lp.sync_all().unwrap();
+    let ks = &lp.peers[4].engine.core.ix.keysets.get(&(g, Role::Read, newest_read(&lp, 4, g).unwrap())).unwrap().left_out;
+    assert!(ks.is_empty(), "{ks:?}");
+    assert_ne!(sealed_at(&mut lp, 4, g, a), None);
+}
+
+// spec/crypto.md §4 (Seal, Left out; model `D0_above_g2_mark`): G {a1, W, A}, A {a1, E}. a1
+// removes E from A alone and rotates G leaving A out at A's keyset E opens; W, reading not A and
+// lacking the removal (so not judging A's keyset by order), does not re-seal A there. Once a1
+// rotates A, W re-seals A at that keyset.
+#[test]
+fn removal_alone_left_out_stays_out_at_co_writer_spec_crypto_4() {
+    let read = BTreeSet::from([Role::Read]);
+    let mut lp = LocalPeer::new(3, 977, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let [_, w, e] = std::array::from_fn(|i| lp.peers[i].engine.me());
+    let a = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&a, &e, &edge(Role::Read)).unwrap();
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &w, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let start = held_by(&lp, 2, &[a, g]);
+    let before = commit_ids(&mut lp, 0);
+    removal_alone(&mut lp, 0, a, e);
+    let removal: BTreeSet<osis_base::CommitId> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
+    rotate_leaving_out(&mut lp, 0, g, &read, &[]);
+    assert_eq!(sealed_at(&mut lp, 0, g, a), None, "a1 leaves A out");
+    send_skipping(&mut lp, 0, 1, &removal);
+    assert!(lp.peers[1].engine.departures(&a).unwrap().is_empty(), "W lacks the removal");
+    assert!(lp.peers[1].engine.epochs(&a).is_none_or(|x| x.read.held().next().is_none()), "W holds none of A's secrets");
+    assert_eq!(lp.peers[1].engine.reseal_due(&g, &Pass).unwrap().commits.len(), 0, "W re-seals nothing");
+    lp.sync_all().unwrap();
+    assert_eq!(sealed_at(&mut lp, 1, g, a), None);
+    assert!(!leaked(&mut lp, 0, &[a, g], e, start.clone()).contains(&g), "E opens nothing a1 writes under G");
+    lp.peers[0].engine.ensure_rotated(&a).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[1].engine.reseal_due(&g, &Pass).unwrap().commits.len(), 1, "W re-seals A at its knowing keyset");
+    lp.sync_all().unwrap();
+    assert_eq!(sealed_at(&mut lp, 1, g, a), newest_read(&lp, 0, a));
+    assert_eq!(leaked(&mut lp, 0, &[a, g], e, start), Vec::<Tid>::new());
+}

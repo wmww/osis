@@ -54,7 +54,7 @@ pub(crate) fn keysets_of(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<Keys
 }
 
 /// Each keyset a `keys.0` body writes: its role, epoch, listed epochs, KEM key (suite 1),
-/// possession key and names digest.
+/// possession key, names digest and left-out keysets.
 fn keyset_recs(body: &Fragment) -> Vec<KeysetRec> {
     keys_write(body)
         .keysets
@@ -66,7 +66,8 @@ fn keyset_recs(body: &Fragment) -> Vec<KeysetRec> {
             let kem = (ks.suite == osis_keys::SUITE && osis_crypto::KemPublicKey::from_slice(&b).is_ok()).then_some(b);
             let ct::SigningKey::Ed25519(p) = ks.possession_key;
             let possession = <[u8; 32]>::try_from(p.as_slice()).ok().filter(|p| osis_crypto::VerifyingKey::from_bytes(p).is_ok());
-            Some(KeysetRec { role, epoch, lists, kem, possession, names: ks.names })
+            let left_out = ks.left_out.iter().flat_map(|(m, xs)| xs.iter().filter_map(|x| Some((*m, osis_keys::aspects::from_schema(x).ok()?)))).collect();
+            Some(KeysetRec { role, epoch, lists, kem, possession, names: ks.names, left_out })
         })
         .collect()
 }
@@ -137,6 +138,9 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, keysets: &[
         }
         held.since = Some(held.since.map_or(at, |x| x.min(at)));
         held.names.insert((k.names, h.author));
+        for (m, x) in &k.left_out {
+            held.left_out.entry(*m).or_default().insert(*x);
+        }
         if held != before || !core.ix.keysets.contains_key(&key) {
             core.ix.keysets.insert(key, held);
             core.touch();

@@ -27,7 +27,8 @@ pub fn history_key(role: Role, epoch: &Epoch) -> HistoryKey {
 
 /// The keyset of a role epoch: its KEM public key `kdf("kem", secret)`, delete key and
 /// possession key (spec/crypto.md §3, §7, §4), listing `supersedes` and the digest of the
-/// rotation's `names` (§4), with no possession proofs yet (`produce::rotate` adds them).
+/// rotation's `names` (§4), with no possession proofs or left-out keysets yet (`produce::rotate`
+/// adds them).
 pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>, names: &Names) -> Keyset {
     Keyset {
         epoch: to_schema(epoch),
@@ -38,6 +39,7 @@ pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>, na
         possession_key: SigningKey::Ed25519(crate::possession::possession_key(secret).to_bytes().to_vec()),
         names: names.digest(),
         proofs: BTreeMap::new(),
+        left_out: BTreeMap::new(),
     }
 }
 

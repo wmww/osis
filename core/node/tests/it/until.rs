@@ -136,7 +136,7 @@ fn losts(msgs: &[Message]) -> Vec<(LabelId, Option<Vec<u8>>)> {
 fn rotate(net: &mut Net, b: usize, g: Tid) -> CommitId {
     let tb = net.tid(b);
     let rec = recipients_of(net.engine(b), &[(tb, Role::Admin)]);
-    rotation(net.engine(b), g, &rec, 9, false)
+    rotation(net.engine(b), g, &rec, 10, false)
 }
 
 /// The entries of commit `c` `b` holds under `l`.

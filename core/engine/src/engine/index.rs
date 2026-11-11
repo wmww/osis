@@ -147,11 +147,19 @@ impl Rec for super::HeldKeyset {
         let possession = Value::List(self.possession.iter().map(|(b, p)| Value::List(vec![Value::bytes(b), p.to()])).collect());
         let since = Value::List(self.since.iter().map(Rec::to).collect());
         let names = Value::List(self.names.iter().map(|(d, a)| Value::List(vec![Value::bytes(d), Value::bytes(a.as_bytes())])).collect());
-        Value::List(vec![lists.to(), kem, possession, since, names])
+        let left_out = Value::List(self.left_out.iter().flat_map(|(m, xs)| xs.iter().map(|x| Value::List(vec![Value::bytes(m.as_bytes()), x.to()]))).collect());
+        Value::List(vec![lists.to(), kem, possession, since, names, left_out])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(f) = v else { return None };
-        let [lists, kem, possession, since, names] = f.as_slice() else { return None };
+        let [lists, kem, possession, since, names, left_out] = f.as_slice() else { return None };
+        let Value::List(left_out) = left_out else { return None };
+        let mut out: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>> = BTreeMap::new();
+        for x in left_out {
+            let Value::List(p) = x else { return None };
+            let [Value::Bytes(m), e] = p.as_slice() else { return None };
+            out.entry(Tid::from_bytes(m.as_slice().try_into().ok()?)).or_default().insert(Rec::from(e)?);
+        }
         let Value::List(names) = names else { return None };
         let names = names
             .iter()
@@ -191,7 +199,7 @@ impl Rec for super::HeldKeyset {
             _ => return None,
         };
         let lists: Vec<osis_crypto::Epoch> = Rec::from(lists)?;
-        Some(super::HeldKeyset { lists: lists.into_iter().collect(), kem, possession, since, names })
+        Some(super::HeldKeyset { lists: lists.into_iter().collect(), kem, possession, since, names, left_out: out })
     }
 }
 impl Rec for BoxKey {
@@ -615,7 +623,10 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
                 Some(b) => w.u8(1).raw(b),
                 None => w.u8(0),
             };
-            w = w.raw(&k.names);
+            w = w.raw(&k.names).u32(k.left_out.len() as u32);
+            for (m, x) in &k.left_out {
+                w = w.raw(m.as_bytes()).u64(x.n()).raw(x.nonce());
+            }
         }
         w = w.u8(u8::from(d.stands_in));
         w = match &d.shown {
@@ -806,7 +817,12 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
             let kem = if r.u8()? != 0 { Some(r.bytes()?.to_vec()) } else { None };
             let possession = if r.u8()? != 0 { Some(r.arr()?) } else { None };
             let names = r.arr()?;
-            keysets.push(super::KeysetRec { role, epoch: e, lists, kem, possession, names });
+            let mut left_out = Vec::new();
+            for _ in 0..r.u32()? {
+                let m = Tid::from_bytes(r.arr()?);
+                left_out.push((m, osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped keyset epoch"))?));
+            }
+            keysets.push(super::KeysetRec { role, epoch: e, lists, kem, possession, names, left_out });
         }
         let stands_in = r.u8()? != 0;
         let shown = if r.u8()? != 0 { Some(std::sync::Arc::new(read_showing(&mut r)?)) } else { None };

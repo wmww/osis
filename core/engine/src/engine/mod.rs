@@ -174,6 +174,9 @@ pub struct KeysetRec {
     pub possession: Option<[u8; 32]>,
     /// The digest of the rotation's names it publishes (spec/crypto.md §4).
     pub names: osis_keys::NamesDigest,
+    /// The keysets of holder actors it records its rotation left them out at (spec/crypto.md §4,
+    /// Left out).
+    pub left_out: Vec<(Tid, osis_crypto::Epoch)>,
 }
 
 /// A held valid keyset (`Indexes::keysets`): the epochs the supersedes lists of the bodies
@@ -183,7 +186,8 @@ pub struct KeysetRec {
 /// body other than the keyset's rotation is a forgery, within its limit), the key of its
 /// earliest body (Authority reads a keyset as held just before a commit's key), and the names
 /// digests they publish, each with its body's author (what binds a history entry to a rotator,
-/// spec/crypto.md §4: a forger's body binds entries to the forger).
+/// spec/crypto.md §4: a forger's body binds entries to the forger), and the left-out keysets they
+/// record, joined (Seal reads them at the actor's current epochs).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeldKeyset {
     pub lists: BTreeSet<osis_crypto::Epoch>,
@@ -192,6 +196,7 @@ pub struct HeldKeyset {
     /// The key of its earliest valid body; `None` only before one is noted.
     pub since: Option<osis_perm::Point>,
     pub names: BTreeSet<(osis_keys::NamesDigest, Tid)>,
+    pub left_out: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>,
 }
 
 impl HeldKeyset {
