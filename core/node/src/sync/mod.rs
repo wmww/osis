@@ -795,7 +795,6 @@ impl SyncEngine {
         self.unread_restream()?;
         // pushes after the re-judging: nothing of this step goes to a member it ended
         self.stream_push(out)?;
-        self.keep_served(out);
         Ok(())
     }
 

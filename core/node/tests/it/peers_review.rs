@@ -198,66 +198,6 @@ fn a_fresh_account_splits_no_budget_spec_sync_5() {
     assert!(!second_kept(true), "a fresh account beside it adds none");
 }
 
-// spec/sync.md §5: served connections are capped by one rule over all (the node's
-// `max_connections`): at the cap a new one takes the slot of one sharing nothing (a stranger's
-// idle connection) before a co-reader's, and once every other shares something, of the source
-// holding the most. Below the cap nothing is closed for sharing nothing: a stranger's connection
-// stays until a newcomer needs its slot, and one sharing a sync ID stays while up, however quiet
-// its stream.
-#[test]
-fn at_the_cap_a_stranger_goes_before_a_co_reader_spec_sync_5() {
-    let (mut net, [a]) = local_nodes::<1>();
-    let b = net.add_node(2, SyncConfig::default());
-    reach_ed(&mut net, a);
-    reach_ed(&mut net, b);
-    net.blocked_peers.insert((a, b));
-    net.group_at(a, &[(b, Role::Read)], vec![]);
-    let me = net.node_tid(b);
-    let mut m = osis_engine::Mutation::new();
-    let policy = std::collections::BTreeMap::from([("max_connections".to_string(), 2)]);
-    m.replace(me, &osis_schema::core_types::HOST, &osis_schema::core_types::Host { policy, ..Default::default() }).unwrap();
-    net.engine(b).commit(m).unwrap();
-    net.run();
-    let l = net.label(b);
-    let (s1, _) = dial_in(&mut net, b);
-    let co = member_session(&mut net, b, a, l);
-    assert!(net.sync(b).served_opened()[&co.conn].contains(&l), "a member of its shared set");
-    let (s2, _) = dial_in(&mut net, b);
-    assert!(net.hand_closed(b, s1.hc), "the stranger's idle connection made room");
-    assert!(!net.hand_closed(b, co.hc) && !net.hand_closed(b, s2.hc));
-    // a minute on (the hand member answers no Pull, so it stays under the stall time here)
-    net.clock.advance(60_000);
-    let acts = net.sync(b).handle(Event::Tick);
-    net.actions(b, acts);
-    assert!(!net.hand_closed(b, s2.hc), "no pressure: the idle one stays");
-    let (s3, _) = dial_in(&mut net, b);
-    assert!(net.hand_closed(b, s2.hc), "the next idle one goes for a newcomer");
-    assert!(!net.hand_closed(b, co.hc) && !net.hand_closed(b, s3.hc), "a session sharing a sync ID stays while up, however quiet its stream");
-}
-
-// spec/sync.md §10 (Served connections): at the cap, sources each holding one connection that
-// shares nothing, the oldest gives way to a newcomer, whatever the sources' order: a flood from
-// many sources cannot evict a newcomer at every arrival.
-#[test]
-fn at_the_cap_the_oldest_stranger_goes_whatever_its_source_spec_sync_10() {
-    let (mut net, [a]) = local_nodes::<1>();
-    let me = net.node_tid(a);
-    let mut m = osis_engine::Mutation::new();
-    let policy = std::collections::BTreeMap::from([("max_connections".to_string(), 3)]);
-    m.replace(me, &osis_schema::core_types::HOST, &osis_schema::core_types::Host { policy, ..Default::default() }).unwrap();
-    net.engine(a).commit(m).unwrap();
-    net.run();
-    let s = |b: u8| Some([b; 16]);
-    let old = [dial_in_from(&mut net, a, s(1)).0, dial_in_from(&mut net, a, s(2)).0, dial_in_from(&mut net, a, s(9)).0];
-    assert!(old.iter().all(|d| !net.hand_closed(a, d.hc)));
-    let n1 = dial_in_from(&mut net, a, s(5)).0;
-    assert!(net.hand_closed(a, old[0].hc), "the oldest made room");
-    assert!(!net.hand_closed(a, old[2].hc), "not the highest source");
-    dial_in_from(&mut net, a, s(6));
-    assert!(net.hand_closed(a, old[1].hc));
-    assert!(!net.hand_closed(a, old[2].hc) && !net.hand_closed(a, n1.hc));
-}
-
 // spec/sync.md §5: a stranger without the label's sync key opens nothing.
 // spec/sync.md §5 (co-reader peer)
 #[test]

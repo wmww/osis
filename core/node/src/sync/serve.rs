@@ -2,9 +2,8 @@
 //! node's listeners is a session of the node's hub (`osis_host::Hub`), which answers the store's
 //! kinds; node sync is its upper layer and keeps it here as a `Served` by the hub's connection
 //! ID (`hub_up`): proofs, records, the shared set, the stream and the client port run on it as
-//! on a dialed connection, its messages going down as `Action::Hub`. Node sync also decides how
-//! many connections it serves, one rule over all (`make_room`, `serve_timers`): by source, those
-//! sharing nothing giving way first. What a peer's stream or Deposit items bring is charged to
+//! on a dialed connection, its messages going down as `Action::Hub`. It serves any number of
+//! connections (spec/sync.md §10 Served connections). What a peer's stream or Deposit items bring is charged to
 //! its source (`Proven::source`) when known here, else the label (dialer keys are fresh per
 //! connection), and to a node-wide total (`SyncConfig` `peer_bytes`, `peer_total_bytes`) until
 //! it opens, reaches a host or is dropped.
@@ -22,7 +21,6 @@ use osis_schema::core_types as ct;
 pub(crate) const RECORD_SWEEP_MS: u64 = 3_600_000;
 use osis_base::{BlobId, LabelId};
 use osis_label::{ClaimSet, Step, StepId};
-use osis_transport::Source;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -62,14 +60,9 @@ pub(crate) struct Served {
     hub: osis_host::ConnId,
     /// `(dialer challenge, listener challenge, listener key)`.
     binding: ([u8; 32], [u8; 32], [u8; 32]),
-    source: Option<Source>,
     tier: super::Tier,
     /// It made a client-port request (`Action::Ended` when it goes).
     ported: bool,
-    /// The hub's session holds something of its own (an open, an answered Auth).
-    opened: bool,
-    /// The last `Down::Keep` sent: whether it shares something.
-    kept: bool,
     room: Room,
     /// What this connection's dialer proved (spec/sync.md §10), read by `SyncEngine::proven`.
     proven: super::proofs::Proven,
@@ -78,8 +71,6 @@ pub(crate) struct Served {
     /// How far its proof exchange went: Prove, then Resume, each at most once (spec/wire.md
     /// §11.2).
     asked: Asked,
-    /// Wall ms the session started (at the cap the oldest sharing nothing gives way first).
-    since: u64,
     /// A thin client's: the hash of the secret it authenticated with and its entry's end
     /// (wall ms). The session ends with the entry, with that hash, at that end.
     client: Option<ClientBinding>,
@@ -178,23 +169,13 @@ fn charge_key(source: Option<Tid>, label: &LabelId) -> [u8; 32] {
 }
 
 impl SyncEngine {
-    /// Connections this node serves at once: its `host^.0` policy's `max_connections` (the
-    /// default while it hosts nothing).
-    fn connection_cap(&self) -> usize {
-        self.hosting.emitted.as_ref().map_or_else(|| osis_host::HostPolicy::default().max_connections, |c| c.policy.max_connections)
-    }
-
     /// What the node's hub handed up for its connection `id` (`osis_host::Up`): its start makes
-    /// a served session (after `make_room`), its node-kind messages are judged here, its
+    /// a served session, its node-kind messages are judged here, its
     /// client-port requests go to the holder of the engine (`admit`), its push room to the
     /// pusher whose turn it is, its end ends the session.
     pub(super) fn hub_up(&mut self, id: osis_host::ConnId, up: osis_host::Up, out: &mut Vec<Action>) -> Result<()> {
         use osis_host::Up;
         if let Up::Start(b) = up {
-            if !self.make_room(b.remote.source, out) {
-                out.push(Action::Hub { conn: id, down: Down::Close });
-                return Ok(());
-            }
             let conn = self.next_conn;
             self.next_conn += 1;
             // the main actor's tier comes from the transport type alone, never a key value
@@ -202,8 +183,7 @@ impl SyncEngine {
                 osis_transport::Peer::Unix { uid } if osis_transport::unix::own_uid().is_ok_and(|o| o == uid) => super::Tier::Main,
                 _ => super::Tier::Keyed,
             };
-            let since = self.now();
-            self.served.insert(conn, Served { hub: id, binding: (b.dialer, b.listener, b.key), source: b.remote.source, tier, ported: false, opened: false, kept: false, room: Room::default(), proven: super::proofs::Proven::default(), proved: BTreeSet::new(), asked: Asked::Nothing, since, client: None });
+            self.served.insert(conn, Served { hub: id, binding: (b.dialer, b.listener, b.key), tier, ported: false, room: Room::default(), proven: super::proofs::Proven::default(), proved: BTreeSet::new(), asked: Asked::Nothing, client: None });
             self.hub_conns.insert(id, conn);
             // both ends tell a relayed connection alike, before its first message
             if b.remote.relayed {
@@ -230,11 +210,6 @@ impl SyncEngine {
                     Err((id, code)) => self.hub_down(conn, Down::Reply { id, reply: Err(code) }, out),
                 }
             }
-            Up::Opened(o) => {
-                if let Some(s) = self.served.get_mut(&conn) {
-                    s.opened = o;
-                }
-            }
             Up::Room { budget } => {
                 let Some(r) = self.served.get_mut(&conn).map(|s| &mut s.room) else { return Ok(()) };
                 r.asked = false;
@@ -251,37 +226,6 @@ impl SyncEngine {
             Up::Relay(r) => self.stream_relay(Some(conn), r.label, r.blob_id, &r.blob, r.wrap, Some(r.stamp), out)?,
         }
         Ok(())
-    }
-
-    /// Makes room for a new connection from `source` (one rule over every served connection):
-    /// under the cap there is room; at it, one sharing nothing (no open, no member of its shared
-    /// set, not authenticated) gives way, the oldest of the source holding the most such, else
-    /// the newest of the source holding the most if it holds at least two more than `source`
-    /// (`osis_transport::evict_for`). False: no room, the newcomer is closed.
-    fn make_room(&mut self, source: Option<Source>, out: &mut Vec<Action>) -> bool {
-        if self.served.len() < self.connection_cap() {
-            return true;
-        }
-        let mut idle: BTreeMap<Option<Source>, Vec<(u64, ConnId)>> = BTreeMap::new();
-        let mut held: BTreeMap<Option<Source>, Vec<(u64, ConnId)>> = BTreeMap::new();
-        for (c, s) in &self.served {
-            held.entry(s.source).or_default().push((s.since, *c));
-            if self.serves_nothing(*c, s) {
-                idle.entry(s.source).or_default().push((s.since, *c));
-            }
-        }
-        // the oldest of the sources tied for most: never by source order, which a flood from
-        // sources ordered below a newcomer's would turn into its eviction at every arrival
-        let victim = match idle.values().map(Vec::len).max() {
-            Some(top) => idle.values().filter(|v| v.len() == top).flatten().min().map(|(_, c)| *c),
-            None => {
-                let counts: BTreeMap<Option<Source>, usize> = held.iter().map(|(k, v)| (*k, v.len())).collect();
-                osis_transport::evict_for(&counts, &source).and_then(|k| held.get(&k)).and_then(|v| v.iter().max()).map(|(_, c)| *c)
-            }
-        };
-        let Some(v) = victim else { return false };
-        self.close_served(v, out);
-        true
     }
 
     /// A message, answer or close for served session `conn`, to its hub session.
@@ -359,31 +303,9 @@ impl SyncEngine {
         }
     }
 
-    /// Tells the hub's driver which served connections share something now (`Down::Keep`), so
-    /// that their transport slots are not given away (`osis_transport::link::serve`); at the end
-    /// of each step.
-    pub(super) fn keep_served(&mut self, out: &mut Vec<Action>) {
-        let moved: Vec<(ConnId, bool)> = self.served.iter().filter_map(|(c, s)| {
-            let keep = !self.serves_nothing(*c, s);
-            (keep != s.kept).then_some((*c, keep))
-        }).collect();
-        for (c, keep) in moved {
-            if let Some(s) = self.served.get_mut(&c) {
-                s.kept = keep;
-            }
-            self.hub_down(c, Down::Keep(keep), out);
-        }
-    }
-
     /// Each served session's shared set's members (tests, diagnostics).
     pub fn served_opened(&self) -> BTreeMap<ConnId, BTreeSet<LabelId>> {
         self.served.keys().map(|c| (*c, self.shared_members(*c).into_iter().collect())).collect()
-    }
-
-    /// Whether served session `c` shares nothing: no open or answered Auth at the hub and no
-    /// member of its shared set.
-    fn serves_nothing(&self, c: ConnId, s: &Served) -> bool {
-        !s.opened && self.records.shared.get(&c).is_none_or(|x| x.is_empty())
     }
 
     pub(super) fn served_proven_all(&self) -> Vec<(ConnId, BTreeSet<Tid>)> {
@@ -716,8 +638,7 @@ impl SyncEngine {
         self.end_served(conn, out);
     }
 
-    /// Closes the sessions of a client past its `until` (a connection sharing nothing is closed
-    /// only to make room at the cap, `make_room`); expires the memory log's deletions and this node's
+    /// Closes the sessions of a client past its `until`; expires the memory log's deletions and this node's
     /// tombstones; forgets carriers and certificate placements nothing needs; prunes charges
     /// and blob sizes.
     pub(crate) fn serve_timers(&mut self, out: &mut Vec<Action>) {

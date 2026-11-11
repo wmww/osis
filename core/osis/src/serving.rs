@@ -52,8 +52,6 @@ pub struct ServingPolicy {
     pub entries: u64,
     /// Stored bytes, all told.
     pub bytes: u64,
-    /// Connections served at once.
-    pub connections: usize,
     /// The rest of the limits (`internals::host_limit`). `pub`, so that `..Default::default()`
     /// fills it in, and of a type with nothing to touch.
     #[doc(hidden)]
@@ -71,7 +69,7 @@ pub struct ServingTuning {
 }
 
 /// The names of `ServingPolicy`'s fields among the engine's.
-const PLAIN: [(&str, &str); 6] = [("group_entries", "cap_entries"), ("group_bytes", "cap_bytes"), ("groups", "max_labels"), ("entries", "max_entries"), ("bytes", "max_bytes"), ("connections", "max_connections")];
+const PLAIN: [(&str, &str); 5] = [("group_entries", "cap_entries"), ("group_bytes", "cap_bytes"), ("groups", "max_labels"), ("entries", "max_entries"), ("bytes", "max_bytes")];
 
 impl Default for ServingPolicy {
     fn default() -> ServingPolicy {
@@ -82,7 +80,7 @@ impl Default for ServingPolicy {
 impl ServingPolicy {
     fn of(p: &HostLimits) -> ServingPolicy {
         let tuning = p.knobs().into_iter().filter(|(k, _)| !PLAIN.iter().any(|(_, h)| h == k)).collect();
-        ServingPolicy { group_entries: p.cap_entries, group_bytes: p.cap_bytes, groups: p.max_labels, entries: p.max_entries, bytes: p.max_bytes, connections: p.max_connections, tuning: ServingTuning { known: tuning, unknown: BTreeMap::new() } }
+        ServingPolicy { group_entries: p.cap_entries, group_bytes: p.cap_bytes, groups: p.max_labels, entries: p.max_entries, bytes: p.max_bytes, tuning: ServingTuning { known: tuning, unknown: BTreeMap::new() } }
     }
 
     /// The stored limits `stored`, as far as this build can run by them, the rest kept.
@@ -113,7 +111,6 @@ impl ServingPolicy {
         put("max_labels", self.groups, d.max_labels);
         put("max_entries", self.entries, d.max_entries);
         put("max_bytes", self.bytes, d.max_bytes);
-        put("max_connections", self.connections as u64, d.max_connections as u64);
         host_policy(&k).map_err(Error::Invalid)?;
         Ok(k)
     }

@@ -130,29 +130,19 @@ fn a_client_acts_on_the_dialable_key_only_after_auth() {
     assert!(!r.iter().any(|m| matches!(m, Message::Error { code, .. } if *code == osis_proto::Code::UNSUPPORTED)), "{r:?}");
 }
 
-// spec/sync.md §5, notes/client-port.md §3: an authenticated client shares something: at the cap a keyed session that shares nothing gives way to a newcomer, the authenticated one stays; its end is reported
+// spec/sync.md §5, notes/client-port.md §3: an authenticated client's end is reported
 #[test]
-fn an_authenticated_client_stays_and_its_end_is_reported() {
+fn an_authenticated_clients_end_is_reported() {
     let mut net = Net::new();
     let a = net.add_node(1, SyncConfig::default());
-    let me = net.node_tid(a);
-    let mut m = Mutation::new();
-    let policy = std::collections::BTreeMap::from([("max_connections".to_string(), 2)]);
-    m.replace(me, &ct::HOST, &ct::Host { policy, ..Default::default() }).unwrap();
-    net.engine(a).commit(m).unwrap();
-    step(&mut net, a, Event::Local);
     let uid = osis_transport::unix::own_uid().unwrap();
     let mut c = client(&mut net, a, Peer::Unix { uid });
-    let keyed = client(&mut net, a, Peer::Key([9; 32]));
     let got = auth(&mut net, a, &mut c);
     let Some((_, Message::Auth { id, .. })) = request(&got) else { panic!("{got:?}") };
     let id = *id;
     let acts = net.sync(a).handle(Event::Reply { conn: c.conn, id, reply: Ok(Outcome::Ok { value: Value::Bytes(vec![0; 16]) }) });
     feed(&mut net, a, &mut c, Vec::new(), acts);
-    let newcomer = client(&mut net, a, Peer::Key([8; 32]));
-    assert!(!net.hand_closed(a, c.hc), "authenticated: kept");
-    assert!(net.hand_closed(a, keyed.hc), "the keyed one shares nothing: it gave way");
-    assert!(!net.hand_closed(a, newcomer.hc));
+    assert!(!net.hand_closed(a, c.hc));
     net.hand_close(a, c.hc);
     assert!(net.take_port(a).contains(&Action::Ended { conn: c.conn }));
 }

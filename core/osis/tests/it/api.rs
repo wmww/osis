@@ -1821,7 +1821,6 @@ fn sync_ids_and_serving_policy_api_design() {
     let id: osis::SyncId = "00112233445566778899aabbccddeeff".parse().unwrap();
     assert_eq!(id.to_string(), "00112233445566778899aabbccddeeff");
     let mut p = osis::ServingPolicy { groups: 7, ..Default::default() };
-    osis::internals::host_limit(&mut p, "connections", 3).unwrap();
     osis::internals::host_limit(&mut p, "deletes", 9).unwrap();
     assert!(osis::internals::host_limit(&mut p, "no_such_limit", 1).is_err());
     // one limit, one place, by either name
@@ -1831,7 +1830,7 @@ fn sync_ids_and_serving_policy_api_design() {
     p.group_bytes = osis::ServingPolicy::default().group_bytes;
     db.set_serving(Some(osis::Serving { admitted: [id].into(), caps: [(id, osis::ServingCaps { entries: 1, bytes: 2 })].into(), policy: p.clone(), ..Default::default() })).unwrap();
     let h = db.serving().unwrap().unwrap();
-    assert_eq!((h.policy.groups, h.policy.connections, osis::internals::host_limits_unshown(&h.policy).get("deletes").copied()), (7, 3, Some(9)));
+    assert_eq!((h.policy.groups, osis::internals::host_limits_unshown(&h.policy).get("deletes").copied()), (7, Some(9)));
     assert_eq!(h.policy, p);
     assert!(h.admitted.contains(&id) && h.caps.contains_key(&id));
 }

@@ -82,11 +82,6 @@ pub struct HostPolicy {
     pub max_labels: u64,
     pub max_entries: u64,
     pub max_bytes: u64,
-    /// Connections served at once (node sync closes any beyond, by its rule; the listeners'
-    /// transport connections share as many slots). The transport holds up to
-    /// `osis_transport::link::CONN_MEMORY` per connection in each direction beyond
-    /// `max_buffered_bytes`; the default makes that share at most `max_buffered_bytes` again.
-    pub max_connections: usize,
     /// A connection without the peer's Hello this long after accept is closed.
     pub hello_ms: u64,
     /// Bytes queued for one connection beyond which it is dropped (a peer that does not read);
@@ -96,8 +91,9 @@ pub struct HostPolicy {
     /// Bytes the hub holds for connections in each direction, over all of them: partially
     /// received frames (past it the connection holding the most is closed), and bytes written
     /// and not yet taken by the transport with the reply allowances reserved (never passed:
-    /// output waits for room, `Hub::held`). With `max_connections` times
-    /// `osis_transport::link::CONN_MEMORY`, the node's memory bound for its connections.
+    /// output waits for room, `Hub::held`). The transport's own buffers, up to
+    /// `osis_transport::link::CONN_MEMORY` per connection, are outside it: connections are not
+    /// counted (spec/sync.md §10 Served connections).
     pub max_buffered_bytes: usize,
 }
 
@@ -126,7 +122,6 @@ impl Default for HostPolicy {
             max_labels: 1 << 20,
             max_entries: 1 << 26,
             max_bytes: 256 << 30,
-            max_connections: BUFFERED / osis_transport::link::CONN_MEMORY,
             hello_ms: 10_000,
             max_queued_bytes: 64 << 20,
             max_buffered_bytes: BUFFERED,
@@ -161,7 +156,6 @@ impl HostPolicy {
             "max_labels" => self.max_labels = v,
             "max_entries" => self.max_entries = v,
             "max_bytes" => self.max_bytes = v,
-            "max_connections" => self.max_connections = nz()?,
             "hello_ms" => self.hello_ms = v,
             "max_queued_bytes" => {
                 let q = nz()?;
@@ -205,7 +199,6 @@ impl HostPolicy {
         put("max_labels", self.max_labels, d.max_labels);
         put("max_entries", self.max_entries, d.max_entries);
         put("max_bytes", self.max_bytes, d.max_bytes);
-        put("max_connections", self.max_connections as u64, d.max_connections as u64);
         put("hello_ms", self.hello_ms, d.hello_ms);
         put("max_queued_bytes", self.max_queued_bytes as u64, d.max_queued_bytes as u64);
         put("max_buffered_bytes", self.max_buffered_bytes as u64, d.max_buffered_bytes as u64);

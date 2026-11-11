@@ -881,33 +881,6 @@ fn thin_client_over_quic() {
     assert_eq!(crate::common::block_on(osis::internals::connect(&new, &secret, cfg)).unwrap().at(t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("again")));
 }
 
-// spec/sync.md §10, issues/cli-proxy.md Transport slots: a flood of connections past the node's connection cap, each from a source of its own and never authenticating, neither drops an authenticated client (no error ever reached its watch) nor keeps a new one out
-#[test]
-fn a_flood_keeps_clients_in() {
-    let x = world();
-    // a small connection cap (the serving policy's)
-    x.n.set_serving(Some(osis::Serving { policy: osis::ServingPolicy { connections: 4, ..Default::default() }, ..Default::default() })).unwrap();
-    until("the cap holds", || x.n.sync_engine(|s| s.hosts()));
-    x.n.listen(&x.urls).unwrap();
-    let c = x.thin("c1");
-    let (tx, rx) = channel();
-    let _sub = c.at(x.t, osis::DynamicAspectKey::untyped(title())).on_change(move |_, ch| tx.send(ch.value.is_err()).unwrap()).unwrap();
-    assert!(!rx.recv_timeout(W).unwrap());
-    let addr = osis_transport::Address { url: x.nc.url().to_string(), key: x.nc.key() };
-    let mut flood = Vec::new();
-    for i in 0..4 + 8 {
-        flood.push(crate::port::Raw::over(&x.net.endpoint(&format!("f{i}")), addr.clone()));
-    }
-    // none of it touched the client
-    assert_eq!(c.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("first")));
-    assert!(rx.try_recv().is_err(), "the client's connection was dropped");
-    assert!(c.status().unwrap().node_connections[0].connected);
-    // a new client gets in during it
-    assert_eq!(x.thin("c2").at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("first")));
-    drop(flood);
-    drop(x.host);
-}
-
 // spec/sync.md §10, notes/client-port.md §6: with several node connections a thing known here to none goes to the first that knows it; an unreachable earlier one stops the search: Network, not the later one's answer, so a write cannot land at a node chosen by who happens to be up
 #[test]
 fn several_node_connections_never_skip_a_down_one() {

@@ -42,8 +42,6 @@ pub(super) enum HubEv {
 
 struct ConnState {
     tx: LinkTx,
-    /// Its transport slot is kept (`Down::Keep`, `Link::kept`).
-    kept: Arc<std::sync::atomic::AtomicBool>,
     reader: JoinHandle<()>,
     source: Option<Source>,
     /// The listener group that took it (none: the node's own dial, a replication session).
@@ -147,8 +145,6 @@ pub(super) struct HubRun {
     /// Connections with a read waiting whose requests wait for output room (`Hub::waits`), out
     /// of `turns` until `Hub::take_resumed` names them.
     parked: std::collections::HashSet<ConnId>,
-    /// Transport connections of every listener (`max_connections` of them).
-    slots: Arc<link::Slots>,
     /// The node's dialable key: its own dials of it reach the hub whether or not a listener
     /// of it runs yet.
     pub own: Option<[u8; 32]>,
@@ -172,19 +168,16 @@ pub(super) struct HubRun {
 
 impl HubRun {
     pub fn new(hub: Hub, clock: Arc<dyn Clock>, log: Log, ev: mpsc::UnboundedSender<HubEv>) -> HubRun {
-        let slots = link::Slots::new(hub.store().policy().max_connections);
-        HubRun { cfg: None, hub, own: None, next: 1, conns: HashMap::new(), turns: Turns::default(), parked: Default::default(), slots, groups: HashMap::new(), next_group: 1, repl: Vec::new(), repl_run: 0, at: None, clock, log, ev, ups: Vec::new(), moved: false }
+        HubRun { cfg: None, hub, own: None, next: 1, conns: HashMap::new(), turns: Turns::default(), parked: Default::default(), groups: HashMap::new(), next_group: 1, repl: Vec::new(), repl_run: 0, at: None, clock, log, ev, ups: Vec::new(), moved: false }
     }
 
     /// Serves the sessions `listeners` accept, under their key `key`; returns their group.
-    /// Transport connections of all listeners are capped as sessions are (`max_connections`;
-    /// each may carry several), shared by source.
     pub fn listen<L: osis_transport::Listener + 'static>(&mut self, key: [u8; 32], listeners: Vec<L>) -> u64 {
         let group = self.next_group;
         self.next_group += 1;
         let idle = Duration::from_millis(self.hub.store().policy().hello_ms);
         let (in_tx, mut incoming) = mpsc::channel(64);
-        let mut tasks: Vec<JoinHandle<()>> = listeners.into_iter().map(|l| tokio::spawn(link::serve(l, idle, FINISH_WAIT, in_tx.clone(), self.slots.clone()))).collect();
+        let mut tasks: Vec<JoinHandle<()>> = listeners.into_iter().map(|l| tokio::spawn(link::serve(l, idle, FINISH_WAIT, in_tx.clone()))).collect();
         drop(in_tx);
         let fwd = self.ev.clone();
         tasks.push(tokio::spawn(async move {
@@ -253,26 +246,11 @@ impl HubRun {
         std::mem::take(&mut self.moved)
     }
 
-    /// Node sync's messages, answers, room requests and closes for the hub's connections; its
-    /// `Keep`s set their links' transport slots.
-    pub fn down(&mut self, mut downs: Vec<(ConnId, Down)>) {
-        downs.retain(|(id, d)| match d {
-            Down::Keep(k) => {
-                if let Some(c) = self.conns.get(id) {
-                    c.kept.store(*k, std::sync::atomic::Ordering::Release);
-                }
-                false
-            }
-            _ => true,
-        });
+    /// Node sync's messages, answers, room requests and closes for the hub's connections.
+    pub fn down(&mut self, downs: Vec<(ConnId, Down)>) {
         let now = self.now();
         let out = blocking(|| self.hub.down(now, downs));
         self.apply(out);
-    }
-
-    /// The hub's policy changed: listeners take its `max_connections` from the next newcomer.
-    pub fn policy_changed(&self) {
-        self.slots.set_max(self.hub.store().policy().max_connections);
     }
 
     pub fn hub_mut(&mut self) -> &mut Hub {
@@ -291,10 +269,10 @@ impl HubRun {
     fn add(&mut self, link: Link, group: Option<u64>, done: Option<oneshot::Sender<()>>) -> ConnId {
         let id = self.next;
         self.next += 1;
-        let Link { tx, rx, source, kept, .. } = link;
+        let Link { tx, rx, source, .. } = link;
         let turn = Arc::new(Notify::new());
         let reader = tokio::spawn(read(id, rx, self.ev.clone(), turn.clone()));
-        self.conns.insert(id, ConnState { tx, kept, reader, source, group, input: None, turn, done, taken: u64::MAX });
+        self.conns.insert(id, ConnState { tx, reader, source, group, input: None, turn, done, taken: u64::MAX });
         id
     }
 

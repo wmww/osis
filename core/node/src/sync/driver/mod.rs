@@ -711,7 +711,6 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 st.set_admission(osis_host::Admission::Only(Default::default()), Default::default());
             }
             let out = blocking(|| self.hub.hub_mut().stop_hosting(&|_| true));
-            self.hub.policy_changed();
             self.hub.applied(out);
             return;
         };
@@ -721,7 +720,6 @@ impl<T: Transport, H: Shared> Driver<T, H> {
             st.set_policy(cfg.policy.clone());
             st.set_admission(cfg.admission.clone(), cfg.caps.clone());
         }
-        self.hub.policy_changed();
         if self.hub.cfg.as_ref().is_none_or(|c| c.replicate != cfg.replicate) {
             let secret = self.dialable_secret();
             self.hub.replicate(&self.transport, &cfg.replicate, secret);
@@ -789,8 +787,8 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
     let (ev_tx, mut ev_rx) = mpsc::channel(1024);
     let (lan_tx, mut lan_rx) = mpsc::channel(64);
     let (net_tx, mut net_rx) = mpsc::channel::<()>(1);
-    // unbounded, yet at most a read and an end per hub connection, a link per dial task and the
-    // listeners' accepts (`link::serve`'s slots)
+    // unbounded, yet at most a read and an end per hub connection, a link per dial task and an
+    // accept per session the listeners took
     let (hub_tx, mut hub_rx) = mpsc::unbounded_channel();
     let mut store = None;
     let _ = blocking(|| {

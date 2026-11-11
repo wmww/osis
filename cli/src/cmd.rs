@@ -1547,7 +1547,7 @@ fn serving_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
 /// The limits set apart from the defaults, by name.
 fn policy_lines(p: &osis::ServingPolicy) -> BTreeMap<String, u64> {
     let d = osis::ServingPolicy::default();
-    let plain = [("group_entries", p.group_entries, d.group_entries), ("group_bytes", p.group_bytes, d.group_bytes), ("groups", p.groups, d.groups), ("entries", p.entries, d.entries), ("bytes", p.bytes, d.bytes), ("connections", p.connections as u64, d.connections as u64)];
+    let plain = [("group_entries", p.group_entries, d.group_entries), ("group_bytes", p.group_bytes, d.group_bytes), ("groups", p.groups, d.groups), ("entries", p.entries, d.entries), ("bytes", p.bytes, d.bytes)];
     plain.into_iter().filter(|(_, v, def)| v != def).map(|(k, v, _)| (k.to_string(), v)).chain(osis::internals::host_limits_unshown(p)).collect()
 }
 

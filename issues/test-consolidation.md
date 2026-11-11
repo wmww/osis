@@ -126,7 +126,6 @@ Format: `file:line test | action | why safe | confidence`.
 - store `pager.rs row_padding_classes` | merge into `row_lengths_show_only_the_class` (bring its independent oracle) | medium
 - transport `p2p.rs peer_*_connects` | one table | medium
 - transport `quic.rs` + `mem.rs`/`manage.rs` | one shared conformance suite, like store's `memory_backend_suite` | medium
-- transport `link.rs` and host `bounds.rs` `full_slots_shared_by_source` | trim each to one eviction and one refusal | `lib.rs evict_for_shares_fairly` tests fairness | medium
 - sim `peers.rs world_*` (4 tests) | one World wiring test | low-medium
 - label `step.rs claim_key_per_step` | one seed | low
 

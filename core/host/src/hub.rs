@@ -4,8 +4,7 @@
 //! (`Changed` to every connection and replicator, `Relay` to every other connection), bounded
 //! sweeps, Hello deadlines, stalls of the upper layer's requests and timers. Node sync is every
 //! session's upper layer (issues/net-one-peer.md step 3): the hub hands it each connection's
-//! start, node-kind messages, client-port requests, whether the session opened something, push
-//! room and end (`HubOutput::Up`) and takes its messages, answers and closes down (`Hub::down`),
+//! start, node-kind messages, client-port requests, push room and end (`HubOutput::Up`) and takes its messages, answers and closes down (`Hub::down`),
 //! judging none of them. The node's driver and the simulator only move bytes, pass `Up` and
 //! `Down` between the hub and node sync, and call `tick` when `next_due` says.
 
@@ -50,9 +49,6 @@ pub enum Up {
     /// A client-port request (Auth, Call, Sub: answered by `Down::Reply`; an Unsub, already
     /// answered).
     Request(Box<Message>),
-    /// Whether the session holds something of the hub's own (an open, an answered Auth): sent
-    /// when it changes.
-    Opened(bool),
     /// Pushes of up to `budget` bytes may go now (after `Down::WantRoom`).
     Room { budget: usize },
     /// A relay-only entry this connection uploaded to a sync ID node sync does not read, past
@@ -103,9 +99,6 @@ pub enum Down {
     Notify(Vec<(osis_proto::msg::Id, osis_proto::Payload)>),
     /// Pushes wait: `Up::Room` when the session's push rule allows.
     WantRoom,
-    /// Whether the connection shares something (node sync's rule over its connections): for the
-    /// driver, which keeps its transport slot from being given away; the hub keeps nothing of it.
-    Keep(bool),
     /// Close the connection.
     Close,
     /// Node sync changed this label in the store outside a batch (a Deposit item it took): its
@@ -121,8 +114,8 @@ enum Conn {
     /// (`ServingSession::need`); `queued`: in `queue` since then; `paused`: received
     /// frames wait for room, so it takes no input (`Hub::waits`); `taken`: the last report
     /// (`Hub::sent`); `moved`: a report took more since the last check; `started`: its
-    /// `Up::Start` went; `opened`: the last `Up::Opened`.
-    Served { c: Box<ServingSession>, remote: Remote, hello_by: Option<u64>, buffered: usize, hold: usize, alone: bool, need: Option<usize>, queued: Option<u64>, paused: bool, taken: u64, moved: bool, started: bool, opened: bool },
+    /// `Up::Start` went.
+    Served { c: Box<ServingSession>, remote: Remote, hello_by: Option<u64>, buffered: usize, hold: usize, alone: bool, need: Option<usize>, queued: Option<u64>, paused: bool, taken: u64, moved: bool, started: bool },
     Peer { r: Box<Replicator>, timer: Option<u64> },
 }
 
@@ -252,7 +245,7 @@ impl Hub {
         self.now = now;
         let cfg = ServingConfig { static_key: key, challenge: self.challenge() };
         let hello_by = Some(now.saturating_add(self.store().policy().hello_ms));
-        self.conns.insert(id, Conn::Served { c: Box::new(ServingSession::new(cfg)), remote, hello_by, buffered: 0, hold: 0, alone: true, need: None, queued: None, paused: false, taken: 0, moved: false, started: false, opened: false });
+        self.conns.insert(id, Conn::Served { c: Box::new(ServingSession::new(cfg)), remote, hello_by, buffered: 0, hold: 0, alone: true, need: None, queued: None, paused: false, taken: 0, moved: false, started: false });
         self.batch(|h, st, out| h.serve(st, now, id, ServingInput::Start, out))
     }
 
@@ -360,7 +353,6 @@ impl Hub {
                     Down::Reply { id: r, reply } => h.serve(st, now, id, ServingInput::Reply { id: r, reply }, out),
                     Down::Notify(n) => h.serve(st, now, id, ServingInput::Notify(n), out),
                     Down::WantRoom => h.serve(st, now, id, ServingInput::WantRoom, out),
-                    Down::Keep(_) => {}
                     Down::Changed(_) => {}
                     Down::Close => {
                         h.remove(id);
@@ -483,8 +475,8 @@ impl Hub {
     /// the driver reports takes in, so a reader's progress shows in each): closes, most held
     /// first until the whole queue's needs fit, the connections holding output that the
     /// transport took none of since the last check (each peer that stops reading could
-    /// otherwise hold its share for good, and anyone who shares one group can open
-    /// `max_connections` of them; making room for the first alone would let the queue move one
+    /// otherwise hold its share for good, and anyone who shares one group can open any
+    /// number of them; making room for the first alone would let the queue move one
     /// request a period). Once the first has waited half the stall time (`first_due`: readers
     /// draining too slowly to make its room in time), the connections holding the most,
     /// whatever they read, until it fits.
@@ -605,7 +597,7 @@ impl Hub {
 
     fn serve(&mut self, st: &mut HostStore, now: u64, id: ConnId, input: ServingInput, out: &mut Vec<HubOutput>) {
         let (share, slack) = (self.share(st), self.slack(st, id));
-        let Some(Conn::Served { c, remote, hello_by, buffered, hold, alone, need, queued, paused, started, opened, .. }) = self.conns.get_mut(&id) else { return };
+        let Some(Conn::Served { c, remote, hello_by, buffered, hold, alone, need, queued, paused, started, .. }) = self.conns.get_mut(&id) else { return };
         c.set_room(share, slack);
         // whose entries these are (echo suppression): a keyed peer's
         st.set_origin(match &remote.peer {
@@ -622,9 +614,6 @@ impl Hub {
             *started = true;
             out.push(HubOutput::Up(id, Up::Start(Binding { dialer, listener, key, remote: *remote })));
         }
-        let now_opened = !c.none_opened();
-        let opened_moved = *started && now_opened != *opened;
-        *opened = now_opened;
         let now_buffered = c.buffered();
         self.buffered = self.buffered.saturating_sub(*buffered).saturating_add(now_buffered);
         *buffered = now_buffered;
@@ -645,9 +634,6 @@ impl Hub {
             self.resumed.push(id);
         }
         *paused = now_paused;
-        if opened_moved {
-            out.push(HubOutput::Up(id, Up::Opened(now_opened)));
-        }
         for o in outputs {
             match o {
                 ServingOutput::Send(b) => out.push(HubOutput::Send(id, b)),

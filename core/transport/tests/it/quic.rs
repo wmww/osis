@@ -140,7 +140,7 @@ fn quic_unread_sessions_hold_one_window_spec_sync_10() {
         let addr = l.address();
         let (out, mut incoming) = tokio::sync::mpsc::channel(STREAMS);
         let w = std::time::Duration::from_secs(30);
-        tokio::spawn(link::serve(l, w, w, out, link::Slots::new(8)));
+        tokio::spawn(link::serve(l, w, w, out));
         let c = Quic::new().dial(&addr).await.unwrap();
         let written = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut writers = Vec::new();

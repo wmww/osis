@@ -303,7 +303,7 @@ mod tests {
         let uid = own_uid().unwrap();
         assert_eq!(addr.key, uid_key(uid));
         let (out, mut incoming) = tokio::sync::mpsc::channel(4);
-        tokio::spawn(link::serve(l, W, W, out, link::Slots::new(8)));
+        tokio::spawn(link::serve(l, W, W, out));
         let mut a = link::dial(&Unix, &addr, None, W).await.unwrap();
         assert_eq!(a.peer, Peer::Unix { uid });
         assert!(a.tx.send(b"hi".to_vec(), usize::MAX));
@@ -329,7 +329,7 @@ mod tests {
         let addr = l.address();
         l.uid = l.uid.wrapping_add(1);
         let (out, mut incoming) = tokio::sync::mpsc::channel(4);
-        tokio::spawn(link::serve(l, W, W, out, link::Slots::new(8)));
+        tokio::spawn(link::serve(l, W, W, out));
         let mut a = link::dial(&Unix, &addr, None, W).await.unwrap();
         assert!(a.tx.send(b"hi".to_vec(), usize::MAX));
         assert_eq!(tokio::time::timeout(W, a.rx.recv()).await.unwrap(), None, "closed by the listener");

@@ -573,7 +573,7 @@ pub struct ServingFlags {
     /// Push what it stores for others to this serving node, `url#key` (repeatable)
     #[arg(long, value_name = "ADDR")]
     pub replicate: Vec<String>,
-    /// A limit: group_entries, group_bytes, groups, entries, bytes, connections (repeatable)
+    /// A limit: group_entries, group_bytes, groups, entries, bytes (repeatable)
     #[arg(long, value_name = "NAME=N")]
     pub policy: Vec<String>,
     /// Caps for a group or a sync ID, in place of the policy's (repeatable)

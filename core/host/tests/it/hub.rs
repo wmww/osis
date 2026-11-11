@@ -477,7 +477,7 @@ fn started(w: &World, h: usize) -> osis_host::ConnId {
 
 // issues/net-one-peer.md step 3 (The hub calls up for nothing; spec/wire.md §11.2): a session's
 // start with its binding (the listener's key, the dialer as the transport tells it) goes up at
-// its Hello, whether it holds an open as that changes, then node-kind messages unjudged in
+// its Hello, an open of the hub's own sends nothing up, then node-kind messages unjudged in
 // arrival order; node sync's answers come down and go out; the end goes up once the connection
 // is gone
 #[test]
@@ -492,7 +492,7 @@ fn node_kinds_go_up_answers_come_down() {
     let l = Label::new(3);
     w.setup(a, &l);
     w.open(a, &l);
-    assert_eq!(w.ups.drain(..).map(|(_, _, u)| u).collect::<Vec<_>>(), vec![osis_host::Up::Opened(true)]);
+    assert!(w.ups.is_empty(), "{:?}", w.ups);
     w.send(a, Command::Prove(vec![]));
     w.pump();
     let pull = osis_proto::msg::Pull { id: osis_proto::msg::NODE_IDS | 7, cursor: None, joins: vec![], inline_limit: 0, max_reply: osis_proto::serving::REPLY_BUDGET as u64, follow: true, ephemeral: false };
