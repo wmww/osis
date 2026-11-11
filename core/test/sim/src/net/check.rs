@@ -4,8 +4,8 @@
 //!   holders of a labeled group read the same values of its items.
 //! - spec/sync.md §6 (convergence): every body a writer judges must-hold at a label is in a live
 //!   entry at every host of the label it reaches; no entry a node judges must-not-hold (and may
-//!   delete) stays live there; a writer promotes the deposited entries it verified, but for a
-//!   duplicate of what stamped entries hold (§5).
+//!   delete) stays live there; a writer promotes the deposited entries it verified with a part
+//!   on the label's closure that no stamped entry holds (§5).
 //! - spec/sync.md §4, §5: no live entry is tombstoned, and a blob seen tombstoned never comes
 //!   back while the host keeps its data.
 //! - spec/commits.md §5: a purged body is at no host and no honest node keeps its key or
@@ -550,12 +550,16 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                         if !sync.entries(&l).iter().any(|(x, _)| x == db) {
                             continue;
                         }
-                        // one stamped copy per part: a deposit whose valid parts live stamped
-                        // entries of the commit hold already is a duplicate, left for clearing
+                        // the label's own content, one stamped copy per part: a deposit whose
+                        // valid parts on the closure live stamped entries of the commit hold
+                        // already is a duplicate, and a chain certificate outside the closure goes
+                        // as the promoter's copy in a promoted commit's chain; both are left for
+                        // clearing
                         let dp = sim.known.get(&(l, *db)).map(|x| x.1.clone()).unwrap_or_default();
                         let valid = sync.engine().valid_parts(&c).unwrap_or_default();
+                        let closure = sync.engine().closure(&g);
                         let stamped: BTreeSet<usize> = live.iter().filter(|b| !deposited.contains(&(l, **b))).filter_map(|b| sim.known.get(&(l, *b))).filter(|(kc, _)| *kc == c).flat_map(|(_, kp)| kp.iter().copied()).collect();
-                        if dp.iter().filter(|p| valid.contains(*p)).all(|p| stamped.contains(p)) {
+                        if dp.iter().filter(|p| valid.contains(*p) && h.aspects.get(**p).is_some_and(|a| closure.contains(&a.tid))).all(|p| stamped.contains(p)) {
                             continue;
                         }
                         let ek = sync.entries(&l).into_iter().find(|(x, _)| x == db).map(|x| x.1);

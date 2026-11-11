@@ -31,12 +31,12 @@ impl SyncEngine {
     }
 
     /// The commit deposits among `due_entries` this writer would promote (`would_promote`).
-    pub(super) fn due_deposits(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId, up: &mut Upstream) -> Result<Vec<Deposit>> {
+    pub(super) fn due_deposits(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId) -> Result<Vec<Deposit>> {
         let mut out = Vec::new();
         for (id, e) in self.due_entries(conn, host, l) {
             let Kind::Commit { commit, parts, .. } = &e.kind else { continue };
             let (commit, parts) = (*commit, parts.clone());
-            if self.would_promote(g, l, Some(&host), &id, up)? {
+            if self.would_promote(g, l, Some(&host), &id)? {
                 out.push((id, e, commit, parts));
             }
         }
@@ -45,10 +45,10 @@ impl SyncEngine {
 
     /// Whether deposited entry `b` under `l` (of `g`) at `host` is one a writer may yet promote:
     /// a commit it would promote (`would_promote`), or one parked.
-    pub(super) fn promotable(&mut self, g: &Tid, l: LabelId, host: &HostKey, b: &BlobId, up: &mut Upstream) -> Result<bool> {
+    pub(super) fn promotable(&mut self, g: &Tid, l: LabelId, host: &HostKey, b: &BlobId) -> Result<bool> {
         match self.state.entries.get(&(l, *b)).map(|e| &e.kind) {
             Some(Kind::Parked(_)) => Ok(true),
-            Some(Kind::Commit { .. }) => self.would_promote(g, l, Some(host), b, up),
+            Some(Kind::Commit { .. }) => self.would_promote(g, l, Some(host), b),
             _ => Ok(false),
         }
     }
@@ -59,16 +59,16 @@ impl SyncEngine {
     /// `judged_valid`: a single-use race loser's role commit holds a void grant beside the valid
     /// removal of its link key the label needs. One copy per commit and part, however many
     /// encryptions are deposited; duplicates and what the label does not need wait for
-    /// clearing. A part the label must
-    /// hold: one on a thing of its closure (its bodies: the deletion judgment goes on from
-    /// there); a role commit's part writing or boxing an edge of a closure thing (a grant to the
-    /// label's actor, a removal of it: `Engine::holders_named`); a key actor's own card (a node
-    /// is tied to its account by its devices actor's roster, which a group label does not carry,
-    /// so a writer cannot tell whose node it is); or a certificate part (a role commit's, a
-    /// card's, a creation's) on a thing on an authority path into the closure (`Held::upstream`,
-    /// any validity: a chain into the label may need it). Other certificates the label needs
-    /// (revokes about its authors) are this writer's to place as it holds them (`certificates`).
-    pub(super) fn would_promote(&mut self, g: &Tid, l: LabelId, host: Option<&HostKey>, id: &BlobId, up: &mut Upstream) -> Result<bool> {
+    /// clearing. A part the label must hold: one on a thing of its closure (its bodies: the
+    /// deletion judgment goes on from there), or a role commit's part writing or boxing an edge
+    /// of a closure thing (a grant to the label's actor, a removal of it:
+    /// `Engine::holders_named`), or a key actor's newest card (each aspect's newest valid write
+    /// by itself). Never another chain certificate on its own (a role commit or creation outside
+    /// the closure, a superseded card): it goes in the author's chain of a commit the label must
+    /// hold, which the promoter places itself (`complete_chain`), so a deposited one is a
+    /// duplicate; else anything on an authority path into the label (a reader's own account,
+    /// edges it writes there) would be stamped for good.
+    pub(super) fn would_promote(&mut self, g: &Tid, l: LabelId, host: Option<&HostKey>, id: &BlobId) -> Result<bool> {
         let Some(Entry { kind: Kind::Commit { commit, parts, .. }, cert: false, .. }) = self.state.entries.get(&(l, *id)).cloned() else { return Ok(false) };
         let Some(valid) = self.engine.valid_parts(&commit) else { return Ok(false) };
         let Some(h) = self.engine.header(&commit) else { return Ok(false) };
@@ -77,10 +77,11 @@ impl SyncEngine {
         let mut need = Vec::new();
         for ai in parts.iter().filter(|ai| valid.contains(ai)) {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            let cert = h.kind.is_role() || is_card(a.ak.as_str()) || a.ak.as_str() == osis_commit::retention::CREATED;
             let about = named.get(ai).is_some_and(|hs| hs.iter().any(|x| closure.contains(x)));
-            let own_card = is_card(a.ak.as_str()) && a.tid == h.author;
-            if closure.contains(&a.tid) || about || own_card || cert && up.get_or_insert_with(|| self.engine.core.ix.held.upstream(&closure)).contains(&a.tid) {
+            // a key actor's newest card, which no chain carries but its `keys.0` (spec/sync.md
+            // §3: co-readers dial a node by its `reach.0`): one per aspect, its rewrites not
+            let card = is_card(a.ak.as_str()) && a.tid == h.author && self.engine.latest_by(&a.tid, a.ak.as_str(), Some(&h.author)) == Some(commit);
+            if closure.contains(&a.tid) || about || card {
                 need.push(*ai);
             }
         }
@@ -128,8 +129,8 @@ impl SyncEngine {
     /// each deposit due for promotion whose commit this writer applied, the parts of its
     /// author's chain no entry under `l` holds go up as this node's certificate copies, when it
     /// holds them all (else the deposit stays unpromoted).
-    pub(super) fn complete_chains(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId, up: &mut Upstream) -> Result<()> {
-        for (_, _, c, parts) in self.due_deposits(conn, host, g, l, up)? {
+    pub(super) fn complete_chains(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId) -> Result<()> {
+        for (_, _, c, parts) in self.due_deposits(conn, host, g, l)? {
             self.complete_chain(Some(host), g, l, &c, &parts)?;
         }
         Ok(())
@@ -178,12 +179,11 @@ impl SyncEngine {
     /// stays a deposit and is judged again next pass (one not applied yet, once applied). Of
     /// the entries `scope` names, but `ours` (this pass's placements).
     pub(super) fn local_promote(&mut self, g: &Tid, l: LabelId, write: &osis_crypto::SigningSecret, scope: &Scope, ours: &BTreeSet<BlobId>, left: &mut Left) -> Result<()> {
-        let mut up = None;
         for id in self.scope_entries(&l, scope).difference(ours).copied().collect::<Vec<_>>() {
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             let Kind::Commit { commit, parts, .. } = &e.kind else { continue };
             let (commit, parts) = (*commit, parts.clone());
-            if e.stamp.is_some() || e.cert || self.own(&commit) || !self.would_promote(g, l, None, &id, &mut up)? {
+            if e.stamp.is_some() || e.cert || self.own(&commit) || !self.would_promote(g, l, None, &id)? {
                 continue;
             }
             if let Some(t) = self.relay_at(l, &commit) {
@@ -223,12 +223,11 @@ impl SyncEngine {
             return Ok(());
         }
         let latest = self.inbox_latest();
-        let mut up = None;
         let mut waiting = Vec::new();
         for id in deposited {
             let Some((kind, Some(size))) = self.state.entries.get(&(l, id)).map(|e| (e.kind.clone(), e.size)) else { continue };
             let idle = match &kind {
-                Kind::Commit { .. } => !self.would_promote(&p.g, l, Some(&host), &id, &mut up)?,
+                Kind::Commit { .. } => !self.would_promote(&p.g, l, Some(&host), &id)?,
                 Kind::Inbox(Some(c)) => {
                     // unapplied: it waits, as its inbox bytes do, until its turn past `latest`
                     let pending = !self.engine.core.ix.commits.contains_key(c) && self.inbox_opened(&l, &id)?.is_some_and(|o| o.until <= latest);
@@ -272,10 +271,9 @@ impl SyncEngine {
     /// commits whose author's chain is under the label (`complete_chains` placed what it held
     /// of it); per host (a blob may be deposited at several).
     pub(super) fn promote(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
-        let mut up = None;
-        for (id, e, c, parts) in self.due_deposits(conn, host, g, l, &mut up)? {
+        for (id, e, c, parts) in self.due_deposits(conn, host, g, l)? {
             // one promoted just now may hold its parts already (`stamp_entry`)
-            if uploads.iter().any(|u| osis_label::blob_id(&u.blob) == id) || !self.would_promote(g, l, Some(&host), &id, &mut up)? || !self.chain_missing(Some(host), g, l, &c, &parts)?.is_some_and(|m| m.is_empty()) {
+            if uploads.iter().any(|u| osis_label::blob_id(&u.blob) == id) || !self.would_promote(g, l, Some(&host), &id)? || !self.chain_missing(Some(host), g, l, &c, &parts)?.is_some_and(|m| m.is_empty()) {
                 continue;
             }
             let Some(blob) = self.engine.blob(&id)? else { continue };

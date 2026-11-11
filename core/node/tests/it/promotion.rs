@@ -107,3 +107,124 @@ fn a_readers_copies_are_promoted_once_spec_sync_5() {
     let waiting = ids.values().flatten().filter(|id| live.contains(id) && !stamped(&net, host, &l, id)).count();
     assert!(waiting <= osis_base::format::DEPOSITS_WAITING, "{waiting} unpromoted copies stay");
 }
+
+/// `hosted_nodes::<2>` with a group of node 0's that node 1 reads, settled: the group and its
+/// label.
+fn reader_of_a_group() -> (Net, usize, usize, usize, Tid, LabelId) {
+    let (mut net, host, [a, r]) = hosted_nodes::<2>();
+    let g = net.group(a, &[(r, Role::Read)], &[host]);
+    net.run();
+    net.advance(60_000);
+    let l = net.group_labels(a).into_iter().find(|(y, _)| *y == g).unwrap().1.id;
+    (net, host, a, r, g, l)
+}
+
+/// Every part of commit `c` at node `n`.
+fn whole(net: &mut Net, n: usize, c: CommitId) -> (CommitId, Vec<usize>) {
+    let h = net.engine(n).header(&c).unwrap();
+    (c, (0..h.aspects.len()).collect())
+}
+
+// spec/sync.md §5 (Promotion: a chain certificate outside the closure goes only with a commit the
+// label must hold): reader `r`'s account reads the group, so it is on an authority path into it,
+// but the role commits `r` writes on its own account, each naming a fresh holder (15 bytes of its
+// choosing), are nothing the label must hold: deposited, none is stamped.
+#[test]
+fn a_readers_own_role_commits_are_not_promoted_spec_sync_5() {
+    let (mut net, host, _, r, g, l) = reader_of_a_group();
+    let me = net.tid(r);
+    let commits: BTreeMap<CommitId, Vec<usize>> = (0..20u8).map(|i| set_edge(net.engine(r), me, Tid::from_bytes([i; 15]), Role::Read)).collect::<Vec<_>>().into_iter().map(|c| whole(&mut net, r, c)).collect();
+    let ids = flood(&mut net, r, (host, g, l), &commits, 1);
+    for _ in 0..5 {
+        net.advance(60_000);
+    }
+    let n = ids.values().flatten().filter(|id| stamped(&net, host, &l, id)).count();
+    assert_eq!(n, 0, "{n} of {} stamped", ids.len());
+}
+
+// spec/sync.md §5 (Promotion): reader `r` mints things and grants each a role on its own
+// account: their creations and edge writes are on an authority path into the group, none a
+// commit the label must hold: deposited, none is stamped.
+#[test]
+fn a_readers_fresh_things_are_not_promoted_spec_sync_5() {
+    let (mut net, host, _, r, g, l) = reader_of_a_group();
+    let me = net.tid(r);
+    let mut commits = BTreeMap::new();
+    for _ in 0..20 {
+        let e = net.engine(r);
+        let mut m = osis_node::Mutation::new();
+        let t = e.new_thing(&mut m, me);
+        let c0 = e.commit(m).unwrap().unwrap();
+        let c = set_edge(net.engine(r), me, t, Role::Read);
+        for x in [c0, c] {
+            let (x, p) = whole(&mut net, r, x);
+            commits.insert(x, p);
+        }
+    }
+    let ids = flood(&mut net, r, (host, g, l), &commits, 1);
+    for _ in 0..5 {
+        net.advance(60_000);
+    }
+    let n = ids.values().flatten().filter(|id| stamped(&net, host, &l, id)).count();
+    assert_eq!(n, 0, "{n} of {} stamped", ids.len());
+}
+
+// spec/sync.md §5 (Promotion: a key actor's newest card only): reader `r` rewrites its own node's
+// `reach.0` twenty times with 4 KB of its choosing each and deposits them: no older rewrite is
+// ever uploaded stamped.
+#[test]
+fn a_readers_own_card_rewrites_are_not_promoted_spec_sync_5() {
+    let (mut net, host, _, r, g, l) = reader_of_a_group();
+    let me = net.node_tid(r);
+    let mut commits = BTreeMap::new();
+    let mut newest = None;
+    for i in 0..20u8 {
+        let e = net.engine(r);
+        let mut m = osis_node::Mutation::new();
+        let reach = osis_schema::core_types::Reach { dialable: [0; 32], items: vec![format!("{i}{}", "x".repeat(4000))], lan_secret: [0; 32], account: None };
+        m.set(me, &osis_schema::core_types::REACH, &reach).unwrap();
+        let c = e.commit(m).unwrap().unwrap();
+        newest = Some(c);
+        let (c, p) = whole(&mut net, r, c);
+        commits.insert(c, p);
+        net.advance(1_000);
+    }
+    let ids = flood(&mut net, r, (host, g, l), &commits, 1);
+    for _ in 0..5 {
+        net.advance(60_000);
+    }
+    // uploaded stamped by anyone, whatever deleted it since (a superseded card goes)
+    let older: BTreeSet<&BlobId> = ids.iter().filter(|(c, _)| Some(**c) != newest).flat_map(|(_, x)| x).collect();
+    let n = net.uploaded.keys().filter(|(_, ul, b, _)| *ul == l && older.contains(b)).count();
+    assert_eq!(n, 0, "{n} stamped uploads of {} older rewrites", older.len());
+}
+
+// spec/requirements.md (read access never stores arbitrary content at a node that cannot read
+// it): reader `r` mints twenty key actors and writes each one's `reach.0` card with 4 KB of its
+// choosing, deposited under the group's label: none should be stamped. Fails: every key actor's
+// newest card is promoted (issues/promotion-minted-key-actor-cards.md).
+#[test]
+#[ignore = "issues/promotion-minted-key-actor-cards.md"]
+fn a_readers_minted_key_actors_cards_are_not_promoted_spec_sync_5() {
+    let (mut net, host, _, r, g, l) = reader_of_a_group();
+    let mut commits = BTreeMap::new();
+    for i in 0..20u8 {
+        let e = net.engine(r);
+        let seed = osis_crypto::Secret32::from_bytes([i + 1; 32]);
+        let k = e.hold_key_actor(seed.clone()).unwrap();
+        let mut m = osis_node::Mutation::new();
+        assert_eq!(m.create(osis_node::identity::key_actor_record(&osis_crypto::KeyActorKeys::from_seed(&seed), &seed)), k);
+        m.sign_as(k);
+        let reach = osis_schema::core_types::Reach { dialable: [0; 32], items: vec![format!("{i}{}", "x".repeat(4000))], lan_secret: [0; 32], account: None };
+        m.set(k, &osis_schema::core_types::REACH, &reach).unwrap();
+        let c = e.commit(m).unwrap().unwrap();
+        let (c, p) = whole(&mut net, r, c);
+        commits.insert(c, p);
+    }
+    let ids = flood(&mut net, r, (host, g, l), &commits, 1);
+    for _ in 0..5 {
+        net.advance(60_000);
+    }
+    let n = ids.values().flatten().filter(|id| stamped(&net, host, &l, id)).count();
+    assert_eq!(n, 0, "{n} of {} stamped", ids.len());
+}

@@ -153,10 +153,6 @@ struct At<'a> {
 /// A deposited entry due for promotion: (blob, entry, commit, its parts).
 type Deposit = (BlobId, Entry, CommitId, Vec<usize>);
 
-/// The things on an authority path into a label's closure (`Held::upstream`), found once per
-/// use when needed (`SyncEngine::would_promote`).
-type Upstream = Option<BTreeSet<Tid>>;
-
 pub(super) fn is_snapshot(k: CKind) -> bool {
     matches!(k, CKind::ContentSnapshot | CKind::RoleSnapshot)
 }
@@ -309,7 +305,7 @@ impl SyncEngine {
             self.certificates(&g, l, &authors)?;
         }
         if keys.write.is_some() && read_ok {
-            self.complete_chains(conn, host, &g, l, &mut None)?;
+            self.complete_chains(conn, host, &g, l)?;
         }
         // every certificate copy this node placed here: chain, card, flows' placements,
         // promoted deposits' chains (those placed just now included)
@@ -321,9 +317,8 @@ impl SyncEngine {
         self.clear_deposits(conn, host, p, out)?;
         // a commit deposited there this writer has not promoted yet: its chain may come
         if keys.write.is_some() {
-            let mut up = None;
             for b in self.state.deposited_at(&host, &l) {
-                if self.promotable(&g, l, &host, &b, &mut up)? {
+                if self.promotable(&g, l, &host, &b)? {
                     left.again = true;
                     break;
                 }
