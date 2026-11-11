@@ -464,8 +464,9 @@ impl Relay {
         self.copies.push((c, bytes.to_vec()));
         self.settle(p);
     }
+    // the engine's own reexamine: `Peer::reexamine` delivers its carriers again itself, taking the names
     fn settle(&mut self, p: &mut Peer) {
-        p.reexamine().unwrap();
+        p.engine.reexamine().unwrap();
         for _ in 0..=self.copies.len() {
             let names = p.engine.take_redeliver();
             if names.is_empty() {
@@ -479,7 +480,7 @@ impl Relay {
                     }
                 }
             }
-            p.reexamine().unwrap();
+            p.engine.reexamine().unwrap();
         }
         assert!(p.engine.take_redeliver().is_empty(), "a name for every round");
     }

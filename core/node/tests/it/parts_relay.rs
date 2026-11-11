@@ -134,6 +134,32 @@ fn restart_reopens_awaiting_entries_spec_commits_4() {
     assert!(!awaiting(&mut x), "reopened at the start");
 }
 
+// spec/commits.md §4 Unjudgeable, at a node: an entry of a commit pending for drift whose parts are
+// one on a thing whose record is unknown and one bad holds nothing once the clock judges it: the
+// entry awaits the record, its bytes gone, and the commit applies when the record comes.
+#[test]
+fn pending_entry_judged_unjudgeable_awaits_spec_commits_4() {
+    use osis_base::format::MAX_DRIFT_MS;
+    let mut x = case();
+    let (a, b, g, h, l) = (x.a, x.b, x.g, x.h, x.l);
+    let t = x.net.engine(a).get_typed(&g, &osis_schema::core_types::GROUP).unwrap().unwrap().items.into_iter().find(|t| *t != h).unwrap();
+    x.net.set_skew(a, 2 * MAX_DRIFT_MS as i64);
+    let mut m = osis_node::Mutation::new();
+    m.set(h, &REG, &Value::Str("ahead".into())).unwrap();
+    m.set(t, &REG, &Value::Str("bad".into())).unwrap();
+    let (c, bytes) = x.net.engine(a).commit_forged(m, [(t, osis_base::Ak::new("t:reg.0").unwrap())].into()).unwrap().unwrap();
+    let id = x.give(bytes.clone(), c, 100);
+    assert!(x.net.engine(b).pending().iter().any(|(p, _)| *p == c), "pending for drift");
+    x.net.tick(2 * MAX_DRIFT_MS);
+    assert!(x.net.engine(b).pending().is_empty(), "thrown out once judged");
+    assert!(x.net.sync(b).entries(&l).iter().any(|(e, k)| *e == id && matches!(k, osis_node::sync::EntryKind::Awaits { .. })), "the entry awaits");
+    assert!(!x.net.sync(b).holds_blob(&id), "its bytes go");
+    x.give_record(300);
+    x.give(bytes, c, 100);
+    assert!(x.holds(c), "{:?}", x.net.engine(b).pending());
+    assert_eq!(x.read(), Some(Value::Str("ahead".into())));
+}
+
 fn edge_op(holder: Tid) -> osis_crdt::PathOp {
     osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(holder))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, tied: None })) }
 }
