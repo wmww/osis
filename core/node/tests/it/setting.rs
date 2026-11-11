@@ -761,3 +761,29 @@ fn first_keeping_setting_arriving_late_shows_and_tells_spec_commits_5() {
     lp.peers[0].tick().unwrap();
     assert!(!listed(&mut lp.peers[0], &v1, d) && told(&mut lp.peers[0], d).contains(&v1), "and as it leaves");
 }
+
+// notes/engine-retention.md Leaving history, notes/api.md Commits (listeners): a snapshot whose
+// carried write a later write kills leaves the listing at its keep bound, and is told then.
+#[test]
+fn a_snapshot_is_told_leaving_history_spec_commits_5() {
+    let (mut lp, d) = setup(901);
+    set(&mut lp, 0, d, &setting(&[(A, keep(10 * 60_000))]));
+    let x1 = put(&mut lp, 0, d, "one");
+    let s = lp.peers[0].engine.snapshot(&d, &ak(A)).unwrap().unwrap();
+    lp.advance(1_000);
+    lp.peers[0].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true), &[d]).unwrap();
+    put(&mut lp, 0, d, "two");
+    assert!(listed(&mut lp.peers[0], &x1, d) && listed(&mut lp.peers[0], &s, d), "in history");
+    lp.peers[0].drain_events();
+    lp.advance(11 * 60_000);
+    lp.peers[0].tick().unwrap();
+    let mut told = Vec::new();
+    for e in lp.peers[0].drain_events() {
+        if let osis_node::Event::Commits(ch) = e {
+            told.extend(ch.iter().filter(|x| x.tid == d).map(|x| x.id));
+        }
+    }
+    for c in [x1, s] {
+        assert!(!listed(&mut lp.peers[0], &c, d) && told.contains(&c), "{c:?} left history, told");
+    }
+}

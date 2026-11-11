@@ -12,7 +12,8 @@
 //! Rows only time events, never a read: listing, keep bounds and undo judge history from the held
 //! set when asked (`bounds`). A row is a schedule never earlier than its part's replaced-at, set
 //! where that may move (`date_due`, at a transaction's end, `Dating`): a kill from the killing
-//! writes' stamps, no body read; a rebuild and an aspect turning dated from the held set; a part's
+//! writes' stamps, no body read, on the dying writes' own commits and every snapshot of the aspect
+//! (one carrying none of them gets a row it leaves with nothing to tell); a rebuild and an aspect turning dated from the held set; a part's
 //! own change (dropped, stripped, its validity). A late row tells listeners and marks node-sync
 //! late, never before the body leaves.
 //!
@@ -151,13 +152,15 @@ fn left(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place, now: u64) -> Result<()> {
     let whole = held && !m.bare(ai) && m.valid_at(ai);
     let floor = osis_commit::retention::purge_keep_until(&h).filter(|t| *t > now);
     if !ak.signal() {
-        // never early: a row's part is out of history by a fresh judgment when its row leaves (a
-        // row may be late: an earlier superseder of a dead write arriving moves no row)
+        // never early: a row's part is out of history by a fresh judgment when its row leaves, or
+        // not replaced (a snapshot's row set by a kill of writes it does not carry, a text creation
+        // revived: a tick that tells nothing new; the death that replaces it sets the row again).
+        // A row may be late: an earlier superseder of a dead write arriving moves no row
         #[cfg(debug_assertions)]
         if whole && tx.core.recheck_at((tx.core.tx_store, tx.core.generation, tx.core.memory_generation), format!("leaving {tid:?} {ak:?}")) {
             let fresh = crate::costs::paused(|| super::bounds::dated_replaced_at(tx, &h, &c, ai))?;
             let k = history::of(tx.core, tid, ak);
-            assert!(fresh.is_some_and(|f| leaves(&k, f) <= now), "{c:?} on {tid:?} {ak:?} left at row {p:?} while in history (replaced at {fresh:?})");
+            assert!(fresh.is_none_or(|f| leaves(&k, f) <= now), "{c:?} on {tid:?} {ak:?} left at row {p:?} while in history (replaced at {fresh:?})");
         }
         // one its purge floor keeps listed is told again then, by its floor's timer (`on_parts`)
         moved(tx, tid, ak, &c);
@@ -287,8 +290,8 @@ pub(crate) enum Dating {
     /// Its meta changed: its row goes if it is no longer held whole and valid (a purged part's
     /// is its request's `ts`), else stays.
     Kept,
-    /// A write of it died under writes stamped up to this (`Killed::at`): its row is set no
-    /// earlier, never moved earlier, no body read.
+    /// A write of it (or, a snapshot's, maybe of it) died under writes stamped up to this
+    /// (`Killed::at`): its row is set no earlier, never moved earlier, no body read.
     Killed(Ts),
     /// Dated from the held set (`bounds::dated_replaced_at`: the aspect's held bodies read once
     /// per transaction): a rebuild, and every held part of an aspect turning dated (`true`: a row
@@ -318,8 +321,8 @@ fn row_at(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, how: Dating, old: O
 }
 
 /// At a transaction's end: the rows of the parts whose date may have moved (`Core::to_date`: a
-/// kill sets the dying writes' own commits' rows no earlier than the killing writes, reading no
-/// body; a rebuild and an aspect turning dated date whole, the aspect's held bodies read once for
+/// kill sets the rows of the dying writes' own commits and the aspect's snapshots no earlier than
+/// the killing writes, reading no body; a rebuild and an aspect turning dated date whole, the aspect's held bodies read once for
 /// all, `Core::held_writes_memo`), and of every part with a row or stripped whose meta changed. So
 /// a row is a schedule that is never early: the date it holds is the part's replaced-at or later
 /// (an earlier superseder arriving, or the killing writes stamped after the first superseder,

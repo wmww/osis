@@ -360,9 +360,10 @@ impl Killed {
 
 /// A join on `(tid, ak)` superseded `dead`: the held bodies with a relative bound it may have
 /// replaced (the dying writes' own commits, and the aspect's snapshots, which may carry them) are
-/// judged again by node-sync (`Core::changed`), and the history row of each dying write's own
-/// commit is set no earlier than `Killed::at` (`Core::to_date`, `Dating::Killed`: no body read);
-/// with `Killed::all`, every one dated whole (`mark_bounded`).
+/// judged again by node-sync (`Core::changed`), and the history row of each is set no earlier
+/// than `Killed::at` (`Core::to_date`, `Dating::Killed`: no body read; a snapshot whether or not it
+/// carries a dying write, as telling which would read it); with `Killed::all`, every one dated
+/// whole (`mark_bounded`).
 /// On any aspect the dying writes' own commits are marked and become cover candidates: a body
 /// read on its own may not be now (`read_alone`); with `Killed::all`, every held body of the
 /// aspect (a reset joined by pages: rare).
@@ -389,7 +390,7 @@ pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
     for c in on {
         if bounded_part(tx.core, &c, tid, ak).is_some() {
             tx.core.mark_changed(c);
-            if let Some(t) = dead.at.filter(|_| owners.contains(&c)) {
+            if let Some(t) = dead.at {
                 tx.core.to_date.push((*tid, ak.clone(), c, super::leaving::Dating::Killed(t)));
             }
         }
