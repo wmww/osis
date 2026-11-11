@@ -249,28 +249,11 @@ impl Core {
     /// stays until it is finalized (spec/permissions.md §2).
     /// An ended actor holds no keys: in its place come its frozen holders (its edges as they
     /// stood at its ending: nobody writes it after), each at the lesser of its role there and
-    /// the ended actor's here, and so on through ended actors among them, each once (spec/crypto.md
-    /// §4, Holder actors, Ended); `actor` itself never.
+    /// the ended actor's here, and so on through ended actors among them, a holder reached
+    /// more than one way at the greatest (spec/crypto.md §4, Holder actors, Ended); `actor`
+    /// itself never.
     pub fn key_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
-        let mut out: BTreeMap<Tid, Role> = BTreeMap::new();
-        let mut seen = BTreeSet::from([*actor]);
-        let mut work = vec![(*actor, Role::Admin)];
-        while let Some((t, cap)) = work.pop() {
-            for (m, r) in self.edge_holders(&t) {
-                let r = r.min(cap);
-                if self.ended_actor(&m) {
-                    if seen.insert(m) {
-                        work.push((m, r));
-                    }
-                    continue;
-                }
-                if m != *actor {
-                    let x = out.entry(m).or_insert(r);
-                    *x = (*x).max(r);
-                }
-            }
-        }
-        out.into_iter().collect()
+        expand_ended(actor, |t| self.edge_holders(t), |m| self.ended_actor(m))
     }
 
     /// The direct holders of `actor` for keys (`key_holders` without the ended actors' frozen
@@ -464,5 +447,66 @@ impl Engine {
     /// Commits `m` in a running transaction.
     pub(crate) fn commit_tx(tx: &mut Tx<'_>, m: Mutation) -> Result<Option<CommitId>> {
         crate::engine::write::commit_in(tx, m)
+    }
+}
+
+/// `key_holders`' walk over `edges` (an actor's direct holders for keys) with `ended` actors
+/// replaced by their own holders, each at the lesser role along the way and the greatest over
+/// the ways: an ended actor is entered again only at a greater role than before, so each at
+/// most once per role.
+fn expand_ended(actor: &Tid, edges: impl Fn(&Tid) -> Vec<(Tid, Role)>, ended: impl Fn(&Tid) -> bool) -> Vec<(Tid, Role)> {
+    let mut out: BTreeMap<Tid, Role> = BTreeMap::new();
+    let mut entered: BTreeMap<Tid, Role> = BTreeMap::from([(*actor, Role::Admin)]);
+    let mut work = vec![(*actor, Role::Admin)];
+    while let Some((t, cap)) = work.pop() {
+        for (m, r) in edges(&t) {
+            let r = r.min(cap);
+            if m == *actor {
+                continue;
+            }
+            let into = if ended(&m) { &mut entered } else { &mut out };
+            if into.get(&m).is_some_and(|x| *x >= r) {
+                continue;
+            }
+            into.insert(m, r);
+            if ended(&m) {
+                work.push((m, r));
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tid(n: u8) -> Tid {
+        Tid::from_bytes([n; 15])
+    }
+
+    // spec/crypto.md §4 (Holders for keys, Ended): an ended actor reached at a lesser role first
+    // and at a greater one later puts its holders at the greater, whatever the walk's order
+    #[test]
+    fn ended_holder_reached_two_ways_takes_the_greater_role_spec_crypto_4() {
+        let (a, t, u, v, m) = (tid(1), tid(2), tid(3), tid(4), tid(5));
+        for (lo, hi) in [(t, u), (u, t)] {
+            // a: lo (ended, read), hi (ended, admin); lo and hi: v (ended, admin); v: m (admin)
+            let edges = |x: &Tid| -> Vec<(Tid, Role)> {
+                let mut e = if *x == a {
+                    vec![(lo, Role::Read), (hi, Role::Admin)]
+                } else if *x == lo || *x == hi {
+                    vec![(v, Role::Admin)]
+                } else if *x == v {
+                    vec![(m, Role::Admin), (a, Role::Admin)]
+                } else {
+                    vec![]
+                };
+                e.sort();
+                e
+            };
+            let ended = |x: &Tid| [t, u, v].contains(x);
+            assert_eq!(expand_ended(&a, edges, ended), vec![(m, Role::Admin)], "lo {lo:?}");
+        }
     }
 }

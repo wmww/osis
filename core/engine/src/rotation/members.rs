@@ -70,12 +70,13 @@ pub(crate) fn keyed(core: &mut Core, a: &Tid, h: &Tid) -> bool {
 }
 
 /// Whether a grant of `holder` on `target` written now would be keyless (spec/crypto.md §4): a
-/// standing edge keeps its standing's judgement, a new one comes after every grant held.
+/// standing edge on `target` (`edge_holders`) keeps its standing's judgement, a new one comes
+/// after every grant held.
 pub(crate) fn grant_keyless(core: &mut Core, target: &Tid, holder: &Tid) -> bool {
     if core.is_key_actor(holder) {
         return false;
     }
-    if core.key_holders(target).iter().any(|(m, _)| m == holder) {
+    if core.edge_holders(target).iter().any(|(m, _)| m == holder) {
         return key_access(core).contains(&(*target, *holder));
     }
     // the grants held with this one last, and the record edges of both ends (an actor whose

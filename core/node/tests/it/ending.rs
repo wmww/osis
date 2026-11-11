@@ -1080,3 +1080,19 @@ fn a_second_ending_after_one_that_falls_ends_the_thing_spec_commits_5() {
         }
     }
 }
+
+// spec/permissions.md §1, spec/commits.md §5 (Ending: authority through an ended actor stands):
+// b administers plain x only through x's first admin t; once t ended, removing t from x would
+// leave x no admin (t's frozen admins administer x through t's edge alone), so it is refused
+#[test]
+fn removing_an_ended_only_admin_of_a_plain_thing_is_refused_spec_permissions_1() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let t = ending_actor(&mut net, a, b, g, false);
+    let x = net.item(a, g, t, "x");
+    net.run();
+    end_with_c_away(&mut net, c);
+    assert!(!net.engine(b).knows(&t), "t ended");
+    let d = osis_node::flows::Demotion { holder: t, new: None, retain: None };
+    let err = net.engine(b).demote(&x, &d).err();
+    assert!(matches!(err, Some(osis_node::Error::Misuse(m)) if m.contains("no admin")), "refused: {err:?}");
+}

@@ -242,9 +242,10 @@ pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: Tid) -
 }
 
 /// Whether lowering `lowered` on plain `target` would leave it no admin (spec/permissions.md §1:
-/// refused; signed anyway, the thing stays plain and nobody administers it).
+/// refused; signed anyway, the thing stays plain and nobody administers it). Over the edges on
+/// `target` (`edge_holders`): an ended admin there still administers it (spec/commits.md §5).
 fn leaves_no_admin(core: &crate::engine::Core, target: &Tid, lowered: &[(Tid, Option<Role>)]) -> bool {
-    !core.key_holders(target).into_iter().any(|(m, r)| r == Role::Admin && lowered.iter().all(|(x, n)| *x != m || *n == Some(Role::Admin)))
+    !core.edge_holders(target).into_iter().any(|(m, r)| r == Role::Admin && lowered.iter().all(|(x, n)| *x != m || *n == Some(Role::Admin)))
 }
 
 /// A removal or demotion (or a self-removal) of `d.holder` on `target` by `who`: an explicit
