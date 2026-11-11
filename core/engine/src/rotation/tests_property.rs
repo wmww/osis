@@ -38,11 +38,18 @@ struct Reached {
 /// (actor, role, epoch): a secret.
 type Key = (Tid, Role, Epoch);
 
-/// A rotator's view when it made an epoch: the commits it held (the rotation commit included),
-/// the peers below the epoch's role in its view, for keys, and the holder actors the epoch
-/// boxes of which the rotator held no secret at that role, each with the keyset its box names
-/// (`Made::blind`).
-type Made = BTreeMap<Key, (BTreeSet<CommitId>, BTreeSet<usize>, BTreeSet<(Tid, Epoch)>)>;
+/// A rotator's view when it made an epoch.
+struct Made {
+    /// The commits it held, the rotation commit included.
+    held: BTreeSet<CommitId>,
+    /// The peers below the epoch's role in its view, for keys.
+    below: BTreeSet<usize>,
+    /// The holder actors the epoch boxes of which the rotator held no secret at that role, each
+    /// with the keyset its box names.
+    blind: BTreeSet<(Tid, Epoch)>,
+    /// The earlier established secrets of the role it held: what its history box carries.
+    carried: BTreeSet<Epoch>,
+}
 
 struct Run {
     lp: LocalPeer,
@@ -53,11 +60,12 @@ struct Run {
     ever: Vec<BTreeSet<Key>>,
     /// The secrets each peer was handed by a grant, each with the grant's index into `log`: the
     /// epochs the grant boxed it that its granter held before it, and the earlier secrets of
-    /// their roles the granter held (its history boxes), none the grantee held yet. Any holder
+    /// their roles the granter held (its history boxes), and what those open through boxes to
+    /// the granted thing as a holder actor, none the grantee held yet. Any holder
     /// of a key may hand it on (spec/requirements.md Permissions), and a grant judged invalid
     /// (its author lowered concurrently) still opens (spec/crypto.md §4, Boxes).
     handed: Vec<BTreeMap<Key, usize>>,
-    made: Made,
+    made: BTreeMap<Key, Made>,
     rng: Rng,
     /// Peers that forged: their nodes no longer act, and nothing is checked of them.
     hostile: BTreeSet<usize>,
@@ -105,15 +113,19 @@ impl Run {
         }
     }
 
-    /// Peer `i` granted peer `j` role `r` on `t`: notes what that handed `j` (`handed`).
+    /// Peer `i` granted peer `j` role `r` on `t`: notes what that handed `j` (`handed`), on `t`
+    /// and, through boxes to `t` as a holder actor, on the actors `t` holds a role on.
     fn grant(&mut self, i: usize, j: usize, t: Tid, r: Role) {
         let had: BTreeSet<Key> = self.held(i).into_iter().filter(|k| k.0 == t).collect();
-        let before = openable(&mut self.lp, i, &[t], self.tids[j], BTreeSet::new());
+        // the actors `i` may read
+        let all: Vec<Tid> = self.all().into_iter().filter(|a| self.lp.peers[i].engine.get_typed(a, &ct::SECRETS).is_ok()).collect();
+        let before = openable(&mut self.lp, i, &all, self.tids[j], BTreeSet::new());
         if self.lp.peers[i].engine.grant(&t, &self.tids[j], &edge(r)).is_ok() {
-            let after = openable(&mut self.lp, i, &[t], self.tids[j], BTreeSet::new());
+            let after = openable(&mut self.lp, i, &all, self.tids[j], BTreeSet::new());
             let boxed: BTreeSet<Key> = after.difference(&before).filter(|k| had.contains(k)).copied().collect();
             let carried = had.iter().filter(|k| boxed.iter().any(|b| b.1 == k.1 && k.2.n() < b.2.n()));
-            for k in boxed.iter().chain(carried).filter(|k| !self.ever[j].contains(k)) {
+            let above = after.difference(&before).filter(|k| k.0 != t);
+            for k in boxed.iter().chain(carried).chain(above).filter(|k| !self.ever[j].contains(k)) {
                 self.handed[j].entry(*k).or_insert(self.log.len());
             }
         }
@@ -159,7 +171,8 @@ impl Run {
                         // where order allows it (`excused`)
                         let blind: BTreeSet<(Tid, Epoch)> = via.iter().copied().filter(|(m, _)| !self.ever[i].iter().any(|k| k.0 == *m && k.1 == r)).collect();
                         self.log.push(format!("  made actor {} {r:?} n{} {:?} at peer {i}, below {below:?}, blind {}", self.actors.iter().position(|a| a.0 == t).unwrap(), x.n(), &x.nonce()[..2], blind.len()));
-                        self.made.insert((t, r, *x), (held.iter().copied().chain(own).collect(), below, blind));
+                        let carried = e.role(r).held_established().map(|(y, _)| y).filter(|y| y.n() < x.n()).collect();
+                        self.made.insert((t, r, *x), Made { held: held.iter().copied().chain(own).collect(), below, blind, carried });
                     }
                 }
             }
@@ -588,7 +601,9 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
             // no departed holder reads later content: what a holder that may write encrypts
             // under opens to no peer without access, from all it ever held or made and every box;
             // nor does any epoch made by a rotator that saw the peer depart, unless a grant
-            // handed it on (its author's own departure then rotates the role, so the first holds)
+            // (on the thing or on a holder actor of it) handed it on (its author's own departure
+            // then rotates the role, so the first holds) or the history of a later epoch the peer held as a holder in its rotator's view
+            // carried it (access regained, here or through a holder actor, reads earlier content)
             let gone: Vec<usize> = (0..N).filter(|d| !access(run, o, *d, t, r)).collect();
             for &d in &gone {
                 let opens = openable(&mut run.lp, o, &all, run.tids[d], run.ever[d].clone());
@@ -604,15 +619,18 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                     }
                 }
                 let last = departure(run, o, t, d);
-                for ((mt, mr, e), (held, below, blind)) in &run.made {
-                    if *mt == t && *mr == r && below.contains(&d) && last.is_some_and(|c| held.contains(&c)) {
-                        // excused only by that box: without it (and the secret, had its node
-                        // opened it so), the peer opens the epoch no other way
-                        let blind: BTreeSet<Tid> = blind.iter().filter(|(m, k)| run.excused(o, held, *m, r, k, d)).map(|x| x.0).collect();
-                        let opened = opens_own.contains(&(t, r, *e)) && (blind.is_empty() || {
-                            let mut kept = own.clone();
-                            kept.remove(&(t, r, *e));
-                            super::tests::openable_but(&mut run.lp, o, &all, run.tids[d], kept, &blind.iter().map(|m| (t, r, *e, *m)).collect()).contains(&(t, r, *e))
+                let regained = |e: &Epoch| run.made.iter().any(|((t2, r2, e2), m)| *t2 == t && *r2 == r && !m.below.contains(&d) && m.carried.contains(e) && run.ever[d].contains(&(t, r, *e2)));
+                // the boxes within the limit for `d` (`excused`), in any epoch of the history: a
+                // cascade seals a holder actor blind in an epoch of an actor `t`'s epoch boxes
+                let limit: BTreeSet<(Tid, Role, Epoch, Tid)> = run.made.iter().flat_map(|((t2, r2, e2), m)| m.blind.iter().filter(|(bm, k)| run.excused(o, &m.held, *bm, *r2, k, d)).map(move |(bm, _)| (*t2, *r2, *e2, *bm))).collect();
+                for ((mt, mr, e), Made { held, below, .. }) in &run.made {
+                    if *mt == t && *mr == r && below.contains(&d) && last.is_some_and(|c| held.contains(&c)) && !regained(e) {
+                        // excused only by those boxes: without them (and every secret the peer
+                        // held of an epoch made with it below, had its node opened it so), the
+                        // peer opens the epoch no other way
+                        let opened = opens_own.contains(&(t, r, *e)) && (limit.is_empty() || {
+                            let kept: BTreeSet<Key> = own.iter().filter(|k| !run.made.get(k).is_some_and(|m| m.below.contains(&d))).copied().collect();
+                            super::tests::openable_but(&mut run.lp, o, &all, run.tids[d], kept, &limit).contains(&(t, r, *e))
                         });
                         assert!(!opened, "seed {seed}: peer {d} (now {:?}) opens {t:?} {r:?} epoch {e:?}, made by a rotator that saw it depart (first held at step {:?})", role(d), run.first.get(&(d, (t, r, *e))));
                     }

@@ -899,6 +899,39 @@ fn invalid_grant_box_judges_nothing_spec_crypto_4() {
     assert!(lp.peers[0].engine.ensure_rotated(&y).unwrap().0.commits.is_empty());
 }
 
+// spec/requirements.md Permissions (a role M holds on A reaches M's holders; a secret once shared
+// cannot be un-shared): the owner demotes writer D on G to reader, rotating write to e1 that D
+// lacks, then raises D on M, a writer of G, to write: D writes G through M again and opens e1 by
+// G's box to M. Removing M from G rotates write to e2, which D opens no way.
+#[test]
+fn access_regained_through_a_holder_actor_reads_what_the_departure_rotated_spec_crypto_4() {
+    let mut lp = synced(2);
+    let d = lp.peers[1].engine.me();
+    let g = group(&mut lp, 0);
+    let m = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &m, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&m, &d, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let write = |lp: &LocalPeer| lp.peers[0].engine.epochs(&g).and_then(|e| e.role(Role::Write).newest_held().map(|x| x.0)).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: d, new: Some(edge(Role::Read)), retain: None }).unwrap();
+    let e1 = write(&lp);
+    lp.sync_all().unwrap();
+    assert!(!held_by(&lp, 1, &[g]).contains(&(g, Role::Write, e1)), "the demotion's epoch is closed to D");
+    lp.peers[0].engine.grant(&m, &d, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    let mut kept = held_by(&lp, 1, &[g, m]);
+    assert!(kept.contains(&(g, Role::Write, e1)), "D, a writer of G through M, opens e1");
+    lp.peers[0].engine.demote(&g, &Demotion { holder: m, new: None, retain: None }).unwrap();
+    let e2 = write(&lp);
+    assert_ne!(e1, e2, "M's removal rotates write");
+    lp.sync_all().unwrap();
+    kept.extend(held_by(&lp, 1, &[g, m]));
+    assert!(!openable(&mut lp, 0, &[g, m], d, kept).contains(&(g, Role::Write, e2)), "D opens no epoch made since M's removal");
+    assert!(blocked_at(&mut lp, 0, g).is_empty());
+    assert!(lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "nothing due");
+}
+
 // spec/crypto.md §4 (Boxes: an invalid grant's box opens what its author held; Departures: the
 // author's own lowering rotates past it): admin A demotes writer D to reader, rotating write to
 // e1 that D lacks; the owner removes A, rotating write to e2; A, not knowing, re-grants D write,
