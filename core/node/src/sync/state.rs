@@ -2477,6 +2477,7 @@ mod tests {
             let mut s = State::default();
             let l = LabelId([1; 16]);
             let blobs: Vec<(BlobId, Vec<u8>)> = (0..n).map(|i| (i as u32).to_be_bytes().repeat(10)).map(|x| (osis_label::blob_id(&x), x)).collect();
+            let blobs_ids: Vec<(BlobId, ())> = blobs.iter().map(|(b, _)| (*b, ())).collect();
             for (b, _) in &blobs {
                 s.set_entry(l, *b, entry(1));
             }
@@ -2484,13 +2485,22 @@ mod tests {
             s.flush_storing(&mut e, blobs).unwrap();
             let rows = e.run(|tx| hub(tx)?.reader_rows(&l, None, 1000).map_err(hub_err)).unwrap().len();
             assert_eq!(rows, n);
-            (disks[0].0.syncs() - w0.0, disks[1].0.syncs() - w0.1)
+            let added = (disks[0].0.syncs() - w0.0, disks[1].0.syncs() - w0.1);
+            // removing them all: the rows go after the engine's commit, in one hub commit
+            for (b, _) in &blobs_ids {
+                s.remove_entry(l, *b);
+            }
+            let w1 = (disks[0].0.syncs(), disks[1].0.syncs());
+            s.flush(&mut e).unwrap();
+            let rows = e.run(|tx| hub(tx)?.reader_rows(&l, None, 1000).map_err(hub_err)).unwrap().len();
+            assert_eq!(rows, 0);
+            (added, (disks[0].0.syncs() - w1.0, disks[1].0.syncs() - w1.1))
         };
         // n and 10n past the first table split (a split commits shredded: two backend writes)
         let (small, large) = (commits(25), commits(250));
         assert_eq!(small, large, "commits per batch do not grow with it");
         // the engine's store: one shredding commit (two writes); the hub's: its commit (here
         // shredding: two) and the transaction's note cleared after the engine's
-        assert!(small.0 <= 2 && small.1 <= 3, "{small:?}");
+        assert!(small.0.0 <= 2 && small.0.1 <= 3, "{small:?}");
     }
 }

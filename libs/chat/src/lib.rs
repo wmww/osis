@@ -43,8 +43,8 @@ pub struct Options {
     pub disappear: Option<Duration>,
     /// A kicked participant retains a read-only copy, unless the kick says otherwise.
     pub retain_copies: bool,
-    /// Whom the chat syncs with; empty: this node's saved peers. The maker's serving nodes take it
-    /// by `admit own`; another serving node must admit it by its sync ID or admit anyone.
+    /// Whom the chat syncs with; empty: this node's saved peers. A serving node that reads it serves
+    /// it; another must admit it by its sync ID or admit anyone.
     pub peers: Vec<osis::Address>,
 }
 

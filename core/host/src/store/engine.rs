@@ -69,7 +69,14 @@ impl CipherHost for HostStore {
     }
 
     fn finish(&mut self, op: &[u8]) -> Result<(), Error> {
-        self.finish_removal(op).map_err(store_err)
+        // one commit for a transaction's removals (`commit`), not one each; a failure drops
+        // them (the note stays: the next settle applies them again)
+        self.defer_durability();
+        let r = self.finish_removal(op).map_err(store_err);
+        if r.is_err() {
+            CipherHost::abort(self);
+        }
+        r
     }
 
     fn local(&mut self, f: &mut dyn FnMut(&mut osis_store::Transaction<'_>) -> Result<(), Error>) -> Result<(), Error> {
