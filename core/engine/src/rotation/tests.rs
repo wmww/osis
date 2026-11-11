@@ -467,6 +467,23 @@ fn orphaned_epoch_rotated_spec_crypto_4() {
     }
 }
 
+// spec/crypto.md §4 (established: by a rotation commit held with its `secrets.0` delta; orphaned
+// is judged from the boxes held, so it needs that): writer W rotates G's read; writer V gets the
+// rotation without its boxes (a certificate). W's epoch is not current at V, so V, lacking it,
+// finds nothing orphaned and rotates nothing; W's boxes then reach it.
+#[test]
+fn rotation_without_its_boxes_orphans_nothing_spec_crypto_4() {
+    let (mut lp, g, _) = granted(3, &[(1, Role::Write), (2, Role::Write)]);
+    rotate_leaving_out(&mut lp, 1, g, &[Role::Read].into(), &[]);
+    let w = newest_read(&lp, 1, g).unwrap();
+    deliver_without_secrets(&mut lp, 1, 2, g);
+    let v = &mut lp.peers[2].engine;
+    assert!(!v.epochs(&g).unwrap().read.current().contains(&w), "W's epoch current without its boxes");
+    assert_eq!(v.rotated_already(&g).unwrap(), Some(BTreeSet::new()), "V rotates nothing");
+    lp.sync_all().unwrap();
+    assert!(lp.peers[2].engine.epochs(&g).unwrap().read.secret(&w).is_some(), "W's boxes reach V");
+}
+
 // spec/crypto.md §4 (established by its own valid rotation commit): peer 1's rotation G of read
 // (epoch s, boxing peers 2 and 4 only) falls invalid, peer 0 demoting 1 to read concurrently;
 // peer 4's rotation of read is a valid fork beside it. Unaware of the demotion, 2 and 4 re-grant
