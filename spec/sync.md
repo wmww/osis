@@ -207,6 +207,8 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - **Refused as signed by an earlier deposit key**: signed again with the current one, or dropped when the client holds no other.
   - **Moot**: an inbox blob once its delivery is forgotten or sealed again (§3), any deposit under a label the client sees replaced.
   - **Promotion**: a writer that verifies a deposited commit the label must hold re-uploads it stamped (promotes it), only once its author's chain for the deposited deltas (spec/permissions.md §4) is under the label.
+    - It promotes only a deposit holding a delta the label must hold that no other entry under the label at that host holds stamped or as the writer's own certificate copy: one stamped copy per delta, however many encryptions are deposited.
+    - A delta the label must hold here, valid at the writer: one on a thing of the label's closure; an edge write or box naming a thing of the closure as holder; a key actor's own `keys.0`, `node.0` or `reach.0` delta; a role commit's or a `keys.0`, `node.0`, `reach.0` or `created.0` delta on a thing with an authority path into the closure (over any edge write or record link the writer holds, at any time).
     - A promoter completes the chain it holds, placing the missing deltas as its own certificate copies with the promotion.
     - A record blob counts toward the chain only stamped or the promoter's own; a deposited record blob is never promoted (it waits for clearing).
     - A writer that holds neither the commit applied nor the chain leaves the deposit unpromoted.
@@ -214,7 +216,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - A certificate copy is never deleted for an incomplete chain.
 - **Clearing deposits**: a node holding the delete key of a label keeps at most `DEPOSITS_WAITING` entries and `DEPOSITS_WAITING_BYTES` bytes per host of the deposits there it can do nothing with.
   - Those are every deposited entry whose bytes it has received except:
-    - one it opened as a commit it judges valid (as a reader judges what it deposits, §6);
+    - one it opened as a commit it would promote (Promotion);
     - an inbox blob it would stamp (§3);
     - an inbox blob whose commit is not applied and whose prefix expiry is within `INBOX_LIFETIME + 2 × MAX_DRIFT`.
   - Each counts at its blob's size, whether or not the node still holds its bytes.

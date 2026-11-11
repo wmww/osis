@@ -54,6 +54,7 @@ mod order;
 mod parts;
 mod pending_bound;
 mod pinned;
+mod promotion;
 mod parts_relay;
 mod pass_marks;
 mod pass_sources;

@@ -359,6 +359,12 @@ impl Engine {
     /// §5): applied, not pending, each aspect valid, and, for a role commit, each of its
     /// edge ops applied (an aspect is valid while any op on it is: the loser of a single-use
     /// redemption race keeps its valid removal of L beside its void grant).
+    /// The parts of applied, not pending commit `c` valid here (`None`: not applied or pending).
+    pub fn valid_parts(&self, c: &CommitId) -> Option<BTreeSet<usize>> {
+        let m = self.core.ix.commits.get(c).filter(|_| !self.core.ix.pending.contains_key(c))?;
+        Some((0..m.header.aspects.len()).filter(|ai| m.valid_at(*ai)).collect())
+    }
+
     pub fn judged_valid(&self, c: &CommitId, parts: &[usize]) -> bool {
         let Some(m) = self.core.ix.commits.get(c) else { return false };
         if self.core.ix.pending.contains_key(c) || parts.iter().any(|ai| !m.valid_at(*ai)) {
