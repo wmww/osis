@@ -51,6 +51,11 @@ struct Run {
     actors: Vec<(Tid, usize)>,
     /// Every secret each peer held or made at any point: what a departed peer keeps.
     ever: Vec<BTreeSet<Key>>,
+    /// The secrets each peer was handed by a grant: those its granter held at the grant's roles
+    /// that it held not yet. Any holder of a key may hand it on (spec/requirements.md
+    /// Permissions), and a grant judged invalid (its author lowered concurrently) still opens
+    /// (spec/crypto.md §4, Boxes).
+    handed: Vec<BTreeSet<Key>>,
     made: Made,
     rng: Rng,
     /// Peers that forged: their nodes no longer act, and nothing is checked of them.
@@ -96,6 +101,14 @@ impl Run {
                 self.first.entry((p, *k)).or_insert(self.log.len());
             }
             self.ever[p].extend(h);
+        }
+    }
+
+    /// Peer `i` granted peer `j` role `r` on `t`: notes what that handed `j` (`handed`).
+    fn grant(&mut self, i: usize, j: usize, t: Tid, r: Role) {
+        if self.lp.peers[i].engine.grant(&t, &self.tids[j], &edge(r)).is_ok() {
+            let new: Vec<Key> = self.held(i).into_iter().filter(|k| k.0 == t && k.1 <= r && !self.ever[j].contains(k)).collect();
+            self.handed[j].extend(new);
         }
     }
 
@@ -274,7 +287,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
         }
     }
     lp.sync_all().unwrap();
-    let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], made: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
+    let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeSet::new(); N], made: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
     run.log.push(format!("actors {:?} (owners), peers {:?}", run.actors, run.tids));
     run.note();
     reached.cycle = k > 1;
@@ -324,7 +337,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
                 4 if ri == Role::Admin && j != o && j != i => {
                     let r = ROLES[run.rng.next(3) as usize];
                     if run.lp.peers[i].engine.core.role_now(&run.tids[j], &t) < Some(r) {
-                        let _ = run.lp.peers[i].engine.grant(&t, &run.tids[j], &edge(r));
+                        run.grant(i, j, t, r);
                     }
                 }
                 // an `until` soon on a holder's edge, at its role now
@@ -339,7 +352,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
                     let every = run.rng.next(2) == 0;
                     for p in (1..N).filter(|p| *p != i && *p != o && (every || *p == j)) {
                         if let Some(r) = run.lp.peers[i].engine.core.role_now(&run.tids[p], &t) {
-                            let _ = run.lp.peers[i].engine.grant(&t, &run.tids[p], &edge(r));
+                            run.grant(i, p, t, r);
                         }
                     }
                 }
@@ -550,11 +563,14 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                 continue;
             }
             // no departed holder reads later content: what a holder that may write encrypts
-            // under, and every epoch made by a rotator that saw the peer depart, opens to no
-            // peer without access, from all it ever held or made and every box
+            // under opens to no peer without access, from all it ever held or made and every box;
+            // nor does any epoch made by a rotator that saw the peer depart, unless a grant
+            // handed it on (its author's own departure then rotates the role, so the first holds)
             let gone: Vec<usize> = (0..N).filter(|d| !access(run, o, *d, t, r)).collect();
             for &d in &gone {
                 let opens = openable(&mut run.lp, o, &all, run.tids[d], run.ever[d].clone());
+                let own: BTreeSet<Key> = run.ever[d].difference(&run.handed[d]).copied().collect();
+                let opens_own = openable(&mut run.lp, o, &all, run.tids[d], own.clone());
                 for &(h, hr) in direct.iter().filter(|x| x.1 >= r.max(Role::Write)) {
                     if super::tests::blocked_at(&mut run.lp, h, t).contains(&r) {
                         continue;
@@ -569,8 +585,8 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                         // excused only by that box: without it (and the secret, had its node
                         // opened it so), the peer opens the epoch no other way
                         let blind: BTreeSet<Tid> = blind.iter().filter(|(m, k)| run.excused(o, held, *m, r, k, d)).map(|x| x.0).collect();
-                        let opened = opens.contains(&(t, r, *e)) && (blind.is_empty() || {
-                            let mut kept = run.ever[d].clone();
+                        let opened = opens_own.contains(&(t, r, *e)) && (blind.is_empty() || {
+                            let mut kept = own.clone();
                             kept.remove(&(t, r, *e));
                             super::tests::openable_but(&mut run.lp, o, &all, run.tids[d], kept, &blind.iter().map(|m| (t, r, *e, *m)).collect()).contains(&(t, r, *e))
                         });

@@ -882,6 +882,45 @@ fn invalid_grant_box_judges_nothing_spec_crypto_4() {
     assert!(lp.peers[0].engine.ensure_rotated(&y).unwrap().0.commits.is_empty());
 }
 
+// spec/crypto.md §4 (Boxes: an invalid grant's box opens what its author held; Departures: the
+// author's own lowering rotates past it): admin A demotes writer D to reader, rotating write to
+// e1 that D lacks; the owner removes A, rotating write to e2; A, not knowing, re-grants D write,
+// boxing e1. Settled, the grant is invalid and D a reader. D opens e1 (A held it and handed it
+// on: a secret once shared cannot be un-shared) but not e2, which every writer encrypts under.
+#[test]
+fn invalid_regrant_hands_on_only_what_its_author_held_spec_crypto_4() {
+    let mut lp = LocalPeer::new(3, 965, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let (a, d) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &a, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    let write = |lp: &LocalPeer, i: usize| lp.peers[i].engine.epochs(&g).and_then(|e| e.role(Role::Write).newest_held().map(|x| x.0));
+    lp.peers[1].clock.advance(1_000);
+    lp.peers[1].engine.demote(&g, &Demotion { holder: d, new: Some(edge(Role::Read)), retain: None }).unwrap();
+    let e1 = write(&lp, 1).unwrap();
+    lp.sync(1, 0).unwrap();
+    lp.peers[0].clock.advance(2_000);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: a, new: None, retain: None }).unwrap();
+    let e2 = write(&lp, 0).unwrap();
+    assert_ne!(e1, e2, "A's removal rotates write");
+    lp.peers[1].clock.advance(3_000);
+    lp.peers[1].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
+    // D, holding the grant before A's removal, opens e1 and keeps it
+    lp.sync(1, 2).unwrap();
+    let mut kept = held_by(&lp, 2, &[g]);
+    assert!(kept.contains(&(g, Role::Write, e1)), "A's box hands D e1 (the limit)");
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[0].engine.core.key_holders(&g).into_iter().find(|h| h.0 == d).map(|h| h.1), Some(Role::Read), "the re-grant is invalid: D reads");
+    kept.extend(held_by(&lp, 2, &[g]));
+    let opens = openable(&mut lp, 0, &[g], d, kept);
+    assert!(!opens.contains(&(g, Role::Write, e2)), "D opens no epoch made since A's removal");
+    assert!(blocked_at(&mut lp, 0, g).is_empty());
+    assert!(lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "nothing due");
+    assert_eq!(write(&lp, 0), Some(e2), "the owner writes under e2");
+}
+
 // spec/crypto.md §4 (Boxes: an invalid commit's boxes judge nothing;
 // issue held-boxes-reader-rekey (closed)): reader R of G writes `secrets.0` deltas (invalid: a delta
 // needs write) boxing G's current read epoch to party P, which holds no role on G. G's admin
