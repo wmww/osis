@@ -60,7 +60,7 @@ impl SyncEngine {
                     }
                     if origin == Origin::Remote && role_commit {
                         self.seq += 1;
-                        let at = self.raw_now();
+                        let at = self.now();
                         for a in &h.aspects {
                             let actor = self.keys_actor(&a.tid);
                             self.role_change.insert(actor, (self.seq, at));

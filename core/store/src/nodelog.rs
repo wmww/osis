@@ -60,7 +60,7 @@ pub enum NodeEvent {
     /// An entry became servable here (its row and its bytes both held), or the wrap or stamp of
     /// one that is changed. An entry whose bytes have not arrived has no event: nothing serves it.
     Added(LabelId, BlobId),
-    /// An entry left the node. `at` (corrected wall ms) only ages the event.
+    /// An entry left the node. `at` (wall ms) only ages the event.
     Deleted { label: LabelId, blob: BlobId, at: u64 },
     /// The sync ID's head moved.
     Head(LabelId),
@@ -330,7 +330,7 @@ impl Transaction<'_> {
         Ok(Some(pos_value(v.get(8..).ok_or(Error::Corrupt("node log slot"))?)?))
     }
 
-    /// Logs that an entry left the node at `at` (corrected wall ms). Returns its position.
+    /// Logs that an entry left the node at `at` (wall ms). Returns its position.
     pub fn log_deleted(&mut self, label: LabelId, blob: BlobId, at: u64) -> Result<u64, Error> {
         self.log_place(entry_slot(&label, &blob), NodeEvent::Deleted { label, blob, at }, first_logged)
     }

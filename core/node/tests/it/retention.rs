@@ -3147,8 +3147,9 @@ fn skewed_clocks_dated_at_earliest_superseder_spec_commits_5() {
         set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
         sync(&mut lp, 0, i);
     }
-    lp.peers[1].engine.set_clock_offset(3_600_000);
-    lp.peers[2].engine.set_clock_offset(-3_600_000);
+    lp.peers[1].clock.advance(3_600_000);
+    let behind = WallMs(lp.peers[2].engine.now().0 - 3_600_000);
+    lp.peers[2].clock.set(behind);
     let k = ak("t:kept.0");
     let set = |lp: &mut LocalPeer, i: usize, v: &str| {
         let mut m = Mutation::new();
@@ -3249,7 +3250,7 @@ fn parked_grant_gives_no_purge_right_spec_commits_4() {
     let c = set(&mut lp, 0, t, &REG, "admin's");
     lp.sync_all().unwrap();
     lp.advance(5);
-    lp.peers[0].engine.set_clock_offset(2 * MAX_DRIFT_MS as i64);
+    lp.peers[0].clock.advance(2 * MAX_DRIFT_MS);
     let g = set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
     let grant = lp.peers[0].engine.package(&g).unwrap().unwrap();
     let mut m = Mutation::new();
@@ -3262,7 +3263,7 @@ fn parked_grant_gives_no_purge_right_spec_commits_4() {
     let e = &mut lp.peers[2].engine;
     assert!(e.body_not_dropped(&c, &t, &ak("t:reg.0")));
     assert!(!e.named_by_a_fallen_purge(&c, &[0]).unwrap(), "the parked grant names no possible admin");
-    lp.peers[2].engine.set_clock_offset(2 * MAX_DRIFT_MS as i64);
+    lp.peers[2].clock.advance(2 * MAX_DRIFT_MS);
     lp.peers[2].reexamine().unwrap();
     let e = &mut lp.peers[2].engine;
     assert!(e.pending().is_empty(), "{:?}", e.pending());

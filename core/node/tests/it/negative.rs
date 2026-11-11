@@ -71,18 +71,15 @@ fn deletions(net: &Net, host: usize, l: &osis_base::LabelId) -> usize {
     recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(_))).count()
 }
 
-/// Two writers, one with its corrected clock `MAX_DRIFT` ahead (its median offset counts a
-/// second host that far ahead), compact two dead bodies and pass their keep-at-least bound.
-/// Returns the host's log deletions over the crossing and how many blobs of those bodies
-/// either node knew.
+/// Two writers, one with its clock `MAX_DRIFT` ahead, compact two dead bodies and pass their
+/// keep-at-least bound. Returns the host's log deletions over the crossing and how many blobs of
+/// those bodies either node knew.
 fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
     let mut net = Net::new();
     let host = net.add_host();
-    let sk = net.add_host();
-    net.hosts[sk].skew = osis_base::format::MAX_DRIFT_MS as i64;
-    let (fast, slow): (&[usize], &[usize]) = (&[host, sk], &[host]);
-    let a = net.node(1, if a_ahead { fast } else { slow });
-    let b = net.node(2, if a_ahead { slow } else { fast });
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    net.set_skew(if a_ahead { a } else { b }, osis_base::format::MAX_DRIFT_MS as i64);
     let g = net.group(a, &[(b, osis_base::Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
     let mut bodies = Vec::new();
@@ -124,7 +121,7 @@ fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
 }
 
 // spec/sync.md §7 (compaction waits MAX_DRIFT past keep-at-least): two right holders whose
-// corrected clocks differ by MAX_DRIFT, either way, cross a keep-at-least bound: the two dead
+// clocks differ by MAX_DRIFT, either way, cross a keep-at-least bound: the two dead
 // bodies are deleted at the host once each and nobody places them again (the node past the
 // bound used to delete what the other, still before it, placed again as must-hold).
 #[test]

@@ -179,7 +179,7 @@ impl Inputs {
 /// pass (`Left`), kept by the set until the wait ends or a pass judges everything.
 #[derive(Default)]
 pub(crate) struct Waits {
-    /// Entries and commits whose verdict changes at a time (corrected wall ms).
+    /// Entries and commits whose verdict changes at a time (wall ms).
     pub due: BTreeMap<u64, BTreeSet<Touch>>,
     /// Commits whose verdict waits on an aspect's state (liveness).
     pub aspects: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
@@ -237,10 +237,10 @@ pub(crate) struct Work {
     /// The last pass left something only another pass finds out about (`Left`), or the label's
     /// own records were touched or a wait woken since: passes at its next resync.
     pub again: bool,
-    /// When time alone next wants a pass (corrected wall ms, as the due times it comes from;
+    /// When time alone next wants a pass (wall ms, as the due times it comes from;
     /// `SyncEngine::schedule_pass`): `Some(0)` at the next resync, none never.
     pub pass_at: Option<u64>,
-    /// When `pass_at` was set (corrected wall ms): a clock now before it went back.
+    /// When `pass_at` was set (wall ms): a clock now before it went back.
     pub scheduled: u64,
 }
 
@@ -257,7 +257,7 @@ impl Work {
         !self.touched.full && !self.again && self.unopened.is_empty() && self.waits.held_back.is_empty() && self.unsettled.is_empty()
     }
 
-    /// Whether a resync at `now` (corrected wall ms) passes this label: also once when the clock
+    /// Whether a resync at `now` (wall ms) passes this label: also once when the clock
     /// went back since `pass_at` was set (it was set at a later time).
     pub fn resync_due(&self, now: u64) -> bool {
         !self.quiet() || self.pass_at.is_some_and(|t| t <= now) || now < self.scheduled
@@ -523,7 +523,7 @@ impl SyncEngine {
     }
 
     /// The first time after now that a grant's `until` or a role commit's `ts` falls due in the
-    /// components of `actors` (corrected wall ms).
+    /// components of `actors` (wall ms).
     pub(super) fn horizon(&self, actors: impl Iterator<Item = Tid>) -> Option<u64> {
         let now = self.now();
         let core = &self.engine.core;

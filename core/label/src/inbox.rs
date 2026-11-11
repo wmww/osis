@@ -202,7 +202,7 @@ pub fn seal_stranded_notice(recipient: &Tid, kem: &KemPublicKey, notice: &Strand
 }
 
 /// Seals an inbox blob to `recipient`'s newest read keyset KEM key: prefix with expiry `now`
-/// (the sender's corrected wall ms) + `INBOX_LIFETIME`, no commitments. Its entry's wrap is a
+/// (the sender's wall ms) + `INBOX_LIFETIME`, no commitments. Its entry's wrap is a
 /// filler (`osis_crypto::filler_wrap`).
 pub fn seal_inbox_blob(recipient: &Tid, kem: &KemPublicKey, payload: &InboxPayload, now: WallMs, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
     seal(recipient, kem, &payload.to_value()?, now, rng)

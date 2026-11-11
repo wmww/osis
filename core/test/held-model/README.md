@@ -5,7 +5,7 @@ Written from `spec/` alone, depending on no osis crate but crdt-model (the other
 
 ## Input (`src/types.rs`)
 `Held { now, me, records, commits, dots }`:
-- `now`: the node's corrected clock (wall ms). `me`: the node (needed for "may I drop this").
+- `now`: the node's wall clock (ms). `me`: the node (needed for "may I drop this").
 - Ids: things, actors and nodes share one `u32` space.
 - `dots`: which commit each write belongs to (spec/crdt.md §2.4): per session-form commit and aspect its source and counter range (`DotRange`); a commit no range names is commit form under `commit_source(id)` (`stamp(ts, id, ctr)` builds its stamps).
 - `records`: the creation records the node holds apart from creations (key actors', a dependent's chain proofs), `Record { id, link }` with `RecordLink::Key` (a key actor: node, link key; admin of itself) or `RecordLink::Admin(a)` (its first admin). A held `created.0` body (`Delta::Created(link)` on `Aspect::CREATED`) gives its record too, once its author's and first admin's are known.

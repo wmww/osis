@@ -144,7 +144,7 @@ pub(crate) struct Shared {
     acked_gen: u64,
     started: bool,
     in_flight: bool,
-    /// The last generation was refused: a whole filter goes again (`again`) at this time (raw
+    /// The last generation was refused: a whole filter goes again (`again`) at this time (wall
     /// ms), `resync_ms` after, as a refused Pull does (`stream_refused`).
     retry_at: Option<u64>,
     again: bool,
@@ -525,7 +525,7 @@ impl SyncEngine {
 
     /// Sends again the filters whose last generation was refused, once their time came.
     pub(super) fn shared_retry(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        let now = self.raw_now();
+        let now = self.now();
         let due: Vec<ConnId> = self.records.shared.iter().filter(|(_, s)| s.retry_at.is_some_and(|t| t <= now)).map(|(c, _)| *c).collect();
         for conn in due {
             if let Some(s) = self.records.shared.get_mut(&conn) {
@@ -905,7 +905,7 @@ impl SyncEngine {
     /// peer has not refused it, after the peer's digest (issues/net-shared-set.md, Deposits).
     pub(super) fn shared_deposits(&mut self, out: &mut Vec<Action>) -> Result<()> {
         use super::state::{Dest, INBOX_NODES};
-        let now = self.raw_now();
+        let now = self.now();
         // one in flight on a connection gone (dialed or served) goes again
         for (_, o) in self.outbox.iter_mut().filter(|(k, _)| k.0 == INBOX_NODES) {
             if o.sent.is_some_and(|c| !self.records.shared.contains_key(&c)) {
@@ -971,7 +971,7 @@ impl SyncEngine {
             return Ok(());
         }
         if matches!(code, Code::BUDGET_FULL | Code::RATE_LIMITED | Code::STORAGE_CAP) {
-            let now = self.raw_now();
+            let now = self.now();
             let Some(o) = self.outbox.get_mut(&k) else { return Ok(()) };
             o.tries = o.tries.saturating_add(1);
             let tries = o.tries;
@@ -1241,7 +1241,7 @@ impl SyncEngine {
     }
 
     fn shared_reply(&mut self, conn: ConnId, id: u32, codes: Vec<osis_proto::msg::SharedCode>, out: &mut Vec<Action>) -> Result<()> {
-        let retry_at = self.raw_now().saturating_add(self.cfg.resync_ms);
+        let retry_at = self.now().saturating_add(self.cfg.resync_ms);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         let Some(asked) = s.asked.remove(&id) else { return Ok(()) };
         match asked {

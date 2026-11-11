@@ -34,6 +34,10 @@ pub enum Diagnostic {
     Storage { detail: String },
     /// An app callback panicked.
     Callback { detail: String },
+    /// This node's clock and a peer's differ by more than a few seconds: one of them is wrong.
+    /// A clock far behind holds back others' writes here; one far ahead has this node's writes
+    /// held back elsewhere. Fix the device's clock if it is this one.
+    ClockSkew { detail: String },
     /// Background sync died: nothing syncs until the node is opened again, and waits fail
     /// `Network`.
     SyncStopped { detail: String },
@@ -61,6 +65,7 @@ impl From<osis_node::Diagnostic> for Diagnostic {
             (K::Storage, ..) => Diagnostic::Storage { detail },
             (K::Callback, ..) => Diagnostic::Callback { detail },
             (K::SyncStopped, ..) => Diagnostic::SyncStopped { detail },
+            (K::ClockSkew, ..) => Diagnostic::ClockSkew { detail },
             (K::Parked, ..) => Diagnostic::Parked { things: tids, commit: commit.map(Into::into), peer, detail },
             _ => Diagnostic::Handled { things: tids, commit: commit.map(Into::into), peer, detail: format!("{kind:?}: {detail}") },
         }
@@ -81,6 +86,7 @@ impl std::fmt::Display for Diagnostic {
             Diagnostic::Storage { detail } => ("storage", detail),
             Diagnostic::Callback { detail } => ("callback", detail),
             Diagnostic::SyncStopped { detail } => ("sync stopped", detail),
+            Diagnostic::ClockSkew { detail } => ("clock skew", detail),
             Diagnostic::Parked { detail, .. } => ("from a newer format", detail),
             Diagnostic::Handled { detail, .. } => ("handled", detail),
         };

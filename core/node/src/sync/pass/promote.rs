@@ -8,20 +8,20 @@ impl SyncEngine {
     /// (`RELAY_MIN_MS`: a co-writer may promote it first), not in flight.
     pub(super) fn due_entries(&mut self, conn: ConnId, host: HostKey, l: LabelId) -> Vec<(BlobId, Entry)> {
         let ids: Vec<(BlobId, Entry)> = self.state.deposited_at(&host, &l).into_iter().filter_map(|b| self.state.entries.get(&(l, b)).map(|e| (b, e.clone()))).collect();
-        let raw = self.raw_now();
+        let now = self.now();
         self.deposit_seen.retain(|k, _| self.state.deposited.contains(k));
         let mut out = Vec::new();
         for (id, e) in ids {
-            if self.conns.get(&conn).is_some_and(|c| crate::sync::in_flight(c, &c.req.sent, (l, id), raw)) {
+            if self.conns.get(&conn).is_some_and(|c| crate::sync::in_flight(c, &c.req.sent, (l, id), now)) {
                 continue;
             }
-            let seen = *self.deposit_seen.entry((host, l, id)).or_insert(raw);
+            let seen = *self.deposit_seen.entry((host, l, id)).or_insert(now);
             // by what it carries: a blob's ID is the luck of its sealing
             let due = seen.saturating_add(match &e.kind {
                 Kind::Commit { commit, .. } => self.relay_delay(&commit.0),
                 _ => self.relay_delay(&id.0),
             });
-            if raw < due {
+            if now < due {
                 self.settle_by(due, l);
                 continue;
             }
@@ -192,7 +192,7 @@ impl SyncEngine {
         RELAY_MIN_MS + u64::from_le_bytes(x) % (SETTLE_MS - RELAY_MIN_MS)
     }
 
-    /// When this node uploads or relays commit `c` at a host lacking it (corrected wall ms; a wake
+    /// When this node uploads or relays commit `c` at a host lacking it (wall ms; a wake
     /// is set for then), `None` for now: its own (made here, a held key actor's included, or placed
     /// first by a flow) at once, another node's once `relay_delay` has passed since it arrived here.
     pub(super) fn relay_at(&mut self, l: LabelId, c: &CommitId) -> Option<u64> {
@@ -201,12 +201,10 @@ impl SyncEngine {
             return None;
         }
         let due = m.received.0.saturating_add(self.relay_delay(&c.0));
-        let now = self.now();
-        if now >= due {
+        if self.now() >= due {
             return None;
         }
-        let at = self.raw_now().saturating_add(due - now);
-        self.settle_by(at, l);
+        self.settle_by(due, l);
         Some(due)
     }
 }

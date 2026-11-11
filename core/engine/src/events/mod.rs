@@ -142,6 +142,9 @@ pub enum DiagnosticKind {
     /// The `osis` sync driver died (a panic, or its runtime shut down with the store open):
     /// nothing syncs until the store is opened again; waits fail `Network` (`detail`: why).
     SyncStopped,
+    /// A dialed peer's clock differs from this node's by more than `OFFSET_DIAGNOSTIC_MS`
+    /// (spec/sync.md §6): one of the two is wrong (`detail`: the peer and the offset).
+    ClockSkew,
 }
 
 /// A structured diagnostic: kind, the things and commit it names, the peer it came from.

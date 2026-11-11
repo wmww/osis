@@ -73,13 +73,13 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Until when (raw ms) giving `t` secrets of its own again is left to another node: the
+    /// Until when (wall ms) giving `t` secrets of its own again is left to another node: the
     /// author of the newest role write on `t` held, received less than `SETTLE_MS` ago.
     fn own_secrets_wait(&self, t: &Tid) -> Option<u64> {
         let roles = Ak::new(osis_schema::RawKey::ak(&ct::ROLES)).ok()?;
         let (_, c) = self.engine.core.ix.by_aspect.get(&(*t, roles))?.iter().next_back()?;
         let m = self.engine.core.ix.commits.get(c).filter(|m| m.origin != crate::events::Origin::Local)?;
-        let (now, due) = (self.now(), m.received.0.saturating_add(SETTLE_MS));
-        (due > now).then(|| self.raw_now().saturating_add(due - now))
+        let due = m.received.0.saturating_add(SETTLE_MS);
+        (due > self.now()).then_some(due)
     }
 }

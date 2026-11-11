@@ -610,10 +610,10 @@ impl SyncEngine {
     /// (`role_change` is memory only; spec/permissions.md §3 bounds the wait after the change):
     /// a restarted node first hears its peers out.
     pub(crate) fn peers_waited(&self, actor: &Tid) -> bool {
-        self.peer_wait_end(actor) <= self.raw_now()
+        self.peer_wait_end(actor) <= self.now()
     }
 
-    /// When the wait of `peers_waited` ends (raw ms).
+    /// When the wait of `peers_waited` ends (wall ms).
     pub(crate) fn peer_wait_end(&self, actor: &Tid) -> u64 {
         self.role_change.get(actor).map_or(self.started, |x| x.1).saturating_add(self.cfg.peer_pass_wait_ms)
     }

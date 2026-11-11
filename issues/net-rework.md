@@ -59,7 +59,7 @@ Depends on issues/account-signing.md: what a connection proves (3, 5-6), the pee
 8. issues/net-one-peer.md: one kind of peer: one key, one serving path, one store; sync IDs leave the API; replacement goes.
 9. issues/net-rename.md: spec, then code, in the new words.
 
-5-6 decide much of 2, 7 and 8 (what an open is, what a peer must know), so their design is settled first. 3 and 4 can run beside them. The LAN rules in 3 are independent. The structural refactors each job needs: issues/net-sync-structure.md. Related, owned elsewhere: issues/p2p-own.md (relays), issues/clock-peer-offset.md (a peer can pull a node's clock), issues/recovery-redesign.md (its peer side needs 8), issues/client-auth.md (client credentials), issues/privacy.md.
+5-6 decide much of 2, 7 and 8 (what an open is, what a peer must know), so their design is settled first. 3 and 4 can run beside them. The LAN rules in 3 are independent. The structural refactors each job needs: issues/net-sync-structure.md. Related, owned elsewhere: issues/p2p-own.md (relays), issues/recovery-redesign.md (its peer side needs 8), issues/client-auth.md (client credentials), issues/privacy.md.
 
 ## Open (whole project)
 - (design) The node's tick per sync ID (issues/idle-pass-per-label.md): the one per-sync-ID cost that still bounds the pairing and the shared set (issues/net-shared-set.md, Costs).

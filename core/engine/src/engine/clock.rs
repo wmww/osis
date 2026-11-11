@@ -1,5 +1,5 @@
-//! The HLC (spec/crdt.md §2.2) over the corrected clock (spec/sync.md §6): `max(corrected wall
-//! clock, last ts seen)`, `logical` incremented on equal `wall_ms`. A writer that exhausts the
+//! The HLC (spec/crdt.md §2.2) over the node's wall clock: `max(wall clock, last ts seen)`,
+//! `logical` incremented on equal `wall_ms`. A writer that exhausts the
 //! 16 logical bits within one millisecond moves to the next millisecond instead of waiting.
 
 use osis_base::{Clock, Ts, WallMs};
@@ -7,28 +7,17 @@ use std::sync::Arc;
 
 pub struct Hlc {
     clock: Arc<dyn Clock>,
-    /// Correction from node-sync (ms added to the wall clock).
-    offset: i64,
     last: Ts,
 }
 
 impl Hlc {
     pub fn new(clock: Arc<dyn Clock>, last: Ts) -> Hlc {
-        Hlc { clock, offset: 0, last }
+        Hlc { clock, last }
     }
 
-    /// The corrected wall clock.
+    /// The wall clock.
     pub fn wall(&self) -> WallMs {
-        let w = self.clock.now_wall_ms().0;
-        WallMs(if self.offset >= 0 { w.saturating_add(self.offset.unsigned_abs()) } else { w.saturating_sub(self.offset.unsigned_abs()) })
-    }
-
-    pub fn set_offset(&mut self, ms: i64) {
-        self.offset = ms;
-    }
-
-    pub fn offset(&self) -> i64 {
-        self.offset
+        self.clock.now_wall_ms()
     }
 
     pub fn last(&self) -> Ts {
@@ -84,8 +73,6 @@ mod tests {
         assert_eq!((d.wall_ms(), d.logical()), (WallMs(5000), 8));
         c.set(WallMs(6000));
         assert_eq!(h.next(), Ts::make(WallMs(6000), 0).unwrap());
-        h.set_offset(-500);
-        assert_eq!(h.wall(), WallMs(5500));
     }
 
     // spec/crdt.md §2.2: 16 logical bits; exhausting them moves to the next millisecond.

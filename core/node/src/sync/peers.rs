@@ -71,14 +71,14 @@ pub struct Peer {
 /// announcements from many sources cannot make the node dial in a loop.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LanRoute {
-    /// Proven address and when last heard (raw ms).
+    /// Proven address and when last heard (wall ms).
     pub good: Option<(Address, u64)>,
     pub candidate: Option<(Address, u64)>,
     /// Addresses that failed, until when.
     pub failed: BTreeMap<Address, u64>,
-    /// When a new candidate last ended the peer's retry pause (raw ms).
+    /// When a new candidate last ended the peer's retry pause (wall ms).
     pub cut: Option<u64>,
-    /// When the candidate last changed (raw ms).
+    /// When the candidate last changed (wall ms).
     pub changed: Option<u64>,
     /// Verified announcements of the newest window heard, each with the first source it came
     /// from (at most `LAN_BOUND`, oldest evicted): a copy from another source is a replay and
@@ -332,7 +332,7 @@ impl SyncEngine {
     /// Forgets the cached co-readers, `reach.0` holders and LAN tags when the engine's state
     /// changed or a minute passed since they were computed.
     fn peers_fresh(&mut self) {
-        let key = (self.engine.core.generation, self.raw_now() / PEERS_TTL_MS);
+        let key = (self.engine.core.generation, self.now() / PEERS_TTL_MS);
         if self.peer_cache.key != key {
             self.peer_cache = PeerCache { key, ..PeerCache::default() };
         }
@@ -341,7 +341,7 @@ impl SyncEngine {
     /// Where to dial each co-reader: its proven LAN address while fresh, else a LAN candidate,
     /// else `peer://` with its relays; never an address backed off.
     pub(crate) fn peer_addresses(&mut self) -> BTreeMap<[u8; 32], (Address, BTreeSet<LabelId>)> {
-        let now = self.raw_now();
+        let now = self.now();
         for r in self.lan.values_mut() {
             if r.good.as_ref().is_some_and(|(_, at)| at.saturating_add(LAN_FRESH_MS) <= now) {
                 r.good = None;
@@ -367,13 +367,13 @@ impl SyncEngine {
     /// LAN candidate it went to is the proven route (spec/sync.md §10). True when the connection
     /// goes through the proven LAN route.
     pub(crate) fn lan_up(&mut self, peer: [u8; 32], addr: &Address) -> bool {
-        let raw = self.raw_now();
+        let now = self.now();
         let Some(r) = self.lan.get_mut(&peer) else { return false };
         if let Some(c) = r.candidate.take_if(|(a, _)| a == addr) {
             r.good = Some(c);
         } else if r.good.as_ref().is_none_or(|(a, _)| a != addr) && r.heard.contains_key(addr) {
             // a verified source the candidate moved away from while its dial ran
-            r.good = Some((addr.clone(), raw));
+            r.good = Some((addr.clone(), now));
         }
         r.good.as_ref().is_some_and(|(a, _)| a == addr)
     }
@@ -496,7 +496,7 @@ impl SyncEngine {
     /// A connection to a co-reader ended before coming up: when it went to a LAN address, that
     /// address is backed off (true; the next route is dialed at once), not the peer.
     pub(crate) fn lan_failed(&mut self, peer: [u8; 32], addr: &Address) -> bool {
-        let until = self.raw_now().saturating_add(self.cfg.peer_retry_ms);
+        let until = self.now().saturating_add(self.cfg.peer_retry_ms);
         let Some(r) = self.lan.get_mut(&peer) else { return false };
         let mut hit = r.candidate.take_if(|(a, _)| a == addr).is_some();
         hit |= r.good.take_if(|(a, _)| a == addr).is_some();
@@ -541,12 +541,12 @@ impl SyncEngine {
     /// Whether a waiting LAN candidate may skip the peer's retry pause now (at most once per
     /// `peer_retry_ms`); records the cut.
     pub(crate) fn lan_cut(&mut self, peer: [u8; 32]) -> bool {
-        let raw = self.raw_now();
+        let now = self.now();
         let pause = self.cfg.peer_retry_ms;
         let Some(r) = self.lan.get_mut(&peer) else { return false };
         let waiting = r.candidate.as_ref().is_some_and(|(a, _)| !r.failed.contains_key(a));
-        if waiting && r.cut.is_none_or(|t| t.saturating_add(pause) <= raw) {
-            r.cut = Some(raw);
+        if waiting && r.cut.is_none_or(|t| t.saturating_add(pause) <= now) {
+            r.cut = Some(now);
             return true;
         }
         false
@@ -574,7 +574,7 @@ impl SyncEngine {
             self.peer_cache.lan_tags = Some((window, tags));
         }
         let Some((k, secret, w)) = self.peer_cache.lan_tags.as_ref().and_then(|(_, t)| t.get(&a.tag)).copied() else { return (None, Vec::new()) };
-        let raw = self.raw_now();
+        let now = self.now();
         let r = self.lan.entry(k).or_default();
         let at = a.address(from);
         let address = Address { url: at.url, key: at.key };
@@ -616,15 +616,15 @@ impl SyncEngine {
             if let Some((a, at)) = x
                 && *a == address
             {
-                *at = raw;
+                *at = now;
                 return (Some(k), Vec::new());
             }
         }
-        if r.changed.is_some_and(|t| t.saturating_add(LAN_CHANGE_MS) > raw) {
+        if r.changed.is_some_and(|t| t.saturating_add(LAN_CHANGE_MS) > now) {
             return (Some(k), Vec::new());
         }
-        r.candidate = Some((address, raw));
-        r.changed = Some(raw);
+        r.candidate = Some((address, now));
+        r.changed = Some(now);
         // dial it now, even inside the retry pause, once per pause length
         if self.retry.contains_key(&k) && self.lan_cut(k) {
             self.retry.remove(&k);
@@ -632,7 +632,7 @@ impl SyncEngine {
         // nothing to do while its pause holds, or while a connection to the peer runs but over
         // a relay, where the LAN route is dialed beside it (`lan_probe`)
         let running = self.conns.values().any(|c| c.host == k);
-        if running && !self.lan_probe(&k, &dialed) || !running && self.retry.get(&k).is_some_and(|(_, t)| *t > raw) {
+        if running && !self.lan_probe(&k, &dialed) || !running && self.retry.get(&k).is_some_and(|(_, t)| *t > now) {
             return (Some(k), Vec::new());
         }
         (Some(k), self.handle(Event::Local))

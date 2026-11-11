@@ -547,7 +547,7 @@ impl Osis {
         AspectRef { db: self, tid, key }
     }
 
-    /// The corrected wall clock: the time the node stamps commits with,
+    /// This node's wall clock: the time it stamps commits with,
     /// for app timestamps. On a thin client, its node's: `Network` when it cannot be
     /// reached.
     pub fn now(&self) -> Result<Time> {

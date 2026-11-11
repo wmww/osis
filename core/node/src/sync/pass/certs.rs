@@ -84,8 +84,7 @@ impl SyncEngine {
                 && let Some(h) = self.engine.header(&c)
                 && (h.frontier.is_some() || missing.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "keys.0")))
             {
-                let at = self.raw_now().saturating_add(t - now);
-                self.settle_by(at, l);
+                self.settle_by(t, l);
                 continue;
             }
             // nothing to place once its parts are dropped here (`State::sweep_certs`)

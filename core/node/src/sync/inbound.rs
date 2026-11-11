@@ -1709,7 +1709,7 @@ impl SyncEngine {
         let missing = |s: &Self, b: &BlobId| s.conns.get(&conn).is_none_or(|c| c.req.missing.contains(b));
         let mut seen = BTreeSet::new();
         let ids: Vec<BlobId> = ids.into_iter().filter(|b| seen.insert(*b) && !missing(self, b) && self.may_ask(conn, l, b)).collect();
-        let now = self.raw_now();
+        let now = self.now();
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         c.req.fetching.extend(ids.iter().map(|b| (*b, now)));
         if ids.is_empty() {
@@ -2040,9 +2040,9 @@ impl SyncEngine {
                 if dead && !self.state.present_anywhere(&l, &b) {
                     self.absent_at(None, l, b)?;
                 } else if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED) {
-                    let raw = self.raw_now();
+                    let now = self.now();
                     if let Some(c) = self.conns.get_mut(&conn) {
-                        c.req.sent.insert((l, b), (raw, super::UNTAGGED));
+                        c.req.sent.insert((l, b), (now, super::UNTAGGED));
                     }
                 }
                 if code == Code::STORAGE_CAP && !self.capped.contains(&(host, l, b)) {
@@ -2091,9 +2091,9 @@ impl SyncEngine {
             // a refused promotion waits again (`RELAY_MIN_MS`): co-writers refused alike (a step
             // registered meanwhile) would otherwise all send it at the next pass
             if code != Code::OK {
-                let raw = self.raw_now();
+                let now = self.now();
                 if let Some(t) = self.deposit_seen.get_mut(&(host, l, b)) {
-                    *t = raw;
+                    *t = now;
                 }
             }
         }
@@ -2154,7 +2154,7 @@ impl SyncEngine {
             self.deposit_room.insert((host, l), n);
         }
         // a queued deposit's answer
-        let now = self.raw_now();
+        let now = self.now();
         if let Some(o) = self.outbox.get_mut(&(host, l, b)).filter(|o| o.sent.is_some()) {
             // refused for now (not registered yet, rate limit, budget full while the label's
             // writers are away, the host at a storage cap): sent again until taken or moot; signed by an earlier deposit key

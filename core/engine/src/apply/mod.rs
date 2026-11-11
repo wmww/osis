@@ -56,7 +56,7 @@ pub enum Reason {
     MissingChain(Tid),
     /// Unjudgeable: the record of a thing whose part it holds, or of the actor, is unknown.
     UnknownCreated(Tid),
-    /// `ts` more than `MAX_DRIFT` ahead of the corrected clock.
+    /// `ts` more than `MAX_DRIFT` ahead of the wall clock.
     Drift,
     /// A page of a paged delta or a blob of a linked header list has not arrived.
     WaitBlobs,
@@ -410,8 +410,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         return Ok(throw_out(tx, id, &unjudged, r));
     }
     // the bound is for received commits, a sibling node's too (spec/crdt.md §2.2): this node's
-    // own are as far ahead as its HLC, which a clock correction moving back must not turn
-    // against them
+    // own are as far ahead as its HLC, which a wall clock set back must not turn against them
     if origin != Origin::Local && h.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
         return Ok(Exam::Pending(Reason::Drift, Vec::new()));
     }

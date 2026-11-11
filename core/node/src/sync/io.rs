@@ -245,7 +245,7 @@ pub struct LabelStatus {
     /// This node left the group and keeps its secrets until its self-removal is placed
     /// (`SyncEngine::leaving`).
     pub leaving: bool,
-    /// When it was last seen with a source and every source caught up (raw wall ms), in this run.
+    /// When it was last seen with a source and every source caught up (wall ms), in this run.
     pub last_sync: Option<u64>,
     /// A pass finished here once, or this node made it: no first download is outstanding.
     pub passed: bool,

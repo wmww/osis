@@ -900,7 +900,7 @@ fn purged_changed(tx: &mut Tx<'_>, purged: BTreeSet<(Tid, Ak)>, changed: &mut BT
 /// A due timer: its store key, commit, aspect index and kind (`T_EXPIRY`, `T_FLOOR`, `T_KEPT`).
 type Due = (Vec<u8>, CommitId, usize, u8);
 
-/// The timers due by the corrected clock, and when the first of the others is (`u64::MAX`: none).
+/// The timers due by the wall clock, and when the first of the others is (`u64::MAX`: none).
 fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
     let now = tx.now().0;
     let mut due = Vec::new();
@@ -972,7 +972,7 @@ impl Engine {
         self.core.ix.commits.get(c).is_some_and(|m| m.dropped_invalid(ai) && !valueless(&self.core, c, ai))
     }
 
-    /// Runs what is due by the corrected clock: expiries, purge floors (`T_FLOOR`), signal keep
+    /// Runs what is due by the wall clock: expiries, purge floors (`T_FLOOR`), signal keep
     /// bounds (`T_KEPT`) and commits
     /// parked for drift. The
     /// commits whose timers fired are marked changed (`Core::changed`).
@@ -1004,14 +1004,14 @@ impl Engine {
         self.reexamine()
     }
 
-    /// Whether a retention timer, durable or memory, is due by the corrected
+    /// Whether a retention timer, durable or memory, is due by the wall
     /// clock: in memory, no store read (a timer removed without running may leave a false
     /// `true`, which the next `tick` clears).
     pub fn timers_due(&self) -> bool {
         self.core.timer_floor <= self.now().0
     }
 
-    /// When the next retention timer is due (corrected wall ms).
+    /// When the next retention timer is due (wall ms).
     pub fn next_timer(&mut self) -> Result<Option<u64>> {
         self.run(|tx| {
             let first = tx.txn.scan_local(records::TIMER, &[], 1)?;

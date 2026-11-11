@@ -198,7 +198,7 @@ ClaimSet := [[claim+], {entry: box}]
 - `label.0` stores a step as the canonical bytes of `Step` and its claim set as those of `ClaimSet` (`step_record`, spec/data-model.md §9).
 
 ## 9. Inbox blobs
-- **Inbox blob** (spec/crypto.md §5): prefix with expiry = the sender's corrected wall ms + `INBOX_LIFETIME` and no commitments, then the raw bytes of a sealed box (§7, not a `sealed` value) to the recipient's newest read keyset KEM key.
+- **Inbox blob** (spec/crypto.md §5): prefix with expiry = the sender's wall ms + `INBOX_LIFETIME` and no commitments, then the raw bytes of a sealed box (§7, not a `sealed` value) to the recipient's newest read keyset KEM key.
 - AD = `[recipient, "inbox", prefix bytes]` (`"inbox"` a text string).
 - Payload: the padded (§5) canonical bytes of `InboxPayload`:
   ```
@@ -226,7 +226,7 @@ peer := [dialable, [relay*]]
 ## 11. Node-to-node protocol (version 1)
 ### 11.1 Framing and handshake
 - Each direction of the stream (spec/sync.md §10) is a sequence of frames: a 4-byte big-endian length `len`, `1 <= len <= MAX_MESSAGE`, then one canonical CBOR item of `len` bytes. A frame breaking a rule of this section is answered by Error 2 and may end the connection.
-- Each side sends `Hello := ["osis", [version+], wall_ms, challenge]` as its first frame, without waiting for the other's: supported protocol versions strictly ascending (at most 16; the Hello frame at most 256 bytes), its corrected wall clock, 32 random bytes. The session uses the greatest version both list; with none in common, both close. This section defines version 1.
+- Each side sends `Hello := ["osis", [version+], wall_ms, challenge]` as its first frame, without waiting for the other's: supported protocol versions strictly ascending (at most 16; the Hello frame at most 256 bytes), its wall clock, 32 random bytes. The session uses the greatest version both list; with none in common, both close. This section defines version 1.
 - Every later frame is a message `[kind, id, ...]`. `id < 2^32` is chosen by the requesting side and not reused while its request is outstanding; replies carry it. `id` is 0 in a Push and a Notify and nonzero in every request and reply, except an Error answering a frame whose id cannot be read, which carries 0; any other id 0 (or a Push or Notify with another id) is malformed. A Sub's id names its subscription and is not reused (by any request) until its Unsub is answered, a Notify `[1]` for it arrived, or its Sub was answered otherwise than by Reply `[0, ..]`; a Sub reusing a live subscription's id is answered Error 2. Either side may send requests. A request of unknown kind gets Error 11. Replies may arrive in any order, except a stream's (§11.2, Pull).
 - **Static key** of a side: the 32-byte key the transport authenticated for it (the key of the address dialed or listened on: a host's address key; a peer's dialable key, or the LAN transport key it announced). An open signature binds the opened side's static key and Hello challenge.
 

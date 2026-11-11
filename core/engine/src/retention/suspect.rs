@@ -37,7 +37,7 @@ pub enum Why {
 /// A body a flag is about: its commit, aspect index and `Why` bits.
 type Entry = (CommitId, u8, u8);
 
-/// The flag record: le64 corrected wall ms last raised, then per body a 32-byte commit ID, the
+/// The flag record: le64 wall ms last raised, then per body a 32-byte commit ID, the
 /// aspect index and the `Why` bits.
 fn read(v: &[u8]) -> (u64, Vec<Entry>) {
     let (at, rest) = v.split_first_chunk::<8>().map_or((0, &[][..]), |(a, r)| (u64::from_le_bytes(*a), r));
@@ -115,7 +115,7 @@ fn dormant(core: &Core, e: &Entry) -> bool {
 }
 
 impl Engine {
-    /// The aspects this node flags suspect, with when each was last flagged (corrected wall ms)
+    /// The aspects this node flags suspect, with when each was last flagged (wall ms)
     /// and why (`Why` bits over the bodies it is about that are not dormant).
     pub fn suspects(&mut self) -> Result<Vec<(Tid, Ak, u64, u8)>> {
         self.run(|tx| {

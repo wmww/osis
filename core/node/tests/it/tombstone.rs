@@ -813,14 +813,13 @@ fn a_header_only_some_judge_lasting_is_left_alone_spec_sync_6() {
 #[test]
 fn a_slow_clock_purges_a_message_stamped_ahead_spec_commits_5() {
     let Chat { mut net, a, b, t, .. } = chat();
-    net.engine(b).set_clock_offset(20 * 60_000);
-    net.engine(a).set_clock_offset(-20 * 60_000);
+    net.set_skew(b, 20 * 60_000);
+    net.set_skew(a, -20 * 60_000);
     let m = msg(&mut net, b, t, "SECRET", permanent());
     net.run();
     assert!(net.engine(a).commit_ids().contains(&m));
     net.restart(a, 55);
     net.run();
-    net.engine(a).set_clock_offset(-20 * 60_000);
     let p = purge(&mut net, a, t, m, Retention::default());
     assert!(net.engine(b).header(&m).unwrap().ts < net.engine(a).header(&p).unwrap().ts);
     net.run();

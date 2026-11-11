@@ -8,7 +8,7 @@ impl SyncEngine {
     /// with, whether every host failed it (stranded), which connected hosts refuse it, and when it
     /// last had every source caught up.
     pub fn label_status(&mut self) -> Vec<LabelStatus> {
-        let now = self.raw_now();
+        let now = self.now();
         let mut out = Vec::new();
         for (g, l) in self.labels() {
             let leaving = self.leaving().any(|a| *a == self.engine.group_actor(&g));
@@ -214,7 +214,7 @@ impl SyncEngine {
     /// How long (ms) a dial to `key` still waits for its retry pause, if it waits (tests).
     #[doc(hidden)]
     pub fn retrying(&self, key: &[u8; 32]) -> Option<u64> {
-        self.retry.get(key).map(|(_, t)| t.saturating_sub(self.raw_now()))
+        self.retry.get(key).map(|(_, t)| t.saturating_sub(self.now()))
     }
 
     /// Diagnostics since the last call (tests).

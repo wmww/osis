@@ -248,7 +248,7 @@ impl SyncEngine {
     /// No key opens `l` on `conn`: tried again from scratch after `resync_ms`. A hinted label:
     /// the next thing a blob names it under gets its turn (`vet_inbox_hints`).
     fn fail(&mut self, conn: ConnId, l: LabelId) {
-        let now = self.raw_now();
+        let now = self.now();
         let Some(lc) = self.lc_mut(conn, &l) else { return };
         lc.phase = Phase::Failed;
         lc.last_sync = now;
@@ -591,7 +591,7 @@ impl SyncEngine {
             // a later pass registers again after a back-off (else every pass sent it again), and
             // the pass that waited for the step runs now under the host's head
             (Request::Register, Some(Phase::Open)) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED | Code::NOT_ADMITTED) => {
-                let (now, first, cap) = (self.raw_now(), self.cfg.retry_ms, self.cfg.resync_ms);
+                let (now, first, cap) = (self.now(), self.cfg.retry_ms, self.cfg.resync_ms);
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.registering = None;
                     lc.step_retry = now.saturating_add(backoff(first, cap, lc.step_refusals));
@@ -641,7 +641,7 @@ impl SyncEngine {
     /// register: opened again after a back-off, `retry_ms` doubling per refusal in a row on this
     /// connection (an open resets it) up to `resync_ms`.
     fn refused_for_now(&mut self, conn: ConnId, l: LabelId, code: Code) {
-        let now = self.raw_now();
+        let now = self.now();
         let (first, cap) = (self.cfg.retry_ms, self.cfg.resync_ms);
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let (n, last) = c.req.refusals.entry(l).or_insert((0, code));

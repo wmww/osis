@@ -59,7 +59,7 @@ The rules are in spec/sync.md at the section named.
 - An ex-writer or ex-admin keeps old-epoch delete keys and, as a reader, the sync key, so it can delete its own old `author` bodies or old `admin` bodies at hosts; healed by any holder's next sync. Level 3 needs the write key, so `writer` bodies are safe.
 - A malicious current writer can wipe `writer`-purgeable bodies at a host; write access already lets it reset them everywhere.
 - Host storage under `author` and `author_or_admin` grows with superseded bodies until a snapshot with the right over them is written and their right holders sync: under `author_or_admin` an admin's or their author's, under `author` their author's only. So departed authors' `author` bodies stay for good, their `author_or_admin` ones until an admin compacts (a removal is the natural moment). Measured in notes/growth.md.
-- Bounds read on a node's own clock straddle: two nodes either side of a keep-at-least bound or a grant's `until` (`stale_card`) may delete and re-place one body for as long as their corrected clocks differ (seconds).
+- Bounds read on a node's own clock straddle: two nodes either side of a keep-at-least bound or a grant's `until` (`stale_card`) may delete and re-place one body for as long as their clocks differ.
 - Relative keep bounds measure from the killing commit's `ts`, so a backdated kill shortens "at least D" by up to the drift cap.
 
 ## In node sync

@@ -127,7 +127,7 @@ impl SyncEngine {
 
     /// Asks for the next batch once the last is answered; ends the fill when nothing is left.
     pub(crate) fn fill_more(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let (secrets_now, now) = (self.secrets_count(), self.raw_now());
+        let (secrets_now, now) = (self.secrets_count(), self.now());
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let host = c.host;
         let Some(lc) = c.labels.get_mut(&l) else { return Ok(()) };

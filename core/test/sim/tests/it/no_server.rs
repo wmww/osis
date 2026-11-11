@@ -968,17 +968,19 @@ fn repro_row34_lan_recognition_tolerates_max_drift() {
     assert!(w.peer_routes(&b).iter().any(|r| matches!(r, Route::Lan(_))), "{:?}", w.peer_routes(&b));
 }
 
-// Row 35, spec/sync.md §6 (a wrong local clock harms only that node's own writes): Alice's
-// clock 120 min slow does not stop Bob redeeming her link.
+// Row 35, spec/sync.md §6 (a wrong local clock harms only that node's own writes; nothing another
+// node sends moves a node's clock): Bob, connected to Alice alone, whose clock is 120 min slow,
+// redeems her link, then takes Carol's writes (Carol dials him: a served session).
 #[test]
-#[ignore = "issues/clock-peer-offset.md"]
-fn repro_row35_a_slow_peer_does_not_stop_a_redeem() {
+fn a_slow_peer_does_not_move_a_nodes_clock_row_35_spec_sync_6() {
     let mut w = World::new();
     let r = w.reach.add_relay(None);
     let a = osis::internals::create(w.cfg_clocked(1, &[], ClockSpec { skew_ms: -120 * 60_000, drift_ppm: 0 })).unwrap();
     let b = w.account(2, &[]);
-    w.place(&a, &[], Uplink::Public, &[r]);
-    w.place(&b, &[], Uplink::Public, &[r]);
+    let c = w.account(3, &[]);
+    for n in [&a, &b, &c] {
+        w.place(n, &[], Uplink::Public, &[r]);
+    }
     w.run();
     let g = group(&a);
     say(&a, g, "first");
@@ -987,6 +989,11 @@ fn repro_row35_a_slow_peer_does_not_stop_a_redeem() {
     w.run();
     let got = w.until(b.redeem(&link), 1000, 40);
     assert!(got.is_ok(), "{got:?}");
+    w.advance(STEP_MS);
+    let g2 = join(&mut w, &b, &c, Role::Write);
+    say(&c, g2, "from carol");
+    w.advance(STEP_MS);
+    assert_eq!(heard(&b, g2).as_deref(), Some("from carol"));
 }
 
 // Row 36, spec/sync.md §10: unreachable co-readers never hide a reachable one (8 newer ones

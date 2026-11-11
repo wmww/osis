@@ -387,11 +387,11 @@ impl SyncEngine {
         self.stats.entries += ids.len() as u64;
         let desired = desired(bodies);
         // deletes in flight on this connection are not sent again (`RESEND_MS`)
-        let raw = self.raw_now();
-        let busy = |s: &Self, id: &BlobId| s.conns.get(&conn).is_some_and(|c| crate::sync::in_flight(c, &c.req.deleting, (l, *id), raw));
+        let now = self.now();
+        let busy = |s: &Self, id: &BlobId| s.conns.get(&conn).is_some_and(|c| crate::sync::in_flight(c, &c.req.deleting, (l, *id), now));
         let send = |s: &mut Self, id: BlobId| {
             if let Some(c) = s.conns.get_mut(&conn) {
-                c.req.deleting.insert((l, id), (raw, crate::sync::UNTAGGED));
+                c.req.deleting.insert((l, id), (now, crate::sync::UNTAGGED));
             }
         };
         let mut items = Vec::new();
@@ -497,7 +497,7 @@ impl SyncEngine {
     /// host admits it in the room they free and removes them in the same step, so the label
     /// never lacks the kept live writes.
     fn replace_sends(&mut self, conn: ConnId, keys: &HeadKeys, l: LabelId, replace: BTreeMap<BlobId, Vec<osis_label::DeleteItem>>, out: &mut Vec<crate::sync::Action>) -> Result<()> {
-        let raw = self.raw_now();
+        let now = self.now();
         let mut uploads = Vec::new();
         for (q, items) in replace {
             let Some(mut e) = self.state.entries.get(&(l, q)).cloned() else { continue };
@@ -511,7 +511,7 @@ impl SyncEngine {
             let wrap = e.wrap;
             self.state.set_entry(l, q, e);
             if let Some(c) = self.conns.get_mut(&conn) {
-                c.req.sent.insert((l, q), (raw, crate::sync::UNTAGGED));
+                c.req.sent.insert((l, q), (now, crate::sync::UNTAGGED));
                 c.req.replacing.insert((l, q), items.iter().map(|i| i.blob).collect());
             }
             uploads.push(osis_proto::Entry { blob, wrap, stamp, replaces: items });

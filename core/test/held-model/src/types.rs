@@ -308,7 +308,7 @@ pub struct Record {
 /// Everything the model's output is a function of.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Held {
-    /// The node's corrected clock, wall ms.
+    /// The node's wall clock, ms.
     pub now: u64,
     /// The node itself (for "may drop" judgments that need the right).
     pub me: NodeId,

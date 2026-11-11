@@ -96,16 +96,16 @@ impl SyncEngine {
         }
         waiting.sort();
         waiting.reverse();
-        let raw = self.raw_now();
+        let now = self.now();
         let mut items = Vec::new();
         while over(&waiting) {
             let Some((_, _, _, id, _)) = waiting.pop() else { break };
             let Some(c) = self.conns.get_mut(&conn) else { break };
-            if crate::sync::in_flight(c, &c.req.deleting, (l, id), raw) {
+            if crate::sync::in_flight(c, &c.req.deleting, (l, id), now) {
                 continue;
             }
             if let Some(item) = delete_item(keys, &l, id, None, &[], true) {
-                c.req.deleting.insert((l, id), (raw, crate::sync::UNTAGGED));
+                c.req.deleting.insert((l, id), (now, crate::sync::UNTAGGED));
                 items.push(item);
             }
         }

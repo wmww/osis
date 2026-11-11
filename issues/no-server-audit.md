@@ -6,8 +6,6 @@
 Evidence: `pNN`/`qN` are throwaway probes over `Transport::InProcess`, whose `peer://` finds any listener by key (**kinder than reality**: a `works` from it says the sync logic holds, not that nodes find each other). `(by hand)`: real sockets on localhost (the networking check, notes/testing.md By hand). `no_server` tests: core/test/sim/tests/it/no_server.rs, on `World` over the reachability model, model time; each open row's `repro_row<N>_*` (`#[ignore]` names the job, which renames it) asserts the right outcome. Also cli/tests/it/cli.rs `repro_row3_row12_*`.
 
 ## Findings
-Row 35's likely cause, read only: the own-commit drift exemption skips only commits this node signs, not those signed by a key actor it holds (issues/clock-peer-offset.md).
-
 Severity: **fails** (error or never happens), **silent** (claims success or does nothing, no error), **degraded**, ok.
 
 | # | Feature | No saved peers, no internet | Evidence | Severity |
@@ -45,8 +43,8 @@ Severity: **fails** (error or never happens), **silent** (claims success or does
 | 31 | LAN reach on a mesh | 255.255.255.255 and ff02::1 stop at one hop; `Lan::On { also_announce_to }` adds targets by hand, and a source outside the private ranges is still dropped (row 30). No discovery across hops (issues/net-mesh-discovery.md) | lan.rs, net.rs (read); `lan_announces_to_configured_targets_across_segments` | degraded |
 | 32 | LAN loop on one machine | Nodes share port 47380 on Linux (`SO_REUSEADDR`) and all hear broadcasts; a bind that still fails is logged and leaves the node working | `two_nodes_share_the_port` (by hand), `driver_lan_failed_bind_leaves_the_node_working` | ok |
 | 33 | Lost announcement | A join announces 3 times in its first 2 s; a later loss waits for the next 30 s repeat | `driver_lan_join_repeats_its_announcement` | ok |
-| 34 | LAN tag vs clock | Tags tolerate 10-20 min of skew, `MAX_DRIFT` allows 60. Past it nodes never match, and a connection is what would correct the clock | peers.rs:525; p10 window | fails |
-| 35 | Clock pulled by a peer | The offset is the median over all connections, peers included, with no cap: one peer can set it. Alice 120 min behind: Bob's `redeem` fails `own commit not applicable`. +120, ±30, -5 fine. Against "a wrong local clock harms only that node's own writes" | conn.rs:386; apply/mod.rs:817; p10 | fails |
+| 34 | LAN tag vs clock | Tags tolerate 10-20 min of skew, `MAX_DRIFT` allows 60. Past it nodes never match | peers.rs:525; p10 window | fails |
+| 35 | Clock pulled by a peer | Nothing a peer sends moves a node's clock; an offset over 5 s is a `ClockSkew` diagnostic. Bob connected to Alice alone, 120 min slow, redeems her link and takes Carol's writes | `a_slow_peer_does_not_move_a_nodes_clock_row_35_spec_sync_6` | ok |
 | 36 | Co-reader cap | At most 8 per label, chosen by node tid, and LAN tags come from that same list: an unreachable 8 hide a reachable 9th | peers.rs:303-315,524 (read) | degraded |
 | 37 | Link expiry, K with no saved peer | Only the node that made the link finalizes it (`h.here`) | deliver.rs:485 (read) | degraded |
 

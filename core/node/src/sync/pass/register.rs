@@ -11,7 +11,7 @@ impl SyncEngine {
     pub(super) fn step_settled(&mut self, g: &Tid, l: LabelId) -> bool {
         let a = self.keys_actor(g);
         let Some(t) = self.rotation_at.get(&a).map(|t| t.saturating_add(SETTLE_MS)) else { return true };
-        if t <= self.raw_now() {
+        if t <= self.now() {
             return true;
         }
         self.settle_by(t, l);
@@ -65,7 +65,7 @@ impl SyncEngine {
         // a step refused for now goes again only after its back-off; meanwhile the pass runs
         // under the host's head: what it uploads is wrapped under the newest read epoch, so a
         // removed holder still opening that head gets nothing it can read (spec/sync.md §5)
-        if retry > self.raw_now() {
+        if retry > self.now() {
             return Ok(false);
         }
         let (Some(write), Some(head)) = (keys.write.clone(), head) else { return Ok(false) };
@@ -79,7 +79,7 @@ impl SyncEngine {
         let a = self.keys_actor(&g);
         let core = &self.engine.core;
         let ids: Vec<CommitId> = core.on_thing(&a).filter(|c| core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_role())).collect();
-        let raw = self.raw_now();
+        let now = self.now();
         let mut uploads = Vec::new();
         let ctx = self.engine.body_ctx(&g);
         for id in ids {
@@ -96,7 +96,7 @@ impl SyncEngine {
                     None => continue,
                 },
             };
-            if self.state.is_present(&host, &l, &bid) || self.upload_busy(conn, l, bid, raw) {
+            if self.state.is_present(&host, &l, &bid) || self.upload_busy(conn, l, bid, now) {
                 continue;
             }
             let (Some(en), Some(blob)) = (self.state.entries.get(&(l, bid)).cloned(), self.engine.blob(&bid)?) else { continue };

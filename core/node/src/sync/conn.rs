@@ -39,7 +39,7 @@ pub(crate) enum Phase {
     /// No key opens it here.
     Failed,
     /// The host refused registering it for now (not admitted, full, the rate) or does not hold it
-    /// and this node cannot register it: opened again from scratch at `retry_at` (raw ms).
+    /// and this node cannot register it: opened again from scratch at `retry_at` (wall ms).
     Refused { retry_at: u64 },
 }
 
@@ -69,7 +69,7 @@ pub(crate) struct LConn {
     pub fill: Option<fill::Fill>,
     /// A child step sent for registration.
     pub registering: Option<(Step, osis_label::ClaimSet)>,
-    /// A child step refused for now: no pass registers one before this (raw ms).
+    /// A child step refused for now: no pass registers one before this (wall ms).
     pub step_retry: u64,
     /// Child steps refused in a row (the back-off doubles per refusal; an open or a registered
     /// step resets it).
@@ -125,7 +125,6 @@ pub(crate) struct Conn {
     pub up: bool,
     pub labels: BTreeMap<LabelId, LConn>,
     pub timer: Option<u64>,
-    pub offset: Option<i64>,
     pub req: Requests,
 }
 
@@ -133,7 +132,7 @@ pub(crate) struct Conn {
 /// with the connection (asked again on the next one).
 #[derive(Default)]
 pub(crate) struct Requests {
-    /// Entries uploaded or deposited, with when (raw ms) and the tag of the command carrying them
+    /// Entries uploaded or deposited, with when (wall ms) and the tag of the command carrying them
     /// (`ClientSession::commands`): passes skip them while unanswered or within `RESEND_MS`
     /// (`in_flight`).
     pub sent: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
@@ -142,7 +141,7 @@ pub(crate) struct Requests {
     /// Uploads sent replacing entries (spec/sync.md §5): those are gone once one is answered OK.
     /// A plain upload of the same blob waits meanwhile (two statuses could not be told apart).
     pub replacing: BTreeMap<(LabelId, osis_base::BlobId), Vec<osis_base::BlobId>>,
-    /// Blobs asked for and not received yet, with when (raw ms; `SyncEngine::asked`).
+    /// Blobs asked for and not received yet, with when (wall ms; `SyncEngine::asked`).
     pub fetching: BTreeMap<osis_base::BlobId, u64>,
     /// Blobs the host did not deliver when fetched (since it last announced them).
     pub missing: BTreeSet<osis_base::BlobId>,
@@ -177,13 +176,13 @@ impl Requests {
 }
 
 impl SyncEngine {
-    /// Until when blob `b` counts as asked (raw ms), `None` when it is asked nowhere now. One rule
+    /// Until when blob `b` counts as asked (wall ms), `None` when it is asked nowhere now. One rule
     /// for every source, a host or a reader: a fetch counts while it is younger than
     /// `STALL_TIMEOUT_MS`; older, it may be held behind a reply its source trickles (the stall
     /// rule only wants the oldest request to move), so the next source is asked too and whichever
     /// answers first settles it (spec/sync.md §10, Bodies).
     pub(crate) fn asked(&self, b: &osis_base::BlobId) -> Option<u64> {
-        let now = self.raw_now();
+        let now = self.now();
         let hosts = self.conns.values().filter_map(|c| c.req.fetching.get(b).copied());
         hosts.chain(self.stream_asks(b)).map(|at| at.saturating_add(osis_proto::client::STALL_TIMEOUT_MS)).filter(|t| *t > now).max()
     }
@@ -245,7 +244,7 @@ impl SyncEngine {
             // `peer_retry_ms` (a peer closing every session must not make a dial loop): a P2P dial
             // that punched through ends its relayed connection and the redial takes the direct
             // one (notes/networking.md, switching)
-            let now = self.raw_now();
+            let now = self.now();
             let pause = self.cfg.peer_retry_ms;
             self.redialed.retain(|_, t| t.saturating_add(pause) > now);
             let quick = c.peer && c.up && !self.redialed.contains_key(&c.host);
@@ -261,7 +260,7 @@ impl SyncEngine {
                 (false, true) => pause,
                 (false, false) => self.cfg.retry_ms,
             };
-            self.retry.insert(c.host, (c.address, self.raw_now().saturating_add(pause)));
+            self.retry.insert(c.host, (c.address, self.now().saturating_add(pause)));
         }
     }
 
@@ -297,7 +296,7 @@ impl SyncEngine {
     /// Dials wanted hosts without a connection (after their retry time); adds labels to
     /// open connections.
     pub(super) fn connect(&mut self, out: &mut Vec<Action>) {
-        let now = self.raw_now();
+        let now = self.now();
         let wanted = self.wanted_hosts();
         // a host no longer wanted keeps no retry time (it would hold the wake in the past)
         self.retry.retain(|k, _| wanted.contains_key(k));
@@ -322,7 +321,7 @@ impl SyncEngine {
             self.rng.fill_bytes(&mut challenge);
             // the key the transport authenticates (a LAN address presents its own)
             let session = ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge });
-            self.conns.insert(conn, Conn { host: key, address: addr.clone(), peer, session, proven: super::proofs::Proven::default(), proved: BTreeSet::new(), up: false, labels: BTreeMap::new(), timer: None, offset: None, req: Requests::default() });
+            self.conns.insert(conn, Conn { host: key, address: addr.clone(), peer, session, proven: super::proofs::Proven::default(), proved: BTreeSet::new(), up: false, labels: BTreeMap::new(), timer: None, req: Requests::default() });
             out.push(Action::Dial { conn, address: addr });
         }
     }
@@ -363,7 +362,7 @@ impl SyncEngine {
 
     /// Sends a command on a connection.
     pub(crate) fn command(&mut self, conn: ConnId, cmd: Command, out: &mut Vec<Action>) -> Result<()> {
-        let now = self.raw_now();
+        let now = self.now();
         if tracing() {
             self.trace(conn, &cmd);
         }
@@ -431,14 +430,13 @@ impl SyncEngine {
             E::Peer(m) => self.peer_message(conn, *m, out)?,
             // Hellos done: every label this host holds starts opening
             E::Ready { .. } => self.add_new_labels(out)?,
-            E::ClockOffset { offset_ms, .. } => {
-                if let Some(c) = self.conns.get_mut(&conn) {
-                    c.offset = Some(offset_ms);
-                }
-                let mut v: Vec<i64> = self.conns.values().filter_map(|c| c.offset).collect();
-                v.sort_unstable();
-                if let Some(m) = v.get(v.len() / 2) {
-                    self.engine.set_clock_offset(*m);
+            // a diagnostic only: nothing another node sends moves this node's clock (spec/sync.md §6)
+            E::ClockOffset { offset_ms, diagnostic } => {
+                if diagnostic && let Some(c) = self.conns.get(&conn) {
+                    let detail = format!("the clock of {} is {offset_ms:+} ms from this node's", osis_label::address_to_text(&c.address));
+                    let now = self.engine.now();
+                    self.engine.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::ClockSkew, tids: Vec::new(), commit: None, peer: None, detail }, now);
+                    self.engine.core.events.flush();
                 }
             }
             E::Opened { label, head, entry_box } => self.opened(conn, label, head, entry_box, out)?,

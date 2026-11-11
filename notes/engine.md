@@ -45,7 +45,7 @@ osis-node (`core/node/src/sync`, notes/sync.md): `mod.rs` `SyncEngine`; `state.r
 
 ## Public surface (engine)
 A map by area, not a full list (rustdoc has that).
-- Lifecycle: `Engine::create(backend, root, Config, clock, rng)` (fresh identity; the node thing's `created.0` with `node.0`, then `keys.0`), `Engine::open(..)` (load, re-examine pending), `reload`, `tid`, `identity`, `now` (corrected clock), `set_clock_offset`, `subscribe`/`subscribe_durable() -> Receiver<Event>`, `register_schema`, `app_record`/`set_app_record` (the `u/` records the `osis` crate keeps), `report(diagnostic)` (deduped like the engine's own).
+- Lifecycle: `Engine::create(backend, root, Config, clock, rng)` (fresh identity; the node thing's `created.0` with `node.0`, then `keys.0`), `Engine::open(..)` (load, re-examine pending), `reload`, `tid`, `identity`, `now` (the wall clock), `subscribe`/`subscribe_durable() -> Receiver<Event>`, `register_schema`, `app_record`/`set_app_record` (the `u/` records the `osis` crate keeps), `report(diagnostic)` (deduped like the engine's own).
 - Writing: `Mutation` (`create`, `deleting`, `set`/`replace`/`remove_aspect`/`op` through any `RawKey`, `retention`, `expires`/`expires_all`, `purge`, `undo(target)`, `frontier`, `act_as`, `confine`, `sign_as`, `commit_form`, `require_synced`); `Engine::new_thing(&mut m, admin)`, `Engine::commit(m) -> Option<CommitId>` (notes/engine-apply.md, Writer side).
 - Receiving: `ingest(bytes, blobs)` / `ingest_from(.., peer)` / `ingest_memory` -> `Ingested::{Applied, Duplicate, Pending(reason), Parked}`; `reexamine`, `set_syncing(tid, on)`, `tick` (expiry, purge floors, drift), `pending()`.
 - Relaying: `commit_ids`, `header`, `commit_bytes`, `blob`, `package`.

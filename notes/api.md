@@ -20,7 +20,7 @@ How to judge this shape, and the standing rules: notes/api-design.md.
 - Clients with an actor of their own (notes/client-port.md §3): `add_client`, then `Osis::connect(&[NodeLogin])`, a thin client answering as one actor: `me()` its actor, what it may not read is unknown, writes by its rights; sharing, sync and process-wide calls `Unsupported`, but for `holders` and `leave` of its own actor's grant. Grants to the actor are what the client reaches.
 - Group sources (notes/client-port.md §6, §8): `connect_node`, `group_source`, `Status.two_sources`. A disconnected source is `Network`, never another's answer.
 - Identity: `node() -> Tid`, `me() -> Tid` (the account: author of its writes, holder of its roles), `home() -> Tid` (the private group every node of the account syncs).
-- `now() -> Result<Time>` (`Time`: milliseconds since the epoch, the one public time type): the corrected clock commits are stamped with; on a thin client its node's, `Network` when it cannot be reached.
+- `now() -> Result<Time>` (`Time`: milliseconds since the epoch, the one public time type): the node's wall clock, which commits are stamped with (never moved by other nodes); on a thin client its node's, `Network` when it cannot be reached.
 
 ## Keys: typed aspects and signals
 - `AspectKey` is what the API takes: generated constants and `DynamicAspectKey`, not a bare name (each has `name()`, its `Ak`); `RawKey` beneath it is osis-schema's, doc-hidden, what the engine takes (`Ak` too). `DynamicAspectKey` (`Osis::aspect_key(name)`, typed by a schema registered at run time; `DynamicAspectKey::untyped(ak)`: never typed) says what an app needs without the schema: `name()`, `value_type() -> Option<NestedType>` (`get()` its shape, `name()` its declared name), `default_retention()`.

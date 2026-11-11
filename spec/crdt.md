@@ -35,8 +35,8 @@ A **dot** is `(source, counter)`, counter ≥ 1. A dot identifies one write fore
 
 ### 2.2 Timestamps and stamps
 - `ts` is one unsigned integer: `wall_ms * 2^16 + logical`, `wall_ms < 2^47`.
-- **HLC rules.** A node's clock is `max(wall clock, last ts seen)`, where wall clock is the node's corrected clock (spec/sync.md §6), with `logical` incremented on equal `wall_ms`. On receiving a commit the clock advances to the commit's ts. The author tiebreak lives in the dot, not in `ts`.
-- **Parking.** A commit with `wall_ms(ts)` more than `MAX_DRIFT` ahead of the receiver's wall clock is **parked**: kept unjoined and counted as not received (frontiers, §8) until local wall time catches up, then joined normally.
+- **HLC rules.** A node's clock is `max(wall clock, last ts seen)`, the wall clock being its own (spec/sync.md §6), with `logical` incremented on equal `wall_ms`. On receiving a commit the clock advances to the commit's ts. The author tiebreak lives in the dot, not in `ts`.
+- **Parking.** A received commit with `wall_ms(ts)` more than `MAX_DRIFT` ahead of the receiver's wall clock is **parked**: kept unjoined and counted as not received (frontiers, §8) until local wall time catches up, then joined normally. A commit the node makes itself is never parked, whoever signs it: its HLC may run ahead of its wall clock.
 - **Next stamp.** Every stamp a node holds has a `ts` at most that of a commit it applied (a carried write is stamped no later than the snapshot carrying it, §8). So a node's next commit stamps above every stamp it holds, but for the ephemeral commit that follows a durable one under its `ts` (spec/sync.md §9).
 - A **stamp** is `(ts, dot)`. One commit has one `ts`; every write in it has that `ts`. A creation or position write has its own counter, so these are ordered by counter inside a commit; commit-level writes share `lo` (§2.3).
 - **Total order on stamps**: by `ts`; then the dot.

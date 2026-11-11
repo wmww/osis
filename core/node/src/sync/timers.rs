@@ -42,7 +42,7 @@ impl SyncEngine {
 
     /// Session pings, periodic re-syncs and retries.
     pub(super) fn timers(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        let (now, corrected) = (self.raw_now(), self.now());
+        let now = self.now();
         // the clock went back: resyncs count from now, not from a time still ahead
         self.local_last = self.local_last.min(now);
         for l in self.conns.values_mut().flat_map(|c| c.labels.values_mut()) {
@@ -99,7 +99,7 @@ impl SyncEngine {
             }
             self.start_label(conn, g, label, out)?;
         }
-        if self.local_any && self.local_last.saturating_add(self.cfg.resync_ms) <= now && (self.local_work.is_empty() || self.local_work.values().any(|w| w.resync_due(corrected))) {
+        if self.local_any && self.local_last.saturating_add(self.cfg.resync_ms) <= now && (self.local_work.is_empty() || self.local_work.values().any(|w| w.resync_due(now))) {
             self.local_dirty = true;
         }
         for (conn, label) in resync {
@@ -114,19 +114,19 @@ impl SyncEngine {
                 // subscribed: a pass when something waits for it (`Work::resync_due`: what a pass
                 // left, a timed bound); unsubscribed, the Sync's end uploads those
                 l.last_sync = now;
-                l.dirty |= l.fill.is_some() || l.work.resync_due(corrected) || capped;
+                l.dirty |= l.fill.is_some() || l.work.resync_due(now) || capped;
             }
         }
         Ok(())
     }
 
-    /// When the next Tick is wanted (raw wall ms): session timers, one tick per `resync_ms` while
+    /// When the next Tick is wanted (wall ms): session timers, one tick per `resync_ms` while
     /// anything is open (a label's own resync only when something waits for it), served sessions'
     /// idle ends, redials, inbox retries and the engine's retention (expiry, purge floor) and
     /// lost-access timers. Never before `MIN_WAKE_MS` after the last Tick, so an item due but not
     /// serviceable yet cannot spin (and later events do not push a due wake back).
     pub(super) fn next_wake(&mut self) -> Option<u64> {
-        let now = self.raw_now();
+        let now = self.now();
         let mut t: Option<u64> = None;
         let mut at = |x: u64| t = Some(t.map_or(x, |y: u64| y.min(x)));
         let resync = self.cfg.resync_ms;
@@ -160,30 +160,27 @@ impl SyncEngine {
         if let Some(x) = self.settle_at.keys().next() {
             at(*x);
         }
-        let skew = self.now() as i64 - now as i64;
-        // a corrected time as a raw one
-        let raw = |x: u64| (x as i64).saturating_sub(skew).max(0) as u64;
         // a pending grant keeping a leaver's actor ages out (`drop_left`)
         if let Some(x) = self.left.as_ref().and_then(|l| l.recheck_at()) {
-            at(raw(x));
+            at(x);
         }
         // a pending grant keeping a lost actor ages out (`drop_lost_due`)
         if let Some(x) = self.engine.next_lost_due() {
-            at(raw(x));
+            at(x);
         }
         // an unsent delivery (`at` 0) waits on placement, which wakes by its own events and bound
         if let Some(x) = self.state.sent_inbox.values().filter(|s| s.at != 0).map(|s| s.at.saturating_add(osis_base::format::INBOX_LIFETIME_MS)).min() {
-            at(raw(x));
+            at(x);
         }
         // a due inbox blob goes once its host's connection is ready (an event of its own)
         for o in self.outbox.values().filter(|o| o.sent.is_none() && o.after > now) {
             at(o.after);
         }
         if let Ok(Some(x)) = self.engine.next_timer() {
-            at(raw(x));
+            at(x);
         }
         if let Ok(Some(x)) = self.engine.next_link_expiry() {
-            at(raw(x));
+            at(x);
         }
         t.map(|x| x.max(self.last_tick.saturating_add(MIN_WAKE_MS)))
     }
@@ -205,7 +202,7 @@ impl SyncEngine {
     /// to find out by (the stall timeout), and a live label would hear nothing.
     pub fn refresh(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
-        let (now, quiet) = (self.raw_now(), self.cfg.retry_ms);
+        let (now, quiet) = (self.now(), self.cfg.retry_ms);
         let conns: Vec<ConnId> = self.conns.keys().copied().collect();
         for conn in conns {
             let Some(c) = self.conns.get_mut(&conn) else { continue };
@@ -248,7 +245,7 @@ impl SyncEngine {
 
     /// Starts a cursor sync of an open label.
     pub(crate) fn sync_label(&mut self, conn: ConnId, label: LabelId, out: &mut Vec<Action>) -> Result<()> {
-        let now = self.raw_now();
+        let now = self.now();
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let host = c.host;
         let Some(l) = c.labels.get_mut(&label) else { return Ok(()) };

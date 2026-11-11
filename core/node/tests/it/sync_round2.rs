@@ -68,9 +68,9 @@ fn pending_commit_does_not_withhold_uploads_spec_sync_6() {
     let t = net.item(a, g, g, "v1");
     net.run();
     // b writes two hours ahead: a holds it pending for drift
-    net.engine(b).set_clock_offset(2 * 3_600_000);
+    net.set_skew(b, 2 * 3_600_000);
     net.write(b, t, "ahead");
-    net.engine(b).set_clock_offset(0);
+    net.set_skew(b, 0);
     net.run();
     assert!(net.engine(a).pending().iter().any(|(_, r)| *r == osis_node::Reason::Drift));
     let c = net.write(a, t, "mine");
@@ -80,17 +80,33 @@ fn pending_commit_does_not_withhold_uploads_spec_sync_6() {
     assert!(blobs_of(&mut net, a, &l, &c).iter().any(|x| at.contains(x)), "a's body went up beside the pending commit");
 }
 
-// spec/crdt.md §2.2 (the drift bound is for received commits), spec/sync.md §6: a correction that
-// moves the clock back below this node's HLC never stops it from committing.
+// spec/sync.md §6 (nothing another node sends changes a node's clock): a host two hours ahead is
+// reported (`ClockSkew`) and moves nothing: the node's writes keep its own clock.
+#[test]
+fn a_skewed_host_is_reported_not_followed_spec_sync_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    net.hosts[host].skew = 2 * 3_600_000;
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
+    let t = net.item(a, g, g, "v1");
+    net.advance(60_000);
+    assert!(net.diagnostics(a).iter().any(|d| d.starts_with("ClockSkew")), "{:?}", net.diagnostics(a));
+    let c = net.write(a, t, "v2");
+    assert_eq!(net.engine(a).header(&c).unwrap().ts.wall_ms().0, net.now());
+}
+
+// spec/crdt.md §2.2 (the drift bound is for received commits): a wall clock set back below this
+// node's HLC never stops it from committing.
 #[test]
 fn own_commit_after_clock_moves_back_spec_crdt_2() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let g = net.group(a, &[], &[]);
     let t = net.item(a, g, g, "v1");
-    net.engine(a).set_clock_offset(12 * 3_600_000);
+    net.set_skew(a, 12 * 3_600_000);
     net.write(a, t, "ahead");
-    net.engine(a).set_clock_offset(0);
+    net.set_skew(a, 0);
     net.write(a, t, "back");
     assert_eq!(net.read(a, t), Some(s("back")));
 }

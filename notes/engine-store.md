@@ -19,7 +19,7 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` records
 | `g/`+tid+commit | `keys.0` parts whose held body wrote a keyset, any validity (`ix.keyset_parts`; kept while the commit is held, whatever becomes of the body); `own_keys` = things with such a part valid (`apply::keys::refresh_own_keys`, on noting, flips, load), so an uncover keeps it and an invalid rotation drops it |
 | `k/`+actor | opened epochs of an actor (`established`, `claims`, `snapshot`; never re-inferred). A plain thing's leftover epochs here are reading-only overlays on its derived ones (`Core::own_epochs`/`epochs`) |
 | `b/`+commit+tid | pending boxes kept sealed by forgetting (`apply/keys.rs` `SEALED`; notes/engine-lost-access.md) |
-| `q/`+aspect | suspect flags: le64 corrected wall ms last raised, then per body its commit, aspect index and `Why` bits (`retention/suspect.rs`) |
+| `q/`+aspect | suspect flags: le64 wall ms last raised, then per body its commit, aspect index and `Why` bits (`retention/suspect.rs`) |
 | `l/`, `T/`, `K/`, `B/` | the lost-access work list, timed losses, kept copies, bearers (`rotation/lost.rs`) |
 | `d/`+AK | the local schema of each app AK (canonical form) |
 | `u/`+name | API records (account, home group, settings) |

@@ -73,7 +73,7 @@ const MAX_WAITING: usize = 1024;
 #[derive(Default)]
 pub(crate) struct MemLog {
     seq: u64,
-    /// By counter: entry, added (else deleted), when (corrected wall ms).
+    /// By counter: entry, added (else deleted), when (wall ms).
     by_seq: BTreeMap<u64, (LabelId, BlobId, bool, u64)>,
     slot: BTreeMap<(LabelId, BlobId), u64>,
 }
@@ -306,12 +306,12 @@ pub(crate) struct Pulling {
     record: Option<RecordId>,
     /// Pulls sent (tests count them).
     pulls: u64,
-    /// The last Pull was answered Error: asked again at this time (raw ms), `resync_ms` after.
+    /// The last Pull was answered Error: asked again at this time (wall ms), `resync_ms` after.
     retry_at: Option<u64>,
 }
 
 /// A Fetch of the stream not answered yet: its place in send order (`Pulling::sent`), the member,
-/// the blobs, the `max_reply` asked and when they were first asked there (raw ms; the rest of an
+/// the blobs, the `max_reply` asked and when they were first asked there (wall ms; the rest of an
 /// answered Fetch keeps it: past `STALL_TIMEOUT_MS` its bodies are asked of the next source too,
 /// `SyncEngine::asked`).
 struct Fetching {
@@ -818,7 +818,7 @@ impl SyncEngine {
 
     /// `conn`'s Pull in flight is refused: asked again after `resync_ms` (`stream_retry`).
     fn stream_pull_refused(&mut self, conn: ConnId) {
-        let at = self.raw_now().saturating_add(self.cfg.resync_ms);
+        let at = self.now().saturating_add(self.cfg.resync_ms);
         if let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) {
             p.asked = None;
             p.caught_up = false;
@@ -853,7 +853,7 @@ impl SyncEngine {
 
     /// Asks again the streams whose Pull was answered Error once their time came.
     pub(super) fn stream_retry(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        let now = self.raw_now();
+        let now = self.now();
         let due: Vec<ConnId> = self.streams.iter().filter(|(_, s)| s.pulling.retry_at.is_some_and(|t| t <= now)).map(|(c, _)| *c).collect();
         for conn in due {
             if let Some(s) = self.streams.get_mut(&conn) {
@@ -1171,7 +1171,7 @@ impl SyncEngine {
     /// `REPLY_BUDGET` for the rest of an answered one (`again`: when that one was asked, which the
     /// rest keeps, so answering one body at a time does not hold the others longer).
     pub(crate) fn stream_fetch(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, again: Option<u64>, out: &mut Vec<Action>) -> Result<()> {
-        let now = self.raw_now();
+        let now = self.now();
         let ids: Vec<BlobId> = ids.into_iter().filter(|b| self.may_ask(conn, l, b)).collect();
         if ids.is_empty() {
             return Ok(());

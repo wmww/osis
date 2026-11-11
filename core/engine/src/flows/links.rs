@@ -166,7 +166,7 @@ impl Engine {
         Ok(out)
     }
 
-    /// When the next link this node may finalize expires (corrected wall ms): the earliest
+    /// When the next link this node may finalize expires (wall ms): the earliest
     /// `until` of a live L edge on a K it is admin of.
     pub fn next_link_expiry(&mut self) -> Result<Option<u64>> {
         let Some(me) = self.core.me() else { return Ok(None) };

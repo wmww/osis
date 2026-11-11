@@ -2463,9 +2463,9 @@ fn unverified_ephemeral_not_kept_or_spread_spec_sync_9() {
     let wk = write_key(&mut net, a, g);
     let ak = osis_base::Ak::new(STATE).unwrap();
     // a writer's commit stamped three hours ahead
-    net.engine(a).set_clock_offset(3 * 3_600_000);
+    net.set_skew(a, 3 * 3_600_000);
     let future = forge_memory(&mut net, a, w, &ak, s("from the future"));
-    net.engine(a).set_clock_offset(0);
+    net.set_skew(a, 0);
     let (_, ev) = sealed(&mut net, a, g, &future.blob, Some(&wk), 1);
     let acts = push(&mut net, b, s1, l, vec![ev]);
     net.actions(b, acts);

@@ -112,7 +112,7 @@ enum LogWrite {
     Head(LabelId, [u8; 32]),
 }
 
-/// A tombstone (`State::tombs`): when (corrected wall ms) and what the entry was.
+/// A tombstone (`State::tombs`): when (wall ms) and what the entry was.
 #[derive(Clone, Debug)]
 pub struct Tomb {
     pub at: u64,
@@ -208,7 +208,7 @@ pub struct OutRec {
 }
 
 /// A role commit delivered by inbox to `holder` (spec/sync.md §3): re-sealed and sent
-/// again once `INBOX_LIFETIME` passed since `at` (corrected wall ms) unless the holder acted;
+/// again once `INBOX_LIFETIME` passed since `at` (wall ms) unless the holder acted;
 /// `at` 0: not sent yet (`SyncEngine::send_inbox`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SentInbox {
@@ -292,7 +292,7 @@ impl Kind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Carriers {
     pub by: Vec<CommitId>,
-    /// Corrected wall ms of the last change.
+    /// Wall ms of the last change.
     pub at: u64,
     /// Of a memory commit (`State::memory_commits` when set): never stored, kept for a memory
     /// tombstone's lifetime.
@@ -345,7 +345,7 @@ pub struct State {
     pub certs: BTreeSet<(LabelId, CommitId)>,
     /// The thing lists this node placed under a label: (label, rotation, thing).
     pub listed: BTreeSet<(LabelId, CommitId, Tid)>,
-    /// Blob IDs of no use at a host, by when (corrected wall ms): uploads it refused as
+    /// Blob IDs of no use at a host, by when (wall ms): uploads it refused as
     /// tombstoned, and entries it holds under a wrap not opening to the blob's key (a stamped
     /// entry's wrap never changes there, spec/sync.md §5). Forgotten after `TOMBSTONE_LIFETIME`,
     /// when the host's tombstone is gone too; not while the host still holds the entry.
@@ -387,13 +387,13 @@ pub struct State {
     pub deleted_commits: BTreeMap<CommitId, usize>,
     /// Inbox blobs not yet answered by their host, by (host, blob).
     pub outbox: BTreeMap<(HostKey, LabelId, BlobId), OutRec>,
-    /// Corrected wall ms of the running `handle` (tombstone times).
+    /// Wall ms of the running `handle` (tombstone times).
     pub now: u64,
     /// Things forgotten whose opened inbox blobs are not yet checked (`y/f`).
     pub forget: BTreeSet<Tid>,
     /// Replaced labels this admin no longer syncs (`y/q`, spec/sync.md §2).
     pub retired: crate::engine::memo::StampedSet<LabelId>,
-    /// When this admin first saw each replaced label it still syncs (corrected wall ms, `y/q`
+    /// When this admin first saw each replaced label it still syncs (wall ms, `y/q`
     /// with a time): retired after `ROLE_KEEP` whatever its hosts say.
     pub replaced_seen: BTreeMap<LabelId, u64>,
     /// Inbox deliveries by (holder, commit), until the holder acts or the re-sends run out.

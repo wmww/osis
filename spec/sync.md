@@ -102,7 +102,7 @@
     - It does so when either:
       - its commit is applied, valid in every part the blob carries, and about an actor whose inbox the label is (it has parts a copy below would take for that actor); or
       - its user declined it (below).
-    - It does not when another blob of that commit under the label is stamped, or the blob's prefix expiry is more than `INBOX_LIFETIME + 2 × MAX_DRIFT` ahead of the corrected clock.
+    - It does not when another blob of that commit under the label is stamped, or the blob's prefix expiry is more than `INBOX_LIFETIME + 2 × MAX_DRIFT` ahead of its wall clock.
     - A blob so stamped leaves the deposit budget and stays readable until it expires.
     - Every other inbox blob stays deposited, until it expires or is cleared (§5).
   - **Following a payload label**: the payload's labels and hosts are the sender's word. A recipient follows (opens, dials the hosts of) a payload label only:
@@ -249,7 +249,8 @@ Each operation names a label. Writes are signed with the role keys of the host's
 ## 6. Protocol
 - **Framing**: framed messages over an ordered byte stream (§10); version negotiation, messages and limits: spec/wire.md §11. Every message has a fixed maximum size; every list is paged.
 - **Handshake and clock**: each side's handshake carries its wall clock (ms) and a random challenge for opens (§5).
-  - A node SHOULD estimate its clock offset from peers' handshakes and Ping/Pong round trips (spec/wire.md §11; round-trip corrected, robust to an outlier, ignoring samples whose round trip exceeds a few seconds) and use the corrected clock wherever wall time is used.
+  - Every node uses its own wall clock wherever wall time is used; nothing another node sends changes it.
+  - A node SHOULD estimate a dialed peer's clock offset from its handshake and Ping/Pong round trips (spec/wire.md §11; round-trip corrected, robust to an outlier, ignoring samples whose round trip exceeds a few seconds) and report an offset of more than a few seconds as a diagnostic.
 - **Flow control**:
   - **Requester**: either side of a connection, whoever dialed, keeps at most `WINDOW` in flight on it, counting per request it sent and that is not answered (the Stream's and the shared set's included) its frame length plus a reply allowance:
     - `MAX_MESSAGE` for Reconcile;
@@ -359,7 +360,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
     - Parts are judged (spec/permissions.md §5.2).
     - A session-form one applies atomically and an invalid part is un-merged (spec/crdt.md §4.6).
     - A part past its `expires` is held as its leftover, value-less, at every node (spec/crdt.md §4.7), one arriving past it included.
-    - An ephemeral commit more than `MAX_DRIFT` ahead of the corrected clock waits as a durable one does.
+    - An ephemeral commit more than `MAX_DRIFT` ahead of the wall clock waits as a durable one does.
   - **Forgetting**: a node forgets an ephemeral commit whole, header included, once none of its parts is held any more (each covered or superseded; a leftover is held until covered or superseded) and none waits, keeping of its header only what deleting its entries at hosts needs while it has any.
     - A copy of a forgotten commit arriving again applies and goes again by the same rules.
 - **Compaction**: any writer of the aspect compacts (spec/commits.md §2, §5).
@@ -391,10 +392,10 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
 - **Relay-only commits**:
   - **Dropped unopened**: a node drops a relay-only blob unopened when one of these holds:
     - it is larger than `MAX_RELAY_BLOB`;
-    - its prefix expiry is passed or more than `2 × MAX_DRIFT` ahead of the corrected clock;
+    - its prefix expiry is passed or more than `2 × MAX_DRIFT` ahead of its wall clock;
     - the node received that blob ID under that label before its expiry (remembered for at most a bounded number of blobs: past it the earliest-expiring is forgotten and its expiry becomes the label's floor, at or below which blobs are dropped).
   - **Delivery**: it verifies the rest like an ephemeral commit and tells its valid ephemeral signal parts to listeners once (spec/data-model.md §2). It holds and re-uploads nothing.
-  - **Replay**: it remembers delivered relay-only commit IDs until their `ts` is `MAX_DRIFT` old, at most `MAX_DELIVERED` (past that the earliest delivered is forgotten and its `ts` becomes its author's floor unless lower, at or below which that author's relay-only commits are dropped), and drops relay-only commits whose `ts` is more than `MAX_DRIFT` from its corrected clock.
+  - **Replay**: it remembers delivered relay-only commit IDs until their `ts` is `MAX_DRIFT` old, at most `MAX_DELIVERED` (past that the earliest delivered is forgotten and its `ts` becomes its author's floor unless lower, at or below which that author's relay-only commits are dropped), and drops relay-only commits whose `ts` is more than `MAX_DRIFT` from its wall clock.
   - **Co-reader peer**: a co-reader peer serving the label passes a verified new one on, stamped as received: from a host to the sessions it serves and the readers sharing the label (§10, Stream), from a session or reader to its other sessions and readers and to the label's hosts it syncs with.
 
 ## 10. Transport and addresses

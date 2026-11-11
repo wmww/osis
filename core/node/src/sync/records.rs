@@ -147,7 +147,7 @@ impl SyncEngine {
         if actors.is_empty() {
             // no record: the listener runs the connection's set if it knows this dialer, and this
             // side tests a filter it receives (first contact, issues/net-first-contact.md)
-            let now = self.raw_now();
+            let now = self.now();
             if let Some(c) = self.conns.get_mut(&conn) {
                 let o = c.session.handle(now, ClientInput::Command(Command::Peer(Box::new(osis_proto::Message::NoRecord { id: super::shared::NO_RECORD_ID }))));
                 self.outputs(conn, o, out)?;
@@ -161,7 +161,7 @@ impl SyncEngine {
         let tags = recs.iter().take(MAX_RESUME_TAGS).map(|r| resume_tag(&r.r, &key, &dialer, &listener)).collect();
         let expect = recs.iter().take(MAX_RESUME_TAGS).map(|r| (resumed_tag(&r.r, &key, &dialer, &listener), r.id)).collect();
         self.records.sent.insert(conn, ResumeSent { nonce, actors, expect });
-        let now = self.raw_now();
+        let now = self.now();
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let o = c.session.handle(now, ClientInput::Command(Command::Resume { nonce, tags }));
         self.outputs(conn, o, out)

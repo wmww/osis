@@ -235,8 +235,9 @@ impl NetSim {
 
     /// After quiescence: a random writer of a tracked durable thing sets its cursor there and
     /// refreshes it every half expiry; each reader a path through hosts that keep nothing
-    /// out joins to it reads it just before every refresh. Then the writer goes down (nobody sees it leave) and once its last
-    /// write expired nobody reads its cursor. Then it comes back.
+    /// out joins to it reads it just before every refresh, unless the write expired by the
+    /// reader's clock. Then the writer goes down (nobody sees it leave) and no reader whose clock
+    /// passed its last write's expiry reads its cursor. Then it comes back.
     pub fn author_leaves(&mut self) -> Res<()> {
         let Some(&(t, g)) = self.eph.things.first() else { return Ok(()) };
         let ms = self.readers(&g)?;
@@ -249,19 +250,21 @@ impl NetSim {
         let Some(&a) = self.dice.pick(&writers) else { return Ok(()) };
         self.eph.next += 1;
         let v = format!("c{}", self.eph.next);
+        let mut until = 0;
         for round in 0..4 {
             let mut m = Mutation::new();
+            // the expiry `cursor_op` writes, which each reader judges by its own clock
+            until = self.engine(a)?.now().0.saturating_add(CURSOR_MS);
             self.cursor_op(a, t, &v, &mut m)?;
             self.eph_write(a, m, format!("cursor {t} {v} (refresh {round})"))?;
             self.settle()?;
-            // just before the next refresh: a second's slack for the nodes' corrected clocks
             self.advance(CURSOR_MS / 2 - 1_000)?;
             self.settle()?;
             // the readers a path through hosts that keep nothing out joins to the writer
             let lossy = self.lossy_hosts();
             let readers = self.eph_components(&g, &ms, &lossy).into_iter().find(|c| c.contains(&a)).unwrap_or_default();
             for o in &readers {
-                if self.cursor_of(*o, &t, a)?.as_deref() != Some(v.as_str()) {
+                if self.engine(*o)?.now().0 < until && self.cursor_of(*o, &t, a)?.as_deref() != Some(v.as_str()) {
                     return Err(self.fail(format!("node {o} does not read node {a}'s refreshed cursor {v} on {t} (refresh {round})")));
                 }
             }
@@ -273,7 +276,7 @@ impl NetSim {
         self.advance(CURSOR_MS)?;
         self.settle()?;
         for o in ms.into_iter().filter(|o| *o != a) {
-            if let Some(c) = self.cursor_of(o, &t, a)? {
+            if self.engine(o)?.now().0 >= until && let Some(c) = self.cursor_of(o, &t, a)? {
                 return Err(self.fail(format!("node {o} still reads departed author {a}'s cursor {c} on {t} past its expiry")));
             }
         }

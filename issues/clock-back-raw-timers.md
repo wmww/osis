@@ -1,4 +1,4 @@
-# A clock gone back stalls what counts in raw ms
+# A clock gone back stalls what counts in wall ms
 > Summary: after the wall clock jumps back by D, session pings and stall checks (`next_ping`, `c.timer`), `settle_at`, the peer wait and `Refused` back-offs wait up to D more; in dev builds a grant's `until` coming alive again trips `reseal_quiet`'s debug check.
 > Priority: low
 > Tags: node-sync, proto

@@ -59,7 +59,7 @@ The requirements behind sync: spec/requirements.md, Data a node cannot read and 
 - Deposit budget and deposit order: notes/inbox.md. `TOMBSTONE_LIFETIME` 30 days (notes/sync-convergence.md). `INBOX_LIFETIME` 90 days (format constant, matching `ROLE_KEEP`).
 - Fetching from a node that cannot read them, a client cannot put permission commits first before decrypting, so it downloads everything and applies role commits first.
 - Clients may batch uploads to blur timing.
-- Diagnostics: a clock offset of more than a few seconds against peers (proto reports it after three pongs, above 5 s); an ephemeral commit not applied for the node's cap; an ephemeral upload a host refused for its cap.
+- Diagnostics: a clock offset of more than a few seconds against a dialed peer (`ClockSkew`; proto estimates it after three pongs, reported above `OFFSET_DIAGNOSTIC_MS` 5 s; the only use of the estimate); an ephemeral commit not applied for the node's cap; an ephemeral upload a host refused for its cap.
 - Repair of a deleted chunk (spec/sync.md §1) runs at most once per aspect per back-off interval, doubling.
 - Handshakes have no deadline beyond the transport's idle timeout; a listener bounds the handshakes in progress (notes/networking.md); a host closes a connection with no Hello after `hello_ms` (notes/serving.md).
 - LAN routes: notes/peers.md.

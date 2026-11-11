@@ -151,7 +151,8 @@ mod tests {
         let g = e.new_thing(&mut m, me);
         m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
         e.commit(m).unwrap();
-        e.set_clock_offset(-60_000);
+        lp.peers[0].clock.set(WallMs(1_700_000_000_000 - 60_000));
+        let e = &mut lp.peers[0].engine;
         let mut m = Mutation::new();
         m.set(g, &ak("t:m.0"), &Value::Str("typing".into())).unwrap();
         m.expires(g, &ak("t:m.0"), WallMs(e.now().0 + 5_000)).unwrap();

@@ -998,7 +998,7 @@ fn expiring_membership_api_writes() {
 }
 
 // spec/commits.md §2 (`created.0`); notes/api.md Reads (`created`, `now`): the creating commit with its time and
-// receipt, the corrected clock.
+// receipt, the node's clock.
 #[test]
 fn created_now_api_reads() {
     let c = clock();

@@ -336,7 +336,7 @@ impl SyncEngine {
     fn send(&mut self, conn: ConnId, host: HostKey, p: &Head, mut sends: Vec<Out>, left: &mut Left, out: &mut Vec<super::Action>) -> Result<()> {
         let (g, l, keys) = (p.g, p.l, &p.keys);
         sends.sort_by_key(|o| o.prio);
-        let raw = self.raw_now();
+        let now = self.now();
         let mut seen = BTreeSet::new();
         let mut uploads = Vec::new();
         let mut deposits = Vec::new();
@@ -354,7 +354,7 @@ impl SyncEngine {
                     }
                 };
             }
-            if !seen.insert(o.id) || settled || self.upload_busy(conn, l, o.id, raw) {
+            if !seen.insert(o.id) || settled || self.upload_busy(conn, l, o.id, now) {
                 continue;
             }
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
@@ -393,7 +393,7 @@ impl SyncEngine {
         }
         self.upload(conn, l, uploads, out)?;
         if let Some(c) = self.conns.get_mut(&conn) {
-            c.req.sent.extend(deposits.iter().map(|d| ((l, osis_label::blob_id(&d.0)), (raw, super::UNTAGGED))));
+            c.req.sent.extend(deposits.iter().map(|d| ((l, osis_label::blob_id(&d.0)), (now, super::UNTAGGED))));
         }
         for (blob, wrap, sig) in deposits {
             self.command(conn, Command::Deposit { label: l, blob, wrap, sig }, out)?;
@@ -404,8 +404,8 @@ impl SyncEngine {
 
     /// Whether an upload of `id` under `l` on `conn` is in flight (`in_flight`) or waits on a
     /// replacing upload: not sent again meanwhile.
-    pub(super) fn upload_busy(&self, conn: ConnId, l: LabelId, id: BlobId, raw: u64) -> bool {
-        self.conns.get(&conn).is_some_and(|c| super::in_flight(c, &c.req.sent, (l, id), raw) || c.req.replacing.contains_key(&(l, id)))
+    pub(super) fn upload_busy(&self, conn: ConnId, l: LabelId, id: BlobId, now: u64) -> bool {
+        self.conns.get(&conn).is_some_and(|c| super::in_flight(c, &c.req.sent, (l, id), now) || c.req.replacing.contains_key(&(l, id)))
     }
 
     /// Gives `uploads` under `l` on `conn` as one Upload, each recorded in flight
@@ -414,13 +414,13 @@ impl SyncEngine {
         if uploads.is_empty() {
             return Ok(());
         }
-        let raw = self.raw_now();
+        let now = self.now();
         let ids: Vec<BlobId> = uploads.iter().map(|u| osis_label::blob_id(&u.blob)).collect();
         for b in &ids {
             self.note_own_upload(conn, l, *b);
         }
         if let Some(c) = self.conns.get_mut(&conn) {
-            c.req.sent.extend(ids.into_iter().map(|b| ((l, b), (raw, super::UNTAGGED))));
+            c.req.sent.extend(ids.into_iter().map(|b| ((l, b), (now, super::UNTAGGED))));
         }
         self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
         self.given(conn);
@@ -542,7 +542,7 @@ impl SyncEngine {
     /// its local pass also issues steps, promotes and re-seals, as a host pass does at a host.
     pub(crate) fn local_passes(&mut self) -> Result<()> {
         self.local_dirty = false;
-        self.local_last = self.raw_now();
+        self.local_last = self.now();
         // a node no reader can pull (it neither dials co-readers nor is dialable) serves nothing
         if !self.serves_readers() {
             self.local_any = false;

@@ -49,7 +49,7 @@ pub const ROTATIONS_DUE: &[u8] = b"rd/";
 /// Commits whose `keys.0` part on a thing wrote a keyset in its body (`Indexes::keyset_parts`;
 /// kept while the commit is held, whatever becomes of the body): `g/` + tid + commit ID.
 pub const OWN_KEYS: &[u8] = b"g/";
-/// Suspect aspects (`retention::suspect`): `q/` + aspect key, le64 corrected wall ms last
+/// Suspect aspects (`retention::suspect`): `q/` + aspect key, le64 wall ms last
 /// raised, then per body its commit ID, aspect index and `Why` bits.
 pub const SUSPECT: &[u8] = b"q/";
 /// The local schema of each app AK (`Core::schemas`): `d/` + AK, the schema's canonical form.

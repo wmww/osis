@@ -577,13 +577,8 @@ impl NetSim {
         self.add_node_with(cfg, spec)
     }
 
-    pub fn add_node_with(&mut self, mut cfg: SyncConfig, mut spec: ClockSpec) -> Res<usize> {
+    pub fn add_node_with(&mut self, mut cfg: SyncConfig, spec: ClockSpec) -> Res<usize> {
         cfg.full_passes |= FULL_PASSES.with(|x| x.get());
-        // a drifting clock corrected by pings moves with when they went, and they go when a
-        // session has been quiet: compared runs drift not
-        if compared() {
-            spec.drift_ppm = 0;
-        }
         let i = self.nodes.len();
         let faults = Faults::new();
         let backend = MemoryBackend::with_faults(faults.clone());

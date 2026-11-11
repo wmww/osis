@@ -320,7 +320,7 @@ pub enum Cmd {
     /// Everyone holding a role on T, directly or through another actor: actor, role, when it ends,
     /// and the actors in between, one line per grant that makes it a holder
     Holders { t: String },
-    /// This node's corrected clock
+    /// This node's clock
     Now,
     /// Grant HOLDER ROLE (read, write, admin) on T, or change the grant's --until and --may-grant (no
     /// ROLE: as it is). Never lowers. Records the role only: HOLDER reads T once a synced group it

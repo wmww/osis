@@ -103,7 +103,7 @@ pub struct SyncEngine {
     next_conn: ConnId,
     /// Hosts not connected: when to dial again.
     retry: BTreeMap<HostKey, (Address, u64)>,
-    /// Co-readers redialed at once after an up connection ended, and when (raw ms): at most
+    /// Co-readers redialed at once after an up connection ended, and when (wall ms): at most
     /// once per `peer_retry_ms` each.
     redialed: BTreeMap<HostKey, u64>,
     /// Co-readers whose dialed connection closed as the duplicate of one they dialed here: not
@@ -115,7 +115,7 @@ pub struct SyncEngine {
     pub(crate) state: State,
     /// Event counter: pass completions and remote role commits are ordered by it.
     pub(crate) seq: u64,
-    /// Per (host, label), the last pass end: its `seq` and when (corrected wall ms).
+    /// Per (host, label), the last pass end: its `seq` and when (wall ms).
     /// Kept across disconnects on purpose: readers ask "a pass ended after X", never "on the live
     /// connection". `complete_pass` counts only passes after the actor's last remote role
     /// commit (`role_change`), and finalizing an expired link only those ended after `until`;
@@ -123,9 +123,9 @@ pub struct SyncEngine {
     /// costs a box. Clearing would block re-seal and link finalization while one host is down.
     pub(crate) passes: BTreeMap<(HostKey, LabelId), (u64, u64)>,
     wake: Option<u64>,
-    /// Per label, when it last had every source caught up (raw wall ms; `label_status`, memory only).
+    /// Per label, when it last had every source caught up (wall ms; `label_status`, memory only).
     last_synced: BTreeMap<LabelId, u64>,
-    /// When the last Tick was handled (raw wall ms).
+    /// When the last Tick was handled (wall ms).
     last_tick: u64,
     /// Recent diagnostics (also sent as engine events).
     diagnostics: Vec<String>,
@@ -193,7 +193,7 @@ pub struct SyncEngine {
     /// `state.version` the sweep of reading-only sources last ran at (`sweep_unchecked`).
     pub(crate) unchecked_swept: Option<u64>,
     /// When a certificate left to its author (`SETTLE_MS`), or another node's body or deposit
-    /// left to a co-writer (`RELAY_MIN_MS`), is due again (raw ms).
+    /// left to a co-writer (`RELAY_MIN_MS`), is due again (wall ms).
     pub(crate) settle_at: BTreeMap<u64, BTreeSet<LabelId>>,
     /// Labels synced with nobody want a local pass (`local_passes`); when the last ran (raw
     /// ms), and whether there were any (the periodic pass's wake).
@@ -204,7 +204,7 @@ pub struct SyncEngine {
     pub(crate) local_expiry: BTreeMap<osis_base::BlobId, Option<u64>>,
     /// The work sets of the local passes, by label (`LConn::work` for a label served here).
     pub(crate) local_work: BTreeMap<osis_base::LabelId, work::Work>,
-    /// When this node first saw each entry deposited at a host (raw ms; the promotion wait).
+    /// When this node first saw each entry deposited at a host (wall ms; the promotion wait).
     pub(crate) deposit_seen: BTreeMap<(HostKey, LabelId, osis_base::BlobId), u64>,
     /// This node's uploads a host refused for the label's cap (code 12), until taken there
     /// or no longer held: a purged body they would carry goes first (spec/sync.md §7).
@@ -275,7 +275,7 @@ pub struct SyncEngine {
     pub(crate) hub_conns: BTreeMap<osis_host::ConnId, ConnId>,
     /// Steps peers registered here since start, by label.
     pub(crate) peer_steps: BTreeMap<LabelId, Vec<(Step, Option<osis_label::ClaimSet>)>>,
-    /// Co-readers found on the LAN: their address there and when (raw ms).
+    /// Co-readers found on the LAN: their address there and when (wall ms).
     pub(crate) lan: BTreeMap<HostKey, peers::LanRoute>,
     /// The next `publish_reach` writes a fresh lan secret.
     pub(crate) lan_rotate: bool,
@@ -303,17 +303,17 @@ pub struct SyncEngine {
     pub(crate) sources_gen: u64,
     /// What this node holds moved: the shared sets re-judge and send additions (`shared_changed`).
     pub(crate) shared_dirty: bool,
-    /// The last remote role commit of each actor applied: its `seq`, and when (raw ms; the peer
+    /// The last remote role commit of each actor applied: its `seq`, and when (wall ms; the peer
     /// part of `complete_pass` waits at most `peer_pass_wait_ms` from it).
     pub(crate) role_change: BTreeMap<Tid, (u64, u64)>,
     /// Actors with a remote role commit applied this step: each host of their labels is asked
     /// for a pass end (`ask_pass_ends`).
     pub(crate) pass_wanted: BTreeSet<Tid>,
-    /// When this engine was built (raw ms): a role change applied before it came no later,
+    /// When this engine was built (wall ms): a role change applied before it came no later,
     /// so the peer wait of an actor with none in `role_change` counts from here.
     pub(crate) started: u64,
     /// When the last remote role commit writing an actor's `secrets.0` (a rotation, the
-    /// only change its author registers a step for) applied (raw ms; `step_settled`).
+    /// only change its author registers a step for) applied (wall ms; `step_settled`).
     pub(crate) rotation_at: BTreeMap<Tid, u64>,
     /// `placed` answers by commit, valid while `State::version` (the first field) is unchanged and
     /// no engine change came (in memory).
@@ -344,8 +344,7 @@ pub struct SyncEngine {
 pub(crate) type Deferred = (Tid, osis_base::CommitId, BTreeSet<usize>, Option<[u8; 32]>);
 
 impl SyncEngine {
-    /// Wraps an engine. `clock` is the uncorrected wall clock the engine was built on (Hellos
-    /// carry it; the correction goes to the engine).
+    /// Wraps an engine. `clock` is the wall clock the engine was built on.
     pub fn new(mut engine: Engine, clock: Arc<dyn Clock>, rng: Box<dyn CryptoRngCore + Send>, cfg: SyncConfig) -> Result<SyncEngine> {
         // a memory commit marks itself changed like any (`Engine::take_changed`), not by event
         let events = engine.subscribe_durable();
@@ -512,12 +511,7 @@ impl SyncEngine {
         self.engine.core.secret_actor(g).unwrap_or(*g)
     }
 
-    /// Raw wall ms (sessions and timers).
-    pub(crate) fn raw_now(&self) -> u64 {
-        self.clock.now_wall_ms().0
-    }
-
-    /// Corrected wall ms (expiry and bounds).
+    /// Wall ms.
     pub(crate) fn now(&self) -> u64 {
         self.engine.now().0
     }
@@ -560,7 +554,7 @@ impl SyncEngine {
         // a Tick consumed the driver's wake: the next one is always asked for again
         if matches!(ev, Event::Tick) {
             self.wake = None;
-            self.last_tick = self.raw_now();
+            self.last_tick = self.now();
         }
         let mut ok = self.settled_step(ev, &mut out);
         // what the passes marked (a refetch applied commits, an admin recorded a step) passes now,
@@ -634,7 +628,7 @@ impl SyncEngine {
             }
             Event::Local => {}
             Event::Up { conn } => {
-                let now = self.raw_now();
+                let now = self.now();
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.up = true;
                     let mut o = c.session.handle(now, ClientInput::Start);
@@ -672,7 +666,7 @@ impl SyncEngine {
                 }
             }
             Event::Bytes { conn, bytes } => {
-                let now = self.raw_now();
+                let now = self.now();
                 if let Some(c) = self.conns.get_mut(&conn) {
                     let o = c.session.handle(now, ClientInput::Bytes(bytes));
                     self.outputs(conn, o, out)?;
@@ -680,7 +674,7 @@ impl SyncEngine {
             }
             Event::Down { conn } => self.lost(conn),
             Event::Sent { conns } => {
-                let now = self.raw_now();
+                let now = self.now();
                 for (conn, n) in conns {
                     if self.served.contains_key(&conn) {
                         self.serve(conn, osis_proto::ServingInput::Taken(n), out)?;
@@ -899,7 +893,7 @@ mod tests {
             let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(965)), cfg).unwrap();
             let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
             let b = osis_base::BlobId([1; 32]);
-            let now = s.raw_now();
+            let now = s.now();
             s.conns.get_mut(&conn).unwrap().req.fetching.insert(b, now);
             let d = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
             s.queue_deposit(LabelId([1; 16]), std::slice::from_ref(&host), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN], None);

@@ -89,12 +89,12 @@ pub(crate) struct Served {
     /// How far its proof exchange went: Prove, then Resume, each at most once (spec/wire.md
     /// §11.2).
     asked: Asked,
-    /// Raw ms of the last bytes received (idle sessions are closed).
+    /// Wall ms of the last bytes received (idle sessions are closed).
     pub last: u64,
-    /// Raw ms the session started (one that opens nothing is closed).
+    /// Wall ms the session started (one that opens nothing is closed).
     since: u64,
     /// A thin client's: the hash of the secret it authenticated with and its entry's end
-    /// (corrected wall ms). The session ends with the entry, with that hash, at that end.
+    /// (wall ms). The session ends with the entry, with that hash, at that end.
     client: Option<ClientBinding>,
 }
 
@@ -159,7 +159,7 @@ pub(crate) struct Charges {
     by_entry: BTreeMap<(LabelId, BlobId), ([u8; 32], u64)>,
     per: BTreeMap<[u8; 32], u64>,
     total: u64,
-    /// When charges were last pruned (raw ms), and whether a budget was reached since.
+    /// When charges were last pruned (wall ms), and whether a budget was reached since.
     pruned: u64,
     full: bool,
 }
@@ -203,7 +203,7 @@ struct PeerStore<'a> {
     labels: &'a BTreeMap<LabelId, ServedLabel>,
     /// Blob sizes seen (`live` reads a blob only once).
     sizes: RefCell<&'a mut BTreeMap<BlobId, u64>>,
-    /// Corrected wall ms (tombstones of this node's drops).
+    /// Wall ms (tombstones of this node's drops).
     wall: u64,
     /// What is charged so far per charge key (`charge_key`), its limit, this session's proven
     /// source, and this request's charges per key; all peers together may still have `total_left`.
@@ -372,7 +372,6 @@ impl LabelStore for PeerStore<'_> {
     }
 
     fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, _now: u64) -> std::result::Result<osis_proto::RelayVerdict, StoreError> {
-        // expiry is wall time: the corrected clock
         Ok(self.relays.admit(label, blob_id, size, expiry, self.wall))
     }
 
@@ -424,7 +423,7 @@ impl SyncEngine {
         self.state.now = self.now();
         let mut challenge = [0u8; 32];
         self.rng.fill_bytes(&mut challenge);
-        let last = self.raw_now();
+        let last = self.now();
         let session = ServingSession::new(ServingConfig { static_key: local, challenge });
         self.served.insert(conn, Served { conn: Session::Own(Box::new(if public { session.port_only() } else { session.with_port() })), tier, public, ported: false, proven: super::proofs::Proven::default(), proved: BTreeSet::new(), asked: Asked::Nothing, last, since: last, client: None });
         if let Err(e) = self.serve(conn, ServingInput::Start, &mut out) {
@@ -442,7 +441,7 @@ impl SyncEngine {
             osis_host::Up::Start(b) => {
                 let conn = self.next_conn;
                 self.next_conn += 1;
-                let last = self.raw_now();
+                let last = self.now();
                 let session = Session::Hub { id, binding: (b.dialer, b.listener, b.key), room: Room::Idle };
                 self.served.insert(conn, Served { conn: session, tier: super::Tier::Keyed, public: false, ported: false, proven: super::proofs::Proven::default(), proved: BTreeSet::new(), asked: Asked::Nothing, last, since: last, client: None });
                 self.hub_conns.insert(id, conn);
@@ -610,7 +609,7 @@ impl SyncEngine {
                 self.charges.uncharge(p, n);
             }
         }
-        self.charges.pruned = self.raw_now();
+        self.charges.pruned = self.now();
         self.charges.full = false;
     }
 
@@ -624,7 +623,7 @@ impl SyncEngine {
         if !self.served.contains_key(&conn) {
             return Ok(());
         }
-        let now = self.raw_now();
+        let now = self.now();
         // a budget was reached: charges that no longer count go first (at most once a second)
         if self.charges.full && now >= self.charges.pruned.saturating_add(1000) {
             self.prune_charges();
@@ -985,9 +984,8 @@ impl SyncEngine {
     /// tombstones; forgets carriers and certificate placements nothing needs; prunes charges
     /// and blob sizes.
     pub(crate) fn serve_timers(&mut self, out: &mut Vec<Action>) {
-        let now = self.raw_now();
+        let now = self.now();
         let (idle, open) = (self.cfg.serve_idle_ms, self.cfg.serve_open_ms);
-        let corrected = self.now();
         let stale: Vec<ConnId> = self
             .served
             .iter()
@@ -995,7 +993,7 @@ impl SyncEngine {
                 let idled = !self.kept_while_up(**c, s) && s.last.saturating_add(idle) <= now;
                 let opened_nothing = self.serves_nothing(**c, s) && s.since.saturating_add(open) <= now;
                 // a thin client's `until` passed: no other change is needed to end it
-                let ended = s.client.is_some_and(|b| b.until.is_some_and(|u| u <= corrected));
+                let ended = s.client.is_some_and(|b| b.until.is_some_and(|u| u <= now));
                 let stalled = s.conn.own().and_then(ServingSession::stall_at).is_some_and(|t| t <= now);
                 idled || opened_nothing || ended || stalled
             })
@@ -1029,11 +1027,10 @@ impl SyncEngine {
     /// When the next served session goes idle.
     pub(crate) fn serve_wake(&self) -> Option<u64> {
         // a session holding pushes back: `Event::Sent` at the next tick may give them room
-        let poll = self.served.values().any(|s| s.conn.own().is_some_and(ServingSession::held)).then(|| self.raw_now().saturating_add(osis_proto::serving::PUSH_POLL_MS));
+        let poll = self.served.values().any(|s| s.conn.own().is_some_and(ServingSession::held)).then(|| self.now().saturating_add(osis_proto::serving::PUSH_POLL_MS));
         let stall = self.served.values().filter_map(|s| s.conn.own().and_then(ServingSession::stall_at)).min();
-        // a thin client's `until`, corrected wall ms, on the raw clock
-        let (raw, wall) = (self.raw_now(), self.now());
-        let until = self.served.values().filter_map(|s| s.client.and_then(|b| b.until)).map(|u| u.saturating_add(raw).saturating_sub(wall)).min();
+        // a thin client's `until`
+        let until = self.served.values().filter_map(|s| s.client.and_then(|b| b.until)).min();
         self.served.iter().filter(|(c, s)| !self.kept_while_up(**c, s)).map(|(c, s)| if self.serves_nothing(*c, s) { s.since.saturating_add(self.cfg.serve_open_ms).min(s.last.saturating_add(self.cfg.serve_idle_ms)) } else { s.last.saturating_add(self.cfg.serve_idle_ms) }).chain(poll).chain(until).chain(stall).min()
     }
 }

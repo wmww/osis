@@ -13,7 +13,7 @@
 - A parked part a purge drops (`Gone`) still counts as held for its commit's pending until `act` makes it missing (its judgment needs the applied set). No bad-by-itself deltas, so no bad-input blobs.
 
 **Clock and stamps**
-- `ts = wall_ms * 2^16 + logical`; `now` is the node's corrected wall clock. Commit-form dots only: no sessions, frontier tables or `Absorbed`.
+- `ts = wall_ms * 2^16 + logical`; `now` is the node's wall clock. Commit-form dots only: no sessions, frontier tables or `Absorbed`.
 - Unknown encodings exist only as `Body::Parked` (a part as a whole); no links, pages, chunks or list-by-link waits.
 
 **Permissions**

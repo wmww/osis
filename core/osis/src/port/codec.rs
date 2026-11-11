@@ -342,7 +342,7 @@ pub(crate) fn status(v: Value) -> Result<Status> {
     Ok(st)
 }
 
-const KINDS: [DiagnosticKind; 19] = [
+const KINDS: [DiagnosticKind; 20] = [
     DiagnosticKind::BadInput,
     DiagnosticKind::CollidingRecord,
     DiagnosticKind::Parked,
@@ -362,6 +362,7 @@ const KINDS: [DiagnosticKind; 19] = [
     DiagnosticKind::SyncStopped,
     DiagnosticKind::DisputesUnexamined,
     DiagnosticKind::AddendaFailed,
+    DiagnosticKind::ClockSkew,
 ];
 
 /// Fails to compile when a kind is added: list it in `KINDS` too (an unlisted one went out as
@@ -370,7 +371,7 @@ const KINDS: [DiagnosticKind; 19] = [
 fn kinds_listed(k: DiagnosticKind) {
     use DiagnosticKind::*;
     match k {
-        BadInput | CollidingRecord | Parked | Pending | OverlappingCounters | Removed | Callback | NotSynced | Stranded | Uncommitted | EphemeralRefused | Mismatch | Storage | Repair | OwnWriteInvalid | Unreadable | SyncStopped | DisputesUnexamined | AddendaFailed => {}
+        BadInput | CollidingRecord | Parked | Pending | OverlappingCounters | Removed | Callback | NotSynced | Stranded | Uncommitted | EphemeralRefused | Mismatch | Storage | Repair | OwnWriteInvalid | Unreadable | SyncStopped | DisputesUnexamined | AddendaFailed | ClockSkew => {}
     }
 }
 

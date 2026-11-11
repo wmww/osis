@@ -915,6 +915,23 @@ fn commit_form_redemption_canonical_spec_crdt_3_2() {
     }
 }
 
+// spec/crdt.md §2.2 (a commit the node makes is never parked, whoever signs it): a redeemer
+// whose clock went back two hours after it saw the sharer's commits redeems: the join, signed by
+// the link key, is stamped by its HLC, two hours ahead of its wall clock.
+#[test]
+fn redeem_with_the_clock_set_back_spec_crdt_2() {
+    let (mut lp, ps) = people(2, 512);
+    let (pa, ps1) = (ps[0], ps[1]);
+    let d = thing_of(&mut lp, 0, pa);
+    let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
+    sync(&mut lp, 0, 1);
+    let back = lp.peers[1].clock.now_wall_ms().0 - 120 * 60_000;
+    lp.peers[1].clock.set(osis_base::WallMs(back));
+    lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
+    sync(&mut lp, 1, 0);
+    assert_eq!(lp.peers[0].engine.roster(&link.k).get(&ps1).map(|e| e.role), Some(Role::Read));
+}
+
 // spec/permissions.md §7: a stranger redeems a read link: signing as L it invite-grants its
 // own actor to K (deposited: read), single use removes L's edge in the same commit, so a
 // second redeemer finds no link; the redeemer reads the target through K.

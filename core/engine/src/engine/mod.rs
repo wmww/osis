@@ -2689,14 +2689,9 @@ impl Engine {
         &self.core.id
     }
 
-    /// The corrected wall clock.
+    /// The wall clock.
     pub fn now(&self) -> WallMs {
         self.core.now()
-    }
-
-    /// The clock correction from node-sync (spec/sync.md §6).
-    pub fn set_clock_offset(&mut self, ms: i64) {
-        self.core.hlc.set_offset(ms);
     }
 
     /// A channel of engine events, sent after durability.
@@ -2897,7 +2892,6 @@ impl Engine {
         let mut fresh = Core::new(self.core.id.clone(), self.clock.clone(), self.core.session, self.core.expiring);
         fresh.later_sessions = self.core.later_sessions;
         fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
-        fresh.hlc.set_offset(self.core.hlc.offset());
         fresh.commits_watched = self.core.commits_watched;
         fresh.commit_listeners = self.core.commit_listeners.clone();
         fresh.skip_writer_rules = self.core.skip_writer_rules;

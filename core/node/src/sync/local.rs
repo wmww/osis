@@ -26,7 +26,7 @@ const MAX_INBOX_RESENDS: u32 = 3;
 /// restart sends every one again.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Outgoing {
-    /// Not sent before this raw wall ms (a refused deposit backs off from `retry_ms`).
+    /// Not sent before this wall ms (a refused deposit backs off from `retry_ms`).
     pub after: u64,
     /// Refusals so far (the back-off doubles per refusal).
     pub tries: u32,
@@ -618,7 +618,7 @@ impl SyncEngine {
             self.log_events(None, l, vec![osis_proto::Event::Added { blob_id, blob: Some(blob), wrap, stamp: None }], None, out)?;
         }
         let ready: Vec<(ConnId, [u8; 32])> = self.conns.iter().filter(|(_, c)| c.session.is_ready()).map(|(id, c)| (*id, c.host)).collect();
-        let now = self.raw_now();
+        let now = self.now();
         let due: Vec<((HostKey, LabelId, BlobId), ConnId)> = self
             .outbox
             .iter()

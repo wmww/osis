@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, dead_code)]
 //! Sync engines and hosts in process, no tokio: `SyncEngine`s exchanging bytes with
-//! osis-host `Hub`s over in-memory queues, one manual clock. Group setup stands in for pairing
+//! osis-host `Hub`s over in-memory queues, one manual clock (nodes may run off it: `set_skew`). Group setup stands in for pairing
 //! (direct delivery of the setup commits).
 
 use osis_base::{Clock, CommitId, ManualClock, Role, Tid, Value, WallMs};
@@ -31,8 +31,21 @@ pub struct Host {
     pub skew: i64,
 }
 
+/// A node's wall clock: the net's plus a skew of its own (`Net::set_skew`).
+pub struct NodeClock {
+    base: Arc<ManualClock>,
+    skew: std::sync::atomic::AtomicI64,
+}
+
+impl Clock for NodeClock {
+    fn now_wall_ms(&self) -> WallMs {
+        WallMs(self.base.now_wall_ms().0.saturating_add_signed(self.skew.load(std::sync::atomic::Ordering::SeqCst)))
+    }
+}
+
 pub struct Node {
     pub sync: Option<SyncEngine>,
+    pub clock: Arc<NodeClock>,
     pub backend: MemoryBackend,
     pub root: MemoryRoot,
     pub online: bool,
@@ -299,6 +312,11 @@ impl Net {
         self.hosts[s] = Host { hub, backend, root, address, skew };
     }
 
+    /// Sets node `n`'s clock `ms` off the net's.
+    pub fn set_skew(&mut self, n: usize, ms: i64) {
+        self.nodes[n].clock.skew.store(ms, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Host `s`'s wall clock.
     pub fn now_at(&self, s: usize) -> u64 {
         self.now().saturating_add_signed(self.hosts[s].skew)
@@ -333,14 +351,15 @@ impl Net {
 
     fn add_node_on(&mut self, seed: u64, cfg: SyncConfig, backend: MemoryBackend, root: MemoryRoot, engine_cfg: Config) -> usize {
         let cfg = SyncConfig { full_passes: cfg.full_passes || self.full_passes, ..cfg };
-        let c: Arc<dyn Clock> = self.clock.clone();
+        let clock = Arc::new(NodeClock { base: self.clock.clone(), skew: 0.into() });
+        let c: Arc<dyn Clock> = clock.clone();
         let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), engine_cfg, c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
         let home: Vec<Address> = if self.home_at_hosts { cfg.hosts.clone() } else { Vec::new() };
         let done = if self.bare { None } else { let d = engine.create_account(&home).unwrap().1; (!home.is_empty()).then_some(d) };
         let mut sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         let events = sync.engine_mut().subscribe_durable();
         let acts = done.map(|d| sync.carry_out(d).unwrap());
-        self.nodes.push(Node { sync: Some(sync), backend, root, online: true, wake: None, life: 0, accepts: true, events });
+        self.nodes.push(Node { sync: Some(sync), clock, backend, root, online: true, wake: None, life: 0, accepts: true, events });
         let n = self.nodes.len() - 1;
         if let Some(acts) = acts {
             self.actions(n, acts);
@@ -352,12 +371,13 @@ impl Net {
     /// `n` if `n` still runs.
     pub fn copy_node(&mut self, n: usize, seed: u64) -> usize {
         let cfg = self.sync(n).config().clone();
-        let c: Arc<dyn Clock> = self.clock.clone();
+        let clock = Arc::new(NodeClock { base: self.clock.clone(), skew: self.nodes[n].clock.skew.load(std::sync::atomic::Ordering::SeqCst).into() });
+        let c: Arc<dyn Clock> = clock.clone();
         let (backend, root) = (self.nodes[n].backend.copy(), self.nodes[n].root.copy());
         let engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
         let mut sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         let events = sync.engine_mut().subscribe_durable();
-        self.nodes.push(Node { sync: Some(sync), backend, root, online: true, wake: None, life: 0, accepts: true, events });
+        self.nodes.push(Node { sync: Some(sync), clock, backend, root, online: true, wake: None, life: 0, accepts: true, events });
         self.nodes.len() - 1
     }
 
@@ -460,8 +480,8 @@ impl Net {
     pub fn restart(&mut self, n: usize, seed: u64) {
         let cfg = self.sync(n).config().clone();
         self.disconnect(n);
-        let c: Arc<dyn Clock> = self.clock.clone();
         let node = &mut self.nodes[n];
+        let c: Arc<dyn Clock> = node.clock.clone();
         node.sync = None;
         node.life += 1;
         let engine = Engine::open(Box::new(node.backend.clone()), Box::new(node.root.clone()), Config::default(), c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
