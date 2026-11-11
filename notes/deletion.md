@@ -14,6 +14,7 @@
 - They never stand in for erasure: an app that needs data gone for good purges or expires it.
 
 ## Consequences
-- A mechanism that reclaims storage must not write a lasting record of what it removed; if it needs a request to reach other nodes, that request must be forgettable: forgotten `ROLE_KEEP` after it was written, and kept past that only as long as a live thing needs it to judge (a release request while a held dependent or lister names the released thing), so what is kept is bounded by live things, never by what was removed.
+- A mechanism that reclaims storage must not write a lasting record of what it removed; if it needs a request to reach other nodes, that request must be forgettable: it expires `ROLE_KEEP` after it was written, takes the removed thing's headers with it, and is kept past that only while a held thing depends on, lists or references the removed thing (the rule every ending's evidence follows), so what is kept is bounded by live things, never by what was removed.
+- Lasting headers are erasure's: a purge may leave one, a release never does.
 - A mechanism that erases may keep a tombstone, and a purge must.
 - Naming: the reclaim verb for a thing is `release` (Tess preferred it to "drop", which the engine uses for bodies, and "free"). The erasure of a thing is a purge of its creation.
