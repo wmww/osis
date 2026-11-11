@@ -128,6 +128,11 @@ impl SyncEngine {
     /// one whose bound a replacement dates (it moves earlier with no mark when an earlier
     /// superseder of an already dead write arrives).
     pub(super) fn keeps(&mut self, c: &CommitId) -> Result<std::sync::Arc<Vec<u64>>> {
+        let at = self.engine.settings_generation();
+        if self.keeps_at != at {
+            self.keeps.clear();
+            self.keeps_at = at;
+        }
         let pending = self.engine.core.changed.as_ref().is_some_and(|x| x.commits.contains(c));
         if !pending && let Some(k) = self.keeps.get(c) {
             let k = k.clone();

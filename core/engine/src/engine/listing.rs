@@ -216,38 +216,9 @@ fn keep_bound(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<u64>> {
     })
 }
 
-/// Arms a timer at the keep bound of `c`'s part on `(tid, ak)` when a bound lists it (`keep_bound`):
-/// its leaving the listing then changes no state, so the timer tells it (`kept_passed`). Costs a
-/// header check, and a liveness read where the header allows a bound past now (none for a write
-/// keeping no history). A bound past `FOREVER` keeps for good: no timer.
-fn arm_keep_bound(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId) -> Result<()> {
-    let now = tx.now().0;
-    // a bound past now needs a keeping setting or a purge floor
-    let dated = crate::retention::history::of(tx.core, tid, ak).dated();
-    let may_keep = |m: &crate::engine::Meta, ai: usize| m.header.aspects.get(ai).is_some() && (dated || osis_commit::retention::purge_keep_until(&m.header).is_some_and(|t| now < t));
-    let Some((ai, expires)) = tx.core.ix.commits.get(c).and_then(|m| Some((m.aspect(tid, ak)?, m.header.expires)).filter(|(ai, _)| may_keep(m, *ai))) else { return Ok(()) };
-    // an expiry by then takes it out first, by its own timer (one timer per part and time)
-    if let Some(t) = keep_bound(tx, c, ai)?.filter(|t| now < *t && *t < osis_commit::FOREVER && expires.is_none_or(|e| *t < e)) {
-        tx.put_timer(t, c, ai, crate::retention::T_KEPT)?;
-    }
-    Ok(())
-}
-
-/// `arm_keep_bound` of every commit held on `(tid, ak)`: O(commits held there).
-fn arm_keep_bounds(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    if ak.signal() {
-        return Ok(());
-    }
-    let on: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-    for c in on {
-        drop(crate::costs::span("listing: keep bound armed"));
-        arm_keep_bound(tx, tid, ak, &c)?;
-    }
-    Ok(())
-}
-
-/// The keep-bound timer of value part `ai` of `c` ran: told when its bound has passed, armed
-/// again when the bound moved later (its replacement dated anew).
+/// The timer of value part `ai` of `c`, kept past leaving history by its commit's purge floor
+/// (`retention::leaving::left`), ran: told when its bound has passed, armed again when it moved
+/// later.
 pub(crate) fn kept_passed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     if !tx.core.commits_watched {
         return Ok(());
@@ -283,18 +254,6 @@ fn listed_by_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Commi
         }
     }
     Ok(out)
-}
-
-/// The settings of `tid` changed (`retention::settings_changed`): every commit held on value
-/// aspect `(tid, ak)`, `on`, may be listed otherwise, so each is told (a stale one told again is
-/// harmless) and its keep-bound timer armed again.
-pub(crate) fn setting_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, on: &[CommitId]) -> Result<()> {
-    if listened(tx.core, tid, ak) {
-        for c in on {
-            tx.core.commits_named(*tid, ak.clone(), *c);
-        }
-    }
-    arm_keep_bounds(tx, tid, ak)
 }
 
 /// Whether a commit listener may be on `(tid, ak)`: on the thing or a group it is in
@@ -340,7 +299,6 @@ pub(crate) fn listing_moved(tx: &mut Tx<'_>) -> Result<()> {
         for c in before.symmetric_difference(&after) {
             tx.core.commits_named(tid, ak.clone(), *c);
         }
-        arm_keep_bounds(tx, &tid, &ak)?;
     }
     let mut killed = std::mem::take(&mut tx.core.killed);
     killed.sort();
@@ -351,7 +309,6 @@ pub(crate) fn listing_moved(tx: &mut Tx<'_>) -> Result<()> {
         if listed(tx, &c, ai)?.is_none() {
             tx.core.commits_named(tid, ak.clone(), c);
         }
-        arm_keep_bound(tx, &tid, &ak, &c)?;
     }
     Ok(())
 }
@@ -401,24 +358,13 @@ impl Engine {
 
     /// `f` says whether a commit listener is on a thing (a group's: its things too): at the end of
     /// each transaction the listing of each of their aspects it touched is judged
-    /// (`listing_moved`). `new`: the things of a listener just added, each aspect of them (a
-    /// group's members' too) armed for its keep bounds (`arm_keep_bounds`), as a state change
-    /// arms them.
-    pub fn listen_commits(&mut self, f: super::CommitListeners, new: &[Tid]) -> Result<()> {
+    /// (`listing_moved`), and a part leaving history by time alone is told
+    /// (`retention::leaving`). `new`: the things of a listener just added (nothing to arm: the
+    /// history rows are kept whoever listens).
+    pub fn listen_commits(&mut self, f: super::CommitListeners, _new: &[Tid]) -> Result<()> {
         self.core.commits_watched = true;
         self.core.commit_listeners = Some(f);
-        let core = &self.core;
-        let things: BTreeSet<Tid> = new.iter().flat_map(|t| core.ix.groups.closures.get(t).map_or_else(|| vec![*t], |c| c.iter().copied().collect())).collect();
-        let aspects: Vec<(Tid, Ak)> = things.iter().flat_map(|t| core.aspects_of(t).map(|(k, _)| k.clone())).collect();
-        if aspects.is_empty() {
-            return Ok(());
-        }
-        self.run(|tx| {
-            for (tid, ak) in &aspects {
-                arm_keep_bounds(tx, tid, ak)?;
-            }
-            Ok(())
-        })
+        Ok(())
     }
 
     /// What is here of `c`'s part on `(tid, ak)`, listed or not; `None` when it has none.

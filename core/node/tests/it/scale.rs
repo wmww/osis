@@ -1317,3 +1317,73 @@ fn a_change_costs_a_few_passes() {
         assert!(big.1[0] <= 9, "{change:?}: {} rotation runs over {passes} passes", big.1[0]);
     }
 }
+
+/// A thing keeping `t:kept.0` and signal `t:log~0` a day, watched by a commit listener: n
+/// overwrites of the register and n fires, a minute apart. Then (a setting keeping both two
+/// days, which moves no body in or out of history; the first replaced value and the first two
+/// fires leaving history as their window passes and the engine ticks; a setting shortening the
+/// window by a minute, so the next value and fire leave at once), each with the commits it marked
+/// for node-sync and told the listener as spans.
+fn history_moves(n: usize) -> [Work; 3] {
+    const DAY_MS: u64 = 86_400_000;
+    let two = osis_schema::History::Keep { until: None, after: Some(2 * DAY_MS) };
+    let mut lp = net(1, 46);
+    let t = crate::common::new_thing_keeping(&mut lp, 0, &[("t:log~0", crate::common::DAY)]);
+    let (kept, log) = (ak("t:kept.0"), ak("t:log~0"));
+    let rx = lp.peers[0].engine.subscribe();
+    lp.peers[0].engine.listen_commits(std::sync::Arc::new(|_| true), &[t]).unwrap();
+    let start = lp.peers[0].engine.now().0;
+    let mut vals = Vec::new();
+    let mut fires = Vec::new();
+    for i in 0..n {
+        lp.advance(60_000);
+        for (k, out) in [(&kept, &mut vals), (&log, &mut fires)] {
+            let mut m = Mutation::new();
+            m.set(t, k, &Value::Str(format!("v{i}"))).unwrap();
+            out.push(lp.peers[0].commit(m).unwrap().unwrap());
+        }
+    }
+    lp.advance(60_000);
+    let mut x = crate::common::test_setting();
+    x.rules.extend(crate::common::setting(&[("t:kept.0", two), ("t:log~0", two)]).rules);
+    let step = |lp: &mut LocalPeer, f: &dyn Fn(&mut LocalPeer)| {
+        lp.peers[0].engine.take_changed();
+        while rx.try_recv().is_ok() {}
+        let (_, mut w) = measured_at(lp, 0, |lp| f(lp));
+        w.spans.insert("commits marked changed", lp.peers[0].engine.take_changed().commits.len() as u64);
+        let told = rx.try_iter().filter_map(|e| if let osis_node::Event::Commits(ch) = e { Some(ch.len() as u64) } else { None }).sum();
+        w.spans.insert("commits told", told);
+        w
+    };
+    let change = step(&mut lp, &|lp| { crate::common::set_setting(lp, 0, t, &x); });
+    for (c, k) in [(&vals[0], &kept), (&fires[0], &log), (&vals[n - 1], &kept)] {
+        assert!(lp.peers[0].engine.listed_at(c, &[(t, k.clone())]).unwrap(), "in history before the window passes");
+    }
+    // the first value was replaced by the second, written a minute after it with the second fire
+    let now = lp.peers[0].engine.now().0;
+    lp.advance(start + 2 * 60_000 + 2 * DAY_MS + 1 - now);
+    let pass = step(&mut lp, &|lp| lp.peers[0].tick().unwrap());
+    let listed = |lp: &mut LocalPeer, c: &osis_base::CommitId, k: &Ak| lp.peers[0].engine.listed_at(c, &[(t, k.clone())]).unwrap();
+    assert!(!listed(&mut lp, &vals[0], &kept) && !listed(&mut lp, &fires[0], &log) && !listed(&mut lp, &fires[1], &log), "left history");
+    assert!(listed(&mut lp, &vals[1], &kept) && listed(&mut lp, &fires[2], &log), "still in history");
+    let short = osis_schema::History::Keep { until: None, after: Some(2 * DAY_MS - 60_000) };
+    let mut x = crate::common::test_setting();
+    x.rules.extend(crate::common::setting(&[("t:kept.0", short), ("t:log~0", short)]).rules);
+    let shorten = step(&mut lp, &|lp| { crate::common::set_setting(lp, 0, t, &x); });
+    assert!(!listed(&mut lp, &vals[1], &kept) && !listed(&mut lp, &fires[2], &log), "left history at the shortening");
+    assert!(listed(&mut lp, &vals[2], &kept) && listed(&mut lp, &fires[3], &log), "still in history");
+    [change, pass, shorten]
+}
+
+// issues/thing-history.md Cost; spec/requirements.md, Scale: a setting change that moves no body
+// in or out of history, a window passing over a constant number of bodies and a setting change
+// moving a constant number out, read no body and walk no commit that stays listed: every counted phase, the commits marked for node-sync and
+// told the listener, and the store rows read and written are flat in the history held.
+#[test]
+fn setting_change_and_window_passing_are_flat_spec_commits_5() {
+    let (a, b) = (history_moves(20), history_moves(200));
+    for (what, i) in [("a setting change", 0), ("a window passing", 1), ("a shortening", 2)] {
+        all_flat(what, &a[i], &b[i]);
+        flat(&format!("{what}: store rows read"), a[i].io.reads, b[i].io.reads);
+    }
+}

@@ -663,3 +663,101 @@ fn an_unkept_part_dates_no_class_spec_commits_5() {
     e.drop_body(&b, &d, &ak(other)).unwrap();
     assert_eq!((e.body_keeps(&w).unwrap(), e.replaced_at(&w, &d, &ak(kept)).unwrap(), e.replaced_at(&w, &d, &ak(other)).unwrap()), before, "a covered drop moved W");
 }
+
+/// Peer `p` listens for commit events on every thing.
+fn watch(p: &mut Peer) {
+    p.engine.listen_commits(std::sync::Arc::new(|_| true), &[]).unwrap();
+    p.drain_events();
+}
+
+/// The commits on `(d, A)` commit events named since the last drain.
+fn told(p: &mut Peer, d: Tid) -> Vec<CommitId> {
+    let mut out = Vec::new();
+    for e in p.drain_events() {
+        if let osis_node::Event::Commits(ch) = e {
+            out.extend(ch.iter().filter(|x| x.tid == d && x.ak == ak(A)).map(|x| x.id));
+        }
+    }
+    out
+}
+
+// notes/api.md Commits, spec/commits.md §5 History: a body leaving history as its window passes
+// is told to a commit listener, whatever order the setting and the bodies arrived in and across
+// a restart, and nothing that stays is told
+#[test]
+fn leaving_history_is_told_in_any_order_spec_commits_5() {
+    let (mut lp, d) = setup(351);
+    let base = base(&mut lp);
+    let x = set(&mut lp, 0, d, &setting(&[(A, keep(HOUR))]));
+    let v1 = put(&mut lp, 1, d, "one");
+    let v2 = put(&mut lp, 1, d, "two");
+    let pks = [pack(&mut lp, 0, &x), pack(&mut lp, 1, &v1), pack(&mut lp, 1, &v2)];
+    let now = lp.peers[0].engine.now();
+    for (n, order) in [[0, 1, 2], [1, 2, 0], [2, 1, 0]].into_iter().enumerate() {
+        let mut p = fresh(&base, &order.map(|i| &pks[i]), 353, now);
+        if n == 1 {
+            p.restart(355).unwrap();
+        }
+        watch(&mut p);
+        p.clock.advance(HOUR - 5_000);
+        p.tick().unwrap();
+        assert!(told(&mut p, d).is_empty(), "{order:?}: nothing leaves before its window passes");
+        p.clock.advance(10_000);
+        p.tick().unwrap();
+        assert_eq!(told(&mut p, d), vec![v1], "{order:?}: told as it leaves");
+        assert!(!listed(&mut p, &v1, d) && listed(&mut p, &v2, d), "{order:?}");
+        p.clock.advance(10 * HOUR);
+        p.tick().unwrap();
+        assert!(told(&mut p, d).is_empty(), "{order:?}: the live one stays");
+    }
+}
+
+// spec/commits.md §5 Convergence (Decisions 1): a setting arriving late, stamped while a body was
+// still in history, brings back a body that left meanwhile where it is still held: listed and told
+// again; a later shortening by its stamp takes it out again, told
+#[test]
+fn late_setting_brings_back_and_is_told_spec_commits_5() {
+    let (mut lp, d) = setup(361);
+    set(&mut lp, 0, d, &setting(&[(A, keep(HOUR))]));
+    let v1 = put(&mut lp, 1, d, "one");
+    put(&mut lp, 1, d, "two");
+    lp.sync_all().unwrap();
+    // Carol extends while v1 is in history; Alice receives it two hours later
+    let late = set(&mut lp, 2, d, &setting(&[(A, keep(10 * HOUR))]));
+    let pk = pack(&mut lp, 2, &late);
+    watch(&mut lp.peers[0]);
+    lp.advance(2 * HOUR);
+    lp.peers[0].tick().unwrap();
+    assert_eq!(told(&mut lp.peers[0], d), vec![v1], "left");
+    assert!(!listed(&mut lp.peers[0], &v1, d));
+    lp.deliver(0, &pk).unwrap();
+    assert!(listed(&mut lp.peers[0], &v1, d), "back where held");
+    assert!(told(&mut lp.peers[0], d).contains(&v1), "told as it comes back");
+    let short = set(&mut lp, 0, d, &setting(&[(A, keep(HOUR))]));
+    assert!(lp.peers[0].engine.header(&short).is_some());
+    assert!(!listed(&mut lp.peers[0], &v1, d), "out from the shortening's stamp");
+    assert!(told(&mut lp.peers[0], d).contains(&v1), "told as it leaves");
+}
+
+// spec/commits.md §5 Convergence: the first setting keeping an aspect, arriving after bodies
+// replaced since its stamp, shows the held ones and tells them
+#[test]
+fn first_keeping_setting_arriving_late_shows_and_tells_spec_commits_5() {
+    let (mut lp, d) = setup(371);
+    let late = set(&mut lp, 2, d, &setting(&[(A, keep(10 * HOUR))]));
+    let pk = pack(&mut lp, 2, &late);
+    let v1 = put(&mut lp, 1, d, "one");
+    let v2 = put(&mut lp, 1, d, "two");
+    for c in [v1, v2] {
+        let p = pack(&mut lp, 1, &c);
+        lp.deliver(0, &p).unwrap();
+    }
+    assert!(!listed(&mut lp.peers[0], &v1, d), "no history promised yet");
+    watch(&mut lp.peers[0]);
+    lp.deliver(0, &pk).unwrap();
+    assert!(listed(&mut lp.peers[0], &v1, d), "in history from the setting's stamp");
+    assert!(told(&mut lp.peers[0], d).contains(&v1), "told as it shows");
+    lp.advance(11 * HOUR);
+    lp.peers[0].tick().unwrap();
+    assert!(!listed(&mut lp.peers[0], &v1, d) && told(&mut lp.peers[0], d).contains(&v1), "and as it leaves");
+}

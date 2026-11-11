@@ -1696,6 +1696,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     }
     crate::rotation::load_lost_due(tx)?;
     crate::rotation::load_kept(tx)?;
+    crate::retention::leaving::load(tx)?;
     let mut pend = Vec::new();
     let mut after: Option<CommitId> = None;
     loop {

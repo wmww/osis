@@ -646,6 +646,17 @@ indexes! {
     pub unresolved: JSet<CommitId>,
     /// Roles `secrets.0` and `keys.0` deltas need (by commit and aspect index).
     pub rotation_role: JMap<(CommitId, usize), osis_base::Role>,
+    /// Per value aspect whose bodies leave history in order (`retention::leaving`): each held
+    /// valid part replaced there, by (replaced-at, commit), in history or not. Persisted
+    /// (`records::LEAVING`).
+    pub leaving: JSetMap<(Tid, Ak), (Ts, CommitId)>,
+    /// `leaving` by part: (commit, thing, aspect) to its row's replaced-at (derived).
+    pub dated: JMap<(CommitId, Tid, Ak), Ts>,
+    /// Per aspect whose bodies leave history in order: (its timer's due wall ms, `u64::MAX`:
+    /// none; the last place out of history). Persisted (`records::LEAVE_FROM`).
+    pub leave_from: JMap<(Tid, Ak), crate::retention::leaving::From>,
+    /// `leave_from`'s timers by due wall ms (derived).
+    pub leave_due: JSetMap<u64, (Tid, Ak)>,
     /// What each held `retention^.0` delta of a thing reading as a setting says, in key order,
     /// valid or not (spec/commits.md §5 The setting; `validity::Judge::settings` takes the valid).
     pub retention: JMap<Tid, Vec<(Point, Arc<osis_schema::core_types::RetentionSetting>)>>,
@@ -746,6 +757,7 @@ pub(crate) struct CoreMark {
     commits_named: usize,
     listed_before: usize,
     killed: usize,
+    to_date: usize,
     stale: (BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<CommitId>, bool),
     batched: Option<BTreeMap<(Tid, Ak), Batched>>,
     memory_tx: bool,
@@ -902,6 +914,10 @@ pub struct Core {
     /// Commits with a write a join of the running transaction superseded, on listened aspects
     /// (`listing::listing_moved`).
     pub(crate) killed: Vec<(Tid, Ak, CommitId)>,
+    /// Parts on dated aspects whose replaced-at the running transaction may have moved (a kill, a
+    /// rebuild; `true`: its aspect turned dated, so a row landing in history is told): their
+    /// history rows are dated again at its end (`retention::leaving::date_due`).
+    pub(crate) to_date: Vec<(Tid, Ak, CommitId, bool)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look.
     pub(crate) redeliver: BTreeSet<CommitId>,
@@ -976,6 +992,9 @@ pub struct Core {
     /// What judging when bodies were replaced reads of aspects' held bodies
     /// (`retention::bounds::held_writes`), kept while nothing changes.
     pub(crate) held_writes: crate::retention::bounds::HeldWritesCache,
+    /// `held_writes` per aspect while `retention::leaving::date_due` runs, at a transaction's end
+    /// when nothing it reads changes any more.
+    pub(crate) held_writes_memo: Option<BTreeMap<(Tid, Ak), Arc<crate::retention::bounds::HeldWrites>>>,
     /// At or before the earliest retention timer held (wall ms; `u64::MAX`: none): set by
     /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
     pub timer_floor: u64,
@@ -991,6 +1010,11 @@ pub struct Core {
     /// Things whose `retention^.0` deltas arrived, flipped or dropped this transaction: what their
     /// timeline judges is judged again at its end (`retention::settings_changed`).
     pub settings_due: BTreeSet<Tid>,
+    /// Bumped whenever a thing's settings change (`retention::settings_changed`): node-sync's
+    /// cached keep bounds of bodies whose leaving no setting dated are judged again
+    /// (`Engine::settings_generation`). Only moves forward: a bump a rollback undid costs a
+    /// re-judgment.
+    pub settings_generation: u64,
     /// Commits with a part judged invalid this transaction (`Core::index_validity`): dropped at
     /// its end where held (`retention::drop_invalid`).
     pub drop_due: BTreeSet<CommitId>,
@@ -1122,6 +1146,7 @@ impl Core {
             commit_listeners: None,
             listed_before: self.listed_before.clone(),
             killed: self.killed.clone(),
+            to_date: self.to_date.clone(),
             redeliver: self.redeliver.clone(),
             forge_bad: self.forge_bad.clone(),
             #[cfg(debug_assertions)]
@@ -1151,9 +1176,11 @@ impl Core {
             batched: self.batched.clone(),
             cover_cache: self.cover_cache.clone(),
             held_writes: self.held_writes.clone(),
+            held_writes_memo: self.held_writes_memo.clone(),
             timer_floor: self.timer_floor.clone(),
             none_due: self.none_due.clone(),
             settings_due: self.settings_due.clone(),
+            settings_generation: self.settings_generation,
             cover_candidates: self.cover_candidates.clone(),
             drop_due: self.drop_due.clone(),
             cut_subs: self.cut_subs.clone(),
@@ -1531,6 +1558,7 @@ impl Core {
             commits_named: self.commits_named.len(),
             listed_before: self.listed_before.len(),
             killed: self.killed.len(),
+            to_date: self.to_date.len(),
             stale: (self.stale_things.clone(), self.stale_authors.clone(), self.stale_under.clone(), self.stale_commits.clone(), self.stale_all),
             batched: self.batched.clone(),
             memory_tx: self.memory_tx,
@@ -1553,6 +1581,7 @@ impl Core {
             self.decoded.clear();
             self.cover_cache = None;
             self.held_writes = Default::default();
+            self.held_writes_memo = None;
             self.records_read.wrote_all();
             if self.memory_tx {
                 self.memory_generation += 1;
@@ -1584,6 +1613,7 @@ impl Core {
         self.commits_named.truncate(m.commits_named);
         self.listed_before.truncate(m.listed_before);
         self.killed.truncate(m.killed);
+        self.to_date.truncate(m.to_date);
         self.batched = m.batched;
         self.memory_tx = m.memory_tx;
     }
@@ -1603,6 +1633,7 @@ impl Core {
             commits_named: _,
             listed_before: _,
             killed: _,
+            to_date: _,
             written: _,
             memory: _,
             stale_things: _,
@@ -1644,6 +1675,7 @@ impl Core {
             decoded: _,
             cover_cache: _,
             held_writes: _,
+            held_writes_memo: _,
             generation: _,
             role_generation: _,
             memory_generation: _,
@@ -1655,6 +1687,7 @@ impl Core {
             none_due: _,
             cover_candidates: _,
             settings_due: _,
+            settings_generation: _,
             valueless_dirty: _,
             changed: _,
             redeliver: _,
@@ -1825,6 +1858,7 @@ impl Core {
             commit_listeners: None,
             listed_before: Vec::new(),
             killed: Vec::new(),
+            to_date: Vec::new(),
             redeliver: BTreeSet::new(),
             pended: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
@@ -1858,10 +1892,12 @@ impl Core {
             batched: None,
             cover_cache: None,
             held_writes: Default::default(),
+            held_writes_memo: None,
             timer_floor: 0,
             none_due: BTreeSet::new(),
             cover_candidates: BTreeMap::new(),
             settings_due: BTreeSet::new(),
+            settings_generation: 0,
             drop_due: BTreeSet::new(),
             cut_subs: BTreeSet::new(),
             refold: BTreeSet::new(),
@@ -2864,6 +2900,11 @@ impl Engine {
         self.core.sync_records = Some(r);
     }
 
+    /// `Core::settings_generation`: what node-sync's cached keep bounds hold for.
+    pub fn settings_generation(&self) -> u64 {
+        self.core.settings_generation
+    }
+
     /// What changed since the last call (`Core::changed`), keeping it from now on.
     pub fn take_changed(&mut self) -> Changed {
         self.core.changed.replace(Changed::default()).unwrap_or_default()
@@ -2961,6 +3002,10 @@ impl Engine {
                 }
                 tx.core.listed_before.clear();
                 tx.core.killed.clear();
+                if r.is_ok() {
+                    r = r.and_then(|v| crate::retention::leaving::date_due(&mut tx).map(|_| v));
+                }
+                tx.core.to_date.clear();
                 if r.is_ok() {
                     r = r.and_then(|v| Core::commit_changes(&mut tx).map(|_| v));
                 }

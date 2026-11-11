@@ -30,6 +30,7 @@ use std::collections::BTreeSet;
 
 pub(crate) mod bounds;
 pub(crate) mod history;
+pub(crate) mod leaving;
 pub(crate) mod leftover;
 mod pending;
 mod purge;
@@ -55,8 +56,10 @@ pub(crate) use bounds::{Killed, mark_killed, mark_bounded};
 const T_EXPIRY: u8 = 1;
 /// A purge-on-replace body kept to its commit's purge floor: judged again then (`replace`).
 const T_FLOOR: u8 = 2;
-/// A body's keep bound: a signal's body goes then (`signal_bound`); a listed value part leaves
-/// the listing then (`listing::kept_passed`).
+/// A part kept past leaving history by a purge request's header (its commit's purge floor, a
+/// purged fire's tombstone): a signal's body goes then (`signal_bound`); a value part leaves the
+/// listing then (`listing::kept_passed`). Leaving history by the timeline alone is `leaving`'s
+/// one timer per aspect.
 pub(crate) const T_KEPT: u8 = 3;
 
 /// A signal delta's keep bound, wall ms (spec/commits.md §5 Signals): any body's keep at least
@@ -405,39 +408,22 @@ pub(crate) fn drop_invalid(tx: &mut Tx<'_>) -> Result<()> {
 
 /// The things whose `retention^.0` settings arrived, flipped or dropped this transaction
 /// (`Core::settings_due`): what their timelines judge is judged again (spec/commits.md §5
-/// Convergence), from what is held. Every held body on the thing: node-sync's keep bounds
-/// (`Core::mark_changed`), purge on replace (`settle_none`: a setting arriving can make a writer
-/// owe a cover), listings (every commit told, keep-bound timers armed again) and a fire's keep
-/// bound (dropped when past, else its timer armed again; an earlier timer finds the bound moved).
-/// Cost: O(the thing's held commits) per change of its settings, a rare path.
+/// Convergence), from what is held, per aspect of the thing: the bodies that leave history or come
+/// back by the new timeline are told and marked (`leaving::settings_changed`: O(those bodies), no
+/// body read), and purge on replace is settled where some setting asks for it (`settle_none`: a
+/// setting arriving can make a writer owe a cover).
 pub(crate) fn settings_changed(tx: &mut Tx<'_>) -> Result<()> {
-    let now = tx.now().0;
     while let Some(t) = tx.core.settings_due.pop_first() {
+        tx.core.settings_generation += 1;
         let aspects: Vec<Ak> = tx.core.ix.by_aspect.range((t, Ak::MIN)..).take_while(|((x, _), _)| *x == t).map(|((_, a), _)| a.clone()).collect();
         for ak in aspects {
             if osis_commit::retention::fixed_retention(ak.as_str()).is_some() {
                 continue;
             }
-            let on: Vec<CommitId> = tx.core.ix.by_aspect.get(&(t, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-            for c in &on {
-                tx.core.mark_changed(*c);
+            if history::of(tx.core, &t, &ak).purges() {
+                tx.core.none_due.insert((t, ak.clone()));
             }
-            tx.core.none_due.insert((t, ak.clone()));
-            if ak.signal() {
-                for c in &on {
-                    let Some(m) = tx.core.ix.commits.get(c) else { continue };
-                    let Some(ai) = m.aspect(&t, &ak).filter(|ai| m.holds(*ai)) else { continue };
-                    let h = m.header.clone();
-                    crate::engine::edits::time_passed(tx, c, ai);
-                    match h.aspects.get(ai).and_then(|a| signal_bound(tx.core, &h, a)) {
-                        Some(b) if b <= now => drop_part(tx, c, ai)?,
-                        Some(b) => tx.put_timer(b, c, ai, T_KEPT)?,
-                        None => {}
-                    }
-                }
-            } else {
-                crate::engine::listing::setting_changed(tx, &t, &ak, &on)?;
-            }
+            leaving::settings_changed(tx, &t, &ak)?;
         }
     }
     Ok(())
@@ -915,14 +901,18 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, p
         }
         purge::purge_arrived(tx, id, h, ai, purged)?;
         drop_gone(tx, id, ai, purged)?;
-        // a signal body goes at its keep bound, whole or as its leftover
-        if let Some(a) = h.aspects.get(ai).filter(|a| a.ak.signal())
-            && let Some(t) = signal_bound(tx.core, h, a)
-        {
-            if t <= tx.now().0 {
-                drop_part(tx, id, ai)?;
+        // a signal body goes at its keep bound, whole or as its leftover: by its aspect's walk
+        // while its timeline keeps it (`leaving`), then by its commit's purge floor if later
+        if let Some(a) = h.aspects.get(ai).filter(|a| a.ak.signal()) {
+            let now = tx.now().0;
+            if history::of(tx.core, &a.tid, &a.ak).leaves_at(Some(h.ts.wall_ms().0)) > now {
+                leaving::fire_held(tx, &a.tid, &a.ak, (h.ts, *id))?;
             } else {
-                tx.put_timer(t, id, ai, T_KEPT)?;
+                match signal_bound(tx.core, h, a) {
+                    Some(t) if t <= now => drop_part(tx, id, ai)?,
+                    Some(t) => tx.put_timer(t, id, ai, T_KEPT)?,
+                    None => {}
+                }
             }
         }
     }
@@ -951,17 +941,24 @@ type Due = (Vec<u8>, CommitId, usize, u8);
 fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
     let now = tx.now().0;
     let mut due = Vec::new();
-    let mut next = u64::MAX;
-    tx.scan(records::TIMER, |k, v| {
-        let (t, c, ai) = records::parse_timer(k)?;
-        if t <= now {
-            due.push((k.to_vec(), c, ai, v.first().copied().unwrap_or(0)));
-        } else {
-            next = next.min(t);
+    // keys sort by time: read up to the first not due
+    let mut from: Vec<u8> = Vec::new();
+    loop {
+        let page = tx.txn.scan_local(records::TIMER, &from, 64)?;
+        let n = page.len();
+        for (k, v) in page {
+            let tail = k.get(records::TIMER.len()..).unwrap_or_default();
+            let (t, c, ai) = records::parse_timer(tail)?;
+            if t > now {
+                return Ok((due, t));
+            }
+            from = [tail, &[0]].concat();
+            due.push((tail.to_vec(), c, ai, v.first().copied().unwrap_or(0)));
         }
-        Ok(())
-    })?;
-    Ok((due, next))
+        if n < 64 {
+            return Ok((due, u64::MAX));
+        }
+    }
 }
 
 /// Runs due timer `key` (`records::timer_key`) of part `ai` of `c`, of `kind`; the
@@ -1028,22 +1025,26 @@ impl Engine {
         self.core.ix.commits.get(c).is_some_and(|m| m.dropped_invalid(ai) && !valueless(&self.core, c, ai))
     }
 
-    /// Runs what is due by the wall clock: expiries, purge floors (`T_FLOOR`), signal keep
-    /// bounds (`T_KEPT`) and commits
-    /// parked for drift. The
-    /// commits whose timers fired are marked changed (`Core::changed`).
+    /// Runs what is due by the wall clock: expiries, purge floors (`T_FLOOR`, `T_KEPT`), bodies
+    /// leaving history (`leaving`) and commits parked for drift. The commits whose timers fired
+    /// are marked changed (`Core::changed`).
     pub fn tick(&mut self) -> Result<()> {
         let r = self.run(|tx| {
             let mut changed = BTreeSet::new();
             let (due, next) = due_timers(tx)?;
+            let (leave, next_leave) = leaving::due(tx.core, tx.now().0);
             // the timers these put lower it again
-            tx.core.timer_floor = next;
+            tx.core.timer_floor = next.min(next_leave);
             // their rebuilds once per aspect (`run_batched`: an expiry reads no state)
             crate::apply::run_batched(tx, |tx| {
                 for (k, c, ai, kind) in due {
                     // a memory commit's timer is memory work: what it writes stays in memory
                     let memory = tx.is_memory_commit(&c);
                     tx.in_class(memory, |tx| run_timer(tx, &[records::TIMER, &k].concat(), &c, ai, kind, &mut changed))?;
+                }
+                for (tid, ak) in leave {
+                    let memory = tx.txn.is_memory_aspect(&tid, &ak);
+                    tx.in_class(memory, |tx| leaving::passed(tx, &tid, &ak))?;
                 }
                 Ok(())
             })?;
@@ -1071,7 +1072,9 @@ impl Engine {
     pub fn next_timer(&mut self) -> Result<Option<u64>> {
         self.run(|tx| {
             let first = tx.txn.scan_local(records::TIMER, &[], 1)?;
-            Ok(first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _)| t))
+            let part = first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _)| t);
+            let aspect = tx.core.ix.leave_due.keys().next().copied();
+            Ok(part.into_iter().chain(aspect).min())
         })
     }
 

@@ -131,8 +131,8 @@ fn listed_while_in_read_or_kept_api_commits() {
 
 // spec/commits.md §7 (Listed parts), notes/api.md Commits (listeners): a replaced part leaving
 // the listing at its keep bound is told, to a listener added before its replacement and to one
-// added after, once; no keep-bound timer is armed for an aspect no listener is on, or for one
-// whose writes keep no history.
+// added after, once; the kept aspect has one timer whoever listens, and an aspect whose writes keep
+// no history has none.
 #[test]
 fn kept_part_is_told_leaving_at_its_bound_api_commits() {
     let c = clock();
@@ -143,13 +143,14 @@ fn kept_part_is_told_leaving_at_its_bound_api_commits() {
     let timer = || db.engine(|e| e.next_timer().unwrap());
     let x = commit_with(&db, |w| w.at(t, kept(&db, &k)).set(&s("x"))).stamp.id;
     commit_with(&db, |w| w.at(t, kept(&db, &k)).set(&s("y")));
-    assert_eq!(timer(), None, "no listener: no timer");
+    let first = timer();
+    assert!(first.is_some(), "the kept aspect's timer, listened or not");
     let p = thing(&db);
     let (_p, prx) = watch(&db, p, plain.clone());
     for v in ["x", "y"] {
         db.commit_set(p, untyped(plain.clone()), &s(v)).unwrap();
     }
-    assert_eq!(timer(), None, "no history kept: no timer");
+    assert_eq!(timer(), first, "no history kept: no timer of its own");
     let u = thing(&db);
     let (_before, rx) = watch(&db, u, k.clone());
     let a = commit_with(&db, |w| w.at(u, kept(&db, &k)).set(&s("a"))).stamp.id;

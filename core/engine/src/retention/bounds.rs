@@ -243,8 +243,18 @@ const HELD_WRITES_MAX: usize = 1 << 20;
 
 /// `HeldWrites` of `(tid, ak)`, through `Core::held_writes` (`HeldWritesCache`).
 fn held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Arc<HeldWrites>> {
-    let at = (tx.core.generation, tx.core.memory_generation);
     let k = (*tid, ak.clone());
+    if let Some(memo) = &tx.core.held_writes_memo {
+        if let Some(x) = memo.get(&k) {
+            return Ok(x.clone());
+        }
+        let x = Arc::new(read_held_writes(tx, tid, ak)?);
+        if let Some(memo) = &mut tx.core.held_writes_memo {
+            memo.insert(k, x.clone());
+        }
+        return Ok(x);
+    }
+    let at = (tx.core.generation, tx.core.memory_generation);
     let clean = !tx.core.dirty;
     if clean && tx.core.held_writes.at == at
         && let Some(x) = tx.core.held_writes.aspects.get(&k).cloned()
@@ -342,7 +352,8 @@ impl Killed {
 
 /// A join on `(tid, ak)` superseded `dead`: the held bodies with a relative bound it may have
 /// replaced (the dying writes' own commits, and the aspect's snapshots, which may carry them) are
-/// judged again by node-sync (`Core::changed`); with `Killed::all`, every one (`mark_bounded`).
+/// judged again by node-sync (`Core::changed`) and their history rows dated again
+/// (`Core::to_date`); with `Killed::all`, every one (`mark_bounded`).
 /// On any aspect the dying writes' own commits are marked and become cover candidates: a body
 /// read on its own may not be now (`read_alone`); with `Killed::all`, every held body of the
 /// aspect (a reset joined by pages: rare).
@@ -369,12 +380,14 @@ pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
     for c in on {
         if bounded_part(tx.core, &c, tid, ak).is_some() {
             tx.core.mark_changed(c);
+            tx.core.to_date.push((*tid, ak.clone(), c, false));
         }
     }
 }
 
 /// The state of `(tid, ak)` was rebuilt (a validity flip, an un-merge, a drop): every held body
-/// with a relative bound is judged again by node-sync, as when it was replaced may have moved, and
+/// with a relative bound is judged again by node-sync and its history row dated again, as when it
+/// was replaced may have moved, and
 /// every held body is a cover candidate again (a write of it may have died; the rebuild read
 /// them all already).
 pub(crate) fn mark_bounded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) {
@@ -391,6 +404,7 @@ pub(crate) fn mark_bounded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) {
     for c in on {
         if bounded_part(tx.core, &c, tid, ak).is_some() {
             tx.core.mark_changed(c);
+            tx.core.to_date.push((*tid, ak.clone(), c, false));
         }
     }
 }

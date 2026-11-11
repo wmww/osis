@@ -229,6 +229,8 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     for t in &out.things {
         tx.txn.remove_local(&[records::SYNCING, t.as_bytes()].concat(), Shred::No)?;
     }
+    // the things' history cursors and rows (`leaving`)
+    super::leaving::forget_things(tx, &out.things)?;
     // timers of forgotten parts
     let hit = |c: &CommitId, ai: usize| out.commits.contains(c) || parts.get(c).is_some_and(|s| s.contains(&ai));
     let mut stale = Vec::new();

@@ -340,8 +340,10 @@ pub struct SyncEngine {
     pub(crate) rotated: BTreeMap<Tid, Rotated>,
     /// `Engine::body_keeps` per commit judged (`keeps`): a function of the held set that the
     /// engine marks changed for every commit whose bodies' replacement it may move (notes/node-sync-work-sets.md),
-    /// so an entry goes with its commit's mark (`engine_events`).
+    /// so an entry goes with its commit's mark (`engine_events`), and all go with a settings change
+    /// (`keeps_at`: the `Engine::settings_generation` they hold for).
     pub(crate) keeps: BTreeMap<osis_base::CommitId, std::sync::Arc<Vec<u64>>>,
+    pub(crate) keeps_at: u64,
     /// This node's `clients^.0` changed since the last step (`clients_changed`).
     pub(crate) clients_moved: bool,
     /// Commit blobs with linked header lists whose prefix was checked against the resolved
@@ -478,6 +480,7 @@ impl SyncEngine {
             placed_waiting: BTreeSet::new(),
             rotated: BTreeMap::new(),
             keeps: BTreeMap::new(),
+            keeps_at: 0,
             last_synced: BTreeMap::new(),
             clients_moved: false,
             prefix_checked: BTreeSet::new(),

@@ -36,6 +36,12 @@ pub const PURGES_NAMED: &[u8] = b"pn/";
 pub const FORGOTTEN: &[u8] = b"f/";
 /// Timers: `x/` + T (8 bytes, big endian) + commit ID + aspect index (4 bytes).
 pub const TIMER: &[u8] = b"x/";
+/// History rows (`Indexes::leaving`): `hr/` + aspect key + replaced-at (`Ts`, 8 bytes) +
+/// commit ID, empty.
+pub const LEAVING: &[u8] = b"hr/";
+/// History cursors (`Indexes::leave_from`): `hf/` + aspect key, the due wall ms (8 bytes), then
+/// 0, or 1 + the last place out (`Ts`, commit ID).
+pub const LEAVE_FROM: &[u8] = b"hf/";
 /// Things this node syncs: `s/` + tid.
 pub const SYNCING: &[u8] = b"s/";
 /// Commits voided by overlapping session ranges: `o/` + commit ID.
