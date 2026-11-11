@@ -1,5 +1,5 @@
 # One kind of peer
-> Summary: A node has two kinds of peer (saved peer, the old host; direct peer, a co-reader) with two stores (the hub's and the engine's) behind the one hub session, local passes besides; one listening key (built, 3d). Make one: one key, one blind store and serving path (the hub, fed public data by node sync) that opens by key proof alone, peers that cannot read listed by the accounts they serve (issues/account-signing.md), consent by own nodes; then the API (`SyncId` out). The concept unification the rename waits for. Part of issues/net-rework.md.
+> Summary: A node has two kinds of peer (saved peer, the old host; direct peer, a co-reader) behind the one hub session, local passes besides; one listening key (built, 3d) and one store (built, 3f). Make one: one key, one blind store and serving path (the hub, fed public data by node sync) that opens by key proof alone, peers that cannot read listed by the accounts they serve (issues/account-signing.md), consent by own nodes; then the API (`SyncId` out). The concept unification the rename waits for. Part of issues/net-rework.md.
 > Priority: normal
 > Tags: node, sync, host, proto, api, spec
 
@@ -8,7 +8,7 @@
 | Found by | fixed address in `label.0`, link and card text | `reach.0`, LAN, a link's sharer |
 | Who can be one | a node with `host^.0` that admits the label | a node that reads the group |
 | Serving code | `ServingSession` in the hub (`osis-host`, `HostStore`) | the same hub session, node sync above it serving the stream; local passes when no host is listed (notes/peers.md) |
-| Store | `host.redb` (entries, blobs, durable log) | node sync's entries and the engine's blobs; the durable node log (notes/peers.md, The stream) |
+| Store | the node's one store (the hub's: entries, blobs, the node log) | the same (3f) |
 | Key | the node's one key (the dialable key) | the same |
 | Opens by | sync key, claim, static entry | those for a peer that cannot read; between readers nothing opens, the shared set's members are pulled (notes/peers.md, The stream) |
 | Registration | first come, by parent's delete key | steps recorded in `label.0`, plus valid child steps peers register; new labels refused |
