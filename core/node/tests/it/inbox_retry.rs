@@ -488,8 +488,9 @@ fn a_readers_invalid_fill_ends_with_an_admin_pass_spec_sync_5() {
     let tb = net.tid(b);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
-    // b writes before it hears of its demotion: no peer takes them, stamped under a write key
-    // the demotion's step supersedes
+    // b writes before it hears of its demotion: no peer takes them (none pulls b's store),
+    // stamped under a write key the demotion's step supersedes
+    net.unpulled.insert(b);
     let room = osis_proto::LabelStore::budget(&*net.hosts[host].hub.store(), &l).unwrap().entries_left;
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
