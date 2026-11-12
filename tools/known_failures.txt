@@ -6,3 +6,4 @@ order::held_set_decides_plain OSIS_ORDER_START=539131766525 issues/order-require
 keep::any_order_until_keeps_no_more_large OSIS_KEEP_START=636109736897 issues/keep-until-order-seed.md kept only by order
 ephemeral::random_churn_converges_large OSIS_EPH_START=235597868743 issues/churn-cursor-rebuild-differs.md differs from a rebuild from held bodies
 order::held_set_decides_plain OSIS_ORDER_SEED=895280621181 issues/order-partsaway-role-commit-applies.md seed \d+, PartsAway \(replay: .*: now: held-model differs: role commit \S+ \(#\d+\) on \S+ applies: model true, node false
+ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6 OSIS_EPH_START=751305619689 issues/eph-reverts-restarts-seed.md seed 751305619689: Tid\(
