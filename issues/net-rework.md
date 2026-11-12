@@ -37,7 +37,7 @@ The registry of old words stays issues/deprecated-terms.md. Renames come after t
 ## Decided (Tess)
 - One concept of node and of peer; "host" is deprecated, never built on. No separate word for a peer that cannot read a group. The values two nodes compare to find shared sync IDs are **beacons**, not tags (a tag is a group shown to users).
 - Synced = caught up with every node connected on the group; nobody connected is one state, not synced.
-- Who may store data on a node that it cannot read: by default only the user's own nodes, which serve the user's groups with no setup; anyone else's is opt-in. Keeping data unread takes no other kind of node: any node keeps a sync ID it holds no keys to beside the ones it reads (issues/net-one-peer.md).
+- Who may store data on a node that it cannot read: a node holds exactly the sync IDs under its synced group, which its account writes; one it cannot read it holds by a sync-only grant, accepted like any grant. Keeping data unread takes no other kind of node: readability is per (node, sync ID) (issues/net-one-peer.md, Sync model).
 - Stores, serving paths, keys and names: ours to decide.
 - Unify the concepts before or with the rename, never rename first.
 - Sync IDs leave the public API; `unsync` goes; sync ID replacement (index > 0) goes (in job 8, where the serving path that made it necessary goes; it stays until then).
