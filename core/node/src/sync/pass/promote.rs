@@ -121,8 +121,13 @@ impl SyncEngine {
     /// chain first), gets the missing parts of its author's chain placed as
     /// this node's certificate copies, then its stamp; one whose chain it cannot complete
     /// stays a deposit and is judged again next pass (one not applied yet, once applied). Of
-    /// the entries `scope` names, but `ours` (this pass's placements).
+    /// the entries `scope` names, but `ours` (this pass's placements). Only while this node
+    /// writes the group: a demoted writer still serving a head whose write key it holds would
+    /// stamp under a key its peers refuse, and the chain it places for them stays a deposit.
     pub(super) fn local_promote(&mut self, g: &Tid, l: LabelId, write: &osis_crypto::SigningSecret, scope: &Scope, ours: &BTreeSet<BlobId>, left: &mut Left) -> Result<()> {
+        if self.engine.role_on(&self.engine.group_actor(g)) < Some(Role::Write) {
+            return Ok(());
+        }
         for id in self.scope_entries(&l, scope).difference(ours).copied().collect::<Vec<_>>() {
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             let Kind::Commit { commit, parts, .. } = &e.kind else { continue };
