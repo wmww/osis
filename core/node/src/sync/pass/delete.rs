@@ -148,8 +148,11 @@ impl SyncEngine {
                 note.at(from);
                 return Ok(None);
             }
-            // every delta's live writes count, the kept ones' too (spec/sync.md §7, `carried`)
-            let live = opened.iter().any(|ai| self.part_live(&h, commit, *ai));
+            // every delta's live writes count, the kept ones' too (spec/sync.md §7, `carried`);
+            // under a replaced label no content entry stays, carried there or not: its
+            // replacement holds the content (spec/sync.md §2)
+            let content_gone = self.is_replaced(g, l) && !opened.iter().filter_map(|ai| h.aspects.get(*ai)).any(|a| super::kept_when_replaced(a.ak.as_str()));
+            let live = !content_gone && opened.iter().any(|ai| self.part_live(&h, commit, *ai));
             return Ok(Some((Hold::MustNot(Why::Dropped), live, aspects)));
         }
         // a delta dropped here while invalid: no right deletes it (spec/permissions.md §6), so
@@ -867,3 +870,4 @@ impl SyncEngine {
 fn is_role(a: &Ak) -> bool {
     osis_schema::core_types::is_role_class(a.as_str())
 }
+
