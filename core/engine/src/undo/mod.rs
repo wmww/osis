@@ -265,7 +265,8 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Ts, confined: 
 /// record and the parts on things the commit created (those are deleted, `unmake_ops`). Every
 /// other part is reverted, or there is no undo (`NotKept`): it is not in kept history by its
 /// thing's setting at wall ms `now` (spec/commits.md §7: `bounds::setting_keeps`, whatever is
-/// held, so an undo is the same on every node whatever compaction did), or its body is not held
+/// held, so an undo is the same on every node whatever compaction did) and is not a membership
+/// write only adding things the commit created (`lists_only`), or its body is not held
 /// (purged, expired, not fetched yet); or it writes back replaced content
 /// (`osis_crdt::restores`) not kept (`replaced_kept`).
 fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, now: u64) -> Result<Vec<(osis_commit::AspectEntry, Fragment, Source)>> {
@@ -277,18 +278,30 @@ fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, now: u64) -> Result<Vec<(osi
         if !m.valid_at(ai) || a.ak.signal() || a.ak.as_str() == CREATED.ak() || a.ak.as_str() == osis_commit::retention::RETENTION || made.contains(&a.tid) {
             continue;
         }
-        if m.body_gone(ai) || m.missing.contains(&ai) || !crate::retention::bounds::setting_keeps(tx, target, ai, now)? {
+        if m.body_gone(ai) || m.missing.contains(&ai) {
             return Err(Error::NotKept(*target));
         }
         let Some(Decoded::Delta(d)) = crate::apply::held_part(tx, target, ai)? else { return Err(Error::Corrupt("content part held without its delta")) };
         let source = h.form.own_source(h.author, *target);
         let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi } };
-        if osis_crdt::restores(&undone) && !replaced_kept(tx, &h, target, a, now)? {
+        let restores = osis_crdt::restores(&undone);
+        if !lists_only(a, &d.fragment, restores, &made) && !crate::retention::bounds::setting_keeps(tx, target, ai, now)? {
+            return Err(Error::NotKept(*target));
+        }
+        if restores && !replaced_kept(tx, &h, target, a, now)? {
             return Err(Error::NotKept(*target));
         }
         parts.push((a.clone(), d.fragment, source));
     }
     Ok(parts)
+}
+
+/// Whether part `a` (delta `delta`, `restores` by `osis_crdt::restores`) is a membership write
+/// only adding things its commit created (`made`): its undo takes back nothing the deletion of
+/// those things does not (`unmake_ops` removes them from every group), so it needs no stored
+/// content and no setting (spec/commits.md §7). One also touching an existing member does.
+fn lists_only(a: &osis_commit::AspectEntry, delta: &Fragment, restores: bool, made: &BTreeSet<Tid>) -> bool {
+    a.ak.as_str() == GROUP.ak() && !restores && !made.is_empty() && crate::engine::groups::def_of(delta).is_none_or(|(i, s)| i.union(&s).all(|x| made.contains(x)))
 }
 
 /// The undo's deltas of `parts` (each undone delta with its writer's source and the state before
@@ -781,17 +794,39 @@ mod tests {
         lp.peers[0].engine.revert(&rm)
     }
 
-    // spec/commits.md §7: a snapshot part not kept is excused by no snapshot, whether or not
-    // the node holds the parts that wrote it. On an aspect no setting keeps history, C writes
-    // `k` and snapshots; A, holding C's delta or only the snapshot, removes `k`: no kept part
-    // holds `k`.
+    // A removes entry `k` of `x:n.0`, which no setting keeps yet, then a setting keeps it a day
+    // (`two`'s rules plus `x:n.0`): the parts the removal replaced are out of history, so only a
+    // kept part superseding them lets its undo restore (spec/commits.md §7 Limit). The undo.
+    fn remove_k_then_keep(lp: &mut LocalPeer, t: osis_base::Tid, x: &Ak, keep: osis_schema::Retention) -> crate::error::Result<Option<osis_base::CommitId>> {
+        lp.advance(10);
+        let mut m = Mutation::new();
+        m.op(t, x, PathOp { path: Vec::new(), op: Op::Remove(Value::Str("k".into())) }).unwrap().retention(t, x, keep).unwrap();
+        let rm = lp.peers[0].commit(m).unwrap().unwrap();
+        lp.advance(10);
+        let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
+        let mut setting = ct::RetentionSetting::of(Ak::new("x:m.0").unwrap(), day);
+        for k in ["x:r.0", "x:n.0"] {
+            setting.rules.insert(Ak::new(k).unwrap(), ct::RetentionEntry { history: Some(day), ..Default::default() });
+        }
+        let mut m = Mutation::new();
+        m.set(t, &ct::RETENTION, &setting).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.peers[0].engine.revert(&rm)
+    }
+
+    // spec/commits.md §7 Limit: a part out of history is excused by a snapshot reaching it only
+    // while the snapshot is in kept history itself, whether or not the node holds the parts that
+    // wrote it. C writes `k` (and `j`, when `live`) and snapshots; A, holding C's delta or only
+    // the snapshot, removes `k`, and a setting comes after: the undo writes `k` back from the
+    // snapshot while `j` keeps it live, and is `NotKept` once the removal replaced all of it.
     #[test]
     fn unkept_snapshot_without_its_writers_spec_commits_7() {
-        for headers in [true, false] {
+        for (live, headers) in [(true, true), (true, false), (false, true), (false, false)] {
             let (mut lp, t, _, keep) = two();
             let x = Ak::new("x:n.0").unwrap();
+            let v: &[(&str, i64)] = if live { &[("k", 2), ("j", 1)] } else { &[("k", 2)] };
             let mut m = Mutation::new();
-            m.set(t, &x, &Value::Map([(Value::Str("k".into()), Value::Int(2))].into_iter().collect())).unwrap();
+            m.set(t, &x, &map_of(v)).unwrap();
             let d = lp.peers[1].commit(m).unwrap().unwrap();
             lp.advance(10);
             lp.peers[1].engine.snapshot(&t, &x).unwrap().unwrap();
@@ -800,7 +835,13 @@ mod tests {
                     lp.deliver(0, &pk).unwrap();
                 }
             }
-            assert!(matches!(remove_k(&mut lp, t, &x, keep), Err(Error::NotKept(_))), "headers {headers}");
+            let r = remove_k_then_keep(&mut lp, t, &x, keep);
+            if live {
+                r.unwrap().unwrap();
+                assert_eq!(lp.peers[0].engine.get(&t, &x).unwrap(), Some(map_of(v)), "headers {headers}");
+            } else {
+                assert!(matches!(r, Err(Error::NotKept(_))), "headers {headers}");
+            }
         }
     }
 
@@ -951,24 +992,37 @@ mod tests {
         assert_eq!(lp.peers[1].engine.deleted_aspects(&p).unwrap(), Vec::<Ak>::new(), "the removal covers W");
     }
 
-    // spec/commits.md §7, spec/crdt.md §8: a snapshot holds an expiring delta's writes
-    // value-less, so reaching it excuses nothing. On an aspect no setting keeps history, C
-    // writes `k` expiring and snapshots the map (kept: A's `j` lives in it); A removes `k`.
+    // spec/commits.md §7 Limit, spec/crdt.md §8: a snapshot holds an expiring delta's writes
+    // value-less, so reaching it excuses nothing. A writes `j`; C puts `k` (expiring or not) and
+    // snapshots the map (kept: `j` lives in it); A removes `k`, and a setting comes after, so
+    // C's put is out of history: the undo writes `k` back from the snapshot only where `k` does
+    // not expire.
     #[test]
     fn snapshot_excuses_no_expiring_part_spec_commits_7() {
-        let (mut lp, t, _, keep) = two();
-        let x = Ak::new("x:n.0").unwrap();
-        let mut m = Mutation::new();
-        m.set(t, &x, &Value::Map([(Value::Str("j".into()), Value::Int(1))].into_iter().collect())).unwrap().retention(t, &x, keep).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap();
-        lp.sync(0, 1).unwrap();
-        lp.advance(10);
-        let mut m = Mutation::new();
-        m.op(t, &x, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str("k".into()))], op: Op::Put(Value::Int(2)) }).unwrap().expires(t, &x, WallMs(1_800_000_000_000)).unwrap();
-        lp.peers[1].commit(m).unwrap().unwrap();
-        lp.advance(10);
-        lp.peers[1].engine.snapshot(&t, &x).unwrap().unwrap();
-        lp.sync(1, 0).unwrap();
-        assert!(matches!(remove_k(&mut lp, t, &x, keep), Err(Error::NotKept(_))));
+        for expiring in [false, true] {
+            let (mut lp, t, _, keep) = two();
+            let x = Ak::new("x:n.0").unwrap();
+            let mut m = Mutation::new();
+            m.set(t, &x, &map_of(&[("j", 1)])).unwrap().retention(t, &x, keep).unwrap();
+            lp.peers[0].commit(m).unwrap().unwrap();
+            lp.sync(0, 1).unwrap();
+            lp.advance(10);
+            let mut m = Mutation::new();
+            m.op(t, &x, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str("k".into()))], op: Op::Put(Value::Int(2)) }).unwrap();
+            if expiring {
+                m.expires(t, &x, WallMs(1_800_000_000_000)).unwrap();
+            }
+            lp.peers[1].commit(m).unwrap().unwrap();
+            lp.advance(10);
+            lp.peers[1].engine.snapshot(&t, &x).unwrap().unwrap();
+            lp.sync(1, 0).unwrap();
+            let r = remove_k_then_keep(&mut lp, t, &x, keep);
+            if expiring {
+                assert!(matches!(r, Err(Error::NotKept(_))));
+            } else {
+                r.unwrap().unwrap();
+                assert_eq!(lp.peers[0].engine.get(&t, &x).unwrap(), Some(map_of(&[("j", 1), ("k", 2)])));
+            }
+        }
     }
 }

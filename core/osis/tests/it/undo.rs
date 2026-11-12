@@ -415,3 +415,41 @@ fn undo_over_forgotten_ephemeral_part_not_undoable_spec_commits_7() {
     assert_eq!(db.at(t, key(&db, "app:xe+.0")).get().unwrap(), int(2), "nothing written");
 }
 
+
+// spec/commits.md §7: undoing a creation needs no setting on the groups it was created into:
+// the deletion removes the thing from every group, so the creating commit's membership write,
+// adding only things it created, needs no kept history. One also adding an existing thing to
+// such a group needs the group's setting, so it is `NotKept`, nothing written.
+#[test]
+fn creation_in_plain_group_undoes_spec_commits_7() {
+    let db = setup(0);
+    let n_key = key(&db, "app:n.0");
+    let (g, e) = db.commit_with(|w| Ok((w.create()?, w.create()?))).unwrap();
+    let n = db
+        .commit_with(|w| {
+            let n = w.create_in(db.me(), &[g])?;
+            w.at(n, n_key.clone()).set(&Value::Int(1))?;
+            Ok(n)
+        })
+        .unwrap();
+    assert_eq!(db.members(g).unwrap(), vec![osis::Member::Item(n)]);
+    db.undo(&Scope::Thing(n)).unwrap().unwrap();
+    assert_eq!(db.members(g).unwrap(), vec![], "gone from the group");
+    let of = db.groups_of(n).unwrap();
+    assert!(of.item_of.is_empty() && of.subgroup_of.is_empty() && of.within.is_empty(), "{of:?}");
+    assert_eq!(db.at(n, n_key.clone()).get().unwrap(), None, "and its content");
+    let (m, c) = db
+        .commit_with(|w| {
+            let m = w.create_in(db.me(), &[g])?;
+            w.group(g).add(osis::Member::Item(e))?;
+            Ok(m)
+        })
+        .map(|m| (m, db.writes(&Scope::Thing(m), &osis::CommitQuery::default()).unwrap().commits[0].stamp.id))
+        .unwrap();
+    let marks = db.engine(|x| x.commit_ids().len());
+    assert_eq!(db.undo(&Scope::Thing(m)), Err(gone(c)), "an existing member added too");
+    assert_eq!(db.engine(|x| x.commit_ids().len()), marks, "nothing written");
+    let mut want = vec![osis::Member::Item(e), osis::Member::Item(m)];
+    want.sort_by_key(|x| match x { osis::Member::Item(t) | osis::Member::Subgroup(t) => *t });
+    assert_eq!(db.members(g).unwrap(), want);
+}
