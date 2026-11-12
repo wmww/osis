@@ -22,6 +22,9 @@ pub struct ValueStream {
     len: u64,
     /// Payload bytes delivered (or skipped) so far.
     pos: u64,
+    /// Chunks fetched from the tree, and the most bytes held at once (`internals::stream_work`).
+    chunks: u64,
+    held: usize,
 }
 
 enum Src {
@@ -39,25 +42,6 @@ impl std::fmt::Debug for ValueStream {
     }
 }
 
-/// The length a canonical CBOR byte or text string head declares, with the head's size.
-fn string_head(b: &[u8]) -> Option<(u64, usize)> {
-    let first = *b.first()?;
-    if !matches!(first >> 5, 2 | 3) {
-        return None;
-    }
-    let info = first & 31;
-    let n = match info {
-        0..=23 => return Some((u64::from(info), 1)),
-        24 => 1,
-        25 => 2,
-        26 => 4,
-        27 => 8,
-        _ => return None,
-    };
-    let bytes = b.get(1..1 + n)?;
-    Some((bytes.iter().fold(0u64, |acc, x| (acc << 8) | u64::from(*x)), 1 + n))
-}
-
 fn not_string() -> Error {
     Error::Invalid("not a string or blob".into())
 }
@@ -69,25 +53,24 @@ fn tree_reader(link: Link) -> osis_label::TreeReader {
 impl ValueStream {
     fn open(db: &ReadOnly, tid: Tid, v: Value) -> Result<ValueStream> {
         match v {
-            Value::Str(s) => Ok(ValueStream { db: db.clone(), tid, len: s.len() as u64, src: Src::Inline(s.into_bytes()), pos: 0 }),
-            Value::Bytes(b) => Ok(ValueStream { db: db.clone(), tid, len: b.len() as u64, src: Src::Inline(b), pos: 0 }),
+            Value::Str(s) => Ok(ValueStream { db: db.clone(), tid, len: s.len() as u64, held: s.len(), src: Src::Inline(s.into_bytes()), pos: 0, chunks: 0 }),
+            Value::Bytes(b) => Ok(ValueStream { db: db.clone(), tid, len: b.len() as u64, held: b.len(), src: Src::Inline(b), pos: 0, chunks: 0 }),
             Value::Link(link) => {
                 let mut reader = Box::new(tree_reader(*link));
-                let mut first = Vec::new();
+                let (mut first, mut chunks) = (Vec::new(), 0);
                 let (len, head) = loop {
-                    if let Some(h) = string_head(&first) {
-                        break h;
-                    }
-                    if first.len() > 9 {
-                        return Err(not_string());
+                    if let Some((_, len, n)) = osis_label::string_head(&first).map_err(|_| not_string())? {
+                        break (len, n);
                     }
                     match db.engine(|e| e.next_chunk(&tid, &mut reader))? {
                         Some(c) => first.extend(c),
                         None => return Err(not_string()),
                     }
+                    chunks += 1;
                 };
+                let held = first.len() + reader.path_links() * std::mem::size_of::<Link>();
                 let src = Src::Tree { reader, buf: first, start: 0, at: head, head: head as u64 };
-                Ok(ValueStream { db: db.clone(), tid, len, src, pos: 0 })
+                Ok(ValueStream { db: db.clone(), tid, len, src, pos: 0, chunks, held })
             }
             _ => Err(not_string()),
         }
@@ -101,6 +84,11 @@ impl ValueStream {
     /// Whether the value is empty.
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// Chunks fetched so far, and the most bytes of chunk and tree path held at once.
+    pub(crate) fn work(&self) -> (u64, usize) {
+        (self.chunks, self.held)
     }
 
     fn read_some(&mut self, out: &mut [u8]) -> Result<usize> {
@@ -139,6 +127,8 @@ impl ValueStream {
                             *start += buf.len() as u64;
                             *buf = c;
                             *at = 0;
+                            self.chunks += 1;
+                            self.held = self.held.max(buf.len() + reader.path_links() * std::mem::size_of::<Link>());
                         }
                         None => return Err(Error::Storage("large value shorter than its head".into())),
                     }
@@ -210,7 +200,7 @@ impl<K: ValueKey, H: std::borrow::Borrow<ReadOnly>> PathRef<'_, '_, K, H> {
             db.untrackable("stream at a connected node")?;
             let ak = ak_of(key)?;
             let Some(len) = db.node_len(&r, tid, &ak, path)? else { return Ok(None) };
-            return Ok(Some(ValueStream { db: db.clone(), tid, len, pos: 0, src: Src::Node { r, ak, path: path.clone(), buf: Vec::new(), start: 0 } }));
+            return Ok(Some(ValueStream { db: db.clone(), tid, len, pos: 0, chunks: 0, held: 0, src: Src::Node { r, ak, path: path.clone(), buf: Vec::new(), start: 0 } }));
         }
         if db.tracking.is_some() {
             // the link, not the bytes: a change of the value is a new link

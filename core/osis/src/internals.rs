@@ -99,6 +99,11 @@ pub fn kept_writes(k: &crate::KeepAlive) -> u64 {
     k.writes()
 }
 
+/// A stream's chunks fetched so far, and the most bytes of chunk and tree path it held at once.
+pub fn stream_work(s: &crate::ValueStream) -> (u64, usize) {
+    s.work()
+}
+
 /// A joining node's node tid, before it has finished.
 pub fn joining_node(j: &crate::Joining) -> osis_base::Tid {
     j.node()
