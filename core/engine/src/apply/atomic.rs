@@ -1139,7 +1139,6 @@ pub(crate) fn strip_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment, ow
         return Ok(());
     }
     let _s = crate::costs::span("expiry: strip");
-    tx.core.strips += 1;
     // the state changes: held purge-on-replace bodies are judged again (`retention::settle_none`)
     if crate::retention::history::of(tx.core, tid, ak).purges() {
         tx.core.none_due.insert(k.clone());

@@ -460,12 +460,6 @@ impl Engine {
         self.core.rebuilds
     }
 
-    /// Expiries applied to a state in place so far (`apply::strip_state`).
-    #[doc(hidden)]
-    pub fn strips(&self) -> u64 {
-        self.core.strips
-    }
-
     /// How many held `retention^.0` parts are invalid.
     #[doc(hidden)]
     pub fn fallen_settings(&self) -> usize {

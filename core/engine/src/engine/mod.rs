@@ -1171,8 +1171,6 @@ pub struct Core {
     pub death_walks: u64,
     /// Aspect rebuilds run (`apply::rebuild`). Tests: what a validity change costs.
     pub rebuilds: u64,
-    /// Expiries applied to a state in place (`apply::strip_state`).
-    pub strips: u64,
     /// Stored commit records and their parts, decoded once per write of the record
     /// (`decoded::DecodedCommits`).
     pub(crate) decoded: decoded::DecodedCommits,
@@ -1327,7 +1325,6 @@ impl Core {
             replaced_reads: self.replaced_reads.clone(),
             death_walks: self.death_walks.clone(),
             rebuilds: self.rebuilds.clone(),
-            strips: self.strips.clone(),
             decoded: self.decoded.clone(),
             generation: self.generation.clone(),
             role_generation: self.role_generation.clone(),
@@ -1892,7 +1889,6 @@ impl Core {
             replaced_reads: _,
             death_walks: _,
             rebuilds: _,
-            strips: _,
             // set outside steps: identity, configuration, node-sync's settings, test hooks, what
             // a transaction's end records
             walks_done: _,
@@ -2123,7 +2119,6 @@ impl Core {
             replaced_reads: 0,
             death_walks: 0,
             rebuilds: 0,
-            strips: 0,
             decoded: Default::default(),
             generation: 0,
             role_generation: 0,
