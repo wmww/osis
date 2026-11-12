@@ -505,18 +505,18 @@ impl SyncEngine {
         // (`relink_lost`), reviving a purged value. So every delete waits until the host holds
         // the role commits this node does (at most the relay delay and a round trip; `relay_at`
         // schedules the pass)
-        if at.roles_behind {
-            return Ok(());
-        }
-        if let Some(c) = self.conns.get_mut(&conn) {
-            for id in &sent {
-                c.req.deleting.insert((l, *id), (now, crate::sync::UNTAGGED));
+        if !at.roles_behind {
+            if let Some(c) = self.conns.get_mut(&conn) {
+                for id in &sent {
+                    c.req.deleting.insert((l, *id), (now, crate::sync::UNTAGGED));
+                }
             }
+            if !items.is_empty() {
+                self.command(conn, Command::Delete { label: l, items }, out)?;
+            }
+            self.replace_sends(conn, keys, l, replace, out)?;
         }
-        if !items.is_empty() {
-            self.command(conn, Command::Delete { label: l, items }, out)?;
-        }
-        self.replace_sends(conn, keys, l, replace, out)?;
+        // tags this pass's earlier requests too (`clear_deposits`' deletes)
         self.given(conn);
         Ok(())
     }
