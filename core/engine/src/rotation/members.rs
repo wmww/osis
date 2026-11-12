@@ -54,16 +54,6 @@ pub(crate) fn key_access(core: &Core) -> Arc<BTreeSet<(Tid, Tid)>> {
     core.key_access.get(&(), || Arc::new(osis_keys::key_access(grants(core, &[]))))
 }
 
-/// The roles of `a` that `who` may rotate over grants with key access only (spec/crypto.md §4,
-/// Merger): a role through a keyless grant is a role, but its holder never gets the secret of
-/// that role of the holder actor it reaches `a` through, so no rotation of `a` by it shows that
-/// actor at the role it needs (Possession): every node judges it invalid.
-pub(crate) fn may_rotate_keyed(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
-    let Some(tl) = core.timelines.get(a) else { return BTreeSet::new() };
-    let role = tl.roles_without(who, osis_perm::At::now(crate::flows::now_ts(core)), &key_access(core)).get(a).copied();
-    ROLES.into_iter().filter(|r| role >= Some(Role::Write) && Some(*r) <= role).collect()
-}
-
 /// `who`'s role on `a` now for keys (spec/crypto.md §4, Holds: `At::KEYS`, every `until`
 /// disregarded), over its record chain and through holder actors whose grants have key access
 /// only: a keyless grant gives no read through it (spec/requirements.md Permissions), so a party

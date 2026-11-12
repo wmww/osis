@@ -1716,8 +1716,7 @@ fn reseal_candidates_follow_the_clock_spec_permissions_2() {
 // through G's keyless grant on H: it holds H's read secret, never its write one. Its rotations
 // of M, read and write or write alone, show H at no role its write needs: invalid at every node,
 // so they fork nothing (a proof at read once made the first valid and the second not, so a fork
-// whose maker was X stayed forked when X merged write alone). Nor is X a merger
-// (`may_rotate_keyed`).
+// whose maker was X stayed forked when X merged write alone). Nor may X rotate M (`may_rotate`).
 #[test]
 fn keyless_route_makes_no_valid_rotation_spec_crypto_4() {
     let mut lp = synced(2);
@@ -1730,8 +1729,8 @@ fn keyless_route_makes_no_valid_rotation_spec_crypto_4() {
     lp.peers[0].engine.grant(&h, &x, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     assert!(lp.peers[0].engine.run(|tx| Ok(super::members::key_access(tx.core).contains(&(h, g)))).unwrap(), "G's grant on H is keyless");
-    let (maybe, keyed) = lp.peers[0].engine.run(|tx| Ok((super::may_rotate(tx.core, &x, &m), super::members::may_rotate_keyed(tx.core, &x, &m)))).unwrap();
-    assert!(maybe.contains(&Role::Write) && !keyed.contains(&Role::Write), "X writes M only through the keyless grant: {maybe:?} {keyed:?}");
+    let (role, may) = lp.peers[0].engine.run(|tx| Ok((tx.core.role_now(&x, &m), super::may_rotate(tx.core, &x, &m)))).unwrap();
+    assert!(role == Some(Role::Write) && !may.contains(&Role::Write), "X writes M only through the keyless grant: {role:?} {may:?}");
     let made = [BTreeSet::from([Role::Read, Role::Write]), BTreeSet::from([Role::Write])].map(|rot| rotate_unchecked(&mut lp, 1, m, &rot).0);
     lp.sync_all().unwrap();
     for i in 0..2 {
@@ -1742,6 +1741,32 @@ fn keyless_route_makes_no_valid_rotation_spec_crypto_4() {
         assert_eq!(lp.peers[i].engine.epochs(&m).unwrap().write.current().len(), 1, "peer {i}: M's write forked");
     }
     assert!(blocked_at(&mut lp, 0, g).is_empty(), "G's admin may encrypt under G");
+}
+
+// spec/permissions.md §3 (Who rotates), spec/crypto.md §4 (orphaned): a role through a keyless
+// grant is no right to rotate. Cycle as above; X reads M directly and writes it only through G's
+// keyless grant on H. Peer 0 rotates M's read boxing X alone; at writer W (peer 2), lacking the
+// new secret, the epoch boxes no holder that may rotate read (X's rotation would be invalid):
+// orphaned, so W rotates it.
+#[test]
+fn keyless_route_is_no_rotator_spec_crypto_4() {
+    let mut lp = synced(3);
+    let (o, x, w) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+    let (g, m, h) = (group(&mut lp, 0), group(&mut lp, 0), group(&mut lp, 0));
+    lp.peers[0].engine.grant(&g, &m, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&m, &h, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&h, &g, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&g, &x, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&m, &x, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&m, &w, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    let due = |lp: &mut LocalPeer| lp.peers[2].engine.run(|tx| super::rotation_due(tx, &w, &m, false)).unwrap();
+    assert!(due(&mut lp).is_empty());
+    rotate_skipping(&mut lp, 0, m, &BTreeSet::from([Role::Read]), &[o, h, w]);
+    lp.sync_all().unwrap();
+    let e = newest_read(&lp, 0, m).unwrap();
+    assert!(lp.peers[2].engine.epochs(&m).unwrap().read.secret(&e).is_none(), "W lacks the new read secret");
+    assert!(due(&mut lp).contains(&Role::Read), "orphaned at W: X is no rotator of M");
 }
 
 /// A destroyed holder actor's world (spec/crypto.md §4, Holder actors, Destroyed): peer 0 makes T,

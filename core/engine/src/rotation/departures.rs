@@ -181,10 +181,21 @@ pub(crate) fn departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
     crate::engine::memo::Memo::get_in(tx, |tx| &tx.core.departures, a, |tx| Ok(direct_departures(tx, a)?.into_iter().collect()))
 }
 
-/// The roles of `a` that `who` (this node, or a key actor it signs as) may rotate now: write
-/// and above rotates its role and below.
+/// The roles of `a` that `who` (this node, a key actor it signs as, or a holder actor) may
+/// rotate now (spec/permissions.md §3, Who rotates): write and above rotates its role and below,
+/// over grants with key access only. A role through a keyless grant is a role, but its holder
+/// never gets the secret of the holder actor it reaches `a` through at that role, so no rotation
+/// or re-seal of `a` by it shows that actor (spec/crypto.md §4, Possession): every node judges
+/// it invalid.
 pub fn may_rotate(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
-    core.timelines.get(a).map(|tl| tl.may_rotate(who, a, At::now(now_ts(core))).into_iter().collect()).unwrap_or_default()
+    let Some(tl) = core.timelines.get(a) else { return BTreeSet::new() };
+    let at = At::now(now_ts(core));
+    let keyless = super::members::key_access(core);
+    if keyless.is_empty() {
+        return tl.may_rotate(who, a, at).into_iter().collect();
+    }
+    let role = tl.roles_without(who, at, &keyless).get(a).copied();
+    osis_keys::ROLES.into_iter().filter(|r| role >= Some(Role::Write) && Some(*r) <= role).collect()
 }
 
 /// The known departures of `a`, each with the commit that made it when that is this node's

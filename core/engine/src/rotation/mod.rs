@@ -226,15 +226,15 @@ fn wrappable(epochs: &ActorEpochs, roles: &BTreeSet<Role>) -> bool {
 
 /// The maker of epoch `e` of role `r` of `a` as `who` sees it (`osis_keys::fork_merger`): the
 /// author of its rotation commit (`epoch_intro`); unknown without one (a snapshot's epoch). It
-/// may rotate by its roles over grants with key access (`members::may_rotate_keyed`): a maker
-/// whose role runs through a keyless grant makes no valid merge. `me` is this node, not its
+/// may rotate (`may_rotate`: over grants with key access; a maker whose role runs through a
+/// keyless grant makes no valid merge). `me` is this node, not its
 /// account: nodes of one account share an author, and two of them merging alike would fork again
 /// on every round.
 fn maker(core: &Core, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch) -> Option<osis_keys::Maker> {
     let (_, c) = core.ix.epoch_intro.get(&(*a, r, *e))?;
     let m = core.ix.commits.get(c)?;
     let author = m.view.author;
-    Some(osis_keys::Maker { me: author == *who && m.origin == crate::events::Origin::Local, may_rotate: members::may_rotate_keyed(core, &author, a).contains(&r) })
+    Some(osis_keys::Maker { me: author == *who && m.origin == crate::events::Origin::Local, may_rotate: may_rotate(core, &author, a).contains(&r) })
 }
 
 /// Current holders of `a` for keys (`Core::key_holders`) as a rotation by `who` boxes them
