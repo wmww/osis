@@ -752,7 +752,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
     if let Some(d) = drops {
         let mut back = input.held.clone();
         let mut fresh = Vec::new();
-        for c in back.commits.iter_mut().filter(|c| !c.is_role()) {
+        for (ci, c) in back.commits.iter_mut().enumerate().filter(|(_, c)| !c.is_role()) {
             let id = input.commits[&c.id].0;
             for (i, p) in c.parts.iter_mut().enumerate() {
                 if matches!(p.body, hm::Body::Held(_)) {
@@ -761,18 +761,17 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
                     && let Some(b) = d.bodies.get(&(id, i))
                 {
                     p.body = b.clone();
-                    fresh.push((c.id, c.kind, i, id, p.thing, p.aspect));
+                    fresh.push((ci, c.id, i, id, p.thing, p.aspect));
                 }
             }
         }
         if !fresh.is_empty() {
             let ob = hm::evaluate(&back);
             let now = input.held.now;
-            for &(cid, kind, i, id, thing, aspect) in &fresh {
+            for &(ci, cid, i, id, thing, aspect) in &fresh {
                 let (t, a) = &by_part[&(thing, aspect)];
-                // a live delta (held valid, not replaced, not a snapshot's or a signal's) is kept
-                // to its aspect's live bound (spec/commits.md §5 Kept while live)
-                if kind == hm::CommitKind::Content && !aspect.signal && ob.valid.get(&(cid, i)) == Some(&true) && !ob.replaced.contains(&(cid, i)) {
+                // a live delta is kept to its aspect's live bound (spec/commits.md §5 Kept while live)
+                if ob.live_delta(&back.commits[ci], i) {
                     reach_n(cov, "live drops judged", 1);
                     if now < ob.live_until(thing, aspect) {
                         diffs.push(("dropped a live body before its live bound".into(), differ(format!("commit {id:?} (#{cid}) on {t:?} {}: dropped as covered at {now}, live, the settings held keep it to {}", a.as_str(), ob.live_until(thing, aspect)), &[thing])));

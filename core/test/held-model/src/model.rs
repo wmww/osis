@@ -172,9 +172,15 @@ impl Outcome {
     pub fn aspect_keeps(&self, t: ThingId, a: Aspect) -> bool {
         thing_history::timeline(&self.timeline_of(t, a), true).iter().any(|s| matches!(s.opt, Opt::Keep { .. }))
     }
-    /// Until when a live delta of `(t, a)` (held valid, not replaced, not a snapshot's or a
-    /// signal's) is kept from a covered drop (spec/commits.md §5 Kept while live, one way); 0: a
-    /// cover drops it at once. `NEVER` for fixed retention.
+    /// Whether part `i` of `c` is a live delta of spec/commits.md §5 Kept while live: held valid,
+    /// not replaced, a content commit's (not a snapshot's; role-class parts are fixed retention),
+    /// not a signal's.
+    pub fn live_delta(&self, c: &Commit, i: usize) -> bool {
+        c.kind == CommitKind::Content && !c.parts[i].aspect.signal && self.valid.get(&(c.id, i)) == Some(&true) && !self.replaced.contains(&(c.id, i))
+    }
+    /// Until when a live delta of `(t, a)` (`live_delta`) is kept from a covered drop
+    /// (spec/commits.md §5 Kept while live, one way); 0: a cover drops it at once. `NEVER` for
+    /// fixed retention.
     pub fn live_until(&self, t: ThingId, a: Aspect) -> u64 {
         if a.fixed() {
             return NEVER;
@@ -776,7 +782,7 @@ fn judge(h: &Held) -> Outcome {
                 o.deadlines.insert(o.out(p.thing, p.aspect, *r));
             }
             // a live delta's live bound
-            if c.kind == CommitKind::Content && !p.aspect.signal && o.valid.get(&(c.id, i)) == Some(&true) && !o.replaced.contains(&(c.id, i)) {
+            if o.live_delta(c, i) {
                 o.deadlines.insert(o.live_until(p.thing, p.aspect));
             }
         }
@@ -907,13 +913,11 @@ fn fate(
     // one out of history (spec/commits.md §5 Kept while live; its author's own covers only is
     // node-sync's rule, spec/sync.md §7 Own bodies, AMBIGUITIES 70). A live delta held invalid
     // (the author's own, kept by spec/permissions.md §6) is no live delta of that rule.
-    if c.kind != CommitKind::Snapshot && !o.replaced.contains(&pr) {
-        if o.valid.get(&pr) != Some(&true) {
-            return (keep(KeepWhy::Plain), false);
-        }
-        if now < o.live_until(t, a) {
-            return (keep(KeepWhy::Live), false);
-        }
+    if c.kind != CommitKind::Snapshot && !o.replaced.contains(&pr) && o.valid.get(&pr) != Some(&true) {
+        return (keep(KeepWhy::Plain), false);
+    }
+    if o.live_delta(c, i) && now < o.live_until(t, a) {
+        return (keep(KeepWhy::Live), false);
     }
     let kept = o.replaced_at.get(&pr).copied().flatten().is_some_and(|r| o.kept(t, a, r, now));
     let under = o.under_purge.contains(&pr);

@@ -3798,25 +3798,30 @@ fn harness_flags_a_covered_drop_in_history_spec_commits_5() {
 }
 
 // The harness's covered-drop check also catches a node dropping a live body before its live
-// bound (spec/commits.md §5 Kept while live): one kept register write (kept 30 min after
-// replaced, so live for good) and a snapshot covering it, dropped by hand, is flagged.
+// bound (spec/commits.md §5 Kept while live): a kept register write (kept 30 min after replaced,
+// so live for good) and a plain one (no history, no bound), each under a snapshot covering it,
+// both dropped by hand: the kept one is flagged, the plain one judged and spared.
 #[test]
 fn harness_flags_a_live_drop_before_its_live_bound_spec_commits_5() {
     use Step::*;
-    let h = vec![Typed { by: 0, t: 0, op: 16, k: 0, v: 1 }, Advance { who: None, ms: 10 }, Compact { by: 0, t: 0, op: 16 }];
+    let h = vec![Typed { by: 0, t: 0, op: 16, k: 0, v: 1 }, Typed { by: 0, t: 0, op: 0, k: 0, v: 1 }, Advance { who: None, ms: 10 }, Compact { by: 0, t: 0, op: 16 }, Compact { by: 0, t: 0, op: 0 }];
     let played = play(0, &h);
     let hist = crate::held::History::new(&played.packs);
     let n = played.packs.len();
     let mut p = deliver(&played, &(0..n).collect::<Vec<_>>());
-    let (t, a) = (played.things[0], aspect_of(16));
-    let writes: Vec<CommitId> = played.packs[played.base..].iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap()).filter(|b| !b.header.kind.is_compaction() && b.header.aspects.iter().any(|x| x.tid == t && x.ak == a)).map(|b| b.id()).collect();
-    assert_eq!(writes.len(), 1, "{:?}", played.tally.show());
+    let t = played.things[0];
+    let write = |a: &Ak| -> Vec<CommitId> { played.packs[played.base..].iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap()).filter(|b| !b.header.kind.is_compaction() && b.header.aspects.iter().any(|x| x.tid == t && x.ak == *a)).map(|b| b.id()).collect() };
+    let (kept, plain) = (aspect_of(16), aspect_of(0));
+    let (wk, wp) = (write(&kept), write(&plain));
+    assert_eq!((wk.len(), wp.len()), (1, 1), "{:?}", played.tally.show());
     let (mut cov, mut drops) = (crate::held::Coverage::default(), crate::held::Drops::default());
     assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)), None);
-    p.engine.drop_body(&writes[0], &t, &a).unwrap();
+    p.engine.drop_body(&wk[0], &t, &kept).unwrap();
+    p.engine.drop_body(&wp[0], &t, &plain).unwrap();
     let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)).expect("the drop is flagged");
-    assert!(d.contains("live"), "{d}");
+    assert!(d.contains("live") && d.contains(kept.as_str()), "{d}");
     assert_eq!(cov.differs.get("dropped a live body before its live bound"), Some(&1), "{:?}", cov.differs);
+    assert_eq!(cov.reached.get("live drops judged"), Some(&2), "{:?}", cov.reached);
 }
 
 // spec/commits.md §5 Invalid: 0 lowers 1 to read, 2 (having seen it) grants 1 write again, 1

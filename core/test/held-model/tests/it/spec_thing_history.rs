@@ -9,13 +9,18 @@ const OPTS: [Opt; 6] = [Opt::None, Opt::Keep { after: 1, until: 0 }, Opt::Keep {
 
 /// Every timeline of up to `n` settings stamped in `0..END`.
 fn timelines(n: usize) -> Vec<Vec<Setting>> {
+    timelines_of(n, &OPTS)
+}
+
+/// Every timeline of up to `n` settings stamped in `0..END`, each one of `opts`.
+fn timelines_of(n: usize, opts: &[Opt]) -> Vec<Vec<Setting>> {
     let mut all = vec![vec![]];
     let mut last: Vec<Vec<Setting>> = vec![vec![]];
     for id in 0..n as u32 {
         let mut next = Vec::new();
         for t in &last {
             for ts in 0..END {
-                for opt in OPTS {
+                for &opt in opts {
                     let mut t = t.clone();
                     t.push(Setting { ts, id, opt });
                     next.push(t);
@@ -60,16 +65,20 @@ fn leaves_in_replaced_order() {
 
 /// Kept while live (spec/commits.md §5): a live body is kept at m exactly while some moment at or
 /// after m would keep a body replaced then (the setting in force then keeps it past then); for
-/// good iff the newest setting does so for every later moment.
+/// good iff the newest setting does so for every later moment. Entries with a D and a T too.
 #[test]
 fn kept_while_live_until_no_later_replacement_would_be_kept() {
-    for t in timelines(3) {
+    let mut opts = OPTS.to_vec();
+    opts.push(Opt::Keep { after: 1, until: 5 });
+    for t in timelines_of(3, &opts) {
         let l = live_until(&t, true);
         let kept_if_replaced = |m: Ms| out(&t, true, m) > m;
-        for m in 0..=END + 4 {
-            assert_eq!(m < l, (m..=END + 4).any(kept_if_replaced), "{t:?} m {m}: live until {l}");
+        let mut later = kept_if_replaced(NEVER - 1);
+        assert_eq!(l == NEVER, later, "{t:?}: live until {l}");
+        for m in (0..=END + 4).rev() {
+            later |= kept_if_replaced(m);
+            assert_eq!(m < l, later, "{t:?} m {m}: live until {l}");
         }
-        assert_eq!(l == NEVER, kept_if_replaced(NEVER - 1), "{t:?}: live until {l}");
     }
 }
 
