@@ -607,9 +607,9 @@ impl SyncEngine {
         // A superseded one, its author's own to delete, goes at a host full for the label too:
         // its superseder waits there for the room it holds, and no other node places it again.
         // Not a covered one: a co-writer lacking the cover there places what it covers again
-        // (or covers it anew) into the room freed, the cover is refused again, and the two loop. Held again, the join judges it like any held body
-        // (`judge`): the record of what covered it then may cover it no more (a validity flip
-        // since)
+        // (or covers it anew) into the room freed, the cover is refused again, and the two loop.
+        // Held again, the join judges it like any held body (`judge`): the record of what
+        // covered it then may cover it no more (a validity flip since)
         if let Some(f) = self.memory.forgotten.get(commit)
             && !self.engine.core.ix.commits.contains_key(commit)
         {
