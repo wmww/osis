@@ -173,12 +173,7 @@ impl SyncEngine {
         // over, asked again by a later pass (it wakes none: a hostile host's every answer would)
         let events: Vec<LogEvent> = events
             .into_iter()
-            .filter(|e| match e {
-                LogEvent::Added { blob_id, blob: Some(b), .. } if osis_label::blob_id(b) != *blob_id => {
-                    false
-                }
-                _ => true,
-            })
+            .filter(|e| !matches!(e, LogEvent::Added { blob_id, blob: Some(b), .. } if osis_label::blob_id(b) != *blob_id))
             .collect();
         let conn = match src {
             Src::Host(c) => Some(c),
