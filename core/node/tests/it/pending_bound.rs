@@ -96,8 +96,9 @@ fn held_pending_survives_passes_and_restart_spec_commits_4() {
     assert_eq!(net.read(a, t), Some(s("ahead")));
 }
 
-// A pending row goes with the last entry carrying it: the host deletes the entry (its author, a
-// writer, deletes its own body), and the pending commit counts as never received.
+// A pending row goes with the last entry carrying it: the author goes away, the peer that cannot
+// read the label (its last holder) drops the entry, and the pending commit counts as never
+// received.
 #[test]
 fn pending_row_goes_with_its_last_entry_spec_commits_4() {
     let mut net = Net::new();
@@ -115,6 +116,7 @@ fn pending_row_goes_with_its_last_entry_spec_commits_4() {
     let l = net.label(a);
     let ids: Vec<osis_base::BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect();
     assert!(!ids.is_empty());
+    net.set_online(b, false);
     let now = net.now();
     for id in &ids {
         net.hosts[host].hub.store().delete(&l, id, now).unwrap();
