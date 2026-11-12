@@ -553,7 +553,9 @@ fn walk_sides(run: &mut Run) -> usize {
 }
 
 /// Whether peer `d` may read role `r` of actor `t` in peer `at`'s rosters: a holder of it for
-/// keys, itself or through a holder actor it may read at `r`.
+/// keys, itself or through a holder actor it may read at `r` whose grant has key access there (a
+/// keyless grant, closing a cycle, gives no read access through it: spec/requirements.md
+/// Permissions, spec/crypto.md §4 Key access).
 fn access(run: &Run, at: usize, d: usize, t: Tid, r: Role) -> bool {
     access_at(run, at, d, t, r, None)
 }
@@ -567,12 +569,13 @@ fn access_at(run: &Run, at: usize, d: usize, t: Tid, r: Role, point: Option<osis
             _ => core.key_holders(a),
         }
     };
+    let keyless = super::members::key_access(core);
     let mut reach: BTreeSet<Tid> = BTreeSet::new();
     loop {
         let n = reach.len();
         for a in run.all() {
             let holders = holders_of(&a);
-            if holders.iter().any(|(m, mr)| *mr >= r && (*m == run.tids[d] || reach.contains(m))) {
+            if holders.iter().any(|(m, mr)| *mr >= r && (*m == run.tids[d] || reach.contains(m) && !keyless.contains(&(a, *m)))) {
                 reach.insert(a);
             }
         }
