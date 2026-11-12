@@ -143,7 +143,7 @@ Open toolkit checks: backgrounds in Vello (gradients, sweep gradients, masks; be
 ## Running it
 One device with demo data (the first build takes a few minutes): `cargo run -p osis-app -- ~/osis-try/solo --demo --theme glass`. The store directory is made on first run; `--demo` adds the demo things once (keeping existing favorites); `--theme frost|glass|workstation|memphis|slate|cel` and `--auto|--light|--dark` set the look, as does the Look section of home's page. `--peer ADDR` (repeatable) adds peer addresses an existing store lacks.
 
-Two nodes syncing through a local serving node (four terminals):
+Two nodes syncing through a third local node of another account (four terminals):
 1. `cargo run --bin osis -- -s ~/osis-try/host init`, then `cargo run --bin osis -- -s ~/osis-try/host serve --listen quic://127.0.0.1:47833 --admit open` (`open`: it is another account, so it takes no group as its own). Its first line is the serving address, `quic://127.0.0.1:47833#<key>` (stable across restarts of that store); leave it running.
 2. `cargo run -p osis-app -- ~/osis-try/a --peer 'quic://127.0.0.1:47833#<key>' --demo` (quote the address: it holds a `#`). Close the window once it shows (a store is locked while open).
 3. `cargo run --bin osis -- -s ~/osis-try/a pair offer`. It prints an `osis://pair/...` line and waits.

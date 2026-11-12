@@ -12,7 +12,7 @@
 - Whether it hosts a label at all is visible to a prober with the label ID (Open's UNKNOWN_LABEL vs REFUSED; accepted).
 
 ## Does not learn
-AKs, tids other than its dialers' proven actors, thing or aspect counts, authors, role grants, another account's node identities, which entries are projections or rewrites of one commit, retention bounds. What it deleted (a delete, an expiry, a timed delete, a replaced entry) it forgets: the host store shreds every removal, so a later compromise of the serving node, even one that also holds the label's read secret, recovers no deleted wrap (notes/serving.md; notes/local-store.md).
+AKs, tids other than its dialers' proven actors, thing or aspect counts, authors, role grants, another account's node identities, which entries are projections or rewrites of one commit, retention bounds. What it deleted (a delete, an expiry, a timed delete, a replaced entry) it forgets: the host store shreds every removal, so a later compromise of that node, even one that also holds the label's read secret, recovers no deleted wrap (notes/serving.md; notes/local-store.md).
 
 ## Costs
 - Padmé padding costs at most about 12% under 256 B, 6% up to 64 KB, 3% above; 1-4% on average.

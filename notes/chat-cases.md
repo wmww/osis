@@ -10,7 +10,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Can a member edit another member's message? | no | no |
 | Can a chat admin edit another member's message? | no | no |
 | Can a chat admin hide a message from honest clients? | yes | opt |
-| Can a chat admin erase one message from serving nodes and honest devices? | yes | opt³⁸ |
+| Can a chat admin erase one message from nodes keeping the chat unread and honest devices? | yes | opt³⁸ |
 | Can an admin of a member's account (their other device) edit that member's messages? | yes | yes |
 | Can an admin of a team that is a member edit a team member's messages? | no | no |
 | Can a member make a message appear as written by Bob? | no | no |
@@ -28,11 +28,11 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Can they still read others' old messages? | opt | opt |
 | Can they read new messages? | no | no |
 | Can they post? | no | no |
-| Modified client: can a post reach others through a serving node the kicker has not updated yet? | no | no |
+| Modified client: can a post reach others through a node keeping the chat unread that the kicker has not updated yet? | no | no |
 | Modified client: can a current member relay their post so it shows as theirs? | no | no |
 | Modified client: can they edit or delete old messages so others see it? | no | no |
 | Do others still see their old messages by default? | yes | opt |
-| Can the kicker wipe their whole history from serving nodes and honest devices? | yes | yes²⁶ |
+| Can the kicker wipe their whole history from nodes keeping the chat unread and honest devices? | yes | yes²⁶ |
 | Does their modified client keep what it downloaded? | accepted | yes |
 | A message they sent before the kick that the kicker had not received: does it stay for others? | yes | no! |
 | Re-added later: do posts their modified client made while kicked appear? | no | yes! |
@@ -89,10 +89,10 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 |---|---|---|
 | Delete for everyone: erased on honest online devices? | yes | yes |
 | Erased on offline devices when they return? | yes | yes |
-| Erased at serving nodes? | yes | yes |
+| Erased at nodes keeping the chat unread? | yes | yes |
 | Attachments erased too? | yes | yes |
-| Edit: does the old text leave serving nodes promptly? | yes | yes²⁷ |
-| Disappearing message gone everywhere at its time, serving nodes unattended? | yes | yes |
+| Edit: does the old text leave nodes keeping the chat unread promptly? | yes | yes²⁷ |
+| Disappearing message gone everywhere at its time, with the nodes keeping the chat unread unattended? | yes | yes |
 | Offline device past the time: gone when it wakes? | yes | yes |
 | Does a hostile device keep a deleted message? | accepted | yes |
 | Can the app make messages undeletable (permanent chat)? | opt | opt* |
@@ -109,18 +109,18 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Modified client: can it tell a message existed, who sent it and when, from what osis keeps? | accepted | yes²⁸ |
 | Can a member forge a "Bob deleted a message" tombstone for a message Bob never sent? | no | no |
 | Can members tell an expired message from a purged one? | opt | opt²⁰ |
-| Can a serving node tell that a message was deleted? | accepted | yes |
-| Can a serving node tell who sent the deleted message, or what it said? | no | no |
-| Can a serving node tell an expired entry from a purged one? | accepted | yes |
-| Can a serving node forge a deletion that members show as a tombstone? | no | no |
+| Can a node keeping the chat unread tell that a message was deleted? | accepted | yes |
+| Can a node keeping the chat unread tell who sent the deleted message, or what it said? | no | no |
+| Can a node keeping the chat unread tell an expired entry from a purged one? | accepted | yes |
+| Can a node keeping the chat unread forge a deletion that members show as a tombstone? | no | no |
 
 ## Moderation and abuse
 
 | case | want | chat |
 |---|---|---|
-| Modified member: can it write junk nobody can ever erase from serving nodes and honest devices? | no | no³¹ |
-| Can admins wipe a member's whole history from serving nodes and devices? | yes | yes²⁶ |
-| Can admins get one illegal message off serving nodes without wiping the member? | yes | opt³⁸ |
+| Modified member: can it write junk nobody can ever erase from nodes keeping the chat unread and honest devices? | no | no³¹ |
+| Can admins wipe a member's whole history from nodes keeping the chat unread and devices? | yes | yes²⁶ |
+| Can admins get one illegal message off nodes keeping the chat unread without wiping the member? | yes | opt³⁸ |
 | Can you block someone without deleting anything on either side? | yes | opt |
 | Is your evidence kept after blocking? | yes | opt |
 | Can a blocked contact you share a group with add you to a chat? | no | opt¹² |
@@ -139,16 +139,16 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Can a writer lock everyone out by rotating keys to itself? | no | no |
 | Can the creator leave or be demoted? | yes | yes |
 
-## Serving nodes (questions about one that cannot read the chat)
+## Nodes keeping the chat unread
 
 | case | want | chat |
 |---|---|---|
-| Does a serving node that cannot read it learn who is in the chat or what is said? | no | no |
-| Does a serving node learn message sizes, times and expiries? | accepted | yes |
-| Only serving node lost: can members move to a new one? | yes | opt¹⁴ |
-| Members on different serving nodes of the chat: do they converge? | yes | yes |
-| Can a serving node colluding with a kicked member read new messages? | no | no |
-| Can a colluding serving node deliver a kicked member's post? | no | no |
+| Does a node keeping the chat unread learn who is in the chat or what is said? | no | no |
+| Does a node keeping the chat unread learn message sizes, times and expiries? | accepted | yes |
+| Only node keeping the chat unread lost: can members move to a new one? | yes | opt¹⁴ |
+| Members on different nodes keeping the chat unread: do they converge? | yes | yes |
+| Can a node keeping the chat unread, colluding with a kicked member, read new messages? | no | no |
+| Can a node keeping the chat unread, colluding, deliver a kicked member's post? | no | no |
 | Can a member's own node serve the chat? | yes | opt |
 
 ## Order and display
@@ -190,7 +190,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | 1:1: can either side kick the other? | no | opt* |
 | Two 1:1 chats with one person created at once: shown as one? | yes | opt |
 
-## Forward secrecy (a recording of the serving nodes plus one device stolen today)
+## Forward secrecy (a recording of the nodes keeping the chat unread plus one device stolen today)
 
 | case | want | chat |
 |---|---|---|
@@ -200,9 +200,9 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Stolen keys only: can messages sent after the theft be read? | no | yes! |
 | Can a removed member read what it already copied? | accepted | yes |
 | Does anyone gain deniability? | accepted | no |
-| A device offline for a year: can it read everything still at the serving nodes on return? | yes | yes |
+| A device offline for a year: can it read everything still at the nodes keeping the chat unread on return? | yes | yes |
 | Can a new member read history without an existing member re-publishing it? | opt | yes |
-| Do serving nodes end up storing content nobody can read? | no | no |
+| Do nodes keeping the chat unread end up storing content nobody can read? | no | no |
 | Is protection per message, at once, rather than after a window? | yes | no! core j |
 | Can a chat have forward secrecy at all? | yes | core m |
 
@@ -212,7 +212,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 |---|---|---|
 | Does removing a member from the top realm remove them from every channel at once? | yes | yes |
 | Does one commit protect all new content from the removed member (channels re-key on the next sync)? | yes | yes⁴¹ |
-| Does cutting the removed member's upload and sync keys need an admin step per channel per serving node? | no | yes⁴¹! |
+| Does cutting the removed member's upload and sync keys need an admin step per channel per node keeping the chat unread? | no | yes⁴¹! |
 | Can the removed member keep uploading junk to a channel until an admin steps it there? | no | yes! |
 | Removal under 10 MB upload at 1000 members and 100 channels? | yes | yes⁴² |
 | Removal under 10 MB upload at 100,000 members (nested rosters) and 100 channels? | yes | yes⁴² |
@@ -265,7 +265,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 11. About 33 B of value-less residue per message.
 12. The grant applies (sender is "connected"); the app leaves automatically.
 13. Needs your contact card's keys; the remedy is a new card.
-14. Needs two serving nodes listed, or direct member-to-member contact, for the replacement to be learned.
+14. Needs two nodes keeping the chat unread listed, or direct member-to-member contact, for the replacement to be learned.
 20. From held headers: an expired delta carries `expires`, a purged one is named by a purge request; after header forgetting both are residue.
 26. admins may always purge, and `nobody` is bad on a message (spec/commits.md §5): a modified sender's message goes like any.
 27. an edit is a replacement of the message purging its older versions in the same commit.
@@ -273,13 +273,13 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 30. nothing is compacted; messages keep at least forever.
 31. `nobody` is bad on content and admins may always purge (spec/commits.md §5): junk is what an admin's purge by author erases.
 33. Segments: the admin creates a new chat, grants everyone plus the newcomer, and the old chat points to it (admin-only); old members' apps stitch the two. No core change; Tess's primary path is core n (notes/chat.md Left out).
-34. The new chat carries no pointer back; a tid is a bare reference and the old chat's label and serving nodes live under its own label.
+34. The new chat carries no pointer back; a tid is a bare reference and the old chat's label and the peers keeping it live under its own label.
 35. The pointer is a set, so old members stitch every branch; each newcomer sees only its branch; admins merge with a further segment.
 36. About 15 KB per member (grant boxes plus chain certificates under the new label): about 15 MB at 1000, estimated.
 38. default yes; author-only purge (admins cannot delete) is a chat setting (core q, built).
 39. the header's actor is checked by validity (spec/permissions.md §5.2: the signing device holds write on the actor at the commit's key), so a valid commit's actor is its sender; that the actor itself could write on the chat is the ordinary validity of the device's write only when its path runs through the actor.
 40. with the frontier study; today a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 1.9x10^6 messages.
-41. The removal and the top realm's rotation are one commit (2.7 KB per member); each child re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each child to register a step at each serving node; until then the removed member reads ciphertext and can upload.
+41. The removal and the top realm's rotation are one commit (2.7 KB per member); each child re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each child to register a step at each node keeping it unread; until then the removed member reads ciphertext and can upload.
 42. At 1000: 2.7 MB plus about 11 KB per child, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top realm (100 boxes), then children; estimated.
 43. All three roles rotate on every realm and chat the mod administered, admins only; the ex-mod keeps delete keys until each label is stepped.
 44. Every syncing node places its chain (11.5 KB per account) and card (1.5 KB) under each label it reads: about 13 MB once at 1000; about 1.4 GB at 100,000.
@@ -289,7 +289,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 48. A sibling chat the members write carries the reactions; the app shows them under the announcement.
 49. Adding a channel is a grant for the realm on the chat, needing admin on the chat and on the realm's layout; a member creates a chat and asks an admin to add it.
 50. The realm's grants are its contents (every member holds them through the realm's inbox copies); names and categories are a chat-app layout aspect on the realm. Channels are not in the realm's group, so nothing of theirs is under its label.
-51. Grant the private channel only to a role realm. Left: its serving nodes see its label, a device-removal frontier head names its tid under public labels (frontier-study format), and a purge across children shows their tids.
+51. Grant the private channel only to a role realm. Left: the nodes keeping it unread see its label, a device-removal frontier head names its tid under public labels (frontier-study format), and a purge across children shows their tids.
 52. Entry counts are drowned by certificates (no kind in the log); a latest-time register per child on the parent, written by posters, is the cheap source.
 53. Threads and forum posts are reply chains inside the channel, grouped by the app.
 54. A thing under the realm or holding a grant for it is in the realm; as a member of the realm's group it syncs under the realm's label, one with its own label syncs under that. With plain grants (notes/realms.md open question 1) a writer's removing it from the group only stops the auto-sync; removing it from the realm is an admin's grant removal.
