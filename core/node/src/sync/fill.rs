@@ -1,12 +1,12 @@
-//! A label's first sync at a host (spec/sync.md §6): list its entries, then fetch them in the
-//! order their wraps give: what judging needs first, then newest first. Nothing about a body
-//! changes: one not fetched yet is one not received. Only the order, and when the pass ends.
+//! A label's listing at a peer that cannot read it (spec/sync.md §6): its stream lists the entries (announced without
+//! bytes), then they are fetched in the order their wraps give: what judging needs first, then
+//! newest first. Nothing about a body changes: one not fetched yet is one not received. Only the
+//! order, and when the pass ends.
 
 use super::state::Kind;
 use super::{ConnId, HostKey, LConn, Phase, SyncEngine};
 use crate::error::Result;
 use osis_base::{BlobId, LabelId};
-use osis_proto::Cursor;
 use osis_proto::client::STALL_TIMEOUT_MS;
 use std::collections::BTreeSet;
 
@@ -34,8 +34,6 @@ pub(crate) struct Fill {
     listed: bool,
     /// Rank `FIRST` is fetched, or a batch went unanswered past the stall time: a pass may run.
     pub first_done: bool,
-    /// The host's position: the node's cursor moves when the fill ends (and to the listing's end).
-    cursor: Option<Cursor>,
     /// Secrets held when the ranks were taken.
     secrets: usize,
 }
@@ -62,21 +60,18 @@ impl SyncEngine {
         self.group_of(l, Some(conn)).map(|g| self.read_secrets(&g)).unwrap_or_default()
     }
 
-    /// Starts `l`'s fill on `conn`, once it is known at this host: the entries it has listed
-    /// and not fetched are queued (a connection lost or a restart mid-fill lists no more than
-    /// what came since). Marked in the store until it ends.
+    /// Starts `l`'s fill on `conn`: the entries known there and not fetched are queued (a stream
+    /// resumed mid-fill lists no more than what came since). Marked in the store until it ends.
     pub(crate) fn fill_start(&mut self, conn: ConnId, l: LabelId) {
         let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return };
         self.state.set_filling(host, l, true);
         let secrets = self.fill_secrets(conn, &l);
         let mut queue = BTreeSet::new();
-        if self.state.cursors.contains_key(&(host, l)) {
-            for b in self.state.of_kind(&l, Kind::TAG_UNKNOWN) {
-                let Some(e) = self.state.entries.get(&(l, b)) else { continue };
-                let r = self.rank(&secrets, host, &l, &b, &e.wrap);
-                if self.state.is_present(&host, &l, &b) && !self.engine.has_blob(&b) {
-                    queue.insert((r, b));
-                }
+        for b in self.state.of_kind(&l, Kind::TAG_UNKNOWN) {
+            let Some(e) = self.state.entries.get(&(l, b)) else { continue };
+            let r = self.rank(&secrets, host, &l, &b, &e.wrap);
+            if self.state.is_present(&host, &l, &b) && !self.engine.has_blob(&b) {
+                queue.insert((r, b));
             }
         }
         let n = self.secrets_count();
@@ -85,7 +80,7 @@ impl SyncEngine {
         }
     }
 
-    /// Queues entries a Sync or push announced without bytes.
+    /// Queues entries the stream announced without bytes.
     pub(crate) fn fill_add(&mut self, conn: ConnId, l: LabelId, ids: &[BlobId]) {
         if ids.is_empty() {
             return;
@@ -98,27 +93,12 @@ impl SyncEngine {
         }
     }
 
-    /// The fill holds the position: `true` when `l` fills on `conn`.
-    pub(crate) fn fill_cursor(&mut self, conn: ConnId, l: &LabelId, c: Cursor) -> bool {
-        match self.lc_mut(conn, l).and_then(|x| x.fill.as_mut()) {
-            Some(f) => {
-                f.cursor = Some(c);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// The listing ended: whether `l` fills on `conn`. Its end is the position to go on from.
+    /// The listing ended (the stream read `l` to the peer's end): the fill fetches on. Whether
+    /// `l` fills on `conn`.
     pub(crate) fn fill_listed(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<bool> {
-        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(false) };
         let Some(f) = self.lc_mut(conn, &l).and_then(|x| x.fill.as_mut()) else { return Ok(false) };
         f.listed = true;
-        if let Some(c) = f.cursor {
-            self.state.set_cursor(host, l, Some(c));
-        }
         if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.syncing = false;
             lc.synced = true;
         }
         self.fill_more(conn, l, out)?;
@@ -184,17 +164,14 @@ impl SyncEngine {
             }
         }
         if ids.is_empty() {
-            let cursor = f.cursor;
             if let Some(lc) = self.lc_mut(conn, &l) {
                 lc.fill = None;
                 lc.dirty = true;
             }
             self.state.set_filling(host, l, false);
-            if let Some(x) = cursor {
-                self.state.set_cursor(host, l, Some(x));
-            }
-            // with bytes inline from here on, and what came since; its end is the pass's
-            return self.sync_label(conn, l, out);
+            // its end is the pass's; the stream's bodies come inline from here on
+            self.stream_read(conn, l, out)?;
+            return self.stream_ask(conn, false, out);
         }
         f.asked = ids.clone();
         if let Some(lc) = self.lc_mut(conn, &l) {

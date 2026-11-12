@@ -15,10 +15,7 @@ impl SyncEngine {
         if on {
             // its labels' sessions stop here: nothing more runs on them
             let labels: BTreeSet<LabelId> = self.engine.labels_of(&group).iter().map(|l| l.id).collect();
-            for (id, c) in self.conns.iter_mut() {
-                for l in c.labels.keys().filter(|l| labels.contains(l)) {
-                    self.unsubscribe.insert((*id, *l));
-                }
+            for c in self.conns.values_mut() {
                 c.labels.retain(|l, _| !labels.contains(l));
             }
         }

@@ -200,8 +200,6 @@ impl SyncEngine {
             static_refused: false,
             head: None,
             keys: HeadKeys::default(),
-            syncing: false,
-            ending: false,
             sync_seq: 0,
             synced: false,
             dirty: false,
@@ -212,6 +210,8 @@ impl SyncEngine {
             last_sync: 0,
             path: Vec::new(),
             walk: None,
+            open_key: None,
+            relisted: None,
             entry_box: None,
             writers: Vec::new(),
             work: super::work::Work::fresh(),
@@ -442,7 +442,8 @@ impl SyncEngine {
         self.engine.learn_read_secret(g, item.epoch, item.secret)
     }
 
-    /// The head is good: derive its keys, subscribe, sync.
+    /// The head is good: derive its keys; the label is read there by the shared set (a Hit on
+    /// the host's sync-key entry for this head) and its stream.
     fn accept_head(&mut self, conn: ConnId, l: LabelId, head: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let head_id = head.id();
         self.set_head(conn, l, head)?;
@@ -453,17 +454,17 @@ impl SyncEngine {
         }
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.phase = Phase::Open;
+            lc.open_key = match lc.tries.first() {
+                Some(Try::Sync { key, .. } | Try::Claim { key, .. }) => Some(key.clone()),
+                _ => None,
+            };
             lc.tries.clear();
             (lc.step_retry, lc.step_refusals) = (0, 0);
         }
         self.stream_source_gained(conn, &l, out)?;
-        if self.cfg.subscribe {
-            self.command(conn, Command::Subscribe { labels: vec![l] }, out)?;
-        }
-        // a step registered between the Open reply and the subscription is in neither the
-        // pushes nor a cursor-less replay: ask for the path after the opened head
+        // a step registered after the Open's answer: asked for by the path after the opened head
         self.command(conn, Command::Path { label: l, after: Some(head_id) }, out)?;
-        self.sync_label(conn, l, out)
+        self.shared_head_opened(conn, out)
     }
 
     /// An Open matched a superseded step: `step` is its child. Verify it under the parent and
@@ -566,16 +567,6 @@ impl SyncEngine {
                 c.req.deleting.retain(|(x, _), _| *x != l);
             }
         }
-        // a reconciliation ended unanswered (an open a new head ended): the next sync starts one
-        if kind == Request::Reconcile {
-            self.memory.reconciling.remove(&(conn, l));
-        }
-        // a refused Sync listed nothing to the host: the next one lists the held memory entries
-        // again (else the stale list counted as held there)
-        if kind == Request::Sync {
-            self.memory.gained.remove(&(conn, l));
-            self.memory.announced.remove(&(conn, l));
-        }
         let phase = self.lc(conn, &l).map(|x| x.phase.clone());
         match (kind, phase) {
             (Request::Open, Some(Phase::Opening)) if code == Code::UNKNOWN_LABEL => self.register_path(conn, l, out),
@@ -619,18 +610,15 @@ impl SyncEngine {
                 self.reopen(conn, l, out)
             }
             // sent before the open in flight (replies come in order): that open decides
-            (Request::Sync | Request::Reconcile | Request::Path, Some(Phase::Opening)) if code == Code::NOT_OPENED => Ok(()),
-            (Request::Sync | Request::Reconcile | Request::Path, _) if code == Code::NOT_OPENED || code == Code::UNKNOWN_LABEL => self.reopen(conn, l, out),
+            (Request::Path | Request::Fetch, Some(Phase::Opening)) if code == Code::NOT_OPENED => Ok(()),
+            // the host ended the open (a new head's sync key): opened again, and what the stream
+            // announced meanwhile is fetched by the pass after (`refetch`)
+            (Request::Path | Request::Fetch, _) if code == Code::NOT_OPENED || code == Code::UNKNOWN_LABEL => {
+                self.diag(format!("{kind:?} refused: code {}", code.0));
+                self.reopen(conn, l, out)
+            }
             // the opened head is no longer on the host's path
             (Request::Path, Some(Phase::Open)) => self.reopen(conn, l, out),
-            (Request::Sync, _) => {
-                if let Some(lc) = self.lc_mut(conn, &l) {
-                    lc.syncing = false;
-                    lc.ending = false;
-                }
-                self.diag(format!("sync refused: code {}", code.0));
-                Ok(())
-            }
             _ => {
                 self.diag(format!("{kind:?} refused: code {}", code.0));
                 Ok(())
@@ -660,7 +648,13 @@ impl SyncEngine {
     /// More than `MAX_REOPENS` in a row (refused registrations, stale heads) waits for the
     /// retry timer instead.
     pub(crate) fn reopen(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(()) };
+        let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
+        // an open in flight decides: a host answers in order, so its answer comes after whatever
+        // asked for this one, and a second Open's answers would meet the first's next try
+        if lc.phase == Phase::Opening {
+            return Ok(());
+        }
+        let g = lc.group;
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let n = c.req.reopens.entry(l).or_insert(0);
         *n += 1;

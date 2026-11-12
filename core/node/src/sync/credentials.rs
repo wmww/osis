@@ -149,6 +149,20 @@ impl SyncEngine {
         Some(labels.iter().map(|l| (*l, things.get(l).map_or(Judgment::Unknown, |t| judge.of(t)))).collect())
     }
 
+    /// The sync key of the head each of `labels` is open at on host connection `conn` (by Open,
+    /// the write path until issues/net-one-peer.md 3h2), else the claim key the Open used, with
+    /// its secret: what reads it there, a Hit on that node's sync-key or claim entry with the open
+    /// signature (it cannot read the label). None on any other connection: a reader opens to a
+    /// reader by its read credentials.
+    pub(super) fn reader_sync_keys(&self, conn: ConnId, labels: &[LabelId]) -> BTreeMap<LabelId, ([u8; 32], osis_crypto::SigningSecret)> {
+        let Some(c) = self.conns.get(&conn) else { return BTreeMap::new() };
+        labels.iter().filter_map(|l| {
+            let lc = c.labels.get(l).filter(|x| x.phase == super::Phase::Open)?;
+            let key = lc.keys.sync.clone().or_else(|| lc.open_key.clone())?;
+            Some((*l, (key.verifying_key().to_bytes(), key)))
+        }).collect()
+    }
+
     /// This node's credentials of each of `labels`, as a reader or as the key actor its link or
     /// card names (issues/net-shared-set.md, Words): the read secret at each current epoch held
     /// (of a synced group, or of a hint's thing a held box gave one of), a static entry per key actor on the label's roster held, and the static entry of the key

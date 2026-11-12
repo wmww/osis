@@ -286,6 +286,40 @@ fn a_lost_after_a_dropped_push_names_a_reported_position_spec_sync_10() {
     assert_eq!(net.read(a, t), Some(s("pushed while full")));
 }
 
+// spec/sync.md §10 (Lost): a peer ending a member skips its events while this side's stream
+// position moves on. This side closing it itself keeps that position, so the peer's Lost, crossing
+// the close, sets where the member stopped: the rejoin starts there and brings what was skipped
+#[test]
+fn a_lost_crossing_an_own_close_sets_where_the_rejoin_starts_spec_sync_10() {
+    let (mut net, a, b, gs) = paired(1);
+    net.item(b, gs[0], gs[0], "x");
+    net.run();
+    let l = label_of(&mut net, b, gs[0]);
+    let (c, pc) = net.peer_conns(a).into_iter().find(|(_, m, _)| *m == b).map(|(c, _, pc)| (c, pc)).unwrap();
+    let before = net.sync(a).stream_cursor(c);
+    // b's pushes reach a without their events: a's position moves past a write it never got
+    net.tamper_link = Some((b, a));
+    net.tamper = Some(Box::new(|m| match m {
+        Message::Stream(st) if st.cursor.is_some() => Some(Message::Stream(Box::new(osis_proto::msg::Stream { events: Vec::new(), cursor: st.cursor.clone(), report: st.report }))),
+        _ => None,
+    }));
+    let t = net.item(b, gs[0], gs[0], "skipped");
+    net.run();
+    assert!(net.sync(a).stream_cursor(c) != before && net.read(a, t).is_none(), "a moved past t without it");
+    // a closes l; b's Lost naming the earlier position crosses it
+    let mut out = Vec::new();
+    net.sync(a).shared_drop(c, l, &mut out).unwrap();
+    net.inject(b, pc, &Message::Lost { id: 1 << 31 | 99, items: vec![(l, before)] });
+    net.actions(a, out);
+    net.run();
+    net.tamper = None;
+    net.tamper_link = None;
+    net.restart(a, 21);
+    net.run();
+    net.advance(120_000);
+    assert_eq!(net.read(a, t), Some(s("skipped")));
+}
+
 // spec/sync.md §10 (Agreement): no Offer before the peer's Digest is read and no Pull before the
 // records agree. Here `a`'s Digest never reaches `b`: `b`, with a group new to `a` to offer and a
 // filter of `a`'s to test it against, offers and pulls nothing on that connection

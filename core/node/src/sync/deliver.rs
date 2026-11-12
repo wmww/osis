@@ -264,6 +264,11 @@ impl SyncEngine {
     /// commits or an aged-out pending grant left it work due, until none is (forgetting
     /// re-examines pending commits, which may apply more).
     pub(crate) fn drop_lost_due(&mut self) -> Result<()> {
+        // judging needs what a fill fetches first, as a pass does (`fill_before_passes`): a role
+        // commit applied from its first batch must not judge before the rest of that rank
+        if self.fill_before_passes() {
+            return Ok(());
+        }
         for _ in 0..16 {
             if !self.engine.lost_due() {
                 break;
@@ -311,13 +316,18 @@ impl SyncEngine {
             self.state.mem_log.forget(l);
             self.state.forget_passed(l);
         }
-        for (id, c) in self.conns.iter_mut() {
-            for l in c.labels.keys().filter(|l| gone(l)) {
-                self.unsubscribe.insert((*id, *l));
-            }
+        for c in self.conns.values_mut() {
             c.labels.retain(|l, _| !gone(l));
             c.req.forget(gone);
         }
+        // what this node read of the streams of peers that cannot read L is no longer what it
+        // holds (labels forgotten, or the entries of forgotten things under labels kept): later
+        // joins there list from the start (a rare path, brute force: every such peer's)
+        let keys: Vec<HostKey> = self.state.stream_at.keys().copied().collect();
+        for h in keys {
+            self.state.set_stream_at(h, None);
+        }
+        self.stream_restart_known();
         self.refusals.retain(|(_, l), _| !gone(l));
         // until `labels` is asked again, the forgotten labels are no actor's
         let mut s = (*self.synced).clone();
@@ -332,19 +342,6 @@ impl SyncEngine {
         self.served_cache = None;
         self.forget_inbox()?;
         Ok(leaving)
-    }
-
-    /// Stops the pushes of forgotten labels' sessions (spec/sync.md §8) still connected and not
-    /// opened again.
-    pub(crate) fn stop_pushes(&mut self, out: &mut Vec<Action>) {
-        for (conn, l) in std::mem::take(&mut self.unsubscribe) {
-            if !self.cfg.subscribe || self.conns.get(&conn).is_none_or(|c| c.labels.contains_key(&l)) {
-                continue;
-            }
-            if let Err(e) = self.command(conn, osis_proto::Command::Unsubscribe { labels: vec![l] }, out) {
-                self.diag(format!("unsubscribe: {e}"));
-            }
-        }
     }
 
     /// Records a flow's deliveries; the next step sends them.
@@ -781,12 +778,12 @@ impl SyncEngine {
     }
 
     /// Asks each host of the labels of every actor in `pass_wanted` for a pass end after that
-    /// actor's last remote role commit (a Sync from the cursor), where the label is live and its
-    /// last pass end there came before the commit: a commit applied from outside a label's
+    /// actor's last remote role commit (a fresh Pull on its stream), where the label is live and
+    /// its last pass end there came before the commit: a commit applied from outside a label's
     /// host stream (an inbox, a Deposit item, another host) would otherwise wait for that label's
-    /// next push (spec/permissions.md §3 Complete pass). A Sync in flight is asked again when it
-    /// ends (`synced`): sent before the commit, its end is none after it.
-    /// Passes go on meanwhile (`LConn::ending`): the label was read to its end before.
+    /// next push (spec/permissions.md §3 Complete pass). A Pull in flight is asked again when it
+    /// ends (`stream_read`): sent before the commit, its end is none after it. Passes go on
+    /// meanwhile: the label was read to its end before.
     pub(crate) fn ask_pass_ends(&mut self, out: &mut Vec<Action>) -> Result<()> {
         if self.pass_wanted.is_empty() {
             return Ok(());
@@ -798,27 +795,19 @@ impl SyncEngine {
             for l in self.synced.by_actor.get(&a).into_iter().flatten() {
                 let Some((_, hosts)) = self.synced.actors.get(l) else { continue };
                 for (id, c) in self.conns.iter().filter(|(_, c)| !c.peer && hosts.contains(&c.host)) {
-                    let live = c.labels.get(l).is_some_and(|x| x.phase == Phase::Open && x.synced && !x.syncing && x.fill.is_none());
-                    let cursor = self.state.cursors.get(&(c.host, *l)).copied();
-                    if let Some(cursor) = cursor.filter(|_| live && self.passes.get(&(c.host, *l)).is_none_or(|p| p.0 <= since)) {
-                        ask.push((*id, *l, cursor));
+                    let live = c.labels.get(l).is_some_and(|x| x.phase == Phase::Open && x.synced && x.fill.is_none());
+                    if live && self.passes.get(&(c.host, *l)).is_none_or(|p| p.0 <= since) {
+                        ask.push(*id);
                     }
                 }
             }
         }
-        for (conn, label, cursor) in ask {
-            self.ask_pass_end(conn, label, cursor, out)?;
+        ask.sort_unstable();
+        ask.dedup();
+        for conn in ask {
+            self.stream_ask(conn, true, out)?;
         }
         Ok(())
-    }
-
-    /// Asks the host on `conn` for a pass end of live label `label`: a Sync from `cursor`.
-    pub(crate) fn ask_pass_end(&mut self, conn: ConnId, label: LabelId, cursor: osis_proto::Cursor, out: &mut Vec<Action>) -> Result<()> {
-        if let Some(x) = self.lc_mut(conn, &label) {
-            (x.syncing, x.ending) = (true, true);
-        }
-        let inline_limit = self.cfg.inline_limit;
-        self.command(conn, osis_proto::Command::Sync { label, cursor: Some(cursor), inline_limit, entries: Vec::new(), gained: Vec::new() }, out)
     }
 
     /// Whether label `l` (held under `thing`) passed completely after `since`

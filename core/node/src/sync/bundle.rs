@@ -49,7 +49,7 @@ impl SyncEngine {
                             self.record_steps(&g, &label, &steps, None)?;
                         }
                     }
-                    ClientEvent::Events { label, events, .. } => self.log_events(None, label, events, None, &mut out)?,
+                    ClientEvent::Events { label, events, .. } => self.log_events(None, label, events, &mut out)?,
                     ClientEvent::PeerError(e) => self.diag(format!("bundle: {e}")),
                     _ => {}
                 }

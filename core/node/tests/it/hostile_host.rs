@@ -12,7 +12,7 @@ use osis_base::{Ak, LabelId, Role, Value};
 use osis_crypto::{Epoch, LabelRole, Secret32, SeededRng, label_role_key};
 use osis_label::{Parent, StepKeys, genesis_label, register};
 use osis_node::sync::{Action, ConnId, Event, SyncEngine};
-use osis_proto::{Cursor, FrameDecoder, Hello, Message, encode_frame};
+use osis_proto::{FrameDecoder, Hello, Message, encode_frame};
 
 fn frame(m: Message) -> Vec<u8> {
     encode_frame(&m.encode())
@@ -57,7 +57,7 @@ fn unsolicited_push_stores_nothing_spec_wire_11_2() {
     let junk = LabelId([0x77; 16]);
     let blobs: Vec<Vec<u8>> = (0..50u8).map(|i| vec![i; 64]).collect();
     let events = blobs.iter().map(|b| osis_proto::Event::Added { blob_id: osis_label::blob_id(b), blob: Some(b.clone()), wrap: [1; osis_crypto::WRAP_LEN], stamp: None }).collect();
-    net.feed(a, Event::Bytes { conn, bytes: frame(Message::Push { label: junk, events, cursor: Cursor { log_id: [0; 16], seq: 1 } }) });
+    net.feed(a, Event::Bytes { conn, bytes: frame(crate::net::stream_msg(junk, events, 1)) });
     net.settle(10_000);
     assert!(net.sync(a).entries(&junk).is_empty(), "no entry under a label not opened");
     for b in &blobs {
@@ -108,7 +108,7 @@ fn replayed_ephemeral_signal_dropped_spec_sync_9() {
     net.actions(a, acts);
     net.settle(10_000);
     assert_eq!(fired(&rx).len(), 1, "delivered once");
-    let push = |e: &osis_proto::Entry| Message::Push { label, events: vec![osis_proto::Event::Added { blob_id: osis_label::blob_id(&e.blob), blob: Some(e.blob.clone()), wrap: e.wrap, stamp: Some(e.stamp) }], cursor: osis_proto::Cursor { log_id: [0; 16], seq: 0 } };
+    let push = |e: &osis_proto::Entry| crate::net::stream_msg(label, vec![osis_proto::Event::Added { blob_id: osis_label::blob_id(&e.blob), blob: Some(e.blob.clone()), wrap: e.wrap, stamp: Some(e.stamp) }], 0);
     let conn_b = net.conn_to(b, host).unwrap();
     net.feed(b, Event::Bytes { conn: conn_b, bytes: frame(push(&entry)) });
     assert!(fired(&rx).is_empty(), "a duplicate fires nothing");
@@ -150,7 +150,7 @@ fn junk_relays_raise_no_floor_spec_sync_9() {
         .collect();
     for chunk in junk.chunks(4096) {
         let conn_b = net.conn_to(b, host).unwrap();
-        net.feed(b, Event::Bytes { conn: conn_b, bytes: frame(Message::Push { label, events: chunk.to_vec(), cursor: Cursor { log_id: [0; 16], seq: 0 } }) });
+        net.feed(b, Event::Bytes { conn: conn_b, bytes: frame(crate::net::stream_msg(label, chunk.to_vec(), 0)) });
     }
     net.clock.advance(1_000);
     signal(&mut net, false);
@@ -205,7 +205,7 @@ fn junk_under_opened_label_kept_nowhere_spec_sync_3() {
     let conn = net.conn_to(a, host).expect("connected");
     let blobs: Vec<Vec<u8>> = (0..50u8).map(|i| vec![i; 4096]).collect();
     let events = blobs.iter().map(|b| osis_proto::Event::Added { blob_id: osis_label::blob_id(b), blob: Some(b.clone()), wrap: [1; osis_crypto::WRAP_LEN], stamp: None }).collect();
-    net.feed(a, Event::Bytes { conn, bytes: frame(Message::Push { label: l, events, cursor: Cursor { log_id: [0; 16], seq: 1 << 40 } }) });
+    net.feed(a, Event::Bytes { conn, bytes: frame(crate::net::stream_msg(l, events, 1 << 40)) });
     net.settle(10_000);
     for b in &blobs {
         assert!(!net.sync(a).holds_blob(&osis_label::blob_id(b)), "no junk blob kept");
@@ -472,7 +472,7 @@ fn linked_header_prefix_checked_spec_commits_4() {
     let mut events: Vec<osis_proto::Event> = pk.blobs.iter().map(|(bid, bytes)| osis_proto::Event::Added { blob_id: *bid, blob: Some(bytes.clone()), wrap: [1; osis_crypto::WRAP_LEN], stamp: None }).collect();
     events.push(osis_proto::Event::Added { blob_id: id, blob: Some(blob), wrap, stamp: None });
     let conn = net.conn_to(b, host).expect("connected");
-    net.feed(b, Event::Bytes { conn, bytes: frame(Message::Push { label: l, events, cursor: Cursor { log_id: [0; 16], seq: 1 << 40 } }) });
+    net.feed(b, Event::Bytes { conn, bytes: frame(crate::net::stream_msg(l, events, 1 << 40)) });
     net.settle(10_000);
     // the lists came with it, so the prefix is checked at opening: nothing of the forged blob
     // applies and the entry is bad input
@@ -500,7 +500,7 @@ fn junk(l: &LabelId, tag: u8, n: u8, stamp_key: Option<&osis_crypto::SigningSecr
             osis_proto::Event::Added { blob_id: id, blob: Some(b.clone()), wrap, stamp: stamp_key.map(|k| osis_label::sign_stamp(k, l, &id, &wrap)) }
         })
         .collect();
-    (ids, Message::Push { label: *l, events, cursor: Cursor { log_id: [tag; 16], seq: 1 << 40 } })
+    (ids, crate::net::stream_msg(*l, events, 1 << 40))
 }
 
 // spec/sync.md §3 (unvouched entries); spec/requirements.md ("nothing trusts a host's word"; peer input never causes unbounded
@@ -615,7 +615,7 @@ fn old_step_stamp_vouches_nothing_spec_sync_5() {
 
 /// A Push of `events` under `l` (a host's word).
 fn push(l: LabelId, events: Vec<osis_proto::Event>) -> Vec<u8> {
-    frame(Message::Push { label: l, events, cursor: Cursor { log_id: [0; 16], seq: 1 << 40 } })
+    frame(crate::net::stream_msg(l, events, 1 << 40))
 }
 
 /// The entries node `n` knows under `l` holding a commit that touches `t`.

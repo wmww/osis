@@ -317,7 +317,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ),
         (
             "pull reply",
-            Message::PullReply(Box::new(crate::msg::PullReply { id: 34, events: vec![(l, added.clone()), (l, Event::Deleted(id(0xb7)))], cursor: Some(vec![0x2e; 72]), whole: false, more: true, report: false, joins: vec![(LabelId([0x0b; 16]), Some(vec![0x2f; 72]))] })),
+            Message::PullReply(Box::new(crate::msg::PullReply { id: 34, events: vec![(l, added.clone()), (l, Event::Deleted(id(0xb7)))], cursor: Some(vec![0x2e; 72]), whole: false, trimmed: false, more: true, report: false, joins: vec![(LabelId([0x0b; 16]), Some(vec![0x2f; 72]))] })),
         ),
         ("stream", Message::Stream(Box::new(crate::msg::Stream { events: vec![(l, added.clone())], cursor: Some(vec![0x30; 72]), report: true }))),
         ("applied", Message::Applied { cursor: vec![0x30; 72] }),

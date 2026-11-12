@@ -36,8 +36,7 @@ pub(crate) fn sealed(net: &mut Net, w: usize, g: Tid, c: &osis_commit::CommitBlo
 /// the node's actions.
 pub(crate) fn push(net: &mut Net, n: usize, host: usize, l: osis_base::LabelId, events: Vec<osis_proto::Event>) -> Vec<osis_node::sync::Action> {
     let conn = net.conn_to(n, host).unwrap();
-    let cursor = osis_proto::Cursor { log_id: [0; 16], seq: 0 };
-    let bytes = osis_proto::encode_frame(&osis_proto::Message::Push { label: l, events, cursor }.encode());
+    let bytes = osis_proto::encode_frame(&crate::net::stream_msg(l, events, 0).encode());
     net.sync(n).handle(Event::Bytes { conn, bytes })
 }
 
@@ -2752,6 +2751,33 @@ fn host_cap_refused_entry_retried_spec_sync_9() {
     assert!(net.eph_read(b, t, "win:a+.0").is_some(), "a's write reached b");
 }
 
+// spec/sync.md §9, §10 (presence at a peer that cannot read L is what its stream showed; random
+// churn seed 564958814858 shrunk): an entry both hosts announce without bytes (two sources) and
+// a reader fetches from one turns out ephemeral there; it stays present at both, so no pass puts
+// it up again at the other (there the writers' passes and others' deletes looped)
+#[test]
+fn a_memory_entry_announced_without_bytes_stays_present_where_shown_spec_sync_9() {
+    let (mut net, (hosts, nodes, _g, w)) = churn_world();
+    let mut m = Mutation::new();
+    m.set(w, &eph(FLAG), &s("f")).unwrap();
+    let c = net.engine(nodes[1]).write(m).unwrap().unwrap().id;
+    net.feed(nodes[1], Event::Local);
+    net.run();
+    let keys: BTreeSet<[u8; 32]> = hosts.iter().map(|h| net.hosts[*h].address.key).collect();
+    for n in [nodes[0], nodes[2], nodes[3]] {
+        let entries = net.sync(n).ephemeral_entries_of(&c);
+        assert!(!entries.is_empty(), "node {n} holds it");
+        for (_, _, at) in entries {
+            assert_eq!(at.into_iter().collect::<BTreeSet<_>>(), keys, "node {n}: present at both hosts");
+        }
+    }
+    let before = uploads_sent(&net);
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    assert_eq!(uploads_sent(&net), before, "nothing goes up again");
+}
+
 /// Upload messages nodes sent so far (osis-proto message kind 10).
 fn uploads_sent(net: &Net) -> usize {
     net.sent_kinds.get(&10).copied().unwrap_or(0)
@@ -3367,27 +3393,17 @@ fn demoted_writer_entry_stops_spec_sync_5() {
 // spec/sync.md §5, §9: a writer compacts before it reads a rotation: the cover and the deletes
 // of what it absorbs (carried as replacements) are signed under the old write key and refused 9;
 // once the writer reads the rotation the cover lands and the absorbed entries go at the host.
-// Code 9 carries no head (spec/wire.md §11.2): the writer learns it by push, or unsubscribed by
-// its next resync's Sync.
+// Code 9 carries no head (spec/wire.md §11.2): the writer learns it by its stream from the host.
 #[test]
 fn cover_across_unread_rotation_lands_spec_sync_9() {
-    cover_across_unread_rotation(true);
-    cover_across_unread_rotation(false);
-}
-
-fn cover_across_unread_rotation(subscribe: bool) {
     let (mut net, host, [a]) = hosted_nodes::<1>();
-    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], subscribe, ..SyncConfig::default() });
+    let b = net.node(2, &[host]);
     let c = net.node(3, &[host]);
     let x = net.node(4, &[host]);
     let g = net.group(a, &[(b, Role::Write), (c, Role::Write), (x, Role::Read)], &[host]);
     net.run();
     let w = window(&mut net, a, g, "w");
     net.run();
-    if !subscribe {
-        // the window reaches b by its resync
-        net.advance(60_000);
-    }
     for i in 0..4 {
         note(&mut net, b, w, &format!("k{i}"), &format!("v{i}"));
         net.run();

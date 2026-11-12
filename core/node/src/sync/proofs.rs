@@ -105,4 +105,40 @@ impl SyncEngine {
     pub(super) fn connection_proven(&self, conn: ConnId) -> Option<&Proven> {
         self.conns.get(&conn).map(|c| &c.proven).or_else(|| self.served_proven(conn))
     }
+
+    /// A connection proves what this node held when it came up, once (spec/sync.md §10,
+    /// Connection proofs): one where this node proved its actors and lacks one it would prove now
+    /// (a link key held since, the account's seed) is closed, a dialed one dialed again at once and
+    /// a served one by its dialer, so the new connection proves it. Without it a redeemer connected before it held
+    /// the link key showed no actor its peer knows, so the peer's filter never showed the link's
+    /// label to it. Brute force for a rare change: looked at only when the key actors or the roles
+    /// moved, then O(connections).
+    pub(super) fn reprove(&mut self, out: &mut Vec<super::Action>) -> Result<()> {
+        let mark = (self.engine.core.role_generation, self.engine.core.key_actors.keys().copied().collect::<Vec<Tid>>());
+        if self.provers_mark.as_ref() == Some(&mark) {
+            return Ok(());
+        }
+        self.provers_mark = Some(mark);
+        let tids = |p: Vec<Prover>| p.iter().map(|p| p.record.tid()).collect::<BTreeSet<Tid>>();
+        let now = (tids(provers(&mut self.engine, false)?), tids(provers(&mut self.engine, true)?));
+        let up: Vec<(ConnId, [u8; 32])> = self.conns.iter().filter(|(_, c)| c.up).map(|(id, c)| (*id, c.host)).collect();
+        let mut stale = Vec::new();
+        for (conn, host) in up {
+            let mine = if self.dials_own_node(&host) { &now.1 } else { &now.0 };
+            if self.conns.get(&conn).is_some_and(|c| !mine.is_subset(&c.proved)) {
+                stale.push((conn, host));
+            }
+        }
+        for (conn, host) in stale {
+            out.push(super::Action::Close { conn });
+            self.lost(conn);
+            // closed here, not lost: no pause before the redial
+            self.retry.remove(&host);
+        }
+        // a served dialer redials as after any loss
+        for conn in self.served_stale(&now) {
+            self.close_served(conn, out);
+        }
+        Ok(())
+    }
 }

@@ -100,6 +100,26 @@ fn a_listing_from_the_start_is_the_live_set_plus_retained_deletions() {
     assert_eq!(heads(&e).len(), 2);
 }
 
+// spec/sync.md §10 (Node log: the deletion horizon): dropping deletion events raises the horizon
+// to the highest dropped, so a cursor from before it is known to have missed deletions; a log
+// that dropped none has horizon 0.
+#[test]
+fn dropped_deletions_raise_the_horizon_spec_sync_10() {
+    let mut h = host();
+    let f = Fixture::new(0x30);
+    let l = f.label;
+    h.s.push_step(&l, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
+    let ids: Vec<BlobId> = (0..3).map(|n| put(&mut h.s, &l, n, true, None, &[])).collect();
+    let horizon = |h: &mut Host| h.s.node_log(|t| t.log_horizon()).unwrap();
+    h.s.delete(&l, &ids[0], T0).unwrap();
+    sweep(&mut h, T0 + 1_000);
+    assert_eq!(horizon(&mut h), 0, "a deletion within its lifetime is still logged");
+    let end = h.s.node_log(|t| t.log_end()).unwrap();
+    sweep(&mut h, T0 + TOMBSTONE_LIFETIME_MS + 1);
+    let at = horizon(&mut h);
+    assert!(at > 0 && at <= end, "the dropped deletion's position: {at} of {end}");
+}
+
 /// Deposits promoted: two events per entry written, one held. Counted at n and 10n: the log
 /// grows with what the store holds, not with what was written.
 #[test]

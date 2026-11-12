@@ -82,7 +82,7 @@ fn kept_from_reader(peer_bytes: u64) -> bool {
     let blob = vec![0x5a; 1000];
     let blob_id = osis_label::blob_id(&blob);
     let ev = osis_proto::Event::Added { blob_id, blob: Some(blob), wrap: [0x11; osis_crypto::WRAP_LEN], stamp: None };
-    let reply = osis_proto::msg::PullReply { id, events: vec![(l, ev)], cursor: Some(vec![1; 8]), whole: false, more: false, report: false, joins: Vec::new() };
+    let reply = osis_proto::msg::PullReply { id, events: vec![(l, ev)], cursor: Some(vec![1; 8]), whole: false, trimmed: false, more: false, report: false, joins: Vec::new() };
     command(&mut net, b, &mut p, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
     net.sync(b).entries(&l).iter().any(|(x, _)| *x == blob_id)
 }
@@ -123,7 +123,7 @@ fn pending_kept_from_reader(peer_bytes: u64) -> (bool, bool) {
     let (mut p, evs) = member_pulled(&mut net, b, a, l);
     let id = evs.iter().find_map(|e| if let ClientEvent::Peer(m) = e { if let osis_proto::Message::Pull(x) = &**m { Some(x.id) } else { None } } else { None }).expect("b pulls its member");
     let ev = osis_proto::Event::Added { blob_id, blob: Some(blob), wrap, stamp: None };
-    let reply = osis_proto::msg::PullReply { id, events: vec![(l, ev)], cursor: Some(vec![1; 8]), whole: false, more: false, report: false, joins: Vec::new() };
+    let reply = osis_proto::msg::PullReply { id, events: vec![(l, ev)], cursor: Some(vec![1; 8]), whole: false, trimmed: false, more: false, report: false, joins: Vec::new() };
     command(&mut net, b, &mut p, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
     let kept = net.sync(b).entries(&l).iter().any(|(x, _)| *x == blob_id);
     let pending = net.engine(b).pending().iter().any(|(x, _)| *x == c);
@@ -185,7 +185,7 @@ fn budget_across_restart(pending: bool, restart: bool) -> (usize, usize) {
         let (mut p, evs) = member_pulled(&mut net, b, a, l);
         let id = evs.iter().find_map(|e| if let ClientEvent::Peer(m) = e { if let osis_proto::Message::Pull(x) = &**m { Some(x.id) } else { None } } else { None }).expect("b pulls its member");
         let evs = batch.iter().map(|(blob_id, blob, wrap)| (l, osis_proto::Event::Added { blob_id: *blob_id, blob: Some(blob.clone()), wrap: *wrap, stamp: None })).collect();
-        let reply = osis_proto::msg::PullReply { id, events: evs, cursor: Some(vec![1 + i as u8; 8]), whole: false, more: false, report: false, joins: Vec::new() };
+        let reply = osis_proto::msg::PullReply { id, events: evs, cursor: Some(vec![1 + i as u8; 8]), whole: false, more: false, report: false, trimmed: false, joins: Vec::new() };
         command(&mut net, b, &mut p, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
     }
     let held = net.sync(b).entries(&l);
@@ -244,7 +244,7 @@ fn second_kept(fresh: bool) -> bool {
         let blob = vec![0x5a + i as u8; 1000];
         let blob_id = osis_label::blob_id(&blob);
         let ev = osis_proto::Event::Added { blob_id, blob: Some(blob), wrap: [0x11; osis_crypto::WRAP_LEN], stamp: None };
-        let reply = osis_proto::msg::PullReply { id, events: vec![(l, ev)], cursor: Some(vec![1; 8]), whole: false, more: false, report: false, joins: Vec::new() };
+        let reply = osis_proto::msg::PullReply { id, events: vec![(l, ev)], cursor: Some(vec![1; 8]), whole: false, trimmed: false, more: false, report: false, joins: Vec::new() };
         command(&mut net, b, &mut p, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
         kept = net.sync(b).entries(&l).iter().any(|(x, _)| *x == blob_id);
     }
@@ -300,7 +300,7 @@ fn a_charged_source_costs_its_row_until_judged_spec_sync_5() {
         let ids: Vec<osis_base::BlobId> = events.iter().filter_map(|(_, e)| if let osis_proto::Event::Added { blob_id, .. } = e { Some(*blob_id) } else { None }).collect();
         let (mut p, evs) = member_pulled(&mut net, b, a, l);
         let id = evs.iter().find_map(|e| if let ClientEvent::Peer(m) = e { if let osis_proto::Message::Pull(x) = &**m { Some(x.id) } else { None } } else { None }).expect("b pulls its member");
-        let reply = osis_proto::msg::PullReply { id, events, cursor: Some(vec![1; 8]), whole: false, more: false, report: false, joins: Vec::new() };
+        let reply = osis_proto::msg::PullReply { id, events, cursor: Some(vec![1; 8]), whole: false, more: false, report: false, trimmed: false, joins: Vec::new() };
         command(&mut net, b, &mut p, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
         let charged = entry_rows(&mut net, b, l);
         assert!(ids.iter().all(|x| charged.contains_key(x)), "n {n}: every entry kept pending");
@@ -348,7 +348,7 @@ fn reader_flood(n: usize, memory: bool) -> (usize, usize, bool) {
     let (mut pa, evs) = member_pulled(&mut net, b, a, l);
     let id = pull(&evs).expect("b pulls a");
     let events = a_events(&mut net);
-    let reply = osis_proto::msg::PullReply { id, events, cursor: Some(vec![1; 8]), whole: false, more: false, report: false, joins: Vec::new() };
+    let reply = osis_proto::msg::PullReply { id, events, cursor: Some(vec![1; 8]), whole: false, more: false, report: false, trimmed: false, joins: Vec::new() };
     command(&mut net, b, &mut pa, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
     assert_eq!(net.read(b, t), Some(s("doc")), "the item reached b");
     let mut flood = Vec::new();
@@ -370,7 +370,7 @@ fn reader_flood(n: usize, memory: bool) -> (usize, usize, bool) {
     }
     let (mut pr, evs) = member_pulled(&mut net, b, r, l);
     let id = pull(&evs).expect("b pulls r");
-    let reply = osis_proto::msg::PullReply { id, events, cursor: Some(vec![1; 8]), whole: false, more: false, report: false, joins: Vec::new() };
+    let reply = osis_proto::msg::PullReply { id, events, cursor: Some(vec![1; 8]), whole: false, more: false, report: false, trimmed: false, joins: Vec::new() };
     command(&mut net, b, &mut pr, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
     // a tick forgets what no entry carries
     net.advance(1_000);

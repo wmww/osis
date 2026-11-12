@@ -293,7 +293,7 @@ fn keyless_node_keeps_the_wrap_that_opens_spec_sync_5() {
     let write = fx.net.engine(h).head_keys(&g, gl.index, &head).unwrap().write.unwrap();
     let push = |net: &mut Net, id: BlobId, wrap: [u8; WRAP_LEN], stamped: bool| {
         let stamp = stamped.then(|| osis_label::sign_stamp(&write, &l, &id, &wrap));
-        let m = Message::Push { label: l, events: vec![osis_proto::Event::Added { blob_id: id, blob: None, wrap, stamp }], cursor: osis_proto::Cursor { log_id: [0; 16], seq: 0 } };
+        let m = crate::net::stream_msg(l, vec![osis_proto::Event::Added { blob_id: id, blob: None, wrap, stamp }], 0);
         net.feed(f, osis_node::sync::Event::Bytes { conn, bytes: encode_frame(&m.encode()) });
         net.settle(10_000);
         net.sync(f).entry_meta(&l, &id).unwrap().0
@@ -435,8 +435,7 @@ fn poison_stamped_before_a_rotation_still_repaired_spec_sync_5() {
 /// `n`, connected to `host`, hears `id` there under `wrap` as a host announces it without its bytes.
 fn announce(net: &mut Net, n: usize, host: usize, l: &LabelId, id: BlobId, wrap: [u8; WRAP_LEN], stamp: osis_crypto::Signature) {
     let conn = net.conn_to(n, host).unwrap();
-    let (log_id, seq) = net.hosts[host].hub.store().log_head(l).unwrap();
-    let m = Message::Push { label: *l, events: vec![osis_proto::Event::Added { blob_id: id, blob: None, wrap, stamp: Some(stamp) }], cursor: osis_proto::Cursor { log_id, seq } };
+    let m = crate::net::stream_msg(*l, vec![osis_proto::Event::Added { blob_id: id, blob: None, wrap, stamp: Some(stamp) }], 1 << 40);
     net.feed(n, osis_node::sync::Event::Bytes { conn, bytes: encode_frame(&m.encode()) });
 }
 

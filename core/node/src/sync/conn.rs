@@ -55,14 +55,10 @@ pub(crate) struct LConn {
     pub static_refused: bool,
     pub head: Option<Step>,
     pub keys: HeadKeys,
-    /// A Sync exchange is running.
-    pub syncing: bool,
-    /// The running Sync only asks a live label for a pass end (`ask_pass_ends`): passes go on.
-    pub ending: bool,
-    /// `SyncEngine::seq` when the last Sync was sent: its end is no pass end after a role
-    /// commit applied since (`synced`).
+    /// `SyncEngine::seq` when the connection's last Pull was sent: its end is no pass end after
+    /// a role commit applied since (`stream_read`).
     pub sync_seq: u64,
-    /// The log was read to its end at least once on this connection.
+    /// The stream read it to the peer's end since it last joined there (`stream_read`).
     pub synced: bool,
     /// A pass is wanted once the running exchange ends.
     pub dirty: bool,
@@ -81,6 +77,12 @@ pub(crate) struct LConn {
     pub path: Vec<Step>,
     /// A hinted open walked to an unverified step: the host's path is checked after the open.
     pub walk: Option<Step>,
+    /// A listing from the start under way here: what was present here before it, and whether
+    /// the peer marked it trimmed (`known_join`, `stream_read`).
+    pub relisted: Option<(BTreeSet<osis_base::BlobId>, bool)>,
+    /// The key whose open signature opened the head here (a sync key, or a claim's): what reads
+    /// the label there when this node holds no secret of the head yet (`reader_sync_keys`).
+    pub open_key: Option<osis_crypto::SigningSecret>,
     /// A static-entry open's entry box, opened once the host's path verified the head.
     pub entry_box: Option<osis_schema::core_types::SecretBox>,
     /// Write keys of a host path verified here (a label not recorded in `label.0`): stamps
@@ -91,7 +93,7 @@ pub(crate) struct LConn {
 impl LConn {
     /// The log was read to its end and nothing runs.
     pub(super) fn ready(&self) -> bool {
-        self.synced && (!self.syncing || self.ending) && self.registering.is_none()
+        self.synced && self.registering.is_none()
     }
 
     /// A fill here has not all that judging needs.
@@ -140,18 +142,20 @@ pub(crate) struct Requests {
     pub sent: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
     /// Deletes sent, likewise.
     pub deleting: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
-    /// Uploads sent replacing entries (spec/sync.md §5): those are gone once one is answered OK.
-    /// A plain upload of the same blob waits meanwhile (two statuses could not be told apart).
-    pub replacing: BTreeMap<(LabelId, osis_base::BlobId), Vec<osis_base::BlobId>>,
+    /// Uploads sent replacing entries (spec/sync.md §5), with the tag of the command carrying
+    /// each: those are gone once it is answered OK. A plain upload of the same blob waits
+    /// meanwhile; one sent before it is answered first (statuses come in order: `entry_status`
+    /// takes the one whose command is answered).
+    pub replacing: BTreeMap<(LabelId, osis_base::BlobId), (Vec<osis_base::BlobId>, u64)>,
     /// Blobs asked for and not received yet, with when (wall ms; `SyncEngine::asked`).
     pub fetching: BTreeMap<osis_base::BlobId, u64>,
     /// Blobs the host did not deliver when fetched (since it last announced them).
     pub missing: BTreeSet<osis_base::BlobId>,
     /// Reopens in a row per label.
     pub reopens: BTreeMap<LabelId, u32>,
-    /// Labels whose cursor the host's log was trimmed past (code 15), until their
-    /// reconciliation answers (`reconciled`: what it lacks of the present entries was deleted).
-    pub trimmed: BTreeSet<LabelId>,
+    /// Labels opened again because they were not members after a filter arrival, with that
+    /// arrival's number: once per arrival (`shared_unopened`).
+    pub reopened: BTreeMap<LabelId, u64>,
 }
 
 impl Requests {
@@ -161,11 +165,17 @@ impl Requests {
         self.deleting.retain(|(l, _), _| !gone(l));
         self.replacing.retain(|(l, _), _| !gone(l));
         self.reopens.retain(|l, _| !gone(l));
+        self.reopened.retain(|l, _| !gone(l));
     }
 
     /// The commands carrying the `UNTAGGED` requests were given, the last tagged `tag`.
     pub fn given(&mut self, tag: u64) {
         for v in self.sent.values_mut().chain(self.deleting.values_mut()) {
+            if v.1 == UNTAGGED {
+                v.1 = tag;
+            }
+        }
+        for v in self.replacing.values_mut() {
             if v.1 == UNTAGGED {
                 v.1 = tag;
             }
@@ -222,7 +232,7 @@ impl SyncEngine {
         if let Some(c) = self.conns.remove(&conn) {
             self.records.conn_gone(conn);
             self.streams.remove(&conn);
-            if let Err(e) = self.memory_lost(conn, c.host, &c.req.fetching) {
+            if let Err(e) = self.memory_lost(conn, c.host) {
                 self.diag(format!("forgetting a connection's memory entries: {e}"));
             }
             // deposits not answered on this connection go out again on the next one
@@ -287,6 +297,9 @@ impl SyncEngine {
             for (k, (a, _)) in self.link_routes() {
                 m.entry(k).or_insert((a, true));
             }
+        }
+        if let Some(me) = self.own_key() {
+            m.remove(&me);
         }
         m
     }
@@ -364,13 +377,7 @@ impl SyncEngine {
         if tracing() {
             self.trace(conn, &cmd);
         }
-        let seq = self.seq;
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-        if let Command::Sync { label, .. } = &cmd
-            && let Some(lc) = c.labels.get_mut(label)
-        {
-            lc.sync_seq = seq;
-        }
         let o = c.session.handle(now, ClientInput::Command(cmd));
         self.outputs(conn, o, out)
     }
@@ -444,47 +451,10 @@ impl SyncEngine {
             E::EntryStatus { label, blob_ids, codes } => self.entry_status(conn, label, blob_ids, codes)?,
             E::DeleteStatus { label, blob_ids, codes } => self.delete_status(conn, label, blob_ids, codes)?,
             E::Budget { label, blob_id, code, budget } => self.budget(conn, label, blob_id, code, budget.map(|b| b.0))?,
-            // a Push names its label: one not started on this connection is junk (spec/wire.md
-            // §11.2; peer input never grows storage unasked)
-            E::Events { label, .. } if !self.conns.get(&conn).is_some_and(|c| c.labels.contains_key(&label)) => self.diag("host pushed a label not opened".into()),
-            // a session not open yet: a push left from an earlier session (a forgotten label's,
-            // a reopen's) would move the cursor past what its replay has not listed
-            E::Events { label, .. } if !self.lc(conn, &label).is_some_and(|x| x.phase == Phase::Open) => {}
-            E::Events { label, events, cursor } => {
-                if !events.is_empty() {
-                    self.received_from(conn, label);
-                }
-                self.log_events(Some(conn), label, events, cursor, out)?
-            }
-            E::Want { label, ids } => {
-                self.memory_want(conn, label, &ids)?;
-                self.want(conn, label, ids, out)?
-            }
-            E::Synced { label } => {
-                self.memory_synced(conn, label);
-                self.synced(conn, label, out)?
-            }
-            E::NeedReconcile { label, trimmed } => {
-                let s = self.conns.get_mut(&conn).map(|c| {
-                    if trimmed {
-                        c.req.trimmed.insert(label);
-                    }
-                    c.host
-                });
-                if let Some(s) = s {
-                    self.state.set_cursor(s, label, None);
-                    // a restart reconciliation running lists the present entries too and syncs
-                    // from its cursor after it; this one's reply would be taken for it (`reconciled`)
-                    if !self.memory.reconciling.contains(&(conn, label)) {
-                        let ids = self.state.present_at(&s, &label);
-                        self.command(conn, Command::Reconcile { label, ids }, out)?;
-                    }
-                }
-            }
-            E::Reconciled { label, need, have } => self.reconciled(conn, label, need, have, out)?,
+            // what a host's cursor sync, subscription or reconciliation brings: none is asked (a
+            // host's entries come by its stream, `stream_apply`)
+            E::Events { .. } | E::Want { .. } | E::Synced { .. } | E::NeedReconcile { .. } | E::Reconciled { .. } | E::Subscribed { .. } => self.diag("host sent what no request asked".into()),
             E::Fetched { label, items } => {
-                let ids: Vec<osis_base::BlobId> = items.iter().map(|f| f.blob_id).collect();
-                self.memory_fetch_done(conn, label, &ids, false);
                 // asked for and not there: not asked again on this connection
                 let mut gone = false;
                 for f in items.iter().filter(|f| f.entry.is_none()) {
@@ -498,9 +468,8 @@ impl SyncEngine {
                 if !evs.is_empty() {
                     self.received_from(conn, label);
                 }
-                self.log_events(Some(conn), label, evs, None, out)?;
+                self.log_events(Some(conn), label, evs, out)?;
             }
-            E::Subscribed { .. } => {}
             // the listener keeps no record of this side (it refused the proofs or the Resume): the
             // set still runs
             E::Refused { kind: osis_proto::client::Request::Prove | osis_proto::client::Request::Resume, .. } => self.no_record(conn, out)?,
@@ -511,9 +480,6 @@ impl SyncEngine {
                     for b in &fetch {
                         c.req.fetching.remove(b);
                     }
-                }
-                if let Some(l) = label {
-                    self.memory_fetch_done(conn, l, &fetch, true);
                 }
                 self.refused(conn, label, kind, code, out)?
             }
@@ -551,11 +517,10 @@ impl SyncEngine {
         for (g, l) in self.labels() {
             recorded.entry(l.id).or_default().insert(g);
         }
-        for (id, c) in self.conns.iter_mut() {
+        for c in self.conns.values_mut() {
             let stale: Vec<LabelId> = c.labels.iter().filter(|(l, x)| recorded.get(l).is_some_and(|gs| !gs.contains(&x.group))).map(|(l, _)| *l).collect();
             for l in &stale {
                 c.labels.remove(l);
-                self.unsubscribe.insert((*id, *l));
             }
             c.req.forget(|l| stale.contains(l));
         }

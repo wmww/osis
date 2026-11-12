@@ -10,7 +10,7 @@ use osis_base::{CommitId, LabelId, Role, Tid, Value};
 use osis_commit::CommitBlob;
 use osis_crypto::SeededRng;
 use osis_node::sync::Event;
-use osis_proto::{Cursor, Message, encode_frame};
+use osis_proto::{Message, encode_frame};
 
 fn frame(m: Message) -> Vec<u8> {
     encode_frame(&m.encode())
@@ -27,7 +27,7 @@ pub(crate) fn entry(net: &mut Net, _from: usize, keys: usize, g: Tid, plaintext:
 
 fn push(net: &mut Net, n: usize, host: usize, l: LabelId, e: osis_proto::Event, at: u64) {
     let conn = net.conn_to(n, host).expect("connected");
-    net.feed(n, Event::Bytes { conn, bytes: frame(Message::Push { label: l, events: vec![e], cursor: Cursor { log_id: [0; 16], seq: (1 << 40) + at } }) });
+    net.feed(n, Event::Bytes { conn, bytes: frame(crate::net::stream_msg(l, vec![e], (1 << 40) + at)) });
     net.settle(10_000);
 }
 

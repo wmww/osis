@@ -10,8 +10,6 @@ pub type ConnId = u64;
 pub struct SyncConfig {
     /// Hosts to keep a connection to besides those the labels name.
     pub hosts: Vec<Address>,
-    /// Subscribe to every opened label (pushes, spec/sync.md §8).
-    pub subscribe: bool,
     /// Blobs above this many bytes are announced without their bytes and fetched when needed
     /// (lazy chunks, spec/sync.md §6).
     pub inline_limit: u64,
@@ -60,7 +58,6 @@ impl Default for SyncConfig {
     fn default() -> SyncConfig {
         SyncConfig {
             hosts: Vec::new(),
-            subscribe: true,
             inline_limit: osis_base::format::MAX_BLOB as u64,
             resync_ms: 60_000,
             retry_ms: 5_000,

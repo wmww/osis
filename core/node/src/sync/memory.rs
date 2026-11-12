@@ -179,18 +179,6 @@ pub(crate) struct Forgotten {
 /// The memory class's state beside the sync records (all in memory).
 #[derive(Clone, Default)]
 pub(crate) struct Memory {
-    /// (host, label) reconciled since this node started (`sync_label`).
-    pub reconciled: BTreeSet<(HostKey, LabelId)>,
-    /// Reconciliations running after a start (`sync_label`): their reply keeps the cursor and
-    /// syncs from it (`reconciled`).
-    pub reconciling: BTreeSet<(ConnId, LabelId)>,
-    /// What each such reconciliation asked for: one ending with any of it unanswered
-    /// reconciles that label again on the next connection (nothing else here knows of an entry
-    /// the cursor passed, so nothing would ask for it again).
-    pub reconcile_fetches: BTreeMap<(ConnId, LabelId), BTreeSet<BlobId>>,
-    /// Labels a memory snapshot of whose closure fell invalid while their Sync on the
-    /// connection ran: reconciled when it ends (`synced`, `memory_reconcile_thing`).
-    pub reconcile_after: BTreeSet<(ConnId, LabelId)>,
     /// Entries refused for the label's cap or share here (their bytes dropped, their record
     /// kept unopened): fetched again once room appears (`retry_refused`), not before.
     pub refused: BTreeMap<LabelId, Refused>,
@@ -204,11 +192,6 @@ pub(crate) struct Memory {
     /// Uploads of this node's own memory bodies unanswered per connection and label: its later
     /// own writes there wait (`coalesce_own`, spec/sync.md §9).
     pub own_uploads: BTreeSet<(ConnId, LabelId, BlobId)>,
-    /// Per connection and label, the memory entries its first Sync listed as gained
-    /// (`memory_gained`) that the peer has not asked for yet: present there once the Sync ran
-    /// through (`memory_synced`), since presence of a memory entry is per connection.
-    pub gained: BTreeMap<(ConnId, LabelId), BTreeSet<BlobId>>,
-    pub announced: BTreeSet<(ConnId, LabelId)>,
     /// Own commits a coalescing snapshot was made of: never coalesced again (one the snapshot
     /// could not cover, behind an invalid body of its session, goes as it is, else a snapshot
     /// per pass spun). Trimmed to the commits held.
@@ -224,8 +207,8 @@ impl SyncEngine {
     }
 
     /// Per step, before the engine's changes are drained: the aspects whose memory snapshot
-    /// fell invalid have their labels reconciled (a writer wrote a fresh snapshot, an own commit
-    /// the passes place), the memory aspects due are compacted (`Engine::memory_compactions`),
+    /// fell invalid have their labels' memory entries listed again by every stream carrying them
+    /// (a writer wrote a fresh snapshot, an own commit the passes place), the memory aspects due are compacted (`Engine::memory_compactions`),
     /// the commits the engine forgot are noted (their entries' charge released, their labels
     /// judged again), entries whose commit waited unverified are charged as held, refused entries
     /// are fetched again where room appeared, and ephemeral signals go.
@@ -254,7 +237,7 @@ impl SyncEngine {
             }
         }
         for (t, ak) in invalidated {
-            self.memory_reconcile_thing(&t, &ak, out)?;
+            self.memory_relist_thing(&t, &ak, out)?;
         }
         self.retry_refused();
         let signals = self.engine.take_signals();
@@ -268,10 +251,9 @@ impl SyncEngine {
     /// A memory snapshot of `t`'s aspect `ak` fell invalid here, and the bodies it covered are
     /// gone until copies holders still have arrive again (spec/sync.md §9): the entries of the
     /// commits forgotten as covered or superseded there lose this node's tombstones and wait
-    /// unopened (whatever brings their bytes again opens them), and the labels whose closure holds `t` are reconciled, listing
-    /// only what is held (`memory_unopened`), so hosts name those they still have as needed.
-    /// At once where the label is open, when its Sync running ends, else at its next sync.
-    fn memory_reconcile_thing(&mut self, t: &Tid, ak: &osis_base::Ak, out: &mut Vec<Action>) -> Result<()> {
+    /// unopened (whatever brings their bytes again opens them), and the streams carrying a label
+    /// whose closure holds `t` list their memory entries again (`stream_relist`).
+    fn memory_relist_thing(&mut self, t: &Tid, ak: &osis_base::Ak, out: &mut Vec<Action>) -> Result<()> {
         let on = |f: &Forgotten| matches!(f.why, MemoryDrop::Covered { .. } | MemoryDrop::Superseded { .. }) && f.header.aspects.iter().any(|a| a.tid == *t && a.ak == *ak);
         let covered: Vec<CommitId> = self.memory.forgotten.iter().filter(|(c, f)| on(f) && !self.engine.holds_memory(c)).map(|(c, _)| *c).collect();
         // deleted here as covered: those deletions no longer stand (a role change, rare: the
@@ -296,17 +278,8 @@ impl SyncEngine {
         for (l, ids) in unopened {
             self.open_entries(None, l, &ids)?;
         }
-        let labels: Vec<LabelId> = self.labels().into_iter().filter(|(g, _)| *g == *t || self.engine.closure(g).contains(t)).map(|(_, gl)| gl.id).collect();
-        self.memory.reconciled.retain(|(_, l)| !labels.contains(l));
-        let open: Vec<(ConnId, LabelId, bool)> = self.conns.iter().flat_map(|(id, c)| c.labels.iter().filter(|(l, x)| labels.contains(l) && x.phase == Phase::Open).map(move |(l, x)| (*id, *l, x.syncing))).collect();
-        for (conn, l, syncing) in open {
-            if syncing {
-                self.memory.reconcile_after.insert((conn, l));
-            } else {
-                self.sync_label(conn, l, out)?;
-            }
-        }
-        Ok(())
+        let labels: BTreeSet<LabelId> = self.labels().into_iter().filter(|(g, _)| *g == *t || self.engine.closure(g).contains(t)).map(|(_, gl)| gl.id).collect();
+        self.stream_relist(&labels, out)
     }
 
     /// Memory commits the engine forgot: their entries' charge is released, their header and
@@ -435,12 +408,6 @@ impl SyncEngine {
         if !marked.is_empty() {
             self.mark_labels(marked.iter());
         }
-    }
-
-    /// Whether memory entry `b` of `l` waits unopened to be fetched (not one refused for the
-    /// cap, `memory_skips`): a reconciliation lists it as not held.
-    pub(crate) fn memory_unopened(&self, l: &LabelId, b: &BlobId) -> bool {
-        self.state.entries.get(&(*l, *b)).is_some_and(|e| e.memory && e.kind == Kind::Unknown) && !self.memory_skips(l, b)
     }
 
     /// Whether entry `b` of `l` is not fetched here for now (refused for the cap or share, or
@@ -666,90 +633,16 @@ impl SyncEngine {
         }
     }
 
-    /// The memory entries of `l` held here, listed as gained by the first Sync of `l` on `conn`
-    /// (spec/sync.md §6: the peer asks for those it lacks; the rest it holds, learned at the
-    /// Sync's end, `memory_synced`). None when more than a Sync takes: those are learned by
-    /// uploads answered OK (the pass uploads what counts as absent).
-    pub(crate) fn memory_gained(&mut self, conn: ConnId, l: LabelId) -> Vec<BlobId> {
-        if !self.memory.announced.insert((conn, l)) {
-            return Vec::new();
-        }
-        let ids: BTreeSet<BlobId> = self.memory_entries_of(&l).filter(|(_, e)| matches!(e.kind, Kind::Commit { .. })).map(|(b, _)| b).collect();
-        if ids.is_empty() || ids.len() > osis_proto::msg::MAX_GAINED {
-            return Vec::new();
-        }
-        self.memory.gained.insert((conn, l), ids.clone());
-        ids.into_iter().collect()
-    }
-
-    /// The peer wants gained entries: those are not present there (the pass uploads them); one
-    /// with no body here (its commit forgotten, or known only for a part dropped while invalid)
-    /// is absent there and goes once held nowhere (`absent_at`).
-    pub(crate) fn memory_want(&mut self, conn: ConnId, l: LabelId, ids: &[BlobId]) -> Result<()> {
-        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
-        let Some(mut g) = self.memory.gained.remove(&(conn, l)) else { return Ok(()) };
-        for b in ids {
-            if !g.remove(b) {
-                continue;
-            }
-            let dead = matches!(self.state.entries.get(&(l, *b)), Some(Entry { kind: Kind::Commit { commit, .. }, .. }) if !self.engine.memory_body_held(commit));
-            if dead {
-                self.absent_at(Some(host), l, *b)?;
-            }
-        }
-        self.memory.gained.insert((conn, l), g);
-        Ok(())
-    }
-
-    /// A Sync of `l` on `conn` ran through: what it listed as gained and the peer did not want,
-    /// the peer holds.
-    pub(crate) fn memory_synced(&mut self, conn: ConnId, l: LabelId) {
-        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return };
-        for b in self.memory.gained.remove(&(conn, l)).unwrap_or_default() {
-            self.state.set_present(host, l, b, true);
-        }
-    }
-
-    /// Fetches of `l` on `conn` answered (`refused` false) or refused: they leave
-    /// `reconcile_fetches`; a refused one a reconciliation asked for reconciles the label again
-    /// (on this connection's next sync, or the next periodic pass).
-    pub(crate) fn memory_fetch_done(&mut self, conn: ConnId, l: LabelId, ids: &[BlobId], refused: bool) {
-        let Some(asked) = self.memory.reconcile_fetches.get_mut(&(conn, l)) else { return };
-        let mut lost = false;
-        for b in ids {
-            lost |= asked.remove(b) && refused;
-        }
-        if asked.is_empty() {
-            self.memory.reconcile_fetches.remove(&(conn, l));
-        }
-        if lost && let Some(c) = self.conns.get(&conn) {
-            self.memory.reconciled.remove(&(c.host, l));
-        }
-    }
-
-    /// A connection ended: what waited on it goes with it; a restart reconciliation with
-    /// fetches unanswered runs again on the next connection. A memory entry counts as present
-    /// at a host only as learned on the connection up now (spec/sync.md §9: a restarted host
-    /// lost them, and its durable log says nothing of it), so the next connection's passes
-    /// upload what the host lacks and are answered OK for what it kept.
-    pub(crate) fn memory_lost(&mut self, conn: ConnId, host: HostKey, fetching: &BTreeMap<BlobId, u64>) -> Result<()> {
+    /// A connection ended: what waited on it goes with it. A memory entry counts as present at a
+    /// peer that cannot read L only as learned on the connection up now (spec/sync.md §9: a
+    /// restarted peer lost them, and its durable log says nothing of it; the next connection's
+    /// stream lists those it holds), so the next connection's passes upload what it lacks.
+    pub(crate) fn memory_lost(&mut self, conn: ConnId, host: HostKey) -> Result<()> {
         let gone: Vec<(LabelId, BlobId)> = self.state.memory_entries.iter().filter(|(l, b)| self.state.is_present(&host, l, b)).copied().collect();
         for (l, b) in gone {
             self.state.set_present(host, l, b, false);
         }
-        // an entry of a forgotten commit the host may have kept (its upload or delete unanswered
-        // when the connection ended) stays known until the next connection's Sync says
-        // (`memory_gained`: wanted, it is held nowhere and goes; else it is present and deleted)
-        let unanswered: Vec<LabelId> = self.memory.reconcile_fetches.iter().filter(|((c, _), ids)| *c == conn && ids.iter().any(|b| fetching.contains_key(b))).map(|((_, l), _)| *l).collect();
-        for l in unanswered {
-            self.memory.reconciled.remove(&(host, l));
-        }
-        self.memory.reconcile_fetches.retain(|(c, _), _| *c != conn);
-        self.memory.reconciling.retain(|(c, _)| *c != conn);
-        self.memory.reconcile_after.retain(|(c, _)| *c != conn);
         self.memory.own_uploads.retain(|(c, _, _)| *c != conn);
-        self.memory.gained.retain(|(c, _), _| *c != conn);
-        self.memory.announced.retain(|(c, _)| *c != conn);
         Ok(())
     }
 

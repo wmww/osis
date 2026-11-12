@@ -1,6 +1,6 @@
 //! The sync engine's durable state, in the engine's local records under `y/` (one write batch
 //! per `SyncEngine::handle`): label entries this node knows (wrap, stamp, what the blob is),
-//! presence per host, cursors and heads per (host, label), blob keys of commit blobs,
+//! presence per host, heads per (host, label), blob keys of commit blobs,
 //! certificates placed, blobs a host tombstoned, label hints from inbox blobs, inbox
 //! deliveries to re-send, direct commits for the app, flows'
 //! deliveries owed (`y/y`).
@@ -12,7 +12,6 @@ use crate::flows::Delivery;
 use osis_base::{BlobId, CommitId, LabelId, Tid};
 use osis_crypto::{Secret32, Signature, WRAP_LEN};
 use osis_label::{Address, Step};
-use osis_proto::Cursor;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -21,8 +20,9 @@ pub type HostKey = [u8; 32];
 
 const ENTRY: &[u8] = b"y/e";
 const PRESENT: &[u8] = b"y/p";
-const CURSOR: &[u8] = b"y/c";
-/// A (host, label) whose first sync has not ended (`fill`).
+/// Per peer that cannot read a label it streams, what this node read of its stream (`StreamAt`).
+const STREAM_AT: &[u8] = b"y/c";
+/// A (host, label) whose listing's fill has not ended (`fill`).
 const FILLING: &[u8] = b"y/4";
 const HEAD: &[u8] = b"y/h";
 const BLOB: &[u8] = b"y/b";
@@ -178,6 +178,12 @@ impl Entry {
     /// Its wrap went with a dropped body's bytes (`SyncEngine::forget_blob`).
     pub fn shredded(&self) -> bool {
         self.wrap == [0; WRAP_LEN]
+    }
+
+    /// A dropped body's entry: shredded, its kind kept (a fetch again makes it `Unknown`), so its
+    /// bytes are wanted from nobody and kept from nobody.
+    pub fn dropped(&self) -> bool {
+        self.shredded() && self.kind != Kind::Unknown
     }
 
     /// Not opened, though it opens under one of `secrets` (a shredded one: the fetch brings
@@ -371,7 +377,10 @@ pub struct State {
     /// Placed). Recorded only for commits `placed` waits on (`SyncEngine::note_applied`), kept
     /// only while it waits.
     pub applied: BTreeSet<(LabelId, BlobId, Tid)>,
-    pub cursors: BTreeMap<(HostKey, LabelId), Cursor>,
+    /// `STREAM_AT`: what this node read of the stream of each peer that cannot read L, kept by
+    /// its key (no record finds a peer that proves no known actor): a later connection's joins go on from it, and a listing
+    /// from the start marked trimmed below it tells what was deleted there (`stream`).
+    pub stream_at: BTreeMap<HostKey, StreamAt>,
     /// `FILLING`.
     pub filling: BTreeSet<(HostKey, LabelId)>,
     pub heads: BTreeMap<(HostKey, LabelId), Step>,
@@ -697,6 +706,52 @@ fn decode_kind(r: &mut Rd) -> Result<Kind> {
     })
 }
 
+/// What this node read of the stream of a peer that cannot read L, kept by the peer's key: no
+/// record finds a peer that proves no known actor (issues/net-reconnect.md, Peers that cannot read). A later join there
+/// goes on from it, and a listing from the start marked trimmed tells what was deleted there.
+#[derive(Clone, Default, Debug)]
+pub struct StreamAt {
+    /// The stream position stored last.
+    pub cursor: Vec<u8>,
+    /// The sync IDs in the stream at `cursor`.
+    pub stream: BTreeSet<LabelId>,
+    /// Those that left it since, each at the position it left at.
+    pub lags: BTreeMap<LabelId, Vec<u8>>,
+}
+
+impl StreamAt {
+    /// Where `l` goes on from there, if anywhere.
+    pub fn lag(&self, l: &LabelId) -> Option<Vec<u8>> {
+        self.lags.get(l).cloned().or_else(|| self.stream.contains(l).then(|| self.cursor.clone()))
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut w = Wr::new().bytes(&self.cursor).u32(self.stream.len() as u32);
+        for l in &self.stream {
+            w = w.raw(&l.0);
+        }
+        for (l, c) in &self.lags {
+            w = w.raw(&l.0).bytes(c);
+        }
+        w.take()
+    }
+
+    fn decode(v: &[u8]) -> Result<StreamAt> {
+        let mut r = Rd::new(v);
+        let cursor = r.bytes()?.to_vec();
+        let n = r.u32()?;
+        let mut stream = BTreeSet::new();
+        for _ in 0..n {
+            stream.insert(LabelId(r.arr()?));
+        }
+        let mut lags = BTreeMap::new();
+        while !r.is_empty() {
+            lags.insert(LabelId(r.arr()?), r.bytes()?.to_vec());
+        }
+        Ok(StreamAt { cursor, stream, lags })
+    }
+}
+
 impl State {
     /// Loads every record.
     pub fn load(engine: &mut Engine) -> Result<State> {
@@ -725,17 +780,16 @@ impl State {
                     }
                     s.present.insert(k);
                 }
-                b"c" => {
-                    let k = (r.arr()?, LabelId(r.arr()?));
-                    let mut c = Rd::new(&v);
-                    s.cursors.insert(k, Cursor { log_id: c.arr()?, seq: c.u64()? });
-                }
                 b"A" => {
                     s.applied.insert((LabelId(r.arr()?), BlobId(r.arr()?), r.tid()?));
                 }
                 b"4" => {
                     let k: (HostKey, LabelId) = (r.arr()?, LabelId(r.arr()?));
                     s.filling.insert(k);
+                }
+                b"c" => {
+                    let host: HostKey = r.arr()?;
+                    s.stream_at.insert(host, StreamAt::decode(&v)?);
                 }
                 b"h" => {
                     let k = (r.arr()?, LabelId(r.arr()?));
@@ -1435,8 +1489,8 @@ impl State {
     }
 
     /// Forgets every record of an entry announced without its bytes that turned out ephemeral
-    /// (its blob's prefix class, spec/sync.md §9): it is recorded again as a memory entry (no
-    /// tombstone).
+    /// (its blob's prefix class, spec/sync.md §9), its presence included: it is recorded again
+    /// as a memory entry (no tombstone), the caller moving the presence over.
     pub fn forget_class(&mut self, l: LabelId, b: BlobId) {
         self.forget_entry(l, b);
     }
@@ -1590,16 +1644,17 @@ impl State {
         self.deposited.range((*s, *l, BlobId([0; 32]))..=(*s, *l, BlobId([0xff; 32]))).map(|(_, _, b)| *b).collect()
     }
 
-    pub fn set_cursor(&mut self, s: HostKey, l: LabelId, c: Option<Cursor>) {
-        let k = key(CURSOR, &[&s, &l.0]);
-        match c {
-            Some(c) => {
-                self.put(k, Wr::new().raw(&c.log_id).u64(c.seq).take());
-                self.cursors.insert((s, l), c);
+    /// What was read of peer `s`'s stream (none: forgotten).
+    pub fn set_stream_at(&mut self, s: HostKey, at: Option<StreamAt>) {
+        let k = key(STREAM_AT, &[&s]);
+        match at {
+            Some(at) => {
+                self.put(k, at.encode());
+                self.stream_at.insert(s, at);
             }
             None => {
                 self.del(k);
-                self.cursors.remove(&(s, l));
+                self.stream_at.remove(&s);
             }
         }
     }
@@ -2038,7 +2093,7 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
                 }
                 gone
             }
-            b"p" | b"c" | b"h" | b"g" | b"3" | b"d" => lab(rest.get(32..).unwrap_or_default())?,
+            b"p" | b"h" | b"g" | b"3" | b"d" => lab(rest.get(32..).unwrap_or_default())?,
             b"t" | b"A" => lab(rest)?,
             b"k" => {
                 let mut r = Rd::new(rest);

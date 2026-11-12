@@ -12,7 +12,7 @@ use crate::Ingested;
 use osis_base::{BlobId, Classified, CommitId, ErrorClass, LabelId, Tid};
 use osis_crypto::{Secret32, VerifyingKey, role_kem};
 use osis_label::Step;
-use osis_proto::{Code, Command, Cursor, Event as LogEvent};
+use osis_proto::{Code, Command, Event as LogEvent};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -153,9 +153,9 @@ impl SyncEngine {
     }
 
     /// Log events of a host's Sync reply, push or fetch on `conn`, or of a bundle (`conn` none).
-    pub(crate) fn log_events(&mut self, conn: Option<ConnId>, l: LabelId, events: Vec<LogEvent>, cursor: Option<Cursor>, out: &mut Vec<super::Action>) -> Result<()> {
+    pub(crate) fn log_events(&mut self, conn: Option<ConnId>, l: LabelId, events: Vec<LogEvent>, out: &mut Vec<super::Action>) -> Result<()> {
         let src = conn.map_or(Src::Bundle, Src::Host);
-        self.log_events_from(src, l, events, cursor, out)
+        self.log_events_from(src, l, events, out)
     }
 
     /// Events of member `l` in the stream of reader `conn`, or bodies fetched there: judged by
@@ -163,11 +163,11 @@ impl SyncEngine {
     /// says only that this source no longer has the entry, so nothing is done for it (only a
     /// right holder's drop counts, retention's rule); a head comes by the label's own steps.
     pub(crate) fn reader_events(&mut self, conn: ConnId, l: LabelId, events: Vec<LogEvent>, out: &mut Vec<super::Action>) -> Result<()> {
-        self.log_events_from(Src::Reader(conn), l, events, None, out)
+        self.log_events_from(Src::Reader(conn), l, events, out)
     }
 
     /// `log_events` from `src`.
-    pub(crate) fn log_events_from(&mut self, src: Src, l: LabelId, events: Vec<LogEvent>, cursor: Option<Cursor>, out: &mut Vec<super::Action>) -> Result<()> {
+    pub(crate) fn log_events_from(&mut self, src: Src, l: LabelId, events: Vec<LogEvent>, out: &mut Vec<super::Action>) -> Result<()> {
         // an add whose bytes do not hash to its blob ID (a hostile source's) is ignored (spec/sync.md
         // §1), from any source: one check for every path bytes take below. A fetch it answered is
         // over, asked again by a later pass (it wakes none: a hostile host's every answer would)
@@ -277,12 +277,23 @@ impl SyncEngine {
                     continue;
                 }
                 memory = true;
+                // the peers whose streams announced it hold it whatever its class: their presence
+                // moves to the memory record (each stream shows an entry once, so presence dropped
+                // here never came back, and every pass put the entry up again there), kept for the
+                // peers connected now as any memory entry's (`memory_lost`)
+                let mut shown = Vec::new();
                 if self.state.entries.get(&(l, *blob_id)).is_some_and(|e| !e.memory) {
+                    let up: BTreeSet<HostKey> = self.conns.values().filter(|c| c.up).map(|c| c.host).collect();
+                    shown = self.state.hosts_of(&l, blob_id).into_iter().filter(|s| up.contains(s)).map(|s| (s, self.state.deposited.contains(&(s, l, *blob_id)))).collect();
                     self.state.forget_class(l, *blob_id);
                 }
                 if !self.state.entries.contains_key(&(l, *blob_id)) {
                     // recorded before its presence (`State::put_of` goes by the record's class)
                     self.state.set_entry(l, *blob_id, Entry { wrap: *wrap, stamp: None, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, source: None, memory: true });
+                }
+                for (s, deposited) in shown {
+                    self.state.set_present(s, l, *blob_id, true);
+                    self.state.set_deposited(s, l, *blob_id, deposited);
                 }
             }
             match ev {
@@ -295,9 +306,36 @@ impl SyncEngine {
                         Some(w) => signed_by(w),
                         None => writers.iter().any(signed_by),
                     };
+                    // a durable entry known there as it is, its bytes held (a stream showing it
+                    // again): nothing changed, nothing to judge (a memory entry's replay is judged
+                    // again: its cover may drop it, spec/sync.md §9)
+                    let present = host.is_some_and(|s| self.state.is_present(&s, &l, &blob_id));
+                    let echo = present
+                        && self.engine.has_blob(&blob_id)
+                        && self.state.entries.get(&(l, blob_id)).is_some_and(|e| !e.memory && e.wrap == wrap && (stamp.is_none() || e.stamp == stamp));
+                    // presence comes only from what the peer shows, an own upload's echo
+                    // included, never from an upload's OK (a store restored from a backup lost
+                    // what it acknowledged)
                     if let Some(s) = host {
                         self.state.set_present(s, l, blob_id, true);
                         self.state.set_deposited(s, l, blob_id, stamp.is_none());
+                        if !present {
+                            self.reached(&l, &blob_id);
+                        }
+                        if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
+                            c.req.sent.remove(&(l, blob_id));
+                        }
+                    }
+                    if echo {
+                        continue;
+                    }
+                    // a dropped body (`Entry::dropped`): bytes a fetch asked before the drop
+                    // brings, or anyone's, are not kept
+                    if self.state.entries.get(&(l, blob_id)).is_some_and(Entry::dropped) {
+                        if blob.is_some() {
+                            self.fetched(&blob_id);
+                        }
+                        continue;
                     }
                     // the host holds it now: fetched there again when wanted
                     if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
@@ -413,8 +451,8 @@ impl SyncEngine {
             self.relink_lost()?;
         }
         let filling = conn.is_some_and(|c| self.lc(c, &l).is_some_and(|x| x.fill.is_some()));
-        // a push (no Sync running) brings the log to its end: a pass end
-        let pushed = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).is_some_and(|x| x.synced && !x.syncing && x.fill.is_none());
+        // a push to a stream read to its end brings the log to its end: a pass end
+        let pushed = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).is_some_and(|x| x.synced && x.fill.is_none());
         // the label changed under us: a pass decides again (carriers, retags); not per batch of a fill
         if (!touched.is_empty() || announced)
             && !filling
@@ -430,17 +468,11 @@ impl SyncEngine {
         }
         self.engine.put_memory_blobs(memory_blobs)?;
         self.open_entries(conn, l, &touched)?;
-        // a cursor is stored only with what it covers applied: past `flush_storing` (a later
-        // flush writes it) and the commits opened above
-        if let (Some(s), Some(c)) = (host, cursor)
-            && !conn.is_some_and(|x| self.fill_cursor(x, &l, c))
-        {
-            self.state.set_cursor(s, l, Some(c));
-        }
         if let Some(s) = host {
             self.drop_unvouched(conn, s, l, &unvouched)?;
         }
-        // commit blobs announced without bytes are fetched now; the rest (chunks) lazily
+        // commit blobs announced without bytes are fetched now, deposits (an inbox blob, a
+        // reader's under an epoch not held) too, as a fill ranks them; the rest (chunks) lazily
         if let Some(c) = conn {
             let g = self.group_of(&l, Some(c));
             let secrets = g.map(|g| self.read_secrets(&g)).unwrap_or_default();
@@ -449,7 +481,8 @@ impl SyncEngine {
                 self.fetch_waiting(c, l, out)?;
                 self.fill_more(c, l, out)?;
             } else {
-                let want: Vec<BlobId> = fetch.into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some())).collect();
+                let deposited = |s: &Self, b: &BlobId| host.is_some_and(|h| s.state.deposited.contains(&(h, l, *b)));
+                let want: Vec<BlobId> = fetch.into_iter().filter(|b| deposited(self, b) || self.state.entries.get(&(l, *b)).is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some())).collect();
                 self.fetch_on(c, l, want, out)?;
                 self.fetch_waiting(c, l, out)?;
             }
@@ -1789,10 +1822,12 @@ impl SyncEngine {
         if cur.as_ref().is_some_and(|h| h.id() == step.id()) {
             return Ok(());
         }
-        let (g, open) = (lc.group, lc.phase == super::Phase::Open);
+        // opened by a claim (no secret of the head held): the claim is the old step's, and what
+        // reads the label there now is a claim at the new one (`reader_sync_keys`)
+        let (g, open, claimed) = (lc.group, lc.phase == super::Phase::Open, lc.keys.sync.is_none());
         match cur {
             Some(h) if step.verify_child(&h).is_ok() => {
-                let ended = open && step.keys.sync != h.keys.sync;
+                let ended = open && (step.keys.sync != h.keys.sync || claimed);
                 self.record_steps(&g, &l, &[h, step.clone()], None)?;
                 self.set_head(conn, l, step)?;
                 if ended {
@@ -1804,33 +1839,50 @@ impl SyncEngine {
         }
     }
 
-    /// A Sync ran through its last page: the pass at this host is complete.
-    pub(crate) fn synced(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
+    /// The stream of the peer on `conn` (one that cannot read `l`) read `l` to its end (`stream_reply`): a pass end there,
+    /// once a fill under way ends (`fill_more`). A role commit of the label's actor applied after
+    /// the Pull went may have come from elsewhere: the peer's log as it answered need not hold
+    /// what came before it there (spec/permissions.md §3 Complete pass), so a pass end is asked
+    /// again (a fresh Pull).
+    pub(crate) fn stream_read(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
-        // a fill's pass ends with the fill
-        if self.fill_listed(conn, l, out)? {
+        if self.lc(conn, &l).is_some_and(|x| x.fill.is_some()) {
+            self.fill_listed(conn, l, out)?;
             return self.fetch_waiting(conn, l, out);
         }
+        // a listing from the start ended: marked trimmed (the host's store is the one read before,
+        // its deletions since not all in its log), what it lacks of what was present there was
+        // deleted there, as a Deleted event says; else its absence proves nothing (a wiped or
+        // restored store), and only presence went (`known_join`)
+        let relisted = self.lc_mut(conn, &l).and_then(|x| x.relisted.take());
+        if let Some((before, true)) = relisted {
+            let mut lost = BTreeSet::new();
+            for b in before {
+                if self.state.is_present(&host, &l, &b) {
+                    continue;
+                }
+                let chunk = !self.state.blobs.contains_key(&b);
+                if self.absent_at(Some(host), l, b)? && chunk {
+                    lost.insert(b);
+                }
+            }
+            if !lost.is_empty() && !self.group_of(&l, Some(conn)).is_some_and(|g| self.is_replaced(&g, &l)) {
+                self.relink_pending.extend(lost);
+                self.relink_at = 0;
+                self.relink_lost()?;
+            }
+        }
+        // read there to its end the first time since it joined: a pass judges it (later ends
+        // bring nothing a pass waits for: what arrived marked it already, `log_events`)
         if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.syncing = false;
-            lc.ending = false;
+            lc.dirty |= !lc.synced;
             lc.synced = true;
-            lc.dirty = true;
         }
-        // a role commit of the label's actor applied after this Sync was sent may have come
-        // from elsewhere: the host's log as it answered need not hold what came before it there
-        // (spec/permissions.md §3 Complete pass), so a pass is asked again
         self.engine_events()?;
-        // a memory snapshot fell invalid during it (`memory_reconcile_thing`): reconciled now,
-        // even after a reconciliation that ran then (it listed the entries the fall reopened)
-        if self.memory.reconcile_after.remove(&(conn, l)) && self.state.cursors.contains_key(&(host, l)) {
-            self.memory.reconciled.remove(&(host, l));
-            return self.sync_label(conn, l, out);
-        }
         let sent = self.lc(conn, &l).map_or(u64::MAX, |x| x.sync_seq);
         let later = self.synced.actors.get(&l).and_then(|(a, _)| self.role_change.get(a)).is_some_and(|r| r.0 > sent);
-        if later && let Some(cursor) = self.state.cursors.get(&(host, l)).copied() {
-            self.ask_pass_end(conn, l, cursor, out)?;
+        if later {
+            self.stream_ask(conn, true, out)?;
         } else {
             self.bump_pass(host, l)?;
         }
@@ -2110,68 +2162,6 @@ impl SyncEngine {
         self.fetch(&ids)
     }
 
-    /// Gained IDs the host lacks: upload the stamped entries held.
-    pub(crate) fn want(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, out: &mut Vec<super::Action>) -> Result<()> {
-        let mut entries = Vec::new();
-        for b in ids {
-            let Some(e) = self.state.entries.get(&(l, b)).cloned() else { continue };
-            let (Some(stamp), Some(blob)) = (e.stamp, self.engine.blob(&b)?) else { continue };
-            entries.push(osis_proto::Entry { blob, wrap: e.wrap, stamp, replaces: Vec::new() });
-        }
-        if !entries.is_empty() {
-            self.command(conn, Command::Upload { label: l, entries }, out)?;
-        }
-        Ok(())
-    }
-
-    /// Range reconciliation done: presence follows it; fetch what we lack, then a cursor-less
-    /// metadata Sync for a fresh cursor. After a trimmed log (code 15) an entry known present
-    /// there and absent now was deleted there, as by a Deleted record (`absent_at`); after
-    /// another log (a wiped host) it is only not present.
-    pub(crate) fn reconciled(&mut self, conn: ConnId, l: LabelId, need: Vec<BlobId>, have: Vec<BlobId>, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some((host, trimmed)) = self.conns.get_mut(&conn).map(|c| (c.host, c.req.trimmed.remove(&l))) else { return Ok(()) };
-        // a reconciliation after a start keeps the cursor: the Sync from it that follows settles
-        // the durable entries (Deleted records, or code 10 or 15 and a reconciliation again)
-        let restart = self.memory.reconciling.contains(&(conn, l));
-        let mut lost = BTreeSet::new();
-        for b in have {
-            if trimmed && self.state.is_present(&host, &l, &b) {
-                // as a Deleted record: a chunk gone from every host is relinked (`log_events`)
-                let chunk = !self.state.blobs.contains_key(&b);
-                if self.absent_at(Some(host), l, b)? && chunk {
-                    lost.insert(b);
-                }
-            } else if !restart {
-                self.state.set_present(host, l, b, false);
-            }
-        }
-        if !lost.is_empty() && !self.group_of(&l, Some(conn)).is_some_and(|g| self.is_replaced(&g, &l)) {
-            self.relink_pending.extend(lost);
-            self.relink_at = 0;
-            self.relink_lost()?;
-        }
-        // the host holds them now: undelivered before or not, asked again (like an announce)
-        if let Some(c) = self.conns.get_mut(&conn) {
-            for b in &need {
-                c.req.missing.remove(b);
-            }
-        }
-        let need: Vec<BlobId> = need.into_iter().filter(|b| !self.memory_skips(&l, b)).collect();
-        if restart {
-            self.memory.reconcile_fetches.insert((conn, l), need.iter().copied().collect());
-        }
-        self.fetch_on(conn, l, need, out)?;
-        // a reconciliation after a start: the cursor stays (`sync_label`)
-        if self.memory.reconciling.remove(&(conn, l)) {
-            self.memory.reconciled.insert((host, l));
-            return self.sync_label(conn, l, out);
-        }
-        if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.syncing = true;
-        }
-        self.command(conn, Command::Sync { label: l, cursor: None, inline_limit: 0, entries: Vec::new(), gained: Vec::new() }, out)
-    }
-
     /// Host `s` reports holding entry `b` of `l` (an announcement, an upload answered OK): it is
     /// present there. One this node tombstoned is recorded again as it was, quietly (not
     /// fetched, not served on), so the pass judges it there as any present entry, whatever its
@@ -2203,9 +2193,15 @@ impl SyncEngine {
             if self.relay_status(&b, code) {
                 continue;
             }
+            // the replacing upload's status only once its command is answered: an earlier plain
+            // upload of the same blob is answered first
             let replaced = self.conns.get_mut(&conn).and_then(|c| {
-                c.req.sent.remove(&(l, b));
-                c.req.replacing.remove(&(l, b))
+                // taken: in flight until the stream shows it (`RESEND_MS`, then sent again)
+                if code != Code::OK {
+                    c.req.sent.remove(&(l, b));
+                }
+                let mine = c.req.replacing.get(&(l, b)).is_some_and(|(_, tag)| c.session.answered(*tag));
+                if mine { c.req.replacing.remove(&(l, b)).map(|(x, _)| x) } else { None }
             });
             // a memory entry refused for the host's cap or rate waits its resend time, as if in
             // flight, before a pass sends it again: room appears by others' expiries and
@@ -2247,15 +2243,8 @@ impl SyncEngine {
                 self.capped.remove(&(host, l, b));
             }
             match code {
-                Code::OK => {
-                    let new = self.host_holds(host, l, b);
-                    grew |= new;
-                    if new {
-                        self.reached(&l, &b);
-                    }
-                    // a stamped upload of a deposited entry promoted it
-                    self.state.set_deposited(host, l, b, false);
-                }
+                // presence comes with the peer's stream showing it (`log_events_from`)
+                Code::OK => {}
                 Code::TOMBSTONED => {
                     self.tombstoned(host, l, b)?;
                     if let Some(lc) = self.lc_mut(conn, &l) {

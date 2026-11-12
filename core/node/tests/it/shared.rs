@@ -251,6 +251,59 @@ fn a_link_redeemed_through_a_joiner_gets_the_box_from_the_hit_reply_spec_sync_10
     assert_eq!(net.peer_sent(j, OPEN) + net.peer_sent(r, OPEN), 0, "no Open between readers");
 }
 
+// spec/sync.md §10 (Connection proofs): a connection proves what its node held when it came up;
+// a redeemer already connected to a reader of K, a stranger there, holds the link key after its
+// proofs went, so the peer's filter never shows K to it. It dials again and reads K there
+#[test]
+fn a_link_key_held_after_the_connection_is_proved_on_a_new_one_spec_sync_10() {
+    let (mut net, _, a, _, (k, kl, _, seed)) = crate::net_judgment::linked();
+    let at = vec![osis_label::Address { url: osis_transport::peer_url(&[]), key: reach_ed(&mut net, a) }];
+    let c = net.add_node(2, osis_node::sync::SyncConfig { hosts: at.clone(), ..Default::default() });
+    net.run();
+    let to_a = |net: &Net| net.dialed.iter().filter(|(n, x)| *n == c && x.key == at[0].key).count();
+    let before = to_a(&net);
+    let held = net.engine(c).hold_key_actor(seed).unwrap();
+    let acts = net.sync(c).follow(held, k, kl, at.clone());
+    net.actions(c, acts);
+    net.run();
+    assert!(net.engine(c).epochs(&k).is_some_and(|e| e.read.holds_any()), "the redeemer reads K at the peer it was connected to");
+    assert_eq!(to_a(&net), before + 1, "by one new connection to it");
+}
+
+// spec/permissions.md §7, spec/sync.md §5: only the link's sharer lacking the key's static entry
+// ends a link. A peer holding nothing of K (here a stranger; the redeemer's own other node alike)
+// shows no entry of K's label: that says nothing while the sharer is not reached
+#[test]
+fn a_peer_other_than_the_sharer_does_not_end_a_link_spec_permissions_7() {
+    let (mut net, _, a, _, (k, kl, _, seed)) = crate::net_judgment::linked();
+    let ka = reach_ed(&mut net, a);
+    let d = net.node(3, &[]);
+    let kd = reach_ed(&mut net, d);
+    let at = |key| vec![osis_label::Address { url: osis_transport::peer_url(&[]), key }];
+    let c = net.add_node(2, osis_node::sync::SyncConfig { hosts: at(kd), ..Default::default() });
+    net.blocked_peers.insert((c, a));
+    let held = net.engine(c).hold_key_actor(seed).unwrap();
+    net.sync(c).follow_link_peer(k, k, at(ka));
+    let acts = net.sync(c).follow(held, k, kl, vec![]);
+    net.actions(c, acts);
+    net.run();
+    assert!(net.sync(c).pass_stats().filters_received >= 1, "d's filter came");
+    assert!(!net.sync(c).static_entry_refused(&kl), "d's filter lacking K's entry ends nothing");
+}
+
+// spec/sync.md §10 (Node keys): a node is never its own peer, whatever address names it (its
+// account's saved peer, a label's host): no dial to its own key
+#[test]
+fn a_node_never_dials_its_own_key_spec_sync_10() {
+    let (mut net, [a]) = local_nodes::<1>();
+    let me = osis_label::Address { url: osis_transport::peer_url(&[]), key: reach_ed(&mut net, a) };
+    let t = net.tid(a);
+    let acts = net.sync(a).follow(t, t, LabelId([0x42; 16]), vec![me.clone()]);
+    net.actions(a, acts);
+    net.run();
+    assert!(!net.dialed.iter().any(|(n, x)| *n == a && x.key == me.key), "{:?}", net.dialed);
+}
+
 // issues/net-shared-set.md, Words and Peers that cannot read: a stranger's NoRecord starts the
 // connection's set, whose filter holds none of what the node reads (here nothing else: it keeps
 // nothing unread); before it, a shared-set request is refused

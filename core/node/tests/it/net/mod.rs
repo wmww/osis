@@ -357,7 +357,8 @@ fn told_ids(b: &[u8]) -> Vec<osis_base::BlobId> {
     let mut v = Vec::new();
     while let Ok(Some(body)) = d.next_frame() {
         match osis_proto::Message::decode(&body) {
-            Ok(M::Push { events, .. } | M::SyncReply { events, .. }) => v.extend(events.iter().filter_map(|e| if let E::Added { blob_id, .. } = e { Some(*blob_id) } else { None })),
+            Ok(M::PullReply(r)) => v.extend(r.events.iter().filter_map(|(_, e)| if let E::Added { blob_id, .. } = e { Some(*blob_id) } else { None })),
+            Ok(M::Stream(r)) => v.extend(r.events.iter().filter_map(|(_, e)| if let E::Added { blob_id, .. } = e { Some(*blob_id) } else { None })),
             Ok(M::FetchReply { items, .. }) => v.extend(items.iter().filter(|i| i.entry.is_some()).map(|i| i.blob_id)),
             _ => {}
         }
@@ -375,22 +376,27 @@ fn without_blobs(b: &[u8], hide: &BTreeSet<osis_base::BlobId>, bare: bool) -> Ve
     while let Ok(Some(body)) = d.next_frame() {
         match osis_proto::Message::decode(&body) {
             Ok(mut m) => {
-                match &mut m {
-                    M::Push { events, .. } | M::SyncReply { events, .. } if bare => {
-                        for e in events.iter_mut() {
+                let strip = |events: &mut Vec<(osis_base::LabelId, E)>| {
+                    if bare {
+                        for (_, e) in events.iter_mut() {
                             if let E::Added { blob_id, blob, .. } = e
                                 && hide.contains(blob_id)
                             {
                                 *blob = None;
                             }
                         }
+                    } else {
+                        events.retain(|(_, e)| !matches!(e, E::Added { blob_id, .. } if hide.contains(blob_id)));
                     }
-                    M::Push { events, .. } | M::SyncReply { events, .. } => events.retain(|e| !matches!(e, E::Added { blob_id, .. } if hide.contains(blob_id))),
+                };
+                match &mut m {
+                    M::PullReply(r) => strip(&mut r.events),
+                    M::Stream(r) => strip(&mut r.events),
                     M::FetchReply { items, .. } => items.retain(|i| !hide.contains(&i.blob_id)),
                     _ => {}
                 }
-                // a push carries at least one event: one emptied is dropped whole
-                if matches!(&m, M::Push { events, .. } if events.is_empty()) {
+                // a cursorless push carries at least one event: one emptied is dropped whole
+                if matches!(&m, M::Stream(r) if r.events.is_empty() && r.cursor.is_none()) {
                     continue;
                 }
                 out.extend(osis_proto::encode_frame(&m.encode()));
@@ -424,6 +430,12 @@ pub const HUB_BASE: ConnId = 1 << 40;
 /// take at most about 210 rounds (random churn and window seeds 90). Minor consequence,
 /// test-only: near 0 every settle fails; at infinity a loop runs to the seed's CPU timeout.
 const SETTLE_ROUNDS: usize = 2_000;
+
+/// What a peer that cannot read `l` streams to a reader: `events` of `l` at a position `at`
+/// names (a hostile peer's push, or a replay).
+pub fn stream_msg(l: osis_base::LabelId, events: Vec<osis_proto::Event>, at: u64) -> osis_proto::Message {
+    osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events: events.into_iter().map(|e| (l, e)).collect(), cursor: Some(at.to_be_bytes().to_vec()), report: false }))
+}
 
 pub fn host_key(i: usize) -> [u8; 32] {
     [0x50 + i as u8; 32]

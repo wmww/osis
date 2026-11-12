@@ -73,7 +73,7 @@ impl SyncEngine {
             .conns
             .iter()
             .flat_map(|(id, c)| {
-                c.labels.iter().filter(|(_, l)| l.phase == Phase::Open && !l.syncing && l.last_sync.saturating_add(self.cfg.resync_ms) <= now).map(move |(lid, _)| (*id, *lid))
+                c.labels.iter().filter(|(_, l)| l.phase == Phase::Open && l.last_sync.saturating_add(self.cfg.resync_ms) <= now).map(move |(lid, _)| (*id, *lid))
             })
             .collect();
         // labels no key opened, and registrations refused for now once their back-off passed: try
@@ -103,16 +103,12 @@ impl SyncEngine {
             self.local_dirty = true;
         }
         for (conn, label) in resync {
-            if self.needs_sync(conn, &label) {
-                self.sync_label(conn, label, out)?;
-                continue;
-            }
             // an upload the host refused for the label's cap goes again once per resync while the
             // body is held (spec/sync.md §9: room appears there without a word to anyone)
             let capped = self.conns.get(&conn).is_some_and(|c| self.capped.range((c.host, label, osis_base::BlobId([0; 32]))..=(c.host, label, osis_base::BlobId([0xff; 32]))).next().is_some());
             if let Some(l) = self.lc_mut(conn, &label) {
-                // subscribed: a pass when something waits for it (`Work::resync_due`: what a pass
-                // left, a timed bound); unsubscribed, the Sync's end uploads those
+                // a pass when something waits for it (`Work::resync_due`: what a pass left, a
+                // timed bound); the stream brings what the host gets
                 l.last_sync = now;
                 l.dirty |= l.fill.is_some() || l.work.resync_due(now) || capped;
             }
@@ -140,7 +136,7 @@ impl SyncEngine {
             for l in c.labels.values() {
                 // a label waiting for a reply re-syncs after it; a quiet one needs no time of its
                 // own, what comes due for it waits for the next tick
-                if (l.phase == Phase::Open && !l.syncing && (!l.synced || !self.cfg.subscribe || l.fill.is_some() || !l.work.quiet())) || l.phase == Phase::Failed {
+                if (l.phase == Phase::Open && (l.fill.is_some() || !l.work.quiet())) || l.phase == Phase::Failed {
                     at(l.last_sync.saturating_add(resync));
                 }
                 if let Phase::Refused { retry_at } = l.phase {
@@ -188,19 +184,8 @@ impl SyncEngine {
         t.map(|x| x.max(self.last_tick.saturating_add(MIN_WAKE_MS)))
     }
 
-    /// Whether open label `label` on `conn` needs a Sync to catch up: without a subscription, not
-    /// synced since it opened, or not reconciled since this node started or a memory snapshot
-    /// fell invalid (`memory`). Otherwise pushes bring what the host gets.
-    pub(super) fn needs_sync(&self, conn: ConnId, label: &LabelId) -> bool {
-        let Some(c) = self.conns.get(&conn) else { return false };
-        let Some(l) = c.labels.get(label) else { return false };
-        let unreconciled = !self.memory.reconciled.contains(&(c.host, *label)) && self.state.cursors.contains_key(&(c.host, *label));
-        !self.cfg.subscribe || unreconciled || !l.synced
-    }
-
-    /// Catches up at the caller's word (an app's refresh, at any rate): a label that needs it syncs,
-    /// a live one only judges again: a Sync of every label costs a round trip per two (each may
-    /// answer `MAX_MESSAGE`, `osis_proto::client::WINDOW`) and shows `Syncing`. A connection
+    /// Catches up at the caller's word (an app's refresh, at any rate): every open label judges
+    /// again (the streams bring what their sources get, so nothing is asked). A connection
     /// quiet for `retry_ms` gets a ping: after a network change it may be dead with nothing in flight
     /// to find out by (the stall timeout), and a live label would hear nothing.
     pub fn refresh(&mut self) -> Vec<Action> {
@@ -214,13 +199,9 @@ impl SyncEngine {
                 self.diag(format!("sync: {e}"));
             }
         }
-        let open: Vec<(ConnId, LabelId)> = self.conns.iter().flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.phase == Phase::Open && !l.syncing).map(move |(lid, _)| (*id, *lid))).collect();
+        let open: Vec<(ConnId, LabelId)> = self.conns.iter().flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.phase == Phase::Open).map(move |(lid, _)| (*id, *lid))).collect();
         for (conn, label) in open {
-            if self.needs_sync(conn, &label) {
-                if let Err(e) = self.sync_label(conn, label, &mut out) {
-                    self.diag(format!("sync: {e}"));
-                }
-            } else if let Some(l) = self.lc_mut(conn, &label) {
+            if let Some(l) = self.lc_mut(conn, &label) {
                 l.dirty = true;
             }
         }
@@ -228,76 +209,15 @@ impl SyncEngine {
         out
     }
 
-    /// Syncs every open label at every connection now, live or not, and asks every reader's
-    /// stream: when this returns' replies are in, this node has heard all its sources had
-    /// (`wait_synced`, a demotion's pre-sync).
+    /// Asks every stream (readers' and those of peers that cannot read L): when this returns' replies are in, this node has
+    /// heard all its sources had (`wait_synced`, a demotion's pre-sync).
     pub fn sync_now(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
         if let Err(e) = self.stream_ask_all(&mut out) {
             self.diag(format!("sync: {e}"));
         }
-        let todo: Vec<(ConnId, LabelId)> = self.conns.iter().flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.phase == Phase::Open && !l.syncing).map(move |(lid, _)| (*id, *lid))).collect();
-        for (conn, label) in todo {
-            if let Err(e) = self.sync_label(conn, label, &mut out) {
-                self.diag(format!("sync: {e}"));
-            }
-        }
         let _ = self.state.flush(&mut self.engine);
         out
     }
 
-    /// Starts a cursor sync of an open label.
-    pub(crate) fn sync_label(&mut self, conn: ConnId, label: LabelId, out: &mut Vec<Action>) -> Result<()> {
-        let now = self.now();
-        let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-        let host = c.host;
-        let Some(l) = c.labels.get_mut(&label) else { return Ok(()) };
-        // a fill past its listing goes on, its end brings what came meanwhile; a pass now and then
-        if l.fill.as_ref().is_some_and(|f| f.listed()) {
-            l.dirty = true;
-            l.last_sync = now;
-            return self.fill_more(conn, label, out);
-        }
-        l.fill = None;
-        l.syncing = true;
-        l.last_sync = now;
-        let cursor = self.state.cursors.get(&(host, label)).copied();
-        // the first sync of a label at a host since start reconciles the live sets first: the
-        // memory entries a cursor already passed are in no memory here after a start
-        // (spec/sync.md §9); the cursor stays for what follows (a replay from no cursor lists
-        // everything: nothing to reconcile after it). Marked reconciled when the reply arrives
-        // (`reconciled`): a connection ending first reconciles again on the next one
-        if cursor.is_none() {
-            self.memory.reconciled.insert((host, label));
-        }
-        if cursor.is_some() && !self.memory.reconciled.contains(&(host, label)) {
-            if self.memory.reconciling.contains(&(conn, label)) {
-                return Ok(());
-            }
-            // a memory entry waiting unopened is not listed (covered by a snapshot since fallen
-            // invalid, `memory_reconcile_thing`): it comes back as needed, as durable fetches
-            // back the bodies it marks never received
-            let ids: Vec<osis_base::BlobId> = self.state.present_at(&host, &label).into_iter().filter(|b| !self.memory_unopened(&label, b)).collect();
-            self.memory.reconciling.insert((conn, label));
-            return self.command(conn, Command::Reconcile { label, ids }, out);
-        }
-        // a replay lists the live entries only: presence starts over from it (a cursor lost in a
-        // crash otherwise kept entries a wiped host no longer holds "present" for good)
-        if cursor.is_none() {
-            for b in self.state.present_at(&host, &label) {
-                self.state.set_present(host, label, b, false);
-            }
-        }
-        // a first sync lists, then fetches in the wraps' order (`fill`)
-        let inline_limit = if cursor.is_none() || self.state.filling.contains(&(host, label)) {
-            self.fill_start(conn, label);
-            0
-        } else {
-            self.cfg.inline_limit
-        };
-        // the memory entries held, listed once per connection: the host asks for those it
-        // lacks (presence of a memory entry is per connection, spec/sync.md §9)
-        let gained = self.memory_gained(conn, label);
-        self.command(conn, Command::Sync { label, cursor, inline_limit, entries: Vec::new(), gained }, out)
-    }
 }

@@ -132,10 +132,20 @@ impl SyncEngine {
         self.rng.fill_bytes(&mut b);
         let s = Secret32::from_bytes(b);
         self.state.set_reach_secret(s.clone());
+        self.own_key = None;
         if let Err(e) = self.state.flush(&mut self.engine) {
             self.diag(format!("sync state: {e}"));
         }
         s
+    }
+
+    /// This node's key once it has a dialable secret, cached: a node is never its own peer
+    /// (`wanted_hosts`), whatever address names it (its account's saved peer, a label's host).
+    pub(crate) fn own_key(&mut self) -> Option<[u8; 32]> {
+        if self.own_key.is_none() {
+            self.own_key = self.state.reach_secret.as_ref().map(|s| SigningSecret::from_seed(s).verifying_key().to_bytes());
+        }
+        self.own_key
     }
 
     /// This node's key: the Ed25519 key of its dialable secret, under which every listener of
@@ -163,6 +173,7 @@ impl SyncEngine {
     fn rotate_now(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let items = self.own_reach().map(|r| r.items);
         self.state.reach_secret = None;
+        self.own_key = None;
         self.lan_rotate = true;
         let s = self.dialable_secret();
         // every transport's key is the Ed25519 key of its secret (the driver's listener presents it)
@@ -174,10 +185,12 @@ impl SyncEngine {
     }
 
     /// Whether a reader may pull this node's stream: it is dialable, or a connection shares a
-    /// sync ID. Only then is a label synced with no host served, so placed locally
+    /// sync ID with a peer that pulls (not one that cannot read it: it reads nothing). Only then is a label synced
+    /// with no host served, so placed locally
     /// (`local_passes`).
     pub(crate) fn serves_readers(&mut self) -> bool {
-        self.records.shared.values().any(|s| !s.is_empty()) || self.own_reach().is_some()
+        // a peer that cannot read L (opened by this side's sync key there) pulls nothing
+        self.records.shared.iter().any(|(c, s)| s.member_ids().any(|l| !self.shared_by_key(*c, &l))) || self.own_reach().is_some()
     }
 
     /// This node's `reach.0`, if published.

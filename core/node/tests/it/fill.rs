@@ -206,10 +206,11 @@ fn own_writes_go_out_during_a_fill_spec_sync_6() {
     assert_eq!(f.net.read(f.a, t), Some(net::s("mine")));
 }
 
-// spec/sync.md §6: a fill goes on across a restart from what is listed, not a second listing, and
-// brings what does not open too (here a chunk: a filler wrap), as a replay did.
+// spec/sync.md §6: a fill goes on across a restart from what it holds: what came is not fetched
+// again (a peer with no record of this node lists again, issues/net-reconnect.md Peers that cannot
+// read, Limit), and what does not open comes too (here a chunk: a filler wrap).
 #[test]
-fn restart_goes_on_without_listing_again_spec_sync_6() {
+fn restart_goes_on_without_fetching_again_spec_sync_6() {
     let mut f = chat(Role::Read);
     let (a, c, host, l, t) = (f.a, f.c, f.host, f.l, f.t);
     let mut m = Mutation::new();
@@ -218,11 +219,11 @@ fn restart_goes_on_without_listing_again_spec_sync_6() {
     f.net.run();
     f.part_way();
     let held = f.held().len();
-    f.net.told.insert(c, Default::default());
+    f.net.fetched.insert(c, Default::default());
     f.net.restart(c, 3);
     f.finish();
-    let told = f.net.told.get(&c).map_or(0, |x| x.len());
-    assert!(told < N - held + 16, "listed again: {told} entries told, {held} held");
+    let fetched = f.net.fetched.get(&c).map_or(0, |x| x.len());
+    assert!(fetched < N - held + 16, "fetched again: {fetched} entries, {held} held");
     let ids: Vec<BlobId> = f.net.host_ids(host, &l);
     for b in ids {
         assert!(f.net.engine(c).has_blob(&b), "every entry fetched");
@@ -500,12 +501,12 @@ fn no_pass_before_order_0_at_two_hosts_spec_sync_6() {
     no_pass_before_order_0(2, false);
 }
 
-// spec/sync.md §6: a rotation part way can end the open at the host with a batch asked under it:
-// the host refuses it, the reopen goes on from what is listed, in order, and the pass still ends
-// only when everything is here.
+// spec/sync.md §6: a rotation part way ends the open at the host (a batch asked under it is
+// refused, or the new head comes first): the reopen goes on from what is listed, in order, and
+// the pass still ends only when everything is here.
 #[test]
 fn a_rotation_part_way_loses_nothing_spec_sync_6() {
-    let mut refused = 0;
+    let mut part_way = 0;
     for wait in 0..4 {
         let (net, (host, a, c, d, g, t, l)) = Net::cached("fill::rotation_part_way", || {
             let mut net = Net::new();
@@ -530,6 +531,7 @@ fn a_rotation_part_way_loses_nothing_spec_sync_6() {
         for _ in 0..wait {
             f.net.round();
         }
+        part_way += usize::from(f.held().len() < N);
         let (ta, tc, td) = (f.net.tid(a), f.net.tid(c), f.net.tid(d));
         let recipients = net::recipients_of(f.net.engine(a), &[(ta, Role::Admin), (tc, Role::Read)]);
         net::remove_holder(f.net.engine(a), g, td, &recipients, 9);
@@ -544,10 +546,9 @@ fn a_rotation_part_way_loses_nothing_spec_sync_6() {
             }
             n == N
         });
-        refused += f.net.diagnostics(c).iter().filter(|x| x.contains("Fetch refused")).count();
         f.finish();
     }
-    assert!(refused > 0, "no batch was refused: nothing tested");
+    assert!(part_way > 0, "no rotation part way: nothing tested");
 }
 
 // spec/sync.md §6: a message written during a fill comes next, not after the backlog.

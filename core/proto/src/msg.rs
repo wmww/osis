@@ -260,15 +260,17 @@ pub struct Pull {
     pub ephemeral: bool,
 }
 
-/// `PullReply [42, id, [[label_id, event]*], Opt(cursor), whole, more, report, [join*]]`:
-/// `joins` are the Pull's joins not in the stream at `cursor`: still in pages at their own
-/// cursor, or (none) not shared here.
+/// `PullReply [42, id, [[label_id, event]*], Opt(cursor), whole, trimmed, more, report, [join*]]`:
+/// `trimmed` (with `whole`): a cursor the Pull named is on this store's history below its
+/// deletion horizon, so deletions since it are not all in the log. `joins` are the Pull's joins
+/// not in the stream at `cursor`: still in pages at their own cursor, or (none) not shared here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PullReply {
     pub id: Id,
     pub events: Vec<(LabelId, Event)>,
     pub cursor: Option<Vec<u8>>,
     pub whole: bool,
+    pub trimmed: bool,
     pub more: bool,
     pub report: bool,
     pub joins: Vec<Join>,
@@ -547,7 +549,7 @@ impl Message {
             M::Lost { items, .. } => vec![k, id, Value::List(items.iter().map(|(l, c)| Value::List(vec![Value::bytes(&l.0), Value::opt(c.as_ref().map(|c| Value::bytes(c)))])).collect())],
             M::Shared { codes, .. } => vec![k, id, Value::List(codes.iter().map(|(c, t, g)| Value::List(vec![Value::uint(c.0), Value::opt(t.as_ref().map(|t| Value::bytes(t))), Value::opt(g.as_ref().map(|g| Value::List(vec![Value::Bytes(box_bytes(&g.entry_box)), Value::List(g.path.iter().map(step_value).collect())])))])).collect())],
             M::Pull(p) => vec![k, id, opt_cursor(&p.cursor), joins_value(&p.joins), Value::uint(p.inline_limit), Value::uint(p.max_reply), Value::Bool(p.follow), Value::Bool(p.ephemeral)],
-            M::PullReply(r) => vec![k, id, stream_events_value(&r.events), opt_cursor(&r.cursor), Value::Bool(r.whole), Value::Bool(r.more), Value::Bool(r.report), joins_value(&r.joins)],
+            M::PullReply(r) => vec![k, id, stream_events_value(&r.events), opt_cursor(&r.cursor), Value::Bool(r.whole), Value::Bool(r.trimmed), Value::Bool(r.more), Value::Bool(r.report), joins_value(&r.joins)],
             M::Stream(s) => vec![k, id, stream_events_value(&s.events), opt_cursor(&s.cursor), Value::Bool(s.report)],
             M::Applied { cursor } => vec![k, id, Value::bytes(cursor)],
             M::Digest { digest } => vec![k, id, Value::bytes(digest)],
@@ -595,8 +597,8 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         7 | 19 | 23 | 25 => 5,
         12 | 30 => 6,
         16 => 7,
-        15 | 41 | 42 => 8,
-        36 => 9,
+        15 | 41 => 8,
+        36 | 42 => 9,
         43 => 5,
         46 => 4,
         _ => return Err(Error::UnknownKind(kind)),
@@ -695,6 +697,7 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
             events: stream_events(f.list(0, usize::MAX, "events")?)?,
             cursor: opt_cursor_of(&mut f)?,
             whole: f.bool()?,
+            trimmed: f.bool()?,
             more: f.bool()?,
             report: f.bool()?,
             joins: joins(f.list(0, usize::MAX, "joins")?)?,

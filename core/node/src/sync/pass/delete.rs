@@ -537,7 +537,7 @@ impl SyncEngine {
             self.state.set_entry(l, q, e);
             if let Some(c) = self.conns.get_mut(&conn) {
                 c.req.sent.insert((l, q), (now, crate::sync::UNTAGGED));
-                c.req.replacing.insert((l, q), items.iter().map(|i| i.blob).collect());
+                c.req.replacing.insert((l, q), (items.iter().map(|i| i.blob).collect(), crate::sync::UNTAGGED));
             }
             uploads.push(osis_proto::Entry { blob, wrap, stamp, replaces: items });
         }

@@ -288,3 +288,26 @@ fn judgment_work_does_not_grow_with_things_asked_spec_sync_10() {
     assert_eq!(small, big, "work at n and 10n");
     assert!(small.0 <= 1 && small.1 <= 1, "one walk of the actor, once: {small:?}");
 }
+
+// spec/sync.md §10 (Connection proofs): a connection proves once, at its start. A listener that
+// comes to hold an actor it did not prove to a known dialer closes the session (the dialer
+// dials again and is answered with it), as a dialer closes and redials its own
+#[test]
+fn a_listener_holding_a_new_actor_closes_what_it_proved_without_it_spec_sync_10() {
+    let (mut net, host, a, _, (_, _, l, seed)) = linked();
+    let b = net.node(2, &[host]);
+    net.engine(b).hold_key_actor(seed).unwrap();
+    let provers: Vec<Prover> = net.sync(b).provers(false).unwrap().into_iter().filter(|p| p.record.tid() == l).collect();
+    let (conn, answered) = prove(&mut net, a, provers.clone());
+    assert!(answered > 0, "a holder is known: proofs are shown");
+    let (other, _) = prove(&mut net, a, provers.clone());
+    let acts = net.sync(a).handle(osis_node::sync::Event::Local);
+    net.actions(a, acts);
+    assert!(net.sync(a).proven(other).is_some(), "nothing new held: the session stays");
+    net.engine(a).hold_key_actor(Secret32::from_bytes([0x66; 32])).unwrap();
+    let acts = net.sync(a).handle(osis_node::sync::Event::Local);
+    net.actions(a, acts);
+    assert!(net.sync(a).proven(conn).is_none(), "closed: it proved less than the node would now");
+    let (_, again) = prove(&mut net, a, provers);
+    assert_eq!(again, answered + 1, "a new session proves the new actor");
+}

@@ -1058,7 +1058,7 @@ fn node_requests() -> Vec<Message> {
 /// The node's answer to one of `node_requests`.
 fn node_answer(m: &Message) -> Message {
     match m {
-        Message::Pull(p) => Message::PullReply(Box::new(osis_proto::msg::PullReply { id: p.id, events: vec![], cursor: None, whole: true, more: false, report: false, joins: vec![] })),
+        Message::Pull(p) => Message::PullReply(Box::new(osis_proto::msg::PullReply { id: p.id, events: vec![], cursor: None, whole: true, trimmed: false, more: false, report: false, joins: vec![] })),
         Message::Fetch { id, .. } => Message::FetchReply { id: *id, items: vec![] },
         m => panic!("{m:?}"),
     }

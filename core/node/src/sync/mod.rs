@@ -119,6 +119,10 @@ pub struct SyncEngine {
     /// Followed links (by K) whose redemption is under way: their sharer nodes are redialed after
     /// `retry_ms`, not `peer_retry_ms` (`lost`). Memory only: no redemption outlives the process.
     redeeming: BTreeSet<Tid>,
+    /// The role generation and key actors `reprove` last looked at.
+    provers_mark: Option<(u64, Vec<Tid>)>,
+    /// `own_key`'s cache: the dialable secret's key.
+    own_key: Option<[u8; 32]>,
     pub(crate) state: State,
     /// Event counter: pass completions and remote role commits are ordered by it.
     pub(crate) seq: u64,
@@ -257,8 +261,6 @@ pub struct SyncEngine {
     /// The labels heard out at the last lifetime judgment (`judge_lifetimes`); `None` before the
     /// first: a label heard out since judges the held things again.
     pub(crate) lifetimes_heard: Option<BTreeSet<osis_base::LabelId>>,
-    /// Sessions of forgotten labels whose pushes the host is still to stop.
-    pub(crate) unsubscribe: BTreeSet<(ConnId, LabelId)>,
     /// The synced labels as last computed (`labels()`).
     /// The labels synced as `labels` last answered: what reads between two asks go by.
     pub(crate) synced: Arc<Synced>,
@@ -391,6 +393,8 @@ impl SyncEngine {
             redialed: BTreeMap::new(),
             stand_in: BTreeMap::new(),
             redeeming: BTreeSet::new(),
+            provers_mark: None,
+            own_key: None,
             state,
             seq: 0,
             passes: BTreeMap::new(),
@@ -448,7 +452,6 @@ impl SyncEngine {
             tied: deliver::TiedWork { all: true, ..Default::default() },
             synced: Default::default(),
             synced_of: crate::engine::memo::Memo::new("labels synced"),
-            unsubscribe: BTreeSet::new(),
             served: BTreeMap::new(),
             hub_conns: BTreeMap::new(),
             refusals: BTreeMap::new(),
@@ -670,7 +673,6 @@ impl SyncEngine {
         if let Err(e) = self.drop_left() {
             self.diag(format!("dropping lost secrets: {e}"));
         }
-        self.stop_pushes(&mut out);
         self.host_step(&mut out);
         if let Some(at) = self.next_wake()
             && self.wake != Some(at)
@@ -789,6 +791,7 @@ impl SyncEngine {
             self.engine_events()?;
         }
         self.retire_replaced();
+        self.reprove(out)?;
         self.stamp_changes()?;
         if std::mem::take(&mut self.clients_moved) {
             self.clients_changed(out);
@@ -1034,47 +1037,9 @@ mod tests {
         s.fetch_on(conn, l, [b], &mut Vec::new()).unwrap();
         assert!(!s.asked(&b).is_some(), "not asked again");
         let added = osis_proto::Event::Added { blob_id: b, blob: None, wrap: [3; osis_crypto::WRAP_LEN], stamp: None };
-        s.log_events(Some(conn), l, vec![added], None, &mut Vec::new()).unwrap();
+        s.log_events(Some(conn), l, vec![added], &mut Vec::new()).unwrap();
         s.fetch_on(conn, l, [b], &mut Vec::new()).unwrap();
         assert!(s.asked(&b).is_some(), "asked once announced");
-        // likewise when a reconciliation finds the host holding it
-        let b2 = osis_base::BlobId([2; 32]);
-        s.conns.get_mut(&conn).unwrap().req.missing.insert(b2);
-        s.reconciled(conn, l, vec![b2], Vec::new(), &mut Vec::new()).unwrap();
-        assert!(s.asked(&b2).is_some(), "asked once reconciled");
-    }
-
-    // spec/sync.md §6: a connection ending before the entries a reconciliation after a start
-    // found missing arrived reconciles that label again on the next: no cursor or entry here
-    // names those ephemeral entries (`ephemeral::random_window_inflight_large` seed 100013: a
-    // twice-restarted author never got its earlier sessions' commits back). A refused fetch
-    // reconciles again too; answered first, it stays reconciled.
-    #[test]
-    fn reconcile_fetches_lost_reconcile_again_spec_sync_6() {
-        for case in ["down", "answered", "refused"] {
-            let lp = one_peer();
-            let p = lp.peers.into_iter().next().unwrap();
-            let host = Address { url: "quic://host:1".into(), key: [7; 32] };
-            let cfg = SyncConfig { hosts: vec![host], ..SyncConfig::default() };
-            let mut s = SyncEngine::new(super::host::on_hub(p), Box::new(osis_crypto::SeededRng::from_u64(1)), cfg).unwrap();
-            let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
-            let key = s.conns[&conn].host;
-            let (l, b) = (LabelId([1; 16]), osis_base::BlobId([1; 32]));
-            s.memory.reconciling.insert((conn, l));
-            s.reconciled(conn, l, vec![b], Vec::new(), &mut Vec::new()).unwrap();
-            assert!(s.asked(&b).is_some() && s.memory.reconciled.contains(&(key, l)));
-            match case {
-                "answered" => s.session_event(conn, ClientEvent::Fetched { label: l, items: vec![osis_proto::msg::Fetched { blob_id: b, entry: None }] }, &mut Vec::new()).unwrap(),
-                "refused" => s.session_event(conn, ClientEvent::Refused { label: Some(l), kind: osis_proto::Request::Fetch, code: osis_proto::Code::RATE_LIMITED, fetch: vec![b] }, &mut Vec::new()).unwrap(),
-                _ => {}
-            }
-            let left = s.memory.reconcile_fetches.contains_key(&(conn, l));
-            if case != "refused" {
-                s.handle(Event::Down { conn });
-            }
-            assert_eq!(s.memory.reconciled.contains(&(key, l)), case == "answered", "{case}");
-            assert!(case == "down" || !left, "{case}: answered or refused fetches are not tracked");
-        }
     }
 
     // spec/sync.md §5: a deposit is kept until each of its hosts answers it, also across a

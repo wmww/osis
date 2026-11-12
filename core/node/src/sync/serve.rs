@@ -68,6 +68,8 @@ pub(crate) struct Served {
     proven: super::proofs::Proven,
     /// The actors this node proved to it in answer (`SyncEngine::proved`).
     proved: BTreeSet<Tid>,
+    /// The dialer proved a known actor, so this node answered with its own proofs (`reprove`).
+    answered: bool,
     /// How far its proof exchange went: Prove, then Resume, each at most once (spec/wire.md
     /// §11.2).
     asked: Asked,
@@ -195,7 +197,7 @@ impl SyncEngine {
                 osis_transport::Peer::Unix { uid } if osis_transport::unix::own_uid().is_ok_and(|o| o == uid) => super::Tier::Main,
                 _ => super::Tier::Keyed,
             };
-            self.served.insert(conn, Served { hub: id, binding: (b.dialer, b.listener, b.key), tier, ported: false, room: Room::default(), proven: super::proofs::Proven::default(), proved: BTreeSet::new(), asked: Asked::Nothing, client: None });
+            self.served.insert(conn, Served { hub: id, binding: (b.dialer, b.listener, b.key), tier, ported: false, room: Room::default(), proven: super::proofs::Proven::default(), proved: BTreeSet::new(), answered: false, asked: Asked::Nothing, client: None });
             self.hub_conns.insert(id, conn);
             // both ends tell a relayed connection alike, before its first message
             if b.remote.relayed {
@@ -327,6 +329,13 @@ impl SyncEngine {
     /// The actors served session `conn` proved (`SyncEngine::proven`).
     pub(super) fn served_proven(&self, conn: ConnId) -> Option<&super::proofs::Proven> {
         self.served.get(&conn).map(|s| &s.proven)
+    }
+
+    /// Served sessions this node answered with its proofs that lack one it would prove now
+    /// (`reprove`): `now` is its proofs to a node of another account, then to one of its own.
+    pub(super) fn served_stale(&self, now: &(BTreeSet<Tid>, BTreeSet<Tid>)) -> Vec<ConnId> {
+        let mine = |s: &Served| if super::proofs::own_peer(&self.engine, &s.proven) { &now.1 } else { &now.0 };
+        self.served.iter().filter(|(_, s)| s.answered && !mine(s).is_subset(&s.proved)).map(|(c, _)| *c).collect()
     }
 
     /// What this node proved to served session `conn`'s dialer.
@@ -525,10 +534,10 @@ impl SyncEngine {
             let known = self.engine.core.judge(proven.all()).known();
             let own = super::proofs::own_peer(&self.engine, &proven);
             let mine: Vec<osis_proto::ActorProof> = if known { super::proofs::provers(&mut self.engine, own)?.iter().map(|p| p.sign(true, &dialer, &key)).collect() } else { Vec::new() };
-            Ok((proven, mine))
+            Ok((proven, mine, known))
         })();
         // an engine error is this node's, not the peer's: answered Error 1, the step goes on
-        let (proven, mine) = match answer {
+        let (proven, mine, known) = match answer {
             Ok(a) => a,
             Err(e) => {
                 self.diag(format!("serve prove: {e}"));
@@ -539,6 +548,7 @@ impl SyncEngine {
         if let Some(s) = self.served.get_mut(&conn) {
             s.proven = proven;
             s.proved = mine.iter().map(|p| p.actor()).collect();
+            s.answered = known;
         }
         self.hub_down(conn, Down::Message(Box::new(Message::Proved { id, proofs: mine })), out);
         Ok(())

@@ -17,6 +17,7 @@
 //!
 //! Rows, all catalog rows under `kind::LOG`:
 //! `m` meta (cursor key, log ID, current incarnation, end position); `n` the ended incarnations;
+//! `z` the deletion horizon (`log_horizon`);
 //! `e pos` an event; `i label blob` an entry's slot (its latest event's position and the
 //! position it was first logged at); `h label` a head's slot; `d at pos` the deletion events by
 //! when they were logged, for the sweep. Whether this open of the store has
@@ -50,6 +51,8 @@ const PAGE: usize = 256;
 
 const META: &[u8] = &[kind::LOG, b'm'];
 const ENDED: &[u8] = &[kind::LOG, b'n'];
+/// The deletion horizon: the highest position a deletion event the sweep dropped held.
+const HORIZON: &[u8] = &[kind::LOG, b'z'];
 const EVENT: &[u8] = &[kind::LOG, b'e'];
 const ENTRY_SLOT: &[u8] = &[kind::LOG, b'i'];
 const HEAD_SLOT: &[u8] = &[kind::LOG, b'h'];
@@ -349,8 +352,19 @@ impl Transaction<'_> {
                 self.cat_remove(&entry_slot(&label, &blob), Shred::Yes)?;
             }
             self.log_drop_event(pos, Shred::Yes)?;
+            if pos > self.log_horizon()? {
+                self.cat_put_to(HORIZON, pos.to_be_bytes().to_vec(), Shred::No, false)?;
+            }
         }
         Ok(full)
+    }
+
+    /// The deletion horizon: a position below it may have had deletion events the sweep has
+    /// dropped since, so a reader at such a position does not hear of those deletions by reading
+    /// on (issues/net-one-peer.md 3h1: a listing from the start, marked trimmed, tells it). 0 while
+    /// none was dropped.
+    pub fn log_horizon(&mut self) -> Result<u64, Error> {
+        self.cat_get(HORIZON)?.map_or(Ok(0), |v| pos_value(&v))
     }
 
     /// When `log_sweep` next has a deletion event to drop: `None` with none held.

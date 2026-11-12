@@ -40,7 +40,9 @@ impl SyncEngine {
             // up both ways (`stream_idle`); one still finding what it shares is opening: a
             // connection this node dialed, or one it serves whose shared set began. A peer
             // counts once whatever connections it has (`pass_source`).
-            let readers: BTreeSet<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && c.up).map(|(id, _)| *id).chain(self.records.shared.keys().copied()).collect();
+            // (a host's connection is counted above: its stream reads it as a host)
+            let host_conn = |id: &ConnId| self.conns.get(id).is_some_and(|c| !c.peer);
+            let readers: BTreeSet<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && c.up).map(|(id, _)| *id).chain(self.records.shared.keys().copied()).filter(|id| !host_conn(id)).collect();
             for id in readers {
                 if !self.shared_member(id, &l.id) && !self.shared_settled(id) {
                     st.opening += 1;
@@ -48,7 +50,7 @@ impl SyncEngine {
             }
             let mut by_source: BTreeMap<Tid, bool> = BTreeMap::new();
             let mut unnamed = (0, 0);
-            for id in self.records.shared.keys().filter(|c| self.shared_member(**c, &l.id)) {
+            for id in self.records.shared.keys().filter(|c| !host_conn(c) && self.shared_member(**c, &l.id)) {
                 let idle = self.stream_idle(*id, &l.id);
                 match self.pass_source(*id) {
                     Some(k) => *by_source.entry(k).or_default() |= idle,
@@ -194,10 +196,9 @@ impl SyncEngine {
         for (id, c) in &self.conns {
             for (l, x) in &c.labels {
                 v.push(format!(
-                    "conn {id} {l:?}: {:?} synced {} syncing {} dirty {} registering {} writer {} reader {} outstanding {} head {:?}",
+                    "conn {id} {l:?}: {:?} synced {} dirty {} registering {} writer {} reader {} outstanding {} head {:?}",
                     x.phase,
                     x.synced,
-                    x.syncing,
                     x.dirty,
                     x.registering.is_some(),
                     x.keys.is_writer(),
@@ -236,12 +237,6 @@ impl SyncEngine {
     /// Entries this node knows under a label (tests).
     pub fn entries(&self, l: &LabelId) -> Vec<(osis_base::BlobId, EntryKind)> {
         self.state.label_entries(l).map(|(b, e)| (b, e.kind.clone())).collect()
-    }
-
-    /// The positions this node's cursors of label `l` are at, one per host (tests).
-    #[doc(hidden)]
-    pub fn cursor_seqs(&self, l: &LabelId) -> Vec<u64> {
-        self.state.cursors.iter().filter(|((_, x), _)| x == l).map(|(_, c)| c.seq).collect()
     }
 
     /// The groups label `l` is held under on this node's connections (tests).
